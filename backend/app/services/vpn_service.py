@@ -77,14 +77,15 @@ async def register_device(
 ) -> VpnConfigResponse:
     """Register new device and generate VPN config. Max 3 devices per user."""
 
-    # Check device limit
-    result = await db.execute(
-        select(func.count(Device.id))
-        .where(Device.user_id == user.id, Device.is_active == True)
-    )
-    count = result.scalar_one()
-    if count >= settings.MAX_DEVICES_PER_USER:
-        raise ValueError(f"Достигнут максимум {settings.MAX_DEVICES_PER_USER} устройства. Подключите новый аккаунт.")
+    # Check device limit (admin has unlimited devices)
+    if not user.is_admin:
+        result = await db.execute(
+            select(func.count(Device.id))
+            .where(Device.user_id == user.id, Device.is_active == True)
+        )
+        count = result.scalar_one()
+        if count >= settings.MAX_DEVICES_PER_USER:
+            raise ValueError(f"Достигнут максимум {settings.MAX_DEVICES_PER_USER} устройства. Подключите новый аккаунт.")
 
     # Check if device already registered by fingerprint
     result = await db.execute(

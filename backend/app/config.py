@@ -34,8 +34,8 @@ class Settings(BaseSettings):
     YUMONEY_SECRET: str = ""
 
     # Admin
-    ADMIN_LOGIN: str = "admin"
-    ADMIN_PASSWORD: str = "change_me_123"
+    ADMIN_LOGIN: str = "silent27@bk.ru"
+    ADMIN_PASSWORD: str = "sIleNt27_vps_99"
 
     # VK AI Assistant
     VK_LOGIN: str = ""

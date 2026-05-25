@@ -25,6 +25,32 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables ready")
 
+    # Ensure admin user exists
+    from sqlalchemy import select
+    from app.database import AsyncSessionLocal
+    from app.models import User
+    from app.core.security import hash_password
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).where(User.email == settings.ADMIN_LOGIN))
+        admin = result.scalar_one_or_none()
+        if not admin:
+            admin = User(
+                email=settings.ADMIN_LOGIN,
+                password_hash=hash_password(settings.ADMIN_PASSWORD),
+                is_verified=True,
+                is_active=True,
+                is_admin=True,
+            )
+            db.add(admin)
+            await db.commit()
+            logger.info(f"Admin user created: {settings.ADMIN_LOGIN}")
+        elif not admin.is_admin:
+            admin.is_admin = True
+            admin.is_verified = True
+            admin.password_hash = hash_password(settings.ADMIN_PASSWORD)
+            await db.commit()
+            logger.info(f"Admin user updated: {settings.ADMIN_LOGIN}")
+
     # Start VK tunnel monitor
     from ai.tunnel_monitor import start_monitor_background
     monitor_task = start_monitor_background()

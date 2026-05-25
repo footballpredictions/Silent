@@ -62,11 +62,12 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     if not user or not verify_password(req.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Неверный email или пароль")
 
-    if not user.is_verified:
-        raise HTTPException(status_code=403, detail="Подтвердите email перед входом")
-
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Аккаунт заблокирован")
+
+    # Admin bypasses email verification
+    if not user.is_verified and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Подтвердите email перед входом")
 
     return TokenResponse(
         access_token=create_access_token(user.id),
@@ -119,8 +120,11 @@ async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(g
 
 
 @router.post("/admin/login", response_model=AdminTokenResponse)
-async def admin_login(req: AdminLoginRequest):
-    if req.login != settings.ADMIN_LOGIN or req.password != settings.ADMIN_PASSWORD:
+async def admin_login(req: AdminLoginRequest, db: AsyncSession = Depends(get_db)):
+    # Accept both email and legacy login
+    login = req.login.strip().lower()
+    expected_login = settings.ADMIN_LOGIN.strip().lower()
+    if (login != expected_login and login != "admin") or req.password != settings.ADMIN_PASSWORD:
         raise HTTPException(status_code=401, detail="Неверные данные администратора")
     token = create_access_token("admin", expires_delta=timedelta(hours=12))
     return AdminTokenResponse(access_token=token)

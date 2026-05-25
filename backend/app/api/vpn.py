@@ -19,6 +19,9 @@ router = APIRouter(prefix="/vpn", tags=["vpn"])
 
 
 async def _check_active_subscription(user: User, db: AsyncSession):
+    # Admin has unlimited access — no subscription needed
+    if user.is_admin:
+        return None
     result = await db.execute(
         select(Subscription).where(
             Subscription.user_id == user.id,

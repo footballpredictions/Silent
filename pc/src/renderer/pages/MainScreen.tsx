@@ -32,23 +32,50 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
 
   useEffect(() => { fetchProfile() }, [])
 
+  useEffect(() => {
+    const ea = (window as any).electronAPI
+    if (!ea) return
+    ea.onVpnStopped(() => {
+      setConnected(false)
+      setConnecting(false)
+      api.post('/api/vpn/disconnect', { device_fingerprint: DEVICE_FINGERPRINT }).catch(() => null)
+      fetchProfile()
+    })
+    return () => { ea.removeVpnListeners?.() }
+  }, [])
+
   const handleToggle = async () => {
     if (connecting) return
     setConnecting(true)
     try {
       if (!connected) {
-        // Register device & connect
-        await api.post('/api/vpn/device/register', {
+        // 1. Register device and get VPN config from backend
+        const { data: vpnConfig } = await api.post('/api/vpn/device/register', {
           device_name: 'PC',
           device_type: 'pc',
           device_fingerprint: DEVICE_FINGERPRINT,
-        }).catch(() => null)
+        })
+        // 2. Notify backend of connection
         await api.post('/api/vpn/connect', {
           device_fingerprint: DEVICE_FINGERPRINT,
           device_type: 'pc',
         })
+        // 3. Launch wdtt-client + WireGuard via Electron IPC
+        const ea = (window as any).electronAPI
+        if (ea?.vpnConnect) {
+          const result = await ea.vpnConnect({
+            server_ip: vpnConfig.server_ip,
+            server_port: vpnConfig.server_port,
+            vk_hashes: vpnConfig.vk_hashes,
+            wdtt_password: vpnConfig.wdtt_password,
+            device_id: String(vpnConfig.device_id),
+          })
+          if (result?.error) throw new Error(result.error)
+        }
         setConnected(true)
       } else {
+        const ea = (window as any).electronAPI
+        await ea?.vpnDisconnect?.()
         await api.post('/api/vpn/disconnect', { device_fingerprint: DEVICE_FINGERPRINT })
         setConnected(false)
       }
@@ -56,6 +83,7 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
     } catch (err: any) {
       if (err.response?.status === 402) alert('Нет активной подписки')
       else if (err.response?.status === 403) alert(err.response.data.detail)
+      else if (err.message) alert('Ошибка: ' + err.message)
     } finally { setConnecting(false) }
   }
 

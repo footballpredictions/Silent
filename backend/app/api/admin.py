@@ -204,9 +204,8 @@ async def vk_oauth_url(
     import urllib.parse
     from app.config import settings
 
-    # Use VK Android client for OAuth
-    client_id = 6287487
-    redirect_uri = f"https://132-243-234-162.nip.io/api/admin/vk/oauth-callback"
+    client_id = 54608093
+    redirect_uri = "https://132-243-234-162.nip.io/api/admin/vk/oauth-callback"
     scope = "offline"  # offline = permanent token
     params = urllib.parse.urlencode({
         "client_id": client_id,
@@ -243,9 +242,9 @@ async def vk_oauth_callback(
         return HTMLResponse('<html><body style="background:#0a0a0a;color:#fff">Код не получен</body></html>')
 
     # Exchange code for token
-    client_id = 6287487
-    client_secret = "VeWdmVclDCtn6ihuP1nt"
-    redirect_uri = f"https://132-243-234-162.nip.io/api/admin/vk/oauth-callback"
+    client_id = 54608093
+    client_secret = "wxj4liNXn7nElGP5DDgz"
+    redirect_uri = "https://132-243-234-162.nip.io/api/admin/vk/oauth-callback"
 
     try:
         async with aiohttp.ClientSession() as session:

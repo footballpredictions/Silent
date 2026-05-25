@@ -210,7 +210,7 @@ async function applyWireGuardConfig(confPath, send, turnIPs = [], gateway = null
   const { execSync } = require('child_process')
   try {
     execSync(`"${wgExe}" /uninstalltunnelservice wg-turn`, { windowsHide: true })
-    await new Promise(r => setTimeout(r, 1000))
+    await new Promise(r => setTimeout(r, 1500))
   } catch {}
 
   send('[WG] Применяю конфигурацию WireGuard...')
@@ -218,13 +218,45 @@ async function applyWireGuardConfig(confPath, send, turnIPs = [], gateway = null
     windowsHide: true,
     detached: false,
   })
-  wgProc.on('close', (code) => {
+  wgProc.on('close', async (code) => {
     if (code === 0) {
       send('[WG] ✅ WireGuard туннель активирован!')
       send('[WG] Трафик защищён, IP: 10.66.66.2')
     } else {
       send(`[WG] ⚠ Ошибка активации (код ${code})`)
       send('[WG] Убедитесь что приложение запущено от Администратора')
+      return
+    }
+
+    // Diagnostic: check service state + handshake after 4 seconds
+    await new Promise(r => setTimeout(r, 4000))
+    try {
+      // Check Windows service state
+      const svcOut = execSync('sc query WireGuardTunnel$wg-turn', { windowsHide: true, encoding: 'utf8' })
+      const state = (svcOut.match(/STATE\s*:\s*\d+\s+(\S+)/) || [])[1] || '?'
+      send(`[WG] Сервис WireGuardTunnel: ${state}`)
+
+      // Show tunnel status via wg.exe
+      const wgDir = path.dirname(wgExe)
+      const wgCli = path.join(wgDir, 'wg.exe')
+      if (fs.existsSync(wgCli)) {
+        const wgStatus = execSync(`"${wgCli}" show wg-turn`, { windowsHide: true, encoding: 'utf8' })
+        send('[WG] wg show:')
+        wgStatus.split('\n').filter(l => l.trim()).forEach(l => send('  ' + l.trim()))
+      }
+
+      // Ping VPN server
+      const pingOut = execSync('ping -n 2 -w 2000 10.66.66.1', { windowsHide: true, encoding: 'utf8' })
+      if (pingOut.includes('TTL=') || pingOut.includes('ttl=')) {
+        send('[WG] ✅ Ping 10.66.66.1 — туннель работает!')
+      } else {
+        send('[WG] ⚠ Ping 10.66.66.1 нет ответа — handshake не завершён')
+        send('[WG] Проверяю маршруты...')
+        const routes = execSync('route print 10.66.66.*', { windowsHide: true, encoding: 'utf8' })
+        routes.split('\n').filter(l => l.includes('10.66.66')).forEach(l => send('  ' + l.trim()))
+      }
+    } catch (e) {
+      send('[WG] Диагностика: ' + e.message.split('\n')[0].slice(0, 120))
     }
   })
 }
@@ -269,6 +301,17 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   if (config.server_ip) turnIPs.add(config.server_ip)
 
   let wgApplied = false
+  let confSaved = false
+  let activeWorkers = 0
+
+  const tryApplyWg = async () => {
+    if (wgApplied || !confSaved || activeWorkers < 2) return
+    wgApplied = true
+    // Extra 1s to let TURN sessions stabilize before WG changes routing
+    await new Promise(r => setTimeout(r, 1000))
+    send(`[WG] Воркеров активно: ${activeWorkers}, запускаю туннель...`)
+    await applyWireGuardConfig(confPath, send, [...turnIPs], originalGateway)
+  }
 
   const handleLine = async (line) => {
     send(line)
@@ -276,11 +319,16 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     const turnMatch = line.match(/TURN UDP \(([\d.]+):\d+\)/)
     if (turnMatch) turnIPs.add(turnMatch[1])
 
-    // When conf saved — add exclusion routes then activate WireGuard
-    if (!wgApplied && line.includes('[КОНФИГ] Сохранён в wg-turn.conf')) {
-      wgApplied = true
-      await new Promise(r => setTimeout(r, 500))
-      await applyWireGuardConfig(confPath, send, [...turnIPs], originalGateway)
+    if (line.includes('[КОНФИГ] Сохранён в wg-turn.conf')) {
+      confSaved = true
+      await tryApplyWg()
+    }
+
+    // Count active workers from dispatcher messages
+    if (line.includes('[ДИСП] Воркер') && line.includes('зарегистрирован')) {
+      const m = line.match(/всего:\s*(\d+)/)
+      if (m) activeWorkers = parseInt(m[1])
+      await tryApplyWg()
     }
   }
 

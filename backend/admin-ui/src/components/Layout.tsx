@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Users, Hash, Tag, Palette, LogOut, Shield } from 'lucide-react'
+import { LayoutDashboard, Users, Hash, Tag, Palette, LogOut, Shield, ScrollText } from 'lucide-react'
 
 const nav = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Дашборд' },
@@ -7,6 +7,7 @@ const nav = [
   { to: '/vk', icon: Hash, label: 'VK / Тоннели' },
   { to: '/promo', icon: Tag, label: 'Промокоды' },
   { to: '/theme', icon: Palette, label: 'Оформление' },
+  { to: '/logs', icon: ScrollText, label: 'Логи' },
 ]
 
 export default function Layout({ children, onLogout }: { children: React.ReactNode; onLogout: () => void }) {

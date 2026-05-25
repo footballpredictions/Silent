@@ -35,6 +35,7 @@ class UserProfileResponse(BaseModel):
     id: uuid.UUID
     email: EmailStr
     display_id: str
+    is_admin: bool = False
     subscription: SubscriptionInfo
     devices: list[DeviceInfo]
     devices_count: int

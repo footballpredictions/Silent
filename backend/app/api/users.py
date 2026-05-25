@@ -16,20 +16,28 @@ router = APIRouter(prefix="/users", tags=["users"])
 @router.get("/me", response_model=UserProfileResponse)
 async def get_profile(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     # Active subscription
-    result = await db.execute(
-        select(Subscription)
-        .where(Subscription.user_id == user.id, Subscription.status == "active")
-        .order_by(Subscription.expires_at.desc())
-    )
-    sub = result.scalars().first()
-    subscription_info = SubscriptionInfo(is_active=False)
-    if sub and sub.is_active:
+    if user.is_admin:
         subscription_info = SubscriptionInfo(
             is_active=True,
-            plan_type=sub.plan_type,
-            expires_at=sub.expires_at,
-            days_left=sub.days_left,
+            plan_type="unlimited",
+            expires_at=None,
+            days_left=99999,
         )
+    else:
+        result = await db.execute(
+            select(Subscription)
+            .where(Subscription.user_id == user.id, Subscription.status == "active")
+            .order_by(Subscription.expires_at.desc())
+        )
+        sub = result.scalars().first()
+        subscription_info = SubscriptionInfo(is_active=False)
+        if sub and sub.is_active:
+            subscription_info = SubscriptionInfo(
+                is_active=True,
+                plan_type=sub.plan_type,
+                expires_at=sub.expires_at,
+                days_left=sub.days_left,
+            )
 
     # Devices
     result = await db.execute(
@@ -51,6 +59,7 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
         id=user.id,
         email=user.email,
         display_id=user.display_id,
+        is_admin=user.is_admin,
         subscription=subscription_info,
         devices=device_infos,
         devices_count=len(devices),

@@ -102,7 +102,8 @@ async def register_device(
         priv_key = ""  # Client provides own key
 
     wg_address = await _get_next_wg_address(db)
-    wdtt_pass = generate_wdtt_password()
+    # Use master WDTT password — devices authenticate with the server master password
+    wdtt_pass = settings.WDTT_MASTER_PASSWORD
 
     device = Device(
         user_id=user.id,

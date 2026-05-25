@@ -6,6 +6,7 @@ import UsersPage from './pages/UsersPage'
 import VkPage from './pages/VkPage'
 import PromoPage from './pages/PromoPage'
 import ThemePage from './pages/ThemePage'
+import LogsPage from './pages/LogsPage'
 import Layout from './components/Layout'
 
 function App() {
@@ -35,6 +36,7 @@ function App() {
           <Route path="/vk" element={<VkPage token={token} />} />
           <Route path="/promo" element={<PromoPage token={token} />} />
           <Route path="/theme" element={<ThemePage token={token} />} />
+          <Route path="/logs" element={<LogsPage token={token} />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </Layout>

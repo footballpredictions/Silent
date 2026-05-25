@@ -559,6 +559,13 @@ async def create_promo(
     return {"message": f"Промокод {promo.code} создан"}
 
 
+@router.get("/logs")
+async def get_api_logs(_: bool = Depends(get_admin_credentials)):
+    """Last 500 in-memory log entries."""
+    from app.log_buffer import get_logs
+    return {"logs": get_logs()}
+
+
 @router.get("/promo")
 async def list_promos(
     _: bool = Depends(get_admin_credentials),

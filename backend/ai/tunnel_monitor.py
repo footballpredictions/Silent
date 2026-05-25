@@ -30,15 +30,6 @@ async def monitor_loop():
         try:
             async with AsyncSessionLocal() as db:
                 manager = VkManager(db)
-
-                # Ensure authenticated
-                if not manager._token:
-                    auth_ok = await manager.authenticate()
-                    if not auth_ok:
-                        logger.error("VK auth failed, will retry in 60s")
-                        await asyncio.sleep(60)
-                        continue
-
                 await manager.check_and_heal()
                 consecutive_failures = 0
                 logger.debug(f"VK hash check completed at {datetime.utcnow().isoformat()}")

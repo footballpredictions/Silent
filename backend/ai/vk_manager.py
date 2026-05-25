@@ -294,32 +294,19 @@ class VkManager:
         return len(created) == MAX_HASHES, msg
 
     async def check_and_heal(self) -> None:
+        """
+        Hashes are managed manually via admin UI.
+        VK API check disabled — just log current count.
+        """
         result = await self.db.execute(
             select(VkHash).where(VkHash.is_active == True).order_by(VkHash.slot_index)
         )
         hashes = result.scalars().all()
 
         if not hashes:
-            logger.info("No VK hashes in DB, creating fresh ones...")
-            await self.recreate_all_hashes()
-            return
-
-        failed = []
-        for h in hashes:
-            alive = await self._check_hash_alive(h.hash_value)
-            h.last_checked = datetime.utcnow()
-            if not alive:
-                h.fail_count += 1
-                h.last_failed = datetime.utcnow()
-                failed.append(h)
-            else:
-                h.fail_count = 0
-
-        await self.db.commit()
-
-        if failed:
-            logger.warning(f"{len(failed)}/{len(hashes)} hashes failed. Recreating all...")
-            await self.recreate_all_hashes()
+            logger.warning("No active VK hashes. Add them via admin panel → VK TURN Хеши.")
+        else:
+            logger.info(f"VK hashes: {len(hashes)} active (manual mode)")
 
     async def close(self):
         if self._session and not self._session.closed:

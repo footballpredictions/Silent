@@ -17,6 +17,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from app.log_buffer import install as _install_log_buffer
+_install_log_buffer()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -114,5 +117,6 @@ if os.path.exists(admin_ui_dist):
 
 
 @app.get("/health")
+@app.get("/api/health")
 async def health():
     return {"status": "ok", "version": settings.APP_VERSION}

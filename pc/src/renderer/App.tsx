@@ -1,27 +1,25 @@
 import { useState, useEffect } from 'react'
-import { isLoggedIn } from './api'
+import { isLoggedIn, setServerUrl } from './api'
 import LoginScreen from './pages/LoginScreen'
 import MainScreen from './pages/MainScreen'
-import ServerSetupScreen from './pages/ServerSetupScreen'
 
-type Screen = 'setup' | 'login' | 'main'
+const SERVER_URL = 'https://132-243-234-162.nip.io'
+
+type Screen = 'login' | 'main'
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>('setup')
+  const [screen, setScreen] = useState<Screen>('login')
   const [theme, setTheme] = useState<any>(null)
 
   useEffect(() => {
-    const { getServerUrl } = require('./api')
-    if (!getServerUrl()) {
-      setScreen('setup')
-    } else if (!isLoggedIn()) {
-      setScreen('login')
-    } else {
+    setServerUrl(SERVER_URL)
+    if (isLoggedIn()) {
       setScreen('main')
+    } else {
+      setScreen('login')
     }
   }, [])
 
-  const handleSetupDone = () => setScreen('login')
   const handleLoginDone = (themeData: any) => {
     setTheme(themeData)
     setScreen('main')
@@ -30,7 +28,6 @@ export default function App() {
 
   return (
     <div className="w-full h-full bg-white">
-      {screen === 'setup' && <ServerSetupScreen onDone={handleSetupDone} />}
       {screen === 'login' && <LoginScreen onLogin={handleLoginDone} />}
       {screen === 'main' && <MainScreen theme={theme} onLogout={handleLogout} />}
     </div>

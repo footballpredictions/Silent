@@ -3,7 +3,7 @@ import { Menu, X, ChevronRight } from 'lucide-react'
 import api, { clearTokens } from '../api'
 
 interface Profile {
-  email: string; display_id: string
+  email: string; display_id: string; is_admin: boolean
   subscription: { is_active: boolean; plan_type: string | null; expires_at: string | null; days_left: number }
   devices: any[]; devices_count: number; max_devices: number
 }
@@ -128,7 +128,12 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
 
       {/* Bottom subscription info */}
       <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-100" style={{ background: bg }}>
-        {profile?.subscription.is_active ? (
+        {profile?.is_admin || profile?.subscription.plan_type === 'unlimited' ? (
+          <div className="text-center">
+            <div className="text-xs font-semibold text-green-600">Бессрочно</div>
+            <div className="text-xs text-gray-400 mt-0.5">Полный доступ</div>
+          </div>
+        ) : profile?.subscription.is_active ? (
           <div className="text-center">
             <div className="text-xs font-semibold text-green-600">Оплачено</div>
             <div className="text-xs text-gray-400 mt-0.5">

@@ -51,35 +51,57 @@ export default function VkPage({ token }: { token: string }) {
     fetchOauthStatus()
   }, [])
 
-  // ── VK OAuth login ────────────────────────────────────────────────
-  const loginViaOAuth = async () => {
+  // ── VK Token via browser ─────────────────────────────────────────
+  const [tokenInput, setTokenInput] = useState('')
+  const [showTokenInput, setShowTokenInput] = useState(false)
+  const [saveTokenStatus, setSaveTokenStatus] = useState<Status>('idle')
+  const [saveTokenMsg, setSaveTokenMsg] = useState('')
+
+  const VK_AUTH_URL = 'https://oauth.vk.com/authorize?client_id=6287487&scope=offline&redirect_uri=https://oauth.vk.com/blank.html&display=page&response_type=token'
+
+  const openVkAuth = () => {
+    window.open(VK_AUTH_URL, '_blank')
+    setShowTokenInput(true)
+  }
+
+  const extractToken = (input: string): string => {
+    // Support pasting full URL or just the token
+    const match = input.match(/access_token=([A-Za-z0-9_\-.]+)/)
+    if (match) return match[1]
+    // Or plain token string
+    if (/^[A-Za-z0-9_\-.]{30,}$/.test(input.trim())) return input.trim()
+    return ''
+  }
+
+  const saveToken = async () => {
+    const tk = extractToken(tokenInput)
+    if (!tk) {
+      setSaveTokenStatus('error')
+      setSaveTokenMsg('Не найден токен. Скопируй адресную строку полностью.')
+      return
+    }
+    setSaveTokenStatus('loading'); setSaveTokenMsg('Сохраняем...')
     try {
-      const res = await api('/api/admin/vk/oauth-url')
+      const res = await api('/api/admin/vk/save-token', {
+        method: 'POST', body: JSON.stringify({ token: tk }),
+      })
       const data = await res.json()
-      const popup = window.open(data.url, '_blank', 'width=700,height=600')
-
-      // Poll for token after user completes OAuth in popup
-      if (pollRef.current) clearInterval(pollRef.current)
-      pollRef.current = setInterval(async () => {
-        const statusRes = await api('/api/admin/vk/oauth-status')
-        if (statusRes.ok) {
-          const s = await statusRes.json()
-          if (s.authorized) {
-            clearInterval(pollRef.current!)
-            setOauthAuthorized(true)
-            setAuthStatus('success')
-            setAuthMsg('Авторизация VK прошла успешно! Теперь нажмите «Пересоздать все».')
-            popup?.close()
-          }
-        }
-      }, 2000)
-
-      // Stop polling after 3 min
-      setTimeout(() => clearInterval(pollRef.current!), 180_000)
+      if (res.ok && data.success) {
+        setSaveTokenStatus('success')
+        setSaveTokenMsg('Токен сохранён! Теперь нажмите «Пересоздать все».')
+        setOauthAuthorized(true)
+        setTokenInput('')
+        setShowTokenInput(false)
+        setTimeout(() => setSaveTokenStatus('idle'), 6000)
+      } else {
+        setSaveTokenStatus('error'); setSaveTokenMsg(data.message || 'Ошибка сохранения')
+      }
     } catch (e: any) {
-      setAuthStatus('error'); setAuthMsg('Ошибка: ' + e.message)
+      setSaveTokenStatus('error'); setSaveTokenMsg('Ошибка: ' + e.message)
     }
   }
+
+  const loginViaOAuth = openVkAuth
 
   // ── Test existing token ───────────────────────────────────────────
   const testAuth = async () => {
@@ -139,14 +161,12 @@ export default function VkPage({ token }: { token: string }) {
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">
-          {/* OAuth button */}
-          <button onClick={loginViaOAuth}
+          <button onClick={openVkAuth}
             className="flex items-center gap-2 bg-[#4680C2] hover:bg-[#3a6fad] text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors">
             <ExternalLink className="w-3.5 h-3.5" />
-            Войти через ВКонтакте
+            {oauthAuthorized ? 'Обновить токен VK' : 'Получить токен VK'}
           </button>
 
-          {/* Test existing token */}
           {oauthAuthorized && (
             <button onClick={testAuth} disabled={authStatus === 'loading'}
               className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold border transition-all disabled:opacity-50 ${
@@ -154,14 +174,37 @@ export default function VkPage({ token }: { token: string }) {
                 authStatus === 'error'   ? 'bg-red-500/10 border-red-500/40 text-red-400' :
                 'bg-[#1a1a1a] border-[#2a2a2a] text-white hover:border-white'
               }`}>
-              {authStatus === 'loading'
-                ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Проверяем...</>
-                : authStatus === 'success' ? <><ShieldCheck className="w-3.5 h-3.5" /> Токен валиден</>
-                : authStatus === 'error'   ? <><ShieldX className="w-3.5 h-3.5" /> Проверить токен</>
-                : <><ShieldCheck className="w-3.5 h-3.5" /> Проверить токен</>}
+              {authStatus === 'loading' ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Проверяем...</>
+               : authStatus === 'success' ? <><ShieldCheck className="w-3.5 h-3.5" /> Токен валиден</>
+               : <><ShieldCheck className="w-3.5 h-3.5" /> Проверить токен</>}
             </button>
           )}
         </div>
+
+        {/* Step-by-step instruction + token paste */}
+        {showTokenInput && (
+          <div className="bg-[#0d0d0d] border border-[#2a2a2a] rounded-xl p-4 space-y-3">
+            <p className="text-xs text-[#aaa] leading-relaxed">
+              <span className="text-white font-semibold">Шаг 1.</span> В открывшейся вкладке войди в ВКонтакте.<br/>
+              <span className="text-white font-semibold">Шаг 2.</span> После входа ты увидишь <em>пустую белую страницу</em> — это нормально.<br/>
+              <span className="text-white font-semibold">Шаг 3.</span> Скопируй <strong>весь адрес</strong> из адресной строки браузера.<br/>
+              <span className="text-[#555]">Пример: <code className="text-[#888]">https://oauth.vk.com/blank.html#access_token=vk1.a.Abc123...</code></span>
+            </p>
+            <div className="flex gap-2">
+              <input
+                value={tokenInput}
+                onChange={e => setTokenInput(e.target.value)}
+                placeholder="Вставь URL или токен сюда..."
+                className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none focus:border-[#4680C2] transition-colors"
+              />
+              <button onClick={saveToken} disabled={!tokenInput || saveTokenStatus === 'loading'}
+                className="px-4 py-2.5 bg-[#4680C2] hover:bg-[#3a6fad] text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">
+                {saveTokenStatus === 'loading' ? <RefreshCw className="w-4 h-4 animate-spin" /> : 'Сохранить'}
+              </button>
+            </div>
+            <StatusBadge status={saveTokenStatus} msg={saveTokenMsg} />
+          </div>
+        )}
 
         <StatusBadge status={authStatus} msg={authMsg} />
       </div>

@@ -294,6 +294,46 @@ async def vk_oauth_callback(
         return HTMLResponse(f'<html><body style="background:#0a0a0a;color:#fff">Исключение: {e}</body></html>')
 
 
+@router.post("/vk/save-token")
+async def save_vk_token(
+    data: dict,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save VK access token directly (obtained via browser)."""
+    token = data.get("token", "").strip()
+    if not token or len(token) < 20:
+        return {"success": False, "message": "Токен слишком короткий или пустой"}
+
+    # Verify token works
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.vk.com/method/users.get",
+                params={"access_token": token, "v": "5.131"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                check = await resp.json(content_type=None)
+
+        if "error" in check:
+            err = check["error"].get("error_msg", str(check["error"]))
+            return {"success": False, "message": f"Токен недействителен: {err}"}
+    except Exception as e:
+        return {"success": False, "message": f"Не удалось проверить токен: {e}"}
+
+    # Save to DB
+    result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
+    creds = result.scalar_one_or_none()
+    if creds:
+        creds.access_token = token
+        creds.is_configured = True
+    else:
+        db.add(VkCredentials(id=1, access_token=token, is_configured=True))
+    await db.commit()
+    return {"success": True, "message": "Токен VK сохранён и проверен"}
+
+
 @router.get("/vk/oauth-status")
 async def vk_oauth_status(
     _: bool = Depends(get_admin_credentials),

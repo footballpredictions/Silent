@@ -295,23 +295,7 @@ async def vk_oauth_callback(
         return HTMLResponse(f'<html><body style="background:#0a0a0a;color:#fff">Исключение: {e}</body></html>')
 
 
-@router.post("/vk/auth-server")
-async def vk_auth_from_server(
-    data: dict,
-    _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
-):
-    """Authenticate with VK directly from server (token bound to server IP)."""
-    login = data.get("login", "").strip()
-    password = data.get("password", "").strip()
-    if not login or not password:
-        return {"success": False, "message": "Введите логин и пароль VK"}
-
-    success, token, err = await VkManager.direct_auth(login, password)
-    if not success:
-        return {"success": False, "message": err}
-
-    # Save to DB
+async def _save_vk_token_to_db(db: AsyncSession, login: str, token: str):
     result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
     creds = result.scalar_one_or_none()
     if creds:
@@ -321,7 +305,52 @@ async def vk_auth_from_server(
     else:
         db.add(VkCredentials(id=1, login=login, access_token=token, is_configured=True))
     await db.commit()
-    return {"success": True, "message": "Авторизация прошла успешно! Токен привязан к серверу."}
+
+
+@router.post("/vk/auth-server")
+async def vk_auth_from_server(
+    data: dict,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start VK auth from server. Returns success, need_2fa, or error."""
+    login = data.get("login", "").strip()
+    password = data.get("password", "").strip()
+    if not login or not password:
+        return {"success": False, "message": "Введите логин и пароль VK"}
+
+    res = await VkManager.direct_auth(login, password)
+
+    if res.get("need_2fa"):
+        return res  # {need_2fa: True, session_id: ..., message: ...}
+
+    if res.get("success") and res.get("token"):
+        await _save_vk_token_to_db(db, login, res["token"])
+        return {"success": True, "message": "Авторизация прошла успешно! Токен привязан к серверу."}
+
+    return {"success": False, "message": res.get("message", "Ошибка авторизации")}
+
+
+@router.post("/vk/auth-2fa")
+async def vk_auth_2fa(
+    data: dict,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Provide 2FA code for a pending auth session."""
+    session_id = data.get("session_id", "").strip()
+    code = data.get("code", "").strip()
+    login = data.get("login", "").strip()
+    if not session_id or not code:
+        return {"success": False, "message": "Не указан session_id или код"}
+
+    res = await VkManager.submit_2fa_code(session_id, code)
+
+    if res.get("success") and res.get("token"):
+        await _save_vk_token_to_db(db, login, res["token"])
+        return {"success": True, "message": "Авторизация с 2FA прошла успешно!"}
+
+    return {"success": False, "message": res.get("message", "Ошибка 2FA")}
 
 
 @router.post("/vk/save-token")

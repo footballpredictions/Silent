@@ -57,6 +57,13 @@ export default function VkPage({ token }: { token: string }) {
     fetchStatus()
   }, [])
 
+  // ── 2FA state ────────────────────────────────────────────────────────
+  const [need2fa, setNeed2fa]     = useState(false)
+  const [sessionId, setSessionId] = useState('')
+  const [smsCode, setSmsCode]     = useState('')
+  const [tfaStatus, setTfaStatus] = useState<Status>('idle')
+  const [tfaMsg, setTfaMsg]       = useState('')
+
   // ── Auth from server ────────────────────────────────────────────────
   const doAuth = async () => {
     if (!login || !password) {
@@ -64,23 +71,49 @@ export default function VkPage({ token }: { token: string }) {
       return
     }
     setAuthStatus('loading'); setAuthMsg('Авторизуемся через сервер...')
+    setNeed2fa(false); setSmsCode('')
     try {
       const res = await api('/api/admin/vk/auth-server', {
         method: 'POST',
         body: JSON.stringify({ login, password }),
       })
       const data = await res.json()
-      if (res.ok && data.success) {
-        setAuthStatus('success')
-        setAuthMsg(data.message)
-        setHasToken(true)
-        setPassword('')
+      if (data.need_2fa) {
+        setNeed2fa(true)
+        setSessionId(data.session_id)
+        setAuthStatus('idle'); setAuthMsg('')
+        setTfaStatus('idle'); setTfaMsg(data.message)
+      } else if (data.success) {
+        setAuthStatus('success'); setAuthMsg(data.message)
+        setHasToken(true); setPassword('')
       } else {
-        setAuthStatus('error')
-        setAuthMsg(data.message || 'Ошибка авторизации')
+        setAuthStatus('error'); setAuthMsg(data.message || 'Ошибка авторизации')
       }
     } catch (e: any) {
       setAuthStatus('error'); setAuthMsg('Ошибка: ' + e.message)
+    }
+  }
+
+  // ── Submit 2FA code ─────────────────────────────────────────────────
+  const submit2fa = async () => {
+    if (!smsCode) return
+    setTfaStatus('loading'); setTfaMsg('Проверяем код...')
+    try {
+      const res = await api('/api/admin/vk/auth-2fa', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId, code: smsCode, login }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setNeed2fa(false); setSmsCode('')
+        setAuthStatus('success'); setAuthMsg(data.message)
+        setHasToken(true); setPassword('')
+        setTfaStatus('idle'); setTfaMsg('')
+      } else {
+        setTfaStatus('error'); setTfaMsg(data.message || 'Неверный код')
+      }
+    } catch (e: any) {
+      setTfaStatus('error'); setTfaMsg('Ошибка: ' + e.message)
     }
   }
 
@@ -176,6 +209,30 @@ export default function VkPage({ token }: { token: string }) {
             ? <><RefreshCw className="w-4 h-4 animate-spin" /> Авторизуемся...</>
             : hasToken ? 'Обновить токен' : 'Авторизоваться'}
         </button>
+
+        {/* 2FA code input */}
+        {need2fa && (
+          <div className="bg-[#0d0d0d] border border-yellow-700/40 rounded-xl p-4 space-y-3">
+            <p className="text-xs text-yellow-400 leading-relaxed">
+              VK отправил SMS на ваш номер. Введите код из сообщения:
+            </p>
+            <div className="flex gap-2">
+              <input
+                value={smsCode}
+                onChange={e => setSmsCode(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && submit2fa()}
+                placeholder="Код из SMS"
+                maxLength={8}
+                className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-sm text-white placeholder-[#555] focus:outline-none focus:border-yellow-600 transition-colors tracking-widest text-center"
+              />
+              <button onClick={submit2fa} disabled={!smsCode || tfaStatus === 'loading'}
+                className="px-5 py-2.5 bg-yellow-600 hover:bg-yellow-500 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">
+                {tfaStatus === 'loading' ? <RefreshCw className="w-4 h-4 animate-spin" /> : 'Подтвердить'}
+              </button>
+            </div>
+            <StatusBadge status={tfaStatus} msg={tfaMsg} />
+          </div>
+        )}
 
         <StatusBadge status={authStatus} msg={authMsg} />
       </div>

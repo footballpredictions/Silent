@@ -9,6 +9,8 @@ import asyncio
 import aiohttp
 import logging
 import re
+import threading
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -17,6 +19,9 @@ from sqlalchemy import select
 
 from app.models import VkHash, VkCredentials
 from app.core.security import decrypt_value
+
+# Pending 2FA sessions: {session_id: (thread, code_event, code_holder, result_holder)}
+_pending_2fa: dict = {}
 
 logger = logging.getLogger(__name__)
 
@@ -105,37 +110,93 @@ class VkManager:
         return False
 
     @classmethod
-    async def direct_auth(cls, login: str, password: str) -> tuple[bool, str, str]:
+    async def direct_auth(cls, login: str, password: str) -> dict:
         """
-        Perform auth from server side via vk_api (implicit flow — no client_secret needed).
-        Returns (success, token_or_empty, error_message).
+        Start VK auth from server side (vk_api implicit flow).
+        Returns dict with keys:
+          success=True, token=...           — auth done, no 2FA
+          need_2fa=True, session_id=...     — SMS sent, waiting for code
+          success=False, message=...        — error
         """
-        import asyncio
-        from functools import partial
+        loop = asyncio.get_event_loop()
+        session_id = str(uuid.uuid4())
+
+        code_event = threading.Event()
+        code_holder: list = [None]          # code_holder[0] = provided code
+        result_holder: list = [None]        # result_holder[0] = final dict
+
+        def _auth_handler():
+            """Called by vk_api when 2FA code is needed."""
+            logger.info("VK 2FA required, waiting for code...")
+            code_event.wait(timeout=300)   # wait up to 5 min
+            if code_holder[0]:
+                return code_holder[0], True
+            raise Exception("Timeout: 2FA code not provided within 5 minutes")
 
         def _sync_auth():
             import vk_api as vk_api_lib
-            vk_session = vk_api_lib.VkApi(login=login, password=password)
+            vk_session = vk_api_lib.VkApi(
+                login=login,
+                password=password,
+                auth_handler=_auth_handler,
+            )
             try:
                 vk_session.auth(token_only=True)
                 token = vk_session.token.get("access_token", "")
                 if token:
-                    return True, token, ""
-                return False, "", "Токен не получен после авторизации"
+                    result_holder[0] = {"success": True, "token": token}
+                else:
+                    result_holder[0] = {"success": False, "message": "Токен не получен"}
             except vk_api_lib.AuthError as e:
                 msg = str(e)
-                if "CAPTCHA" in msg.upper():
-                    return False, "", "VK требует капчу. Попробуйте позже или войдите через браузер вк."
-                if "two-factor" in msg.lower() or "2fa" in msg.lower() or "код" in msg.lower():
-                    return False, "", "Требуется код из SMS/приложения (2FA). Временно отключите двухфакторку в настройках VK."
-                if "password" in msg.lower() or "неверный" in msg.lower():
-                    return False, "", f"Неверный логин или пароль: {msg}"
-                return False, "", f"Ошибка авторизации VK: {msg}"
+                if "captcha" in msg.lower():
+                    result_holder[0] = {"success": False, "message": "VK требует капчу. Попробуйте позже."}
+                elif "password" in msg.lower() or "неверн" in msg.lower() or "invalid" in msg.lower():
+                    result_holder[0] = {"success": False, "message": f"Неверный логин или пароль VK: {msg}"}
+                else:
+                    result_holder[0] = {"success": False, "message": f"Ошибка VK: {msg}"}
             except Exception as e:
-                return False, "", f"Неожиданная ошибка: {e}"
+                result_holder[0] = {"success": False, "message": f"Ошибка: {e}"}
+            finally:
+                _pending_2fa.pop(session_id, None)
 
+        t = threading.Thread(target=_sync_auth, daemon=True)
+        t.start()
+
+        # Wait up to 4 seconds — enough for auth without 2FA
+        t.join(timeout=4)
+
+        if not t.is_alive():
+            # Auth completed (success or error, no 2FA needed)
+            return result_holder[0] or {"success": False, "message": "Неизвестная ошибка"}
+
+        # Auth thread is blocked waiting for 2FA code — SMS already sent by VK
+        _pending_2fa[session_id] = (t, code_event, code_holder, result_holder)
+        return {"need_2fa": True, "session_id": session_id,
+                "message": "VK отправил SMS с кодом. Введите его ниже."}
+
+    @classmethod
+    async def submit_2fa_code(cls, session_id: str, code: str) -> dict:
+        """
+        Provide 2FA code for a pending auth session.
+        Returns same format as direct_auth.
+        """
+        entry = _pending_2fa.get(session_id)
+        if not entry:
+            return {"success": False, "message": "Сессия не найдена или уже завершена. Попробуйте войти заново."}
+
+        t, code_event, code_holder, result_holder = entry
+        code_holder[0] = code
+        code_event.set()   # wake up the waiting auth thread
+
+        # Wait for the auth thread to finish
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, _sync_auth)
+        await loop.run_in_executor(None, lambda: t.join(timeout=15))
+
+        if t.is_alive():
+            return {"success": False, "message": "Сервер VK не ответил вовремя. Попробуйте снова."}
+
+        return result_holder[0] or {"success": False, "message": "Неизвестная ошибка"}
 
     async def create_call(self) -> Optional[str]:
         """Create a new VK group call and return its hash."""

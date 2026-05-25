@@ -107,64 +107,35 @@ class VkManager:
     @classmethod
     async def direct_auth(cls, login: str, password: str) -> tuple[bool, str, str]:
         """
-        Perform Direct Auth from server side (token bound to server IP).
+        Perform auth from server side via vk_api (implicit flow — no client_secret needed).
         Returns (success, token_or_empty, error_message).
-        One attempt only — caller must handle retries with proper delay.
         """
         import asyncio
+        from functools import partial
 
-        # Try each known client in sequence; stop on first success
-        async with aiohttp.ClientSession(
-            headers={
-                "User-Agent": "VKAndroidApp/8.10-17765 (Android 14; SDK 34; arm64-v8a; Google Pixel 8; ru; 2560x1080)"
-            },
-            timeout=aiohttp.ClientTimeout(total=20),
-        ) as session:
-            for client in VK_CLIENTS:
-                try:
-                    async with session.post(
-                        "https://oauth.vk.com/token",
-                        data={
-                            "grant_type": "password",
-                            "client_id": client["id"],
-                            "client_secret": client["secret"],
-                            "username": login,
-                            "password": password,
-                            "scope": "offline",
-                            "v": VK_API_VERSION,
-                        },
-                    ) as resp:
-                        data = await resp.json(content_type=None)
+        def _sync_auth():
+            import vk_api as vk_api_lib
+            vk_session = vk_api_lib.VkApi(login=login, password=password)
+            try:
+                vk_session.auth(token_only=True)
+                token = vk_session.token.get("access_token", "")
+                if token:
+                    return True, token, ""
+                return False, "", "Токен не получен после авторизации"
+            except vk_api_lib.AuthError as e:
+                msg = str(e)
+                if "CAPTCHA" in msg.upper():
+                    return False, "", "VK требует капчу. Попробуйте позже или войдите через браузер вк."
+                if "two-factor" in msg.lower() or "2fa" in msg.lower() or "код" in msg.lower():
+                    return False, "", "Требуется код из SMS/приложения (2FA). Временно отключите двухфакторку в настройках VK."
+                if "password" in msg.lower() or "неверный" in msg.lower():
+                    return False, "", f"Неверный логин или пароль: {msg}"
+                return False, "", f"Ошибка авторизации VK: {msg}"
+            except Exception as e:
+                return False, "", f"Неожиданная ошибка: {e}"
 
-                    if "access_token" in data:
-                        token = data["access_token"]
-                        logger.info(f"Direct Auth OK via client_id={client['id']}")
-                        return True, token, ""
-
-                    err = data.get("error", "")
-                    msg = data.get("error_description", str(data))
-
-                    # Rate limit — wait and abort
-                    if "too_many" in msg.lower() or "15 sec" in msg.lower():
-                        return False, "", f"VK временно блокирует запросы: {msg}. Подождите ~30 сек и повторите."
-
-                    # 2FA required
-                    if "need_validation" in err or "need_captcha" in err:
-                        redirect = data.get("redirect_uri", "")
-                        return False, "", f"Требуется подтверждение. Войдите в VK вручную: {redirect}"
-
-                    # Wrong password / invalid user
-                    if "invalid_client" in err or "invalid_user" in msg.lower() or "invalid_grant" in err:
-                        return False, "", f"Неверный логин или пароль VK (error={err}, desc={msg})"
-
-                    logger.warning(f"client_id={client['id']} failed: {err} — {msg}")
-                    await asyncio.sleep(1)
-
-                except Exception as e:
-                    logger.warning(f"client_id={client['id']} exception: {e}")
-                    await asyncio.sleep(1)
-
-        return False, "", "Не удалось авторизоваться ни через один VK клиент. Попробуйте позже."
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _sync_auth)
 
     async def create_call(self) -> Optional[str]:
         """Create a new VK group call and return its hash."""

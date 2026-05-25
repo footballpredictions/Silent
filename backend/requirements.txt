@@ -14,3 +14,4 @@ bcrypt==4.0.1
 cryptography==43.0.1
 psutil==6.0.0
 python-multipart==0.0.12
+vk_api==11.9.9

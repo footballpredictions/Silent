@@ -84,25 +84,11 @@ class VkManager:
             creds = result.scalar_one_or_none()
 
             if creds and creds.access_token:
-                session = await self._get_session()
-                async with session.get(
-                    "https://api.vk.com/method/users.get",
-                    params={"access_token": creds.access_token, "v": VK_API_VERSION},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    data = await resp.json(content_type=None)
-
-                if "response" in data:
-                    self._token = creds.access_token
-                    self.last_error = ""
-                    logger.info("VK auth OK via saved token")
-                    return True
-
-                err = data.get("error", {})
-                err_msg = err.get("error_msg", str(err))
-                logger.warning(f"Saved token invalid: {err_msg}")
-                creds.access_token = None
-                await self.db.commit()
+                # Use token directly — IP validation would fail for browser-obtained tokens
+                self._token = creds.access_token
+                self.last_error = ""
+                logger.info("VK auth: loaded saved token")
+                return True
         except Exception as e:
             logger.warning(f"Token check error: {e}")
 

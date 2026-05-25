@@ -205,18 +205,18 @@ async def vk_oauth_url(
     from app.config import settings
 
     client_id = 54608093
-    # redirect_uri must be VK's own app URL for mini-apps (external URLs not allowed)
-    redirect_uri = f"https://vk.com/app{client_id}"
+    # blank.html is always allowed as redirect for any VK app
+    redirect_uri = "https://oauth.vk.com/blank.html"
     params = urllib.parse.urlencode({
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "scope": "calls",
-        "response_type": "code",
+        "response_type": "token",
         "v": "5.131",
         "display": "page",
     })
     url = f"https://oauth.vk.com/authorize?{params}"
-    return {"url": url, "redirect_uri": redirect_uri, "need_manual_code": True}
+    return {"url": url}
 
 
 @router.get("/vk/oauth-callback")
@@ -392,29 +392,12 @@ async def save_vk_token(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Save VK access token directly (obtained via browser)."""
+    """Save VK access token from browser (no server-side IP validation)."""
     token = data.get("token", "").strip()
     if not token or len(token) < 20:
         return {"success": False, "message": "Токен слишком короткий или пустой"}
 
-    # Verify token works
-    import aiohttp
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://api.vk.com/method/users.get",
-                params={"access_token": token, "v": "5.131"},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                check = await resp.json(content_type=None)
-
-        if "error" in check:
-            err = check["error"].get("error_msg", str(check["error"]))
-            return {"success": False, "message": f"Токен недействителен: {err}"}
-    except Exception as e:
-        return {"success": False, "message": f"Не удалось проверить токен: {e}"}
-
-    # Save to DB
+    # Save directly — validation from server fails for browser tokens due to IP binding
     result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
     creds = result.scalar_one_or_none()
     if creds:
@@ -423,7 +406,7 @@ async def save_vk_token(
     else:
         db.add(VkCredentials(id=1, access_token=token, is_configured=True))
     await db.commit()
-    return {"success": True, "message": "Токен VK сохранён и проверен"}
+    return {"success": True, "message": "Токен сохранён! Нажмите «Пересоздать все» для проверки."}
 
 
 @router.get("/vk/oauth-status")

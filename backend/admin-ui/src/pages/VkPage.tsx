@@ -58,25 +58,26 @@ export default function VkPage({ token }: { token: string }) {
   const [codeMsg, setCodeMsg]             = useState('')
 
   const loginViaOAuth = async () => {
-    setAuthStatus('loading'); setAuthMsg('')
     try {
       const res = await api('/api/admin/vk/oauth-url')
       const data = await res.json()
       window.open(data.url, '_blank', 'width=700,height=600')
       setShowCodeInput(true)
-      setAuthStatus('idle')
     } catch (e: any) {
       setAuthStatus('error'); setAuthMsg('Ошибка: ' + e.message)
     }
   }
 
   const submitCode = async () => {
-    const code = oauthCode.match(/[?&]code=([^&]+)/)?.[1] || oauthCode.trim()
-    if (!code) { setCodeStatus('error'); setCodeMsg('Вставьте полный URL или только значение code'); return }
-    setCodeStatus('loading'); setCodeMsg('Обмениваем код на токен...')
+    // Extract access_token from URL fragment or plain token
+    const raw = oauthCode.trim()
+    const tokenMatch = raw.match(/access_token=([A-Za-z0-9_.\-]+)/)
+    const token = tokenMatch ? tokenMatch[1] : (/^[A-Za-z0-9_.\-]{30,}$/.test(raw) ? raw : '')
+    if (!token) { setCodeStatus('error'); setCodeMsg('Не найден токен. Скопируй весь адрес из адресной строки.'); return }
+    setCodeStatus('loading'); setCodeMsg('Сохраняем токен...')
     try {
-      const res = await api('/api/admin/vk/exchange-code', {
-        method: 'POST', body: JSON.stringify({ code }),
+      const res = await api('/api/admin/vk/save-token', {
+        method: 'POST', body: JSON.stringify({ token }),
       })
       const data = await res.json()
       if (data.success) {
@@ -164,15 +165,16 @@ export default function VkPage({ token }: { token: string }) {
           <div className="bg-[#0d0d0d] border border-[#2a2a2a] rounded-xl p-4 space-y-3">
             <p className="text-xs text-[#aaa] leading-relaxed">
               <span className="text-white font-semibold">Шаг 1.</span> Войди в ВК в открывшейся вкладке.<br/>
-              <span className="text-white font-semibold">Шаг 2.</span> После входа ты попадёшь на страницу приложения — адрес будет содержать <code className="text-[#4680C2]">?code=...</code><br/>
-              <span className="text-white font-semibold">Шаг 3.</span> Скопируй весь адрес из адресной строки и вставь ниже:
+              <span className="text-white font-semibold">Шаг 2.</span> После входа увидишь <em>пустую белую страницу</em>.<br/>
+              <span className="text-white font-semibold">Шаг 3.</span> Скопируй <strong>весь адрес</strong> из адресной строки и вставь сюда:<br/>
+              <span className="text-[#555]">Пример: <code className="text-[#888]">https://oauth.vk.com/blank.html#access_token=vk1.a.ABC...</code></span>
             </p>
             <div className="flex gap-2">
               <input
                 value={oauthCode}
                 onChange={e => setOauthCode(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && submitCode()}
-                placeholder="https://vk.com/app54608093?code=abc123..."
+                placeholder="https://oauth.vk.com/blank.html#access_token=..."
                 className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-xs text-white placeholder-[#555] focus:outline-none focus:border-[#4680C2] transition-colors"
               />
               <button onClick={submitCode} disabled={!oauthCode || codeStatus === 'loading'}

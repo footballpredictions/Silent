@@ -294,6 +294,35 @@ async def vk_oauth_callback(
         return HTMLResponse(f'<html><body style="background:#0a0a0a;color:#fff">Исключение: {e}</body></html>')
 
 
+@router.post("/vk/auth-server")
+async def vk_auth_from_server(
+    data: dict,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Authenticate with VK directly from server (token bound to server IP)."""
+    login = data.get("login", "").strip()
+    password = data.get("password", "").strip()
+    if not login or not password:
+        return {"success": False, "message": "Введите логин и пароль VK"}
+
+    success, token, err = await VkManager.direct_auth(login, password)
+    if not success:
+        return {"success": False, "message": err}
+
+    # Save to DB
+    result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
+    creds = result.scalar_one_or_none()
+    if creds:
+        creds.login = login
+        creds.access_token = token
+        creds.is_configured = True
+    else:
+        db.add(VkCredentials(id=1, login=login, access_token=token, is_configured=True))
+    await db.commit()
+    return {"success": True, "message": "Авторизация прошла успешно! Токен привязан к серверу."}
+
+
 @router.post("/vk/save-token")
 async def save_vk_token(
     data: dict,

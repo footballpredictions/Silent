@@ -69,78 +69,44 @@ class VkManager:
             raise VkApiError(err.get("error_code", -1), err.get("error_msg", "Unknown"))
         return data.get("response", {})
 
-    async def _load_credentials(self) -> tuple[str, str]:
-        result = await self.db.execute(select(VkCredentials).where(VkCredentials.id == 1))
-        creds = result.scalar_one_or_none()
-        if not creds or not creds.is_configured:
-            raise RuntimeError("VK credentials не настроены в панели администратора")
-        return decrypt_value(creds.login_enc), decrypt_value(creds.password_enc)
-
     async def authenticate(self) -> bool:
-        """Authenticate with VK and get access token. Tries multiple client_ids."""
+        """
+        Authenticate with VK.
+        Priority: 1) saved OAuth token  2) password grant (fallback)
+        """
+        # 1. Try saved OAuth token first
         try:
-            login, password = await self._load_credentials()
-        except Exception as e:
-            self.last_error = str(e)
-            logger.error(f"VK credentials load error: {e}")
-            return False
+            result = await self.db.execute(select(VkCredentials).where(VkCredentials.id == 1))
+            creds = result.scalar_one_or_none()
 
-        session = await self._get_session()
-
-        for i, client in enumerate(VK_CLIENTS):
-            if i > 0:
-                await asyncio.sleep(2)  # Pause between client attempts to avoid rate limit
-            try:
+            if creds and creds.access_token:
+                # Verify token is still valid
+                session = await self._get_session()
                 async with session.get(
-                    "https://oauth.vk.com/token",
-                    params={
-                        "grant_type": "password",
-                        "client_id": client["id"],
-                        "client_secret": client["secret"],
-                        "username": login,
-                        "password": password,
-                        "scope": "nohttps,audio,offline",
-                        "v": VK_API_VERSION,
-                    },
-                    timeout=aiohttp.ClientTimeout(total=15),
+                    "https://api.vk.com/method/users.get",
+                    params={"access_token": creds.access_token, "v": VK_API_VERSION},
+                    timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     data = await resp.json(content_type=None)
 
-                if "access_token" in data:
-                    self._token = data["access_token"]
+                if "response" in data:
+                    self._token = creds.access_token
                     self.last_error = ""
-                    logger.info(f"VK auth OK with client_id={client['id']}")
+                    logger.info("VK auth OK via saved OAuth token")
                     return True
+                else:
+                    logger.warning(f"Saved OAuth token invalid: {data.get('error', {})}")
+                    # Clear expired token
+                    creds.access_token = None
+                    await self.db.commit()
+        except Exception as e:
+            logger.warning(f"OAuth token check error: {e}")
 
-                err = data.get("error", "")
-                err_desc = data.get("error_description", str(data))
-
-                # Need 2FA validation — can't proceed without user input
-                if err == "need_validation" or "validation" in err_desc.lower():
-                    self.last_error = (
-                        "Требуется подтверждение входа (двухфакторная аутентификация). "
-                        "Войдите в VK вручную с этого устройства или отключите 2FA."
-                    )
-                    return False
-
-                # Wrong password — no point trying other clients
-                if err in ("invalid_client", "invalid_grant") and "password" in err_desc.lower():
-                    self.last_error = f"Неверный логин или пароль ВКонтакте: {err_desc}"
-                    return False
-
-                # Rate limited — stop immediately
-                if "too many" in err_desc.lower() or "rate" in err_desc.lower():
-                    self.last_error = f"VK заблокировал запросы на 15 сек: {err_desc}. Подождите и попробуйте ещё раз."
-                    return False
-
-                logger.warning(f"VK auth failed with client_id={client['id']}: {err_desc}")
-                self.last_error = err_desc
-
-            except Exception as e:
-                logger.error(f"VK auth exception with client_id={client['id']}: {e}")
-                self.last_error = str(e)
-                break  # Network error — no point retrying
-
+        # 2. No valid token — tell user to login via OAuth
+        self.last_error = (
+            "Токен VK не найден или устарел. "
+            "Нажмите кнопку «Войти через ВКонтакте» и авторизуйтесь в браузере."
+        )
         return False
 
     async def create_call(self) -> Optional[str]:

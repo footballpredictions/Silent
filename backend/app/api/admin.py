@@ -195,6 +195,117 @@ async def get_vk_hashes(
     ]
 
 
+@router.get("/vk/oauth-url")
+async def vk_oauth_url(
+    _: bool = Depends(get_admin_credentials),
+):
+    """Generate VK OAuth authorization URL. User opens it in browser, logs in, gets redirected back."""
+    import urllib.parse
+    from app.config import settings
+
+    # Use VK Android client for OAuth
+    client_id = 6287487
+    redirect_uri = f"https://132-243-234-162.nip.io/api/admin/vk/oauth-callback"
+    scope = "offline"  # offline = permanent token
+    params = urllib.parse.urlencode({
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": scope,
+        "response_type": "code",
+        "v": "5.131",
+        "display": "page",
+    })
+    url = f"https://oauth.vk.com/authorize?{params}"
+    return {"url": url, "redirect_uri": redirect_uri}
+
+
+@router.get("/vk/oauth-callback")
+async def vk_oauth_callback(
+    code: str = None,
+    error: str = None,
+    error_description: str = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """VK OAuth callback — exchanges code for token and saves it."""
+    import aiohttp
+    from app.config import settings
+
+    if error:
+        html = f"""<!DOCTYPE html><html><body style="background:#0a0a0a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+        <div style="text-align:center"><h2 style="color:#ef4444">Ошибка авторизации</h2><p>{error_description or error}</p>
+        <p style="color:#555">Закройте это окно и попробуйте снова.</p></div></body></html>"""
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(html)
+
+    if not code:
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse('<html><body style="background:#0a0a0a;color:#fff">Код не получен</body></html>')
+
+    # Exchange code for token
+    client_id = 6287487
+    client_secret = "VeWdmVclDCtn6ihuP1nt"
+    redirect_uri = f"https://132-243-234-162.nip.io/api/admin/vk/oauth-callback"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://oauth.vk.com/access_token",
+                params={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "redirect_uri": redirect_uri,
+                    "code": code,
+                },
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                data = await resp.json(content_type=None)
+
+        if "access_token" in data:
+            token = data["access_token"]
+            # Save token to DB
+            result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
+            creds = result.scalar_one_or_none()
+            if creds:
+                creds.access_token = token
+                creds.is_configured = True
+            else:
+                from app.core.security import encrypt_value
+                db.add(VkCredentials(id=1, access_token=token, is_configured=True))
+            await db.commit()
+
+            from fastapi.responses import HTMLResponse
+            html = """<!DOCTYPE html><html><body style="background:#0a0a0a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+            <div style="text-align:center">
+            <div style="font-size:48px;margin-bottom:16px">✅</div>
+            <h2 style="color:#22c55e;margin:0 0 8px">Авторизация успешна!</h2>
+            <p style="color:#888">Токен VK сохранён. Закройте это окно и нажмите «Пересоздать все».</p>
+            <script>setTimeout(()=>window.close(),3000)</script>
+            </div></body></html>"""
+            return HTMLResponse(html)
+
+        err = data.get("error_description", str(data))
+        from fastapi.responses import HTMLResponse
+        html = f"""<!DOCTYPE html><html><body style="background:#0a0a0a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+        <div style="text-align:center"><h2 style="color:#ef4444">Ошибка получения токена</h2><p>{err}</p></div></body></html>"""
+        return HTMLResponse(html)
+
+    except Exception as e:
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(f'<html><body style="background:#0a0a0a;color:#fff">Исключение: {e}</body></html>')
+
+
+@router.get("/vk/oauth-status")
+async def vk_oauth_status(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check if VK OAuth token is saved."""
+    result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
+    creds = result.scalar_one_or_none()
+    has_token = bool(creds and creds.access_token)
+    return {"authorized": has_token, "configured": bool(creds and creds.is_configured)}
+
+
 @router.post("/vk/test-auth")
 async def test_vk_auth(
     _: bool = Depends(get_admin_credentials),

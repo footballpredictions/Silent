@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Key, RefreshCw, CheckCircle, XCircle, AlertTriangle, Eye, EyeOff, Check, ShieldCheck, ShieldX } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Key, RefreshCw, CheckCircle, XCircle, AlertTriangle, ShieldCheck, ShieldX, ExternalLink } from 'lucide-react'
 
 type Status = 'idle' | 'loading' | 'success' | 'error'
 
@@ -18,17 +18,13 @@ function StatusBadge({ status, msg }: { status: Status; msg: string }) {
 }
 
 export default function VkPage({ token }: { token: string }) {
-  const [login, setLogin] = useState('')
-  const [password, setPassword] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
   const [hashes, setHashes] = useState<any[]>([])
-
-  const [saveStatus, setSaveStatus]     = useState<Status>('idle')
-  const [saveMsg, setSaveMsg]           = useState('')
+  const [oauthAuthorized, setOauthAuthorized] = useState(false)
   const [authStatus, setAuthStatus]     = useState<Status>('idle')
   const [authMsg, setAuthMsg]           = useState('')
   const [recreateStatus, setRecreateStatus] = useState<Status>('idle')
   const [recreateMsg, setRecreateMsg]   = useState('')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const api = (path: string, opts?: RequestInit) =>
     fetch(path, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...opts?.headers }, ...opts })
@@ -40,51 +36,60 @@ export default function VkPage({ token }: { token: string }) {
     } catch {}
   }
 
-  const fetchCredentials = async () => {
+  const fetchOauthStatus = async () => {
     try {
-      const res = await api('/api/admin/vk/credentials')
+      const res = await api('/api/admin/vk/oauth-status')
       if (res.ok) {
         const data = await res.json()
-        if (data.login) setLogin(data.login)
+        setOauthAuthorized(data.authorized)
       }
     } catch {}
   }
 
   useEffect(() => {
     fetchHashes()
-    fetchCredentials()
+    fetchOauthStatus()
   }, [])
 
-  // ── Save credentials ──────────────────────────────────────────────
-  const saveCredentials = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!login.trim() || !password.trim()) return
-    setSaveStatus('loading'); setSaveMsg('Сохраняем...')
+  // ── VK OAuth login ────────────────────────────────────────────────
+  const loginViaOAuth = async () => {
     try {
-      const res = await api('/api/admin/vk/credentials', {
-        method: 'POST', body: JSON.stringify({ login, password }),
-      })
+      const res = await api('/api/admin/vk/oauth-url')
       const data = await res.json()
-      if (res.ok) {
-        setSaveStatus('success'); setSaveMsg(data.message || 'Credentials сохранены')
-        setPassword('')
-        setTimeout(() => setSaveStatus('idle'), 5000)
-      } else {
-        setSaveStatus('error'); setSaveMsg(data.detail || 'Ошибка сохранения')
-      }
+      const popup = window.open(data.url, '_blank', 'width=700,height=600')
+
+      // Poll for token after user completes OAuth in popup
+      if (pollRef.current) clearInterval(pollRef.current)
+      pollRef.current = setInterval(async () => {
+        const statusRes = await api('/api/admin/vk/oauth-status')
+        if (statusRes.ok) {
+          const s = await statusRes.json()
+          if (s.authorized) {
+            clearInterval(pollRef.current!)
+            setOauthAuthorized(true)
+            setAuthStatus('success')
+            setAuthMsg('Авторизация VK прошла успешно! Теперь нажмите «Пересоздать все».')
+            popup?.close()
+          }
+        }
+      }, 2000)
+
+      // Stop polling after 3 min
+      setTimeout(() => clearInterval(pollRef.current!), 180_000)
     } catch (e: any) {
-      setSaveStatus('error'); setSaveMsg('Ошибка соединения: ' + e.message)
+      setAuthStatus('error'); setAuthMsg('Ошибка: ' + e.message)
     }
   }
 
-  // ── Test auth ─────────────────────────────────────────────────────
+  // ── Test existing token ───────────────────────────────────────────
   const testAuth = async () => {
-    setAuthStatus('loading'); setAuthMsg('Проверяем авторизацию VK...')
+    setAuthStatus('loading'); setAuthMsg('Проверяем токен VK...')
     try {
       const res = await api('/api/admin/vk/test-auth', { method: 'POST' })
       const data = await res.json()
       setAuthStatus(data.success ? 'success' : 'error')
       setAuthMsg(data.message)
+      if (data.success) setOauthAuthorized(true)
     } catch (e: any) {
       setAuthStatus('error'); setAuthMsg('Ошибка запроса: ' + e.message)
     }
@@ -108,67 +113,57 @@ export default function VkPage({ token }: { token: string }) {
     <div className="space-y-6 max-w-2xl">
       <h1 className="text-xl font-bold">VK Аккаунт и тоннели</h1>
 
-      {/* ── Credentials ── */}
+      {/* ── OAuth Login ── */}
       <div className="bg-[#111] border border-[#222] rounded-xl p-6 space-y-4">
         <div>
           <h2 className="font-semibold flex items-center gap-2 mb-1">
-            <Key className="w-4 h-4" /> VK Credentials
+            <Key className="w-4 h-4" /> Авторизация ВКонтакте
           </h2>
           <p className="text-[#555] text-xs">
-            AI-ассистент использует этот аккаунт для создания звонков и получения TURN-хешей.
+            Войдите в аккаунт VK через браузер. Работает с любым аккаунтом, включая 2FA.
           </p>
         </div>
 
-        <form onSubmit={saveCredentials} className="space-y-3">
-          <input
-            type="text" value={login} onChange={e => setLogin(e.target.value)}
-            placeholder="Логин ВКонтакте (телефон или email)"
-            className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#444] transition-colors"
-          />
-          <div className="relative">
-            <input
-              type={showPassword ? 'text' : 'password'}
-              value={password} onChange={e => setPassword(e.target.value)}
-              placeholder="Пароль"
-              className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-4 py-2.5 pr-11 text-sm text-white focus:outline-none focus:border-[#444] transition-colors"
-            />
-            <button type="button" onClick={() => setShowPassword(v => !v)} tabIndex={-1}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-[#555] hover:text-white transition-colors p-1">
-              {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-            </button>
-          </div>
+        {/* Status indicator */}
+        <div className={`flex items-center gap-3 rounded-lg px-4 py-3 border ${
+          oauthAuthorized
+            ? 'bg-green-500/10 border-green-500/30'
+            : 'bg-[#1a1a1a] border-[#2a2a2a]'
+        }`}>
+          {oauthAuthorized
+            ? <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0" />
+            : <XCircle className="w-4 h-4 text-[#555] flex-shrink-0" />}
+          <span className={`text-sm ${oauthAuthorized ? 'text-green-400' : 'text-[#555]'}`}>
+            {oauthAuthorized ? 'Аккаунт VK подключён' : 'Аккаунт не подключён'}
+          </span>
+        </div>
 
-          <div className="flex items-center gap-3 flex-wrap">
-            {/* Save */}
-            <button type="submit" disabled={saveStatus === 'loading'}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-all disabled:opacity-50 ${
-                saveStatus === 'success' ? 'bg-green-500 text-white' :
-                saveStatus === 'error'   ? 'bg-red-500/20 border border-red-500/50 text-red-400' :
-                'bg-white text-black hover:bg-[#e0e0e0]'
-              }`}>
-              {saveStatus === 'loading' ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Сохраняем...</> :
-               saveStatus === 'success' ? <><Check className="w-3.5 h-3.5" /> Сохранено!</> :
-               'Сохранить'}
-            </button>
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* OAuth button */}
+          <button onClick={loginViaOAuth}
+            className="flex items-center gap-2 bg-[#4680C2] hover:bg-[#3a6fad] text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors">
+            <ExternalLink className="w-3.5 h-3.5" />
+            Войти через ВКонтакте
+          </button>
 
-            {/* Test auth */}
-            <button type="button" onClick={testAuth} disabled={authStatus === 'loading'}
+          {/* Test existing token */}
+          {oauthAuthorized && (
+            <button onClick={testAuth} disabled={authStatus === 'loading'}
               className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold border transition-all disabled:opacity-50 ${
                 authStatus === 'success' ? 'bg-green-500/10 border-green-500/40 text-green-400' :
                 authStatus === 'error'   ? 'bg-red-500/10 border-red-500/40 text-red-400' :
                 'bg-[#1a1a1a] border-[#2a2a2a] text-white hover:border-white'
               }`}>
-              {authStatus === 'loading' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> :
-               authStatus === 'success' ? <ShieldCheck className="w-3.5 h-3.5" /> :
-               authStatus === 'error'   ? <ShieldX className="w-3.5 h-3.5" /> :
-               <ShieldCheck className="w-3.5 h-3.5" />}
-              {authStatus === 'loading' ? 'Проверяем...' : 'Проверить авторизацию'}
+              {authStatus === 'loading'
+                ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Проверяем...</>
+                : authStatus === 'success' ? <><ShieldCheck className="w-3.5 h-3.5" /> Токен валиден</>
+                : authStatus === 'error'   ? <><ShieldX className="w-3.5 h-3.5" /> Проверить токен</>
+                : <><ShieldCheck className="w-3.5 h-3.5" /> Проверить токен</>}
             </button>
-          </div>
+          )}
+        </div>
 
-          <StatusBadge status={saveStatus} msg={saveMsg} />
-          <StatusBadge status={authStatus} msg={authMsg} />
-        </form>
+        <StatusBadge status={authStatus} msg={authMsg} />
       </div>
 
       {/* ── Hashes ── */}
@@ -207,11 +202,14 @@ export default function VkPage({ token }: { token: string }) {
 
       <div className="bg-[#111] border border-yellow-900/50 rounded-xl p-4">
         <p className="text-xs text-yellow-500/80 leading-relaxed">
-          <strong>Порядок настройки:</strong> 1) Введи логин и пароль VK → «Сохранить»
-          &nbsp;2) Нажми «Проверить авторизацию» — должно появиться «Успешно»
-          &nbsp;3) Нажми «Пересоздать все» для создания TURN-хешей.<br/><br/>
+          <strong>Порядок настройки:</strong>&nbsp;
+          1) Нажми «Войти через ВКонтакте» — откроется новая вкладка&nbsp;
+          2) Войди в свой аккаунт VK и подтверди доступ&nbsp;
+          3) Вкладка закроется автоматически, статус сменится на зелёный&nbsp;
+          4) Нажми «Пересоздать все» для создания TURN-хешей.<br/><br/>
           <strong>Важно:</strong> При звонке ВКонтакте нажимай «Просто завершить»,
-          иначе хеш перестанет работать. Монитор проверяет хеши каждые 5 минут.
+          а не «Завершить для всех» — иначе хеш перестанет работать.
+          Монитор проверяет хеши каждые 5 минут.
         </p>
       </div>
     </div>

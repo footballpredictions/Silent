@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
     logger.info("Database tables ready")
 
     # Start VK tunnel monitor
-    from app.ai.tunnel_monitor import start_monitor_background
+    from ai.tunnel_monitor import start_monitor_background
     monitor_task = start_monitor_background()
 
     yield

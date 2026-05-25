@@ -184,7 +184,7 @@ async def recreate_vk_hashes(
     db: AsyncSession = Depends(get_db),
 ):
     """Manually trigger VK hash recreation."""
-    from app.ai.vk_manager import VkManager
+    from ai.vk_manager import VkManager
     manager = VkManager(db)
     success = await manager.recreate_all_hashes()
     return {"success": success, "message": "Хеши пересозданы" if success else "Ошибка пересоздания"}

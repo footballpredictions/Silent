@@ -135,6 +135,23 @@ class VkCredentialsRequest(BaseModel):
     password: str
 
 
+@router.get("/vk/credentials")
+async def get_vk_credentials(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return saved VK login (no password for security)."""
+    result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
+    creds = result.scalar_one_or_none()
+    if not creds or not creds.is_configured:
+        return {"login": "", "configured": False}
+    try:
+        login = decrypt_value(creds.login_enc)
+    except Exception:
+        login = ""
+    return {"login": login, "configured": True}
+
+
 @router.post("/vk/credentials")
 async def set_vk_credentials(
     req: VkCredentialsRequest,
@@ -153,7 +170,7 @@ async def set_vk_credentials(
     else:
         db.add(VkCredentials(id=1, login_enc=enc_login, password_enc=enc_pass, is_configured=True))
     await db.commit()
-    return {"message": "VK credentials saved"}
+    return {"message": "VK credentials сохранены успешно"}
 
 
 @router.get("/vk/hashes")

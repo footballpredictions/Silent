@@ -206,11 +206,10 @@ async def vk_oauth_url(
 
     client_id = 54608093
     redirect_uri = "https://132-243-234-162.nip.io/api/admin/vk/oauth-callback"
-    scope = "offline"  # offline = permanent token
     params = urllib.parse.urlencode({
         "client_id": client_id,
         "redirect_uri": redirect_uri,
-        "scope": scope,
+        "scope": "calls",
         "response_type": "code",
         "v": "5.131",
         "display": "page",

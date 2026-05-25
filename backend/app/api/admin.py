@@ -196,6 +196,53 @@ async def get_vk_hashes(
     ]
 
 
+@router.post("/vk/hashes/add")
+async def add_vk_hash(
+    data: dict,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually add a VK call hash."""
+    hash_val = data.get("hash", "").strip()
+    if not hash_val or len(hash_val) < 4:
+        return {"success": False, "message": "Хеш слишком короткий"}
+
+    result = await db.execute(select(VkHash).order_by(VkHash.slot_index))
+    existing = result.scalars().all()
+    if len(existing) >= 3:
+        return {"success": False, "message": "Максимум 3 хеша. Удали один перед добавлением."}
+
+    # Find next free slot
+    used_slots = {h.slot_index for h in existing}
+    slot = next(i for i in range(3) if i not in used_slots)
+
+    db.add(VkHash(hash_value=hash_val, slot_index=slot, is_active=True, fail_count=0))
+    await db.commit()
+    return {"success": True, "message": f"Хеш добавлен в слот {slot}"}
+
+
+@router.delete("/vk/hashes/{hash_id}")
+async def delete_vk_hash(
+    hash_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a VK call hash."""
+    import uuid as _uuid
+    try:
+        uid = _uuid.UUID(hash_id)
+        result = await db.execute(select(VkHash).where(VkHash.id == uid))
+    except Exception:
+        return {"success": False, "message": "Неверный ID"}
+
+    h = result.scalar_one_or_none()
+    if not h:
+        return {"success": False, "message": "Хеш не найден"}
+    await db.delete(h)
+    await db.commit()
+    return {"success": True}
+
+
 @router.get("/vk/oauth-url")
 async def vk_oauth_url(
     _: bool = Depends(get_admin_credentials),

@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
-import { Key, RefreshCw, CheckCircle, XCircle, AlertTriangle, ShieldCheck, ExternalLink } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Link, RefreshCw, CheckCircle, XCircle, AlertTriangle, Plus, Trash2 } from 'lucide-react'
 
 type Status = 'idle' | 'loading' | 'success' | 'error'
 
@@ -18,13 +18,10 @@ function StatusBadge({ status, msg }: { status: Status; msg: string }) {
 }
 
 export default function VkPage({ token }: { token: string }) {
-  const [hashes, setHashes]     = useState<any[]>([])
-  const [hasToken, setHasToken] = useState(false)
-  const [authStatus, setAuthStatus] = useState<Status>('idle')
-  const [authMsg, setAuthMsg]       = useState('')
-  const [recreateStatus, setRecreateStatus] = useState<Status>('idle')
-  const [recreateMsg, setRecreateMsg]       = useState('')
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [hashes, setHashes] = useState<any[]>([])
+  const [newLink, setNewLink]     = useState('')
+  const [addStatus, setAddStatus] = useState<Status>('idle')
+  const [addMsg, setAddMsg]       = useState('')
 
   const api = (path: string, opts?: RequestInit) =>
     fetch(path, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...opts?.headers }, ...opts })
@@ -36,187 +33,110 @@ export default function VkPage({ token }: { token: string }) {
     } catch {}
   }
 
-  const fetchStatus = async () => {
-    try {
-      const res = await api('/api/admin/vk/oauth-status')
-      if (res.ok) {
-        const data = await res.json()
-        setHasToken(data.authorized)
-      }
-    } catch {}
+  useEffect(() => { fetchHashes() }, [])
+
+  // Extract hash from VK call link or use raw hash
+  const extractHash = (input: string): string => {
+    const match = input.match(/call\/join\/([A-Za-z0-9_\-]+)/)
+    if (match) return match[1]
+    if (/^[A-Za-z0-9_\-]{6,}$/.test(input.trim())) return input.trim()
+    return ''
   }
 
-  useEffect(() => {
-    fetchHashes()
-    fetchStatus()
-  }, [])
-
-  // ── OAuth code flow ──────────────────────────────────────────────────
-  const [showCodeInput, setShowCodeInput] = useState(false)
-  const [oauthCode, setOauthCode]         = useState('')
-  const [codeStatus, setCodeStatus]       = useState<Status>('idle')
-  const [codeMsg, setCodeMsg]             = useState('')
-
-  const loginViaOAuth = async () => {
+  const addHash = async () => {
+    const hash = extractHash(newLink)
+    if (!hash) { setAddStatus('error'); setAddMsg('Неверная ссылка. Пример: vk.com/call/join/HASH или просто HASH'); return }
+    setAddStatus('loading'); setAddMsg('Добавляем...')
     try {
-      const res = await api('/api/admin/vk/oauth-url')
-      const data = await res.json()
-      window.open(data.url, '_blank', 'width=700,height=600')
-      setShowCodeInput(true)
-    } catch (e: any) {
-      setAuthStatus('error'); setAuthMsg('Ошибка: ' + e.message)
-    }
-  }
-
-  const submitCode = async () => {
-    // Extract access_token from URL fragment or plain token
-    const raw = oauthCode.trim()
-    const tokenMatch = raw.match(/access_token=([A-Za-z0-9_.\-]+)/)
-    const token = tokenMatch ? tokenMatch[1] : (/^[A-Za-z0-9_.\-]{30,}$/.test(raw) ? raw : '')
-    if (!token) { setCodeStatus('error'); setCodeMsg('Не найден токен. Скопируй весь адрес из адресной строки.'); return }
-    setCodeStatus('loading'); setCodeMsg('Сохраняем токен...')
-    try {
-      const res = await api('/api/admin/vk/save-token', {
-        method: 'POST', body: JSON.stringify({ token }),
+      const res = await api('/api/admin/vk/hashes/add', {
+        method: 'POST', body: JSON.stringify({ hash }),
       })
       const data = await res.json()
       if (data.success) {
-        setCodeStatus('success'); setCodeMsg(data.message)
-        setHasToken(true); setShowCodeInput(false); setOauthCode('')
-        setAuthStatus('success'); setAuthMsg(data.message)
+        setAddStatus('success'); setAddMsg('Хеш добавлен!')
+        setNewLink(''); fetchHashes()
+        setTimeout(() => setAddStatus('idle'), 3000)
       } else {
-        setCodeStatus('error'); setCodeMsg(data.message)
+        setAddStatus('error'); setAddMsg(data.message || 'Ошибка')
       }
     } catch (e: any) {
-      setCodeStatus('error'); setCodeMsg('Ошибка: ' + e.message)
+      setAddStatus('error'); setAddMsg('Ошибка: ' + e.message)
     }
   }
 
-  // ── Test token ──────────────────────────────────────────────────────
-  const testAuth = async () => {
-    setAuthStatus('loading'); setAuthMsg('Проверяем токен...')
+  const removeHash = async (id: number) => {
     try {
-      const res = await api('/api/admin/vk/test-auth', { method: 'POST' })
-      const data = await res.json()
-      setAuthStatus(data.success ? 'success' : 'error')
-      setAuthMsg(data.message)
-      if (data.success) setHasToken(true)
-    } catch (e: any) {
-      setAuthStatus('error'); setAuthMsg('Ошибка: ' + e.message)
-    }
-  }
-
-  // ── Recreate hashes ─────────────────────────────────────────────────
-  const recreateHashes = async () => {
-    setRecreateStatus('loading'); setRecreateMsg('Создаём хеши, подождите (~15 сек)...')
-    try {
-      const res = await api('/api/admin/vk/recreate', { method: 'POST' })
-      const data = await res.json()
-      setRecreateStatus(data.success ? 'success' : 'error')
-      setRecreateMsg(data.message)
-      if (data.success) setTimeout(fetchHashes, 1000)
-    } catch (e: any) {
-      setRecreateStatus('error'); setRecreateMsg('Ошибка запроса: ' + e.message)
-    }
+      await api(`/api/admin/vk/hashes/${id}`, { method: 'DELETE' })
+      fetchHashes()
+    } catch {}
   }
 
   return (
     <div className="space-y-6 max-w-2xl">
-      <h1 className="text-xl font-bold">VK Аккаунт и тоннели</h1>
+      <h1 className="text-xl font-bold">VK TURN Хеши</h1>
 
-      {/* ── Auth block ── */}
-      <div className="bg-[#111] border border-[#222] rounded-xl p-6 space-y-4">
-        <div>
-          <h2 className="font-semibold flex items-center gap-2 mb-1">
-            <Key className="w-4 h-4" /> Авторизация ВКонтакте
-          </h2>
-          <p className="text-[#555] text-xs">
-            Войдите через VK OAuth — токен привяжется к IP сервера. Работает с 2FA.
-          </p>
-        </div>
-
-        {/* Status indicator */}
-        <div className={`flex items-center gap-3 rounded-lg px-4 py-3 border ${
-          hasToken ? 'bg-green-500/10 border-green-500/30' : 'bg-[#1a1a1a] border-[#2a2a2a]'
-        }`}>
-          {hasToken
-            ? <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0" />
-            : <XCircle    className="w-4 h-4 text-[#555] flex-shrink-0" />}
-          <span className={`text-sm ${hasToken ? 'text-green-400' : 'text-[#555]'}`}>
-            {hasToken ? 'Аккаунт VK подключён' : 'Аккаунт не подключён'}
-          </span>
-          {hasToken && (
-            <button onClick={testAuth} disabled={authStatus === 'loading'}
-              className="ml-auto flex items-center gap-1.5 text-xs text-[#555] hover:text-white transition-colors disabled:opacity-50">
-              <ShieldCheck className="w-3.5 h-3.5" />
-              {authStatus === 'loading' ? 'Проверяем...' : 'Проверить'}
-            </button>
-          )}
-        </div>
-
-        <button onClick={loginViaOAuth}
-          className="flex items-center gap-2 bg-[#4680C2] hover:bg-[#3a6fad] text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors">
-          <ExternalLink className="w-4 h-4" />
-          {hasToken ? 'Обновить токен VK' : 'Войти через ВКонтакте'}
-        </button>
-
-        {/* Code paste flow */}
-        {showCodeInput && (
-          <div className="bg-[#0d0d0d] border border-[#2a2a2a] rounded-xl p-4 space-y-3">
-            <p className="text-xs text-[#aaa] leading-relaxed">
-              <span className="text-white font-semibold">Шаг 1.</span> Войди в ВК в открывшейся вкладке.<br/>
-              <span className="text-white font-semibold">Шаг 2.</span> После входа увидишь <em>пустую белую страницу</em>.<br/>
-              <span className="text-white font-semibold">Шаг 3.</span> Скопируй <strong>весь адрес</strong> из адресной строки и вставь сюда:<br/>
-              <span className="text-[#555]">Пример: <code className="text-[#888]">https://oauth.vk.com/blank.html#access_token=vk1.a.ABC...</code></span>
-            </p>
-            <div className="flex gap-2">
-              <input
-                value={oauthCode}
-                onChange={e => setOauthCode(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && submitCode()}
-                placeholder="https://oauth.vk.com/blank.html#access_token=..."
-                className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-xs text-white placeholder-[#555] focus:outline-none focus:border-[#4680C2] transition-colors"
-              />
-              <button onClick={submitCode} disabled={!oauthCode || codeStatus === 'loading'}
-                className="px-4 py-2.5 bg-[#4680C2] hover:bg-[#3a6fad] text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">
-                {codeStatus === 'loading' ? <RefreshCw className="w-4 h-4 animate-spin" /> : 'Подтвердить'}
-              </button>
-            </div>
-            <StatusBadge status={codeStatus} msg={codeMsg} />
-          </div>
-        )}
-
-        <StatusBadge status={authStatus} msg={authMsg} />
+      {/* Instructions */}
+      <div className="bg-[#111] border border-[#4680C2]/30 rounded-xl p-5 space-y-3">
+        <h2 className="font-semibold flex items-center gap-2 text-sm">
+          <Link className="w-4 h-4 text-[#4680C2]" /> Как получить хеш
+        </h2>
+        <ol className="text-xs text-[#aaa] space-y-1.5 leading-relaxed list-decimal list-inside">
+          <li>Открой <strong className="text-white">ВКонтакте</strong> → Группы → выбери любую свою группу</li>
+          <li>Нажми <strong className="text-white">«Звонок»</strong> → <strong className="text-white">«Начать звонок»</strong></li>
+          <li>Скопируй ссылку на звонок — она выглядит как <code className="text-[#4680C2]">vk.com/call/join/ХЕSH</code></li>
+          <li>Вставь ссылку (или только хеш) в поле ниже</li>
+          <li className="text-yellow-400">При завершении звонка нажимай <strong>«Просто завершить»</strong>, НЕ «Завершить для всех»</li>
+        </ol>
       </div>
 
-      {/* ── Hashes ── */}
-      <div className="bg-[#111] border border-[#222] rounded-xl p-6">
+      {/* Add hash */}
+      <div className="bg-[#111] border border-[#222] rounded-xl p-5 space-y-3">
+        <h2 className="font-semibold text-sm">Добавить хеш</h2>
+        <div className="flex gap-2">
+          <input
+            value={newLink}
+            onChange={e => setNewLink(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && addHash()}
+            placeholder="https://vk.com/call/join/AbCdEf123 или просто AbCdEf123"
+            className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-sm text-white placeholder-[#555] focus:outline-none focus:border-[#4680C2] transition-colors"
+          />
+          <button onClick={addHash} disabled={!newLink || addStatus === 'loading'}
+            className="flex items-center gap-1.5 px-4 py-2.5 bg-[#4680C2] hover:bg-[#3a6fad] text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">
+            {addStatus === 'loading' ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+            Добавить
+          </button>
+        </div>
+        <StatusBadge status={addStatus} msg={addMsg} />
+      </div>
+
+      {/* Hashes list */}
+      <div className="bg-[#111] border border-[#222] rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold">VK Хеши (TURN туннели)</h2>
-          <button onClick={recreateHashes} disabled={recreateStatus === 'loading'}
-            className="flex items-center gap-2 bg-[#1a1a1a] border border-[#2a2a2a] px-4 py-2 rounded-lg text-xs hover:border-white transition-colors disabled:opacity-50">
-            <RefreshCw className={`w-3.5 h-3.5 ${recreateStatus === 'loading' ? 'animate-spin' : ''}`} />
-            {recreateStatus === 'loading' ? 'Создаём...' : 'Пересоздать все'}
+          <h2 className="font-semibold text-sm">Активные хеши ({hashes.length}/3)</h2>
+          <button onClick={fetchHashes} className="text-[#555] hover:text-white transition-colors">
+            <RefreshCw className="w-4 h-4" />
           </button>
         </div>
 
-        <StatusBadge status={recreateStatus} msg={recreateMsg} />
-
         {hashes.length === 0 ? (
-          <div className={`text-center py-8 text-[#555] ${recreateStatus !== 'idle' ? 'mt-3' : ''}`}>
+          <div className="text-center py-8 text-[#555]">
             <AlertTriangle className="w-8 h-8 mx-auto mb-2 text-yellow-500" />
-            <p className="text-sm">Хеши не созданы.<br/>Авторизуйтесь выше → «Пересоздать все».</p>
+            <p className="text-sm">Нет хешей. Создай звонок в VK и добавь ссылку выше.</p>
           </div>
         ) : (
-          <div className={`space-y-2 ${recreateStatus !== 'idle' ? 'mt-3' : ''}`}>
+          <div className="space-y-2">
             {hashes.map((h, i) => (
               <div key={h.id ?? i} className="flex items-center gap-3 bg-[#151515] rounded-lg px-4 py-3">
                 {h.is_active
                   ? <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0" />
                   : <XCircle className="w-4 h-4 text-red-400 flex-shrink-0" />}
-                <span className="text-xs text-[#555] w-12 flex-shrink-0">Слот {h.slot}</span>
-                <span className="font-mono text-xs flex-1 text-[#ccc] break-all truncate max-w-[220px]">{h.hash}</span>
-                <span className="text-xs text-[#555] flex-shrink-0">Сбоев: {h.fail_count}</span>
+                <span className="text-xs text-[#555] w-12 flex-shrink-0">Слот {i + 1}</span>
+                <span className="font-mono text-xs flex-1 text-[#ccc] truncate">{h.hash}</span>
+                <span className="text-xs text-[#555] flex-shrink-0">Сбоев: {h.fail_count ?? 0}</span>
+                <button onClick={() => removeHash(h.id)}
+                  className="text-[#555] hover:text-red-400 transition-colors flex-shrink-0">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
               </div>
             ))}
           </div>
@@ -225,13 +145,9 @@ export default function VkPage({ token }: { token: string }) {
 
       <div className="bg-[#111] border border-yellow-900/50 rounded-xl p-4">
         <p className="text-xs text-yellow-500/80 leading-relaxed">
-          <strong>Порядок настройки:</strong>&nbsp;
-          1) Нажми «Войти через ВКонтакте» — откроется окно VK&nbsp;
-          2) Войди в аккаунт (2FA работает автоматически)&nbsp;
-          3) Окно закроется, статус станет зелёным&nbsp;
-          4) Нажми «Пересоздать все».<br/><br/>
-          <strong>Важно:</strong> При звонке ВКонтакте нажимай «Просто завершить»,
-          а не «Завершить для всех» — иначе хеш перестанет работать.
+          Можно добавить до <strong>3 хешей</strong> — они используются параллельно для увеличения скорости.
+          Хеш перестаёт работать если нажать «Завершить для всех» в звонке.
+          Монитор автоматически помечает нерабочие хеши.
         </p>
       </div>
     </div>

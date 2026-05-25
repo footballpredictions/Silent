@@ -87,7 +87,9 @@ class VkManager:
 
         session = await self._get_session()
 
-        for client in VK_CLIENTS:
+        for i, client in enumerate(VK_CLIENTS):
+            if i > 0:
+                await asyncio.sleep(2)  # Pause between client attempts to avoid rate limit
             try:
                 async with session.get(
                     "https://oauth.vk.com/token",
@@ -110,13 +112,34 @@ class VkManager:
                     logger.info(f"VK auth OK with client_id={client['id']}")
                     return True
 
-                err_desc = data.get("error_description", data.get("error", str(data)))
+                err = data.get("error", "")
+                err_desc = data.get("error_description", str(data))
+
+                # Need 2FA validation — can't proceed without user input
+                if err == "need_validation" or "validation" in err_desc.lower():
+                    self.last_error = (
+                        "Требуется подтверждение входа (двухфакторная аутентификация). "
+                        "Войдите в VK вручную с этого устройства или отключите 2FA."
+                    )
+                    return False
+
+                # Wrong password — no point trying other clients
+                if err in ("invalid_client", "invalid_grant") and "password" in err_desc.lower():
+                    self.last_error = f"Неверный логин или пароль ВКонтакте: {err_desc}"
+                    return False
+
+                # Rate limited — stop immediately
+                if "too many" in err_desc.lower() or "rate" in err_desc.lower():
+                    self.last_error = f"VK заблокировал запросы на 15 сек: {err_desc}. Подождите и попробуйте ещё раз."
+                    return False
+
                 logger.warning(f"VK auth failed with client_id={client['id']}: {err_desc}")
                 self.last_error = err_desc
 
             except Exception as e:
                 logger.error(f"VK auth exception with client_id={client['id']}: {e}")
                 self.last_error = str(e)
+                break  # Network error — no point retrying
 
         return False
 

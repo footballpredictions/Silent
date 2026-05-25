@@ -159,29 +159,37 @@ async function installWireGuard(send) {
   })
 }
 
-// Get original default gateway before VPN changes routing
-function getDefaultGateway() {
-  const { execSync } = require('child_process')
-  try {
-    const out = execSync('route print 0.0.0.0', { windowsHide: true, encoding: 'utf8' })
-    const match = out.match(/0\.0\.0\.0\s+0\.0\.0\.0\s+([\d.]+)/)
-    return match ? match[1] : null
-  } catch { return null }
-}
+// Generate AllowedIPs that cover 0.0.0.0/0 EXCEPT the specified IPs.
+// This is the correct WireGuard split-tunnel method: prevents WFP from blocking DTLS/TURN traffic.
+function generateExclusionAllowedIPs(excludeIPs) {
+  const ipToNum = ip => ip.split('.').reduce((a, b) => (a << 8 | Number(b)) >>> 0, 0)
+  const numToIp = n => [(n>>>24)&0xff,(n>>>16)&0xff,(n>>>8)&0xff,n&0xff].join('.')
 
-// Add host route for an IP via a specific gateway (so it bypasses VPN)
-function addExclusionRoute(ip, gateway) {
-  const { execSync } = require('child_process')
-  try { execSync(`route add ${ip} mask 255.255.255.255 ${gateway} metric 1`, { windowsHide: true }) } catch {}
-}
+  function cidrExclude(netNum, prefix, excludeNum) {
+    const mask = prefix === 0 ? 0 : ((0xffffffff << (32 - prefix)) >>> 0)
+    if ((excludeNum & mask) !== (netNum & mask)) return [[netNum, prefix]]
+    if (prefix === 32) return []
+    const np = prefix + 1
+    const nm = ((0xffffffff << (32 - np)) >>> 0)
+    const left = netNum
+    const right = (netNum | (1 << (31 - prefix))) >>> 0
+    if ((excludeNum & nm) === (left & nm))
+      return [...cidrExclude(left, np, excludeNum), [right, np]]
+    return [[left, np], ...cidrExclude(right, np, excludeNum)]
+  }
 
-function delExclusionRoute(ip) {
-  const { execSync } = require('child_process')
-  try { execSync(`route delete ${ip} mask 255.255.255.255`, { windowsHide: true }) } catch {}
+  let networks = [[0, 0]]
+  for (const ip of excludeIPs) {
+    const excl = ipToNum(ip)
+    const next = []
+    for (const [net, pfx] of networks) next.push(...cidrExclude(net, pfx, excl))
+    networks = next
+  }
+  return networks.map(([n, p]) => `${numToIp(n)}/${p}`).join(', ')
 }
 
 // Apply wg-turn.conf via WireGuard Windows CLI (requires admin)
-async function applyWireGuardConfig(confPath, send, turnIPs = [], gateway = null) {
+async function applyWireGuardConfig(confPath, send, excludeIPs = []) {
   let wgExe = findWireGuard()
 
   // Auto-install if not found
@@ -196,13 +204,17 @@ async function applyWireGuardConfig(confPath, send, turnIPs = [], gateway = null
 
   if (!wgExe) return
 
-  // Add exclusion routes for TURN server IPs BEFORE activating VPN
-  // This prevents routing loop: wdtt-client traffic bypasses the WireGuard tunnel
-  if (gateway && turnIPs.length > 0) {
-    send(`[WG] Маршруты для TURN серверов через шлюз ${gateway}...`)
-    for (const ip of turnIPs) {
-      addExclusionRoute(ip, gateway)
-      send(`[WG] route add ${ip} → ${gateway}`)
+  // Patch AllowedIPs to exclude TURN/server IPs.
+  // This prevents WireGuard WFP from blocking wdtt-client DTLS traffic to TURN servers.
+  if (excludeIPs.length > 0) {
+    try {
+      let conf = fs.readFileSync(confPath, 'utf8')
+      const allowedIPs = generateExclusionAllowedIPs(excludeIPs)
+      conf = conf.replace(/AllowedIPs\s*=\s*.+/, `AllowedIPs = ${allowedIPs}`)
+      fs.writeFileSync(confPath, conf)
+      send(`[WG] Split-tunnel: исключено IP из AllowedIPs (${excludeIPs.length} хостов)`)
+    } catch (e) {
+      send('[WG] Предупреждение: не удалось патчить AllowedIPs: ' + e.message)
     }
   }
 
@@ -294,11 +306,9 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     }
   }
 
-  // Capture gateway before VPN changes routing
-  const originalGateway = getDefaultGateway()
-  // Also always exclude the VPN server IP itself
-  const turnIPs = new Set()
-  if (config.server_ip) turnIPs.add(config.server_ip)
+  // Collect TURN/server IPs to exclude from WireGuard AllowedIPs
+  const excludeIPs = new Set()
+  if (config.server_ip) excludeIPs.add(config.server_ip)
 
   let wgApplied = false
   let confSaved = false
@@ -307,17 +317,17 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   const tryApplyWg = async () => {
     if (wgApplied || !confSaved || activeWorkers < 2) return
     wgApplied = true
-    // Extra 1s to let TURN sessions stabilize before WG changes routing
-    await new Promise(r => setTimeout(r, 1000))
+    // Extra 500ms to collect more TURN IPs from logs before patching conf
+    await new Promise(r => setTimeout(r, 500))
     send(`[WG] Воркеров активно: ${activeWorkers}, запускаю туннель...`)
-    await applyWireGuardConfig(confPath, send, [...turnIPs], originalGateway)
+    await applyWireGuardConfig(confPath, send, [...excludeIPs])
   }
 
   const handleLine = async (line) => {
     send(line)
-    // Collect TURN relay IPs from wdtt-client logs: "[СЕССИЯ #N] TURN UDP (IP:PORT)"
+    // Collect TURN server IPs from logs: "[СЕССИЯ #N] TURN UDP (IP:PORT)"
     const turnMatch = line.match(/TURN UDP \(([\d.]+):\d+\)/)
-    if (turnMatch) turnIPs.add(turnMatch[1])
+    if (turnMatch) excludeIPs.add(turnMatch[1])
 
     if (line.includes('[КОНФИГ] Сохранён в wg-turn.conf')) {
       confSaved = true
@@ -337,8 +347,6 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
   wdttProcess.on('close', (code) => {
     wdttProcess = null
-    // Remove exclusion routes
-    for (const ip of turnIPs) delExclusionRoute(ip)
     // Remove WireGuard tunnel
     const wgExe = findWireGuard()
     if (wgExe) {

@@ -2,29 +2,33 @@
 VK AI Assistant — creates VK group calls, extracts TURN hashes,
 monitors tunnel health 24/7 and auto-recreates on failure.
 
-Uses VK API client_id 6287487 (fallback: 8202606) following the
+Uses VK API client_id 6287487 (VK Android) following the
 same auth flow as proxy-turn-vk-android.
 """
 import asyncio
 import aiohttp
 import logging
 import re
-import uuid
 from datetime import datetime
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.models import VkHash, VkCredentials, AppSetting
+from app.models import VkHash, VkCredentials
 from app.core.security import decrypt_value
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-VK_API_VERSION = "5.199"
-VK_CLIENT_IDS = [6287487, 8202606]
+VK_API_VERSION = "5.131"
 MAX_HASHES = 3
+
+# Known VK client credentials (public, used in FOSS VK clients)
+VK_CLIENTS = [
+    {"id": 6287487,  "secret": "VeWdmVclDCtn6ihuP1nt"},  # VK Android
+    {"id": 2274003,  "secret": "hHbZxrka2uZ6jB1inYsH"},  # VK Official
+    {"id": 2685278,  "secret": "lxhD8OD7dMsqtXIm5IUY"},  # Kate Mobile
+]
 
 
 class VkApiError(Exception):
@@ -38,12 +42,14 @@ class VkManager:
         self.db = db
         self._session: Optional[aiohttp.ClientSession] = None
         self._token: Optional[str] = None
-        self._client_id_idx: int = 0
+        self.last_error: str = ""
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
-                headers={"User-Agent": "VKAndroidApp/8.10-17765 (Android 14; SDK 34; arm64-v8a; Google Pixel 8; ru; 2560x1080)"},
+                headers={
+                    "User-Agent": "VKAndroidApp/8.10-17765 (Android 14; SDK 34; arm64-v8a; Google Pixel 8; ru; 2560x1080)"
+                },
                 timeout=aiohttp.ClientTimeout(total=30),
             )
         return self._session
@@ -56,7 +62,7 @@ class VkManager:
 
         url = f"https://api.vk.com/method/{method}"
         async with session.post(url, data=params) as resp:
-            data = await resp.json()
+            data = await resp.json(content_type=None)
 
         if "error" in data:
             err = data["error"]
@@ -67,57 +73,52 @@ class VkManager:
         result = await self.db.execute(select(VkCredentials).where(VkCredentials.id == 1))
         creds = result.scalar_one_or_none()
         if not creds or not creds.is_configured:
-            raise RuntimeError("VK credentials not configured in admin panel")
-        login = decrypt_value(creds.login_enc)
-        password = decrypt_value(creds.password_enc)
-        return login, password
+            raise RuntimeError("VK credentials не настроены в панели администратора")
+        return decrypt_value(creds.login_enc), decrypt_value(creds.password_enc)
 
     async def authenticate(self) -> bool:
-        """Authenticate with VK and get access token."""
+        """Authenticate with VK and get access token. Tries multiple client_ids."""
         try:
             login, password = await self._load_credentials()
         except Exception as e:
-            logger.error(f"Failed to load VK credentials: {e}")
+            self.last_error = str(e)
+            logger.error(f"VK credentials load error: {e}")
             return False
 
-        for client_id in VK_CLIENT_IDS:
+        session = await self._get_session()
+
+        for client in VK_CLIENTS:
             try:
-                session = await self._get_session()
                 async with session.get(
                     "https://oauth.vk.com/token",
                     params={
                         "grant_type": "password",
-                        "client_id": client_id,
-                        "client_secret": "",
+                        "client_id": client["id"],
+                        "client_secret": client["secret"],
                         "username": login,
                         "password": password,
-                        "scope": "all",
+                        "scope": "nohttps,audio,offline",
                         "v": VK_API_VERSION,
-                    }
+                    },
+                    timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
-                    data = await resp.json()
+                    data = await resp.json(content_type=None)
 
                 if "access_token" in data:
                     self._token = data["access_token"]
-                    logger.info(f"VK authenticated with client_id {client_id}")
+                    self.last_error = ""
+                    logger.info(f"VK auth OK with client_id={client['id']}")
                     return True
 
-                logger.warning(f"VK auth failed with client_id {client_id}: {data.get('error_description', data)}")
+                err_desc = data.get("error_description", data.get("error", str(data)))
+                logger.warning(f"VK auth failed with client_id={client['id']}: {err_desc}")
+                self.last_error = err_desc
+
             except Exception as e:
-                logger.error(f"VK auth error with client_id {client_id}: {e}")
+                logger.error(f"VK auth exception with client_id={client['id']}: {e}")
+                self.last_error = str(e)
 
         return False
-
-    async def _get_anonymous_token(self) -> Optional[str]:
-        """Get anonymous TURN token for a call hash."""
-        try:
-            resp = await self._vk_request("calls.getAnonymousToken", {})
-            return resp.get("token")
-        except VkApiError as e:
-            if e.code in (5, 1116):
-                logger.warning(f"VK token invalid, re-authenticating: {e}")
-                await self.authenticate()
-            return None
 
     async def create_call(self) -> Optional[str]:
         """Create a new VK group call and return its hash."""
@@ -128,19 +129,25 @@ class VkManager:
             if hash_val:
                 logger.info(f"Created VK call, hash: {hash_val[:12]}...")
                 return hash_val
-            logger.error(f"Could not extract hash from join_link: {join_link}")
+            # Some API versions return hash directly
+            if resp.get("hash"):
+                return resp["hash"]
+            logger.error(f"Cannot extract hash from response: {resp}")
+            self.last_error = f"Не удалось извлечь хеш из ответа: {resp}"
             return None
         except VkApiError as e:
-            logger.error(f"Failed to create VK call: {e}")
+            self.last_error = str(e)
+            logger.error(f"VK API error creating call: {e}")
             if e.code in (5, 1116):
                 await self.authenticate()
             return None
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"Unexpected error creating VK call: {e}")
             return None
 
     async def _check_hash_alive(self, hash_val: str) -> bool:
-        """Check if a VK call hash is still valid by trying to get TURN credentials."""
+        """Check if a VK call hash is still valid."""
         try:
             session = await self._get_session()
             async with session.get(
@@ -152,45 +159,50 @@ class VkManager:
                 },
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
-                data = await resp.json()
+                data = await resp.json(content_type=None)
             return "response" in data
         except Exception:
             return False
 
     @staticmethod
     def _extract_hash(url_or_hash: str) -> Optional[str]:
-        """Extract hash from VK call URL or return as-is if already a hash."""
         if not url_or_hash:
             return None
-        # Full URL: vk.com/call/join/HASH
         match = re.search(r"/join/([A-Za-z0-9_\-]+)", url_or_hash)
         if match:
             return match.group(1)
-        # Already a hash
         if re.match(r"^[A-Za-z0-9_\-]{8,}$", url_or_hash):
             return url_or_hash
         return None
 
-    async def recreate_all_hashes(self) -> bool:
-        """Recreate all VK call hashes. Called by monitor or manually from admin."""
+    async def recreate_all_hashes(self) -> tuple[bool, str]:
+        """
+        Recreate all VK call hashes.
+        Returns (success, error_message).
+        """
         if not self._token:
-            if not await self.authenticate():
-                logger.error("Cannot recreate hashes: VK auth failed")
-                return False
+            auth_ok = await self.authenticate()
+            if not auth_ok:
+                err = self.last_error or "VK авторизация не удалась"
+                logger.error(f"Cannot recreate hashes: {err}")
+                return False, f"Ошибка авторизации VK: {err}"
 
         logger.info("Recreating all VK hashes...")
-        created: list[str] = []
+        created: list[tuple[int, str]] = []
+        errors: list[str] = []
 
         for slot in range(MAX_HASHES):
             hash_val = await self.create_call()
             if hash_val:
                 created.append((slot, hash_val))
             else:
-                logger.error(f"Failed to create hash for slot {slot}")
-            await asyncio.sleep(2)  # Avoid API rate limiting
+                err = self.last_error or f"Не удалось создать хеш для слота {slot}"
+                errors.append(err)
+                logger.error(f"Failed to create hash for slot {slot}: {err}")
+            await asyncio.sleep(2)
 
         if not created:
-            return False
+            return False, f"Не удалось создать ни одного хеша. Ошибки: {'; '.join(errors)}"
 
         # Update DB
         result = await self.db.execute(select(VkHash))
@@ -211,11 +223,13 @@ class VkManager:
                 ))
 
         await self.db.commit()
-        logger.info(f"Successfully recreated {len(created)}/{MAX_HASHES} hashes")
-        return len(created) == MAX_HASHES
+        msg = f"Создано {len(created)}/{MAX_HASHES} хешей"
+        if errors:
+            msg += f". Ошибки: {'; '.join(errors)}"
+        logger.info(msg)
+        return len(created) == MAX_HASHES, msg
 
     async def check_and_heal(self) -> None:
-        """Check all hashes; if any fail — try reconnect first, then recreate all."""
         result = await self.db.execute(
             select(VkHash).where(VkHash.is_active == True).order_by(VkHash.slot_index)
         )
@@ -234,7 +248,6 @@ class VkManager:
                 h.fail_count += 1
                 h.last_failed = datetime.utcnow()
                 failed.append(h)
-                logger.warning(f"Hash slot {h.slot_index} is dead (fail_count={h.fail_count})")
             else:
                 h.fail_count = 0
 

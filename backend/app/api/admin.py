@@ -195,6 +195,24 @@ async def get_vk_hashes(
     ]
 
 
+@router.post("/vk/test-auth")
+async def test_vk_auth(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Test VK authentication with saved credentials."""
+    from ai.vk_manager import VkManager
+    manager = VkManager(db)
+    try:
+        ok = await manager.authenticate()
+        await manager.close()
+        if ok:
+            return {"success": True, "message": "Авторизация VK прошла успешно"}
+        return {"success": False, "message": f"Ошибка авторизации: {manager.last_error}"}
+    except Exception as e:
+        return {"success": False, "message": f"Исключение: {e}"}
+
+
 @router.post("/vk/recreate")
 async def recreate_vk_hashes(
     _: bool = Depends(get_admin_credentials),
@@ -203,8 +221,12 @@ async def recreate_vk_hashes(
     """Manually trigger VK hash recreation."""
     from ai.vk_manager import VkManager
     manager = VkManager(db)
-    success = await manager.recreate_all_hashes()
-    return {"success": success, "message": "Хеши пересозданы" if success else "Ошибка пересоздания"}
+    try:
+        success, message = await manager.recreate_all_hashes()
+        await manager.close()
+        return {"success": success, "message": message}
+    except Exception as e:
+        return {"success": False, "message": f"Исключение при пересоздании: {e}"}
 
 
 # Theme management

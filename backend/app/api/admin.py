@@ -14,6 +14,7 @@ from app.database import get_db
 from app.models import User, Subscription, Device, VkCredentials, VkHash, AppSetting, PromoCode
 from app.core.deps import get_admin_credentials
 from app.core.security import encrypt_value, decrypt_value
+from ai.vk_manager import VkManager
 from app.schemas.vpn import ThemeResponse
 
 router = APIRouter(prefix="/admin", tags=["admin"])

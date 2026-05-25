@@ -154,8 +154,8 @@ class VkManager:
                         return False, "", f"Требуется подтверждение. Войдите в VK вручную: {redirect}"
 
                     # Wrong password / invalid user
-                    if "invalid_client" in err or "invalid_user" in msg.lower():
-                        return False, "", "Неверный логин или пароль VK."
+                    if "invalid_client" in err or "invalid_user" in msg.lower() or "invalid_grant" in err:
+                        return False, "", f"Неверный логин или пароль VK (error={err}, desc={msg})"
 
                     logger.warning(f"client_id={client['id']} failed: {err} — {msg}")
                     await asyncio.sleep(1)

@@ -51,42 +51,43 @@ export default function VkPage({ token }: { token: string }) {
     fetchStatus()
   }, [])
 
-  // ── OAuth popup login ───────────────────────────────────────────────
+  // ── OAuth code flow ──────────────────────────────────────────────────
+  const [showCodeInput, setShowCodeInput] = useState(false)
+  const [oauthCode, setOauthCode]         = useState('')
+  const [codeStatus, setCodeStatus]       = useState<Status>('idle')
+  const [codeMsg, setCodeMsg]             = useState('')
+
   const loginViaOAuth = async () => {
-    setAuthStatus('loading'); setAuthMsg('Открываем окно авторизации VK...')
+    setAuthStatus('loading'); setAuthMsg('')
     try {
       const res = await api('/api/admin/vk/oauth-url')
       const data = await res.json()
-      const popup = window.open(data.url, 'vkAuth', 'width=700,height=600,left=300,top=100')
-
-      if (pollRef.current) clearInterval(pollRef.current)
-      setAuthMsg('Авторизуйтесь в открывшемся окне...')
-
-      pollRef.current = setInterval(async () => {
-        try {
-          const s = await api('/api/admin/vk/oauth-status')
-          if (s.ok) {
-            const sd = await s.json()
-            if (sd.authorized) {
-              clearInterval(pollRef.current!)
-              setHasToken(true)
-              setAuthStatus('success')
-              setAuthMsg('Авторизация прошла успешно! Токен привязан к серверу.')
-              popup?.close()
-            }
-          }
-        } catch {}
-      }, 2000)
-
-      // Close polling after 5 min
-      setTimeout(() => {
-        clearInterval(pollRef.current!)
-        if (authStatus === 'loading') {
-          setAuthStatus('idle'); setAuthMsg('')
-        }
-      }, 300_000)
+      window.open(data.url, '_blank', 'width=700,height=600')
+      setShowCodeInput(true)
+      setAuthStatus('idle')
     } catch (e: any) {
       setAuthStatus('error'); setAuthMsg('Ошибка: ' + e.message)
+    }
+  }
+
+  const submitCode = async () => {
+    const code = oauthCode.match(/[?&]code=([^&]+)/)?.[1] || oauthCode.trim()
+    if (!code) { setCodeStatus('error'); setCodeMsg('Вставьте полный URL или только значение code'); return }
+    setCodeStatus('loading'); setCodeMsg('Обмениваем код на токен...')
+    try {
+      const res = await api('/api/admin/vk/exchange-code', {
+        method: 'POST', body: JSON.stringify({ code }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setCodeStatus('success'); setCodeMsg(data.message)
+        setHasToken(true); setShowCodeInput(false); setOauthCode('')
+        setAuthStatus('success'); setAuthMsg(data.message)
+      } else {
+        setCodeStatus('error'); setCodeMsg(data.message)
+      }
+    } catch (e: any) {
+      setCodeStatus('error'); setCodeMsg('Ошибка: ' + e.message)
     }
   }
 
@@ -152,14 +153,36 @@ export default function VkPage({ token }: { token: string }) {
           )}
         </div>
 
-        <div className="flex gap-3">
-          <button onClick={loginViaOAuth} disabled={authStatus === 'loading'}
-            className="flex items-center gap-2 bg-[#4680C2] hover:bg-[#3a6fad] text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">
-            {authStatus === 'loading'
-              ? <><RefreshCw className="w-4 h-4 animate-spin" /> Ожидаем...</>
-              : <><ExternalLink className="w-4 h-4" /> {hasToken ? 'Обновить токен VK' : 'Войти через ВКонтакте'}</>}
-          </button>
-        </div>
+        <button onClick={loginViaOAuth}
+          className="flex items-center gap-2 bg-[#4680C2] hover:bg-[#3a6fad] text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors">
+          <ExternalLink className="w-4 h-4" />
+          {hasToken ? 'Обновить токен VK' : 'Войти через ВКонтакте'}
+        </button>
+
+        {/* Code paste flow */}
+        {showCodeInput && (
+          <div className="bg-[#0d0d0d] border border-[#2a2a2a] rounded-xl p-4 space-y-3">
+            <p className="text-xs text-[#aaa] leading-relaxed">
+              <span className="text-white font-semibold">Шаг 1.</span> Войди в ВК в открывшейся вкладке.<br/>
+              <span className="text-white font-semibold">Шаг 2.</span> После входа ты попадёшь на страницу приложения — адрес будет содержать <code className="text-[#4680C2]">?code=...</code><br/>
+              <span className="text-white font-semibold">Шаг 3.</span> Скопируй весь адрес из адресной строки и вставь ниже:
+            </p>
+            <div className="flex gap-2">
+              <input
+                value={oauthCode}
+                onChange={e => setOauthCode(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && submitCode()}
+                placeholder="https://vk.com/app54608093?code=abc123..."
+                className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-xs text-white placeholder-[#555] focus:outline-none focus:border-[#4680C2] transition-colors"
+              />
+              <button onClick={submitCode} disabled={!oauthCode || codeStatus === 'loading'}
+                className="px-4 py-2.5 bg-[#4680C2] hover:bg-[#3a6fad] text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">
+                {codeStatus === 'loading' ? <RefreshCw className="w-4 h-4 animate-spin" /> : 'Подтвердить'}
+              </button>
+            </div>
+            <StatusBadge status={codeStatus} msg={codeMsg} />
+          </div>
+        )}
 
         <StatusBadge status={authStatus} msg={authMsg} />
       </div>

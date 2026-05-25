@@ -205,7 +205,8 @@ async def vk_oauth_url(
     from app.config import settings
 
     client_id = 54608093
-    redirect_uri = "https://132-243-234-162.nip.io/api/admin/vk/oauth-callback"
+    # redirect_uri must be VK's own app URL for mini-apps (external URLs not allowed)
+    redirect_uri = f"https://vk.com/app{client_id}"
     params = urllib.parse.urlencode({
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -215,7 +216,7 @@ async def vk_oauth_url(
         "display": "page",
     })
     url = f"https://oauth.vk.com/authorize?{params}"
-    return {"url": url, "redirect_uri": redirect_uri}
+    return {"url": url, "redirect_uri": redirect_uri, "need_manual_code": True}
 
 
 @router.get("/vk/oauth-callback")
@@ -327,6 +328,40 @@ async def vk_auth_from_server(
         return {"success": True, "message": "Авторизация прошла успешно! Токен привязан к серверу."}
 
     return {"success": False, "message": res.get("message", "Ошибка авторизации")}
+
+
+@router.post("/vk/exchange-code")
+async def vk_exchange_code(
+    data: dict,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Exchange VK OAuth code for token server-side (token bound to server IP)."""
+    import aiohttp as _aiohttp
+    code = data.get("code", "").strip()
+    if not code:
+        return {"success": False, "message": "Не передан code"}
+
+    client_id = 54608093
+    client_secret = "wxj4liNXn7nElGP5DDgz"
+    redirect_uri = f"https://vk.com/app{client_id}"
+
+    async with _aiohttp.ClientSession() as session:
+        async with session.get(
+            "https://oauth.vk.com/access_token",
+            params={"client_id": client_id, "client_secret": client_secret,
+                    "redirect_uri": redirect_uri, "code": code},
+            timeout=_aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            result = await resp.json(content_type=None)
+
+    if "access_token" in result:
+        token = result["access_token"]
+        await _save_vk_token_to_db(db, "", token)
+        return {"success": True, "message": "Токен получен и привязан к серверу!"}
+
+    err = result.get("error_description") or result.get("error") or str(result)
+    return {"success": False, "message": f"Ошибка обмена кода: {err}"}
 
 
 @router.post("/vk/auth-2fa")

@@ -57,9 +57,17 @@ class Settings(BaseSettings):
     # CORS
     ALLOWED_ORIGINS: List[str] = ["*"]
 
+    # These are used by Docker Compose directly, not by the app
+    POSTGRES_PASSWORD: str = "silent_pass"
+    REDIS_PASSWORD: str = "silent_redis"
+    WDTT_MASTER_PASSWORD: str = "change_this_password"
+    WDTT_PORT: int = 56000
+    WDTT_WG_PORT: int = 56001
+
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"
 
 
 settings = Settings()

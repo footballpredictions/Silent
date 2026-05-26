@@ -76,6 +76,12 @@ data class DeviceRegisterRequest(
     val wg_public_key: String?,
 )
 
+data class BootstrapConfigRequest(
+    val bootstrap_hash: String,
+    val device_type: String,
+    val device_fingerprint: String,
+)
+
 data class VpnConfig(
     val device_id: String,
     val wg_private_key: String,
@@ -184,4 +190,7 @@ interface SilentApi {
 
     @GET("api/vpn/hashes")
     suspend fun getVpnHashes(): Response<VpnHashesResponse>
+
+    @POST("api/vpn/bootstrap-config")
+    suspend fun bootstrapConfig(@Body req: BootstrapConfigRequest): Response<VpnConfig>
 }

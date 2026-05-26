@@ -8,14 +8,21 @@ from datetime import datetime
 from app.database import get_db
 from app.models import User, Device, AppSetting
 from app.schemas.vpn import (
-    DeviceRegisterRequest, VpnConfigResponse,
-    ConnectRequest, DisconnectRequest, AppExclusionRequest, ThemeResponse,
+    DeviceRegisterRequest,
+    BootstrapConfigRequest,
+    VpnConfigResponse,
+    ConnectRequest,
+    DisconnectRequest,
+    AppExclusionRequest,
+    ThemeResponse,
 )
 from app.core.deps import get_verified_user
 from app.services.vpn_service import (
     register_device,
-    _build_vpn_config,
+    register_bootstrap_device,
+    build_vpn_config_for_user,
     get_active_vk_hashes,
+    get_bootstrap_hashes_for_user,
     count_connected_sessions,
     clear_stale_online_status,
 )
@@ -25,9 +32,19 @@ from app.config import settings
 router = APIRouter(prefix="/vpn", tags=["vpn"])
 
 
-async def _check_active_subscription(user: User, db: AsyncSession):
-    if not await user_has_active_subscription(user, db):
-        raise HTTPException(status_code=402, detail="Активная подписка не найдена")
+@router.post("/bootstrap-config", response_model=VpnConfigResponse)
+async def bootstrap_config(req: BootstrapConfigRequest, db: AsyncSession = Depends(get_db)):
+    """Pre-login VPN — reach backend through VK TURN with bootstrap hash only."""
+    await clear_stale_online_status(db)
+    try:
+        return await register_bootstrap_device(
+            db,
+            bootstrap_hash=req.bootstrap_hash,
+            device_fingerprint=req.device_fingerprint,
+            device_type=req.device_type,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/device/register", response_model=VpnConfigResponse)
@@ -36,23 +53,35 @@ async def device_register(
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _check_active_subscription(user, db)
     await clear_stale_online_status(db)
+    has_sub = await user_has_active_subscription(user, db)
     try:
-        config = await register_device(
-            db, user,
+        await register_device(
+            db,
+            user,
             device_name=req.device_name,
             device_type=req.device_type,
             device_fingerprint=req.device_fingerprint,
             wg_public_key=req.wg_public_key,
         )
-        if user.vk_user_id:
+        result = await db.execute(
+            select(Device).where(
+                Device.user_id == user.id,
+                Device.device_fingerprint == req.device_fingerprint,
+                Device.is_active == True,
+            )
+        )
+        device = result.scalar_one_or_none()
+        if not device:
+            raise HTTPException(status_code=500, detail="Не удалось создать устройство")
+        if user.vk_user_id and has_sub:
             try:
                 from app.services.vk_config_publisher import publish_config_for_user
+
                 await publish_config_for_user(db, user)
             except Exception:
                 pass
-        return config
+        return await build_vpn_config_for_user(db, device, user, has_sub)
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
@@ -63,7 +92,6 @@ async def get_config(
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _check_active_subscription(user, db)
     result = await db.execute(
         select(Device).where(
             Device.user_id == user.id,
@@ -74,7 +102,8 @@ async def get_config(
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Сессия устройства не найдена. Войдите снова.")
-    return await _build_vpn_config(db, device)
+    has_sub = await user_has_active_subscription(user, db)
+    return await build_vpn_config_for_user(db, device, user, has_sub)
 
 
 @router.get("/hashes")
@@ -82,12 +111,18 @@ async def get_vk_hashes(
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """All active VK TURN hashes — client merges with bootstrap from VK."""
-    await _check_active_subscription(user, db)
-    hashes = await get_active_vk_hashes(db)
-    if not hashes:
-        raise HTTPException(status_code=503, detail="VK-хеши ещё не созданы на сервере")
-    return {"hashes": hashes, "bootstrap_hash": hashes[0]}
+    """VK TURN hashes — full list with subscription, bootstrap only without."""
+    has_sub = await user_has_active_subscription(user, db)
+    if has_sub:
+        hashes = await get_active_vk_hashes(db)
+        if not hashes:
+            raise HTTPException(status_code=503, detail="VK-хеши ещё не созданы на сервере")
+        return {"hashes": hashes, "bootstrap_hash": hashes[0], "mode": "full"}
+
+    boot = await get_bootstrap_hashes_for_user(db, user)
+    if not boot:
+        raise HTTPException(status_code=503, detail="Bootstrap-хеш не найден. Привяжите VK.")
+    return {"hashes": boot, "bootstrap_hash": boot[0], "mode": "bootstrap"}
 
 
 @router.post("/connect")
@@ -96,7 +131,6 @@ async def connect(
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _check_active_subscription(user, db)
     result = await db.execute(
         select(Device).where(
             Device.user_id == user.id,
@@ -120,7 +154,7 @@ async def connect(
     device.last_connected = datetime.utcnow()
     device.last_ip = req.last_ip
     await db.commit()
-    return {"status": "connected"}
+    return {"status": "connected", "mode": "full" if await user_has_active_subscription(user, db) else "bootstrap"}
 
 
 @router.post("/disconnect")

@@ -9,9 +9,10 @@ import api, {
 } from '../api'
 import {
   cacheVpnConfig, fetchConfigFromVk, getCachedVpnConfig, clearCachedVpnConfig,
-  getVkAccessToken, getVkUserId, saveVkUserId,
+  getVkAccessToken, getVkUserId, saveVkUserId, getBootstrapHash,
   type VpnConfigPayload,
 } from '../vkConfig'
+import { fetchBootstrapConfig } from '../bootstrapVpn'
 
 interface Profile {
   email: string; display_id: string
@@ -99,12 +100,20 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           config = reg.data
           cacheVpnConfig(config!)
         } catch (e: any) {
-          if (e.response?.status === 402) { alert('Нет активной подписки'); return }
           try {
             const cfg = await api.get(`/api/vpn/config?fingerprint=${fp}`)
             config = cfg.data
             cacheVpnConfig(config!)
-          } catch {}
+          } catch {
+            const boot = getBootstrapHash()
+            if (boot) {
+              const bootCfg = await fetchBootstrapConfig()
+              if (bootCfg) {
+                config = bootCfg
+                cacheVpnConfig(config)
+              }
+            }
+          }
         }
         if (!config) {
           const vkId = profile?.vk_user_id || getVkUserId()

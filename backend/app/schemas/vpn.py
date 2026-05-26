@@ -10,6 +10,13 @@ class DeviceRegisterRequest(BaseModel):
     wg_public_key: Optional[str] = None
 
 
+class BootstrapConfigRequest(BaseModel):
+    """Pre-login VPN config — only bootstrap VK hash, no subscription required."""
+    bootstrap_hash: str
+    device_type: str  # android, ios, pc
+    device_fingerprint: str
+
+
 class VpnConfigResponse(BaseModel):
     """Complete VPN configuration sent to client."""
     device_id: uuid.UUID

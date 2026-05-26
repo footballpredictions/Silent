@@ -29,6 +29,7 @@ class SilentRepository @Inject constructor(
         const val PREF_VK_USER_ID = "vk_user_id"
         const val PREF_VK_ACCESS_TOKEN = "vk_access_token"
         const val PREF_BOOTSTRAP_HASH = "vk_bootstrap_hash"
+        const val PREF_PRE_LOGIN_FP = "pre_login_fp"
         const val PREF_CACHED_CONFIG = "cached_vpn_config"
         const val PREF_CACHED_CONFIG_TS = "cached_vpn_config_ts"
         const val PREF_LAST_EMAIL = "last_email"
@@ -193,6 +194,15 @@ class SilentRepository @Inject constructor(
     }
 
     fun getBootstrapHash(): String? = prefs.getString(PREF_BOOTSTRAP_HASH, null)?.takeIf { it.isNotBlank() }
+
+    /** Stable fingerprint for bootstrap VPN before Silent login. */
+    fun getOrCreatePreLoginFingerprint(): String {
+        val existing = prefs.getString(PREF_PRE_LOGIN_FP, null)?.takeIf { it.isNotBlank() }
+        if (existing != null) return existing
+        val fp = UUID.randomUUID().toString()
+        prefs.edit().putString(PREF_PRE_LOGIN_FP, fp).apply()
+        return fp
+    }
 
     fun cacheVpnConfig(json: String) {
         prefs.edit()

@@ -323,3 +323,106 @@ async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigRespon
         vk_hashes=hashes,
         stream_count=3,
     )
+
+
+BOOTSTRAP_USER_EMAIL = "__bootstrap__@silent.local"
+
+
+async def validate_bootstrap_hash(db: AsyncSession, bootstrap_hash: str) -> bool:
+    h = bootstrap_hash.strip()
+    if len(h) < 8:
+        return False
+    active = await get_active_vk_hashes(db)
+    if h in active:
+        return True
+    from app.models.vk_link_session import VkLinkSession
+
+    result = await db.execute(
+        select(VkLinkSession).where(
+            VkLinkSession.bootstrap_hash == h,
+            VkLinkSession.completed == True,
+        )
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def get_or_create_bootstrap_user(db: AsyncSession) -> User:
+    from app.core.security import hash_password
+
+    result = await db.execute(select(User).where(User.email == BOOTSTRAP_USER_EMAIL))
+    user = result.scalar_one_or_none()
+    if user:
+        return user
+    user = User(
+        email=BOOTSTRAP_USER_EMAIL,
+        password_hash=hash_password(str(uuid.uuid4())),
+        is_verified=True,
+        is_active=True,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+async def get_bootstrap_hashes_for_user(db: AsyncSession, user: User) -> list[str]:
+    active = await get_active_vk_hashes(db)
+    boot = active[0] if active else None
+    if user.vk_user_id and not boot:
+        from app.services.vk_config_reader import fetch_bootstrap_hash_from_vk_messages
+
+        boot = await fetch_bootstrap_hash_from_vk_messages(user.vk_user_id)
+    return [boot] if boot else []
+
+
+async def build_vpn_config_for_user(
+    db: AsyncSession,
+    device: Device,
+    user: User,
+    has_subscription: bool,
+) -> VpnConfigResponse:
+    config = await _build_vpn_config(db, device)
+    if has_subscription:
+        return config
+    boot_hashes = await get_bootstrap_hashes_for_user(db, user)
+    if boot_hashes:
+        return config.model_copy(update={"vk_hashes": boot_hashes})
+    active = await get_active_vk_hashes(db)
+    if active:
+        return config.model_copy(update={"vk_hashes": [active[0]]})
+    return config
+
+
+async def register_bootstrap_device(
+    db: AsyncSession,
+    bootstrap_hash: str,
+    device_fingerprint: str,
+    device_type: str,
+) -> VpnConfigResponse:
+    boot = bootstrap_hash.strip()
+    if not await validate_bootstrap_hash(db, boot):
+        raise ValueError("Недействительный bootstrap-хеш")
+
+    user = await get_or_create_bootstrap_user(db)
+    fp = f"boot:{device_fingerprint.strip()}"
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user.id,
+            Device.device_fingerprint == fp,
+            Device.is_active == True,
+        )
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        config = await _build_vpn_config(db, existing)
+        return config.model_copy(update={"vk_hashes": [boot]})
+
+    config = await register_device(
+        db,
+        user,
+        device_name=f"Bootstrap-{device_type}",
+        device_type=device_type,
+        device_fingerprint=fp,
+        wg_public_key=None,
+    )
+    return config.model_copy(update={"vk_hashes": [boot]})

@@ -21,11 +21,21 @@ class MainActivity : ComponentActivity() {
 
     private val vm: MainViewModel by viewModels()
     private var vpnPermissionGranted = mutableStateOf(false)
+    private var pendingBootstrapAfterPermission = mutableStateOf(false)
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == RESULT_OK) vpnPermissionGranted.value = true
+        if (result.resultCode == RESULT_OK) {
+            if (pendingBootstrapAfterPermission.value) {
+                pendingBootstrapAfterPermission.value = false
+                vm.ensureBootstrapVpn(this)
+            } else {
+                vpnPermissionGranted.value = true
+            }
+        } else {
+            pendingBootstrapAfterPermission.value = false
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,6 +58,18 @@ class MainActivity : ComponentActivity() {
             val bootstrapHash by vm.bootstrapHash.collectAsState()
             val vkMsg by vm.vkMsg.collectAsState()
             val sessionDeviceId by vm.sessionDeviceId.collectAsState()
+
+            LaunchedEffect(vkReady, screen) {
+                if (screen == AppScreen.LOGIN && vkReady) {
+                    val prep = VpnService.prepare(this@MainActivity)
+                    if (prep != null) {
+                        pendingBootstrapAfterPermission.value = true
+                        vpnPermissionLauncher.launch(prep)
+                    } else {
+                        vm.ensureBootstrapVpn(this@MainActivity)
+                    }
+                }
+            }
 
             LaunchedEffect(vpnPermissionGranted.value) {
                 if (vpnPermissionGranted.value) {

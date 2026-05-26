@@ -15,6 +15,7 @@ import {
   saveBootstrapHash,
   isVkReady,
 } from '../vkConfig'
+import { ensureBootstrapVpn } from '../bootstrapVpn'
 import VkLoginSection from '../components/VkLoginSection'
 
 export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void }) {
@@ -38,6 +39,15 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
     if (id > 0) setVkUserId(id)
     setBootstrapHash(getBootstrapHash())
   }, [])
+
+  useEffect(() => {
+    if (!vkReady) return
+    ensureBootstrapVpn()
+      .then(ok => {
+        if (ok) setVkMsg('Канал к серверу готов. Войдите в аккаунт.')
+      })
+      .catch(() => {})
+  }, [vkReady, bootstrapHash])
 
   useEffect(() => {
     const api_ = (window as any).electronAPI
@@ -120,6 +130,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
     e.preventDefault()
     setLoading(true); setError('')
     try {
+      if (vkReady) await ensureBootstrapVpn()
       const res = await api.post('/api/auth/login', { email, password })
       saveTokens(res.data.access_token, res.data.refresh_token)
 

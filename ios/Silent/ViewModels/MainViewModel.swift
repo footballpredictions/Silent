@@ -54,7 +54,7 @@ class MainViewModel: ObservableObject {
         } else if vpnState == .disconnected {
             vpnState = .connecting
             do {
-                let _ = try await api.registerDevice(name: UIDevice.current.name, type: "ios")
+                let _ = try await api.resolveVpnConfig(deviceName: UIDevice.current.name)
                 try await api.connect()
                 vpnState = .connected
                 await loadProfile()

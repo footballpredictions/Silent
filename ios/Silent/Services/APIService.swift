@@ -154,6 +154,46 @@ class APIService: ObservableObject {
         return try await request("api/vpn/device/register", method: "POST", body: Req(device_name: name, device_type: type, device_fingerprint: deviceFingerprint, wg_public_key: nil))
     }
 
+    var bootstrapHash: String? {
+        get { defaults.string(forKey: "vk_bootstrap_hash") }
+        set { defaults.set(newValue, forKey: "vk_bootstrap_hash") }
+    }
+
+    var preLoginFingerprint: String {
+        if let fp = defaults.string(forKey: "pre_login_fp") { return fp }
+        let fp = UUID().uuidString
+        defaults.set(fp, forKey: "pre_login_fp")
+        return fp
+    }
+
+    func fetchBootstrapConfig() async throws -> VpnConfig {
+        guard let boot = bootstrapHash, !boot.isEmpty else {
+            throw APIError.server("Bootstrap-хеш не найден. Привяжите VK.")
+        }
+        struct Req: Encodable {
+            let bootstrap_hash: String
+            let device_type: String
+            let device_fingerprint: String
+        }
+        return try await request(
+            "api/vpn/bootstrap-config",
+            method: "POST",
+            body: Req(bootstrap_hash: boot, device_type: "ios", device_fingerprint: preLoginFingerprint),
+            auth: false
+        )
+    }
+
+    func resolveVpnConfig(deviceName: String) async throws -> VpnConfig {
+        do {
+            return try await registerDevice(name: deviceName, type: "ios")
+        } catch {
+            if bootstrapHash != nil {
+                return try await fetchBootstrapConfig()
+            }
+            throw error
+        }
+    }
+
     func connect() async throws {
         struct Req: Encodable { let device_fingerprint: String; let device_type: String }
         let _: [String: String] = try await request("api/vpn/connect", method: "POST", body: Req(device_fingerprint: deviceFingerprint, device_type: "ios"))

@@ -9,6 +9,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
 import com.silent.vpn.auth.CredentialHelper
+import com.silent.vpn.data.BootstrapConfigRequest
 import com.silent.vpn.data.ConnectRequest
 import com.silent.vpn.data.DeviceRegisterRequest
 import com.silent.vpn.data.DisconnectRequest
@@ -79,6 +80,9 @@ class MainViewModel @Inject constructor(
 
     private val _sessionDeviceId = MutableStateFlow(repo.getSessionDeviceId())
     val sessionDeviceId: StateFlow<String?> = _sessionDeviceId
+
+    private var bootstrapVpnMode = false
+    private var bootstrapConnecting = false
 
     val lastEmail: String get() = repo.getLastEmail().orEmpty()
     val repository: SilentRepository get() = repo
@@ -152,6 +156,15 @@ class MainViewModel @Inject constructor(
             _authLoading.value = true
             _authError.value = null
             runCatching {
+                activity?.let { ctx ->
+                    if (isVkReady() && _vpnState.value != VpnState.CONNECTED) {
+                        ensureBootstrapVpn(ctx)
+                        repeat(45) {
+                            delay(1000)
+                            if (_vpnState.value == VpnState.CONNECTED) return@repeat
+                        }
+                    }
+                }
                 val res = repo.getApi().login(LoginRequest(email, password))
                 if (!res.isSuccessful) {
                     _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Неверный логин или пароль"
@@ -216,6 +229,62 @@ class MainViewModel @Inject constructor(
     }
 
     fun clearVkMsg() { _vkMsg.value = "" }
+
+    /** Bootstrap VPN on login screen — reach backend through VK TURN before Silent login. */
+    fun ensureBootstrapVpn(context: Context) {
+        if (repo.isLoggedIn() || !isVkReady()) return
+        if (_vpnState.value == VpnState.CONNECTED || _vpnState.value == VpnState.CONNECTING) return
+        if (bootstrapConnecting) return
+        viewModelScope.launch {
+            bootstrapConnecting = true
+            _vpnError.value = null
+            try {
+                val boot = repo.getBootstrapHash() ?: return@launch
+                val fp = repo.getOrCreatePreLoginFingerprint()
+                val res = repo.getApi().bootstrapConfig(
+                    BootstrapConfigRequest(boot, "android", fp)
+                )
+                if (!res.isSuccessful) {
+                    Log.w("MainViewModel", "bootstrap-config ${res.code()}")
+                    _vkMsg.value = parseError(res.errorBody()?.string() ?: "")
+                        ?: "Не удалось получить bootstrap-конфиг"
+                    return@launch
+                }
+                var config = applyBootstrapHash(res.body()!!)
+                if (config.vk_hashes.isEmpty() || config.wg_private_key.isBlank()) {
+                    _vkMsg.value = "Bootstrap-конфиг неполный"
+                    return@launch
+                }
+                bootstrapVpnMode = true
+                _vpnState.value = VpnState.CONNECTING
+                val intent = Intent(context, SilentVpnService::class.java).apply {
+                    action = SilentVpnService.ACTION_CONNECT
+                    putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(config))
+                }
+                ContextCompat.startForegroundService(context, intent)
+                repeat(90) {
+                    delay(1000)
+                    if (_vpnState.value != VpnState.CONNECTING) return@launch
+                    if (WdttTunnelManager.tunnelReady.value) {
+                        _vpnState.value = VpnState.CONNECTED
+                        _vkMsg.value = "Канал к серверу готов. Войдите в аккаунт."
+                        return@launch
+                    }
+                }
+                if (_vpnState.value == VpnState.CONNECTING) {
+                    stopVpnLocally(context)
+                    bootstrapVpnMode = false
+                    _vpnState.value = VpnState.DISCONNECTED
+                    _vkMsg.value = WdttTunnelManager.lastError.value ?: "Таймаут bootstrap VPN"
+                }
+            }.onFailure {
+                Log.e("MainViewModel", "bootstrap VPN", it)
+                _vkMsg.value = it.message ?: "Ошибка bootstrap VPN"
+            } finally {
+                bootstrapConnecting = false
+            }
+        }
+    }
 
     private fun refreshBootstrapHash() {
         refreshVkState()
@@ -297,11 +366,6 @@ class MainViewModel @Inject constructor(
                         DeviceRegisterRequest("Android", "android", fp, null)
                     )
                     when (regRes.code()) {
-                        402 -> {
-                            _vpnError.value = "Нет активной подписки"
-                            _vpnState.value = VpnState.DISCONNECTED
-                            return@launch
-                        }
                         403 -> {
                             _vpnError.value = parseError(regRes.errorBody()?.string() ?: "") ?: "Доступ запрещён"
                             _vpnState.value = VpnState.DISCONNECTED
@@ -343,6 +407,21 @@ class MainViewModel @Inject constructor(
                     if (vkUserId != null && vkUserId > 0) {
                         vpnConfig = VkConfigFetcher.fetchConfig(vkUserId, repo.getVkAccessToken())
                         if (vpnConfig != null) repo.cacheVpnConfig(Gson().toJson(vpnConfig))
+                    }
+                }
+
+                if (vpnConfig == null) {
+                    val boot = repo.getBootstrapHash()
+                    if (!boot.isNullOrBlank()) {
+                        runCatching {
+                            val bRes = repo.getApi().bootstrapConfig(
+                                BootstrapConfigRequest(boot, "android", fp)
+                            )
+                            if (bRes.isSuccessful) {
+                                vpnConfig = applyBootstrapHash(bRes.body()!!)
+                                repo.cacheVpnConfig(Gson().toJson(vpnConfig))
+                            }
+                        }
                     }
                 }
 

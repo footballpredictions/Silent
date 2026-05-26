@@ -277,9 +277,9 @@ class MainViewModel @Inject constructor(
                     _vpnState.value = VpnState.DISCONNECTED
                     _vkMsg.value = WdttTunnelManager.lastError.value ?: "Таймаут bootstrap VPN"
                 }
-            }.onFailure {
-                Log.e("MainViewModel", "bootstrap VPN", it)
-                _vkMsg.value = it.message ?: "Ошибка bootstrap VPN"
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "bootstrap VPN", e)
+                _vkMsg.value = e.message ?: "Ошибка bootstrap VPN"
             } finally {
                 bootstrapConnecting = false
             }

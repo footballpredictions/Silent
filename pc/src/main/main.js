@@ -7,6 +7,7 @@ const { spawn } = require('child_process')
 app.commandLine.appendSwitch('ignore-certificate-errors')
 const {
   stopWireGuardTunnel,
+  resetWireGuardState,
   buildWgConfigFromApi,
   applyWireGuardConfig,
 } = require('./vpn/wireguard')
@@ -146,7 +147,8 @@ function cleanupVpn() {
     try { wdttProcess.kill() } catch {}
     wdttProcess = null
   }
-  stopWireGuardTunnel(isDev, __dirname)
+  stopWireGuardTunnel()
+  resetWireGuardState()
   wgApplied = false
 }
 
@@ -187,11 +189,21 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
   wdttProcess = spawn(exePath, args, { cwd: tmpDir })
   wgApplied = false
+  resetWireGuardState()
 
   const excludeIPs = new Set()
   if (config.server_ip) excludeIPs.add(config.server_ip)
-  let activeWorkers = 0
   const apiConf = buildWgConfigFromApi(config)
+
+  let wgAttempted = false
+  let wgPoll = null
+  let wgTimers = []
+
+  const clearWgRetries = () => {
+    if (wgPoll) { clearInterval(wgPoll); wgPoll = null }
+    wgTimers.forEach(t => clearTimeout(t))
+    wgTimers = []
+  }
 
   const sendVpnError = (msg) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -199,8 +211,18 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     }
   }
 
+  const failWireGuard = (msg) => {
+    if (wgApplied || !wgAttempted) return
+    clearWgRetries()
+    sendVpnError(msg)
+    cleanupVpn()
+  }
+
   const tryApplyWg = async (confText) => {
-    if (wgApplied || !confText) return false
+    if (wgApplied || wgAttempted || !confText) return false
+    wgAttempted = true
+    clearWgRetries()
+
     fs.writeFileSync(confPath, confText)
     await new Promise(r => setTimeout(r, 400))
     const ok = await applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs])
@@ -211,7 +233,9 @@ ipcMain.handle('vpn-connect', async (_, config) => {
       }
       return true
     }
-    sendVpnError('WireGuard: разрешите UAC для Wintun или переустановите приложение')
+    failWireGuard(
+      'WireGuard не запустился. Закройте приложение, щёлкните правой кнопкой по Silent VPN → «Запуск от имени администратора» и подключитесь снова (один раз).',
+    )
     return false
   }
 
@@ -227,14 +251,8 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     const turnMatch = line.match(/TURN UDP \(([\d.]+):\d+\)/)
     if (turnMatch) excludeIPs.add(turnMatch[1])
 
-    if (line.includes('[СТАТИСТИКА]')) {
-      const m = line.match(/Активных:\s*(\d+)/)
-      if (m) activeWorkers = parseInt(m[1], 10)
-    }
     if (line.includes('[ДИСП] Воркер') && line.includes('зарегистрирован')) {
-      const m = line.match(/всего:\s*(\d+)/)
-      if (m) activeWorkers = parseInt(m[1], 10)
-      if (!wgApplied && apiConf) await tryApplyWg(apiConf)
+      if (!wgApplied && !wgAttempted && apiConf) await tryApplyWg(apiConf)
     }
 
     if (line.includes('[КОНФИГ]') && line.includes('Сохранён')) {
@@ -279,28 +297,25 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     d.toString().split('\n').forEach(l => { if (l) handleLine(l) })
   })
 
-  let confPoll = null
-
   wdttProcess.on('close', (code) => {
-    if (confPoll) clearInterval(confPoll)
+    clearWgRetries()
     wdttProcess = null
-    stopWireGuardTunnel(isDev, __dirname)
+    stopWireGuardTunnel()
+    resetWireGuardState()
     wgApplied = false
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('vpn-stopped', code)
     }
   })
 
-  confPoll = setInterval(async () => {
-    if (wgApplied) { clearInterval(confPoll); return }
+  wgPoll = setInterval(async () => {
+    if (wgApplied || wgAttempted) { clearWgRetries(); return }
     await applyFromFile()
-  }, 2000)
+  }, 3000)
 
-  for (const ms of [3000, 8000, 15000]) {
-    setTimeout(async () => {
-      if (!wgApplied && apiConf) await tryApplyWg(apiConf)
-    }, ms)
-  }
+  wgTimers.push(setTimeout(async () => {
+    if (!wgApplied && !wgAttempted && apiConf) await tryApplyWg(apiConf)
+  }, 12000))
 
   return { success: true }
 })

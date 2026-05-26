@@ -1,60 +1,63 @@
-/** WireGuard через bundled wireguard.exe + wintun.dll — без installtunnelservice / установки службы. */
+/** WireGuard: один запуск за подключение, без циклов UAC и taskkill. */
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 const { spawn, execSync } = require('child_process')
 
 const TUNNEL_CONF_NAME = 'wg-turn.conf'
+const SYSTEM_WG_DIR = 'C:\\Program Files\\WireGuard'
+
 let wgProcess = null
+let wgApplyLocked = false
 
 function resourcesDir(isDev, dirname) {
   return isDev ? path.join(dirname, '../../resources') : process.resourcesPath
 }
 
-function findWireGuardDir(isDev, dirname) {
+function findBundledDir(isDev, dirname) {
   const base = resourcesDir(isDev, dirname)
-  const candidates = [
-    path.join(base, 'wireguard'),
-    base,
-  ]
-  for (const dir of candidates) {
-    const wgExe = path.join(dir, 'wireguard.exe')
-    if (fs.existsSync(wgExe)) return dir
+  for (const dir of [path.join(base, 'wireguard'), base]) {
+    if (fs.existsSync(path.join(dir, 'wireguard.exe'))) return dir
   }
   return null
 }
 
-function getBinaries(isDev, dirname, send) {
-  const dir = findWireGuardDir(isDev, dirname)
-  if (!dir) {
-    send('[WG] ❌ wireguard.exe не найден в resources/wireguard/')
-    return null
-  }
-  const wgExe = path.join(dir, 'wireguard.exe')
-  const wintun = path.join(dir, 'wintun.dll')
-  if (!fs.existsSync(wintun)) {
-    send('[WG] ❌ wintun.dll не найден рядом с wireguard.exe')
-    return null
-  }
-  return { dir, wgExe, wintun }
-}
-
-function cleanupLegacyService() {
-  const serviceName = 'WireGuardTunnel$wg-turn'
-  try { execSync(`sc stop "${serviceName}"`, { windowsHide: true, stdio: 'ignore' }) } catch {}
-  try { execSync(`sc delete "${serviceName}"`, { windowsHide: true, stdio: 'ignore' }) } catch {}
-  try { execSync(`sc stop "WireGuardTunnel$silent-wg"`, { windowsHide: true, stdio: 'ignore' }) } catch {}
-  try { execSync(`sc delete "WireGuardTunnel$silent-wg"`, { windowsHide: true, stdio: 'ignore' }) } catch {}
-}
-
-function stopWireGuardTunnel(isDev, dirname) {
+function resetWireGuardState() {
+  wgApplyLocked = false
   if (wgProcess) {
     try { wgProcess.kill() } catch {}
     wgProcess = null
   }
-  try {
-    execSync('taskkill /F /IM wireguard.exe /T', { windowsHide: true, stdio: 'ignore' })
-  } catch {}
-  cleanupLegacyService()
+}
+
+function prepareRuntimeDir(isDev, dirname, send) {
+  const bundled = findBundledDir(isDev, dirname)
+  if (!bundled) {
+    send('[WG] wireguard.exe не найден в resources/wireguard/')
+    return null
+  }
+  const wintunSrc = path.join(bundled, 'wintun.dll')
+  if (!fs.existsSync(wintunSrc)) {
+    send('[WG] wintun.dll не найден — пересоберите приложение')
+    return null
+  }
+
+  const srcDir = fs.existsSync(path.join(SYSTEM_WG_DIR, 'wireguard.exe')) ? SYSTEM_WG_DIR : bundled
+  const runtimeDir = path.join(os.tmpdir(), 'silent-vpn-wg')
+  fs.mkdirSync(runtimeDir, { recursive: true })
+
+  for (const name of ['wireguard.exe', 'wg.exe']) {
+    const src = path.join(srcDir, name)
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, path.join(runtimeDir, name))
+    }
+  }
+  fs.copyFileSync(wintunSrc, path.join(runtimeDir, 'wintun.dll'))
+  return runtimeDir
+}
+
+function stopWireGuardTunnel() {
+  resetWireGuardState()
 }
 
 function buildWgConfigFromApi(config, listenPort = 9000) {
@@ -93,17 +96,16 @@ function generateExclusionAllowedIPs(excludeIPs) {
 
   let networks = [[0, 0]]
   for (const ip of excludeIPs) {
-    const excl = ipToNum(ip)
-    networks = networks.flatMap(([net, pfx]) => cidrExclude(net, pfx, excl))
+    networks = networks.flatMap(([net, pfx]) => cidrExclude(net, pfx, ipToNum(ip)))
   }
   return networks.map(([n, p]) => `${numToIp(n)}/${p}`).join(', ')
 }
 
-function isWintunAdapterUp() {
+function isTunnelUp() {
   try {
     const out = execSync(
-      'powershell.exe -NoProfile -Command "Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -match \'WireGuard|Wintun\' -and $_.Status -eq \'Up\' } | Select-Object -First 1 -ExpandProperty Name"',
-      { windowsHide: true, encoding: 'utf8', timeout: 8000 },
+      'powershell.exe -NoProfile -Command "Get-NetAdapter -EA SilentlyContinue | ? { $_.InterfaceDescription -match \'WireGuard|Wintun\' -and $_.Status -eq \'Up\' } | Select -First 1 -Expand Name"',
+      { windowsHide: true, encoding: 'utf8', timeout: 5000 },
     )
     return !!out.trim()
   } catch {
@@ -111,19 +113,8 @@ function isWintunAdapterUp() {
   }
 }
 
-function runTunnelForeground(wgExe, confPath, cwd) {
+function runTunnelOnce(wgExe, confPath, cwd) {
   return new Promise((resolve) => {
-    try {
-      wgProcess = spawn(wgExe, ['/tunnelservice', confPath], {
-        cwd,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
-    } catch {
-      resolve(false)
-      return
-    }
-
     let settled = false
     const finish = (ok) => {
       if (settled) return
@@ -131,51 +122,49 @@ function runTunnelForeground(wgExe, confPath, cwd) {
       resolve(ok)
     }
 
+    try {
+      wgProcess = spawn(wgExe, ['/tunnelservice', confPath], {
+        cwd,
+        windowsHide: true,
+        stdio: 'ignore',
+        detached: false,
+      })
+    } catch {
+      finish(false)
+      return
+    }
+
     wgProcess.on('error', () => finish(false))
-    wgProcess.on('close', () => {
-      if (wgProcess && wgProcess.exitCode !== null) wgProcess = null
+    wgProcess.on('exit', () => {
+      wgProcess = null
       if (!settled) finish(false)
     })
 
-    wgProcess.stderr?.on('data', () => {})
-    wgProcess.stdout?.on('data', () => {})
-
     setTimeout(() => {
-      if (!wgProcess || wgProcess.killed) {
+      if (wgProcess && !wgProcess.killed) {
+        finish(isTunnelUp() || true)
+      } else {
         finish(false)
-        return
       }
-      if (isWintunAdapterUp()) {
-        finish(true)
-        return
-      }
-      // процесс жив — считаем успехом (адаптер может подняться чуть позже)
-      finish(true)
-    }, 2500)
-  })
-}
-
-function runTunnelElevated(wgExe, confPath, cwd) {
-  return new Promise((resolve) => {
-    const ps = [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-      `$ErrorActionPreference='SilentlyContinue'; `
-      + `$wg=${JSON.stringify(wgExe)}; $cfg=${JSON.stringify(confPath)}; $dir=${JSON.stringify(cwd)}; `
-      + `Start-Process -FilePath $wg -ArgumentList '/tunnelservice',$cfg -WorkingDirectory $dir -WindowStyle Hidden -Verb RunAs; `
-      + `Start-Sleep -Seconds 4; `
-      + `$a=Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'WireGuard|Wintun' -and $_.Status -eq 'Up' } | Select-Object -First 1; `
-      + `if ($a) { exit 0 } else { exit 1 }`,
-    ]
-    const proc = spawn('powershell.exe', ps, { windowsHide: true })
-    proc.on('close', code => resolve(code === 0))
-    proc.on('error', () => resolve(false))
+    }, 3000)
   })
 }
 
 async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs = []) {
-  const bins = getBinaries(isDev, dirname, send)
-  if (!bins) return false
-  const { dir, wgExe } = bins
+  if (wgApplyLocked) {
+    send('[WG] Уже пробовали поднять туннель в этой сессии')
+    return false
+  }
+  wgApplyLocked = true
+
+  const runtimeDir = prepareRuntimeDir(isDev, dirname, send)
+  if (!runtimeDir) return false
+
+  const wgExe = path.join(runtimeDir, 'wireguard.exe')
+  if (!fs.existsSync(wgExe)) {
+    send('[WG] wireguard.exe недоступен')
+    return false
+  }
 
   if (excludeIPs.length > 0 && fs.existsSync(confPath)) {
     try {
@@ -183,32 +172,31 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
       conf = conf.replace(/AllowedIPs\s*=\s*.+/, `AllowedIPs = ${generateExclusionAllowedIPs(excludeIPs)}`)
       fs.writeFileSync(confPath, conf)
     } catch (e) {
-      send('[WG] AllowedIPs patch: ' + e.message)
+      send('[WG] AllowedIPs: ' + e.message)
     }
   }
 
-  stopWireGuardTunnel(isDev, dirname)
-  await new Promise(r => setTimeout(r, 600))
-
-  send('[WG] Запуск туннеля (wintun)...')
-  let ok = await runTunnelForeground(wgExe, confPath, dir)
-  if (!ok) {
-    send('[WG] Нужны права администратора для Wintun (один раз)...')
-    ok = await runTunnelElevated(wgExe, confPath, dir)
+  if (wgProcess) {
+    try { wgProcess.kill() } catch {}
+    wgProcess = null
+    await new Promise(r => setTimeout(r, 400))
   }
 
+  send('[WG] Запуск туннеля...')
+  const ok = await runTunnelOnce(wgExe, confPath, runtimeDir)
+
   if (ok) {
-    send('[WG] ✅ Туннель активен')
+    send('[WG] Туннель активен')
     return true
   }
 
-  send('[WG] ⚠ Не удалось поднять туннель. Разрешите UAC или переустановите приложение.')
+  send('[WG] Не удалось поднять туннель')
   return false
 }
 
 module.exports = {
   TUNNEL_CONF_NAME,
-  findWireGuardDir,
+  resetWireGuardState,
   stopWireGuardTunnel,
   buildWgConfigFromApi,
   applyWireGuardConfig,

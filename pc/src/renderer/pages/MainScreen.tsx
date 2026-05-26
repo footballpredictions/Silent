@@ -15,17 +15,19 @@ import {
 
 interface Profile {
   email: string; display_id: string
+  is_admin?: boolean
   vk_linked?: boolean; vk_user_id?: number | null
   subscription: { is_active: boolean; plan_type: string | null; expires_at: string | null; days_left: number }
   devices: any[]; devices_count: number; max_devices: number
 }
 
-const DEVICE_FINGERPRINT = () => getDeviceFingerprint()
+const GREEN = '#16A34A'
 
-export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: () => void }) {
+export default function MainScreen({ theme: initialTheme, onLogout }: { theme: any; onLogout: () => void }) {
   const [connected, setConnected] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [clientTheme, setClientTheme] = useState<any>(initialTheme)
   const sessionDeviceId = getSessionDeviceId()
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuPage, setMenuPage] = useState<null | 'devices' | 'subscription' | 'settings' | 'promo' | 'support' | 'about'>( null)
@@ -44,15 +46,27 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
   useEffect(() => { fetchProfile() }, [])
 
   useEffect(() => {
+    api.get('/api/vpn/theme').then(r => setClientTheme(r.data)).catch(() => {})
+  }, [])
+
+  useEffect(() => {
     const api_ = (window as any).electronAPI
     if (!api_?.onVpnStopped) return
     const onStopped = () => {
       setConnected(false)
       setConnecting(false)
     }
+    const onError = (msg: string) => {
+      alert(msg)
+      setConnecting(false)
+      setConnected(false)
+    }
     api_.onVpnStopped(onStopped)
+    api_.onVpnError?.(onError)
     return () => api_.removeVpnListeners?.()
   }, [])
+
+  const DEVICE_FINGERPRINT = () => getDeviceFingerprint()
 
   const waitVpnReady = (timeoutMs = 90000): Promise<boolean> =>
     new Promise(resolve => {
@@ -173,13 +187,19 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
     onLogout()
   }
 
-  const bg = theme?.background_color || '#ffffff'
-  const fg = theme?.text_color || '#000000'
-  const toggleOn = theme?.toggle_on_color || '#000000'
-  const toggleOff = theme?.toggle_off_color || '#cccccc'
+  const bg = clientTheme?.background_color || '#ffffff'
+  const fg = clientTheme?.text_color || '#000000'
+  const toggleOn = clientTheme?.toggle_on_color || '#000000'
+  const toggleOff = clientTheme?.toggle_off_color || '#cccccc'
+  const fontFamily = clientTheme?.font_family ? `${clientTheme.font_family}, Inter, sans-serif` : 'Inter, sans-serif'
+  const appTitle = (clientTheme?.app_name || 'Silent').toUpperCase()
+  const muted = `${fg}66`
+
+  const statusLabel = connecting ? 'Подключение...' : connected ? 'Подключено' : 'Отключено'
+  const statusColor = connecting ? `${fg}99` : connected ? GREEN : muted
 
   return (
-    <div className="relative flex flex-col h-full overflow-hidden" style={{ background: bg, color: fg }}>
+    <div className="relative flex flex-col h-full overflow-hidden" style={{ background: bg, color: fg, fontFamily }}>
       {/* Title bar - draggable */}
       <div className="h-9 flex items-center px-3 flex-shrink-0 border-b border-gray-100"
         style={{ WebkitAppRegion: 'drag', background: bg } as any}>
@@ -188,7 +208,7 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
           className="p-1 hover:opacity-60 transition-opacity">
           <Menu className="w-4 h-4" />
         </button>
-        <span className="text-xs font-bold tracking-widest mx-auto">SILENT</span>
+        <span className="text-xs font-bold tracking-widest mx-auto">{appTitle}</span>
         <div className="flex gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as any}>
           <button onClick={() => (window as any).electronAPI?.minimize()}
             className="w-2.5 h-2.5 rounded-full bg-gray-300 hover:bg-gray-400 transition-colors" />
@@ -201,8 +221,8 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
       <div className="flex-1 flex flex-col items-center justify-center pb-16 gap-6 px-4">
         {/* Status */}
         <div className="text-center">
-          <div className={`text-xs font-medium tracking-widest uppercase ${connected ? 'text-green-600' : 'text-gray-400'}`}>
-            {connecting ? 'Подключение...' : connected ? 'Подключено' : 'Отключено'}
+          <div className="text-xs font-medium tracking-widest uppercase" style={{ color: statusColor, letterSpacing: '0.15em' }}>
+            {statusLabel}
           </div>
         </div>
 
@@ -228,22 +248,29 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
 
         {/* Connecting spinner */}
         {connecting && (
-          <div className="w-4 h-4 border-2 border-gray-300 border-t-black rounded-full animate-spin" />
+          <div className="w-4 h-4 border-2 rounded-full animate-spin"
+            style={{ borderColor: `${fg}33`, borderTopColor: fg }} />
         )}
       </div>
 
       {/* Bottom subscription info */}
-      <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-100" style={{ background: bg }}>
-        {profile?.subscription.is_active ? (
+      <div className="absolute bottom-0 left-0 right-0 p-4 border-t" style={{ background: bg, borderColor: '#F3F4F6' }}>
+        {profile?.is_admin || profile?.subscription?.plan_type === 'unlimited' ? (
           <div className="text-center">
-            <div className="text-xs font-semibold text-green-600">Оплачено</div>
-            <div className="text-xs text-gray-400 mt-0.5">
+            <div className="text-xs font-semibold" style={{ color: GREEN }}>Бессрочно</div>
+            <div className="text-xs mt-0.5" style={{ color: muted }}>Полный доступ</div>
+          </div>
+        ) : profile?.subscription?.is_active ? (
+          <div className="text-center">
+            <div className="text-xs font-semibold" style={{ color: GREEN }}>Оплачено</div>
+            <div className="text-xs mt-0.5" style={{ color: muted }}>
               до {profile.subscription.expires_at?.split('T')[0].split('-').reverse().join('.')}
             </div>
           </div>
         ) : (
           <button onClick={() => { setMenuOpen(true); setMenuPage('subscription') }}
-            className="w-full bg-black text-white rounded-xl py-2 text-xs font-semibold hover:bg-gray-800 transition-colors">
+            className="w-full rounded-xl py-2 text-xs font-semibold transition-colors"
+            style={{ background: fg, color: bg }}>
             Оформить подписку
           </button>
         )}
@@ -273,16 +300,17 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
               <nav className="flex-1 p-2 overflow-y-auto">
                 {[
                   { key: 'subscription', label: 'Подписка' },
-                  { key: 'settings', label: 'Настройки' },
+                  { key: 'settings', label: 'VK / офлайн' },
                   { key: 'promo', label: 'Промокод' },
-                  { key: 'devices', label: `Устройства (${profile?.devices_count || 0}/${profile?.max_devices || 3})` },
+                  { key: 'devices', label: `Сессии (${profile?.devices_count || 0}/${profile?.max_devices || 3})` },
                   { key: 'support', label: 'Поддержка' },
                   { key: 'about', label: 'О сервисе' },
                 ].map(({ key, label }) => (
                   <button key={key} onClick={() => setMenuPage(key as any)}
-                    className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm hover:bg-gray-100 transition-colors">
+                    className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm transition-colors"
+                    style={{ color: fg }}>
                     {label}
-                    <ChevronRight className="w-3.5 h-3.5 text-gray-400" />
+                    <ChevronRight className="w-3.5 h-3.5" style={{ color: muted }} />
                   </button>
                 ))}
                 <button onClick={handleLogout}
@@ -355,7 +383,7 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
             {menuPage === 'devices' && (
               <div className="flex-1 p-4 overflow-y-auto">
                 <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
-                <div className="text-sm font-semibold mb-3">Устройства</div>
+                <div className="text-xs font-semibold mb-3">Сессии</div>
                 {profile?.devices.map(d => (
                   <div key={d.id} className="flex items-center gap-2 py-2 border-b border-gray-100">
                     <div className={`w-1.5 h-1.5 rounded-full ${d.is_connected ? 'bg-green-500' : 'bg-gray-300'}`} />

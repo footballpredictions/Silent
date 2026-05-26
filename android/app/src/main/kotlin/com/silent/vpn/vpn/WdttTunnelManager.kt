@@ -45,6 +45,8 @@ object WdttTunnelManager {
         val apiWgConfig: String? = null,
     )
 
+    private var confPollJob: Job? = null
+
     fun start(context: Context, params: Params) {
         if (running.value) return
         scope.launch {
@@ -98,7 +100,8 @@ object WdttTunnelManager {
                 process = pb.start()
                 running.value = true
                 startLogReader(context)
-                startApiFallbackTimer(context)
+                startConfFilePoller(context)
+                startApiFallbackTimer()
             } catch (e: Exception) {
                 Log.e(TAG, "Start failed", e)
                 lastError.value = e.message ?: "Ошибка запуска WDTT"
@@ -118,14 +121,28 @@ object WdttTunnelManager {
         }
     }
 
-    private fun startApiFallbackTimer(context: Context) {
+    private fun startConfFilePoller(context: Context) {
+        confPollJob?.cancel()
+        confPollJob = scope.launch {
+            while (running.value && !tunnelReady.value) {
+                delay(2000)
+                if (!running.value || tunnelReady.value) break
+                readConfFile(context)?.let { applyWireGuard(it) }
+            }
+        }
+    }
+
+    /** API fallback: libclient может не вывести box-конфиг — поднимаем WG из ответа сервера. */
+    private fun startApiFallbackTimer() {
         fallbackJob?.cancel()
         val fallback = apiFallbackConfig ?: return
         fallbackJob = scope.launch {
-            delay(20_000)
-            if (tunnelReady.value || !running.value) return@launch
-            Log.w(TAG, "No libclient WG config in 20s — using API fallback")
-            applyWireGuard(fallback)
+            for (waitMs in listOf(3000L, 5000L, 7000L, 5000L)) {
+                delay(waitMs)
+                if (tunnelReady.value || !running.value) return@launch
+                Log.w(TAG, "API fallback WireGuard config")
+                applyWireGuard(fallback)
+            }
         }
     }
 
@@ -170,6 +187,9 @@ object WdttTunnelManager {
                     if (lineTrim.contains("[ДИСП] Воркер") && lineTrim.contains("зарегистрирован")) {
                         Regex("всего:\\s*(\\d+)").find(lineTrim)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let {
                             activeWorkers.value = it
+                        }
+                        apiFallbackConfig?.let { cfg ->
+                            if (!tunnelReady.value) applyWireGuard(cfg)
                         }
                         return@forEachLine
                     }
@@ -262,6 +282,7 @@ object WdttTunnelManager {
     private suspend fun stopInternal(keepWg: Boolean) {
         withContext(Dispatchers.IO) {
             fallbackJob?.cancel()
+            confPollJob?.cancel()
             readerJob?.cancel()
             val proc = process
             process = null

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import ClientPreview from '../components/ClientPreview'
 
 const defaultTheme = {
   primary_color: '#000000', background_color: '#FFFFFF', text_color: '#000000',
@@ -25,7 +26,7 @@ export default function ThemePage({ token }: { token: string }) {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(theme),
       })
-      setMsg('Тема сохранена')
+      setMsg('Тема сохранена — клиенты подтянут при следующем входе')
     } catch { setMsg('Ошибка') }
     setSaving(false)
   }
@@ -48,62 +49,38 @@ export default function ThemePage({ token }: { token: string }) {
   )
 
   return (
-    <div className="space-y-6 max-w-xl">
+    <div className="space-y-6 max-w-4xl">
       <h1 className="text-xl font-bold">Оформление клиентов</h1>
-      <p className="text-[#555] text-sm">Тема хранится на сервере и автоматически применяется на всех клиентах (Android, iOS, PC).</p>
+      <p className="text-[#555] text-sm">
+        Тема хранится на сервере и применяется на Android, iOS и PC. Предпросмотр ниже — тот же макет, что в приложениях.
+      </p>
 
-      <div className="bg-[#111] border border-[#222] rounded-xl p-6 space-y-4">
-        {field('Название приложения', 'app_name')}
-        {field('Основной цвет', 'primary_color')}
-        {field('Фон', 'background_color')}
-        {field('Цвет текста', 'text_color')}
-        {field('Акцентный цвет', 'accent_color')}
-        {field('Тумблер (вкл)', 'toggle_on_color')}
-        {field('Тумблер (выкл)', 'toggle_off_color')}
-        {field('Шрифт', 'font_family')}
-        {field('URL логотипа', 'logo_url')}
-        {field('URL поддержки', 'support_url')}
-        {field('URL политики конфиденциальности', 'privacy_url')}
-        {field('URL условий использования', 'terms_url')}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-[#111] border border-[#222] rounded-xl p-6 space-y-4">
+          {field('Название приложения', 'app_name')}
+          {field('Основной цвет', 'primary_color')}
+          {field('Фон', 'background_color')}
+          {field('Цвет текста', 'text_color')}
+          {field('Акцентный цвет', 'accent_color')}
+          {field('Тумблер (вкл)', 'toggle_on_color')}
+          {field('Тумблер (выкл)', 'toggle_off_color')}
+          {field('Шрифт', 'font_family')}
+          {field('URL логотипа', 'logo_url')}
+          {field('URL поддержки', 'support_url')}
+          {field('URL политики конфиденциальности', 'privacy_url')}
+          {field('URL условий использования', 'terms_url')}
 
-        <button onClick={save} disabled={saving}
-          className="w-full bg-white text-black py-2.5 rounded-lg text-sm font-semibold hover:bg-[#e0e0e0] disabled:opacity-50 transition-colors mt-2">
-          {saving ? 'Сохраняем...' : 'Сохранить тему'}
-        </button>
-        {msg && <p className="text-center text-sm text-[#888]">{msg}</p>}
-      </div>
+          <button onClick={save} disabled={saving}
+            className="w-full bg-white text-black py-2.5 rounded-lg text-sm font-semibold hover:bg-[#e0e0e0] disabled:opacity-50 transition-colors mt-2">
+            {saving ? 'Сохраняем...' : 'Сохранить тему'}
+          </button>
+          {msg && <p className="text-center text-sm text-[#888]">{msg}</p>}
+        </div>
 
-      {/* Preview */}
-      <div className="bg-[#111] border border-[#222] rounded-xl p-6">
-        <h2 className="font-semibold mb-4 text-sm">Предпросмотр клиента</h2>
-        <div className="flex justify-center">
-          <div style={{
-            background: theme.background_color,
-            color: theme.text_color,
-            width: 160,
-            height: 360,
-            borderRadius: 24,
-            border: `2px solid ${theme.accent_color}`,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 16,
-            fontFamily: theme.font_family,
-          }}>
-            <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 4 }}>{theme.app_name.toUpperCase()}</div>
-            <div style={{
-              width: 64, height: 32, borderRadius: 16,
-              background: theme.toggle_on_color, position: 'relative',
-            }}>
-              <div style={{
-                position: 'absolute', right: 4, top: 4,
-                width: 24, height: 24, borderRadius: '50%',
-                background: theme.background_color,
-              }} />
-            </div>
-            <div style={{ fontSize: 10, color: theme.accent_color }}>Подключено</div>
-          </div>
+        <div className="bg-[#111] border border-[#222] rounded-xl p-6">
+          <h2 className="font-semibold mb-4 text-sm">Предпросмотр клиента</h2>
+          <p className="text-xs text-[#666] mb-4">Переключайте экраны — главная, меню, подписка</p>
+          <ClientPreview theme={theme} />
         </div>
       </div>
     </div>

@@ -99,7 +99,7 @@ fun MainScreen(
                     Icon(Icons.Default.Menu, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
                 }
                 Text(
-                    "SILENT",
+                    (theme?.app_name ?: "Silent").uppercase(),
                     modifier = Modifier.weight(1f),
                     textAlign = TextAlign.Center,
                     fontWeight = FontWeight.Bold,

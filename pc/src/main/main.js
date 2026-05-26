@@ -117,7 +117,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     '-peer', `${config.server_ip}:${config.server_port}`,
     '-vk', hashes,
     '-password', config.wdtt_password,
-    '-device-id', config.device_id,
+    '-device-id', String(config.device_id || ''),
     '-listen', '127.0.0.1:9000',
     '-n', String(config.stream_count || 12),
     '-captcha-mode', 'auto',
@@ -128,27 +128,36 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
   const excludeIPs = new Set()
   if (config.server_ip) excludeIPs.add(config.server_ip)
-  let confReady = false
   let activeWorkers = 0
   const apiConf = buildWgConfigFromApi(config)
 
-  const tryApplyWg = async (confText) => {
-    if (wgApplied || !confText) return
-    wgApplied = true
-    fs.writeFileSync(confPath, confText)
-    await new Promise(r => setTimeout(r, 400))
-    const ok = await applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs])
-    if (ok && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('vpn-ready', true)
-    } else {
-      wgApplied = false
+  const sendVpnError = (msg) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('vpn-error', msg)
     }
   }
 
+  const tryApplyWg = async (confText) => {
+    if (wgApplied || !confText) return false
+    fs.writeFileSync(confPath, confText)
+    await new Promise(r => setTimeout(r, 400))
+    const ok = await applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs])
+    if (ok) {
+      wgApplied = true
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('vpn-ready', true)
+      }
+      return true
+    }
+    sendVpnError('WireGuard: запустите Silent VPN от администратора')
+    return false
+  }
+
   const applyFromFile = async () => {
-    if (!fs.existsSync(confPath)) return
+    if (!fs.existsSync(confPath)) return false
     const text = fs.readFileSync(confPath, 'utf8')
-    if (text.includes('[Interface]')) await tryApplyWg(text)
+    if (text.includes('[Interface]')) return tryApplyWg(text)
+    return false
   }
 
   const handleLine = async (line) => {
@@ -163,15 +172,14 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     if (line.includes('[ДИСП] Воркер') && line.includes('зарегистрирован')) {
       const m = line.match(/всего:\s*(\d+)/)
       if (m) activeWorkers = parseInt(m[1], 10)
+      if (!wgApplied && apiConf) await tryApplyWg(apiConf)
     }
 
     if (line.includes('[КОНФИГ]') && line.includes('Сохранён')) {
-      confReady = true
       await applyFromFile()
       return
     }
 
-    // reference: box WireGuard → сразу UP
     if (line.includes('╔') && line.includes('WireGuard')) {
       return
     }
@@ -209,7 +217,10 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     d.toString().split('\n').forEach(l => { if (l) handleLine(l) })
   })
 
+  let confPoll = null
+
   wdttProcess.on('close', (code) => {
+    if (confPoll) clearInterval(confPoll)
     wdttProcess = null
     stopWireGuardTunnel(isDev, __dirname)
     wgApplied = false
@@ -218,13 +229,16 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     }
   })
 
-  // Fallback API config через 20с (Android-логика)
-  setTimeout(async () => {
-    if (!wgApplied && apiConf && activeWorkers >= 1) await tryApplyWg(apiConf)
-  }, 20_000)
-  setTimeout(async () => {
-    if (!wgApplied && apiConf) await tryApplyWg(apiConf)
-  }, 25_000)
+  confPoll = setInterval(async () => {
+    if (wgApplied) { clearInterval(confPoll); return }
+    await applyFromFile()
+  }, 2000)
+
+  for (const ms of [3000, 8000, 15000]) {
+    setTimeout(async () => {
+      if (!wgApplied && apiConf) await tryApplyWg(apiConf)
+    }, ms)
+  }
 
   return { success: true }
 })

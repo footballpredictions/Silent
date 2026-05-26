@@ -10,10 +10,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   vpnReadConfig: () => ipcRenderer.invoke('vpn-read-config'),
   onVpnLog: (cb) => ipcRenderer.on('vpn-log', (_, line) => cb(line)),
   onVpnReady: (cb) => ipcRenderer.on('vpn-ready', (_, ok) => cb(ok)),
+  onVpnError: (cb) => ipcRenderer.on('vpn-error', (_, msg) => cb(msg)),
   onVpnStopped: (cb) => ipcRenderer.on('vpn-stopped', (_, code) => cb(code)),
   removeVpnListeners: () => {
     ipcRenderer.removeAllListeners('vpn-log')
     ipcRenderer.removeAllListeners('vpn-ready')
+    ipcRenderer.removeAllListeners('vpn-error')
     ipcRenderer.removeAllListeners('vpn-stopped')
   },
 })

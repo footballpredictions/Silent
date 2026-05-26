@@ -405,8 +405,12 @@ class MainViewModel @Inject constructor(
                 }
                 if (_vpnState.value == VpnState.CONNECTING) {
                     val err = WdttTunnelManager.lastError.value
-                        ?: WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
-                        ?: "Таймаут подключения (нет активных воркеров WDTT)"
+                        ?: if (WdttTunnelManager.activeWorkers.value > 0) {
+                            "WireGuard не поднялся за 90 с"
+                        } else {
+                            WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
+                                ?: "Таймаут: WDTT не подключился к серверу"
+                        }
                     stopVpnLocally(context)
                     _vpnError.value = err
                     _vpnState.value = VpnState.DISCONNECTED

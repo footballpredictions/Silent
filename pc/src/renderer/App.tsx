@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { isLoggedIn, clearTokens, clearSessionFingerprint } from './api'
+import { isLoggedIn, clearTokens, clearSessionFingerprint, getServerUrl } from './api'
 import LoginScreen from './pages/LoginScreen'
 import MainScreen from './pages/MainScreen'
 import ServerSetupScreen from './pages/ServerSetupScreen'
@@ -11,7 +11,6 @@ export default function App() {
   const [theme, setTheme] = useState<any>(null)
 
   useEffect(() => {
-    const { getServerUrl } = require('./api')
     if (!getServerUrl()) {
       setScreen('setup')
     } else if (!isLoggedIn()) {

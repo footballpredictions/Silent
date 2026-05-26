@@ -41,7 +41,7 @@ function createWindow() {
     show: false,
   })
 
-  if (isDev) {
+  if (!app.isPackaged && process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:3001')
   } else {
     mainWindow.loadFile(path.join(__dirname, '../../dist/renderer/index.html'))

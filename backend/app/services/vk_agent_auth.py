@@ -27,14 +27,94 @@ VK_ANDROID_CLIENTS = [
     {"id": 8202606, "secret": ""},
 ]
 
-# Browser token capture URL (Android client, offline scope for long-lived token)
-def build_token_capture_url() -> str:
-    return (
-        "https://oauth.vk.com/authorize?client_id=6287487"
-        "&display=page&redirect_uri=https://oauth.vk.com/blank.html"
-        "&scope=offline,photos,audio,video,docs,notes,pages,status,wall,groups,messages"
-        "&response_type=token&v=5.199"
+VK_ANDROID_CLIENT_ID = 6287487
+VK_ANDROID_CLIENT_SECRET = "VeWdmVclDCtn6ihuP1nt"
+
+
+def agent_oauth_redirect_uri(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.startswith("http://"):
+        base = "https://" + base.split("://", 1)[1]
+    return f"{base}/static/vk-agent-oauth.html"
+
+
+def build_agent_auth_url(state: str, base_url: str) -> str:
+    """Android VK client OAuth — token supports calls.create (VK ID does not)."""
+    from urllib.parse import urlencode
+    redirect_uri = agent_oauth_redirect_uri(base_url)
+    params = {
+        "client_id": str(VK_ANDROID_CLIENT_ID),
+        "redirect_uri": redirect_uri,
+        "response_type": "token",
+        "scope": "offline",
+        "state": state,
+        "display": "page",
+        "v": VK_API_VERSION,
+    }
+    return f"https://oauth.vk.com/authorize?{urlencode(params)}"
+
+
+async def exchange_android_code(code: str, redirect_uri: str) -> dict | None:
+    async with aiohttp.ClientSession(
+        headers={"User-Agent": VK_USER_AGENT},
+        timeout=aiohttp.ClientTimeout(total=30),
+    ) as session:
+        async with session.post(
+            "https://oauth.vk.com/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": str(VK_ANDROID_CLIENT_ID),
+                "client_secret": VK_ANDROID_CLIENT_SECRET,
+                "redirect_uri": redirect_uri,
+                "code": code,
+            },
+        ) as resp:
+            data = await resp.json(content_type=None)
+    if "access_token" not in data:
+        logger.warning("Android code exchange failed: %s", data)
+        return None
+    return data
+
+
+async def complete_agent_auth(
+    db: AsyncSession,
+    state: str,
+    access_token: str,
+    expires_in: int | None = None,
+) -> tuple[bool, str, int | None]:
+    """Validate session, save Android token, verify calls.create."""
+    from app.models import VkLinkSession
+    from datetime import datetime
+
+    result = await db.execute(
+        select(VkLinkSession).where(
+            VkLinkSession.state == state,
+            VkLinkSession.purpose == "agent",
+        )
     )
+    session = result.scalar_one_or_none()
+    if not session:
+        return False, "Сессия не найдена", None
+    if session.expires_at < datetime.utcnow():
+        return False, "Сессия истекла — повторите вход", None
+    if session.completed:
+        ok, _, uid = await validate_token(access_token)
+        return ok, "Уже авторизован", uid
+
+    await save_stored_token(db, access_token, expires_in)
+    ok, msg, uid = await validate_token(access_token)
+    if not ok:
+        return False, msg, None
+    calls_ok, calls_msg = await test_calls_permission(access_token)
+    if not calls_ok:
+        await set_calls_verified(db, False)
+        return False, f"Звонки недоступны: {calls_msg}", uid
+
+    session.vk_user_id = uid
+    session.completed = True
+    await set_calls_verified(db, True)
+    await db.commit()
+    return True, "OK", uid
 
 
 async def _api_get(method: str, token: str, extra: dict | None = None) -> dict:
@@ -260,7 +340,12 @@ async def get_auth_status(db: AsyncSession) -> dict:
         if ok:
             calls_ok = await get_calls_verified(db)
             if not calls_ok:
-                auth_error = "Аккаунт привязан, но звонки не проверены — войдите через VK снова"
+                c_ok, c_msg = await test_calls_permission(token)
+                if c_ok:
+                    await set_calls_verified(db, True)
+                    calls_ok = True
+                else:
+                    auth_error = f"Нужен токен Android-клиента VK: {c_msg}"
         else:
             auth_error = detail
     else:

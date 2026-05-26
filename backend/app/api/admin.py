@@ -3,7 +3,8 @@ import json
 import os
 import psutil
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -135,6 +136,17 @@ class VkHashManualRequest(BaseModel):
     slot: int
 
 
+class VkOAuthFinishRequest(BaseModel):
+    state: str
+    access_token: str
+    expires_in: int | None = None
+
+
+class VkPasswordAuthRequest(BaseModel):
+    login: str
+    password: str
+
+
 @router.get("/vk/status")
 async def vk_panel_status(
     _: bool = Depends(get_admin_credentials),
@@ -152,19 +164,21 @@ async def vk_panel_status(
 
 @router.post("/vk/bot-auth/start")
 async def vk_bot_auth_start(
+    request: Request,
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
     from app.config import settings
-    from app.services.vk_id_service import generate_pkce, build_authorize_url
+    from app.services.vk_agent_auth import build_agent_auth_url
     from app.models import VkLinkSession
     import secrets
     from datetime import timedelta
 
-    if not settings.VK_ID_APP_ID:
-        raise HTTPException(status_code=503, detail="VK ID не настроен на сервере")
+    base = str(request.base_url).rstrip("/")
+    if "nip.io" in base and base.startswith("http://"):
+        base = base.replace("http://", "https://", 1)
 
-    code_verifier, code_challenge = generate_pkce()
+    code_verifier = secrets.token_urlsafe(32)
     state = secrets.token_urlsafe(32)
     db.add(VkLinkSession(
         state=state,
@@ -176,10 +190,105 @@ async def vk_bot_auth_start(
     await db.commit()
     bot_url = settings.VK_BOT_WRITE_URL or f"https://vk.com/write-{settings.VK_GROUP_ID}"
     return {
-        "auth_url": build_authorize_url(state, code_challenge),
+        "auth_url": build_agent_auth_url(state, base),
         "state": state,
         "bot_url": bot_url,
     }
+
+
+@router.post("/vk/oauth/finish")
+async def vk_oauth_finish(
+    req: VkOAuthFinishRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Public: static page posts Android access_token after OAuth."""
+    from app.services.vk_agent_auth import complete_agent_auth
+    ok, message, uid = await complete_agent_auth(
+        db, req.state, req.access_token.strip(), req.expires_in,
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"success": True, "message": message, "vk_user_id": uid}
+
+
+@router.get("/vk/oauth/callback")
+async def vk_oauth_callback_code(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    """Fallback: authorization_code from Android client."""
+    if error:
+        return HTMLResponse(
+            f"<body style='background:#000;color:#fff;font-family:sans-serif;padding:40px'>"
+            f"<h2>Ошибка VK</h2><p>{error_description or error}</p></body>",
+            status_code=400,
+        )
+    if not code or not state:
+        return HTMLResponse("<p>Нет code/state</p>", status_code=400)
+
+    from app.services.vk_agent_auth import (
+        agent_oauth_redirect_uri,
+        exchange_android_code,
+        complete_agent_auth,
+    )
+    base = str(request.base_url).rstrip("/")
+    if base.startswith("http://"):
+        base = base.replace("http://", "https://", 1)
+    redirect_uri = agent_oauth_redirect_uri(base)
+    token_data = await exchange_android_code(code, redirect_uri)
+    if not token_data:
+        return HTMLResponse("<p>Не удалось обменять code на token</p>", status_code=400)
+
+    ok, message, uid = await complete_agent_auth(
+        db,
+        state,
+        token_data["access_token"],
+        token_data.get("expires_in"),
+    )
+    if not ok:
+        return HTMLResponse(
+            f"<body style='background:#000;color:#f88;font-family:sans-serif;padding:40px'>"
+            f"<h2>Ошибка</h2><p>{message}</p></body>",
+            status_code=400,
+        )
+    return HTMLResponse(
+        f"<body style='background:#000;color:#4ade80;font-family:sans-serif;padding:40px;text-align:center'>"
+        f"<h2>VK подключён</h2><p>ID {uid}. Закройте окно.</p>"
+        f"<script>setTimeout(function(){{window.close()}},2000)</script></body>"
+    )
+
+
+@router.post("/vk/bot-auth/password")
+async def vk_bot_auth_password(
+    req: VkPasswordAuthRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Android client password grant — works for calls.create from server."""
+    from app.services.vk_agent_auth import (
+        password_login,
+        save_stored_token,
+        validate_token,
+        test_calls_permission,
+        set_calls_verified,
+    )
+    token, msg = await password_login(req.login.strip(), req.password)
+    if not token:
+        raise HTTPException(status_code=400, detail=msg)
+    await save_stored_token(db, token)
+    ok, detail, uid = await validate_token(token)
+    if not ok:
+        raise HTTPException(status_code=400, detail=detail)
+    calls_ok, calls_msg = await test_calls_permission(token)
+    if not calls_ok:
+        await set_calls_verified(db, False)
+        raise HTTPException(status_code=400, detail=f"Звонки недоступны: {calls_msg}")
+    await set_calls_verified(db, True)
+    return {"success": True, "vk_user_id": uid, "message": "VK авторизован (Android API)"}
 
 
 @router.get("/vk/bot-auth/status")

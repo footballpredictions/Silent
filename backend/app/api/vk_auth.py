@@ -193,28 +193,11 @@ async def vk_oauth_callback(
     if not vk_user_id:
         return _error_page("VK не вернул ID пользователя.")
 
-    # Admin AI agent OAuth — save token, no bootstrap
-    if getattr(session, "purpose", "guest") == "agent":
-        access_token = token_data.get("access_token")
-        if not access_token:
-            return _error_page("VK не вернул access_token для агента.")
-        from app.services.vk_agent_auth import save_stored_token, validate_token, test_calls_permission, set_calls_verified
-        await save_stored_token(db, access_token, token_data.get("expires_in"))
-        ok, msg, _ = await validate_token(access_token)
-        if not ok:
-            return _error_page(f"Токен не прошёл проверку: {msg}")
-        calls_ok, calls_msg = await test_calls_permission(access_token)
-        session.vk_user_id = vk_user_id
-        session.completed = True
-        await db.commit()
-        if not calls_ok:
-            await set_calls_verified(db, False)
-            return _error_page(
-                f"VK привязан, но звонки недоступны: {calls_msg}. "
-                "Используйте аккаунт VK с правом создавать звонки."
-            )
-        await set_calls_verified(db, True)
-        return _admin_agent_success_page(vk_user_id)
+    if getattr(session, "purpose", None) == "agent":
+        return _error_page(
+            "Для AI-агента используйте «Войти через VK» в панели админа "
+            "(Android OAuth, не VK ID)."
+        )
 
     _, boot = await publish_bootstrap_to_vk_user(db, vk_user_id)
     if not boot:

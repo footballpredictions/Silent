@@ -166,6 +166,38 @@ export default function VkPage({ token }: { token: string }) {
             </span>
           </div>
           {status?.auth_error && <p className="text-xs text-red-400">{status.auth_error}</p>}
+          <p className="text-[10px] text-[#444] leading-relaxed">
+            Используется Android API VK (как в клиенте) — нужен для создания звонков и хешей.
+          </p>
+          <details className="text-xs text-[#555]">
+            <summary className="cursor-pointer hover:text-[#888]">Не открывается окно VK?</summary>
+            <form className="mt-3 space-y-2" onSubmit={async e => {
+              e.preventDefault()
+              const fd = new FormData(e.currentTarget)
+              setAuthLoading(true)
+              setErr('')
+              try {
+                const res = await fetch('/api/admin/vk/bot-auth/password', {
+                  method: 'POST',
+                  headers: jsonH,
+                  body: JSON.stringify({ login: fd.get('login'), password: fd.get('password') }),
+                })
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.detail || 'Ошибка')
+                setMsg(data.message)
+                await load()
+              } catch (ex: any) { setErr(ex.message) }
+              setAuthLoading(false)
+            }}>
+              <input name="login" placeholder="Телефон или email VK" required
+                className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white" />
+              <input name="password" type="password" placeholder="Пароль VK" required
+                className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white" />
+              <button type="submit" className="text-xs border border-[#333] px-3 py-1.5 rounded-lg hover:border-white">
+                Войти по паролю
+              </button>
+            </form>
+          </details>
           <div className="flex flex-wrap gap-2">
             <button onClick={startBotAuth} disabled={authLoading}
               className="inline-flex items-center gap-2 bg-[#4680C2] hover:bg-[#5a94d6] text-white px-4 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50">

@@ -72,7 +72,11 @@ fun SideMenuContent(
         Spacer(modifier = Modifier.height(8.dp))
 
         val items = listOf(
-            Triple("Подписка", onSubscription, if (profile?.subscription?.is_active == true) "Активна" else "Нет"),
+            Triple("Подписка", onSubscription, when {
+                profile?.is_admin == true || profile?.subscription?.plan_type == "unlimited" -> "Бессрочно"
+                profile?.subscription?.is_active == true -> "Активна"
+                else -> "Нет"
+            }),
             Triple("Настройки", onSettings, null),
             Triple("Промокоды", onPromo, null),
             Triple("Устройства", onDevices, "${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3}"),

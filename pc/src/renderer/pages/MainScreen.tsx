@@ -1,9 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Menu, X, ChevronRight } from 'lucide-react'
 import api, { clearTokens } from '../api'
+import {
+  cacheVpnConfig, fetchConfigFromVk, getCachedVpnConfig,
+  getVkAccessToken, getVkUserId, openVkMessagesAuth, saveVkUserId, saveVkAccessToken,
+  type VpnConfigPayload,
+} from '../vkConfig'
 
 interface Profile {
   email: string; display_id: string
+  vk_linked?: boolean; vk_user_id?: number | null
   subscription: { is_active: boolean; plan_type: string | null; expires_at: string | null; days_left: number }
   devices: any[]; devices_count: number; max_devices: number
 }
@@ -22,11 +28,13 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
   const [menuPage, setMenuPage] = useState<null | 'devices' | 'subscription' | 'settings' | 'promo' | 'support' | 'about'>( null)
   const [promoCode, setPromoCode] = useState('')
   const [promoMsg, setPromoMsg] = useState('')
+  const [vkMsg, setVkMsg] = useState('')
 
   const fetchProfile = useCallback(async () => {
     try {
       const res = await api.get('/api/users/me')
       setProfile(res.data)
+      if (res.data.vk_user_id) saveVkUserId(res.data.vk_user_id)
     } catch {}
   }, [])
 
@@ -37,26 +45,74 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
     setConnecting(true)
     try {
       if (!connected) {
-        // Register device & connect
-        await api.post('/api/vpn/device/register', {
-          device_name: 'PC',
-          device_type: 'pc',
-          device_fingerprint: DEVICE_FINGERPRINT,
-        }).catch(() => null)
-        await api.post('/api/vpn/connect', {
-          device_fingerprint: DEVICE_FINGERPRINT,
-          device_type: 'pc',
-        })
+        let config: VpnConfigPayload | null = null
+        try {
+          const reg = await api.post('/api/vpn/device/register', {
+            device_name: 'PC',
+            device_type: 'pc',
+            device_fingerprint: DEVICE_FINGERPRINT,
+          })
+          config = reg.data
+          cacheVpnConfig(config!)
+        } catch (e: any) {
+          if (e.response?.status === 402) { alert('Нет активной подписки'); return }
+          try {
+            const cfg = await api.get(`/api/vpn/config?fingerprint=${DEVICE_FINGERPRINT}`)
+            config = cfg.data
+            cacheVpnConfig(config!)
+          } catch {}
+        }
+        if (!config) {
+          const vkId = profile?.vk_user_id || getVkUserId()
+          if (vkId) config = await fetchConfigFromVk(vkId, getVkAccessToken())
+          if (config) cacheVpnConfig(config)
+        }
+        if (!config) config = getCachedVpnConfig()
+        if (!config) {
+          alert('Сервер недоступен. Привяжите VK в настройках и разрешите чтение сообщений.')
+          return
+        }
+        try {
+          await api.post('/api/vpn/connect', { device_fingerprint: DEVICE_FINGERPRINT, device_type: 'pc' })
+        } catch {}
+        if ((window as any).electronAPI?.vpnConnect) {
+          await (window as any).electronAPI.vpnConnect(config)
+        }
         setConnected(true)
       } else {
-        await api.post('/api/vpn/disconnect', { device_fingerprint: DEVICE_FINGERPRINT })
+        if ((window as any).electronAPI?.vpnDisconnect) {
+          await (window as any).electronAPI.vpnDisconnect()
+        }
+        await api.post('/api/vpn/disconnect', { device_fingerprint: DEVICE_FINGERPRINT }).catch(() => null)
         setConnected(false)
       }
       fetchProfile()
     } catch (err: any) {
-      if (err.response?.status === 402) alert('Нет активной подписки')
-      else if (err.response?.status === 403) alert(err.response.data.detail)
+      if (err.response?.status === 403) alert(err.response.data.detail)
     } finally { setConnecting(false) }
+  }
+
+  const handleLinkVk = async () => {
+    try {
+      const res = await api.post('/api/auth/vk/link/start')
+      const { auth_url, bot_url } = res.data
+      ;(window as any).electronAPI?.openExternal(auth_url)
+      setVkMsg('Завершите вход VK в браузере...')
+      for (let i = 0; i < 90; i++) {
+        await new Promise(r => setTimeout(r, 2000))
+        const st = await api.get('/api/auth/vk/status')
+        if (st.data.linked) {
+          if (st.data.vk_user_id) saveVkUserId(st.data.vk_user_id)
+          setVkMsg('VK привязан')
+          fetchProfile()
+          return
+        }
+      }
+      setVkMsg('Привязка не завершена')
+      if (bot_url) (window as any).electronAPI?.openExternal(bot_url)
+    } catch (e: any) {
+      setVkMsg(e.response?.data?.detail || 'Ошибка привязки VK')
+    }
   }
 
   const handleLogout = async () => {
@@ -277,10 +333,29 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
             )}
 
             {menuPage === 'settings' && (
-              <div className="flex-1 p-4">
+              <div className="flex-1 p-4 overflow-y-auto">
                 <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
-                <div className="text-sm font-semibold mb-3">Настройки</div>
-                <p className="text-xs text-gray-500">Исключения приложений доступны на мобильных клиентах.</p>
+                <div className="text-sm font-semibold mb-3">VK (офлайн-конфиг)</div>
+                <p className="text-xs text-gray-500 mb-3">
+                  {profile?.vk_linked ? `VK привязан (ID ${profile.vk_user_id})` : 'VK не привязан — нужен для работы при блокировках'}
+                </p>
+                <button onClick={handleLinkVk}
+                  className="w-full bg-[#4680C2] text-white rounded-xl py-2.5 text-xs font-semibold mb-2">
+                  Привязать VK ID
+                </button>
+                <button onClick={() => (window as any).electronAPI?.openExternal('https://vk.com/write-239092728')}
+                  className="w-full bg-black text-white rounded-xl py-2.5 text-xs font-semibold mb-2">
+                  Написать боту VK
+                </button>
+                <button onClick={openVkMessagesAuth}
+                  className="w-full bg-gray-800 text-white rounded-xl py-2.5 text-xs font-semibold mb-2">
+                  Разрешить чтение сообщений VK
+                </button>
+                <input placeholder="Вставьте VK token (access_token из oauth.vk.com/blank.html#...)"
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs mt-2"
+                  onBlur={e => { if (e.target.value.trim()) { saveVkAccessToken(e.target.value.trim()); setVkMsg('VK token сохранён') } }}
+                  style={{ userSelect: 'text' } as any} />
+                {vkMsg && <p className="text-xs text-gray-500 mt-2">{vkMsg}</p>}
               </div>
             )}
           </div>

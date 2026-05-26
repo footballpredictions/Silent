@@ -12,7 +12,7 @@ from app.schemas.vpn import (
     ConnectRequest, DisconnectRequest, AppExclusionRequest, ThemeResponse,
 )
 from app.core.deps import get_verified_user
-from app.services.vpn_service import register_device, _build_vpn_config
+from app.services.vpn_service import register_device, _build_vpn_config, get_active_vk_hashes
 from app.config import settings
 
 router = APIRouter(prefix="/vpn", tags=["vpn"])
@@ -46,6 +46,12 @@ async def device_register(
             device_fingerprint=req.device_fingerprint,
             wg_public_key=req.wg_public_key,
         )
+        if user.vk_user_id:
+            try:
+                from app.services.vk_config_publisher import publish_config_for_user
+                await publish_config_for_user(db, user)
+            except Exception:
+                pass
         return config
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -69,6 +75,19 @@ async def get_config(
     if not device:
         raise HTTPException(status_code=404, detail="Устройство не зарегистрировано")
     return await _build_vpn_config(db, device)
+
+
+@router.get("/hashes")
+async def get_vk_hashes(
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """All active VK TURN hashes — client merges with bootstrap from VK."""
+    await _check_active_subscription(user, db)
+    hashes = await get_active_vk_hashes(db)
+    if not hashes:
+        raise HTTPException(status_code=503, detail="VK-хеши ещё не созданы на сервере")
+    return {"hashes": hashes, "bootstrap_hash": hashes[0]}
 
 
 @router.post("/connect")

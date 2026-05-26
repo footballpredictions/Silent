@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Boolean, DateTime, func
+from sqlalchemy import String, Boolean, DateTime, BigInteger, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -15,6 +15,9 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     verification_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reset_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    vk_user_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True, index=True)
+    vk_linked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    vk_config_published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

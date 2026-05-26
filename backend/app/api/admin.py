@@ -184,10 +184,21 @@ async def recreate_vk_hashes(
     db: AsyncSession = Depends(get_db),
 ):
     """Manually trigger VK hash recreation."""
-    from app.ai.vk_manager import VkManager
+    from ai.vk_manager import VkManager
     manager = VkManager(db)
     success = await manager.recreate_all_hashes()
     return {"success": success, "message": "Хеши пересозданы" if success else "Ошибка пересоздания"}
+
+
+@router.post("/vk/publish-configs")
+async def publish_vk_configs(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Push encrypted VPN configs to all linked VK users."""
+    from app.services.vk_config_publisher import publish_all_configs
+    sent = await publish_all_configs(db)
+    return {"sent": sent, "message": f"Отправлено {sent} конфигов в VK"}
 
 
 # Theme management

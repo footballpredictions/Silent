@@ -3,9 +3,14 @@ package com.silent.vpn.ui.screens
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -23,173 +28,311 @@ import com.silent.vpn.ui.theme.parseColor
 
 enum class VpnState { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
 
-@OptIn(ExperimentalMaterial3Api::class)
+private enum class MenuPage { ROOT, SUBSCRIPTION, SETTINGS, PROMO, DEVICES, SUPPORT, ABOUT }
+
 @Composable
 fun MainScreen(
     profile: UserProfile?,
     vpnState: VpnState,
     theme: ThemeData?,
+    vpnError: String?,
     onToggle: () -> Unit,
-    onMenuClick: () -> Unit,
+    onLogout: () -> Unit,
+    onClearVpnError: () -> Unit,
+    onCheckPromo: (String, (String) -> Unit) -> Unit,
+    onInitPayment: (String, (String) -> Unit, (String) -> Unit) -> Unit,
+    onOpenUrl: (String) -> Unit,
+    onShowError: (String) -> Unit,
 ) {
     val bg = parseColor(theme?.background_color ?: "#FFFFFF", Color.White)
     val fg = parseColor(theme?.text_color ?: "#000000", Color.Black)
     val toggleOn = parseColor(theme?.toggle_on_color ?: "#000000", Color.Black)
     val toggleOff = parseColor(theme?.toggle_off_color ?: "#CCCCCC", Color(0xFFCCCCCC))
 
+    var menuOpen by remember { mutableStateOf(false) }
+    var menuPage by remember { mutableStateOf(MenuPage.ROOT) }
+    var promoCode by remember { mutableStateOf("") }
+    var promoMsg by remember { mutableStateOf("") }
+
     val isConnected = vpnState == VpnState.CONNECTED
     val isTransitioning = vpnState == VpnState.CONNECTING || vpnState == VpnState.DISCONNECTING
 
-    // Pulse animation when connected
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(vpnError) {
+        vpnError?.let {
+            snackbarHostState.showSnackbar(it)
+            onClearVpnError()
+        }
+    }
+
     val pulseAnim = rememberInfiniteTransition(label = "pulse")
     val pulseScale by pulseAnim.animateFloat(
-        initialValue = 1f, targetValue = if (isConnected) 1.15f else 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = EaseInOut),
-            repeatMode = RepeatMode.Reverse,
-        ), label = "scale"
+        initialValue = 1f, targetValue = if (isConnected) 1.12f else 1f,
+        animationSpec = infiniteRepeatable(tween(1500, easing = EaseInOut), RepeatMode.Reverse),
+        label = "scale",
     )
-
-    // Toggle animation
     val toggleOffset by animateFloatAsState(
         targetValue = if (isConnected) 1f else 0f,
         animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMediumLow),
-        label = "toggle"
+        label = "toggle",
     )
 
-    Scaffold(
-        containerColor = bg,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        theme?.app_name?.uppercase() ?: "SILENT",
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 4.sp,
-                        fontSize = 14.sp,
-                        color = fg,
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onMenuClick) {
-                        Icon(Icons.Default.Menu, contentDescription = "Menu", tint = fg)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = bg),
-            )
-        },
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Spacer(modifier = Modifier.weight(1f))
-
-            // Status label
-            Text(
-                text = when (vpnState) {
-                    VpnState.CONNECTED -> "Подключено"
-                    VpnState.CONNECTING -> "Подключение..."
-                    VpnState.DISCONNECTING -> "Отключение..."
-                    VpnState.DISCONNECTED -> "Отключено"
-                },
-                color = when (vpnState) {
-                    VpnState.CONNECTED -> Color(0xFF22C55E)
-                    VpnState.DISCONNECTED -> fg.copy(alpha = 0.4f)
-                    else -> fg.copy(alpha = 0.6f)
-                },
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 1.sp,
-            )
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            // Big toggle with pulse ring
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.size(160.dp),
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(bg)
+            .windowInsetsPadding(WindowInsets.safeDrawing),
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Title bar — как на PC
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(36.dp)
+                    .border(0.5.dp, Color(0xFFF3F4F6))
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (isConnected) {
-                    Box(
-                        modifier = Modifier
-                            .size(140.dp)
-                            .scale(pulseScale)
-                            .background(toggleOn.copy(alpha = 0.12f), CircleShape)
-                    )
+                IconButton(onClick = { menuOpen = true; menuPage = MenuPage.ROOT }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Menu, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
                 }
+                Text(
+                    "SILENT",
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 3.sp,
+                    fontSize = 12.sp,
+                    color = fg,
+                )
+                Spacer(modifier = Modifier.size(28.dp))
+            }
 
-                // Toggle track
-                Box(
-                    modifier = Modifier
-                        .width(130.dp)
-                        .height(64.dp)
-                        .background(
-                            if (isConnected) toggleOn else toggleOff,
-                            RoundedCornerShape(32.dp),
-                        )
-                        .clickable(enabled = !isTransitioning, onClick = onToggle),
-                    contentAlignment = Alignment.CenterStart,
-                ) {
-                    // Thumb
-                    val thumbOffset = (130.dp - 64.dp) * toggleOffset
-                    Box(
-                        modifier = Modifier
-                            .padding(start = 4.dp)
-                            .offset(x = thumbOffset)
-                            .size(56.dp)
-                            .background(bg, CircleShape)
-                            .border(2.dp, if (isConnected) toggleOn else toggleOff, CircleShape),
-                    ) {
-                        if (isTransitioning) {
-                            CircularProgressIndicator(
+            // Main content
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        when (vpnState) {
+                            VpnState.CONNECTED -> "Подключено"
+                            VpnState.CONNECTING -> "Подключение..."
+                            VpnState.DISCONNECTING -> "Отключение..."
+                            VpnState.DISCONNECTED -> "Отключено"
+                        },
+                        color = when (vpnState) {
+                            VpnState.CONNECTED -> Color(0xFF16A34A)
+                            VpnState.DISCONNECTED -> fg.copy(alpha = 0.4f)
+                            else -> fg.copy(alpha = 0.6f)
+                        },
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 1.5.sp,
+                    )
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    // Toggle 120x60 — как на PC
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(120.dp, 60.dp)) {
+                        if (isConnected) {
+                            Box(
                                 modifier = Modifier
-                                    .size(20.dp)
-                                    .align(Alignment.Center),
-                                strokeWidth = 2.dp,
-                                color = fg,
+                                    .fillMaxSize()
+                                    .scale(pulseScale)
+                                    .background(toggleOn.copy(alpha = 0.2f), CircleShape),
                             )
                         }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(if (isConnected) toggleOn else toggleOff, CircleShape)
+                                .clickable(enabled = !isTransitioning, onClick = onToggle),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(start = 4.dp)
+                                    .offset(x = (120.dp - 48.dp - 8.dp) * toggleOffset)
+                                    .size(48.dp)
+                                    .background(bg, CircleShape)
+                                    .border(2.dp, if (isConnected) toggleOn else toggleOff, CircleShape),
+                            )
+                        }
+                    }
+
+                    if (isTransitioning) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = fg)
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.weight(1f))
-
-            // Subscription info at bottom
-            Box(
+            // Bottom subscription — как на PC
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 32.dp),
-                contentAlignment = Alignment.Center,
+                    .border(0.5.dp, Color(0xFFF3F4F6))
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (profile?.subscription?.is_active == true) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "Оплачено",
-                            color = Color(0xFF22C55E),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
+                when {
+                    profile?.is_admin == true || profile?.subscription?.plan_type == "unlimited" -> {
+                        Text("Бессрочно", color = Color(0xFF16A34A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Полный доступ", color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
+                    }
+                    profile?.subscription?.is_active == true -> {
+                        Text("Оплачено", color = Color(0xFF16A34A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         Text(
                             "до ${profile.subscription.expires_at?.take(10)?.split("-")?.reversed()?.joinToString(".")}",
-                            color = fg.copy(alpha = 0.5f),
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(top = 2.dp),
+                            color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
                         )
                     }
-                } else {
-                    Button(
-                        onClick = { /* Open subscription screen */ },
-                        colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = bg),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Оформить подписку", fontWeight = FontWeight.SemiBold)
+                    else -> {
+                        Button(
+                            onClick = { menuOpen = true; menuPage = MenuPage.SUBSCRIPTION },
+                            colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = bg),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().height(36.dp),
+                        ) {
+                            Text("Оформить подписку", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
                     }
+                }
+            }
+        }
+
+        // Side drawer overlay — как на PC
+        if (menuOpen) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                Column(
+                    modifier = Modifier
+                        .width(208.dp)
+                        .fillMaxHeight()
+                        .background(bg)
+                        .border(0.5.dp, Color(0xFFE5E7EB)),
+                ) {
+                    // Header
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp).border(0.5.dp, Color(0xFFF3F4F6)),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(profile?.email ?: "—", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg, maxLines = 1)
+                            Text("ID: ${profile?.display_id ?: "—"}", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.padding(top = 2.dp))
+                        }
+                        IconButton(onClick = { menuOpen = false; menuPage = MenuPage.ROOT }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
+                        }
+                    }
+
+                    when (menuPage) {
+                        MenuPage.ROOT -> {
+                            val items = listOf(
+                                MenuPage.SUBSCRIPTION to "Подписка",
+                                MenuPage.SETTINGS to "VK / офлайн",
+                                MenuPage.PROMO to "Промокод",
+                                MenuPage.DEVICES to "Устройства (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})",
+                                MenuPage.SUPPORT to "Поддержка",
+                                MenuPage.ABOUT to "О сервисе",
+                            )
+                            items.forEach { (page, label) ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().clickable { menuPage = page }.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(label, fontSize = 14.sp, color = fg, modifier = Modifier.weight(1f))
+                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = fg.copy(alpha = 0.3f), modifier = Modifier.size(14.dp))
+                                }
+                            }
+                            TextButton(
+                                onClick = { menuOpen = false; onLogout() },
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                            ) { Text("Выйти", color = Color(0xFFEF4444), fontSize = 14.sp) }
+                        }
+                        MenuPage.SUBSCRIPTION -> MenuSubscription(profile, fg, onBack = { menuPage = MenuPage.ROOT }, onInitPayment, onOpenUrl, onShowError)
+                        MenuPage.SETTINGS -> MenuSimplePage(
+                            "VK",
+                            if (profile?.vk_linked == true) {
+                                "VK привязан (ID ${profile.vk_user_id}). Настройка — на экране входа."
+                            } else {
+                                "VK не привязан. Выйдите и настройте VK на экране входа."
+                            },
+                            fg,
+                        ) { menuPage = MenuPage.ROOT }
+                        MenuPage.PROMO -> MenuPromo(fg, bg, promoCode, { promoCode = it }, promoMsg, { onCheckPromo(promoCode) { promoMsg = it } }) { menuPage = MenuPage.ROOT }
+                        MenuPage.DEVICES -> MenuDevices(profile, fg) { menuPage = MenuPage.ROOT }
+                        MenuPage.SUPPORT -> MenuSimplePage("Поддержка", "По вопросам обратитесь через email или Telegram.", fg) { menuPage = MenuPage.ROOT }
+                        MenuPage.ABOUT -> MenuSimplePage("Silent VPN", "Версия 1.0.2\nWireGuard-туннель через VK TURN/DTLS", fg) { menuPage = MenuPage.ROOT }
+                    }
+                }
+                Box(
+                    modifier = Modifier.weight(1f).fillMaxHeight().background(Color.Black.copy(alpha = 0.2f))
+                        .clickable { menuOpen = false; menuPage = MenuPage.ROOT },
+                )
+            }
+        }
+
+        SnackbarHost(snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
+    }
+}
+
+@Composable
+private fun MenuSimplePage(title: String, body: String, fg: Color, onBack: () -> Unit) {
+    Column(modifier = Modifier.padding(16.dp)) {
+        Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
+        Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        Text(body, fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp))
+    }
+}
+
+@Composable
+private fun MenuSubscription(profile: UserProfile?, fg: Color, onBack: () -> Unit, onInitPayment: (String, (String) -> Unit, (String) -> Unit) -> Unit, onOpenUrl: (String) -> Unit, onShowError: (String) -> Unit) {
+    Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
+        Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
+        if (profile?.subscription?.is_active == true) {
+            Text("Подписка активна", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+            Text("Тариф: ${profile.subscription.plan_type}\nОсталось: ${profile.subscription.days_left} дней", fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp))
+        } else {
+            Text("Выберите тариф", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+            listOf("monthly" to ("Месяц" to "199 ₽"), "quarterly" to ("3 месяца" to "499 ₽"), "yearly" to ("Год" to "1 499 ₽")).forEach { (id, labelPrice) ->
+                Button(
+                    onClick = { onInitPayment(id, onOpenUrl, onShowError) },
+                    colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = Color.White),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                ) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(labelPrice.first, fontSize = 12.sp)
+                        Text(labelPrice.second, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MenuPromo(fg: Color, bg: Color, promoCode: String, onPromoChange: (String) -> Unit, promoMsg: String, onApply: () -> Unit, onBack: () -> Unit) {
+    Column(modifier = Modifier.padding(16.dp)) {
+        Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
+        Text("Промокод", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        OutlinedTextField(value = promoCode, onValueChange = onPromoChange, placeholder = { Text("Введите код") }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), shape = RoundedCornerShape(12.dp))
+        Button(onClick = onApply, colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = bg), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+            Text("Применить", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+        if (promoMsg.isNotBlank()) Text(promoMsg, fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
+    }
+}
+
+@Composable
+private fun MenuDevices(profile: UserProfile?, fg: Color, onBack: () -> Unit) {
+    Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
+        Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
+        Text("Устройства", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        profile?.devices?.forEach { d ->
+            Row(modifier = Modifier.padding(vertical = 8.dp).border(0.5.dp, Color(0xFFF3F4F6)).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.size(6.dp).background(if (d.is_connected) Color(0xFF22C55E) else Color(0xFFD1D5DB), CircleShape))
+                Column(modifier = Modifier.padding(start = 8.dp)) {
+                    Text(d.device_name, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = fg)
+                    Text(d.device_type, fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
                 }
             }
         }

@@ -212,6 +212,13 @@ class VkManager:
 
         await self.db.commit()
         logger.info(f"Successfully recreated {len(created)}/{MAX_HASHES} hashes")
+
+        try:
+            from app.services.vk_config_publisher import publish_all_configs
+            await publish_all_configs(self.db)
+        except Exception as e:
+            logger.warning("VK config publish after hash recreate failed: %s", e)
+
         return len(created) == MAX_HASHES
 
     async def check_and_heal(self) -> None:
@@ -241,8 +248,29 @@ class VkManager:
         await self.db.commit()
 
         if failed:
-            logger.warning(f"{len(failed)}/{len(hashes)} hashes failed. Recreating all...")
-            await self.recreate_all_hashes()
+            logger.warning("%s/%s hashes failed — replacing dead slots", len(failed), len(hashes))
+            replaced = 0
+            for h in failed:
+                h.is_active = False
+                new_hash = await self.create_call()
+                if new_hash:
+                    h.hash_value = new_hash
+                    h.is_active = True
+                    h.fail_count = 0
+                    h.updated_at = datetime.utcnow()
+                    replaced += 1
+                await asyncio.sleep(2)
+            await self.db.commit()
+            if replaced:
+                logger.info("Replaced %s dead hash slot(s)", replaced)
+                try:
+                    from app.services.vk_config_publisher import publish_all_configs
+                    await publish_all_configs(self.db)
+                except Exception as e:
+                    logger.warning("VK publish after hash replace failed: %s", e)
+            elif len(failed) == len(hashes):
+                logger.warning("All slots failed — full recreate")
+                await self.recreate_all_hashes()
 
     async def close(self):
         if self._session and not self._session.closed:

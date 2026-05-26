@@ -39,6 +39,8 @@ class UserProfileResponse(BaseModel):
     devices: list[DeviceInfo]
     devices_count: int
     max_devices: int = 3
+    vk_linked: bool = False
+    vk_user_id: int | None = None
 
     model_config = {"from_attributes": True}
 

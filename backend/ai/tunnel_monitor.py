@@ -10,7 +10,7 @@ import logging
 from datetime import datetime
 
 from app.database import AsyncSessionLocal
-from app.ai.vk_manager import VkManager
+from ai.vk_manager import VkManager
 
 logger = logging.getLogger(__name__)
 

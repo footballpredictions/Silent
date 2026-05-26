@@ -29,10 +29,43 @@ data class UserProfile(
     val id: String,
     val email: String,
     val display_id: String,
+    val is_admin: Boolean = false,
     val subscription: SubscriptionInfo,
     val devices: List<DeviceInfo>,
     val devices_count: Int,
     val max_devices: Int,
+    val vk_linked: Boolean = false,
+    val vk_user_id: Long? = null,
+)
+
+data class VkGuestLinkStartResponse(val auth_url: String, val state: String)
+
+data class VkGuestStatusResponse(
+    val completed: Boolean = false,
+    val vk_user_id: Long? = null,
+    val bootstrap_hash: String? = null,
+)
+
+data class VkAttachRequest(val vk_user_id: Long)
+
+data class VkAttachResponse(
+    val linked: Boolean = false,
+    val vk_user_id: Long? = null,
+    val bootstrap_hash: String? = null,
+    val hashes: List<String>? = null,
+)
+
+data class VkLinkStartResponse(val auth_url: String, val bot_url: String = "")
+data class VkLinkStatusResponse(
+    val linked: Boolean,
+    val vk_user_id: Long? = null,
+    val bot_url: String = "",
+    val bootstrap_hash: String? = null,
+)
+
+data class VpnHashesResponse(
+    val hashes: List<String>,
+    val bootstrap_hash: String? = null,
 )
 
 data class DeviceRegisterRequest(
@@ -123,4 +156,28 @@ interface SilentApi {
 
     @GET("api/payments/plans")
     suspend fun getPlans(): Response<List<Map<String, Any>>>
+
+    @POST("api/auth/vk/guest/link/start")
+    suspend fun vkGuestLinkStart(): Response<VkGuestLinkStartResponse>
+
+    @GET("api/auth/vk/guest/status")
+    suspend fun vkGuestStatus(@Query("state") state: String): Response<VkGuestStatusResponse>
+
+    @POST("api/auth/vk/link/attach")
+    suspend fun vkLinkAttach(@Body req: VkAttachRequest): Response<VkAttachResponse>
+
+    @POST("api/auth/vk/link/start")
+    suspend fun vkLinkStart(): Response<VkLinkStartResponse>
+
+    @GET("api/auth/vk/status")
+    suspend fun vkLinkStatus(): Response<VkLinkStatusResponse>
+
+    @GET("api/auth/vk/config-sync")
+    suspend fun vkConfigSync(): Response<VpnConfig>
+
+    @GET("api/auth/vk/bootstrap-hash")
+    suspend fun vkBootstrapHash(): Response<VpnHashesResponse>
+
+    @GET("api/vpn/hashes")
+    suspend fun getVpnHashes(): Response<VpnHashesResponse>
 }

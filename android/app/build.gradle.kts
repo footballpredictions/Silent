@@ -2,8 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    id("kotlin-kapt")
-    id("dagger.hilt.android.plugin")
+    alias(libs.plugins.ksp)
+    id("com.google.dagger.hilt.android") version "2.53"
 }
 
 android {
@@ -14,15 +14,33 @@ android {
         applicationId = "com.silent.vpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 5
+        versionName = "1.0.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("silent-release.keystore")
+            storePassword = "silent_vpn_2026"
+            keyAlias = "silent-vpn"
+            keyPassword = "silent_vpn_2026"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("release")
+        }
+        debug {
+            isMinifyEnabled = false
+            applicationIdSuffix = ".debug"
         }
     }
     compileOptions {
@@ -31,6 +49,14 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+    packaging {
+        jniLibs { useLegacyPackaging = true }
+    }
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
+        }
+    }
 }
 
 dependencies {
@@ -52,7 +78,7 @@ dependencies {
 
     // DI
     implementation(libs.hilt.android)
-    kapt(libs.hilt.compiler)
+    ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
 
     // Coroutines
@@ -63,4 +89,13 @@ dependencies {
 
     // WireGuard
     implementation(libs.wireguard.android)
+
+    // AppCompat (for theme)
+    implementation(libs.appcompat)
+
+    // Extended icons
+    implementation(libs.androidx.material.icons.extended)
+
+    // ViewModel for Compose
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
 }

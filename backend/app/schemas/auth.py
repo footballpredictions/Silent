@@ -1,3 +1,4 @@
+from datetime import datetime
 from pydantic import BaseModel, EmailStr, field_validator
 import re
 
@@ -46,3 +47,31 @@ class AdminLoginRequest(BaseModel):
 class AdminTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class VkLinkStartResponse(BaseModel):
+    auth_url: str
+    bot_url: str = ""
+
+
+class VkGuestLinkStartResponse(BaseModel):
+    auth_url: str
+    state: str
+
+
+class VkGuestStatusResponse(BaseModel):
+    completed: bool = False
+    vk_user_id: int | None = None
+    bootstrap_hash: str | None = None
+
+
+class VkAttachRequest(BaseModel):
+    vk_user_id: int
+
+
+class VkLinkStatusResponse(BaseModel):
+    linked: bool
+    vk_user_id: int | None = None
+    linked_at: datetime | None = None
+    bot_url: str = ""
+    bootstrap_hash: str | None = None

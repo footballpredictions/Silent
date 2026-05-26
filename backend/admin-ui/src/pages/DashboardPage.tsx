@@ -52,7 +52,7 @@ const ProgressBar = ({ percent, label }: { percent: number; label: string }) => 
   </div>
 )
 
-export default function DashboardPage({ token }: { token: string }) {
+export default function DashboardPage({ token, onUnauthorized }: { token: string; onUnauthorized?: () => void }) {
   const [stats, setStats] = useState<Stats | null>(null)
   const [cpuHistory, setCpuHistory] = useState<{ t: string; v: number }[]>([])
   const [loading, setLoading] = useState(false)
@@ -63,7 +63,13 @@ export default function DashboardPage({ token }: { token: string }) {
       const res = await fetch('/api/admin/stats', {
         headers: { Authorization: `Bearer ${token}` },
       })
+      if (res.status === 401) {
+        onUnauthorized?.()
+        return
+      }
+      if (!res.ok) return
       const data: Stats = await res.json()
+      if (!data?.system) return
       setStats(data)
       setCpuHistory(prev => [
         ...prev.slice(-19),
@@ -84,8 +90,9 @@ export default function DashboardPage({ token }: { token: string }) {
 
   if (!stats) {
     return (
-      <div className="flex items-center justify-center h-64">
+      <div className="flex flex-col items-center justify-center h-64 gap-3">
         <div className="animate-spin w-8 h-8 border-2 border-white border-t-transparent rounded-full" />
+        <p className="text-[#666] text-sm">Загрузка статистики...</p>
       </div>
     )
   }

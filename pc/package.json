@@ -7,6 +7,9 @@
     "start": "electron .",
     "dev": "concurrently \"vite --port 3001\" \"wait-on http://localhost:3001 && electron .\"",
     "build:renderer": "vite build --outDir dist/renderer",
+    "setup:wireguard": "powershell -ExecutionPolicy Bypass -File scripts/setup-wireguard.ps1",
+    "prebuild": "npm run setup:wireguard",
+    "predist": "npm run setup:wireguard",
     "build": "npm run build:renderer && electron-builder",
     "dist": "npm run build"
   },

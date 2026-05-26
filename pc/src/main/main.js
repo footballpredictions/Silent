@@ -211,7 +211,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
       }
       return true
     }
-    sendVpnError('WireGuard: подтвердите UAC или переустановите приложение')
+    sendVpnError('WireGuard: разрешите UAC для Wintun или переустановите приложение')
     return false
   }
 

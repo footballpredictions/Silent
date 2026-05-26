@@ -8,6 +8,7 @@ app.commandLine.appendSwitch('ignore-certificate-errors')
 const {
   stopWireGuardTunnel,
   resetWireGuardState,
+  forceStopWireGuard,
   buildWgConfigFromApi,
   applyWireGuardConfig,
 } = require('./vpn/wireguard')
@@ -147,8 +148,7 @@ function cleanupVpn() {
     try { wdttProcess.kill() } catch {}
     wdttProcess = null
   }
-  stopWireGuardTunnel()
-  resetWireGuardState()
+  stopWireGuardTunnel(isDev, __dirname, sendLog)
   wgApplied = false
 }
 
@@ -300,8 +300,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   wdttProcess.on('close', (code) => {
     clearWgRetries()
     wdttProcess = null
-    stopWireGuardTunnel()
-    resetWireGuardState()
+    stopWireGuardTunnel(isDev, __dirname, sendLog)
     wgApplied = false
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('vpn-stopped', code)
@@ -331,6 +330,9 @@ ipcMain.handle('vpn-read-config', async () => {
 })
 
 app.whenReady().then(() => {
+  // Сироты wireguard.exe после краша / прошлых версий — убираем до подключения
+  forceStopWireGuard(isDev, __dirname, () => {})
+
   if (process.defaultApp) {
     if (process.argv.length >= 2) {
       app.setAsDefaultProtocolClient('silentvpn', process.execPath, [path.resolve(process.argv[1])])

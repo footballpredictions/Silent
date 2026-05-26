@@ -1,14 +1,20 @@
-/** WireGuard: один запуск за подключение, без циклов UAC и taskkill. */
+/**
+ * WireGuard на Windows — bundled wireguard.exe + wintun.dll (аналог GoBackend на Android).
+ * Жизненный цикл туннеля привязан к Silent VPN: при disconnect/quit — полная остановка.
+ */
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { spawn, execSync } = require('child_process')
 
+const TUNNEL_NAME = 'wg-turn'
 const TUNNEL_CONF_NAME = 'wg-turn.conf'
 const SYSTEM_WG_DIR = 'C:\\Program Files\\WireGuard'
 
 let wgProcess = null
 let wgApplyLocked = false
+let lastConfPath = null
+let lastRuntimeDir = null
 
 function resourcesDir(isDev, dirname) {
   return isDev ? path.join(dirname, '../../resources') : process.resourcesPath
@@ -24,21 +30,17 @@ function findBundledDir(isDev, dirname) {
 
 function resetWireGuardState() {
   wgApplyLocked = false
-  if (wgProcess) {
-    try { wgProcess.kill() } catch {}
-    wgProcess = null
-  }
 }
 
 function prepareRuntimeDir(isDev, dirname, send) {
   const bundled = findBundledDir(isDev, dirname)
   if (!bundled) {
-    send('[WG] wireguard.exe не найден в resources/wireguard/')
+    send?.('[WG] wireguard.exe не найден в resources/wireguard/')
     return null
   }
   const wintunSrc = path.join(bundled, 'wintun.dll')
   if (!fs.existsSync(wintunSrc)) {
-    send('[WG] wintun.dll не найден — пересоберите приложение')
+    send?.('[WG] wintun.dll не найден — пересоберите приложение')
     return null
   }
 
@@ -56,8 +58,77 @@ function prepareRuntimeDir(isDev, dirname, send) {
   return runtimeDir
 }
 
-function stopWireGuardTunnel() {
+function psExec(script) {
+  const file = path.join(os.tmpdir(), `silent-wg-cleanup-${Date.now()}.ps1`)
+  try {
+    fs.writeFileSync(file, script, 'utf8')
+    execSync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${file}"`, {
+      windowsHide: true,
+      stdio: 'ignore',
+      timeout: 20000,
+    })
+  } catch {} finally {
+    try { fs.unlinkSync(file) } catch {}
+  }
+}
+
+/** Остановить только наши процессы/адаптеры Silent VPN (не трогаем чужой WireGuard). */
+function forceStopWireGuard(isDev, dirname, send) {
+  send?.('[WG] Остановка туннеля...')
+
+  if (wgProcess?.pid) {
+    try {
+      execSync(`taskkill /PID ${wgProcess.pid} /T /F`, { windowsHide: true, stdio: 'ignore' })
+    } catch {}
+    wgProcess = null
+  }
+
+  const runtimeDir = lastRuntimeDir || path.join(os.tmpdir(), 'silent-vpn-wg')
+  const wgExe = path.join(runtimeDir, 'wireguard.exe')
+  const conf = lastConfPath || path.join(os.tmpdir(), TUNNEL_CONF_NAME)
+
+  if (fs.existsSync(wgExe)) {
+    try {
+      execSync(`"${wgExe}" /uninstalltunnelservice ${TUNNEL_NAME}`, { windowsHide: true, stdio: 'ignore' })
+    } catch {}
+    if (fs.existsSync(conf)) {
+      try {
+        execSync(`"${wgExe}" /uninstalltunnelservice "${conf}"`, { windowsHide: true, stdio: 'ignore' })
+      } catch {}
+    }
+  }
+
+  for (const svc of [`WireGuardTunnel$${TUNNEL_NAME}`, 'WireGuardTunnel$silent-wg']) {
+    try { execSync(`sc stop "${svc}"`, { windowsHide: true, stdio: 'ignore' }) } catch {}
+    try { execSync(`sc delete "${svc}"`, { windowsHide: true, stdio: 'ignore' }) } catch {}
+  }
+
+  psExec(`
+    $markers = @('wg-turn.conf','silent-vpn-wg','${TUNNEL_NAME.replace(/'/g, "''")}')
+    Get-CimInstance Win32_Process -Filter "Name='wireguard.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $cmd = $_.CommandLine; $markers | Where-Object { $cmd -like "*$_*" } } |
+      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  `)
+
+  psExec(`
+    Get-NetAdapter -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.Name -eq '${TUNNEL_NAME}' -or
+        $_.InterfaceDescription -match 'WireGuard Tunnel.*wg-turn|Wintun.*wg-turn'
+      } |
+      ForEach-Object {
+        Disable-NetAdapter -Name $_.Name -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-NetAdapter -Name $_.Name -Confirm:$false -ErrorAction SilentlyContinue
+      }
+  `)
+
+  psExec('ipconfig /flushdns')
   resetWireGuardState()
+  send?.('[WG] Туннель остановлен')
+}
+
+function stopWireGuardTunnel(isDev, dirname, send) {
+  forceStopWireGuard(isDev, dirname, send)
 }
 
 function buildWgConfigFromApi(config, listenPort = 9000) {
@@ -104,7 +175,7 @@ function generateExclusionAllowedIPs(excludeIPs) {
 function isTunnelUp() {
   try {
     const out = execSync(
-      'powershell.exe -NoProfile -Command "Get-NetAdapter -EA SilentlyContinue | ? { $_.InterfaceDescription -match \'WireGuard|Wintun\' -and $_.Status -eq \'Up\' } | Select -First 1 -Expand Name"',
+      'powershell.exe -NoProfile -Command "Get-NetAdapter -EA SilentlyContinue | ? { ($_.Name -eq \'wg-turn\' -or $_.InterfaceDescription -match \'WireGuard|Wintun\') -and $_.Status -eq \'Up\' } | Select -First 1 -Expand Name"',
       { windowsHide: true, encoding: 'utf8', timeout: 5000 },
     )
     return !!out.trim()
@@ -156,9 +227,11 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     return false
   }
   wgApplyLocked = true
+  lastConfPath = confPath
 
   const runtimeDir = prepareRuntimeDir(isDev, dirname, send)
   if (!runtimeDir) return false
+  lastRuntimeDir = runtimeDir
 
   const wgExe = path.join(runtimeDir, 'wireguard.exe')
   if (!fs.existsSync(wgExe)) {
@@ -176,11 +249,8 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     }
   }
 
-  if (wgProcess) {
-    try { wgProcess.kill() } catch {}
-    wgProcess = null
-    await new Promise(r => setTimeout(r, 400))
-  }
+  forceStopWireGuard(isDev, dirname, () => {})
+  await new Promise(r => setTimeout(r, 500))
 
   send('[WG] Запуск туннеля...')
   const ok = await runTunnelOnce(wgExe, confPath, runtimeDir)
@@ -196,7 +266,9 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
 
 module.exports = {
   TUNNEL_CONF_NAME,
+  TUNNEL_NAME,
   resetWireGuardState,
+  forceStopWireGuard,
   stopWireGuardTunnel,
   buildWgConfigFromApi,
   applyWireGuardConfig,

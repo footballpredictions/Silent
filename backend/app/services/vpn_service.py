@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Device, User, VkHash, AppSetting
@@ -108,6 +108,51 @@ async def clear_stale_online_status(db: AsyncSession) -> int:
     return len(devices)
 
 
+async def prune_idle_sessions(db: AsyncSession, user_id) -> int:
+    """Удалить неактивные сессии (переустановка / закрыли приложение без logout)."""
+    idle_cutoff = datetime.utcnow() - timedelta(hours=settings.SESSION_IDLE_HOURS)
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user_id,
+            Device.is_active == True,
+            Device.is_connected == False,
+            or_(
+                Device.last_connected < idle_cutoff,
+                and_(Device.last_connected.is_(None), Device.created_at < idle_cutoff),
+            ),
+        )
+    )
+    idle = result.scalars().all()
+    for d in idle:
+        await db.delete(d)
+    if idle:
+        await db.commit()
+    return len(idle)
+
+
+async def replace_same_type_session(
+    db: AsyncSession,
+    user_id,
+    device_type: str,
+    device_fingerprint: str,
+) -> int:
+    """Новый login с другим fingerprint того же типа — убираем старую запись (переустановка)."""
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user_id,
+            Device.device_type == device_type,
+            Device.device_fingerprint != device_fingerprint,
+            Device.is_active == True,
+        )
+    )
+    old = result.scalars().all()
+    for d in old:
+        await db.delete(d)
+    if old:
+        await db.commit()
+    return len(old)
+
+
 async def prune_old_sessions(db: AsyncSession, user_id) -> int:
     """Удалить старые сессии (переустановка без logout)."""
     cutoff = datetime.utcnow() - timedelta(days=settings.SESSION_MAX_AGE_DAYS)
@@ -194,6 +239,8 @@ async def register_device(
     wg_public_key: Optional[str] = None,
 ) -> VpnConfigResponse:
     await clear_stale_online_status(db)
+    await replace_same_type_session(db, user.id, device_type, device_fingerprint)
+    await prune_idle_sessions(db, user.id)
     await prune_old_sessions(db, user.id)
 
     result = await db.execute(

@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     WG_SERVER_PUBLIC_KEY: str = ""
     SESSION_ONLINE_TIMEOUT_MINUTES: int = 10
     SESSION_MAX_AGE_DAYS: int = 7
+    SESSION_IDLE_HOURS: int = 6
 
     # Subscription prices
     PRICE_MONTHLY: float = 199.0

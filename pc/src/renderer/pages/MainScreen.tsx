@@ -360,15 +360,30 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
               <div className="flex-1 p-4 overflow-y-auto">
                 <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
                 <div className="text-xs font-semibold mb-3">Сессии</div>
-                {profile?.devices.map(d => (
+                {profile?.devices.map(d => {
+                  const isCurrent = sessionDeviceId && d.id === sessionDeviceId
+                  return (
                   <div key={d.id} className="flex items-center gap-2 py-2 border-b border-gray-100">
                     <div className={`w-1.5 h-1.5 rounded-full ${d.is_connected ? 'bg-green-500' : 'bg-gray-300'}`} />
-                    <div>
-                      <div className="text-xs font-medium">{d.device_name}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium">{d.device_name}{isCurrent ? ' (эта)' : ''}</div>
                       <div className="text-xs text-gray-400">{d.device_type}</div>
                     </div>
+                    {!isCurrent && (
+                      <button
+                        onClick={async () => {
+                          if (!confirm('Удалить эту сессию?')) return
+                          await api.delete(`/api/users/devices/${d.id}`)
+                          fetchProfile()
+                        }}
+                        className="text-[10px] text-red-500 shrink-0"
+                      >
+                        Удалить
+                      </button>
+                    )}
                   </div>
-                ))}
+                  )
+                })}
               </div>
             )}
 

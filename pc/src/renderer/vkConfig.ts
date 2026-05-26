@@ -96,6 +96,19 @@ export function saveVkAccessToken(token: string) {
   localStorage.setItem('silent_vk_access_token', token)
 }
 
+export function getBootstrapHash(): string | null {
+  return localStorage.getItem('silent_vk_bootstrap_hash')
+}
+
+export function saveBootstrapHash(hash: string | null) {
+  if (hash?.trim()) localStorage.setItem('silent_vk_bootstrap_hash', hash.trim())
+  else localStorage.removeItem('silent_vk_bootstrap_hash')
+}
+
+export function isVkReady(): boolean {
+  return getVkUserId() > 0 && !!getBootstrapHash()
+}
+
 export function openVkMessagesAuth() {
   const url = `https://oauth.vk.com/authorize?client_id=${APP_ID}&display=page&redirect_uri=https://oauth.vk.com/blank.html&scope=messages,offline&response_type=token&v=5.199`
   ;(window as any).electronAPI?.openExternal(url)

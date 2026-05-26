@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import api, {
   saveTokens,
   startNewSession,
@@ -6,7 +6,15 @@ import api, {
   clearSessionFingerprint,
   clearTokens,
 } from '../api'
-import { cacheVpnConfig } from '../vkConfig'
+import {
+  cacheVpnConfig,
+  getVkUserId,
+  saveVkUserId,
+  getBootstrapHash,
+  saveBootstrapHash,
+  isVkReady,
+} from '../vkConfig'
+import VkLoginSection from '../components/VkLoginSection'
 
 export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void }) {
   const [tab, setTab] = useState<'login' | 'register'>('login')
@@ -15,6 +23,58 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [regDone, setRegDone] = useState(false)
+  const [vkMsg, setVkMsg] = useState('')
+  const [vkLinking, setVkLinking] = useState(false)
+  const [vkUserId, setVkUserId] = useState<number | null>(() => {
+    const id = getVkUserId()
+    return id > 0 ? id : null
+  })
+  const [bootstrapHash, setBootstrapHash] = useState<string | null>(getBootstrapHash)
+  const vkReady = isVkReady()
+
+  useEffect(() => {
+    const id = getVkUserId()
+    if (id > 0) setVkUserId(id)
+    setBootstrapHash(getBootstrapHash())
+  }, [])
+
+  const refreshVkState = () => {
+    const id = getVkUserId()
+    setVkUserId(id > 0 ? id : null)
+    setBootstrapHash(getBootstrapHash())
+  }
+
+  const handleLinkVk = async () => {
+    setVkLinking(true)
+    setVkMsg('Открытие VK...')
+    try {
+      const res = await api.post('/api/auth/vk/guest/link/start')
+      const { auth_url, state } = res.data
+      ;(window as any).electronAPI?.openExternal(auth_url)
+      for (let i = 0; i < 90; i++) {
+        await new Promise(r => setTimeout(r, 2000))
+        const st = await api.get('/api/auth/vk/guest/status', { params: { state } })
+        if (st.data.completed) {
+          if (st.data.vk_user_id) {
+            saveVkUserId(st.data.vk_user_id)
+            setVkUserId(st.data.vk_user_id)
+          }
+          if (st.data.bootstrap_hash) {
+            saveBootstrapHash(st.data.bootstrap_hash)
+            setBootstrapHash(st.data.bootstrap_hash)
+          }
+          refreshVkState()
+          setVkMsg('VK готов. Первый хеш получен — войдите в аккаунт.')
+          return
+        }
+      }
+      setVkMsg('Завершите вход VK в браузере или вернитесь в приложение.')
+    } catch (e: any) {
+      setVkMsg(e.response?.data?.detail || 'Не удалось начать привязку VK')
+    } finally {
+      setVkLinking(false)
+    }
+  }
 
   const openLoginSession = async (): Promise<boolean> => {
     const fp = startNewSession()
@@ -41,6 +101,21 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
     try {
       const res = await api.post('/api/auth/login', { email, password })
       saveTokens(res.data.access_token, res.data.refresh_token)
+
+      const localVkId = getVkUserId()
+      if (localVkId > 0) {
+        try {
+          const att = await api.post('/api/auth/vk/link/attach', { vk_user_id: localVkId })
+          if (att.data.bootstrap_hash) {
+            saveBootstrapHash(att.data.bootstrap_hash)
+            setBootstrapHash(att.data.bootstrap_hash)
+          }
+          refreshVkState()
+        } catch (err: any) {
+          setVkMsg(err.response?.data?.detail || 'Не удалось привязать VK к аккаунту')
+        }
+      }
+
       if (!(await openLoginSession())) return
       const themeRes = await api.get('/api/vpn/theme').catch(() => ({ data: null }))
       onLogin(themeRes.data)
@@ -72,13 +147,22 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col px-5 pt-6 pb-5">
+      <div className="flex-1 flex flex-col px-5 pt-6 pb-5 overflow-y-auto">
         <div className="text-center mb-5">
           <div className="w-14 h-14 bg-black rounded-2xl flex items-center justify-center mx-auto mb-3">
             <span className="text-white font-bold text-xl">S</span>
           </div>
           <h1 className="font-bold text-base tracking-widest">SILENT</h1>
         </div>
+
+        <VkLoginSection
+          vkReady={vkReady}
+          vkUserId={vkUserId}
+          bootstrapHash={bootstrapHash}
+          vkMsg={vkMsg}
+          linking={vkLinking}
+          onLinkVk={handleLinkVk}
+        />
 
         <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
           {(['login', 'register'] as const).map(t => (

@@ -2,6 +2,9 @@ const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell } = require(
 const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
+
+// Self-signed сервер — как на Android (TrustAllCerts)
+app.commandLine.appendSwitch('ignore-certificate-errors')
 const {
   stopWireGuardTunnel,
   buildWgConfigFromApi,

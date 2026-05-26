@@ -1,13 +1,18 @@
 import { useState } from 'react'
-import { setServerUrl } from '../api'
+import { setServerUrl, DEFAULT_SERVER_URL } from '../api'
 
 export default function ServerSetupScreen({ onDone }: { onDone: () => void }) {
-  const [url, setUrl] = useState('https://')
+  const [url, setUrl] = useState(DEFAULT_SERVER_URL)
   const [error, setError] = useState('')
 
   const handleSave = () => {
-    if (!url.startsWith('http')) { setError('Введите корректный URL'); return }
-    setServerUrl(url)
+    const trimmed = url.trim()
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+      setError('Введите URL с http:// или https://')
+      return
+    }
+    if (trimmed.length < 12) { setError('Введите корректный URL сервера'); return }
+    setServerUrl(trimmed)
     onDone()
   }
 

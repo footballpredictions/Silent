@@ -5,6 +5,7 @@ import api, {
   saveSessionDeviceId,
   clearSessionFingerprint,
   clearTokens,
+  formatApiError,
 } from '../api'
 import {
   cacheVpnConfig,
@@ -110,7 +111,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
     } catch (e: any) {
       clearSessionFingerprint()
       clearTokens()
-      setError(e.response?.data?.detail || 'Достигнут лимит устройств (3). Выйдите на другом устройстве.')
+      setError(formatApiError(e, 'Достигнут лимит устройств (3). Выйдите на другом устройстве.'))
       return false
     }
   }
@@ -140,7 +141,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
       const themeRes = await api.get('/api/vpn/theme').catch(() => ({ data: null }))
       onLogin(themeRes.data)
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Ошибка входа')
+      setError(formatApiError(err, 'Ошибка входа'))
     } finally { setLoading(false) }
   }
 
@@ -151,7 +152,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
       await api.post('/api/auth/register', { email, password })
       setRegDone(true)
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Ошибка регистрации')
+      setError(formatApiError(err, 'Ошибка регистрации'))
     } finally { setLoading(false) }
   }
 

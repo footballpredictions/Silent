@@ -1,16 +1,43 @@
 import axios from 'axios'
 
 const SERVER_URL_KEY = 'silent_server_url'
+export const DEFAULT_SERVER_URL = 'https://132-243-234-162.nip.io'
 const TOKEN_KEY = 'silent_token'
 const REFRESH_KEY = 'silent_refresh'
 const DEVICE_FP_KEY = 'device_fp'
 const SESSION_DEVICE_ID_KEY = 'session_device_id'
 
 export function getServerUrl(): string {
-  return localStorage.getItem(SERVER_URL_KEY) || ''
+  return localStorage.getItem(SERVER_URL_KEY) || DEFAULT_SERVER_URL
 }
 export function setServerUrl(url: string) {
   localStorage.setItem(SERVER_URL_KEY, url.replace(/\/$/, ''))
+}
+export function initServerUrl() {
+  const stored = localStorage.getItem(SERVER_URL_KEY)
+  if (!stored || stored.length < 12 || !stored.startsWith('http')) {
+    localStorage.setItem(SERVER_URL_KEY, DEFAULT_SERVER_URL)
+  }
+}
+
+export function formatApiError(err: unknown, fallback: string): string {
+  const e = err as { response?: { data?: { detail?: unknown } }; code?: string; message?: string }
+  const detail = e.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((item) => (typeof item === 'string' ? item : (item as { msg?: string })?.msg))
+      .filter(Boolean)
+    if (msgs.length) return msgs.join('. ')
+  }
+  if (e.code === 'ERR_NETWORK') {
+    return `Нет связи с сервером (${getServerUrl()}). Проверьте интернет и адрес сервера.`
+  }
+  if (e.message?.includes('certificate') || e.message?.includes('SSL')) {
+    return 'Ошибка SSL сертификата сервера. Переустановите приложение или обновите сервер.'
+  }
+  if (e.message?.trim()) return e.message
+  return fallback
 }
 
 const api = axios.create({ timeout: 15000 })
@@ -26,7 +53,12 @@ api.interceptors.request.use(cfg => {
 api.interceptors.response.use(
   r => r,
   async err => {
-    if (err.response?.status === 401) {
+    const url = String(err.config?.url || '')
+    const isAuthRoute =
+      url.includes('/api/auth/login') ||
+      url.includes('/api/auth/register') ||
+      url.includes('/api/auth/refresh')
+    if (err.response?.status === 401 && !isAuthRoute) {
       const refresh = localStorage.getItem(REFRESH_KEY)
       if (refresh) {
         try {

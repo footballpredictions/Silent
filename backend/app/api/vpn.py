@@ -17,6 +17,7 @@ from app.services.vpn_service import (
     _build_vpn_config,
     get_active_vk_hashes,
     count_connected_sessions,
+    clear_stale_online_status,
 )
 from app.services.subscription_service import user_has_active_subscription
 from app.config import settings
@@ -36,6 +37,7 @@ async def device_register(
     db: AsyncSession = Depends(get_db),
 ):
     await _check_active_subscription(user, db)
+    await clear_stale_online_status(db)
     try:
         config = await register_device(
             db, user,

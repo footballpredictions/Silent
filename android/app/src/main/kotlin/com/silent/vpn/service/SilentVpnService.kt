@@ -11,7 +11,10 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.silent.vpn.MainActivity
+import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.vpn.WdttTunnelManager
+import com.silent.vpn.vpn.WireGuardConfigBuilder
+import com.google.gson.Gson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -38,7 +41,14 @@ class SilentVpnService : Service() {
         createNotificationChannel()
         scope.launch {
             WdttTunnelManager.stats.collectLatest { stats ->
-                if (stats.isNotBlank() && isRunning) updateNotification(stats)
+                if (stats.isNotBlank() && isRunning && !WdttTunnelManager.tunnelReady.value) {
+                    updateNotification(stats)
+                }
+            }
+        }
+        scope.launch {
+            WdttTunnelManager.tunnelReady.collectLatest { ready ->
+                if (ready && isRunning) updateNotification("Подключено")
             }
         }
     }
@@ -68,6 +78,9 @@ class SilentVpnService : Service() {
                 obj.optString("deviceId").ifBlank { "android" }
             }
 
+            val vpnConfig = runCatching { Gson().fromJson(configJson, VpnConfig::class.java) }.getOrNull()
+            val apiWg = vpnConfig?.let { WireGuardConfigBuilder.fromVpnConfig(it) }
+
             WdttTunnelManager.start(
                 this,
                 WdttTunnelManager.Params(
@@ -76,6 +89,9 @@ class SilentVpnService : Service() {
                     vkHashes = hashes,
                     wdttPassword = obj.getString("wdtt_password"),
                     deviceId = deviceId,
+                    workers = vpnConfig?.stream_count?.coerceIn(1, 128) ?: 12,
+                    captchaMode = "auto",
+                    apiWgConfig = apiWg,
                 ),
             )
             isRunning = true

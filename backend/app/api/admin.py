@@ -147,6 +147,11 @@ class VkPasswordAuthRequest(BaseModel):
     password: str
 
 
+class VkOAuthPasteRequest(BaseModel):
+    state: str
+    paste: str
+
+
 @router.get("/vk/status")
 async def vk_panel_status(
     _: bool = Depends(get_admin_credentials),
@@ -193,7 +198,42 @@ async def vk_bot_auth_start(
         "auth_url": build_agent_auth_url(state, base),
         "state": state,
         "bot_url": bot_url,
+        "paste_hint": (
+            "После входа VK откроется blank.html?code=... — скопируйте весь URL "
+            "и вставьте ниже. Токен получит сервер (не вставляйте vk1.a с ПК — другой IP)."
+        ),
     }
+
+
+@router.post("/vk/bot-auth/paste")
+async def vk_bot_auth_paste(
+    req: VkOAuthPasteRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Сохранить токен: code из URL → обмен на сервере (IP VPS)."""
+    from app.services.vk_agent_auth import (
+        parse_vk_oauth_paste,
+        complete_agent_auth,
+        save_agent_token_direct,
+        paste_to_server_token,
+    )
+
+    token, expires_in, err = await paste_to_server_token(req.paste)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    if not token:
+        raise HTTPException(status_code=400, detail="Не удалось получить token")
+
+    _, _, state_from_url, _ = parse_vk_oauth_paste(req.paste)
+    state = (state_from_url or req.state or "").strip()
+    if state:
+        ok, message, uid = await complete_agent_auth(db, state, token, expires_in)
+    else:
+        ok, message, uid = await save_agent_token_direct(db, token, expires_in)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"success": True, "message": message, "vk_user_id": uid}
 
 
 @router.post("/vk/oauth/finish")
@@ -239,7 +279,7 @@ async def vk_oauth_callback_code(
     if base.startswith("http://"):
         base = base.replace("http://", "https://", 1)
     redirect_uri = agent_oauth_redirect_uri(base)
-    token_data = await exchange_android_code(code, redirect_uri)
+    token_data, err = await exchange_android_code(code, redirect_uri)
     if not token_data:
         return HTMLResponse("<p>Не удалось обменять code на token</p>", status_code=400)
 
@@ -318,10 +358,13 @@ async def vk_agent_connect(
     status = await get_auth_status(db)
     if not status.get("vk_linked"):
         raise HTTPException(status_code=400, detail=status.get("auth_error") or "Сначала войдите через VK")
-    if not status.get("calls_ok"):
-        raise HTTPException(status_code=400, detail="VK не может создавать звонки — авторизуйтесь снова")
 
     manager = VkManager(db)
+    ok, err = await manager.ensure_authenticated()
+    if not ok:
+        raise HTTPException(status_code=400, detail=err or "VK не может создавать звонки")
+    await set_calls_verified(db, True)
+
     try:
         active = (await db.execute(
             select(func.count(VkHash.id)).where(VkHash.is_active == True)
@@ -338,6 +381,24 @@ async def vk_agent_connect(
         return {"success": True, "message": message, "agent_connected": True}
     finally:
         await manager.close()
+
+
+@router.post("/vk/agent/sync-env")
+async def vk_agent_sync_env(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Перечитать VK_AGENT_ACCESS_TOKEN из .env и проверить calls.create."""
+    from app.services.vk_agent_auth import resolve_agent_token, get_env_agent_token
+    if not get_env_agent_token():
+        raise HTTPException(
+            status_code=400,
+            detail="VK_AGENT_ACCESS_TOKEN не задан в .env на сервере",
+        )
+    token, msg = await resolve_agent_token(db, verify_calls=True)
+    if not token:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": msg}
 
 
 @router.post("/vk/agent/disconnect")

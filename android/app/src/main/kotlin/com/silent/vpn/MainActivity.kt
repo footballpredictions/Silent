@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
             val vkUserId by vm.vkUserId.collectAsState()
             val bootstrapHash by vm.bootstrapHash.collectAsState()
             val vkMsg by vm.vkMsg.collectAsState()
+            val sessionDeviceId by vm.sessionDeviceId.collectAsState()
 
             LaunchedEffect(vpnPermissionGranted.value) {
                 if (vpnPermissionGranted.value) {
@@ -58,7 +59,8 @@ class MainActivity : ComponentActivity() {
             SilentTheme(themeData = theme) {
                 when (screen) {
                     AppScreen.LOGIN -> LoginScreen(
-                        onLogin = vm::login,
+                        initialEmail = vm.lastEmail,
+                        onLogin = { email, password -> vm.login(email, password, this@MainActivity) },
                         onRegister = vm::register,
                         loading = authLoading,
                         error = authError,
@@ -80,6 +82,8 @@ class MainActivity : ComponentActivity() {
                         profile = profile,
                         vpnState = vpnState,
                         theme = theme,
+                        repo = vm.repository,
+                        sessionDeviceId = sessionDeviceId,
                         vpnError = vpnError,
                         onToggle = {
                             if (vpnState == VpnState.DISCONNECTED) {

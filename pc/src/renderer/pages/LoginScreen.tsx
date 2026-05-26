@@ -1,5 +1,12 @@
 import { useState } from 'react'
-import api, { saveTokens } from '../api'
+import api, {
+  saveTokens,
+  startNewSession,
+  saveSessionDeviceId,
+  clearSessionFingerprint,
+  clearTokens,
+} from '../api'
+import { cacheVpnConfig } from '../vkConfig'
 
 export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void }) {
   const [tab, setTab] = useState<'login' | 'register'>('login')
@@ -9,13 +16,32 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
   const [loading, setLoading] = useState(false)
   const [regDone, setRegDone] = useState(false)
 
+  const openLoginSession = async (): Promise<boolean> => {
+    const fp = startNewSession()
+    try {
+      const reg = await api.post('/api/vpn/device/register', {
+        device_name: 'PC',
+        device_type: 'pc',
+        device_fingerprint: fp,
+      })
+      saveSessionDeviceId(reg.data.device_id)
+      cacheVpnConfig(reg.data)
+      return true
+    } catch (e: any) {
+      clearSessionFingerprint()
+      clearTokens()
+      setError(e.response?.data?.detail || 'Достигнут лимит устройств (3). Выйдите на другом устройстве.')
+      return false
+    }
+  }
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true); setError('')
     try {
       const res = await api.post('/api/auth/login', { email, password })
       saveTokens(res.data.access_token, res.data.refresh_token)
-      // Fetch theme
+      if (!(await openLoginSession())) return
       const themeRes = await api.get('/api/vpn/theme').catch(() => ({ data: null }))
       onLogin(themeRes.data)
     } catch (err: any) {
@@ -38,7 +64,6 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
 
   return (
     <div className="flex flex-col h-full">
-      {/* Title bar */}
       <div className="h-8 bg-black flex items-center px-4 flex-shrink-0" style={{ WebkitAppRegion: 'drag' } as any}>
         <span className="text-xs text-gray-500 tracking-widest">SILENT VPN</span>
         <div className="ml-auto flex gap-2" style={{ WebkitAppRegion: 'no-drag' } as any}>
@@ -55,7 +80,6 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
           <h1 className="font-bold text-base tracking-widest">SILENT</h1>
         </div>
 
-        {/* Tabs */}
         <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
           {(['login', 'register'] as const).map(t => (
             <button key={t} onClick={() => { setTab(t); setError(''); setRegDone(false) }}
@@ -92,11 +116,6 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
               className="w-full bg-black text-white rounded-xl py-3 text-sm font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
               {loading ? '...' : tab === 'login' ? 'Войти' : 'Зарегистрироваться'}
             </button>
-            {tab === 'login' && (
-              <button type="button" className="w-full text-xs text-gray-400 hover:text-black transition-colors">
-                Забыли пароль?
-              </button>
-            )}
           </form>
         )}
       </div>

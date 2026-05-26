@@ -31,6 +31,10 @@ class SilentRepository @Inject constructor(
         const val PREF_BOOTSTRAP_HASH = "vk_bootstrap_hash"
         const val PREF_CACHED_CONFIG = "cached_vpn_config"
         const val PREF_CACHED_CONFIG_TS = "cached_vpn_config_ts"
+        const val PREF_LAST_EMAIL = "last_email"
+        const val PREF_SESSION_DEVICE_ID = "session_device_id"
+        const val PREF_EXCLUDED_APPS = "excluded_apps"
+        const val PREF_EXCLUSIONS_WHITELIST = "exclusions_whitelist"
         const val VK_APP_ID = 54610377L
         const val VK_GROUP_ID = 239092728L
     }
@@ -128,6 +132,8 @@ class SilentRepository @Inject constructor(
 
     /** New session id on each login — frees slot on logout. */
     fun startNewSession(): String {
+        clearCachedVpnConfig()
+        clearSessionDeviceId()
         val fp = UUID.randomUUID().toString()
         prefs.edit().putString(PREF_DEVICE_FP, fp).apply()
         return fp
@@ -138,6 +144,38 @@ class SilentRepository @Inject constructor(
     }
 
     fun hasSessionFingerprint(): Boolean = prefs.getString(PREF_DEVICE_FP, null) != null
+
+    fun saveSessionDeviceId(id: String) {
+        prefs.edit().putString(PREF_SESSION_DEVICE_ID, id).apply()
+    }
+
+    fun getSessionDeviceId(): String? = prefs.getString(PREF_SESSION_DEVICE_ID, null)?.takeIf { it.isNotBlank() }
+
+    fun clearSessionDeviceId() {
+        prefs.edit().remove(PREF_SESSION_DEVICE_ID).apply()
+    }
+
+    fun saveLastEmail(email: String) {
+        prefs.edit().putString(PREF_LAST_EMAIL, email.trim()).apply()
+    }
+
+    fun getLastEmail(): String? = prefs.getString(PREF_LAST_EMAIL, null)?.takeIf { it.isNotBlank() }
+
+    fun clearCachedVpnConfig() {
+        prefs.edit().remove(PREF_CACHED_CONFIG).remove(PREF_CACHED_CONFIG_TS).apply()
+    }
+
+    fun getExcludedPackages(): Set<String> =
+        prefs.getString(PREF_EXCLUDED_APPS, "")?.split(",")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+
+    fun isExclusionsWhitelist(): Boolean = prefs.getBoolean(PREF_EXCLUSIONS_WHITELIST, false)
+
+    fun saveExcludedApps(packages: Set<String>, whitelist: Boolean) {
+        prefs.edit()
+            .putString(PREF_EXCLUDED_APPS, packages.joinToString(","))
+            .putBoolean(PREF_EXCLUSIONS_WHITELIST, whitelist)
+            .apply()
+    }
 
     fun getVkUserId(): Long = prefs.getLong(PREF_VK_USER_ID, 0L)
     fun saveVkUserId(id: Long) = prefs.edit().putLong(PREF_VK_USER_ID, id).apply()

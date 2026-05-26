@@ -12,18 +12,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+/**
+ * WDTT-туннель по логике [proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android):
+ * libclient → box-конфиг WireGuard в логах → сразу поднять WG (без ожидания счётчика воркеров).
+ */
 object WdttTunnelManager {
     private const val TAG = "WdttTunnelManager"
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var process: Process? = null
     private var readerJob: Job? = null
+    private var fallbackJob: Job? = null
     private var wgHelper: WireGuardHelper? = null
-    private var serverIp: String = ""
-    private val excludeIPs = linkedSetOf<String>()
-    private var pendingConfig: String? = null
-    private var confReady = false
-    private var wgApplied = false
+    private var apiFallbackConfig: String? = null
+    private var lastWgConfig: String? = null
 
     val running = MutableStateFlow(false)
     val tunnelReady = MutableStateFlow(false)
@@ -38,23 +40,23 @@ object WdttTunnelManager {
         val wdttPassword: String,
         val deviceId: String,
         val listenPort: Int = 9000,
-        val workers: Int = 16,
+        val workers: Int = 12,
+        val captchaMode: String = "auto",
+        val apiWgConfig: String? = null,
     )
 
     fun start(context: Context, params: Params) {
         if (running.value) return
+        scope.launch {
+            stopInternal(keepWg = false)
+
         lastError.value = null
         tunnelReady.value = false
-        wgApplied = false
-        confReady = false
-        pendingConfig = null
-        excludeIPs.clear()
-        serverIp = params.serverIp
-        if (params.serverIp.isNotBlank()) excludeIPs.add(params.serverIp)
+        stats.value = ""
         activeWorkers.value = 0
+        apiFallbackConfig = params.apiWgConfig?.trim()?.takeIf { it.contains("[Interface]") }
         wgHelper = WireGuardHelper(context.applicationContext)
 
-        scope.launch {
             try {
                 val binaryPath = context.applicationInfo.nativeLibraryDir + "/libclient.so"
                 if (!File(binaryPath).exists()) {
@@ -62,22 +64,29 @@ object WdttTunnelManager {
                     return@launch
                 }
 
-                val hashes = params.vkHashes.filter { it.isNotBlank() }.take(3).joinToString(",")
-                if (hashes.isEmpty()) {
+                val hashList = params.vkHashes
+                    .flatMap { it.split(Regex("[,\\s\\n]+")) }
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .take(3)
+                if (hashList.isEmpty()) {
                     lastError.value = "Нет VK-хешей"
                     return@launch
                 }
+                if (params.wdttPassword.isBlank()) {
+                    lastError.value = "Пароль WDTT не задан"
+                    return@launch
+                }
 
-                val peer = "${params.serverIp}:${params.serverPort}"
                 val cmd = listOf(
                     binaryPath,
-                    "-peer", peer,
-                    "-vk", hashes,
-                    "-n", params.workers.toString(),
+                    "-peer", "${params.serverIp}:${params.serverPort}",
+                    "-vk", hashList.joinToString(","),
+                    "-n", params.workers.coerceIn(1, 128).toString(),
                     "-listen", "127.0.0.1:${params.listenPort}",
                     "-device-id", params.deviceId,
                     "-password", params.wdttPassword,
-                    "-captcha-mode", "rjs",
+                    "-captcha-mode", sanitizeCaptchaMode(params.captchaMode),
                 )
 
                 val pb = ProcessBuilder(cmd)
@@ -85,14 +94,38 @@ object WdttTunnelManager {
                 pb.redirectErrorStream(true)
                 pb.environment()["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
 
+                deleteOldConf(context)
                 process = pb.start()
                 running.value = true
                 startLogReader(context)
+                startApiFallbackTimer(context)
             } catch (e: Exception) {
                 Log.e(TAG, "Start failed", e)
                 lastError.value = e.message ?: "Ошибка запуска WDTT"
                 running.value = false
             }
+        }
+    }
+
+    private fun sanitizeCaptchaMode(mode: String): String = when (mode.lowercase()) {
+        "rjs", "wv", "auto" -> mode.lowercase()
+        else -> "auto"
+    }
+
+    private fun deleteOldConf(context: Context) {
+        listOf("wg-turn.conf", "wg.conf").forEach { name ->
+            runCatching { File(context.filesDir, name).delete() }
+        }
+    }
+
+    private fun startApiFallbackTimer(context: Context) {
+        fallbackJob?.cancel()
+        val fallback = apiFallbackConfig ?: return
+        fallbackJob = scope.launch {
+            delay(20_000)
+            if (tunnelReady.value || !running.value) return@launch
+            Log.w(TAG, "No libclient WG config in 20s — using API fallback")
+            applyWireGuard(fallback)
         }
     }
 
@@ -105,15 +138,22 @@ object WdttTunnelManager {
 
             try {
                 reader.forEachLine { line ->
-                    val lineTrim = line.replace(Regex("^\\d{4}/\\d{2}/\\d{2}\\s\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\s"), "").trim()
+                    val lineTrim = line
+                        .replace(Regex("^\\d{4}/\\d{2}/\\d{2}\\s\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\s"), "")
+                        .trim()
                     Log.d(TAG, lineTrim)
 
-                    Regex("TURN UDP \\(([\\d.]+):\\d+\\)").find(lineTrim)?.groupValues?.getOrNull(1)?.let {
-                        excludeIPs.add(it)
-                    }
-
-                    if (lineTrim.contains("FATAL_AUTH")) {
-                        lastError.value = "Ошибка авторизации WDTT"
+                    if (lineTrim.contains("FATAL_AUTH") &&
+                        !lineTrim.contains("DTLS timeout", true) &&
+                        !lineTrim.contains("WRAP_AUTH_TIMEOUT", true)
+                    ) {
+                        val reason = when {
+                            lineTrim.contains("неверный пароль", true) -> "Неверный пароль WDTT"
+                            lineTrim.contains("истёк", true) -> "Срок пароля истёк"
+                            lineTrim.contains("другому устройству", true) -> "Пароль привязан к другому устройству"
+                            else -> "Ошибка авторизации WDTT"
+                        }
+                        lastError.value = reason
                         stop()
                         return@forEachLine
                     }
@@ -123,7 +163,6 @@ object WdttTunnelManager {
                         stats.value = msg
                         Regex("Активных:\\s*(\\d+)").find(msg)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let {
                             activeWorkers.value = it
-                            tryApplyWireGuard(context)
                         }
                         return@forEachLine
                     }
@@ -131,15 +170,16 @@ object WdttTunnelManager {
                     if (lineTrim.contains("[ДИСП] Воркер") && lineTrim.contains("зарегистрирован")) {
                         Regex("всего:\\s*(\\d+)").find(lineTrim)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let {
                             activeWorkers.value = it
-                            tryApplyWireGuard(context)
                         }
                         return@forEachLine
                     }
 
                     if (lineTrim.contains("[КОНФИГ]") && lineTrim.contains("Сохранён")) {
+                        readConfFile(context)?.let { applyWireGuard(it) }
                         return@forEachLine
                     }
 
+                    // Как в reference: box-drawing WireGuard → сразу UP
                     if (line.contains("╔") && line.contains("WireGuard")) {
                         collectingConfig = true
                         configBuilder.clear()
@@ -150,9 +190,7 @@ object WdttTunnelManager {
                             collectingConfig = false
                             val configStr = configBuilder.toString().trim()
                             if (configStr.isNotBlank()) {
-                                pendingConfig = configStr
-                                confReady = true
-                                tryApplyWireGuard(context)
+                                applyWireGuard(configStr)
                             }
                         } else if (line.contains("║")) {
                             val content = line.replace("║", "").trim()
@@ -164,47 +202,79 @@ object WdttTunnelManager {
             } catch (e: Exception) {
                 Log.e(TAG, "Reader error", e)
             } finally {
-                running.value = false
-                tunnelReady.value = false
+                if (!tunnelReady.value) {
+                    running.value = false
+                }
                 process = null
             }
         }
     }
 
-    private fun tryApplyWireGuard(context: Context) {
-        if (wgApplied || !confReady || activeWorkers.value < 2) return
-        val config = pendingConfig ?: return
-        wgApplied = true
+    private fun readConfFile(context: Context): String? {
+        for (name in listOf("wg-turn.conf", "wg.conf")) {
+            val f = File(context.filesDir, name)
+            if (f.exists() && f.length() > 20) {
+                val text = runCatching { f.readText().trim() }.getOrNull()
+                if (!text.isNullOrBlank() && text.contains("[Interface]")) {
+                    Log.i(TAG, "WG config from $name")
+                    return text
+                }
+            }
+        }
+        return null
+    }
+
+    private fun applyWireGuard(configStr: String) {
+        if (tunnelReady.value) return
+        fallbackJob?.cancel()
+        lastWgConfig = configStr
         scope.launch {
-            delay(500)
             try {
-                wgHelper?.startTunnel(config, excludeIPs.toList())
+                wgHelper?.startTunnel(configStr)
                 tunnelReady.value = true
-                Log.i(TAG, "WireGuard up, workers=${activeWorkers.value}, exclude=${excludeIPs.size}")
+                Log.i(TAG, "WireGuard UP")
             } catch (e: Exception) {
-                wgApplied = false
                 lastError.value = "WireGuard: ${e.message}"
+                Log.e(TAG, "WireGuard failed", e)
                 stop()
             }
         }
     }
 
     fun stop() {
+        scope.launch { stopInternal(keepWg = false) }
+    }
+
+    fun reloadWireGuard(context: Context) {
+        if (!tunnelReady.value) return
+        val config = lastWgConfig ?: return
         scope.launch {
-            withContext(Dispatchers.IO) {
-                readerJob?.cancel()
-                process?.destroy()
-                process = null
+            try {
                 wgHelper?.stopTunnel()
-                running.value = false
-                tunnelReady.value = false
-                activeWorkers.value = 0
-                stats.value = ""
-                wgApplied = false
-                confReady = false
-                pendingConfig = null
-                excludeIPs.clear()
+                delay(200)
+                wgHelper?.startTunnel(config)
+            } catch (e: Exception) {
+                lastError.value = "WireGuard: ${e.message}"
             }
+        }
+    }
+
+    private suspend fun stopInternal(keepWg: Boolean) {
+        withContext(Dispatchers.IO) {
+            fallbackJob?.cancel()
+            readerJob?.cancel()
+            val proc = process
+            process = null
+            if (proc != null) {
+                runCatching { proc.destroy() }
+                runCatching { proc.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS) }
+                if (proc.isAlive) runCatching { proc.destroyForcibly() }
+            }
+            if (!keepWg) wgHelper?.stopTunnel()
+            running.value = false
+            tunnelReady.value = false
+            activeWorkers.value = 0
+            stats.value = ""
         }
     }
 }

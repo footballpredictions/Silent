@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { isLoggedIn } from './api'
+import { isLoggedIn, clearTokens, clearSessionFingerprint } from './api'
 import LoginScreen from './pages/LoginScreen'
 import MainScreen from './pages/MainScreen'
 import ServerSetupScreen from './pages/ServerSetupScreen'
@@ -15,6 +15,10 @@ export default function App() {
     if (!getServerUrl()) {
       setScreen('setup')
     } else if (!isLoggedIn()) {
+      if (localStorage.getItem('silent_token')) {
+        clearTokens()
+        clearSessionFingerprint()
+      }
       setScreen('login')
     } else {
       setScreen('main')

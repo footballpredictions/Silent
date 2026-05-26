@@ -28,13 +28,15 @@ import com.silent.vpn.ui.theme.parseColor
 
 enum class VpnState { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
 
-private enum class MenuPage { ROOT, SUBSCRIPTION, SETTINGS, PROMO, DEVICES, SUPPORT, ABOUT }
+private enum class MenuPage { ROOT, SUBSCRIPTION, SETTINGS, EXCEPTIONS, PROMO, DEVICES, SUPPORT, ABOUT }
 
 @Composable
 fun MainScreen(
     profile: UserProfile?,
     vpnState: VpnState,
     theme: ThemeData?,
+    repo: com.silent.vpn.data.SilentRepository,
+    sessionDeviceId: String? = null,
     vpnError: String?,
     onToggle: () -> Unit,
     onLogout: () -> Unit,
@@ -216,7 +218,15 @@ fun MainScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(profile?.email ?: "—", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg, maxLines = 1)
-                            Text("ID: ${profile?.display_id ?: "—"}", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.padding(top = 2.dp))
+                            Text("Аккаунт: ${profile?.display_id ?: "—"}", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.padding(top = 2.dp))
+                            sessionDeviceId?.takeIf { it.isNotBlank() }?.let { sid ->
+                                Text(
+                                    "Сессия: ${sid.take(8).uppercase()}",
+                                    fontSize = 11.sp,
+                                    color = fg.copy(alpha = 0.35f),
+                                    modifier = Modifier.padding(top = 2.dp),
+                                )
+                            }
                         }
                         IconButton(onClick = { menuOpen = false; menuPage = MenuPage.ROOT }, modifier = Modifier.size(24.dp)) {
                             Icon(Icons.Default.Close, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
@@ -228,6 +238,7 @@ fun MainScreen(
                             val items = listOf(
                                 MenuPage.SUBSCRIPTION to "Подписка",
                                 MenuPage.SETTINGS to "VK / офлайн",
+                                MenuPage.EXCEPTIONS to "Исключения приложений",
                                 MenuPage.PROMO to "Промокод",
                                 MenuPage.DEVICES to "Сессии (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})",
                                 MenuPage.SUPPORT to "Поддержка",
@@ -257,6 +268,7 @@ fun MainScreen(
                             },
                             fg,
                         ) { menuPage = MenuPage.ROOT }
+                        MenuPage.EXCEPTIONS -> AppExclusionsScreen(repo, fg, bg) { menuPage = MenuPage.ROOT }
                         MenuPage.PROMO -> MenuPromo(fg, bg, promoCode, { promoCode = it }, promoMsg, { onCheckPromo(promoCode) { promoMsg = it } }) { menuPage = MenuPage.ROOT }
                         MenuPage.DEVICES -> MenuDevices(profile, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.SUPPORT -> MenuSimplePage("Поддержка", "По вопросам обратитесь через email или Telegram.", fg) { menuPage = MenuPage.ROOT }

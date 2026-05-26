@@ -3,6 +3,8 @@ import axios from 'axios'
 const SERVER_URL_KEY = 'silent_server_url'
 const TOKEN_KEY = 'silent_token'
 const REFRESH_KEY = 'silent_refresh'
+const DEVICE_FP_KEY = 'device_fp'
+const SESSION_DEVICE_ID_KEY = 'session_device_id'
 
 export function getServerUrl(): string {
   return localStorage.getItem(SERVER_URL_KEY) || ''
@@ -54,8 +56,42 @@ export function clearTokens() {
   localStorage.removeItem(REFRESH_KEY)
 }
 
+/** Новый fingerprint на каждый login — освобождает слот при logout. */
+export function startNewSession(): string {
+  clearSessionDeviceId()
+  const fp = crypto.randomUUID()
+  localStorage.setItem(DEVICE_FP_KEY, fp)
+  return fp
+}
+
+export function getDeviceFingerprint(): string {
+  const fp = localStorage.getItem(DEVICE_FP_KEY)
+  if (!fp) throw new Error('Session not started')
+  return fp
+}
+
+export function hasSessionFingerprint(): boolean {
+  return !!localStorage.getItem(DEVICE_FP_KEY)
+}
+
+export function clearSessionFingerprint() {
+  localStorage.removeItem(DEVICE_FP_KEY)
+}
+
+export function saveSessionDeviceId(id: string) {
+  localStorage.setItem(SESSION_DEVICE_ID_KEY, id)
+}
+
+export function getSessionDeviceId(): string | null {
+  return localStorage.getItem(SESSION_DEVICE_ID_KEY)
+}
+
+export function clearSessionDeviceId() {
+  localStorage.removeItem(SESSION_DEVICE_ID_KEY)
+}
+
 export function isLoggedIn(): boolean {
-  return !!localStorage.getItem(TOKEN_KEY)
+  return !!localStorage.getItem(TOKEN_KEY) && hasSessionFingerprint()
 }
 
 export default api

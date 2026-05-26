@@ -119,8 +119,20 @@ app.include_router(admin_router, prefix="/api")
 
 
 @app.get("/health")
+@app.get("/api/health")
 async def health():
     return {"status": "ok", "version": settings.APP_VERSION}
+
+
+# Legacy OAuth landing (GET/POST) — иначе POST даёт 405
+_vk_oauth_html = os.path.join(os.path.dirname(__file__), "..", "static", "vk-agent-oauth.html")
+
+
+@app.api_route("/static/vk-agent-oauth.html", methods=["GET", "POST"], include_in_schema=False)
+async def vk_agent_oauth_landing():
+    if os.path.isfile(_vk_oauth_html):
+        return FileResponse(_vk_oauth_html, media_type="text/html")
+    raise HTTPException(status_code=404, detail="Not Found")
 
 
 # Static files (logo, etc.)

@@ -3,10 +3,12 @@ package com.silent.vpn
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import androidx.activity.ComponentActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
+import com.silent.vpn.auth.CredentialHelper
 import com.silent.vpn.data.ConnectRequest
 import com.silent.vpn.data.DeviceRegisterRequest
 import com.silent.vpn.data.DisconnectRequest
@@ -75,6 +77,12 @@ class MainViewModel @Inject constructor(
     private val _vkMsg = MutableStateFlow("")
     val vkMsg: StateFlow<String> = _vkMsg
 
+    private val _sessionDeviceId = MutableStateFlow(repo.getSessionDeviceId())
+    val sessionDeviceId: StateFlow<String?> = _sessionDeviceId
+
+    val lastEmail: String get() = repo.getLastEmail().orEmpty()
+    val repository: SilentRepository get() = repo
+
     private fun isVkReady(): Boolean =
         repo.getVkUserId() > 0 && !repo.getBootstrapHash().isNullOrBlank()
 
@@ -139,7 +147,7 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun login(email: String, password: String) {
+    fun login(email: String, password: String, activity: ComponentActivity? = null) {
         viewModelScope.launch {
             _authLoading.value = true
             _authError.value = null
@@ -151,6 +159,7 @@ class MainViewModel @Inject constructor(
                 }
                 val tokens = res.body()!!
                 repo.saveTokens(tokens.access_token, tokens.refresh_token)
+                repo.saveLastEmail(email)
                 val localVkId = repo.getVkUserId().takeIf { it > 0 }
                 if (localVkId != null) {
                     runCatching {
@@ -168,6 +177,7 @@ class MainViewModel @Inject constructor(
                 }
                 repo.startNewSession()
                 if (!openLoginSession()) return@launch
+                activity?.let { CredentialHelper.offerSavePassword(it, email, password) }
                 refreshSession()
                 goToMain()
             }.onFailure {
@@ -215,7 +225,13 @@ class MainViewModel @Inject constructor(
         val res = repo.getApi().registerDevice(
             DeviceRegisterRequest("Android", "android", repo.getDeviceFingerprint(), null)
         )
-        if (res.isSuccessful) return true
+        if (res.isSuccessful) {
+            val cfg = res.body()!!
+            repo.saveSessionDeviceId(cfg.device_id)
+            repo.cacheVpnConfig(Gson().toJson(cfg))
+            _sessionDeviceId.value = cfg.device_id
+            return true
+        }
         _authError.value = parseError(res.errorBody()?.string() ?: "")
             ?: "Достигнут лимит устройств (3). Выйдите на другом устройстве."
         repo.clearSessionFingerprint()
@@ -243,7 +259,10 @@ class MainViewModel @Inject constructor(
             }
 
             repo.clearSessionFingerprint()
+            repo.clearSessionDeviceId()
+            repo.clearCachedVpnConfig()
             repo.clearTokens()
+            _sessionDeviceId.value = null
             _profile.value = null
             _theme.value = null
             _vpnState.value = VpnState.DISCONNECTED
@@ -291,6 +310,8 @@ class MainViewModel @Inject constructor(
                     }
                     if (regRes.isSuccessful) {
                         vpnConfig = regRes.body()!!
+                        repo.saveSessionDeviceId(vpnConfig!!.device_id)
+                        _sessionDeviceId.value = vpnConfig!!.device_id
                         repo.cacheVpnConfig(Gson().toJson(vpnConfig))
                     } else if (regRes.code() != 0) {
                         apiError = parseError(regRes.errorBody()?.string() ?: "") ?: "Ошибка регистрации устройства"
@@ -327,7 +348,10 @@ class MainViewModel @Inject constructor(
 
                 if (vpnConfig == null) {
                     repo.getCachedVpnConfig()?.let { cached ->
-                        vpnConfig = Gson().fromJson(cached, VpnConfig::class.java)
+                        val parsed = Gson().fromJson(cached, VpnConfig::class.java)
+                        if (parsed.device_id == repo.getSessionDeviceId()) {
+                            vpnConfig = parsed
+                        }
                     }
                 }
 
@@ -356,6 +380,12 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
+                if (vpnConfig!!.wg_private_key.isBlank() || vpnConfig!!.server_public_key.isBlank()) {
+                    _vpnError.value = "Нет ключей WireGuard на сервере. Перезайдите в аккаунт."
+                    _vpnState.value = VpnState.DISCONNECTED
+                    return@launch
+                }
+
                 runCatching {
                     repo.getApi().connect(ConnectRequest(fp, "android"))
                 }
@@ -366,6 +396,21 @@ class MainViewModel @Inject constructor(
                 }
                 ContextCompat.startForegroundService(context, intent)
                 loadProfile()
+
+                // Таймаут: если WireGuard не поднялся за 90с — останавливаем
+                repeat(90) {
+                    delay(1000)
+                    if (_vpnState.value != VpnState.CONNECTING) return@launch
+                    if (WdttTunnelManager.tunnelReady.value) return@launch
+                }
+                if (_vpnState.value == VpnState.CONNECTING) {
+                    val err = WdttTunnelManager.lastError.value
+                        ?: WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
+                        ?: "Таймаут подключения (нет активных воркеров WDTT)"
+                    stopVpnLocally(context)
+                    _vpnError.value = err
+                    _vpnState.value = VpnState.DISCONNECTED
+                }
             }.onFailure {
                 _vpnError.value = it.message ?: "Ошибка подключения"
                 _vpnState.value = VpnState.DISCONNECTED

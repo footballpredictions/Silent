@@ -9,6 +9,8 @@ type Status = {
   auth_error: string | null
   agent_connected: boolean
   agent_enabled: boolean
+  env_token_set?: boolean
+  env_token_warn?: string | null
   hashes_active: number
   max_hashes: number
 }
@@ -30,19 +32,33 @@ export default function VkPage({ token }: { token: string }) {
   const [agentLoading, setAgentLoading] = useState(false)
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
+  const [oauthPaste, setOauthPaste] = useState('')
+  const [authUrl, setAuthUrl] = useState('')
+  const oauthStateRef = useRef('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const authH = { Authorization: `Bearer ${token}` }
   const jsonH = { ...authH, 'Content-Type': 'application/json' }
 
+  const parseApi = async (res: Response) => {
+    const text = await res.text()
+    try {
+      return { ok: res.ok, data: JSON.parse(text) as Record<string, unknown> }
+    } catch {
+      return { ok: false, data: { detail: text.slice(0, 200) || `HTTP ${res.status}` } }
+    }
+  }
+
   const load = async () => {
     try {
-      const [s, h] = await Promise.all([
-        fetch('/api/admin/vk/status', { headers: authH }).then(r => r.json()),
-        fetch('/api/admin/vk/hashes', { headers: authH }).then(r => r.json()),
+      const [sr, hr] = await Promise.all([
+        fetch('/api/admin/vk/status', { headers: authH }),
+        fetch('/api/admin/vk/hashes', { headers: authH }),
       ])
-      setStatus(s)
-      setHashes(h)
+      const s = await parseApi(sr)
+      const h = await parseApi(hr)
+      if (s.ok) setStatus(s.data as unknown as Status)
+      if (h.ok) setHashes(h.data as unknown as HashRow[])
     } catch {
       setErr('Ошибка загрузки')
     }
@@ -59,29 +75,37 @@ export default function VkPage({ token }: { token: string }) {
     setMsg('')
     try {
       const res = await fetch('/api/admin/vk/bot-auth/start', { method: 'POST', headers: authH })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Ошибка')
-      window.open(data.auth_url, '_blank', 'width=520,height=720')
-      setMsg('Войдите в VK в открывшемся окне. Можно также написать боту для проверки связи.')
-      if (pollRef.current) clearInterval(pollRef.current)
-      pollRef.current = setInterval(async () => {
-        const st = await fetch(`/api/admin/vk/bot-auth/status?state=${data.state}`, { headers: authH })
-        const body = await st.json()
-        if (body.completed) {
-          if (pollRef.current) clearInterval(pollRef.current)
-          setMsg(`VK привязан (ID ${body.vk_user_id})`)
-          setAuthLoading(false)
-          await load()
-        }
-      }, 2000)
-      setTimeout(() => {
-        if (pollRef.current) clearInterval(pollRef.current)
-        setAuthLoading(false)
-      }, 120000)
+      const { ok, data } = await parseApi(res)
+      if (!ok) throw new Error(String(data.detail || 'Ошибка'))
+      oauthStateRef.current = String(data.state || '')
+      setAuthUrl(String(data.auth_url || ''))
+      window.open(String(data.auth_url), '_blank', 'width=520,height=720')
+      setMsg(String(data.paste_hint || 'Войдите в VK, затем вставьте URL из адресной строки blank.html'))
     } catch (e: any) {
       setErr(e.message)
-      setAuthLoading(false)
     }
+    setAuthLoading(false)
+  }
+
+  const submitOAuthPaste = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setAuthLoading(true)
+    setErr('')
+    try {
+      const res = await fetch('/api/admin/vk/bot-auth/paste', {
+        method: 'POST',
+        headers: jsonH,
+        body: JSON.stringify({ state: oauthStateRef.current, paste: oauthPaste.trim() }),
+      })
+      const { ok, data } = await parseApi(res)
+      if (!ok) throw new Error(String(data.detail || 'Ошибка'))
+      setMsg(`VK привязан (ID ${data.vk_user_id})`)
+      setOauthPaste('')
+      await load()
+    } catch (ex: any) {
+      setErr(ex.message)
+    }
+    setAuthLoading(false)
   }
 
   const connectAgent = async () => {
@@ -90,9 +114,9 @@ export default function VkPage({ token }: { token: string }) {
     setMsg('')
     try {
       const res = await fetch('/api/admin/vk/agent/connect', { method: 'POST', headers: authH })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Ошибка')
-      setMsg(data.message)
+      const { ok, data } = await parseApi(res)
+      if (!ok) throw new Error(String(data.detail || 'Ошибка'))
+      setMsg(String(data.message || 'OK'))
       await load()
     } catch (e: any) {
       setErr(e.message)
@@ -108,6 +132,22 @@ export default function VkPage({ token }: { token: string }) {
     setAgentLoading(false)
   }
 
+  const syncEnvToken = async () => {
+    setAgentLoading(true)
+    setErr('')
+    setMsg('')
+    try {
+      const res = await fetch('/api/admin/vk/agent/sync-env', { method: 'POST', headers: authH })
+      const { ok, data } = await parseApi(res)
+      if (!ok) throw new Error(String(data.detail || 'Ошибка'))
+      setMsg(String(data.message || 'OK'))
+      await load()
+    } catch (e: any) {
+      setErr(e.message)
+    }
+    setAgentLoading(false)
+  }
+
   const addManual = async (e: React.FormEvent) => {
     e.preventDefault()
     setErr('')
@@ -117,9 +157,9 @@ export default function VkPage({ token }: { token: string }) {
         headers: jsonH,
         body: JSON.stringify({ hash: manualHash.trim(), slot: manualSlot }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Ошибка')
-      setMsg(data.message)
+      const { ok, data } = await parseApi(res)
+      if (!ok) throw new Error(String(data.detail || 'Ошибка'))
+      setMsg(String(data.message || 'OK'))
       setManualHash('')
       await load()
     } catch (e: any) {
@@ -130,9 +170,9 @@ export default function VkPage({ token }: { token: string }) {
   const removeHash = async (slot: number) => {
     setErr('')
     const res = await fetch(`/api/admin/vk/hashes/${slot}`, { method: 'DELETE', headers: authH })
-    const data = await res.json()
-    if (!res.ok) { setErr(data.detail); return }
-    setMsg(data.message)
+    const { ok, data } = await parseApi(res)
+    if (!ok) { setErr(String(data.detail)); return }
+    setMsg(String(data.message))
     await load()
   }
 
@@ -158,19 +198,60 @@ export default function VkPage({ token }: { token: string }) {
           <div className="flex items-center gap-2 text-sm">
             {status?.vk_linked && status?.calls_ok
               ? <CheckCircle2 className="w-4 h-4 text-green-400" />
+              : status?.vk_linked
+              ? <Circle className="w-4 h-4 text-amber-400" />
               : <Circle className="w-4 h-4 text-[#555]" />}
-            <span className={status?.vk_linked ? 'text-green-400' : 'text-[#888]'}>
-              {status?.vk_linked
+            <span className={status?.vk_linked && status?.calls_ok ? 'text-green-400' : status?.vk_linked ? 'text-amber-400' : 'text-[#888]'}>
+              {status?.vk_linked && status?.calls_ok
                 ? `VK аккаунт ID ${status.vk_user_id}`
+                : status?.vk_linked
+                ? `Токен OK (ID ${status.vk_user_id}), нажмите «Сохранить» или «Подключить агента»`
                 : 'Не авторизован'}
             </span>
           </div>
           {status?.auth_error && <p className="text-xs text-red-400">{status.auth_error}</p>}
+          {status?.env_token_warn && (
+            <p className="text-[10px] text-amber-500/90">{status.env_token_warn}</p>
+          )}
+          {status?.env_token_set && !status?.env_token_warn && (
+            <p className="text-[10px] text-green-500/80">
+              На сервере задан VK_AGENT_ACCESS_TOKEN в .env.
+            </p>
+          )}
+          {!status?.env_token_set && status?.auth_error?.includes('Android') && (
+            <p className="text-[10px] text-[#666] leading-relaxed">
+              Добавьте в .env на сервере: VK_AGENT_ACCESS_TOKEN=vk1.a… (OAuth client_id 6287487).
+            </p>
+          )}
           <p className="text-[10px] text-[#444] leading-relaxed">
             Используется Android API VK (как в клиенте) — нужен для создания звонков и хешей.
           </p>
+          <form onSubmit={submitOAuthPaste} className="space-y-2">
+            <p className="text-[10px] text-[#666]">
+              1. «Войти через VK» → 2. скопируйте URL <span className="text-[#888]">blank.html?code=...</span> → 3. вставьте сюда
+            </p>
+            <p className="text-[10px] text-amber-600/90">
+              Не вставляйте vk1.a... с ПК — VK привязывает token к IP. Сервер сам обменяет code.
+            </p>
+            {authUrl && (
+              <a href={authUrl} target="_blank" rel="noreferrer"
+                className="block text-[10px] text-[#4680C2] hover:underline break-all">
+                Открыть VK OAuth (если окно не открылось)
+              </a>
+            )}
+            <input
+              value={oauthPaste}
+              onChange={e => setOauthPaste(e.target.value)}
+              placeholder="https://oauth.vk.com/blank.html?code=...&state=..."
+              className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white font-mono"
+            />
+            <button type="submit" disabled={authLoading || !oauthPaste.trim()}
+              className="text-xs bg-[#222] border border-[#333] px-3 py-1.5 rounded-lg hover:border-white disabled:opacity-40">
+              Сохранить токен
+            </button>
+          </form>
           <details className="text-xs text-[#555]">
-            <summary className="cursor-pointer hover:text-[#888]">Не открывается окно VK?</summary>
+            <summary className="cursor-pointer hover:text-[#888]">Вход по паролю VK (если OAuth не работает)</summary>
             <form className="mt-3 space-y-2" onSubmit={async e => {
               e.preventDefault()
               const fd = new FormData(e.currentTarget)
@@ -182,9 +263,9 @@ export default function VkPage({ token }: { token: string }) {
                   headers: jsonH,
                   body: JSON.stringify({ login: fd.get('login'), password: fd.get('password') }),
                 })
-                const data = await res.json()
-                if (!res.ok) throw new Error(data.detail || 'Ошибка')
-                setMsg(data.message)
+                const { ok, data } = await parseApi(res)
+                if (!ok) throw new Error(String(data.detail || 'Ошибка'))
+                setMsg(String(data.message))
                 await load()
               } catch (ex: any) { setErr(ex.message) }
               setAuthLoading(false)
@@ -204,6 +285,12 @@ export default function VkPage({ token }: { token: string }) {
               {authLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bot className="w-4 h-4" />}
               Войти через VK
             </button>
+            {status?.env_token_set && (
+              <button onClick={syncEnvToken} disabled={agentLoading}
+                className="inline-flex items-center gap-2 border border-[#333] px-4 py-2.5 rounded-xl text-sm text-[#aaa] hover:border-[#555] disabled:opacity-50">
+                Проверить .env токен
+              </button>
+            )}
             {status?.bot_url && (
               <a href={status.bot_url} target="_blank" rel="noreferrer"
                 className="inline-flex items-center gap-2 border border-[#333] px-4 py-2.5 rounded-xl text-sm text-[#aaa] hover:border-[#555]">
@@ -233,7 +320,7 @@ export default function VkPage({ token }: { token: string }) {
               Отключить агента
             </button>
           ) : (
-            <button onClick={connectAgent} disabled={agentLoading || !status?.vk_linked || !status?.calls_ok}
+            <button onClick={connectAgent} disabled={agentLoading || !status?.vk_linked}
               className="bg-white text-black px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-[#e5e5e5] disabled:opacity-40 disabled:cursor-not-allowed">
               {agentLoading ? 'Подключение…' : 'Подключить агента'}
             </button>

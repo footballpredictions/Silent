@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.models import VkHash
-from app.services.vk_agent_auth import resolve_agent_token, validate_token, VK_API_VERSION, VK_USER_AGENT
+from app.services.vk_agent_auth import resolve_agent_token, validate_token, VK_API_VERSION, VK_USER_AGENT, vk_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +48,7 @@ class VkManager:
             ok, err = await self.ensure_authenticated()
             if not ok:
                 raise VkApiError(-1, err)
-        session = await self._get_session()
-        params["v"] = VK_API_VERSION
-        params["access_token"] = self._token
-
-        url = f"https://api.vk.com/method/{method}"
-        async with session.post(url, data=params) as resp:
-            data = await resp.json(content_type=None)
-
+        data = await vk_api_call(method, self._token, params or None)
         if "error" in data:
             err = data["error"]
             code = err.get("error_code", -1)
@@ -71,7 +64,7 @@ class VkManager:
                 return True, msg
             self._token = None
 
-        token, msg = await resolve_agent_token(self.db)
+        token, msg = await resolve_agent_token(self.db, verify_calls=True)
         if token:
             self._token = token
             return True, msg

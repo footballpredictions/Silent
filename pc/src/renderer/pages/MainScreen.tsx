@@ -1,8 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Menu, X, ChevronRight } from 'lucide-react'
-import api, { clearTokens } from '../api'
+import api, {
+  clearTokens,
+  getDeviceFingerprint,
+  getSessionDeviceId,
+  clearSessionFingerprint,
+  clearSessionDeviceId,
+} from '../api'
 import {
-  cacheVpnConfig, fetchConfigFromVk, getCachedVpnConfig,
+  cacheVpnConfig, fetchConfigFromVk, getCachedVpnConfig, clearCachedVpnConfig,
   getVkAccessToken, getVkUserId, openVkMessagesAuth, saveVkUserId, saveVkAccessToken,
   type VpnConfigPayload,
 } from '../vkConfig'
@@ -14,16 +20,13 @@ interface Profile {
   devices: any[]; devices_count: number; max_devices: number
 }
 
-const DEVICE_FINGERPRINT = (() => {
-  let fp = localStorage.getItem('device_fp')
-  if (!fp) { fp = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('device_fp', fp) }
-  return fp
-})()
+const DEVICE_FINGERPRINT = () => getDeviceFingerprint()
 
 export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: () => void }) {
   const [connected, setConnected] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [profile, setProfile] = useState<Profile | null>(null)
+  const sessionDeviceId = getSessionDeviceId()
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuPage, setMenuPage] = useState<null | 'devices' | 'subscription' | 'settings' | 'promo' | 'support' | 'about'>( null)
   const [promoCode, setPromoCode] = useState('')
@@ -40,24 +43,52 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
 
   useEffect(() => { fetchProfile() }, [])
 
+  useEffect(() => {
+    const api_ = (window as any).electronAPI
+    if (!api_?.onVpnStopped) return
+    const onStopped = () => {
+      setConnected(false)
+      setConnecting(false)
+    }
+    api_.onVpnStopped(onStopped)
+    return () => api_.removeVpnListeners?.()
+  }, [])
+
+  const waitVpnReady = (timeoutMs = 90000): Promise<boolean> =>
+    new Promise(resolve => {
+      const api_ = (window as any).electronAPI
+      if (!api_?.onVpnReady) { resolve(true); return }
+      let done = false
+      const finish = (ok: boolean) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        resolve(ok)
+      }
+      const handler = (ok: boolean) => finish(!!ok)
+      api_.onVpnReady(handler)
+      const timer = setTimeout(() => finish(false), timeoutMs)
+    })
+
   const handleToggle = async () => {
     if (connecting) return
     setConnecting(true)
     try {
+      const fp = DEVICE_FINGERPRINT()
       if (!connected) {
         let config: VpnConfigPayload | null = null
         try {
           const reg = await api.post('/api/vpn/device/register', {
             device_name: 'PC',
             device_type: 'pc',
-            device_fingerprint: DEVICE_FINGERPRINT,
+            device_fingerprint: fp,
           })
           config = reg.data
           cacheVpnConfig(config!)
         } catch (e: any) {
           if (e.response?.status === 402) { alert('Нет активной подписки'); return }
           try {
-            const cfg = await api.get(`/api/vpn/config?fingerprint=${DEVICE_FINGERPRINT}`)
+            const cfg = await api.get(`/api/vpn/config?fingerprint=${fp}`)
             config = cfg.data
             cacheVpnConfig(config!)
           } catch {}
@@ -72,18 +103,29 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
           alert('Сервер недоступен. Привяжите VK в настройках и разрешите чтение сообщений.')
           return
         }
+        if (!config.wg_private_key?.trim() || !config.server_public_key?.trim()) {
+          alert('Нет ключей WireGuard. Перезайдите в аккаунт или проверьте сервер.')
+          return
+        }
         try {
-          await api.post('/api/vpn/connect', { device_fingerprint: DEVICE_FINGERPRINT, device_type: 'pc' })
+          await api.post('/api/vpn/connect', { device_fingerprint: fp, device_type: 'pc' })
         } catch {}
         if ((window as any).electronAPI?.vpnConnect) {
-          await (window as any).electronAPI.vpnConnect(config)
+          const res = await (window as any).electronAPI.vpnConnect(config)
+          if (res?.error) { alert(res.error); return }
+          const ready = await waitVpnReady()
+          if (!ready) {
+            alert('Таймаут подключения WireGuard')
+            await (window as any).electronAPI?.vpnDisconnect?.()
+            return
+          }
         }
         setConnected(true)
       } else {
         if ((window as any).electronAPI?.vpnDisconnect) {
           await (window as any).electronAPI.vpnDisconnect()
         }
-        await api.post('/api/vpn/disconnect', { device_fingerprint: DEVICE_FINGERPRINT }).catch(() => null)
+        await api.post('/api/vpn/disconnect', { device_fingerprint: fp }).catch(() => null)
         setConnected(false)
       }
       fetchProfile()
@@ -116,9 +158,17 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
   }
 
   const handleLogout = async () => {
-    if (connected) {
-      await api.post('/api/vpn/disconnect', { device_fingerprint: DEVICE_FINGERPRINT }).catch(() => null)
+    const fp = (() => { try { return DEVICE_FINGERPRINT() } catch { return null } })()
+    if (connected || connecting) {
+      await (window as any).electronAPI?.vpnDisconnect?.()
+      if (fp) await api.post('/api/vpn/disconnect', { device_fingerprint: fp }).catch(() => null)
     }
+    if (fp) {
+      await api.post('/api/users/logout', { device_fingerprint: fp }).catch(() => null)
+    }
+    clearCachedVpnConfig()
+    clearSessionDeviceId()
+    clearSessionFingerprint()
     clearTokens()
     onLogout()
   }
@@ -209,6 +259,11 @@ export default function MainScreen({ theme, onLogout }: { theme: any; onLogout: 
               <div>
                 <div className="text-xs font-semibold truncate max-w-[140px]">{profile?.email || '—'}</div>
                 <div className="text-xs text-gray-400 mt-0.5">ID: {profile?.display_id || '—'}</div>
+                {sessionDeviceId && (
+                  <div className="text-xs text-gray-400 mt-0.5">
+                    Сессия: {sessionDeviceId.slice(0, 8).toUpperCase()}
+                  </div>
+                )}
               </div>
               <button onClick={() => { setMenuOpen(false); setMenuPage(null) }}
                 className="p-1 hover:opacity-60"><X className="w-4 h-4" /></button>

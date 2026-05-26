@@ -67,6 +67,11 @@ export function cacheVpnConfig(config: VpnConfigPayload) {
   localStorage.setItem('silent_vpn_config_cache_ts', String(Date.now()))
 }
 
+export function clearCachedVpnConfig() {
+  localStorage.removeItem('silent_vpn_config_cache')
+  localStorage.removeItem('silent_vpn_config_cache_ts')
+}
+
 export function getCachedVpnConfig(): VpnConfigPayload | null {
   const ts = Number(localStorage.getItem('silent_vpn_config_cache_ts') || '0')
   if (Date.now() - ts > 30 * 60 * 1000) return null

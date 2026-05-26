@@ -22,6 +22,7 @@ import com.silent.vpn.ui.theme.parseColor
 fun SideMenuContent(
     profile: UserProfile?,
     theme: ThemeData?,
+    sessionDeviceId: String? = null,
     onClose: () -> Unit,
     onSubscription: () -> Unit,
     onSettings: () -> Unit,
@@ -58,11 +59,19 @@ fun SideMenuContent(
                     maxLines = 1,
                 )
                 Text(
-                    "ID: ${profile?.display_id ?: "—"}",
+                    "Аккаунт: ${profile?.display_id ?: "—"}",
                     color = bg.copy(alpha = 0.6f),
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 2.dp),
                 )
+                sessionDeviceId?.takeIf { it.isNotBlank() }?.let { sid ->
+                    Text(
+                        "Сессия: ${sid.take(8).uppercase()}",
+                        color = bg.copy(alpha = 0.45f),
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
             }
             IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd)) {
                 Icon(Icons.Default.Close, contentDescription = null, tint = bg)

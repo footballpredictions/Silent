@@ -10,7 +10,12 @@ from app.core.deps import get_current_user
 from app.core.security import verify_password, hash_password
 from app.config import settings
 from app.services.subscription_service import is_user_admin, ensure_admin_flag
-from app.services.vpn_service import end_device_session, count_active_sessions, count_connected_sessions
+from app.services.vpn_service import (
+    end_device_session,
+    count_active_sessions,
+    count_connected_sessions,
+    clear_stale_online_status,
+)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -18,6 +23,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 @router.get("/me", response_model=UserProfileResponse)
 async def get_profile(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     await ensure_admin_flag(user, db)
+    await clear_stale_online_status(db)
     admin = is_user_admin(user)
 
     subscription_info = SubscriptionInfo(is_active=False)

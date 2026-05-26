@@ -7,8 +7,8 @@ const { spawn } = require('child_process')
 app.commandLine.appendSwitch('ignore-certificate-errors')
 const {
   stopWireGuardTunnel,
-  resetWireGuardState,
   forceStopWireGuard,
+  isProcessElevated,
   buildWgConfigFromApi,
   applyWireGuardConfig,
 } = require('./vpn/wireguard')
@@ -189,7 +189,6 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
   wdttProcess = spawn(exePath, args, { cwd: tmpDir })
   wgApplied = false
-  resetWireGuardState()
 
   const excludeIPs = new Set()
   if (config.server_ip) excludeIPs.add(config.server_ip)
@@ -234,7 +233,9 @@ ipcMain.handle('vpn-connect', async (_, config) => {
       return true
     }
     failWireGuard(
-      'WireGuard не запустился. Закройте приложение, щёлкните правой кнопкой по Silent VPN → «Запуск от имени администратора» и подключитесь снова (один раз).',
+      isProcessElevated()
+        ? 'WireGuard не запустился. Откройте services.msc → WireGuardTunnel$wg-turn или переустановите WireGuard с wireguard.com.'
+        : 'WireGuard требует права администратора. Закройте Silent VPN полностью (ПКМ в трее → Выход), запустите ярлык «Запуск от имени администратора» и подключитесь снова.',
     )
     return false
   }
@@ -314,7 +315,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
   wgTimers.push(setTimeout(async () => {
     if (!wgApplied && !wgAttempted && apiConf) await tryApplyWg(apiConf)
-  }, 12000))
+  }, 20000))
 
   return { success: true }
 })

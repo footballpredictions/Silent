@@ -21,6 +21,9 @@
       { "from": "resources/wdtt-client.exe", "to": "wdtt-client.exe" },
       { "from": "resources/wireguard", "to": "wireguard", "filter": ["**/*"] }
     ],
+    "extraFiles": [
+      { "from": "scripts/Silent VPN (Admin).bat", "to": "Silent VPN (Admin).bat" }
+    ],
     "files": [
       "src/**/*",
       "dist/renderer/**/*",

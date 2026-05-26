@@ -18,4 +18,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('vpn-error')
     ipcRenderer.removeAllListeners('vpn-stopped')
   },
+  onVkDeepLink: (cb) => ipcRenderer.on('vk-deep-link', (_, payload) => cb(payload)),
+  removeVkDeepLinkListeners: () => ipcRenderer.removeAllListeners('vk-deep-link'),
 })

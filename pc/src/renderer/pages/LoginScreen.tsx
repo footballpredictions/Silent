@@ -38,6 +38,26 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
     setBootstrapHash(getBootstrapHash())
   }, [])
 
+  useEffect(() => {
+    const api_ = (window as any).electronAPI
+    if (!api_?.onVkDeepLink) return
+    const handler = ({ boot, vk }: { boot?: string; vk?: number | null }) => {
+      if (vk != null && vk > 0) {
+        saveVkUserId(vk)
+        setVkUserId(vk)
+      }
+      if (boot) {
+        saveBootstrapHash(boot)
+        setBootstrapHash(boot)
+      }
+      refreshVkState()
+      setVkMsg('VK готов. Первый хеш получен — войдите в аккаунт.')
+      setVkLinking(false)
+    }
+    api_.onVkDeepLink(handler)
+    return () => api_.removeVkDeepLinkListeners?.()
+  }, [])
+
   const refreshVkState = () => {
     const id = getVkUserId()
     setVkUserId(id > 0 ? id : null)

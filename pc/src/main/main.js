@@ -17,6 +17,57 @@ let tray = null
 let isQuitting = false
 let wdttProcess = null
 let wgApplied = false
+let pendingVkDeepLink = null
+
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', (_, argv) => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+    const url = argv.find(a => typeof a === 'string' && a.startsWith('silentvpn://'))
+    if (url) handleVkDeepLink(url)
+  })
+}
+
+function handleVkDeepLink(url) {
+  if (!url || typeof url !== 'string' || !url.startsWith('silentvpn://')) return
+  try {
+    const u = new URL(url)
+    if (u.hostname !== 'vk-linked') return
+    const boot = u.searchParams.get('boot') || ''
+    const vkRaw = u.searchParams.get('vk')
+    const vk = vkRaw ? parseInt(vkRaw, 10) : null
+    const payload = { boot, vk: Number.isFinite(vk) ? vk : null }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const send = () => {
+        mainWindow.webContents.send('vk-deep-link', payload)
+        mainWindow.show()
+        mainWindow.focus()
+      }
+      if (mainWindow.webContents.isLoading()) {
+        pendingVkDeepLink = payload
+      } else {
+        send()
+      }
+    } else {
+      pendingVkDeepLink = payload
+    }
+  } catch {}
+}
+
+if (process.platform === 'win32') {
+  const launchUrl = process.argv.find(a => typeof a === 'string' && a.startsWith('silentvpn://'))
+  if (launchUrl) handleVkDeepLink(launchUrl)
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  handleVkDeepLink(url)
+})
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -47,6 +98,14 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../../dist/renderer/index.html'))
   }
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (pendingVkDeepLink) {
+      mainWindow.webContents.send('vk-deep-link', pendingVkDeepLink)
+      pendingVkDeepLink = null
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
   mainWindow.once('ready-to-show', () => mainWindow.show())
   mainWindow.on('close', (e) => {
     if (!isQuitting && tray) {
@@ -149,7 +208,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
       }
       return true
     }
-    sendVpnError('WireGuard: запустите Silent VPN от администратора')
+    sendVpnError('WireGuard: подтвердите UAC или переустановите приложение')
     return false
   }
 
@@ -254,6 +313,13 @@ ipcMain.handle('vpn-read-config', async () => {
 })
 
 app.whenReady().then(() => {
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient('silentvpn', process.execPath, [path.resolve(process.argv[1])])
+    }
+  } else {
+    app.setAsDefaultProtocolClient('silentvpn')
+  }
   createWindow()
   createTray()
 })

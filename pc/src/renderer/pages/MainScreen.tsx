@@ -9,7 +9,7 @@ import api, {
 } from '../api'
 import {
   cacheVpnConfig, fetchConfigFromVk, getCachedVpnConfig, clearCachedVpnConfig,
-  getVkAccessToken, getVkUserId, openVkMessagesAuth, saveVkUserId, saveVkAccessToken,
+  getVkAccessToken, getVkUserId, saveVkUserId,
   type VpnConfigPayload,
 } from '../vkConfig'
 
@@ -33,7 +33,6 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const [menuPage, setMenuPage] = useState<null | 'devices' | 'subscription' | 'settings' | 'promo' | 'support' | 'about'>( null)
   const [promoCode, setPromoCode] = useState('')
   const [promoMsg, setPromoMsg] = useState('')
-  const [vkMsg, setVkMsg] = useState('')
 
   const fetchProfile = useCallback(async () => {
     try {
@@ -114,7 +113,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         }
         if (!config) config = getCachedVpnConfig()
         if (!config) {
-          alert('Сервер недоступен. Привяжите VK в настройках и разрешите чтение сообщений.')
+          alert('Сервер недоступен. Выйдите и настройте VK на экране входа.')
           return
         }
         if (!config.wg_private_key?.trim() || !config.server_public_key?.trim()) {
@@ -146,29 +145,6 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     } catch (err: any) {
       if (err.response?.status === 403) alert(err.response.data.detail)
     } finally { setConnecting(false) }
-  }
-
-  const handleLinkVk = async () => {
-    try {
-      const res = await api.post('/api/auth/vk/link/start')
-      const { auth_url, bot_url } = res.data
-      ;(window as any).electronAPI?.openExternal(auth_url)
-      setVkMsg('Завершите вход VK в браузере...')
-      for (let i = 0; i < 90; i++) {
-        await new Promise(r => setTimeout(r, 2000))
-        const st = await api.get('/api/auth/vk/status')
-        if (st.data.linked) {
-          if (st.data.vk_user_id) saveVkUserId(st.data.vk_user_id)
-          setVkMsg('VK привязан')
-          fetchProfile()
-          return
-        }
-      }
-      setVkMsg('Привязка не завершена')
-      if (bot_url) (window as any).electronAPI?.openExternal(bot_url)
-    } catch (e: any) {
-      setVkMsg(e.response?.data?.detail || 'Ошибка привязки VK')
-    }
   }
 
   const handleLogout = async () => {
@@ -418,27 +394,12 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
             {menuPage === 'settings' && (
               <div className="flex-1 p-4 overflow-y-auto">
                 <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
-                <div className="text-sm font-semibold mb-3">VK (офлайн-конфиг)</div>
-                <p className="text-xs text-gray-500 mb-3">
-                  {profile?.vk_linked ? `VK привязан (ID ${profile.vk_user_id})` : 'VK не привязан — нужен для работы при блокировках'}
+                <div className="text-sm font-semibold mb-3">VK</div>
+                <p className="text-xs text-gray-500">
+                  {profile?.vk_linked || profile?.vk_user_id
+                    ? `VK привязан (ID ${profile.vk_user_id}). Настройка — на экране входа.`
+                    : 'VK не привязан. Выйдите и настройте VK на экране входа.'}
                 </p>
-                <button onClick={handleLinkVk}
-                  className="w-full bg-[#4680C2] text-white rounded-xl py-2.5 text-xs font-semibold mb-2">
-                  Привязать VK ID
-                </button>
-                <button onClick={() => (window as any).electronAPI?.openExternal('https://vk.com/write-239092728')}
-                  className="w-full bg-black text-white rounded-xl py-2.5 text-xs font-semibold mb-2">
-                  Написать боту VK
-                </button>
-                <button onClick={openVkMessagesAuth}
-                  className="w-full bg-gray-800 text-white rounded-xl py-2.5 text-xs font-semibold mb-2">
-                  Разрешить чтение сообщений VK
-                </button>
-                <input placeholder="Вставьте VK token (access_token из oauth.vk.com/blank.html#...)"
-                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs mt-2"
-                  onBlur={e => { if (e.target.value.trim()) { saveVkAccessToken(e.target.value.trim()); setVkMsg('VK token сохранён') } }}
-                  style={{ userSelect: 'text' } as any} />
-                {vkMsg && <p className="text-xs text-gray-500 mt-2">{vkMsg}</p>}
               </div>
             )}
           </div>

@@ -1,4 +1,4 @@
-/** Bundled WireGuard CLI — без установки приложения WireGuard из Program Files. */
+/** WireGuard через bundled CLI — UAC только для установки туннеля, не для всего приложения. */
 const path = require('path')
 const fs = require('fs')
 const { spawn, execSync } = require('child_process')
@@ -29,15 +29,8 @@ function stopWireGuardTunnel(isDev, dirname) {
     } catch {}
   }
   const serviceName = `WireGuardTunnel$${TUNNEL_NAME}`
-  try {
-    execSync(`sc stop "${serviceName}"`, { windowsHide: true, stdio: 'ignore' })
-  } catch {}
-  try {
-    execSync(`sc delete "${serviceName}"`, { windowsHide: true, stdio: 'ignore' })
-  } catch {}
-  try {
-    execSync('taskkill /F /IM wireguard.exe /T', { windowsHide: true, stdio: 'ignore' })
-  } catch {}
+  try { execSync(`sc stop "${serviceName}"`, { windowsHide: true, stdio: 'ignore' }) } catch {}
+  try { execSync(`sc delete "${serviceName}"`, { windowsHide: true, stdio: 'ignore' }) } catch {}
 }
 
 function buildWgConfigFromApi(config, listenPort = 9000) {
@@ -82,6 +75,24 @@ function generateExclusionAllowedIPs(excludeIPs) {
   return networks.map(([n, p]) => `${numToIp(n)}/${p}`).join(', ')
 }
 
+function runInstallTunnel(wgExe, confPath, elevated) {
+  return new Promise((resolve) => {
+    if (elevated) {
+      const ps = [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
+        `$p = Start-Process -FilePath ${JSON.stringify(wgExe)} -ArgumentList '/installtunnelservice',${JSON.stringify(confPath)} -Verb RunAs -Wait -PassThru; if ($p) { exit $p.ExitCode } else { exit 1 }`,
+      ]
+      const proc = spawn('powershell.exe', ps, { windowsHide: true })
+      proc.on('close', code => resolve(code === 0))
+      proc.on('error', () => resolve(false))
+      return
+    }
+    const proc = spawn(wgExe, ['/installtunnelservice', confPath], { windowsHide: true })
+    proc.on('close', code => resolve(code === 0))
+    proc.on('error', () => resolve(false))
+  })
+}
+
 async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs = []) {
   const wgExe = findBundledWireGuard(isDev, dirname)
   if (!wgExe) {
@@ -102,19 +113,18 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   stopWireGuardTunnel(isDev, dirname)
   await new Promise(r => setTimeout(r, 800))
 
-  return new Promise((resolve) => {
-    send('[WG] Запуск туннеля (bundled CLI)...')
-    const proc = spawn(wgExe, ['/installtunnelservice', confPath], { windowsHide: true })
-    proc.on('close', (code) => {
-      if (code === 0) {
-        send('[WG] ✅ Туннель активен')
-        resolve(true)
-      } else {
-        send(`[WG] ⚠ Ошибка (код ${code}). Запустите от администратора.`)
-        resolve(false)
-      }
-    })
-  })
+  send('[WG] Установка туннеля...')
+  let ok = await runInstallTunnel(wgExe, confPath, false)
+  if (!ok) {
+    send('[WG] Запрос прав администратора (UAC) для WireGuard...')
+    ok = await runInstallTunnel(wgExe, confPath, true)
+  }
+  if (ok) {
+    send('[WG] ✅ Туннель активен')
+    return true
+  }
+  send('[WG] ⚠ Не удалось поднять туннель. Подтвердите UAC или переустановите приложение.')
+  return false
 }
 
 module.exports = {
@@ -124,3 +134,4 @@ module.exports = {
   buildWgConfigFromApi,
   applyWireGuardConfig,
 }
+

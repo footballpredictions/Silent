@@ -1,4 +1,5 @@
 """VK ID linking — guest bootstrap before login + account attach after login."""
+import json
 import logging
 import secrets
 from datetime import datetime, timedelta
@@ -44,16 +45,28 @@ h2{{font-weight:400}}p{{color:#aaa;max-width:320px;margin:12px auto;line-height:
 
 
 def _success_page(vk_user_id: int, boot: str) -> HTMLResponse:
-    deep_link = f"silentvpn://vk-linked?boot={boot}&vk={vk_user_id}" if boot else "silentvpn://vk-linked"
+    deep_link = f"silentvpn://vk-linked?boot={boot}&vk={vk_user_id}" if boot else f"silentvpn://vk-linked?vk={vk_user_id}"
+    link_js = json.dumps(deep_link)
     return HTMLResponse(
         f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Silent VPN</title>
 <style>body{{font-family:sans-serif;text-align:center;padding:60px;background:#000;color:#fff}}
-h2{{font-weight:400}}p{{color:#aaa}}a{{color:#4680C2;text-decoration:none;font-size:16px;display:inline-block;margin-top:20px;padding:12px 24px;border:1px solid #4680C2;border-radius:8px}}</style></head>
+h2{{font-weight:400}}p{{color:#aaa;max-width:340px;margin:12px auto;line-height:1.5}}
+a{{color:#4680C2;text-decoration:none;font-size:16px;display:inline-block;margin-top:20px;padding:12px 24px;border:1px solid #4680C2;border-radius:8px}}</style></head>
 <body><h2>VK подключён</h2>
 <p>Первый хеш отправлен в сообщения VK автоматически.</p>
-<a href="{deep_link}">Открыть Silent VPN</a>
-<p style="margin-top:24px;font-size:13px">Вернитесь в приложение и войдите в аккаунт.</p>
+<a href="{deep_link}" id="openApp">Вернуться в Silent VPN</a>
+<p id="hint" style="margin-top:24px;font-size:13px">Открываем приложение…</p>
+<script>
+(function(){{
+  var link = {link_js};
+  try {{ window.location.href = link; }} catch (e) {{}}
+  setTimeout(function(){{
+    var el = document.getElementById('hint');
+    if (el) el.textContent = 'Вернитесь в окно Silent VPN на компьютере — данные уже сохранены.';
+  }}, 1500);
+}})();
+</script>
 </body></html>"""
     )
 

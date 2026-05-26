@@ -39,9 +39,11 @@ class Settings(BaseSettings):
     ADMIN_LOGIN: str = "admin"
     ADMIN_PASSWORD: str = "change_me_123"
 
-    # VK AI Assistant (admin account for TURN hashes)
+    # VK AI Assistant (Android client token for calls.create / TURN hashes)
     VK_LOGIN: str = ""
     VK_PASSWORD: str = ""
+    # Токен Android-клиента (6287487): vk1.a.... — приоритет над OAuth/БД
+    VK_AGENT_ACCESS_TOKEN: str = ""
     VK_CLIENT_IDS: List[int] = [6287487, 8202606]
 
     # VK Community bot (config delivery via messages)
@@ -61,6 +63,7 @@ class Settings(BaseSettings):
     WG_PORT: int = 56001
     WG_SUBNET: str = "10.66.66.0/24"
     MAX_DEVICES_PER_USER: int = 3
+    WDTT_MASTER_PASSWORD: str = ""
 
     # Subscription prices
     PRICE_MONTHLY: float = 199.0

@@ -2,6 +2,7 @@ package com.silent.vpn
 
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -86,17 +87,25 @@ class MainViewModel @Inject constructor(
     init {
         if (repo.isLoggedIn()) {
             if (!repo.hasSessionFingerprint()) {
-                viewModelScope.launch {
-                    repo.startNewSession()
-                    openLoginSession()
-                }
+                repo.clearTokens()
+                _screen.value = AppScreen.LOGIN
+            } else {
+                refreshSession()
             }
-            refreshSession()
         }
         viewModelScope.launch {
             WdttTunnelManager.lastError.collect { err ->
                 if (!err.isNullOrBlank()) {
                     _vpnError.value = err
+                    _vpnState.value = VpnState.DISCONNECTED
+                }
+            }
+        }
+        viewModelScope.launch {
+            WdttTunnelManager.tunnelReady.collect { ready ->
+                if (ready) {
+                    _vpnState.value = VpnState.CONNECTED
+                } else if (_vpnState.value == VpnState.CONNECTED) {
                     _vpnState.value = VpnState.DISCONNECTED
                 }
             }
@@ -225,7 +234,12 @@ class MainViewModel @Inject constructor(
             }
 
             if (fp != null && repo.getAccessToken() != null) {
-                runCatching { repo.getApi().logoutSession(DisconnectRequest(fp)) }
+                runCatching {
+                    val res = repo.getApi().logoutSession(DisconnectRequest(fp))
+                    if (!res.isSuccessful) {
+                        Log.w("MainViewModel", "logout API ${res.code()}")
+                    }
+                }
             }
 
             repo.clearSessionFingerprint()
@@ -351,7 +365,6 @@ class MainViewModel @Inject constructor(
                     putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(vpnConfig))
                 }
                 ContextCompat.startForegroundService(context, intent)
-                _vpnState.value = VpnState.CONNECTED
                 loadProfile()
             }.onFailure {
                 _vpnError.value = it.message ?: "Ошибка подключения"

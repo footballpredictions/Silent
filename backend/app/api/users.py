@@ -85,7 +85,7 @@ async def logout_session(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Exit account: release device slot and mark VPN disconnected."""
+    """Exit account: delete device session and free slot."""
     await end_device_session(db, user.id, req.device_fingerprint)
     return {"status": "logged_out"}
 

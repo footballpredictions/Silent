@@ -9,7 +9,6 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import com.silent.vpn.MainActivity
 import com.silent.vpn.vpn.WdttTunnelManager
@@ -65,7 +64,9 @@ class SilentVpnService : Service() {
             val arr = obj.optJSONArray("vk_hashes")
             if (arr != null) for (i in 0 until arr.length()) hashes.add(arr.getString(i))
 
-            val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "android"
+            val deviceId = obj.optString("device_id").ifBlank {
+                obj.optString("deviceId").ifBlank { "android" }
+            }
 
             WdttTunnelManager.start(
                 this,

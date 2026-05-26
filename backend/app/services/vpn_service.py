@@ -93,7 +93,7 @@ async def end_device_session(
     user_id,
     device_fingerprint: str,
 ) -> bool:
-    """Logout: release slot and mark VPN disconnected."""
+    """Logout: удалить сессию устройства и освободить слот."""
     result = await db.execute(
         select(Device).where(
             Device.user_id == user_id,
@@ -103,8 +103,7 @@ async def end_device_session(
     device = result.scalar_one_or_none()
     if not device:
         return False
-    device.is_connected = False
-    device.is_active = False
+    await db.delete(device)
     await db.commit()
     return True
 
@@ -137,31 +136,14 @@ async def register_device(
             "Выйдите из аккаунта на одном из них."
         )
 
-    result = await db.execute(
-        select(Device).where(
-            Device.user_id == user.id,
-            Device.device_fingerprint == device_fingerprint,
-        )
-    )
-    inactive = result.scalar_one_or_none()
-    if inactive:
-        inactive.is_active = True
-        inactive.is_connected = False
-        inactive.device_name = device_name
-        inactive.device_type = device_type
-        inactive.last_connected = None
-        await db.commit()
-        await db.refresh(inactive)
-        return await _build_vpn_config(db, inactive)
-
-    # Check device limit — new session
+    # Новая сессия — новый device_id (не реактивируем старые записи)
     priv_key, pub_key = _generate_wg_keypair()
     if wg_public_key:
         pub_key = wg_public_key
         priv_key = ""  # Client provides own key
 
     wg_address = await _get_next_wg_address(db)
-    wdtt_pass = generate_wdtt_password()
+    wdtt_pass = (settings.WDTT_MASTER_PASSWORD or "").strip() or generate_wdtt_password()
 
     device = Device(
         user_id=user.id,
@@ -194,14 +176,14 @@ async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigRespon
             pass
 
     return VpnConfigResponse(
-        device_id=device.id,
+        device_id=str(device.id),
         wg_private_key=priv_key,
         wg_address=device.wg_address or "10.66.66.2/24",
         wg_dns="77.88.8.8,77.88.8.1",
         server_ip=settings.VPN_SERVER_IP,
         server_port=settings.VPN_SERVER_PORT,
         server_public_key=server_pub_key,
-        wdtt_password=device.wdtt_password or "",
+        wdtt_password=(settings.WDTT_MASTER_PASSWORD or "").strip() or (device.wdtt_password or ""),
         vk_hashes=hashes,
         stream_count=3,
     )

@@ -57,6 +57,9 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE vk_link_sessions ADD COLUMN IF NOT EXISTS completed BOOLEAN DEFAULT FALSE"
         ))
         await conn.execute(text(
+            "ALTER TABLE vk_link_sessions ADD COLUMN IF NOT EXISTS purpose VARCHAR(32) DEFAULT 'guest'"
+        ))
+        await conn.execute(text(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE"
         ))
         await conn.execute(text(

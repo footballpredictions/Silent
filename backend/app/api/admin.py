@@ -11,9 +11,8 @@ from pydantic import BaseModel
 from typing import Optional
 
 from app.database import get_db
-from app.models import User, Subscription, Device, VkCredentials, VkHash, AppSetting, PromoCode
+from app.models import User, Subscription, Device, VkHash, AppSetting, PromoCode
 from app.core.deps import get_admin_credentials
-from app.core.security import encrypt_value, decrypt_value
 from app.schemas.vpn import ThemeResponse
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -129,81 +128,117 @@ async def ban_user(
     return {"status": "banned" if not user.is_active else "unbanned"}
 
 
-# VK credentials & hash management
-class VkCredentialsRequest(BaseModel):
-    login: str = ""
-    password: str = ""
-    access_token: str = ""
-
+# ─── VK: bot auth → AI agent → manual hashes ─────────────────────────────────
 
 class VkHashManualRequest(BaseModel):
     hash: str
     slot: int
 
 
-class VkHashSlotRequest(BaseModel):
-    slot: int
-
-
 @router.get("/vk/status")
-async def vk_auth_status(
+async def vk_panel_status(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
     from app.services.vk_agent_auth import get_auth_status
-    return await get_auth_status(db)
-
-
-@router.post("/vk/credentials")
-async def set_vk_credentials(
-    req: VkCredentialsRequest,
-    _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
-):
-    from app.services.vk_agent_auth import save_stored_token, validate_token
-
-    result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
-    creds = result.scalar_one_or_none()
-
-    if req.access_token.strip():
-        token = req.access_token.strip()
-        ok, msg, uid = await validate_token(token)
-        if not ok:
-            raise HTTPException(status_code=400, detail=f"Токен не работает: {msg}")
-        await save_stored_token(db, token)
-        return {"message": f"VK токен сохранён (user_id={uid})", "auth_ok": True}
-
-    if not req.login.strip() or not req.password:
-        raise HTTPException(status_code=400, detail="Укажите логин/пароль или access_token")
-
-    enc_login = encrypt_value(req.login.strip())
-    enc_pass = encrypt_value(req.password)
-
-    if creds:
-        creds.login_enc = enc_login
-        creds.password_enc = enc_pass
-        creds.is_configured = True
-    else:
-        db.add(VkCredentials(id=1, login_enc=enc_login, password_enc=enc_pass, is_configured=True))
-    await db.commit()
-
-    from app.services.vk_agent_auth import resolve_agent_token
-    token, msg = await resolve_agent_token(db)
-    if token:
-        return {"message": f"Credentials сохранены. {msg}", "auth_ok": True}
-    return {"message": f"Credentials сохранены, но авторизация не удалась: {msg}", "auth_ok": False}
-
-
-@router.post("/vk/auth/test")
-async def test_vk_auth(
-    _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
-):
-    from app.services.vk_agent_auth import get_auth_status
+    from ai.vk_manager import MAX_HASHES
     status = await get_auth_status(db)
-    if not status["auth_ok"]:
-        raise HTTPException(status_code=400, detail=status.get("auth_error") or "Auth failed")
+    status["hashes_active"] = (await db.execute(
+        select(func.count(VkHash.id)).where(VkHash.is_active == True)
+    )).scalar_one()
+    status["max_hashes"] = MAX_HASHES
     return status
+
+
+@router.post("/vk/bot-auth/start")
+async def vk_bot_auth_start(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.config import settings
+    from app.services.vk_id_service import generate_pkce, build_authorize_url
+    from app.models import VkLinkSession
+    import secrets
+    from datetime import timedelta
+
+    if not settings.VK_ID_APP_ID:
+        raise HTTPException(status_code=503, detail="VK ID не настроен на сервере")
+
+    code_verifier, code_challenge = generate_pkce()
+    state = secrets.token_urlsafe(32)
+    db.add(VkLinkSession(
+        state=state,
+        user_id=None,
+        code_verifier=code_verifier,
+        expires_at=datetime.utcnow() + timedelta(minutes=15),
+        purpose="agent",
+    ))
+    await db.commit()
+    bot_url = settings.VK_BOT_WRITE_URL or f"https://vk.com/write-{settings.VK_GROUP_ID}"
+    return {
+        "auth_url": build_authorize_url(state, code_challenge),
+        "state": state,
+        "bot_url": bot_url,
+    }
+
+
+@router.get("/vk/bot-auth/status")
+async def vk_bot_auth_poll(
+    state: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models import VkLinkSession
+    result = await db.execute(
+        select(VkLinkSession).where(VkLinkSession.state == state, VkLinkSession.purpose == "agent")
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
+    return {"completed": session.completed, "vk_user_id": session.vk_user_id}
+
+
+@router.post("/vk/agent/connect")
+async def vk_agent_connect(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.vk_agent_auth import get_auth_status, set_agent_enabled, set_calls_verified
+    from ai.vk_manager import VkManager
+
+    status = await get_auth_status(db)
+    if not status.get("vk_linked"):
+        raise HTTPException(status_code=400, detail=status.get("auth_error") or "Сначала войдите через VK")
+    if not status.get("calls_ok"):
+        raise HTTPException(status_code=400, detail="VK не может создавать звонки — авторизуйтесь снова")
+
+    manager = VkManager(db)
+    try:
+        active = (await db.execute(
+            select(func.count(VkHash.id)).where(VkHash.is_active == True)
+        )).scalar_one()
+        if active < 3:
+            success, message = await manager.recreate_all_hashes()
+            if not success:
+                raise HTTPException(status_code=400, detail=message)
+        else:
+            await manager.check_and_heal()
+            message = "Агент подключён, хеши проверены"
+        await set_agent_enabled(db, True)
+        await set_calls_verified(db, True)
+        return {"success": True, "message": message, "agent_connected": True}
+    finally:
+        await manager.close()
+
+
+@router.post("/vk/agent/disconnect")
+async def vk_agent_disconnect(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.vk_agent_auth import set_agent_enabled
+    await set_agent_enabled(db, False)
+    return {"success": True, "message": "AI-агент отключён", "agent_connected": False}
 
 
 @router.get("/vk/hashes")
@@ -256,42 +291,21 @@ async def add_vk_hash_manual(
     return {"success": True, "slot": req.slot, "hash": hash_val, "message": f"Хеш добавлен в слот {req.slot}"}
 
 
-@router.post("/vk/hashes/create")
-async def create_vk_hash_slot(
-    req: VkHashSlotRequest,
+@router.delete("/vk/hashes/{slot}")
+async def delete_vk_hash_slot(
+    slot: int,
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create hash via calls.create for a slot (uses VK Android auth)."""
-    from ai.vk_manager import VkManager
-    manager = VkManager(db)
-    try:
-        hash_val, msg = await manager.create_hash_for_slot(req.slot)
-        if not hash_val:
-            raise HTTPException(status_code=400, detail=msg)
-        try:
-            from app.services.vk_config_publisher import publish_all_configs
-            await publish_all_configs(db)
-        except Exception:
-            pass
-        return {"success": True, "slot": req.slot, "hash": hash_val, "message": msg}
-    finally:
-        await manager.close()
-
-
-@router.post("/vk/recreate")
-async def recreate_vk_hashes(
-    _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
-):
-    """Manually trigger VK hash recreation."""
-    from ai.vk_manager import VkManager
-    manager = VkManager(db)
-    try:
-        success, message = await manager.recreate_all_hashes()
-        return {"success": success, "message": message}
-    finally:
-        await manager.close()
+    from ai.vk_manager import MAX_HASHES
+    if slot < 0 or slot >= MAX_HASHES:
+        raise HTTPException(status_code=400, detail=f"Слот 0–{MAX_HASHES - 1}")
+    result = await db.execute(select(VkHash).where(VkHash.slot_index == slot))
+    h = result.scalar_one_or_none()
+    if h:
+        h.is_active = False
+        await db.commit()
+    return {"success": True, "message": f"Слот {slot} очищен"}
 
 
 @router.post("/vk/publish-configs")

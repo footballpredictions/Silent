@@ -162,37 +162,120 @@ async def resolve_agent_token(db: AsyncSession) -> tuple[str | None, str]:
         except Exception as e:
             return None, str(e)
 
-    return None, (
-        "Нет рабочего VK токена. Вставьте access_token из браузера "
-        "(client_id 6287487) или сохраните логин/пароль."
-    )
+    from app.config import settings
+    if settings.VK_LOGIN and settings.VK_PASSWORD:
+        token, msg = await password_login(settings.VK_LOGIN, settings.VK_PASSWORD)
+        if token:
+            await save_stored_token(db, token)
+            return token, msg
+
+    return None, "Сначала нажмите «Войти через VK» в панели админа."
+
+
+async def test_calls_permission(token: str) -> tuple[bool, str]:
+    """Check if token can create VK calls (creates one test call)."""
+    try:
+        async with aiohttp.ClientSession(
+            headers={"User-Agent": VK_USER_AGENT},
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as session:
+            async with session.post(
+                "https://api.vk.com/method/calls.create",
+                data={"access_token": token, "v": VK_API_VERSION},
+            ) as resp:
+                data = await resp.json(content_type=None)
+        if "error" in data:
+            err = data["error"]
+            return False, err.get("error_msg", "calls.create denied")
+        join = data.get("response", {}).get("join_link", "")
+        if join:
+            return True, "OK"
+        return False, "calls.create без join_link"
+    except Exception as e:
+        return False, str(e)
+
+
+async def _setting(db: AsyncSession, key: str) -> str | None:
+    from app.models import AppSetting
+    r = await db.execute(select(AppSetting).where(AppSetting.key == key))
+    s = r.scalar_one_or_none()
+    return s.value if s else None
+
+
+async def _set_setting(db: AsyncSession, key: str, value: str) -> None:
+    from app.models import AppSetting
+    r = await db.execute(select(AppSetting).where(AppSetting.key == key))
+    s = r.scalar_one_or_none()
+    if s:
+        s.value = value
+    else:
+        db.add(AppSetting(key=key, value=value))
+    await db.commit()
+
+
+async def set_calls_verified(db: AsyncSession, ok: bool) -> None:
+    await _set_setting(db, "vk_agent_calls_ok", "true" if ok else "false")
+
+
+async def get_calls_verified(db: AsyncSession) -> bool:
+    return (await _setting(db, "vk_agent_calls_ok")) == "true"
+
+
+async def is_agent_enabled(db: AsyncSession) -> bool:
+    from app.models import AppSetting
+    result = await db.execute(select(AppSetting).where(AppSetting.key == "vk_agent_enabled"))
+    s = result.scalar_one_or_none()
+    return s is not None and s.value == "true"
+
+
+async def set_agent_enabled(db: AsyncSession, enabled: bool) -> None:
+    from app.models import AppSetting
+    key = "vk_agent_enabled"
+    result = await db.execute(select(AppSetting).where(AppSetting.key == key))
+    s = result.scalar_one_or_none()
+    if s:
+        s.value = "true" if enabled else "false"
+    else:
+        db.add(AppSetting(key=key, value="true" if enabled else "false"))
+    await db.commit()
 
 
 async def get_auth_status(db: AsyncSession) -> dict:
+    from app.config import settings
+
     result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
     creds = result.scalar_one_or_none()
-    has_password = bool(creds and creds.login_enc and creds.password_enc)
     has_token = bool(creds and creds.access_token)
 
     auth_ok = False
     auth_error: str | None = None
     vk_user_id: int | None = None
+    calls_ok = False
 
     token, msg = await resolve_agent_token(db)
     if token:
         ok, detail, uid = await validate_token(token)
         auth_ok = ok
-        auth_error = None if ok else detail
         vk_user_id = uid
+        if ok:
+            calls_ok = await get_calls_verified(db)
+            if not calls_ok:
+                auth_error = "Аккаунт привязан, но звонки не проверены — войдите через VK снова"
+        else:
+            auth_error = detail
     else:
         auth_error = msg
 
+    agent_on = await is_agent_enabled(db)
+
     return {
-        "configured": bool(creds and creds.is_configured) or has_token or has_password,
-        "has_password": has_password,
-        "has_token": has_token,
-        "auth_ok": auth_ok,
+        "bot_url": settings.VK_BOT_WRITE_URL or f"https://vk.com/write-{settings.VK_GROUP_ID}",
+        "group_id": settings.VK_GROUP_ID,
+        "vk_linked": auth_ok,
+        "calls_ok": calls_ok,
         "auth_error": auth_error,
         "vk_user_id": vk_user_id,
-        "token_capture_url": build_token_capture_url(),
+        "agent_connected": agent_on and auth_ok and calls_ok,
+        "agent_enabled": agent_on,
+        "has_token": has_token,
     }

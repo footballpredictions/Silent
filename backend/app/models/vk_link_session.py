@@ -15,3 +15,4 @@ class VkLinkSession(Base):
     vk_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     bootstrap_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    purpose: Mapped[str] = mapped_column(String(32), default="guest")  # guest | user | agent

@@ -58,16 +58,17 @@ h2{{font-weight:400}}p{{color:#aaa}}a{{color:#4680C2;text-decoration:none;font-s
     )
 
 
-async def _start_session(db: AsyncSession, user_id=None) -> tuple[str, str, str]:
+async def _start_session(db: AsyncSession, user_id=None, purpose: str = "guest") -> tuple[str, str, str]:
     code_verifier, code_challenge = generate_pkce()
     state = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(minutes=LINK_TTL_MINUTES)
     if user_id:
         await db.execute(delete(VkLinkSession).where(VkLinkSession.user_id == user_id))
-    else:
+    elif purpose == "guest":
         await db.execute(
             delete(VkLinkSession).where(
                 VkLinkSession.user_id.is_(None),
+                VkLinkSession.purpose == "guest",
                 VkLinkSession.expires_at < datetime.utcnow(),
             )
         )
@@ -76,9 +77,24 @@ async def _start_session(db: AsyncSession, user_id=None) -> tuple[str, str, str]
         user_id=user_id,
         code_verifier=code_verifier,
         expires_at=expires_at,
+        purpose=purpose,
     ))
     await db.commit()
     return state, code_verifier, build_authorize_url(state, code_challenge)
+
+
+def _admin_agent_success_page(vk_user_id: int) -> HTMLResponse:
+    return HTMLResponse(
+        """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Silent Admin</title>
+<style>body{font-family:sans-serif;text-align:center;padding:60px;background:#0a0a0a;color:#fff}
+h2{font-weight:500;color:#4ade80}p{color:#888}</style></head>
+<body><h2>VK подключён</h2>
+<p>Аккаунт ID %d привязан к AI-агенту.</p>
+<p>Закройте окно и нажмите «Подключить агента» в панели админа.</p>
+<script>setTimeout(function(){window.close()},3000)</script>
+</body></html>""" % vk_user_id
+    )
 
 
 @router.post("/guest/link/start", response_model=VkGuestLinkStartResponse)
@@ -176,6 +192,29 @@ async def vk_oauth_callback(
     vk_user_id = int(token_data.get("user_id", 0))
     if not vk_user_id:
         return _error_page("VK не вернул ID пользователя.")
+
+    # Admin AI agent OAuth — save token, no bootstrap
+    if getattr(session, "purpose", "guest") == "agent":
+        access_token = token_data.get("access_token")
+        if not access_token:
+            return _error_page("VK не вернул access_token для агента.")
+        from app.services.vk_agent_auth import save_stored_token, validate_token, test_calls_permission, set_calls_verified
+        await save_stored_token(db, access_token, token_data.get("expires_in"))
+        ok, msg, _ = await validate_token(access_token)
+        if not ok:
+            return _error_page(f"Токен не прошёл проверку: {msg}")
+        calls_ok, calls_msg = await test_calls_permission(access_token)
+        session.vk_user_id = vk_user_id
+        session.completed = True
+        await db.commit()
+        if not calls_ok:
+            await set_calls_verified(db, False)
+            return _error_page(
+                f"VK привязан, но звонки недоступны: {calls_msg}. "
+                "Используйте аккаунт VK с правом создавать звонки."
+            )
+        await set_calls_verified(db, True)
+        return _admin_agent_success_page(vk_user_id)
 
     _, boot = await publish_bootstrap_to_vk_user(db, vk_user_id)
     if not boot:

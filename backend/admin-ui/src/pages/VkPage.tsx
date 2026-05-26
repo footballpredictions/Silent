@@ -1,286 +1,253 @@
-import { useState, useEffect } from 'react'
-import { Key, RefreshCw, CheckCircle, XCircle, AlertTriangle, Plus, Zap, ExternalLink } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Bot, Cpu, Trash2, Plus, CheckCircle2, Circle, Loader2 } from 'lucide-react'
 
-type VkStatus = {
-  configured: boolean
-  has_password: boolean
-  has_token: boolean
-  auth_ok: boolean
-  auth_error: string | null
+type Status = {
+  bot_url: string
+  vk_linked: boolean
+  calls_ok: boolean
   vk_user_id: number | null
-  token_capture_url: string
+  auth_error: string | null
+  agent_connected: boolean
+  agent_enabled: boolean
+  hashes_active: number
+  max_hashes: number
+}
+
+type HashRow = {
+  id: string
+  slot: number
+  hash: string
+  is_active: boolean
+  fail_count: number
 }
 
 export default function VkPage({ token }: { token: string }) {
-  const [login, setLogin] = useState('')
-  const [password, setPassword] = useState('')
-  const [accessToken, setAccessToken] = useState('')
-  const [hashes, setHashes] = useState<any[]>([])
-  const [status, setStatus] = useState<VkStatus | null>(null)
+  const [status, setStatus] = useState<Status | null>(null)
+  const [hashes, setHashes] = useState<HashRow[]>([])
   const [manualHash, setManualHash] = useState('')
   const [manualSlot, setManualSlot] = useState(0)
-  const [saving, setSaving] = useState(false)
-  const [recreating, setRecreating] = useState(false)
-  const [creatingSlot, setCreatingSlot] = useState<number | null>(null)
+  const [authLoading, setAuthLoading] = useState(false)
+  const [agentLoading, setAgentLoading] = useState(false)
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+  const authH = { Authorization: `Bearer ${token}` }
+  const jsonH = { ...authH, 'Content-Type': 'application/json' }
 
-  const fetchAll = async () => {
+  const load = async () => {
     try {
-      const [hRes, sRes] = await Promise.all([
-        fetch('/api/admin/vk/hashes', { headers: { Authorization: `Bearer ${token}` } }),
-        fetch('/api/admin/vk/status', { headers: { Authorization: `Bearer ${token}` } }),
+      const [s, h] = await Promise.all([
+        fetch('/api/admin/vk/status', { headers: authH }).then(r => r.json()),
+        fetch('/api/admin/vk/hashes', { headers: authH }).then(r => r.json()),
       ])
-      setHashes(await hRes.json())
-      setStatus(await sRes.json())
+      setStatus(s)
+      setHashes(h)
     } catch {
-      setErr('Не удалось загрузить данные VK')
+      setErr('Ошибка загрузки')
     }
   }
 
-  useEffect(() => { fetchAll() }, [])
+  useEffect(() => {
+    load()
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [])
 
-  const saveCredentials = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setSaving(true)
-    setMsg('')
+  const startBotAuth = async () => {
+    setAuthLoading(true)
     setErr('')
+    setMsg('')
     try {
-      const body: Record<string, string> = {}
-      if (accessToken.trim()) body.access_token = accessToken.trim()
-      else {
-        body.login = login
-        body.password = password
-      }
-      const res = await fetch('/api/admin/vk/credentials', { method: 'POST', headers, body: JSON.stringify(body) })
+      const res = await fetch('/api/admin/vk/bot-auth/start', { method: 'POST', headers: authH })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Ошибка')
-      setMsg(data.message || 'Сохранено')
-      setLogin('')
-      setPassword('')
-      setAccessToken('')
-      await fetchAll()
+      window.open(data.auth_url, '_blank', 'width=520,height=720')
+      setMsg('Войдите в VK в открывшемся окне. Можно также написать боту для проверки связи.')
+      if (pollRef.current) clearInterval(pollRef.current)
+      pollRef.current = setInterval(async () => {
+        const st = await fetch(`/api/admin/vk/bot-auth/status?state=${data.state}`, { headers: authH })
+        const body = await st.json()
+        if (body.completed) {
+          if (pollRef.current) clearInterval(pollRef.current)
+          setMsg(`VK привязан (ID ${body.vk_user_id})`)
+          setAuthLoading(false)
+          await load()
+        }
+      }, 2000)
+      setTimeout(() => {
+        if (pollRef.current) clearInterval(pollRef.current)
+        setAuthLoading(false)
+      }, 120000)
     } catch (e: any) {
-      setErr(e.message || 'Ошибка сохранения')
+      setErr(e.message)
+      setAuthLoading(false)
     }
-    setSaving(false)
   }
 
-  const testAuth = async () => {
-    setMsg('')
+  const connectAgent = async () => {
+    setAgentLoading(true)
     setErr('')
+    setMsg('')
     try {
-      const res = await fetch('/api/admin/vk/auth/test', { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+      const res = await fetch('/api/admin/vk/agent/connect', { method: 'POST', headers: authH })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Auth failed')
-      setMsg(`Авторизация OK — VK user_id ${data.vk_user_id}`)
-      await fetchAll()
+      if (!res.ok) throw new Error(data.detail || 'Ошибка')
+      setMsg(data.message)
+      await load()
     } catch (e: any) {
       setErr(e.message)
     }
+    setAgentLoading(false)
   }
 
-  const recreateHashes = async () => {
-    setRecreating(true)
-    setMsg('')
-    setErr('')
-    try {
-      const res = await fetch('/api/admin/vk/recreate', { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
-      const data = await res.json()
-      if (!data.success && !data.message?.includes('частично')) {
-        setErr(data.message || 'Ошибка пересоздания')
-      } else {
-        setMsg(data.message)
-      }
-      setTimeout(fetchAll, 1500)
-    } catch {
-      setErr('Ошибка сети')
-    }
-    setRecreating(false)
-  }
-
-  const createSlot = async (slot: number) => {
-    setCreatingSlot(slot)
-    setMsg('')
-    setErr('')
-    try {
-      const res = await fetch('/api/admin/vk/hashes/create', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ slot }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || data.message || 'Ошибка')
-      setMsg(data.message || `Слот ${slot} создан`)
-      await fetchAll()
-    } catch (e: any) {
-      setErr(e.message)
-    }
-    setCreatingSlot(null)
+  const disconnectAgent = async () => {
+    setAgentLoading(true)
+    await fetch('/api/admin/vk/agent/disconnect', { method: 'POST', headers: authH })
+    setMsg('Агент отключён')
+    await load()
+    setAgentLoading(false)
   }
 
   const addManual = async (e: React.FormEvent) => {
     e.preventDefault()
-    setMsg('')
     setErr('')
     try {
       const res = await fetch('/api/admin/vk/hashes/manual', {
         method: 'POST',
-        headers,
+        headers: jsonH,
         body: JSON.stringify({ hash: manualHash.trim(), slot: manualSlot }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Ошибка')
       setMsg(data.message)
       setManualHash('')
-      await fetchAll()
+      await load()
     } catch (e: any) {
       setErr(e.message)
     }
   }
 
+  const removeHash = async (slot: number) => {
+    setErr('')
+    const res = await fetch(`/api/admin/vk/hashes/${slot}`, { method: 'DELETE', headers: authH })
+    const data = await res.json()
+    if (!res.ok) { setErr(data.detail); return }
+    setMsg(data.message)
+    await load()
+  }
+
+  const step = (n: number, title: string, children: React.ReactNode) => (
+    <section className="bg-[#111] border border-[#222] rounded-2xl overflow-hidden">
+      <div className="flex items-center gap-3 px-5 py-4 border-b border-[#222] bg-[#0d0d0d]">
+        <span className="w-7 h-7 rounded-full bg-white text-black text-sm font-bold flex items-center justify-center">{n}</span>
+        <h2 className="font-semibold text-sm">{title}</h2>
+      </div>
+      <div className="p-5">{children}</div>
+    </section>
+  )
+
   return (
-    <div className="space-y-6 max-w-2xl">
-      <h1 className="text-xl font-bold">VK Аккаунт и тоннели</h1>
-
-      {/* Auth status */}
-      <div className={`border rounded-xl p-4 ${status?.auth_ok ? 'border-green-900/50 bg-green-950/20' : 'border-yellow-900/50 bg-yellow-950/10'}`}>
-        <div className="flex items-center gap-2 mb-2">
-          {status?.auth_ok
-            ? <CheckCircle className="w-4 h-4 text-green-400" />
-            : <AlertTriangle className="w-4 h-4 text-yellow-500" />}
-          <span className="text-sm font-medium">
-            {status?.auth_ok
-              ? `VK авторизован (ID ${status.vk_user_id})`
-              : 'VK не авторизован — хеши не создаются'}
-          </span>
-        </div>
-        {status?.auth_error && (
-          <p className="text-xs text-red-400 mb-2">{status.auth_error}</p>
-        )}
-        <button onClick={testAuth}
-          className="text-xs bg-[#1a1a1a] border border-[#333] px-3 py-1.5 rounded-lg hover:border-white">
-          Проверить авторизацию
-        </button>
+    <div className="space-y-5 max-w-xl">
+      <div>
+        <h1 className="text-xl font-bold">VK тоннели</h1>
+        <p className="text-[#666] text-xs mt-1">Три шага: бот → агент → хеши вручную при необходимости</p>
       </div>
 
-      {/* Token (recommended) */}
-      <div className="bg-[#111] border border-[#222] rounded-xl p-6">
-        <h2 className="font-semibold mb-1 flex items-center gap-2"><Key className="w-4 h-4" /> VK Access Token</h2>
-        <p className="text-[#555] text-xs mb-3">
-          Рекомендуется: токен Android-клиента (client_id 6287487) — тот же способ, что у proxy-turn-vk.
-          AI-агент сохранит токен и будет им создавать/заменять хеши автоматически.
-        </p>
-        {status?.token_capture_url && (
-          <a href={status.token_capture_url} target="_blank" rel="noreferrer"
-            className="inline-flex items-center gap-1 text-xs text-blue-400 hover:underline mb-3">
-            <ExternalLink className="w-3 h-3" /> Получить токен в браузере
-          </a>
-        )}
-        <form onSubmit={saveCredentials} className="space-y-3">
-          <textarea
-            value={accessToken}
-            onChange={e => setAccessToken(e.target.value)}
-            placeholder="vk1.a.... или вставьте из oauth.vk.com/blank.html#access_token=..."
-            rows={3}
-            className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-4 py-2.5 text-xs text-white font-mono focus:outline-none focus:border-[#444]"
-          />
-          <p className="text-[#444] text-xs">— или логин/пароль (может не работать без 2FA):</p>
-          <input
-            type="text" value={login} onChange={e => setLogin(e.target.value)}
-            placeholder="Логин (телефон или email)"
-            className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#444]"
-          />
-          <input
-            type="password" value={password} onChange={e => setPassword(e.target.value)}
-            placeholder="Пароль"
-            className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#444]"
-          />
-          <button type="submit" disabled={saving}
-            className="bg-white text-black px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-[#e0e0e0] disabled:opacity-50 transition-colors">
-            {saving ? 'Сохраняем...' : 'Сохранить авторизацию'}
-          </button>
-        </form>
-      </div>
-
-      {/* Hashes */}
-      <div className="bg-[#111] border border-[#222] rounded-xl p-6">
-        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-          <h2 className="font-semibold">VK Хеши (TURN туннели)</h2>
-          <button onClick={recreateHashes} disabled={recreating}
-            className="flex items-center gap-2 bg-[#1a1a1a] border border-[#2a2a2a] px-4 py-2 rounded-lg text-xs hover:border-white transition-colors disabled:opacity-50">
-            <RefreshCw className={`w-3.5 h-3.5 ${recreating ? 'animate-spin' : ''}`} />
-            Создать все 3
-          </button>
-        </div>
-
-        <div className="flex gap-2 mb-4">
-          {[0, 1, 2].map(slot => (
-            <button key={slot} onClick={() => createSlot(slot)} disabled={creatingSlot !== null}
-              className="flex items-center gap-1 bg-[#1a1a1a] border border-[#2a2a2a] px-3 py-1.5 rounded-lg text-xs hover:border-green-600 disabled:opacity-50">
-              <Zap className={`w-3 h-3 ${creatingSlot === slot ? 'animate-pulse' : ''}`} />
-              Слот {slot}
-            </button>
-          ))}
-        </div>
-
-        {hashes.length === 0 ? (
-          <div className="text-center py-6 text-[#555]">
-            <AlertTriangle className="w-8 h-8 mx-auto mb-2 text-yellow-500" />
-            <p className="text-sm">Хеши не созданы. Сохраните VK токен и нажмите «Слот 0» или «Создать все 3».</p>
+      {step(1, 'Авторизация через бота Silent', (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-sm">
+            {status?.vk_linked && status?.calls_ok
+              ? <CheckCircle2 className="w-4 h-4 text-green-400" />
+              : <Circle className="w-4 h-4 text-[#555]" />}
+            <span className={status?.vk_linked ? 'text-green-400' : 'text-[#888]'}>
+              {status?.vk_linked
+                ? `VK аккаунт ID ${status.vk_user_id}`
+                : 'Не авторизован'}
+            </span>
           </div>
-        ) : (
-          <div className="space-y-2 mb-4">
-            {hashes.map(h => (
-              <div key={h.id} className="flex items-center gap-3 bg-[#151515] rounded-lg px-4 py-3">
-                {h.is_active
-                  ? <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0" />
-                  : <XCircle className="w-4 h-4 text-red-400 flex-shrink-0" />}
-                <span className="text-xs text-[#555] w-12">Слот {h.slot}</span>
-                <span className="font-mono text-xs flex-1 text-[#ccc] break-all">{h.hash}</span>
-                <span className="text-xs text-[#555]">Сбоев: {h.fail_count}</span>
+          {status?.auth_error && <p className="text-xs text-red-400">{status.auth_error}</p>}
+          <div className="flex flex-wrap gap-2">
+            <button onClick={startBotAuth} disabled={authLoading}
+              className="inline-flex items-center gap-2 bg-[#4680C2] hover:bg-[#5a94d6] text-white px-4 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50">
+              {authLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bot className="w-4 h-4" />}
+              Войти через VK
+            </button>
+            {status?.bot_url && (
+              <a href={status.bot_url} target="_blank" rel="noreferrer"
+                className="inline-flex items-center gap-2 border border-[#333] px-4 py-2.5 rounded-xl text-sm text-[#aaa] hover:border-[#555]">
+                Открыть бота
+              </a>
+            )}
+          </div>
+        </div>
+      ))}
+
+      {step(2, 'AI-агент — авто-хеши', (
+        <div className="space-y-4">
+          <p className="text-xs text-[#666] leading-relaxed">
+            Агент каждые 5 мин проверяет 3 слота. Сломанный хеш заменяется автоматически и рассылается клиентам.
+          </p>
+          <div className="flex items-center gap-2 text-sm">
+            <Cpu className={`w-4 h-4 ${status?.agent_connected ? 'text-green-400' : 'text-[#555]'}`} />
+            <span className={status?.agent_connected ? 'text-green-400' : 'text-[#888]'}>
+              {status?.agent_connected
+                ? `Работает · ${status.hashes_active}/${status.max_hashes} хешей`
+                : 'Не подключён'}
+            </span>
+          </div>
+          {status?.agent_connected ? (
+            <button onClick={disconnectAgent} disabled={agentLoading}
+              className="border border-[#444] text-[#ccc] px-4 py-2.5 rounded-xl text-sm hover:border-red-500 hover:text-red-400 disabled:opacity-50">
+              Отключить агента
+            </button>
+          ) : (
+            <button onClick={connectAgent} disabled={agentLoading || !status?.vk_linked || !status?.calls_ok}
+              className="bg-white text-black px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-[#e5e5e5] disabled:opacity-40 disabled:cursor-not-allowed">
+              {agentLoading ? 'Подключение…' : 'Подключить агента'}
+            </button>
+          )}
+        </div>
+      ))}
+
+      {step(3, 'Ручное управление хешами', (
+        <div className="space-y-4">
+          {[0, 1, 2].map(slot => {
+            const h = hashes.find(x => x.slot === slot && x.is_active)
+            return (
+              <div key={slot} className="flex items-start gap-3 bg-[#0a0a0a] rounded-xl p-3 border border-[#1a1a1a]">
+                <span className="text-[10px] text-[#555] font-mono mt-1 w-10">#{slot}</span>
+                {h ? (
+                  <>
+                    <p className="flex-1 font-mono text-[11px] text-[#bbb] break-all leading-relaxed">{h.hash}</p>
+                    <button onClick={() => removeHash(slot)} className="text-[#555] hover:text-red-400 p-1">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </>
+                ) : (
+                  <p className="flex-1 text-xs text-[#444] italic">Пусто</p>
+                )}
               </div>
-            ))}
-          </div>
-        )}
-
-        <form onSubmit={addManual} className="border-t border-[#222] pt-4 space-y-2">
-          <p className="text-xs text-[#555] flex items-center gap-1"><Plus className="w-3 h-3" /> Добавить хеш вручную</p>
-          <div className="flex gap-2">
+            )
+          })}
+          <form onSubmit={addManual} className="flex gap-2 pt-2 border-t border-[#222]">
             <select value={manualSlot} onChange={e => setManualSlot(Number(e.target.value))}
-              className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white">
-              <option value={0}>Слот 0</option>
-              <option value={1}>Слот 1</option>
-              <option value={2}>Слот 2</option>
+              className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-2 py-2 text-xs text-white">
+              <option value={0}>#0</option>
+              <option value={1}>#1</option>
+              <option value={2}>#2</option>
             </select>
-            <input
-              value={manualHash}
-              onChange={e => setManualHash(e.target.value)}
-              placeholder="Хеш или ссылка vk.com/call/join/…"
-              className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white font-mono"
-            />
-            <button type="submit" className="bg-[#222] border border-[#333] px-4 py-2 rounded-lg text-xs hover:border-white">
-              Добавить
+            <input value={manualHash} onChange={e => setManualHash(e.target.value)}
+              placeholder="Ссылка vk.com/call/join/… или хеш"
+              className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white font-mono" />
+            <button type="submit" className="bg-[#222] border border-[#333] px-3 py-2 rounded-lg hover:border-white">
+              <Plus className="w-4 h-4" />
             </button>
-          </div>
-        </form>
-      </div>
+          </form>
+        </div>
+      ))}
 
-      {msg && (
-        <div className="bg-[#111] border border-green-900/40 rounded-xl px-4 py-3 text-sm text-green-400">{msg}</div>
-      )}
-      {err && (
-        <div className="bg-[#111] border border-red-900/40 rounded-xl px-4 py-3 text-sm text-red-400">{err}</div>
-      )}
-
-      <div className="bg-[#111] border border-yellow-900/50 rounded-xl p-4">
-        <p className="text-xs text-yellow-500/80 leading-relaxed">
-          <strong>AI-агент</strong> каждые 5 мин проверяет хеши и автоматически заменяет мёртвые через тот же VK токен.
-          При завершении звонка в VK нажимайте «Просто завершить», не «Завершить для всех».
-        </p>
-      </div>
+      {msg && <p className="text-sm text-green-400 px-1">{msg}</p>}
+      {err && <p className="text-sm text-red-400 px-1">{err}</p>}
     </div>
   )
 }

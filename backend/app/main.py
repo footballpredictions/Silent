@@ -57,6 +57,12 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE vk_link_sessions ADD COLUMN IF NOT EXISTS completed BOOLEAN DEFAULT FALSE"
         ))
         await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        await conn.execute(text(
+            "UPDATE users SET is_admin = TRUE WHERE LOWER(email) = LOWER(:admin_email)"
+        ), {"admin_email": settings.ADMIN_LOGIN})
+        await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_vk_link_sessions_user_id ON vk_link_sessions (user_id)"
         ))
     logger.info("Database tables ready")

@@ -35,9 +35,11 @@ class UserProfileResponse(BaseModel):
     id: uuid.UUID
     email: EmailStr
     display_id: str
+    is_admin: bool = False
     subscription: SubscriptionInfo
     devices: list[DeviceInfo]
     devices_count: int
+    connected_count: int = 0
     max_devices: int = 3
     vk_linked: bool = False
     vk_user_id: int | None = None

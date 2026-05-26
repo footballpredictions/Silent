@@ -67,6 +67,48 @@ async def get_server_public_key(db: AsyncSession) -> str:
     return setting.value if setting else ""
 
 
+async def count_active_sessions(db: AsyncSession, user_id) -> int:
+    result = await db.execute(
+        select(func.count(Device.id)).where(
+            Device.user_id == user_id,
+            Device.is_active == True,
+        )
+    )
+    return result.scalar_one()
+
+
+async def count_connected_sessions(db: AsyncSession, user_id) -> int:
+    result = await db.execute(
+        select(func.count(Device.id)).where(
+            Device.user_id == user_id,
+            Device.is_active == True,
+            Device.is_connected == True,
+        )
+    )
+    return result.scalar_one()
+
+
+async def end_device_session(
+    db: AsyncSession,
+    user_id,
+    device_fingerprint: str,
+) -> bool:
+    """Logout: release slot and mark VPN disconnected."""
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user_id,
+            Device.device_fingerprint == device_fingerprint,
+        )
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        return False
+    device.is_connected = False
+    device.is_active = False
+    await db.commit()
+    return True
+
+
 async def register_device(
     db: AsyncSession,
     user: User,
@@ -75,26 +117,44 @@ async def register_device(
     device_fingerprint: str,
     wg_public_key: Optional[str] = None,
 ) -> VpnConfigResponse:
-    """Register new device and generate VPN config. Max 3 devices per user."""
+    """Register/login session. Max 3 active sessions per user (one fingerprint per login)."""
 
-    # Check device limit
     result = await db.execute(
-        select(func.count(Device.id))
-        .where(Device.user_id == user.id, Device.is_active == True)
-    )
-    count = result.scalar_one()
-    if count >= settings.MAX_DEVICES_PER_USER:
-        raise ValueError(f"Достигнут максимум {settings.MAX_DEVICES_PER_USER} устройства. Подключите новый аккаунт.")
-
-    # Check if device already registered by fingerprint
-    result = await db.execute(
-        select(Device).where(Device.user_id == user.id, Device.device_fingerprint == device_fingerprint)
+        select(Device).where(
+            Device.user_id == user.id,
+            Device.device_fingerprint == device_fingerprint,
+            Device.is_active == True,
+        )
     )
     existing = result.scalar_one_or_none()
     if existing:
         return await _build_vpn_config(db, existing)
 
-    # Generate WireGuard keys
+    active_count = await count_active_sessions(db, user.id)
+    if active_count >= settings.MAX_DEVICES_PER_USER:
+        raise ValueError(
+            f"Достигнут лимит {settings.MAX_DEVICES_PER_USER} устройств. "
+            "Выйдите из аккаунта на одном из них."
+        )
+
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user.id,
+            Device.device_fingerprint == device_fingerprint,
+        )
+    )
+    inactive = result.scalar_one_or_none()
+    if inactive:
+        inactive.is_active = True
+        inactive.is_connected = False
+        inactive.device_name = device_name
+        inactive.device_type = device_type
+        inactive.last_connected = None
+        await db.commit()
+        await db.refresh(inactive)
+        return await _build_vpn_config(db, inactive)
+
+    # Check device limit — new session
     priv_key, pub_key = _generate_wg_keypair()
     if wg_public_key:
         pub_key = wg_public_key

@@ -122,13 +122,22 @@ class SilentRepository @Inject constructor(
     fun isLoggedIn() = getAccessToken() != null
 
     fun getDeviceFingerprint(): String {
-        var fp = prefs.getString(PREF_DEVICE_FP, null)
-        if (fp == null) {
-            fp = UUID.randomUUID().toString()
-            prefs.edit().putString(PREF_DEVICE_FP, fp).apply()
-        }
+        return prefs.getString(PREF_DEVICE_FP, null)
+            ?: throw IllegalStateException("Session not started")
+    }
+
+    /** New session id on each login — frees slot on logout. */
+    fun startNewSession(): String {
+        val fp = UUID.randomUUID().toString()
+        prefs.edit().putString(PREF_DEVICE_FP, fp).apply()
         return fp
     }
+
+    fun clearSessionFingerprint() {
+        prefs.edit().remove(PREF_DEVICE_FP).apply()
+    }
+
+    fun hasSessionFingerprint(): Boolean = prefs.getString(PREF_DEVICE_FP, null) != null
 
     fun getVkUserId(): Long = prefs.getLong(PREF_VK_USER_ID, 0L)
     fun saveVkUserId(id: Long) = prefs.edit().putLong(PREF_VK_USER_ID, id).apply()

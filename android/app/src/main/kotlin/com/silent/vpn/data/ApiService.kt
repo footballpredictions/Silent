@@ -33,6 +33,7 @@ data class UserProfile(
     val subscription: SubscriptionInfo,
     val devices: List<DeviceInfo>,
     val devices_count: Int,
+    val connected_count: Int = 0,
     val max_devices: Int,
     val vk_linked: Boolean = false,
     val vk_user_id: Long? = null,
@@ -132,6 +133,9 @@ interface SilentApi {
 
     @GET("api/users/me")
     suspend fun getProfile(): Response<UserProfile>
+
+    @POST("api/users/logout")
+    suspend fun logoutSession(@Body req: DisconnectRequest): Response<Map<String, String>>
 
     @GET("api/vpn/theme")
     suspend fun getTheme(): Response<ThemeData>

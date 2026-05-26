@@ -84,7 +84,15 @@ class MainViewModel @Inject constructor(
     }
 
     init {
-        if (repo.isLoggedIn()) refreshSession()
+        if (repo.isLoggedIn()) {
+            if (!repo.hasSessionFingerprint()) {
+                viewModelScope.launch {
+                    repo.startNewSession()
+                    openLoginSession()
+                }
+            }
+            refreshSession()
+        }
         viewModelScope.launch {
             WdttTunnelManager.lastError.collect { err ->
                 if (!err.isNullOrBlank()) {
@@ -149,6 +157,8 @@ class MainViewModel @Inject constructor(
                         _vkMsg.value = it.message ?: "Ошибка привязки VK"
                     }
                 }
+                repo.startNewSession()
+                if (!openLoginSession()) return@launch
                 refreshSession()
                 goToMain()
             }.onFailure {
@@ -192,23 +202,52 @@ class MainViewModel @Inject constructor(
         refreshVkState()
     }
 
+    private suspend fun openLoginSession(): Boolean {
+        val res = repo.getApi().registerDevice(
+            DeviceRegisterRequest("Android", "android", repo.getDeviceFingerprint(), null)
+        )
+        if (res.isSuccessful) return true
+        _authError.value = parseError(res.errorBody()?.string() ?: "")
+            ?: "Достигнут лимит устройств (3). Выйдите на другом устройстве."
+        repo.clearSessionFingerprint()
+        repo.clearTokens()
+        return false
+    }
+
     fun logout(context: Context? = null) {
         viewModelScope.launch {
-            if (_vpnState.value == VpnState.CONNECTED) {
-                context?.let { disconnect(it) }
-                runCatching {
-                    repo.getApi().disconnect(DisconnectRequest(repo.getDeviceFingerprint()))
-                }
+            val fp = if (repo.hasSessionFingerprint()) {
+                runCatching { repo.getDeviceFingerprint() }.getOrNull()
+            } else null
+
+            if (_vpnState.value == VpnState.CONNECTED || _vpnState.value == VpnState.CONNECTING) {
+                context?.let { stopVpnLocally(it) }
             }
+
+            if (fp != null && repo.getAccessToken() != null) {
+                runCatching { repo.getApi().logoutSession(DisconnectRequest(fp)) }
+            }
+
+            repo.clearSessionFingerprint()
+            repo.clearTokens()
+            _profile.value = null
+            _theme.value = null
+            _vpnState.value = VpnState.DISCONNECTED
+            _screen.value = AppScreen.LOGIN
+            _authError.value = null
+            _vpnError.value = null
+            _regDone.value = false
         }
-        repo.clearTokens()
-        _profile.value = null
-        _theme.value = null
-        _vpnState.value = VpnState.DISCONNECTED
-        _screen.value = AppScreen.LOGIN
-        _authError.value = null
-        _vpnError.value = null
-        _regDone.value = false
+    }
+
+    private fun stopVpnLocally(context: Context) {
+        runCatching {
+            val intent = Intent(context, SilentVpnService::class.java).apply {
+                action = SilentVpnService.ACTION_DISCONNECT
+            }
+            context.startService(intent)
+        }
+        WdttTunnelManager.stop()
     }
 
     fun connect(context: Context) {

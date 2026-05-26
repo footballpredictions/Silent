@@ -6,29 +6,27 @@ from sqlalchemy import select
 from datetime import datetime
 
 from app.database import get_db
-from app.models import User, Device, Subscription, AppSetting
+from app.models import User, Device, AppSetting
 from app.schemas.vpn import (
     DeviceRegisterRequest, VpnConfigResponse,
     ConnectRequest, DisconnectRequest, AppExclusionRequest, ThemeResponse,
 )
 from app.core.deps import get_verified_user
-from app.services.vpn_service import register_device, _build_vpn_config, get_active_vk_hashes
+from app.services.vpn_service import (
+    register_device,
+    _build_vpn_config,
+    get_active_vk_hashes,
+    count_connected_sessions,
+)
+from app.services.subscription_service import user_has_active_subscription
 from app.config import settings
 
 router = APIRouter(prefix="/vpn", tags=["vpn"])
 
 
 async def _check_active_subscription(user: User, db: AsyncSession):
-    result = await db.execute(
-        select(Subscription).where(
-            Subscription.user_id == user.id,
-            Subscription.status == "active",
-        ).order_by(Subscription.expires_at.desc())
-    )
-    sub = result.scalars().first()
-    if not sub or not sub.is_active:
+    if not await user_has_active_subscription(user, db):
         raise HTTPException(status_code=402, detail="Активная подписка не найдена")
-    return sub
 
 
 @router.post("/device/register", response_model=VpnConfigResponse)
@@ -73,7 +71,7 @@ async def get_config(
     )
     device = result.scalar_one_or_none()
     if not device:
-        raise HTTPException(status_code=404, detail="Устройство не зарегистрировано")
+        raise HTTPException(status_code=404, detail="Сессия устройства не найдена. Войдите снова.")
     return await _build_vpn_config(db, device)
 
 
@@ -106,7 +104,15 @@ async def connect(
     )
     device = result.scalar_one_or_none()
     if not device:
-        raise HTTPException(status_code=404, detail="Устройство не найдено")
+        raise HTTPException(status_code=404, detail="Сессия устройства не найдена. Войдите снова.")
+
+    if not device.is_connected:
+        connected = await count_connected_sessions(db, user.id)
+        if connected >= settings.MAX_DEVICES_PER_USER:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Достигнут лимит {settings.MAX_DEVICES_PER_USER} одновременных подключений VPN.",
+            )
 
     device.is_connected = True
     device.last_connected = datetime.utcnow()
@@ -121,10 +127,12 @@ async def disconnect(
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """VPN off — session stays active until logout."""
     result = await db.execute(
         select(Device).where(
             Device.user_id == user.id,
             Device.device_fingerprint == req.device_fingerprint,
+            Device.is_active == True,
         )
     )
     device = result.scalar_one_or_none()
@@ -147,7 +155,6 @@ async def set_exclusions(
     if not device:
         raise HTTPException(status_code=404, detail="Устройство не найдено")
 
-    # Store exclusions as JSON in AppSetting (per device)
     key = f"exclusions_{device.id}"
     result = await db.execute(select(AppSetting).where(AppSetting.key == key))
     setting = result.scalar_one_or_none()
@@ -166,7 +173,6 @@ async def get_exclusions(
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
-    import uuid
     result = await db.execute(
         select(AppSetting).where(AppSetting.key == f"exclusions_{device_id}")
     )

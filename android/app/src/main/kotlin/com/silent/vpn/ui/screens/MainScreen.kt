@@ -229,7 +229,7 @@ fun MainScreen(
                                 MenuPage.SUBSCRIPTION to "Подписка",
                                 MenuPage.SETTINGS to "VK / офлайн",
                                 MenuPage.PROMO to "Промокод",
-                                MenuPage.DEVICES to "Устройства (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})",
+                                MenuPage.DEVICES to "Сессии (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})",
                                 MenuPage.SUPPORT to "Поддержка",
                                 MenuPage.ABOUT to "О сервисе",
                             )
@@ -326,7 +326,13 @@ private fun MenuPromo(fg: Color, bg: Color, promoCode: String, onPromoChange: (S
 private fun MenuDevices(profile: UserProfile?, fg: Color, onBack: () -> Unit) {
     Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
-        Text("Устройства", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        Text("Сессии", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        Text(
+            "VPN онлайн: ${profile?.connected_count ?: 0} из ${profile?.devices_count ?: 0}",
+            fontSize = 11.sp,
+            color = fg.copy(alpha = 0.45f),
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
         profile?.devices?.forEach { d ->
             Row(modifier = Modifier.padding(vertical = 8.dp).border(0.5.dp, Color(0xFFF3F4F6)).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(modifier = Modifier.size(6.dp).background(if (d.is_connected) Color(0xFF22C55E) else Color(0xFFD1D5DB), CircleShape))

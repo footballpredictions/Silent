@@ -79,7 +79,7 @@ fun SideMenuContent(
             }),
             Triple("Настройки", onSettings, null),
             Triple("Промокоды", onPromo, null),
-            Triple("Устройства", onDevices, "${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3}"),
+            Triple("Сессии", onDevices, "${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3}"),
             Triple("Поддержка", onSupport, null),
             Triple("О сервисе", onAbout, null),
         )

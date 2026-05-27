@@ -19,6 +19,7 @@ import {
   isBootstrapVpnActive,
 } from '../bootstrapVpn'
 import HashInputSection from '../components/HashInputSection'
+import SilentLogo from '../components/SilentLogo'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import { pushLog } from '../debugLog'
 
@@ -137,6 +138,11 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-6">
+        <div className="flex flex-col items-center mb-5">
+          <SilentLogo size={56} />
+          <p className="mt-3 text-base font-bold tracking-[0.3em]">SILENT</p>
+        </div>
+
         <HashInputSection
           bootstrapHash={bootstrapHash}
           statusMsg={statusMsg}

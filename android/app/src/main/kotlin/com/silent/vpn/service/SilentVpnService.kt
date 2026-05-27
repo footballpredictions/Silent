@@ -14,6 +14,7 @@ import com.silent.vpn.MainActivity
 import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.WireGuardConfigBuilder
+import com.silent.vpn.util.DebugLog
 import com.google.gson.Gson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,7 +58,11 @@ class SilentVpnService : Service() {
         when (intent?.action) {
             ACTION_CONNECT -> {
                 val configJson = intent.getStringExtra(EXTRA_CONFIG)
-                if (configJson == null) { stopSelf(); return START_NOT_STICKY }
+                if (configJson == null) {
+                    DebugLog.e("VpnService", "CONNECT without config")
+                    stopSelf(); return START_NOT_STICKY
+                }
+                DebugLog.i("VpnService", "CONNECT device=${runCatching { JSONObject(configJson).optString("device_id") }.getOrNull()?.take(8)}")
                 val notification = buildNotification("Подключение...")
                 startFg(notification)
                 connect(configJson)
@@ -97,6 +102,7 @@ class SilentVpnService : Service() {
             isRunning = true
             updateNotification("Подключение...")
         } catch (e: Exception) {
+            DebugLog.e("VpnService", "connect failed", e)
             isRunning = false
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -104,6 +110,7 @@ class SilentVpnService : Service() {
     }
 
     private fun disconnect() {
+        DebugLog.i("VpnService", "DISCONNECT")
         WdttTunnelManager.stop()
         isRunning = false
         stopForeground(STOP_FOREGROUND_REMOVE)

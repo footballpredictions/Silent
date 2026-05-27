@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.util.Log
+import com.silent.vpn.util.DebugLog
 import com.silent.vpn.SilentApp
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
@@ -86,6 +87,7 @@ class WireGuardHelper(context: Context) {
             setTunnelUpWithRetry(tunnel, finalConfig)
             sharedTunnel = tunnel
             Log.i(TAG, "WireGuard tunnel UP")
+            DebugLog.i(TAG, "WireGuard tunnel UP")
         }
     }
 
@@ -98,6 +100,7 @@ class WireGuardHelper(context: Context) {
             } catch (e: Exception) {
                 last = e
                 Log.w(TAG, "WG UP attempt ${attempt + 1}/3: ${e.message}")
+                DebugLog.w(TAG, "WG UP attempt ${attempt + 1}/3: ${e.message}")
                 runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
                 ensureGoBackendServiceStarted()
                 delay(250L * (attempt + 1))

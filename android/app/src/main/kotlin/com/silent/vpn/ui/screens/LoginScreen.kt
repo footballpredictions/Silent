@@ -18,6 +18,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.silent.vpn.ui.components.DebugLogButton
+import com.silent.vpn.ui.components.DebugLogDialog
 
 @Composable
 fun LoginScreen(
@@ -40,6 +42,7 @@ fun LoginScreen(
     var email by remember(initialEmail) { mutableStateOf(initialEmail) }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
+    var showDebugLog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -57,6 +60,11 @@ fun LoginScreen(
                 color = Color(0xFF6B7280),
                 fontSize = 11.sp,
                 letterSpacing = 2.sp,
+                modifier = Modifier.align(Alignment.CenterStart),
+            )
+            DebugLogButton(
+                onClick = { showDebugLog = true },
+                modifier = Modifier.align(Alignment.CenterEnd),
             )
         }
 
@@ -236,5 +244,6 @@ fun LoginScreen(
             }
         }
     }
+    DebugLogDialog(visible = showDebugLog, onDismiss = { showDebugLog = false })
 }
 

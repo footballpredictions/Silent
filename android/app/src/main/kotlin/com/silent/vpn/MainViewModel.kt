@@ -24,6 +24,7 @@ import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.vk.VkConfigFetcher
+import com.silent.vpn.util.DebugLog
 import com.silent.vpn.vpn.WdttTunnelManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -108,6 +109,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             WdttTunnelManager.lastError.collect { err ->
                 if (!err.isNullOrBlank()) {
+                    DebugLog.e("MainViewModel", "WDTT error: $err")
                     _vpnError.value = err
                     _vpnState.value = VpnState.DISCONNECTED
                 }
@@ -116,6 +118,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             WdttTunnelManager.tunnelReady.collect { ready ->
                 if (ready) {
+                    DebugLog.i("MainViewModel", "tunnel ready")
                     _vpnState.value = VpnState.CONNECTED
                 } else if (_vpnState.value == VpnState.CONNECTED) {
                     _vpnState.value = VpnState.DISCONNECTED
@@ -235,6 +238,7 @@ class MainViewModel @Inject constructor(
         if (repo.isLoggedIn() || !isVkReady()) return
         if (_vpnState.value == VpnState.CONNECTED || _vpnState.value == VpnState.CONNECTING) return
         if (bootstrapConnecting) return
+        DebugLog.i("MainViewModel", "ensureBootstrapVpn start")
         viewModelScope.launch {
             bootstrapConnecting = true
             _vpnError.value = null
@@ -246,6 +250,7 @@ class MainViewModel @Inject constructor(
                 )
                 if (!res.isSuccessful) {
                     Log.w("MainViewModel", "bootstrap-config ${res.code()}")
+                    DebugLog.w("MainViewModel", "bootstrap-config HTTP ${res.code()}: ${res.errorBody()?.string()?.take(200)}")
                     _vkMsg.value = parseError(res.errorBody()?.string() ?: "")
                         ?: "Не удалось получить bootstrap-конфиг"
                     return@launch
@@ -354,6 +359,7 @@ class MainViewModel @Inject constructor(
 
     fun connect(context: Context) {
         viewModelScope.launch {
+            DebugLog.i("MainViewModel", "connect() start")
             _vpnState.value = VpnState.CONNECTING
             _vpnError.value = null
             runCatching {
@@ -374,6 +380,7 @@ class MainViewModel @Inject constructor(
                     }
                     if (regRes.isSuccessful) {
                         vpnConfig = regRes.body()!!
+                        DebugLog.i("MainViewModel", "device/register OK device=${vpnConfig!!.device_id.take(8)} hashes=${vpnConfig!!.vk_hashes.size}")
                         repo.saveSessionDeviceId(vpnConfig!!.device_id)
                         _sessionDeviceId.value = vpnConfig!!.device_id
                         repo.cacheVpnConfig(Gson().toJson(vpnConfig))
@@ -435,6 +442,7 @@ class MainViewModel @Inject constructor(
                 }
 
                 if (vpnConfig == null) {
+                    DebugLog.e("MainViewModel", apiError ?: "no vpn config")
                     _vpnError.value = apiError ?: "Сервер недоступен. Загрузите конфиг из VK в настройках или подключитесь при доступном интернете."
                     _vpnState.value = VpnState.DISCONNECTED
                     return@launch
@@ -492,9 +500,11 @@ class MainViewModel @Inject constructor(
                         }
                     stopVpnLocally(context)
                     _vpnError.value = err
+                    DebugLog.e("MainViewModel", "connect timeout: $err")
                     _vpnState.value = VpnState.DISCONNECTED
                 }
             }.onFailure {
+                DebugLog.e("MainViewModel", "connect failed", it)
                 _vpnError.value = it.message ?: "Ошибка подключения"
                 _vpnState.value = VpnState.DISCONNECTED
             }

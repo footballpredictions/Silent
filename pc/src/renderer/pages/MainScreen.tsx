@@ -13,6 +13,8 @@ import {
   type VpnConfigPayload,
 } from '../vkConfig'
 import { fetchBootstrapConfig } from '../bootstrapVpn'
+import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
+import { pushLog } from '../debugLog'
 
 interface Profile {
   email: string; display_id: string
@@ -34,6 +36,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const [menuPage, setMenuPage] = useState<null | 'devices' | 'subscription' | 'settings' | 'promo' | 'support' | 'about'>( null)
   const [promoCode, setPromoCode] = useState('')
   const [promoMsg, setPromoMsg] = useState('')
+  const [showDebugLog, setShowDebugLog] = useState(false)
 
   const fetchProfile = useCallback(async () => {
     try {
@@ -57,6 +60,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
       setConnecting(false)
     }
     const onError = (msg: string) => {
+      pushLog('VPN', msg, 'E')
       alert(msg)
       setConnecting(false)
       setConnected(false)
@@ -87,6 +91,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const handleToggle = async () => {
     if (connecting) return
     setConnecting(true)
+    pushLog('Main', connected ? 'disconnect' : 'connect start')
     try {
       const fp = DEVICE_FINGERPRINT()
       if (!connected) {
@@ -99,7 +104,9 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           })
           config = reg.data
           cacheVpnConfig(config!)
+          pushLog('Main', `device/register OK hashes=${config.vk_hashes?.length ?? 0}`)
         } catch (e: any) {
+          pushLog('Main', `device/register fail: ${e.response?.data?.detail || e.message}`, 'W')
           try {
             const cfg = await api.get(`/api/vpn/config?fingerprint=${fp}`)
             config = cfg.data
@@ -122,10 +129,12 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         }
         if (!config) config = getCachedVpnConfig()
         if (!config) {
+          pushLog('Main', 'no VPN config', 'E')
           alert('Сервер недоступен. Выйдите и настройте VK на экране входа.')
           return
         }
         if (!config.wg_private_key?.trim() || !config.server_public_key?.trim()) {
+          pushLog('Main', 'missing WG keys', 'E')
           alert('Нет ключей WireGuard. Перезайдите в аккаунт или проверьте сервер.')
           return
         }
@@ -134,9 +143,10 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         } catch {}
         if ((window as any).electronAPI?.vpnConnect) {
           const res = await (window as any).electronAPI.vpnConnect(config)
-          if (res?.error) { alert(res.error); return }
+          if (res?.error) { pushLog('Main', `vpnConnect: ${res.error}`, 'E'); alert(res.error); return }
           const ready = await waitVpnReady()
           if (!ready) {
+            pushLog('Main', 'WireGuard timeout', 'E')
             alert('Таймаут подключения WireGuard')
             await (window as any).electronAPI?.vpnDisconnect?.()
             return
@@ -194,7 +204,8 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           <Menu className="w-4 h-4" />
         </button>
         <span className="text-xs font-bold tracking-widest mx-auto">{appTitle}</span>
-        <div className="flex gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as any}>
+        <div className="flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as any}>
+          <DebugLogButton onClick={() => setShowDebugLog(true)} />
           <button onClick={() => (window as any).electronAPI?.minimize()}
             className="w-2.5 h-2.5 rounded-full bg-gray-300 hover:bg-gray-400 transition-colors" />
           <button onClick={() => (window as any).electronAPI?.close()}
@@ -432,6 +443,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           <div className="flex-1 bg-black/20" onClick={() => { setMenuOpen(false); setMenuPage(null) }} />
         </div>
       )}
+      <DebugLogPanel open={showDebugLog} onClose={() => setShowDebugLog(false)} />
     </div>
   )
 }

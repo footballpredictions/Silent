@@ -17,6 +17,8 @@ import {
 } from '../vkConfig'
 import { ensureBootstrapVpn } from '../bootstrapVpn'
 import VkLoginSection from '../components/VkLoginSection'
+import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
+import { pushLog } from '../debugLog'
 
 export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void }) {
   const [tab, setTab] = useState<'login' | 'register'>('login')
@@ -32,6 +34,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
     return id > 0 ? id : null
   })
   const [bootstrapHash, setBootstrapHash] = useState<string | null>(getBootstrapHash)
+  const [showDebugLog, setShowDebugLog] = useState(false)
   const vkReady = isVkReady()
 
   useEffect(() => {
@@ -152,7 +155,9 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
       const themeRes = await api.get('/api/vpn/theme').catch(() => ({ data: null }))
       onLogin(themeRes.data)
     } catch (err: any) {
-      setError(formatApiError(err, 'Ошибка входа'))
+      const msg = formatApiError(err, 'Ошибка входа')
+      pushLog('Login', msg, 'E')
+      setError(msg)
     } finally { setLoading(false) }
   }
 
@@ -173,7 +178,8 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
     <div className="flex flex-col h-full">
       <div className="h-8 bg-black flex items-center px-4 flex-shrink-0" style={{ WebkitAppRegion: 'drag' } as any}>
         <span className="text-xs text-gray-500 tracking-widest">SILENT VPN</span>
-        <div className="ml-auto flex gap-2" style={{ WebkitAppRegion: 'no-drag' } as any}>
+        <div className="ml-auto flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as any}>
+          <DebugLogButton onClick={() => setShowDebugLog(true)} />
           <button onClick={() => (window as any).electronAPI?.minimize()} className="w-3 h-3 rounded-full bg-gray-600 hover:bg-gray-400 transition-colors" />
           <button onClick={() => (window as any).electronAPI?.close()} className="w-3 h-3 rounded-full bg-gray-600 hover:bg-red-400 transition-colors" />
         </div>
@@ -235,6 +241,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
           </form>
         )}
       </div>
+      <DebugLogPanel open={showDebugLog} onClose={() => setShowDebugLog(false)} />
     </div>
   )
 }

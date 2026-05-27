@@ -22,6 +22,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.silent.vpn.ui.components.DebugLogButton
+import com.silent.vpn.ui.components.DebugLogDialog
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.UserProfile
 import com.silent.vpn.ui.theme.parseColor
@@ -55,6 +57,7 @@ fun MainScreen(
     var menuPage by remember { mutableStateOf(MenuPage.ROOT) }
     var promoCode by remember { mutableStateOf("") }
     var promoMsg by remember { mutableStateOf("") }
+    var showDebugLog by remember { mutableStateOf(false) }
 
     val isConnected = vpnState == VpnState.CONNECTED
     val isTransitioning = vpnState == VpnState.CONNECTING || vpnState == VpnState.DISCONNECTING
@@ -108,6 +111,7 @@ fun MainScreen(
                     color = fg,
                 )
                 Spacer(modifier = Modifier.size(28.dp))
+                DebugLogButton(onClick = { showDebugLog = true })
             }
 
             // Main content
@@ -283,6 +287,7 @@ fun MainScreen(
         }
 
         SnackbarHost(snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
+        DebugLogDialog(visible = showDebugLog, onDismiss = { showDebugLog = false })
     }
 }
 

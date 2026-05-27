@@ -2,6 +2,7 @@ package com.silent.vpn.vpn
 
 import android.content.Context
 import android.util.Log
+import com.silent.vpn.util.DebugLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -63,6 +64,7 @@ object WdttTunnelManager {
                 val binaryPath = context.applicationInfo.nativeLibraryDir + "/libclient.so"
                 if (!File(binaryPath).exists()) {
                     lastError.value = "WDTT клиент не найден (libclient.so)"
+                    DebugLog.e(TAG, lastError.value!!)
                     return@launch
                 }
 
@@ -73,12 +75,16 @@ object WdttTunnelManager {
                     .take(3)
                 if (hashList.isEmpty()) {
                     lastError.value = "Нет VK-хешей"
+                    DebugLog.e(TAG, lastError.value!!)
                     return@launch
                 }
                 if (params.wdttPassword.isBlank()) {
                     lastError.value = "Пароль WDTT не задан"
+                    DebugLog.e(TAG, lastError.value!!)
                     return@launch
                 }
+
+                DebugLog.i(TAG, "start peer=${params.serverIp}:${params.serverPort} hashes=${hashList.size} device=${params.deviceId.take(8)}")
 
                 val cmd = listOf(
                     binaryPath,
@@ -104,6 +110,7 @@ object WdttTunnelManager {
                 startApiFallbackTimer()
             } catch (e: Exception) {
                 Log.e(TAG, "Start failed", e)
+                DebugLog.e(TAG, "Start failed", e)
                 lastError.value = e.message ?: "Ошибка запуска WDTT"
                 running.value = false
             }
@@ -141,6 +148,7 @@ object WdttTunnelManager {
                 delay(waitMs)
                 if (tunnelReady.value || !running.value) return@launch
                 Log.w(TAG, "API fallback WireGuard config")
+                DebugLog.w(TAG, "API fallback WireGuard config")
                 applyWireGuard(fallback)
             }
         }
@@ -159,6 +167,7 @@ object WdttTunnelManager {
                         .replace(Regex("^\\d{4}/\\d{2}/\\d{2}\\s\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\s"), "")
                         .trim()
                     Log.d(TAG, lineTrim)
+                    if (lineTrim.isNotBlank()) DebugLog.d(TAG, lineTrim)
 
                     if (lineTrim.contains("FATAL_AUTH") &&
                         !lineTrim.contains("DTLS timeout", true) &&
@@ -171,6 +180,7 @@ object WdttTunnelManager {
                             else -> "Ошибка авторизации WDTT"
                         }
                         lastError.value = reason
+                        DebugLog.e(TAG, reason)
                         stop()
                         return@forEachLine
                     }
@@ -221,6 +231,7 @@ object WdttTunnelManager {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Reader error", e)
+                DebugLog.e(TAG, "Reader error", e)
             } finally {
                 if (!tunnelReady.value) {
                     running.value = false
@@ -237,6 +248,7 @@ object WdttTunnelManager {
                 val text = runCatching { f.readText().trim() }.getOrNull()
                 if (!text.isNullOrBlank() && text.contains("[Interface]")) {
                     Log.i(TAG, "WG config from $name")
+                    DebugLog.i(TAG, "WG config from $name")
                     return text
                 }
             }
@@ -253,9 +265,11 @@ object WdttTunnelManager {
                 wgHelper?.startTunnel(configStr)
                 tunnelReady.value = true
                 Log.i(TAG, "WireGuard UP")
+                DebugLog.i(TAG, "WireGuard UP")
             } catch (e: Exception) {
                 lastError.value = "WireGuard: ${e.message}"
                 Log.e(TAG, "WireGuard failed", e)
+                DebugLog.e(TAG, "WireGuard failed", e)
                 stop()
             }
         }

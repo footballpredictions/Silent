@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { isLoggedIn, clearTokens, clearSessionFingerprint, initServerUrl } from './api'
+import { initVpnLogListener } from './debugLog'
 import LoginScreen from './pages/LoginScreen'
 import MainScreen from './pages/MainScreen'
 import ServerSetupScreen from './pages/ServerSetupScreen'
@@ -12,6 +13,7 @@ export default function App() {
 
   useEffect(() => {
     initServerUrl()
+    initVpnLogListener()
     if (!isLoggedIn()) {
       if (localStorage.getItem('silent_token')) {
         clearTokens()

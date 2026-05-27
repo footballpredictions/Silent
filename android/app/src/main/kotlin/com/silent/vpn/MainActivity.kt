@@ -14,6 +14,7 @@ import com.silent.vpn.ui.screens.LoginScreen
 import com.silent.vpn.ui.screens.MainScreen
 import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.ui.theme.SilentTheme
+import com.silent.vpn.util.DebugLog
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -41,6 +42,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        DebugLog.i("App", "Silent VPN ${android.os.Build.MODEL} API ${android.os.Build.VERSION.SDK_INT}")
         handleVkDeepLink(intent)
 
         setContent {

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell } = require('electron')
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, clipboard } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
@@ -163,6 +163,11 @@ ipcMain.handle('window-minimize', () => mainWindow?.minimize())
 ipcMain.handle('window-close', () => mainWindow?.hide())
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url))
 ipcMain.handle('get-platform', () => process.platform)
+
+ipcMain.handle('clipboard-write', (_, text) => {
+  clipboard.writeText(String(text ?? ''))
+  return true
+})
 
 ipcMain.handle('vpn-connect', async (_, config) => {
   if (wdttProcess) return { error: 'Already running' }

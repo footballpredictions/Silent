@@ -3,9 +3,18 @@ import { Search, Ban, CheckCircle, ShieldCheck, Trash2 } from 'lucide-react'
 
 interface UserRow {
   id: string; display_id: string; email: string; is_verified: boolean; is_active: boolean
+  is_admin?: boolean
   created_at: string; bootstrap_hash: string | null; server_hashes: number
   subscription: { active: boolean; plan: string | null; expires_at: string | null }
   devices_count: number
+}
+
+function subscriptionLabel(u: UserRow): string {
+  if (u.is_admin || u.subscription.plan === 'unlimited') return '∞'
+  if (!u.subscription.active) return 'Нет'
+  const plan = u.subscription.plan === 'trial' ? 'Пробный' : u.subscription.plan
+  const until = u.subscription.expires_at?.split('T')[0]
+  return until ? `${plan} · до ${until}` : plan || 'Активна'
 }
 
 export default function UsersPage({ token }: { token: string }) {
@@ -49,7 +58,6 @@ export default function UsersPage({ token }: { token: string }) {
   }
 
   const toggleBan = (id: string) => apiAction(id, '/ban', 'POST')
-
   const verifyUser = (id: string) => apiAction(id, '/verify', 'POST')
 
   const deleteUser = async (u: UserRow) => {
@@ -114,13 +122,9 @@ export default function UsersPage({ token }: { token: string }) {
                   <td className="px-4 py-3 font-mono text-xs text-[#888]">{u.bootstrap_hash || '—'}</td>
                   <td className="px-4 py-3 text-center">{u.server_hashes ?? 0}/3</td>
                   <td className="px-4 py-3">
-                    {u.subscription.active ? (
-                      <span className="text-green-400 text-xs">
-                        {u.subscription.plan} · до {u.subscription.expires_at?.split('T')[0]}
-                      </span>
-                    ) : (
-                      <span className="text-[#555] text-xs">Нет</span>
-                    )}
+                    <span className={`text-xs ${u.subscription.active || u.is_admin ? 'text-green-400' : 'text-[#555]'}`}>
+                      {subscriptionLabel(u)}
+                    </span>
                   </td>
                   <td className="px-4 py-3 text-center">{u.devices_count}/3</td>
                   <td className="px-4 py-3">
@@ -135,34 +139,40 @@ export default function UsersPage({ token }: { token: string }) {
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      {!u.is_verified && (
+                    {u.is_admin ? (
+                      <div className="text-right text-xs font-semibold text-amber-400/90 tracking-wide">
+                        Админ
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-end gap-1">
+                        {!u.is_verified && (
+                          <button
+                            onClick={() => verifyUser(u.id)}
+                            disabled={actionId === u.id}
+                            className="p-1.5 rounded-lg transition-colors hover:bg-blue-500/20 text-[#555] hover:text-blue-400 disabled:opacity-40"
+                            title="Верифицировать без email"
+                          >
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         <button
-                          onClick={() => verifyUser(u.id)}
+                          onClick={() => toggleBan(u.id)}
                           disabled={actionId === u.id}
-                          className="p-1.5 rounded-lg transition-colors hover:bg-blue-500/20 text-[#555] hover:text-blue-400 disabled:opacity-40"
-                          title="Верифицировать без email"
+                          className={`p-1.5 rounded-lg transition-colors disabled:opacity-40 ${u.is_active ? 'hover:bg-red-500/20 text-[#555] hover:text-red-400' : 'hover:bg-green-500/20 text-[#555] hover:text-green-400'}`}
+                          title={u.is_active ? 'Заблокировать' : 'Разблокировать'}
                         >
-                          <ShieldCheck className="w-3.5 h-3.5" />
+                          {u.is_active ? <Ban className="w-3.5 h-3.5" /> : <CheckCircle className="w-3.5 h-3.5" />}
                         </button>
-                      )}
-                      <button
-                        onClick={() => toggleBan(u.id)}
-                        disabled={actionId === u.id}
-                        className={`p-1.5 rounded-lg transition-colors disabled:opacity-40 ${u.is_active ? 'hover:bg-red-500/20 text-[#555] hover:text-red-400' : 'hover:bg-green-500/20 text-[#555] hover:text-green-400'}`}
-                        title={u.is_active ? 'Заблокировать' : 'Разблокировать'}
-                      >
-                        {u.is_active ? <Ban className="w-3.5 h-3.5" /> : <CheckCircle className="w-3.5 h-3.5" />}
-                      </button>
-                      <button
-                        onClick={() => deleteUser(u)}
-                        disabled={actionId === u.id}
-                        className="p-1.5 rounded-lg transition-colors hover:bg-red-500/20 text-[#555] hover:text-red-400 disabled:opacity-40"
-                        title="Удалить пользователя"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+                        <button
+                          onClick={() => deleteUser(u)}
+                          disabled={actionId === u.id}
+                          className="p-1.5 rounded-lg transition-colors hover:bg-red-500/20 text-[#555] hover:text-red-400 disabled:opacity-40"
+                          title="Удалить пользователя"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))

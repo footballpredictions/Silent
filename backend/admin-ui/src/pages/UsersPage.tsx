@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Search, Ban, CheckCircle } from 'lucide-react'
+import { Search, Ban, CheckCircle, ShieldCheck, Trash2 } from 'lucide-react'
 
 interface UserRow {
   id: string; display_id: string; email: string; is_verified: boolean; is_active: boolean
@@ -12,24 +12,51 @@ export default function UsersPage({ token }: { token: string }) {
   const [users, setUsers] = useState<UserRow[]>([])
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
+  const [actionId, setActionId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const headers = { Authorization: `Bearer ${token}` }
 
   const fetchUsers = async () => {
     setLoading(true)
-    const res = await fetch('/api/admin/users?limit=100', {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    setError(null)
+    const res = await fetch('/api/admin/users?limit=100', { headers })
+    if (!res.ok) {
+      setError('Не удалось загрузить пользователей')
+      setLoading(false)
+      return
+    }
     setUsers(await res.json())
     setLoading(false)
   }
 
   useEffect(() => { fetchUsers() }, [])
 
-  const toggleBan = async (id: string) => {
-    await fetch(`/api/admin/users/${id}/ban`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    fetchUsers()
+  const apiAction = async (id: string, path: string, method: string) => {
+    setActionId(id)
+    setError(null)
+    try {
+      const res = await fetch(`/api/admin/users/${id}${path}`, { method, headers })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        setError(body.detail || 'Ошибка операции')
+        return
+      }
+      await fetchUsers()
+    } finally {
+      setActionId(null)
+    }
+  }
+
+  const toggleBan = (id: string) => apiAction(id, '/ban', 'POST')
+
+  const verifyUser = (id: string) => apiAction(id, '/verify', 'POST')
+
+  const deleteUser = async (u: UserRow) => {
+    if (!confirm(`Удалить пользователя ${u.email}?\n\nБудут удалены устройства, подписки, платежи и VK-хеши.`)) {
+      return
+    }
+    await apiAction(u.id, '', 'DELETE')
   }
 
   const filtered = users.filter(u =>
@@ -54,6 +81,12 @@ export default function UsersPage({ token }: { token: string }) {
         </div>
       </div>
 
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm rounded-lg px-4 py-3">
+          {error}
+        </div>
+      )}
+
       <div className="bg-[#111] border border-[#222] rounded-xl overflow-hidden">
         <table className="w-full text-sm">
           <thead>
@@ -65,7 +98,7 @@ export default function UsersPage({ token }: { token: string }) {
               <th className="text-left px-4 py-3">Подписка</th>
               <th className="text-left px-4 py-3">Устройств</th>
               <th className="text-left px-4 py-3">Статус</th>
-              <th className="px-4 py-3" />
+              <th className="px-4 py-3 text-right">Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -91,19 +124,45 @@ export default function UsersPage({ token }: { token: string }) {
                   </td>
                   <td className="px-4 py-3 text-center">{u.devices_count}/3</td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <div className={`w-1.5 h-1.5 rounded-full ${u.is_active ? 'bg-green-400' : 'bg-red-400'}`} />
-                      <span className="text-xs text-[#888]">{u.is_verified ? 'Верифицирован' : 'Не верифицирован'}</span>
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-1.5 h-1.5 rounded-full ${u.is_active ? 'bg-green-400' : 'bg-red-400'}`} />
+                        <span className="text-xs text-[#888]">{u.is_active ? 'Активен' : 'Заблокирован'}</span>
+                      </div>
+                      <span className={`text-xs ${u.is_verified ? 'text-green-400/80' : 'text-amber-400/80'}`}>
+                        {u.is_verified ? 'Верифицирован' : 'Не верифицирован'}
+                      </span>
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <button
-                      onClick={() => toggleBan(u.id)}
-                      className={`p-1.5 rounded-lg transition-colors ${u.is_active ? 'hover:bg-red-500/20 text-[#555] hover:text-red-400' : 'hover:bg-green-500/20 text-[#555] hover:text-green-400'}`}
-                      title={u.is_active ? 'Заблокировать' : 'Разблокировать'}
-                    >
-                      {u.is_active ? <Ban className="w-3.5 h-3.5" /> : <CheckCircle className="w-3.5 h-3.5" />}
-                    </button>
+                    <div className="flex items-center justify-end gap-1">
+                      {!u.is_verified && (
+                        <button
+                          onClick={() => verifyUser(u.id)}
+                          disabled={actionId === u.id}
+                          className="p-1.5 rounded-lg transition-colors hover:bg-blue-500/20 text-[#555] hover:text-blue-400 disabled:opacity-40"
+                          title="Верифицировать без email"
+                        >
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => toggleBan(u.id)}
+                        disabled={actionId === u.id}
+                        className={`p-1.5 rounded-lg transition-colors disabled:opacity-40 ${u.is_active ? 'hover:bg-red-500/20 text-[#555] hover:text-red-400' : 'hover:bg-green-500/20 text-[#555] hover:text-green-400'}`}
+                        title={u.is_active ? 'Заблокировать' : 'Разблокировать'}
+                      >
+                        {u.is_active ? <Ban className="w-3.5 h-3.5" /> : <CheckCircle className="w-3.5 h-3.5" />}
+                      </button>
+                      <button
+                        onClick={() => deleteUser(u)}
+                        disabled={actionId === u.id}
+                        className="p-1.5 rounded-lg transition-colors hover:bg-red-500/20 text-[#555] hover:text-red-400 disabled:opacity-40"
+                        title="Удалить пользователя"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))

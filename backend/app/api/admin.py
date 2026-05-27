@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from app.database import get_db
-from app.models import User, Subscription, Device, VkHash, AppSetting, PromoCode
+from app.models import User, Subscription, Device, VkHash, AppSetting, PromoCode, Payment, VkLinkSession
 from app.core.deps import get_admin_credentials
 from app.schemas.vpn import ThemeResponse
 
@@ -150,7 +150,62 @@ async def ban_user(
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     user.is_active = not user.is_active
     await db.commit()
-    return {"status": "banned" if not user.is_active else "unbanned"}
+    return {"status": "banned" if not user.is_active else "unbanned", "is_active": user.is_active}
+
+
+@router.post("/users/{user_id}/verify")
+async def verify_user(
+    user_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ручная верификация email без письма."""
+    import uuid
+    from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
+
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if user.email == BOOTSTRAP_USER_EMAIL:
+        raise HTTPException(status_code=400, detail="Нельзя верифицировать системного пользователя")
+    if user.is_verified:
+        return {"status": "already_verified", "is_verified": True}
+
+    user.is_verified = True
+    user.verification_token = None
+    await db.commit()
+    return {"status": "verified", "is_verified": True}
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Удалить пользователя и все связанные данные."""
+    import uuid
+    from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
+
+    uid = uuid.UUID(user_id)
+    result = await db.execute(select(User).where(User.id == uid))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if user.email == BOOTSTRAP_USER_EMAIL:
+        raise HTTPException(status_code=400, detail="Нельзя удалить системного пользователя")
+    if user.is_admin:
+        raise HTTPException(status_code=400, detail="Нельзя удалить администратора")
+
+    await db.execute(delete(VkHash).where(VkHash.user_id == uid))
+    await db.execute(delete(VkLinkSession).where(VkLinkSession.user_id == uid))
+    await db.execute(delete(Device).where(Device.user_id == uid))
+    await db.execute(delete(Payment).where(Payment.user_id == uid))
+    await db.execute(delete(Subscription).where(Subscription.user_id == uid))
+    await db.delete(user)
+    await db.commit()
+    return {"status": "deleted", "id": user_id}
 
 
 # ─── VK: bot auth → AI agent → manual hashes ─────────────────────────────────

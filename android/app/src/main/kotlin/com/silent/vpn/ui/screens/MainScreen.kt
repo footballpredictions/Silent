@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,12 +26,33 @@ import androidx.compose.ui.unit.sp
 import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
 import com.silent.vpn.data.ThemeData
+import com.silent.vpn.data.DeviceInfo
 import com.silent.vpn.data.UserProfile
 import com.silent.vpn.ui.theme.parseColor
 
 enum class VpnState { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
 
-private enum class MenuPage { ROOT, SUBSCRIPTION, SETTINGS, EXCEPTIONS, PROMO, DEVICES, SUPPORT, ABOUT }
+private enum class MenuPage { ROOT, SUBSCRIPTION, EXCEPTIONS, HASHES, PROMO, DEVICES, SUPPORT, ABOUT }
+
+private fun deviceTypeLabel(type: String): String = when (type.lowercase()) {
+    "android" -> "Android"
+    "pc", "windows" -> "ПК"
+    "ios" -> "iOS"
+    else -> type.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+}
+
+private fun defaultDeviceName(type: String): String = when (type.lowercase()) {
+    "android" -> "Android"
+    "pc", "windows" -> "PC"
+    "ios" -> "iOS"
+    else -> deviceTypeLabel(type)
+}
+
+private fun sessionCustomLabel(d: DeviceInfo): String? {
+    val defaults = setOf("Android", "ПК", "PC", "iOS", "Windows")
+    if (d.device_name in defaults || d.device_name.startsWith("Bootstrap-", ignoreCase = true)) return null
+    return d.device_name
+}
 
 @Composable
 fun MainScreen(
@@ -47,6 +69,7 @@ fun MainScreen(
     onInitPayment: (String, (String) -> Unit, (String) -> Unit) -> Unit,
     onOpenUrl: (String) -> Unit,
     onShowError: (String) -> Unit,
+    onRenameDevice: (deviceId: String, name: String, onResult: (Boolean, String?) -> Unit) -> Unit,
 ) {
     val bg = parseColor(theme?.background_color ?: "#FFFFFF", Color.White)
     val fg = parseColor(theme?.text_color ?: "#000000", Color.Black)
@@ -89,29 +112,32 @@ fun MainScreen(
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Title bar — как на PC
-            Row(
+            // Title bar — название по центру, меню слева, лог справа
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(36.dp)
                     .border(0.5.dp, Color(0xFFF3F4F6))
-                    .padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .padding(horizontal = 4.dp),
+                contentAlignment = Alignment.Center,
             ) {
-                IconButton(onClick = { menuOpen = true; menuPage = MenuPage.ROOT }, modifier = Modifier.size(28.dp)) {
+                IconButton(
+                    onClick = { menuOpen = true; menuPage = MenuPage.ROOT },
+                    modifier = Modifier.align(Alignment.CenterStart).size(28.dp),
+                ) {
                     Icon(Icons.Default.Menu, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
                 }
                 Text(
                     (theme?.app_name ?: "Silent").uppercase(),
-                    modifier = Modifier.weight(1f),
-                    textAlign = TextAlign.Center,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 3.sp,
                     fontSize = 12.sp,
                     color = fg,
                 )
-                Spacer(modifier = Modifier.size(28.dp))
-                DebugLogButton(onClick = { showDebugLog = true })
+                DebugLogButton(
+                    onClick = { showDebugLog = true },
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                )
             }
 
             // Main content
@@ -241,8 +267,8 @@ fun MainScreen(
                         MenuPage.ROOT -> {
                             val items = listOf(
                                 MenuPage.SUBSCRIPTION to "Подписка",
-                                MenuPage.SETTINGS to "VK / офлайн",
                                 MenuPage.EXCEPTIONS to "Исключения приложений",
+                                MenuPage.HASHES to "Хеши",
                                 MenuPage.PROMO to "Промокод",
                                 MenuPage.DEVICES to "Сессии (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})",
                                 MenuPage.SUPPORT to "Поддержка",
@@ -263,20 +289,12 @@ fun MainScreen(
                             ) { Text("Выйти", color = Color(0xFFEF4444), fontSize = 14.sp) }
                         }
                         MenuPage.SUBSCRIPTION -> MenuSubscription(profile, fg, onBack = { menuPage = MenuPage.ROOT }, onInitPayment, onOpenUrl, onShowError)
-                        MenuPage.SETTINGS -> MenuSimplePage(
-                            "VK",
-                            if (profile?.vk_linked == true) {
-                                "VK привязан (ID ${profile.vk_user_id}). Настройка — на экране входа."
-                            } else {
-                                "VK не привязан. Выйдите и настройте VK на экране входа."
-                            },
-                            fg,
-                        ) { menuPage = MenuPage.ROOT }
                         MenuPage.EXCEPTIONS -> AppExclusionsScreen(repo, fg, bg) { menuPage = MenuPage.ROOT }
+                        MenuPage.HASHES -> MenuHashesScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.PROMO -> MenuPromo(fg, bg, promoCode, { promoCode = it }, promoMsg, { onCheckPromo(promoCode) { promoMsg = it } }) { menuPage = MenuPage.ROOT }
-                        MenuPage.DEVICES -> MenuDevices(profile, fg) { menuPage = MenuPage.ROOT }
+                        MenuPage.DEVICES -> MenuDevices(profile, fg, sessionDeviceId, vpnState, onRenameDevice) { menuPage = MenuPage.ROOT }
                         MenuPage.SUPPORT -> MenuSimplePage("Поддержка", "По вопросам обратитесь через email или Telegram.", fg) { menuPage = MenuPage.ROOT }
-                        MenuPage.ABOUT -> MenuSimplePage("Silent VPN", "Версия 1.0.2\nWireGuard-туннель через VK TURN/DTLS", fg) { menuPage = MenuPage.ROOT }
+                        MenuPage.ABOUT -> MenuSimplePage("Silent VPN", "Версия 1.0.15\nWireGuard-туннель через VK TURN/DTLS", fg) { menuPage = MenuPage.ROOT }
                     }
                 }
                 Box(
@@ -340,22 +358,110 @@ private fun MenuPromo(fg: Color, bg: Color, promoCode: String, onPromoChange: (S
 }
 
 @Composable
-private fun MenuDevices(profile: UserProfile?, fg: Color, onBack: () -> Unit) {
+private fun MenuDevices(
+    profile: UserProfile?,
+    fg: Color,
+    sessionDeviceId: String?,
+    vpnState: VpnState,
+    onRenameDevice: (deviceId: String, name: String, onResult: (Boolean, String?) -> Unit) -> Unit,
+    onBack: () -> Unit,
+) {
+    var renameTarget by remember { mutableStateOf<DeviceInfo?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var renameSaving by remember { mutableStateOf(false) }
+
+    if (renameTarget != null) {
+        AlertDialog(
+            onDismissRequest = { if (!renameSaving) renameTarget = null },
+            title = { Text("Приписать имя", fontSize = 14.sp) },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it.take(64) },
+                    placeholder = { Text("Например: Мой телефон") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !renameSaving,
+                    onClick = {
+                        val target = renameTarget ?: return@TextButton
+                        renameSaving = true
+                        val name = renameText.trim().ifBlank { defaultDeviceName(target.device_type) }
+                        onRenameDevice(target.id, name) { ok, _ ->
+                            renameSaving = false
+                            if (ok) renameTarget = null
+                        }
+                    },
+                ) { Text("Сохранить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!renameSaving) renameTarget = null }) {
+                    Text("Отмена")
+                }
+            },
+        )
+    }
+
     Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
         Text("Сессии", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        val localOnline = vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING
+        val onlineCount = profile?.devices?.count { d ->
+            d.is_connected || (localOnline && d.id == sessionDeviceId)
+        } ?: 0
         Text(
-            "VPN онлайн: ${profile?.connected_count ?: 0} из ${profile?.devices_count ?: 0}",
+            "VPN онлайн: $onlineCount из ${profile?.devices_count ?: 0}",
             fontSize = 11.sp,
             color = fg.copy(alpha = 0.45f),
             modifier = Modifier.padding(bottom = 8.dp),
         )
         profile?.devices?.forEach { d ->
-            Row(modifier = Modifier.padding(vertical = 8.dp).border(0.5.dp, Color(0xFFF3F4F6)).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(modifier = Modifier.size(6.dp).background(if (d.is_connected) Color(0xFF22C55E) else Color(0xFFD1D5DB), CircleShape))
-                Column(modifier = Modifier.padding(start = 8.dp)) {
-                    Text(d.device_name, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = fg)
-                    Text(d.device_type, fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
+            val online = d.is_connected || (localOnline && d.id == sessionDeviceId)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp)
+                    .border(0.5.dp, Color(0xFFF3F4F6))
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier.size(10.dp).background(
+                        if (online) Color(0xFF22C55E) else Color(0xFFD1D5DB),
+                        CircleShape,
+                    ),
+                )
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 10.dp),
+                ) {
+                    Text(
+                        deviceTypeLabel(d.device_type),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = fg,
+                    )
+                    sessionCustomLabel(d)?.let { label ->
+                        Text(
+                            label,
+                            fontSize = 11.sp,
+                            color = fg.copy(alpha = 0.45f),
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = {
+                        renameTarget = d
+                        renameText = sessionCustomLabel(d).orEmpty()
+                    },
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(Icons.Default.Edit, contentDescription = "Подписать", tint = fg.copy(alpha = 0.45f), modifier = Modifier.size(16.dp))
                 }
             }
         }

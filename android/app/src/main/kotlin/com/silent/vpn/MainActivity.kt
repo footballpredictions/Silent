@@ -15,14 +15,21 @@ import com.silent.vpn.ui.screens.MainScreen
 import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.ui.theme.SilentTheme
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        @Volatile
+        var isForeground: Boolean = false
+    }
+
     private val vm: MainViewModel by viewModels()
     private var vpnPermissionGranted = mutableStateOf(false)
     private var pendingBootstrapAfterPermission = mutableStateOf(false)
+    private var pendingHashInput = mutableStateOf("")
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -30,7 +37,7 @@ class MainActivity : ComponentActivity() {
         if (result.resultCode == RESULT_OK) {
             if (pendingBootstrapAfterPermission.value) {
                 pendingBootstrapAfterPermission.value = false
-                vm.ensureBootstrapVpn(this)
+                vm.connectForLogin(this, pendingHashInput.value)
             } else {
                 vpnPermissionGranted.value = true
             }
@@ -43,7 +50,6 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         DebugLog.i("App", "Silent VPN ${android.os.Build.MODEL} API ${android.os.Build.VERSION.SDK_INT}")
-        handleVkDeepLink(intent)
 
         setContent {
             val screen by vm.screen.collectAsState()
@@ -55,23 +61,10 @@ class MainActivity : ComponentActivity() {
             val vpnError by vm.vpnError.collectAsState()
             val regDone by vm.regDone.collectAsState()
             val regEmail by vm.regEmail.collectAsState()
-            val vkReady by vm.vkReady.collectAsState()
-            val vkUserId by vm.vkUserId.collectAsState()
             val bootstrapHash by vm.bootstrapHash.collectAsState()
-            val vkMsg by vm.vkMsg.collectAsState()
+            val statusMsg by vm.statusMsg.collectAsState()
+            val bootstrapConnecting by vm.bootstrapConnecting.collectAsState()
             val sessionDeviceId by vm.sessionDeviceId.collectAsState()
-
-            LaunchedEffect(vkReady, screen) {
-                if (screen == AppScreen.LOGIN && vkReady) {
-                    val prep = VpnService.prepare(this@MainActivity)
-                    if (prep != null) {
-                        pendingBootstrapAfterPermission.value = true
-                        vpnPermissionLauncher.launch(prep)
-                    } else {
-                        vm.ensureBootstrapVpn(this@MainActivity)
-                    }
-                }
-            }
 
             LaunchedEffect(vpnPermissionGranted.value) {
                 if (vpnPermissionGranted.value) {
@@ -90,13 +83,18 @@ class MainActivity : ComponentActivity() {
                         error = authError,
                         regDone = regDone,
                         regEmail = regEmail,
-                        vkReady = vkReady,
-                        vkUserId = vkUserId,
+                        hashReady = !bootstrapHash.isNullOrBlank(),
                         bootstrapHash = bootstrapHash,
-                        vkMsg = vkMsg,
-                        onLinkVk = {
-                            vm.linkVkGuest { url ->
-                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        statusMsg = statusMsg,
+                        bootstrapConnecting = bootstrapConnecting,
+                        onConnect = { raw ->
+                            val prep = VpnService.prepare(this@MainActivity)
+                            pendingHashInput.value = raw
+                            if (prep != null) {
+                                pendingBootstrapAfterPermission.value = true
+                                vpnPermissionLauncher.launch(prep)
+                            } else {
+                                vm.connectForLogin(this@MainActivity, raw)
                             }
                         },
                         onClearError = vm::clearAuthError,
@@ -126,21 +124,21 @@ class MainActivity : ComponentActivity() {
                             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                         },
                         onShowError = vm::showError,
+                        onRenameDevice = vm::renameDevice,
                     )
                 }
             }
         }
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        handleVkDeepLink(intent)
+    override fun onResume() {
+        super.onResume()
+        isForeground = true
+        ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
     }
 
-    private fun handleVkDeepLink(intent: Intent?) {
-        val data = intent?.data ?: return
-        if (data.scheme != "silentvpn" || data.host != "vk-linked") return
-        vm.handleVkDeepLink(data.getQueryParameter("boot"), data.getQueryParameter("vk")?.toLongOrNull())
+    override fun onPause() {
+        isForeground = false
+        super.onPause()
     }
 }

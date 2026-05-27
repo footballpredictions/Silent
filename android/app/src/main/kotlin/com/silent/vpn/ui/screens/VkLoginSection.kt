@@ -34,7 +34,7 @@ fun VkLoginSection(
     Text(
         when {
             vkReady && vkUserId != null -> "VK готов (ID $vkUserId). Можно войти в аккаунт."
-            else -> "Привяжите VK — бот автоматически отправит первый хеш"
+            else -> "Привяжите VK — откроется вход (логин и пароль). Если предложат «в один клик» — выберите «Ввести вручную»"
         },
         fontSize = 11.sp,
         color = Color(0xFF6B7280),

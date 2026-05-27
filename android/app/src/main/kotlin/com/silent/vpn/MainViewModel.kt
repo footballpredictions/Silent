@@ -19,11 +19,10 @@ import com.silent.vpn.data.RegisterRequest
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.UserProfile
-import com.silent.vpn.data.VkAttachRequest
 import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.ui.screens.VpnState
-import com.silent.vpn.vk.VkConfigFetcher
+import com.silent.vpn.vk.HashParser
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.vpn.WdttTunnelManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -31,6 +30,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import javax.inject.Inject
 
 enum class AppScreen { LOGIN, MAIN }
@@ -70,31 +71,41 @@ class MainViewModel @Inject constructor(
     private val _bootstrapHash = MutableStateFlow(repo.getBootstrapHash())
     val bootstrapHash: StateFlow<String?> = _bootstrapHash
 
-    private val _vkUserId = MutableStateFlow(repo.getVkUserId().takeIf { it > 0 })
-    val vkUserId: StateFlow<Long?> = _vkUserId
+    private val _hashReady = MutableStateFlow(isHashReady())
+    val hashReady: StateFlow<Boolean> = _hashReady
 
-    private val _vkReady = MutableStateFlow(isVkReady())
-    val vkReady: StateFlow<Boolean> = _vkReady
+    private val _statusMsg = MutableStateFlow("")
+    val statusMsg: StateFlow<String> = _statusMsg
 
-    private val _vkMsg = MutableStateFlow("")
-    val vkMsg: StateFlow<String> = _vkMsg
+    private val _bootstrapConnecting = MutableStateFlow(false)
+    val bootstrapConnecting: StateFlow<Boolean> = _bootstrapConnecting
 
     private val _sessionDeviceId = MutableStateFlow(repo.getSessionDeviceId())
     val sessionDeviceId: StateFlow<String?> = _sessionDeviceId
 
     private var bootstrapVpnMode = false
-    private var bootstrapConnecting = false
+    private var bootstrapConnectingInternal = false
 
     val lastEmail: String get() = repo.getLastEmail().orEmpty()
     val repository: SilentRepository get() = repo
 
-    private fun isVkReady(): Boolean =
-        repo.getVkUserId() > 0 && !repo.getBootstrapHash().isNullOrBlank()
+    private fun isHashReady(): Boolean = !repo.getBootstrapHash().isNullOrBlank()
 
-    private fun refreshVkState() {
-        _vkUserId.value = repo.getVkUserId().takeIf { it > 0 }
+    private fun refreshHashState() {
         _bootstrapHash.value = repo.getBootstrapHash()
-        _vkReady.value = isVkReady()
+        _hashReady.value = isHashReady()
+    }
+
+    /** Сохранить хеш из поля и подключить bootstrap VPN. */
+    fun connectForLogin(context: Context, raw: String) {
+        val h = HashParser.extract(raw)
+        if (h == null) {
+            _statusMsg.value = "Неверный хеш. Вставьте ссылку vk.com/call/join/… или сам хеш"
+            return
+        }
+        repo.saveBootstrapHash(h)
+        refreshHashState()
+        ensureBootstrapVpn(context)
     }
 
     init {
@@ -120,7 +131,11 @@ class MainViewModel @Inject constructor(
                 if (ready) {
                     DebugLog.i("MainViewModel", "tunnel ready")
                     _vpnState.value = VpnState.CONNECTED
-                } else if (_vpnState.value == VpnState.CONNECTED) {
+                    markDeviceOnlineOnServer()
+                } else if (
+                    _vpnState.value == VpnState.CONNECTED &&
+                    !WdttTunnelManager.running.value
+                ) {
                     _vpnState.value = VpnState.DISCONNECTED
                 }
             }
@@ -130,6 +145,15 @@ class MainViewModel @Inject constructor(
     private fun refreshSession() {
         loadProfile()
         loadTheme()
+    }
+
+    private fun markDeviceOnlineOnServer() {
+        viewModelScope.launch {
+            runCatching {
+                repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
+            }
+            loadProfile()
+        }
     }
 
     private fun loadProfile() {
@@ -159,14 +183,9 @@ class MainViewModel @Inject constructor(
             _authLoading.value = true
             _authError.value = null
             runCatching {
-                activity?.let { ctx ->
-                    if (isVkReady() && _vpnState.value != VpnState.CONNECTED) {
-                        ensureBootstrapVpn(ctx)
-                        repeat(45) {
-                            delay(1000)
-                            if (_vpnState.value == VpnState.CONNECTED) return@repeat
-                        }
-                    }
+                if (_vpnState.value != VpnState.CONNECTED) {
+                    _authError.value = "Сначала нажмите «Подключить для входа»"
+                    return@launch
                 }
                 val res = repo.getApi().login(LoginRequest(email, password))
                 if (!res.isSuccessful) {
@@ -176,23 +195,9 @@ class MainViewModel @Inject constructor(
                 val tokens = res.body()!!
                 repo.saveTokens(tokens.access_token, tokens.refresh_token)
                 repo.saveLastEmail(email)
-                val localVkId = repo.getVkUserId().takeIf { it > 0 }
-                if (localVkId != null) {
-                    runCatching {
-                        val att = repo.getApi().vkLinkAttach(VkAttachRequest(localVkId))
-                        if (att.isSuccessful) {
-                            att.body()?.bootstrap_hash?.let { repo.saveBootstrapHash(it) }
-                            refreshVkState()
-                        } else {
-                            _vkMsg.value = parseError(att.errorBody()?.string() ?: "")
-                                ?: "Не удалось привязать VK к аккаунту"
-                        }
-                    }.onFailure {
-                        _vkMsg.value = it.message ?: "Ошибка привязки VK"
-                    }
-                }
                 repo.startNewSession()
                 if (!openLoginSession()) return@launch
+                activity?.let { disconnectBootstrapVpn(it) }
                 activity?.let { CredentialHelper.offerSavePassword(it, email, password) }
                 refreshSession()
                 goToMain()
@@ -231,19 +236,30 @@ class MainViewModel @Inject constructor(
         _screen.value = AppScreen.MAIN
     }
 
-    fun clearVkMsg() { _vkMsg.value = "" }
+    private fun disconnectBootstrapVpn(context: Context) {
+        if (!bootstrapVpnMode) return
+        stopVpnLocally(context)
+        bootstrapVpnMode = false
+        _vpnState.value = VpnState.DISCONNECTED
+        _statusMsg.value = "Интернет отключён. VPN включайте на главном экране."
+    }
 
-    /** Bootstrap VPN on login screen — reach backend through VK TURN before Silent login. */
+    /** Bootstrap VPN on login screen — reach backend through user's VK hash. */
     fun ensureBootstrapVpn(context: Context) {
-        if (repo.isLoggedIn() || !isVkReady()) return
-        if (_vpnState.value == VpnState.CONNECTED || _vpnState.value == VpnState.CONNECTING) return
-        if (bootstrapConnecting) return
+        if (repo.isLoggedIn() || !isHashReady()) return
+        if (_vpnState.value == VpnState.CONNECTED || bootstrapConnectingInternal) return
         DebugLog.i("MainViewModel", "ensureBootstrapVpn start")
         viewModelScope.launch {
-            bootstrapConnecting = true
+            bootstrapConnectingInternal = true
+            _bootstrapConnecting.value = true
             _vpnError.value = null
             try {
-                val boot = repo.getBootstrapHash() ?: return@launch
+                val boot = HashParser.extract(repo.getBootstrapHash().orEmpty())
+                    ?: run {
+                        _statusMsg.value = "Неверный сохранённый хеш. Вставьте ссылку vk.com/call/join/… заново"
+                        return@launch
+                    }
+                repo.saveBootstrapHash(boot)
                 val fp = repo.getOrCreatePreLoginFingerprint()
                 val res = repo.getApi().bootstrapConfig(
                     BootstrapConfigRequest(boot, "android", fp)
@@ -251,13 +267,13 @@ class MainViewModel @Inject constructor(
                 if (!res.isSuccessful) {
                     Log.w("MainViewModel", "bootstrap-config ${res.code()}")
                     DebugLog.w("MainViewModel", "bootstrap-config HTTP ${res.code()}: ${res.errorBody()?.string()?.take(200)}")
-                    _vkMsg.value = parseError(res.errorBody()?.string() ?: "")
+                    _statusMsg.value = parseError(res.errorBody()?.string() ?: "")
                         ?: "Не удалось получить bootstrap-конфиг"
                     return@launch
                 }
                 var config = applyBootstrapHash(res.body()!!)
                 if (config.vk_hashes.isEmpty() || config.wg_private_key.isBlank()) {
-                    _vkMsg.value = "Bootstrap-конфиг неполный"
+                    _statusMsg.value = "Bootstrap-конфиг неполный"
                     return@launch
                 }
                 bootstrapVpnMode = true
@@ -272,7 +288,7 @@ class MainViewModel @Inject constructor(
                     if (_vpnState.value != VpnState.CONNECTING) return@launch
                     if (WdttTunnelManager.tunnelReady.value) {
                         _vpnState.value = VpnState.CONNECTED
-                        _vkMsg.value = "Канал к серверу готов. Войдите в аккаунт."
+                        _statusMsg.value = "Канал готов. Можно войти или зарегистрироваться."
                         return@launch
                     }
                 }
@@ -280,24 +296,22 @@ class MainViewModel @Inject constructor(
                     stopVpnLocally(context)
                     bootstrapVpnMode = false
                     _vpnState.value = VpnState.DISCONNECTED
-                    _vkMsg.value = WdttTunnelManager.lastError.value ?: "Таймаут bootstrap VPN"
+                    _statusMsg.value = WdttTunnelManager.lastError.value ?: "Таймаут bootstrap VPN"
                 }
             } catch (e: Exception) {
                 Log.e("MainViewModel", "bootstrap VPN", e)
-                _vkMsg.value = e.message ?: "Ошибка bootstrap VPN"
+                _statusMsg.value = e.message ?: "Ошибка bootstrap VPN"
             } finally {
-                bootstrapConnecting = false
+                bootstrapConnectingInternal = false
+                _bootstrapConnecting.value = false
             }
         }
     }
 
-    private fun refreshBootstrapHash() {
-        refreshVkState()
-    }
-
     private suspend fun openLoginSession(): Boolean {
+        val boot = repo.getBootstrapHash()
         val res = repo.getApi().registerDevice(
-            DeviceRegisterRequest("Android", "android", repo.getDeviceFingerprint(), null)
+            DeviceRegisterRequest("Android", "android", repo.getDeviceFingerprint(), null, boot)
         )
         if (res.isSuccessful) {
             val cfg = res.body()!!
@@ -364,145 +378,107 @@ class MainViewModel @Inject constructor(
             _vpnError.value = null
             runCatching {
                 val fp = repo.getDeviceFingerprint()
+                val cached = loadCachedVpnConfig()
+                if (cached != null && isConfigConnectable(cached)) {
+                    DebugLog.i("MainViewModel", "fast connect from cache")
+                    runCatching { repo.getApi().connect(ConnectRequest(fp, "android")) }
+                    launchVpnService(context, cached)
+                    viewModelScope.launch { refreshVpnConfigInBackground(fp) }
+                    waitForTunnelReady(context)
+                    return@launch
+                }
+
                 var vpnConfig: VpnConfig? = null
                 var apiError: String? = null
+                var accessDenied = false
 
-                runCatching {
-                    val regRes = repo.getApi().registerDevice(
-                        DeviceRegisterRequest("Android", "android", fp, null)
-                    )
-                    when (regRes.code()) {
-                        403 -> {
-                            _vpnError.value = parseError(regRes.errorBody()?.string() ?: "") ?: "Доступ запрещён"
-                            _vpnState.value = VpnState.DISCONNECTED
-                            return@launch
-                        }
-                    }
-                    if (regRes.isSuccessful) {
-                        vpnConfig = regRes.body()!!
-                        DebugLog.i("MainViewModel", "device/register OK device=${vpnConfig!!.device_id.take(8)} hashes=${vpnConfig!!.vk_hashes.size}")
-                        repo.saveSessionDeviceId(vpnConfig!!.device_id)
-                        _sessionDeviceId.value = vpnConfig!!.device_id
-                        repo.cacheVpnConfig(Gson().toJson(vpnConfig))
-                    } else if (regRes.code() != 0) {
-                        apiError = parseError(regRes.errorBody()?.string() ?: "") ?: "Ошибка регистрации устройства"
-                    }
-                }
-
-                if (vpnConfig == null) {
-                    runCatching {
-                        val cfgRes = repo.getApi().getConfig(fp)
-                        if (cfgRes.isSuccessful) {
-                            vpnConfig = cfgRes.body()!!
-                            repo.cacheVpnConfig(Gson().toJson(vpnConfig))
-                        }
-                    }
-                }
-
-                if (vpnConfig == null) {
-                    runCatching {
-                        val vkRes = repo.getApi().vkConfigSync()
-                        if (vkRes.isSuccessful) {
-                            vpnConfig = vkRes.body()!!
-                            repo.cacheVpnConfig(Gson().toJson(vpnConfig))
-                        }
-                    }
-                }
-
-                if (vpnConfig == null) {
-                    val vkUserId = _profile.value?.vk_user_id ?: repo.getVkUserId().takeIf { it > 0 }
-                    if (vkUserId != null && vkUserId > 0) {
-                        vpnConfig = VkConfigFetcher.fetchConfig(vkUserId, repo.getVkAccessToken())
-                        if (vpnConfig != null) repo.cacheVpnConfig(Gson().toJson(vpnConfig))
-                    }
-                }
-
-                if (vpnConfig == null) {
-                    val boot = repo.getBootstrapHash()
-                    if (!boot.isNullOrBlank()) {
+                coroutineScope {
+                    val regJob = async {
                         runCatching {
-                            val bRes = repo.getApi().bootstrapConfig(
-                                BootstrapConfigRequest(boot, "android", fp)
+                            repo.getApi().registerDevice(
+                                DeviceRegisterRequest("Android", "android", fp, null, repo.getBootstrapHash())
                             )
-                            if (bRes.isSuccessful) {
-                                vpnConfig = applyBootstrapHash(bRes.body()!!)
+                        }.getOrNull()
+                    }
+                    val hashesJob = async {
+                        runCatching { repo.getApi().getVpnHashes() }.getOrNull()
+                    }
+
+                    val regRes = regJob.await()
+                    if (regRes != null) {
+                        when (regRes.code()) {
+                            403 -> {
+                                _vpnError.value = parseError(regRes.errorBody()?.string() ?: "") ?: "Доступ запрещён"
+                                _vpnState.value = VpnState.DISCONNECTED
+                                accessDenied = true
+                                return@coroutineScope
+                            }
+                        }
+                        if (regRes.isSuccessful) {
+                            vpnConfig = regRes.body()!!
+                            DebugLog.i("MainViewModel", "device/register OK device=${vpnConfig!!.device_id.take(8)} hashes=${vpnConfig!!.vk_hashes.size}")
+                            repo.saveSessionDeviceId(vpnConfig!!.device_id)
+                            _sessionDeviceId.value = vpnConfig!!.device_id
+                            repo.cacheVpnConfig(Gson().toJson(vpnConfig))
+                        } else if (regRes.code() != 0) {
+                            apiError = parseError(regRes.errorBody()?.string() ?: "") ?: "Ошибка регистрации устройства"
+                        }
+                    }
+
+                    if (vpnConfig == null) {
+                        runCatching {
+                            val cfgRes = repo.getApi().getConfig(fp)
+                            if (cfgRes.isSuccessful) {
+                                vpnConfig = cfgRes.body()!!
                                 repo.cacheVpnConfig(Gson().toJson(vpnConfig))
+                            }
+                        }
+                    }
+
+                    if (vpnConfig == null) {
+                        vpnConfig = loadCachedVpnConfig()
+                    }
+
+                    vpnConfig = vpnConfig?.let { applyBootstrapHash(it) }
+
+                    hashesJob.await()?.let { hres ->
+                        if (hres.isSuccessful) {
+                            val all = hres.body()?.hashes?.filter { it.isNotBlank() }
+                            if (!all.isNullOrEmpty() && vpnConfig != null) {
+                                vpnConfig = vpnConfig!!.copy(vk_hashes = all)
+                                repo.cacheVpnConfig(Gson().toJson(vpnConfig))
+                                if (all.size <= 1) {
+                                    runCatching {
+                                        repo.getApi().requestHashRefresh(ConnectRequest(fp, "android"))
+                                    }
+                                }
                             }
                         }
                     }
                 }
 
-                if (vpnConfig == null) {
-                    repo.getCachedVpnConfig()?.let { cached ->
-                        val parsed = Gson().fromJson(cached, VpnConfig::class.java)
-                        if (parsed.device_id == repo.getSessionDeviceId()) {
-                            vpnConfig = parsed
-                        }
-                    }
-                }
+                if (accessDenied) return@launch
 
                 if (vpnConfig == null) {
                     DebugLog.e("MainViewModel", apiError ?: "no vpn config")
-                    _vpnError.value = apiError ?: "Сервер недоступен. Загрузите конфиг из VK в настройках или подключитесь при доступном интернете."
+                    _vpnError.value = apiError ?: "Сервер недоступен. Подключитесь дома по Wi‑Fi для первого входа."
                     _vpnState.value = VpnState.DISCONNECTED
                     return@launch
                 }
 
-                vpnConfig = applyBootstrapHash(vpnConfig!!)
-
-                runCatching {
-                    val hres = repo.getApi().getVpnHashes()
-                    if (hres.isSuccessful) {
-                        val all = hres.body()?.hashes?.filter { it.isNotBlank() }
-                        if (!all.isNullOrEmpty()) {
-                            vpnConfig = vpnConfig!!.copy(vk_hashes = all)
-                            repo.cacheVpnConfig(Gson().toJson(vpnConfig))
-                        }
+                if (!isConfigConnectable(vpnConfig!!)) {
+                    _vpnError.value = when {
+                        vpnConfig!!.vk_hashes.isEmpty() -> "Нет VK-хеша. Введите хеш на экране входа."
+                        else -> "Нет ключей WireGuard на сервере. Перезайдите в аккаунт."
                     }
-                }
-
-                if (vpnConfig!!.vk_hashes.isEmpty()) {
-                    _vpnError.value = "Нет VK-хеша. Привяжите VK и получите сообщение от бота."
                     _vpnState.value = VpnState.DISCONNECTED
                     return@launch
                 }
 
-                if (vpnConfig!!.wg_private_key.isBlank() || vpnConfig!!.server_public_key.isBlank()) {
-                    _vpnError.value = "Нет ключей WireGuard на сервере. Перезайдите в аккаунт."
-                    _vpnState.value = VpnState.DISCONNECTED
-                    return@launch
-                }
-
-                runCatching {
-                    repo.getApi().connect(ConnectRequest(fp, "android"))
-                }
-
-                val intent = Intent(context, SilentVpnService::class.java).apply {
-                    action = SilentVpnService.ACTION_CONNECT
-                    putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(vpnConfig))
-                }
-                ContextCompat.startForegroundService(context, intent)
+                runCatching { repo.getApi().connect(ConnectRequest(fp, "android")) }
+                launchVpnService(context, vpnConfig!!)
                 loadProfile()
-
-                // Таймаут: если WireGuard не поднялся за 90с — останавливаем
-                repeat(90) {
-                    delay(1000)
-                    if (_vpnState.value != VpnState.CONNECTING) return@launch
-                    if (WdttTunnelManager.tunnelReady.value) return@launch
-                }
-                if (_vpnState.value == VpnState.CONNECTING) {
-                    val err = WdttTunnelManager.lastError.value
-                        ?: if (WdttTunnelManager.activeWorkers.value > 0) {
-                            "WireGuard не поднялся за 90 с"
-                        } else {
-                            WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
-                                ?: "Таймаут: WDTT не подключился к серверу"
-                        }
-                    stopVpnLocally(context)
-                    _vpnError.value = err
-                    DebugLog.e("MainViewModel", "connect timeout: $err")
-                    _vpnState.value = VpnState.DISCONNECTED
-                }
+                waitForTunnelReady(context)
             }.onFailure {
                 DebugLog.e("MainViewModel", "connect failed", it)
                 _vpnError.value = it.message ?: "Ошибка подключения"
@@ -511,38 +487,66 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun linkVkGuest(onOpenUrl: (String) -> Unit) {
-        viewModelScope.launch {
-            _vkMsg.value = "Открытие VK..."
-            runCatching {
-                val res = repo.getApi().vkGuestLinkStart()
-                if (!res.isSuccessful) {
-                    _vkMsg.value = parseError(res.errorBody()?.string() ?: "") ?: "Не удалось начать привязку VK"
-                    return@launch
+    private fun loadCachedVpnConfig(): VpnConfig? {
+        val cached = repo.getCachedVpnConfig() ?: return null
+        val parsed = runCatching { Gson().fromJson(cached, VpnConfig::class.java) }.getOrNull() ?: return null
+        if (parsed.device_id != repo.getSessionDeviceId()) return null
+        return applyBootstrapHash(parsed)
+    }
+
+    private fun isConfigConnectable(config: VpnConfig): Boolean =
+        config.vk_hashes.isNotEmpty() &&
+            config.wg_private_key.isNotBlank() &&
+            config.server_public_key.isNotBlank()
+
+    private fun launchVpnService(context: Context, config: VpnConfig) {
+        val intent = Intent(context, SilentVpnService::class.java).apply {
+            action = SilentVpnService.ACTION_CONNECT
+            putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(config))
+        }
+        ContextCompat.startForegroundService(context, intent)
+    }
+
+    private suspend fun refreshVpnConfigInBackground(fp: String) {
+        runCatching {
+            val regRes = repo.getApi().registerDevice(
+                DeviceRegisterRequest("Android", "android", fp, null, repo.getBootstrapHash())
+            )
+            if (regRes.isSuccessful) {
+                var cfg = applyBootstrapHash(regRes.body()!!)
+                repo.saveSessionDeviceId(cfg.device_id)
+                _sessionDeviceId.value = cfg.device_id
+                val hres = repo.getApi().getVpnHashes()
+                if (hres.isSuccessful) {
+                    val all = hres.body()?.hashes?.filter { it.isNotBlank() }
+                    if (!all.isNullOrEmpty()) cfg = cfg.copy(vk_hashes = all)
                 }
-                val data = res.body()!!
-                onOpenUrl(data.auth_url)
-                repeat(90) {
-                    delay(2000)
-                    val st = repo.getApi().vkGuestStatus(data.state)
-                    if (st.isSuccessful && st.body()?.completed == true) {
-                        val body = st.body()!!
-                        body.vk_user_id?.let { repo.saveVkUserId(it) }
-                        body.bootstrap_hash?.let { repo.saveBootstrapHash(it) }
-                        refreshVkState()
-                        _vkMsg.value = "VK готов. Первый хеш получен — войдите в аккаунт."
-                        return@launch
-                    }
-                }
-                _vkMsg.value = "Завершите вход VK в браузере или вернитесь в приложение."
-            }.onFailure {
-                _vkMsg.value = it.message ?: "Ошибка привязки VK"
+                repo.cacheVpnConfig(Gson().toJson(cfg))
+                runCatching { repo.getApi().connect(ConnectRequest(fp, "android")) }
             }
         }
     }
 
-    /** @deprecated use linkVkGuest */
-    fun linkVk(onOpenUrl: (String) -> Unit) = linkVkGuest(onOpenUrl)
+    private suspend fun waitForTunnelReady(context: Context) {
+        repeat(150) {
+            delay(200)
+            if (_vpnState.value != VpnState.CONNECTING) return
+            if (WdttTunnelManager.tunnelReady.value) return
+        }
+        if (_vpnState.value == VpnState.CONNECTING) {
+            val err = WdttTunnelManager.lastError.value
+                ?: if (WdttTunnelManager.activeWorkers.value > 0) {
+                    "WireGuard не поднялся"
+                } else {
+                    WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
+                        ?: "Таймаут: WDTT не подключился к серверу"
+                }
+            stopVpnLocally(context)
+            _vpnError.value = err
+            DebugLog.e("MainViewModel", "connect timeout: $err")
+            _vpnState.value = VpnState.DISCONNECTED
+        }
+    }
 
     fun disconnect(context: Context) {
         viewModelScope.launch {
@@ -575,6 +579,22 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun renameDevice(deviceId: String, name: String, onResult: (Boolean, String?) -> Unit) {
+        viewModelScope.launch {
+            runCatching {
+                val res = repo.getApi().renameDevice(deviceId, com.silent.vpn.data.DeviceRenameRequest(name))
+                if (res.isSuccessful) {
+                    loadProfile()
+                    onResult(true, null)
+                } else {
+                    onResult(false, parseError(res.errorBody()?.string() ?: "") ?: "Ошибка переименования")
+                }
+            }.onFailure {
+                onResult(false, it.message ?: "Ошибка")
+            }
+        }
+    }
+
     fun initPayment(planType: String, onUrl: (String) -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
             runCatching {
@@ -583,19 +603,6 @@ class MainViewModel @Inject constructor(
                 else onError(parseError(res.errorBody()?.string() ?: "") ?: "Ошибка оплаты")
             }.onFailure {
                 onError(it.message ?: "Ошибка")
-            }
-        }
-    }
-
-    fun handleVkDeepLink(bootHash: String?, vkUserId: Long?) {
-        viewModelScope.launch {
-            bootHash?.takeIf { it.isNotBlank() }?.let { repo.saveBootstrapHash(it) }
-            vkUserId?.takeIf { it > 0 }?.let { repo.saveVkUserId(it) }
-            refreshVkState()
-            if (!bootHash.isNullOrBlank()) {
-                _vkMsg.value = "Первый хеш получен. Войдите в аккаунт Silent."
-            } else {
-                _vkMsg.value = "VK подключён. Войдите в аккаунт Silent."
             }
         }
     }

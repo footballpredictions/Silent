@@ -86,6 +86,10 @@ class SilentVpnService : Service() {
             val vpnConfig = runCatching { Gson().fromJson(configJson, VpnConfig::class.java) }.getOrNull()
             val apiWg = vpnConfig?.let { WireGuardConfigBuilder.fromVpnConfig(it) }
 
+            val hashCount = hashes.size.coerceAtLeast(1)
+            val workerCount = (vpnConfig?.stream_count ?: (hashCount * 3).coerceAtLeast(9))
+                .coerceIn(3, 12)
+
             WdttTunnelManager.start(
                 this,
                 WdttTunnelManager.Params(
@@ -94,11 +98,12 @@ class SilentVpnService : Service() {
                     vkHashes = hashes,
                     wdttPassword = obj.getString("wdtt_password"),
                     deviceId = deviceId,
-                    workers = vpnConfig?.stream_count?.coerceIn(1, 128) ?: 12,
+                    workers = workerCount,
                     captchaMode = "auto",
                     apiWgConfig = apiWg,
                 ),
             )
+            DebugLog.i("VpnService", "WDTT workers=$workerCount hashes=$hashCount")
             isRunning = true
             updateNotification("Подключение...")
         } catch (e: Exception) {

@@ -124,7 +124,7 @@ class WireGuardHelper(context: Context) {
                 appContext.startService(Intent(appContext, GoBackend.VpnService::class.java))
             }
         }
-        delay(300)
+        delay(100)
     }
 
     private fun isInstalled(pkg: String): Boolean = runCatching {

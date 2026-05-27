@@ -67,13 +67,27 @@ data class VkLinkStatusResponse(
 data class VpnHashesResponse(
     val hashes: List<String>,
     val bootstrap_hash: String? = null,
+    val mode: String? = null,
+    val items: List<HashItemDto>? = null,
 )
+
+data class HashItemDto(
+    val hash: String,
+    val label: String,
+    val source: String,
+    val slot_index: Int? = null,
+    val is_active: Boolean = true,
+    val status: String = "active",
+)
+
+data class DeviceRenameRequest(val device_name: String)
 
 data class DeviceRegisterRequest(
     val device_name: String,
     val device_type: String,
     val device_fingerprint: String,
     val wg_public_key: String?,
+    val bootstrap_hash: String? = null,
 )
 
 data class BootstrapConfigRequest(
@@ -140,6 +154,12 @@ interface SilentApi {
     @GET("api/users/me")
     suspend fun getProfile(): Response<UserProfile>
 
+    @PATCH("api/users/devices/{deviceId}")
+    suspend fun renameDevice(
+        @Path("deviceId") deviceId: String,
+        @Body req: DeviceRenameRequest,
+    ): Response<Map<String, String>>
+
     @POST("api/users/logout")
     suspend fun logoutSession(@Body req: DisconnectRequest): Response<Map<String, String>>
 
@@ -173,6 +193,9 @@ interface SilentApi {
     @GET("api/auth/vk/guest/status")
     suspend fun vkGuestStatus(@Query("state") state: String): Response<VkGuestStatusResponse>
 
+    @POST("api/auth/vk/guest/complete")
+    suspend fun vkGuestComplete(@Body req: VkGuestCompleteRequest): Response<Map<String, Any>>
+
     @POST("api/auth/vk/link/attach")
     suspend fun vkLinkAttach(@Body req: VkAttachRequest): Response<VkAttachResponse>
 
@@ -190,6 +213,9 @@ interface SilentApi {
 
     @GET("api/vpn/hashes")
     suspend fun getVpnHashes(): Response<VpnHashesResponse>
+
+    @POST("api/vpn/hashes/request-refresh")
+    suspend fun requestHashRefresh(@Body req: ConnectRequest): Response<VpnHashesResponse>
 
     @POST("api/vpn/bootstrap-config")
     suspend fun bootstrapConfig(@Body req: BootstrapConfigRequest): Response<VpnConfig>

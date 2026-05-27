@@ -30,11 +30,11 @@ fun LoginScreen(
     error: String?,
     regDone: Boolean,
     regEmail: String,
-    vkReady: Boolean,
-    vkUserId: Long?,
+    hashReady: Boolean,
     bootstrapHash: String?,
-    vkMsg: String,
-    onLinkVk: () -> Unit,
+    statusMsg: String,
+    bootstrapConnecting: Boolean,
+    onConnect: (String) -> Unit,
     onClearError: () -> Unit,
     onRegDoneDismiss: () -> Unit,
 ) {
@@ -93,12 +93,11 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            VkLoginSection(
-                vkReady = vkReady,
-                vkUserId = vkUserId,
+            HashInputSection(
                 bootstrapHash = bootstrapHash,
-                vkMsg = vkMsg,
-                onLinkVk = onLinkVk,
+                statusMsg = statusMsg,
+                bootstrapConnecting = bootstrapConnecting,
+                onConnect = onConnect,
             )
 
             Row(
@@ -246,4 +245,3 @@ fun LoginScreen(
     }
     DebugLogDialog(visible = showDebugLog, onDismiss = { showDebugLog = false })
 }
-

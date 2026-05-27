@@ -175,6 +175,8 @@ async def verify_user(
     user.is_verified = True
     user.verification_token = None
     await db.commit()
+    from app.services.subscription_service import ensure_trial_subscription
+    await ensure_trial_subscription(db, user)
     return {"status": "verified", "is_verified": True}
 
 

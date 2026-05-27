@@ -16,6 +16,7 @@ from app.core.security import (
     generate_token,
 )
 from app.services.email_service import send_verification_email, send_password_reset_email
+from app.services.subscription_service import ensure_trial_subscription
 from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -51,6 +52,7 @@ async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
     user.is_verified = True
     user.verification_token = None
     await db.commit()
+    await ensure_trial_subscription(db, user)
     return {"message": "Email подтверждён. Теперь вы можете войти."}
 
 

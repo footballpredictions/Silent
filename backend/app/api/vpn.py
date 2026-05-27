@@ -27,7 +27,11 @@ from app.services.vpn_service import (
     count_connected_sessions,
     clear_stale_online_status,
 )
-from app.services.subscription_service import user_has_active_subscription
+from app.services.subscription_service import (
+    user_has_active_subscription,
+    ensure_trial_subscription,
+    require_active_subscription,
+)
 from app.config import settings
 
 router = APIRouter(prefix="/vpn", tags=["vpn"])
@@ -55,6 +59,8 @@ async def device_register(
     db: AsyncSession = Depends(get_db),
 ):
     await clear_stale_online_status(db)
+    await ensure_trial_subscription(db, user)
+    await require_active_subscription(user, db)
     has_sub = await user_has_active_subscription(user, db)
     try:
         if req.bootstrap_hash:
@@ -107,6 +113,8 @@ async def get_config(
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Сессия устройства не найдена. Войдите снова.")
+    await ensure_trial_subscription(db, user)
+    await require_active_subscription(user, db)
     has_sub = await user_has_active_subscription(user, db)
     return await build_vpn_config_for_user(db, device, user, has_sub)
 
@@ -168,6 +176,9 @@ async def connect(
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Сессия устройства не найдена. Войдите снова.")
+
+    await ensure_trial_subscription(db, user)
+    await require_active_subscription(user, db)
 
     if not device.is_connected:
         connected = await count_connected_sessions(db, user.id)

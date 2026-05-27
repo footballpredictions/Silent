@@ -133,16 +133,37 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> bool:
     payment.raw_response = str(data)
     await db.flush()
 
-    # Activate subscription
+    from app.services.subscription_service import TRIAL_PLAN
+    trial_result = await db.execute(
+        select(Subscription).where(
+            Subscription.user_id == payment.user_id,
+            Subscription.plan_type == TRIAL_PLAN,
+            Subscription.status == "active",
+        )
+    )
+    for trial in trial_result.scalars().all():
+        trial.status = "cancelled"
+
     _, days = PLAN_PRICES.get(payment.plan_type, (0, 30))
     now = datetime.utcnow()
+    active_result = await db.execute(
+        select(Subscription)
+        .where(Subscription.user_id == payment.user_id, Subscription.status == "active")
+        .order_by(Subscription.expires_at.desc())
+    )
+    base = now
+    for existing in active_result.scalars().all():
+        if existing.is_active and existing.expires_at > base:
+            base = existing.expires_at
+        existing.status = "cancelled"
+
     subscription = Subscription(
         user_id=payment.user_id,
         plan_type=payment.plan_type,
         status="active",
         amount_paid=float(payment.amount),
         started_at=now,
-        expires_at=now + timedelta(days=days),
+        expires_at=base + timedelta(days=days),
     )
     db.add(subscription)
     await db.commit()

@@ -79,7 +79,9 @@ export default function ThemePage({ token }: { token: string }) {
 
         <div className="bg-[#111] border border-[#222] rounded-xl p-6">
           <h2 className="font-semibold mb-4 text-sm">Предпросмотр клиента</h2>
-          <p className="text-xs text-[#666] mb-4">Переключайте экраны — главная, меню, подписка</p>
+          <p className="text-xs text-[#666] mb-4">
+            Переключайте экраны: главная, меню и каждый раздел бокового меню приложения
+          </p>
           <ClientPreview theme={theme} />
         </div>
       </div>

@@ -11,7 +11,38 @@ export type ClientTheme = {
   app_name: string
 }
 
-type PreviewScreen = 'main' | 'menu' | 'subscription'
+type PreviewScreen =
+  | 'main'
+  | 'menu'
+  | 'subscription'
+  | 'exceptions'
+  | 'hashes'
+  | 'promo'
+  | 'devices'
+  | 'support'
+  | 'about'
+
+const SCREEN_TABS: { id: PreviewScreen; label: string }[] = [
+  { id: 'main', label: 'Главная' },
+  { id: 'menu', label: 'Меню' },
+  { id: 'subscription', label: 'Подписка' },
+  { id: 'exceptions', label: 'Исключения' },
+  { id: 'hashes', label: 'Хеши' },
+  { id: 'promo', label: 'Промокод' },
+  { id: 'devices', label: 'Сессии' },
+  { id: 'support', label: 'Поддержка' },
+  { id: 'about', label: 'О сервисе' },
+]
+
+const MENU_ITEMS: { id: PreviewScreen; label: string; badge?: string }[] = [
+  { id: 'subscription', label: 'Подписка', badge: 'Активна' },
+  { id: 'exceptions', label: 'Исключения приложений' },
+  { id: 'hashes', label: 'Хеши' },
+  { id: 'promo', label: 'Промокод' },
+  { id: 'devices', label: 'Сессии', badge: '1/3' },
+  { id: 'support', label: 'Поддержка' },
+  { id: 'about', label: 'О сервисе' },
+]
 
 export default function ClientPreview({ theme, platform = 'mobile' }: {
   theme: ClientTheme
@@ -19,7 +50,6 @@ export default function ClientPreview({ theme, platform = 'mobile' }: {
 }) {
   const [screen, setScreen] = useState<PreviewScreen>('main')
   const [connected, setConnected] = useState(true)
-  const [menuOpen, setMenuOpen] = useState(false)
 
   const w = 265
   const h = 606
@@ -32,6 +62,67 @@ export default function ClientPreview({ theme, platform = 'mobile' }: {
 
   const statusText = connected ? 'Подключено' : 'Отключено'
   const statusColor = connected ? green : muted
+
+  const goTo = (s: PreviewScreen) => setScreen(s)
+
+  const backBtn = (target: PreviewScreen = 'menu') => (
+    <button type="button" onClick={() => goTo(target)}
+      style={{ background: 'none', border: 'none', cursor: 'pointer', color: muted, fontSize: 12, marginBottom: 16, padding: 0 }}>
+      ← Назад
+    </button>
+  )
+
+  const subPage = (title: string, children: React.ReactNode) => (
+    <div style={{ flex: 1, padding: 16, overflow: 'auto' }}>
+      {backBtn('menu')}
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>{title}</div>
+      {children}
+    </div>
+  )
+
+  const menuDrawer = () => (
+    <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 10 }}>
+      <div style={{
+        width: 208, background: bg, borderRight: '0.5px solid #E5E7EB',
+        display: 'flex', flexDirection: 'column',
+      }}>
+        <div style={{
+          padding: 16, borderBottom: '0.5px solid #F3F4F6',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+        }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>user@mail.ru</div>
+            <div style={{ fontSize: 11, color: muted, marginTop: 2 }}>Аккаунт: ABC123</div>
+            <div style={{ fontSize: 10, color: `${fg}59`, marginTop: 2 }}>Сессия: A1B2C3D4</div>
+          </div>
+          <button type="button" onClick={() => goTo('main')}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: fg, fontSize: 14, padding: 0 }}>✕</button>
+        </div>
+        <div style={{ flex: 1, padding: '4px 0', overflow: 'auto' }}>
+          {MENU_ITEMS.map(item => (
+            <button key={item.id} type="button" onClick={() => goTo(item.id)}
+              style={{
+                width: '100%', textAlign: 'left', padding: '10px 12px', fontSize: 13,
+                background: 'none', border: 'none', cursor: 'pointer', color: fg,
+                display: 'flex', alignItems: 'center', gap: 6,
+                borderBottom: `0.5px solid ${fg}0F`,
+              }}>
+              <span style={{ flex: 1 }}>{item.label}</span>
+              {item.badge && (
+                <span style={{ fontSize: 11, color: muted }}>{item.badge}</span>
+              )}
+              <span style={{ color: `${fg}4D`, fontSize: 12 }}>›</span>
+            </button>
+          ))}
+          <button type="button" style={{
+            width: '100%', textAlign: 'left', padding: '10px 12px', fontSize: 13,
+            background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444', marginTop: 4,
+          }}>Выйти</button>
+        </div>
+      </div>
+      <div style={{ flex: 1, background: 'rgba(0,0,0,0.2)' }} onClick={() => goTo('main')} />
+    </div>
+  )
 
   const shell = (
     <div style={{
@@ -48,13 +139,12 @@ export default function ClientPreview({ theme, platform = 'mobile' }: {
         height: 36, display: 'flex', alignItems: 'center', padding: '0 12px',
         borderBottom: '0.5px solid #F3F4F6',
       }}>
-        <button type="button" onClick={() => { setMenuOpen(true); setScreen('menu') }}
+        <button type="button" onClick={() => goTo('menu')}
           style={{ background: 'none', border: 'none', cursor: 'pointer', color: fg, fontSize: 14, padding: 0 }}>☰</button>
         <div style={{ flex: 1, textAlign: 'center', fontWeight: 700, fontSize: 12, letterSpacing: 4 }}>{appTitle}</div>
         <div style={{ width: 16 }} />
       </div>
 
-      {/* Main */}
       {screen === 'main' && (
         <>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24 }}>
@@ -83,52 +173,10 @@ export default function ClientPreview({ theme, platform = 'mobile' }: {
         </>
       )}
 
-      {/* Menu drawer overlay */}
-      {menuOpen && screen === 'menu' && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 10 }}>
-          <div style={{ width: 208, background: bg, borderRight: '0.5px solid #E5E7EB', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ padding: 16, borderBottom: '0.5px solid #F3F4F6', display: 'flex', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 600 }}>user@mail.ru</div>
-                <div style={{ fontSize: 11, color: muted, marginTop: 2 }}>Аккаунт: ABC123</div>
-              </div>
-              <button type="button" onClick={() => { setMenuOpen(false); setScreen('main') }}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: fg }}>✕</button>
-            </div>
-            <div style={{ flex: 1, padding: 8 }}>
-              {[
-                ['subscription', 'Подписка'],
-                ['settings', 'VK / офлайн'],
-                ['promo', 'Промокод'],
-                ['devices', 'Сессии (1/3)'],
-                ['support', 'Поддержка'],
-                ['about', 'О сервисе'],
-              ].map(([key, label]) => (
-                <button key={key} type="button" onClick={() => key === 'subscription' && setScreen('subscription')}
-                  style={{
-                    width: '100%', textAlign: 'left', padding: '10px 12px', fontSize: 14,
-                    background: 'none', border: 'none', cursor: 'pointer', color: fg,
-                    display: 'flex', justifyContent: 'space-between',
-                  }}>
-                  {label}<span style={{ color: muted }}>›</span>
-                </button>
-              ))}
-              <button type="button" style={{
-                width: '100%', textAlign: 'left', padding: '10px 12px', fontSize: 14,
-                background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444', marginTop: 8,
-              }}>Выйти</button>
-            </div>
-          </div>
-          <div style={{ flex: 1, background: 'rgba(0,0,0,0.2)' }}
-            onClick={() => { setMenuOpen(false); setScreen('main') }} />
-        </div>
-      )}
+      {screen === 'menu' && menuDrawer()}
 
-      {screen === 'subscription' && (
-        <div style={{ flex: 1, padding: 16, overflow: 'auto' }}>
-          <button type="button" onClick={() => { setScreen('menu'); setMenuOpen(true) }}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: muted, fontSize: 12, marginBottom: 16 }}>← Назад</button>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Выберите тариф</div>
+      {screen === 'subscription' && subPage('Выберите тариф', (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {[
             ['Месяц', '199 ₽'],
             ['3 месяца', '499 ₽'],
@@ -137,29 +185,119 @@ export default function ClientPreview({ theme, platform = 'mobile' }: {
             <div key={label} style={{
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               background: theme.primary_color, color: bg,
-              borderRadius: 12, padding: '10px 12px', marginBottom: 8, fontSize: 12, fontWeight: 600,
+              borderRadius: 12, padding: '10px 12px', fontSize: 12, fontWeight: 600,
             }}>
               <span>{label}</span><span>{price}</span>
             </div>
           ))}
         </div>
-      )}
+      ))}
+
+      {screen === 'exceptions' && subPage('Исключения приложений', (
+        <>
+          <div style={{ fontSize: 11, color: muted, marginBottom: 10 }}>
+            Приложения, которые не идут через VPN
+          </div>
+          <input readOnly value="Поиск приложений…" style={{
+            width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 12,
+            borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: muted,
+          }} />
+          {['Telegram', 'YouTube', 'Chrome'].map(name => (
+            <div key={name} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '8px 0', borderBottom: `0.5px solid ${fg}12`, fontSize: 12,
+            }}>
+              <span>{name}</span>
+              <div style={{ width: 18, height: 18, borderRadius: 4, border: `1.5px solid ${fg}44` }} />
+            </div>
+          ))}
+        </>
+      ))}
+
+      {screen === 'hashes' && subPage('Хеши', (
+        <>
+          <div style={{ fontSize: 11, color: muted, marginBottom: 10 }}>Bootstrap и серверные хеши VK</div>
+          {[
+            ['Bootstrap', 'a1b2c3d4…', green],
+            ['Сервер #0', 'e5f6g7h8…', green],
+            ['Сервер #1', 'i9j0k1l2…', muted],
+          ].map(([label, hash, dotColor]) => (
+            <div key={label} style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '8px 0', borderBottom: `0.5px solid ${fg}12`, fontSize: 11,
+            }}>
+              <div style={{ width: 6, height: 6, borderRadius: '50%', background: dotColor as string }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: 12 }}>{label}</div>
+                <div style={{ fontFamily: 'monospace', color: muted, marginTop: 2 }}>{hash}</div>
+              </div>
+            </div>
+          ))}
+        </>
+      ))}
+
+      {screen === 'promo' && subPage('Промокод', (
+        <>
+          <input readOnly value="" placeholder="Введите код" style={{
+            width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 12,
+            borderRadius: 10, border: `1px solid ${fg}22`, background: bg, color: fg,
+          }} />
+          <button type="button" style={{
+            marginTop: 8, width: '100%', padding: '8px 0', borderRadius: 10, border: 'none',
+            background: theme.primary_color, color: bg, fontSize: 12, fontWeight: 600, cursor: 'default',
+          }}>Применить</button>
+        </>
+      ))}
+
+      {screen === 'devices' && subPage('Сессии', (
+        <>
+          <div style={{ fontSize: 11, color: muted, marginBottom: 10 }}>VPN онлайн: 1 из 1</div>
+          {[
+            ['Pixel 8', 'android', true],
+            ['Windows PC', 'desktop', false],
+          ].map(([name, type, online]) => (
+            <div key={name as string} style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '8px 0', borderBottom: `0.5px solid ${fg}12`,
+            }}>
+              <div style={{
+                width: 6, height: 6, borderRadius: '50%',
+                background: online ? green : `${fg}33`,
+              }} />
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 500 }}>{name as string}</div>
+                <div style={{ fontSize: 10, color: muted }}>{type as string}</div>
+              </div>
+            </div>
+          ))}
+        </>
+      ))}
+
+      {screen === 'support' && subPage('Поддержка', (
+        <p style={{ fontSize: 12, color: muted, lineHeight: 1.5, margin: 0 }}>
+          По вопросам обратитесь через email или Telegram.
+        </p>
+      ))}
+
+      {screen === 'about' && subPage('Silent VPN', (
+        <div style={{ fontSize: 12, color: muted, lineHeight: 1.6 }}>
+          <p style={{ margin: '0 0 6px' }}>Версия 1.0.18</p>
+          <p style={{ margin: 0 }}>WireGuard-туннель через VK TURN/DTLS</p>
+        </div>
+      ))}
     </div>
   )
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-        {(['main', 'menu', 'subscription'] as PreviewScreen[]).map(s => (
-          <button key={s} type="button" onClick={() => {
-            setScreen(s)
-            setMenuOpen(s === 'menu')
-          }} style={{
-            padding: '6px 12px', fontSize: 11, borderRadius: 8, cursor: 'pointer',
-            background: screen === s ? '#fff' : '#222', color: screen === s ? '#000' : '#aaa',
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+        {SCREEN_TABS.map(({ id, label }) => (
+          <button key={id} type="button" onClick={() => goTo(id)} style={{
+            padding: '5px 10px', fontSize: 10, borderRadius: 8, cursor: 'pointer',
+            background: screen === id ? '#fff' : '#222', color: screen === id ? '#000' : '#aaa',
             border: '1px solid #333',
           }}>
-            {s === 'main' ? 'Главная' : s === 'menu' ? 'Меню' : 'Подписка'}
+            {label}
           </button>
         ))}
       </div>

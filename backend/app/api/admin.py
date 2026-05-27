@@ -7,13 +7,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, case
 from pydantic import BaseModel
 from typing import Optional
 
 from app.database import get_db
 from app.models import User, Subscription, Device, VkHash, AppSetting, PromoCode, Payment, VkLinkSession
 from app.core.deps import get_admin_credentials
+from app.config import settings
 from app.schemas.vpn import ThemeResponse
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -94,10 +95,17 @@ async def list_users(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
+    admin_email = settings.ADMIN_LOGIN.lower()
     result = await db.execute(
         select(User)
         .where(User.email != "__bootstrap__@silent.local")
-        .order_by(User.created_at.desc())
+        .order_by(
+            case(
+                ((User.is_admin == True) | (func.lower(User.email) == admin_email), 0),
+                else_=1,
+            ),
+            User.created_at.desc(),
+        )
         .offset(skip)
         .limit(limit)
     )
@@ -139,6 +147,34 @@ async def list_users(
             "devices_count": dev_count,
         })
     return out
+
+
+class GrantSubscriptionRequest(BaseModel):
+    plan_type: str
+
+
+@router.post("/users/{user_id}/grant-subscription")
+async def grant_user_subscription(
+    user_id: str,
+    req: GrantSubscriptionRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ручная выдача подписки (monthly / quarterly / yearly)."""
+    import uuid
+    from app.services.subscription_service import grant_manual_subscription
+
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    sub = await grant_manual_subscription(db, user, req.plan_type.strip().lower())
+    return {
+        "status": "granted",
+        "plan_type": sub.plan_type,
+        "expires_at": sub.expires_at,
+    }
 
 
 @router.post("/users/{user_id}/ban")

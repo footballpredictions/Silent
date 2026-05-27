@@ -1,9 +1,10 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Users, Hash, Tag, Palette, LogOut, Shield } from 'lucide-react'
+import { LayoutDashboard, Users, Hash, Tag, Palette, LogOut, Shield, Calendar } from 'lucide-react'
 
 const nav = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Дашборд' },
   { to: '/users', icon: Users, label: 'Пользователи' },
+  { to: '/subscriptions', icon: Calendar, label: 'Подписки' },
   { to: '/vk', icon: Hash, label: 'VK / Тоннели' },
   { to: '/promo', icon: Tag, label: 'Промокоды' },
   { to: '/theme', icon: Palette, label: 'Оформление' },

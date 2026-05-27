@@ -85,3 +85,49 @@ async def require_active_subscription(user: User, db: AsyncSession) -> None:
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail="Пробный период закончился. Оформите подписку для доступа к интернету.",
         )
+
+
+GRANTABLE_PLANS = {
+    "monthly": 30,
+    "quarterly": 90,
+    "yearly": 365,
+}
+
+
+async def grant_manual_subscription(
+    db: AsyncSession,
+    user: User,
+    plan_type: str,
+) -> Subscription:
+    """Admin grant: cancel active subs, extend from current expiry or now."""
+    if plan_type not in GRANTABLE_PLANS:
+        raise HTTPException(status_code=400, detail="plan_type: monthly, quarterly или yearly")
+    if is_user_admin(user):
+        raise HTTPException(status_code=400, detail="Администратору подписка не нужна")
+
+    days = GRANTABLE_PLANS[plan_type]
+    now = datetime.utcnow()
+
+    active_result = await db.execute(
+        select(Subscription)
+        .where(Subscription.user_id == user.id, Subscription.status == "active")
+        .order_by(Subscription.expires_at.desc())
+    )
+    base = now
+    for existing in active_result.scalars().all():
+        if existing.is_active and existing.expires_at > base:
+            base = existing.expires_at
+        existing.status = "cancelled"
+
+    subscription = Subscription(
+        user_id=user.id,
+        plan_type=plan_type,
+        status="active",
+        amount_paid=0,
+        started_at=now,
+        expires_at=base + timedelta(days=days),
+    )
+    db.add(subscription)
+    await db.commit()
+    await db.refresh(subscription)
+    return subscription

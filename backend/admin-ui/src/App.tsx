@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import UsersPage from './pages/UsersPage'
+import SubscriptionsPage from './pages/SubscriptionsPage'
 import VkPage from './pages/VkPage'
 import PromoPage from './pages/PromoPage'
 import ThemePage from './pages/ThemePage'
@@ -65,6 +66,7 @@ function App() {
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<DashboardPage token={token} onUnauthorized={handleLogout} />} />
               <Route path="/users" element={<UsersPage token={token} />} />
+              <Route path="/subscriptions" element={<SubscriptionsPage token={token} />} />
               <Route path="/vk" element={<VkPage token={token} />} />
               <Route path="/promo" element={<PromoPage token={token} />} />
               <Route path="/theme" element={<ThemePage token={token} />} />

@@ -119,7 +119,9 @@ class MainViewModel @Inject constructor(
         }
         viewModelScope.launch {
             WdttTunnelManager.lastError.collect { err ->
-                if (!err.isNullOrBlank()) {
+                if (!err.isNullOrBlank() &&
+                    (_vpnState.value == VpnState.CONNECTING || _vpnState.value == VpnState.CONNECTED)
+                ) {
                     DebugLog.e("MainViewModel", "WDTT error: $err")
                     _vpnError.value = err
                     _vpnState.value = VpnState.DISCONNECTED

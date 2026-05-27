@@ -394,6 +394,7 @@ object WdttTunnelManager {
             tunnelReady.value = false
             activeWorkers.value = 0
             stats.value = ""
+            lastError.value = null
         }
     }
 

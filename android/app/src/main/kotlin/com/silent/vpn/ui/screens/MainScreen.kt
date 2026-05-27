@@ -210,6 +210,13 @@ fun MainScreen(
                         Text("Бессрочно", color = Color(0xFF16A34A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         Text("Полный доступ", color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
                     }
+                    profile?.subscription?.is_active == true && profile.subscription.plan_type == "trial" -> {
+                        Text("Пробный период", color = Color(0xFF2563EB), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "осталось ${profile.subscription.days_left} дн.",
+                            color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
                     profile?.subscription?.is_active == true -> {
                         Text("Оплачено", color = Color(0xFF16A34A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         Text(
@@ -323,8 +330,15 @@ private fun MenuSubscription(profile: UserProfile?, fg: Color, onBack: () -> Uni
     Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
         if (profile?.subscription?.is_active == true) {
+            val planLabel = when (profile.subscription.plan_type) {
+                "trial" -> "Пробный период"
+                "monthly" -> "Месяц"
+                "quarterly" -> "3 месяца"
+                "yearly" -> "Год"
+                else -> profile.subscription.plan_type ?: "—"
+            }
             Text("Подписка активна", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
-            Text("Тариф: ${profile.subscription.plan_type}\nОсталось: ${profile.subscription.days_left} дней", fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp))
+            Text("Тариф: $planLabel\nОсталось: ${profile.subscription.days_left} дней", fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp))
         } else {
             Text("Выберите тариф", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
             listOf("monthly" to ("Месяц" to "199 ₽"), "quarterly" to ("3 месяца" to "499 ₽"), "yearly" to ("Год" to "1 499 ₽")).forEach { (id, labelPrice) ->

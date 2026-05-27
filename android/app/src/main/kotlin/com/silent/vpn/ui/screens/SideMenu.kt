@@ -83,6 +83,7 @@ fun SideMenuContent(
         val items = listOf(
             Triple("Подписка", onSubscription, when {
                 profile?.is_admin == true || profile?.subscription?.plan_type == "unlimited" -> "Бессрочно"
+                profile?.subscription?.is_active == true && profile.subscription.plan_type == "trial" -> "Пробный"
                 profile?.subscription?.is_active == true -> "Активна"
                 else -> "Нет"
             }),

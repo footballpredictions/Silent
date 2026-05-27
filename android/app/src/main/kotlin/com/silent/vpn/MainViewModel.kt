@@ -379,11 +379,25 @@ class MainViewModel @Inject constructor(
             _vpnState.value = VpnState.CONNECTING
             _vpnError.value = null
             runCatching {
+                refreshProfileForConnect()
+                if (!hasVpnAccess()) {
+                    _vpnError.value = subscriptionRequiredMessage()
+                    _vpnState.value = VpnState.DISCONNECTED
+                    return@launch
+                }
+
                 val fp = repo.getDeviceFingerprint()
                 val cached = loadCachedVpnConfig()
                 if (cached != null && isConfigConnectable(cached)) {
                     DebugLog.i("MainViewModel", "fast connect from cache")
-                    runCatching { repo.getApi().connect(ConnectRequest(fp, "android")) }
+                    val connectRes = runCatching { repo.getApi().connect(ConnectRequest(fp, "android")) }.getOrNull()
+                    if (connectRes != null && connectRes.code() == 402) {
+                        _vpnError.value = parseError(connectRes.errorBody()?.string() ?: "")
+                            ?: subscriptionRequiredMessage()
+                        _vpnState.value = VpnState.DISCONNECTED
+                        loadProfile()
+                        return@launch
+                    }
                     launchVpnService(context, cached)
                     viewModelScope.launch { refreshVpnConfigInBackground(fp) }
                     waitForTunnelReady(context)
@@ -409,10 +423,12 @@ class MainViewModel @Inject constructor(
                     val regRes = regJob.await()
                     if (regRes != null) {
                         when (regRes.code()) {
-                            403 -> {
-                                _vpnError.value = parseError(regRes.errorBody()?.string() ?: "") ?: "Доступ запрещён"
+                            402, 403 -> {
+                                _vpnError.value = parseError(regRes.errorBody()?.string() ?: "")
+                                    ?: subscriptionRequiredMessage()
                                 _vpnState.value = VpnState.DISCONNECTED
                                 accessDenied = true
+                                loadProfile()
                                 return@coroutineScope
                             }
                         }
@@ -433,6 +449,9 @@ class MainViewModel @Inject constructor(
                             if (cfgRes.isSuccessful) {
                                 vpnConfig = cfgRes.body()!!
                                 repo.cacheVpnConfig(Gson().toJson(vpnConfig))
+                            } else if (cfgRes.code() == 402) {
+                                apiError = parseError(cfgRes.errorBody()?.string() ?: "")
+                                    ?: subscriptionRequiredMessage()
                             }
                         }
                     }
@@ -608,6 +627,22 @@ class MainViewModel @Inject constructor(
             }
         }
     }
+
+    private suspend fun refreshProfileForConnect() {
+        runCatching {
+            val res = repo.getApi().getProfile()
+            if (res.isSuccessful) _profile.value = res.body()
+        }
+    }
+
+    private fun hasVpnAccess(): Boolean {
+        val p = _profile.value ?: return true
+        if (p.is_admin) return true
+        return p.subscription.is_active
+    }
+
+    private fun subscriptionRequiredMessage() =
+        "Пробный период закончился. Оформите подписку в меню → Подписка."
 
     private fun applyBootstrapHash(config: VpnConfig): VpnConfig {
         val hashes = config.vk_hashes.filter { it.isNotBlank() }

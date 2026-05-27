@@ -184,7 +184,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             _authLoading.value = true
             _authError.value = null
-            runCatching {
+            try {
                 if (_vpnState.value != VpnState.CONNECTED) {
                     _authError.value = "Сначала нажмите «Подключить для входа»"
                     return@launch
@@ -203,10 +203,11 @@ class MainViewModel @Inject constructor(
                 activity?.let { CredentialHelper.offerSavePassword(it, email, password) }
                 refreshSession()
                 goToMain()
-            }.onFailure {
-                _authError.value = it.message ?: "Ошибка входа"
+            } catch (e: Exception) {
+                _authError.value = e.message ?: "Ошибка входа"
+            } finally {
+                _authLoading.value = false
             }
-            _authLoading.value = false
         }
     }
 
@@ -214,7 +215,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             _authLoading.value = true
             _authError.value = null
-            runCatching {
+            try {
                 val res = repo.getApi().register(RegisterRequest(email, password))
                 if (!res.isSuccessful) {
                     _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Ошибка регистрации"
@@ -222,10 +223,11 @@ class MainViewModel @Inject constructor(
                 }
                 _regEmail.value = email
                 _regDone.value = true
-            }.onFailure {
-                _authError.value = it.message ?: "Ошибка регистрации"
+            } catch (e: Exception) {
+                _authError.value = e.message ?: "Ошибка регистрации"
+            } finally {
+                _authLoading.value = false
             }
-            _authLoading.value = false
         }
     }
 

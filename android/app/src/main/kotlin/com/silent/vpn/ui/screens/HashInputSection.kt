@@ -12,7 +12,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -34,17 +33,18 @@ fun HashInputSection(
     onConnect: (String) -> Unit,
 ) {
     var input by remember(bootstrapHash) { mutableStateOf(bootstrapHash.orEmpty()) }
+    val fieldColors = authTextFieldColors()
 
     Text(
         "Шаг 1 — хеш звонка VK",
         fontWeight = FontWeight.SemiBold,
         fontSize = 13.sp,
-        color = Color.Black,
+        color = Color.White,
     )
     Text(
         "Вставьте ссылку vk.com/call/join/… или хеш, затем подключитесь. Хеш сохранится автоматически.",
         fontSize = 11.sp,
-        color = Color(0xFF6B7280),
+        color = AuthColors.hint,
         modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
     )
 
@@ -52,15 +52,14 @@ fun HashInputSection(
         value = input,
         onValueChange = { input = it },
         modifier = Modifier.fillMaxWidth(),
-        placeholder = { Text("Хеш или ссылка на звонок VK", fontSize = 13.sp) },
+        placeholder = {
+            Text("Хеш или ссылка на звонок VK", fontSize = 13.sp, color = AuthColors.fieldPlaceholder)
+        },
         singleLine = true,
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
         keyboardActions = KeyboardActions(onGo = { if (!bootstrapConnecting) onConnect(input) }),
         shape = RoundedCornerShape(12.dp),
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = Color.Black,
-            unfocusedBorderColor = Color(0xFFE5E7EB),
-        ),
+        colors = fieldColors,
     )
 
     Spacer(modifier = Modifier.height(10.dp))
@@ -70,7 +69,12 @@ fun HashInputSection(
         enabled = input.isNotBlank() && !bootstrapConnecting,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = Color.Black),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color.White,
+            contentColor = Color.Black,
+            disabledContainerColor = Color(0xFF333333),
+            disabledContentColor = Color(0xFF666666),
+        ),
     ) {
         Text(
             if (bootstrapConnecting) "Подключение…" else "Подключить для входа",
@@ -83,12 +87,12 @@ fun HashInputSection(
         Text(
             statusMsg,
             fontSize = 11.sp,
-            color = Color(0xFF6B7280),
+            color = AuthColors.hint,
             modifier = Modifier.padding(top = 8.dp),
         )
     }
 
     Spacer(modifier = Modifier.height(16.dp))
-    HorizontalDivider(color = Color(0xFFE5E7EB))
+    HorizontalDivider(color = AuthColors.divider)
     Spacer(modifier = Modifier.height(16.dp))
 }

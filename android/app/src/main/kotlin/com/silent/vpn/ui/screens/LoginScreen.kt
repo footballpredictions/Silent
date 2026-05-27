@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
+import com.silent.vpn.ui.components.SilentLogo
 
 @Composable
 fun LoginScreen(
@@ -43,10 +44,12 @@ fun LoginScreen(
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var showDebugLog by remember { mutableStateOf(false) }
+    val fieldColors = authTextFieldColors()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(AuthColors.screenBg)
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         Box(
@@ -57,7 +60,7 @@ fun LoginScreen(
         ) {
             Text(
                 "SILENT VPN",
-                color = Color(0xFF6B7280),
+                color = AuthColors.hint,
                 fontSize = 11.sp,
                 letterSpacing = 2.sp,
                 modifier = Modifier.align(Alignment.CenterStart),
@@ -79,16 +82,15 @@ fun LoginScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(56.dp)
-                        .background(Color.Black, RoundedCornerShape(16.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("S", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 22.sp)
-                }
+                SilentLogo()
                 Spacer(modifier = Modifier.height(12.dp))
-                Text("SILENT", fontWeight = FontWeight.Bold, fontSize = 16.sp, letterSpacing = 3.sp)
+                Text(
+                    "SILENT",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    letterSpacing = 3.sp,
+                )
             }
 
             Spacer(modifier = Modifier.height(20.dp))
@@ -103,7 +105,7 @@ fun LoginScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFFF3F4F6), RoundedCornerShape(12.dp))
+                    .background(AuthColors.tabBg, RoundedCornerShape(12.dp))
                     .padding(4.dp),
             ) {
                 listOf("login" to "Войти", "register" to "Регистрация").forEach { (key, label) ->
@@ -112,7 +114,7 @@ fun LoginScreen(
                         modifier = Modifier
                             .weight(1f)
                             .background(
-                                if (selected) Color.Black else Color.Transparent,
+                                if (selected) Color.White else Color.Transparent,
                                 RoundedCornerShape(10.dp),
                             )
                             .padding(vertical = 8.dp),
@@ -128,7 +130,7 @@ fun LoginScreen(
                         ) {
                             Text(
                                 label,
-                                color = if (selected) Color.White else Color(0xFF6B7280),
+                                color = if (selected) Color.Black else AuthColors.hint,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Medium,
                             )
@@ -145,10 +147,15 @@ fun LoginScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Spacer(modifier = Modifier.height(32.dp))
-                    Text("Подтвердите email", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                    Text(
+                        "Подтвердите email",
+                        color = Color.White,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp,
+                    )
                     Text(
                         "Ссылка отправлена на $regEmail",
-                        color = Color(0xFF6B7280),
+                        color = AuthColors.hint,
                         fontSize = 12.sp,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(top = 4.dp),
@@ -157,47 +164,45 @@ fun LoginScreen(
                         tab = "login"
                         onRegDoneDismiss()
                     }) {
-                        Text("Войти", fontSize = 12.sp, color = Color.Black)
+                        Text("Войти", fontSize = 12.sp, color = Color.White)
                     }
                 }
             } else {
-                Text("Email", color = Color(0xFF6B7280), fontSize = 12.sp)
+                Text("Email", color = AuthColors.label, fontSize = 12.sp)
                 OutlinedTextField(
                     value = email,
                     onValueChange = { email = it },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("you@example.com", fontSize = 14.sp) },
+                    placeholder = {
+                        Text("you@example.com", fontSize = 14.sp, color = AuthColors.fieldPlaceholder)
+                    },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                     shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.Black,
-                        unfocusedBorderColor = Color(0xFFE5E7EB),
-                    ),
+                    colors = fieldColors,
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                Text("Пароль", color = Color(0xFF6B7280), fontSize = 12.sp)
+                Text("Пароль", color = AuthColors.label, fontSize = 12.sp)
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("••••••••", fontSize = 14.sp) },
+                    placeholder = {
+                        Text("••••••••", fontSize = 14.sp, color = AuthColors.fieldPlaceholder)
+                    },
                     singleLine = true,
                     visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.Black,
-                        unfocusedBorderColor = Color(0xFFE5E7EB),
-                    ),
+                    colors = fieldColors,
                     trailingIcon = {
                         TextButton(onClick = { showPassword = !showPassword }) {
                             Text(
                                 if (showPassword) "Скрыть" else "Показать",
                                 fontSize = 11.sp,
-                                color = Color(0xFF6B7280),
+                                color = AuthColors.hint,
                             )
                         }
                     },
@@ -224,12 +229,17 @@ fun LoginScreen(
                         .fillMaxWidth()
                         .height(48.dp),
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Black),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White,
+                        contentColor = Color.Black,
+                        disabledContainerColor = Color(0xFF333333),
+                        disabledContentColor = Color(0xFF666666),
+                    ),
                 ) {
                     if (loading) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(20.dp),
-                            color = Color.White,
+                            color = Color.Black,
                             strokeWidth = 2.dp,
                         )
                     } else {

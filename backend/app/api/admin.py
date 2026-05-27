@@ -118,19 +118,23 @@ async def list_users(
             select(func.count(VkHash.id)).where(VkHash.user_id == user.id, VkHash.is_active == True)
         )).scalar_one()
 
+        from app.services.subscription_service import is_user_admin
+        admin = is_user_admin(user)
+
         out.append({
             "id": str(user.id),
             "display_id": user.display_id,
             "email": user.email,
             "is_verified": user.is_verified,
             "is_active": user.is_active,
+            "is_admin": admin,
             "created_at": user.created_at,
             "bootstrap_hash": (user.bootstrap_hash[:12] + "...") if user.bootstrap_hash else None,
             "server_hashes": hash_count,
             "subscription": {
-                "active": sub.is_active if sub else False,
-                "plan": sub.plan_type if sub else None,
-                "expires_at": sub.expires_at if sub else None,
+                "active": True if admin else (sub.is_active if sub else False),
+                "plan": "unlimited" if admin else (sub.plan_type if sub else None),
+                "expires_at": None if admin else (sub.expires_at if sub else None),
             },
             "devices_count": dev_count,
         })

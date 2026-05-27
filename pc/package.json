@@ -1,6 +1,6 @@
 {
   "name": "silent-vpn-pc",
-  "version": "1.0.0",
+  "version": "1.0.15",
   "description": "Silent VPN — PC Client",
   "main": "src/main/main.js",
   "scripts": {
@@ -16,7 +16,8 @@
     "directories": { "output": "dist/electron" },
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "requireAdministrator"
     },
     "linux": {
       "target": "AppImage",

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Shield } from 'lucide-react'
+import SilentLogo from '../components/SilentLogo'
 
 export default function LoginPage({ onLogin }: { onLogin: (token: string) => void }) {
   const [login, setLogin] = useState('')
@@ -31,8 +31,8 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
     <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-white rounded-2xl mb-4">
-            <Shield className="w-8 h-8 text-black" />
+          <div className="inline-flex mb-4">
+            <SilentLogo size={64} />
           </div>
           <h1 className="text-2xl font-bold tracking-widest">SILENT</h1>
           <p className="text-[#555] text-sm mt-1">Admin Panel</p>

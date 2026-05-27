@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Users, Hash, Tag, Palette, LogOut, Shield, Calendar } from 'lucide-react'
+import { LayoutDashboard, Users, Hash, Tag, Palette, LogOut, Calendar } from 'lucide-react'
+import SilentLogo from './SilentLogo'
 
 const nav = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Дашборд' },
@@ -16,11 +17,13 @@ export default function Layout({ children, onLogout }: { children: React.ReactNo
       {/* Sidebar */}
       <aside className="w-56 bg-[#111] border-r border-[#222] flex flex-col">
         <div className="p-6 border-b border-[#222]">
-          <div className="flex items-center gap-2">
-            <Shield className="w-6 h-6 text-white" />
-            <span className="font-bold text-lg tracking-widest">SILENT</span>
+          <div className="flex items-center gap-3">
+            <SilentLogo size={32} />
+            <div>
+              <span className="font-bold text-lg tracking-widest block leading-tight">SILENT</span>
+              <p className="text-xs text-[#555]">Admin Panel</p>
+            </div>
           </div>
-          <p className="text-xs text-[#555] mt-1">Admin Panel</p>
         </div>
 
         <nav className="flex-1 p-3 space-y-1">

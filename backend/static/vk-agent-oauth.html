@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Silent — VK Agent</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0a0a0a; color: #fff;
+           display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .box { text-align: center; padding: 2rem; max-width: 360px; }
+    h2 { font-weight: 500; font-size: 1.1rem; }
+    p { color: #888; font-size: 0.85rem; line-height: 1.5; }
+    .ok { color: #4ade80; }
+    .err { color: #f87171; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2 id="title">Подключение VK…</h2>
+    <p id="msg">Подождите</p>
+  </div>
+  <script>
+    (async function () {
+      const title = document.getElementById('title');
+      const msg = document.getElementById('msg');
+      const params = new URLSearchParams(location.search);
+      const state = params.get('state') || '';
+      const hash = new URLSearchParams(location.hash.replace(/^#/, ''));
+      const token = hash.get('access_token');
+      const expiresIn = hash.get('expires_in');
+
+      if (!state || !token) {
+        title.textContent = 'Ошибка';
+        msg.className = 'err';
+        msg.textContent = 'VK не вернул токен. Закройте окно и повторите вход.';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/admin/vk/oauth/finish', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            state,
+            access_token: token,
+            expires_in: expiresIn ? parseInt(expiresIn, 10) : null,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || 'Ошибка');
+        title.textContent = 'Готово';
+        msg.className = 'ok';
+        msg.textContent = 'VK подключён. Закройте окно и нажмите «Подключить агента».';
+        setTimeout(function () { window.close(); }, 2500);
+      } catch (e) {
+        title.textContent = 'Ошибка';
+        msg.className = 'err';
+        msg.textContent = e.message || 'Не удалось сохранить токен';
+      }
+    })();
+  </script>
+</body>
+</html>

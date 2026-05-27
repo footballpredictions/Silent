@@ -1,15 +1,16 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, DateTime, Boolean, Integer, func, Text
+from sqlalchemy import String, DateTime, Boolean, Integer, func, Text, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
 
 class VkHash(Base):
-    """VK Call hash managed by AI assistant for VPN tunnels."""
+    """VK Call hash managed by AI assistant for VPN tunnels (per user, slots 0–2)."""
     __tablename__ = "vk_hashes"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     hash_value: Mapped[str] = mapped_column(String(255), nullable=False)
     call_link: Mapped[str | None] = mapped_column(Text, nullable=True)
     slot_index: Mapped[int] = mapped_column(Integer, nullable=False)  # 0, 1, 2 (up to 3 hashes)

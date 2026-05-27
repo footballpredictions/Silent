@@ -1,9 +1,11 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 import secrets
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
+
     # App
     APP_NAME: str = "Silent VPN"
     APP_VERSION: str = "1.0.0"
@@ -34,13 +36,26 @@ class Settings(BaseSettings):
     YUMONEY_SECRET: str = ""
 
     # Admin
-    ADMIN_LOGIN: str = "silent27@bk.ru"
-    ADMIN_PASSWORD: str = "sIleNt27_vps_99"
+    ADMIN_LOGIN: str = "admin"
+    ADMIN_PASSWORD: str = "change_me_123"
 
-    # VK AI Assistant
+    # VK AI Assistant (Android client token for calls.create / TURN hashes)
     VK_LOGIN: str = ""
     VK_PASSWORD: str = ""
+    # Токен Android-клиента (6287487): vk1.a.... — приоритет над OAuth/БД
+    VK_AGENT_ACCESS_TOKEN: str = ""
     VK_CLIENT_IDS: List[int] = [6287487, 8202606]
+
+    # VK Community bot (config delivery via messages)
+    VK_GROUP_ID: int = 0
+    VK_COMMUNITY_TOKEN: str = ""
+
+    # VK ID (user linking)
+    VK_ID_APP_ID: int = 0
+    VK_ID_CLIENT_SECRET: str = ""
+    VK_ID_REDIRECT_URI: str = "https://132-243-234-162.nip.io/api/auth/vk/callback"
+    VK_MESSAGES_REDIRECT_URI: str = "https://132-243-234-162.nip.io/api/auth/vk/messages-callback"
+    VK_BOT_WRITE_URL: str = "https://vk.com/write-239092728"
 
     # VPN Server
     VPN_SERVER_IP: str = ""
@@ -48,6 +63,11 @@ class Settings(BaseSettings):
     WG_PORT: int = 56001
     WG_SUBNET: str = "10.66.66.0/24"
     MAX_DEVICES_PER_USER: int = 3
+    WDTT_MASTER_PASSWORD: str = ""
+    WG_SERVER_PUBLIC_KEY: str = ""
+    SESSION_ONLINE_TIMEOUT_MINUTES: int = 10
+    SESSION_MAX_AGE_DAYS: int = 7
+    SESSION_IDLE_HOURS: int = 6
 
     # Subscription prices
     PRICE_MONTHLY: float = 199.0
@@ -56,18 +76,6 @@ class Settings(BaseSettings):
 
     # CORS
     ALLOWED_ORIGINS: List[str] = ["*"]
-
-    # These are used by Docker Compose directly, not by the app
-    POSTGRES_PASSWORD: str = "silent_pass"
-    REDIS_PASSWORD: str = "silent_redis"
-    WDTT_MASTER_PASSWORD: str = "change_this_password"
-    WDTT_PORT: int = 56000
-    WDTT_WG_PORT: int = 56001
-
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        extra = "ignore"
 
 
 settings = Settings()

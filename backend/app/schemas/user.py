@@ -39,7 +39,10 @@ class UserProfileResponse(BaseModel):
     subscription: SubscriptionInfo
     devices: list[DeviceInfo]
     devices_count: int
+    connected_count: int = 0
     max_devices: int = 3
+    vk_linked: bool = False
+    vk_user_id: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -47,3 +50,7 @@ class UserProfileResponse(BaseModel):
 class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str
+
+
+class DeviceRenameRequest(BaseModel):
+    device_name: str

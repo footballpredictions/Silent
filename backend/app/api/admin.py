@@ -3,18 +3,17 @@ import json
 import os
 import psutil
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from pydantic import BaseModel
 from typing import Optional
 
 from app.database import get_db
-from app.models import User, Subscription, Device, VkCredentials, VkHash, AppSetting, PromoCode
+from app.models import User, Subscription, Device, VkHash, AppSetting, PromoCode
 from app.core.deps import get_admin_credentials
-from app.core.security import encrypt_value, decrypt_value
-from ai.vk_manager import VkManager
 from app.schemas.vpn import ThemeResponse
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -41,9 +40,22 @@ async def get_stats(
         select(func.count(Device.id)).where(Device.is_connected == True)
     )).scalar_one()
 
-    # VK hashes status
-    hashes_result = await db.execute(select(VkHash).order_by(VkHash.slot_index))
+    # VK hashes — only active per-user slots (no legacy global / dead slots)
+    hashes_result = await db.execute(
+        select(VkHash)
+        .where(VkHash.is_active == True, VkHash.user_id.isnot(None))
+        .order_by(VkHash.user_id, VkHash.slot_index)
+    )
     hashes = hashes_result.scalars().all()
+    user_emails: dict = {}
+    for h in hashes:
+        if h.user_id and h.user_id not in user_emails:
+            u = await db.get(User, h.user_id)
+            user_emails[h.user_id] = u.email if u else "?"
+
+    real_users = (await db.execute(
+        select(func.count(User.id)).where(User.email != "__bootstrap__@silent.local")
+    )).scalar_one()
 
     return {
         "system": {
@@ -56,7 +68,7 @@ async def get_stats(
             "disk_percent": disk.percent,
         },
         "users": {
-            "total": total_users,
+            "total": real_users,
             "active_subscriptions": active_subs,
             "connected_devices": connected_devices,
         },
@@ -64,6 +76,8 @@ async def get_stats(
             {
                 "slot": h.slot_index,
                 "hash": h.hash_value[:12] + "...",
+                "user_id": str(h.user_id) if h.user_id else None,
+                "user_email": user_emails.get(h.user_id, "?"),
                 "is_active": h.is_active,
                 "fail_count": h.fail_count,
                 "last_checked": h.last_checked,
@@ -81,7 +95,11 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(User).order_by(User.created_at.desc()).offset(skip).limit(limit)
+        select(User)
+        .where(User.email != "__bootstrap__@silent.local")
+        .order_by(User.created_at.desc())
+        .offset(skip)
+        .limit(limit)
     )
     users = result.scalars().all()
 
@@ -96,6 +114,9 @@ async def list_users(
         dev_count = (await db.execute(
             select(func.count(Device.id)).where(Device.user_id == user.id, Device.is_active == True)
         )).scalar_one()
+        hash_count = (await db.execute(
+            select(func.count(VkHash.id)).where(VkHash.user_id == user.id, VkHash.is_active == True)
+        )).scalar_one()
 
         out.append({
             "id": str(user.id),
@@ -104,6 +125,8 @@ async def list_users(
             "is_verified": user.is_verified,
             "is_active": user.is_active,
             "created_at": user.created_at,
+            "bootstrap_hash": (user.bootstrap_hash[:12] + "...") if user.bootstrap_hash else None,
+            "server_hashes": hash_count,
             "subscription": {
                 "active": sub.is_active if sub else False,
                 "plan": sub.plan_type if sub else None,
@@ -130,62 +153,309 @@ async def ban_user(
     return {"status": "banned" if not user.is_active else "unbanned"}
 
 
-# VK credentials management
-class VkCredentialsRequest(BaseModel):
+# ─── VK: bot auth → AI agent → manual hashes ─────────────────────────────────
+
+class VkHashManualRequest(BaseModel):
+    hash: str
+    slot: int
+    user_id: Optional[str] = None
+
+
+class VkOAuthFinishRequest(BaseModel):
+    state: str
+    access_token: str
+    expires_in: int | None = None
+
+
+class VkPasswordAuthRequest(BaseModel):
     login: str
     password: str
 
 
-@router.get("/vk/credentials")
-async def get_vk_credentials(
+class VkOAuthPasteRequest(BaseModel):
+    state: str
+    paste: str
+
+
+@router.get("/vk/status")
+async def vk_panel_status(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return saved VK login (no password for security)."""
-    result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
-    creds = result.scalar_one_or_none()
-    if not creds or not creds.is_configured:
-        return {"login": "", "configured": False}
-    try:
-        login = decrypt_value(creds.login_enc)
-    except Exception:
-        login = ""
-    return {"login": login, "configured": True}
+    from app.services.vk_agent_auth import get_auth_status
+    from ai.vk_manager import MAX_HASHES
+    status = await get_auth_status(db)
+    status["hashes_active"] = (await db.execute(
+        select(func.count(VkHash.id)).where(VkHash.is_active == True)
+    )).scalar_one()
+    status["max_hashes"] = MAX_HASHES
+    return status
 
 
-@router.post("/vk/credentials")
-async def set_vk_credentials(
-    req: VkCredentialsRequest,
+@router.post("/vk/bot-auth/start")
+async def vk_bot_auth_start(
+    request: Request,
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
-    creds = result.scalar_one_or_none()
-    enc_login = encrypt_value(req.login)
-    enc_pass = encrypt_value(req.password)
+    from app.config import settings
+    from app.services.vk_agent_auth import build_agent_auth_url
+    from app.models import VkLinkSession
+    import secrets
+    from datetime import timedelta
 
-    if creds:
-        creds.login_enc = enc_login
-        creds.password_enc = enc_pass
-        creds.is_configured = True
-    else:
-        db.add(VkCredentials(id=1, login_enc=enc_login, password_enc=enc_pass, is_configured=True))
+    base = str(request.base_url).rstrip("/")
+    if "nip.io" in base and base.startswith("http://"):
+        base = base.replace("http://", "https://", 1)
+
+    code_verifier = secrets.token_urlsafe(32)
+    state = secrets.token_urlsafe(32)
+    db.add(VkLinkSession(
+        state=state,
+        user_id=None,
+        code_verifier=code_verifier,
+        expires_at=datetime.utcnow() + timedelta(minutes=15),
+        purpose="agent",
+    ))
     await db.commit()
-    return {"message": "VK credentials сохранены успешно"}
+    bot_url = settings.VK_BOT_WRITE_URL or f"https://vk.com/write-{settings.VK_GROUP_ID}"
+    return {
+        "auth_url": build_agent_auth_url(state, base),
+        "state": state,
+        "bot_url": bot_url,
+        "paste_hint": (
+            "После входа VK откроется blank.html?code=... — скопируйте весь URL "
+            "и вставьте ниже. Токен получит сервер (не вставляйте vk1.a с ПК — другой IP)."
+        ),
+    }
+
+
+@router.post("/vk/bot-auth/paste")
+async def vk_bot_auth_paste(
+    req: VkOAuthPasteRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Сохранить токен: code из URL → обмен на сервере (IP VPS)."""
+    from app.services.vk_agent_auth import (
+        parse_vk_oauth_paste,
+        complete_agent_auth,
+        save_agent_token_direct,
+        paste_to_server_token,
+    )
+
+    token, expires_in, err = await paste_to_server_token(req.paste)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    if not token:
+        raise HTTPException(status_code=400, detail="Не удалось получить token")
+
+    _, _, state_from_url, _ = parse_vk_oauth_paste(req.paste)
+    state = (state_from_url or req.state or "").strip()
+    if state:
+        ok, message, uid = await complete_agent_auth(db, state, token, expires_in)
+    else:
+        ok, message, uid = await save_agent_token_direct(db, token, expires_in)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"success": True, "message": message, "vk_user_id": uid}
+
+
+@router.post("/vk/oauth/finish")
+async def vk_oauth_finish(
+    req: VkOAuthFinishRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Public: static page posts Android access_token after OAuth."""
+    from app.services.vk_agent_auth import complete_agent_auth
+    ok, message, uid = await complete_agent_auth(
+        db, req.state, req.access_token.strip(), req.expires_in,
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"success": True, "message": message, "vk_user_id": uid}
+
+
+@router.get("/vk/oauth/callback")
+async def vk_oauth_callback_code(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    """Fallback: authorization_code from Android client."""
+    if error:
+        return HTMLResponse(
+            f"<body style='background:#000;color:#fff;font-family:sans-serif;padding:40px'>"
+            f"<h2>Ошибка VK</h2><p>{error_description or error}</p></body>",
+            status_code=400,
+        )
+    if not code or not state:
+        return HTMLResponse("<p>Нет code/state</p>", status_code=400)
+
+    from app.services.vk_agent_auth import (
+        agent_oauth_redirect_uri,
+        exchange_android_code,
+        complete_agent_auth,
+    )
+    base = str(request.base_url).rstrip("/")
+    if base.startswith("http://"):
+        base = base.replace("http://", "https://", 1)
+    redirect_uri = agent_oauth_redirect_uri(base)
+    token_data, err = await exchange_android_code(code, redirect_uri)
+    if not token_data:
+        return HTMLResponse("<p>Не удалось обменять code на token</p>", status_code=400)
+
+    ok, message, uid = await complete_agent_auth(
+        db,
+        state,
+        token_data["access_token"],
+        token_data.get("expires_in"),
+    )
+    if not ok:
+        return HTMLResponse(
+            f"<body style='background:#000;color:#f88;font-family:sans-serif;padding:40px'>"
+            f"<h2>Ошибка</h2><p>{message}</p></body>",
+            status_code=400,
+        )
+    return HTMLResponse(
+        f"<body style='background:#000;color:#4ade80;font-family:sans-serif;padding:40px;text-align:center'>"
+        f"<h2>VK подключён</h2><p>ID {uid}. Закройте окно.</p>"
+        f"<script>setTimeout(function(){{window.close()}},2000)</script></body>"
+    )
+
+
+@router.post("/vk/bot-auth/password")
+async def vk_bot_auth_password(
+    req: VkPasswordAuthRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Android client password grant — works for calls.create from server."""
+    from app.services.vk_agent_auth import (
+        password_login,
+        save_stored_token,
+        validate_token,
+        test_calls_permission,
+        set_calls_verified,
+    )
+    token, msg = await password_login(req.login.strip(), req.password)
+    if not token:
+        raise HTTPException(status_code=400, detail=msg)
+    await save_stored_token(db, token)
+    ok, detail, uid = await validate_token(token)
+    if not ok:
+        raise HTTPException(status_code=400, detail=detail)
+    calls_ok, calls_msg = await test_calls_permission(token)
+    if not calls_ok:
+        await set_calls_verified(db, False)
+        raise HTTPException(status_code=400, detail=f"Звонки недоступны: {calls_msg}")
+    await set_calls_verified(db, True)
+    return {"success": True, "vk_user_id": uid, "message": "VK авторизован (Android API)"}
+
+
+@router.get("/vk/bot-auth/status")
+async def vk_bot_auth_poll(
+    state: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models import VkLinkSession
+    result = await db.execute(
+        select(VkLinkSession).where(VkLinkSession.state == state, VkLinkSession.purpose == "agent")
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
+    return {"completed": session.completed, "vk_user_id": session.vk_user_id}
+
+
+@router.post("/vk/agent/connect")
+async def vk_agent_connect(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.vk_agent_auth import get_auth_status, set_agent_enabled, set_calls_verified
+    from ai.vk_manager import VkManager
+
+    status = await get_auth_status(db)
+    if not status.get("vk_linked"):
+        raise HTTPException(status_code=400, detail=status.get("auth_error") or "Сначала войдите через VK")
+
+    manager = VkManager(db)
+    ok, err = await manager.ensure_authenticated()
+    if not ok:
+        raise HTTPException(status_code=400, detail=err or "VK не может создавать звонки")
+    await set_calls_verified(db, True)
+
+    try:
+        active = (await db.execute(
+            select(func.count(VkHash.id)).where(VkHash.is_active == True)
+        )).scalar_one()
+        if active < 3:
+            success, message = await manager.recreate_all_hashes()
+            if not success:
+                raise HTTPException(status_code=400, detail=message)
+        else:
+            await manager.check_and_heal()
+            message = "Агент подключён, хеши проверены"
+        await set_agent_enabled(db, True)
+        await set_calls_verified(db, True)
+        return {"success": True, "message": message, "agent_connected": True}
+    finally:
+        await manager.close()
+
+
+@router.post("/vk/agent/sync-env")
+async def vk_agent_sync_env(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Перечитать VK_AGENT_ACCESS_TOKEN из .env и проверить calls.create."""
+    from app.services.vk_agent_auth import resolve_agent_token, get_env_agent_token
+    if not get_env_agent_token():
+        raise HTTPException(
+            status_code=400,
+            detail="VK_AGENT_ACCESS_TOKEN не задан в .env на сервере",
+        )
+    token, msg = await resolve_agent_token(db, verify_calls=True)
+    if not token:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": msg}
+
+
+@router.post("/vk/agent/disconnect")
+async def vk_agent_disconnect(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.vk_agent_auth import set_agent_enabled
+    await set_agent_enabled(db, False)
+    return {"success": True, "message": "AI-агент отключён", "agent_connected": False}
 
 
 @router.get("/vk/hashes")
 async def get_vk_hashes(
+    user_id: Optional[str] = None,
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(VkHash).order_by(VkHash.slot_index))
+    q = select(VkHash).where(VkHash.is_active == True).order_by(VkHash.slot_index)
+    if user_id:
+        import uuid
+        q = q.where(VkHash.user_id == uuid.UUID(user_id))
+    else:
+        q = q.where(VkHash.user_id.is_(None))
+    result = await db.execute(q)
     hashes = result.scalars().all()
     return [
         {
             "id": str(h.id),
             "slot": h.slot_index,
             "hash": h.hash_value,
+            "user_id": str(h.user_id) if h.user_id else None,
             "call_link": h.call_link,
             "is_active": h.is_active,
             "fail_count": h.fail_count,
@@ -196,310 +466,92 @@ async def get_vk_hashes(
     ]
 
 
-@router.post("/vk/hashes/add")
-async def add_vk_hash(
-    data: dict,
+@router.post("/vk/hashes/manual")
+async def add_vk_hash_manual(
+    req: VkHashManualRequest,
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually add a VK call hash."""
-    hash_val = data.get("hash", "").strip()
-    if not hash_val or len(hash_val) < 4:
-        return {"success": False, "message": "Хеш слишком короткий"}
+    """Add hash manually (from VK call link)."""
+    from ai.vk_manager import VkManager, MAX_HASHES
+    if req.slot < 0 or req.slot >= MAX_HASHES:
+        raise HTTPException(status_code=400, detail=f"Слот 0–{MAX_HASHES - 1}")
 
-    result = await db.execute(select(VkHash).order_by(VkHash.slot_index))
-    existing = result.scalars().all()
-    if len(existing) >= 3:
-        return {"success": False, "message": "Максимум 3 хеша. Удали один перед добавлением."}
+    manager = VkManager(db)
+    hash_val = manager._extract_hash(req.hash.strip())
+    if not hash_val:
+        raise HTTPException(status_code=400, detail="Неверный формат хеша или ссылки vk.com/call/join/…")
 
-    # Find next free slot
-    used_slots = {h.slot_index for h in existing}
-    slot = next(i for i in range(3) if i not in used_slots)
+    link = req.hash.strip() if req.hash.startswith("http") else f"https://vk.com/call/join/{hash_val}"
+    uid = None
+    if req.user_id:
+        import uuid
+        uid = uuid.UUID(req.user_id)
+    await manager.upsert_hash_slot(req.slot, hash_val, link, user_id=uid)
 
-    db.add(VkHash(hash_value=hash_val, slot_index=slot, is_active=True, fail_count=0))
-    await db.commit()
-    return {"success": True, "message": f"Хеш добавлен в слот {slot}"}
-
-
-@router.delete("/vk/hashes/{hash_id}")
-async def delete_vk_hash(
-    hash_id: str,
-    _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
-):
-    """Delete a VK call hash."""
-    import uuid as _uuid
     try:
-        uid = _uuid.UUID(hash_id)
-        result = await db.execute(select(VkHash).where(VkHash.id == uid))
+        from app.services.vk_config_publisher import publish_all_configs
+        await publish_all_configs(db)
     except Exception:
-        return {"success": False, "message": "Неверный ID"}
+        pass
 
+    return {"success": True, "slot": req.slot, "hash": hash_val, "message": f"Хеш добавлен в слот {req.slot}"}
+
+
+@router.post("/maintenance/cleanup-bootstrap")
+async def cleanup_bootstrap_user(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Удалить синтетического пользователя bootstrap, его устройства и legacy-хеши без user_id."""
+    from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
+    from app.models import Device
+
+    await db.execute(delete(VkHash).where(VkHash.user_id.is_(None)))
+    await db.execute(delete(VkHash).where(VkHash.is_active == False))
+
+    result = await db.execute(select(User).where(User.email == BOOTSTRAP_USER_EMAIL))
+    boot = result.scalar_one_or_none()
+    if boot:
+        await db.execute(delete(Device).where(Device.user_id == boot.id))
+        await db.delete(boot)
+    await db.commit()
+    return {"ok": True, "message": "Bootstrap-пользователь и устаревшие хеши удалены"}
+
+
+@router.delete("/vk/hashes/{slot}")
+async def delete_vk_hash_slot(
+    slot: int,
+    user_id: Optional[str] = None,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from ai.vk_manager import MAX_HASHES
+    if slot < 0 or slot >= MAX_HASHES:
+        raise HTTPException(status_code=400, detail=f"Слот 0–{MAX_HASHES - 1}")
+    q = select(VkHash).where(VkHash.slot_index == slot, VkHash.is_active == True)
+    if user_id:
+        import uuid
+        q = q.where(VkHash.user_id == uuid.UUID(user_id))
+    else:
+        q = q.where(VkHash.user_id.is_(None))
+    result = await db.execute(q)
     h = result.scalar_one_or_none()
-    if not h:
-        return {"success": False, "message": "Хеш не найден"}
-    await db.delete(h)
-    await db.commit()
-    return {"success": True}
+    if h:
+        await db.delete(h)
+        await db.commit()
+    return {"success": True, "message": f"Слот {slot} удалён"}
 
 
-@router.get("/vk/oauth-url")
-async def vk_oauth_url(
-    _: bool = Depends(get_admin_credentials),
-):
-    """Generate VK OAuth authorization URL. User opens it in browser, logs in, gets redirected back."""
-    import urllib.parse
-    from app.config import settings
-
-    client_id = 54608093
-    # blank.html is always allowed as redirect for any VK app
-    redirect_uri = "https://oauth.vk.com/blank.html"
-    params = urllib.parse.urlencode({
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "scope": "calls",
-        "response_type": "token",
-        "v": "5.131",
-        "display": "page",
-    })
-    url = f"https://oauth.vk.com/authorize?{params}"
-    return {"url": url}
-
-
-@router.get("/vk/oauth-callback")
-async def vk_oauth_callback(
-    code: str = None,
-    error: str = None,
-    error_description: str = None,
-    db: AsyncSession = Depends(get_db),
-):
-    """VK OAuth callback — exchanges code for token and saves it."""
-    import aiohttp
-    from app.config import settings
-
-    if error:
-        html = f"""<!DOCTYPE html><html><body style="background:#0a0a0a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-        <div style="text-align:center"><h2 style="color:#ef4444">Ошибка авторизации</h2><p>{error_description or error}</p>
-        <p style="color:#555">Закройте это окно и попробуйте снова.</p></div></body></html>"""
-        from fastapi.responses import HTMLResponse
-        return HTMLResponse(html)
-
-    if not code:
-        from fastapi.responses import HTMLResponse
-        return HTMLResponse('<html><body style="background:#0a0a0a;color:#fff">Код не получен</body></html>')
-
-    # Exchange code for token
-    client_id = 54608093
-    client_secret = "wxj4liNXn7nElGP5DDgz"
-    redirect_uri = "https://132-243-234-162.nip.io/api/admin/vk/oauth-callback"
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://oauth.vk.com/access_token",
-                params={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "redirect_uri": redirect_uri,
-                    "code": code,
-                },
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                data = await resp.json(content_type=None)
-
-        if "access_token" in data:
-            token = data["access_token"]
-            # Save token to DB
-            result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
-            creds = result.scalar_one_or_none()
-            if creds:
-                creds.access_token = token
-                creds.is_configured = True
-            else:
-                from app.core.security import encrypt_value
-                db.add(VkCredentials(id=1, access_token=token, is_configured=True))
-            await db.commit()
-
-            from fastapi.responses import HTMLResponse
-            html = """<!DOCTYPE html><html><body style="background:#0a0a0a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-            <div style="text-align:center">
-            <div style="font-size:48px;margin-bottom:16px">✅</div>
-            <h2 style="color:#22c55e;margin:0 0 8px">Авторизация успешна!</h2>
-            <p style="color:#888">Токен VK сохранён. Закройте это окно и нажмите «Пересоздать все».</p>
-            <script>setTimeout(()=>window.close(),3000)</script>
-            </div></body></html>"""
-            return HTMLResponse(html)
-
-        err = data.get("error_description", str(data))
-        from fastapi.responses import HTMLResponse
-        html = f"""<!DOCTYPE html><html><body style="background:#0a0a0a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-        <div style="text-align:center"><h2 style="color:#ef4444">Ошибка получения токена</h2><p>{err}</p></div></body></html>"""
-        return HTMLResponse(html)
-
-    except Exception as e:
-        from fastapi.responses import HTMLResponse
-        return HTMLResponse(f'<html><body style="background:#0a0a0a;color:#fff">Исключение: {e}</body></html>')
-
-
-async def _save_vk_token_to_db(db: AsyncSession, login: str, token: str):
-    result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
-    creds = result.scalar_one_or_none()
-    if creds:
-        creds.login = login
-        creds.access_token = token
-        creds.is_configured = True
-    else:
-        db.add(VkCredentials(id=1, login=login, access_token=token, is_configured=True))
-    await db.commit()
-
-
-@router.post("/vk/auth-server")
-async def vk_auth_from_server(
-    data: dict,
+@router.post("/vk/publish-configs")
+async def publish_vk_configs(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Start VK auth from server. Returns success, need_2fa, or error."""
-    login = data.get("login", "").strip()
-    password = data.get("password", "").strip()
-    if not login or not password:
-        return {"success": False, "message": "Введите логин и пароль VK"}
-
-    res = await VkManager.direct_auth(login, password)
-
-    if res.get("need_2fa"):
-        return res  # {need_2fa: True, session_id: ..., message: ...}
-
-    if res.get("success") and res.get("token"):
-        await _save_vk_token_to_db(db, login, res["token"])
-        return {"success": True, "message": "Авторизация прошла успешно! Токен привязан к серверу."}
-
-    return {"success": False, "message": res.get("message", "Ошибка авторизации")}
-
-
-@router.post("/vk/exchange-code")
-async def vk_exchange_code(
-    data: dict,
-    _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
-):
-    """Exchange VK OAuth code for token server-side (token bound to server IP)."""
-    import aiohttp as _aiohttp
-    code = data.get("code", "").strip()
-    if not code:
-        return {"success": False, "message": "Не передан code"}
-
-    client_id = 54608093
-    client_secret = "wxj4liNXn7nElGP5DDgz"
-    redirect_uri = f"https://vk.com/app{client_id}"
-
-    async with _aiohttp.ClientSession() as session:
-        async with session.get(
-            "https://oauth.vk.com/access_token",
-            params={"client_id": client_id, "client_secret": client_secret,
-                    "redirect_uri": redirect_uri, "code": code},
-            timeout=_aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            result = await resp.json(content_type=None)
-
-    if "access_token" in result:
-        token = result["access_token"]
-        await _save_vk_token_to_db(db, "", token)
-        return {"success": True, "message": "Токен получен и привязан к серверу!"}
-
-    err = result.get("error_description") or result.get("error") or str(result)
-    return {"success": False, "message": f"Ошибка обмена кода: {err}"}
-
-
-@router.post("/vk/auth-2fa")
-async def vk_auth_2fa(
-    data: dict,
-    _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
-):
-    """Provide 2FA code for a pending auth session."""
-    session_id = data.get("session_id", "").strip()
-    code = data.get("code", "").strip()
-    login = data.get("login", "").strip()
-    if not session_id or not code:
-        return {"success": False, "message": "Не указан session_id или код"}
-
-    res = await VkManager.submit_2fa_code(session_id, code)
-
-    if res.get("success") and res.get("token"):
-        await _save_vk_token_to_db(db, login, res["token"])
-        return {"success": True, "message": "Авторизация с 2FA прошла успешно!"}
-
-    return {"success": False, "message": res.get("message", "Ошибка 2FA")}
-
-
-@router.post("/vk/save-token")
-async def save_vk_token(
-    data: dict,
-    _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
-):
-    """Save VK access token from browser (no server-side IP validation)."""
-    token = data.get("token", "").strip()
-    if not token or len(token) < 20:
-        return {"success": False, "message": "Токен слишком короткий или пустой"}
-
-    # Save directly — validation from server fails for browser tokens due to IP binding
-    result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
-    creds = result.scalar_one_or_none()
-    if creds:
-        creds.access_token = token
-        creds.is_configured = True
-    else:
-        db.add(VkCredentials(id=1, access_token=token, is_configured=True))
-    await db.commit()
-    return {"success": True, "message": "Токен сохранён! Нажмите «Пересоздать все» для проверки."}
-
-
-@router.get("/vk/oauth-status")
-async def vk_oauth_status(
-    _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
-):
-    """Check if VK OAuth token is saved."""
-    result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
-    creds = result.scalar_one_or_none()
-    has_token = bool(creds and creds.access_token)
-    return {"authorized": has_token, "configured": bool(creds and creds.is_configured)}
-
-
-@router.post("/vk/test-auth")
-async def test_vk_auth(
-    _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
-):
-    """Test VK authentication with saved credentials."""
-    from ai.vk_manager import VkManager
-    manager = VkManager(db)
-    try:
-        ok = await manager.authenticate()
-        await manager.close()
-        if ok:
-            return {"success": True, "message": "Авторизация VK прошла успешно"}
-        return {"success": False, "message": f"Ошибка авторизации: {manager.last_error}"}
-    except Exception as e:
-        return {"success": False, "message": f"Исключение: {e}"}
-
-
-@router.post("/vk/recreate")
-async def recreate_vk_hashes(
-    _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
-):
-    """Manually trigger VK hash recreation."""
-    from ai.vk_manager import VkManager
-    manager = VkManager(db)
-    try:
-        success, message = await manager.recreate_all_hashes()
-        await manager.close()
-        return {"success": success, "message": message}
-    except Exception as e:
-        return {"success": False, "message": f"Исключение при пересоздании: {e}"}
+    """Push encrypted VPN configs to all linked VK users."""
+    from app.services.vk_config_publisher import publish_all_configs
+    sent = await publish_all_configs(db)
+    return {"sent": sent, "message": f"Отправлено {sent} конфигов в VK"}
 
 
 # Theme management
@@ -557,13 +609,6 @@ async def create_promo(
     db.add(promo)
     await db.commit()
     return {"message": f"Промокод {promo.code} создан"}
-
-
-@router.get("/logs")
-async def get_api_logs(_: bool = Depends(get_admin_credentials)):
-    """Last 500 in-memory log entries."""
-    from app.log_buffer import get_logs
-    return {"logs": get_logs()}
 
 
 @router.get("/promo")

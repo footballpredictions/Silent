@@ -3,7 +3,8 @@ import { Search, Ban, CheckCircle } from 'lucide-react'
 
 interface UserRow {
   id: string; display_id: string; email: string; is_verified: boolean; is_active: boolean
-  created_at: string; subscription: { active: boolean; plan: string | null; expires_at: string | null }
+  created_at: string; bootstrap_hash: string | null; server_hashes: number
+  subscription: { active: boolean; plan: string | null; expires_at: string | null }
   devices_count: number
 }
 
@@ -32,8 +33,10 @@ export default function UsersPage({ token }: { token: string }) {
   }
 
   const filtered = users.filter(u =>
-    u.email.toLowerCase().includes(search.toLowerCase()) ||
-    u.display_id.toLowerCase().includes(search.toLowerCase())
+    !u.email.includes('bootstrap') && (
+      u.email.toLowerCase().includes(search.toLowerCase()) ||
+      u.display_id.toLowerCase().includes(search.toLowerCase())
+    )
   )
 
   return (
@@ -57,6 +60,8 @@ export default function UsersPage({ token }: { token: string }) {
             <tr className="border-b border-[#222] text-[#555] text-xs uppercase tracking-wider">
               <th className="text-left px-4 py-3">ID</th>
               <th className="text-left px-4 py-3">Email</th>
+              <th className="text-left px-4 py-3">Bootstrap</th>
+              <th className="text-left px-4 py-3">Сервер</th>
               <th className="text-left px-4 py-3">Подписка</th>
               <th className="text-left px-4 py-3">Устройств</th>
               <th className="text-left px-4 py-3">Статус</th>
@@ -65,14 +70,16 @@ export default function UsersPage({ token }: { token: string }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} className="text-center py-12 text-[#555]">Загрузка...</td></tr>
+              <tr><td colSpan={8} className="text-center py-12 text-[#555]">Загрузка...</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={6} className="text-center py-12 text-[#555]">Нет пользователей</td></tr>
+              <tr><td colSpan={8} className="text-center py-12 text-[#555]">Нет пользователей</td></tr>
             ) : (
               filtered.map(u => (
                 <tr key={u.id} className="border-b border-[#1a1a1a] hover:bg-[#151515] transition-colors">
                   <td className="px-4 py-3 font-mono text-[#888]">{u.display_id}</td>
                   <td className="px-4 py-3">{u.email}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-[#888]">{u.bootstrap_hash || '—'}</td>
+                  <td className="px-4 py-3 text-center">{u.server_hashes ?? 0}/3</td>
                   <td className="px-4 py-3">
                     {u.subscription.active ? (
                       <span className="text-green-400 text-xs">

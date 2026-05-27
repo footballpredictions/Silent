@@ -1,27 +1,40 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from datetime import datetime
 
 from app.database import get_db
 from app.models import User, Subscription, Device
-from app.schemas.user import UserProfileResponse, UserResponse, SubscriptionInfo, DeviceInfo, ChangePasswordRequest
-from app.core.deps import get_current_user, get_verified_user
+from app.schemas.user import UserProfileResponse, SubscriptionInfo, DeviceInfo, ChangePasswordRequest, DeviceRenameRequest
+from app.schemas.vpn import DisconnectRequest
+from app.core.deps import get_current_user
 from app.core.security import verify_password, hash_password
 from app.config import settings
+from app.services.subscription_service import is_user_admin, ensure_admin_flag
+from app.services.vpn_service import (
+    end_device_session,
+    count_active_sessions,
+    count_connected_sessions,
+    clear_stale_online_status,
+    prune_idle_sessions,
+)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
 @router.get("/me", response_model=UserProfileResponse)
 async def get_profile(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    # Active subscription
-    if user.is_admin:
+    await ensure_admin_flag(user, db)
+    await clear_stale_online_status(db)
+    await prune_idle_sessions(db, user.id)
+    admin = is_user_admin(user)
+
+    subscription_info = SubscriptionInfo(is_active=False)
+    if admin:
         subscription_info = SubscriptionInfo(
             is_active=True,
             plan_type="unlimited",
             expires_at=None,
-            days_left=99999,
+            days_left=9999,
         )
     else:
         result = await db.execute(
@@ -30,7 +43,6 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
             .order_by(Subscription.expires_at.desc())
         )
         sub = result.scalars().first()
-        subscription_info = SubscriptionInfo(is_active=False)
         if sub and sub.is_active:
             subscription_info = SubscriptionInfo(
                 is_active=True,
@@ -39,9 +51,11 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
                 days_left=sub.days_left,
             )
 
-    # Devices
     result = await db.execute(
-        select(Device).where(Device.user_id == user.id, Device.is_active == True)
+        select(Device).where(
+            Device.user_id == user.id,
+            Device.is_active == True,
+        ).order_by(Device.last_connected.desc().nullslast(), Device.created_at.desc())
     )
     devices = result.scalars().all()
     device_infos = [
@@ -55,16 +69,33 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
         for d in devices
     ]
 
+    active_sessions = await count_active_sessions(db, user.id)
+    connected = await count_connected_sessions(db, user.id)
+
     return UserProfileResponse(
         id=user.id,
         email=user.email,
         display_id=user.display_id,
-        is_admin=user.is_admin,
+        is_admin=admin,
         subscription=subscription_info,
         devices=device_infos,
-        devices_count=len(devices),
+        devices_count=active_sessions,
+        connected_count=connected,
         max_devices=settings.MAX_DEVICES_PER_USER,
+        vk_linked=user.vk_user_id is not None,
+        vk_user_id=user.vk_user_id,
     )
+
+
+@router.post("/logout")
+async def logout_session(
+    req: DisconnectRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Exit account: delete device session and free slot."""
+    await end_device_session(db, user.id, req.device_fingerprint)
+    return {"status": "logged_out"}
 
 
 @router.post("/change-password")
@@ -80,6 +111,32 @@ async def change_password(
     return {"message": "Пароль изменён"}
 
 
+@router.patch("/devices/{device_id}")
+async def rename_device(
+    device_id: str,
+    req: DeviceRenameRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+
+    name = req.device_name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Имя не может быть пустым")
+    if len(name) > 64:
+        raise HTTPException(status_code=400, detail="Имя слишком длинное (макс. 64 символа)")
+
+    result = await db.execute(
+        select(Device).where(Device.id == uuid.UUID(device_id), Device.user_id == user.id)
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Устройство не найдено")
+    device.device_name = name
+    await db.commit()
+    return {"message": "Имя обновлено", "device_name": name}
+
+
 @router.delete("/devices/{device_id}")
 async def remove_device(
     device_id: str,
@@ -93,7 +150,6 @@ async def remove_device(
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Устройство не найдено")
-    device.is_active = False
-    device.is_connected = False
+    await db.delete(device)
     await db.commit()
-    return {"message": "Устройство удалено"}
+    return {"message": "Сессия удалена"}

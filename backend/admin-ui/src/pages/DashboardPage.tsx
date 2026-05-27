@@ -20,6 +20,7 @@ interface Stats {
   vk_hashes: Array<{
     slot: number
     hash: string
+    user_email?: string
     is_active: boolean
     fail_count: number
     last_checked: string | null
@@ -52,7 +53,7 @@ const ProgressBar = ({ percent, label }: { percent: number; label: string }) => 
   </div>
 )
 
-export default function DashboardPage({ token }: { token: string }) {
+export default function DashboardPage({ token, onUnauthorized }: { token: string; onUnauthorized?: () => void }) {
   const [stats, setStats] = useState<Stats | null>(null)
   const [cpuHistory, setCpuHistory] = useState<{ t: string; v: number }[]>([])
   const [loading, setLoading] = useState(false)
@@ -63,7 +64,13 @@ export default function DashboardPage({ token }: { token: string }) {
       const res = await fetch('/api/admin/stats', {
         headers: { Authorization: `Bearer ${token}` },
       })
+      if (res.status === 401) {
+        onUnauthorized?.()
+        return
+      }
+      if (!res.ok) return
       const data: Stats = await res.json()
+      if (!data?.system) return
       setStats(data)
       setCpuHistory(prev => [
         ...prev.slice(-19),
@@ -84,8 +91,9 @@ export default function DashboardPage({ token }: { token: string }) {
 
   if (!stats) {
     return (
-      <div className="flex items-center justify-center h-64">
+      <div className="flex flex-col items-center justify-center h-64 gap-3">
         <div className="animate-spin w-8 h-8 border-2 border-white border-t-transparent rounded-full" />
+        <p className="text-[#666] text-sm">Загрузка статистики...</p>
       </div>
     )
   }
@@ -138,24 +146,22 @@ export default function DashboardPage({ token }: { token: string }) {
         </div>
       </div>
 
-      {/* VK Hashes */}
+      {/* VK Hashes — per-user active slots only */}
       <div className="bg-[#111] border border-[#222] rounded-xl p-5">
         <h3 className="text-xs text-[#666] uppercase tracking-wider mb-4 flex items-center gap-2">
-          <Hash className="w-3.5 h-3.5" /> VK Туннельные хеши
+          <Hash className="w-3.5 h-3.5" /> Серверные VK-хеши (по пользователям)
         </h3>
         <div className="space-y-2">
           {stats.vk_hashes.length === 0 && (
-            <p className="text-[#555] text-sm">Хеши не созданы. Перейдите в раздел "VK / Тоннели".</p>
+            <p className="text-[#555] text-sm">Нет активных серверных хешей. Подключите AI-агента или добавьте вручную в разделе VK.</p>
           )}
-          {stats.vk_hashes.map(h => (
-            <div key={h.slot} className="flex items-center gap-4 py-2 border-b border-[#1a1a1a] last:border-0">
-              <div className={`w-2 h-2 rounded-full ${h.is_active ? 'bg-green-400' : 'bg-red-400'}`} />
+          {stats.vk_hashes.map((h, i) => (
+            <div key={`${h.user_email}-${h.slot}-${i}`} className="flex items-center gap-4 py-2 border-b border-[#1a1a1a] last:border-0">
+              <div className="w-2 h-2 rounded-full bg-green-400" />
+              <span className="text-xs text-[#666] w-32 truncate">{h.user_email || '—'}</span>
               <span className="text-xs text-[#666]">Слот {h.slot}</span>
               <span className="font-mono text-sm flex-1">{h.hash}</span>
               <span className="text-xs text-[#555]">Сбоев: {h.fail_count}</span>
-              <span className={`text-xs ${h.is_active ? 'text-green-400' : 'text-red-400'}`}>
-                {h.is_active ? 'Активен' : 'Неактивен'}
-              </span>
             </div>
           ))}
         </div>

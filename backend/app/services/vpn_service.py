@@ -1,13 +1,15 @@
 """VPN configuration service — WireGuard key generation and WDTT password management."""
-import subprocess
 import base64
 import ipaddress
-import uuid
 import logging
+import os
+import uuid
+from datetime import datetime, timedelta
 from typing import Optional
 
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from sqlalchemy import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 
 from app.models import Device, User, VkHash, AppSetting
 from app.core.security import generate_wdtt_password, encrypt_value
@@ -17,54 +19,218 @@ from app.schemas.vpn import VpnConfigResponse
 logger = logging.getLogger(__name__)
 
 
+def _clamp_wg_private(raw: bytes) -> bytes:
+    key = bytearray(raw)
+    key[0] &= 248
+    key[31] &= 127
+    key[31] |= 64
+    return bytes(key)
+
+
 def _generate_wg_keypair() -> tuple[str, str]:
-    """Generate WireGuard private/public key pair using wg command or pure Python."""
+    """WireGuard Curve25519 keypair (без wg binary — для Docker API)."""
     try:
-        priv = subprocess.check_output(["wg", "genkey"], stderr=subprocess.DEVNULL).strip().decode()
-        pub = subprocess.check_output(["wg", "pubkey"], input=priv.encode(), stderr=subprocess.DEVNULL).strip().decode()
-        return priv, pub
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        # Fallback: generate random 32 bytes and base64-encode (for dev/testing)
-        import secrets as _s
-        priv_bytes = _s.token_bytes(32)
-        priv_b64 = base64.b64encode(priv_bytes).decode()
-        # Without wg binary we can't derive the real public key — return placeholder
-        pub_b64 = base64.b64encode(b"\x00" * 32).decode()
-        logger.warning("wg binary not found, using placeholder keys (dev mode)")
-        return priv_b64, pub_b64
+        priv_raw = _clamp_wg_private(os.urandom(32))
+        priv = X25519PrivateKey.from_private_bytes(priv_raw)
+        pub_raw = priv.public_key().public_bytes_raw()
+        return base64.b64encode(priv_raw).decode(), base64.b64encode(pub_raw).decode()
+    except Exception as e:
+        logger.error("WG keygen failed: %s", e)
+        raise RuntimeError("Не удалось сгенерировать ключи WireGuard") from e
+
+
+def _is_valid_wg_key(key: str) -> bool:
+    if not key or len(key) < 40:
+        return False
+    if key == base64.b64encode(b"\x00" * 32).decode():
+        return False
+    return True
 
 
 async def _get_next_wg_address(db: AsyncSession) -> str:
-    """Assign next available IP from WireGuard subnet."""
     subnet = ipaddress.IPv4Network(settings.WG_SUBNET)
     hosts = list(subnet.hosts())
-    # .1 is the server itself
-    server_ip = str(hosts[0])
-
     result = await db.execute(select(Device.wg_address).where(Device.wg_address.isnot(None)))
     used = {row[0] for row in result.fetchall()}
-
     for host in hosts[1:]:
         addr = f"{host}/{subnet.prefixlen}"
         if str(host) not in used and addr not in used:
             return addr
-
     raise RuntimeError("No available WireGuard addresses")
 
 
-async def get_active_vk_hashes(db: AsyncSession) -> list[str]:
-    result = await db.execute(
-        select(VkHash.hash_value)
-        .where(VkHash.is_active == True)
-        .order_by(VkHash.slot_index)
-    )
+async def get_active_vk_hashes(db: AsyncSession, user_id=None) -> list[str]:
+    """Legacy global hashes (user_id IS NULL) — admin panel only."""
+    q = select(VkHash.hash_value).where(VkHash.is_active == True)
+    if user_id is not None:
+        q = q.where(VkHash.user_id == user_id)
+    else:
+        q = q.where(VkHash.user_id.is_(None))
+    q = q.order_by(VkHash.slot_index)
+    result = await db.execute(q)
     return [row[0] for row in result.fetchall()]
 
 
 async def get_server_public_key(db: AsyncSession) -> str:
+    env_key = (settings.WG_SERVER_PUBLIC_KEY or "").strip()
+    if env_key:
+        return env_key
     result = await db.execute(select(AppSetting).where(AppSetting.key == "server_public_key"))
     setting = result.scalar_one_or_none()
-    return setting.value if setting else ""
+    return (setting.value or "").strip() if setting else ""
+
+
+async def ensure_server_public_key(db: AsyncSession, key: str) -> None:
+    key = key.strip()
+    if not key:
+        return
+    result = await db.execute(select(AppSetting).where(AppSetting.key == "server_public_key"))
+    setting = result.scalar_one_or_none()
+    if setting:
+        setting.value = key
+    else:
+        db.add(AppSetting(key="server_public_key", value=key))
+    await db.commit()
+
+
+async def clear_stale_online_status(db: AsyncSession) -> int:
+    """Сброс «онлайн», если VPN давно не обновлялся (удалили приложение без logout)."""
+    cutoff = datetime.utcnow() - timedelta(minutes=settings.SESSION_ONLINE_TIMEOUT_MINUTES)
+    result = await db.execute(
+        select(Device).where(
+            Device.is_connected == True,
+            Device.last_connected.isnot(None),
+            Device.last_connected < cutoff,
+        )
+    )
+    devices = result.scalars().all()
+    for d in devices:
+        d.is_connected = False
+    if devices:
+        await db.commit()
+    return len(devices)
+
+
+async def prune_idle_sessions(db: AsyncSession, user_id) -> int:
+    """Удалить неактивные сессии (переустановка / закрыли приложение без logout)."""
+    idle_cutoff = datetime.utcnow() - timedelta(hours=settings.SESSION_IDLE_HOURS)
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user_id,
+            Device.is_active == True,
+            Device.is_connected == False,
+            or_(
+                Device.last_connected < idle_cutoff,
+                and_(Device.last_connected.is_(None), Device.created_at < idle_cutoff),
+            ),
+        )
+    )
+    idle = result.scalars().all()
+    for d in idle:
+        await db.delete(d)
+    if idle:
+        await db.commit()
+    return len(idle)
+
+
+async def replace_same_type_session(
+    db: AsyncSession,
+    user_id,
+    device_type: str,
+    device_fingerprint: str,
+) -> int:
+    """Новый login с другим fingerprint того же типа — убираем старую запись (переустановка)."""
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user_id,
+            Device.device_type == device_type,
+            Device.device_fingerprint != device_fingerprint,
+            Device.is_active == True,
+        )
+    )
+    old = result.scalars().all()
+    for d in old:
+        await db.delete(d)
+    if old:
+        await db.commit()
+    return len(old)
+
+
+async def prune_old_sessions(db: AsyncSession, user_id) -> int:
+    """Удалить старые сессии (переустановка без logout)."""
+    cutoff = datetime.utcnow() - timedelta(days=settings.SESSION_MAX_AGE_DAYS)
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user_id,
+            Device.is_connected == False,
+            Device.created_at < cutoff,
+        )
+    )
+    old = result.scalars().all()
+    for d in old:
+        await db.delete(d)
+    if old:
+        await db.commit()
+    return len(old)
+
+
+async def prune_oldest_session_if_full(db: AsyncSession, user_id) -> bool:
+    """Если лимит 3 — удалить самую старую неподключённую сессию."""
+    active_count = await count_active_sessions(db, user_id)
+    if active_count < settings.MAX_DEVICES_PER_USER:
+        return False
+    result = await db.execute(
+        select(Device)
+        .where(Device.user_id == user_id, Device.is_active == True, Device.is_connected == False)
+        .order_by(Device.last_connected.asc().nullsfirst(), Device.created_at.asc())
+        .limit(1)
+    )
+    victim = result.scalar_one_or_none()
+    if not victim:
+        return False
+    await db.delete(victim)
+    await db.commit()
+    return True
+
+
+async def count_active_sessions(db: AsyncSession, user_id) -> int:
+    result = await db.execute(
+        select(func.count(Device.id)).where(
+            Device.user_id == user_id,
+            Device.is_active == True,
+        )
+    )
+    return result.scalar_one()
+
+
+async def count_connected_sessions(db: AsyncSession, user_id) -> int:
+    result = await db.execute(
+        select(func.count(Device.id)).where(
+            Device.user_id == user_id,
+            Device.is_active == True,
+            Device.is_connected == True,
+        )
+    )
+    return result.scalar_one()
+
+
+async def end_device_session(
+    db: AsyncSession,
+    user_id,
+    device_fingerprint: str,
+) -> bool:
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user_id,
+            Device.device_fingerprint == device_fingerprint,
+        )
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        return False
+    await db.delete(device)
+    await db.commit()
+    return True
 
 
 async def register_device(
@@ -75,35 +241,39 @@ async def register_device(
     device_fingerprint: str,
     wg_public_key: Optional[str] = None,
 ) -> VpnConfigResponse:
-    """Register new device and generate VPN config. Max 3 devices per user."""
+    await clear_stale_online_status(db)
+    await replace_same_type_session(db, user.id, device_type, device_fingerprint)
+    await prune_idle_sessions(db, user.id)
+    await prune_old_sessions(db, user.id)
 
-    # Check device limit (admin has unlimited devices)
-    if not user.is_admin:
-        result = await db.execute(
-            select(func.count(Device.id))
-            .where(Device.user_id == user.id, Device.is_active == True)
-        )
-        count = result.scalar_one()
-        if count >= settings.MAX_DEVICES_PER_USER:
-            raise ValueError(f"Достигнут максимум {settings.MAX_DEVICES_PER_USER} устройства. Подключите новый аккаунт.")
-
-    # Check if device already registered by fingerprint
     result = await db.execute(
-        select(Device).where(Device.user_id == user.id, Device.device_fingerprint == device_fingerprint)
+        select(Device).where(
+            Device.user_id == user.id,
+            Device.device_fingerprint == device_fingerprint,
+            Device.is_active == True,
+        )
     )
     existing = result.scalar_one_or_none()
     if existing:
         return await _build_vpn_config(db, existing)
 
-    # Generate WireGuard keys
+    active_count = await count_active_sessions(db, user.id)
+    if active_count >= settings.MAX_DEVICES_PER_USER:
+        freed = await prune_oldest_session_if_full(db, user.id)
+        active_count = await count_active_sessions(db, user.id)
+        if not freed and active_count >= settings.MAX_DEVICES_PER_USER:
+            raise ValueError(
+                f"Достигнут лимит {settings.MAX_DEVICES_PER_USER} устройств. "
+                "Выйдите из аккаунта на одном из них."
+            )
+
     priv_key, pub_key = _generate_wg_keypair()
     if wg_public_key:
         pub_key = wg_public_key
-        priv_key = ""  # Client provides own key
+        priv_key = ""
 
     wg_address = await _get_next_wg_address(db)
-    # Use master WDTT password — devices authenticate with the server master password
-    wdtt_pass = settings.WDTT_MASTER_PASSWORD
+    wdtt_pass = (settings.WDTT_MASTER_PASSWORD or "").strip() or generate_wdtt_password()
 
     device = Device(
         user_id=user.id,
@@ -124,8 +294,14 @@ async def register_device(
 
 async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigResponse:
     from app.core.security import decrypt_value
+    from app.services.user_hash_service import get_vpn_hashes_for_user
 
-    hashes = await get_active_vk_hashes(db)
+    result = await db.execute(select(User).where(User.id == device.user_id))
+    user = result.scalar_one_or_none()
+    if user and user.email != BOOTSTRAP_USER_EMAIL:
+        hashes = await get_vpn_hashes_for_user(db, user)
+    else:
+        hashes = await get_active_vk_hashes(db)
     server_pub_key = await get_server_public_key(db)
 
     priv_key = ""
@@ -135,15 +311,114 @@ async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigRespon
         except Exception:
             pass
 
+    if not _is_valid_wg_key(priv_key):
+        priv_key, pub_key = _generate_wg_keypair()
+        device.wg_private_key_enc = encrypt_value(priv_key)
+        device.wg_public_key = pub_key
+        await db.commit()
+
+    if not _is_valid_wg_key(server_pub_key):
+        logger.warning("server_public_key missing — set WG_SERVER_PUBLIC_KEY in .env")
+
     return VpnConfigResponse(
-        device_id=device.id,
+        device_id=str(device.id),
         wg_private_key=priv_key,
         wg_address=device.wg_address or "10.66.66.2/24",
         wg_dns="77.88.8.8,77.88.8.1",
         server_ip=settings.VPN_SERVER_IP,
         server_port=settings.VPN_SERVER_PORT,
         server_public_key=server_pub_key,
-        wdtt_password=device.wdtt_password or "",
+        wdtt_password=(settings.WDTT_MASTER_PASSWORD or "").strip() or (device.wdtt_password or ""),
         vk_hashes=hashes,
         stream_count=3,
     )
+
+
+BOOTSTRAP_USER_EMAIL = "__bootstrap__@silent.local"
+
+
+async def validate_bootstrap_hash(db: AsyncSession, bootstrap_hash: str) -> bool:
+    from app.services.user_hash_service import extract_call_hash
+
+    return extract_call_hash(bootstrap_hash) is not None
+
+
+async def get_or_create_bootstrap_user(db: AsyncSession) -> User:
+    from app.core.security import hash_password
+
+    result = await db.execute(select(User).where(User.email == BOOTSTRAP_USER_EMAIL))
+    user = result.scalar_one_or_none()
+    if user:
+        return user
+    user = User(
+        email=BOOTSTRAP_USER_EMAIL,
+        password_hash=hash_password(str(uuid.uuid4())),
+        is_verified=True,
+        is_active=True,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+async def get_bootstrap_hashes_for_user(db: AsyncSession, user: User) -> list[str]:
+    boot = (user.bootstrap_hash or "").strip()
+    return [boot] if boot else []
+
+
+async def build_vpn_config_for_user(
+    db: AsyncSession,
+    device: Device,
+    user: User,
+    has_subscription: bool,
+) -> VpnConfigResponse:
+    from app.services.user_hash_service import get_vpn_hashes_for_user
+
+    config = await _build_vpn_config(db, device)
+    if user.email == BOOTSTRAP_USER_EMAIL:
+        return config
+    hashes = await get_vpn_hashes_for_user(db, user)
+    if hashes:
+        return config.model_copy(update={"vk_hashes": hashes, "stream_count": min(len(hashes), 4)})
+    boot = await get_bootstrap_hashes_for_user(db, user)
+    if boot:
+        return config.model_copy(update={"vk_hashes": boot, "stream_count": 1})
+    return config
+
+
+async def register_bootstrap_device(
+    db: AsyncSession,
+    bootstrap_hash: str,
+    device_fingerprint: str,
+    device_type: str,
+) -> VpnConfigResponse:
+    from app.services.user_hash_service import extract_call_hash
+
+    h = extract_call_hash(bootstrap_hash)
+    if not h:
+        raise ValueError("Недействительный bootstrap-хеш")
+
+    user = await get_or_create_bootstrap_user(db)
+    fp = f"boot:{device_fingerprint.strip()}"
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user.id,
+            Device.device_fingerprint == fp,
+            Device.is_active == True,
+        )
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        config = await _build_vpn_config(db, existing)
+        return config.model_copy(update={"vk_hashes": [h]})
+
+    config = await register_device(
+        db,
+        user,
+        device_name=f"Bootstrap-{device_type}",
+        device_type=device_type,
+        device_fingerprint=fp,
+        wg_public_key=None,
+    )
+    return config.model_copy(update={"vk_hashes": [h]})

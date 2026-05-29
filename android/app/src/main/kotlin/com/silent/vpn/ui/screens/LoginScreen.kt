@@ -18,12 +18,17 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.silent.vpn.data.ThemeData
 import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
 import com.silent.vpn.ui.components.SilentLogo
+import com.silent.vpn.ui.theme.LoginUi
+import com.silent.vpn.ui.theme.loginTextFieldColors
+import com.silent.vpn.ui.theme.toLoginUi
 
 @Composable
 fun LoginScreen(
+    theme: ThemeData? = null,
     initialEmail: String = "",
     onLogin: (email: String, password: String) -> Unit,
     onRegister: (email: String, password: String) -> Unit,
@@ -40,28 +45,29 @@ fun LoginScreen(
     onClearError: () -> Unit,
     onRegDoneDismiss: () -> Unit,
 ) {
+    val ui = remember(theme) { theme.toLoginUi() }
     var tab by remember { mutableStateOf("login") }
     var email by remember(initialEmail) { mutableStateOf(initialEmail) }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var showDebugLog by remember { mutableStateOf(false) }
-    val fieldColors = authTextFieldColors()
+    val fieldColors = loginTextFieldColors(ui)
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(AuthColors.screenBg)
+            .background(ui.bg)
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color.Black)
+                .background(ui.headerBg)
                 .padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
             Text(
                 "SILENT VPN",
-                color = AuthColors.hint,
+                color = ui.headerFg,
                 fontSize = 11.sp,
                 letterSpacing = 2.sp,
                 modifier = Modifier.align(Alignment.CenterStart),
@@ -87,7 +93,7 @@ fun LoginScreen(
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
                     "SILENT",
-                    color = Color.White,
+                    color = ui.fg,
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp,
                     letterSpacing = 3.sp,
@@ -97,6 +103,7 @@ fun LoginScreen(
             Spacer(modifier = Modifier.height(20.dp))
 
             HashInputSection(
+                ui = ui,
                 bootstrapHash = bootstrapHash,
                 statusMsg = statusMsg,
                 bootstrapConnecting = bootstrapConnecting,
@@ -107,7 +114,7 @@ fun LoginScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(AuthColors.tabBg, RoundedCornerShape(12.dp))
+                    .background(ui.tabBg, RoundedCornerShape(12.dp))
                     .padding(4.dp),
             ) {
                 listOf("login" to "Войти", "register" to "Регистрация").forEach { (key, label) ->
@@ -116,7 +123,7 @@ fun LoginScreen(
                         modifier = Modifier
                             .weight(1f)
                             .background(
-                                if (selected) Color.White else Color.Transparent,
+                                if (selected) ui.primaryBtnBg else Color.Transparent,
                                 RoundedCornerShape(10.dp),
                             )
                             .padding(vertical = 8.dp),
@@ -132,7 +139,7 @@ fun LoginScreen(
                         ) {
                             Text(
                                 label,
-                                color = if (selected) Color.Black else AuthColors.hint,
+                                color = if (selected) ui.primaryBtnFg else ui.hint,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Medium,
                             )
@@ -151,13 +158,13 @@ fun LoginScreen(
                     Spacer(modifier = Modifier.height(32.dp))
                     Text(
                         "Подтвердите email",
-                        color = Color.White,
+                        color = ui.fg,
                         fontWeight = FontWeight.Medium,
                         fontSize = 14.sp,
                     )
                     Text(
                         "Ссылка отправлена на $regEmail",
-                        color = AuthColors.hint,
+                        color = ui.hint,
                         fontSize = 12.sp,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(top = 4.dp),
@@ -166,17 +173,17 @@ fun LoginScreen(
                         tab = "login"
                         onRegDoneDismiss()
                     }) {
-                        Text("Войти", fontSize = 12.sp, color = Color.White)
+                        Text("Войти", fontSize = 12.sp, color = ui.fg)
                     }
                 }
             } else {
-                Text("Email", color = AuthColors.label, fontSize = 12.sp)
+                Text("Email", color = ui.label, fontSize = 12.sp)
                 OutlinedTextField(
                     value = email,
                     onValueChange = { email = it },
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = {
-                        Text("you@example.com", fontSize = 14.sp, color = AuthColors.fieldPlaceholder)
+                        Text("you@example.com", fontSize = 14.sp, color = ui.fieldPlaceholder)
                     },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
@@ -186,13 +193,13 @@ fun LoginScreen(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                Text("Пароль", color = AuthColors.label, fontSize = 12.sp)
+                Text("Пароль", color = ui.label, fontSize = 12.sp)
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = {
-                        Text("••••••••", fontSize = 14.sp, color = AuthColors.fieldPlaceholder)
+                        Text("••••••••", fontSize = 14.sp, color = ui.fieldPlaceholder)
                     },
                     singleLine = true,
                     visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
@@ -204,7 +211,7 @@ fun LoginScreen(
                             Text(
                                 if (showPassword) "Скрыть" else "Показать",
                                 fontSize = 11.sp,
-                                color = AuthColors.hint,
+                                color = ui.hint,
                             )
                         }
                     },
@@ -213,7 +220,7 @@ fun LoginScreen(
                 if (!error.isNullOrBlank()) {
                     Text(
                         error,
-                        color = Color(0xFFEF4444),
+                        color = ui.red,
                         fontSize = 12.sp,
                         modifier = Modifier.padding(top = 8.dp),
                     )
@@ -232,16 +239,16 @@ fun LoginScreen(
                         .height(48.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White,
-                        contentColor = Color.Black,
-                        disabledContainerColor = Color(0xFF333333),
-                        disabledContentColor = Color(0xFF666666),
+                        containerColor = ui.primaryBtnBg,
+                        contentColor = ui.primaryBtnFg,
+                        disabledContainerColor = ui.primaryBtnBg.copy(alpha = 0.4f),
+                        disabledContentColor = ui.primaryBtnFg.copy(alpha = 0.5f),
                     ),
                 ) {
                     if (loading) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(20.dp),
-                            color = Color.Black,
+                            color = ui.primaryBtnFg,
                             strokeWidth = 2.dp,
                         )
                     } else {

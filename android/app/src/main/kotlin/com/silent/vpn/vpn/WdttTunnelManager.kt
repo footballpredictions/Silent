@@ -24,6 +24,7 @@ import java.io.File
  */
 object WdttTunnelManager {
     private const val TAG = "WdttTunnelManager"
+    private const val NETWORK_RESTART_GRACE_MS = 90_000L
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var process: Process? = null
@@ -36,9 +37,11 @@ object WdttTunnelManager {
     private var appliedConfigFingerprint: String? = null
     private val wgApplyMutex = Mutex()
     private var appContext: Context? = null
+    private var lastParams: Params? = null
+    private var lastContext: Context? = null
+    private var processStartedAtMs = 0L
     private var wrapAuthTimeoutCount = 0
     private val wgExcludeIps = linkedSetOf<String>()
-    private var pendingServerIp: String? = null
 
     val running = MutableStateFlow(false)
     val tunnelReady = MutableStateFlow(false)
@@ -60,22 +63,30 @@ object WdttTunnelManager {
 
     private var confPollJob: Job? = null
 
-    fun start(context: Context, params: Params) {
-        if (running.value) return
+    fun start(context: Context, params: Params, isSwitching: Boolean = false) {
+        if (running.value && !isSwitching) return
         scope.launch {
-            stopInternal(keepWg = false)
-
-            lastError.value = null
-            tunnelReady.value = false
-            stats.value = ""
-            activeWorkers.value = 0
-            wrapAuthTimeoutCount = 0
-            appliedConfigSource = 0
-            appliedConfigFingerprint = null
-            apiFallbackConfig = params.apiWgConfig?.trim()?.takeIf { it.contains("[Interface]") }
-            wgHelper = WireGuardHelper(context.applicationContext)
-            appContext = context.applicationContext
-            CaptchaWebViewManager.onTunnelStart(context)
+            val ctx = context.applicationContext
+            if (!isSwitching) {
+                stopInternal(keepWg = false)
+                lastError.value = null
+                tunnelReady.value = false
+                stats.value = ""
+                activeWorkers.value = 0
+                wrapAuthTimeoutCount = 0
+                appliedConfigSource = 0
+                appliedConfigFingerprint = null
+                lastParams = params
+                lastContext = ctx
+                apiFallbackConfig = params.apiWgConfig?.trim()?.takeIf { it.contains("[Interface]") }
+                CaptchaWebViewManager.onTunnelStart(context)
+            } else {
+                killProcess()
+                activeWorkers.value = 0
+                stats.value = ""
+            }
+            wgHelper = WireGuardHelper(ctx)
+            appContext = ctx
 
             try {
                 val libDir = context.applicationInfo.nativeLibraryDir
@@ -103,11 +114,12 @@ object WdttTunnelManager {
                     return@launch
                 }
 
-                wgExcludeIps.clear()
-                wgExcludeIps.add(params.serverIp.trim())
-                pendingServerIp = params.serverIp.trim()
+                if (!isSwitching) {
+                    wgExcludeIps.clear()
+                    wgExcludeIps.add(params.serverIp.trim())
+                }
 
-                DebugLog.i(TAG, "start peer=${params.serverIp}:${params.serverPort} hashes=${hashList.size} device=${params.deviceId.take(8)}")
+                DebugLog.i(TAG, "start peer=${params.serverIp}:${params.serverPort} hashes=${hashList.size} switching=$isSwitching")
 
                 val cmd = listOf(
                     binaryPath,
@@ -127,6 +139,7 @@ object WdttTunnelManager {
 
                 deleteOldConf(context)
                 process = pb.start()
+                processStartedAtMs = System.currentTimeMillis()
                 running.value = true
                 DebugLog.i(TAG, "libclient started")
                 delay(100)
@@ -344,11 +357,6 @@ object WdttTunnelManager {
 
         fallbackJob?.cancel()
         scope.launch {
-            // Дождаться TURN IP в split-tunnel, иначе libclient теряет связь с VK.
-            repeat(30) {
-                if (wgExcludeIps.size >= 2) return@repeat
-                delay(200)
-            }
             wgApplyMutex.withLock {
                 if (source < appliedConfigSource) return@withLock
                 if (tunnelReady.value && source <= appliedConfigSource && fingerprint == appliedConfigFingerprint) {
@@ -389,8 +397,55 @@ object WdttTunnelManager {
     fun isInternetReady(): Boolean =
         tunnelReady.value && activeWorkers.value >= 1 && !lastWgAddress().isNullOrBlank() && appliedConfigSource > 0
 
+    fun restartTransport() {
+        val elapsed = System.currentTimeMillis() - processStartedAtMs
+        if (processStartedAtMs > 0L && elapsed < NETWORK_RESTART_GRACE_MS) {
+            DebugLog.i(TAG, "[СЕТЬ] restartTransport пропущен (${elapsed}ms < ${NETWORK_RESTART_GRACE_MS}ms)")
+            return
+        }
+        if (!tunnelReady.value || activeWorkers.value < 1) {
+            DebugLog.i(TAG, "[СЕТЬ] restartTransport пропущен (туннель не готов)")
+            return
+        }
+        val params = lastParams ?: return
+        val ctx = appContext ?: return
+        DebugLog.i(TAG, "[СЕТЬ] Перезапуск libclient после смены сети")
+        killProcess()
+        scope.launch {
+            delay(1500)
+            start(ctx, params, isSwitching = true)
+        }
+    }
+
+    fun pause() {
+        if (!running.value) return
+        DebugLog.i(TAG, "pause: сеть потеряна, libclient остановлен")
+        killProcess()
+        activeWorkers.value = 0
+    }
+
+    fun resume() {
+        val params = lastParams ?: return
+        val ctx = appContext ?: return
+        DebugLog.i(TAG, "resume: сеть восстановлена")
+        scope.launch { start(ctx, params, isSwitching = true) }
+    }
+
     fun stop() {
         scope.launch { stopInternal(keepWg = false) }
+    }
+
+    private fun killProcess() {
+        fallbackJob?.cancel()
+        confPollJob?.cancel()
+        readerJob?.cancel()
+        val proc = process
+        process = null
+        if (proc != null) {
+            runCatching { proc.destroy() }
+            runCatching { proc.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS) }
+            if (proc.isAlive) runCatching { proc.destroyForcibly() }
+        }
     }
 
     fun reloadWireGuard(context: Context) {
@@ -409,20 +464,13 @@ object WdttTunnelManager {
 
     private suspend fun stopInternal(keepWg: Boolean) {
         withContext(Dispatchers.IO) {
-            fallbackJob?.cancel()
-            confPollJob?.cancel()
-            readerJob?.cancel()
-            val proc = process
-            process = null
-            if (proc != null) {
-                runCatching { proc.destroy() }
-                runCatching { proc.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS) }
-                if (proc.isAlive) runCatching { proc.destroyForcibly() }
-            }
+            killProcess()
             if (!keepWg) wgHelper?.stopTunnel()
             CaptchaWebViewManager.onTunnelStop()
             ManlCaptchaWebViewManager.cancelCaptcha()
             appContext = null
+            lastParams = null
+            lastContext = null
             appliedConfigSource = 0
             appliedConfigFingerprint = null
             running.value = false

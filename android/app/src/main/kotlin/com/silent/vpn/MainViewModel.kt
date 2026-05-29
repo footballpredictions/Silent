@@ -30,6 +30,7 @@ import com.silent.vpn.vk.HashParser
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.vpn.WdttTunnelManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -46,6 +47,7 @@ enum class AppScreen { LOGIN, MAIN }
 @HiltViewModel
 class MainViewModel @Inject constructor(
     private val repo: SilentRepository,
+    @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
     private val _screen = MutableStateFlow(if (repo.isLoggedIn()) AppScreen.MAIN else AppScreen.LOGIN)
@@ -133,6 +135,7 @@ class MainViewModel @Inject constructor(
     }
 
     init {
+        loadTheme()
         if (repo.isLoggedIn()) {
             if (!repo.hasSessionFingerprint()) {
                 repo.clearTokens()
@@ -161,14 +164,16 @@ class MainViewModel @Inject constructor(
             WdttTunnelManager.tunnelReady.collect { ready ->
                 if (ready) {
                     DebugLog.i("MainViewModel", "tunnel ready")
-                    if (WdttTunnelManager.isInternetReady()) {
+                    if (!WdttTunnelManager.isInternetReady()) return@collect
+                    if (bootstrapVpnMode) {
                         _vpnState.value = VpnState.CONNECTED
-                        if (bootstrapVpnMode) {
-                            _statusMsg.value = "Канал готов. Войдите или зарегистрируйтесь (2 мин)."
-                            bootstrapContext?.let { startBootstrapSessionTimeout(it) }
-                        }
+                        _statusMsg.value = "Канал готов. Войдите или зарегистрируйтесь (2 мин)."
+                        bootstrapContext?.let { startBootstrapSessionTimeout(it) }
                         onVpnTunnelReady()
-                        markDeviceOnlineOnServer()
+                    } else if (SilentVpnService.isRunning) {
+                        _vpnState.value = VpnState.CONNECTED
+                        onVpnTunnelReady()
+                        if (repo.isLoggedIn()) markDeviceOnlineOnServer()
                     }
                 } else if (
                     _vpnState.value == VpnState.CONNECTED &&
@@ -185,6 +190,22 @@ class MainViewModel @Inject constructor(
         loadProfile()
         loadTheme()
         viewModelScope.launch { syncServerHashes() }
+    }
+
+    fun onReturnedToApp() {
+        if (!repo.isLoggedIn()) return
+        _screen.value = AppScreen.MAIN
+        if (_profile.value == null) {
+            viewModelScope.launch { fetchProfileNow() }
+        }
+    }
+
+    fun onAppResumed() {
+        if (!repo.isLoggedIn()) return
+        if (_screen.value != AppScreen.MAIN) _screen.value = AppScreen.MAIN
+        if (_profile.value == null) {
+            viewModelScope.launch { fetchProfileNow() }
+        }
     }
 
     /** Download server hash list to device storage; drop bootstrap when server slots are ready. */
@@ -207,7 +228,7 @@ class MainViewModel @Inject constructor(
             ?: loadCachedVpnConfig()?.wg_address?.takeIf { it.isNotBlank() }
             ?: WdttTunnelManager.lastWgAddress()
         repo.setTunnelApiFromWgAddress(wgAddr)
-        loadProfile()
+        if (repo.isLoggedIn()) loadProfile()
         loadTheme()
         if (repo.isLoggedIn()) {
             viewModelScope.launch { syncServerHashes() }
@@ -215,6 +236,7 @@ class MainViewModel @Inject constructor(
     }
 
     private fun markDeviceOnlineOnServer() {
+        if (_vpnState.value != VpnState.CONNECTED) return
         viewModelScope.launch {
             runCatching {
                 repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
@@ -223,17 +245,70 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    private var profilePollJob: Job? = null
+    private var vpnProfilePollJob: Job? = null
+
+    /** Периодическое обновление списка сессий, пока открыт экран «Сессии» (как на PC, 5 с). */
+    fun setSessionsScreenActive(active: Boolean) {
+        profilePollJob?.cancel()
+        profilePollJob = null
+        if (!active) return
+        loadProfile()
+        profilePollJob = viewModelScope.launch {
+            while (true) {
+                delay(5000)
+                fetchProfile()
+            }
+        }
+    }
+
+    /** Обновление профиля каждые 10 с при активном VPN на главном экране (как на PC). */
+    fun setVpnProfilePolling(active: Boolean) {
+        vpnProfilePollJob?.cancel()
+        vpnProfilePollJob = null
+        if (!active) return
+        vpnProfilePollJob = viewModelScope.launch {
+            while (true) {
+                delay(10_000)
+                fetchProfile()
+            }
+        }
+    }
+
     private fun loadProfile() {
-        viewModelScope.launch {
-            runCatching {
+        viewModelScope.launch { fetchProfile() }
+    }
+
+    private suspend fun fetchProfile() {
+        fetchProfileNow()
+    }
+
+    private suspend fun fetchProfileNow(): Boolean {
+        val wg = WdttTunnelManager.lastWgAddress()
+        val bases = repo.apiBaseCandidates(wg)
+        for (base in bases) {
+            try {
+                repo.useApiBase(base)
                 val res = repo.getApi().getProfile()
                 if (res.isSuccessful) {
                     val p = res.body()!!
                     _profile.value = p
                     p.vk_user_id?.let { repo.saveVkUserId(it) }
-                } else if (res.code() == 401) logout()
+                    runCatching {
+                        val themeRes = repo.getApi().getTheme()
+                        if (themeRes.isSuccessful) _theme.value = themeRes.body()
+                    }
+                    return true
+                }
+                if (res.code() == 401) {
+                    logout()
+                    return false
+                }
+            } catch (e: Exception) {
+                DebugLog.w("MainViewModel", "fetchProfile on $base: ${e.message}")
             }
         }
+        return _profile.value != null
     }
 
     private fun loadTheme() {
@@ -247,6 +322,7 @@ class MainViewModel @Inject constructor(
 
     fun login(email: String, password: String, activity: ComponentActivity? = null) {
         viewModelScope.launch {
+            cancelBootstrapSessionTimeout()
             _authLoading.value = true
             _authError.value = null
             try {
@@ -270,10 +346,12 @@ class MainViewModel @Inject constructor(
                 repo.startNewSession()
                 if (!openLoginSession()) return@launch
                 syncServerHashes()
+                if (!fetchProfileNow()) {
+                    _vpnError.value = "Профиль не загрузился. Включите VPN на главном экране."
+                }
                 activity?.let { disconnectBootstrapVpn(it) }
-                activity?.let { CredentialHelper.offerSavePassword(it, email, password) }
-                refreshSession()
                 goToMain()
+                activity?.let { CredentialHelper.offerSavePassword(it, email, password) }
             } catch (e: Exception) {
                 _authError.value = e.message ?: "Ошибка входа"
             } finally {
@@ -315,6 +393,7 @@ class MainViewModel @Inject constructor(
 
     fun register(email: String, password: String) {
         viewModelScope.launch {
+            cancelBootstrapSessionTimeout()
             _authLoading.value = true
             _authError.value = null
             try {
@@ -782,7 +861,9 @@ class MainViewModel @Inject constructor(
             WdttTunnelManager.stop()
             repo.clearTunnelApiBase()
             _vpnState.value = VpnState.DISCONNECTED
-            loadProfile()
+            if (repo.isLoggedIn() && _profile.value == null) {
+                viewModelScope.launch { fetchProfileNow() }
+            }
         }
     }
 

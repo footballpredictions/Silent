@@ -1,9 +1,14 @@
 package com.silent.vpn
 
+import android.Manifest
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -24,12 +29,24 @@ class MainActivity : ComponentActivity() {
     companion object {
         @Volatile
         var isForeground: Boolean = false
+
+        const val EXTRA_OPEN_MAIN = "open_main"
+
+        fun openIntent(context: Context): Intent =
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+                putExtra(EXTRA_OPEN_MAIN, true)
+            }
     }
 
     private val vm: MainViewModel by viewModels()
     private var vpnPermissionGranted = mutableStateOf(false)
     private var pendingBootstrapAfterPermission = mutableStateOf(false)
     private var pendingHashInput = mutableStateOf("")
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* optional — FGS notification still works */ }
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -50,6 +67,14 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         DebugLog.i("App", "Silent VPN ${android.os.Build.MODEL} API ${android.os.Build.VERSION.SDK_INT}")
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
 
         setContent {
             val screen by vm.screen.collectAsState()
@@ -76,6 +101,7 @@ class MainActivity : ComponentActivity() {
             SilentTheme(themeData = theme) {
                 when (screen) {
                     AppScreen.LOGIN -> LoginScreen(
+                        theme = theme,
                         initialEmail = vm.lastEmail,
                         onLogin = { email, password -> vm.login(email, password, this@MainActivity) },
                         onRegister = vm::register,
@@ -126,15 +152,26 @@ class MainActivity : ComponentActivity() {
                         },
                         onShowError = vm::showError,
                         onRenameDevice = vm::renameDevice,
+                        onDevicesScreenActive = vm::setSessionsScreenActive,
+                        onVpnProfilePolling = vm::setVpnProfilePolling,
                     )
                 }
             }
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_OPEN_MAIN, false)) {
+            vm.onReturnedToApp()
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         isForeground = true
+        vm.onAppResumed()
         ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
     }
 

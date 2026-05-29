@@ -18,11 +18,20 @@ pc/node_modules/
 
 # Android
 android/.gradle/
+android/app/.gradle/
 android/build/
 android/app/build/
 android/.idea/
 android/*.iml
 android/local.properties
+android/app/local.properties
+
+# Local deploy/diag scripts (not for git)
+/*.py
+!backend/**/*.py
+_ref_proxy_turn/
+pc_untracked_backup_temp/
+wdtt-src/
 
 # iOS
 ios/Silent.xcodeproj/project.xcworkspace/

@@ -70,6 +70,8 @@ fun MainScreen(
     onOpenUrl: (String) -> Unit,
     onShowError: (String) -> Unit,
     onRenameDevice: (deviceId: String, name: String, onResult: (Boolean, String?) -> Unit) -> Unit,
+    onDevicesScreenActive: (Boolean) -> Unit = {},
+    onVpnProfilePolling: (Boolean) -> Unit = {},
 ) {
     val bg = parseColor(theme?.background_color ?: "#FFFFFF", Color.White)
     val fg = parseColor(theme?.text_color ?: "#000000", Color.Black)
@@ -81,6 +83,21 @@ fun MainScreen(
     var promoCode by remember { mutableStateOf("") }
     var promoMsg by remember { mutableStateOf("") }
     var showDebugLog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(menuOpen, menuPage) {
+        onDevicesScreenActive(menuOpen && menuPage == MenuPage.DEVICES)
+    }
+    LaunchedEffect(vpnState) {
+        onVpnProfilePolling(
+            vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING,
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            onDevicesScreenActive(false)
+            onVpnProfilePolling(false)
+        }
+    }
 
     val isConnected = vpnState == VpnState.CONNECTED
     val isTransitioning = vpnState == VpnState.CONNECTING || vpnState == VpnState.DISCONNECTING
@@ -206,7 +223,14 @@ fun MainScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 when {
-                    profile?.is_admin == true || profile?.subscription?.plan_type == "unlimited" -> {
+                    profile == null -> {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = fg.copy(alpha = 0.5f),
+                        )
+                    }
+                    profile.is_admin || profile.subscription?.plan_type == "unlimited" -> {
                         Text("Бессрочно", color = Color(0xFF16A34A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         Text("Полный доступ", color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
                     }
@@ -301,7 +325,7 @@ fun MainScreen(
                         MenuPage.PROMO -> MenuPromo(fg, bg, promoCode, { promoCode = it }, promoMsg, { onCheckPromo(promoCode) { promoMsg = it } }) { menuPage = MenuPage.ROOT }
                         MenuPage.DEVICES -> MenuDevices(profile, fg, sessionDeviceId, vpnState, onRenameDevice) { menuPage = MenuPage.ROOT }
                         MenuPage.SUPPORT -> MenuSimplePage("Поддержка", "По вопросам обратитесь через email или Telegram.", fg) { menuPage = MenuPage.ROOT }
-                        MenuPage.ABOUT -> MenuSimplePage("Silent VPN", "Версия 1.0.15\nWireGuard-туннель через VK TURN/DTLS", fg) { menuPage = MenuPage.ROOT }
+                        MenuPage.ABOUT -> MenuSimplePage("Silent VPN", "Версия 1.0.22\nWireGuard-туннель через VK TURN/DTLS", fg) { menuPage = MenuPage.ROOT }
                     }
                 }
                 Box(
@@ -423,9 +447,11 @@ private fun MenuDevices(
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
         Text("Сессии", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
         val localOnline = vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING
-        val onlineCount = profile?.devices?.count { d ->
-            d.is_connected || (localOnline && d.id == sessionDeviceId)
-        } ?: 0
+        fun deviceOnline(d: DeviceInfo): Boolean {
+            val isSelf = !sessionDeviceId.isNullOrBlank() && d.id == sessionDeviceId
+            return d.is_connected || (localOnline && isSelf)
+        }
+        val onlineCount = profile?.devices?.count { deviceOnline(it) } ?: 0
         Text(
             "VPN онлайн: $onlineCount из ${profile?.devices_count ?: 0}",
             fontSize = 11.sp,
@@ -433,7 +459,7 @@ private fun MenuDevices(
             modifier = Modifier.padding(bottom = 8.dp),
         )
         profile?.devices?.forEach { d ->
-            val online = d.is_connected || (localOnline && d.id == sessionDeviceId)
+            val online = deviceOnline(d)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

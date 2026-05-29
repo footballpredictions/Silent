@@ -24,9 +24,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.silent.vpn.ui.theme.LoginUi
+import com.silent.vpn.ui.theme.loginTextFieldColors
 
 @Composable
 fun HashInputSection(
+    ui: LoginUi,
     bootstrapHash: String?,
     statusMsg: String,
     bootstrapConnecting: Boolean,
@@ -34,18 +37,18 @@ fun HashInputSection(
     onConnect: (String) -> Unit,
 ) {
     var input by remember(bootstrapHash) { mutableStateOf(bootstrapHash.orEmpty()) }
-    val fieldColors = authTextFieldColors()
+    val fieldColors = loginTextFieldColors(ui)
 
     Text(
         "Шаг 1 — хеш звонка VK",
         fontWeight = FontWeight.SemiBold,
         fontSize = 13.sp,
-        color = Color.White,
+        color = ui.fg,
     )
     Text(
         "Временный интернет на 2 минуты — только для входа или регистрации. По истечении хеш сбросится.",
         fontSize = 11.sp,
-        color = AuthColors.hint,
+        color = ui.hint,
         modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
     )
 
@@ -54,7 +57,7 @@ fun HashInputSection(
         onValueChange = { input = it },
         modifier = Modifier.fillMaxWidth(),
         placeholder = {
-            Text("Хеш или ссылка на звонок VK", fontSize = 13.sp, color = AuthColors.fieldPlaceholder)
+            Text("Хеш или ссылка на звонок VK", fontSize = 13.sp, color = ui.fieldPlaceholder)
         },
         singleLine = true,
         enabled = !bootstrapReady,
@@ -79,13 +82,10 @@ fun HashInputSection(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = when {
-                bootstrapReady -> Color(0xFF16A34A)
-                else -> Color.White
-            },
-            contentColor = if (bootstrapReady) Color.White else Color.Black,
-            disabledContainerColor = if (bootstrapReady) Color(0xFF16A34A) else Color(0xFF333333),
-            disabledContentColor = if (bootstrapReady) Color.White else Color(0xFF666666),
+            containerColor = if (bootstrapReady) ui.green else ui.primaryBtnBg,
+            contentColor = if (bootstrapReady) Color.White else ui.primaryBtnFg,
+            disabledContainerColor = if (bootstrapReady) ui.green else ui.primaryBtnBg.copy(alpha = 0.4f),
+            disabledContentColor = if (bootstrapReady) Color.White else ui.primaryBtnFg.copy(alpha = 0.5f),
         ),
     ) {
         Text(buttonText, fontSize = 13.sp, fontWeight = FontWeight.Medium)
@@ -93,12 +93,15 @@ fun HashInputSection(
 
     if (statusMsg.isNotBlank()) {
         val statusColor = when {
-            bootstrapReady -> Color(0xFF16A34A)
+            bootstrapReady -> ui.green
             statusMsg.contains("ошиб", ignoreCase = true) ||
                 statusMsg.contains("не удалось", ignoreCase = true) ||
-                statusMsg.contains("невер", ignoreCase = true) -> Color(0xFFEF4444)
-            bootstrapConnecting -> Color(0xFF6B7280)
-            else -> Color(0xFF6B7280)
+                statusMsg.contains("невер", ignoreCase = true) ||
+                statusMsg.contains("истекло", ignoreCase = true) -> ui.red
+            statusMsg.contains("канал готов", ignoreCase = true) ||
+                statusMsg.contains("осталось", ignoreCase = true) -> ui.green
+            bootstrapConnecting -> ui.hint
+            else -> ui.hint
         }
         Text(
             statusMsg,
@@ -109,6 +112,6 @@ fun HashInputSection(
     }
 
     Spacer(modifier = Modifier.height(16.dp))
-    HorizontalDivider(color = AuthColors.divider)
+    HorizontalDivider(color = ui.divider)
     Spacer(modifier = Modifier.height(16.dp))
 }

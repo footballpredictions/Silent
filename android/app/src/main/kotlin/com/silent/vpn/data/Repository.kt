@@ -6,8 +6,6 @@ import android.content.SharedPreferences
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -43,6 +41,7 @@ class SilentRepository @Inject constructor(
         const val PREF_SAVED_HASH_ITEMS_TS = "saved_hash_items_ts"
         const val VK_APP_ID = 54610377L
         const val VK_GROUP_ID = 239092728L
+        const val WG_TUNNEL_GATEWAY = "10.66.66.1"
     }
 
     private val prefs: SharedPreferences = createPrefs(context)
@@ -56,21 +55,7 @@ class SilentRepository @Inject constructor(
         ensureServerUrl()
     }
 
-    private fun createPrefs(context: Context): SharedPreferences {
-        return try {
-            val masterKey = MasterKey.Builder(context)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            EncryptedSharedPreferences.create(
-                context, "silent_prefs", masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-            )
-        } catch (e: Exception) {
-            Log.w(TAG, "EncryptedSharedPreferences unavailable, using regular prefs", e)
-            context.getSharedPreferences("silent_prefs", Context.MODE_PRIVATE)
-        }
-    }
+    private fun createPrefs(context: Context): SharedPreferences = SilentPrefs.open(context)
 
     fun getApi(): SilentApi {
         val url = getServerUrl()
@@ -134,17 +119,14 @@ class SilentRepository @Inject constructor(
         }
     }
 
+    /** WG API/nginx на сервере всегда 10.66.66.1 (не client_ip−1). */
     fun wgGatewayFromAddress(wgAddress: String?): String? {
-        if (wgAddress.isNullOrBlank()) return null
+        if (wgAddress.isNullOrBlank()) return WG_TUNNEL_GATEWAY
         val host = wgAddress.substringBefore('/').trim()
         if (!host.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) return null
         val parts = host.split('.').mapNotNull { it.toIntOrNull() }
         if (parts.size != 4) return null
-        return if (parts[3] > 0) {
-            "${parts[0]}.${parts[1]}.${parts[2]}.${parts[3] - 1}"
-        } else {
-            host
-        }
+        return "${parts[0]}.${parts[1]}.${parts[2]}.1"
     }
 
     fun apiBaseCandidates(wgAddress: String? = null): List<String> {
@@ -152,6 +134,7 @@ class SilentRepository @Inject constructor(
         wgGatewayFromAddress(wgAddress)?.let { out.add("https://$it") }
         wgGatewayFromAddress(wgAddress)?.let { out.add("http://$it:8000") }
         out.add("https://${BootstrapVpnConfig.serverHost()}")
+        out.add("https://$DEFAULT_SERVER_HOST")
         out.add(getPublicServerUrl())
         return out.filter { it.isNotBlank() }.toList()
     }

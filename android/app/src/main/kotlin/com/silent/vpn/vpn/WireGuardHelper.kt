@@ -18,7 +18,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 
-/** WireGuard через GoBackend — как в proxy-turn-vk-android. */
+/**
+ * WireGuard: split-tunnel (сервер/TURN вне WG), VK — excludeApplications, API — через WG-шлюз.
+ */
 class WireGuardHelper(context: Context) {
     private val appContext = context.applicationContext
     private val backend = (appContext as SilentApp).getBackend(context)
@@ -56,24 +58,21 @@ class WireGuardHelper(context: Context) {
             val parsed = Config.parse(ByteArrayInputStream(configToApply.toByteArray(Charsets.UTF_8)))
             val ifaceBuilder = Interface.Builder()
                 .parseAddresses(parsed.`interface`.addresses.joinToString(", ") { it.toString() })
-            if (parsed.`interface`.dnsServers.isNotEmpty()) {
-                ifaceBuilder.parseDnsServers(parsed.`interface`.dnsServers.joinToString(", ") { it.hostAddress ?: "" })
+            val mtu = if (parsed.`interface`.mtu.isPresent) {
+                parsed.`interface`.mtu.get().coerceAtLeast(1280)
+            } else {
+                1280
             }
-            ifaceBuilder.parseMtu(
-                if (parsed.`interface`.mtu.isPresent) parsed.`interface`.mtu.get().coerceAtLeast(1280).toString()
-                else "1280"
-            )
+            ifaceBuilder.parseMtu(mtu.toString())
             ifaceBuilder.parsePrivateKey(parsed.`interface`.keyPair.privateKey.toBase64())
 
-            // VK-клиенты вне туннеля (TURN). Само приложение — через WG (API и DNS через туннель).
-            val excluded = mutableSetOf("com.vkontakte.android", "com.vk.calls", "com.vk.im")
             runCatching {
-                val repoPrefs = appContext.getSharedPreferences("silent_prefs", Context.MODE_PRIVATE)
-                val saved = repoPrefs.getString("excluded_apps", "")?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
-                excluded.addAll(saved)
+                val excluded = resolveExcludedAppPackages(appContext)
+                if (excluded.isNotEmpty()) {
+                    ifaceBuilder.excludeApplications(excluded)
+                    DebugLog.i(TAG, "App exclusions: ${excluded.size} пакетов вне туннеля")
+                }
             }
-            val installedExcluded = excluded.filter { isInstalled(it) }.toSet()
-            if (installedExcluded.isNotEmpty()) ifaceBuilder.excludeApplications(installedExcluded)
 
             val peer = parsed.peers.firstOrNull() ?: throw IllegalStateException("No peer in config")
             val peerBuilder = Peer.Builder().parsePublicKey(peer.publicKey.toBase64())
@@ -81,19 +80,25 @@ class WireGuardHelper(context: Context) {
             if (peer.endpoint.isPresent) peerBuilder.parseEndpoint(peer.endpoint.get().toString())
             if (peer.persistentKeepalive.isPresent) {
                 peerBuilder.parsePersistentKeepalive(peer.persistentKeepalive.get().toString())
+            } else {
+                peerBuilder.parsePersistentKeepalive("25")
             }
             val allowedIps = peer.allowedIps.takeIf { it.isNotEmpty() }?.joinToString(", ") { it.toString() }
                 ?: if (excludeIPs.isNotEmpty()) AllowedIpsHelper.generateExclusionAllowedIPs(excludeIPs) else "0.0.0.0/0"
             peerBuilder.parseAllowedIPs(allowedIps)
-            DebugLog.i(TAG, "AllowedIPs=$allowedIps")
+            DebugLog.i(TAG, "AllowedIPs=$allowedIps MTU=$mtu")
 
             val wgHost = parsed.`interface`.addresses.firstOrNull()?.address?.hostAddress
             if (!wgHost.isNullOrBlank()) {
                 val parts = wgHost.split('.').mapNotNull { it.toIntOrNull() }
-                if (parts.size == 4 && parts[3] > 0) {
-                    val gw = "${parts[0]}.${parts[1]}.${parts[2]}.${parts[3] - 1}"
+                if (parts.size == 4) {
+                    val gw = "${parts[0]}.${parts[1]}.${parts[2]}.1"
                     ifaceBuilder.parseDnsServers("$gw,1.1.1.1")
                 }
+            } else if (parsed.`interface`.dnsServers.isNotEmpty()) {
+                ifaceBuilder.parseDnsServers(
+                    parsed.`interface`.dnsServers.joinToString(", ") { it.hostAddress ?: "" },
+                )
             }
 
             val finalConfig = Config.Builder()
@@ -142,11 +147,6 @@ class WireGuardHelper(context: Context) {
                 appContext.startService(Intent(appContext, GoBackend.VpnService::class.java))
             }
         }
-        delay(100)
+        delay(300)
     }
-
-    private fun isInstalled(pkg: String): Boolean = runCatching {
-        appContext.packageManager.getPackageInfo(pkg, 0)
-        true
-    }.getOrDefault(false)
 }

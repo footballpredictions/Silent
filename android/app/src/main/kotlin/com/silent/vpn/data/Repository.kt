@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.ClipboardManager
 import android.content.SharedPreferences
 import android.util.Log
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -21,7 +23,8 @@ class SilentRepository @Inject constructor(
 ) {
     companion object {
         private const val TAG = "SilentRepository"
-        const val DEFAULT_SERVER_URL = "https://132-243-234-162.nip.io"
+        const val DEFAULT_SERVER_URL = "https://132.243.234.162"
+        const val DEFAULT_SERVER_HOST = "132-243-234-162.nip.io"
         const val PREF_SERVER_URL = "server_url"
         const val PREF_ACCESS_TOKEN = "access_token"
         const val PREF_REFRESH_TOKEN = "refresh_token"
@@ -36,6 +39,8 @@ class SilentRepository @Inject constructor(
         const val PREF_SESSION_DEVICE_ID = "session_device_id"
         const val PREF_EXCLUDED_APPS = "excluded_apps"
         const val PREF_EXCLUSIONS_WHITELIST = "exclusions_whitelist"
+        const val PREF_SAVED_HASH_ITEMS = "saved_hash_items"
+        const val PREF_SAVED_HASH_ITEMS_TS = "saved_hash_items_ts"
         const val VK_APP_ID = 54610377L
         const val VK_GROUP_ID = 239092728L
     }
@@ -44,6 +49,8 @@ class SilentRepository @Inject constructor(
 
     private var _api: SilentApi? = null
     private var _baseUrl: String = ""
+    /** Когда VPN поднят — API через адрес в туннеле (10.66.66.1), иначе nip.io недоступен в белых списках. */
+    private var tunnelApiBaseUrl: String? = null
 
     init {
         ensureServerUrl()
@@ -76,15 +83,19 @@ class SilentRepository @Inject constructor(
 
     private fun buildApi(baseUrl: String): SilentApi {
         val logging = HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
+        val nipHost = DEFAULT_SERVER_HOST
         val client = OkHttpClient.Builder()
             .addInterceptor(logging)
             .addInterceptor { chain ->
+                var req = chain.request()
                 val token = getAccessToken()
-                val req = if (token != null) {
-                    chain.request().newBuilder()
-                        .header("Authorization", "Bearer $token")
-                        .build()
-                } else chain.request()
+                if (token != null) {
+                    req = req.newBuilder().header("Authorization", "Bearer $token").build()
+                }
+                // HTTPS по IP: nginx ждёт Host с nip.io
+                if (req.url.host.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) {
+                    req = req.newBuilder().header("Host", nipHost).build()
+                }
                 chain.proceed(req)
             }
             .hostnameVerifier { _, _ -> true }
@@ -99,7 +110,63 @@ class SilentRepository @Inject constructor(
             .create(SilentApi::class.java)
     }
 
-    fun getServerUrl(): String = prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
+    fun getServerUrl(): String {
+        tunnelApiBaseUrl?.let { return it }
+        return prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
+    }
+
+    /** Переключить API на WireGuard-шлюз (обычно 10.66.66.1) пока VPN активен. */
+    fun setTunnelApiFromWgAddress(wgAddress: String?) {
+        val gw = wgGatewayFromAddress(wgAddress)
+        if (gw == null) {
+            clearTunnelApiBase()
+            return
+        }
+        useApiBase("https://$gw")
+        Log.i(TAG, "API via tunnel: https://$gw")
+    }
+
+    fun clearTunnelApiBase() {
+        if (tunnelApiBaseUrl != null) {
+            tunnelApiBaseUrl = null
+            _api = null
+            Log.i(TAG, "API via public URL")
+        }
+    }
+
+    fun wgGatewayFromAddress(wgAddress: String?): String? {
+        if (wgAddress.isNullOrBlank()) return null
+        val host = wgAddress.substringBefore('/').trim()
+        if (!host.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) return null
+        val parts = host.split('.').mapNotNull { it.toIntOrNull() }
+        if (parts.size != 4) return null
+        return if (parts[3] > 0) {
+            "${parts[0]}.${parts[1]}.${parts[2]}.${parts[3] - 1}"
+        } else {
+            host
+        }
+    }
+
+    fun apiBaseCandidates(wgAddress: String? = null): List<String> {
+        val out = linkedSetOf<String>()
+        wgGatewayFromAddress(wgAddress)?.let { out.add("https://$it") }
+        wgGatewayFromAddress(wgAddress)?.let { out.add("http://$it:8000") }
+        out.add("https://${BootstrapVpnConfig.serverHost()}")
+        out.add(getPublicServerUrl())
+        return out.filter { it.isNotBlank() }.toList()
+    }
+
+    fun getPublicServerUrl(): String =
+        prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
+
+    /** Временно переключить base URL (для перебора кандидатов при входе). */
+    fun useApiBase(baseUrl: String) {
+        val normalized = baseUrl.trimEnd('/')
+        if (tunnelApiBaseUrl != normalized) {
+            tunnelApiBaseUrl = normalized
+            _api = null
+        }
+    }
     fun setServerUrl(url: String) {
         prefs.edit().putString(PREF_SERVER_URL, url.trimEnd('/')).apply()
         _api = null
@@ -194,6 +261,43 @@ class SilentRepository @Inject constructor(
     }
 
     fun getBootstrapHash(): String? = prefs.getString(PREF_BOOTSTRAP_HASH, null)?.takeIf { it.isNotBlank() }
+
+    fun saveHashItems(items: List<HashItemDto>) {
+        if (items.isEmpty()) return
+        prefs.edit()
+            .putString(PREF_SAVED_HASH_ITEMS, Gson().toJson(items))
+            .putLong(PREF_SAVED_HASH_ITEMS_TS, System.currentTimeMillis())
+            .apply()
+    }
+
+    fun getSavedHashItems(): List<HashItemDto> {
+        val json = prefs.getString(PREF_SAVED_HASH_ITEMS, null) ?: return emptyList()
+        return runCatching {
+            val type = object : TypeToken<List<HashItemDto>>() {}.type
+            Gson().fromJson<List<HashItemDto>>(json, type)
+        }.getOrDefault(emptyList())
+    }
+
+    fun getSavedHashItemsUpdatedAt(): Long = prefs.getLong(PREF_SAVED_HASH_ITEMS_TS, 0L)
+
+    fun clearSavedHashItems() {
+        prefs.edit()
+            .remove(PREF_SAVED_HASH_ITEMS)
+            .remove(PREF_SAVED_HASH_ITEMS_TS)
+            .apply()
+    }
+
+    suspend fun fetchAndSaveHashItems(): Result<List<HashItemDto>> {
+        return runCatching {
+            val res = getApi().getVpnHashes()
+            if (!res.isSuccessful) {
+                error(res.errorBody()?.string()?.take(200) ?: "HTTP ${res.code()}")
+            }
+            val items = res.body()!!.toHashItems()
+            if (items.isNotEmpty()) saveHashItems(items)
+            items
+        }
+    }
 
     /** Stable fingerprint for bootstrap VPN before Silent login. */
     fun getOrCreatePreLoginFingerprint(): String {

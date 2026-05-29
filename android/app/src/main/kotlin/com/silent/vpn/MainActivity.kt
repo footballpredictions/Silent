@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity() {
                         bootstrapHash = bootstrapHash,
                         statusMsg = statusMsg,
                         bootstrapConnecting = bootstrapConnecting,
+                        bootstrapReady = vpnState == VpnState.CONNECTED,
                         onConnect = { raw ->
                             val prep = VpnService.prepare(this@MainActivity)
                             pendingHashInput.value = raw

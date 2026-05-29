@@ -37,6 +37,8 @@ object WdttTunnelManager {
     private val wgApplyMutex = Mutex()
     private var appContext: Context? = null
     private var wrapAuthTimeoutCount = 0
+    private val wgExcludeIps = linkedSetOf<String>()
+    private var pendingServerIp: String? = null
 
     val running = MutableStateFlow(false)
     val tunnelReady = MutableStateFlow(false)
@@ -89,7 +91,7 @@ object WdttTunnelManager {
                     .flatMap { it.split(Regex("[,\\s\\n]+")) }
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
-                    .take(3)
+                    .take(4)
                 if (hashList.isEmpty()) {
                     lastError.value = "Нет VK-хешей"
                     DebugLog.e(TAG, lastError.value!!)
@@ -100,6 +102,10 @@ object WdttTunnelManager {
                     DebugLog.e(TAG, lastError.value!!)
                     return@launch
                 }
+
+                wgExcludeIps.clear()
+                wgExcludeIps.add(params.serverIp.trim())
+                pendingServerIp = params.serverIp.trim()
 
                 DebugLog.i(TAG, "start peer=${params.serverIp}:${params.serverPort} hashes=${hashList.size} device=${params.deviceId.take(8)}")
 
@@ -175,6 +181,11 @@ object WdttTunnelManager {
             delay(8_000)
             if (tunnelReady.value || !running.value) return@launch
             if (appliedConfigSource >= 3) return@launch
+            if (activeWorkers.value < 2) {
+                DebugLog.w(TAG, "API fallback wait: workers=${activeWorkers.value}")
+                delay(2_000)
+            }
+            if (tunnelReady.value || !running.value || activeWorkers.value < 1) return@launch
             DebugLog.w(TAG, "API fallback WireGuard (8s timeout)")
             applyWireGuard(fallback, source = 1)
         }
@@ -243,12 +254,23 @@ object WdttTunnelManager {
                         return@forEachLine
                     }
 
+                    Regex("""TURN UDP \(([\d.]+):\d+\)""").find(lineTrim)?.groupValues?.getOrNull(1)?.let { turnIp ->
+                        if (wgExcludeIps.add(turnIp)) {
+                            DebugLog.i(TAG, "TURN IP excluded from WG: $turnIp")
+                        }
+                    }
+
                     if (lineTrim.contains("[ДИСП] Воркер") && lineTrim.contains("зарегистрирован")) {
                         Regex("всего:\\s*(\\d+)").find(lineTrim)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let {
                             activeWorkers.value = it
                         }
                         apiFallbackConfig?.let { cfg ->
-                            if (!tunnelReady.value) applyWireGuard(cfg, source = 1)
+                            if (activeWorkers.value >= 1 && !tunnelReady.value) {
+                                scope.launch {
+                                    delay(500)
+                                    if (!tunnelReady.value) applyWireGuard(cfg, source = 1)
+                                }
+                            }
                         }
                         return@forEachLine
                     }
@@ -322,6 +344,11 @@ object WdttTunnelManager {
 
         fallbackJob?.cancel()
         scope.launch {
+            // Дождаться TURN IP в split-tunnel, иначе libclient теряет связь с VK.
+            repeat(30) {
+                if (wgExcludeIps.size >= 2) return@repeat
+                delay(200)
+            }
             wgApplyMutex.withLock {
                 if (source < appliedConfigSource) return@withLock
                 if (tunnelReady.value && source <= appliedConfigSource && fingerprint == appliedConfigFingerprint) {
@@ -336,7 +363,7 @@ object WdttTunnelManager {
                         delay(150)
                     }
                     val srcName = when (source) { 3 -> "file"; 2 -> "box"; else -> "api" }
-                    wgHelper?.startTunnel(normalized)
+                    wgHelper?.startTunnel(normalized, wgExcludeIps.toList())
                     appliedConfigSource = source
                     appliedConfigFingerprint = fingerprint
                     if (!tunnelReady.value) {
@@ -354,6 +381,14 @@ object WdttTunnelManager {
         }
     }
 
+    fun lastWgAddress(): String? {
+        val cfg = lastWgConfig ?: return null
+        return Regex("""(?m)^Address\s*=\s*(\S+)""").find(cfg)?.groupValues?.getOrNull(1)
+    }
+
+    fun isInternetReady(): Boolean =
+        tunnelReady.value && activeWorkers.value >= 1 && !lastWgAddress().isNullOrBlank() && appliedConfigSource > 0
+
     fun stop() {
         scope.launch { stopInternal(keepWg = false) }
     }
@@ -365,7 +400,7 @@ object WdttTunnelManager {
             try {
                 wgHelper?.stopTunnel()
                 delay(200)
-                wgHelper?.startTunnel(config)
+                wgHelper?.startTunnel(config, wgExcludeIps.toList())
             } catch (e: Exception) {
                 lastError.value = "WireGuard: ${e.message}"
             }

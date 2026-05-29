@@ -35,6 +35,7 @@ fun LoginScreen(
     bootstrapHash: String?,
     statusMsg: String,
     bootstrapConnecting: Boolean,
+    bootstrapReady: Boolean,
     onConnect: (String) -> Unit,
     onClearError: () -> Unit,
     onRegDoneDismiss: () -> Unit,
@@ -99,6 +100,7 @@ fun LoginScreen(
                 bootstrapHash = bootstrapHash,
                 statusMsg = statusMsg,
                 bootstrapConnecting = bootstrapConnecting,
+                bootstrapReady = bootstrapReady,
                 onConnect = onConnect,
             )
 

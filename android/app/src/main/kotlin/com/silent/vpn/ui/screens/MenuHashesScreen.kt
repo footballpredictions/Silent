@@ -20,6 +20,9 @@ import com.silent.vpn.data.HashItemDto
 import com.silent.vpn.data.SilentRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun MenuHashesScreen(
@@ -27,35 +30,39 @@ fun MenuHashesScreen(
     fg: Color,
     onBack: () -> Unit,
 ) {
-    var loading by remember { mutableStateOf(true) }
+    var loading by remember { mutableStateOf(repo.getSavedHashItems().isEmpty()) }
+    var syncing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var items by remember { mutableStateOf<List<HashItemDto>>(emptyList()) }
+    var items by remember { mutableStateOf(repo.getSavedHashItems()) }
+    var savedAt by remember { mutableStateOf(repo.getSavedHashItemsUpdatedAt()) }
+    var refreshKey by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(Unit) {
-        loading = true
+    suspend fun refreshFromServer() {
+        syncing = true
         error = null
-        val res = withContext(Dispatchers.IO) {
-            runCatching { repo.getApi().getVpnHashes() }.getOrNull()
-        }
-        if (res?.isSuccessful == true) {
-            items = res.body()?.items.orEmpty()
-            if (items.isEmpty()) {
-                val hashes = res.body()?.hashes.orEmpty()
-                items = hashes.mapIndexed { i, h ->
-                    HashItemDto(
-                        hash = h,
-                        label = if (i == 0) "Bootstrap" else "Сервер #${i - 1}",
-                        source = if (i == 0) "bootstrap" else "server",
-                        slot_index = if (i == 0) null else i - 1,
-                        is_active = true,
-                        status = "active",
-                    )
-                }
+        val result = withContext(Dispatchers.IO) { repo.fetchAndSaveHashItems() }
+        result.onSuccess { downloaded ->
+            if (downloaded.isNotEmpty()) {
+                items = downloaded
+                savedAt = repo.getSavedHashItemsUpdatedAt()
+            } else if (items.isEmpty()) {
+                error = "На сервере пока нет хешей"
             }
-        } else {
-            error = res?.errorBody()?.string()?.take(120) ?: "Не удалось загрузить хеши"
+        }.onFailure {
+            if (items.isEmpty()) {
+                error = it.message?.take(120) ?: "Не удалось загрузить хеши"
+            }
         }
+        syncing = false
         loading = false
+    }
+
+    LaunchedEffect(refreshKey) {
+        if (refreshKey == 0) {
+            items = repo.getSavedHashItems()
+            savedAt = repo.getSavedHashItemsUpdatedAt()
+        }
+        refreshFromServer()
     }
 
     Column(
@@ -69,11 +76,26 @@ fun MenuHashesScreen(
         }
         Text("Хеши", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = fg)
         Text(
-            "Хеши с сервера для VPN-туннеля",
+            "Сохранены на устройстве и обновляются с сервера",
             fontSize = 11.sp,
             color = fg.copy(0.5f),
-            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
         )
+        if (savedAt > 0L) {
+            Text(
+                "Последнее обновление: ${formatSavedAt(savedAt)}",
+                fontSize = 10.sp,
+                color = fg.copy(0.4f),
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
+        TextButton(
+            onClick = { refreshKey++ },
+            enabled = !syncing,
+            modifier = Modifier.padding(bottom = 4.dp),
+        ) {
+            Text(if (syncing) "Обновление…" else "Обновить с сервера", fontSize = 11.sp, color = fg.copy(0.7f))
+        }
 
         when {
             loading -> {
@@ -81,19 +103,30 @@ fun MenuHashesScreen(
                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                 }
             }
-            error != null -> {
+            error != null && items.isEmpty() -> {
                 Text(error!!, fontSize = 12.sp, color = Color(0xFFEF4444))
             }
             items.isEmpty() -> {
                 Text("Нет хешей. Добавьте bootstrap на входе или попросите админа.", fontSize = 12.sp, color = fg.copy(0.5f))
             }
             else -> {
+                if (syncing) {
+                    Text("Обновление с сервера…", fontSize = 10.sp, color = fg.copy(0.45f), modifier = Modifier.padding(bottom = 8.dp))
+                }
+                if (error != null) {
+                    Text(error!!, fontSize = 11.sp, color = Color(0xFFEF4444), modifier = Modifier.padding(bottom = 8.dp))
+                }
                 items.forEach { item ->
                     HashRow(item, fg)
                 }
             }
         }
     }
+}
+
+private fun formatSavedAt(ts: Long): String {
+    val fmt = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale("ru"))
+    return fmt.format(Date(ts))
 }
 
 @Composable

@@ -30,6 +30,7 @@ fun HashInputSection(
     bootstrapHash: String?,
     statusMsg: String,
     bootstrapConnecting: Boolean,
+    bootstrapReady: Boolean,
     onConnect: (String) -> Unit,
 ) {
     var input by remember(bootstrapHash) { mutableStateOf(bootstrapHash.orEmpty()) }
@@ -42,7 +43,7 @@ fun HashInputSection(
         color = Color.White,
     )
     Text(
-        "Вставьте ссылку vk.com/call/join/… или хеш, затем подключитесь. Хеш сохранится автоматически.",
+        "Временный интернет на 2 минуты — только для входа или регистрации. По истечении хеш сбросится.",
         fontSize = 11.sp,
         color = AuthColors.hint,
         modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
@@ -56,38 +57,53 @@ fun HashInputSection(
             Text("Хеш или ссылка на звонок VK", fontSize = 13.sp, color = AuthColors.fieldPlaceholder)
         },
         singleLine = true,
+        enabled = !bootstrapReady,
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-        keyboardActions = KeyboardActions(onGo = { if (!bootstrapConnecting) onConnect(input) }),
+        keyboardActions = KeyboardActions(onGo = { if (!bootstrapConnecting && !bootstrapReady) onConnect(input) }),
         shape = RoundedCornerShape(12.dp),
         colors = fieldColors,
     )
 
     Spacer(modifier = Modifier.height(10.dp))
 
+    val buttonText = when {
+        bootstrapConnecting -> "Подключение…"
+        bootstrapReady -> "Подключено ✓"
+        else -> "Подключить для входа"
+    }
+    val buttonEnabled = input.isNotBlank() && !bootstrapConnecting && !bootstrapReady
+
     Button(
         onClick = { onConnect(input) },
-        enabled = input.isNotBlank() && !bootstrapConnecting,
+        enabled = buttonEnabled,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = Color.White,
-            contentColor = Color.Black,
-            disabledContainerColor = Color(0xFF333333),
-            disabledContentColor = Color(0xFF666666),
+            containerColor = when {
+                bootstrapReady -> Color(0xFF16A34A)
+                else -> Color.White
+            },
+            contentColor = if (bootstrapReady) Color.White else Color.Black,
+            disabledContainerColor = if (bootstrapReady) Color(0xFF16A34A) else Color(0xFF333333),
+            disabledContentColor = if (bootstrapReady) Color.White else Color(0xFF666666),
         ),
     ) {
-        Text(
-            if (bootstrapConnecting) "Подключение…" else "Подключить для входа",
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-        )
+        Text(buttonText, fontSize = 13.sp, fontWeight = FontWeight.Medium)
     }
 
     if (statusMsg.isNotBlank()) {
+        val statusColor = when {
+            bootstrapReady -> Color(0xFF16A34A)
+            statusMsg.contains("ошиб", ignoreCase = true) ||
+                statusMsg.contains("не удалось", ignoreCase = true) ||
+                statusMsg.contains("невер", ignoreCase = true) -> Color(0xFFEF4444)
+            bootstrapConnecting -> Color(0xFF6B7280)
+            else -> Color(0xFF6B7280)
+        }
         Text(
             statusMsg,
             fontSize = 11.sp,
-            color = AuthColors.hint,
+            color = statusColor,
             modifier = Modifier.padding(top = 8.dp),
         )
     }

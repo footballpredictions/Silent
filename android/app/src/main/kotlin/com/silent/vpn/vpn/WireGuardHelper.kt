@@ -34,12 +34,18 @@ class WireGuardHelper(context: Context) {
         override fun onStateChange(newState: Tunnel.State) {}
     }
 
-    suspend fun startTunnel(configString: String) = wgMutex.withLock {
+    suspend fun startTunnel(configString: String, excludeIPs: Collection<String> = emptyList()) = wgMutex.withLock {
         withContext(Dispatchers.IO) {
             if (VpnService.prepare(appContext) != null) {
                 throw IllegalStateException("VPN-разрешение не выдано")
             }
             ensureGoBackendServiceStarted()
+
+            var configToApply = configString
+            if (excludeIPs.isNotEmpty()) {
+                configToApply = AllowedIpsHelper.patchAllowedIPs(configString, excludeIPs)
+                DebugLog.i(TAG, "Split-tunnel: исключено IP=${excludeIPs.size}")
+            }
 
             sharedTunnel?.let {
                 runCatching { backend.setState(it, Tunnel.State.DOWN, null) }
@@ -47,7 +53,7 @@ class WireGuardHelper(context: Context) {
                 delay(150)
             }
 
-            val parsed = Config.parse(ByteArrayInputStream(configString.toByteArray(Charsets.UTF_8)))
+            val parsed = Config.parse(ByteArrayInputStream(configToApply.toByteArray(Charsets.UTF_8)))
             val ifaceBuilder = Interface.Builder()
                 .parseAddresses(parsed.`interface`.addresses.joinToString(", ") { it.toString() })
             if (parsed.`interface`.dnsServers.isNotEmpty()) {
@@ -59,8 +65,8 @@ class WireGuardHelper(context: Context) {
             )
             ifaceBuilder.parsePrivateKey(parsed.`interface`.keyPair.privateKey.toBase64())
 
-            // Исключаем WDTT и VK из туннеля (reference: checked = excluded в обоих режимах)
-            val excluded = mutableSetOf(appContext.packageName, "com.vkontakte.android", "com.vk.calls")
+            // VK-клиенты вне туннеля (TURN). Само приложение — через WG (API и DNS через туннель).
+            val excluded = mutableSetOf("com.vkontakte.android", "com.vk.calls", "com.vk.im")
             runCatching {
                 val repoPrefs = appContext.getSharedPreferences("silent_prefs", Context.MODE_PRIVATE)
                 val saved = repoPrefs.getString("excluded_apps", "")?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
@@ -76,7 +82,19 @@ class WireGuardHelper(context: Context) {
             if (peer.persistentKeepalive.isPresent) {
                 peerBuilder.parsePersistentKeepalive(peer.persistentKeepalive.get().toString())
             }
-            peerBuilder.parseAllowedIPs("0.0.0.0/0")
+            val allowedIps = peer.allowedIps.takeIf { it.isNotEmpty() }?.joinToString(", ") { it.toString() }
+                ?: if (excludeIPs.isNotEmpty()) AllowedIpsHelper.generateExclusionAllowedIPs(excludeIPs) else "0.0.0.0/0"
+            peerBuilder.parseAllowedIPs(allowedIps)
+            DebugLog.i(TAG, "AllowedIPs=$allowedIps")
+
+            val wgHost = parsed.`interface`.addresses.firstOrNull()?.address?.hostAddress
+            if (!wgHost.isNullOrBlank()) {
+                val parts = wgHost.split('.').mapNotNull { it.toIntOrNull() }
+                if (parts.size == 4 && parts[3] > 0) {
+                    val gw = "${parts[0]}.${parts[1]}.${parts[2]}.${parts[3] - 1}"
+                    ifaceBuilder.parseDnsServers("$gw,1.1.1.1")
+                }
+            }
 
             val finalConfig = Config.Builder()
                 .setInterface(ifaceBuilder.build())

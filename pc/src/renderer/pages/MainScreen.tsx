@@ -43,9 +43,9 @@ const GREEN = '#16A34A'
 function deviceTypeLabel(type: string): string {
   const t = (type || '').toLowerCase()
   if (t === 'android') return 'Android'
-  if (t === 'pc' || t === 'windows') return '╨Я╨Ъ'
+  if (t === 'pc' || t === 'windows') return 'ПК'
   if (t === 'ios') return 'iOS'
-  return type ? type.charAt(0).toUpperCase() + type.slice(1) : 'тАФ'
+  return type ? type.charAt(0).toUpperCase() + type.slice(1) : '—'
 }
 
 function defaultDeviceName(type: string): string {
@@ -57,7 +57,7 @@ function defaultDeviceName(type: string): string {
 }
 
 function sessionCustomLabel(d: DeviceInfo): string | null {
-  const defaults = new Set(['Android', '╨Я╨Ъ', 'PC', 'iOS', 'Windows'])
+  const defaults = new Set(['Android', 'ПК', 'PC', 'iOS', 'Windows'])
   if (defaults.has(d.device_name) || d.device_name.startsWith('Bootstrap-')) return null
   return d.device_name
 }
@@ -188,12 +188,12 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         if (!config) config = getCachedVpnConfig()
         if (!config) {
           pushLog('Main', 'no VPN config', 'E')
-          alert('╨б╨╡╤А╨▓╨╡╤А ╨╜╨╡╨┤╨╛╤Б╤В╤Г╨┐╨╡╨╜. ╨Т╤Л╨╣╨┤╨╕╤В╨╡ ╨╕ ╨╜╨░╤Б╤В╤А╨╛╨╣╤В╨╡ hash ╨╜╨░ ╤Н╨║╤А╨░╨╜╨╡ ╨▓╤Е╨╛╨┤╨░.')
+          alert('Сервер недоступен. Выйдите и настройте hash на экране входа.')
           return
         }
         if (!config.wg_private_key?.trim() || !config.server_public_key?.trim()) {
           pushLog('Main', 'missing WG keys', 'E')
-          alert('╨Э╨╡╤В ╨║╨╗╤О╤З╨╡╨╣ WireGuard. ╨Я╨╡╤А╨╡╨╖╨░╨╣╨┤╨╕╤В╨╡ ╨▓ ╨░╨║╨║╨░╤Г╨╜╤В ╨╕╨╗╨╕ ╨┐╤А╨╛╨▓╨╡╤А╤М╤В╨╡ ╤Б╨╡╤А╨▓╨╡╤А.')
+          alert('Нет ключей WireGuard. Перезайдите в аккаунт или проверьте сервер.')
           return
         }
         try {
@@ -213,7 +213,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           const ready = await waitVpnReady()
           if (!ready) {
             pushLog('Main', 'WireGuard timeout', 'E')
-            alert('╨в╨░╨╣╨╝╨░╤Г╤В ╨┐╨╛╨┤╨║╨╗╤О╤З╨╡╨╜╨╕╤П WireGuard')
+            alert('Таймаут подключения WireGuard')
             await (window as any).electronAPI?.vpnDisconnect?.()
             return
           }
@@ -257,7 +257,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
       setRenameTarget(null)
       fetchProfile()
     } catch (e: any) {
-      alert(e.response?.data?.detail || '╨Ю╤И╨╕╨▒╨║╨░ ╨┐╨╡╤А╨╡╨╕╨╝╨╡╨╜╨╛╨▓╨░╨╜╨╕╤П')
+      alert(e.response?.data?.detail || 'Ошибка переименования')
     } finally {
       setRenameSaving(false)
     }
@@ -271,7 +271,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const appTitle = (clientTheme?.app_name || 'Silent').toUpperCase()
   const muted = `${fg}66`
 
-  const statusLabel = connecting ? '╨Я╨╛╨┤╨║╨╗╤О╤З╨╡╨╜╨╕╨╡...' : connected ? '╨Я╨╛╨┤╨║╨╗╤О╤З╨╡╨╜╨╛' : '╨Ю╤В╨║╨╗╤О╤З╨╡╨╜╨╛'
+  const statusLabel = connecting ? 'Подключение...' : connected ? 'Подключено' : 'Отключено'
   const statusColor = connecting ? `${fg}99` : connected ? GREEN : muted
   const localOnline = connected || connecting
 
@@ -328,8 +328,8 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
       <div className="absolute bottom-0 left-0 right-0 p-4 border-t" style={{ background: bg, borderColor: '#F3F4F6' }}>
         {profile?.is_admin || profile?.subscription?.plan_type === 'unlimited' ? (
           <div className="text-center">
-            <div className="text-xs font-semibold" style={{ color: GREEN }}>╨С╨╡╤Б╤Б╤А╨╛╤З╨╜╨╛</div>
-            <div className="text-xs mt-0.5" style={{ color: muted }}>╨Я╨╛╨╗╨╜╤Л╨╣ ╨┤╨╛╤Б╤В╤Г╨┐</div>
+            <div className="text-xs font-semibold" style={{ color: GREEN }}>Бессрочно</div>
+            <div className="text-xs mt-0.5" style={{ color: muted }}>Полный доступ</div>
           </div>
         ) : profile?.subscription?.is_active && profile.subscription.plan_type === 'trial' ? (
           <div className="text-center">
@@ -340,16 +340,16 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           </div>
         ) : profile?.subscription?.is_active ? (
           <div className="text-center">
-            <div className="text-xs font-semibold" style={{ color: GREEN }}>╨Ю╨┐╨╗╨░╤З╨╡╨╜╨╛</div>
+            <div className="text-xs font-semibold" style={{ color: GREEN }}>Бессрочно</div>
             <div className="text-xs mt-0.5" style={{ color: muted }}>
-              ╨┤╨╛ {profile.subscription.expires_at?.split('T')[0].split('-').reverse().join('.')}
+              до {profile.subscription.expires_at?.split('T')[0].split('-').reverse().join('.')}
             </div>
           </div>
         ) : (
           <button onClick={() => { setMenuOpen(true); setMenuPage('subscription') }}
             className="w-full rounded-xl py-2 text-xs font-semibold transition-colors"
             style={{ background: fg, color: bg }}>
-            ╨Ю╤Д╨╛╤А╨╝╨╕╤В╤М ╨┐╨╛╨┤╨┐╨╕╤Б╨║╤Г
+            Оформить подписку
           </button>
         )}
       </div>
@@ -357,11 +357,11 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
       {renameTarget && (
         <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-xs rounded-xl p-4 shadow-xl" style={{ background: bg }}>
-            <div className="text-sm font-semibold mb-3">╨Я╤А╨╕╨┐╨╕╤Б╨░╤В╤М ╨╕╨╝╤П</div>
+            <div className="text-sm font-semibold mb-3">Приписать имя</div>
             <input
               value={renameText}
               onChange={e => setRenameText(e.target.value.slice(0, 64))}
-              placeholder="╨Э╨░╨┐╤А╨╕╨╝╨╡╤А: ╨а╨░╨▒╨╛╤З╨╕╨╣ ╨Я╨Ъ"
+              placeholder="Например: Рабочий ПК"
               className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm mb-3 focus:outline-none focus:border-black"
               style={{ userSelect: 'text' } as any}
               autoFocus
@@ -372,14 +372,14 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                 disabled={renameSaving}
                 className="flex-1 py-2 text-xs rounded-xl border border-gray-200"
               >
-                ╨Ю╤В╨╝╨╡╨╜╨░
+                Отмена
               </button>
               <button
                 onClick={saveRename}
                 disabled={renameSaving}
                 className="flex-1 py-2 text-xs rounded-xl text-white bg-black disabled:opacity-50"
               >
-                ╨б╨╛╤Е╤А╨░╨╜╨╕╤В╤М
+                Сохранить
               </button>
             </div>
           </div>
@@ -392,11 +392,11 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
             style={{ background: bg, borderRight: '1px solid #e5e7eb' }}>
             <div className="p-4 border-b border-gray-100 flex items-center justify-between">
               <div>
-                <div className="text-xs font-semibold truncate max-w-[140px]">{profile?.email || 'тАФ'}</div>
-                <div className="text-xs text-gray-400 mt-0.5">╨Р╨║╨║╨░╤Г╨╜╤В: {profile?.display_id || 'тАФ'}</div>
+                <div className="text-xs font-semibold truncate max-w-[140px]">{profile?.email || '—'}</div>
+                <div className="text-xs text-gray-400 mt-0.5">Аккаунт: {profile?.display_id || '—'}</div>
                 {sessionDeviceId && (
                   <div className="text-xs text-gray-400 mt-0.5">
-                    ╨б╨╡╤Б╤Б╨╕╤П: {sessionDeviceId.slice(0, 8).toUpperCase()}
+                    Сессия: {sessionDeviceId.slice(0, 8).toUpperCase()}
                   </div>
                 )}
               </div>
@@ -407,13 +407,13 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
             {menuPage === null && (
               <nav className="flex-1 p-2 overflow-y-auto">
                 {[
-                  { key: 'subscription', label: '╨Я╨╛╨┤╨┐╨╕╤Б╨║╨░' },
-                  { key: 'exceptions', label: '╨Ш╤Б╨║╨╗╤О╤З╨╡╨╜╨╕╤П ╨┐╤А╨╕╨╗╨╛╨╢╨╡╨╜╨╕╨╣' },
-                  { key: 'hashes', label: '╨е╨╡╤И╨╕' },
-                  { key: 'promo', label: '╨Я╤А╨╛╨╝╨╛╨║╨╛╨┤' },
-                  { key: 'devices', label: `╨б╨╡╤Б╤Б╨╕╨╕ (${profile?.devices_count || 0}/${profile?.max_devices || 3})` },
-                  { key: 'support', label: '╨Я╨╛╨┤╨┤╨╡╤А╨╢╨║╨░' },
-                  { key: 'about', label: '╨Ю ╤Б╨╡╤А╨▓╨╕╤Б╨╡' },
+                  { key: 'subscription', label: 'Подписка' },
+                  { key: 'exceptions', label: 'Исключения приложений' },
+                  { key: 'hashes', label: 'Хеши' },
+                  { key: 'promo', label: 'Промокод' },
+                  { key: 'devices', label: `Сессии (${profile?.devices_count || 0}/${profile?.max_devices || 3})` },
+                  { key: 'support', label: 'Поддержка' },
+                  { key: 'about', label: 'О сервисе' },
                 ].map(({ key, label }) => (
                   <button key={key} onClick={() => setMenuPage(key as MenuPage)}
                     className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm transition-colors"
@@ -424,7 +424,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                 ))}
                 <button onClick={handleLogout}
                   className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-red-500 hover:bg-red-50 transition-colors mt-2">
-                  ╨Т╤Л╨╣╤В╨╕
+                  Выйти
                 </button>
               </nav>
             )}
@@ -432,7 +432,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
             {menuPage === 'subscription' && (
               <div className="flex-1 p-4 overflow-y-auto">
                 <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4 flex items-center gap-1">
-                  тЖР ╨Э╨░╨╖╨░╨┤
+                  ← Назад
                 </button>
                 {profile?.subscription.is_active ? (
                   <div className="space-y-2">
@@ -449,11 +449,11 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="text-sm font-semibold">╨Т╤Л╨▒╨╡╤А╨╕╤В╨╡ ╤В╨░╤А╨╕╤Д</div>
+                    <div className="text-sm font-semibold">Выберите тариф</div>
                     {[
-                      { id: 'monthly', label: '╨Ь╨╡╤Б╤П╤Ж', price: '199 тВ╜' },
-                      { id: 'quarterly', label: '3 ╨╝╨╡╤Б╤П╤Ж╨░', price: '499 тВ╜' },
-                      { id: 'yearly', label: '╨У╨╛╨┤', price: '1 499 тВ╜' },
+                      { id: 'monthly', label: 'Месяц', price: '199 ₽' },
+                      { id: 'quarterly', label: '3 месяца', price: '499 ₽' },
+                      { id: 'yearly', label: 'Год', price: '1 499 ₽' },
                     ].map(plan => (
                       <button key={plan.id}
                         onClick={async () => {
@@ -461,7 +461,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                             const res = await api.post('/api/payments/init', { plan_type: plan.id })
                             ;(window as any).electronAPI?.openExternal(res.data.url)
                           } catch (e: any) {
-                            alert(e.response?.data?.detail || '╨Ю╤И╨╕╨▒╨║╨░')
+      alert(e.response?.data?.detail || 'Ошибка переименования')
                           }
                         }}
                         className="w-full flex items-center justify-between bg-black text-white rounded-xl px-3 py-2.5 text-xs font-semibold hover:bg-gray-800 transition-colors">
@@ -484,19 +484,19 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
 
             {menuPage === 'promo' && (
               <div className="flex-1 p-4">
-                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">тЖР ╨Э╨░╨╖╨░╨┤</button>
-                <div className="text-sm font-semibold mb-3">╨Я╤А╨╛╨╝╨╛╨║╨╛╨┤</div>
+                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
+                <div className="text-sm font-semibold mb-3">Промокод</div>
                 <input value={promoCode} onChange={e => setPromoCode(e.target.value)}
-                  placeholder="╨Т╨▓╨╡╨┤╨╕╤В╨╡ ╨║╨╛╨┤"
+              placeholder="Например: Рабочий ПК"
                   className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-black"
                   style={{ userSelect: 'text' } as any} />
                 <button onClick={async () => {
                   try {
                     const res = await api.post('/api/payments/promo/check', { code: promoCode, plan_type: 'monthly' })
-                    setPromoMsg(`╨б╨║╨╕╨┤╨║╨░ ${res.data.discount_percent}%!`)
-                  } catch (e: any) { setPromoMsg(e.response?.data?.detail || '╨Э╨╡ ╨╜╨░╨╣╨┤╨╡╨╜') }
+                    setPromoMsg(`Скидка ${res.data.discount_percent}%!`)
+                  } catch (e: any) { setPromoMsg(e.response?.data?.detail || 'Не найден') }
                 }} className="mt-2 w-full bg-black text-white rounded-xl py-2 text-xs font-semibold hover:bg-gray-800 transition-colors">
-                  ╨Я╤А╨╕╨╝╨╡╨╜╨╕╤В╤М
+                  Применить
                 </button>
                 {promoMsg && <p className="text-xs text-gray-500 mt-2 text-center">{promoMsg}</p>}
               </div>
@@ -504,10 +504,10 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
 
             {menuPage === 'devices' && (
               <div className="flex-1 p-4 overflow-y-auto">
-                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">тЖР ╨Э╨░╨╖╨░╨┤</button>
-                <div className="text-sm font-semibold mb-1">╨б╨╡╤Б╤Б╨╕╨╕</div>
+                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
+                <div className="text-sm font-semibold mb-1">Сессии</div>
                 <div className="text-[11px] mb-3" style={{ color: muted }}>
-                  VPN ╨╛╨╜╨╗╨░╨╣╨╜: {profile?.devices.filter(d => d.is_connected || (localOnline && d.id === sessionDeviceId)).length || 0} ╨╕╨╖ {profile?.devices_count || 0}
+                  VPN онлайн: {profile?.devices.filter(d => d.is_connected || (localOnline && d.id === sessionDeviceId)).length || 0} из {profile?.devices_count || 0}
                 </div>
                 {profile?.devices.map(d => {
                   const online = d.is_connected || (localOnline && d.id === sessionDeviceId)
@@ -530,7 +530,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                           setRenameText(sessionCustomLabel(d) || '')
                         }}
                         className="p-1.5 rounded-lg hover:bg-gray-100 shrink-0"
-                        title="╨Я╨╛╨┤╨┐╨╕╤Б╨░╤В╤М"
+                        title="Подписать"
                       >
                         <Pencil className="w-3.5 h-3.5" style={{ color: muted }} />
                       </button>
@@ -542,19 +542,19 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
 
             {menuPage === 'support' && (
               <div className="flex-1 p-4">
-                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">тЖР ╨Э╨░╨╖╨░╨┤</button>
-                <div className="text-sm font-semibold mb-3">╨Я╨╛╨┤╨┤╨╡╤А╨╢╨║╨░</div>
-                <p className="text-xs text-gray-500">╨Я╨╛ ╨▓╨╛╨┐╤А╨╛╤Б╨░╨╝ ╨╛╨▒╤А╨░╤В╨╕╤В╨╡╤Б╤М ╤З╨╡╤А╨╡╨╖ email ╨╕╨╗╨╕ Telegram.</p>
+                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
+                <div className="text-sm font-semibold mb-3">Поддержка</div>
+                <p className="text-xs text-gray-500">По вопросам обратитесь через email или Telegram.</p>
               </div>
             )}
 
             {menuPage === 'about' && (
               <div className="flex-1 p-4">
-                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">тЖР ╨Э╨░╨╖╨░╨┤</button>
+                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
                 <div className="text-sm font-semibold mb-1">Silent VPN</div>
                 <div className="text-xs text-gray-500 space-y-1">
-                  <p>╨Т╨╡╤А╤Б╨╕╤П 1.0.15</p>
-                  <p>WireGuard-╤В╤Г╨╜╨╜╨╡╨╗╤М ╤З╨╡╤А╨╡╨╖ VK TURN/DTLS</p>
+                  <p>Версия 1.0.22</p>
+                  <p>WireGuard-туннель через VK TURN/DTLS</p>
                 </div>
               </div>
             )}

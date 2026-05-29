@@ -8,6 +8,7 @@ export default defineConfig({
   build: {
     outDir: 'dist/renderer',
     sourcemap: false,
+    charset: 'utf8',
   },
   server: {
     port: 3001,

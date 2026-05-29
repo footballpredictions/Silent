@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
+import { X } from 'lucide-react'
 import { clearLogs, readLogs, subscribeLogs, type DebugLogItem } from '../debugLog'
 
 export function DebugLogButton({ onClick }: { onClick: () => void }) {
@@ -46,44 +47,57 @@ export default function DebugLogPanel({ open, onClose }: { open: boolean; onClos
 
   return (
     <div
-      className="absolute inset-0 z-[100] flex items-center justify-center p-3"
+      className="absolute inset-0 z-[100] flex items-center justify-center p-2"
       style={{ WebkitAppRegion: 'no-drag', background: 'rgba(0,0,0,0.55)' } as React.CSSProperties}
+      onClick={onClose}
     >
       <div
-        className="w-[95%] h-[85%] rounded-2xl flex flex-col overflow-hidden"
-        style={{ background: '#111827' }}
+        className="w-full h-[88%] rounded-2xl flex flex-col overflow-hidden"
+        style={{ background: '#111827', maxWidth: 248 }}
+        onClick={e => e.stopPropagation()}
       >
-        <div
-          className="flex items-center gap-1 px-3 py-2"
-          style={{ background: '#1F2937' }}
-        >
-          <div className="flex-1 text-[13px] font-semibold text-white">Лог VPN (debug)</div>
-          <button
-            type="button"
-            onClick={copyLog}
-            className="text-[11px] px-2 py-1 text-[#60A5FA] hover:opacity-80"
-          >
-            Копировать
-          </button>
-          <button
-            type="button"
-            onClick={clearLogs}
-            className="text-[11px] px-2 py-1 text-[#9CA3AF] hover:text-white"
-          >
-            Очистить
-          </button>
+        <div className="relative px-2 pt-2 pb-1.5 shrink-0" style={{ background: '#1F2937' }}>
           <button
             type="button"
             onClick={onClose}
-            className="text-[11px] px-2 py-1 text-[#9CA3AF] hover:text-white"
+            className="absolute top-1.5 right-1.5 p-1 rounded-md text-[#9CA3AF] hover:text-white hover:bg-white/10"
+            title="Закрыть"
+            aria-label="Закрыть"
           >
-            Закрыть
+            <X className="w-4 h-4" />
           </button>
+          <div className="text-center pr-6 pl-6">
+            <div className="text-[12px] font-semibold text-white leading-tight">Лог VPN</div>
+            <div className="text-[9px] text-[#9CA3AF] leading-tight mt-0.5">debug</div>
+          </div>
+          <div className="flex gap-1 mt-2">
+            <button
+              type="button"
+              onClick={copyLog}
+              className="flex-1 min-w-0 py-1 rounded text-[9px] font-medium text-[#60A5FA] hover:bg-white/5 truncate"
+            >
+              Копия
+            </button>
+            <button
+              type="button"
+              onClick={clearLogs}
+              className="flex-1 min-w-0 py-1 rounded text-[9px] font-medium text-[#9CA3AF] hover:text-white hover:bg-white/5 truncate"
+            >
+              Очистить
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 min-w-0 py-1 rounded text-[9px] font-medium text-[#9CA3AF] hover:text-white hover:bg-white/5 truncate"
+            >
+              Закрыть
+            </button>
+          </div>
         </div>
 
-        <div className="flex-1 overflow-auto p-2">
+        <div className="flex-1 overflow-auto p-2 min-h-0">
           <pre
-            className="text-[10px] leading-[14px] whitespace-pre-wrap break-words font-mono m-0"
+            className="text-[9px] leading-[13px] whitespace-pre-wrap break-words font-mono m-0"
             style={{ color: '#E5E7EB' }}
           >
             {logText || 'Лог пуст. Подключите VPN или привяжите VK.'}

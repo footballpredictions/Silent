@@ -22,6 +22,7 @@ import {
 import HashInputSection from '../components/HashInputSection'
 import SilentLogo from '../components/SilentLogo'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
+import TitleBar from '../components/TitleBar'
 import { pushLog } from '../debugLog'
 import { authColors } from '../authTheme'
 import { authStrings as s } from '../authStrings'
@@ -144,22 +145,18 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
 
   return (
     <div className="flex flex-col h-full" style={{ background: authColors.screenBg }}>
-      <div
-        className="h-8 flex items-center px-4 flex-shrink-0"
-        style={{ background: '#000000', WebkitAppRegion: 'drag' } as React.CSSProperties}
-      >
-        <span className="text-[11px] tracking-widest" style={{ color: authColors.hint }}>
-          SILENT VPN
-        </span>
-        <div className="ml-auto flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-          <DebugLogButton onClick={() => setShowDebugLog(true)} />
-        </div>
-      </div>
+      <TitleBar
+        title="SILENT VPN"
+        dark
+        right={<DebugLogButton onClick={() => setShowDebugLog(true)} />}
+      />
 
       <div className="flex-1 overflow-y-auto px-5 py-6">
-        <div className="flex flex-col items-center mb-5">
+        <div className="flex flex-col items-center mb-5 w-full">
           <SilentLogo size={56} />
-          <p className="mt-3 text-base font-bold tracking-[0.3em] text-white">SILENT</p>
+          <p className="mt-3 w-full text-center text-base font-bold tracking-[0.3em] text-white">
+            SILENT
+          </p>
         </div>
 
         <HashInputSection

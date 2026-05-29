@@ -277,20 +277,33 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
 
   return (
     <div className="relative flex flex-col h-full overflow-hidden" style={{ background: bg, color: fg, fontFamily }}>
-      <div className="h-9 flex items-center px-3 flex-shrink-0 border-b border-gray-100"
-        style={{ WebkitAppRegion: 'drag', background: bg } as any}>
-        <button onClick={() => setMenuOpen(true)}
-          style={{ WebkitAppRegion: 'no-drag', color: fg } as any}
-          className="p-1 hover:opacity-60 transition-opacity">
+      <div
+        className="h-9 flex-shrink-0 grid grid-cols-[auto_1fr_auto] items-center px-2 border-b border-gray-100"
+        style={{ WebkitAppRegion: 'drag', background: bg } as React.CSSProperties}
+      >
+        <button
+          onClick={() => setMenuOpen(true)}
+          style={{ WebkitAppRegion: 'no-drag', color: fg } as React.CSSProperties}
+          className="p-1 hover:opacity-60 transition-opacity col-start-1"
+        >
           <Menu className="w-4 h-4" />
         </button>
-        <span className="text-xs font-bold tracking-widest mx-auto">{appTitle}</span>
-        <div className="flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as any}>
+        <span className="col-start-2 text-center text-xs font-bold tracking-widest truncate px-1">
+          {appTitle}
+        </span>
+        <div
+          className="col-start-3 flex items-center gap-1"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
           <DebugLogButton onClick={() => setShowDebugLog(true)} />
-          <button onClick={() => (window as any).electronAPI?.minimize()}
-            className="w-2.5 h-2.5 rounded-full bg-gray-300 hover:bg-gray-400 transition-colors" />
-          <button onClick={() => (window as any).electronAPI?.close()}
-            className="w-2.5 h-2.5 rounded-full bg-gray-300 hover:bg-red-400 transition-colors" />
+          <button
+            onClick={() => (window as any).electronAPI?.minimize()}
+            className="w-2.5 h-2.5 rounded-full bg-gray-300 hover:bg-gray-400 transition-colors"
+          />
+          <button
+            onClick={() => (window as any).electronAPI?.close()}
+            className="w-2.5 h-2.5 rounded-full bg-gray-300 hover:bg-red-400 transition-colors"
+          />
         </div>
       </div>
 
@@ -340,7 +353,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           </div>
         ) : profile?.subscription?.is_active ? (
           <div className="text-center">
-            <div className="text-xs font-semibold" style={{ color: GREEN }}>Бессрочно</div>
+            <div className="text-xs font-semibold" style={{ color: GREEN }}>Оплачено</div>
             <div className="text-xs mt-0.5" style={{ color: muted }}>
               до {profile.subscription.expires_at?.split('T')[0].split('-').reverse().join('.')}
             </div>
@@ -461,7 +474,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                             const res = await api.post('/api/payments/init', { plan_type: plan.id })
                             ;(window as any).electronAPI?.openExternal(res.data.url)
                           } catch (e: any) {
-      alert(e.response?.data?.detail || 'Ошибка переименования')
+                            alert(e.response?.data?.detail || 'Ошибка')
                           }
                         }}
                         className="w-full flex items-center justify-between bg-black text-white rounded-xl px-3 py-2.5 text-xs font-semibold hover:bg-gray-800 transition-colors">
@@ -487,7 +500,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                 <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
                 <div className="text-sm font-semibold mb-3">Промокод</div>
                 <input value={promoCode} onChange={e => setPromoCode(e.target.value)}
-              placeholder="Например: Рабочий ПК"
+                  placeholder="Введите код"
                   className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-black"
                   style={{ userSelect: 'text' } as any} />
                 <button onClick={async () => {

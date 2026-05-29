@@ -36,7 +36,8 @@ export default function HashInputSection({
       low.includes('ошиб') ||
       low.includes('не удалось') ||
       low.includes('невер') ||
-      low.includes('истекло')
+      low.includes('истекло') ||
+      low.includes('интернет через vpn')
     ) {
       return ui.red
     }

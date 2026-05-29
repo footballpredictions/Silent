@@ -20,12 +20,26 @@ function resourcesDir(isDev, dirname) {
   return isDev ? path.join(dirname, '../../resources') : process.resourcesPath
 }
 
+const SYSTEM_WG_DIR = 'C:\\Program Files\\WireGuard'
+
 function findBundledDir(isDev, dirname) {
   const base = resourcesDir(isDev, dirname)
-  for (const dir of [path.join(base, 'wireguard'), base]) {
+  const candidates = [
+    path.join(base, 'wireguard'),
+    path.join(STABLE_WG_DIR),
+    SYSTEM_WG_DIR,
+    base,
+  ]
+  for (const dir of candidates) {
     if (fs.existsSync(path.join(dir, 'wireguard.exe'))) return dir
   }
   return null
+}
+
+function findWintunDll(dir) {
+  if (!dir) return null
+  const p = path.join(dir, 'wintun.dll')
+  return fs.existsSync(p) ? p : null
 }
 
 function isProcessElevated() {
@@ -38,14 +52,23 @@ function isProcessElevated() {
 }
 
 /** Копируем wireguard.exe + wintun.dll в ProgramData — служба Windows не должна ссылаться на %TEMP%. */
-function prepareRuntimeDir(isDev, dirname) {
+function prepareRuntimeDir(isDev, dirname, send) {
   const bundled = findBundledDir(isDev, dirname)
-  if (!bundled) return null
-  const wintunSrc = path.join(bundled, 'wintun.dll')
-  if (!fs.existsSync(wintunSrc)) return null
+  let srcDir = bundled
+  let wintunSrc = findWintunDll(bundled)
 
-  const systemWg = path.join('C:\\Program Files\\WireGuard', 'wireguard.exe')
-  const srcDir = fs.existsSync(systemWg) ? 'C:\\Program Files\\WireGuard' : bundled
+  if (!srcDir || !wintunSrc) {
+    if (fs.existsSync(path.join(SYSTEM_WG_DIR, 'wireguard.exe'))) {
+      srcDir = SYSTEM_WG_DIR
+      wintunSrc = findWintunDll(SYSTEM_WG_DIR)
+      send?.('[WG] Используем WireGuard из Program Files')
+    }
+  }
+
+  if (!srcDir || !wintunSrc) {
+    send?.('[WG] Не найдены wireguard.exe / wintun.dll (resources/wireguard или установка WireGuard)')
+    return null
+  }
 
   fs.mkdirSync(STABLE_WG_DIR, { recursive: true })
   for (const name of ['wireguard.exe', 'wg.exe']) {
@@ -56,6 +79,7 @@ function prepareRuntimeDir(isDev, dirname) {
   }
   fs.copyFileSync(wintunSrc, path.join(STABLE_WG_DIR, 'wintun.dll'))
   lastRuntimeDir = STABLE_WG_DIR
+  send?.(`[WG] Runtime: ${STABLE_WG_DIR}`)
   return STABLE_WG_DIR
 }
 
@@ -142,26 +166,57 @@ async function waitForTunnelUp(maxMs = 30000, send) {
   return up
 }
 
+async function waitForTunnelDown(maxMs = 15000, send) {
+  const deadline = Date.now() + maxMs
+  while (Date.now() < deadline) {
+    if (!isTunnelUp() && !isServiceRunning()) return true
+    await sleep(400)
+  }
+  const down = !isTunnelUp() && !isServiceRunning()
+  if (!down) logServiceState(send)
+  return down
+}
+
+/** WDTT/WireGuard слушает UDP :9000, не TCP. */
+function isUdpPortListening(port, host = '127.0.0.1') {
+  try {
+    const out = execSync('netstat -ano -p udp', { encoding: 'utf8', windowsHide: true, timeout: 8000 })
+    const portSuffix = `:${port}`
+    return out.split('\n').some(line => {
+      if (!line.includes(portSuffix)) return false
+      const local = line.trim().split(/\s+/)[1] || ''
+      return local.startsWith(host) || local.startsWith('0.0.0.0') || local === `[::]:${port}` || local === `*:${port}`
+    })
+  } catch {
+    return false
+  }
+}
+
 function waitForPort(host, port, timeoutMs = 8000) {
-  return new Promise((resolve) => {
-    const start = Date.now()
-    const probe = () => {
-      const sock = net.createConnection({ host, port, timeout: 2000 }, () => {
-        sock.destroy()
-        resolve(true)
-      })
-      sock.on('error', () => {
-        if (Date.now() - start >= timeoutMs) resolve(false)
-        else setTimeout(probe, 400)
-      })
-      sock.on('timeout', () => {
-        sock.destroy()
-        if (Date.now() - start >= timeoutMs) resolve(false)
-        else setTimeout(probe, 400)
-      })
+  return waitForWdttProxy(host, port, timeoutMs)
+}
+
+/** Ждём локальный WDTT-прокси (UDP 9000) или готовый wg-turn.conf. */
+async function waitForWdttProxy(host, port, timeoutMs = 60000, send, confPath = null) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (confPath && fs.existsSync(confPath)) {
+      try {
+        const text = fs.readFileSync(confPath, 'utf8')
+        if (text.includes('[Interface]') && text.includes(`127.0.0.1:${port}`)) {
+          send?.('[WG] WDTT: конфиг wg-turn.conf готов')
+          return true
+        }
+      } catch { /* ignore */ }
     }
-    probe()
-  })
+    if (isUdpPortListening(port, host)) {
+      send?.('[WG] WDTT: UDP прокси слушает ' + host + ':' + port)
+      return true
+    }
+    await sleep(400)
+  }
+  send?.('[WG] WDTT: таймаут ожидания UDP ' + host + ':' + port)
+  return false
 }
 
 function copyStableConf(confPath) {
@@ -174,7 +229,7 @@ function copyStableConf(confPath) {
 function forceStopWireGuard(isDev, dirname, send) {
   send?.('[WG] Остановка туннеля...')
 
-  const runtimeDir = lastRuntimeDir || prepareRuntimeDir(isDev, dirname) || STABLE_WG_DIR
+  const runtimeDir = lastRuntimeDir || prepareRuntimeDir(isDev, dirname, send) || STABLE_WG_DIR
   const wgExe = path.join(runtimeDir, 'wireguard.exe')
 
   if (fs.existsSync(wgExe)) {
@@ -201,10 +256,12 @@ function buildWgConfigFromApi(config, listenPort = 9000) {
   const priv = (config.wg_private_key || '').trim()
   const pub = (config.server_public_key || '').trim()
   if (!priv || !pub) return null
-  const dns = config.wg_dns || '77.88.8.8,77.88.8.1'
+  const addr = (config.wg_address || config.assigned_ip || '').trim()
+  if (!addr) return null
+  const dns = config.wg_dns || config.dns || '77.88.8.8,77.88.8.1'
   return `[Interface]
 PrivateKey = ${priv}
-Address = ${config.wg_address}
+Address = ${addr}
 DNS = ${dns}
 
 [Peer]
@@ -291,7 +348,7 @@ try {
 
 async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs = [], options = {}) {
   const skipWdttWait = options.skipWdttWait === true
-  const runtimeDir = prepareRuntimeDir(isDev, dirname)
+  const runtimeDir = prepareRuntimeDir(isDev, dirname, send)
   if (!runtimeDir) {
     send('[WG] Нет wireguard.exe / wintun.dll — переустановите Silent VPN')
     return false
@@ -356,6 +413,11 @@ module.exports = {
   TUNNEL_NAME,
   isProcessElevated,
   waitForPort,
+  waitForWdttProxy,
+  isUdpPortListening,
+  waitForTunnelDown,
+  isTunnelUp,
+  isServiceRunning,
   resetWireGuardState: () => {},
   forceStopWireGuard,
   stopWireGuardTunnel,

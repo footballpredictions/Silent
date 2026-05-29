@@ -59,10 +59,14 @@ export default function AppExclusionsPanel({ fg, muted, onBack }: Props) {
   }, [apps, selected, search, showSystemApps])
 
   return (
-    <div className="flex-1 p-4 overflow-y-auto">
-      <button onClick={onBack} className="text-xs text-gray-400 mb-4">← Назад</button>
-      <div className="text-sm font-semibold mb-1" style={{ color: fg }}>Исключения приложений</div>
-      <p className="text-[11px] mb-3" style={{ color: muted }}>
+    <div className="flex-1 p-4 overflow-y-auto text-left w-full self-stretch items-start">
+      <button type="button" onClick={onBack} className="text-xs text-gray-400 mb-4 block text-left">
+        ← Назад
+      </button>
+      <div className="text-sm font-bold mb-1 text-left w-full" style={{ color: fg }}>
+        Исключения приложений
+      </div>
+      <p className="text-[11px] mb-3 text-left w-full" style={{ color: muted }}>
         {whitelist ? 'БС: неотмеченные идут через VPN' : 'ЧС: отмеченные исключены из VPN'}
       </p>
 

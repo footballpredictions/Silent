@@ -4,6 +4,7 @@ import api, {
   clearTokens,
   getDeviceFingerprint,
   getSessionDeviceId,
+  saveSessionDeviceId,
   clearSessionFingerprint,
   clearSessionDeviceId,
 } from '../api'
@@ -12,7 +13,8 @@ import {
   getVkAccessToken, getVkUserId, saveVkUserId, getBootstrapHash,
   type VpnConfigPayload,
 } from '../vkConfig'
-import { fetchBootstrapConfig } from '../bootstrapVpn'
+import { disconnectBootstrapVpn, fetchBootstrapConfig, isBootstrapVpnActive } from '../bootstrapVpn'
+import { waitVpnReady } from '../vpnReady'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
@@ -91,8 +93,25 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   useEffect(() => { fetchProfile() }, [fetchProfile])
 
   useEffect(() => {
+    if (menuPage !== 'devices') return
+    fetchProfile()
+    const id = window.setInterval(() => fetchProfile(), 5000)
+    return () => clearInterval(id)
+  }, [menuPage, fetchProfile])
+
+  useEffect(() => {
     api.get('/api/vpn/theme').then(r => setClientTheme(r.data)).catch(() => {})
   }, [])
+
+  const markOnlineOnServer = useCallback(async () => {
+    const fp = getDeviceFingerprint()
+    try {
+      await api.post('/api/vpn/connect', { device_fingerprint: fp, device_type: 'pc' })
+      await fetchProfile()
+    } catch {
+      /* ignore */
+    }
+  }, [fetchProfile])
 
   useEffect(() => {
     const api_ = (window as any).electronAPI
@@ -103,32 +122,35 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     }
     const onError = (msg: string) => {
       pushLog('VPN', msg, 'E')
-      alert(msg)
       setConnecting(false)
       setConnected(false)
     }
+    const onReady = (ok: boolean) => {
+      if (ok) {
+        setConnected(true)
+        setConnecting(false)
+        void markOnlineOnServer()
+      }
+    }
+    const onLog = (line: string) => {
+      if (!line?.trim()) return
+      const level = /error|ошиб|fail|таймаут/i.test(line) ? 'E' : 'I'
+      pushLog('VPN', line.trim(), level)
+    }
     api_.onVpnStopped(onStopped)
     api_.onVpnError?.(onError)
+    api_.onVpnReady?.(onReady)
+    api_.onVpnLog?.(onLog)
     return () => api_.removeVpnListeners?.()
-  }, [])
+  }, [markOnlineOnServer])
+
+  useEffect(() => {
+    if (!connected) return
+    const id = window.setInterval(() => fetchProfile(), 10000)
+    return () => clearInterval(id)
+  }, [connected, fetchProfile])
 
   const DEVICE_FINGERPRINT = () => getDeviceFingerprint()
-
-  const waitVpnReady = (timeoutMs = 90000): Promise<boolean> =>
-    new Promise(resolve => {
-      const api_ = (window as any).electronAPI
-      if (!api_?.onVpnReady) { resolve(true); return }
-      let done = false
-      const finish = (ok: boolean) => {
-        if (done) return
-        done = true
-        clearTimeout(timer)
-        resolve(ok)
-      }
-      const handler = (ok: boolean) => finish(!!ok)
-      api_.onVpnReady(handler)
-      const timer = setTimeout(() => finish(false), timeoutMs)
-    })
 
   const handleToggle = async () => {
     if (connecting) return
@@ -137,6 +159,11 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     try {
       const fp = DEVICE_FINGERPRINT()
       if (!connected) {
+        if (isBootstrapVpnActive()) {
+          await disconnectBootstrapVpn()
+          pushLog('Main', 'bootstrap VPN stopped before connect')
+          await new Promise(r => setTimeout(r, 2000))
+        }
         const p = await fetchProfile()
         const hasAccess = !p || p.is_admin || p.subscription?.is_active
         if (!hasAccess) {
@@ -155,7 +182,8 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           })
           config = reg.data
           cacheVpnConfig(config!)
-          pushLog('Main', `device/register OK hashes=${config.vk_hashes?.length ?? 0}`)
+          if (config.device_id) saveSessionDeviceId(String(config.device_id))
+          pushLog('Main', `device/register OK device=${String(config.device_id || '').slice(0, 8)} hashes=${config.vk_hashes?.length ?? 0}`)
         } catch (e: any) {
           if (e.response?.status === 402) {
             alert(e.response?.data?.detail || 'Оформите подписку для доступа к интернету.')
@@ -196,27 +224,18 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           alert('Нет ключей WireGuard. Перезайдите в аккаунт или проверьте сервер.')
           return
         }
-        try {
-          await api.post('/api/vpn/connect', { device_fingerprint: fp, device_type: 'pc' })
-        } catch (e: any) {
-          if (e.response?.status === 402) {
-            alert(e.response?.data?.detail || 'Оформите подписку для доступа к интернету.')
-            setMenuOpen(true)
-            setMenuPage('subscription')
-            fetchProfile()
-            return
-          }
-        }
         if ((window as any).electronAPI?.vpnConnect) {
+          pushLog('Main', 'vpnConnect start')
           const res = await (window as any).electronAPI.vpnConnect(config)
           if (res?.error) { pushLog('Main', `vpnConnect: ${res.error}`, 'E'); alert(res.error); return }
-          const ready = await waitVpnReady()
+          const ready = await waitVpnReady(90000)
           if (!ready) {
-            pushLog('Main', 'WireGuard timeout', 'E')
-            alert('Таймаут подключения WireGuard')
+            pushLog('Main', 'connect timeout', 'E')
+            alert('WireGuard не поднялся')
             await (window as any).electronAPI?.vpnDisconnect?.()
             return
           }
+          await markOnlineOnServer()
         }
         setConnected(true)
       } else {
@@ -278,21 +297,24 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   return (
     <div className="relative flex flex-col h-full overflow-hidden" style={{ background: bg, color: fg, fontFamily }}>
       <div
-        className="h-9 flex-shrink-0 grid grid-cols-[auto_1fr_auto] items-center px-2 border-b border-gray-100"
+        className="h-9 flex-shrink-0 relative flex items-center border-b border-gray-100 px-2"
         style={{ WebkitAppRegion: 'drag', background: bg } as React.CSSProperties}
       >
         <button
           onClick={() => setMenuOpen(true)}
           style={{ WebkitAppRegion: 'no-drag', color: fg } as React.CSSProperties}
-          className="p-1 hover:opacity-60 transition-opacity col-start-1"
+          className="p-1 hover:opacity-60 transition-opacity z-10"
         >
           <Menu className="w-4 h-4" />
         </button>
-        <span className="col-start-2 text-center text-xs font-bold tracking-widest truncate px-1">
+        <span
+          className="absolute left-1/2 -translate-x-1/2 text-xs font-bold tracking-widest truncate max-w-[120px] pointer-events-none"
+          style={{ color: fg }}
+        >
           {appTitle}
         </span>
         <div
-          className="col-start-3 flex items-center gap-1"
+          className="ml-auto flex items-center gap-1 z-10"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <DebugLogButton onClick={() => setShowDebugLog(true)} />
@@ -428,11 +450,15 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                   { key: 'support', label: 'Поддержка' },
                   { key: 'about', label: 'О сервисе' },
                 ].map(({ key, label }) => (
-                  <button key={key} onClick={() => setMenuPage(key as MenuPage)}
-                    className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm transition-colors"
-                    style={{ color: fg }}>
-                    {label}
-                    <ChevronRight className="w-3.5 h-3.5" style={{ color: muted }} />
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setMenuPage(key as MenuPage)}
+                    className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors"
+                    style={{ color: fg }}
+                  >
+                    <span className="flex-1 text-left leading-snug">{label}</span>
+                    <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: muted }} />
                   </button>
                 ))}
                 <button onClick={handleLogout}
@@ -488,7 +514,9 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
             )}
 
             {menuPage === 'exceptions' && (
-              <AppExclusionsPanel fg={fg} muted={muted} onBack={() => setMenuPage(null)} />
+              <div className="flex-1 flex flex-col min-h-0 w-full items-stretch text-left">
+                <AppExclusionsPanel fg={fg} muted={muted} onBack={() => setMenuPage(null)} />
+              </div>
             )}
 
             {menuPage === 'hashes' && (
@@ -516,20 +544,29 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
             )}
 
             {menuPage === 'devices' && (
-              <div className="flex-1 p-4 overflow-y-auto">
-                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
-                <div className="text-sm font-semibold mb-1">Сессии</div>
-                <div className="text-[11px] mb-3" style={{ color: muted }}>
+              <div className="flex-1 p-4 overflow-y-auto text-left w-full">
+                <button type="button" onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4 block text-left">
+                  ← Назад
+                </button>
+                <div className="text-sm font-semibold mb-1 text-left">Сессии</div>
+                <div className="text-[11px] mb-3 text-left" style={{ color: muted }}>
                   VPN онлайн: {profile?.devices.filter(d => d.is_connected || (localOnline && d.id === sessionDeviceId)).length || 0} из {profile?.devices_count || 0}
                 </div>
+                {!profile?.devices?.length && (
+                  <p className="text-xs text-left" style={{ color: muted }}>Нет зарегистрированных устройств</p>
+                )}
                 {profile?.devices.map(d => {
-                  const online = d.is_connected || (localOnline && d.id === sessionDeviceId)
+                  const isSelf = sessionDeviceId != null && String(d.id) === String(sessionDeviceId)
+                  const online = d.is_connected || (localOnline && isSelf)
                   return (
-                    <div key={d.id} className="flex items-center gap-2 py-2.5 border-b border-gray-100">
+                    <div key={d.id} className="flex items-center gap-2 py-2.5 border-b border-gray-100 text-left">
                       <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${online ? 'bg-green-500' : 'bg-gray-300'}`} />
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium truncate" style={{ color: fg }}>
                           {deviceTypeLabel(d.device_type)}
+                          {isSelf && (
+                            <span className="font-normal text-[11px]" style={{ color: muted }}> · это вы</span>
+                          )}
                         </div>
                         {sessionCustomLabel(d) && (
                           <div className="text-[11px] truncate mt-0.5" style={{ color: muted }}>

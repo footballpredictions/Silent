@@ -22,6 +22,11 @@
         "to": "wdtt-client.exe"
       },
       {
+        "from": "resources/wireguard",
+        "to": "wireguard",
+        "filter": ["**/*"]
+      },
+      {
         "from": "resources/wireguard-installer.msi",
         "to": "wireguard-installer.msi"
       }

@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   vkGuestBootstrap: (authUrl) => ipcRenderer.invoke('vk-guest-bootstrap', authUrl),
   vpnConnect: (config) => ipcRenderer.invoke('vpn-connect', config),
   vpnDisconnect: () => ipcRenderer.invoke('vpn-disconnect'),
+  vpnIsReady: () => ipcRenderer.invoke('vpn-is-ready'),
   vpnReadConfig: () => ipcRenderer.invoke('vpn-read-config'),
   onVpnLog: (cb) => ipcRenderer.on('vpn-log', (_, line) => cb(line)),
   onVpnReady: (cb) => ipcRenderer.on('vpn-ready', (_, ok) => cb(ok)),

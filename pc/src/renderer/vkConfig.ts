@@ -1,14 +1,16 @@
-﻿const BOOT_HASH_KEY = 'silent_vk_bootstrap_hash'
+const BOOT_HASH_KEY = 'silent_vk_bootstrap_hash'
 const VK_ACCESS_KEY = 'silent_vk_access_token'
 const VK_USER_ID_KEY = 'silent_vk_user_id'
 const VPN_CACHE_KEY = 'silent_vpn_config_cache'
 
 export interface VpnConfigPayload {
-  wg_private_key: string
-  server_public_key: string
+  wg_private_key?: string
+  wg_address?: string
+  server_public_key?: string
   server_ip: string
   server_port: number
-  assigned_ip: string
+  assigned_ip?: string
+  wg_dns?: string
   dns?: string
   mtu?: number
   keepalive?: number

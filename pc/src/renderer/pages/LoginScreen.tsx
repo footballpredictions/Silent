@@ -52,7 +52,7 @@ export default function LoginScreen({
     setBootstrapHash(getBootstrapHash())
     const active = isBootstrapVpnActive()
     setBootstrapReady(active)
-    if (active) setStatusMsg(s.channelReady)
+    if (active) setStatusMsg(s.channelReadyAlready)
     setBootstrapStatusListener(msg => {
       setStatusMsg(msg)
       setBootstrapReady(isBootstrapVpnActive())
@@ -81,7 +81,6 @@ export default function LoginScreen({
       const active = isBootstrapVpnActive()
       setBootstrapReady(ok && active)
       if (!ok || !active) {
-        setStatusMsg(s.bootstrapFail)
         setBootstrapReady(false)
       }
     } finally {
@@ -173,7 +172,7 @@ export default function LoginScreen({
         <div className="flex flex-col items-center mb-5 w-full">
           <SilentLogo size={56} />
           <p
-            className="mt-3 w-full text-center text-base font-bold tracking-[0.3em]"
+            className="mt-3 text-base font-bold tracking-[0.3em]"
             style={{ color: ui.fg }}
           >
             SILENT

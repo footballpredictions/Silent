@@ -8,10 +8,16 @@ app.commandLine.appendSwitch('ignore-certificate-errors')
 const {
   stopWireGuardTunnel,
   forceStopWireGuard,
+  waitForWdttProxy,
+  waitForTunnelDown,
   isProcessElevated,
   buildWgConfigFromApi,
   applyWireGuardConfig,
 } = require('./vpn/wireguard')
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms))
+}
 
 const isDev = process.env.NODE_ENV === 'development'
 const WIN_WIDTH = 265
@@ -152,6 +158,12 @@ function cleanupVpn() {
   wgApplied = false
 }
 
+async function cleanupVpnAsync() {
+  cleanupVpn()
+  await waitForTunnelDown(15000, sendLog)
+  await sleep(500)
+}
+
 function wdttExePath() {
   const p = isDev
     ? path.join(__dirname, '../../resources/wdtt-client.exe')
@@ -184,7 +196,14 @@ ipcMain.handle('vk-guest-bootstrap', async (_, authUrl) => {
 })
 
 ipcMain.handle('vpn-connect', async (_, config) => {
-  if (wdttProcess) return { error: 'Already running' }
+  if (wdttProcess) {
+    sendLog('[VPN] Переподключение: остановка предыдущей сессии...')
+    await cleanupVpnAsync()
+  } else {
+    forceStopWireGuard(isDev, __dirname, sendLog)
+    await waitForTunnelDown(10000, sendLog)
+    await sleep(800)
+  }
 
   const exePath = wdttExePath()
   if (!fs.existsSync(exePath)) {
@@ -214,6 +233,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   const apiConf = buildWgConfigFromApi(config)
 
   let wgAttempted = false
+  let wgFailed = false
   let wgPoll = null
   let wgTimers = []
 
@@ -230,19 +250,36 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   }
 
   const failWireGuard = (msg) => {
-    if (wgApplied) return
-    wgAttempted = false
+    if (wgApplied || wgFailed) return
+    wgFailed = true
+    wgAttempted = true
     clearWgRetries()
     sendVpnError(msg)
   }
 
-  const tryApplyWg = async (confText) => {
-    if (wgApplied || wgAttempted || !confText) return false
+  let wgInstallInFlight = false
+
+  const tryApplyWg = async (confText, source = 'file') => {
+    if (wgApplied || wgFailed || wgInstallInFlight || !confText) return false
+    if (!confText.includes('[Interface]')) return false
+    if (wgAttempted) return false
+
+    wgInstallInFlight = true
     wgAttempted = true
     clearWgRetries()
 
+    sendLog(`[WG] Применение конфига (${source})...`)
+    sendLog('[WG] Ожидание WDTT UDP 127.0.0.1:9000...')
+    const wdttReady = await waitForWdttProxy('127.0.0.1', 9000, 45000, sendLog, confPath)
+    if (!wdttReady) {
+      wgInstallInFlight = false
+      wgAttempted = false
+      failWireGuard('Таймаут: WDTT не подключился к серверу')
+      return false
+    }
+
     fs.writeFileSync(confPath, confText)
-    await new Promise(r => setTimeout(r, 400))
+    await sleep(400)
 
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], { skipWdttWait: true })
     const timeoutMs = isProcessElevated() ? 45000 : 120000
@@ -255,8 +292,9 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     } catch (e) {
       sendLog('[WG] ' + (e.message || 'install failed'))
       ok = false
+    } finally {
+      wgInstallInFlight = false
     }
-
     if (ok) {
       wgApplied = true
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -275,7 +313,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   const applyFromFile = async () => {
     if (!fs.existsSync(confPath)) return false
     const text = fs.readFileSync(confPath, 'utf8')
-    if (text.includes('[Interface]')) return tryApplyWg(text)
+    if (text.includes('[Interface]')) return tryApplyWg(text, 'wdtt-file')
     return false
   }
 
@@ -283,10 +321,6 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     sendLog(line)
     const turnMatch = line.match(/TURN UDP \(([\d.]+):\d+\)/)
     if (turnMatch) excludeIPs.add(turnMatch[1])
-
-    if (line.includes('[ДИСП] Воркер') && line.includes('зарегистрирован')) {
-      if (!wgApplied && !wgAttempted && apiConf) await tryApplyWg(apiConf)
-    }
 
     if (line.includes('[КОНФИГ]') && line.includes('Сохранён')) {
       await applyFromFile()
@@ -310,7 +344,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     if (line.includes('╚')) {
       collecting = false
       const cfg = boxBuilder.join('\n').trim()
-      if (cfg) await tryApplyWg(cfg)
+      if (cfg) await tryApplyWg(cfg, 'box')
       return
     }
     if (line.includes('║')) {
@@ -341,20 +375,23 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   })
 
   wgPoll = setInterval(async () => {
-    if (wgApplied) { clearWgRetries(); return }
-    if (wgAttempted) return
+    if (wgApplied || wgFailed || wgAttempted || wgInstallInFlight) {
+      if (wgApplied || wgFailed) clearWgRetries()
+      return
+    }
     await applyFromFile()
   }, 3000)
 
   wgTimers.push(setTimeout(async () => {
-    if (!wgApplied && !wgAttempted && apiConf) await tryApplyWg(apiConf)
-  }, 20000))
+    if (wgApplied || wgFailed || wgAttempted || wgInstallInFlight) return
+    if (apiConf) await tryApplyWg(apiConf, 'api')
+  }, 45000))
 
   return { success: true }
 })
 
 ipcMain.handle('vpn-disconnect', async () => {
-  cleanupVpn()
+  await cleanupVpnAsync()
   return { success: true }
 })
 
@@ -362,6 +399,8 @@ ipcMain.handle('vpn-read-config', async () => {
   const confPath = path.join(app.getPath('temp'), 'wg-turn.conf')
   return fs.existsSync(confPath) ? fs.readFileSync(confPath, 'utf8') : null
 })
+
+ipcMain.handle('vpn-is-ready', async () => ({ ready: !!wgApplied }))
 
 app.whenReady().then(() => {
   // Сироты wireguard.exe после краша / прошлых версий — убираем до подключения

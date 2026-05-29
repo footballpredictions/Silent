@@ -3,8 +3,8 @@ import axios from 'axios'
 const SERVER_URL_KEY = 'silent_server_url'
 const TOKEN_KEY = 'silent_token'
 const REFRESH_KEY = 'silent_refresh'
+/** Один fingerprint на сессию — как Android PREF_DEVICE_FP. */
 const DEVICE_FP_KEY = 'silent_device_fingerprint'
-const SESSION_FP_KEY = 'silent_session_fingerprint'
 const SESSION_DEVICE_KEY = 'silent_session_device_id'
 
 export function getServerUrl(): string {
@@ -64,20 +64,31 @@ export function isLoggedIn(): boolean {
 export function getDeviceFingerprint(): string {
   let fp = localStorage.getItem(DEVICE_FP_KEY)
   if (!fp) {
-    fp = crypto.randomUUID()
-    localStorage.setItem(DEVICE_FP_KEY, fp)
+    const legacy = localStorage.getItem('silent_session_fingerprint')
+    if (legacy) {
+      fp = legacy
+      localStorage.setItem(DEVICE_FP_KEY, legacy)
+      localStorage.removeItem('silent_session_fingerprint')
+    }
   }
+  if (!fp) throw new Error('Session not started')
   return fp
 }
 
+/** Новая сессия при входе — освобождает слот устройства (как Android). */
 export function startNewSession(): string {
+  clearSessionDeviceId()
   const fp = crypto.randomUUID()
-  localStorage.setItem(SESSION_FP_KEY, fp)
+  localStorage.setItem(DEVICE_FP_KEY, fp)
   return fp
 }
 
 export function clearSessionFingerprint(): void {
-  localStorage.removeItem(SESSION_FP_KEY)
+  localStorage.removeItem(DEVICE_FP_KEY)
+}
+
+export function hasSessionFingerprint(): boolean {
+  return !!localStorage.getItem(DEVICE_FP_KEY)?.trim()
 }
 
 export function getSessionDeviceId(): string | null {

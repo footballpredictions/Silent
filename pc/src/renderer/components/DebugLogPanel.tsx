@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { clearLogs, readLogs, subscribeLogs, type DebugLogItem } from '../debugLog'
 
 export function DebugLogButton({ onClick }: { onClick: () => void }) {
@@ -28,6 +28,7 @@ function formatLogText(items: DebugLogItem[]): string {
 
 export default function DebugLogPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [items, setItems] = useState<DebugLogItem[]>(readLogs())
+  const [copyToast, setCopyToast] = useState(false)
 
   useEffect(() => subscribeLogs(setItems), [])
 
@@ -40,8 +41,11 @@ export default function DebugLogPanel({ open, onClose }: { open: boolean; onClos
     try {
       await navigator.clipboard.writeText(text)
     } catch {
-      /* ignore */
+      const api = (window as any).electronAPI
+      if (api?.copyToClipboard) await api.copyToClipboard(text)
     }
+    setCopyToast(true)
+    setTimeout(() => setCopyToast(false), 2000)
   }
 
   return (
@@ -53,18 +57,25 @@ export default function DebugLogPanel({ open, onClose }: { open: boolean; onClos
         className="w-full h-[88%] rounded-2xl flex flex-col overflow-hidden"
         style={{ background: '#111827', maxWidth: 248 }}
       >
-        <div className="px-2 pt-2 pb-1.5 shrink-0" style={{ background: '#1F2937' }}>
+        <div className="px-2 pt-2 pb-1.5 shrink-0 relative" style={{ background: '#1F2937' }}>
           <div className="text-center">
-            <div className="text-[12px] font-semibold text-white leading-tight">Лог VPN</div>
-            <div className="text-[9px] text-[#9CA3AF] leading-tight mt-0.5">debug</div>
+            <div className="text-[12px] font-semibold text-white leading-tight">Лог VPN (debug)</div>
           </div>
+          {copyToast && (
+            <div
+              className="absolute left-1/2 -translate-x-1/2 top-1 px-2 py-0.5 rounded text-[9px] text-white"
+              style={{ background: 'rgba(0,0,0,0.75)' }}
+            >
+              Лог скопирован
+            </div>
+          )}
           <div className="flex gap-1 mt-2">
             <button
               type="button"
               onClick={copyLog}
               className="flex-1 min-w-0 py-1 rounded text-[9px] font-medium text-[#60A5FA] hover:bg-white/5 truncate"
             >
-              Копия
+              Копировать
             </button>
             <button
               type="button"

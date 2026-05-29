@@ -17,6 +17,7 @@ import {
   ensureBootstrapVpn,
   disconnectBootstrapVpn,
   isBootstrapVpnActive,
+  setBootstrapStatusListener,
 } from '../bootstrapVpn'
 import HashInputSection from '../components/HashInputSection'
 import SilentLogo from '../components/SilentLogo'
@@ -37,6 +38,13 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
 
   useEffect(() => {
     setBootstrapHash(getBootstrapHash())
+    setBootstrapStatusListener(msg => {
+      setStatusMsg(msg)
+      if (msg.includes('истекло')) {
+        setBootstrapHash(getBootstrapHash())
+      }
+    })
+    return () => setBootstrapStatusListener(null)
   }, [])
 
   const connectForLogin = async (raw: string) => {
@@ -52,11 +60,9 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
     setError('')
     try {
       const ok = await ensureBootstrapVpn()
-      setStatusMsg(
-        ok
-          ? 'Канал готов. Можно войти или зарегистрироваться.'
-          : 'Не удалось получить bootstrap-конфиг или подключиться',
-      )
+      if (!ok) {
+        setStatusMsg('Не удалось получить bootstrap-конфиг или подключиться')
+      }
     } finally {
       setBootstrapConnecting(false)
     }
@@ -113,6 +119,10 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
     setLoading(true)
     setError('')
     try {
+      if (!isBootstrapVpnActive()) {
+        setError('Сначала нажмите «Подключить для входа»')
+        return
+      }
       await api.post('/api/auth/register', { email, password })
       setRegDone(true)
     } catch (err: any) {

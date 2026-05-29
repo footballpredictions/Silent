@@ -4,24 +4,27 @@ import { ReactNode } from 'react'
 export default function TitleBar({
   title,
   right,
-  dark = false,
+  headerBg = '#000000',
+  headerFg = '#9CA3AF',
 }: {
   title: string
   right?: ReactNode
-  dark?: boolean
+  headerBg?: string
+  headerFg?: string
 }) {
   return (
     <div
-      className="h-8 flex-shrink-0 grid grid-cols-[1fr_auto_1fr] items-center px-2"
+      className="h-8 flex-shrink-0 grid grid-cols-[1fr_auto_1fr] items-center px-2 border-b"
       style={{
-        background: dark ? '#000000' : undefined,
+        background: headerBg,
+        borderColor: 'rgba(0,0,0,0.06)',
         WebkitAppRegion: 'drag',
       } as React.CSSProperties}
     >
       <div />
       <span
         className="text-[11px] tracking-widest text-center col-start-2"
-        style={{ color: dark ? '#9CA3AF' : '#6B7280' }}
+        style={{ color: headerFg }}
       >
         {title}
       </span>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import api, {
   saveTokens,
   startNewSession,
@@ -24,10 +24,18 @@ import SilentLogo from '../components/SilentLogo'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import TitleBar from '../components/TitleBar'
 import { pushLog } from '../debugLog'
-import { authColors } from '../authTheme'
 import { authStrings as s } from '../authStrings'
+import { themeToUi, type ClientTheme } from '../clientTheme'
 
-export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void }) {
+export default function LoginScreen({
+  theme,
+  onLogin,
+}: {
+  theme: ClientTheme | null
+  onLogin: (theme: ClientTheme | null) => void
+}) {
+  const ui = useMemo(() => themeToUi(theme), [theme])
+
   const [tab, setTab] = useState<'login' | 'register'>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -42,7 +50,9 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
 
   useEffect(() => {
     setBootstrapHash(getBootstrapHash())
-    setBootstrapReady(isBootstrapVpnActive())
+    const active = isBootstrapVpnActive()
+    setBootstrapReady(active)
+    if (active) setStatusMsg(s.channelReady)
     setBootstrapStatusListener(msg => {
       setStatusMsg(msg)
       setBootstrapReady(isBootstrapVpnActive())
@@ -57,18 +67,22 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
     const h = extractCallHash(raw)
     if (!h) {
       setStatusMsg(s.invalidHash)
+      setBootstrapReady(false)
       return
     }
     saveBootstrapHash(h)
     setBootstrapHash(h)
     setBootstrapConnecting(true)
-    setStatusMsg('')
+    setBootstrapReady(false)
+    setStatusMsg(s.connectingWait)
     setError('')
     try {
       const ok = await ensureBootstrapVpn()
-      setBootstrapReady(ok && isBootstrapVpnActive())
-      if (!ok) {
+      const active = isBootstrapVpnActive()
+      setBootstrapReady(ok && active)
+      if (!ok || !active) {
         setStatusMsg(s.bootstrapFail)
+        setBootstrapReady(false)
       }
     } finally {
       setBootstrapConnecting(false)
@@ -111,8 +125,8 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
       await disconnectBootstrapVpn()
       setBootstrapReady(false)
       setStatusMsg(s.internetOff)
-      const themeRes = await api.get('/api/vpn/theme').catch(() => ({ data: null }))
-      onLogin(themeRes.data)
+      const themeRes = await api.get('/api/vpn/theme').catch(() => ({ data: theme }))
+      onLogin(themeRes.data ?? theme)
     } catch (err: any) {
       const msg = formatApiError(err, 'Ошибка входа')
       pushLog('Login', msg, 'E')
@@ -144,17 +158,24 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
     'w-full rounded-xl px-3 py-2.5 text-sm focus:outline-none transition-colors'
 
   return (
-    <div className="flex flex-col h-full" style={{ background: authColors.screenBg }}>
+    <div
+      className="flex flex-col h-full"
+      style={{ background: ui.bg, color: ui.fg, fontFamily: ui.fontFamily }}
+    >
       <TitleBar
         title="SILENT VPN"
-        dark
+        headerBg={ui.headerBg}
+        headerFg={ui.headerFg}
         right={<DebugLogButton onClick={() => setShowDebugLog(true)} />}
       />
 
       <div className="flex-1 overflow-y-auto px-5 py-6">
         <div className="flex flex-col items-center mb-5 w-full">
           <SilentLogo size={56} />
-          <p className="mt-3 w-full text-center text-base font-bold tracking-[0.3em] text-white">
+          <p
+            className="mt-3 w-full text-center text-base font-bold tracking-[0.3em]"
+            style={{ color: ui.fg }}
+          >
             SILENT
           </p>
         </div>
@@ -165,9 +186,10 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
           bootstrapConnecting={bootstrapConnecting}
           bootstrapReady={bootstrapReady}
           onConnect={connectForLogin}
+          ui={ui}
         />
 
-        <div className="flex rounded-xl p-1 mb-4" style={{ background: authColors.tabBg }}>
+        <div className="flex rounded-xl p-1 mb-4" style={{ background: ui.tabBg }}>
           {(['login', 'register'] as const).map(key => (
             <button
               key={key}
@@ -179,8 +201,8 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
               }}
               className="flex-1 py-2 rounded-[10px] text-xs font-medium transition-colors"
               style={{
-                background: tab === key ? '#FFFFFF' : 'transparent',
-                color: tab === key ? '#000000' : authColors.hint,
+                background: tab === key ? ui.primaryBtnBg : 'transparent',
+                color: tab === key ? ui.primaryBtnFg : ui.hint,
               }}
             >
               {key === 'login' ? s.login : s.register}
@@ -190,8 +212,10 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
 
         {regDone ? (
           <div className="text-center py-8">
-            <p className="font-medium text-sm text-white">{s.confirmEmail}</p>
-            <p className="text-xs mt-1" style={{ color: authColors.hint }}>
+            <p className="font-medium text-sm" style={{ color: ui.fg }}>
+              {s.confirmEmail}
+            </p>
+            <p className="text-xs mt-1" style={{ color: ui.hint }}>
               {s.emailSent(email)}
             </p>
             <button
@@ -200,22 +224,23 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
                 setTab('login')
                 setRegDone(false)
               }}
-              className="mt-4 text-xs text-white hover:opacity-80"
+              className="mt-4 text-xs hover:opacity-80"
+              style={{ color: ui.fg }}
             >
               {s.login}
             </button>
           </div>
         ) : (
           <form onSubmit={tab === 'login' ? handleLogin : handleRegister}>
-            <label className="text-xs" style={{ color: authColors.label }}>
+            <label className="text-xs" style={{ color: ui.label }}>
               {s.email}
             </label>
             <input
               className={fieldCls + ' mt-1 mb-3'}
               style={{
-                background: authColors.fieldBg,
-                color: authColors.fieldText,
-                border: `1px solid ${authColors.border}`,
+                background: ui.fieldBg,
+                color: ui.fieldText,
+                border: `1px solid ${ui.border}`,
               }}
               type="email"
               value={email}
@@ -223,15 +248,15 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
               placeholder="you@example.com"
               required
             />
-            <label className="text-xs" style={{ color: authColors.label }}>
+            <label className="text-xs" style={{ color: ui.label }}>
               {s.password}
             </label>
             <input
               className={fieldCls + ' mt-1 mb-3'}
               style={{
-                background: authColors.fieldBg,
-                color: authColors.fieldText,
-                border: `1px solid ${authColors.border}`,
+                background: ui.fieldBg,
+                color: ui.fieldText,
+                border: `1px solid ${ui.border}`,
               }}
               type="password"
               value={password}
@@ -240,7 +265,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
               required
             />
             {error && (
-              <p className="text-xs mb-2" style={{ color: authColors.red }}>
+              <p className="text-xs mb-2" style={{ color: ui.red }}>
                 {error}
               </p>
             )}
@@ -248,7 +273,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (theme: any) => void
               type="submit"
               disabled={loading || !email.trim() || !password.trim()}
               className="w-full py-3 rounded-xl text-sm font-semibold disabled:opacity-40"
-              style={{ background: '#FFFFFF', color: '#000000' }}
+              style={{ background: ui.primaryBtnBg, color: ui.primaryBtnFg }}
             >
               {loading ? '…' : tab === 'login' ? s.login : s.registerSubmit}
             </button>

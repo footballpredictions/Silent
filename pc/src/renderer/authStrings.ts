@@ -6,6 +6,8 @@ export const authStrings = {
   hashPlaceholder: 'Хеш или ссылка на звонок VK',
   connectBtn: 'Подключить для входа',
   connecting: 'Подключение…',
+  connectingWait: 'Подключение… подождите',
+  channelReady: 'Канал готов. Можно войти или зарегистрироваться.',
   connectedBtn: 'Подключено ✓',
   invalidHash: 'Неверный хеш. Вставьте ссылку vk.com/call/join/… или сам хеш',
   bootstrapFail: 'Не удалось получить bootstrap-конфиг или подключиться',

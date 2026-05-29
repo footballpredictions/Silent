@@ -122,6 +122,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
 
   if (bootstrapActive) {
     pushLog('Bootstrap', 'already active')
+    notifyStatus('Канал готов. Можно войти или зарегистрироваться.')
     return true
   }
 
@@ -141,6 +142,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   const ok = await waitVpnReady()
   pushLog('Bootstrap', ok ? 'VPN ready' : 'VPN timeout', ok ? 'I' : 'E')
   if (ok) {
+    notifyStatus('Канал готов. Можно войти или зарегистрироваться.')
     startBootstrapSessionTimeout()
   } else {
     bootstrapActive = false

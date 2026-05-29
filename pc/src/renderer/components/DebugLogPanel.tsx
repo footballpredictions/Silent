@@ -1,5 +1,4 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
-import { X } from 'lucide-react'
 import { clearLogs, readLogs, subscribeLogs, type DebugLogItem } from '../debugLog'
 
 export function DebugLogButton({ onClick }: { onClick: () => void }) {
@@ -7,7 +6,7 @@ export function DebugLogButton({ onClick }: { onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="px-1.5 py-0 text-[10px] font-medium hover:text-white transition-colors"
+      className="px-1.5 py-0 text-[10px] font-medium hover:opacity-70 transition-opacity"
       style={{ WebkitAppRegion: 'no-drag', color: '#6B7280' } as React.CSSProperties}
       title="Логи"
     >
@@ -49,24 +48,13 @@ export default function DebugLogPanel({ open, onClose }: { open: boolean; onClos
     <div
       className="absolute inset-0 z-[100] flex items-center justify-center p-2"
       style={{ WebkitAppRegion: 'no-drag', background: 'rgba(0,0,0,0.55)' } as React.CSSProperties}
-      onClick={onClose}
     >
       <div
         className="w-full h-[88%] rounded-2xl flex flex-col overflow-hidden"
         style={{ background: '#111827', maxWidth: 248 }}
-        onClick={e => e.stopPropagation()}
       >
-        <div className="relative px-2 pt-2 pb-1.5 shrink-0" style={{ background: '#1F2937' }}>
-          <button
-            type="button"
-            onClick={onClose}
-            className="absolute top-1.5 right-1.5 p-1 rounded-md text-[#9CA3AF] hover:text-white hover:bg-white/10"
-            title="Закрыть"
-            aria-label="Закрыть"
-          >
-            <X className="w-4 h-4" />
-          </button>
-          <div className="text-center pr-6 pl-6">
+        <div className="px-2 pt-2 pb-1.5 shrink-0" style={{ background: '#1F2937' }}>
+          <div className="text-center">
             <div className="text-[12px] font-semibold text-white leading-tight">Лог VPN</div>
             <div className="text-[9px] text-[#9CA3AF] leading-tight mt-0.5">debug</div>
           </div>

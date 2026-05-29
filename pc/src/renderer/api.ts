@@ -3,6 +3,9 @@ import axios from 'axios'
 const SERVER_URL_KEY = 'silent_server_url'
 const TOKEN_KEY = 'silent_token'
 const REFRESH_KEY = 'silent_refresh'
+const DEVICE_FP_KEY = 'silent_device_fingerprint'
+const SESSION_FP_KEY = 'silent_session_fingerprint'
+const SESSION_DEVICE_KEY = 'silent_session_device_id'
 
 export function getServerUrl(): string {
   return localStorage.getItem(SERVER_URL_KEY) || ''
@@ -56,6 +59,49 @@ export function clearTokens() {
 
 export function isLoggedIn(): boolean {
   return !!localStorage.getItem(TOKEN_KEY)
+}
+
+export function getDeviceFingerprint(): string {
+  let fp = localStorage.getItem(DEVICE_FP_KEY)
+  if (!fp) {
+    fp = crypto.randomUUID()
+    localStorage.setItem(DEVICE_FP_KEY, fp)
+  }
+  return fp
+}
+
+export function startNewSession(): string {
+  const fp = crypto.randomUUID()
+  localStorage.setItem(SESSION_FP_KEY, fp)
+  return fp
+}
+
+export function clearSessionFingerprint(): void {
+  localStorage.removeItem(SESSION_FP_KEY)
+}
+
+export function getSessionDeviceId(): string | null {
+  return localStorage.getItem(SESSION_DEVICE_KEY)
+}
+
+export function saveSessionDeviceId(id: string): void {
+  localStorage.setItem(SESSION_DEVICE_KEY, id)
+}
+
+export function clearSessionDeviceId(): void {
+  localStorage.removeItem(SESSION_DEVICE_KEY)
+}
+
+export function formatApiError(err: unknown, fallback: string): string {
+  const e = err as { response?: { data?: { detail?: unknown } }; message?: string }
+  const detail = e?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d: { msg?: string } | string) => (typeof d === 'string' ? d : d?.msg || String(d)))
+      .join(', ')
+  }
+  return e?.message || fallback
 }
 
 export default api

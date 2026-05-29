@@ -16,6 +16,16 @@
     "directories": {
       "output": "dist/electron"
     },
+    "extraResources": [
+      {
+        "from": "resources/wdtt-client.exe",
+        "to": "wdtt-client.exe"
+      },
+      {
+        "from": "resources/wireguard-installer.msi",
+        "to": "wireguard-installer.msi"
+      }
+    ],
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico",

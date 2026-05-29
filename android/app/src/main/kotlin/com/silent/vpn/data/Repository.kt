@@ -39,6 +39,7 @@ class SilentRepository @Inject constructor(
         const val PREF_EXCLUSIONS_WHITELIST = "exclusions_whitelist"
         const val PREF_SAVED_HASH_ITEMS = "saved_hash_items"
         const val PREF_SAVED_HASH_ITEMS_TS = "saved_hash_items_ts"
+        const val PREF_CACHED_PROFILE = "cached_profile_json"
         const val VK_APP_ID = 54610377L
         const val VK_GROUP_ID = 239092728L
         const val WG_TUNNEL_GATEWAY = "10.66.66.1"
@@ -172,7 +173,21 @@ class SilentRepository @Inject constructor(
     }
     fun clearTokens() {
         prefs.edit().remove(PREF_ACCESS_TOKEN).remove(PREF_REFRESH_TOKEN).apply()
+        clearCachedProfile()
         _api = null
+    }
+
+    fun saveCachedProfile(profile: UserProfile) {
+        prefs.edit().putString(PREF_CACHED_PROFILE, Gson().toJson(profile)).apply()
+    }
+
+    fun getCachedProfile(): UserProfile? {
+        val json = prefs.getString(PREF_CACHED_PROFILE, null) ?: return null
+        return runCatching { Gson().fromJson(json, UserProfile::class.java) }.getOrNull()
+    }
+
+    fun clearCachedProfile() {
+        prefs.edit().remove(PREF_CACHED_PROFILE).apply()
     }
     fun isLoggedIn() = getAccessToken() != null
 

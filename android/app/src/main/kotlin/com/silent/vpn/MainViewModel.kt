@@ -135,14 +135,18 @@ class MainViewModel @Inject constructor(
     }
 
     init {
-        loadTheme()
         if (repo.isLoggedIn()) {
             if (!repo.hasSessionFingerprint()) {
                 repo.clearTokens()
                 _screen.value = AppScreen.LOGIN
             } else {
+                _screen.value = AppScreen.MAIN
+                restoreCachedProfileToUi()
+                syncVpnStateFromSystem()
                 refreshSession()
             }
+        } else {
+            loadTheme()
         }
         viewModelScope.launch {
             WdttTunnelManager.lastError.collect { err ->
@@ -193,18 +197,40 @@ class MainViewModel @Inject constructor(
     }
 
     fun onReturnedToApp() {
-        if (!repo.isLoggedIn()) return
-        _screen.value = AppScreen.MAIN
-        if (_profile.value == null) {
-            viewModelScope.launch { fetchProfileNow() }
-        }
+        syncSessionOnResume()
     }
 
     fun onAppResumed() {
+        syncSessionOnResume()
+    }
+
+    private fun restoreCachedProfileToUi() {
+        repo.getCachedProfile()?.let { cached ->
+            if (_profile.value == null) _profile.value = cached
+        }
+    }
+
+    private fun syncVpnStateFromSystem() {
+        when {
+            SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value -> {
+                _vpnState.value = VpnState.CONNECTED
+                onVpnTunnelReady()
+            }
+            SilentVpnService.isRunning -> _vpnState.value = VpnState.CONNECTING
+            else -> _vpnState.value = VpnState.DISCONNECTED
+        }
+    }
+
+    private fun syncSessionOnResume() {
         if (!repo.isLoggedIn()) return
-        if (_screen.value != AppScreen.MAIN) _screen.value = AppScreen.MAIN
-        if (_profile.value == null) {
-            viewModelScope.launch { fetchProfileNow() }
+        _screen.value = AppScreen.MAIN
+        restoreCachedProfileToUi()
+        syncVpnStateFromSystem()
+        viewModelScope.launch {
+            if (WdttTunnelManager.tunnelReady.value || SilentVpnService.isRunning) {
+                onVpnTunnelReady()
+            }
+            fetchProfileNow()
         }
     }
 
@@ -293,6 +319,7 @@ class MainViewModel @Inject constructor(
                 if (res.isSuccessful) {
                     val p = res.body()!!
                     _profile.value = p
+                    repo.saveCachedProfile(p)
                     p.vk_user_id?.let { repo.saveVkUserId(it) }
                     runCatching {
                         val themeRes = repo.getApi().getTheme()

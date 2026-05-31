@@ -36,6 +36,10 @@ export function signalBars(activeChannelsOnHash: number, channelsPerHash: number
   return 0
 }
 
+export function resolveWorkersPerHash(config: { vk_hashes?: string[] }): number {
+  return getChannelsPerHash()
+}
+
 export function resolveWorkerCount(config: { vk_hashes?: string[]; stream_count?: number }): number {
   const savedActive = activeServerHashCount(getSavedHashItems())
   const hashCount = Math.max(
@@ -43,10 +47,9 @@ export function resolveWorkerCount(config: { vk_hashes?: string[]; stream_count?
     savedActive,
     1,
   )
-  const userWorkers = computeWorkerCount(hashCount, getChannelsPerHash())
-  return Math.max(userWorkers, config.stream_count || 0)
+  return computeWorkerCount(hashCount, getChannelsPerHash())
 }
 
 export function applyWorkerCount<T extends { vk_hashes?: string[]; stream_count?: number }>(config: T): T {
-  return { ...config, stream_count: resolveWorkerCount(config) }
+  return { ...config, stream_count: resolveWorkersPerHash(config) }
 }

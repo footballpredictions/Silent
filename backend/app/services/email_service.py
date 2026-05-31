@@ -108,7 +108,7 @@ def _base_template(content: str) -> str:
 
 
 def send_verification_email(to_email: str, token: str, base_url: str) -> bool:
-    verify_url = f"{base_url}/verify-email?token={token}"
+    verify_url = f"{base_url}/api/auth/verify-email?token={token}"
     content = f"""
     <p style="margin:0 0 16px 0;color:#333333;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">
       Добро пожаловать в <strong>Silent VPN</strong>!
@@ -185,7 +185,7 @@ def send_subscription_activated_email(to_email: str, plan_type: str, expires_at:
 
 
 def send_password_reset_email(to_email: str, token: str, base_url: str) -> bool:
-    reset_url = f"{base_url}/reset-password?token={token}"
+    reset_url = f"{base_url}/api/auth/reset-password-page?token={token}"
     content = f"""
     <p style="margin:0 0 16px 0;color:#333333;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">
       Мы получили запрос на сброс пароля для вашего аккаунта <strong>Silent VPN</strong>.

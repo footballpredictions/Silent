@@ -1,4 +1,5 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Request
+from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import timedelta
@@ -52,18 +53,61 @@ async def register(
     return {"message": "Регистрация успешна. Проверьте email для подтверждения."}
 
 
-@router.get("/verify-email")
+@router.get("/verify-email", response_class=HTMLResponse)
 async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.verification_token == token))
     user = result.scalar_one_or_none()
+
     if not user:
-        raise HTTPException(status_code=400, detail="Недействительный токен")
+        return HTMLResponse(_html_page(
+            success=False,
+            title="Ссылка недействительна",
+            message="Токен подтверждения устарел или уже был использован.",
+        ), status_code=400)
 
     user.is_verified = True
     user.verification_token = None
     await db.commit()
     await ensure_trial_subscription(db, user)
-    return {"message": "Email подтверждён. Теперь вы можете войти."}
+
+    return HTMLResponse(_html_page(
+        success=True,
+        title="Email подтверждён!",
+        message=f"Аккаунт <strong>{user.email}</strong> успешно активирован.<br>Теперь вы можете войти в приложение.",
+    ))
+
+
+def _html_page(success: bool, title: str, message: str) -> str:
+    icon = "✓" if success else "✗"
+    color = "#22c55e" if success else "#ef4444"
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Silent VPN — {title}</title>
+<style>
+  *{{margin:0;padding:0;box-sizing:border-box}}
+  body{{background:#0a0a0a;font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:16px}}
+  .card{{background:#111;border:1px solid #222;border-radius:16px;padding:48px 40px;max-width:480px;width:100%;text-align:center}}
+  .icon{{width:72px;height:72px;background:{color}22;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 24px;font-size:32px;color:{color}}}
+  .brand{{color:#fff;font-size:13px;font-weight:700;letter-spacing:3px;margin-bottom:32px;opacity:0.5}}
+  h1{{color:#fff;font-size:22px;font-weight:700;margin-bottom:16px}}
+  p{{color:#888;font-size:15px;line-height:1.7}}
+  p strong{{color:#ccc}}
+  .hint{{margin-top:24px;color:#555;font-size:13px}}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand">SILENT VPN</div>
+  <div class="icon">{icon}</div>
+  <h1>{title}</h1>
+  <p>{message}</p>
+  <p class="hint">Можно закрыть эту страницу и вернуться в приложение.</p>
+</div>
+</body>
+</html>"""
 
 
 @router.post("/login", response_model=TokenResponse)

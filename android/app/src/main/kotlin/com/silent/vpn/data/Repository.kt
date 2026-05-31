@@ -12,6 +12,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -86,6 +87,8 @@ class SilentRepository @Inject constructor(
             }
             .hostnameVerifier { _, _ -> true }
             .sslSocketFactory(TrustAllCerts.sslSocketFactory(), TrustAllCerts.trustManager())
+            .connectTimeout(4, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
             .build()
 
         return Retrofit.Builder()
@@ -108,8 +111,8 @@ class SilentRepository @Inject constructor(
             clearTunnelApiBase()
             return
         }
-        useApiBase("https://$gw")
-        Log.i(TAG, "API via tunnel: https://$gw")
+        useApiBase("http://$gw:8000")
+        Log.i(TAG, "API via tunnel: http://$gw:8000")
     }
 
     fun clearTunnelApiBase() {
@@ -132,8 +135,10 @@ class SilentRepository @Inject constructor(
 
     fun apiBaseCandidates(wgAddress: String? = null): List<String> {
         val out = linkedSetOf<String>()
-        wgGatewayFromAddress(wgAddress)?.let { out.add("https://$it") }
-        wgGatewayFromAddress(wgAddress)?.let { out.add("http://$it:8000") }
+        wgGatewayFromAddress(wgAddress)?.let { gw ->
+            out.add("http://$gw:8000")
+            out.add("https://$gw")
+        }
         out.add("https://${BootstrapVpnConfig.serverHost()}")
         out.add("https://$DEFAULT_SERVER_HOST")
         out.add(getPublicServerUrl())

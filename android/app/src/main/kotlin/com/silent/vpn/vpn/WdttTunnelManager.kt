@@ -17,6 +17,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 import java.io.File
+import java.net.InetSocketAddress
+import java.net.Socket
 
 /**
  * WDTT-туннель по логике [proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android):
@@ -62,6 +64,7 @@ object WdttTunnelManager {
     )
 
     private var confPollJob: Job? = null
+    private var readyProbeJob: Job? = null
 
     fun start(context: Context, params: Params, isSwitching: Boolean = false) {
         if (running.value && !isSwitching) return
@@ -347,18 +350,88 @@ object WdttTunnelManager {
         return null
     }
 
+    /** Ключевые поля WG — если совпадают, повторный stop/start не нужен (box → file). */
+    private fun wgConfigSemanticKey(config: String): String {
+        fun field(name: String): String =
+            Regex("""(?m)^$name\s*=\s*(\S+)""").find(config)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+        return listOf(
+            field("PrivateKey"),
+            field("Address"),
+            field("PublicKey"),
+            field("Endpoint"),
+        ).joinToString("|")
+    }
+
+    private suspend fun awaitGatewayReachable(
+        gateway: String = "10.66.66.1",
+        port: Int = 8000,
+        attempts: Int = 6,
+    ): Boolean {
+        repeat(attempts) { attempt ->
+            if (!running.value) return false
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    Socket().use { socket ->
+                        socket.connect(InetSocketAddress(gateway, port), 1500)
+                    }
+                    true
+                }.getOrDefault(false)
+            }
+            if (ok) {
+                DebugLog.i(TAG, "Gateway $gateway:$port reachable")
+                return true
+            }
+            delay(350L * (attempt + 1))
+        }
+        DebugLog.w(TAG, "Gateway $gateway:$port not reachable after $attempts attempts")
+        return false
+    }
+
+    private fun markTunnelReadyAfterProbe(source: Int) {
+        readyProbeJob?.cancel()
+        readyProbeJob = scope.launch {
+            delay(400)
+            if (!running.value || appliedConfigSource != source) return@launch
+            val gw = com.silent.vpn.data.SilentRepository.WG_TUNNEL_GATEWAY
+            val reachable = awaitGatewayReachable(gateway = gw, port = 8000)
+            if (!running.value) return@launch
+            if (reachable || activeWorkers.value >= 1) {
+                tunnelReady.value = true
+            }
+        }
+    }
+
     /** source: 1=api, 2=box log, 3=wg-turn.conf — higher is better */
     private fun applyWireGuard(configStr: String, source: Int = 1) {
         val normalized = configStr.trim()
         if (normalized.isBlank()) return
         val fingerprint = normalized.hashCode().toString()
+        val semanticKey = wgConfigSemanticKey(normalized)
         if (source < appliedConfigSource) return
+        if (tunnelReady.value && semanticKey == wgConfigSemanticKey(lastWgConfig.orEmpty())) {
+            if (source > appliedConfigSource) {
+                appliedConfigSource = source
+                appliedConfigFingerprint = fingerprint
+                DebugLog.d(TAG, "WireGuard skip reapply (same keys, source=$source)")
+            }
+            return
+        }
         if (tunnelReady.value && source <= appliedConfigSource && fingerprint == appliedConfigFingerprint) return
 
         fallbackJob?.cancel()
         scope.launch {
             wgApplyMutex.withLock {
                 if (source < appliedConfigSource) return@withLock
+                val prevSemantic = wgConfigSemanticKey(lastWgConfig.orEmpty())
+                if (tunnelReady.value && semanticKey == prevSemantic && semanticKey.isNotBlank()) {
+                    if (source > appliedConfigSource) {
+                        appliedConfigSource = source
+                        appliedConfigFingerprint = fingerprint
+                        lastWgConfig = normalized
+                        DebugLog.d(TAG, "WireGuard skip reapply in lock (same keys)")
+                    }
+                    return@withLock
+                }
                 if (tunnelReady.value && source <= appliedConfigSource && fingerprint == appliedConfigFingerprint) {
                     return@withLock
                 }
@@ -369,16 +442,16 @@ object WdttTunnelManager {
                         DebugLog.i(TAG, "WireGuard upgrade config source=$source")
                         wgHelper?.stopTunnel()
                         delay(150)
+                        tunnelReady.value = false
+                        readyProbeJob?.cancel()
                     }
                     val srcName = when (source) { 3 -> "file"; 2 -> "box"; else -> "api" }
                     wgHelper?.startTunnel(normalized, wgExcludeIps.toList())
                     appliedConfigSource = source
                     appliedConfigFingerprint = fingerprint
-                    if (!tunnelReady.value) {
-                        tunnelReady.value = true
-                    }
                     Log.i(TAG, "WireGuard UP ($srcName)")
                     DebugLog.i(TAG, "WireGuard UP ($srcName)")
+                    markTunnelReadyAfterProbe(source)
                 } catch (e: Exception) {
                     lastError.value = "WireGuard: ${e.message}"
                     Log.e(TAG, "WireGuard failed", e)
@@ -438,6 +511,7 @@ object WdttTunnelManager {
     private fun killProcess() {
         fallbackJob?.cancel()
         confPollJob?.cancel()
+        readyProbeJob?.cancel()
         readerJob?.cancel()
         val proc = process
         process = null

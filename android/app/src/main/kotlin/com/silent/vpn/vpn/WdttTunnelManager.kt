@@ -125,6 +125,12 @@ object WdttTunnelManager {
 
                 if (!isSwitching) {
                     wgExcludeIps.clear()
+                    // Bootstrap: app внутри VPN → нужно исключить TURN IP из AllowedIPs,
+                    // иначе libclient зацикливается: TURN-трафик идёт через WG → loop.
+                    // Main VPN: app вне VPN → loop невозможен, exclusion не нужен.
+                    if (isBootstrapMode) {
+                        wgExcludeIps.add(params.serverIp.trim())
+                    }
                 }
 
                 DebugLog.i(
@@ -286,7 +292,15 @@ object WdttTunnelManager {
                         return@forEachLine
                     }
 
-
+                    // Bootstrap: app внутри VPN → динамически исключаем TURN IP из AllowedIPs.
+                    // Main VPN: app вне VPN → exclusion не нужен (loop невозможен).
+                    if (isBootstrapMode) {
+                        Regex("""TURN UDP \(([\d.]+):\d+\)""").find(lineTrim)?.groupValues?.getOrNull(1)?.let { turnIp ->
+                            if (wgExcludeIps.add(turnIp)) {
+                                DebugLog.i(TAG, "Bootstrap TURN IP excluded from WG: $turnIp")
+                            }
+                        }
+                    }
 
                     if (lineTrim.contains("[ДИСП] Воркер") && lineTrim.contains("зарегистрирован")) {
                         Regex("всего:\\s*(\\d+)").find(lineTrim)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let {

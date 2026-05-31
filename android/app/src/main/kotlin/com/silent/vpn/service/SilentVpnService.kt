@@ -120,8 +120,8 @@ class SilentVpnService : Service() {
             val apiWg = vpnConfig?.let { WireGuardConfigBuilder.fromVpnConfig(it) }
 
             val hashCount = hashes.size.coerceAtLeast(1)
-            val maxWorkers = if (isCellularNetwork()) 6 else 12
-            val workerCount = (vpnConfig?.stream_count ?: (hashCount * 3).coerceAtLeast(6))
+            val maxWorkers = if (isCellularNetwork()) 6 else 9
+            val workerCount = (vpnConfig?.stream_count ?: (hashCount * 3).coerceAtLeast(3))
                 .coerceIn(3, maxWorkers)
 
             WdttTunnelManager.start(

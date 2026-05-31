@@ -852,8 +852,8 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun waitForTunnelReady(context: Context) {
-        repeat(150) {
-            delay(200)
+        repeat(200) {
+            delay(100)
             if (_vpnState.value != VpnState.CONNECTING) return
             if (WdttTunnelManager.tunnelReady.value) {
                 onVpnTunnelReady()

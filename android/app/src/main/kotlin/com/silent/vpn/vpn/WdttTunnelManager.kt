@@ -12,6 +12,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -184,7 +185,7 @@ object WdttTunnelManager {
                 if (!running.value) break
                 if (tunnelReady.value && appliedConfigSource >= 3) break
                 readConfFile(context)?.let { applyWireGuard(it, source = 3) }
-                delay(400)
+                delay(200)
             }
         }
     }
@@ -194,15 +195,15 @@ object WdttTunnelManager {
         fallbackJob?.cancel()
         val fallback = apiFallbackConfig ?: return
         fallbackJob = scope.launch {
-            delay(8_000)
+            delay(4_000)
             if (tunnelReady.value || !running.value) return@launch
             if (appliedConfigSource >= 3) return@launch
-            if (activeWorkers.value < 2) {
+            if (activeWorkers.value < 1) {
                 DebugLog.w(TAG, "API fallback wait: workers=${activeWorkers.value}")
-                delay(2_000)
+                delay(1_000)
             }
             if (tunnelReady.value || !running.value || activeWorkers.value < 1) return@launch
-            DebugLog.w(TAG, "API fallback WireGuard (8s timeout)")
+            DebugLog.w(TAG, "API fallback WireGuard (4s timeout)")
             applyWireGuard(fallback, source = 1)
         }
     }
@@ -281,11 +282,8 @@ object WdttTunnelManager {
                             activeWorkers.value = it
                         }
                         apiFallbackConfig?.let { cfg ->
-                            if (activeWorkers.value >= 1 && !tunnelReady.value) {
-                                scope.launch {
-                                    delay(500)
-                                    if (!tunnelReady.value) applyWireGuard(cfg, source = 1)
-                                }
+                            if (activeWorkers.value >= 1 && !tunnelReady.value && appliedConfigSource == 0) {
+                                applyWireGuard(cfg, source = 1)
                             }
                         }
                         return@forEachLine
@@ -365,14 +363,14 @@ object WdttTunnelManager {
     private suspend fun awaitGatewayReachable(
         gateway: String = "10.66.66.1",
         port: Int = 8000,
-        attempts: Int = 6,
+        attempts: Int = 3,
     ): Boolean {
         repeat(attempts) { attempt ->
             if (!running.value) return false
             val ok = withContext(Dispatchers.IO) {
                 runCatching {
                     Socket().use { socket ->
-                        socket.connect(InetSocketAddress(gateway, port), 1500)
+                        socket.connect(InetSocketAddress(gateway, port), 1000)
                     }
                     true
                 }.getOrDefault(false)
@@ -381,7 +379,7 @@ object WdttTunnelManager {
                 DebugLog.i(TAG, "Gateway $gateway:$port reachable")
                 return true
             }
-            delay(350L * (attempt + 1))
+            if (attempt + 1 < attempts) delay(200L)
         }
         DebugLog.w(TAG, "Gateway $gateway:$port not reachable after $attempts attempts")
         return false
@@ -390,12 +388,24 @@ object WdttTunnelManager {
     private fun markTunnelReadyAfterProbe(source: Int) {
         readyProbeJob?.cancel()
         readyProbeJob = scope.launch {
-            delay(400)
-            if (!running.value || appliedConfigSource != source) return@launch
-            val gw = com.silent.vpn.data.SilentRepository.WG_TUNNEL_GATEWAY
-            val reachable = awaitGatewayReachable(gateway = gw, port = 8000)
-            if (!running.value) return@launch
-            if (reachable || activeWorkers.value >= 1) {
+            val probeJob = launch {
+                awaitGatewayReachable(
+                    gateway = com.silent.vpn.data.SilentRepository.WG_TUNNEL_GATEWAY,
+                    port = 8000,
+                )
+            }
+            delay(150)
+            if (!running.value || appliedConfigSource != source) {
+                probeJob.cancel()
+                return@launch
+            }
+            if (activeWorkers.value >= 1) {
+                tunnelReady.value = true
+                probeJob.cancel()
+                return@launch
+            }
+            withTimeoutOrNull(2_000) { probeJob.join() }
+            if (running.value && activeWorkers.value >= 1) {
                 tunnelReady.value = true
             }
         }

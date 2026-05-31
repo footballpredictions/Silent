@@ -1,10 +1,10 @@
 import { activeServerHashCount, getSavedHashItems } from './hashItemsStore'
 
 export const WORKERS_PER_GROUP = 9
-export const MAX_WORKERS_PER_HASH = 9
+export const MAX_WORKERS_PER_HASH = 27
 export const DEFAULT_TOTAL_WORKERS = 18
-export const MAX_HASHES = 2
-export const LIBCLIENT_MAX_WORKERS = 18
+export const MAX_HASHES = 4
+export const LIBCLIENT_MAX_WORKERS = 108
 export const BOOTSTRAP_STREAM_COUNT = 3
 
 /** @deprecated legacy key — migrated to TOTAL_WORKERS_KEY */
@@ -30,7 +30,8 @@ export function groupsForWorkers(totalWorkers: number): number {
 }
 
 /**
- * Только нужное число хешей для `-vk`: при n=18 — 2 хеша, не все слоты сразу.
+ * Передаём libclient ВСЕ доступные хеши (до MAX_HASHES).
+ * libclient сам распределяет воркеров по хешам циклически — как в proxy-turn-vk-android.
  */
 export function hashesForLibclient(allHashes: string[], totalWorkers: number): string[] {
   const unique = allHashes
@@ -38,11 +39,7 @@ export function hashesForLibclient(allHashes: string[], totalWorkers: number): s
     .map(h => h.trim())
     .filter(h => h.length >= 6)
     .filter((h, i, arr) => arr.indexOf(h) === i)
-  if (unique.length === 0) return []
-  const groups = groupsForWorkers(
-    workersForLibclient(totalWorkers, Math.min(unique.length, MAX_HASHES)),
-  )
-  return unique.slice(0, groups)
+  return unique.slice(0, MAX_HASHES)
 }
 
 export function migrateLegacyPerHash(oldPerHash: number, activeHashCount: number): number {

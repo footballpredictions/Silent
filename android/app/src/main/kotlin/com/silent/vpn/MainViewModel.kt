@@ -28,6 +28,7 @@ import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.vk.HashParser
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -661,6 +662,9 @@ class MainViewModel @Inject constructor(
     fun connect(context: Context) {
         viewModelScope.launch {
             DebugLog.i("MainViewModel", "connect() start")
+            if (VpnNetworkHelper.isOtherVpnActive(context)) {
+                DebugLog.i("MainViewModel", "Подключение заменит другой активный VPN")
+            }
             _vpnState.value = VpnState.CONNECTING
             _vpnError.value = null
             runCatching {

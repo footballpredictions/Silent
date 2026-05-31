@@ -44,6 +44,7 @@ object WdttTunnelManager {
     private var lastContext: Context? = null
     private var processStartedAtMs = 0L
     private var wrapAuthTimeoutCount = 0
+    private var isSwitchingTransport = false
     private val wgExcludeIps = linkedSetOf<String>()
 
     val running = MutableStateFlow(false)
@@ -88,6 +89,7 @@ object WdttTunnelManager {
                 killProcess()
                 activeWorkers.value = 0
                 stats.value = ""
+                isSwitchingTransport = true
             }
             wgHelper = WireGuardHelper(ctx)
             appContext = ctx
@@ -280,6 +282,13 @@ object WdttTunnelManager {
                     if (lineTrim.contains("[ДИСП] Воркер") && lineTrim.contains("зарегистрирован")) {
                         Regex("всего:\\s*(\\d+)").find(lineTrim)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let {
                             activeWorkers.value = it
+                        }
+                        if (isSwitchingTransport && activeWorkers.value >= 1 && tunnelReady.value) {
+                            isSwitchingTransport = false
+                            scope.launch {
+                                delay(400)
+                                reloadWireGuard(context)
+                            }
                         }
                         apiFallbackConfig?.let { cfg ->
                             if (activeWorkers.value >= 1 && !tunnelReady.value && appliedConfigSource == 0) {
@@ -502,15 +511,19 @@ object WdttTunnelManager {
 
     fun pause() {
         if (!running.value) return
-        DebugLog.i(TAG, "pause: сеть потеряна, libclient остановлен")
+        DebugLog.i(TAG, "pause: сеть потеряна, libclient остановлен (WG остаётся)")
         killProcess()
         activeWorkers.value = 0
+        // running=true — сервис знает, что VPN-сессия ещё активна
     }
 
     fun resume() {
+        if (running.value && process?.isAlive == true) return
         val params = lastParams ?: return
         val ctx = appContext ?: return
-        DebugLog.i(TAG, "resume: сеть восстановлена")
+        DebugLog.i(TAG, "resume: сеть восстановлена, перезапуск libclient")
+        running.value = true
+        isSwitchingTransport = true
         scope.launch { start(ctx, params, isSwitching = true) }
     }
 

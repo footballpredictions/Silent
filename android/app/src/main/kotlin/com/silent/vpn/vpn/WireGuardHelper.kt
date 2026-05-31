@@ -41,6 +41,9 @@ class WireGuardHelper(context: Context) {
             if (VpnService.prepare(appContext) != null) {
                 throw IllegalStateException("VPN-разрешение не выдано")
             }
+            if (VpnNetworkHelper.isOtherVpnActive(appContext)) {
+                DebugLog.i(TAG, "Замена другого VPN — поднимаем Silent")
+            }
             ensureGoBackendServiceStarted()
 
             var configToApply = configString

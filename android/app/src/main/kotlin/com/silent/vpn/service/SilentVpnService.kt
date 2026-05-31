@@ -21,12 +21,15 @@ import com.silent.vpn.MainActivity
 import com.silent.vpn.R
 import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.WireGuardConfigBuilder
 import com.google.gson.Gson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -59,6 +62,9 @@ class SilentVpnService : Service() {
     private var lastTransport: Int? = null
     private var lastNetworkChangeTime = 0L
     private var connectStartedAtMs = 0L
+    private var lastUnderlyingInternet: Boolean? = null
+    private var pausedForNetwork = false
+    private var networkRecoveryJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -156,6 +162,9 @@ class SilentVpnService : Service() {
 
     private fun disconnect() {
         DebugLog.i("VpnService", "DISCONNECT")
+        networkRecoveryJob?.cancel()
+        pausedForNetwork = false
+        lastUnderlyingInternet = null
         teardownNetworkCallback()
         WdttTunnelManager.stop()
         isRunning = false
@@ -174,10 +183,28 @@ class SilentVpnService : Service() {
     private fun setupNetworkCallback() {
         if (networkCallback != null) return
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        lastUnderlyingInternet = VpnNetworkHelper.hasUnderlyingInternet(this)
         networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                scheduleNetworkRecovery(1500) { handleNetworkRestored() }
+            }
+
+            override fun onLost(network: Network) {
+                scheduleNetworkRecovery(2000) { handleNetworkLost() }
+            }
+
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return
                 if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) return
+                val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                val prev = lastUnderlyingInternet
+                lastUnderlyingInternet = hasInternet
+                if (prev != null && !hasInternet && prev) {
+                    scheduleNetworkRecovery(2000) { handleNetworkLost() }
+                } else if (prev == false && hasInternet) {
+                    scheduleNetworkRecovery(1500) { handleNetworkRestored() }
+                }
+
+                if (!hasInternet) return
                 val transport = when {
                     caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ->
                         NetworkCapabilities.TRANSPORT_WIFI
@@ -185,12 +212,13 @@ class SilentVpnService : Service() {
                         NetworkCapabilities.TRANSPORT_CELLULAR
                     else -> return
                 }
-                val prev = lastTransport
+                val prevTransport = lastTransport
                 lastTransport = transport
-                if (prev == null || prev == transport) return
+                if (prevTransport == null || prevTransport == transport) return
                 if (!canRestartForNetwork()) return
-                DebugLog.i("VpnService", "Смена транспорта $prev → $transport — restartTransport")
-                handleNetworkChange()
+                DebugLog.i("VpnService", "Смена транспорта $prevTransport → $transport — restartTransport")
+                pausedForNetwork = false
+                handleTransportChange()
             }
         }
         val request = NetworkRequest.Builder()
@@ -198,6 +226,44 @@ class SilentVpnService : Service() {
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
         connectivityManager?.registerNetworkCallback(request, networkCallback!!)
+    }
+
+    private fun scheduleNetworkRecovery(delayMs: Long, action: () -> Unit) {
+        networkRecoveryJob?.cancel()
+        networkRecoveryJob = scope.launch {
+            delay(delayMs.toLong())
+            if (isRunning) action()
+        }
+    }
+
+    private fun handleNetworkLost() {
+        if (!isRunning || pausedForNetwork) return
+        if (!WdttTunnelManager.running.value) return
+        DebugLog.i("VpnService", "Потеря сети (звонок/разрыв) — pause libclient")
+        pausedForNetwork = true
+        WdttTunnelManager.pause()
+    }
+
+    private fun handleNetworkRestored() {
+        if (!isRunning) return
+        if (!pausedForNetwork && WdttTunnelManager.running.value) return
+        if (!VpnNetworkHelper.hasUnderlyingInternet(this)) return
+        DebugLog.i("VpnService", "Сеть восстановлена — resume libclient")
+        pausedForNetwork = false
+        if (WdttTunnelManager.tunnelReady.value) {
+            WdttTunnelManager.resume()
+        } else {
+            WdttTunnelManager.restartTransport()
+        }
+    }
+
+    private fun handleTransportChange() {
+        val now = System.currentTimeMillis()
+        if (now - lastNetworkChangeTime < NETWORK_DEBOUNCE_MS) return
+        lastNetworkChangeTime = now
+        if (WdttTunnelManager.running.value || WdttTunnelManager.tunnelReady.value) {
+            WdttTunnelManager.restartTransport()
+        }
     }
 
     private fun teardownNetworkCallback() {
@@ -219,15 +285,6 @@ class SilentVpnService : Service() {
         val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
         return caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
             !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-    }
-
-    private fun handleNetworkChange() {
-        val now = System.currentTimeMillis()
-        if (now - lastNetworkChangeTime < NETWORK_DEBOUNCE_MS) return
-        lastNetworkChangeTime = now
-        if (WdttTunnelManager.running.value) {
-            WdttTunnelManager.restartTransport()
-        }
     }
 
     private fun acquireWakeLock() {

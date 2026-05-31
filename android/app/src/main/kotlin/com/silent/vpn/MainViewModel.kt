@@ -188,6 +188,8 @@ class MainViewModel @Inject constructor(
                     _vpnState.value == VpnState.CONNECTED &&
                     !WdttTunnelManager.running.value
                 ) {
+                    onlineHeartbeatJob?.cancel()
+                    onlineHeartbeatJob = null
                     _vpnState.value = VpnState.DISCONNECTED
                     repo.clearTunnelApiBase()
                 }
@@ -310,16 +312,25 @@ class MainViewModel @Inject constructor(
 
     private fun markDeviceOnlineOnServer() {
         if (_vpnState.value != VpnState.CONNECTED) return
-        viewModelScope.launch {
-            runCatching {
-                repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
+        onlineHeartbeatJob?.cancel()
+        // Запускаем heartbeat: первый вызов сразу, затем каждые 5 минут пока VPN подключён.
+        // clearTunnelApiBase() — обязательно, чтобы не использовать кэшированный bootstrap
+        // gateway (10.66.66.1), который недоступен из основного VPN (app вне туннеля).
+        onlineHeartbeatJob = viewModelScope.launch {
+            while (_vpnState.value == VpnState.CONNECTED) {
+                repo.clearTunnelApiBase()
+                runCatching {
+                    repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
+                }
+                delay(5 * 60 * 1000L)
             }
-            loadProfile()
         }
+        loadProfile()
     }
 
     private var profilePollJob: Job? = null
     private var vpnProfilePollJob: Job? = null
+    private var onlineHeartbeatJob: Job? = null
 
     /** Периодическое обновление списка сессий, пока открыт экран «Сессии» (как на PC, 5 с). */
     fun setSessionsScreenActive(active: Boolean) {
@@ -734,6 +745,8 @@ class MainViewModel @Inject constructor(
     }
 
     private fun stopVpnLocally(context: Context) {
+        onlineHeartbeatJob?.cancel()
+        onlineHeartbeatJob = null
         runCatching {
             val intent = Intent(context, SilentVpnService::class.java).apply {
                 action = SilentVpnService.ACTION_DISCONNECT
@@ -969,6 +982,8 @@ class MainViewModel @Inject constructor(
     }
 
     fun disconnect(context: Context) {
+        onlineHeartbeatJob?.cancel()
+        onlineHeartbeatJob = null
         viewModelScope.launch {
             _vpnState.value = VpnState.DISCONNECTING
             runCatching {

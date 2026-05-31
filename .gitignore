@@ -16,6 +16,10 @@ dist/
 pc/dist/
 pc/node_modules/
 
+# Release builds (local only, never commit)
+releases/
+*.apk
+
 # Android
 android/.gradle/
 android/app/.gradle/

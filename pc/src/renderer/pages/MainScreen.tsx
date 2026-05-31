@@ -18,6 +18,7 @@ import { waitVpnReady } from '../vpnReady'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
+import { applyWorkerCount } from '../hashChannelHelper'
 import { pushLog } from '../debugLog'
 
 interface DeviceInfo {
@@ -78,6 +79,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const [renameTarget, setRenameTarget] = useState<DeviceInfo | null>(null)
   const [renameText, setRenameText] = useState('')
   const [renameSaving, setRenameSaving] = useState(false)
+  const [activeWorkers, setActiveWorkers] = useState(0)
 
   const fetchProfile = useCallback(async () => {
     try {
@@ -119,6 +121,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     const onStopped = () => {
       setConnected(false)
       setConnecting(false)
+      setActiveWorkers(0)
     }
     const onError = (msg: string) => {
       pushLog('VPN', msg, 'E')
@@ -134,6 +137,8 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     }
     const onLog = (line: string) => {
       if (!line?.trim()) return
+      const m = line.match(/Активных:\s*(\d+)/)
+      if (m) setActiveWorkers(parseInt(m[1], 10))
       const level = /error|ошиб|fail|таймаут/i.test(line) ? 'E' : 'I'
       pushLog('VPN', line.trim(), level)
     }
@@ -226,7 +231,8 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         }
         if ((window as any).electronAPI?.vpnConnect) {
           pushLog('Main', 'vpnConnect start')
-          const res = await (window as any).electronAPI.vpnConnect(config)
+          const connectCfg = applyWorkerCount(config)
+          const res = await (window as any).electronAPI.vpnConnect(connectCfg)
           if (res?.error) { pushLog('Main', `vpnConnect: ${res.error}`, 'E'); alert(res.error); return }
           const ready = await waitVpnReady(90000)
           if (!ready) {
@@ -520,7 +526,13 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
             )}
 
             {menuPage === 'hashes' && (
-              <MenuHashesPanel fg={fg} muted={muted} onBack={() => setMenuPage(null)} />
+              <MenuHashesPanel
+                fg={fg}
+                muted={muted}
+                vpnConnected={connected}
+                activeWorkers={activeWorkers}
+                onBack={() => setMenuPage(null)}
+              />
             )}
 
             {menuPage === 'promo' && (

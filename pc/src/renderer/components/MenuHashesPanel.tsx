@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import api from '../api'
 import {
+  CHANNEL_OPTIONS,
+  computeWorkerCount,
+  getChannelsPerHash,
+  saveChannelsPerHash,
+  signalBars,
+} from '../hashChannelHelper'
+import {
   formatSavedAt,
   getSavedHashItems,
   getSavedHashItemsUpdatedAt,
@@ -13,9 +20,28 @@ interface Props {
   fg: string
   muted: string
   onBack: () => void
+  vpnConnected?: boolean
+  activeWorkers?: number
 }
 
-export default function MenuHashesPanel({ fg, muted, onBack }: Props) {
+function SignalBars({ bars, fg }: { bars: number; fg: string }) {
+  return (
+    <div className="flex items-end gap-0.5 shrink-0">
+      {[0, 1, 2, 3].map(i => (
+        <div
+          key={i}
+          className="w-[3px] rounded-sm"
+          style={{
+            height: 6 + i * 3,
+            background: i < bars ? '#22C55E' : `${fg}26`,
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
+export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = false, activeWorkers = 0 }: Props) {
   const cached = getSavedHashItems()
   const [loading, setLoading] = useState(cached.length === 0)
   const [syncing, setSyncing] = useState(false)
@@ -23,6 +49,15 @@ export default function MenuHashesPanel({ fg, muted, onBack }: Props) {
   const [items, setItems] = useState<HashItem[]>(cached)
   const [savedAt, setSavedAt] = useState(getSavedHashItemsUpdatedAt())
   const [refreshKey, setRefreshKey] = useState(0)
+  const [channelsPerHash, setChannelsPerHash] = useState(getChannelsPerHash())
+
+  const activeHashCount = Math.max(
+    items.filter(i => i.status === 'active' && i.is_active && i.hash?.trim()).length,
+    1,
+  )
+  const totalChannels = computeWorkerCount(activeHashCount, channelsPerHash)
+  const workersPerHashEst =
+    vpnConnected && activeHashCount > 0 ? Math.ceil(activeWorkers / activeHashCount) : 0
 
   const refreshFromServer = useCallback(async () => {
     setSyncing(true)
@@ -77,6 +112,44 @@ export default function MenuHashesPanel({ fg, muted, onBack }: Props) {
           Последнее обновление: {formatSavedAt(savedAt)}
         </p>
       )}
+
+      <div className="rounded-xl border border-gray-100 p-3 mb-3 text-left" style={{ borderColor: `${fg}20` }}>
+        <div className="text-[11px] font-semibold mb-1" style={{ color: fg }}>
+          Каналов на хеш
+        </div>
+        <p className="text-[10px] mb-2" style={{ color: muted }}>
+          {activeHashCount} хеш(а) × {channelsPerHash} = {totalChannels} каналов
+        </p>
+        <div className="flex gap-1.5">
+          {CHANNEL_OPTIONS.map(option => {
+            const picked = channelsPerHash === option
+            return (
+              <button
+                key={option}
+                type="button"
+                onClick={() => {
+                  setChannelsPerHash(option)
+                  saveChannelsPerHash(option)
+                }}
+                className="flex-1 rounded-lg py-2 text-xs font-bold transition-opacity"
+                style={{
+                  background: picked ? fg : `${fg}14`,
+                  color: picked ? '#fff' : fg,
+                }}
+              >
+                {option}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {vpnConnected && (
+        <p className="text-[10px] mb-2 text-left" style={{ color: muted }}>
+          Активных каналов: {activeWorkers} / {totalChannels}
+        </p>
+      )}
+
       <button
         type="button"
         disabled={syncing}
@@ -108,19 +181,29 @@ export default function MenuHashesPanel({ fg, muted, onBack }: Props) {
       )}
       {items.map((item, i) => {
         const active = item.status === 'active' && item.is_active
+        const bars =
+          vpnConnected && active ? signalBars(workersPerHashEst, channelsPerHash) : 0
         return (
           <div key={`${item.label}-${i}`} className="flex gap-2 py-2 border-b border-gray-100 last:border-0 text-left">
             <div className={`w-2 h-2 rounded-full mt-1 shrink-0 ${active ? 'bg-green-500' : 'bg-red-500'}`} />
             <div className="flex-1 min-w-0">
-              <div className="text-xs font-semibold" style={{ color: fg }}>
-                {item.label}
-                <span className={`font-normal ml-1 ${active ? 'text-green-600' : 'text-red-500'}`}>
-                  · {active ? 'Активна' : 'Просрочен'}
-                </span>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-semibold min-w-0" style={{ color: fg }}>
+                  {item.label}
+                  <span className={`font-normal ml-1 ${active ? 'text-green-600' : 'text-red-500'}`}>
+                    · {active ? 'Активна' : 'Просрочен'}
+                  </span>
+                </div>
+                {active && bars > 0 && <SignalBars bars={bars} fg={fg} />}
               </div>
               <div className="text-[10px] font-mono break-all mt-1" style={{ color: active ? muted : `${fg}55` }}>
                 {item.hash}
               </div>
+              {active && (
+                <div className="text-[9px] mt-0.5" style={{ color: muted }}>
+                  до {channelsPerHash} каналов
+                </div>
+              )}
             </div>
           </div>
         )

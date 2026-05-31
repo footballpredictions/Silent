@@ -2,7 +2,7 @@ import api from './api'
 import { clearBootstrapHash, getBootstrapHash, type VpnConfigPayload } from './vkConfig'
 import { pushLog } from './debugLog'
 import { buildLocalBootstrapConfig } from './bootstrapVpnConfig'
-import { waitVpnReady } from './vpnReady'
+import { applyWorkerCount } from './hashChannelHelper'
 import { authStrings as s } from './authStrings'
 
 const PRE_LOGIN_FP_KEY = 'silent_pre_login_fp'
@@ -133,7 +133,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
     return false
   }
 
-  const res = await electron.vpnConnect(config)
+  const res = await electron.vpnConnect(applyWorkerCount(config))
   if (res?.error) {
     pushLog('Bootstrap', `vpnConnect error: ${res.error}`, 'E')
     notifyStatus(res.error)

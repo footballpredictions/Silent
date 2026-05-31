@@ -2,13 +2,13 @@ package com.silent.vpn.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
@@ -43,7 +43,6 @@ fun MenuHashesScreen(
     var items by remember { mutableStateOf(repo.getSavedHashItems()) }
     var savedAt by remember { mutableStateOf(repo.getSavedHashItemsUpdatedAt()) }
     var refreshKey by remember { mutableIntStateOf(0) }
-    var channelsPerHash by remember { mutableIntStateOf(repo.getChannelsPerHash()) }
 
     val activeWorkers by WdttTunnelManager.activeWorkers.collectAsState()
     val vpnRunning by WdttTunnelManager.running.collectAsState()
@@ -53,12 +52,16 @@ fun MenuHashesScreen(
     val activeHashCount = serverItems
         .count { it.status == "active" && it.is_active && it.hash.isNotBlank() }
         .coerceIn(1, HashChannelHelper.MAX_HASHES)
-    val totalChannels = HashChannelHelper.computeWorkerCount(activeHashCount, channelsPerHash)
-    val workersPerHashEst = if (activeHashCount > 0 && vpnRunning) {
-        (activeWorkers + activeHashCount - 1) / activeHashCount
-    } else {
-        0
+    val maxTotalWorkers = HashChannelHelper.maxTotalWorkers(activeHashCount)
+    var totalWorkers by remember(activeHashCount) {
+        mutableIntStateOf(repo.getTotalWorkers(activeHashCount))
     }
+
+    LaunchedEffect(activeHashCount) {
+        val normalized = repo.getTotalWorkers(activeHashCount)
+        if (totalWorkers != normalized) totalWorkers = normalized
+    }
+
 
     suspend fun refreshFromServer() {
         syncing = true
@@ -115,18 +118,19 @@ fun MenuHashesScreen(
 
         ChannelStrengthSelector(
             fg = fg,
-            selected = channelsPerHash,
+            totalWorkers = totalWorkers,
             activeHashCount = activeHashCount,
-            totalChannels = totalChannels,
+            maxTotalWorkers = maxTotalWorkers,
+            vpnRunning = SilentVpnService.isRunning,
             onSelect = { value ->
-                channelsPerHash = value
-                repo.saveChannelsPerHash(value)
+                totalWorkers = value
+                repo.saveTotalWorkers(value, activeHashCount)
             },
         )
 
         if (SilentVpnService.isRunning && tunnelReady) {
             Text(
-                "Активных каналов: $activeWorkers / $totalChannels",
+                "Активных каналов: $activeWorkers / $totalWorkers",
                 fontSize = 10.sp,
                 color = fg.copy(0.55f),
                 modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
@@ -162,16 +166,20 @@ fun MenuHashesScreen(
                 if (error != null) {
                     Text(error!!, fontSize = 11.sp, color = Color(0xFFEF4444), modifier = Modifier.padding(bottom = 8.dp))
                 }
-                serverItems.forEach { item ->
+                serverItems.forEachIndexed { index, item ->
                     HashRow(
                         item = item,
                         fg = fg,
                         signalBars = if (vpnRunning && item.status == "active" && item.is_active) {
-                            HashChannelHelper.signalBars(workersPerHashEst, channelsPerHash)
+                            HashChannelHelper.signalBars(activeWorkers, totalWorkers)
                         } else {
                             0
                         },
-                        channelsPerHash = channelsPerHash,
+                        maxChannels = HashChannelHelper.workersForHashSlot(
+                            totalWorkers,
+                            index,
+                            activeHashCount,
+                        ),
                     )
                 }
             }
@@ -182,11 +190,17 @@ fun MenuHashesScreen(
 @Composable
 private fun ChannelStrengthSelector(
     fg: Color,
-    selected: Int,
+    totalWorkers: Int,
     activeHashCount: Int,
-    totalChannels: Int,
+    maxTotalWorkers: Int,
+    vpnRunning: Boolean,
     onSelect: (Int) -> Unit,
 ) {
+    val min = HashChannelHelper.WORKERS_PER_GROUP.toFloat()
+    val max = maxTotalWorkers.toFloat()
+    val stepped = HashChannelHelper.normalizeTotalWorkers(totalWorkers, activeHashCount).toFloat()
+    val sliderSteps = ((maxTotalWorkers / HashChannelHelper.WORKERS_PER_GROUP) - 1).coerceAtLeast(0)
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -194,42 +208,40 @@ private fun ChannelStrengthSelector(
             .border(1.dp, fg.copy(0.12f), RoundedCornerShape(12.dp))
             .padding(12.dp),
     ) {
-        Text("Сила каналов", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Сила каналов", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = fg)
+            Text(
+                "${stepped.toInt()}",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = fg,
+            )
+        }
         Text(
-            "$activeHashCount хеш(а) × $selected = $totalChannels потоков (макс. ${HashChannelHelper.computeWorkerCount(activeHashCount, 27)})",
+            "Потоков: ${stepped.toInt()} из $maxTotalWorkers (шаг 9, до $activeHashCount хеш × 27)",
             fontSize = 10.sp,
             color = fg.copy(0.5f),
             modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            HashChannelHelper.OPTIONS.forEach { option ->
-                val picked = selected == option
-                val total = HashChannelHelper.computeWorkerCount(activeHashCount, option)
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (picked) fg else fg.copy(0.08f))
-                        .clickable { onSelect(option) }
-                        .padding(vertical = 6.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "$total",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (picked) Color.White else fg,
-                        )
-                        Text(
-                            "$option/хеш",
-                            fontSize = 9.sp,
-                            color = if (picked) Color.White.copy(0.85f) else fg.copy(0.45f),
-                        )
-                    }
-                }
-            }
-        }
+        Slider(
+            value = stepped,
+            onValueChange = { raw ->
+                onSelect(HashChannelHelper.normalizeTotalWorkers(raw.toInt(), activeHashCount))
+            },
+            valueRange = min..max,
+            steps = sliderSteps,
+            enabled = !vpnRunning,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "9 → 18 → 27 → 36… — каждые +9 добавляется хеш (в libclient уходит только n÷9 хешей)",
+            fontSize = 9.sp,
+            color = fg.copy(0.4f),
+        )
     }
 }
 
@@ -263,7 +275,7 @@ private fun HashRow(
     item: HashItemDto,
     fg: Color,
     signalBars: Int,
-    channelsPerHash: Int,
+    maxChannels: Int,
 ) {
     val active = item.status == "active" && item.is_active
     val lamp = if (active) Color(0xFF22C55E) else Color(0xFFEF4444)
@@ -306,9 +318,9 @@ private fun HashRow(
                 color = fg.copy(alpha = if (active) 0.65f else 0.35f),
                 modifier = Modifier.padding(top = 4.dp),
             )
-            if (active) {
+            if (active && maxChannels > 0) {
                 Text(
-                    "до $channelsPerHash каналов",
+                    "до $maxChannels каналов",
                     fontSize = 9.sp,
                     color = fg.copy(0.4f),
                     modifier = Modifier.padding(top = 2.dp),

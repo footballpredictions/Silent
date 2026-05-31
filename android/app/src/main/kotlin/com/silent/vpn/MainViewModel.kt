@@ -804,7 +804,9 @@ class MainViewModel @Inject constructor(
                             }
                             val serverHashes = hashItems.activeServerHashes().map { it.hash }
                             if (serverHashes.isNotEmpty() && vpnConfig != null) {
-                                vpnConfig = vpnConfig!!.copy(vk_hashes = serverHashes)
+                                vpnConfig = vpnConfig!!.copy(
+                                    vk_hashes = serverHashes.take(HashChannelHelper.MAX_HASHES),
+                                )
                                 repo.cacheVpnConfig(Gson().toJson(vpnConfig))
                                 if (serverHashes.size < HashChannelHelper.MAX_HASHES) {
                                     runCatching {
@@ -860,7 +862,10 @@ class MainViewModel @Inject constructor(
 
     private fun vpnConfigForWdtt(config: VpnConfig): VpnConfig {
         val boot = repo.getBootstrapHash()?.trim().orEmpty()
-        val server = config.vk_hashes.filter { it.isNotBlank() && it != boot }
+        val server = config.vk_hashes
+            .filter { it.isNotBlank() && it != boot }
+            .distinct()
+            .take(HashChannelHelper.MAX_HASHES)
         return if (server.isNotEmpty()) config.copy(vk_hashes = server) else config
     }
 

@@ -67,6 +67,7 @@ object WdttTunnelManager {
 
     private var confPollJob: Job? = null
     private var readyProbeJob: Job? = null
+    private var lastPolledConfFingerprint: String? = null
 
     fun start(context: Context, params: Params, isSwitching: Boolean = false) {
         if (running.value && !isSwitching) return
@@ -104,11 +105,11 @@ object WdttTunnelManager {
                 }
                 DebugLog.i(TAG, "libclient path=$binaryPath size=${File(binaryPath).length()}")
 
-                val hashList = params.vkHashes
-                    .flatMap { it.split(Regex("[,\\s\\n]+")) }
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() }
-                    .take(4)
+                val workers = HashChannelHelper.workersForLibclient(
+                    params.workers,
+                    params.vkHashes.size.coerceAtMost(HashChannelHelper.MAX_HASHES),
+                )
+                val hashList = HashChannelHelper.hashesForLibclient(params.vkHashes, workers)
                 if (hashList.isEmpty()) {
                     lastError.value = "Нет VK-хешей"
                     DebugLog.e(TAG, lastError.value!!)
@@ -125,13 +126,16 @@ object WdttTunnelManager {
                     wgExcludeIps.add(params.serverIp.trim())
                 }
 
-                DebugLog.i(TAG, "start peer=${params.serverIp}:${params.serverPort} hashes=${hashList.size} switching=$isSwitching")
+                DebugLog.i(
+                    TAG,
+                    "start peer=${params.serverIp}:${params.serverPort} n=$workers hashes=${hashList.size} switching=$isSwitching",
+                )
 
                 val cmd = listOf(
                     binaryPath,
                     "-peer", "${params.serverIp}:${params.serverPort}",
                     "-vk", hashList.joinToString(","),
-                    "-n", params.workers.coerceIn(1, 128).toString(),
+                    "-n", workers.toString(),
                     "-listen", "127.0.0.1:${params.listenPort}",
                     "-device-id", params.deviceId,
                     "-password", params.wdttPassword,
@@ -182,30 +186,38 @@ object WdttTunnelManager {
 
     private fun startConfFilePoller(context: Context) {
         confPollJob?.cancel()
+        lastPolledConfFingerprint = null
         confPollJob = scope.launch {
             while (running.value) {
-                if (!running.value) break
-                if (tunnelReady.value && appliedConfigSource >= 3) break
-                readConfFile(context)?.let { applyWireGuard(it, source = 3) }
-                delay(200)
+                if (appliedConfigSource >= 2) break
+                readConfFile(context)?.let { conf ->
+                    val fp = conf.hashCode().toString()
+                    if (fp != lastPolledConfFingerprint) {
+                        lastPolledConfFingerprint = fp
+                        applyWireGuard(conf, source = 3)
+                    }
+                }
+                delay(500)
             }
         }
     }
 
-    /** Резерв: API-конфиг, если libclient не записал wg-turn.conf. */
+    /** Резерв: API-конфиг только если libclient не выдал box/file (на LTE дольше). */
     private fun startApiFallbackTimer() {
         fallbackJob?.cancel()
         val fallback = apiFallbackConfig ?: return
         fallbackJob = scope.launch {
-            delay(4_000)
-            if (tunnelReady.value || !running.value) return@launch
-            if (appliedConfigSource >= 3) return@launch
+            delay(12_000)
+            if (!running.value || appliedConfigSource >= 2) return@launch
             if (activeWorkers.value < 1) {
                 DebugLog.w(TAG, "API fallback wait: workers=${activeWorkers.value}")
-                delay(1_000)
+                repeat(8) {
+                    delay(1_000)
+                    if (!running.value || appliedConfigSource >= 2 || activeWorkers.value >= 1) return@repeat
+                }
             }
-            if (tunnelReady.value || !running.value || activeWorkers.value < 1) return@launch
-            DebugLog.w(TAG, "API fallback WireGuard (4s timeout)")
+            if (!running.value || appliedConfigSource >= 2 || activeWorkers.value < 1) return@launch
+            DebugLog.w(TAG, "API fallback WireGuard (12s timeout)")
             applyWireGuard(fallback, source = 1)
         }
     }
@@ -288,11 +300,6 @@ object WdttTunnelManager {
                             scope.launch {
                                 delay(400)
                                 reloadWireGuard(context)
-                            }
-                        }
-                        apiFallbackConfig?.let { cfg ->
-                            if (activeWorkers.value >= 1 && !tunnelReady.value && appliedConfigSource == 0) {
-                                applyWireGuard(cfg, source = 1)
                             }
                         }
                         return@forEachLine
@@ -432,43 +439,36 @@ object WdttTunnelManager {
         val fingerprint = normalized.hashCode().toString()
         val semanticKey = wgConfigSemanticKey(normalized)
         if (source < appliedConfigSource) return
-        if (tunnelReady.value && semanticKey == wgConfigSemanticKey(lastWgConfig.orEmpty())) {
+
+        val prevSemantic = wgConfigSemanticKey(lastWgConfig.orEmpty())
+        if (appliedConfigSource > 0 && semanticKey.isNotBlank() && semanticKey == prevSemantic) {
             if (source > appliedConfigSource) {
                 appliedConfigSource = source
                 appliedConfigFingerprint = fingerprint
-                DebugLog.d(TAG, "WireGuard skip reapply (same keys, source=$source)")
             }
+            DebugLog.d(TAG, "WireGuard skip reapply (same keys, source=$source)")
             return
         }
-        if (tunnelReady.value && source <= appliedConfigSource && fingerprint == appliedConfigFingerprint) return
+        if (appliedConfigSource > 0 && source <= appliedConfigSource && fingerprint == appliedConfigFingerprint) return
 
-        fallbackJob?.cancel()
+        if (source >= 2) fallbackJob?.cancel()
         scope.launch {
             wgApplyMutex.withLock {
                 if (source < appliedConfigSource) return@withLock
-                val prevSemantic = wgConfigSemanticKey(lastWgConfig.orEmpty())
-                if (tunnelReady.value && semanticKey == prevSemantic && semanticKey.isNotBlank()) {
+                val lockedPrev = wgConfigSemanticKey(lastWgConfig.orEmpty())
+                if (appliedConfigSource > 0 && semanticKey.isNotBlank() && semanticKey == lockedPrev) {
                     if (source > appliedConfigSource) {
                         appliedConfigSource = source
                         appliedConfigFingerprint = fingerprint
-                        lastWgConfig = normalized
-                        DebugLog.d(TAG, "WireGuard skip reapply in lock (same keys)")
                     }
+                    DebugLog.d(TAG, "WireGuard skip reapply in lock (same keys)")
                     return@withLock
                 }
-                if (tunnelReady.value && source <= appliedConfigSource && fingerprint == appliedConfigFingerprint) {
+                if (appliedConfigSource > 0 && source <= appliedConfigSource && fingerprint == appliedConfigFingerprint) {
                     return@withLock
                 }
-                val upgrade = tunnelReady.value && source > appliedConfigSource
                 lastWgConfig = normalized
                 try {
-                    if (upgrade) {
-                        DebugLog.i(TAG, "WireGuard upgrade config source=$source")
-                        wgHelper?.stopTunnel()
-                        delay(150)
-                        tunnelReady.value = false
-                        readyProbeJob?.cancel()
-                    }
                     val srcName = when (source) { 3 -> "file"; 2 -> "box"; else -> "api" }
                     wgHelper?.startTunnel(normalized, wgExcludeIps.toList())
                     appliedConfigSource = source

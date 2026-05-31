@@ -136,26 +136,30 @@ class SilentVpnService : Service() {
             val bootHash = SilentPrefs.open(this)
                 .getString(SilentRepository.PREF_BOOTSTRAP_HASH, null)?.trim().orEmpty()
             val serverHashes = hashes.filter { it.isNotBlank() && it != bootHash }
-            val wdttHashes = if (serverHashes.isNotEmpty()) serverHashes else hashes
+                .distinct()
+                .take(HashChannelHelper.MAX_HASHES)
+            val wdttHashes = if (serverHashes.isNotEmpty()) serverHashes else hashes.take(HashChannelHelper.MAX_HASHES)
             val hashCount = wdttHashes.size.coerceIn(1, HashChannelHelper.MAX_HASHES)
-            val workersPerHash = repoResolveWorkersPerHash()
-                .coerceIn(9, if (isCellularNetwork()) 27 else 27)
-            val totalWorkers = workersPerHash * hashCount
+            val totalWorkers = repoResolveTotalWorkers(hashCount)
+            val libclientHashes = HashChannelHelper.hashesForLibclient(wdttHashes, totalWorkers)
 
             WdttTunnelManager.start(
                 this,
                 WdttTunnelManager.Params(
                     serverIp = obj.getString("server_ip"),
                     serverPort = obj.getInt("server_port"),
-                    vkHashes = wdttHashes,
+                    vkHashes = libclientHashes.ifEmpty { wdttHashes },
                     wdttPassword = obj.getString("wdtt_password"),
                     deviceId = deviceId,
-                    workers = workersPerHash,
+                    workers = totalWorkers,
                     captchaMode = "auto",
                     apiWgConfig = apiWg,
                 ),
             )
-            DebugLog.i("VpnService", "WDTT n=$workersPerHash/хеш × $hashCount = $totalWorkers hashes=$hashCount")
+            DebugLog.i(
+                "VpnService",
+                "WDTT n=$totalWorkers vk=${libclientHashes.size}/$hashCount hashes",
+            )
             isRunning = true
         } catch (e: Exception) {
             DebugLog.e("VpnService", "connect failed", e)
@@ -422,13 +426,25 @@ class SilentVpnService : Service() {
         super.onDestroy()
     }
 
-    private fun repoResolveWorkersPerHash(): Int {
+    private fun repoResolveTotalWorkers(hashCount: Int): Int {
         val prefs = SilentPrefs.open(this)
-        return HashChannelHelper.workersPerHashForLibclient(
-            prefs.getInt(
-                SilentRepository.PREF_HASH_CHANNELS_PER_HASH,
-                HashChannelHelper.DEFAULT_CHANNELS_PER_HASH,
-            ),
+        val activeHashes = hashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)
+        if (prefs.contains(SilentRepository.PREF_HASH_TOTAL_WORKERS)) {
+            return HashChannelHelper.workersForLibclient(
+                prefs.getInt(
+                    SilentRepository.PREF_HASH_TOTAL_WORKERS,
+                    HashChannelHelper.DEFAULT_TOTAL_WORKERS,
+                ),
+                activeHashes,
+            )
+        }
+        val legacyPerHash = prefs.getInt(
+            SilentRepository.PREF_HASH_CHANNELS_PER_HASH,
+            HashChannelHelper.DEFAULT_TOTAL_WORKERS,
+        )
+        return HashChannelHelper.workersForLibclient(
+            HashChannelHelper.migrateLegacyPerHash(legacyPerHash, activeHashes),
+            activeHashes,
         )
     }
 }

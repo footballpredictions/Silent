@@ -28,6 +28,7 @@ class WireGuardHelper(context: Context) {
     private companion object {
         val wgMutex = Mutex()
         var sharedTunnel: WgTunnel? = null
+        var lastAppliedSemanticKey: String? = null
         private const val TAG = "WireGuardHelper"
     }
 
@@ -52,9 +53,16 @@ class WireGuardHelper(context: Context) {
                 DebugLog.i(TAG, "Split-tunnel: исключено IP=${excludeIPs.size}")
             }
 
+            val semanticKey = wgSemanticKey(configToApply)
+            if (sharedTunnel != null && semanticKey.isNotBlank() && semanticKey == lastAppliedSemanticKey) {
+                DebugLog.i(TAG, "WireGuard skip (same config, tunnel UP)")
+                return@withContext
+            }
+
             sharedTunnel?.let {
                 runCatching { backend.setState(it, Tunnel.State.DOWN, null) }
                 sharedTunnel = null
+                lastAppliedSemanticKey = null
                 delay(150)
             }
 
@@ -112,9 +120,21 @@ class WireGuardHelper(context: Context) {
             val tunnel = WgTunnel()
             setTunnelUpWithRetry(tunnel, finalConfig)
             sharedTunnel = tunnel
+            lastAppliedSemanticKey = semanticKey
             Log.i(TAG, "WireGuard tunnel UP")
             DebugLog.i(TAG, "WireGuard tunnel UP")
         }
+    }
+
+    private fun wgSemanticKey(config: String): String {
+        fun field(name: String): String =
+            Regex("""(?m)^$name\s*=\s*(\S+)""").find(config)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+        return listOf(
+            field("PrivateKey"),
+            field("Address"),
+            field("PublicKey"),
+            field("Endpoint"),
+        ).joinToString("|")
     }
 
     private suspend fun setTunnelUpWithRetry(tunnel: WgTunnel, config: Config) {
@@ -140,6 +160,7 @@ class WireGuardHelper(context: Context) {
             sharedTunnel?.let {
                 runCatching { backend.setState(it, Tunnel.State.DOWN, null) }
                 sharedTunnel = null
+                lastAppliedSemanticKey = null
             }
         }
     }

@@ -41,6 +41,7 @@ class SilentRepository @Inject constructor(
         const val PREF_SAVED_HASH_ITEMS = "saved_hash_items"
         const val PREF_SAVED_HASH_ITEMS_TS = "saved_hash_items_ts"
         const val PREF_HASH_CHANNELS_PER_HASH = "hash_channels_per_hash"
+        const val PREF_HASH_TOTAL_WORKERS = "hash_total_workers"
         const val PREF_CACHED_PROFILE = "cached_profile_json"
         const val VK_APP_ID = 54610377L
         const val VK_GROUP_ID = 239092728L
@@ -284,25 +285,43 @@ class SilentRepository @Inject constructor(
 
     fun getSavedHashItemsUpdatedAt(): Long = prefs.getLong(PREF_SAVED_HASH_ITEMS_TS, 0L)
 
-    fun getChannelsPerHash(): Int =
-        HashChannelHelper.normalizeChannelsPerHash(
-            prefs.getInt(PREF_HASH_CHANNELS_PER_HASH, HashChannelHelper.DEFAULT_CHANNELS_PER_HASH),
+    fun getTotalWorkers(activeHashCount: Int = getSavedHashItems().activeServerHashCount().coerceAtLeast(1)): Int {
+        val capped = activeHashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)
+        if (prefs.contains(PREF_HASH_TOTAL_WORKERS)) {
+            val raw = prefs.getInt(PREF_HASH_TOTAL_WORKERS, HashChannelHelper.DEFAULT_TOTAL_WORKERS)
+            if (raw > HashChannelHelper.maxTotalWorkers(capped)) {
+                val fixed = HashChannelHelper.normalizeTotalWorkers(
+                    HashChannelHelper.DEFAULT_TOTAL_WORKERS,
+                    capped,
+                )
+                saveTotalWorkers(fixed, capped)
+                return fixed
+            }
+            return HashChannelHelper.normalizeTotalWorkers(raw, capped)
+        }
+        val legacyPer = prefs.getInt(
+            PREF_HASH_CHANNELS_PER_HASH,
+            HashChannelHelper.DEFAULT_TOTAL_WORKERS,
         )
+        val migrated = HashChannelHelper.migrateLegacyPerHash(legacyPer, capped)
+        saveTotalWorkers(migrated, capped)
+        return migrated
+    }
 
-    fun saveChannelsPerHash(value: Int) {
+    fun saveTotalWorkers(value: Int, activeHashCount: Int = getSavedHashItems().activeServerHashCount().coerceAtLeast(1)) {
         prefs.edit()
-            .putInt(PREF_HASH_CHANNELS_PER_HASH, HashChannelHelper.normalizeChannelsPerHash(value))
+            .putInt(
+                PREF_HASH_TOTAL_WORKERS,
+                HashChannelHelper.normalizeTotalWorkers(value, activeHashCount),
+            )
             .apply()
     }
 
-    /** `-n` для libclient: каналы на один хеш (9/18/27), не сумма. */
-    fun resolveWorkersPerHash(): Int =
-        HashChannelHelper.workersPerHashForLibclient(getChannelsPerHash())
-
-    fun resolveVpnWorkerCount(vkHashCount: Int): Int {
+    /** `-n` для libclient: итого потоков (кратно 9), как в reference WDTT. */
+    fun resolveWorkersForLibclient(vkHashCount: Int): Int {
         val savedActive = getSavedHashItems().activeServerHashCount()
         val activeHashes = maxOf(vkHashCount, savedActive, 1).coerceAtMost(HashChannelHelper.MAX_HASHES)
-        return HashChannelHelper.computeWorkerCount(activeHashes, getChannelsPerHash())
+        return HashChannelHelper.workersForLibclient(getTotalWorkers(activeHashes), activeHashes)
     }
 
     fun clearSavedHashItems() {

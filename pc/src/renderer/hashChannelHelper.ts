@@ -2,9 +2,9 @@ import { activeServerHashCount, getSavedHashItems } from './hashItemsStore'
 
 export const WORKERS_PER_GROUP = 9
 export const MAX_WORKERS_PER_HASH = 27
-export const DEFAULT_TOTAL_WORKERS = 18
 export const MAX_HASHES = 4
 export const LIBCLIENT_MAX_WORKERS = 108
+export const DEFAULT_TOTAL_WORKERS = LIBCLIENT_MAX_WORKERS
 export const BOOTSTRAP_STREAM_COUNT = 3
 
 /** @deprecated legacy key — migrated to TOTAL_WORKERS_KEY */
@@ -56,20 +56,23 @@ export function migrateLegacyPerHash(oldPerHash: number, activeHashCount: number
 
 export function getTotalWorkers(activeHashCount = activeServerHashCount(getSavedHashItems()) || 1): number {
   const capped = Math.min(Math.max(activeHashCount, 1), MAX_HASHES)
+  const max = maxTotalWorkers(capped)
   const stored = localStorage.getItem(TOTAL_WORKERS_KEY)
   if (stored != null && stored !== '') {
     const raw = Number(stored) || DEFAULT_TOTAL_WORKERS
-    if (raw > maxTotalWorkers(capped)) {
-      const fixed = normalizeTotalWorkers(DEFAULT_TOTAL_WORKERS, capped)
-      saveTotalWorkers(fixed, capped)
-      return fixed
+    // Upgrade from old default (≤ 27 = single-hash max) — users never set this manually
+    if (raw <= MAX_WORKERS_PER_HASH) {
+      saveTotalWorkers(max, capped)
+      return max
+    }
+    if (raw > max) {
+      saveTotalWorkers(max, capped)
+      return max
     }
     return normalizeTotalWorkers(raw, capped)
   }
-  const legacy = Number(localStorage.getItem(CHANNELS_KEY) || DEFAULT_TOTAL_WORKERS)
-  const migrated = migrateLegacyPerHash(legacy, capped)
-  saveTotalWorkers(migrated, capped)
-  return migrated
+  saveTotalWorkers(max, capped)
+  return max
 }
 
 export function saveTotalWorkers(value: number, activeHashCount = activeServerHashCount(getSavedHashItems()) || 1): void {

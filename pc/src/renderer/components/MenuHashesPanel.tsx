@@ -154,7 +154,7 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
           style={{ color: fg }}
         />
         <p className="text-[9px] mt-2" style={{ color: muted }}>
-          9 → 18 → 27 → 36… — каждые +9 добавляется хеш (в libclient уходит только n÷9 хешей)
+          9 → 18 → 27 → 36… (шаг 9, макс {maxTotal} = {activeHashCount} хеш × 27)
         </p>
       </div>
 

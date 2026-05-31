@@ -162,6 +162,12 @@ class WireGuardHelper(context: Context) {
         }
     }
 
+    /** Проверяет состояние WG-туннеля через backend (без TCP-соединений — работает даже если app исключён из VPN). */
+    fun isTunnelUp(): Boolean {
+        val tunnel = sharedTunnel ?: return false
+        return runCatching { backend.getState(tunnel) == Tunnel.State.UP }.getOrDefault(false)
+    }
+
     private suspend fun ensureGoBackendServiceStarted() {
         withContext(Dispatchers.Main) {
             runCatching {

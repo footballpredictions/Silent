@@ -19,8 +19,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 import java.io.File
-import java.net.InetSocketAddress
-import java.net.Socket
 
 /**
  * WDTT-туннель по логике [proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android):
@@ -377,58 +375,20 @@ object WdttTunnelManager {
         ).joinToString("|")
     }
 
-    private suspend fun awaitGatewayReachable(
-        gateway: String = "10.66.66.1",
-        port: Int = 8000,
-        attempts: Int = 3,
-    ): Boolean {
-        repeat(attempts) { attempt ->
-            if (!running.value) return false
-            val ok = withContext(Dispatchers.IO) {
-                runCatching {
-                    Socket().use { socket ->
-                        socket.connect(InetSocketAddress(gateway, port), 1000)
-                    }
-                    true
-                }.getOrDefault(false)
-            }
-            if (ok) {
-                DebugLog.i(TAG, "Gateway $gateway:$port reachable")
-                return true
-            }
-            if (attempt + 1 < attempts) delay(200L)
-        }
-        DebugLog.w(TAG, "Gateway $gateway:$port not reachable after $attempts attempts")
-        return false
-    }
-
     private fun markTunnelReadyAfterProbe(source: Int) {
         readyProbeJob?.cancel()
         readyProbeJob = scope.launch {
-            repeat(25) {
-                delay(200)
+            // Наш app исключён из VPN (как в proxy-turn-vk-android), поэтому TCP-соединение
+            // к шлюзу 10.66.66.1 из нашего процесса не работает — он обходит VPN.
+            // Вместо этого проверяем WG backend state + активные воркеры.
+            repeat(60) {
+                delay(500)
                 if (!running.value || appliedConfigSource < source) return@launch
-                if (activeWorkers.value < 1) return@launch
-                if (awaitGatewayReachable(
-                        gateway = com.silent.vpn.data.SilentRepository.WG_TUNNEL_GATEWAY,
-                        port = 8000,
-                        attempts = 2,
-                    )
-                ) {
+                if (activeWorkers.value >= 1 && wgHelper?.isTunnelUp() == true) {
                     tunnelReady.value = true
-                    DebugLog.i(TAG, "tunnelReady: gateway API reachable")
+                    DebugLog.i(TAG, "tunnelReady: WG UP + ${activeWorkers.value} active workers")
                     return@launch
                 }
-            }
-            if (running.value && activeWorkers.value >= 1 &&
-                awaitGatewayReachable(
-                    gateway = com.silent.vpn.data.SilentRepository.WG_TUNNEL_GATEWAY,
-                    port = 8000,
-                    attempts = 5,
-                )
-            ) {
-                tunnelReady.value = true
-                DebugLog.i(TAG, "tunnelReady: gateway reachable (late)")
             }
         }
     }

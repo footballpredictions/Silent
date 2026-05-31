@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import timedelta
@@ -23,7 +23,12 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register(req: RegisterRequest, request: Request, db: AsyncSession = Depends(get_db)):
+async def register(
+    req: RegisterRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(User).where(User.email == req.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email уже зарегистрирован")
@@ -37,8 +42,10 @@ async def register(req: RegisterRequest, request: Request, db: AsyncSession = De
     db.add(user)
     await db.commit()
 
+    # Отправка письма в фоне — не блокирует ответ клиенту
     base_url = str(request.base_url).rstrip("/")
-    send_verification_email(req.email, token, base_url)
+    background_tasks.add_task(send_verification_email, req.email, token, base_url)
+
     return {"message": "Регистрация успешна. Проверьте email для подтверждения."}
 
 
@@ -95,7 +102,12 @@ async def refresh(req: RefreshRequest, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/forgot-password")
-async def forgot_password(req: ForgotPasswordRequest, request: Request, db: AsyncSession = Depends(get_db)):
+async def forgot_password(
+    req: ForgotPasswordRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(User).where(User.email == req.email))
     user = result.scalar_one_or_none()
     if user:
@@ -103,7 +115,8 @@ async def forgot_password(req: ForgotPasswordRequest, request: Request, db: Asyn
         user.reset_token = token
         await db.commit()
         base_url = str(request.base_url).rstrip("/")
-        send_password_reset_email(req.email, token, base_url)
+        # Отправка письма в фоне — не блокирует ответ клиенту
+        background_tasks.add_task(send_password_reset_email, req.email, token, base_url)
     return {"message": "Если email зарегистрирован, письмо отправлено"}
 
 

@@ -46,9 +46,10 @@ class SilentRepository @Inject constructor(
         const val VK_APP_ID = 54610377L
         const val VK_GROUP_ID = 239092728L
         const val WG_TUNNEL_GATEWAY = "10.66.66.1"
-        /** Наш app исключён из VPN-туннеля (как в proxy-turn-vk-android).
-         *  При true — не пробуем 10.66.66.1 в apiBaseCandidates, сразу идём на public URL. */
-        const val APP_EXCLUDED_FROM_VPN = true
+        /** Наш app исключён из VPN-туннеля (true = основной VPN, false = bootstrap VPN для логина).
+         *  При true — не пробуем 10.66.66.1 в apiBaseCandidates (app вне туннеля, gateway недоступен).
+         *  При false — bootstrap: app внутри VPN, gateway доступен. */
+        var APP_EXCLUDED_FROM_VPN = true
     }
 
     private val prefs: SharedPreferences = createPrefs(context)

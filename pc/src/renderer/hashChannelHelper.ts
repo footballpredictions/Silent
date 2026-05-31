@@ -1,10 +1,10 @@
 import { activeServerHashCount, getSavedHashItems } from './hashItemsStore'
 
 export const WORKERS_PER_GROUP = 9
-export const MAX_WORKERS_PER_HASH = 27
+export const MAX_WORKERS_PER_HASH = 9
 export const DEFAULT_TOTAL_WORKERS = 18
-export const MAX_HASHES = 4
-export const LIBCLIENT_MAX_WORKERS = 108
+export const MAX_HASHES = 2
+export const LIBCLIENT_MAX_WORKERS = 18
 export const BOOTSTRAP_STREAM_COUNT = 3
 
 /** @deprecated legacy key — migrated to TOTAL_WORKERS_KEY */

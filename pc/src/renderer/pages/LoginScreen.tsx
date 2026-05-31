@@ -89,7 +89,7 @@ export default function LoginScreen({
     }
   }
 
-  const openLoginSession = async (): Promise<boolean> => {
+  const openLoginSession = async (): Promise<{ ok: boolean; subscriptionExpired?: boolean }> => {
     const fp = startNewSession()
     const boot = getBootstrapHash()
     try {
@@ -101,12 +101,20 @@ export default function LoginScreen({
       })
       saveSessionDeviceId(reg.data.device_id)
       cacheVpnConfig(reg.data)
-      return true
+      return { ok: true }
     } catch (e: any) {
+      if ((e as any).response?.status === 402) {
+        clearSessionFingerprint()
+        // Tokens remain — user is authenticated but subscription expired
+        const msg = (e as any).response?.data?.detail
+          ?? 'Пробный период закончился. Оформите подписку.'
+        localStorage.setItem('silent_subscription_msg', msg)
+        return { ok: false, subscriptionExpired: true }
+      }
       clearSessionFingerprint()
       clearTokens()
       setError(formatApiError(e, 'Достигнут лимит устройств (3). Выйдите на другом устройстве.'))
-      return false
+      return { ok: false }
     }
   }
 
@@ -121,8 +129,17 @@ export default function LoginScreen({
       }
       const res = await api.post('/api/auth/login', { email, password })
       saveTokens(res.data.access_token, res.data.refresh_token)
-      if (!(await openLoginSession())) {
-        refreshBootstrapSessionTimer()
+      const sessionResult = await openLoginSession()
+      if (!sessionResult.ok) {
+        if (sessionResult.subscriptionExpired) {
+          // Authenticated but no subscription — go to main, show renewal notice there
+          await disconnectBootstrapVpn()
+          setBootstrapReady(false)
+          const themeRes = await api.get('/api/vpn/theme').catch(() => ({ data: theme }))
+          onLogin(themeRes.data ?? theme)
+        } else {
+          refreshBootstrapSessionTimer()
+        }
         return
       }
       await disconnectBootstrapVpn()

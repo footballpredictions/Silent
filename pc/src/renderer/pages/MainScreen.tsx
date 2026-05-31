@@ -92,7 +92,14 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     }
   }, [])
 
-  useEffect(() => { fetchProfile() }, [fetchProfile])
+  useEffect(() => {
+    fetchProfile()
+    const subMsg = localStorage.getItem('silent_subscription_msg')
+    if (subMsg) {
+      localStorage.removeItem('silent_subscription_msg')
+      setMenuPage('subscription')
+    }
+  }, [fetchProfile])
 
   useEffect(() => {
     if (menuPage !== 'devices') return

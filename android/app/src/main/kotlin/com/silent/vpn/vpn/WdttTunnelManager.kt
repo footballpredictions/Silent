@@ -2,6 +2,7 @@ package com.silent.vpn.vpn
 
 import android.content.Context
 import android.util.Log
+import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.vpn.captcha.CaptchaWebViewManager
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager

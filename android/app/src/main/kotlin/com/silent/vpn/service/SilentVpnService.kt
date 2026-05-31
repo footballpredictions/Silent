@@ -72,8 +72,13 @@ class SilentVpnService : Service() {
             ) { ready, stats, wdttRunning ->
                 Triple(ready, stats, wdttRunning)
             }.collectLatest { (ready, stats, wdttRunning) ->
-                if (!isRunning && !wdttRunning) return@collectLatest
-                postVpnNotification(ready, stats)
+                if (!isRunning) return@collectLatest
+                val vpnActive = ready && WdttTunnelManager.isInternetReady()
+                if (vpnActive) {
+                    postVpnNotification(stats)
+                } else if (wdttRunning) {
+                    startFg(buildConnectingNotification())
+                }
             }
         }
     }
@@ -97,7 +102,7 @@ class SilentVpnService : Service() {
                 setupNetworkCallback()
                 acquireWakeLock()
                 acquireWifiLock()
-                startFg(buildNotification(connecting = true))
+                startFg(buildConnectingNotification())
                 connect(configJson)
             }
             ACTION_DISCONNECT -> disconnect()
@@ -139,13 +144,12 @@ class SilentVpnService : Service() {
             )
             DebugLog.i("VpnService", "WDTT workers=$workerCount hashes=$hashCount")
             isRunning = true
-            postVpnNotification(WdttTunnelManager.tunnelReady.value, WdttTunnelManager.stats.value)
         } catch (e: Exception) {
             DebugLog.e("VpnService", "connect failed", e)
             isRunning = false
             releaseWakeLock()
             releaseWifiLock()
-            stopForeground(STOP_FOREGROUND_REMOVE)
+            clearVpnNotification()
             stopSelf()
         }
     }
@@ -157,8 +161,14 @@ class SilentVpnService : Service() {
         isRunning = false
         releaseWakeLock()
         releaseWifiLock()
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        clearVpnNotification()
         stopSelf()
+    }
+
+    /** Убрать уведомление из шторки — только когда VPN выключен. */
+    private fun clearVpnNotification() {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        getSystemService(NotificationManager::class.java)?.cancel(NOTIF_ID)
     }
 
     private fun setupNetworkCallback() {
@@ -284,26 +294,39 @@ class SilentVpnService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-    private fun notificationTitle(ready: Boolean, connecting: Boolean): String = when {
+    private fun notificationTitle(ready: Boolean): String = when {
         ready -> "Silent VPN — подключено"
-        connecting -> "Silent VPN — подключение…"
-        else -> "Silent VPN"
+        else -> "Silent VPN — подключение…"
     }
 
-    private fun notificationBody(ready: Boolean, stats: String, connecting: Boolean): String {
-        if (stats.isNotBlank()) return stats.trim()
+    private fun notificationBody(ready: Boolean, stats: String): String {
+        if (ready && stats.isNotBlank()) return stats.trim()
         return when {
             ready -> "Туннель активен"
-            connecting -> "Подключение к серверу…"
-            else -> "Ожидание…"
+            else -> "Подключение к серверу…"
         }
     }
 
-    private fun buildNotification(ready: Boolean = false, stats: String = "", connecting: Boolean = false): Notification {
-        val body = notificationBody(ready, stats, connecting)
+    /** Минимальное FG-уведомление на время подключения (Android требует для foreground service). */
+    private fun buildConnectingNotification(): Notification =
+        NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_silent)
+            .setContentTitle("Silent VPN — подключение…")
+            .setContentText("Подключение к серверу…")
+            .setContentIntent(openAppIntent())
+            .setOngoing(false)
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build()
+
+    private fun buildActiveNotification(stats: String): Notification {
+        val body = notificationBody(ready = true, stats = stats)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_silent)
-            .setContentTitle(notificationTitle(ready, connecting))
+            .setContentTitle(notificationTitle(ready = true))
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setContentIntent(openAppIntent())
@@ -314,13 +337,10 @@ class SilentVpnService : Service() {
             .build()
     }
 
-    private fun postVpnNotification(ready: Boolean, stats: String) {
-        if (!isRunning) return
-        val notification = buildNotification(
-            ready = ready,
-            stats = stats,
-            connecting = !ready,
-        )
+    private fun postVpnNotification(stats: String) {
+        if (!isRunning || !WdttTunnelManager.isInternetReady()) return
+        val notification = buildActiveNotification(stats)
+        startFg(notification)
         getSystemService(NotificationManager::class.java)?.notify(NOTIF_ID, notification)
     }
 
@@ -332,6 +352,7 @@ class SilentVpnService : Service() {
         isRunning = false
         releaseWakeLock()
         releaseWifiLock()
+        clearVpnNotification()
         super.onDestroy()
     }
 }

@@ -623,7 +623,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                 <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
                 <div className="text-sm font-semibold mb-1">Silent VPN</div>
                 <div className="text-xs text-gray-500 space-y-1">
-                  <p>Версия 1.0.22</p>
+                  <p>Версия 1.0.31</p>
                   <p>WireGuard-туннель через VK TURN/DTLS</p>
                 </div>
               </div>

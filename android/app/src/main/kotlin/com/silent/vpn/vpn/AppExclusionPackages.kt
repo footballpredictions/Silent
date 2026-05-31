@@ -16,7 +16,12 @@ val VK_TUNNEL_PACKAGES = setOf(
  * Список для [com.wireguard.config.Interface.Builder.excludeApplications].
  * В storage всегда лежит blacklist (отмеченные = вне VPN); режим БС инвертируется в UI при переключении.
  */
-fun resolveExcludedAppPackages(context: Context): Set<String> {
+/**
+ * @param isBootstrap если true — bootstrap VPN (экран входа): наш app включаем в туннель,
+ *   чтобы API-запросы при логине шли ЧЕРЕЗ VPN, а не напрямую (сервер может блокировать прямые соединения).
+ *   Если false — основной VPN: наш app вне туннеля, libclient дотягивается до TURN напрямую без WG-петли.
+ */
+fun resolveExcludedAppPackages(context: Context, isBootstrap: Boolean = false): Set<String> {
     val prefs = SilentPrefs.open(context)
     val userSelected = prefs.getString(SilentRepository.PREF_EXCLUDED_APPS, "")
         ?.split(",")
@@ -25,12 +30,12 @@ fun resolveExcludedAppPackages(context: Context): Set<String> {
         ?: emptySet()
 
     val pm = context.packageManager
-    // Как в proxy-turn-vk-android: наш app исключаем из VPN-туннеля.
-    // Тогда libclient дотягивается до TURN-серверов напрямую (без WG-петли),
-    // AllowedIPs остаётся 0.0.0.0/0 (простой полный туннель для остальных приложений),
-    // а API-вызовы приложения идут напрямую к публичному серверу.
     val excluded = LinkedHashSet<String>()
-    excluded.add(context.packageName)          // собственный пакет — всегда вне туннеля
+    // Bootstrap VPN: наш app НЕ исключаем — логин/регистрация идёт через VPN-туннель.
+    // Основной VPN: исключаем — libclient напрямую дотягивается до TURN (нет WG-петли).
+    if (!isBootstrap) {
+        excluded.add(context.packageName)
+    }
     excluded.addAll(VK_TUNNEL_PACKAGES)
     excluded.addAll(userSelected)
 

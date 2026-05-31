@@ -62,11 +62,13 @@ object WdttTunnelManager {
         val workers: Int = 12,
         val captchaMode: String = "auto",
         val apiWgConfig: String? = null,
+        val isBootstrap: Boolean = false,
     )
 
     private var confPollJob: Job? = null
     private var readyProbeJob: Job? = null
     private var lastPolledConfFingerprint: String? = null
+    private var isBootstrapMode: Boolean = false
 
     fun start(context: Context, params: Params, isSwitching: Boolean = false) {
         if (running.value && !isSwitching) return
@@ -83,6 +85,7 @@ object WdttTunnelManager {
                 appliedConfigFingerprint = null
                 lastParams = params
                 lastContext = ctx
+                isBootstrapMode = params.isBootstrap
                 apiFallbackConfig = params.apiWgConfig?.trim()?.takeIf { it.contains("[Interface]") }
                 CaptchaWebViewManager.onTunnelStart(context)
             } else {
@@ -426,7 +429,7 @@ object WdttTunnelManager {
                 lastWgConfig = normalized
                 try {
                     val srcName = when (source) { 3 -> "file"; 2 -> "box"; else -> "api" }
-                    wgHelper?.startTunnel(normalized, wgExcludeIps.toList())
+                    wgHelper?.startTunnel(normalized, wgExcludeIps.toList(), isBootstrapMode)
                     appliedConfigSource = source
                     appliedConfigFingerprint = fingerprint
                     Log.i(TAG, "WireGuard UP ($srcName)")
@@ -513,7 +516,7 @@ object WdttTunnelManager {
             try {
                 wgHelper?.stopTunnel()
                 delay(200)
-                wgHelper?.startTunnel(config, wgExcludeIps.toList())
+                wgHelper?.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode)
             } catch (e: Exception) {
                 lastError.value = "WireGuard: ${e.message}"
             }

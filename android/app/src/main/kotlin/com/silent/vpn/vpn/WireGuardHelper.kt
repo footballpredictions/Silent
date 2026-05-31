@@ -37,7 +37,7 @@ class WireGuardHelper(context: Context) {
         override fun onStateChange(newState: Tunnel.State) {}
     }
 
-    suspend fun startTunnel(configString: String, excludeIPs: Collection<String> = emptyList()) = wgMutex.withLock {
+    suspend fun startTunnel(configString: String, excludeIPs: Collection<String> = emptyList(), isBootstrap: Boolean = false) = wgMutex.withLock {
         withContext(Dispatchers.IO) {
             if (VpnService.prepare(appContext) != null) {
                 throw IllegalStateException("VPN-разрешение не выдано")
@@ -78,10 +78,10 @@ class WireGuardHelper(context: Context) {
             ifaceBuilder.parsePrivateKey(parsed.`interface`.keyPair.privateKey.toBase64())
 
             runCatching {
-                val excluded = resolveExcludedAppPackages(appContext)
+                val excluded = resolveExcludedAppPackages(appContext, isBootstrap)
                 if (excluded.isNotEmpty()) {
                     ifaceBuilder.excludeApplications(excluded)
-                    DebugLog.i(TAG, "App exclusions: ${excluded.size} пакетов вне туннеля")
+                    DebugLog.i(TAG, "App exclusions: ${excluded.size} пакетов вне туннеля (bootstrap=$isBootstrap)")
                 }
             }
 

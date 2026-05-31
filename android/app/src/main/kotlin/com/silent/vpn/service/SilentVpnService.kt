@@ -163,6 +163,7 @@ class SilentVpnService : Service() {
                     workers = totalWorkers,
                     captchaMode = "auto",
                     apiWgConfig = apiWg,
+                    isBootstrap = isBootstrap,
                 ),
             )
             DebugLog.i(

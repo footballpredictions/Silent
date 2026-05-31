@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     SMTP_PASS: str = ""
     EMAIL_FROM: str = "noreply@silent-vpn.ru"
     EMAIL_FROM_NAME: str = "Silent VPN"
+    FRONTEND_URL: str = "https://132-243-234-162.nip.io"
 
     # YuMoney
     YUMONEY_WALLET_1: str = ""

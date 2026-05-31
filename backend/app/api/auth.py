@@ -2,6 +2,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import timedelta
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.models import User
@@ -25,7 +28,6 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(
     req: RegisterRequest,
-    request: Request,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
@@ -43,8 +45,9 @@ async def register(
     await db.commit()
 
     # Отправка письма в фоне — не блокирует ответ клиенту
-    base_url = str(request.base_url).rstrip("/")
+    base_url = settings.FRONTEND_URL.rstrip("/")
     background_tasks.add_task(send_verification_email, req.email, token, base_url)
+    logger.info(f"Register: {req.email}, verify link base: {base_url}")
 
     return {"message": "Регистрация успешна. Проверьте email для подтверждения."}
 
@@ -104,7 +107,6 @@ async def refresh(req: RefreshRequest, db: AsyncSession = Depends(get_db)):
 @router.post("/forgot-password")
 async def forgot_password(
     req: ForgotPasswordRequest,
-    request: Request,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
@@ -114,7 +116,7 @@ async def forgot_password(
         token = generate_token()
         user.reset_token = token
         await db.commit()
-        base_url = str(request.base_url).rstrip("/")
+        base_url = settings.FRONTEND_URL.rstrip("/")
         # Отправка письма в фоне — не блокирует ответ клиенту
         background_tasks.add_task(send_password_reset_email, req.email, token, base_url)
     return {"message": "Если email зарегистрирован, письмо отправлено"}

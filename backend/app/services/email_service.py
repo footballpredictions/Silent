@@ -61,42 +61,48 @@ def _send(to_email: str, subject: str, html_body: str) -> bool:
 
 
 def _base_template(content: str) -> str:
+    """Email-safe template — all styles are inline for compatibility with all mail clients."""
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Silent VPN</title>
-<style>
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ background: #f5f5f5; font-family: 'Inter', Arial, sans-serif; }}
-  .wrapper {{ max-width: 560px; margin: 40px auto; background: #fff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }}
-  .header {{ background: #000; padding: 32px; text-align: center; }}
-  .header img {{ height: 48px; }}
-  .header h1 {{ color: #fff; font-size: 22px; font-weight: 700; margin-top: 12px; letter-spacing: 2px; }}
-  .body {{ padding: 40px 36px; }}
-  .body p {{ color: #333; font-size: 15px; line-height: 1.7; margin-bottom: 16px; }}
-  .btn {{ display: inline-block; background: #000; color: #fff; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; margin: 8px 0; }}
-  .info-box {{ background: #f9f9f9; border-left: 3px solid #000; padding: 16px 20px; border-radius: 0 8px 8px 0; margin: 20px 0; }}
-  .info-box p {{ margin: 0; color: #555; font-size: 14px; }}
-  .footer {{ background: #f9f9f9; padding: 24px 36px; text-align: center; }}
-  .footer p {{ color: #999; font-size: 12px; line-height: 1.6; }}
-</style>
 </head>
-<body>
-<div class="wrapper">
-  <div class="header">
-    <img src="cid:silent_logo" alt="Silent VPN">
-    <h1>SILENT</h1>
-  </div>
-  <div class="body">
-    {content}
-  </div>
-  <div class="footer">
-    <p>Silent VPN — защищённый туннель для вашего трафика<br>
-    Это автоматическое письмо, не отвечайте на него.</p>
-  </div>
-</div>
+<body style="margin:0;padding:0;background-color:#f5f5f5;font-family:Arial,Helvetica,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f5;padding:40px 16px;">
+  <tr>
+    <td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;background-color:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.08);">
+
+        <!-- Header -->
+        <tr>
+          <td style="background-color:#000000;padding:32px;text-align:center;">
+            <div style="color:#ffffff;font-size:24px;font-weight:700;letter-spacing:4px;font-family:Arial,sans-serif;">SILENT VPN</div>
+          </td>
+        </tr>
+
+        <!-- Body -->
+        <tr>
+          <td style="padding:40px 36px;">
+            {content}
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td style="background-color:#f9f9f9;padding:24px 36px;text-align:center;">
+            <p style="margin:0;color:#999999;font-size:12px;line-height:1.6;font-family:Arial,sans-serif;">
+              Silent VPN — защищённый туннель для вашего трафика<br>
+              Это автоматическое письмо, не отвечайте на него.
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
 </body>
 </html>"""
 
@@ -104,16 +110,41 @@ def _base_template(content: str) -> str:
 def send_verification_email(to_email: str, token: str, base_url: str) -> bool:
     verify_url = f"{base_url}/verify-email?token={token}"
     content = f"""
-    <p>Добро пожаловать в <strong>Silent VPN</strong>!</p>
-    <p>Для завершения регистрации подтвердите ваш email-адрес:</p>
-    <p style="text-align:center;margin:28px 0;">
-      <a href="{verify_url}" class="btn">Подтвердить email</a>
+    <p style="margin:0 0 16px 0;color:#333333;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">
+      Добро пожаловать в <strong>Silent VPN</strong>!
     </p>
-    <div class="info-box">
-      <p>Если кнопка не работает, скопируйте ссылку в браузер:<br>
-      <span style="color:#000;word-break:break-all;">{verify_url}</span></p>
-    </div>
-    <p>Ссылка действительна 24 часа.</p>
+    <p style="margin:0 0 24px 0;color:#333333;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">
+      Для завершения регистрации нажмите кнопку подтверждения:
+    </p>
+
+    <!-- Button -->
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td align="center" style="padding:8px 0 24px 0;">
+          <a href="{verify_url}"
+             style="display:inline-block;background-color:#000000;color:#ffffff;padding:16px 40px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;font-family:Arial,sans-serif;letter-spacing:0.5px;">
+            ✉ Подтвердить email
+          </a>
+        </td>
+      </tr>
+    </table>
+
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="background-color:#f9f9f9;border-left:3px solid #000000;padding:14px 18px;border-radius:0 8px 8px 0;margin-bottom:16px;">
+          <p style="margin:0 0 6px 0;color:#555555;font-size:13px;font-family:Arial,sans-serif;">
+            Если кнопка не работает, скопируйте ссылку в браузер:
+          </p>
+          <p style="margin:0;color:#000000;font-size:12px;word-break:break-all;font-family:Arial,sans-serif;">
+            {verify_url}
+          </p>
+        </td>
+      </tr>
+    </table>
+
+    <p style="margin:16px 0 0 0;color:#888888;font-size:13px;line-height:1.6;font-family:Arial,sans-serif;">
+      Ссылка действительна <strong>24 часа</strong>. Если вы не регистрировались — просто проигнорируйте письмо.
+    </p>
     """
     return _send(to_email, "Silent VPN — подтвердите email", _base_template(content))
 
@@ -130,15 +161,25 @@ def send_subscription_activated_email(to_email: str, plan_type: str, expires_at:
     expires_str = expires_at.strftime("%d.%m.%Y")
 
     content = f"""
-    <p>Спасибо за оплату! Ваша подписка успешно активирована.</p>
-    <div class="info-box">
-      <p><strong>Тарифный план:</strong> {plan_name}</p>
-      <p><strong>Действует до:</strong> {expires_str}</p>
-    </div>
-    <p>Теперь вы можете подключиться к <strong>Silent VPN</strong> на своём устройстве.
-    Запустите приложение и нажмите на тумблер подключения.</p>
-    <p>Подключить можно до <strong>3 устройств</strong> одновременно.</p>
-    <p>Если у вас возникли вопросы — обратитесь в службу поддержки.</p>
+    <p style="margin:0 0 16px 0;color:#333333;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">
+      Спасибо за оплату! Ваша подписка успешно активирована.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="background-color:#f9f9f9;border-left:3px solid #000000;padding:16px 20px;border-radius:0 8px 8px 0;margin-bottom:20px;">
+          <p style="margin:0 0 6px 0;color:#333333;font-size:14px;font-family:Arial,sans-serif;">
+            <strong>Тарифный план:</strong> {plan_name}
+          </p>
+          <p style="margin:0;color:#333333;font-size:14px;font-family:Arial,sans-serif;">
+            <strong>Действует до:</strong> {expires_str}
+          </p>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:16px 0 0 0;color:#333333;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">
+      Теперь вы можете подключиться к <strong>Silent VPN</strong> на своём устройстве.
+      Подключить можно до <strong>3 устройств</strong> одновременно.
+    </p>
     """
     return _send(to_email, "Silent VPN — подписка активирована", _base_template(content))
 
@@ -146,13 +187,31 @@ def send_subscription_activated_email(to_email: str, plan_type: str, expires_at:
 def send_password_reset_email(to_email: str, token: str, base_url: str) -> bool:
     reset_url = f"{base_url}/reset-password?token={token}"
     content = f"""
-    <p>Мы получили запрос на сброс пароля для вашего аккаунта Silent VPN.</p>
-    <p style="text-align:center;margin:28px 0;">
-      <a href="{reset_url}" class="btn">Сбросить пароль</a>
+    <p style="margin:0 0 16px 0;color:#333333;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">
+      Мы получили запрос на сброс пароля для вашего аккаунта <strong>Silent VPN</strong>.
     </p>
-    <div class="info-box">
-      <p>Если вы не запрашивали сброс пароля — просто проигнорируйте это письмо.<br>
-      Ссылка действительна 1 час.</p>
-    </div>
+
+    <!-- Button -->
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td align="center" style="padding:8px 0 24px 0;">
+          <a href="{reset_url}"
+             style="display:inline-block;background-color:#000000;color:#ffffff;padding:16px 40px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;font-family:Arial,sans-serif;letter-spacing:0.5px;">
+            🔑 Сбросить пароль
+          </a>
+        </td>
+      </tr>
+    </table>
+
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="background-color:#f9f9f9;border-left:3px solid #000000;padding:14px 18px;border-radius:0 8px 8px 0;">
+          <p style="margin:0;color:#555555;font-size:13px;font-family:Arial,sans-serif;">
+            Если вы не запрашивали сброс пароля — просто проигнорируйте это письмо.<br>
+            Ссылка действительна <strong>1 час</strong>.
+          </p>
+        </td>
+      </tr>
+    </table>
     """
     return _send(to_email, "Silent VPN — сброс пароля", _base_template(content))

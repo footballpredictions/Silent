@@ -98,6 +98,7 @@ class MainViewModel @Inject constructor(
     private var bootstrapConnectingInternal = false
     private var bootstrapTimeoutJob: Job? = null
     private var bootstrapContext: Context? = null
+    private var silentBootstrapSync = false
 
     val lastEmail: String get() = repo.getLastEmail().orEmpty()
     val repository: SilentRepository get() = repo
@@ -176,6 +177,8 @@ class MainViewModel @Inject constructor(
                         _statusMsg.value = "Канал готов. Войдите или зарегистрируйтесь (2 мин)."
                         bootstrapContext?.let { startBootstrapSessionTimeout(it) }
                         onVpnTunnelReady()
+                    } else if (silentBootstrapSync) {
+                        onVpnTunnelReady()
                     } else if (SilentVpnService.isRunning) {
                         _vpnState.value = VpnState.CONNECTED
                         onVpnTunnelReady()
@@ -232,23 +235,65 @@ class MainViewModel @Inject constructor(
             if (WdttTunnelManager.tunnelReady.value || SilentVpnService.isRunning) {
                 onVpnTunnelReady()
             }
-            fetchProfileNow()
+            refreshDataWithBootstrapFallback(appContext)
         }
     }
 
-    /** Download server hash list to device storage; drop bootstrap when server slots are ready. */
+    /** Если API недоступен без VPN (белые списки) — краткий bootstrap для профиля и хешей. */
+    private suspend fun refreshDataWithBootstrapFallback(context: Context) {
+        repo.clearTunnelApiBase()
+        if (fetchProfileNow()) {
+            if (repo.isLoggedIn()) syncServerHashes()
+            return
+        }
+        if (!repo.isLoggedIn() || !isHashReady()) return
+        if (SilentVpnService.isRunning || WdttTunnelManager.running.value) return
+        runSilentBootstrapSync(context)
+    }
+
+    private suspend fun runSilentBootstrapSync(context: Context) {
+        if (silentBootstrapSync) return
+        silentBootstrapSync = true
+        try {
+            val boot = HashParser.extract(repo.getBootstrapHash().orEmpty()) ?: return
+            val fp = repo.getOrCreatePreLoginFingerprint()
+            var config = runCatching {
+                val res = repo.getApi().bootstrapConfig(BootstrapConfigRequest(boot, "android", fp))
+                if (res.isSuccessful) applyBootstrapHash(res.body()!!) else null
+            }.getOrNull()
+            if (config == null || config.vk_hashes.isEmpty()) {
+                config = applyBootstrapHash(BootstrapVpnConfig.build(boot, fp))
+            }
+            if (config.vk_hashes.isEmpty()) return
+            DebugLog.i("MainViewModel", "silent bootstrap sync start")
+            launchVpnService(context.applicationContext, config)
+            repeat(60) {
+                delay(200)
+                if (WdttTunnelManager.tunnelReady.value && WdttTunnelManager.isInternetReady()) {
+                    onVpnTunnelReady(config)
+                    fetchProfileNow()
+                    syncServerHashes()
+                    refreshVpnConfigInBackground(repo.getDeviceFingerprint())
+                    return
+                }
+            }
+        } catch (e: Exception) {
+            DebugLog.w("MainViewModel", "silent bootstrap sync: ${e.message}")
+        } finally {
+            stopVpnLocally(context.applicationContext)
+            repo.clearTunnelApiBase()
+            silentBootstrapSync = false
+        }
+    }
+
+    /** Download server hash list to device storage (bootstrap в prefs не трогаем — только скрыт в UI). */
     private suspend fun syncServerHashes(): List<HashItemDto> {
         val result = repo.fetchAndSaveHashItems()
         if (result.isFailure) {
             Log.w("MainViewModel", "syncServerHashes: ${result.exceptionOrNull()?.message}")
             return repo.getSavedHashItems()
         }
-        val items = result.getOrDefault(emptyList())
-        if (items.activeServerHashes().isNotEmpty()) {
-            repo.saveBootstrapHash(null)
-            refreshHashState()
-        }
-        return items
+        return result.getOrDefault(emptyList())
     }
 
     private fun onVpnTunnelReady(vpnConfig: VpnConfig? = null) {
@@ -513,13 +558,11 @@ class MainViewModel @Inject constructor(
         DebugLog.i("MainViewModel", "bootstrap session expired (${BOOTSTRAP_SESSION_MS / 1000}s)")
         cancelBootstrapSessionTimeout()
         stopVpnLocally(ctx)
-        repo.saveBootstrapHash(null)
-        refreshHashState()
         bootstrapVpnMode = false
         bootstrapContext = null
         _vpnState.value = VpnState.DISCONNECTED
         _statusMsg.value =
-            "Время временного интернета истекло (2 мин). Вставьте хеш заново и нажмите «Подключить для входа»."
+            "Время временного интернета истекло (2 мин). Нажмите «Подключить для входа» снова."
     }
 
     /** Bootstrap VPN on login screen — reach backend through user's VK hash. */
@@ -758,10 +801,6 @@ class MainViewModel @Inject constructor(
                             val hashItems = body?.toHashItems().orEmpty()
                             if (hashItems.isNotEmpty()) {
                                 repo.saveHashItems(hashItems)
-                                if (hashItems.activeServerHashes().isNotEmpty()) {
-                                    repo.saveBootstrapHash(null)
-                                    refreshHashState()
-                                }
                             }
                             val serverHashes = hashItems.activeServerHashes().map { it.hash }
                             if (serverHashes.isNotEmpty() && vpnConfig != null) {
@@ -819,10 +858,17 @@ class MainViewModel @Inject constructor(
             config.wg_private_key.isNotBlank() &&
             config.server_public_key.isNotBlank()
 
+    private fun vpnConfigForWdtt(config: VpnConfig): VpnConfig {
+        val boot = repo.getBootstrapHash()?.trim().orEmpty()
+        val server = config.vk_hashes.filter { it.isNotBlank() && it != boot }
+        return if (server.isNotEmpty()) config.copy(vk_hashes = server) else config
+    }
+
     private fun launchVpnService(context: Context, config: VpnConfig) {
+        val wdttConfig = vpnConfigForWdtt(config)
         val intent = Intent(context, SilentVpnService::class.java).apply {
             action = SilentVpnService.ACTION_CONNECT
-            putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(config))
+            putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(wdttConfig))
         }
         ContextCompat.startForegroundService(context, intent)
     }
@@ -842,10 +888,6 @@ class MainViewModel @Inject constructor(
                     val hashItems = body?.toHashItems().orEmpty()
                     if (hashItems.isNotEmpty()) {
                         repo.saveHashItems(hashItems)
-                        if (hashItems.activeServerHashes().isNotEmpty()) {
-                            repo.saveBootstrapHash(null)
-                            refreshHashState()
-                        }
                     }
                     val serverHashes = hashItems.activeServerHashes().map { it.hash }
                     if (serverHashes.isNotEmpty()) cfg = cfg.copy(vk_hashes = serverHashes)

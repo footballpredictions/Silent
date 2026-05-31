@@ -295,6 +295,10 @@ class SilentRepository @Inject constructor(
             .apply()
     }
 
+    /** `-n` для libclient: каналы на один хеш (9/18/27), не сумма. */
+    fun resolveWorkersPerHash(): Int =
+        HashChannelHelper.workersPerHashForLibclient(getChannelsPerHash())
+
     fun resolveVpnWorkerCount(vkHashCount: Int): Int {
         val savedActive = getSavedHashItems().activeServerHashCount()
         val activeHashes = maxOf(vkHashCount, savedActive, 1).coerceAtMost(HashChannelHelper.MAX_HASHES)

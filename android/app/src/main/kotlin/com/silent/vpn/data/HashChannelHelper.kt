@@ -12,7 +12,11 @@ object HashChannelHelper {
         else -> 27
     }
 
-    /** workers для libclient `-n`: активные хеши × каналы на хеш. */
+    /** Потоков на один VK-хеш для libclient `-n` (9 / 18 / 27). libclient сам умножает на число хешей. */
+    fun workersPerHashForLibclient(channelsPerHash: Int): Int =
+        normalizeChannelsPerHash(channelsPerHash)
+
+    /** Итого потоков для UI: хеши × каналы на хеш (до 108 при 4×27). */
     fun computeWorkerCount(activeHashCount: Int, channelsPerHash: Int): Int {
         val hashes = activeHashCount.coerceIn(1, MAX_HASHES)
         val per = normalizeChannelsPerHash(channelsPerHash)

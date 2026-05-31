@@ -21,8 +21,6 @@ import com.silent.vpn.MainActivity
 import com.silent.vpn.R
 import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.SilentRepository
-import com.silent.vpn.data.HashItemDto
-import com.silent.vpn.data.activeServerHashCount
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.util.DebugLog
@@ -30,7 +28,6 @@ import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.WireGuardConfigBuilder
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -136,25 +133,29 @@ class SilentVpnService : Service() {
             val vpnConfig = runCatching { Gson().fromJson(configJson, VpnConfig::class.java) }.getOrNull()
             val apiWg = vpnConfig?.let { WireGuardConfigBuilder.fromVpnConfig(it) }
 
-            val hashCount = hashes.size.coerceAtLeast(1)
-            val maxWorkers = if (isCellularNetwork()) 54 else 108
-            val workerCount = repoResolveWorkerCount(hashCount, vpnConfig?.stream_count)
-                .coerceIn(3, maxWorkers)
+            val bootHash = SilentPrefs.open(this)
+                .getString(SilentRepository.PREF_BOOTSTRAP_HASH, null)?.trim().orEmpty()
+            val serverHashes = hashes.filter { it.isNotBlank() && it != bootHash }
+            val wdttHashes = if (serverHashes.isNotEmpty()) serverHashes else hashes
+            val hashCount = wdttHashes.size.coerceIn(1, HashChannelHelper.MAX_HASHES)
+            val workersPerHash = repoResolveWorkersPerHash()
+                .coerceIn(9, if (isCellularNetwork()) 27 else 27)
+            val totalWorkers = workersPerHash * hashCount
 
             WdttTunnelManager.start(
                 this,
                 WdttTunnelManager.Params(
                     serverIp = obj.getString("server_ip"),
                     serverPort = obj.getInt("server_port"),
-                    vkHashes = hashes,
+                    vkHashes = wdttHashes,
                     wdttPassword = obj.getString("wdtt_password"),
                     deviceId = deviceId,
-                    workers = workerCount,
+                    workers = workersPerHash,
                     captchaMode = "auto",
                     apiWgConfig = apiWg,
                 ),
             )
-            DebugLog.i("VpnService", "WDTT workers=$workerCount hashes=$hashCount")
+            DebugLog.i("VpnService", "WDTT n=$workersPerHash/хеш × $hashCount = $totalWorkers hashes=$hashCount")
             isRunning = true
         } catch (e: Exception) {
             DebugLog.e("VpnService", "connect failed", e)
@@ -245,6 +246,8 @@ class SilentVpnService : Service() {
     private fun handleNetworkLost() {
         if (!isRunning || pausedForNetwork) return
         if (!WdttTunnelManager.running.value) return
+        if (System.currentTimeMillis() - connectStartedAtMs < NETWORK_GRACE_MS) return
+        if (!WdttTunnelManager.tunnelReady.value) return
         DebugLog.i("VpnService", "Потеря сети (звонок/разрыв) — pause libclient")
         pausedForNetwork = true
         WdttTunnelManager.pause()
@@ -419,18 +422,13 @@ class SilentVpnService : Service() {
         super.onDestroy()
     }
 
-    private fun repoResolveWorkerCount(vkHashCount: Int, serverStreamCount: Int?): Int {
+    private fun repoResolveWorkersPerHash(): Int {
         val prefs = SilentPrefs.open(this)
-        val channelsPerHash = HashChannelHelper.normalizeChannelsPerHash(
-            prefs.getInt(SilentRepository.PREF_HASH_CHANNELS_PER_HASH, HashChannelHelper.DEFAULT_CHANNELS_PER_HASH),
+        return HashChannelHelper.workersPerHashForLibclient(
+            prefs.getInt(
+                SilentRepository.PREF_HASH_CHANNELS_PER_HASH,
+                HashChannelHelper.DEFAULT_CHANNELS_PER_HASH,
+            ),
         )
-        val savedActive = runCatching {
-            val json = prefs.getString(SilentRepository.PREF_SAVED_HASH_ITEMS, null) ?: return@runCatching emptyList<HashItemDto>()
-            val type = object : TypeToken<List<HashItemDto>>() {}.type
-            Gson().fromJson<List<HashItemDto>>(json, type) ?: emptyList()
-        }.getOrDefault(emptyList()).activeServerHashCount()
-        val activeHashes = maxOf(vkHashCount, savedActive, 1).coerceAtMost(HashChannelHelper.MAX_HASHES)
-        val userWorkers = HashChannelHelper.computeWorkerCount(activeHashes, channelsPerHash)
-        return maxOf(userWorkers, serverStreamCount ?: 0)
     }
 }

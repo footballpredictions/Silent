@@ -397,25 +397,30 @@ object WdttTunnelManager {
     private fun markTunnelReadyAfterProbe(source: Int) {
         readyProbeJob?.cancel()
         readyProbeJob = scope.launch {
-            val probeJob = launch {
+            repeat(25) {
+                delay(200)
+                if (!running.value || appliedConfigSource < source) return@launch
+                if (activeWorkers.value < 1) return@launch
+                if (awaitGatewayReachable(
+                        gateway = com.silent.vpn.data.SilentRepository.WG_TUNNEL_GATEWAY,
+                        port = 8000,
+                        attempts = 2,
+                    )
+                ) {
+                    tunnelReady.value = true
+                    DebugLog.i(TAG, "tunnelReady: gateway API reachable")
+                    return@launch
+                }
+            }
+            if (running.value && activeWorkers.value >= 1 &&
                 awaitGatewayReachable(
                     gateway = com.silent.vpn.data.SilentRepository.WG_TUNNEL_GATEWAY,
                     port = 8000,
+                    attempts = 5,
                 )
-            }
-            delay(150)
-            if (!running.value || appliedConfigSource != source) {
-                probeJob.cancel()
-                return@launch
-            }
-            if (activeWorkers.value >= 1) {
+            ) {
                 tunnelReady.value = true
-                probeJob.cancel()
-                return@launch
-            }
-            withTimeoutOrNull(2_000) { probeJob.join() }
-            if (running.value && activeWorkers.value >= 1) {
-                tunnelReady.value = true
+                DebugLog.i(TAG, "tunnelReady: gateway reachable (late)")
             }
         }
     }

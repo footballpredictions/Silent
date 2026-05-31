@@ -16,6 +16,7 @@ import com.silent.vpn.data.DeviceRegisterRequest
 import com.silent.vpn.data.DisconnectRequest
 import com.silent.vpn.data.HashItemDto
 import com.silent.vpn.data.LoginRequest
+import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.data.toHashItems
 import com.silent.vpn.data.PromoCheckRequest
@@ -762,11 +763,11 @@ class MainViewModel @Inject constructor(
                                     refreshHashState()
                                 }
                             }
-                            val all = body?.hashes?.filter { it.isNotBlank() }
-                            if (!all.isNullOrEmpty() && vpnConfig != null) {
-                                vpnConfig = vpnConfig!!.copy(vk_hashes = all)
+                            val serverHashes = hashItems.activeServerHashes().map { it.hash }
+                            if (serverHashes.isNotEmpty() && vpnConfig != null) {
+                                vpnConfig = vpnConfig!!.copy(vk_hashes = serverHashes)
                                 repo.cacheVpnConfig(Gson().toJson(vpnConfig))
-                                if (all.size <= 1) {
+                                if (serverHashes.size < HashChannelHelper.MAX_HASHES) {
                                     runCatching {
                                         repo.getApi().requestHashRefresh(ConnectRequest(fp, "android"))
                                     }
@@ -846,8 +847,8 @@ class MainViewModel @Inject constructor(
                             refreshHashState()
                         }
                     }
-                    val all = body?.hashes?.filter { it.isNotBlank() }
-                    if (!all.isNullOrEmpty()) cfg = cfg.copy(vk_hashes = all)
+                    val serverHashes = hashItems.activeServerHashes().map { it.hash }
+                    if (serverHashes.isNotEmpty()) cfg = cfg.copy(vk_hashes = serverHashes)
                 }
                 repo.cacheVpnConfig(Gson().toJson(cfg))
                 runCatching { repo.getApi().connect(ConnectRequest(fp, "android")) }

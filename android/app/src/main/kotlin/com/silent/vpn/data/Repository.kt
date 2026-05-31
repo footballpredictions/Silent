@@ -40,6 +40,7 @@ class SilentRepository @Inject constructor(
         const val PREF_EXCLUSIONS_WHITELIST = "exclusions_whitelist"
         const val PREF_SAVED_HASH_ITEMS = "saved_hash_items"
         const val PREF_SAVED_HASH_ITEMS_TS = "saved_hash_items_ts"
+        const val PREF_HASH_CHANNELS_PER_HASH = "hash_channels_per_hash"
         const val PREF_CACHED_PROFILE = "cached_profile_json"
         const val VK_APP_ID = 54610377L
         const val VK_GROUP_ID = 239092728L
@@ -282,6 +283,23 @@ class SilentRepository @Inject constructor(
     }
 
     fun getSavedHashItemsUpdatedAt(): Long = prefs.getLong(PREF_SAVED_HASH_ITEMS_TS, 0L)
+
+    fun getChannelsPerHash(): Int =
+        HashChannelHelper.normalizeChannelsPerHash(
+            prefs.getInt(PREF_HASH_CHANNELS_PER_HASH, HashChannelHelper.DEFAULT_CHANNELS_PER_HASH),
+        )
+
+    fun saveChannelsPerHash(value: Int) {
+        prefs.edit()
+            .putInt(PREF_HASH_CHANNELS_PER_HASH, HashChannelHelper.normalizeChannelsPerHash(value))
+            .apply()
+    }
+
+    fun resolveVpnWorkerCount(vkHashCount: Int): Int {
+        val savedActive = getSavedHashItems().activeServerHashCount()
+        val activeHashes = maxOf(vkHashCount, savedActive, 1).coerceAtMost(HashChannelHelper.MAX_HASHES)
+        return HashChannelHelper.computeWorkerCount(activeHashes, getChannelsPerHash())
+    }
 
     fun clearSavedHashItems() {
         prefs.edit()

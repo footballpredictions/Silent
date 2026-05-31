@@ -76,7 +76,7 @@ export default function UsersPage({ token }: { token: string }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <h1 className="text-xl font-bold">Пользователи</h1>
         <div className="relative">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#555]" />
@@ -84,7 +84,7 @@ export default function UsersPage({ token }: { token: string }) {
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Поиск..."
-            className="bg-[#111] border border-[#222] rounded-lg pl-9 pr-4 py-2 text-sm text-white placeholder-[#555] focus:outline-none focus:border-[#444]"
+            className="w-full sm:w-auto bg-[#111] border border-[#222] rounded-lg pl-9 pr-4 py-2 text-sm text-white placeholder-[#555] focus:outline-none focus:border-[#444]"
           />
         </div>
       </div>
@@ -95,8 +95,8 @@ export default function UsersPage({ token }: { token: string }) {
         </div>
       )}
 
-      <div className="bg-[#111] border border-[#222] rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-[#111] border border-[#222] rounded-xl overflow-x-auto">
+        <table className="w-full text-sm min-w-[700px]">
           <thead>
             <tr className="border-b border-[#222] text-[#555] text-xs uppercase tracking-wider">
               <th className="text-left px-4 py-3">ID</th>

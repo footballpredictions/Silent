@@ -113,14 +113,14 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       </div>
 
       {/* User stats */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard icon={Users} label="Пользователей" value={stats.users.total} />
         <StatCard icon={Wifi} label="Активных подписок" value={stats.users.active_subscriptions} />
         <StatCard icon={Wifi} label="Подключений" value={stats.users.connected_devices} />
       </div>
 
       {/* System */}
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="bg-[#111] border border-[#222] rounded-xl p-5">
           <h3 className="text-xs text-[#666] uppercase tracking-wider mb-4 flex items-center gap-2">
             <Cpu className="w-3.5 h-3.5" /> Системные ресурсы
@@ -156,12 +156,12 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
             <p className="text-[#555] text-sm">Нет активных серверных хешей. Подключите AI-агента или добавьте вручную в разделе VK.</p>
           )}
           {stats.vk_hashes.map((h, i) => (
-            <div key={`${h.user_email}-${h.slot}-${i}`} className="flex items-center gap-4 py-2 border-b border-[#1a1a1a] last:border-0">
-              <div className="w-2 h-2 rounded-full bg-green-400" />
-              <span className="text-xs text-[#666] w-32 truncate">{h.user_email || '—'}</span>
-              <span className="text-xs text-[#666]">Слот {h.slot}</span>
-              <span className="font-mono text-sm flex-1">{h.hash}</span>
-              <span className="text-xs text-[#555]">Сбоев: {h.fail_count}</span>
+            <div key={`${h.user_email}-${h.slot}-${i}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 border-b border-[#1a1a1a] last:border-0">
+              <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
+              <span className="text-xs text-[#666] max-w-[120px] truncate">{h.user_email || '—'}</span>
+              <span className="text-xs text-[#666] shrink-0">Слот {h.slot}</span>
+              <span className="font-mono text-xs break-all flex-1 min-w-0">{h.hash}</span>
+              <span className="text-xs text-[#555] shrink-0">Сбоев: {h.fail_count}</span>
             </div>
           ))}
         </div>

@@ -32,7 +32,7 @@ export default function PromoPage({ token }: { token: string }) {
 
       <div className="bg-[#111] border border-[#222] rounded-xl p-6">
         <h2 className="font-semibold mb-4 flex items-center gap-2"><Plus className="w-4 h-4" /> Создать промокод</h2>
-        <form onSubmit={create} className="grid grid-cols-2 gap-3">
+        <form onSubmit={create} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="col-span-2">
             <label className="text-xs text-[#666] mb-1 block">Код</label>
             <input value={form.code} onChange={e => setForm({ ...form, code: e.target.value.toUpperCase() })}
@@ -72,8 +72,8 @@ export default function PromoPage({ token }: { token: string }) {
         </form>
       </div>
 
-      <div className="bg-[#111] border border-[#222] rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-[#111] border border-[#222] rounded-xl overflow-x-auto">
+        <table className="w-full text-sm min-w-[480px]">
           <thead>
             <tr className="border-b border-[#222] text-[#555] text-xs uppercase tracking-wider">
               <th className="text-left px-4 py-3">Код</th>

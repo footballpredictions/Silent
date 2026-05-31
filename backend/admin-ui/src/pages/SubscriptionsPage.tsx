@@ -117,7 +117,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold flex items-center gap-2">
             <Calendar className="w-5 h-5" />
@@ -125,13 +125,13 @@ export default function SubscriptionsPage({ token }: { token: string }) {
           </h1>
           <p className="text-sm text-[#666] mt-1">Нажмите план чтобы выдать, повторно — чтобы забрать</p>
         </div>
-        <div className="relative">
+        <div className="relative shrink-0">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#555]" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Поиск..."
-            className="bg-[#111] border border-[#222] rounded-lg pl-9 pr-4 py-2 text-sm text-white placeholder-[#555] focus:outline-none focus:border-[#444]"
+            className="w-full sm:w-auto bg-[#111] border border-[#222] rounded-lg pl-9 pr-4 py-2 text-sm text-white placeholder-[#555] focus:outline-none focus:border-[#444]"
           />
         </div>
       </div>
@@ -147,8 +147,8 @@ export default function SubscriptionsPage({ token }: { token: string }) {
         </div>
       )}
 
-      <div className="bg-[#111] border border-[#222] rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-[#111] border border-[#222] rounded-xl overflow-x-auto">
+        <table className="w-full text-sm min-w-[580px]">
           <thead>
             <tr className="border-b border-[#222] text-[#555] text-xs uppercase tracking-wider">
               <th className="text-left px-4 py-3">ID</th>

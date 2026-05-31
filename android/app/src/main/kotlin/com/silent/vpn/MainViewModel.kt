@@ -162,6 +162,7 @@ class MainViewModel @Inject constructor(
                     if (bootstrapVpnMode) {
                         bootstrapVpnMode = false
                         cancelBootstrapSessionTimeout()
+                        bootstrapContext?.let { stopVpnLocally(it) }
                         _statusMsg.value = err
                     }
                 }
@@ -174,8 +175,6 @@ class MainViewModel @Inject constructor(
                     if (!WdttTunnelManager.isInternetReady()) return@collect
                     if (bootstrapVpnMode) {
                         _vpnState.value = VpnState.CONNECTED
-                        _statusMsg.value = "Канал готов. Войдите или зарегистрируйтесь (2 мин)."
-                        bootstrapContext?.let { startBootstrapSessionTimeout(it) }
                         onVpnTunnelReady()
                     } else if (silentBootstrapSync) {
                         onVpnTunnelReady()
@@ -402,16 +401,19 @@ class MainViewModel @Inject constructor(
             try {
                 if (_vpnState.value != VpnState.CONNECTED) {
                     _authError.value = "Сначала дождитесь зелёной надписи «Канал готов»"
+                    restartBootstrapTimerIfNeeded()
                     return@launch
                 }
                 if (!WdttTunnelManager.isInternetReady()) {
                     _authError.value = "VPN ещё не готов. Подождите или нажмите «Подключить» снова"
+                    restartBootstrapTimerIfNeeded()
                     return@launch
                 }
                 awaitTunnelApiReady()
                 val res = loginWithFallback(email, password)
                 if (!res.isSuccessful) {
                     _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Неверный логин или пароль"
+                    restartBootstrapTimerIfNeeded()
                     return@launch
                 }
                 val tokens = res.body()!!
@@ -428,6 +430,7 @@ class MainViewModel @Inject constructor(
                 activity?.let { CredentialHelper.offerSavePassword(it, email, password) }
             } catch (e: Exception) {
                 _authError.value = e.message ?: "Ошибка входа"
+                restartBootstrapTimerIfNeeded()
             } finally {
                 _authLoading.value = false
             }
@@ -473,18 +476,21 @@ class MainViewModel @Inject constructor(
             try {
                 if (_vpnState.value != VpnState.CONNECTED) {
                     _authError.value = "Сначала подключитесь для входа (шаг 1)"
+                    restartBootstrapTimerIfNeeded()
                     return@launch
                 }
                 awaitTunnelApiReady()
                 val res = registerWithFallback(email, password)
                 if (!res.isSuccessful) {
                     _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Ошибка регистрации"
+                    restartBootstrapTimerIfNeeded()
                     return@launch
                 }
                 _regEmail.value = email
                 _regDone.value = true
             } catch (e: Exception) {
                 _authError.value = e.message ?: "Ошибка регистрации"
+                restartBootstrapTimerIfNeeded()
             } finally {
                 _authLoading.value = false
             }
@@ -528,6 +534,7 @@ class MainViewModel @Inject constructor(
     }
 
     private fun startBootstrapSessionTimeout(context: Context) {
+        if (bootstrapTimeoutJob?.isActive == true) return
         cancelBootstrapSessionTimeout()
         bootstrapContext = context.applicationContext
         bootstrapTimeoutJob = viewModelScope.launch {
@@ -569,6 +576,11 @@ class MainViewModel @Inject constructor(
     fun ensureBootstrapVpn(context: Context) {
         if (repo.isLoggedIn() || !isHashReady()) return
         if (bootstrapConnectingInternal) return
+        if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
+            bootstrapContext = context.applicationContext
+            startBootstrapSessionTimeout(context)
+            return
+        }
         DebugLog.i("MainViewModel", "ensureBootstrapVpn start")
         viewModelScope.launch {
             bootstrapConnectingInternal = true
@@ -637,6 +649,13 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    private fun restartBootstrapTimerIfNeeded() {
+        val ctx = bootstrapContext ?: return
+        if (bootstrapVpnMode && !repo.isLoggedIn() && _vpnState.value == VpnState.CONNECTED) {
+            startBootstrapSessionTimeout(ctx)
+        }
+    }
+
     private suspend fun openLoginSession(): Boolean {
         val boot = repo.getBootstrapHash()
         val res = repo.getApi().registerDevice(
@@ -649,10 +668,15 @@ class MainViewModel @Inject constructor(
             _sessionDeviceId.value = cfg.device_id
             return true
         }
+        DebugLog.e(
+            "MainViewModel",
+            "device/register HTTP ${res.code()}: ${res.errorBody()?.string()?.take(200)}",
+        )
         _authError.value = parseError(res.errorBody()?.string() ?: "")
             ?: "Достигнут лимит устройств (3). Выйдите на другом устройстве."
         repo.clearSessionFingerprint()
         repo.clearTokens()
+        restartBootstrapTimerIfNeeded()
         return false
     }
 

@@ -140,8 +140,17 @@ class SilentVpnService : Service() {
                 .take(HashChannelHelper.MAX_HASHES)
             val wdttHashes = if (serverHashes.isNotEmpty()) serverHashes else hashes.take(HashChannelHelper.MAX_HASHES)
             val hashCount = wdttHashes.size.coerceIn(1, HashChannelHelper.MAX_HASHES)
-            val totalWorkers = repoResolveTotalWorkers(hashCount)
-            val libclientHashes = HashChannelHelper.hashesForLibclient(wdttHashes, totalWorkers)
+            val isBootstrap = deviceId.startsWith("boot:")
+            val totalWorkers = if (isBootstrap) {
+                (vpnConfig?.stream_count ?: 3).coerceIn(3, 9)
+            } else {
+                repoResolveTotalWorkers(hashCount)
+            }
+            val libclientHashes = if (isBootstrap) {
+                wdttHashes.firstOrNull { it.isNotBlank() }?.let { listOf(it.trim()) } ?: emptyList()
+            } else {
+                HashChannelHelper.hashesForLibclient(wdttHashes, totalWorkers)
+            }
 
             WdttTunnelManager.start(
                 this,

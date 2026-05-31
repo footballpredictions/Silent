@@ -32,7 +32,7 @@ object HashChannelHelper {
         val unique = allHashes
             .flatMap { it.split(Regex("[,\\s\\n]+")) }
             .map { it.trim() }
-            .filter { it.length >= 16 }
+            .filter { it.length >= 6 }
             .distinct()
         if (unique.isEmpty()) return emptyList()
         val groups = groupsForWorkers(workersForLibclient(totalWorkers, unique.size.coerceAtMost(MAX_HASHES)))

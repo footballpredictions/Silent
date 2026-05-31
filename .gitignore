@@ -50,6 +50,7 @@ backend/wdtt/wdtt-server
 *.crt
 *.p12
 *.keystore
+!android/keystore/silent-release.keystore
 backend/.env
 
 # Logs

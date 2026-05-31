@@ -176,6 +176,7 @@ class MainViewModel @Inject constructor(
                     if (bootstrapVpnMode) {
                         _vpnState.value = VpnState.CONNECTED
                         onVpnTunnelReady()
+                        bootstrapContext?.let { startBootstrapSessionTimeout(it) }
                     } else if (silentBootstrapSync) {
                         onVpnTunnelReady()
                     } else if (SilentVpnService.isRunning) {
@@ -534,7 +535,6 @@ class MainViewModel @Inject constructor(
     }
 
     private fun startBootstrapSessionTimeout(context: Context) {
-        if (bootstrapTimeoutJob?.isActive == true) return
         cancelBootstrapSessionTimeout()
         bootstrapContext = context.applicationContext
         bootstrapTimeoutJob = viewModelScope.launch {

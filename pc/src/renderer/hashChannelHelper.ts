@@ -4,6 +4,7 @@ export const WORKERS_PER_GROUP = 9
 export const MAX_WORKERS_PER_HASH = 27
 export const DEFAULT_TOTAL_WORKERS = 18
 export const MAX_HASHES = 4
+export const LIBCLIENT_MAX_WORKERS = 108
 
 /** @deprecated legacy key — migrated to TOTAL_WORKERS_KEY */
 export const CHANNELS_KEY = 'silent_hash_channels_per_hash'
@@ -16,22 +17,60 @@ export function maxTotalWorkers(activeHashCount: number): number {
 export function normalizeTotalWorkers(value: number, activeHashCount: number): number {
   const max = maxTotalWorkers(activeHashCount)
   const stepped = Math.round(value / WORKERS_PER_GROUP) * WORKERS_PER_GROUP
-  return Math.min(max, Math.max(WORKERS_PER_GROUP, stepped))
+  return Math.min(max, Math.max(WORKERS_PER_GROUP, stepped), LIBCLIENT_MAX_WORKERS)
+}
+
+/** Число групп libclient = n / 9. */
+export function groupsForWorkers(totalWorkers: number): number {
+  return Math.min(
+    Math.max(Math.floor(Math.max(totalWorkers, WORKERS_PER_GROUP) / WORKERS_PER_GROUP), 1),
+    MAX_HASHES,
+  )
+}
+
+/**
+ * Только нужное число хешей для `-vk`: при n=18 — 2 хеша, не все слоты сразу.
+ */
+export function hashesForLibclient(allHashes: string[], totalWorkers: number): string[] {
+  const unique = allHashes
+    .flatMap(h => h.split(/[,\s\n]+/))
+    .map(h => h.trim())
+    .filter(h => h.length >= 16)
+    .filter((h, i, arr) => arr.indexOf(h) === i)
+  if (unique.length === 0) return []
+  const groups = groupsForWorkers(
+    workersForLibclient(totalWorkers, Math.min(unique.length, MAX_HASHES)),
+  )
+  return unique.slice(0, groups)
 }
 
 export function migrateLegacyPerHash(oldPerHash: number, activeHashCount: number): number {
-  const per = oldPerHash <= 9 ? 9 : oldPerHash <= 18 ? 18 : 27
-  return normalizeTotalWorkers(per * Math.max(activeHashCount, 1), activeHashCount)
+  const asTotal =
+    oldPerHash <= 9 ? 9
+      : oldPerHash <= 18 ? 18
+        : oldPerHash <= 27 ? 27
+          : oldPerHash <= 36 ? 36
+            : oldPerHash <= 54 ? 54
+              : oldPerHash <= 72 ? 72
+                : DEFAULT_TOTAL_WORKERS
+  return normalizeTotalWorkers(asTotal, activeHashCount)
 }
 
 export function getTotalWorkers(activeHashCount = activeServerHashCount(getSavedHashItems()) || 1): number {
+  const capped = Math.min(Math.max(activeHashCount, 1), MAX_HASHES)
   const stored = localStorage.getItem(TOTAL_WORKERS_KEY)
   if (stored != null && stored !== '') {
-    return normalizeTotalWorkers(Number(stored) || DEFAULT_TOTAL_WORKERS, activeHashCount)
+    const raw = Number(stored) || DEFAULT_TOTAL_WORKERS
+    if (raw > maxTotalWorkers(capped)) {
+      const fixed = normalizeTotalWorkers(DEFAULT_TOTAL_WORKERS, capped)
+      saveTotalWorkers(fixed, capped)
+      return fixed
+    }
+    return normalizeTotalWorkers(raw, capped)
   }
   const legacy = Number(localStorage.getItem(CHANNELS_KEY) || DEFAULT_TOTAL_WORKERS)
-  const migrated = migrateLegacyPerHash(legacy, activeHashCount)
-  saveTotalWorkers(migrated, activeHashCount)
+  const migrated = migrateLegacyPerHash(legacy, capped)
+  saveTotalWorkers(migrated, capped)
   return migrated
 }
 
@@ -43,12 +82,12 @@ export function saveTotalWorkers(value: number, activeHashCount = activeServerHa
 }
 
 export function workersForLibclient(totalWorkers: number, activeHashCount: number): number {
-  return normalizeTotalWorkers(totalWorkers, activeHashCount)
+  return normalizeTotalWorkers(totalWorkers, Math.min(Math.max(activeHashCount, 1), MAX_HASHES))
 }
 
 export function workersForHashSlot(totalWorkers: number, hashIndex: number, activeHashCount: number): number {
   if (hashIndex < 0 || hashIndex >= Math.max(activeHashCount, 1)) return 0
-  const groups = Math.floor(totalWorkers / WORKERS_PER_GROUP)
+  const groups = groupsForWorkers(totalWorkers)
   if (groups <= 0) return 0
   let perHash = 0
   for (let i = 0; i < groups; i++) {
@@ -68,15 +107,32 @@ export function signalBars(activeWorkers: number, totalWorkers: number): number 
   return 0
 }
 
+function capHashes(hashes: string[] | undefined): string[] {
+  return (hashes || [])
+    .flatMap(h => h.split(/[,\s\n]+/))
+    .map(h => h.trim())
+    .filter(h => h.length >= 16)
+    .filter((h, i, arr) => arr.indexOf(h) === i)
+    .slice(0, MAX_HASHES)
+}
+
 export function resolveWorkerCount(config: { vk_hashes?: string[]; stream_count?: number }): number {
   const savedActive = activeServerHashCount(getSavedHashItems())
+  const cappedHashes = capHashes(config.vk_hashes)
   const hashCount = Math.min(
-    Math.max(config.vk_hashes?.filter(h => h?.trim()).length || 0, savedActive, 1),
+    Math.max(cappedHashes.length, savedActive, 1),
     MAX_HASHES,
   )
   return workersForLibclient(getTotalWorkers(hashCount), hashCount)
 }
 
 export function applyWorkerCount<T extends { vk_hashes?: string[]; stream_count?: number }>(config: T): T {
-  return { ...config, stream_count: resolveWorkerCount(config) }
+  const cappedHashes = capHashes(config.vk_hashes)
+  const workers = resolveWorkerCount({ ...config, vk_hashes: cappedHashes })
+  const libclientHashes = hashesForLibclient(cappedHashes, workers)
+  return {
+    ...config,
+    vk_hashes: libclientHashes.length > 0 ? libclientHashes : cappedHashes.slice(0, 1),
+    stream_count: workers,
+  }
 }

@@ -232,6 +232,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         if ((window as any).electronAPI?.vpnConnect) {
           pushLog('Main', 'vpnConnect start')
           const connectCfg = applyWorkerCount(config)
+          pushLog('Main', `vpnConnect n=${connectCfg.stream_count} hashes=${connectCfg.vk_hashes?.length ?? 0}`)
           const res = await (window as any).electronAPI.vpnConnect(connectCfg)
           if (res?.error) { pushLog('Main', `vpnConnect: ${res.error}`, 'E'); alert(res.error); return }
           const ready = await waitVpnReady(90000)

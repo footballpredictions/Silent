@@ -215,13 +215,15 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   if (fs.existsSync(confPath)) fs.unlinkSync(confPath)
 
   const hashes = (config.vk_hashes || []).filter(Boolean).join(',')
+  const workers = Number(config.stream_count) || 18
+  sendLog(`[VPN] connect n=${workers} hashes=${(config.vk_hashes || []).filter(Boolean).length}`)
   const args = [
     '-peer', `${config.server_ip}:${config.server_port}`,
     '-vk', hashes,
     '-password', config.wdtt_password,
     '-device-id', String(config.device_id || ''),
     '-listen', '127.0.0.1:9000',
-    '-n', String(config.stream_count || 12),
+    '-n', String(workers),
     '-captcha-mode', 'auto',
   ]
 

@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import api from '../api'
 import {
-  CHANNEL_OPTIONS,
   MAX_HASHES,
-  computeWorkerCount,
-  getChannelsPerHash,
-  saveChannelsPerHash,
+  WORKERS_PER_GROUP,
+  getTotalWorkers,
+  maxTotalWorkers,
+  normalizeTotalWorkers,
+  saveTotalWorkers,
   signalBars,
+  workersForHashSlot,
 } from '../hashChannelHelper'
 import {
   formatSavedAt,
@@ -50,16 +52,23 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
   const [items, setItems] = useState<HashItem[]>(cached)
   const [savedAt, setSavedAt] = useState(getSavedHashItemsUpdatedAt())
   const [refreshKey, setRefreshKey] = useState(0)
-  const [channelsPerHash, setChannelsPerHash] = useState(getChannelsPerHash())
 
   const serverItems = items.filter(i => i.source !== 'bootstrap')
   const activeHashCount = Math.min(
     Math.max(serverItems.filter(i => i.status === 'active' && i.is_active && i.hash?.trim()).length, 1),
     MAX_HASHES,
   )
-  const totalChannels = computeWorkerCount(activeHashCount, channelsPerHash)
-  const workersPerHashEst =
-    vpnConnected && activeHashCount > 0 ? Math.ceil(activeWorkers / activeHashCount) : 0
+  const maxTotal = maxTotalWorkers(activeHashCount)
+  const [totalWorkers, setTotalWorkers] = useState(() => getTotalWorkers(activeHashCount))
+
+  useEffect(() => {
+    setTotalWorkers(getTotalWorkers(activeHashCount))
+  }, [activeHashCount])
+
+  const stepped = useMemo(
+    () => normalizeTotalWorkers(totalWorkers, activeHashCount),
+    [totalWorkers, activeHashCount],
+  )
 
   const refreshFromServer = useCallback(async () => {
     setSyncing(true)
@@ -98,6 +107,8 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
     void refreshFromServer()
   }, [refreshKey, refreshFromServer])
 
+  const serverHashRows = serverItems.filter(i => i.source !== 'bootstrap')
+
   return (
     <div className="flex-1 p-4 overflow-y-auto text-left w-full items-start">
       <button type="button" onClick={onBack} className="text-xs text-gray-400 mb-4 block text-left">
@@ -116,42 +127,40 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
       )}
 
       <div className="rounded-xl border border-gray-100 p-3 mb-3 text-left" style={{ borderColor: `${fg}20` }}>
-        <div className="text-[11px] font-semibold mb-1" style={{ color: fg }}>
-          Сила каналов
+        <div className="flex items-center justify-between mb-1">
+          <div className="text-[11px] font-semibold" style={{ color: fg }}>
+            Сила каналов
+          </div>
+          <div className="text-base font-bold" style={{ color: fg }}>
+            {stepped}
+          </div>
         </div>
-        <p className="text-[10px] mb-2" style={{ color: muted }}>
-          {activeHashCount} хеш(а) × {channelsPerHash} = {totalChannels} потоков (макс.{' '}
-          {computeWorkerCount(activeHashCount, 27)})
+        <p className="text-[10px] mb-3" style={{ color: muted }}>
+          Потоков: {stepped} из {maxTotal} (шаг 9, до {activeHashCount} хеш × 27)
         </p>
-        <div className="flex gap-1.5">
-          {CHANNEL_OPTIONS.map(option => {
-            const picked = channelsPerHash === option
-            const total = computeWorkerCount(activeHashCount, option)
-            return (
-              <button
-                key={option}
-                type="button"
-                onClick={() => {
-                  setChannelsPerHash(option)
-                  saveChannelsPerHash(option)
-                }}
-                className="flex-1 rounded-lg py-1.5 text-xs font-bold transition-opacity flex flex-col items-center"
-                style={{
-                  background: picked ? fg : `${fg}14`,
-                  color: picked ? '#fff' : fg,
-                }}
-              >
-                <span className="text-[13px]">{total}</span>
-                <span className="text-[9px] font-normal opacity-80">{option}/хеш</span>
-              </button>
-            )
-          })}
-        </div>
+        <input
+          type="range"
+          min={WORKERS_PER_GROUP}
+          max={maxTotal}
+          step={WORKERS_PER_GROUP}
+          value={stepped}
+          disabled={vpnConnected}
+          onChange={e => {
+            const next = normalizeTotalWorkers(Number(e.target.value), activeHashCount)
+            setTotalWorkers(next)
+            saveTotalWorkers(next, activeHashCount)
+          }}
+          className="w-full accent-current"
+          style={{ color: fg }}
+        />
+        <p className="text-[9px] mt-2" style={{ color: muted }}>
+          9 → 18 → 27 → 36… — каждые +9 подключают следующий хеш
+        </p>
       </div>
 
       {vpnConnected && (
         <p className="text-[10px] mb-2 text-left" style={{ color: muted }}>
-          Активных каналов: {activeWorkers} / {totalChannels}
+          Активных каналов: {activeWorkers} / {stepped}
         </p>
       )}
 
@@ -171,12 +180,12 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
         </div>
       )}
       {error && items.length === 0 && <p className="text-xs text-red-500 text-left">{error}</p>}
-      {!loading && serverItems.length === 0 && !error && (
+      {!loading && serverHashRows.length === 0 && !error && (
         <p className="text-xs text-left" style={{ color: muted }}>
           Нет серверных хешей. Попросите админа выдать слоты.
         </p>
       )}
-      {syncing && serverItems.length > 0 && (
+      {syncing && serverHashRows.length > 0 && (
         <p className="text-[10px] mb-2 text-left" style={{ color: muted }}>
           Обновление с сервера…
         </p>
@@ -184,11 +193,10 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
       {error && items.length > 0 && (
         <p className="text-[11px] text-red-500 mb-2 text-left">{error}</p>
       )}
-      {items.map((item, i) => {
-        if (item.source === 'bootstrap') return null
+      {serverHashRows.map((item, i) => {
         const active = item.status === 'active' && item.is_active
-        const bars =
-          vpnConnected && active ? signalBars(workersPerHashEst, channelsPerHash) : 0
+        const bars = vpnConnected && active ? signalBars(activeWorkers, stepped) : 0
+        const maxChannels = workersForHashSlot(stepped, i, activeHashCount)
         return (
           <div key={`${item.label}-${i}`} className="flex gap-2 py-2 border-b border-gray-100 last:border-0 text-left">
             <div className={`w-2 h-2 rounded-full mt-1 shrink-0 ${active ? 'bg-green-500' : 'bg-red-500'}`} />
@@ -205,9 +213,9 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
               <div className="text-[10px] font-mono break-all mt-1" style={{ color: active ? muted : `${fg}55` }}>
                 {item.hash}
               </div>
-              {active && (
+              {active && maxChannels > 0 && (
                 <div className="text-[9px] mt-0.5" style={{ color: muted }}>
-                  до {channelsPerHash} каналов
+                  до {maxChannels} каналов
                 </div>
               )}
             </div>

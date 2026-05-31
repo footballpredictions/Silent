@@ -25,13 +25,16 @@ fun resolveExcludedAppPackages(context: Context): Set<String> {
         ?: emptySet()
 
     val pm = context.packageManager
-    // Наш app НЕ исключаем — он должен ходить в 10.66.66.1 через WireGuard (API/профиль).
-    // libclient сам исключает TURN IP из WG через wgExcludeIps.
+    // Как в proxy-turn-vk-android: наш app исключаем из VPN-туннеля.
+    // Тогда libclient дотягивается до TURN-серверов напрямую (без WG-петли),
+    // AllowedIPs остаётся 0.0.0.0/0 (простой полный туннель для остальных приложений),
+    // а API-вызовы приложения идут напрямую к публичному серверу.
     val excluded = LinkedHashSet<String>()
+    excluded.add(context.packageName)          // собственный пакет — всегда вне туннеля
     excluded.addAll(VK_TUNNEL_PACKAGES)
     excluded.addAll(userSelected)
 
-    return excluded.filter { pkg -> pkg != context.packageName && isPackageInstalled(pm, pkg) }.toSet()
+    return excluded.filter { pkg -> isPackageInstalled(pm, pkg) }.toSet()
 }
 
 private fun isPackageInstalled(pm: PackageManager, pkg: String): Boolean = runCatching {

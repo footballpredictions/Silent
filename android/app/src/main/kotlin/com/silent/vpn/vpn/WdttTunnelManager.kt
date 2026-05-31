@@ -122,7 +122,6 @@ object WdttTunnelManager {
 
                 if (!isSwitching) {
                     wgExcludeIps.clear()
-                    wgExcludeIps.add(params.serverIp.trim())
                 }
 
                 DebugLog.i(
@@ -284,11 +283,7 @@ object WdttTunnelManager {
                         return@forEachLine
                     }
 
-                    Regex("""TURN UDP \(([\d.]+):\d+\)""").find(lineTrim)?.groupValues?.getOrNull(1)?.let { turnIp ->
-                        if (wgExcludeIps.add(turnIp)) {
-                            DebugLog.i(TAG, "TURN IP excluded from WG: $turnIp")
-                        }
-                    }
+
 
                     if (lineTrim.contains("[ДИСП] Воркер") && lineTrim.contains("зарегистрирован")) {
                         Regex("всего:\\s*(\\d+)").find(lineTrim)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let {

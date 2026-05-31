@@ -124,7 +124,7 @@ async def get_vk_hashes(
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """VK TURN hashes for user: bootstrap + up to 3 server slots."""
+    """VK TURN hashes for user: bootstrap + up to 4 server slots."""
     from app.services.user_hash_service import get_vpn_hashes_for_user, get_hash_items_for_user
 
     hashes = await get_vpn_hashes_for_user(db, user)

@@ -1,4 +1,4 @@
-"""Per-user VK call hashes: bootstrap (user) + 3 server slots."""
+"""Per-user VK call hashes: bootstrap (user) + 4 server slots."""
 from __future__ import annotations
 
 import logging
@@ -13,7 +13,7 @@ from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
 
 logger = logging.getLogger(__name__)
 
-MAX_SERVER_SLOTS = 3
+MAX_SERVER_SLOTS = 4
 
 
 def extract_call_hash(value: str) -> str | None:
@@ -138,7 +138,7 @@ async def cleanup_bootstrap_devices(db: AsyncSession, device_fingerprint: str) -
 
 
 async def ensure_user_server_hashes(db: AsyncSession, user_id: uuid.UUID) -> int:
-    """Create missing server slots (0–2) via AI agent when enabled."""
+    """Create missing server slots (0–3) via AI agent when enabled."""
     from app.services.vk_agent_auth import is_agent_enabled
     from ai.vk_manager import VkManager
 

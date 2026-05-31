@@ -37,6 +37,8 @@ export default function VkPage({ token }: { token: string }) {
   const oauthStateRef = useRef('')
 
   const authH = { Authorization: `Bearer ${token}` }
+  const maxSlots = status?.max_hashes ?? 4
+  const slotIndexes = Array.from({ length: maxSlots }, (_, i) => i)
   const jsonH = { ...authH, 'Content-Type': 'application/json' }
 
   const parseApi = async (res: Response) => {
@@ -197,7 +199,7 @@ export default function VkPage({ token }: { token: string }) {
       <div>
         <h1 className="text-xl font-bold">VK — серверный AI-агент</h1>
         <p className="text-[#666] text-sm mt-1">
-          Токен VK нужен только серверу для 3 хешей на пользователя. Клиенты вставляют свой хеш вручную.
+          Токен VK нужен только серверу для 4 серверных хешей на пользователя (bootstrap — отдельно, только для входа).
         </p>
       </div>
 
@@ -243,7 +245,7 @@ export default function VkPage({ token }: { token: string }) {
         </div>
         <div className="p-5 space-y-3">
           <p className="text-xs text-[#666] leading-relaxed">
-            Агент каждые ~5 мин проверяет 3 слота у каждого пользователя и пересоздаёт сломанные хеши.
+            Агент каждые ~5 мин проверяет 4 слота у каждого пользователя и пересоздаёт сломанные хеши.
           </p>
           <p className="text-sm text-[#888]">
             {status?.agent_connected ? 'Подключён' : 'Не подключён'}
@@ -289,7 +291,7 @@ export default function VkPage({ token }: { token: string }) {
             <p className="text-xs text-[#555]">{users[0].email}</p>
           )}
 
-          {[0, 1, 2].map(slot => {
+          {slotIndexes.map(slot => {
             const h = hashes.find(x => x.slot === slot && x.is_active)
             return (
               <div key={slot} className="flex items-start gap-3 bg-[#0a0a0a] rounded-xl p-3 border border-[#1a1a1a]">
@@ -318,9 +320,9 @@ export default function VkPage({ token }: { token: string }) {
               onChange={e => setManualSlot(Number(e.target.value))}
               className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-2 py-2 text-xs text-white"
             >
-              <option value={0}>#0</option>
-              <option value={1}>#1</option>
-              <option value={2}>#2</option>
+              {slotIndexes.map(slot => (
+                <option key={slot} value={slot}>#{slot}</option>
+              ))}
             </select>
             <input
               value={manualHash}

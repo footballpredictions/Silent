@@ -19,7 +19,7 @@ from app.services.vk_agent_auth import resolve_agent_token, validate_token, VK_A
 
 logger = logging.getLogger(__name__)
 
-MAX_HASHES = 3
+MAX_HASHES = 4
 
 
 class VkApiError(Exception):

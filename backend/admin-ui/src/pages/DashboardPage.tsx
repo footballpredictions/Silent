@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Cpu, HardDrive, MemoryStick, Users, Wifi, Hash, RefreshCw } from 'lucide-react'
+import { Cpu, HardDrive, MemoryStick, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
 interface Stats {
@@ -52,6 +52,82 @@ const ProgressBar = ({ percent, label }: { percent: number; label: string }) => 
     </div>
   </div>
 )
+
+function VkHashesCard({ hashes }: { hashes: Stats['vk_hashes'] }) {
+  // Group by user email
+  const byUser = hashes.reduce<Record<string, Stats['vk_hashes']>>((acc, h) => {
+    const key = h.user_email || '—'
+    if (!acc[key]) acc[key] = []
+    acc[key].push(h)
+    return acc
+  }, {})
+
+  const users = Object.entries(byUser)
+  const [open, setOpen] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(users.map(([email]) => [email, true]))
+  )
+
+  const toggle = (email: string) =>
+    setOpen(prev => ({ ...prev, [email]: !prev[email] }))
+
+  return (
+    <div className="bg-[#111] border border-[#222] rounded-xl p-5">
+      <h3 className="text-xs text-[#666] uppercase tracking-wider mb-4 flex items-center gap-2">
+        <Hash className="w-3.5 h-3.5" /> Серверные VK-хеши (по пользователям)
+      </h3>
+
+      {hashes.length === 0 && (
+        <p className="text-[#555] text-sm">Нет активных серверных хешей. Подключите AI-агента или добавьте вручную в разделе VK.</p>
+      )}
+
+      <div className="space-y-1">
+        {users.map(([email, slots]) => {
+          const isOpen = open[email]
+          return (
+            <div key={email} className="border border-[#1e1e1e] rounded-lg overflow-hidden">
+              {/* User header — clickable */}
+              <button
+                onClick={() => toggle(email)}
+                className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-[#181818] transition-colors text-left"
+              >
+                {isOpen
+                  ? <ChevronDown className="w-3.5 h-3.5 text-[#555] shrink-0" />
+                  : <ChevronRight className="w-3.5 h-3.5 text-[#555] shrink-0" />
+                }
+                <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
+                <span className="text-sm text-white flex-1 min-w-0 truncate">{email}</span>
+                <span className="text-[10px] text-[#555] bg-[#222] px-2 py-0.5 rounded-full shrink-0">
+                  {slots.length} / 4
+                </span>
+              </button>
+
+              {/* Hashes list */}
+              {isOpen && (
+                <div className="border-t border-[#1e1e1e] divide-y divide-[#1a1a1a]">
+                  {slots.map((h, i) => (
+                    <div key={i} className="px-3 py-2 bg-[#0f0f0f]">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[10px] text-[#555] bg-[#1a1a1a] px-1.5 py-0.5 rounded shrink-0">
+                          Слот {h.slot}
+                        </span>
+                        {h.fail_count > 0 && (
+                          <span className="text-[10px] text-red-400/80 shrink-0">⚠ {h.fail_count} сбоев</span>
+                        )}
+                      </div>
+                      <div className="font-mono text-[11px] text-[#777] break-all leading-relaxed">
+                        {h.hash}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
 export default function DashboardPage({ token, onUnauthorized }: { token: string; onUnauthorized?: () => void }) {
   const [stats, setStats] = useState<Stats | null>(null)
@@ -146,30 +222,7 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
         </div>
       </div>
 
-      {/* VK Hashes — per-user active slots only */}
-      <div className="bg-[#111] border border-[#222] rounded-xl p-5">
-        <h3 className="text-xs text-[#666] uppercase tracking-wider mb-4 flex items-center gap-2">
-          <Hash className="w-3.5 h-3.5" /> Серверные VK-хеши (по пользователям)
-        </h3>
-        <div className="space-y-2">
-          {stats.vk_hashes.length === 0 && (
-            <p className="text-[#555] text-sm">Нет активных серверных хешей. Подключите AI-агента или добавьте вручную в разделе VK.</p>
-          )}
-          {stats.vk_hashes.map((h, i) => (
-            <div key={`${h.user_email}-${h.slot}-${i}`} className="py-2.5 border-b border-[#1a1a1a] last:border-0">
-              {/* Row 1: status + email + slot + fail count */}
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
-                <span className="text-xs text-white truncate flex-1 min-w-0">{h.user_email || '—'}</span>
-                <span className="text-[10px] text-[#555] bg-[#1a1a1a] px-1.5 py-0.5 rounded shrink-0">Слот {h.slot}</span>
-                <span className="text-[10px] text-[#555] shrink-0">⚠ {h.fail_count}</span>
-              </div>
-              {/* Row 2: hash (truncated) */}
-              <div className="mt-1 ml-4 font-mono text-[11px] text-[#555] truncate">{h.hash}</div>
-            </div>
-          ))}
-        </div>
-      </div>
+      <VkHashesCard hashes={stats.vk_hashes} />
     </div>
   )
 }

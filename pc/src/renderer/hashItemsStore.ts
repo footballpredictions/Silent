@@ -10,10 +10,13 @@ export interface HashItem {
 const ITEMS_KEY = 'silent_saved_hash_items'
 const TS_KEY = 'silent_saved_hash_items_ts'
 
+export const MAX_SERVER_HASHES = 4
+
 export function getSavedHashItems(): HashItem[] {
   try {
     const raw = localStorage.getItem(ITEMS_KEY)
-    return raw ? (JSON.parse(raw) as HashItem[]) : []
+    const items = raw ? (JSON.parse(raw) as HashItem[]) : []
+    return items.filter(i => i.source !== 'bootstrap')
   } catch {
     return []
   }
@@ -25,7 +28,8 @@ export function getSavedHashItemsUpdatedAt(): number {
 }
 
 export function saveHashItems(items: HashItem[]): void {
-  localStorage.setItem(ITEMS_KEY, JSON.stringify(items))
+  const serverOnly = items.filter(i => i.source !== 'bootstrap' && i.hash?.trim())
+  localStorage.setItem(ITEMS_KEY, JSON.stringify(serverOnly))
   localStorage.setItem(TS_KEY, String(Date.now()))
 }
 
@@ -45,18 +49,35 @@ export function formatSavedAt(ts: number): string {
   })
 }
 
+export function activeServerHashes(items: HashItem[]): HashItem[] {
+  return items.filter(
+    i => i.source !== 'bootstrap' && i.is_active && i.status === 'active' && i.hash?.trim(),
+  )
+}
+
+export function activeServerHashCount(items: HashItem[]): number {
+  const n = activeServerHashes(items).length
+  return Math.min(Math.max(n, 1), MAX_SERVER_HASHES)
+}
+
 export function mapHashesResponse(body: {
   items?: HashItem[]
   hashes?: string[]
+  bootstrap_hash?: string
 }): HashItem[] {
-  if (body.items?.length) return body.items
+  if (body.items?.length) {
+    return body.items.filter(i => i.source !== 'bootstrap' && i.hash?.trim())
+  }
+  const boot = (body.bootstrap_hash || '').trim()
   const hashes: string[] = body.hashes || []
-  return hashes.map((h, i) => ({
-    hash: h,
-    label: i === 0 ? 'Bootstrap' : `Сервер #${i - 1}`,
-    source: i === 0 ? 'bootstrap' : 'server',
-    slot_index: i === 0 ? null : i - 1,
-    is_active: true,
-    status: 'active',
-  }))
+  return hashes
+    .filter(h => h?.trim() && h !== boot)
+    .map((h, i) => ({
+      hash: h,
+      label: `Сервер #${i}`,
+      source: 'server',
+      slot_index: i,
+      is_active: true,
+      status: 'active',
+    }))
 }

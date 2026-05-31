@@ -201,8 +201,8 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     await cleanupVpnAsync()
   } else {
     forceStopWireGuard(isDev, __dirname, sendLog)
-    await waitForTunnelDown(10000, sendLog)
-    await sleep(800)
+    await waitForTunnelDown(8000, sendLog)
+    await sleep(400)
   }
 
   const exePath = wdttExePath()
@@ -270,7 +270,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
     sendLog(`[WG] Применение конфига (${source})...`)
     sendLog('[WG] Ожидание WDTT UDP 127.0.0.1:9000...')
-    const wdttReady = await waitForWdttProxy('127.0.0.1', 9000, 45000, sendLog, confPath)
+    const wdttReady = await waitForWdttProxy('127.0.0.1', 9000, 30000, sendLog, confPath)
     if (!wdttReady) {
       wgInstallInFlight = false
       wgAttempted = false
@@ -279,10 +279,10 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     }
 
     fs.writeFileSync(confPath, confText)
-    await sleep(400)
+    await sleep(150)
 
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], { skipWdttWait: true })
-    const timeoutMs = isProcessElevated() ? 45000 : 120000
+    const timeoutMs = isProcessElevated() ? 35000 : 90000
     let ok = false
     try {
       ok = await Promise.race([
@@ -380,12 +380,12 @@ ipcMain.handle('vpn-connect', async (_, config) => {
       return
     }
     await applyFromFile()
-  }, 3000)
+  }, 2000)
 
   wgTimers.push(setTimeout(async () => {
     if (wgApplied || wgFailed || wgAttempted || wgInstallInFlight) return
     if (apiConf) await tryApplyWg(apiConf, 'api')
-  }, 45000))
+  }, 20000))
 
   return { success: true }
 })

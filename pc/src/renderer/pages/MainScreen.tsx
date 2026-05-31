@@ -167,7 +167,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         if (isBootstrapVpnActive()) {
           await disconnectBootstrapVpn()
           pushLog('Main', 'bootstrap VPN stopped before connect')
-          await new Promise(r => setTimeout(r, 2000))
+          await new Promise(r => setTimeout(r, 500))
         }
         const p = await fetchProfile()
         const hasAccess = !p || p.is_admin || p.subscription?.is_active

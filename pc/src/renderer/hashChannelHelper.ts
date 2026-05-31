@@ -1,4 +1,4 @@
-import { getSavedHashItems } from './hashItemsStore'
+import { activeServerHashCount, getSavedHashItems } from './hashItemsStore'
 
 export const CHANNEL_OPTIONS = [9, 18, 27] as const
 export const CHANNELS_KEY = 'silent_hash_channels_per_hash'
@@ -37,9 +37,7 @@ export function signalBars(activeChannelsOnHash: number, channelsPerHash: number
 }
 
 export function resolveWorkerCount(config: { vk_hashes?: string[]; stream_count?: number }): number {
-  const savedActive = getSavedHashItems().filter(
-    i => i.is_active && i.status === 'active' && i.hash?.trim(),
-  ).length
+  const savedActive = activeServerHashCount(getSavedHashItems())
   const hashCount = Math.max(
     config.vk_hashes?.filter(h => h?.trim()).length || 0,
     savedActive,

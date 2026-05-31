@@ -213,7 +213,7 @@ async function waitForWdttProxy(host, port, timeoutMs = 60000, send, confPath = 
       send?.('[WG] WDTT: UDP прокси слушает ' + host + ':' + port)
       return true
     }
-    await sleep(400)
+    await sleep(200)
   }
   send?.('[WG] WDTT: таймаут ожидания UDP ' + host + ':' + port)
   return false

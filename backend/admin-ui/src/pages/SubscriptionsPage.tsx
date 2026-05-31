@@ -12,21 +12,26 @@ interface UserRow {
 }
 
 const PLANS = [
-  { type: 'monthly', label: 'Месяц', days: 30 },
-  { type: 'quarterly', label: '3 месяца', days: 90 },
-  { type: 'yearly', label: 'Год', days: 365 },
+  { type: 'three_days', label: '3 дня',    days: 3 },
+  { type: 'monthly',    label: 'Месяц',    days: 30 },
+  { type: 'quarterly',  label: '3 месяца', days: 90 },
+  { type: 'yearly',     label: 'Год',      days: 365 },
+  { type: 'unlimited',  label: '∞',        days: null },
 ] as const
+
+const PLAN_NAMES: Record<string, string> = {
+  trial:      'Пробный',
+  three_days: '3 дня',
+  monthly:    'Месяц',
+  quarterly:  '3 месяца',
+  yearly:     'Год',
+  unlimited:  '∞',
+}
 
 function subscriptionLabel(u: UserRow): string {
   if (u.is_admin || u.subscription.plan === 'unlimited') return '∞'
   if (!u.subscription.active) return 'Нет'
-  const names: Record<string, string> = {
-    trial: 'Пробный',
-    monthly: 'Месяц',
-    quarterly: '3 месяца',
-    yearly: 'Год',
-  }
-  const plan = names[u.subscription.plan || ''] || u.subscription.plan || 'Активна'
+  const plan = PLAN_NAMES[u.subscription.plan || ''] || u.subscription.plan || 'Активна'
   const until = u.subscription.expires_at?.split('T')[0]
   return until ? `${plan} · до ${until}` : plan
 }
@@ -56,26 +61,47 @@ export default function SubscriptionsPage({ token }: { token: string }) {
 
   useEffect(() => { fetchUsers() }, [])
 
-  const grant = async (user: UserRow, planType: string, planLabel: string) => {
-    if (!confirm(`Выдать подписку «${planLabel}» пользователю ${user.email}?`)) return
+  const isPlanActive = (u: UserRow, planType: string) =>
+    u.subscription.active && u.subscription.plan === planType
 
-    const key = `${user.id}:${planType}`
+  const togglePlan = async (u: UserRow, planType: string, planLabel: string) => {
+    const key = `${u.id}:${planType}`
     setActionKey(key)
     setError(null)
     setSuccess(null)
+
     try {
-      const res = await fetch(`/api/admin/users/${user.id}/grant-subscription`, {
-        method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan_type: planType }),
-      })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        setError(body.detail || 'Не удалось выдать подписку')
-        return
+      if (isPlanActive(u, planType)) {
+        // Toggle OFF — revoke
+        const res = await fetch(`/api/admin/users/${u.id}/revoke-subscription`, {
+          method: 'POST',
+          headers,
+        })
+        const body = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          setError(body.detail || 'Не удалось отозвать подписку')
+          return
+        }
+        setSuccess(`Подписка «${planLabel}» отозвана у ${u.email}`)
+      } else {
+        // Toggle ON — grant
+        const res = await fetch(`/api/admin/users/${u.id}/grant-subscription`, {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plan_type: planType }),
+        })
+        const body = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          setError(body.detail || 'Не удалось выдать подписку')
+          return
+        }
+        const until = body.expires_at
+          ? planType === 'unlimited'
+            ? ''
+            : ` · до ${body.expires_at.split('T')[0]}`
+          : ''
+        setSuccess(`Подписка «${planLabel}» выдана ${u.email}${until}`)
       }
-      const until = body.expires_at?.split('T')[0] || ''
-      setSuccess(`Подписка «${planLabel}» выдана ${user.email}${until ? ` · до ${until}` : ''}`)
       await fetchUsers()
     } finally {
       setActionKey(null)
@@ -97,7 +123,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
             <Calendar className="w-5 h-5" />
             Выдача подписок
           </h1>
-          <p className="text-sm text-[#666] mt-1">Ручная выдача подписки зарегистрированным пользователям</p>
+          <p className="text-sm text-[#666] mt-1">Нажмите план чтобы выдать, повторно — чтобы забрать</p>
         </div>
         <div className="relative">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#555]" />
@@ -129,7 +155,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
               <th className="text-left px-4 py-3">Email</th>
               <th className="text-left px-4 py-3">Текущая подписка</th>
               <th className="text-left px-4 py-3">Статус</th>
-              <th className="px-4 py-3 text-right">Выдать</th>
+              <th className="px-4 py-3 text-right">Планы</th>
             </tr>
           </thead>
           <tbody>
@@ -162,17 +188,27 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                       <div className="text-right text-xs font-semibold text-amber-400/90">Админ</div>
                     ) : (
                       <div className="flex items-center justify-end gap-1.5 flex-wrap">
-                        {PLANS.map(p => (
-                          <button
-                            key={p.type}
-                            onClick={() => grant(u, p.type, p.label)}
-                            disabled={actionKey === `${u.id}:${p.type}`}
-                            className="px-2.5 py-1 rounded-lg text-xs border border-[#333] text-[#ccc] hover:bg-white hover:text-black hover:border-white transition-colors disabled:opacity-40"
-                            title={`${p.label} (${p.days} дн.)`}
-                          >
-                            {p.label}
-                          </button>
-                        ))}
+                        {PLANS.map(p => {
+                          const active = isPlanActive(u, p.type)
+                          const busy = actionKey === `${u.id}:${p.type}`
+                          return (
+                            <button
+                              key={p.type}
+                              onClick={() => togglePlan(u, p.type, p.label)}
+                              disabled={busy}
+                              title={active
+                                ? `Забрать «${p.label}»`
+                                : `Выдать «${p.label}»${p.days ? ` (${p.days} дн.)` : ''}`}
+                              className={`px-2.5 py-1 rounded-lg text-xs border transition-colors disabled:opacity-40 ${
+                                active
+                                  ? 'bg-green-500/20 border-green-500/60 text-green-400 hover:bg-red-500/20 hover:border-red-500/60 hover:text-red-400'
+                                  : 'border-[#333] text-[#ccc] hover:bg-white hover:text-black hover:border-white'
+                              }`}
+                            >
+                              {busy ? '…' : p.label}
+                            </button>
+                          )
+                        })}
                       </div>
                     )}
                   </td>

@@ -160,7 +160,7 @@ async def grant_user_subscription(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ручная выдача подписки (monthly / quarterly / yearly)."""
+    """Ручная выдача подписки (three_days / monthly / quarterly / yearly / unlimited)."""
     import uuid
     from app.services.subscription_service import grant_manual_subscription
 
@@ -175,6 +175,27 @@ async def grant_user_subscription(
         "plan_type": sub.plan_type,
         "expires_at": sub.expires_at,
     }
+
+
+@router.post("/users/{user_id}/revoke-subscription")
+async def revoke_user_subscription(
+    user_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Отозвать активную подписку пользователя."""
+    import uuid
+    from app.services.subscription_service import revoke_subscription, is_user_admin
+
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if is_user_admin(user):
+        raise HTTPException(status_code=400, detail="Нельзя отозвать подписку у администратора")
+
+    cancelled = await revoke_subscription(db, user)
+    return {"status": "revoked", "cancelled": cancelled}
 
 
 @router.post("/users/{user_id}/ban")

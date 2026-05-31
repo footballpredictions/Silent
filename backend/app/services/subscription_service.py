@@ -88,9 +88,11 @@ async def require_active_subscription(user: User, db: AsyncSession) -> None:
 
 
 GRANTABLE_PLANS = {
+    "three_days": 3,
     "monthly": 30,
     "quarterly": 90,
     "yearly": 365,
+    "unlimited": 36500,  # ~100 лет
 }
 
 
@@ -101,7 +103,10 @@ async def grant_manual_subscription(
 ) -> Subscription:
     """Admin grant: cancel active subs, extend from current expiry or now."""
     if plan_type not in GRANTABLE_PLANS:
-        raise HTTPException(status_code=400, detail="plan_type: monthly, quarterly или yearly")
+        raise HTTPException(
+            status_code=400,
+            detail="plan_type: three_days, monthly, quarterly, yearly или unlimited",
+        )
     if is_user_admin(user):
         raise HTTPException(status_code=400, detail="Администратору подписка не нужна")
 
@@ -113,9 +118,10 @@ async def grant_manual_subscription(
         .where(Subscription.user_id == user.id, Subscription.status == "active")
         .order_by(Subscription.expires_at.desc())
     )
-    base = now
+    # For unlimited always start from now (no stacking needed for ~100 years)
+    base = now if plan_type == "unlimited" else now
     for existing in active_result.scalars().all():
-        if existing.is_active and existing.expires_at > base:
+        if plan_type != "unlimited" and existing.is_active and existing.expires_at > base:
             base = existing.expires_at
         existing.status = "cancelled"
 
@@ -131,3 +137,18 @@ async def grant_manual_subscription(
     await db.commit()
     await db.refresh(subscription)
     return subscription
+
+
+async def revoke_subscription(db: AsyncSession, user: User) -> int:
+    """Cancel all active subscriptions for the user. Returns count cancelled."""
+    active_result = await db.execute(
+        select(Subscription)
+        .where(Subscription.user_id == user.id, Subscription.status == "active")
+    )
+    cancelled = 0
+    for sub in active_result.scalars().all():
+        if sub.is_active:
+            sub.status = "cancelled"
+            cancelled += 1
+    await db.commit()
+    return cancelled

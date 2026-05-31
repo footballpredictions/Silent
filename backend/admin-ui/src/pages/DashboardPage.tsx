@@ -156,12 +156,16 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
             <p className="text-[#555] text-sm">Нет активных серверных хешей. Подключите AI-агента или добавьте вручную в разделе VK.</p>
           )}
           {stats.vk_hashes.map((h, i) => (
-            <div key={`${h.user_email}-${h.slot}-${i}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 border-b border-[#1a1a1a] last:border-0">
-              <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
-              <span className="text-xs text-[#666] max-w-[120px] truncate">{h.user_email || '—'}</span>
-              <span className="text-xs text-[#666] shrink-0">Слот {h.slot}</span>
-              <span className="font-mono text-xs break-all flex-1 min-w-0">{h.hash}</span>
-              <span className="text-xs text-[#555] shrink-0">Сбоев: {h.fail_count}</span>
+            <div key={`${h.user_email}-${h.slot}-${i}`} className="py-2.5 border-b border-[#1a1a1a] last:border-0">
+              {/* Row 1: status + email + slot + fail count */}
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
+                <span className="text-xs text-white truncate flex-1 min-w-0">{h.user_email || '—'}</span>
+                <span className="text-[10px] text-[#555] bg-[#1a1a1a] px-1.5 py-0.5 rounded shrink-0">Слот {h.slot}</span>
+                <span className="text-[10px] text-[#555] shrink-0">⚠ {h.fail_count}</span>
+              </div>
+              {/* Row 2: hash (truncated) */}
+              <div className="mt-1 ml-4 font-mono text-[11px] text-[#555] truncate">{h.hash}</div>
             </div>
           ))}
         </div>

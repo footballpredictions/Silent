@@ -2,8 +2,9 @@ import api from './api'
 import { clearBootstrapHash, getBootstrapHash, type VpnConfigPayload } from './vkConfig'
 import { pushLog } from './debugLog'
 import { buildLocalBootstrapConfig } from './bootstrapVpnConfig'
-import { applyWorkerCount } from './hashChannelHelper'
+import { applyBootstrapWorkerCount } from './hashChannelHelper'
 import { authStrings as s } from './authStrings'
+import { waitVpnReady } from './vpnReady'
 
 const PRE_LOGIN_FP_KEY = 'silent_pre_login_fp'
 const BOOTSTRAP_SESSION_MS = 2 * 60 * 1000
@@ -68,7 +69,7 @@ function cancelBootstrapSessionTimeout() {
 }
 
 function startBootstrapSessionTimeout() {
-  cancelBootstrapSessionTimeout()
+  if (bootstrapTimeoutTimer) return
   bootstrapSessionDeadline = Date.now() + BOOTSTRAP_SESSION_MS
   const tick = () => {
     if (!bootstrapActive) {
@@ -106,6 +107,13 @@ export function isBootstrapVpnActive(): boolean {
   return bootstrapActive
 }
 
+/** Restart 2-min countdown if bootstrap VPN is still up (e.g. after remount or failed login). */
+export function refreshBootstrapSessionTimer(): void {
+  if (!bootstrapActive) return
+  cancelBootstrapSessionTimeout()
+  startBootstrapSessionTimeout()
+}
+
 /** Connect bootstrap VPN on login screen — reach backend before Silent login. */
 export async function ensureBootstrapVpn(): Promise<boolean> {
   const boot = getBootstrapHash()
@@ -121,7 +129,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
 
   if (bootstrapActive) {
     pushLog('Bootstrap', 'already active')
-    notifyStatus(s.channelReadyAlready)
+    refreshBootstrapSessionTimer()
     return true
   }
 
@@ -133,7 +141,9 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
     return false
   }
 
-  const res = await electron.vpnConnect(applyWorkerCount(config))
+  const bootCfg = applyBootstrapWorkerCount(config, boot)
+  pushLog('Bootstrap', `vpnConnect n=${bootCfg.stream_count} hashes=${bootCfg.vk_hashes?.length ?? 0}`)
+  const res = await electron.vpnConnect(bootCfg)
   if (res?.error) {
     pushLog('Bootstrap', `vpnConnect error: ${res.error}`, 'E')
     notifyStatus(res.error)
@@ -144,7 +154,6 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   const ok = await waitVpnReady(90000)
   pushLog('Bootstrap', ok ? 'VPN ready' : 'VPN timeout', ok ? 'I' : 'E')
   if (ok) {
-    notifyStatus(s.channelReady)
     startBootstrapSessionTimeout()
     return true
   }

@@ -5,6 +5,7 @@ export const MAX_WORKERS_PER_HASH = 27
 export const DEFAULT_TOTAL_WORKERS = 18
 export const MAX_HASHES = 4
 export const LIBCLIENT_MAX_WORKERS = 108
+export const BOOTSTRAP_STREAM_COUNT = 3
 
 /** @deprecated legacy key — migrated to TOTAL_WORKERS_KEY */
 export const CHANNELS_KEY = 'silent_hash_channels_per_hash'
@@ -35,7 +36,7 @@ export function hashesForLibclient(allHashes: string[], totalWorkers: number): s
   const unique = allHashes
     .flatMap(h => h.split(/[,\s\n]+/))
     .map(h => h.trim())
-    .filter(h => h.length >= 16)
+    .filter(h => h.length >= 6)
     .filter((h, i, arr) => arr.indexOf(h) === i)
   if (unique.length === 0) return []
   const groups = groupsForWorkers(
@@ -111,7 +112,7 @@ function capHashes(hashes: string[] | undefined): string[] {
   return (hashes || [])
     .flatMap(h => h.split(/[,\s\n]+/))
     .map(h => h.trim())
-    .filter(h => h.length >= 16)
+    .filter(h => h.length >= 6)
     .filter((h, i, arr) => arr.indexOf(h) === i)
     .slice(0, MAX_HASHES)
 }
@@ -124,6 +125,21 @@ export function resolveWorkerCount(config: { vk_hashes?: string[]; stream_count?
     MAX_HASHES,
   )
   return workersForLibclient(getTotalWorkers(hashCount), hashCount)
+}
+
+export function applyBootstrapWorkerCount<T extends { vk_hashes?: string[]; stream_count?: number }>(
+  config: T,
+  bootHash?: string,
+): T {
+  const hash = (config.vk_hashes || []).map(h => h.trim()).filter(Boolean)[0]
+    || bootHash?.trim()
+    || ''
+  const workers = config.stream_count ?? BOOTSTRAP_STREAM_COUNT
+  return {
+    ...config,
+    vk_hashes: hash ? [hash] : config.vk_hashes,
+    stream_count: Math.min(Math.max(workers, 3), 9),
+  }
 }
 
 export function applyWorkerCount<T extends { vk_hashes?: string[]; stream_count?: number }>(config: T): T {

@@ -17,6 +17,7 @@ import {
   ensureBootstrapVpn,
   disconnectBootstrapVpn,
   isBootstrapVpnActive,
+  refreshBootstrapSessionTimer,
   setBootstrapStatusListener,
 } from '../bootstrapVpn'
 import HashInputSection from '../components/HashInputSection'
@@ -52,7 +53,7 @@ export default function LoginScreen({
     setBootstrapHash(getBootstrapHash())
     const active = isBootstrapVpnActive()
     setBootstrapReady(active)
-    if (active) setStatusMsg(s.channelReadyAlready)
+    if (active) refreshBootstrapSessionTimer()
     setBootstrapStatusListener(msg => {
       setStatusMsg(msg)
       setBootstrapReady(isBootstrapVpnActive())
@@ -120,7 +121,10 @@ export default function LoginScreen({
       }
       const res = await api.post('/api/auth/login', { email, password })
       saveTokens(res.data.access_token, res.data.refresh_token)
-      if (!(await openLoginSession())) return
+      if (!(await openLoginSession())) {
+        refreshBootstrapSessionTimer()
+        return
+      }
       await disconnectBootstrapVpn()
       setBootstrapReady(false)
       setStatusMsg(s.internetOff)
@@ -130,6 +134,7 @@ export default function LoginScreen({
       const msg = formatApiError(err, 'Ошибка входа')
       pushLog('Login', msg, 'E')
       setError(msg)
+      refreshBootstrapSessionTimer()
     } finally {
       setLoading(false)
     }
@@ -148,6 +153,7 @@ export default function LoginScreen({
       setRegDone(true)
     } catch (err: any) {
       setError(formatApiError(err, 'Ошибка регистрации'))
+      refreshBootstrapSessionTimer()
     } finally {
       setLoading(false)
     }

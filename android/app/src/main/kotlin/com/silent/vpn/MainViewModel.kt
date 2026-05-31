@@ -421,7 +421,14 @@ class MainViewModel @Inject constructor(
                 repo.saveTokens(tokens.access_token, tokens.refresh_token)
                 repo.saveLastEmail(email)
                 repo.startNewSession()
-                if (!openLoginSession()) return@launch
+                if (!openLoginSession()) {
+                    // 402 subscription expired: tokens are valid, navigate to main with error shown
+                    if (repo.isLoggedIn()) {
+                        activity?.let { disconnectBootstrapVpn(it) }
+                        goToMain()
+                    }
+                    return@launch
+                }
                 syncServerHashes()
                 if (!fetchProfileNow()) {
                     _vpnError.value = "Профиль не загрузился. Включите VPN на главном экране."
@@ -668,11 +675,16 @@ class MainViewModel @Inject constructor(
             _sessionDeviceId.value = cfg.device_id
             return true
         }
-        DebugLog.e(
-            "MainViewModel",
-            "device/register HTTP ${res.code()}: ${res.errorBody()?.string()?.take(200)}",
-        )
-        _authError.value = parseError(res.errorBody()?.string() ?: "")
+        val bodyStr = res.errorBody()?.string() ?: ""
+        DebugLog.e("MainViewModel", "device/register HTTP ${res.code()}: ${bodyStr.take(200)}")
+        if (res.code() == 402) {
+            // Subscription expired — user is authenticated but has no active plan.
+            // Don't clear tokens: let caller navigate to main with a renewal prompt.
+            _vpnError.value = parseError(bodyStr)
+                ?: "Пробный период закончился. Для продолжения оформите подписку."
+            return false
+        }
+        _authError.value = parseError(bodyStr)
             ?: "Достигнут лимит устройств (3). Выйдите на другом устройстве."
         repo.clearSessionFingerprint()
         repo.clearTokens()

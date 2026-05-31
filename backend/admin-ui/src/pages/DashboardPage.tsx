@@ -21,6 +21,7 @@ interface Stats {
     slot: number
     hash: string
     user_email?: string
+    user_connected?: boolean
     is_active: boolean
     fail_count: number
     last_checked: string | null
@@ -94,7 +95,10 @@ function VkHashesCard({ hashes }: { hashes: Stats['vk_hashes'] }) {
                   ? <ChevronDown className="w-3.5 h-3.5 text-[#555] shrink-0" />
                   : <ChevronRight className="w-3.5 h-3.5 text-[#555] shrink-0" />
                 }
-                <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
+                {/* Online dot — green if connected, gray if not */}
+                <div className={`w-2 h-2 rounded-full shrink-0 ${
+                  slots[0]?.user_connected ? 'bg-green-400 shadow-[0_0_5px_#4ade80]' : 'bg-[#444]'
+                }`} />
                 <span className="text-sm text-white flex-1 min-w-0 truncate">{email}</span>
                 <span className="text-[10px] text-[#555] bg-[#222] px-2 py-0.5 rounded-full shrink-0">
                   {slots.length} / 4
@@ -105,16 +109,18 @@ function VkHashesCard({ hashes }: { hashes: Stats['vk_hashes'] }) {
               {isOpen && (
                 <div className="border-t border-[#1e1e1e] divide-y divide-[#1a1a1a]">
                   {slots.map((h, i) => (
-                    <div key={i} className="px-3 py-2 bg-[#0f0f0f]">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-[10px] text-[#555] bg-[#1a1a1a] px-1.5 py-0.5 rounded shrink-0">
+                    <div key={i} className="px-3 py-2.5 bg-[#0f0f0f]">
+                      {/* Slot badge + fail count in top-right */}
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] text-[#555] bg-[#1a1a1a] px-1.5 py-0.5 rounded">
                           Слот {h.slot}
                         </span>
-                        <span className={`text-[10px] shrink-0 ${h.fail_count > 0 ? 'text-red-400' : 'text-[#444]'}`}>
+                        <span className={`text-[10px] ${h.fail_count > 0 ? 'text-red-400' : 'text-[#333]'}`}>
                           ⚠ {h.fail_count} сбоев
                         </span>
                       </div>
-                      <div className="font-mono text-[11px] text-[#777] break-all leading-relaxed">
+                      {/* Full hash, no truncation */}
+                      <div className="font-mono text-[11px] text-[#666] break-all leading-relaxed select-all">
                         {h.hash}
                       </div>
                     </div>
@@ -192,14 +198,7 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard icon={Users} label="Пользователей" value={stats.users.total} />
         <StatCard icon={Wifi} label="Активных подписок" value={stats.users.active_subscriptions} />
-        <div className="bg-[#111] border border-[#222] rounded-xl p-5">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-[#666] text-xs uppercase tracking-wider">Онлайн</span>
-            <div className={`w-2.5 h-2.5 rounded-full ${stats.users.connected_devices > 0 ? 'bg-green-400 shadow-[0_0_6px_#4ade80]' : 'bg-[#444]'}`} />
-          </div>
-          <div className="text-2xl font-bold">{stats.users.connected_devices}</div>
-          <div className="text-[#555] text-xs mt-1">{stats.users.connected_devices > 0 ? 'подключений активно' : 'нет подключений'}</div>
-        </div>
+        <StatCard icon={Wifi} label="Подключений" value={stats.users.connected_devices} />
       </div>
 
       {/* System */}

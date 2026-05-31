@@ -49,10 +49,16 @@ async def get_stats(
     )
     hashes = hashes_result.scalars().all()
     user_emails: dict = {}
+    user_online: dict = {}
     for h in hashes:
         if h.user_id and h.user_id not in user_emails:
             u = await db.get(User, h.user_id)
             user_emails[h.user_id] = u.email if u else "?"
+            dev_online = (await db.execute(
+                select(func.count(Device.id))
+                .where(Device.user_id == h.user_id, Device.is_connected == True)
+            )).scalar_one()
+            user_online[h.user_id] = dev_online > 0
 
     real_users = (await db.execute(
         select(func.count(User.id)).where(User.email != "__bootstrap__@silent.local")
@@ -76,9 +82,10 @@ async def get_stats(
         "vk_hashes": [
             {
                 "slot": h.slot_index,
-                "hash": h.hash_value[:12] + "...",
+                "hash": h.hash_value,
                 "user_id": str(h.user_id) if h.user_id else None,
                 "user_email": user_emails.get(h.user_id, "?"),
+                "user_connected": user_online.get(h.user_id, False),
                 "is_active": h.is_active,
                 "fail_count": h.fail_count,
                 "last_checked": h.last_checked,

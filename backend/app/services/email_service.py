@@ -1,4 +1,5 @@
 import smtplib
+import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
@@ -38,11 +39,21 @@ def _send(to_email: str, subject: str, html_body: str) -> bool:
             img.add_header("Content-Disposition", "inline", filename="logo.png")
             msg.attach(img)
 
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as smtp:
-            smtp.ehlo()
-            smtp.starttls()
-            smtp.login(settings.SMTP_USER, settings.SMTP_PASS)
-            smtp.sendmail(settings.EMAIL_FROM, to_email, msg.as_bytes())
+        # Port 465 = implicit SSL (SMTP_SSL), port 587 = STARTTLS
+        if settings.SMTP_PORT == 465:
+            ctx = ssl.create_default_context()
+            with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, context=ctx) as smtp:
+                smtp.login(settings.SMTP_USER, settings.SMTP_PASS)
+                smtp.sendmail(settings.EMAIL_FROM, to_email, msg.as_bytes())
+        else:
+            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as smtp:
+                smtp.ehlo()
+                smtp.starttls()
+                smtp.ehlo()
+                smtp.login(settings.SMTP_USER, settings.SMTP_PASS)
+                smtp.sendmail(settings.EMAIL_FROM, to_email, msg.as_bytes())
+
+        logger.info(f"Email sent to {to_email}: {subject}")
         return True
     except Exception as e:
         logger.error(f"Email send failed to {to_email}: {e}")
@@ -108,7 +119,13 @@ def send_verification_email(to_email: str, token: str, base_url: str) -> bool:
 
 
 def send_subscription_activated_email(to_email: str, plan_type: str, expires_at: datetime) -> bool:
-    plan_names = {"monthly": "Месячный", "quarterly": "Квартальный", "yearly": "Годовой"}
+    plan_names = {
+        "three_days": "3 дня",
+        "monthly": "Месячный",
+        "quarterly": "Квартальный",
+        "yearly": "Годовой",
+        "unlimited": "Безлимитный",
+    }
     plan_name = plan_names.get(plan_type, plan_type)
     expires_str = expires_at.strftime("%d.%m.%Y")
 

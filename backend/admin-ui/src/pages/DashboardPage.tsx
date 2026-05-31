@@ -64,7 +64,7 @@ function VkHashesCard({ hashes }: { hashes: Stats['vk_hashes'] }) {
 
   const users = Object.entries(byUser)
   const [open, setOpen] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(users.map(([email]) => [email, true]))
+    Object.fromEntries(users.map(([email]) => [email, false]))
   )
 
   const toggle = (email: string) =>
@@ -110,9 +110,9 @@ function VkHashesCard({ hashes }: { hashes: Stats['vk_hashes'] }) {
                         <span className="text-[10px] text-[#555] bg-[#1a1a1a] px-1.5 py-0.5 rounded shrink-0">
                           Слот {h.slot}
                         </span>
-                        {h.fail_count > 0 && (
-                          <span className="text-[10px] text-red-400/80 shrink-0">⚠ {h.fail_count} сбоев</span>
-                        )}
+                        <span className={`text-[10px] shrink-0 ${h.fail_count > 0 ? 'text-red-400' : 'text-[#444]'}`}>
+                          ⚠ {h.fail_count} сбоев
+                        </span>
                       </div>
                       <div className="font-mono text-[11px] text-[#777] break-all leading-relaxed">
                         {h.hash}
@@ -192,7 +192,14 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard icon={Users} label="Пользователей" value={stats.users.total} />
         <StatCard icon={Wifi} label="Активных подписок" value={stats.users.active_subscriptions} />
-        <StatCard icon={Wifi} label="Подключений" value={stats.users.connected_devices} />
+        <div className="bg-[#111] border border-[#222] rounded-xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[#666] text-xs uppercase tracking-wider">Онлайн</span>
+            <div className={`w-2.5 h-2.5 rounded-full ${stats.users.connected_devices > 0 ? 'bg-green-400 shadow-[0_0_6px_#4ade80]' : 'bg-[#444]'}`} />
+          </div>
+          <div className="text-2xl font-bold">{stats.users.connected_devices}</div>
+          <div className="text-[#555] text-xs mt-1">{stats.users.connected_devices > 0 ? 'подключений активно' : 'нет подключений'}</div>
+        </div>
       </div>
 
       {/* System */}

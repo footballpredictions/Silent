@@ -206,27 +206,33 @@ private fun ChannelStrengthSelector(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .border(1.dp, fg.copy(0.12f), RoundedCornerShape(12.dp))
-            .padding(12.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Сила каналов", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = fg)
-            Text(
-                "${stepped.toInt()}",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                color = fg,
+            Column {
+                Text("Сила каналов", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = fg)
+                Text(
+                    "${stepped.toInt()} / $maxTotalWorkers потоков",
+                    fontSize = 10.sp,
+                    color = fg.copy(0.5f),
+                    modifier = Modifier.padding(top = 1.dp),
+                )
+            }
+            SignalBars(
+                bars = when {
+                    stepped >= max * 0.85f -> 4
+                    stepped >= max * 0.6f -> 3
+                    stepped >= max * 0.35f -> 2
+                    stepped > min -> 1
+                    else -> 0
+                },
+                fg = fg,
             )
         }
-        Text(
-            "Потоков: ${stepped.toInt()} из $maxTotalWorkers (шаг 9, до $activeHashCount хеш × 27)",
-            fontSize = 10.sp,
-            color = fg.copy(0.5f),
-            modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
-        )
         Slider(
             value = stepped,
             onValueChange = { raw ->
@@ -235,13 +241,15 @@ private fun ChannelStrengthSelector(
             valueRange = min..max,
             steps = sliderSteps,
             enabled = !vpnRunning,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
         )
-        Text(
-            "9 → 18 → 27 → 36… — каждые +9 добавляется хеш (в libclient уходит только n÷9 хешей)",
-            fontSize = 9.sp,
-            color = fg.copy(0.4f),
-        )
+        if (vpnRunning) {
+            Text(
+                "Изменится после переподключения",
+                fontSize = 9.sp,
+                color = fg.copy(0.35f),
+            )
+        }
     }
 }
 

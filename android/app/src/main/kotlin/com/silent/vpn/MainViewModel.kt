@@ -426,6 +426,7 @@ class MainViewModel @Inject constructor(
                     if (repo.isLoggedIn()) {
                         activity?.let { disconnectBootstrapVpn(it) }
                         goToMain()
+                        loadProfile()  // загружаем профиль нового аккаунта сразу, не ждём poll
                     }
                     return@launch
                 }
@@ -529,6 +530,9 @@ class MainViewModel @Inject constructor(
 
     fun goToMain() {
         _screen.value = AppScreen.MAIN
+        if (_profile.value == null) {
+            viewModelScope.launch { fetchProfileNow() }
+        }
     }
 
     private fun disconnectBootstrapVpn(context: Context) {
@@ -711,6 +715,7 @@ class MainViewModel @Inject constructor(
                 }
             }
 
+            repo.clearCachedProfile()  // сначала чистим кеш — до clearTokens, чтобы не было стейла
             repo.clearSessionFingerprint()
             repo.clearSessionDeviceId()
             repo.clearCachedVpnConfig()

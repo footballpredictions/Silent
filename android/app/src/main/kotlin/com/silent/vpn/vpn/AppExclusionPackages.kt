@@ -25,13 +25,12 @@ fun resolveExcludedAppPackages(context: Context): Set<String> {
         ?: emptySet()
 
     val excluded = LinkedHashSet<String>()
+    excluded.add(context.packageName)  // наш app всегда вне туннеля — libclient обходит VPN напрямую к TURN
     excluded.addAll(VK_TUNNEL_PACKAGES)
     excluded.addAll(userSelected)
 
     val pm = context.packageManager
-    return excluded.filter { pkg ->
-        pkg != context.packageName && isPackageInstalled(pm, pkg)
-    }.toSet()
+    return excluded.filter { pkg -> isPackageInstalled(pm, pkg) }.toSet()
 }
 
 private fun isPackageInstalled(pm: PackageManager, pkg: String): Boolean = runCatching {

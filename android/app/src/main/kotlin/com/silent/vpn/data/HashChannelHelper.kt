@@ -26,7 +26,9 @@ object HashChannelHelper {
             .coerceIn(1, MAX_HASHES)
 
     /**
-     * Только нужное число хешей для `-vk`: при n=18 — 2 хеша, не все слоты сразу.
+     * Передаём libclient ВСЕ доступные хеши (до MAX_HASHES).
+     * libclient сам распределяет воркеров по хешам циклически — как в proxy-turn-vk-android:
+     * hashList.take(3) → "-vk h1,h2,h3", "-n totalWorkers".
      */
     fun hashesForLibclient(allHashes: List<String>, totalWorkers: Int): List<String> {
         val unique = allHashes
@@ -34,9 +36,7 @@ object HashChannelHelper {
             .map { it.trim() }
             .filter { it.length >= 6 }
             .distinct()
-        if (unique.isEmpty()) return emptyList()
-        val groups = groupsForWorkers(workersForLibclient(totalWorkers, unique.size.coerceAtMost(MAX_HASHES)))
-        return unique.take(groups)
+        return unique.take(MAX_HASHES)
     }
 
     fun workersForLibclient(totalWorkers: Int, activeHashCount: Int): Int =

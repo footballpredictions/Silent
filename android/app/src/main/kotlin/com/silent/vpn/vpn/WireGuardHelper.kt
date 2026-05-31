@@ -99,17 +99,14 @@ class WireGuardHelper(context: Context) {
             peerBuilder.parseAllowedIPs(allowedIps)
             DebugLog.i(TAG, "AllowedIPs=$allowedIps MTU=$mtu")
 
-            val wgHost = parsed.`interface`.addresses.firstOrNull()?.address?.hostAddress
-            if (!wgHost.isNullOrBlank()) {
-                val parts = wgHost.split('.').mapNotNull { it.toIntOrNull() }
-                if (parts.size == 4) {
-                    val gw = "${parts[0]}.${parts[1]}.${parts[2]}.1"
-                    ifaceBuilder.parseDnsServers("$gw,1.1.1.1")
-                }
-            } else if (parsed.`interface`.dnsServers.isNotEmpty()) {
+            // Используем DNS из конфига (как в proxy-turn-vk-android), fallback = Yandex+Cloudflare.
+            // НЕ переопределяем на gateway (10.66.66.1) — на нём нет DNS-сервера → таймаут → YouTube не работает.
+            if (parsed.`interface`.dnsServers.isNotEmpty()) {
                 ifaceBuilder.parseDnsServers(
                     parsed.`interface`.dnsServers.joinToString(", ") { it.hostAddress ?: "" },
                 )
+            } else {
+                ifaceBuilder.parseDnsServers("1.1.1.1,77.88.8.8")
             }
 
             val finalConfig = Config.Builder()

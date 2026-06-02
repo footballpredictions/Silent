@@ -8,7 +8,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Slider
+import com.silent.vpn.ui.components.PcStyleRangeSlider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
@@ -196,10 +196,7 @@ private fun ChannelStrengthSelector(
     vpnRunning: Boolean,
     onSelect: (Int) -> Unit,
 ) {
-    val min = HashChannelHelper.WORKERS_PER_GROUP.toFloat()
-    val max = maxTotalWorkers.toFloat()
     val stepped = HashChannelHelper.normalizeTotalWorkers(totalWorkers, activeHashCount)
-    val sliderSteps = ((maxTotalWorkers / HashChannelHelper.WORKERS_PER_GROUP) - 1).coerceAtLeast(0)
     val muted = fg.copy(alpha = 0.5f)
 
     Column(
@@ -228,15 +225,14 @@ private fun ChannelStrengthSelector(
             color = muted,
             modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
         )
-        Slider(
-            value = stepped.toFloat(),
-            onValueChange = { raw ->
-                onSelect(HashChannelHelper.normalizeTotalWorkers(raw.toInt(), activeHashCount))
-            },
-            valueRange = min..max,
-            steps = sliderSteps,
+        PcStyleRangeSlider(
+            value = stepped,
+            onValueChange = { onSelect(HashChannelHelper.normalizeTotalWorkers(it, activeHashCount)) },
+            minValue = HashChannelHelper.WORKERS_PER_GROUP,
+            maxValue = maxTotalWorkers,
+            step = HashChannelHelper.WORKERS_PER_GROUP,
             enabled = !vpnRunning,
-            modifier = Modifier.fillMaxWidth(),
+            accent = fg,
         )
         Text(
             "9 → 18 → 27 → 36… (шаг 9, макс $maxTotalWorkers = $activeHashCount хеш × 27)",

@@ -1,19 +1,20 @@
-"""Per-user VK call hashes: bootstrap (user) + 3 server slots."""
+"""Per-user VK call hashes: bootstrap (user) + 4 server slots."""
 from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
 
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ai.vk_manager import MAX_HASHES
 from app.models import User, VkHash, Device
 from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
 
 logger = logging.getLogger(__name__)
 
-MAX_SERVER_SLOTS = 3
+# Должно совпадать с ai.vk_manager.MAX_HASHES и клиентами (Android/PC MAX_HASHES=4).
+MAX_SERVER_SLOTS = MAX_HASHES
 
 
 def extract_call_hash(value: str) -> str | None:
@@ -37,7 +38,7 @@ def extract_call_hash(value: str) -> str | None:
 
 
 async def get_vpn_hashes_for_user(db: AsyncSession, user: User) -> list[str]:
-    """User bootstrap + up to 3 active server hashes (deduped)."""
+    """User bootstrap + up to 4 active server hashes (deduped)."""
     out: list[str] = []
     boot = (user.bootstrap_hash or "").strip()
     if boot:
@@ -138,7 +139,7 @@ async def cleanup_bootstrap_devices(db: AsyncSession, device_fingerprint: str) -
 
 
 async def ensure_user_server_hashes(db: AsyncSession, user_id: uuid.UUID) -> int:
-    """Create missing server slots (0–2) via AI agent when enabled."""
+    """Create missing server slots (0–3) via AI agent when enabled."""
     from app.services.vk_agent_auth import is_agent_enabled
     from ai.vk_manager import VkManager
 
@@ -177,7 +178,7 @@ async def ensure_user_server_hashes(db: AsyncSession, user_id: uuid.UUID) -> int
 
 
 async def request_hash_refresh(db: AsyncSession, user: User) -> tuple[bool, str]:
-    """Client asks for 3 new server hashes when only bootstrap remains."""
+    """Client asks for new server hashes when slots are empty."""
     active = await count_active_server_hashes(db, user.id)
     if active >= MAX_SERVER_SLOTS:
         return True, "Хеши в норме"

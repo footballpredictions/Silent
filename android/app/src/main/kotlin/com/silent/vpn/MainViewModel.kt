@@ -18,6 +18,7 @@ import com.silent.vpn.data.HashItemDto
 import com.silent.vpn.data.LoginRequest
 import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.activeServerHashes
+import com.silent.vpn.data.prepareVpnConnectConfig
 import com.silent.vpn.data.toHashItems
 import com.silent.vpn.data.PromoCheckRequest
 import com.silent.vpn.data.RegisterRequest
@@ -795,7 +796,9 @@ class MainViewModel @Inject constructor(
                         loadProfile()
                         return@launch
                     }
-                    launchVpnService(context, cached)
+                    val prepared = repo.prepareVpnConnectConfig(cached, fp)
+                    repo.cacheVpnConfig(Gson().toJson(prepared))
+                    launchVpnService(context, prepared)
                     viewModelScope.launch { refreshVpnConfigInBackground(fp) }
                     waitForTunnelReady(context)
                     return@launch
@@ -900,8 +903,9 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
-                runCatching { repo.getApi().connect(ConnectRequest(fp, "android")) }
-                launchVpnService(context, vpnConfig!!)
+                val prepared = repo.prepareVpnConnectConfig(vpnConfig!!, fp)
+                repo.cacheVpnConfig(Gson().toJson(prepared))
+                launchVpnService(context, prepared)
                 loadProfile()
                 waitForTunnelReady(context)
             }.onFailure {

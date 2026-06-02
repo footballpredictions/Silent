@@ -14,8 +14,8 @@ android {
         applicationId = "com.silent.vpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 50
-        versionName = "1.0.50"
+        versionCode = 51
+        versionName = "1.0.51"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")

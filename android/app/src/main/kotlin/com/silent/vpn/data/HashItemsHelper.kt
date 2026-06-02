@@ -23,7 +23,7 @@ fun List<HashItemDto>.activeServerHashes(): List<HashItemDto> =
     filter { it.source != "bootstrap" && it.is_active && it.status == "active" && it.hash.isNotBlank() }
 
 fun List<HashItemDto>.activeServerHashCount(): Int =
-    activeServerHashes().size.coerceIn(1, HashChannelHelper.MAX_HASHES)
+    activeServerHashes().size.coerceAtMost(HashChannelHelper.MAX_HASHES)
 
 fun List<String>.serverHashesExcludingBootstrap(bootstrap: String?): List<String> {
     val boot = bootstrap?.trim().orEmpty()

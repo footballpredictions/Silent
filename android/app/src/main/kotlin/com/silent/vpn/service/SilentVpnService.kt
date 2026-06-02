@@ -149,7 +149,14 @@ class SilentVpnService : Service() {
             val totalWorkers = if (isBootstrap) {
                 (vpnConfig?.stream_count ?: 9).coerceIn(3, 9)
             } else {
-                repoResolveTotalWorkers(activeHashCount)
+                val configWorkers = vpnConfig?.stream_count?.takeIf {
+                    it >= HashChannelHelper.WORKERS_PER_GROUP
+                }
+                if (configWorkers != null) {
+                    HashChannelHelper.workersForLibclient(configWorkers, activeHashCount)
+                } else {
+                    repoResolveTotalWorkers(activeHashCount)
+                }
             }
             val libclientHashes = if (isBootstrap) {
                 wdttHashes.firstOrNull { it.isNotBlank() }?.let { listOf(it.trim()) } ?: emptyList()

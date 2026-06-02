@@ -198,58 +198,52 @@ private fun ChannelStrengthSelector(
 ) {
     val min = HashChannelHelper.WORKERS_PER_GROUP.toFloat()
     val max = maxTotalWorkers.toFloat()
-    val stepped = HashChannelHelper.normalizeTotalWorkers(totalWorkers, activeHashCount).toFloat()
+    val stepped = HashChannelHelper.normalizeTotalWorkers(totalWorkers, activeHashCount)
     val sliderSteps = ((maxTotalWorkers / HashChannelHelper.WORKERS_PER_GROUP) - 1).coerceAtLeast(0)
+    val muted = fg.copy(alpha = 0.5f)
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .border(1.dp, fg.copy(0.12f), RoundedCornerShape(12.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 12.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column {
-                Text("Сила каналов", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = fg)
-                Text(
-                    "${stepped.toInt()} / $maxTotalWorkers потоков",
-                    fontSize = 10.sp,
-                    color = fg.copy(0.5f),
-                    modifier = Modifier.padding(top = 1.dp),
-                )
-            }
-            SignalBars(
-                bars = when {
-                    stepped >= max * 0.85f -> 4
-                    stepped >= max * 0.6f -> 3
-                    stepped >= max * 0.35f -> 2
-                    stepped > min -> 1
-                    else -> 0
-                },
-                fg = fg,
+            Text("Сила каналов", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = fg)
+            Text(
+                stepped.toString(),
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = fg,
             )
         }
+        Text(
+            "Потоков: $stepped из $maxTotalWorkers (шаг 9, до $activeHashCount хеш × 27)",
+            fontSize = 10.sp,
+            color = muted,
+            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+        )
         Slider(
-            value = stepped,
+            value = stepped.toFloat(),
             onValueChange = { raw ->
                 onSelect(HashChannelHelper.normalizeTotalWorkers(raw.toInt(), activeHashCount))
             },
             valueRange = min..max,
             steps = sliderSteps,
             enabled = !vpnRunning,
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            modifier = Modifier.fillMaxWidth(),
         )
-        if (vpnRunning) {
-            Text(
-                "Изменится после переподключения",
-                fontSize = 9.sp,
-                color = fg.copy(0.35f),
-            )
-        }
+        Text(
+            "9 → 18 → 27 → 36… (шаг 9, макс $maxTotalWorkers = $activeHashCount хеш × 27)",
+            fontSize = 9.sp,
+            color = muted,
+            modifier = Modifier.padding(top = 8.dp),
+        )
     }
 }
 

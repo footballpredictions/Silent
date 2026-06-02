@@ -23,7 +23,7 @@ export default function ServerSetupScreen({ onDone }: { onDone: () => void }) {
           <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center mx-auto mb-3">
             <span className="text-black font-bold text-lg">S</span>
           </div>
-          <h1 className="font-bold text-base tracking-widest">SILENT</h1>
+          <h1 className="font-bold text-base tracking-widest">SILENT VPN</h1>
           <p className="text-gray-500 text-xs mt-1">Настройка сервера</p>
         </div>
 

@@ -301,7 +301,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const toggleOn = clientTheme?.toggle_on_color || '#000000'
   const toggleOff = clientTheme?.toggle_off_color || '#cccccc'
   const fontFamily = clientTheme?.font_family ? `${clientTheme.font_family}, Inter, sans-serif` : 'Inter, sans-serif'
-  const appTitle = (clientTheme?.app_name || 'Silent').toUpperCase()
+  const appTitle = (clientTheme?.app_name || 'Silent VPN').toUpperCase()
   const muted = `${fg}66`
 
   const statusLabel = connecting ? 'Подключение...' : connected ? 'Подключено' : 'Отключено'

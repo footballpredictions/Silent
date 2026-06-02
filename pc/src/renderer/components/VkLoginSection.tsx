@@ -37,7 +37,7 @@ export default function VkLoginSection({
       </button>
       {vkMsg && <p className="text-xs text-gray-500 mt-2">{vkMsg}</p>}
       <hr className="my-4 border-gray-200" />
-      <p className="text-sm font-semibold text-black">Шаг 2 — вход в Silent</p>
+      <p className="text-sm font-semibold text-black">Шаг 2 — вход в Silent VPN</p>
       <div className="mt-2" />
     </div>
   )

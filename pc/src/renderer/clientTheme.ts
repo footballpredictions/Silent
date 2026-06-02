@@ -49,6 +49,6 @@ export function themeToUi(theme: ClientTheme | null) {
     green: '#16A34A',
     red: '#EF4444',
     fontFamily: theme?.font_family ? `${theme.font_family}, Inter, sans-serif` : 'Inter, sans-serif',
-    appTitle: (theme?.app_name || 'Silent').toUpperCase(),
+    appTitle: (theme?.app_name || 'Silent VPN').toUpperCase(),
   }
 }

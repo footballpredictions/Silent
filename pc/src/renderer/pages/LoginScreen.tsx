@@ -198,7 +198,7 @@ export default function LoginScreen({
             className="mt-3 text-base font-bold tracking-[0.3em]"
             style={{ color: ui.fg }}
           >
-            SILENT
+            SILENT VPN
           </p>
         </div>
 

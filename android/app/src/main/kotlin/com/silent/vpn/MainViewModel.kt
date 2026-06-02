@@ -243,6 +243,13 @@ class MainViewModel @Inject constructor(
 
     /** Если API недоступен без VPN (белые списки) — краткий bootstrap для профиля и хешей. */
     private suspend fun refreshDataWithBootstrapFallback(context: Context) {
+        if (SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) {
+            onVpnTunnelReady()
+            if (fetchProfileNow()) {
+                if (repo.isLoggedIn()) syncServerHashes()
+            }
+            return
+        }
         repo.clearTunnelApiBase()
         if (fetchProfileNow()) {
             if (repo.isLoggedIn()) syncServerHashes()
@@ -313,12 +320,9 @@ class MainViewModel @Inject constructor(
     private fun markDeviceOnlineOnServer() {
         if (_vpnState.value != VpnState.CONNECTED) return
         onlineHeartbeatJob?.cancel()
-        // Запускаем heartbeat: первый вызов сразу, затем каждые 5 минут пока VPN подключён.
-        // clearTunnelApiBase() — обязательно, чтобы не использовать кэшированный bootstrap
-        // gateway (10.66.66.1), который недоступен из основного VPN (app вне туннеля).
         onlineHeartbeatJob = viewModelScope.launch {
             while (_vpnState.value == VpnState.CONNECTED) {
-                repo.clearTunnelApiBase()
+                repo.setTunnelApiFromWgAddress(WdttTunnelManager.lastWgAddress())
                 runCatching {
                     repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
                 }

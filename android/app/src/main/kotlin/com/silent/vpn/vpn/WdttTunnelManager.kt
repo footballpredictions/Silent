@@ -125,12 +125,9 @@ object WdttTunnelManager {
 
                 if (!isSwitching) {
                     wgExcludeIps.clear()
-                    // Bootstrap: app внутри VPN → нужно исключить TURN IP из AllowedIPs,
-                    // иначе libclient зацикливается: TURN-трафик идёт через WG → loop.
-                    // Main VPN: app вне VPN → loop невозможен, exclusion не нужен.
-                    if (isBootstrapMode) {
-                        wgExcludeIps.add(params.serverIp.trim())
-                    }
+                    // TURN IP вне WG (split-tunnel) — иначе libclient зацикливается.
+                    // App внутри VPN → API через 10.66.66.1; TURN — напрямую.
+                    wgExcludeIps.add(params.serverIp.trim())
                 }
 
                 DebugLog.i(

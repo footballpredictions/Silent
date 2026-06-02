@@ -46,9 +46,7 @@ class SilentRepository @Inject constructor(
         const val VK_APP_ID = 54610377L
         const val VK_GROUP_ID = 239092728L
         const val WG_TUNNEL_GATEWAY = "10.66.66.1"
-        /** Наш app исключён из VPN-туннеля (true = основной VPN, false = bootstrap VPN для логина).
-         *  При true — не пробуем 10.66.66.1 в apiBaseCandidates (app вне туннеля, gateway недоступен).
-         *  При false — bootstrap: app внутри VPN, gateway доступен. */
+        /** App внутри VPN пока сервис активен → API через gateway 10.66.66.1. */
         var APP_EXCLUDED_FROM_VPN = true
     }
 
@@ -141,8 +139,6 @@ class SilentRepository @Inject constructor(
 
     fun apiBaseCandidates(wgAddress: String? = null): List<String> {
         val out = linkedSetOf<String>()
-        // Наш app исключён из VPN (как в reference), поэтому 10.66.66.1 недоступен
-        // из нашего процесса — пропускаем tunnel кандидатов, сразу идём на public URL.
         if (!APP_EXCLUDED_FROM_VPN) {
             wgGatewayFromAddress(wgAddress)?.let { gw ->
                 out.add("http://$gw:8000")
@@ -340,15 +336,25 @@ class SilentRepository @Inject constructor(
     }
 
     suspend fun fetchAndSaveHashItems(): Result<List<HashItemDto>> {
-        return runCatching {
-            val res = getApi().getVpnHashes()
-            if (!res.isSuccessful) {
-                error(res.errorBody()?.string()?.take(200) ?: "HTTP ${res.code()}")
+        val bases = apiBaseCandidates()
+        var lastError: Exception? = null
+        for (base in bases) {
+            try {
+                useApiBase(base)
+                val res = getApi().getVpnHashes()
+                if (!res.isSuccessful) {
+                    lastError = Exception(res.errorBody()?.string()?.take(200) ?: "HTTP ${res.code()}")
+                    continue
+                }
+                val items = res.body()!!.toHashItems()
+                if (items.isNotEmpty()) saveHashItems(items)
+                return Result.success(items)
+            } catch (e: Exception) {
+                lastError = e
+                Log.w(TAG, "fetchAndSaveHashItems on $base: ${e.message}")
             }
-            val items = res.body()!!.toHashItems()
-            if (items.isNotEmpty()) saveHashItems(items)
-            items
         }
+        return Result.failure(lastError ?: Exception("Не удалось загрузить хеши"))
     }
 
     /** Stable fingerprint for bootstrap VPN before Silent login. */

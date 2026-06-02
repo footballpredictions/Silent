@@ -62,6 +62,7 @@ object WdttTunnelManager {
         val deviceId: String,
         val listenPort: Int = 9000,
         val workers: Int = 12,
+        val activeHashCount: Int = HashChannelHelper.MAX_HASHES,
         val captchaMode: String = "auto",
         val apiWgConfig: String? = null,
         val isBootstrap: Boolean = false,
@@ -111,7 +112,7 @@ object WdttTunnelManager {
 
                 val workers = HashChannelHelper.workersForLibclient(
                     params.workers,
-                    params.vkHashes.size.coerceAtMost(HashChannelHelper.MAX_HASHES),
+                    params.activeHashCount.coerceIn(1, HashChannelHelper.MAX_HASHES),
                 )
                 val hashList = HashChannelHelper.hashesForLibclient(params.vkHashes, workers)
                 if (hashList.isEmpty()) {

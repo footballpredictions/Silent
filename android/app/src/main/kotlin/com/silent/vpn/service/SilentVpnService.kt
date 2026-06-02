@@ -28,6 +28,8 @@ import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.WireGuardConfigBuilder
 import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import com.silent.vpn.data.HashItemDto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -139,13 +141,15 @@ class SilentVpnService : Service() {
                 .distinct()
                 .take(HashChannelHelper.MAX_HASHES)
             val wdttHashes = if (serverHashes.isNotEmpty()) serverHashes else hashes.take(HashChannelHelper.MAX_HASHES)
-            val hashCount = wdttHashes.size.coerceIn(1, HashChannelHelper.MAX_HASHES)
+            val savedActive = loadSavedActiveServerHashCount()
+            val activeHashCount = maxOf(wdttHashes.size, savedActive, 1)
+                .coerceAtMost(HashChannelHelper.MAX_HASHES)
             val isBootstrap = deviceId.startsWith("boot:")
             SilentRepository.APP_EXCLUDED_FROM_VPN = !isBootstrap
             val totalWorkers = if (isBootstrap) {
-                (vpnConfig?.stream_count ?: 3).coerceIn(3, 9)
+                (vpnConfig?.stream_count ?: 9).coerceIn(3, 9)
             } else {
-                repoResolveTotalWorkers(hashCount)
+                repoResolveTotalWorkers(activeHashCount)
             }
             val libclientHashes = if (isBootstrap) {
                 wdttHashes.firstOrNull { it.isNotBlank() }?.let { listOf(it.trim()) } ?: emptyList()
@@ -162,6 +166,7 @@ class SilentVpnService : Service() {
                     wdttPassword = obj.getString("wdtt_password"),
                     deviceId = deviceId,
                     workers = totalWorkers,
+                    activeHashCount = activeHashCount,
                     captchaMode = "auto",
                     apiWgConfig = apiWg,
                     isBootstrap = isBootstrap,
@@ -169,7 +174,7 @@ class SilentVpnService : Service() {
             )
             DebugLog.i(
                 "VpnService",
-                "WDTT n=$totalWorkers vk=${libclientHashes.size}/$hashCount hashes",
+                "WDTT n=$totalWorkers vk=${libclientHashes.size}/$activeHashCount hashes",
             )
             isRunning = true
         } catch (e: Exception) {
@@ -438,17 +443,31 @@ class SilentVpnService : Service() {
         super.onDestroy()
     }
 
-    private fun repoResolveTotalWorkers(hashCount: Int): Int {
+    private fun loadSavedActiveServerHashCount(): Int {
+        val json = SilentPrefs.open(this)
+            .getString(SilentRepository.PREF_SAVED_HASH_ITEMS, null) ?: return 0
+        val items = runCatching {
+            val type = object : TypeToken<List<HashItemDto>>() {}.type
+            Gson().fromJson<List<HashItemDto>>(json, type)
+        }.getOrDefault(emptyList())
+        return items.count {
+            it.source != "bootstrap" && it.is_active && it.status == "active" && it.hash.isNotBlank()
+        }
+    }
+
+    private fun repoResolveTotalWorkers(activeHashCount: Int): Int {
         val prefs = SilentPrefs.open(this)
-        val activeHashes = hashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)
+        val activeHashes = activeHashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)
+        val max = HashChannelHelper.maxTotalWorkers(activeHashes)
         if (prefs.contains(SilentRepository.PREF_HASH_TOTAL_WORKERS)) {
-            return HashChannelHelper.workersForLibclient(
-                prefs.getInt(
-                    SilentRepository.PREF_HASH_TOTAL_WORKERS,
-                    HashChannelHelper.DEFAULT_TOTAL_WORKERS,
-                ),
-                activeHashes,
+            val raw = prefs.getInt(
+                SilentRepository.PREF_HASH_TOTAL_WORKERS,
+                HashChannelHelper.DEFAULT_TOTAL_WORKERS,
             )
+            if (raw <= HashChannelHelper.MAX_WORKERS_PER_HASH) {
+                return HashChannelHelper.workersForLibclient(max, activeHashes)
+            }
+            return HashChannelHelper.workersForLibclient(raw, activeHashes)
         }
         val legacyPerHash = prefs.getInt(
             SilentRepository.PREF_HASH_CHANNELS_PER_HASH,

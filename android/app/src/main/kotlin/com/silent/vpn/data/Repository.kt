@@ -298,15 +298,17 @@ class SilentRepository @Inject constructor(
 
     fun getTotalWorkers(activeHashCount: Int = getSavedHashItems().activeServerHashCount().coerceAtLeast(1)): Int {
         val capped = activeHashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)
+        val max = HashChannelHelper.maxTotalWorkers(capped)
         if (prefs.contains(PREF_HASH_TOTAL_WORKERS)) {
             val raw = prefs.getInt(PREF_HASH_TOTAL_WORKERS, HashChannelHelper.DEFAULT_TOTAL_WORKERS)
-            if (raw > HashChannelHelper.maxTotalWorkers(capped)) {
-                val fixed = HashChannelHelper.normalizeTotalWorkers(
-                    HashChannelHelper.DEFAULT_TOTAL_WORKERS,
-                    capped,
-                )
-                saveTotalWorkers(fixed, capped)
-                return fixed
+            // Старый дефолт ≤27 на один хеш — поднимаем до максимума для текущего числа хешей.
+            if (raw <= HashChannelHelper.MAX_WORKERS_PER_HASH) {
+                saveTotalWorkers(max, capped)
+                return max
+            }
+            if (raw > max) {
+                saveTotalWorkers(max, capped)
+                return max
             }
             return HashChannelHelper.normalizeTotalWorkers(raw, capped)
         }

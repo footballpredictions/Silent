@@ -7,9 +7,9 @@ package com.silent.vpn.data
 object HashChannelHelper {
     const val WORKERS_PER_GROUP = 9
     const val MAX_WORKERS_PER_HASH = 27
-    const val DEFAULT_TOTAL_WORKERS = LIBCLIENT_MAX_WORKERS
     const val MAX_HASHES = 4
     const val LIBCLIENT_MAX_WORKERS = 108
+    const val DEFAULT_TOTAL_WORKERS = LIBCLIENT_MAX_WORKERS
 
     fun maxTotalWorkers(activeHashCount: Int): Int =
         activeHashCount.coerceIn(1, MAX_HASHES) * MAX_WORKERS_PER_HASH

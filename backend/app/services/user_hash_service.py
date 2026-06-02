@@ -15,6 +15,14 @@ logger = logging.getLogger(__name__)
 
 # Должно совпадать с ai.vk_manager.MAX_HASHES и клиентами (Android/PC MAX_HASHES=4).
 MAX_SERVER_SLOTS = MAX_HASHES
+LIBCLIENT_MAX_WORKERS = 108
+WORKERS_PER_HASH = 27
+
+
+def recommended_stream_count(active_server_hash_count: int) -> int:
+    """Recommended libclient -n: active server hashes × 27 (max 108)."""
+    capped = min(max(active_server_hash_count, 1), MAX_HASHES)
+    return min(capped * WORKERS_PER_HASH, LIBCLIENT_MAX_WORKERS)
 
 
 def extract_call_hash(value: str) -> str | None:
@@ -37,12 +45,9 @@ def extract_call_hash(value: str) -> str | None:
     return None
 
 
-async def get_vpn_hashes_for_user(db: AsyncSession, user: User) -> list[str]:
-    """User bootstrap + up to 4 active server hashes (deduped)."""
+async def get_server_hashes_for_user(db: AsyncSession, user: User) -> list[str]:
+    """Active server hashes only — for libclient -vk (bootstrap excluded)."""
     out: list[str] = []
-    boot = (user.bootstrap_hash or "").strip()
-    if boot:
-        out.append(boot)
     result = await db.execute(
         select(VkHash.hash_value)
         .where(VkHash.user_id == user.id, VkHash.is_active == True)
@@ -51,6 +56,18 @@ async def get_vpn_hashes_for_user(db: AsyncSession, user: User) -> list[str]:
     for (h,) in result.fetchall():
         h = (h or "").strip()
         if h and h not in out:
+            out.append(h)
+    return out[:MAX_SERVER_SLOTS]
+
+
+async def get_vpn_hashes_for_user(db: AsyncSession, user: User) -> list[str]:
+    """User bootstrap + up to 4 active server hashes (deduped)."""
+    out: list[str] = []
+    boot = (user.bootstrap_hash or "").strip()
+    if boot:
+        out.append(boot)
+    for h in await get_server_hashes_for_user(db, user):
+        if h not in out:
             out.append(h)
     return out
 

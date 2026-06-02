@@ -33,7 +33,7 @@ class VpnConfigResponse(BaseModel):
     server_public_key: str
     wdtt_password: str
     vk_hashes: list[str]
-    stream_count: int = 3
+    stream_count: int = 9  # libclient -n (workers), not hash count; bootstrap default 9
 
     model_config = {"from_attributes": True}
 

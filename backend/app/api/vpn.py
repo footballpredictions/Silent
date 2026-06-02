@@ -117,6 +117,9 @@ async def get_config(
     await ensure_trial_subscription(db, user)
     await require_active_subscription(user, db)
     has_sub = await user_has_active_subscription(user, db)
+    from app.services.user_hash_service import ensure_user_server_hashes
+
+    await ensure_user_server_hashes(db, user.id)
     return await build_vpn_config_for_user(db, device, user, has_sub)
 
 
@@ -180,6 +183,10 @@ async def connect(
 
     await ensure_trial_subscription(db, user)
     await require_active_subscription(user, db)
+
+    from app.services.user_hash_service import ensure_user_server_hashes
+
+    await ensure_user_server_hashes(db, user.id)
 
     if not device.is_connected:
         connected = await count_connected_sessions(db, user.id)

@@ -330,7 +330,7 @@ async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigRespon
         server_public_key=server_pub_key,
         wdtt_password=(settings.WDTT_MASTER_PASSWORD or "").strip() or (device.wdtt_password or ""),
         vk_hashes=hashes,
-        stream_count=3,
+        stream_count=9,
     )
 
 
@@ -373,17 +373,25 @@ async def build_vpn_config_for_user(
     user: User,
     has_subscription: bool,
 ) -> VpnConfigResponse:
-    from app.services.user_hash_service import get_vpn_hashes_for_user
+    from app.services.user_hash_service import (
+        get_server_hashes_for_user,
+        recommended_stream_count,
+    )
 
     config = await _build_vpn_config(db, device)
     if user.email == BOOTSTRAP_USER_EMAIL:
         return config
-    hashes = await get_vpn_hashes_for_user(db, user)
-    if hashes:
-        return config.model_copy(update={"vk_hashes": hashes, "stream_count": min(len(hashes), 4)})
+    server_hashes = await get_server_hashes_for_user(db, user)
+    if server_hashes:
+        return config.model_copy(
+            update={
+                "vk_hashes": server_hashes,
+                "stream_count": recommended_stream_count(len(server_hashes)),
+            }
+        )
     boot = await get_bootstrap_hashes_for_user(db, user)
     if boot:
-        return config.model_copy(update={"vk_hashes": boot, "stream_count": 1})
+        return config.model_copy(update={"vk_hashes": boot, "stream_count": 9})
     return config
 
 

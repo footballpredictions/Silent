@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import api from '../api'
 import {
   MAX_HASHES,
+  MAX_WORKERS_PER_HASH,
   WORKERS_PER_GROUP,
   getTotalWorkers,
   maxTotalWorkers,
@@ -213,9 +214,11 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
               <div className="text-[10px] font-mono break-all mt-1" style={{ color: active ? muted : `${fg}55` }}>
                 {item.hash}
               </div>
-              {active && maxChannels > 0 && (
+              {active && (
                 <div className="text-[9px] mt-0.5" style={{ color: muted }}>
-                  до {maxChannels} каналов
+                  {maxChannels > 0
+                    ? `${maxChannels} / ${MAX_WORKERS_PER_HASH} каналов`
+                    : `0 / ${MAX_WORKERS_PER_HASH} каналов · увеличьте потоки`}
                 </div>
               )}
             </div>

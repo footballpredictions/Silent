@@ -262,63 +262,72 @@ fun MainScreen(
             }
         }
 
-        // Side drawer overlay — как на PC
+        // Side drawer (половина) — только список; пункты меню на полный экран
         if (menuOpen) {
-            Row(modifier = Modifier.fillMaxSize()) {
-                Column(
-                    modifier = Modifier
-                        .width(208.dp)
-                        .fillMaxHeight()
-                        .background(bg)
-                        .border(0.5.dp, Color(0xFFE5E7EB)),
-                ) {
-                    // Header
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp).border(0.5.dp, Color(0xFFF3F4F6)),
-                        verticalAlignment = Alignment.Top,
+            if (menuPage == MenuPage.ROOT) {
+                Row(modifier = Modifier.fillMaxSize()) {
+                    Column(
+                        modifier = Modifier
+                            .width(208.dp)
+                            .fillMaxHeight()
+                            .background(bg)
+                            .border(0.5.dp, Color(0xFFE5E7EB)),
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(profile?.email ?: "—", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg, maxLines = 1)
-                            Text("Аккаунт: ${profile?.display_id ?: "—"}", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.padding(top = 2.dp))
-                            sessionDeviceId?.takeIf { it.isNotBlank() }?.let { sid ->
-                                Text(
-                                    "Сессия: ${sid.take(8).uppercase()}",
-                                    fontSize = 11.sp,
-                                    color = fg.copy(alpha = 0.35f),
-                                    modifier = Modifier.padding(top = 2.dp),
-                                )
-                            }
-                        }
-                        IconButton(onClick = { menuOpen = false; menuPage = MenuPage.ROOT }, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
-                        }
-                    }
-
-                    when (menuPage) {
-                        MenuPage.ROOT -> {
-                            val items = listOf(
-                                MenuPage.SUBSCRIPTION to "Подписка",
-                                MenuPage.EXCEPTIONS to "Исключения приложений",
-                                MenuPage.HASHES to "Хеши",
-                                MenuPage.PROMO to "Промокод",
-                                MenuPage.DEVICES to "Сессии (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})",
-                                MenuPage.SUPPORT to "Поддержка",
-                                MenuPage.ABOUT to "О сервисе",
-                            )
-                            items.forEach { (page, label) ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().clickable { menuPage = page }.padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(label, fontSize = 14.sp, color = fg, modifier = Modifier.weight(1f))
-                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = fg.copy(alpha = 0.3f), modifier = Modifier.size(14.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp).border(0.5.dp, Color(0xFFF3F4F6)),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(profile?.email ?: "—", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg, maxLines = 1)
+                                Text("Аккаунт: ${profile?.display_id ?: "—"}", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.padding(top = 2.dp))
+                                sessionDeviceId?.takeIf { it.isNotBlank() }?.let { sid ->
+                                    Text(
+                                        "Сессия: ${sid.take(8).uppercase()}",
+                                        fontSize = 11.sp,
+                                        color = fg.copy(alpha = 0.35f),
+                                        modifier = Modifier.padding(top = 2.dp),
+                                    )
                                 }
                             }
-                            TextButton(
-                                onClick = { menuOpen = false; onLogout() },
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                            ) { Text("Выйти", color = Color(0xFFEF4444), fontSize = 14.sp) }
+                            IconButton(onClick = { menuOpen = false; menuPage = MenuPage.ROOT }, modifier = Modifier.size(24.dp)) {
+                                Icon(Icons.Default.Close, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
+                            }
                         }
+                        val items = listOf(
+                            MenuPage.SUBSCRIPTION to "Подписка",
+                            MenuPage.EXCEPTIONS to "Исключения приложений",
+                            MenuPage.HASHES to "Хеши",
+                            MenuPage.PROMO to "Промокод",
+                            MenuPage.DEVICES to "Сессии (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})",
+                            MenuPage.SUPPORT to "Поддержка",
+                            MenuPage.ABOUT to "О сервисе",
+                        )
+                        items.forEach { (page, label) ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().clickable { menuPage = page }.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(label, fontSize = 14.sp, color = fg, modifier = Modifier.weight(1f))
+                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = fg.copy(alpha = 0.3f), modifier = Modifier.size(14.dp))
+                            }
+                        }
+                        TextButton(
+                            onClick = { menuOpen = false; onLogout() },
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        ) { Text("Выйти", color = Color(0xFFEF4444), fontSize = 14.sp) }
+                    }
+                    Box(
+                        modifier = Modifier.weight(1f).fillMaxHeight().background(Color.Black.copy(alpha = 0.2f))
+                            .clickable { menuOpen = false; menuPage = MenuPage.ROOT },
+                    )
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(bg),
+                ) {
+                    when (menuPage) {
                         MenuPage.SUBSCRIPTION -> MenuSubscription(profile, fg, onBack = { menuPage = MenuPage.ROOT }, onInitPayment, onOpenUrl, onShowError)
                         MenuPage.EXCEPTIONS -> AppExclusionsScreen(repo, fg, bg) { menuPage = MenuPage.ROOT }
                         MenuPage.HASHES -> MenuHashesScreen(repo, fg) { menuPage = MenuPage.ROOT }
@@ -326,12 +335,9 @@ fun MainScreen(
                         MenuPage.DEVICES -> MenuDevices(profile, fg, sessionDeviceId, vpnState, onRenameDevice) { menuPage = MenuPage.ROOT }
                         MenuPage.SUPPORT -> MenuSimplePage("Поддержка", "По вопросам обратитесь через email или Telegram.", fg) { menuPage = MenuPage.ROOT }
                         MenuPage.ABOUT -> MenuSimplePage("Silent VPN", "Версия 1.0.22\nWireGuard-туннель через VK TURN/DTLS", fg) { menuPage = MenuPage.ROOT }
+                        else -> Unit
                     }
                 }
-                Box(
-                    modifier = Modifier.weight(1f).fillMaxHeight().background(Color.Black.copy(alpha = 0.2f))
-                        .clickable { menuOpen = false; menuPage = MenuPage.ROOT },
-                )
             }
         }
 
@@ -342,7 +348,7 @@ fun MainScreen(
 
 @Composable
 private fun MenuSimplePage(title: String, body: String, fg: Color, onBack: () -> Unit) {
-    Column(modifier = Modifier.padding(16.dp)) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
         Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
         Text(body, fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp))
@@ -351,7 +357,7 @@ private fun MenuSimplePage(title: String, body: String, fg: Color, onBack: () ->
 
 @Composable
 private fun MenuSubscription(profile: UserProfile?, fg: Color, onBack: () -> Unit, onInitPayment: (String, (String) -> Unit, (String) -> Unit) -> Unit, onOpenUrl: (String) -> Unit, onShowError: (String) -> Unit) {
-    Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
         if (profile?.subscription?.is_active == true) {
             val planLabel = when (profile.subscription.plan_type) {
@@ -384,7 +390,7 @@ private fun MenuSubscription(profile: UserProfile?, fg: Color, onBack: () -> Uni
 
 @Composable
 private fun MenuPromo(fg: Color, bg: Color, promoCode: String, onPromoChange: (String) -> Unit, promoMsg: String, onApply: () -> Unit, onBack: () -> Unit) {
-    Column(modifier = Modifier.padding(16.dp)) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
         Text("Промокод", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
         OutlinedTextField(value = promoCode, onValueChange = onPromoChange, placeholder = { Text("Введите код") }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), shape = RoundedCornerShape(12.dp))
@@ -443,7 +449,7 @@ private fun MenuDevices(
         )
     }
 
-    Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
         Text("Сессии", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
         val localOnline = vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING

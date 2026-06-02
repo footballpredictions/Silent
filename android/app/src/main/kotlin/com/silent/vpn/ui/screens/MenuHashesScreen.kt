@@ -20,10 +20,15 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalDensity
 import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.HashItemDto
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.service.SilentVpnService
+import com.silent.vpn.ui.theme.UiColors
+import com.silent.vpn.ui.theme.UiDimens
 import com.silent.vpn.vpn.WdttTunnelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -203,7 +208,7 @@ private fun ChannelStrengthSelector(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .border(1.dp, fg.copy(0.12f), RoundedCornerShape(12.dp))
+            .border(UiDimens.borderThin, fg.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
             .padding(horizontal = 12.dp, vertical = 12.dp),
     ) {
         Row(
@@ -279,9 +284,19 @@ private fun HashRow(
     val lamp = if (active) Color(0xFF22C55E) else Color(0xFFEF4444)
     val statusText = if (active) "Активна" else "Просрочен"
 
+    val density = LocalDensity.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .drawBehind {
+                val stroke = with(density) { UiDimens.borderThin.toPx() }
+                drawLine(
+                    color = UiColors.Gray100,
+                    start = Offset(0f, size.height - (stroke / 2f)),
+                    end = Offset(size.width, size.height - (stroke / 2f)),
+                    strokeWidth = stroke,
+                )
+            }
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.Top,
     ) {

@@ -5,14 +5,19 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.silent.vpn.ui.theme.UiColors
+import com.silent.vpn.ui.theme.UiDimens
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -147,25 +152,38 @@ fun AppExclusionsScreen(
             modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = !whitelist, onClick = {
-                if (whitelist) {
-                    val all = apps.map { it.packageName }.toSet()
-                    saveSelection(all - selected, false)
+            listOf(false to "ЧС", true to "БС").forEach { (isWhitelist, label) ->
+                val isActive = whitelist == isWhitelist
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isActive) fg else Color.Transparent)
+                        .border(UiDimens.borderThin, if (isActive) fg else UiColors.Gray200, RoundedCornerShape(8.dp))
+                        .clickable {
+                            if (isWhitelist && !whitelist) {
+                                val all = apps.map { it.packageName }.toSet()
+                                saveSelection(all - selected, true)
+                            } else if (!isWhitelist && whitelist) {
+                                val all = apps.map { it.packageName }.toSet()
+                                saveSelection(all - selected, false)
+                            }
+                        }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        label,
+                        fontSize = 12.sp,
+                        color = if (isActive) bg else fg,
+                    )
                 }
-            }, label = { Text("ЧС") })
-            FilterChip(selected = whitelist, onClick = {
-                if (!whitelist) {
-                    val all = apps.map { it.packageName }.toSet()
-                    saveSelection(all - selected, true)
-                }
-            }, label = { Text("БС") })
+            }
         }
         Row(
             Modifier.fillMaxWidth().padding(top = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("Показать системные", fontSize = 12.sp, color = fg, modifier = Modifier.weight(1f))
-            Switch(checked = showSystemApps, onCheckedChange = { showSystemApps = it })
+            Checkbox(checked = showSystemApps, onCheckedChange = { showSystemApps = it })
         }
         OutlinedTextField(
             value = search,

@@ -79,7 +79,7 @@ fun VkLoginSection(
     HorizontalDivider(color = Color(0xFFE5E7EB))
     Spacer(modifier = Modifier.height(16.dp))
     Text(
-        "Шаг 2 — вход в Silent",
+        "Шаг 2 — вход в Silent VPN",
         fontWeight = FontWeight.SemiBold,
         fontSize = 13.sp,
         color = Color.Black,

@@ -92,7 +92,7 @@ fun LoginScreen(
                 SilentLogo()
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    "SILENT",
+                    "SILENT VPN",
                     color = ui.fg,
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp,

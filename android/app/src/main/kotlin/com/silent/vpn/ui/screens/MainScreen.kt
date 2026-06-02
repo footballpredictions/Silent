@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
@@ -17,18 +16,28 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
+import com.silent.vpn.ui.components.MenuNavItem
+import com.silent.vpn.ui.components.MenuNavLogout
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.DeviceInfo
 import com.silent.vpn.data.UserProfile
 import com.silent.vpn.ui.theme.parseColor
+import com.silent.vpn.ui.theme.UiColors
+import com.silent.vpn.ui.theme.UiDimens
+import com.silent.vpn.ui.theme.UiFont
+import com.silent.vpn.ui.theme.displayAppName
+import com.silent.vpn.ui.theme.mutedFg
 
 enum class VpnState { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
 
@@ -129,12 +138,22 @@ fun MainScreen(
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
+            val density = LocalDensity.current
             // Title bar — название по центру, меню слева, лог справа
+            val titleBarDivider = Modifier.drawBehind {
+                val stroke = with(density) { UiDimens.borderThin.toPx() }
+                drawLine(
+                    color = UiColors.Gray100,
+                    start = Offset(0f, size.height - (stroke / 2f)),
+                    end = Offset(size.width, size.height - (stroke / 2f)),
+                    strokeWidth = stroke,
+                )
+            }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(36.dp)
-                    .border(0.5.dp, Color(0xFFF3F4F6))
+                    .height(UiDimens.titleBarHeight)
+                    .then(titleBarDivider)
                     .padding(horizontal = 4.dp),
                 contentAlignment = Alignment.Center,
             ) {
@@ -145,10 +164,10 @@ fun MainScreen(
                     Icon(Icons.Default.Menu, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
                 }
                 Text(
-                    (theme?.app_name ?: "Silent").uppercase(),
+                    displayAppName(theme),
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = 3.sp,
-                    fontSize = 12.sp,
+                    letterSpacing = UiFont.titleTracking,
+                    fontSize = UiFont.xs,
                     color = fg,
                 )
                 DebugLogButton(
@@ -215,11 +234,20 @@ fun MainScreen(
             }
 
             // Bottom subscription — как на PC
+            val bottomDivider = Modifier.drawBehind {
+                val stroke = with(density) { UiDimens.borderThin.toPx() }
+                drawLine(
+                    color = UiColors.Gray100,
+                    start = Offset(0f, stroke / 2f),
+                    end = Offset(size.width, stroke / 2f),
+                    strokeWidth = stroke,
+                )
+            }
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(0.5.dp, Color(0xFFF3F4F6))
-                    .padding(16.dp),
+                    .then(bottomDivider)
+                    .padding(UiDimens.pagePadding),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 when {
@@ -268,53 +296,63 @@ fun MainScreen(
                 Row(modifier = Modifier.fillMaxSize()) {
                     Column(
                         modifier = Modifier
-                            .width(208.dp)
+                            .width(UiDimens.menuWidth)
                             .fillMaxHeight()
                             .background(bg)
-                            .border(0.5.dp, Color(0xFFE5E7EB)),
+                            .border(UiDimens.borderThin, UiColors.Gray200),
                     ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(16.dp).border(0.5.dp, Color(0xFFF3F4F6)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(UiDimens.pagePadding),
                             verticalAlignment = Alignment.Top,
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(profile?.email ?: "—", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg, maxLines = 1)
-                                Text("Аккаунт: ${profile?.display_id ?: "—"}", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.padding(top = 2.dp))
+                                Text(
+                                    profile?.email ?: "—",
+                                    fontSize = UiFont.xs,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = fg,
+                                    maxLines = 1,
+                                )
+                                Text(
+                                    "Аккаунт: ${profile?.display_id ?: "—"}",
+                                    fontSize = UiFont.xs,
+                                    color = mutedFg(fg),
+                                    modifier = Modifier.padding(top = 2.dp),
+                                )
                                 sessionDeviceId?.takeIf { it.isNotBlank() }?.let { sid ->
                                     Text(
                                         "Сессия: ${sid.take(8).uppercase()}",
-                                        fontSize = 11.sp,
-                                        color = fg.copy(alpha = 0.35f),
+                                        fontSize = UiFont.caption,
+                                        color = mutedFg(fg, 0.35f),
                                         modifier = Modifier.padding(top = 2.dp),
                                     )
                                 }
                             }
-                            IconButton(onClick = { menuOpen = false; menuPage = MenuPage.ROOT }, modifier = Modifier.size(24.dp)) {
+                            IconButton(
+                                onClick = { menuOpen = false; menuPage = MenuPage.ROOT },
+                                modifier = Modifier.size(24.dp),
+                            ) {
                                 Icon(Icons.Default.Close, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
                             }
                         }
-                        val items = listOf(
-                            MenuPage.SUBSCRIPTION to "Подписка",
-                            MenuPage.EXCEPTIONS to "Исключения приложений",
-                            MenuPage.HASHES to "Хеши",
-                            MenuPage.PROMO to "Промокод",
-                            MenuPage.DEVICES to "Сессии (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})",
-                            MenuPage.SUPPORT to "Поддержка",
-                            MenuPage.ABOUT to "О сервисе",
-                        )
-                        items.forEach { (page, label) ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().clickable { menuPage = page }.padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(label, fontSize = 14.sp, color = fg, modifier = Modifier.weight(1f))
-                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = fg.copy(alpha = 0.3f), modifier = Modifier.size(14.dp))
+                        HorizontalDivider(color = UiColors.Gray100, thickness = UiDimens.borderThin)
+                        Column(modifier = Modifier.padding(UiDimens.menuNavPadding)) {
+                            val items = listOf(
+                                MenuPage.SUBSCRIPTION to "Подписка",
+                                MenuPage.EXCEPTIONS to "Исключения приложений",
+                                MenuPage.HASHES to "Хеши",
+                                MenuPage.PROMO to "Промокод",
+                                MenuPage.DEVICES to "Сессии (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})",
+                                MenuPage.SUPPORT to "Поддержка",
+                                MenuPage.ABOUT to "О сервисе",
+                            )
+                            items.forEach { (page, label) ->
+                                MenuNavItem(label = label, fg = fg, onClick = { menuPage = page })
                             }
+                            MenuNavLogout(onClick = { menuOpen = false; onLogout() })
                         }
-                        TextButton(
-                            onClick = { menuOpen = false; onLogout() },
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                        ) { Text("Выйти", color = Color(0xFFEF4444), fontSize = 14.sp) }
                     }
                     Box(
                         modifier = Modifier.weight(1f).fillMaxHeight().background(Color.Black.copy(alpha = 0.2f))
@@ -466,17 +504,25 @@ private fun MenuDevices(
         )
         profile?.devices?.forEach { d ->
             val online = deviceOnline(d)
+            val density = LocalDensity.current
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 8.dp)
-                    .border(0.5.dp, Color(0xFFF3F4F6))
-                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                    .drawBehind {
+                        val stroke = with(density) { UiDimens.borderThin.toPx() }
+                        drawLine(
+                            color = UiColors.Gray100,
+                            start = Offset(0f, size.height - (stroke / 2f)),
+                            end = Offset(size.width, size.height - (stroke / 2f)),
+                            strokeWidth = stroke,
+                        )
+                    }
+                    .padding(vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
                     modifier = Modifier.size(10.dp).background(
-                        if (online) Color(0xFF22C55E) else Color(0xFFD1D5DB),
+                        if (online) UiColors.Green500 else UiColors.Gray300,
                         CircleShape,
                     ),
                 )

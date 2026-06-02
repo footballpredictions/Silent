@@ -326,9 +326,13 @@ private fun HashRow(
                 color = fg.copy(alpha = if (active) 0.65f else 0.35f),
                 modifier = Modifier.padding(top = 4.dp),
             )
-            if (active && maxChannels > 0) {
+            if (active) {
                 Text(
-                    "до $maxChannels каналов",
+                    if (maxChannels > 0) {
+                        "$maxChannels / ${HashChannelHelper.MAX_WORKERS_PER_HASH} каналов"
+                    } else {
+                        "0 / ${HashChannelHelper.MAX_WORKERS_PER_HASH} каналов · увеличьте потоки"
+                    },
                     fontSize = 9.sp,
                     color = fg.copy(0.4f),
                     modifier = Modifier.padding(top = 2.dp),

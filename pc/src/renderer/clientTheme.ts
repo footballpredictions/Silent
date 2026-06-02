@@ -23,6 +23,12 @@ function isDarkBg(bg: string): boolean {
   return lum < 0.45
 }
 
+export function resolveAppName(raw?: string | null): string {
+  const name = (raw || '').trim()
+  if (!name || name.toLowerCase() === 'silent') return 'Silent VPN'
+  return name
+}
+
 /** UI palette derived from admin theme (login + main screens). */
 export function themeToUi(theme: ClientTheme | null) {
   const bg = theme?.background_color || '#ffffff'
@@ -49,6 +55,6 @@ export function themeToUi(theme: ClientTheme | null) {
     green: '#16A34A',
     red: '#EF4444',
     fontFamily: theme?.font_family ? `${theme.font_family}, Inter, sans-serif` : 'Inter, sans-serif',
-    appTitle: (theme?.app_name || 'Silent VPN').toUpperCase(),
+    appTitle: resolveAppName(theme?.app_name).toUpperCase(),
   }
 }

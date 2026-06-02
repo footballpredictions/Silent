@@ -16,6 +16,7 @@ import {
 import { disconnectBootstrapVpn, fetchBootstrapConfig, isBootstrapVpnActive } from '../bootstrapVpn'
 import { waitVpnReady } from '../vpnReady'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
+import { resolveAppName } from '../clientTheme'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
 import { applyWorkerCount } from '../hashChannelHelper'
@@ -301,7 +302,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const toggleOn = clientTheme?.toggle_on_color || '#000000'
   const toggleOff = clientTheme?.toggle_off_color || '#cccccc'
   const fontFamily = clientTheme?.font_family ? `${clientTheme.font_family}, Inter, sans-serif` : 'Inter, sans-serif'
-  const appTitle = (clientTheme?.app_name || 'Silent VPN').toUpperCase()
+  const appTitle = resolveAppName(clientTheme?.app_name).toUpperCase()
   const muted = `${fg}66`
 
   const statusLabel = connecting ? 'Подключение...' : connected ? 'Подключено' : 'Отключено'

@@ -17,7 +17,7 @@ import { disconnectBootstrapVpn, fetchBootstrapConfig, isBootstrapVpnActive } fr
 import { waitVpnReady } from '../vpnReady'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import { resolveAppName } from '../clientTheme'
-import { MENU_DRAWER_CLASS, UI_COLORS } from '../uiTokens'
+import { menuDrawerStyle, UI_COLORS } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
 import { applyWorkerCount } from '../hashChannelHelper'
@@ -443,8 +443,8 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
       {menuOpen && menuPage === null && (
         <div className="absolute inset-0 z-50 flex">
           <div
-            className={`${MENU_DRAWER_CLASS} h-full flex flex-col`}
-            style={{ background: bg, borderRight: `1px solid ${UI_COLORS.gray200}` }}
+            className="h-full flex flex-col"
+            style={{ ...menuDrawerStyle, background: bg, borderRight: `1px solid ${UI_COLORS.gray200}` }}
           >
             <div
               className="p-4 flex items-center justify-between"

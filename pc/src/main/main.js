@@ -215,7 +215,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   if (fs.existsSync(confPath)) fs.unlinkSync(confPath)
 
   const hashes = (config.vk_hashes || []).filter(Boolean).join(',')
-  const workers = Number(config.stream_count) || 18
+  const workers = Math.min(Math.max(Number(config.stream_count) || 108, 9), 108)
   sendLog(`[VPN] connect n=${workers} hashes=${(config.vk_hashes || []).filter(Boolean).length}`)
   const args = [
     '-peer', `${config.server_ip}:${config.server_port}`,

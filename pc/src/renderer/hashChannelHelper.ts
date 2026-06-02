@@ -5,7 +5,7 @@ export const MAX_WORKERS_PER_HASH = 27
 export const MAX_HASHES = 4
 export const LIBCLIENT_MAX_WORKERS = 108
 export const DEFAULT_TOTAL_WORKERS = LIBCLIENT_MAX_WORKERS
-export const BOOTSTRAP_STREAM_COUNT = 3
+export const BOOTSTRAP_STREAM_COUNT = 9
 
 /** @deprecated legacy key — migrated to TOTAL_WORKERS_KEY */
 export const CHANNELS_KEY = 'silent_hash_channels_per_hash'

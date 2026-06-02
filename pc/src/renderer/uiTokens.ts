@@ -1,8 +1,8 @@
 /** UI tokens — синхронизированы с Android `UiTokens.kt`. */
 export const MENU_WIDTH_PX = 208
 
-/** Drawer = половина экрана (Android Row weight 1f + 1f). */
-export const MENU_DRAWER_CLASS = 'w-1/2 shrink-0'
+/** Drawer — фиксированная ширина 208px (= Tailwind w-52 = Android 208dp). */
+export const MENU_DRAWER_CLASS = 'w-52 shrink-0'
 
 export const UI_COLORS = {
   gray100: '#F3F4F6',

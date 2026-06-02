@@ -303,9 +303,22 @@ func main() {
 	var wg sync.WaitGroup
 	workerIDCounter := 1
 
-	// Параллельный старт всех групп — без каскадного ожидания (быстрее набор 108 каналов).
+	var prevWaitReady <-chan struct{}
+
 	for g := 0; g < numGroups; g++ {
 		isFirst := (g == 0)
+
+		var myWaitReady <-chan struct{}
+		var mySignalReady chan<- struct{}
+
+		if g > 0 {
+			myWaitReady = prevWaitReady
+		}
+		if g < numGroups-1 {
+			ch := make(chan struct{})
+			mySignalReady = ch
+			prevWaitReady = ch
+		}
 
 		ids := make([]int, workersPerGroup)
 		for i := range ids {
@@ -320,11 +333,11 @@ func main() {
 		}
 
 		wg.Add(1)
-		go func(groupID int, isFirstGroup bool, configChan chan<- string, workerIds []int, startHashIndex int) {
+		go func(groupID int, isFirstGroup bool, configChan chan<- string, workerIds []int, startHashIndex int, waitR <-chan struct{}, sigR chan<- struct{}) {
 			defer wg.Done()
 			WorkerGroup(ctx, groupID, startHashIndex, tp, peer, disp, localPort,
-				isFirstGroup, configChan, workerIds, &pauseFlag, *deviceID, *connPassword, stats, nil, nil)
-		}(gID, isFirst, cc, ids, g)
+				isFirstGroup, configChan, workerIds, &pauseFlag, *deviceID, *connPassword, stats, waitR, sigR)
+		}(gID, isFirst, cc, ids, g, myWaitReady, mySignalReady)
 	}
 
 	wg.Wait()

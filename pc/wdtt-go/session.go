@@ -19,16 +19,16 @@ import (
 )
 
 const (
-	workerSendBuf      = 1024
+	workerSendBuf      = 512
 	sessionReadTimeout = 30 * time.Minute
 	readBufSize        = 1600
-	socketBufSize      = 4 * 1024 * 1024
+	socketBufSize      = 2 * 1024 * 1024
 	keepaliveByte      = 0xFF
 	keepaliveInterval  = 15 * time.Second
 )
 
-// Параллельный старт 108 воркеров — больше одновременных DTLS handshake.
-var handshakeSem = make(chan struct{}, 32)
+// Ограничение одновременных DTLS handshake — как в reference WDTT.
+var handshakeSem = make(chan struct{}, 3)
 
 // NullLoggerFactory подавляет логи pion
 type NullLoggerFactory struct{}

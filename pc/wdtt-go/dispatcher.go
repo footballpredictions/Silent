@@ -31,25 +31,12 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	returnChBuf      = 4096
-	writeLoopWorkers = 8
+	returnChBuf      = 2048
+	writeLoopWorkers = 2
+	uploadRetryMs    = 50
 
-	// chunkSize — количество последовательных пакетов, отправляемых в один worker
-	// перед переключением на следующий.
-	//
-	// Зачем: при round-robin (chunk=1) каждый пакет летит через разный TURN relay
-	// с разным latency, что приводит к reorder на сервере. TCP внутри WireGuard
-	// интерпретирует reorder как потери → cwnd collapse → скорость single-flow
-	// падает до ~8 KB/s.
-	//
-	// С chunk=8: пакеты в пределах одного TCP congestion window (~10 пакетов при
-	// initial cwnd) уходят через один TURN relay → прилетают по порядку.
-	// Reorder возможен только между chunk-границами, что покрывается WG replay
-	// window (2048 пакетов).
-	//
-	// Агрегатная пропускная способность не меняется — все workers загружены
-	// равномерно по-прежнему (каждый получает 1/N от общего трафика за время).
-	chunkSize = 16
+	// chunkSize — adaptive chunking как в proxy-turn-vk-android.
+	chunkSize = 8
 )
 
 type WorkerSlot struct {
@@ -61,7 +48,7 @@ type Dispatcher struct {
 	localConn  net.PacketConn
 	clientAddr atomic.Pointer[net.Addr]
 	workers    atomic.Pointer[[]*WorkerSlot]
-	mu         sync.Mutex // Используется только для записи
+	mu         sync.Mutex
 	rrIndex    int
 	rrCount    int
 	ReturnCh   chan []byte
@@ -80,7 +67,7 @@ func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) 
 		cancel:    dcancel,
 		stats:     stats,
 	}
-	
+
 	empty := make([]*WorkerSlot, 0)
 	d.workers.Store(&empty)
 
@@ -119,17 +106,13 @@ func (d *Dispatcher) Unregister(slot *WorkerSlot) {
 		}
 	}
 	d.workers.Store(&newWorkers)
+	if d.rrIndex >= len(newWorkers) && len(newWorkers) > 0 {
+		d.rrIndex = d.rrIndex % len(newWorkers)
+	}
+	d.rrCount = 0
 	log.Printf("[ДИСП] Воркер #%d отключён (осталось: %d)", slot.ID, len(newWorkers))
 }
 
-// readLoop читает WireGuard-пакеты и распределяет по workers chunk'ами.
-//
-// Логика: отправляем chunkSize подряд пакетов в один worker, потом переходим
-// к следующему. Если текущий worker перегружен (канал полный) — немедленно
-// ищем свободный worker и начинаем новый chunk на нём. Это гарантирует:
-//   - В рамках chunk пакеты идут через один TURN relay → in-order delivery
-//   - Между chunks — разные relay → максимальная агрегатная скорость
-//   - Нет блокировки, нет буферизации, нет дополнительного latency
 func (d *Dispatcher) readLoop() {
 	defer d.wg.Done()
 
@@ -163,10 +146,10 @@ func (d *Dispatcher) readLoop() {
 		ws := *workersPtr
 		nw := len(ws)
 
+		d.mu.Lock()
 		sent := false
 		idx := d.rrIndex % nw
 
-		// Пробуем текущий worker (chunk affinity)
 		w := ws[idx]
 		select {
 		case w.SendCh <- pkt:
@@ -177,14 +160,13 @@ func (d *Dispatcher) readLoop() {
 				d.rrCount = 0
 			}
 		default:
-			// Текущий worker перегружен — ищем свободный, начинаем новый chunk
 			for i := 1; i < nw; i++ {
 				altIdx := (idx + i) % nw
 				select {
 				case ws[altIdx].SendCh <- pkt:
 					sent = true
 					d.rrIndex = altIdx
-					d.rrCount = 1 // первый пакет нового chunk'а уже отправлен
+					d.rrCount = 1
 				default:
 				}
 				if sent {
@@ -194,20 +176,33 @@ func (d *Dispatcher) readLoop() {
 		}
 
 		if !sent {
-			// Все воркеры заняты — блокируемся до слота (drop убивает upload на speedtest).
-			w := ws[d.rrIndex%nw]
-			select {
-			case w.SendCh <- pkt:
-				d.rrCount++
-				if d.rrCount >= chunkSize {
-					d.rrIndex = (d.rrIndex + 1) % nw
-					d.rrCount = 0
+			deadline := time.Now().Add(uploadRetryMs * time.Millisecond)
+			for time.Now().Before(deadline) && !sent {
+				tryIdx := d.rrIndex % nw
+				select {
+				case ws[tryIdx].SendCh <- pkt:
+					sent = true
+					d.rrCount++
+					if d.rrCount >= chunkSize {
+						d.rrIndex = (tryIdx + 1) % nw
+						d.rrCount = 0
+					}
+				case <-d.ctx.Done():
+					d.mu.Unlock()
+					putPktBuf(pkt)
+					return
+				default:
+					d.rrIndex = (tryIdx + 1) % nw
+					time.Sleep(1 * time.Millisecond)
 				}
-			case <-d.ctx.Done():
+			}
+			if !sent {
+				d.rrIndex = (idx + 1) % nw
+				d.rrCount = 0
 				putPktBuf(pkt)
-				return
 			}
 		}
+		d.mu.Unlock()
 	}
 }
 

@@ -122,8 +122,8 @@ func WorkerGroup(
 	for i, wid := range workerIDs {
 		wg.Add(1)
 
-		// Stagger: 50мс между воркерами (быстрее набор каналов)
-		workerDelay := time.Duration(i) * 50 * time.Millisecond
+		// Stagger: 500мс между воркерами (как в proxy-turn-vk-android)
+		workerDelay := time.Duration(i) * 500 * time.Millisecond
 
 		go func(wid int, delay time.Duration) {
 			defer wg.Done()

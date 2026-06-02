@@ -33,7 +33,10 @@ object UiFont {
     val titleTracking = 3.sp
 }
 
-fun displayAppName(theme: ThemeData?): String =
-    (theme?.app_name?.takeIf { it.isNotBlank() } ?: "Silent VPN").uppercase()
+fun displayAppName(theme: ThemeData?): String {
+    val raw = theme?.app_name?.takeIf { it.isNotBlank() } ?: "Silent VPN"
+    val name = if (raw.equals("Silent", ignoreCase = true)) "Silent VPN" else raw
+    return name.uppercase()
+}
 
 fun mutedFg(fg: Color, alpha: Float = 0.4f): Color = fg.copy(alpha = alpha)

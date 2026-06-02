@@ -1,8 +1,8 @@
 package com.silent.vpn.ui.components
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -62,45 +62,55 @@ fun PcStyleRangeSlider(
 
         val accentColor = if (enabled) accent else accent.copy(alpha = 0.38f)
 
-        Box(
-            Modifier
-                .align(Alignment.Center)
-                .fillMaxWidth()
-                .height(trackHeight)
-                .clip(RoundedCornerShape(2.dp))
-                .background(accent.copy(alpha = if (enabled) 0.12f else 0.08f)),
-        )
-        Box(
-            Modifier
-                .align(Alignment.CenterStart)
-                .fillMaxWidth(activeFraction.coerceAtLeast(0.001f))
-                .height(trackHeight)
-                .clip(RoundedCornerShape(2.dp))
-                .background(accentColor),
-        )
-        Box(
-            Modifier
-                .align(Alignment.CenterStart)
-                .offset { IntOffset(thumbX.roundToInt(), 0) }
-                .size(thumbSize)
-                .clip(CircleShape)
-                .background(accentColor),
-        )
+        fun updateFromX(x: Float) {
+            val f = (x - thumbPx / 2f).coerceIn(0f, travel) / travel
+            onValueChange(snap(minValue + f * range))
+        }
+
         Box(
             Modifier
                 .matchParentSize()
                 .pointerInput(enabled, minValue, maxValue, step, widthPx, thumbPx) {
                     if (!enabled) return@pointerInput
-                    fun update(x: Float) {
-                        val f = (x - thumbPx / 2f).coerceIn(0f, travel) / travel
-                        onValueChange(snap(minValue + f * range))
-                    }
-                    detectTapGestures { offset -> update(offset.x) }
-                    detectDragGestures { change, _ ->
-                        change.consume()
-                        update(change.position.x)
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        down.consume()
+                        updateFromX(down.position.x)
+                        val pointerId = down.id
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                            if (!change.pressed) break
+                            updateFromX(change.position.x)
+                            change.consume()
+                        }
                     }
                 },
-        )
+        ) {
+            Box(
+                Modifier
+                    .align(Alignment.Center)
+                    .fillMaxWidth()
+                    .height(trackHeight)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(accent.copy(alpha = if (enabled) 0.12f else 0.08f)),
+            )
+            Box(
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .fillMaxWidth(activeFraction.coerceAtLeast(0.001f))
+                    .height(trackHeight)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(accentColor),
+            )
+            Box(
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .offset { IntOffset(thumbX.roundToInt(), 0) }
+                    .size(thumbSize)
+                    .clip(CircleShape)
+                    .background(accentColor),
+            )
+        }
     }
 }

@@ -4,7 +4,7 @@ import ClientPreview from '../components/ClientPreview'
 const defaultTheme = {
   primary_color: '#000000', background_color: '#FFFFFF', text_color: '#000000',
   accent_color: '#1A1A1A', toggle_on_color: '#000000', toggle_off_color: '#CCCCCC',
-  font_family: 'Inter', logo_url: '/static/logo.svg', app_name: 'Silent',
+  font_family: 'Inter', logo_url: '/static/logo.svg', app_name: 'Silent VPN',
   support_url: '', privacy_url: '', terms_url: '',
 }
 

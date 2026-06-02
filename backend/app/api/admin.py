@@ -16,6 +16,7 @@ from app.models import User, Subscription, Device, VkHash, AppSetting, PromoCode
 from app.core.deps import get_admin_credentials
 from app.config import settings
 from app.schemas.vpn import ThemeResponse
+from app.services.theme_settings import load_theme
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -685,11 +686,8 @@ async def get_theme_admin(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(AppSetting).where(AppSetting.key == "theme"))
-    setting = result.scalar_one_or_none()
-    if setting:
-        return json.loads(setting.value)
-    return ThemeResponse().model_dump()
+    theme = await load_theme(db, persist_migration=True)
+    return theme.model_dump()
 
 
 @router.post("/theme")

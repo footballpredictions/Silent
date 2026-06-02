@@ -54,7 +54,7 @@ export default function ClientPreview({ theme, platform = 'mobile' }: {
   const w = 265
   const h = 606
   const scale = platform === 'pc' ? 0.72 : 0.72
-  const appTitle = (theme.app_name || 'Silent').toUpperCase()
+  const appTitle = (theme.app_name || 'Silent VPN').toUpperCase()
   const fg = theme.text_color
   const bg = theme.background_color
   const muted = `${fg}66`

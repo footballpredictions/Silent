@@ -32,6 +32,7 @@ from app.services.subscription_service import (
     ensure_trial_subscription,
     require_active_subscription,
 )
+from app.services.theme_settings import load_theme
 from app.config import settings
 
 router = APIRouter(prefix="/vpn", tags=["vpn"])
@@ -259,12 +260,4 @@ async def get_exclusions(
 @router.get("/theme", response_model=ThemeResponse)
 async def get_theme(db: AsyncSession = Depends(get_db)):
     """Public endpoint — clients fetch UI theme from backend."""
-    result = await db.execute(select(AppSetting).where(AppSetting.key == "theme"))
-    setting = result.scalar_one_or_none()
-    if setting:
-        try:
-            data = json.loads(setting.value)
-            return ThemeResponse(**data)
-        except Exception:
-            pass
-    return ThemeResponse()
+    return await load_theme(db, persist_migration=True)

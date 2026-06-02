@@ -64,7 +64,7 @@ class ThemeResponse(BaseModel):
     toggle_off_color: str = "#CCCCCC"
     font_family: str = "Inter"
     logo_url: str = "/static/logo.svg"
-    app_name: str = "Silent"
+    app_name: str = "Silent VPN"
     support_url: str = ""
     privacy_url: str = ""
     terms_url: str = ""

@@ -31,9 +31,8 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	returnChBuf    = 4096
-	writeLoopWorkers = 4
-	uploadRetryMs  = 30
+	returnChBuf      = 4096
+	writeLoopWorkers = 8
 
 	// chunkSize — количество последовательных пакетов, отправляемых в один worker
 	// перед переключением на следующий.
@@ -195,28 +194,18 @@ func (d *Dispatcher) readLoop() {
 		}
 
 		if !sent {
-			// Кратко ждём слот — дроп upload убивает скорость отдачи (speedtest upload).
-			deadline := time.Now().Add(uploadRetryMs * time.Millisecond)
-			for time.Now().Before(deadline) && !sent {
-				w := ws[d.rrIndex%nw]
-				select {
-				case w.SendCh <- pkt:
-					sent = true
-					d.rrCount++
-					if d.rrCount >= chunkSize {
-						d.rrIndex = (d.rrIndex + 1) % nw
-						d.rrCount = 0
-					}
-				case <-d.ctx.Done():
-					putPktBuf(pkt)
-					return
-				case <-time.After(2 * time.Millisecond):
+			// Все воркеры заняты — блокируемся до слота (drop убивает upload на speedtest).
+			w := ws[d.rrIndex%nw]
+			select {
+			case w.SendCh <- pkt:
+				d.rrCount++
+				if d.rrCount >= chunkSize {
+					d.rrIndex = (d.rrIndex + 1) % nw
+					d.rrCount = 0
 				}
-			}
-			if !sent {
-				d.rrIndex = (idx + 1) % nw
-				d.rrCount = 0
+			case <-d.ctx.Done():
 				putPktBuf(pkt)
+				return
 			}
 		}
 	}

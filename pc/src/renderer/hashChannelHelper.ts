@@ -60,11 +60,6 @@ export function getTotalWorkers(activeHashCount = activeServerHashCount(getSaved
   const stored = localStorage.getItem(TOTAL_WORKERS_KEY)
   if (stored != null && stored !== '') {
     const raw = Number(stored) || DEFAULT_TOTAL_WORKERS
-    // Upgrade from old default (≤ 27 = single-hash max) — users never set this manually
-    if (raw <= MAX_WORKERS_PER_HASH) {
-      saveTotalWorkers(max, capped)
-      return max
-    }
     if (raw > max) {
       saveTotalWorkers(max, capped)
       return max

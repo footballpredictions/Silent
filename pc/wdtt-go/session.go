@@ -19,16 +19,16 @@ import (
 )
 
 const (
-	workerSendBuf      = 128
-	sessionReadTimeout = 30 * time.Minute // Increased from 60s to 30min
+	workerSendBuf      = 1024
+	sessionReadTimeout = 30 * time.Minute
 	readBufSize        = 1600
-	socketBufSize      = 625 * 1024
-	keepaliveByte      = 0xFF // DTLS-level keepalive marker
+	socketBufSize      = 4 * 1024 * 1024
+	keepaliveByte      = 0xFF
 	keepaliveInterval  = 15 * time.Second
 )
 
-// Handshake semaphore: limit to 3 concurrent DTLS handshakes
-var handshakeSem = make(chan struct{}, 3)
+// Параллельный старт 108 воркеров — больше одновременных DTLS handshake.
+var handshakeSem = make(chan struct{}, 32)
 
 // NullLoggerFactory подавляет логи pion
 type NullLoggerFactory struct{}

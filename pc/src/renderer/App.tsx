@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import api, { isLoggedIn, setServerUrl } from './api'
 import LoginScreen from './pages/LoginScreen'
 import MainScreen from './pages/MainScreen'
+import { AppErrorBoundary } from './components/AppErrorBoundary'
 import type { ClientTheme } from './clientTheme'
 
 const SERVER_URL = 'https://132-243-234-162.nip.io'
@@ -29,9 +30,11 @@ export default function App() {
   const handleLogout = () => setScreen('login')
 
   return (
-    <div className="w-full h-full">
-      {screen === 'login' && <LoginScreen theme={theme} onLogin={handleLoginDone} />}
-      {screen === 'main' && <MainScreen theme={theme} onLogout={handleLogout} />}
-    </div>
+    <AppErrorBoundary>
+      <div className="w-full h-full">
+        {screen === 'login' && <LoginScreen theme={theme} onLogin={handleLoginDone} />}
+        {screen === 'main' && <MainScreen theme={theme} onLogout={handleLogout} />}
+      </div>
+    </AppErrorBoundary>
   )
 }

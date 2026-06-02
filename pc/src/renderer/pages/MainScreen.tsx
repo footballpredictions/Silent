@@ -17,6 +17,7 @@ import { disconnectBootstrapVpn, fetchBootstrapConfig, isBootstrapVpnActive } fr
 import { waitVpnReady } from '../vpnReady'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import { resolveAppName } from '../clientTheme'
+import { MENU_DRAWER_CLASS, UI_COLORS } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
 import { applyWorkerCount } from '../hashChannelHelper'
@@ -98,6 +99,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     const subMsg = localStorage.getItem('silent_subscription_msg')
     if (subMsg) {
       localStorage.removeItem('silent_subscription_msg')
+      setMenuOpen(true)
       setMenuPage('subscription')
     }
   }, [fetchProfile])
@@ -316,7 +318,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         style={{ WebkitAppRegion: 'drag', background: bg } as React.CSSProperties}
       >
         <button
-          onClick={() => setMenuOpen(true)}
+          onClick={() => { setMenuOpen(true); setMenuPage(null) }}
           style={{ WebkitAppRegion: 'no-drag', color: fg } as React.CSSProperties}
           className="p-1 hover:opacity-60 transition-opacity z-10"
         >
@@ -392,7 +394,9 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           <div className="text-center">
             <div className="text-xs font-semibold" style={{ color: GREEN }}>Оплачено</div>
             <div className="text-xs mt-0.5" style={{ color: muted }}>
-              до {profile.subscription.expires_at?.split('T')[0].split('-').reverse().join('.')}
+              до {profile.subscription.expires_at
+                ? profile.subscription.expires_at.split('T')[0].split('-').reverse().join('.')
+                : '—'}
             </div>
           </div>
         ) : (
@@ -438,9 +442,14 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
 
       {menuOpen && menuPage === null && (
         <div className="absolute inset-0 z-50 flex">
-          <div className="slide-in w-52 h-full shadow-2xl flex flex-col"
-            style={{ background: bg, borderRight: '1px solid #e5e7eb' }}>
-            <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+          <div
+            className={`${MENU_DRAWER_CLASS} h-full flex flex-col`}
+            style={{ background: bg, borderRight: `1px solid ${UI_COLORS.gray200}` }}
+          >
+            <div
+              className="p-4 flex items-center justify-between"
+              style={{ borderBottom: `1px solid ${UI_COLORS.gray100}` }}
+            >
               <div>
                 <div className="text-xs font-semibold truncate max-w-[140px]">{profile?.email || '—'}</div>
                 <div className="text-xs text-gray-400 mt-0.5">Аккаунт: {profile?.display_id || '—'}</div>
@@ -450,8 +459,12 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                   </div>
                 )}
               </div>
-              <button onClick={() => { setMenuOpen(false); setMenuPage(null) }}
-                className="p-1 hover:opacity-60"><X className="w-4 h-4" /></button>
+              <button
+                onClick={() => { setMenuOpen(false); setMenuPage(null) }}
+                className="p-1 hover:opacity-60"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
             <nav className="flex-1 p-2 overflow-y-auto">
               {[
@@ -485,14 +498,20 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
       )}
 
       {menuOpen && menuPage !== null && (
-        <div className="absolute inset-0 z-50 flex flex-col h-full w-full overflow-hidden"
-          style={{ background: bg }}>
+        <div
+          className="absolute inset-0 z-50 flex flex-col h-full w-full overflow-hidden"
+          style={{ background: bg }}
+        >
           {menuPage === 'subscription' && (
             <div className="flex-1 p-4 overflow-y-auto w-full">
-              <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4 flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setMenuPage(null)}
+                className="text-xs text-gray-400 mb-4 flex items-center gap-1"
+              >
                 ← Назад
               </button>
-              {profile?.subscription.is_active ? (
+              {profile?.subscription?.is_active ? (
                 <div className="space-y-2">
                   <div className="text-sm font-semibold">Подписка активна</div>
                   <div className="text-xs text-gray-500">
@@ -501,8 +520,8 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                       monthly: 'Месяц',
                       quarterly: '3 месяца',
                       yearly: 'Год',
-                    }[profile.subscription.plan_type || ''] || profile.subscription.plan_type}<br />
-                    Осталось: {profile.subscription.days_left} дней
+                    }[profile.subscription?.plan_type || ''] || profile.subscription?.plan_type}<br />
+                    Осталось: {profile.subscription?.days_left ?? 0} дней
                   </div>
                 </div>
               ) : (
@@ -575,12 +594,12 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
               </button>
               <div className="text-sm font-semibold mb-1 text-left">Сессии</div>
               <div className="text-[11px] mb-3 text-left" style={{ color: muted }}>
-                VPN онлайн: {profile?.devices.filter(d => d.is_connected || (localOnline && d.id === sessionDeviceId)).length || 0} из {profile?.devices_count || 0}
+                VPN онлайн: {profile?.devices?.filter(d => d.is_connected || (localOnline && d.id === sessionDeviceId)).length || 0} из {profile?.devices_count || 0}
               </div>
               {!profile?.devices?.length && (
                 <p className="text-xs text-left" style={{ color: muted }}>Нет зарегистрированных устройств</p>
               )}
-              {profile?.devices.map(d => {
+              {profile?.devices?.map(d => {
                 const isSelf = sessionDeviceId != null && String(d.id) === String(sessionDeviceId)
                 const online = d.is_connected || (localOnline && isSelf)
                 return (

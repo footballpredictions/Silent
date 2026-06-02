@@ -18,6 +18,7 @@ object UiColors {
 
 object UiDimens {
     val borderThin = 1.dp
+    /** Справочно; drawer на главном экране = 50% ширины (Modifier.weight(1f)). */
     val menuWidth = 208.dp
     val titleBarHeight = 36.dp
     val menuNavPadding = 8.dp

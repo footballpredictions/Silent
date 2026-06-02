@@ -296,7 +296,7 @@ fun MainScreen(
                 Row(modifier = Modifier.fillMaxSize()) {
                     Column(
                         modifier = Modifier
-                            .width(UiDimens.menuWidth)
+                            .weight(1f)
                             .fillMaxHeight()
                             .background(bg)
                             .border(UiDimens.borderThin, UiColors.Gray200),

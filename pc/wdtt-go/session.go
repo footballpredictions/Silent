@@ -19,15 +19,15 @@ import (
 )
 
 const (
-	workerSendBuf      = 512
+	workerSendBuf      = 1024
 	sessionReadTimeout = 30 * time.Minute
 	readBufSize        = 1600
-	socketBufSize      = 2 * 1024 * 1024
+	socketBufSize      = 4 * 1024 * 1024
 	keepaliveByte      = 0xFF
 	keepaliveInterval  = 15 * time.Second
 )
 
-// Ограничение одновременных DTLS handshake — как в reference WDTT.
+// Каскадный старт групп — не более 3 одновременных DTLS handshake.
 var handshakeSem = make(chan struct{}, 3)
 
 // NullLoggerFactory подавляет логи pion

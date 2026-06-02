@@ -31,12 +31,9 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	returnChBuf      = 2048
-	writeLoopWorkers = 2
-	uploadRetryMs    = 50
-
-	// chunkSize — adaptive chunking как в proxy-turn-vk-android.
-	chunkSize = 8
+	returnChBuf      = 4096
+	writeLoopWorkers = 4
+	chunkSize        = 16
 )
 
 type WorkerSlot struct {
@@ -106,10 +103,6 @@ func (d *Dispatcher) Unregister(slot *WorkerSlot) {
 		}
 	}
 	d.workers.Store(&newWorkers)
-	if d.rrIndex >= len(newWorkers) && len(newWorkers) > 0 {
-		d.rrIndex = d.rrIndex % len(newWorkers)
-	}
-	d.rrCount = 0
 	log.Printf("[ДИСП] Воркер #%d отключён (осталось: %d)", slot.ID, len(newWorkers))
 }
 
@@ -146,7 +139,6 @@ func (d *Dispatcher) readLoop() {
 		ws := *workersPtr
 		nw := len(ws)
 
-		d.mu.Lock()
 		sent := false
 		idx := d.rrIndex % nw
 
@@ -176,33 +168,20 @@ func (d *Dispatcher) readLoop() {
 		}
 
 		if !sent {
-			deadline := time.Now().Add(uploadRetryMs * time.Millisecond)
-			for time.Now().Before(deadline) && !sent {
-				tryIdx := d.rrIndex % nw
-				select {
-				case ws[tryIdx].SendCh <- pkt:
-					sent = true
-					d.rrCount++
-					if d.rrCount >= chunkSize {
-						d.rrIndex = (tryIdx + 1) % nw
-						d.rrCount = 0
-					}
-				case <-d.ctx.Done():
-					d.mu.Unlock()
-					putPktBuf(pkt)
-					return
-				default:
-					d.rrIndex = (tryIdx + 1) % nw
-					time.Sleep(1 * time.Millisecond)
+			// Блокируемся до слота — drop upload убивает отдачу на speedtest.
+			target := ws[d.rrIndex%nw]
+			select {
+			case target.SendCh <- pkt:
+				d.rrCount++
+				if d.rrCount >= chunkSize {
+					d.rrIndex = (d.rrIndex + 1) % nw
+					d.rrCount = 0
 				}
-			}
-			if !sent {
-				d.rrIndex = (idx + 1) % nw
-				d.rrCount = 0
+			case <-d.ctx.Done():
 				putPktBuf(pkt)
+				return
 			}
 		}
-		d.mu.Unlock()
 	}
 }
 

@@ -243,13 +243,6 @@ class MainViewModel @Inject constructor(
 
     /** Если API недоступен без VPN (белые списки) — краткий bootstrap для профиля и хешей. */
     private suspend fun refreshDataWithBootstrapFallback(context: Context) {
-        if (SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) {
-            onVpnTunnelReady()
-            if (fetchProfileNow()) {
-                if (repo.isLoggedIn()) syncServerHashes()
-            }
-            return
-        }
         repo.clearTunnelApiBase()
         if (fetchProfileNow()) {
             if (repo.isLoggedIn()) syncServerHashes()
@@ -309,7 +302,11 @@ class MainViewModel @Inject constructor(
         val wgAddr = vpnConfig?.wg_address?.takeIf { it.isNotBlank() }
             ?: loadCachedVpnConfig()?.wg_address?.takeIf { it.isNotBlank() }
             ?: WdttTunnelManager.lastWgAddress()
-        repo.setTunnelApiFromWgAddress(wgAddr)
+        if (SilentRepository.APP_EXCLUDED_FROM_VPN) {
+            repo.clearTunnelApiBase()
+        } else {
+            repo.setTunnelApiFromWgAddress(wgAddr)
+        }
         if (repo.isLoggedIn()) loadProfile()
         loadTheme()
         if (repo.isLoggedIn()) {
@@ -322,7 +319,7 @@ class MainViewModel @Inject constructor(
         onlineHeartbeatJob?.cancel()
         onlineHeartbeatJob = viewModelScope.launch {
             while (_vpnState.value == VpnState.CONNECTED) {
-                repo.setTunnelApiFromWgAddress(WdttTunnelManager.lastWgAddress())
+                repo.clearTunnelApiBase()
                 runCatching {
                     repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
                 }
@@ -373,31 +370,40 @@ class MainViewModel @Inject constructor(
 
     private suspend fun fetchProfileNow(): Boolean {
         val wg = WdttTunnelManager.lastWgAddress()
-        val bases = repo.apiBaseCandidates(wg)
-        for (base in bases) {
-            try {
-                repo.useApiBase(base)
-                val res = repo.getApi().getProfile()
-                if (res.isSuccessful) {
-                    val p = res.body()!!
-                    _profile.value = p
-                    repo.saveCachedProfile(p)
-                    p.vk_user_id?.let { repo.saveVkUserId(it) }
-                    runCatching {
-                        val themeRes = repo.getApi().getTheme()
-                        if (themeRes.isSuccessful) _theme.value = themeRes.body()
-                    }
-                    return true
-                }
-                if (res.code() == 401) {
-                    logout()
-                    return false
-                }
-            } catch (e: Exception) {
-                DebugLog.w("MainViewModel", "fetchProfile on $base: ${e.message}")
+        for (base in repo.apiBaseCandidates(wg)) {
+            if (tryFetchProfileOnBase(base)) return true
+        }
+        if (SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value && SilentRepository.APP_EXCLUDED_FROM_VPN) {
+            return WdttTunnelManager.withApiOverlay {
+                tryFetchProfileOnBase(WdttTunnelManager.tunnelApiBase())
             }
         }
         return _profile.value != null
+    }
+
+    private suspend fun tryFetchProfileOnBase(base: String): Boolean {
+        try {
+            repo.useApiBase(base)
+            val res = repo.getApi().getProfile()
+            if (res.isSuccessful) {
+                val p = res.body()!!
+                _profile.value = p
+                repo.saveCachedProfile(p)
+                p.vk_user_id?.let { repo.saveVkUserId(it) }
+                runCatching {
+                    val themeRes = repo.getApi().getTheme()
+                    if (themeRes.isSuccessful) _theme.value = themeRes.body()
+                }
+                return true
+            }
+            if (res.code() == 401) {
+                logout()
+                return false
+            }
+        } catch (e: Exception) {
+            DebugLog.w("MainViewModel", "fetchProfile on $base: ${e.message}")
+        }
+        return false
     }
 
     private fun loadTheme() {

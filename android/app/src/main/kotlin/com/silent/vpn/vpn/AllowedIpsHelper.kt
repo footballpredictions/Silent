@@ -1,7 +1,13 @@
 package com.silent.vpn.vpn
 
-/** Split-tunnel AllowedIPs: 0.0.0.0/0 minus TURN/server hosts (как PC/reference). */
+/** Split-tunnel AllowedIPs: WG subnet only или 0.0.0.0/0 minus hosts. */
 object AllowedIpsHelper {
+    const val WG_TUNNEL_SUBNET = "10.66.66.0/24"
+
+    /** Только подсеть WG в туннеле — API (10.66.66.1) через VPN, TURN/VK напрямую. */
+    fun patchAllowedIPsToSubnet(config: String, subnet: String = WG_TUNNEL_SUBNET): String =
+        config.replace(Regex("(?m)^AllowedIPs\\s*=\\s*.+$"), "AllowedIPs = $subnet")
+
     fun generateExclusionAllowedIPs(excludeIPs: Collection<String>): String {
         val unique = excludeIPs.map { it.trim() }.filter { it.matches(Regex("""\d+\.\d+\.\d+\.\d+""")) }.distinct()
         if (unique.isEmpty()) return "0.0.0.0/0"

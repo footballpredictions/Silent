@@ -13,12 +13,8 @@ val VK_TUNNEL_PACKAGES = setOf(
 )
 
 /**
- * Список для [com.wireguard.config.Interface.Builder.excludeApplications].
- * В storage всегда лежит blacklist (отмеченные = вне VPN); режим БС инвертируется в UI при переключении.
- */
-/**
- * @param isBootstrap bootstrap VPN на экране входа; основной VPN использует те же правила маршрутизации.
- * Наш app всегда внутри VPN — API (10.66.66.1) через туннель; TURN IP исключён из AllowedIPs (split-tunnel).
+ * @param isBootstrap bootstrap VPN: app внутри туннеля для API при логине.
+ * Основной VPN: app вне туннеля — libclient/TURN напрямую (белые списки).
  */
 fun resolveExcludedAppPackages(context: Context, isBootstrap: Boolean = false): Set<String> {
     val prefs = SilentPrefs.open(context)
@@ -30,6 +26,9 @@ fun resolveExcludedAppPackages(context: Context, isBootstrap: Boolean = false): 
 
     val pm = context.packageManager
     val excluded = LinkedHashSet<String>()
+    if (!isBootstrap) {
+        excluded.add(context.packageName)
+    }
     excluded.addAll(VK_TUNNEL_PACKAGES)
     excluded.addAll(userSelected)
 

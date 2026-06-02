@@ -141,8 +141,7 @@ class SilentVpnService : Service() {
             val wdttHashes = if (serverHashes.isNotEmpty()) serverHashes else hashes.take(HashChannelHelper.MAX_HASHES)
             val hashCount = wdttHashes.size.coerceIn(1, HashChannelHelper.MAX_HASHES)
             val isBootstrap = deviceId.startsWith("boot:")
-            // App внутри VPN → API через gateway 10.66.66.1 (нужно на мобильных белых списках).
-            SilentRepository.APP_EXCLUDED_FROM_VPN = false
+            SilentRepository.APP_EXCLUDED_FROM_VPN = !isBootstrap
             val totalWorkers = if (isBootstrap) {
                 (vpnConfig?.stream_count ?: 3).coerceIn(3, 9)
             } else {

@@ -3,6 +3,7 @@ package com.silent.vpn.vpn
 import android.content.Context
 import android.util.Log
 import com.silent.vpn.data.HashChannelHelper
+import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.vpn.captcha.CaptchaWebViewManager
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
@@ -38,6 +39,7 @@ object WdttTunnelManager {
     private var appliedConfigSource: Int = 0 // 0=none, 1=api, 2=box, 3=file
     private var appliedConfigFingerprint: String? = null
     private val wgApplyMutex = Mutex()
+    private val apiOverlayMutex = Mutex()
     private var appContext: Context? = null
     private var lastParams: Params? = null
     private var lastContext: Context? = null
@@ -125,9 +127,10 @@ object WdttTunnelManager {
 
                 if (!isSwitching) {
                     wgExcludeIps.clear()
-                    // TURN IP вне WG (split-tunnel) — иначе libclient зацикливается.
-                    // App внутри VPN → API через 10.66.66.1; TURN — напрямую.
-                    wgExcludeIps.add(params.serverIp.trim())
+                    // Bootstrap: app внутри VPN → исключаем server/TURN IP из AllowedIPs.
+                    if (isBootstrapMode) {
+                        wgExcludeIps.add(params.serverIp.trim())
+                    }
                 }
 
                 DebugLog.i(
@@ -289,8 +292,6 @@ object WdttTunnelManager {
                         return@forEachLine
                     }
 
-                    // Bootstrap: app внутри VPN → динамически исключаем TURN IP из AllowedIPs.
-                    // Main VPN: app вне VPN → exclusion не нужен (loop невозможен).
                     if (isBootstrapMode) {
                         Regex("""TURN UDP \(([\d.]+):\d+\)""").find(lineTrim)?.groupValues?.getOrNull(1)?.let { turnIp ->
                             if (wgExcludeIps.add(turnIp)) {
@@ -459,6 +460,24 @@ object WdttTunnelManager {
     fun lastWgAddress(): String? {
         val cfg = lastWgConfig ?: return null
         return Regex("""(?m)^Address\s*=\s*(\S+)""").find(cfg)?.groupValues?.getOrNull(1)
+    }
+
+    fun tunnelApiBase(): String = "http://${SilentRepository.WG_TUNNEL_GATEWAY}:8000"
+
+    /** Кратко: app в WG + AllowedIPs=/24 — только для HTTP к 10.66.66.1, затем восстановление main config. */
+    suspend fun <T> withApiOverlay(block: suspend () -> T): T {
+        val config = lastWgConfig ?: return block()
+        val helper = wgHelper ?: return block()
+        return apiOverlayMutex.withLock {
+            helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = true)
+            delay(150)
+            try {
+                block()
+            } finally {
+                helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
+                delay(100)
+            }
+        }
     }
 
     fun isInternetReady(): Boolean =

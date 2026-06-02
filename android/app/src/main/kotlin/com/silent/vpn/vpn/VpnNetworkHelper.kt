@@ -2,6 +2,7 @@ package com.silent.vpn.vpn
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.util.DebugLog
@@ -21,6 +22,19 @@ object VpnNetworkHelper {
             }
         }
         return false
+    }
+
+    /** WireGuard-сеть Silent — для HTTP к 10.66.66.1 когда app исключён из туннеля. */
+    fun getSilentVpnNetwork(context: Context): Network? {
+        if (!SilentVpnService.isRunning) return null
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+            return network
+        }
+        return null
     }
 
     fun hasUnderlyingInternet(context: Context): Boolean {

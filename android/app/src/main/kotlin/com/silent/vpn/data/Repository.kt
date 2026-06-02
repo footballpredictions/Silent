@@ -46,13 +46,14 @@ class SilentRepository @Inject constructor(
         const val VK_APP_ID = 54610377L
         const val VK_GROUP_ID = 239092728L
         const val WG_TUNNEL_GATEWAY = "10.66.66.1"
-        /** App внутри VPN пока сервис активен → API через gateway 10.66.66.1. */
+        /** false только в bootstrap VPN (app в туннеле для API при логине). */
         var APP_EXCLUDED_FROM_VPN = true
     }
 
     private val prefs: SharedPreferences = createPrefs(context)
 
     private var _api: SilentApi? = null
+    private var _apiCacheKey: String? = null
     private var _baseUrl: String = ""
     /** Когда VPN поднят — API через адрес в туннеле (10.66.66.1), иначе nip.io недоступен в белых списках. */
     private var tunnelApiBaseUrl: String? = null
@@ -65,8 +66,9 @@ class SilentRepository @Inject constructor(
 
     fun getApi(): SilentApi {
         val url = getServerUrl()
-        if (_api == null || _baseUrl != url) {
-            _baseUrl = url.trimEnd('/') + "/"
+        if (_api == null || _apiCacheKey != url.trimEnd('/')) {
+            _apiCacheKey = url.trimEnd('/')
+            _baseUrl = _apiCacheKey + "/"
             _api = buildApi(_baseUrl)
         }
         return _api!!
@@ -123,6 +125,7 @@ class SilentRepository @Inject constructor(
         if (tunnelApiBaseUrl != null) {
             tunnelApiBaseUrl = null
             _api = null
+            _apiCacheKey = null
             Log.i(TAG, "API via public URL")
         }
     }
@@ -160,11 +163,13 @@ class SilentRepository @Inject constructor(
         if (tunnelApiBaseUrl != normalized) {
             tunnelApiBaseUrl = normalized
             _api = null
+            _apiCacheKey = null
         }
     }
     fun setServerUrl(url: String) {
         prefs.edit().putString(PREF_SERVER_URL, url.trimEnd('/')).apply()
         _api = null
+        _apiCacheKey = null
     }
     fun ensureServerUrl() {
         if (prefs.getString(PREF_SERVER_URL, null).isNullOrBlank()) {
@@ -181,11 +186,13 @@ class SilentRepository @Inject constructor(
             .putString(PREF_REFRESH_TOKEN, refresh)
             .apply()
         _api = null
+        _apiCacheKey = null
     }
     fun clearTokens() {
         prefs.edit().remove(PREF_ACCESS_TOKEN).remove(PREF_REFRESH_TOKEN).apply()
         clearCachedProfile()
         _api = null
+        _apiCacheKey = null
     }
 
     fun saveCachedProfile(profile: UserProfile) {
@@ -336,7 +343,15 @@ class SilentRepository @Inject constructor(
     }
 
     suspend fun fetchAndSaveHashItems(): Result<List<HashItemDto>> {
-        val bases = apiBaseCandidates()
+        val first = fetchHashItemsFromBases(apiBaseCandidates())
+        if (first.isSuccess || !APP_EXCLUDED_FROM_VPN) return first
+        if (!com.silent.vpn.service.SilentVpnService.isRunning) return first
+        return com.silent.vpn.vpn.WdttTunnelManager.withApiOverlay {
+            fetchHashItemsFromBases(listOf("http://$WG_TUNNEL_GATEWAY:8000"))
+        }
+    }
+
+    private suspend fun fetchHashItemsFromBases(bases: List<String>): Result<List<HashItemDto>> {
         var lastError: Exception? = null
         for (base in bases) {
             try {

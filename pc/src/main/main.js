@@ -266,6 +266,14 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     if (!confText.includes('[Interface]')) return false
     if (wgAttempted) return false
 
+    let normalizedConf = confText
+    if (!normalizedConf.includes('MTU =')) {
+      normalizedConf = normalizedConf.replace(
+        /(\[Interface\][^\[]*)/,
+        (m) => (m.includes('MTU =') ? m : m.trimEnd() + '\nMTU = 1280\n'),
+      )
+    }
+
     wgInstallInFlight = true
     wgAttempted = true
     clearWgRetries()
@@ -280,7 +288,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
       return false
     }
 
-    fs.writeFileSync(confPath, confText)
+    fs.writeFileSync(confPath, normalizedConf)
     await sleep(150)
 
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], { skipWdttWait: true })

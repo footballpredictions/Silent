@@ -20,7 +20,7 @@ import { resolveAppName } from '../clientTheme'
 import { menuDrawerStyle, UI_COLORS } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
-import { applyWorkerCount } from '../hashChannelHelper'
+import { prepareVpnConnectConfig } from '../prepareVpnConnect'
 import { pushLog } from '../debugLog'
 
 interface DeviceInfo {
@@ -241,7 +241,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         }
         if ((window as any).electronAPI?.vpnConnect) {
           pushLog('Main', 'vpnConnect start')
-          const connectCfg = applyWorkerCount(config)
+          const connectCfg = await prepareVpnConnectConfig(config, fp)
           pushLog('Main', `vpnConnect n=${connectCfg.stream_count} hashes=${connectCfg.vk_hashes?.length ?? 0}`)
           const res = await (window as any).electronAPI.vpnConnect(connectCfg)
           if (res?.error) { pushLog('Main', `vpnConnect: ${res.error}`, 'E'); alert(res.error); return }

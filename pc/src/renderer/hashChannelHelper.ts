@@ -124,6 +124,12 @@ export function resolveWorkerCount(config: { vk_hashes?: string[]; stream_count?
     Math.max(cappedHashes.length, savedActive, 1),
     MAX_HASHES,
   )
+  const max = maxTotalWorkers(hashCount)
+  const stored = localStorage.getItem(TOTAL_WORKERS_KEY)
+  if (stored == null || stored === '') {
+    saveTotalWorkers(max, hashCount)
+    return workersForLibclient(max, hashCount)
+  }
   return workersForLibclient(getTotalWorkers(hashCount), hashCount)
 }
 

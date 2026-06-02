@@ -56,8 +56,7 @@ export function activeServerHashes(items: HashItem[]): HashItem[] {
 }
 
 export function activeServerHashCount(items: HashItem[]): number {
-  const n = activeServerHashes(items).length
-  return Math.min(Math.max(n, 1), MAX_SERVER_HASHES)
+  return Math.min(activeServerHashes(items).length, MAX_SERVER_HASHES)
 }
 
 export function mapHashesResponse(body: {

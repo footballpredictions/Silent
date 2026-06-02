@@ -435,7 +435,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         </div>
       )}
 
-      {menuOpen && (
+      {menuOpen && menuPage === null && (
         <div className="absolute inset-0 z-50 flex">
           <div className="slide-in w-52 h-full shadow-2xl flex flex-col"
             style={{ background: bg, borderRight: '1px solid #e5e7eb' }}>
@@ -452,185 +452,186 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
               <button onClick={() => { setMenuOpen(false); setMenuPage(null) }}
                 className="p-1 hover:opacity-60"><X className="w-4 h-4" /></button>
             </div>
-
-            {menuPage === null && (
-              <nav className="flex-1 p-2 overflow-y-auto">
-                {[
-                  { key: 'subscription', label: 'Подписка' },
-                  { key: 'exceptions', label: 'Исключения приложений' },
-                  { key: 'hashes', label: 'Хеши' },
-                  { key: 'promo', label: 'Промокод' },
-                  { key: 'devices', label: `Сессии (${profile?.devices_count || 0}/${profile?.max_devices || 3})` },
-                  { key: 'support', label: 'Поддержка' },
-                  { key: 'about', label: 'О сервисе' },
-                ].map(({ key, label }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setMenuPage(key as MenuPage)}
-                    className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors"
-                    style={{ color: fg }}
-                  >
-                    <span className="flex-1 text-left leading-snug">{label}</span>
-                    <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: muted }} />
-                  </button>
-                ))}
-                <button onClick={handleLogout}
-                  className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-red-500 hover:bg-red-50 transition-colors mt-2">
-                  Выйти
+            <nav className="flex-1 p-2 overflow-y-auto">
+              {[
+                { key: 'subscription', label: 'Подписка' },
+                { key: 'exceptions', label: 'Исключения приложений' },
+                { key: 'hashes', label: 'Хеши' },
+                { key: 'promo', label: 'Промокод' },
+                { key: 'devices', label: `Сессии (${profile?.devices_count || 0}/${profile?.max_devices || 3})` },
+                { key: 'support', label: 'Поддержка' },
+                { key: 'about', label: 'О сервисе' },
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setMenuPage(key as MenuPage)}
+                  className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors"
+                  style={{ color: fg }}
+                >
+                  <span className="flex-1 text-left leading-snug">{label}</span>
+                  <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: muted }} />
                 </button>
-              </nav>
-            )}
+              ))}
+              <button onClick={handleLogout}
+                className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-red-500 hover:bg-red-50 transition-colors mt-2">
+                Выйти
+              </button>
+            </nav>
+          </div>
+          <div className="flex-1 bg-black/20" onClick={() => { setMenuOpen(false); setMenuPage(null) }} />
+        </div>
+      )}
 
-            {menuPage === 'subscription' && (
-              <div className="flex-1 p-4 overflow-y-auto">
-                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4 flex items-center gap-1">
-                  ← Назад
-                </button>
-                {profile?.subscription.is_active ? (
-                  <div className="space-y-2">
-                    <div className="text-sm font-semibold">Подписка активна</div>
-                    <div className="text-xs text-gray-500">
-                      Тариф: {{
-                        trial: 'Пробный период',
-                        monthly: 'Месяц',
-                        quarterly: '3 месяца',
-                        yearly: 'Год',
-                      }[profile.subscription.plan_type || ''] || profile.subscription.plan_type}<br />
-                      Осталось: {profile.subscription.days_left} дней
-                    </div>
+      {menuOpen && menuPage !== null && (
+        <div className="absolute inset-0 z-50 flex flex-col h-full w-full overflow-hidden"
+          style={{ background: bg }}>
+          {menuPage === 'subscription' && (
+            <div className="flex-1 p-4 overflow-y-auto w-full">
+              <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4 flex items-center gap-1">
+                ← Назад
+              </button>
+              {profile?.subscription.is_active ? (
+                <div className="space-y-2">
+                  <div className="text-sm font-semibold">Подписка активна</div>
+                  <div className="text-xs text-gray-500">
+                    Тариф: {{
+                      trial: 'Пробный период',
+                      monthly: 'Месяц',
+                      quarterly: '3 месяца',
+                      yearly: 'Год',
+                    }[profile.subscription.plan_type || ''] || profile.subscription.plan_type}<br />
+                    Осталось: {profile.subscription.days_left} дней
                   </div>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="text-sm font-semibold">Выберите тариф</div>
-                    {[
-                      { id: 'monthly', label: 'Месяц', price: '199 ₽' },
-                      { id: 'quarterly', label: '3 месяца', price: '499 ₽' },
-                      { id: 'yearly', label: 'Год', price: '1 499 ₽' },
-                    ].map(plan => (
-                      <button key={plan.id}
-                        onClick={async () => {
-                          try {
-                            const res = await api.post('/api/payments/init', { plan_type: plan.id })
-                            ;(window as any).electronAPI?.openExternal(res.data.url)
-                          } catch (e: any) {
-                            alert(e.response?.data?.detail || 'Ошибка')
-                          }
-                        }}
-                        className="w-full flex items-center justify-between bg-black text-white rounded-xl px-3 py-2.5 text-xs font-semibold hover:bg-gray-800 transition-colors">
-                        <span>{plan.label}</span>
-                        <span>{plan.price}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {menuPage === 'exceptions' && (
-              <div className="flex-1 flex flex-col min-h-0 w-full items-stretch text-left">
-                <AppExclusionsPanel fg={fg} muted={muted} onBack={() => setMenuPage(null)} />
-              </div>
-            )}
-
-            {menuPage === 'hashes' && (
-              <MenuHashesPanel
-                fg={fg}
-                muted={muted}
-                vpnConnected={connected}
-                activeWorkers={activeWorkers}
-                onBack={() => setMenuPage(null)}
-              />
-            )}
-
-            {menuPage === 'promo' && (
-              <div className="flex-1 p-4">
-                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
-                <div className="text-sm font-semibold mb-3">Промокод</div>
-                <input value={promoCode} onChange={e => setPromoCode(e.target.value)}
-                  placeholder="Введите код"
-                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-black"
-                  style={{ userSelect: 'text' } as any} />
-                <button onClick={async () => {
-                  try {
-                    const res = await api.post('/api/payments/promo/check', { code: promoCode, plan_type: 'monthly' })
-                    setPromoMsg(`Скидка ${res.data.discount_percent}%!`)
-                  } catch (e: any) { setPromoMsg(e.response?.data?.detail || 'Не найден') }
-                }} className="mt-2 w-full bg-black text-white rounded-xl py-2 text-xs font-semibold hover:bg-gray-800 transition-colors">
-                  Применить
-                </button>
-                {promoMsg && <p className="text-xs text-gray-500 mt-2 text-center">{promoMsg}</p>}
-              </div>
-            )}
-
-            {menuPage === 'devices' && (
-              <div className="flex-1 p-4 overflow-y-auto text-left w-full">
-                <button type="button" onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4 block text-left">
-                  ← Назад
-                </button>
-                <div className="text-sm font-semibold mb-1 text-left">Сессии</div>
-                <div className="text-[11px] mb-3 text-left" style={{ color: muted }}>
-                  VPN онлайн: {profile?.devices.filter(d => d.is_connected || (localOnline && d.id === sessionDeviceId)).length || 0} из {profile?.devices_count || 0}
                 </div>
-                {!profile?.devices?.length && (
-                  <p className="text-xs text-left" style={{ color: muted }}>Нет зарегистрированных устройств</p>
-                )}
-                {profile?.devices.map(d => {
-                  const isSelf = sessionDeviceId != null && String(d.id) === String(sessionDeviceId)
-                  const online = d.is_connected || (localOnline && isSelf)
-                  return (
-                    <div key={d.id} className="flex items-center gap-2 py-2.5 border-b border-gray-100 text-left">
-                      <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${online ? 'bg-green-500' : 'bg-gray-300'}`} />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium truncate" style={{ color: fg }}>
-                          {deviceTypeLabel(d.device_type)}
-                          {isSelf && (
-                            <span className="font-normal text-[11px]" style={{ color: muted }}> · это вы</span>
-                          )}
-                        </div>
-                        {sessionCustomLabel(d) && (
-                          <div className="text-[11px] truncate mt-0.5" style={{ color: muted }}>
-                            {sessionCustomLabel(d)}
-                          </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="text-sm font-semibold">Выберите тариф</div>
+                  {[
+                    { id: 'monthly', label: 'Месяц', price: '199 ₽' },
+                    { id: 'quarterly', label: '3 месяца', price: '499 ₽' },
+                    { id: 'yearly', label: 'Год', price: '1 499 ₽' },
+                  ].map(plan => (
+                    <button key={plan.id}
+                      onClick={async () => {
+                        try {
+                          const res = await api.post('/api/payments/init', { plan_type: plan.id })
+                          ;(window as any).electronAPI?.openExternal(res.data.url)
+                        } catch (e: any) {
+                          alert(e.response?.data?.detail || 'Ошибка')
+                        }
+                      }}
+                      className="w-full flex items-center justify-between bg-black text-white rounded-xl px-3 py-2.5 text-xs font-semibold hover:bg-gray-800 transition-colors">
+                      <span>{plan.label}</span>
+                      <span>{plan.price}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {menuPage === 'exceptions' && (
+            <div className="flex-1 flex flex-col min-h-0 w-full h-full items-stretch text-left">
+              <AppExclusionsPanel fg={fg} muted={muted} onBack={() => setMenuPage(null)} />
+            </div>
+          )}
+
+          {menuPage === 'hashes' && (
+            <MenuHashesPanel
+              fg={fg}
+              muted={muted}
+              vpnConnected={connected}
+              activeWorkers={activeWorkers}
+              onBack={() => setMenuPage(null)}
+            />
+          )}
+
+          {menuPage === 'promo' && (
+            <div className="flex-1 p-4 w-full overflow-y-auto">
+              <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
+              <div className="text-sm font-semibold mb-3">Промокод</div>
+              <input value={promoCode} onChange={e => setPromoCode(e.target.value)}
+                placeholder="Введите код"
+                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-black"
+                style={{ userSelect: 'text' } as any} />
+              <button onClick={async () => {
+                try {
+                  const res = await api.post('/api/payments/promo/check', { code: promoCode, plan_type: 'monthly' })
+                  setPromoMsg(`Скидка ${res.data.discount_percent}%!`)
+                } catch (e: any) { setPromoMsg(e.response?.data?.detail || 'Не найден') }
+              }} className="mt-2 w-full bg-black text-white rounded-xl py-2 text-xs font-semibold hover:bg-gray-800 transition-colors">
+                Применить
+              </button>
+              {promoMsg && <p className="text-xs text-gray-500 mt-2 text-center">{promoMsg}</p>}
+            </div>
+          )}
+
+          {menuPage === 'devices' && (
+            <div className="flex-1 p-4 overflow-y-auto text-left w-full">
+              <button type="button" onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4 block text-left">
+                ← Назад
+              </button>
+              <div className="text-sm font-semibold mb-1 text-left">Сессии</div>
+              <div className="text-[11px] mb-3 text-left" style={{ color: muted }}>
+                VPN онлайн: {profile?.devices.filter(d => d.is_connected || (localOnline && d.id === sessionDeviceId)).length || 0} из {profile?.devices_count || 0}
+              </div>
+              {!profile?.devices?.length && (
+                <p className="text-xs text-left" style={{ color: muted }}>Нет зарегистрированных устройств</p>
+              )}
+              {profile?.devices.map(d => {
+                const isSelf = sessionDeviceId != null && String(d.id) === String(sessionDeviceId)
+                const online = d.is_connected || (localOnline && isSelf)
+                return (
+                  <div key={d.id} className="flex items-center gap-2 py-2.5 border-b border-gray-100 text-left">
+                    <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${online ? 'bg-green-500' : 'bg-gray-300'}`} />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate" style={{ color: fg }}>
+                        {deviceTypeLabel(d.device_type)}
+                        {isSelf && (
+                          <span className="font-normal text-[11px]" style={{ color: muted }}> · это вы</span>
                         )}
                       </div>
-                      <button
-                        onClick={() => {
-                          setRenameTarget(d)
-                          setRenameText(sessionCustomLabel(d) || '')
-                        }}
-                        className="p-1.5 rounded-lg hover:bg-gray-100 shrink-0"
-                        title="Подписать"
-                      >
-                        <Pencil className="w-3.5 h-3.5" style={{ color: muted }} />
-                      </button>
+                      {sessionCustomLabel(d) && (
+                        <div className="text-[11px] truncate mt-0.5" style={{ color: muted }}>
+                          {sessionCustomLabel(d)}
+                        </div>
+                      )}
                     </div>
-                  )
-                })}
-              </div>
-            )}
+                    <button
+                      onClick={() => {
+                        setRenameTarget(d)
+                        setRenameText(sessionCustomLabel(d) || '')
+                      }}
+                      className="p-1.5 rounded-lg hover:bg-gray-100 shrink-0"
+                      title="Подписать"
+                    >
+                      <Pencil className="w-3.5 h-3.5" style={{ color: muted }} />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
 
-            {menuPage === 'support' && (
-              <div className="flex-1 p-4">
-                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
-                <div className="text-sm font-semibold mb-3">Поддержка</div>
-                <p className="text-xs text-gray-500">По вопросам обратитесь через email или Telegram.</p>
-              </div>
-            )}
+          {menuPage === 'support' && (
+            <div className="flex-1 p-4 w-full overflow-y-auto">
+              <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
+              <div className="text-sm font-semibold mb-3">Поддержка</div>
+              <p className="text-xs text-gray-500">По вопросам обратитесь через email или Telegram.</p>
+            </div>
+          )}
 
-            {menuPage === 'about' && (
-              <div className="flex-1 p-4">
-                <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
-                <div className="text-sm font-semibold mb-1">Silent VPN</div>
-                <div className="text-xs text-gray-500 space-y-1">
-                  <p>Версия 1.0.32</p>
-                  <p>WireGuard-туннель через VK TURN/DTLS</p>
-                </div>
+          {menuPage === 'about' && (
+            <div className="flex-1 p-4 w-full overflow-y-auto">
+              <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
+              <div className="text-sm font-semibold mb-1">Silent VPN</div>
+              <div className="text-xs text-gray-500 space-y-1">
+                <p>Версия 1.0.32</p>
+                <p>WireGuard-туннель через VK TURN/DTLS</p>
               </div>
-            )}
-          </div>
-
-          <div className="flex-1 bg-black/20" onClick={() => { setMenuOpen(false); setMenuPage(null) }} />
+            </div>
+          )}
         </div>
       )}
       <DebugLogPanel open={showDebugLog} onClose={() => setShowDebugLog(false)} />

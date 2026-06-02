@@ -31,7 +31,9 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	returnChBuf = 384
+	returnChBuf    = 4096
+	writeLoopWorkers = 4
+	uploadRetryMs  = 30
 
 	// chunkSize — количество последовательных пакетов, отправляемых в один worker
 	// перед переключением на следующий.
@@ -48,7 +50,7 @@ const (
 	//
 	// Агрегатная пропускная способность не меняется — все workers загружены
 	// равномерно по-прежнему (каждый получает 1/N от общего трафика за время).
-	chunkSize = 8
+	chunkSize = 16
 )
 
 type WorkerSlot struct {
@@ -83,9 +85,11 @@ func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) 
 	empty := make([]*WorkerSlot, 0)
 	d.workers.Store(&empty)
 
-	d.wg.Add(2)
+	d.wg.Add(1 + writeLoopWorkers)
 	go d.readLoop()
-	go d.writeLoop()
+	for i := 0; i < writeLoopWorkers; i++ {
+		go d.writeLoop()
+	}
 	return d
 }
 
@@ -191,10 +195,29 @@ func (d *Dispatcher) readLoop() {
 		}
 
 		if !sent {
-			// Все workers перегружены — сдвигаем указатель, пакет дропается
-			d.rrIndex = (idx + 1) % nw
-			d.rrCount = 0
-			putPktBuf(pkt)
+			// Кратко ждём слот — дроп upload убивает скорость отдачи (speedtest upload).
+			deadline := time.Now().Add(uploadRetryMs * time.Millisecond)
+			for time.Now().Before(deadline) && !sent {
+				w := ws[d.rrIndex%nw]
+				select {
+				case w.SendCh <- pkt:
+					sent = true
+					d.rrCount++
+					if d.rrCount >= chunkSize {
+						d.rrIndex = (d.rrIndex + 1) % nw
+						d.rrCount = 0
+					}
+				case <-d.ctx.Done():
+					putPktBuf(pkt)
+					return
+				case <-time.After(2 * time.Millisecond):
+				}
+			}
+			if !sent {
+				d.rrIndex = (idx + 1) % nw
+				d.rrCount = 0
+				putPktBuf(pkt)
+			}
 		}
 	}
 }

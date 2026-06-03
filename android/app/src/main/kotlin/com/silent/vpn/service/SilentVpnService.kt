@@ -529,23 +529,29 @@ class SilentVpnService : Service() {
         val prefs = SilentPrefs.open(this)
         val activeHashes = activeHashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)
         val max = HashChannelHelper.maxTotalWorkers(activeHashes)
-        if (prefs.contains(SilentRepository.PREF_HASH_TOTAL_WORKERS)) {
-            val raw = prefs.getInt(
-                SilentRepository.PREF_HASH_TOTAL_WORKERS,
-                HashChannelHelper.DEFAULT_TOTAL_WORKERS,
-            )
-            if (raw <= HashChannelHelper.MAX_WORKERS_PER_HASH) {
-                return HashChannelHelper.workersForLibclient(max, activeHashes)
+        val saved = when {
+            prefs.contains(SilentRepository.PREF_HASH_TOTAL_WORKERS) -> {
+                val raw = prefs.getInt(
+                    SilentRepository.PREF_HASH_TOTAL_WORKERS,
+                    HashChannelHelper.WORKERS_PER_GROUP,
+                )
+                if (raw > max) max else HashChannelHelper.normalizeTotalWorkers(raw, activeHashes)
             }
-            return HashChannelHelper.workersForLibclient(raw, activeHashes)
+            prefs.contains(SilentRepository.PREF_HASH_CHANNELS_PER_HASH) &&
+                !prefs.getBoolean(SilentRepository.PREF_HASH_LEGACY_MIGRATED, false) -> {
+                HashChannelHelper.migrateLegacyPerHash(
+                    prefs.getInt(
+                        SilentRepository.PREF_HASH_CHANNELS_PER_HASH,
+                        HashChannelHelper.WORKERS_PER_GROUP,
+                    ),
+                    activeHashes,
+                )
+            }
+            else -> HashChannelHelper.normalizeTotalWorkers(
+                HashChannelHelper.WORKERS_PER_GROUP * 4,
+                activeHashes,
+            )
         }
-        val legacyPerHash = prefs.getInt(
-            SilentRepository.PREF_HASH_CHANNELS_PER_HASH,
-            HashChannelHelper.DEFAULT_TOTAL_WORKERS,
-        )
-        return HashChannelHelper.workersForLibclient(
-            HashChannelHelper.migrateLegacyPerHash(legacyPerHash, activeHashes),
-            activeHashes,
-        )
+        return HashChannelHelper.workersForLibclient(saved, activeHashes)
     }
 }

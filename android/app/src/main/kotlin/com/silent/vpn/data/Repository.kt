@@ -42,6 +42,7 @@ class SilentRepository @Inject constructor(
         const val PREF_SAVED_HASH_ITEMS_TS = "saved_hash_items_ts"
         const val PREF_HASH_CHANNELS_PER_HASH = "hash_channels_per_hash"
         const val PREF_HASH_TOTAL_WORKERS = "hash_total_workers"
+        const val PREF_HASH_LEGACY_MIGRATED = "hash_total_workers_legacy_migrated"
         const val PREF_CACHED_PROFILE = "cached_profile_json"
         const val VK_APP_ID = 54610377L
         const val VK_GROUP_ID = 239092728L
@@ -300,25 +301,30 @@ class SilentRepository @Inject constructor(
         val capped = activeHashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)
         val max = HashChannelHelper.maxTotalWorkers(capped)
         if (prefs.contains(PREF_HASH_TOTAL_WORKERS)) {
-            val raw = prefs.getInt(PREF_HASH_TOTAL_WORKERS, HashChannelHelper.DEFAULT_TOTAL_WORKERS)
-            // Старый дефолт ≤27 на один хеш — поднимаем до максимума для текущего числа хешей.
-            if (raw <= HashChannelHelper.MAX_WORKERS_PER_HASH) {
-                saveTotalWorkers(max, capped)
-                return max
-            }
+            val raw = prefs.getInt(PREF_HASH_TOTAL_WORKERS, HashChannelHelper.WORKERS_PER_GROUP)
             if (raw > max) {
                 saveTotalWorkers(max, capped)
                 return max
             }
             return HashChannelHelper.normalizeTotalWorkers(raw, capped)
         }
-        val legacyPer = prefs.getInt(
-            PREF_HASH_CHANNELS_PER_HASH,
-            HashChannelHelper.DEFAULT_TOTAL_WORKERS,
+        if (!prefs.getBoolean(PREF_HASH_LEGACY_MIGRATED, false) &&
+            prefs.contains(PREF_HASH_CHANNELS_PER_HASH)
+        ) {
+            val legacyPer = prefs.getInt(PREF_HASH_CHANNELS_PER_HASH, HashChannelHelper.WORKERS_PER_GROUP)
+            val migrated = HashChannelHelper.migrateLegacyPerHash(legacyPer, capped)
+            prefs.edit()
+                .putInt(PREF_HASH_TOTAL_WORKERS, migrated)
+                .putBoolean(PREF_HASH_LEGACY_MIGRATED, true)
+                .apply()
+            return migrated
+        }
+        val firstInstall = HashChannelHelper.normalizeTotalWorkers(
+            HashChannelHelper.WORKERS_PER_GROUP * 4,
+            capped,
         )
-        val migrated = HashChannelHelper.migrateLegacyPerHash(legacyPer, capped)
-        saveTotalWorkers(migrated, capped)
-        return migrated
+        saveTotalWorkers(firstInstall, capped)
+        return firstInstall
     }
 
     fun saveTotalWorkers(value: Int, activeHashCount: Int = getSavedHashItems().activeServerHashCount().coerceAtLeast(1)) {

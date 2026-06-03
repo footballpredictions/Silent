@@ -225,10 +225,20 @@ private fun ChannelStrengthSelector(
             )
         }
         Text(
-            "Потоков: $stepped из $maxTotalWorkers (шаг 9, до $activeHashCount хеш × 27)",
+            "Потоков: $stepped из $maxTotalWorkers (шаг 9, макс $activeHashCount хеша × 27)",
             fontSize = 10.sp,
             color = muted,
-            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+        )
+        Text(
+            if (vpnRunning) {
+                "Чтобы применить: выключите VPN → выберите силу → подключите снова (смотрите «Активных каналов»)"
+            } else {
+                "После смены переподключите VPN. Скорость теста часто упирается в VPS/сеть; каналы дают запас и стабильность"
+            },
+            fontSize = 9.sp,
+            color = muted,
+            modifier = Modifier.padding(bottom = 12.dp),
         )
         PcStyleRangeSlider(
             value = stepped,
@@ -240,7 +250,7 @@ private fun ChannelStrengthSelector(
             accent = fg,
         )
         Text(
-            "9 → 18 → 27 → 36… (шаг 9, макс $maxTotalWorkers = $activeHashCount хеш × 27)",
+            "В логе connect: n=$stepped — столько воркеров запустит libclient",
             fontSize = 9.sp,
             color = muted,
             modifier = Modifier.padding(top = 8.dp),

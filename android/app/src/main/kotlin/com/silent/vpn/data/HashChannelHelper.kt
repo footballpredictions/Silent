@@ -20,10 +20,12 @@ object HashChannelHelper {
         return stepped.coerceIn(WORKERS_PER_GROUP, max.coerceAtMost(LIBCLIENT_MAX_WORKERS))
     }
 
-    /** Число групп libclient = n / 9. */
-    fun groupsForWorkers(totalWorkers: Int): Int =
-        (totalWorkers.coerceAtLeast(WORKERS_PER_GROUP) / WORKERS_PER_GROUP)
-            .coerceIn(1, MAX_HASHES)
+    /** Число групп libclient = n / 9 (до 12 групп = 108 воркеров). */
+    fun groupsForWorkers(totalWorkers: Int): Int {
+        val maxGroups = LIBCLIENT_MAX_WORKERS / WORKERS_PER_GROUP
+        return (totalWorkers.coerceAtLeast(WORKERS_PER_GROUP) / WORKERS_PER_GROUP)
+            .coerceIn(1, maxGroups)
+    }
 
     /**
      * Передаём libclient ВСЕ доступные хеши (до MAX_HASHES).

@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 
-echo === Building Go libclient for Android (parallel groups) ===
+echo === Building Go libclient for Android (cascade groups) ===
 
 set "PROJECT_ROOT=%~dp0"
 set "GO_CLIENT_DIR=%PROJECT_ROOT%wdtt-go"

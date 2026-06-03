@@ -303,7 +303,17 @@ func main() {
 	var wg sync.WaitGroup
 	workerIDCounter := 1
 
-	// Параллельный старт всех групп — без каскадного ожидания (быстрее набор 108 каналов).
+	// Каскад групп (как proxy-turn-vk-android): первая группа → WG за ~5 с,
+	// следующие стартуют после успешных кредов предыдущей (меньше параллельных капч VK).
+	var groupGate chan struct{}
+	firstGate := make(chan struct{})
+	close(firstGate)
+	groupGate = firstGate
+	hashCount := len(hashes)
+	if hashCount < 1 {
+		hashCount = 1
+	}
+
 	for g := 0; g < numGroups; g++ {
 		isFirst := (g == 0)
 
@@ -319,12 +329,21 @@ func main() {
 			cc = configCh
 		}
 
+		waitReady := groupGate
+		var signalNext chan struct{}
+		if g < numGroups-1 {
+			signalNext = make(chan struct{})
+			groupGate = signalNext
+		}
+
+		startHashIndex := g % hashCount
 		wg.Add(1)
-		go func(groupID int, isFirstGroup bool, configChan chan<- string, workerIds []int, startHashIndex int) {
+		go func(groupID int, isFirstGroup bool, configChan chan<- string, workerIds []int, hashIdx int,
+			wait <-chan struct{}, signal chan<- struct{}) {
 			defer wg.Done()
-			WorkerGroup(ctx, groupID, startHashIndex, tp, peer, disp, localPort,
-				isFirstGroup, configChan, workerIds, &pauseFlag, *deviceID, *connPassword, stats, nil, nil)
-		}(gID, isFirst, cc, ids, g)
+			WorkerGroup(ctx, groupID, hashIdx, tp, peer, disp, localPort,
+				isFirstGroup, configChan, workerIds, &pauseFlag, *deviceID, *connPassword, stats, wait, signal)
+		}(gID, isFirst, cc, ids, startHashIndex, waitReady, signalNext)
 	}
 
 	wg.Wait()

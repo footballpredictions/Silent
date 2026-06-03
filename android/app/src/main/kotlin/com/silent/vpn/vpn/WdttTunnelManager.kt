@@ -359,6 +359,18 @@ object WdttTunnelManager {
                 val exitCode = runCatching { proc?.exitValue() }.getOrNull()
                 if (exitCode != null) {
                     DebugLog.w(TAG, "libclient exited code=$exitCode ready=${tunnelReady.value}")
+                    activeWorkers.value = 0
+                    if (tunnelReady.value && lastParams != null && lastContext != null && running.value) {
+                        val ctx = lastContext!!
+                        val params = lastParams!!
+                        scope.launch {
+                            delay(2500)
+                            if (process == null && running.value && tunnelReady.value) {
+                                DebugLog.i(TAG, "libclient упал при активном WG — перезапуск транспорта")
+                                start(ctx, params, isSwitching = true)
+                            }
+                        }
+                    }
                 }
                 if (!tunnelReady.value) {
                     running.value = false
@@ -511,6 +523,13 @@ object WdttTunnelManager {
 
     fun isInternetReady(): Boolean =
         tunnelReady.value && activeWorkers.value >= 1 && !lastWgAddress().isNullOrBlank() && appliedConfigSource > 0
+
+    /** WG поднят, libclient жив, есть хотя бы один воркер. */
+    fun isTransportHealthy(): Boolean {
+        if (!tunnelReady.value || activeWorkers.value < 1) return false
+        val proc = process ?: return false
+        return proc.isAlive
+    }
 
     fun restartTransport() {
         val elapsed = System.currentTimeMillis() - processStartedAtMs

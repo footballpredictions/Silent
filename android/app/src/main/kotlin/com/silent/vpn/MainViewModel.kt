@@ -183,7 +183,11 @@ class MainViewModel @Inject constructor(
                 if (ready) {
                     if (_vpnState.value == VpnState.DISCONNECTING) return@collect
                     DebugLog.i("MainViewModel", "tunnel ready")
-                    if (!WdttTunnelManager.isInternetReady()) return@collect
+                    if (!WdttTunnelManager.isInternetReady() &&
+                        WdttTunnelManager.activeWorkers.value < 1
+                    ) {
+                        return@collect
+                    }
                     if (bootstrapVpnMode) {
                         _vpnState.value = VpnState.CONNECTED
                         onVpnTunnelReady()
@@ -197,7 +201,8 @@ class MainViewModel @Inject constructor(
                     }
                 } else if (
                     (_vpnState.value == VpnState.CONNECTED || _vpnState.value == VpnState.DISCONNECTING) &&
-                    !WdttTunnelManager.running.value
+                    !WdttTunnelManager.running.value &&
+                    WdttTunnelManager.activeWorkers.value < 1
                 ) {
                     onlineHeartbeatJob?.cancel()
                     onlineHeartbeatJob = null
@@ -833,11 +838,11 @@ class MainViewModel @Inject constructor(
                         loadProfile()
                         return@launch
                     }
-                    val config = connectVpnConfig(cached)
+                    val config = wdttConnectConfig(cached)
                     DebugLog.i("MainViewModel", "connect n=${config.stream_count} vk=${config.vk_hashes.size}")
                     launchVpnService(context, config)
                     viewModelScope.launch { refreshVpnConfigInBackground(fp) }
-                    waitForTunnelReady(context)
+                    waitForTunnelReady(context, config.stream_count)
                     return@launch
                 }
 
@@ -940,11 +945,11 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
-                val config = connectVpnConfig(vpnConfig!!)
+                val config = wdttConnectConfig(vpnConfig!!)
                 DebugLog.i("MainViewModel", "connect n=${config.stream_count} vk=${config.vk_hashes.size}")
                 launchVpnService(context, config)
                 viewModelScope.launch { refreshVpnConfigInBackground(fp) }
-                waitForTunnelReady(context)
+                waitForTunnelReady(context, config.stream_count)
             }.onFailure {
                 DebugLog.e("MainViewModel", "connect failed", it)
                 _vpnError.value = it.message ?: "Ошибка подключения"
@@ -983,24 +988,26 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * Единый быстрый connect: 1 VK-хеш × 9 воркеров (~3–8 с до интернета).
-     * Полная сила каналов из prefs — только после смены в «Сила каналов» + переподключение.
+     * Один CONNECT с полным n и всеми хешами (как proxy-turn-vk-android).
+     * libclient каскадом: первая группа (~5 с) → WG; остальные добирают каналы в том же процессе.
      */
-    private fun connectVpnConfig(config: VpnConfig): VpnConfig {
+    private fun wdttConnectConfig(config: VpnConfig): VpnConfig {
         val filtered = vpnConfigForWdtt(config)
-        val boot = repo.getBootstrapHash()?.trim().orEmpty()
-        val hash = filtered.vk_hashes
-            .firstOrNull { it.isNotBlank() && it.trim() != boot }
-            ?: filtered.vk_hashes.firstOrNull { it.isNotBlank() }
-            ?: return filtered.copy(stream_count = HashChannelHelper.WORKERS_PER_GROUP)
+        val activeHashes = maxOf(
+            filtered.vk_hashes.size,
+            repo.getSavedHashItems().activeServerHashes().size,
+            1,
+        ).coerceAtMost(HashChannelHelper.MAX_HASHES)
+        val workers = repo.resolveWorkersForLibclient(activeHashes)
+        val hashes = HashChannelHelper.hashesForLibclient(filtered.vk_hashes, workers)
         return filtered.copy(
-            vk_hashes = listOf(hash.trim()),
-            stream_count = HashChannelHelper.WORKERS_PER_GROUP,
+            vk_hashes = hashes.ifEmpty { filtered.vk_hashes },
+            stream_count = workers,
         )
     }
 
     private fun launchVpnService(context: Context, config: VpnConfig) {
-        val wdttConfig = connectVpnConfig(config).let { vpnConfigForWdtt(it) }
+        val wdttConfig = wdttConnectConfig(config)
         val intent = Intent(context, SilentVpnService::class.java).apply {
             action = SilentVpnService.ACTION_CONNECT
             putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(wdttConfig))
@@ -1033,26 +1040,52 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun waitForTunnelReady(context: Context) {
-        // «Подключено» = WG + ≥1 воркер; таймаут 60 с (ручная капча).
-        repeat(600) {
+    /** Таймаут набора групп: 60 с + ~25 с на каждую доп. группу (каскад + капча), макс. 3 мин. */
+    private fun connectWaitTimeoutMs(totalWorkers: Int): Int {
+        val groups = HashChannelHelper.groupsForWorkers(totalWorkers)
+        return (60_000 + (groups - 1).coerceAtLeast(0) * 25_000).coerceAtMost(180_000)
+    }
+
+    private fun vpnTunnelUsable(): Boolean =
+        WdttTunnelManager.tunnelReady.value && WdttTunnelManager.activeWorkers.value >= 1
+
+    private suspend fun waitForTunnelReady(context: Context, totalWorkers: Int) {
+        val timeoutMs = connectWaitTimeoutMs(totalWorkers)
+        val iterations = timeoutMs / 100
+        repeat(iterations) {
             delay(100)
             if (_vpnState.value != VpnState.CONNECTING) return
-            if (WdttTunnelManager.isInternetReady()) return
-        }
-        if (_vpnState.value == VpnState.CONNECTING) {
-            val err = WdttTunnelManager.lastError.value
-                ?: if (WdttTunnelManager.activeWorkers.value > 0) {
-                    "WireGuard не поднялся"
-                } else {
-                    WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
-                        ?: "Таймаут: WDTT не подключился к серверу"
+            if (WdttTunnelManager.isInternetReady() || vpnTunnelUsable()) {
+                if (_vpnState.value == VpnState.CONNECTING) {
+                    _vpnState.value = VpnState.CONNECTED
+                    onVpnTunnelReady()
+                    if (repo.isLoggedIn()) markDeviceOnlineOnServer()
                 }
-            stopVpnLocally(context)
-            _vpnError.value = err
-            DebugLog.e("MainViewModel", "connect timeout: $err")
-            _vpnState.value = VpnState.DISCONNECTED
+                return
+            }
         }
+        if (_vpnState.value != VpnState.CONNECTING) return
+        if (vpnTunnelUsable()) {
+            DebugLog.w(
+                "MainViewModel",
+                "connect wait ended but tunnel OK (${WdttTunnelManager.activeWorkers.value} workers)",
+            )
+            _vpnState.value = VpnState.CONNECTED
+            onVpnTunnelReady()
+            if (repo.isLoggedIn()) markDeviceOnlineOnServer()
+            return
+        }
+        val err = WdttTunnelManager.lastError.value
+            ?: if (WdttTunnelManager.activeWorkers.value > 0) {
+                "WireGuard не поднялся"
+            } else {
+                WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
+                    ?: "Таймаут: WDTT не подключился к серверу"
+            }
+        stopVpnLocally(context)
+        _vpnError.value = err
+        DebugLog.e("MainViewModel", "connect timeout: $err")
+        _vpnState.value = VpnState.DISCONNECTED
     }
 
     fun disconnect(context: Context) {

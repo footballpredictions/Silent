@@ -51,8 +51,12 @@ class SilentVpnService : Service() {
         private const val CHANNEL_ID = "silent_vpn"
         private const val NOTIF_ID = 1001
         /** Не перезапускать libclient сразу после WireGuard — иначе ломается вход. */
+        /** Не трогать libclient в первые секунды первого connect. */
         private const val NETWORK_GRACE_MS = 90_000L
-        private const val NETWORK_DEBOUNCE_MS = 12_000L
+        /** После tunnelReady переключение Wi‑Fi/LTE можно обрабатывать раньше. */
+        private const val NETWORK_GRACE_AFTER_READY_MS = 12_000L
+        private const val NETWORK_DEBOUNCE_MS = 8_000L
+        private const val TRANSPORT_WATCHDOG_MS = 20_000L
         const val ACTION_CONNECT = "com.silent.vpn.CONNECT"
         const val ACTION_DISCONNECT = "com.silent.vpn.DISCONNECT"
         const val EXTRA_CONFIG = "vpn_config_json"
@@ -71,6 +75,7 @@ class SilentVpnService : Service() {
     private var lastUnderlyingInternet: Boolean? = null
     private var pausedForNetwork = false
     private var networkRecoveryJob: Job? = null
+    private var transportWatchdogJob: Job? = null
     private var statusCollectorJob: Job? = null
 
     override fun onCreate() {
@@ -113,6 +118,7 @@ class SilentVpnService : Service() {
                 lastTransport = null
                 lastNetworkChangeTime = 0L
                 setupNetworkCallback()
+                startTransportWatchdog()
                 acquireWakeLock()
                 acquireWifiLock()
                 startFg(buildConnectingNotification())
@@ -202,6 +208,7 @@ class SilentVpnService : Service() {
         DebugLog.i("VpnService", "DISCONNECT")
         isRunning = false
         networkRecoveryJob?.cancel()
+        transportWatchdogJob?.cancel()
         statusCollectorJob?.cancel()
         pausedForNetwork = false
         lastUnderlyingInternet = null
@@ -296,31 +303,61 @@ class SilentVpnService : Service() {
     private fun handleNetworkRestored() {
         if (!isRunning) return
         if (!VpnNetworkHelper.hasUnderlyingInternet(this)) return
-        val wasPaused = pausedForNetwork
-        val elapsed = System.currentTimeMillis() - connectStartedAtMs
-        if (!wasPaused) {
-            if (elapsed < NETWORK_GRACE_MS) return
-            if (!WdttTunnelManager.tunnelReady.value) return
-        }
-        val workers = WdttTunnelManager.activeWorkers.value
-        if (!wasPaused && workers >= 1) return
-        DebugLog.i("VpnService", "Сеть восстановлена — resume (wasPaused=$wasPaused workers=$workers)")
-        pausedForNetwork = false
-        if (wasPaused || !WdttTunnelManager.running.value) {
-            WdttTunnelManager.resume()
-        } else if (workers < 1) {
-            WdttTunnelManager.resume()
-        } else {
-            WdttTunnelManager.restartTransport()
-        }
+        recoverTransportAfterNetwork("сеть восстановлена")
     }
 
     private fun handleTransportChange() {
         val now = System.currentTimeMillis()
         if (now - lastNetworkChangeTime < NETWORK_DEBOUNCE_MS) return
         lastNetworkChangeTime = now
-        if (WdttTunnelManager.running.value || WdttTunnelManager.tunnelReady.value) {
-            WdttTunnelManager.restartTransport()
+        recoverTransportAfterNetwork("смена Wi‑Fi ↔ мобильная")
+    }
+
+    /**
+     * После звонка, обрыва или смены транспорта — поднять libclient снова (WG не трогаем).
+     */
+    private fun recoverTransportAfterNetwork(reason: String) {
+        if (!isRunning) return
+        if (!VpnNetworkHelper.hasUnderlyingInternet(this)) return
+        val elapsed = System.currentTimeMillis() - connectStartedAtMs
+        val wasPaused = pausedForNetwork
+        val ready = WdttTunnelManager.tunnelReady.value
+        val graceLimit = if (ready) NETWORK_GRACE_AFTER_READY_MS else NETWORK_GRACE_MS
+        if (!wasPaused && elapsed < graceLimit) return
+        if (!wasPaused && !ready) return
+
+        val healthy = WdttTunnelManager.isTransportHealthy()
+        if (!wasPaused && healthy) return
+
+        DebugLog.i(
+            "VpnService",
+            "Восстановление транспорта ($reason): paused=$wasPaused healthy=$healthy workers=${WdttTunnelManager.activeWorkers.value}",
+        )
+        pausedForNetwork = false
+        when {
+            wasPaused || !WdttTunnelManager.running.value -> WdttTunnelManager.resume()
+            !healthy -> WdttTunnelManager.restartTransport()
+            else -> WdttTunnelManager.restartTransport()
+        }
+    }
+
+    /** Периодически: туннель «подключён», но libclient мёртв — перезапуск без действий пользователя. */
+    private fun startTransportWatchdog() {
+        transportWatchdogJob?.cancel()
+        transportWatchdogJob = scope.launch {
+            while (isRunning) {
+                delay(TRANSPORT_WATCHDOG_MS)
+                if (!isRunning) break
+                if (pausedForNetwork) continue
+                if (!VpnNetworkHelper.hasUnderlyingInternet(this@SilentVpnService)) continue
+                if (!WdttTunnelManager.tunnelReady.value) continue
+                val elapsed = System.currentTimeMillis() - connectStartedAtMs
+                if (elapsed < NETWORK_GRACE_AFTER_READY_MS) continue
+                if (WdttTunnelManager.isTransportHealthy()) continue
+                scheduleNetworkRecovery(2000) {
+                    recoverTransportAfterNetwork("watchdog")
+                }
+            }
         }
     }
 
@@ -332,9 +369,14 @@ class SilentVpnService : Service() {
 
     private fun canRestartForNetwork(): Boolean {
         if (!isRunning) return false
-        if (System.currentTimeMillis() - connectStartedAtMs < NETWORK_GRACE_MS) return false
+        val elapsed = System.currentTimeMillis() - connectStartedAtMs
+        val grace = if (WdttTunnelManager.tunnelReady.value) {
+            NETWORK_GRACE_AFTER_READY_MS
+        } else {
+            NETWORK_GRACE_MS
+        }
+        if (elapsed < grace) return false
         if (!WdttTunnelManager.tunnelReady.value) return false
-        if (WdttTunnelManager.activeWorkers.value < 1) return false
         return true
     }
 

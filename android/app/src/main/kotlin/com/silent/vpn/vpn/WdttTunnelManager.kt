@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 import java.io.File
@@ -499,7 +500,10 @@ object WdttTunnelManager {
                 apiOverlayDepth = (apiOverlayDepth - 1).coerceAtLeast(0)
                 if (apiOverlayDepth == 0) {
                     apiOverlayRestoreJob?.cancel()
-                    helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
+                    // NonCancellable: overlay ДОЛЖЕН восстановиться даже если coroutine отменена
+                    withContext(NonCancellable) {
+                        helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
+                    }
                 }
             }
         }

@@ -320,33 +320,32 @@ class MainViewModel @Inject constructor(
 
     private var mainTunnelDataSyncJob: Job? = null
     private var connectJob: Job? = null
-    private var channelUpgradeJob: Job? = null
 
     private fun onVpnTunnelReady(vpnConfig: VpnConfig? = null) {
         if (_vpnState.value == VpnState.DISCONNECTING) return
         val wgAddr = vpnConfig?.wg_address?.takeIf { it.isNotBlank() }
             ?: loadCachedVpnConfig()?.wg_address?.takeIf { it.isNotBlank() }
             ?: WdttTunnelManager.lastWgAddress()
-        if (SilentRepository.APP_EXCLUDED_FROM_VPN) {
-            repo.clearTunnelApiBase()
-        } else {
+        if (!SilentRepository.APP_EXCLUDED_FROM_VPN) {
             repo.setTunnelApiFromWgAddress(wgAddr)
+        } else {
+            repo.clearTunnelApiBase()
         }
-        // Bootstrap: данные только в login(). Основной VPN — один пакет sync через туннель.
         if (repo.isLoggedIn() && !bootstrapVpnMode && SilentVpnService.isRunning) {
             mainTunnelDataSyncJob?.cancel()
             mainTunnelDataSyncJob = viewModelScope.launch {
-                delay(2_000)
+                // Ждём пока все группы поднимутся (~45 с), затем синхронизируем данные.
+                delay(50_000)
                 if (_vpnState.value != VpnState.CONNECTED || !SilentVpnService.isRunning) return@launch
                 runCatching {
-                    WdttTunnelManager.withApiOverlay {
-                        repo.useApiBase(WdttTunnelManager.tunnelApiBase())
-                        fetchProfileNow()
-                        syncServerHashes()
-                        runCatching {
-                            val res = repo.getApi().getTheme()
-                            if (res.isSuccessful) _theme.value = res.body()
-                        }
+                    // Всегда через прямой API: приложение исключено из VPN
+                    // (APP_EXCLUDED_FROM_VPN=true) либо сидит внутри туннеля.
+                    repo.clearTunnelApiBase()
+                    fetchProfileNow()
+                    syncServerHashes()
+                    runCatching {
+                        val res = repo.getApi().getTheme()
+                        if (res.isSuccessful) _theme.value = res.body()
                     }
                 }.onFailure { e ->
                     DebugLog.w("MainViewModel", "main tunnel sync: ${e.message}")
@@ -364,15 +363,8 @@ class MainViewModel @Inject constructor(
         onlineHeartbeatJob = viewModelScope.launch {
             while (_vpnState.value == VpnState.CONNECTED && SilentVpnService.isRunning) {
                 runCatching {
-                    if (SilentRepository.APP_EXCLUDED_FROM_VPN) {
-                        WdttTunnelManager.withApiOverlay {
-                            repo.useApiBase(WdttTunnelManager.tunnelApiBase())
-                            repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
-                        }
-                    } else {
-                        repo.clearTunnelApiBase()
-                        repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
-                    }
+                    repo.clearTunnelApiBase()
+                    repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
                 }
                 delay(5 * 60 * 1000L)
             }
@@ -853,21 +845,12 @@ class MainViewModel @Inject constructor(
                         loadProfile()
                         return@launch
                     }
-                    val quick = vpnConfigForWdtt(quickConnectConfig(cached))
-                    DebugLog.i(
-                        "MainViewModel",
-                        "quick connect n=${quick.stream_count} vk=${quick.vk_hashes.size}",
-                    )
-                    launchVpnService(context, quick)
-                    viewModelScope.launch {
-                        runCatching {
-                            val prepared = repo.prepareVpnConnectConfig(cached, fp)
-                            repo.cacheVpnConfig(Gson().toJson(prepared))
-                        }
-                        refreshVpnConfigInBackground(fp)
-                    }
+                    val config = resolveFullConfig(cached)
+                    DebugLog.i("MainViewModel", "connect from cache n=${config.stream_count} vk=${config.vk_hashes.size}")
+                    repo.cacheVpnConfig(Gson().toJson(config))
+                    launchVpnService(context, config)
+                    viewModelScope.launch { refreshVpnConfigInBackground(fp) }
                     waitForTunnelReady(context)
-                    scheduleChannelUpgrade(context)
                     return@launch
                 }
 
@@ -970,22 +953,13 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
-                val quick = vpnConfigForWdtt(quickConnectConfig(vpnConfig!!))
-                DebugLog.i(
-                    "MainViewModel",
-                    "quick connect n=${quick.stream_count} vk=${quick.vk_hashes.size}",
-                )
-                launchVpnService(context, quick)
-                viewModelScope.launch {
-                    runCatching {
-                        val prepared = repo.prepareVpnConnectConfig(vpnConfig!!, fp)
-                        repo.cacheVpnConfig(Gson().toJson(prepared))
-                    }
-                    refreshVpnConfigInBackground(fp)
-                }
+                val config = resolveFullConfig(vpnConfig!!)
+                DebugLog.i("MainViewModel", "connect n=${config.stream_count} vk=${config.vk_hashes.size}")
+                repo.cacheVpnConfig(Gson().toJson(config))
+                launchVpnService(context, config)
+                viewModelScope.launch { refreshVpnConfigInBackground(fp) }
                 loadProfile()
                 waitForTunnelReady(context)
-                scheduleChannelUpgrade(context)
             }.onFailure {
                 DebugLog.e("MainViewModel", "connect failed", it)
                 _vpnError.value = it.message ?: "Ошибка подключения"
@@ -1023,44 +997,16 @@ class MainViewModel @Inject constructor(
         return if (server.isNotEmpty()) config.copy(vk_hashes = server) else config
     }
 
-    /** Быстрый старт: 1 хеш × 9 воркеров — интернет раньше; полный n — отложенный upgrade. */
-    private fun quickConnectConfig(config: VpnConfig): VpnConfig {
-        val boot = repo.getBootstrapHash()?.trim().orEmpty()
-        val server = config.vk_hashes
-            .filter { it.isNotBlank() && it.trim() != boot }
-            .distinct()
-        val hash = server.firstOrNull()
-            ?: config.vk_hashes.firstOrNull { it.isNotBlank() }
-            ?: return config
-        return config.copy(
-            vk_hashes = listOf(hash.trim()),
-            stream_count = HashChannelHelper.WORKERS_PER_GROUP,
-        )
-    }
-
-    private fun scheduleChannelUpgrade(context: Context) {
-        channelUpgradeJob?.cancel()
-        channelUpgradeJob = viewModelScope.launch {
-            delay(50_000)
-            if (_vpnState.value != VpnState.CONNECTED || !SilentVpnService.isRunning) return@launch
-            if (!WdttTunnelManager.tunnelReady.value || WdttTunnelManager.activeWorkers.value < 1) return@launch
-            upgradeVpnChannelsIfNeeded(context)
-        }
-    }
-
-    private suspend fun upgradeVpnChannelsIfNeeded(context: Context) {
-        val cached = loadCachedVpnConfig() ?: return
-        val fp = repo.getDeviceFingerprint()
-        val prepared = runCatching { repo.prepareVpnConnectConfig(cached, fp) }.getOrNull() ?: return
-        repo.cacheVpnConfig(Gson().toJson(prepared))
-        val full = vpnConfigForWdtt(prepared)
-        val quick = vpnConfigForWdtt(quickConnectConfig(cached))
-        if (full.stream_count <= quick.stream_count && full.vk_hashes.size <= quick.vk_hashes.size) return
-        DebugLog.i(
-            "MainViewModel",
-            "upgrade channels n=${full.stream_count} vk=${full.vk_hashes.size} (was n=${quick.stream_count})",
-        )
-        launchVpnService(context, full)
+    /** Полный конфиг: n воркеров из prefs, все активные хеши. Никакого двухфазного upgrade. */
+    private fun resolveFullConfig(config: VpnConfig): VpnConfig {
+        val filtered = vpnConfigForWdtt(config)
+        val activeHashes = maxOf(
+            filtered.vk_hashes.size,
+            repo.getSavedHashItems().activeServerHashCount(),
+            1,
+        ).coerceAtMost(HashChannelHelper.MAX_HASHES)
+        val workers = repo.resolveWorkersForLibclient(activeHashes)
+        return filtered.copy(stream_count = workers)
     }
 
     private fun launchVpnService(context: Context, config: VpnConfig) {
@@ -1128,8 +1074,6 @@ class MainViewModel @Inject constructor(
         vpnProfilePollJob = null
         mainTunnelDataSyncJob?.cancel()
         mainTunnelDataSyncJob = null
-        channelUpgradeJob?.cancel()
-        channelUpgradeJob = null
         viewModelScope.launch {
             _vpnState.value = VpnState.DISCONNECTING
             runCatching {

@@ -10,6 +10,7 @@ export const BOOTSTRAP_STREAM_COUNT = 9
 /** @deprecated legacy key — migrated to TOTAL_WORKERS_KEY */
 export const CHANNELS_KEY = 'silent_hash_channels_per_hash'
 export const TOTAL_WORKERS_KEY = 'silent_hash_total_workers'
+export const LEGACY_MIGRATED_KEY = 'silent_hash_total_workers_legacy_migrated'
 
 export function maxTotalWorkers(activeHashCount: number): number {
   return Math.min(Math.max(activeHashCount, 1), MAX_HASHES) * MAX_WORKERS_PER_HASH
@@ -21,19 +22,26 @@ export function normalizeTotalWorkers(value: number, activeHashCount: number): n
   return Math.min(max, Math.max(WORKERS_PER_GROUP, stepped), LIBCLIENT_MAX_WORKERS)
 }
 
-/** Число групп libclient = n / 9. */
+/** Число групп libclient = n / 9 (до 12 групп = 108 воркеров). */
 export function groupsForWorkers(totalWorkers: number): number {
+  const maxGroups = LIBCLIENT_MAX_WORKERS / WORKERS_PER_GROUP
   return Math.min(
     Math.max(Math.floor(Math.max(totalWorkers, WORKERS_PER_GROUP) / WORKERS_PER_GROUP), 1),
-    MAX_HASHES,
+    maxGroups,
   )
+}
+
+/** Таймаут connect: 60 с + ~25 с на каждую доп. группу (каскад + капча), макс. 3 мин. */
+export function connectWaitTimeoutMs(totalWorkers: number): number {
+  const groups = groupsForWorkers(totalWorkers)
+  return Math.min(60_000 + Math.max(0, groups - 1) * 25_000, 180_000)
 }
 
 /**
  * Передаём libclient ВСЕ доступные хеши (до MAX_HASHES).
  * libclient сам распределяет воркеров по хешам циклически — как в proxy-turn-vk-android.
  */
-export function hashesForLibclient(allHashes: string[], totalWorkers: number): string[] {
+export function hashesForLibclient(allHashes: string[], _totalWorkers: number): string[] {
   const unique = allHashes
     .flatMap(h => h.split(/[,\s\n]+/))
     .map(h => h.trim())
@@ -59,15 +67,27 @@ export function getTotalWorkers(activeHashCount = activeServerHashCount(getSaved
   const max = maxTotalWorkers(capped)
   const stored = localStorage.getItem(TOTAL_WORKERS_KEY)
   if (stored != null && stored !== '') {
-    const raw = Number(stored) || DEFAULT_TOTAL_WORKERS
+    const raw = Number(stored) || WORKERS_PER_GROUP
     if (raw > max) {
       saveTotalWorkers(max, capped)
       return max
     }
     return normalizeTotalWorkers(raw, capped)
   }
-  saveTotalWorkers(max, capped)
-  return max
+  if (
+    localStorage.getItem(LEGACY_MIGRATED_KEY) !== '1' &&
+    localStorage.getItem(CHANNELS_KEY) != null &&
+    localStorage.getItem(CHANNELS_KEY) !== ''
+  ) {
+    const legacyPer = Number(localStorage.getItem(CHANNELS_KEY)) || WORKERS_PER_GROUP
+    const migrated = migrateLegacyPerHash(legacyPer, capped)
+    localStorage.setItem(TOTAL_WORKERS_KEY, String(migrated))
+    localStorage.setItem(LEGACY_MIGRATED_KEY, '1')
+    return migrated
+  }
+  const firstInstall = normalizeTotalWorkers(WORKERS_PER_GROUP * 4, capped)
+  saveTotalWorkers(firstInstall, capped)
+  return firstInstall
 }
 
 export function saveTotalWorkers(value: number, activeHashCount = activeServerHashCount(getSavedHashItems()) || 1): void {
@@ -119,12 +139,6 @@ export function resolveWorkerCount(config: { vk_hashes?: string[]; stream_count?
     Math.max(cappedHashes.length, savedActive, 1),
     MAX_HASHES,
   )
-  const max = maxTotalWorkers(hashCount)
-  const stored = localStorage.getItem(TOTAL_WORKERS_KEY)
-  if (stored == null || stored === '') {
-    saveTotalWorkers(max, hashCount)
-    return workersForLibclient(max, hashCount)
-  }
   return workersForLibclient(getTotalWorkers(hashCount), hashCount)
 }
 
@@ -143,6 +157,7 @@ export function applyBootstrapWorkerCount<T extends { vk_hashes?: string[]; stre
   }
 }
 
+/** Один connect с полным n и всеми хешами (как Android wdttConnectConfig). */
 export function applyWorkerCount<T extends { vk_hashes?: string[]; stream_count?: number }>(config: T): T {
   const cappedHashes = capHashes(config.vk_hashes)
   const workers = resolveWorkerCount({ ...config, vk_hashes: cappedHashes })

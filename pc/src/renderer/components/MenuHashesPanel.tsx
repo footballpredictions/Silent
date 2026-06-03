@@ -136,8 +136,13 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
             {stepped}
           </div>
         </div>
-        <p className="text-[10px] mb-3" style={{ color: muted }}>
-          Потоков: {stepped} из {maxTotal} (шаг 9, до {activeHashCount} хеш × 27)
+        <p className="text-[10px] mb-1" style={{ color: muted }}>
+          Потоков: {stepped} из {maxTotal} (шаг 9, макс {activeHashCount} хеша × 27)
+        </p>
+        <p className="text-[9px] mb-3" style={{ color: muted }}>
+          {vpnConnected
+            ? 'Чтобы применить: выключите VPN → выберите силу → подключите снова (смотрите «Активных каналов»)'
+            : 'После смены переподключите VPN. Скорость теста часто упирается в VPS/сеть; каналы дают запас и стабильность'}
         </p>
         <input
           type="range"
@@ -155,7 +160,7 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
           style={{ color: fg }}
         />
         <p className="text-[9px] mt-2" style={{ color: muted }}>
-          9 → 18 → 27 → 36… (шаг 9, макс {maxTotal} = {activeHashCount} хеш × 27)
+          В логе: connect n={stepped} — столько воркеров запустит wdtt-client
         </p>
       </div>
 

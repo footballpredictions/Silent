@@ -1,9 +1,12 @@
-/** Ожидание готовности туннеля — как Android repeat + isInternetReady / tunnelReady. */
-export async function waitVpnReady(timeoutMs = 90000): Promise<boolean> {
+import { connectWaitTimeoutMs } from './hashChannelHelper'
+
+/** Ожидание готовности туннеля — как Android waitForTunnelReady. */
+export async function waitVpnReady(timeoutMs?: number, totalWorkers = 108): Promise<boolean> {
+  const deadlineMs = timeoutMs ?? connectWaitTimeoutMs(totalWorkers)
   const electron = (window as any).electronAPI
   if (!electron?.vpnConnect && !electron?.onVpnReady) return true
 
-  const deadline = Date.now() + timeoutMs
+  const deadline = Date.now() + deadlineMs
   let listenerOk: boolean | null = null
 
   if (electron.onVpnReady) {

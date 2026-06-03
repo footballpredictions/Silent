@@ -15,7 +15,7 @@
     "appId": "ru.silent.vpn",
     "productName": "Silent VPN",
     "directories": {
-      "output": "build-release-1043"
+      "output": "build-output"
     },
     "artifactName": "Silent VPN Setup ${version}.${ext}",
     "files": [

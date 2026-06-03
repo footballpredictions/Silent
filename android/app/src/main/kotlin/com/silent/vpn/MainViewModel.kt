@@ -17,7 +17,6 @@ import com.silent.vpn.data.DisconnectRequest
 import com.silent.vpn.data.HashItemDto
 import com.silent.vpn.data.LoginRequest
 import com.silent.vpn.data.HashChannelHelper
-import com.silent.vpn.data.activeServerHashCount
 import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.data.prepareVpnConnectConfig
 import com.silent.vpn.data.toHashItems
@@ -332,25 +331,6 @@ class MainViewModel @Inject constructor(
             repo.clearTunnelApiBase()
         }
         if (repo.isLoggedIn() && !bootstrapVpnMode && SilentVpnService.isRunning) {
-            mainTunnelDataSyncJob?.cancel()
-            mainTunnelDataSyncJob = viewModelScope.launch {
-                // Ждём пока все группы поднимутся (~45 с), затем синхронизируем данные.
-                delay(50_000)
-                if (_vpnState.value != VpnState.CONNECTED || !SilentVpnService.isRunning) return@launch
-                runCatching {
-                    // Всегда через прямой API: приложение исключено из VPN
-                    // (APP_EXCLUDED_FROM_VPN=true) либо сидит внутри туннеля.
-                    repo.clearTunnelApiBase()
-                    fetchProfileNow()
-                    syncServerHashes()
-                    runCatching {
-                        val res = repo.getApi().getTheme()
-                        if (res.isSuccessful) _theme.value = res.body()
-                    }
-                }.onFailure { e ->
-                    DebugLog.w("MainViewModel", "main tunnel sync: ${e.message}")
-                }
-            }
             markDeviceOnlineOnServer()
         } else {
             loadTheme()
@@ -406,10 +386,18 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun fetchProfileNow(): Boolean {
+        // Основной VPN: приложение вне туннеля — только прямой API, без overlay WG.
+        if (SilentVpnService.isRunning && !bootstrapVpnMode) {
+            repo.clearTunnelApiBase()
+            for (base in repo.apiBaseCandidates(null)) {
+                if (tryFetchProfileOnBase(base)) return true
+            }
+            return _profile.value != null
+        }
         if (
             SilentVpnService.isRunning &&
             WdttTunnelManager.tunnelReady.value &&
-            SilentRepository.APP_EXCLUDED_FROM_VPN
+            bootstrapVpnMode
         ) {
             return WdttTunnelManager.withApiOverlay {
                 tryFetchProfileOnBase(WdttTunnelManager.tunnelApiBase())
@@ -845,9 +833,8 @@ class MainViewModel @Inject constructor(
                         loadProfile()
                         return@launch
                     }
-                    val config = resolveFullConfig(cached)
-                    DebugLog.i("MainViewModel", "connect from cache n=${config.stream_count} vk=${config.vk_hashes.size}")
-                    repo.cacheVpnConfig(Gson().toJson(config))
+                    val config = connectVpnConfig(cached)
+                    DebugLog.i("MainViewModel", "connect n=${config.stream_count} vk=${config.vk_hashes.size}")
                     launchVpnService(context, config)
                     viewModelScope.launch { refreshVpnConfigInBackground(fp) }
                     waitForTunnelReady(context)
@@ -953,12 +940,10 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
-                val config = resolveFullConfig(vpnConfig!!)
+                val config = connectVpnConfig(vpnConfig!!)
                 DebugLog.i("MainViewModel", "connect n=${config.stream_count} vk=${config.vk_hashes.size}")
-                repo.cacheVpnConfig(Gson().toJson(config))
                 launchVpnService(context, config)
                 viewModelScope.launch { refreshVpnConfigInBackground(fp) }
-                loadProfile()
                 waitForTunnelReady(context)
             }.onFailure {
                 DebugLog.e("MainViewModel", "connect failed", it)
@@ -997,20 +982,25 @@ class MainViewModel @Inject constructor(
         return if (server.isNotEmpty()) config.copy(vk_hashes = server) else config
     }
 
-    /** Полный конфиг: n воркеров из prefs, все активные хеши. Никакого двухфазного upgrade. */
-    private fun resolveFullConfig(config: VpnConfig): VpnConfig {
+    /**
+     * Единый быстрый connect: 1 VK-хеш × 9 воркеров (~3–8 с до интернета).
+     * Полная сила каналов из prefs — только после смены в «Сила каналов» + переподключение.
+     */
+    private fun connectVpnConfig(config: VpnConfig): VpnConfig {
         val filtered = vpnConfigForWdtt(config)
-        val activeHashes = maxOf(
-            filtered.vk_hashes.size,
-            repo.getSavedHashItems().activeServerHashCount(),
-            1,
-        ).coerceAtMost(HashChannelHelper.MAX_HASHES)
-        val workers = repo.resolveWorkersForLibclient(activeHashes)
-        return filtered.copy(stream_count = workers)
+        val boot = repo.getBootstrapHash()?.trim().orEmpty()
+        val hash = filtered.vk_hashes
+            .firstOrNull { it.isNotBlank() && it.trim() != boot }
+            ?: filtered.vk_hashes.firstOrNull { it.isNotBlank() }
+            ?: return filtered.copy(stream_count = HashChannelHelper.WORKERS_PER_GROUP)
+        return filtered.copy(
+            vk_hashes = listOf(hash.trim()),
+            stream_count = HashChannelHelper.WORKERS_PER_GROUP,
+        )
     }
 
     private fun launchVpnService(context: Context, config: VpnConfig) {
-        val wdttConfig = vpnConfigForWdtt(config)
+        val wdttConfig = connectVpnConfig(config).let { vpnConfigForWdtt(it) }
         val intent = Intent(context, SilentVpnService::class.java).apply {
             action = SilentVpnService.ACTION_CONNECT
             putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(wdttConfig))
@@ -1044,8 +1034,8 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun waitForTunnelReady(context: Context) {
-        // «Подключено» только когда WG + ≥1 воркер (интернет), не при пустом туннеле.
-        repeat(250) {
+        // «Подключено» = WG + ≥1 воркер; таймаут 60 с (ручная капча).
+        repeat(600) {
             delay(100)
             if (_vpnState.value != VpnState.CONNECTING) return
             if (WdttTunnelManager.isInternetReady()) return

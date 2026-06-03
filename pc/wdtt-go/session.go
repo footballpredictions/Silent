@@ -413,6 +413,9 @@ func RunSession(
 			case <-sessCtx.Done():
 				putPktBuf(pkt)
 				return
+			default:
+				// Не блокируем DTLS reader при перегрузке download — иначе все воркеры встают.
+				putPktBuf(pkt)
 			}
 		}
 	}()

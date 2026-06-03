@@ -1,6 +1,6 @@
 {
   "name": "silent-vpn-pc",
-  "version": "1.0.40",
+  "version": "1.0.43",
   "description": "Silent VPN PC Client",
   "main": "src/main/main.js",
   "scripts": {
@@ -15,9 +15,14 @@
     "appId": "ru.silent.vpn",
     "productName": "Silent VPN",
     "directories": {
-      "output": "build-output"
+      "output": "build-release-1043"
     },
     "artifactName": "Silent VPN Setup ${version}.${ext}",
+    "files": [
+      "**/*",
+      "!build-output{,/**/*}",
+      "dist/renderer/**/*"
+    ],
     "extraResources": [
       {
         "from": "resources/wdtt-client.exe",

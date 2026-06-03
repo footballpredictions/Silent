@@ -18,6 +18,9 @@ if exist "build-output" (
 if exist "dist\electron" (
   rd /s /q "dist\electron" 2>nul
 )
+if exist "build-output-v41" (
+  rd /s /q "build-output-v41" 2>nul
+)
 
 echo [1/3] wdtt-client.exe...
 cd wdtt-go
@@ -28,9 +31,27 @@ if errorlevel 1 (
 )
 cd ..
 
+if not exist "postcss.config.js" (
+  echo ERROR: postcss.config.js missing - UI will break without Tailwind
+  exit /b 1
+)
+if not exist "tailwind.config.js" (
+  echo ERROR: tailwind.config.js missing - UI will break without Tailwind
+  exit /b 1
+)
+
 echo [2/3] renderer...
+if exist "dist\renderer" rd /s /q "dist\renderer" 2>nul
 call npm run build:renderer
 if errorlevel 1 exit /b 1
+
+for %%F in (dist\renderer\assets\*.css) do (
+  if %%~zF LSS 8000 (
+    echo ERROR: CSS too small ^(%%~zF bytes^) - Tailwind did not compile. Aborting.
+    exit /b 1
+  )
+  echo OK: renderer CSS %%~nxF ^(%%~zF bytes^)
+)
 
 echo [3/3] NSIS installer -^> build-output\
 call npx electron-builder --win nsis --publish never

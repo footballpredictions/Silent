@@ -33,7 +33,21 @@ func putPktBuf(b []byte) {
 const (
 	returnChBuf      = 4096
 	writeLoopWorkers = 4
-	chunkSize        = 16
+	uploadRetryMs    = 30
+
+	// chunkSize — количество последовательных пакетов, отправляемых в один worker
+	// перед переключением на следующий.
+	//
+	// Зачем: при round-robin (chunk=1) каждый пакет летит через разный TURN relay
+	// с разным latency, что приводит к reorder на сервере. TCP внутри WireGuard
+	// интерпретирует reorder как потери → cwnd collapse → скорость single-flow
+	// падает до ~8 KB/s.
+	//
+	// С chunk=8: пакеты в пределах одного TCP congestion window (~10 пакетов при
+	// initial cwnd) уходят через один TURN relay → прилетают по порядку.
+	// Reorder возможен только между chunk-границами, что покрывается WG replay
+	// window (2048 пакетов).
+	chunkSize = 16
 )
 
 type WorkerSlot struct {
@@ -106,6 +120,13 @@ func (d *Dispatcher) Unregister(slot *WorkerSlot) {
 	log.Printf("[ДИСП] Воркер #%d отключён (осталось: %d)", slot.ID, len(newWorkers))
 }
 
+// readLoop читает WireGuard-пакеты и распределяет по workers chunk'ами.
+//
+// Логика: отправляем chunkSize подряд пакетов в один worker, потом переходим
+// к следующему. Если текущий worker перегружен (канал полный) — немедленно
+// ищем свободный worker и начинаем новый chunk на нём.
+// При полной загрузке — короткий retry, затем drop (как Android): блокировка
+// readLoop останавливает ACK/отдачу → YouTube и TCP замирают.
 func (d *Dispatcher) readLoop() {
 	defer d.wg.Done()
 
@@ -168,18 +189,27 @@ func (d *Dispatcher) readLoop() {
 		}
 
 		if !sent {
-			// Блокируемся до слота — drop upload убивает отдачу на speedtest.
-			target := ws[d.rrIndex%nw]
-			select {
-			case target.SendCh <- pkt:
-				d.rrCount++
-				if d.rrCount >= chunkSize {
-					d.rrIndex = (d.rrIndex + 1) % nw
-					d.rrCount = 0
+			deadline := time.Now().Add(uploadRetryMs * time.Millisecond)
+			for time.Now().Before(deadline) && !sent {
+				w := ws[d.rrIndex%nw]
+				select {
+				case w.SendCh <- pkt:
+					sent = true
+					d.rrCount++
+					if d.rrCount >= chunkSize {
+						d.rrIndex = (d.rrIndex + 1) % nw
+						d.rrCount = 0
+					}
+				case <-d.ctx.Done():
+					putPktBuf(pkt)
+					return
+				case <-time.After(2 * time.Millisecond):
 				}
-			case <-d.ctx.Done():
+			}
+			if !sent {
+				d.rrIndex = (idx + 1) % nw
+				d.rrCount = 0
 				putPktBuf(pkt)
-				return
 			}
 		}
 	}

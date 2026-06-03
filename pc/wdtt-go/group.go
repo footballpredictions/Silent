@@ -17,6 +17,22 @@ const (
 	defaultCycleSecs = 36000
 )
 
+// passCascade — следующая группа не блокируется, если у этой ошибка кредов VK.
+func passCascade(signalReady chan<- struct{}, groupID int, success bool) {
+	if signalReady == nil {
+		return
+	}
+	go func() {
+		time.Sleep(2 * time.Second)
+		close(signalReady)
+		if success {
+			log.Printf("[ГРУППА #%d] Успешный старт! Передача эстафеты следующей группе...", groupID)
+		} else {
+			log.Printf("[ГРУППА #%d] Эстафета следующей группе (группа пропущена)", groupID)
+		}
+	}()
+}
+
 // WorkerGroup:
 // Запускает 9 потоков с одними кредами. Ротации нет — работает до смерти воркеров.
 func WorkerGroup(
@@ -72,11 +88,12 @@ func WorkerGroup(
 	if err == nil {
 		creds = &Credentials{User: user, Pass: pass, TurnURLs: turnURLs, CacheStreamID: credStreamID}
 	} else {
-		log.Printf("[ГРУППА #%d] Ошибка кредов: %v", groupID, err)
+		log.Printf("[ГРУППА #%d] Ошибка кредов: %v — пропуск группы (%d воркеров)", groupID, err, len(workerIDs))
+		passCascade(signalReady, groupID, false)
 		return
 	}
 
-	log.Printf("[ГРУППА #%d] Креды OK, TURN: %v, %d воркеров", groupID, creds.TurnURLs, len(workerIDs))
+	log.Printf("[ГРУППА #%d] Креды OK, TURN: %v, %d воркеров в группе", groupID, creds.TurnURLs, len(workerIDs))
 
 	var configRequestInFlight int32
 	var wg sync.WaitGroup
@@ -110,14 +127,7 @@ func WorkerGroup(
 		return true
 	}
 
-	// Сигнализируем следующей группе, что мы успешно запустились (креды получены + 2 сек форы)
-	if signalReady != nil {
-		go func() {
-			time.Sleep(2000 * time.Millisecond)
-			close(signalReady)
-			log.Printf("[ГРУППА #%d] Успешный старт! Передача эстафеты следующей группе...", groupID)
-		}()
-	}
+	passCascade(signalReady, groupID, true)
 
 	for i, wid := range workerIDs {
 		wg.Add(1)
@@ -217,6 +227,12 @@ func WorkerGroup(
 
 					if isStunDeath {
 						log.Printf("[ВОРКЕР #%d] Невосстановимая TURN/STUN ошибка, завершение: %s", wid, errStr)
+						return
+					}
+
+					// TURN Allocate timeout под нагрузкой — бесконечные retry забивают UDP/CPU (YouTube фризит).
+					if strings.Contains(errStrLower, "all retransmissions failed") && attempt >= 3 {
+						log.Printf("[ВОРКЕР #%d] TURN недоступен после %d попыток, останавливаем retry", wid, attempt)
 						return
 					}
 				}

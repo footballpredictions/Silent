@@ -14,6 +14,8 @@ dist/
 
 # Electron build
 pc/dist/
+pc/build-output/
+pc/build-output-v*/
 pc/node_modules/
 
 # Android

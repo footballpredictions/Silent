@@ -344,6 +344,9 @@ class SilentRepository @Inject constructor(
             .apply()
     }
 
+    suspend fun fetchAndSaveHashItemsViaTunnel(): Result<List<HashItemDto>> =
+        fetchHashItemsFromBases(listOf("http://$WG_TUNNEL_GATEWAY:8000"))
+
     suspend fun fetchAndSaveHashItems(): Result<List<HashItemDto>> {
         val first = fetchHashItemsFromBases(apiBaseCandidates())
         if (first.isSuccess || !APP_EXCLUDED_FROM_VPN) return first

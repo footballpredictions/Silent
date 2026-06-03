@@ -38,6 +38,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
@@ -70,12 +71,13 @@ class SilentVpnService : Service() {
     private var lastUnderlyingInternet: Boolean? = null
     private var pausedForNetwork = false
     private var networkRecoveryJob: Job? = null
+    private var statusCollectorJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         acquireWakeLock()
-        scope.launch {
+        statusCollectorJob = scope.launch {
             combine(
                 WdttTunnelManager.tunnelReady,
                 WdttTunnelManager.stats,
@@ -164,6 +166,7 @@ class SilentVpnService : Service() {
                 HashChannelHelper.hashesForLibclient(wdttHashes, totalWorkers)
             }
 
+            val switching = WdttTunnelManager.running.value && !isBootstrap
             WdttTunnelManager.start(
                 this,
                 WdttTunnelManager.Params(
@@ -178,6 +181,7 @@ class SilentVpnService : Service() {
                     apiWgConfig = apiWg,
                     isBootstrap = isBootstrap,
                 ),
+                isSwitching = switching,
             )
             DebugLog.i(
                 "VpnService",
@@ -196,23 +200,31 @@ class SilentVpnService : Service() {
 
     private fun disconnect() {
         DebugLog.i("VpnService", "DISCONNECT")
-        SilentRepository.APP_EXCLUDED_FROM_VPN = true
+        isRunning = false
         networkRecoveryJob?.cancel()
+        statusCollectorJob?.cancel()
         pausedForNetwork = false
         lastUnderlyingInternet = null
+        SilentRepository.APP_EXCLUDED_FROM_VPN = true
         teardownNetworkCallback()
-        WdttTunnelManager.stop()
-        isRunning = false
-        releaseWakeLock()
-        releaseWifiLock()
         clearVpnNotification()
-        stopSelf()
+        scope.launch(Dispatchers.IO) {
+            WdttTunnelManager.stopAndAwait()
+            withContext(Dispatchers.Main) {
+                clearVpnNotification()
+                releaseWakeLock()
+                releaseWifiLock()
+                stopSelf()
+            }
+        }
     }
 
-    /** Убрать уведомление из шторки — только когда VPN выключен. */
+    /** Убрать уведомление из шторки — только когда VPN выключен (только main thread). */
     private fun clearVpnNotification() {
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        getSystemService(NotificationManager::class.java)?.cancel(NOTIF_ID)
+        runCatching {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            getSystemService(NotificationManager::class.java)?.cancel(NOTIF_ID)
+        }
     }
 
     private fun setupNetworkCallback() {
@@ -283,11 +295,20 @@ class SilentVpnService : Service() {
 
     private fun handleNetworkRestored() {
         if (!isRunning) return
-        if (!pausedForNetwork && WdttTunnelManager.running.value) return
         if (!VpnNetworkHelper.hasUnderlyingInternet(this)) return
-        DebugLog.i("VpnService", "Сеть восстановлена — resume libclient")
+        val wasPaused = pausedForNetwork
+        val elapsed = System.currentTimeMillis() - connectStartedAtMs
+        if (!wasPaused) {
+            if (elapsed < NETWORK_GRACE_MS) return
+            if (!WdttTunnelManager.tunnelReady.value) return
+        }
+        val workers = WdttTunnelManager.activeWorkers.value
+        if (!wasPaused && workers >= 1) return
+        DebugLog.i("VpnService", "Сеть восстановлена — resume (wasPaused=$wasPaused workers=$workers)")
         pausedForNetwork = false
-        if (WdttTunnelManager.tunnelReady.value) {
+        if (wasPaused || !WdttTunnelManager.running.value) {
+            WdttTunnelManager.resume()
+        } else if (workers < 1) {
             WdttTunnelManager.resume()
         } else {
             WdttTunnelManager.restartTransport()

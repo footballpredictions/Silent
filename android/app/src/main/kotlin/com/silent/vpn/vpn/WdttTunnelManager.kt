@@ -35,11 +35,13 @@ object WdttTunnelManager {
     private var fallbackJob: Job? = null
     private var wgHelper: WireGuardHelper? = null
     private var apiFallbackConfig: String? = null
+    private var deferredApiWgConfig: String? = null
     private var lastWgConfig: String? = null
     private var appliedConfigSource: Int = 0 // 0=none, 1=api, 2=box, 3=file
     private var appliedConfigFingerprint: String? = null
     private val wgApplyMutex = Mutex()
     private val apiOverlayMutex = Mutex()
+    private var apiOverlayDepth = 0
     private var appContext: Context? = null
     private var lastParams: Params? = null
     private var lastContext: Context? = null
@@ -83,6 +85,7 @@ object WdttTunnelManager {
                 tunnelReady.value = false
                 stats.value = ""
                 activeWorkers.value = 0
+                deferredApiWgConfig = null
                 wrapAuthTimeoutCount = 0
                 appliedConfigSource = 0
                 appliedConfigFingerprint = null
@@ -92,6 +95,8 @@ object WdttTunnelManager {
                 apiFallbackConfig = params.apiWgConfig?.trim()?.takeIf { it.contains("[Interface]") }
                 CaptchaWebViewManager.onTunnelStart(context)
             } else {
+                apiOverlayRestoreJob?.cancel()
+                apiOverlayDepth = 0
                 killProcess()
                 activeWorkers.value = 0
                 stats.value = ""
@@ -210,24 +215,25 @@ object WdttTunnelManager {
         }
     }
 
-    /** Резерв: API-конфиг только если libclient не выдал box/file (на LTE дольше). */
+    /** Резерв API-WG только для bootstrap; на основном VPN ранний 0.0.0.0/0 без воркеров рвёт интернет. */
     private fun startApiFallbackTimer() {
+        if (!isBootstrapMode) return
         fallbackJob?.cancel()
         val fallback = apiFallbackConfig ?: return
         fallbackJob = scope.launch {
-            delay(12_000)
-            if (!running.value || appliedConfigSource >= 2) return@launch
-            if (activeWorkers.value < 1) {
-                DebugLog.w(TAG, "API fallback wait: workers=${activeWorkers.value}")
-                repeat(8) {
-                    delay(1_000)
-                    if (!running.value || appliedConfigSource >= 2 || activeWorkers.value >= 1) return@repeat
-                }
-            }
-            if (!running.value || appliedConfigSource >= 2 || activeWorkers.value < 1) return@launch
-            DebugLog.w(TAG, "API fallback WireGuard (12s timeout)")
+            delay(8_000)
+            if (!running.value || appliedConfigSource > 0) return@launch
+            DebugLog.w(TAG, "WireGuard late API fallback (bootstrap)")
             applyWireGuard(fallback, source = 1)
         }
+    }
+
+    private fun tryApplyDeferredApiWg() {
+        if (isBootstrapMode || activeWorkers.value < 1 || appliedConfigSource > 0) return
+        val cfg = deferredApiWgConfig ?: apiFallbackConfig ?: return
+        deferredApiWgConfig = null
+        DebugLog.i(TAG, "WireGuard API apply after ${activeWorkers.value} workers")
+        applyWireGuard(cfg, source = 1)
     }
 
     private fun startLogReader(context: Context) {
@@ -287,8 +293,10 @@ object WdttTunnelManager {
                         val msg = lineTrim.substringAfter("[СТАТИСТИКА]").trim()
                         stats.value = msg
                         Regex("Активных:\\s*(\\d+)").find(msg)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let {
+                            val prev = activeWorkers.value
                             activeWorkers.value = it
                             if (it > 0) wrapAuthTimeoutCount = 0
+                            if (prev < 1 && it >= 1) tryApplyDeferredApiWg()
                         }
                         return@forEachLine
                     }
@@ -303,7 +311,9 @@ object WdttTunnelManager {
 
                     if (lineTrim.contains("[ДИСП] Воркер") && lineTrim.contains("зарегистрирован")) {
                         Regex("всего:\\s*(\\d+)").find(lineTrim)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let {
+                            val prev = activeWorkers.value
                             activeWorkers.value = it
+                            if (prev < 1 && it >= 1) tryApplyDeferredApiWg()
                         }
                         if (isSwitchingTransport && activeWorkers.value >= 1 && tunnelReady.value) {
                             isSwitchingTransport = false
@@ -387,13 +397,11 @@ object WdttTunnelManager {
     }
 
     private fun markTunnelReadyAfterProbe(source: Int) {
+        if (tunnelReady.value) return
         readyProbeJob?.cancel()
         readyProbeJob = scope.launch {
-            // Наш app исключён из VPN (как в proxy-turn-vk-android), поэтому TCP-соединение
-            // к шлюзу 10.66.66.1 из нашего процесса не работает — он обходит VPN.
-            // Вместо этого проверяем WG backend state + активные воркеры.
-            repeat(60) {
-                delay(500)
+            repeat(50) {
+                delay(if (it < 25) 100L else 400L)
                 if (!running.value || appliedConfigSource < source) return@launch
                 if (activeWorkers.value >= 1 && wgHelper?.isTunnelUp() == true) {
                     tunnelReady.value = true
@@ -408,6 +416,11 @@ object WdttTunnelManager {
     private fun applyWireGuard(configStr: String, source: Int = 1) {
         val normalized = configStr.trim()
         if (normalized.isBlank()) return
+        if (!isBootstrapMode && activeWorkers.value < 1 && source == 1) {
+            deferredApiWgConfig = normalized
+            DebugLog.d(TAG, "defer WG API until WDTT workers ready")
+            return
+        }
         val fingerprint = normalized.hashCode().toString()
         val semanticKey = wgConfigSemanticKey(normalized)
         if (source < appliedConfigSource) return
@@ -465,18 +478,29 @@ object WdttTunnelManager {
 
     fun tunnelApiBase(): String = "http://${SilentRepository.WG_TUNNEL_GATEWAY}:8000"
 
-    /** Кратко: app в WG + AllowedIPs=/24 — только для HTTP к 10.66.66.1, затем восстановление main config. */
+    private var apiOverlayRestoreJob: Job? = null
+
+    /** Краткий overlay только для HTTP к 10.66.66.1; основной WG — полный туннель (интернет). */
     suspend fun <T> withApiOverlay(block: suspend () -> T): T {
+        if (!running.value) return block()
         val config = lastWgConfig ?: return block()
         val helper = wgHelper ?: return block()
         return apiOverlayMutex.withLock {
-            helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = true)
-            delay(150)
+            apiOverlayRestoreJob?.cancel()
+            val entered = apiOverlayDepth == 0
+            apiOverlayDepth++
+            if (entered) {
+                helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = true)
+                delay(200)
+            }
             try {
                 block()
             } finally {
-                helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
-                delay(100)
+                apiOverlayDepth = (apiOverlayDepth - 1).coerceAtLeast(0)
+                if (apiOverlayDepth == 0) {
+                    apiOverlayRestoreJob?.cancel()
+                    helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
+                }
             }
         }
     }
@@ -526,6 +550,10 @@ object WdttTunnelManager {
         scope.launch { stopInternal(keepWg = false) }
     }
 
+    suspend fun stopAndAwait() {
+        stopInternal(keepWg = false)
+    }
+
     private fun killProcess() {
         fallbackJob?.cancel()
         confPollJob?.cancel()
@@ -556,6 +584,9 @@ object WdttTunnelManager {
 
     private suspend fun stopInternal(keepWg: Boolean) {
         withContext(Dispatchers.IO) {
+            apiOverlayRestoreJob?.cancel()
+            apiOverlayDepth = 0
+            deferredApiWgConfig = null
             killProcess()
             if (!keepWg) wgHelper?.stopTunnel()
             CaptchaWebViewManager.onTunnelStop()

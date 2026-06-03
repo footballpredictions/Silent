@@ -135,12 +135,14 @@ class MainActivity : ComponentActivity() {
                         sessionDeviceId = sessionDeviceId,
                         vpnError = vpnError,
                         onToggle = {
-                            if (vpnState == VpnState.DISCONNECTED) {
-                                val intent = VpnService.prepare(this@MainActivity)
-                                if (intent != null) vpnPermissionLauncher.launch(intent)
-                                else vm.connect(this@MainActivity)
-                            } else if (vpnState == VpnState.CONNECTED) {
-                                vm.disconnect(this@MainActivity)
+                            when (vpnState) {
+                                VpnState.DISCONNECTED -> {
+                                    val intent = VpnService.prepare(this@MainActivity)
+                                    if (intent != null) vpnPermissionLauncher.launch(intent)
+                                    else vm.connect(this@MainActivity)
+                                }
+                                VpnState.CONNECTING, VpnState.CONNECTED, VpnState.DISCONNECTING ->
+                                    vm.disconnect(this@MainActivity)
                             }
                         },
                         onLogout = { vm.logout(this@MainActivity) },

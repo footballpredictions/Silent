@@ -40,7 +40,7 @@ import kotlin.random.Random
 object CaptchaWebViewManager {
 
     private const val TAG = "CaptchaWV"
-    private const val CAPTCHA_TIMEOUT_MS = 10_000L
+    private const val CAPTCHA_TIMEOUT_MS = 25_000L
     private const val WV_CREATE_TIMEOUT_MS = 3000L
     const val ERROR_SLIDER_DETECTED = "slider_detected"
 

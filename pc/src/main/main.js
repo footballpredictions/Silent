@@ -293,7 +293,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
   const tmpDir = app.getPath('temp')
   const confPath = path.join(tmpDir, 'wg-turn.conf')
-  if (fs.existsSync(confPath)) fs.unlinkSync(confPath)
+  if (!switching && fs.existsSync(confPath)) fs.unlinkSync(confPath)
 
   const hashes = (config.vk_hashes || []).filter(Boolean).join(',')
   const workers = Math.min(Math.max(Number(config.stream_count) || 108, 9), 108)

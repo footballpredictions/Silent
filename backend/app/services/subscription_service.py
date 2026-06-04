@@ -20,6 +20,16 @@ def is_test_user(user: User) -> bool:
     return bool(getattr(user, "is_test_user", False))
 
 
+async def user_in_test_mode(user: User, db: AsyncSession) -> bool:
+    """Test access: per-user flag or global test mode (all non-admin users)."""
+    if is_user_admin(user):
+        return False
+    if is_test_user(user):
+        return True
+    from app.services.test_mode_settings import is_registration_test_mode_enabled
+    return await is_registration_test_mode_enabled(db)
+
+
 async def ensure_admin_flag(user: User, db: AsyncSession) -> None:
     """Sync is_admin from ADMIN_LOGIN email once."""
     if user.email.lower() == settings.ADMIN_LOGIN.lower() and not user.is_admin:
@@ -99,6 +109,57 @@ async def enroll_user_in_test_mode(db: AsyncSession, user: User) -> Subscription
     return subscription
 
 
+async def sync_all_users_for_test_mode(db: AsyncSession, enabled: bool) -> int:
+    """Enable/disable test mode for every non-admin user."""
+    from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
+
+    result = await db.execute(select(User))
+    affected = 0
+    now = datetime.utcnow()
+
+    for user in result.scalars().all():
+        if is_user_admin(user) or user.email == BOOTSTRAP_USER_EMAIL:
+            continue
+
+        changed = False
+        if enabled:
+            if not user.is_test_user:
+                user.is_test_user = True
+                changed = True
+            active = await get_active_subscription(db, user)
+            if not active:
+                db.add(Subscription(
+                    user_id=user.id,
+                    plan_type=TEST_PLAN,
+                    status="active",
+                    amount_paid=0,
+                    started_at=now,
+                    expires_at=now + timedelta(days=36500),
+                ))
+                changed = True
+        else:
+            if user.is_test_user:
+                user.is_test_user = False
+                changed = True
+            active_result = await db.execute(
+                select(Subscription).where(
+                    Subscription.user_id == user.id,
+                    Subscription.status == "active",
+                    Subscription.plan_type == TEST_PLAN,
+                )
+            )
+            for sub in active_result.scalars().all():
+                if sub.is_active:
+                    sub.status = "cancelled"
+                    changed = True
+
+        if changed:
+            affected += 1
+
+    await db.commit()
+    return affected
+
+
 async def apply_post_verification_benefits(db: AsyncSession, user: User) -> Subscription | None:
     """Trial or test mode subscription after email verification."""
     if is_user_admin(user):
@@ -112,7 +173,7 @@ async def apply_post_verification_benefits(db: AsyncSession, user: User) -> Subs
 
 
 async def user_has_active_subscription(user: User, db: AsyncSession) -> bool:
-    if is_user_admin(user) or is_test_user(user):
+    if is_user_admin(user) or await user_in_test_mode(user, db):
         return True
     await ensure_trial_subscription(db, user)
     sub = await get_active_subscription(db, user)
@@ -121,7 +182,7 @@ async def user_has_active_subscription(user: User, db: AsyncSession) -> bool:
 
 async def require_active_subscription(user: User, db: AsyncSession) -> None:
     """Raise 402 if VPN access is not allowed (trial ended, no paid plan)."""
-    if is_user_admin(user) or is_test_user(user):
+    if is_user_admin(user) or await user_in_test_mode(user, db):
         return
 
     await ensure_trial_subscription(db, user)

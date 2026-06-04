@@ -123,6 +123,9 @@ async def list_users(
     )
     users = result.scalars().all()
 
+    from app.services.test_mode_settings import is_registration_test_mode_enabled
+    global_test = await is_registration_test_mode_enabled(db)
+
     out = []
     for user in users:
         sub_result = await db.execute(
@@ -140,6 +143,7 @@ async def list_users(
 
         from app.services.subscription_service import is_user_admin
         admin = is_user_admin(user)
+        in_test = global_test or bool(user.is_test_user)
 
         out.append({
             "id": str(user.id),
@@ -148,14 +152,14 @@ async def list_users(
             "is_verified": user.is_verified,
             "is_active": user.is_active,
             "is_admin": admin,
-            "is_test_user": bool(user.is_test_user),
+            "is_test_user": in_test,
             "created_at": user.created_at,
             "bootstrap_hash": (user.bootstrap_hash[:12] + "...") if user.bootstrap_hash else None,
             "server_hashes": hash_count,
             "subscription": {
-                "active": True if admin or user.is_test_user else (sub.is_active if sub else False),
-                "plan": "unlimited" if admin else ("test" if user.is_test_user else (sub.plan_type if sub else None)),
-                "expires_at": None if admin or user.is_test_user else (sub.expires_at if sub else None),
+                "active": True if admin or in_test else (sub.is_active if sub else False),
+                "plan": "unlimited" if admin else ("test" if in_test else (sub.plan_type if sub else None)),
+                "expires_at": None if admin or in_test else (sub.expires_at if sub else None),
             },
             "devices_count": dev_count,
         })
@@ -184,8 +188,8 @@ async def set_registration_test_mode_endpoint(
 ):
     from app.services.test_mode_settings import set_registration_test_mode
 
-    enabled = await set_registration_test_mode(db, req.enabled)
-    return {"enabled": enabled}
+    enabled, affected = await set_registration_test_mode(db, req.enabled)
+    return {"enabled": enabled, "users_affected": affected}
 
 
 class GrantSubscriptionRequest(BaseModel):

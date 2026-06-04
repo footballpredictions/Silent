@@ -94,10 +94,11 @@ export default function SubscriptionsPage({ token }: { token: string }) {
         return
       }
       setTestMode(!!body.enabled)
+      const n = body.users_affected ?? 0
       setSuccess(
         body.enabled
-          ? 'Тестовый режим включён — новые регистрации получат безлимит'
-          : 'Тестовый режим выключен — новые регистрации получат пробный период'
+          ? `Тестовый режим включён — безлимит для всех пользователей${n ? ` (${n} обновлено)` : ''}`
+          : `Тестовый режим выключен — обычные подписки${n ? ` (${n} обновлено)` : ''}`
       )
     } finally {
       setTestModeBusy(false)
@@ -178,7 +179,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                 ? 'bg-purple-500/15 border-purple-500/50 text-purple-300'
                 : 'bg-[#111] border-[#333] text-[#ccc] hover:border-[#555]'
             }`}
-            title="Новые регистрации получают безлимитный тестовый режим"
+            title="Безлимитный доступ для всех пользователей"
           >
             <span className="font-medium">Тест</span>
             <span
@@ -207,7 +208,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
 
       {testMode && (
         <div className="bg-purple-500/10 border border-purple-500/30 text-purple-300 text-sm rounded-lg px-4 py-3">
-          Тестовый режим активен: все новые пользователи после подтверждения email получают безлимитный доступ.
+          Тестовый режим активен: все пользователи получают безлимитный доступ к интернету.
         </div>
       )}
 

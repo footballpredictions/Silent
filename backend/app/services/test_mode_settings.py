@@ -1,4 +1,4 @@
-"""Global registration test mode toggle (AppSetting)."""
+"""Global test mode toggle (AppSetting) — applies to all users while enabled."""
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,7 +15,7 @@ async def is_registration_test_mode_enabled(db: AsyncSession) -> bool:
     return row is not None and row.value.strip().lower() in ("true", "1", "yes", "on")
 
 
-async def set_registration_test_mode(db: AsyncSession, enabled: bool) -> bool:
+async def set_registration_test_mode(db: AsyncSession, enabled: bool) -> tuple[bool, int]:
     result = await db.execute(
         select(AppSetting).where(AppSetting.key == REGISTRATION_TEST_MODE_KEY)
     )
@@ -26,4 +26,7 @@ async def set_registration_test_mode(db: AsyncSession, enabled: bool) -> bool:
     else:
         db.add(AppSetting(key=REGISTRATION_TEST_MODE_KEY, value=value))
     await db.commit()
-    return enabled
+
+    from app.services.subscription_service import sync_all_users_for_test_mode
+    affected = await sync_all_users_for_test_mode(db, enabled)
+    return enabled, affected

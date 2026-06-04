@@ -12,6 +12,7 @@ type Screen = 'login' | 'main'
 export default function App() {
   const [screen, setScreen] = useState<Screen>('login')
   const [theme, setTheme] = useState<ClientTheme | null>(null)
+  const [resetToken, setResetToken] = useState<string | null>(null)
 
   useEffect(() => {
     setServerUrl(SERVER_URL)
@@ -21,10 +22,20 @@ export default function App() {
     } else {
       setScreen('login')
     }
+    const api_ = (window as any).electronAPI
+    const onReset = ({ token }: { token: string }) => {
+      if (token) {
+        setResetToken(token)
+        setScreen('login')
+      }
+    }
+    api_?.onResetPasswordLink?.(onReset)
+    return () => api_?.removeResetPasswordLinkListeners?.()
   }, [])
 
   const handleLoginDone = (themeData: ClientTheme | null) => {
     if (themeData) setTheme(themeData)
+    setResetToken(null)
     setScreen('main')
   }
   const handleLogout = () => setScreen('login')
@@ -32,7 +43,14 @@ export default function App() {
   return (
     <AppErrorBoundary>
       <div className="w-full h-full">
-        {screen === 'login' && <LoginScreen theme={theme} onLogin={handleLoginDone} />}
+        {screen === 'login' && (
+          <LoginScreen
+            theme={theme}
+            resetToken={resetToken}
+            onResetDone={() => setResetToken(null)}
+            onLogin={handleLoginDone}
+          />
+        )}
         {screen === 'main' && <MainScreen theme={theme} onLogout={handleLogout} />}
       </div>
     </AppErrorBoundary>

@@ -11,6 +11,22 @@ export interface ClientTheme {
   update_bar_progress_color?: string
   update_bar_label_available?: string
   update_bar_label_downloading?: string
+  login_step1_title?: string
+  login_step1_instruction?: string
+  login_hash_placeholder?: string
+  login_hash_button_text?: string
+  login_vk_mobile_url?: string
+  login_vk_mobile_link_text?: string
+  login_vk_pc_url?: string
+  login_vk_pc_link_text?: string
+  login_link_color?: string
+  login_step2_title?: string
+  login_remember_me_label?: string
+  login_forgot_password_label?: string
+  login_forgot_title?: string
+  login_forgot_instruction?: string
+  login_reset_title?: string
+  login_reset_button_text?: string
 }
 
 function parseHex(color: string): { r: number; g: number; b: number } | null {
@@ -61,5 +77,6 @@ export function themeToUi(theme: ClientTheme | null) {
     red: '#EF4444',
     fontFamily: theme?.font_family ? `${theme.font_family}, Inter, sans-serif` : 'Inter, sans-serif',
     appTitle: resolveAppName(theme?.app_name).toUpperCase(),
+    linkColor: theme?.login_link_color || '#4680C2',
   }
 }

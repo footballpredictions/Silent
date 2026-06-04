@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onVkDeepLink: (cb) => ipcRenderer.on('vk-deep-link', (_, payload) => cb(payload)),
   removeVkDeepLinkListeners: () => ipcRenderer.removeAllListeners('vk-deep-link'),
+  onResetPasswordLink: (cb) => ipcRenderer.on('reset-password-link', (_, payload) => cb(payload)),
+  removeResetPasswordLinkListeners: () => ipcRenderer.removeAllListeners('reset-password-link'),
   listInstalledApps: () => ipcRenderer.invoke('list-installed-apps'),
   getAppVersion: () => ipcRenderer.invoke('app-version'),
   downloadUpdate: (url, filename) => ipcRenderer.invoke('app-update-download', { url, filename }),

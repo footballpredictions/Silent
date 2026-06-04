@@ -34,6 +34,7 @@ let isQuitting = false
 let wdttProcess = null
 let wgApplied = false
 let pendingVkDeepLink = null
+let pendingResetPasswordLink = null
 let vpnSessionActive = false
 let connectStartedAtMs = 0
 let pausedForNetwork = false
@@ -64,44 +65,65 @@ if (!app.requestSingleInstanceLock()) {
       mainWindow.focus()
     }
     const url = argv.find(a => typeof a === 'string' && a.startsWith('silentvpn://'))
-    if (url) handleVkDeepLink(url)
+    if (url) handleDeepLink(url)
   })
 }
 
-function handleVkDeepLink(url) {
+function handleDeepLink(url) {
   if (!url || typeof url !== 'string' || !url.startsWith('silentvpn://')) return
   try {
     const u = new URL(url)
-    if (u.hostname !== 'vk-linked') return
-    const boot = u.searchParams.get('boot') || ''
-    const vkRaw = u.searchParams.get('vk')
-    const vk = vkRaw ? parseInt(vkRaw, 10) : null
-    const payload = { boot, vk: Number.isFinite(vk) ? vk : null }
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      const send = () => {
-        mainWindow.webContents.send('vk-deep-link', payload)
-        mainWindow.show()
-        mainWindow.focus()
-      }
-      if (mainWindow.webContents.isLoading()) {
-        pendingVkDeepLink = payload
+    if (u.hostname === 'vk-linked') {
+      const boot = u.searchParams.get('boot') || ''
+      const vkRaw = u.searchParams.get('vk')
+      const vk = vkRaw ? parseInt(vkRaw, 10) : null
+      const payload = { boot, vk: Number.isFinite(vk) ? vk : null }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        const send = () => {
+          mainWindow.webContents.send('vk-deep-link', payload)
+          mainWindow.show()
+          mainWindow.focus()
+        }
+        if (mainWindow.webContents.isLoading()) {
+          pendingVkDeepLink = payload
+        } else {
+          send()
+        }
       } else {
-        send()
+        pendingVkDeepLink = payload
       }
-    } else {
-      pendingVkDeepLink = payload
+      return
+    }
+    if (u.hostname === 'reset-password') {
+      const token = u.searchParams.get('token')
+      if (!token) return
+      const payload = { token }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        const send = () => {
+          mainWindow.webContents.send('reset-password-link', payload)
+          mainWindow.show()
+          mainWindow.focus()
+        }
+        if (mainWindow.webContents.isLoading()) {
+          pendingResetPasswordLink = payload
+        } else {
+          send()
+        }
+      } else {
+        pendingResetPasswordLink = payload
+      }
     }
   } catch {}
 }
 
 if (process.platform === 'win32') {
   const launchUrl = process.argv.find(a => typeof a === 'string' && a.startsWith('silentvpn://'))
-  if (launchUrl) handleVkDeepLink(launchUrl)
+  if (launchUrl) handleDeepLink(launchUrl)
 }
 
 app.on('open-url', (event, url) => {
   event.preventDefault()
-  handleVkDeepLink(url)
+  handleDeepLink(url)
 })
 
 function createWindow() {
@@ -137,6 +159,12 @@ function createWindow() {
     if (pendingVkDeepLink) {
       mainWindow.webContents.send('vk-deep-link', pendingVkDeepLink)
       pendingVkDeepLink = null
+      mainWindow.show()
+      mainWindow.focus()
+    }
+    if (pendingResetPasswordLink) {
+      mainWindow.webContents.send('reset-password-link', pendingResetPasswordLink)
+      pendingResetPasswordLink = null
       mainWindow.show()
       mainWindow.focus()
     }

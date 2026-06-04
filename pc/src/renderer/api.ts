@@ -7,6 +7,8 @@ const REFRESH_KEY = 'silent_refresh'
 /** Один fingerprint на сессию — как Android PREF_DEVICE_FP. */
 const DEVICE_FP_KEY = 'silent_device_fingerprint'
 const SESSION_DEVICE_KEY = 'silent_session_device_id'
+const REMEMBER_ME_KEY = 'silent_remember_me'
+const REMEMBER_EMAIL_KEY = 'silent_remember_email'
 
 export function getServerUrl(): string {
   return localStorage.getItem(SERVER_URL_KEY) || ''
@@ -105,6 +107,24 @@ export function saveSessionDeviceId(id: string): void {
 
 export function clearSessionDeviceId(): void {
   localStorage.removeItem(SESSION_DEVICE_KEY)
+}
+
+export function getRememberMe(): boolean {
+  return localStorage.getItem(REMEMBER_ME_KEY) === '1'
+}
+
+export function getRememberedEmail(): string {
+  return getRememberMe() ? (localStorage.getItem(REMEMBER_EMAIL_KEY) || '') : ''
+}
+
+export function saveRememberMe(email: string, remember: boolean): void {
+  if (remember) {
+    localStorage.setItem(REMEMBER_ME_KEY, '1')
+    localStorage.setItem(REMEMBER_EMAIL_KEY, email.trim())
+  } else {
+    localStorage.removeItem(REMEMBER_ME_KEY)
+    localStorage.removeItem(REMEMBER_EMAIL_KEY)
+  }
 }
 
 export function formatApiError(err: unknown, fallback: string): string {

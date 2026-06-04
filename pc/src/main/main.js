@@ -2,6 +2,8 @@ const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, clipboard }
 const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
+const https = require('https')
+const http = require('http')
 
 // Self-signed сервер — как на Android (TrustAllCerts)
 app.commandLine.appendSwitch('ignore-certificate-errors')
@@ -709,6 +711,72 @@ ipcMain.handle('vpn-is-ready', async () => ({
   target: sessionTargetWorkers,
   min: minWorkersForTunnelReady(vpnBootstrapMode),
 }))
+
+ipcMain.handle('app-version', () => app.getVersion())
+
+function downloadFileWithProgress(url, destPath, onProgress) {
+  return new Promise((resolve, reject) => {
+    const proto = url.startsWith('https') ? https : http
+    const req = proto.get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        downloadFileWithProgress(res.headers.location, destPath, onProgress).then(resolve).catch(reject)
+        res.resume()
+        return
+      }
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode}`))
+        res.resume()
+        return
+      }
+      const total = parseInt(res.headers['content-length'] || '0', 10)
+      let received = 0
+      const file = fs.createWriteStream(destPath)
+      res.on('data', (chunk) => {
+        received += chunk.length
+        if (total > 0 && onProgress) onProgress(Math.min(100, Math.round((received / total) * 100)))
+      })
+      res.pipe(file)
+      file.on('finish', () => file.close(() => resolve(destPath)))
+      file.on('error', (err) => {
+        fs.unlink(destPath, () => {})
+        reject(err)
+      })
+    })
+    req.on('error', reject)
+    req.setTimeout(600_000, () => {
+      req.destroy(new Error('Download timeout'))
+    })
+  })
+}
+
+ipcMain.handle('app-update-download', async (_, { url, filename }) => {
+  try {
+    const safeName = path.basename(filename || 'update.exe')
+    const dest = path.join(app.getPath('temp'), safeName)
+    const sendProgress = (pct) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update-progress', pct)
+      }
+    }
+    await downloadFileWithProgress(url, dest, sendProgress)
+    return { ok: true, path: dest }
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) }
+  }
+})
+
+ipcMain.handle('app-update-install', async (_, filePath) => {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) {
+      return { ok: false, error: 'File not found' }
+    }
+    spawn(filePath, [], { detached: true, stdio: 'ignore' }).unref()
+    setTimeout(() => app.quit(), 500)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) }
+  }
+})
 
 app.whenReady().then(() => {
   // Сироты wireguard.exe после краша / прошлых версий — убираем до подключения

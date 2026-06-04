@@ -29,6 +29,8 @@ import {
   saveCachedProfile,
   clearCachedProfile,
 } from '../profileStore'
+import { checkForUpdate, getAppVersion, type UpdateInfo } from '../updateCheck'
+import { getApiBaseUrl } from '../tunnelApi'
 
 interface DeviceInfo {
   id: string
@@ -127,6 +129,9 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const [activeWorkers, setActiveWorkers] = useState(0)
   const connectLockRef = useRef(false)
   const onlineMarkedRef = useRef(false)
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [updateDownloading, setUpdateDownloading] = useState(false)
+  const [updateProgress, setUpdateProgress] = useState(0)
 
   const fetchProfile = useCallback(async () => {
     try {
@@ -237,6 +242,52 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     const id = window.setInterval(() => fetchProfile(), 10000)
     return () => clearInterval(id)
   }, [connected, fetchProfile])
+
+  useEffect(() => {
+    if (!connected) {
+      setUpdateInfo(null)
+      return
+    }
+    let cancelled = false
+    const run = async () => {
+      const info = await checkForUpdate()
+      if (!cancelled && info?.available) setUpdateInfo(info)
+    }
+    void run()
+    const id = window.setInterval(() => void run(), 5 * 60_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [connected])
+
+  useEffect(() => {
+    const api_ = (window as any).electronAPI
+    if (!api_?.onUpdateProgress) return
+    api_.onUpdateProgress((pct: number) => setUpdateProgress(pct))
+    return () => api_.removeUpdateListeners?.()
+  }, [])
+
+  const handleUpdateClick = async () => {
+    if (!updateInfo?.download_url || updateDownloading) return
+    const api_ = (window as any).electronAPI
+    if (!api_?.downloadUpdate) return
+    setUpdateDownloading(true)
+    setUpdateProgress(0)
+    const base = getApiBaseUrl().replace(/\/$/, '')
+    const url = updateInfo.download_url.startsWith('http')
+      ? updateInfo.download_url
+      : `${base}${updateInfo.download_url}`
+    try {
+      const res = await api_.downloadUpdate(url, updateInfo.filename || 'update.exe')
+      if (res?.ok && res.path && api_.installUpdate) {
+        await api_.installUpdate(res.path)
+      } else {
+        alert(res?.error || 'Ошибка загрузки обновления')
+        setUpdateDownloading(false)
+      }
+    } catch {
+      alert('Ошибка загрузки обновления')
+      setUpdateDownloading(false)
+    }
+  }
 
   useEffect(() => {
     if (!connecting || connected) return
@@ -499,7 +550,17 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
       </div>
 
       <div className="absolute bottom-0 left-0 right-0 p-4 border-t" style={{ background: bg, borderColor: '#F3F4F6' }}>
-        {profile?.is_admin || profile?.subscription?.plan_type === 'unlimited' ? (
+        {updateInfo?.available ? (
+          <button
+            onClick={() => void handleUpdateClick()}
+            disabled={updateDownloading}
+            className="w-full rounded-xl py-2 text-xs font-semibold transition-colors disabled:opacity-70"
+            style={{ background: '#2563EB', color: '#FFFFFF' }}>
+            {updateDownloading
+              ? `Скачивание… ${updateProgress}%`
+              : `Доступно обновление v${updateInfo.version}`}
+          </button>
+        ) : profile?.is_admin || profile?.subscription?.plan_type === 'unlimited' ? (
           <div className="text-center">
             <div className="text-xs font-semibold" style={{ color: GREEN }}>Бессрочно</div>
             <div className="text-xs mt-0.5" style={{ color: muted }}>Полный доступ</div>
@@ -772,7 +833,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
               <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
               <div className="text-sm font-semibold mb-1">Silent VPN</div>
               <div className="text-xs text-gray-500 space-y-1">
-                <p>Версия 1.0.32</p>
+                <p>Версия {getAppVersion()}</p>
                 <p>WireGuard-туннель через VK TURN/DTLS</p>
               </div>
             </div>

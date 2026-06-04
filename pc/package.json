@@ -1,6 +1,6 @@
 {
   "name": "silent-vpn-pc",
-  "version": "1.0.60",
+  "version": "1.0.71",
   "description": "Silent VPN PC Client",
   "main": "src/main/main.js",
   "scripts": {

@@ -1,5 +1,5 @@
 import api from './api'
-import { applyWorkerCount } from './hashChannelHelper'
+import { applyWorkerCountForConnect } from './hashChannelHelper'
 import {
   activeServerHashes,
   mapHashesResponse,
@@ -26,26 +26,42 @@ export async function prepareVpnConnectConfig(
     /* connect может вернуть 403 при лимите устройств — хеши всё равно пробуем */
   }
 
+  const hashSyncDeadline = 10_000
+  const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
+    Promise.race([
+      p,
+      new Promise<null>(resolve => setTimeout(() => resolve(null), ms)),
+    ])
+
   let items: HashItem[] = getSavedHashItems()
   try {
-    const hashesRes = await api.get('/api/vpn/hashes')
-    const downloaded = mapHashesResponse(hashesRes.data)
-    if (downloaded.length > 0) {
-      saveHashItems(downloaded)
-      items = downloaded
-    }
-    const active = activeServerHashes(items).length
-    if (active < 4) {
-      try {
-        await api.post('/api/vpn/hashes/request-refresh', { device_fingerprint: fingerprint })
-        const again = await api.get('/api/vpn/hashes')
-        const refreshed = mapHashesResponse(again.data)
-        if (refreshed.length > items.length) {
-          saveHashItems(refreshed)
-          items = refreshed
+    const hashesRes = await withTimeout(api.get('/api/vpn/hashes'), hashSyncDeadline)
+    if (!hashesRes) {
+      pushLog('Main', 'hash sync: timeout before connect, using cache', 'W')
+    } else {
+      const downloaded = mapHashesResponse(hashesRes.data)
+      if (downloaded.length > 0) {
+        saveHashItems(downloaded)
+        items = downloaded
+      }
+      const active = activeServerHashes(items).length
+      if (active < 4) {
+        try {
+          await withTimeout(
+            api.post('/api/vpn/hashes/request-refresh', { device_fingerprint: fingerprint }),
+            5_000,
+          )
+          const again = await withTimeout(api.get('/api/vpn/hashes'), hashSyncDeadline)
+          if (again) {
+            const refreshed = mapHashesResponse(again.data)
+            if (refreshed.length > items.length) {
+              saveHashItems(refreshed)
+              items = refreshed
+            }
+          }
+        } catch {
+          /* AI-агент может быть выключен */
         }
-      } catch {
-        /* AI-агент может быть выключен */
       }
     }
   } catch (e: unknown) {
@@ -78,10 +94,36 @@ export async function prepareVpnConnectConfig(
     /* остаёмся на merged из register + hash sync */
   }
 
-  const prepared = applyWorkerCount(merged)
+  // Одна сессия wdtt с полным n из настроек (как Android). Без фонового upgrade — он рвал транспорт (0 воркеров при живом WG).
+  const prepared = applyWorkerCountForConnect(merged)
   pushLog(
     'Main',
-    `prepare n=${prepared.stream_count} hashes=${prepared.vk_hashes?.length ?? 0} stream_count_api=${merged.stream_count ?? '?'}`,
+    `prepare n=${prepared.stream_count} hashes=${prepared.vk_hashes?.length ?? 0}`,
   )
   return prepared
+}
+
+let hashesTunnelSyncInFlight: Promise<boolean> | null = null
+
+/** После поднятия WG: хеши через 10.66.66.1 (tunnel API), обновляет timestamp в меню. */
+export async function syncHashesWhenTunnelUp(): Promise<boolean> {
+  if (hashesTunnelSyncInFlight) return hashesTunnelSyncInFlight
+  hashesTunnelSyncInFlight = (async () => {
+    try {
+      const hashesRes = await api.get('/api/vpn/hashes')
+      const downloaded = mapHashesResponse(hashesRes.data)
+      if (downloaded.length > 0) {
+        saveHashItems(downloaded)
+        pushLog('Main', `hashes sync via tunnel: ${downloaded.length} items`)
+        return true
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      pushLog('Main', `hashes tunnel sync: ${msg}`, 'W')
+    }
+    return false
+  })().finally(() => {
+    hashesTunnelSyncInFlight = null
+  })
+  return hashesTunnelSyncInFlight
 }

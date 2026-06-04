@@ -7,6 +7,10 @@ export const LIBCLIENT_MAX_WORKERS = 108
 export const DEFAULT_TOTAL_WORKERS = LIBCLIENT_MAX_WORKERS
 /** Bootstrap: только API в WG, 3 воркера (1 группа) — как Android, без нагрузки на login. */
 export const BOOTSTRAP_STREAM_COUNT = 3
+/** PC connect: 2 группы — хватает для 0.0.0.0/0 на десктопе, без 6× VK Auth. */
+export const PC_CONNECT_WORKERS = 18
+/** Верхняя граница n при connect на PC. */
+export const PC_CONNECT_MAX_WORKERS = 27
 
 /** @deprecated legacy key — migrated to TOTAL_WORKERS_KEY */
 export const CHANNELS_KEY = 'silent_hash_channels_per_hash'
@@ -32,12 +36,12 @@ export function groupsForWorkers(totalWorkers: number): number {
   )
 }
 
-/** Bootstrap: WG + 1 воркер (как Android isInternetReady). Основной VPN: WG + воркеры. */
+/** Bootstrap: WG + 1 воркер. Основной VPN: WG + ≥1 воркер (как Android waitForTunnelReady). */
 export function connectWaitTimeoutMs(totalWorkers: number, isBootstrap = false): number {
   if (isBootstrap) return 90_000
   const n = Math.max(totalWorkers, WORKERS_PER_GROUP)
   const groups = Math.ceil(n / WORKERS_PER_GROUP)
-  return Math.min(120_000, 30_000 + groups * 8_000)
+  return Math.min(120_000, 25_000 + groups * 6_000)
 }
 
 /**
@@ -160,7 +164,7 @@ export function applyBootstrapWorkerCount<T extends { vk_hashes?: string[]; stre
   }
 }
 
-/** Один connect с полным n и всеми хешами (как Android wdttConnectConfig). */
+/** Полный n из настроек (цель рампа). */
 export function applyWorkerCount<T extends { vk_hashes?: string[]; stream_count?: number }>(config: T): T {
   const cappedHashes = capHashes(config.vk_hashes)
   const workers = resolveWorkerCount({ ...config, vk_hashes: cappedHashes })
@@ -170,4 +174,11 @@ export function applyWorkerCount<T extends { vk_hashes?: string[]; stream_count?
     vk_hashes: libclientHashes.length > 0 ? libclientHashes : cappedHashes.slice(0, 1),
     stream_count: workers,
   }
+}
+
+/** PC connect = Android: полный n из ползунка, одна сессия wdtt, каскад групп 2 с. */
+export function applyWorkerCountForConnect<
+  T extends { vk_hashes?: string[]; stream_count?: number },
+>(config: T): T {
+  return applyWorkerCount(config)
 }

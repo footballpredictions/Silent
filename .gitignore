@@ -12,6 +12,10 @@ dist/
 .env
 *.local
 
+# PC installers (собираются локально, в git только код)
+releases/*.exe
+releases/*.apk
+
 # Electron build
 pc/dist/
 pc/build-output/

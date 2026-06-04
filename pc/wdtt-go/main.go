@@ -125,7 +125,10 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:9000", "локальный адрес")
 	vkHash := flag.String("vk", "", "хеши VK-звонков (через запятую)")
 	peerAddr := flag.String("peer", "", "адрес:порт VPS сервера")
-	numW := flag.Int("n", 24, "количество воркеров (кратно 12)")
+	numW := flag.Int("n", 24, "воркеров на старте (кратно 9)")
+	targetN := flag.Int("target-n", 0, "целевое число воркеров в этой сессии (0 = как -n)")
+	rampFirst := flag.Duration("ramp-first", defaultRampFirstDelay, "пауза перед 2-й группой")
+	rampNext := flag.Duration("ramp-next", defaultRampNextDelay, "пауза между последующими группами")
 
 	deviceID := flag.String("device-id", "unknown", "уникальный ID устройства")
 	connPassword := flag.String("password", "", "пароль подключения")
@@ -225,7 +228,24 @@ func main() {
 		localPort = "9000"
 	}
 
-	numGroups := *numW / workersPerGroup
+	targetWorkers := *numW
+	if *targetN > *numW {
+		targetWorkers = *targetN
+	}
+	if targetWorkers < workersPerGroup {
+		targetWorkers = workersPerGroup
+	}
+	if *numW < workersPerGroup {
+		*numW = workersPerGroup
+	}
+	bootGroups := (*numW + workersPerGroup - 1) / workersPerGroup
+	numGroups := (targetWorkers + workersPerGroup - 1) / workersPerGroup
+	rampEnabled := *targetN > *numW && numGroups > bootGroups
+	var ramp *rampScheduler
+	if rampEnabled {
+		rampDelays := numGroups - bootGroups - 1
+		ramp = newRampScheduler(ctx, rampDelays, bootGroups, *rampFirst, *rampNext)
+	}
 
 	wrapStatus := "OFF"
 	if len(wrapKey) == wrapKeyLen {
@@ -243,7 +263,11 @@ func main() {
 	log.Println("[КЛИЕНТ] ═══════════════════════════════════════")
 	log.Printf("[КЛИЕНТ] VK Creds: Client IDs: %s", GetActiveClientIdsString())
 	log.Printf("[КЛИЕНТ] TLS: %s fingerprint", GetActiveFingerprint())
-	log.Printf("[КЛИЕНТ] Воркеров: %d (групп: %d, по %d)", *numW, numGroups, workersPerGroup)
+	if rampEnabled {
+		log.Printf("[КЛИЕНТ] Воркеров: %d → %d (boot групп: %d, всего групп: %d, рамп %v / %v)", *numW, targetWorkers, bootGroups, numGroups, *rampFirst, *rampNext)
+	} else {
+		log.Printf("[КЛИЕНТ] Воркеров: %d (групп: %d, по %d)", targetWorkers, numGroups, workersPerGroup)
+	}
 	log.Printf("[КЛИЕНТ] Хешей: %d", len(hashes))
 	log.Printf("[КЛИЕНТ] Слушаю: %s | Пир: %s", *listen, cleanPeerAddr)
 	log.Printf("[КЛИЕНТ] Протокол: UDP")
@@ -303,8 +327,11 @@ func main() {
 	var wg sync.WaitGroup
 	workerIDCounter := 1
 
-	// Параллельный старт всех групп (как Android v1.0.46+): WG после первой группы,
-	// остальные креды/TURN без эстафеты — connect 3–5 с, без каскадного VK throttle.
+	// Группа 1 → WG; при рампе группы 2+ с паузой (один процесс, без restart).
+	var groupGate chan struct{}
+	firstGate := make(chan struct{})
+	close(firstGate)
+	groupGate = firstGate
 	hashCount := len(hashes)
 	if hashCount < 1 {
 		hashCount = 1
@@ -325,13 +352,26 @@ func main() {
 			cc = configCh
 		}
 
+		var waitReady <-chan struct{}
+		var signalNext chan struct{}
+		if ramp != nil && g > bootGroups {
+			waitReady = ramp.waitForGroup(g - bootGroups - 1)
+		} else {
+			waitReady = groupGate
+			if g < numGroups-1 && (ramp == nil || g+1 <= bootGroups) {
+				signalNext = make(chan struct{})
+				groupGate = signalNext
+			}
+		}
+
 		startHashIndex := g % hashCount
 		wg.Add(1)
-		go func(groupID int, isFirstGroup bool, configChan chan<- string, workerIds []int, hashIdx int) {
+		go func(groupID int, isFirstGroup bool, configChan chan<- string, workerIds []int, hashIdx int,
+			wait <-chan struct{}, signal chan<- struct{}, rampSched *rampScheduler) {
 			defer wg.Done()
 			WorkerGroup(ctx, groupID, hashIdx, tp, peer, disp, localPort,
-				isFirstGroup, configChan, workerIds, &pauseFlag, *deviceID, *connPassword, stats, nil, nil)
-		}(gID, isFirst, cc, ids, startHashIndex)
+				isFirstGroup, configChan, workerIds, &pauseFlag, *deviceID, *connPassword, stats, wait, signal, rampSched)
+		}(gID, isFirst, cc, ids, startHashIndex, waitReady, signalNext, ramp)
 	}
 
 	wg.Wait()

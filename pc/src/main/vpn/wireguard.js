@@ -13,6 +13,8 @@ const TUNNEL_CONF_NAME = 'wg-turn.conf'
 const SERVICE_NAME = `WireGuardTunnel$${TUNNEL_NAME}`
 const STABLE_CONF_DIR = path.join(process.env.ProgramData || 'C:\\ProgramData', 'SilentVPN')
 const STABLE_WG_DIR = path.join(STABLE_CONF_DIR, 'wireguard')
+/** Основной VPN: DNS через туннель (Cloudflare, как wdtt server.go). */
+const WG_DNS_CLOUDFLARE = '1.1.1.1, 1.0.0.1'
 
 let lastRuntimeDir = null
 
@@ -235,6 +237,20 @@ async function waitForWdttProxy(host, port, timeoutMs = 60000, send, confPath = 
   return false
 }
 
+/** Ждём освобождения UDP-порта после kill wdtt (иначе два libclient на 9000). */
+async function waitForUdpPortFree(host, port, timeoutMs = 8000, send) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!isUdpPortListening(port, host)) {
+      send?.('[WG] UDP ' + host + ':' + port + ' свободен')
+      return true
+    }
+    await sleep(200)
+  }
+  send?.('[WG] UDP ' + host + ':' + port + ' всё ещё занят')
+  return false
+}
+
 function copyStableConf(confPath) {
   fs.mkdirSync(STABLE_CONF_DIR, { recursive: true })
   const stable = path.join(STABLE_CONF_DIR, TUNNEL_CONF_NAME)
@@ -274,7 +290,7 @@ function buildWgConfigFromApi(config, listenPort = 9000) {
   if (!priv || !pub) return null
   const addr = (config.wg_address || config.assigned_ip || '').trim()
   if (!addr) return null
-  const dns = config.wg_dns || config.dns || '77.88.8.8,77.88.8.1'
+  const dns = config.wg_dns || config.dns || WG_DNS_CLOUDFLARE
   return `[Interface]
 PrivateKey = ${priv}
 Address = ${addr}
@@ -407,7 +423,16 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
         // DNS через WG при split-route ломает резолв на Windows → «нет интернета»
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
       } else {
-        send?.('[WG] AllowedIPs = 0.0.0.0/0 (основной VPN: трафик через WDTT)')
+        send?.('[WG] AllowedIPs = 0.0.0.0/0 (основной VPN: интернет через WDTT)')
+        if (/^\s*DNS\s*=/m.test(conf)) {
+          conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, `DNS = ${WG_DNS_CLOUDFLARE}\n`)
+        } else {
+          conf = conf.replace(
+            /(\[Interface\][^\[]*)/,
+            m => (m.includes('DNS =') ? m : `${m.trimEnd()}\nDNS = ${WG_DNS_CLOUDFLARE}\n`),
+          )
+        }
+        send?.(`[WG] DNS = ${WG_DNS_CLOUDFLARE} (Cloudflare через туннель)`)
       }
       conf = conf.replace(/AllowedIPs\s*=\s*.+/, `AllowedIPs = ${allowed}`)
       fs.writeFileSync(confPath, conf)
@@ -478,6 +503,7 @@ module.exports = {
   isProcessElevated,
   waitForPort,
   waitForWdttProxy,
+  waitForUdpPortFree,
   isUdpPortListening,
   waitForTunnelDown,
   isTunnelUp,

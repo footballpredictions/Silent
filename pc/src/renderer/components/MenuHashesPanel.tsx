@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import api from '../api'
+import { getCachedVpnConfig } from '../vkConfig'
+import { setTunnelApiBase } from '../tunnelApi'
 import {
   MAX_HASHES,
   MAX_WORKERS_PER_HASH,
@@ -70,10 +72,13 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
     () => normalizeTotalWorkers(totalWorkers, activeHashCount),
     [totalWorkers, activeHashCount],
   )
-
   const refreshFromServer = useCallback(async () => {
     setSyncing(true)
     setError(null)
+    if (vpnConnected) {
+      const cfg = getCachedVpnConfig()
+      setTunnelApiBase(cfg?.wg_address ?? cfg?.assigned_ip ?? null)
+    }
     try {
       const res = await api.get('/api/vpn/hashes')
       const downloaded = mapHashesResponse(res.data)
@@ -81,6 +86,7 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
         saveHashItems(downloaded)
         setItems(downloaded)
         setSavedAt(getSavedHashItemsUpdatedAt())
+        setError(null)
       } else {
         setItems(prev => {
           if (prev.length === 0) setError('На сервере пока нет хешей')
@@ -88,17 +94,13 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
         })
       }
     } catch (e: any) {
-      setItems(prev => {
-        if (prev.length === 0) {
-          setError(e.response?.data?.detail || e.message || 'Не удалось загрузить хеши')
-        }
-        return prev
-      })
+      const msg = e.response?.data?.detail || e.message || 'Не удалось загрузить хеши'
+      setError(msg)
     } finally {
       setSyncing(false)
       setLoading(false)
     }
-  }, [])
+  }, [vpnConnected])
 
   useEffect(() => {
     if (refreshKey === 0) {
@@ -160,7 +162,7 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
           style={{ color: fg }}
         />
         <p className="text-[9px] mt-2" style={{ color: muted }}>
-          В логе: connect n={stepped} — столько воркеров запустит wdtt-client
+          При подключении: {stepped} воркеров (как на Android)
         </p>
       </div>
 

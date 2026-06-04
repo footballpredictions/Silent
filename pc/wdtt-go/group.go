@@ -51,6 +51,7 @@ func WorkerGroup(
 	stats *Stats,
 	waitReady <-chan struct{},
 	signalReady chan<- struct{},
+	ramp *rampScheduler,
 ) {
 	// Каскадный запуск: ждем свою очередь
 	if waitReady != nil {
@@ -89,7 +90,13 @@ func WorkerGroup(
 		creds = &Credentials{User: user, Pass: pass, TurnURLs: turnURLs, CacheStreamID: credStreamID}
 	} else {
 		log.Printf("[ГРУППА #%d] Ошибка кредов: %v — пропуск группы (%d воркеров)", groupID, err, len(workerIDs))
-		passCascade(signalReady, groupID, false, 1*time.Second)
+		if ramp != nil && groupID > ramp.bootGroups {
+			ramp.passToNext(groupID-ramp.bootGroups-1, false)
+		} else if ramp != nil {
+			passCascade(signalReady, groupID, false, 1*time.Second)
+		} else {
+			passCascade(signalReady, groupID, false, 1*time.Second)
+		}
 		return
 	}
 
@@ -127,8 +134,12 @@ func WorkerGroup(
 		return true
 	}
 
-	// Как Android: эстафета после кредов + 2 с (воркеры догоняют в фоне).
-	passCascade(signalReady, groupID, true, 2*time.Second)
+	// Boot-группы: каскад 2 с; post-boot — паузы рампа (один процесс).
+	if ramp != nil && groupID > ramp.bootGroups {
+		ramp.passToNext(groupID-ramp.bootGroups-1, true)
+	} else {
+		passCascade(signalReady, groupID, true, 2*time.Second)
+	}
 
 	for i, wid := range workerIDs {
 		wg.Add(1)

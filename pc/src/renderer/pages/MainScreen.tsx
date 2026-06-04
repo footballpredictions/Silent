@@ -20,8 +20,10 @@ import { resolveAppName } from '../clientTheme'
 import { menuDrawerStyle, UI_COLORS } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
-import { prepareVpnConnectConfig } from '../prepareVpnConnect'
+import { prepareVpnConnectConfig, syncHashesWhenTunnelUp } from '../prepareVpnConnect'
 import { pushLog } from '../debugLog'
+import { setTunnelApiBase, clearTunnelApiBase } from '../tunnelApi'
+import { getCachedVpnConfig } from '../vkConfig'
 import {
   getCachedProfile,
   saveCachedProfile,
@@ -124,6 +126,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const [renameSaving, setRenameSaving] = useState(false)
   const [activeWorkers, setActiveWorkers] = useState(0)
   const connectLockRef = useRef(false)
+  const onlineMarkedRef = useRef(false)
 
   const fetchProfile = useCallback(async () => {
     try {
@@ -157,20 +160,30 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     api.get('/api/vpn/theme').then(r => setClientTheme(r.data)).catch(() => {})
   }, [])
 
+  const applyTunnelApiFromCache = useCallback(() => {
+    const cfg = getCachedVpnConfig()
+    setTunnelApiBase(cfg?.wg_address ?? cfg?.assigned_ip ?? null)
+  }, [])
+
   const markOnlineOnServer = useCallback(async () => {
+    if (onlineMarkedRef.current) return
+    onlineMarkedRef.current = true
     const fp = getDeviceFingerprint()
+    applyTunnelApiFromCache()
     try {
       await api.post('/api/vpn/connect', { device_fingerprint: fp, device_type: 'pc' })
       await fetchProfile()
+      setTimeout(() => { void syncHashesWhenTunnelUp() }, 60_000)
     } catch {
-      /* ignore */
+      onlineMarkedRef.current = false
     }
-  }, [fetchProfile])
+  }, [fetchProfile, applyTunnelApiFromCache])
 
   useEffect(() => {
     const api_ = (window as any).electronAPI
     api_?.vpnIsReady?.().then((r: { ready?: boolean; workers?: number }) => {
       if (r?.ready) {
+        applyTunnelApiFromCache()
         setConnected(true)
         setConnecting(false)
         if (r.workers) setActiveWorkers(r.workers)
@@ -178,12 +191,14 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         pushLog('Main', `VPN уже активен (${r.workers ?? '?'} воркеров)`)
       }
     }).catch(() => {})
-  }, [markOnlineOnServer])
+  }, [markOnlineOnServer, applyTunnelApiFromCache])
 
   useEffect(() => {
     const api_ = (window as any).electronAPI
     if (!api_?.onVpnStopped) return
     const onStopped = () => {
+      onlineMarkedRef.current = false
+      clearTunnelApiBase()
       setConnected(false)
       setConnecting(false)
       setActiveWorkers(0)
@@ -195,6 +210,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     }
     const onReady = (ok: boolean) => {
       if (ok) {
+        applyTunnelApiFromCache()
         setConnected(true)
         setConnecting(false)
         void markOnlineOnServer()
@@ -214,7 +230,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     api_.onVpnReady?.(onReady)
     api_.onVpnLog?.(onLog)
     return () => api_.removeVpnListeners?.()
-  }, [markOnlineOnServer])
+  }, [markOnlineOnServer, applyTunnelApiFromCache])
 
   useEffect(() => {
     if (!connected) return
@@ -354,6 +370,8 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         if ((window as any).electronAPI?.vpnDisconnect) {
           await (window as any).electronAPI.vpnDisconnect()
         }
+        onlineMarkedRef.current = false
+        clearTunnelApiBase()
         await api.post('/api/vpn/disconnect', { device_fingerprint: fp }).catch(() => null)
         setConnected(false)
       }

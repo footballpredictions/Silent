@@ -4,12 +4,14 @@ import { Search, Ban, CheckCircle, ShieldCheck, Trash2 } from 'lucide-react'
 interface UserRow {
   id: string; display_id: string; email: string; is_verified: boolean; is_active: boolean
   is_admin?: boolean
+  is_test_user?: boolean
   created_at: string; bootstrap_hash: string | null; server_hashes: number
   subscription: { active: boolean; plan: string | null; expires_at: string | null }
   devices_count: number
 }
 
 function subscriptionLabel(u: UserRow): string {
+  if (u.is_test_user || u.subscription.plan === 'test') return 'Тест · безлимит'
   if (u.is_admin || u.subscription.plan === 'unlimited') return '∞'
   if (!u.subscription.active) return 'Нет'
   const plan = u.subscription.plan === 'trial' ? 'Пробный' : u.subscription.plan
@@ -118,11 +120,20 @@ export default function UsersPage({ token }: { token: string }) {
               filtered.map(u => (
                 <tr key={u.id} className="border-b border-[#1a1a1a] hover:bg-[#151515] transition-colors">
                   <td className="px-4 py-3 font-mono text-[#888]">{u.display_id}</td>
-                  <td className="px-4 py-3">{u.email}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span>{u.email}</span>
+                      {u.is_test_user && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                          Тест
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3 font-mono text-xs text-[#888]">{u.bootstrap_hash || '—'}</td>
                   <td className="px-4 py-3 text-center">{u.server_hashes ?? 0}/3</td>
                   <td className="px-4 py-3">
-                    <span className={`text-xs ${u.subscription.active || u.is_admin ? 'text-green-400' : 'text-[#555]'}`}>
+                    <span className={`text-xs ${u.subscription.active || u.is_admin || u.is_test_user ? 'text-green-400' : 'text-[#555]'}`}>
                       {subscriptionLabel(u)}
                     </span>
                   </td>

@@ -8,6 +8,7 @@ interface UserRow {
   is_verified: boolean
   is_active: boolean
   is_admin?: boolean
+  is_test_user?: boolean
   subscription: { active: boolean; plan: string | null; expires_at: string | null }
 }
 
@@ -21,6 +22,7 @@ const PLANS = [
 
 const PLAN_NAMES: Record<string, string> = {
   trial:      'Пробный',
+  test:       'Тест',
   three_days: '3 дня',
   monthly:    'Месяц',
   quarterly:  '3 месяца',
@@ -29,6 +31,7 @@ const PLAN_NAMES: Record<string, string> = {
 }
 
 function subscriptionLabel(u: UserRow): string {
+  if (u.is_test_user || u.subscription.plan === 'test') return 'Тест · безлимит'
   if (u.is_admin || u.subscription.plan === 'unlimited') return '∞'
   if (!u.subscription.active) return 'Нет'
   const plan = PLAN_NAMES[u.subscription.plan || ''] || u.subscription.plan || 'Активна'
@@ -43,8 +46,18 @@ export default function SubscriptionsPage({ token }: { token: string }) {
   const [actionKey, setActionKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [testMode, setTestMode] = useState(false)
+  const [testModeBusy, setTestModeBusy] = useState(false)
 
   const headers = { Authorization: `Bearer ${token}` }
+
+  const fetchTestMode = async () => {
+    const res = await fetch('/api/admin/subscriptions/registration-test-mode', { headers })
+    if (res.ok) {
+      const data = await res.json()
+      setTestMode(!!data.enabled)
+    }
+  }
 
   const fetchUsers = async () => {
     setLoading(true)
@@ -59,7 +72,37 @@ export default function SubscriptionsPage({ token }: { token: string }) {
     setLoading(false)
   }
 
-  useEffect(() => { fetchUsers() }, [])
+  useEffect(() => {
+    fetchTestMode()
+    fetchUsers()
+  }, [])
+
+  const toggleTestMode = async () => {
+    setTestModeBusy(true)
+    setError(null)
+    setSuccess(null)
+    const next = !testMode
+    try {
+      const res = await fetch('/api/admin/subscriptions/registration-test-mode', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(body.detail || 'Не удалось изменить тестовый режим')
+        return
+      }
+      setTestMode(!!body.enabled)
+      setSuccess(
+        body.enabled
+          ? 'Тестовый режим включён — новые регистрации получат безлимит'
+          : 'Тестовый режим выключен — новые регистрации получат пробный период'
+      )
+    } finally {
+      setTestModeBusy(false)
+    }
+  }
 
   const isPlanActive = (u: UserRow, planType: string) =>
     u.subscription.active && u.subscription.plan === planType
@@ -125,7 +168,32 @@ export default function SubscriptionsPage({ token }: { token: string }) {
           </h1>
           <p className="text-sm text-[#666] mt-1">Нажмите план чтобы выдать, повторно — чтобы забрать</p>
         </div>
-        <div className="relative shrink-0">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+          <button
+            type="button"
+            onClick={toggleTestMode}
+            disabled={testModeBusy}
+            className={`flex items-center justify-between gap-3 px-4 py-2 rounded-lg border text-sm transition-colors disabled:opacity-50 ${
+              testMode
+                ? 'bg-purple-500/15 border-purple-500/50 text-purple-300'
+                : 'bg-[#111] border-[#333] text-[#ccc] hover:border-[#555]'
+            }`}
+            title="Новые регистрации получают безлимитный тестовый режим"
+          >
+            <span className="font-medium">Тест</span>
+            <span
+              className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${
+                testMode ? 'bg-purple-500' : 'bg-[#333]'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+                  testMode ? 'translate-x-4' : 'translate-x-0.5'
+                }`}
+              />
+            </span>
+          </button>
+          <div className="relative shrink-0">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#555]" />
           <input
             value={search}
@@ -133,8 +201,15 @@ export default function SubscriptionsPage({ token }: { token: string }) {
             placeholder="Поиск..."
             className="w-full sm:w-auto bg-[#111] border border-[#222] rounded-lg pl-9 pr-4 py-2 text-sm text-white placeholder-[#555] focus:outline-none focus:border-[#444]"
           />
+          </div>
         </div>
       </div>
+
+      {testMode && (
+        <div className="bg-purple-500/10 border border-purple-500/30 text-purple-300 text-sm rounded-lg px-4 py-3">
+          Тестовый режим активен: все новые пользователи после подтверждения email получают безлимитный доступ.
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm rounded-lg px-4 py-3">
@@ -167,9 +242,18 @@ export default function SubscriptionsPage({ token }: { token: string }) {
               filtered.map(u => (
                 <tr key={u.id} className="border-b border-[#1a1a1a] hover:bg-[#151515] transition-colors">
                   <td className="px-4 py-3 font-mono text-[#888]">{u.display_id}</td>
-                  <td className="px-4 py-3">{u.email}</td>
                   <td className="px-4 py-3">
-                    <span className={`text-xs ${u.subscription.active || u.is_admin ? 'text-green-400' : 'text-[#555]'}`}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span>{u.email}</span>
+                      {u.is_test_user && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                          Тест
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`text-xs ${u.subscription.active || u.is_admin || u.is_test_user ? 'text-green-400' : 'text-[#555]'}`}>
                       {subscriptionLabel(u)}
                     </span>
                   </td>
@@ -186,6 +270,8 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                   <td className="px-4 py-3">
                     {u.is_admin ? (
                       <div className="text-right text-xs font-semibold text-amber-400/90">Админ</div>
+                    ) : u.is_test_user ? (
+                      <div className="text-right text-xs font-semibold text-purple-300/90">Тест · ∞</div>
                     ) : (
                       <div className="flex items-center justify-end gap-1.5 flex-wrap">
                         {PLANS.map(p => {

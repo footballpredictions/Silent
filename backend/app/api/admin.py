@@ -148,17 +148,44 @@ async def list_users(
             "is_verified": user.is_verified,
             "is_active": user.is_active,
             "is_admin": admin,
+            "is_test_user": bool(user.is_test_user),
             "created_at": user.created_at,
             "bootstrap_hash": (user.bootstrap_hash[:12] + "...") if user.bootstrap_hash else None,
             "server_hashes": hash_count,
             "subscription": {
-                "active": True if admin else (sub.is_active if sub else False),
-                "plan": "unlimited" if admin else (sub.plan_type if sub else None),
-                "expires_at": None if admin else (sub.expires_at if sub else None),
+                "active": True if admin or user.is_test_user else (sub.is_active if sub else False),
+                "plan": "unlimited" if admin else ("test" if user.is_test_user else (sub.plan_type if sub else None)),
+                "expires_at": None if admin or user.is_test_user else (sub.expires_at if sub else None),
             },
             "devices_count": dev_count,
         })
     return out
+
+
+class RegistrationTestModeRequest(BaseModel):
+    enabled: bool
+
+
+@router.get("/subscriptions/registration-test-mode")
+async def get_registration_test_mode(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.test_mode_settings import is_registration_test_mode_enabled
+
+    return {"enabled": await is_registration_test_mode_enabled(db)}
+
+
+@router.post("/subscriptions/registration-test-mode")
+async def set_registration_test_mode_endpoint(
+    req: RegistrationTestModeRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.test_mode_settings import set_registration_test_mode
+
+    enabled = await set_registration_test_mode(db, req.enabled)
+    return {"enabled": enabled}
 
 
 class GrantSubscriptionRequest(BaseModel):
@@ -248,8 +275,8 @@ async def verify_user(
     user.is_verified = True
     user.verification_token = None
     await db.commit()
-    from app.services.subscription_service import ensure_trial_subscription
-    await ensure_trial_subscription(db, user)
+    from app.services.subscription_service import apply_post_verification_benefits
+    await apply_post_verification_benefits(db, user)
     return {"status": "verified", "is_verified": True}
 
 

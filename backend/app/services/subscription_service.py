@@ -9,10 +9,15 @@ from app.models import User, Subscription
 from app.config import settings
 
 TRIAL_PLAN = "trial"
+TEST_PLAN = "test"
 
 
 def is_user_admin(user: User) -> bool:
     return bool(user.is_admin) or user.email.lower() == settings.ADMIN_LOGIN.lower()
+
+
+def is_test_user(user: User) -> bool:
+    return bool(getattr(user, "is_test_user", False))
 
 
 async def ensure_admin_flag(user: User, db: AsyncSession) -> None:
@@ -65,8 +70,49 @@ async def ensure_trial_subscription(db: AsyncSession, user: User) -> Subscriptio
     return trial
 
 
-async def user_has_active_subscription(user: User, db: AsyncSession) -> bool:
+async def enroll_user_in_test_mode(db: AsyncSession, user: User) -> Subscription:
+    """Mark user as test and grant unlimited-style subscription."""
     if is_user_admin(user):
+        raise HTTPException(status_code=400, detail="Администратору тестовый режим не нужен")
+
+    user.is_test_user = True
+    now = datetime.utcnow()
+
+    active_result = await db.execute(
+        select(Subscription)
+        .where(Subscription.user_id == user.id, Subscription.status == "active")
+    )
+    for existing in active_result.scalars().all():
+        existing.status = "cancelled"
+
+    subscription = Subscription(
+        user_id=user.id,
+        plan_type=TEST_PLAN,
+        status="active",
+        amount_paid=0,
+        started_at=now,
+        expires_at=now + timedelta(days=36500),
+    )
+    db.add(subscription)
+    await db.commit()
+    await db.refresh(subscription)
+    return subscription
+
+
+async def apply_post_verification_benefits(db: AsyncSession, user: User) -> Subscription | None:
+    """Trial or test mode subscription after email verification."""
+    if is_user_admin(user):
+        return None
+
+    from app.services.test_mode_settings import is_registration_test_mode_enabled
+
+    if await is_registration_test_mode_enabled(db):
+        return await enroll_user_in_test_mode(db, user)
+    return await ensure_trial_subscription(db, user)
+
+
+async def user_has_active_subscription(user: User, db: AsyncSession) -> bool:
+    if is_user_admin(user) or is_test_user(user):
         return True
     await ensure_trial_subscription(db, user)
     sub = await get_active_subscription(db, user)
@@ -75,7 +121,7 @@ async def user_has_active_subscription(user: User, db: AsyncSession) -> bool:
 
 async def require_active_subscription(user: User, db: AsyncSession) -> None:
     """Raise 402 if VPN access is not allowed (trial ended, no paid plan)."""
-    if is_user_admin(user):
+    if is_user_admin(user) or is_test_user(user):
         return
 
     await ensure_trial_subscription(db, user)

@@ -9,7 +9,7 @@ from app.schemas.vpn import DisconnectRequest
 from app.core.deps import get_current_user
 from app.core.security import verify_password, hash_password
 from app.config import settings
-from app.services.subscription_service import is_user_admin, ensure_admin_flag, ensure_trial_subscription
+from app.services.subscription_service import is_user_admin, ensure_admin_flag, ensure_trial_subscription, is_test_user
 from app.services.vpn_service import (
     end_device_session,
     count_active_sessions,
@@ -26,14 +26,23 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
     await ensure_admin_flag(user, db)
     await clear_stale_online_status(db)
     await prune_idle_sessions(db, user.id)
-    await ensure_trial_subscription(db, user)
+    if not is_test_user(user):
+        await ensure_trial_subscription(db, user)
     admin = is_user_admin(user)
+    test = is_test_user(user)
 
     subscription_info = SubscriptionInfo(is_active=False)
     if admin:
         subscription_info = SubscriptionInfo(
             is_active=True,
             plan_type="unlimited",
+            expires_at=None,
+            days_left=9999,
+        )
+    elif test:
+        subscription_info = SubscriptionInfo(
+            is_active=True,
+            plan_type="test",
             expires_at=None,
             days_left=9999,
         )

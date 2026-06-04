@@ -17,6 +17,7 @@ from app.core.deps import get_admin_credentials
 from app.config import settings
 from app.schemas.vpn import ThemeResponse
 from app.services.theme_settings import load_theme
+from app.services.system_info import get_cpu_info
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -29,6 +30,7 @@ async def get_stats(
     """Dashboard system stats."""
     # System resources
     cpu = psutil.cpu_percent(interval=0.5)
+    cpu_info = get_cpu_info()
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
 
@@ -42,7 +44,7 @@ async def get_stats(
         select(func.count(Device.id)).where(Device.is_connected == True)
     )).scalar_one()
 
-    # VK hashes — only active per-user slots (no legacy global / dead slots)
+    # VK hashes — active per-user slots (for dashboard grouping)
     hashes_result = await db.execute(
         select(VkHash)
         .where(VkHash.is_active == True, VkHash.user_id.isnot(None))
@@ -68,6 +70,7 @@ async def get_stats(
     return {
         "system": {
             "cpu_percent": cpu,
+            **cpu_info,
             "memory_total_gb": round(mem.total / 1e9, 1),
             "memory_used_gb": round(mem.used / 1e9, 1),
             "memory_percent": mem.percent,
@@ -84,7 +87,6 @@ async def get_stats(
             {
                 "slot": h.slot_index,
                 "hash": h.hash_value,
-                "user_id": str(h.user_id) if h.user_id else None,
                 "user_email": user_emails.get(h.user_id, "?"),
                 "user_connected": user_online.get(h.user_id, False),
                 "is_active": h.is_active,

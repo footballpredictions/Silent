@@ -5,6 +5,10 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'rec
 interface Stats {
   system: {
     cpu_percent: number
+    cpu_model?: string | null
+    cpu_cores?: number
+    cpu_freq_base_mhz?: number | null
+    cpu_freq_current_mhz?: number | null
     memory_total_gb: number
     memory_used_gb: number
     memory_percent: number
@@ -38,6 +42,8 @@ const StatCard = ({ icon: Icon, label, value, sub, color = 'white' }: any) => (
     {sub && <div className="text-[#555] text-xs mt-1">{sub}</div>}
   </div>
 )
+
+const formatGhz = (mhz: number) => `${(mhz / 1000).toFixed(2)} GHz`
 
 const ProgressBar = ({ percent, label }: { percent: number; label: string }) => (
   <div className="mb-3">
@@ -198,7 +204,16 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard icon={Users} label="Пользователей" value={stats.users.total} />
         <StatCard icon={Wifi} label="Активных подписок" value={stats.users.active_subscriptions} />
-        <StatCard icon={Wifi} label="Подключений" value={stats.users.connected_devices} />
+        <div className="bg-[#111] border border-[#222] rounded-xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[#666] text-xs uppercase tracking-wider">Онлайн</span>
+            <div className={`w-2.5 h-2.5 rounded-full ${stats.users.connected_devices > 0 ? 'bg-green-400 shadow-[0_0_6px_#4ade80]' : 'bg-[#444]'}`} />
+          </div>
+          <div className="text-2xl font-bold">{stats.users.connected_devices}</div>
+          <div className="text-[#555] text-xs mt-1">
+            {stats.users.connected_devices > 0 ? 'подключений активно' : 'нет подключений'}
+          </div>
+        </div>
       </div>
 
       {/* System */}
@@ -207,13 +222,31 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
           <h3 className="text-xs text-[#666] uppercase tracking-wider mb-4 flex items-center gap-2">
             <Cpu className="w-3.5 h-3.5" /> Системные ресурсы
           </h3>
+          {(stats.system.cpu_freq_base_mhz != null || stats.system.cpu_freq_current_mhz != null) && (
+            <div className="text-xs text-[#666] mb-3 space-y-1">
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                {stats.system.cpu_freq_base_mhz != null && (
+                  <span>Частота (номинал): <span className="text-[#aaa]">{formatGhz(stats.system.cpu_freq_base_mhz)}</span></span>
+                )}
+                {stats.system.cpu_freq_current_mhz != null && (
+                  <span>Онлайн: <span className="text-white font-medium">{formatGhz(stats.system.cpu_freq_current_mhz)}</span></span>
+                )}
+              </div>
+              {stats.system.cpu_model && (
+                <div className="text-[#555] truncate" title={stats.system.cpu_model}>
+                  {stats.system.cpu_model}
+                  {stats.system.cpu_cores ? ` · ${stats.system.cpu_cores} ядер` : ''}
+                </div>
+              )}
+            </div>
+          )}
           <ProgressBar percent={stats.system.cpu_percent} label={`CPU — ${stats.system.cpu_percent.toFixed(1)}%`} />
           <ProgressBar percent={stats.system.memory_percent} label={`RAM — ${stats.system.memory_used_gb} / ${stats.system.memory_total_gb} GB`} />
           <ProgressBar percent={stats.system.disk_percent} label={`Диск — ${stats.system.disk_used_gb} / ${stats.system.disk_total_gb} GB`} />
         </div>
 
         <div className="bg-[#111] border border-[#222] rounded-xl p-5">
-          <h3 className="text-xs text-[#666] uppercase tracking-wider mb-4">CPU — история</h3>
+          <h3 className="text-xs text-[#666] uppercase tracking-wider mb-4">CPU — загрузка (%)</h3>
           <ResponsiveContainer width="100%" height={120}>
             <AreaChart data={cpuHistory}>
               <XAxis dataKey="t" hide />

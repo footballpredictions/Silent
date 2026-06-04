@@ -200,7 +200,7 @@ function isWdttAlive() {
 const TRANSPORT_RESTART_GRACE_MS = 90_000
 
 function isTransportHealthy() {
-  return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
+  return wgApplied && activeWorkerCount >= minWorkersForTunnelReady() && isWdttAlive()
 }
 
 function clearTunnelReadyPoll() {
@@ -220,10 +220,20 @@ function scheduleTunnelReadyPoll(sendLogFn) {
   }, 500)
 }
 
+const WORKERS_PER_GROUP = 9
+
+/** Минимум каналов до «Подключено» — иначе YouTube видит ~9 TURN и ставит 144p. */
+function minWorkersForTunnelReady() {
+  const target = sessionTargetWorkers || 108
+  const twoThirds = Math.floor((target * 2) / 3)
+  const stepped = Math.max(WORKERS_PER_GROUP * 2, Math.floor(twoThirds / WORKERS_PER_GROUP) * WORKERS_PER_GROUP)
+  return Math.min(target, stepped)
+}
+
 function isVpnReadyForUi() {
   if (tunnelReadySent) return true
   if (!wgApplied) return false
-  return activeWorkerCount >= 1 || (isWdttAlive() && isTunnelUp())
+  return activeWorkerCount >= minWorkersForTunnelReady()
 }
 
 function ensureVpnReadyEvent(sendLogFn) {
@@ -233,7 +243,7 @@ function ensureVpnReadyEvent(sendLogFn) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('vpn-ready', true)
   }
-  sendLogFn?.('[VPN] tunnel ready (WG + workers)')
+  sendLogFn?.(`[VPN] tunnel ready (WG + ${activeWorkerCount}/${sessionTargetWorkers} workers)`)
 }
 
 function pauseWdtt(reason) {
@@ -617,6 +627,7 @@ ipcMain.handle('vpn-is-ready', async () => ({
   ready: isVpnReadyForUi(),
   workers: activeWorkerCount,
   target: sessionTargetWorkers,
+  min: minWorkersForTunnelReady(),
 }))
 
 app.whenReady().then(() => {

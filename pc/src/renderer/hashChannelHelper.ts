@@ -31,9 +31,11 @@ export function groupsForWorkers(totalWorkers: number): number {
   )
 }
 
-/** Таймаут connect — как Android: WG + первый воркер, без ожидания всех каналов. */
-export function connectWaitTimeoutMs(_totalWorkers: number): number {
-  return 120_000
+/** Таймаут connect: WG + ~2/3 воркеров (каскад групп + DTLS). */
+export function connectWaitTimeoutMs(totalWorkers: number): number {
+  const n = Math.max(totalWorkers, WORKERS_PER_GROUP)
+  const groups = Math.ceil(n / WORKERS_PER_GROUP)
+  return Math.min(180_000, 45_000 + groups * 12_000)
 }
 
 /**

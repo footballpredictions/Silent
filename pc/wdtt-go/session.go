@@ -408,13 +408,19 @@ func RunSession(
 			}
 
 			pkt = pkt[:n]
-			select {
-			case d.ReturnCh <- pkt:
-			case <-sessCtx.Done():
-				putPktBuf(pkt)
-				return
-			default:
-				// Не блокируем DTLS reader при перегрузке download — иначе все воркеры встают.
+			sent := false
+			for try := 0; try < 80 && !sent; try++ {
+				select {
+				case d.ReturnCh <- pkt:
+					sent = true
+				case <-sessCtx.Done():
+					putPktBuf(pkt)
+					return
+				default:
+					time.Sleep(2 * time.Millisecond)
+				}
+			}
+			if !sent {
 				putPktBuf(pkt)
 			}
 		}

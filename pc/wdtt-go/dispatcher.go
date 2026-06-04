@@ -31,8 +31,8 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	returnChBuf      = 4096
-	writeLoopWorkers = 4
+	returnChBuf      = 32768
+	writeLoopWorkers = 8
 	uploadRetryMs    = 30
 
 	// chunkSize — количество последовательных пакетов, отправляемых в один worker

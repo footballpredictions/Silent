@@ -385,6 +385,8 @@ try {
 
 async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs = [], options = {}) {
   const skipWdttWait = options.skipWdttWait === true
+  const subnetOnly = options.subnetOnly === true
+  const skipForceStop = options.skipForceStop === true
   const runtimeDir = prepareRuntimeDir(isDev, dirname, send)
   if (!runtimeDir) {
     send('[WG] Нет wireguard.exe / wintun.dll — переустановите Silent VPN')
@@ -397,7 +399,10 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   if (fs.existsSync(confPath)) {
     try {
       let conf = fs.readFileSync(confPath, 'utf8')
-      const allowed = buildAllowedIPsForWindows(excludeIPs, send)
+      const allowed = subnetOnly
+        ? '10.66.66.0/24'
+        : buildAllowedIPsForWindows(excludeIPs, send)
+      if (subnetOnly) send?.('[WG] AllowedIPs = 10.66.66.0/24 (API в туннеле, TURN/интернет напрямую)')
       conf = conf.replace(/AllowedIPs\s*=\s*.+/, `AllowedIPs = ${allowed}`)
       fs.writeFileSync(confPath, conf)
       fs.copyFileSync(confPath, path.join(STABLE_CONF_DIR, TUNNEL_CONF_NAME))
@@ -413,8 +418,12 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     send('[WG] WDTT активен, поднимаем WireGuard...')
   }
 
-  forceStopWireGuard(isDev, dirname, () => {})
-  await sleep(1000)
+  if (skipForceStop && (isTunnelUp() || isServiceRunning())) {
+    send('[WG] Туннель уже активен — без полной переустановки')
+  } else {
+    forceStopWireGuard(isDev, dirname, () => {})
+    await sleep(skipForceStop ? 300 : 1000)
+  }
 
   const stableConf = copyStableConf(confPath)
   send(`[WG] Конфиг: ${stableConf}`)

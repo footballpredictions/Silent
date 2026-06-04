@@ -425,7 +425,6 @@ async function beginWdttSession(config, { switching = false } = {}) {
     }
 
     wgInstallInFlight = true
-    wgAttempted = true
     clearWgRetries()
 
     sendLog(`[WG] Применение конфига (${source})...`)
@@ -441,7 +440,11 @@ async function beginWdttSession(config, { switching = false } = {}) {
     fs.writeFileSync(confPath, normalizedConf)
     await sleep(150)
 
-    const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], { skipWdttWait: true })
+    const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
+      skipWdttWait: true,
+      subnetOnly: true,
+      skipForceStop: switching && (isTunnelUp() || isServiceRunning()),
+    })
     const timeoutMs = isProcessElevated() ? 70000 : 90000
     let ok = false
     try {
@@ -461,6 +464,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     }
     if (ok) {
       wgApplied = true
+      wgAttempted = true
       scheduleTunnelReadyPoll(sendLog)
       ensureVpnReadyEvent(sendLog)
       return true

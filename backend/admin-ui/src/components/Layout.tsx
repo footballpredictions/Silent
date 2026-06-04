@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Users, Hash, Tag, Palette, LogOut, Calendar, Menu, X } from 'lucide-react'
+import { LayoutDashboard, Users, Hash, Tag, Palette, LogOut, Calendar, Menu, X, Download } from 'lucide-react'
 import SilentLogo from './SilentLogo'
 
 const nav = [
@@ -10,6 +10,7 @@ const nav = [
   { to: '/vk', icon: Hash, label: 'VK / Тоннели' },
   { to: '/promo', icon: Tag, label: 'Промокоды' },
   { to: '/theme', icon: Palette, label: 'Оформление' },
+  { to: '/updates', icon: Download, label: 'Обновления' },
 ]
 
 function NavItems({ onClose }: { onClose?: () => void }) {

@@ -3,9 +3,10 @@ import json
 import os
 import psutil
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+import tempfile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, case
 from pydantic import BaseModel
@@ -18,6 +19,7 @@ from app.config import settings
 from app.schemas.vpn import ThemeResponse
 from app.services.theme_settings import load_theme
 from app.services.system_info import get_cpu_info
+from app.services import update_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -756,3 +758,49 @@ async def list_promos(
         }
         for p in promos
     ]
+
+
+# App updates (PC / Android)
+@router.get("/updates")
+async def list_updates(_: bool = Depends(get_admin_credentials)):
+    return update_service.list_all()
+
+
+@router.post("/updates/upload")
+async def upload_update(
+    platform: str = Form(..., pattern="^(pc|android)$"),
+    version: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+    _: bool = Depends(get_admin_credentials),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename")
+    ext = os.path.splitext(file.filename)[1].lower()
+    if platform == "pc" and ext not in (".exe", ".msi"):
+        raise HTTPException(status_code=400, detail="PC update must be .exe or .msi")
+    if platform == "android" and ext != ".apk":
+        raise HTTPException(status_code=400, detail="Android update must be .apk")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        info = update_service.publish_file(platform, file.filename, tmp_path, version=version)
+        return {"message": "Update published", **info}
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+@router.delete("/updates/{platform}")
+async def delete_update(
+    platform: str,
+    _: bool = Depends(get_admin_credentials),
+):
+    if platform not in update_service.PLATFORMS:
+        raise HTTPException(status_code=400, detail="Invalid platform")
+    update_service.delete_platform_update(platform)
+    return {"message": f"Update for {platform} removed"}

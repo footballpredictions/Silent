@@ -118,6 +118,8 @@ from app.api.users import router as users_router
 from app.api.vpn import router as vpn_router
 from app.api.payments import router as payments_router
 from app.api.admin import router as admin_router
+from app.api.updates import router as updates_router
+from app.services import update_service
 
 app.include_router(auth_router, prefix="/api")
 app.include_router(vk_auth_router, prefix="/api")
@@ -125,6 +127,7 @@ app.include_router(users_router, prefix="/api")
 app.include_router(vpn_router, prefix="/api")
 app.include_router(payments_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
+app.include_router(updates_router, prefix="/api")
 
 
 @app.get("/health")
@@ -148,6 +151,11 @@ async def vk_agent_oauth_landing():
 static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
 os.makedirs(static_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# Client app updates (PC installer, Android APK)
+update_service.ensure_dirs()
+update_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "update"))
+app.mount("/update", StaticFiles(directory=update_dir), name="updates")
 
 # Admin UI SPA — index.html fallback for client-side routes (/dashboard, /users, …)
 admin_ui_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "admin-ui", "dist"))

@@ -158,6 +158,38 @@ class SilentRepository @Inject constructor(
     fun getPublicServerUrl(): String =
         prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
 
+    /** База для скачивания обновлений — HTTPS всегда через nip.io (сертификат не на IP). */
+    fun resolveUpdateDownloadBase(preferredBase: String?): String {
+        val base = preferredBase?.trimEnd('/').orEmpty()
+        if (base.startsWith("http://")) return base
+        if (base.contains(Regex("""\d+\.\d+\.\d+\.\d+"""))) return "https://$DEFAULT_SERVER_HOST"
+        if (base.startsWith("https://")) return base
+        return "https://$DEFAULT_SERVER_HOST"
+    }
+
+    fun joinUpdateUrl(base: String, downloadPath: String): String {
+        if (downloadPath.startsWith("http://") || downloadPath.startsWith("https://")) return downloadPath
+        val path = if (downloadPath.startsWith("/")) downloadPath else "/$downloadPath"
+        return base.trimEnd('/') + path.replace(" ", "%20")
+    }
+
+    fun buildDownloadClient(): OkHttpClient {
+        val nipHost = DEFAULT_SERVER_HOST
+        return OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                var req = chain.request()
+                if (req.url.host.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) {
+                    req = req.newBuilder().header("Host", nipHost).build()
+                }
+                chain.proceed(req)
+            }
+            .hostnameVerifier { _, _ -> true }
+            .sslSocketFactory(TrustAllCerts.sslSocketFactory(), TrustAllCerts.trustManager())
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.MINUTES)
+            .build()
+    }
+
     /** Временно переключить base URL (для перебора кандидатов при входе). */
     fun useApiBase(baseUrl: String) {
         val normalized = baseUrl.trimEnd('/')

@@ -21,16 +21,13 @@ object AppUpdateManager {
         context: Context,
         url: String,
         filename: String,
+        client: OkHttpClient,
         onProgress: (Int) -> Unit,
     ): File = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "updates").apply { mkdirs() }
         dir.listFiles()?.forEach { it.delete() }
         val dest = File(dir, filename.ifBlank { "update.apk" })
 
-        val client = OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.MINUTES)
-            .build()
         val request = Request.Builder().url(url).build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw IllegalStateException("HTTP ${response.code}")

@@ -106,6 +106,7 @@ class MainViewModel @Inject constructor(
     private var profilePollJob: Job? = null
     private var vpnProfilePollJob: Job? = null
     private var updatePollJob: Job? = null
+    private var updateApiBaseUrl: String? = null
     private var onlineHeartbeatJob: Job? = null
 
     private val _updateInfo = MutableStateFlow<UpdateCheckResponse?>(null)
@@ -401,6 +402,7 @@ class MainViewModel @Inject constructor(
         updatePollJob = null
         if (!active) {
             _updateInfo.value = null
+            updateApiBaseUrl = null
             return
         }
         viewModelScope.launch { runCatching { checkForUpdateNow() } }
@@ -415,6 +417,7 @@ class MainViewModel @Inject constructor(
     private suspend fun checkForUpdateNow() {
         if (_vpnState.value != VpnState.CONNECTED) {
             _updateInfo.value = null
+            updateApiBaseUrl = null
             return
         }
         val version = AppUpdateManager.currentVersion()
@@ -446,7 +449,12 @@ class MainViewModel @Inject constructor(
         val res = repo.getApi().checkUpdate("android", version)
         if (!res.isSuccessful) return false
         val body = res.body()
-        _updateInfo.value = if (body?.available == true) body else null
+        if (body?.available == true) {
+            _updateInfo.value = body
+            updateApiBaseUrl = base.trimEnd('/')
+        } else {
+            _updateInfo.value = null
+        }
         return true
     }
 
@@ -458,12 +466,13 @@ class MainViewModel @Inject constructor(
             _updateDownloading.value = true
             _updateProgress.value = 0
             try {
-                val base = repo.getServerUrl().trimEnd('/')
-                val url = if (downloadPath.startsWith("http")) downloadPath else "$base$downloadPath"
+                val base = repo.resolveUpdateDownloadBase(updateApiBaseUrl)
+                val url = repo.joinUpdateUrl(base, downloadPath)
                 val file = AppUpdateManager.downloadApk(
                     context,
                     url,
                     info.filename ?: "update.apk",
+                    repo.buildDownloadClient(),
                 ) { pct -> _updateProgress.value = pct }
                 onInstallReady(AppUpdateManager.installApk(context, file))
             } catch (e: Exception) {

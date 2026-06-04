@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { getApiBaseUrl } from './tunnelApi'
+import { getApiBaseUrl, isTunnelApiActive } from './tunnelApi'
 
 const SERVER_URL_KEY = 'silent_server_url'
 const TOKEN_KEY = 'silent_token'
@@ -20,6 +20,9 @@ const api = axios.create({ timeout: 15000 })
 api.interceptors.request.use(cfg => {
   const baseURL = getApiBaseUrl()
   cfg.baseURL = baseURL
+  if (!cfg.timeout || cfg.timeout === 15000) {
+    cfg.timeout = isTunnelApiActive() ? 45_000 : 15_000
+  }
   const token = localStorage.getItem(TOKEN_KEY)
   if (token) cfg.headers!['Authorization'] = `Bearer ${token}`
   return cfg

@@ -15,6 +15,7 @@ import {
 import { extractCallHash } from '../hashConfig'
 import {
   ensureBootstrapVpn,
+  ensureBootstrapTunnelApi,
   disconnectBootstrapVpn,
   isBootstrapVpnActive,
   prefetchLoginDataViaBootstrap,
@@ -91,6 +92,7 @@ export default function LoginScreen({
   }
 
   const openLoginSession = async (): Promise<{ ok: boolean; subscriptionExpired?: boolean }> => {
+    ensureBootstrapTunnelApi()
     const fp = startNewSession()
     const boot = getBootstrapHash()
     try {
@@ -124,10 +126,11 @@ export default function LoginScreen({
     setLoading(true)
     setError('')
     try {
-      if (!isBootstrapVpnActive()) {
+      if (!isBootstrapVpnActive() || !ensureBootstrapTunnelApi()) {
         setError(s.needBootstrap)
         return
       }
+      pushLog('Login', 'auth via tunnel API')
       const res = await api.post('/api/auth/login', { email, password })
       saveTokens(res.data.access_token, res.data.refresh_token)
       const sessionResult = await openLoginSession()
@@ -164,7 +167,7 @@ export default function LoginScreen({
     setLoading(true)
     setError('')
     try {
-      if (!isBootstrapVpnActive()) {
+      if (!isBootstrapVpnActive() || !ensureBootstrapTunnelApi()) {
         setError(s.needBootstrap)
         return
       }

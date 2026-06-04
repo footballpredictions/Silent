@@ -111,6 +111,13 @@ export function isBootstrapVpnActive(): boolean {
   return bootstrapActive
 }
 
+/** Перед login/register — API только через WG (10.66.66.1), не публичный URL. */
+export function ensureBootstrapTunnelApi(): boolean {
+  if (!bootstrapActive) return false
+  setTunnelApiBase(lastBootstrapWgAddress)
+  return true
+}
+
 export function refreshBootstrapSessionTimer(): void {
   if (!bootstrapActive) return
   cancelBootstrapSessionTimeout()

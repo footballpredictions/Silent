@@ -5,7 +5,8 @@ export const MAX_WORKERS_PER_HASH = 27
 export const MAX_HASHES = 4
 export const LIBCLIENT_MAX_WORKERS = 108
 export const DEFAULT_TOTAL_WORKERS = LIBCLIENT_MAX_WORKERS
-export const BOOTSTRAP_STREAM_COUNT = 9
+/** Bootstrap: только API в WG, 3 воркера (1 группа) — как Android, без нагрузки на login. */
+export const BOOTSTRAP_STREAM_COUNT = 3
 
 /** @deprecated legacy key — migrated to TOTAL_WORKERS_KEY */
 export const CHANNELS_KEY = 'silent_hash_channels_per_hash'
@@ -151,11 +152,10 @@ export function applyBootstrapWorkerCount<T extends { vk_hashes?: string[]; stre
   const hash = (config.vk_hashes || []).map(h => h.trim()).filter(Boolean)[0]
     || bootHash?.trim()
     || ''
-  const workers = config.stream_count ?? BOOTSTRAP_STREAM_COUNT
   return {
     ...config,
     vk_hashes: hash ? [hash] : config.vk_hashes,
-    stream_count: Math.min(Math.max(workers, 3), 9),
+    stream_count: BOOTSTRAP_STREAM_COUNT,
     is_bootstrap: true,
   }
 }

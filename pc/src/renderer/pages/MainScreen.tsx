@@ -223,7 +223,6 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     const tick = async () => {
       try {
         const r = await api_?.vpnIsReady?.()
-        if (typeof r?.workers === 'number') setActiveWorkers(r.workers)
         if (r?.ready) {
           setConnected(true)
           setConnecting(false)
@@ -395,7 +394,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const muted = `${fg}66`
 
   const statusLabel = connecting
-    ? (activeWorkers > 0 ? `Каналы ${activeWorkers}…` : 'Подключение…')
+    ? 'Подключение…'
     : connected
       ? 'Подключено'
       : 'Отключено'

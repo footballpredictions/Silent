@@ -181,8 +181,8 @@ async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(g
 
 
 @router.get("/reset-password-page", response_class=HTMLResponse)
-async def reset_password_page(token: str, db: AsyncSession = Depends(get_db)):
-    """Browser page from email link — set password or redirect to app via silentvpn://."""
+async def reset_password_page(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """Email link — detect platform, open app (silentvpn://), password form lives in clients."""
     result = await db.execute(select(User).where(User.reset_token == token))
     user = result.scalar_one_or_none()
     if not user:
@@ -192,61 +192,99 @@ async def reset_password_page(token: str, db: AsyncSession = Depends(get_db)):
             message="Токен сброса пароля устарел или уже был использован.",
         ), status_code=400)
 
+    ua = (request.headers.get("user-agent") or "").lower()
+    is_mobile = any(x in ua for x in ("android", "iphone", "ipad", "mobile"))
     deep_link = f"silentvpn://reset-password?token={token}"
+    android_intent = (
+        f"intent://reset-password?token={token}"
+        f"#Intent;scheme=silentvpn;package=com.silent.vpn;end"
+    )
     token_js = json.dumps(token)
     deep_js = json.dumps(deep_link)
+    intent_js = json.dumps(android_intent)
+    mobile_js = "true" if is_mobile else "false"
+    hint_mobile = "Откроется приложение Silent VPN — введите новый пароль там."
+    hint_pc = "Откроется программа Silent VPN на компьютере — введите новый пароль там."
+    hint = hint_mobile if is_mobile else hint_pc
+
     return HTMLResponse(f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Silent VPN — новый пароль</title>
+<title>Silent VPN — сброс пароля</title>
 <style>
   *{{margin:0;padding:0;box-sizing:border-box}}
   body{{background:#0a0a0a;font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:16px}}
-  .card{{background:#111;border:1px solid #222;border-radius:16px;padding:40px 32px;max-width:420px;width:100%}}
-  .brand{{color:#fff;font-size:12px;font-weight:700;letter-spacing:3px;margin-bottom:24px;opacity:0.5;text-align:center}}
-  h1{{color:#fff;font-size:20px;font-weight:700;margin-bottom:8px;text-align:center}}
-  p{{color:#888;font-size:14px;line-height:1.6;text-align:center;margin-bottom:20px}}
-  label{{display:block;color:#aaa;font-size:12px;margin-bottom:6px}}
-  input{{width:100%;padding:12px 14px;border-radius:10px;border:1px solid #333;background:#1a1a1a;color:#fff;font-size:14px;margin-bottom:14px}}
-  input:focus{{outline:none;border-color:#555}}
-  button{{width:100%;padding:14px;border:none;border-radius:10px;background:#fff;color:#000;font-size:14px;font-weight:700;cursor:pointer;margin-top:4px}}
-  button:disabled{{opacity:0.5;cursor:not-allowed}}
-  .err{{color:#ef4444;font-size:12px;text-align:center;margin-bottom:10px;min-height:18px}}
-  .ok{{color:#22c55e;font-size:13px;text-align:center;margin-top:12px;display:none}}
-  .open-app{{display:block;text-align:center;margin-top:16px;color:#4680C2;text-decoration:none;font-size:14px;padding:12px;border:1px solid #4680C2;border-radius:10px}}
-  .hint{{color:#555;font-size:12px;text-align:center;margin-top:16px}}
+  .card{{background:#111;border:1px solid #222;border-radius:16px;padding:40px 32px;max-width:420px;width:100%;text-align:center}}
+  .brand{{color:#fff;font-size:12px;font-weight:700;letter-spacing:3px;margin-bottom:24px;opacity:0.5}}
+  h1{{color:#fff;font-size:20px;font-weight:700;margin-bottom:12px}}
+  p{{color:#888;font-size:14px;line-height:1.6;margin-bottom:20px}}
+  p strong{{color:#ccc}}
+  .spinner{{width:36px;height:36px;border:3px solid #333;border-top-color:#fff;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 20px}}
+  @keyframes spin{{to{{transform:rotate(360deg)}}}}
+  a.btn{{display:inline-block;margin-top:8px;padding:14px 28px;border-radius:10px;background:#fff;color:#000;font-size:14px;font-weight:700;text-decoration:none}}
+  .hint{{color:#555;font-size:12px;margin-top:20px;line-height:1.5}}
+  .manual{{display:none;margin-top:24px;text-align:left;border-top:1px solid #222;padding-top:20px}}
+  .manual label{{display:block;color:#aaa;font-size:12px;margin-bottom:6px}}
+  .manual input{{width:100%;padding:12px;border-radius:10px;border:1px solid #333;background:#1a1a1a;color:#fff;font-size:14px;margin-bottom:12px;box-sizing:border-box}}
+  .manual button{{width:100%;padding:12px;border:none;border-radius:10px;background:#333;color:#fff;font-size:13px;cursor:pointer}}
+  .err{{color:#ef4444;font-size:12px;margin-top:8px;min-height:16px}}
 </style>
 </head>
 <body>
 <div class="card">
   <div class="brand">SILENT VPN</div>
-  <h1>Новый пароль</h1>
-  <p>Для аккаунта <strong style="color:#ccc">{user.email}</strong></p>
-  <div class="err" id="err"></div>
-  <form id="form">
+  <div class="spinner" id="spin"></div>
+  <h1 id="title">Открываем приложение…</h1>
+  <p>{hint}<br>Аккаунт: <strong>{user.email}</strong></p>
+  <a href="{deep_link}" class="btn" id="openBtn">Открыть Silent VPN</a>
+  <p class="hint" id="subhint">Если приложение не открылось автоматически — нажмите кнопку выше.</p>
+  <div class="manual" id="manual">
+    <p style="font-size:12px;color:#888;margin-bottom:12px;text-align:center">Запасной вариант — сменить пароль здесь:</p>
     <label>Новый пароль (мин. 8 символов)</label>
-    <input type="password" id="pw" minlength="8" required autocomplete="new-password">
-    <button type="submit" id="btn">Сохранить пароль</button>
-  </form>
-  <p class="ok" id="ok">Пароль сохранён. Открываем приложение…</p>
-  <a href="{deep_link}" class="open-app" id="openApp" style="display:none">Открыть Silent VPN</a>
-  <p class="hint" id="hint">Или откройте приложение вручную — появится окно для нового пароля.</p>
+    <input type="password" id="pw" minlength="8" autocomplete="new-password">
+    <button type="button" id="saveBtn">Сохранить пароль</button>
+    <div class="err" id="err"></div>
+  </div>
+  <p class="hint" style="margin-top:16px"><a href="#" id="showManual" style="color:#4680C2;text-decoration:none;font-size:11px">Не открывается приложение?</a></p>
 </div>
 <script>
 (function(){{
   var token = {token_js};
   var deepLink = {deep_js};
-  try {{ window.location.href = deepLink; }} catch (e) {{}}
-  document.getElementById('form').addEventListener('submit', async function(e){{
+  var androidIntent = {intent_js};
+  var isMobile = {mobile_js};
+
+  function openApp() {{
+    if (isMobile) {{
+      try {{ window.location.href = androidIntent; return; }} catch (e) {{}}
+    }}
+    try {{ window.location.href = deepLink; }} catch (e) {{}}
+  }}
+
+  openApp();
+  setTimeout(openApp, 600);
+  setTimeout(openApp, 1500);
+
+  document.getElementById('openBtn').addEventListener('click', function(e) {{
     e.preventDefault();
+    openApp();
+  }});
+
+  document.getElementById('showManual').addEventListener('click', function(e) {{
+    e.preventDefault();
+    document.getElementById('manual').style.display = 'block';
+    document.getElementById('spin').style.display = 'none';
+    document.getElementById('title').textContent = 'Новый пароль';
+    document.getElementById('subhint').textContent = 'После сохранения войдите в приложение с новым паролем.';
+  }});
+
+  document.getElementById('saveBtn').addEventListener('click', async function() {{
     var pw = document.getElementById('pw').value;
     var err = document.getElementById('err');
-    var btn = document.getElementById('btn');
     err.textContent = '';
     if (pw.length < 8) {{ err.textContent = 'Минимум 8 символов'; return; }}
-    btn.disabled = true;
     try {{
       var res = await fetch('/api/auth/reset-password', {{
         method: 'POST',
@@ -254,20 +292,11 @@ async def reset_password_page(token: str, db: AsyncSession = Depends(get_db)):
         body: JSON.stringify({{ token: token, new_password: pw }})
       }});
       var data = await res.json().catch(function(){{ return {{}}; }});
-      if (!res.ok) {{
-        err.textContent = data.detail || 'Ошибка сохранения';
-        btn.disabled = false;
-        return;
-      }}
-      document.getElementById('form').style.display = 'none';
-      document.getElementById('ok').style.display = 'block';
-      document.getElementById('openApp').style.display = 'block';
-      document.getElementById('hint').textContent = 'Войдите с новым паролем.';
-      try {{ window.location.href = deepLink + '&done=1'; }} catch (ex) {{}}
-    }} catch (ex) {{
-      err.textContent = 'Ошибка сети';
-      btn.disabled = false;
-    }}
+      if (!res.ok) {{ err.textContent = data.detail || 'Ошибка'; return; }}
+      document.getElementById('title').textContent = 'Пароль сохранён';
+      document.getElementById('manual').innerHTML = '<p style="color:#22c55e;font-size:14px;text-align:center">Готово. Войдите в приложение.</p>';
+      openApp();
+    }} catch (ex) {{ err.textContent = 'Ошибка сети'; }}
   }});
 }})();
 </script>

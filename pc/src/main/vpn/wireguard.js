@@ -402,7 +402,13 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
       const allowed = subnetOnly
         ? '10.66.66.0/24'
         : buildAllowedIPsForWindows(excludeIPs, send)
-      if (subnetOnly) send?.('[WG] AllowedIPs = 10.66.66.0/24 (API в туннеле, TURN/интернет напрямую)')
+      if (subnetOnly) {
+        send?.('[WG] AllowedIPs = 10.66.66.0/24 (bootstrap: только API)')
+        // DNS через WG при split-route ломает резолв на Windows → «нет интернета»
+        conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
+      } else {
+        send?.('[WG] AllowedIPs = 0.0.0.0/0 (основной VPN: трафик через WDTT)')
+      }
       conf = conf.replace(/AllowedIPs\s*=\s*.+/, `AllowedIPs = ${allowed}`)
       fs.writeFileSync(confPath, conf)
       fs.copyFileSync(confPath, path.join(STABLE_CONF_DIR, TUNNEL_CONF_NAME))

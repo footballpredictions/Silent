@@ -442,7 +442,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
       skipWdttWait: true,
-      subnetOnly: true,
+      // Bootstrap: только API (10.66.66.0/24). Основной VPN: 0.0.0.0/0 — весь трафик через WDTT.
+      subnetOnly: vpnBootstrapMode,
       skipForceStop: switching && (isTunnelUp() || isServiceRunning()),
     })
     const timeoutMs = isProcessElevated() ? 70000 : 90000

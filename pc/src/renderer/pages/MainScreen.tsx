@@ -22,6 +22,11 @@ import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
 import { prepareVpnConnectConfig } from '../prepareVpnConnect'
 import { pushLog } from '../debugLog'
+import {
+  getCachedProfile,
+  saveCachedProfile,
+  clearCachedProfile,
+} from '../profileStore'
 
 interface DeviceInfo {
   id: string
@@ -106,7 +111,7 @@ function sessionCustomLabel(d: DeviceInfo): string | null {
 export default function MainScreen({ theme: initialTheme, onLogout }: { theme: any; onLogout: () => void }) {
   const [connected, setConnected] = useState(false)
   const [connecting, setConnecting] = useState(false)
-  const [profile, setProfile] = useState<Profile | null>(null)
+  const [profile, setProfile] = useState<Profile | null>(() => getCachedProfile<Profile>())
   const [clientTheme, setClientTheme] = useState<any>(initialTheme)
   const sessionDeviceId = getSessionDeviceId()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -371,6 +376,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
       await api.post('/api/users/logout', { device_fingerprint: fp }).catch(() => null)
     }
     clearCachedVpnConfig()
+    clearCachedProfile()
     clearSessionDeviceId()
     clearSessionFingerprint()
     clearTokens()

@@ -8,6 +8,7 @@ import {
   type HashItem,
 } from './hashItemsStore'
 import { setTunnelApiBase, clearTunnelApiBase } from './tunnelApi'
+import { saveCachedProfile } from './profileStore'
 /** Профиль и хеши через bootstrap WG (10.66.66.1), как Android syncLoginDataViaBootstrapTunnel. */
 export async function syncLoginDataViaBootstrap(
   wgAddress?: string | null,
@@ -15,13 +16,18 @@ export async function syncLoginDataViaBootstrap(
   setTunnelApiBase(wgAddress)
   let profile: Record<string, unknown> | null = null
   let hashesOk = false
-  try {
-    const me = await api.get('/api/users/me')
-    profile = me.data as Record<string, unknown>
-    pushLog('Bootstrap', `profile OK vk=${profile?.vk_user_id ?? '?'}`)
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e)
-    pushLog('Bootstrap', `profile FAIL: ${msg}`, 'W')
+  for (let attempt = 1; attempt <= 2 && !profile; attempt++) {
+    try {
+      const me = await api.get('/api/users/me')
+      profile = me.data as Record<string, unknown>
+      saveCachedProfile(profile)
+      pushLog('Bootstrap', `profile OK vk=${profile?.vk_user_id ?? '?'}`)
+      break
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      pushLog('Bootstrap', `profile FAIL (${attempt}/2): ${msg}`, 'W')
+      if (attempt < 2) await new Promise(r => setTimeout(r, 400))
+    }
   }
 
   try {

@@ -125,6 +125,11 @@ data class ThemeData(
     val support_url: String = "",
     val privacy_url: String = "",
     val terms_url: String = "",
+    val update_bar_background_color: String = "#2563EB",
+    val update_bar_text_color: String = "#FFFFFF",
+    val update_bar_progress_color: String = "#1D4ED8",
+    val update_bar_label_available: String = "Доступно обновление",
+    val update_bar_label_downloading: String = "Скачивание…",
 )
 
 data class PaymentInitRequest(val plan_type: String, val promo_code: String? = null)

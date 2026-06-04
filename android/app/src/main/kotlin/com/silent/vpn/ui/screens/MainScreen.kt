@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
@@ -92,6 +93,11 @@ fun MainScreen(
     val fg = parseColor(theme?.text_color ?: "#000000", Color.Black)
     val toggleOn = parseColor(theme?.toggle_on_color ?: "#000000", Color.Black)
     val toggleOff = parseColor(theme?.toggle_off_color ?: "#CCCCCC", Color(0xFFCCCCCC))
+    val updateBarBg = parseColor(theme?.update_bar_background_color ?: "#2563EB", Color(0xFF2563EB))
+    val updateBarFg = parseColor(theme?.update_bar_text_color ?: "#FFFFFF", Color.White)
+    val updateBarProgress = parseColor(theme?.update_bar_progress_color ?: "#1D4ED8", Color(0xFF1D4ED8))
+    val updateLabelAvailable = theme?.update_bar_label_available?.takeIf { it.isNotBlank() } ?: "Доступно обновление"
+    val updateLabelDownloading = theme?.update_bar_label_downloading?.takeIf { it.isNotBlank() } ?: "Скачивание…"
 
     var menuOpen by remember { mutableStateOf(false) }
     var menuPage by remember { mutableStateOf(MenuPage.ROOT) }
@@ -261,17 +267,30 @@ fun MainScreen(
             ) {
                 when {
                     updateInfo?.available == true -> {
-                        Button(
-                            onClick = onUpdateClick,
-                            enabled = !updateDownloading,
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB), contentColor = Color.White),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth().height(36.dp),
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(36.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(updateBarBg)
+                                .clickable(enabled = !updateDownloading, onClick = onUpdateClick),
+                            contentAlignment = Alignment.Center,
                         ) {
+                            if (updateDownloading) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.CenterStart)
+                                        .fillMaxHeight()
+                                        .fillMaxWidth(updateProgress.coerceIn(0, 100) / 100f)
+                                        .background(updateBarProgress.copy(alpha = 0.35f)),
+                                )
+                            }
                             Text(
-                                if (updateDownloading) "Скачивание… $updateProgress%" else "Доступно обновление v${updateInfo.version}",
+                                if (updateDownloading) "$updateLabelDownloading $updateProgress%"
+                                else "$updateLabelAvailable v${updateInfo.version}",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
+                                color = updateBarFg,
                             )
                         }
                     }

@@ -63,6 +63,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val installUpdateLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { /* системный установщик APK */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -90,6 +94,9 @@ class MainActivity : ComponentActivity() {
             val statusMsg by vm.statusMsg.collectAsState()
             val bootstrapConnecting by vm.bootstrapConnecting.collectAsState()
             val sessionDeviceId by vm.sessionDeviceId.collectAsState()
+            val updateInfo by vm.updateInfo.collectAsState()
+            val updateProgress by vm.updateProgress.collectAsState()
+            val updateDownloading by vm.updateDownloading.collectAsState()
 
             LaunchedEffect(vpnPermissionGranted.value) {
                 if (vpnPermissionGranted.value) {
@@ -156,6 +163,15 @@ class MainActivity : ComponentActivity() {
                         onRenameDevice = vm::renameDevice,
                         onDevicesScreenActive = vm::setSessionsScreenActive,
                         onVpnProfilePolling = vm::setVpnProfilePolling,
+                        updateInfo = updateInfo,
+                        updateDownloading = updateDownloading,
+                        updateProgress = updateProgress,
+                        onUpdateClick = {
+                            vm.downloadAndInstallUpdate(this@MainActivity) { intent ->
+                                installUpdateLauncher.launch(intent)
+                            }
+                        },
+                        onUpdatePolling = vm::setUpdatePolling,
                     )
                 }
             }

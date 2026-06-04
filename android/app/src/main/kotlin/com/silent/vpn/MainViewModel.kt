@@ -32,6 +32,8 @@ import com.silent.vpn.vk.HashParser
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
+import com.silent.vpn.update.AppUpdateManager
+import com.silent.vpn.data.UpdateCheckResponse
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -103,7 +105,17 @@ class MainViewModel @Inject constructor(
     private var silentBootstrapSync = false
     private var profilePollJob: Job? = null
     private var vpnProfilePollJob: Job? = null
+    private var updatePollJob: Job? = null
     private var onlineHeartbeatJob: Job? = null
+
+    private val _updateInfo = MutableStateFlow<UpdateCheckResponse?>(null)
+    val updateInfo: StateFlow<UpdateCheckResponse?> = _updateInfo
+
+    private val _updateProgress = MutableStateFlow(0)
+    val updateProgress: StateFlow<Int> = _updateProgress
+
+    private val _updateDownloading = MutableStateFlow(false)
+    val updateDownloading: StateFlow<Boolean> = _updateDownloading
 
     val lastEmail: String get() = repo.getLastEmail().orEmpty()
     val repository: SilentRepository get() = repo
@@ -379,6 +391,85 @@ class MainViewModel @Inject constructor(
             while (true) {
                 delay(10_000)
                 runCatching { fetchProfileNow() }
+            }
+        }
+    }
+
+    /** Проверка обновлений через VPN (как на PC). */
+    fun setUpdatePolling(active: Boolean) {
+        updatePollJob?.cancel()
+        updatePollJob = null
+        if (!active) {
+            _updateInfo.value = null
+            return
+        }
+        viewModelScope.launch { runCatching { checkForUpdateNow() } }
+        updatePollJob = viewModelScope.launch {
+            while (true) {
+                delay(5 * 60_000)
+                runCatching { checkForUpdateNow() }
+            }
+        }
+    }
+
+    private suspend fun checkForUpdateNow() {
+        if (_vpnState.value != VpnState.CONNECTED) {
+            _updateInfo.value = null
+            return
+        }
+        val version = AppUpdateManager.currentVersion()
+        val bases = when {
+            SilentVpnService.isRunning && !bootstrapVpnMode ->
+                repo.apiBaseCandidates(null)
+            SilentVpnService.isRunning && bootstrapVpnMode && WdttTunnelManager.tunnelReady.value ->
+                listOf(WdttTunnelManager.tunnelApiBase())
+            else -> repo.apiBaseCandidates(WdttTunnelManager.lastWgAddress())
+        }
+        for (base in bases) {
+            try {
+                if (SilentVpnService.isRunning && bootstrapVpnMode && WdttTunnelManager.tunnelReady.value) {
+                    val ok = WdttTunnelManager.withApiOverlay {
+                        tryCheckUpdateOnBase(base, version)
+                    }
+                    if (ok) return
+                } else {
+                    if (tryCheckUpdateOnBase(base, version)) return
+                }
+            } catch (e: Exception) {
+                DebugLog.w("MainViewModel", "checkUpdate: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun tryCheckUpdateOnBase(base: String, version: String): Boolean {
+        repo.useApiBase(base)
+        val res = repo.getApi().checkUpdate("android", version)
+        if (!res.isSuccessful) return false
+        val body = res.body()
+        _updateInfo.value = if (body?.available == true) body else null
+        return true
+    }
+
+    fun downloadAndInstallUpdate(context: Context, onInstallReady: (Intent) -> Unit) {
+        val info = _updateInfo.value ?: return
+        if (_updateDownloading.value) return
+        val downloadPath = info.download_url ?: return
+        viewModelScope.launch {
+            _updateDownloading.value = true
+            _updateProgress.value = 0
+            try {
+                val base = repo.getServerUrl().trimEnd('/')
+                val url = if (downloadPath.startsWith("http")) downloadPath else "$base$downloadPath"
+                val file = AppUpdateManager.downloadApk(
+                    context,
+                    url,
+                    info.filename ?: "update.apk",
+                ) { pct -> _updateProgress.value = pct }
+                onInstallReady(AppUpdateManager.installApk(context, file))
+            } catch (e: Exception) {
+                _vpnError.value = "Ошибка загрузки обновления: ${e.message}"
+            } finally {
+                _updateDownloading.value = false
             }
         }
     }

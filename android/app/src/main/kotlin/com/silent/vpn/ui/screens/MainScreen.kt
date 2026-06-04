@@ -32,6 +32,7 @@ import com.silent.vpn.ui.components.MenuNavLogout
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.DeviceInfo
 import com.silent.vpn.data.UserProfile
+import com.silent.vpn.data.UpdateCheckResponse
 import com.silent.vpn.ui.theme.parseColor
 import com.silent.vpn.ui.theme.UiColors
 import com.silent.vpn.ui.theme.UiDimens
@@ -81,6 +82,11 @@ fun MainScreen(
     onRenameDevice: (deviceId: String, name: String, onResult: (Boolean, String?) -> Unit) -> Unit,
     onDevicesScreenActive: (Boolean) -> Unit = {},
     onVpnProfilePolling: (Boolean) -> Unit = {},
+    updateInfo: UpdateCheckResponse? = null,
+    updateDownloading: Boolean = false,
+    updateProgress: Int = 0,
+    onUpdateClick: () -> Unit = {},
+    onUpdatePolling: (Boolean) -> Unit = {},
 ) {
     val bg = parseColor(theme?.background_color ?: "#FFFFFF", Color.White)
     val fg = parseColor(theme?.text_color ?: "#000000", Color.Black)
@@ -97,14 +103,17 @@ fun MainScreen(
         onDevicesScreenActive(menuOpen && menuPage == MenuPage.DEVICES)
     }
     LaunchedEffect(vpnState) {
+        val active = vpnState == VpnState.CONNECTED
         onVpnProfilePolling(
             vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING,
         )
+        onUpdatePolling(active)
     }
     DisposableEffect(Unit) {
         onDispose {
             onDevicesScreenActive(false)
             onVpnProfilePolling(false)
+            onUpdatePolling(false)
         }
     }
 
@@ -251,6 +260,21 @@ fun MainScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 when {
+                    updateInfo?.available == true -> {
+                        Button(
+                            onClick = onUpdateClick,
+                            enabled = !updateDownloading,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB), contentColor = Color.White),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().height(36.dp),
+                        ) {
+                            Text(
+                                if (updateDownloading) "Скачивание… $updateProgress%" else "Доступно обновление v${updateInfo.version}",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
                     profile == null -> {
                         CircularProgressIndicator(
                             modifier = Modifier.size(20.dp),
@@ -372,7 +396,7 @@ fun MainScreen(
                         MenuPage.PROMO -> MenuPromo(fg, bg, promoCode, { promoCode = it }, promoMsg, { onCheckPromo(promoCode) { promoMsg = it } }) { menuPage = MenuPage.ROOT }
                         MenuPage.DEVICES -> MenuDevices(profile, fg, sessionDeviceId, vpnState, onRenameDevice) { menuPage = MenuPage.ROOT }
                         MenuPage.SUPPORT -> MenuSimplePage("Поддержка", "По вопросам обратитесь через email или Telegram.", fg) { menuPage = MenuPage.ROOT }
-                        MenuPage.ABOUT -> MenuSimplePage("Silent VPN", "Версия 1.0.22\nWireGuard-туннель через VK TURN/DTLS", fg) { menuPage = MenuPage.ROOT }
+                        MenuPage.ABOUT -> MenuSimplePage("Silent VPN", "Версия ${com.silent.vpn.BuildConfig.VERSION_NAME}\nWireGuard-туннель через VK TURN/DTLS", fg) { menuPage = MenuPage.ROOT }
                         else -> Unit
                     }
                 }

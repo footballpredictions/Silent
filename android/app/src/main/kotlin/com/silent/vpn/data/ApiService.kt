@@ -139,6 +139,15 @@ data class PromoCheckResponse(
     val discounted_price: Double,
 )
 
+data class UpdateCheckResponse(
+    val available: Boolean = false,
+    val version: String? = null,
+    val filename: String? = null,
+    val size: Long = 0,
+    val uploaded_at: String? = null,
+    val download_url: String? = null,
+)
+
 // ─── API Interface ────────────────────────────────────────────────────────────
 
 interface SilentApi {
@@ -219,4 +228,10 @@ interface SilentApi {
 
     @POST("api/vpn/bootstrap-config")
     suspend fun bootstrapConfig(@Body req: BootstrapConfigRequest): Response<VpnConfig>
+
+    @GET("api/updates/check")
+    suspend fun checkUpdate(
+        @Query("platform") platform: String,
+        @Query("version") version: String,
+    ): Response<UpdateCheckResponse>
 }

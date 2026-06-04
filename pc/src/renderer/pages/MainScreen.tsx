@@ -89,6 +89,26 @@ interface Profile {
 type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'hashes' | 'promo' | 'support' | 'about'
 
 const GREEN = '#16A34A'
+const TEST_PURPLE = '#9333EA'
+
+const PLAN_LABELS: Record<string, string> = {
+  trial: 'Пробный период',
+  test: 'Тестовый режим',
+  monthly: 'Месяц',
+  quarterly: '3 месяца',
+  yearly: 'Год',
+  unlimited: 'Бессрочно',
+}
+
+function planLabel(planType: string | null | undefined): string {
+  if (!planType) return '—'
+  return PLAN_LABELS[planType] || planType
+}
+
+function isUnlimitedLikePlan(profile: Profile | null | undefined): boolean {
+  const plan = profile?.subscription?.plan_type
+  return !!profile?.is_admin || plan === 'unlimited' || plan === 'test'
+}
 
 function deviceTypeLabel(type: string): string {
   const t = (type || '').toLowerCase()
@@ -583,6 +603,11 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                 : `${updateLabelAvailable} v${updateInfo.version}`}
             </span>
           </button>
+        ) : profile?.subscription?.plan_type === 'test' ? (
+          <div className="text-center">
+            <div className="text-xs font-semibold" style={{ color: TEST_PURPLE }}>Тестовый режим</div>
+            <div className="text-xs mt-0.5" style={{ color: muted }}>Безлимит</div>
+          </div>
         ) : profile?.is_admin || profile?.subscription?.plan_type === 'unlimited' ? (
           <div className="text-center">
             <div className="text-xs font-semibold" style={{ color: GREEN }}>Бессрочно</div>
@@ -720,13 +745,10 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
                 <div className="space-y-2">
                   <div className="text-sm font-semibold">Подписка активна</div>
                   <div className="text-xs text-gray-500">
-                    Тариф: {{
-                      trial: 'Пробный период',
-                      monthly: 'Месяц',
-                      quarterly: '3 месяца',
-                      yearly: 'Год',
-                    }[profile.subscription?.plan_type || ''] || profile.subscription?.plan_type}<br />
-                    Осталось: {profile.subscription?.days_left ?? 0} дней
+                    Тариф: {planLabel(profile.subscription?.plan_type)}<br />
+                    {isUnlimitedLikePlan(profile)
+                      ? 'Безлимитный доступ'
+                      : `Осталось: ${profile.subscription?.days_left ?? 0} дней`}
                   </div>
                 </div>
               ) : (

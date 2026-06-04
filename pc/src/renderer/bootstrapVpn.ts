@@ -5,6 +5,8 @@ import { buildLocalBootstrapConfig } from './bootstrapVpnConfig'
 import { applyBootstrapWorkerCount } from './hashChannelHelper'
 import { authStrings as s } from './authStrings'
 import { waitVpnReady } from './vpnReady'
+import { setTunnelApiBase, clearTunnelApiBase } from './tunnelApi'
+import { syncLoginDataViaBootstrap } from './syncBootstrapData'
 
 const PRE_LOGIN_FP_KEY = 'silent_pre_login_fp'
 const BOOTSTRAP_SESSION_MS = 2 * 60 * 1000
@@ -52,6 +54,7 @@ let bootstrapActive = false
 let bootstrapTimeoutTimer: ReturnType<typeof setInterval> | null = null
 let bootstrapSessionDeadline = 0
 let statusListener: ((msg: string) => void) | null = null
+let lastBootstrapWgAddress: string | null = null
 
 export function setBootstrapStatusListener(fn: ((msg: string) => void) | null) {
   statusListener = fn
@@ -97,7 +100,8 @@ async function expireBootstrapSession() {
   cancelBootstrapSessionTimeout()
   bootstrapActive = false
   clearBootstrapHash()
-  await (window as any).electronAPI?.vpnDisconnect?.()
+  clearTunnelApiBase()
+  await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
   notifyStatus(
     'Время временного интернета истекло (2 мин). Вставьте хеш заново и нажмите «Подключить для входа».',
   )
@@ -107,7 +111,6 @@ export function isBootstrapVpnActive(): boolean {
   return bootstrapActive
 }
 
-/** Restart 2-min countdown if bootstrap VPN is still up (e.g. after remount or failed login). */
 export function refreshBootstrapSessionTimer(): void {
   if (!bootstrapActive) return
   cancelBootstrapSessionTimeout()
@@ -151,21 +154,33 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   }
   bootstrapActive = true
 
-  const ok = await waitVpnReady(90000)
+  const ok = await waitVpnReady(90_000, bootCfg.stream_count ?? 9, true)
   pushLog('Bootstrap', ok ? 'VPN ready' : 'VPN timeout', ok ? 'I' : 'E')
   if (ok) {
+    lastBootstrapWgAddress = bootCfg.assigned_ip || null
+    setTunnelApiBase(lastBootstrapWgAddress)
     startBootstrapSessionTimeout()
     return true
   }
 
   bootstrapActive = false
-  await electron.vpnDisconnect?.()
+  clearTunnelApiBase()
+  await electron.vpnDisconnect?.({ fast: true })
   notifyStatus(s.bootstrapFail)
   return false
+}
+
+/** Профиль и хеши пока bootstrap ещё поднят (до отключения). */
+export async function prefetchLoginDataViaBootstrap(): Promise<boolean> {
+  if (!bootstrapActive) return false
+  const { profile, hashesOk } = await syncLoginDataViaBootstrap(lastBootstrapWgAddress)
+  pushLog('Bootstrap', `prefetch profile=${!!profile} hashes=${hashesOk}`)
+  return !!profile || hashesOk
 }
 
 export async function disconnectBootstrapVpn(): Promise<void> {
   cancelBootstrapSessionTimeout()
   bootstrapActive = false
-  await (window as any).electronAPI?.vpnDisconnect?.()
+  clearTunnelApiBase()
+  await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
 }

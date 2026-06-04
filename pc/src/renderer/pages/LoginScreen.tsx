@@ -17,6 +17,7 @@ import {
   ensureBootstrapVpn,
   disconnectBootstrapVpn,
   isBootstrapVpnActive,
+  prefetchLoginDataViaBootstrap,
   refreshBootstrapSessionTimer,
   setBootstrapStatusListener,
 } from '../bootstrapVpn'
@@ -132,7 +133,7 @@ export default function LoginScreen({
       const sessionResult = await openLoginSession()
       if (!sessionResult.ok) {
         if (sessionResult.subscriptionExpired) {
-          // Authenticated but no subscription — go to main, show renewal notice there
+          await prefetchLoginDataViaBootstrap().catch(() => false)
           await disconnectBootstrapVpn()
           setBootstrapReady(false)
           const themeRes = await api.get('/api/vpn/theme').catch(() => ({ data: theme }))
@@ -142,6 +143,7 @@ export default function LoginScreen({
         }
         return
       }
+      await prefetchLoginDataViaBootstrap()
       await disconnectBootstrapVpn()
       setBootstrapReady(false)
       setStatusMsg(s.internetOff)

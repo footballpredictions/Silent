@@ -1,8 +1,12 @@
 import { connectWaitTimeoutMs } from './hashChannelHelper'
 
 /** Ожидание готовности туннеля — как Android waitForTunnelReady. */
-export async function waitVpnReady(timeoutMs?: number, totalWorkers = 108): Promise<boolean> {
-  const deadlineMs = timeoutMs ?? connectWaitTimeoutMs(totalWorkers)
+export async function waitVpnReady(
+  timeoutMs?: number,
+  totalWorkers = 108,
+  isBootstrap = false,
+): Promise<boolean> {
+  const deadlineMs = timeoutMs ?? connectWaitTimeoutMs(totalWorkers, isBootstrap)
   const electron = (window as any).electronAPI
   if (!electron?.vpnConnect && !electron?.onVpnReady) return true
 

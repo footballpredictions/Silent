@@ -258,7 +258,6 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
         if (isBootstrapVpnActive()) {
           await disconnectBootstrapVpn()
           pushLog('Main', 'bootstrap VPN stopped before connect')
-          await new Promise(r => setTimeout(r, 500))
         }
         const p = await fetchProfile()
         const hasAccess = !p || p.is_admin || p.subscription?.is_active
@@ -269,17 +268,25 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           return
         }
 
-        let config: VpnConfigPayload | null = null
+        let config: VpnConfigPayload | null = getCachedVpnConfig()
+        if (config?.device_id) saveSessionDeviceId(String(config.device_id))
+        if (!config?.wg_private_key?.trim() || !config?.vk_hashes?.length) {
+          config = null
+        }
         try {
-          const reg = await api.post('/api/vpn/device/register', {
-            device_name: 'PC',
-            device_type: 'pc',
-            device_fingerprint: fp,
-          })
-          config = reg.data
-          cacheVpnConfig(config!)
-          if (config.device_id) saveSessionDeviceId(String(config.device_id))
-          pushLog('Main', `device/register OK device=${String(config.device_id || '').slice(0, 8)} hashes=${config.vk_hashes?.length ?? 0}`)
+          if (!config) {
+            const reg = await api.post('/api/vpn/device/register', {
+              device_name: 'PC',
+              device_type: 'pc',
+              device_fingerprint: fp,
+            })
+            config = reg.data
+            cacheVpnConfig(config!)
+            if (config.device_id) saveSessionDeviceId(String(config.device_id))
+            pushLog('Main', `device/register OK device=${String(config.device_id || '').slice(0, 8)} hashes=${config.vk_hashes?.length ?? 0}`)
+          } else {
+            pushLog('Main', `connect from cache device=${String(config.device_id || '').slice(0, 8)} hashes=${config.vk_hashes?.length ?? 0}`)
+          }
         } catch (e: any) {
           if (e.response?.status === 402) {
             alert(e.response?.data?.detail || 'Оформите подписку для доступа к интернету.')

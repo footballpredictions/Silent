@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { getApiBaseUrl } from './tunnelApi'
 
 const SERVER_URL_KEY = 'silent_server_url'
 const TOKEN_KEY = 'silent_token'
@@ -17,7 +18,7 @@ export function setServerUrl(url: string) {
 const api = axios.create({ timeout: 15000 })
 
 api.interceptors.request.use(cfg => {
-  const baseURL = getServerUrl()
+  const baseURL = getApiBaseUrl()
   cfg.baseURL = baseURL
   const token = localStorage.getItem(TOKEN_KEY)
   if (token) cfg.headers!['Authorization'] = `Bearer ${token}`

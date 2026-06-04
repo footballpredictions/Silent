@@ -31,11 +31,12 @@ export function groupsForWorkers(totalWorkers: number): number {
   )
 }
 
-/** Таймаут connect: WG + ~2/3 воркеров (каскад групп + DTLS). */
-export function connectWaitTimeoutMs(totalWorkers: number): number {
+/** Bootstrap: WG + 1 воркер (как Android isInternetReady). Основной VPN: WG + воркеры. */
+export function connectWaitTimeoutMs(totalWorkers: number, isBootstrap = false): number {
+  if (isBootstrap) return 90_000
   const n = Math.max(totalWorkers, WORKERS_PER_GROUP)
   const groups = Math.ceil(n / WORKERS_PER_GROUP)
-  return Math.min(180_000, 45_000 + groups * 12_000)
+  return Math.min(120_000, 30_000 + groups * 8_000)
 }
 
 /**
@@ -143,7 +144,7 @@ export function resolveWorkerCount(config: { vk_hashes?: string[]; stream_count?
   return workersForLibclient(getTotalWorkers(hashCount), hashCount)
 }
 
-export function applyBootstrapWorkerCount<T extends { vk_hashes?: string[]; stream_count?: number }>(
+export function applyBootstrapWorkerCount<T extends { vk_hashes?: string[]; stream_count?: number; is_bootstrap?: boolean }>(
   config: T,
   bootHash?: string,
 ): T {
@@ -155,6 +156,7 @@ export function applyBootstrapWorkerCount<T extends { vk_hashes?: string[]; stre
     ...config,
     vk_hashes: hash ? [hash] : config.vk_hashes,
     stream_count: Math.min(Math.max(workers, 3), 9),
+    is_bootstrap: true,
   }
 }
 

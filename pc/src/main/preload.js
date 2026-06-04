@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyToClipboard: (text) => ipcRenderer.invoke('clipboard-write', text),
   vkGuestBootstrap: (authUrl) => ipcRenderer.invoke('vk-guest-bootstrap', authUrl),
   vpnConnect: (config) => ipcRenderer.invoke('vpn-connect', config),
-  vpnDisconnect: () => ipcRenderer.invoke('vpn-disconnect'),
+  vpnDisconnect: (opts) => ipcRenderer.invoke('vpn-disconnect', opts),
   vpnIsReady: () => ipcRenderer.invoke('vpn-is-ready'),
   vpnReadConfig: () => ipcRenderer.invoke('vpn-read-config'),
   onVpnLog: (cb) => ipcRenderer.on('vpn-log', (_, line) => cb(line)),

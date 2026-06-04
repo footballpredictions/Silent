@@ -44,6 +44,7 @@ let networkMonitor = null
 let wdttRelaunchTimer = null
 let vpnConnectInFlight = false
 let tunnelReadyPollTimer = null
+let vpnBootstrapMode = false
 
 const { createNetworkMonitor } = require('./vpn/networkRecovery')
 
@@ -167,6 +168,7 @@ function sendLog(line) {
 }
 
 function cleanupVpn() {
+  vpnBootstrapMode = false
   vpnSessionActive = false
   pausedForNetwork = false
   transportSwitching = false
@@ -222,12 +224,9 @@ function scheduleTunnelReadyPoll(sendLogFn) {
 
 const WORKERS_PER_GROUP = 9
 
-/** Минимум каналов до «Подключено» — иначе YouTube видит ~9 TURN и ставит 144p. */
+/** Bootstrap и основной VPN: WG + ≥1 воркер (как Android isInternetReady). */
 function minWorkersForTunnelReady() {
-  const target = sessionTargetWorkers || 108
-  const twoThirds = Math.floor((target * 2) / 3)
-  const stepped = Math.max(WORKERS_PER_GROUP * 2, Math.floor(twoThirds / WORKERS_PER_GROUP) * WORKERS_PER_GROUP)
-  return Math.min(target, stepped)
+  return 1
 }
 
 function isVpnReadyForUi() {
@@ -311,6 +310,12 @@ async function cleanupVpnAsync() {
   await sleep(500)
 }
 
+async function fastDisconnectVpn() {
+  cleanupVpn()
+  forceStopWireGuard(isDev, __dirname, sendLog)
+  await waitForTunnelDown(4000, sendLog)
+}
+
 function wdttExePath() {
   const p = isDev
     ? path.join(__dirname, '../../resources/wdtt-client.exe')
@@ -343,6 +348,7 @@ ipcMain.handle('vk-guest-bootstrap', async (_, authUrl) => {
 })
 
 async function beginWdttSession(config, { switching = false } = {}) {
+  vpnBootstrapMode = !!config.is_bootstrap
   const exePath = wdttExePath()
   if (!fs.existsSync(exePath)) {
     return { error: `wdtt-client.exe не найден: ${exePath}` }
@@ -613,7 +619,11 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   }
 })
 
-ipcMain.handle('vpn-disconnect', async () => {
+ipcMain.handle('vpn-disconnect', async (_, opts) => {
+  if (opts?.fast) {
+    await fastDisconnectVpn()
+    return { success: true }
+  }
   await cleanupVpnAsync()
   return { success: true }
 })

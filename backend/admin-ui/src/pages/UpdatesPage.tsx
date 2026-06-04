@@ -66,15 +66,17 @@ export default function UpdatesPage({ token }: { token: string }) {
         headers: { Authorization: `Bearer ${token}` },
         body: fd,
       })
-      const data = await res.json()
+      let data: { detail?: string; version?: string; message?: string } = {}
+      try { data = await res.json() } catch { /* non-json e.g. nginx 413 */ }
       if (!res.ok) {
-        setMsg(data.detail || 'Ошибка загрузки')
+        if (res.status === 413) setMsg('Файл слишком большой для сервера (лимит 200 МБ)')
+        else setMsg(typeof data.detail === 'string' ? data.detail : `Ошибка загрузки (${res.status})`)
       } else {
         setMsg(`Загружено: ${platformLabel[platform]} v${data.version}`)
         await load()
       }
-    } catch {
-      setMsg('Ошибка сети')
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Ошибка сети')
     }
     setUploading(null)
   }

@@ -57,7 +57,9 @@
       "installerIcon": "assets/icon.ico",
       "installerHeaderIcon": "assets/icon.ico",
       "differentialPackage": false,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "allowElevation": true
     }
   },
   "dependencies": {

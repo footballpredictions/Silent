@@ -274,11 +274,17 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     const base = getApiBaseUrl().replace(/\/$/, '')
     const url = updateInfo.download_url.startsWith('http')
       ? updateInfo.download_url
-      : `${base}${updateInfo.download_url}`
+      : `${base}${updateInfo.download_url.replace(/ /g, '%20')}`
     try {
       const res = await api_.downloadUpdate(url, updateInfo.filename || 'update.exe')
       if (res?.ok && res.path && api_.installUpdate) {
-        await api_.installUpdate(res.path)
+        setUpdateProgress(100)
+        const inst = await api_.installUpdate(res.path)
+        if (!inst?.ok) {
+          alert(inst?.error || 'Не удалось запустить установщик')
+          setUpdateDownloading(false)
+        }
+        // при успехе приложение закроется — установщик NSIS откроется сам
       } else {
         alert(res?.error || 'Ошибка загрузки обновления')
         setUpdateDownloading(false)

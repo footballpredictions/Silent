@@ -717,7 +717,8 @@ ipcMain.handle('app-version', () => app.getVersion())
 function downloadFileWithProgress(url, destPath, onProgress) {
   return new Promise((resolve, reject) => {
     const proto = url.startsWith('https') ? https : http
-    const req = proto.get(url, (res) => {
+    const opts = url.startsWith('https') ? { rejectUnauthorized: false } : {}
+    const req = proto.get(url, opts, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         downloadFileWithProgress(res.headers.location, destPath, onProgress).then(resolve).catch(reject)
         res.resume()
@@ -770,8 +771,24 @@ ipcMain.handle('app-update-install', async (_, filePath) => {
     if (!filePath || !fs.existsSync(filePath)) {
       return { ok: false, error: 'File not found' }
     }
-    spawn(filePath, [], { detached: true, stdio: 'ignore' }).unref()
-    setTimeout(() => app.quit(), 500)
+    isQuitting = true
+    sendLog('[Update] stopping VPN before install…')
+    try {
+      networkMonitor?.stop()
+      await fastDisconnectVpn()
+    } catch { /* ignore */ }
+    const { execSync } = require('child_process')
+    for (const proc of ['wdtt-client.exe', 'wireguard.exe', 'wg.exe']) {
+      try { execSync(`taskkill /F /IM ${proc} /T`, { stdio: 'ignore' }) } catch { /* ignore */ }
+    }
+    await sleep(800)
+
+    sendLog('[Update] launching installer: ' + filePath)
+    const openErr = await shell.openPath(filePath)
+    if (openErr) {
+      return { ok: false, error: openErr }
+    }
+    setTimeout(() => app.quit(), 1500)
     return { ok: true }
   } catch (e) {
     return { ok: false, error: e?.message || String(e) }

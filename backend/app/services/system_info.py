@@ -1,6 +1,7 @@
 """Host CPU model and frequency for admin dashboard."""
 from __future__ import annotations
 
+import glob
 import re
 
 import psutil
@@ -29,32 +30,50 @@ def _parse_base_mhz_from_model(model: str) -> float | None:
     return None
 
 
-def _current_mhz_from_proc() -> float | None:
+def _read_sysfs_current_mhz() -> list[float]:
+    """Live per-core frequency from cpufreq (kHz -> MHz). Fresh read every call."""
+    values: list[float] = []
+    for path in sorted(glob.glob("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                values.append(int(f.read().strip()) / 1000.0)
+        except (OSError, ValueError):
+            continue
+    return values
+
+
+def _read_proc_current_mhz() -> list[float]:
+    """Per-core MHz from /proc/cpuinfo — kernel updates under load (no psutil cache)."""
     values: list[float] = []
     try:
         with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as f:
             for line in f:
                 if line.startswith("cpu MHz"):
-                    values.append(float(line.split(":", 1)[1].strip()))
+                    try:
+                        values.append(float(line.split(":", 1)[1].strip()))
+                    except ValueError:
+                        continue
     except OSError:
-        return None
-    if not values:
-        return None
-    return sum(values) / len(values)
+        pass
+    return values
 
 
-def _current_mhz_from_psutil() -> float | None:
+def _live_current_mhz() -> float | None:
+    """
+    Current operating frequency: prefer sysfs, then /proc/cpuinfo.
+    Use max across cores (turbo / busiest core), not average with nominal.
+    """
+    samples = _read_sysfs_current_mhz() or _read_proc_current_mhz()
+    if samples:
+        return max(samples)
+
+    # Last resort only — never use .max (nominal cap), only .current
     try:
         per = psutil.cpu_freq(percpu=True)
         if per:
-            currents = [p.current for p in per if p and p.current and p.current > 0]
+            currents = [float(p.current) for p in per if p and p.current and p.current > 0]
             if currents:
-                return sum(currents) / len(currents)
-        agg = psutil.cpu_freq()
-        if agg and agg.current and agg.current > 0:
-            return float(agg.current)
-        if agg and agg.max and agg.max > 0:
-            return float(agg.max)
+                return max(currents)
     except Exception:
         pass
     return None
@@ -63,7 +82,7 @@ def _current_mhz_from_psutil() -> float | None:
 def get_cpu_info() -> dict:
     model = _read_cpu_model()
     base_mhz = _parse_base_mhz_from_model(model)
-    current_mhz = _current_mhz_from_psutil() or _current_mhz_from_proc()
+    current_mhz = _live_current_mhz()
 
     if base_mhz is None:
         try:

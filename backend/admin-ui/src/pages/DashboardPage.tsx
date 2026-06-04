@@ -44,6 +44,7 @@ const StatCard = ({ icon: Icon, label, value, sub, color = 'white' }: any) => (
 )
 
 const formatGhz = (mhz: number) => `${(mhz / 1000).toFixed(2)} GHz`
+const formatLiveMhz = (mhz: number) => `${mhz.toFixed(1)} MHz`
 
 const ProgressBar = ({ percent, label }: { percent: number; label: string }) => (
   <div className="mb-3">
@@ -229,7 +230,7 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
                   <span>Частота (номинал): <span className="text-[#aaa]">{formatGhz(stats.system.cpu_freq_base_mhz)}</span></span>
                 )}
                 {stats.system.cpu_freq_current_mhz != null && (
-                  <span>Онлайн: <span className="text-white font-medium">{formatGhz(stats.system.cpu_freq_current_mhz)}</span></span>
+                  <span>Онлайн: <span className="text-white font-medium">{formatLiveMhz(stats.system.cpu_freq_current_mhz)}</span></span>
                 )}
               </div>
               {stats.system.cpu_model && (

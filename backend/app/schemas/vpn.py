@@ -68,3 +68,9 @@ class ThemeResponse(BaseModel):
     support_url: str = ""
     privacy_url: str = ""
     terms_url: str = ""
+    # Bottom update bar (replaces subscription strip while update is available)
+    update_bar_background_color: str = "#2563EB"
+    update_bar_text_color: str = "#FFFFFF"
+    update_bar_progress_color: str = "#1D4ED8"
+    update_bar_label_available: str = "Доступно обновление"
+    update_bar_label_downloading: str = "Скачивание…"

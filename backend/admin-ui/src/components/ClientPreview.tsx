@@ -9,10 +9,17 @@ export type ClientTheme = {
   toggle_off_color: string
   font_family: string
   app_name: string
+  update_bar_background_color?: string
+  update_bar_text_color?: string
+  update_bar_progress_color?: string
+  update_bar_label_available?: string
+  update_bar_label_downloading?: string
 }
 
 type PreviewScreen =
   | 'main'
+  | 'main_update'
+  | 'main_download'
   | 'menu'
   | 'subscription'
   | 'exceptions'
@@ -24,6 +31,8 @@ type PreviewScreen =
 
 const SCREEN_TABS: { id: PreviewScreen; label: string }[] = [
   { id: 'main', label: 'Главная' },
+  { id: 'main_update', label: 'Обновление' },
+  { id: 'main_download', label: 'Загрузка' },
   { id: 'menu', label: 'Меню' },
   { id: 'subscription', label: 'Подписка' },
   { id: 'exceptions', label: 'Исключения' },
@@ -59,6 +68,15 @@ export default function ClientPreview({ theme, platform = 'mobile' }: {
   const bg = theme.background_color
   const muted = `${fg}66`
   const green = '#16A34A'
+  const updateBg = theme.update_bar_background_color || '#2563EB'
+  const updateFg = theme.update_bar_text_color || '#FFFFFF'
+  const updateProgress = theme.update_bar_progress_color || '#1D4ED8'
+  const updateLabel = theme.update_bar_label_available || 'Доступно обновление'
+  const downloadLabel = theme.update_bar_label_downloading || 'Скачивание…'
+  const showMain = screen === 'main' || screen === 'main_update' || screen === 'main_download'
+  const showUpdateBar = screen === 'main_update' || screen === 'main_download'
+  const updateDownloading = screen === 'main_download'
+  const updateProgressPct = 47
 
   const statusText = connected ? 'Подключено' : 'Отключено'
   const statusColor = connected ? green : muted
@@ -145,7 +163,7 @@ export default function ClientPreview({ theme, platform = 'mobile' }: {
         <div style={{ width: 16 }} />
       </div>
 
-      {screen === 'main' && (
+      {showMain && (
         <>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24 }}>
             <div style={{ fontSize: 12, fontWeight: 500, letterSpacing: 2, color: statusColor, textTransform: 'uppercase' }}>
@@ -167,8 +185,30 @@ export default function ClientPreview({ theme, platform = 'mobile' }: {
             </button>
           </div>
           <div style={{ borderTop: '0.5px solid #F3F4F6', padding: 16, textAlign: 'center' }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: green }}>Оплачено</div>
-            <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>до 26.06.2026</div>
+            {showUpdateBar ? (
+              <button type="button" style={{
+                width: '100%', borderRadius: 12, border: 'none', cursor: 'default',
+                background: updateBg, color: updateFg, padding: '10px 12px',
+                fontSize: 12, fontWeight: 600, position: 'relative', overflow: 'hidden',
+              }}>
+                {updateDownloading && (
+                  <div style={{
+                    position: 'absolute', left: 0, top: 0, bottom: 0,
+                    width: `${updateProgressPct}%`, background: updateProgress, opacity: 0.35,
+                  }} />
+                )}
+                <span style={{ position: 'relative' }}>
+                  {updateDownloading
+                    ? `${downloadLabel} ${updateProgressPct}%`
+                    : `${updateLabel} v1.0.73`}
+                </span>
+              </button>
+            ) : (
+              <>
+                <div style={{ fontSize: 12, fontWeight: 600, color: green }}>Оплачено</div>
+                <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>до 26.06.2026</div>
+              </>
+            )}
           </div>
         </>
       )}

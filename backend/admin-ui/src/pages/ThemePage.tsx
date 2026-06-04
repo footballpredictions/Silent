@@ -6,6 +6,9 @@ const defaultTheme = {
   accent_color: '#1A1A1A', toggle_on_color: '#000000', toggle_off_color: '#CCCCCC',
   font_family: 'Inter', logo_url: '/static/logo.svg', app_name: 'Silent VPN',
   support_url: '', privacy_url: '', terms_url: '',
+  update_bar_background_color: '#2563EB', update_bar_text_color: '#FFFFFF',
+  update_bar_progress_color: '#1D4ED8',
+  update_bar_label_available: 'Доступно обновление', update_bar_label_downloading: 'Скачивание…',
 }
 
 export default function ThemePage({ token }: { token: string }) {
@@ -69,6 +72,20 @@ export default function ThemePage({ token }: { token: string }) {
           {field('URL поддержки', 'support_url')}
           {field('URL политики конфиденциальности', 'privacy_url')}
           {field('URL условий использования', 'terms_url')}
+
+          <div className="pt-2 border-t border-[#2a2a2a]">
+            <h3 className="text-sm font-semibold text-white mb-3">Полоска обновления</h3>
+            <p className="text-xs text-[#666] mb-4">
+              Внизу главного экрана вместо подписки, пока доступна новая версия (Android, iOS, PC).
+            </p>
+            <div className="space-y-4">
+              {field('Фон полоски', 'update_bar_background_color')}
+              {field('Цвет текста', 'update_bar_text_color')}
+              {field('Цвет прогресса', 'update_bar_progress_color')}
+              {field('Текст «доступно»', 'update_bar_label_available')}
+              {field('Текст при загрузке', 'update_bar_label_downloading')}
+            </div>
+          </div>
 
           <button onClick={save} disabled={saving}
             className="w-full bg-white text-black py-2.5 rounded-lg text-sm font-semibold hover:bg-[#e0e0e0] disabled:opacity-50 transition-colors mt-2">

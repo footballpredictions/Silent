@@ -25,6 +25,7 @@ data class LoginUi(
     val primaryBtnFg: Color,
     val green: Color = Color(0xFF16A34A),
     val red: Color = Color(0xFFEF4444),
+    val linkColor: Color = Color(0xFF4680C2),
 )
 
 private fun isDarkBackground(bg: Color): Boolean {
@@ -52,6 +53,7 @@ fun ThemeData?.toLoginUi(): LoginUi {
         headerFg = if (dark) Color(0xFF9CA3AF) else fg.copy(alpha = 0.6f),
         primaryBtnBg = if (dark) Color.White else fg,
         primaryBtnFg = if (dark) Color.Black else bg,
+        linkColor = parseColor(this?.login_link_color ?: "#4680C2", Color(0xFF4680C2)),
     )
 }
 

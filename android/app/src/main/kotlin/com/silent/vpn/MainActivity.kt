@@ -80,6 +80,8 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        handleDeepLink(intent)
+
         setContent {
             val screen by vm.screen.collectAsState()
             val profile by vm.profile.collectAsState()
@@ -97,6 +99,8 @@ class MainActivity : ComponentActivity() {
             val updateInfo by vm.updateInfo.collectAsState()
             val updateProgress by vm.updateProgress.collectAsState()
             val updateDownloading by vm.updateDownloading.collectAsState()
+            val resetToken by vm.resetPasswordToken.collectAsState()
+            val forgotSent by vm.forgotSent.collectAsState()
 
             LaunchedEffect(vpnPermissionGranted.value) {
                 if (vpnPermissionGranted.value) {
@@ -110,13 +114,18 @@ class MainActivity : ComponentActivity() {
                     AppScreen.LOGIN -> LoginScreen(
                         theme = theme,
                         initialEmail = vm.lastEmail,
-                        onLogin = { email, password -> vm.login(email, password, this@MainActivity) },
+                        initialRememberMe = vm.rememberMe,
+                        resetToken = resetToken,
+                        forgotSent = forgotSent,
+                        onLogin = { email, password, remember -> vm.login(email, password, remember, this@MainActivity) },
                         onRegister = vm::register,
+                        onForgotPassword = vm::forgotPassword,
+                        onResetPassword = vm::resetPassword,
+                        onClearResetToken = vm::clearResetToken,
                         loading = authLoading,
                         error = authError,
                         regDone = regDone,
                         regEmail = regEmail,
-                        hashReady = !bootstrapHash.isNullOrBlank(),
                         bootstrapHash = bootstrapHash,
                         statusMsg = statusMsg,
                         bootstrapConnecting = bootstrapConnecting,
@@ -130,6 +139,9 @@ class MainActivity : ComponentActivity() {
                             } else {
                                 vm.connectForLogin(this@MainActivity, raw)
                             }
+                        },
+                        onOpenVkLink = { url ->
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                         },
                         onClearError = vm::clearAuthError,
                         onRegDoneDismiss = vm::dismissRegDone,
@@ -181,9 +193,14 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        handleDeepLink(intent)
         if (intent.getBooleanExtra(EXTRA_OPEN_MAIN, false)) {
             vm.onReturnedToApp()
         }
+    }
+
+    private fun handleDeepLink(intent: Intent?) {
+        intent?.data?.let { vm.handleDeepLink(it) }
     }
 
     override fun onResume() {

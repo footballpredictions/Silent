@@ -35,6 +35,7 @@ class SilentRepository @Inject constructor(
         const val PREF_CACHED_CONFIG = "cached_vpn_config"
         const val PREF_CACHED_CONFIG_TS = "cached_vpn_config_ts"
         const val PREF_LAST_EMAIL = "last_email"
+        const val PREF_REMEMBER_ME = "remember_me"
         const val PREF_SESSION_DEVICE_ID = "session_device_id"
         const val PREF_EXCLUDED_APPS = "excluded_apps"
         const val PREF_EXCLUSIONS_WHITELIST = "exclusions_whitelist"
@@ -276,7 +277,19 @@ class SilentRepository @Inject constructor(
         prefs.edit().putString(PREF_LAST_EMAIL, email.trim()).apply()
     }
 
-    fun getLastEmail(): String? = prefs.getString(PREF_LAST_EMAIL, null)?.takeIf { it.isNotBlank() }
+    fun getRememberMe(): Boolean = prefs.getBoolean(PREF_REMEMBER_ME, false)
+
+    fun saveRememberMe(email: String, remember: Boolean) {
+        prefs.edit()
+            .putBoolean(PREF_REMEMBER_ME, remember)
+            .apply {
+                if (remember) putString(PREF_LAST_EMAIL, email.trim()) else remove(PREF_LAST_EMAIL)
+            }
+            .apply()
+    }
+
+    fun getLastEmail(): String? =
+        if (getRememberMe()) prefs.getString(PREF_LAST_EMAIL, null)?.takeIf { it.isNotBlank() } else null
 
     fun clearCachedVpnConfig() {
         prefs.edit().remove(PREF_CACHED_CONFIG).remove(PREF_CACHED_CONFIG_TS).apply()

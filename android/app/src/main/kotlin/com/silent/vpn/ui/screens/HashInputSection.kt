@@ -10,9 +10,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,41 +24,43 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.silent.vpn.data.ThemeData
 import com.silent.vpn.ui.theme.LoginUi
 import com.silent.vpn.ui.theme.loginTextFieldColors
 
 @Composable
 fun HashInputSection(
     ui: LoginUi,
+    theme: ThemeData?,
     bootstrapHash: String?,
     statusMsg: String,
     bootstrapConnecting: Boolean,
     bootstrapReady: Boolean,
     onConnect: (String) -> Unit,
+    onOpenVkLink: () -> Unit,
+    showDivider: Boolean = true,
 ) {
     var input by remember(bootstrapHash) { mutableStateOf(bootstrapHash.orEmpty()) }
     val fieldColors = loginTextFieldColors(ui)
 
-    Text(
-        "Шаг 1 — хеш звонка VK",
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 13.sp,
-        color = ui.fg,
-    )
-    Text(
-        "Временный интернет на 2 минуты — только для входа или регистрации. По истечении хеш сбросится.",
-        fontSize = 11.sp,
-        color = ui.hint,
-        modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
-    )
+    val title = theme?.login_step1_title ?: "Шаг 1 — хеш звонка VK"
+    val hint = theme?.login_step1_instruction
+        ?: "Временный интернет на 2 минуты — только для входа или регистрации."
+    val placeholder = theme?.login_hash_placeholder ?: "Хеш или ссылка на звонок VK"
+    val confirmBtn = theme?.login_hash_button_text ?: "Подтвердить"
+    val vkLabel = theme?.login_vk_mobile_link_text ?: "ВКонтакте — раздел «Звонки»"
+
+    Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = ui.fg)
+    Text(hint, fontSize = 11.sp, color = ui.hint, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
+    TextButton(onClick = onOpenVkLink, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+        Text(vkLabel, fontSize = 11.sp, color = ui.linkColor, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)
+    }
 
     OutlinedTextField(
         value = input,
         onValueChange = { input = it },
         modifier = Modifier.fillMaxWidth(),
-        placeholder = {
-            Text("Хеш или ссылка на звонок VK", fontSize = 13.sp, color = ui.fieldPlaceholder)
-        },
+        placeholder = { Text(placeholder, fontSize = 13.sp, color = ui.fieldPlaceholder) },
         singleLine = true,
         enabled = !bootstrapReady,
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
@@ -72,7 +74,7 @@ fun HashInputSection(
     val buttonText = when {
         bootstrapConnecting -> "Подключение…"
         bootstrapReady -> "Подключено ✓"
-        else -> "Подключить для входа"
+        else -> confirmBtn
     }
     val buttonEnabled = input.isNotBlank() && !bootstrapConnecting && !bootstrapReady
 
@@ -103,15 +105,10 @@ fun HashInputSection(
             bootstrapConnecting -> ui.hint
             else -> ui.hint
         }
-        Text(
-            statusMsg,
-            fontSize = 11.sp,
-            color = statusColor,
-            modifier = Modifier.padding(top = 8.dp),
-        )
+        Text(statusMsg, fontSize = 11.sp, color = statusColor, modifier = Modifier.padding(top = 8.dp))
     }
 
-    Spacer(modifier = Modifier.height(16.dp))
-    HorizontalDivider(color = ui.divider)
-    Spacer(modifier = Modifier.height(16.dp))
+    if (showDivider) {
+        Spacer(modifier = Modifier.height(16.dp))
+    }
 }

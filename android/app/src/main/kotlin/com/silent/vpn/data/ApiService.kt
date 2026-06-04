@@ -7,6 +7,8 @@ import retrofit2.http.*
 
 data class LoginRequest(val email: String, val password: String)
 data class RegisterRequest(val email: String, val password: String)
+data class ForgotPasswordRequest(val email: String)
+data class ResetPasswordRequest(val token: String, val new_password: String)
 data class TokenResponse(val access_token: String, val refresh_token: String)
 data class RefreshRequest(val refresh_token: String)
 
@@ -130,6 +132,22 @@ data class ThemeData(
     val update_bar_progress_color: String = "#1D4ED8",
     val update_bar_label_available: String = "Доступно обновление",
     val update_bar_label_downloading: String = "Скачивание…",
+    val login_step1_title: String = "Шаг 1 — хеш звонка VK",
+    val login_step1_instruction: String = "Скопируйте хеш из раздела «Звонки» в приложении ВКонтакте. Вставьте хеш или ссылку ниже — временный канал для входа (2 мин).",
+    val login_hash_placeholder: String = "Хеш или ссылка на звонок VK",
+    val login_hash_button_text: String = "Подтвердить",
+    val login_vk_mobile_url: String = "https://vk.com/calls",
+    val login_vk_mobile_link_text: String = "ВКонтакте — раздел «Звонки»",
+    val login_vk_pc_url: String = "https://vk.com/calls",
+    val login_vk_pc_link_text: String = "VK Звонки в браузере",
+    val login_link_color: String = "#4680C2",
+    val login_step2_title: String = "Шаг 2 — вход или регистрация",
+    val login_remember_me_label: String = "Запомнить меня",
+    val login_forgot_password_label: String = "Забыли пароль?",
+    val login_forgot_title: String = "Восстановление пароля",
+    val login_forgot_instruction: String = "Введите email — мы отправим ссылку для установки нового пароля.",
+    val login_reset_title: String = "Новый пароль",
+    val login_reset_button_text: String = "Сохранить пароль",
 )
 
 data class PaymentInitRequest(val plan_type: String, val promo_code: String? = null)
@@ -161,6 +179,12 @@ interface SilentApi {
 
     @POST("api/auth/register")
     suspend fun register(@Body req: RegisterRequest): Response<Map<String, String>>
+
+    @POST("api/auth/forgot-password")
+    suspend fun forgotPassword(@Body req: ForgotPasswordRequest): Response<Map<String, String>>
+
+    @POST("api/auth/reset-password")
+    suspend fun resetPassword(@Body req: ResetPasswordRequest): Response<Map<String, String>>
 
     @POST("api/auth/refresh")
     suspend fun refresh(@Body req: RefreshRequest): Response<TokenResponse>

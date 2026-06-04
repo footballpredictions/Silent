@@ -2,6 +2,7 @@ package com.silent.vpn
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.core.content.ContextCompat
@@ -14,8 +15,10 @@ import com.silent.vpn.data.BootstrapVpnConfig
 import com.silent.vpn.data.ConnectRequest
 import com.silent.vpn.data.DeviceRegisterRequest
 import com.silent.vpn.data.DisconnectRequest
+import com.silent.vpn.data.ForgotPasswordRequest
 import com.silent.vpn.data.HashItemDto
 import com.silent.vpn.data.LoginRequest
+import com.silent.vpn.data.ResetPasswordRequest
 import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.data.prepareVpnConnectConfig
@@ -118,7 +121,14 @@ class MainViewModel @Inject constructor(
     private val _updateDownloading = MutableStateFlow(false)
     val updateDownloading: StateFlow<Boolean> = _updateDownloading
 
+    private val _resetPasswordToken = MutableStateFlow<String?>(null)
+    val resetPasswordToken: StateFlow<String?> = _resetPasswordToken
+
+    private val _forgotSent = MutableStateFlow(false)
+    val forgotSent: StateFlow<Boolean> = _forgotSent
+
     val lastEmail: String get() = repo.getLastEmail().orEmpty()
+    val rememberMe: Boolean get() = repo.getRememberMe()
     val repository: SilentRepository get() = repo
 
     private fun isHashReady(): Boolean = !repo.getBootstrapHash().isNullOrBlank()
@@ -549,7 +559,61 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun login(email: String, password: String, activity: ComponentActivity? = null) {
+    fun handleDeepLink(uri: Uri?) {
+        if (uri?.scheme != "silentvpn") return
+        when (uri.host) {
+            "reset-password" -> uri.getQueryParameter("token")?.takeIf { it.isNotBlank() }?.let {
+                _resetPasswordToken.value = it
+                _screen.value = AppScreen.LOGIN
+            }
+        }
+    }
+
+    fun clearResetToken() {
+        _resetPasswordToken.value = null
+    }
+
+    fun forgotPassword(email: String) {
+        viewModelScope.launch {
+            _authLoading.value = true
+            _authError.value = null
+            _forgotSent.value = false
+            try {
+                val res = repo.getApi().forgotPassword(ForgotPasswordRequest(email))
+                if (!res.isSuccessful) {
+                    _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Ошибка отправки"
+                    return@launch
+                }
+                _forgotSent.value = true
+            } catch (e: Exception) {
+                _authError.value = e.message ?: "Ошибка отправки"
+            } finally {
+                _authLoading.value = false
+            }
+        }
+    }
+
+    fun resetPassword(token: String, newPassword: String) {
+        viewModelScope.launch {
+            _authLoading.value = true
+            _authError.value = null
+            try {
+                val res = repo.getApi().resetPassword(ResetPasswordRequest(token, newPassword))
+                if (!res.isSuccessful) {
+                    _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Не удалось сохранить пароль"
+                    return@launch
+                }
+                _resetPasswordToken.value = null
+                _authError.value = null
+            } catch (e: Exception) {
+                _authError.value = e.message ?: "Ошибка"
+            } finally {
+                _authLoading.value = false
+            }
+        }
+    }
+
+    fun login(email: String, password: String, rememberMe: Boolean, activity: ComponentActivity? = null) {
         viewModelScope.launch {
             cancelBootstrapSessionTimeout()
             _authLoading.value = true
@@ -574,7 +638,7 @@ class MainViewModel @Inject constructor(
                 }
                 val tokens = res.body()!!
                 repo.saveTokens(tokens.access_token, tokens.refresh_token)
-                repo.saveLastEmail(email)
+                repo.saveRememberMe(email, rememberMe)
                 repo.startNewSession()
                 val ctx = activity?.applicationContext ?: appContext
                 if (!openLoginSession()) {
@@ -631,7 +695,7 @@ class MainViewModel @Inject constructor(
         throw lastError ?: Exception("Не удалось связаться с сервером. Проверьте VPN и попробуйте снова.")
     }
 
-    fun register(email: String, password: String) {
+    fun register(email: String, password: String, rememberMe: Boolean) {
         viewModelScope.launch {
             cancelBootstrapSessionTimeout()
             _authLoading.value = true
@@ -649,6 +713,7 @@ class MainViewModel @Inject constructor(
                     restartBootstrapTimerIfNeeded()
                     return@launch
                 }
+                repo.saveRememberMe(email, rememberMe)
                 _regEmail.value = email
                 _regDone.value = true
             } catch (e: Exception) {

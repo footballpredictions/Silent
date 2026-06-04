@@ -30,7 +30,7 @@ async def get_stats(
     """Dashboard system stats."""
     # System resources
     cpu = psutil.cpu_percent(interval=0.5)
-    cpu_info = get_cpu_info()
+    cpu_info = get_cpu_info(cpu)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
 

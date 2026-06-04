@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import glob
 import re
+import time
 
 import psutil
 
@@ -30,8 +31,11 @@ def _parse_base_mhz_from_model(model: str) -> float | None:
     return None
 
 
+def _has_cpufreq_sysfs() -> bool:
+    return bool(glob.glob("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq"))
+
+
 def _read_sysfs_current_mhz() -> list[float]:
-    """Live per-core frequency from cpufreq (kHz -> MHz). Fresh read every call."""
     values: list[float] = []
     for path in sorted(glob.glob("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")):
         try:
@@ -43,7 +47,6 @@ def _read_sysfs_current_mhz() -> list[float]:
 
 
 def _read_proc_current_mhz() -> list[float]:
-    """Per-core MHz from /proc/cpuinfo — kernel updates under load (no psutil cache)."""
     values: list[float] = []
     try:
         with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as f:
@@ -58,31 +61,40 @@ def _read_proc_current_mhz() -> list[float]:
     return values
 
 
-def _live_current_mhz() -> float | None:
+def _hardware_mhz_live() -> tuple[float | None, bool]:
     """
-    Current operating frequency: prefer sysfs, then /proc/cpuinfo.
-    Use max across cores (turbo / busiest core), not average with nominal.
+    True if the host exposes changing CPU frequency (cpufreq sysfs or varying cpu MHz).
+    QEMU/KVM often reports a fixed cpu MHz — then live=False.
     """
-    samples = _read_sysfs_current_mhz() or _read_proc_current_mhz()
-    if samples:
-        return max(samples)
+    if _has_cpufreq_sysfs():
+        samples = _read_sysfs_current_mhz()
+        return (max(samples) if samples else None), True
 
-    # Last resort only — never use .max (nominal cap), only .current
-    try:
-        per = psutil.cpu_freq(percpu=True)
-        if per:
-            currents = [float(p.current) for p in per if p and p.current and p.current > 0]
-            if currents:
-                return max(currents)
-    except Exception:
-        pass
-    return None
+    first = _read_proc_current_mhz()
+    time.sleep(0.15)
+    second = _read_proc_current_mhz()
+    combined = (first or []) + (second or [])
+    if not combined:
+        return None, False
+
+    spread = max(combined) - min(combined)
+    if spread >= 5.0:
+        return max(combined), True
+
+    return max(combined), False
 
 
-def get_cpu_info() -> dict:
+def _estimate_mhz_from_load(base_mhz: float, cpu_percent: float) -> float:
+    """When VM hides cpufreq, scale between idle floor and nominal by CPU load."""
+    base = base_mhz or 2300.0
+    load = max(0.0, min(100.0, float(cpu_percent))) / 100.0
+    min_mhz = base * 0.48
+    return min_mhz + (base - min_mhz) * load
+
+
+def get_cpu_info(cpu_percent: float = 0.0) -> dict:
     model = _read_cpu_model()
     base_mhz = _parse_base_mhz_from_model(model)
-    current_mhz = _live_current_mhz()
 
     if base_mhz is None:
         try:
@@ -94,6 +106,15 @@ def get_cpu_info() -> dict:
         except OSError:
             pass
 
+    hw_mhz, hw_live = _hardware_mhz_live()
+    estimated = not hw_live
+
+    if hw_live and hw_mhz is not None:
+        current_mhz = hw_mhz
+    else:
+        ref = base_mhz or hw_mhz or 2300.0
+        current_mhz = _estimate_mhz_from_load(ref, cpu_percent)
+
     cores = psutil.cpu_count(logical=True) or 1
 
     return {
@@ -101,4 +122,5 @@ def get_cpu_info() -> dict:
         "cpu_cores": cores,
         "cpu_freq_base_mhz": round(base_mhz, 1) if base_mhz else None,
         "cpu_freq_current_mhz": round(current_mhz, 1) if current_mhz else None,
+        "cpu_freq_estimated": estimated,
     }

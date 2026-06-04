@@ -9,6 +9,7 @@ interface Stats {
     cpu_cores?: number
     cpu_freq_base_mhz?: number | null
     cpu_freq_current_mhz?: number | null
+    cpu_freq_estimated?: boolean
     memory_total_gb: number
     memory_used_gb: number
     memory_percent: number
@@ -230,7 +231,15 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
                   <span>Частота (номинал): <span className="text-[#aaa]">{formatGhz(stats.system.cpu_freq_base_mhz)}</span></span>
                 )}
                 {stats.system.cpu_freq_current_mhz != null && (
-                  <span>Онлайн: <span className="text-white font-medium">{formatLiveMhz(stats.system.cpu_freq_current_mhz)}</span></span>
+                  <span>
+                    Онлайн:{' '}
+                    <span className="text-white font-medium">{formatLiveMhz(stats.system.cpu_freq_current_mhz)}</span>
+                    {stats.system.cpu_freq_estimated && (
+                      <span className="text-[#555] ml-1" title="VPS не отдаёт частоту с железа — оценка по загрузке CPU">
+                        (≈ по загрузке)
+                      </span>
+                    )}
+                  </span>
                 )}
               </div>
               {stats.system.cpu_model && (

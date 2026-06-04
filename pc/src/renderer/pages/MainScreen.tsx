@@ -480,6 +480,11 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const fontFamily = clientTheme?.font_family ? `${clientTheme.font_family}, Inter, sans-serif` : 'Inter, sans-serif'
   const appTitle = resolveAppName(clientTheme?.app_name).toUpperCase()
   const muted = `${fg}66`
+  const updateBarBg = clientTheme?.update_bar_background_color || '#2563EB'
+  const updateBarFg = clientTheme?.update_bar_text_color || '#FFFFFF'
+  const updateBarProgress = clientTheme?.update_bar_progress_color || '#1D4ED8'
+  const updateLabelAvailable = clientTheme?.update_bar_label_available || 'Доступно обновление'
+  const updateLabelDownloading = clientTheme?.update_bar_label_downloading || 'Скачивание…'
 
   const statusLabel = connecting
     ? 'Подключение…'
@@ -560,11 +565,23 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           <button
             onClick={() => void handleUpdateClick()}
             disabled={updateDownloading}
-            className="w-full rounded-xl py-2 text-xs font-semibold transition-colors disabled:opacity-70"
-            style={{ background: '#2563EB', color: '#FFFFFF' }}>
-            {updateDownloading
-              ? `Скачивание… ${updateProgress}%`
-              : `Доступно обновление v${updateInfo.version}`}
+            className="w-full rounded-xl py-2 text-xs font-semibold transition-colors disabled:opacity-70 relative overflow-hidden"
+            style={{ background: updateBarBg, color: updateBarFg }}>
+            {updateDownloading && (
+              <span
+                className="absolute inset-y-0 left-0"
+                style={{
+                  width: `${updateProgress}%`,
+                  background: updateBarProgress,
+                  opacity: 0.35,
+                }}
+              />
+            )}
+            <span className="relative">
+              {updateDownloading
+                ? `${updateLabelDownloading} ${updateProgress}%`
+                : `${updateLabelAvailable} v${updateInfo.version}`}
+            </span>
           </button>
         ) : profile?.is_admin || profile?.subscription?.plan_type === 'unlimited' ? (
           <div className="text-center">

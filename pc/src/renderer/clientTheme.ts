@@ -6,6 +6,11 @@ export interface ClientTheme {
   toggle_off_color?: string
   font_family?: string
   app_name?: string
+  update_bar_background_color?: string
+  update_bar_text_color?: string
+  update_bar_progress_color?: string
+  update_bar_label_available?: string
+  update_bar_label_downloading?: string
 }
 
 function parseHex(color: string): { r: number; g: number; b: number } | null {

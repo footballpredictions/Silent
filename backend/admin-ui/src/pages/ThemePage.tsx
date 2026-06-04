@@ -9,6 +9,22 @@ const defaultTheme = {
   update_bar_background_color: '#2563EB', update_bar_text_color: '#FFFFFF',
   update_bar_progress_color: '#1D4ED8',
   update_bar_label_available: 'Доступно обновление', update_bar_label_downloading: 'Скачивание…',
+  login_step1_title: 'Шаг 1 — хеш звонка VK',
+  login_step1_instruction: 'Скопируйте хеш из раздела «Звонки» в приложении ВКонтакте (на ПК — VK Звонки в браузере). Вставьте хеш или ссылку ниже — временный канал только для входа или регистрации (2 мин).',
+  login_hash_placeholder: 'Хеш или ссылка на звонок VK',
+  login_hash_button_text: 'Подтвердить',
+  login_vk_mobile_url: 'https://vk.com/calls',
+  login_vk_mobile_link_text: 'ВКонтакте — раздел «Звонки»',
+  login_vk_pc_url: 'https://vk.com/calls',
+  login_vk_pc_link_text: 'VK Звонки в браузере',
+  login_link_color: '#4680C2',
+  login_step2_title: 'Шаг 2 — вход или регистрация',
+  login_remember_me_label: 'Запомнить меня',
+  login_forgot_password_label: 'Забыли пароль?',
+  login_forgot_title: 'Восстановление пароля',
+  login_forgot_instruction: 'Введите email — мы отправим ссылку для установки нового пароля.',
+  login_reset_title: 'Новый пароль',
+  login_reset_button_text: 'Сохранить пароль',
 }
 
 export default function ThemePage({ token }: { token: string }) {
@@ -51,6 +67,14 @@ export default function ThemePage({ token }: { token: string }) {
     </div>
   )
 
+  const fieldTextarea = (label: string, key: keyof typeof theme) => (
+    <div key={String(key)}>
+      <label className="text-xs text-[#666] mb-1 block">{label}</label>
+      <textarea value={theme[key]} rows={3} onChange={e => setTheme({ ...theme, [key]: e.target.value })}
+        className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-[#444] resize-y min-h-[72px]" />
+    </div>
+  )
+
   return (
     <div className="space-y-6 max-w-4xl">
       <h1 className="text-xl font-bold">Оформление клиентов</h1>
@@ -84,6 +108,34 @@ export default function ThemePage({ token }: { token: string }) {
               {field('Цвет прогресса', 'update_bar_progress_color')}
               {field('Текст «доступно»', 'update_bar_label_available')}
               {field('Текст при загрузке', 'update_bar_label_downloading')}
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-[#2a2a2a]">
+            <h3 className="text-sm font-semibold text-white mb-3">Вход — шаг 1 (хеш VK)</h3>
+            <div className="space-y-4">
+              {field('Заголовок', 'login_step1_title')}
+              {fieldTextarea('Инструкция', 'login_step1_instruction')}
+              {field('Placeholder поля хеша', 'login_hash_placeholder')}
+              {field('Кнопка подтверждения', 'login_hash_button_text')}
+              {field('Ссылка (моб.) — URL', 'login_vk_mobile_url')}
+              {field('Ссылка (моб.) — текст', 'login_vk_mobile_link_text')}
+              {field('Ссылка (ПК) — URL', 'login_vk_pc_url')}
+              {field('Ссылка (ПК) — текст', 'login_vk_pc_link_text')}
+              {field('Цвет ссылок', 'login_link_color')}
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-[#2a2a2a]">
+            <h3 className="text-sm font-semibold text-white mb-3">Вход — шаг 2 (логин)</h3>
+            <div className="space-y-4">
+              {field('Заголовок', 'login_step2_title')}
+              {field('«Запомнить меня»', 'login_remember_me_label')}
+              {field('«Забыли пароль?»', 'login_forgot_password_label')}
+              {field('Заголовок восстановления', 'login_forgot_title')}
+              {fieldTextarea('Текст восстановления', 'login_forgot_instruction')}
+              {field('Заголовок нового пароля', 'login_reset_title')}
+              {field('Кнопка сохранения пароля', 'login_reset_button_text')}
             </div>
           </div>
 

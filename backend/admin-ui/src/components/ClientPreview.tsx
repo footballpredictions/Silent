@@ -14,9 +14,23 @@ export type ClientTheme = {
   update_bar_progress_color?: string
   update_bar_label_available?: string
   update_bar_label_downloading?: string
+  login_step1_title?: string
+  login_step1_instruction?: string
+  login_hash_placeholder?: string
+  login_hash_button_text?: string
+  login_vk_mobile_url?: string
+  login_vk_mobile_link_text?: string
+  login_vk_pc_url?: string
+  login_vk_pc_link_text?: string
+  login_link_color?: string
+  login_step2_title?: string
+  login_remember_me_label?: string
+  login_forgot_password_label?: string
 }
 
 type PreviewScreen =
+  | 'login_step1'
+  | 'login_step2'
   | 'main'
   | 'main_update'
   | 'main_download'
@@ -30,6 +44,8 @@ type PreviewScreen =
   | 'about'
 
 const SCREEN_TABS: { id: PreviewScreen; label: string }[] = [
+  { id: 'login_step1', label: 'Вход 1' },
+  { id: 'login_step2', label: 'Вход 2' },
   { id: 'main', label: 'Главная' },
   { id: 'main_update', label: 'Обновление' },
   { id: 'main_download', label: 'Загрузка' },
@@ -77,6 +93,11 @@ export default function ClientPreview({ theme, platform = 'mobile' }: {
   const showUpdateBar = screen === 'main_update' || screen === 'main_download'
   const updateDownloading = screen === 'main_download'
   const updateProgressPct = 47
+  const linkColor = theme.login_link_color || '#4680C2'
+  const vkLinkText = platform === 'pc'
+    ? (theme.login_vk_pc_link_text || 'VK Звонки в браузере')
+    : (theme.login_vk_mobile_link_text || 'ВКонтакте — раздел «Звонки»')
+  const isLoginPreview = screen === 'login_step1' || screen === 'login_step2'
 
   const statusText = connected ? 'Подключено' : 'Отключено'
   const statusColor = connected ? green : muted
@@ -158,10 +179,65 @@ export default function ClientPreview({ theme, platform = 'mobile' }: {
         borderBottom: '0.5px solid #F3F4F6',
       }}>
         <button type="button" onClick={() => goTo('menu')}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: fg, fontSize: 14, padding: 0 }}>☰</button>
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: fg, fontSize: 14, padding: 0, visibility: isLoginPreview ? 'hidden' : 'visible' }}>☰</button>
         <div style={{ flex: 1, textAlign: 'center', fontWeight: 700, fontSize: 12, letterSpacing: 4 }}>{appTitle}</div>
         <div style={{ width: 16 }} />
       </div>
+
+      {screen === 'login_step1' && (
+        <div style={{ flex: 1, padding: 16, overflow: 'auto' }}>
+          <div style={{ textAlign: 'center', marginBottom: 16 }}>
+            <div style={{ width: 40, height: 40, borderRadius: '50%', background: `${fg}15`, margin: '0 auto 8px' }} />
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 3 }}>{appTitle}</div>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{theme.login_step1_title || 'Шаг 1 — хеш звонка VK'}</div>
+          <div style={{ fontSize: 10, color: muted, lineHeight: 1.5, marginBottom: 10 }}>
+            {theme.login_step1_instruction || 'Инструкция…'}
+          </div>
+          <button type="button" style={{
+            background: 'none', border: 'none', color: linkColor, fontSize: 10, cursor: 'pointer', padding: 0, marginBottom: 12, textDecoration: 'underline',
+          }}>{vkLinkText}</button>
+          <input readOnly placeholder={theme.login_hash_placeholder || 'Хеш…'} style={{
+            width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 11,
+            borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
+          }} />
+          <button type="button" style={{
+            width: '100%', marginTop: 8, padding: '9px 0', borderRadius: 10, border: 'none',
+            background: theme.primary_color, color: bg, fontSize: 11, fontWeight: 600,
+          }}>{theme.login_hash_button_text || 'Подтвердить'}</button>
+        </div>
+      )}
+
+      {screen === 'login_step2' && (
+        <div style={{ flex: 1, padding: 16, overflow: 'auto' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 12 }}>{theme.login_step2_title || 'Шаг 2 — вход'}</div>
+          <div style={{ display: 'flex', borderRadius: 10, background: `${fg}0A`, padding: 3, marginBottom: 12 }}>
+            <div style={{ flex: 1, textAlign: 'center', padding: '6px 0', fontSize: 10, fontWeight: 600, background: theme.primary_color, color: bg, borderRadius: 8 }}>Войти</div>
+            <div style={{ flex: 1, textAlign: 'center', padding: '6px 0', fontSize: 10, color: muted }}>Регистрация</div>
+          </div>
+          <div style={{ fontSize: 10, color: muted, marginBottom: 4 }}>Email</div>
+          <input readOnly placeholder="you@example.com" style={{
+            width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 11, marginBottom: 10,
+            borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
+          }} />
+          <div style={{ fontSize: 10, color: muted, marginBottom: 4 }}>Пароль</div>
+          <input readOnly type="password" placeholder="••••••••" style={{
+            width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 11, marginBottom: 8,
+            borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
+          }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, fontSize: 10 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: muted }}>
+              <span style={{ width: 12, height: 12, border: `1px solid ${fg}44`, borderRadius: 3 }} />
+              {theme.login_remember_me_label || 'Запомнить меня'}
+            </label>
+            <span style={{ color: linkColor }}>{theme.login_forgot_password_label || 'Забыли пароль?'}</span>
+          </div>
+          <button type="button" style={{
+            width: '100%', padding: '9px 0', borderRadius: 10, border: 'none',
+            background: theme.primary_color, color: bg, fontSize: 11, fontWeight: 600,
+          }}>Войти</button>
+        </div>
+      )}
 
       {showMain && (
         <>

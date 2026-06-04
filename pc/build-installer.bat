@@ -21,6 +21,13 @@ if exist "dist\electron" (
 if exist "build-output-v41" (
   rd /s /q "build-output-v41" 2>nul
 )
+for /d %%D in (build-release*) do (
+  echo Cleaning %%D...
+  rd /s /q "%%D" 2>nul
+)
+if exist "build-output-old-locked" (
+  rd /s /q "build-output-old-locked" 2>nul
+)
 
 echo [1/3] wdtt-client.exe...
 cd wdtt-go

@@ -19,9 +19,9 @@
     },
     "artifactName": "Silent VPN Setup ${version}.${ext}",
     "files": [
-      "**/*",
-      "!build-output{,/**/*}",
-      "dist/renderer/**/*"
+      "src/**",
+      "dist/renderer/**",
+      "package.json"
     ],
     "extraResources": [
       {

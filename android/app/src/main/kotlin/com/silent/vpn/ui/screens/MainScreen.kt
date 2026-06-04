@@ -301,6 +301,10 @@ fun MainScreen(
                             color = fg.copy(alpha = 0.5f),
                         )
                     }
+                    profile?.subscription?.plan_type == "test" -> {
+                        Text("Тестовый режим", color = Color(0xFF9333EA), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Безлимит", color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
+                    }
                     profile.is_admin || profile.subscription?.plan_type == "unlimited" -> {
                         Text("Бессрочно", color = Color(0xFF16A34A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         Text("Полный доступ", color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
@@ -441,15 +445,25 @@ private fun MenuSubscription(profile: UserProfile?, fg: Color, onBack: () -> Uni
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
         if (profile?.subscription?.is_active == true) {
-            val planLabel = when (profile.subscription.plan_type) {
+            val planType = profile.subscription.plan_type
+            val planLabel = when (planType) {
                 "trial" -> "Пробный период"
+                "test" -> "Тестовый режим"
                 "monthly" -> "Месяц"
                 "quarterly" -> "3 месяца"
                 "yearly" -> "Год"
-                else -> profile.subscription.plan_type ?: "—"
+                "unlimited" -> "Бессрочно"
+                else -> planType ?: "—"
             }
+            val unlimitedLike = profile.is_admin || planType == "unlimited" || planType == "test"
             Text("Подписка активна", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
-            Text("Тариф: $planLabel\nОсталось: ${profile.subscription.days_left} дней", fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp))
+            Text(
+                if (unlimitedLike) "Тариф: $planLabel\nБезлимитный доступ"
+                else "Тариф: $planLabel\nОсталось: ${profile.subscription.days_left} дней",
+                fontSize = 12.sp,
+                color = fg.copy(alpha = 0.5f),
+                modifier = Modifier.padding(top = 8.dp),
+            )
         } else {
             Text("Выберите тариф", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
             listOf("monthly" to ("Месяц" to "199 ₽"), "quarterly" to ("3 месяца" to "499 ₽"), "yearly" to ("Год" to "1 499 ₽")).forEach { (id, labelPrice) ->

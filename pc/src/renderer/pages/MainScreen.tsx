@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Menu, X, ChevronRight, Pencil } from 'lucide-react'
 import api, {
   clearTokens,
@@ -27,8 +27,44 @@ interface DeviceInfo {
   id: string
   device_name: string
   device_type: string
+  device_fingerprint?: string | null
   is_connected: boolean
   last_connected?: string | null
+}
+
+/** id в профиле и device_id из register могут отличаться форматом — сверяем также по fingerprint. */
+function isCurrentSessionDevice(d: DeviceInfo, sessionId: string | null): boolean {
+  if (!sessionId) return false
+  const sid = String(sessionId)
+  const did = String(d.id)
+  if (did === sid) return true
+  if (sid.length >= 8 && did.length >= 8 && (did.startsWith(sid) || sid.startsWith(did))) return true
+  try {
+    const fp = getDeviceFingerprint()
+    if (fp && d.device_fingerprint && fp === d.device_fingerprint) return true
+  } catch { /* ignore */ }
+  return false
+}
+
+function deviceOnlineLabel(
+  d: DeviceInfo,
+  sessionId: string | null,
+  localOnline: boolean,
+  connecting: boolean,
+): string {
+  const isSelf = isCurrentSessionDevice(d, sessionId)
+  if (d.is_connected) return 'В сети'
+  if (isSelf && connecting) return 'Подключение…'
+  if (isSelf && localOnline) return 'В сети'
+  if (d.last_connected) {
+    try {
+      const dt = new Date(d.last_connected)
+      if (!Number.isNaN(dt.getTime())) {
+        return `Был в сети ${dt.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`
+      }
+    } catch { /* ignore */ }
+  }
+  return 'Не в сети'
 }
 
 interface Profile {
@@ -82,6 +118,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const [renameText, setRenameText] = useState('')
   const [renameSaving, setRenameSaving] = useState(false)
   const [activeWorkers, setActiveWorkers] = useState(0)
+  const connectLockRef = useRef(false)
 
   const fetchProfile = useCallback(async () => {
     try {
@@ -127,6 +164,19 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
 
   useEffect(() => {
     const api_ = (window as any).electronAPI
+    api_?.vpnIsReady?.().then((r: { ready?: boolean; workers?: number }) => {
+      if (r?.ready) {
+        setConnected(true)
+        setConnecting(false)
+        if (r.workers) setActiveWorkers(r.workers)
+        void markOnlineOnServer()
+        pushLog('Main', `VPN уже активен (${r.workers ?? '?'} воркеров)`)
+      }
+    }).catch(() => {})
+  }, [markOnlineOnServer])
+
+  useEffect(() => {
+    const api_ = (window as any).electronAPI
     if (!api_?.onVpnStopped) return
     const onStopped = () => {
       setConnected(false)
@@ -149,6 +199,8 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
       if (!line?.trim()) return
       const m = line.match(/Активных:\s*(\d+)/)
       if (m) setActiveWorkers(parseInt(m[1], 10))
+      const reg = line.match(/зарегистрирован \(всего:\s*(\d+)\)/)
+      if (reg) setActiveWorkers(parseInt(reg[1], 10))
       const level = /error|ошиб|fail|таймаут/i.test(line) ? 'E' : 'I'
       pushLog('VPN', line.trim(), level)
     }
@@ -165,15 +217,44 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     return () => clearInterval(id)
   }, [connected, fetchProfile])
 
+  useEffect(() => {
+    if (!connecting || connected) return
+    const api_ = (window as any).electronAPI
+    const tick = async () => {
+      try {
+        const r = await api_?.vpnIsReady?.()
+        if (r?.ready) {
+          setConnected(true)
+          setConnecting(false)
+          void markOnlineOnServer()
+        }
+      } catch { /* ignore */ }
+    }
+    void tick()
+    const id = window.setInterval(() => void tick(), 500)
+    return () => clearInterval(id)
+  }, [connecting, connected, markOnlineOnServer])
+
   const DEVICE_FINGERPRINT = () => getDeviceFingerprint()
 
   const handleToggle = async () => {
-    if (connecting) return
+    if (connectLockRef.current || connecting) return
+    connectLockRef.current = true
     setConnecting(true)
+    if (!connected) {
+      setActiveWorkers(0)
+    }
     pushLog('Main', connected ? 'disconnect' : 'connect start')
     try {
       const fp = DEVICE_FINGERPRINT()
       if (!connected) {
+        const api_ = (window as any).electronAPI
+        const already = await api_?.vpnIsReady?.().catch(() => null)
+        if (already?.ready) {
+          setConnected(true)
+          pushLog('Main', 'VPN уже поднят, UI синхронизирован')
+          return
+        }
         if (isBootstrapVpnActive()) {
           await disconnectBootstrapVpn()
           pushLog('Main', 'bootstrap VPN stopped before connect')
@@ -248,8 +329,10 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
           const ready = await waitVpnReady(undefined, connectCfg.stream_count ?? 108)
           if (!ready) {
             pushLog('Main', 'connect timeout', 'E')
-            alert('WireGuard не поднялся')
+            alert('WireGuard не поднялся. Установите Silent VPN 1.0.51+ или проверьте службу WireGuardTunnel$wg-turn')
             await (window as any).electronAPI?.vpnDisconnect?.()
+            await api.post('/api/vpn/disconnect', { device_fingerprint: fp }).catch(() => null)
+            await fetchProfile()
             return
           }
           await markOnlineOnServer()
@@ -265,7 +348,10 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
       fetchProfile()
     } catch (err: any) {
       if (err.response?.status === 402 || err.response?.status === 403) alert(err.response.data.detail)
-    } finally { setConnecting(false) }
+    } finally {
+      connectLockRef.current = false
+      setConnecting(false)
+    }
   }
 
   const handleLogout = async () => {
@@ -307,7 +393,11 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const appTitle = resolveAppName(clientTheme?.app_name).toUpperCase()
   const muted = `${fg}66`
 
-  const statusLabel = connecting ? 'Подключение...' : connected ? 'Подключено' : 'Отключено'
+  const statusLabel = connecting
+    ? 'Подключение…'
+    : connected
+      ? 'Подключено'
+      : 'Отключено'
   const statusColor = connecting ? `${fg}99` : connected ? GREEN : muted
   const localOnline = connected || connecting
 
@@ -594,23 +684,27 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
               </button>
               <div className="text-sm font-semibold mb-1 text-left">Сессии</div>
               <div className="text-[11px] mb-3 text-left" style={{ color: muted }}>
-                VPN онлайн: {profile?.devices?.filter(d => d.is_connected || (localOnline && d.id === sessionDeviceId)).length || 0} из {profile?.devices_count || 0}
+                VPN онлайн: {profile?.devices?.filter(d => d.is_connected || (localOnline && isCurrentSessionDevice(d, sessionDeviceId))).length || 0} из {profile?.devices_count || 0}
               </div>
               {!profile?.devices?.length && (
                 <p className="text-xs text-left" style={{ color: muted }}>Нет зарегистрированных устройств</p>
               )}
               {profile?.devices?.map(d => {
-                const isSelf = sessionDeviceId != null && String(d.id) === String(sessionDeviceId)
+                const isSelf = isCurrentSessionDevice(d, sessionDeviceId)
                 const online = d.is_connected || (localOnline && isSelf)
+                const statusText = deviceOnlineLabel(d, sessionDeviceId, localOnline, connecting)
                 return (
                   <div key={d.id} className="flex items-center gap-2 py-2.5 border-b border-gray-100 text-left">
-                    <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${online ? 'bg-green-500' : 'bg-gray-300'}`} />
+                    <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${online ? 'bg-green-500' : connecting && isSelf ? 'bg-amber-400' : 'bg-gray-300'}`} />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium truncate" style={{ color: fg }}>
                         {deviceTypeLabel(d.device_type)}
                         {isSelf && (
                           <span className="font-normal text-[11px]" style={{ color: muted }}> · это вы</span>
                         )}
+                      </div>
+                      <div className="text-[11px] mt-0.5 truncate" style={{ color: online ? GREEN : muted }}>
+                        {statusText}
                       </div>
                       {sessionCustomLabel(d) && (
                         <div className="text-[11px] truncate mt-0.5" style={{ color: muted }}>

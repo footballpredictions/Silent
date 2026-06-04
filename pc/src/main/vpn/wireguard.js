@@ -101,8 +101,11 @@ function runWgInstall(wgExe, stableConf, runtimeDir, send) {
   try {
     execSync(`sc start "${SERVICE_NAME}"`, { windowsHide: true, stdio: 'pipe', timeout: 20000, encoding: 'utf8' })
   } catch (e) {
-    const msg = (e.stdout || e.stderr || '').toString().trim()
-    if (msg) send('[WG] sc start: ' + msg.slice(0, 200))
+    const msg = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim()
+    // 1056 = служба уже запущена (installtunnelservice часто стартует сам)
+    if (msg && !/1056|already running|уже запущен/i.test(msg)) {
+      send('[WG] sc start: ' + msg.slice(0, 200))
+    }
   }
 }
 
@@ -132,13 +135,26 @@ function isTunnelUp() {
   }
 }
 
+/** STATE : 4 = Running (текст локализован на RU Windows). */
 function isServiceRunning() {
   try {
     const out = execSync(`sc query "${SERVICE_NAME}"`, { encoding: 'utf8', windowsHide: true })
-    return out.includes('RUNNING')
+    if (/\bSTATE\s*:\s*4\b/i.test(out) || /\bСостояние\s*:\s*4\b/i.test(out)) return true
+    return /\bRUNNING\b/i.test(out) || /\bРАБОТАЕТ\b/i.test(out)
   } catch {
     return false
   }
+}
+
+/** Профиль Private — стабильнее маршруты/DNS на Windows (иконка в трее всё равно от Wi‑Fi). */
+function polishWgNetworkProfile(send) {
+  try {
+    execSync(
+      `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } | Select-Object -First 1; if ($a) { Set-NetConnectionProfile -InterfaceIndex $a.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue } }"`,
+      { windowsHide: true, timeout: 12000 },
+    )
+    send?.('[WG] Адаптер wg-turn: профиль Private')
+  } catch { /* ignore */ }
 }
 
 function logServiceState(send) {
@@ -273,6 +289,24 @@ PersistentKeepalive = 25
 `
 }
 
+/** Windows WireGuard tunnel падает (exit 10), если маршрутов слишком много. */
+const MAX_WINDOWS_ALLOWED_ROUTES = 32
+
+function countAllowedRoutes(allowedIPsValue) {
+  return allowedIPsValue.split(',').map(s => s.trim()).filter(Boolean).length
+}
+
+function buildAllowedIPsForWindows(excludeIPs, send) {
+  if (!excludeIPs.length) return '0.0.0.0/0'
+  const split = generateExclusionAllowedIPs(excludeIPs)
+  const n = countAllowedRoutes(split)
+  if (n > MAX_WINDOWS_ALLOWED_ROUTES) {
+    send?.(`[WG] Слишком много маршрутов (${n}) — используем AllowedIPs = 0.0.0.0/0`)
+    return '0.0.0.0/0'
+  }
+  return split
+}
+
 function generateExclusionAllowedIPs(excludeIPs) {
   const ipToNum = ip => ip.split('.').reduce((a, b) => (a << 8 | Number(b)) >>> 0, 0)
   const numToIp = n => [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff].join('.')
@@ -337,7 +371,9 @@ try {
         resolve(false)
         return
       }
-      resolve(await waitForTunnelUp(35000, send))
+      const up = await waitForTunnelUp(35000, send)
+      if (up) polishWgNetworkProfile(send)
+      resolve(up)
     })
 
     launcher.on('error', () => {
@@ -358,11 +394,13 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   const wgExe = path.join(runtimeDir, 'wireguard.exe')
   send(`[WG] wireguard.exe: ${wgExe}`)
 
-  if (excludeIPs.length > 0 && fs.existsSync(confPath)) {
+  if (fs.existsSync(confPath)) {
     try {
       let conf = fs.readFileSync(confPath, 'utf8')
-      conf = conf.replace(/AllowedIPs\s*=\s*.+/, `AllowedIPs = ${generateExclusionAllowedIPs(excludeIPs)}`)
+      const allowed = buildAllowedIPsForWindows(excludeIPs, send)
+      conf = conf.replace(/AllowedIPs\s*=\s*.+/, `AllowedIPs = ${allowed}`)
       fs.writeFileSync(confPath, conf)
+      fs.copyFileSync(confPath, path.join(STABLE_CONF_DIR, TUNNEL_CONF_NAME))
     } catch (e) {
       send('[WG] AllowedIPs: ' + e.message)
     }
@@ -400,10 +438,20 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
 
   runWgInstall(wgExe, stableConf, runtimeDir, send)
 
-  if (await waitForTunnelUp(35000, send)) {
+  if (await waitForTunnelUp(60000, send)) {
+    polishWgNetworkProfile(send)
     send('[WG] Туннель активен')
     return true
   }
+
+  logServiceState(send)
+  try {
+    const evt = execSync(
+      `powershell.exe -NoProfile -Command "Get-WinEvent -LogName Application -MaxEvents 30 | Where-Object { $_.ProviderName -match 'WireGuard' } | Select-Object -First 3 -ExpandProperty Message"`,
+      { encoding: 'utf8', windowsHide: true, timeout: 8000 },
+    )
+    if (evt.trim()) send('[WG] Event log: ' + evt.trim().slice(0, 300))
+  } catch { /* ignore */ }
 
   send('[WG] Служба не поднялась — services.msc → WireGuardTunnel$wg-turn')
   return false

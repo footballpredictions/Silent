@@ -322,6 +322,7 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		tlsclient.WithTimeoutSeconds(20),
 		tlsclient.WithClientProfile(profiles.Chrome_146),
 		tlsclient.WithCookieJar(jar),
+		tlsclient.WithDialer(newVkDirectDialer()),
 	)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("failed to initialize tls_client: %w", err)
@@ -659,10 +660,6 @@ func GetCreds(ctx context.Context, link string, streamID int) (string, string, [
 // ─── DNS dialer setup ───
 
 func setupGlobalResolver() {
-	dialer := &net.Dialer{
-		Timeout:   3 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
 	yandexDNSServers := []string{"77.88.8.8:53", "77.88.8.1:53"}
 
 	net.DefaultResolver = &net.Resolver{
@@ -670,12 +667,12 @@ func setupGlobalResolver() {
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			var lastErr error
 			for _, dns := range yandexDNSServers {
-				conn, err := dialer.DialContext(ctx, "udp", dns)
+				conn, err := dialViaLan(ctx, "udp", dns, 3*time.Second)
 				if err == nil {
 					return conn, nil
 				}
 				lastErr = err
-				conn, err = dialer.DialContext(ctx, "tcp", dns)
+				conn, err = dialViaLan(ctx, "tcp", dns, 3*time.Second)
 				if err == nil {
 					return conn, nil
 				}
@@ -684,7 +681,7 @@ func setupGlobalResolver() {
 
 			address = strings.TrimSpace(address)
 			if address != "" && !isYandexDNSAddress(address) {
-				conn, err := dialer.DialContext(ctx, network, address)
+				conn, err := dialViaLan(ctx, network, address, 3*time.Second)
 				if err == nil {
 					return conn, nil
 				}

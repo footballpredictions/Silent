@@ -17,13 +17,13 @@ const (
 	defaultCycleSecs = 36000
 )
 
-// passCascade — следующая группа не блокируется, если у этой ошибка кредов VK.
-func passCascade(signalReady chan<- struct{}, groupID int, success bool) {
+// passCascade — эстафета следующей группе (при ошибке кредов — без блокировки каскада).
+func passCascade(signalReady chan<- struct{}, groupID int, success bool, delay time.Duration) {
 	if signalReady == nil {
 		return
 	}
 	go func() {
-		time.Sleep(2 * time.Second)
+		time.Sleep(delay)
 		close(signalReady)
 		if success {
 			log.Printf("[ГРУППА #%d] Успешный старт! Передача эстафеты следующей группе...", groupID)
@@ -89,7 +89,7 @@ func WorkerGroup(
 		creds = &Credentials{User: user, Pass: pass, TurnURLs: turnURLs, CacheStreamID: credStreamID}
 	} else {
 		log.Printf("[ГРУППА #%d] Ошибка кредов: %v — пропуск группы (%d воркеров)", groupID, err, len(workerIDs))
-		passCascade(signalReady, groupID, false)
+		passCascade(signalReady, groupID, false, 1*time.Second)
 		return
 	}
 
@@ -127,13 +127,14 @@ func WorkerGroup(
 		return true
 	}
 
-	passCascade(signalReady, groupID, true)
+	// Как Android: эстафета после кредов + 2 с (воркеры догоняют в фоне).
+	passCascade(signalReady, groupID, true, 2*time.Second)
 
 	for i, wid := range workerIDs {
 		wg.Add(1)
 
-		// Stagger: 500мс между воркерами (как в proxy-turn-vk-android)
-		workerDelay := time.Duration(i) * 500 * time.Millisecond
+		// Stagger: 50мс между воркерами (как Android libclient)
+		workerDelay := time.Duration(i) * 50 * time.Millisecond
 
 		go func(wid int, delay time.Duration) {
 			defer wg.Done()

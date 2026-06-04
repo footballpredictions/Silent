@@ -31,10 +31,9 @@ export function groupsForWorkers(totalWorkers: number): number {
   )
 }
 
-/** Таймаут connect: 60 с + ~25 с на каждую доп. группу (каскад + капча), макс. 3 мин. */
-export function connectWaitTimeoutMs(totalWorkers: number): number {
-  const groups = groupsForWorkers(totalWorkers)
-  return Math.min(60_000 + Math.max(0, groups - 1) * 25_000, 180_000)
+/** Таймаут connect — как Android: WG + первый воркер, без ожидания всех каналов. */
+export function connectWaitTimeoutMs(_totalWorkers: number): number {
+  return 120_000
 }
 
 /**

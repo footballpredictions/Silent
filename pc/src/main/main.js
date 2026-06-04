@@ -11,6 +11,8 @@ const {
   waitForWdttProxy,
   waitForTunnelDown,
   isProcessElevated,
+  isTunnelUp,
+  isServiceRunning,
   buildWgConfigFromApi,
   applyWireGuardConfig,
 } = require('./vpn/wireguard')
@@ -35,8 +37,13 @@ let pausedForNetwork = false
 let transportSwitching = false
 let lastVpnConnectConfig = null
 let activeWorkerCount = 0
+let sessionTargetWorkers = 108
+let tunnelReadySent = false
+let wdttStartedAtMs = 0
 let networkMonitor = null
 let wdttRelaunchTimer = null
+let vpnConnectInFlight = false
+let tunnelReadyPollTimer = null
 
 const { createNetworkMonitor } = require('./vpn/networkRecovery')
 
@@ -177,6 +184,8 @@ function cleanupVpn() {
   }
   stopWireGuardTunnel(isDev, __dirname, sendLog)
   wgApplied = false
+  tunnelReadySent = false
+  clearTunnelReadyPoll()
 }
 
 function isWdttAlive() {
@@ -188,8 +197,43 @@ function isWdttAlive() {
   }
 }
 
+const TRANSPORT_RESTART_GRACE_MS = 90_000
+
 function isTransportHealthy() {
   return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
+}
+
+function clearTunnelReadyPoll() {
+  if (tunnelReadyPollTimer) {
+    clearInterval(tunnelReadyPollTimer)
+    tunnelReadyPollTimer = null
+  }
+}
+
+function scheduleTunnelReadyPoll(sendLogFn) {
+  clearTunnelReadyPoll()
+  let attempts = 0
+  tunnelReadyPollTimer = setInterval(() => {
+    attempts += 1
+    ensureVpnReadyEvent(sendLogFn)
+    if (tunnelReadySent || attempts >= 120) clearTunnelReadyPoll()
+  }, 500)
+}
+
+function isVpnReadyForUi() {
+  if (tunnelReadySent) return true
+  if (!wgApplied) return false
+  return activeWorkerCount >= 1 || (isWdttAlive() && isTunnelUp())
+}
+
+function ensureVpnReadyEvent(sendLogFn) {
+  if (tunnelReadySent || !isVpnReadyForUi()) return
+  tunnelReadySent = true
+  clearTunnelReadyPoll()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('vpn-ready', true)
+  }
+  sendLogFn?.('[VPN] tunnel ready (WG + workers)')
 }
 
 function pauseWdtt(reason) {
@@ -218,7 +262,8 @@ function restoreTransport(reason) {
 }
 
 function scheduleWdttRelaunch(delayMs = 1500) {
-  if (!vpnSessionActive || !lastVpnConnectConfig || wdttProcess) return
+  if (!vpnSessionActive || !lastVpnConnectConfig) return
+  if (wdttProcess && isWdttAlive()) return
   if (wdttRelaunchTimer) clearTimeout(wdttRelaunchTimer)
   wdttRelaunchTimer = setTimeout(() => {
     wdttRelaunchTimer = null
@@ -238,6 +283,8 @@ function startNetworkMonitor() {
     get vpnSessionActive() { return vpnSessionActive },
     get pausedForNetwork() { return pausedForNetwork },
     set pausedForNetwork(v) { pausedForNetwork = v },
+    get activeWorkerCount() { return activeWorkerCount },
+    get wdttStartedAtMs() { return wdttStartedAtMs },
   }
   networkMonitor?.stop()
   networkMonitor = createNetworkMonitor(state, {
@@ -297,6 +344,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
   const hashes = (config.vk_hashes || []).filter(Boolean).join(',')
   const workers = Math.min(Math.max(Number(config.stream_count) || 108, 9), 108)
+  sessionTargetWorkers = workers
   sendLog(`[VPN] connect n=${workers} hashes=${(config.vk_hashes || []).filter(Boolean).length}`)
   const args = [
     '-peer', `${config.server_ip}:${config.server_port}`,
@@ -309,8 +357,10 @@ async function beginWdttSession(config, { switching = false } = {}) {
   ]
 
   wdttProcess = spawn(exePath, args, { cwd: tmpDir })
+  wdttStartedAtMs = Date.now()
   if (!switching) {
     wgApplied = false
+    tunnelReadySent = false
     activeWorkerCount = 0
   }
 
@@ -376,7 +426,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     await sleep(150)
 
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], { skipWdttWait: true })
-    const timeoutMs = isProcessElevated() ? 35000 : 90000
+    const timeoutMs = isProcessElevated() ? 70000 : 90000
     let ok = false
     try {
       ok = await Promise.race([
@@ -389,11 +439,14 @@ async function beginWdttSession(config, { switching = false } = {}) {
     } finally {
       wgInstallInFlight = false
     }
+    if (!ok && (isTunnelUp() || isServiceRunning())) {
+      sendLog('[WG] Туннель/служба активны после таймаута — считаем успехом')
+      ok = true
+    }
     if (ok) {
       wgApplied = true
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('vpn-ready', true)
-      }
+      scheduleTunnelReadyPoll(sendLog)
+      ensureVpnReadyEvent(sendLog)
       return true
     }
     failWireGuard(
@@ -414,11 +467,16 @@ async function beginWdttSession(config, { switching = false } = {}) {
   const handleLine = async (line) => {
     sendLog(line)
     const statsMatch = line.match(/Активных:\s*(\d+)/)
-    if (statsMatch) activeWorkerCount = parseInt(statsMatch[1], 10)
+    if (statsMatch) {
+      activeWorkerCount = parseInt(statsMatch[1], 10)
+      if (wgApplied) ensureVpnReadyEvent(sendLog)
+    }
     const regMatch = line.match(/зарегистрирован \(всего:\s*(\d+)\)/)
-    if (regMatch) activeWorkerCount = parseInt(regMatch[1], 10)
-    const turnMatch = line.match(/TURN UDP \(([\d.]+):\d+\)/)
-    if (turnMatch) excludeIPs.add(turnMatch[1])
+    if (regMatch) {
+      activeWorkerCount = parseInt(regMatch[1], 10)
+      if (wgApplied) ensureVpnReadyEvent(sendLog)
+    }
+    // TURN IP в AllowedIPs не добавляем: split 0.0.0.0/0 → сотни маршрутов, WG на Windows падает (exit 10).
 
     if (line.includes('[КОНФИГ]') && line.includes('Сохранён')) {
       await applyFromFile()
@@ -483,46 +541,66 @@ async function beginWdttSession(config, { switching = false } = {}) {
     return { success: true }
   }
 
-  wgPoll = setInterval(async () => {
-    if (wgApplied || wgFailed || wgAttempted || wgInstallInFlight) {
+  wgPoll = setInterval(() => {
+    if (wgApplied || wgFailed || wgInstallInFlight) {
       if (wgApplied || wgFailed) clearWgRetries()
       return
     }
-    await applyFromFile()
-  }, 2000)
+    applyFromFile()
+  }, 500)
 
-  wgTimers.push(setTimeout(async () => {
-    if (wgApplied || wgFailed || wgAttempted || wgInstallInFlight) return
-    if (apiConf) await tryApplyWg(apiConf, 'api')
-  }, 20000))
+  // Запасной конфиг с сервера — только bootstrap; основной VPN как Android (только wdtt/box).
+  if (config.is_bootstrap && apiConf) {
+    wgTimers.push(setTimeout(async () => {
+      if (wgApplied || wgFailed || wgInstallInFlight) return
+      await tryApplyWg(apiConf, 'api-fallback')
+    }, 8000))
+  }
 
   return { success: true }
 }
 
 ipcMain.handle('vpn-connect', async (_, config) => {
-  if (wdttProcess && !transportSwitching) {
-    sendLog('[VPN] Переподключение: остановка предыдущей сессии...')
-    await cleanupVpnAsync()
-  } else if (!wdttProcess) {
-    forceStopWireGuard(isDev, __dirname, sendLog)
-    await waitForTunnelDown(8000, sendLog)
-    await sleep(400)
+  if (vpnConnectInFlight) {
+    sendLog('[VPN] connect: уже выполняется, без перезапуска')
+    ensureVpnReadyEvent(sendLog)
+    return { success: true, skipped: true }
   }
 
-  const exePath = wdttExePath()
-  if (!fs.existsSync(exePath)) {
-    return { error: `wdtt-client.exe не найден: ${exePath}` }
+  if (vpnSessionActive && isTransportHealthy()) {
+    sendLog('[VPN] connect: туннель уже работает')
+    ensureVpnReadyEvent(sendLog)
+    return { success: true, alreadyActive: true }
   }
 
-  lastVpnConnectConfig = config
-  vpnSessionActive = true
-  connectStartedAtMs = Date.now()
-  pausedForNetwork = false
-  transportSwitching = false
+  vpnConnectInFlight = true
+  try {
+    if (wdttProcess && !transportSwitching && !isTransportHealthy()) {
+      sendLog('[VPN] Переподключение: остановка предыдущей сессии...')
+      await cleanupVpnAsync()
+    } else if (!wdttProcess && !wgApplied) {
+      forceStopWireGuard(isDev, __dirname, sendLog)
+      await waitForTunnelDown(8000, sendLog)
+      await sleep(400)
+    }
 
-  const result = await beginWdttSession(config, { switching: false })
-  if (!result.error) startNetworkMonitor()
-  return result
+    const exePath = wdttExePath()
+    if (!fs.existsSync(exePath)) {
+      return { error: `wdtt-client.exe не найден: ${exePath}` }
+    }
+
+    lastVpnConnectConfig = config
+    vpnSessionActive = true
+    connectStartedAtMs = Date.now()
+    pausedForNetwork = false
+    transportSwitching = false
+
+    const result = await beginWdttSession(config, { switching: false })
+    if (!result.error) startNetworkMonitor()
+    return result
+  } finally {
+    vpnConnectInFlight = false
+  }
 })
 
 ipcMain.handle('vpn-disconnect', async () => {
@@ -536,8 +614,9 @@ ipcMain.handle('vpn-read-config', async () => {
 })
 
 ipcMain.handle('vpn-is-ready', async () => ({
-  ready: !!wgApplied,
+  ready: isVpnReadyForUi(),
   workers: activeWorkerCount,
+  target: sessionTargetWorkers,
 }))
 
 app.whenReady().then(() => {

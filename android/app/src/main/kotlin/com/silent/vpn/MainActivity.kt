@@ -101,6 +101,7 @@ class MainActivity : ComponentActivity() {
             val updateProgress by vm.updateProgress.collectAsState()
             val updateDownloading by vm.updateDownloading.collectAsState()
             val resetToken by vm.resetPasswordToken.collectAsState()
+            val resetPasswordSuccess by vm.resetPasswordSuccess.collectAsState()
             val forgotSent by vm.forgotSent.collectAsState()
 
             LaunchedEffect(vpnPermissionGranted.value) {
@@ -117,12 +118,14 @@ class MainActivity : ComponentActivity() {
                         initialEmail = vm.lastEmail,
                         initialRememberMe = vm.rememberMe,
                         resetToken = resetToken,
+                        resetPasswordSuccess = resetPasswordSuccess,
                         forgotSent = forgotSent,
                         onLogin = { email, password, remember -> vm.login(email, password, remember, this@MainActivity) },
                         onRegister = vm::register,
                         onForgotPassword = vm::forgotPassword,
                         onResetPassword = vm::resetPassword,
                         onClearResetToken = vm::clearResetToken,
+                        onClearResetPasswordSuccess = vm::clearResetPasswordSuccess,
                         loading = authLoading,
                         error = authError,
                         regDone = regDone,

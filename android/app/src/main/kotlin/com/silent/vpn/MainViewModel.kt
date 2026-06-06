@@ -126,6 +126,9 @@ class MainViewModel @Inject constructor(
     private val _resetPasswordToken = MutableStateFlow<String?>(null)
     val resetPasswordToken: StateFlow<String?> = _resetPasswordToken
 
+    private val _resetPasswordSuccess = MutableStateFlow(false)
+    val resetPasswordSuccess: StateFlow<Boolean> = _resetPasswordSuccess
+
     private val _forgotSent = MutableStateFlow(false)
     val forgotSent: StateFlow<Boolean> = _forgotSent
 
@@ -162,7 +165,8 @@ class MainViewModel @Inject constructor(
             return
         }
         if (_vpnState.value == VpnState.CONNECTED && bootstrapVpnMode) {
-            _statusMsg.value = "Канал готов. Можно войти или зарегистрироваться."
+            bootstrapContext = context.applicationContext
+            restartBootstrapTimerIfNeeded()
             return
         }
         repo.saveBootstrapHash(h)
@@ -277,6 +281,9 @@ class MainViewModel @Inject constructor(
     }
 
     fun onAppResumed() {
+        if (!repo.isLoggedIn() && bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
+            restartBootstrapTimerIfNeeded()
+        }
         syncSessionOnResume()
     }
 
@@ -572,11 +579,13 @@ class MainViewModel @Inject constructor(
     }
 
     /** До входа: API через overlay, если поднят bootstrap-VPN (приложение вне WG). */
-    private fun needsPreLoginApiOverlay(): Boolean =
-        SilentRepository.APP_EXCLUDED_FROM_VPN &&
-            SilentVpnService.isRunning &&
-            WdttTunnelManager.tunnelReady.value &&
-            !repo.isLoggedIn()
+    private fun needsPreLoginApiOverlay(): Boolean {
+        if (!SilentRepository.APP_EXCLUDED_FROM_VPN) return false
+        if (!SilentVpnService.isRunning || !WdttTunnelManager.tunnelReady.value) return false
+        // Вся bootstrap-сессия (включая registerDevice после saveTokens)
+        if (bootstrapVpnMode) return true
+        return !repo.isLoggedIn()
+    }
 
     private suspend fun <T> withBootstrapBackendApi(block: suspend () -> T): T {
         if (needsPreLoginApiOverlay()) {
@@ -700,6 +709,11 @@ class MainViewModel @Inject constructor(
 
     fun clearResetToken() {
         _resetPasswordToken.value = null
+        _resetPasswordSuccess.value = false
+    }
+
+    fun clearResetPasswordSuccess() {
+        _resetPasswordSuccess.value = false
     }
 
     fun forgotPassword(email: String) {
@@ -752,6 +766,7 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
                 _resetPasswordToken.value = null
+                _resetPasswordSuccess.value = true
                 _authError.value = null
             } catch (e: Exception) {
                 _authError.value = e.message ?: "Ошибка"
@@ -767,6 +782,7 @@ class MainViewModel @Inject constructor(
             cancelBootstrapSessionTimeout()
             _authLoading.value = true
             _authError.value = null
+            _resetPasswordSuccess.value = false
             try {
                 if (_vpnState.value != VpnState.CONNECTED) {
                     _authError.value = "Сначала дождитесь зелёной надписи «Канал готов»"
@@ -779,31 +795,33 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
                 awaitTunnelApiReady()
-                val res = loginWithFallback(email, password)
-                if (!res.isSuccessful) {
-                    _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Неверный логин или пароль"
-                    restartBootstrapTimerIfNeeded()
-                    return@launch
-                }
-                val tokens = res.body()!!
-                repo.saveTokens(tokens.access_token, tokens.refresh_token)
-                repo.saveRememberMe(email, rememberMe)
-                repo.startNewSession()
-                val ctx = activity?.applicationContext ?: appContext
-                if (!openLoginSession()) {
-                    if (repo.isLoggedIn()) {
-                        syncLoginDataViaBootstrapTunnel()
-                        disconnectBootstrapVpn(ctx)
-                        goToMain(skipProfileFetch = true)
+                withBootstrapBackendApi {
+                    val res = loginAttempt(email, password)
+                    if (!res.isSuccessful) {
+                        _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Неверный логин или пароль"
+                        restartBootstrapTimerIfNeeded()
+                        return@launch
                     }
-                    return@launch
+                    val tokens = res.body()!!
+                    repo.saveTokens(tokens.access_token, tokens.refresh_token)
+                    repo.saveRememberMe(email, rememberMe)
+                    repo.startNewSession()
+                    val ctx = activity?.applicationContext ?: appContext
+                    if (!openLoginSession()) {
+                        if (repo.isLoggedIn()) {
+                            syncLoginDataViaBootstrapTunnel()
+                            disconnectBootstrapVpn(ctx)
+                            goToMain(skipProfileFetch = true)
+                        }
+                        return@launch
+                    }
+                    if (!syncLoginDataViaBootstrapTunnel()) {
+                        _vpnError.value = "Профиль не загрузился. Включите VPN на главном экране."
+                    }
+                    disconnectBootstrapVpn(ctx)
+                    goToMain(skipProfileFetch = true)
+                    activity?.let { CredentialHelper.offerSavePassword(it, email, password) }
                 }
-                if (!syncLoginDataViaBootstrapTunnel()) {
-                    _vpnError.value = "Профиль не загрузился. Включите VPN на главном экране."
-                }
-                disconnectBootstrapVpn(ctx)
-                goToMain(skipProfileFetch = true)
-                activity?.let { CredentialHelper.offerSavePassword(it, email, password) }
             } catch (e: Exception) {
                 _authError.value = e.message ?: "Ошибка входа"
                 restartBootstrapTimerIfNeeded()
@@ -811,6 +829,25 @@ class MainViewModel @Inject constructor(
                 _authLoading.value = false
             }
         }
+    }
+
+    private suspend fun loginAttempt(email: String, password: String): retrofit2.Response<com.silent.vpn.data.TokenResponse> {
+        val bases = preLoginApiBases()
+        var lastError: Exception? = null
+        for (base in bases) {
+            try {
+                repo.useApiBase(base)
+                DebugLog.i("MainViewModel", "login try API base=$base")
+                val res = repo.getApi().login(LoginRequest(email, password))
+                DebugLog.i("MainViewModel", "login HTTP ${res.code()} on $base")
+                if (res.isSuccessful || res.code() in 400..499) return res
+                lastError = Exception(parseError(res.errorBody()?.string() ?: "") ?: "HTTP ${res.code()}")
+            } catch (e: Exception) {
+                lastError = e
+                DebugLog.w("MainViewModel", "login failed on $base: ${e.message}")
+            }
+        }
+        throw lastError ?: Exception("Не удалось связаться с сервером. Проверьте VPN и попробуйте снова.")
     }
 
     private suspend fun awaitTunnelApiReady() {
@@ -825,27 +862,6 @@ class MainViewModel @Inject constructor(
         onVpnTunnelReady()
     }
 
-    private suspend fun loginWithFallback(email: String, password: String): retrofit2.Response<com.silent.vpn.data.TokenResponse> {
-        suspend fun attempt(): retrofit2.Response<com.silent.vpn.data.TokenResponse> {
-            val bases = preLoginApiBases()
-            var lastError: Exception? = null
-            for (base in bases) {
-                try {
-                    repo.useApiBase(base)
-                    DebugLog.i("MainViewModel", "login try API base=$base")
-                    val res = repo.getApi().login(LoginRequest(email, password))
-                    if (res.isSuccessful || res.code() in 400..499) return res
-                    lastError = Exception(parseError(res.errorBody()?.string() ?: "") ?: "HTTP ${res.code()}")
-                } catch (e: Exception) {
-                    lastError = e
-                    DebugLog.w("MainViewModel", "login failed on $base: ${e.message}")
-                }
-            }
-            throw lastError ?: Exception("Не удалось связаться с сервером. Проверьте VPN и попробуйте снова.")
-        }
-        return withBootstrapBackendApi { attempt() }
-    }
-
     fun register(email: String, password: String, rememberMe: Boolean) {
         viewModelScope.launch {
             _authLoading.value = true
@@ -857,15 +873,17 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
                 awaitTunnelApiReady()
-                val res = registerWithFallback(email, password)
-                if (!res.isSuccessful) {
-                    _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Ошибка регистрации"
-                    restartBootstrapTimerIfNeeded()
-                    return@launch
+                withBootstrapBackendApi {
+                    val res = registerAttempt(email, password)
+                    if (!res.isSuccessful) {
+                        _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Ошибка регистрации"
+                        restartBootstrapTimerIfNeeded()
+                        return@launch
+                    }
+                    repo.saveRememberMe(email, rememberMe)
+                    _regEmail.value = email
+                    _regDone.value = true
                 }
-                repo.saveRememberMe(email, rememberMe)
-                _regEmail.value = email
-                _regDone.value = true
                 // Таймер не перезапускаем — те же 2 мин с шага 1, потом VPN отключится.
             } catch (e: Exception) {
                 _authError.value = e.message ?: "Ошибка регистрации"
@@ -876,23 +894,22 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun registerWithFallback(email: String, password: String): retrofit2.Response<Map<String, String>> {
-        suspend fun attempt(): retrofit2.Response<Map<String, String>> {
-            val bases = preLoginApiBases()
-            var lastError: Exception? = null
-            for (base in bases) {
-                try {
-                    repo.useApiBase(base)
-                    val res = repo.getApi().register(RegisterRequest(email, password))
-                    if (res.isSuccessful || res.code() in 400..499) return res
-                    lastError = Exception(parseError(res.errorBody()?.string() ?: "") ?: "HTTP ${res.code()}")
-                } catch (e: Exception) {
-                    lastError = e
-                }
+    private suspend fun registerAttempt(email: String, password: String): retrofit2.Response<Map<String, String>> {
+        val bases = preLoginApiBases()
+        var lastError: Exception? = null
+        for (base in bases) {
+            try {
+                repo.useApiBase(base)
+                val res = repo.getApi().register(RegisterRequest(email, password))
+                DebugLog.i("MainViewModel", "register HTTP ${res.code()} on $base")
+                if (res.isSuccessful || res.code() in 400..499) return res
+                lastError = Exception(parseError(res.errorBody()?.string() ?: "") ?: "HTTP ${res.code()}")
+            } catch (e: Exception) {
+                lastError = e
+                DebugLog.w("MainViewModel", "register failed on $base: ${e.message}")
             }
-            throw lastError ?: Exception("Не удалось связаться с сервером")
         }
-        return withBootstrapBackendApi { attempt() }
+        throw lastError ?: Exception("Не удалось связаться с сервером. Проверьте VPN и попробуйте снова.")
     }
 
     fun clearAuthError() { _authError.value = null }
@@ -1052,11 +1069,10 @@ class MainViewModel @Inject constructor(
 
     private suspend fun openLoginSession(): Boolean {
         val boot = repo.getBootstrapHash()
-        val res = withBootstrapBackendApi {
-            repo.getApi().registerDevice(
-                DeviceRegisterRequest("Android", "android", repo.getDeviceFingerprint(), null, boot)
-            )
-        }
+        val res = repo.getApi().registerDevice(
+            DeviceRegisterRequest("Android", "android", repo.getDeviceFingerprint(), null, boot)
+        )
+        DebugLog.i("MainViewModel", "registerDevice HTTP ${res.code()}")
         if (res.isSuccessful) {
             val cfg = res.body()!!
             repo.saveSessionDeviceId(cfg.device_id)

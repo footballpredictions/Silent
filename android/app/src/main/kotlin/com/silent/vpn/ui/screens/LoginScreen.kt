@@ -36,12 +36,14 @@ fun LoginScreen(
     initialEmail: String = "",
     initialRememberMe: Boolean = false,
     resetToken: String? = null,
+    resetPasswordSuccess: Boolean = false,
     forgotSent: Boolean = false,
     onLogin: (email: String, password: String, rememberMe: Boolean) -> Unit,
     onRegister: (email: String, password: String, rememberMe: Boolean) -> Unit,
     onForgotPassword: (email: String) -> Unit,
     onResetPassword: (token: String, newPassword: String) -> Unit,
     onClearResetToken: () -> Unit,
+    onClearResetPasswordSuccess: () -> Unit,
     loading: Boolean,
     error: String?,
     regDone: Boolean,
@@ -60,7 +62,6 @@ fun LoginScreen(
         mutableStateOf(
             when {
                 !resetToken.isNullOrBlank() -> LoginStep.RESET
-                bootstrapReady -> LoginStep.AUTH
                 else -> LoginStep.HASH
             },
         )
@@ -84,12 +85,19 @@ fun LoginScreen(
     val vkUrl = theme?.login_vk_mobile_url ?: "https://vk.com/calls"
 
     LaunchedEffect(resetToken) {
-        if (!resetToken.isNullOrBlank()) step = LoginStep.RESET
+        if (!resetToken.isNullOrBlank()) {
+            step = LoginStep.RESET
+        } else if (step == LoginStep.RESET) {
+            step = if (bootstrapReady) LoginStep.AUTH else LoginStep.HASH
+            newPassword = ""
+            tab = "login"
+        }
     }
 
-    LaunchedEffect(bootstrapReady) {
-        if (bootstrapReady && step == LoginStep.HASH) step = LoginStep.AUTH
-        if (!bootstrapReady && statusMsg.contains("истекло", ignoreCase = true)) step = LoginStep.HASH
+    LaunchedEffect(bootstrapReady, statusMsg) {
+        if (!bootstrapReady && statusMsg.contains("истекло", ignoreCase = true)) {
+            step = LoginStep.HASH
+        }
     }
 
     Column(
@@ -137,6 +145,15 @@ fun LoginScreen(
                 enter = fadeIn() + slideInVertically { it / 4 },
             ) {
                 Column {
+                    if (resetPasswordSuccess) {
+                        Text(
+                            "Пароль сохранён. Войдите с новым паролем.",
+                            color = ui.green,
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                        )
+                    }
                     Text(step2Title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = ui.fg, modifier = Modifier.padding(bottom = 12.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth().background(ui.tabBg, RoundedCornerShape(12.dp)).padding(4.dp),
@@ -203,6 +220,7 @@ fun LoginScreen(
                         if (!error.isNullOrBlank()) Text(error, color = ui.red, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
                         Button(
                             onClick = {
+                                onClearResetPasswordSuccess()
                                 if (tab == "login") onLogin(email.trim(), password, rememberMe)
                                 else onRegister(email.trim(), password, rememberMe)
                             },
@@ -215,7 +233,7 @@ fun LoginScreen(
                             else Text(if (tab == "login") "Войти" else "Зарегистрироваться", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                         }
                         TextButton(onClick = { step = LoginStep.HASH }, modifier = Modifier.fillMaxWidth()) {
-                            Text("← Изменить хеш VK", fontSize = 11.sp, color = ui.hint)
+                            Text("← К шагу 1 — хеш VK", fontSize = 11.sp, color = ui.hint)
                         }
                     }
                 }
@@ -244,32 +262,23 @@ fun LoginScreen(
                         colors = ButtonDefaults.buttonColors(containerColor = ui.primaryBtnBg, contentColor = ui.primaryBtnFg),
                     ) { Text("Отправить письмо") }
                 }
-                TextButton(onClick = { step = if (bootstrapReady) LoginStep.AUTH else LoginStep.HASH; onClearError() }) {
-                    Text("← Назад", fontSize = 12.sp, color = ui.hint)
+                TextButton(onClick = { step = LoginStep.AUTH; onClearError() }) {
+                    Text("← Назад к входу", fontSize = 12.sp, color = ui.hint)
                 }
             }
 
             if (step == LoginStep.RESET && !resetToken.isNullOrBlank()) {
                 if (!bootstrapReady) {
-                    HashInputSection(
-                        ui = ui,
-                        theme = theme,
-                        bootstrapHash = bootstrapHash,
-                        statusMsg = statusMsg,
-                        bootstrapConnecting = bootstrapConnecting,
-                        bootstrapReady = bootstrapReady,
-                        onConnect = onConnect,
-                        onOpenVkLink = { onOpenVkLink(vkUrl) },
-                        showDivider = true,
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        "Для смены пароля нужен VPN (шаг 1). Подключитесь выше.",
+                        "Сначала подключитесь на шаге 1.",
                         fontSize = 12.sp,
                         color = ui.hint,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                        modifier = Modifier.padding(bottom = 12.dp),
                     )
+                    TextButton(onClick = { step = LoginStep.HASH }) {
+                        Text("← К шагу 1 — подключить VPN", fontSize = 12.sp, color = ui.hint)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
                 Text(resetTitle, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = ui.fg)
                 Spacer(modifier = Modifier.height(12.dp))

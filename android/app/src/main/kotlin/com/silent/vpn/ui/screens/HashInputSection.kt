@@ -43,12 +43,11 @@ fun HashInputSection(
     var input by remember(bootstrapHash) { mutableStateOf(bootstrapHash.orEmpty()) }
     val fieldColors = loginTextFieldColors(ui)
 
-    val title = theme?.login_step1_title ?: "Шаг 1 — хеш звонка VK"
-    val hint = theme?.login_step1_instruction
-        ?: "Временный интернет на 2 минуты — для входа, регистрации и ссылок из почты (браузер тоже через VPN)."
-    val placeholder = theme?.login_hash_placeholder ?: "Хеш или ссылка на звонок VK"
-    val confirmBtn = theme?.login_hash_button_text ?: "Подтвердить"
-    val vkLabel = theme?.login_vk_mobile_link_text ?: "ВКонтакте — раздел «Звонки»"
+    val title = theme?.login_step1_title ?: ThemeData().login_step1_title
+    val hint = theme?.login_step1_instruction ?: ThemeData().login_step1_instruction
+    val placeholder = theme?.login_hash_placeholder ?: ThemeData().login_hash_placeholder
+    val confirmBtn = theme?.login_hash_button_text ?: ThemeData().login_hash_button_text
+    val vkLabel = theme?.login_vk_mobile_link_text ?: ThemeData().login_vk_mobile_link_text
 
     Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = ui.fg)
     Text(hint, fontSize = 11.sp, color = ui.hint, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))

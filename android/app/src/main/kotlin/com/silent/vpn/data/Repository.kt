@@ -6,6 +6,7 @@ import android.content.SharedPreferences
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.silent.vpn.vpn.VpnNetworkHelper
 import dagger.hilt.android.qualifiers.ApplicationContext
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -79,7 +80,7 @@ class SilentRepository @Inject constructor(
     private fun buildApi(baseUrl: String): SilentApi {
         val logging = HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
         val nipHost = DEFAULT_SERVER_HOST
-        val client = OkHttpClient.Builder()
+        val builder = OkHttpClient.Builder()
             .addInterceptor(logging)
             .addInterceptor { chain ->
                 var req = chain.request()
@@ -97,7 +98,16 @@ class SilentRepository @Inject constructor(
             .sslSocketFactory(TrustAllCerts.sslSocketFactory(), TrustAllCerts.trustManager())
             .connectTimeout(4, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
-            .build()
+        if (baseUrl.contains(WG_TUNNEL_GATEWAY)) {
+            VpnNetworkHelper.getSilentVpnNetwork(context)?.let { network ->
+                builder.socketFactory(network.socketFactory)
+                builder.dns { hostname ->
+                    network.getAllByName(hostname).toList()
+                }
+                Log.i(TAG, "API client bound to VPN network for $baseUrl")
+            }
+        }
+        val client = builder.build()
 
         return Retrofit.Builder()
             .baseUrl(baseUrl)

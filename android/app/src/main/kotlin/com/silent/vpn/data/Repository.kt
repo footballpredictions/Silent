@@ -436,6 +436,24 @@ class SilentRepository @Inject constructor(
         }
     }
 
+    suspend fun reportHashFailure(hash: String, errorType: String, message: String): Result<Unit> {
+        if (!isLoggedIn()) return Result.failure(IllegalStateException("not logged in"))
+        return runCatching {
+            val req = HashFailureReportRequest(
+                hash = hash,
+                error_type = errorType,
+                message = message,
+                device_fingerprint = getDeviceFingerprint(),
+            )
+            withTunnelApiWhenExcluded {
+                val res = getApi().reportHashFailure(req)
+                if (!res.isSuccessful) {
+                    throw Exception("report-failure ${res.code()}: ${res.errorBody()?.string()}")
+                }
+            }
+        }
+    }
+
     private suspend fun fetchHashItemsFromBases(bases: List<String>): Result<List<HashItemDto>> {
         var lastError: Exception? = null
         for (base in bases) {

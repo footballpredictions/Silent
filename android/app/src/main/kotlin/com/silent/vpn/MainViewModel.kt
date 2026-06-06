@@ -34,6 +34,7 @@ import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.vk.HashParser
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.vpn.VpnNetworkHelper
+import com.silent.vpn.vpn.HashFailureReporter
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.update.AppUpdateManager
 import com.silent.vpn.data.UpdateCheckResponse
@@ -183,6 +184,11 @@ class MainViewModel @Inject constructor(
     }
 
     init {
+        HashFailureReporter.install { hash, errorType, message ->
+            if (!repo.isLoggedIn() || bootstrapVpnMode) return@install
+            repo.reportHashFailure(hash, errorType, message)
+                .onFailure { e -> DebugLog.w("MainViewModel", "hash failure report: ${e.message}") }
+        }
         if (repo.isLoggedIn()) {
             if (!repo.hasSessionFingerprint()) {
                 repo.clearTokens()

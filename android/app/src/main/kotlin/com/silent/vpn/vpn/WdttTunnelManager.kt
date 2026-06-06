@@ -75,6 +75,8 @@ object WdttTunnelManager {
     private var readyProbeJob: Job? = null
     private var lastPolledConfFingerprint: String? = null
     private var isBootstrapMode: Boolean = false
+    private var sessionVkHashes: List<String> = emptyList()
+    private val groupHashPrefix = mutableMapOf<Int, String>()
 
     fun start(context: Context, params: Params, isSwitching: Boolean = false) {
         if (running.value && !isSwitching) return
@@ -131,6 +133,9 @@ object WdttTunnelManager {
                     DebugLog.e(TAG, lastError.value!!)
                     return@launch
                 }
+
+                sessionVkHashes = hashList
+                if (!isSwitching) groupHashPrefix.clear()
 
                 if (!isSwitching) {
                     wgExcludeIps.clear()
@@ -235,6 +240,23 @@ object WdttTunnelManager {
         applyWireGuard(cfg, source = 1)
     }
 
+    private fun resolveHashForGroup(groupId: Int): String? {
+        groupHashPrefix[groupId]?.let { prefix ->
+            sessionVkHashes.find { it.startsWith(prefix) }?.let { return it }
+            if (prefix.length >= 6) return prefix
+        }
+        if (sessionVkHashes.isEmpty()) return null
+        val idx = (groupId - 1).coerceAtLeast(0)
+        return sessionVkHashes[idx % sessionVkHashes.size]
+    }
+
+    private fun hashTargetsForWorkerFatal(): List<String> {
+        val fromGroups = groupHashPrefix.values.mapNotNull { prefix ->
+            sessionVkHashes.find { it.startsWith(prefix) } ?: prefix.takeIf { it.length >= 6 }
+        }.distinct()
+        return fromGroups.ifEmpty { sessionVkHashes.take(1) }
+    }
+
     private fun startLogReader(context: Context) {
         readerJob?.cancel()
         readerJob = scope.launch {
@@ -304,6 +326,38 @@ object WdttTunnelManager {
                         Regex("""TURN UDP \(([\d.]+):\d+\)""").find(lineTrim)?.groupValues?.getOrNull(1)?.let { turnIp ->
                             if (wgExcludeIps.add(turnIp)) {
                                 DebugLog.i(TAG, "Bootstrap TURN IP excluded from WG: $turnIp")
+                            }
+                        }
+                    }
+
+                    if (!isBootstrapMode) {
+                        Regex("""\[ГРУППА #(\d+)\] Запрос кредов \(хеш: (\S+)""").find(lineTrim)?.let { m ->
+                            val gid = m.groupValues[1].toIntOrNull() ?: return@let
+                            groupHashPrefix[gid] = m.groupValues[2].trimEnd('.')
+                        }
+                        Regex("""\[ГРУППА #(\d+)\] Ошибка кредов: (.+)""").find(lineTrim)?.let { m ->
+                            val gid = m.groupValues[1].toIntOrNull() ?: return@let
+                            resolveHashForGroup(gid)?.let { hash ->
+                                HashFailureReporter.report(scope, hash, "creds_failed", m.groupValues[2])
+                            }
+                        }
+                        if (lineTrim.contains("[VK Auth] Failed")) {
+                            Regex("""\[STREAM (\d+)\]""").find(lineTrim)?.let { m ->
+                                val streamId = m.groupValues[1].toIntOrNull() ?: return@let
+                                val gid = streamId / 100
+                                if (gid > 0) {
+                                    resolveHashForGroup(gid)?.let { hash ->
+                                        HashFailureReporter.report(scope, hash, "vk_auth_failed", lineTrim)
+                                    }
+                                }
+                            }
+                        }
+                        Regex("""\[ВОРКЕР #\d+\] Фатальная ошибка: (.+)""").find(lineTrim)?.let { m ->
+                            val err = m.groupValues[1]
+                            if (err.contains("хеш мёртв", ignoreCase = true)) {
+                                hashTargetsForWorkerFatal().forEach { hash ->
+                                    HashFailureReporter.report(scope, hash, "hash_dead", err)
+                                }
                             }
                         }
                     }

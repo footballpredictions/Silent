@@ -82,6 +82,13 @@ data class HashItemDto(
     val status: String = "active",
 )
 
+data class HashFailureReportRequest(
+    val hash: String,
+    val error_type: String,
+    val message: String = "",
+    val device_fingerprint: String,
+)
+
 data class DeviceRenameRequest(val device_name: String)
 
 data class DeviceRegisterRequest(
@@ -254,6 +261,9 @@ interface SilentApi {
 
     @POST("api/vpn/hashes/request-refresh")
     suspend fun requestHashRefresh(@Body req: ConnectRequest): Response<VpnHashesResponse>
+
+    @POST("api/vpn/hashes/report-failure")
+    suspend fun reportHashFailure(@Body req: HashFailureReportRequest): Response<Map<String, String>>
 
     @POST("api/vpn/bootstrap-config")
     suspend fun bootstrapConfig(@Body req: BootstrapConfigRequest): Response<VpnConfig>

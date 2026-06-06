@@ -44,6 +44,7 @@ fun LoginScreen(
     onResetPassword: (token: String, newPassword: String) -> Unit,
     onClearResetToken: () -> Unit,
     onClearResetPasswordSuccess: () -> Unit,
+    onClearForgotSent: () -> Unit = {},
     loading: Boolean,
     error: String?,
     regDone: Boolean,
@@ -218,7 +219,11 @@ fun LoginScreen(
                                 Text(rememberLabel, fontSize = 12.sp, color = ui.hint)
                             }
                             if (tab == "login") {
-                                TextButton(onClick = { step = LoginStep.FORGOT; onClearError() }) {
+                                TextButton(onClick = {
+                                    onClearForgotSent()
+                                    step = LoginStep.FORGOT
+                                    onClearError()
+                                }) {
                                     Text(forgotLabel, fontSize = 11.sp, color = ui.linkColor)
                                 }
                             }
@@ -250,7 +255,10 @@ fun LoginScreen(
                 Text(forgotHint, fontSize = 12.sp, color = ui.hint, modifier = Modifier.padding(top = 8.dp, bottom = 16.dp))
                 if (forgotSent) {
                     Text("Если email зарегистрирован, письмо отправлено.", color = ui.green, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 24.dp))
-                    Text("Откройте ссылку в браузере — VPN должен быть включён", color = ui.hint, fontSize = 11.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 24.dp))
+                    Text("Откройте ссылку в браузере — VPN должен быть включён", color = ui.hint, fontSize = 11.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp))
+                    TextButton(onClick = { onClearForgotSent() }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Отправить письмо снова", fontSize = 12.sp, color = ui.linkColor)
+                    }
                 } else {
                     OutlinedTextField(
                         value = email, onValueChange = { email = it }, modifier = Modifier.fillMaxWidth(),
@@ -268,7 +276,7 @@ fun LoginScreen(
                         colors = ButtonDefaults.buttonColors(containerColor = ui.primaryBtnBg, contentColor = ui.primaryBtnFg),
                     ) { Text("Отправить письмо") }
                 }
-                TextButton(onClick = { step = LoginStep.AUTH; onClearError() }) {
+                TextButton(onClick = { onClearForgotSent(); step = LoginStep.AUTH; onClearError() }) {
                     Text("← Назад к входу", fontSize = 12.sp, color = ui.hint)
                 }
             }

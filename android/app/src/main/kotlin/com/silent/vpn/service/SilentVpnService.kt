@@ -56,7 +56,8 @@ class SilentVpnService : Service() {
         /** После tunnelReady переключение Wi‑Fi/LTE можно обрабатывать раньше. */
         private const val NETWORK_GRACE_AFTER_READY_MS = 12_000L
         private const val NETWORK_DEBOUNCE_MS = 8_000L
-        private const val TRANSPORT_WATCHDOG_MS = 20_000L
+        private const val TRANSPORT_WATCHDOG_MS = 45_000L
+        private const val NOTIF_UPDATE_MIN_MS = 30_000L
         const val ACTION_CONNECT = "com.silent.vpn.CONNECT"
         const val ACTION_DISCONNECT = "com.silent.vpn.DISCONNECT"
         const val EXTRA_CONFIG = "vpn_config_json"
@@ -77,11 +78,13 @@ class SilentVpnService : Service() {
     private var networkRecoveryJob: Job? = null
     private var transportWatchdogJob: Job? = null
     private var statusCollectorJob: Job? = null
+    private var performanceLocksHeld = false
+    private var lastNotifUpdateMs = 0L
+    private var lastNotifBody = ""
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        acquireWakeLock()
         statusCollectorJob = scope.launch {
             combine(
                 WdttTunnelManager.tunnelReady,
@@ -93,6 +96,7 @@ class SilentVpnService : Service() {
                 if (!isRunning) return@collectLatest
                 val vpnActive = ready && WdttTunnelManager.isInternetReady()
                 if (vpnActive) {
+                    releasePerformanceLocks()
                     postVpnNotification(stats)
                 } else if (wdttRunning) {
                     startFg(buildConnectingNotification())
@@ -119,8 +123,7 @@ class SilentVpnService : Service() {
                 lastNetworkChangeTime = 0L
                 setupNetworkCallback()
                 startTransportWatchdog()
-                acquireWakeLock()
-                acquireWifiLock()
+                acquirePerformanceLocks()
                 startFg(buildConnectingNotification())
                 connect(configJson)
             }
@@ -208,6 +211,9 @@ class SilentVpnService : Service() {
     private fun disconnect() {
         DebugLog.i("VpnService", "DISCONNECT")
         isRunning = false
+        performanceLocksHeld = false
+        lastNotifBody = ""
+        lastNotifUpdateMs = 0L
         networkRecoveryJob?.cancel()
         transportWatchdogJob?.cancel()
         statusCollectorJob?.cancel()
@@ -335,6 +341,7 @@ class SilentVpnService : Service() {
             "Восстановление транспорта ($reason): paused=$wasPaused healthy=$healthy workers=${WdttTunnelManager.activeWorkers.value}",
         )
         pausedForNetwork = false
+        acquireTransientWakeLock()
         when {
             wasPaused || !WdttTunnelManager.running.value -> WdttTunnelManager.resume()
             !healthy -> WdttTunnelManager.restartTransport()
@@ -386,6 +393,36 @@ class SilentVpnService : Service() {
         val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
         return caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
             !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
+
+    private fun acquirePerformanceLocks() {
+        performanceLocksHeld = true
+        acquireWakeLock()
+        if (isOnWifi()) acquireWifiLock()
+    }
+
+    /** После стабильного подключения — не держать CPU/Wi‑Fi awake (экономия батареи). */
+    private fun releasePerformanceLocks() {
+        if (!performanceLocksHeld) return
+        performanceLocksHeld = false
+        releaseWakeLock()
+        releaseWifiLock()
+    }
+
+    private fun acquireTransientWakeLock() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        runCatching {
+            pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "silent:transport_recover").apply {
+                setReferenceCounted(false)
+                acquire(30_000L)
+            }
+        }
+    }
+
+    private fun isOnWifi(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
     }
 
     private fun acquireWakeLock() {
@@ -497,6 +534,12 @@ class SilentVpnService : Service() {
 
     private fun postVpnNotification(stats: String) {
         if (!isRunning || !WdttTunnelManager.isInternetReady()) return
+        val body = notificationBody(ready = true, stats = stats)
+        val now = System.currentTimeMillis()
+        if (body == lastNotifBody && now - lastNotifUpdateMs < NOTIF_UPDATE_MIN_MS) return
+        if (now - lastNotifUpdateMs < NOTIF_UPDATE_MIN_MS && lastNotifBody.isNotBlank()) return
+        lastNotifUpdateMs = now
+        lastNotifBody = body
         val notification = buildActiveNotification(stats)
         startFg(notification)
         getSystemService(NotificationManager::class.java)?.notify(NOTIF_ID, notification)

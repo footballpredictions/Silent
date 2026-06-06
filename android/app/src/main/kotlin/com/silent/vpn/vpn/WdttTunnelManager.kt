@@ -350,8 +350,13 @@ object WdttTunnelManager {
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Reader error", e)
-                DebugLog.e(TAG, "Reader error", e)
+                val msg = e.message.orEmpty()
+                if (msg.contains("interrupted", ignoreCase = true) || msg.contains("close()", ignoreCase = true)) {
+                    DebugLog.d(TAG, "libclient reader stopped")
+                } else if (running.value) {
+                    Log.e(TAG, "Reader error", e)
+                    DebugLog.e(TAG, "Reader error", e)
+                }
             } finally {
                 val proc = process
                 val exitCode = runCatching { proc?.exitValue() }.getOrNull()

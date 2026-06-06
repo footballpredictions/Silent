@@ -100,7 +100,7 @@ class SilentRepository @Inject constructor(
             .sslSocketFactory(TrustAllCerts.sslSocketFactory(), TrustAllCerts.trustManager())
             .connectTimeout(4, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
-        if (baseUrl.contains(WG_TUNNEL_GATEWAY)) {
+        if (baseUrl.contains(WG_TUNNEL_GATEWAY) && !APP_EXCLUDED_FROM_VPN) {
             VpnNetworkHelper.getSilentVpnNetwork(context)?.let { network ->
                 builder.socketFactory(network.socketFactory)
                 builder.dns(object : Dns {

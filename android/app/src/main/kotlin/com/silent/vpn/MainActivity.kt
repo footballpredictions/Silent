@@ -126,6 +126,7 @@ class MainActivity : ComponentActivity() {
                         onResetPassword = vm::resetPassword,
                         onClearResetToken = vm::clearResetToken,
                         onClearResetPasswordSuccess = vm::clearResetPasswordSuccess,
+                        onClearForgotSent = vm::clearForgotSent,
                         loading = authLoading,
                         error = authError,
                         regDone = regDone,

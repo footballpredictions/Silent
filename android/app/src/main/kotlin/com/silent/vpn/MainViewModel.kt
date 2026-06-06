@@ -51,7 +51,8 @@ import javax.inject.Inject
 
 private const val BOOTSTRAP_SESSION_MS = 2 * 60 * 1000L
 /** Пока VPN включён — периодически спрашиваем сервер о новой версии. */
-private const val UPDATE_POLL_INTERVAL_MS = 30_000L
+private const val UPDATE_POLL_INTERVAL_MS = 120_000L
+private const val VPN_PROFILE_POLL_INTERVAL_MS = 60_000L
 
 enum class AppScreen { LOGIN, MAIN }
 
@@ -436,21 +437,21 @@ class MainViewModel @Inject constructor(
     /** Сразу проверить обновление и держать фоновый опрос, пока VPN подключён. */
     private fun triggerUpdateCheckAndPolling() {
         if (_vpnState.value != VpnState.CONNECTED || bootstrapVpnMode || !repo.isLoggedIn()) return
-        viewModelScope.launch { runCatching { checkForUpdateNow() } }
         startUpdatePolling()
     }
 
     private fun startUpdatePolling() {
         if (updatePollJob?.isActive == true) return
         updatePollJob = viewModelScope.launch {
+            delay(15_000)
             while (
                 _vpnState.value == VpnState.CONNECTED &&
                 repo.isLoggedIn() &&
                 !bootstrapVpnMode &&
                 SilentVpnService.isRunning
             ) {
-                delay(UPDATE_POLL_INTERVAL_MS)
                 runCatching { checkForUpdateNow() }
+                delay(UPDATE_POLL_INTERVAL_MS)
             }
         }
     }
@@ -500,7 +501,7 @@ class MainViewModel @Inject constructor(
         if (!active) return
         vpnProfilePollJob = viewModelScope.launch {
             while (true) {
-                delay(10_000)
+                delay(VPN_PROFILE_POLL_INTERVAL_MS)
                 runCatching { fetchProfileNow() }
             }
         }
@@ -742,6 +743,10 @@ class MainViewModel @Inject constructor(
 
     fun clearResetPasswordSuccess() {
         _resetPasswordSuccess.value = false
+    }
+
+    fun clearForgotSent() {
+        _forgotSent.value = false
     }
 
     fun forgotPassword(email: String) {
@@ -1173,6 +1178,8 @@ class MainViewModel @Inject constructor(
             _authError.value = null
             _vpnError.value = null
             _regDone.value = false
+            _forgotSent.value = false
+            _resetPasswordSuccess.value = false
             if (pendingReset && context != null) {
                 ensureBootstrapForAuthFlow(context)
             }

@@ -138,6 +138,16 @@ class MainViewModel @Inject constructor(
         _hashReady.value = isHashReady()
     }
 
+    /** Удаляем bootstrap только если с сервера есть ≥1 активный хеш; иначе — fallback для главного VPN. */
+    private fun clearBootstrapIfServerHashesReady(items: List<HashItemDto>) {
+        val active = items.activeServerHashes()
+        if (active.isEmpty()) return
+        if (repo.getBootstrapHash().isNullOrBlank()) return
+        repo.saveBootstrapHash(null)
+        refreshHashState()
+        DebugLog.i("MainViewModel", "bootstrap cleared (${active.size} server hash(es))")
+    }
+
     /** Сохранить хеш из поля и подключить bootstrap VPN. */
     fun connectForLogin(context: Context, raw: String) {
         val h = HashParser.extract(raw)
@@ -247,7 +257,13 @@ class MainViewModel @Inject constructor(
         if (!WdttTunnelManager.isInternetReady()) return false
         val tunnel = WdttTunnelManager.tunnelApiBase()
         repo.useApiBase(tunnel)
-        runCatching { repo.fetchAndSaveHashItemsViaTunnel() }
+        val items = runCatching {
+            repo.fetchAndSaveHashItemsViaTunnel().getOrDefault(emptyList())
+        }.getOrElse {
+            DebugLog.w("MainViewModel", "login hash sync: ${it.message}")
+            repo.getSavedHashItems()
+        }
+        clearBootstrapIfServerHashesReady(items)
         return fetchProfileNow() || _profile.value != null
     }
 
@@ -335,14 +351,16 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    /** Download server hash list to device storage (bootstrap в prefs не трогаем — только скрыт в UI). */
+    /** Скачать список хешей с сервера; bootstrap убрать только при ≥1 активном серверном хеше. */
     private suspend fun syncServerHashes(): List<HashItemDto> {
         val result = repo.fetchAndSaveHashItems()
         if (result.isFailure) {
             Log.w("MainViewModel", "syncServerHashes: ${result.exceptionOrNull()?.message}")
             return repo.getSavedHashItems()
         }
-        return result.getOrDefault(emptyList())
+        val items = result.getOrDefault(emptyList())
+        clearBootstrapIfServerHashesReady(items)
+        return items
     }
 
     private var mainTunnelDataSyncJob: Job? = null
@@ -1146,6 +1164,7 @@ class MainViewModel @Inject constructor(
                             val hashItems = body?.toHashItems().orEmpty()
                             if (hashItems.isNotEmpty()) {
                                 repo.saveHashItems(hashItems)
+                                clearBootstrapIfServerHashesReady(hashItems)
                             }
                             val serverHashes = hashItems.activeServerHashes().map { it.hash }
                             if (serverHashes.isNotEmpty() && vpnConfig != null) {
@@ -1267,6 +1286,7 @@ class MainViewModel @Inject constructor(
                         val hashItems = body?.toHashItems().orEmpty()
                         if (hashItems.isNotEmpty()) {
                             repo.saveHashItems(hashItems)
+                            clearBootstrapIfServerHashesReady(hashItems)
                         }
                         val serverHashes = hashItems.activeServerHashes().map { it.hash }
                         if (serverHashes.isNotEmpty()) cfg = cfg.copy(vk_hashes = serverHashes)

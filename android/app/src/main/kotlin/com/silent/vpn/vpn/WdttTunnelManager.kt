@@ -21,6 +21,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * WDTT-туннель по логике [proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android):
@@ -41,8 +42,10 @@ object WdttTunnelManager {
     private var appliedConfigSource: Int = 0 // 0=none, 1=api, 2=box, 3=file
     private var appliedConfigFingerprint: String? = null
     private val wgApplyMutex = Mutex()
+    private val startStopMutex = Mutex()
     private var apiOverlayDepth = 0
     @Volatile private var apiOverlayActive = false
+    @Volatile private var suppressNetworkRecovery = false
     private var overlayHoldUntilMs = 0L
     private var overlayRestoreJob: Job? = null
     private val overlayHoldMs = 4_000L
@@ -54,6 +57,8 @@ object WdttTunnelManager {
     private var wrapAuthTimeoutCount = 0
     private var isSwitchingTransport = false
     private val wgExcludeIps = linkedSetOf<String>()
+    private var captchaSolveJob: Job? = null
+    private val captchaSession = AtomicInteger(0)
 
     val running = MutableStateFlow(false)
     val tunnelReady = MutableStateFlow(false)
@@ -83,31 +88,31 @@ object WdttTunnelManager {
     private val groupHashPrefix = mutableMapOf<Int, String>()
 
     fun start(context: Context, params: Params, isSwitching: Boolean = false) {
-        if (running.value && !isSwitching) return
         scope.launch {
-            val ctx = context.applicationContext
-            if (!isSwitching) {
-                stopInternal(keepWg = false)
-                lastError.value = null
-                tunnelReady.value = false
-                stats.value = ""
-                activeWorkers.value = 0
-                deferredApiWgConfig = null
-                wrapAuthTimeoutCount = 0
-                appliedConfigSource = 0
-                appliedConfigFingerprint = null
-                lastParams = params
-                lastContext = ctx
-                isBootstrapMode = params.isBootstrap
-                apiFallbackConfig = params.apiWgConfig?.trim()?.takeIf { it.contains("[Interface]") }
-                CaptchaWebViewManager.onTunnelStart(context)
-            } else {
+            startStopMutex.withLock {
+                val ctx = context.applicationContext
+                if (!isSwitching) {
+                    stopInternal(keepWg = false)
+                    lastError.value = null
+                    tunnelReady.value = false
+                    stats.value = "Ожидание данных…"
+                    activeWorkers.value = 0
+                    deferredApiWgConfig = null
+                    wrapAuthTimeoutCount = 0
+                    appliedConfigSource = 0
+                    appliedConfigFingerprint = null
+                    lastParams = params
+                    lastContext = ctx
+                    isBootstrapMode = params.isBootstrap
+                    apiFallbackConfig = params.apiWgConfig?.trim()?.takeIf { it.contains("[Interface]") }
+                    CaptchaWebViewManager.onTunnelStart(context)
+                } else {
                 overlayRestoreJob?.cancel()
                 apiOverlayDepth = 0
                 apiOverlayActive = false
                 killProcess()
                 activeWorkers.value = 0
-                stats.value = ""
+                stats.value = "Ожидание данных…"
                 isSwitchingTransport = true
             }
             wgHelper = WireGuardHelper(ctx)
@@ -119,7 +124,7 @@ object WdttTunnelManager {
                 if (!File(binaryPath).exists()) {
                     lastError.value = "WDTT клиент не найден (libclient.so)"
                     DebugLog.e(TAG, lastError.value!!)
-                    return@launch
+                    return@withLock
                 }
                 DebugLog.i(TAG, "libclient path=$binaryPath size=${File(binaryPath).length()}")
 
@@ -131,12 +136,12 @@ object WdttTunnelManager {
                 if (hashList.isEmpty()) {
                     lastError.value = "Нет VK-хешей"
                     DebugLog.e(TAG, lastError.value!!)
-                    return@launch
+                    return@withLock
                 }
                 if (params.wdttPassword.isBlank()) {
                     lastError.value = "Пароль WDTT не задан"
                     DebugLog.e(TAG, lastError.value!!)
-                    return@launch
+                    return@withLock
                 }
 
                 sessionVkHashes = hashList
@@ -144,8 +149,6 @@ object WdttTunnelManager {
 
                 if (!isSwitching) {
                     wgExcludeIps.clear()
-                    // Bootstrap: полный 0.0.0.0/0 — браузер (подтверждение email, сброс пароля) через VPN.
-                    // Silent app исключён из WG → libclient/TURN напрямую.
                 }
 
                 DebugLog.i(
@@ -181,7 +184,7 @@ object WdttTunnelManager {
                     DebugLog.e(TAG, lastError.value!!)
                     running.value = false
                     process = null
-                    return@launch
+                    return@withLock
                 }
                 startLogReader(context)
                 startConfFilePoller(context)
@@ -191,6 +194,7 @@ object WdttTunnelManager {
                 DebugLog.e(TAG, "Start failed", e)
                 lastError.value = e.message ?: "Ошибка запуска WDTT"
                 running.value = false
+            }
             }
         }
     }
@@ -276,19 +280,24 @@ object WdttTunnelManager {
                     val lineTrim = line
                         .replace(Regex("^\\d{4}/\\d{2}/\\d{2}\\s\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\s"), "")
                         .trim()
-                    Log.d(TAG, lineTrim)
-                    if (lineTrim.isNotBlank()) DebugLog.d(TAG, lineTrim)
+                    val important = lineTrim.contains("[СТАТИСТИКА]") ||
+                        lineTrim.contains("FATAL") ||
+                        lineTrim.contains("ГРУППА #") ||
+                        lineTrim.contains("[READY]") ||
+                        lineTrim.contains("API overlay") ||
+                        lineTrim.startsWith("CAPTCHA_SOLVE|") ||
+                        lineTrim.contains("Ошибка кредов") ||
+                        lineTrim.contains("WireGuard")
+                    if (important) {
+                        DebugLog.i(TAG, lineTrim)
+                    } else if (com.silent.vpn.BuildConfig.DEBUG) {
+                        DebugLog.d(TAG, lineTrim)
+                    }
 
                     if (lineTrim.startsWith("CAPTCHA_SOLVE|")) {
                         val payload = lineTrim.substringAfter("CAPTCHA_SOLVE|")
                         val parts = payload.split("|", limit = 3)
-                        scope.launch {
-                            when (parts.size) {
-                                3 -> handleCaptchaSolve(parts[0], parts[1], parts[2])
-                                2 -> handleCaptchaSolve("selected", parts[0], parts[1])
-                                else -> writeCaptchaResult("error:invalid CAPTCHA_SOLVE format")
-                            }
-                        }
+                        scheduleCaptchaSolve(parts)
                         return@forEachLine
                     }
 
@@ -320,20 +329,19 @@ object WdttTunnelManager {
                     if (lineTrim.contains("[СТАТИСТИКА]")) {
                         val msg = lineTrim.substringAfter("[СТАТИСТИКА]").trim()
                         stats.value = msg
-                        Regex("Активных:\\s*(\\d+)").find(msg)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let {
-                            val prev = activeWorkers.value
+                        val newActive = Regex("Активных:\\s*(\\d+)").find(msg)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                        val prevActive = activeWorkers.value
+                        newActive?.let {
                             activeWorkers.value = it
                             if (it > 0) wrapAuthTimeoutCount = 0
-                            if (prev < 1 && it >= 1) tryApplyDeferredApiWg()
+                            if (prevActive < 1 && it >= 1) tryApplyDeferredApiWg()
                         }
                         return@forEachLine
                     }
 
-                    if (isBootstrapMode) {
-                        Regex("""TURN UDP \(([\d.]+):\d+\)""").find(lineTrim)?.groupValues?.getOrNull(1)?.let { turnIp ->
-                            if (wgExcludeIps.add(turnIp)) {
-                                DebugLog.i(TAG, "Bootstrap TURN IP excluded from WG: $turnIp")
-                            }
+                    Regex("""TURN UDP \(([\d.]+):\d+\)""").find(lineTrim)?.groupValues?.getOrNull(1)?.let { turnIp ->
+                        if (isBootstrapMode && wgExcludeIps.add(turnIp)) {
+                            DebugLog.i(TAG, "Bootstrap TURN IP excluded from WG: $turnIp")
                         }
                     }
 
@@ -344,8 +352,10 @@ object WdttTunnelManager {
                         }
                         Regex("""\[ГРУППА #(\d+)\] Ошибка кредов: (.+)""").find(lineTrim)?.let { m ->
                             val gid = m.groupValues[1].toIntOrNull() ?: return@let
-                            resolveHashForGroup(gid)?.let { hash ->
-                                HashFailureReporter.report(scope, hash, "creds_failed", m.groupValues[2])
+                            if (tunnelReady.value) {
+                                resolveHashForGroup(gid)?.let { hash ->
+                                    HashFailureReporter.report(scope, hash, "creds_failed", m.groupValues[2])
+                                }
                             }
                         }
                         if (lineTrim.contains("[VK Auth] Failed")) {
@@ -489,6 +499,9 @@ object WdttTunnelManager {
         }
     }
 
+    private fun wgExcludeForTunnel(): List<String> =
+        if (isBootstrapMode) wgExcludeIps.toList() else emptyList()
+
     /** source: 1=api, 2=box log, 3=wg-turn.conf — higher is better */
     private fun applyWireGuard(configStr: String, source: Int = 1) {
         val normalized = configStr.trim()
@@ -537,7 +550,7 @@ object WdttTunnelManager {
                 lastWgConfig = normalized
                 try {
                     val srcName = when (source) { 3 -> "file"; 2 -> "box"; else -> "api" }
-                    wgHelper?.startTunnel(normalized, wgExcludeIps.toList(), isBootstrapMode)
+                    wgHelper?.startTunnel(normalized, wgExcludeForTunnel(), isBootstrapMode)
                     appliedConfigSource = source
                     appliedConfigFingerprint = fingerprint
                     Log.i(TAG, "WireGuard UP ($srcName)")
@@ -583,54 +596,119 @@ object WdttTunnelManager {
         DebugLog.w(TAG, "awaitWgConfigSettled: timeout (source=$appliedConfigSource)")
     }
 
+    fun isBootstrapMode(): Boolean = isBootstrapMode
+
+    fun lastParams(): Params? = lastParams
+
+    /** libclient ещё набирает группы — overlay WG ломает VK creds (app в туннеле с /24). */
+    fun isWorkerRampUpActive(): Boolean {
+        if (!running.value || !tunnelReady.value) return false
+        val total = lastParams?.workers ?: return false
+        return activeWorkers.value < total
+    }
+
+    fun isApiOverlayActive(): Boolean = apiOverlayActive
+
+    fun isNetworkRecoverySuppressed(): Boolean = apiOverlayActive || suppressNetworkRecovery
+
+    class ApiOverlayBlockedException(message: String) : Exception(message)
+
+    private var lastOverlayEndedMs = 0L
+    private val minOverlayIntervalMs = 60_000L
+
     /**
-     * Краткий overlay для HTTP к 10.66.66.1.
-     * Hold 4 с после последнего запроса — без лишних ON/OFF WG (иконка VPN не моргает).
+     * Bootstrap: overlay WG для API.
      */
     suspend fun <T> withApiOverlay(block: suspend () -> T): T {
+        if (!isBootstrapMode) {
+            return withApiOverlayBrief(block, allowDuringRampUp = false)
+        }
         if (!running.value) return block()
+        if (apiOverlayActive) return block()
         val config = lastWgConfig ?: return block()
         val helper = wgHelper ?: return block()
-        var scheduleRestore = false
-        val result = wgApplyMutex.withLock {
+        return wgApplyMutex.withLock {
             overlayRestoreJob?.cancel()
-            apiOverlayDepth++
-            if (!apiOverlayActive) {
-                DebugLog.i(TAG, "API overlay ON → 10.66.66.0/24")
-                helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = true)
-                apiOverlayActive = true
-                delay(overlayEnterDelayMs)
-            } else {
-                DebugLog.d(TAG, "API overlay reuse (depth=$apiOverlayDepth)")
-            }
+            DebugLog.i(TAG, "API overlay ON (bootstrap)")
+            helper.startTunnel(config, wgExcludeForTunnel(), isBootstrapMode, apiOverlayMode = true)
+            apiOverlayActive = true
+            apiOverlayDepth = 0
+            delay(overlayEnterDelayMs)
             try {
                 block()
             } finally {
-                apiOverlayDepth = (apiOverlayDepth - 1).coerceAtLeast(0)
-                overlayHoldUntilMs = System.currentTimeMillis() + overlayHoldMs
-                scheduleRestore = apiOverlayDepth == 0
+                if (apiOverlayActive) {
+                    DebugLog.i(TAG, "API overlay OFF (bootstrap)")
+                    helper.startTunnel(config, wgExcludeForTunnel(), isBootstrapMode, apiOverlayMode = false)
+                    apiOverlayActive = false
+                }
             }
         }
-        if (scheduleRestore) scheduleOverlayRestore(config, helper)
-        return result
+    }
+
+    /**
+     * Основной VPN: краткий overlay 10.66.66.0/24 — только HTTP к API, libclient/TURN мимо VPN.
+     * @param allowDuringRampUp только для initial backend sync сразу после 1-й группы.
+     */
+    suspend fun <T> withApiOverlayBrief(
+        block: suspend () -> T,
+        allowDuringRampUp: Boolean = false,
+    ): T {
+        if (!running.value) return block()
+        if (isWorkerRampUpActive() && !allowDuringRampUp) {
+            throw ApiOverlayBlockedException(
+                "overlay blocked during worker ramp-up (${activeWorkers.value}/${lastParams?.workers})",
+            )
+        }
+        if (!allowDuringRampUp && !apiOverlayActive) {
+            val since = System.currentTimeMillis() - lastOverlayEndedMs
+            if (lastOverlayEndedMs > 0L && since < minOverlayIntervalMs) {
+                throw ApiOverlayBlockedException("overlay throttled (${since}ms since last)")
+            }
+        }
+        val config = lastWgConfig ?: return block()
+        val helper = wgHelper ?: return block()
+        return wgApplyMutex.withLock {
+            if (apiOverlayActive) return@withLock block()
+            overlayRestoreJob?.cancel()
+            suppressNetworkRecovery = true
+            DebugLog.i(TAG, "API overlay brief ON (10.66.66.0/24)")
+            helper.startTunnel(config, wgExcludeForTunnel(), isBootstrapMode, apiOverlayMode = true)
+            apiOverlayActive = true
+            delay(if (allowDuringRampUp) 350L else overlayEnterDelayMs)
+            try {
+                block()
+            } finally {
+                suppressNetworkRecovery = false
+                if (apiOverlayActive) {
+                    DebugLog.i(TAG, "API overlay brief OFF")
+                    helper.startTunnel(config, wgExcludeForTunnel(), isBootstrapMode, apiOverlayMode = false)
+                    apiOverlayActive = false
+                    lastOverlayEndedMs = System.currentTimeMillis()
+                }
+            }
+        }
+    }
+
+    /** Сброс overlay при disconnect / ошибке. */
+    fun ensureApiOverlayOff() {
+        overlayRestoreJob?.cancel()
+        if (!apiOverlayActive) return
+        val config = lastWgConfig ?: run { apiOverlayActive = false; return }
+        val helper = wgHelper ?: run { apiOverlayActive = false; return }
+        scope.launch {
+            wgApplyMutex.withLock {
+                if (!apiOverlayActive) return@withLock
+                DebugLog.i(TAG, "API overlay force OFF")
+                helper.startTunnel(config, wgExcludeForTunnel(), isBootstrapMode, apiOverlayMode = false)
+                apiOverlayActive = false
+                apiOverlayDepth = 0
+            }
+        }
     }
 
     private fun scheduleOverlayRestore(config: String, helper: WireGuardHelper) {
-        overlayRestoreJob?.cancel()
-        overlayRestoreJob = scope.launch {
-            while (apiOverlayDepth == 0 && System.currentTimeMillis() < overlayHoldUntilMs) {
-                delay(200)
-            }
-            if (apiOverlayDepth > 0 || overlayRestoreSuppressed || !running.value) return@launch
-            wgApplyMutex.withLock {
-                if (apiOverlayDepth > 0 || !apiOverlayActive) return@withLock
-                if (System.currentTimeMillis() < overlayHoldUntilMs) return@withLock
-                DebugLog.i(TAG, "API overlay OFF → full tunnel")
-                helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
-                apiOverlayActive = false
-                overlayRestoreSuppressed = false
-            }
-        }
+        // Deprecated: overlay восстанавливается синхронно в withApiOverlay.finally
     }
 
     fun isInternetReady(): Boolean =
@@ -682,11 +760,13 @@ object WdttTunnelManager {
     }
 
     fun stop() {
-        scope.launch { stopInternal(keepWg = false) }
+        scope.launch {
+            startStopMutex.withLock { stopInternal(keepWg = false) }
+        }
     }
 
     suspend fun stopAndAwait() {
-        stopInternal(keepWg = false)
+        startStopMutex.withLock { stopInternal(keepWg = false) }
     }
 
     private fun killProcess() {
@@ -710,7 +790,7 @@ object WdttTunnelManager {
             try {
                 wgHelper?.stopTunnel()
                 delay(200)
-                wgHelper?.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode)
+                wgHelper?.startTunnel(config, wgExcludeForTunnel(), isBootstrapMode)
             } catch (e: Exception) {
                 lastError.value = "WireGuard: ${e.message}"
             }
@@ -719,6 +799,8 @@ object WdttTunnelManager {
 
     private suspend fun stopInternal(keepWg: Boolean) {
         overlayRestoreSuppressed = true
+        ensureApiOverlayOff()
+        cancelAllCaptchaSolvers()
         withContext(Dispatchers.IO) {
             overlayRestoreJob?.cancel()
             apiOverlayDepth = 0
@@ -741,29 +823,74 @@ object WdttTunnelManager {
         }
     }
 
-    private suspend fun handleCaptchaSolve(requestMode: String, redirectUri: String, sessionToken: String) {
+    private fun scheduleCaptchaSolve(parts: List<String>) {
+        captchaSolveJob?.cancel()
+        CaptchaWebViewManager.cancelCurrentSolve()
+        ManlCaptchaWebViewManager.cancelCaptcha()
+        val session = captchaSession.incrementAndGet()
+        captchaSolveJob = scope.launch {
+            when (parts.size) {
+                3 -> handleCaptchaSolve(session, parts[0], parts[1], parts[2])
+                2 -> handleCaptchaSolve(session, "selected", parts[0], parts[1])
+                else -> writeCaptchaResultIfCurrent(session, "error:invalid CAPTCHA_SOLVE format")
+            }
+        }
+    }
+
+    private fun cancelAllCaptchaSolvers() {
+        captchaSession.incrementAndGet()
+        captchaSolveJob?.cancel()
+        captchaSolveJob = null
+        CaptchaWebViewManager.cancelCurrentSolve()
+        ManlCaptchaWebViewManager.cancelCaptcha()
+    }
+
+    private suspend fun handleCaptchaSolve(
+        session: Int,
+        requestMode: String,
+        redirectUri: String,
+        sessionToken: String,
+    ) {
         val ctx = appContext ?: run {
-            writeCaptchaResult("error:context is null")
+            writeCaptchaResultIfCurrent(session, "error:context is null")
             return
         }
-        DebugLog.i(TAG, "CAPTCHA solve mode=$requestMode")
+        DebugLog.i(TAG, "CAPTCHA solve mode=$requestMode session=$session")
         try {
             val token = when (requestMode.lowercase()) {
                 "auto" -> CaptchaWebViewManager.solveCaptchaAsync(redirectUri, sessionToken)
                 "manual" -> ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
                 else -> solveAutoWebViewCaptcha(ctx, redirectUri, sessionToken)
             }
+            if (!isCaptchaSessionCurrent(session)) {
+                DebugLog.d(TAG, "CAPTCHA result ignored (superseded session=$session)")
+                return
+            }
             DebugLog.i(TAG, "CAPTCHA solved (${token.length} chars)")
-            writeCaptchaResult(token)
-        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-            DebugLog.e(TAG, "CAPTCHA timeout")
-            writeCaptchaResult("error:timeout")
+            writeCaptchaResultIfCurrent(session, token)
         } catch (e: CancellationException) {
-            writeCaptchaResult("error:cancelled")
+            if (isCaptchaSessionCurrent(session)) {
+                DebugLog.d(TAG, "CAPTCHA cancelled session=$session")
+            }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            if (!isCaptchaSessionCurrent(session)) return
+            DebugLog.e(TAG, "CAPTCHA timeout session=$session")
+            writeCaptchaResultIfCurrent(session, "error:timeout")
         } catch (e: Exception) {
+            if (!isCaptchaSessionCurrent(session)) return
             DebugLog.e(TAG, "CAPTCHA failed: ${e.message}")
-            writeCaptchaResult("error:${e.message ?: "unknown"}")
+            writeCaptchaResultIfCurrent(session, "error:${e.message ?: "unknown"}")
         }
+    }
+
+    private fun isCaptchaSessionCurrent(session: Int): Boolean = session == captchaSession.get()
+
+    private fun writeCaptchaResultIfCurrent(session: Int, result: String) {
+        if (!isCaptchaSessionCurrent(session)) {
+            DebugLog.d(TAG, "CAPTCHA_RESULT skipped (stale session=$session)")
+            return
+        }
+        writeCaptchaResult(result)
     }
 
     private suspend fun solveAutoWebViewCaptcha(

@@ -35,8 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -56,8 +55,8 @@ class SilentVpnService : Service() {
         /** После tunnelReady переключение Wi‑Fi/LTE можно обрабатывать раньше. */
         private const val NETWORK_GRACE_AFTER_READY_MS = 12_000L
         private const val NETWORK_DEBOUNCE_MS = 8_000L
-        private const val TRANSPORT_WATCHDOG_MS = 45_000L
-        private const val NOTIF_UPDATE_MIN_MS = 5_000L
+        private const val TRANSPORT_WATCHDOG_MS = 180_000L
+        private const val NOTIF_UPDATE_MIN_MS = 3_000L
         const val ACTION_CONNECT = "com.silent.vpn.CONNECT"
         const val ACTION_DISCONNECT = "com.silent.vpn.DISCONNECT"
         const val EXTRA_CONFIG = "vpn_config_json"
@@ -77,7 +76,7 @@ class SilentVpnService : Service() {
     private var pausedForNetwork = false
     private var networkRecoveryJob: Job? = null
     private var transportWatchdogJob: Job? = null
-    private var statusCollectorJob: Job? = null
+    private var statsUpdaterJob: Job? = null
     private var performanceLocksHeld = false
     private var lastNotifUpdateMs = 0L
     private var lastNotifBody = ""
@@ -85,22 +84,22 @@ class SilentVpnService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        statusCollectorJob = scope.launch {
-            combine(
-                WdttTunnelManager.tunnelReady,
-                WdttTunnelManager.stats,
-                WdttTunnelManager.running,
-            ) { ready, stats, wdttRunning ->
-                Triple(ready, stats, wdttRunning)
-            }.collectLatest { (ready, stats, wdttRunning) ->
-                if (!isRunning) return@collectLatest
-                val vpnActive = ready && WdttTunnelManager.isInternetReady()
-                if (vpnActive) {
+    }
+
+    /** Как в proxy-turn-vk-android: отдельный цикл обновления уведомления (переживает reconnect). */
+    private fun startStatsUpdater() {
+        statsUpdaterJob?.cancel()
+        statsUpdaterJob = scope.launch {
+            delay(1000)
+            while (isActive && isRunning) {
+                val stats = WdttTunnelManager.stats.value
+                if (WdttTunnelManager.isInternetReady()) {
                     releasePerformanceLocks()
                     postVpnNotification(stats)
-                } else if (wdttRunning) {
+                } else if (WdttTunnelManager.running.value) {
                     startFg(buildConnectingNotification())
                 }
+                delay(3000)
             }
         }
     }
@@ -121,11 +120,15 @@ class SilentVpnService : Service() {
                 connectStartedAtMs = System.currentTimeMillis()
                 lastTransport = null
                 lastNetworkChangeTime = 0L
+                lastNotifBody = ""
+                lastNotifUpdateMs = 0L
                 setupNetworkCallback()
                 startTransportWatchdog()
+                startStatsUpdater()
                 acquirePerformanceLocks()
                 startFg(buildConnectingNotification())
                 connect(configJson)
+                VpnTileHelper.requestUpdate(this)
             }
             ACTION_DISCONNECT -> disconnect()
         }
@@ -156,7 +159,7 @@ class SilentVpnService : Service() {
             val activeHashCount = maxOf(wdttHashes.size, savedActive, 1)
                 .coerceAtMost(HashChannelHelper.MAX_HASHES)
             val isBootstrap = deviceId.startsWith("boot:")
-            // Bootstrap и основной VPN: app вне WG; API — overlay, браузер — полный туннель.
+            // Silent всегда вне WG (libclient/TURN напрямую). API — overlay с split AllowedIPs.
             SilentRepository.APP_EXCLUDED_FROM_VPN = true
             val totalWorkers = if (isBootstrap) {
                 (vpnConfig?.stream_count ?: 9).coerceIn(3, 9)
@@ -198,9 +201,11 @@ class SilentVpnService : Service() {
                 "WDTT n=$totalWorkers vk=${libclientHashes.size}/$activeHashCount hashes",
             )
             isRunning = true
+            VpnTileHelper.requestUpdate(this)
         } catch (e: Exception) {
             DebugLog.e("VpnService", "connect failed", e)
             isRunning = false
+            VpnTileHelper.requestUpdate(this)
             releaseWakeLock()
             releaseWifiLock()
             clearVpnNotification()
@@ -211,12 +216,13 @@ class SilentVpnService : Service() {
     private fun disconnect() {
         DebugLog.i("VpnService", "DISCONNECT")
         isRunning = false
+        VpnTileHelper.requestUpdate(this)
         performanceLocksHeld = false
         lastNotifBody = ""
         lastNotifUpdateMs = 0L
         networkRecoveryJob?.cancel()
         transportWatchdogJob?.cancel()
-        statusCollectorJob?.cancel()
+        statsUpdaterJob?.cancel()
         pausedForNetwork = false
         lastUnderlyingInternet = null
         SilentRepository.APP_EXCLUDED_FROM_VPN = true
@@ -276,6 +282,7 @@ class SilentVpnService : Service() {
                 val prevTransport = lastTransport
                 lastTransport = transport
                 if (prevTransport == null || prevTransport == transport) return
+                if (WdttTunnelManager.isNetworkRecoverySuppressed()) return
                 if (!canRestartForNetwork()) return
                 DebugLog.i("VpnService", "Смена транспорта $prevTransport → $transport — restartTransport")
                 pausedForNetwork = false
@@ -299,6 +306,7 @@ class SilentVpnService : Service() {
 
     private fun handleNetworkLost() {
         if (!isRunning || pausedForNetwork) return
+        if (WdttTunnelManager.isNetworkRecoverySuppressed()) return
         if (!WdttTunnelManager.running.value) return
         if (System.currentTimeMillis() - connectStartedAtMs < NETWORK_GRACE_MS) return
         if (!WdttTunnelManager.tunnelReady.value) return
@@ -325,6 +333,8 @@ class SilentVpnService : Service() {
      */
     private fun recoverTransportAfterNetwork(reason: String) {
         if (!isRunning) return
+        if (WdttTunnelManager.isNetworkRecoverySuppressed()) return
+        if (WdttTunnelManager.isWorkerRampUpActive()) return
         if (!VpnNetworkHelper.hasUnderlyingInternet(this)) return
         val elapsed = System.currentTimeMillis() - connectStartedAtMs
         val wasPaused = pausedForNetwork
@@ -398,7 +408,7 @@ class SilentVpnService : Service() {
     private fun acquirePerformanceLocks() {
         performanceLocksHeld = true
         acquireWakeLock()
-        if (isOnWifi()) acquireWifiLock()
+        // WifiLock HIGH_PERF/LLOW_LATENCY греет чип — достаточно wake lock на этапе connect.
     }
 
     /** После стабильного подключения — не держать CPU/Wi‑Fi awake (экономия батареи). */
@@ -495,7 +505,8 @@ class SilentVpnService : Service() {
     }
 
     private fun notificationBody(ready: Boolean, stats: String): String {
-        if (ready && stats.isNotBlank()) return stats.trim()
+        val trimmed = stats.trim()
+        if (ready && trimmed.isNotBlank() && trimmed != "Ожидание данных…") return trimmed
         return when {
             ready -> "Туннель активен"
             else -> "Подключение к серверу…"
@@ -551,6 +562,7 @@ class SilentVpnService : Service() {
         teardownNetworkCallback()
         WdttTunnelManager.stop()
         isRunning = false
+        VpnTileHelper.requestUpdate(this)
         releaseWakeLock()
         releaseWifiLock()
         clearVpnNotification()

@@ -43,6 +43,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -52,8 +53,7 @@ import javax.inject.Inject
 
 private const val BOOTSTRAP_SESSION_MS = 2 * 60 * 1000L
 /** Пока VPN включён — периодически спрашиваем сервер о новой версии. */
-private const val UPDATE_POLL_INTERVAL_MS = 120_000L
-private const val VPN_PROFILE_POLL_INTERVAL_MS = 60_000L
+private const val TUNNEL_API_MAINTENANCE_MS = 5 * 60 * 1000L
 
 enum class AppScreen { LOGIN, MAIN }
 
@@ -186,8 +186,15 @@ class MainViewModel @Inject constructor(
     init {
         HashFailureReporter.install { hash, errorType, message ->
             if (!repo.isLoggedIn() || bootstrapVpnMode) return@install
-            repo.reportHashFailure(hash, errorType, message)
-                .onFailure { e -> DebugLog.w("MainViewModel", "hash failure report: ${e.message}") }
+            if (WdttTunnelManager.isWorkerRampUpActive()) {
+                pendingHashFailures.add(Triple(hash, errorType, message))
+                DebugLog.i("MainViewModel", "hash failure queued (ramp-up): ${hash.take(8)}…")
+                return@install
+            }
+            viewModelScope.launch {
+                repo.reportHashFailure(hash, errorType, message)
+                    .onFailure { e -> DebugLog.w("MainViewModel", "hash failure report: ${e.message}") }
+            }
         }
         if (repo.isLoggedIn()) {
             if (!repo.hasSessionFingerprint()) {
@@ -421,6 +428,13 @@ class MainViewModel @Inject constructor(
     private var mainTunnelDataSyncJob: Job? = null
     private var backendSyncJob: Job? = null
     private var connectJob: Job? = null
+    /** До завершения runInitialBackendSync не дергаем overlay из polling (конфликт с creds). */
+    private var backendSyncCompleted = false
+    private var wantsUpdatePolling = false
+    private var wantsVpnProfilePolling = false
+    private val pendingHashFailures = ConcurrentLinkedQueue<Triple<String, String, String>>()
+    private var hashFailureFlushJob: Job? = null
+    private var tunnelApiMaintenanceJob: Job? = null
 
     private fun onVpnTunnelReady(vpnConfig: VpnConfig? = null) {
         if (_vpnState.value == VpnState.DISCONNECTING) return
@@ -437,33 +451,74 @@ class MainViewModel @Inject constructor(
             backendSyncJob = viewModelScope.launch {
                 WdttTunnelManager.awaitWgConfigSettled()
                 if (_vpnState.value != VpnState.CONNECTED || !WdttTunnelManager.tunnelReady.value) return@launch
+                // Overlay только после всех групп — иначе WG toggle рвёт libclient и скорость.
+                val deadline = System.currentTimeMillis() + 180_000L
+                while (
+                    System.currentTimeMillis() < deadline &&
+                    WdttTunnelManager.isWorkerRampUpActive() &&
+                    _vpnState.value == VpnState.CONNECTED
+                ) {
+                    delay(1_000)
+                }
+                delay(2_000)
+                if (_vpnState.value != VpnState.CONNECTED || !WdttTunnelManager.tunnelReady.value) return@launch
                 runInitialBackendSync()
-                markDeviceOnlineOnServer()
-                startUpdatePolling(skipInitialCheck = true)
+                backendSyncCompleted = true
+                if (wantsUpdatePolling || wantsVpnProfilePolling) startTunnelApiMaintenance()
             }
         } else {
             loadTheme()
         }
     }
 
-    /** Сразу проверить обновление и держать фоновый опрос, пока VPN подключён. */
+    /** Сразу проверить обновление — фактически через единый maintenance (без лишних overlay). */
     private fun triggerUpdateCheckAndPolling() {
         if (_vpnState.value != VpnState.CONNECTED || bootstrapVpnMode || !repo.isLoggedIn()) return
-        startUpdatePolling()
+        if (SilentRepository.APP_EXCLUDED_FROM_VPN && !backendSyncCompleted) return
+        startTunnelApiMaintenance()
     }
 
-    private fun startUpdatePolling(skipInitialCheck: Boolean = false) {
-        if (updatePollJob?.isActive == true) return
-        updatePollJob = viewModelScope.launch {
-            if (!skipInitialCheck) delay(5_000)
+    /** Один overlay-с сеанс каждые 5 мин: online + profile + checkUpdate. */
+    private fun startTunnelApiMaintenance() {
+        if (tunnelApiMaintenanceJob?.isActive == true) return
+        if (!wantsUpdatePolling && !wantsVpnProfilePolling) return
+        tunnelApiMaintenanceJob = viewModelScope.launch {
             while (
                 _vpnState.value == VpnState.CONNECTED &&
                 repo.isLoggedIn() &&
                 !bootstrapVpnMode &&
-                SilentVpnService.isRunning
+                SilentVpnService.isRunning &&
+                (wantsUpdatePolling || wantsVpnProfilePolling)
             ) {
-                runCatching { checkForUpdateNow() }
-                delay(UPDATE_POLL_INTERVAL_MS)
+                if (backendSyncCompleted && !WdttTunnelManager.isWorkerRampUpActive()) {
+                    runCatching { runTunnelApiMaintenanceBatch() }
+                }
+                delay(TUNNEL_API_MAINTENANCE_MS)
+            }
+        }
+    }
+
+    private fun stopTunnelApiMaintenance() {
+        tunnelApiMaintenanceJob?.cancel()
+        tunnelApiMaintenanceJob = null
+    }
+
+    private suspend fun runTunnelApiMaintenanceBatch() {
+        if (WdttTunnelManager.isWorkerRampUpActive()) return
+        val tunnel = repo.tunnelApiBaseUrl()
+        val version = AppUpdateManager.currentVersion()
+        repo.withTunnelApiWhenExcluded {
+            runCatching {
+                val res = repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
+                if (res.isSuccessful) {
+                    DebugLog.i("MainViewModel", "online heartbeat OK (tunnel API)")
+                }
+            }
+            if (wantsVpnProfilePolling) {
+                tryFetchProfileOnBase(tunnel)
+            }
+            if (wantsUpdatePolling) {
+                tryCheckUpdateOnBase(tunnel, version)
             }
         }
     }
@@ -494,41 +549,30 @@ class MainViewModel @Inject constructor(
             tryFetchProfileOnBase(tunnel)
             DebugLog.i("MainViewModel", "checkUpdate start v=$version via $tunnel")
             tryCheckUpdateOnBase(tunnel, version)
+            applyRefreshVpnConfigDirect(repo.getDeviceFingerprint())
+            flushPendingHashFailuresInOverlay()
         }
+    }
+
+    private suspend fun flushPendingHashFailuresInOverlay() {
+        val batch = mutableListOf<Triple<String, String, String>>()
+        while (true) {
+            val item = pendingHashFailures.poll() ?: break
+            batch.add(item)
+        }
+        if (batch.isEmpty()) return
+        DebugLog.i("MainViewModel", "hash failure flush: ${batch.size} item(s)")
+        runCatching { repo.reportHashFailuresDirect(batch) }
+            .onFailure { e -> DebugLog.w("MainViewModel", "hash failure batch: ${e.message}") }
     }
 
     private fun stopUpdatePolling(clearBanner: Boolean = true) {
         updatePollJob?.cancel()
         updatePollJob = null
+        stopTunnelApiMaintenance()
         if (clearBanner) {
             _updateInfo.value = null
             updateApiBaseUrl = null
-        }
-    }
-
-    private fun markDeviceOnlineOnServer() {
-        if (_vpnState.value != VpnState.CONNECTED) return
-        onlineHeartbeatJob?.cancel()
-        onlineHeartbeatJob = viewModelScope.launch {
-            var intervalMs = 5 * 60 * 1000L
-            while (_vpnState.value == VpnState.CONNECTED && SilentVpnService.isRunning) {
-                delay(intervalMs)
-                val ok = runCatching {
-                    repo.withTunnelApiWhenExcluded {
-                        val res = repo.getApi().connect(
-                            ConnectRequest(repo.getDeviceFingerprint(), "android"),
-                        )
-                        if (!res.isSuccessful) {
-                            throw Exception("online HTTP ${res.code()}: ${res.errorBody()?.string()?.take(120)}")
-                        }
-                    }
-                }.onSuccess {
-                    DebugLog.i("MainViewModel", "online heartbeat OK (tunnel API)")
-                }.onFailure { e ->
-                    DebugLog.w("MainViewModel", "online heartbeat: ${e.message}")
-                }.isSuccess
-                intervalMs = if (ok) 5 * 60 * 1000L else 30_000L
-            }
         }
     }
 
@@ -540,31 +584,32 @@ class MainViewModel @Inject constructor(
         loadProfile()
         profilePollJob = viewModelScope.launch {
             while (true) {
-                delay(5000)
+                delay(30_000)
                 runCatching { fetchProfileNow() }
             }
         }
     }
 
-    /** Обновление профиля каждые 10 с при активном VPN на главном экране (как на PC). */
+    /** Обновление профиля — через единый maintenance (без отдельных overlay). */
     fun setVpnProfilePolling(active: Boolean) {
-        vpnProfilePollJob?.cancel()
-        vpnProfilePollJob = null
-        if (!active) return
-        vpnProfilePollJob = viewModelScope.launch {
-            while (true) {
-                delay(VPN_PROFILE_POLL_INTERVAL_MS)
-                runCatching { fetchProfileNow() }
-            }
+        if (!active) {
+            wantsVpnProfilePolling = false
+            if (!wantsUpdatePolling) stopTunnelApiMaintenance()
+            return
         }
+        wantsVpnProfilePolling = true
+        if (!backendSyncCompleted) return
+        startTunnelApiMaintenance()
     }
 
-    /** Проверка обновлений через VPN (как на PC). */
+    /** Проверка обновлений — через единый maintenance (без отдельных overlay). */
     fun setUpdatePolling(active: Boolean) {
         if (!active) {
+            wantsUpdatePolling = false
             stopUpdatePolling(clearBanner = true)
             return
         }
+        wantsUpdatePolling = true
         triggerUpdateCheckAndPolling()
     }
 
@@ -574,44 +619,9 @@ class MainViewModel @Inject constructor(
             return
         }
         if (!SilentVpnService.isRunning || bootstrapVpnMode || !repo.isLoggedIn()) return
-        if (SilentRepository.APP_EXCLUDED_FROM_VPN && !WdttTunnelManager.tunnelReady.value) {
-            return
-        }
-        val version = AppUpdateManager.currentVersion()
-        if (
-            SilentVpnService.isRunning &&
-            !bootstrapVpnMode &&
-            SilentRepository.APP_EXCLUDED_FROM_VPN &&
-            WdttTunnelManager.tunnelReady.value
-        ) {
-            runCatching {
-                repo.withTunnelApiWhenExcluded {
-                    tryCheckUpdateOnBase(repo.tunnelApiBaseUrl(), version)
-                }
-            }.onFailure { e ->
-                DebugLog.w("MainViewModel", "checkUpdate: ${e.message}")
-            }
-            return
-        }
-        val bases = when {
-            SilentVpnService.isRunning && bootstrapVpnMode && WdttTunnelManager.tunnelReady.value ->
-                listOf(WdttTunnelManager.tunnelApiBase())
-            else -> repo.apiBaseCandidates(WdttTunnelManager.lastWgAddress())
-        }
-        for (base in bases) {
-            try {
-                if (SilentVpnService.isRunning && bootstrapVpnMode && WdttTunnelManager.tunnelReady.value) {
-                    val ok = WdttTunnelManager.withApiOverlay {
-                        tryCheckUpdateOnBase(base, version)
-                    }
-                    if (ok) return
-                } else {
-                    if (tryCheckUpdateOnBase(base, version)) return
-                }
-            } catch (e: Exception) {
-                DebugLog.w("MainViewModel", "checkUpdate: ${e.message}")
-            }
-        }
+        if (SilentRepository.APP_EXCLUDED_FROM_VPN && !WdttTunnelManager.tunnelReady.value) return
+        if (SilentRepository.APP_EXCLUDED_FROM_VPN && !backendSyncCompleted) return
+        runTunnelApiMaintenanceBatch()
     }
 
     private suspend fun tryCheckUpdateOnBase(base: String, version: String): Boolean {
@@ -713,17 +723,23 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun fetchProfileNow(): Boolean {
-        // Основной VPN: app вне WG (TURN напрямую), API — через overlay 10.66.66.0/24.
         if (SilentVpnService.isRunning && !bootstrapVpnMode) {
             if (
                 SilentRepository.APP_EXCLUDED_FROM_VPN &&
                 WdttTunnelManager.tunnelReady.value
             ) {
-                if (repo.withTunnelApiWhenExcluded { tryFetchProfileOnBase(repo.tunnelApiBaseUrl()) }) {
-                    return true
+                if (_profile.value != null) return true
+                if (
+                    WdttTunnelManager.isWorkerRampUpActive() ||
+                    WdttTunnelManager.isApiOverlayActive()
+                ) {
+                    return _profile.value != null
                 }
-            } else {
-                for (base in repo.apiBaseCandidates(null)) {
+                return runCatching {
+                    repo.withTunnelApiWhenExcluded { tryFetchProfileOnBase(repo.tunnelApiBaseUrl()) }
+                }.getOrDefault(false) || _profile.value != null
+            } else if (WdttTunnelManager.tunnelReady.value) {
+                for (base in repo.apiBaseCandidates(WdttTunnelManager.lastWgAddress())) {
                     if (tryFetchProfileOnBase(base)) return true
                 }
             }
@@ -1249,6 +1265,13 @@ class MainViewModel @Inject constructor(
         mainTunnelDataSyncJob = null
         backendSyncJob?.cancel()
         backendSyncJob = null
+        backendSyncCompleted = false
+        wantsUpdatePolling = false
+        wantsVpnProfilePolling = false
+        pendingHashFailures.clear()
+        hashFailureFlushJob?.cancel()
+        hashFailureFlushJob = null
+        stopTunnelApiMaintenance()
         onlineHeartbeatJob?.cancel()
         onlineHeartbeatJob = null
         runCatching {
@@ -1269,6 +1292,10 @@ class MainViewModel @Inject constructor(
         connectJob?.cancel()
         connectJob = viewModelScope.launch {
             DebugLog.i("MainViewModel", "connect() start")
+            WdttTunnelManager.stopAndAwait()
+            backendSyncCompleted = false
+            wantsUpdatePolling = false
+            wantsVpnProfilePolling = false
             if (repo.isLoggedIn()) bootstrapVpnMode = false
             if (VpnNetworkHelper.isOtherVpnActive(context)) {
                 DebugLog.i("MainViewModel", "Подключение заменит другой активный VPN")
@@ -1301,7 +1328,6 @@ class MainViewModel @Inject constructor(
                         "connect device=${config.device_id.take(12)} n=${config.stream_count} vk=${config.vk_hashes.size}",
                     )
                     launchVpnService(context, config)
-                    viewModelScope.launch { refreshVpnConfigInBackground(fp) }
                     waitForTunnelReady(context, config.stream_count)
                     return@launch
                 }
@@ -1410,7 +1436,6 @@ class MainViewModel @Inject constructor(
                     "connect device=${config.device_id.take(12)} n=${config.stream_count} vk=${config.vk_hashes.size}",
                 )
                 launchVpnService(context, config)
-                viewModelScope.launch { refreshVpnConfigInBackground(fp) }
                 waitForTunnelReady(context, config.stream_count)
             }.onFailure {
                 DebugLog.e("MainViewModel", "connect failed", it)
@@ -1495,28 +1520,31 @@ class MainViewModel @Inject constructor(
     private suspend fun refreshVpnConfigInBackground(fp: String) {
         runCatching {
             repo.withTunnelApiWhenExcluded {
-                val regRes = repo.getApi().registerDevice(
-                    DeviceRegisterRequest("Android", "android", fp, null, repo.getBootstrapHash())
-                )
-                if (regRes.isSuccessful) {
-                    var cfg = regRes.body()!!
-                    repo.saveSessionDeviceId(cfg.device_id)
-                    _sessionDeviceId.value = cfg.device_id
-                    val hres = repo.getApi().getVpnHashes()
-                    if (hres.isSuccessful) {
-                        val body = hres.body()
-                        val hashItems = body?.toHashItems().orEmpty()
-                        if (hashItems.isNotEmpty()) {
-                            repo.saveHashItems(hashItems)
-                            clearBootstrapIfServerHashesReady(hashItems)
-                        }
-                        val serverHashes = hashItems.activeServerHashes().map { it.hash }
-                        if (serverHashes.isNotEmpty()) cfg = cfg.copy(vk_hashes = serverHashes)
-                    }
-                    repo.cacheVpnConfig(Gson().toJson(cfg))
-                    runCatching { repo.getApi().connect(ConnectRequest(fp, "android")) }
-                }
+                applyRefreshVpnConfigDirect(fp)
             }
+        }
+    }
+
+    private suspend fun applyRefreshVpnConfigDirect(fp: String) {
+        val regRes = repo.getApi().registerDevice(
+            DeviceRegisterRequest("Android", "android", fp, null, repo.getBootstrapHash())
+        )
+        if (regRes.isSuccessful) {
+            var cfg = regRes.body()!!
+            repo.saveSessionDeviceId(cfg.device_id)
+            _sessionDeviceId.value = cfg.device_id
+            val hres = repo.getApi().getVpnHashes()
+            if (hres.isSuccessful) {
+                val body = hres.body()
+                val hashItems = body?.toHashItems().orEmpty()
+                if (hashItems.isNotEmpty()) {
+                    repo.saveHashItems(hashItems)
+                    clearBootstrapIfServerHashesReady(hashItems)
+                }
+                val serverHashes = hashItems.activeServerHashes().map { it.hash }
+                if (serverHashes.isNotEmpty()) cfg = cfg.copy(vk_hashes = serverHashes)
+            }
+            repo.cacheVpnConfig(Gson().toJson(cfg))
         }
     }
 
@@ -1531,9 +1559,9 @@ class MainViewModel @Inject constructor(
 
     private suspend fun waitForTunnelReady(context: Context, totalWorkers: Int) {
         val timeoutMs = connectWaitTimeoutMs(totalWorkers)
-        val iterations = timeoutMs / 100
+        val iterations = timeoutMs / 300
         repeat(iterations) {
-            delay(100)
+            delay(300)
             if (_vpnState.value != VpnState.CONNECTING) return
             if (WdttTunnelManager.isInternetReady() || vpnTunnelUsable()) {
                 if (_vpnState.value == VpnState.CONNECTING) {
@@ -1578,6 +1606,13 @@ class MainViewModel @Inject constructor(
         mainTunnelDataSyncJob = null
         backendSyncJob?.cancel()
         backendSyncJob = null
+        backendSyncCompleted = false
+        wantsUpdatePolling = false
+        wantsVpnProfilePolling = false
+        pendingHashFailures.clear()
+        hashFailureFlushJob?.cancel()
+        hashFailureFlushJob = null
+        stopTunnelApiMaintenance()
         viewModelScope.launch {
             _vpnState.value = VpnState.DISCONNECTING
             WdttTunnelManager.prepareForShutdown()

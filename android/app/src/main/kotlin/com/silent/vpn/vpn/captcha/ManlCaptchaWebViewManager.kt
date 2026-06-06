@@ -57,7 +57,11 @@ object ManlCaptchaWebViewManager {
     }
 
     fun cancelCaptcha() {
-        pendingResult.get()?.completeExceptionally(kotlin.coroutines.cancellation.CancellationException("Cancelled by system"))
+        pendingResult.getAndSet(null)?.cancel(CancellationException("Cancelled by system"))
+        activeActivity?.finish()
+        activeActivity = null
+        pendingIntentToStart = null
+        isCaptchaPending = false
     }
 
     private const val NOTIFICATION_ID = 9001
@@ -124,10 +128,8 @@ object ManlCaptchaWebViewManager {
             }
             pendingIntentToStart = intent
 
-            if (com.silent.vpn.MainActivity.isForeground) {
-                // Запускаем окно только если интерфейс приложения активен (иначе Android блокирует старт)
-                context.startActivity(intent)
-            }
+            // Всегда показываем окно капчи (VPN/connect идёт из MainActivity).
+            context.startActivity(intent)
 
             try {
                 withTimeout(CAPTCHA_TIMEOUT_MS) {

@@ -20,6 +20,7 @@ import com.silent.vpn.ui.screens.MainScreen
 import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.ui.theme.SilentTheme
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.vk.VkCallsLink
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import dagger.hilt.android.AndroidEntryPoint
@@ -32,12 +33,16 @@ class MainActivity : ComponentActivity() {
         var isForeground: Boolean = false
 
         const val EXTRA_OPEN_MAIN = "open_main"
+        const val EXTRA_TILE_CONNECT = "tile_connect"
 
         fun openIntent(context: Context): Intent =
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
                 putExtra(EXTRA_OPEN_MAIN, true)
             }
+
+        fun tileConnectIntent(context: Context): Intent =
+            openIntent(context).apply { putExtra(EXTRA_TILE_CONNECT, true) }
     }
 
     private val vm: MainViewModel by viewModels()
@@ -103,6 +108,10 @@ class MainActivity : ComponentActivity() {
             val resetToken by vm.resetPasswordToken.collectAsState()
             val resetPasswordSuccess by vm.resetPasswordSuccess.collectAsState()
             val forgotSent by vm.forgotSent.collectAsState()
+
+            LaunchedEffect(Unit) {
+                handleTileConnectIntent(intent)
+            }
 
             LaunchedEffect(vpnPermissionGranted.value) {
                 if (vpnPermissionGranted.value) {
@@ -208,6 +217,19 @@ class MainActivity : ComponentActivity() {
         if (!isResetLink && intent.getBooleanExtra(EXTRA_OPEN_MAIN, false)) {
             vm.onReturnedToApp()
         }
+        handleTileConnectIntent(intent)
+    }
+
+    private fun handleTileConnectIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_TILE_CONNECT, false) != true) return
+        intent.removeExtra(EXTRA_TILE_CONNECT)
+
+        if (SilentVpnService.isRunning) return
+        if (!vm.repository.isLoggedIn()) return
+
+        val prep = VpnService.prepare(this)
+        if (prep != null) vpnPermissionLauncher.launch(prep)
+        else vpnPermissionGranted.value = true
     }
 
     override fun onResume() {

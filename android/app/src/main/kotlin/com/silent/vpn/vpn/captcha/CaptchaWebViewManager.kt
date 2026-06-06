@@ -142,10 +142,15 @@ object CaptchaWebViewManager {
 
     fun onTunnelStop() {
         isTunnelActive = false
-        cancelPendingResult("tunnel stopped")
-        destroyCurrentWebView()
+        cancelCurrentSolve()
         appContext = null
         Log.d(TAG, "Туннель остановлен")
+    }
+
+    /** Отменить текущий auto-WebView (новый CAPTCHA_SOLVE от libclient). */
+    fun cancelCurrentSolve() {
+        cancelPendingResult("superseded")
+        destroyCurrentWebView()
     }
 
     // ═══════════════════════════════════════════════════════════════

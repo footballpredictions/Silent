@@ -110,17 +110,21 @@ class WireGuardHelper(context: Context) {
 
             var configToApply = configString
 
-            if (excludeIPs.isNotEmpty() && !apiOverlayMode) {
-
+            if (isBootstrap && excludeIPs.isNotEmpty() && !apiOverlayMode) {
                 configToApply = AllowedIpsHelper.patchAllowedIPs(configString, excludeIPs)
-
-                DebugLog.i(TAG, "Split-tunnel: исключено IP=${excludeIPs.size}")
-
+                DebugLog.i(TAG, "Bootstrap split-tunnel: исключено IP=${excludeIPs.size}")
+            }
+            if (apiOverlayMode) {
+                configToApply = AllowedIpsHelper.patchAllowedIPsToSubnet(configString)
+                DebugLog.i(TAG, "API overlay: ${AllowedIpsHelper.WG_TUNNEL_SUBNET}")
             }
 
 
 
-            val excludeKey = if (apiOverlayMode) "overlay" else excludeIPs.sorted().joinToString(",")
+            val excludeKey = when {
+                apiOverlayMode -> "overlay-app-in"
+                else -> excludeIPs.sorted().joinToString(",")
+            }
 
             val semanticKey = wgSemanticKey(configToApply) + "|ex=$excludeKey|ov=$apiOverlayMode"
 
@@ -206,14 +210,9 @@ class WireGuardHelper(context: Context) {
 
             }
 
-            val allowedIps = when {
-                // Overlay: Silent в туннеле, остальные приложения — как обычно (0.0.0.0/0).
-                // Нельзя 10.66.66.0/24 — браузер теряет интернет на время overlay.
-                apiOverlayMode -> peer.allowedIps.takeIf { it.isNotEmpty() }?.joinToString(", ") { it.toString() }
-                    ?: "0.0.0.0/0"
-                else -> peer.allowedIps.takeIf { it.isNotEmpty() }?.joinToString(", ") { it.toString() }
-                    ?: if (excludeIPs.isNotEmpty()) AllowedIpsHelper.generateExclusionAllowedIPs(excludeIPs) else "0.0.0.0/0"
-            }
+            val allowedIps = parsed.peers.firstOrNull()?.allowedIps?.takeIf { it.isNotEmpty() }
+                ?.joinToString(", ") { it.toString() }
+                ?: "0.0.0.0/0"
 
             peerBuilder.parseAllowedIPs(allowedIps)
 
@@ -247,11 +246,37 @@ class WireGuardHelper(context: Context) {
 
 
 
-            val tunnel = WgTunnel()
+            val tunnel = sharedTunnel
+            if (tunnel != null) {
+                runCatching {
+                    backend.setState(tunnel, Tunnel.State.UP, finalConfig)
+                    lastAppliedSemanticKey = semanticKey
+                    DebugLog.i(TAG, "WireGuard hot reload")
+                    return@withContext
+                }.onFailure { e ->
+                    DebugLog.w(TAG, "WG hot reload failed: ${e.message}")
+                }
+            }
 
-            setTunnelUpWithRetry(tunnel, finalConfig)
+            sharedTunnel?.let {
 
-            sharedTunnel = tunnel
+                runCatching { backend.setState(it, Tunnel.State.DOWN, null) }
+
+                sharedTunnel = null
+
+                lastAppliedSemanticKey = null
+
+                delay(150)
+
+            }
+
+
+
+            val newTunnel = WgTunnel()
+
+            setTunnelUpWithRetry(newTunnel, finalConfig)
+
+            sharedTunnel = newTunnel
 
             lastAppliedSemanticKey = semanticKey
 

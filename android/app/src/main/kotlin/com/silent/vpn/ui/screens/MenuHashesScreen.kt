@@ -56,7 +56,8 @@ fun MenuHashesScreen(
     val serverItems = items.filter { it.source != "bootstrap" }
     val activeHashCount = serverItems
         .count { it.status == "active" && it.is_active && it.hash.isNotBlank() }
-        .coerceIn(1, HashChannelHelper.MAX_HASHES)
+        .coerceIn(0, HashChannelHelper.MAX_HASHES)
+        .coerceAtLeast(1)
     val maxTotalWorkers = HashChannelHelper.maxTotalWorkers(activeHashCount)
     var totalWorkers by remember(activeHashCount) {
         mutableIntStateOf(repo.getTotalWorkers(activeHashCount))
@@ -71,21 +72,28 @@ fun MenuHashesScreen(
     suspend fun refreshFromServer() {
         syncing = true
         error = null
-        val result = withContext(Dispatchers.IO) { repo.fetchAndSaveHashItems() }
-        result.onSuccess { downloaded ->
-            if (downloaded.isNotEmpty()) {
-                items = downloaded
-                savedAt = repo.getSavedHashItemsUpdatedAt()
-            } else if (items.isEmpty()) {
-                error = "На сервере пока нет хешей"
+        try {
+            val result = withContext(Dispatchers.IO) { repo.fetchAndSaveHashItems() }
+            result.onSuccess { downloaded ->
+                if (downloaded.isNotEmpty()) {
+                    items = downloaded
+                    savedAt = repo.getSavedHashItemsUpdatedAt()
+                } else if (items.isEmpty()) {
+                    error = "На сервере пока нет хешей"
+                }
+            }.onFailure {
+                if (items.isEmpty()) {
+                    error = it.message?.take(120) ?: "Не удалось загрузить хеши"
+                }
             }
-        }.onFailure {
+        } catch (e: Exception) {
             if (items.isEmpty()) {
-                error = it.message?.take(120) ?: "Не удалось загрузить хеши"
+                error = e.message?.take(120) ?: "Не удалось загрузить хеши"
             }
+        } finally {
+            syncing = false
+            loading = false
         }
-        syncing = false
-        loading = false
     }
 
     LaunchedEffect(refreshKey) {
@@ -279,7 +287,7 @@ private fun SignalBars(bars: Int, fg: Color, modifier: Modifier = Modifier) {
 }
 
 private fun formatSavedAt(ts: Long): String {
-    val fmt = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale("ru"))
+    val fmt = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.forLanguageTag("ru"))
     return fmt.format(Date(ts))
 }
 

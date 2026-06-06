@@ -14,7 +14,7 @@ val VK_TUNNEL_PACKAGES = setOf(
 
 /**
  * Silent и VK всегда вне WG (libclient/TURN напрямую на белых списках).
- * Bootstrap: браузер и остальные приложения идут через полный туннель 0.0.0.0/0.
+ * Overlay: Silent кратко в туннеле для HTTP к 10.66.66.1; TURN — split AllowedIPs.
  */
 fun resolveExcludedAppPackages(context: Context, includeAppInTunnel: Boolean = false): Set<String> {
     val prefs = SilentPrefs.open(context)

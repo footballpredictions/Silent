@@ -4,12 +4,10 @@ import android.content.Context
 import android.content.ClipboardManager
 import android.content.SharedPreferences
 import android.util.Log
+import com.silent.vpn.BuildConfig
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
-import com.silent.vpn.vpn.VpnNetworkHelper
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.net.InetAddress
-import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -80,10 +78,14 @@ class SilentRepository @Inject constructor(
     }
 
     private fun buildApi(baseUrl: String): SilentApi {
-        val logging = HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
         val nipHost = DEFAULT_SERVER_HOST
         val builder = OkHttpClient.Builder()
-            .addInterceptor(logging)
+        if (BuildConfig.DEBUG) {
+            builder.addInterceptor(
+                HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC },
+            )
+        }
+        builder
             .addInterceptor { chain ->
                 var req = chain.request()
                 val token = getAccessToken()
@@ -100,20 +102,8 @@ class SilentRepository @Inject constructor(
             .sslSocketFactory(TrustAllCerts.sslSocketFactory(), TrustAllCerts.trustManager())
             .connectTimeout(4, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
-        // Bind к VPN Network только если app в туннеле; при APP_EXCLUDED — EPERM, маршрут через overlay WG.
-        if (baseUrl.contains(WG_TUNNEL_GATEWAY) &&
-            com.silent.vpn.service.SilentVpnService.isRunning &&
-            !APP_EXCLUDED_FROM_VPN
-        ) {
-            VpnNetworkHelper.getSilentVpnNetwork(context)?.let { network ->
-                builder.socketFactory(network.socketFactory)
-                builder.dns(object : Dns {
-                    override fun lookup(hostname: String): List<InetAddress> =
-                        network.getAllByName(hostname).toList()
-                })
-                Log.i(TAG, "API client bound to VPN network for $baseUrl")
-            }
-        }
+        // Bind к VPN Network не работает для excluded app (EPERM на API 36+).
+        // Tunnel API — через withApiOverlayBrief в withTunnelApiWhenExcluded.
         val client = builder.build()
 
         return Retrofit.Builder()
@@ -156,26 +146,40 @@ class SilentRepository @Inject constructor(
         _apiCacheKey = null
     }
 
-    /** VPN подключён, app исключён из WG — API только через overlay (app кратко в WG, 10.66.66.0/24). */
+    /** true когда app excluded из WG и нужен overlay/bind для HTTP к 10.66.66.1 */
     fun needsTunnelApiOverlay(): Boolean =
         APP_EXCLUDED_FROM_VPN &&
             com.silent.vpn.service.SilentVpnService.isRunning &&
             com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value
 
     /**
-     * Основной VPN: приложение вне WG (TURN/VK напрямую), API — через краткий overlay 10.66.66.0/24.
-     * Без overlay запросы к публичному IP бекенда блокируются белыми списками оператора.
+     * Основной VPN: краткий overlay 10.66.66.0/24 (bind EPERM когда app excluded).
+     * Bootstrap: полный overlay через withApiOverlay.
+     * @param allowDuringRampUp true только для initial backend sync (сразу после 1-й группы).
      */
-    suspend fun <T> withTunnelApiWhenExcluded(block: suspend () -> T): T {
+    suspend fun <T> withTunnelApiWhenExcluded(block: suspend () -> T): T =
+        withTunnelApiWhenExcludedInternal(block, allowDuringRampUp = false)
+
+    /** Initial backend sync сразу после 1-й группы (до creds групп 2+). */
+    suspend fun <T> withTunnelApiForInitialSync(block: suspend () -> T): T =
+        withTunnelApiWhenExcludedInternal(block, allowDuringRampUp = true)
+
+    private suspend fun <T> withTunnelApiWhenExcludedInternal(
+        block: suspend () -> T,
+        allowDuringRampUp: Boolean,
+    ): T {
         if (!APP_EXCLUDED_FROM_VPN) return block()
         if (!com.silent.vpn.service.SilentVpnService.isRunning) return block()
         if (!com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value) {
-            Log.w(TAG, "withTunnelApiWhenExcluded: tunnel not ready, skip public URL")
+            Log.w(TAG, "withTunnelApiWhenExcluded: tunnel not ready")
             error("VPN tunnel not ready for backend API")
         }
-        return com.silent.vpn.vpn.WdttTunnelManager.withApiOverlay {
-            useApiBase(tunnelApiBaseUrl())
-            block()
+        useApiBase(tunnelApiBaseUrl())
+        invalidateApiClient()
+        return if (com.silent.vpn.vpn.WdttTunnelManager.isBootstrapMode()) {
+            com.silent.vpn.vpn.WdttTunnelManager.withApiOverlay { block() }
+        } else {
+            com.silent.vpn.vpn.WdttTunnelManager.withApiOverlayBrief(block, allowDuringRampUp)
         }
     }
 
@@ -383,7 +387,7 @@ class SilentRepository @Inject constructor(
         val json = prefs.getString(PREF_SAVED_HASH_ITEMS, null) ?: return emptyList()
         return runCatching {
             val type = object : TypeToken<List<HashItemDto>>() {}.type
-            Gson().fromJson<List<HashItemDto>>(json, type)
+            Gson().fromJson<List<HashItemDto>>(json, type).sanitized()
         }.getOrDefault(emptyList())
     }
 
@@ -446,38 +450,68 @@ class SilentRepository @Inject constructor(
         fetchHashItemsFromBases(listOf("http://$WG_TUNNEL_GATEWAY:8000"))
 
     suspend fun fetchAndSaveHashItems(): Result<List<HashItemDto>> {
-        if (needsTunnelApiOverlay()) {
-            runCatching {
-                return withTunnelApiWhenExcluded {
-                    fetchHashItemsFromBases(listOf(tunnelApiBaseUrl()))
-                }
-            }.onFailure { e ->
-                Log.w(TAG, "fetchAndSaveHashItems via tunnel: ${e.message}")
+        suspend fun tryViaTunnel(): Result<List<HashItemDto>> = runCatching {
+            withTunnelApiWhenExcluded {
+                fetchHashItemsFromBases(listOf(tunnelApiBaseUrl()))
             }
+        }.getOrElse { e ->
+            Log.w(TAG, "fetchAndSaveHashItems via tunnel: ${e.message}")
+            Result.failure(e)
+        }
+
+        if (needsTunnelApiOverlay()) {
+            val tunnel = tryViaTunnel()
+            if (tunnel.isSuccess) return tunnel
         }
         val first = fetchHashItemsFromBases(apiBaseCandidates())
         if (first.isSuccess || !APP_EXCLUDED_FROM_VPN) return first
         if (!com.silent.vpn.service.SilentVpnService.isRunning) return first
-        return withTunnelApiWhenExcluded {
-            fetchHashItemsFromBases(listOf(tunnelApiBaseUrl()))
+        val tunnel = tryViaTunnel()
+        return when {
+            tunnel.isSuccess -> tunnel
+            first.isFailure -> first
+            else -> tunnel
         }
     }
 
     suspend fun reportHashFailure(hash: String, errorType: String, message: String): Result<Unit> {
         if (!isLoggedIn()) return Result.failure(IllegalStateException("not logged in"))
         return runCatching {
-            val req = HashFailureReportRequest(
-                hash = hash,
-                error_type = errorType,
-                message = message,
-                device_fingerprint = getDeviceFingerprint(),
-            )
             withTunnelApiWhenExcluded {
-                val res = getApi().reportHashFailure(req)
-                if (!res.isSuccessful) {
-                    throw Exception("report-failure ${res.code()}: ${res.errorBody()?.string()}")
+                reportHashFailureDirect(hash, errorType, message)
+            }
+        }
+    }
+
+    suspend fun reportHashFailuresBatch(
+        items: List<Triple<String, String, String>>,
+    ): Result<Unit> {
+        if (!isLoggedIn() || items.isEmpty()) return Result.success(Unit)
+        return runCatching {
+            withTunnelApiWhenExcluded {
+                items.forEach { (hash, errorType, message) ->
+                    reportHashFailureDirect(hash, errorType, message)
                 }
             }
+        }
+    }
+
+    suspend fun reportHashFailuresDirect(items: List<Triple<String, String, String>>) {
+        items.forEach { (hash, errorType, message) ->
+            reportHashFailureDirect(hash, errorType, message)
+        }
+    }
+
+    internal suspend fun reportHashFailureDirect(hash: String, errorType: String, message: String) {
+        val req = HashFailureReportRequest(
+            hash = hash,
+            error_type = errorType,
+            message = message,
+            device_fingerprint = getDeviceFingerprint(),
+        )
+        val res = getApi().reportHashFailure(req)
+        if (!res.isSuccessful) {
+            throw Exception("report-failure ${res.code()}: ${res.errorBody()?.string()}")
         }
     }
 

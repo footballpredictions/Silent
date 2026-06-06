@@ -50,6 +50,8 @@ import kotlinx.coroutines.Job
 import javax.inject.Inject
 
 private const val BOOTSTRAP_SESSION_MS = 2 * 60 * 1000L
+/** Пока VPN включён — периодически спрашиваем сервер о новой версии. */
+private const val UPDATE_POLL_INTERVAL_MS = 30_000L
 
 enum class AppScreen { LOGIN, MAIN }
 
@@ -300,6 +302,9 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             if (SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) {
                 onVpnTunnelReady()
+                if (_vpnState.value == VpnState.CONNECTED && repo.isLoggedIn()) {
+                    runCatching { checkForUpdateNow() }
+                }
             }
         }
     }
@@ -378,8 +383,40 @@ class MainViewModel @Inject constructor(
         }
         if (repo.isLoggedIn() && !bootstrapVpnMode && SilentVpnService.isRunning) {
             markDeviceOnlineOnServer()
+            triggerUpdateCheckAndPolling()
         } else {
             loadTheme()
+        }
+    }
+
+    /** Сразу проверить обновление и держать фоновый опрос, пока VPN подключён. */
+    private fun triggerUpdateCheckAndPolling() {
+        if (_vpnState.value != VpnState.CONNECTED || bootstrapVpnMode || !repo.isLoggedIn()) return
+        viewModelScope.launch { runCatching { checkForUpdateNow() } }
+        startUpdatePolling()
+    }
+
+    private fun startUpdatePolling() {
+        if (updatePollJob?.isActive == true) return
+        updatePollJob = viewModelScope.launch {
+            while (
+                _vpnState.value == VpnState.CONNECTED &&
+                repo.isLoggedIn() &&
+                !bootstrapVpnMode &&
+                SilentVpnService.isRunning
+            ) {
+                delay(UPDATE_POLL_INTERVAL_MS)
+                runCatching { checkForUpdateNow() }
+            }
+        }
+    }
+
+    private fun stopUpdatePolling(clearBanner: Boolean = true) {
+        updatePollJob?.cancel()
+        updatePollJob = null
+        if (clearBanner) {
+            _updateInfo.value = null
+            updateApiBaseUrl = null
         }
     }
 
@@ -427,26 +464,20 @@ class MainViewModel @Inject constructor(
 
     /** Проверка обновлений через VPN (как на PC). */
     fun setUpdatePolling(active: Boolean) {
-        updatePollJob?.cancel()
-        updatePollJob = null
         if (!active) {
-            _updateInfo.value = null
-            updateApiBaseUrl = null
+            stopUpdatePolling(clearBanner = true)
             return
         }
-        viewModelScope.launch { runCatching { checkForUpdateNow() } }
-        updatePollJob = viewModelScope.launch {
-            while (true) {
-                delay(5 * 60_000)
-                runCatching { checkForUpdateNow() }
-            }
-        }
+        triggerUpdateCheckAndPolling()
     }
 
     private suspend fun checkForUpdateNow() {
         if (_vpnState.value != VpnState.CONNECTED) {
-            _updateInfo.value = null
-            updateApiBaseUrl = null
+            stopUpdatePolling(clearBanner = true)
+            return
+        }
+        if (!SilentVpnService.isRunning || bootstrapVpnMode || !repo.isLoggedIn()) return
+        if (SilentRepository.APP_EXCLUDED_FROM_VPN && !WdttTunnelManager.tunnelReady.value) {
             return
         }
         val version = AppUpdateManager.currentVersion()
@@ -1353,6 +1384,7 @@ class MainViewModel @Inject constructor(
         onlineHeartbeatJob = null
         vpnProfilePollJob?.cancel()
         vpnProfilePollJob = null
+        stopUpdatePolling(clearBanner = true)
         mainTunnelDataSyncJob?.cancel()
         mainTunnelDataSyncJob = null
         viewModelScope.launch {

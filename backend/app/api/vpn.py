@@ -16,6 +16,7 @@ from app.schemas.vpn import (
     AppExclusionRequest,
     ThemeResponse,
     HashRefreshRequest,
+    HashFailureReportRequest,
 )
 from app.core.deps import get_verified_user
 from app.services.vpn_service import (
@@ -162,6 +163,27 @@ async def request_hash_refresh(
 
     hashes = await get_vpn_hashes_for_user(db, user)
     return {"ok": True, "message": message, "hashes": hashes}
+
+
+@router.post("/hashes/report-failure")
+async def report_hash_failure(
+    req: HashFailureReportRequest,
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Client reports hash/tunnel failure from libclient (until AI agent monitor runs)."""
+    from app.services.user_hash_service import report_hash_failure as do_report
+
+    ok, detail = await do_report(
+        db,
+        user,
+        hash_hint=req.hash,
+        error_type=(req.error_type or "unknown").strip()[:64],
+        message=(req.message or "")[:500],
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail=detail)
+    return {"ok": True, "detail": detail}
 
 
 @router.post("/connect")

@@ -15,6 +15,14 @@ class HashRefreshRequest(BaseModel):
     device_fingerprint: str
 
 
+class HashFailureReportRequest(BaseModel):
+    """Client reports VK hash / tunnel failure (libclient logs)."""
+    hash: str
+    error_type: str  # creds_failed | hash_dead | vk_auth_failed | group_failed
+    message: str = ""
+    device_fingerprint: str
+
+
 class BootstrapConfigRequest(BaseModel):
     """Pre-login VPN config — only bootstrap VK hash, no subscription required."""
     bootstrap_hash: str

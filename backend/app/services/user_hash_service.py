@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -224,3 +225,69 @@ async def list_users_for_monitor(db: AsyncSession) -> list[uuid.UUID]:
         if uid and uid not in ids:
             ids.append(uid)
     return ids
+
+
+FAIL_COUNT_DEACTIVATE = 5
+
+
+def _hash_matches(hint: str, full: str) -> bool:
+    hint = (hint or "").strip()
+    full = (full or "").strip()
+    if not hint or not full:
+        return False
+    if hint == full:
+        return True
+    if len(hint) >= 6 and full.startswith(hint):
+        return True
+    if len(full) >= 6 and hint.startswith(full[: min(len(hint), len(full))]):
+        return True
+    return False
+
+
+async def report_hash_failure(
+    db: AsyncSession,
+    user: User,
+    hash_hint: str,
+    error_type: str,
+    message: str,
+) -> tuple[bool, str]:
+    """Increment fail_count for matching server hash (client-side tunnel/VK errors)."""
+    raw = (hash_hint or "").strip()
+    normalized = extract_call_hash(raw) or raw
+    if len(normalized) < 6:
+        return False, "invalid hash hint"
+
+    result = await db.execute(select(VkHash).where(VkHash.user_id == user.id))
+    matched: VkHash | None = None
+    for row in result.scalars().all():
+        hv = (row.hash_value or "").strip()
+        if _hash_matches(normalized, hv):
+            matched = row
+            break
+
+    if matched is None:
+        boot = (user.bootstrap_hash or "").strip()
+        if boot and _hash_matches(normalized, boot):
+            logger.warning(
+                "hash failure (bootstrap) user=%s type=%s: %s",
+                user.id,
+                error_type,
+                (message or "")[:200],
+            )
+            return True, "bootstrap logged"
+        return False, "hash not found"
+
+    matched.fail_count = int(matched.fail_count or 0) + 1
+    matched.last_failed = datetime.utcnow()
+    matched.last_checked = datetime.utcnow()
+    if matched.fail_count >= FAIL_COUNT_DEACTIVATE:
+        matched.is_active = False
+        logger.warning(
+            "hash slot %s deactivated (fail_count=%s) user=%s type=%s",
+            matched.slot_index,
+            matched.fail_count,
+            user.id,
+            error_type,
+        )
+    await db.commit()
+    return True, f"fail_count={matched.fail_count}"

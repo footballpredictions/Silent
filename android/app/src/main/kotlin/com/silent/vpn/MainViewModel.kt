@@ -800,27 +800,27 @@ class MainViewModel @Inject constructor(
                     if (!res.isSuccessful) {
                         _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Неверный логин или пароль"
                         restartBootstrapTimerIfNeeded()
-                        return@launch
-                    }
-                    val tokens = res.body()!!
-                    repo.saveTokens(tokens.access_token, tokens.refresh_token)
-                    repo.saveRememberMe(email, rememberMe)
-                    repo.startNewSession()
-                    val ctx = activity?.applicationContext ?: appContext
-                    if (!openLoginSession()) {
-                        if (repo.isLoggedIn()) {
-                            syncLoginDataViaBootstrapTunnel()
+                    } else {
+                        val tokens = res.body()!!
+                        repo.saveTokens(tokens.access_token, tokens.refresh_token)
+                        repo.saveRememberMe(email, rememberMe)
+                        repo.startNewSession()
+                        val ctx = activity?.applicationContext ?: appContext
+                        if (!openLoginSession()) {
+                            if (repo.isLoggedIn()) {
+                                syncLoginDataViaBootstrapTunnel()
+                                disconnectBootstrapVpn(ctx)
+                                goToMain(skipProfileFetch = true)
+                            }
+                        } else {
+                            if (!syncLoginDataViaBootstrapTunnel()) {
+                                _vpnError.value = "Профиль не загрузился. Включите VPN на главном экране."
+                            }
                             disconnectBootstrapVpn(ctx)
                             goToMain(skipProfileFetch = true)
+                            activity?.let { CredentialHelper.offerSavePassword(it, email, password) }
                         }
-                        return@launch
                     }
-                    if (!syncLoginDataViaBootstrapTunnel()) {
-                        _vpnError.value = "Профиль не загрузился. Включите VPN на главном экране."
-                    }
-                    disconnectBootstrapVpn(ctx)
-                    goToMain(skipProfileFetch = true)
-                    activity?.let { CredentialHelper.offerSavePassword(it, email, password) }
                 }
             } catch (e: Exception) {
                 _authError.value = e.message ?: "Ошибка входа"
@@ -878,11 +878,11 @@ class MainViewModel @Inject constructor(
                     if (!res.isSuccessful) {
                         _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Ошибка регистрации"
                         restartBootstrapTimerIfNeeded()
-                        return@launch
+                    } else {
+                        repo.saveRememberMe(email, rememberMe)
+                        _regEmail.value = email
+                        _regDone.value = true
                     }
-                    repo.saveRememberMe(email, rememberMe)
-                    _regEmail.value = email
-                    _regDone.value = true
                 }
                 // Таймер не перезапускаем — те же 2 мин с шага 1, потом VPN отключится.
             } catch (e: Exception) {

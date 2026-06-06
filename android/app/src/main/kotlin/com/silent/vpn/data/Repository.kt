@@ -8,6 +8,8 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.silent.vpn.vpn.VpnNetworkHelper
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.net.InetAddress
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -101,9 +103,10 @@ class SilentRepository @Inject constructor(
         if (baseUrl.contains(WG_TUNNEL_GATEWAY)) {
             VpnNetworkHelper.getSilentVpnNetwork(context)?.let { network ->
                 builder.socketFactory(network.socketFactory)
-                builder.dns { hostname ->
-                    network.getAllByName(hostname).toList()
-                }
+                builder.dns(object : Dns {
+                    override fun lookup(hostname: String): List<InetAddress> =
+                        network.getAllByName(hostname).toList()
+                })
                 Log.i(TAG, "API client bound to VPN network for $baseUrl")
             }
         }

@@ -250,6 +250,27 @@ fun LoginScreen(
             }
 
             if (step == LoginStep.RESET && !resetToken.isNullOrBlank()) {
+                if (!bootstrapReady) {
+                    HashInputSection(
+                        ui = ui,
+                        theme = theme,
+                        bootstrapHash = bootstrapHash,
+                        statusMsg = statusMsg,
+                        bootstrapConnecting = bootstrapConnecting,
+                        bootstrapReady = bootstrapReady,
+                        onConnect = onConnect,
+                        onOpenVkLink = { onOpenVkLink(vkUrl) },
+                        showDivider = true,
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        "Для смены пароля нужен VPN (шаг 1). Подключитесь выше.",
+                        fontSize = 12.sp,
+                        color = ui.hint,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    )
+                }
                 Text(resetTitle, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = ui.fg)
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(
@@ -268,7 +289,7 @@ fun LoginScreen(
                 Spacer(modifier = Modifier.height(12.dp))
                 Button(
                     onClick = { onResetPassword(resetToken, newPassword) },
-                    enabled = !loading && newPassword.length >= 8,
+                    enabled = !loading && newPassword.length >= 8 && bootstrapReady,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = ui.primaryBtnBg, contentColor = ui.primaryBtnFg),

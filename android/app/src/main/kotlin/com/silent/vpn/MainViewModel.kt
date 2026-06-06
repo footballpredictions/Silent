@@ -230,6 +230,9 @@ class MainViewModel @Inject constructor(
                     } else if (silentBootstrapSync) {
                         onVpnTunnelReady()
                     } else if (SilentVpnService.isRunning) {
+                        if (!repo.isLoggedIn() && _screen.value == AppScreen.LOGIN) {
+                            bootstrapVpnMode = true
+                        }
                         _vpnState.value = VpnState.CONNECTED
                         onVpnTunnelReady()
                         if (repo.isLoggedIn()) markDeviceOnlineOnServer()
@@ -295,6 +298,11 @@ class MainViewModel @Inject constructor(
     }
 
     private fun syncSessionOnResume() {
+        if (_resetPasswordToken.value != null) {
+            _screen.value = AppScreen.LOGIN
+            ensureBootstrapForAuthFlow(appContext)
+            return
+        }
         if (!repo.isLoggedIn()) return
         _screen.value = AppScreen.MAIN
         restoreCachedProfileToUi()
@@ -563,18 +571,49 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun <T> withBootstrapBackendApi(block: suspend () -> T): T {
-        if (
-            bootstrapVpnMode &&
+    /** До входа: API через overlay, если поднят bootstrap-VPN (приложение вне WG). */
+    private fun needsPreLoginApiOverlay(): Boolean =
+        SilentRepository.APP_EXCLUDED_FROM_VPN &&
             SilentVpnService.isRunning &&
-            WdttTunnelManager.tunnelReady.value
-        ) {
+            WdttTunnelManager.tunnelReady.value &&
+            !repo.isLoggedIn()
+
+    private suspend fun <T> withBootstrapBackendApi(block: suspend () -> T): T {
+        if (needsPreLoginApiOverlay()) {
+            if (!bootstrapVpnMode && _screen.value == AppScreen.LOGIN) {
+                bootstrapVpnMode = true
+            }
             return WdttTunnelManager.withApiOverlay {
                 repo.useApiBase(WdttTunnelManager.tunnelApiBase())
                 block()
             }
         }
         return block()
+    }
+
+    private fun preLoginApiBases(): List<String> {
+        if (needsPreLoginApiOverlay()) {
+            return listOf(WdttTunnelManager.tunnelApiBase())
+        }
+        return repo.apiBaseCandidates(WdttTunnelManager.lastWgAddress())
+    }
+
+    /** Шаг 1 для входа / регистрации / сброса пароля при блокировке. */
+    fun ensureBootstrapForAuthFlow(context: Context) {
+        if (!isHashReady()) return
+        if (SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) {
+            if (!bootstrapVpnMode) bootstrapVpnMode = true
+            bootstrapContext = context.applicationContext
+            if (_vpnState.value != VpnState.CONNECTED) {
+                _vpnState.value = VpnState.CONNECTED
+                onVpnTunnelReady()
+            }
+            restartBootstrapTimerIfNeeded()
+            return
+        }
+        if (_vpnState.value != VpnState.CONNECTING && !bootstrapConnectingInternal) {
+            ensureBootstrapVpn(context)
+        }
     }
 
     private suspend fun fetchProfileNow(): Boolean {
@@ -648,12 +687,13 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun handleDeepLink(uri: Uri?) {
+    fun handleDeepLink(uri: Uri?, context: Context? = null) {
         if (uri?.scheme != "silentvpn") return
         when (uri.host) {
-            "reset-password" -> uri.getQueryParameter("token")?.takeIf { it.isNotBlank() }?.let {
-                _resetPasswordToken.value = it
+            "reset-password" -> uri.getQueryParameter("token")?.takeIf { it.isNotBlank() }?.let { token ->
+                _resetPasswordToken.value = token
                 _screen.value = AppScreen.LOGIN
+                context?.let { ensureBootstrapForAuthFlow(it) }
             }
         }
     }
@@ -673,6 +713,7 @@ class MainViewModel @Inject constructor(
                     restartBootstrapTimerIfNeeded()
                     return@launch
                 }
+                awaitTunnelApiReady()
                 val res = withBootstrapBackendApi {
                     repo.getApi().forgotPassword(ForgotPasswordRequest(email))
                 }
@@ -696,17 +737,25 @@ class MainViewModel @Inject constructor(
             _authLoading.value = true
             _authError.value = null
             try {
+                if (_vpnState.value != VpnState.CONNECTED) {
+                    _authError.value = "Сначала подключитесь для входа (шаг 1)"
+                    restartBootstrapTimerIfNeeded()
+                    return@launch
+                }
+                awaitTunnelApiReady()
                 val res = withBootstrapBackendApi {
                     repo.getApi().resetPassword(ResetPasswordRequest(token, newPassword))
                 }
                 if (!res.isSuccessful) {
                     _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Не удалось сохранить пароль"
+                    restartBootstrapTimerIfNeeded()
                     return@launch
                 }
                 _resetPasswordToken.value = null
                 _authError.value = null
             } catch (e: Exception) {
                 _authError.value = e.message ?: "Ошибка"
+                restartBootstrapTimerIfNeeded()
             } finally {
                 _authLoading.value = false
             }
@@ -778,12 +827,7 @@ class MainViewModel @Inject constructor(
 
     private suspend fun loginWithFallback(email: String, password: String): retrofit2.Response<com.silent.vpn.data.TokenResponse> {
         suspend fun attempt(): retrofit2.Response<com.silent.vpn.data.TokenResponse> {
-            val wg = WdttTunnelManager.lastWgAddress()
-            val bases = if (bootstrapVpnMode && WdttTunnelManager.tunnelReady.value) {
-                listOf(WdttTunnelManager.tunnelApiBase())
-            } else {
-                repo.apiBaseCandidates(wg)
-            }
+            val bases = preLoginApiBases()
             var lastError: Exception? = null
             for (base in bases) {
                 try {
@@ -834,12 +878,7 @@ class MainViewModel @Inject constructor(
 
     private suspend fun registerWithFallback(email: String, password: String): retrofit2.Response<Map<String, String>> {
         suspend fun attempt(): retrofit2.Response<Map<String, String>> {
-            val wg = WdttTunnelManager.lastWgAddress()
-            val bases = if (bootstrapVpnMode && WdttTunnelManager.tunnelReady.value) {
-                listOf(WdttTunnelManager.tunnelApiBase())
-            } else {
-                repo.apiBaseCandidates(wg)
-            }
+            val bases = preLoginApiBases()
             var lastError: Exception? = null
             for (base in bases) {
                 try {
@@ -892,6 +931,8 @@ class MainViewModel @Inject constructor(
                 val mm = leftSec / 60
                 val ss = leftSec % 60
                 _statusMsg.value = when {
+                    _resetPasswordToken.value != null ->
+                        "Смена пароля через VPN. Осталось %d:%02d".format(mm, ss)
                     _regDone.value ->
                         "Подтвердите email в браузере. VPN ещё %d:%02d".format(mm, ss)
                     _forgotSent.value ->
@@ -1011,9 +1052,11 @@ class MainViewModel @Inject constructor(
 
     private suspend fun openLoginSession(): Boolean {
         val boot = repo.getBootstrapHash()
-        val res = repo.getApi().registerDevice(
-            DeviceRegisterRequest("Android", "android", repo.getDeviceFingerprint(), null, boot)
-        )
+        val res = withBootstrapBackendApi {
+            repo.getApi().registerDevice(
+                DeviceRegisterRequest("Android", "android", repo.getDeviceFingerprint(), null, boot)
+            )
+        }
         if (res.isSuccessful) {
             val cfg = res.body()!!
             repo.saveSessionDeviceId(cfg.device_id)
@@ -1040,6 +1083,7 @@ class MainViewModel @Inject constructor(
 
     fun logout(context: Context? = null) {
         viewModelScope.launch {
+            val pendingReset = _resetPasswordToken.value != null
             val fp = if (repo.hasSessionFingerprint()) {
                 runCatching { repo.getDeviceFingerprint() }.getOrNull()
             } else null
@@ -1047,6 +1091,9 @@ class MainViewModel @Inject constructor(
             if (_vpnState.value == VpnState.CONNECTED || _vpnState.value == VpnState.CONNECTING) {
                 context?.let { stopVpnLocally(it) }
             }
+            bootstrapVpnMode = false
+            bootstrapContext = null
+            cancelBootstrapSessionTimeout()
 
             if (fp != null && repo.getAccessToken() != null) {
                 runCatching {
@@ -1072,6 +1119,9 @@ class MainViewModel @Inject constructor(
             _authError.value = null
             _vpnError.value = null
             _regDone.value = false
+            if (pendingReset && context != null) {
+                ensureBootstrapForAuthFlow(context)
+            }
         }
     }
 

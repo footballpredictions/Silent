@@ -5,14 +5,12 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 
-/** Открыть раздел «Звонки» в приложении VK (не в браузере). */
+/** Открыть раздел «Звонки»: VK → VK Звонки → браузер. */
 object VkCallsLink {
-    private val VK_APP_PACKAGES = listOf(
-        "com.vkontakte.android",
-        "com.vk.calls",
-    )
+    private const val PKG_VK = "com.vkontakte.android"
+    private const val PKG_VK_CALLS = "com.vk.calls"
 
-    private val IN_APP_URIS = listOf(
+    private val VK_URIS = listOf(
         "vkontakte://vk.com/calls",
         "vkontakte://calls",
         "https://vk.com/calls",
@@ -20,20 +18,36 @@ object VkCallsLink {
         "https://m.vk.com/calls",
     )
 
+    private val VK_CALLS_URIS = listOf(
+        "vkcalls://calls",
+        "vkontakte://vk.com/calls",
+        "vkontakte://calls",
+        "https://vk.com/calls",
+        "https://vk.ru/calls",
+    )
+
     fun openCalls(context: Context, webUrl: String? = null) {
         val pm = context.packageManager
-        val extras = webUrl?.trim()?.takeIf { it.isNotBlank() }?.let { listOf(it) }.orEmpty()
-        val candidates = (IN_APP_URIS + extras).distinct()
+        val webExtras = webUrl?.trim()?.takeIf { it.isNotBlank() }?.let { listOf(it) }.orEmpty()
 
-        for (pkg in VK_APP_PACKAGES) {
-            if (!isInstalled(pm, pkg)) continue
-            for (uri in candidates) {
-                if (launch(context, Uri.parse(uri), pkg, pm)) return
-            }
-        }
+        if (tryOpenInPackage(context, pm, PKG_VK, VK_URIS + webExtras)) return
+        if (tryOpenInPackage(context, pm, PKG_VK_CALLS, VK_CALLS_URIS + webExtras)) return
 
-        val browserUrl = extras.firstOrNull() ?: "https://vk.com/calls"
+        val browserUrl = webExtras.firstOrNull() ?: "https://vk.com/calls"
         launch(context, Uri.parse(browserUrl), packageName = null, pm = pm)
+    }
+
+    private fun tryOpenInPackage(
+        context: Context,
+        pm: PackageManager,
+        packageName: String,
+        uris: List<String>,
+    ): Boolean {
+        if (!isInstalled(pm, packageName)) return false
+        for (uri in uris.distinct()) {
+            if (launch(context, Uri.parse(uri), packageName, pm)) return true
+        }
+        return false
     }
 
     private fun launch(context: Context, uri: Uri, packageName: String?, pm: PackageManager): Boolean {

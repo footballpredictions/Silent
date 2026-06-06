@@ -191,17 +191,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun handleDeepLink(intent: Intent?) {
+        intent?.data?.let { vm.handleDeepLink(it, this) }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        val isResetLink = intent.data?.scheme == "silentvpn" &&
+            intent.data?.host == "reset-password"
         handleDeepLink(intent)
-        if (intent.getBooleanExtra(EXTRA_OPEN_MAIN, false)) {
+        if (!isResetLink && intent.getBooleanExtra(EXTRA_OPEN_MAIN, false)) {
             vm.onReturnedToApp()
         }
-    }
-
-    private fun handleDeepLink(intent: Intent?) {
-        intent?.data?.let { vm.handleDeepLink(it) }
     }
 
     override fun onResume() {

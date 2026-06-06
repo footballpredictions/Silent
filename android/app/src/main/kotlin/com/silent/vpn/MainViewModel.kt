@@ -312,9 +312,24 @@ class MainViewModel @Inject constructor(
         }
         if (!repo.isLoggedIn()) return
         _screen.value = AppScreen.MAIN
+        _authLoading.value = false
         restoreCachedProfileToUi()
         syncVpnStateFromSystem()
         viewModelScope.launch {
+            if (_profile.value == null && repo.isLoggedIn()) {
+                runCatching {
+                    if (bootstrapVpnMode && SilentVpnService.isRunning) {
+                        withBootstrapBackendApi { fetchProfileNow() }
+                        if (_profile.value != null) {
+                            disconnectBootstrapVpn(appContext)
+                        }
+                    } else {
+                        fetchProfileNow()
+                    }
+                }.onFailure { e ->
+                    DebugLog.w("MainViewModel", "resume profile fetch: ${e.message}")
+                }
+            }
             if (SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) {
                 onVpnTunnelReady()
                 if (_vpnState.value == VpnState.CONNECTED && repo.isLoggedIn()) {
@@ -647,9 +662,8 @@ class MainViewModel @Inject constructor(
             WdttTunnelManager.tunnelReady.value &&
             bootstrapVpnMode
         ) {
-            return WdttTunnelManager.withApiOverlay {
-                tryFetchProfileOnBase(WdttTunnelManager.tunnelApiBase())
-            } || _profile.value != null
+            repo.useApiBase(WdttTunnelManager.tunnelApiBase())
+            return tryFetchProfileOnBase(WdttTunnelManager.tunnelApiBase()) || _profile.value != null
         }
         val wg = WdttTunnelManager.lastWgAddress()
         for (base in repo.apiBaseCandidates(wg)) {
@@ -815,6 +829,8 @@ class MainViewModel @Inject constructor(
                         } else {
                             if (!syncLoginDataViaBootstrapTunnel()) {
                                 _vpnError.value = "Профиль не загрузился. Включите VPN на главном экране."
+                            } else {
+                                DebugLog.i("MainViewModel", "login sync OK profile=${_profile.value?.email}")
                             }
                             disconnectBootstrapVpn(ctx)
                             goToMain(skipProfileFetch = true)
@@ -1536,9 +1552,15 @@ class MainViewModel @Inject constructor(
 
     private fun applyBootstrapHash(config: VpnConfig): VpnConfig {
         val hashes = config.vk_hashes.filter { it.isNotBlank() }
-        if (hashes.isNotEmpty()) return config
-        val boot = repo.getBootstrapHash() ?: return config
-        return config.copy(vk_hashes = listOf(boot))
+        var cfg = if (hashes.isNotEmpty()) config else {
+            val boot = repo.getBootstrapHash() ?: return config
+            config.copy(vk_hashes = listOf(boot))
+        }
+        if (!cfg.device_id.startsWith("boot:")) {
+            val fp = repo.getOrCreatePreLoginFingerprint()
+            cfg = cfg.copy(device_id = "boot:$fp")
+        }
+        return cfg
     }
 
     private fun parseError(body: String): String? {

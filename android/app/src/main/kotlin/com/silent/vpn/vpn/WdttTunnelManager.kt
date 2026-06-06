@@ -496,21 +496,22 @@ object WdttTunnelManager {
         if (!running.value) return block()
         val config = lastWgConfig ?: return block()
         val helper = wgHelper ?: return block()
+        // Уже внутри overlay (login → profile/hash) — не брать mutex повторно (deadlock).
+        if (apiOverlayDepth > 0) {
+            return block()
+        }
         return apiOverlayMutex.withLock {
             apiOverlayRestoreJob?.cancel()
-            val entered = apiOverlayDepth == 0
-            apiOverlayDepth++
-            if (entered) {
+            apiOverlayDepth = 1
+            try {
                 helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = true)
                 delay(500)
-            }
-            try {
                 block()
             } finally {
-                apiOverlayDepth = (apiOverlayDepth - 1).coerceAtLeast(0)
-                if (apiOverlayDepth == 0) {
-                    apiOverlayRestoreJob?.cancel()
-                    // NonCancellable: overlay ДОЛЖЕН восстановиться даже если coroutine отменена
+                apiOverlayDepth = 0
+                apiOverlayRestoreJob?.cancel()
+                // Не поднимать WG снова, если внутри block() туннель уже остановили (вход/регистрация).
+                if (running.value) {
                     withContext(NonCancellable) {
                         helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
                     }

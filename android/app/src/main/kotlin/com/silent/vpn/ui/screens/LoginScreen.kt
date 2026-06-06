@@ -94,6 +94,12 @@ fun LoginScreen(
         }
     }
 
+    LaunchedEffect(bootstrapReady) {
+        if (bootstrapReady && step == LoginStep.HASH) {
+            step = LoginStep.AUTH
+        }
+    }
+
     LaunchedEffect(bootstrapReady, statusMsg) {
         if (!bootstrapReady && statusMsg.contains("истекло", ignoreCase = true)) {
             step = LoginStep.HASH

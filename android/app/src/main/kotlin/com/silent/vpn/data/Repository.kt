@@ -48,7 +48,7 @@ class SilentRepository @Inject constructor(
         const val VK_APP_ID = 54610377L
         const val VK_GROUP_ID = 239092728L
         const val WG_TUNNEL_GATEWAY = "10.66.66.1"
-        /** false только в bootstrap VPN (app в туннеле для API при логине). */
+        /** false только при apiOverlayMode (краткий overlay для HTTP к 10.66.66.1). */
         var APP_EXCLUDED_FROM_VPN = true
     }
 
@@ -129,6 +129,22 @@ class SilentRepository @Inject constructor(
             _api = null
             _apiCacheKey = null
             Log.i(TAG, "API via public URL")
+        }
+    }
+
+    fun tunnelApiBaseUrl(): String = "http://$WG_TUNNEL_GATEWAY:8000"
+
+    /**
+     * Основной VPN: приложение вне WG (TURN/VK напрямую), API — через краткий overlay 10.66.66.0/24.
+     * Без overlay запросы к публичному IP бекенда блокируются белыми списками оператора.
+     */
+    suspend fun <T> withTunnelApiWhenExcluded(block: suspend () -> T): T {
+        if (!APP_EXCLUDED_FROM_VPN) return block()
+        if (!com.silent.vpn.service.SilentVpnService.isRunning) return block()
+        if (!com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value) return block()
+        return com.silent.vpn.vpn.WdttTunnelManager.withApiOverlay {
+            useApiBase(tunnelApiBaseUrl())
+            block()
         }
     }
 
@@ -402,8 +418,8 @@ class SilentRepository @Inject constructor(
         val first = fetchHashItemsFromBases(apiBaseCandidates())
         if (first.isSuccess || !APP_EXCLUDED_FROM_VPN) return first
         if (!com.silent.vpn.service.SilentVpnService.isRunning) return first
-        return com.silent.vpn.vpn.WdttTunnelManager.withApiOverlay {
-            fetchHashItemsFromBases(listOf("http://$WG_TUNNEL_GATEWAY:8000"))
+        return withTunnelApiWhenExcluded {
+            fetchHashItemsFromBases(listOf(tunnelApiBaseUrl()))
         }
     }
 

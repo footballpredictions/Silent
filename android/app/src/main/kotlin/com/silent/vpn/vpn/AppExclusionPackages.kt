@@ -13,10 +13,10 @@ val VK_TUNNEL_PACKAGES = setOf(
 )
 
 /**
- * @param isBootstrap bootstrap VPN: app внутри туннеля для API при логине.
- * Основной VPN: app вне туннеля — libclient/TURN напрямую (белые списки).
+ * Silent и VK всегда вне WG (libclient/TURN напрямую на белых списках).
+ * Bootstrap: браузер и остальные приложения идут через полный туннель 0.0.0.0/0.
  */
-fun resolveExcludedAppPackages(context: Context, isBootstrap: Boolean = false): Set<String> {
+fun resolveExcludedAppPackages(context: Context, includeAppInTunnel: Boolean = false): Set<String> {
     val prefs = SilentPrefs.open(context)
     val userSelected = prefs.getString(SilentRepository.PREF_EXCLUDED_APPS, "")
         ?.split(",")
@@ -26,7 +26,7 @@ fun resolveExcludedAppPackages(context: Context, isBootstrap: Boolean = false): 
 
     val pm = context.packageManager
     val excluded = LinkedHashSet<String>()
-    if (!isBootstrap) {
+    if (!includeAppInTunnel) {
         excluded.add(context.packageName)
     }
     excluded.addAll(VK_TUNNEL_PACKAGES)

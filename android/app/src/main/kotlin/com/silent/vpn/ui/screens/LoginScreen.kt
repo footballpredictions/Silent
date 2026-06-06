@@ -158,6 +158,7 @@ fun LoginScreen(
                             Spacer(modifier = Modifier.height(32.dp))
                             Text("Подтвердите email", color = ui.fg, fontWeight = FontWeight.Medium, fontSize = 14.sp)
                             Text("Ссылка отправлена на $regEmail", color = ui.hint, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
+                            Text("Откройте её в браузере — VPN должен быть включён", color = ui.hint, fontSize = 11.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 2.dp))
                             TextButton(onClick = { tab = "login"; onRegDoneDismiss() }) { Text("Войти", fontSize = 12.sp, color = ui.fg) }
                         }
                     } else {
@@ -219,7 +220,8 @@ fun LoginScreen(
                 Text(forgotTitle, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = ui.fg)
                 Text(forgotHint, fontSize = 12.sp, color = ui.hint, modifier = Modifier.padding(top = 8.dp, bottom = 16.dp))
                 if (forgotSent) {
-                    Text("Если email зарегистрирован, письмо отправлено.", color = ui.green, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp))
+                    Text("Если email зарегистрирован, письмо отправлено.", color = ui.green, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 24.dp))
+                    Text("Откройте ссылку в браузере — VPN должен быть включён", color = ui.hint, fontSize = 11.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 24.dp))
                 } else {
                     OutlinedTextField(
                         value = email, onValueChange = { email = it }, modifier = Modifier.fillMaxWidth(),

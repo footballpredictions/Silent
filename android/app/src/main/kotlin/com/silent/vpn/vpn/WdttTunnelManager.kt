@@ -134,10 +134,8 @@ object WdttTunnelManager {
 
                 if (!isSwitching) {
                     wgExcludeIps.clear()
-                    // Bootstrap: app внутри VPN → исключаем server/TURN IP из AllowedIPs.
-                    if (isBootstrapMode) {
-                        wgExcludeIps.add(params.serverIp.trim())
-                    }
+                    // Bootstrap: полный 0.0.0.0/0 — браузер (подтверждение email, сброс пароля) через VPN.
+                    // Silent app исключён из WG → libclient/TURN напрямую.
                 }
 
                 DebugLog.i(

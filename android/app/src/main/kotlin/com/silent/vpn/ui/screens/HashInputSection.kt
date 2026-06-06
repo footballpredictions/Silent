@@ -45,7 +45,7 @@ fun HashInputSection(
 
     val title = theme?.login_step1_title ?: "Шаг 1 — хеш звонка VK"
     val hint = theme?.login_step1_instruction
-        ?: "Временный интернет на 2 минуты — только для входа или регистрации."
+        ?: "Временный интернет на 2 минуты — для входа, регистрации и ссылок из почты (браузер тоже через VPN)."
     val placeholder = theme?.login_hash_placeholder ?: "Хеш или ссылка на звонок VK"
     val confirmBtn = theme?.login_hash_button_text ?: "Подтвердить"
     val vkLabel = theme?.login_vk_mobile_link_text ?: "ВКонтакте — раздел «Звонки»"

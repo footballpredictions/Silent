@@ -153,7 +153,8 @@ class SilentVpnService : Service() {
             val activeHashCount = maxOf(wdttHashes.size, savedActive, 1)
                 .coerceAtMost(HashChannelHelper.MAX_HASHES)
             val isBootstrap = deviceId.startsWith("boot:")
-            SilentRepository.APP_EXCLUDED_FROM_VPN = !isBootstrap
+            // Bootstrap и основной VPN: app вне WG; API — overlay, браузер — полный туннель.
+            SilentRepository.APP_EXCLUDED_FROM_VPN = true
             val totalWorkers = if (isBootstrap) {
                 (vpnConfig?.stream_count ?: 9).coerceIn(3, 9)
             } else {

@@ -238,7 +238,9 @@ object WdttTunnelManager {
     }
 
     private fun tryApplyDeferredApiWg() {
-        if (isBootstrapMode || activeWorkers.value < 1 || appliedConfigSource > 0) return
+        if (activeWorkers.value < 1 || appliedConfigSource > 0) return
+        // Основной VPN: WG только из box/file libclient — без промежуточного API-конфига (лишний restart).
+        if (!isBootstrapMode) return
         val cfg = deferredApiWgConfig ?: apiFallbackConfig ?: return
         deferredApiWgConfig = null
         DebugLog.i(TAG, "WireGuard API apply after ${activeWorkers.value} workers")
@@ -494,6 +496,11 @@ object WdttTunnelManager {
         if (!isBootstrapMode && activeWorkers.value < 1 && source == 1) {
             deferredApiWgConfig = normalized
             DebugLog.d(TAG, "defer WG API until WDTT workers ready")
+            return
+        }
+        if (source == 1 && !isBootstrapMode) {
+            deferredApiWgConfig = normalized
+            DebugLog.d(TAG, "skip WG API on main VPN, wait libclient box/file")
             return
         }
         val fingerprint = normalized.hashCode().toString()

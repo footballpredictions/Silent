@@ -207,13 +207,12 @@ class WireGuardHelper(context: Context) {
             }
 
             val allowedIps = when {
-
-                apiOverlayMode -> AllowedIpsHelper.WG_TUNNEL_SUBNET
-
+                // Overlay: Silent в туннеле, остальные приложения — как обычно (0.0.0.0/0).
+                // Нельзя 10.66.66.0/24 — браузер теряет интернет на время overlay.
+                apiOverlayMode -> peer.allowedIps.takeIf { it.isNotEmpty() }?.joinToString(", ") { it.toString() }
+                    ?: "0.0.0.0/0"
                 else -> peer.allowedIps.takeIf { it.isNotEmpty() }?.joinToString(", ") { it.toString() }
-
                     ?: if (excludeIPs.isNotEmpty()) AllowedIpsHelper.generateExclusionAllowedIPs(excludeIPs) else "0.0.0.0/0"
-
             }
 
             peerBuilder.parseAllowedIPs(allowedIps)

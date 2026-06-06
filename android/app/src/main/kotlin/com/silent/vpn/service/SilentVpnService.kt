@@ -57,7 +57,7 @@ class SilentVpnService : Service() {
         private const val NETWORK_GRACE_AFTER_READY_MS = 12_000L
         private const val NETWORK_DEBOUNCE_MS = 8_000L
         private const val TRANSPORT_WATCHDOG_MS = 45_000L
-        private const val NOTIF_UPDATE_MIN_MS = 30_000L
+        private const val NOTIF_UPDATE_MIN_MS = 5_000L
         const val ACTION_CONNECT = "com.silent.vpn.CONNECT"
         const val ACTION_DISCONNECT = "com.silent.vpn.DISCONNECT"
         const val EXTRA_CONFIG = "vpn_config_json"

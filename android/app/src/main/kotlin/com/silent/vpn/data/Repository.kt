@@ -62,6 +62,9 @@ class SilentRepository @Inject constructor(
     private var _baseUrl: String = ""
     /** Когда VPN поднят — API через адрес в туннеле (10.66.66.1), иначе nip.io недоступен в белых списках. */
     private var tunnelApiBaseUrl: String? = null
+    /** true только внутри withApiOverlay — bind OkHttp к VPN-сети для 10.66.66.1. */
+    @Volatile
+    private var bindApiToVpnNetwork = false
 
     init {
         ensureServerUrl()
@@ -100,14 +103,17 @@ class SilentRepository @Inject constructor(
             .sslSocketFactory(TrustAllCerts.sslSocketFactory(), TrustAllCerts.trustManager())
             .connectTimeout(4, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
-        if (baseUrl.contains(WG_TUNNEL_GATEWAY) && !APP_EXCLUDED_FROM_VPN) {
+        val bindVpn = baseUrl.contains(WG_TUNNEL_GATEWAY) &&
+            com.silent.vpn.service.SilentVpnService.isRunning &&
+            (bindApiToVpnNetwork || !APP_EXCLUDED_FROM_VPN)
+        if (bindVpn) {
             VpnNetworkHelper.getSilentVpnNetwork(context)?.let { network ->
                 builder.socketFactory(network.socketFactory)
                 builder.dns(object : Dns {
                     override fun lookup(hostname: String): List<InetAddress> =
                         network.getAllByName(hostname).toList()
                 })
-                Log.i(TAG, "API client bound to VPN network for $baseUrl")
+                Log.i(TAG, "API client bound to VPN network for $baseUrl (overlay=$bindApiToVpnNetwork)")
             }
         }
         val client = builder.build()
@@ -147,6 +153,17 @@ class SilentRepository @Inject constructor(
 
     fun tunnelApiBaseUrl(): String = "http://$WG_TUNNEL_GATEWAY:8000"
 
+    fun invalidateApiClient() {
+        _api = null
+        _apiCacheKey = null
+    }
+
+    /** VPN подключён, app исключён из WG — API только через overlay + bind к VPN Network. */
+    fun needsTunnelApiOverlay(): Boolean =
+        APP_EXCLUDED_FROM_VPN &&
+            com.silent.vpn.service.SilentVpnService.isRunning &&
+            com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value
+
     /**
      * Основной VPN: приложение вне WG (TURN/VK напрямую), API — через краткий overlay 10.66.66.0/24.
      * Без overlay запросы к публичному IP бекенда блокируются белыми списками оператора.
@@ -154,10 +171,20 @@ class SilentRepository @Inject constructor(
     suspend fun <T> withTunnelApiWhenExcluded(block: suspend () -> T): T {
         if (!APP_EXCLUDED_FROM_VPN) return block()
         if (!com.silent.vpn.service.SilentVpnService.isRunning) return block()
-        if (!com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value) return block()
+        if (!com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value) {
+            Log.w(TAG, "withTunnelApiWhenExcluded: tunnel not ready, skip public URL")
+            error("VPN tunnel not ready for backend API")
+        }
         return com.silent.vpn.vpn.WdttTunnelManager.withApiOverlay {
+            bindApiToVpnNetwork = true
             useApiBase(tunnelApiBaseUrl())
-            block()
+            invalidateApiClient()
+            try {
+                block()
+            } finally {
+                bindApiToVpnNetwork = false
+                invalidateApiClient()
+            }
         }
     }
 
@@ -428,6 +455,15 @@ class SilentRepository @Inject constructor(
         fetchHashItemsFromBases(listOf("http://$WG_TUNNEL_GATEWAY:8000"))
 
     suspend fun fetchAndSaveHashItems(): Result<List<HashItemDto>> {
+        if (needsTunnelApiOverlay()) {
+            runCatching {
+                return withTunnelApiWhenExcluded {
+                    fetchHashItemsFromBases(listOf(tunnelApiBaseUrl()))
+                }
+            }.onFailure { e ->
+                Log.w(TAG, "fetchAndSaveHashItems via tunnel: ${e.message}")
+            }
+        }
         val first = fetchHashItemsFromBases(apiBaseCandidates())
         if (first.isSuccess || !APP_EXCLUDED_FROM_VPN) return first
         if (!com.silent.vpn.service.SilentVpnService.isRunning) return first

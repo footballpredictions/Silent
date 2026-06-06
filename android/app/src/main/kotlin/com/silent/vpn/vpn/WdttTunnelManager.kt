@@ -571,7 +571,7 @@ object WdttTunnelManager {
             apiOverlayDepth++
             if (entered) {
                 helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = true)
-                delay(500)
+                delay(800)
             }
             try {
                 block()

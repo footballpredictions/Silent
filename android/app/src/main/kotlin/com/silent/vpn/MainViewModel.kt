@@ -435,6 +435,10 @@ class MainViewModel @Inject constructor(
         if (repo.isLoggedIn() && !bootstrapVpnMode && SilentVpnService.isRunning) {
             markDeviceOnlineOnServer()
             triggerUpdateCheckAndPolling()
+            viewModelScope.launch {
+                runCatching { fetchProfileNow() }
+                    .onFailure { e -> DebugLog.w("MainViewModel", "profile after tunnel ready: ${e.message}") }
+            }
         } else {
             loadTheme()
         }
@@ -449,7 +453,7 @@ class MainViewModel @Inject constructor(
     private fun startUpdatePolling() {
         if (updatePollJob?.isActive == true) return
         updatePollJob = viewModelScope.launch {
-            delay(15_000)
+            delay(5_000)
             while (
                 _vpnState.value == VpnState.CONNECTED &&
                 repo.isLoggedIn() &&
@@ -475,13 +479,24 @@ class MainViewModel @Inject constructor(
         if (_vpnState.value != VpnState.CONNECTED) return
         onlineHeartbeatJob?.cancel()
         onlineHeartbeatJob = viewModelScope.launch {
+            var intervalMs = 0L
             while (_vpnState.value == VpnState.CONNECTED && SilentVpnService.isRunning) {
-                runCatching {
+                if (intervalMs > 0L) delay(intervalMs)
+                val ok = runCatching {
                     repo.withTunnelApiWhenExcluded {
-                        repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
+                        val res = repo.getApi().connect(
+                            ConnectRequest(repo.getDeviceFingerprint(), "android"),
+                        )
+                        if (!res.isSuccessful) {
+                            throw Exception("online HTTP ${res.code()}: ${res.errorBody()?.string()?.take(120)}")
+                        }
                     }
-                }
-                delay(5 * 60 * 1000L)
+                }.onSuccess {
+                    DebugLog.i("MainViewModel", "online heartbeat OK (tunnel API)")
+                }.onFailure { e ->
+                    DebugLog.w("MainViewModel", "online heartbeat: ${e.message}")
+                }.isSuccess
+                intervalMs = if (ok) 5 * 60 * 1000L else 30_000L
             }
         }
     }
@@ -1593,7 +1608,11 @@ class MainViewModel @Inject constructor(
 
     private suspend fun refreshProfileForConnect() {
         runCatching {
-            val res = repo.getApi().getProfile()
+            val res = if (repo.needsTunnelApiOverlay()) {
+                repo.withTunnelApiWhenExcluded { repo.getApi().getProfile() }
+            } else {
+                repo.getApi().getProfile()
+            }
             if (res.isSuccessful) _profile.value = res.body()
         }
     }

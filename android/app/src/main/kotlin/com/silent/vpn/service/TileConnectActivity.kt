@@ -28,6 +28,7 @@ class TileConnectActivity : ComponentActivity() {
         when (VpnTileConnect.tryConnect(this)) {
             VpnTileConnect.ConnectResult.Started,
             VpnTileConnect.ConnectResult.AlreadyConnected,
+            VpnTileConnect.ConnectResult.Busy,
             -> finish()
             VpnTileConnect.ConnectResult.NeedVpnPermission -> {
                 val prep = VpnService.prepare(this)

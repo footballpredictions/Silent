@@ -490,6 +490,12 @@ object WdttTunnelManager {
     fun tunnelApiBase(): String = "http://${SilentRepository.WG_TUNNEL_GATEWAY}:8000"
 
     private var apiOverlayRestoreJob: Job? = null
+    @Volatile private var overlayRestoreSuppressed = false
+
+    /** Перед отключением VPN — не восстанавливать полный туннель в finally overlay. */
+    fun prepareForShutdown() {
+        overlayRestoreSuppressed = true
+    }
 
     /** Краткий overlay только для HTTP к 10.66.66.1; основной WG — полный туннель (интернет). */
     suspend fun <T> withApiOverlay(block: suspend () -> T): T {
@@ -502,19 +508,24 @@ object WdttTunnelManager {
         }
         return apiOverlayMutex.withLock {
             apiOverlayRestoreJob?.cancel()
-            apiOverlayDepth = 1
-            try {
+            val entered = apiOverlayDepth == 0
+            apiOverlayDepth++
+            if (entered) {
                 helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = true)
                 delay(500)
+            }
+            try {
                 block()
             } finally {
-                apiOverlayDepth = 0
-                apiOverlayRestoreJob?.cancel()
-                // Не поднимать WG снова, если внутри block() туннель уже остановили (вход/регистрация).
-                if (running.value) {
-                    withContext(NonCancellable) {
-                        helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
+                apiOverlayDepth = (apiOverlayDepth - 1).coerceAtLeast(0)
+                if (apiOverlayDepth == 0) {
+                    apiOverlayRestoreJob?.cancel()
+                    if (running.value && !overlayRestoreSuppressed) {
+                        withContext(NonCancellable) {
+                            helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
+                        }
                     }
+                    overlayRestoreSuppressed = false
                 }
             }
         }
@@ -605,6 +616,7 @@ object WdttTunnelManager {
     }
 
     private suspend fun stopInternal(keepWg: Boolean) {
+        overlayRestoreSuppressed = true
         withContext(Dispatchers.IO) {
             apiOverlayRestoreJob?.cancel()
             apiOverlayDepth = 0

@@ -266,6 +266,20 @@ class MainViewModel @Inject constructor(
         if (!WdttTunnelManager.isInternetReady()) return false
         val tunnel = WdttTunnelManager.tunnelApiBase()
         repo.useApiBase(tunnel)
+        runCatching {
+            val reg = repo.getApi().registerDevice(
+                DeviceRegisterRequest("Android", "android", repo.getDeviceFingerprint(), null, repo.getBootstrapHash())
+            )
+            if (reg.isSuccessful) {
+                val cfg = reg.body()!!
+                repo.saveSessionDeviceId(cfg.device_id)
+                _sessionDeviceId.value = cfg.device_id
+                repo.cacheVpnConfig(Gson().toJson(cfg))
+                DebugLog.i("MainViewModel", "login cache device=${cfg.device_id.take(8)} hashes=${cfg.vk_hashes.size}")
+            }
+        }.onFailure { e ->
+            DebugLog.w("MainViewModel", "login registerDevice cache: ${e.message}")
+        }
         val items = runCatching {
             repo.fetchAndSaveHashItemsViaTunnel().getOrDefault(emptyList())
         }.getOrElse {
@@ -359,10 +373,10 @@ class MainViewModel @Inject constructor(
             val fp = repo.getOrCreatePreLoginFingerprint()
             var config = runCatching {
                 val res = repo.getApi().bootstrapConfig(BootstrapConfigRequest(boot, "android", fp))
-                if (res.isSuccessful) applyBootstrapHash(res.body()!!) else null
+                if (res.isSuccessful) bootstrapLaunchConfig(res.body()!!) else null
             }.getOrNull()
             if (config == null || config.vk_hashes.isEmpty()) {
-                config = applyBootstrapHash(BootstrapVpnConfig.build(boot, fp))
+                config = bootstrapLaunchConfig(BootstrapVpnConfig.build(boot, fp))
             }
             if (config.vk_hashes.isEmpty()) return
             DebugLog.i("MainViewModel", "silent bootstrap sync start")
@@ -809,6 +823,9 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
                 awaitTunnelApiReady()
+                val ctx = activity?.applicationContext ?: appContext
+                var loginSucceeded = false
+                var offerSavePassword = false
                 withBootstrapBackendApi {
                     val res = loginAttempt(email, password)
                     if (!res.isSuccessful) {
@@ -819,12 +836,10 @@ class MainViewModel @Inject constructor(
                         repo.saveTokens(tokens.access_token, tokens.refresh_token)
                         repo.saveRememberMe(email, rememberMe)
                         repo.startNewSession()
-                        val ctx = activity?.applicationContext ?: appContext
                         if (!openLoginSession()) {
                             if (repo.isLoggedIn()) {
                                 syncLoginDataViaBootstrapTunnel()
-                                disconnectBootstrapVpn(ctx)
-                                goToMain(skipProfileFetch = true)
+                                loginSucceeded = true
                             }
                         } else {
                             if (!syncLoginDataViaBootstrapTunnel()) {
@@ -832,10 +847,16 @@ class MainViewModel @Inject constructor(
                             } else {
                                 DebugLog.i("MainViewModel", "login sync OK profile=${_profile.value?.email}")
                             }
-                            disconnectBootstrapVpn(ctx)
-                            goToMain(skipProfileFetch = true)
-                            activity?.let { CredentialHelper.offerSavePassword(it, email, password) }
+                            loginSucceeded = true
+                            offerSavePassword = true
                         }
+                    }
+                }
+                if (loginSucceeded) {
+                    disconnectBootstrapVpn(ctx)
+                    goToMain(skipProfileFetch = true)
+                    if (offerSavePassword) {
+                        activity?.let { CredentialHelper.offerSavePassword(it, email, password) }
                     }
                 }
             } catch (e: Exception) {
@@ -943,6 +964,7 @@ class MainViewModel @Inject constructor(
     private suspend fun disconnectBootstrapVpn(context: Context) {
         if (!bootstrapVpnMode) return
         cancelBootstrapSessionTimeout()
+        WdttTunnelManager.prepareForShutdown()
         stopVpnLocally(context)
         WdttTunnelManager.stopAndAwait()
         SilentRepository.APP_EXCLUDED_FROM_VPN = true
@@ -1023,12 +1045,12 @@ class MainViewModel @Inject constructor(
                 val fp = repo.getOrCreatePreLoginFingerprint()
                 var config = runCatching {
                     val res = repo.getApi().bootstrapConfig(BootstrapConfigRequest(boot, "android", fp))
-                    if (res.isSuccessful) applyBootstrapHash(res.body()!!) else null
+                    if (res.isSuccessful) bootstrapLaunchConfig(res.body()!!) else null
                 }.getOrNull()
 
                 if (config == null || config.vk_hashes.isEmpty()) {
                     DebugLog.w("MainViewModel", "bootstrap-config недоступен, локальный конфиг через VK TURN")
-                    config = applyBootstrapHash(BootstrapVpnConfig.build(boot, fp))
+                    config = bootstrapLaunchConfig(BootstrapVpnConfig.build(boot, fp))
                 }
 
                 if (config.vk_hashes.isEmpty()) {
@@ -1180,6 +1202,7 @@ class MainViewModel @Inject constructor(
         connectJob?.cancel()
         connectJob = viewModelScope.launch {
             DebugLog.i("MainViewModel", "connect() start")
+            if (repo.isLoggedIn()) bootstrapVpnMode = false
             if (VpnNetworkHelper.isOtherVpnActive(context)) {
                 DebugLog.i("MainViewModel", "Подключение заменит другой активный VPN")
             }
@@ -1205,8 +1228,11 @@ class MainViewModel @Inject constructor(
                         loadProfile()
                         return@launch
                     }
-                    val config = wdttConnectConfig(cached)
-                    DebugLog.i("MainViewModel", "connect n=${config.stream_count} vk=${config.vk_hashes.size}")
+                    val config = wdttConnectConfig(resolveMainVpnConfig(cached))
+                    DebugLog.i(
+                        "MainViewModel",
+                        "connect device=${config.device_id.take(12)} n=${config.stream_count} vk=${config.vk_hashes.size}",
+                    )
                     launchVpnService(context, config)
                     viewModelScope.launch { refreshVpnConfigInBackground(fp) }
                     waitForTunnelReady(context, config.stream_count)
@@ -1269,8 +1295,6 @@ class MainViewModel @Inject constructor(
                         vpnConfig = loadCachedVpnConfig()
                     }
 
-                    vpnConfig = vpnConfig?.let { applyBootstrapHash(it) }
-
                     hashesJob.await()?.let { hres ->
                         if (hres.isSuccessful) {
                             val body = hres.body()
@@ -1313,8 +1337,11 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
-                val config = wdttConnectConfig(vpnConfig!!)
-                DebugLog.i("MainViewModel", "connect n=${config.stream_count} vk=${config.vk_hashes.size}")
+                val config = wdttConnectConfig(resolveMainVpnConfig(vpnConfig!!))
+                DebugLog.i(
+                    "MainViewModel",
+                    "connect device=${config.device_id.take(12)} n=${config.stream_count} vk=${config.vk_hashes.size}",
+                )
                 launchVpnService(context, config)
                 viewModelScope.launch { refreshVpnConfigInBackground(fp) }
                 waitForTunnelReady(context, config.stream_count)
@@ -1337,8 +1364,12 @@ class MainViewModel @Inject constructor(
     private fun loadCachedVpnConfig(): VpnConfig? {
         val cached = repo.getCachedVpnConfig() ?: return null
         val parsed = runCatching { Gson().fromJson(cached, VpnConfig::class.java) }.getOrNull() ?: return null
+        if (repo.isLoggedIn() && parsed.device_id.startsWith("boot:")) {
+            DebugLog.w("MainViewModel", "cached VPN config is bootstrap — ignore after login")
+            return null
+        }
         if (parsed.device_id != repo.getSessionDeviceId()) return null
-        return applyBootstrapHash(parsed)
+        return parsed
     }
 
     private fun isConfigConnectable(config: VpnConfig): Boolean =
@@ -1375,12 +1406,23 @@ class MainViewModel @Inject constructor(
     }
 
     private fun launchVpnService(context: Context, config: VpnConfig) {
-        val wdttConfig = wdttConnectConfig(config)
+        val forService = if (bootstrapVpnMode) config else resolveMainVpnConfig(config)
+        val wdttConfig = wdttConnectConfig(forService)
         val intent = Intent(context, SilentVpnService::class.java).apply {
             action = SilentVpnService.ACTION_CONNECT
             putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(wdttConfig))
         }
         ContextCompat.startForegroundService(context, intent)
+    }
+
+    /** После входа основной VPN не должен стартовать с boot: device_id (иначе n=9, 1 хеш). */
+    private fun resolveMainVpnConfig(config: VpnConfig): VpnConfig {
+        if (!repo.isLoggedIn() || bootstrapVpnMode) return config
+        if (!config.device_id.startsWith("boot:")) return config
+        val sessionId = repo.getSessionDeviceId()?.takeIf { it.isNotBlank() && !it.startsWith("boot:") }
+            ?: return config
+        DebugLog.w("MainViewModel", "main VPN: boot device_id → ${sessionId.take(8)}")
+        return config.copy(device_id = sessionId)
     }
 
     private suspend fun refreshVpnConfigInBackground(fp: String) {
@@ -1390,7 +1432,7 @@ class MainViewModel @Inject constructor(
                     DeviceRegisterRequest("Android", "android", fp, null, repo.getBootstrapHash())
                 )
                 if (regRes.isSuccessful) {
-                    var cfg = applyBootstrapHash(regRes.body()!!)
+                    var cfg = regRes.body()!!
                     repo.saveSessionDeviceId(cfg.device_id)
                     _sessionDeviceId.value = cfg.device_id
                     val hres = repo.getApi().getVpnHashes()
@@ -1471,15 +1513,17 @@ class MainViewModel @Inject constructor(
         mainTunnelDataSyncJob = null
         viewModelScope.launch {
             _vpnState.value = VpnState.DISCONNECTING
+            WdttTunnelManager.prepareForShutdown()
             runCatching {
-                repo.withTunnelApiWhenExcluded {
-                    repo.getApi().disconnect(DisconnectRequest(repo.getDeviceFingerprint()))
+                if (SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) {
+                    repo.withTunnelApiWhenExcluded {
+                        repo.getApi().disconnect(DisconnectRequest(repo.getDeviceFingerprint()))
+                    }
                 }
-                val intent = Intent(context, SilentVpnService::class.java).apply {
-                    action = SilentVpnService.ACTION_DISCONNECT
-                }
-                context.startService(intent)
             }
+            bootstrapVpnMode = false
+            stopVpnLocally(context)
+            WdttTunnelManager.stopAndAwait()
             repo.clearTunnelApiBase()
             _vpnState.value = VpnState.DISCONNECTED
         }
@@ -1550,17 +1594,19 @@ class MainViewModel @Inject constructor(
     private fun subscriptionRequiredMessage() =
         "Пробный период закончился. Оформите подписку в меню → Подписка."
 
+    /** Только для bootstrap-VPN на экране входа: хеш + device_id boot:… */
+    private fun bootstrapLaunchConfig(config: VpnConfig): VpnConfig {
+        val withHash = applyBootstrapHash(config)
+        if (withHash.device_id.startsWith("boot:")) return withHash
+        val fp = repo.getOrCreatePreLoginFingerprint()
+        return withHash.copy(device_id = "boot:$fp")
+    }
+
     private fun applyBootstrapHash(config: VpnConfig): VpnConfig {
         val hashes = config.vk_hashes.filter { it.isNotBlank() }
-        var cfg = if (hashes.isNotEmpty()) config else {
-            val boot = repo.getBootstrapHash() ?: return config
-            config.copy(vk_hashes = listOf(boot))
-        }
-        if (!cfg.device_id.startsWith("boot:")) {
-            val fp = repo.getOrCreatePreLoginFingerprint()
-            cfg = cfg.copy(device_id = "boot:$fp")
-        }
-        return cfg
+        if (hashes.isNotEmpty()) return config
+        val boot = repo.getBootstrapHash() ?: return config
+        return config.copy(vk_hashes = listOf(boot))
     }
 
     private fun parseError(body: String): String? {

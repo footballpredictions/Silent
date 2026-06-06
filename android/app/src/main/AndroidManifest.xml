@@ -12,6 +12,7 @@
 
     <queries>
         <package android:name="com.vkontakte.android" />
+        <package android:name="com.vk.calls" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />

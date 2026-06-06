@@ -20,6 +20,7 @@ import com.silent.vpn.ui.screens.MainScreen
 import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.ui.theme.SilentTheme
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.vk.VkCallsLink
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -141,7 +142,7 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onOpenVkLink = { url ->
-                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                            VkCallsLink.openCalls(this@MainActivity, url)
                         },
                         onClearError = vm::clearAuthError,
                         onRegDoneDismiss = vm::dismissRegDone,

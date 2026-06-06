@@ -125,6 +125,11 @@ fun LoginScreen(
                     onOpenVkLink = { onOpenVkLink(vkUrl) },
                     showDivider = false,
                 )
+                if (bootstrapReady) {
+                    TextButton(onClick = { step = LoginStep.AUTH }, modifier = Modifier.fillMaxWidth()) {
+                        Text("→ К шагу 2 — вход или регистрация", fontSize = 11.sp, color = ui.hint)
+                    }
+                }
             }
 
             AnimatedVisibility(

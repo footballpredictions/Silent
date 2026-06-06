@@ -59,6 +59,13 @@ object WdttTunnelManager {
     private val wgExcludeIps = linkedSetOf<String>()
     private var captchaSolveJob: Job? = null
     private val captchaSession = AtomicInteger(0)
+    @Volatile private var captchaInProgress = false
+    @Volatile private var captchaManualInProgress = false
+    private var lastCaptchaRedirectUri: String? = null
+    private var lastCaptchaScheduledMs = 0L
+
+    fun isCaptchaInProgress(): Boolean = captchaInProgress
+    fun isCaptchaManualInProgress(): Boolean = captchaManualInProgress
 
     val running = MutableStateFlow(false)
     val tunnelReady = MutableStateFlow(false)
@@ -824,9 +831,39 @@ object WdttTunnelManager {
     }
 
     private fun scheduleCaptchaSolve(parts: List<String>) {
+        val requestMode = when (parts.size) {
+            3 -> parts[0].lowercase()
+            else -> "selected"
+        }
+        val redirectUri = when (parts.size) {
+            3 -> parts[1]
+            2 -> parts[0]
+            else -> return
+        }
+        val now = System.currentTimeMillis()
+
+        // Ручная капча на экране — не сбрасывать повторными auto от libclient.
+        if ((captchaManualInProgress || ManlCaptchaWebViewManager.isCaptchaPending) &&
+            requestMode == "auto"
+        ) {
+            DebugLog.w(TAG, "CAPTCHA auto skipped — manual WebView open")
+            return
+        }
+        if (captchaInProgress && requestMode == "auto" &&
+            redirectUri == lastCaptchaRedirectUri &&
+            now - lastCaptchaScheduledMs < 12_000L
+        ) {
+            DebugLog.d(TAG, "CAPTCHA auto debounced (same URI)")
+            return
+        }
+        lastCaptchaRedirectUri = redirectUri
+        lastCaptchaScheduledMs = now
+
         captchaSolveJob?.cancel()
-        CaptchaWebViewManager.cancelCurrentSolve()
-        ManlCaptchaWebViewManager.cancelCaptcha()
+        if (!captchaManualInProgress) {
+            CaptchaWebViewManager.cancelCurrentSolve()
+            ManlCaptchaWebViewManager.cancelCaptcha()
+        }
         val session = captchaSession.incrementAndGet()
         captchaSolveJob = scope.launch {
             when (parts.size) {
@@ -839,6 +876,9 @@ object WdttTunnelManager {
 
     private fun cancelAllCaptchaSolvers() {
         captchaSession.incrementAndGet()
+        captchaInProgress = false
+        captchaManualInProgress = false
+        lastCaptchaRedirectUri = null
         captchaSolveJob?.cancel()
         captchaSolveJob = null
         CaptchaWebViewManager.cancelCurrentSolve()
@@ -856,6 +896,8 @@ object WdttTunnelManager {
             return
         }
         DebugLog.i(TAG, "CAPTCHA solve mode=$requestMode session=$session")
+        captchaInProgress = true
+        captchaManualInProgress = requestMode == "manual"
         try {
             val token = when (requestMode.lowercase()) {
                 "auto" -> CaptchaWebViewManager.solveCaptchaAsync(redirectUri, sessionToken)
@@ -880,6 +922,11 @@ object WdttTunnelManager {
             if (!isCaptchaSessionCurrent(session)) return
             DebugLog.e(TAG, "CAPTCHA failed: ${e.message}")
             writeCaptchaResultIfCurrent(session, "error:${e.message ?: "unknown"}")
+        } finally {
+            if (isCaptchaSessionCurrent(session)) {
+                captchaInProgress = false
+                captchaManualInProgress = false
+            }
         }
     }
 
@@ -904,16 +951,19 @@ object WdttTunnelManager {
             } catch (e: IllegalStateException) {
                 if (e.message == CaptchaWebViewManager.ERROR_SLIDER_DETECTED) {
                     DebugLog.w(TAG, "CAPTCHA slider -> manual WebView")
+                    captchaManualInProgress = true
                     return ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
                 }
                 throw e
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 if (attempt == 1) {
                     DebugLog.w(TAG, "CAPTCHA auto WBV timeout -> manual")
+                    captchaManualInProgress = true
                     return ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
                 }
             }
         }
+        captchaManualInProgress = true
         return ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
     }
 

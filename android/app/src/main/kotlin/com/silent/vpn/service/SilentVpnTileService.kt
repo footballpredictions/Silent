@@ -9,7 +9,7 @@ import android.service.quicksettings.TileService
 import androidx.annotation.RequiresApi
 import com.silent.vpn.MainActivity
 import com.silent.vpn.R
-import com.silent.vpn.vpn.WdttTunnelManager
+import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 
 @RequiresApi(Build.VERSION_CODES.N)
 class SilentVpnTileService : TileService() {
@@ -27,17 +27,26 @@ class SilentVpnTileService : TileService() {
     }
 
     private fun performClick() {
-        if (VpnTileConnect.isVpnActive()) {
-            VpnTileConnect.disconnect(this)
-        } else {
-            when (VpnTileConnect.tryConnect(this)) {
+        when {
+            VpnTileConnect.isCaptchaPending() -> {
+                ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
+            }
+            VpnTileConnect.isVpnActive() -> {
+                VpnTileConnect.disconnect(this)
+            }
+            VpnTileConnect.isSessionBusy() -> {
+                // Подключение / ramp-up — не перезапускать.
+            }
+            else -> when (VpnTileConnect.tryConnect(this)) {
                 VpnTileConnect.ConnectResult.Started -> Unit
                 VpnTileConnect.ConnectResult.NeedVpnPermission ->
                     collapseToActivity(TileConnectActivity.intent(this))
                 VpnTileConnect.ConnectResult.NeedLogin,
                 VpnTileConnect.ConnectResult.NoConfig,
                 -> collapseToActivity(MainActivity.openIntent(this))
-                VpnTileConnect.ConnectResult.AlreadyConnected -> Unit
+                VpnTileConnect.ConnectResult.AlreadyConnected,
+                VpnTileConnect.ConnectResult.Busy,
+                -> Unit
             }
         }
         refreshTile()
@@ -61,12 +70,17 @@ class SilentVpnTileService : TileService() {
 
     private fun refreshTile() {
         val tile = qsTile ?: return
-        val connected = SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value
-        val connecting = SilentVpnService.isRunning && !connected
+        val connected = VpnTileConnect.isVpnActive()
+        val connecting = VpnTileConnect.isSessionBusy() && !connected
+        val captcha = VpnTileConnect.isCaptchaPending()
 
         tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_silent)
         tile.label = getString(R.string.app_name)
         when {
+            captcha -> {
+                tile.state = Tile.STATE_ACTIVE
+                tile.subtitle = getString(R.string.tile_subtitle_captcha)
+            }
             connected -> {
                 tile.state = Tile.STATE_ACTIVE
                 tile.subtitle = getString(R.string.tile_subtitle_connected)

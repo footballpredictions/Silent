@@ -12,6 +12,7 @@ import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.vpn.WdttTunnelManager
+import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import dagger.hilt.android.EntryPointAccessors
 
 object VpnTileConnect {
@@ -22,17 +23,37 @@ object VpnTileConnect {
         NeedLogin,
         NoConfig,
         AlreadyConnected,
+        Busy,
     }
+
+    private const val TILE_DEBOUNCE_MS = 4_000L
+    private var lastTileActionMs = 0L
 
     private fun repository(context: Context): SilentRepository =
         EntryPointAccessors.fromApplication(context.applicationContext, AppEntryPoint::class.java)
             .silentRepository()
 
+    /** VPN поднят и туннель готов. */
     fun isVpnActive(): Boolean =
         SilentVpnService.isRunning &&
-            (WdttTunnelManager.tunnelReady.value || WdttTunnelManager.running.value)
+            WdttTunnelManager.tunnelReady.value &&
+            WdttTunnelManager.activeWorkers.value >= 1
+
+    /** Идёт connect / libclient / капча — нельзя перезапускать с плитки. */
+    fun isSessionBusy(): Boolean =
+        SilentVpnService.isRunning ||
+            WdttTunnelManager.running.value ||
+            WdttTunnelManager.isCaptchaInProgress() ||
+            ManlCaptchaWebViewManager.isCaptchaPending
+
+    fun isCaptchaPending(): Boolean =
+        WdttTunnelManager.isCaptchaInProgress() ||
+            ManlCaptchaWebViewManager.isCaptchaPending
 
     fun disconnect(context: Context) {
+        val now = System.currentTimeMillis()
+        if (now - lastTileActionMs < TILE_DEBOUNCE_MS) return
+        lastTileActionMs = now
         context.startService(
             Intent(context, SilentVpnService::class.java).apply {
                 action = SilentVpnService.ACTION_DISCONNECT
@@ -41,11 +62,21 @@ object VpnTileConnect {
     }
 
     fun tryConnect(context: Context): ConnectResult {
+        val now = System.currentTimeMillis()
+        if (now - lastTileActionMs < TILE_DEBOUNCE_MS) {
+            DebugLog.i("VpnTileConnect", "tile connect debounced")
+            return ConnectResult.Busy
+        }
         if (isVpnActive()) return ConnectResult.AlreadyConnected
+        if (isSessionBusy()) {
+            DebugLog.i("VpnTileConnect", "tile connect blocked — session busy")
+            return ConnectResult.Busy
+        }
         val repo = repository(context)
         if (!repo.isLoggedIn()) return ConnectResult.NeedLogin
         val cached = loadCachedConfig(repo) ?: return ConnectResult.NoConfig
         if (VpnService.prepare(context) != null) return ConnectResult.NeedVpnPermission
+        lastTileActionMs = now
         startVpnService(context, repo, cached)
         return ConnectResult.Started
     }
@@ -53,9 +84,11 @@ object VpnTileConnect {
     /** После выдачи VPN-разрешения из [TileConnectActivity]. */
     fun connectAfterPermission(context: Context): ConnectResult {
         if (isVpnActive()) return ConnectResult.AlreadyConnected
+        if (isSessionBusy()) return ConnectResult.Busy
         val repo = repository(context)
         if (!repo.isLoggedIn()) return ConnectResult.NeedLogin
         val cached = loadCachedConfig(repo) ?: return ConnectResult.NoConfig
+        lastTileActionMs = System.currentTimeMillis()
         startVpnService(context, repo, cached)
         return ConnectResult.Started
     }

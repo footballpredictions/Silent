@@ -27,6 +27,7 @@ import com.silent.vpn.util.DebugLog
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.WireGuardConfigBuilder
+import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.silent.vpn.data.HashItemDto
@@ -112,6 +113,15 @@ class SilentVpnService : Service() {
                     DebugLog.e("VpnService", "CONNECT without config")
                     stopSelf()
                     return START_NOT_STICKY
+                }
+                if (VpnTileConnect.isCaptchaPending()) {
+                    DebugLog.w("VpnService", "CONNECT ignored — VK captcha in progress")
+                    ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
+                    return START_STICKY
+                }
+                if (WdttTunnelManager.running.value && !WdttTunnelManager.tunnelReady.value) {
+                    DebugLog.w("VpnService", "CONNECT ignored — tunnel ramp-up in progress")
+                    return START_STICKY
                 }
                 DebugLog.i(
                     "VpnService",

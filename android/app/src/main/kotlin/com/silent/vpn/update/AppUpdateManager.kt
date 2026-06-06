@@ -34,6 +34,7 @@ object AppUpdateManager {
             val body = response.body ?: throw IllegalStateException("Empty body")
             val total = body.contentLength()
             var received = 0L
+            var lastPct = -1
             body.byteStream().use { input ->
                 dest.outputStream().use { output ->
                     val buf = ByteArray(8192)
@@ -44,7 +45,10 @@ object AppUpdateManager {
                         received += n
                         if (total > 0) {
                             val pct = ((received * 100) / total).toInt().coerceIn(0, 100)
-                            withContext(Dispatchers.Main) { onProgress(pct) }
+                            if (pct != lastPct) {
+                                lastPct = pct
+                                withContext(Dispatchers.Main) { onProgress(pct) }
+                            }
                         }
                     }
                 }
@@ -53,7 +57,7 @@ object AppUpdateManager {
         dest
     }
 
-    fun installApk(context: Context, apkFile: File): Intent {
+    fun installApk(context: Context, apkFile: File, fromActivity: Boolean = false): Intent {
         val uri: Uri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",
@@ -61,7 +65,7 @@ object AppUpdateManager {
         )
         return Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (!fromActivity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
     }

@@ -653,14 +653,23 @@ class MainViewModel @Inject constructor(
             try {
                 val base = repo.resolveUpdateDownloadBase(updateApiBaseUrl)
                 val url = repo.joinUpdateUrl(base, downloadPath)
-                val file = AppUpdateManager.downloadApk(
-                    context,
-                    url,
-                    info.filename ?: "update.apk",
-                    repo.buildDownloadClient(),
-                ) { pct -> _updateProgress.value = pct }
-                onInstallReady(AppUpdateManager.installApk(context, file))
+                DebugLog.i("MainViewModel", "update download url=$url overlay=${repo.needsOverlayForUpdateDownload(base)}")
+                val download: suspend () -> java.io.File = {
+                    AppUpdateManager.downloadApk(
+                        context,
+                        url,
+                        info.filename ?: "update.apk",
+                        repo.buildDownloadClient(),
+                    ) { pct -> _updateProgress.value = pct }
+                }
+                val file = if (repo.needsOverlayForUpdateDownload(base)) {
+                    repo.withTunnelApiForUpdateDownload { download() }
+                } else {
+                    download()
+                }
+                onInstallReady(AppUpdateManager.installApk(context, file, fromActivity = true))
             } catch (e: Exception) {
+                DebugLog.e("MainViewModel", "update download failed: ${e.message}")
                 _vpnError.value = "Ошибка загрузки обновления: ${e.message}"
             } finally {
                 _updateDownloading.value = false

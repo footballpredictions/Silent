@@ -654,6 +654,41 @@ object WdttTunnelManager {
     }
 
     /**
+     * Скачивание обновления: overlay держим на всё время HTTP (APK может быть большим).
+     * Без throttle — иначе повторный tap через минуту после checkUpdate получает отказ.
+     */
+    suspend fun <T> withApiOverlayForDownload(block: suspend () -> T): T {
+        if (!running.value) return block()
+        if (isWorkerRampUpActive()) {
+            throw ApiOverlayBlockedException(
+                "overlay blocked during worker ramp-up (${activeWorkers.value}/${lastParams?.workers})",
+            )
+        }
+        val config = lastWgConfig ?: return block()
+        val helper = wgHelper ?: return block()
+        return wgApplyMutex.withLock {
+            if (apiOverlayActive) return@withLock block()
+            overlayRestoreJob?.cancel()
+            suppressNetworkRecovery = true
+            DebugLog.i(TAG, "API overlay download ON (10.66.66.0/24)")
+            helper.startTunnel(config, wgExcludeForTunnel(), isBootstrapMode, apiOverlayMode = true)
+            apiOverlayActive = true
+            delay(overlayEnterDelayMs)
+            try {
+                block()
+            } finally {
+                suppressNetworkRecovery = false
+                if (apiOverlayActive) {
+                    DebugLog.i(TAG, "API overlay download OFF")
+                    helper.startTunnel(config, wgExcludeForTunnel(), isBootstrapMode, apiOverlayMode = false)
+                    apiOverlayActive = false
+                    lastOverlayEndedMs = System.currentTimeMillis()
+                }
+            }
+        }
+    }
+
+    /**
      * Основной VPN: краткий overlay 10.66.66.0/24 — только HTTP к API, libclient/TURN мимо VPN.
      * @param allowDuringRampUp только для initial backend sync сразу после 1-й группы.
      */

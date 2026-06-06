@@ -164,6 +164,19 @@ class SilentRepository @Inject constructor(
     suspend fun <T> withTunnelApiForInitialSync(block: suspend () -> T): T =
         withTunnelApiWhenExcludedInternal(block, allowDuringRampUp = true)
 
+    /** Долгая загрузка APK — overlay без throttle, держим до конца скачивания. */
+    suspend fun <T> withTunnelApiForUpdateDownload(block: suspend () -> T): T {
+        if (!APP_EXCLUDED_FROM_VPN) return block()
+        if (!com.silent.vpn.service.SilentVpnService.isRunning) return block()
+        if (!com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value) {
+            Log.w(TAG, "withTunnelApiForUpdateDownload: tunnel not ready")
+            error("VPN tunnel not ready for update download")
+        }
+        useApiBase(tunnelApiBaseUrl())
+        invalidateApiClient()
+        return com.silent.vpn.vpn.WdttTunnelManager.withApiOverlayForDownload { block() }
+    }
+
     private suspend fun <T> withTunnelApiWhenExcludedInternal(
         block: suspend () -> T,
         allowDuringRampUp: Boolean,
@@ -210,13 +223,28 @@ class SilentRepository @Inject constructor(
     fun getPublicServerUrl(): String =
         prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
 
-    /** База для скачивания обновлений — HTTPS всегда через nip.io (сертификат не на IP). */
+    /** База для скачивания обновлений. Туннельный API — только через overlay (Silent вне WG). */
     fun resolveUpdateDownloadBase(preferredBase: String?): String {
         val base = preferredBase?.trimEnd('/').orEmpty()
-        if (base.startsWith("http://")) return base
+        if (isTunnelApiBase(base)) return tunnelApiBaseUrl()
+        if (base.startsWith("http://")) {
+            if (APP_EXCLUDED_FROM_VPN) return "https://$DEFAULT_SERVER_HOST"
+            return base
+        }
         if (base.contains(Regex("""\d+\.\d+\.\d+\.\d+"""))) return "https://$DEFAULT_SERVER_HOST"
         if (base.startsWith("https://")) return base
         return "https://$DEFAULT_SERVER_HOST"
+    }
+
+    fun needsOverlayForUpdateDownload(base: String): Boolean =
+        needsTunnelApiOverlay() && isTunnelApiBase(base)
+
+    private fun isTunnelApiBase(base: String): Boolean {
+        if (base.isBlank()) return false
+        if (base.contains(WG_TUNNEL_GATEWAY)) return true
+        return base.startsWith("http://") &&
+            base.substringAfter("http://").substringBefore('/').substringBefore(':')
+                .matches(Regex("""\d+\.\d+\.\d+\.\d+"""))
     }
 
     fun joinUpdateUrl(base: String, downloadPath: String): String {

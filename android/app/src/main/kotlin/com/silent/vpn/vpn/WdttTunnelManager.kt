@@ -41,7 +41,6 @@ object WdttTunnelManager {
     private var appliedConfigSource: Int = 0 // 0=none, 1=api, 2=box, 3=file
     private var appliedConfigFingerprint: String? = null
     private val wgApplyMutex = Mutex()
-    private val apiOverlayMutex = Mutex()
     private var apiOverlayDepth = 0
     private var appContext: Context? = null
     private var lastParams: Params? = null
@@ -556,22 +555,37 @@ object WdttTunnelManager {
         overlayRestoreSuppressed = true
     }
 
+    fun wgConfigSettled(): Boolean = appliedConfigSource >= 2
+
+    /** Ждём финальный WG-конфиг (box/file), чтобы overlay API не гонялся с applyWireGuard. */
+    suspend fun awaitWgConfigSettled(timeoutMs: Long = 8000L) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (appliedConfigSource >= 2 && activeWorkers.value >= 1 && wgHelper?.isTunnelUp() == true) {
+                delay(250)
+                return
+            }
+            delay(100)
+        }
+        DebugLog.w(TAG, "awaitWgConfigSettled: timeout (source=$appliedConfigSource)")
+    }
+
     /** Краткий overlay только для HTTP к 10.66.66.1; основной WG — полный туннель (интернет). */
     suspend fun <T> withApiOverlay(block: suspend () -> T): T {
         if (!running.value) return block()
         val config = lastWgConfig ?: return block()
         val helper = wgHelper ?: return block()
-        // Уже внутри overlay (login → profile/hash) — не брать mutex повторно (deadlock).
         if (apiOverlayDepth > 0) {
             return block()
         }
-        return apiOverlayMutex.withLock {
+        return wgApplyMutex.withLock {
             apiOverlayRestoreJob?.cancel()
             val entered = apiOverlayDepth == 0
             apiOverlayDepth++
             if (entered) {
+                DebugLog.i(TAG, "API overlay ON → 10.66.66.0/24")
                 helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = true)
-                delay(800)
+                delay(1200)
             }
             try {
                 block()
@@ -581,6 +595,7 @@ object WdttTunnelManager {
                     apiOverlayRestoreJob?.cancel()
                     if (running.value && !overlayRestoreSuppressed) {
                         withContext(NonCancellable) {
+                            DebugLog.i(TAG, "API overlay OFF → full tunnel")
                             helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
                         }
                     }

@@ -246,7 +246,6 @@ class MainViewModel @Inject constructor(
                         }
                         _vpnState.value = VpnState.CONNECTED
                         onVpnTunnelReady()
-                        if (repo.isLoggedIn()) markDeviceOnlineOnServer()
                     }
                 } else if (
                     (_vpnState.value == VpnState.CONNECTED || _vpnState.value == VpnState.DISCONNECTING) &&
@@ -420,6 +419,7 @@ class MainViewModel @Inject constructor(
     }
 
     private var mainTunnelDataSyncJob: Job? = null
+    private var backendSyncJob: Job? = null
     private var connectJob: Job? = null
 
     private fun onVpnTunnelReady(vpnConfig: VpnConfig? = null) {
@@ -433,9 +433,12 @@ class MainViewModel @Inject constructor(
             repo.clearTunnelApiBase()
         }
         if (repo.isLoggedIn() && !bootstrapVpnMode && SilentVpnService.isRunning) {
-            markDeviceOnlineOnServer()
-            triggerUpdateCheckAndPolling()
-            viewModelScope.launch {
+            backendSyncJob?.cancel()
+            backendSyncJob = viewModelScope.launch {
+                WdttTunnelManager.awaitWgConfigSettled()
+                if (_vpnState.value != VpnState.CONNECTED || !WdttTunnelManager.tunnelReady.value) return@launch
+                markDeviceOnlineOnServer()
+                triggerUpdateCheckAndPolling()
                 runCatching { fetchProfileNow() }
                     .onFailure { e -> DebugLog.w("MainViewModel", "profile after tunnel ready: ${e.message}") }
             }
@@ -717,6 +720,7 @@ class MainViewModel @Inject constructor(
                 _profile.value = p
                 repo.saveCachedProfile(p)
                 p.vk_user_id?.let { repo.saveVkUserId(it) }
+                DebugLog.i("MainViewModel", "fetchProfile OK via $base")
                 runCatching {
                     val themeRes = repo.getApi().getTheme()
                     if (themeRes.isSuccessful) _theme.value = themeRes.body()
@@ -1210,6 +1214,8 @@ class MainViewModel @Inject constructor(
     private fun stopVpnLocally(context: Context) {
         mainTunnelDataSyncJob?.cancel()
         mainTunnelDataSyncJob = null
+        backendSyncJob?.cancel()
+        backendSyncJob = null
         onlineHeartbeatJob?.cancel()
         onlineHeartbeatJob = null
         runCatching {
@@ -1500,7 +1506,6 @@ class MainViewModel @Inject constructor(
                 if (_vpnState.value == VpnState.CONNECTING) {
                     _vpnState.value = VpnState.CONNECTED
                     onVpnTunnelReady()
-                    if (repo.isLoggedIn()) markDeviceOnlineOnServer()
                 }
                 return
             }
@@ -1513,7 +1518,6 @@ class MainViewModel @Inject constructor(
             )
             _vpnState.value = VpnState.CONNECTED
             onVpnTunnelReady()
-            if (repo.isLoggedIn()) markDeviceOnlineOnServer()
             return
         }
         val err = WdttTunnelManager.lastError.value
@@ -1539,6 +1543,8 @@ class MainViewModel @Inject constructor(
         stopUpdatePolling(clearBanner = true)
         mainTunnelDataSyncJob?.cancel()
         mainTunnelDataSyncJob = null
+        backendSyncJob?.cancel()
+        backendSyncJob = null
         viewModelScope.launch {
             _vpnState.value = VpnState.DISCONNECTING
             WdttTunnelManager.prepareForShutdown()

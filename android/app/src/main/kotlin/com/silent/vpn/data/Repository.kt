@@ -62,9 +62,6 @@ class SilentRepository @Inject constructor(
     private var _baseUrl: String = ""
     /** Когда VPN поднят — API через адрес в туннеле (10.66.66.1), иначе nip.io недоступен в белых списках. */
     private var tunnelApiBaseUrl: String? = null
-    /** true только внутри withApiOverlay — bind OkHttp к VPN-сети для 10.66.66.1. */
-    @Volatile
-    private var bindApiToVpnNetwork = false
 
     init {
         ensureServerUrl()
@@ -103,17 +100,18 @@ class SilentRepository @Inject constructor(
             .sslSocketFactory(TrustAllCerts.sslSocketFactory(), TrustAllCerts.trustManager())
             .connectTimeout(4, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
-        val bindVpn = baseUrl.contains(WG_TUNNEL_GATEWAY) &&
+        // Bind к VPN Network только если app в туннеле; при APP_EXCLUDED — EPERM, маршрут через overlay WG.
+        if (baseUrl.contains(WG_TUNNEL_GATEWAY) &&
             com.silent.vpn.service.SilentVpnService.isRunning &&
-            (bindApiToVpnNetwork || !APP_EXCLUDED_FROM_VPN)
-        if (bindVpn) {
+            !APP_EXCLUDED_FROM_VPN
+        ) {
             VpnNetworkHelper.getSilentVpnNetwork(context)?.let { network ->
                 builder.socketFactory(network.socketFactory)
                 builder.dns(object : Dns {
                     override fun lookup(hostname: String): List<InetAddress> =
                         network.getAllByName(hostname).toList()
                 })
-                Log.i(TAG, "API client bound to VPN network for $baseUrl (overlay=$bindApiToVpnNetwork)")
+                Log.i(TAG, "API client bound to VPN network for $baseUrl")
             }
         }
         val client = builder.build()
@@ -158,7 +156,7 @@ class SilentRepository @Inject constructor(
         _apiCacheKey = null
     }
 
-    /** VPN подключён, app исключён из WG — API только через overlay + bind к VPN Network. */
+    /** VPN подключён, app исключён из WG — API только через overlay (app кратко в WG, 10.66.66.0/24). */
     fun needsTunnelApiOverlay(): Boolean =
         APP_EXCLUDED_FROM_VPN &&
             com.silent.vpn.service.SilentVpnService.isRunning &&
@@ -176,15 +174,8 @@ class SilentRepository @Inject constructor(
             error("VPN tunnel not ready for backend API")
         }
         return com.silent.vpn.vpn.WdttTunnelManager.withApiOverlay {
-            bindApiToVpnNetwork = true
             useApiBase(tunnelApiBaseUrl())
-            invalidateApiClient()
-            try {
-                block()
-            } finally {
-                bindApiToVpnNetwork = false
-                invalidateApiClient()
-            }
+            block()
         }
     }
 

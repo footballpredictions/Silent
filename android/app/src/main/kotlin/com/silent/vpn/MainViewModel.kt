@@ -632,7 +632,7 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
                 _forgotSent.value = true
-                restartBootstrapTimerIfNeeded()
+                // Таймер не перезапускаем — те же 2 мин с шага 1.
             } catch (e: Exception) {
                 _authError.value = e.message ?: "Ошибка отправки"
                 restartBootstrapTimerIfNeeded()
@@ -773,7 +773,7 @@ class MainViewModel @Inject constructor(
                 repo.saveRememberMe(email, rememberMe)
                 _regEmail.value = email
                 _regDone.value = true
-                restartBootstrapTimerIfNeeded()
+                // Таймер не перезапускаем — те же 2 мин с шага 1, потом VPN отключится.
             } catch (e: Exception) {
                 _authError.value = e.message ?: "Ошибка регистрации"
                 restartBootstrapTimerIfNeeded()

@@ -437,10 +437,9 @@ class MainViewModel @Inject constructor(
             backendSyncJob = viewModelScope.launch {
                 WdttTunnelManager.awaitWgConfigSettled()
                 if (_vpnState.value != VpnState.CONNECTED || !WdttTunnelManager.tunnelReady.value) return@launch
+                runInitialBackendSync()
                 markDeviceOnlineOnServer()
-                triggerUpdateCheckAndPolling()
-                runCatching { fetchProfileNow() }
-                    .onFailure { e -> DebugLog.w("MainViewModel", "profile after tunnel ready: ${e.message}") }
+                startUpdatePolling(skipInitialCheck = true)
             }
         } else {
             loadTheme()
@@ -453,10 +452,10 @@ class MainViewModel @Inject constructor(
         startUpdatePolling()
     }
 
-    private fun startUpdatePolling() {
+    private fun startUpdatePolling(skipInitialCheck: Boolean = false) {
         if (updatePollJob?.isActive == true) return
         updatePollJob = viewModelScope.launch {
-            delay(5_000)
+            if (!skipInitialCheck) delay(5_000)
             while (
                 _vpnState.value == VpnState.CONNECTED &&
                 repo.isLoggedIn() &&
@@ -466,6 +465,35 @@ class MainViewModel @Inject constructor(
                 runCatching { checkForUpdateNow() }
                 delay(UPDATE_POLL_INTERVAL_MS)
             }
+        }
+    }
+
+    /** Один overlay-с сеанс после connect: online + profile + checkUpdate. */
+    private suspend fun runInitialBackendSync() {
+        val tunnel = repo.tunnelApiBaseUrl()
+        val version = AppUpdateManager.currentVersion()
+        if (!repo.needsTunnelApiOverlay()) {
+            runCatching {
+                val res = repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
+                if (res.isSuccessful) DebugLog.i("MainViewModel", "online heartbeat OK")
+            }
+            tryFetchProfileOnBase(tunnel)
+            DebugLog.i("MainViewModel", "checkUpdate start v=$version")
+            tryCheckUpdateOnBase(repo.getPublicServerUrl(), version)
+            return
+        }
+        repo.withTunnelApiWhenExcluded {
+            runCatching {
+                val res = repo.getApi().connect(ConnectRequest(repo.getDeviceFingerprint(), "android"))
+                if (res.isSuccessful) {
+                    DebugLog.i("MainViewModel", "online heartbeat OK (tunnel API)")
+                } else {
+                    DebugLog.w("MainViewModel", "online sync HTTP ${res.code()}")
+                }
+            }
+            tryFetchProfileOnBase(tunnel)
+            DebugLog.i("MainViewModel", "checkUpdate start v=$version via $tunnel")
+            tryCheckUpdateOnBase(tunnel, version)
         }
     }
 
@@ -482,9 +510,9 @@ class MainViewModel @Inject constructor(
         if (_vpnState.value != VpnState.CONNECTED) return
         onlineHeartbeatJob?.cancel()
         onlineHeartbeatJob = viewModelScope.launch {
-            var intervalMs = 0L
+            var intervalMs = 5 * 60 * 1000L
             while (_vpnState.value == VpnState.CONNECTED && SilentVpnService.isRunning) {
-                if (intervalMs > 0L) delay(intervalMs)
+                delay(intervalMs)
                 val ok = runCatching {
                     repo.withTunnelApiWhenExcluded {
                         val res = repo.getApi().connect(
@@ -589,13 +617,18 @@ class MainViewModel @Inject constructor(
     private suspend fun tryCheckUpdateOnBase(base: String, version: String): Boolean {
         repo.useApiBase(base)
         val res = repo.getApi().checkUpdate("android", version)
-        if (!res.isSuccessful) return false
+        if (!res.isSuccessful) {
+            DebugLog.w("MainViewModel", "checkUpdate HTTP ${res.code()} on $base")
+            return false
+        }
         val body = res.body()
         if (body?.available == true) {
             _updateInfo.value = body
             updateApiBaseUrl = base.trimEnd('/')
+            DebugLog.i("MainViewModel", "checkUpdate: available ${body.version} on $base")
         } else {
             _updateInfo.value = null
+            DebugLog.i("MainViewModel", "checkUpdate: up to date v=$version on $base")
         }
         return true
     }

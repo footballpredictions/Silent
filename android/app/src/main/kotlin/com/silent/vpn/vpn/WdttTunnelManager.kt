@@ -42,6 +42,11 @@ object WdttTunnelManager {
     private var appliedConfigFingerprint: String? = null
     private val wgApplyMutex = Mutex()
     private var apiOverlayDepth = 0
+    @Volatile private var apiOverlayActive = false
+    private var overlayHoldUntilMs = 0L
+    private var overlayRestoreJob: Job? = null
+    private val overlayHoldMs = 4_000L
+    private val overlayEnterDelayMs = 800L
     private var appContext: Context? = null
     private var lastParams: Params? = null
     private var lastContext: Context? = null
@@ -97,8 +102,9 @@ object WdttTunnelManager {
                 apiFallbackConfig = params.apiWgConfig?.trim()?.takeIf { it.contains("[Interface]") }
                 CaptchaWebViewManager.onTunnelStart(context)
             } else {
-                apiOverlayRestoreJob?.cancel()
+                overlayRestoreJob?.cancel()
                 apiOverlayDepth = 0
+                apiOverlayActive = false
                 killProcess()
                 activeWorkers.value = 0
                 stats.value = ""
@@ -547,12 +553,12 @@ object WdttTunnelManager {
 
     fun tunnelApiBase(): String = "http://${SilentRepository.WG_TUNNEL_GATEWAY}:8000"
 
-    private var apiOverlayRestoreJob: Job? = null
-    @Volatile private var overlayRestoreSuppressed = false
+    private var overlayRestoreSuppressed = false
 
-    /** Перед отключением VPN — не восстанавливать полный туннель в finally overlay. */
+    /** Перед отключением VPN — не восстанавливать полный туннель после overlay. */
     fun prepareForShutdown() {
         overlayRestoreSuppressed = true
+        overlayRestoreJob?.cancel()
     }
 
     fun wgConfigSettled(): Boolean = appliedConfigSource >= 2
@@ -570,37 +576,52 @@ object WdttTunnelManager {
         DebugLog.w(TAG, "awaitWgConfigSettled: timeout (source=$appliedConfigSource)")
     }
 
-    /** Краткий overlay только для HTTP к 10.66.66.1; основной WG — полный туннель (интернет). */
+    /**
+     * Краткий overlay для HTTP к 10.66.66.1.
+     * Hold 4 с после последнего запроса — без лишних ON/OFF WG (иконка VPN не моргает).
+     */
     suspend fun <T> withApiOverlay(block: suspend () -> T): T {
         if (!running.value) return block()
         val config = lastWgConfig ?: return block()
         val helper = wgHelper ?: return block()
-        if (apiOverlayDepth > 0) {
-            return block()
-        }
-        return wgApplyMutex.withLock {
-            apiOverlayRestoreJob?.cancel()
-            val entered = apiOverlayDepth == 0
+        var scheduleRestore = false
+        val result = wgApplyMutex.withLock {
+            overlayRestoreJob?.cancel()
             apiOverlayDepth++
-            if (entered) {
+            if (!apiOverlayActive) {
                 DebugLog.i(TAG, "API overlay ON → 10.66.66.0/24")
                 helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = true)
-                delay(1200)
+                apiOverlayActive = true
+                delay(overlayEnterDelayMs)
+            } else {
+                DebugLog.d(TAG, "API overlay reuse (depth=$apiOverlayDepth)")
             }
             try {
                 block()
             } finally {
                 apiOverlayDepth = (apiOverlayDepth - 1).coerceAtLeast(0)
-                if (apiOverlayDepth == 0) {
-                    apiOverlayRestoreJob?.cancel()
-                    if (running.value && !overlayRestoreSuppressed) {
-                        withContext(NonCancellable) {
-                            DebugLog.i(TAG, "API overlay OFF → full tunnel")
-                            helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
-                        }
-                    }
-                    overlayRestoreSuppressed = false
-                }
+                overlayHoldUntilMs = System.currentTimeMillis() + overlayHoldMs
+                scheduleRestore = apiOverlayDepth == 0
+            }
+        }
+        if (scheduleRestore) scheduleOverlayRestore(config, helper)
+        return result
+    }
+
+    private fun scheduleOverlayRestore(config: String, helper: WireGuardHelper) {
+        overlayRestoreJob?.cancel()
+        overlayRestoreJob = scope.launch {
+            while (apiOverlayDepth == 0 && System.currentTimeMillis() < overlayHoldUntilMs) {
+                delay(200)
+            }
+            if (apiOverlayDepth > 0 || overlayRestoreSuppressed || !running.value) return@launch
+            wgApplyMutex.withLock {
+                if (apiOverlayDepth > 0 || !apiOverlayActive) return@withLock
+                if (System.currentTimeMillis() < overlayHoldUntilMs) return@withLock
+                DebugLog.i(TAG, "API overlay OFF → full tunnel")
+                helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
+                apiOverlayActive = false
+                overlayRestoreSuppressed = false
             }
         }
     }
@@ -692,8 +713,9 @@ object WdttTunnelManager {
     private suspend fun stopInternal(keepWg: Boolean) {
         overlayRestoreSuppressed = true
         withContext(Dispatchers.IO) {
-            apiOverlayRestoreJob?.cancel()
+            overlayRestoreJob?.cancel()
             apiOverlayDepth = 0
+            apiOverlayActive = false
             deferredApiWgConfig = null
             killProcess()
             if (!keepWg) wgHelper?.stopTunnel()

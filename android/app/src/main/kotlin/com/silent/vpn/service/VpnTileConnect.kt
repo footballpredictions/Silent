@@ -11,6 +11,7 @@ import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.util.SessionTrace
 import dagger.hilt.android.EntryPointAccessors
 
 object VpnTileConnect {
@@ -41,8 +42,12 @@ object VpnTileConnect {
 
     fun disconnect(context: Context) {
         val now = System.currentTimeMillis()
-        if (now - lastTileActionMs < TILE_DEBOUNCE_MS) return
+        if (now - lastTileActionMs < TILE_DEBOUNCE_MS) {
+            SessionTrace.mark("VpnTileConnect.disconnect", "debounced")
+            return
+        }
         lastTileActionMs = now
+        SessionTrace.enter("VpnTileConnect.disconnect")
         context.startService(
             Intent(context, SilentVpnService::class.java).apply {
                 action = SilentVpnService.ACTION_DISCONNECT
@@ -51,36 +56,110 @@ object VpnTileConnect {
     }
 
     fun tryConnect(context: Context): ConnectResult {
+        SessionTrace.enter("VpnTileConnect.tryConnect")
         val appCtx = context.applicationContext
         val now = System.currentTimeMillis()
         if (now - lastTileActionMs < TILE_DEBOUNCE_MS) {
+            SessionTrace.exit("VpnTileConnect.tryConnect", "debounced")
             DebugLog.i("VpnTileConnect", "tile connect debounced")
             return ConnectResult.Busy
         }
-        if (isVpnActive(context)) return ConnectResult.AlreadyConnected
+        if (isVpnActive(context)) {
+            SessionTrace.exit("VpnTileConnect.tryConnect", "already connected")
+            return ConnectResult.AlreadyConnected
+        }
         if (isSessionBusy(context)) {
+            SessionTrace.exit("VpnTileConnect.tryConnect", "session busy")
             DebugLog.i("VpnTileConnect", "tile connect blocked — session busy")
             return ConnectResult.Busy
         }
         val repo = repository(context)
-        if (!repo.isLoggedIn()) return ConnectResult.NeedLogin
-        val cached = loadCachedConfig(repo) ?: return ConnectResult.NoConfig
-        if (VpnService.prepare(context) != null) return ConnectResult.NeedVpnPermission
+        if (!repo.isLoggedIn()) {
+            SessionTrace.exit("VpnTileConnect.tryConnect", "need login")
+            return ConnectResult.NeedLogin
+        }
+        val cached = loadCachedConfig(repo)
+        if (cached == null) {
+            SessionTrace.exit("VpnTileConnect.tryConnect", "no config")
+            return ConnectResult.NoConfig
+        }
+        if (VpnService.prepare(context) != null) {
+            SessionTrace.exit("VpnTileConnect.tryConnect", "need vpn permission")
+            return ConnectResult.NeedVpnPermission
+        }
         lastTileActionMs = now
+        SessionTrace.mark("VpnTileConnect.tryConnect", "starting service")
         startVpnService(context, repo, cached)
+        SessionTrace.exit("VpnTileConnect.tryConnect", "started")
         return ConnectResult.Started
     }
 
     /** После выдачи VPN-разрешения из [TileConnectActivity]. */
     fun connectAfterPermission(context: Context): ConnectResult {
-        if (isVpnActive(context)) return ConnectResult.AlreadyConnected
-        if (isSessionBusy(context)) return ConnectResult.Busy
+        SessionTrace.enter("VpnTileConnect.connectAfterPermission")
+        if (isVpnActive(context)) {
+            SessionTrace.exit("VpnTileConnect.connectAfterPermission", "already connected")
+            return ConnectResult.AlreadyConnected
+        }
+        if (isSessionBusy(context)) {
+            SessionTrace.exit("VpnTileConnect.connectAfterPermission", "busy")
+            return ConnectResult.Busy
+        }
         val repo = repository(context)
-        if (!repo.isLoggedIn()) return ConnectResult.NeedLogin
-        val cached = loadCachedConfig(repo) ?: return ConnectResult.NoConfig
+        if (!repo.isLoggedIn()) {
+            SessionTrace.exit("VpnTileConnect.connectAfterPermission", "need login")
+            return ConnectResult.NeedLogin
+        }
+        val cached = loadCachedConfig(repo)
+        if (cached == null) {
+            SessionTrace.exit("VpnTileConnect.connectAfterPermission", "no config")
+            return ConnectResult.NoConfig
+        }
         lastTileActionMs = System.currentTimeMillis()
         startVpnService(context, repo, cached)
+        SessionTrace.exit("VpnTileConnect.connectAfterPermission", "started")
         return ConnectResult.Started
+    }
+
+    /** Переподключение после START_STICKY (процесс убит, сервис перезапущен). */
+    fun restartCachedSession(context: Context): Boolean {
+        SessionTrace.enter("VpnTileConnect.restartCachedSession")
+        if (VpnSessionState.isActive(context)) {
+            SessionTrace.exit("VpnTileConnect.restartCachedSession", "already active")
+            return true
+        }
+        if (VpnSessionState.isBusy(context)) {
+            SessionTrace.exit("VpnTileConnect.restartCachedSession", "busy")
+            return false
+        }
+        val started = restartCachedSessionDirect(context)
+        SessionTrace.exit("VpnTileConnect.restartCachedSession", if (started) "started" else "failed")
+        return started
+    }
+
+    /** Без reconcileStaleSession — для восстановления после убийства процесса. */
+    internal fun restartCachedSessionDirect(context: Context): Boolean {
+        SessionTrace.enter("VpnTileConnect.restartCachedSessionDirect")
+        if (SilentVpnService.isRunning || WdttTunnelManager.running.value) {
+            SessionTrace.exit("VpnTileConnect.restartCachedSessionDirect", "busy")
+            return false
+        }
+        val repo = repository(context)
+        if (!repo.isLoggedIn()) {
+            SessionTrace.exit("VpnTileConnect.restartCachedSessionDirect", "not logged in")
+            VpnServiceTracker.markSessionActive(context, false)
+            return false
+        }
+        val cached = loadCachedConfig(repo)
+        if (cached == null) {
+            SessionTrace.exit("VpnTileConnect.restartCachedSessionDirect", "no config")
+            VpnServiceTracker.markSessionActive(context, false)
+            return false
+        }
+        SessionTrace.mark("VpnTileConnect.restartCachedSessionDirect", "starting service")
+        startVpnService(context, repo, cached)
+        SessionTrace.exit("VpnTileConnect.restartCachedSessionDirect", "started")
+        return true
     }
 
     private fun loadCachedConfig(repo: SilentRepository): VpnConfig? {

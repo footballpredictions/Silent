@@ -5,6 +5,7 @@ import android.util.Log
 import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vpn.captcha.CaptchaWebViewManager
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import kotlinx.coroutines.CoroutineScope
@@ -95,6 +96,10 @@ object WdttTunnelManager {
     private val groupHashPrefix = mutableMapOf<Int, String>()
 
     fun start(context: Context, params: Params, isSwitching: Boolean = false) {
+        SessionTrace.enter(
+            "WdttTunnelManager.start",
+            "workers=${params.workers} hashes=${params.vkHashes.size} switching=$isSwitching bootstrap=${params.isBootstrap}",
+        )
         scope.launch {
             startStopMutex.withLock {
                 val ctx = context.applicationContext
@@ -499,6 +504,7 @@ object WdttTunnelManager {
                 if (!running.value || appliedConfigSource < source) return@launch
                 if (activeWorkers.value >= 1 && wgHelper?.isTunnelUp() == true) {
                     tunnelReady.value = true
+                    SessionTrace.mark("WdttTunnelManager.tunnelReady", "workers=${activeWorkers.value}")
                     DebugLog.i(TAG, "tunnelReady: WG UP + ${activeWorkers.value} active workers")
                     return@launch
                 }
@@ -804,6 +810,7 @@ object WdttTunnelManager {
     }
 
     fun stop() {
+        SessionTrace.mark("WdttTunnelManager.stop")
         scope.launch {
             startStopMutex.withLock { stopInternal(keepWg = false) }
         }
@@ -815,6 +822,7 @@ object WdttTunnelManager {
 
     /** После kill процесса — сброс Flow без stopInternal (плитка QS). */
     fun clearStaleSession() {
+        SessionTrace.mark("WdttTunnelManager.clearStaleSession")
         running.value = false
         tunnelReady.value = false
         activeWorkers.value = 0

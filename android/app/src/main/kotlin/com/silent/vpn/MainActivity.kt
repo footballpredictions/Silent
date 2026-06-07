@@ -20,6 +20,7 @@ import com.silent.vpn.ui.screens.MainScreen
 import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.ui.theme.SilentTheme
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.vk.VkCallsLink
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
@@ -76,6 +77,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        SessionTrace.mark("MainActivity.onCreate", BuildConfig.VERSION_NAME)
         DebugLog.i("App", "Silent VPN ${android.os.Build.MODEL} API ${android.os.Build.VERSION.SDK_INT}")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -235,12 +237,14 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         isForeground = true
+        SessionTrace.mark("MainActivity.onResume")
         vm.onAppResumed()
         ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
     }
 
     override fun onPause() {
         isForeground = false
+        SessionTrace.mark("MainActivity.onPause")
         super.onPause()
     }
 }

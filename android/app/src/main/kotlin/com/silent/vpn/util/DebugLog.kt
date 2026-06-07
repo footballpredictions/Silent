@@ -73,6 +73,12 @@ object DebugLog {
         flushUiIfDirty()
     }
 
+    /** Только буфер UI «Лог», без второй строки в logcat. */
+    fun traceUi(tag: String, msg: String) {
+        append("T", tag, msg, flushUi = true)
+        flushUiIfDirty()
+    }
+
     fun getText(): String = synchronized(this) { buffer.joinToString("\n") }
 
     fun clear() {

@@ -36,6 +36,7 @@ import com.silent.vpn.service.VpnSessionState
 import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.vk.HashParser
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.HashFailureReporter
 import com.silent.vpn.vpn.WdttTunnelManager
@@ -324,15 +325,24 @@ class MainViewModel @Inject constructor(
     }
 
     private fun syncVpnStateFromSystem() {
+        SessionTrace.enter("MainViewModel.syncVpnStateFromSystem")
         VpnServiceTracker.reconcileStaleSession(appContext)
         when {
             VpnSessionState.isActive(appContext) -> {
                 _vpnState.value = VpnState.CONNECTED
+                SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "CONNECTED attach")
                 attachExistingSession()
             }
-            SilentVpnService.isRunning -> _vpnState.value = VpnState.CONNECTING
-            else -> _vpnState.value = VpnState.DISCONNECTED
+            SilentVpnService.isRunning -> {
+                _vpnState.value = VpnState.CONNECTING
+                SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "CONNECTING")
+            }
+            else -> {
+                _vpnState.value = VpnState.DISCONNECTED
+                SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "DISCONNECTED")
+            }
         }
+        SessionTrace.exit("MainViewModel.syncVpnStateFromSystem")
     }
 
     /** Подключиться к уже работающему туннелю (плитка QS / сервис без перезапуска). */
@@ -342,12 +352,17 @@ class MainViewModel @Inject constructor(
     }
 
     private fun syncSessionOnResume() {
+        SessionTrace.enter("MainViewModel.syncSessionOnResume")
         if (_resetPasswordToken.value != null) {
+            SessionTrace.exit("MainViewModel.syncSessionOnResume", "reset password flow")
             _screen.value = AppScreen.LOGIN
             ensureBootstrapForAuthFlow(appContext)
             return
         }
-        if (!repo.isLoggedIn()) return
+        if (!repo.isLoggedIn()) {
+            SessionTrace.exit("MainViewModel.syncSessionOnResume", "not logged in")
+            return
+        }
         _screen.value = AppScreen.MAIN
         _authLoading.value = false
         restoreCachedProfileToUi()
@@ -374,6 +389,7 @@ class MainViewModel @Inject constructor(
                 }
             }
         }
+        SessionTrace.exit("MainViewModel.syncSessionOnResume", "vpn=${_vpnState.value}")
     }
 
     /** Если API недоступен без VPN (белые списки) — краткий bootstrap для профиля и хешей. */
@@ -1293,15 +1309,22 @@ class MainViewModel @Inject constructor(
     }
 
     fun connect(context: Context) {
-        if (_vpnState.value == VpnState.CONNECTING) return
+        SessionTrace.enter("MainViewModel.connect", "state=${_vpnState.value}")
+        if (_vpnState.value == VpnState.CONNECTING) {
+            SessionTrace.exit("MainViewModel.connect", "already connecting")
+            return
+        }
         if (VpnSessionState.isActive(appContext)) {
+            SessionTrace.mark("MainViewModel.connect", "attach existing session")
             DebugLog.i("MainViewModel", "connect attach — shared session already active")
             _vpnState.value = VpnState.CONNECTED
             _vpnError.value = null
             attachExistingSession()
+            SessionTrace.exit("MainViewModel.connect", "attached")
             return
         }
         if (_vpnState.value == VpnState.CONNECTED && SilentVpnService.isRunning) {
+            SessionTrace.exit("MainViewModel.connect", "already connected")
             DebugLog.i("MainViewModel", "connect ignored: already connected")
             return
         }
@@ -1613,6 +1636,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun disconnect(context: Context) {
+        SessionTrace.enter("MainViewModel.disconnect")
         connectJob?.cancel()
         connectJob = null
         onlineHeartbeatJob?.cancel()
@@ -1647,6 +1671,7 @@ class MainViewModel @Inject constructor(
             WdttTunnelManager.stopAndAwait()
             repo.clearTunnelApiBase()
             _vpnState.value = VpnState.DISCONNECTED
+            SessionTrace.exit("MainViewModel.disconnect")
         }
     }
 

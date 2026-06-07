@@ -24,6 +24,7 @@ import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.WireGuardConfigBuilder
@@ -67,6 +68,7 @@ class SilentVpnService : Service() {
             private set
 
         fun resetStaleSession() {
+            SessionTrace.mark("SilentVpnService.resetStaleSession")
             isRunning = false
         }
     }
@@ -91,6 +93,7 @@ class SilentVpnService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        SessionTrace.mark("SilentVpnService.onCreate")
         createNotificationChannel()
     }
 
@@ -98,6 +101,7 @@ class SilentVpnService : Service() {
     private fun startStatsUpdater() {
         statsUpdaterJob?.cancel()
         statsUpdaterJob = scope.launch {
+            SessionTrace.enter("SilentVpnService.statsUpdater")
             delay(1000)
             while (isActive && isRunning) {
                 val stats = WdttTunnelManager.stats.value
@@ -105,43 +109,52 @@ class SilentVpnService : Service() {
                     releasePerformanceLocks()
                     postVpnNotification(stats)
                     if (VpnSessionState.isActive(this@SilentVpnService)) {
+                        SessionTrace.mark("SilentVpnService.statsUpdater", "active sync=${stats.take(32)}")
+                        VpnServiceTracker.markSessionActive(this@SilentVpnService, true)
                         VpnBackendSync.ensureRunning(scope, this@SilentVpnService)
                     }
                 } else if (WdttTunnelManager.running.value) {
+                    SessionTrace.mark("SilentVpnService.statsUpdater", "connecting")
                     startFg(buildConnectingNotification())
                 }
                 delay(3000)
             }
+            SessionTrace.exit("SilentVpnService.statsUpdater")
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        SessionTrace.mark("SilentVpnService.onStartCommand", "action=${intent?.action}")
         when (intent?.action) {
             ACTION_CONNECT -> {
                 val configJson = intent.getStringExtra(EXTRA_CONFIG)
                 if (configJson == null) {
+                    SessionTrace.warn("SilentVpnService.CONNECT", "no config")
                     DebugLog.e("VpnService", "CONNECT without config")
                     stopSelf()
                     return START_NOT_STICKY
                 }
                 if (VpnTileConnect.isCaptchaPending()) {
+                    SessionTrace.mark("SilentVpnService.CONNECT", "blocked captcha")
                     DebugLog.w("VpnService", "CONNECT ignored — VK captcha in progress")
                     ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
                     return START_STICKY
                 }
                 if (VpnSessionState.isActive(this)) {
+                    SessionTrace.mark("SilentVpnService.CONNECT", "already active")
                     DebugLog.i("VpnService", "CONNECT ignored — session already active (app/tile shared)")
                     VpnBackendSync.ensureRunning(scope, this)
                     VpnTileHelper.requestUpdate(this)
                     return START_STICKY
                 }
                 if (WdttTunnelManager.running.value && !WdttTunnelManager.tunnelReady.value) {
+                    SessionTrace.mark("SilentVpnService.CONNECT", "blocked ramp-up")
                     DebugLog.w("VpnService", "CONNECT ignored — tunnel ramp-up in progress")
                     return START_STICKY
                 }
-                DebugLog.i(
-                    "VpnService",
-                    "CONNECT device=${runCatching { JSONObject(configJson).optString("device_id") }.getOrNull()?.take(8)}",
+                SessionTrace.enter(
+                    "SilentVpnService.CONNECT",
+                    "device=${runCatching { JSONObject(configJson).optString("device_id") }.getOrNull()?.take(8)}",
                 )
                 connectStartedAtMs = System.currentTimeMillis()
                 lastTransport = null
@@ -157,11 +170,21 @@ class SilentVpnService : Service() {
                 connect(configJson)
                 VpnTileHelper.requestUpdate(this)
             }
-            ACTION_DISCONNECT -> disconnect()
+            ACTION_DISCONNECT -> {
+                SessionTrace.enter("SilentVpnService.DISCONNECT")
+                disconnect()
+            }
             ACTION_EXTERNAL_REVOKED -> {
+                SessionTrace.warn("SilentVpnService", "EXTERNAL_REVOKED")
                 if (isRunning) {
                     DebugLog.w("VpnService", "DISCONNECT — VPN revoked by another app")
                     disconnect()
+                }
+            }
+            null -> {
+                if (VpnServiceTracker.isSessionMarkedActive(this) && !isRunning) {
+                    SessionTrace.mark("SilentVpnService.onStartCommand", "sticky restart")
+                    VpnTileConnect.restartCachedSession(this)
                 }
             }
         }
@@ -234,8 +257,10 @@ class SilentVpnService : Service() {
                 "WDTT n=$totalWorkers vk=${libclientHashes.size}/$activeHashCount hashes",
             )
             isRunning = true
+            SessionTrace.mark("SilentVpnService.connect", "isRunning=true")
             VpnTileHelper.requestUpdate(this)
         } catch (e: Exception) {
+            SessionTrace.warn("SilentVpnService.connect", e.message ?: "failed")
             DebugLog.e("VpnService", "connect failed", e)
             isRunning = false
             VpnTileHelper.requestUpdate(this)
@@ -249,6 +274,8 @@ class SilentVpnService : Service() {
     private fun disconnect() {
         DebugLog.i("VpnService", "DISCONNECT")
         isRunning = false
+        SessionTrace.mark("SilentVpnService.disconnect", "isRunning=false")
+        VpnServiceTracker.markSessionActive(this, false)
         VpnBackendSync.stop()
         teardownVpnOwnershipMonitor()
         VpnTileHelper.requestUpdate(this)
@@ -626,12 +653,27 @@ class SilentVpnService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        VpnServiceTracker.reconcileStaleSession(applicationContext)
+        SessionTrace.mark("SilentVpnService.onTaskRemoved", "app swiped away running=$isRunning")
+        if (isRunning) {
+            VpnServiceTracker.markSessionActive(this, true)
+            val stats = WdttTunnelManager.stats.value
+            runCatching {
+                if (WdttTunnelManager.isInternetReady()) {
+                    startFg(buildActiveNotification(stats))
+                } else {
+                    startFg(buildConnectingNotification())
+                }
+            }
+        }
         VpnTileHelper.requestUpdate(this)
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
+        SessionTrace.enter("SilentVpnService.onDestroy")
+        if (!isRunning) {
+            VpnServiceTracker.markSessionActive(this, false)
+        }
         teardownNetworkCallback()
         teardownVpnOwnershipMonitor()
         WdttTunnelManager.stop()
@@ -641,6 +683,7 @@ class SilentVpnService : Service() {
         releaseWakeLock()
         releaseWifiLock()
         clearVpnNotification()
+        SessionTrace.exit("SilentVpnService.onDestroy")
         super.onDestroy()
     }
 

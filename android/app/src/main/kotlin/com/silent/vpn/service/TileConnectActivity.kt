@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import com.silent.vpn.MainActivity
+import com.silent.vpn.util.SessionTrace
 
 /**
  * Прозрачная активность: только запрос VPN-разрешения для плитки QS.
@@ -17,6 +18,7 @@ class TileConnectActivity : ComponentActivity() {
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
+        SessionTrace.mark("TileConnectActivity.vpnPermission", "result=${result.resultCode}")
         if (result.resultCode == RESULT_OK) {
             VpnTileConnect.connectAfterPermission(this)
         }
@@ -25,12 +27,17 @@ class TileConnectActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        when (VpnTileConnect.tryConnect(this)) {
+        SessionTrace.enter("TileConnectActivity.onCreate")
+        when (val r = VpnTileConnect.tryConnect(this)) {
             VpnTileConnect.ConnectResult.Started,
             VpnTileConnect.ConnectResult.AlreadyConnected,
             VpnTileConnect.ConnectResult.Busy,
-            -> finish()
+            -> {
+                SessionTrace.exit("TileConnectActivity.onCreate", r.name)
+                finish()
+            }
             VpnTileConnect.ConnectResult.NeedVpnPermission -> {
+                SessionTrace.mark("TileConnectActivity.onCreate", "request permission")
                 val prep = VpnService.prepare(this)
                 if (prep != null) vpnPermissionLauncher.launch(prep)
                 else {
@@ -41,6 +48,7 @@ class TileConnectActivity : ComponentActivity() {
             VpnTileConnect.ConnectResult.NeedLogin,
             VpnTileConnect.ConnectResult.NoConfig,
             -> {
+                SessionTrace.exit("TileConnectActivity.onCreate", "open app ${r.name}")
                 startActivity(MainActivity.openIntent(this))
                 finish()
             }

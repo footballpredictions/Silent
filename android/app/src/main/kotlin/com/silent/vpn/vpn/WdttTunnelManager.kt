@@ -811,6 +811,15 @@ object WdttTunnelManager {
         startStopMutex.withLock { stopInternal(keepWg = false) }
     }
 
+    /** После kill процесса — сброс Flow без stopInternal (плитка QS). */
+    fun clearStaleSession() {
+        running.value = false
+        tunnelReady.value = false
+        activeWorkers.value = 0
+        stats.value = ""
+        lastError.value = null
+    }
+
     private fun killProcess() {
         fallbackJob?.cancel()
         confPollJob?.cancel()
@@ -877,28 +886,29 @@ object WdttTunnelManager {
         }
         val now = System.currentTimeMillis()
 
-        // Ручная капча на экране — не сбрасывать повторными auto от libclient.
-        if ((captchaManualInProgress || ManlCaptchaWebViewManager.isCaptchaPending) &&
-            requestMode == "auto"
-        ) {
-            DebugLog.w(TAG, "CAPTCHA auto skipped — manual WebView open")
+        // Ручная капча на экране — не сбрасывать повторными запросами от libclient.
+        if (captchaManualInProgress || ManlCaptchaWebViewManager.isCaptchaPending) {
+            if (requestMode == "auto") {
+                DebugLog.w(TAG, "CAPTCHA auto skipped — manual WebView open")
+                return
+            }
+            DebugLog.d(TAG, "CAPTCHA manual skipped — already open")
+            appContext?.let { ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(it) }
             return
         }
-        if (captchaInProgress && requestMode == "auto" &&
+        // Auto ещё решается — не перезапускать (libclient шлёт retry каждые ~10 с).
+        if (requestMode == "auto" && captchaInProgress &&
             redirectUri == lastCaptchaRedirectUri &&
-            now - lastCaptchaScheduledMs < 12_000L
+            now - lastCaptchaScheduledMs < 30_000L
         ) {
-            DebugLog.d(TAG, "CAPTCHA auto debounced (same URI)")
+            DebugLog.d(TAG, "CAPTCHA auto skipped — in progress")
             return
         }
         lastCaptchaRedirectUri = redirectUri
         lastCaptchaScheduledMs = now
 
         captchaSolveJob?.cancel()
-        if (!captchaManualInProgress) {
-            CaptchaWebViewManager.cancelCurrentSolve()
-            ManlCaptchaWebViewManager.cancelCaptcha()
-        }
+        CaptchaWebViewManager.cancelCurrentSolve()
         val session = captchaSession.incrementAndGet()
         captchaSolveJob = scope.launch {
             when (parts.size) {
@@ -935,7 +945,6 @@ object WdttTunnelManager {
         captchaManualInProgress = requestMode == "manual"
         try {
             val token = when (requestMode.lowercase()) {
-                "auto" -> CaptchaWebViewManager.solveCaptchaAsync(redirectUri, sessionToken)
                 "manual" -> ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
                 else -> solveAutoWebViewCaptcha(ctx, redirectUri, sessionToken)
             }

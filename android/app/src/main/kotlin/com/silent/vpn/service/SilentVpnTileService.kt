@@ -15,6 +15,11 @@ import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 class SilentVpnTileService : TileService() {
 
     override fun onStartListening() {
+        VpnServiceTracker.reconcileStaleSession(applicationContext)
+        refreshTile()
+    }
+
+    override fun onStopListening() {
         refreshTile()
     }
 
@@ -31,10 +36,10 @@ class SilentVpnTileService : TileService() {
             VpnTileConnect.isCaptchaPending() -> {
                 ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
             }
-            VpnTileConnect.isVpnActive() -> {
+            VpnTileConnect.isVpnActive(this) -> {
                 VpnTileConnect.disconnect(this)
             }
-            VpnTileConnect.isSessionBusy() -> {
+            VpnTileConnect.isSessionBusy(this) -> {
                 // Подключение / ramp-up — не перезапускать.
             }
             else -> when (VpnTileConnect.tryConnect(this)) {
@@ -70,8 +75,8 @@ class SilentVpnTileService : TileService() {
 
     private fun refreshTile() {
         val tile = qsTile ?: return
-        val connected = VpnTileConnect.isVpnActive()
-        val connecting = VpnTileConnect.isSessionBusy() && !connected
+        val connected = VpnTileConnect.isVpnActive(this)
+        val connecting = VpnTileConnect.isSessionBusy(this) && !connected
         val captcha = VpnTileConnect.isCaptchaPending()
 
         tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_silent)

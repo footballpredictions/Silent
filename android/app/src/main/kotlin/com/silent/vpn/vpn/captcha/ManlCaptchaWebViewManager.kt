@@ -50,10 +50,21 @@ object ManlCaptchaWebViewManager {
     var isCaptchaPending = false
 
     fun checkAndShowPendingCaptcha(context: Context) {
-        val intent = pendingIntentToStart
-        if (intent != null && activeActivity == null) {
-            context.startActivity(intent)
+        val intent = pendingIntentToStart ?: return
+        if (activeActivity != null) {
+            context.startActivity(
+                Intent(context, ManlCaptchaActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                    )
+                    putExtra("redirectUri", intent.getStringExtra("redirectUri"))
+                },
+            )
+            return
         }
+        context.startActivity(intent)
     }
 
     fun cancelCaptcha() {
@@ -115,10 +126,18 @@ object ManlCaptchaWebViewManager {
 
     suspend fun solveCaptchaAsync(context: Context, redirectUri: String, sessionToken: String): String {
         return captchaMutex.withLock {
+            val existing = pendingResult.get()
+            if (isCaptchaPending && existing != null && !existing.isCompleted) {
+                Log.d(TAG, "Reusing open manual captcha")
+                checkAndShowPendingCaptcha(context)
+                return@withLock withTimeout(CAPTCHA_TIMEOUT_MS) {
+                    existing.await().getOrThrow()
+                }
+            }
+
             isCaptchaPending = true
             val deferred = CompletableDeferred<Result<String>>()
-            // Если предыдущий вызов завис, отменяем его
-            pendingResult.getAndSet(deferred)?.cancel()
+            pendingResult.set(deferred)
 
             showCaptchaNotification(context, redirectUri)
 
@@ -128,7 +147,6 @@ object ManlCaptchaWebViewManager {
             }
             pendingIntentToStart = intent
 
-            // Всегда показываем окно капчи (VPN/connect идёт из MainActivity).
             context.startActivity(intent)
 
             try {
@@ -323,9 +341,8 @@ class ManlCaptchaActivity : ComponentActivity() {
                                     }
                                     @JavascriptInterface
                                     fun onError(err: String) {
-                                        Log.e("ManlCaptchaWV", "Error: $err")
-                                        ManlCaptchaWebViewManager.notifyResult(Result.failure(Exception("VK Captcha error: ${'$'}err")))
-                                        finish()
+                                        Log.w("ManlCaptchaWV", "VK error (will retry): $err")
+                                        this@apply.post { loadUrl(redirectUri) }
                                     }
                                     @JavascriptInterface
                                     fun onCancelAndStop() {
@@ -339,6 +356,7 @@ class ManlCaptchaActivity : ComponentActivity() {
                                 webViewClient = object : WebViewClient() {
                                     override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                                         super.onPageStarted(view, url, favicon)
+                                        isLoading = true
                                         view?.evaluateJavascript(interceptorJSCode, null)
                                     }
                                     override fun onPageFinished(view: WebView?, url: String?) {

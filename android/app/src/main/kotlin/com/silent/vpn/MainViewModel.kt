@@ -31,6 +31,7 @@ import com.silent.vpn.data.UserProfile
 import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.service.VpnBackendSync
+import com.silent.vpn.service.VpnServiceTracker
 import com.silent.vpn.service.VpnSessionState
 import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.vk.HashParser
@@ -323,8 +324,9 @@ class MainViewModel @Inject constructor(
     }
 
     private fun syncVpnStateFromSystem() {
+        VpnServiceTracker.reconcileStaleSession(appContext)
         when {
-            VpnSessionState.isActive() -> {
+            VpnSessionState.isActive(appContext) -> {
                 _vpnState.value = VpnState.CONNECTED
                 attachExistingSession()
             }
@@ -365,7 +367,7 @@ class MainViewModel @Inject constructor(
                     DebugLog.w("MainViewModel", "resume profile fetch: ${e.message}")
                 }
             }
-            if (SilentVpnService.isRunning && VpnSessionState.isActive()) {
+            if (SilentVpnService.isRunning && VpnSessionState.isActive(appContext)) {
                 attachExistingSession()
                 if (_vpnState.value == VpnState.CONNECTED && repo.isLoggedIn()) {
                     runCatching { checkForUpdateNow() }
@@ -1292,7 +1294,7 @@ class MainViewModel @Inject constructor(
 
     fun connect(context: Context) {
         if (_vpnState.value == VpnState.CONNECTING) return
-        if (VpnSessionState.isActive()) {
+        if (VpnSessionState.isActive(appContext)) {
             DebugLog.i("MainViewModel", "connect attach — shared session already active")
             _vpnState.value = VpnState.CONNECTED
             _vpnError.value = null
@@ -1306,7 +1308,7 @@ class MainViewModel @Inject constructor(
         connectJob?.cancel()
         connectJob = viewModelScope.launch {
             DebugLog.i("MainViewModel", "connect() start")
-            if (!VpnSessionState.isBusy()) {
+            if (!VpnSessionState.isBusy(appContext)) {
                 WdttTunnelManager.stopAndAwait()
             }
             backendSyncCompleted = false

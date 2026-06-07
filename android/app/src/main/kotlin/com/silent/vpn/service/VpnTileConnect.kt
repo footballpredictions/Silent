@@ -31,9 +31,11 @@ object VpnTileConnect {
         EntryPointAccessors.fromApplication(context.applicationContext, AppEntryPoint::class.java)
             .silentRepository()
 
-    fun isVpnActive(): Boolean = VpnSessionState.isActive()
+    fun isVpnActive(context: Context): Boolean =
+        VpnSessionState.isActive(context.applicationContext)
 
-    fun isSessionBusy(): Boolean = VpnSessionState.isBusy()
+    fun isSessionBusy(context: Context): Boolean =
+        VpnSessionState.isBusy(context.applicationContext)
 
     fun isCaptchaPending(): Boolean = VpnSessionState.isCaptchaPending()
 
@@ -49,13 +51,14 @@ object VpnTileConnect {
     }
 
     fun tryConnect(context: Context): ConnectResult {
+        val appCtx = context.applicationContext
         val now = System.currentTimeMillis()
         if (now - lastTileActionMs < TILE_DEBOUNCE_MS) {
             DebugLog.i("VpnTileConnect", "tile connect debounced")
             return ConnectResult.Busy
         }
-        if (isVpnActive()) return ConnectResult.AlreadyConnected
-        if (isSessionBusy()) {
+        if (isVpnActive(context)) return ConnectResult.AlreadyConnected
+        if (isSessionBusy(context)) {
             DebugLog.i("VpnTileConnect", "tile connect blocked — session busy")
             return ConnectResult.Busy
         }
@@ -70,8 +73,8 @@ object VpnTileConnect {
 
     /** После выдачи VPN-разрешения из [TileConnectActivity]. */
     fun connectAfterPermission(context: Context): ConnectResult {
-        if (isVpnActive()) return ConnectResult.AlreadyConnected
-        if (isSessionBusy()) return ConnectResult.Busy
+        if (isVpnActive(context)) return ConnectResult.AlreadyConnected
+        if (isSessionBusy(context)) return ConnectResult.Busy
         val repo = repository(context)
         if (!repo.isLoggedIn()) return ConnectResult.NeedLogin
         val cached = loadCachedConfig(repo) ?: return ConnectResult.NoConfig

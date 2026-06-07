@@ -96,7 +96,7 @@ object VpnBackendSync {
     private fun startMaintenance(scope: CoroutineScope, context: Context) {
         if (maintenanceJob?.isActive == true) return
         maintenanceJob = scope.launch {
-            while (isActive && SilentVpnService.isRunning && VpnSessionState.isActive()) {
+            while (isActive && SilentVpnService.isRunning && VpnSessionState.isActive(context)) {
                 delay(MAINTENANCE_MS)
                 if (!SilentVpnService.isRunning || !repo(context).isLoggedIn()) break
                 if (WdttTunnelManager.isWorkerRampUpActive()) continue

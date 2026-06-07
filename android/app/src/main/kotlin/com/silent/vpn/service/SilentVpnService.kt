@@ -65,6 +65,10 @@ class SilentVpnService : Service() {
         const val EXTRA_CONFIG = "vpn_config_json"
         var isRunning = false
             private set
+
+        fun resetStaleSession() {
+            isRunning = false
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -100,7 +104,7 @@ class SilentVpnService : Service() {
                 if (WdttTunnelManager.isInternetReady()) {
                     releasePerformanceLocks()
                     postVpnNotification(stats)
-                    if (VpnSessionState.isActive()) {
+                    if (VpnSessionState.isActive(this@SilentVpnService)) {
                         VpnBackendSync.ensureRunning(scope, this@SilentVpnService)
                     }
                 } else if (WdttTunnelManager.running.value) {
@@ -125,7 +129,7 @@ class SilentVpnService : Service() {
                     ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
                     return START_STICKY
                 }
-                if (VpnSessionState.isActive()) {
+                if (VpnSessionState.isActive(this)) {
                     DebugLog.i("VpnService", "CONNECT ignored — session already active (app/tile shared)")
                     VpnBackendSync.ensureRunning(scope, this)
                     VpnTileHelper.requestUpdate(this)
@@ -620,6 +624,12 @@ class SilentVpnService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        VpnServiceTracker.reconcileStaleSession(applicationContext)
+        VpnTileHelper.requestUpdate(this)
+        super.onTaskRemoved(rootIntent)
+    }
 
     override fun onDestroy() {
         teardownNetworkCallback()

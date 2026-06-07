@@ -81,15 +81,19 @@ object VpnBackendSync {
             }
             return
         }
-        r.withTunnelApiWhenExcluded {
-            runCatching {
-                val res = r.getApi().connect(ConnectRequest(r.getDeviceFingerprint(), "android"))
-                if (res.isSuccessful) {
-                    DebugLog.i(TAG, "online heartbeat OK (tunnel API)")
-                } else {
-                    DebugLog.w(TAG, "online sync HTTP ${res.code()}")
+        runCatching {
+            r.withTunnelApiForInitialSync {
+                runCatching {
+                    val res = r.getApi().connect(ConnectRequest(r.getDeviceFingerprint(), "android"))
+                    if (res.isSuccessful) {
+                        DebugLog.i(TAG, "online heartbeat OK (tunnel API)")
+                    } else {
+                        DebugLog.w(TAG, "online sync HTTP ${res.code()}")
+                    }
                 }
             }
+        }.onFailure { e ->
+            DebugLog.w(TAG, "initial sync skipped: ${e.message}")
         }
     }
 
@@ -108,11 +112,15 @@ object VpnBackendSync {
     private suspend fun runMaintenancePulse(context: Context) {
         val r = repo(context)
         if (!r.isLoggedIn()) return
-        r.withTunnelApiWhenExcluded {
-            runCatching {
-                val res = r.getApi().connect(ConnectRequest(r.getDeviceFingerprint(), "android"))
-                if (res.isSuccessful) DebugLog.i(TAG, "online heartbeat OK (maintenance)")
+        runCatching {
+            r.withTunnelApiWhenExcluded {
+                runCatching {
+                    val res = r.getApi().connect(ConnectRequest(r.getDeviceFingerprint(), "android"))
+                    if (res.isSuccessful) DebugLog.i(TAG, "online heartbeat OK (maintenance)")
+                }
             }
+        }.onFailure { e ->
+            DebugLog.w(TAG, "maintenance sync skipped: ${e.message}")
         }
     }
 }

@@ -705,7 +705,9 @@ object WdttTunnelManager {
         if (!allowDuringRampUp && !apiOverlayActive) {
             val since = System.currentTimeMillis() - lastOverlayEndedMs
             if (lastOverlayEndedMs > 0L && since < minOverlayIntervalMs) {
-                throw ApiOverlayBlockedException("overlay throttled (${since}ms since last)")
+                val waitMs = minOverlayIntervalMs - since
+                DebugLog.d(TAG, "API overlay throttled (${since}ms since last), wait ${waitMs}ms")
+                delay(waitMs)
             }
         }
         val config = lastWgConfig ?: return block()

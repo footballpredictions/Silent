@@ -12,6 +12,7 @@ import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.SessionTrace
+import com.silent.vpn.vpn.WdttTunnelManager
 import dagger.hilt.android.EntryPointAccessors
 
 object VpnTileConnect {

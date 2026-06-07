@@ -13,6 +13,7 @@ import android.util.Log
 import com.silent.vpn.util.DebugLog
 
 import com.silent.vpn.SilentApp
+import com.silent.vpn.service.SilentGoBackendVpnService
 
 import com.wireguard.android.backend.GoBackend
 
@@ -384,7 +385,7 @@ class WireGuardHelper(context: Context) {
 
             runCatching {
 
-                appContext.startService(Intent(appContext, GoBackend.VpnService::class.java))
+                appContext.startService(Intent(appContext, SilentGoBackendVpnService::class.java))
 
             }
 

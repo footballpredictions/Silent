@@ -11,8 +11,6 @@ import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.util.DebugLog
-import com.silent.vpn.vpn.WdttTunnelManager
-import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import dagger.hilt.android.EntryPointAccessors
 
 object VpnTileConnect {
@@ -33,22 +31,11 @@ object VpnTileConnect {
         EntryPointAccessors.fromApplication(context.applicationContext, AppEntryPoint::class.java)
             .silentRepository()
 
-    /** VPN поднят и туннель готов. */
-    fun isVpnActive(): Boolean =
-        SilentVpnService.isRunning &&
-            WdttTunnelManager.tunnelReady.value &&
-            WdttTunnelManager.activeWorkers.value >= 1
+    fun isVpnActive(): Boolean = VpnSessionState.isActive()
 
-    /** Идёт connect / libclient / капча — нельзя перезапускать с плитки. */
-    fun isSessionBusy(): Boolean =
-        SilentVpnService.isRunning ||
-            WdttTunnelManager.running.value ||
-            WdttTunnelManager.isCaptchaInProgress() ||
-            ManlCaptchaWebViewManager.isCaptchaPending
+    fun isSessionBusy(): Boolean = VpnSessionState.isBusy()
 
-    fun isCaptchaPending(): Boolean =
-        WdttTunnelManager.isCaptchaInProgress() ||
-            ManlCaptchaWebViewManager.isCaptchaPending
+    fun isCaptchaPending(): Boolean = VpnSessionState.isCaptchaPending()
 
     fun disconnect(context: Context) {
         val now = System.currentTimeMillis()

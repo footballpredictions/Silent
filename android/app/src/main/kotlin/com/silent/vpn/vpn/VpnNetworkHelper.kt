@@ -4,20 +4,41 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.Build
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.util.DebugLog
 
 object VpnNetworkHelper {
     private const val TAG = "VpnNetworkHelper"
 
-    /** Активен ли чужой VPN (не Silent). */
+    /** getConnectionOwnerUid(Network) — API 31+, через reflection (stub на части SDK). */
+    fun vpnOwnerUid(cm: ConnectivityManager, network: Network): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return -1
+        return runCatching {
+            ConnectivityManager::class.java
+                .getMethod("getConnectionOwnerUid", Network::class.java)
+                .invoke(cm, network) as Int
+        }.getOrDefault(-1)
+    }
+
+    /** Активен ли чужой VPN (не Silent). Только реально подключённый туннель другого uid. */
     fun isOtherVpnActive(context: Context): Boolean {
-        if (SilentVpnService.isRunning) return false
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val ourUid = context.applicationInfo.uid
         for (network in cm.allNetworks) {
             val caps = cm.getNetworkCapabilities(network) ?: continue
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
-                DebugLog.i(TAG, "Обнаружен активный VPN другого приложения")
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val owner = vpnOwnerUid(cm, network)
+                if (owner == ourUid) continue
+                if (owner > 0) {
+                    DebugLog.i(TAG, "Обнаружен активный VPN другого приложения (uid=$owner)")
+                    return true
+                }
+            } else if (SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) {
+                continue
+            } else {
+                DebugLog.i(TAG, "Обнаружен активный VPN (legacy check)")
                 return true
             }
         }
@@ -28,10 +49,15 @@ object VpnNetworkHelper {
     fun getSilentVpnNetwork(context: Context): Network? {
         if (!SilentVpnService.isRunning) return null
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val ourUid = context.applicationInfo.uid
         for (network in cm.allNetworks) {
             val caps = cm.getNetworkCapabilities(network) ?: continue
             if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
             if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val owner = vpnOwnerUid(cm, network)
+                if (owner > 0 && owner != ourUid) continue
+            }
             return network
         }
         return null

@@ -60,6 +60,8 @@ class SilentVpnService : Service() {
         private const val NOTIF_UPDATE_MIN_MS = 3_000L
         const val ACTION_CONNECT = "com.silent.vpn.CONNECT"
         const val ACTION_DISCONNECT = "com.silent.vpn.DISCONNECT"
+        /** Другой VPN подключился — Android отозвал наш VpnService. */
+        const val ACTION_EXTERNAL_REVOKED = "com.silent.vpn.EXTERNAL_REVOKED"
         const val EXTRA_CONFIG = "vpn_config_json"
         var isRunning = false
             private set
@@ -81,6 +83,7 @@ class SilentVpnService : Service() {
     private var performanceLocksHeld = false
     private var lastNotifUpdateMs = 0L
     private var lastNotifBody = ""
+    private var vpnOwnerCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -97,6 +100,9 @@ class SilentVpnService : Service() {
                 if (WdttTunnelManager.isInternetReady()) {
                     releasePerformanceLocks()
                     postVpnNotification(stats)
+                    if (VpnSessionState.isActive()) {
+                        VpnBackendSync.ensureRunning(scope, this@SilentVpnService)
+                    }
                 } else if (WdttTunnelManager.running.value) {
                     startFg(buildConnectingNotification())
                 }
@@ -119,6 +125,12 @@ class SilentVpnService : Service() {
                     ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
                     return START_STICKY
                 }
+                if (VpnSessionState.isActive()) {
+                    DebugLog.i("VpnService", "CONNECT ignored — session already active (app/tile shared)")
+                    VpnBackendSync.ensureRunning(scope, this)
+                    VpnTileHelper.requestUpdate(this)
+                    return START_STICKY
+                }
                 if (WdttTunnelManager.running.value && !WdttTunnelManager.tunnelReady.value) {
                     DebugLog.w("VpnService", "CONNECT ignored — tunnel ramp-up in progress")
                     return START_STICKY
@@ -137,10 +149,17 @@ class SilentVpnService : Service() {
                 startStatsUpdater()
                 acquirePerformanceLocks()
                 startFg(buildConnectingNotification())
+                setupVpnOwnershipMonitor()
                 connect(configJson)
                 VpnTileHelper.requestUpdate(this)
             }
             ACTION_DISCONNECT -> disconnect()
+            ACTION_EXTERNAL_REVOKED -> {
+                if (isRunning) {
+                    DebugLog.w("VpnService", "DISCONNECT — VPN revoked by another app")
+                    disconnect()
+                }
+            }
         }
         return START_STICKY
     }
@@ -226,6 +245,8 @@ class SilentVpnService : Service() {
     private fun disconnect() {
         DebugLog.i("VpnService", "DISCONNECT")
         isRunning = false
+        VpnBackendSync.stop()
+        teardownVpnOwnershipMonitor()
         VpnTileHelper.requestUpdate(this)
         performanceLocksHeld = false
         lastNotifBody = ""
@@ -393,6 +414,38 @@ class SilentVpnService : Service() {
         networkCallback?.let { runCatching { connectivityManager?.unregisterNetworkCallback(it) } }
         networkCallback = null
         lastTransport = null
+    }
+
+    /** Отключиться только если другой VPN реально захватил сеть (uid ≠ наш). */
+    private fun setupVpnOwnershipMonitor() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        if (vpnOwnerCallback != null) return
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val ourUid = applicationInfo.uid
+        vpnOwnerCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                if (!isRunning) return
+                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
+                val owner = VpnNetworkHelper.vpnOwnerUid(cm, network)
+                if (owner <= 0 || owner == ourUid) return
+                DebugLog.w("VpnService", "Another VPN owns network (uid=$owner) — stopping Silent")
+                disconnect()
+            }
+        }
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+            .build()
+        runCatching { cm.registerNetworkCallback(request, vpnOwnerCallback!!) }
+    }
+
+    private fun teardownVpnOwnershipMonitor() {
+        vpnOwnerCallback?.let { cb ->
+            runCatching {
+                (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
+                    .unregisterNetworkCallback(cb)
+            }
+        }
+        vpnOwnerCallback = null
     }
 
     private fun canRestartForNetwork(): Boolean {
@@ -570,8 +623,10 @@ class SilentVpnService : Service() {
 
     override fun onDestroy() {
         teardownNetworkCallback()
+        teardownVpnOwnershipMonitor()
         WdttTunnelManager.stop()
         isRunning = false
+        VpnBackendSync.stop()
         VpnTileHelper.requestUpdate(this)
         releaseWakeLock()
         releaseWifiLock()

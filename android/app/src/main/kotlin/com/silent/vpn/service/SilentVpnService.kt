@@ -291,6 +291,9 @@ class SilentVpnService : Service() {
         teardownNetworkCallback()
         clearVpnNotification()
         scope.launch(Dispatchers.IO) {
+            if (WdttTunnelManager.tunnelReady.value) {
+                runCatching { VpnBackendSync.notifyDisconnect(this@SilentVpnService) }
+            }
             WdttTunnelManager.stopAndAwait()
             withContext(Dispatchers.Main) {
                 clearVpnNotification()

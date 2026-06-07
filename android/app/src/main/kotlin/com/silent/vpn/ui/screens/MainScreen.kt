@@ -108,12 +108,14 @@ fun MainScreen(
     LaunchedEffect(menuOpen, menuPage) {
         onDevicesScreenActive(menuOpen && menuPage == MenuPage.DEVICES)
     }
-    LaunchedEffect(vpnState) {
-        val active = vpnState == VpnState.CONNECTED
+    LaunchedEffect(vpnState, menuOpen, menuPage) {
+        val onSessions = menuOpen && menuPage == MenuPage.DEVICES
         onVpnProfilePolling(
-            vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING,
+            vpnState == VpnState.CONNECTED ||
+                vpnState == VpnState.CONNECTING ||
+                onSessions,
         )
-        onUpdatePolling(active)
+        onUpdatePolling(vpnState == VpnState.CONNECTED)
     }
     DisposableEffect(Unit) {
         onDispose {
@@ -547,16 +549,28 @@ private fun MenuDevices(
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
         Text("Сессии", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        val maxSlots = profile?.max_devices ?: 3
+        val slotsUsed = profile?.devices_count ?: profile?.devices?.size ?: 0
         val localOnline = vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING
         fun deviceOnline(d: DeviceInfo): Boolean {
+            if (d.is_connected) return true
             val isSelf = !sessionDeviceId.isNullOrBlank() && d.id == sessionDeviceId
-            return d.is_connected || (localOnline && isSelf)
+            return localOnline && isSelf
         }
-        val onlineCount = profile?.devices?.count { deviceOnline(it) } ?: 0
+        val devices = profile?.devices.orEmpty()
+        val listOnline = devices.count { deviceOnline(it) }
+        val serverOnline = profile?.connected_count ?: 0
+        val onlineCount = maxOf(listOnline, serverOnline).coerceIn(0, maxSlots)
         Text(
-            "VPN онлайн: $onlineCount из ${profile?.devices_count ?: 0}",
+            "VPN онлайн: $onlineCount из $maxSlots",
             fontSize = 11.sp,
             color = fg.copy(alpha = 0.45f),
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        Text(
+            "Занято слотов: $slotsUsed из $maxSlots",
+            fontSize = 11.sp,
+            color = fg.copy(alpha = 0.35f),
             modifier = Modifier.padding(bottom = 8.dp),
         )
         profile?.devices?.forEach { d ->

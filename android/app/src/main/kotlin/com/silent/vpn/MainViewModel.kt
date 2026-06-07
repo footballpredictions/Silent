@@ -598,7 +598,7 @@ class MainViewModel @Inject constructor(
         loadProfile()
         profilePollJob = viewModelScope.launch {
             while (true) {
-                delay(30_000)
+                delay(5_000)
                 runCatching { fetchProfileNow() }
             }
         }

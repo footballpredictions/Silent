@@ -2,6 +2,7 @@ package com.silent.vpn.service
 
 import android.content.Context
 import com.silent.vpn.data.ConnectRequest
+import com.silent.vpn.data.DisconnectRequest
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.util.DebugLog
@@ -40,6 +41,23 @@ object VpnBackendSync {
         maintenanceJob?.cancel()
         maintenanceJob = null
         VpnSessionState.resetBackendSync()
+    }
+
+    /** Снять устройство с «онлайн» на backend (плитка / сервис без MainViewModel). */
+    suspend fun notifyDisconnect(context: Context) {
+        val r = repo(context)
+        if (!r.isLoggedIn()) return
+        runCatching {
+            if (r.needsTunnelApiOverlay() && WdttTunnelManager.tunnelReady.value) {
+                r.withTunnelApiWhenExcluded {
+                    r.getApi().disconnect(DisconnectRequest(r.getDeviceFingerprint()))
+                }
+            } else {
+                r.getApi().disconnect(DisconnectRequest(r.getDeviceFingerprint()))
+            }
+        }.onFailure { e ->
+            DebugLog.w(TAG, "disconnect API skipped: ${e.message}")
+        }
     }
 
     private fun scheduleInitialSync(scope: CoroutineScope, context: Context) {
@@ -152,4 +170,4 @@ object VpnBackendSync {
         }
     }
 }
-
+

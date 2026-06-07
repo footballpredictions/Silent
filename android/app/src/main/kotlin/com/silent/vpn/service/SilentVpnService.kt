@@ -108,7 +108,7 @@ class SilentVpnService : Service() {
                 if (WdttTunnelManager.isInternetReady()) {
                     releasePerformanceLocks()
                     postVpnNotification(stats)
-                    if (VpnSessionState.isActive(this@SilentVpnService)) {
+                    if (VpnSessionState.isActive()) {
                         SessionTrace.mark("SilentVpnService.statsUpdater", "active sync=${stats.take(32)}")
                         VpnServiceTracker.markSessionActive(this@SilentVpnService, true)
                         VpnBackendSync.ensureRunning(scope, this@SilentVpnService)
@@ -140,7 +140,7 @@ class SilentVpnService : Service() {
                     ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
                     return START_STICKY
                 }
-                if (VpnSessionState.isActive(this)) {
+                if (VpnSessionState.isActive()) {
                     SessionTrace.mark("SilentVpnService.CONNECT", "already active")
                     DebugLog.i("VpnService", "CONNECT ignored — session already active (app/tile shared)")
                     VpnBackendSync.ensureRunning(scope, this)
@@ -182,9 +182,8 @@ class SilentVpnService : Service() {
                 }
             }
             null -> {
-                if (VpnServiceTracker.isSessionMarkedActive(this) && !isRunning) {
-                    SessionTrace.mark("SilentVpnService.onStartCommand", "sticky restart")
-                    VpnTileConnect.restartCachedSession(this)
+                if (isRunning) {
+                    SessionTrace.mark("SilentVpnService.onStartCommand", "sticky keep-alive")
                 }
             }
         }
@@ -258,6 +257,7 @@ class SilentVpnService : Service() {
             )
             isRunning = true
             SessionTrace.mark("SilentVpnService.connect", "isRunning=true")
+            VpnServiceTracker.markSessionActive(this, true)
             VpnTileHelper.requestUpdate(this)
         } catch (e: Exception) {
             SessionTrace.warn("SilentVpnService.connect", e.message ?: "failed")
@@ -664,6 +664,8 @@ class SilentVpnService : Service() {
                     startFg(buildConnectingNotification())
                 }
             }
+        } else {
+            VpnServiceTracker.markSessionActive(this, false)
         }
         VpnTileHelper.requestUpdate(this)
         super.onTaskRemoved(rootIntent)

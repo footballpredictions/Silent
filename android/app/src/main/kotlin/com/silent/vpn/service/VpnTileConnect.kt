@@ -12,7 +12,6 @@ import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.SessionTrace
-import com.silent.vpn.vpn.WdttTunnelManager
 import dagger.hilt.android.EntryPointAccessors
 
 object VpnTileConnect {
@@ -26,41 +25,45 @@ object VpnTileConnect {
         Busy,
     }
 
-    private const val TILE_DEBOUNCE_MS = 4_000L
-    private var lastTileActionMs = 0L
+    private const val CONNECT_DEBOUNCE_MS = 2_000L
+    private const val DISCONNECT_DEBOUNCE_MS = 800L
+    private var lastConnectMs = 0L
+    private var lastDisconnectMs = 0L
 
     private fun repository(context: Context): SilentRepository =
         EntryPointAccessors.fromApplication(context.applicationContext, AppEntryPoint::class.java)
             .silentRepository()
 
-    fun isVpnActive(context: Context): Boolean =
-        VpnSessionState.isActive(context.applicationContext)
+    fun isVpnActive(context: Context): Boolean = VpnSessionState.isActive()
 
-    fun isSessionBusy(context: Context): Boolean =
-        VpnSessionState.isBusy(context.applicationContext)
+    fun isSessionBusy(context: Context): Boolean = VpnSessionState.isBusy()
+
+    fun canDisconnectFromTile(context: Context): Boolean = VpnSessionState.canDisconnectFromTile()
 
     fun isCaptchaPending(): Boolean = VpnSessionState.isCaptchaPending()
 
     fun disconnect(context: Context) {
         val now = System.currentTimeMillis()
-        if (now - lastTileActionMs < TILE_DEBOUNCE_MS) {
+        if (now - lastDisconnectMs < DISCONNECT_DEBOUNCE_MS) {
             SessionTrace.mark("VpnTileConnect.disconnect", "debounced")
             return
         }
-        lastTileActionMs = now
+        lastDisconnectMs = now
         SessionTrace.enter("VpnTileConnect.disconnect")
+        VpnServiceTracker.markSessionActive(context.applicationContext, false)
         context.startService(
             Intent(context, SilentVpnService::class.java).apply {
                 action = SilentVpnService.ACTION_DISCONNECT
             },
         )
+        VpnTileHelper.requestUpdate(context.applicationContext)
     }
 
     fun tryConnect(context: Context): ConnectResult {
         SessionTrace.enter("VpnTileConnect.tryConnect")
         val appCtx = context.applicationContext
         val now = System.currentTimeMillis()
-        if (now - lastTileActionMs < TILE_DEBOUNCE_MS) {
+        if (now - lastConnectMs < CONNECT_DEBOUNCE_MS) {
             SessionTrace.exit("VpnTileConnect.tryConnect", "debounced")
             DebugLog.i("VpnTileConnect", "tile connect debounced")
             return ConnectResult.Busy
@@ -88,7 +91,7 @@ object VpnTileConnect {
             SessionTrace.exit("VpnTileConnect.tryConnect", "need vpn permission")
             return ConnectResult.NeedVpnPermission
         }
-        lastTileActionMs = now
+        lastConnectMs = now
         SessionTrace.mark("VpnTileConnect.tryConnect", "starting service")
         startVpnService(context, repo, cached)
         SessionTrace.exit("VpnTileConnect.tryConnect", "started")
@@ -116,50 +119,42 @@ object VpnTileConnect {
             SessionTrace.exit("VpnTileConnect.connectAfterPermission", "no config")
             return ConnectResult.NoConfig
         }
-        lastTileActionMs = System.currentTimeMillis()
+        lastConnectMs = System.currentTimeMillis()
         startVpnService(context, repo, cached)
         SessionTrace.exit("VpnTileConnect.connectAfterPermission", "started")
         return ConnectResult.Started
     }
 
-    /** Переподключение после START_STICKY (процесс убит, сервис перезапущен). */
+    /** Только START_STICKY в том же процессе — не вызывать из Application.onCreate. */
     fun restartCachedSession(context: Context): Boolean {
         SessionTrace.enter("VpnTileConnect.restartCachedSession")
-        if (VpnSessionState.isActive(context)) {
+        if (VpnSessionState.isActive()) {
             SessionTrace.exit("VpnTileConnect.restartCachedSession", "already active")
             return true
         }
-        if (VpnSessionState.isBusy(context)) {
+        if (VpnSessionState.isBusy()) {
             SessionTrace.exit("VpnTileConnect.restartCachedSession", "busy")
             return false
         }
-        val started = restartCachedSessionDirect(context)
-        SessionTrace.exit("VpnTileConnect.restartCachedSession", if (started) "started" else "failed")
-        return started
-    }
-
-    /** Без reconcileStaleSession — для восстановления после убийства процесса. */
-    internal fun restartCachedSessionDirect(context: Context): Boolean {
-        SessionTrace.enter("VpnTileConnect.restartCachedSessionDirect")
-        if (SilentVpnService.isRunning || WdttTunnelManager.running.value) {
-            SessionTrace.exit("VpnTileConnect.restartCachedSessionDirect", "busy")
+        if (!VpnServiceTracker.isSessionMarkedActive(context)) {
+            SessionTrace.exit("VpnTileConnect.restartCachedSession", "pref inactive")
             return false
         }
         val repo = repository(context)
         if (!repo.isLoggedIn()) {
-            SessionTrace.exit("VpnTileConnect.restartCachedSessionDirect", "not logged in")
+            SessionTrace.exit("VpnTileConnect.restartCachedSession", "not logged in")
             VpnServiceTracker.markSessionActive(context, false)
             return false
         }
         val cached = loadCachedConfig(repo)
         if (cached == null) {
-            SessionTrace.exit("VpnTileConnect.restartCachedSessionDirect", "no config")
+            SessionTrace.exit("VpnTileConnect.restartCachedSession", "no config")
             VpnServiceTracker.markSessionActive(context, false)
             return false
         }
-        SessionTrace.mark("VpnTileConnect.restartCachedSessionDirect", "starting service")
+        SessionTrace.mark("VpnTileConnect.restartCachedSession", "starting service")
         startVpnService(context, repo, cached)
-        SessionTrace.exit("VpnTileConnect.restartCachedSessionDirect", "started")
+        SessionTrace.exit("VpnTileConnect.restartCachedSession", "started")
         return true
     }
 

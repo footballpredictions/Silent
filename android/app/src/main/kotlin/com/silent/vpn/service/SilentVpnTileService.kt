@@ -43,12 +43,9 @@ class SilentVpnTileService : TileService() {
                 SessionTrace.mark("SilentVpnTileService.performClick", "captcha")
                 ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
             }
-            VpnTileConnect.isVpnActive(this) -> {
+            VpnTileConnect.canDisconnectFromTile(this) -> {
                 SessionTrace.mark("SilentVpnTileService.performClick", "disconnect")
                 VpnTileConnect.disconnect(this)
-            }
-            VpnTileConnect.isSessionBusy(this) -> {
-                SessionTrace.mark("SilentVpnTileService.performClick", "busy — ignore")
             }
             else -> when (VpnTileConnect.tryConnect(this)) {
                 VpnTileConnect.ConnectResult.Started ->
@@ -94,7 +91,8 @@ class SilentVpnTileService : TileService() {
             return
         }
         val connected = VpnTileConnect.isVpnActive(this)
-        val connecting = VpnTileConnect.isSessionBusy(this) && !connected
+        val busy = VpnTileConnect.isSessionBusy(this)
+        val connecting = busy && !connected
         val captcha = VpnTileConnect.isCaptchaPending()
 
         tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_silent)
@@ -124,7 +122,7 @@ class SilentVpnTileService : TileService() {
         tile.updateTile()
         SessionTrace.mark(
             "SilentVpnTileService.refreshTile",
-            "state=$subtitleKey tileState=${tile.state} connected=$connected busy=${connecting || connected}",
+            "state=$subtitleKey tileState=${tile.state} connected=$connected busy=$busy",
         )
     }
 }

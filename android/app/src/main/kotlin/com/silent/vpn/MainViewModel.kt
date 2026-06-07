@@ -328,7 +328,7 @@ class MainViewModel @Inject constructor(
         SessionTrace.enter("MainViewModel.syncVpnStateFromSystem")
         VpnServiceTracker.reconcileStaleSession(appContext)
         when {
-            VpnSessionState.isActive(appContext) -> {
+            VpnSessionState.isActive() -> {
                 _vpnState.value = VpnState.CONNECTED
                 SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "CONNECTED attach")
                 attachExistingSession()
@@ -382,7 +382,7 @@ class MainViewModel @Inject constructor(
                     DebugLog.w("MainViewModel", "resume profile fetch: ${e.message}")
                 }
             }
-            if (SilentVpnService.isRunning && VpnSessionState.isActive(appContext)) {
+            if (SilentVpnService.isRunning && VpnSessionState.isActive()) {
                 attachExistingSession()
                 if (_vpnState.value == VpnState.CONNECTED && repo.isLoggedIn()) {
                     runCatching { checkForUpdateNow() }
@@ -1314,7 +1314,7 @@ class MainViewModel @Inject constructor(
             SessionTrace.exit("MainViewModel.connect", "already connecting")
             return
         }
-        if (VpnSessionState.isActive(appContext)) {
+        if (VpnSessionState.isActive()) {
             SessionTrace.mark("MainViewModel.connect", "attach existing session")
             DebugLog.i("MainViewModel", "connect attach — shared session already active")
             _vpnState.value = VpnState.CONNECTED
@@ -1331,7 +1331,7 @@ class MainViewModel @Inject constructor(
         connectJob?.cancel()
         connectJob = viewModelScope.launch {
             DebugLog.i("MainViewModel", "connect() start")
-            if (!VpnSessionState.isBusy(appContext)) {
+            if (!VpnSessionState.isBusy()) {
                 WdttTunnelManager.stopAndAwait()
             }
             backendSyncCompleted = false

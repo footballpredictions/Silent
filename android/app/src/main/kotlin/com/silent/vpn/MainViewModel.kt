@@ -59,6 +59,8 @@ import javax.inject.Inject
 private const val BOOTSTRAP_SESSION_MS = 2 * 60 * 1000L
 /** Пока VPN включён — периодически спрашиваем сервер о новой версии. */
 private const val TUNNEL_API_MAINTENANCE_MS = 5 * 60 * 1000L
+/** Пока открыт экран «Устройства/Сессии» — обновляем список (overlay троттлится 60с). */
+private const val SESSIONS_POLL_MS = 10 * 1000L
 
 enum class AppScreen { LOGIN, MAIN }
 
@@ -116,6 +118,7 @@ class MainViewModel @Inject constructor(
     private var bootstrapContext: Context? = null
     private var silentBootstrapSync = false
     private var profilePollJob: Job? = null
+    @Volatile private var sessionsFetchInFlight = false
     private var vpnProfilePollJob: Job? = null
     private var updatePollJob: Job? = null
     private var updateApiBaseUrl: String? = null
@@ -288,7 +291,7 @@ class MainViewModel @Inject constructor(
         repo.useApiBase(tunnel)
         runCatching {
             val reg = repo.getApi().registerDevice(
-                DeviceRegisterRequest("Android", "android", repo.getDeviceFingerprint(), null, repo.getBootstrapHash())
+                DeviceRegisterRequest(repo.getDeviceDisplayName(), "android", repo.getDeviceFingerprint(), null, repo.getBootstrapHash())
             )
             if (reg.isSuccessful) {
                 val cfg = reg.body()!!
@@ -606,16 +609,25 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    /** Периодическое обновление списка сессий, пока открыт экран «Сессии» (как на PC, 5 с). */
+    /**
+     * Живой список сессий, пока открыт экран «Устройства».
+     * force=true заставляет реально перечитать профиль (иначе fetchProfileNow вернёт кеш,
+     * когда app excluded и профиль уже загружен). Реальный overlay при этом ограничен
+     * троттлом 60с, так что туннель не дёргается чаще, чем при обычном maintenance.
+     */
     fun setSessionsScreenActive(active: Boolean) {
         profilePollJob?.cancel()
         profilePollJob = null
         if (!active) return
-        loadProfile()
         profilePollJob = viewModelScope.launch {
             while (true) {
-                delay(5_000)
-                runCatching { fetchProfileNow() }
+                if (!sessionsFetchInFlight) {
+                    sessionsFetchInFlight = true
+                    runCatching { fetchProfileNow(force = true) }
+                        .onFailure { e -> DebugLog.w("MainViewModel", "sessions poll: ${e.message}") }
+                    sessionsFetchInFlight = false
+                }
+                delay(SESSIONS_POLL_MS)
             }
         }
     }
@@ -761,7 +773,7 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun fetchProfileNow(): Boolean {
+    private suspend fun fetchProfileNow(force: Boolean = false): Boolean {
         if (
             _vpnState.value == VpnState.CONNECTING ||
             _vpnState.value == VpnState.DISCONNECTING ||
@@ -774,7 +786,7 @@ class MainViewModel @Inject constructor(
                 SilentRepository.APP_EXCLUDED_FROM_VPN &&
                 WdttTunnelManager.tunnelReady.value
             ) {
-                if (_profile.value != null) return true
+                if (!force && _profile.value != null) return true
                 if (
                     WdttTunnelManager.isWorkerRampUpActive() ||
                     WdttTunnelManager.isApiOverlayActive()
@@ -1233,7 +1245,7 @@ class MainViewModel @Inject constructor(
     private suspend fun openLoginSession(): Boolean {
         val boot = repo.getBootstrapHash()
         val res = repo.getApi().registerDevice(
-            DeviceRegisterRequest("Android", "android", repo.getDeviceFingerprint(), null, boot)
+            DeviceRegisterRequest(repo.getDeviceDisplayName(), "android", repo.getDeviceFingerprint(), null, boot)
         )
         DebugLog.i("MainViewModel", "registerDevice HTTP ${res.code()}")
         if (res.isSuccessful) {
@@ -1438,7 +1450,7 @@ class MainViewModel @Inject constructor(
                     val regJob = async {
                         runCatching {
                             repo.getApi().registerDevice(
-                                DeviceRegisterRequest("Android", "android", fp, null, repo.getBootstrapHash())
+                                DeviceRegisterRequest(repo.getDeviceDisplayName(), "android", fp, null, repo.getBootstrapHash())
                             )
                         }.getOrNull()
                     }
@@ -1625,7 +1637,7 @@ class MainViewModel @Inject constructor(
 
     private suspend fun applyRefreshVpnConfigDirect(fp: String) {
         val regRes = repo.getApi().registerDevice(
-            DeviceRegisterRequest("Android", "android", fp, null, repo.getBootstrapHash())
+            DeviceRegisterRequest(repo.getDeviceDisplayName(), "android", fp, null, repo.getBootstrapHash())
         )
         if (regRes.isSuccessful) {
             var cfg = regRes.body()!!
@@ -1714,13 +1726,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             _vpnState.value = VpnState.DISCONNECTING
             WdttTunnelManager.prepareForShutdown()
-            runCatching {
-                if (SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) {
-                    repo.withTunnelApiWhenExcluded {
-                        repo.getApi().disconnect(DisconnectRequest(repo.getDeviceFingerprint()))
-                    }
-                }
-            }
+            runCatching { VpnBackendSync.notifyDisconnect(appContext) }
             bootstrapVpnMode = false
             stopVpnLocally(context)
             WdttTunnelManager.stopAndAwait()

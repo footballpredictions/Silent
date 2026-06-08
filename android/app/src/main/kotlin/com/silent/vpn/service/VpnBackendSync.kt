@@ -6,15 +6,14 @@ import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.SessionTrace
+import com.silent.vpn.vpn.WdttTunnelManager
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.CoroutineScope
 
 /**
- * Онлайн-статус устройства теперь ведёт wdtt-server (server-to-server репорт в backend:
- * см. reportDeviceOnline в server.go). Поэтому клиент НЕ делает online-heartbeat через
- * WG-overlay во время сессии — туннель поднимается один раз, без переключений.
- *
- * Объект сохранён ради совместимости с вызывающим кодом (сервис/плитка/MainViewModel).
+ * Онлайн-статус устройства ведёт wdtt-server (s2s → backend).
+ * Клиент при выключении VPN только снимает «онлайн» через POST /disconnect,
+ * пока туннель ещё поднят (через WG-overlay на заблокированных сетях).
  */
 object VpnBackendSync {
     private const val TAG = "VpnBackendSync"
@@ -23,7 +22,6 @@ object VpnBackendSync {
         EntryPointAccessors.fromApplication(context.applicationContext, AppEntryPoint::class.java)
             .silentRepository()
 
-    /** Больше не делает heartbeat: online ставит wdtt-server при подъёме WG. */
     fun ensureRunning(scope: CoroutineScope, context: Context) {
         VpnSessionState.backendSyncCompleted = true
     }
@@ -34,17 +32,38 @@ object VpnBackendSync {
     }
 
     /**
-     * Best-effort снятие «онлайн» при выключении VPN. Без WG-overlay: туннель уже гасится.
-     * Если backend недоступен напрямую (заблокирован у пользователя) — статус снимет
-     * wdtt-server по обрыву соединения + backend по таймауту неактивности.
+     * Снять «онлайн» на backend **до** остановки libclient/WG.
+     * На мобильном интернете (блокировка) публичный API недоступен — запрос идёт
+     * через краткий overlay к 10.66.66.1, пока VPN ещё активен.
      */
     suspend fun notifyDisconnect(context: Context) {
         val r = repo(context)
         if (!r.isLoggedIn()) return
+        WdttTunnelManager.prepareForShutdown()
         runCatching {
-            r.getApi().disconnect(DisconnectRequest(r.getDeviceFingerprint()))
+            when {
+                SilentVpnService.isRunning &&
+                    WdttTunnelManager.tunnelReady.value &&
+                    r.needsTunnelApiOverlay() -> {
+                    r.withTunnelApiWhenExcluded { postDisconnect(r) }
+                }
+                SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value -> {
+                    r.setTunnelApiFromWgAddress(WdttTunnelManager.lastWgAddress())
+                    postDisconnect(r)
+                }
+                else -> postDisconnect(r)
+            }
         }.onFailure { e ->
-            DebugLog.w(TAG, "disconnect API skipped (online снимет wdtt-server): ${e.message}")
+            DebugLog.w(TAG, "disconnect API failed: ${e.message}")
+        }
+    }
+
+    private suspend fun postDisconnect(r: SilentRepository) {
+        val res = r.getApi().disconnect(DisconnectRequest(r.getDeviceFingerprint()))
+        if (res.isSuccessful) {
+            DebugLog.i(TAG, "disconnect API OK — online cleared before tunnel stop")
+        } else {
+            DebugLog.w(TAG, "disconnect API HTTP ${res.code()}")
         }
     }
 }

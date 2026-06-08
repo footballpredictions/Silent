@@ -29,6 +29,7 @@ class SilentRepository @Inject constructor(
         const val PREF_ACCESS_TOKEN = "access_token"
         const val PREF_REFRESH_TOKEN = "refresh_token"
         const val PREF_DEVICE_FP = "device_fingerprint"
+        const val PREF_STABLE_FP = "stable_device_fp"
         const val PREF_VK_USER_ID = "vk_user_id"
         const val PREF_VK_ACCESS_TOKEN = "vk_access_token"
         const val PREF_BOOTSTRAP_HASH = "vk_bootstrap_hash"
@@ -327,12 +328,51 @@ class SilentRepository @Inject constructor(
             ?: throw IllegalStateException("Session not started")
     }
 
-    /** New session id on each login — frees slot on logout. */
+    /** Человекочитаемое имя устройства для списка сессий (напр. «Samsung SM-G991B»). */
+    fun getDeviceDisplayName(): String {
+        val manufacturer = (android.os.Build.MANUFACTURER ?: "").trim()
+        val model = (android.os.Build.MODEL ?: "").trim()
+        val raw = when {
+            model.isEmpty() -> manufacturer
+            manufacturer.isEmpty() -> model
+            model.startsWith(manufacturer, ignoreCase = true) -> model
+            else -> "$manufacturer $model"
+        }.trim()
+        return raw.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+            .ifBlank { "Android" }
+            .take(64)
+    }
+
+    /**
+     * Session fingerprint = СТАБИЛЬНЫЙ id устройства (один телефон = один ряд-сессия).
+     * Раньше тут был случайный UUID на каждый вход → перелогин/переустановка плодили
+     * «призрачные» сессии и забивали лимит 3-х. Теперь берём стабильный отпечаток.
+     */
     fun startNewSession(): String {
         clearCachedVpnConfig()
         clearSessionDeviceId()
-        val fp = UUID.randomUUID().toString()
+        val fp = stableDeviceFingerprint()
         prefs.edit().putString(PREF_DEVICE_FP, fp).apply()
+        return fp
+    }
+
+    /** ANDROID_ID-based стабильный отпечаток; переживает переустановку и перелогин. */
+    private fun stableDeviceFingerprint(): String {
+        prefs.getString(PREF_STABLE_FP, null)?.takeIf { it.isNotBlank() }?.let { return it }
+        val androidId = try {
+            android.provider.Settings.Secure.getString(
+                context.contentResolver,
+                android.provider.Settings.Secure.ANDROID_ID,
+            )
+        } catch (e: Exception) {
+            null
+        }
+        val fp = if (!androidId.isNullOrBlank() && androidId != "9774d56d682e549c") {
+            "and-$androidId"
+        } else {
+            "and-${UUID.randomUUID()}"
+        }
+        prefs.edit().putString(PREF_STABLE_FP, fp).apply()
         return fp
     }
 

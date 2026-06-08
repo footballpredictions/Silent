@@ -272,28 +272,32 @@ class SilentVpnService : Service() {
     }
 
     private fun disconnect() {
-        DebugLog.i("VpnService", "DISCONNECT")
-        isRunning = false
-        SessionTrace.mark("SilentVpnService.disconnect", "isRunning=false")
-        VpnServiceTracker.markSessionActive(this, false)
-        VpnBackendSync.stop()
-        teardownVpnOwnershipMonitor()
-        VpnTileHelper.requestUpdate(this)
-        performanceLocksHeld = false
-        lastNotifBody = ""
-        lastNotifUpdateMs = 0L
-        networkRecoveryJob?.cancel()
-        transportWatchdogJob?.cancel()
-        statsUpdaterJob?.cancel()
-        pausedForNetwork = false
-        lastUnderlyingInternet = null
-        SilentRepository.APP_EXCLUDED_FROM_VPN = true
-        teardownNetworkCallback()
-        clearVpnNotification()
         scope.launch(Dispatchers.IO) {
+            // 1) Сначала снимаем онлайн на backend (туннель ещё жив — важно для блокировки).
             if (WdttTunnelManager.tunnelReady.value) {
                 runCatching { VpnBackendSync.notifyDisconnect(this@SilentVpnService) }
             }
+            withContext(Dispatchers.Main) {
+                DebugLog.i("VpnService", "DISCONNECT")
+                isRunning = false
+                SessionTrace.mark("SilentVpnService.disconnect", "isRunning=false")
+                VpnServiceTracker.markSessionActive(this@SilentVpnService, false)
+                VpnBackendSync.stop()
+                teardownVpnOwnershipMonitor()
+                VpnTileHelper.requestUpdate(this@SilentVpnService)
+                performanceLocksHeld = false
+                lastNotifBody = ""
+                lastNotifUpdateMs = 0L
+                networkRecoveryJob?.cancel()
+                transportWatchdogJob?.cancel()
+                statsUpdaterJob?.cancel()
+                pausedForNetwork = false
+                lastUnderlyingInternet = null
+                SilentRepository.APP_EXCLUDED_FROM_VPN = true
+                teardownNetworkCallback()
+                clearVpnNotification()
+            }
+            WdttTunnelManager.prepareForShutdown()
             WdttTunnelManager.stopAndAwait()
             withContext(Dispatchers.Main) {
                 clearVpnNotification()

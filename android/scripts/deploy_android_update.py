@@ -52,6 +52,7 @@ print("manifest ok", version, size)
     script = f"""#!/bin/bash
 set -e
 docker exec backend-api-1 mkdir -p /app/update/android
+docker exec backend-api-1 sh -c 'find /app/update/android -type f ! -name manifest.json -delete 2>/dev/null || true'
 docker cp "{remote_file}" "backend-api-1:{container_dest}"
 docker cp /tmp/write_manifest_android.py backend-api-1:/tmp/write_manifest_android.py
 docker exec backend-api-1 python /tmp/write_manifest_android.py

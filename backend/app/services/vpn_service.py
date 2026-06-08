@@ -3,6 +3,7 @@ import base64
 import ipaddress
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -17,6 +18,30 @@ from app.config import settings
 from app.schemas.vpn import VpnConfigResponse
 
 logger = logging.getLogger(__name__)
+
+# После POST /disconnect клиент гасит туннель; wdtt-server ещё ~секунду шлёт online=true.
+# Игнорируем такие keepalive, чтобы сессия не «всплывала» снова в UI.
+_DISCONNECT_GRACE_SEC = 45.0
+_recent_client_disconnects: dict[str, float] = {}
+
+
+def mark_client_disconnect(device_id) -> None:
+    _recent_client_disconnects[str(device_id)] = time.monotonic()
+
+
+def clear_client_disconnect(device_id) -> None:
+    _recent_client_disconnects.pop(str(device_id), None)
+
+
+def _in_client_disconnect_grace(device_id) -> bool:
+    key = str(device_id)
+    ts = _recent_client_disconnects.get(key)
+    if ts is None:
+        return False
+    if time.monotonic() - ts > _DISCONNECT_GRACE_SEC:
+        _recent_client_disconnects.pop(key, None)
+        return False
+    return True
 
 
 def _clamp_wg_private(raw: bytes) -> bytes:
@@ -141,9 +166,19 @@ async def set_device_online(db: AsyncSession, device_ref: str, online: bool) -> 
     if device is None:
         return False
 
+    if online and _in_client_disconnect_grace(device.id):
+        logger.debug(
+            "ignore s2s online=true for device %s (client disconnect grace)",
+            device.id,
+        )
+        return True
+
     device.is_connected = bool(online)
     if online:
         device.last_connected = datetime.utcnow()
+        clear_client_disconnect(device.id)
+    else:
+        clear_client_disconnect(device.id)
     await db.commit()
     return True
 
@@ -279,7 +314,10 @@ async def register_device(
     wg_public_key: Optional[str] = None,
 ) -> VpnConfigResponse:
     await clear_stale_online_status(db)
-    await replace_same_type_session(db, user.id, device_type, device_fingerprint)
+    # NB: не вытесняем устройства того же типа — у одного аккаунта может быть
+    # несколько Android/ПК одновременно (каждое = отдельная сессия с онлайн-статусом).
+    # Лимит и очистка «призраков» (переустановка/релогин) делаются ниже через
+    # prune_idle_sessions / prune_old_sessions / prune_oldest_session_if_full.
     await prune_idle_sessions(db, user.id)
     await prune_old_sessions(db, user.id)
 
@@ -292,6 +330,18 @@ async def register_device(
     )
     existing = result.scalar_one_or_none()
     if existing:
+        # При повторной регистрации (релогин/переустановка на том же устройстве)
+        # подтягиваем человекочитаемое имя, но не затираем его дефолтным "Android"/"PC".
+        _generic = {"android", "pc", "ios", "windows"}
+        if (
+            device_name
+            and device_name.strip()
+            and device_name.strip().lower() not in _generic
+            and existing.device_name != device_name
+        ):
+            existing.device_name = device_name
+            await db.commit()
+            await db.refresh(existing)
         return await _build_vpn_config(db, existing)
 
     active_count = await count_active_sessions(db, user.id)

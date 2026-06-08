@@ -29,6 +29,7 @@ from app.services.vpn_service import (
     count_connected_sessions,
     clear_stale_online_status,
     set_device_online,
+    mark_client_disconnect,
 )
 from app.services.subscription_service import (
     user_has_active_subscription,
@@ -244,6 +245,7 @@ async def disconnect(
     device = result.scalar_one_or_none()
     if device:
         device.is_connected = False
+        mark_client_disconnect(device.id)
         await db.commit()
     return {"status": "disconnected"}
 

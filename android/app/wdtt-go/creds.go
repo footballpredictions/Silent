@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -658,28 +660,89 @@ func GetCreds(ctx context.Context, link string, streamID int) (string, string, [
 
 // ─── DNS dialer setup ───
 
+var androidSysDNSServers []string
+
+func setAndroidSysDNSServers(csv string) {
+	androidSysDNSServers = nil
+	for _, part := range strings.Split(csv, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if !strings.Contains(part, ":") {
+			part = net.JoinHostPort(part, "53")
+		}
+		if isYandexDNSAddress(part) {
+			continue
+		}
+		androidSysDNSServers = append(androidSysDNSServers, part)
+	}
+}
+
 func setupGlobalResolver() {
+	// Порядок: Yandex (часто в белых списках) → DNS оператора (sys-dns) → netd → запрошенный.
+	//
+	// ВАЖНО: для каждого DNS-сервера сначала пробуем TCP/53 — это реальное рукопожатие,
+	// поэтому недоступный сервер (например, Yandex после смены сети/звонка на LTE с
+	// белым списком) даёт ошибку соединения, и мы корректно переходим к следующему.
+	// Старый код дёргал сначала UDP: UDP-«dial» успешен мгновенно (без рукопожатия),
+	// поэтому всегда возвращался первый сервер, запрос потом таймаутил, а fallback на
+	// sys-dns/netd НИКОГДА не срабатывал → "lookup login.vk.ru: i/o timeout".
 	dialer := &net.Dialer{
-		Timeout:   3 * time.Second,
+		// Время на TCP-рукопожатие к DNS-серверу. Достаточно для LTE, но коротко,
+		// чтобы при недоступном сервере быстро уйти на следующий.
+		Timeout:   1500 * time.Millisecond,
 		KeepAlive: 30 * time.Second,
 	}
 	yandexDNSServers := []string{"77.88.8.8:53", "77.88.8.1:53"}
+	netdFallback := []string{"127.0.0.1:53", "[::1]:53"}
+
+	if len(androidSysDNSServers) > 0 {
+		log.Printf("[DNS] resolver: yandex → sys-dns=%v → netd (tcp-first)", androidSysDNSServers)
+	} else {
+		log.Printf("[DNS] resolver: yandex → netd → system (tcp-first)")
+	}
 
 	net.DefaultResolver = &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			var lastErr error
+			// TCP-first: рукопожатие подтверждает, что сервер реально достижим.
+			// UDP пробуем только если TCP-порт явно закрыт (connection refused) —
+			// тогда сервер «жив», но без TCP/53; таймаут TCP трактуем как
+			// недоступность и идём к следующему серверу.
+			tryDial := func(server string) (net.Conn, error) {
+				conn, err := dialer.DialContext(ctx, "tcp", server)
+				if err == nil {
+					return conn, nil
+				}
+				lastErr = err
+				if isConnRefused(err) {
+					if uc, uerr := dialer.DialContext(ctx, "udp", server); uerr == nil {
+						return uc, nil
+					} else {
+						lastErr = uerr
+					}
+				}
+				return nil, lastErr
+			}
+
 			for _, dns := range yandexDNSServers {
-				conn, err := dialer.DialContext(ctx, "udp", dns)
-				if err == nil {
+				if conn, err := tryDial(dns); err == nil {
 					return conn, nil
 				}
-				lastErr = err
-				conn, err = dialer.DialContext(ctx, "tcp", dns)
-				if err == nil {
+			}
+
+			for _, dns := range androidSysDNSServers {
+				if conn, err := tryDial(dns); err == nil {
 					return conn, nil
 				}
-				lastErr = err
+			}
+
+			for _, dns := range netdFallback {
+				if conn, err := tryDial(dns); err == nil {
+					return conn, nil
+				}
 			}
 
 			address = strings.TrimSpace(address)
@@ -690,9 +753,25 @@ func setupGlobalResolver() {
 				}
 				lastErr = err
 			}
+			if lastErr == nil {
+				lastErr = fmt.Errorf("no DNS server reachable")
+			}
 			return nil, lastErr
 		},
 	}
+}
+
+// isConnRefused определяет, что сервер достижим, но TCP-порт закрыт
+// (тогда имеет смысл попробовать UDP). Таймаут/нет маршрута — это
+// недоступность, и мы переходим к следующему DNS-серверу.
+func isConnRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "connection refused")
 }
 
 func isYandexDNSAddress(address string) bool {

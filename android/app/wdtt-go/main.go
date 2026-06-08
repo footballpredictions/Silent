@@ -59,8 +59,6 @@ func drainCaptchaResult() {
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 
-	setupGlobalResolver()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -132,8 +130,11 @@ func main() {
 	captchaMode := flag.String("captcha-mode", "auto", "режим обхода капчи (auto/wv/rjs)")
 	fingerprint := flag.String("fingerprint", "chrome", "браузерный фингерпринт (chrome, safari, ios, android, firefox)")
 	clientIdsFlag := flag.String("client-ids", "", "ID клиентов VK через запятую")
+	sysDnsFlag := flag.String("sys-dns", "", "DNS оператора с Android (через запятую)")
 
 	flag.Parse()
+	setAndroidSysDNSServers(*sysDnsFlag)
+	setupGlobalResolver()
 	activeCaptchaMode := setCaptchaMode(*captchaMode)
 
 	if *peerAddr == "" || *vkHash == "" {

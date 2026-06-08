@@ -1,6 +1,7 @@
 package com.silent.vpn.vpn
 
 import android.content.Context
+import android.net.ConnectivityManager
 import android.util.Log
 import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.SilentRepository
@@ -117,6 +118,10 @@ object WdttTunnelManager {
                     lastContext = ctx
                     isBootstrapMode = params.isBootstrap
                     apiFallbackConfig = params.apiWgConfig?.trim()?.takeIf { it.contains("[Interface]") }
+                    // Основной VPN: WG только из box/file libclient — без cached apply (иначе двойной UP).
+                    if (params.isBootstrap && apiFallbackConfig != null) {
+                        deferredApiWgConfig = apiFallbackConfig
+                    }
                     CaptchaWebViewManager.onTunnelStart(context)
                 } else {
                 overlayRestoreJob?.cancel()
@@ -168,16 +173,24 @@ object WdttTunnelManager {
                     "start peer=${params.serverIp}:${params.serverPort} n=$workers hashes=${hashList.size} switching=$isSwitching",
                 )
 
-                val cmd = listOf(
-                    binaryPath,
-                    "-peer", "${params.serverIp}:${params.serverPort}",
-                    "-vk", hashList.joinToString(","),
-                    "-n", workers.toString(),
-                    "-listen", "127.0.0.1:${params.listenPort}",
-                    "-device-id", params.deviceId,
-                    "-password", params.wdttPassword,
-                    "-captcha-mode", sanitizeCaptchaMode(params.captchaMode),
-                )
+                val cmd = buildList {
+                    add(binaryPath)
+                    addAll(
+                        listOf(
+                            "-peer", "${params.serverIp}:${params.serverPort}",
+                            "-vk", hashList.joinToString(","),
+                            "-n", workers.toString(),
+                            "-listen", "127.0.0.1:${params.listenPort}",
+                            "-device-id", params.deviceId,
+                            "-password", params.wdttPassword,
+                            "-captcha-mode", sanitizeCaptchaMode(params.captchaMode),
+                        ),
+                    )
+                    systemDnsForLibclient(context)?.let { dns ->
+                        add("-sys-dns")
+                        add(dns)
+                    }
+                }
 
                 val pb = ProcessBuilder(cmd)
                 pb.directory(context.filesDir)
@@ -214,6 +227,17 @@ object WdttTunnelManager {
     private fun sanitizeCaptchaMode(mode: String): String = when (mode.lowercase()) {
         "rjs", "wv", "auto" -> mode.lowercase()
         else -> "auto"
+    }
+
+    /** DNS оператора с LinkProperties — fallback для libclient на LTE с белыми списками. */
+    private fun systemDnsForLibclient(context: Context): String? {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return null
+        val servers = cm.getLinkProperties(cm.activeNetwork)?.dnsServers ?: return null
+        return servers.mapNotNull { addr ->
+            addr.hostAddress?.takeIf { it.isNotBlank() }?.let { host ->
+                if (host.contains(':')) host else "$host:53"
+            }
+        }.distinct().joinToString(",").takeIf { it.isNotBlank() }
     }
 
     private fun deleteOldConf(context: Context) {
@@ -254,13 +278,17 @@ object WdttTunnelManager {
     }
 
     private fun tryApplyDeferredApiWg() {
-        if (activeWorkers.value < 1 || appliedConfigSource > 0) return
-        // Основной VPN: WG только из box/file libclient — без промежуточного API-конфига (лишний restart).
         if (!isBootstrapMode) return
+        if (activeWorkers.value < 1 || appliedConfigSource > 0) return
         val cfg = deferredApiWgConfig ?: apiFallbackConfig ?: return
         deferredApiWgConfig = null
-        DebugLog.i(TAG, "WireGuard API apply after ${activeWorkers.value} workers")
-        applyWireGuard(cfg, source = 1)
+        if (isBootstrapMode) {
+            DebugLog.i(TAG, "WireGuard API apply after ${activeWorkers.value} workers (bootstrap)")
+            applyWireGuard(cfg, source = 1)
+        } else {
+            DebugLog.i(TAG, "WireGuard cached apply after ${activeWorkers.value} workers (main)")
+            applyWireGuard(cfg, source = 2)
+        }
     }
 
     private fun resolveHashForGroup(groupId: Int): String? {
@@ -295,6 +323,11 @@ object WdttTunnelManager {
                     val important = lineTrim.contains("[СТАТИСТИКА]") ||
                         lineTrim.contains("FATAL") ||
                         lineTrim.contains("ГРУППА #") ||
+                        lineTrim.contains("[VK Auth]") ||
+                        lineTrim.contains("Ошибка кредов") ||
+                        lineTrim.contains("Креды OK") ||
+                        lineTrim.contains("[КАПЧА]") ||
+                        lineTrim.contains("[Captcha]") ||
                         lineTrim.contains("[READY]") ||
                         lineTrim.contains("API overlay") ||
                         lineTrim.startsWith("CAPTCHA_SOLVE|") ||

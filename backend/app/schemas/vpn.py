@@ -56,6 +56,12 @@ class DisconnectRequest(BaseModel):
     device_fingerprint: str
 
 
+class InternalOnlineRequest(BaseModel):
+    """wdtt-server -> backend: device connectivity report (server-to-server)."""
+    device_id: str
+    online: bool = True
+
+
 class AppExclusionRequest(BaseModel):
     device_id: uuid.UUID
     mode: str  # blacklist, whitelist

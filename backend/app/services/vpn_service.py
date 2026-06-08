@@ -111,6 +111,43 @@ async def clear_stale_online_status(db: AsyncSession) -> int:
     return len(devices)
 
 
+async def set_device_online(db: AsyncSession, device_ref: str, online: bool) -> bool:
+    """Server-to-server: wdtt-server reports a device as connected/disconnected.
+
+    device_ref is the value libclient receives as -device-id, which equals the
+    backend Device.id (UUID string). Falls back to device_fingerprint for safety.
+    """
+    device = None
+    try:
+        device_uuid = uuid.UUID(device_ref)
+    except (ValueError, AttributeError, TypeError):
+        device_uuid = None
+
+    if device_uuid is not None:
+        result = await db.execute(
+            select(Device).where(Device.id == device_uuid, Device.is_active == True)
+        )
+        device = result.scalar_one_or_none()
+
+    if device is None:
+        result = await db.execute(
+            select(Device).where(
+                Device.device_fingerprint == device_ref,
+                Device.is_active == True,
+            )
+        )
+        device = result.scalar_one_or_none()
+
+    if device is None:
+        return False
+
+    device.is_connected = bool(online)
+    if online:
+        device.last_connected = datetime.utcnow()
+    await db.commit()
+    return True
+
+
 async def prune_idle_sessions(db: AsyncSession, user_id) -> int:
     """Удалить неактивные сессии (переустановка / закрыли приложение без logout)."""
     idle_cutoff = datetime.utcnow() - timedelta(hours=settings.SESSION_IDLE_HOURS)

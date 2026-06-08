@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     WG_SUBNET: str = "10.66.66.0/24"
     MAX_DEVICES_PER_USER: int = 3
     WDTT_MASTER_PASSWORD: str = ""
+    # Shared secret for server-to-server online reports from wdtt-server
+    INTERNAL_API_SECRET: str = ""
     WG_SERVER_PUBLIC_KEY: str = ""
     SESSION_ONLINE_TIMEOUT_MINUTES: int = 10
     SESSION_MAX_AGE_DAYS: int = 7

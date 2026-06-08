@@ -1,6 +1,6 @@
 """VPN configuration and connection API."""
 import json
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime
@@ -17,6 +17,7 @@ from app.schemas.vpn import (
     ThemeResponse,
     HashRefreshRequest,
     HashFailureReportRequest,
+    InternalOnlineRequest,
 )
 from app.core.deps import get_verified_user
 from app.services.vpn_service import (
@@ -27,6 +28,7 @@ from app.services.vpn_service import (
     get_bootstrap_hashes_for_user,
     count_connected_sessions,
     clear_stale_online_status,
+    set_device_online,
 )
 from app.services.subscription_service import (
     user_has_active_subscription,
@@ -244,6 +246,27 @@ async def disconnect(
         device.is_connected = False
         await db.commit()
     return {"status": "disconnected"}
+
+
+@router.post("/internal/online")
+async def internal_online(
+    req: InternalOnlineRequest,
+    x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Server-to-server online report from wdtt-server (no client JWT).
+
+    wdtt-server already tracks connected devices (activeDevices). It pushes
+    online=true on connect / periodic keepalive and online=false on drop, so
+    the client never needs to heartbeat the backend through the VPN.
+    """
+    secret = (settings.INTERNAL_API_SECRET or "").strip()
+    if not secret or x_internal_secret != secret:
+        raise HTTPException(status_code=403, detail="forbidden")
+    # Periodic keepalives double as a cleanup trigger for stale sessions.
+    await clear_stale_online_status(db)
+    ok = await set_device_online(db, req.device_id.strip(), bool(req.online))
+    return {"ok": ok}
 
 
 @router.post("/exclusions")

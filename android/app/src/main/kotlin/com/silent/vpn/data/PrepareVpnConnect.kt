@@ -9,10 +9,6 @@ suspend fun SilentRepository.prepareVpnConnectConfig(
 ): VpnConfig {
     var merged = config
 
-    runCatching {
-        getApi().connect(ConnectRequest(fingerprint, "android"))
-    }
-
     var hashItems = getSavedHashItems()
     runCatching {
         val hres = getApi().getVpnHashes()

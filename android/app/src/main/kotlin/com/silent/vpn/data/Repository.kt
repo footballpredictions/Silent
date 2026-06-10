@@ -3,10 +3,15 @@ package com.silent.vpn.data
 import android.content.Context
 import android.content.ClipboardManager
 import android.content.SharedPreferences
+import android.net.ConnectivityManager
+import android.net.Network
 import android.util.Log
 import com.silent.vpn.BuildConfig
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.silent.vpn.vpn.TunnelApiProxy
+import com.silent.vpn.vpn.VpnNetworkHelper
+import com.silent.vpn.vpn.WdttTunnelManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -69,16 +74,26 @@ class SilentRepository @Inject constructor(
     private fun createPrefs(context: Context): SharedPreferences = SilentPrefs.open(context)
 
     fun getApi(): SilentApi {
-        val url = getServerUrl()
-        if (_api == null || _apiCacheKey != url.trimEnd('/')) {
-            _apiCacheKey = url.trimEnd('/')
-            _baseUrl = _apiCacheKey + "/"
-            _api = buildApi(_baseUrl)
+        val url = getServerUrl().trimEnd('/')
+        val vpnNet = resolveVpnNetworkForApi(url)
+        val cacheKey = if (vpnNet != null) "$url|vpn" else url
+        if (_api == null || _apiCacheKey != cacheKey) {
+            _apiCacheKey = cacheKey
+            _baseUrl = "$url/"
+            _api = buildApi(_baseUrl, vpnNetwork = vpnNet)
         }
         return _api!!
     }
 
-    private fun buildApi(baseUrl: String): SilentApi {
+    /** Excluded app: HTTP к 10.66.66.1 — только через VPN Network (как Chrome в туннеле). */
+    private fun resolveVpnNetworkForApi(url: String): Network? {
+        if (!APP_EXCLUDED_FROM_VPN || !isMainVpnTunnelUp()) return null
+        if (url.startsWith(TunnelApiProxy.baseUrl())) return null
+        if (!url.contains(WG_TUNNEL_GATEWAY)) return null
+        return VpnNetworkHelper.getSilentVpnNetwork(context)
+    }
+
+    private fun buildApi(baseUrl: String, vpnNetwork: Network? = null, connectTimeoutSec: Long? = null): SilentApi {
         val nipHost = DEFAULT_SERVER_HOST
         val builder = OkHttpClient.Builder()
         if (BuildConfig.DEBUG) {
@@ -101,10 +116,11 @@ class SilentRepository @Inject constructor(
             }
             .hostnameVerifier { _, _ -> true }
             .sslSocketFactory(TrustAllCerts.sslSocketFactory(), TrustAllCerts.trustManager())
-            .connectTimeout(4, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-        // Bind к VPN Network не работает для excluded app (EPERM на API 36+).
-        // Tunnel API — через withApiOverlayBrief в withTunnelApiWhenExcluded.
+        vpnNetwork?.let { builder.socketFactory(it.socketFactory) }
+        val connectSec = connectTimeoutSec ?: if (baseUrl.contains("10.66.")) 12L else 4L
+        builder
+            .connectTimeout(connectSec, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
         val client = builder.build()
 
         return Retrofit.Builder()
@@ -117,11 +133,26 @@ class SilentRepository @Inject constructor(
 
     fun getServerUrl(): String {
         tunnelApiBaseUrl?.let { return it }
-        return prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
+        if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
+            return "http://$WG_TUNNEL_GATEWAY:8000"
+        }
+        return getPublicServerUrl().trimEnd('/')
     }
 
-    /** Переключить API на WireGuard-шлюз (обычно 10.66.66.1) пока VPN активен. */
+    /** Public HTTPS — только fallback (Wi‑Fi); на mobile Chrome идёт через VPN, app excluded. */
+    private fun publicApiBases(): List<String> = listOf(
+        "https://$DEFAULT_SERVER_HOST",
+        getPublicServerUrl().trimEnd('/'),
+    ).distinct().filter { it.isNotBlank() }
+
+    private fun tunnelApiBase(): String = "http://$WG_TUNNEL_GATEWAY:8000"
+
+    /** Переключить API на WG-шлюз (bootstrap / app в туннеле). */
     fun setTunnelApiFromWgAddress(wgAddress: String?) {
+        if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
+            useApiBase(tunnelApiBase())
+            return
+        }
         val gw = wgGatewayFromAddress(wgAddress)
         if (gw == null) {
             clearTunnelApiBase()
@@ -129,6 +160,39 @@ class SilentRepository @Inject constructor(
         }
         useApiBase("http://$gw:8000")
         Log.i(TAG, "API via tunnel: http://$gw:8000")
+    }
+
+    /** Как PC applyTunnelApiFromCache — перед connect/disconnect/sync через туннель. */
+    fun prepareTunnelApiFromCachedConfig() {
+        val json = getCachedVpnConfig() ?: return
+        val cfg = runCatching { Gson().fromJson(json, VpnConfig::class.java) }.getOrNull() ?: return
+        setTunnelApiFromWgAddress(cfg.wg_address?.takeIf { it.isNotBlank() })
+        invalidateApiClient()
+    }
+
+    /** Хеши + VPN-конфиг через тот же канал, что POST /connect (из VpnBackendSync). */
+    suspend fun syncHashesAndConfigAfterConnect(): Boolean {
+        if (!isLoggedIn()) return false
+        var ok = false
+        fetchHashItemsOnce().onSuccess {
+            ok = true
+            Log.i(TAG, "syncHashes OK (${it.size} items)")
+        }.onFailure { e ->
+            Log.w(TAG, "syncHashes: ${e.message}")
+        }
+        val fp = getDeviceFingerprint()
+        runCatching {
+            val res = getApi().getConfig(fp)
+            if (res.isSuccessful) {
+                res.body()?.let { cacheVpnConfig(Gson().toJson(it)) }
+                ok = true
+                Log.i(TAG, "syncConfig OK device=${res.body()?.device_id?.take(8)}")
+            }
+        }.onFailure { e ->
+            Log.w(TAG, "syncConfig: ${e.message}")
+        }
+        mergeSavedHashesIntoCachedConfig()
+        return ok
     }
 
     fun clearTunnelApiBase() {
@@ -140,32 +204,178 @@ class SilentRepository @Inject constructor(
         }
     }
 
-    fun tunnelApiBaseUrl(): String = "http://$WG_TUNNEL_GATEWAY:8000"
+    fun tunnelApiBaseUrl(): String =
+        if (shouldUseTunnelApiProxy()) TunnelApiProxy.baseUrl()
+        else "http://$WG_TUNNEL_GATEWAY:8000"
+
+    fun shouldUseTunnelApiProxy(): Boolean =
+        APP_EXCLUDED_FROM_VPN &&
+            WdttTunnelManager.tunnelReady.value &&
+            WdttTunnelManager.running.value &&
+            !WdttTunnelManager.isBootstrapMode() &&
+            TunnelApiProxy.isActive()
+
+    private suspend fun prepareTunnelApiBase(): Boolean {
+        if (!APP_EXCLUDED_FROM_VPN) return true
+        if (!WdttTunnelManager.tunnelReady.value || !WdttTunnelManager.running.value) return false
+        if (WdttTunnelManager.isBootstrapMode()) return false
+        if (TunnelApiProxy.isActive()) {
+            useApiBase(TunnelApiProxy.baseUrl())
+            invalidateApiClient()
+            return true
+        }
+        if (!TunnelApiProxy.ensureStarted(context)) return false
+        useApiBase(TunnelApiProxy.baseUrl())
+        invalidateApiClient()
+        Log.i(TAG, "API via local proxy: ${TunnelApiProxy.baseUrl()}")
+        return true
+    }
 
     fun invalidateApiClient() {
         _api = null
         _apiCacheKey = null
     }
 
-    /** true когда app excluded из WG и нужен overlay/bind для HTTP к 10.66.66.1 */
+    /** true когда app excluded из WG и нужен overlay для HTTP к 10.66.66.1 */
     fun needsTunnelApiOverlay(): Boolean =
         APP_EXCLUDED_FROM_VPN &&
             com.silent.vpn.service.SilentVpnService.isRunning &&
             com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value
 
     /**
-     * Основной VPN: краткий overlay 10.66.66.0/24 (bind EPERM когда app excluded).
+     * Основной VPN: краткий overlay 10.66.66.0/24.
      * Bootstrap: полный overlay через withApiOverlay.
-     * @param allowDuringRampUp true только для initial backend sync (сразу после 1-й группы).
      */
     suspend fun <T> withTunnelApiWhenExcluded(block: suspend () -> T): T =
         withTunnelApiWhenExcludedInternal(block, allowDuringRampUp = false)
 
-    /** Initial backend sync сразу после 1-й группы (до creds групп 2+). */
     suspend fun <T> withTunnelApiForInitialSync(block: suspend () -> T): T =
         withTunnelApiWhenExcludedInternal(block, allowDuringRampUp = true)
 
-    /** Долгая загрузка APK — overlay без throttle, держим до конца скачивания. */
+    suspend fun <T> withTunnelApiForHashFetch(block: suspend () -> T): T =
+        withTunnelApiWhenExcluded(block)
+
+    /** Main VPN excluded — overlay (как 84c7ee3). */
+    suspend fun <T> withMainVpnTunnelApi(block: suspend () -> T): T {
+        if (!APP_EXCLUDED_FROM_VPN) {
+            val previousTunnel = tunnelApiBaseUrl
+            useApiBase(tunnelApiBase())
+            invalidateApiClient()
+            try {
+                return block()
+            } finally {
+                if (tunnelApiBaseUrl != previousTunnel) {
+                    tunnelApiBaseUrl = previousTunnel
+                    invalidateApiClient()
+                }
+            }
+        }
+        return withTunnelApiWhenExcluded(block)
+    }
+
+    private suspend fun <T> withTunnelApiViaProxyOrOverlay(
+        block: suspend () -> T,
+        allowDuringRampUp: Boolean,
+    ): T = withTunnelApiWhenExcludedInternal(block, allowDuringRampUp)
+
+    /**
+     * HTTP через VPN Network — запасной путь (overlay основной).
+     */
+    suspend fun <T> withBoundVpnNetwork(block: suspend () -> T): T {
+        val network = VpnNetworkHelper.getSilentVpnNetwork(context)
+            ?: throw IllegalStateException("VPN network not available")
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val previous = cm.boundNetworkForProcess
+        if (!cm.bindProcessToNetwork(network)) {
+            throw IllegalStateException("bindProcessToNetwork(VPN) failed")
+        }
+        try {
+            return block()
+        } finally {
+            cm.bindProcessToNetwork(previous)
+        }
+    }
+
+    private fun isMainVpnTunnelUp(): Boolean =
+        com.silent.vpn.vpn.WdttTunnelManager.running.value &&
+            com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value &&
+            !com.silent.vpn.vpn.WdttTunnelManager.isBootstrapMode()
+
+    /**
+     * Main VPN tunnel API — overlay 10.66.66.0/24 (как 84c7ee3).
+     */
+    suspend fun <T> withTunnelApiStrict(block: suspend () -> T): T {
+        check(isMainVpnTunnelUp()) { "VPN tunnel not up" }
+        useApiBase(tunnelApiBase())
+        invalidateApiClient()
+        Log.i(TAG, "tunnel strict: overlay → ${tunnelApiBase()}")
+        return WdttTunnelManager.withApiOverlayBrief(block, allowDuringRampUp = true)
+    }
+
+    /** Backend API через overlay когда VPN поднят и app excluded. */
+    suspend fun <T> withBackendApi(block: suspend () -> T): T {
+        if (needsTunnelApiOverlay()) {
+            return withTunnelApiWhenExcludedInternal(block, allowDuringRampUp = false)
+        }
+        return block()
+    }
+
+    /** @deprecated fallback; основной путь — overlay через [withTunnelApiWhenExcludedInternal]. */
+    private suspend fun <T> withVpnConnectedApi(block: suspend () -> T): T =
+        withTunnelApiWhenExcludedInternal(block, allowDuringRampUp = false)
+
+    /** HTTP к 10.66.66.1 через VPN Network без смены WG-конфига. */
+    private suspend fun <T> tryTunnelApiRoutes(block: suspend () -> T): T {
+        val network = VpnNetworkHelper.getSilentVpnNetwork(context)
+            ?: throw IllegalStateException("VPN network not available")
+
+        runCatching {
+            return withBoundVpnNetwork {
+                useApiBase(tunnelApiBase())
+                invalidateApiClient()
+                Log.d(TAG, "API via bindProcessToNetwork → ${tunnelApiBase()}")
+                block()
+            }
+        }.onFailure { e ->
+            Log.w(TAG, "API tunnel bind: ${e.message}")
+        }
+
+        useApiBase(tunnelApiBase())
+        invalidateApiClient()
+        runCatching {
+            Log.d(TAG, "API via Network.socketFactory → ${tunnelApiBase()}")
+            return block()
+        }.onFailure { e ->
+            Log.w(TAG, "API tunnel socket: ${e.message}")
+        }
+
+        runCatching {
+            return withNetworkBoundApi(network, block)
+        }.onFailure { e ->
+            Log.w(TAG, "API explicit vpn client: ${e.message}")
+        }
+
+        throw IllegalStateException("tunnel API unavailable")
+    }
+
+    private suspend fun <T> withNetworkBoundApi(network: Network, block: suspend () -> T): T {
+        val base = tunnelApiBase()
+        val prevApi = _api
+        val prevKey = _apiCacheKey
+        val prevTunnel = tunnelApiBaseUrl
+        try {
+            tunnelApiBaseUrl = base
+            _apiCacheKey = "$base|vpn-net"
+            _api = buildApi("$base/", vpnNetwork = network)
+            return block()
+        } finally {
+            _api = prevApi
+            _apiCacheKey = prevKey
+            tunnelApiBaseUrl = prevTunnel
+        }
+    }
+
+    /** Долгая загрузка APK — overlay без throttle. */
     suspend fun <T> withTunnelApiForUpdateDownload(block: suspend () -> T): T {
         if (!APP_EXCLUDED_FROM_VPN) return block()
         if (!com.silent.vpn.service.SilentVpnService.isRunning) return block()
@@ -202,14 +412,15 @@ class SilentRepository @Inject constructor(
         if (wgAddress.isNullOrBlank()) return WG_TUNNEL_GATEWAY
         val host = wgAddress.substringBefore('/').trim()
         if (!host.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) return null
-        val parts = host.split('.').mapNotNull { it.toIntOrNull() }
-        if (parts.size != 4) return null
-        return "${parts[0]}.${parts[1]}.${parts[2]}.1"
+        if (!host.startsWith("10.66.")) return null
+        return WG_TUNNEL_GATEWAY
     }
 
     fun apiBaseCandidates(wgAddress: String? = null): List<String> {
         val out = linkedSetOf<String>()
-        if (!APP_EXCLUDED_FROM_VPN) {
+        if (shouldUseTunnelApiProxy()) {
+            out.add(TunnelApiProxy.baseUrl())
+        } else if (!APP_EXCLUDED_FROM_VPN) {
             wgGatewayFromAddress(wgAddress)?.let { gw ->
                 out.add("http://$gw:8000")
                 out.add("https://$gw")
@@ -224,12 +435,18 @@ class SilentRepository @Inject constructor(
     fun getPublicServerUrl(): String =
         prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
 
-    /** База для скачивания обновлений. Туннельный API — только через overlay (Silent вне WG). */
+    /** База для скачивания обновлений — public HTTPS при VPN ON, прокси как запасной. */
     fun resolveUpdateDownloadBase(preferredBase: String?): String {
         val base = preferredBase?.trimEnd('/').orEmpty()
-        if (isTunnelApiBase(base)) return tunnelApiBaseUrl()
+        if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
+            if (base.startsWith("https://")) return base
+            return getPublicServerUrl().trimEnd('/')
+        }
+        if (isTunnelApiBase(base) || shouldUseTunnelApiProxy()) return tunnelApiBaseUrl()
         if (base.startsWith("http://")) {
-            if (APP_EXCLUDED_FROM_VPN) return "https://$DEFAULT_SERVER_HOST"
+            if (APP_EXCLUDED_FROM_VPN && !TunnelApiProxy.isActive()) {
+                return "https://$DEFAULT_SERVER_HOST"
+            }
             return base
         }
         if (base.contains(Regex("""\d+\.\d+\.\d+\.\d+"""))) return "https://$DEFAULT_SERVER_HOST"
@@ -243,6 +460,7 @@ class SilentRepository @Inject constructor(
     private fun isTunnelApiBase(base: String): Boolean {
         if (base.isBlank()) return false
         if (base.contains(WG_TUNNEL_GATEWAY)) return true
+        if (base.contains("127.0.0.1") && base.contains(":${TunnelApiProxy.LISTEN_PORT}")) return true
         return base.startsWith("http://") &&
             base.substringAfter("http://").substringBefore('/').substringBefore(':')
                 .matches(Regex("""\d+\.\d+\.\d+\.\d+"""))
@@ -443,6 +661,20 @@ class SilentRepository @Inject constructor(
 
     fun getBootstrapHash(): String? = prefs.getString(PREF_BOOTSTRAP_HASH, null)?.takeIf { it.isNotBlank() }
 
+    /** Удалить временный хеш входа — после login основной VPN его не использует. */
+    fun clearBootstrapHash() {
+        if (!prefs.contains(PREF_BOOTSTRAP_HASH)) return
+        prefs.edit().remove(PREF_BOOTSTRAP_HASH).apply()
+        Log.i(TAG, "bootstrap hash cleared")
+    }
+
+    /** Активные серверные хеши для основного VPN (не bootstrap). */
+    fun mainVpnServerHashes(): List<String> = com.silent.vpn.vk.HashParser.normalizeList(
+        getSavedHashItems().activeServerHashes().map { it.hash.trim() },
+    ).filter { it.isNotBlank() }.distinct().take(HashChannelHelper.MAX_HASHES)
+
+    fun hasMainVpnServerHashes(): Boolean = mainVpnServerHashes().isNotEmpty()
+
     fun saveHashItems(items: List<HashItemDto>) {
         if (items.isEmpty()) return
         prefs.edit()
@@ -457,6 +689,36 @@ class SilentRepository @Inject constructor(
             val type = object : TypeToken<List<HashItemDto>>() {}.type
             Gson().fromJson<List<HashItemDto>>(json, type).sanitized()
         }.getOrDefault(emptyList())
+    }
+
+    /**
+     * Хеши для основного VPN: только сохранённые с сервера (PREF_SAVED_HASH_ITEMS).
+     * Fallback — vk_hashes из кеша конфига (после merge), без временного bootstrap-хеша.
+     */
+    fun resolveConnectVkHashes(
+        configHashes: List<String>,
+        savedItems: List<HashItemDto> = getSavedHashItems(),
+    ): List<String> {
+        val fromSaved = com.silent.vpn.vk.HashParser.normalizeList(
+            savedItems.activeServerHashes().map { it.hash.trim() },
+        ).filter { it.isNotBlank() }.distinct().take(HashChannelHelper.MAX_HASHES)
+        if (fromSaved.isNotEmpty()) return fromSaved
+        val boot = getBootstrapHash()?.trim().orEmpty()
+        return com.silent.vpn.vk.HashParser.normalizeList(configHashes)
+            .filter { it.isNotBlank() && (boot.isEmpty() || it != boot) }
+            .distinct()
+            .take(HashChannelHelper.MAX_HASHES)
+    }
+
+    /** Обновить vk_hashes в кешированном конфиге после sync хешей с сервера. */
+    fun mergeSavedHashesIntoCachedConfig() {
+        val hashes = mainVpnServerHashes().ifEmpty { resolveConnectVkHashes(emptyList()) }
+        if (hashes.isEmpty()) return
+        val json = getCachedVpnConfig() ?: return
+        val cfg = runCatching { Gson().fromJson(json, VpnConfig::class.java) }.getOrNull() ?: return
+        if (cfg.vk_hashes == hashes) return
+        cacheVpnConfig(Gson().toJson(cfg.copy(vk_hashes = hashes)))
+        Log.i(TAG, "cached VPN config vk_hashes updated from saved items (${hashes.size})")
     }
 
     fun getSavedHashItemsUpdatedAt(): Long = prefs.getLong(PREF_SAVED_HASH_ITEMS_TS, 0L)
@@ -514,31 +776,274 @@ class SilentRepository @Inject constructor(
             .apply()
     }
 
-    suspend fun fetchAndSaveHashItemsViaTunnel(): Result<List<HashItemDto>> =
-        fetchHashItemsFromBases(listOf("http://$WG_TUNNEL_GATEWAY:8000"))
+    /** POST /disconnect — тот же [withTunnelApiStrict], что connect; вызывать ДО stop VPN. */
+    suspend fun notifyDisconnectBeforeTunnelStop(): Boolean {
+        if (!isLoggedIn() || !isMainVpnTunnelUp()) {
+            Log.w(TAG, "disconnect: tunnel not up")
+            return false
+        }
+        return runCatching {
+            withTunnelApiStrict {
+                val url = getServerUrl()
+                val ok = postDisconnectRequest()
+                Log.i(TAG, "disconnect via $url ok=$ok")
+                ok
+            }
+        }.getOrOrLog(false)
+    }
 
-    suspend fun fetchAndSaveHashItems(): Result<List<HashItemDto>> {
-        suspend fun tryViaTunnel(): Result<List<HashItemDto>> = runCatching {
-            withTunnelApiWhenExcluded {
-                fetchHashItemsFromBases(listOf(tunnelApiBaseUrl()))
+    /** POST /connect — после поднятия туннеля. */
+    suspend fun pingOnlineWithBackend(): Boolean {
+        if (!isLoggedIn() || !isMainVpnTunnelUp()) return false
+        return runCatching {
+            withTunnelApiStrict {
+                val url = getServerUrl()
+                val ok = getApi().connect(ConnectRequest(getDeviceFingerprint(), "android")).isSuccessful
+                Log.i(TAG, "connect online via $url ok=$ok")
+                ok
+            }
+        }.getOrOrLog(false)
+    }
+
+    /** После connect: хеши + config — тот же туннель, без public. */
+    suspend fun syncHashesViaTunnel(): Boolean {
+        if (!isLoggedIn() || !isMainVpnTunnelUp()) return false
+        return runCatching {
+            withTunnelApiStrict {
+                val url = getServerUrl()
+                val ok = syncHashesAndConfigAfterConnect()
+                Log.i(TAG, "sync hashes via $url ok=$ok")
+                ok
+            }
+        }.getOrOrLog(false)
+    }
+
+    /** Connect online, затем хеши — один сеанс tunnel API. */
+    suspend fun syncAllViaTunnel(): Boolean {
+        if (!isLoggedIn() || !isMainVpnTunnelUp()) return false
+        return runCatching {
+            withTunnelApiStrict {
+                val url = getServerUrl()
+                val online = getApi()
+                    .connect(ConnectRequest(getDeviceFingerprint(), "android"))
+                    .isSuccessful
+                Log.i(TAG, "syncAll connect via $url ok=$online")
+                val data = syncHashesAndConfigAfterConnect()
+                Log.i(TAG, "syncAll hashes via $url ok=$data")
+                online || data
+            }
+        }.getOrOrLog(false)
+    }
+
+    private fun <T> Result<T>.getOrOrLog(default: T): T =
+        onFailure { e -> Log.w(TAG, "tunnel API: ${e.message}") }.getOrDefault(default)
+
+    private suspend fun postDisconnectRequest(): Boolean {
+        val res = getApi().disconnect(DisconnectRequest(getDeviceFingerprint()))
+        if (res.isSuccessful) return true
+        Log.w(TAG, "disconnect HTTP ${res.code()}")
+        return false
+    }
+
+    /** «Онлайн» на backend — только POST /connect (без registerDevice: иначе дубли в админке). */
+    suspend fun registerOnlineWithBackend(): Boolean = pingOnlineWithBackend()
+
+    suspend fun fetchAndSaveHashItemsViaTunnel(): Result<List<HashItemDto>> {
+        return if (WdttTunnelManager.isBootstrapMode()) {
+            runCatching {
+                withTunnelApiWhenExcludedInternal({
+                    fetchHashItemsFromBases(listOf("http://$WG_TUNNEL_GATEWAY:8000")).getOrThrow()
+                }, allowDuringRampUp = true)
+            }.fold(
+                onSuccess = { Result.success(it) },
+                onFailure = { Result.failure(it) },
+            )
+        } else {
+            fetchHashItemsViaTunnelProxy()
+        }
+    }
+
+    suspend fun fetchAndSaveHashItems(): Result<List<HashItemDto>> =
+        fetchAndSaveHashItems(preferPublicOnly = false)
+
+    suspend fun fetchAndSaveHashItems(preferPublicOnly: Boolean = false): Result<List<HashItemDto>> {
+        if (preferPublicOnly) {
+            return fetchHashItemsFromPublicBases(fastTimeout = true)
+        }
+        return runCatching {
+            if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
+                withTunnelApiStrict {
+                    fetchHashItemsOnce().getOrThrow()
+                }
+            } else {
+                withBackendApi {
+                    fetchHashItemsFromBases(apiBaseCandidates(), connectTimeoutSec = 12L).getOrThrow()
+                }
+            }
+        }.fold(
+            onSuccess = { Result.success(it) },
+            onFailure = { e ->
+                Log.w(TAG, "fetchAndSaveHashItems: ${e.message}")
+                Result.failure(e)
+            },
+        )
+    }
+
+    private suspend fun fetchHashItemsViaTunnelProxy(): Result<List<HashItemDto>> =
+        runCatching {
+            if (!prepareTunnelApiBase()) error("tunnel proxy not ready")
+            fetchHashItemsFromBases(listOf(TunnelApiProxy.baseUrl())).getOrThrow()
+        }.fold(
+            onSuccess = { items ->
+                Log.i(TAG, "fetchAndSaveHashItems OK via proxy (${items.size} items)")
+                Result.success(items)
+            },
+            onFailure = { e ->
+                Log.w(TAG, "fetchHashItemsViaTunnelProxy: ${e.message}")
+                Result.failure(e)
+            },
+        )
+
+    private suspend fun fetchHashItemsFromPublicBases(fastTimeout: Boolean): Result<List<HashItemDto>> {
+        val bases = if (fastTimeout) {
+            listOf("https://$DEFAULT_SERVER_HOST", getPublicServerUrl())
+        } else {
+            listOf(getPublicServerUrl(), "https://$DEFAULT_SERVER_HOST") +
+                apiBaseCandidates().filter { it.startsWith("https://") }
+        }.distinct()
+        val timeout = if (fastTimeout) 2L else 10L
+        return runCatching {
+            withBackendApi {
+                fetchHashItemsFromBases(bases, connectTimeoutSec = timeout)
             }
         }.getOrElse { e ->
-            Log.w(TAG, "fetchAndSaveHashItems via tunnel: ${e.message}")
+            Log.w(TAG, "fetchAndSaveHashItems public: ${e.message}")
             Result.failure(e)
         }
+    }
 
-        if (needsTunnelApiOverlay()) {
-            val tunnel = tryViaTunnel()
-            if (tunnel.isSuccess) return tunnel
+    /** Обновить access_token по refresh_token (401 на /hashes и т.п.). */
+    private suspend fun refreshAccessToken(): Boolean {
+        val refresh = getRefreshToken()?.takeIf { it.isNotBlank() } ?: return false
+        return try {
+            val url = getServerUrl().trimEnd('/')
+            val network = resolveVpnNetworkForApi(url)
+            val res = buildApi("$url/", vpnNetwork = network).refresh(RefreshRequest(refresh))
+            if (!res.isSuccessful) return false
+            val body = res.body() ?: return false
+            saveTokens(body.access_token, body.refresh_token)
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "refreshAccessToken: ${e.message}")
+            false
         }
-        val first = fetchHashItemsFromBases(apiBaseCandidates())
-        if (first.isSuccess || !APP_EXCLUDED_FROM_VPN) return first
-        if (!com.silent.vpn.service.SilentVpnService.isRunning) return first
-        val tunnel = tryViaTunnel()
+    }
+
+    private suspend fun fetchHashItemsOnce(api: SilentApi = getApi()): Result<List<HashItemDto>> {
+        return try {
+            val res = api.getVpnHashes()
+            if (res.code() == 401 && refreshAccessToken()) {
+                val retry = api.getVpnHashes()
+                if (!retry.isSuccessful) {
+                    return Result.failure(
+                        Exception(retry.errorBody()?.string()?.take(200) ?: "HTTP ${retry.code()}"),
+                    )
+                }
+                val items = retry.body()!!.toHashItems()
+                if (items.isNotEmpty()) saveHashItems(items)
+                return Result.success(items)
+            }
+            if (!res.isSuccessful) {
+                return Result.failure(
+                    Exception(res.errorBody()?.string()?.take(200) ?: "HTTP ${res.code()}"),
+                )
+            }
+            val items = res.body()!!.toHashItems()
+            if (items.isNotEmpty()) saveHashItems(items)
+            Result.success(items)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun fetchHashItemsFromBases(
+        bases: List<String>,
+        vpnNetwork: Network? = null,
+        connectTimeoutSec: Long? = null,
+    ): Result<List<HashItemDto>> {
+        val previousTunnel = tunnelApiBaseUrl
+        var lastError: Exception? = null
+        var succeeded = false
+        try {
+            for (base in bases.distinct().filter { it.isNotBlank() }) {
+                try {
+                    val normalized = base.trimEnd('/')
+                    val api = if (vpnNetwork != null) {
+                        buildApi("$normalized/", vpnNetwork, connectTimeoutSec)
+                    } else {
+                        useApiBase(normalized)
+                        invalidateApiClient()
+                        if (connectTimeoutSec != null) {
+                            buildApi("$normalized/", connectTimeoutSec = connectTimeoutSec)
+                        } else {
+                            getApi()
+                        }
+                    }
+                    val attempt = fetchHashItemsOnce(api)
+                    if (attempt.isSuccess) {
+                        succeeded = true
+                        return attempt
+                    }
+                    lastError = attempt.exceptionOrNull() as? Exception
+                        ?: Exception(attempt.toString())
+                } catch (e: Exception) {
+                    lastError = e
+                    Log.w(TAG, "fetchAndSaveHashItems on $base: ${e.message}")
+                }
+            }
+            return Result.failure(lastError ?: Exception("Не удалось загрузить хеши"))
+        } finally {
+            if (!succeeded && vpnNetwork == null && tunnelApiBaseUrl != previousTunnel) {
+                tunnelApiBaseUrl = previousTunnel
+                _api = null
+                _apiCacheKey = null
+            }
+        }
+    }
+
+    fun humanizeHashFetchError(message: String?): String {
+        val m = message?.lowercase().orEmpty()
+        val vpnUp = isMainVpnTunnelUp()
         return when {
-            tunnel.isSuccess -> tunnel
-            first.isFailure -> first
-            else -> tunnel
+            m.contains("overlay blocked") ->
+                "Подождите завершения подключения VPN и повторите."
+            m.contains("tunnel not ready") ->
+                "VPN ещё подключается — подождите и повторите."
+            m.contains("upstream error") ||
+                m.contains("upstream failed") ||
+                m.contains("vpn upstream") ||
+                m.contains("502") ->
+                "Не удалось достучаться до сервера через VPN. Подождите 5 сек и повторите."
+            m.contains("overlay suppressed") ->
+                "VPN выключается — повторите позже."
+            m.contains("failed to connect") ||
+                m.contains("connect timed out") ||
+                m.contains("unable to resolve") ||
+                m.contains("connection refused") ||
+                m.contains("network is unreachable") ||
+                m.contains("all api routes failed") ||
+                m.contains("tunnel api unavailable") ->
+                if (vpnUp) {
+                    val detail = message?.take(80)?.trim().orEmpty()
+                    if (detail.isNotBlank()) {
+                        "Не удалось обновить данные: $detail"
+                    } else {
+                        "Не удалось связаться с сервером. Повторите через несколько секунд."
+                    }
+                } else {
+                    "Нет связи с сервером. При блокировке мобильного интернета включите VPN и повторите."
+                }
+            else -> message?.take(120) ?: "Не удалось загрузить хеши"
         }
     }
 
@@ -583,34 +1088,10 @@ class SilentRepository @Inject constructor(
         }
     }
 
-    private suspend fun fetchHashItemsFromBases(bases: List<String>): Result<List<HashItemDto>> {
-        var lastError: Exception? = null
-        for (base in bases) {
-            try {
-                useApiBase(base)
-                val res = getApi().getVpnHashes()
-                if (!res.isSuccessful) {
-                    lastError = Exception(res.errorBody()?.string()?.take(200) ?: "HTTP ${res.code()}")
-                    continue
-                }
-                val items = res.body()!!.toHashItems()
-                if (items.isNotEmpty()) saveHashItems(items)
-                return Result.success(items)
-            } catch (e: Exception) {
-                lastError = e
-                Log.w(TAG, "fetchAndSaveHashItems on $base: ${e.message}")
-            }
-        }
-        return Result.failure(lastError ?: Exception("Не удалось загрузить хеши"))
-    }
-
-    /** Stable fingerprint for bootstrap VPN before Silent login. */
+    /** Stable fingerprint for bootstrap and login — один and-ANDROID_ID на телефон. */
     fun getOrCreatePreLoginFingerprint(): String {
-        val existing = prefs.getString(PREF_PRE_LOGIN_FP, null)?.takeIf { it.isNotBlank() }
-        if (existing != null) return existing
-        val fp = UUID.randomUUID().toString()
-        prefs.edit().putString(PREF_PRE_LOGIN_FP, fp).apply()
-        return fp
+        prefs.getString(PREF_STABLE_FP, null)?.takeIf { it.isNotBlank() }?.let { return it }
+        return stableDeviceFingerprint()
     }
 
     fun cacheVpnConfig(json: String) {

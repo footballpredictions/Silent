@@ -18,4 +18,8 @@ object HashParser {
         }
         return null
     }
+
+    /** Чистый хеш для libclient — из ссылки vk.com/call/join/… или bare token (reference 1.1.8+). */
+    fun normalizeList(raw: List<String>): List<String> =
+        raw.mapNotNull { extract(it) }.distinct()
 }

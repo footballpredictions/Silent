@@ -1,53 +1,34 @@
 package com.silent.vpn.service
 
-import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 
-/** Единое состояние VPN-сессии (плитка QS и приложение — один туннель). Только чтение, без side-effects. */
+/**
+ * Единое состояние VPN-сессии — как [TunnelManager.running] в proxy-turn-vk-android.
+ */
 object VpnSessionState {
 
     @Volatile
     var backendSyncCompleted: Boolean = false
 
-    private fun tunnelUp(): Boolean =
-        WdttTunnelManager.tunnelReady.value && WdttTunnelManager.activeWorkers.value >= 1
+    /** Хеши/конfig из VpnBackendSync (сервис) или MainViewModel. */
+    @Volatile
+    var tunnelDataSyncCompleted: Boolean = false
 
-    /** Туннель поднят и libclient готов. */
-    fun isActive(): Boolean {
-        val result = SilentVpnService.isRunning && tunnelUp()
-        SessionTrace.mark(
-            "VpnSessionState.isActive",
-            "=$result running=${SilentVpnService.isRunning} tunnel=${tunnelUp()} workers=${WdttTunnelManager.activeWorkers.value}",
-        )
-        return result
-    }
+    /** Туннель активен: libclient + WireGuard UP. */
+    fun isActive(): Boolean =
+        WdttTunnelManager.running.value && WdttTunnelManager.tunnelReady.value
 
-    /** Connect / ramp-up / капча — нельзя перезапускать второй connect. */
-    fun isBusy(): Boolean {
-        val result = SilentVpnService.isRunning ||
-            WdttTunnelManager.running.value ||
-            WdttTunnelManager.isCaptchaInProgress() ||
-            ManlCaptchaWebViewManager.isCaptchaPending
-        SessionTrace.mark(
-            "VpnSessionState.isBusy",
-            "=$result running=${SilentVpnService.isRunning} wdtt=${WdttTunnelManager.running.value}",
-        )
-        return result
-    }
+    /** Идёт подключение или капча. */
+    fun isBusy(): Boolean =
+        WdttTunnelManager.running.value && !WdttTunnelManager.tunnelReady.value ||
+            isCaptchaPending()
 
-    /** Можно отменить с плитки: подключено или идёт connect/ramp-up. */
-    fun canDisconnectFromTile(): Boolean = isActive() || isBusy()
-
-    fun isCaptchaPending(): Boolean {
-        val result = WdttTunnelManager.isCaptchaInProgress() ||
-            ManlCaptchaWebViewManager.isCaptchaPending
-        SessionTrace.mark("VpnSessionState.isCaptchaPending", "=$result")
-        return result
-    }
+    fun isCaptchaPending(): Boolean =
+        WdttTunnelManager.isCaptchaInProgress() || ManlCaptchaWebViewManager.isCaptchaPending
 
     fun resetBackendSync() {
-        SessionTrace.mark("VpnSessionState.resetBackendSync")
         backendSyncCompleted = false
+        tunnelDataSyncCompleted = false
     }
 }

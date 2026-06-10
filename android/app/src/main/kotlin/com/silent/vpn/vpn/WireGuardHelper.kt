@@ -13,6 +13,7 @@ import android.util.Log
 import com.silent.vpn.util.DebugLog
 
 import com.silent.vpn.SilentApp
+import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.service.SilentGoBackendVpnService
 
 import com.wireguard.android.backend.GoBackend
@@ -63,9 +64,27 @@ class WireGuardHelper(context: Context) {
 
         var lastAppliedSemanticKey: String? = null
 
+        @Volatile var wgTransitionActive: Boolean = false
+
         private const val TAG = "WireGuardHelper"
 
     }
+
+    /** Сброс WG даже если sharedTunnel=null (новый процесс после kill). */
+    suspend fun forceStopSilentTunnel() = wgMutex.withLock {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                appContext.startService(Intent(appContext, SilentGoBackendVpnService::class.java))
+            }
+            delay(300)
+            val tunnel = sharedTunnel ?: WgTunnel()
+            runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
+            sharedTunnel = null
+            lastAppliedSemanticKey = null
+        }
+    }
+
+    fun isWgTransitionActive(): Boolean = wgTransitionActive
 
 
 
@@ -92,6 +111,8 @@ class WireGuardHelper(context: Context) {
     ) = wgMutex.withLock {
 
         withContext(Dispatchers.IO) {
+            wgTransitionActive = true
+            try {
 
             if (VpnService.prepare(appContext) != null) {
 
@@ -111,11 +132,17 @@ class WireGuardHelper(context: Context) {
 
             var configToApply = configString
 
-            if (isBootstrap && excludeIPs.isNotEmpty() && !apiOverlayMode) {
-                configToApply = AllowedIpsHelper.patchAllowedIPs(configString, excludeIPs)
-                DebugLog.i(TAG, "Bootstrap split-tunnel: исключено IP=${excludeIPs.size}")
-            }
-            if (apiOverlayMode) {
+            if (!apiOverlayMode) {
+                if (isBootstrap) {
+                    if (excludeIPs.isNotEmpty()) {
+                        configToApply = AllowedIpsHelper.patchAllowedIPs(configString, excludeIPs)
+                        DebugLog.i(TAG, "Bootstrap split-tunnel: исключено IP=${excludeIPs.size}")
+                    } else {
+                        configToApply = AllowedIpsHelper.patchAllowedIPsToSubnet(configString)
+                        DebugLog.i(TAG, "Bootstrap: AllowedIPs = ${AllowedIpsHelper.WG_TUNNEL_SUBNET}")
+                    }
+                }
+            } else {
                 configToApply = AllowedIpsHelper.patchAllowedIPsToSubnet(configString)
                 DebugLog.i(TAG, "API overlay: ${AllowedIpsHelper.WG_TUNNEL_SUBNET}")
             }
@@ -175,7 +202,7 @@ class WireGuardHelper(context: Context) {
 
 
 
-            val includeAppInTunnel = apiOverlayMode
+            val includeAppInTunnel = apiOverlayMode || !SilentRepository.APP_EXCLUDED_FROM_VPN
 
             runCatching {
 
@@ -285,6 +312,9 @@ class WireGuardHelper(context: Context) {
 
             DebugLog.i(TAG, "WireGuard tunnel UP")
 
+            } finally {
+                wgTransitionActive = false
+            }
         }
 
     }

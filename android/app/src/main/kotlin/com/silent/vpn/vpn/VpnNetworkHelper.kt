@@ -50,17 +50,23 @@ object VpnNetworkHelper {
         if (!SilentVpnService.isRunning) return null
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val ourUid = context.applicationInfo.uid
+        var fallback: Network? = null
         for (network in cm.allNetworks) {
             val caps = cm.getNetworkCapabilities(network) ?: continue
             if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
-            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val owner = vpnOwnerUid(cm, network)
                 if (owner > 0 && owner != ourUid) continue
             }
-            return network
+            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                return network
+            }
+            if (fallback == null) fallback = network
         }
-        return null
+        if (fallback != null) {
+            DebugLog.i(TAG, "VPN network without INTERNET cap — using anyway")
+        }
+        return fallback
     }
 
     fun hasUnderlyingInternet(context: Context): Boolean {

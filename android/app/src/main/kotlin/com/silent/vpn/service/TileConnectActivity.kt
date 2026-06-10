@@ -6,13 +6,13 @@ import android.net.VpnService
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.silent.vpn.MainActivity
 import com.silent.vpn.util.SessionTrace
+import kotlinx.coroutines.launch
 
-/**
- * Прозрачная активность: только запрос VPN-разрешения для плитки QS.
- * Не открывает UI приложения — сразу закрывается после старта VPN.
- */
+/** Запрос VPN-разрешения для плитки (если пользователь открыл приложение вручную). */
 class TileConnectActivity : ComponentActivity() {
 
     private val vpnPermissionLauncher = registerForActivityResult(
@@ -20,7 +20,11 @@ class TileConnectActivity : ComponentActivity() {
     ) { result ->
         SessionTrace.mark("TileConnectActivity.vpnPermission", "result=${result.resultCode}")
         if (result.resultCode == RESULT_OK) {
-            VpnTileConnect.connectAfterPermission(this)
+            lifecycleScope.launch {
+                VpnTileConnect.buildConnectIntentFromCache(this@TileConnectActivity)?.let { intent ->
+                    ContextCompat.startForegroundService(this@TileConnectActivity, intent)
+                }
+            }
         }
         finish()
     }
@@ -28,28 +32,17 @@ class TileConnectActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         SessionTrace.enter("TileConnectActivity.onCreate")
-        when (val r = VpnTileConnect.tryConnect(this)) {
-            VpnTileConnect.ConnectResult.Started,
-            VpnTileConnect.ConnectResult.AlreadyConnected,
-            VpnTileConnect.ConnectResult.Busy,
-            -> {
-                SessionTrace.exit("TileConnectActivity.onCreate", r.name)
-                finish()
-            }
-            VpnTileConnect.ConnectResult.NeedVpnPermission -> {
-                SessionTrace.mark("TileConnectActivity.onCreate", "request permission")
-                val prep = VpnService.prepare(this)
-                if (prep != null) vpnPermissionLauncher.launch(prep)
-                else {
-                    VpnTileConnect.connectAfterPermission(this)
-                    finish()
+        val prep = VpnService.prepare(this)
+        if (prep != null) {
+            vpnPermissionLauncher.launch(prep)
+        } else {
+            lifecycleScope.launch {
+                val intent = VpnTileConnect.buildConnectIntentFromCache(this@TileConnectActivity)
+                if (intent != null) {
+                    ContextCompat.startForegroundService(this@TileConnectActivity, intent)
+                } else {
+                    startActivity(MainActivity.openIntent(this@TileConnectActivity))
                 }
-            }
-            VpnTileConnect.ConnectResult.NeedLogin,
-            VpnTileConnect.ConnectResult.NoConfig,
-            -> {
-                SessionTrace.exit("TileConnectActivity.onCreate", "open app ${r.name}")
-                startActivity(MainActivity.openIntent(this))
                 finish()
             }
         }

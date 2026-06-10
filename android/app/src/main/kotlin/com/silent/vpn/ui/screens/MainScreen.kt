@@ -553,6 +553,7 @@ private fun MenuDevices(
         val slotsUsed = profile?.devices_count ?: profile?.devices?.size ?: 0
         val localOnline = vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING
         fun deviceOnline(d: DeviceInfo): Boolean {
+            if (vpnState == VpnState.DISCONNECTED || vpnState == VpnState.DISCONNECTING) return false
             if (d.is_connected) return true
             val isSelf = !sessionDeviceId.isNullOrBlank() && d.id == sessionDeviceId
             return localOnline && isSelf

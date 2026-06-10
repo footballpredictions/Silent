@@ -68,28 +68,29 @@ fun MenuHashesScreen(
         if (totalWorkers != normalized) totalWorkers = normalized
     }
 
-
     suspend fun refreshFromServer() {
         syncing = true
         error = null
         try {
             val result = withContext(Dispatchers.IO) { repo.fetchAndSaveHashItems() }
             result.onSuccess { downloaded ->
-                if (downloaded.isNotEmpty()) {
-                    items = downloaded
-                    savedAt = repo.getSavedHashItemsUpdatedAt()
-                } else if (items.isEmpty()) {
-                    error = "На сервере пока нет хешей"
-                }
-            }.onFailure {
+                val fresh = repo.getSavedHashItems()
+                items = fresh.ifEmpty { downloaded }
+                savedAt = repo.getSavedHashItemsUpdatedAt()
                 if (items.isEmpty()) {
-                    error = it.message?.take(120) ?: "Не удалось загрузить хеши"
+                    error = "На сервере пока нет хешей"
+                } else {
+                    repo.mergeSavedHashesIntoCachedConfig()
                 }
+            }.onFailure { e ->
+                items = repo.getSavedHashItems()
+                savedAt = repo.getSavedHashItemsUpdatedAt()
+                error = repo.humanizeHashFetchError(e.message)
             }
         } catch (e: Exception) {
-            if (items.isEmpty()) {
-                error = e.message?.take(120) ?: "Не удалось загрузить хеши"
-            }
+            items = repo.getSavedHashItems()
+            savedAt = repo.getSavedHashItemsUpdatedAt()
+            error = repo.humanizeHashFetchError(e.message)
         } finally {
             syncing = false
             loading = false
@@ -97,10 +98,9 @@ fun MenuHashesScreen(
     }
 
     LaunchedEffect(refreshKey) {
-        if (refreshKey == 0) {
-            items = repo.getSavedHashItems()
-            savedAt = repo.getSavedHashItemsUpdatedAt()
-        }
+        items = repo.getSavedHashItems()
+        savedAt = repo.getSavedHashItemsUpdatedAt()
+        loading = items.filter { it.source != "bootstrap" }.isEmpty() && refreshKey == 0
         refreshFromServer()
     }
 

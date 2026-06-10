@@ -6,7 +6,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Dict, Optional
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from sqlalchemy import select, func, or_, and_
@@ -19,29 +19,33 @@ from app.schemas.vpn import VpnConfigResponse
 
 logger = logging.getLogger(__name__)
 
-# После POST /disconnect клиент гасит туннель; wdtt-server ещё ~секунду шлёт online=true.
-# Игнорируем такие keepalive, чтобы сессия не «всплывала» снова в UI.
-_DISCONNECT_GRACE_SEC = 45.0
-_recent_client_disconnects: dict[str, float] = {}
+# Клиент явно вызвал POST /disconnect — wdtt keepalive не должен снова ставить online=true.
+_client_disconnect_until: Dict[str, float] = {}
+CLIENT_DISCONNECT_LATCH_SEC = 90.0
 
 
-def mark_client_disconnect(device_id) -> None:
-    _recent_client_disconnects[str(device_id)] = time.monotonic()
+def mark_client_disconnect_latch(*device_refs: str) -> None:
+    until = time.monotonic() + CLIENT_DISCONNECT_LATCH_SEC
+    for ref in device_refs:
+        key = (ref or "").strip()
+        if key:
+            _client_disconnect_until[key] = until
 
 
-def clear_client_disconnect(device_id) -> None:
-    _recent_client_disconnects.pop(str(device_id), None)
-
-
-def _in_client_disconnect_grace(device_id) -> bool:
-    key = str(device_id)
-    ts = _recent_client_disconnects.get(key)
-    if ts is None:
-        return False
-    if time.monotonic() - ts > _DISCONNECT_GRACE_SEC:
-        _recent_client_disconnects.pop(key, None)
-        return False
-    return True
+def _disconnect_latch_active(*device_refs: str) -> bool:
+    now = time.monotonic()
+    for ref in device_refs:
+        key = (ref or "").strip()
+        if not key:
+            continue
+        until = _client_disconnect_until.get(key)
+        if until is None:
+            continue
+        if now >= until:
+            _client_disconnect_until.pop(key, None)
+            continue
+        return True
+    return False
 
 
 def _clamp_wg_private(raw: bytes) -> bytes:
@@ -166,19 +170,17 @@ async def set_device_online(db: AsyncSession, device_ref: str, online: bool) -> 
     if device is None:
         return False
 
-    if online and _in_client_disconnect_grace(device.id):
-        logger.debug(
-            "ignore s2s online=true for device %s (client disconnect grace)",
-            device.id,
-        )
+    if online and _disconnect_latch_active(
+        device_ref,
+        str(device.id),
+        device.device_fingerprint or "",
+    ):
+        logger.debug("ignore wdtt online=true — client disconnect latch active for %s", device_ref)
         return True
 
     device.is_connected = bool(online)
     if online:
         device.last_connected = datetime.utcnow()
-        clear_client_disconnect(device.id)
-    else:
-        clear_client_disconnect(device.id)
     await db.commit()
     return True
 
@@ -205,6 +207,59 @@ async def prune_idle_sessions(db: AsyncSession, user_id) -> int:
     return len(idle)
 
 
+async def collapse_duplicate_devices(db: AsyncSession, user_id) -> int:
+    """Один слот на device_type в списке сессий (оставляем online или самый свежий)."""
+    removed = 0
+    for dtype in ("android", "pc", "ios", "windows"):
+        result = await db.execute(
+            select(Device)
+            .where(Device.user_id == user_id, Device.device_type == dtype)
+            .order_by(
+                Device.is_connected.desc(),
+                Device.last_connected.desc().nullslast(),
+                Device.created_at.desc(),
+            )
+        )
+        rows = result.scalars().all()
+        if len(rows) <= 1:
+            continue
+        for d in rows[1:]:
+            await db.delete(d)
+            removed += 1
+    if removed:
+        await db.commit()
+    return removed
+
+
+async def dedupe_same_type_devices(
+    db: AsyncSession,
+    user_id,
+    device_type: str,
+    keep_fingerprint: str,
+) -> int:
+    """Один слот на тип (android/pc): убрать дубли с другим fingerprint (гонка registerDevice)."""
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user_id,
+            Device.device_type == device_type,
+            Device.device_fingerprint != keep_fingerprint,
+        )
+    )
+    dupes = result.scalars().all()
+    for d in dupes:
+        await db.delete(d)
+    if dupes:
+        await db.commit()
+        logger.info(
+            "dedupe %s: removed %d duplicate(s) for user %s, keep %s",
+            device_type,
+            len(dupes),
+            user_id,
+            keep_fingerprint[:16],
+        )
+    return len(dupes)
+
+
 async def replace_same_type_session(
     db: AsyncSession,
     user_id,
@@ -212,20 +267,7 @@ async def replace_same_type_session(
     device_fingerprint: str,
 ) -> int:
     """Новый login с другим fingerprint того же типа — убираем старую запись (переустановка)."""
-    result = await db.execute(
-        select(Device).where(
-            Device.user_id == user_id,
-            Device.device_type == device_type,
-            Device.device_fingerprint != device_fingerprint,
-            Device.is_active == True,
-        )
-    )
-    old = result.scalars().all()
-    for d in old:
-        await db.delete(d)
-    if old:
-        await db.commit()
-    return len(old)
+    return await dedupe_same_type_devices(db, user_id, device_type, device_fingerprint)
 
 
 async def prune_old_sessions(db: AsyncSession, user_id) -> int:
@@ -314,10 +356,7 @@ async def register_device(
     wg_public_key: Optional[str] = None,
 ) -> VpnConfigResponse:
     await clear_stale_online_status(db)
-    # NB: не вытесняем устройства того же типа — у одного аккаунта может быть
-    # несколько Android/ПК одновременно (каждое = отдельная сессия с онлайн-статусом).
-    # Лимит и очистка «призраков» (переустановка/релогин) делаются ниже через
-    # prune_idle_sessions / prune_old_sessions / prune_oldest_session_if_full.
+    await replace_same_type_session(db, user.id, device_type, device_fingerprint)
     await prune_idle_sessions(db, user.id)
     await prune_old_sessions(db, user.id)
 
@@ -330,18 +369,6 @@ async def register_device(
     )
     existing = result.scalar_one_or_none()
     if existing:
-        # При повторной регистрации (релогин/переустановка на том же устройстве)
-        # подтягиваем человекочитаемое имя, но не затираем его дефолтным "Android"/"PC".
-        _generic = {"android", "pc", "ios", "windows"}
-        if (
-            device_name
-            and device_name.strip()
-            and device_name.strip().lower() not in _generic
-            and existing.device_name != device_name
-        ):
-            existing.device_name = device_name
-            await db.commit()
-            await db.refresh(existing)
         return await _build_vpn_config(db, existing)
 
     active_count = await count_active_sessions(db, user.id)
@@ -375,6 +402,7 @@ async def register_device(
     db.add(device)
     await db.commit()
     await db.refresh(device)
+    await dedupe_same_type_devices(db, user.id, device_type, device_fingerprint)
 
     return await _build_vpn_config(db, device)
 

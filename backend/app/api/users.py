@@ -16,6 +16,7 @@ from app.services.vpn_service import (
     count_connected_sessions,
     clear_stale_online_status,
     prune_idle_sessions,
+    collapse_duplicate_devices,
 )
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -26,6 +27,7 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
     await ensure_admin_flag(user, db)
     await clear_stale_online_status(db)
     await prune_idle_sessions(db, user.id)
+    await collapse_duplicate_devices(db, user.id)
     if not await user_in_test_mode(user, db):
         await ensure_trial_subscription(db, user)
     admin = is_user_admin(user)

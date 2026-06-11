@@ -26,10 +26,6 @@ object VpnTileConnect {
         return buildConnectIntent(context, repo, config)
     }
 
-    /** @deprecated используй [buildConnectIntentFromCache] — prepare после поднятия WG */
-    suspend fun prepareAndBuildConnectIntent(context: Context): Intent? =
-        buildConnectIntentFromCache(context)
-
     private fun buildConnectIntent(
         context: Context,
         repo: SilentRepository,

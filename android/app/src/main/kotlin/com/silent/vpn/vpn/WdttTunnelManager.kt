@@ -248,7 +248,7 @@ object WdttTunnelManager {
                                 "-captcha-mode", sanitizeCaptchaMode(params.captchaMode),
                             ),
                         )
-                        systemDnsForLibclient(appContext)?.let { dns ->
+                        systemDnsForLibclient(appContext).let { dns ->
                             add("-sys-dns")
                             add(dns)
                         }
@@ -289,16 +289,22 @@ object WdttTunnelManager {
         else -> "auto"
     }
 
-    private fun systemDnsForLibclient(context: Context): String? {
+    private fun systemDnsForLibclient(context: Context): String {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
-            ?: return null
-        val servers = cm.getLinkProperties(cm.activeNetwork)?.dnsServers ?: return null
-        return servers.mapNotNull { addr ->
-            addr.hostAddress?.takeIf { it.isNotBlank() }?.let { host ->
-                if (host.contains(':')) host else "$host:53"
+            ?: return DEFAULT_LIBCLIENT_DNS
+        val linkDns = cm.getLinkProperties(cm.activeNetwork)?.dnsServers
+            ?.mapNotNull { addr ->
+                addr.hostAddress?.takeIf { it.isNotBlank() }?.let { host ->
+                    if (host.contains(':')) host else "$host:53"
+                }
             }
-        }.distinct().joinToString(",").takeIf { it.isNotBlank() }
+            ?.distinct()
+            ?.joinToString(",")
+            ?.takeIf { it.isNotBlank() }
+        return linkDns ?: DEFAULT_LIBCLIENT_DNS
     }
+
+    private const val DEFAULT_LIBCLIENT_DNS = "1.1.1.1:53,77.88.8.8:53"
 
     private fun deleteOldConf(context: Context) {
         listOf("wg-turn.conf", "wg.conf").forEach { name ->
@@ -949,13 +955,18 @@ object WdttTunnelManager {
             try {
                 block()
             } finally {
-                if (apiOverlayActive) {
-                    updateLog("overlay_off", "API overlay brief OFF", 50)
-                    helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
-                    apiOverlayActive = false
-                    lastOverlayEndedMs = System.currentTimeMillis()
+                // NonCancellable: restore overlay даже при таймауте/отмене вызова (иначе флаги залипнут).
+                withContext(NonCancellable) {
+                    if (apiOverlayActive) {
+                        updateLog("overlay_off", "API overlay brief OFF", 50)
+                        runCatching {
+                            helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
+                        }
+                        apiOverlayActive = false
+                        lastOverlayEndedMs = System.currentTimeMillis()
+                    }
+                    suppressNetworkRecovery = false
                 }
-                suppressNetworkRecovery = false
             }
         }
     }
@@ -1024,6 +1035,7 @@ object WdttTunnelManager {
     private suspend fun stopInternal() {
         overlayRestoreSuppressed = true
         apiOverlayActive = false
+        suppressNetworkRecovery = false
         wgApplyJob?.cancel()
         wgApplyScheduled = false
         cancelAllCaptchaSolvers()

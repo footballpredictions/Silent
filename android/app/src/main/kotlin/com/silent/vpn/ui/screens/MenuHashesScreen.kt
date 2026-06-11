@@ -31,6 +31,7 @@ import com.silent.vpn.ui.theme.UiColors
 import com.silent.vpn.ui.theme.UiDimens
 import com.silent.vpn.vpn.WdttTunnelManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -47,7 +48,7 @@ fun MenuHashesScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var items by remember { mutableStateOf(repo.getSavedHashItems()) }
     var savedAt by remember { mutableStateOf(repo.getSavedHashItemsUpdatedAt()) }
-    var refreshKey by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
 
     val activeWorkers by WdttTunnelManager.activeWorkers.collectAsState()
     val vpnRunning by WdttTunnelManager.running.collectAsState()
@@ -97,11 +98,10 @@ fun MenuHashesScreen(
         }
     }
 
-    LaunchedEffect(refreshKey) {
+    LaunchedEffect(Unit) {
         items = repo.getSavedHashItems()
         savedAt = repo.getSavedHashItemsUpdatedAt()
-        loading = items.filter { it.source != "bootstrap" }.isEmpty() && refreshKey == 0
-        refreshFromServer()
+        loading = false
     }
 
     Column(
@@ -115,7 +115,7 @@ fun MenuHashesScreen(
         }
         Text("Хеши", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = fg)
         Text(
-            "Сохранены на устройстве и обновляются с сервера",
+            "Кеш на устройстве. Обновление с сервера — по кнопке ниже (при VPN может кратко дернуть туннель).",
             fontSize = 11.sp,
             color = fg.copy(0.5f),
             modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
@@ -153,7 +153,7 @@ fun MenuHashesScreen(
         }
 
         TextButton(
-            onClick = { refreshKey++ },
+            onClick = { scope.launch { refreshFromServer() } },
             enabled = !syncing,
             modifier = Modifier.padding(bottom = 4.dp),
         ) {

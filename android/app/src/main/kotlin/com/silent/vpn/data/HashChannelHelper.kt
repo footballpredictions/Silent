@@ -67,7 +67,8 @@ object HashChannelHelper {
     }
 
     fun signalBars(activeWorkers: Int, totalWorkers: Int): Int {
-        val expected = normalizeTotalWorkers(totalWorkers, 1).coerceAtLeast(WORKERS_PER_GROUP)
+        // MAX_HASHES: не зажимать ожидание до 27 — иначе при 36+ воркерах сигнал завышен.
+        val expected = normalizeTotalWorkers(totalWorkers, MAX_HASHES).coerceAtLeast(WORKERS_PER_GROUP)
         if (expected <= 0) return 0
         val ratio = activeWorkers.toFloat() / expected
         return when {

@@ -57,7 +57,8 @@ object VpnServiceTracker {
      */
 
     fun reconcileStaleSession(context: Context): Boolean {
-        if (SilentVpnService.isRunning && WdttTunnelManager.running.value) {
+        // Не сбрасывать во время CONNECT (isRunning уже true, libclient ещё стартует).
+        if (SilentVpnService.isRunning || WdttTunnelManager.running.value) {
             return true
         }
 

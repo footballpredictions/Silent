@@ -31,6 +31,7 @@ import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.service.VpnBackendSync
 import com.silent.vpn.service.VpnServiceTracker
+import com.silent.vpn.service.VpnConnectHelper
 import com.silent.vpn.service.VpnSessionState
 import com.silent.vpn.service.VpnTileConnect
 import com.silent.vpn.ui.screens.VpnState
@@ -47,6 +48,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
@@ -56,9 +59,7 @@ import kotlinx.coroutines.Job
 import javax.inject.Inject
 
 private const val BOOTSTRAP_SESSION_MS = 2 * 60 * 1000L
-/** Пока VPN включён — периодически спрашиваем сервер о новой версии. */
-private const val TUNNEL_API_MAINTENANCE_MS = 15 * 60 * 1000L
-/** Пока открыт экран «Устройства/Сессии» — обновляем список (overlay троттлится 60с). */
+/** Пока открыт экран «Устройства/Сессии» и VPN ВЫКЛЮЧЕН — обновляем список по public API. */
 private const val SESSIONS_POLL_MS = 10 * 1000L
 
 enum class AppScreen { LOGIN, MAIN }
@@ -118,10 +119,7 @@ class MainViewModel @Inject constructor(
     private var silentBootstrapSync = false
     private var profilePollJob: Job? = null
     @Volatile private var sessionsFetchInFlight = false
-    private var vpnProfilePollJob: Job? = null
-    private var updatePollJob: Job? = null
     private var updateApiBaseUrl: String? = null
-    private var onlineHeartbeatJob: Job? = null
 
     private val _updateInfo = MutableStateFlow<UpdateCheckResponse?>(null)
     val updateInfo: StateFlow<UpdateCheckResponse?> = _updateInfo
@@ -198,10 +196,11 @@ class MainViewModel @Inject constructor(
         HashFailureReporter.install { hash, errorType, message ->
             if (!repo.isLoggedIn() || bootstrapVpnMode) return@install
             if (WdttTunnelManager.isWorkerRampUpActive() ||
+                !VpnSessionState.tunnelDataSyncCompleted ||
                 (_vpnState.value == VpnState.CONNECTING && !WdttTunnelManager.tunnelReady.value)
             ) {
                 pendingHashFailures.add(Triple(hash, errorType, message))
-                DebugLog.i("MainViewModel", "hash failure queued (ramp-up): ${hash.take(8)}…")
+                DebugLog.i("MainViewModel", "hash failure queued (connect sync): ${hash.take(8)}…")
                 return@install
             }
             viewModelScope.launch {
@@ -216,6 +215,7 @@ class MainViewModel @Inject constructor(
             } else {
                 _screen.value = AppScreen.MAIN
                 restoreCachedProfileToUi()
+                restoreCachedThemeToUi()
                 syncVpnStateFromSystem()
                 viewModelScope.launch {
                     runCatching { refreshSession() }
@@ -263,18 +263,14 @@ class MainViewModel @Inject constructor(
                         onVpnTunnelReady()
                     }
                 } else if (
-                    (_vpnState.value == VpnState.CONNECTED || _vpnState.value == VpnState.DISCONNECTING) &&
+                    _vpnState.value == VpnState.CONNECTED &&
                     !WdttTunnelManager.running.value &&
                     WdttTunnelManager.activeWorkers.value < 1
                 ) {
-                    onlineHeartbeatJob?.cancel()
-                    onlineHeartbeatJob = null
                     _vpnState.value = VpnState.DISCONNECTED
                     backendSyncCompleted = false
                     repo.clearTunnelApiBase()
-                    if (repo.isLoggedIn()) {
-                        runCatching { fetchProfileNow(force = true) }
-                    }
+                    markLocalDeviceOffline()
                 }
             }
         }
@@ -282,8 +278,11 @@ class MainViewModel @Inject constructor(
 
     private suspend fun refreshSession() {
         loadTheme()
-        fetchProfileNow()
-        syncServerHashes()
+        restoreCachedProfileToUi()
+        if (!SilentVpnService.isRunning) {
+            fetchProfileNow()
+            syncServerHashes(preferPublicOnly = true)
+        }
     }
 
     /** Профиль и хеши через bootstrap-туннель до отключения временного VPN. */
@@ -344,6 +343,12 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    private fun restoreCachedThemeToUi(refreshFromSync: Boolean = false) {
+        repo.getCachedTheme()?.let { cached ->
+            if (refreshFromSync || _theme.value == null) _theme.value = cached
+        }
+    }
+
     private fun syncVpnStateFromSystem() {
         SessionTrace.enter("MainViewModel.syncVpnStateFromSystem")
         VpnServiceTracker.reconcileStaleSession(appContext)
@@ -369,12 +374,7 @@ class MainViewModel @Inject constructor(
     private fun attachExistingSession() {
         if (_vpnState.value == VpnState.DISCONNECTING) return
         onVpnTunnelReady(initialConnect = false)
-        viewModelScope.launch {
-            if (VpnSessionState.tunnelDataSyncCompleted || backendSyncCompleted) {
-                runCatching { syncServerHashes() }
-                restoreCachedProfileToUi()
-            }
-        }
+        restoreCachedProfileToUi()
     }
 
     private fun syncSessionOnResume() {
@@ -418,29 +418,10 @@ class MainViewModel @Inject constructor(
                 if (_vpnState.value != VpnState.CONNECTED) {
                     _vpnState.value = VpnState.CONNECTED
                 }
-                refreshBackendDataQuietly()
+                // Без overlay-обновления при resume — данные из кеша; свежие приходят при connect.
             }
         }
         SessionTrace.exit("MainViewModel.syncSessionOnResume", "vpn=${_vpnState.value}")
-    }
-
-    /** Обновить кеш с сервера без WG overlay (VPN уже даёт интернет). */
-    private fun refreshBackendDataQuietly() {
-        if (!backendSyncCompleted) return
-        if (WdttTunnelManager.isApiOverlayActive() || WdttTunnelManager.isWorkerRampUpActive()) return
-        val now = System.currentTimeMillis()
-        if (now - lastTunnelMaintenanceAtMs < 60_000L) return
-        lastTunnelMaintenanceAtMs = now
-        viewModelScope.launch {
-            runCatching {
-                repo.withBackendApi {
-                    tryFetchProfileViaRepoApi()
-                    syncServerHashes()
-                }
-            }.onFailure { e ->
-                DebugLog.w("MainViewModel", "quiet backend refresh: ${e.message}")
-            }
-        }
     }
 
     /** Если API недоступен без VPN (белые списки) — краткий bootstrap для профиля и хешей. */
@@ -502,22 +483,17 @@ class MainViewModel @Inject constructor(
         return items
     }
 
-    private var mainTunnelDataSyncJob: Job? = null
+    private var tunnelSyncWatchJob: Job? = null
     private var backendSyncJob: Job? = null
     private var resumeProfileJob: Job? = null
     private var connectJob: Job? = null
-    /** До завершения runInitialBackendSync не дергаем overlay из polling (конфликт с creds). */
+    /** До завершения VpnBackendSync не дергаем overlay из polling. */
     private var backendSyncCompleted: Boolean
         get() = VpnSessionState.backendSyncCompleted
         set(value) { VpnSessionState.backendSyncCompleted = value }
-    private var wantsUpdatePolling = false
-    private var wantsVpnProfilePolling = false
     private val pendingHashFailures = ConcurrentLinkedQueue<Triple<String, String, String>>()
     private var hashFailureFlushJob: Job? = null
-    private var tunnelApiMaintenanceJob: Job? = null
     private var lastTunnelAttachAtMs = 0L
-    private var lastTunnelMaintenanceAtMs = 0L
-
     /** Первое подключение туннеля — sync/theme. Resume attach не должен дёргать WG overlay. */
     private fun onVpnTunnelReady(vpnConfig: VpnConfig? = null, initialConnect: Boolean = true) {
         if (_vpnState.value == VpnState.DISCONNECTING) return
@@ -536,126 +512,37 @@ class MainViewModel @Inject constructor(
             ?: loadCachedVpnConfig()?.wg_address?.takeIf { it.isNotBlank() }
             ?: WdttTunnelManager.lastWgAddress()
         repo.setTunnelApiFromWgAddress(wgAddr)
-        if (_theme.value == null && WdttTunnelManager.tunnelReady.value) {
-            loadTheme()
+        restoreCachedThemeToUi()
+        if (!bootstrapVpnMode && repo.isLoggedIn()) {
+            watchTunnelDataSyncFromCache()
         }
-        // Backend sync (online+hashes) — VpnBackendSync из VPN-сервиса.
     }
 
-    /** Профиль, хеши — в фоне после стабилизации WG (не во время подъёма). */
-    private fun startMainTunnelDataSync() {
-        if (backendSyncCompleted || VpnSessionState.tunnelDataSyncCompleted) {
+    private fun watchTunnelDataSyncFromCache() {
+        if (VpnSessionState.tunnelDataSyncCompleted) {
+            restoreCachedProfileToUi()
+            restoreCachedThemeToUi(refreshFromSync = true)
+            refreshHashState()
             backendSyncCompleted = true
             return
         }
-        if (mainTunnelDataSyncJob?.isActive == true) return
-        mainTunnelDataSyncJob = viewModelScope.launch {
-            for (i in 0 until 30) {
-                if (WdttTunnelManager.tunnelReady.value) break
-                if (!SilentVpnService.isRunning) return@launch
-                delay(200)
-            }
-            if (!WdttTunnelManager.tunnelReady.value || !SilentVpnService.isRunning) return@launch
-            delay(3000)
-            if (!SilentVpnService.isRunning || !VpnSessionState.isActive()) return@launch
-            if (backendSyncCompleted || VpnSessionState.tunnelDataSyncCompleted) {
-                backendSyncCompleted = true
-                return@launch
-            }
-            var syncOk = false
-            try {
-                runInitialBackendSync()
-                syncServerHashes()
-                syncOk = true
-            } catch (e: Exception) {
-                DebugLog.w("MainViewModel", "main tunnel sync: ${e.message}")
-            }
-            if (syncOk) {
-                backendSyncCompleted = true
-                VpnSessionState.tunnelDataSyncCompleted = true
-            }
-            restoreCachedProfileToUi()
-            if (wantsUpdatePolling || wantsVpnProfilePolling) {
-                startTunnelApiMaintenance()
-            }
-        }
-    }
-
-    /** Сразу проверить обновление — фактически через единый maintenance (без лишних overlay). */
-    private fun triggerUpdateCheckAndPolling() {
-        if (_vpnState.value != VpnState.CONNECTED || bootstrapVpnMode || !repo.isLoggedIn()) return
-        if (SilentRepository.APP_EXCLUDED_FROM_VPN && !backendSyncCompleted) return
-        if (tunnelApiMaintenanceJob?.isActive == true) return
-        startTunnelApiMaintenance()
-    }
-
-    /** Один overlay-с сеанс каждые 5 мин: online + profile + checkUpdate. */
-    private fun startTunnelApiMaintenance() {
-        if (tunnelApiMaintenanceJob?.isActive == true) return
-        if (!wantsUpdatePolling && !wantsVpnProfilePolling) return
-        tunnelApiMaintenanceJob = viewModelScope.launch {
-            while (
-                _vpnState.value == VpnState.CONNECTED &&
-                repo.isLoggedIn() &&
-                !bootstrapVpnMode &&
-                SilentVpnService.isRunning &&
-                (wantsUpdatePolling || wantsVpnProfilePolling)
-            ) {
-                if (backendSyncCompleted && !WdttTunnelManager.isWorkerRampUpActive()) {
-                    runCatching { runTunnelApiMaintenanceBatch() }
+        tunnelSyncWatchJob?.cancel()
+        tunnelSyncWatchJob = viewModelScope.launch {
+            repeat(120) {
+                if (VpnSessionState.tunnelDataSyncCompleted) {
+                    restoreCachedProfileToUi()
+                    restoreCachedThemeToUi(refreshFromSync = true)
+                    refreshHashState()
+                    backendSyncCompleted = true
+                    return@launch
                 }
-                delay(TUNNEL_API_MAINTENANCE_MS)
+                if (_vpnState.value != VpnState.CONNECTED || !SilentVpnService.isRunning) return@launch
+                delay(500)
             }
         }
-    }
-
-    private fun stopTunnelApiMaintenance() {
-        tunnelApiMaintenanceJob?.cancel()
-        tunnelApiMaintenanceJob = null
-    }
-
-    private suspend fun runTunnelApiMaintenanceBatch() {
-        if (WdttTunnelManager.isWorkerRampUpActive()) return
-        if (WdttTunnelManager.isApiOverlayActive()) return
-        val version = AppUpdateManager.currentVersion()
-        repo.withBackendApi {
-            if (wantsVpnProfilePolling) {
-                tryFetchProfileViaRepoApi()
-            }
-            if (wantsUpdatePolling) {
-                tryCheckUpdateViaRepoApi(version)
-            }
-        }
-    }
-
-    /** Профиль / обновления после connect — без overlay если VPN уже работает. */
-    private suspend fun runInitialBackendSync() {
-        val version = AppUpdateManager.currentVersion()
-        repo.withBackendApi {
-            tryFetchProfileViaRepoApi()
-            DebugLog.i("MainViewModel", "checkUpdate start v=$version")
-            tryCheckUpdateViaRepoApi(version)
-            applyRefreshVpnConfigDirect(repo.getDeviceFingerprint())
-            flushPendingHashFailuresInOverlay()
-        }
-    }
-
-    private suspend fun flushPendingHashFailuresInOverlay() {
-        val batch = mutableListOf<Triple<String, String, String>>()
-        while (true) {
-            val item = pendingHashFailures.poll() ?: break
-            batch.add(item)
-        }
-        if (batch.isEmpty()) return
-        DebugLog.i("MainViewModel", "hash failure flush: ${batch.size} item(s)")
-        runCatching { repo.reportHashFailuresDirect(batch) }
-            .onFailure { e -> DebugLog.w("MainViewModel", "hash failure batch: ${e.message}") }
     }
 
     private fun stopUpdatePolling(clearBanner: Boolean = true) {
-        updatePollJob?.cancel()
-        updatePollJob = null
-        stopTunnelApiMaintenance()
         if (clearBanner) {
             _updateInfo.value = null
             updateApiBaseUrl = null
@@ -663,15 +550,15 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * Живой список сессий, пока открыт экран «Устройства».
-     * force=true заставляет реально перечитать профиль (иначе fetchProfileNow вернёт кеш,
-     * когда app excluded и профиль уже загружен). Реальный overlay при этом ограничен
-     * троттлом 60с, так что туннель не дёргается чаще, чем при обычном maintenance.
+     * Экран «Устройства»: при включённом основном VPN — ОДНО чтение профиля (один overlay),
+     * без живого 10-секундного поллинга (он дёргал WG). При выключенном VPN — обычный поллинг
+     * по public API.
      */
     fun setSessionsScreenActive(active: Boolean) {
         profilePollJob?.cancel()
         profilePollJob = null
         if (!active) return
+        val mainVpnUp = SilentVpnService.isRunning && !bootstrapVpnMode
         profilePollJob = viewModelScope.launch {
             while (true) {
                 if (!sessionsFetchInFlight) {
@@ -680,45 +567,21 @@ class MainViewModel @Inject constructor(
                         .onFailure { e -> DebugLog.w("MainViewModel", "sessions poll: ${e.message}") }
                     sessionsFetchInFlight = false
                 }
+                if (mainVpnUp) break
                 delay(SESSIONS_POLL_MS)
             }
         }
     }
 
-    /** Обновление профиля — через единый maintenance (без отдельных overlay). */
+    /** Профиль приходит из initial sync при connect + кеша — без периодических overlay. */
     fun setVpnProfilePolling(active: Boolean) {
-        if (!active) {
-            wantsVpnProfilePolling = false
-            if (!wantsUpdatePolling) stopTunnelApiMaintenance()
-            return
-        }
-        wantsVpnProfilePolling = true
-        if (!backendSyncCompleted) return
-        startTunnelApiMaintenance()
+        // No-op: периодический поллинг убран, чтобы не дёргать WG overlay.
     }
 
-    /** Проверка обновлений — через единый maintenance (без отдельных overlay). */
+    /** Обновления — один раз при connect (VpnBackendSync), без поллинга. */
     fun setUpdatePolling(active: Boolean) {
         if (!active) {
-            wantsUpdatePolling = false
             stopUpdatePolling(clearBanner = true)
-            return
-        }
-        wantsUpdatePolling = true
-        triggerUpdateCheckAndPolling()
-    }
-
-    private suspend fun checkForUpdateNow() {
-        if (_vpnState.value != VpnState.CONNECTED) {
-            stopUpdatePolling(clearBanner = true)
-            return
-        }
-        if (!SilentVpnService.isRunning || bootstrapVpnMode || !repo.isLoggedIn()) return
-        if (WdttTunnelManager.isApiOverlayActive()) return
-        runCatching {
-            repo.withBackendApi {
-                tryCheckUpdateViaRepoApi(AppUpdateManager.currentVersion())
-            }
         }
     }
 
@@ -883,10 +746,6 @@ class MainViewModel @Inject constructor(
                 repo.saveCachedProfile(p)
                 p.vk_user_id?.let { repo.saveVkUserId(it) }
                 DebugLog.i("MainViewModel", "fetchProfile OK via ${repo.getServerUrl()}")
-                runCatching {
-                    val themeRes = repo.getApi().getTheme()
-                    if (themeRes.isSuccessful) _theme.value = themeRes.body()
-                }
                 return true
             }
             if (res.code() == 401) {
@@ -945,13 +804,19 @@ class MainViewModel @Inject constructor(
 
     private fun loadTheme() {
         viewModelScope.launch {
+            restoreCachedThemeToUi()
+            if (SilentVpnService.isRunning && !bootstrapVpnMode) {
+                // Тема на основном VPN — только в syncAllViaTunnel (один overlay), не отдельным запросом.
+                return@launch
+            }
             runCatching {
-                val res = if (SilentVpnService.isRunning && !bootstrapVpnMode) {
-                    repo.withBackendApi { repo.getApi().getTheme() }
-                } else {
-                    repo.getApi().getTheme()
+                val res = repo.getApi().getTheme()
+                if (res.isSuccessful) {
+                    res.body()?.let {
+                        _theme.value = it
+                        repo.saveCachedTheme(it)
+                    }
                 }
-                if (res.isSuccessful) _theme.value = res.body()
             }
         }
     }
@@ -1430,20 +1295,15 @@ class MainViewModel @Inject constructor(
     }
 
     private fun stopVpnLocally(context: Context) {
-        mainTunnelDataSyncJob?.cancel()
-        mainTunnelDataSyncJob = null
+        tunnelSyncWatchJob?.cancel()
+        tunnelSyncWatchJob = null
         backendSyncJob?.cancel()
         backendSyncJob = null
         backendSyncCompleted = false
         lastTunnelAttachAtMs = 0L
-        wantsUpdatePolling = false
-        wantsVpnProfilePolling = false
         pendingHashFailures.clear()
         hashFailureFlushJob?.cancel()
         hashFailureFlushJob = null
-        stopTunnelApiMaintenance()
-        onlineHeartbeatJob?.cancel()
-        onlineHeartbeatJob = null
         runCatching {
             val intent = Intent(context, SilentVpnService::class.java).apply {
                 action = SilentVpnService.ACTION_DISCONNECT
@@ -1458,8 +1318,9 @@ class MainViewModel @Inject constructor(
     fun connect(context: Context) {
         SessionTrace.enter("MainViewModel.connect", "state=${_vpnState.value}")
         if (_vpnState.value == VpnState.CONNECTING) {
-            SessionTrace.exit("MainViewModel.connect", "already connecting")
-            return
+            DebugLog.i("MainViewModel", "connect: cancel stale CONNECTING and retry")
+            connectJob?.cancel()
+            connectJob = null
         }
         if (VpnSessionState.isActive()) {
             SessionTrace.mark("MainViewModel.connect", "attach existing session")
@@ -1475,22 +1336,12 @@ class MainViewModel @Inject constructor(
             DebugLog.i("MainViewModel", "connect ignored: already connected")
             return
         }
-        if (WdttTunnelManager.running.value && !VpnSessionState.isActive()) {
-            _vpnState.value = VpnState.CONNECTING
-            _vpnError.value = null
-            val workers = loadCachedVpnConfig()?.let { wdttConnectConfig(resolveMainVpnConfig(it)).stream_count } ?: 36
-            connectJob?.cancel()
-            connectJob = viewModelScope.launch { waitForTunnelReady(context, workers) }
-            return
-        }
         resumeProfileJob?.cancel()
         connectJob?.cancel()
         connectJob = viewModelScope.launch {
             DebugLog.i("MainViewModel", "connect() start")
             bootstrapVpnMode = false
             backendSyncCompleted = false
-            wantsUpdatePolling = false
-            wantsVpnProfilePolling = false
             if (VpnNetworkHelper.isOtherVpnActive(context)) {
                 DebugLog.i("MainViewModel", "Подключение заменит другой активный VPN")
             }
@@ -1779,6 +1630,9 @@ class MainViewModel @Inject constructor(
             ?: WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
             ?: "Таймаут: VPN не подключился"
         stopVpnLocally(context)
+        withContext(Dispatchers.IO) {
+            VpnConnectHelper.ensureCleanSlate(context, force = true)
+        }
         _vpnError.value = err
         _vpnState.value = VpnState.DISCONNECTED
     }
@@ -1796,45 +1650,26 @@ class MainViewModel @Inject constructor(
 
     fun disconnect(context: Context) {
         SessionTrace.enter("MainViewModel.disconnect")
+        if (_vpnState.value == VpnState.DISCONNECTED && !SilentVpnService.isRunning) {
+            SessionTrace.exit("MainViewModel.disconnect", "already off")
+            return
+        }
         connectJob?.cancel()
         connectJob = null
-        onlineHeartbeatJob?.cancel()
-        onlineHeartbeatJob = null
-        vpnProfilePollJob?.cancel()
-        vpnProfilePollJob = null
         stopUpdatePolling(clearBanner = true)
-        mainTunnelDataSyncJob?.cancel()
-        mainTunnelDataSyncJob = null
+        tunnelSyncWatchJob?.cancel()
+        tunnelSyncWatchJob = null
         backendSyncJob?.cancel()
         backendSyncJob = null
         backendSyncCompleted = false
-        wantsUpdatePolling = false
-        wantsVpnProfilePolling = false
         pendingHashFailures.clear()
         hashFailureFlushJob?.cancel()
         hashFailureFlushJob = null
-        stopTunnelApiMaintenance()
-        viewModelScope.launch {
-            _vpnState.value = VpnState.DISCONNECTING
-            bootstrapVpnMode = false
-            // Тот же tunnel API, что connect — ДО выключения VPN (мобильный интернет без Wi‑Fi).
-            if (repo.isLoggedIn() && WdttTunnelManager.tunnelReady.value && WdttTunnelManager.running.value) {
-                runCatching { repo.notifyDisconnectBeforeTunnelStop() }
-            }
-            stopVpnLocally(context)
-            val deadline = System.currentTimeMillis() + 20_000L
-            while (
-                (WdttTunnelManager.running.value || SilentVpnService.isRunning) &&
-                System.currentTimeMillis() < deadline
-            ) {
-                delay(100)
-            }
-            _vpnState.value = VpnState.DISCONNECTED
-            if (repo.isLoggedIn()) {
-                runCatching { fetchProfileNow(force = true) }
-            }
-            SessionTrace.exit("MainViewModel.disconnect")
-        }
+        bootstrapVpnMode = false
+        markLocalDeviceOffline()
+        _vpnState.value = VpnState.DISCONNECTED
+        stopVpnLocally(context)
+        SessionTrace.exit("MainViewModel.disconnect")
     }
 
     fun checkPromo(code: String, onResult: (String) -> Unit) {

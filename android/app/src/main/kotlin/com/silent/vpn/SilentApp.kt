@@ -2,12 +2,9 @@ package com.silent.vpn
 
 import android.app.Application
 import android.content.Context
-import com.silent.vpn.service.VpnConnectHelper
 import com.silent.vpn.service.VpnServiceTracker
-import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.service.VpnTileHelper
 import com.silent.vpn.util.SessionTrace
-import com.silent.vpn.vpn.WdttTunnelManager
 import com.wireguard.android.backend.GoBackend
 import dagger.hilt.android.HiltAndroidApp
 
@@ -16,12 +13,11 @@ class SilentApp : Application() {
     override fun onCreate() {
         super.onCreate()
         SessionTrace.mark("SilentApp.onCreate", BuildConfig.VERSION_NAME)
+        // Только reconcile — полная очистка один раз в SilentVpnService.CONNECT (не блокировать плитку).
         VpnServiceTracker.reconcileStaleSession(this)
-        if (!SilentVpnService.isRunning && !WdttTunnelManager.running.value) {
-            Thread {
-                runCatching { VpnConnectHelper.ensureCleanSlate(this) }
-            }.start()
-        }
+        Thread {
+            runCatching { getBackend(this) }
+        }.start()
         VpnTileHelper.requestUpdate(this)
     }
 

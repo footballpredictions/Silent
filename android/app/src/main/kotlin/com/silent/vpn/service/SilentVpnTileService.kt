@@ -20,7 +20,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Quick Settings — как reference: [WdttTunnelManager.running] + [SilentVpnService.isRunning].
@@ -101,9 +100,6 @@ class SilentVpnTileService : TileService() {
 
             scope.launch {
                 try {
-                    withContext(Dispatchers.IO) {
-                        VpnConnectHelper.ensureCleanSlate(this@SilentVpnTileService)
-                    }
                     val intent = VpnTileConnect.buildConnectIntentFromCache(this@SilentVpnTileService)
                     if (intent == null) {
                         Toast.makeText(

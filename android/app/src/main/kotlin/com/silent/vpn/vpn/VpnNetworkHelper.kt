@@ -45,9 +45,8 @@ object VpnNetworkHelper {
         return false
     }
 
-    /** WireGuard-сеть Silent — для HTTP к 10.66.66.1 когда app исключён из туннеля. */
-    fun getSilentVpnNetwork(context: Context): Network? {
-        if (!SilentVpnService.isRunning) return null
+    /** WireGuard-сеть Silent (в т.ч. после kill процесса — без проверки isRunning). */
+    fun findOurVpnNetwork(context: Context): Network? {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val ourUid = context.applicationInfo.uid
         var fallback: Network? = null
@@ -63,10 +62,13 @@ object VpnNetworkHelper {
             }
             if (fallback == null) fallback = network
         }
-        if (fallback != null) {
-            DebugLog.i(TAG, "VPN network without INTERNET cap — using anyway")
-        }
         return fallback
+    }
+
+    /** WireGuard-сеть Silent — для HTTP к 10.66.66.1 когда app исключён из туннеля. */
+    fun getSilentVpnNetwork(context: Context): Network? {
+        if (!SilentVpnService.isRunning) return null
+        return findOurVpnNetwork(context)
     }
 
     fun hasUnderlyingInternet(context: Context): Boolean {

@@ -27,6 +27,12 @@ fun parseColor(hex: String, fallback: Color): Color = try {
     Color(android.graphics.Color.parseColor(hex))
 } catch (_: Exception) { fallback }
 
+/** Светлый фон → тёмные иконки status bar; тёмный фон → светлые иконки. */
+fun isDarkBackground(color: Color): Boolean {
+    val lum = 0.299f * color.red + 0.587f * color.green + 0.114f * color.blue
+    return lum < 0.45f
+}
+
 @Composable
 fun SilentTheme(
     themeData: ThemeData? = null,
@@ -36,6 +42,8 @@ fun SilentTheme(
     val colorScheme = themeData?.toColorScheme(darkTheme)
         ?: if (darkTheme) darkColorScheme(primary = Color.White, background = Color.Black)
         else lightColorScheme(primary = Color.Black, background = Color.White)
+
+    ApplySystemBarAppearance(colorScheme.background)
 
     MaterialTheme(
         colorScheme = colorScheme,

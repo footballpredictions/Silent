@@ -28,11 +28,6 @@ data class LoginUi(
     val linkColor: Color = Color(0xFF4680C2),
 )
 
-private fun isDarkBackground(bg: Color): Boolean {
-    val lum = 0.299f * bg.red + 0.587f * bg.green + 0.114f * bg.blue
-    return lum < 0.45f
-}
-
 fun ThemeData?.toLoginUi(): LoginUi {
     val bg = parseColor(this?.background_color ?: "#FFFFFF", Color.White)
     val fg = parseColor(this?.text_color ?: "#000000", Color.Black)

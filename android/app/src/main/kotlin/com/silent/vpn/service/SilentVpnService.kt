@@ -39,11 +39,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 /**
@@ -85,6 +87,8 @@ class SilentVpnService : Service() {
     private var isTunnelPaused = false
     private var transportWatchdogJob: Job? = null
     private var statsUpdaterJob: Job? = null
+    @Volatile
+    private var backendSyncTriggered = false
     private var performanceLocksHeld = false
     private var lastNotifUpdateMs = 0L
     private var lastNotifBody = ""
@@ -105,7 +109,7 @@ class SilentVpnService : Service() {
         statsUpdaterJob?.cancel()
         statsUpdaterJob = scope.launch {
             SessionTrace.enter("SilentVpnService.statsUpdater")
-            delay(1000)
+            delay(300)
             while (isActive) {
                 if (!WdttTunnelManager.running.value && !isTunnelPaused) {
                     if (!isRunning) {
@@ -117,8 +121,16 @@ class SilentVpnService : Service() {
                     val stats = WdttTunnelManager.stats.value
                     if (WdttTunnelManager.tunnelReady.value) {
                         releasePerformanceLocks()
+                        if (!VpnServiceTracker.isSessionMarkedActive(this@SilentVpnService)) {
+                            VpnServiceTracker.markSessionActive(this@SilentVpnService, true)
+                        }
                         postVpnNotification(stats)
-                        if (VpnSessionState.isActive()) {
+                        if (
+                            !backendSyncTriggered &&
+                            VpnSessionState.isActive() &&
+                            !VpnSessionState.tunnelDataSyncCompleted
+                        ) {
+                            backendSyncTriggered = true
                             VpnBackendSync.ensureBackendSyncAfterTunnel(scope, this@SilentVpnService)
                         }
                     } else if (WdttTunnelManager.running.value) {
@@ -148,14 +160,12 @@ class SilentVpnService : Service() {
                     ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
                     return START_STICKY
                 }
-                if (WdttTunnelManager.running.value && isRunning) {
-                    SessionTrace.mark("SilentVpnService.CONNECT", "already running")
-                    VpnTileHelper.requestUpdate(this)
-                    return START_STICKY
-                }
-                if (!isRunning) {
-                    VpnConnectHelper.ensureCleanSlate(this)
-                }
+        if (WdttTunnelManager.running.value && isRunning && WdttTunnelManager.tunnelReady.value) {
+            SessionTrace.mark("SilentVpnService.CONNECT", "already running")
+            VpnTileHelper.requestUpdate(this)
+            return START_STICKY
+        }
+                VpnConnectHelper.prepareForConnect(this)
                 SessionTrace.enter(
                     "SilentVpnService.CONNECT",
                     "device=${runCatching { JSONObject(configJson).optString("device_id") }.getOrNull()?.take(8)}",
@@ -164,6 +174,7 @@ class SilentVpnService : Service() {
                 lastNetworkChangeTime = 0L
                 lastNotifBody = ""
                 lastNotifUpdateMs = 0L
+                backendSyncTriggered = false
                 setupNetworkCallback()
                 startTransportWatchdog()
                 startStatsUpdater()
@@ -291,38 +302,49 @@ class SilentVpnService : Service() {
     }
 
     private fun disconnect() {
+        if (!isRunning && !WdttTunnelManager.running.value) {
+            VpnTileHelper.requestUpdate(this)
+            stopSelf()
+            return
+        }
+        DebugLog.i("VpnService", "DISCONNECT")
+        isRunning = false
+        SessionTrace.mark("SilentVpnService.disconnect", "isRunning=false")
+        VpnServiceTracker.markSessionActive(this, false)
+        teardownVpnOwnershipMonitor()
+        VpnTileHelper.requestUpdate(this)
+        transportWatchdogJob?.cancel()
+        statsUpdaterJob?.cancel()
+        isTunnelPaused = false
+        activeNetworks.clear()
+        performanceLocksHeld = false
+        lastNotifBody = ""
+        lastNotifUpdateMs = 0L
+        SilentRepository.APP_EXCLUDED_FROM_VPN = true
+        teardownNetworkCallback()
+        clearVpnNotification()
+        VpnBackendSync.stop()
+        WdttTunnelManager.prepareForShutdown()
         scope.launch(Dispatchers.IO) {
             val repo = EntryPointAccessors.fromApplication(
                 applicationContext,
                 AppEntryPoint::class.java,
             ).silentRepository()
-            // Offline на backend — tunnel API, затем гасим туннель.
-            if (repo.isLoggedIn()) {
-                runCatching { VpnBackendSync.notifyDisconnect(this@SilentVpnService) }
+            val notifyJob = if (repo.isLoggedIn() && WdttTunnelManager.tunnelReady.value) {
+                async {
+                    runCatching { VpnBackendSync.notifyDisconnect(this@SilentVpnService) }
+                }
+            } else {
+                null
             }
-            VpnBackendSync.stop()
-            WdttTunnelManager.prepareForShutdown()
-            withContext(Dispatchers.Main) {
-                DebugLog.i("VpnService", "DISCONNECT")
-                isRunning = false
-                SessionTrace.mark("SilentVpnService.disconnect", "isRunning=false")
-                VpnServiceTracker.markSessionActive(this@SilentVpnService, false)
-                teardownVpnOwnershipMonitor()
-                VpnTileHelper.requestUpdate(this@SilentVpnService)
-                performanceLocksHeld = false
-                lastNotifBody = ""
-                lastNotifUpdateMs = 0L
-                transportWatchdogJob?.cancel()
-                statsUpdaterJob?.cancel()
-                isTunnelPaused = false
-                activeNetworks.clear()
-                SilentRepository.APP_EXCLUDED_FROM_VPN = true
-                teardownNetworkCallback()
-                clearVpnNotification()
+            withTimeoutOrNull(1_500L) { notifyJob?.await() }
+            if (isRunning) {
+                SessionTrace.mark("SilentVpnService.disconnect", "skipped teardown — reconnected")
+                return@launch
             }
             WdttTunnelManager.stopAndAwait()
             withContext(Dispatchers.Main) {
-                clearVpnNotification()
+                if (isRunning) return@withContext
                 releaseWakeLock()
                 releaseWifiLock()
                 stopSelf()
@@ -599,6 +621,7 @@ class SilentVpnService : Service() {
         activeNetworks.clear()
         VpnServiceTracker.markSessionActive(this, false)
         VpnBackendSync.stop()
+        backendSyncTriggered = false
         teardownNetworkCallback()
         teardownVpnOwnershipMonitor()
         performanceLocksHeld = false

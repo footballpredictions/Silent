@@ -17,15 +17,16 @@ import {
 import { disconnectBootstrapVpn, fetchBootstrapConfig, isBootstrapVpnActive } from '../bootstrapVpn'
 import { waitVpnReady } from '../vpnReady'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
+import { AppErrorBoundary } from '../components/AppErrorBoundary'
 import { resolveAppName } from '../clientTheme'
 import { menuDrawerStyle, UI_COLORS } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
 import { prepareVpnConnectConfig, syncHashesWhenTunnelUp } from '../prepareVpnConnect'
 import { pushLog, logI } from '../debugLog'
+import { clearVpnLogs } from '../vpnLogStore'
 import { SessionTrace } from '../sessionTrace'
 import { setTunnelApiBase, clearTunnelApiBase } from '../tunnelApi'
-import { getCachedVpnConfig } from '../vkConfig'
 import {
   getCachedProfile,
   saveCachedProfile,
@@ -168,10 +169,13 @@ export default function MainScreen({
     try {
       const res = await api.get('/api/users/me')
       setProfile(res.data)
+      saveCachedProfile(res.data)
       if (res.data.vk_user_id) saveVkUserId(res.data.vk_user_id)
       return res.data as Profile
     } catch {
-      return null
+      const cached = getCachedProfile<Profile>()
+      if (cached) setProfile(cached)
+      return cached
     }
   }, [])
 
@@ -219,7 +223,6 @@ export default function MainScreen({
     const api_ = (window as any).electronAPI
     api_?.vpnIsReady?.().then((r: { ready?: boolean; workers?: number }) => {
       if (r?.ready) {
-        applyTunnelApiFromCache()
         setConnected(true)
         setConnecting(false)
         if (r.workers) setActiveWorkers(r.workers)
@@ -247,7 +250,6 @@ export default function MainScreen({
     }
     const onReady = (ok: boolean) => {
       if (ok) {
-        applyTunnelApiFromCache()
         setConnected(true)
         setConnecting(false)
         void markOnlineOnServer()
@@ -350,6 +352,7 @@ export default function MainScreen({
     setConnecting(true)
     if (!connected) {
       setActiveWorkers(0)
+      clearVpnLogs()
     }
     pushLog('Main', connected ? 'disconnect' : 'connect start')
     SessionTrace.enter('Main.connect', connected ? 'disconnect' : 'start')
@@ -544,7 +547,7 @@ export default function MainScreen({
           {appTitle}
         </span>
         <div
-          className="ml-auto flex items-center gap-1 z-10"
+          className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2 z-10"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <DebugLogButton onClick={() => setShowDebugLog(true)} />
@@ -623,29 +626,29 @@ export default function MainScreen({
             <div className="text-xs font-semibold" style={{ color: GREEN }}>Бессрочно</div>
             <div className="text-xs mt-0.5" style={{ color: muted }}>Полный доступ</div>
           </div>
-        ) : profile?.subscription?.is_active && profile.subscription.plan_type === 'trial' ? (
+        ) : profile?.subscription?.is_active && profile?.subscription?.plan_type === 'trial' ? (
           <div className="text-center">
             <div className="text-xs font-semibold" style={{ color: '#2563EB' }}>Пробный период</div>
             <div className="text-xs mt-0.5" style={{ color: muted }}>
-              осталось {profile.subscription.days_left} дн.
+              осталось {profile?.subscription?.days_left ?? 0} дн.
             </div>
           </div>
         ) : profile?.subscription?.is_active ? (
           <div className="text-center">
             <div className="text-xs font-semibold" style={{ color: GREEN }}>Оплачено</div>
             <div className="text-xs mt-0.5" style={{ color: muted }}>
-              до {profile.subscription.expires_at
+              до {profile?.subscription?.expires_at
                 ? profile.subscription.expires_at.split('T')[0].split('-').reverse().join('.')
                 : '—'}
             </div>
           </div>
-        ) : (
+        ) : profile ? (
           <button onClick={() => { setMenuOpen(true); setMenuPage('subscription') }}
             className="w-full rounded-xl py-2 text-xs font-semibold transition-colors"
             style={{ background: fg, color: bg }}>
             Оформить подписку
           </button>
-        )}
+        ) : null}
       </div>
 
       {renameTarget && (
@@ -795,13 +798,15 @@ export default function MainScreen({
           )}
 
           {menuPage === 'hashes' && (
-            <MenuHashesPanel
-              fg={fg}
-              muted={muted}
-              vpnConnected={connected}
-              activeWorkers={activeWorkers}
-              onBack={() => setMenuPage(null)}
-            />
+            <AppErrorBoundary key="hashes" onReset={() => setMenuPage(null)}>
+              <MenuHashesPanel
+                fg={fg}
+                muted={muted}
+                vpnConnected={connected}
+                activeWorkers={activeWorkers}
+                onBack={() => setMenuPage(null)}
+              />
+            </AppErrorBoundary>
           )}
 
           {menuPage === 'promo' && (

@@ -55,6 +55,18 @@ let wdttReplacing = false
 
 const { createNetworkMonitor } = require('./vpn/networkRecovery')
 const { createSessionTrace } = require('./sessionTrace')
+const { parseLibclientLine } = require('./libclientLogParser')
+
+function resolveAssetPath(relativePath) {
+  const rel = relativePath.replace(/^[/\\]+/, '')
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, rel)]
+    : [path.join(__dirname, '../../', rel), path.join(process.resourcesPath, rel)]
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p
+  }
+  return candidates[0]
+}
 
 let sessionTrace = null
 function trace() {
@@ -151,7 +163,7 @@ function createWindow() {
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
     },
-    icon: path.join(__dirname, '../../assets/icon.png'),
+    icon: resolveAssetPath('assets/icon.png'),
     title: 'Silent VPN',
     show: false,
   })
@@ -186,8 +198,13 @@ function createWindow() {
 }
 
 function createTray() {
-  const iconPath = path.join(__dirname, '../../assets/tray.png')
-  const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
+  let icon = nativeImage.createFromPath(resolveAssetPath('assets/tray.png'))
+  if (icon.isEmpty()) icon = nativeImage.createFromPath(resolveAssetPath('assets/icon.png'))
+  if (icon.isEmpty()) {
+    console.error('[Tray] иконка не найдена (assets/tray.png)')
+    return
+  }
+  icon = icon.resize({ width: 16, height: 16 })
   tray = new Tray(icon)
   tray.setToolTip('Silent VPN')
   const contextMenu = Menu.buildFromTemplate([
@@ -202,47 +219,37 @@ function createTray() {
   })
 }
 
-function formatVpnLogLine(line) {
-  if (!line || typeof line !== 'string') return line
-  if (line.startsWith('CAPTCHA_SOLVE|')) {
-    const parts = line.split('|')
-    const mode = parts[1] || 'auto'
-    const n = (parts[2] || '').length + (parts[3] || '').length
-    return `[VPN] CAPTCHA: окно браузера (${mode}, ~${n} симв. токена)`
-  }
-  const noisyWorker = line.includes('[ВОРКЕР #')
-    && !line.includes('[READY]')
-    && !line.includes('зарегистрирован')
-    && !line.includes('Ошибка')
-  if (
-    line.includes('[СЕССИЯ #')
-    || line.includes('[DTLS]')
-    || line.includes('Рукопожатие')
-    || noisyWorker
-  ) {
-    return null
-  }
-  return line
-}
-
 function sendDebugLog(payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('debug-log', payload)
   }
 }
 
-function sendLog(line) {
-  const formatted = formatVpnLogLine(line)
-  if (!formatted) return
-  line = formatted
-  let level = 'I'
-  let tag = 'VPN'
-  if (line.includes('[WG]')) tag = 'WireGuard'
-  if (/error|ошиб|fail|таймаут/i.test(line)) level = 'E'
-  else if (/WARN|⚠/i.test(line)) level = 'W'
-  sendDebugLog({ tag, level, message: line })
+function sendWdttLog(entry) {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('vpn-log', line)
+    mainWindow.webContents.send('wdtt-log', entry)
+  }
+}
+
+function sendLog(line) {
+  const trimmed = String(line || '').trim()
+  if (!trimmed) return
+
+  const parsed = parseLibclientLine(trimmed)
+  if (parsed) {
+    sendWdttLog(parsed)
+    return
+  }
+
+  if (/^\[WG\]|^\[VPN\]|^\[Update\]/.test(trimmed)) {
+    const isError = /error|ошиб|fail|таймаут/i.test(trimmed)
+    const tag = trimmed.startsWith('[WG]') ? 'WireGuard' : 'VPN'
+    sendWdttLog({
+      key: `sys_${tag}_${trimmed.slice(0, 36).replace(/\d+/g, '#')}`,
+      message: trimmed,
+      priority: isError ? 99 : 2,
+      isError,
+    })
   }
 }
 
@@ -303,17 +310,15 @@ function scheduleTunnelReadyPoll(sendLogFn) {
 
 const WORKERS_PER_GROUP = 9
 
-/** PC: ≥18 воркеров (2 группы) — иначе YouTube/TCP дропается в dispatcher. Bootstrap: 1. */
+/** PC: «готов» = WireGuard поднят (как Android tunnelReady), воркеры набираются фоном. */
 function minWorkersForTunnelReady(isBootstrap = false) {
   if (isBootstrap || vpnBootstrapMode) return 1
-  const target = sessionTargetWorkers || WORKERS_PER_GROUP * 4
-  return Math.min(target, Math.max(WORKERS_PER_GROUP * 2, 18))
+  return 1
 }
 
 function isVpnReadyForUi() {
   if (tunnelReadySent) return true
-  if (!wgApplied) return false
-  return activeWorkerCount >= minWorkersForTunnelReady(vpnBootstrapMode)
+  return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
 }
 
 async function stopWdttForReplace(sendLogFn, reason = 'replace') {
@@ -532,11 +537,10 @@ async function beginWdttSession(config, { switching = false } = {}) {
     }
 
     wgInstallInFlight = true
-    clearWgRetries()
 
     sendLog(`[WG] Применение конфига (${source})...`)
     sendLog('[WG] Ожидание WDTT UDP 127.0.0.1:9000...')
-    const proxyWaitMs = switching ? 12_000 : 30_000
+    const proxyWaitMs = switching ? 8_000 : 12_000
     const wdttReady = await waitForWdttProxy('127.0.0.1', 9000, proxyWaitMs, sendLog, confPath)
     if (!wdttReady) {
       wgInstallInFlight = false
@@ -574,6 +578,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     if (ok) {
       wgApplied = true
       wgAttempted = true
+      clearWgRetries()
       scheduleTunnelReadyPoll(sendLog)
       ensureVpnReadyEvent(sendLog)
       return true
@@ -589,8 +594,13 @@ async function beginWdttSession(config, { switching = false } = {}) {
   const applyFromFile = async () => {
     if (!fs.existsSync(confPath)) return false
     const text = fs.readFileSync(confPath, 'utf8')
-    if (text.includes('[Interface]')) return tryApplyWg(text, 'wdtt-file')
-    return false
+    if (!text.includes('[Interface]')) return false
+    if (wgApplied || wgInstallInFlight) return false
+    if (wgFailed) {
+      wgFailed = false
+      wgAttempted = false
+    }
+    return tryApplyWg(text, 'wdtt-file')
   }
 
   const handleLine = async (line) => {
@@ -599,18 +609,28 @@ async function beginWdttSession(config, { switching = false } = {}) {
       activeWorkerCount = parseInt(statsMatch[1], 10)
       if (wgApplied) ensureVpnReadyEvent(sendLog)
       const now = Date.now()
-      if (now - lastStatsLogToUiAt < 8000) return
-      lastStatsLogToUiAt = now
+      if (now - lastStatsLogToUiAt >= 8000) {
+        lastStatsLogToUiAt = now
+        sendLog(line)
+      }
+      return
     }
     sendLog(line)
     const regMatch = line.match(/зарегистрирован \(всего:\s*(\d+)\)/)
     if (regMatch) {
       activeWorkerCount = parseInt(regMatch[1], 10)
+      if (!wgApplied && !wgInstallInFlight && activeWorkerCount >= 1) {
+        await applyFromFile()
+      }
       if (wgApplied) ensureVpnReadyEvent(sendLog)
     }
     // TURN IP в AllowedIPs не добавляем: split 0.0.0.0/0 → сотни маршрутов, WG на Windows падает (exit 10).
 
     if (!switching && line.includes('[КОНФИГ]') && line.includes('Сохранён')) {
+      if (wgFailed) {
+        wgFailed = false
+        wgAttempted = false
+      }
       await applyFromFile()
       return
     }
@@ -686,12 +706,12 @@ async function beginWdttSession(config, { switching = false } = {}) {
     applyFromFile()
   }, 500)
 
-  // Запасной конфиг с сервера — только bootstrap; основной VPN как Android (только wdtt/box).
-  if (config.is_bootstrap && apiConf) {
+  // Bootstrap: запасной конфиг с API. Основной VPN — только wg-turn.conf / box (GETCONF).
+  if (apiConf && config.is_bootstrap) {
     wgTimers.push(setTimeout(async () => {
       if (wgApplied || wgFailed || wgInstallInFlight) return
       await tryApplyWg(apiConf, 'api-fallback')
-    }, 8000))
+    }, 5_000))
   }
 
   return { success: true }

@@ -6,7 +6,7 @@ import { AppErrorBoundary } from './components/AppErrorBoundary'
 import type { ClientTheme } from './clientTheme'
 import { getCachedTheme, saveCachedTheme } from './themeStore'
 import { runAppStateMigrationIfNeeded } from './appStateMigration'
-import { checkForUpdate, type UpdateInfo } from './updateCheck'
+import { checkForUpdate, getAppVersion, type UpdateInfo } from './updateCheck'
 import { useVpnLogSubscription } from './useVpnLogSubscription'
 
 const SERVER_URL = 'https://132-243-234-162.nip.io'
@@ -79,7 +79,7 @@ export default function App() {
   }
 
   return (
-    <AppErrorBoundary>
+    <AppErrorBoundary key={getAppVersion()}>
       <div className="w-full h-full">
         {screen === 'login' && (
           <LoginScreen

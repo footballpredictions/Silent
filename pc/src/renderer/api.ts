@@ -4,6 +4,7 @@ import { getApiBaseUrl, isTunnelApiActive } from './tunnelApi'
 const SERVER_URL_KEY = 'silent_server_url'
 const TOKEN_KEY = 'silent_token'
 const REFRESH_KEY = 'silent_refresh'
+const FALLBACK_PUBLIC = 'https://132-243-234-162.nip.io'
 /** Один fingerprint на сессию — как Android PREF_DEVICE_FP. */
 const DEVICE_FP_KEY = 'silent_device_fingerprint'
 const SESSION_DEVICE_KEY = 'silent_session_device_id'
@@ -17,11 +18,25 @@ export function setServerUrl(url: string) {
   localStorage.setItem(SERVER_URL_KEY, url.replace(/\/$/, ''))
 }
 
+export function getPublicApiBaseUrl(): string {
+  return (getServerUrl() || FALLBACK_PUBLIC).replace(/\/$/, '')
+}
+
 const api = axios.create({ timeout: 15000 })
 
+function isPublicApiPath(url: string): boolean {
+  const path = url.split('?')[0]
+  return (
+    path === '/api/users/me'
+    || path.startsWith('/api/auth/')
+    || path.startsWith('/api/updates/')
+    || path.startsWith('/api/vpn/theme')
+  )
+}
+
 api.interceptors.request.use(cfg => {
-  const baseURL = getApiBaseUrl()
-  cfg.baseURL = baseURL
+  const usePublic = isPublicApiPath(cfg.url || '')
+  cfg.baseURL = usePublic ? getPublicApiBaseUrl() : getApiBaseUrl()
   if (!cfg.timeout || cfg.timeout === 15000) {
     cfg.timeout = isTunnelApiActive() ? 45_000 : 15_000
   }
@@ -37,7 +52,7 @@ api.interceptors.response.use(
       const refresh = localStorage.getItem(REFRESH_KEY)
       if (refresh) {
         try {
-          const res = await axios.post(`${getServerUrl()}/api/auth/refresh`, { refresh_token: refresh })
+          const res = await axios.post(`${getPublicApiBaseUrl()}/api/auth/refresh`, { refresh_token: refresh })
           localStorage.setItem(TOKEN_KEY, res.data.access_token)
           localStorage.setItem(REFRESH_KEY, res.data.refresh_token)
           err.config.headers['Authorization'] = `Bearer ${res.data.access_token}`

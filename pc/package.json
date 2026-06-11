@@ -1,6 +1,6 @@
 {
   "name": "silent-vpn-pc",
-  "version": "1.0.122",
+  "version": "1.0.129",
   "description": "Silent VPN PC Client",
   "main": "src/main/main.js",
   "scripts": {
@@ -15,7 +15,7 @@
     "appId": "ru.silent.vpn",
     "productName": "Silent VPN",
     "directories": {
-      "output": "build-release-1122"
+      "output": "build-release-1129"
     },
     "artifactName": "Silent VPN Setup ${version}.${ext}",
     "files": [
@@ -36,6 +36,14 @@
       {
         "from": "resources/wireguard-installer.msi",
         "to": "wireguard-installer.msi"
+      },
+      {
+        "from": "assets/tray.png",
+        "to": "assets/tray.png"
+      },
+      {
+        "from": "assets/icon.png",
+        "to": "assets/icon.png"
       }
     ],
     "win": {

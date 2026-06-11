@@ -1,11 +1,10 @@
 import { getAppVersion } from './updateCheck'
-import { clearCachedProfile } from './profileStore'
 import { clearCachedVpnConfig } from './vkConfig'
 import { pushLog } from './debugLog'
 
 const MIGRATED_VERSION_KEY = 'silent_app_migrated_version'
 
-/** Одноразовая миграция после OTA — сброс залипшего кеша VPN/профиля. */
+/** Одноразовая миграция после OTA — сброс только VPN-конфига (профиль не трогаем). */
 export function runAppStateMigrationIfNeeded(): void {
   const current = getAppVersion()
   const last = localStorage.getItem(MIGRATED_VERSION_KEY) || ''
@@ -15,7 +14,6 @@ export function runAppStateMigrationIfNeeded(): void {
 
   if (localStorage.getItem('silent_token')) {
     clearCachedVpnConfig()
-    clearCachedProfile()
   }
 
   localStorage.setItem(MIGRATED_VERSION_KEY, current)

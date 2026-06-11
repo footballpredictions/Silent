@@ -26,7 +26,6 @@ export async function prepareVpnConnectConfig(
     /* connect может вернуть 403 при лимите устройств — хеши всё равно пробуем */
   }
 
-  const hashSyncDeadline = 10_000
   const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
     Promise.race([
       p,
@@ -34,6 +33,8 @@ export async function prepareVpnConnectConfig(
     ])
 
   let items: HashItem[] = getSavedHashItems()
+  const hasCachedHashes = activeServerHashes(items).length > 0
+  const hashSyncDeadline = hasCachedHashes ? 3_000 : 8_000
   try {
     const hashesRes = await withTimeout(api.get('/api/vpn/hashes'), hashSyncDeadline)
     if (!hashesRes) {

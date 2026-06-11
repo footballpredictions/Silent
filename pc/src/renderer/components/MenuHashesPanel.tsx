@@ -1,7 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import api from '../api'
-import { getCachedVpnConfig } from '../vkConfig'
-import { setTunnelApiBase } from '../tunnelApi'
+import { useEffect, useMemo, useState } from 'react'
 import {
   MAX_HASHES,
   MAX_WORKERS_PER_HASH,
@@ -17,8 +14,6 @@ import {
   formatSavedAt,
   getSavedHashItems,
   getSavedHashItemsUpdatedAt,
-  mapHashesResponse,
-  saveHashItems,
   type HashItem,
 } from '../hashItemsStore'
 
@@ -49,12 +44,8 @@ function SignalBars({ bars, fg }: { bars: number; fg: string }) {
 
 export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = false, activeWorkers = 0 }: Props) {
   const cached = getSavedHashItems()
-  const [loading, setLoading] = useState(cached.length === 0)
-  const [syncing, setSyncing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [items, setItems] = useState<HashItem[]>(cached)
   const [savedAt, setSavedAt] = useState(getSavedHashItemsUpdatedAt())
-  const [refreshKey, setRefreshKey] = useState(0)
 
   const serverItems = items.filter(i => i.source !== 'bootstrap')
   const activeHashCount = Math.min(
@@ -72,43 +63,10 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
     () => normalizeTotalWorkers(totalWorkers, activeHashCount),
     [totalWorkers, activeHashCount],
   )
-  const refreshFromServer = useCallback(async () => {
-    setSyncing(true)
-    setError(null)
-    if (vpnConnected) {
-      const cfg = getCachedVpnConfig()
-      setTunnelApiBase(cfg?.wg_address ?? cfg?.assigned_ip ?? null)
-    }
-    try {
-      const res = await api.get('/api/vpn/hashes')
-      const downloaded = mapHashesResponse(res.data)
-      if (downloaded.length > 0) {
-        saveHashItems(downloaded)
-        setItems(downloaded)
-        setSavedAt(getSavedHashItemsUpdatedAt())
-        setError(null)
-      } else {
-        setItems(prev => {
-          if (prev.length === 0) setError('На сервере пока нет хешей')
-          return prev
-        })
-      }
-    } catch (e: any) {
-      const msg = e.response?.data?.detail || e.message || 'Не удалось загрузить хеши'
-      setError(msg)
-    } finally {
-      setSyncing(false)
-      setLoading(false)
-    }
-  }, [vpnConnected])
-
   useEffect(() => {
-    if (refreshKey === 0) {
-      setItems(getSavedHashItems())
-      setSavedAt(getSavedHashItemsUpdatedAt())
-    }
-    void refreshFromServer()
-  }, [refreshKey, refreshFromServer])
+    setItems(getSavedHashItems())
+    setSavedAt(getSavedHashItemsUpdatedAt())
+  }, [])
 
   const serverHashRows = serverItems.filter(i => i.source !== 'bootstrap')
 
@@ -121,7 +79,7 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
         Хеши
       </div>
       <p className="text-[11px] mb-1 text-left" style={{ color: muted }}>
-        Сохранены на устройстве и обновляются с сервера
+        Сохранены на устройстве; обновляются при подключении VPN
       </p>
       {savedAt > 0 && (
         <p className="text-[10px] mb-2 text-left" style={{ color: muted }}>
@@ -172,34 +130,10 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
         </p>
       )}
 
-      <button
-        type="button"
-        disabled={syncing}
-        onClick={() => setRefreshKey(k => k + 1)}
-        className="text-[11px] mb-3 text-left hover:opacity-70 disabled:opacity-40"
-        style={{ color: fg }}
-      >
-        {syncing ? 'Обновление…' : 'Обновить с сервера'}
-      </button>
-
-      {loading && (
-        <div className="flex justify-center py-8">
-          <div className="w-5 h-5 border-2 rounded-full animate-spin border-gray-200 border-t-black" />
-        </div>
-      )}
-      {error && items.length === 0 && <p className="text-xs text-red-500 text-left">{error}</p>}
-      {!loading && serverHashRows.length === 0 && !error && (
+      {serverHashRows.length === 0 && (
         <p className="text-xs text-left" style={{ color: muted }}>
-          Нет серверных хешей. Попросите админа выдать слоты.
+          Нет серверных хешей. Попросите админа выдать слоты или переподключите VPN.
         </p>
-      )}
-      {syncing && serverHashRows.length > 0 && (
-        <p className="text-[10px] mb-2 text-left" style={{ color: muted }}>
-          Обновление с сервера…
-        </p>
-      )}
-      {error && items.length > 0 && (
-        <p className="text-[11px] text-red-500 mb-2 text-left">{error}</p>
       )}
       {serverHashRows.map((item, i) => {
         const active = item.status === 'active' && item.is_active

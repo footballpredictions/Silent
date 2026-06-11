@@ -33,7 +33,7 @@ func putPktBuf(b []byte) {
 const (
 	returnChBuf      = 32768
 	writeLoopWorkers = 8
-	uploadRetryMs    = 30
+	uploadRetryMs    = 50
 
 	// chunkSize — количество последовательных пакетов, отправляемых в один worker
 	// перед переключением на следующий.
@@ -47,7 +47,8 @@ const (
 	// initial cwnd) уходят через один TURN relay → прилетают по порядку.
 	// Reorder возможен только между chunk-границами, что покрывается WG replay
 	// window (2048 пакетов).
-	chunkSize = 16
+	// chunk=128: дольше держим TCP-поток (YouTube) на одном TURN — меньше reorder/cwnd collapse.
+	chunkSize = 128
 )
 
 type WorkerSlot struct {

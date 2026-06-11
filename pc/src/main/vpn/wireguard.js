@@ -13,8 +13,12 @@ const TUNNEL_CONF_NAME = 'wg-turn.conf'
 const SERVICE_NAME = `WireGuardTunnel$${TUNNEL_NAME}`
 const STABLE_CONF_DIR = path.join(process.env.ProgramData || 'C:\\ProgramData', 'SilentVPN')
 const STABLE_WG_DIR = path.join(STABLE_CONF_DIR, 'wireguard')
-/** Основной VPN: DNS из wdtt-конфига (как Android), не принудительный Cloudflare. */
-const WG_DNS_FALLBACK = '1.1.1.1, 1.0.0.1'
+/** Cloudflare первым (googlevideo CDN), Yandex — запасной (как Android WireGuardHelper). */
+const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
+
+function normalizeDnsValue(_raw) {
+  return WG_DNS
+}
 
 let lastRuntimeDir = null
 
@@ -290,7 +294,7 @@ function buildWgConfigFromApi(config, listenPort = 9000) {
   if (!priv || !pub) return null
   const addr = (config.wg_address || config.assigned_ip || '').trim()
   if (!addr) return null
-  const dns = config.wg_dns || config.dns || WG_DNS_CLOUDFLARE
+  const dns = normalizeDnsValue(config.wg_dns || config.dns)
   return `[Interface]
 PrivateKey = ${priv}
 Address = ${addr}
@@ -300,7 +304,7 @@ MTU = 1280
 [Peer]
 PublicKey = ${pub}
 Endpoint = 127.0.0.1:${listenPort}
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 `
 }
@@ -313,11 +317,11 @@ function countAllowedRoutes(allowedIPsValue) {
 }
 
 function buildAllowedIPsForWindows(excludeIPs, send) {
-  if (!excludeIPs.length) return '0.0.0.0/0'
+  if (!excludeIPs.length) return '0.0.0.0/0, ::/0'
   const split = generateExclusionAllowedIPs(excludeIPs)
   const n = countAllowedRoutes(split)
   if (n > MAX_WINDOWS_ALLOWED_ROUTES) {
-    send?.(`[WG] Слишком много маршрутов (${n}) — используем AllowedIPs = 0.0.0.0/0`)
+    send?.(`[WG] Слишком много маршрутов (${n}) — используем AllowedIPs = 0.0.0.0/0, ::/0`)
     return '0.0.0.0/0'
   }
   return split
@@ -423,17 +427,15 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
         // DNS через WG при split-route ломает резолв на Windows → «нет интернета»
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
       } else {
-        send?.('[WG] AllowedIPs = 0.0.0.0/0 (основной VPN: интернет через WDTT)')
-        if (!/^\s*DNS\s*=/m.test(conf)) {
-          conf = conf.replace(
-            /(\[Interface\][^\[]*)/,
-            m => `${m.trimEnd()}\nDNS = ${WG_DNS_FALLBACK}\n`,
-          )
-          send?.(`[WG] DNS = ${WG_DNS_FALLBACK} (fallback)`)
-        } else {
-          const dnsLine = conf.match(/^\s*DNS\s*=\s*(.+)$/m)
-          send?.(`[WG] DNS из wdtt: ${dnsLine ? dnsLine[1].trim() : '?'}`)
-        }
+        send?.('[WG] AllowedIPs = 0.0.0.0/0, ::/0, ::/0 (полный туннель, IPv6 через WG)')
+        const dnsLine = conf.match(/^\s*DNS\s*=\s*(.+)$/m)
+        const dns = normalizeDnsValue(dnsLine ? dnsLine[1] : '')
+        conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
+        conf = conf.replace(
+          /(\[Interface\][^\[]*)/,
+          m => `${m.trimEnd()}\nDNS = ${dns}\n`,
+        )
+        send?.(`[WG] DNS = ${dns}`)
       }
       conf = conf.replace(/AllowedIPs\s*=\s*.+/, `AllowedIPs = ${allowed}`)
       fs.writeFileSync(confPath, conf)

@@ -1,5 +1,7 @@
 ﻿/** Буфер логов для UI «Лог» — как Android DebugLog.kt */
 
+import { pushAppLog } from './vpnLogStore'
+
 export type LogLevel = 'D' | 'I' | 'W' | 'E' | 'T'
 
 export interface DebugLogItem {
@@ -115,22 +117,16 @@ export function traceUi(tag: string, message: string) {
   append('T', tag, message, true)
 }
 
-/** Совместимость со старым pushLog. */
 export function pushLog(tag: string, message: string, level: 'I' | 'W' | 'E' = 'I') {
-  if (level === 'E') logE(tag, message)
-  else if (level === 'W') logW(tag, message)
-  else logI(tag, message)
+  pushAppLog(tag, message, level)
 }
 
 export function ingestMainLog(payload: { tag?: string; level?: string; message?: string }) {
   const tag = payload.tag || 'Main'
   const msg = payload.message || ''
   const lvl = (payload.level || 'I').toUpperCase()
-  if (lvl === 'E') logE(tag, msg)
-  else if (lvl === 'W') logW(tag, msg)
-  else if (lvl === 'D') logD(tag, msg)
-  else if (lvl === 'T') traceUi(tag, msg)
-  else logI(tag, msg)
+  const level = lvl === 'E' ? 'E' : lvl === 'W' ? 'W' : 'I'
+  pushAppLog(tag, msg, level)
 }
 
 export function formatLogLine(item: DebugLogItem): string {

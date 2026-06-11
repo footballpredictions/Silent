@@ -281,7 +281,7 @@ function forceStopWireGuard(isDev, dirname, send) {
       ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   `)
 
-  send?.('[WG] Туннель остановлен')
+  send?.('[WG] Остановка службы wg-turn (переустановка)...')
 }
 
 function stopWireGuardTunnel(isDev, dirname, send) {
@@ -427,7 +427,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
         // DNS через WG при split-route ломает резолв на Windows → «нет интернета»
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
       } else {
-        send?.('[WG] AllowedIPs = 0.0.0.0/0, ::/0, ::/0 (полный туннель, IPv6 через WG)')
+        send?.(`[WG] AllowedIPs = ${allowed} (полный туннель)`)
         const dnsLine = conf.match(/^\s*DNS\s*=\s*(.+)$/m)
         const dns = normalizeDnsValue(dnsLine ? dnsLine[1] : '')
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')

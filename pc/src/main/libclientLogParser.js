@@ -92,6 +92,12 @@ function parseLibclientLine(lineTrim) {
     return { key: 'workers_reg', message: lineTrim, priority: 2, isError: false }
   }
 
+  // Ретраи воркеров — шум, не ошибка VPN (как Android: скрываем до isError)
+  if (lineTrim.includes('[ВОРКЕР #') && !lineTrim.includes('[READY]') && !lineTrim.includes('зарегистрирован')) {
+    return null
+  }
+  if (lineTrim.includes('[СЕССИЯ #')) return null
+
   if (isError) {
     let errorKey = 'general_error'
     if (/connection refused/i.test(lineTrim)) errorKey = 'err_conn_refused'
@@ -99,12 +105,6 @@ function parseLibclientLine(lineTrim) {
     else errorKey = `general_error_${lineTrim.slice(0, 12)}`
     return { key: errorKey, message: lineTrim, priority: 99, isError: true }
   }
-
-  // Шумные строки воркеров не показываем (как Android)
-  if (lineTrim.includes('[ВОРКЕР #') && !lineTrim.includes('[READY]') && !lineTrim.includes('зарегистрирован')) {
-    return null
-  }
-  if (lineTrim.includes('[СЕССИЯ #')) return null
 
   return null
 }

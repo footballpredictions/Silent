@@ -24,6 +24,7 @@ import { menuDrawerStyle, UI_COLORS } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
 import { prepareVpnConnectConfig, syncHashesWhenTunnelUp } from '../prepareVpnConnect'
+import { notifyDisconnect } from '../vpnBackendSync'
 import { pushLog, logI } from '../debugLog'
 import { clearVpnLogs } from '../vpnLogStore'
 import { SessionTrace } from '../sessionTrace'
@@ -294,6 +295,10 @@ export default function MainScreen({
   }, [connected, fetchProfile])
 
   useEffect(() => {
+    if (initialUpdateInfo?.available) setUpdateInfo(initialUpdateInfo)
+  }, [initialUpdateInfo])
+
+  useEffect(() => {
     let cancelled = false
     const run = async () => {
       const info = await checkForUpdate()
@@ -458,12 +463,12 @@ export default function MainScreen({
         }
         setConnected(true)
       } else {
+        clearTunnelApiBase()
+        await notifyDisconnect(fp)
         if ((window as any).electronAPI?.vpnDisconnect) {
           await (window as any).electronAPI.vpnDisconnect()
         }
         onlineMarkedRef.current = false
-        clearTunnelApiBase()
-        await api.post('/api/vpn/disconnect', { device_fingerprint: fp }).catch(() => null)
         setConnected(false)
       }
       fetchProfile()
@@ -477,9 +482,10 @@ export default function MainScreen({
 
   const handleLogout = async () => {
     const fp = (() => { try { return DEVICE_FINGERPRINT() } catch { return null } })()
+    clearTunnelApiBase()
+    if (fp) await notifyDisconnect(fp)
     if (connected || connecting) {
       await (window as any).electronAPI?.vpnDisconnect?.()
-      if (fp) await api.post('/api/vpn/disconnect', { device_fingerprint: fp }).catch(() => null)
     }
     if (fp) {
       await api.post('/api/users/logout', { device_fingerprint: fp }).catch(() => null)

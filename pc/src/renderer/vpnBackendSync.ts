@@ -61,24 +61,45 @@ export async function notifyConnect(): Promise<boolean> {
   }
 }
 
-/** Снять «онлайн» на backend до остановки VPN (пока tunnel API доступен). */
-export async function notifyDisconnect(): Promise<boolean> {
+/** Снять «онлайн» на backend — всегда public HTTPS, tunnel только как fallback. */
+export async function notifyDisconnect(fingerprint?: string): Promise<boolean> {
+  const fp = fingerprint || getDeviceFingerprint()
+  const publicUrl = getPublicApiBaseUrl()
+
   try {
-    const fp = getDeviceFingerprint()
-    const cfg = getCachedVpnConfig()
-    const addr = cfg?.wg_address ?? cfg?.assigned_ip
-    if (!addr?.trim()) return false
-    setTunnelApiBase(addr)
-    const res = await api.post('/api/vpn/disconnect', { device_fingerprint: fp })
+    const res = await axios.post(
+      `${publicUrl}/api/vpn/disconnect`,
+      { device_fingerprint: fp },
+      { headers: authHeaders(), timeout: 15_000 },
+    )
     if (res.status >= 200 && res.status < 300) {
-      pushLog('Main', 'disconnect API OK — online cleared before tunnel stop')
+      pushLog('Main', 'disconnect API OK (public)')
       return true
     }
     pushLog('Main', `disconnect API HTTP ${res.status}`, 'W')
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    pushLog('Main', `disconnect API public: ${msg}`, 'W')
+  }
+
+  const cfg = getCachedVpnConfig()
+  const addr = cfg?.wg_address ?? cfg?.assigned_ip
+  if (!addr?.trim()) return false
+
+  setTunnelApiBase(addr)
+  try {
+    const res = await api.post('/api/vpn/disconnect', { device_fingerprint: fp })
+    if (res.status >= 200 && res.status < 300) {
+      pushLog('Main', 'disconnect API OK (tunnel)')
+      return true
+    }
+    pushLog('Main', `disconnect API tunnel HTTP ${res.status}`, 'W')
     return false
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
-    pushLog('Main', `disconnect API failed: ${msg}`, 'W')
+    pushLog('Main', `disconnect API tunnel: ${msg}`, 'W')
     return false
+  } finally {
+    clearTunnelApiBase()
   }
 }

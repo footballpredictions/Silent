@@ -115,7 +115,9 @@ fun MainScreen(
                 vpnState == VpnState.CONNECTING ||
                 onSessions,
         )
-        onUpdatePolling(vpnState == VpnState.CONNECTED)
+    }
+    LaunchedEffect(Unit) {
+        onUpdatePolling(true)
     }
     DisposableEffect(Unit) {
         onDispose {

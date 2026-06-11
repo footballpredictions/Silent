@@ -14,6 +14,7 @@ import com.silent.vpn.MainActivity
 import com.silent.vpn.R
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -38,11 +39,14 @@ class SilentVpnTileService : TileService() {
         stateJob?.cancel()
         stateJob = scope.launch {
             try {
-                WdttTunnelManager.running.collect {
+                combine(
+                    WdttTunnelManager.running,
+                    WdttTunnelManager.tunnelReady,
+                ) { _, _ -> Unit }.collect {
                     updateTile(isVpnConnected())
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "running collect failed", e)
+                Log.e(TAG, "state collect failed", e)
             }
         }
     }
@@ -62,7 +66,9 @@ class SilentVpnTileService : TileService() {
     }
 
     private fun isVpnConnected(): Boolean =
-        WdttTunnelManager.running.value && SilentVpnService.isRunning
+        VpnSessionState.isActive() ||
+            (SilentVpnService.isRunning && WdttTunnelManager.running.value && WdttTunnelManager.tunnelReady.value) ||
+            (VpnServiceTracker.isSessionMarkedActive(this) && WdttTunnelManager.tunnelReady.value)
 
     private fun performClick() {
         runCatching {

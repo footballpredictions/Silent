@@ -30,9 +30,6 @@ import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.ui.theme.UiColors
 import com.silent.vpn.ui.theme.UiDimens
 import com.silent.vpn.vpn.WdttTunnelManager
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -44,11 +41,8 @@ fun MenuHashesScreen(
     onBack: () -> Unit,
 ) {
     var loading by remember { mutableStateOf(repo.getSavedHashItems().isEmpty()) }
-    var syncing by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
     var items by remember { mutableStateOf(repo.getSavedHashItems()) }
     var savedAt by remember { mutableStateOf(repo.getSavedHashItemsUpdatedAt()) }
-    val scope = rememberCoroutineScope()
 
     val activeWorkers by WdttTunnelManager.activeWorkers.collectAsState()
     val vpnRunning by WdttTunnelManager.running.collectAsState()
@@ -69,35 +63,6 @@ fun MenuHashesScreen(
         if (totalWorkers != normalized) totalWorkers = normalized
     }
 
-    suspend fun refreshFromServer() {
-        syncing = true
-        error = null
-        try {
-            val result = withContext(Dispatchers.IO) { repo.fetchAndSaveHashItems() }
-            result.onSuccess { downloaded ->
-                val fresh = repo.getSavedHashItems()
-                items = fresh.ifEmpty { downloaded }
-                savedAt = repo.getSavedHashItemsUpdatedAt()
-                if (items.isEmpty()) {
-                    error = "На сервере пока нет хешей"
-                } else {
-                    repo.mergeSavedHashesIntoCachedConfig()
-                }
-            }.onFailure { e ->
-                items = repo.getSavedHashItems()
-                savedAt = repo.getSavedHashItemsUpdatedAt()
-                error = repo.humanizeHashFetchError(e.message)
-            }
-        } catch (e: Exception) {
-            items = repo.getSavedHashItems()
-            savedAt = repo.getSavedHashItemsUpdatedAt()
-            error = repo.humanizeHashFetchError(e.message)
-        } finally {
-            syncing = false
-            loading = false
-        }
-    }
-
     LaunchedEffect(Unit) {
         items = repo.getSavedHashItems()
         savedAt = repo.getSavedHashItemsUpdatedAt()
@@ -115,7 +80,7 @@ fun MenuHashesScreen(
         }
         Text("Хеши", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = fg)
         Text(
-            "Кеш на устройстве. Обновление с сервера — по кнопке ниже (при VPN может кратко дернуть туннель).",
+            "Кеш на устройстве. При подключении VPN список обновляется автоматически.",
             fontSize = 11.sp,
             color = fg.copy(0.5f),
             modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
@@ -152,33 +117,16 @@ fun MenuHashesScreen(
             Spacer(Modifier.height(8.dp))
         }
 
-        TextButton(
-            onClick = { scope.launch { refreshFromServer() } },
-            enabled = !syncing,
-            modifier = Modifier.padding(bottom = 4.dp),
-        ) {
-            Text(if (syncing) "Обновление…" else "Обновить с сервера", fontSize = 11.sp, color = fg.copy(0.7f))
-        }
-
         when {
             loading -> {
                 Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                 }
             }
-            error != null && items.isEmpty() -> {
-                Text(error!!, fontSize = 12.sp, color = Color(0xFFEF4444))
-            }
             serverItems.isEmpty() -> {
-                Text("Нет серверных хешей. Попросите админа выдать слоты.", fontSize = 12.sp, color = fg.copy(0.5f))
+                Text("Нет серверных хешей. Подключите VPN или попросите админа выдать слоты.", fontSize = 12.sp, color = fg.copy(0.5f))
             }
             else -> {
-                if (syncing) {
-                    Text("Обновление с сервера…", fontSize = 10.sp, color = fg.copy(0.45f), modifier = Modifier.padding(bottom = 8.dp))
-                }
-                if (error != null) {
-                    Text(error!!, fontSize = 11.sp, color = Color(0xFFEF4444), modifier = Modifier.padding(bottom = 8.dp))
-                }
                 serverItems.forEachIndexed { index, item ->
                     HashRow(
                         item = item,

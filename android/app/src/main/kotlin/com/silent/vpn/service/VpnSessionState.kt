@@ -15,9 +15,11 @@ object VpnSessionState {
     @Volatile
     var tunnelDataSyncCompleted: Boolean = false
 
-    /** Туннель активен: libclient + WireGuard UP. */
+    /** Туннель активен: сервис + libclient + WireGuard UP. */
     fun isActive(): Boolean =
-        WdttTunnelManager.running.value && WdttTunnelManager.tunnelReady.value
+        SilentVpnService.isRunning &&
+            WdttTunnelManager.running.value &&
+            WdttTunnelManager.tunnelReady.value
 
     /** Идёт подключение или капча. */
     fun isBusy(): Boolean =

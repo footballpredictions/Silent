@@ -26,8 +26,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 object VpnBackendSync {
     private const val TAG = "VpnBackendSync"
     private const val TUNNEL_WAIT_MS = 60_000L
-    /** При неудаче initial sync — не чаще одной попытки в минуту (не дёргать WG). */
-    private const val RETRY_MIN_INTERVAL_MS = 60_000L
+    /** При неудаче initial sync — повтор через [ensureBackendSyncAfterTunnel] из statsUpdater. */
+    private const val RETRY_MIN_INTERVAL_MS = 15_000L
     private const val DISCONNECT_NOTIFY_TIMEOUT_MS = 1_500L
 
     private var syncJob: Job? = null
@@ -54,9 +54,28 @@ object VpnBackendSync {
             val ok = runCatching { r.syncAllViaTunnel() }.getOrDefault(false)
             if (ok) {
                 VpnSessionState.tunnelDataSyncCompleted = true
-                DebugLog.i(TAG, "after tunnel: connect+hashes+theme OK")
+                VpnSessionState.backendSyncCompleted = true
+                DebugLog.i(TAG, "after tunnel: POST /connect + sync OK")
             } else {
-                DebugLog.w(TAG, "after tunnel: sync FAILED — без повторного overlay")
+                DebugLog.w(TAG, "after tunnel: POST /connect/sync FAILED — retry in 8s")
+                delay(8_000)
+                if (
+                    scope.isActive &&
+                    WdttTunnelManager.tunnelReady.value &&
+                    WdttTunnelManager.running.value
+                ) {
+                    val retryOk = runCatching { r.syncAllViaTunnel() }.getOrDefault(false)
+                    if (retryOk) {
+                        VpnSessionState.tunnelDataSyncCompleted = true
+                        VpnSessionState.backendSyncCompleted = true
+                        DebugLog.i(TAG, "after tunnel: retry OK")
+                    } else {
+                        DebugLog.w(TAG, "after tunnel: retry FAILED")
+                        lastAttemptAtMs = 0L
+                    }
+                } else {
+                    lastAttemptAtMs = 0L
+                }
             }
         }
     }

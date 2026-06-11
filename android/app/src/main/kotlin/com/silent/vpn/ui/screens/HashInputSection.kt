@@ -49,8 +49,21 @@ fun HashInputSection(
     val confirmBtn = theme?.login_hash_button_text ?: ThemeData().login_hash_button_text
     val vkLabel = theme?.login_vk_mobile_link_text ?: ThemeData().login_vk_mobile_link_text
 
+    val showCountdown = bootstrapReady &&
+        statusMsg.contains("осталось", ignoreCase = true)
+
     Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = ui.fg)
-    Text(hint, fontSize = 11.sp, color = ui.hint, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
+    if (showCountdown) {
+        Text(
+            statusMsg,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = ui.green,
+            modifier = Modifier.padding(top = 6.dp, bottom = 8.dp),
+        )
+    } else {
+        Text(hint, fontSize = 11.sp, color = ui.hint, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
+    }
     TextButton(onClick = onOpenVkLink, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
         Text(vkLabel, fontSize = 11.sp, color = ui.linkColor, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)
     }
@@ -92,7 +105,7 @@ fun HashInputSection(
         Text(buttonText, fontSize = 13.sp, fontWeight = FontWeight.Medium)
     }
 
-    if (statusMsg.isNotBlank()) {
+    if (statusMsg.isNotBlank() && !showCountdown) {
         val statusColor = when {
             bootstrapReady -> ui.green
             statusMsg.contains("ошиб", ignoreCase = true) ||

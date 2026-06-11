@@ -140,7 +140,7 @@ data class ThemeData(
     val update_bar_label_available: String = "Доступно обновление",
     val update_bar_label_downloading: String = "Скачивание…",
     val login_step1_title: String = "Шаг 1 — хеш звонка VK",
-    val login_step1_instruction: String = "Временный интернет на 2 минуты — для входа, регистрации и ссылок из почты (браузер тоже через VPN).",
+    val login_step1_instruction: String = "Скопируйте хеш из раздела «Звонки» в приложении ВКонтакте (на ПК — VK Звонки в браузере). Вставьте хеш или ссылку ниже — временный канал только для входа или регистрации (2 мин).",
     val login_hash_placeholder: String = "Хеш или ссылка на звонок VK",
     val login_hash_button_text: String = "Подтвердить",
     val login_vk_mobile_url: String = "https://vk.com/calls",

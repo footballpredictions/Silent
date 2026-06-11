@@ -162,6 +162,15 @@ fun LoginScreen(
                         )
                     }
                     Text(step2Title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = ui.fg, modifier = Modifier.padding(bottom = 12.dp))
+                    if (bootstrapReady && statusMsg.contains("осталось", ignoreCase = true)) {
+                        Text(
+                            statusMsg,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = ui.green,
+                            modifier = Modifier.padding(bottom = 12.dp),
+                        )
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth().background(ui.tabBg, RoundedCornerShape(12.dp)).padding(4.dp),
                     ) {

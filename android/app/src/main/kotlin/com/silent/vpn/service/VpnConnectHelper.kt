@@ -41,6 +41,7 @@ object VpnConnectHelper {
             val orphanWg = VpnNetworkHelper.findOurVpnNetwork(appCtx) != null
             val stale = needsStaleCleanup(context)
             WdttTunnelManager.ensureApiOverlayOff()
+            VpnBackendSync.stop()
             VpnSessionState.resetBackendSync()
             if (!orphanWg && !stale) {
                 SessionTrace.mark("VpnConnectHelper.prepareForConnect", "clean reconnect — skip WG reset")

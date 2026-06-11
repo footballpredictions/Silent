@@ -67,7 +67,7 @@ object VpnNetworkHelper {
 
     /** WireGuard-сеть Silent — для HTTP к 10.66.66.1 когда app исключён из туннеля. */
     fun getSilentVpnNetwork(context: Context): Network? {
-        if (!SilentVpnService.isRunning) return null
+        if (!SilentVpnService.isRunning && !WdttTunnelManager.tunnelReady.value) return null
         return findOurVpnNetwork(context)
     }
 

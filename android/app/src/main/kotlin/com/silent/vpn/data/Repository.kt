@@ -724,7 +724,7 @@ class SilentRepository @Inject constructor(
             return false
         }
         return runCatching {
-            withMainTunnelApi {
+            withTunnelApiStrict {
                 val url = getServerUrl()
                 val ok = postDisconnectRequest()
                 Log.i(TAG, "disconnect via $url ok=$ok")
@@ -733,35 +733,65 @@ class SilentRepository @Inject constructor(
         }.getOrOrLog(false)
     }
 
-    /** Connect online, затем хеши — один сеанс tunnel API (прокси, без overlay). */
+    /** Connect online + хеши + profile + theme — прокси без overlay, иначе один overlay. */
     suspend fun syncAllViaTunnel(): Boolean {
         if (!isLoggedIn() || !isMainVpnTunnelUp()) return false
+        prepareTunnelApiFromCachedConfig()
         return runCatching {
-            withMainTunnelApi {
+            executeMainTunnelSyncSession {
                 val url = getServerUrl()
-                val online = getApi()
-                    .connect(ConnectRequest(getDeviceFingerprint(), "android"))
-                    .isSuccessful
-                Log.i(TAG, "syncAll connect via $url ok=$online")
-                val data = syncHashesAndConfigAfterConnect()
-                runCatching {
-                    val profileRes = getApi().getProfile()
-                    if (profileRes.isSuccessful) {
-                        profileRes.body()?.let { saveCachedProfile(it) }
-                        Log.i(TAG, "syncAll profile OK")
-                    }
-                }.onFailure { e -> Log.w(TAG, "syncAll profile: ${e.message}") }
-                runCatching {
-                    val themeRes = getApi().getTheme()
-                    if (themeRes.isSuccessful) {
-                        themeRes.body()?.let { saveCachedTheme(it) }
-                        Log.i(TAG, "syncAll theme OK")
-                    }
-                }.onFailure { e -> Log.w(TAG, "syncAll theme: ${e.message}") }
-                Log.i(TAG, "syncAll hashes via $url ok=$data")
-                online || data
+                val online = postConnectOnline()
+                if (!online) {
+                    Log.w(TAG, "syncAll: POST /connect failed via $url")
+                    return@executeMainTunnelSyncSession false
+                }
+                syncHashesAndConfigAfterConnect()
+                syncProfileAndThemeAfterConnect()
+                Log.i(TAG, "syncAll OK via $url (connect+hashes+profile)")
+                true
             }
         }.getOrOrLog(false)
+    }
+
+    private suspend fun executeMainTunnelSyncSession(block: suspend () -> Boolean): Boolean {
+        if (APP_EXCLUDED_FROM_VPN && prepareTunnelApiBase()) {
+            Log.i(TAG, "tunnel sync via proxy (no overlay)")
+            return block()
+        }
+        Log.i(TAG, "tunnel sync via overlay → ${tunnelApiBase()}")
+        return withTunnelApiStrict { block() }
+    }
+
+    private suspend fun postConnectOnline(): Boolean {
+        val res = runCatching {
+            getApi().connect(ConnectRequest(getDeviceFingerprint(), "android"))
+        }.getOrNull() ?: return false
+        if (res.isSuccessful) {
+            Log.i(TAG, "POST /connect OK")
+            return true
+        }
+        val err = runCatching { res.errorBody()?.string()?.take(200) }.getOrNull()
+        Log.w(TAG, "POST /connect HTTP ${res.code()}${err?.let { ": $it" } ?: ""}")
+        return false
+    }
+
+    private suspend fun syncProfileAndThemeAfterConnect() {
+        runCatching {
+            val profileRes = getApi().getProfile()
+            if (profileRes.isSuccessful) {
+                profileRes.body()?.let { saveCachedProfile(it) }
+                Log.i(TAG, "syncAll profile OK")
+            } else {
+                Log.w(TAG, "syncAll profile HTTP ${profileRes.code()}")
+            }
+        }.onFailure { e -> Log.w(TAG, "syncAll profile: ${e.message}") }
+        runCatching {
+            val themeRes = getApi().getTheme()
+            if (themeRes.isSuccessful) {
+                themeRes.body()?.let { saveCachedTheme(it) }
+                Log.i(TAG, "syncAll theme OK")
+            }
+        }.onFailure { e -> Log.w(TAG, "syncAll theme: ${e.message}") }
     }
 
     private fun <T> Result<T>.getOrOrLog(default: T): T =
@@ -785,9 +815,33 @@ class SilentRepository @Inject constructor(
                 onFailure = { Result.failure(it) },
             )
         } else {
-            fetchHashItemsViaTunnelProxy()
+            fetchHashItemsViaTunnel().fold(
+                onSuccess = { Result.success(it) },
+                onFailure = { e -> Result.failure(e) },
+            )
         }
     }
+
+    /** Хеши через VPN: прокси без overlay, иначе один overlay-сеанс. */
+    private suspend fun fetchHashItemsViaTunnel(): Result<List<HashItemDto>> =
+        runCatching {
+            if (prepareTunnelApiBase()) {
+                fetchHashItemsFromBases(listOf(TunnelApiProxy.baseUrl())).getOrThrow()
+            } else {
+                withTunnelApiStrict {
+                    fetchHashItemsFromBases(listOf(tunnelApiBase())).getOrThrow()
+                }
+            }
+        }.fold(
+            onSuccess = { items ->
+                Log.i(TAG, "fetchAndSaveHashItems OK via tunnel (${items.size} items)")
+                Result.success(items)
+            },
+            onFailure = { e ->
+                Log.w(TAG, "fetchHashItemsViaTunnel: ${e.message}")
+                Result.failure(e)
+            },
+        )
 
     suspend fun fetchAndSaveHashItems(): Result<List<HashItemDto>> =
         fetchAndSaveHashItems(preferPublicOnly = false)
@@ -798,8 +852,12 @@ class SilentRepository @Inject constructor(
         }
         return runCatching {
             if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
-                withMainTunnelApi {
+                if (prepareTunnelApiBase()) {
                     fetchHashItemsOnce().getOrThrow()
+                } else {
+                    withTunnelApiStrict {
+                        fetchHashItemsOnce().getOrThrow()
+                    }
                 }
             } else {
                 withBackendApi {
@@ -814,21 +872,6 @@ class SilentRepository @Inject constructor(
             },
         )
     }
-
-    private suspend fun fetchHashItemsViaTunnelProxy(): Result<List<HashItemDto>> =
-        runCatching {
-            if (!prepareTunnelApiBase()) error("tunnel proxy not ready")
-            fetchHashItemsFromBases(listOf(TunnelApiProxy.baseUrl())).getOrThrow()
-        }.fold(
-            onSuccess = { items ->
-                Log.i(TAG, "fetchAndSaveHashItems OK via proxy (${items.size} items)")
-                Result.success(items)
-            },
-            onFailure = { e ->
-                Log.w(TAG, "fetchHashItemsViaTunnelProxy: ${e.message}")
-                Result.failure(e)
-            },
-        )
 
     private suspend fun fetchHashItemsFromPublicBases(fastTimeout: Boolean): Result<List<HashItemDto>> {
         val bases = if (fastTimeout) {

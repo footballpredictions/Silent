@@ -90,8 +90,6 @@ class SilentVpnService : Service() {
     private var transportWatchdogJob: Job? = null
     private var statsUpdaterJob: Job? = null
     @Volatile
-    private var backendSyncTriggered = false
-    @Volatile
     private var tunnelProxyStarted = false
     private var performanceLocksHeld = false
     private var lastNotifUpdateMs = 0L
@@ -102,10 +100,6 @@ class SilentVpnService : Service() {
         super.onCreate()
         SessionTrace.mark("SilentVpnService.onCreate")
         createNotificationChannel()
-        // Kill с включённым VPN: pref=true, isRunning=false — сразу чистим, до START_STICKY restore.
-        if (!isRunning && VpnServiceTracker.isSessionMarkedActive(this)) {
-            VpnConnectHelper.ensureCleanSlate(this)
-        }
     }
 
     private fun isWithinConnectGrace(): Boolean =
@@ -133,12 +127,13 @@ class SilentVpnService : Service() {
                         }
                         ensureTunnelApiProxyAsync()
                         postVpnNotification(stats)
+                        VpnTileHelper.requestUpdate(this@SilentVpnService)
                         if (
-                            !backendSyncTriggered &&
-                            VpnSessionState.isActive() &&
+                            WdttTunnelManager.tunnelReady.value &&
+                            WdttTunnelManager.running.value &&
+                            !WdttTunnelManager.isBootstrapMode() &&
                             !VpnSessionState.tunnelDataSyncCompleted
                         ) {
-                            backendSyncTriggered = true
                             VpnBackendSync.ensureBackendSyncAfterTunnel(scope, this@SilentVpnService)
                         }
                     } else if (WdttTunnelManager.running.value) {
@@ -200,7 +195,6 @@ class SilentVpnService : Service() {
                 lastNetworkChangeTime = 0L
                 lastNotifBody = ""
                 lastNotifUpdateMs = 0L
-                backendSyncTriggered = false
                 tunnelProxyStarted = false
                 setupNetworkCallback()
                 startTransportWatchdog()
@@ -653,7 +647,6 @@ class SilentVpnService : Service() {
         activeNetworks.clear()
         VpnServiceTracker.markSessionActive(this, false)
         VpnBackendSync.stop()
-        backendSyncTriggered = false
         tunnelProxyStarted = false
         teardownNetworkCallback()
         teardownVpnOwnershipMonitor()

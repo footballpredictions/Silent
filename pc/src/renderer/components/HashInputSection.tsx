@@ -34,6 +34,8 @@ export default function HashInputSection({
   const vkLabel = theme?.login_vk_pc_link_text || 'VK Звонки в браузере'
   const linkColor = theme?.login_link_color || ui.linkColor
 
+  const showCountdown = bootstrapReady && statusMsg.toLowerCase().includes('осталось')
+
   const buttonText = bootstrapConnecting
     ? s.connecting
     : bootstrapReady
@@ -68,9 +70,15 @@ export default function HashInputSection({
       <p className="text-[13px] font-semibold" style={{ color: ui.fg }}>
         {title}
       </p>
-      <p className="text-[11px] mt-1 mb-2 leading-relaxed" style={{ color: ui.hint }}>
-        {hint}
-      </p>
+      {showCountdown ? (
+        <p className="text-[12px] mt-1.5 mb-2 font-medium" style={{ color: ui.green }}>
+          {statusMsg}
+        </p>
+      ) : (
+        <p className="text-[11px] mt-1 mb-2 leading-relaxed" style={{ color: ui.hint }}>
+          {hint}
+        </p>
+      )}
       <button
         type="button"
         onClick={openVkLink}
@@ -107,7 +115,7 @@ export default function HashInputSection({
       >
         {buttonText}
       </button>
-      {(statusMsg || bootstrapConnecting) && (
+      {(statusMsg || bootstrapConnecting) && !showCountdown && (
         <p className="text-[11px] mt-2 font-medium" style={{ color: statusColor }}>
           {bootstrapConnecting && !statusMsg ? s.connectingWait : statusMsg}
         </p>

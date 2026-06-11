@@ -7,6 +7,7 @@ import api, {
   saveSessionDeviceId,
   clearSessionFingerprint,
   clearSessionDeviceId,
+  getServerUrl,
 } from '../api'
 import {
   cacheVpnConfig, fetchConfigFromVk, getCachedVpnConfig, clearCachedVpnConfig,
@@ -31,6 +32,7 @@ import {
 } from '../profileStore'
 import { checkForUpdate, getAppVersion, type UpdateInfo } from '../updateCheck'
 import { getApiBaseUrl } from '../tunnelApi'
+import { notifyConnect } from '../vpnBackendSync'
 
 interface DeviceInfo {
   id: string
@@ -132,7 +134,15 @@ function sessionCustomLabel(d: DeviceInfo): string | null {
   return d.device_name
 }
 
-export default function MainScreen({ theme: initialTheme, onLogout }: { theme: any; onLogout: () => void }) {
+export default function MainScreen({
+  theme: initialTheme,
+  initialUpdateInfo = null,
+  onLogout,
+}: {
+  theme: any
+  initialUpdateInfo?: UpdateInfo | null
+  onLogout: () => void
+}) {
   const [connected, setConnected] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [profile, setProfile] = useState<Profile | null>(() => getCachedProfile<Profile>())
@@ -149,7 +159,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const [activeWorkers, setActiveWorkers] = useState(0)
   const connectLockRef = useRef(false)
   const onlineMarkedRef = useRef(false)
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(initialUpdateInfo)
   const [updateDownloading, setUpdateDownloading] = useState(false)
   const [updateProgress, setUpdateProgress] = useState(0)
 
@@ -193,10 +203,10 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   const markOnlineOnServer = useCallback(async () => {
     if (onlineMarkedRef.current) return
     onlineMarkedRef.current = true
-    const fp = getDeviceFingerprint()
     applyTunnelApiFromCache()
     try {
-      await api.post('/api/vpn/connect', { device_fingerprint: fp, device_type: 'pc' })
+      const ok = await notifyConnect()
+      if (!ok) onlineMarkedRef.current = false
       await fetchProfile()
       setTimeout(() => { void syncHashesWhenTunnelUp() }, 60_000)
     } catch {
@@ -264,10 +274,6 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
   }, [connected, fetchProfile])
 
   useEffect(() => {
-    if (!connected) {
-      setUpdateInfo(null)
-      return
-    }
     let cancelled = false
     const run = async () => {
       const info = await checkForUpdate()
@@ -275,8 +281,11 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     }
     void run()
     const id = window.setInterval(() => void run(), 5 * 60_000)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [connected])
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [])
 
   useEffect(() => {
     const api_ = (window as any).electronAPI
@@ -291,7 +300,7 @@ export default function MainScreen({ theme: initialTheme, onLogout }: { theme: a
     if (!api_?.downloadUpdate) return
     setUpdateDownloading(true)
     setUpdateProgress(0)
-    const base = getApiBaseUrl().replace(/\/$/, '')
+    const base = (getServerUrl() || 'https://132-243-234-162.nip.io').replace(/\/$/, '')
     const url = updateInfo.download_url.startsWith('http')
       ? updateInfo.download_url
       : `${base}${updateInfo.download_url.replace(/ /g, '%20')}`

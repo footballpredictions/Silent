@@ -4,19 +4,42 @@ import LoginScreen from './pages/LoginScreen'
 import MainScreen from './pages/MainScreen'
 import { AppErrorBoundary } from './components/AppErrorBoundary'
 import type { ClientTheme } from './clientTheme'
+import { getCachedTheme, saveCachedTheme } from './themeStore'
+import { runAppStateMigrationIfNeeded } from './appStateMigration'
+import { checkForUpdate, type UpdateInfo } from './updateCheck'
 
 const SERVER_URL = 'https://132-243-234-162.nip.io'
 
 type Screen = 'login' | 'main'
 
+async function loadThemeFromServer(): Promise<ClientTheme | null> {
+  try {
+    const res = await api.get('/api/vpn/theme')
+    if (res.data) {
+      saveCachedTheme(res.data)
+      return res.data as ClientTheme
+    }
+  } catch {
+    /* offline — cached/default */
+  }
+  return getCachedTheme()
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>('login')
-  const [theme, setTheme] = useState<ClientTheme | null>(null)
+  const [theme, setTheme] = useState<ClientTheme | null>(() => getCachedTheme())
   const [resetToken, setResetToken] = useState<string | null>(null)
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
 
   useEffect(() => {
+    runAppStateMigrationIfNeeded()
     setServerUrl(SERVER_URL)
-    api.get('/api/vpn/theme').then(r => setTheme(r.data)).catch(() => setTheme(null))
+    void loadThemeFromServer().then(t => {
+      if (t) setTheme(t)
+    })
+    void checkForUpdate().then(info => {
+      if (info?.available) setUpdateInfo(info)
+    })
     if (isLoggedIn()) {
       setScreen('main')
     } else {
@@ -34,11 +57,23 @@ export default function App() {
   }, [])
 
   const handleLoginDone = (themeData: ClientTheme | null) => {
-    if (themeData) setTheme(themeData)
+    if (themeData) {
+      setTheme(themeData)
+      saveCachedTheme(themeData)
+    }
     setResetToken(null)
     setScreen('main')
   }
-  const handleLogout = () => setScreen('login')
+
+  const handleLogout = () => {
+    setResetToken(null)
+    setScreen('login')
+    const cached = getCachedTheme()
+    if (cached) setTheme(cached)
+    void loadThemeFromServer().then(t => {
+      if (t) setTheme(t)
+    })
+  }
 
   return (
     <AppErrorBoundary>
@@ -51,7 +86,13 @@ export default function App() {
             onLogin={handleLoginDone}
           />
         )}
-        {screen === 'main' && <MainScreen theme={theme} onLogout={handleLogout} />}
+        {screen === 'main' && (
+          <MainScreen
+            theme={theme}
+            initialUpdateInfo={updateInfo}
+            onLogout={handleLogout}
+          />
+        )}
       </div>
     </AppErrorBoundary>
   )

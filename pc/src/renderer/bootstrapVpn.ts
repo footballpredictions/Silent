@@ -1,4 +1,3 @@
-import api from './api'
 import { clearBootstrapHash, getBootstrapHash, type VpnConfigPayload } from './vkConfig'
 import { pushLog } from './debugLog'
 import { buildLocalBootstrapConfig } from './bootstrapVpnConfig'
@@ -31,23 +30,8 @@ export async function fetchBootstrapConfig(): Promise<VpnConfigPayload | null> {
   const boot = getBootstrapHash()
   if (!boot) return null
   const fp = getPreLoginFingerprint()
-  pushLog('Bootstrap', `fetch config hash=${boot.slice(0, 12)}…`)
-  try {
-    const res = await api.post('/api/vpn/bootstrap-config', {
-      bootstrap_hash: boot,
-      device_type: 'pc',
-      device_fingerprint: fp,
-    })
-    pushLog(
-      'Bootstrap',
-      `config OK device=${String(res.data.device_id).slice(0, 8)} hashes=${res.data.vk_hashes?.length ?? 0}`,
-    )
-    return applyBootstrapHash(res.data as VpnConfigPayload, boot)
-  } catch (e: any) {
-    pushLog('Bootstrap', `config FAIL: ${e.response?.data?.detail || e.message}`, 'E')
-    pushLog('Bootstrap', 'bootstrap-config недоступен, локальный конфиг через VK TURN', 'W')
-    return applyBootstrapHash(buildLocalBootstrapConfig(boot, fp), boot)
-  }
+  pushLog('Bootstrap', `local config hash=${boot.slice(0, 12)}… (без public HTTPS)`)
+  return applyBootstrapHash(buildLocalBootstrapConfig(boot, fp), boot)
 }
 
 let bootstrapActive = false
@@ -71,9 +55,12 @@ function cancelBootstrapSessionTimeout() {
   }
 }
 
-function startBootstrapSessionTimeout() {
+function startBootstrapSessionTimeout(forceNewDeadline = false) {
+  const now = Date.now()
+  if (forceNewDeadline || bootstrapSessionDeadline <= now) {
+    bootstrapSessionDeadline = now + BOOTSTRAP_SESSION_MS
+  }
   if (bootstrapTimeoutTimer) return
-  bootstrapSessionDeadline = Date.now() + BOOTSTRAP_SESSION_MS
   const tick = () => {
     if (!bootstrapActive) {
       cancelBootstrapSessionTimeout()
@@ -94,10 +81,15 @@ function startBootstrapSessionTimeout() {
   bootstrapTimeoutTimer = setInterval(tick, 1000)
 }
 
+function resetBootstrapDeadline() {
+  cancelBootstrapSessionTimeout()
+  bootstrapSessionDeadline = 0
+}
+
 async function expireBootstrapSession() {
   if (!bootstrapActive) return
   pushLog('Bootstrap', `session expired (${BOOTSTRAP_SESSION_MS / 1000}s)`)
-  cancelBootstrapSessionTimeout()
+  resetBootstrapDeadline()
   bootstrapActive = false
   clearBootstrapHash()
   clearTunnelApiBase()
@@ -118,10 +110,17 @@ export function ensureBootstrapTunnelApi(): boolean {
   return true
 }
 
+/** Продолжить отсчёт с того же дедлайна (шаг 2 → шаг 1). */
 export function refreshBootstrapSessionTimer(): void {
   if (!bootstrapActive) return
   cancelBootstrapSessionTimeout()
-  startBootstrapSessionTimeout()
+  startBootstrapSessionTimeout(false)
+}
+
+export function forceNewBootstrapSessionTimer(): void {
+  if (!bootstrapActive) return
+  cancelBootstrapSessionTimeout()
+  startBootstrapSessionTimeout(true)
 }
 
 /** Connect bootstrap VPN on login screen — reach backend before Silent login. */
@@ -166,7 +165,8 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   if (ok) {
     lastBootstrapWgAddress = bootCfg.assigned_ip || null
     setTunnelApiBase(lastBootstrapWgAddress)
-    startBootstrapSessionTimeout()
+    cancelBootstrapSessionTimeout()
+    startBootstrapSessionTimeout(true)
     return true
   }
 

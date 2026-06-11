@@ -351,6 +351,11 @@ export default function LoginScreen({
             <p className="text-[13px] font-semibold mb-3" style={{ color: ui.fg }}>
               {step2Title}
             </p>
+            {bootstrapReady && statusMsg.toLowerCase().includes('осталось') && (
+              <p className="text-[12px] font-medium mb-3" style={{ color: ui.green }}>
+                {statusMsg}
+              </p>
+            )}
 
             <div className="flex rounded-xl p-1 mb-4" style={{ background: ui.tabBg }}>
               {(['login', 'register'] as const).map(key => (

@@ -17,6 +17,7 @@ import {
 import { disconnectBootstrapVpn, isBootstrapVpnActive } from '../bootstrapVpn'
 import { fetchVpnConfigWithKeys } from '../vpnConfigFetch'
 import { waitVpnReady } from '../vpnReady'
+import { warmupBrowsingPath } from '../warmupBrowsingPath'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import { AppErrorBoundary } from '../components/AppErrorBoundary'
 import { resolveAppName } from '../clientTheme'
@@ -459,6 +460,8 @@ export default function MainScreen({
             await fetchProfile()
             return
           }
+          pushLog('Main', 'warmup browsing path')
+          await warmupBrowsingPath().catch(() => null)
           await markOnlineOnServer()
         }
         setConnected(true)

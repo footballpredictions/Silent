@@ -310,15 +310,17 @@ function scheduleTunnelReadyPoll(sendLogFn) {
 
 const WORKERS_PER_GROUP = 9
 
-/** PC: «готов» = WireGuard поднят (как Android tunnelReady), воркеры набираются фоном. */
+/** PC: «готов» когда набрано достаточно воркеров для первого HTTPS (YouTube). */
 function minWorkersForTunnelReady(isBootstrap = false) {
   if (isBootstrap || vpnBootstrapMode) return 1
-  return 1
+  const target = Math.max(sessionTargetWorkers || WORKERS_PER_GROUP, WORKERS_PER_GROUP)
+  const half = Math.floor(target * 0.5)
+  return Math.min(target, Math.max(WORKERS_PER_GROUP, Math.min(half, 27)))
 }
 
 function isVpnReadyForUi() {
   if (tunnelReadySent) return true
-  return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
+  return wgApplied && activeWorkerCount >= minWorkersForTunnelReady(vpnBootstrapMode) && isWdttAlive()
 }
 
 async function stopWdttForReplace(sendLogFn, reason = 'replace') {

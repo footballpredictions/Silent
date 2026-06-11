@@ -31,24 +31,13 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	returnChBuf      = 32768
-	writeLoopWorkers = 8
-	uploadRetryMs    = 50
+	returnChBuf      = 65536
+	writeLoopWorkers = 12
+	uploadRetryMs    = 100
 
-	// chunkSize — количество последовательных пакетов, отправляемых в один worker
-	// перед переключением на следующий.
-	//
-	// Зачем: при round-robin (chunk=1) каждый пакет летит через разный TURN relay
-	// с разным latency, что приводит к reorder на сервере. TCP внутри WireGuard
-	// интерпретирует reorder как потери → cwnd collapse → скорость single-flow
-	// падает до ~8 KB/s.
-	//
-	// С chunk=8: пакеты в пределах одного TCP congestion window (~10 пакетов при
-	// initial cwnd) уходят через один TURN relay → прилетают по порядку.
-	// Reorder возможен только между chunk-границами, что покрывается WG replay
-	// window (2048 пакетов).
-	// chunk=128: дольше держим TCP-поток (YouTube) на одном TURN — меньше reorder/cwnd collapse.
-	chunkSize = 128
+	// chunkSize — пакеты одного TCP-потока (YouTube) через один TURN relay.
+	// chunk=256: меньше reorder/cwnd collapse на первом открытии страницы.
+	chunkSize = 256
 )
 
 type WorkerSlot struct {

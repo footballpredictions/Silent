@@ -54,6 +54,13 @@ let wdttGeneration = 0
 let wdttReplacing = false
 
 const { createNetworkMonitor } = require('./vpn/networkRecovery')
+const { createSessionTrace } = require('./sessionTrace')
+
+let sessionTrace = null
+function trace() {
+  if (!sessionTrace) sessionTrace = createSessionTrace(sendDebugLog)
+  return sessionTrace
+}
 
 if (!app.requestSingleInstanceLock()) {
   app.quit()
@@ -218,10 +225,22 @@ function formatVpnLogLine(line) {
   return line
 }
 
+function sendDebugLog(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('debug-log', payload)
+  }
+}
+
 function sendLog(line) {
   const formatted = formatVpnLogLine(line)
   if (!formatted) return
   line = formatted
+  let level = 'I'
+  let tag = 'VPN'
+  if (line.includes('[WG]')) tag = 'WireGuard'
+  if (/error|ошиб|fail|таймаут/i.test(line)) level = 'E'
+  else if (/WARN|⚠/i.test(line)) level = 'W'
+  sendDebugLog({ tag, level, message: line })
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('vpn-log', line)
   }
@@ -284,10 +303,11 @@ function scheduleTunnelReadyPoll(sendLogFn) {
 
 const WORKERS_PER_GROUP = 9
 
-/** PC: WG после ≥6 воркеров (9 на 0.0.0.0/0 мало для десктопа). Bootstrap: 1. */
+/** PC: ≥18 воркеров (2 группы) — иначе YouTube/TCP дропается в dispatcher. Bootstrap: 1. */
 function minWorkersForTunnelReady(isBootstrap = false) {
   if (isBootstrap || vpnBootstrapMode) return 1
-  return 6
+  const target = sessionTargetWorkers || WORKERS_PER_GROUP * 4
+  return Math.min(target, Math.max(WORKERS_PER_GROUP * 2, 18))
 }
 
 function isVpnReadyForUi() {
@@ -342,10 +362,10 @@ function restoreTransport(reason) {
   }
   sendLog(`[VPN] Восстановление транспорта (${reason}), workers=${activeWorkerCount}`)
   pausedForNetwork = false
-  scheduleWdttRelaunch(1500)
+  scheduleWdttRelaunch(800)
 }
 
-function scheduleWdttRelaunch(delayMs = 1500) {
+function scheduleWdttRelaunch(delayMs = 800) {
   if (!vpnSessionActive || !lastVpnConnectConfig) return
   if (wdttProcess && isWdttAlive()) return
   if (wdttRelaunchTimer) clearTimeout(wdttRelaunchTimer)
@@ -354,6 +374,7 @@ function scheduleWdttRelaunch(delayMs = 1500) {
     if (!vpnSessionActive || wdttProcess || !lastVpnConnectConfig) return
     transportSwitching = true
     sendLog('[VPN] Перезапуск wdtt-client…')
+    trace().mark('Main.wdttRelaunch')
     beginWdttSession(lastVpnConnectConfig, { switching: true }).catch(e => {
       sendLog('[VPN] relaunch failed: ' + (e.message || e))
     })
@@ -641,7 +662,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     if (vpnSessionActive && wgApplied && !isQuitting && !transportSwitching) {
       sendLog(`[VPN] wdtt завершился (code=${code}), WG остаётся — перезапуск транспорта…`)
       transportSwitching = true
-      scheduleWdttRelaunch(1500)
+      scheduleWdttRelaunch(800)
       return
     }
     transportSwitching = false
@@ -677,6 +698,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
 }
 
 ipcMain.handle('vpn-connect', async (_, config) => {
+  trace().enter('Main.vpnConnect', `bootstrap=${!!config?.is_bootstrap} n=${config?.stream_count ?? '?'}`)
   if (vpnConnectInFlight) {
     sendLog('[VPN] connect: уже выполняется, без перезапуска')
     ensureVpnReadyEvent(sendLog)
@@ -713,6 +735,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
     const result = await beginWdttSession(config, { switching: false })
     if (!result.error) startNetworkMonitor()
+    trace().exit('Main.vpnConnect', result.error ? `error=${result.error}` : 'ok')
     return result
   } finally {
     vpnConnectInFlight = false

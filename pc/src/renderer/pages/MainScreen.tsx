@@ -22,7 +22,8 @@ import { menuDrawerStyle, UI_COLORS } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
 import { prepareVpnConnectConfig, syncHashesWhenTunnelUp } from '../prepareVpnConnect'
-import { pushLog } from '../debugLog'
+import { pushLog, logI } from '../debugLog'
+import { SessionTrace } from '../sessionTrace'
 import { setTunnelApiBase, clearTunnelApiBase } from '../tunnelApi'
 import { getCachedVpnConfig } from '../vkConfig'
 import {
@@ -231,6 +232,7 @@ export default function MainScreen({
   useEffect(() => {
     const api_ = (window as any).electronAPI
     if (!api_?.onVpnStopped) return
+    let mounted = true
     const onStopped = () => {
       onlineMarkedRef.current = false
       clearTunnelApiBase()
@@ -252,19 +254,17 @@ export default function MainScreen({
       }
     }
     const onLog = (line: string) => {
-      if (!line?.trim()) return
+      if (!mounted || !line?.trim()) return
       const m = line.match(/Активных:\s*(\d+)/)
       if (m) setActiveWorkers(parseInt(m[1], 10))
       const reg = line.match(/зарегистрирован \(всего:\s*(\d+)\)/)
       if (reg) setActiveWorkers(parseInt(reg[1], 10))
-      const level = /error|ошиб|fail|таймаут/i.test(line) ? 'E' : 'I'
-      pushLog('VPN', line.trim(), level)
     }
     api_.onVpnStopped(onStopped)
     api_.onVpnError?.(onError)
     api_.onVpnReady?.(onReady)
     api_.onVpnLog?.(onLog)
-    return () => api_.removeVpnListeners?.()
+    return () => { mounted = false }
   }, [markOnlineOnServer, applyTunnelApiFromCache])
 
   useEffect(() => {
@@ -352,6 +352,7 @@ export default function MainScreen({
       setActiveWorkers(0)
     }
     pushLog('Main', connected ? 'disconnect' : 'connect start')
+    SessionTrace.enter('Main.connect', connected ? 'disconnect' : 'start')
     try {
       const fp = DEVICE_FINGERPRINT()
       if (!connected) {

@@ -1,5 +1,6 @@
 import { clearBootstrapHash, getBootstrapHash, type VpnConfigPayload } from './vkConfig'
 import { pushLog } from './debugLog'
+import { SessionTrace } from './sessionTrace'
 import { buildLocalBootstrapConfig } from './bootstrapVpnConfig'
 import { applyBootstrapWorkerCount } from './hashChannelHelper'
 import { authStrings as s } from './authStrings'
@@ -143,6 +144,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   }
 
   pushLog('Bootstrap', 'ensureBootstrapVpn start')
+  SessionTrace.enter('Bootstrap.ensureVpn')
   const config = await fetchBootstrapConfig()
   if (!config?.vk_hashes?.length) {
     pushLog('Bootstrap', 'Нет VK-хеша для bootstrap', 'E')
@@ -167,6 +169,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
     setTunnelApiBase(lastBootstrapWgAddress)
     cancelBootstrapSessionTimeout()
     startBootstrapSessionTimeout(true)
+    SessionTrace.mark('Bootstrap.tunnelReady')
     return true
   }
 

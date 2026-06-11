@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   vpnIsReady: () => ipcRenderer.invoke('vpn-is-ready'),
   vpnReadConfig: () => ipcRenderer.invoke('vpn-read-config'),
   onVpnLog: (cb) => ipcRenderer.on('vpn-log', (_, line) => cb(line)),
+  onDebugLog: (cb) => ipcRenderer.on('debug-log', (_, payload) => cb(payload)),
   onVpnReady: (cb) => ipcRenderer.on('vpn-ready', (_, ok) => cb(ok)),
   onVpnError: (cb) => ipcRenderer.on('vpn-error', (_, msg) => cb(msg)),
   onVpnStopped: (cb) => ipcRenderer.on('vpn-stopped', (_, code) => cb(code)),
@@ -20,6 +21,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('vpn-ready')
     ipcRenderer.removeAllListeners('vpn-error')
     ipcRenderer.removeAllListeners('vpn-stopped')
+  },
+  removeDebugLogListeners: () => {
+    ipcRenderer.removeAllListeners('debug-log')
   },
   onVkDeepLink: (cb) => ipcRenderer.on('vk-deep-link', (_, payload) => cb(payload)),
   removeVkDeepLinkListeners: () => ipcRenderer.removeAllListeners('vk-deep-link'),

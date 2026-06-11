@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { clearLogs, readLogs, subscribeLogs, type DebugLogItem } from '../debugLog'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { clearLogs, formatLogLine, readLogs, subscribeLogs, type DebugLogItem } from '../debugLog'
 
 export function DebugLogButton({ onClick }: { onClick: () => void }) {
   return (
@@ -15,24 +15,21 @@ export function DebugLogButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-function formatLogText(items: DebugLogItem[]): string {
-  if (items.length === 0) return ''
-  return items
-    .map(r => {
-      const d = new Date(r.ts)
-      const t = d.toLocaleTimeString('ru-RU', { hour12: false })
-      return `[${t}] [${r.level}] [${r.tag}] ${r.message}`
-    })
-    .join('\n')
-}
-
 export default function DebugLogPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [items, setItems] = useState<DebugLogItem[]>(readLogs())
   const [copyToast, setCopyToast] = useState(false)
+  const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => subscribeLogs(setItems), [])
 
-  const logText = useMemo(() => formatLogText(items.slice(-500)), [items])
+  useEffect(() => {
+    if (open) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [items, open])
+
+  const logText = useMemo(() => {
+    if (items.length === 0) return ''
+    return items.slice(-600).map(formatLogLine).join('\n')
+  }, [items])
 
   if (!open) return null
 
@@ -48,6 +45,14 @@ export default function DebugLogPanel({ open, onClose }: { open: boolean; onClos
     setTimeout(() => setCopyToast(false), 2000)
   }
 
+  const levelColor = (level: string) => {
+    if (level === 'E') return '#F87171'
+    if (level === 'W') return '#FBBF24'
+    if (level === 'T') return '#93C5FD'
+    if (level === 'D') return '#9CA3AF'
+    return '#E5E7EB'
+  }
+
   return (
     <div
       className="absolute inset-0 z-[100] flex items-center justify-center p-2"
@@ -55,7 +60,7 @@ export default function DebugLogPanel({ open, onClose }: { open: boolean; onClos
     >
       <div
         className="w-full h-[88%] rounded-2xl flex flex-col overflow-hidden"
-        style={{ background: '#111827', maxWidth: 248 }}
+        style={{ background: '#111827', maxWidth: 280 }}
       >
         <div className="px-2 pt-2 pb-1.5 shrink-0 relative" style={{ background: '#1F2937' }}>
           <div className="text-center">
@@ -70,37 +75,29 @@ export default function DebugLogPanel({ open, onClose }: { open: boolean; onClos
             </div>
           )}
           <div className="flex gap-1 mt-2">
-            <button
-              type="button"
-              onClick={copyLog}
-              className="flex-1 min-w-0 py-1 rounded text-[9px] font-medium text-[#60A5FA] hover:bg-white/5 truncate"
-            >
+            <button type="button" onClick={copyLog} className="flex-1 py-1 rounded text-[9px] font-medium text-[#60A5FA] hover:bg-white/5">
               Копировать
             </button>
-            <button
-              type="button"
-              onClick={clearLogs}
-              className="flex-1 min-w-0 py-1 rounded text-[9px] font-medium text-[#9CA3AF] hover:text-white hover:bg-white/5 truncate"
-            >
+            <button type="button" onClick={clearLogs} className="flex-1 py-1 rounded text-[9px] font-medium text-[#9CA3AF] hover:text-white hover:bg-white/5">
               Очистить
             </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 min-w-0 py-1 rounded text-[9px] font-medium text-[#9CA3AF] hover:text-white hover:bg-white/5 truncate"
-            >
+            <button type="button" onClick={onClose} className="flex-1 py-1 rounded text-[9px] font-medium text-[#9CA3AF] hover:text-white hover:bg-white/5">
               Закрыть
             </button>
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto p-2 min-h-0">
-          <pre
-            className="text-[9px] leading-[13px] whitespace-pre-wrap break-words font-mono m-0"
-            style={{ color: '#E5E7EB' }}
-          >
-            {logText || 'Лог пуст. Подключите VPN или привяжите VK.'}
-          </pre>
+        <div className="flex-1 overflow-auto p-2 min-h-0 font-mono text-[9px] leading-[13px]">
+          {items.length === 0 ? (
+            <p className="text-[#9CA3AF] m-0">Лог пуст. Подключите VPN или войдите.</p>
+          ) : (
+            items.slice(-600).map((item, i) => (
+              <div key={`${item.ts}-${i}`} style={{ color: levelColor(item.level) }}>
+                {formatLogLine(item)}
+              </div>
+            ))
+          )}
+          <div ref={bottomRef} />
         </div>
       </div>
     </div>

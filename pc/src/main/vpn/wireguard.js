@@ -13,8 +13,8 @@ const TUNNEL_CONF_NAME = 'wg-turn.conf'
 const SERVICE_NAME = `WireGuardTunnel$${TUNNEL_NAME}`
 const STABLE_CONF_DIR = path.join(process.env.ProgramData || 'C:\\ProgramData', 'SilentVPN')
 const STABLE_WG_DIR = path.join(STABLE_CONF_DIR, 'wireguard')
-/** Основной VPN: DNS через туннель (Cloudflare, как wdtt server.go). */
-const WG_DNS_CLOUDFLARE = '1.1.1.1, 1.0.0.1'
+/** Основной VPN: DNS из wdtt-конфига (как Android), не принудительный Cloudflare. */
+const WG_DNS_FALLBACK = '1.1.1.1, 1.0.0.1'
 
 let lastRuntimeDir = null
 
@@ -424,15 +424,16 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
       } else {
         send?.('[WG] AllowedIPs = 0.0.0.0/0 (основной VPN: интернет через WDTT)')
-        if (/^\s*DNS\s*=/m.test(conf)) {
-          conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, `DNS = ${WG_DNS_CLOUDFLARE}\n`)
-        } else {
+        if (!/^\s*DNS\s*=/m.test(conf)) {
           conf = conf.replace(
             /(\[Interface\][^\[]*)/,
-            m => (m.includes('DNS =') ? m : `${m.trimEnd()}\nDNS = ${WG_DNS_CLOUDFLARE}\n`),
+            m => `${m.trimEnd()}\nDNS = ${WG_DNS_FALLBACK}\n`,
           )
+          send?.(`[WG] DNS = ${WG_DNS_FALLBACK} (fallback)`)
+        } else {
+          const dnsLine = conf.match(/^\s*DNS\s*=\s*(.+)$/m)
+          send?.(`[WG] DNS из wdtt: ${dnsLine ? dnsLine[1].trim() : '?'}`)
         }
-        send?.(`[WG] DNS = ${WG_DNS_CLOUDFLARE} (Cloudflare через туннель)`)
       }
       conf = conf.replace(/AllowedIPs\s*=\s*.+/, `AllowedIPs = ${allowed}`)
       fs.writeFileSync(confPath, conf)

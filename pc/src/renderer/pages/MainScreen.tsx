@@ -10,11 +10,12 @@ import api, {
   getServerUrl,
 } from '../api'
 import {
-  cacheVpnConfig, fetchConfigFromVk, getCachedVpnConfig, clearCachedVpnConfig,
-  getVkAccessToken, getVkUserId, saveVkUserId, getBootstrapHash,
+  cacheVpnConfig, getCachedVpnConfig, clearCachedVpnConfig,
+  getVkUserId, saveVkUserId,
   type VpnConfigPayload,
 } from '../vkConfig'
-import { disconnectBootstrapVpn, fetchBootstrapConfig, isBootstrapVpnActive } from '../bootstrapVpn'
+import { disconnectBootstrapVpn, isBootstrapVpnActive } from '../bootstrapVpn'
+import { fetchVpnConfigWithKeys } from '../vpnConfigFetch'
 import { waitVpnReady } from '../vpnReady'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import { AppErrorBoundary } from '../components/AppErrorBoundary'
@@ -202,7 +203,24 @@ export default function MainScreen({
 
   const applyTunnelApiFromCache = useCallback(() => {
     const cfg = getCachedVpnConfig()
-    setTunnelApiBase(cfg?.wg_address ?? cfg?.assigned_ip ?? null)
+    const addr = cfg?.wg_address ?? cfg?.assigned_ip
+    if (addr?.trim()) setTunnelApiBase(addr)
+    else clearTunnelApiBase()
+  }, [])
+
+  useEffect(() => {
+    clearTunnelApiBase()
+    const cfg = getCachedVpnConfig()
+    if (cfg?.wg_private_key?.trim() && cfg?.server_public_key?.trim()) return
+    let fp: string | null = null
+    try {
+      fp = getDeviceFingerprint()
+    } catch {
+      return
+    }
+    void fetchVpnConfigWithKeys(fp).then(c => {
+      if (c) cacheVpnConfig(c)
+    })
   }, [])
 
   const markOnlineOnServer = useCallback(async () => {
@@ -366,10 +384,6 @@ export default function MainScreen({
           pushLog('Main', 'VPN уже поднят, UI синхронизирован')
           return
         }
-        if (isBootstrapVpnActive()) {
-          await disconnectBootstrapVpn()
-          pushLog('Main', 'bootstrap VPN stopped before connect')
-        }
         const p = await fetchProfile()
         const hasAccess = !p || p.is_admin || p.subscription?.is_active
         if (!hasAccess) {
@@ -381,53 +395,40 @@ export default function MainScreen({
 
         let config: VpnConfigPayload | null = getCachedVpnConfig()
         if (config?.device_id) saveSessionDeviceId(String(config.device_id))
-        if (!config?.wg_private_key?.trim() || !config?.vk_hashes?.length) {
+        if (!config?.wg_private_key?.trim() || !config?.server_public_key?.trim() || !config?.vk_hashes?.length) {
           config = null
         }
-        try {
-          if (!config) {
-            const reg = await api.post('/api/vpn/device/register', {
-              device_name: 'PC',
-              device_type: 'pc',
-              device_fingerprint: fp,
-            })
-            config = reg.data
-            cacheVpnConfig(config!)
-            if (config.device_id) saveSessionDeviceId(String(config.device_id))
-            pushLog('Main', `device/register OK device=${String(config.device_id || '').slice(0, 8)} hashes=${config.vk_hashes?.length ?? 0}`)
-          } else {
-            pushLog('Main', `connect from cache device=${String(config.device_id || '').slice(0, 8)} hashes=${config.vk_hashes?.length ?? 0}`)
-          }
-        } catch (e: any) {
-          if (e.response?.status === 402) {
-            alert(e.response?.data?.detail || 'Оформите подписку для доступа к интернету.')
-            setMenuOpen(true)
-            setMenuPage('subscription')
-            fetchProfile()
-            return
-          }
-          pushLog('Main', `device/register fail: ${e.response?.data?.detail || e.message}`, 'W')
-          try {
-            const cfg = await api.get(`/api/vpn/config?fingerprint=${fp}`)
-            config = cfg.data
-            cacheVpnConfig(config!)
-          } catch {
-            const boot = getBootstrapHash()
-            if (boot) {
-              const bootCfg = await fetchBootstrapConfig()
-              if (bootCfg) {
-                config = bootCfg
-                cacheVpnConfig(config)
-              }
-            }
-          }
-        }
         if (!config) {
-          const vkId = profile?.vk_user_id || getVkUserId()
-          if (vkId) config = await fetchConfigFromVk(vkId, getVkAccessToken())
-          if (config) cacheVpnConfig(config)
+          try {
+            config = await fetchVpnConfigWithKeys(fp)
+          } catch (e: any) {
+            if (e.response?.status === 402) {
+              alert(e.response?.data?.detail || 'Оформите подписку для доступа к интернету.')
+              setMenuOpen(true)
+              setMenuPage('subscription')
+              fetchProfile()
+              return
+            }
+            throw e
+          }
+          if (config) {
+            cacheVpnConfig(config)
+            if (config.device_id) saveSessionDeviceId(String(config.device_id))
+            pushLog(
+              'Main',
+              `device/register OK device=${String(config.device_id || '').slice(0, 8)} hashes=${config.vk_hashes?.length ?? 0}`,
+            )
+          }
+        } else {
+          pushLog(
+            'Main',
+            `connect from cache device=${String(config.device_id || '').slice(0, 8)} hashes=${config.vk_hashes?.length ?? 0}`,
+          )
         }
-        if (!config) config = getCachedVpnConfig()
+        if (isBootstrapVpnActive()) {
+          await disconnectBootstrapVpn()
+          pushLog('Main', 'bootstrap VPN stopped before connect')
+        }
         if (!config) {
           pushLog('Main', 'no VPN config', 'E')
           alert('Сервер недоступен. Выйдите и настройте hash на экране входа.')

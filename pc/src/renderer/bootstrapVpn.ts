@@ -5,7 +5,7 @@ import { buildLocalBootstrapConfig } from './bootstrapVpnConfig'
 import { applyBootstrapWorkerCount } from './hashChannelHelper'
 import { authStrings as s } from './authStrings'
 import { waitVpnReady } from './vpnReady'
-import { setTunnelApiBase, clearTunnelApiBase } from './tunnelApi'
+import { enableTunnelApi, clearTunnelApiBase } from './tunnelApi'
 import { syncLoginDataViaBootstrap } from './syncBootstrapData'
 
 const PRE_LOGIN_FP_KEY = 'silent_pre_login_fp'
@@ -107,7 +107,7 @@ export function isBootstrapVpnActive(): boolean {
 /** Перед login/register — API только через WG (10.66.66.1), не публичный URL. */
 export function ensureBootstrapTunnelApi(): boolean {
   if (!bootstrapActive) return false
-  setTunnelApiBase(lastBootstrapWgAddress)
+  enableTunnelApi()
   return true
 }
 
@@ -166,7 +166,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   pushLog('Bootstrap', ok ? 'VPN ready' : 'VPN timeout', ok ? 'I' : 'E')
   if (ok) {
     lastBootstrapWgAddress = bootCfg.assigned_ip || null
-    setTunnelApiBase(lastBootstrapWgAddress)
+    enableTunnelApi()
     cancelBootstrapSessionTimeout()
     startBootstrapSessionTimeout(true)
     SessionTrace.mark('Bootstrap.tunnelReady')

@@ -53,6 +53,7 @@ export function saveVkUserId(id: number) {
 }
 
 export function cacheVpnConfig(cfg: VpnConfigPayload) {
+  if (!cfg.wg_private_key?.trim() || !cfg.server_public_key?.trim()) return
   localStorage.setItem(VPN_CACHE_KEY, JSON.stringify(cfg))
 }
 

@@ -7,13 +7,13 @@ import {
   getSavedHashItems,
   type HashItem,
 } from './hashItemsStore'
-import { setTunnelApiBase, clearTunnelApiBase } from './tunnelApi'
+import { enableTunnelApi, clearTunnelApiBase } from './tunnelApi'
 import { saveCachedProfile } from './profileStore'
 /** Профиль и хеши через bootstrap WG (10.66.66.1), как Android syncLoginDataViaBootstrapTunnel. */
 export async function syncLoginDataViaBootstrap(
   wgAddress?: string | null,
 ): Promise<{ profile: Record<string, unknown> | null; hashesOk: boolean }> {
-  setTunnelApiBase(wgAddress)
+  enableTunnelApi()
   let profile: Record<string, unknown> | null = null
   let hashesOk = false
   for (let attempt = 1; attempt <= 2 && !profile; attempt++) {

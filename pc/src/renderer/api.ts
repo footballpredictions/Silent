@@ -24,19 +24,8 @@ export function getPublicApiBaseUrl(): string {
 
 const api = axios.create({ timeout: 15000 })
 
-function isPublicApiPath(url: string): boolean {
-  const path = url.split('?')[0]
-  return (
-    path === '/api/users/me'
-    || path.startsWith('/api/auth/')
-    || path.startsWith('/api/updates/')
-    || path.startsWith('/api/vpn/theme')
-  )
-}
-
 api.interceptors.request.use(cfg => {
-  const usePublic = isPublicApiPath(cfg.url || '')
-  cfg.baseURL = usePublic ? getPublicApiBaseUrl() : getApiBaseUrl()
+  cfg.baseURL = isTunnelApiActive() ? getApiBaseUrl() : getPublicApiBaseUrl()
   if (!cfg.timeout || cfg.timeout === 15000) {
     cfg.timeout = isTunnelApiActive() ? 45_000 : 15_000
   }

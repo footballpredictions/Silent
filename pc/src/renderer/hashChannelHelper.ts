@@ -36,12 +36,10 @@ export function groupsForWorkers(totalWorkers: number): number {
   )
 }
 
-/** Bootstrap: WG + 1 воркер. Основной VPN: WG + ≥1 воркер (как Android waitForTunnelReady). */
+/** Bootstrap: WG + 1 воркер. Основной VPN: WG + ≥1 воркер — UI сразу, остальное фоном. */
 export function connectWaitTimeoutMs(totalWorkers: number, isBootstrap = false): number {
   if (isBootstrap) return 90_000
-  const n = Math.max(totalWorkers, WORKERS_PER_GROUP)
-  const groups = Math.ceil(n / WORKERS_PER_GROUP)
-  return Math.min(120_000, 25_000 + groups * 6_000)
+  return 45_000
 }
 
 /**

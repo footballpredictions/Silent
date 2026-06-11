@@ -460,9 +460,8 @@ export default function MainScreen({
             await fetchProfile()
             return
           }
-          pushLog('Main', 'warmup browsing path')
-          await warmupBrowsingPath().catch(() => null)
           await markOnlineOnServer()
+          void warmupBrowsingPath().catch(() => null)
         }
         setConnected(true)
       } else {

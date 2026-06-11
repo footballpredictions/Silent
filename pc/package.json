@@ -1,6 +1,6 @@
 {
   "name": "silent-vpn-pc",
-  "version": "1.0.133",
+  "version": "1.0.134",
   "description": "Silent VPN PC Client",
   "main": "src/main/main.js",
   "scripts": {
@@ -15,7 +15,7 @@
     "appId": "ru.silent.vpn",
     "productName": "Silent VPN",
     "directories": {
-      "output": "build-release-1133"
+      "output": "build-release-1134"
     },
     "artifactName": "Silent VPN Setup ${version}.${ext}",
     "files": [

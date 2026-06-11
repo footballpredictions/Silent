@@ -578,10 +578,27 @@ class MainViewModel @Inject constructor(
         // No-op: периодический поллинг убран, чтобы не дёргать WG overlay.
     }
 
-    /** Обновления — один раз при connect (VpnBackendSync), без поллинга. */
+    /** Обновления — один раз при CONNECTED (public HTTPS, без overlay). */
     fun setUpdatePolling(active: Boolean) {
         if (!active) {
             stopUpdatePolling(clearBanner = true)
+            return
+        }
+        viewModelScope.launch {
+            val version = com.silent.vpn.BuildConfig.VERSION_NAME
+            runCatching {
+                val bases = listOf(
+                    repo.getPublicServerUrl().trimEnd('/'),
+                    "https://${SilentRepository.DEFAULT_SERVER_HOST}",
+                ).distinct()
+                for (base in bases) {
+                    if (tryCheckUpdateOnBase(base, version) && _updateInfo.value?.available == true) {
+                        return@launch
+                    }
+                }
+            }.onFailure { e ->
+                DebugLog.w("MainViewModel", "checkUpdate: ${e.message}")
+            }
         }
     }
 
@@ -1662,6 +1679,8 @@ class MainViewModel @Inject constructor(
         backendSyncJob?.cancel()
         backendSyncJob = null
         backendSyncCompleted = false
+        VpnSessionState.resetBackendSync()
+        lastTunnelAttachAtMs = 0L
         pendingHashFailures.clear()
         hashFailureFlushJob?.cancel()
         hashFailureFlushJob = null

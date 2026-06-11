@@ -52,7 +52,6 @@ object VpnBackendSync {
             if (!repo(context).isLoggedIn() || WdttTunnelManager.isBootstrapMode()) return@launch
             val r = repo(context)
             val ok = runCatching { r.syncAllViaTunnel() }.getOrDefault(false)
-            WdttTunnelManager.ensureApiOverlayOff()
             if (ok) {
                 VpnSessionState.tunnelDataSyncCompleted = true
                 DebugLog.i(TAG, "after tunnel: connect+hashes+theme OK")

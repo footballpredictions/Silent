@@ -32,22 +32,30 @@ object VpnConnectHelper {
     }
 
     /**
-     * Перед CONNECT: сброс orphan WG + полная очистка только при stale.
-     * Вызывать один раз из SilentVpnService (плитка не дублирует).
+     * Перед CONNECT: полная очистка только при stale/orphan WG.
+     * При нормальном reconnect после disconnect — no-op (не дёргаем WG).
      */
     fun prepareForConnect(context: Context) {
         synchronized(lock) {
             val appCtx = context.applicationContext
-            runBlocking {
-                runCatching { WdttTunnelManager.ensureApiOverlayOff() }
-                runCatching { WireGuardHelper(appCtx).forceStopSilentTunnel() }
-                    .onFailure { e -> DebugLog.w(TAG, "forceStopSilentTunnel: ${e.message}") }
-            }
-            if (!needsStaleCleanup(context)) {
-                SessionTrace.mark("VpnConnectHelper.prepareForConnect", "WG reset, libclient clean")
+            val orphanWg = VpnNetworkHelper.findOurVpnNetwork(appCtx) != null
+            val stale = needsStaleCleanup(context)
+            WdttTunnelManager.ensureApiOverlayOff()
+            VpnSessionState.resetBackendSync()
+            if (!orphanWg && !stale) {
+                SessionTrace.mark("VpnConnectHelper.prepareForConnect", "clean reconnect — skip WG reset")
                 return
             }
-            ensureCleanSlateLocked(appCtx, force = true, stale = true)
+            SessionTrace.mark("VpnConnectHelper.prepareForConnect", "orphanWg=$orphanWg stale=$stale")
+            runBlocking {
+                if (orphanWg || WdttTunnelManager.running.value) {
+                    runCatching { WireGuardHelper(appCtx).forceStopSilentTunnel() }
+                        .onFailure { e -> DebugLog.w(TAG, "forceStopSilentTunnel: ${e.message}") }
+                }
+            }
+            if (stale) {
+                ensureCleanSlateLocked(appCtx, force = true, stale = true)
+            }
         }
     }
 

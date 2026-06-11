@@ -237,11 +237,32 @@ class SilentRepository @Inject constructor(
         _apiCacheKey = null
     }
 
-    /** true когда app excluded из WG и нужен overlay для HTTP к 10.66.66.1 */
+    /** true когда app excluded из WG и overlay ещё нужен (прокси не поднят). */
     fun needsTunnelApiOverlay(): Boolean =
         APP_EXCLUDED_FROM_VPN &&
             com.silent.vpn.service.SilentVpnService.isRunning &&
-            com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value
+            com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value &&
+            !TunnelApiProxy.isActive()
+
+    suspend fun ensureTunnelApiProxy(): Boolean = prepareTunnelApiBase()
+
+    /**
+     * API через VPN-туннель: сначала локальный прокси (без overlay), иначе overlay fallback.
+     */
+    private suspend fun <T> withMainTunnelApi(block: suspend () -> T): T {
+        check(isMainVpnTunnelUp()) { "VPN tunnel not up" }
+        if (APP_EXCLUDED_FROM_VPN) {
+            if (prepareTunnelApiBase()) {
+                Log.i(TAG, "tunnel API via proxy (no overlay)")
+                return block()
+            }
+            Log.w(TAG, "proxy unavailable → overlay fallback")
+            return withTunnelApiStrict(block)
+        }
+        useApiBase(tunnelApiBase())
+        invalidateApiClient()
+        return block()
+    }
 
     /**
      * Основной VPN: краткий overlay 10.66.66.0/24.
@@ -266,9 +287,16 @@ class SilentRepository @Inject constructor(
         return WdttTunnelManager.withApiOverlayBrief(block, allowDuringRampUp = true)
     }
 
-    /** Backend API через overlay когда VPN поднят и app excluded. */
+    /** Backend API: прокси без overlay, если VPN поднят и app excluded. */
     suspend fun <T> withBackendApi(block: suspend () -> T): T {
-        if (needsTunnelApiOverlay()) {
+        if (
+            APP_EXCLUDED_FROM_VPN &&
+            com.silent.vpn.service.SilentVpnService.isRunning &&
+            com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value
+        ) {
+            if (prepareTunnelApiBase()) {
+                return block()
+            }
             return withTunnelApiWhenExcludedInternal(block, allowDuringRampUp = false)
         }
         return block()
@@ -302,7 +330,11 @@ class SilentRepository @Inject constructor(
         return if (com.silent.vpn.vpn.WdttTunnelManager.isBootstrapMode()) {
             com.silent.vpn.vpn.WdttTunnelManager.withApiOverlay { block() }
         } else {
-            com.silent.vpn.vpn.WdttTunnelManager.withApiOverlayBrief(block, allowDuringRampUp)
+            if (prepareTunnelApiBase()) {
+                block()
+            } else {
+                com.silent.vpn.vpn.WdttTunnelManager.withApiOverlayBrief(block, allowDuringRampUp)
+            }
         }
     }
 
@@ -692,7 +724,7 @@ class SilentRepository @Inject constructor(
             return false
         }
         return runCatching {
-            withTunnelApiStrict {
+            withMainTunnelApi {
                 val url = getServerUrl()
                 val ok = postDisconnectRequest()
                 Log.i(TAG, "disconnect via $url ok=$ok")
@@ -701,11 +733,11 @@ class SilentRepository @Inject constructor(
         }.getOrOrLog(false)
     }
 
-    /** Connect online, затем хеши — один сеанс tunnel API. */
+    /** Connect online, затем хеши — один сеанс tunnel API (прокси, без overlay). */
     suspend fun syncAllViaTunnel(): Boolean {
         if (!isLoggedIn() || !isMainVpnTunnelUp()) return false
         return runCatching {
-            withTunnelApiStrict {
+            withMainTunnelApi {
                 val url = getServerUrl()
                 val online = getApi()
                     .connect(ConnectRequest(getDeviceFingerprint(), "android"))
@@ -766,7 +798,7 @@ class SilentRepository @Inject constructor(
         }
         return runCatching {
             if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
-                withTunnelApiStrict {
+                withMainTunnelApi {
                     fetchHashItemsOnce().getOrThrow()
                 }
             } else {

@@ -59,6 +59,8 @@ class SilentVpnService : Service() {
         private const val NOTIF_ID = 1001
         /** Не перезапускать libclient при смене сети в первые 2 мин после connect. */
         private const val NETWORK_GRACE_MS = 120_000L
+        /** transportWatchdog не kill сервис, пока libclient ещё стартует. */
+        private const val LIBCLIENT_START_GRACE_MS = 45_000L
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 90_000L
         private const val NOTIF_UPDATE_MIN_MS = 3_000L
         const val ACTION_CONNECT = "com.silent.vpn.CONNECT"
@@ -89,6 +91,8 @@ class SilentVpnService : Service() {
     private var statsUpdaterJob: Job? = null
     @Volatile
     private var backendSyncTriggered = false
+    @Volatile
+    private var tunnelProxyStarted = false
     private var performanceLocksHeld = false
     private var lastNotifUpdateMs = 0L
     private var lastNotifBody = ""
@@ -103,6 +107,9 @@ class SilentVpnService : Service() {
             VpnConnectHelper.ensureCleanSlate(this)
         }
     }
+
+    private fun isWithinConnectGrace(): Boolean =
+        isRunning && System.currentTimeMillis() - connectStartedAtMs < LIBCLIENT_START_GRACE_MS
 
     /** Как в proxy-turn-vk-android: отдельный цикл обновления уведомления (переживает reconnect). */
     private fun startStatsUpdater() {
@@ -124,6 +131,7 @@ class SilentVpnService : Service() {
                         if (!VpnServiceTracker.isSessionMarkedActive(this@SilentVpnService)) {
                             VpnServiceTracker.markSessionActive(this@SilentVpnService, true)
                         }
+                        ensureTunnelApiProxyAsync()
                         postVpnNotification(stats)
                         if (
                             !backendSyncTriggered &&
@@ -140,6 +148,24 @@ class SilentVpnService : Service() {
                 delay(2000)
             }
             SessionTrace.exit("SilentVpnService.statsUpdater")
+        }
+    }
+
+    /** Локальный прокси → 10.66.66.1 через VPN Network — без WG overlay. */
+    private fun ensureTunnelApiProxyAsync() {
+        if (tunnelProxyStarted || WdttTunnelManager.isBootstrapMode()) return
+        tunnelProxyStarted = true
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val repo = EntryPointAccessors.fromApplication(
+                    applicationContext,
+                    AppEntryPoint::class.java,
+                ).silentRepository()
+                repo.ensureTunnelApiProxy()
+            }.onFailure { e ->
+                DebugLog.w("VpnService", "tunnel proxy start: ${e.message}")
+                tunnelProxyStarted = false
+            }
         }
     }
 
@@ -175,6 +201,7 @@ class SilentVpnService : Service() {
                 lastNotifBody = ""
                 lastNotifUpdateMs = 0L
                 backendSyncTriggered = false
+                tunnelProxyStarted = false
                 setupNetworkCallback()
                 startTransportWatchdog()
                 startStatsUpdater()
@@ -324,6 +351,7 @@ class SilentVpnService : Service() {
         teardownNetworkCallback()
         clearVpnNotification()
         VpnBackendSync.stop()
+        tunnelProxyStarted = false
         WdttTunnelManager.prepareForShutdown()
         scope.launch(Dispatchers.IO) {
             val repo = EntryPointAccessors.fromApplication(
@@ -402,8 +430,12 @@ class SilentVpnService : Service() {
         transportWatchdogJob = scope.launch {
             delay(1000)
             while (isActive && isRunning) {
-                // Как reference: только libclient — без disconnect при кратковременном WG reload.
                 if (!WdttTunnelManager.running.value && !isTunnelPaused) {
+                    if (isWithinConnectGrace()) {
+                        delay(2000)
+                        continue
+                    }
+                    DebugLog.w("VpnService", "transportWatchdog: libclient down after grace — stop")
                     stopSelf()
                     break
                 }
@@ -622,6 +654,7 @@ class SilentVpnService : Service() {
         VpnServiceTracker.markSessionActive(this, false)
         VpnBackendSync.stop()
         backendSyncTriggered = false
+        tunnelProxyStarted = false
         teardownNetworkCallback()
         teardownVpnOwnershipMonitor()
         performanceLocksHeld = false

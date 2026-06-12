@@ -34,7 +34,8 @@ export async function prepareVpnConnectConfig(
 
   let items: HashItem[] = getSavedHashItems()
   const cachedActive = activeServerHashes(items).length
-  if (cachedActive < 4) {
+  const configHashes = (config.vk_hashes || []).map(h => h.trim()).filter(Boolean).length
+  if (cachedActive < 4 && configHashes < 4) {
     const hashSyncDeadline = cachedActive > 0 ? 3_000 : 8_000
     try {
       const hashesRes = await withTimeout(api.get('/api/vpn/hashes'), hashSyncDeadline)

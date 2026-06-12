@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeResetPasswordLinkListeners: () => ipcRenderer.removeAllListeners('reset-password-link'),
   listInstalledApps: () => ipcRenderer.invoke('list-installed-apps'),
   getAppVersion: () => ipcRenderer.invoke('app-version'),
+  checkForUpdate: (version) => ipcRenderer.invoke('app-update-check', { version, platform: 'pc' }),
   downloadUpdate: (url, filename) => ipcRenderer.invoke('app-update-download', { url, filename }),
   installUpdate: (filePath) => ipcRenderer.invoke('app-update-install', filePath),
   onUpdateProgress: (cb) => ipcRenderer.on('update-progress', (_, pct) => cb(pct)),

@@ -8,6 +8,7 @@ import api, {
   clearSessionFingerprint,
   clearSessionDeviceId,
   getServerUrl,
+  getPublicApiBaseUrl,
 } from '../api'
 import {
   cacheVpnConfig, getCachedVpnConfig, clearCachedVpnConfig,
@@ -326,12 +327,12 @@ export default function MainScreen({
     if (!api_?.downloadUpdate) return
     setUpdateDownloading(true)
     setUpdateProgress(0)
-    const base = (getServerUrl() || 'https://132-243-234-162.nip.io').replace(/\/$/, '')
-    const url = updateInfo.download_url.startsWith('http')
+    const base = getPublicApiBaseUrl()
+    const dlPath = updateInfo.download_url.startsWith('http')
       ? updateInfo.download_url
-      : `${base}${updateInfo.download_url.replace(/ /g, '%20')}`
+      : `${base}${updateInfo.download_url.startsWith('/') ? updateInfo.download_url : `/${updateInfo.download_url}`}`
     try {
-      const res = await api_.downloadUpdate(url, updateInfo.filename || 'update.exe')
+      const res = await api_.downloadUpdate(dlPath, updateInfo.filename || 'update.exe')
       if (res?.ok && res.path && api_.installUpdate) {
         setUpdateProgress(100)
         const inst = await api_.installUpdate(res.path)

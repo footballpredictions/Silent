@@ -27,7 +27,7 @@ export async function notifyConnect(): Promise<boolean> {
   try {
     const res = await axios.post(`${publicUrl}/api/vpn/connect`, body, {
       headers: authHeaders(),
-      timeout: 15_000,
+      timeout: 30_000,
     })
     if (res.status >= 200 && res.status < 300) {
       pushLog('Main', 'connect API OK (public)')

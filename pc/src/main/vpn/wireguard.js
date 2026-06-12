@@ -58,7 +58,14 @@ function isProcessElevated() {
 }
 
 /** Копируем wireguard.exe + wintun.dll в ProgramData — служба Windows не должна ссылаться на %TEMP%. */
-function prepareRuntimeDir(isDev, dirname, send) {
+function prepareRuntimeDir(isDev, dirname, send, options = {}) {
+  const reuse = options.reuse === true
+  if (reuse && fs.existsSync(path.join(STABLE_WG_DIR, 'wireguard.exe'))) {
+    lastRuntimeDir = STABLE_WG_DIR
+    send?.(`[WG] Runtime: ${STABLE_WG_DIR} (reuse)`)
+    return STABLE_WG_DIR
+  }
+
   const bundled = findBundledDir(isDev, dirname)
   let srcDir = bundled
   let wintunSrc = findWintunDll(bundled)
@@ -72,6 +79,11 @@ function prepareRuntimeDir(isDev, dirname, send) {
   }
 
   if (!srcDir || !wintunSrc) {
+    if (fs.existsSync(path.join(STABLE_WG_DIR, 'wireguard.exe'))) {
+      lastRuntimeDir = STABLE_WG_DIR
+      send?.(`[WG] Runtime: ${STABLE_WG_DIR} (fallback)`)
+      return STABLE_WG_DIR
+    }
     send?.('[WG] Не найдены wireguard.exe / wintun.dll (resources/wireguard или установка WireGuard)')
     return null
   }
@@ -79,11 +91,29 @@ function prepareRuntimeDir(isDev, dirname, send) {
   fs.mkdirSync(STABLE_WG_DIR, { recursive: true })
   for (const name of ['wireguard.exe', 'wg.exe']) {
     const src = path.join(srcDir, name)
-    if (fs.existsSync(src)) {
-      fs.copyFileSync(src, path.join(STABLE_WG_DIR, name))
+    const dest = path.join(STABLE_WG_DIR, name)
+    if (!fs.existsSync(src)) continue
+    try {
+      fs.copyFileSync(src, dest)
+    } catch (e) {
+      if (e.code === 'EBUSY' && fs.existsSync(dest)) {
+        send?.(`[WG] ${name} занят службой — используем ${dest}`)
+      } else if (fs.existsSync(dest)) {
+        send?.(`[WG] ${name}: ${e.message} — используем существующий`)
+      } else {
+        throw e
+      }
     }
   }
-  fs.copyFileSync(wintunSrc, path.join(STABLE_WG_DIR, 'wintun.dll'))
+  const wintunDest = path.join(STABLE_WG_DIR, 'wintun.dll')
+  try {
+    fs.copyFileSync(wintunSrc, wintunDest)
+  } catch (e) {
+    if (!(e.code === 'EBUSY' && fs.existsSync(wintunDest))) {
+      if (!fs.existsSync(wintunDest)) throw e
+      send?.(`[WG] wintun.dll: ${e.message} — используем существующий`)
+    }
+  }
   lastRuntimeDir = STABLE_WG_DIR
   send?.(`[WG] Runtime: ${STABLE_WG_DIR}`)
   return STABLE_WG_DIR
@@ -407,7 +437,8 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   const skipWdttWait = options.skipWdttWait === true
   const subnetOnly = options.subnetOnly === true
   const skipForceStop = options.skipForceStop === true
-  const runtimeDir = prepareRuntimeDir(isDev, dirname, send)
+  const reuseRuntime = options.reuseRuntime === true
+  const runtimeDir = prepareRuntimeDir(isDev, dirname, send, { reuse: reuseRuntime })
   if (!runtimeDir) {
     send('[WG] Нет wireguard.exe / wintun.dll — переустановите Silent VPN')
     return false
@@ -427,7 +458,8 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
         // DNS через WG при split-route ломает резолв на Windows → «нет интернета»
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
       } else {
-        send?.(`[WG] AllowedIPs = ${allowed} (полный туннель)`)
+        const isFull = allowed === '0.0.0.0/0'
+        send?.(`[WG] AllowedIPs = ${isFull ? allowed : allowed.slice(0, 80) + (allowed.length > 80 ? '…' : '')}${isFull ? ' (полный туннель)' : ' (split, исключён сервер)'}`)
         const dnsLine = conf.match(/^\s*DNS\s*=\s*(.+)$/m)
         const dns = normalizeDnsValue(dnsLine ? dnsLine[1] : '')
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')

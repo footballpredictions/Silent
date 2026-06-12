@@ -22,7 +22,7 @@ export function buildLocalBootstrapConfig(vkHash: string, preLoginFingerprint: s
     wg_private_key: '',
     assigned_ip: '',
     server_public_key: '',
-    server_ip: serverHost(),
+    server_ip: SERVER_HOST,
     server_port: SERVER_PORT,
     dns: '1.1.1.1, 1.0.0.1, 77.88.8.8',
     wdtt_password: WDTT_MASTER_PASSWORD,

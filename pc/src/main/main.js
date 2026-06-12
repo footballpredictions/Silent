@@ -50,8 +50,21 @@ let wdttRelaunchTimer = null
 let vpnConnectInFlight = false
 let tunnelReadyPollTimer = null
 let vpnBootstrapMode = false
+let wgCredPhase = false
+let expectedCredGroups = 1
+let credGroupsResolved = 0
+let fullTunnelUpgradeTimer = null
+let wgFullTunnelUpgradeInFlight = false
 let wdttGeneration = 0
 let wdttReplacing = false
+
+const SERVER_IP_FALLBACK = '132.243.234.162'
+
+function normalizeServerIp(raw) {
+  const s = String(raw || '').trim()
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(s)) return s
+  return SERVER_IP_FALLBACK
+}
 
 const { createNetworkMonitor } = require('./vpn/networkRecovery')
 const { createSessionTrace } = require('./sessionTrace')
@@ -253,8 +266,20 @@ function sendLog(line) {
   }
 }
 
+function clearFullTunnelUpgradeTimer() {
+  if (fullTunnelUpgradeTimer) {
+    clearTimeout(fullTunnelUpgradeTimer)
+    fullTunnelUpgradeTimer = null
+  }
+}
+
 function cleanupVpn() {
   vpnBootstrapMode = false
+  wgCredPhase = false
+  expectedCredGroups = 1
+  credGroupsResolved = 0
+  wgFullTunnelUpgradeInFlight = false
+  clearFullTunnelUpgradeTimer()
   vpnSessionActive = false
   pausedForNetwork = false
   transportSwitching = false
@@ -450,6 +475,14 @@ ipcMain.handle('vk-guest-bootstrap', async (_, authUrl) => {
 
 async function beginWdttSession(config, { switching = false } = {}) {
   vpnBootstrapMode = !!config.is_bootstrap
+  config.server_ip = normalizeServerIp(config.server_ip)
+  const hashCount = (config.vk_hashes || []).filter(Boolean).length
+  expectedCredGroups = Math.max(1, hashCount || 1)
+  credGroupsResolved = 0
+  wgFullTunnelUpgradeInFlight = false
+  clearFullTunnelUpgradeTimer()
+  // Пока группы 2–4 запрашивают VK-креды через LAN — только 10.66.66.0/24, не 0.0.0.0/0.
+  wgCredPhase = !vpnBootstrapMode && expectedCredGroups > 1
   const exePath = wdttExePath()
   if (!fs.existsSync(exePath)) {
     return { error: `wdtt-client.exe не найден: ${exePath}` }
@@ -522,6 +555,70 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
   let wgInstallInFlight = false
 
+  const upgradeToFullTunnel = async (source = 'groups', attempt = 1) => {
+    if (!wgCredPhase || wgFullTunnelUpgradeInFlight) return
+    if (!wgApplied) {
+      if (attempt <= 20) {
+        setTimeout(() => { void upgradeToFullTunnel(source, attempt + 1) }, 500)
+      }
+      return
+    }
+    while (wgInstallInFlight) {
+      await sleep(200)
+    }
+    wgFullTunnelUpgradeInFlight = true
+    clearFullTunnelUpgradeTimer()
+    sendLog(`[WG] Переключение на полный туннель (${source})…`)
+    try {
+      if (!fs.existsSync(confPath)) {
+        sendLog('[WG] full tunnel upgrade: нет wg-turn.conf', 'W')
+        return
+      }
+      const ok = await applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
+        skipWdttWait: true,
+        subnetOnly: false,
+        skipForceStop: false,
+        reuseRuntime: true,
+      })
+      if (ok) {
+        wgCredPhase = false
+        sendLog('[WG] Полный туннель активен, DNS = 1.1.1.1 + 77.88.8.8')
+      } else if (attempt < 3) {
+        sendLog(`[WG] full tunnel retry ${attempt + 1}/3…`, 'W')
+        wgFullTunnelUpgradeInFlight = false
+        setTimeout(() => { void upgradeToFullTunnel(`${source}-retry`, attempt + 1) }, 3000)
+        return
+      } else {
+        sendLog('[WG] full tunnel upgrade failed — YouTube может не работать', 'W')
+      }
+    } catch (e) {
+      sendLog(`[WG] full tunnel upgrade: ${e?.message || e}`, 'W')
+      if (attempt < 3) {
+        wgFullTunnelUpgradeInFlight = false
+        setTimeout(() => { void upgradeToFullTunnel(`${source}-retry`, attempt + 1) }, 3000)
+        return
+      }
+    } finally {
+      wgFullTunnelUpgradeInFlight = false
+    }
+  }
+
+  const maybeScheduleFullTunnelUpgrade = () => {
+    if (!wgCredPhase || fullTunnelUpgradeTimer) return
+    fullTunnelUpgradeTimer = setTimeout(() => {
+      fullTunnelUpgradeTimer = null
+      void upgradeToFullTunnel('timeout')
+    }, 25_000)
+  }
+
+  const onCredGroupResolved = (groupId) => {
+    if (!wgCredPhase) return
+    credGroupsResolved += 1
+    if (credGroupsResolved >= expectedCredGroups || groupId >= expectedCredGroups) {
+      void upgradeToFullTunnel(`group #${groupId}`)
+    }
+  }
+
   const tryApplyWg = async (confText, source = 'file') => {
     if (switching && wgApplied) return false
     if (wgApplied || wgFailed || wgInstallInFlight || !confText) return false
@@ -554,8 +651,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
       skipWdttWait: true,
-      // Bootstrap: только 10.66.66.0/24. Основной VPN: 0.0.0.0/0 — на белых списках YouTube только через туннель.
-      subnetOnly: vpnBootstrapMode,
+      subnetOnly: vpnBootstrapMode || wgCredPhase,
       skipForceStop: switching && (isTunnelUp() || isServiceRunning()),
     })
     const timeoutMs = isProcessElevated() ? 70000 : 90000
@@ -579,6 +675,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       wgApplied = true
       wgAttempted = true
       clearWgRetries()
+      if (wgCredPhase) maybeScheduleFullTunnelUpgrade()
       scheduleTunnelReadyPoll(sendLog)
       ensureVpnReadyEvent(sendLog)
       return true
@@ -616,6 +713,14 @@ async function beginWdttSession(config, { switching = false } = {}) {
       return
     }
     sendLog(line)
+    const credOkMatch = line.match(/\[ГРУППА #(\d+)\] Креды OK/)
+    if (credOkMatch) {
+      onCredGroupResolved(parseInt(credOkMatch[1], 10))
+    }
+    const credFailMatch = line.match(/\[ГРУППА #(\d+)\] Ошибка кредов/)
+    if (credFailMatch) {
+      onCredGroupResolved(parseInt(credFailMatch[1], 10))
+    }
     const regMatch = line.match(/зарегистрирован \(всего:\s*(\d+)\)/)
     if (regMatch) {
       activeWorkerCount = parseInt(regMatch[1], 10)
@@ -784,6 +889,50 @@ ipcMain.handle('vpn-is-ready', async () => ({
 }))
 
 ipcMain.handle('app-version', () => app.getVersion())
+
+const UPDATE_PUBLIC_BASE = 'https://132-243-234-162.nip.io'
+
+function fetchJsonGet(url) {
+  return new Promise((resolve, reject) => {
+    const proto = url.startsWith('https') ? https : http
+    const opts = url.startsWith('https') ? { rejectUnauthorized: false } : {}
+    const req = proto.get(url, opts, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        fetchJsonGet(res.headers.location).then(resolve).catch(reject)
+        res.resume()
+        return
+      }
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode}`))
+        res.resume()
+        return
+      }
+      let body = ''
+      res.on('data', (chunk) => { body += chunk })
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body))
+        } catch (e) {
+          reject(e)
+        }
+      })
+    })
+    req.on('error', reject)
+    req.setTimeout(45_000, () => {
+      req.destroy(new Error('Update check timeout'))
+    })
+  })
+}
+
+ipcMain.handle('app-update-check', async (_, { version, platform = 'pc' }) => {
+  const url = `${UPDATE_PUBLIC_BASE}/api/updates/check?platform=${encodeURIComponent(platform)}&version=${encodeURIComponent(version || '')}`
+  try {
+    return await fetchJsonGet(url)
+  } catch (e) {
+    sendLog(`[Update] check fail: ${e?.message || e}`)
+    return null
+  }
+})
 
 function downloadFileWithProgress(url, destPath, onProgress) {
   return new Promise((resolve, reject) => {

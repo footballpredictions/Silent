@@ -37,8 +37,6 @@ export default function UpdatesPage({ token }: { token: string }) {
   const [uploading, setUploading] = useState<string | null>(null)
   const pcRef = useRef<HTMLInputElement>(null)
   const androidRef = useRef<HTMLInputElement>(null)
-  const [pcVersion, setPcVersion] = useState('')
-  const [androidVersion, setAndroidVersion] = useState('')
 
   const headers = { Authorization: `Bearer ${token}` }
 
@@ -53,13 +51,12 @@ export default function UpdatesPage({ token }: { token: string }) {
 
   useEffect(() => { load() }, [])
 
-  const upload = async (platform: string, file: File, version: string) => {
+  const upload = async (platform: string, file: File) => {
     setUploading(platform)
     setMsg('')
     const fd = new FormData()
     fd.append('platform', platform)
     fd.append('file', file)
-    if (version.trim()) fd.append('version', version.trim())
     try {
       const res = await fetch('/api/admin/updates/upload', {
         method: 'POST',
@@ -117,11 +114,6 @@ export default function UpdatesPage({ token }: { token: string }) {
                       <p>Файл: {item.filename}</p>
                       <p>Размер: {formatSize(item.size)}</p>
                       <p>Загружено: {formatDate(item.uploaded_at)}</p>
-                      {item.download_url && (
-                        <a href={item.download_url} className="inline-flex items-center gap-1 text-blue-400 hover:underline mt-1">
-                          <Download className="w-3 h-3" /> Скачать
-                        </a>
-                      )}
                     </div>
                   ) : (
                     <p className="text-sm text-[#555] mt-2">Нет загруженной версии</p>
@@ -138,17 +130,17 @@ export default function UpdatesPage({ token }: { token: string }) {
                 )}
               </div>
 
-              <div className="mt-4 pt-4 border-t border-[#222] flex flex-wrap items-end gap-3">
-                <div>
-                  <label className="text-xs text-[#666] block mb-1">Версия (необязательно)</label>
-                  <input
-                    type="text"
-                    placeholder="1.0.72"
-                    value={item.platform === 'pc' ? pcVersion : androidVersion}
-                    onChange={e => item.platform === 'pc' ? setPcVersion(e.target.value) : setAndroidVersion(e.target.value)}
-                    className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-sm text-white w-28 focus:outline-none"
-                  />
-                </div>
+              <div className="mt-4 pt-4 border-t border-[#222] flex flex-wrap items-center gap-3">
+                {item.download_url && (
+                  <a
+                    href={item.download_url}
+                    download
+                    className="inline-flex items-center gap-2 bg-[#1a1a1a] border border-[#2a2a2a] text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#222] transition-colors"
+                  >
+                    <Download className="w-4 h-4" />
+                    Скачать
+                  </a>
+                )}
                 <input
                   ref={item.platform === 'pc' ? pcRef : androidRef}
                   type="file"
@@ -156,7 +148,7 @@ export default function UpdatesPage({ token }: { token: string }) {
                   className="hidden"
                   onChange={e => {
                     const f = e.target.files?.[0]
-                    if (f) upload(item.platform, f, item.platform === 'pc' ? pcVersion : androidVersion)
+                    if (f) upload(item.platform, f)
                     e.target.value = ''
                   }}
                 />

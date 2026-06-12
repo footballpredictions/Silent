@@ -717,9 +717,11 @@ class SilentRepository @Inject constructor(
             .apply()
     }
 
-    /** POST /disconnect — тот же [withTunnelApiStrict], что connect; вызывать ДО stop VPN. */
+    /** POST /disconnect — public HTTPS, затем tunnel (как PC). */
     suspend fun notifyDisconnectBeforeTunnelStop(): Boolean {
-        if (!isLoggedIn() || !isMainVpnTunnelUp()) {
+        if (!isLoggedIn()) return false
+        if (postDisconnectViaPublic()) return true
+        if (!isMainVpnTunnelUp()) {
             Log.w(TAG, "disconnect: tunnel not up")
             return false
         }
@@ -733,14 +735,23 @@ class SilentRepository @Inject constructor(
         }.getOrOrLog(false)
     }
 
-    /** Connect online + хеши + profile + theme — прокси без overlay, иначе один overlay. */
+    /** Connect online + хеши + profile + theme — public HTTPS → tunnel overlay. */
     suspend fun syncAllViaTunnel(): Boolean {
-        if (!isLoggedIn() || !isMainVpnTunnelUp()) return false
+        if (!isLoggedIn()) return false
         prepareTunnelApiFromCachedConfig()
+        if (postConnectViaPublic()) {
+            return runCatching {
+                syncHashesAndConfigAfterConnect()
+                syncProfileAndThemeAfterConnect()
+                Log.i(TAG, "syncAll OK (public connect + hashes/profile)")
+                true
+            }.getOrOrLog(false)
+        }
+        if (!isMainVpnTunnelUp()) return false
         return runCatching {
             executeMainTunnelSyncSession {
                 val url = getServerUrl()
-                val online = postConnectOnline()
+                val online = postConnectOnlineViaTunnel()
                 if (!online) {
                     Log.w(TAG, "syncAll: POST /connect failed via $url")
                     return@executeMainTunnelSyncSession false
@@ -762,16 +773,47 @@ class SilentRepository @Inject constructor(
         return withTunnelApiStrict { block() }
     }
 
-    private suspend fun postConnectOnline(): Boolean {
+    private suspend fun postConnectViaPublic(): Boolean {
+        val body = ConnectRequest(getDeviceFingerprint(), "android")
+        for (base in publicApiBases()) {
+            val res = runCatching {
+                buildApi("$base/").connect(body)
+            }.getOrNull() ?: continue
+            if (res.isSuccessful) {
+                Log.i(TAG, "POST /connect OK (public $base)")
+                return true
+            }
+            val err = runCatching { res.errorBody()?.string()?.take(200) }.getOrNull()
+            Log.w(TAG, "POST /connect public HTTP ${res.code()} on $base${err?.let { ": $it" } ?: ""}")
+        }
+        return false
+    }
+
+    private suspend fun postDisconnectViaPublic(): Boolean {
+        val body = DisconnectRequest(getDeviceFingerprint())
+        for (base in publicApiBases()) {
+            val res = runCatching {
+                buildApi("$base/").disconnect(body)
+            }.getOrNull() ?: continue
+            if (res.isSuccessful) {
+                Log.i(TAG, "POST /disconnect OK (public $base)")
+                return true
+            }
+            Log.w(TAG, "disconnect public HTTP ${res.code()} on $base")
+        }
+        return false
+    }
+
+    private suspend fun postConnectOnlineViaTunnel(): Boolean {
         val res = runCatching {
             getApi().connect(ConnectRequest(getDeviceFingerprint(), "android"))
         }.getOrNull() ?: return false
         if (res.isSuccessful) {
-            Log.i(TAG, "POST /connect OK")
+            Log.i(TAG, "POST /connect OK (tunnel)")
             return true
         }
         val err = runCatching { res.errorBody()?.string()?.take(200) }.getOrNull()
-        Log.w(TAG, "POST /connect HTTP ${res.code()}${err?.let { ": $it" } ?: ""}")
+        Log.w(TAG, "POST /connect tunnel HTTP ${res.code()}${err?.let { ": $it" } ?: ""}")
         return false
     }
 

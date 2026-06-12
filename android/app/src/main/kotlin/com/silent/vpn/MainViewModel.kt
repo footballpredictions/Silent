@@ -17,6 +17,7 @@ import com.silent.vpn.data.DeviceRegisterRequest
 import com.silent.vpn.data.DisconnectRequest
 import com.silent.vpn.data.ForgotPasswordRequest
 import com.silent.vpn.data.HashItemDto
+import com.silent.vpn.data.LoginDeviceInfo
 import com.silent.vpn.data.LoginRequest
 import com.silent.vpn.data.ResetPasswordRequest
 import com.silent.vpn.data.HashChannelHelper
@@ -970,10 +971,15 @@ class MainViewModel @Inject constructor(
                 }
                 ensureTunnelApiBaseForLogin()
                 val ctx = activity?.applicationContext ?: appContext
+                val loginDevice = LoginDeviceInfo(
+                    device_fingerprint = repo.startNewSession(),
+                    device_type = "android",
+                    device_name = repo.getDeviceDisplayName(),
+                )
                 var loginSucceeded = false
                 var offerSavePassword = false
                 withBootstrapBackendApi {
-                    val res = loginAttempt(email, password)
+                    val res = loginAttempt(email, password, loginDevice)
                     if (!res.isSuccessful) {
                         _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Неверный логин или пароль"
                         restartBootstrapTimerIfNeeded()
@@ -981,7 +987,6 @@ class MainViewModel @Inject constructor(
                         val tokens = res.body()!!
                         repo.saveTokens(tokens.access_token, tokens.refresh_token)
                         repo.saveRememberMe(email, rememberMe)
-                        repo.startNewSession()
                         if (!openLoginSession()) {
                             if (repo.isLoggedIn()) {
                                 syncLoginDataViaBootstrapTunnel(registerIfNeeded = true)
@@ -1017,7 +1022,11 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun loginAttempt(email: String, password: String): retrofit2.Response<com.silent.vpn.data.TokenResponse> {
+    private suspend fun loginAttempt(
+        email: String,
+        password: String,
+        device: LoginDeviceInfo? = null,
+    ): retrofit2.Response<com.silent.vpn.data.TokenResponse> {
         awaitTunnelApiReady()
         val bases = preLoginApiBases()
         if (bases.isEmpty()) {
@@ -1029,7 +1038,7 @@ class MainViewModel @Inject constructor(
                 try {
                     repo.useApiBase(base)
                     DebugLog.i("MainViewModel", "login try API base=$base (attempt ${attempt + 1})")
-                    val res = repo.getApi().login(LoginRequest(email, password))
+                    val res = repo.getApi().login(LoginRequest(email, password, device))
                     DebugLog.i("MainViewModel", "login HTTP ${res.code()} on $base")
                     if (res.isSuccessful || res.code() in 400..499) return res
                     lastError = Exception(parseError(res.errorBody()?.string() ?: "") ?: "HTTP ${res.code()}")

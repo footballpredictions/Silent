@@ -5,7 +5,17 @@ import retrofit2.http.*
 
 // ─── DTOs ────────────────────────────────────────────────────────────────────
 
-data class LoginRequest(val email: String, val password: String)
+data class LoginDeviceInfo(
+    val device_fingerprint: String,
+    val device_type: String = "android",
+    val device_name: String = "Android",
+)
+
+data class LoginRequest(
+    val email: String,
+    val password: String,
+    val device: LoginDeviceInfo? = null,
+)
 data class RegisterRequest(val email: String, val password: String)
 data class ForgotPasswordRequest(val email: String)
 data class ResetPasswordRequest(val token: String, val new_password: String)

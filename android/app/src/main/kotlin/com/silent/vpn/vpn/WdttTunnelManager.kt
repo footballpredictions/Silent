@@ -39,7 +39,7 @@ data class LogEntry(
 
 object WdttTunnelManager {
     private const val TAG = "WdttTunnelManager"
-    private const val NETWORK_RESTART_GRACE_MS = 90_000L
+    private const val NETWORK_RESTART_GRACE_MS = 30_000L
 
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -868,6 +868,16 @@ object WdttTunnelManager {
         if (!tunnelReady.value) return false
         val proc = process ?: return false
         return proc.isAlive && activeWorkers.value >= 1
+    }
+
+    /** Долго нет активных воркеров при живом процессе — вероятно «завис» после doze/смены сети. */
+    fun isTransportStale(thresholdMs: Long): Boolean {
+        if (!tunnelReady.value || !running.value) return false
+        val proc = process ?: return false
+        if (!proc.isAlive) return false
+        val last = lastActiveAtMs
+        if (last <= 0L) return false
+        return activeWorkers.value <= 0 && System.currentTimeMillis() - last > thresholdMs
     }
 
     private fun needsWgOverlayReload(): Boolean = SilentRepository.APP_EXCLUDED_FROM_VPN

@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -57,11 +58,18 @@ class SilentVpnService : Service() {
     companion object {
         private const val CHANNEL_ID = "silent_vpn"
         private const val NOTIF_ID = 1001
-        /** Не перезапускать libclient при смене сети в первые 2 мин после connect. */
-        private const val NETWORK_GRACE_MS = 120_000L
+        /** Не перезапускать libclient при смене сети в первые 30 с после connect. */
+        private const val NETWORK_GRACE_MS = 30_000L
         /** transportWatchdog не kill сервис, пока libclient ещё стартует. */
         private const val LIBCLIENT_START_GRACE_MS = 45_000L
-        private const val NETWORK_CHANGE_DEBOUNCE_MS = 90_000L
+        /** Минимальный интервал между restartTransport (не дёргать при LTE handover). */
+        private const val NETWORK_CHANGE_DEBOUNCE_MS = 5_000L
+        /** Задержка перед restart после возврата сети / звонка. */
+        private const val NETWORK_RECOVERY_DELAY_MS = 2_500L
+        /** Сколько ждать «больного» транспорта перед restart. */
+        private const val TRANSPORT_UNHEALTHY_MS = 20_000L
+        /** Нет активных воркеров дольше этого — restart (doze / screen off). */
+        private const val TRANSPORT_STALE_MS = 120_000L
         private const val NOTIF_UPDATE_MIN_MS = 3_000L
         const val ACTION_CONNECT = "com.silent.vpn.CONNECT"
         const val ACTION_DISCONNECT = "com.silent.vpn.DISCONNECT"
@@ -86,7 +94,11 @@ class SilentVpnService : Service() {
     private var lastNetworkChangeTime = 0L
     private var connectStartedAtMs = 0L
     private val activeNetworks = mutableSetOf<Network>()
+    private var lastNetworkFingerprint = ""
+    private var networkRecoveryJob: Job? = null
+    private var transportUnhealthySinceMs = 0L
     private var isTunnelPaused = false
+    private var phoneCallActive = false
     private var transportWatchdogJob: Job? = null
     private var statsUpdaterJob: Job? = null
     @Volatile
@@ -95,6 +107,8 @@ class SilentVpnService : Service() {
     private var lastNotifUpdateMs = 0L
     private var lastNotifBody = ""
     private var vpnOwnerCallback: ConnectivityManager.NetworkCallback? = null
+    private var audioManager: AudioManager? = null
+    private var audioModeListener: AudioManager.OnModeChangedListener? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -121,13 +135,14 @@ class SilentVpnService : Service() {
                 if (isRunning) {
                     val stats = WdttTunnelManager.stats.value
                     if (WdttTunnelManager.tunnelReady.value) {
-                        releasePerformanceLocks()
+                        ensureSessionWakeLock()
                         if (!VpnServiceTracker.isSessionMarkedActive(this@SilentVpnService)) {
                             VpnServiceTracker.markSessionActive(this@SilentVpnService, true)
                         }
                         ensureTunnelApiProxyAsync()
                         postVpnNotification(stats)
                         VpnTileHelper.requestUpdate(this@SilentVpnService)
+                        checkTransportHealth()
                         if (
                             WdttTunnelManager.tunnelReady.value &&
                             WdttTunnelManager.running.value &&
@@ -193,10 +208,14 @@ class SilentVpnService : Service() {
                 )
                 connectStartedAtMs = System.currentTimeMillis()
                 lastNetworkChangeTime = 0L
+                lastNetworkFingerprint = ""
+                transportUnhealthySinceMs = 0L
+                phoneCallActive = false
                 lastNotifBody = ""
                 lastNotifUpdateMs = 0L
                 tunnelProxyStarted = false
                 setupNetworkCallback()
+                setupPhoneCallMonitor()
                 startTransportWatchdog()
                 startStatsUpdater()
                 acquirePerformanceLocks()
@@ -335,14 +354,19 @@ class SilentVpnService : Service() {
         teardownVpnOwnershipMonitor()
         VpnTileHelper.requestUpdate(this)
         transportWatchdogJob?.cancel()
+        networkRecoveryJob?.cancel()
         statsUpdaterJob?.cancel()
         isTunnelPaused = false
         activeNetworks.clear()
+        lastNetworkFingerprint = ""
+        transportUnhealthySinceMs = 0L
+        phoneCallActive = false
         performanceLocksHeld = false
         lastNotifBody = ""
         lastNotifUpdateMs = 0L
         SilentRepository.APP_EXCLUDED_FROM_VPN = true
         teardownNetworkCallback()
+        teardownPhoneCallMonitor()
         clearVpnNotification()
         VpnBackendSync.stop()
         tunnelProxyStarted = false
@@ -386,37 +410,161 @@ class SilentVpnService : Service() {
         if (networkCallback != null) return
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         activeNetworks.clear()
+        lastNetworkFingerprint = currentDefaultNetworkFingerprint()
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                val wasEmpty = activeNetworks.isEmpty()
                 activeNetworks.add(network)
-                // Не трогаем libclient при каждом onAvailable (видео/LTE) — только после полной потери.
-                if (wasEmpty && isRunning && WdttTunnelManager.running.value && WdttTunnelManager.tunnelReady.value) {
-                    handleNetworkChange()
+                val fp = fingerprintForNetwork(network)
+                if (lastNetworkFingerprint.isNotEmpty() && fp.isNotEmpty() && fp != lastNetworkFingerprint) {
+                    lastNetworkFingerprint = fp
+                    scheduleNetworkRecovery("available:$fp")
+                } else if (lastNetworkFingerprint.isEmpty() && fp.isNotEmpty()) {
+                    lastNetworkFingerprint = fp
+                    if (isRunning && WdttTunnelManager.tunnelReady.value) {
+                        scheduleNetworkRecovery("restored:$fp")
+                    }
                 }
             }
 
             override fun onLost(network: Network) {
                 activeNetworks.remove(network)
-                // Не kill libclient при кратковременном пропадании сети.
+                if (activeNetworks.isEmpty()) {
+                    lastNetworkFingerprint = ""
+                }
+            }
+
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return
+                val fp = networkFingerprint(caps)
+                if (lastNetworkFingerprint.isNotEmpty() && fp.isNotEmpty() && fp != lastNetworkFingerprint) {
+                    lastNetworkFingerprint = fp
+                    scheduleNetworkRecovery("capabilities:$fp")
+                } else if (lastNetworkFingerprint.isEmpty() && fp.isNotEmpty()) {
+                    lastNetworkFingerprint = fp
+                }
             }
         }
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-            .build()
-        connectivityManager?.registerNetworkCallback(request, networkCallback!!)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            connectivityManager?.registerDefaultNetworkCallback(networkCallback!!)
+        } else {
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build()
+            connectivityManager?.registerNetworkCallback(request, networkCallback!!)
+        }
     }
 
-    private fun handleNetworkChange() {
-        val now = System.currentTimeMillis()
-        if (now - lastNetworkChangeTime < NETWORK_CHANGE_DEBOUNCE_MS) return
-        lastNetworkChangeTime = now
+    private fun currentDefaultNetworkFingerprint(): String {
+        val cm = connectivityManager ?: return ""
+        val network = cm.activeNetwork ?: return ""
+        return fingerprintForNetwork(network)
+    }
+
+    private fun fingerprintForNetwork(network: Network): String {
+        val cm = connectivityManager ?: return ""
+        return networkFingerprint(cm.getNetworkCapabilities(network))
+    }
+
+    private fun networkFingerprint(caps: NetworkCapabilities?): String {
+        if (caps == null) return ""
+        val transports = buildList {
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) add("wifi")
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) add("cell")
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) add("eth")
+        }.sorted().joinToString("+")
+        return transports.ifEmpty { "unknown" }
+    }
+
+    private fun scheduleNetworkRecovery(reason: String, delayMs: Long = NETWORK_RECOVERY_DELAY_MS) {
+        if (!isRunning) return
+        networkRecoveryJob?.cancel()
+        networkRecoveryJob = scope.launch {
+            delay(delayMs)
+            requestNetworkRecovery(reason)
+        }
+    }
+
+    private fun requestNetworkRecovery(reason: String) {
         if (WdttTunnelManager.isNetworkRecoverySuppressed()) return
         if (!isRunning || !WdttTunnelManager.running.value || !WdttTunnelManager.tunnelReady.value) return
         if (System.currentTimeMillis() - connectStartedAtMs < NETWORK_GRACE_MS) return
-        if (activeNetworks.isEmpty()) return
+        if (lastNetworkFingerprint.isEmpty()) {
+            val fp = currentDefaultNetworkFingerprint()
+            if (fp.isEmpty()) return
+            lastNetworkFingerprint = fp
+        }
+        val now = System.currentTimeMillis()
+        val sinceLast = now - lastNetworkChangeTime
+        if (sinceLast < NETWORK_CHANGE_DEBOUNCE_MS) {
+            scheduleNetworkRecovery(reason, NETWORK_CHANGE_DEBOUNCE_MS - sinceLast)
+            return
+        }
+        lastNetworkChangeTime = now
+        DebugLog.i("VpnService", "network recovery: $reason")
         WdttTunnelManager.restartTransport()
+    }
+
+    private fun checkTransportHealth() {
+        if (!isRunning || !WdttTunnelManager.tunnelReady.value || !WdttTunnelManager.running.value) {
+            transportUnhealthySinceMs = 0L
+            return
+        }
+        if (WdttTunnelManager.isNetworkRecoverySuppressed()) {
+            transportUnhealthySinceMs = 0L
+            return
+        }
+        if (System.currentTimeMillis() - connectStartedAtMs < NETWORK_GRACE_MS) return
+        val now = System.currentTimeMillis()
+        if (!WdttTunnelManager.isTransportHealthy()) {
+            if (transportUnhealthySinceMs == 0L) transportUnhealthySinceMs = now
+            else if (now - transportUnhealthySinceMs >= TRANSPORT_UNHEALTHY_MS) {
+                transportUnhealthySinceMs = 0L
+                scheduleNetworkRecovery("unhealthy")
+            }
+        } else {
+            transportUnhealthySinceMs = 0L
+        }
+        if (WdttTunnelManager.isTransportStale(TRANSPORT_STALE_MS)) {
+            scheduleNetworkRecovery("stale")
+        }
+    }
+
+    private fun setupPhoneCallMonitor() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        if (audioModeListener != null) return
+        val am = getSystemService(AUDIO_SERVICE) as AudioManager
+        audioManager = am
+        val listener = AudioManager.OnModeChangedListener { mode ->
+            if (!isRunning) return@OnModeChangedListener
+            when (mode) {
+                AudioManager.MODE_IN_CALL,
+                AudioManager.MODE_IN_COMMUNICATION,
+                AudioManager.MODE_RINGTONE,
+                -> phoneCallActive = true
+                AudioManager.MODE_NORMAL -> {
+                    if (phoneCallActive) {
+                        phoneCallActive = false
+                        scheduleNetworkRecovery("phone_call_end", 3_000L)
+                    }
+                }
+            }
+        }
+        audioModeListener = listener
+        am.addOnModeChangedListener(mainExecutor, listener)
+    }
+
+    private fun teardownPhoneCallMonitor() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val listener = audioModeListener
+            if (listener != null) {
+                runCatching { audioManager?.removeOnModeChangedListener(listener) }
+            }
+        }
+        audioModeListener = null
+        audioManager = null
+        phoneCallActive = false
     }
 
     private fun startTransportWatchdog() {
@@ -429,9 +577,14 @@ class SilentVpnService : Service() {
                         delay(2000)
                         continue
                     }
-                    DebugLog.w("VpnService", "transportWatchdog: libclient down after grace — stop")
-                    stopSelf()
-                    break
+                    if (WdttTunnelManager.tunnelReady.value) {
+                        DebugLog.w("VpnService", "transportWatchdog: libclient down — restart")
+                        scheduleNetworkRecovery("watchdog_down", 1_000L)
+                    } else {
+                        DebugLog.w("VpnService", "transportWatchdog: libclient down before tunnel — stop")
+                        stopSelf()
+                        break
+                    }
                 }
                 delay(2000)
             }
@@ -478,15 +631,14 @@ class SilentVpnService : Service() {
     private fun acquirePerformanceLocks() {
         performanceLocksHeld = true
         acquireWakeLock()
-        // WifiLock HIGH_PERF/LLOW_LATENCY греет чип — достаточно wake lock на этапе connect.
     }
 
-    /** После стабильного подключения — не держать CPU/Wi‑Fi awake (экономия батареи). */
-    private fun releasePerformanceLocks() {
-        if (!performanceLocksHeld) return
-        performanceLocksHeld = false
-        releaseWakeLock()
-        releaseWifiLock()
+    /** Держим partial wake lock на всё время VPN — иначе doze гасит libclient при выключенном экране. */
+    private fun ensureSessionWakeLock() {
+        if (!performanceLocksHeld) {
+            performanceLocksHeld = true
+        }
+        acquireWakeLock()
     }
 
     private fun acquireWakeLock() {
@@ -641,14 +793,18 @@ class SilentVpnService : Service() {
     /** Как stopTunnel() в reference TunnelService. */
     private fun stopTunnelLocal(awaitStop: Boolean = false, stopService: Boolean = true) {
         transportWatchdogJob?.cancel()
+        networkRecoveryJob?.cancel()
         statsUpdaterJob?.cancel()
         isRunning = false
         isTunnelPaused = false
         activeNetworks.clear()
+        lastNetworkFingerprint = ""
+        transportUnhealthySinceMs = 0L
         VpnServiceTracker.markSessionActive(this, false)
         VpnBackendSync.stop()
         tunnelProxyStarted = false
         teardownNetworkCallback()
+        teardownPhoneCallMonitor()
         teardownVpnOwnershipMonitor()
         performanceLocksHeld = false
         lastNotifBody = ""

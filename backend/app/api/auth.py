@@ -22,6 +22,7 @@ from app.core.security import (
 )
 from app.services.email_service import send_verification_email, send_password_reset_email
 from app.services.subscription_service import apply_post_verification_benefits
+from app.services.vpn_service import ensure_device_session
 from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -124,6 +125,18 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
 
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Аккаунт заблокирован")
+
+    if req.device and req.device.device_fingerprint.strip():
+        try:
+            await ensure_device_session(
+                db,
+                user,
+                device_name=req.device.device_name,
+                device_type=req.device.device_type,
+                device_fingerprint=req.device.device_fingerprint,
+            )
+        except ValueError as e:
+            logger.warning("login ensure_device_session: %s", e)
 
     return TokenResponse(
         access_token=create_access_token(user.id),

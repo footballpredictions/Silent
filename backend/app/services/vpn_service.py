@@ -347,6 +347,75 @@ async def end_device_session(
     return True
 
 
+async def ensure_device_session(
+    db: AsyncSession,
+    user: User,
+    device_name: str,
+    device_type: str,
+    device_fingerprint: str,
+) -> Device:
+    """После login: сессия в списке устройств, offline до POST /vpn/connect."""
+    device_type = (device_type or "android").strip().lower()[:32]
+    device_name = (device_name or device_type or "Device").strip()[:64]
+    fp = (device_fingerprint or "").strip()
+    if not fp:
+        raise ValueError("device_fingerprint required")
+
+    await clear_stale_online_status(db)
+    await replace_same_type_session(db, user.id, device_type, fp)
+    await prune_idle_sessions(db, user.id)
+
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user.id,
+            Device.device_fingerprint == fp,
+        )
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        existing.is_active = True
+        existing.device_name = device_name
+        existing.device_type = device_type
+        existing.is_connected = False
+        existing.last_connected = datetime.utcnow()
+        await db.commit()
+        await db.refresh(existing)
+        await dedupe_same_type_devices(db, user.id, device_type, fp)
+        return existing
+
+    active_count = await count_active_sessions(db, user.id)
+    if active_count >= settings.MAX_DEVICES_PER_USER:
+        freed = await prune_oldest_session_if_full(db, user.id)
+        active_count = await count_active_sessions(db, user.id)
+        if not freed and active_count >= settings.MAX_DEVICES_PER_USER:
+            raise ValueError(
+                f"Достигнут лимит {settings.MAX_DEVICES_PER_USER} устройств. "
+                "Выйдите из аккаунта на одном из них."
+            )
+
+    priv_key, pub_key = _generate_wg_keypair()
+    wg_address = await _get_next_wg_address(db)
+    wdtt_pass = (settings.WDTT_MASTER_PASSWORD or "").strip() or generate_wdtt_password()
+
+    device = Device(
+        user_id=user.id,
+        device_name=device_name,
+        device_type=device_type,
+        device_fingerprint=fp,
+        wg_public_key=pub_key,
+        wg_private_key_enc=encrypt_value(priv_key),
+        wg_address=wg_address,
+        wdtt_password=wdtt_pass,
+        is_connected=False,
+        last_connected=datetime.utcnow(),
+    )
+    db.add(device)
+    await db.commit()
+    await db.refresh(device)
+    await dedupe_same_type_devices(db, user.id, device_type, fp)
+    return device
+
+
 async def register_device(
     db: AsyncSession,
     user: User,
@@ -364,11 +433,19 @@ async def register_device(
         select(Device).where(
             Device.user_id == user.id,
             Device.device_fingerprint == device_fingerprint,
-            Device.is_active == True,
         )
     )
     existing = result.scalar_one_or_none()
     if existing:
+        existing.is_active = True
+        if device_name:
+            existing.device_name = device_name[:64]
+        if device_type:
+            existing.device_type = device_type[:32]
+        existing.last_connected = datetime.utcnow()
+        await db.commit()
+        await db.refresh(existing)
+        await dedupe_same_type_devices(db, user.id, device_type, device_fingerprint)
         return await _build_vpn_config(db, existing)
 
     active_count = await count_active_sessions(db, user.id)

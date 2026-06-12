@@ -15,9 +15,16 @@ class RegisterRequest(BaseModel):
         return v
 
 
+class LoginDeviceInfo(BaseModel):
+    device_fingerprint: str
+    device_type: str = "android"
+    device_name: str = "Android"
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+    device: LoginDeviceInfo | None = None
 
 
 class TokenResponse(BaseModel):

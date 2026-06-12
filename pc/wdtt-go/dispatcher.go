@@ -31,11 +31,11 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	returnChBuf      = 4096
-	writeLoopWorkers = 4
-	uploadRetryMs    = 30
+	returnChBuf      = 16384
+	writeLoopWorkers = 6
+	uploadRetryMs    = 50
 
-	// chunkSize — как Android libclient: 16 пакетов на один TURN relay (TCP/YouTube).
+	// chunk=16 — как Android: один TCP-поток (YouTube) на одном TURN relay.
 	chunkSize = 16
 )
 

@@ -24,7 +24,7 @@ export function buildLocalBootstrapConfig(vkHash: string, preLoginFingerprint: s
     server_public_key: '',
     server_ip: serverHost(),
     server_port: SERVER_PORT,
-    dns: '77.88.8.8,77.88.8.1',
+    dns: '1.1.1.1, 1.0.0.1, 77.88.8.8',
     wdtt_password: WDTT_MASTER_PASSWORD,
     vk_hashes: [vkHash],
     stream_count: 3,

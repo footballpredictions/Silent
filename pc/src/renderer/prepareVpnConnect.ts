@@ -33,41 +33,43 @@ export async function prepareVpnConnectConfig(
     ])
 
   let items: HashItem[] = getSavedHashItems()
-  const hasCachedHashes = activeServerHashes(items).length > 0
-  const hashSyncDeadline = hasCachedHashes ? 3_000 : 8_000
-  try {
-    const hashesRes = await withTimeout(api.get('/api/vpn/hashes'), hashSyncDeadline)
-    if (!hashesRes) {
-      pushLog('Main', 'hash sync: timeout before connect, using cache', 'W')
-    } else {
-      const downloaded = mapHashesResponse(hashesRes.data)
-      if (downloaded.length > 0) {
-        saveHashItems(downloaded)
-        items = downloaded
-      }
-      const active = activeServerHashes(items).length
-      if (active < 4) {
-        try {
-          await withTimeout(
-            api.post('/api/vpn/hashes/request-refresh', { device_fingerprint: fingerprint }),
-            5_000,
-          )
-          const again = await withTimeout(api.get('/api/vpn/hashes'), hashSyncDeadline)
-          if (again) {
-            const refreshed = mapHashesResponse(again.data)
-            if (refreshed.length > items.length) {
-              saveHashItems(refreshed)
-              items = refreshed
+  const cachedActive = activeServerHashes(items).length
+  if (cachedActive < 4) {
+    const hashSyncDeadline = cachedActive > 0 ? 3_000 : 8_000
+    try {
+      const hashesRes = await withTimeout(api.get('/api/vpn/hashes'), hashSyncDeadline)
+      if (!hashesRes) {
+        pushLog('Main', 'hash sync: timeout before connect, using cache', 'W')
+      } else {
+        const downloaded = mapHashesResponse(hashesRes.data)
+        if (downloaded.length > 0) {
+          saveHashItems(downloaded)
+          items = downloaded
+        }
+        const active = activeServerHashes(items).length
+        if (active < 4) {
+          try {
+            await withTimeout(
+              api.post('/api/vpn/hashes/request-refresh', { device_fingerprint: fingerprint }),
+              5_000,
+            )
+            const again = await withTimeout(api.get('/api/vpn/hashes'), hashSyncDeadline)
+            if (again) {
+              const refreshed = mapHashesResponse(again.data)
+              if (refreshed.length > items.length) {
+                saveHashItems(refreshed)
+                items = refreshed
+              }
             }
+          } catch {
+            /* AI-агент может быть выключен */
           }
-        } catch {
-          /* AI-агент может быть выключен */
         }
       }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      pushLog('Main', `hash sync: ${msg}`, 'W')
     }
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e)
-    pushLog('Main', `hash sync: ${msg}`, 'W')
   }
 
   const serverHashes = activeServerHashes(items).map(i => i.hash.trim()).filter(Boolean)

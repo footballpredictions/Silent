@@ -27,8 +27,8 @@ const (
 	keepaliveInterval  = 15 * time.Second
 )
 
-// Параллельные DTLS handshake — как Android libclient (32).
-var handshakeSem = make(chan struct{}, 32)
+// Windows: не более 8 параллельных DTLS (32 ломает сокеты, 3 — медленный ramp).
+var handshakeSem = make(chan struct{}, 8)
 
 // NullLoggerFactory подавляет логи pion
 type NullLoggerFactory struct{}

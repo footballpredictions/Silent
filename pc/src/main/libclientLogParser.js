@@ -97,6 +97,7 @@ function parseLibclientLine(lineTrim) {
     return null
   }
   if (lineTrim.includes('[СЕССИЯ #')) return null
+  if (lineTrim.includes('[ГРУППА #')) return null
 
   if (isError) {
     let errorKey = 'general_error'

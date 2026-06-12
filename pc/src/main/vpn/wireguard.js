@@ -13,8 +13,8 @@ const TUNNEL_CONF_NAME = 'wg-turn.conf'
 const SERVICE_NAME = `WireGuardTunnel$${TUNNEL_NAME}`
 const STABLE_CONF_DIR = path.join(process.env.ProgramData || 'C:\\ProgramData', 'SilentVPN')
 const STABLE_WG_DIR = path.join(STABLE_CONF_DIR, 'wireguard')
-/** DNS как Android WireGuardConfigBuilder; Cloudflare — запасной. */
-const WG_DNS = '77.88.8.8,77.88.8.1'
+/** DNS: Cloudflare для CDN/YouTube, Yandex — VK/РФ. */
+const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
 
 function normalizeDnsValue(_raw) {
   return WG_DNS
@@ -316,8 +316,15 @@ function countAllowedRoutes(allowedIPsValue) {
   return allowedIPsValue.split(',').map(s => s.trim()).filter(Boolean).length
 }
 
-function buildAllowedIPsForWindows(_excludeIPs, _send) {
-  return '0.0.0.0/0'
+function buildAllowedIPsForWindows(excludeIPs, send) {
+  if (!excludeIPs.length) return '0.0.0.0/0'
+  const split = generateExclusionAllowedIPs(excludeIPs)
+  const n = countAllowedRoutes(split)
+  if (n > MAX_WINDOWS_ALLOWED_ROUTES) {
+    send?.(`[WG] Слишком много маршрутов (${n}) — AllowedIPs = 0.0.0.0/0`)
+    return '0.0.0.0/0'
+  }
+  return split
 }
 
 function generateExclusionAllowedIPs(excludeIPs) {

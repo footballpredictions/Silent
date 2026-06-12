@@ -414,7 +414,7 @@ async function cleanupVpnAsync() {
 async function fastDisconnectVpn() {
   cleanupVpn()
   forceStopWireGuard(isDev, __dirname, sendLog)
-  await waitForTunnelDown(4000, sendLog)
+  await waitForTunnelDown(2000, sendLog)
 }
 
 function wdttExePath() {
@@ -491,6 +491,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
     activeWorkerCount = 0
   }
 
+  const excludeIPs = new Set()
+  if (config.server_ip) excludeIPs.add(config.server_ip)
   const apiConf = buildWgConfigFromApi(config)
 
   let wgAttempted = false
@@ -550,7 +552,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     fs.writeFileSync(confPath, normalizedConf)
     await sleep(150)
 
-    const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [], {
+    const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
       skipWdttWait: true,
       // Bootstrap: только 10.66.66.0/24. Основной VPN: 0.0.0.0/0 — на белых списках YouTube только через туннель.
       subnetOnly: vpnBootstrapMode,
@@ -761,11 +763,11 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 })
 
 ipcMain.handle('vpn-disconnect', async (_, opts) => {
-  if (opts?.fast) {
-    await fastDisconnectVpn()
+  if (opts?.slow) {
+    await cleanupVpnAsync()
     return { success: true }
   }
-  await cleanupVpnAsync()
+  await fastDisconnectVpn()
   return { success: true }
 })
 

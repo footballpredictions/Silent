@@ -208,27 +208,63 @@ async def prune_idle_sessions(db: AsyncSession, user_id) -> int:
 
 
 async def collapse_duplicate_devices(db: AsyncSession, user_id) -> int:
-    """Один слот на device_type в списке сессий (оставляем online или самый свежий)."""
+    """Удалить только повторы одного fingerprint (разные телефоны/ПК — отдельные слоты)."""
     removed = 0
-    for dtype in ("android", "pc", "ios", "windows"):
-        result = await db.execute(
-            select(Device)
-            .where(Device.user_id == user_id, Device.device_type == dtype)
-            .order_by(
-                Device.is_connected.desc(),
-                Device.last_connected.desc().nullslast(),
-                Device.created_at.desc(),
-            )
+    result = await db.execute(
+        select(Device)
+        .where(Device.user_id == user_id)
+        .order_by(
+            Device.is_connected.desc(),
+            Device.last_connected.desc().nullslast(),
+            Device.created_at.desc(),
         )
-        rows = result.scalars().all()
-        if len(rows) <= 1:
+    )
+    seen: set[str] = set()
+    for d in result.scalars().all():
+        fp = (d.device_fingerprint or "").strip()
+        if not fp:
             continue
-        for d in rows[1:]:
+        if fp in seen:
             await db.delete(d)
             removed += 1
+        else:
+            seen.add(fp)
     if removed:
         await db.commit()
     return removed
+
+
+async def dedupe_duplicate_fingerprint(
+    db: AsyncSession,
+    user_id,
+    device_fingerprint: str,
+) -> int:
+    """Одна запись на fingerprint (гонка register/login), не трогаем другие устройства."""
+    fp = (device_fingerprint or "").strip()
+    if not fp:
+        return 0
+    result = await db.execute(
+        select(Device)
+        .where(Device.user_id == user_id, Device.device_fingerprint == fp)
+        .order_by(
+            Device.is_connected.desc(),
+            Device.last_connected.desc().nullslast(),
+            Device.created_at.desc(),
+        )
+    )
+    rows = result.scalars().all()
+    if len(rows) <= 1:
+        return 0
+    for d in rows[1:]:
+        await db.delete(d)
+    await db.commit()
+    logger.info(
+        "dedupe fingerprint: removed %d duplicate(s) for user %s keep %s",
+        len(rows) - 1,
+        user_id,
+        fp[:16],
+    )
+    return len(rows) - 1
 
 
 async def dedupe_same_type_devices(
@@ -237,27 +273,8 @@ async def dedupe_same_type_devices(
     device_type: str,
     keep_fingerprint: str,
 ) -> int:
-    """Один слот на тип (android/pc): убрать дубли с другим fingerprint (гонка registerDevice)."""
-    result = await db.execute(
-        select(Device).where(
-            Device.user_id == user_id,
-            Device.device_type == device_type,
-            Device.device_fingerprint != keep_fingerprint,
-        )
-    )
-    dupes = result.scalars().all()
-    for d in dupes:
-        await db.delete(d)
-    if dupes:
-        await db.commit()
-        logger.info(
-            "dedupe %s: removed %d duplicate(s) for user %s, keep %s",
-            device_type,
-            len(dupes),
-            user_id,
-            keep_fingerprint[:16],
-        )
-    return len(dupes)
+    """Deprecated alias — только dedupe по fingerprint."""
+    return await dedupe_duplicate_fingerprint(db, user_id, keep_fingerprint)
 
 
 async def replace_same_type_session(
@@ -266,8 +283,8 @@ async def replace_same_type_session(
     device_type: str,
     device_fingerprint: str,
 ) -> int:
-    """Новый login с другим fingerprint того же типа — убираем старую запись (переустановка)."""
-    return await dedupe_same_type_devices(db, user_id, device_type, device_fingerprint)
+    """Deprecated: больше не удаляем другие устройства того же типа."""
+    return await dedupe_duplicate_fingerprint(db, user_id, device_fingerprint)
 
 
 async def prune_old_sessions(db: AsyncSession, user_id) -> int:

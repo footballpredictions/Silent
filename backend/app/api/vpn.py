@@ -28,7 +28,6 @@ from app.services.vpn_service import (
     get_bootstrap_hashes_for_user,
     count_connected_sessions,
     clear_stale_online_status,
-    dedupe_same_type_devices,
     set_device_online,
     mark_client_disconnect_latch,
 )
@@ -226,18 +225,6 @@ async def connect(
     device.last_connected = datetime.utcnow()
     device.last_ip = req.last_ip
     await db.commit()
-    # Снять «online» и удалить дубли того же типа (два android с одного телефона).
-    others = await db.execute(
-        select(Device).where(
-            Device.user_id == user.id,
-            Device.device_type == device.device_type,
-            Device.device_fingerprint != req.device_fingerprint,
-        )
-    )
-    for other in others.scalars().all():
-        other.is_connected = False
-    await db.commit()
-    await dedupe_same_type_devices(db, user.id, device.device_type, req.device_fingerprint)
     return {"status": "connected", "mode": "full" if await user_has_active_subscription(user, db) else "bootstrap"}
 
 

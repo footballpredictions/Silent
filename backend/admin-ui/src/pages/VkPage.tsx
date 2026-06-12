@@ -137,6 +137,22 @@ export default function VkPage({ token }: { token: string }) {
     }
   }
 
+  const disconnectAgent = async () => {
+    setLoading(true)
+    setErr('')
+    try {
+      const res = await fetch('/api/admin/vk/agent/disconnect', { method: 'POST', headers: authH })
+      const { ok, data } = await parseApi(res)
+      if (!ok) throw new Error(String(data.detail || 'Ошибка'))
+      setMsg(String(data.message || 'Агент отключён'))
+      load()
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Ошибка')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const addManual = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!hashUserId) {
@@ -245,20 +261,34 @@ export default function VkPage({ token }: { token: string }) {
         </div>
         <div className="p-5 space-y-3">
           <p className="text-xs text-[#666] leading-relaxed">
-            Агент каждые ~5 мин проверяет 4 слота у каждого пользователя и пересоздаёт сломанные хеши.
+            Агент каждые ~5 мин проверяет 4 слота у каждого пользователя: создаёт недостающие и заменяет сломанные хеши.
           </p>
+          {!status?.vk_linked && (
+            <p className="text-xs text-amber-400/90">
+              Сначала обновите токен VK (шаг 1) — без него звонки не создаются.
+            </p>
+          )}
           <p className="text-sm text-[#888]">
-            {status?.agent_connected ? 'Подключён' : 'Не подключён'}
-            {status ? ` · ${status.hashes_active} активных` : ''}
+            {status?.agent_connected ? '✓ Подключён и работает' : status?.agent_enabled ? 'Включён, но токен/calls не OK' : 'Не подключён'}
+            {status ? ` · ${status.hashes_active} активных хешей` : ''}
           </p>
           <div className="flex flex-wrap gap-2">
             <button
               onClick={connectAgent}
-              disabled={loading}
+              disabled={loading || !status?.vk_linked}
               className="bg-white text-black px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-[#e5e5e5] disabled:opacity-40"
             >
               Подключить агента
             </button>
+            {status?.agent_enabled && (
+              <button
+                onClick={disconnectAgent}
+                disabled={loading}
+                className="border border-[#333] px-4 py-2.5 rounded-xl text-sm text-[#aaa] hover:border-red-500 hover:text-red-400"
+              >
+                Отключить
+              </button>
+            )}
             <button
               onClick={cleanupBootstrap}
               className="border border-[#333] px-4 py-2.5 rounded-xl text-sm text-[#aaa] hover:border-red-500 hover:text-red-400 inline-flex items-center gap-1"

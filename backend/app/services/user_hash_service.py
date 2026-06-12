@@ -209,22 +209,14 @@ async def request_hash_refresh(db: AsyncSession, user: User) -> tuple[bool, str]
 
 
 async def list_users_for_monitor(db: AsyncSession) -> list[uuid.UUID]:
-    """Users with bootstrap or server hashes — for AI monitor."""
+    """Все активные пользователи (кроме bootstrap) — агент заполняет слоты 0–3."""
     result = await db.execute(
         select(User.id).where(
             User.is_active == True,
             User.email != BOOTSTRAP_USER_EMAIL,
-            User.bootstrap_hash.isnot(None),
         )
     )
-    ids = [row[0] for row in result.fetchall()]
-    result2 = await db.execute(
-        select(VkHash.user_id).where(VkHash.user_id.isnot(None), VkHash.is_active == True).distinct()
-    )
-    for (uid,) in result2.fetchall():
-        if uid and uid not in ids:
-            ids.append(uid)
-    return ids
+    return [row[0] for row in result.fetchall()]
 
 
 FAIL_COUNT_DEACTIVATE = 5

@@ -552,19 +552,14 @@ async def vk_agent_connect(
     await set_calls_verified(db, True)
 
     try:
-        active = (await db.execute(
-            select(func.count(VkHash.id)).where(VkHash.is_active == True)
-        )).scalar_one()
-        if active < 3:
-            success, message = await manager.recreate_all_hashes()
-            if not success:
-                raise HTTPException(status_code=400, detail=message)
-        else:
-            await manager.check_and_heal()
-            message = "Агент подключён, хеши проверены"
+        await manager.check_and_heal()
         await set_agent_enabled(db, True)
         await set_calls_verified(db, True)
-        return {"success": True, "message": message, "agent_connected": True}
+        return {
+            "success": True,
+            "message": "Агент подключён — хеши проверены и созданы для всех пользователей",
+            "agent_connected": True,
+        }
     finally:
         await manager.close()
 

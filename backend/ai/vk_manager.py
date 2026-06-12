@@ -225,9 +225,21 @@ class VkManager:
             .order_by(VkHash.slot_index)
         )
         hashes = result.scalars().all()
-        if not hashes:
-            for slot in range(MAX_HASHES):
+        active_slots = {h.slot_index for h in hashes}
+
+        # Заполнить пустые слоты 0–3
+        for slot in range(MAX_HASHES):
+            if slot not in active_slots:
                 await self.create_hash_for_user_slot(user_id, slot)
+                await asyncio.sleep(2)
+
+        result = await self.db.execute(
+            select(VkHash)
+            .where(VkHash.user_id == user_id, VkHash.is_active == True)
+            .order_by(VkHash.slot_index)
+        )
+        hashes = result.scalars().all()
+        if not hashes:
             return
 
         failed = []

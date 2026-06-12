@@ -27,8 +27,8 @@ const (
 	keepaliveInterval  = 15 * time.Second
 )
 
-// Каскадный старт групп — не более 3 одновременных DTLS handshake.
-var handshakeSem = make(chan struct{}, 3)
+// Параллельные DTLS handshake — как Android libclient (32).
+var handshakeSem = make(chan struct{}, 32)
 
 // NullLoggerFactory подавляет логи pion
 type NullLoggerFactory struct{}

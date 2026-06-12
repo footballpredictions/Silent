@@ -491,8 +491,6 @@ async function beginWdttSession(config, { switching = false } = {}) {
     activeWorkerCount = 0
   }
 
-  const excludeIPs = new Set()
-  if (config.server_ip) excludeIPs.add(config.server_ip)
   const apiConf = buildWgConfigFromApi(config)
 
   let wgAttempted = false
@@ -552,7 +550,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     fs.writeFileSync(confPath, normalizedConf)
     await sleep(150)
 
-    const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
+    const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [], {
       skipWdttWait: true,
       // Bootstrap: только 10.66.66.0/24. Основной VPN: 0.0.0.0/0 — на белых списках YouTube только через туннель.
       subnetOnly: vpnBootstrapMode,

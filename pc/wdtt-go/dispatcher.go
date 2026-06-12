@@ -31,13 +31,12 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	returnChBuf      = 65536
-	writeLoopWorkers = 12
-	uploadRetryMs    = 100
+	returnChBuf      = 4096
+	writeLoopWorkers = 4
+	uploadRetryMs    = 30
 
-	// chunkSize — пакеты одного TCP-потока (YouTube) через один TURN relay.
-	// chunk=256: меньше reorder/cwnd collapse на первом открытии страницы.
-	chunkSize = 256
+	// chunkSize — как Android libclient: 16 пакетов на один TURN relay (TCP/YouTube).
+	chunkSize = 16
 )
 
 type WorkerSlot struct {

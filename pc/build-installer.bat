@@ -60,14 +60,14 @@ for %%F in (dist\renderer\assets\*.css) do (
   echo OK: renderer CSS %%~nxF ^(%%~zF bytes^)
 )
 
-echo [3/3] NSIS installer -^> build-release-1134\
+echo [3/3] NSIS installer -^> build-release-1135\
 call npx electron-builder --win nsis --publish never
 if errorlevel 1 (
   echo electron-builder FAILED
   exit /b 1
 )
 
-for %%F in ("build-release-1134\Silent VPN Setup *.exe") do (
+for %%F in ("build-release-1135\Silent VPN Setup *.exe") do (
   echo.
   echo OK: %%~fF
   if not exist "..\releases" mkdir "..\releases"

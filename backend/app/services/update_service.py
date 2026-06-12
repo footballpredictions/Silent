@@ -56,12 +56,24 @@ def is_newer(latest: str, current: str) -> bool:
     return _parse_version(latest) > _parse_version(current)
 
 
+def _download_url(platform: str, filename: str) -> str:
+    from urllib.parse import quote
+    return f"/update/{platform}/{quote(filename)}"
+
+
 def list_all() -> list[dict]:
     ensure_dirs()
     out = []
     for platform in PLATFORMS:
         m = _read_manifest(platform)
-        if m:
+        if m and m.get("filename"):
+            fn = m["filename"]
+            file_path = os.path.join(_platform_dir(platform), fn)
+            entry = {"platform": platform, **m}
+            if os.path.isfile(file_path):
+                entry["download_url"] = _download_url(platform, fn)
+            out.append(entry)
+        elif m:
             out.append({"platform": platform, **m})
         else:
             out.append({"platform": platform, "version": None, "filename": None, "uploaded_at": None, "size": 0})

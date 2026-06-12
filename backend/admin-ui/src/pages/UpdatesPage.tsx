@@ -30,6 +30,12 @@ const platformLabel: Record<string, string> = {
   android: 'Android',
 }
 
+function downloadHref(item: UpdateInfo): string | null {
+  if (item.download_url) return item.download_url
+  if (!item.filename) return null
+  return `/update/${item.platform}/${encodeURIComponent(item.filename)}`
+}
+
 export default function UpdatesPage({ token }: { token: string }) {
   const [items, setItems] = useState<UpdateInfo[]>([])
   const [loading, setLoading] = useState(true)
@@ -131,10 +137,10 @@ export default function UpdatesPage({ token }: { token: string }) {
               </div>
 
               <div className="mt-4 pt-4 border-t border-[#222] flex flex-wrap items-center gap-3">
-                {item.download_url && (
+                {downloadHref(item) && (
                   <a
-                    href={item.download_url}
-                    download
+                    href={downloadHref(item)!}
+                    download={item.filename || true}
                     className="inline-flex items-center gap-2 bg-[#1a1a1a] border border-[#2a2a2a] text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#222] transition-colors"
                   >
                     <Download className="w-4 h-4" />

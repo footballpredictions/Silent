@@ -529,6 +529,9 @@ class MainViewModel @Inject constructor(
         if (!bootstrapVpnMode && repo.isLoggedIn()) {
             watchTunnelDataSyncFromCache()
         }
+        if (!bootstrapVpnMode && !WdttTunnelManager.isBootstrapMode()) {
+            checkForAppUpdate()
+        }
     }
 
     private fun watchTunnelDataSyncFromCache() {
@@ -559,19 +562,24 @@ class MainViewModel @Inject constructor(
 
     private var updateCheckInFlight = false
 
-    /** Проверка OTA по public HTTPS — без VPN, при старте и на главном экране. */
+    /** Проверка OTA: public HTTPS, затем tunnel если VPN поднят (бэкенд может быть заблокирован без VPN). */
     fun checkForAppUpdate() {
         if (updateCheckInFlight) return
         updateCheckInFlight = true
         viewModelScope.launch {
             try {
                 val version = com.silent.vpn.BuildConfig.VERSION_NAME
+                var ok = false
                 val bases = listOf(
                     repo.getPublicServerUrl().trimEnd('/'),
                     "https://${SilentRepository.DEFAULT_SERVER_HOST}",
                 ).distinct()
                 for (base in bases) {
-                    if (tryCheckUpdateOnBase(base, version)) break
+                    ok = runCatching { tryCheckUpdateOnBase(base, version) }.getOrDefault(false)
+                    if (ok) break
+                }
+                if (!ok) {
+                    tryCheckUpdateViaTunnel(version)
                 }
             } catch (e: Exception) {
                 DebugLog.w("MainViewModel", "checkUpdate: ${e.message}")
@@ -610,9 +618,22 @@ class MainViewModel @Inject constructor(
         // No-op: периодический поллинг убран, чтобы не дёргать WG overlay.
     }
 
-    /** Главный экран: повторная проверка OTA (не зависит от VPN). */
+    /** Главный экран: проверка OTA (public, при VPN — повтор через tunnel). */
     fun setUpdatePolling(active: Boolean) {
         if (active) checkForAppUpdate()
+    }
+
+    private suspend fun tryCheckUpdateViaTunnel(version: String): Boolean {
+        if (!SilentVpnService.isRunning || !WdttTunnelManager.tunnelReady.value) return false
+        if (WdttTunnelManager.isBootstrapMode()) return false
+        repo.prepareTunnelApiFromCachedConfig()
+        return runCatching {
+            repo.withBackendApi {
+                tryCheckUpdateViaRepoApi(version)
+            }
+        }.onFailure { e ->
+            DebugLog.w("MainViewModel", "checkUpdate tunnel: ${e.message}")
+        }.getOrDefault(false)
     }
 
     private suspend fun tryCheckUpdateOnBase(base: String, version: String): Boolean {

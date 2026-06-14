@@ -69,6 +69,13 @@ function normalizeServerIp(raw) {
 const { createNetworkMonitor } = require('./vpn/networkRecovery')
 const { createSessionTrace } = require('./sessionTrace')
 const { parseLibclientLine } = require('./libclientLogParser')
+const { parseHashFailureFromLine } = require('./hashFailureFromLog')
+
+const ZERO_WORKERS_RELAUNCH_MS = 90_000
+let sessionVkHashes = []
+const groupHashPrefix = new Map()
+let zeroWorkersSinceMs = 0
+let zeroWorkersWatchdogTimer = null
 
 function resolveAssetPath(relativePath) {
   const rel = relativePath.replace(/^[/\\]+/, '')
@@ -244,6 +251,58 @@ function sendWdttLog(entry) {
   }
 }
 
+function sendHashFailureReport(payload) {
+  if (!payload?.hash || mainWindow?.isDestroyed()) return
+  mainWindow.webContents.send('hash-failure', payload)
+}
+
+function resetHashFailureSessionState() {
+  sessionVkHashes = []
+  groupHashPrefix.clear()
+  zeroWorkersSinceMs = 0
+  if (zeroWorkersWatchdogTimer) {
+    clearInterval(zeroWorkersWatchdogTimer)
+    zeroWorkersWatchdogTimer = null
+  }
+}
+
+function hashFailureCtx() {
+  return {
+    sessionVkHashes,
+    groupHashPrefix,
+    tunnelReady: wgApplied && tunnelReadySent,
+  }
+}
+
+function maybeReportHashFailureFromLine(line) {
+  const failure = parseHashFailureFromLine(line, hashFailureCtx())
+  if (failure) sendHashFailureReport(failure)
+}
+
+function startZeroWorkersWatchdog() {
+  if (zeroWorkersWatchdogTimer) clearInterval(zeroWorkersWatchdogTimer)
+  zeroWorkersSinceMs = 0
+  zeroWorkersWatchdogTimer = setInterval(() => {
+    if (!vpnSessionActive || !wgApplied || !tunnelReadySent || transportSwitching) {
+      zeroWorkersSinceMs = 0
+      return
+    }
+    if (!isWdttAlive()) return
+    if (activeWorkerCount > 0) {
+      zeroWorkersSinceMs = 0
+      return
+    }
+    const now = Date.now()
+    if (!zeroWorkersSinceMs) zeroWorkersSinceMs = now
+    else if (now - zeroWorkersSinceMs >= ZERO_WORKERS_RELAUNCH_MS) {
+      zeroWorkersSinceMs = 0
+      sendLog('[VPN] 0 активных воркеров 90с — перезапуск wdtt…')
+      transportSwitching = true
+      scheduleWdttRelaunch(800)
+    }
+  }, 5000)
+}
+
 function sendLog(line) {
   const trimmed = String(line || '').trim()
   if (!trimmed) return
@@ -274,6 +333,7 @@ function clearFullTunnelUpgradeTimer() {
 }
 
 function cleanupVpn() {
+  resetHashFailureSessionState()
   vpnBootstrapMode = false
   wgCredPhase = false
   expectedCredGroups = 1
@@ -496,7 +556,11 @@ async function beginWdttSession(config, { switching = false } = {}) {
   const confPath = path.join(tmpDir, 'wg-turn.conf')
   if (!switching && fs.existsSync(confPath)) fs.unlinkSync(confPath)
 
-  const hashes = (config.vk_hashes || []).filter(Boolean).join(',')
+  const hashList = (config.vk_hashes || []).filter(Boolean)
+  sessionVkHashes = hashList
+  groupHashPrefix.clear()
+  zeroWorkersSinceMs = 0
+  const hashes = hashList.join(',')
   const workers = Math.min(Math.max(Number(config.stream_count) || 108, 9), 108)
   sessionTargetWorkers = workers
   sendLog(
@@ -701,9 +765,11 @@ async function beginWdttSession(config, { switching = false } = {}) {
   }
 
   const handleLine = async (line) => {
+    maybeReportHashFailureFromLine(line)
     const statsMatch = line.match(/Активных:\s*(\d+)/)
     if (statsMatch) {
       activeWorkerCount = parseInt(statsMatch[1], 10)
+      if (activeWorkerCount > 0) zeroWorkersSinceMs = 0
       if (wgApplied) ensureVpnReadyEvent(sendLog)
       const now = Date.now()
       if (now - lastStatsLogToUiAt >= 8000) {
@@ -859,7 +925,10 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     transportSwitching = false
 
     const result = await beginWdttSession(config, { switching: false })
-    if (!result.error) startNetworkMonitor()
+    if (!result.error) {
+      startNetworkMonitor()
+      startZeroWorkersWatchdog()
+    }
     trace().exit('Main.vpnConnect', result.error ? `error=${result.error}` : 'ok')
     return result
   } finally {

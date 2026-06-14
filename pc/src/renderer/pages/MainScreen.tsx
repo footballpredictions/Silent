@@ -39,6 +39,7 @@ import {
 import { checkForUpdate, getAppVersion, type UpdateInfo } from '../updateCheck'
 import { getApiBaseUrl } from '../tunnelApi'
 import { notifyConnect } from '../vpnBackendSync'
+import { flushPendingHashFailures, resetHashFailureReporter } from '../hashFailureReporter'
 
 interface DeviceInfo {
   id: string
@@ -235,6 +236,7 @@ export default function MainScreen({
       if (!ok) onlineMarkedRef.current = false
       await fetchProfile()
       setTimeout(() => { void syncHashesWhenTunnelUp() }, 60_000)
+      void flushPendingHashFailures()
     } catch {
       onlineMarkedRef.current = false
     }
@@ -260,6 +262,7 @@ export default function MainScreen({
     const onStopped = () => {
       onlineMarkedRef.current = false
       clearTunnelApiBase()
+      resetHashFailureReporter()
       setConnected(false)
       setConnecting(false)
       setActiveWorkers(0)

@@ -17,12 +17,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onVpnReady: (cb) => ipcRenderer.on('vpn-ready', (_, ok) => cb(ok)),
   onVpnError: (cb) => ipcRenderer.on('vpn-error', (_, msg) => cb(msg)),
   onVpnStopped: (cb) => ipcRenderer.on('vpn-stopped', (_, code) => cb(code)),
+  onHashFailure: (cb) => ipcRenderer.on('hash-failure', (_, payload) => cb(payload)),
   removeVpnListeners: () => {
     ipcRenderer.removeAllListeners('vpn-log')
     ipcRenderer.removeAllListeners('wdtt-log')
     ipcRenderer.removeAllListeners('vpn-ready')
     ipcRenderer.removeAllListeners('vpn-error')
     ipcRenderer.removeAllListeners('vpn-stopped')
+    ipcRenderer.removeAllListeners('hash-failure')
   },
   removeDebugLogListeners: () => {
     ipcRenderer.removeAllListeners('debug-log')

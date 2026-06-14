@@ -35,11 +35,11 @@ object AppStateMigration {
                 fp.isBlank() && stable.isNotBlank() ->
                     prefs.edit().putString(SilentRepository.PREF_DEVICE_FP, stable).apply()
             }
-            // Старый кеш WG/профиля после OTA → connect без register, сессия offline.
+            // Старый кеш WG после OTA → connect без register, сессия offline.
+            // Профиль не трогаем — пользователь должен видеть подписку сразу после обновления.
             prefs.edit()
                 .remove(SilentRepository.PREF_CACHED_CONFIG)
                 .remove(SilentRepository.PREF_CACHED_CONFIG_TS)
-                .remove(SilentRepository.PREF_CACHED_PROFILE)
                 .apply()
         }
 

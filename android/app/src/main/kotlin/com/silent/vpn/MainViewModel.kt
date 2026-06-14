@@ -307,8 +307,8 @@ class MainViewModel @Inject constructor(
     private suspend fun refreshSession() {
         loadTheme()
         restoreCachedProfileToUi()
+        fetchProfileNow(force = _profile.value == null)
         if (!SilentVpnService.isRunning) {
-            fetchProfileNow()
             syncServerHashes(preferPublicOnly = true)
         }
     }
@@ -420,25 +420,21 @@ class MainViewModel @Inject constructor(
         syncVpnStateFromSystem()
         resumeProfileJob?.cancel()
         resumeProfileJob = viewModelScope.launch {
-            if (
-                _profile.value == null &&
-                repo.isLoggedIn() &&
-                _vpnState.value == VpnState.DISCONNECTED &&
-                !VpnSessionState.isBusy()
-            ) {
+            if (_profile.value == null && repo.isLoggedIn() && !VpnSessionState.isBusy()) {
                 runCatching {
                     if (bootstrapVpnMode && SilentVpnService.isRunning) {
-                        withBootstrapBackendApi { fetchProfileNow() }
+                        withBootstrapBackendApi { fetchProfileNow(force = true) }
                         if (_profile.value != null) {
                             disconnectBootstrapVpn(appContext)
                         }
                     } else {
-                        fetchProfileNow()
+                        fetchProfileNow(force = true)
                     }
                 }.onFailure { e ->
                     DebugLog.w("MainViewModel", "resume profile fetch: ${e.message}")
                 }
             }
+            restoreCachedProfileToUi()
             if (SilentVpnService.isRunning && VpnSessionState.isActive()) {
                 if (_vpnState.value != VpnState.CONNECTED) {
                     _vpnState.value = VpnState.CONNECTED
@@ -857,7 +853,7 @@ class MainViewModel @Inject constructor(
                 repo.withBackendApi { tryFetchProfileViaRepoApi() }
             }.getOrDefault(false) || _profile.value != null
         }
-        if (SilentVpnService.isRunning && !bootstrapVpnMode) {
+        if (SilentVpnService.isRunning && !bootstrapVpnMode && !force) {
             return _profile.value != null
         }
         if (

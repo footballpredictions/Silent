@@ -56,7 +56,7 @@ import org.json.JSONObject
 class SilentVpnService : Service() {
 
     companion object {
-        private const val CHANNEL_ID = "silent_vpn_status"
+        private const val CHANNEL_ID = "silent_vpn_fg"
         private const val NOTIF_ID = 1001
         private const val NOTIF_OPEN_REQUEST_CODE = 41_001
         /** Не перезапускать libclient при смене сети в первые 30 с после connect. */
@@ -677,10 +677,22 @@ class SilentVpnService : Service() {
     }
 
     private fun startFg(notification: Notification) {
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(NOTIF_ID, notification)
+        when {
+            Build.VERSION.SDK_INT >= 34 -> {
+                startForeground(
+                    NOTIF_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                )
+            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
+                startForeground(
+                    NOTIF_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                )
+            }
+            else -> startForeground(NOTIF_ID, notification)
         }
     }
 
@@ -738,7 +750,7 @@ class SilentVpnService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .apply {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
                 }
             }
@@ -758,7 +770,7 @@ class SilentVpnService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .apply {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
                 }
             }

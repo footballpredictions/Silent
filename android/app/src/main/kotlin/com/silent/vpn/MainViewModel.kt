@@ -309,6 +309,13 @@ class MainViewModel @Inject constructor(
         loadTheme()
         restoreCachedProfileToUi()
         repo.mergeSavedHashesIntoCachedConfig()
+        if (SilentVpnService.isRunning && VpnSessionState.isActive()) {
+            if (_profile.value == null) {
+                fetchProfileNow(force = true)
+            }
+            ensureVpnConfigRestored(appContext)
+            return
+        }
         fetchProfileNow(force = _profile.value == null)
         if (!SilentVpnService.isRunning) {
             syncServerHashes(preferPublicOnly = true)
@@ -426,6 +433,12 @@ class MainViewModel @Inject constructor(
             reconcileLoginBootstrapSession(appContext)
         } else if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
             restartBootstrapTimerIfNeeded()
+        }
+        if (SilentVpnService.isRunning && VpnSessionState.isActive()) {
+            if (_screen.value != AppScreen.MAIN) _screen.value = AppScreen.MAIN
+            if (_vpnState.value != VpnState.CONNECTED) _vpnState.value = VpnState.CONNECTED
+            restoreCachedProfileToUi()
+            return
         }
         syncSessionOnResume()
     }

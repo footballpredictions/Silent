@@ -461,12 +461,13 @@ class MainViewModel @Inject constructor(
         when {
             VpnSessionState.isActive() -> {
                 _vpnState.value = VpnState.CONNECTED
-                SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "CONNECTED attach")
-                attachExistingSession()
+                restoreCachedProfileToUi()
+                restoreCachedThemeToUi()
             }
             SilentVpnService.isRunning -> {
-                _vpnState.value = VpnState.CONNECTING
-                SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "CONNECTING")
+                _vpnState.value = VpnState.CONNECTED
+                SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "CONNECTED attach")
+                attachExistingSession()
             }
             else -> {
                 _vpnState.value = VpnState.DISCONNECTED

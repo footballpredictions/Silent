@@ -1,5 +1,6 @@
 package com.silent.vpn.service
 
+import android.app.ActivityOptions
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -56,7 +57,7 @@ import org.json.JSONObject
 class SilentVpnService : Service() {
 
     companion object {
-        private const val CHANNEL_ID = "silent_vpn_fg"
+        private const val CHANNEL_ID = "silent_vpn_status_v2"
         private const val NOTIF_ID = 1001
         private const val NOTIF_OPEN_REQUEST_CODE = 41_001
         /** Не перезапускать libclient при смене сети в первые 30 с после connect. */
@@ -698,28 +699,42 @@ class SilentVpnService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(NotificationManager::class.java) ?: return
+            // Старые каналы от прошлых версий — иначе два «Silent VPN» в шторке.
+            listOf("silent_vpn", "silent_vpn_status", "silent_vpn_fg").forEach { oldId ->
+                if (oldId != CHANNEL_ID) nm.deleteNotificationChannel(oldId)
+            }
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Silent VPN",
                 NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
                 description = "Статус VPN и скорость"
-                setShowBadge(true)
+                setShowBadge(false)
                 enableVibration(false)
                 setSound(null, null)
             }
-            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+            nm.createNotificationChannel(channel)
         }
     }
 
     private fun openAppIntent(): PendingIntent {
         val intent = MainActivity.openIntent(this)
-        return PendingIntent.getActivity(
-            this,
-            NOTIF_OPEN_REQUEST_CODE,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val options = ActivityOptions.makeBasic()
+                .setPendingIntentBackgroundActivityStartMode(
+                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
+                )
+            return PendingIntent.getActivity(
+                this,
+                NOTIF_OPEN_REQUEST_CODE,
+                intent,
+                piFlags,
+                options.toBundle(),
+            )
+        }
+        return PendingIntent.getActivity(this, NOTIF_OPEN_REQUEST_CODE, intent, piFlags)
     }
 
     private fun notificationTitle(ready: Boolean): String = when {
@@ -749,11 +764,6 @@ class SilentVpnService : Service() {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .apply {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-                }
-            }
             .build()
 
     private fun buildActiveNotification(stats: String): Notification {
@@ -769,11 +779,6 @@ class SilentVpnService : Service() {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .apply {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-                }
-            }
             .build()
     }
 
@@ -785,9 +790,7 @@ class SilentVpnService : Service() {
         if (now - lastNotifUpdateMs < NOTIF_UPDATE_MIN_MS && lastNotifBody.isNotBlank()) return
         lastNotifUpdateMs = now
         lastNotifBody = body
-        val notification = buildActiveNotification(stats)
-        startFg(notification)
-        getSystemService(NotificationManager::class.java)?.notify(NOTIF_ID, notification)
+        startFg(buildActiveNotification(stats))
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

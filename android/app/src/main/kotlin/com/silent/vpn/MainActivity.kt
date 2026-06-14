@@ -71,6 +71,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private var pendingNotificationOpen = false
+    private val openFromNotification = mutableStateOf(false)
 
     private val installUpdateLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -118,6 +119,14 @@ class MainActivity : ComponentActivity() {
 
             LaunchedEffect(Unit) {
                 handleTileConnectIntent(intent)
+            }
+
+            val fromNotif by openFromNotification
+            LaunchedEffect(fromNotif) {
+                if (fromNotif) {
+                    openFromNotification.value = false
+                    vm.onReturnedToApp()
+                }
             }
 
             LaunchedEffect(vpnPermissionGranted.value) {
@@ -247,11 +256,13 @@ class MainActivity : ComponentActivity() {
         val fromNotification = pendingNotificationOpen
         if (fromNotification) {
             pendingNotificationOpen = false
-            vm.onReturnedToApp()
+            openFromNotification.value = true
         } else {
             vm.onAppResumed()
         }
-        ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
+        if (!fromNotification) {
+            ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
+        }
     }
 
     override fun onPause() {

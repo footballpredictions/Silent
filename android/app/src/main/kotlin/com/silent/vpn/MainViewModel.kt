@@ -503,6 +503,24 @@ class MainViewModel @Inject constructor(
         set(value) { VpnSessionState.backendSyncCompleted = value }
     private val pendingHashFailures = ConcurrentLinkedQueue<Triple<String, String, String>>()
     private var hashFailureFlushJob: Job? = null
+
+    private fun flushPendingHashFailures() {
+        if (pendingHashFailures.isEmpty() || !repo.isLoggedIn()) return
+        val batch = mutableListOf<Triple<String, String, String>>()
+        while (true) {
+            val item = pendingHashFailures.poll() ?: break
+            batch.add(item)
+        }
+        if (batch.isEmpty()) return
+        hashFailureFlushJob?.cancel()
+        hashFailureFlushJob = viewModelScope.launch {
+            repo.reportHashFailuresBatch(batch)
+                .onFailure { e ->
+                    batch.forEach { pendingHashFailures.add(it) }
+                    DebugLog.w("MainViewModel", "hash failure batch: ${e.message}")
+                }
+        }
+    }
     private var lastTunnelAttachAtMs = 0L
     /** Первое подключение туннеля — sync/theme. Resume attach не должен дёргать WG overlay. */
     private fun onVpnTunnelReady(vpnConfig: VpnConfig? = null, initialConnect: Boolean = true) {
@@ -541,6 +559,7 @@ class MainViewModel @Inject constructor(
             refreshHashState()
             markLocalDeviceOnline()
             backendSyncCompleted = true
+            flushPendingHashFailures()
             return
         }
         tunnelSyncWatchJob?.cancel()
@@ -552,6 +571,7 @@ class MainViewModel @Inject constructor(
                     refreshHashState()
                     markLocalDeviceOnline()
                     backendSyncCompleted = true
+                    flushPendingHashFailures()
                     return@launch
                 }
                 if (_vpnState.value != VpnState.CONNECTED && !VpnSessionState.isActive()) return@launch

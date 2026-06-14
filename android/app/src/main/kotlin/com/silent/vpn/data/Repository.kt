@@ -1062,7 +1062,7 @@ class SilentRepository @Inject constructor(
     suspend fun reportHashFailure(hash: String, errorType: String, message: String): Result<Unit> {
         if (!isLoggedIn()) return Result.failure(IllegalStateException("not logged in"))
         return runCatching {
-            withTunnelApiWhenExcluded {
+            withBackendApi {
                 reportHashFailureDirect(hash, errorType, message)
             }
         }
@@ -1073,7 +1073,7 @@ class SilentRepository @Inject constructor(
     ): Result<Unit> {
         if (!isLoggedIn() || items.isEmpty()) return Result.success(Unit)
         return runCatching {
-            withTunnelApiWhenExcluded {
+            withBackendApi {
                 items.forEach { (hash, errorType, message) ->
                     reportHashFailureDirect(hash, errorType, message)
                 }

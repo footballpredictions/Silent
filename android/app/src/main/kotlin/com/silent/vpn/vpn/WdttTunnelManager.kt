@@ -544,6 +544,18 @@ object WdttTunnelManager {
                                 }
                             }
                         }
+                        if (
+                            tunnelReady.value &&
+                            (lineTrim.contains("хеш мёртв", true) ||
+                                lineTrim.contains("call not found", true))
+                        ) {
+                            val hashHint = Regex("""(?:хеш|hash):\s*(\S+)""", RegexOption.IGNORE_CASE)
+                                .find(lineTrim)?.groupValues?.getOrNull(1)
+                                ?: sessionVkHashes.firstOrNull()
+                            hashHint?.let { h ->
+                                HashFailureReporter.report(scope, h, "hash_dead", lineTrim)
+                            }
+                        }
                     }
 
                     val isError = lineTrim.contains("Ошибка", true) ||

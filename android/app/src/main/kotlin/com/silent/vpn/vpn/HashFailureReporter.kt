@@ -26,6 +26,7 @@ object HashFailureReporter {
     fun report(scope: CoroutineScope, hashHint: String, errorType: String, message: String) {
         val hash = hashHint.trim()
         if (hash.length < 6) return
+        if (isTransientHashError(message)) return
         val type = errorType.trim().ifBlank { "unknown" }
         val key = "${hash.take(32)}|$type"
         val now = System.currentTimeMillis()
@@ -38,5 +39,21 @@ object HashFailureReporter {
             runCatching { fn(hash, type, message.take(500)) }
                 .onFailure { e -> DebugLog.w(TAG, "report failed: ${e.message}") }
         }
+    }
+
+    /** Не считаем «хеш сломан»: капча, сеть, временные ошибки VK API. */
+    private fun isTransientHashError(message: String): Boolean {
+        val m = message.lowercase()
+        if (m.isBlank()) return true
+        if (m.contains("captcha")) return true
+        if (m.contains("i/o timeout") || m.contains("context deadline")) return true
+        if (m.contains("connection refused") || m.contains("connection reset")) return true
+        if (m.contains("rate limit") || m.contains("flood control") || m.contains("error 29")) return true
+        if (m.contains("getanonymoustoken") && m.contains("error 10")) return true
+        if (m.contains("error 10") && m.contains("internal")) return true
+        if (m.contains("timeout") && !m.contains("wrap_auth_timeout")) return true
+        if (m.contains("all vk credentials failed")) return true
+        if (m.contains("global lockout")) return true
+        return false
     }
 }

@@ -29,7 +29,6 @@ async function loadThemeFromServer(): Promise<ClientTheme | null> {
 export default function App() {
   const [screen, setScreen] = useState<Screen>('login')
   const [theme, setTheme] = useState<ClientTheme | null>(() => getCachedTheme())
-  const [resetToken, setResetToken] = useState<string | null>(null)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
 
   useVpnLogSubscription(true)
@@ -48,15 +47,6 @@ export default function App() {
     } else {
       setScreen('login')
     }
-    const api_ = (window as any).electronAPI
-    const onReset = ({ token }: { token: string }) => {
-      if (token) {
-        setResetToken(token)
-        setScreen('login')
-      }
-    }
-    api_?.onResetPasswordLink?.(onReset)
-    return () => api_?.removeResetPasswordLinkListeners?.()
   }, [])
 
   const handleLoginDone = (themeData: ClientTheme | null) => {
@@ -64,12 +54,10 @@ export default function App() {
       setTheme(themeData)
       saveCachedTheme(themeData)
     }
-    setResetToken(null)
     setScreen('main')
   }
 
   const handleLogout = () => {
-    setResetToken(null)
     setScreen('login')
     const cached = getCachedTheme()
     if (cached) setTheme(cached)
@@ -82,12 +70,7 @@ export default function App() {
     <AppErrorBoundary key={getAppVersion()}>
       <div className="w-full h-full">
         {screen === 'login' && (
-          <LoginScreen
-            theme={theme}
-            resetToken={resetToken}
-            onResetDone={() => setResetToken(null)}
-            onLogin={handleLoginDone}
-          />
+          <LoginScreen theme={theme} onLogin={handleLoginDone} />
         )}
         {screen === 'main' && (
           <MainScreen

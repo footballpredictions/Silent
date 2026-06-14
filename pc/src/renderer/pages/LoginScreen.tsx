@@ -34,17 +34,13 @@ import { pushLog } from '../debugLog'
 import { authStrings as s } from '../authStrings'
 import { themeToUi, type ClientTheme } from '../clientTheme'
 
-type LoginStep = 1 | 2 | 'forgot' | 'reset'
+type LoginStep = 1 | 2 | 'forgot'
 
 export default function LoginScreen({
   theme,
-  resetToken,
-  onResetDone,
   onLogin,
 }: {
   theme: ClientTheme | null
-  resetToken?: string | null
-  onResetDone?: () => void
   onLogin: (theme: ClientTheme | null) => void
 }) {
   const ui = useMemo(() => themeToUi(theme), [theme])
@@ -57,9 +53,6 @@ export default function LoginScreen({
   const [rememberMe, setRememberMe] = useState(getRememberMe())
   const [forgotEmail, setForgotEmail] = useState('')
   const [forgotSent, setForgotSent] = useState(false)
-  const [newPassword, setNewPassword] = useState('')
-  const [showNewPassword, setShowNewPassword] = useState(false)
-  const [resetDone, setResetDone] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [regDone, setRegDone] = useState(false)
@@ -74,9 +67,7 @@ export default function LoginScreen({
   const rememberLabel = theme?.login_remember_me_label || 'Запомнить меня'
   const forgotLabel = theme?.login_forgot_password_label || 'Забыли пароль?'
   const forgotTitle = theme?.login_forgot_title || 'Восстановление пароля'
-  const forgotHint = theme?.login_forgot_instruction || 'Введите email — мы отправим ссылку для установки нового пароля.'
-  const resetTitle = theme?.login_reset_title || 'Новый пароль'
-  const resetBtn = theme?.login_reset_button_text || 'Сохранить пароль'
+  const forgotHint = theme?.login_forgot_instruction || 'Введите email — мы отправим ссылку.'
   const linkColor = theme?.login_link_color || ui.linkColor
 
   useEffect(() => {
@@ -86,13 +77,6 @@ export default function LoginScreen({
       setRememberMe(true)
     }
   }, [])
-
-  useEffect(() => {
-    if (resetToken) {
-      setStep('reset')
-      setError('')
-    }
-  }, [resetToken])
 
   useEffect(() => {
     setBootstrapHash(getBootstrapHash())
@@ -252,22 +236,6 @@ export default function LoginScreen({
       setForgotSent(true)
     } catch (err: any) {
       setError(formatApiError(err, 'Ошибка отправки'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleResetPassword = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!resetToken) return
-    setLoading(true)
-    setError('')
-    try {
-      await api.post('/api/auth/reset-password', { token: resetToken, new_password: newPassword })
-      setResetDone(true)
-      onResetDone?.()
-    } catch (err: any) {
-      setError(formatApiError(err, 'Не удалось сохранить пароль'))
     } finally {
       setLoading(false)
     }
@@ -459,9 +427,14 @@ export default function LoginScreen({
             <p className="text-sm font-semibold mb-2" style={{ color: ui.fg }}>{forgotTitle}</p>
             <p className="text-xs mb-4 leading-relaxed" style={{ color: ui.hint }}>{forgotHint}</p>
             {forgotSent ? (
-              <p className="text-xs text-center py-6" style={{ color: ui.green }}>
-                Если email зарегистрирован, письмо отправлено. Откройте ссылку в письме.
-              </p>
+              <div className="text-xs text-center py-6 space-y-2">
+                <p style={{ color: ui.green }}>
+                  Если email зарегистрирован, письмо отправлено.
+                </p>
+                <p style={{ color: ui.hint }}>
+                  Откройте ссылку из письма в браузере — смените пароль на странице сайта, затем войдите в приложение.
+                </p>
+              </div>
             ) : (
               <form onSubmit={handleForgot}>
                 <label className="text-xs" style={{ color: ui.label }}>{s.email}</label>
@@ -496,39 +469,6 @@ export default function LoginScreen({
             >
               ← Назад
             </button>
-          </div>
-        )}
-
-        {step === 'reset' && (
-          <div>
-            <p className="text-sm font-semibold mb-2" style={{ color: ui.fg }}>{resetTitle}</p>
-            {resetDone ? (
-              <div className="text-center py-6">
-                <p className="text-sm font-medium" style={{ color: ui.green }}>Пароль сохранён</p>
-                <button
-                  type="button"
-                  onClick={() => { setStep(bootstrapReady ? 2 : 1); setResetDone(false); setNewPassword('') }}
-                  className="mt-4 text-xs"
-                  style={{ color: ui.fg }}
-                >
-                  {s.login}
-                </button>
-              </div>
-            ) : (
-              <form onSubmit={handleResetPassword}>
-                <label className="text-xs" style={{ color: ui.label }}>{s.password}</label>
-                {passwordField(newPassword, setNewPassword, showNewPassword, () => setShowNewPassword(v => !v))}
-                {error && <p className="text-xs mb-2" style={{ color: ui.red }}>{error}</p>}
-                <button
-                  type="submit"
-                  disabled={loading || newPassword.length < 8}
-                  className="w-full py-3 rounded-xl text-sm font-semibold disabled:opacity-40"
-                  style={{ background: ui.primaryBtnBg, color: ui.primaryBtnFg }}
-                >
-                  {loading ? '…' : resetBtn}
-                </button>
-              </form>
-            )}
           </div>
         )}
       </div>

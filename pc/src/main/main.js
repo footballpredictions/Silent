@@ -34,7 +34,6 @@ let isQuitting = false
 let wdttProcess = null
 let wgApplied = false
 let pendingVkDeepLink = null
-let pendingResetPasswordLink = null
 let vpnSessionActive = false
 let connectStartedAtMs = 0
 let pausedForNetwork = false
@@ -133,25 +132,6 @@ function handleDeepLink(url) {
       }
       return
     }
-    if (u.hostname === 'reset-password') {
-      const token = u.searchParams.get('token')
-      if (!token) return
-      const payload = { token }
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        const send = () => {
-          mainWindow.webContents.send('reset-password-link', payload)
-          mainWindow.show()
-          mainWindow.focus()
-        }
-        if (mainWindow.webContents.isLoading()) {
-          pendingResetPasswordLink = payload
-        } else {
-          send()
-        }
-      } else {
-        pendingResetPasswordLink = payload
-      }
-    }
   } catch {}
 }
 
@@ -198,12 +178,6 @@ function createWindow() {
     if (pendingVkDeepLink) {
       mainWindow.webContents.send('vk-deep-link', pendingVkDeepLink)
       pendingVkDeepLink = null
-      mainWindow.show()
-      mainWindow.focus()
-    }
-    if (pendingResetPasswordLink) {
-      mainWindow.webContents.send('reset-password-link', pendingResetPasswordLink)
-      pendingResetPasswordLink = null
       mainWindow.show()
       mainWindow.focus()
     }

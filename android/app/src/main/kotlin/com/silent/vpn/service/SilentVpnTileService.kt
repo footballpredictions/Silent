@@ -10,6 +10,7 @@ import android.service.quicksettings.TileService
 import android.util.Log
 import android.widget.Toast
 import androidx.annotation.RequiresApi
+import androidx.core.content.ContextCompat
 import com.silent.vpn.MainActivity
 import com.silent.vpn.R
 import com.silent.vpn.vpn.WdttTunnelManager
@@ -104,27 +105,15 @@ class SilentVpnTileService : TileService() {
                 return
             }
 
-            scope.launch {
-                try {
-                    val intent = VpnTileConnect.buildConnectIntentFromCache(this@SilentVpnTileService)
-                    if (intent == null) {
-                        Toast.makeText(
-                            this@SilentVpnTileService,
-                            "Откройте Silent VPN и войдите в аккаунт",
-                            Toast.LENGTH_LONG,
-                        ).show()
-                        openMainActivity()
-                        return@launch
-                    }
-                    startForegroundService(intent)
-                } catch (e: Exception) {
-                    Log.e(TAG, "start via tile failed", e)
-                    Toast.makeText(
-                        this@SilentVpnTileService,
-                        "Ошибка запуска: ${e.localizedMessage}",
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                }
+            runCatching {
+                startConnectDirect()
+            }.onFailure { e ->
+                Log.e(TAG, "start via tile failed", e)
+                Toast.makeText(
+                    this,
+                    "Ошибка запуска: ${e.localizedMessage}",
+                    Toast.LENGTH_SHORT,
+                ).show()
             }
         }.onFailure { e ->
             Log.e(TAG, "onClick failed", e)
@@ -161,6 +150,21 @@ class SilentVpnTileService : TileService() {
         }.onFailure { e ->
             Log.e(TAG, "updateTile failed", e)
         }
+    }
+
+    /** Прямой FGS — без TileConnectActivity (collapse → рабочий стол, onTaskRemoved). */
+    private fun startConnectDirect() {
+        val connectIntent = VpnTileConnect.buildConnectIntentFromCache(this)
+        if (connectIntent == null) {
+            Toast.makeText(
+                this,
+                "Откройте Silent VPN и войдите в аккаунт",
+                Toast.LENGTH_LONG,
+            ).show()
+            openMainActivity()
+            return
+        }
+        ContextCompat.startForegroundService(this, connectIntent)
     }
 
     private fun openMainActivity() {

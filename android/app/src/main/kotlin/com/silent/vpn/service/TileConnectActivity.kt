@@ -10,6 +10,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.silent.vpn.MainActivity
 import com.silent.vpn.util.SessionTrace
+import com.silent.vpn.vpn.WdttTunnelManager
 import kotlinx.coroutines.launch
 
 /** Запрос VPN-разрешения для плитки (если пользователь открыл приложение вручную). */
@@ -32,6 +33,11 @@ class TileConnectActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         SessionTrace.enter("TileConnectActivity.onCreate")
+        if (SilentVpnService.isRunning || WdttTunnelManager.running.value) {
+            SessionTrace.exit("TileConnectActivity.onCreate", "already running")
+            finish()
+            return
+        }
         val prep = VpnService.prepare(this)
         if (prep != null) {
             vpnPermissionLauncher.launch(prep)

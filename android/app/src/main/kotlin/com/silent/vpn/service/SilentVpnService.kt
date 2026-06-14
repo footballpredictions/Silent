@@ -1,6 +1,5 @@
 package com.silent.vpn.service
 
-import android.app.ActivityOptions
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -58,6 +57,7 @@ class SilentVpnService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "silent_vpn_status_v2"
+        private const val PREF_NOTIF_CHANNELS_MIGRATED_V2 = "notif_channels_migrated_v2"
         private const val NOTIF_ID = 1001
         private const val NOTIF_OPEN_REQUEST_CODE = 41_001
         /** Не перезапускать libclient при смене сети в первые 30 с после connect. */
@@ -198,11 +198,23 @@ class SilentVpnService : Service() {
                     ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
                     return START_STICKY
                 }
-        if (WdttTunnelManager.running.value && isRunning && WdttTunnelManager.tunnelReady.value) {
-            SessionTrace.mark("SilentVpnService.CONNECT", "already running")
-            VpnTileHelper.requestUpdate(this)
-            return START_STICKY
-        }
+                if (isRunning || WdttTunnelManager.running.value) {
+                    SessionTrace.mark("SilentVpnService.CONNECT", "ignored — already connecting/running")
+                    VpnTileHelper.requestUpdate(this)
+                    return START_STICKY
+                }
+                try {
+                    acquirePerformanceLocks()
+                    startFg(buildConnectingNotification())
+                } catch (e: Exception) {
+                    SessionTrace.warn("SilentVpnService.CONNECT", "FGS failed: ${e.message}")
+                    DebugLog.e("VpnService", "CONNECT FGS failed", e)
+                    performanceLocksHeld = false
+                    releaseWakeLock()
+                    releaseWifiLock()
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 VpnConnectHelper.prepareForConnect(this)
                 SessionTrace.enter(
                     "SilentVpnService.CONNECT",
@@ -220,10 +232,20 @@ class SilentVpnService : Service() {
                 setupPhoneCallMonitor()
                 startTransportWatchdog()
                 startStatsUpdater()
-                acquirePerformanceLocks()
-                startFg(buildConnectingNotification())
-                setupVpnOwnershipMonitor()
-                connect(configJson, intent.getBooleanExtra(EXTRA_IS_BOOTSTRAP, false))
+                try {
+                    setupVpnOwnershipMonitor()
+                    connect(configJson, intent.getBooleanExtra(EXTRA_IS_BOOTSTRAP, false))
+                } catch (e: Exception) {
+                    SessionTrace.warn("SilentVpnService.CONNECT", "startup failed: ${e.message}")
+                    DebugLog.e("VpnService", "CONNECT startup failed", e)
+                    isRunning = false
+                    performanceLocksHeld = false
+                    releaseWakeLock()
+                    releaseWifiLock()
+                    clearVpnNotification()
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 VpnTileHelper.requestUpdate(this)
             }
             ACTION_DISCONNECT -> {
@@ -678,31 +700,49 @@ class SilentVpnService : Service() {
     }
 
     private fun startFg(notification: Notification) {
-        when {
-            Build.VERSION.SDK_INT >= 34 -> {
-                startForeground(
-                    NOTIF_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-                )
+        try {
+            when {
+                Build.VERSION.SDK_INT >= 34 -> {
+                    try {
+                        startForeground(
+                            NOTIF_ID,
+                            notification,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                        )
+                    } catch (e: Exception) {
+                        DebugLog.w("VpnService", "FGS specialUse failed, fallback connectedDevice: ${e.message}")
+                        startForeground(
+                            NOTIF_ID,
+                            notification,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                        )
+                    }
+                }
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
+                    startForeground(
+                        NOTIF_ID,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                    )
+                }
+                else -> startForeground(NOTIF_ID, notification)
             }
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
-                startForeground(
-                    NOTIF_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-                )
-            }
-            else -> startForeground(NOTIF_ID, notification)
+        } catch (e: Exception) {
+            SessionTrace.warn("SilentVpnService.startFg", e.message ?: "failed")
+            DebugLog.e("VpnService", "startForeground failed", e)
+            throw e
         }
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NotificationManager::class.java) ?: return
-            // Старые каналы от прошлых версий — иначе два «Silent VPN» в шторке.
-            listOf("silent_vpn", "silent_vpn_status", "silent_vpn_fg").forEach { oldId ->
-                if (oldId != CHANNEL_ID) nm.deleteNotificationChannel(oldId)
+            val prefs = SilentPrefs.open(this)
+            if (!prefs.getBoolean(PREF_NOTIF_CHANNELS_MIGRATED_V2, false)) {
+                listOf("silent_vpn", "silent_vpn_status", "silent_vpn_fg").forEach { oldId ->
+                    if (oldId != CHANNEL_ID) nm.deleteNotificationChannel(oldId)
+                }
+                prefs.edit().putBoolean(PREF_NOTIF_CHANNELS_MIGRATED_V2, true).apply()
             }
             val channel = NotificationChannel(
                 CHANNEL_ID,
@@ -720,21 +760,12 @@ class SilentVpnService : Service() {
 
     private fun openAppIntent(): PendingIntent {
         val intent = MainActivity.openIntent(this)
-        val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val options = ActivityOptions.makeBasic()
-                .setPendingIntentBackgroundActivityStartMode(
-                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
-                )
-            return PendingIntent.getActivity(
-                this,
-                NOTIF_OPEN_REQUEST_CODE,
-                intent,
-                piFlags,
-                options.toBundle(),
-            )
-        }
-        return PendingIntent.getActivity(this, NOTIF_OPEN_REQUEST_CODE, intent, piFlags)
+        return PendingIntent.getActivity(
+            this,
+            NOTIF_OPEN_REQUEST_CODE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     private fun notificationTitle(ready: Boolean): String = when {

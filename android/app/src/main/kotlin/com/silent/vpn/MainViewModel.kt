@@ -129,6 +129,9 @@ class MainViewModel @Inject constructor(
     private var profilePollJob: Job? = null
     @Volatile private var sessionsFetchInFlight = false
     private var updateApiBaseUrl: String? = null
+    /** Должен быть объявлен до init — tunnelReady.collect может сработать в конструкторе. */
+    private val pendingHashFailures = ConcurrentLinkedQueue<Triple<String, String, String>>()
+    private var hashFailureFlushJob: Job? = null
 
     private val _updateInfo = MutableStateFlow<UpdateCheckResponse?>(null)
     val updateInfo: StateFlow<UpdateCheckResponse?> = _updateInfo
@@ -415,14 +418,30 @@ class MainViewModel @Inject constructor(
         return tryFetchProfileOnBase(tunnel) || _profile.value != null
     }
 
+    /** Главный экран только после входа; bootstrap/pre-login остаётся на LOGIN. */
+    private fun isMainVpnSessionForUi(): Boolean =
+        repo.isLoggedIn() && !bootstrapVpnMode && !WdttTunnelManager.isBootstrapMode()
+
+    private fun restoreVpnUiAfterForeground() {
+        if (_vpnState.value != VpnState.CONNECTED) {
+            _vpnState.value = VpnState.CONNECTED
+        }
+        restoreCachedProfileToUi()
+        restoreCachedThemeToUi()
+    }
+
     fun onReturnedToApp() {
+        if (!repo.isLoggedIn()) {
+            reconcileLoginBootstrapSession(appContext)
+        }
         if (SilentVpnService.isRunning && VpnSessionState.isActive()) {
-            _screen.value = AppScreen.MAIN
-            if (_vpnState.value != VpnState.CONNECTED) {
-                _vpnState.value = VpnState.CONNECTED
+            if (isMainVpnSessionForUi()) {
+                _screen.value = AppScreen.MAIN
+                restoreVpnUiAfterForeground()
+            } else {
+                _screen.value = AppScreen.LOGIN
+                restoreVpnUiAfterForeground()
             }
-            restoreCachedProfileToUi()
-            restoreCachedThemeToUi()
             return
         }
         syncSessionOnResume()
@@ -435,9 +454,13 @@ class MainViewModel @Inject constructor(
             restartBootstrapTimerIfNeeded()
         }
         if (SilentVpnService.isRunning && VpnSessionState.isActive()) {
-            if (_screen.value != AppScreen.MAIN) _screen.value = AppScreen.MAIN
-            if (_vpnState.value != VpnState.CONNECTED) _vpnState.value = VpnState.CONNECTED
-            restoreCachedProfileToUi()
+            if (isMainVpnSessionForUi()) {
+                if (_screen.value != AppScreen.MAIN) _screen.value = AppScreen.MAIN
+                restoreVpnUiAfterForeground()
+            } else {
+                _screen.value = AppScreen.LOGIN
+                restoreVpnUiAfterForeground()
+            }
             return
         }
         syncSessionOnResume()
@@ -463,11 +486,20 @@ class MainViewModel @Inject constructor(
                 _vpnState.value = VpnState.CONNECTED
                 restoreCachedProfileToUi()
                 restoreCachedThemeToUi()
+                if (!isMainVpnSessionForUi()) {
+                    _screen.value = AppScreen.LOGIN
+                }
             }
             SilentVpnService.isRunning -> {
                 _vpnState.value = VpnState.CONNECTED
-                SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "CONNECTED attach")
-                attachExistingSession()
+                if (isMainVpnSessionForUi()) {
+                    SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "CONNECTED attach")
+                    attachExistingSession()
+                } else {
+                    SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "bootstrap attach")
+                    _screen.value = AppScreen.LOGIN
+                    reconcileLoginBootstrapSession(appContext)
+                }
             }
             else -> {
                 _vpnState.value = VpnState.DISCONNECTED
@@ -589,8 +621,6 @@ class MainViewModel @Inject constructor(
     private var backendSyncCompleted: Boolean
         get() = VpnSessionState.backendSyncCompleted
         set(value) { VpnSessionState.backendSyncCompleted = value }
-    private val pendingHashFailures = ConcurrentLinkedQueue<Triple<String, String, String>>()
-    private var hashFailureFlushJob: Job? = null
 
     private fun flushPendingHashFailures() {
         if (pendingHashFailures.isEmpty() || !repo.isLoggedIn()) return

@@ -234,6 +234,7 @@ class MainViewModel @Inject constructor(
                             DebugLog.w("MainViewModel", "refreshSession: ${e.message}")
                         }
                 }
+                repo.mergeSavedHashesIntoCachedConfig()
             }
         } else {
             loadTheme()
@@ -307,9 +308,62 @@ class MainViewModel @Inject constructor(
     private suspend fun refreshSession() {
         loadTheme()
         restoreCachedProfileToUi()
+        repo.mergeSavedHashesIntoCachedConfig()
         fetchProfileNow(force = _profile.value == null)
         if (!SilentVpnService.isRunning) {
             syncServerHashes(preferPublicOnly = true)
+        }
+        ensureVpnConfigRestored(appContext)
+    }
+
+    /**
+     * После OTA кеш WG мог быть сброшен — восстанавливаем через bootstrap по сохранённому хешу,
+     * чтобы connect работал на мобильном интернете без Wi‑Fi.
+     */
+    private suspend fun ensureVpnConfigRestored(context: Context): Boolean {
+        val cached = loadCachedVpnConfig()
+        if (cached != null && isConfigConnectable(cached)) {
+            repo.mergeSavedHashesIntoCachedConfig()
+            return true
+        }
+        if (!repo.isLoggedIn() || !repo.hasMainVpnServerHashes()) return false
+        if (silentBootstrapSync || bootstrapVpnMode) return false
+        if (SilentVpnService.isRunning || WdttTunnelManager.running.value) return false
+
+        val bootHash = repo.mainVpnServerHashes().firstOrNull() ?: return false
+        val fp = runCatching { repo.getDeviceFingerprint() }.getOrNull() ?: return false
+
+        silentBootstrapSync = true
+        val prevBootstrap = bootstrapVpnMode
+        try {
+            var config = runCatching {
+                val res = repo.getApi().bootstrapConfig(BootstrapConfigRequest(bootHash, "android", fp))
+                if (res.isSuccessful) bootstrapLaunchConfig(res.body()!!) else null
+            }.getOrNull()
+            if (config == null || config.vk_hashes.isEmpty()) {
+                config = bootstrapLaunchConfig(BootstrapVpnConfig.build(bootHash, fp))
+            }
+            if (config.vk_hashes.isEmpty()) return false
+            DebugLog.i("MainViewModel", "restore VPN config via saved hash bootstrap")
+            bootstrapVpnMode = true
+            launchVpnService(context.applicationContext, config, forceBootstrap = true)
+            repeat(75) {
+                delay(200)
+                if (WdttTunnelManager.tunnelReady.value) {
+                    withBootstrapBackendApi { applyRefreshVpnConfigDirect(fp) }
+                    val restored = loadCachedVpnConfig()
+                    return restored != null && isConfigConnectable(restored)
+                }
+            }
+            return false
+        } catch (e: Exception) {
+            DebugLog.w("MainViewModel", "ensureVpnConfigRestored: ${e.message}")
+            return false
+        } finally {
+            stopVpnLocally(context.applicationContext)
+            repo.clearTunnelApiBase()
+            bootstrapVpnMode = prevBootstrap
+            silentBootstrapSync = false
         }
     }
 
@@ -1579,6 +1633,11 @@ class MainViewModel @Inject constructor(
                         vpnConfig = loadCachedVpnConfig()
                     }
 
+                    if (vpnConfig == null && repo.hasMainVpnServerHashes()) {
+                        ensureVpnConfigRestored(context)
+                        vpnConfig = loadCachedVpnConfig()
+                    }
+
                     hashesJob.await()?.let { hres ->
                         if (hres.isSuccessful) {
                             val body = hres.body()
@@ -1607,7 +1666,8 @@ class MainViewModel @Inject constructor(
 
                 if (vpnConfig == null) {
                     DebugLog.e("MainViewModel", apiError ?: "no vpn config")
-                    _vpnError.value = apiError ?: "Сервер недоступен. Подключитесь дома по Wi‑Fi для первого входа."
+                    _vpnError.value = apiError
+                        ?: "Не удалось восстановить VPN. Проверьте интернет и повторите."
                     _vpnState.value = VpnState.DISCONNECTED
                     return@launch
                 }

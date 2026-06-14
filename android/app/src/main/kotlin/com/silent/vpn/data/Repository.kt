@@ -656,11 +656,21 @@ class SilentRepository @Inject constructor(
     fun mergeSavedHashesIntoCachedConfig() {
         val hashes = mainVpnServerHashes().ifEmpty { resolveConnectVkHashes(emptyList()) }
         if (hashes.isEmpty()) return
-        val json = getCachedVpnConfig() ?: return
+        val json = getCachedVpnConfigRaw() ?: return
         val cfg = runCatching { Gson().fromJson(json, VpnConfig::class.java) }.getOrNull() ?: return
         if (cfg.vk_hashes == hashes) return
         cacheVpnConfig(Gson().toJson(cfg.copy(vk_hashes = hashes)))
         Log.i(TAG, "cached VPN config vk_hashes updated from saved items (${hashes.size})")
+    }
+
+    /** JSON конфига без проверки TTL (для merge после OTA). */
+    private fun getCachedVpnConfigRaw(): String? =
+        prefs.getString(PREF_CACHED_CONFIG, null)?.takeIf { it.isNotBlank() }
+
+    fun getCachedVpnConfig(): String? {
+        val ts = prefs.getLong(PREF_CACHED_CONFIG_TS, 0L)
+        if (ts > 0L && System.currentTimeMillis() - ts > 7 * 24 * 60 * 60 * 1000L) return null
+        return getCachedVpnConfigRaw()
     }
 
     fun getSavedHashItemsUpdatedAt(): Long = prefs.getLong(PREF_SAVED_HASH_ITEMS_TS, 0L)
@@ -1111,12 +1121,6 @@ class SilentRepository @Inject constructor(
             .putString(PREF_CACHED_CONFIG, json)
             .putLong(PREF_CACHED_CONFIG_TS, System.currentTimeMillis())
             .apply()
-    }
-
-    fun getCachedVpnConfig(): String? {
-        val ts = prefs.getLong(PREF_CACHED_CONFIG_TS, 0L)
-        if (System.currentTimeMillis() - ts > 7 * 24 * 60 * 60 * 1000L) return null
-        return prefs.getString(PREF_CACHED_CONFIG, null)
     }
 
     fun getClipboardText(): String? {

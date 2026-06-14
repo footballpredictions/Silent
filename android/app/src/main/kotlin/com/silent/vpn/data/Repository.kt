@@ -366,13 +366,11 @@ class SilentRepository @Inject constructor(
     fun getPublicServerUrl(): String =
         prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
 
-    /** База для скачивания: public HTTPS, или tunnel если проверка/прокси уже через VPN. */
+    /** База для скачивания: с VPN — tunnel; без VPN — public HTTPS (Wi‑Fi). */
     fun resolveUpdateDownloadBase(preferredBase: String?): String {
         val base = preferredBase?.trimEnd('/').orEmpty()
         if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
-            if (isTunnelApiBase(base) || shouldUseTunnelApiProxy()) return tunnelApiBaseUrl()
-            if (base.startsWith("https://")) return base
-            return getPublicServerUrl().trimEnd('/')
+            return tunnelApiBaseUrl()
         }
         if (isTunnelApiBase(base) || shouldUseTunnelApiProxy()) return tunnelApiBaseUrl()
         if (base.startsWith("http://")) {

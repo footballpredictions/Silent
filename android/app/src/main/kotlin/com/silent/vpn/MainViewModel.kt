@@ -647,7 +647,7 @@ class MainViewModel @Inject constructor(
 
     private var updateCheckInFlight = false
 
-    /** Проверка OTA: public HTTPS, затем tunnel если VPN поднят (бэкенд может быть заблокирован без VPN). */
+    /** Проверка OTA: с VPN — только tunnel (Wi‑Fi и mobile); без VPN — public HTTPS (только Wi‑Fi). */
     fun checkForAppUpdate() {
         if (updateCheckInFlight) return
         updateCheckInFlight = true
@@ -655,16 +655,17 @@ class MainViewModel @Inject constructor(
             try {
                 val version = com.silent.vpn.BuildConfig.VERSION_NAME
                 var ok = false
-                val bases = listOf(
-                    repo.getPublicServerUrl().trimEnd('/'),
-                    "https://${SilentRepository.DEFAULT_SERVER_HOST}",
-                ).distinct()
-                for (base in bases) {
-                    ok = runCatching { tryCheckUpdateOnBase(base, version) }.getOrDefault(false)
-                    if (ok) break
-                }
-                if (!ok) {
-                    tryCheckUpdateViaTunnel(version)
+                if (isMainVpnUpForUpdates()) {
+                    ok = tryCheckUpdateViaTunnel(version)
+                } else {
+                    val bases = listOf(
+                        repo.getPublicServerUrl().trimEnd('/'),
+                        "https://${SilentRepository.DEFAULT_SERVER_HOST}",
+                    ).distinct()
+                    for (base in bases) {
+                        ok = runCatching { tryCheckUpdateOnBase(base, version) }.getOrDefault(false)
+                        if (ok) break
+                    }
                 }
             } catch (e: Exception) {
                 DebugLog.w("MainViewModel", "checkUpdate: ${e.message}")
@@ -673,6 +674,11 @@ class MainViewModel @Inject constructor(
             }
         }
     }
+
+    private fun isMainVpnUpForUpdates(): Boolean =
+        SilentVpnService.isRunning &&
+            WdttTunnelManager.tunnelReady.value &&
+            !WdttTunnelManager.isBootstrapMode()
 
     /**
      * Экран «Устройства»: при включённом основном VPN — ОДНО чтение профиля (один overlay),
@@ -709,12 +715,16 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun tryCheckUpdateViaTunnel(version: String): Boolean {
-        if (!SilentVpnService.isRunning || !WdttTunnelManager.tunnelReady.value) return false
-        if (WdttTunnelManager.isBootstrapMode()) return false
+        if (!isMainVpnUpForUpdates()) return false
         repo.prepareTunnelApiFromCachedConfig()
+        com.silent.vpn.vpn.TunnelApiProxy.ensureStarted(appContext)
         return runCatching {
-            repo.withBackendApi {
+            if (repo.ensureTunnelApiProxy()) {
                 tryCheckUpdateViaRepoApi(version)
+            } else {
+                repo.withTunnelApiStrict {
+                    tryCheckUpdateViaRepoApi(version)
+                }
             }
         }.onFailure { e ->
             DebugLog.w("MainViewModel", "checkUpdate tunnel: ${e.message}")
@@ -759,7 +769,7 @@ class MainViewModel @Inject constructor(
                         repo.buildDownloadClient(),
                     ) { pct -> _updateProgress.value = pct }
                 }
-                val file = if (repo.needsOverlayForUpdateDownload(base)) {
+                val file = if (isMainVpnUpForUpdates() && SilentRepository.APP_EXCLUDED_FROM_VPN) {
                     repo.withTunnelApiForUpdateDownload { download() }
                 } else {
                     download()

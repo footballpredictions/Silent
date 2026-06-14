@@ -625,6 +625,7 @@ class MainViewModel @Inject constructor(
             markLocalDeviceOnline()
             backendSyncCompleted = true
             flushPendingHashFailures()
+            checkForAppUpdate()
             return
         }
         tunnelSyncWatchJob?.cancel()
@@ -637,6 +638,7 @@ class MainViewModel @Inject constructor(
                     markLocalDeviceOnline()
                     backendSyncCompleted = true
                     flushPendingHashFailures()
+                    checkForAppUpdate()
                     return@launch
                 }
                 if (_vpnState.value != VpnState.CONNECTED && !VpnSessionState.isActive()) return@launch
@@ -656,6 +658,7 @@ class MainViewModel @Inject constructor(
                 val version = com.silent.vpn.BuildConfig.VERSION_NAME
                 var ok = false
                 if (isMainVpnUpForUpdates()) {
+                    waitForVpnApiReady()
                     ok = tryCheckUpdateViaTunnel(version)
                 } else {
                     val bases = listOf(
@@ -714,20 +717,30 @@ class MainViewModel @Inject constructor(
         if (active) checkForAppUpdate()
     }
 
+    private suspend fun waitForVpnApiReady() {
+        val deadline = System.currentTimeMillis() + 30_000L
+        while (System.currentTimeMillis() < deadline) {
+            if (!isMainVpnUpForUpdates()) return
+            if (!WdttTunnelManager.isWorkerRampUpActive() && !WdttTunnelManager.isApiOverlayActive()) return
+            delay(500)
+        }
+    }
+
     private suspend fun tryCheckUpdateViaTunnel(version: String): Boolean {
         if (!isMainVpnUpForUpdates()) return false
         repo.prepareTunnelApiFromCachedConfig()
         com.silent.vpn.vpn.TunnelApiProxy.ensureStarted(appContext)
+
+        val viaProxy = runCatching {
+            repo.withOtaCheckViaTunnel { tryCheckUpdateViaRepoApi(version) }
+        }.getOrDefault(false)
+        if (viaProxy) return true
+
+        DebugLog.w("MainViewModel", "checkUpdate proxy failed, retry overlay")
         return runCatching {
-            if (repo.ensureTunnelApiProxy()) {
-                tryCheckUpdateViaRepoApi(version)
-            } else {
-                repo.withTunnelApiStrict {
-                    tryCheckUpdateViaRepoApi(version)
-                }
-            }
+            repo.withTunnelApiStrict { tryCheckUpdateViaRepoApi(version) }
         }.onFailure { e ->
-            DebugLog.w("MainViewModel", "checkUpdate tunnel: ${e.message}")
+            DebugLog.w("MainViewModel", "checkUpdate tunnel overlay: ${e.message}")
         }.getOrDefault(false)
     }
 

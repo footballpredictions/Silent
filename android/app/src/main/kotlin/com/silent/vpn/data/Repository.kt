@@ -147,8 +147,6 @@ class SilentRepository @Inject constructor(
     ).distinct().filter { it.isNotBlank() }
 
     private fun tunnelApiBase(): String = "http://$WG_TUNNEL_GATEWAY:8000"
-
-    /** Переключить API на WG-шлюз (bootstrap / app в туннеле). */
     fun setTunnelApiFromWgAddress(wgAddress: String?) {
         if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
             useApiBase(tunnelApiBase())
@@ -302,17 +300,26 @@ class SilentRepository @Inject constructor(
         return block()
     }
 
-    /** Долгая загрузка APK — overlay без throttle. */
+    /** Долгая загрузка APK — overlay + прямой 10.66.66.1 (не localhost-прокси). */
     suspend fun <T> withTunnelApiForUpdateDownload(block: suspend () -> T): T {
         if (!APP_EXCLUDED_FROM_VPN) return block()
-        if (!com.silent.vpn.service.SilentVpnService.isRunning) return block()
-        if (!com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value) {
+        if (!isMainVpnTunnelUp()) {
             Log.w(TAG, "withTunnelApiForUpdateDownload: tunnel not ready")
             error("VPN tunnel not ready for update download")
         }
-        useApiBase(tunnelApiBaseUrl())
+        useApiBase(tunnelApiBase())
         invalidateApiClient()
         return com.silent.vpn.vpn.WdttTunnelManager.withApiOverlayForDownload { block() }
+    }
+
+    /** OTA check: proxy без overlay, при ошибке — overlay strict (как syncAllViaTunnel). */
+    suspend fun <T> withOtaCheckViaTunnel(block: suspend () -> T): T {
+        check(isMainVpnTunnelUp()) { "VPN tunnel not up" }
+        prepareTunnelApiFromCachedConfig()
+        if (APP_EXCLUDED_FROM_VPN && prepareTunnelApiBase()) {
+            return block()
+        }
+        return withTunnelApiStrict(block)
     }
 
     private suspend fun <T> withTunnelApiWhenExcludedInternal(
@@ -366,11 +373,11 @@ class SilentRepository @Inject constructor(
     fun getPublicServerUrl(): String =
         prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
 
-    /** База для скачивания: с VPN — tunnel; без VPN — public HTTPS (Wi‑Fi). */
+    /** База для скачивания: с VPN — 10.66.66.1 (overlay); без VPN — public HTTPS (Wi‑Fi). */
     fun resolveUpdateDownloadBase(preferredBase: String?): String {
         val base = preferredBase?.trimEnd('/').orEmpty()
         if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
-            return tunnelApiBaseUrl()
+            return tunnelApiBase()
         }
         if (isTunnelApiBase(base) || shouldUseTunnelApiProxy()) return tunnelApiBaseUrl()
         if (base.startsWith("http://")) {

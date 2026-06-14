@@ -18,7 +18,6 @@ data class LoginRequest(
 )
 data class RegisterRequest(val email: String, val password: String)
 data class ForgotPasswordRequest(val email: String)
-data class ResetPasswordRequest(val token: String, val new_password: String)
 data class TokenResponse(val access_token: String, val refresh_token: String)
 data class RefreshRequest(val refresh_token: String)
 
@@ -199,9 +198,6 @@ interface SilentApi {
 
     @POST("api/auth/forgot-password")
     suspend fun forgotPassword(@Body req: ForgotPasswordRequest): Response<Map<String, String>>
-
-    @POST("api/auth/reset-password")
-    suspend fun resetPassword(@Body req: ResetPasswordRequest): Response<Map<String, String>>
 
     @POST("api/auth/refresh")
     suspend fun refresh(@Body req: RefreshRequest): Response<TokenResponse>

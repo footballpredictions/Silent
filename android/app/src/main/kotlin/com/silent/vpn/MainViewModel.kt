@@ -2,7 +2,6 @@ package com.silent.vpn
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.core.content.ContextCompat
@@ -19,7 +18,6 @@ import com.silent.vpn.data.ForgotPasswordRequest
 import com.silent.vpn.data.HashItemDto
 import com.silent.vpn.data.LoginDeviceInfo
 import com.silent.vpn.data.LoginRequest
-import com.silent.vpn.data.ResetPasswordRequest
 import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.data.toHashItems
@@ -140,12 +138,6 @@ class MainViewModel @Inject constructor(
 
     private val _updateDownloading = MutableStateFlow(false)
     val updateDownloading: StateFlow<Boolean> = _updateDownloading
-
-    private val _resetPasswordToken = MutableStateFlow<String?>(null)
-    val resetPasswordToken: StateFlow<String?> = _resetPasswordToken
-
-    private val _resetPasswordSuccess = MutableStateFlow(false)
-    val resetPasswordSuccess: StateFlow<Boolean> = _resetPasswordSuccess
 
     private val _forgotSent = MutableStateFlow(false)
     val forgotSent: StateFlow<Boolean> = _forgotSent
@@ -417,12 +409,6 @@ class MainViewModel @Inject constructor(
 
     private fun syncSessionOnResume() {
         SessionTrace.enter("MainViewModel.syncSessionOnResume")
-        if (_resetPasswordToken.value != null) {
-            SessionTrace.exit("MainViewModel.syncSessionOnResume", "reset password flow")
-            _screen.value = AppScreen.LOGIN
-            reconcileLoginBootstrapSession(appContext)
-            return
-        }
         if (!repo.isLoggedIn()) {
             reconcileLoginBootstrapSession(appContext)
             SessionTrace.exit("MainViewModel.syncSessionOnResume", "not logged in")
@@ -974,34 +960,6 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun handleDeepLink(uri: Uri?, context: Context? = null) {
-        val token = extractResetPasswordToken(uri) ?: return
-        _resetPasswordToken.value = token
-        _screen.value = AppScreen.LOGIN
-        context?.let { reconcileLoginBootstrapSession(it) }
-    }
-
-    private fun extractResetPasswordToken(uri: Uri?): String? {
-        if (uri == null) return null
-        if (uri.scheme == "silentvpn" && uri.host == "reset-password") {
-            return uri.getQueryParameter("token")?.takeIf { it.isNotBlank() }
-        }
-        val path = uri.path ?: return null
-        if ((uri.scheme == "https" || uri.scheme == "http") && path.contains("app-reset")) {
-            return uri.getQueryParameter("token")?.takeIf { it.isNotBlank() }
-        }
-        return null
-    }
-
-    fun clearResetToken() {
-        _resetPasswordToken.value = null
-        _resetPasswordSuccess.value = false
-    }
-
-    fun clearResetPasswordSuccess() {
-        _resetPasswordSuccess.value = false
-    }
-
     fun clearForgotSent() {
         _forgotSent.value = false
     }
@@ -1040,46 +998,10 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun resetPassword(token: String, newPassword: String) {
-        viewModelScope.launch {
-            reconcileLoginBootstrapSession(appContext)
-            _authLoading.value = true
-            _authError.value = null
-            try {
-                if (!_bootstrapReady.value) {
-                    _authError.value = "Сначала подключитесь для входа (шаг 1)"
-                    return@launch
-                }
-                awaitTunnelApiReady()
-                val res = withBootstrapBackendApi {
-                    repo.getApi().resetPassword(ResetPasswordRequest(token, newPassword))
-                }
-                if (!res.isSuccessful) {
-                    _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Не удалось сохранить пароль"
-                    restartBootstrapTimerIfNeeded()
-                    return@launch
-                }
-                _resetPasswordToken.value = null
-                _resetPasswordSuccess.value = true
-                _authError.value = null
-                refreshBootstrapCountdownNow()
-            } catch (e: Exception) {
-                _authError.value = e.message ?: "Ошибка"
-                restartBootstrapTimerIfNeeded()
-            } finally {
-                _authLoading.value = false
-                if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
-                    restartBootstrapTimerIfNeeded()
-                }
-            }
-        }
-    }
-
     fun login(email: String, password: String, rememberMe: Boolean, activity: ComponentActivity? = null) {
         viewModelScope.launch {
             _authLoading.value = true
             _authError.value = null
-            _resetPasswordSuccess.value = false
             _statusMsg.value = "Вход…"
             try {
                 if (_vpnState.value != VpnState.CONNECTED) {
@@ -1315,8 +1237,6 @@ class MainViewModel @Inject constructor(
         val mm = leftSec / 60
         val ss = leftSec % 60
         _statusMsg.value = when {
-            _resetPasswordToken.value != null ->
-                "Смена пароля через VPN. Осталось %d:%02d".format(mm, ss)
             _regDone.value ->
                 "Подтвердите email (браузер/почта). VPN ещё %d:%02d".format(mm, ss)
             _forgotSent.value ->
@@ -1473,7 +1393,6 @@ class MainViewModel @Inject constructor(
 
     fun logout(context: Context? = null) {
         viewModelScope.launch {
-            val pendingReset = _resetPasswordToken.value != null
             val fp = if (repo.hasSessionFingerprint()) {
                 runCatching { repo.getDeviceFingerprint() }.getOrNull()
             } else null
@@ -1511,10 +1430,6 @@ class MainViewModel @Inject constructor(
             _vpnError.value = null
             _regDone.value = false
             _forgotSent.value = false
-            _resetPasswordSuccess.value = false
-            if (pendingReset && context != null) {
-                ensureBootstrapForAuthFlow(context)
-            }
         }
     }
 

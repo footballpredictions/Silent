@@ -409,6 +409,15 @@ class MainViewModel @Inject constructor(
     }
 
     fun onReturnedToApp() {
+        if (SilentVpnService.isRunning && VpnSessionState.isActive()) {
+            _screen.value = AppScreen.MAIN
+            if (_vpnState.value != VpnState.CONNECTED) {
+                _vpnState.value = VpnState.CONNECTED
+            }
+            restoreCachedProfileToUi()
+            restoreCachedThemeToUi()
+            return
+        }
         syncSessionOnResume()
     }
 
@@ -612,9 +621,6 @@ class MainViewModel @Inject constructor(
         if (!bootstrapVpnMode && repo.isLoggedIn()) {
             watchTunnelDataSyncFromCache()
         }
-        if (!bootstrapVpnMode && !WdttTunnelManager.isBootstrapMode()) {
-            checkForAppUpdate()
-        }
     }
 
     private fun watchTunnelDataSyncFromCache() {
@@ -625,7 +631,6 @@ class MainViewModel @Inject constructor(
             markLocalDeviceOnline()
             backendSyncCompleted = true
             flushPendingHashFailures()
-            checkForAppUpdate()
             return
         }
         tunnelSyncWatchJob?.cancel()
@@ -638,7 +643,6 @@ class MainViewModel @Inject constructor(
                     markLocalDeviceOnline()
                     backendSyncCompleted = true
                     flushPendingHashFailures()
-                    checkForAppUpdate()
                     return@launch
                 }
                 if (_vpnState.value != VpnState.CONNECTED && !VpnSessionState.isActive()) return@launch
@@ -649,26 +653,26 @@ class MainViewModel @Inject constructor(
 
     private var updateCheckInFlight = false
 
-    /** Проверка OTA: с VPN — только tunnel (Wi‑Fi и mobile); без VPN — public HTTPS (только Wi‑Fi). */
+    /** OTA: только public HTTPS (Wi‑Fi, без VPN). С VPN не проверяем — overlay ломает туннель. */
     fun checkForAppUpdate() {
         if (updateCheckInFlight) return
+        if (
+            SilentVpnService.isRunning &&
+            WdttTunnelManager.tunnelReady.value &&
+            !WdttTunnelManager.isBootstrapMode()
+        ) {
+            return
+        }
         updateCheckInFlight = true
         viewModelScope.launch {
             try {
                 val version = com.silent.vpn.BuildConfig.VERSION_NAME
-                var ok = false
-                if (isMainVpnUpForUpdates()) {
-                    waitForVpnApiReady()
-                    ok = tryCheckUpdateViaTunnel(version)
-                } else {
-                    val bases = listOf(
-                        repo.getPublicServerUrl().trimEnd('/'),
-                        "https://${SilentRepository.DEFAULT_SERVER_HOST}",
-                    ).distinct()
-                    for (base in bases) {
-                        ok = runCatching { tryCheckUpdateOnBase(base, version) }.getOrDefault(false)
-                        if (ok) break
-                    }
+                val bases = listOf(
+                    repo.getPublicServerUrl().trimEnd('/'),
+                    "https://${SilentRepository.DEFAULT_SERVER_HOST}",
+                ).distinct()
+                for (base in bases) {
+                    if (runCatching { tryCheckUpdateOnBase(base, version) }.getOrDefault(false)) break
                 }
             } catch (e: Exception) {
                 DebugLog.w("MainViewModel", "checkUpdate: ${e.message}")
@@ -677,11 +681,6 @@ class MainViewModel @Inject constructor(
             }
         }
     }
-
-    private fun isMainVpnUpForUpdates(): Boolean =
-        SilentVpnService.isRunning &&
-            WdttTunnelManager.tunnelReady.value &&
-            !WdttTunnelManager.isBootstrapMode()
 
     /**
      * Экран «Устройства»: при включённом основном VPN — ОДНО чтение профиля (один overlay),
@@ -712,36 +711,9 @@ class MainViewModel @Inject constructor(
         // No-op: периодический поллинг убран, чтобы не дёргать WG overlay.
     }
 
-    /** Главный экран: проверка OTA (public, при VPN — повтор через tunnel). */
+    /** Главный экран: одна проверка OTA при открытии (только без VPN). */
     fun setUpdatePolling(active: Boolean) {
         if (active) checkForAppUpdate()
-    }
-
-    private suspend fun waitForVpnApiReady() {
-        val deadline = System.currentTimeMillis() + 30_000L
-        while (System.currentTimeMillis() < deadline) {
-            if (!isMainVpnUpForUpdates()) return
-            if (!WdttTunnelManager.isWorkerRampUpActive() && !WdttTunnelManager.isApiOverlayActive()) return
-            delay(500)
-        }
-    }
-
-    private suspend fun tryCheckUpdateViaTunnel(version: String): Boolean {
-        if (!isMainVpnUpForUpdates()) return false
-        repo.prepareTunnelApiFromCachedConfig()
-        com.silent.vpn.vpn.TunnelApiProxy.ensureStarted(appContext)
-
-        val viaProxy = runCatching {
-            repo.withOtaCheckViaTunnel { tryCheckUpdateViaRepoApi(version) }
-        }.getOrDefault(false)
-        if (viaProxy) return true
-
-        DebugLog.w("MainViewModel", "checkUpdate proxy failed, retry overlay")
-        return runCatching {
-            repo.withTunnelApiStrict { tryCheckUpdateViaRepoApi(version) }
-        }.onFailure { e ->
-            DebugLog.w("MainViewModel", "checkUpdate tunnel overlay: ${e.message}")
-        }.getOrDefault(false)
     }
 
     private suspend fun tryCheckUpdateOnBase(base: String, version: String): Boolean {
@@ -782,7 +754,7 @@ class MainViewModel @Inject constructor(
                         repo.buildDownloadClient(),
                     ) { pct -> _updateProgress.value = pct }
                 }
-                val file = if (isMainVpnUpForUpdates() && SilentRepository.APP_EXCLUDED_FROM_VPN) {
+                val file = if (repo.needsOverlayForUpdateDownload(base)) {
                     repo.withTunnelApiForUpdateDownload { download() }
                 } else {
                     download()
@@ -968,24 +940,6 @@ class MainViewModel @Inject constructor(
             DebugLog.w("MainViewModel", "fetchProfile: ${e.message}")
         }
         return false
-    }
-
-    private suspend fun tryCheckUpdateViaRepoApi(version: String): Boolean {
-        val res = repo.getApi().checkUpdate("android", version)
-        if (!res.isSuccessful) {
-            DebugLog.w("MainViewModel", "checkUpdate HTTP ${res.code()} on ${repo.getServerUrl()}")
-            return false
-        }
-        val body = res.body()
-        if (body?.available == true) {
-            _updateInfo.value = body
-            updateApiBaseUrl = repo.getServerUrl().trimEnd('/')
-            DebugLog.i("MainViewModel", "checkUpdate: available ${body.version}")
-        } else {
-            _updateInfo.value = null
-            DebugLog.i("MainViewModel", "checkUpdate: up to date v=$version")
-        }
-        return true
     }
 
     private suspend fun tryFetchProfileOnBase(base: String): Boolean {

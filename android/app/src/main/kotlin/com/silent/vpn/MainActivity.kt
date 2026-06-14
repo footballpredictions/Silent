@@ -38,7 +38,11 @@ class MainActivity : ComponentActivity() {
 
         fun openIntent(context: Context): Intent =
             Intent(context, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+                action = Intent.ACTION_MAIN
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra(EXTRA_OPEN_MAIN, true)
             }
 
@@ -70,6 +74,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var pendingNotificationOpen = false
+
     private val installUpdateLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { /* системный установщик APK */ }
@@ -86,6 +92,11 @@ class MainActivity : ComponentActivity() {
             ) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
+        }
+
+        pendingNotificationOpen = intent?.getBooleanExtra(EXTRA_OPEN_MAIN, false) == true
+        if (pendingNotificationOpen) {
+            intent?.removeExtra(EXTRA_OPEN_MAIN)
         }
 
         setContent {
@@ -211,10 +222,14 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (intent.getBooleanExtra(EXTRA_OPEN_MAIN, false)) {
-            vm.onReturnedToApp()
-        }
+        handleNotificationOpenIntent(intent)
         handleTileConnectIntent(intent)
+    }
+
+    private fun handleNotificationOpenIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_OPEN_MAIN, false) != true) return
+        intent.removeExtra(EXTRA_OPEN_MAIN)
+        pendingNotificationOpen = true
     }
 
     private fun handleTileConnectIntent(intent: Intent?) {
@@ -234,6 +249,10 @@ class MainActivity : ComponentActivity() {
         isForeground = true
         SessionTrace.mark("MainActivity.onResume")
         vm.onAppResumed()
+        if (pendingNotificationOpen) {
+            pendingNotificationOpen = false
+            vm.onReturnedToApp()
+        }
         ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
     }
 

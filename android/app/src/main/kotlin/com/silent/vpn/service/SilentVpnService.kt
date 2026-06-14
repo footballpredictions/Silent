@@ -56,8 +56,9 @@ import org.json.JSONObject
 class SilentVpnService : Service() {
 
     companion object {
-        private const val CHANNEL_ID = "silent_vpn"
+        private const val CHANNEL_ID = "silent_vpn_status"
         private const val NOTIF_ID = 1001
+        private const val NOTIF_OPEN_REQUEST_CODE = 41_001
         /** Не перезапускать libclient при смене сети в первые 30 с после connect. */
         private const val NETWORK_GRACE_MS = 30_000L
         /** transportWatchdog не kill сервис, пока libclient ещё стартует. */
@@ -688,22 +689,26 @@ class SilentVpnService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Silent VPN",
-                NotificationManager.IMPORTANCE_LOW,
+                NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
                 description = "Статус VPN и скорость"
                 setShowBadge(true)
+                enableVibration(false)
+                setSound(null, null)
             }
             getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
     }
 
-    private fun openAppIntent(): PendingIntent =
-        PendingIntent.getActivity(
+    private fun openAppIntent(): PendingIntent {
+        val intent = MainActivity.openIntent(this)
+        return PendingIntent.getActivity(
             this,
-            1,
-            MainActivity.openIntent(this),
+            NOTIF_OPEN_REQUEST_CODE,
+            intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+    }
 
     private fun notificationTitle(ready: Boolean): String = when {
         ready -> "Silent VPN — подключено"
@@ -719,19 +724,24 @@ class SilentVpnService : Service() {
         }
     }
 
-    /** Минимальное FG-уведомление на время подключения (Android требует для foreground service). */
+    /** FG-уведомление на время подключения. */
     private fun buildConnectingNotification(): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_silent)
             .setContentTitle("Silent VPN — подключение…")
             .setContentText("Подключение к серверу…")
             .setContentIntent(openAppIntent())
-            .setOngoing(false)
+            .setOngoing(true)
             .setSilent(true)
             .setOnlyAlertOnce(true)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+                }
+            }
             .build()
 
     private fun buildActiveNotification(stats: String): Notification {
@@ -744,8 +754,14 @@ class SilentVpnService : Service() {
             .setContentIntent(openAppIntent())
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+                }
+            }
             .build()
     }
 

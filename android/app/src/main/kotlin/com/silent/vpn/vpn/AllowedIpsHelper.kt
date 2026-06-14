@@ -8,6 +8,20 @@ object AllowedIpsHelper {
     fun patchAllowedIPsToSubnet(config: String, subnet: String = WG_TUNNEL_SUBNET): String =
         config.replace(Regex("(?m)^AllowedIPs\\s*=\\s*.+$"), "AllowedIPs = $subnet")
 
+    /**
+     * Bootstrap: API в WG + HTTPS бекенда (verify/reset из браузера/почты).
+     * TURN/VK — вне AllowedIPs, идут напрямую по мобильной сети.
+     */
+    fun patchAllowedIPsForBootstrapAuth(config: String, serverIp: String): String {
+        val ip = serverIp.trim()
+        val allowed = if (ip.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) {
+            "$WG_TUNNEL_SUBNET, $ip/32"
+        } else {
+            WG_TUNNEL_SUBNET
+        }
+        return config.replace(Regex("(?m)^AllowedIPs\\s*=\\s*.+$"), "AllowedIPs = $allowed")
+    }
+
     fun generateExclusionAllowedIPs(excludeIPs: Collection<String>): String {
         val unique = excludeIPs.map { it.trim() }.filter { it.matches(Regex("""\d+\.\d+\.\d+\.\d+""")) }.distinct()
         if (unique.isEmpty()) return "0.0.0.0/0"

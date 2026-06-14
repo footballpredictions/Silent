@@ -41,6 +41,7 @@ android {
         debug {
             isMinifyEnabled = false
             applicationIdSuffix = ".debug"
+            resValue("string", "app_name", "Silent VPN (debug)")
         }
     }
     lint {

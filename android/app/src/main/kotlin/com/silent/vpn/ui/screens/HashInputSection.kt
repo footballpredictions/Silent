@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.ui.theme.LoginUi
 import com.silent.vpn.ui.theme.loginTextFieldColors
+import com.silent.vpn.vk.HashParser
 
 @Composable
 fun HashInputSection(
@@ -36,7 +37,9 @@ fun HashInputSection(
     statusMsg: String,
     bootstrapConnecting: Boolean,
     bootstrapReady: Boolean,
+    bootstrapSecondsLeft: Int? = null,
     onConnect: (String) -> Unit,
+    onContinueToAuth: () -> Unit = {},
     onOpenVkLink: () -> Unit,
     showDivider: Boolean = true,
 ) {
@@ -49,13 +52,22 @@ fun HashInputSection(
     val confirmBtn = theme?.login_hash_button_text ?: ThemeData().login_hash_button_text
     val vkLabel = theme?.login_vk_mobile_link_text ?: ThemeData().login_vk_mobile_link_text
 
-    val showCountdown = bootstrapReady &&
-        statusMsg.contains("осталось", ignoreCase = true)
+    val showCountdown = bootstrapReady
+
+    val savedHash = bootstrapHash?.trim().orEmpty()
+    val enteredHash = HashParser.extract(input)?.trim().orEmpty()
+    val hashChanged = bootstrapReady && enteredHash.isNotBlank() && enteredHash != savedHash
 
     Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = ui.fg)
     if (showCountdown) {
+        val sec = bootstrapSecondsLeft
+        val countdownText = when {
+            sec != null -> statusMsg.ifBlank { "Канал готов. Осталось %d:%02d".format(sec / 60, sec % 60) }
+            statusMsg.isNotBlank() -> statusMsg
+            else -> "VPN включён — можно продолжить"
+        }
         Text(
-            statusMsg,
+            countdownText,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
             color = ui.green,
@@ -74,9 +86,15 @@ fun HashInputSection(
         modifier = Modifier.fillMaxWidth(),
         placeholder = { Text(placeholder, fontSize = 13.sp, color = ui.fieldPlaceholder) },
         singleLine = true,
-        enabled = !bootstrapReady,
+        enabled = !bootstrapReady || hashChanged,
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-        keyboardActions = KeyboardActions(onGo = { if (!bootstrapConnecting && !bootstrapReady) onConnect(input) }),
+        keyboardActions = KeyboardActions(onGo = {
+            when {
+                bootstrapConnecting -> Unit
+                bootstrapReady && !hashChanged -> onContinueToAuth()
+                else -> onConnect(input)
+            }
+        }),
         shape = RoundedCornerShape(12.dp),
         colors = fieldColors,
     )
@@ -85,13 +103,25 @@ fun HashInputSection(
 
     val buttonText = when {
         bootstrapConnecting -> "Подключение…"
-        bootstrapReady -> "Подключено ✓"
+        bootstrapReady && hashChanged -> "Переподключить"
+        bootstrapReady && bootstrapSecondsLeft != null -> {
+            val sec = bootstrapSecondsLeft ?: 0
+            "К шагу 2 · %d:%02d".format(sec / 60, sec % 60)
+        }
+        bootstrapReady -> "К шагу 2 ✓"
         else -> confirmBtn
     }
-    val buttonEnabled = input.isNotBlank() && !bootstrapConnecting && !bootstrapReady
+    val buttonEnabled = when {
+        bootstrapConnecting -> false
+        bootstrapReady && !hashChanged -> true
+        else -> input.isNotBlank()
+    }
 
     Button(
-        onClick = { onConnect(input) },
+        onClick = {
+            if (bootstrapReady && !hashChanged) onContinueToAuth()
+            else onConnect(input)
+        },
         enabled = buttonEnabled,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
@@ -107,7 +137,7 @@ fun HashInputSection(
 
     if (statusMsg.isNotBlank() && !showCountdown) {
         val statusColor = when {
-            bootstrapReady -> ui.green
+            bootstrapReady && bootstrapSecondsLeft == null -> ui.green
             statusMsg.contains("ошиб", ignoreCase = true) ||
                 statusMsg.contains("не удалось", ignoreCase = true) ||
                 statusMsg.contains("невер", ignoreCase = true) ||

@@ -28,22 +28,17 @@ import com.silent.vpn.ui.components.SilentLogo
 import com.silent.vpn.ui.theme.loginTextFieldColors
 import com.silent.vpn.ui.theme.toLoginUi
 
-private enum class LoginStep { HASH, AUTH, FORGOT, RESET }
+private enum class LoginStep { HASH, AUTH, FORGOT }
 
 @Composable
 fun LoginScreen(
     theme: ThemeData? = null,
     initialEmail: String = "",
     initialRememberMe: Boolean = false,
-    resetToken: String? = null,
-    resetPasswordSuccess: Boolean = false,
     forgotSent: Boolean = false,
     onLogin: (email: String, password: String, rememberMe: Boolean) -> Unit,
     onRegister: (email: String, password: String, rememberMe: Boolean) -> Unit,
     onForgotPassword: (email: String) -> Unit,
-    onResetPassword: (token: String, newPassword: String) -> Unit,
-    onClearResetToken: () -> Unit,
-    onClearResetPasswordSuccess: () -> Unit,
     onClearForgotSent: () -> Unit = {},
     loading: Boolean,
     error: String?,
@@ -53,27 +48,23 @@ fun LoginScreen(
     statusMsg: String,
     bootstrapConnecting: Boolean,
     bootstrapReady: Boolean,
+    bootstrapSecondsLeft: Int? = null,
     onConnect: (String) -> Unit,
     onOpenVkLink: (String) -> Unit,
     onClearError: () -> Unit,
     onRegDoneDismiss: () -> Unit,
+    onSyncBootstrap: () -> Unit = {},
 ) {
     val ui = remember(theme) { theme.toLoginUi() }
-    var step by remember {
-        mutableStateOf(
-            when {
-                !resetToken.isNullOrBlank() -> LoginStep.RESET
-                else -> LoginStep.HASH
-            },
-        )
-    }
+    var step by remember { mutableStateOf(LoginStep.HASH) }
     var tab by remember { mutableStateOf("login") }
     var email by remember(initialEmail) { mutableStateOf(initialEmail) }
     var password by remember { mutableStateOf("") }
-    var newPassword by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var rememberMe by remember(initialRememberMe) { mutableStateOf(initialRememberMe) }
     var showDebugLog by remember { mutableStateOf(false) }
+    /** Пользователь явно вернулся на шаг 1 — не перекидывать автоматически на шаг 2. */
+    var preferStep1 by remember { mutableStateOf(false) }
     val fieldColors = loginTextFieldColors(ui)
 
     val step2Title = theme?.login_step2_title ?: "Шаг 2 — вход или регистрация"
@@ -81,30 +72,35 @@ fun LoginScreen(
     val forgotLabel = theme?.login_forgot_password_label ?: "Забыли пароль?"
     val forgotTitle = theme?.login_forgot_title ?: "Восстановление пароля"
     val forgotHint = theme?.login_forgot_instruction ?: "Введите email — мы отправим ссылку."
-    val resetTitle = theme?.login_reset_title ?: "Новый пароль"
-    val resetBtn = theme?.login_reset_button_text ?: "Сохранить пароль"
     val vkUrl = theme?.login_vk_mobile_url ?: "https://vk.com/calls"
 
-    LaunchedEffect(resetToken) {
-        if (!resetToken.isNullOrBlank()) {
-            step = LoginStep.RESET
-        } else if (step == LoginStep.RESET) {
-            step = if (bootstrapReady) LoginStep.AUTH else LoginStep.HASH
-            newPassword = ""
-            tab = "login"
-        }
+    fun goToStep1() {
+        preferStep1 = true
+        step = LoginStep.HASH
+        onClearError()
+    }
+
+    fun goToStep2() {
+        preferStep1 = false
+        step = LoginStep.AUTH
+        onClearError()
     }
 
     LaunchedEffect(bootstrapReady) {
-        if (bootstrapReady && step == LoginStep.HASH) {
+        if (bootstrapReady && step == LoginStep.HASH && !preferStep1) {
             step = LoginStep.AUTH
         }
     }
 
     LaunchedEffect(bootstrapReady, statusMsg) {
         if (!bootstrapReady && statusMsg.contains("истекло", ignoreCase = true)) {
+            preferStep1 = true
             step = LoginStep.HASH
         }
+    }
+
+    LaunchedEffect(step, bootstrapReady) {
+        onSyncBootstrap()
     }
 
     Column(
@@ -136,15 +132,12 @@ fun LoginScreen(
                     statusMsg = statusMsg,
                     bootstrapConnecting = bootstrapConnecting,
                     bootstrapReady = bootstrapReady,
+                    bootstrapSecondsLeft = bootstrapSecondsLeft,
                     onConnect = onConnect,
+                    onContinueToAuth = { goToStep2() },
                     onOpenVkLink = { onOpenVkLink(vkUrl) },
                     showDivider = false,
                 )
-                if (bootstrapReady) {
-                    TextButton(onClick = { step = LoginStep.AUTH }, modifier = Modifier.fillMaxWidth()) {
-                        Text("→ К шагу 2 — вход или регистрация", fontSize = 11.sp, color = ui.hint)
-                    }
-                }
             }
 
             AnimatedVisibility(
@@ -152,19 +145,17 @@ fun LoginScreen(
                 enter = fadeIn() + slideInVertically { it / 4 },
             ) {
                 Column {
-                    if (resetPasswordSuccess) {
-                        Text(
-                            "Пароль сохранён. Войдите с новым паролем.",
-                            color = ui.green,
-                            fontSize = 13.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                        )
-                    }
                     Text(step2Title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = ui.fg, modifier = Modifier.padding(bottom = 12.dp))
-                    if (bootstrapReady && statusMsg.contains("осталось", ignoreCase = true)) {
+                    if (bootstrapReady) {
+                        val sec = bootstrapSecondsLeft
                         Text(
-                            statusMsg,
+                            when {
+                                sec != null -> statusMsg.ifBlank {
+                                    "Канал готов. Осталось %d:%02d".format(sec / 60, sec % 60)
+                                }
+                                statusMsg.isNotBlank() -> statusMsg
+                                else -> "VPN включён"
+                            },
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Medium,
                             color = ui.green,
@@ -196,7 +187,7 @@ fun LoginScreen(
                             Spacer(modifier = Modifier.height(32.dp))
                             Text("Подтвердите email", color = ui.fg, fontWeight = FontWeight.Medium, fontSize = 14.sp)
                             Text("Ссылка отправлена на $regEmail", color = ui.hint, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
-                            Text("Откройте её в браузере — VPN должен быть включён", color = ui.hint, fontSize = 11.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 2.dp))
+                            Text("Откройте ссылку из письма (браузер или почта) — временный VPN включён", color = ui.hint, fontSize = 11.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 2.dp))
                             TextButton(onClick = { tab = "login"; onRegDoneDismiss() }) { Text("Войти", fontSize = 12.sp, color = ui.fg) }
                         }
                     } else {
@@ -240,7 +231,6 @@ fun LoginScreen(
                         if (!error.isNullOrBlank()) Text(error, color = ui.red, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
                         Button(
                             onClick = {
-                                onClearResetPasswordSuccess()
                                 if (tab == "login") onLogin(email.trim(), password, rememberMe)
                                 else onRegister(email.trim(), password, rememberMe)
                             },
@@ -252,7 +242,7 @@ fun LoginScreen(
                             if (loading) CircularProgressIndicator(modifier = Modifier.size(20.dp), color = ui.primaryBtnFg, strokeWidth = 2.dp)
                             else Text(if (tab == "login") "Войти" else "Зарегистрироваться", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                         }
-                        TextButton(onClick = { step = LoginStep.HASH }, modifier = Modifier.fillMaxWidth()) {
+                        TextButton(onClick = { goToStep1() }, modifier = Modifier.fillMaxWidth()) {
                             Text("← К шагу 1 — хеш VK", fontSize = 11.sp, color = ui.hint)
                         }
                     }
@@ -264,7 +254,13 @@ fun LoginScreen(
                 Text(forgotHint, fontSize = 12.sp, color = ui.hint, modifier = Modifier.padding(top = 8.dp, bottom = 16.dp))
                 if (forgotSent) {
                     Text("Если email зарегистрирован, письмо отправлено.", color = ui.green, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 24.dp))
-                    Text("Откройте ссылку в браузере — VPN должен быть включён", color = ui.hint, fontSize = 11.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp))
+                    Text(
+                        "Откройте ссылку из письма в браузере или почте — смените пароль на странице сайта, затем войдите в приложение.",
+                        color = ui.hint,
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
+                    )
                     TextButton(onClick = { onClearForgotSent() }, modifier = Modifier.fillMaxWidth()) {
                         Text("Отправить письмо снова", fontSize = 12.sp, color = ui.linkColor)
                     }
@@ -287,47 +283,6 @@ fun LoginScreen(
                 }
                 TextButton(onClick = { onClearForgotSent(); step = LoginStep.AUTH; onClearError() }) {
                     Text("← Назад к входу", fontSize = 12.sp, color = ui.hint)
-                }
-            }
-
-            if (step == LoginStep.RESET && !resetToken.isNullOrBlank()) {
-                if (!bootstrapReady) {
-                    Text(
-                        "Сначала подключитесь на шаге 1.",
-                        fontSize = 12.sp,
-                        color = ui.hint,
-                        modifier = Modifier.padding(bottom = 12.dp),
-                    )
-                    TextButton(onClick = { step = LoginStep.HASH }) {
-                        Text("← К шагу 1 — подключить VPN", fontSize = 12.sp, color = ui.hint)
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-                Text(resetTitle, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = ui.fg)
-                Spacer(modifier = Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = newPassword, onValueChange = { newPassword = it }, modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Новый пароль") },
-                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    shape = RoundedCornerShape(12.dp), colors = fieldColors,
-                    trailingIcon = {
-                        TextButton(onClick = { showPassword = !showPassword }) {
-                            Text(if (showPassword) "Скрыть" else "Показать", fontSize = 11.sp, color = ui.hint)
-                        }
-                    },
-                )
-                if (!error.isNullOrBlank()) Text(error, color = ui.red, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
-                Spacer(modifier = Modifier.height(12.dp))
-                Button(
-                    onClick = { onResetPassword(resetToken, newPassword) },
-                    enabled = !loading && newPassword.length >= 8 && bootstrapReady,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = ui.primaryBtnBg, contentColor = ui.primaryBtnFg),
-                ) { Text(resetBtn) }
-                TextButton(onClick = { onClearResetToken(); step = if (bootstrapReady) LoginStep.AUTH else LoginStep.HASH }) {
-                    Text("← Назад", fontSize = 12.sp, color = ui.hint)
                 }
             }
         }

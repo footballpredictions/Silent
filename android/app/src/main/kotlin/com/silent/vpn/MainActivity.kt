@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -88,8 +87,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        handleDeepLink(intent)
-
         setContent {
             val screen by vm.screen.collectAsState()
             val profile by vm.profile.collectAsState()
@@ -103,12 +100,12 @@ class MainActivity : ComponentActivity() {
             val bootstrapHash by vm.bootstrapHash.collectAsState()
             val statusMsg by vm.statusMsg.collectAsState()
             val bootstrapConnecting by vm.bootstrapConnecting.collectAsState()
+            val bootstrapReady by vm.bootstrapReady.collectAsState()
+            val bootstrapSecondsLeft by vm.bootstrapSecondsLeft.collectAsState()
             val sessionDeviceId by vm.sessionDeviceId.collectAsState()
             val updateInfo by vm.updateInfo.collectAsState()
             val updateProgress by vm.updateProgress.collectAsState()
             val updateDownloading by vm.updateDownloading.collectAsState()
-            val resetToken by vm.resetPasswordToken.collectAsState()
-            val resetPasswordSuccess by vm.resetPasswordSuccess.collectAsState()
             val forgotSent by vm.forgotSent.collectAsState()
 
             LaunchedEffect(Unit) {
@@ -122,21 +119,22 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            LaunchedEffect(screen) {
+                if (screen == AppScreen.LOGIN) {
+                    vm.reconcileLoginBootstrapSession(this@MainActivity)
+                }
+            }
+
             SilentTheme(themeData = theme) {
                 when (screen) {
                     AppScreen.LOGIN -> LoginScreen(
                         theme = theme,
                         initialEmail = vm.lastEmail,
                         initialRememberMe = vm.rememberMe,
-                        resetToken = resetToken,
-                        resetPasswordSuccess = resetPasswordSuccess,
                         forgotSent = forgotSent,
                         onLogin = { email, password, remember -> vm.login(email, password, remember, this@MainActivity) },
                         onRegister = vm::register,
                         onForgotPassword = vm::forgotPassword,
-                        onResetPassword = vm::resetPassword,
-                        onClearResetToken = vm::clearResetToken,
-                        onClearResetPasswordSuccess = vm::clearResetPasswordSuccess,
                         onClearForgotSent = vm::clearForgotSent,
                         loading = authLoading,
                         error = authError,
@@ -145,7 +143,8 @@ class MainActivity : ComponentActivity() {
                         bootstrapHash = bootstrapHash,
                         statusMsg = statusMsg,
                         bootstrapConnecting = bootstrapConnecting,
-                        bootstrapReady = vpnState == VpnState.CONNECTED,
+                        bootstrapReady = bootstrapReady,
+                        bootstrapSecondsLeft = bootstrapSecondsLeft,
                         onConnect = { raw ->
                             val prep = VpnService.prepare(this@MainActivity)
                             pendingHashInput.value = raw
@@ -161,6 +160,7 @@ class MainActivity : ComponentActivity() {
                         },
                         onClearError = vm::clearAuthError,
                         onRegDoneDismiss = vm::dismissRegDone,
+                        onSyncBootstrap = { vm.reconcileLoginBootstrapSession(this@MainActivity) },
                     )
                     AppScreen.MAIN -> MainScreen(
                         profile = profile,
@@ -207,17 +207,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun handleDeepLink(intent: Intent?) {
-        intent?.data?.let { vm.handleDeepLink(it, this) }
-    }
-
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val isResetLink = intent.data?.scheme == "silentvpn" &&
-            intent.data?.host == "reset-password"
-        handleDeepLink(intent)
-        if (!isResetLink && intent.getBooleanExtra(EXTRA_OPEN_MAIN, false)) {
+        if (intent.getBooleanExtra(EXTRA_OPEN_MAIN, false)) {
             vm.onReturnedToApp()
         }
         handleTileConnectIntent(intent)

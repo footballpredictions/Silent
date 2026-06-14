@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
+import com.silent.vpn.util.DebugLog
 
 /** Пакеты VK — всегда вне туннеля (TURN), как в proxy-turn-vk-android. */
 val VK_TUNNEL_PACKAGES = setOf(
@@ -13,8 +14,43 @@ val VK_TUNNEL_PACKAGES = setOf(
 )
 
 /**
- * Silent и VK всегда вне WG (libclient/TURN напрямую на белых списках).
- * Overlay: Silent кратко в туннеле для HTTP к 10.66.66.1; TURN — split AllowedIPs.
+ * Bootstrap (шаг 1): в VPN только Silent + браузеры + почта — ссылки из писем открываются с телефона.
+ * Остальные приложения (VK и т.д.) VPN не затрагивает.
+ */
+private val BOOTSTRAP_COMPANION_PACKAGES = listOf(
+    "com.android.chrome",
+    "com.chrome.beta",
+    "com.chrome.dev",
+    "com.android.browser",
+    "org.mozilla.firefox",
+    "com.opera.browser",
+    "com.opera.mini.native",
+    "com.brave.browser",
+    "com.microsoft.emmx",
+    "com.sec.android.app.sbrowser",
+    "com.google.android.gm",
+    "com.microsoft.office.outlook",
+    "com.yahoo.mobile.client.android.mail",
+    "ru.mail.mailapp",
+    "com.my.mail",
+    "com.yandex.mail",
+    "com.samsung.android.email.provider",
+    "com.google.android.apps.messaging",
+)
+
+fun resolveBootstrapIncludedApps(context: Context): Set<String> {
+    val pm = context.packageManager
+    val out = linkedSetOf(context.packageName)
+    for (pkg in BOOTSTRAP_COMPANION_PACKAGES) {
+        if (isPackageInstalled(pm, pkg)) out.add(pkg)
+    }
+    DebugLog.i("BootstrapVpn", "included apps: ${out.size} (${out.joinToString { it.substringAfterLast('.') }})")
+    return out
+}
+
+/**
+ * Main VPN: Silent и VK вне WG (libclient/TURN напрямую на белых списках).
+ * Bootstrap: includeApplications — Silent + браузеры + почта.
  */
 fun resolveExcludedAppPackages(context: Context, includeAppInTunnel: Boolean = false): Set<String> {
     val prefs = SilentPrefs.open(context)

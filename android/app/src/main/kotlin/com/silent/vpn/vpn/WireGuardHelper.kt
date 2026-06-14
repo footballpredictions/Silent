@@ -13,6 +13,7 @@ import android.util.Log
 import com.silent.vpn.util.DebugLog
 
 import com.silent.vpn.SilentApp
+import com.silent.vpn.data.BootstrapVpnConfig
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.service.SilentGoBackendVpnService
 
@@ -43,9 +44,8 @@ import java.io.ByteArrayInputStream
 /**
 
  * WireGuard: split-tunnel (сервер/TURN вне WG), VK — excludeApplications.
-
- * apiOverlayMode: кратко включаем app в WG только для 10.66.66.0/24 (синхронизация API).
-
+ * Bootstrap: includeApplications (Silent + браузеры + почта), AllowedIPs → API + backend HTTPS.
+ * apiOverlayMode: кратко AllowedIPs = 10.66.66.0/24 для sync API.
  */
 
 class WireGuardHelper(context: Context) {
@@ -134,12 +134,17 @@ class WireGuardHelper(context: Context) {
 
             if (!apiOverlayMode) {
                 if (isBootstrap) {
-                    if (excludeIPs.isNotEmpty()) {
-                        configToApply = AllowedIpsHelper.patchAllowedIPs(configString, excludeIPs)
-                        DebugLog.i(TAG, "Bootstrap split-tunnel: исключено IP=${excludeIPs.size}")
+                    configToApply = if (excludeIPs.isNotEmpty()) {
+                        AllowedIpsHelper.patchAllowedIPs(configString, excludeIPs).also {
+                            DebugLog.i(TAG, "Bootstrap AllowedIPs: 0.0.0.0/0 − ${excludeIPs.size} host(s)")
+                        }
                     } else {
-                        configToApply = AllowedIpsHelper.patchAllowedIPsToSubnet(configString)
-                        DebugLog.i(TAG, "Bootstrap: AllowedIPs = ${AllowedIpsHelper.WG_TUNNEL_SUBNET}")
+                        AllowedIpsHelper.patchAllowedIPsForBootstrapAuth(
+                            configString,
+                            serverIpFromConfig(configString),
+                        ).also {
+                            DebugLog.i(TAG, "Bootstrap AllowedIPs: API + backend HTTPS")
+                        }
                     }
                 }
             } else {
@@ -150,6 +155,7 @@ class WireGuardHelper(context: Context) {
 
 
             val excludeKey = when {
+                isBootstrap && !apiOverlayMode -> "bootstrap-companion"
                 apiOverlayMode -> "overlay-app-in"
                 else -> excludeIPs.sorted().joinToString(",")
             }
@@ -202,20 +208,23 @@ class WireGuardHelper(context: Context) {
 
 
 
-            val includeAppInTunnel = apiOverlayMode || !SilentRepository.APP_EXCLUDED_FROM_VPN
-
-            runCatching {
-
-                val excluded = resolveExcludedAppPackages(appContext, includeAppInTunnel)
-
-                if (excluded.isNotEmpty()) {
-
-                    ifaceBuilder.excludeApplications(excluded)
-
-                    DebugLog.i(TAG, "App exclusions: ${excluded.size} (bootstrap=$isBootstrap overlay=$apiOverlayMode)")
-
+            if (isBootstrap && !apiOverlayMode) {
+                runCatching {
+                    val included = resolveBootstrapIncludedApps(appContext)
+                    if (included.isNotEmpty()) {
+                        ifaceBuilder.includeApplications(included)
+                        DebugLog.i(TAG, "Bootstrap includeApplications: ${included.size}")
+                    }
                 }
-
+            } else {
+                val includeAppInTunnel = apiOverlayMode || !SilentRepository.APP_EXCLUDED_FROM_VPN
+                runCatching {
+                    val excluded = resolveExcludedAppPackages(appContext, includeAppInTunnel)
+                    if (excluded.isNotEmpty()) {
+                        ifaceBuilder.excludeApplications(excluded)
+                        DebugLog.i(TAG, "App exclusions: ${excluded.size} (bootstrap=$isBootstrap overlay=$apiOverlayMode)")
+                    }
+                }
             }
 
 
@@ -320,6 +329,13 @@ class WireGuardHelper(context: Context) {
     }
 
 
+
+    private fun serverIpFromConfig(config: String): String {
+        val endpoint = Regex("""(?m)^Endpoint\s*=\s*([^:\s]+)""")
+            .find(config)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+        return endpoint.takeIf { it.matches(Regex("""\d+\.\d+\.\d+\.\d+""")) }
+            ?: BootstrapVpnConfig.serverHost()
+    }
 
     private fun wgSemanticKey(config: String): String {
 

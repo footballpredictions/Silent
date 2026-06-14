@@ -110,6 +110,14 @@ class MainViewModel @Inject constructor(
     private val _bootstrapConnecting = MutableStateFlow(false)
     val bootstrapConnecting: StateFlow<Boolean> = _bootstrapConnecting
 
+    /** Секунд до конца bootstrap-сессии (2 мин); null — таймер не идёт. */
+    private val _bootstrapSecondsLeft = MutableStateFlow<Int?>(null)
+    val bootstrapSecondsLeft: StateFlow<Int?> = _bootstrapSecondsLeft
+
+    /** VPN для входа/регистрации/сброса пароля готов (сервис + туннель), единый источник для UI. */
+    private val _bootstrapReady = MutableStateFlow(false)
+    val bootstrapReady: StateFlow<Boolean> = _bootstrapReady
+
     private val _sessionDeviceId = MutableStateFlow(repo.getSessionDeviceId())
     val sessionDeviceId: StateFlow<String?> = _sessionDeviceId
 
@@ -179,9 +187,16 @@ class MainViewModel @Inject constructor(
             return
         }
         if (_vpnState.value == VpnState.CONNECTED && bootstrapVpnMode) {
-            bootstrapContext = context.applicationContext
-            restartBootstrapTimerIfNeeded()
-            return
+            val saved = repo.getBootstrapHash()?.trim().orEmpty()
+            if (saved == h) {
+                bootstrapContext = context.applicationContext
+                restartBootstrapTimerIfNeeded()
+                return
+            }
+            resetBootstrapDeadline()
+            stopVpnLocally(context)
+            bootstrapVpnMode = false
+            _vpnState.value = VpnState.DISCONNECTED
         }
         repo.saveBootstrapHash(h)
         refreshHashState()
@@ -230,6 +245,9 @@ class MainViewModel @Inject constructor(
             }
         } else {
             loadTheme()
+            if (SilentVpnService.isRunning && isHashReady()) {
+                reconcileLoginBootstrapSession(appContext)
+            }
         }
         checkForAppUpdate()
         viewModelScope.launch {
@@ -254,10 +272,12 @@ class MainViewModel @Inject constructor(
                 if (ready) {
                     if (_vpnState.value == VpnState.DISCONNECTING) return@collect
                     DebugLog.i("MainViewModel", "tunnel ready")
-                    if (bootstrapVpnMode) {
+                    if (bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) {
+                        if (!bootstrapVpnMode) bootstrapVpnMode = true
                         _vpnState.value = VpnState.CONNECTED
                         onVpnTunnelReady()
-                        bootstrapContext?.let { ctx ->
+                        val ctx = bootstrapContext
+                        if (ctx != null) {
                             startBootstrapSessionTimeout(
                                 ctx,
                                 forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
@@ -268,9 +288,15 @@ class MainViewModel @Inject constructor(
                     } else if (SilentVpnService.isRunning) {
                         if (!repo.isLoggedIn() && _screen.value == AppScreen.LOGIN) {
                             bootstrapVpnMode = true
+                            bootstrapContext = bootstrapContext ?: appContext
+                            startBootstrapSessionTimeout(
+                                appContext,
+                                forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
+                            )
                         }
                         _vpnState.value = VpnState.CONNECTED
                         onVpnTunnelReady()
+                        updateBootstrapReadyFlag()
                     }
                 } else if (
                     _vpnState.value == VpnState.CONNECTED &&
@@ -341,7 +367,9 @@ class MainViewModel @Inject constructor(
     }
 
     fun onAppResumed() {
-        if (!repo.isLoggedIn() && bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
+        if (!repo.isLoggedIn()) {
+            reconcileLoginBootstrapSession(appContext)
+        } else if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
             restartBootstrapTimerIfNeeded()
         }
         syncSessionOnResume()
@@ -392,10 +420,11 @@ class MainViewModel @Inject constructor(
         if (_resetPasswordToken.value != null) {
             SessionTrace.exit("MainViewModel.syncSessionOnResume", "reset password flow")
             _screen.value = AppScreen.LOGIN
-            ensureBootstrapForAuthFlow(appContext)
+            reconcileLoginBootstrapSession(appContext)
             return
         }
         if (!repo.isLoggedIn()) {
+            reconcileLoginBootstrapSession(appContext)
             SessionTrace.exit("MainViewModel.syncSessionOnResume", "not logged in")
             return
         }
@@ -767,20 +796,57 @@ class MainViewModel @Inject constructor(
 
     /** Шаг 1 для входа / регистрации / сброса пароля при блокировке. */
     fun ensureBootstrapForAuthFlow(context: Context) {
+        reconcileLoginBootstrapSession(context)
         if (!isHashReady()) return
-        if (SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) {
-            if (!bootstrapVpnMode) bootstrapVpnMode = true
-            bootstrapContext = context.applicationContext
-            if (_vpnState.value != VpnState.CONNECTED) {
-                _vpnState.value = VpnState.CONNECTED
-                onVpnTunnelReady()
-            }
-            restartBootstrapTimerIfNeeded()
-            return
-        }
+        if (bootstrapVpnMode && SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) return
         if (_vpnState.value != VpnState.CONNECTING && !bootstrapConnectingInternal) {
             ensureBootstrapVpn(context)
         }
+    }
+
+    /**
+     * Синхронизировать UI входа с реально работающим bootstrap-VPN.
+     * ViewModel может пересоздаться, а FGS+туннель остаются — без этого UI «отключается».
+     */
+    fun reconcileLoginBootstrapSession(context: Context) {
+        if (repo.isLoggedIn()) {
+            _bootstrapReady.value = false
+            return
+        }
+        val ctx = context.applicationContext
+        val serviceUp = SilentVpnService.isRunning
+        val tunnelUp = WdttTunnelManager.tunnelReady.value
+        val bootstrapTunnel = WdttTunnelManager.isBootstrapMode()
+
+        if (serviceUp && tunnelUp && isHashReady() && (bootstrapTunnel || _screen.value == AppScreen.LOGIN)) {
+            bootstrapVpnMode = true
+            bootstrapContext = ctx
+            if (_vpnState.value != VpnState.CONNECTED) {
+                _vpnState.value = VpnState.CONNECTED
+                onVpnTunnelReady(initialConnect = false)
+            }
+            WdttTunnelManager.lastWgAddress()?.takeIf { it.isNotBlank() }?.let {
+                repo.setTunnelApiFromWgAddress(it)
+            }
+            startBootstrapSessionTimeout(
+                ctx,
+                forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
+            )
+            DebugLog.i("MainViewModel", "reconcileLoginBootstrapSession: bootstrap VPN active")
+        } else if (!serviceUp && bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
+            bootstrapVpnMode = false
+            cancelBootstrapSessionTimeout()
+            _vpnState.value = VpnState.DISCONNECTED
+        }
+        updateBootstrapReadyFlag()
+    }
+
+    private fun updateBootstrapReadyFlag() {
+        _bootstrapReady.value = !repo.isLoggedIn() &&
+            bootstrapVpnMode &&
+            SilentVpnService.isRunning &&
+            WdttTunnelManager.tunnelReady.value &&
+            _vpnState.value == VpnState.CONNECTED
     }
 
     private suspend fun fetchProfileNow(force: Boolean = false): Boolean {
@@ -909,14 +975,22 @@ class MainViewModel @Inject constructor(
     }
 
     fun handleDeepLink(uri: Uri?, context: Context? = null) {
-        if (uri?.scheme != "silentvpn") return
-        when (uri.host) {
-            "reset-password" -> uri.getQueryParameter("token")?.takeIf { it.isNotBlank() }?.let { token ->
-                _resetPasswordToken.value = token
-                _screen.value = AppScreen.LOGIN
-                context?.let { ensureBootstrapForAuthFlow(it) }
-            }
+        val token = extractResetPasswordToken(uri) ?: return
+        _resetPasswordToken.value = token
+        _screen.value = AppScreen.LOGIN
+        context?.let { reconcileLoginBootstrapSession(it) }
+    }
+
+    private fun extractResetPasswordToken(uri: Uri?): String? {
+        if (uri == null) return null
+        if (uri.scheme == "silentvpn" && uri.host == "reset-password") {
+            return uri.getQueryParameter("token")?.takeIf { it.isNotBlank() }
         }
+        val path = uri.path ?: return null
+        if ((uri.scheme == "https" || uri.scheme == "http") && path.contains("app-reset")) {
+            return uri.getQueryParameter("token")?.takeIf { it.isNotBlank() }
+        }
+        return null
     }
 
     fun clearResetToken() {
@@ -952,24 +1026,28 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
                 _forgotSent.value = true
+                refreshBootstrapCountdownNow()
                 // Таймер не перезапускаем — те же 2 мин с шага 1.
             } catch (e: Exception) {
                 _authError.value = e.message ?: "Ошибка отправки"
                 restartBootstrapTimerIfNeeded()
             } finally {
                 _authLoading.value = false
+                if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
+                    restartBootstrapTimerIfNeeded()
+                }
             }
         }
     }
 
     fun resetPassword(token: String, newPassword: String) {
         viewModelScope.launch {
+            reconcileLoginBootstrapSession(appContext)
             _authLoading.value = true
             _authError.value = null
             try {
-                if (_vpnState.value != VpnState.CONNECTED) {
+                if (!_bootstrapReady.value) {
                     _authError.value = "Сначала подключитесь для входа (шаг 1)"
-                    restartBootstrapTimerIfNeeded()
                     return@launch
                 }
                 awaitTunnelApiReady()
@@ -984,11 +1062,15 @@ class MainViewModel @Inject constructor(
                 _resetPasswordToken.value = null
                 _resetPasswordSuccess.value = true
                 _authError.value = null
+                refreshBootstrapCountdownNow()
             } catch (e: Exception) {
                 _authError.value = e.message ?: "Ошибка"
                 restartBootstrapTimerIfNeeded()
             } finally {
                 _authLoading.value = false
+                if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
+                    restartBootstrapTimerIfNeeded()
+                }
             }
         }
     }
@@ -1128,6 +1210,7 @@ class MainViewModel @Inject constructor(
                         repo.saveRememberMe(email, rememberMe)
                         _regEmail.value = email
                         _regDone.value = true
+                        refreshBootstrapCountdownNow()
                     }
                 }
                 // Таймер не перезапускаем — те же 2 мин с шага 1, потом VPN отключится.
@@ -1136,6 +1219,9 @@ class MainViewModel @Inject constructor(
                 restartBootstrapTimerIfNeeded()
             } finally {
                 _authLoading.value = false
+                if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
+                    restartBootstrapTimerIfNeeded()
+                }
             }
         }
     }
@@ -1188,32 +1274,23 @@ class MainViewModel @Inject constructor(
         repo.clearTunnelApiBase()
         clearBootstrapHashAfterLogin()
         _statusMsg.value = "Интернет отключён. VPN включайте на главном экране."
+        updateBootstrapReadyFlag()
     }
 
     private fun startBootstrapSessionTimeout(context: Context, forceNewDeadline: Boolean = false) {
+        if (!bootstrapVpnMode) return
         val now = System.currentTimeMillis()
         if (forceNewDeadline || bootstrapDeadlineMs <= now) {
             bootstrapDeadlineMs = now + BOOTSTRAP_SESSION_MS
         }
         bootstrapContext = context.applicationContext
+        refreshBootstrapCountdownNow()
         if (bootstrapTimeoutJob?.isActive == true) return
         bootstrapTimeoutJob = viewModelScope.launch {
-            val deadline = bootstrapDeadlineMs
             while (bootstrapVpnMode && !repo.isLoggedIn()) {
-                val leftSec = ((deadline - System.currentTimeMillis()) / 1000L).toInt()
+                val leftSec = ((bootstrapDeadlineMs - System.currentTimeMillis()) / 1000L).toInt()
                 if (leftSec <= 0) break
-                val mm = leftSec / 60
-                val ss = leftSec % 60
-                _statusMsg.value = when {
-                    _resetPasswordToken.value != null ->
-                        "Смена пароля через VPN. Осталось %d:%02d".format(mm, ss)
-                    _regDone.value ->
-                        "Подтвердите email в браузере. VPN ещё %d:%02d".format(mm, ss)
-                    _forgotSent.value ->
-                        "Откройте ссылку из письма в браузере. VPN ещё %d:%02d".format(mm, ss)
-                    else ->
-                        "Канал готов. Осталось %d:%02d — войдите или зарегистрируйтесь".format(mm, ss)
-                }
+                refreshBootstrapCountdownNow()
                 delay(1000)
             }
             if (bootstrapVpnMode && !repo.isLoggedIn()) {
@@ -1222,9 +1299,39 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    private fun refreshBootstrapCountdownNow() {
+        if (!bootstrapVpnMode || bootstrapDeadlineMs <= 0L) {
+            _bootstrapSecondsLeft.value = null
+            updateBootstrapReadyFlag()
+            return
+        }
+        val leftSec = ((bootstrapDeadlineMs - System.currentTimeMillis()) / 1000L).toInt()
+        if (leftSec <= 0) {
+            _bootstrapSecondsLeft.value = null
+            updateBootstrapReadyFlag()
+            return
+        }
+        _bootstrapSecondsLeft.value = leftSec
+        val mm = leftSec / 60
+        val ss = leftSec % 60
+        _statusMsg.value = when {
+            _resetPasswordToken.value != null ->
+                "Смена пароля через VPN. Осталось %d:%02d".format(mm, ss)
+            _regDone.value ->
+                "Подтвердите email (браузер/почта). VPN ещё %d:%02d".format(mm, ss)
+            _forgotSent.value ->
+                "Откройте ссылку из письма (браузер/почта). VPN ещё %d:%02d".format(mm, ss)
+            else ->
+                "Канал готов. Осталось %d:%02d — войдите или зарегистрируйтесь".format(mm, ss)
+        }
+        updateBootstrapReadyFlag()
+    }
+
     private fun cancelBootstrapSessionTimeout() {
         bootstrapTimeoutJob?.cancel()
         bootstrapTimeoutJob = null
+        _bootstrapSecondsLeft.value = null
+        updateBootstrapReadyFlag()
     }
 
     private fun resetBootstrapDeadline() {
@@ -1243,6 +1350,7 @@ class MainViewModel @Inject constructor(
         _vpnState.value = VpnState.DISCONNECTED
         _statusMsg.value =
             "Время временного интернета истекло (2 мин). Нажмите «Подключить для входа» снова."
+        updateBootstrapReadyFlag()
     }
 
     /** Bootstrap VPN on login screen — reach backend through user's VK hash. */
@@ -1321,9 +1429,15 @@ class MainViewModel @Inject constructor(
 
     /** Продолжить отсчёт с того же дедлайна (шаг 2 → шаг 1). */
     private fun resumeBootstrapTimerIfNeeded() {
-        val ctx = bootstrapContext ?: return
-        if (bootstrapVpnMode && !repo.isLoggedIn() && _vpnState.value == VpnState.CONNECTED) {
-            startBootstrapSessionTimeout(ctx, forceNewDeadline = false)
+        val ctx = bootstrapContext ?: appContext
+        if (bootstrapVpnMode && !repo.isLoggedIn()) {
+            if (SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) {
+                if (_vpnState.value != VpnState.CONNECTED) {
+                    _vpnState.value = VpnState.CONNECTED
+                }
+                startBootstrapSessionTimeout(ctx, forceNewDeadline = false)
+            }
+            updateBootstrapReadyFlag()
         }
     }
 

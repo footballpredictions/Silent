@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.runtime.Stable
 import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.SilentRepository
+import com.silent.vpn.util.DebugLog
 import com.silent.vpn.vpn.captcha.CaptchaWebViewManager
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import kotlinx.coroutines.CoroutineScope
@@ -495,7 +496,9 @@ object WdttTunnelManager {
                     }
 
                     Regex("""TURN UDP \(([\d.]+):\d+\)""").find(lineTrim)?.groupValues?.getOrNull(1)?.let { turnIp ->
-                        if (isBootstrapMode) wgExcludeIps.add(turnIp)
+                        if (isBootstrapMode && wgExcludeIps.add(turnIp)) {
+                            reloadBootstrapAllowedIps()
+                        }
                     }
 
                     if (lineTrim.contains("Конфиг получен") ||
@@ -692,7 +695,7 @@ object WdttTunnelManager {
                     withContext(NonCancellable + Dispatchers.Main) {
                         wgHelper?.startTunnel(
                             normalized,
-                            emptyList(),
+                            wgExcludeIps.toList(),
                             isBootstrap = isBootstrapMode,
                         )
                     }
@@ -1009,6 +1012,26 @@ object WdttTunnelManager {
         }
     }
 
+    /** После появления TURN IP — расширить маршруты bootstrap (0.0.0.0/0 − TURN) для браузеров/почты. */
+    private fun reloadBootstrapAllowedIps() {
+        if (!isBootstrapMode || !tunnelReady.value || apiOverlayActive) return
+        val config = lastWgConfig ?: return
+        if (wgApplyJob?.isActive == true) return
+        wgApplyJob = scope.launch {
+            wgApplyMutex.withLock {
+                if (!isBootstrapMode || !tunnelReady.value || apiOverlayActive) return@withLock
+                try {
+                    withContext(NonCancellable + Dispatchers.Main) {
+                        wgHelper?.startTunnel(config, wgExcludeIps.toList(), isBootstrap = true)
+                    }
+                    updateLog("bootstrap_routes", "Bootstrap: маршруты обновлены (TURN вне VPN)", 2)
+                } catch (e: Exception) {
+                    DebugLog.w("WdttTunnel", "bootstrap route reload: ${e.message}")
+                }
+            }
+        }
+    }
+
     fun reloadWireGuard(context: Context) {
         if (!tunnelReady.value) return
         val config = lastWgConfig ?: return
@@ -1016,7 +1039,7 @@ object WdttTunnelManager {
             wgHelper?.stopTunnel()
             delay(200)
             withContext(Dispatchers.Main) {
-                wgHelper?.startTunnel(config, emptyList(), isBootstrap = isBootstrapMode)
+                wgHelper?.startTunnel(config, wgExcludeIps.toList(), isBootstrap = isBootstrapMode)
             }
         }
     }

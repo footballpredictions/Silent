@@ -15,6 +15,7 @@ from app.schemas.vpn import (
     DisconnectRequest,
     AppExclusionRequest,
     ThemeResponse,
+    SyncStateResponse,
     HashRefreshRequest,
     HashFailureReportRequest,
     InternalOnlineRequest,
@@ -308,6 +309,32 @@ async def get_exclusions(
     if not setting:
         return {"mode": "blacklist", "packages": []}
     return json.loads(setting.value)
+
+
+@router.get("/sync-state", response_model=SyncStateResponse)
+async def get_sync_state(
+    hashes_since: int = 0,
+    theme_since: int = 0,
+    profile_since: int = 0,
+    since: int = 0,
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revision check for hashes, theme, profile — per-section since."""
+    from app.services.config_sync_service import build_sync_state
+
+    hs = max(0, hashes_since)
+    ts = max(0, theme_since)
+    ps = max(0, profile_since)
+    if since > 0 and hs == 0 and ts == 0 and ps == 0:
+        hs = ts = ps = since
+    return await build_sync_state(
+        db,
+        user,
+        hashes_since=hs,
+        theme_since=ts,
+        profile_since=ps,
+    )
 
 
 @router.get("/theme", response_model=ThemeResponse)

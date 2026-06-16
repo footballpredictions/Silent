@@ -68,6 +68,15 @@ class AppExclusionRequest(BaseModel):
     packages: list[str]
 
 
+class SyncStateResponse(BaseModel):
+    """Lightweight revision check — clients poll and fetch only changed sections."""
+    revision: int
+    hashes: int
+    theme: int
+    profile: int
+    changed: list[str] = []
+
+
 class ThemeResponse(BaseModel):
     """UI theme data served to all clients."""
     primary_color: str = "#000000"

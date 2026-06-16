@@ -956,6 +956,7 @@ async def set_theme(
     data = json.dumps(theme.model_dump())
     if setting:
         setting.value = data
+        setting.updated_at = datetime.utcnow()
     else:
         db.add(AppSetting(key="theme", value=data))
     await db.commit()

@@ -31,16 +31,17 @@ async def theme_revision(db: AsyncSession) -> int:
 
 
 async def profile_revision(db: AsyncSession, user_id: UUID) -> int:
+    """Подписка и состав устройств — без last_connected (heartbeat не должен будить ConfigSync)."""
+    user_result = await db.execute(select(User.updated_at).where(User.id == user_id))
+    user_rev = _dt_rev(user_result.scalar_one_or_none())
+
     dev_result = await db.execute(
-        select(
-            func.max(Device.last_connected),
-            func.max(Device.created_at),
-        ).where(Device.user_id == user_id, Device.is_active == True)
+        select(func.max(Device.created_at)).where(
+            Device.user_id == user_id,
+            Device.is_active == True,
+        )
     )
-    dev_row = dev_result.one_or_none()
-    dev_rev = 0
-    if dev_row:
-        dev_rev = max(_dt_rev(dev_row[0]), _dt_rev(dev_row[1]))
+    dev_rev = _dt_rev(dev_result.scalar_one_or_none())
 
     sub_result = await db.execute(
         select(
@@ -54,7 +55,7 @@ async def profile_revision(db: AsyncSession, user_id: UUID) -> int:
     if sub_row:
         sub_rev = max(_dt_rev(sub_row[0]), _dt_rev(sub_row[1]), _dt_rev(sub_row[2]))
 
-    return max(dev_rev, sub_rev)
+    return max(user_rev, dev_rev, sub_rev)
 
 
 async def build_sync_state(

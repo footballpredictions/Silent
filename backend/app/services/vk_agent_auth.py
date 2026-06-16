@@ -131,16 +131,10 @@ def build_kate_oauth_url(state: str) -> str:
 
 
 def build_agent_auth_url(state: str, code_challenge: str = "", _base_url: str = "") -> str:
-    """VK Звонки в браузере — redirect на наш HTTPS callback (не vkcau://)."""
-    from app.services.vk_calls_auth import build_calls_admin_auth_urls
-    from app.config import settings
+    """Kate Mobile OAuth — единственный стабильный browser-flow для calls.start на сервере."""
+    from app.services.vk_agent_auth import build_kate_oauth_url
 
-    base = (_base_url or settings.FRONTEND_URL or "").strip().rstrip("/")
-    if not base:
-        from app.services.vk_calls_auth import build_calls_auth_url
-        url, _ = build_calls_auth_url(state, redirect_uri="https://oauth.vk.com/blank.html")
-        return url
-    return build_calls_admin_auth_urls(state, base)["auth_url"]
+    return build_kate_oauth_url(state)
 
 
 async def _read_vk_oauth_json(resp: aiohttp.ClientResponse) -> dict:
@@ -271,8 +265,8 @@ async def paste_to_server_token(
             "Используйте VK Звонки: id.vk.com/auth?app_id=7793118 → вставьте vkcau://…#silent_token=…"
         )
     return None, None, (
-        "Не найден silent_token. Откройте «VK Звонки» в админке, войдите и вставьте URL "
-        "vkcau://vk.com/auth#silent_token=…&uuid={…} (как на calls.vk.com)."
+        "Не найден silent_token. Откройте «VK Звонки» в админке, войдите, нажмите «Продолжить» "
+        "и вставьте URL oauth.vk.com/blank.html?payload=… (или …#silent_token=…&uuid={…})."
     )
 
 
@@ -481,6 +475,7 @@ async def save_agent_token_direct(
         await set_calls_verified(db, False)
         return False, f"Звонки недоступны: {calls_msg}", uid
     await set_calls_verified(db, True)
+    await clear_flood_cooldown(db)
     await db.commit()
     return True, "OK", uid
 
@@ -597,6 +592,69 @@ async def is_agent_enabled(db: AsyncSession) -> bool:
     return s is not None and s.value == "true"
 
 
+async def set_agent_run_log(db: AsyncSession, message: str, *, ok: bool = True) -> None:
+    from datetime import datetime
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    status = "ok" if ok else "error"
+    await _set_setting(db, "vk_agent_last_run", ts)
+    await _set_setting(db, "vk_agent_last_status", status)
+    await _set_setting(db, "vk_agent_last_message", message[:500])
+
+
+async def get_agent_run_log(db: AsyncSession) -> dict:
+    flood_until = await _setting(db, "vk_agent_flood_until")
+    flood_until_msk = _utc_setting_to_msk(flood_until)
+    return {
+        "last_run": await _setting(db, "vk_agent_last_run"),
+        "last_status": await _setting(db, "vk_agent_last_status"),
+        "last_message": await _setting(db, "vk_agent_last_message"),
+        "flood_until": flood_until,
+        "flood_until_msk": flood_until_msk,
+    }
+
+
+def _utc_setting_to_msk(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    from datetime import datetime, timedelta, timezone
+    try:
+        dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=timezone.utc)
+        msk = dt + timedelta(hours=3)
+        return msk.strftime("%d.%m.%Y %H:%M") + " (МСК)"
+    except ValueError:
+        return raw
+
+
+async def set_flood_cooldown(db: AsyncSession, minutes: int = 30) -> None:
+    from datetime import datetime, timedelta
+    until = (datetime.utcnow() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S UTC")
+    await _set_setting(db, "vk_agent_flood_until", until)
+
+
+async def clear_flood_cooldown(db: AsyncSession) -> None:
+    """Снять серверную паузу (осталась от старого VK-аккаунта / flood)."""
+    from app.models import AppSetting
+    r = await db.execute(select(AppSetting).where(AppSetting.key == "vk_agent_flood_until"))
+    s = r.scalar_one_or_none()
+    if s:
+        await db.delete(s)
+        await db.commit()
+
+
+async def is_flood_cooldown(db: AsyncSession) -> tuple[bool, str | None]:
+    from datetime import datetime
+    raw = await _setting(db, "vk_agent_flood_until")
+    if not raw:
+        return False, None
+    try:
+        until = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S UTC")
+        if datetime.utcnow() < until:
+            return True, raw
+    except ValueError:
+        pass
+    return False, None
+
+
 async def set_agent_enabled(db: AsyncSession, enabled: bool) -> None:
     from app.models import AppSetting
     key = "vk_agent_enabled"
@@ -637,6 +695,8 @@ async def get_auth_status(db: AsyncSession) -> dict:
         auth_error = msg if msg else None
 
     agent_on = await is_agent_enabled(db)
+    agent_log = await get_agent_run_log(db)
+    flood, flood_until = await is_flood_cooldown(db)
 
     env_warn: str | None = None
     env_tok = get_env_agent_token()
@@ -655,4 +715,10 @@ async def get_auth_status(db: AsyncSession) -> dict:
         "has_token": has_token,
         "env_token_set": env_tok is not None,
         "env_token_warn": env_warn,
+        "agent_last_run": agent_log.get("last_run"),
+        "agent_last_status": agent_log.get("last_status"),
+        "agent_last_message": agent_log.get("last_message"),
+        "agent_flood_cooldown": flood,
+        "agent_flood_until": flood_until,
+        "agent_flood_until_msk": agent_log.get("flood_until_msk"),
     }

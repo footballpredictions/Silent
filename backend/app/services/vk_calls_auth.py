@@ -5,7 +5,7 @@ import json
 import logging
 import secrets
 import uuid as uuid_lib
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 
 import aiohttp
 
@@ -50,32 +50,56 @@ def build_calls_auth_url(
     return url, uid
 
 
-def build_calls_admin_auth_urls(state: str, site_base: str) -> dict[str, str]:
-    """Два варианта: наш callback (авто) и blank.html (скопировать URL из popup)."""
-    base = (site_base or "").rstrip("/")
-    web_redirect = f"{base}/api/auth/vk/calls-callback?state={state}"
-    auth_web, _ = build_calls_auth_url(state, redirect_uri=web_redirect)
-    auth_blank, _ = build_calls_auth_url(state, redirect_uri="https://oauth.vk.com/blank.html")
-    auth_app, _ = build_calls_auth_url(state, redirect_uri=VK_CALLS_REDIRECT_URI)
+def build_calls_admin_auth_urls(state: str, site_base: str = "") -> dict[str, str]:
+    """
+    VK app 7793118: redirect oauth.vk.com/blank.html → payload JSON с token+uuid.
+    Kate Mobile OAuth в браузере заблокирован VK («direct auth»).
+    """
+    auth_calls_blank, _ = build_calls_auth_url(state, redirect_uri="https://oauth.vk.com/blank.html")
+    auth_calls_blank_ru, _ = build_calls_auth_url(state, redirect_uri="https://oauth.vk.ru/blank.html")
     return {
-        "auth_url": auth_web,
-        "auth_url_blank": auth_blank,
-        "auth_url_app": auth_app,
+        "auth_url": auth_calls_blank,
+        "auth_url_calls": auth_calls_blank,
+        "auth_url_calls_ru": auth_calls_blank_ru,
     }
 
 
+def _parse_calls_payload_json(raw_payload: str) -> tuple[str | None, str | None]:
+    """blank.html?payload={"type":"silent_token","token":"…","uuid":"{…}"}"""
+    if not raw_payload:
+        return None, None
+    text = raw_payload.strip()
+    if not text.startswith("{"):
+        text = unquote(text)
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        return None, None
+    if not isinstance(obj, dict):
+        return None, None
+    token = obj.get("token") or obj.get("silent_token")
+    uid = obj.get("uuid")
+    if token and isinstance(token, str):
+        token = token.strip()
+    else:
+        token = None
+    return token, uid
+
+
 def is_calls_login_start_url(text: str) -> bool:
-    """Ссылка id.vk.com/auth?… без silent_token — это начало входа, не результат."""
+    """Ссылка id.vk.com/auth?… без токена — это начало входа, не результат."""
     raw = (text or "").strip().lower()
     if not raw:
         return False
     if "silent_token=" in raw or "silent_token%3d" in raw:
         return False
+    if "payload=" in raw and "silent_token" in raw:
+        return False
     return "id.vk.com/auth" in raw and "app_id=7793118" in raw
 
 
 def parse_silent_token_from_paste(text: str) -> tuple[str | None, str | None]:
-    """Из vkcau://…#silent_token=…&uuid=… или произвольной строки."""
+    """Из blank.html?payload=…, vkcau://…#silent_token=… или произвольной строки."""
     raw = (text or "").strip()
     if not raw:
         return None, None
@@ -96,8 +120,23 @@ def parse_silent_token_from_paste(text: str) -> tuple[str | None, str | None]:
     uid: str | None = None
     for part in parts:
         params = dict(parse_qsl(part, keep_blank_values=True))
+        payload_token, payload_uid = _parse_calls_payload_json(params.get("payload") or "")
+        token = token or payload_token
+        uid = uid or payload_uid
         token = token or params.get("silent_token") or params.get("token")
         uid = uid or params.get("uuid")
+
+    if not token and "payload=" in raw:
+        try:
+            idx = raw.lower().index("payload=")
+            chunk = raw[idx + len("payload="):]
+            if "&" in chunk:
+                chunk = chunk.split("&", 1)[0]
+            payload_token, payload_uid = _parse_calls_payload_json(unquote(chunk))
+            token = token or payload_token
+            uid = uid or payload_uid
+        except ValueError:
+            pass
 
     if not token and "silent_token=" in raw:
         for chunk in raw.replace("&", " ").split():

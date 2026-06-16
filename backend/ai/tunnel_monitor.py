@@ -10,7 +10,7 @@ from ai.vk_manager import VkManager
 
 logger = logging.getLogger(__name__)
 
-CHECK_INTERVAL_SECONDS = 300
+CHECK_INTERVAL_SECONDS = 900
 STARTUP_DELAY_SECONDS = 10
 
 
@@ -30,7 +30,7 @@ async def monitor_loop():
                 else:
                     manager = VkManager(db)
                     if not manager._token:
-                        auth_ok = await manager.authenticate()
+                        auth_ok = await manager.authenticate(verify_calls=False)
                         if not auth_ok:
                             logger.error("VK auth failed, will retry in 60s")
                             await asyncio.sleep(60)

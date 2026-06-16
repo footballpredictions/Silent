@@ -22,6 +22,36 @@ logger = logging.getLogger(__name__)
 MAX_HASHES = 4
 
 
+async def agent_heal_background() -> None:
+    """Создание/проверка хешей в фоне (connect не ждёт — иначе 504 от nginx)."""
+    from app.database import AsyncSessionLocal
+    from app.services.vk_agent_auth import set_agent_run_log, is_flood_cooldown
+
+    try:
+        async with AsyncSessionLocal() as db:
+            flood, until = await is_flood_cooldown(db)
+            if flood:
+                msg = f"Пропуск: VK flood control до {until}. Новые звонки не создаём."
+                await set_agent_run_log(db, msg, ok=False)
+                logger.warning(msg)
+                return
+            manager = VkManager(db)
+            try:
+                summary = await manager.fill_all_user_slots()
+                await set_agent_run_log(db, summary, ok="ошиб" not in summary.lower() and "flood" not in summary.lower())
+                logger.info("Background agent heal: %s", summary)
+            finally:
+                await manager.close()
+    except Exception as e:
+        logger.exception("Background agent heal failed: %s", e)
+        try:
+            async with AsyncSessionLocal() as db:
+                from app.services.vk_agent_auth import set_agent_run_log
+                await set_agent_run_log(db, f"Ошибка агента: {e}", ok=False)
+        except Exception:
+            pass
+
+
 class VkApiError(Exception):
     def __init__(self, code: int, msg: str):
         self.code = code
@@ -34,6 +64,7 @@ class VkManager:
         self._session: Optional[aiohttp.ClientSession] = None
         self._token: Optional[str] = None
         self._last_auth_error: str = ""
+        self._flood_hit: bool = False
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -52,27 +83,31 @@ class VkManager:
         if "error" in data:
             err = data["error"]
             code = err.get("error_code", -1)
+            msg = err.get("error_msg", "Unknown")
+            if "flood" in msg.lower():
+                self._flood_hit = True
+                self._last_auth_error = msg
             if code in (5, 1116):
                 self._token = None
-            raise VkApiError(code, err.get("error_msg", "Unknown"))
+            raise VkApiError(code, msg)
         return data.get("response", {})
 
-    async def ensure_authenticated(self) -> tuple[bool, str]:
+    async def ensure_authenticated(self, verify_calls: bool = False) -> tuple[bool, str]:
         if self._token:
             ok, msg, _ = await validate_token(self._token)
             if ok:
                 return True, msg
             self._token = None
 
-        token, msg = await resolve_agent_token(self.db, verify_calls=True)
+        token, msg = await resolve_agent_token(self.db, verify_calls=verify_calls)
         if token:
             self._token = token
             return True, msg
         self._last_auth_error = msg
         return False, msg
 
-    async def authenticate(self) -> bool:
-        ok, _ = await self.ensure_authenticated()
+    async def authenticate(self, verify_calls: bool = False) -> bool:
+        ok, _ = await self.ensure_authenticated(verify_calls=verify_calls)
         return ok
 
     async def create_call(self) -> Optional[str]:
@@ -88,8 +123,10 @@ class VkManager:
             return None
         except VkApiError as e:
             logger.error("Failed to create VK call: %s", e)
+            if "flood" in str(e).lower():
+                self._flood_hit = True
             if e.code in (5, 1116):
-                await self.ensure_authenticated()
+                await self.ensure_authenticated(verify_calls=False)
             return None
         except Exception as e:
             logger.error("Unexpected error creating VK call: %s", e)
@@ -214,117 +251,87 @@ class VkManager:
             return True, f"Создано {len(created)}/{MAX_HASHES} хешей (частично)"
         return True, f"Создано {MAX_HASHES} хешей"
 
+    async def fill_user_empty_slots(self, user_id) -> int:
+        """Только пустые слоты 0–3. Сначала убираем дубликаты слотов."""
+        from app.services.user_hash_service import dedupe_user_hash_slots
+
+        await dedupe_user_hash_slots(self.db, user_id)
+
+        created = 0
+        result = await self.db.execute(
+            select(VkHash.slot_index)
+            .where(VkHash.user_id == user_id, VkHash.is_active == True)
+        )
+        active_slots = {row[0] for row in result.fetchall() if 0 <= row[0] < MAX_HASHES}
+
+        for slot in range(MAX_HASHES):
+            if slot in active_slots or self._flood_hit:
+                continue
+            hash_val, msg = await self.create_hash_for_user_slot(user_id, slot)
+            if hash_val:
+                created += 1
+            else:
+                logger.warning("fill slot %s user %s: %s", slot, user_id, msg)
+                if self._flood_hit or (msg and "flood" in msg.lower()):
+                    break
+            await asyncio.sleep(3)
+        return created
+
+    async def fill_all_user_slots(self) -> str:
+        from app.services.user_hash_service import list_users_for_monitor
+        from app.services.vk_agent_auth import set_flood_cooldown
+
+        if not await self.authenticate(verify_calls=False):
+            return f"Ошибка: {self._last_auth_error or 'нет токена VK'}"
+
+        from app.services.user_hash_service import dedupe_all_user_hash_slots
+
+        removed_dupes = await dedupe_all_user_hash_slots(self.db)
+
+        user_ids = await list_users_for_monitor(self.db)
+        if not user_ids:
+            return "Нет пользователей для создания хешей"
+
+        total_created = 0
+        users_touched = 0
+        for uid in user_ids:
+            n = await self.fill_user_empty_slots(uid)
+            if n:
+                users_touched += 1
+                total_created += n
+            if self._flood_hit:
+                await set_flood_cooldown(self.db, minutes=45)
+                return (
+                    f"VK flood control — остановились. Создано {total_created} хешей "
+                    f"для {users_touched} пользов. Повтор через ~45 мин."
+                )
+
+        dup_part = f", удалено дубликатов: {removed_dupes}" if removed_dupes else ""
+        return (
+            f"Готово: +{total_created} хешей, обработано {len(user_ids)} пользов., "
+            f"заполнено у {users_touched}{dup_part}"
+        )
+
     async def check_and_heal_user(self, user_id) -> None:
-        if not await self.authenticate():
+        """Монитор: только заполнить пустые слоты (без деактивации существующих)."""
+        if not await self.authenticate(verify_calls=False):
             logger.error("check_and_heal_user: VK auth failed — %s", self._last_auth_error)
             return
-
-        result = await self.db.execute(
-            select(VkHash)
-            .where(VkHash.user_id == user_id, VkHash.is_active == True)
-            .order_by(VkHash.slot_index)
-        )
-        hashes = result.scalars().all()
-        active_slots = {h.slot_index for h in hashes}
-
-        # Заполнить пустые слоты 0–3
-        for slot in range(MAX_HASHES):
-            if slot not in active_slots:
-                await self.create_hash_for_user_slot(user_id, slot)
-                await asyncio.sleep(2)
-
-        result = await self.db.execute(
-            select(VkHash)
-            .where(VkHash.user_id == user_id, VkHash.is_active == True)
-            .order_by(VkHash.slot_index)
-        )
-        hashes = result.scalars().all()
-        if not hashes:
-            return
-
-        failed = []
-        for h in hashes:
-            alive = await self._check_hash_alive(h.hash_value)
-            h.last_checked = datetime.utcnow()
-            if not alive:
-                h.fail_count += 1
-                h.last_failed = datetime.utcnow()
-                failed.append(h)
-            else:
-                h.fail_count = 0
-        await self.db.commit()
-
-        if failed:
-            for h in failed:
-                new_hash = await self.create_call()
-                if new_hash:
-                    h.hash_value = new_hash
-                    h.call_link = f"https://vk.com/call/join/{new_hash}"
-                    h.is_active = True
-                    h.fail_count = 0
-                    h.updated_at = datetime.utcnow()
-                else:
-                    h.is_active = False
-                await asyncio.sleep(2)
-            await self.db.commit()
+        await self.fill_user_empty_slots(user_id)
 
     async def check_and_heal_all_users(self) -> None:
         from app.services.user_hash_service import list_users_for_monitor
 
         user_ids = await list_users_for_monitor(self.db)
         for uid in user_ids:
+            if self._flood_hit:
+                break
             await self.check_and_heal_user(uid)
 
     async def check_and_heal(self) -> None:
-        """Legacy global hashes + all per-user hashes."""
-        await self.check_and_heal_all_users()
-
-        result = await self.db.execute(
-            select(VkHash)
-            .where(VkHash.user_id.is_(None), VkHash.is_active == True)
-            .order_by(VkHash.slot_index)
-        )
-        hashes = result.scalars().all()
-
-        if not hashes:
-            logger.debug("No legacy global VK hashes")
-            return
-
-        failed = []
-        for h in hashes:
-            alive = await self._check_hash_alive(h.hash_value)
-            h.last_checked = datetime.utcnow()
-            if not alive:
-                h.fail_count += 1
-                h.last_failed = datetime.utcnow()
-                failed.append(h)
-                logger.warning("Global hash slot %s is dead (fail_count=%s)", h.slot_index, h.fail_count)
-            else:
-                h.fail_count = 0
-
-        await self.db.commit()
-
-        if failed:
-            logger.warning("%s/%s global hashes failed — replacing dead slots", len(failed), len(hashes))
-            replaced = 0
-            for h in failed:
-                new_hash = await self.create_call()
-                if new_hash:
-                    h.hash_value = new_hash
-                    h.call_link = f"https://vk.com/call/join/{new_hash}"
-                    h.is_active = True
-                    h.fail_count = 0
-                    h.updated_at = datetime.utcnow()
-                    replaced += 1
-                else:
-                    h.is_active = False
-                await asyncio.sleep(2)
-            await self.db.commit()
-            if replaced:
-                logger.info("Replaced %s dead global hash slot(s)", replaced)
-            elif len(failed) == len(hashes):
-                logger.warning("All global slots failed — full recreate")
-                await self.recreate_all_hashes()
+        """Заполнить пустые слоты у всех пользователей."""
+        summary = await self.fill_all_user_slots()
+        logger.info("check_and_heal: %s", summary)
 
     async def close(self):
         if self._session and not self._session.closed:

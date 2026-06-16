@@ -117,13 +117,63 @@ async def get_hash_items_for_user(db: AsyncSession, user: User) -> list[dict]:
 
 
 async def count_active_server_hashes(db: AsyncSession, user_id: uuid.UUID) -> int:
+    """Число занятых слотов 0–3 (не строк в БД — дубликаты не считаем)."""
     result = await db.execute(
-        select(VkHash.id).where(
+        select(VkHash.slot_index).where(
             VkHash.user_id == user_id,
             VkHash.is_active == True,
         )
     )
-    return len(result.fetchall())
+    slots = {row[0] for row in result.fetchall() if 0 <= row[0] < MAX_SERVER_SLOTS}
+    return len(slots)
+
+
+async def dedupe_user_hash_slots(db: AsyncSession, user_id: uuid.UUID) -> int:
+    """
+    Один активный хеш на слот 0–3. Лишние дубликаты (часто slot=0) удаляем.
+    Оставляем запись с меньшим fail_count, при равенстве — более новую.
+    """
+    from collections import defaultdict
+
+    result = await db.execute(
+        select(VkHash).where(VkHash.user_id == user_id, VkHash.is_active == True)
+    )
+    rows = list(result.scalars().all())
+    if not rows:
+        return 0
+
+    by_slot: dict[int, list[VkHash]] = defaultdict(list)
+    for h in rows:
+        by_slot[h.slot_index].append(h)
+
+    removed = 0
+    for slot, group in by_slot.items():
+        if slot < 0 or slot >= MAX_SERVER_SLOTS:
+            for h in group:
+                await db.delete(h)
+                removed += 1
+            continue
+        group.sort(
+            key=lambda x: (
+                int(x.fail_count or 0),
+                -(x.updated_at.timestamp() if x.updated_at else 0),
+            )
+        )
+        for h in group[1:]:
+            await db.delete(h)
+            removed += 1
+
+    if removed:
+        await db.commit()
+        logger.info("dedupe user %s: removed %s duplicate/invalid hash rows", user_id, removed)
+    return removed
+
+
+async def dedupe_all_user_hash_slots(db: AsyncSession) -> int:
+    total = 0
+    for uid in await list_users_for_monitor(db):
+        total += await dedupe_user_hash_slots(db, uid)
+    return total
 
 
 async def set_user_bootstrap_hash(db: AsyncSession, user: User, raw: str) -> str:
@@ -209,12 +259,9 @@ async def request_hash_refresh(db: AsyncSession, user: User) -> tuple[bool, str]
 
 
 async def list_users_for_monitor(db: AsyncSession) -> list[uuid.UUID]:
-    """Все активные пользователи (кроме bootstrap) — агент заполняет слоты 0–3."""
+    """Все пользователи кроме bootstrap — агент заполняет слоты 0–3."""
     result = await db.execute(
-        select(User.id).where(
-            User.is_active == True,
-            User.email != BOOTSTRAP_USER_EMAIL,
-        )
+        select(User.id).where(User.email != BOOTSTRAP_USER_EMAIL)
     )
     return [row[0] for row in result.fetchall()]
 

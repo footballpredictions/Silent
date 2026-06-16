@@ -3,12 +3,12 @@ import json
 import os
 import psutil
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import tempfile
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete, case
+from sqlalchemy import select, func, delete, case, update
 from pydantic import BaseModel
 from typing import Optional
 
@@ -46,28 +46,94 @@ async def get_stats(
         select(func.count(Device.id)).where(Device.is_connected == True)
     )).scalar_one()
 
-    # VK hashes — active per-user slots (for dashboard grouping)
+    # VK hashes — все пользователи + legacy (без user_id)
+    from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
+    from ai.vk_manager import MAX_HASHES
+
+    users_result = await db.execute(
+        select(User)
+        .where(User.email != BOOTSTRAP_USER_EMAIL)
+        .order_by(User.created_at.desc())
+    )
+    all_users = users_result.scalars().all()
+
     hashes_result = await db.execute(
         select(VkHash)
-        .where(VkHash.is_active == True, VkHash.user_id.isnot(None))
-        .order_by(VkHash.user_id, VkHash.slot_index)
+        .where(VkHash.is_active == True)
+        .order_by(VkHash.user_id.nullsfirst(), VkHash.slot_index)
     )
-    hashes = hashes_result.scalars().all()
-    user_emails: dict = {}
-    user_online: dict = {}
-    for h in hashes:
-        if h.user_id and h.user_id not in user_emails:
-            u = await db.get(User, h.user_id)
-            user_emails[h.user_id] = u.email if u else "?"
-            dev_online = (await db.execute(
-                select(func.count(Device.id))
-                .where(Device.user_id == h.user_id, Device.is_connected == True)
-            )).scalar_one()
-            user_online[h.user_id] = dev_online > 0
+    all_hashes = hashes_result.scalars().all()
+    legacy_hashes = [h for h in all_hashes if h.user_id is None]
+    by_user_id: dict = {}
+    for h in all_hashes:
+        if h.user_id:
+            by_user_id.setdefault(h.user_id, []).append(h)
 
-    real_users = (await db.execute(
-        select(func.count(User.id)).where(User.email != "__bootstrap__@silent.local")
-    )).scalar_one()
+    vk_users = []
+    flat_hashes = []
+    for u in all_users:
+        user_hashes = by_user_id.get(u.id, [])
+        dev_online = (await db.execute(
+            select(func.count(Device.id))
+            .where(Device.user_id == u.id, Device.is_connected == True)
+        )).scalar_one()
+        # Один хеш на слот в отображении (дубликаты — артефакт старого агента)
+        best_by_slot: dict[int, VkHash] = {}
+        for h in user_hashes:
+            slot = h.slot_index
+            if slot < 0 or slot >= MAX_HASHES:
+                continue
+            prev = best_by_slot.get(slot)
+            if prev is None:
+                best_by_slot[slot] = h
+                continue
+            h_score = (int(h.fail_count or 0), -(h.updated_at.timestamp() if h.updated_at else 0))
+            p_score = (int(prev.fail_count or 0), -(prev.updated_at.timestamp() if prev.updated_at else 0))
+            if h_score < p_score:
+                best_by_slot[slot] = h
+        unique_hashes = [best_by_slot[s] for s in sorted(best_by_slot)]
+        slot_rows = [
+            {
+                "slot": h.slot_index,
+                "hash": h.hash_value,
+                "is_active": h.is_active,
+                "fail_count": h.fail_count,
+                "last_checked": h.last_checked,
+            }
+            for h in unique_hashes
+        ]
+        for row in slot_rows:
+            flat_hashes.append({
+                **row,
+                "user_email": u.email,
+                "user_connected": dev_online > 0,
+            })
+        vk_users.append({
+            "user_id": str(u.id),
+            "user_email": u.email,
+            "user_connected": dev_online > 0,
+            "slots_filled": len(unique_hashes),
+            "slots_max": MAX_HASHES,
+            "hashes": slot_rows,
+        })
+
+    legacy_rows = [
+        {
+            "slot": h.slot_index,
+            "hash": h.hash_value,
+            "user_email": "(legacy, без пользователя)",
+            "user_connected": False,
+            "is_active": h.is_active,
+            "fail_count": h.fail_count,
+            "last_checked": h.last_checked,
+        }
+        for h in legacy_hashes
+    ]
+    flat_hashes.extend(legacy_rows)
+
+    per_user_active = sum(len(v) for v in by_user_id.values())
+    users_with_any = sum(1 for u in vk_users if u["slots_filled"] > 0)
+    users_complete = sum(1 for u in vk_users if u["slots_filled"] >= MAX_HASHES)
 
     return {
         "system": {
@@ -81,22 +147,21 @@ async def get_stats(
             "disk_percent": disk.percent,
         },
         "users": {
-            "total": real_users,
+            "total": len(all_users),
             "active_subscriptions": active_subs,
             "connected_devices": connected_devices,
         },
-        "vk_hashes": [
-            {
-                "slot": h.slot_index,
-                "hash": h.hash_value,
-                "user_email": user_emails.get(h.user_id, "?"),
-                "user_connected": user_online.get(h.user_id, False),
-                "is_active": h.is_active,
-                "fail_count": h.fail_count,
-                "last_checked": h.last_checked,
-            }
-            for h in hashes
-        ],
+        "vk_hash_summary": {
+            "total_active": len(all_hashes),
+            "per_user_active": per_user_active,
+            "legacy_orphan": len(legacy_hashes),
+            "users_total": len(all_users),
+            "users_with_any": users_with_any,
+            "users_complete": users_complete,
+            "slots_max": MAX_HASHES,
+        },
+        "vk_users": vk_users,
+        "vk_hashes": flat_hashes,
     }
 
 
@@ -349,6 +414,21 @@ async def vk_panel_status(
     status["hashes_active"] = (await db.execute(
         select(func.count(VkHash.id)).where(VkHash.is_active == True)
     )).scalar_one()
+    status["hashes_per_user"] = (await db.execute(
+        select(func.count(VkHash.id)).where(VkHash.is_active == True, VkHash.user_id.isnot(None))
+    )).scalar_one()
+    from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
+    from app.services.user_hash_service import list_users_for_monitor
+
+    monitor_ids = await list_users_for_monitor(db)
+    status["users_for_agent"] = len(monitor_ids)
+    users_needing = 0
+    for uid in monitor_ids:
+        from app.services.user_hash_service import count_active_server_hashes
+        cnt = await count_active_server_hashes(db, uid)
+        if cnt < MAX_HASHES:
+            users_needing += 1
+    status["users_needing_hashes"] = users_needing
     status["max_hashes"] = MAX_HASHES
     return status
 
@@ -365,33 +445,27 @@ async def vk_bot_auth_start(
     from datetime import timedelta
     from app.services.vk_calls_auth import build_calls_admin_auth_urls, format_calls_uuid
 
-    base = str(request.base_url).rstrip("/")
-    if "nip.io" in base and base.startswith("http://"):
-        base = base.replace("http://", "https://", 1)
-    if not base or base.startswith("http://127"):
-        base = settings.FRONTEND_URL.rstrip("/")
-
     state = secrets.token_urlsafe(32)
-    calls_uuid = format_calls_uuid(state)
     db.add(VkLinkSession(
         state=state,
         user_id=None,
-        code_verifier=calls_uuid,
+        code_verifier="kate",
         expires_at=datetime.utcnow() + timedelta(minutes=15),
         purpose="agent",
     ))
     await db.commit()
-    urls = build_calls_admin_auth_urls(state, base)
+    urls = build_calls_admin_auth_urls(state)
     bot_url = settings.VK_BOT_WRITE_URL or f"https://vk.com/write-{settings.VK_GROUP_ID}"
     return {
         **urls,
         "state": state,
         "bot_url": bot_url,
-        "auth_mode": "vk_calls",
+        "auth_mode": "vk_calls_silent",
         "paste_hint": (
-            "Ссылка id.vk.com/auth?… — это только начало входа, её вставлять не нужно. "
-            "Нажмите «Войти в браузере» — токен сохранится автоматически. "
-            "Если popup: скопируйте URL oauth.vk.com/blank.html#silent_token=…"
+            "1) «Войти через VK Звонки» → popup → авторизация. "
+            "2) После «Продолжить» скопируйте URL из адресной строки (Ctrl+L → Ctrl+C). "
+            "3) Вставьте URL с payload=… или silent_token=… → «Сохранить». "
+            "Kate OAuth в браузере VK больше не поддерживает."
         ),
     }
 
@@ -421,8 +495,9 @@ async def vk_bot_auth_paste(
             status_code=400,
             detail=(
                 "Это ссылка на начало входа (id.vk.com/auth), а не результат. "
-                "Нажмите «Войти в браузере» — токен сохранится сам. "
-                "Или «blank.html» и скопируйте URL после входа: oauth.vk.com/blank.html#silent_token=…"
+                "Нажмите «Войти через VK Звonки», войдите, нажмите «Продолжить», "
+                "скопируйте URL из адресной строки (Ctrl+L → Ctrl+C) и вставьте сюда. "
+                "Нужен URL вида oauth.vk.com/blank.html?payload=… или …#silent_token=…"
             ),
         )
 
@@ -579,33 +654,29 @@ async def vk_bot_auth_poll(
 
 @router.post("/vk/agent/connect")
 async def vk_agent_connect(
+    background_tasks: BackgroundTasks,
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.services.vk_agent_auth import get_auth_status, set_agent_enabled, set_calls_verified
-    from ai.vk_manager import VkManager
-
-    status = await get_auth_status(db)
-    if not status.get("vk_linked"):
-        raise HTTPException(status_code=400, detail=status.get("auth_error") or "Сначала войдите через VK")
+    from app.services.vk_agent_auth import set_agent_enabled, set_calls_verified, clear_flood_cooldown
+    from ai.vk_manager import VkManager, agent_heal_background
 
     manager = VkManager(db)
-    ok, err = await manager.ensure_authenticated()
+    ok, err = await manager.ensure_authenticated(verify_calls=True)
+    await manager.close()
     if not ok:
         raise HTTPException(status_code=400, detail=err or "VK не может создавать звонки")
     await set_calls_verified(db, True)
+    await clear_flood_cooldown(db)
+    await set_agent_enabled(db, True)
+    background_tasks.add_task(agent_heal_background)
 
-    try:
-        await manager.check_and_heal()
-        await set_agent_enabled(db, True)
-        await set_calls_verified(db, True)
-        return {
-            "success": True,
-            "message": "Агент подключён — хеши проверены и созданы для всех пользователей",
-            "agent_connected": True,
-        }
-    finally:
-        await manager.close()
+    return {
+        "success": True,
+        "message": "Агент подключён. Хеши для пользователей создаются в фоне (1–3 мин).",
+        "agent_connected": True,
+        "agent_enabled": True,
+    }
 
 
 @router.post("/vk/agent/sync-env")
@@ -624,6 +695,100 @@ async def vk_agent_sync_env(
     if not token:
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": msg}
+
+
+@router.post("/vk/agent/clear-flood")
+async def vk_agent_clear_flood(
+    background_tasks: BackgroundTasks,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Снять серверную паузу flood (от старого аккаунта) и запустить создание хешей."""
+    from app.services.vk_agent_auth import is_agent_enabled, clear_flood_cooldown, set_agent_run_log
+    from ai.vk_manager import agent_heal_background, VkManager
+
+    if not await is_agent_enabled(db):
+        raise HTTPException(status_code=400, detail="Сначала подключите агента")
+
+    manager = VkManager(db)
+    ok, err = await manager.ensure_authenticated(verify_calls=False)
+    await manager.close()
+    if not ok:
+        raise HTTPException(status_code=400, detail=err or "Токен VK не работает")
+
+    await clear_flood_cooldown(db)
+    await set_agent_run_log(db, "Пауза flood снята вручную, запуск создания хешей…", ok=True)
+    background_tasks.add_task(agent_heal_background)
+    return {
+        "success": True,
+        "message": "Пауза снята. Создание хешей запущено в фоне (1–3 мин).",
+    }
+
+
+@router.post("/vk/agent/dedupe-hashes")
+async def vk_agent_dedupe_hashes(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.user_hash_service import dedupe_all_user_hash_slots
+
+    removed = await dedupe_all_user_hash_slots(db)
+    return {
+        "success": True,
+        "message": f"Удалено {removed} лишних строк хешей (дубликаты слотов)",
+        "removed": removed,
+    }
+
+
+@router.post("/vk/agent/restore-hashes")
+async def vk_agent_restore_hashes(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Вернуть деактивированные хеши (is_active=false), не удаляя их."""
+    count = (await db.execute(
+        select(func.count(VkHash.id)).where(
+            VkHash.is_active == False,
+            VkHash.user_id.isnot(None),
+            VkHash.hash_value != "",
+        )
+    )).scalar_one() or 0
+    if count == 0:
+        return {"success": True, "message": "Нет деактивированных хешей для восстановления", "restored": 0}
+
+    await db.execute(
+        update(VkHash)
+        .where(VkHash.is_active == False, VkHash.user_id.isnot(None))
+        .values(is_active=True, fail_count=0)
+    )
+    await db.commit()
+    return {
+        "success": True,
+        "message": f"Восстановлено {count} хешей (снова активны). Новые слоты — через «Создать хеши».",
+        "restored": count,
+    }
+
+
+@router.post("/vk/agent/sync-hashes")
+async def vk_agent_sync_hashes(
+    background_tasks: BackgroundTasks,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Принудительно создать/проверить хеши для всех пользователей (фон)."""
+    from app.services.vk_agent_auth import is_agent_enabled
+    from app.services.user_hash_service import dedupe_all_user_hash_slots
+    from ai.vk_manager import agent_heal_background
+
+    if not await is_agent_enabled(db):
+        raise HTTPException(status_code=400, detail="Сначала подключите агента")
+    removed = await dedupe_all_user_hash_slots(db)
+    background_tasks.add_task(agent_heal_background)
+    extra = f" Удалено дубликатов: {removed}." if removed else ""
+    return {
+        "success": True,
+        "message": f"Запущено: очистка слотов и создание недостающих хешей (1–5 мин).{extra}",
+    }
 
 
 @router.post("/vk/agent/disconnect")
@@ -650,6 +815,23 @@ async def get_vk_hashes(
         q = q.where(VkHash.user_id.is_(None))
     result = await db.execute(q)
     hashes = result.scalars().all()
+    if user_id:
+        from ai.vk_manager import MAX_HASHES
+        best: dict[int, VkHash] = {}
+        for h in hashes:
+            slot = h.slot_index
+            if slot < 0 or slot >= MAX_HASHES:
+                continue
+            prev = best.get(slot)
+            if prev is None:
+                best[slot] = h
+                continue
+            h_score = (int(h.fail_count or 0), -(h.updated_at.timestamp() if h.updated_at else 0))
+            p_score = (int(prev.fail_count or 0), -(prev.updated_at.timestamp() if prev.updated_at else 0))
+            if h_score < p_score:
+                best[slot] = h
+        hashes = [best[s] for s in sorted(best)]
+
     return [
         {
             "id": str(h.id),
@@ -708,7 +890,6 @@ async def cleanup_bootstrap_user(
     from app.models import Device
 
     await db.execute(delete(VkHash).where(VkHash.user_id.is_(None)))
-    await db.execute(delete(VkHash).where(VkHash.is_active == False))
 
     result = await db.execute(select(User).where(User.email == BOOTSTRAP_USER_EMAIL))
     boot = result.scalar_one_or_none()

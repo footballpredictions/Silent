@@ -31,6 +31,29 @@ interface Stats {
     fail_count: number
     last_checked: string | null
   }>
+  vk_users?: Array<{
+    user_id: string
+    user_email: string
+    user_connected: boolean
+    slots_filled: number
+    slots_max: number
+    hashes: Array<{
+      slot: number
+      hash: string
+      is_active: boolean
+      fail_count: number
+      last_checked: string | null
+    }>
+  }>
+  vk_hash_summary?: {
+    total_active: number
+    per_user_active: number
+    legacy_orphan: number
+    users_total: number
+    users_with_any: number
+    users_complete: number
+    slots_max: number
+  }
 }
 
 const StatCard = ({ icon: Icon, label, value, sub, color = 'white' }: any) => (
@@ -62,16 +85,42 @@ const ProgressBar = ({ percent, label }: { percent: number; label: string }) => 
   </div>
 )
 
-function VkHashesCard({ hashes }: { hashes: Stats['vk_hashes'] }) {
-  // Group by user email
-  const byUser = hashes.reduce<Record<string, Stats['vk_hashes']>>((acc, h) => {
-    const key = h.user_email || '—'
-    if (!acc[key]) acc[key] = []
-    acc[key].push(h)
-    return acc
-  }, {})
+function VkHashesCard({
+  hashes,
+  vkUsers,
+  summary,
+}: {
+  hashes: Stats['vk_hashes']
+  vkUsers?: Stats['vk_users']
+  summary?: Stats['vk_hash_summary']
+}) {
+  const users =
+    vkUsers && vkUsers.length > 0
+      ? vkUsers.map(u => [u.user_email, u] as const)
+      : Object.entries(
+          hashes.reduce<Record<string, Stats['vk_hashes']>>((acc, h) => {
+            const key = h.user_email || '—'
+            if (!acc[key]) acc[key] = []
+            acc[key].push(h)
+            return acc
+          }, {})
+        ).map(([email, slots]) => [
+          email,
+          {
+            user_email: email,
+            user_connected: slots[0]?.user_connected ?? false,
+            slots_filled: slots.length,
+            slots_max: 4,
+            hashes: slots.map(h => ({
+              slot: h.slot,
+              hash: h.hash,
+              is_active: h.is_active,
+              fail_count: h.fail_count,
+              last_checked: h.last_checked,
+            })),
+          },
+        ] as const)
 
-  const users = Object.entries(byUser)
   const [open, setOpen] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(users.map(([email]) => [email, false]))
   )
@@ -79,22 +128,36 @@ function VkHashesCard({ hashes }: { hashes: Stats['vk_hashes'] }) {
   const toggle = (email: string) =>
     setOpen(prev => ({ ...prev, [email]: !prev[email] }))
 
+  const summaryLine = summary
+    ? `${summary.users_total} пользователей · ${summary.per_user_active} хешей у пользователей · ${summary.users_complete} с полным набором (${summary.slots_max}/${summary.slots_max})`
+    : `${hashes.length} активных хешей`
+
   return (
     <div className="bg-[#111] border border-[#222] rounded-xl p-5">
-      <h3 className="text-xs text-[#666] uppercase tracking-wider mb-4 flex items-center gap-2">
+      <h3 className="text-xs text-[#666] uppercase tracking-wider mb-1 flex items-center gap-2">
         <Hash className="w-3.5 h-3.5" /> Серверные VK-хеши (по пользователям)
       </h3>
+      <p className="text-[10px] text-[#555] mb-4">{summaryLine}</p>
+      {summary && summary.legacy_orphan > 0 && (
+        <p className="text-[10px] text-amber-400/80 mb-3">
+          {summary.legacy_orphan} старых хешей без привязки к пользователю (legacy) — не отображаются в списке ниже.
+          Всего активных: {summary.total_active}.
+        </p>
+      )}
 
-      {hashes.length === 0 && (
-        <p className="text-[#555] text-sm">Нет активных серверных хешей. Подключите AI-агента или добавьте вручную в разделе VK.</p>
+      {users.length === 0 && (
+        <p className="text-[#555] text-sm">Нет пользователей. Подключите AI-агента в разделе VK.</p>
       )}
 
       <div className="space-y-1">
-        {users.map(([email, slots]) => {
+        {users.map(([email, u]) => {
           const isOpen = open[email]
+          const slots = 'hashes' in u ? u.hashes : []
+          const filled = 'slots_filled' in u ? u.slots_filled : slots.length
+          const max = 'slots_max' in u ? u.slots_max : 4
+          const connected = 'user_connected' in u ? u.user_connected : false
           return (
             <div key={email} className="border border-[#1e1e1e] rounded-lg overflow-hidden">
-              {/* User header — clickable */}
               <button
                 onClick={() => toggle(email)}
                 className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-[#181818] transition-colors text-left"
@@ -103,22 +166,26 @@ function VkHashesCard({ hashes }: { hashes: Stats['vk_hashes'] }) {
                   ? <ChevronDown className="w-3.5 h-3.5 text-[#555] shrink-0" />
                   : <ChevronRight className="w-3.5 h-3.5 text-[#555] shrink-0" />
                 }
-                {/* Online dot — green if connected, gray if not */}
                 <div className={`w-2 h-2 rounded-full shrink-0 ${
-                  slots[0]?.user_connected ? 'bg-green-400 shadow-[0_0_5px_#4ade80]' : 'bg-[#444]'
+                  connected ? 'bg-green-400 shadow-[0_0_5px_#4ade80]' : 'bg-[#444]'
                 }`} />
                 <span className="text-sm text-white flex-1 min-w-0 truncate">{email}</span>
-                <span className="text-[10px] text-[#555] bg-[#222] px-2 py-0.5 rounded-full shrink-0">
-                  {slots.length} / 4
+                <span className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${
+                  filled >= max ? 'text-green-400/90 bg-green-400/10' : filled > 0 ? 'text-amber-400/90 bg-amber-400/10' : 'text-[#555] bg-[#222]'
+                }`}>
+                  {filled} / {max}
                 </span>
               </button>
 
-              {/* Hashes list */}
               {isOpen && (
                 <div className="border-t border-[#1e1e1e] divide-y divide-[#1a1a1a]">
+                  {filled === 0 && (
+                    <p className="px-3 py-2.5 text-xs text-[#555] italic bg-[#0f0f0f]">
+                      Нет серверных хешей — агент добавит при следующей проверке (~5 мин) или «Создать хеши» в VK.
+                    </p>
+                  )}
                   {slots.map((h, i) => (
                     <div key={i} className="px-3 py-2.5 bg-[#0f0f0f]">
-                      {/* Slot badge + fail count in top-right */}
                       <div className="flex items-center justify-between mb-1.5">
                         <span className="text-[10px] text-[#555] bg-[#1a1a1a] px-1.5 py-0.5 rounded">
                           Слот {h.slot}
@@ -127,7 +194,6 @@ function VkHashesCard({ hashes }: { hashes: Stats['vk_hashes'] }) {
                           ⚠ {h.fail_count} сбоев
                         </span>
                       </div>
-                      {/* Full hash, no truncation */}
                       <div className="font-mono text-[11px] text-[#666] break-all leading-relaxed select-all">
                         {h.hash}
                       </div>
@@ -271,7 +337,7 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
         </div>
       </div>
 
-      <VkHashesCard hashes={stats.vk_hashes} />
+      <VkHashesCard hashes={stats.vk_hashes} vkUsers={stats.vk_users} summary={stats.vk_hash_summary} />
     </div>
   )
 }

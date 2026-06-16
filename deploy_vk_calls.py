@@ -21,6 +21,9 @@ FILES = [
     "app/services/subscription_service.py",
     "app/api/vk_auth.py",
     "app/services/vk_id_service.py",
+    "ai/vk_manager.py",
+    "ai/tunnel_monitor.py",
+    "app/services/user_hash_service.py",
 ]
 
 
@@ -56,7 +59,7 @@ def main() -> None:
     script = """#!/bin/bash
 set -e
 cd /opt/silent-vpn/backend
-for f in app/services/vk_calls_auth.py app/services/vk_agent_auth.py app/api/admin.py app/config.py app/services/subscription_service.py app/api/vk_auth.py app/services/vk_id_service.py; do
+for f in app/services/vk_calls_auth.py app/services/vk_agent_auth.py app/api/admin.py app/config.py app/services/subscription_service.py app/api/vk_auth.py app/services/vk_id_service.py ai/vk_manager.py app/services/user_hash_service.py ai/tunnel_monitor.py; do
   docker cp "$f" backend-api-1:/app/"$f"
 done
 # admin-ui/dist — bind mount с хоста, docker cp не нужен

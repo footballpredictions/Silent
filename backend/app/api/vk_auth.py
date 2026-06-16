@@ -210,9 +210,19 @@ async def vk_calls_silent_callback(state: str = Query(default="")):
   var params = new URLSearchParams(hash || q);
   var silent = params.get('silent_token') || params.get('token');
   var uuid = params.get('uuid');
+  var payloadRaw = params.get('payload');
+  if (!silent && payloadRaw) {{
+    try {{
+      var pl = JSON.parse(decodeURIComponent(payloadRaw));
+      if (pl && pl.token) {{
+        silent = pl.token;
+        uuid = uuid || pl.uuid;
+      }}
+    }} catch(e) {{}}
+  }}
   if (!silent) {{
     show(false, 'Нет silent_token',
-      'VK не вернул токен. Попробуйте «Войти через blank.html» в админке или скопируйте URL oauth.vk.com/blank.html#silent_token=…');
+      'VK не вернул токен. Скопируйте URL oauth.vk.com/blank.html?payload=… и вставьте в админке.');
     return;
   }}
   fetch('/api/auth/vk/calls-silent-finish', {{

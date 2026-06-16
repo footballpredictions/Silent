@@ -655,7 +655,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     fullTunnelUpgradeTimer = setTimeout(() => {
       fullTunnelUpgradeTimer = null
       void upgradeToFullTunnel('timeout')
-    }, 25_000)
+    }, 12_000)
   }
 
   const onCredGroupResolved = (groupId) => {
@@ -765,6 +765,10 @@ async function beginWdttSession(config, { switching = false } = {}) {
     const credOkMatch = line.match(/\[ГРУППА #(\d+)\] Креды OK/)
     if (credOkMatch) {
       onCredGroupResolved(parseInt(credOkMatch[1], 10))
+    } else if (
+      /Первые креды|Учётные данные проверены|Креды OK/i.test(line)
+    ) {
+      onCredGroupResolved(Math.min(credGroupsResolved + 1, expectedCredGroups))
     }
     const credFailMatch = line.match(/\[ГРУППА #(\d+)\] Ошибка кредов/)
     if (credFailMatch) {

@@ -14,6 +14,7 @@ export interface UpdateInfo {
 }
 
 const APP_VERSION = __APP_VERSION__
+let lastVpnUpdateWarnAt = 0
 
 export function getAppVersion(): string {
   return APP_VERSION
@@ -102,7 +103,11 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     return checkViaRendererPublic()
   }
 
-  pushLog('Update', 'VPN active — tunnel check failed, retry later', 'W')
+  const now = Date.now()
+  if (now - lastVpnUpdateWarnAt > 15 * 60_000) {
+    lastVpnUpdateWarnAt = now
+    pushLog('Update', 'VPN active — tunnel check failed, retry later', 'W')
+  }
   return null
 }
 

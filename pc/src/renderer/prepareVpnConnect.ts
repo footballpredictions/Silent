@@ -17,15 +17,6 @@ export async function prepareVpnConnectConfig(
 ): Promise<VpnConfigPayload> {
   let merged = { ...config }
 
-  try {
-    await api.post('/api/vpn/connect', {
-      device_fingerprint: fingerprint,
-      device_type: 'pc',
-    })
-  } catch {
-    /* connect может вернуть 403 при лимите устройств — хеши всё равно пробуем */
-  }
-
   const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
     Promise.race([
       p,

@@ -25,7 +25,7 @@ import { resolveAppName } from '../clientTheme'
 import { menuDrawerStyle, UI_COLORS } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
-import { prepareVpnConnectConfig, syncHashesWhenTunnelUp } from '../prepareVpnConnect'
+import { prepareVpnConnectConfig } from '../prepareVpnConnect'
 import { notifyDisconnect } from '../vpnBackendSync'
 import { pushLog, logI } from '../debugLog'
 import { clearVpnLogs } from '../vpnLogStore'
@@ -45,7 +45,6 @@ import {
   stopConfigSync,
   resetConfigSyncOnLogout,
   seedConfigSyncRevision,
-  tickConfigSyncNow,
 } from '../configSync'
 
 interface DeviceInfo {
@@ -205,7 +204,7 @@ export default function MainScreen({
   useEffect(() => {
     if (menuPage !== 'devices') return
     fetchProfile()
-    const id = window.setInterval(() => fetchProfile(), 5000)
+    const id = window.setInterval(() => fetchProfile(), 30_000)
     return () => clearInterval(id)
   }, [menuPage, fetchProfile])
 
@@ -216,7 +215,7 @@ export default function MainScreen({
       onProfile: p => setProfile(p as Profile),
       onHashesUpdated: () => setHashSyncKey(k => k + 1),
       isVpnConnected: () => connected,
-      isPollAllowed: () => true,
+      isPollAllowed: () => connected && !connecting,
     })
     return () => stopConfigSync()
   }, [connected])
@@ -250,27 +249,16 @@ export default function MainScreen({
     applyTunnelApiFromCache()
     try {
       const ok = await notifyConnect(true)
-      if (!ok) onlineMarkedRef.current = false
-      await fetchProfile()
-      await seedConfigSyncRevision()
-      void tickConfigSyncNow()
-      try {
-        const fp = getDeviceFingerprint()
-        const fresh = await fetchVpnConfigWithKeys(fp)
-        if (fresh) {
-          cacheVpnConfig(fresh)
-          if (fresh.device_id) saveSessionDeviceId(String(fresh.device_id))
-          pushLog('Main', `config refresh via tunnel hashes=${fresh.vk_hashes?.length ?? 0}`)
-        }
-      } catch {
-        /* кеш достаточен */
+      if (!ok) {
+        onlineMarkedRef.current = false
+        return
       }
-      setTimeout(() => { void syncHashesWhenTunnelUp() }, 60_000)
+      await seedConfigSyncRevision()
       void flushPendingHashFailures()
     } catch {
       onlineMarkedRef.current = false
     }
-  }, [fetchProfile, applyTunnelApiFromCache])
+  }, [applyTunnelApiFromCache])
 
   useEffect(() => {
     const api_ = (window as any).electronAPI
@@ -333,6 +321,7 @@ export default function MainScreen({
   useEffect(() => {
     let cancelled = false
     const run = async () => {
+      if (connected || connecting) return
       const info = await checkForUpdate()
       if (!cancelled && info?.available) setUpdateInfo(info)
     }
@@ -342,7 +331,7 @@ export default function MainScreen({
       cancelled = true
       clearInterval(id)
     }
-  }, [])
+  }, [connected, connecting])
 
   useEffect(() => {
     const api_ = (window as any).electronAPI

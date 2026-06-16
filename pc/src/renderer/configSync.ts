@@ -13,12 +13,16 @@ import {
 import { mapHashesResponse, saveHashItems } from './hashItemsStore'
 import { saveCachedTheme } from './themeStore'
 import { saveCachedProfile } from './profileStore'
+import { profileSyncFingerprint } from './profileFingerprint'
 import { enableTunnelApi, isMainVpnSessionActive } from './tunnelApi'
 import type { ClientTheme } from './clientTheme'
 import { flushPendingHashFailures } from './hashFailureReporter'
 
 const POLL_MS = 60_000
 const START_DELAY_MS = 5_000
+const SYNC_STATE_TIMEOUT_MS = 45_000
+
+let lastProfileFingerprint = ''
 
 export interface ConfigSyncOptions {
   onTheme: (theme: ClientTheme) => void
@@ -53,6 +57,7 @@ async function fetchSyncState(): Promise<SyncStateResponse | null> {
           theme_since: getSyncThemeRev(),
           profile_since: getSyncProfileRev(),
         },
+        timeout: SYNC_STATE_TIMEOUT_MS,
       }),
     )
     return res.data
@@ -80,12 +85,14 @@ async function tick(): Promise<void> {
     const state = await fetchSyncState()
     if (!state) return
 
-    const needHashes = state.hashes > getSyncHashesRev()
-    const needTheme = state.theme > getSyncThemeRev()
-    const needProfile = state.profile > getSyncProfileRev()
+    const needHashes = state.changed?.includes('hashes') ?? state.hashes > getSyncHashesRev()
+    const needTheme = state.changed?.includes('theme') ?? state.theme > getSyncThemeRev()
+    const needProfile = state.changed?.includes('profile') ?? state.profile > getSyncProfileRev()
     if (!needHashes && !needTheme && !needProfile) return
 
-    pushLog('ConfigSync', `sync: hashes=${needHashes} theme=${needTheme} profile=${needProfile}`)
+    if (needHashes || needTheme || needProfile) {
+      pushLog('ConfigSync', `sync: hashes=${needHashes} theme=${needTheme} profile=${needProfile}`)
+    }
 
     if (needHashes) {
       try {
@@ -122,10 +129,14 @@ async function tick(): Promise<void> {
       try {
         const res = await withSyncApi(() => api.get('/api/users/me'))
         if (res.data) {
+          const fp = profileSyncFingerprint(res.data)
           saveCachedProfile(res.data)
           saveSyncProfileRev(state.profile)
-          opts.onProfile(res.data)
-          pushLog('ConfigSync', 'profile updated')
+          if (fp !== lastProfileFingerprint) {
+            lastProfileFingerprint = fp
+            opts.onProfile(res.data)
+            pushLog('ConfigSync', 'profile updated')
+          }
         }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e)
@@ -164,6 +175,7 @@ export function stopConfigSync(): void {
 export function resetConfigSyncOnLogout(): void {
   stopConfigSync()
   clearSyncRevisions()
+  lastProfileFingerprint = ''
 }
 
 export async function tickConfigSyncNow(): Promise<void> {

@@ -26,6 +26,14 @@ export type ClientTheme = {
   login_step2_title?: string
   login_remember_me_label?: string
   login_forgot_password_label?: string
+  login_forgot_title?: string
+  login_forgot_instruction?: string
+  login_reset_title?: string
+  login_reset_button_text?: string
+  support_url?: string
+  privacy_url?: string
+  terms_url?: string
+  logo_url?: string
 }
 
 type PreviewScreen =
@@ -43,7 +51,9 @@ type PreviewScreen =
   | 'support'
   | 'about'
 
-const SCREEN_TABS: { id: PreviewScreen; label: string }[] = [
+export type { PreviewScreen }
+
+export const SCREEN_TABS: { id: PreviewScreen; label: string }[] = [
   { id: 'login_step1', label: 'Вход 1' },
   { id: 'login_step2', label: 'Вход 2' },
   { id: 'main', label: 'Главная' },
@@ -69,11 +79,25 @@ const MENU_ITEMS: { id: PreviewScreen; label: string; badge?: string }[] = [
   { id: 'about', label: 'О сервисе' },
 ]
 
-export default function ClientPreview({ theme, platform = 'mobile' }: {
+export default function ClientPreview({
+  theme,
+  platform = 'mobile',
+  screen: controlledScreen,
+  onScreenChange,
+  hideTabs = false,
+}: {
   theme: ClientTheme
   platform?: 'mobile' | 'pc'
+  screen?: PreviewScreen
+  onScreenChange?: (s: PreviewScreen) => void
+  hideTabs?: boolean
 }) {
-  const [screen, setScreen] = useState<PreviewScreen>('main')
+  const [internalScreen, setInternalScreen] = useState<PreviewScreen>('main')
+  const screen = controlledScreen ?? internalScreen
+  const setScreen = (s: PreviewScreen) => {
+    if (onScreenChange) onScreenChange(s)
+    else setInternalScreen(s)
+  }
   const [connected, setConnected] = useState(true)
 
   const w = 265
@@ -406,17 +430,19 @@ export default function ClientPreview({ theme, platform = 'mobile' }: {
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-        {SCREEN_TABS.map(({ id, label }) => (
-          <button key={id} type="button" onClick={() => goTo(id)} style={{
-            padding: '5px 10px', fontSize: 10, borderRadius: 8, cursor: 'pointer',
-            background: screen === id ? '#fff' : '#222', color: screen === id ? '#000' : '#aaa',
-            border: '1px solid #333',
-          }}>
-            {label}
-          </button>
-        ))}
-      </div>
+      {!hideTabs && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+          {SCREEN_TABS.map(({ id, label }) => (
+            <button key={id} type="button" onClick={() => goTo(id)} style={{
+              padding: '5px 10px', fontSize: 10, borderRadius: 8, cursor: 'pointer',
+              background: screen === id ? '#fff' : '#222', color: screen === id ? '#000' : '#aaa',
+              border: '1px solid #333',
+            }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       <div style={{ transform: `scale(${scale})`, transformOrigin: 'top center', height: h * scale }}>
         {shell}
       </div>

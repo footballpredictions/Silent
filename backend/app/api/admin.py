@@ -360,49 +360,32 @@ async def vk_bot_auth_start(
     db: AsyncSession = Depends(get_db),
 ):
     from app.config import settings
-    from app.services.vk_agent_auth import build_agent_auth_url
-    from app.services.vk_id_service import generate_pkce
     from app.models import VkLinkSession
     import secrets
     from datetime import timedelta
-
-    base = str(request.base_url).rstrip("/")
-    if "nip.io" in base and base.startswith("http://"):
-        base = base.replace("http://", "https://", 1)
-
-    if not settings.VK_ID_APP_ID and not (settings.VK_CALLS_CLIENT_SECRET or "").strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Задайте VK_CALLS_CLIENT_SECRET или VK_ID_APP_ID в .env на сервере",
-        )
-
-    code_verifier, code_challenge = generate_pkce()
-    state = secrets.token_urlsafe(32)
     from app.services.vk_calls_auth import build_calls_auth_url, format_calls_uuid
 
-    calls_uuid = format_calls_uuid(state) if (settings.VK_CALLS_CLIENT_SECRET or "").strip() else None
+    state = secrets.token_urlsafe(32)
+    calls_uuid = format_calls_uuid(state)
     db.add(VkLinkSession(
         state=state,
         user_id=None,
-        code_verifier=code_verifier if not calls_uuid else calls_uuid,
+        code_verifier=calls_uuid,
         expires_at=datetime.utcnow() + timedelta(minutes=15),
         purpose="agent",
     ))
     await db.commit()
     bot_url = settings.VK_BOT_WRITE_URL or f"https://vk.com/write-{settings.VK_GROUP_ID}"
-    auth_url = build_agent_auth_url(state, code_challenge, base)
-    calls_mode = bool((settings.VK_CALLS_CLIENT_SECRET or "").strip())
+    auth_url, _ = build_calls_auth_url(state)
     return {
         "auth_url": auth_url,
         "state": state,
         "bot_url": bot_url,
-        "auth_mode": "vk_calls" if calls_mode else ("vk_id" if settings.VK_ID_APP_ID else "kate_oauth"),
+        "auth_mode": "vk_calls",
         "paste_hint": (
-            "VK Звонки: после входа скопируйте адрес из строки браузера "
-            "(vkcau://vk.com/auth#silent_token=…&uuid=…) и вставьте ниже."
-            if calls_mode
-            else "После входа VK перенаправит на blank.html или сайт Silent — "
-            "скопируйте весь URL с code= или device_id=."
+            "После входа скопируйте адрес из строки браузера "
+            "(vkcau://vk.com/auth#silent_token=…&uuid={…}) и вставьте ниже. "
+            "Не используйте OAuth VK ID — он не создаёт звонки."
         ),
     }
 
@@ -413,13 +396,24 @@ async def vk_bot_auth_paste(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Сохранить токен: code из URL → обмен на сервере (IP VPS)."""
+    """Сохранить токен: silent_token (VK Звонки) или code из Kate OAuth."""
     from app.services.vk_agent_auth import (
         parse_vk_oauth_paste,
         complete_agent_auth,
         save_agent_token_direct,
         paste_to_server_token,
     )
+    from app.services.vk_calls_auth import parse_silent_token_from_paste, exchange_silent_token
+
+    silent, silent_uuid = parse_silent_token_from_paste(req.paste)
+    if silent:
+        access, uid, err = await exchange_silent_token(silent, silent_uuid or "")
+        if not access:
+            raise HTTPException(status_code=400, detail=err or "Не удалось обменять silent_token")
+        ok, message, uid = await save_agent_token_direct(db, access, None)
+        if not ok:
+            raise HTTPException(status_code=400, detail=message)
+        return {"success": True, "message": message, "vk_user_id": uid}
 
     token, expires_in, err = await paste_to_server_token(req.paste, db)
     if err:

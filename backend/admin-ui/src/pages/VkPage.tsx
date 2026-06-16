@@ -264,8 +264,9 @@ export default function VkPage({ token }: { token: string }) {
                 : status?.auth_error || '✗ Нет рабочего токена'}
           </p>
           <p className="text-xs text-amber-400/90 leading-relaxed">
-            Для AI-агента нужен токен приложения <strong className="text-amber-300/90">VK Звонки</strong> (calls.start),
-            не VK ID (vk2.a). OAuth «Контакт» / VK ID из браузера <strong className="text-amber-300/90">не подходит</strong>.
+            Ссылка ведёт на <strong className="text-amber-300/90">id.vk.com/auth?app_id=7793118</strong> (VK Звонки),
+            как на calls.vk.com. После входа браузер покажет <code className="text-amber-200">vkcau://vk.com/auth#silent_token=…</code> —
+            скопируйте весь адрес и вставьте ниже. OAuth «Контакт» / VK ID <strong className="text-amber-300/90">не подходит</strong>.
           </p>
           {authUrl && (
             <a
@@ -274,7 +275,7 @@ export default function VkPage({ token }: { token: string }) {
               rel="noreferrer"
               className="block text-center text-xs bg-[#4680C2] text-white px-3 py-2.5 rounded-lg font-semibold hover:bg-[#3a6fad]"
             >
-              {authMode === 'vk_calls' ? 'Открыть вход VK Звонки (id.vk.com)' : 'Открыть VK OAuth'}
+              Открыть вход VK Звонки (id.vk.com)
             </a>
           )}
           <textarea

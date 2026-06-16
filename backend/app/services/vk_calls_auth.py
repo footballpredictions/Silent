@@ -10,7 +10,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 import aiohttp
 
 from app.config import settings
-from app.services.vk_agent_auth import VK_API_VERSION, VK_USER_AGENT, vk_api_call
+from app.services.vk_agent_auth import VK_API_VERSION, VK_USER_AGENT
 
 logger = logging.getLogger(__name__)
 
@@ -96,40 +96,39 @@ async def _read_json(resp: aiohttp.ClientResponse) -> dict:
 
 
 async def get_calls_anonym_token(device_id: str | None = None) -> tuple[str | None, str]:
-    """Анонимный токен для обмена silent_token (как VK Calls desktop)."""
-    secret = (settings.VK_CALLS_CLIENT_SECRET or "").strip()
-    if not secret:
-        return None, "VK_CALLS_CLIENT_SECRET не задан в .env на сервере"
-
+    """Анонимный токен для обмена silent_token (app 7793118, secret не обязателен)."""
     device_id = (device_id or secrets.token_hex(16)).strip()
     headers = {"User-Agent": VK_USER_AGENT}
+    secret = (settings.VK_CALLS_CLIENT_SECRET or "").strip()
 
-    # 1) oauth.vk.com/get_anonym_token (как в логах VK Calls)
+    params: dict[str, str] = {
+        "client_id": str(VK_CALLS_APP_ID),
+        "device_id": device_id,
+    }
+    if secret:
+        params["client_secret"] = secret
+
     try:
         async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.get(
-                "https://oauth.vk.com/get_anonym_token",
-                params={
-                    "client_id": str(VK_CALLS_APP_ID),
-                    "client_secret": secret,
-                    "device_id": device_id,
-                },
-            ) as resp:
+            async with session.get("https://oauth.vk.com/get_anonym_token", params=params) as resp:
                 data = await _read_json(resp)
-            token = (data.get("data") or {}).get("access_token") or data.get("access_token")
+            token = data.get("token")
+            if not token and isinstance(data.get("data"), dict):
+                token = data["data"].get("access_token")
+            if not token:
+                token = data.get("access_token")
             if token:
-                return token, "OK"
-            if data.get("token"):
-                return data["token"], "OK"
+                return str(token), "OK"
+            err = data.get("error_description") or data.get("error") or str(data)[:120]
+            logger.warning("get_anonym_token 7793118: %s", err)
     except Exception as e:
         logger.warning("get_anonym_token GET failed: %s", e)
 
-    # 2) login.vk.ru POST (как wdtt-go)
+    # login.vk.ru POST fallback
     try:
-        payload = (
-            f"client_id={VK_CALLS_APP_ID}&client_secret={secret}"
-            f"&version=1&app_id={VK_CALLS_APP_ID}"
-        )
+        payload = f"client_id={VK_CALLS_APP_ID}&version=1&app_id={VK_CALLS_APP_ID}"
+        if secret:
+            payload += f"&client_secret={secret}"
         async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.post(
                 "https://login.vk.ru/?act=get_anonym_token",
@@ -138,30 +137,13 @@ async def get_calls_anonym_token(device_id: str | None = None) -> tuple[str | No
             ) as resp:
                 data = await _read_json(resp)
             inner = data.get("data") if isinstance(data.get("data"), dict) else data
-            token = (inner or {}).get("access_token")
+            token = (inner or {}).get("access_token") or (inner or {}).get("token")
             if token:
-                return token, "OK"
+                return str(token), "OK"
     except Exception as e:
         logger.warning("login.vk.ru get_anonym_token failed: %s", e)
 
-    # 3) API method auth.getAnonymToken
-    try:
-        data = await vk_api_call(
-            "auth.getAnonymToken",
-            "",
-            {"client_id": str(VK_CALLS_APP_ID), "client_secret": secret},
-        )
-        if "error" in data:
-            err = data["error"]
-            return None, err.get("error_msg", str(err))
-        resp = data.get("response") or {}
-        token = resp.get("token") or resp.get("access_token")
-        if token:
-            return token, "OK"
-    except Exception as e:
-        logger.warning("auth.getAnonymToken failed: %s", e)
-
-    return None, "Не удалось получить anonym token для VK Звонков"
+    return None, "Не удалось получить anonym token для VK Звонков (app 7793118)"
 
 
 async def exchange_silent_token(
@@ -182,11 +164,21 @@ async def exchange_silent_token(
         return None, None, err
 
     try:
-        data = await vk_api_call(
-            "auth.exchangeSilentAuthToken",
-            anonym,
-            {"token": silent_token, "uuid": token_uuid},
-        )
+        payload = {
+            "v": VK_API_VERSION,
+            "access_token": anonym,
+            "token": silent_token,
+            "uuid": token_uuid,
+        }
+        async with aiohttp.ClientSession(
+            headers={"User-Agent": VK_USER_AGENT},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as session:
+            async with session.post(
+                "https://api.vk.com/method/auth.exchangeSilentAuthToken",
+                data=payload,
+            ) as resp:
+                data = await _read_json(resp)
         if "error" in data:
             err_obj = data["error"]
             code = err_obj.get("error_code", 0)

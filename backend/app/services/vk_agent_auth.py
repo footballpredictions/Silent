@@ -131,31 +131,11 @@ def build_kate_oauth_url(state: str) -> str:
 
 
 def build_agent_auth_url(state: str, code_challenge: str = "", _base_url: str = "") -> str:
-    """
-    Приоритет: VK Звонки (silent_token, app 7793118) → Kate OAuth → VK ID (не для агента).
-    """
-    from app.config import settings
+    """Только VK Звонки: id.vk.com/auth?app_id=7793118&response_type=silent_token."""
     from app.services.vk_calls_auth import build_calls_auth_url
 
-    if (settings.VK_CALLS_CLIENT_SECRET or "").strip():
-        url, _ = build_calls_auth_url(state)
-        return url
-
-    if settings.VK_ID_APP_ID and code_challenge:
-        from urllib.parse import urlencode
-
-        params = {
-            "response_type": "code",
-            "client_id": str(settings.VK_ID_APP_ID),
-            "redirect_uri": settings.VK_ID_REDIRECT_URI,
-            "state": state,
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-            "scope": "vkid.personal_info offline",
-        }
-        return f"https://id.vk.ru/authorize?{urlencode(params)}"
-
-    return build_kate_oauth_url(state)
+    url, _ = build_calls_auth_url(state)
+    return url
 
 
 async def _read_vk_oauth_json(resp: aiohttp.ClientResponse) -> dict:
@@ -283,11 +263,11 @@ async def paste_to_server_token(
     if token:
         return None, None, (
             "Токен vk1.a/vk2.a с вашего компьютера не подходит — VK привязывает его к вашему IP. "
-            "Вставьте URL blank.html с code= (#code= или ?code=), сервер получит token сам."
+            "Используйте VK Звонки: id.vk.com/auth?app_id=7793118 → вставьте vkcau://…#silent_token=…"
         )
     return None, None, (
-        "Не найден code в URL. Скопируйте весь адрес blank.html — "
-        "подходит и ?code=..., и #code=..."
+        "Не найден silent_token. Откройте «VK Звонки» в админке, войдите и вставьте URL "
+        "vkcau://vk.com/auth#silent_token=…&uuid={…} (как на calls.vk.com)."
     )
 
 

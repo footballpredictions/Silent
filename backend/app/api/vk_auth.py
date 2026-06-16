@@ -235,11 +235,19 @@ async def vk_oauth_callback(
         logger.warning("VK OAuth error: %s — %s", error, error_description)
         return _error_page(error_description or error)
 
+    result = await db.execute(select(VkLinkSession).where(VkLinkSession.state == state))
+    session = result.scalar_one_or_none()
+    if session and getattr(session, "purpose", None) == "agent":
+        return _error_page(
+            "Для AI-агента нужен вход через VK Звонки (app 7793118), не VK ID. "
+            "Админка → VK → «Открыть вход VK Звонки» → после входа вставьте URL "
+            "vkcau://vk.com/auth#silent_token=…&uuid={…} в поле ниже.",
+            status=400,
+        )
+
     if not code or not state:
         return _error_page("Недействительный ответ VK. Повторите привязку.")
 
-    result = await db.execute(select(VkLinkSession).where(VkLinkSession.state == state))
-    session = result.scalar_one_or_none()
     if not session:
         return _error_page("Сессия привязки не найдена или истекла.")
 

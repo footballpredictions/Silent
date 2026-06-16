@@ -29,6 +29,8 @@ export default function VkPage({ token }: { token: string }) {
   const [hashUserId, setHashUserId] = useState('')
   const [authMode, setAuthMode] = useState('')
   const [authUrl, setAuthUrl] = useState('')
+  const [authUrlBlank, setAuthUrlBlank] = useState('')
+  const [authPolling, setAuthPolling] = useState(false)
   const [oauthPaste, setOauthPaste] = useState('')
   const [vkLogin, setVkLogin] = useState('')
   const [vkPassword, setVkPassword] = useState('')
@@ -87,6 +89,51 @@ export default function VkPage({ token }: { token: string }) {
     }
   }
 
+  const pollAuthStatus = async (): Promise<boolean> => {
+    const st = oauthStateRef.current
+    if (!st) return false
+    const res = await fetch(`/api/admin/vk/bot-auth/status?state=${encodeURIComponent(st)}`, { headers: authH })
+    const { ok, data } = await parseApi(res)
+    if (ok && data.completed) {
+      setMsg(`VK авторизован (ID ${data.vk_user_id ?? '—'})`)
+      setAuthPolling(false)
+      load()
+      return true
+    }
+    return false
+  }
+
+  const startAuthPoll = () => {
+    setAuthPolling(true)
+    const started = Date.now()
+    const tick = window.setInterval(async () => {
+      if (await pollAuthStatus()) {
+        window.clearInterval(tick)
+        return
+      }
+      if (Date.now() - started > 5 * 60 * 1000) {
+        window.clearInterval(tick)
+        setAuthPolling(false)
+      }
+    }, 2000)
+  }
+
+  const openAuthPopup = (url: string) => {
+    if (!url) return
+    window.open(url, 'vk_calls_auth', 'width=520,height=720')
+    startAuthPoll()
+  }
+
+  useEffect(() => {
+    const onMsg = (ev: MessageEvent) => {
+      if (ev.data?.type === 'vk-calls-auth-ok') {
+        pollAuthStatus()
+      }
+    }
+    window.addEventListener('message', onMsg)
+    return () => window.removeEventListener('message', onMsg)
+  }, [])
+
   useEffect(() => {
     load()
     fetch('/api/admin/vk/bot-auth/start', { method: 'POST', headers: authH })
@@ -94,6 +141,7 @@ export default function VkPage({ token }: { token: string }) {
         const { ok, data } = await parseApi(r)
         if (ok) {
           setAuthUrl(String(data.auth_url || ''))
+          setAuthUrlBlank(String(data.auth_url_blank || ''))
           setAuthMode(String(data.auth_mode || ''))
           oauthStateRef.current = String(data.state || '')
         }
@@ -264,37 +312,46 @@ export default function VkPage({ token }: { token: string }) {
                 : status?.auth_error || '✗ Нет рабочего токена'}
           </p>
           <p className="text-xs text-amber-400/90 leading-relaxed">
-            Ссылка ведёт на <strong className="text-amber-300/90">id.vk.com/auth?app_id=7793118</strong> (VK Звонки),
-            как на calls.vk.com. После входа браузер покажет <code className="text-amber-200">vkcau://vk.com/auth#silent_token=…</code> —
-            скопируйте весь адрес и вставьте ниже. OAuth «Контакт» / VK ID <strong className="text-amber-300/90">не подходит</strong>.
+            На ПК VK открывает приложение «Звонки» — ссылку <code className="text-amber-200">id.vk.com/auth?…</code> вставлять
+            <strong className="text-amber-300/90"> не нужно</strong> (это только начало входа). Нажмите «Войти в браузере» —
+            токен сохранится автоматически.
           </p>
-          {authUrl && (
-            <a
-              href={authUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="block text-center text-xs bg-[#4680C2] text-white px-3 py-2.5 rounded-lg font-semibold hover:bg-[#3a6fad]"
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => openAuthPopup(authUrl)}
+              disabled={!authUrl || loading}
+              className="w-full text-xs bg-[#4680C2] text-white px-3 py-2.5 rounded-lg font-semibold hover:bg-[#3a6fad] disabled:opacity-40"
             >
-              Открыть вход VK Звонки (id.vk.com)
-            </a>
-          )}
-          <textarea
-            className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-[11px] text-white font-mono min-h-[72px]"
-            placeholder={
-              authMode === 'vk_calls'
-                ? 'vkcau://vk.com/auth#silent_token=…&uuid={…}'
-                : 'https://oauth.vk.com/blank.html?code=… или #access_token=…'
-            }
-            value={oauthPaste}
-            onChange={e => setOauthPaste(e.target.value)}
-          />
-          <button
-            onClick={saveToken}
-            disabled={loading || !oauthPaste.trim()}
-            className="w-full text-xs bg-white text-black px-3 py-2 rounded-lg font-semibold hover:bg-[#e5e5e5] disabled:opacity-40"
-          >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin inline" /> : 'Сохранить токен (вставка URL)'}
-          </button>
+              {authPolling ? 'Ожидание входа VK…' : 'Войти в браузере (авто-сохранение)'}
+            </button>
+            <button
+              type="button"
+              onClick={() => openAuthPopup(authUrlBlank)}
+              disabled={!authUrlBlank || loading}
+              className="w-full text-xs border border-[#333] text-[#ccc] px-3 py-2 rounded-lg hover:border-[#555] disabled:opacity-40"
+            >
+              Запасной: blank.html (скопировать URL после входа)
+            </button>
+          </div>
+          <details className="text-[10px] text-[#555]">
+            <summary className="cursor-pointer text-[#777]">Ручная вставка URL (если popup не сработал)</summary>
+            <div className="mt-2 space-y-2">
+              <textarea
+                className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-[11px] text-white font-mono min-h-[64px]"
+                placeholder="https://oauth.vk.com/blank.html#silent_token=…&uuid={…}"
+                value={oauthPaste}
+                onChange={e => setOauthPaste(e.target.value)}
+              />
+              <button
+                onClick={saveToken}
+                disabled={loading || !oauthPaste.trim()}
+                className="w-full text-xs bg-white text-black px-3 py-2 rounded-lg font-semibold hover:bg-[#e5e5e5] disabled:opacity-40"
+              >
+                {loading ? <Loader2 className="w-4 h-4 animate-spin inline" /> : 'Сохранить из вставки'}
+              </button>
+            </div>
+          </details>
           <details className="text-[10px] text-[#555]">
             <summary className="cursor-pointer text-[#777]">Запасной вариант: логин и пароль VK</summary>
             <div className="mt-2 space-y-2">
@@ -336,7 +393,7 @@ export default function VkPage({ token }: { token: string }) {
           </p>
           {!status?.vk_linked && (
             <p className="text-xs text-amber-400/90">
-              Сначала войдите по логину и паролю VK (шаг 1) — без Android-токена звонки не создаются.
+              Сначала войдите через VK Звонки (шаг 1) — без токена calls.start звонки не создаются.
             </p>
           )}
           <p className="text-sm text-[#888]">

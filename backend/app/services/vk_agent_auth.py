@@ -131,11 +131,16 @@ def build_kate_oauth_url(state: str) -> str:
 
 
 def build_agent_auth_url(state: str, code_challenge: str = "", _base_url: str = "") -> str:
-    """Только VK Звонки: id.vk.com/auth?app_id=7793118&response_type=silent_token."""
-    from app.services.vk_calls_auth import build_calls_auth_url
+    """VK Звонки в браузере — redirect на наш HTTPS callback (не vkcau://)."""
+    from app.services.vk_calls_auth import build_calls_admin_auth_urls
+    from app.config import settings
 
-    url, _ = build_calls_auth_url(state)
-    return url
+    base = (_base_url or settings.FRONTEND_URL or "").strip().rstrip("/")
+    if not base:
+        from app.services.vk_calls_auth import build_calls_auth_url
+        url, _ = build_calls_auth_url(state, redirect_uri="https://oauth.vk.com/blank.html")
+        return url
+    return build_calls_admin_auth_urls(state, base)["auth_url"]
 
 
 async def _read_vk_oauth_json(resp: aiohttp.ClientResponse) -> dict:

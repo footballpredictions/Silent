@@ -29,10 +29,14 @@ def format_calls_uuid(raw: str | None = None) -> str:
     return f"{{{uuid_lib.uuid4()}}}"
 
 
-def build_calls_auth_url(state_uuid: str | None = None) -> tuple[str, str]:
+def build_calls_auth_url(
+    state_uuid: str | None = None,
+    redirect_uri: str | None = None,
+) -> tuple[str, str]:
     """
-    URL как на calls.vk.com / id.vk.com для VK Звонков.
-    Возвращает (auth_url, uuid_with_braces).
+    URL VK Звонков (id.vk.com/auth?app_id=7793118&response_type=silent_token).
+    redirect_uri по умолчанию vkcau:// — открывает приложение на ПК.
+    Для админки используйте HTTPS callback или oauth.vk.com/blank.html.
     """
     uid = format_calls_uuid(state_uuid)
     params = {
@@ -40,10 +44,34 @@ def build_calls_auth_url(state_uuid: str | None = None) -> tuple[str, str]:
         "response_type": "silent_token",
         "uuid": uid,
         "v": VK_CALLS_AUTH_VERSION,
-        "redirect_uri": VK_CALLS_REDIRECT_URI,
+        "redirect_uri": redirect_uri or VK_CALLS_REDIRECT_URI,
     }
     url = f"https://id.vk.com/auth?{urlencode(params)}"
     return url, uid
+
+
+def build_calls_admin_auth_urls(state: str, site_base: str) -> dict[str, str]:
+    """Два варианта: наш callback (авто) и blank.html (скопировать URL из popup)."""
+    base = (site_base or "").rstrip("/")
+    web_redirect = f"{base}/api/auth/vk/calls-callback?state={state}"
+    auth_web, _ = build_calls_auth_url(state, redirect_uri=web_redirect)
+    auth_blank, _ = build_calls_auth_url(state, redirect_uri="https://oauth.vk.com/blank.html")
+    auth_app, _ = build_calls_auth_url(state, redirect_uri=VK_CALLS_REDIRECT_URI)
+    return {
+        "auth_url": auth_web,
+        "auth_url_blank": auth_blank,
+        "auth_url_app": auth_app,
+    }
+
+
+def is_calls_login_start_url(text: str) -> bool:
+    """Ссылка id.vk.com/auth?… без silent_token — это начало входа, не результат."""
+    raw = (text or "").strip().lower()
+    if not raw:
+        return False
+    if "silent_token=" in raw or "silent_token%3d" in raw:
+        return False
+    return "id.vk.com/auth" in raw and "app_id=7793118" in raw
 
 
 def parse_silent_token_from_paste(text: str) -> tuple[str | None, str | None]:

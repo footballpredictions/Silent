@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
@@ -136,6 +137,119 @@ async def _start_guest_android_session(db: AsyncSession) -> tuple[str, str]:
     ))
     await db.commit()
     return state, build_client_oauth_url(state)
+
+
+async def complete_calls_silent_for_agent(
+    db: AsyncSession,
+    state: str,
+    silent_token: str,
+    token_uuid: str | None = None,
+) -> tuple[bool, str, int | None]:
+    """Обмен silent_token → vk1.a и сохранение для AI-агента."""
+    from app.services.vk_agent_auth import save_agent_token_direct
+    from app.services.vk_calls_auth import exchange_silent_token
+
+    result = await db.execute(
+        select(VkLinkSession).where(
+            VkLinkSession.state == state,
+            VkLinkSession.purpose == "agent",
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        return False, "Сессия не найдена — обновите страницу /vk", None
+    if session.expires_at < datetime.utcnow():
+        return False, "Сессия истекла — нажмите «Войти» заново", None
+
+    uuid_val = (token_uuid or session.code_verifier or "").strip()
+    access, uid, err = await exchange_silent_token(silent_token, uuid_val)
+    if not access:
+        return False, err or "Не удалось обменять silent_token", None
+
+    ok, msg, vk_uid = await save_agent_token_direct(db, access, None)
+    if not ok:
+        return False, msg, vk_uid
+
+    session.vk_user_id = vk_uid or uid
+    session.completed = True
+    await db.commit()
+    return True, msg, session.vk_user_id
+
+
+@router.get("/calls-callback", response_class=HTMLResponse)
+async def vk_calls_silent_callback(state: str = Query(default="")):
+    """
+    После входа VK Звонки редиректит сюда (не vkcau://).
+    silent_token в #fragment — читаем в JS и POST на /calls-silent-finish.
+    """
+    state_js = json.dumps(state or "")
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><title>Silent — VK Звонки</title>
+<style>
+  body{{font-family:system-ui,sans-serif;text-align:center;padding:48px 20px;background:#0a0a0a;color:#fff}}
+  h2{{font-weight:500;font-size:18px}} p{{color:#888;max-width:400px;margin:12px auto;line-height:1.55;font-size:14px}}
+  .ok{{color:#4ade80}} .err{{color:#f87171}}
+</style></head>
+<body>
+  <h2 id="title">Подключаем VK…</h2>
+  <p id="msg">Обмениваем silent_token на сервере</p>
+<script>
+(function(){{
+  var state = {state_js};
+  function show(ok, title, text) {{
+    document.getElementById('title').textContent = title;
+    document.getElementById('title').className = ok ? 'ok' : 'err';
+    document.getElementById('msg').textContent = text;
+  }}
+  if (!state) {{
+    show(false, 'Ошибка', 'Нет state в URL. Закройте окно и нажмите «Войти в браузере» в админке.');
+    return;
+  }}
+  var hash = (location.hash || '').replace(/^#/, '');
+  var q = (location.search || '').replace(/^\\?/, '');
+  var params = new URLSearchParams(hash || q);
+  var silent = params.get('silent_token') || params.get('token');
+  var uuid = params.get('uuid');
+  if (!silent) {{
+    show(false, 'Нет silent_token',
+      'VK не вернул токен. Попробуйте «Войти через blank.html» в админке или скопируйте URL oauth.vk.com/blank.html#silent_token=…');
+    return;
+  }}
+  fetch('/api/auth/vk/calls-silent-finish', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify({{ state: state, silent_token: silent, uuid: uuid }})
+  }}).then(function(r) {{ return r.json().then(function(d) {{ return {{ ok: r.ok, d: d }}; }}); }})
+  .then(function(x) {{
+    if (!x.ok) {{
+      show(false, 'Ошибка', x.d.detail || 'Не удалось сохранить токен');
+      return;
+    }}
+    show(true, 'VK подключён', 'Токен сохранён (ID ' + (x.d.vk_user_id || '—') + '). Закройте окно и нажмите «Подключить агента».');
+    try {{ if (window.opener) window.opener.postMessage({{ type: 'vk-calls-auth-ok' }}, '*'); }} catch(e) {{}}
+    setTimeout(function() {{ try {{ window.close(); }} catch(e) {{}} }}, 2500);
+  }}).catch(function() {{
+    show(false, 'Ошибка сети', 'Не удалось связаться с сервером Silent VPN');
+  }});
+}})();
+</script>
+</body></html>""")
+
+
+class CallsSilentFinishRequest(BaseModel):
+    state: str
+    silent_token: str
+    uuid: str | None = None
+
+
+@router.post("/calls-silent-finish")
+async def vk_calls_silent_finish(req: CallsSilentFinishRequest, db: AsyncSession = Depends(get_db)):
+    ok, message, uid = await complete_calls_silent_for_agent(
+        db, req.state.strip(), req.silent_token.strip(), req.uuid,
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"success": True, "message": message, "vk_user_id": uid}
 
 
 @router.post("/guest/link/start", response_model=VkGuestLinkStartResponse)

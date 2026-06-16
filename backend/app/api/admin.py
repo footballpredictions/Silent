@@ -363,7 +363,13 @@ async def vk_bot_auth_start(
     from app.models import VkLinkSession
     import secrets
     from datetime import timedelta
-    from app.services.vk_calls_auth import build_calls_auth_url, format_calls_uuid
+    from app.services.vk_calls_auth import build_calls_admin_auth_urls, format_calls_uuid
+
+    base = str(request.base_url).rstrip("/")
+    if "nip.io" in base and base.startswith("http://"):
+        base = base.replace("http://", "https://", 1)
+    if not base or base.startswith("http://127"):
+        base = settings.FRONTEND_URL.rstrip("/")
 
     state = secrets.token_urlsafe(32)
     calls_uuid = format_calls_uuid(state)
@@ -375,17 +381,17 @@ async def vk_bot_auth_start(
         purpose="agent",
     ))
     await db.commit()
+    urls = build_calls_admin_auth_urls(state, base)
     bot_url = settings.VK_BOT_WRITE_URL or f"https://vk.com/write-{settings.VK_GROUP_ID}"
-    auth_url, _ = build_calls_auth_url(state)
     return {
-        "auth_url": auth_url,
+        **urls,
         "state": state,
         "bot_url": bot_url,
         "auth_mode": "vk_calls",
         "paste_hint": (
-            "После входа скопируйте адрес из строки браузера "
-            "(vkcau://vk.com/auth#silent_token=…&uuid={…}) и вставьте ниже. "
-            "Не используйте OAuth VK ID — он не создаёт звонки."
+            "Ссылка id.vk.com/auth?… — это только начало входа, её вставлять не нужно. "
+            "Нажмите «Войти в браузере» — токен сохранится автоматически. "
+            "Если popup: скопируйте URL oauth.vk.com/blank.html#silent_token=…"
         ),
     }
 
@@ -403,9 +409,24 @@ async def vk_bot_auth_paste(
         save_agent_token_direct,
         paste_to_server_token,
     )
-    from app.services.vk_calls_auth import parse_silent_token_from_paste, exchange_silent_token
+    from app.services.vk_calls_auth import (
+        parse_silent_token_from_paste,
+        exchange_silent_token,
+        is_calls_login_start_url,
+    )
 
-    silent, silent_uuid = parse_silent_token_from_paste(req.paste)
+    paste = (req.paste or "").strip()
+    if is_calls_login_start_url(paste):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Это ссылка на начало входа (id.vk.com/auth), а не результат. "
+                "Нажмите «Войти в браузере» — токен сохранится сам. "
+                "Или «blank.html» и скопируйте URL после входа: oauth.vk.com/blank.html#silent_token=…"
+            ),
+        )
+
+    silent, silent_uuid = parse_silent_token_from_paste(paste)
     if silent:
         access, uid, err = await exchange_silent_token(silent, silent_uuid or "")
         if not access:

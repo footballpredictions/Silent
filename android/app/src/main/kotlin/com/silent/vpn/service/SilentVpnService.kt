@@ -28,6 +28,7 @@ import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vk.HashParser
+import com.silent.vpn.vpn.TunnelApiProxy
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.WireGuardConfigBuilder
@@ -165,8 +166,8 @@ class SilentVpnService : Service() {
 
     /** Локальный прокси → 10.66.66.1 через VPN Network — без WG overlay. */
     private fun ensureTunnelApiProxyAsync() {
-        if (tunnelProxyStarted || WdttTunnelManager.isBootstrapMode()) return
-        tunnelProxyStarted = true
+        if (WdttTunnelManager.isBootstrapMode()) return
+        if (TunnelApiProxy.isActive()) return
         scope.launch(Dispatchers.IO) {
             runCatching {
                 val repo = EntryPointAccessors.fromApplication(
@@ -176,7 +177,6 @@ class SilentVpnService : Service() {
                 repo.ensureTunnelApiProxy()
             }.onFailure { e ->
                 DebugLog.w("VpnService", "tunnel proxy start: ${e.message}")
-                tunnelProxyStarted = false
             }
         }
     }
@@ -310,8 +310,12 @@ class SilentVpnService : Service() {
             // GETCONF: device_id из конфига (boot:fp / UUID backend). Не ANDROID_ID — на Silent VPS
             // пул 10.66.66.2–250; новый id при исчерпании пула → NOCONF.
             val libclientDeviceId = deviceId
-            // Bootstrap: app в туннеле (10.66.66.0/24). Main: app вне WG — libclient/TURN напрямую.
+            // Bootstrap: app в туннеле. Main: app вне WG (sync только Wi‑Fi).
             SilentRepository.APP_EXCLUDED_FROM_VPN = !isBootstrap
+            DebugLog.i(
+                "VpnService",
+                "VPN app excluded=${SilentRepository.APP_EXCLUDED_FROM_VPN} mobile=${VpnNetworkHelper.isOnMobileData(this)} bootstrap=$isBootstrap",
+            )
             val totalWorkers = if (isBootstrap) {
                 HashChannelHelper.WORKERS_PER_GROUP
             } else {
@@ -388,13 +392,11 @@ class SilentVpnService : Service() {
         performanceLocksHeld = false
         lastNotifBody = ""
         lastNotifUpdateMs = 0L
-        SilentRepository.APP_EXCLUDED_FROM_VPN = true
         teardownNetworkCallback()
         teardownPhoneCallMonitor()
         clearVpnNotification()
         VpnBackendSync.stop()
         tunnelProxyStarted = false
-        WdttTunnelManager.prepareForShutdown()
         scope.launch(Dispatchers.IO) {
             val repo = EntryPointAccessors.fromApplication(
                 applicationContext,
@@ -408,6 +410,8 @@ class SilentVpnService : Service() {
                 null
             }
             withTimeoutOrNull(1_500L) { notifyJob?.await() }
+            SilentRepository.APP_EXCLUDED_FROM_VPN = true
+            WdttTunnelManager.prepareForShutdown()
             if (isRunning) {
                 SessionTrace.mark("SilentVpnService.disconnect", "skipped teardown — reconnected")
                 return@launch

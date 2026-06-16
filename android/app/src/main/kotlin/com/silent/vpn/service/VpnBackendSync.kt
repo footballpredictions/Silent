@@ -43,6 +43,7 @@ object VpnBackendSync {
     fun ensureBackendSyncAfterTunnel(scope: CoroutineScope, context: Context) {
         if (VpnSessionState.tunnelDataSyncCompleted) return
         if (syncJob?.isActive == true) return
+        if (repo(context).isOnMobileData()) return
         val now = System.currentTimeMillis()
         if (now - lastAttemptAtMs < RETRY_MIN_INTERVAL_MS) return
         lastAttemptAtMs = now
@@ -51,6 +52,7 @@ object VpnBackendSync {
             if (!waitForTunnel(scope)) return@launch
             if (!repo(context).isLoggedIn() || WdttTunnelManager.isBootstrapMode()) return@launch
             val r = repo(context)
+            r.ensureTunnelApiProxy()
             val ok = runCatching { r.syncAllViaTunnel() }.getOrDefault(false)
             if (ok) {
                 VpnSessionState.tunnelDataSyncCompleted = true

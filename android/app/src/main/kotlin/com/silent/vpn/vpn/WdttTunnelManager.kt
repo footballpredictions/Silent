@@ -679,6 +679,8 @@ object WdttTunnelManager {
         return sessionVkHashes[(groupId - 1).coerceAtLeast(0) % sessionVkHashes.size]
     }
 
+    private fun mobileApiRouteEnabled(): Boolean = false
+
     private fun applyWireGuard(configStr: String, forceReapply: Boolean = false) {
         val normalized = configStr.trim()
         if (normalized.isBlank()) return
@@ -697,6 +699,7 @@ object WdttTunnelManager {
                             normalized,
                             wgExcludeIps.toList(),
                             isBootstrap = isBootstrapMode,
+                            mobileApiRoute = mobileApiRouteEnabled(),
                         )
                     }
                     tunnelReady.value = true
@@ -790,6 +793,14 @@ object WdttTunnelManager {
                         System.currentTimeMillis() - zeroWorkersSince > 180_000 &&
                         !ManlCaptchaWebViewManager.isCaptchaPending
                     ) {
+                        sessionVkHashes.firstOrNull()?.let { h ->
+                            HashFailureReporter.report(
+                                scope,
+                                h,
+                                "no_connections",
+                                "0 active workers for 180s",
+                            )
+                        }
                         updateLog("watchdog_zombie", "⚠ 0 воркеров 90с — перезапуск", 50, true)
                         killProcess()
                         delay(2000)
@@ -817,6 +828,43 @@ object WdttTunnelManager {
             delay(1500)
             start(ctx, params, isSwitching = true)
         }
+    }
+
+    /**
+     * Новые хеши с сервера — перезапуск libclient без снятия WireGuard.
+     * Только при стабильном туннеле, не во время капчи/ramp-up.
+     */
+    fun applyUpdatedVkHashes(context: Context, hashes: List<String>): Boolean {
+        if (isBootstrapMode) return false
+        if (!tunnelReady.value || !running.value) return false
+        if (isWorkerRampUpActive()) return false
+        if (isCaptchaInProgress() || ManlCaptchaWebViewManager.isCaptchaPending) return false
+        if (activeWorkers.value <= 0) return false
+        val params = lastParams ?: return false
+        val normalized = hashes.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+            .take(HashChannelHelper.MAX_HASHES)
+        if (normalized.isEmpty()) return false
+        val current = params.vkHashes.map { it.trim() }.filter { it.isNotBlank() }
+        if (normalized.toSet() == current.toSet()) return false
+        val workers = HashChannelHelper.workersForLibclient(
+            params.workers,
+            normalized.size.coerceIn(1, HashChannelHelper.MAX_HASHES),
+        )
+        val newParams = params.copy(
+            vkHashes = normalized,
+            activeHashCount = normalized.size,
+            workers = workers,
+        )
+        lastParams = newParams
+        updateLog("hash_update", "Обновление хешей с сервера (${normalized.size})", 2)
+        killProcess()
+        scope.launch {
+            delay(2000)
+            if (running.value || tunnelReady.value) {
+                start(context.applicationContext, newParams, isSwitching = true)
+            }
+        }
+        return true
     }
 
     fun pause() {
@@ -917,7 +965,7 @@ object WdttTunnelManager {
             } finally {
                 if (apiOverlayActive) {
                     updateLog("overlay_off", "API overlay OFF", 50)
-                    helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
+                    helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
                     apiOverlayActive = false
                     lastOverlayEndedMs = System.currentTimeMillis()
                 }
@@ -941,7 +989,7 @@ object WdttTunnelManager {
                 block()
             } finally {
                 if (apiOverlayActive) {
-                    helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
+                    helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
                     apiOverlayActive = false
                     lastOverlayEndedMs = System.currentTimeMillis()
                 }
@@ -985,7 +1033,7 @@ object WdttTunnelManager {
                     if (apiOverlayActive) {
                         updateLog("overlay_off", "API overlay brief OFF", 50)
                         runCatching {
-                            helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
+                            helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
                         }
                         apiOverlayActive = false
                         lastOverlayEndedMs = System.currentTimeMillis()
@@ -1006,7 +1054,7 @@ object WdttTunnelManager {
         scope.launch {
             wgApplyMutex.withLock {
                 if (!apiOverlayActive) return@withLock
-                helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false)
+                helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
                 apiOverlayActive = false
             }
         }
@@ -1035,11 +1083,17 @@ object WdttTunnelManager {
     fun reloadWireGuard(context: Context) {
         if (!tunnelReady.value) return
         val config = lastWgConfig ?: return
+        lastContext = context.applicationContext
         scope.launch {
             wgHelper?.stopTunnel()
             delay(200)
             withContext(Dispatchers.Main) {
-                wgHelper?.startTunnel(config, wgExcludeIps.toList(), isBootstrap = isBootstrapMode)
+                wgHelper?.startTunnel(
+                    config,
+                    wgExcludeIps.toList(),
+                    isBootstrap = isBootstrapMode,
+                    mobileApiRoute = mobileApiRouteEnabled(),
+                )
             }
         }
     }

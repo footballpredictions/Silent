@@ -40,6 +40,18 @@ object AllowedIpsHelper {
         return config.replace(Regex("(?m)^AllowedIPs\\s*=\\s*.+$"), "AllowedIPs = $allowed")
     }
 
+    /** Main VPN mobile: явно 10.66.66.0/24 для API (без overlay toggle). */
+    fun patchAllowedIPsEnsureApiSubnet(config: String, subnet: String = WG_TUNNEL_SUBNET): String {
+        val regex = Regex("(?m)^AllowedIPs\\s*=\\s*(.+)$")
+        val match = regex.find(config) ?: return config.replace(
+            Regex("(?m)^\\[Peer\\]"),
+            "AllowedIPs = $subnet\n\n[Peer]",
+        )
+        val existing = match.groupValues[1].trim()
+        if (existing.contains(subnet)) return config
+        return config.replace(regex, "AllowedIPs = $existing, $subnet")
+    }
+
     private fun ipToNum(ip: String): Long =
         ip.split('.').fold(0L) { acc, oct -> ((acc shl 8) or (oct.toLong() and 0xFF)) and 0xFFFFFFFFL }
 

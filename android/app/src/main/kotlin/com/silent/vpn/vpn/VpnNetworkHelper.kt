@@ -68,7 +68,18 @@ object VpnNetworkHelper {
     /** WireGuard-сеть Silent — для HTTP к 10.66.66.1 когда app исключён из туннеля. */
     fun getSilentVpnNetwork(context: Context): Network? {
         if (!SilentVpnService.isRunning && !WdttTunnelManager.tunnelReady.value) return null
-        return findOurVpnNetwork(context)
+        findOurVpnNetwork(context)?.let { return it }
+        if (!SilentVpnService.isRunning) return null
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                DebugLog.i(TAG, "VPN network fallback (any VPN w/ internet)")
+                return network
+            }
+        }
+        return null
     }
 
     fun hasUnderlyingInternet(context: Context): Boolean {
@@ -79,5 +90,34 @@ object VpnNetworkHelper {
             if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return true
         }
         return false
+    }
+
+    /** Cellular без активного Wi‑Fi/Ethernet (Wi‑Fi радио «вкл» без сети не считается). */
+    fun isOnMobileData(context: Context): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        var cellInternet = false
+        var wifiInternet = false
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
+                DebugLog.i(TAG, "isOnMobileData=false (ethernet)")
+                return false
+            }
+            if (hasUsableWifi(caps)) wifiInternet = true
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) cellInternet = true
+        }
+        val onMobile = cellInternet && !wifiInternet
+        DebugLog.i(TAG, "isOnMobileData=$onMobile cell=$cellInternet wifi=$wifiInternet")
+        return onMobile
+    }
+
+    private fun hasUsableWifi(caps: NetworkCapabilities): Boolean {
+        if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 }

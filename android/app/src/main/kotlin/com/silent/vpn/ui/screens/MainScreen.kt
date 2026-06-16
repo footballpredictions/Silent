@@ -555,15 +555,15 @@ private fun MenuDevices(
         val slotsUsed = profile?.devices_count ?: profile?.devices?.size ?: 0
         val localOnline = vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING
         fun deviceOnline(d: DeviceInfo): Boolean {
-            if (vpnState == VpnState.DISCONNECTED || vpnState == VpnState.DISCONNECTING) return false
             if (d.is_connected) return true
             val isSelf = !sessionDeviceId.isNullOrBlank() && d.id == sessionDeviceId
+            // Только своё устройство — optimistic; остальные строго с сервера
             return localOnline && isSelf
         }
         val devices = profile?.devices.orEmpty()
         val listOnline = devices.count { deviceOnline(it) }
-        val serverOnline = profile?.connected_count ?: 0
-        val onlineCount = maxOf(listOnline, serverOnline).coerceIn(0, maxSlots)
+        val serverOnline = profile?.connected_count ?: listOnline
+        val onlineCount = serverOnline.coerceIn(0, maxSlots)
         Text(
             "VPN онлайн: $onlineCount из $maxSlots",
             fontSize = 11.sp,

@@ -95,6 +95,22 @@ class AllowedIpsHelperTest {
         assertFalse(covers(cidrs, "1.2.3.4"))
     }
 
+    @Test
+    fun `patchAllowedIPsEnsureApiSubnet appends wg subnet`() {
+        val split = AllowedIpsHelper.patchAllowedIPs(baseConfig, listOf("1.2.3.4"))
+        val patched = AllowedIpsHelper.patchAllowedIPsEnsureApiSubnet(split)
+        assertTrue(patched.contains("10.66.66.0/24"))
+        val line = patched.lines().first { it.startsWith("AllowedIPs") }
+        assertTrue(line.contains("10.66.66.0/24"))
+    }
+
+    @Test
+    fun `patchAllowedIPsEnsureApiSubnet is idempotent`() {
+        val once = AllowedIpsHelper.patchAllowedIPsEnsureApiSubnet(baseConfig)
+        val twice = AllowedIpsHelper.patchAllowedIPsEnsureApiSubnet(once)
+        assertEquals(once, twice)
+    }
+
     private fun covers(cidrs: List<String>, ip: String): Boolean {
         val target = ipToLong(ip)
         return cidrs.any { cidr ->

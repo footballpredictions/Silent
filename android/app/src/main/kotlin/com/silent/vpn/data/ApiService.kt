@@ -187,6 +187,14 @@ data class UpdateCheckResponse(
     val download_url: String? = null,
 )
 
+data class SyncStateResponse(
+    val revision: Long = 0,
+    val hashes: Long = 0,
+    val theme: Long = 0,
+    val profile: Long = 0,
+    val changed: List<String> = emptyList(),
+)
+
 // ─── API Interface ────────────────────────────────────────────────────────────
 
 interface SilentApi {
@@ -264,6 +272,13 @@ interface SilentApi {
 
     @GET("api/vpn/hashes")
     suspend fun getVpnHashes(): Response<VpnHashesResponse>
+
+    @GET("api/vpn/sync-state")
+    suspend fun getSyncState(
+        @Query("hashes_since") hashesSince: Long = 0,
+        @Query("theme_since") themeSince: Long = 0,
+        @Query("profile_since") profileSince: Long = 0,
+    ): Response<SyncStateResponse>
 
     @POST("api/vpn/hashes/request-refresh")
     suspend fun requestHashRefresh(@Body req: ConnectRequest): Response<VpnHashesResponse>

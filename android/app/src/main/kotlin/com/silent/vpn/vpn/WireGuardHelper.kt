@@ -108,6 +108,8 @@ class WireGuardHelper(context: Context) {
 
         apiOverlayMode: Boolean = false,
 
+        mobileApiRoute: Boolean = false,
+
     ) = wgMutex.withLock {
 
         withContext(Dispatchers.IO) {
@@ -146,6 +148,15 @@ class WireGuardHelper(context: Context) {
                             DebugLog.i(TAG, "Bootstrap AllowedIPs: API + backend HTTPS")
                         }
                     }
+                } else if (excludeIPs.isNotEmpty()) {
+                    configToApply = AllowedIpsHelper.patchAllowedIPs(configString, excludeIPs).also {
+                        DebugLog.i(TAG, "Main AllowedIPs: 0.0.0.0/0 − ${excludeIPs.size} host(s)")
+                    }
+                }
+                if (!isBootstrap && mobileApiRoute) {
+                    configToApply = AllowedIpsHelper.patchAllowedIPsEnsureApiSubnet(configToApply).also {
+                        DebugLog.i(TAG, "Main mobile: +${AllowedIpsHelper.WG_TUNNEL_SUBNET} for API (no overlay)")
+                    }
                 }
             } else {
                 configToApply = AllowedIpsHelper.patchAllowedIPsToSubnet(configString)
@@ -157,6 +168,7 @@ class WireGuardHelper(context: Context) {
             val excludeKey = when {
                 isBootstrap && !apiOverlayMode -> "bootstrap-companion"
                 apiOverlayMode -> "overlay-app-in"
+                mobileApiRoute -> "mobile-api-${excludeIPs.sorted().joinToString(",")}"
                 else -> excludeIPs.sorted().joinToString(",")
             }
 

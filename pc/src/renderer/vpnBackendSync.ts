@@ -4,9 +4,11 @@ import api, { getPublicApiBaseUrl, getDeviceFingerprint } from './api'
 
 import { pushLog } from './debugLog'
 
-import { getCachedVpnConfig } from './vkConfig'
+import { cacheVpnConfig, getCachedVpnConfig } from './vkConfig'
 
-import { clearTunnelApiBase, setTunnelApiBase } from './tunnelApi'
+import { clearTunnelApiBase, enableTunnelApi, setMainVpnSessionActive } from './tunnelApi'
+
+import { saveSessionDeviceId } from './api'
 
 const CONNECT_BODY = (fp: string) => ({
   device_fingerprint: fp,
@@ -18,50 +20,106 @@ function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-/** Поставить «онлайн» на backend — сначала public API, затем tunnel (10.66.66.1). */
-export async function notifyConnect(): Promise<boolean> {
-  const fp = getDeviceFingerprint()
-  const body = CONNECT_BODY(fp)
-  const publicUrl = getPublicApiBaseUrl()
-
+/** Регистрация устройства при 404 на /connect (кеш без актуального fingerprint). */
+async function ensureDeviceRegistered(fp: string, viaTunnel: boolean): Promise<boolean> {
   try {
-    const res = await axios.post(`${publicUrl}/api/vpn/connect`, body, {
-      headers: authHeaders(),
-      timeout: 30_000,
+    if (viaTunnel) enableTunnelApi()
+    const res = await api.post('/api/vpn/device/register', {
+      device_name: 'PC',
+      device_type: 'pc',
+      device_fingerprint: fp,
     })
-    if (res.status >= 200 && res.status < 300) {
-      pushLog('Main', 'connect API OK (public)')
+    const config = res.data
+    if (config?.device_id) {
+      cacheVpnConfig(config)
+      saveSessionDeviceId(String(config.device_id))
+      pushLog('Main', `device/register retry OK device=${String(config.device_id).slice(0, 8)}`)
       return true
     }
-    pushLog('Main', `connect API public HTTP ${res.status}`, 'W')
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
-    pushLog('Main', `connect API public: ${msg}`, 'W')
+    pushLog('Main', `device/register retry: ${msg}`, 'W')
   }
+  return false
+}
 
-  const cfg = getCachedVpnConfig()
-  const addr = cfg?.wg_address ?? cfg?.assigned_ip
-  if (!addr?.trim()) return false
-
-  setTunnelApiBase(addr)
+async function postConnect(fp: string, viaTunnel: boolean): Promise<{ ok: boolean; status?: number }> {
+  const body = CONNECT_BODY(fp)
   try {
-    const res = await api.post('/api/vpn/connect', body)
+    const res = viaTunnel
+      ? await api.post('/api/vpn/connect', body)
+      : await axios.post(`${getPublicApiBaseUrl()}/api/vpn/connect`, body, {
+          headers: authHeaders(),
+          timeout: 30_000,
+        })
     if (res.status >= 200 && res.status < 300) {
-      pushLog('Main', 'connect API OK (tunnel)')
-      return true
+      return { ok: true }
     }
-    pushLog('Main', `connect API tunnel HTTP ${res.status}`, 'W')
-    return false
+    return { ok: false, status: res.status }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e)
-    pushLog('Main', `connect API tunnel: ${msg}`, 'W')
-    return false
-  } finally {
-    clearTunnelApiBase()
+    const ax = e as { response?: { status?: number }; message?: string }
+    const status = ax.response?.status
+    if (status === 404) {
+      const registered = await ensureDeviceRegistered(fp, viaTunnel)
+      if (registered) {
+        try {
+          const retry = viaTunnel
+            ? await api.post('/api/vpn/connect', body)
+            : await axios.post(`${getPublicApiBaseUrl()}/api/vpn/connect`, body, {
+                headers: authHeaders(),
+                timeout: 30_000,
+              })
+          if (retry.status >= 200 && retry.status < 300) return { ok: true }
+          return { ok: false, status: retry.status }
+        } catch (re: unknown) {
+          const rs = (re as { response?: { status?: number } }).response?.status
+          return { ok: false, status: rs }
+        }
+      }
+    }
+    const msg = ax.message || String(e)
+    pushLog('Main', viaTunnel ? `connect API tunnel: ${msg}` : `connect API public: ${msg}`, 'W')
+    return { ok: false, status }
   }
 }
 
-/** Снять «онлайн» на backend — всегда public HTTPS, tunnel только как fallback. */
+/**
+ * Поставить «онлайн» на backend.
+ * При включённом VPN — сначала tunnel (10.66.66.1), tunnel API не сбрасываем.
+ */
+export async function notifyConnect(vpnTunnelUp = false): Promise<boolean> {
+  const fp = getDeviceFingerprint()
+  if (vpnTunnelUp) {
+    enableTunnelApi()
+    const tunnel = await postConnect(fp, true)
+    if (tunnel.ok) {
+      pushLog('Main', 'connect API OK (tunnel)')
+      return true
+    }
+    pushLog('Main', `connect API tunnel HTTP ${tunnel.status ?? '?'}`, 'W')
+    return false
+  }
+
+  const pub = await postConnect(fp, false)
+  if (pub.ok) {
+    pushLog('Main', 'connect API OK (public)')
+    return true
+  }
+  pushLog('Main', `connect API public HTTP ${pub.status ?? '?'}`, 'W')
+
+  if (!vpnTunnelUp) {
+    enableTunnelApi()
+    const tunnel = await postConnect(fp, true)
+    if (tunnel.ok) {
+      pushLog('Main', 'connect API OK (tunnel fallback)')
+      return true
+    }
+    pushLog('Main', `connect API tunnel HTTP ${tunnel.status ?? '?'}`, 'W')
+  }
+  return false
+}
+
+/** Снять «онлайн» на backend — public HTTPS, tunnel как fallback. */
 export async function notifyDisconnect(fingerprint?: string): Promise<boolean> {
   const fp = fingerprint || getDeviceFingerprint()
   const publicUrl = getPublicApiBaseUrl()
@@ -86,7 +144,7 @@ export async function notifyDisconnect(fingerprint?: string): Promise<boolean> {
   const addr = cfg?.wg_address ?? cfg?.assigned_ip
   if (!addr?.trim()) return false
 
-  setTunnelApiBase(addr)
+  enableTunnelApi()
   try {
     const res = await api.post('/api/vpn/disconnect', { device_fingerprint: fp })
     if (res.status >= 200 && res.status < 300) {
@@ -100,6 +158,6 @@ export async function notifyDisconnect(fingerprint?: string): Promise<boolean> {
     pushLog('Main', `disconnect API tunnel: ${msg}`, 'W')
     return false
   } finally {
-    clearTunnelApiBase()
+    setMainVpnSessionActive(false)
   }
 }

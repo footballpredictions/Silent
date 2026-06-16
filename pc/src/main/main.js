@@ -68,7 +68,7 @@ function normalizeServerIp(raw) {
 const { createNetworkMonitor } = require('./vpn/networkRecovery')
 const { createSessionTrace } = require('./sessionTrace')
 const { parseLibclientLine } = require('./libclientLogParser')
-const { parseHashFailureFromLine } = require('./hashFailureFromLog')
+const { parseHashFailureFromLine, resetCaptchaHits } = require('./hashFailureFromLog')
 
 const ZERO_WORKERS_RELAUNCH_MS = 90_000
 let sessionVkHashes = []
@@ -233,6 +233,7 @@ function sendHashFailureReport(payload) {
 function resetHashFailureSessionState() {
   sessionVkHashes = []
   groupHashPrefix.clear()
+  resetCaptchaHits()
   zeroWorkersSinceMs = 0
   if (zeroWorkersWatchdogTimer) {
     clearInterval(zeroWorkersWatchdogTimer)
@@ -270,6 +271,14 @@ function startZeroWorkersWatchdog() {
     if (!zeroWorkersSinceMs) zeroWorkersSinceMs = now
     else if (now - zeroWorkersSinceMs >= ZERO_WORKERS_RELAUNCH_MS) {
       zeroWorkersSinceMs = 0
+      const hash = sessionVkHashes[0]
+      if (hash && hash.length >= 6) {
+        sendHashFailureReport({
+          hash,
+          errorType: 'no_connections',
+          message: '0 active workers for 90s',
+        })
+      }
       sendLog('[VPN] 0 активных воркеров 90с — перезапуск wdtt…')
       transportSwitching = true
       scheduleWdttRelaunch(800)

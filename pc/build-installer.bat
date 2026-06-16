@@ -4,6 +4,10 @@ cd /d "%~dp0"
 
 echo === Silent VPN PC: clean + wdtt + NSIS installer ===
 
+REM Уникальная папка сборки, чтобы electron-builder не пытался удалять заблокированный app.asar из прошлых прогонов.
+for /f %%R in ('powershell -NoProfile -Command "Get-Random -Minimum 1000 -Maximum 999999"') do set OUT_DIR=build-release-v141-%%R
+echo Output dir: !OUT_DIR!
+
 REM Завершить зависшие процессы прошлой сборки
 taskkill /F /IM makensis.exe 2>nul
 taskkill /F /IM electron-builder.exe 2>nul
@@ -60,14 +64,14 @@ for %%F in (dist\renderer\assets\*.css) do (
   echo OK: renderer CSS %%~nxF ^(%%~zF bytes^)
 )
 
-echo [3/3] NSIS installer -^> build-release-1136\
-call npx electron-builder --win nsis --publish never
+echo [3/3] NSIS installer -^> build-release-v141\
+call npx electron-builder --win nsis --publish never --config.directories.output=!OUT_DIR!
 if errorlevel 1 (
   echo electron-builder FAILED
   exit /b 1
 )
 
-for %%F in ("build-release-1136\Silent VPN Setup *.exe") do (
+for %%F in ("!OUT_DIR!\Silent VPN Setup *.exe") do (
   echo.
   echo OK: %%~fF
   if not exist "..\releases" mkdir "..\releases"

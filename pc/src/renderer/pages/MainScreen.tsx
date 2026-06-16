@@ -30,16 +30,23 @@ import { notifyDisconnect } from '../vpnBackendSync'
 import { pushLog, logI } from '../debugLog'
 import { clearVpnLogs } from '../vpnLogStore'
 import { SessionTrace } from '../sessionTrace'
-import { setTunnelApiBase, clearTunnelApiBase } from '../tunnelApi'
+import { setMainVpnSessionActive } from '../tunnelApi'
 import {
   getCachedProfile,
   saveCachedProfile,
   clearCachedProfile,
 } from '../profileStore'
-import { checkForUpdate, getAppVersion, type UpdateInfo } from '../updateCheck'
+import { checkForUpdate, getAppVersion, getUpdateDownloadBase, type UpdateInfo } from '../updateCheck'
 import { getApiBaseUrl } from '../tunnelApi'
 import { notifyConnect } from '../vpnBackendSync'
 import { flushPendingHashFailures, resetHashFailureReporter } from '../hashFailureReporter'
+import {
+  startConfigSync,
+  stopConfigSync,
+  resetConfigSyncOnLogout,
+  seedConfigSyncRevision,
+  tickConfigSyncNow,
+} from '../configSync'
 
 interface DeviceInfo {
   id: string
@@ -169,6 +176,7 @@ export default function MainScreen({
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(initialUpdateInfo)
   const [updateDownloading, setUpdateDownloading] = useState(false)
   const [updateProgress, setUpdateProgress] = useState(0)
+  const [hashSyncKey, setHashSyncKey] = useState(0)
 
   const fetchProfile = useCallback(async () => {
     try {
@@ -202,18 +210,27 @@ export default function MainScreen({
   }, [menuPage, fetchProfile])
 
   useEffect(() => {
+    setMainVpnSessionActive(connected)
+    startConfigSync({
+      onTheme: t => setClientTheme(t),
+      onProfile: p => setProfile(p as Profile),
+      onHashesUpdated: () => setHashSyncKey(k => k + 1),
+      isVpnConnected: () => connected,
+      isPollAllowed: () => true,
+    })
+    return () => stopConfigSync()
+  }, [connected])
+
+  useEffect(() => {
     api.get('/api/vpn/theme').then(r => setClientTheme(r.data)).catch(() => {})
-  }, [])
+  }, [connected])
 
   const applyTunnelApiFromCache = useCallback(() => {
-    const cfg = getCachedVpnConfig()
-    const addr = cfg?.wg_address ?? cfg?.assigned_ip
-    if (addr?.trim()) setTunnelApiBase(addr)
-    else clearTunnelApiBase()
+    setMainVpnSessionActive(true)
   }, [])
 
   useEffect(() => {
-    clearTunnelApiBase()
+    if (connected) return
     const cfg = getCachedVpnConfig()
     if (cfg?.wg_private_key?.trim() && cfg?.server_public_key?.trim()) return
     let fp: string | null = null
@@ -225,16 +242,29 @@ export default function MainScreen({
     void fetchVpnConfigWithKeys(fp).then(c => {
       if (c) cacheVpnConfig(c)
     })
-  }, [])
+  }, [connected])
 
   const markOnlineOnServer = useCallback(async () => {
     if (onlineMarkedRef.current) return
     onlineMarkedRef.current = true
     applyTunnelApiFromCache()
     try {
-      const ok = await notifyConnect()
+      const ok = await notifyConnect(true)
       if (!ok) onlineMarkedRef.current = false
       await fetchProfile()
+      await seedConfigSyncRevision()
+      void tickConfigSyncNow()
+      try {
+        const fp = getDeviceFingerprint()
+        const fresh = await fetchVpnConfigWithKeys(fp)
+        if (fresh) {
+          cacheVpnConfig(fresh)
+          if (fresh.device_id) saveSessionDeviceId(String(fresh.device_id))
+          pushLog('Main', `config refresh via tunnel hashes=${fresh.vk_hashes?.length ?? 0}`)
+        }
+      } catch {
+        /* кеш достаточен */
+      }
       setTimeout(() => { void syncHashesWhenTunnelUp() }, 60_000)
       void flushPendingHashFailures()
     } catch {
@@ -261,11 +291,14 @@ export default function MainScreen({
     let mounted = true
     const onStopped = () => {
       onlineMarkedRef.current = false
-      clearTunnelApiBase()
+      setMainVpnSessionActive(false)
       resetHashFailureReporter()
       setConnected(false)
       setConnecting(false)
       setActiveWorkers(0)
+      void checkForUpdate().then(info => {
+        if (info?.available) setUpdateInfo(info)
+      })
     }
     const onError = (msg: string) => {
       pushLog('VPN', msg, 'E')
@@ -292,12 +325,6 @@ export default function MainScreen({
     api_.onVpnLog?.(onLog)
     return () => { mounted = false }
   }, [markOnlineOnServer, applyTunnelApiFromCache])
-
-  useEffect(() => {
-    if (!connected) return
-    const id = window.setInterval(() => fetchProfile(), 10000)
-    return () => clearInterval(id)
-  }, [connected, fetchProfile])
 
   useEffect(() => {
     if (initialUpdateInfo?.available) setUpdateInfo(initialUpdateInfo)
@@ -330,7 +357,7 @@ export default function MainScreen({
     if (!api_?.downloadUpdate) return
     setUpdateDownloading(true)
     setUpdateProgress(0)
-    const base = getPublicApiBaseUrl()
+    const base = getUpdateDownloadBase()
     const dlPath = updateInfo.download_url.startsWith('http')
       ? updateInfo.download_url
       : `${base}${updateInfo.download_url.startsWith('/') ? updateInfo.download_url : `/${updateInfo.download_url}`}`
@@ -469,7 +496,7 @@ export default function MainScreen({
         }
         setConnected(true)
       } else {
-        clearTunnelApiBase()
+        setMainVpnSessionActive(false)
         await notifyDisconnect(fp)
         if ((window as any).electronAPI?.vpnDisconnect) {
           await (window as any).electronAPI.vpnDisconnect()
@@ -488,7 +515,7 @@ export default function MainScreen({
 
   const handleLogout = async () => {
     const fp = (() => { try { return DEVICE_FINGERPRINT() } catch { return null } })()
-    clearTunnelApiBase()
+    setMainVpnSessionActive(false)
     if (fp) await notifyDisconnect(fp)
     if (connected || connecting) {
       await (window as any).electronAPI?.vpnDisconnect?.()
@@ -501,6 +528,7 @@ export default function MainScreen({
     clearSessionDeviceId()
     clearSessionFingerprint()
     clearTokens()
+    resetConfigSyncOnLogout()
     onLogout()
   }
 
@@ -811,8 +839,9 @@ export default function MainScreen({
           )}
 
           {menuPage === 'hashes' && (
-            <AppErrorBoundary key="hashes" onReset={() => setMenuPage(null)}>
+            <AppErrorBoundary key={`hashes-${hashSyncKey}`} onReset={() => setMenuPage(null)}>
               <MenuHashesPanel
+                key={hashSyncKey}
                 fg={fg}
                 muted={muted}
                 vpnConnected={connected}

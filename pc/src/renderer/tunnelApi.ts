@@ -9,30 +9,51 @@ function getPublicServerUrl(): string {
 /** WG gateway на сервере — API в белых списках (как Android WG_TUNNEL_GATEWAY). */
 export const WG_TUNNEL_GATEWAY = '10.66.66.1'
 
-let tunnelApiBase: string | null = null
+const TUNNEL_API_URL = `http://${WG_TUNNEL_GATEWAY}:8000`
 
-/** Включить tunnel API только когда WG реально поднят (bootstrap или основной VPN). */
+let tunnelApiBase: string | null = null
+/** Основной VPN включён — все api.* идут на 10.66.66.1, не на nip.io. */
+let mainVpnSessionActive = false
+
 export function enableTunnelApi() {
-  tunnelApiBase = `http://${WG_TUNNEL_GATEWAY}:8000`
+  tunnelApiBase = TUNNEL_API_URL
 }
 
-/** Переключить на tunnel только если в конфиге есть WG-адрес (иначе — public HTTPS). */
 export function setTunnelApiBase(wgAddress?: string | null) {
-  if (!wgAddress?.trim()) {
-    clearTunnelApiBase()
+  if (wgAddress?.trim() || mainVpnSessionActive) {
+    enableTunnelApi()
     return
   }
-  enableTunnelApi()
+  clearTunnelApiBase()
+}
+
+export function setMainVpnSessionActive(active: boolean) {
+  mainVpnSessionActive = active
+  if (active) {
+    enableTunnelApi()
+  } else if (!tunnelApiBase) {
+    clearTunnelApiBase()
+  } else if (tunnelApiBase === TUNNEL_API_URL) {
+    clearTunnelApiBase()
+  }
+}
+
+export function isMainVpnSessionActive(): boolean {
+  return mainVpnSessionActive
 }
 
 export function clearTunnelApiBase() {
+  if (mainVpnSessionActive) return
   tunnelApiBase = null
 }
 
 export function getApiBaseUrl(): string {
-  return tunnelApiBase || getPublicServerUrl()
+  if (mainVpnSessionActive || tunnelApiBase) {
+    return tunnelApiBase || TUNNEL_API_URL
+  }
+  return getPublicServerUrl()
 }
 
 export function isTunnelApiActive(): boolean {
-  return !!tunnelApiBase
+  return mainVpnSessionActive || !!tunnelApiBase
 }

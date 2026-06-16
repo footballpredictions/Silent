@@ -1,4 +1,4 @@
-"""Deploy PC update exe to VPS (host + container, versioned filename)."""
+"""Deploy PC release installer to VPS (host + container, versioned filename)."""
 import io
 import os
 import sys
@@ -13,22 +13,24 @@ PASS = "3txvDbnJvVaZg"
 
 
 def versioned_filename(version: str, original: str) -> str:
-    import re
+    """Имя на сервере. PC installer от electron-builder уже содержит версию в имени."""
     base, ext = os.path.splitext(original)
     if not ext:
         ext = ".exe"
     safe = version.strip()
-    if safe:
-        base = re.sub(rf"[\s-]?{re.escape(safe)}$", "", base).strip()
-        return f"{base}-{safe}{ext}"
-    return original
+    if not safe:
+        return original
+    # electron-builder: "Silent VPN Setup 1.0.140.exe" — не дублируем суффикс.
+    if base.endswith(safe) or base.endswith(f" {safe}"):
+        return original
+    return f"{base}-{safe}{ext}"
 
 
 def main():
     local_file = sys.argv[1]
     version = sys.argv[2] if len(sys.argv) > 2 else None
     if not version:
-        print("Usage: deploy_pc_update.py <setup.exe> <version e.g. 1.0.121>")
+        print("Usage: deploy_pc_update.py <exe> <version e.g. 1.0.140>")
         sys.exit(1)
 
     platform = "pc"
@@ -73,12 +75,21 @@ print("host manifest ok", version, filename)
     print(out.read().decode("utf-8", errors="replace").strip())
 
     manifest_py = f"""
-import json, os
+import json, os, glob
 from datetime import datetime, timezone
 platform = {platform!r}
 filename = {filename!r}
 version = {version!r}
 dest_dir = {container_dir!r}
+os.makedirs(dest_dir, exist_ok=True)
+for old in glob.glob(os.path.join(dest_dir, "*")):
+    base = os.path.basename(old)
+    if base in ("manifest.json", filename):
+        continue
+    try:
+        os.remove(old)
+    except OSError:
+        pass
 path = os.path.join(dest_dir, filename)
 size = os.path.getsize(path) if os.path.isfile(path) else 0
 manifest = {{
@@ -93,22 +104,26 @@ print("manifest ok", version, filename, size)
 """
     sftp.putfo(io.BytesIO(manifest_py.encode()), "/tmp/write_manifest_pc.py")
 
-    check_ver = version
-    script = f"""#!/bin/bash
+    deploy_sh = f"""#!/bin/bash
 set -e
 docker exec backend-api-1 mkdir -p {container_dir}
 docker exec backend-api-1 sh -c 'find {container_dir} -maxdepth 1 -type f -delete 2>/dev/null || true'
 docker cp "{remote_file}" "backend-api-1:{container_dest}"
 docker cp /tmp/write_manifest_pc.py backend-api-1:/tmp/write_manifest_pc.py
 docker exec backend-api-1 python /tmp/write_manifest_pc.py
-curl -s "http://localhost:8000/api/updates/check?platform=pc&version={check_ver}"
+curl -s "http://localhost:8000/api/updates/check?platform=pc&version=1.0.139"
 echo
-curl -sI "http://localhost:8000/update/pc/{filename}" | head -3
+curl -sI "http://127.0.0.1:8000/update/pc/{filename}" | head -5
+echo
 """
-    sftp.putfo(io.BytesIO(script.encode()), "/tmp/deploy_pc_update.sh")
+    sftp.putfo(io.BytesIO(deploy_sh.encode()), "/tmp/deploy_pc_update.sh")
     sftp.close()
-    _, out, _ = client.exec_command("bash /tmp/deploy_pc_update.sh 2>&1", timeout=300)
+
+    _, out, err = client.exec_command("bash /tmp/deploy_pc_update.sh 2>&1", timeout=600)
     print(out.read().decode("utf-8", errors="replace"))
+    e = err.read().decode("utf-8", errors="replace")
+    if e.strip():
+        print("ERR:", e)
     client.close()
     print("Done.")
 

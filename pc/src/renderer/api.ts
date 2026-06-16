@@ -41,7 +41,8 @@ api.interceptors.response.use(
       const refresh = localStorage.getItem(REFRESH_KEY)
       if (refresh) {
         try {
-          const res = await axios.post(`${getPublicApiBaseUrl()}/api/auth/refresh`, { refresh_token: refresh })
+          const refreshBase = isTunnelApiActive() ? getApiBaseUrl() : getPublicApiBaseUrl()
+          const res = await axios.post(`${refreshBase}/api/auth/refresh`, { refresh_token: refresh })
           localStorage.setItem(TOKEN_KEY, res.data.access_token)
           localStorage.setItem(REFRESH_KEY, res.data.refresh_token)
           err.config.headers['Authorization'] = `Bearer ${res.data.access_token}`

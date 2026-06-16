@@ -2,7 +2,7 @@ import axios from 'axios'
 
 import api, { getPublicApiBaseUrl } from './api'
 import { pushLog } from './debugLog'
-import { isTunnelApiActive } from './tunnelApi'
+import { isMainVpnSessionActive, isTunnelApiActive, WG_TUNNEL_GATEWAY } from './tunnelApi'
 
 export interface UpdateInfo {
   available: boolean
@@ -77,10 +77,17 @@ async function checkViaRendererPublic(): Promise<UpdateInfo | null> {
   }
 }
 
-/** OTA: main process HTTPS → tunnel (если VPN) → renderer public. */
+/** OTA: при VPN — сначала tunnel (10.66.66.1), иначе public HTTPS. */
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
+  const vpnOn = isMainVpnSessionActive() || isTunnelApiActive()
+
+  if (vpnOn) {
+    const viaTunnel = await checkViaTunnel()
+    if (viaTunnel) return viaTunnel
+  }
+
   const electron = (window as typeof window & { electronAPI?: { checkForUpdate?: (v: string) => Promise<UpdateInfo | null> } }).electronAPI
-  if (electron?.checkForUpdate) {
+  if (!vpnOn && electron?.checkForUpdate) {
     try {
       const data = await electron.checkForUpdate(APP_VERSION)
       const parsed = parseUpdateResponse(data)
@@ -90,9 +97,21 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       pushLog('Update', `main check fail: ${msg}`, 'W')
     }
   }
-  const viaTunnel = await checkViaTunnel()
-  if (viaTunnel) return viaTunnel
-  return checkViaRendererPublic()
+
+  if (!vpnOn) {
+    return checkViaRendererPublic()
+  }
+
+  pushLog('Update', 'VPN active — tunnel check failed, retry later', 'W')
+  return null
+}
+
+/** База для скачивания OTA: tunnel при VPN, иначе public. */
+export function getUpdateDownloadBase(): string {
+  if (isMainVpnSessionActive() || isTunnelApiActive()) {
+    return `http://${WG_TUNNEL_GATEWAY}:8000`
+  }
+  return getPublicApiBaseUrl()
 }
 
 export { APP_VERSION }

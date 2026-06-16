@@ -1,9 +1,33 @@
 /** Классификация ошибок libclient — что слать на backend как «хеш сломан». */
 
+const CAPTCHA_REPORT_THRESHOLD = 3
+const CAPTCHA_WINDOW_MS = 10 * 60 * 1000
+const captchaHits = new Map()
+
+function isCaptchaRelated(message) {
+  const m = String(message || '').toLowerCase()
+  return m.includes('captcha') || m.includes('капч')
+}
+
+function isPersistentCaptcha(hash) {
+  const key = String(hash || '').slice(0, 32)
+  if (key.length < 6) return false
+  const now = Date.now()
+  const hits = captchaHits.get(key) || []
+  hits.push(now)
+  const fresh = hits.filter((t) => now - t <= CAPTCHA_WINDOW_MS)
+  captchaHits.set(key, fresh)
+  return fresh.length >= CAPTCHA_REPORT_THRESHOLD
+}
+
+function resetCaptchaHits() {
+  captchaHits.clear()
+}
+
 function isTransientHashError(message) {
   const m = String(message || '').toLowerCase()
   if (!m) return true
-  if (m.includes('captcha_wait') || m.includes('captcha')) return true
+  if (isCaptchaRelated(m)) return true
   if (m.includes('i/o timeout') || m.includes('context deadline exceeded')) return true
   if (m.includes('connection refused') || m.includes('connection reset')) return true
   if (m.includes('rate limit') || m.includes('flood control') || m.includes('error 29')) return true
@@ -27,6 +51,22 @@ function resolveHashForGroup(groupId, groupHashPrefix, sessionVkHashes) {
   return sessionVkHashes[idx]
 }
 
+function finalizeFailure(hash, errorType, message) {
+  const h = String(hash || '').trim()
+  if (h.length < 6) return null
+  let type = String(errorType || 'unknown').trim()
+  const msg = String(message || '').slice(0, 500)
+
+  if (isCaptchaRelated(msg) || type.toLowerCase().includes('captcha')) {
+    if (!isPersistentCaptcha(h)) return null
+    type = 'captcha_persistent'
+  } else if (isTransientHashError(msg) && type !== 'hash_dead' && type !== 'no_connections') {
+    return null
+  }
+
+  return { hash: h, errorType: type, message: msg }
+}
+
 /**
  * @returns {{ hash: string, errorType: string, message: string } | null}
  */
@@ -38,10 +78,9 @@ function parseHashFailureFromLine(line, ctx) {
   if (groupCred && ctx.tunnelReady) {
     const gid = parseInt(groupCred[1], 10)
     const msg = groupCred[2].trim()
-    if (isTransientHashError(msg)) return null
     const hash = resolveHashForGroup(gid, ctx.groupHashPrefix, ctx.sessionVkHashes)
     if (!hash) return null
-    return { hash, errorType: 'creds_failed', message: msg.slice(0, 500) }
+    return finalizeFailure(hash, 'creds_failed', msg)
   }
 
   const groupHash = lineTrim.match(/\[ГРУППА #(\d+)\] Запрос кредов \(хеш: (\S+)/)
@@ -56,11 +95,9 @@ function parseHashFailureFromLine(line, ctx) {
     if (stream) {
       const gid = Math.floor(parseInt(stream[1], 10) / 100)
       if (gid > 0) {
-        const msg = lineTrim
-        if (isTransientHashError(msg)) return null
         const hash = resolveHashForGroup(gid, ctx.groupHashPrefix, ctx.sessionVkHashes)
         if (!hash) return null
-        return { hash, errorType: 'vk_auth_failed', message: msg.slice(0, 500) }
+        return finalizeFailure(hash, 'vk_auth_failed', lineTrim)
       }
     }
   }
@@ -72,8 +109,7 @@ function parseHashFailureFromLine(line, ctx) {
     const hashFromLine = lineTrim.match(/хеш[:]\s*(\S+)/i)?.[1]
       || lineTrim.match(/hash[:]\s*(\S+)/i)?.[1]
     const hash = hashFromLine || ctx.sessionVkHashes[0]
-    if (!hash || hash.length < 6) return null
-    return { hash, errorType: 'hash_dead', message: lineTrim.slice(0, 500) }
+    return finalizeFailure(hash, 'hash_dead', lineTrim)
   }
 
   if (
@@ -86,10 +122,16 @@ function parseHashFailureFromLine(line, ctx) {
     if (lineTrim.includes('FATAL_AUTH')) return null
     const hash = resolveHashForGroup(gid, ctx.groupHashPrefix, ctx.sessionVkHashes)
     if (!hash) return null
-    return { hash, errorType: 'hash_dead', message: lineTrim.slice(0, 500) }
+    return finalizeFailure(hash, 'hash_dead', lineTrim)
   }
 
   return null
 }
 
-module.exports = { parseHashFailureFromLine, isTransientHashError, resolveHashForGroup }
+module.exports = {
+  parseHashFailureFromLine,
+  isTransientHashError,
+  resolveHashForGroup,
+  resetCaptchaHits,
+  finalizeFailure,
+}

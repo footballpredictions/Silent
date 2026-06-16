@@ -1,4 +1,5 @@
 """Subscription, trial and admin access helpers."""
+import logging
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException, status
@@ -7,6 +8,8 @@ from sqlalchemy import select
 
 from app.models import User, Subscription
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 TRIAL_PLAN = "trial"
 TEST_PLAN = "test"
@@ -167,9 +170,24 @@ async def apply_post_verification_benefits(db: AsyncSession, user: User) -> Subs
 
     from app.services.test_mode_settings import is_registration_test_mode_enabled
 
+    sub: Subscription | None
     if await is_registration_test_mode_enabled(db):
-        return await enroll_user_in_test_mode(db, user)
-    return await ensure_trial_subscription(db, user)
+        sub = await enroll_user_in_test_mode(db, user)
+    else:
+        sub = await ensure_trial_subscription(db, user)
+
+    try:
+        from app.services.vk_agent_auth import is_agent_enabled
+        from app.services.user_hash_service import ensure_user_server_hashes
+
+        if await is_agent_enabled(db):
+            created = await ensure_user_server_hashes(db, user.id)
+            if created:
+                logger.info("post_verify: created %s VK hash slot(s) for user %s", created, user.id)
+    except Exception as e:
+        logger.warning("post_verify ensure_user_server_hashes failed: %s", e)
+
+    return sub
 
 
 async def user_has_active_subscription(user: User, db: AsyncSession) -> bool:

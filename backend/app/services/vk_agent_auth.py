@@ -1,6 +1,7 @@
 """VK agent auth — Android client OAuth (same as proxy-turn-vk-android)."""
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -19,16 +20,16 @@ VK_USER_AGENT = (
     "VKAndroidApp/8.10-17765 (Android 14; SDK 34; arm64-v8a; Google Pixel 8; ru; 2560x1080)"
 )
 
-# Official / widely used Android client IDs with secrets (for password grant)
+# Kate Mobile / Android standalone — рабочий client для password/code grant (6287487 secret отозван VK)
 VK_ANDROID_CLIENTS = [
-    {"id": 6287487, "secret": "VeWdmVclDCtn6ihuP1nt"},
     {"id": 2274003, "secret": "hHbZxrka2uZ6jB1inYsH"},
     {"id": 2685278, "secret": "lxhD8OD7dMsqtXIm5IUY"},
+    {"id": 6287487, "secret": "VeWdmVclDCtn6ihuP1nt"},
     {"id": 8202606, "secret": ""},
 ]
 
-VK_ANDROID_CLIENT_ID = 6287487
-VK_ANDROID_CLIENT_SECRET = "VeWdmVclDCtn6ihuP1nt"
+VK_ANDROID_CLIENT_ID = 2274003
+VK_ANDROID_CLIENT_SECRET = "hHbZxrka2uZ6jB1inYsH"
 # Единственный redirect для официального Android client_id (нельзя добавить свой домен)
 VK_ANDROID_REDIRECT_URI = "https://oauth.vk.com/blank.html"
 
@@ -64,92 +65,229 @@ def parse_vk_oauth_paste(text: str) -> tuple[str | None, str | None, str | None,
         if code:
             return code, None, state, None
 
-    if fragment and "access_token=" in fragment:
+    if fragment:
         params = dict(parse_qsl(fragment.lstrip("#?"), keep_blank_values=True))
+        code = params.get("code")
+        if code:
+            return code, None, params.get("state"), None
         token = params.get("access_token")
-        state = params.get("state")
-        exp = params.get("expires_in")
-        return None, token, state, int(exp) if exp and str(exp).isdigit() else None
+        if token:
+            exp = params.get("expires_in")
+            return None, token, params.get("state"), int(exp) if exp and str(exp).isdigit() else None
 
-    if raw.startswith("vk1."):
+    if raw.startswith("vk1.") or raw.startswith("vk2."):
         return None, raw, None, None
 
     return None, None, None, None
 
 
-def build_agent_auth_url(state: str, _base_url: str = "") -> str:
-    """Android OAuth code flow — token выдаётся серверу (IP VPS)."""
+def parse_device_id_from_paste(text: str) -> str | None:
+    from urllib.parse import parse_qsl, urlparse
+
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    parts: list[str] = []
+    if raw.startswith("http"):
+        parsed = urlparse(raw)
+        if parsed.query:
+            parts.append(parsed.query)
+        if parsed.fragment:
+            parts.append(parsed.fragment.lstrip("#?"))
+    else:
+        if "#" in raw:
+            parts.append(raw.split("#", 1)[-1])
+        parts.append(raw.lstrip("?"))
+    for part in parts:
+        params = dict(parse_qsl(part, keep_blank_values=True))
+        did = (params.get("device_id") or "").strip()
+        if did:
+            return did
+    return None
+
+
+def redirect_uri_from_oauth_paste(paste: str) -> str:
+    """redirect_uri для обмена code — должен совпадать с blank.html из URL пользователя."""
+    s = (paste or "").lower()
+    if "oauth.vk.ru" in s:
+        return "https://oauth.vk.ru/blank.html"
+    return VK_ANDROID_REDIRECT_URI
+
+
+def build_kate_oauth_url(state: str) -> str:
+    """Kate Mobile code flow — blank.html, токен vk1.a с calls.start (без пароля)."""
     from urllib.parse import urlencode
-    redirect_uri = VK_ANDROID_REDIRECT_URI
+
     params = {
         "client_id": str(VK_ANDROID_CLIENT_ID),
-        "redirect_uri": redirect_uri,
+        "redirect_uri": VK_ANDROID_REDIRECT_URI,
         "response_type": "code",
         "scope": "offline",
         "state": state,
-        "display": "page",
-        "v": VK_API_VERSION,
+        "display": "mobile",
+        "revoke": "1",
     }
-    return f"https://oauth.vk.com/authorize?{urlencode(params)}"
+    return f"https://oauth.vk.ru/authorize?{urlencode(params)}"
+
+
+def build_agent_auth_url(state: str, code_challenge: str = "", _base_url: str = "") -> str:
+    """
+    Приоритет: VK Звонки (silent_token, app 7793118) → Kate OAuth → VK ID (не для агента).
+    """
+    from app.config import settings
+    from app.services.vk_calls_auth import build_calls_auth_url
+
+    if (settings.VK_CALLS_CLIENT_SECRET or "").strip():
+        url, _ = build_calls_auth_url(state)
+        return url
+
+    if settings.VK_ID_APP_ID and code_challenge:
+        from urllib.parse import urlencode
+
+        params = {
+            "response_type": "code",
+            "client_id": str(settings.VK_ID_APP_ID),
+            "redirect_uri": settings.VK_ID_REDIRECT_URI,
+            "state": state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "scope": "vkid.personal_info offline",
+        }
+        return f"https://id.vk.ru/authorize?{urlencode(params)}"
+
+    return build_kate_oauth_url(state)
+
+
+async def _read_vk_oauth_json(resp: aiohttp.ClientResponse) -> dict:
+    text = await resp.text()
+    if not text.strip():
+        return {
+            "error": "empty_response",
+            "error_description": (
+                f"Пустой ответ VK (HTTP {resp.status}). "
+                "Подождите 2–3 минуты и получите новый code через OAuth."
+            ),
+        }
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {
+            "error": "invalid_response",
+            "error_description": f"VK вернул не JSON (HTTP {resp.status}): {text[:120]}",
+        }
 
 
 async def exchange_android_code(code: str, redirect_uri: str) -> tuple[dict | None, str | None]:
-    """Один обмен code→token. Повторы только при обрыве сети (не при ошибке VK)."""
-    last_err: str | None = None
-    for attempt in range(2):
-        try:
-            async with aiohttp.ClientSession(
-                headers={"User-Agent": VK_USER_AGENT},
-                timeout=aiohttp.ClientTimeout(total=45),
-            ) as session:
-                async with session.post(
-                    "https://oauth.vk.com/token",
-                    data={
-                        "grant_type": "authorization_code",
-                        "client_id": str(VK_ANDROID_CLIENT_ID),
-                        "client_secret": VK_ANDROID_CLIENT_SECRET,
-                        "redirect_uri": redirect_uri,
-                        "code": code,
-                    },
-                ) as resp:
-                    data = await resp.json(content_type=None)
+    """Обмен code→token через oauth.vk.com. Один redirect, один запрос."""
+    payload = {
+        "grant_type": "authorization_code",
+        "client_id": str(VK_ANDROID_CLIENT_ID),
+        "client_secret": VK_ANDROID_CLIENT_SECRET,
+        "redirect_uri": redirect_uri,
+        "code": code,
+    }
+    try:
+        async with aiohttp.ClientSession(
+            headers={"User-Agent": VK_USER_AGENT},
+            timeout=aiohttp.ClientTimeout(total=45),
+        ) as session:
+            async with session.post("https://oauth.vk.com/token", data=payload) as resp:
+                data = await _read_vk_oauth_json(resp)
             if "access_token" in data:
                 return data, None
-            last_err = data.get("error_description") or data.get("error") or str(data)
-            logger.warning("Android code exchange failed: %s", data)
-            # Ошибка VK (неверный/использованный code, flood) — не ретраим
-            return None, last_err
-        except Exception as e:
-            last_err = str(e)
-            logger.warning("Android code exchange network attempt %s: %s", attempt + 1, e)
-    return None, last_err or "Server disconnected"
+            err = data.get("error_description") or data.get("error") or str(data)
+            logger.warning("Code exchange redirect=%s: %s", redirect_uri, data)
+            return None, err
+    except Exception as e:
+        logger.warning("Android code exchange failed: %s", e)
+        return None, str(e)
 
 
-async def paste_to_server_token(paste: str) -> tuple[str | None, int | None, str]:
+async def exchange_vkid_agent_code(
+    db: AsyncSession,
+    code: str,
+    state: str,
+    device_id: str | None = None,
+) -> tuple[dict | None, str | None]:
+    """Обмен code→token через VK ID (PKCE + device_id из сессии админки)."""
+    from app.models import VkLinkSession
+    from app.services.vk_id_service import exchange_code
+
+    result = await db.execute(
+        select(VkLinkSession).where(
+            VkLinkSession.state == state,
+            VkLinkSession.purpose == "agent",
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        return None, "Сессия OAuth не найдена — обновите страницу /vk и откройте ссылку заново"
+    if session.expires_at < datetime.utcnow():
+        return None, "Сессия OAuth истекла — обновите страницу /vk"
+
+    token_data = await exchange_code(
+        code,
+        session.code_verifier,
+        (device_id or "web").strip() or "web",
+        state,
+    )
+    if not token_data or not token_data.get("access_token"):
+        return None, "VK ID не выдал access_token — проверьте redirect URI в кабинете VK ID"
+    return token_data, None
+
+
+async def paste_to_server_token(
+    paste: str,
+    db: AsyncSession | None = None,
+) -> tuple[str | None, int | None, str]:
     """
-    code из URL → обмен на сервере (IP VPS).
-    access_token из браузера → отклонить (другой IP).
+    silent_token (VK Звонки) → code (Kate/Android) → VK ID (PKCE).
+    Обмен на сервере (IP VPS).
     """
-    code, token, _, exp = parse_vk_oauth_paste(paste)
+    from app.services.vk_calls_auth import parse_silent_token_from_paste, exchange_silent_token
+
+    silent, silent_uuid = parse_silent_token_from_paste(paste)
+    if silent:
+        access, uid, err = await exchange_silent_token(silent, silent_uuid or "")
+        if access:
+            return access, None, ""
+        return None, None, err or "Не удалось обменять silent_token"
+
+    code, token, state, _ = parse_vk_oauth_paste(paste)
+    device_id = parse_device_id_from_paste(paste)
+
+    if code and db and state:
+        token_data, err = await exchange_vkid_agent_code(db, code, state, device_id)
+        if token_data:
+            exp = token_data.get("expires_in")
+            return token_data["access_token"], int(exp) if exp else None, ""
+        if err and "не найдена" not in err.lower() and "истекла" not in err.lower():
+            return None, None, err
+
     if code:
-        data, err = await exchange_android_code(code, VK_ANDROID_REDIRECT_URI)
+        redirect_uri = redirect_uri_from_oauth_paste(paste)
+        data, err = await exchange_android_code(code, redirect_uri)
         if not data:
             msg = err or "Не удалось обменять code на token"
             if err and "too many" in err.lower():
                 msg = (
-                    "VK временно заблокировал запросы (лимит 15 сек). "
-                    "Подождите 1–2 минуты, нажмите «Войти через VK» заново и вставьте свежий URL с code= "
-                    "(старый code одноразовый)."
+                    "VK: слишком много запросов. Подождите 5 минут, "
+                    "откройте OAuth заново (code одноразовый)."
                 )
+            elif err and ("invalid_grant" in err.lower() or "invalid" in err.lower() or "expired" in err.lower()):
+                msg = f"{err}. Нажмите «Открыть VK OAuth» ещё раз (не Kate/direct auth)."
+            elif err and "direct auth" in err.lower():
+                msg = "Этот OAuth недоступен в браузере. Используйте кнопку «Открыть VK OAuth» на странице /vk."
             return None, None, msg
         return data["access_token"], data.get("expires_in"), ""
     if token:
         return None, None, (
-            "Токен vk1.a с вашего компьютера не подходит — VK привязывает его к вашему IP. "
-            "Вставьте URL с code= (blank.html?code=...), сервер получит token сам."
+            "Токен vk1.a/vk2.a с вашего компьютера не подходит — VK привязывает его к вашему IP. "
+            "Вставьте URL blank.html с code= (#code= или ?code=), сервер получит token сам."
         )
     return None, None, (
-        "Не найден code= в URL. После входа скопируйте адрес blank.html?code=..."
+        "Не найден code в URL. Скопируйте весь адрес blank.html — "
+        "подходит и ?code=..., и #code=..."
     )
 
 
@@ -185,6 +323,12 @@ async def complete_agent_auth(
     calls_ok, calls_msg = await test_calls_permission(access_token)
     if not calls_ok:
         await set_calls_verified(db, False)
+        low = (calls_msg or "").lower()
+        if access_token.startswith("vk2.") or "profile type" in low or "unavailable with current profile" in low:
+            return False, (
+                "Токен VK ID не создаёт звонки (calls.start). "
+                "Для агента нужен вход по логину и паролю VK в админке → раздел /vk."
+            ), uid
         return False, f"Звонки недоступны: {calls_msg}", uid
 
     session.vk_user_id = uid
@@ -231,6 +375,8 @@ async def validate_token(token: str) -> tuple[bool, str, int | None]:
 
 async def test_calls_permission(token: str) -> tuple[bool, str]:
     """Check calls.start (Android token only)."""
+    if (token or "").startswith("vk2."):
+        return False, "VK ID token (vk2.a) не поддерживает calls.start"
     try:
         data = await vk_api_call("calls.start", token)
         if "error" in data:
@@ -245,38 +391,38 @@ async def test_calls_permission(token: str) -> tuple[bool, str]:
 
 
 async def password_login(login: str, password: str) -> tuple[str | None, str]:
-    """Password grant via Android client_id + secret (с IP сервера)."""
-    last_err = "Не удалось авторизоваться"
-    for client in VK_ANDROID_CLIENTS:
-        if not client.get("secret"):
-            continue
-        for attempt in range(2):
-            try:
-                async with aiohttp.ClientSession(
-                    headers={"User-Agent": VK_USER_AGENT},
-                    timeout=aiohttp.ClientTimeout(total=45),
-                ) as session:
-                    payload = {
-                        "grant_type": "password",
-                        "client_id": str(client["id"]),
-                        "client_secret": client["secret"],
-                        "username": login,
-                        "password": password,
-                        "scope": "offline",
-                        "v": VK_API_VERSION,
-                    }
-                    async with session.post("https://oauth.vk.com/token", data=payload) as resp:
-                        data = await resp.json(content_type=None)
-                if "access_token" in data:
-                    logger.info("VK password auth OK with client_id=%s", client["id"])
-                    return data["access_token"], f"Авторизация через client_id {client['id']}"
-                last_err = data.get("error_description") or data.get("error", last_err)
-                logger.warning("VK auth client_id=%s: %s", client["id"], last_err)
-                break
-            except Exception as e:
-                last_err = str(e) or "Server disconnected"
-                logger.warning("VK auth client_id=%s attempt %s: %s", client["id"], attempt + 1, e)
-    return None, last_err
+    """Password grant via Android client_id + secret (с IP сервера). Один запрос — без flood VK."""
+    payload = {
+        "grant_type": "password",
+        "client_id": str(VK_ANDROID_CLIENT_ID),
+        "client_secret": VK_ANDROID_CLIENT_SECRET,
+        "username": login.strip(),
+        "password": password,
+        "scope": "offline",
+        "2fa_supported": "1",
+        "v": VK_API_VERSION,
+    }
+    try:
+        async with aiohttp.ClientSession(
+            headers={"User-Agent": VK_USER_AGENT},
+            timeout=aiohttp.ClientTimeout(total=45),
+        ) as session:
+            async with session.post("https://oauth.vk.com/token", data=payload) as resp:
+                data = await _read_vk_oauth_json(resp)
+        if "access_token" in data:
+            return data["access_token"], "Авторизация OK"
+        err = data.get("error_description") or data.get("error") or "Не удалось авторизоваться"
+        low = err.lower()
+        if "too many" in low or "flood" in low or "pogingen" in low or "paar uur" in low:
+            return None, (
+                "VK заблокировал вход по паролю на несколько часов (слишком много попыток). "
+                "Подождите 3–6 часов и нажмите «Войти» ещё раз — только один раз."
+            )
+        if "need_validation" in low or "validation" in low:
+            return None, "VK запросил SMS-код (2FA). Пока не поддерживается — отключите 2FA или используйте другой аккаунт."
+        return None, err
+    except Exception as e:
+        return None, str(e) or "Server disconnected"
 
 
 async def load_stored_token(db: AsyncSession) -> str | None:
@@ -312,6 +458,25 @@ async def save_stored_token(db: AsyncSession, token: str, expires_in: int | None
             access_token=enc,
             token_expires=expires,
             is_configured=True,
+        ))
+    await db.commit()
+
+
+async def save_agent_credentials(db: AsyncSession, login: str, password: str) -> None:
+    """Сохранить логин/пароль для повторного password grant (когда VK снимет flood)."""
+    result = await db.execute(select(VkCredentials).where(VkCredentials.id == 1))
+    creds = result.scalar_one_or_none()
+    enc_login = encrypt_value(login.strip())
+    enc_pass = encrypt_value(password)
+    if creds:
+        creds.login_enc = enc_login
+        creds.password_enc = enc_pass
+    else:
+        db.add(VkCredentials(
+            id=1,
+            login_enc=enc_login,
+            password_enc=enc_pass,
+            is_configured=False,
         ))
     await db.commit()
 

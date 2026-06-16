@@ -257,9 +257,35 @@ async def vk_oauth_callback(
         return _error_page("VK не вернул ID пользователя.")
 
     if getattr(session, "purpose", None) == "agent":
-        return _error_page(
-            "Для AI-агента используйте «Войти через VK» в панели админа "
-            "(Android OAuth, не VK ID)."
+        from app.services.vk_agent_auth import complete_agent_auth
+
+        access_token = token_data.get("access_token", "")
+        expires_in = token_data.get("expires_in")
+        ok, message, uid = await complete_agent_auth(db, state, access_token, expires_in)
+        if not ok:
+            hint = ""
+            if "логин" in (message or "").lower() or "profile type" in (message or "").lower():
+                hint = (
+                    "<p style='margin-top:16px;color:#888'>Откройте админку → VK / Тоннели → "
+                    "«Войти по логину и паролю». OAuth VK ID для агента не подходит.</p>"
+                )
+            return HTMLResponse(
+                f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Silent — VK Agent</title>
+<style>body{{font-family:sans-serif;text-align:center;padding:48px 24px;background:#000;color:#fff}}
+h2{{font-weight:400;color:#f87171}}p{{color:#ccc;max-width:360px;margin:12px auto;line-height:1.55;font-size:15px}}</style></head>
+<body><h2>Не удалось подключить агента</h2><p>{message or "Ошибка"}</p>{hint}</body></html>""",
+                status_code=400,
+            )
+        return HTMLResponse(
+            f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Silent — VK Agent</title>
+<style>body{{font-family:sans-serif;text-align:center;padding:60px;background:#000;color:#fff}}
+h2{{font-weight:400;color:#4ade80}}p{{color:#aaa;max-width:340px;margin:12px auto;line-height:1.5}}</style></head>
+<body><h2>VK агент подключён</h2>
+<p>ID {uid}. Закройте окно и в админке нажмите «Подключить агента».</p>
+<script>setTimeout(function(){{try{{window.close()}}catch(e){{}}}},2500)</script>
+</body></html>"""
         )
 
     _, boot = await publish_bootstrap_to_vk_user(db, vk_user_id)

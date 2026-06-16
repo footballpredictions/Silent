@@ -27,8 +27,11 @@ export default function VkPage({ token }: { token: string }) {
   const [users, setUsers] = useState<UserRow[]>([])
   const [hashes, setHashes] = useState<HashRow[]>([])
   const [hashUserId, setHashUserId] = useState('')
+  const [authMode, setAuthMode] = useState('')
   const [authUrl, setAuthUrl] = useState('')
   const [oauthPaste, setOauthPaste] = useState('')
+  const [vkLogin, setVkLogin] = useState('')
+  const [vkPassword, setVkPassword] = useState('')
   const [manualHash, setManualHash] = useState('')
   const [manualSlot, setManualSlot] = useState(0)
   const [msg, setMsg] = useState('')
@@ -87,10 +90,13 @@ export default function VkPage({ token }: { token: string }) {
   useEffect(() => {
     load()
     fetch('/api/admin/vk/bot-auth/start', { method: 'POST', headers: authH })
-      .then(r => r.json())
-      .then(d => {
-        setAuthUrl(String(d.auth_url || ''))
-        oauthStateRef.current = String(d.state || '')
+      .then(async r => {
+        const { ok, data } = await parseApi(r)
+        if (ok) {
+          setAuthUrl(String(data.auth_url || ''))
+          setAuthMode(String(data.auth_mode || ''))
+          oauthStateRef.current = String(data.state || '')
+        }
       })
       .catch(() => {})
   }, [])
@@ -113,6 +119,28 @@ export default function VkPage({ token }: { token: string }) {
       if (!ok) throw new Error(String(data.detail || 'Ошибка'))
       setMsg(String(data.message || 'Токен сохранён'))
       setOauthPaste('')
+      load()
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Ошибка')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const savePassword = async () => {
+    setLoading(true)
+    setErr('')
+    setMsg('')
+    try {
+      const res = await fetch('/api/admin/vk/bot-auth/password', {
+        method: 'POST',
+        headers: jsonH,
+        body: JSON.stringify({ login: vkLogin.trim(), password: vkPassword }),
+      })
+      const { ok, data } = await parseApi(res)
+      if (!ok) throw new Error(String(data.detail || 'Ошибка'))
+      setMsg(String(data.message || 'VK авторизован'))
+      setVkPassword('')
       load()
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : 'Ошибка')
@@ -225,32 +253,74 @@ export default function VkPage({ token }: { token: string }) {
       <section className="bg-[#111] border border-[#222] rounded-2xl overflow-hidden">
         <div className="flex items-center gap-3 px-5 py-4 border-b border-[#222] bg-[#0d0d0d]">
           <span className="w-7 h-7 rounded-full bg-white text-black text-sm font-bold flex items-center justify-center">1</span>
-          <h2 className="font-semibold text-sm">Токен агента</h2>
+          <h2 className="font-semibold text-sm">Токен агента (VK Звонки)</h2>
         </div>
         <div className="p-5 space-y-3">
           <p className="text-xs text-[#666]">
-            {status?.vk_linked
-              ? `✓ Токен действителен (VK ID ${status.vk_user_id ?? '—'})`
-              : status?.auth_error || '✗ Нет токена — войдите через VK OAuth'}
+            {status?.vk_linked && !status?.calls_ok
+              ? `⚠ Токен VK ${status.vk_user_id ?? '—'} — звонки недоступны`
+              : status?.vk_linked && status?.calls_ok
+                ? `✓ Токен OK (VK ${status.vk_user_id ?? '—'}), calls.start работает`
+                : status?.auth_error || '✗ Нет рабочего токена'}
+          </p>
+          <p className="text-xs text-amber-400/90 leading-relaxed">
+            Для AI-агента нужен токен приложения <strong className="text-amber-300/90">VK Звонки</strong> (calls.start),
+            не VK ID (vk2.a). OAuth «Контакт» / VK ID из браузера <strong className="text-amber-300/90">не подходит</strong>.
           </p>
           {authUrl && (
-            <a href={authUrl} target="_blank" rel="noreferrer" className="text-[#4680C2] text-xs hover:underline break-all block">
-              Открыть VK OAuth
+            <a
+              href={authUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="block text-center text-xs bg-[#4680C2] text-white px-3 py-2.5 rounded-lg font-semibold hover:bg-[#3a6fad]"
+            >
+              {authMode === 'vk_calls' ? 'Открыть вход VK Звонки (id.vk.com)' : 'Открыть VK OAuth'}
             </a>
           )}
-          <input
-            className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white font-mono"
-            placeholder="https://oauth.vk.com/blank.html?code=...&state=..."
+          <textarea
+            className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-[11px] text-white font-mono min-h-[72px]"
+            placeholder={
+              authMode === 'vk_calls'
+                ? 'vkcau://vk.com/auth#silent_token=…&uuid={…}'
+                : 'https://oauth.vk.com/blank.html?code=… или #access_token=…'
+            }
             value={oauthPaste}
             onChange={e => setOauthPaste(e.target.value)}
           />
           <button
             onClick={saveToken}
             disabled={loading || !oauthPaste.trim()}
-            className="text-xs bg-[#222] border border-[#333] px-3 py-1.5 rounded-lg hover:border-white disabled:opacity-40"
+            className="w-full text-xs bg-white text-black px-3 py-2 rounded-lg font-semibold hover:bg-[#e5e5e5] disabled:opacity-40"
           >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin inline" /> : 'Сохранить токен'}
+            {loading ? <Loader2 className="w-4 h-4 animate-spin inline" /> : 'Сохранить токен (вставка URL)'}
           </button>
+          <details className="text-[10px] text-[#555]">
+            <summary className="cursor-pointer text-[#777]">Запасной вариант: логин и пароль VK</summary>
+            <div className="mt-2 space-y-2">
+              <input
+                className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white"
+                placeholder="Телефон или email VK"
+                value={vkLogin}
+                onChange={e => setVkLogin(e.target.value)}
+                autoComplete="username"
+              />
+              <input
+                type="password"
+                className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white"
+                placeholder="Пароль VK"
+                value={vkPassword}
+                onChange={e => setVkPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+              <button
+                onClick={savePassword}
+                disabled={loading || !vkLogin.trim() || !vkPassword}
+                className="w-full text-xs border border-[#333] text-[#ccc] px-3 py-2 rounded-lg hover:border-[#555] disabled:opacity-40"
+              >
+                Войти по паролю (может быть заблокирован VK)
+              </button>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -265,7 +335,7 @@ export default function VkPage({ token }: { token: string }) {
           </p>
           {!status?.vk_linked && (
             <p className="text-xs text-amber-400/90">
-              Сначала обновите токен VK (шаг 1) — без него звонки не создаются.
+              Сначала войдите по логину и паролю VK (шаг 1) — без Android-токена звонки не создаются.
             </p>
           )}
           <p className="text-sm text-[#888]">

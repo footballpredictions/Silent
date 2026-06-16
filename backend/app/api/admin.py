@@ -361,6 +361,7 @@ async def vk_bot_auth_start(
 ):
     from app.config import settings
     from app.services.vk_agent_auth import build_agent_auth_url
+    from app.services.vk_id_service import generate_pkce
     from app.models import VkLinkSession
     import secrets
     from datetime import timedelta
@@ -369,24 +370,39 @@ async def vk_bot_auth_start(
     if "nip.io" in base and base.startswith("http://"):
         base = base.replace("http://", "https://", 1)
 
-    code_verifier = secrets.token_urlsafe(32)
+    if not settings.VK_ID_APP_ID and not (settings.VK_CALLS_CLIENT_SECRET or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Задайте VK_CALLS_CLIENT_SECRET или VK_ID_APP_ID в .env на сервере",
+        )
+
+    code_verifier, code_challenge = generate_pkce()
     state = secrets.token_urlsafe(32)
+    from app.services.vk_calls_auth import build_calls_auth_url, format_calls_uuid
+
+    calls_uuid = format_calls_uuid(state) if (settings.VK_CALLS_CLIENT_SECRET or "").strip() else None
     db.add(VkLinkSession(
         state=state,
         user_id=None,
-        code_verifier=code_verifier,
+        code_verifier=code_verifier if not calls_uuid else calls_uuid,
         expires_at=datetime.utcnow() + timedelta(minutes=15),
         purpose="agent",
     ))
     await db.commit()
     bot_url = settings.VK_BOT_WRITE_URL or f"https://vk.com/write-{settings.VK_GROUP_ID}"
+    auth_url = build_agent_auth_url(state, code_challenge, base)
+    calls_mode = bool((settings.VK_CALLS_CLIENT_SECRET or "").strip())
     return {
-        "auth_url": build_agent_auth_url(state, base),
+        "auth_url": auth_url,
         "state": state,
         "bot_url": bot_url,
+        "auth_mode": "vk_calls" if calls_mode else ("vk_id" if settings.VK_ID_APP_ID else "kate_oauth"),
         "paste_hint": (
-            "После входа VK откроется blank.html?code=... — скопируйте весь URL "
-            "и вставьте ниже. Токен получит сервер (не вставляйте vk1.a с ПК — другой IP)."
+            "VK Звонки: после входа скопируйте адрес из строки браузера "
+            "(vkcau://vk.com/auth#silent_token=…&uuid=…) и вставьте ниже."
+            if calls_mode
+            else "После входа VK перенаправит на blank.html или сайт Silent — "
+            "скопируйте весь URL с code= или device_id=."
         ),
     }
 
@@ -405,7 +421,7 @@ async def vk_bot_auth_paste(
         paste_to_server_token,
     )
 
-    token, expires_in, err = await paste_to_server_token(req.paste)
+    token, expires_in, err = await paste_to_server_token(req.paste, db)
     if err:
         raise HTTPException(status_code=400, detail=err)
     if not token:
@@ -415,6 +431,8 @@ async def vk_bot_auth_paste(
     state = (state_from_url or req.state or "").strip()
     if state:
         ok, message, uid = await complete_agent_auth(db, state, token, expires_in)
+        if not ok and ("Сессия" in message or "истекла" in message.lower()):
+            ok, message, uid = await save_agent_token_direct(db, token, expires_in)
     else:
         ok, message, uid = await save_agent_token_direct(db, token, expires_in)
     if not ok:
@@ -498,12 +516,23 @@ async def vk_bot_auth_password(
     from app.services.vk_agent_auth import (
         password_login,
         save_stored_token,
+        save_agent_credentials,
         validate_token,
         test_calls_permission,
         set_calls_verified,
     )
-    token, msg = await password_login(req.login.strip(), req.password)
+    login = req.login.strip()
+    await save_agent_credentials(db, login, req.password)
+    token, msg = await password_login(login, req.password)
     if not token:
+        if any(x in (msg or "").lower() for x in ("заблокировал", "flood", "pogingen", "paar uur", "too many")):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{msg} Логин сохранён на сервере — через несколько часов нажмите "
+                    "«Войти по логину и паролю» снова или «Подключить агента»."
+                ),
+            )
         raise HTTPException(status_code=400, detail=msg)
     await save_stored_token(db, token)
     ok, detail, uid = await validate_token(token)

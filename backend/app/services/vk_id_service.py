@@ -1,6 +1,7 @@
 """VK ID OAuth 2.1 — PKCE link flow."""
 import base64
 import hashlib
+import json
 import logging
 import secrets
 from urllib.parse import urlencode
@@ -60,7 +61,15 @@ async def exchange_code(
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(VK_ID_TOKEN, data=data) as resp:
-                result = await resp.json()
+                text = await resp.text()
+                if not text.strip():
+                    logger.error("VK ID token empty response HTTP %s", resp.status)
+                    return None
+                try:
+                    result = json.loads(text)
+                except json.JSONDecodeError:
+                    logger.error("VK ID token non-JSON HTTP %s: %s", resp.status, text[:200])
+                    return None
                 if "error" in result:
                     logger.error("VK ID token error: %s", result)
                     return None

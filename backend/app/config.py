@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     VK_GROUP_ID: int = 0
     VK_COMMUNITY_TOKEN: str = ""
 
+    # VK Звонки (AI-агент: silent_token → calls.start, app calls.vk.com)
+    VK_CALLS_CLIENT_SECRET: str = ""
+
     # VK ID (user linking)
     VK_ID_APP_ID: int = 0
     VK_ID_CLIENT_SECRET: str = ""

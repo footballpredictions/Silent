@@ -1,3 +1,8 @@
+# Client code lives on separate branches (android/pc/ios), not on main
+android/
+pc/
+ios/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -12,31 +17,17 @@ dist/
 .env
 *.local
 
-# PC installers / release builds (собираются локально)
-releases/
-releases/*.exe
-releases/*.apk
-*.apk
-
 # Electron build
 pc/dist/
-pc/build-output/
-pc/build-output-v*/
-pc/build-release-v*/
-pc/build-fresh/
 pc/node_modules/
 
 # Android
 android/.gradle/
-android/app/.gradle/
 android/build/
 android/app/build/
 android/.idea/
 android/*.iml
 android/local.properties
-android/app/local.properties
-android/keystore/*
-!android/keystore/keystore.properties.example
 
 # iOS
 ios/Silent.xcodeproj/project.xcworkspace/
@@ -54,14 +45,7 @@ backend/wdtt/wdtt-server
 *.pem
 *.crt
 *.p12
-*.keystore
 backend/.env
-
-# Local-only / scratch (не коммитить)
-_ref_proxy_turn/
-pc_untracked_backup_temp/
-wdtt-src/
-backend/admin-ui/tsconfig.tsbuildinfo
 
 # Logs
 *.log

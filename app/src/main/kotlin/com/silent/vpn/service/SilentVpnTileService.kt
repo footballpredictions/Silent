@@ -13,8 +13,10 @@ import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import com.silent.vpn.MainActivity
 import com.silent.vpn.R
+import com.silent.vpn.SilentApp
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +37,6 @@ class SilentVpnTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
-        VpnServiceTracker.reconcileStaleSession(this)
         updateTile(isVpnConnected())
         stateJob?.cancel()
         stateJob = scope.launch {
@@ -46,8 +47,10 @@ class SilentVpnTileService : TileService() {
                 ) { _, _ -> Unit }.collect {
                     updateTile(isVpnConnected())
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "state collect failed", e)
+                Log.w(TAG, "state collect failed", e)
             }
         }
     }
@@ -163,6 +166,9 @@ class SilentVpnTileService : TileService() {
             ).show()
             openMainActivity()
             return
+        }
+        runCatching {
+            (applicationContext as? SilentApp)?.getBackend(this)
         }
         ContextCompat.startForegroundService(this, connectIntent)
     }

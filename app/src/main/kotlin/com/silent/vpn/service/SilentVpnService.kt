@@ -209,6 +209,18 @@ class SilentVpnService : Service() {
                     ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
                     return START_STICKY
                 }
+                try {
+                    acquirePerformanceLocks()
+                    startFg(buildConnectingNotification())
+                } catch (e: Exception) {
+                    SessionTrace.warn("SilentVpnService.CONNECT", "FGS failed: ${e.message}")
+                    DebugLog.e("VpnService", "CONNECT FGS failed", e)
+                    performanceLocksHeld = false
+                    releaseWakeLock()
+                    releaseWifiLock()
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 disconnectEpoch++
                 disconnectJob?.cancel()
                 runBlocking(Dispatchers.IO) {
@@ -227,18 +239,6 @@ class SilentVpnService : Service() {
                     )
                     VpnTileHelper.requestUpdate(this)
                     return START_STICKY
-                }
-                try {
-                    acquirePerformanceLocks()
-                    startFg(buildConnectingNotification())
-                } catch (e: Exception) {
-                    SessionTrace.warn("SilentVpnService.CONNECT", "FGS failed: ${e.message}")
-                    DebugLog.e("VpnService", "CONNECT FGS failed", e)
-                    performanceLocksHeld = false
-                    releaseWakeLock()
-                    releaseWifiLock()
-                    stopSelf()
-                    return START_NOT_STICKY
                 }
                 SessionTrace.enter(
                     "SilentVpnService.CONNECT",

@@ -20,6 +20,13 @@ object VpnConnectHelper {
     @Volatile
     private var lastCleanSlateAtMs = 0L
 
+    /** После reconcile / ensureCleanSlate — не гонять stopAndAwait повторно при CONNECT. */
+    fun noteCleanSlate() {
+        synchronized(lock) {
+            lastCleanSlateAtMs = System.currentTimeMillis()
+        }
+    }
+
     /** После force-kill / залипшей плитки — WG или libclient могли остаться в системе. */
     fun needsStaleCleanup(context: Context): Boolean {
         if (SilentVpnService.isRunning && WdttTunnelManager.running.value && WdttTunnelManager.tunnelReady.value) {
@@ -49,11 +56,26 @@ object VpnConnectHelper {
         synchronized(lock) {
             val appCtx = context.applicationContext
             SessionTrace.mark("VpnConnectHelper.prepareForTileReconnect")
+            val now = System.currentTimeMillis()
+            if (now - lastCleanSlateAtMs < CLEAN_SLATE_DEDUPE_MS) {
+                SessionTrace.mark("VpnConnectHelper.prepareForTileReconnect", "skip recent clean")
+                return
+            }
+            val orphanWg = VpnNetworkHelper.findOurVpnNetwork(appCtx) != null
+            val stale = needsStaleCleanup(appCtx)
+            if (!orphanWg && !stale) {
+                SessionTrace.mark("VpnConnectHelper.prepareForTileReconnect", "skip already clean")
+                return
+            }
             runBlocking {
-                runCatching { WdttTunnelManager.stopAndAwait() }
-                    .onFailure { e -> DebugLog.w(TAG, "tile reconnect stopAndAwait: ${e.message}") }
-                runCatching { WireGuardHelper(appCtx).forceStopSilentTunnel() }
-                    .onFailure { e -> DebugLog.w(TAG, "tile reconnect forceStop: ${e.message}") }
+                if (orphanWg || WdttTunnelManager.running.value || stale) {
+                    runCatching { WdttTunnelManager.stopAndAwait() }
+                        .onFailure { e -> DebugLog.w(TAG, "tile reconnect stopAndAwait: ${e.message}") }
+                }
+                if (orphanWg) {
+                    runCatching { WireGuardHelper(appCtx).forceStopSilentTunnel() }
+                        .onFailure { e -> DebugLog.w(TAG, "tile reconnect forceStop: ${e.message}") }
+                }
             }
             resetRuntimeFlagsLocked(appCtx)
             lastCleanSlateAtMs = System.currentTimeMillis()

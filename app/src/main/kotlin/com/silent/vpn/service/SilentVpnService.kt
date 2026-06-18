@@ -107,6 +107,9 @@ class SilentVpnService : Service() {
     private var phoneCallActive = false
     private var transportWatchdogJob: Job? = null
     private var statsUpdaterJob: Job? = null
+    private var disconnectJob: Job? = null
+    @Volatile
+    private var disconnectEpoch = 0
     @Volatile
     private var tunnelProxyStarted = false
     private var performanceLocksHeld = false
@@ -202,8 +205,14 @@ class SilentVpnService : Service() {
                     ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
                     return START_STICKY
                 }
-                if (isRunning || WdttTunnelManager.running.value) {
-                    SessionTrace.mark("SilentVpnService.CONNECT", "ignored — already connecting/running")
+                disconnectEpoch++
+                disconnectJob?.cancel()
+                if (isRunning) {
+                    SessionTrace.mark(
+                        "SilentVpnService.CONNECT",
+                        if (WdttTunnelManager.tunnelReady.value) "ignored — already connected"
+                        else "ignored — already connecting",
+                    )
                     VpnTileHelper.requestUpdate(this)
                     return START_STICKY
                 }
@@ -257,6 +266,10 @@ class SilentVpnService : Service() {
             }
             ACTION_DISCONNECT -> {
                 SessionTrace.enter("SilentVpnService.DISCONNECT")
+                if (!isRunning && !WdttTunnelManager.running.value) {
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 disconnect()
             }
             ACTION_EXTERNAL_REVOKED -> {
@@ -383,8 +396,10 @@ class SilentVpnService : Service() {
             return
         }
         DebugLog.i("VpnService", "DISCONNECT")
+        val epoch = ++disconnectEpoch
+        disconnectJob?.cancel()
         isRunning = false
-        SessionTrace.mark("SilentVpnService.disconnect", "isRunning=false")
+        SessionTrace.mark("SilentVpnService.disconnect", "isRunning=false epoch=$epoch")
         VpnServiceTracker.markSessionActive(this, false)
         teardownVpnOwnershipMonitor()
         VpnTileHelper.requestUpdate(this)
@@ -407,7 +422,7 @@ class SilentVpnService : Service() {
         clearVpnNotification()
         VpnBackendSync.stop()
         tunnelProxyStarted = false
-        scope.launch(Dispatchers.IO) {
+        disconnectJob = scope.launch(Dispatchers.IO) {
             val repo = EntryPointAccessors.fromApplication(
                 applicationContext,
                 AppEntryPoint::class.java,
@@ -420,6 +435,10 @@ class SilentVpnService : Service() {
                 null
             }
             withTimeoutOrNull(1_500L) { notifyJob?.await() }
+            if (epoch != disconnectEpoch) {
+                SessionTrace.mark("SilentVpnService.disconnect", "superseded — tile reconnect")
+                return@launch
+            }
             SilentRepository.APP_EXCLUDED_FROM_VPN = true
             WdttTunnelManager.prepareForShutdown()
             if (isRunning) {
@@ -427,6 +446,10 @@ class SilentVpnService : Service() {
                 return@launch
             }
             WdttTunnelManager.stopAndAwait()
+            if (epoch != disconnectEpoch || isRunning) {
+                SessionTrace.mark("SilentVpnService.disconnect", "skip stopSelf — reconnect")
+                return@launch
+            }
             withContext(Dispatchers.Main) {
                 if (isRunning) return@withContext
                 releaseWakeLock()
@@ -939,6 +962,8 @@ class SilentVpnService : Service() {
 
     /** Как stopTunnel() в reference TunnelService. */
     private fun stopTunnelLocal(awaitStop: Boolean = false, stopService: Boolean = true) {
+        disconnectEpoch++
+        disconnectJob?.cancel()
         transportWatchdogJob?.cancel()
         networkRecoveryJob?.cancel()
         statsUpdaterJob?.cancel()

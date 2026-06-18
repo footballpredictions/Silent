@@ -87,7 +87,8 @@ class SilentVpnTileService : TileService() {
             }
 
             if (connected) {
-                startService(
+                ContextCompat.startForegroundService(
+                    this,
                     Intent(this, SilentVpnService::class.java).apply {
                         action = SilentVpnService.ACTION_DISCONNECT
                     },

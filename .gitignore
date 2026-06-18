@@ -1,66 +1,27 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-.venv/
-venv/
-*.egg-info/
+# Gradle / Android Studio
+app/.gradle/
+.gradle/
+app/build/
+build/
+.idea/
+*.iml
+local.properties
+app/local.properties
 
-# Node
-node_modules/
-dist/
-.env
-*.local
-
-# Electron build
-pc/dist/
-pc/node_modules/
-
-# Release builds (local only, never commit)
-releases/
+# Release builds (локально)
 *.apk
+releases/
 
-# Android
-android/.gradle/
-android/app/.gradle/
-android/build/
-android/app/build/
-android/.idea/
-android/*.iml
-android/local.properties
-android/app/local.properties
-android/keystore/*
-!android/keystore/keystore.properties.example
-
-# Local deploy/diag scripts (not for git)
-/*.py
-!backend/**/*.py
-_ref_proxy_turn/
-pc_untracked_backup_temp/
-wdtt-src/
-
-# iOS
-ios/Silent.xcodeproj/project.xcworkspace/
-ios/DerivedData/
-ios/*.xcworkspace/xcuserdata/
-ios/Pods/
-
-# Docker
-backend/ssl/
-backend/wdtt/wdtt-server
+# Keystore (локально, не в git)
+keystore/*
+!keystore/keystore.properties.example
 
 # Secrets
 *.env
-*.key
-*.pem
-*.crt
-*.p12
 *.keystore
-backend/.env
 
 # Logs
 *.log
-logs/
 
 # OS
 .DS_Store

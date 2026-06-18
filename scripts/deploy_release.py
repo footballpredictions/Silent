@@ -1,0 +1,93 @@
+"""Загрузка PC installer (.exe) на VPS для OTA.
+
+Использование:
+  python scripts/deploy_release.py "build-release-v141-XXX\\Silent VPN Setup 1.0.142.exe" 1.0.142
+"""
+from __future__ import annotations
+
+import io
+import os
+import sys
+
+from _deploy_common import CONTAINER, REMOTE_BACKEND, connect
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
+def versioned_filename(version: str, original: str) -> str:
+    base, ext = os.path.splitext(original)
+    if not ext:
+        ext = ".exe"
+    safe = version.strip()
+    if not safe:
+        return original
+    if base.endswith(safe) or base.endswith(f" {safe}"):
+        return original
+    return f"{base}-{safe}{ext}"
+
+
+def main() -> None:
+    if len(sys.argv) < 3:
+        print("Usage: python scripts/deploy_release.py <path-to-setup.exe> <version>")
+        sys.exit(1)
+
+    local_file = sys.argv[1]
+    version = sys.argv[2]
+    platform = "pc"
+    original_name = os.path.basename(local_file)
+    filename = versioned_filename(version, original_name)
+    remote_dir = f"{REMOTE_BACKEND}/update/{platform}"
+    remote_file = f"{remote_dir}/{filename}"
+    container_dir = f"/app/update/{platform}"
+    container_dest = f"{container_dir}/{filename}"
+    size = os.path.getsize(local_file)
+
+    client = connect()
+    sftp = client.open_sftp()
+    client.exec_command(f"mkdir -p {remote_dir}")
+    client.exec_command(f"find {remote_dir} -maxdepth 1 -type f -delete 2>/dev/null || true")
+    sftp.put(local_file, remote_file)
+    print(f"uploaded {remote_file} ({size // (1024 * 1024)} MB)")
+
+    manifest_py = f"""
+import json, os, glob
+from datetime import datetime, timezone
+dest_dir = {container_dir!r}
+filename = {filename!r}
+version = {version!r}
+os.makedirs(dest_dir, exist_ok=True)
+for old in glob.glob(os.path.join(dest_dir, "*")):
+    if os.path.basename(old) not in ("manifest.json", filename):
+        os.remove(old)
+path = os.path.join(dest_dir, filename)
+size = os.path.getsize(path) if os.path.isfile(path) else 0
+manifest = {{"version": version, "filename": filename, "size": size,
+    "uploaded_at": datetime.now(timezone.utc).isoformat()}}
+with open(os.path.join(dest_dir, "manifest.json"), "w", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2)
+print("manifest ok", version, filename)
+"""
+    sftp.putfo(io.BytesIO(manifest_py.encode()), "/tmp/write_manifest_pc.py")
+    deploy_sh = f"""#!/bin/bash
+set -e
+docker exec {CONTAINER} mkdir -p {container_dir}
+docker exec {CONTAINER} sh -c 'find {container_dir} -maxdepth 1 -type f -delete 2>/dev/null || true'
+docker cp "{remote_file}" "{CONTAINER}:{container_dest}"
+docker cp /tmp/write_manifest_pc.py {CONTAINER}:/tmp/write_manifest_pc.py
+docker exec {CONTAINER} python /tmp/write_manifest_pc.py
+curl -s "http://localhost:8000/api/updates/check?platform=pc&version=0.0.0"
+echo
+"""
+    sftp.putfo(io.BytesIO(deploy_sh.encode()), "/tmp/deploy_pc_release.sh")
+    sftp.close()
+    _, out, err = client.exec_command("bash /tmp/deploy_pc_release.sh 2>&1", timeout=600)
+    print(out.read().decode("utf-8", errors="replace"))
+    e = err.read().decode("utf-8", errors="replace")
+    if e.strip():
+        print("ERR:", e)
+    client.close()
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()

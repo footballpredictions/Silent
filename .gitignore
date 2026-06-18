@@ -13,8 +13,7 @@ releases/*.exe
 
 # Secrets
 .env
-*.local
-*.env
+.env.deploy
 
 # Logs
 *.log

@@ -352,6 +352,11 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-06-18 — Android: восстановление VPN при смене сети / звонке / плохой связи
+
+- **Регрессия:** после `100d728`/`8cbace5` убран pause при обрыве; `mobileApiRouteEnabled=false`; `restartTransport` с 30с grace не срабатывал при Wi‑Fi↔LTE; fingerprint без VALIDATED не ловил 3G/2G.
+- **Исправление (ветка `android`):** pause libclient при полной потере сети; `restartTransportAfterNetwork` без grace; `reapplyWireGuardForNetworkChange` + `mobileApiRoute` на mobile; recovery по VALIDATED; перезапуск TunnelApiProxy после смены сети.
+
 ### 2026-06-18 — Android: bootstrap VPN на мобильном (вход / регистрация / сброс пароля)
 
 - **Регрессия:** в `8cbace5` (ConfigSync, mobile sync off) `Repository.setTunnelApiFromWgAddress` перестал переключать API на tunnel `http://10.66.66.1:8000` — на мобильном интернете ломались вход, регистрация, forgot-password и открытие ссылок verify/reset из браузера/почты при временном VPN (шаг 1).

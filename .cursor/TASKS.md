@@ -93,6 +93,7 @@ Agent приступает к **первой невыполненной** зад
 
 ### Android (`origin/android`, v1.0.130)
 
+- [x] VPN recovery: Wi‑Fi↔LTE, звонок, обрыв/3G — pause + force restartTransport — 2026-06-18
 - [x] Bootstrap VPN на мобильном: tunnel API для входа/регистрации/forgot (регрессия `8cbace5`) — 2026-06-18
 - [x] Релиз v1.0.130 запушен — `8cbace5`
 - [x] Wi-Fi ConfigSync, mobile sync off — `8cbace5`

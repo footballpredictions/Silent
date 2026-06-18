@@ -352,6 +352,12 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-06-18 — Android: WRAP_AUTH_TIMEOUT в логе при ramp-up
+
+- **Симптом:** VPN работает (GETCONF, трафик), но в логе `[ВОРКЕР #N] WRAP_AUTH_TIMEOUT` как красная ошибка при наборе 27/36 воркеров и капче.
+- **Причина:** ретраи DTLS handshake при очереди воркеров; на PC скрыты (`libclientLogParser`), на Android попадали в `isError`.
+- **Исправление (ветка `android`, `eb2597b`):** фильтр `[ВОРКЕР #]` ретраев как на PC; в wdtt-go — быстрый повтор WRAP timeout, stagger 100 мс, handshakeSem 40. **libclient.so** — пересборка `app/build_android_go.bat` (NDK).
+
 ### 2026-06-18 — Android: 0 трафик при подключении (GETCONF vs кеш WG)
 
 - **Симптом:** воркеры набираются (36), `WireGuard UP`, трафик ≈ 0; помогало 4–5 переключений. В логе: `WireGuard из кеша (GETCONF timeout)` + `[ВОРКЕР #1] Ошибка конфига: dtls timeout`.

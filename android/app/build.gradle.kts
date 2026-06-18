@@ -1,9 +1,18 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     id("com.google.dagger.hilt.android") version "2.53"
+}
+
+val keystorePropertiesFile = file("../keystore/keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        load(keystorePropertiesFile.inputStream())
+    }
 }
 
 android {
@@ -23,11 +32,13 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            storeFile = file("../keystore/silent-release.keystore")
-            storePassword = "silent_vpn_2026"
-            keyAlias = "silent-vpn"
-            keyPassword = "silent_vpn_2026"
+        if (keystorePropertiesFile.exists()) {
+            create("release") {
+                storeFile = file("../keystore/${keystoreProperties.getProperty("storeFile")}")
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
         }
     }
 
@@ -36,7 +47,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("release")
+            signingConfigs.findByName("release")?.let { signingConfig = it }
         }
         debug {
             isMinifyEnabled = false

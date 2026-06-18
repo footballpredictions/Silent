@@ -29,6 +29,8 @@ android/.idea/
 android/*.iml
 android/local.properties
 android/app/local.properties
+android/keystore/*
+!android/keystore/keystore.properties.example
 
 # Local deploy/diag scripts (not for git)
 /*.py
@@ -54,7 +56,6 @@ backend/wdtt/wdtt-server
 *.crt
 *.p12
 *.keystore
-!android/keystore/silent-release.keystore
 backend/.env
 
 # Logs

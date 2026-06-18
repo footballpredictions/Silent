@@ -289,7 +289,7 @@ class SilentVpnService : Service() {
             }
 
             val vpnConfig = runCatching { Gson().fromJson(configJson, VpnConfig::class.java) }.getOrNull()
-            // apiWg — только fallback если GETCONF не пришёл за ~10 с (не ранний подъём WG).
+            // apiWg — fallback если GETCONF не пришёл за ~22 с (не ранний подъём WG).
             val apiWg = vpnConfig?.let { WireGuardConfigBuilder.fromVpnConfig(it) }
 
             val bootHash = SilentPrefs.open(this)

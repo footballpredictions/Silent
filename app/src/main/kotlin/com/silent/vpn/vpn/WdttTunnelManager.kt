@@ -44,6 +44,9 @@ object WdttTunnelManager {
     /** GETCONF в libclient ждёт ответ до 15 с — кеш раньше даёт устаревший WG и 0 трафика. */
     private const val MAIN_WG_CACHE_FALLBACK_MS = 22_000L
     private const val MAIN_WG_CACHE_FALLBACK_AFTER_ERR_MS = 28_000L
+    /** QS-плитка / холодный процесс: первая группа воркеров ~5–7 с, watchdog ловит 0 трафик. */
+    private const val TILE_WG_CACHE_FALLBACK_MS = 7_000L
+    private const val TILE_WG_CACHE_FALLBACK_AFTER_ERR_MS = 10_000L
     private const val ZERO_TRAFFIC_RESTART_MS = 35_000L
     private const val ZERO_TRAFFIC_MB_THRESHOLD = 0.08
 
@@ -123,6 +126,8 @@ object WdttTunnelManager {
         val captchaMode: String = "auto",
         val apiWgConfig: String? = null,
         val isBootstrap: Boolean = false,
+        /** Быстрый WG из кеша конфига (плитка QS, холодный старт). */
+        val fastWgCache: Boolean = false,
     )
 
     class ApiOverlayBlockedException(message: String) : Exception(message)
@@ -450,20 +455,21 @@ object WdttTunnelManager {
         val fallback = deferredApiWgConfig ?: return
         if (params.isBootstrap) return
         mainWgFallbackJob = scope.launch {
-            val delayMs = if (
+            val recentGetconfErr =
                 lastGetconfErrorMs > 0L &&
-                System.currentTimeMillis() - lastGetconfErrorMs < 30_000L
-            ) {
-                MAIN_WG_CACHE_FALLBACK_AFTER_ERR_MS
-            } else {
-                MAIN_WG_CACHE_FALLBACK_MS
+                    System.currentTimeMillis() - lastGetconfErrorMs < 30_000L
+            val delayMs = when {
+                params.fastWgCache && recentGetconfErr -> TILE_WG_CACHE_FALLBACK_AFTER_ERR_MS
+                params.fastWgCache -> TILE_WG_CACHE_FALLBACK_MS
+                recentGetconfErr -> MAIN_WG_CACHE_FALLBACK_AFTER_ERR_MS
+                else -> MAIN_WG_CACHE_FALLBACK_MS
             }
             delay(delayMs)
             if (!running.value) return@launch
             if (readConfFile(lastContext) != null) return@launch
             if (appliedWgConfigSource == WgConfigSource.GETCONF) return@launch
             if (activeWorkers.value < 1) {
-                delay(5_000)
+                delay(if (params.fastWgCache) 2_000L else 5_000L)
                 if (activeWorkers.value < 1) return@launch
             }
             if (tunnelReady.value && appliedWgConfigSource != WgConfigSource.NONE) return@launch

@@ -116,6 +116,8 @@ class SilentVpnService : Service() {
     private var disconnectEpoch = 0
     @Volatile
     private var tunnelProxyStarted = false
+    @Volatile
+    private var connectFromTile = false
     private var performanceLocksHeld = false
     private var lastNotifUpdateMs = 0L
     private var lastNotifBody = ""
@@ -223,9 +225,10 @@ class SilentVpnService : Service() {
                 }
                 disconnectEpoch++
                 disconnectJob?.cancel()
+                connectFromTile = intent.getBooleanExtra(EXTRA_FROM_TILE, false)
                 runBlocking(Dispatchers.IO) {
                     disconnectJob?.join()
-                    if (intent.getBooleanExtra(EXTRA_FROM_TILE, false)) {
+                    if (connectFromTile) {
                         VpnConnectHelper.prepareForTileReconnect(this@SilentVpnService)
                     } else {
                         VpnConnectHelper.prepareForConnect(this@SilentVpnService)
@@ -378,6 +381,7 @@ class SilentVpnService : Service() {
                     captchaMode = "auto",
                     apiWgConfig = apiWg,
                     isBootstrap = isBootstrap,
+                    fastWgCache = connectFromTile && !isBootstrap && !apiWg.isNullOrBlank(),
                 ),
                 isSwitching = false,
             )

@@ -1,56 +1,23 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-.venv/
-venv/
-*.egg-info/
-
-# Node
+# Node / Electron
 node_modules/
 dist/
-.env
-*.local
+build-output/
+build-output-v*/
+build-release-v*/
+build-fresh/
 
-# PC installers (собираются локально, в git только код)
+# Installers (локально)
+releases/
 releases/*.exe
-releases/*.apk
-
-# Electron build
-pc/dist/
-pc/build-output/
-pc/build-output-v*/
-pc/node_modules/
-
-# Android
-android/.gradle/
-android/build/
-android/app/build/
-android/.idea/
-android/*.iml
-android/local.properties
-
-# iOS
-ios/Silent.xcodeproj/project.xcworkspace/
-ios/DerivedData/
-ios/*.xcworkspace/xcuserdata/
-ios/Pods/
-
-# Docker
-backend/ssl/
-backend/wdtt/wdtt-server
+*.apk
 
 # Secrets
+.env
+*.local
 *.env
-*.key
-*.pem
-*.crt
-*.p12
-backend/.env
 
 # Logs
 *.log
-logs/
 
 # OS
 .DS_Store

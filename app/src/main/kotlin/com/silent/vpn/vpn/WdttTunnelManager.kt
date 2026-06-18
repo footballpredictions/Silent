@@ -369,6 +369,52 @@ object WdttTunnelManager {
             (message.contains("[VK Auth] Failed", true) && isTransientNetworkGlitch(message))
     }
 
+    private fun isCaptchaSuccessMessage(message: String): Boolean {
+        val lower = message.lowercase()
+        return lower.contains("решил капчу") ||
+            lower.contains("решила капчу") ||
+            lower.contains("smart captcha решена") ||
+            lower.contains("wbv auto решил") ||
+            message.contains("Решена ✓")
+    }
+
+    /** Промежуточные шаги AUTO/v2/WBV — цепочка сама переключается на следующий метод. */
+    private fun isCaptchaChainIntermediateNoise(message: String): Boolean {
+        if (!message.contains("[КАПЧА]", true) &&
+            !message.contains("[КАПЧА AUTO]", true) &&
+            !message.contains("CAPTCHA_RESULT|error", true)
+        ) {
+            return false
+        }
+        if (isCaptchaSuccessMessage(message)) return false
+        val lower = message.lowercase()
+        return lower.contains("rate limit reached") ||
+            lower.contains("error_limit") ||
+            lower.contains("не решил за 2 попытки") ||
+            lower.contains("wbv auto timeout") ||
+            lower.contains("wbv auto попытка") ||
+            lower.contains("финальная go v2 попытка после wbv") ||
+            lower.contains("старт цепочки") ||
+            lower.contains("fallback на wbv") ||
+            (lower.contains("v2 попытка") && lower.contains("ошибка")) ||
+            lower.contains("v2 check status=") ||
+            lower.contains("captcha timeout") ||
+            lower.contains("captcha_result|error") ||
+            lower.contains("финальная go v2 ошибка")
+    }
+
+    private fun isCaptchaRampUpActive(): Boolean =
+        activeWorkers.value > 0 || tunnelReady.value || isWorkerRampUpActive()
+
+    private fun shouldSuppressCaptchaLog(message: String): Boolean {
+        if (!isCaptchaChainIntermediateNoise(message)) return false
+        val lower = message.lowercase()
+        if (lower.contains("captcha timeout") || lower.contains("captcha_result|error")) {
+            return isCaptchaRampUpActive()
+        }
+        return true
+    }
+
     /** Опрос wg-turn.conf — libclient часто пишет только в файл, без box в stdout. */
     private fun startConfFilePoller(context: Context) {
         confPollJob?.cancel()
@@ -696,6 +742,13 @@ object WdttTunnelManager {
                         return@forEachLine
                     }
 
+                    if (lineTrim.contains("[STDIN]") && lineTrim.contains("CAPTCHA_RESULT|error", true)) {
+                        if (shouldSuppressCaptchaLog(lineTrim)) return@forEachLine
+                    }
+                    if (shouldSuppressCaptchaLog(lineTrim)) {
+                        return@forEachLine
+                    }
+
                     val isError = lineTrim.contains("Ошибка", true) ||
                         lineTrim.contains("error", true) ||
                         lineTrim.contains("FAIL", true) ||
@@ -705,15 +758,30 @@ object WdttTunnelManager {
                     when {
                         lineTrim.contains("[КАПЧА] AUTO:") -> {
                             val text = lineTrim.substringAfter("[КАПЧА] AUTO:").trim()
-                            updateLog("captcha_auto_${text.take(12).hashCode()}", "[КАПЧА AUTO] $text", 5, isError)
+                            updateLog(
+                                "captcha_auto_${text.take(12).hashCode()}",
+                                "[КАПЧА AUTO] $text",
+                                5,
+                                isError = false,
+                            )
                         }
                         lineTrim.contains("[КАПЧА] RJS:") -> {
                             val text = lineTrim.substringAfter("[КАПЧА] RJS:").trim()
-                            updateLog("captcha_rjs_${text.take(12).hashCode()}", "[КАПЧА RJS] $text", 5)
+                            updateLog(
+                                "captcha_rjs_${text.take(12).hashCode()}",
+                                "[КАПЧА RJS] $text",
+                                5,
+                                isError = !isCaptchaSuccessMessage(text) && isError,
+                            )
                         }
                         lineTrim.contains("[КАПЧА] WBV:") -> {
                             val text = lineTrim.substringAfter("[КАПЧА] WBV:").trim()
-                            updateLog("captcha_wv_${text.take(12).hashCode()}", "[КАПЧА WBV] $text", 5, isError)
+                            updateLog(
+                                "captcha_wv_${text.take(12).hashCode()}",
+                                "[КАПЧА WBV] $text",
+                                5,
+                                isError = !isCaptchaSuccessMessage(text) && isError,
+                            )
                         }
                         lineTrim.contains("Старт") || lineTrim.contains("Ожидайте") ->
                             updateLog("creds_start", "[ВК] Получение учётных данных…", 2)
@@ -1439,7 +1507,9 @@ object WdttTunnelManager {
                 }
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 if (session == captchaSession.get()) {
-                    updateLog("captcha_timeout", "[КАПЧА] Таймаут 90с — повтор", 5, true)
+                    if (!shouldSuppressCaptchaLog("CAPTCHA_RESULT|error:captcha timeout")) {
+                        updateLog("captcha_timeout", "[КАПЧА] Таймаут 90с — повтор", 5, true)
+                    }
                     writeCaptchaResult(session, "error:captcha timeout")
                     captchaInProgress = false
                     captchaManualInProgress = false

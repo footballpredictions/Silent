@@ -32,8 +32,37 @@ object VpnConnectHelper {
     }
 
     /**
-     * Перед CONNECT: полная очистка только при stale/orphan WG.
-     * При нормальном reconnect после disconnect — no-op (не дёргаем WG).
+     * Сброс только runtime VPN (флаги, in-memory) — без токенов, кеша конфига и хешей.
+     * После OTA или залипшей плитки.
+     */
+    fun resetRuntimeFlags(context: Context) {
+        synchronized(lock) {
+            resetRuntimeFlagsLocked(context.applicationContext)
+        }
+    }
+
+    /**
+     * QS-плитка OFF→ON: гарантированно остановить libclient/WG перед новым CONNECT.
+     * Не трогает логин, cached_vpn_config, saved_hash_items.
+     */
+    fun prepareForTileReconnect(context: Context) {
+        synchronized(lock) {
+            val appCtx = context.applicationContext
+            SessionTrace.mark("VpnConnectHelper.prepareForTileReconnect")
+            runBlocking {
+                runCatching { WdttTunnelManager.stopAndAwait() }
+                    .onFailure { e -> DebugLog.w(TAG, "tile reconnect stopAndAwait: ${e.message}") }
+                runCatching { WireGuardHelper(appCtx).forceStopSilentTunnel() }
+                    .onFailure { e -> DebugLog.w(TAG, "tile reconnect forceStop: ${e.message}") }
+            }
+            resetRuntimeFlagsLocked(appCtx)
+            lastCleanSlateAtMs = System.currentTimeMillis()
+            VpnTileHelper.requestUpdate(appCtx)
+        }
+    }
+
+    /**
+     * Перед CONNECT из приложения: полная очистка только при stale/orphan WG.
      */
     fun prepareForConnect(context: Context) {
         synchronized(lock) {
@@ -91,12 +120,17 @@ object VpnConnectHelper {
             runCatching { WireGuardHelper(appCtx).forceStopSilentTunnel() }
                 .onFailure { e -> DebugLog.w(TAG, "forceStopSilentTunnel: ${e.message}") }
         }
+        resetRuntimeFlagsLocked(appCtx)
+        lastCleanSlateAtMs = System.currentTimeMillis()
+        VpnTileHelper.requestUpdate(appCtx)
+    }
+
+    private fun resetRuntimeFlagsLocked(appCtx: Context) {
         WdttTunnelManager.clearStaleSession()
         SilentVpnService.resetStaleSession()
         VpnBackendSync.stop()
         VpnSessionState.resetBackendSync()
         VpnServiceTracker.markSessionActive(appCtx, false)
-        VpnTileHelper.requestUpdate(appCtx)
-        lastCleanSlateAtMs = System.currentTimeMillis()
+        WdttTunnelManager.ensureApiOverlayOff()
     }
 }

@@ -31,6 +31,7 @@ import com.silent.vpn.vk.HashParser
 import com.silent.vpn.vpn.TunnelApiProxy
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
+import com.silent.vpn.vpn.WireGuardHelper
 import com.silent.vpn.vpn.WireGuardConfigBuilder
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import dagger.hilt.android.EntryPointAccessors
@@ -38,6 +39,7 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.silent.vpn.data.HashItemDto
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -80,6 +82,8 @@ class SilentVpnService : Service() {
         const val ACTION_EXTERNAL_REVOKED = "com.silent.vpn.EXTERNAL_REVOKED"
         const val EXTRA_CONFIG = "vpn_config_json"
         const val EXTRA_IS_BOOTSTRAP = "is_bootstrap"
+        /** CONNECT с QS-плитки — полный сброс транспорта перед стартом. */
+        const val EXTRA_FROM_TILE = "from_tile"
         var isRunning = false
             private set
 
@@ -207,6 +211,14 @@ class SilentVpnService : Service() {
                 }
                 disconnectEpoch++
                 disconnectJob?.cancel()
+                runBlocking(Dispatchers.IO) {
+                    disconnectJob?.join()
+                    if (intent.getBooleanExtra(EXTRA_FROM_TILE, false)) {
+                        VpnConnectHelper.prepareForTileReconnect(this@SilentVpnService)
+                    } else {
+                        VpnConnectHelper.prepareForConnect(this@SilentVpnService)
+                    }
+                }
                 if (isRunning) {
                     SessionTrace.mark(
                         "SilentVpnService.CONNECT",
@@ -228,7 +240,6 @@ class SilentVpnService : Service() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                VpnConnectHelper.prepareForConnect(this)
                 SessionTrace.enter(
                     "SilentVpnService.CONNECT",
                     "device=${runCatching { JSONObject(configJson).optString("device_id") }.getOrNull()?.take(8)}",
@@ -423,38 +434,44 @@ class SilentVpnService : Service() {
         VpnBackendSync.stop()
         tunnelProxyStarted = false
         disconnectJob = scope.launch(Dispatchers.IO) {
-            val repo = EntryPointAccessors.fromApplication(
-                applicationContext,
-                AppEntryPoint::class.java,
-            ).silentRepository()
-            val notifyJob = if (repo.isLoggedIn() && WdttTunnelManager.tunnelReady.value) {
-                async {
-                    runCatching { VpnBackendSync.notifyDisconnect(this@SilentVpnService) }
+            try {
+                val repo = EntryPointAccessors.fromApplication(
+                    applicationContext,
+                    AppEntryPoint::class.java,
+                ).silentRepository()
+                val notifyJob = if (repo.isLoggedIn() && WdttTunnelManager.tunnelReady.value) {
+                    async {
+                        runCatching { VpnBackendSync.notifyDisconnect(this@SilentVpnService) }
+                    }
+                } else {
+                    null
                 }
-            } else {
-                null
-            }
-            withTimeoutOrNull(1_500L) { notifyJob?.await() }
-            if (epoch != disconnectEpoch) {
-                SessionTrace.mark("SilentVpnService.disconnect", "superseded — tile reconnect")
-                return@launch
-            }
-            SilentRepository.APP_EXCLUDED_FROM_VPN = true
-            WdttTunnelManager.prepareForShutdown()
-            if (isRunning) {
-                SessionTrace.mark("SilentVpnService.disconnect", "skipped teardown — reconnected")
-                return@launch
-            }
-            WdttTunnelManager.stopAndAwait()
-            if (epoch != disconnectEpoch || isRunning) {
-                SessionTrace.mark("SilentVpnService.disconnect", "skip stopSelf — reconnect")
-                return@launch
-            }
-            withContext(Dispatchers.Main) {
-                if (isRunning) return@withContext
-                releaseWakeLock()
-                releaseWifiLock()
-                stopSelf()
+                withTimeoutOrNull(1_500L) { notifyJob?.await() }
+                if (epoch != disconnectEpoch) {
+                    SessionTrace.mark("SilentVpnService.disconnect", "superseded — tile reconnect")
+                    return@launch
+                }
+                SilentRepository.APP_EXCLUDED_FROM_VPN = true
+                WdttTunnelManager.prepareForShutdown()
+                if (isRunning) {
+                    SessionTrace.mark("SilentVpnService.disconnect", "skipped teardown — reconnected")
+                    return@launch
+                }
+                WdttTunnelManager.stopAndAwait()
+                if (epoch != disconnectEpoch || isRunning) {
+                    SessionTrace.mark("SilentVpnService.disconnect", "skip stopSelf — reconnect")
+                    return@launch
+                }
+                runCatching { WireGuardHelper(this@SilentVpnService).forceStopSilentTunnel() }
+                withContext(Dispatchers.Main) {
+                    if (isRunning) return@withContext
+                    releaseWakeLock()
+                    releaseWifiLock()
+                    stopSelf()
+                }
+            } catch (e: CancellationException) {
+                SessionTrace.mark("SilentVpnService.disconnect", "cancelled")
+                throw e
             }
         }
     }

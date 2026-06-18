@@ -3,13 +3,17 @@ package com.silent.vpn.data
 import android.content.Context
 import com.silent.vpn.BuildConfig
 import com.silent.vpn.service.SilentVpnService
+import com.silent.vpn.service.VpnConnectHelper
 import com.silent.vpn.service.VpnServiceTracker
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
+import com.silent.vpn.vpn.WireGuardHelper
+import kotlinx.coroutines.runBlocking
 
 /**
  * Одноразовая миграция после OTA — без чистой переустановки.
- * Сбрасывает залипший кеш VPN/профиля, который ломает POST /connect.
+ * Сбрасывает залипший runtime VPN (не токены / кеш конфига / хеши).
  */
 object AppStateMigration {
     private const val TAG = "AppStateMigration"
@@ -23,8 +27,18 @@ object AppStateMigration {
 
         DebugLog.i(TAG, "migrate $last → ${BuildConfig.VERSION_CODE}")
 
-        if (!SilentVpnService.isRunning && !WdttTunnelManager.running.value) {
-            VpnServiceTracker.markSessionActive(appCtx, false)
+        val transportLive = SilentVpnService.isRunning || WdttTunnelManager.running.value
+        if (!transportLive) {
+            VpnConnectHelper.resetRuntimeFlags(appCtx)
+            val orphanWg = VpnNetworkHelper.findOurVpnNetwork(appCtx) != null
+            if (orphanWg) {
+                runBlocking {
+                    runCatching { WireGuardHelper(appCtx).forceStopSilentTunnel() }
+                        .onFailure { e -> DebugLog.w(TAG, "OTA orphan WG cleanup: ${e.message}") }
+                }
+            }
+        } else {
+            VpnServiceTracker.markSessionActive(appCtx, true)
         }
 
         val loggedIn = !prefs.getString(SilentRepository.PREF_ACCESS_TOKEN, null).isNullOrBlank()
@@ -35,7 +49,6 @@ object AppStateMigration {
                 fp.isBlank() && stable.isNotBlank() ->
                     prefs.edit().putString(SilentRepository.PREF_DEVICE_FP, stable).apply()
             }
-            // VPN-конфиг и сохранённые хеши не сбрасываем — иначе на мобильном connect невозможен.
         }
 
         prefs.edit().putInt(PREF_MIGRATED_VERSION, BuildConfig.VERSION_CODE).apply()

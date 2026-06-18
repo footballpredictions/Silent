@@ -5,14 +5,16 @@
 **Silent VPN** — коммерческий VPN-сервис на базе WireGuard-туннелирования через VK TURN/DTLS серверы.
 Технология маскирует трафик под зашифрованный медиатрафик WebRTC-звонков ВКонтакте.
 
-**Репозиторий:** https://github.com/footballpredictions/Silent.git
+**GitHub:** https://github.com/footballpredictions/Silent.git — **один remote**, **четыре ветки**.
 
-| Ветка | Содержимое | Текущая версия клиента |
-|-------|------------|------------------------|
-| `main` | Backend (FastAPI), AI VK-агент, Admin UI (React) | — |
-| `pc` | PC-клиент (Electron 32 + React + Vite) | **1.0.142** |
-| `android` | Android (Kotlin + Jetpack Compose + WireGuard GoBackend) | **1.0.130** |
-| `ios` | iOS (Swift + SwiftUI + NetworkExtension) | начальная версия |
+| Локальная папка | Ветка GitHub | Версия |
+|-----------------|--------------|--------|
+| `Silent/backend/` | `main` | — |
+| `Silent/pc/` | `pc` | **1.0.142** |
+| `Silent/android/` | `android` | **1.0.130** |
+| `Silent/ios/` | `ios` | начальная |
+
+Папка `Silent/` **не является** git-репозиторием — это рабочий контейнер. Внутри каждая подпапка — **свой git** (свой `.git` / worktree) и **свой `.gitignore`**.
 
 ## Production-сервер
 
@@ -23,7 +25,7 @@
 | WDTT (UDP) | `132.243.234.162:56000` |
 | WireGuard (UDP) | `:56001` |
 | Tunnel API (через WG) | `http://10.66.66.1:8000` |
-| Путь на сервере | `/opt/silent-vpn` |
+| Путь на сервере | `/opt/silent-vpn/backend` (клон ветки `main`) |
 | Docker stack | `api`, `db` (PostgreSQL 16), `redis`, `nginx` |
 | wdtt-server | **systemd** (`wdtt.service`), не Docker |
 | TLS | Let's Encrypt для nip.io + self-signed fallback |
@@ -113,13 +115,13 @@
 
 **Чеклист новой UI-фичи:**
 
-1. `backend/app/schemas/vpn.py` — поля в `ThemeResponse`
-2. `backend/admin-ui/src/pages/ThemePage.tsx` — поля в форме
-3. `backend/admin-ui/src/components/ClientPreview.tsx` — превью
-4. PC (`pc/`) — `clientTheme.ts`
-5. Android (`android/`) — `ThemeData`
-6. iOS (`ios/`) — по тому же принципу
-7. Push: `main` + ветки клиентов; деплой backend
+1. `app/schemas/vpn.py` — поля в `ThemeResponse`
+2. `admin-ui/src/pages/ThemePage.tsx` — поля в форме
+3. `admin-ui/src/components/ClientPreview.tsx` — превью
+4. PC (`Silent/pc/`) — `src/renderer/clientTheme.ts`
+5. Android (`Silent/android/`) — `ThemeData`
+6. iOS (`Silent/ios/`) — по тому же принципу
+7. Push: ветка `main` + **все** клиентские ветки; деплой backend
 
 ### AI-агент VK (Zvonki / Calls)
 
@@ -153,37 +155,52 @@
 ## Структура файлов
 
 ```
-Silent/
-├── .cursor/
-│   ├── MEMORY_BANK.md      ← этот файл
-│   ├── TASKS.md            ← задачи
-│   ├── APIS.md             ← API и внешние сервисы
-│   └── rules/              ← AGENTS, memory-bank, server-driven-ui
-├── backend/                ← ветка main (локально может быть частичный checkout)
+Silent/                         ← рабочая папка (НЕ git), открывать в Cursor
+├── .cursor/                    ← Memory Bank для Agent (копия из backend)
+│   ├── MEMORY_BANK.md
+│   ├── TASKS.md
+│   ├── APIS.md
+│   └── rules/
+├── backend/                    ← git, ветка main, свой .gitignore
+│   ├── .git
 │   ├── app/
-│   │   ├── api/            auth.py, vpn.py, users.py, admin.py, vk_auth.py, updates.py, payments.py
-│   │   ├── models/         user, device, subscription, payment, vk_hash, ...
-│   │   ├── schemas/        vpn.py (ThemeResponse), auth, user
-│   │   ├── services/       vpn_service, subscription_service, email_service, theme_settings, ...
-│   │   └── core/           security, deps
-│   ├── ai/                 vk_manager.py
-│   ├── admin-ui/           React-дашборд
+│   │   ├── api/                auth, vpn, users, admin, vk_auth, updates, payments
+│   │   ├── models/
+│   │   ├── schemas/            ThemeResponse
+│   │   ├── services/
+│   │   └── core/
+│   ├── ai/                     vk_manager.py
+│   ├── admin-ui/
 │   ├── docker-compose.yml
-│   ├── nginx.conf
 │   ├── ssl/
-│   ├── wdtt/               wdtt-server binary
-│   └── update/             pc/, android/ — OTA installers
-├── pc/                     ← ветка pc
-│   ├── src/main/           Electron main (VPN, WireGuard, wdtt)
-│   ├── src/renderer/       React UI
-│   ├── wdtt-go/            Go libclient
+│   ├── wdtt/
+│   └── update/                 pc/, android/ — OTA
+├── pc/                         ← git, ветка pc, свой .gitignore
+│   ├── .git
+│   ├── src/main/               Electron
+│   ├── src/renderer/           React
+│   ├── wdtt-go/
 │   └── build-installer.bat
-├── android/                ← ветка android
-├── ios/                    ← ветка ios
-└── deploy_*.py / check_*.py  ← SSH-деплой с Windows на VPS
+├── android/                    ← git, ветка android, свой .gitignore
+│   ├── .git
+│   ├── app/                    Android Studio: открывать android/app
+│   └── keystore/               локально, не в git
+├── ios/                        ← git, ветка ios, свой .gitignore
+│   ├── .git
+│   └── Silent/                 Swift-исходники
+└── deploy_*.py                 ← локальные SSH-скрипты (рядом или в backend)
 ```
 
-**Важно:** локальный workspace может содержать неполный checkout (`backend/` — часть файлов, android/ios — без исходников). Полный backend на VPS и в GitHub-ветках.
+### Первичная настройка локально
+
+```powershell
+# Каждая подпапка — clone своей ветки
+git clone -b main  https://github.com/footballpredictions/Silent.git backend
+git clone -b pc    https://github.com/footballpredictions/Silent.git pc
+git clone -b android https://github.com/footballpredictions/Silent.git android
+git clone -b ios   https://github.com/footballpredictions/Silent.git ios
+# Memory Bank — в корне Silent/.cursor (копия из backend/.cursor)
+```
 
 ## Git workflow
 
@@ -191,10 +208,19 @@ Silent/
 
 ```
 origin → github.com/footballpredictions/Silent.git
-main     → backend + AI + admin-ui
-pc       → PC-клиент
-android  → Android-клиент
-ios      → iOS-клиент
+main     → папка Silent/backend/
+pc       → папка Silent/pc/
+android  → папка Silent/android/
+ios      → папка Silent/ios/
+```
+
+Каждый push делается **из своей папки** в свою ветку:
+
+```powershell
+cd backend;  git push origin main
+cd pc;       git push origin pc
+cd android;  git push origin android
+cd ios;      git push origin ios
 ```
 
 ### Формат коммитов
@@ -208,20 +234,21 @@ fix(pc): faster connect, less ConfigSync/OTA spam, bump 1.0.142
 
 ### Куда коммитить
 
-| Изменения | Ветка |
-|-----------|-------|
-| Backend, admin-ui, AI | `main` |
-| PC-клиент | `pc` |
-| Android | `android` |
-| iOS | `ios` |
-| Theme / UI (server-driven) | `main` + **все** клиентские ветки |
+| Изменения | Папка | Ветка |
+|-----------|-------|-------|
+| Backend, admin-ui, AI | `backend/` | `main` |
+| PC-клиент | `pc/` | `pc` |
+| Android | `android/` | `android` |
+| iOS | `ios/` | `ios` |
+| Theme / UI (server-driven) | `backend/` + все клиенты | `main` + `pc` + `android` + `ios` |
+| Memory Bank | `backend/.cursor/` → копия в `Silent/.cursor/` | `main` |
 
 ### Триггеры Agent
 
 | Фраза пользователя | Действие |
 |--------------------|----------|
-| «пуш» | commit + push в нужную ветку |
-| «релиз» | `.\gradlew.bat assembleRelease` (Android) |
+| «пуш» | commit + push из нужной папки в нужную ветку |
+| «релиз» | `cd android\app; .\gradlew.bat assembleRelease` |
 | «новая задача — …» | добавить в `TASKS.md` |
 
 ## Деплой
@@ -249,7 +276,7 @@ python pull_backend_files.py     # скачать файлы с VPS → лока
 ```powershell
 cd pc
 .\build-installer.bat
-python deploy_update.py --file "pc\build-release-v141-XXXX\Silent VPN Setup 1.0.142.exe" --platform pc --version 1.0.142
+python deploy_update.py --file "build-release-v141-XXXX\Silent VPN Setup 1.0.142.exe" --platform pc --version 1.0.142
 ```
 
 ### Admin UI build
@@ -258,20 +285,12 @@ python deploy_update.py --file "pc\build-release-v141-XXXX\Silent VPN Setup 1.0.
 cd backend\admin-ui
 npm install
 npm run build
-# docker cp dist/. backend-api-1:/app/admin-ui/dist/
-```
-
-### Go wdtt-client (пересборка)
-
-```powershell
-cd pc\wdtt-go
-go build -ldflags="-s -w -checklinkname=0" -trimpath -o ..\resources\wdtt-client.exe .
 ```
 
 ### Android release
 
 ```powershell
-cd android
+cd android\app
 .\gradlew.bat assembleRelease
 ```
 
@@ -284,6 +303,13 @@ npm run dev    # Vite :3001 + Electron
 ```
 
 ## Последние изменения
+
+### 2026-06-18 — Структура репозитория
+
+- Откат monorepo на `main` — клиенты снова только в своих ветках
+- Плоская структура внутри каждой ветки (`app/` в корне android, `src/` в корне pc)
+- Локально: `Silent/{backend,pc,android,ios}` — четыре git-папки, один GitHub remote
+- Keystore Android убран из git (`keystore.properties` локально)
 
 ### 2026-06-16 — Backend + Admin
 

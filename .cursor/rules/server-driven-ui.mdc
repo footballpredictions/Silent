@@ -15,7 +15,7 @@ Silent VPN: **все** цвета, шрифты и настраиваемые т
 4. **PC** (`pc/`) — читать поля из темы (`/api/vpn/theme`, `clientTheme`)
 5. **Android** (`android/`) — `ThemeData` + `parseColor(theme?....)`
 6. **iOS** (`ios/`) — по тому же принципу
-7. Push: `main` + ветки клиентов; деплой backend при изменении API/админки
+7. Push: ветка `main` + все клиентские ветки; деплой backend
 
 ## Запрещено
 

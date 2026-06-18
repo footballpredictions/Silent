@@ -337,6 +337,38 @@ object WdttTunnelManager {
     private fun parseTrafficMb(statsStr: String): Double =
         Regex("""Трафик:\s*([\d.]+)""").find(statsStr)?.groupValues?.getOrNull(1)?.toDoubleOrNull() ?: 0.0
 
+    /** Сетевой шум при ramp-up — libclient сам ретраит, VPN не ломается. */
+    private fun isTransientNetworkGlitch(message: String): Boolean {
+        val lower = message.lowercase()
+        return lower.contains("connection abort") ||
+            lower.contains("connection reset") ||
+            lower.contains("broken pipe") ||
+            lower.contains("ошибка reader: eof") ||
+            lower.contains("ошибка writer:") ||
+            lower.contains(": eof") ||
+            lower.contains("i/o timeout") ||
+            lower.contains("network is unreachable") ||
+            lower.contains("no route to host") ||
+            lower.contains("context deadline exceeded")
+    }
+
+    private fun isVkAuthFatal(message: String): Boolean =
+        message.contains("error_code", true) ||
+            message.contains("call not found", true) ||
+            message.contains("FATAL", true) ||
+            message.contains("хеш мёртв", true) ||
+            message.contains("CAPTCHA", true) ||
+            message.contains("Rate limit", true)
+
+    /** Скрываем ретраи VK/DTLS, когда туннель уже живёт (воркеры или WG UP). */
+    private fun shouldSuppressTransientLibclientNoise(message: String): Boolean {
+        if (activeWorkers.value <= 0 && !tunnelReady.value) return false
+        if (isVkAuthFatal(message)) return false
+        return isTransientNetworkGlitch(message) ||
+            message.contains("WRAP_AUTH_TIMEOUT", true) ||
+            (message.contains("[VK Auth] Failed", true) && isTransientNetworkGlitch(message))
+    }
+
     /** Опрос wg-turn.conf — libclient часто пишет только в файл, без box в stdout. */
     private fun startConfFilePoller(context: Context) {
         confPollJob?.cancel()
@@ -598,13 +630,17 @@ object WdttTunnelManager {
                             }
                         }
                         if (lineTrim.contains("[VK Auth] Failed")) {
-                            Regex("""\[STREAM (\d+)\]""").find(lineTrim)?.let { m ->
-                                val gid = (m.groupValues[1].toIntOrNull() ?: return@let) / 100
-                                if (gid > 0) {
-                                    resolveHashForGroup(gid)?.let { hash ->
-                                        HashFailureReporter.report(scope, hash, "vk_auth_failed", lineTrim)
+                            if (!shouldSuppressTransientLibclientNoise(lineTrim)) {
+                                Regex("""\[STREAM (\d+)\]""").find(lineTrim)?.let { m ->
+                                    val gid = (m.groupValues[1].toIntOrNull() ?: return@let) / 100
+                                    if (gid > 0) {
+                                        resolveHashForGroup(gid)?.let { hash ->
+                                            HashFailureReporter.report(scope, hash, "vk_auth_failed", lineTrim)
+                                        }
                                     }
                                 }
+                            } else {
+                                return@forEachLine
                             }
                         }
                         if (
@@ -621,29 +657,40 @@ object WdttTunnelManager {
                         }
                     }
 
-                    // Ретраи воркеров — шум при ramp-up/капче, не ошибка VPN (как PC libclientLogParser).
+                    // Ретраи воркеров / DTLS — шум при ramp-up, не ошибка VPN (как PC libclientLogParser).
                     if (lineTrim.contains("[ВОРКЕР #") &&
                         !lineTrim.contains("[READY]") &&
                         !lineTrim.contains("зарегистрирован") &&
-                        !lineTrim.contains("Конфиг получен")
+                        !lineTrim.contains("Конфиг получен") &&
+                        !lineTrim.contains("Фатальная ошибка")
                     ) {
-                        if (lineTrim.contains("WRAP_AUTH_TIMEOUT", true) ||
+                        if (shouldSuppressTransientLibclientNoise(lineTrim) ||
+                            lineTrim.contains("Ошибка Reader:", true) ||
+                            lineTrim.contains("Ошибка Writer:", true) ||
+                            lineTrim.contains("WRAP_AUTH_TIMEOUT", true) ||
                             (lineTrim.contains("DTLS timeout", true) && lineTrim.contains("WRAP", true))
                         ) {
-                            if (activeWorkers.value > 0 || tunnelReady.value) {
-                                wrapAuthTimeoutCount = 0
-                            } else {
-                                wrapAuthTimeoutCount++
-                                if (wrapAuthTimeoutCount <= 3) {
-                                    updateLog(
-                                        "wrap_timeout_wait",
-                                        "[WRAP] Handshake не подтвердился ($wrapAuthTimeoutCount)",
-                                        50,
-                                    )
+                            if (lineTrim.contains("WRAP_AUTH_TIMEOUT", true) ||
+                                (lineTrim.contains("DTLS timeout", true) && lineTrim.contains("WRAP", true))
+                            ) {
+                                if (activeWorkers.value > 0 || tunnelReady.value) {
+                                    wrapAuthTimeoutCount = 0
+                                } else {
+                                    wrapAuthTimeoutCount++
+                                    if (wrapAuthTimeoutCount <= 3) {
+                                        updateLog(
+                                            "wrap_timeout_wait",
+                                            "[WRAP] Handshake не подтвердился ($wrapAuthTimeoutCount)",
+                                            50,
+                                        )
+                                    }
                                 }
                             }
+                            return@forEachLine
                         }
-                        return@forEachLine
+                        if (activeWorkers.value > 0 || tunnelReady.value) {
+                            return@forEachLine
+                        }
                     }
                     if (lineTrim.contains("[СЕССИЯ #") || lineTrim.contains("[ГРУППА #")) {
                         return@forEachLine

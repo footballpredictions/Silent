@@ -352,6 +352,12 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-06-18 — Android: QS-плитка OFF→ON + OTA runtime (v1.0.131)
+
+- **Симптом:** после OFF→ON с плитки вылет; чистая установка OK, OTA поверх — нет.
+- **Причина:** гонка disconnect/connect; FGS на DISCONNECT без startForeground; залипшие vpn_session_active / WG после OTA.
+- **Исправление:** `prepareForTileReconnect`, join disconnectJob, `EXTRA_FROM_TILE`, DISCONNECT через startService; `resetRuntimeFlags` в AppStateMigration (без токенов/конфига).
+
 ### 2026-06-18 — Android: быстрый OFF→ON QS-плитки
 
 - **Симптом:** VPN OFF → сразу ON с плитки — приложение падает/сворачивается, VPN не поднимается; повтор через время работает.

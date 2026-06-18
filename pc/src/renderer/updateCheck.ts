@@ -1,0 +1,122 @@
+import axios from 'axios'
+
+import api, { getPublicApiBaseUrl } from './api'
+import { pushLog } from './debugLog'
+import { isMainVpnSessionActive, isTunnelApiActive, WG_TUNNEL_GATEWAY } from './tunnelApi'
+
+export interface UpdateInfo {
+  available: boolean
+  version?: string
+  filename?: string
+  size?: number
+  uploaded_at?: string
+  download_url?: string
+}
+
+const APP_VERSION = __APP_VERSION__
+let lastVpnUpdateWarnAt = 0
+
+export function getAppVersion(): string {
+  return APP_VERSION
+}
+
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split('.').map(n => parseInt(n, 10) || 0)
+  const pb = b.split('.').map(n => parseInt(n, 10) || 0)
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const da = pa[i] ?? 0
+    const db = pb[i] ?? 0
+    if (da > db) return 1
+    if (da < db) return -1
+  }
+  return 0
+}
+
+function parseUpdateResponse(data: UpdateInfo | null | undefined): UpdateInfo | null {
+  if (!data?.version) return null
+  if (compareVersions(data.version, APP_VERSION) <= 0) return null
+  pushLog('Update', `available ${APP_VERSION} → ${data.version}`)
+  const filename = data.filename || ''
+  return {
+    available: true,
+    version: data.version,
+    filename,
+    size: data.size,
+    uploaded_at: data.uploaded_at,
+    download_url: data.download_url || `/update/pc/${encodeURIComponent(filename)}`,
+  }
+}
+
+async function checkViaTunnel(): Promise<UpdateInfo | null> {
+  if (!isTunnelApiActive()) return null
+  try {
+    const res = await api.get<UpdateInfo>('/api/updates/check', {
+      params: { platform: 'pc', version: APP_VERSION },
+      timeout: 45_000,
+    })
+    return parseUpdateResponse(res.data)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    pushLog('Update', `tunnel check fail: ${msg}`, 'W')
+    return null
+  }
+}
+
+async function checkViaRendererPublic(): Promise<UpdateInfo | null> {
+  const base = getPublicApiBaseUrl()
+  try {
+    const res = await axios.get<UpdateInfo>(`${base}/api/updates/check`, {
+      params: { platform: 'pc', version: APP_VERSION },
+      timeout: 45_000,
+    })
+    return parseUpdateResponse(res.data)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    pushLog('Update', `public check fail (${base}): ${msg}`, 'W')
+    return null
+  }
+}
+
+/** OTA: при VPN — сначала tunnel (10.66.66.1), иначе public HTTPS. */
+export async function checkForUpdate(): Promise<UpdateInfo | null> {
+  const vpnOn = isMainVpnSessionActive() || isTunnelApiActive()
+
+  if (vpnOn) {
+    const viaTunnel = await checkViaTunnel()
+    if (viaTunnel) return viaTunnel
+  }
+
+  const electron = (window as typeof window & { electronAPI?: { checkForUpdate?: (v: string) => Promise<UpdateInfo | null> } }).electronAPI
+  if (!vpnOn && electron?.checkForUpdate) {
+    try {
+      const data = await electron.checkForUpdate(APP_VERSION)
+      const parsed = parseUpdateResponse(data)
+      if (parsed) return parsed
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      pushLog('Update', `main check fail: ${msg}`, 'W')
+    }
+  }
+
+  if (!vpnOn) {
+    return checkViaRendererPublic()
+  }
+
+  const now = Date.now()
+  if (now - lastVpnUpdateWarnAt > 15 * 60_000) {
+    lastVpnUpdateWarnAt = now
+    pushLog('Update', 'VPN active — tunnel check failed, retry later', 'W')
+  }
+  return null
+}
+
+/** База для скачивания OTA: tunnel при VPN, иначе public. */
+export function getUpdateDownloadBase(): string {
+  if (isMainVpnSessionActive() || isTunnelApiActive()) {
+    return `http://${WG_TUNNEL_GATEWAY}:8000`
+  }
+  return getPublicApiBaseUrl()
+}
+
+export { APP_VERSION }

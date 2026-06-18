@@ -1,0 +1,458 @@
+package com.silent.vpn.vpn
+
+
+
+import android.content.Context
+
+import android.content.Intent
+
+import android.net.VpnService
+
+import android.util.Log
+
+import com.silent.vpn.util.DebugLog
+
+import com.silent.vpn.SilentApp
+import com.silent.vpn.data.BootstrapVpnConfig
+import com.silent.vpn.data.SilentRepository
+import com.silent.vpn.service.SilentGoBackendVpnService
+
+import com.wireguard.android.backend.GoBackend
+
+import com.wireguard.android.backend.Tunnel
+
+import com.wireguard.config.Config
+
+import com.wireguard.config.Interface
+
+import com.wireguard.config.Peer
+
+import kotlinx.coroutines.Dispatchers
+
+import kotlinx.coroutines.delay
+
+import kotlinx.coroutines.sync.Mutex
+
+import kotlinx.coroutines.sync.withLock
+
+import kotlinx.coroutines.withContext
+
+import java.io.ByteArrayInputStream
+
+
+
+/**
+
+ * WireGuard: split-tunnel (сервер/TURN вне WG), VK — excludeApplications.
+ * Bootstrap: includeApplications (Silent + браузеры + почта), AllowedIPs → API + backend HTTPS.
+ * apiOverlayMode: кратко AllowedIPs = 10.66.66.0/24 для sync API.
+ */
+
+class WireGuardHelper(context: Context) {
+
+    private val appContext = context.applicationContext
+
+    private val backend = (appContext as SilentApp).getBackend(context)
+
+
+
+    private companion object {
+
+        val wgMutex = Mutex()
+
+        var sharedTunnel: WgTunnel? = null
+
+        var lastAppliedSemanticKey: String? = null
+
+        @Volatile var wgTransitionActive: Boolean = false
+
+        private const val TAG = "WireGuardHelper"
+
+    }
+
+    /** Сброс WG даже если sharedTunnel=null (новый процесс после kill). */
+    suspend fun forceStopSilentTunnel() = wgMutex.withLock {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                appContext.startService(Intent(appContext, SilentGoBackendVpnService::class.java))
+            }
+            delay(300)
+            val tunnel = sharedTunnel ?: WgTunnel()
+            runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
+            sharedTunnel = null
+            lastAppliedSemanticKey = null
+        }
+    }
+
+    fun isWgTransitionActive(): Boolean = wgTransitionActive
+
+
+
+    class WgTunnel : Tunnel {
+
+        override fun getName() = "silent"
+
+        override fun onStateChange(newState: Tunnel.State) {}
+
+    }
+
+
+
+    suspend fun startTunnel(
+
+        configString: String,
+
+        excludeIPs: Collection<String> = emptyList(),
+
+        isBootstrap: Boolean = false,
+
+        apiOverlayMode: Boolean = false,
+
+        mobileApiRoute: Boolean = false,
+
+    ) = wgMutex.withLock {
+
+        withContext(Dispatchers.IO) {
+            wgTransitionActive = true
+            try {
+
+            if (VpnService.prepare(appContext) != null) {
+
+                throw IllegalStateException("VPN-разрешение не выдано")
+
+            }
+
+            if (VpnNetworkHelper.isOtherVpnActive(appContext)) {
+
+                DebugLog.i(TAG, "Замена другого VPN — поднимаем Silent")
+
+            }
+
+            ensureGoBackendServiceStarted()
+
+
+
+            var configToApply = configString
+
+            if (!apiOverlayMode) {
+                if (isBootstrap) {
+                    configToApply = if (excludeIPs.isNotEmpty()) {
+                        AllowedIpsHelper.patchAllowedIPs(configString, excludeIPs).also {
+                            DebugLog.i(TAG, "Bootstrap AllowedIPs: 0.0.0.0/0 − ${excludeIPs.size} host(s)")
+                        }
+                    } else {
+                        AllowedIpsHelper.patchAllowedIPsForBootstrapAuth(
+                            configString,
+                            serverIpFromConfig(configString),
+                        ).also {
+                            DebugLog.i(TAG, "Bootstrap AllowedIPs: API + backend HTTPS")
+                        }
+                    }
+                } else if (excludeIPs.isNotEmpty()) {
+                    configToApply = AllowedIpsHelper.patchAllowedIPs(configString, excludeIPs).also {
+                        DebugLog.i(TAG, "Main AllowedIPs: 0.0.0.0/0 − ${excludeIPs.size} host(s)")
+                    }
+                }
+                if (!isBootstrap && mobileApiRoute) {
+                    configToApply = AllowedIpsHelper.patchAllowedIPsEnsureApiSubnet(configToApply).also {
+                        DebugLog.i(TAG, "Main mobile: +${AllowedIpsHelper.WG_TUNNEL_SUBNET} for API (no overlay)")
+                    }
+                }
+            } else {
+                configToApply = AllowedIpsHelper.patchAllowedIPsToSubnet(configString)
+                DebugLog.i(TAG, "API overlay: ${AllowedIpsHelper.WG_TUNNEL_SUBNET}")
+            }
+
+
+
+            val excludeKey = when {
+                isBootstrap && !apiOverlayMode -> "bootstrap-companion"
+                apiOverlayMode -> "overlay-app-in"
+                mobileApiRoute -> "mobile-api-${excludeIPs.sorted().joinToString(",")}"
+                else -> excludeIPs.sorted().joinToString(",")
+            }
+
+            val semanticKey = wgSemanticKey(configToApply) + "|ex=$excludeKey|ov=$apiOverlayMode"
+
+            if (sharedTunnel != null && semanticKey.isNotBlank() && semanticKey == lastAppliedSemanticKey) {
+
+                DebugLog.i(TAG, "WireGuard skip (same config, tunnel UP)")
+
+                return@withContext
+
+            }
+
+
+
+            sharedTunnel?.let {
+
+                runCatching { backend.setState(it, Tunnel.State.DOWN, null) }
+
+                sharedTunnel = null
+
+                lastAppliedSemanticKey = null
+
+                delay(150)
+
+            }
+
+
+
+            val parsed = Config.parse(ByteArrayInputStream(configToApply.toByteArray(Charsets.UTF_8)))
+
+            val ifaceBuilder = Interface.Builder()
+
+                .parseAddresses(parsed.`interface`.addresses.joinToString(", ") { it.toString() })
+
+            val mtu = if (parsed.`interface`.mtu.isPresent) {
+
+                parsed.`interface`.mtu.get().coerceAtLeast(1280)
+
+            } else {
+
+                1280
+
+            }
+
+            ifaceBuilder.parseMtu(mtu.toString())
+
+            ifaceBuilder.parsePrivateKey(parsed.`interface`.keyPair.privateKey.toBase64())
+
+
+
+            if (isBootstrap && !apiOverlayMode) {
+                runCatching {
+                    val included = resolveBootstrapIncludedApps(appContext)
+                    if (included.isNotEmpty()) {
+                        ifaceBuilder.includeApplications(included)
+                        DebugLog.i(TAG, "Bootstrap includeApplications: ${included.size}")
+                    }
+                }
+            } else {
+                val includeAppInTunnel = apiOverlayMode || !SilentRepository.APP_EXCLUDED_FROM_VPN
+                runCatching {
+                    val excluded = resolveExcludedAppPackages(appContext, includeAppInTunnel)
+                    if (excluded.isNotEmpty()) {
+                        ifaceBuilder.excludeApplications(excluded)
+                        DebugLog.i(TAG, "App exclusions: ${excluded.size} (bootstrap=$isBootstrap overlay=$apiOverlayMode)")
+                    }
+                }
+            }
+
+
+
+            val peer = parsed.peers.firstOrNull() ?: throw IllegalStateException("No peer in config")
+
+            val peerBuilder = Peer.Builder().parsePublicKey(peer.publicKey.toBase64())
+
+            if (peer.preSharedKey.isPresent) peerBuilder.parsePreSharedKey(peer.preSharedKey.get().toBase64())
+
+            if (peer.endpoint.isPresent) peerBuilder.parseEndpoint(peer.endpoint.get().toString())
+
+            if (peer.persistentKeepalive.isPresent) {
+
+                peerBuilder.parsePersistentKeepalive(peer.persistentKeepalive.get().toString())
+
+            } else {
+
+                peerBuilder.parsePersistentKeepalive("25")
+
+            }
+
+            val allowedIps = parsed.peers.firstOrNull()?.allowedIps?.takeIf { it.isNotEmpty() }
+                ?.joinToString(", ") { it.toString() }
+                ?: "0.0.0.0/0"
+
+            peerBuilder.parseAllowedIPs(allowedIps)
+
+            DebugLog.i(TAG, "AllowedIPs=$allowedIps MTU=$mtu")
+
+
+
+            if (parsed.`interface`.dnsServers.isNotEmpty()) {
+
+                ifaceBuilder.parseDnsServers(
+
+                    parsed.`interface`.dnsServers.joinToString(", ") { it.hostAddress ?: "" },
+
+                )
+
+            } else {
+
+                ifaceBuilder.parseDnsServers("1.1.1.1,77.88.8.8")
+
+            }
+
+
+
+            val finalConfig = Config.Builder()
+
+                .setInterface(ifaceBuilder.build())
+
+                .addPeer(peerBuilder.build())
+
+                .build()
+
+
+
+            val tunnel = sharedTunnel
+            if (tunnel != null) {
+                runCatching {
+                    backend.setState(tunnel, Tunnel.State.UP, finalConfig)
+                    lastAppliedSemanticKey = semanticKey
+                    DebugLog.i(TAG, "WireGuard hot reload")
+                    return@withContext
+                }.onFailure { e ->
+                    DebugLog.w(TAG, "WG hot reload failed: ${e.message}")
+                }
+            }
+
+            sharedTunnel?.let {
+
+                runCatching { backend.setState(it, Tunnel.State.DOWN, null) }
+
+                sharedTunnel = null
+
+                lastAppliedSemanticKey = null
+
+                delay(150)
+
+            }
+
+
+
+            val newTunnel = WgTunnel()
+
+            setTunnelUpWithRetry(newTunnel, finalConfig)
+
+            sharedTunnel = newTunnel
+
+            lastAppliedSemanticKey = semanticKey
+
+            Log.i(TAG, "WireGuard tunnel UP")
+
+            DebugLog.i(TAG, "WireGuard tunnel UP")
+
+            } finally {
+                wgTransitionActive = false
+            }
+        }
+
+    }
+
+
+
+    private fun serverIpFromConfig(config: String): String {
+        val endpoint = Regex("""(?m)^Endpoint\s*=\s*([^:\s]+)""")
+            .find(config)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+        return endpoint.takeIf { it.matches(Regex("""\d+\.\d+\.\d+\.\d+""")) }
+            ?: BootstrapVpnConfig.serverHost()
+    }
+
+    private fun wgSemanticKey(config: String): String {
+
+        fun field(name: String): String =
+
+            Regex("""(?m)^$name\s*=\s*(\S+)""").find(config)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+
+        return listOf(
+
+            field("PrivateKey"),
+
+            field("Address"),
+
+            field("PublicKey"),
+
+            field("Endpoint"),
+
+        ).joinToString("|")
+
+    }
+
+
+
+    private suspend fun setTunnelUpWithRetry(tunnel: WgTunnel, config: Config) {
+
+        var last: Exception? = null
+
+        repeat(3) { attempt ->
+
+            try {
+
+                backend.setState(tunnel, Tunnel.State.UP, config)
+
+                return
+
+            } catch (e: Exception) {
+
+                last = e
+
+                Log.w(TAG, "WG UP attempt ${attempt + 1}/3: ${e.message}")
+
+                DebugLog.w(TAG, "WG UP attempt ${attempt + 1}/3: ${e.message}")
+
+                runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
+
+                ensureGoBackendServiceStarted()
+
+                delay(250L * (attempt + 1))
+
+            }
+
+        }
+
+        throw last ?: IllegalStateException("WireGuard UP failed")
+
+    }
+
+
+
+    suspend fun stopTunnel() = wgMutex.withLock {
+
+        withContext(Dispatchers.IO) {
+
+            sharedTunnel?.let {
+
+                runCatching { backend.setState(it, Tunnel.State.DOWN, null) }
+
+                sharedTunnel = null
+
+                lastAppliedSemanticKey = null
+
+            }
+
+        }
+
+    }
+
+
+
+    fun isTunnelUp(): Boolean {
+
+        val tunnel = sharedTunnel ?: return false
+
+        return runCatching { backend.getState(tunnel) == Tunnel.State.UP }.getOrDefault(false)
+
+    }
+
+
+
+    private suspend fun ensureGoBackendServiceStarted() {
+
+        withContext(Dispatchers.Main) {
+
+            runCatching {
+
+                appContext.startService(Intent(appContext, SilentGoBackendVpnService::class.java))
+
+            }
+
+        }
+
+        delay(300)
+
+    }
+
+}
+
+

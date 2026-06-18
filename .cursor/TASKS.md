@@ -2,7 +2,7 @@
 
 Формат: `[ ]` — не выполнено, `[x]` — выполнено.  
 Agent приступает к **первой невыполненной** задаче.  
-Статус сверен с коммитами `origin/main`, `origin/pc`, `origin/android` (2026-06-18).
+Статус сверен с `origin/main` (monorepo, 2026-06-18).
 
 ---
 
@@ -10,10 +10,10 @@ Agent приступает к **первой невыполненной** зад
 
 ### Инфраструктура и репозиторий
 
-- [ ] Синхронизировать локальный `backend/` checkout с `origin/main` (локально ~7 файлов, на main — полный `backend/app/`)
-- [ ] Checkout веток `android` / `ios` для полной локальной разработки клиентов
+- [ ] Переключить основной локальный клон `Silent/` на ветку `main` (сейчас worktree `pc`; полный monorepo в `Silent-main`)
+- [ ] Убрать лишние worktree (`Silent-android`, `Silent-main`) после перехода на один клон
 - [ ] Вынести SSH-пароль и GitHub PAT из `deploy_*.py` в локальный `.env.local` (секреты всё ещё в скриптах)
-- [ ] Документировать YuMoney webhook flow в APIS.md (`POST /api/payments/yumoney/notify` — в коде есть, описание flow — нет)
+- [ ] Документировать YuMoney webhook flow в APIS.md (`POST /api/payments/yumoney/notify`)
 
 ### iOS-клиент
 
@@ -27,8 +27,8 @@ Agent приступает к **первой невыполненной** зад
 
 ### Следующие релизы
 
-- [ ] Android: bump version → `assembleRelease` → push `origin/android` → `deploy_update.py`
-- [ ] PC: bump version → `build-installer.bat` → push `origin/pc` → `deploy_update.py`
+- [ ] Android: bump version → `cd android\app; .\gradlew.bat assembleRelease` → push `main` → `deploy_update.py`
+- [ ] PC: bump version → `build-installer.bat` → push `main` → `deploy_update.py`
 
 ---
 
@@ -36,7 +36,9 @@ Agent приступает к **первой невыполненной** зад
 
 ### Memory Bank / документация
 
-- [x] Обновить Memory Bank (MEMORY_BANK.md, APIS.md, TASKS.md) — 2026-06-18
+- [x] Monorepo: `pc/` + `android/` + `ios/` в `main` — 2026-06-18
+- [x] Android keystore убран из git, signing через `keystore.properties` — `bc06cfd`
+- [x] Обновить Memory Bank (MEMORY_BANK.md, APIS.md, TASKS.md) — `581fbe9`
 
 ### Backend (`origin/main`)
 

@@ -5,14 +5,16 @@
 **Silent VPN** — коммерческий VPN-сервис на базе WireGuard-туннелирования через VK TURN/DTLS серверы.
 Технология маскирует трафик под зашифрованный медиатрафик WebRTC-звонков ВКонтакте.
 
-**Репозиторий:** https://github.com/footballpredictions/Silent.git
+**Репозиторий:** https://github.com/footballpredictions/Silent.git — **monorepo**, всё в ветке `main`.
 
-| Ветка | Содержимое | Текущая версия клиента |
-|-------|------------|------------------------|
-| `main` | Backend (FastAPI), AI VK-агент, Admin UI (React) | — |
-| `pc` | PC-клиент (Electron 32 + React + Vite) | **1.0.142** |
-| `android` | Android (Kotlin + Jetpack Compose + WireGuard GoBackend) | **1.0.130** |
-| `ios` | iOS (Swift + SwiftUI + NetworkExtension) | начальная версия |
+| Компонент | Путь | Версия |
+|-----------|------|--------|
+| Backend | `backend/` | — |
+| PC-клиент | `pc/` | **1.0.142** |
+| Android | `android/` | **1.0.130** |
+| iOS | `ios/` | начальная |
+
+Ветки `pc`, `android`, `ios` — **архив** (история до слияния в monorepo). Работа только в `main`.
 
 ## Production-сервер
 
@@ -119,7 +121,7 @@
 4. PC (`pc/`) — `clientTheme.ts`
 5. Android (`android/`) — `ThemeData`
 6. iOS (`ios/`) — по тому же принципу
-7. Push: `main` + ветки клиентов; деплой backend
+7. Push в `main`; деплой backend при изменении API/админки
 
 ### AI-агент VK (Zvonki / Calls)
 
@@ -159,7 +161,7 @@ Silent/
 │   ├── TASKS.md            ← задачи
 │   ├── APIS.md             ← API и внешние сервисы
 │   └── rules/              ← AGENTS, memory-bank, server-driven-ui
-├── backend/                ← ветка main (локально может быть частичный checkout)
+├── backend/
 │   ├── app/
 │   │   ├── api/            auth.py, vpn.py, users.py, admin.py, vk_auth.py, updates.py, payments.py
 │   │   ├── models/         user, device, subscription, payment, vk_hash, ...
@@ -173,29 +175,28 @@ Silent/
 │   ├── ssl/
 │   ├── wdtt/               wdtt-server binary
 │   └── update/             pc/, android/ — OTA installers
-├── pc/                     ← ветка pc
+├── pc/
 │   ├── src/main/           Electron main (VPN, WireGuard, wdtt)
 │   ├── src/renderer/       React UI
 │   ├── wdtt-go/            Go libclient
 │   └── build-installer.bat
-├── android/                ← ветка android
-├── ios/                    ← ветка ios
+├── android/
+├── ios/
 └── deploy_*.py / check_*.py  ← SSH-деплой с Windows на VPS
 ```
 
-**Важно:** локальный workspace может содержать неполный checkout (`backend/` — часть файлов, android/ios — без исходников). Полный backend на VPS и в GitHub-ветках.
+Один клон, одна ветка `main` — все компоненты всегда на месте. Открывать корень `Silent/` в Cursor / Android Studio.
 
 ## Git workflow
 
-### Ветки и remotes
+### Ветка и remote
 
 ```
 origin → github.com/footballpredictions/Silent.git
-main     → backend + AI + admin-ui
-pc       → PC-клиент
-android  → Android-клиент
-ios      → iOS-клиент
+main     → backend + pc + android + ios + .cursor + deploy-скрипты
 ```
+
+Старые ветки `pc`, `android`, `ios` не использовать для новых коммитов.
 
 ### Формат коммитов
 
@@ -208,20 +209,21 @@ fix(pc): faster connect, less ConfigSync/OTA spam, bump 1.0.142
 
 ### Куда коммитить
 
-| Изменения | Ветка |
-|-----------|-------|
-| Backend, admin-ui, AI | `main` |
-| PC-клиент | `pc` |
-| Android | `android` |
-| iOS | `ios` |
-| Theme / UI (server-driven) | `main` + **все** клиентские ветки |
+| Изменения | Путь / ветка |
+|-----------|--------------|
+| Backend, admin-ui, AI | `backend/` → `main` |
+| PC-клиент | `pc/` → `main` |
+| Android | `android/` → `main` |
+| iOS | `ios/` → `main` |
+| Theme / UI (server-driven) | `backend/` + все клиенты → один коммит в `main` |
+| Memory Bank | `.cursor/` → `main` |
 
 ### Триггеры Agent
 
 | Фраза пользователя | Действие |
 |--------------------|----------|
-| «пуш» | commit + push в нужную ветку |
-| «релиз» | `.\gradlew.bat assembleRelease` (Android) |
+| «пуш» | commit + push в `main` |
+| «релиз» | `cd android\app; .\gradlew.bat assembleRelease` |
 | «новая задача — …» | добавить в `TASKS.md` |
 
 ## Деплой
@@ -271,7 +273,7 @@ go build -ldflags="-s -w -checklinkname=0" -trimpath -o ..\resources\wdtt-client
 ### Android release
 
 ```powershell
-cd android
+cd android\app
 .\gradlew.bat assembleRelease
 ```
 
@@ -284,6 +286,12 @@ npm run dev    # Vite :3001 + Electron
 ```
 
 ## Последние изменения
+
+### 2026-06-18 — Monorepo
+
+- `pc/`, `android/`, `ios/` слиты в ветку `main` — одна структура каталогов как в Memory Bank
+- `.gitignore` обновлён: клиенты больше не исключаются из main
+- Ветки `pc` / `android` / `ios` — архив, новые коммиты только в `main`
 
 ### 2026-06-16 — Backend + Admin
 

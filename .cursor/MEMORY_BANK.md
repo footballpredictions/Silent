@@ -352,6 +352,11 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-06-18 — Android: шум VK Auth / DTLS EOF в логе при ramp-up
+
+- **Симптом:** `[VK Auth] Failed … connection abort`, `[ВОРКЕР #N] Ошибка Reader: EOF` при работающем VPN.
+- **Исправление (ветка `android`):** скрытие сетевых ретраев при `воркеры≥1` или WG UP; фатальные VK-ошибки и старт с 0 воркеров — по-прежнему в логе; `vk_auth_failed` на сервер не шлётся для обрывов TCP.
+
 ### 2026-06-18 — Android: WRAP_AUTH_TIMEOUT в логе при ramp-up
 
 - **Симптом:** VPN работает (GETCONF, трафик), но в логе `[ВОРКЕР #N] WRAP_AUTH_TIMEOUT` как красная ошибка при наборе 27/36 воркеров и капче.

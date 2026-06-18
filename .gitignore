@@ -1,8 +1,3 @@
-# Client code lives on separate branches (android/pc/ios), not on main
-android/
-pc/
-ios/
-
 # Python
 __pycache__/
 *.py[cod]
@@ -11,41 +6,23 @@ __pycache__/
 venv/
 *.egg-info/
 
-# Node
+# Node (admin-ui)
+admin-ui/node_modules/
+admin-ui/dist/
 node_modules/
 dist/
-.env
-*.local
 
-# Electron build
-pc/dist/
-pc/node_modules/
-
-# Android
-android/.gradle/
-android/build/
-android/app/build/
-android/.idea/
-android/*.iml
-android/local.properties
-
-# iOS
-ios/Silent.xcodeproj/project.xcworkspace/
-ios/DerivedData/
-ios/*.xcworkspace/xcuserdata/
-ios/Pods/
-
-# Docker
-backend/ssl/
-backend/wdtt/wdtt-server
+# Docker / runtime
+ssl/
+wdtt/wdtt-server
 
 # Secrets
-*.env
+.env
 *.key
 *.pem
 *.crt
 *.p12
-backend/.env
+.env.local
 
 # Logs
 *.log
@@ -54,3 +31,6 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Build artifacts
+admin-ui/tsconfig.tsbuildinfo

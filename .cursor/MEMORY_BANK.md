@@ -352,6 +352,11 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-06-18 — Android: шум цепочки капчи в логе (AUTO/v2/WBV)
+
+- **Симптом:** `rate limit reached`, `ERROR_LIMIT`, `WBV timeout`, `не решил за 2 попытки` при работающем ramp-up.
+- **Исправление (ветка `android`):** скрыты промежуточные шаги AUTO; остаются «решил капчу» / «Решена ✓»; таймаут 90с скрыт при живых воркерах/WG.
+
 ### 2026-06-18 — Android: шум VK Auth / DTLS EOF в логе при ramp-up
 
 - **Симптом:** `[VK Auth] Failed … connection abort`, `[ВОРКЕР #N] Ошибка Reader: EOF` при работающем VPN.

@@ -352,6 +352,12 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-06-18 — Android: 0 трафик при подключении (GETCONF vs кеш WG)
+
+- **Симптом:** воркеры набираются (36), `WireGuard UP`, трафик ≈ 0; помогало 4–5 переключений. В логе: `WireGuard из кеша (GETCONF timeout)` + `[ВОРКЕР #1] Ошибка конфига: dtls timeout`.
+- **Причина:** fallback API-кеша через 10 с раньше таймаута GETCONF (15 с в libclient); после `tunnelReady` свежий GETCONF не перезаписывал WG.
+- **Исправление (ветка `android`, `c47ef2a`):** приоритет `GETCONF` > `API_CACHE`; fallback кеша 22–28 с и только при ≥1 воркере; поллер `wg-turn.conf` после кеш-WG; watchdog 0 трафика → GETCONF или перезапуск; 0 воркеров при старте — перезапуск через 60 с.
+
 ### 2026-06-18 — Android: восстановление VPN при смене сети / звонке / плохой связи
 
 - **Регрессия:** после `100d728`/`8cbace5` убран pause при обрыве; `mobileApiRouteEnabled=false`; `restartTransport` с 30с grace не срабатывал при Wi‑Fi↔LTE; fingerprint без VALIDATED не ловил 3G/2G.

@@ -11,6 +11,7 @@ FILES = [
     "app/config.py",
     "app/api/admin.py",
     "app/api/vk_auth.py",
+    "app/services/vk_id_service.py",
     "app/api/users.py",
     "app/api/auth.py",
     "app/api/vpn.py",

@@ -257,6 +257,17 @@ fix(pc): faster connect, less ConfigSync/OTA spam, bump 1.0.142
 
 ## Деплой
 
+### Шпаргалки по репозиториям (Agent: открывать первым делом)
+
+| Репозиторий | Ветка | Файл шпаргалки | Папка deploy-скриптов |
+|-------------|-------|----------------|----------------------|
+| `backend/` | `main` | **`backend/DEPLOY.md`** | `backend/scripts/` (11 файлов) |
+| `pc/` | `pc` | **`pc/DEPLOY.md`** | `pc/scripts/` (2 deploy + 1 утилита) |
+| `android/` | `android` | **`android/DEPLOY.md`** | `android/scripts/` (2 файла) |
+| `ios/` | `ios` | *(нет OTA-деплоя)* | — |
+
+В каждом `DEPLOY.md` — **полный список** deploy-файлов репозитория и таблица «скрипт → какие исходники на VPS».
+
 ### Правила для Agent (обязательно)
 
 1. **Не создавать** новые `deploy_*.py`, `check_*.py`, `fix_*.py` в корне проекта или рядом с кодом.
@@ -301,7 +312,7 @@ cd backend
 | OTA API на backend | `python scripts/deploy_update_backend.py` | Endpoint `/api/updates` (без .exe/.apk) |
 | wdtt-server systemd | `python scripts/deploy_wdtt_systemd.py` | Установка/обновление wdtt.service |
 
-Подробная таблица и server-side install: `backend/DEPLOY.md`.
+**Детали и списки файлов каждого скрипта:** `backend/DEPLOY.md` (не дублировать здесь).
 
 **Типовой цикл после правок backend:**
 
@@ -314,22 +325,11 @@ python scripts/deploy_stable.py
 
 ### PC OTA (`pc` → `pc/scripts/`)
 
-```powershell
-cd pc
-.\build-installer.bat
-python scripts/deploy_release.py "build-release-v141-XXXX\Silent VPN Setup 1.0.142.exe" 1.0.142
-```
-
-Загружает `.exe` в `/opt/silent-vpn/backend/update/pc/`, обновляет `manifest.json` в контейнере.
+См. **`pc/DEPLOY.md`**: `deploy_release.py`, `_deploy_common.py`.
 
 ### Android OTA (`android` → `android/scripts/`)
 
-```powershell
-cd android\app
-.\gradlew.bat assembleRelease
-cd ..
-python scripts/deploy_release.py "app\build\outputs\apk\release\app-release.apk" 1.0.130
-```
+См. **`android/DEPLOY.md`**: `deploy_release.py`, `_deploy_common.py`.
 
 ### Сборка без деплоя
 
@@ -351,6 +351,11 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-06-18 — Шпаргалки DEPLOY.md по веткам
+
+- `backend/DEPLOY.md`, `pc/DEPLOY.md`, `android/DEPLOY.md` — полные списки deploy-файлов в каждом репозитории
+- MEMORY_BANK: индекс «какой репозиторий → какой DEPLOY.md»
 
 ### 2026-06-18 — Деплой-скрипты и Silent-Project
 

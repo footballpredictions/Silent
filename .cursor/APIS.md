@@ -292,7 +292,11 @@ SSH-секреты: `Silent-Project/.env.deploy` или `backend/.env.deploy` (�
 
 Общий модуль: `_deploy_common.py` (SSH, upload, `load_env()`).
 
+**Полные списки файлов по каждому скрипту:** `backend/DEPLOY.md`, `pc/DEPLOY.md`, `android/DEPLOY.md`.
+
 ### PC OTA — `pc/scripts/` (ветка `pc`)
+
+См. `pc/DEPLOY.md`.
 
 ```powershell
 python scripts/deploy_release.py "<path-to-setup.exe>" <version>
@@ -300,11 +304,11 @@ python scripts/deploy_release.py "<path-to-setup.exe>" <version>
 
 ### Android OTA — `android/scripts/` (ветка `android`)
 
+См. `android/DEPLOY.md`.
+
 ```powershell
 python scripts/deploy_release.py "<path-to.apk>" <version>
 ```
-
-Подробности: `backend/DEPLOY.md`, раздел «Деплой» в `MEMORY_BANK.md`.
 
 ---
 

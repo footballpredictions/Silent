@@ -6,6 +6,16 @@ alwaysApply: true
 
 **Рабочая папка:** `Silent-Project/` (не старый `Silent/` с корневыми `deploy_*.py`).
 
+## Шпаргалки (открывать по ветке)
+
+| Ветка | Файл |
+|-------|------|
+| `main` / backend | `backend/DEPLOY.md` |
+| `pc` | `pc/DEPLOY.md` |
+| `android` | `android/DEPLOY.md` |
+
+Индекс: `MEMORY_BANK.md` → «Деплой» → «Шпаргалки по репозиториям».
+
 ## Запрещено
 
 - Создавать новые `deploy_*.py`, `check_*.py`, `fix_*.py` в корне `Silent-Project/` или рядом с `app/`, `src/`
@@ -24,4 +34,4 @@ alwaysApply: true
 
 Запуск всегда из папки репозитория: `cd backend` → `python scripts/deploy_stable.py`.
 
-Полная таблица и сценарии: `.cursor/MEMORY_BANK.md` → «Деплой», `backend/DEPLOY.md`.
+Полные списки файлов: `backend/DEPLOY.md`, `pc/DEPLOY.md`, `android/DEPLOY.md`.

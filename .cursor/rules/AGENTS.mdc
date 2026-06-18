@@ -7,4 +7,6 @@ alwaysApply: true
 - Полный контекст: `.cursor/MEMORY_BANK.md`, задачи: `.cursor/TASKS.md`, API: `.cursor/APIS.md`.
 - Memory Bank читается **в начале каждой сессии** (см. `.cursor/rules/memory-bank.mdc`).
 - Ответы пользователю: **на русском**.
+- **Рабочая папка:** `Silent-Project/` (не устаревший `Silent/` с корневыми `deploy_*.py`).
+- **Деплой:** использовать **только** скрипты из `backend/scripts/`, `pc/scripts/`, `android/scripts/`. **Не создавать** новые `deploy_*.py` / `check_*.py`. См. раздел «Деплой» в MEMORY_BANK.md.
 - **UI / оформление:** любая новая визуальная фича — поля в `ThemeResponse`, настройки в админке **Оформление**, подключение во **всех** клиентах (pc, android, ios). Не хардкодить цвета/тексты в клиентах. Подробно: раздел «Дизайн» в `MEMORY_BANK.md`.

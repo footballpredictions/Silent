@@ -1,0 +1,27 @@
+---
+alwaysApply: true
+---
+
+# Деплой Silent VPN
+
+**Рабочая папка:** `Silent-Project/` (не старый `Silent/` с корневыми `deploy_*.py`).
+
+## Запрещено
+
+- Создавать новые `deploy_*.py`, `check_*.py`, `fix_*.py` в корне `Silent-Project/` или рядом с `app/`, `src/`
+- Хардкодить SSH-пароли в скрипты
+- Использовать устаревшие имена: `deploy_full_api.py`, `deploy_update.py`, `deploy_all.py`
+
+## Канонические скрипты
+
+| Репозиторий | Папка | Деплой |
+|-------------|-------|--------|
+| backend (`main`) | `backend/scripts/` | `deploy_stable.py`, `deploy_api.py`, `deploy_helper.py`, … |
+| pc (`pc`) | `pc/scripts/` | `deploy_release.py` — OTA .exe |
+| android (`android`) | `android/scripts/` | `deploy_release.py` — OTA .apk |
+
+Секреты: `Silent-Project/.env.deploy` (шаблон `backend/scripts/.env.deploy.example`).
+
+Запуск всегда из папки репозитория: `cd backend` → `python scripts/deploy_stable.py`.
+
+Полная таблица и сценарии: `.cursor/MEMORY_BANK.md` → «Деплой», `backend/DEPLOY.md`.

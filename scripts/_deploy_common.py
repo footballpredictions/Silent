@@ -38,7 +38,7 @@ def ssh_config() -> tuple[str, str, str]:
     password = os.environ.get("DEPLOY_PASS", "")
     if not password:
         raise SystemExit(
-            "Задайте DEPLOY_PASS в backend/.env.deploy или Silent/.env.deploy "
+            "Задайте DEPLOY_PASS в Silent-Project/.env.deploy или backend/.env.deploy "
             "(см. backend/scripts/.env.deploy.example)"
         )
     return host, user, password

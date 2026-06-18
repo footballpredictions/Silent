@@ -2,7 +2,7 @@
 
 ## Деплой с Windows (ветка `main`, папка `backend/`)
 
-Секреты SSH — в `backend/.env.deploy` или `Silent/.env.deploy` (см. `scripts/.env.deploy.example`).
+Секреты SSH — в `Silent-Project/.env.deploy` или `backend/.env.deploy` (см. `scripts/.env.deploy.example`).
 
 ```powershell
 pip install paramiko

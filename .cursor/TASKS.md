@@ -10,9 +10,6 @@ Agent приступает к **первой невыполненной** зад
 
 ### Инфраструктура и репозиторий
 
-- [ ] Синхронизировать локальный `backend/` checkout с `origin/main` (локально ~7 файлов, на main — полный `backend/app/`)
-- [ ] Checkout веток `android` / `ios` для полной локальной разработки клиентов
-- [ ] Вынести SSH-пароль и GitHub PAT из `deploy_*.py` в локальный `.env.local` (секреты всё ещё в скриптах)
 - [ ] Документировать YuMoney webhook flow в APIS.md (`POST /api/payments/yumoney/notify` — в коде есть, описание flow — нет)
 
 ### iOS-клиент
@@ -27,8 +24,8 @@ Agent приступает к **первой невыполненной** зад
 
 ### Следующие релизы
 
-- [ ] Android: bump version → `assembleRelease` → push `origin/android` → `deploy_update.py`
-- [ ] PC: bump version → `build-installer.bat` → push `origin/pc` → `deploy_update.py`
+- [ ] Android: bump version → `assembleRelease` → push `origin/android` → `python scripts/deploy_release.py ...`
+- [ ] PC: bump version → `build-installer.bat` → push `origin/pc` → `python scripts/deploy_release.py ...`
 
 ---
 
@@ -37,6 +34,9 @@ Agent приступает к **первой невыполненной** зад
 ### Memory Bank / документация
 
 - [x] Обновить Memory Bank (MEMORY_BANK.md, APIS.md, TASKS.md) — 2026-06-18
+- [x] Документировать деплой по веткам (`backend/scripts/`, `pc/scripts/`, `android/scripts/`) — 2026-06-18
+- [x] SSH-секреты в `.env.deploy` через `_deploy_common.py` — 2026-06-18
+- [x] Убрать старые deploy/diag-скрипты из корня и `android/scripts/inspect_*.py` — 2026-06-18
 
 ### Backend (`origin/main`)
 

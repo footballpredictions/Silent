@@ -254,29 +254,57 @@ MAX_DEVICES_PER_USER=3
 |----------|----------|
 | Repo | `footballpredictions/Silent` |
 | Ветки | `main`, `pc`, `android`, `ios` |
-| Deploy token | PAT в `deploy_helper.py` / `.git/config` — **ротировать, не коммитить** |
+| Deploy token | PAT только в `.env.deploy` / локальном git config — **не коммитить** |
 
 ---
 
 ## Deploy-скрипты (Windows → VPS)
 
-SSH: `132.243.234.162`, user `root`, path `/opt/silent-vpn`.
+**Каноническое расположение** — только `scripts/` внутри каждой ветки.  
+**Agent: не создавать** новые `deploy_*.py` / `check_*.py` в корне проекта.
+
+SSH-секреты: `Silent-Project/.env.deploy` или `backend/.env.deploy` (шаблон `backend/scripts/.env.deploy.example`).
+
+| Переменная | По умолчанию |
+|------------|--------------|
+| `DEPLOY_HOST` | `132.243.234.162` |
+| `DEPLOY_USER` | `root` |
+| `DEPLOY_PASS` | *(обязательно)* |
+| `DEPLOY_REMOTE` | `/opt/silent-vpn/backend` |
+| `DEPLOY_CONTAINER` | `backend-api-1` |
+
+### Backend — `backend/scripts/` (ветка `main`)
+
+Запуск: `cd backend` → `python scripts/<скрипт>.py`
 
 | Скрипт | Назначение |
 |--------|------------|
-| `deploy_helper.py install` | Первичная установка VPS |
 | `deploy_helper.py check` | Диагностика VPS |
-| `deploy_helper.py status` | `docker compose ps` |
-| `deploy_helper.py creds` | Показать credentials |
-| `deploy_stable.py` | Sync app/ + ai/ + admin-ui dist |
-| `deploy_all.py` | admin + vpn + vk_manager |
-| `deploy_full_api.py` | auth, vpn, users, admin, vk_auth |
-| `deploy_update.py` | OTA: загрузка .exe/.apk + manifest |
+| `deploy_helper.py install` | Первичная установка VPS (clone main, docker) |
+| `deploy_helper.py status` | `docker compose ps` + логи |
+| `deploy_helper.py creds` | Admin credentials с сервера |
+| `deploy_stable.py` | Полный деплой: все `app/` + `ai/` + admin-ui/dist |
+| `deploy_api.py` | Точечно: auth, vpn, users, admin, vk_auth + dist |
+| `deploy_vk_calls.py` | VK Calls auth + vk_manager + admin-ui |
+| `deploy_config_sync.py` | ConfigSync / sync-state |
+| `deploy_update_backend.py` | OTA API (без загрузки бинарников) |
 | `deploy_wdtt_systemd.py` | wdtt-server как systemd service |
-| `deploy_wg_api_fix2.py` | iptables DNAT 10.66.66.1:8000 |
-| `pull_backend_files.py` | Скачать файлы с VPS → локальный backend/ |
 
-**Credentials для SSH** хранятся в deploy-скриптах локально — не публиковать в git.
+Общий модуль: `_deploy_common.py` (SSH, upload, `load_env()`).
+
+### PC OTA — `pc/scripts/` (ветка `pc`)
+
+```powershell
+python scripts/deploy_release.py "<path-to-setup.exe>" <version>
+```
+
+### Android OTA — `android/scripts/` (ветка `android`)
+
+```powershell
+python scripts/deploy_release.py "<path-to.apk>" <version>
+```
+
+Подробности: `backend/DEPLOY.md`, раздел «Деплой» в `MEMORY_BANK.md`.
 
 ---
 

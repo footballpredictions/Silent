@@ -9,12 +9,15 @@
 
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
-| `Silent/backend/` | `main` | — |
-| `Silent/pc/` | `pc` | **1.0.142** |
-| `Silent/android/` | `android` | **1.0.130** |
-| `Silent/ios/` | `ios` | начальная |
+| `Silent-Project/backend/` | `main` | — |
+| `Silent-Project/pc/` | `pc` | **1.0.142** |
+| `Silent-Project/android/` | `android` | **1.0.130** |
+| `Silent-Project/ios/` | `ios` | начальная |
 
-Папка `Silent/` **не является** git-репозиторием — это рабочий контейнер. Внутри каждая подпапка — **свой git** (свой `.git` / worktree) и **свой `.gitignore`**.
+**Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
+Папка `Silent-Project/` **не является** git-репозиторием — это контейнер. Внутри каждая подпапка — **свой git** (worktree / clone) и **свой `.gitignore`**.
+
+> Устаревшая папка `AndroidStudioProjects\Silent` (корневые `deploy_*.py`, `check_*.py`) — **не использовать**. Деплой только через `scripts/` внутри каждой ветки.
 
 ## Production-сервер
 
@@ -118,9 +121,9 @@
 1. `app/schemas/vpn.py` — поля в `ThemeResponse`
 2. `admin-ui/src/pages/ThemePage.tsx` — поля в форме
 3. `admin-ui/src/components/ClientPreview.tsx` — превью
-4. PC (`Silent/pc/`) — `src/renderer/clientTheme.ts`
-5. Android (`Silent/android/`) — `ThemeData`
-6. iOS (`Silent/ios/`) — по тому же принципу
+4. PC (`Silent-Project/pc/`) — `src/renderer/clientTheme.ts`
+5. Android (`Silent-Project/android/`) — `ThemeData`
+6. iOS (`Silent-Project/ios/`) — по тому же принципу
 7. Push: ветка `main` + **все** клиентские ветки; деплой backend
 
 ### AI-агент VK (Zvonki / Calls)
@@ -155,41 +158,24 @@
 ## Структура файлов
 
 ```
-Silent/                         ← рабочая папка (НЕ git), открывать в Cursor
-├── .cursor/                    ← симлинк → backend/.cursor (одни и те же файлы)
-│   ├── MEMORY_BANK.md
-│   ├── TASKS.md
-│   ├── APIS.md
-│   └── rules/
-├── backend/                    ← git, ветка main, свой .gitignore
-│   ├── .git
-│   ├── .cursor/                ← Memory Bank в git (единственный источник)
-│   ├── app/
-│   │   ├── api/                auth, vpn, users, admin, vk_auth, updates, payments
-│   │   ├── models/
-│   │   ├── schemas/            ThemeResponse
-│   │   ├── services/
-│   │   └── core/
-│   ├── ai/                     vk_manager.py
-│   ├── admin-ui/
-│   ├── docker-compose.yml
-│   ├── ssl/
-│   ├── wdtt/
-│   └── update/                 pc/, android/ — OTA
-├── pc/                         ← git, ветка pc, свой .gitignore
-│   ├── .git
-│   ├── src/main/               Electron
-│   ├── src/renderer/           React
-│   ├── wdtt-go/
+Silent-Project/                 ← рабочая папка (НЕ git), открывать в Cursor
+├── .cursor/                    ← junction → backend/.cursor
+├── .env.deploy                 ← SSH-секреты (локально, НЕ в git)
+├── backend/                    ← git, ветка main
+│   ├── .cursor/                ← Memory Bank (единственный источник)
+│   ├── app/, ai/, admin-ui/
+│   ├── scripts/                ← ВСЕ deploy-скрипты backend (см. раздел «Деплой»)
+│   ├── DEPLOY.md
+│   └── docker-compose.yml
+├── pc/                         ← git, ветка pc
+│   ├── scripts/                deploy_release.py — OTA .exe
 │   └── build-installer.bat
-├── android/                    ← git, ветка android, свой .gitignore
-│   ├── .git
+├── android/                    ← git, ветка android
 │   ├── app/                    Android Studio: открывать android/app
+│   ├── scripts/                deploy_release.py — OTA .apk
 │   └── keystore/               локально, не в git
-├── ios/                        ← git, ветка ios, свой .gitignore
-│   ├── .git
-│   └── Silent/                 Swift-исходники
-└── deploy_*.py                 ← локальные SSH-скрипты (рядом или в backend)
+└── ios/                        ← git, ветка ios
+    └── Silent/
 ```
 
 ### Memory Bank — одна папка, не две
@@ -197,12 +183,12 @@ Silent/                         ← рабочая папка (НЕ git), отк
 | Путь | Роль |
 |------|------|
 | `backend/.cursor/` | **Единственный источник.** Коммитится в ветку `main`. Agent **редактирует только здесь**. |
-| `Silent/.cursor/` | **Симлинк** на `backend/.cursor/`. Нужен, чтобы Cursor в корне `Silent/` видел те же rules и Memory Bank. |
+| `Silent-Project/.cursor/` | **Junction** на `backend/.cursor/`. Чтобы Cursor в корне видел те же rules и Memory Bank. |
 
-**Не копировать вручную** — после `git clone backend` создать симлинк:
+**Не копировать вручную** — после настройки worktrees создать junction:
 
 ```powershell
-# из корня Silent (один раз после клонирования)
+# из корня Silent-Project (один раз)
 cmd /c mklink /J .cursor backend\.cursor
 ```
 
@@ -226,10 +212,10 @@ cmd /c mklink /J .cursor backend\.cursor
 
 ```
 origin → github.com/footballpredictions/Silent.git
-main     → папка Silent/backend/
-pc       → папка Silent/pc/
-android  → папка Silent/android/
-ios      → папка Silent/ios/
+main     → папка Silent-Project/backend/
+pc       → папка Silent-Project/pc/
+android  → папка Silent-Project/android/
+ios      → папка Silent-Project/ios/
 ```
 
 Каждый push делается **из своей папки** в свою ветку:
@@ -259,7 +245,7 @@ fix(pc): faster connect, less ConfigSync/OTA spam, bump 1.0.142
 | Android | `android/` | `android` |
 | iOS | `ios/` | `ios` |
 | Theme / UI (server-driven) | `backend/` + все клиенты | `main` + `pc` + `android` + `ios` |
-| Memory Bank | `backend/.cursor/` (+ симлинк `Silent/.cursor`) | `main` |
+| Memory Bank | `backend/.cursor/` (+ junction `Silent-Project/.cursor`) | `main` |
 
 ### Триггеры Agent
 
@@ -271,62 +257,114 @@ fix(pc): faster connect, less ConfigSync/OTA spam, bump 1.0.142
 
 ## Деплой
 
-### Первичная установка VPS
+### Правила для Agent (обязательно)
+
+1. **Не создавать** новые `deploy_*.py`, `check_*.py`, `fix_*.py` в корне проекта или рядом с кодом.
+2. **Использовать только** канонические скрипты из таблиц ниже (`backend/scripts/`, `pc/scripts/`, `android/scripts/`).
+3. Если нужен новый сценарий деплоя — **расширить существующий скрипт** или добавить файл **только** в `backend/scripts/` (и закоммитить в `main`), не в корень `Silent-Project/`.
+4. Секреты SSH — **только** в `.env.deploy` (см. `backend/scripts/.env.deploy.example`). Не хардкодить пароли в скрипты.
+5. Запускать скрипты **из папки своего репозитория** (`cd backend`, `cd pc`, `cd android`).
+6. Перед деплоем admin-ui: `cd backend\admin-ui; npm run build`.
+7. Зависимость: `pip install paramiko` (один раз на машине).
+
+### Секреты и пути
+
+Файл `.env.deploy` (не в git) — один из:
+
+- `Silent-Project/.env.deploy` (рекомендуется, общий для всех веток)
+- `backend/.env.deploy`
+- `%USERPROFILE%\.silent-vpn-deploy.env`
+
+Переменные: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_PASS`, `DEPLOY_REMOTE`, `DEPLOY_CONTAINER`.
+
+На VPS: `/opt/silent-vpn/backend`, контейнер `backend-api-1`, OTA: `update/pc/`, `update/android/`.
+
+### Backend (`main` → `backend/scripts/`)
+
+Запуск из `Silent-Project/backend/`:
 
 ```powershell
-python deploy_helper.py install
+pip install paramiko
+cd backend
 ```
 
-Клонирует repo, генерирует `.env`, SSL, скачивает wdtt-server, `docker compose up -d --build`.
+| Задача | Команда | Когда использовать |
+|--------|---------|-------------------|
+| Диагностика VPS | `python scripts/deploy_helper.py check` | Проверить доступ, Docker, диск |
+| Статус сервисов | `python scripts/deploy_helper.py status` | `docker compose ps`, логи api |
+| Credentials после install | `python scripts/deploy_helper.py creds` | Показать admin-пароль с VPS |
+| **Первичная установка VPS** | `python scripts/deploy_helper.py install` | Новый сервер: clone main, .env, docker |
+| **Полный деплой backend** | `python scripts/deploy_stable.py` | Все `app/*.py` + `ai/*.py` + admin-ui/dist |
+| Точечный API-деплой | `python scripts/deploy_api.py` | auth, vpn, users, admin, vk_auth + dist |
+| VK Calls / агент | `python scripts/deploy_vk_calls.py` | VK auth, vk_manager, admin-ui |
+| ConfigSync | `python scripts/deploy_config_sync.py` | `sync-state` и связанные файлы |
+| OTA API на backend | `python scripts/deploy_update_backend.py` | Endpoint `/api/updates` (без .exe/.apk) |
+| wdtt-server systemd | `python scripts/deploy_wdtt_systemd.py` | Установка/обновление wdtt.service |
 
-### Типовой деплoy backend (с Windows)
+Подробная таблица и server-side install: `backend/DEPLOY.md`.
+
+**Типовой цикл после правок backend:**
 
 ```powershell
-python deploy_stable.py          # sync app/ + ai/ + admin-ui dist
-python deploy_full_api.py        # auth, vpn, users, admin, vk_auth
-python deploy_helper.py check    # диагностика VPS
-python deploy_helper.py status   # docker compose ps
-python pull_backend_files.py     # скачать файлы с VPS → локальный backend/
+cd backend\admin-ui; npm run build; cd ..
+python scripts/deploy_stable.py
 ```
 
-### PC release
+Точечно (быстрее): `python scripts/deploy_api.py` или тематический скрипт из таблицы.
+
+### PC OTA (`pc` → `pc/scripts/`)
 
 ```powershell
 cd pc
 .\build-installer.bat
-python deploy_update.py --file "build-release-v141-XXXX\Silent VPN Setup 1.0.142.exe" --platform pc --version 1.0.142
+python scripts/deploy_release.py "build-release-v141-XXXX\Silent VPN Setup 1.0.142.exe" 1.0.142
 ```
 
-### Admin UI build
+Загружает `.exe` в `/opt/silent-vpn/backend/update/pc/`, обновляет `manifest.json` в контейнере.
 
-```powershell
-cd backend\admin-ui
-npm install
-npm run build
-```
-
-### Android release
+### Android OTA (`android` → `android/scripts/`)
 
 ```powershell
 cd android\app
 .\gradlew.bat assembleRelease
+cd ..
+python scripts/deploy_release.py "app\build\outputs\apk\release\app-release.apk" 1.0.130
 ```
 
-### PC dev
+### Сборка без деплоя
 
 ```powershell
-cd pc
-npm install
-npm run dev    # Vite :3001 + Electron
+# Android release (триггер «релиз»)
+cd android\app; .\gradlew.bat assembleRelease
+
+# PC dev
+cd pc; npm install; npm run dev
 ```
 
+### Чего НЕ делать
+
+| Устаревшее (Silent/) | Замена |
+|---------------------|--------|
+| `deploy_full_api.py` в корне | `backend/scripts/deploy_api.py` |
+| `deploy_update.py` | `pc/scripts/deploy_release.py` или `android/scripts/deploy_release.py` |
+| `deploy_all.py`, `check_*.py`, `fix_*.py` | `deploy_stable.py` / `deploy_helper.py check` |
+| `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
+
 ## Последние изменения
+
+### 2026-06-18 — Деплой-скрипты и Silent-Project
+
+- Рабочая папка: `Silent-Project/` (не старый `Silent/` с корневыми `deploy_*.py`)
+- Backend deploy: только `backend/scripts/` (8 скриптов + `_deploy_common.py`)
+- PC/Android OTA: `pc/scripts/deploy_release.py`, `android/scripts/deploy_release.py`
+- SSH-секреты: `.env.deploy` (шаблон `backend/scripts/.env.deploy.example`)
+- Agent: **не создавать** новые deploy-файлы вне `scripts/`
 
 ### 2026-06-18 — Структура репозитория
 
 - Откат monorepo на `main` — клиенты снова только в своих ветках
 - Плоская структура внутри каждой ветки (`app/` в корне android, `src/` в корне pc)
-- Локально: `Silent/{backend,pc,android,ios}` — четыре git-папки, один GitHub remote
+- Локально: `Silent-Project/{backend,pc,android,ios}` — четыре git-папки, один GitHub remote
 - Keystore Android убран из git (`keystore.properties` локально)
 
 ### 2026-06-16 — Backend + Admin

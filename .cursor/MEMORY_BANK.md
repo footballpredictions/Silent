@@ -352,6 +352,12 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-06-18 — Android: bootstrap VPN на мобильном (вход / регистрация / сброс пароля)
+
+- **Регрессия:** в `8cbace5` (ConfigSync, mobile sync off) `Repository.setTunnelApiFromWgAddress` перестал переключать API на tunnel `http://10.66.66.1:8000` — на мобильном интернете ломались вход, регистрация, forgot-password и открытие ссылок verify/reset из браузера/почты при временном VPN (шаг 1).
+- **Исправление (ветка `android`, до bump):** восстановлен tunnel API для bootstrap (`ensureBootstrapTunnelApi`, `setTunnelApiFromWgAddress`), `withBootstrapBackendApi` / `withRoutineBackendApi` на mobile при активном bootstrap, `ensureBootstrapForAuthFlow` на экране входа.
+- **Фича (как было с `4990a85`):** временный VPN 2 мин — только Silent + браузеры + почта (`includeApplications`), AllowedIPs → API + HTTPS бекенда; после login — disconnect bootstrap, главный VPN на главном экране.
+
 ### 2026-06-18 — Шпаргалки DEPLOY.md по веткам
 
 - `backend/DEPLOY.md`, `pc/DEPLOY.md`, `android/DEPLOY.md` — полные списки deploy-файлов в каждом репозитории

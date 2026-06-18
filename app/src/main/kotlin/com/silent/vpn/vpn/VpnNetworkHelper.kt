@@ -87,6 +87,23 @@ object VpnNetworkHelper {
         for (network in cm.allNetworks) {
             val caps = cm.getNetworkCapabilities(network) ?: continue
             if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            ) {
+                continue
+            }
+            return true
+        }
+        return false
+    }
+
+    /** Есть ли NOT_VPN сеть с INTERNET (без требования VALIDATED — для детекта полного обрыва). */
+    fun hasAnyUnderlyingInternet(context: Context): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
             if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return true
         }
         return false

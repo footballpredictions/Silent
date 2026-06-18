@@ -679,7 +679,37 @@ object WdttTunnelManager {
         return sessionVkHashes[(groupId - 1).coerceAtLeast(0) % sessionVkHashes.size]
     }
 
-    private fun mobileApiRouteEnabled(): Boolean = false
+    private fun mobileApiRouteEnabled(): Boolean {
+        val ctx = lastContext ?: return false
+        return !isBootstrapMode &&
+            SilentRepository.APP_EXCLUDED_FROM_VPN &&
+            VpnNetworkHelper.isOnMobileData(ctx)
+    }
+
+    /** После Wi‑Fi↔LTE / восстановления сети — обновить AllowedIPs (mobile API route). */
+    fun reapplyWireGuardForNetworkChange(context: Context) {
+        if (!tunnelReady.value || isBootstrapMode || apiOverlayActive) return
+        val config = lastWgConfig ?: return
+        lastContext = context.applicationContext
+        scope.launch {
+            wgApplyMutex.withLock {
+                if (!tunnelReady.value || isBootstrapMode || apiOverlayActive) return@withLock
+                runCatching {
+                    withContext(NonCancellable + Dispatchers.Main) {
+                        wgHelper?.startTunnel(
+                            config,
+                            wgExcludeIps.toList(),
+                            isBootstrap = false,
+                            mobileApiRoute = mobileApiRouteEnabled(),
+                        )
+                    }
+                    updateLog("wg_network_reload", "WireGuard: маршруты после смены сети", 2)
+                }.onFailure { e ->
+                    DebugLog.w("WdttTunnel", "wg network reload: ${e.message}")
+                }
+            }
+        }
+    }
 
     private fun applyWireGuard(configStr: String, forceReapply: Boolean = false) {
         val normalized = configStr.trim()
@@ -815,9 +845,11 @@ object WdttTunnelManager {
         }
     }
 
-    fun restartTransport() {
-        val elapsed = System.currentTimeMillis() - processStartedAtMs
-        if (processStartedAtMs > 0L && elapsed < NETWORK_RESTART_GRACE_MS) return
+    fun restartTransport(forceNetwork: Boolean = false) {
+        if (!forceNetwork) {
+            val elapsed = System.currentTimeMillis() - processStartedAtMs
+            if (processStartedAtMs > 0L && elapsed < NETWORK_RESTART_GRACE_MS) return
+        }
         if (isNetworkRecoverySuppressed()) return
         if (!tunnelReady.value) return
         val params = lastParams ?: return
@@ -829,6 +861,9 @@ object WdttTunnelManager {
             start(ctx, params, isSwitching = true)
         }
     }
+
+    /** Явное восстановление после смены сети / звонка — без grace libclient. */
+    fun restartTransportAfterNetwork() = restartTransport(forceNetwork = true)
 
     /**
      * Новые хеши с сервера — перезапуск libclient без снятия WireGuard.
@@ -916,7 +951,7 @@ object WdttTunnelManager {
         }
         if (wgApplyJob?.isActive == true || wgApplyScheduled) return true
         val sinceOverlay = System.currentTimeMillis() - lastOverlayEndedMs
-        if (lastOverlayEndedMs > 0L && sinceOverlay < 15_000L) return true
+        if (lastOverlayEndedMs > 0L && sinceOverlay < 4_000L) return true
         return false
     }
 

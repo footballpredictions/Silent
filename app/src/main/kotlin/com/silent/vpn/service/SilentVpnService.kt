@@ -368,6 +368,14 @@ class SilentVpnService : Service() {
                 HashChannelHelper.hashesForLibclient(wdttHashes, totalWorkers)
             }
 
+            val fastWgCache = connectFromTile && !isBootstrap && !apiWg.isNullOrBlank()
+            if (connectFromTile) {
+                DebugLog.i(
+                    "VpnService",
+                    "tile connect fastWg=$fastWgCache apiWg=${!apiWg.isNullOrBlank()}",
+                )
+            }
+
             WdttTunnelManager.start(
                 this,
                 WdttTunnelManager.Params(
@@ -381,7 +389,7 @@ class SilentVpnService : Service() {
                     captchaMode = "auto",
                     apiWgConfig = apiWg,
                     isBootstrap = isBootstrap,
-                    fastWgCache = connectFromTile && !isBootstrap && !apiWg.isNullOrBlank(),
+                    fastWgCache = fastWgCache,
                 ),
                 isSwitching = false,
             )

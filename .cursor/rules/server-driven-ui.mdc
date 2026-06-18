@@ -1,0 +1,29 @@
+---
+description: 
+alwaysApply: true
+---
+
+# Server-driven UI (оформление с backend)
+
+Silent VPN: **все** цвета, шрифты и настраиваемые тексты клиентского UI задаются на сервере.
+
+## Обязательный чеклист для Agent при новой UI-фиче
+
+1. `backend/app/schemas/vpn.py` — новые поля в `ThemeResponse`
+2. `backend/admin-ui/src/pages/ThemePage.tsx` — поля в форме
+3. `backend/admin-ui/src/components/ClientPreview.tsx` — превью (если видно на главном/меню)
+4. **PC** (`pc/`) — читать поля из темы (`/api/vpn/theme`, `clientTheme`)
+5. **Android** (`android/`) — `ThemeData` + `parseColor(theme?....)`
+6. **iOS** (`ios/`) — по тому же принципу
+7. Push: `main` + ветки клиентов; деплой backend при изменении API/админки
+
+## Запрещено
+
+- Хардкод hex-цветов и фиксированных UI-строк там, где админ должен иметь контроль
+- Делать только backend/админку без правок клиентов
+
+## Ссылки
+
+- API: `GET /api/vpn/theme`
+- Админка: раздел «Оформление»
+- Подробности: `.cursor/MEMORY_BANK.md` → «Дизайн»

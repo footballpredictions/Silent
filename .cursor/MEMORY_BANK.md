@@ -156,13 +156,14 @@
 
 ```
 Silent/                         ← рабочая папка (НЕ git), открывать в Cursor
-├── .cursor/                    ← Memory Bank для Agent (копия из backend)
+├── .cursor/                    ← симлинк → backend/.cursor (одни и те же файлы)
 │   ├── MEMORY_BANK.md
 │   ├── TASKS.md
 │   ├── APIS.md
 │   └── rules/
 ├── backend/                    ← git, ветка main, свой .gitignore
 │   ├── .git
+│   ├── .cursor/                ← Memory Bank в git (единственный источник)
 │   ├── app/
 │   │   ├── api/                auth, vpn, users, admin, vk_auth, updates, payments
 │   │   ├── models/
@@ -191,6 +192,22 @@ Silent/                         ← рабочая папка (НЕ git), отк
 └── deploy_*.py                 ← локальные SSH-скрипты (рядом или в backend)
 ```
 
+### Memory Bank — одна папка, не две
+
+| Путь | Роль |
+|------|------|
+| `backend/.cursor/` | **Единственный источник.** Коммитится в ветку `main`. Agent **редактирует только здесь**. |
+| `Silent/.cursor/` | **Симлинк** на `backend/.cursor/`. Нужен, чтобы Cursor в корне `Silent/` видел те же rules и Memory Bank. |
+
+**Не копировать вручную** — после `git clone backend` создать симлинк:
+
+```powershell
+# из корня Silent (один раз после клонирования)
+cmd /c mklink /J .cursor backend\.cursor
+```
+
+Правило для Agent: правки `MEMORY_BANK.md`, `TASKS.md`, `APIS.md` → только `backend/.cursor/` → `git push origin main`.
+
 ### Первичная настройка локально
 
 ```powershell
@@ -199,7 +216,8 @@ git clone -b main  https://github.com/footballpredictions/Silent.git backend
 git clone -b pc    https://github.com/footballpredictions/Silent.git pc
 git clone -b android https://github.com/footballpredictions/Silent.git android
 git clone -b ios   https://github.com/footballpredictions/Silent.git ios
-# Memory Bank — в корне Silent/.cursor (копия из backend/.cursor)
+# Симлинк Memory Bank (не копия!)
+cmd /c mklink /J .cursor backend\.cursor
 ```
 
 ## Git workflow
@@ -241,7 +259,7 @@ fix(pc): faster connect, less ConfigSync/OTA spam, bump 1.0.142
 | Android | `android/` | `android` |
 | iOS | `ios/` | `ios` |
 | Theme / UI (server-driven) | `backend/` + все клиенты | `main` + `pc` + `android` + `ios` |
-| Memory Bank | `backend/.cursor/` → копия в `Silent/.cursor/` | `main` |
+| Memory Bank | `backend/.cursor/` (+ симлинк `Silent/.cursor`) | `main` |
 
 ### Триггеры Agent
 

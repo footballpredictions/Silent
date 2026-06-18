@@ -936,8 +936,8 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun <T> withBootstrapBackendApi(block: suspend () -> T): T {
-        if (bootstrapVpnMode && WdttTunnelManager.tunnelReady.value && SilentVpnService.isRunning) {
-            ensureTunnelApiBaseForLogin()
+        if (isBootstrapAuthVpnActive()) {
+            repo.ensureBootstrapTunnelApi()
             return block()
         }
         if (needsPreLoginApiOverlay()) {
@@ -946,11 +946,19 @@ class MainViewModel @Inject constructor(
             }
             return WdttTunnelManager.withApiOverlay {
                 repo.useApiBase(WdttTunnelManager.tunnelApiBase())
+                repo.invalidateApiClient()
                 block()
             }
         }
         return block()
     }
+
+    /** Bootstrap VPN для входа / регистрации / сброса пароля на мобильном интернете. */
+    private fun isBootstrapAuthVpnActive(): Boolean =
+        WdttTunnelManager.isBootstrapMode() &&
+            WdttTunnelManager.tunnelReady.value &&
+            SilentVpnService.isRunning &&
+            (bootstrapVpnMode || _screen.value == AppScreen.LOGIN)
 
     private fun preLoginApiBases(): List<String> {
         if (
@@ -1008,6 +1016,8 @@ class MainViewModel @Inject constructor(
             }
             WdttTunnelManager.lastWgAddress()?.takeIf { it.isNotBlank() }?.let {
                 repo.setTunnelApiFromWgAddress(it)
+            } ?: run {
+                if (bootstrapTunnel) repo.ensureBootstrapTunnelApi()
             }
             startBootstrapSessionTimeout(
                 ctx,
@@ -1301,6 +1311,15 @@ class MainViewModel @Inject constructor(
 
     /** Без debounce onVpnTunnelReady — нужен сразу перед login/register. */
     private fun ensureTunnelApiBaseForLogin(): Boolean {
+        if (!WdttTunnelManager.tunnelReady.value) return false
+        if (WdttTunnelManager.isBootstrapMode()) {
+            return repo.ensureBootstrapTunnelApi()
+        }
+        if (!SilentRepository.APP_EXCLUDED_FROM_VPN) {
+            repo.useApiBase(WdttTunnelManager.tunnelApiBase())
+            repo.invalidateApiClient()
+            return true
+        }
         val wgAddr = WdttTunnelManager.lastWgAddress()?.takeIf { it.isNotBlank() } ?: return false
         repo.setTunnelApiFromWgAddress(wgAddr)
         return true
@@ -1467,6 +1486,7 @@ class MainViewModel @Inject constructor(
         stopVpnLocally(ctx)
         bootstrapVpnMode = false
         bootstrapContext = null
+        repo.clearTunnelApiBase()
         _vpnState.value = VpnState.DISCONNECTED
         _statusMsg.value =
             "Время временного интернета истекло (2 мин). Нажмите «Подключить для входа» снова."
@@ -1516,6 +1536,7 @@ class MainViewModel @Inject constructor(
                     if (WdttTunnelManager.tunnelReady.value && WdttTunnelManager.running.value) {
                         _vpnState.value = VpnState.CONNECTED
                         onVpnTunnelReady(config)
+                        repo.ensureBootstrapTunnelApi()
                         startBootstrapSessionTimeout(context, forceNewDeadline = true)
                         return@launch
                     }

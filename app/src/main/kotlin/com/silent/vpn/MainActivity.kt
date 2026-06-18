@@ -168,7 +168,10 @@ class MainActivity : ComponentActivity() {
                         },
                         onClearError = vm::clearAuthError,
                         onRegDoneDismiss = vm::dismissRegDone,
-                        onSyncBootstrap = { vm.reconcileLoginBootstrapSession(this@MainActivity) },
+                        onSyncBootstrap = {
+                            vm.reconcileLoginBootstrapSession(this@MainActivity)
+                            vm.ensureBootstrapForAuthFlow(this@MainActivity)
+                        },
                     )
                     AppScreen.MAIN -> MainScreen(
                         profile = profile,

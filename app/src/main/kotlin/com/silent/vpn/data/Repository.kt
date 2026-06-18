@@ -163,6 +163,9 @@ class SilentRepository @Inject constructor(
 
     fun getServerUrl(): String {
         tunnelApiBaseUrl?.let { return it }
+        if (WdttTunnelManager.isBootstrapMode() && WdttTunnelManager.tunnelReady.value) {
+            return tunnelApiBase()
+        }
         return getPublicServerUrl().trimEnd('/')
     }
 
@@ -230,6 +233,14 @@ class SilentRepository @Inject constructor(
      */
     suspend fun <T> withRoutineBackendApi(block: suspend () -> T): T {
         if (isOnMobileData()) {
+            if (WdttTunnelManager.isBootstrapMode() && WdttTunnelManager.tunnelReady.value) {
+                useApiBase(tunnelApiBase())
+                invalidateApiClient()
+                return block()
+            }
+            if (isMainVpnTunnelUp()) {
+                return withTunnelBackendBlock(block)
+            }
             useApiBase(getPublicServerUrl())
             invalidateApiClient()
             return block()
@@ -292,9 +303,36 @@ class SilentRepository @Inject constructor(
     ).distinct().filter { it.isNotBlank() }
 
     private fun tunnelApiBase(): String = "http://$WG_TUNNEL_GATEWAY:8000"
+
+    /** Bootstrap / app в туннеле — API только через 10.66.66.1 (как PC enableTunnelApi). */
+    fun ensureBootstrapTunnelApi(): Boolean {
+        if (!WdttTunnelManager.isBootstrapMode() || !WdttTunnelManager.tunnelReady.value) return false
+        useApiBase(tunnelApiBase())
+        invalidateApiClient()
+        Log.i(TAG, "API via bootstrap tunnel: ${tunnelApiBase()}")
+        return true
+    }
+
     fun setTunnelApiFromWgAddress(wgAddress: String?) {
-        // Не переключаем base при VPN — public/proxy выбирает withRoutineBackendApi.
-        Log.d(TAG, "tunnel wg=${wgAddress?.substringBefore('/') ?: "?"}")
+        if (WdttTunnelManager.isBootstrapMode() && WdttTunnelManager.tunnelReady.value) {
+            ensureBootstrapTunnelApi()
+            return
+        }
+        if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
+            useApiBase(tunnelApiBaseUrl())
+            invalidateApiClient()
+            return
+        }
+        if (!APP_EXCLUDED_FROM_VPN && WdttTunnelManager.tunnelReady.value) {
+            useApiBase(tunnelApiBase())
+            invalidateApiClient()
+            Log.i(TAG, "API via tunnel (app in VPN): ${tunnelApiBase()}")
+            return
+        }
+        val gw = wgGatewayFromAddress(wgAddress) ?: return
+        useApiBase("http://$gw:8000")
+        invalidateApiClient()
+        Log.i(TAG, "API via tunnel: http://$gw:8000")
     }
 
     /** Перед connect sync — только сброс клиента. */

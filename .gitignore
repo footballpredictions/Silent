@@ -18,6 +18,7 @@ wdtt/wdtt-server
 
 # Secrets
 .env
+.env.deploy
 *.key
 *.pem
 *.crt

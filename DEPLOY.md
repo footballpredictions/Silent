@@ -1,14 +1,47 @@
 # Silent VPN — Инструкция по развёртыванию
 
-## Быстрый старт (одна команда)
+## Деплой с Windows (ветка `main`, папка `backend/`)
+
+Секреты SSH — в `backend/.env.deploy` или `Silent/.env.deploy` (см. `scripts/.env.deploy.example`).
+
+```powershell
+pip install paramiko
+cd backend
+```
+
+| Скрипт | Назначение |
+|--------|------------|
+| `python scripts/deploy_helper.py check` | Диагностика VPS |
+| `python scripts/deploy_helper.py install` | Первичная установка Docker + clone main |
+| `python scripts/deploy_helper.py status` | `docker compose ps` + логи api |
+| `python scripts/deploy_stable.py` | Полный деплой app/ + ai/ + admin-ui/dist |
+| `python scripts/deploy_api.py` | Ключевые API-файлы + admin-ui |
+| `python scripts/deploy_vk_calls.py` | VK Calls auth + admin UI |
+| `python scripts/deploy_config_sync.py` | ConfigSync / sync-state |
+| `python scripts/deploy_update_backend.py` | OTA API на backend |
+| `python scripts/deploy_wdtt_systemd.py` | wdtt-server как systemd |
+
+Клиентские OTA (`.exe` / `.apk`) — скрипты в `pc/scripts/` и `android/scripts/`.
+
+Перед деплоем admin-ui:
+
+```powershell
+cd admin-ui
+npm install
+npm run build
+```
+
+## Быстрый старт на сервере (одна команда)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/footballpredictions/Silent/main/backend/scripts/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/footballpredictions/Silent/main/scripts/install.sh | sudo bash
 ```
+
+Или с Windows: `python scripts/deploy_helper.py install`
 
 Скрипт автоматически:
 1. Установит Docker, WireGuard
-2. Склонирует репозиторий в `/opt/silent-vpn`
+2. Склонирует ветку `main` в `/opt/silent-vpn/backend`
 3. Скачает `wdtt-server` бинарник
 4. Создаёт самоподписанный TLS-сертификат на IP сервера
 5. Генерирует `.env` с безопасными паролями
@@ -89,8 +122,8 @@ docker compose -f /opt/silent-vpn/backend/docker-compose.yml restart
 docker compose -f /opt/silent-vpn/backend/docker-compose.yml down
 
 # Обновление
-cd /opt/silent-vpn && git pull origin main
-docker compose -f backend/docker-compose.yml up -d --build api
+cd /opt/silent-vpn/backend && git pull origin main
+docker compose up -d --build api
 ```
 
 ## Порты

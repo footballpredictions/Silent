@@ -352,6 +352,12 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-06-18 — Android: быстрый OFF→ON QS-плитки
+
+- **Симптом:** VPN OFF → сразу ON с плитки — приложение падает/сворачивается, VPN не поднимается; повтор через время работает.
+- **Причина:** CONNECT отклонялся при `WdttTunnelManager.running`, пока async DISCONNECT ещё не завершился.
+- **Исправление (ветка `android`):** `disconnectEpoch` + отмена teardown при CONNECT; CONNECT не блокируется по `running` при `isRunning=false`; DISCONNECT с плитки через `startForegroundService`.
+
 ### 2026-06-18 — Android: шум цепочки капчи в логе (AUTO/v2/WBV)
 
 - **Симптом:** `rate limit reached`, `ERROR_LIMIT`, `WBV timeout`, `не решил за 2 попытки` при работающем ramp-up.

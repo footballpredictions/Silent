@@ -35,7 +35,7 @@ def connect(timeout: int = 30):
     load_env()
     password = os.environ.get("DEPLOY_PASS", "")
     if not password:
-        raise SystemExit("Задайте DEPLOY_PASS в Silent/.env.deploy")
+        raise SystemExit("Задайте DEPLOY_PASS в Silent-Project/.env.deploy")
     host = os.environ.get("DEPLOY_HOST", "132.243.234.162")
     user = os.environ.get("DEPLOY_USER", "root")
     client = paramiko.SSHClient()

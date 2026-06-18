@@ -122,8 +122,8 @@ func WorkerGroup(
 	for i, wid := range workerIDs {
 		wg.Add(1)
 
-		// Stagger: 50мс между воркерами (быстрее набор каналов)
-		workerDelay := time.Duration(i) * 50 * time.Millisecond
+		// Stagger: 100мс между воркерами — меньше одновременных DTLS при ramp-up
+		workerDelay := time.Duration(i) * 100 * time.Millisecond
 
 		go func(wid int, delay time.Duration) {
 			defer wg.Done()
@@ -201,12 +201,17 @@ func WorkerGroup(
 					}
 
 					attempt++
+					isWrapHandshakeTimeout := strings.Contains(errStr, "WRAP_AUTH_TIMEOUT")
 					if turnAllocAttrMissing {
 						log.Printf("[ВОРКЕР #%d] [TURN] Allocate вернул неполный ответ, обновляем TURN-креды и повторяем (попытка %d): %s", wid, attempt, errStr)
 						refreshCreds("TURN Allocate attribute-not-found")
 					} else if turnCredRefreshNeeded {
 						log.Printf("[ВОРКЕР #%d] [TURN] Ошибка allocation/кредов, обновляем TURN-креды и повторяем (попытка %d): %s", wid, attempt, errStr)
 						refreshCreds("TURN allocation error")
+					} else if isWrapHandshakeTimeout {
+						if attempt == 1 || attempt%5 == 0 {
+							log.Printf("[ВОРКЕР #%d] DTLS handshake — повтор %d", wid, attempt)
+						}
 					} else {
 						log.Printf("[ВОРКЕР #%d] Ошибка (попытка %d): %s", wid, attempt, errStr)
 					}
@@ -226,6 +231,9 @@ func WorkerGroup(
 				}
 
 				retryDelay := time.Duration(5+rand.Intn(11)) * time.Second
+				if sessErr != nil && strings.Contains(sessErr.Error(), "WRAP_AUTH_TIMEOUT") {
+					retryDelay = time.Duration(300+rand.Intn(700)) * time.Millisecond
+				}
 				select {
 				case <-time.After(retryDelay):
 				case <-ctx.Done():

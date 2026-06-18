@@ -27,8 +27,8 @@ const (
 	keepaliveInterval  = 15 * time.Second
 )
 
-// Параллельный старт 108 воркеров — больше одновременных DTLS handshake.
-var handshakeSem = make(chan struct{}, 32)
+// Параллельный старт воркеров — лимит одновременных DTLS handshake.
+var handshakeSem = make(chan struct{}, 40)
 
 // NullLoggerFactory подавляет логи pion
 type NullLoggerFactory struct{}
@@ -287,7 +287,7 @@ func RunSession(
 		if useWrap {
 			errStr := strings.ToLower(err.Error())
 			if strings.Contains(errStr, "deadline") || strings.Contains(errStr, "timeout") {
-				return false, fmt.Errorf("WRAP_AUTH_TIMEOUT: DTLS timeout, пароль/WRAP не подтверждён")
+				return false, fmt.Errorf("WRAP_AUTH_TIMEOUT: DTLS handshake timeout (повтор)")
 			}
 		}
 		return false, fmt.Errorf("DTLS хендшейк: %w", err)

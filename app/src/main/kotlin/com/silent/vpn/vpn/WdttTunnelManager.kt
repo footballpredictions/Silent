@@ -621,6 +621,34 @@ object WdttTunnelManager {
                         }
                     }
 
+                    // Ретраи воркеров — шум при ramp-up/капче, не ошибка VPN (как PC libclientLogParser).
+                    if (lineTrim.contains("[ВОРКЕР #") &&
+                        !lineTrim.contains("[READY]") &&
+                        !lineTrim.contains("зарегистрирован") &&
+                        !lineTrim.contains("Конфиг получен")
+                    ) {
+                        if (lineTrim.contains("WRAP_AUTH_TIMEOUT", true) ||
+                            (lineTrim.contains("DTLS timeout", true) && lineTrim.contains("WRAP", true))
+                        ) {
+                            if (activeWorkers.value > 0 || tunnelReady.value) {
+                                wrapAuthTimeoutCount = 0
+                            } else {
+                                wrapAuthTimeoutCount++
+                                if (wrapAuthTimeoutCount <= 3) {
+                                    updateLog(
+                                        "wrap_timeout_wait",
+                                        "[WRAP] Handshake не подтвердился ($wrapAuthTimeoutCount)",
+                                        50,
+                                    )
+                                }
+                            }
+                        }
+                        return@forEachLine
+                    }
+                    if (lineTrim.contains("[СЕССИЯ #") || lineTrim.contains("[ГРУППА #")) {
+                        return@forEachLine
+                    }
+
                     val isError = lineTrim.contains("Ошибка", true) ||
                         lineTrim.contains("error", true) ||
                         lineTrim.contains("FAIL", true) ||

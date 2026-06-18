@@ -18,6 +18,7 @@ keystore/*
 
 # Secrets
 *.env
+.env.deploy
 *.keystore
 
 # Logs

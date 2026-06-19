@@ -96,7 +96,7 @@ async function expireBootstrapSession() {
   clearTunnelApiBase()
   await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
   notifyStatus(
-    'Время временного интернета истекло (2 мин). Вставьте хеш заново и нажмите «Подключить для входа».',
+    s.bootstrapExpired,
   )
 }
 

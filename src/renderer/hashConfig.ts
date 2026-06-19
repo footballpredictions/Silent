@@ -12,6 +12,8 @@ export function extractCallHash(raw: string): string | null {
   return null
 }
 
+import { getBootstrapHash } from './vkConfig'
+
 export function isHashReady(): boolean {
-  return !!localStorage.getItem('silent_vk_bootstrap_hash')?.trim()
+  return !!getBootstrapHash()?.trim()
 }

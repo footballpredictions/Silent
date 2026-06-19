@@ -1,3 +1,6 @@
+import { extractCallHash } from './hashConfig'
+import { getEmbeddedBootstrapHash } from './embeddedBootstrapHash'
+
 const BOOT_HASH_KEY = 'silent_vk_bootstrap_hash'
 const VK_ACCESS_KEY = 'silent_vk_access_token'
 const VK_USER_ID_KEY = 'silent_vk_user_id'
@@ -21,12 +24,13 @@ export interface VpnConfigPayload {
   vk_hashes: string[]
 }
 
-export function saveBootstrapHash(hash: string) {
-  localStorage.setItem(BOOT_HASH_KEY, hash)
+export function saveBootstrapHash(_hash: string) {
+  // Хеш задаётся при сборке (debug — фиксированный, release — BOOTSTRAP_VK_HASH).
 }
 
 export function getBootstrapHash(): string | null {
-  return localStorage.getItem(BOOT_HASH_KEY)
+  const raw = getEmbeddedBootstrapHash()
+  return extractCallHash(raw) || raw.trim() || null
 }
 
 export function clearBootstrapHash() {

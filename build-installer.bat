@@ -8,12 +8,14 @@ REM Уникальная папка сборки, чтобы electron-builder н
 for /f %%R in ('powershell -NoProfile -Command "Get-Random -Minimum 1000 -Maximum 999999"') do set OUT_DIR=build-release-v141-%%R
 echo Output dir: !OUT_DIR!
 
-REM Завершить зависшие процессы прошлой сборки
+REM Завершить запущенное приложение и процессы прошлой сборки
+echo Stopping running processes...
+taskkill /F /IM "Silent VPN.exe" 2>nul
+taskkill /F /IM wdtt-client.exe 2>nul
 taskkill /F /IM makensis.exe 2>nul
 taskkill /F /IM electron-builder.exe 2>nul
-taskkill /F /IM "Silent VPN.exe" 2>nul
+timeout /t 2 /nobreak >nul
 
-REM Всегда одна директория сборки — полная очистка перед стартом
 if exist "build-output" (
   echo Cleaning build-output...
   rd /s /q "build-output" 2>nul
@@ -24,10 +26,6 @@ if exist "dist\electron" (
 )
 if exist "build-output-v41" (
   rd /s /q "build-output-v41" 2>nul
-)
-for /d %%D in (build-release*) do (
-  echo Cleaning %%D...
-  rd /s /q "%%D" 2>nul
 )
 if exist "build-output-old-locked" (
   rd /s /q "build-output-old-locked" 2>nul
@@ -64,7 +62,7 @@ for %%F in (dist\renderer\assets\*.css) do (
   echo OK: renderer CSS %%~nxF ^(%%~zF bytes^)
 )
 
-echo [3/3] NSIS installer -^> build-release-v141\
+echo [3/3] NSIS installer -^> !OUT_DIR!\
 call npx electron-builder --win nsis --publish never --config.directories.output=!OUT_DIR!
 if errorlevel 1 (
   echo electron-builder FAILED
@@ -77,6 +75,14 @@ for %%F in ("!OUT_DIR!\Silent VPN Setup *.exe") do (
   if not exist "..\releases" mkdir "..\releases"
   copy /Y "%%~fF" "..\releases\" >nul
   echo Copied to releases\%%~nxF
+)
+
+echo Removing old build-release folders (keeping !OUT_DIR!)...
+for /d %%D in (build-release*) do (
+  if /I not "%%~nxD"=="!OUT_DIR!" (
+    echo Removing %%D...
+    rd /s /q "%%D" 2>nul
+  )
 )
 
 echo === BUILD SUCCESS ===

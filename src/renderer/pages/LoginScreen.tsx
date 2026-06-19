@@ -14,9 +14,7 @@ import api, {
 import {
   cacheVpnConfig,
   getBootstrapHash,
-  saveBootstrapHash,
 } from '../vkConfig'
-import { extractCallHash } from '../hashConfig'
 import {
   ensureBootstrapVpn,
   ensureBootstrapTunnelApi,
@@ -26,15 +24,15 @@ import {
   refreshBootstrapSessionTimer,
   setBootstrapStatusListener,
 } from '../bootstrapVpn'
-import HashInputSection from '../components/HashInputSection'
 import SilentLogo from '../components/SilentLogo'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import TitleBar from '../components/TitleBar'
+import WindowControls from '../components/WindowControls'
 import { pushLog } from '../debugLog'
 import { authStrings as s } from '../authStrings'
 import { themeToUi, type ClientTheme } from '../clientTheme'
 
-type LoginStep = 1 | 2 | 'forgot'
+type LoginStep = 'auth' | 'forgot'
 
 export default function LoginScreen({
   theme,
@@ -45,7 +43,7 @@ export default function LoginScreen({
 }) {
   const ui = useMemo(() => themeToUi(theme), [theme])
 
-  const [step, setStep] = useState<LoginStep>(1)
+  const [step, setStep] = useState<LoginStep>('auth')
   const [tab, setTab] = useState<'login' | 'register'>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -59,16 +57,18 @@ export default function LoginScreen({
   const [statusMsg, setStatusMsg] = useState('')
   const [bootstrapConnecting, setBootstrapConnecting] = useState(false)
   const [bootstrapReady, setBootstrapReady] = useState(isBootstrapVpnActive())
-  const [bootstrapHash, setBootstrapHash] = useState<string | null>(getBootstrapHash)
   const [showDebugLog, setShowDebugLog] = useState(false)
-  const [fadeIn, setFadeIn] = useState(false)
 
-  const step2Title = theme?.login_step2_title || 'Шаг 2 — вход или регистрация'
+  const authTitle = (theme?.login_step2_title || s.authTitle)
+    .replace(/^шаг\s*2\s*[—-]\s*/i, '')
   const rememberLabel = theme?.login_remember_me_label || 'Запомнить меня'
   const forgotLabel = theme?.login_forgot_password_label || 'Забыли пароль?'
   const forgotTitle = theme?.login_forgot_title || 'Восстановление пароля'
   const forgotHint = theme?.login_forgot_instruction || 'Введите email — мы отправим ссылку.'
   const linkColor = theme?.login_link_color || ui.linkColor
+
+  const sessionExpired =
+    statusMsg.includes('Закройте приложение') || statusMsg.includes('истекло')
 
   useEffect(() => {
     const saved = getRememberedEmail()
@@ -79,58 +79,36 @@ export default function LoginScreen({
   }, [])
 
   useEffect(() => {
-    setBootstrapHash(getBootstrapHash())
     const active = isBootstrapVpnActive()
     setBootstrapReady(active)
     if (active) {
-      setStep(2)
-      setFadeIn(true)
       refreshBootstrapSessionTimer()
+      return
     }
+
+    let cancelled = false
+    void (async () => {
+      setBootstrapConnecting(true)
+      setStatusMsg(s.connectingWait)
+      setError('')
+      try {
+        const ok = await ensureBootstrapVpn()
+        if (cancelled) return
+        setBootstrapReady(ok && isBootstrapVpnActive())
+      } finally {
+        if (!cancelled) setBootstrapConnecting(false)
+      }
+    })()
+
     setBootstrapStatusListener(msg => {
       setStatusMsg(msg)
       setBootstrapReady(isBootstrapVpnActive())
-      if (msg.includes('истекло')) {
-        setBootstrapHash(getBootstrapHash())
-        setStep(1)
-        setFadeIn(false)
-      }
     })
-    return () => setBootstrapStatusListener(null)
+    return () => {
+      cancelled = true
+      setBootstrapStatusListener(null)
+    }
   }, [])
-
-  useEffect(() => {
-    if (bootstrapReady && step === 1) {
-      const t = window.setTimeout(() => {
-        setStep(2)
-        setFadeIn(true)
-      }, 400)
-      return () => clearTimeout(t)
-    }
-  }, [bootstrapReady, step])
-
-  const connectForLogin = async (raw: string) => {
-    const h = extractCallHash(raw)
-    if (!h) {
-      setStatusMsg(s.invalidHash)
-      setBootstrapReady(false)
-      return
-    }
-    saveBootstrapHash(h)
-    setBootstrapHash(h)
-    setBootstrapConnecting(true)
-    setBootstrapReady(false)
-    setStatusMsg(s.connectingWait)
-    setError('')
-    try {
-      const ok = await ensureBootstrapVpn()
-      const active = isBootstrapVpnActive()
-      setBootstrapReady(ok && active)
-      if (!ok || !active) setBootstrapReady(false)
-    } finally {
-      setBootstrapConnecting(false)
-    }
-  }
 
   const openLoginSession = async (): Promise<{ ok: boolean; subscriptionExpired?: boolean }> => {
     ensureBootstrapTunnelApi()
@@ -249,6 +227,7 @@ export default function LoginScreen({
     onChange: (v: string) => void,
     visible: boolean,
     toggle: () => void,
+    disabled: boolean,
   ) => (
     <div className="relative mb-3">
       <input
@@ -264,6 +243,7 @@ export default function LoginScreen({
         placeholder="••••••••"
         required
         minLength={8}
+        disabled={disabled}
       />
       <button
         type="button"
@@ -277,6 +257,38 @@ export default function LoginScreen({
     </div>
   )
 
+  const statusBlock = () => {
+    if (bootstrapConnecting) {
+      return (
+        <p className="text-[12px] mb-3" style={{ color: ui.hint }}>
+          {statusMsg || s.connectingWait}
+        </p>
+      )
+    }
+    if (sessionExpired) {
+      return (
+        <p className="text-[12px] font-medium mb-3" style={{ color: ui.red }}>
+          {statusMsg}
+        </p>
+      )
+    }
+    if (bootstrapReady && statusMsg.toLowerCase().includes('осталось')) {
+      return (
+        <p className="text-[12px] font-medium mb-3" style={{ color: ui.green }}>
+          {statusMsg}
+        </p>
+      )
+    }
+    if (statusMsg && !bootstrapReady) {
+      return (
+        <p className="text-[12px] mb-3" style={{ color: ui.red }}>
+          {statusMsg}
+        </p>
+      )
+    }
+    return null
+  }
+
   return (
     <div
       className="flex flex-col h-full"
@@ -286,7 +298,12 @@ export default function LoginScreen({
         title="SILENT VPN"
         headerBg={ui.headerBg}
         headerFg={ui.headerFg}
-        right={<DebugLogButton onClick={() => setShowDebugLog(true)} />}
+        right={
+          <>
+            <DebugLogButton onClick={() => setShowDebugLog(true)} />
+            <WindowControls />
+          </>
+        }
       />
 
       <div className="flex-1 overflow-y-auto px-5 py-6">
@@ -297,33 +314,12 @@ export default function LoginScreen({
           </p>
         </div>
 
-        {step === 1 && (
-          <div className="transition-opacity duration-500 opacity-100">
-            <HashInputSection
-              bootstrapHash={bootstrapHash}
-              statusMsg={statusMsg}
-              bootstrapConnecting={bootstrapConnecting}
-              bootstrapReady={bootstrapReady}
-              onConnect={connectForLogin}
-              ui={ui}
-              theme={theme}
-            />
-          </div>
-        )}
-
-        {step === 2 && (
-          <div
-            className="transition-all duration-500"
-            style={{ opacity: fadeIn ? 1 : 0, transform: fadeIn ? 'translateY(0)' : 'translateY(12px)' }}
-          >
+        {step === 'auth' && (
+          <div>
             <p className="text-[13px] font-semibold mb-3" style={{ color: ui.fg }}>
-              {step2Title}
+              {authTitle}
             </p>
-            {bootstrapReady && statusMsg.toLowerCase().includes('осталось') && (
-              <p className="text-[12px] font-medium mb-3" style={{ color: ui.green }}>
-                {statusMsg}
-              </p>
-            )}
+            {statusBlock()}
 
             <div className="flex rounded-xl p-1 mb-4" style={{ background: ui.tabBg }}>
               {(['login', 'register'] as const).map(key => (
@@ -374,9 +370,10 @@ export default function LoginScreen({
                   onChange={e => setEmail(e.target.value)}
                   placeholder="you@example.com"
                   required
+                  disabled={sessionExpired}
                 />
                 <label className="text-xs" style={{ color: ui.label }}>{s.password}</label>
-                {passwordField(password, setPassword, showPassword, () => setShowPassword(v => !v))}
+                {passwordField(password, setPassword, showPassword, () => setShowPassword(v => !v), sessionExpired)}
                 <div className="flex items-center justify-between mb-3 text-xs">
                   <label className="flex items-center gap-2 cursor-pointer" style={{ color: ui.hint }}>
                     <input
@@ -384,6 +381,7 @@ export default function LoginScreen({
                       checked={rememberMe}
                       onChange={e => setRememberMe(e.target.checked)}
                       className="rounded"
+                      disabled={sessionExpired}
                     />
                     {rememberLabel}
                   </label>
@@ -393,6 +391,7 @@ export default function LoginScreen({
                       onClick={() => { setForgotEmail(email); setStep('forgot'); setError(''); setForgotSent(false) }}
                       className="hover:opacity-80"
                       style={{ color: linkColor, background: 'none', border: 'none', cursor: 'pointer' }}
+                      disabled={sessionExpired}
                     >
                       {forgotLabel}
                     </button>
@@ -403,19 +402,11 @@ export default function LoginScreen({
                 )}
                 <button
                   type="submit"
-                  disabled={loading || !email.trim() || !password.trim()}
+                  disabled={loading || sessionExpired || !bootstrapReady || !email.trim() || !password.trim()}
                   className="w-full py-3 rounded-xl text-sm font-semibold disabled:opacity-40"
                   style={{ background: ui.primaryBtnBg, color: ui.primaryBtnFg }}
                 >
                   {loading ? '…' : tab === 'login' ? s.login : s.registerSubmit}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setStep(1); setFadeIn(false) }}
-                  className="w-full mt-3 text-xs opacity-60 hover:opacity-100"
-                  style={{ color: ui.fg, background: 'none', border: 'none', cursor: 'pointer' }}
-                >
-                  ← Изменить хеш VK
                 </button>
               </form>
             )}
@@ -463,11 +454,11 @@ export default function LoginScreen({
             )}
             <button
               type="button"
-              onClick={() => { setStep(bootstrapReady ? 2 : 1); setError('') }}
+              onClick={() => { setStep('auth'); setError('') }}
               className="w-full mt-4 text-xs opacity-60 hover:opacity-100"
               style={{ color: ui.fg, background: 'none', border: 'none', cursor: 'pointer' }}
             >
-              ← Назад
+              ← Назад к входу
             </button>
           </div>
         )}

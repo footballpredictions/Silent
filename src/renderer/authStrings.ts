@@ -1,19 +1,14 @@
-/** Login flow copy — keep in sync with Android HashInputSection / MainViewModel. */
+/** Login flow copy — keep in sync with Android LoginScreen / MainViewModel. */
 export const authStrings = {
-  step1Title: 'Шаг 1 — хеш звонка VK',
-  step1Hint:
-    'Скопируйте хеш из раздела «Звонки» в приложении ВКонтакте (на ПК — VK Звонки в браузере). Вставьте хеш или ссылку ниже — временный канал только для входа или регистрации (2 мин).',
-  hashPlaceholder: 'Хеш или ссылка на звонок VK',
-  connectBtn: 'Подключить для входа',
+  authTitle: 'Вход или регистрация',
   connecting: 'Подключение…',
   connectingWait: 'Подключение… подождите',
-  channelReadyAlready: 'Канал готов. Можно войти или зарегистрироваться.',
   channelReady: 'Канал готов. Войдите или зарегистрируйтесь (2 мин).',
-  connectedBtn: 'Подключено ✓',
-  invalidHash: 'Неверный хеш. Вставьте ссылку vk.com/call/join/… или сам хеш',
   bootstrapFail:
-    'Интернет через VPN не поднялся. Проверьте хеш и попробуйте снова.',
-  needBootstrap: 'Сначала нажмите «Подключить для входа»',
+    'Интернет через VPN не поднялся. Закройте приложение и запустите снова.',
+  bootstrapExpired:
+    'Время временного интернета истекло (2 мин). Закройте приложение и запустите снова.',
+  needBootstrap: 'Временный канал не поднялся. Закройте приложение и запустите снова.',
   internetOff: 'Интернет отключён. VPN включайте на главном экране.',
   confirmEmail: 'Подтвердите email',
   emailSent: (email: string) => `Ссылка отправлена на ${email}`,

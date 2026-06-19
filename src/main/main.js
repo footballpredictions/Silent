@@ -204,7 +204,7 @@ function createTray() {
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Открыть Silent VPN', click: () => { mainWindow.show(); mainWindow.focus() } },
     { type: 'separator' },
-    { label: 'Выход', click: () => { isQuitting = true; cleanupVpn(); app.quit() } },
+    { label: 'Выход', click: () => quitAppFully() },
   ])
   tray.setContextMenu(contextMenu)
   tray.on('click', () => {
@@ -313,6 +313,21 @@ function clearFullTunnelUpgradeTimer() {
     clearTimeout(fullTunnelUpgradeTimer)
     fullTunnelUpgradeTimer = null
   }
+}
+
+function quitAppFully() {
+  if (isQuitting) return
+  isQuitting = true
+  cleanupVpn()
+  if (tray && !tray.isDestroyed()) {
+    tray.destroy()
+    tray = null
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.removeAllListeners('close')
+    mainWindow.close()
+  }
+  app.quit()
 }
 
 function cleanupVpn() {
@@ -499,6 +514,10 @@ ipcMain.handle('list-installed-apps', () => {
 
 ipcMain.handle('window-minimize', () => mainWindow?.minimize())
 ipcMain.handle('window-close', () => mainWindow?.hide())
+ipcMain.handle('app-quit', () => {
+  quitAppFully()
+  return true
+})
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url))
 ipcMain.handle('get-platform', () => process.platform)
 

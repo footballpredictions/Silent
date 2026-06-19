@@ -25,7 +25,7 @@ export default function TitleBar({
         {title}
       </span>
       <div
-        className="flex items-center justify-end gap-1 shrink-0"
+        className="flex items-center justify-end gap-2 shrink-0"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
         {right}

@@ -20,6 +20,7 @@ import { fetchVpnConfigWithKeys } from '../vpnConfigFetch'
 import { waitVpnReady } from '../vpnReady'
 import { warmupBrowsingPath } from '../warmupBrowsingPath'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
+import WindowControls from '../components/WindowControls'
 import { AppErrorBoundary } from '../components/AppErrorBoundary'
 import { resolveAppName } from '../clientTheme'
 import { menuDrawerStyle, UI_COLORS } from '../uiTokens'
@@ -581,14 +582,7 @@ export default function MainScreen({
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <DebugLogButton onClick={() => setShowDebugLog(true)} />
-          <button
-            onClick={() => (window as any).electronAPI?.minimize()}
-            className="w-2.5 h-2.5 rounded-full bg-gray-300 hover:bg-gray-400 transition-colors"
-          />
-          <button
-            onClick={() => (window as any).electronAPI?.close()}
-            className="w-2.5 h-2.5 rounded-full bg-gray-300 hover:bg-red-400 transition-colors"
-          />
+          <WindowControls />
         </div>
       </div>
 

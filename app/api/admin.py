@@ -1056,3 +1056,36 @@ async def delete_update(
         raise HTTPException(status_code=400, detail="Invalid platform")
     update_service.delete_platform_update(platform)
     return {"message": f"Update for {platform} removed"}
+
+
+@router.get("/updates/build-status")
+async def updates_build_status(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.build_agent_service import get_build_status
+    return await get_build_status(db)
+
+
+@router.post("/updates/build/{platform}")
+async def updates_build_release(
+    platform: str,
+    background_tasks: BackgroundTasks,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    if platform not in update_service.PLATFORMS:
+        raise HTTPException(status_code=400, detail="Invalid platform")
+    from app.services.vk_agent_auth import is_agent_enabled
+    from app.services.build_agent_service import get_build_status, build_platform_background
+
+    if not await is_agent_enabled(db):
+        raise HTTPException(
+            status_code=400,
+            detail="Подключите AI-агент VK (нужен для создания bootstrap-хеша)",
+        )
+    status = await get_build_status(db)
+    if status.get("running"):
+        raise HTTPException(status_code=409, detail="Сборка уже выполняется")
+    background_tasks.add_task(build_platform_background, platform)
+    return {"message": f"Сборка {platform} запущена", "platform": platform}

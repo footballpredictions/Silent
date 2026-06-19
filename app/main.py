@@ -82,18 +82,22 @@ async def lifespan(app: FastAPI):
         ))
     logger.info("Database tables ready")
 
-    # Start VK tunnel monitor
+    # Start VK tunnel monitor + nightly OTA rebuild scheduler
     from ai.tunnel_monitor import start_monitor_background
+    from ai.release_build_scheduler import start_release_build_scheduler
+
     monitor_task = start_monitor_background()
+    build_scheduler_task = start_release_build_scheduler()
 
     yield
 
     # Shutdown
-    monitor_task.cancel()
-    try:
-        await monitor_task
-    except Exception:
-        pass
+    for task in (monitor_task, build_scheduler_task):
+        task.cancel()
+        try:
+            await task
+        except Exception:
+            pass
     await engine.dispose()
     logger.info("Shutdown complete")
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Download, Trash2, Upload } from 'lucide-react'
+import { Download, Trash2, Upload, Hammer } from 'lucide-react'
 
 interface UpdateInfo {
   platform: string
@@ -8,6 +8,16 @@ interface UpdateInfo {
   uploaded_at: string | null
   size: number
   download_url?: string
+}
+
+interface BuildStatus {
+  running: boolean
+  status: string
+  message: string | null
+  last_at: string | null
+  last_platform: string | null
+  bootstrap_hash: string | null
+  nightly_date: string | null
 }
 
 function formatSize(bytes: number): string {
@@ -41,21 +51,37 @@ export default function UpdatesPage({ token }: { token: string }) {
   const [loading, setLoading] = useState(true)
   const [msg, setMsg] = useState('')
   const [uploading, setUploading] = useState<string | null>(null)
+  const [building, setBuilding] = useState<string | null>(null)
+  const [buildStatus, setBuildStatus] = useState<BuildStatus | null>(null)
   const pcRef = useRef<HTMLInputElement>(null)
   const androidRef = useRef<HTMLInputElement>(null)
 
   const headers = { Authorization: `Bearer ${token}` }
+
+  const loadBuildStatus = async () => {
+    try {
+      const res = await fetch('/api/admin/updates/build-status', { headers })
+      if (res.ok) setBuildStatus(await res.json())
+    } catch { /* ignore */ }
+  }
 
   const load = async () => {
     setLoading(true)
     try {
       const res = await fetch('/api/admin/updates', { headers })
       if (res.ok) setItems(await res.json())
+      await loadBuildStatus()
     } catch { /* ignore */ }
     setLoading(false)
   }
 
   useEffect(() => { load() }, [])
+
+  useEffect(() => {
+    if (!buildStatus?.running && !building) return
+    const t = setInterval(loadBuildStatus, 4000)
+    return () => clearInterval(t)
+  }, [buildStatus?.running, building, token])
 
   const upload = async (platform: string, file: File) => {
     setUploading(platform)
@@ -96,6 +122,35 @@ export default function UpdatesPage({ token }: { token: string }) {
     }
   }
 
+  const buildRelease = async (platform: string) => {
+    setBuilding(platform)
+    setMsg('')
+    try {
+      const res = await fetch(`/api/admin/updates/build/${platform}`, {
+        method: 'POST',
+        headers,
+      })
+      const data: { detail?: string; message?: string } = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setMsg(typeof data.detail === 'string' ? data.detail : `Ошибка (${res.status})`)
+        setBuilding(null)
+      } else {
+        setMsg(data.message || `Сборка ${platformLabel[platform]} запущена`)
+        await loadBuildStatus()
+      }
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Ошибка сети')
+      setBuilding(null)
+    }
+  }
+
+  useEffect(() => {
+    if (buildStatus && !buildStatus.running && building) {
+      setBuilding(null)
+      if (buildStatus.status === 'ok') load()
+    }
+  }, [buildStatus?.running, buildStatus?.status])
+
   return (
     <div className="space-y-6 max-w-3xl">
       <h1 className="text-xl font-bold">Обновления клиентов</h1>
@@ -103,7 +158,25 @@ export default function UpdatesPage({ token }: { token: string }) {
         Файлы хранятся в папке <code className="text-[#888]">update/</code> на сервере.
         При загрузке новой версии старая удаляется автоматически.
         Клиенты проверяют обновления через VPN-туннель.
+        AI-агент в <strong className="text-[#aaa]">00:00 МСК</strong> создаёт новый bootstrap-хеш
+        и пересобирает релизы (версия не меняется).
       </p>
+
+      {buildStatus && (buildStatus.running || buildStatus.message) && (
+        <div className="bg-[#111] border border-[#222] rounded-xl p-4 text-sm text-[#888]">
+          <p>
+            Сборка:{' '}
+            <span className={buildStatus.running ? 'text-yellow-400' : buildStatus.status === 'ok' ? 'text-green-400' : 'text-red-400'}>
+              {buildStatus.running ? 'в процессе' : buildStatus.status}
+            </span>
+            {buildStatus.last_platform && ` (${platformLabel[buildStatus.last_platform] || buildStatus.last_platform})`}
+          </p>
+          {buildStatus.message && <p className="mt-1">{buildStatus.message}</p>}
+          {buildStatus.bootstrap_hash && (
+            <p className="mt-1 text-xs text-[#555]">Bootstrap: {buildStatus.bootstrap_hash.slice(0, 20)}…</p>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <p className="text-[#666] text-sm">Загрузка...</p>
@@ -165,6 +238,17 @@ export default function UpdatesPage({ token }: { token: string }) {
                 >
                   <Upload className="w-4 h-4" />
                   {uploading === item.platform ? 'Загрузка...' : 'Загрузить файл'}
+                </button>
+                <button
+                  disabled={building === item.platform || buildStatus?.running}
+                  onClick={() => buildRelease(item.platform)}
+                  className="inline-flex items-center gap-2 bg-[#1a1a1a] border border-[#333] text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#222] disabled:opacity-50"
+                  title="Новый bootstrap-хеш + сборка на сервере → update/"
+                >
+                  <Hammer className="w-4 h-4" />
+                  {building === item.platform || (buildStatus?.running && buildStatus.last_platform === item.platform)
+                    ? 'Сборка...'
+                    : 'Собрать релиз в update'}
                 </button>
               </div>
             </div>

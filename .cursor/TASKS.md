@@ -2,7 +2,7 @@
 
 Формат: `[ ]` — не выполнено, `[x]` — выполнено.  
 Agent приступает к **первой невыполненной** задаче.  
-Статус сверен с коммитами `origin/main`, `origin/pc`, `origin/android` (2026-06-18).
+Статус сверен с коммитами `origin/main`, `origin/pc`, `origin/android` (2026-06-19).
 
 ---
 
@@ -50,6 +50,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] S2S keepalive `/api/vpn/internal/online` — `7cf4c8e`
 - [x] Client hash failure reporting — `9e98ddf`
 - [x] OTA updates API + admin page + deploy script — `bb80eb2`, `55ac8ac`
+- [x] Build Agent: ночная OTA-сборка PC/Android (00:00 МСК, новый bootstrap-хеш, version без bump), `build-agent/`, кнопки в админке — 2026-06-19
 - [x] Registration test mode toggle — `f687065`, `809d8e8`
 - [x] Trial subscription 3 дня после верификации — `d2c5b07`
 - [x] Per-user hashes, device rename API — `bfc7d88`
@@ -72,6 +73,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] ClientPreview: все экраны меню — `c5c5d61`
 - [x] ThemePage: настройки по экрану предпросмотра — `01291ba`
 - [x] Updates page: кнопка скачивания билдов — `3e8c082`, `39a291b`
+- [x] Updates page: «Собрать релиз в update» (PC/Android) + статус build-agent — 2026-06-19
 - [x] VK Calls auth через browser callback — `7dfe326`
 - [x] Mobile responsive (drawer nav, grids) — `383db65`
 - [x] VK hashes grouped by user — `49abeca`, `1a2c796`

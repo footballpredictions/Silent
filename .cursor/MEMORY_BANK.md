@@ -194,6 +194,24 @@ cmd /c build-installer.bat
 - Android: OTA через tunnel при VPN, на Wi-Fi для ConfigSync
 - Update bar — цвета и тексты из темы сервера
 
+### Build Agent — ночная OTA-сборка (AI-агент)
+
+**00:00 МСК** (если AI-агент VK подключён): новый bootstrap-хеш → release-сборка PC + Android **без смены версии** → замена файлов в `update/pc/` и `update/android/`.
+
+| Компонент | Путь |
+|-----------|------|
+| Скрипты | `backend/build-agent/` (`sync_repo.sh`, `build_android.sh`, `build_pc.sh`) |
+| Сервис | `app/services/build_agent_service.py` |
+| Планировщик | `ai/release_build_scheduler.py` |
+| Админка | Обновления → «Собрать релиз в update» (PC / Android) |
+| API | `POST /api/admin/updates/build/{platform}`, `GET …/build-status` |
+
+**Git:** перед сборкой клон/обновление в `build-agent/workspace/{pc,android}` — `git fetch`; `reset --hard` только если на remote есть новые коммиты.
+
+**Секреты:** `android/keystore/` → `python scripts/pack_build_secrets.py` → `deploy_build_agent.py` на VPS. Не в git.
+
+**VPS:** Android SDK (`/opt/android-sdk`, mount в api), Docker (PC через `electronuserland/builder:wine`). Подробно: `backend/build-agent/README.md`.
+
 ### Подписки и оплата
 
 - Trial: 3 дня после верификации email
@@ -216,6 +234,7 @@ Silent-Project/                 ← рабочая папка (НЕ git), отк
 ├── backend/                    ← git, ветка main
 │   ├── .cursor/                ← Memory Bank (единственный источник)
 │   ├── app/, ai/, admin-ui/
+│   ├── build-agent/            ← OTA-сборка на VPS (workspace/, secrets/)
 │   ├── scripts/                ← ВСЕ deploy-скрипты backend (см. раздел «Деплой»)
 │   ├── DEPLOY.md
 │   └── docker-compose.yml
@@ -412,6 +431,13 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-06-18 — Build Agent: ночная OTA-сборка + кнопки в админке
+
+- **00:00 МСК:** AI-агент создаёт bootstrap VK-хеш, пересобирает PC + Android release (versionName/package.json **не меняются**), публикует в `update/`.
+- **`backend/build-agent/`:** git sync, скрипты сборки, `secrets/` (keystore с локальной машины).
+- **Админка → Обновления:** «Собрать релиз в update» для проверки.
+- **Deploy:** `pack_build_secrets.py`, `deploy_build_agent.py`; docker-compose volumes `build-agent`, `update`, docker.sock.
 
 ### 2026-06-18 — Вход без шага 1 + bootstrap-хеш в сборке (Android + PC)
 

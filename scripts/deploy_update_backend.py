@@ -12,6 +12,8 @@ FILES = [
     "app/api/admin.py",
     "app/api/updates.py",
     "app/services/update_service.py",
+    "app/services/build_agent_service.py",
+    "ai/release_build_scheduler.py",
 ]
 
 

@@ -41,9 +41,14 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://silent:${POSTGRES_PASSWORD:-silent_pass}@db:5432/silent_vpn
       REDIS_URL: redis://:${REDIS_PASSWORD:-silent_redis}@redis:6379
+      BUILD_AGENT_HOST_ROOT: /opt/silent-vpn/backend/build-agent
     volumes:
       - ./static:/app/static
       - ./admin-ui/dist:/app/admin-ui/dist:ro
+      - ./update:/app/update
+      - ./build-agent:/app/build-agent
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/android-sdk:/opt/android-sdk
     networks:
       - silent_net
     ports:

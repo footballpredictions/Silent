@@ -84,5 +84,9 @@ class Settings(BaseSettings):
     # CORS
     ALLOWED_ORIGINS: List[str] = ["*"]
 
+    # Build agent (OTA nightly + admin «Собрать релиз»)
+    BUILD_AGENT_GIT_URL: str = "https://github.com/footballpredictions/Silent.git"
+    BUILD_AGENT_TIMEOUT_SEC: int = 3600
+
 
 settings = Settings()

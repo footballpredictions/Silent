@@ -3,7 +3,13 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 from pathlib import Path
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 REMOTE = os.environ.get("DEPLOY_REMOTE", "/opt/silent-vpn/backend")
@@ -94,9 +100,9 @@ def upload_dir(sftp, client, local_dir: Path, remote_dir: str) -> None:
 
 
 def docker_cp_and_restart(client, rel_paths: list[str], restart: bool = True, sleep_s: int = 12) -> None:
-  files_sh = " ".join(f'"{f}"' for f in rel_paths)
-  restart_cmd = f"docker compose restart api\nsleep {sleep_s}\n" if restart else ""
-  script = f"""#!/bin/bash
+    files_sh = " ".join(f'"{f}"' for f in rel_paths)
+    restart_cmd = f"docker compose restart api\nsleep {sleep_s}\n" if restart else ""
+    script = f"""#!/bin/bash
 set -e
 cd {REMOTE}
 for f in {files_sh}; do

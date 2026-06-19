@@ -114,9 +114,21 @@ cd backend
 | `app/api/admin.py` |
 | `app/api/updates.py` |
 | `app/services/update_service.py` |
+| `app/services/build_agent_service.py` |
+| `ai/release_build_scheduler.py` |
 | `admin-ui/dist/**` |
 
-Создаёт в контейнере `/app/update/pc`, `/app/update/android`.
+Создаёт в контейнере `/app/update/pc`, `/app/update/android`.  
+Volumes в `docker-compose.yml`: `./update`, `./build-agent`, docker.sock.
+
+### Build Agent (OTA-сборка на VPS)
+
+```powershell
+python scripts/pack_build_secrets.py      # android/keystore → build-agent/secrets/
+python scripts/deploy_build_agent.py      # скрипты + secrets на VPS
+```
+
+На VPS: Android SDK в `/opt/android-sdk` (mount в api), Docker для PC (Wine). См. `build-agent/README.md`.
 
 ### `deploy_wdtt_systemd.py`
 

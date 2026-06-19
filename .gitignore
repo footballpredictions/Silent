@@ -35,3 +35,6 @@ Thumbs.db
 
 # Build artifacts
 admin-ui/tsconfig.tsbuildinfo
+build-agent/workspace/
+build-agent/secrets/android/
+build-agent/secrets/git_token

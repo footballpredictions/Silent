@@ -5,7 +5,27 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     wireguard-tools \
     curl \
+    git \
+    bash \
+    wget \
+    unzip \
+    xz-utils \
+    default-jdk-headless \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
+
+# Go для build-agent (PC wdtt + Android libclient); GOTOOLCHAIN подтягивает версию из go.mod
+ENV GOTOOLCHAIN=auto
+RUN wget -q https://go.dev/dl/go1.24.2.linux-amd64.tar.gz -O /tmp/go.tgz \
+    && tar -C /usr/local -xzf /tmp/go.tgz \
+    && rm /tmp/go.tgz
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Node.js для PC build-agent (npm/vite вне Wine)
+ENV NODE_VERSION=20.19.0
+RUN wget -q "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -O /tmp/node.tar.xz \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+    && rm /tmp/node.tar.xz
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

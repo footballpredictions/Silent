@@ -748,19 +748,18 @@ class SilentRepository @Inject constructor(
         }.apply()
     }
 
-    fun saveBootstrapHash(hash: String?) {
-        prefs.edit().apply {
-            if (hash.isNullOrBlank()) remove(PREF_BOOTSTRAP_HASH) else putString(PREF_BOOTSTRAP_HASH, hash.trim())
-        }.apply()
+    /** VK-хеш для bootstrap VPN на экране входа — зашит в BuildConfig при сборке. */
+    fun getBootstrapHash(): String? =
+        com.silent.vpn.BuildConfig.BOOTSTRAP_VK_HASH.trim().takeIf { it.isNotBlank() }
+
+    fun saveBootstrapHash(@Suppress("UNUSED_PARAMETER") hash: String?) {
+        // Хеш задаётся при сборке (debug — фиксированный, release — -PbootstrapVkHash).
     }
 
-    fun getBootstrapHash(): String? = prefs.getString(PREF_BOOTSTRAP_HASH, null)?.takeIf { it.isNotBlank() }
-
-    /** Удалить временный хеш входа — после login основной VPN его не использует. */
+    /** После login bootstrap VPN отключается; embedded-хеш в BuildConfig не трогаем. */
     fun clearBootstrapHash() {
         if (!prefs.contains(PREF_BOOTSTRAP_HASH)) return
         prefs.edit().remove(PREF_BOOTSTRAP_HASH).apply()
-        Log.i(TAG, "bootstrap hash cleared")
     }
 
     /** Активные серверные хеши для основного VPN (не bootstrap). */

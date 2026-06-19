@@ -59,6 +59,8 @@ import kotlinx.coroutines.Job
 import javax.inject.Inject
 
 private const val BOOTSTRAP_SESSION_MS = 2 * 60 * 1000L
+private const val BOOTSTRAP_EXPIRED_MSG =
+    "Время временного интернета истекло (2 мин). Закройте приложение и запустите снова."
 /** Пока открыт экран «Устройства/Сессии» и VPN ВЫКЛЮЧЕН — обновляем список по public API. */
 private const val SESSIONS_POLL_MS = 10 * 1000L
 
@@ -209,54 +211,17 @@ class MainViewModel @Inject constructor(
         _hashReady.value = isHashReady()
     }
 
-    /** После login удаляем временный хеш входа — главный VPN работает только с серверными. */
+    /** После login bootstrap VPN отключается; legacy prefs очищаем. */
     private fun clearBootstrapHashAfterLogin() {
         if (!repo.isLoggedIn()) return
-        if (repo.getBootstrapHash().isNullOrBlank()) return
         repo.clearBootstrapHash()
         refreshHashState()
-        DebugLog.i("MainViewModel", "bootstrap hash cleared after login")
+        DebugLog.i("MainViewModel", "bootstrap session cleared after login")
     }
 
     private fun clearBootstrapIfServerHashesReady(items: List<HashItemDto>) {
         if (items.activeServerHashes().isEmpty()) return
         clearBootstrapHashAfterLogin()
-    }
-
-    /** Сохранить хеш из поля и подключить bootstrap VPN. */
-    fun connectForLogin(context: Context, raw: String) {
-        val h = HashParser.extract(raw)
-        if (h == null) {
-            _statusMsg.value = "Неверный хеш. Вставьте ссылку vk.com/call/join/… или сам хеш"
-            return
-        }
-        if (bootstrapConnectingInternal) {
-            _statusMsg.value = "Подключение… подождите"
-            return
-        }
-        if (_vpnState.value == VpnState.CONNECTED && bootstrapVpnMode) {
-            val saved = repo.getBootstrapHash()?.trim().orEmpty()
-            if (saved == h) {
-                bootstrapContext = context.applicationContext
-                restartBootstrapTimerIfNeeded()
-                return
-            }
-            resetBootstrapDeadline()
-            stopVpnLocally(context)
-            bootstrapVpnMode = false
-            _vpnState.value = VpnState.DISCONNECTED
-        }
-        repo.saveBootstrapHash(h)
-        refreshHashState()
-        bootstrapDeadlineMs = 0L
-        if (_vpnState.value != VpnState.DISCONNECTED) {
-            resetBootstrapDeadline()
-            stopVpnLocally(context)
-            bootstrapVpnMode = false
-            _vpnState.value = VpnState.DISCONNECTED
-        }
-        _statusMsg.value = "Подключение к серверу через VK…"
-        ensureBootstrapVpn(context)
     }
 
     init {
@@ -983,7 +948,7 @@ class MainViewModel @Inject constructor(
         return repo.apiBaseCandidates(WdttTunnelManager.lastWgAddress())
     }
 
-    /** Шаг 1 для входа / регистрации / сброса пароля при блокировке. */
+    /** Автоподключение bootstrap VPN на экране входа (хеш зашит в BuildConfig). */
     fun ensureBootstrapForAuthFlow(context: Context) {
         reconcileLoginBootstrapSession(context)
         if (!isHashReady()) return
@@ -1488,8 +1453,7 @@ class MainViewModel @Inject constructor(
         bootstrapContext = null
         repo.clearTunnelApiBase()
         _vpnState.value = VpnState.DISCONNECTED
-        _statusMsg.value =
-            "Время временного интернета истекло (2 мин). Нажмите «Подключить для входа» снова."
+        _statusMsg.value = BOOTSTRAP_EXPIRED_MSG
         updateBootstrapReadyFlag()
     }
 
@@ -1510,10 +1474,9 @@ class MainViewModel @Inject constructor(
             try {
                 val boot = HashParser.extract(repo.getBootstrapHash().orEmpty())
                     ?: run {
-                        _statusMsg.value = "Неверный сохранённый хеш. Вставьте ссылку vk.com/call/join/… заново"
+                        _statusMsg.value = "Неверный bootstrap-хеш в сборке приложения."
                         return@launch
                     }
-                repo.saveBootstrapHash(boot)
                 val fp = repo.getOrCreatePreLoginFingerprint()
                 val config = bootstrapLaunchConfig(BootstrapVpnConfig.build(boot, fp))
 
@@ -1548,7 +1511,7 @@ class MainViewModel @Inject constructor(
                     _vpnState.value = VpnState.DISCONNECTED
                     _statusMsg.value = WdttTunnelManager.lastError.value
                         ?: WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
-                        ?: "Интернет через VPN не поднялся. Проверьте хеш и попробуйте снова."
+                        ?: "Интернет через VPN не поднялся. Закройте приложение и запустите снова."
                 }
             } catch (e: Exception) {
                 Log.e("MainViewModel", "bootstrap VPN", e)

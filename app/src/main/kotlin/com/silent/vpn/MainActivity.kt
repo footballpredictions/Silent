@@ -22,7 +22,6 @@ import com.silent.vpn.ui.theme.SilentTheme
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.service.SilentVpnService
-import com.silent.vpn.vk.VkCallsLink
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -49,7 +48,6 @@ class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
     private var vpnPermissionGranted = mutableStateOf(false)
     private var pendingBootstrapAfterPermission = mutableStateOf(false)
-    private var pendingHashInput = mutableStateOf("")
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -61,7 +59,7 @@ class MainActivity : ComponentActivity() {
         if (result.resultCode == RESULT_OK) {
             if (pendingBootstrapAfterPermission.value) {
                 pendingBootstrapAfterPermission.value = false
-                vm.connectForLogin(this, pendingHashInput.value)
+                vm.ensureBootstrapForAuthFlow(this)
             } else {
                 vpnPermissionGranted.value = true
             }
@@ -105,7 +103,6 @@ class MainActivity : ComponentActivity() {
             val vpnError by vm.vpnError.collectAsState()
             val regDone by vm.regDone.collectAsState()
             val regEmail by vm.regEmail.collectAsState()
-            val bootstrapHash by vm.bootstrapHash.collectAsState()
             val statusMsg by vm.statusMsg.collectAsState()
             val bootstrapConnecting by vm.bootstrapConnecting.collectAsState()
             val bootstrapReady by vm.bootstrapReady.collectAsState()
@@ -128,8 +125,14 @@ class MainActivity : ComponentActivity() {
             }
 
             LaunchedEffect(screen) {
-                if (screen == AppScreen.LOGIN) {
-                    vm.reconcileLoginBootstrapSession(this@MainActivity)
+                if (screen != AppScreen.LOGIN) return@LaunchedEffect
+                vm.reconcileLoginBootstrapSession(this@MainActivity)
+                val prep = VpnService.prepare(this@MainActivity)
+                if (prep != null) {
+                    pendingBootstrapAfterPermission.value = true
+                    vpnPermissionLauncher.launch(prep)
+                } else {
+                    vm.ensureBootstrapForAuthFlow(this@MainActivity)
                 }
             }
 
@@ -148,24 +151,10 @@ class MainActivity : ComponentActivity() {
                         error = authError,
                         regDone = regDone,
                         regEmail = regEmail,
-                        bootstrapHash = bootstrapHash,
                         statusMsg = statusMsg,
                         bootstrapConnecting = bootstrapConnecting,
                         bootstrapReady = bootstrapReady,
                         bootstrapSecondsLeft = bootstrapSecondsLeft,
-                        onConnect = { raw ->
-                            val prep = VpnService.prepare(this@MainActivity)
-                            pendingHashInput.value = raw
-                            if (prep != null) {
-                                pendingBootstrapAfterPermission.value = true
-                                vpnPermissionLauncher.launch(prep)
-                            } else {
-                                vm.connectForLogin(this@MainActivity, raw)
-                            }
-                        },
-                        onOpenVkLink = { url ->
-                            VkCallsLink.openCalls(this@MainActivity, url)
-                        },
                         onClearError = vm::clearAuthError,
                         onRegDoneDismiss = vm::dismissRegDone,
                         onSyncBootstrap = {

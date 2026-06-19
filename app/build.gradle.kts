@@ -15,6 +15,9 @@ val keystoreProperties = Properties().apply {
     }
 }
 
+/** Debug: фиксированный VK-хеш для bootstrap VPN на экране входа. Release — только через -PbootstrapVkHash. */
+private val debugBootstrapVkHash = "6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY"
+
 android {
     namespace = "com.silent.vpn"
     compileSdk = 35
@@ -23,8 +26,8 @@ android {
         applicationId = "com.silent.vpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 134
-        versionName = "1.0.134"
+        versionCode = 135
+        versionName = "1.0.135"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
@@ -48,11 +51,18 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfigs.findByName("release")?.let { signingConfig = it }
+            val releaseHash = (project.findProperty("bootstrapVkHash") as String?)?.trim()?.takeIf { it.isNotEmpty() }
+            buildConfigField(
+                "String",
+                "BOOTSTRAP_VK_HASH",
+                "\"${releaseHash ?: debugBootstrapVkHash}\"",
+            )
         }
         debug {
             isMinifyEnabled = false
             applicationIdSuffix = ".debug"
             resValue("string", "app_name", "Silent VPN (debug)")
+            buildConfigField("String", "BOOTSTRAP_VK_HASH", "\"$debugBootstrapVkHash\"")
         }
     }
     lint {
@@ -123,4 +133,23 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.kotlinx.coroutines.test)
+}
+
+gradle.taskGraph.whenReady {
+    val releaseTasks = setOf("assembleRelease", "bundleRelease", "installRelease", "packageRelease")
+    val buildingRelease = allTasks.any { task ->
+        task.project == project && releaseTasks.any { task.name.equals(it, ignoreCase = true) }
+    }
+    if (buildingRelease) {
+        val releaseHash = (project.findProperty("bootstrapVkHash") as String?)?.trim()?.takeIf { it.isNotEmpty() }
+        if (releaseHash == null) {
+            throw GradleException(
+                """
+                Release-сборка Android: нужен актуальный VK bootstrap-хеш.
+                  ./gradlew assembleRelease -PbootstrapVkHash=XXXX
+                Ссылка vk.com/call/join/… — спросите у владельца проекта перед каждым релизом.
+                """.trimIndent(),
+            )
+        }
+    }
 }

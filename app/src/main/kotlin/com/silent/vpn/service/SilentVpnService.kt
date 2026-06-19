@@ -319,8 +319,10 @@ class SilentVpnService : Service() {
             // apiWg — fallback если GETCONF не пришёл за ~22 с (не ранний подъём WG).
             val apiWg = vpnConfig?.let { WireGuardConfigBuilder.fromVpnConfig(it) }
 
-            val bootHash = SilentPrefs.open(this)
-                .getString(SilentRepository.PREF_BOOTSTRAP_HASH, null)?.trim().orEmpty()
+            val bootHash = EntryPointAccessors.fromApplication(
+                applicationContext,
+                AppEntryPoint::class.java,
+            ).silentRepository().getBootstrapHash()?.trim().orEmpty()
             val isBootstrap = forceBootstrap || deviceId.startsWith("boot:")
             val rawHashes = HashParser.normalizeList(hashes).filter { it.isNotBlank() }.distinct()
             val savedServerHashes = if (isBootstrap) emptyList() else loadSavedServerHashes()

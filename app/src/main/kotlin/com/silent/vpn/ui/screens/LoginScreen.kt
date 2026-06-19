@@ -1,8 +1,5 @@
 package com.silent.vpn.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -28,7 +25,7 @@ import com.silent.vpn.ui.components.SilentLogo
 import com.silent.vpn.ui.theme.loginTextFieldColors
 import com.silent.vpn.ui.theme.toLoginUi
 
-private enum class LoginStep { HASH, AUTH, FORGOT }
+private enum class LoginStep { AUTH, FORGOT }
 
 @Composable
 fun LoginScreen(
@@ -44,62 +41,35 @@ fun LoginScreen(
     error: String?,
     regDone: Boolean,
     regEmail: String,
-    bootstrapHash: String?,
     statusMsg: String,
     bootstrapConnecting: Boolean,
     bootstrapReady: Boolean,
     bootstrapSecondsLeft: Int? = null,
-    onConnect: (String) -> Unit,
-    onOpenVkLink: (String) -> Unit,
     onClearError: () -> Unit,
     onRegDoneDismiss: () -> Unit,
     onSyncBootstrap: () -> Unit = {},
 ) {
     val ui = remember(theme) { theme.toLoginUi() }
-    var step by remember { mutableStateOf(LoginStep.HASH) }
+    var step by remember { mutableStateOf(LoginStep.AUTH) }
     var tab by remember { mutableStateOf("login") }
     var email by remember(initialEmail) { mutableStateOf(initialEmail) }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var rememberMe by remember(initialRememberMe) { mutableStateOf(initialRememberMe) }
     var showDebugLog by remember { mutableStateOf(false) }
-    /** Пользователь явно вернулся на шаг 1 — не перекидывать автоматически на шаг 2. */
-    var preferStep1 by remember { mutableStateOf(false) }
     val fieldColors = loginTextFieldColors(ui)
 
-    val step2Title = theme?.login_step2_title ?: "Шаг 2 — вход или регистрация"
+    val authTitle = theme?.login_step2_title?.replace(Regex("шаг\\s*2\\s*[—-]\\s*", RegexOption.IGNORE_CASE), "")
+        ?: "Вход или регистрация"
     val rememberLabel = theme?.login_remember_me_label ?: "Запомнить меня"
     val forgotLabel = theme?.login_forgot_password_label ?: "Забыли пароль?"
     val forgotTitle = theme?.login_forgot_title ?: "Восстановление пароля"
     val forgotHint = theme?.login_forgot_instruction ?: "Введите email — мы отправим ссылку."
-    val vkUrl = theme?.login_vk_mobile_url ?: "https://vk.com/calls"
 
-    fun goToStep1() {
-        preferStep1 = true
-        step = LoginStep.HASH
-        onClearError()
-    }
+    val sessionExpired = statusMsg.contains("Закройте приложение", ignoreCase = true) ||
+        statusMsg.contains("истекло", ignoreCase = true)
 
-    fun goToStep2() {
-        preferStep1 = false
-        step = LoginStep.AUTH
-        onClearError()
-    }
-
-    LaunchedEffect(bootstrapReady) {
-        if (bootstrapReady && step == LoginStep.HASH && !preferStep1) {
-            step = LoginStep.AUTH
-        }
-    }
-
-    LaunchedEffect(bootstrapReady, statusMsg) {
-        if (!bootstrapReady && statusMsg.contains("истекло", ignoreCase = true)) {
-            preferStep1 = true
-            step = LoginStep.HASH
-        }
-    }
-
-    LaunchedEffect(step, bootstrapReady) {
+    LaunchedEffect(Unit) {
         onSyncBootstrap()
     }
 
@@ -124,44 +94,54 @@ fun LoginScreen(
             }
             Spacer(modifier = Modifier.height(20.dp))
 
-            if (step == LoginStep.HASH) {
-                HashInputSection(
-                    ui = ui,
-                    theme = theme,
-                    bootstrapHash = bootstrapHash,
-                    statusMsg = statusMsg,
-                    bootstrapConnecting = bootstrapConnecting,
-                    bootstrapReady = bootstrapReady,
-                    bootstrapSecondsLeft = bootstrapSecondsLeft,
-                    onConnect = onConnect,
-                    onContinueToAuth = { goToStep2() },
-                    onOpenVkLink = { onOpenVkLink(vkUrl) },
-                    showDivider = false,
-                )
-            }
-
-            AnimatedVisibility(
-                visible = step == LoginStep.AUTH,
-                enter = fadeIn() + slideInVertically { it / 4 },
-            ) {
+            if (step == LoginStep.AUTH) {
                 Column {
-                    Text(step2Title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = ui.fg, modifier = Modifier.padding(bottom = 12.dp))
-                    if (bootstrapReady) {
-                        val sec = bootstrapSecondsLeft
-                        Text(
-                            when {
-                                sec != null -> statusMsg.ifBlank {
-                                    "Канал готов. Осталось %d:%02d".format(sec / 60, sec % 60)
-                                }
-                                statusMsg.isNotBlank() -> statusMsg
-                                else -> "VPN включён"
-                            },
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = ui.green,
-                            modifier = Modifier.padding(bottom = 12.dp),
-                        )
+                    Text(authTitle, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = ui.fg, modifier = Modifier.padding(bottom = 12.dp))
+
+                    when {
+                        bootstrapConnecting -> {
+                            Text(
+                                statusMsg.ifBlank { "Подключение… подождите" },
+                                fontSize = 12.sp,
+                                color = ui.hint,
+                                modifier = Modifier.padding(bottom = 12.dp),
+                            )
+                        }
+                        sessionExpired -> {
+                            Text(
+                                statusMsg,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = ui.red,
+                                modifier = Modifier.padding(bottom = 12.dp),
+                            )
+                        }
+                        bootstrapReady -> {
+                            val sec = bootstrapSecondsLeft
+                            Text(
+                                when {
+                                    sec != null -> statusMsg.ifBlank {
+                                        "Канал готов. Осталось %d:%02d".format(sec / 60, sec % 60)
+                                    }
+                                    statusMsg.isNotBlank() -> statusMsg
+                                    else -> "VPN включён"
+                                },
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = ui.green,
+                                modifier = Modifier.padding(bottom = 12.dp),
+                            )
+                        }
+                        statusMsg.isNotBlank() -> {
+                            Text(
+                                statusMsg,
+                                fontSize = 12.sp,
+                                color = ui.red,
+                                modifier = Modifier.padding(bottom = 12.dp),
+                            )
+                        }
                     }
+
                     Row(
                         modifier = Modifier.fillMaxWidth().background(ui.tabBg, RoundedCornerShape(12.dp)).padding(4.dp),
                     ) {
@@ -197,6 +177,7 @@ fun LoginScreen(
                             placeholder = { Text("you@example.com", fontSize = 14.sp, color = ui.fieldPlaceholder) },
                             singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                             shape = RoundedCornerShape(12.dp), colors = fieldColors,
+                            enabled = !sessionExpired,
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text("Пароль", color = ui.label, fontSize = 12.sp)
@@ -207,6 +188,7 @@ fun LoginScreen(
                             visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                             shape = RoundedCornerShape(12.dp), colors = fieldColors,
+                            enabled = !sessionExpired,
                             trailingIcon = {
                                 TextButton(onClick = { showPassword = !showPassword }) {
                                     Text(if (showPassword) "Скрыть" else "Показать", fontSize = 11.sp, color = ui.hint)
@@ -215,7 +197,7 @@ fun LoginScreen(
                         )
                         Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(checked = rememberMe, onCheckedChange = { rememberMe = it }, colors = CheckboxDefaults.colors(checkedColor = ui.fg))
+                                Checkbox(checked = rememberMe, onCheckedChange = { rememberMe = it }, colors = CheckboxDefaults.colors(checkedColor = ui.fg), enabled = !sessionExpired)
                                 Text(rememberLabel, fontSize = 12.sp, color = ui.hint)
                             }
                             if (tab == "login") {
@@ -223,7 +205,7 @@ fun LoginScreen(
                                     onClearForgotSent()
                                     step = LoginStep.FORGOT
                                     onClearError()
-                                }) {
+                                }, enabled = !sessionExpired) {
                                     Text(forgotLabel, fontSize = 11.sp, color = ui.linkColor)
                                 }
                             }
@@ -234,16 +216,13 @@ fun LoginScreen(
                                 if (tab == "login") onLogin(email.trim(), password, rememberMe)
                                 else onRegister(email.trim(), password, rememberMe)
                             },
-                            enabled = !loading && email.isNotBlank() && password.isNotBlank(),
+                            enabled = !loading && !sessionExpired && bootstrapReady && email.isNotBlank() && password.isNotBlank(),
                             modifier = Modifier.fillMaxWidth().height(48.dp),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = ui.primaryBtnBg, contentColor = ui.primaryBtnFg),
                         ) {
                             if (loading) CircularProgressIndicator(modifier = Modifier.size(20.dp), color = ui.primaryBtnFg, strokeWidth = 2.dp)
                             else Text(if (tab == "login") "Войти" else "Зарегистрироваться", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                        }
-                        TextButton(onClick = { goToStep1() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("← К шагу 1 — хеш VK", fontSize = 11.sp, color = ui.hint)
                         }
                     }
                 }

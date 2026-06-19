@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.142** |
-| `Silent-Project/android/` | `android` | **1.0.130** |
+| `Silent-Project/pc/` | `pc` | **1.0.143** |
+| `Silent-Project/android/` | `android` | **1.0.135** |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -60,22 +60,74 @@
 ```
 
 - Трафик маскируется под WebRTC audio (RTP / ChaCha20-Poly1305 AEAD)
-- VK-хеши: bootstrap (от пользователя) + до 4 серверных слотов
+- VK-хеши: bootstrap (зашит в сборку клиента) + до 4 серверных слотов
 - AI-агент следит за хешами и восстанавливает пустые/сломанные слоты
 - Режим ручных хешей в админке (автопересоздание через VK API отключено)
 
 ### VPN Flow для пользователя
 
-**Двухшаговый вход (как Android):**
+**Вход (Android + PC):**
 
-1. **Шаг 1 — Bootstrap:** пользователь вводит VK-хеш → локальный VPN (2 мин) → доступ к tunnel API `10.66.66.1`
-2. **Шаг 2 — Авторизация:** register/login через tunnel → JWT-токены
-3. `POST /api/vpn/device/register` (с bootstrap_hash) → WireGuard-ключи + device_id
-4. Подтверждение email → trial-подписка (3 дня) + post-verification benefits
-5. Нажимает тумблер → полный VPN-туннель `0.0.0.0/0`
-6. Максимум **3 одновременных** VPN-подключения на аккаунт
+1. Старт приложения → сразу экран **вход / регистрация** + автоматический bootstrap VPN (2 мин).
+2. VK bootstrap-хеш **зашит в сборку** — пользователь не вводит.
+3. register/login через tunnel → JWT-тokens
+4. `POST /api/vpn/device/register` (с bootstrap_hash) → WireGuard-ключи + device_id
+5. Подтверждение email → trial-подписка (3 дня)
+6. Тумблер → полный VPN `0.0.0.0/0`
+7. Максимум **3 одновременных** VPN-подключения на аккаунт
+
+**После истечения 2 мин bootstrap:** «Закройте приложение и запустите снова».
 
 **При включённом VPN:** все API-запросы (ConfigSync, OTA, disconnect) идут через tunnel `10.66.66.1`, не через публичный nip.io.
+
+### Bootstrap VK-хеш (сборка Android + PC) — Agent ОБЯЗАН помнить
+
+**Текущий хеш (debug и release по умолчанию):**
+
+- Ссылка: https://vk.com/call/join/6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY
+- Значение: `6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY`
+
+| Тип сборки | Правило для Agent |
+|------------|-------------------|
+| **Debug / dev** | **Всегда** этот хеш — зашит в `android/app/build.gradle.kts` и `pc/vite.config.ts`. Собирать debug **без вопросов**. |
+| **Release** | **Перед каждой новой release-сборкой** (Android `assembleRelease`, PC `npm run build`) **спросить у пользователя** актуальную ссылку `vk.com/call/join/…`. Если дали новую — подставить в сборку. Если «оставь как есть» — использовать текущий хеш выше. **Не начинать release-сборку молча.** |
+
+**Команды release с хешем:**
+
+```powershell
+# Android
+cd android\app
+.\gradlew.bat assembleRelease -PbootstrapVkHash=6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY
+
+# PC (PowerShell)
+cd pc
+$env:BOOTSTRAP_VK_HASH="6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY"
+npm run build
+```
+
+Файлы в коде: `android/app/build.gradle.kts` (`debugBootstrapVkHash`, `-PbootstrapVkHash`), `pc/vite.config.ts` (`DEBUG_BOOTSTRAP_HASH`, env `BOOTSTRAP_VK_HASH`).
+
+Если хеш перестал работать — пользователь даёт новую ссылку; обновить константу в обоих файлах + эту секцию Memory Bank.
+
+### PC release-сборка (.exe) — Agent ОБЯЗАН помнить
+
+Перед **каждой** PC release (`build-installer.bat` / `npm run build`):
+
+1. **Спросить** актуальный bootstrap VK-хеш (см. выше).
+2. **Убить процессы:** `Silent VPN.exe`, `wdtt-client.exe`, `makensis.exe`, `electron-builder.exe` — делает `pc/build-installer.bat` в начале; Agent при ручной сборке тоже должен завершить их.
+3. **После успешной сборки** — удалить **старые** папки `pc/build-release-*`, оставить только новую (скрипт делает это в конце).
+
+Команда:
+
+```powershell
+cd pc
+$env:BOOTSTRAP_VK_HASH="<хеш>"
+cmd /c build-installer.bat
+```
+
+Готовый installer: `pc/build-release-v141-XXXXX/Silent VPN Setup X.X.X.exe` + копия в `pc/releases/`.
+
+**UI:** кнопка закрытия на главном экране PC (`quitApp`) — полный выход из приложения и трея.
 
 ### Tunnel API
 
@@ -252,7 +304,7 @@ fix(pc): faster connect, less ConfigSync/OTA spam, bump 1.0.142
 | Фраза пользователя | Действие |
 |--------------------|----------|
 | «пуш» | commit + push из нужной папки в нужную ветку |
-| «релиз» | `cd android\app; .\gradlew.bat assembleRelease` |
+| «релиз» | **Сначала спросить** актуальный bootstrap VK-хеш (см. «Bootstrap VK-хеш»). Затем `assembleRelease -PbootstrapVkHash=…` |
 | «новая задача — …» | добавить в `TASKS.md` |
 
 ## Деплой
@@ -334,11 +386,20 @@ python scripts/deploy_stable.py
 ### Сборка без деплоя
 
 ```powershell
-# Android release (триггер «релиз»)
-cd android\app; .\gradlew.bat assembleRelease
+# Android debug — хеш зашит, спрашивать не нужно
+cd android\app; .\gradlew.bat assembleDebug
 
-# PC dev
+# Android release — СНАЧАЛА спросить хеш у пользователя
+cd android\app; .\gradlew.bat assembleRelease -PbootstrapVkHash=6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY
+
+# PC dev — хеш зашит
 cd pc; npm install; npm run dev
+
+# PC release — СНАЧАЛА спросить хеш; затем:
+# cd pc
+# $env:BOOTSTRAP_VK_HASH="…"
+# cmd /c build-installer.bat
+# (убивает процессы, после сборки удаляет старые build-release-*)
 ```
 
 ### Чего НЕ делать
@@ -351,6 +412,12 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-06-18 — Вход без шага 1 + bootstrap-хеш в сборке (Android + PC)
+
+- **Android (v1.0.135):** VK bootstrap-хеш зашит в `BuildConfig` (debug — фиксированный; release — `-PbootstrapVkHash`). Старт → сразу экран входа/регистрации + автоподключение bootstrap VPN (2 мин). Убран шаг 1 (ввод хеша). После истечения 2 мин — «Закройте приложение и запустите снова».
+- **PC (v1.0.143):** тот же flow — хеш в `__BOOTSTRAP_VK_HASH__` (`vite.config.ts`, env `BOOTSTRAP_VK_HASH` для release). `WindowControls` + `quitApp` — полное закрытие (окно + трей) на главном экране и на экране входа. `build-installer.bat`: kill процессов перед сборкой, удаление старых `build-release-*` после успеха.
+- **Memory Bank:** секции «Bootstrap VK-хеш» и «PC release-сборка» — debug-хеш, перед release спрашивать новую ссылку у пользователя.
 
 ### 2026-06-18 — Android: QS-плитка OFF→ON + OTA runtime (v1.0.131)
 

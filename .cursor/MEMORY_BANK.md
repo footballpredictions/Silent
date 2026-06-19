@@ -210,7 +210,7 @@ cmd /c build-installer.bat
 
 **Секреты:** `android/keystore/` → `python scripts/pack_build_secrets.py` → `deploy_build_agent.py` на VPS. Не в git.
 
-**VPS:** Android SDK (`/opt/android-sdk`, mount в api), Docker (PC через `electronuserland/builder:wine`). Подробно: `backend/build-agent/README.md`.
+После успешной публикации в `update/` сервис удаляет `node_modules`, `dist`, `build-release-agent`, Gradle `build/`, `jniLibs` и прочие артефакты (`git clean -fdx` в workspace).
 
 ### Подписки и оплата
 

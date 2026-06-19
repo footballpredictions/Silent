@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -125,7 +126,80 @@ async def create_bootstrap_hash(db: AsyncSession) -> str:
         await manager.close()
 
 
-def _run_shell(script: Path, bootstrap_hash: str, timeout: int) -> str:
+def _path_size(path: Path) -> int:
+    if path.is_file():
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+    if not path.is_dir():
+        return 0
+    total = 0
+    for root, _, files in os.walk(path):
+        for name in files:
+            try:
+                total += (Path(root) / name).stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def _remove_path(path: Path) -> int:
+    size = _path_size(path)
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    elif path.is_file():
+        try:
+            path.unlink()
+        except OSError:
+            return 0
+    return size
+
+
+def _cleanup_platform_workspace(platform: str) -> int:
+    """Удалить артефакты сборки после публикации в update/."""
+    repo = _WORKSPACE / platform
+    if not repo.is_dir():
+        return 0
+
+    paths: list[Path] = []
+    if platform == "pc":
+        paths.extend([
+            repo / "node_modules",
+            repo / "dist",
+            repo / "build-release-agent",
+            repo / "build-output",
+            repo / "resources" / "wdtt-client.exe",
+        ])
+        paths.extend(repo.glob("build-release-v*"))
+        paths.extend(repo.glob("build-output-v*"))
+        paths.extend(repo.glob("build-fresh"))
+    elif platform == "android":
+        paths.extend([
+            repo / "app" / "build",
+            repo / "app" / ".gradle",
+            repo / "keystore",
+            repo / "app" / "src" / "main" / "jniLibs",
+        ])
+
+    freed = 0
+    for p in paths:
+        if p.exists():
+            freed += _remove_path(p)
+
+    if (repo / ".git").is_dir():
+        subprocess.run(
+            ["git", "clean", "-fdx"],
+            cwd=str(repo),
+            capture_output=True,
+            timeout=180,
+        )
+
+    logger.info("Build agent cleanup %s: ~%s MB freed", platform, freed // (1024 * 1024))
+    return freed
+
+
+def _run_shell(script: Path, platform: str, bootstrap_hash: str, timeout: int) -> str:
     env = os.environ.copy()
     env["BUILD_AGENT_ROOT"] = str(_BUILD_AGENT_ROOT)
     env["BUILD_AGENT_WORKSPACE"] = str(_WORKSPACE)
@@ -212,13 +286,18 @@ async def build_platform(
                 )
 
             timeout = int(os.environ.get("BUILD_AGENT_TIMEOUT_SEC", "3600"))
-            artifact_path = await asyncio.to_thread(_run_shell, script, bootstrap_hash, timeout)
+            artifact_path = await asyncio.to_thread(
+                _run_shell, script, platform, bootstrap_hash, timeout,
+            )
 
             repo = _WORKSPACE / platform
             version = _read_pc_version(repo) if platform == "pc" else _read_android_version(repo)
             info = _publish(platform, artifact_path, version)
+            freed_mb = (await asyncio.to_thread(_cleanup_platform_workspace, platform)) // (1024 * 1024)
 
             msg = f"OK {platform} v{version} → {info['filename']}"
+            if freed_mb > 0:
+                msg += f", очищено ~{freed_mb} MB"
             await set_build_log(
                 db,
                 msg,

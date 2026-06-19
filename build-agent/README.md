@@ -55,3 +55,7 @@ python scripts/deploy_build_agent.py
 | `BUILD_AGENT_TIMEOUT_SEC` | 3600 |
 
 Опционально: `build-agent/secrets/git_token` — PAT для приватного clone.
+
+## Очистка диска
+
+После успешной публикации в `update/` backend удаляет артефакты в `workspace/{pc,android}/` (`node_modules`, `dist`, `build/`, installer cache и т.д.) — `git clean -fdx` + явное удаление тяжёлых папок.

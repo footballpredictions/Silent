@@ -90,7 +90,7 @@ func RunSession(
 	if err != nil {
 		return false, fmt.Errorf("резолв TURN: %w", err)
 	}
-	c, err := net.DialUDP("udp", nil, resolved)
+	c, err := dialUDPForTURN(resolved)
 	if err != nil {
 		return false, fmt.Errorf("подключение TURN UDP: %w", err)
 	}
@@ -109,7 +109,7 @@ func RunSession(
 		addrFamily = turn.RequestedAddressFamilyIPv6
 	}
 
-	// TURN Client (pion/turn/v5)
+	// TURN Client (pion/turn/v5) — mobileNet: без netlink (HarmonyOS / Android 11+)
 	tc, err := turn.NewClient(&turn.ClientConfig{
 		STUNServerAddr:         turnAddr,
 		TURNServerAddr:         turnAddr,
@@ -118,6 +118,7 @@ func RunSession(
 		Password:               creds.Pass,
 		RequestedAddressFamily: addrFamily,
 		LoggerFactory:          &NullLoggerFactory{},
+		Net:                    mobileNet{},
 	})
 	if err != nil {
 		return false, fmt.Errorf("TURN клиент: %w", err)

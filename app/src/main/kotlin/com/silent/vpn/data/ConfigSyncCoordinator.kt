@@ -116,34 +116,42 @@ object ConfigSyncCoordinator {
 
             if (!needHashes && !needTheme && !needProfile) {
                 Log.d(TAG, "sync-state ok, no changes (h=${state.hashes} t=${state.theme} p=${state.profile})")
-                return
-            }
+                if (!vpnUpForSync()) return
+            } else {
+                Log.i(TAG, "sync: hashes=$needHashes theme=$needTheme profile=$needProfile")
+                DebugLog.i(TAG, "sync: hashes=$needHashes theme=$needTheme profile=$needProfile")
 
-            Log.i(TAG, "sync: hashes=$needHashes theme=$needTheme profile=$needProfile")
-            DebugLog.i(TAG, "sync: hashes=$needHashes theme=$needTheme profile=$needProfile")
-
-            if (needHashes) {
-                val itemsResult = repo.fetchAndSaveHashItemsForSync()
-                val items = itemsResult.getOrNull().orEmpty()
-                if (items.isNotEmpty()) {
-                    applyHashItems(repo, listener, items, state.hashes)
-                } else {
-                    Log.w(TAG, "hashes fetch failed: ${itemsResult.exceptionOrNull()?.message}")
+                if (needHashes) {
+                    val itemsResult = repo.fetchAndSaveHashItemsForSync()
+                    val items = itemsResult.getOrNull().orEmpty()
+                    if (items.isNotEmpty()) {
+                        applyHashItems(repo, listener, items, state.hashes)
+                    } else {
+                        Log.w(TAG, "hashes fetch failed: ${itemsResult.exceptionOrNull()?.message}")
+                    }
+                }
+                if (needTheme) {
+                    repo.fetchAndSaveThemeViaSync().getOrNull()?.let { theme ->
+                        repo.saveSyncThemeRev(state.theme)
+                        listener.onTheme(theme)
+                        Log.i(TAG, "theme updated")
+                    } ?: Log.w(TAG, "theme fetch failed")
+                }
+                if (needProfile) {
+                    repo.fetchAndSaveProfileViaSync().getOrNull()?.let { profile ->
+                        repo.saveSyncProfileRev(state.profile)
+                        listener.onProfile(profile)
+                        Log.i(TAG, "profile updated (devices=${profile.devices.count { it.is_connected }} online)")
+                    } ?: Log.w(TAG, "profile fetch failed")
                 }
             }
-            if (needTheme) {
-                repo.fetchAndSaveThemeViaSync().getOrNull()?.let { theme ->
-                    repo.saveSyncThemeRev(state.theme)
-                    listener.onTheme(theme)
-                    Log.i(TAG, "theme updated")
-                } ?: Log.w(TAG, "theme fetch failed")
-            }
-            if (needProfile) {
-                repo.fetchAndSaveProfileViaSync().getOrNull()?.let { profile ->
-                    repo.saveSyncProfileRev(state.profile)
+
+            // Пока main VPN активен — всегда сверяем подписку с сервером (rev мог не измениться).
+            if (vpnUpForSync()) {
+                repo.fetchProfileLiveViaUser().getOrNull()?.let { profile ->
                     listener.onProfile(profile)
-                    Log.i(TAG, "profile updated (devices=${profile.devices.count { it.is_connected }} online)")
-                } ?: Log.w(TAG, "profile fetch failed")
+                    Log.i(TAG, "subscription check profile active=${profile.subscription.is_active}")
+                } ?: Log.w(TAG, "subscription profile fetch failed")
             }
         }
     }

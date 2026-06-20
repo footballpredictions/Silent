@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.silent.vpn.BuildConfig
 import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
 import com.silent.vpn.ui.components.MenuNavItem
@@ -390,15 +391,15 @@ fun MainScreen(
                         }
                         HorizontalDivider(color = UiColors.Gray100, thickness = UiDimens.borderThin)
                         Column(modifier = Modifier.padding(UiDimens.menuNavPadding)) {
-                            val items = listOf(
-                                MenuPage.SUBSCRIPTION to "Подписка",
-                                MenuPage.EXCEPTIONS to "Исключения приложений",
-                                MenuPage.HASHES to "Хеши",
-                                MenuPage.PROMO to "Промокод",
-                                MenuPage.DEVICES to "Сессии (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})",
-                                MenuPage.SUPPORT to "Поддержка",
-                                MenuPage.ABOUT to "О сервисе",
-                            )
+                            val items = buildList {
+                                add(MenuPage.SUBSCRIPTION to "Подписка")
+                                add(MenuPage.EXCEPTIONS to "Исключения приложений")
+                                if (BuildConfig.DEBUG) add(MenuPage.HASHES to "Хеши")
+                                add(MenuPage.PROMO to "Промокод")
+                                add(MenuPage.DEVICES to "Сессии (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})")
+                                add(MenuPage.SUPPORT to "Поддержка")
+                                add(MenuPage.ABOUT to "О сервисе")
+                            }
                             items.forEach { (page, label) ->
                                 MenuNavItem(label = label, fg = fg, onClick = { menuPage = page })
                             }

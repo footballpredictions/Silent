@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.silent.vpn.BuildConfig
 import com.silent.vpn.vpn.LogEntry
 import com.silent.vpn.vpn.WdttTunnelManager
 @Composable
@@ -33,6 +34,7 @@ fun DebugLogButton(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
+    if (!BuildConfig.DEBUG) return
     TextButton(onClick = onClick, modifier = modifier, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
         Text("Лог", fontSize = 10.sp, fontWeight = FontWeight.Medium, color = Color(0xFF6B7280))
     }
@@ -43,7 +45,7 @@ fun DebugLogDialog(
     visible: Boolean,
     onDismiss: () -> Unit,
 ) {
-    if (!visible) return
+    if (!BuildConfig.DEBUG || !visible) return
     val context = LocalContext.current
     val currentLogs by WdttTunnelManager.logs.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()

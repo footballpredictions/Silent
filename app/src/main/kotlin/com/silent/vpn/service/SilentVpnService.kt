@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import com.silent.vpn.BuildConfig
 import com.silent.vpn.MainActivity
 import com.silent.vpn.R
 import com.silent.vpn.data.HashChannelHelper
@@ -1044,8 +1045,14 @@ class SilentVpnService : Service() {
     private fun loadSavedActiveServerHashCount(): Int = loadSavedServerHashes().size
 
     private fun repoResolveTotalWorkers(activeHashCount: Int): Int {
-        val prefs = SilentPrefs.open(this)
         val activeHashes = activeHashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)
+        if (!BuildConfig.DEBUG) {
+            return HashChannelHelper.workersForLibclient(
+                HashChannelHelper.normalizeTotalWorkers(HashChannelHelper.WORKERS_PER_GROUP * 4, activeHashes),
+                activeHashes,
+            )
+        }
+        val prefs = SilentPrefs.open(this)
         val max = HashChannelHelper.maxTotalWorkers(activeHashes)
         val saved = when {
             prefs.contains(SilentRepository.PREF_HASH_TOTAL_WORKERS) -> {

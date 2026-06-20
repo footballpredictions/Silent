@@ -836,6 +836,12 @@ class SilentRepository @Inject constructor(
 
     fun getTotalWorkers(activeHashCount: Int = getSavedHashItems().activeServerHashCount().coerceAtLeast(1)): Int {
         val capped = activeHashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)
+        if (!BuildConfig.DEBUG) {
+            return HashChannelHelper.normalizeTotalWorkers(
+                HashChannelHelper.WORKERS_PER_GROUP * 4,
+                capped,
+            )
+        }
         val max = HashChannelHelper.maxTotalWorkers(capped)
         if (prefs.contains(PREF_HASH_TOTAL_WORKERS)) {
             val raw = prefs.getInt(PREF_HASH_TOTAL_WORKERS, HashChannelHelper.WORKERS_PER_GROUP)

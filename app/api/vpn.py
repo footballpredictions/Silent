@@ -1,5 +1,6 @@
 """VPN configuration and connection API."""
 import json
+import secrets
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -255,6 +256,7 @@ async def disconnect(
 async def internal_online(
     req: InternalOnlineRequest,
     x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    x_hive_cell_id: str = Header(default="", alias="X-Hive-Cell-Id"),
     db: AsyncSession = Depends(get_db),
 ):
     """Server-to-server online report from wdtt-server (no client JWT).
@@ -264,10 +266,22 @@ async def internal_online(
     the client never needs to heartbeat the backend through the VPN.
     """
     secret = (settings.INTERNAL_API_SECRET or "").strip()
-    if not secret or x_internal_secret != secret:
+    if not secret or not secrets.compare_digest(x_internal_secret, secret):
         raise HTTPException(status_code=403, detail="forbidden")
     await clear_stale_online_status(db)
     ok = await set_device_online(db, req.device_id.strip(), bool(req.online))
+    if x_hive_cell_id.strip():
+        from app.services import hive_service
+        import uuid as _uuid
+
+        try:
+            cid = _uuid.UUID(x_hive_cell_id.strip())
+            cell = await hive_service.get_cell_by_id(db, cid)
+            if cell:
+                await hive_service.refresh_cell_load(db, cell)
+                await db.commit()
+        except (ValueError, TypeError):
+            pass
     return {"ok": ok}
 
 

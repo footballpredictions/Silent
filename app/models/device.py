@@ -21,6 +21,10 @@ class Device(Base):
     last_connected: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_connected: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    cell_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("hive_cells.id"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="devices")
+    cell: Mapped["HiveCell | None"] = relationship(back_populates="devices")

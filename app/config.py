@@ -76,6 +76,16 @@ class Settings(BaseSettings):
     SESSION_IDLE_HOURS: int = 6
     TRIAL_DAYS: int = 3
 
+    # Hive (Улей / Соты) — лимит по CPU/RAM, не по числу пользователей
+    HIVE_CPU_PERCENT_THRESHOLD: float = 85.0
+    HIVE_MEM_PERCENT_THRESHOLD: float = 88.0
+    HIVE_CELL_HTTP_TIMEOUT_SEC: float = 15.0
+    HIVE_PROVISION_SSH_TIMEOUT_SEC: int = 45
+    HIVE_PROVISION_STALE_MINUTES: int = 20
+    HIVE_CELL_AGENT_PORT: int = 9100
+    HIVE_PROVISION_SSH_USER: str = "root"
+    HIVE_WDTT_BINARY_PATH: str = ""
+
     # Subscription prices
     PRICE_MONTHLY: float = 199.0
     PRICE_QUARTERLY: float = 499.0

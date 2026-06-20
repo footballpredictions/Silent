@@ -2,7 +2,7 @@
 
 Формат: `[ ]` — не выполнено, `[x]` — выполнено.  
 Agent приступает к **первой невыполненной** задаче.  
-Статус сверен с коммитами `origin/main`, `origin/pc`, `origin/android` (2026-06-19).
+Статус сверен с коммитами `origin/main`, `origin/pc`, `origin/android` (2026-06-20).
 
 ---
 
@@ -10,6 +10,8 @@ Agent приступает к **первой невыполненной** зад
 
 ### Инфраструктура и репозиторий
 
+- [x] Улей (Hive): автоподключение соты по IP + SSH root (wdtt, DNAT tunnel, cell-agent) — 2026-06-20
+- [x] Улей: фоновый провижининг, удаление зависших сот, CPU/RAM (хост + cell-agent), upgrade-agent — 2026-06-20
 - [ ] Документировать YuMoney webhook flow в APIS.md (`POST /api/payments/yumoney/notify` — в коде есть, описание flow — нет)
 
 ### iOS-клиент
@@ -33,13 +35,14 @@ Agent приступает к **первой невыполненной** зад
 
 ### Memory Bank / документация
 
-- [x] Обновить Memory Bank (MEMORY_BANK.md, APIS.md, TASKS.md) — 2026-06-18
+- [x] Обновить Memory Bank (MEMORY_BANK.md, APIS.md, TASKS.md) — 2026-06-20
 - [x] Документировать деплой по веткам (`backend/scripts/`, `pc/scripts/`, `android/scripts/`) — 2026-06-18
 - [x] SSH-секреты в `.env.deploy` через `_deploy_common.py` — 2026-06-18
 - [x] Убрать старые deploy/diag-скрипты из корня и `android/scripts/inspect_*.py` — 2026-06-18
 
 ### Backend (`origin/main`)
 
+- [x] Улей / Соты (Hive): модель HiveCell, балансировка VPN, admin «Улей», cell-agent, proc_stats, deploy_hive — 2026-06-20
 - [x] `GET /api/vpn/sync-state` для ConfigSync — `d46bce3`, `de4e241`
 - [x] Profile sync revision без heartbeat `last_connected` — `de4e241`
 - [x] VK Calls silent_token auth для AI-агента (app 7793118) — `8ce55f1`, `cc5e1d2`, `fe61a68`
@@ -70,6 +73,7 @@ Agent приступает к **первой невыполненной** зад
 
 ### Admin UI (`origin/main`)
 
+- [x] Страница «Улей» — соты, SSH auto-connect, CPU/RAM, вывод/удаление, upgrade-agent — 2026-06-20
 - [x] ClientPreview: все экраны меню — `c5c5d61`
 - [x] ThemePage: настройки по экрану предпросмотра — `01291ba`
 - [x] Updates page: кнопка скачивания билдов — `3e8c082`, `39a291b`

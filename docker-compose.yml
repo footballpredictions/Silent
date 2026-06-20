@@ -49,6 +49,8 @@ services:
       - ./build-agent:/app/build-agent
       - /var/run/docker.sock:/var/run/docker.sock
       - /opt/android-sdk:/opt/android-sdk
+      - /usr/local/bin/wdtt-server:/app/wdtt/wdtt-server:ro
+      - /proc:/host/proc:ro
     networks:
       - silent_net
     ports:

@@ -8,6 +8,7 @@ import VkPage from './pages/VkPage'
 import PromoPage from './pages/PromoPage'
 import ThemePage from './pages/ThemePage'
 import UpdatesPage from './pages/UpdatesPage'
+import HivePage from './pages/HivePage'
 import Layout from './components/Layout'
 import { ErrorBoundary } from './components/ErrorBoundary'
 
@@ -72,6 +73,7 @@ function App() {
               <Route path="/promo" element={<PromoPage token={token} />} />
               <Route path="/theme" element={<ThemePage token={token} />} />
               <Route path="/updates" element={<UpdatesPage token={token} />} />
+              <Route path="/hive" element={<HivePage token={token} />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
           </Layout>

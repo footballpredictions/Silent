@@ -131,6 +131,30 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 | GET | `/promo` | Admin | Список промокодов |
 | GET | `/logs` | Admin | Буфер логов |
 
+### Admin Hive — `/api/admin/hive`
+
+| Метод | Путь | Auth | Описание |
+|-------|------|------|----------|
+| GET | `/cells` | Admin | Список сот + онлайн VPN, CPU/RAM |
+| GET | `/summary` | Admin | Сводка: нагрузка Улья, пороги, режим балансировки |
+| POST | `/cells/auto` | Admin | Подключить соту (IP + SSH root) — provisoning в фоне |
+| POST | `/cells/manual` | Admin | Ручное добавление (без SSH) |
+| POST | `/cells/connect` | Admin | Подключить через cell-agent URL + пароль |
+| POST | `/cells/{id}/probe` | Admin | Проверка cell-agent |
+| POST | `/cells/{id}/upgrade-agent` | Admin | Обновить cell-agent на соте (body: SSH password) |
+| PATCH | `/cells/{id}` | Admin | Имя, priority, status (`active` / `draining` / `offline`) |
+| DELETE | `/cells/{id}` | Admin | Удалить соту (`?force=true` для provisioning/error) |
+
+**cell-agent на соте** (порт 9100, заголовок `X-Cell-Agent-Secret`):
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| GET | `/health` | Health |
+| POST | `/v1/handshake` | Параметры VPN для Улья |
+| GET | `/v1/status` | CPU/RAM, wdtt_active |
+
+**Env Hive:** `HIVE_CPU_PERCENT_THRESHOLD`, `HIVE_MEM_PERCENT_THRESHOLD`, `HIVE_CELL_AGENT_PORT`, `HIVE_PROVISION_SSH_USER`, `HIVE_PROVISION_STALE_MINUTES`, `HOST_PROC_ROOT` (опц. `/host/proc`).
+
 ### Статические маршруты
 
 | Путь | Описание |

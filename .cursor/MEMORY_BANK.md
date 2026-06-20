@@ -178,6 +178,29 @@ cmd /c build-installer.bat
 6. iOS (`Silent-Project/ios/`) — по тому же принципу
 7. Push: ветка `main` + **все** клиентские ветки; деплой backend
 
+### Улей / Соты (Hive)
+
+Масштабирование VPN: **Улей** (главный VPS) + **соты** (дополнительные VPS). Новые устройства по умолчанию на Улье; при перегрузке CPU/RAM (пороги в `.env`) — на соту с минимумом онлайн VPN. **Сборка build-agent в 00:00 МСК не считается перегрузкой.**
+
+| Компонент | Путь / порт |
+|-----------|-------------|
+| Модель | `app/models/hive_cell.py`, `device.cell_id` |
+| Сервисы | `hive_service.py`, `hive_load.py`, `hive_provision_service.py`, `proc_stats.py` |
+| Admin API | `/api/admin/hive/*` |
+| Admin UI | `admin-ui/src/pages/HivePage.tsx`, маршрут `/hive` |
+| cell-agent на соте | systemd `silent-cell-agent`, порт **9100**, `cell-agent/main.py` |
+| Деплой | `python scripts/deploy_hive.py` (после `npm run build` в admin-ui) |
+
+**Подключение соты:** IP + SSH root → фоновый provisoning (wdtt, iptables DNAT `10.66.66.1:8000` → Улей, cell-agent). SSH-пароль **не хранится**.
+
+**Метрики:** Улей — `proc_stats` (хост VPS через docker.sock или `/host/proc`); соты — `GET cell-agent /v1/status`. UI обновляет каждые 10 с.
+
+**Вывод (draining):** сота не принимает новых клиентов; текущие VPN дорабатывают до отключения → затем удаление.
+
+**Env:** `HIVE_CPU_PERCENT_THRESHOLD`, `HIVE_MEM_PERCENT_THRESHOLD`, `HIVE_CELL_AGENT_PORT`, `HIVE_PROVISION_SSH_USER`, `WDTT_MASTER_PASSWORD`, `VPN_SERVER_IP`.
+
+**Деплой Hive:** только `docker cp` + `docker compose restart api nginx` — **не** `docker compose up -d api` (сбрасывает код в контейнере).
+
 ### AI-агент VK (Zvonki / Calls)
 
 - Авторизация: VK Calls `silent_token` (app `7793118`)
@@ -332,7 +355,7 @@ fix(pc): faster connect, less ConfigSync/OTA spam, bump 1.0.142
 
 | Репозиторий | Ветка | Файл шпаргалки | Папка deploy-скриптов |
 |-------------|-------|----------------|----------------------|
-| `backend/` | `main` | **`backend/DEPLOY.md`** | `backend/scripts/` (11 файлов) |
+| `backend/` | `main` | **`backend/DEPLOY.md`** | `backend/scripts/` (13+ файлов) |
 | `pc/` | `pc` | **`pc/DEPLOY.md`** | `pc/scripts/` (2 deploy + 1 утилита) |
 | `android/` | `android` | **`android/DEPLOY.md`** | `android/scripts/` (2 файла) |
 | `ios/` | `ios` | *(нет OTA-деплоя)* | — |
@@ -382,6 +405,8 @@ cd backend
 | ConfigSync | `python scripts/deploy_config_sync.py` | `sync-state` и связанные файлы |
 | OTA API на backend | `python scripts/deploy_update_backend.py` | Endpoint `/api/updates` (без .exe/.apk) |
 | wdtt-server systemd | `python scripts/deploy_wdtt_systemd.py` | Установка/обновление wdtt.service |
+| **Улей (Hive)** | `python scripts/deploy_hive.py` | Hive API, cell-agent, admin-ui «Улей» |
+| cell-agent на соту | `python scripts/deploy_cell_agent.py <ip>` | Ручная установка agent на VPS-соту |
 
 **Детали и списки файлов каждого скрипта:** `backend/DEPLOY.md` (не дублировать здесь).
 
@@ -466,6 +491,15 @@ cd pc; npm install; npm run dev
 
 - **Симптом:** `[VK Auth] Failed … connection abort`, `[ВОРКЕР #N] Ошибка Reader: EOF` при работающем VPN.
 - **Исправление (ветка `android`):** скрытие сетевых ретраев при `воркеры≥1` или WG UP; фатальные VK-ошибки и старт с 0 воркеров — по-прежнему в логе; `vk_auth_failed` на сервер не шлётся для обрывов TCP.
+
+### 2026-06-20 — Улей (Hive): соты, балансировка, мониторинг
+
+- Модель `HiveCell`, `device.cell_id`, admin «Улей», cell-agent на сотах (порт 9100)
+- Автоподключение соты: SSH root → wdtt + DNAT tunnel + cell-agent; провижининг **в фоне**
+- Балансировка: CPU/RAM Улья (пороги 85/88%), sticky assignment, build-agent ночью не перегружает
+- Метрики: `proc_stats.py` — нагрузка **хоста** VPS (не Docker API); соты через cell-agent `/v1/status`
+- Admin UI: автообновление метрик 10 с, «Вывод», удаление зависших сот, `POST …/upgrade-agent` (SSH)
+- Деплой: `scripts/deploy_hive.py` — `docker cp` + restart (не `compose up -d api`)
 
 ### 2026-06-18 — Android: WRAP_AUTH_TIMEOUT в логе при ramp-up
 

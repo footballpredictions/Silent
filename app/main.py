@@ -80,7 +80,55 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_vk_link_sessions_user_id ON vk_link_sessions (user_id)"
         ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS hive_cells (
+                id UUID PRIMARY KEY,
+                name VARCHAR(128) NOT NULL,
+                is_queen BOOLEAN NOT NULL DEFAULT FALSE,
+                public_ip VARCHAR(255) NOT NULL,
+                wdtt_port INTEGER NOT NULL DEFAULT 56000,
+                wg_port INTEGER NOT NULL DEFAULT 56001,
+                wg_public_key TEXT DEFAULT '',
+                api_url VARCHAR(512),
+                api_secret_enc TEXT,
+                tunnel_api_url VARCHAR(512),
+                max_clients INTEGER NOT NULL DEFAULT 100,
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                priority INTEGER NOT NULL DEFAULT 100,
+                last_seen_at TIMESTAMP,
+                last_error TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_hive_cells_is_queen ON hive_cells (is_queen)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_hive_cells_status ON hive_cells (status)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE devices ADD COLUMN IF NOT EXISTS cell_id UUID REFERENCES hive_cells(id)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_devices_cell_id ON devices (cell_id)"
+        ))
     logger.info("Database tables ready")
+
+    from app.database import AsyncSessionLocal
+    from app.services.hive_service import ensure_queen_cell
+    from sqlalchemy import update as sql_update
+    from app.models import Device
+
+    async with AsyncSessionLocal() as db:
+        try:
+            queen = await ensure_queen_cell(db)
+            await db.execute(
+                sql_update(Device).where(Device.cell_id.is_(None)).values(cell_id=queen.id)
+            )
+            await db.commit()
+        except Exception as e:
+            logger.warning("Hive queen init skipped: %s", e)
 
     # Start VK tunnel monitor + nightly OTA rebuild scheduler
     from ai.tunnel_monitor import start_monitor_background
@@ -125,6 +173,7 @@ from app.api.users import router as users_router
 from app.api.vpn import router as vpn_router
 from app.api.payments import router as payments_router
 from app.api.admin import router as admin_router
+from app.api.hive import router as hive_router
 from app.api.updates import router as updates_router
 from app.services import update_service
 
@@ -134,6 +183,7 @@ app.include_router(users_router, prefix="/api")
 app.include_router(vpn_router, prefix="/api")
 app.include_router(payments_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
+app.include_router(hive_router, prefix="/api")
 app.include_router(updates_router, prefix="/api")
 
 
@@ -141,6 +191,16 @@ app.include_router(updates_router, prefix="/api")
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "version": settings.APP_VERSION}
+
+
+@app.api_route(
+    "/api/{_api_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    include_in_schema=False,
+)
+async def api_unmatched(_api_path: str):
+    """Неизвестный API — 404, а не 405 от SPA catch-all."""
+    raise HTTPException(status_code=404, detail="API endpoint not found")
 
 
 # Legacy OAuth landing (GET/POST) — иначе POST даёт 405

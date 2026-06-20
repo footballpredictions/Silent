@@ -16,6 +16,7 @@ from app.models import Device, User, VkHash, AppSetting
 from app.core.security import generate_wdtt_password, encrypt_value
 from app.config import settings
 from app.schemas.vpn import VpnConfigResponse
+from app.services import hive_service
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +77,13 @@ def _is_valid_wg_key(key: str) -> bool:
     return True
 
 
-async def _get_next_wg_address(db: AsyncSession) -> str:
+async def _get_next_wg_address(db: AsyncSession, cell_id=None) -> str:
     subnet = ipaddress.IPv4Network(settings.WG_SUBNET)
     hosts = list(subnet.hosts())
-    result = await db.execute(select(Device.wg_address).where(Device.wg_address.isnot(None)))
+    q = select(Device.wg_address).where(Device.wg_address.isnot(None))
+    if cell_id is not None:
+        q = q.where(Device.cell_id == cell_id)
+    result = await db.execute(q)
     used = {row[0] for row in result.fetchall()}
     for host in hosts[1:]:
         addr = f"{host}/{subnet.prefixlen}"
@@ -411,7 +415,8 @@ async def ensure_device_session(
             )
 
     priv_key, pub_key = _generate_wg_keypair()
-    wg_address = await _get_next_wg_address(db)
+    cell = await hive_service.pick_cell_for_new_device(db)
+    wg_address = await _get_next_wg_address(db, cell.id)
     wdtt_pass = (settings.WDTT_MASTER_PASSWORD or "").strip() or generate_wdtt_password()
 
     device = Device(
@@ -423,6 +428,7 @@ async def ensure_device_session(
         wg_private_key_enc=encrypt_value(priv_key),
         wg_address=wg_address,
         wdtt_password=wdtt_pass,
+        cell_id=cell.id,
         is_connected=False,
         last_connected=datetime.utcnow(),
     )
@@ -480,7 +486,8 @@ async def register_device(
         pub_key = wg_public_key
         priv_key = ""
 
-    wg_address = await _get_next_wg_address(db)
+    cell = await hive_service.pick_cell_for_new_device(db)
+    wg_address = await _get_next_wg_address(db, cell.id)
     wdtt_pass = (settings.WDTT_MASTER_PASSWORD or "").strip() or generate_wdtt_password()
 
     device = Device(
@@ -492,6 +499,7 @@ async def register_device(
         wg_private_key_enc=encrypt_value(priv_key) if priv_key else None,
         wg_address=wg_address,
         wdtt_password=wdtt_pass,
+        cell_id=cell.id,
     )
     db.add(device)
     await db.commit()
@@ -507,11 +515,18 @@ async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigRespon
 
     result = await db.execute(select(User).where(User.id == device.user_id))
     user = result.scalar_one_or_none()
-    if user and user.email != BOOTSTRAP_USER_EMAIL:
+    is_bootstrap = user and user.email == BOOTSTRAP_USER_EMAIL
+    if user and not is_bootstrap:
         hashes = await get_vpn_hashes_for_user(db, user)
     else:
         hashes = await get_active_vk_hashes(db)
-    server_pub_key = await get_server_public_key(db)
+
+    cell = await hive_service.resolve_cell_for_device(
+        db, device, force_queen=is_bootstrap,
+    )
+    server_pub_key = (cell.wg_public_key or "").strip()
+    if not server_pub_key:
+        server_pub_key = await get_server_public_key(db)
 
     priv_key = ""
     if device.wg_private_key_enc:
@@ -527,15 +542,18 @@ async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigRespon
         await db.commit()
 
     if not _is_valid_wg_key(server_pub_key):
-        logger.warning("server_public_key missing — set WG_SERVER_PUBLIC_KEY in .env")
+        logger.warning("server_public_key missing for cell %s", cell.id)
+
+    server_ip = cell.public_ip or settings.VPN_SERVER_IP
+    server_port = cell.wdtt_port or settings.VPN_SERVER_PORT
 
     return VpnConfigResponse(
         device_id=str(device.id),
         wg_private_key=priv_key,
         wg_address=device.wg_address or "10.66.66.2/24",
         wg_dns="77.88.8.8,77.88.8.1",
-        server_ip=settings.VPN_SERVER_IP,
-        server_port=settings.VPN_SERVER_PORT,
+        server_ip=server_ip,
+        server_port=server_port,
         server_public_key=server_pub_key,
         wdtt_password=(settings.WDTT_MASTER_PASSWORD or "").strip() or (device.wdtt_password or ""),
         vk_hashes=hashes,

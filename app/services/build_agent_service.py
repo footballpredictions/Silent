@@ -97,6 +97,11 @@ async def set_build_log(
         await _set_setting(db, "build_agent_bootstrap_hash", bootstrap_hash)
 
 
+def is_build_running() -> bool:
+    """Сборка OTA/build-agent идёт — не считать CPU Улья перегрузкой VPN."""
+    return _BUILD_RUNNING
+
+
 async def get_build_status(db: AsyncSession) -> dict:
     running = _BUILD_RUNNING
     return {

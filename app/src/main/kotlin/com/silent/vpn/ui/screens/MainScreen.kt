@@ -90,7 +90,7 @@ fun MainScreen(
     onUpdateClick: () -> Unit = {},
     onUpdatePolling: (Boolean) -> Unit = {},
     accountRefreshing: Boolean = false,
-    onRefreshAccount: (onDone: (String?) -> Unit) -> Unit = {},
+    onRefreshAccount: (onDone: (Boolean, String?) -> Unit) -> Unit = {},
 ) {
     val bg = parseColor(theme?.background_color ?: "#FFFFFF", Color.White)
     val fg = parseColor(theme?.text_color ?: "#000000", Color.Black)
@@ -463,7 +463,7 @@ private fun MenuSubscription(
     fg: Color,
     showMobileHint: Boolean,
     accountRefreshing: Boolean,
-    onRefreshAccount: (onDone: (String?) -> Unit) -> Unit,
+    onRefreshAccount: (onDone: (Boolean, String?) -> Unit) -> Unit,
     onBack: () -> Unit,
     onInitPayment: (String, (String) -> Unit, (String) -> Unit) -> Unit,
     onOpenUrl: (String) -> Unit,
@@ -483,9 +483,9 @@ private fun MenuSubscription(
         Button(
             onClick = {
                 refreshMsg = ""
-                onRefreshAccount { err ->
-                    refreshMsg = err ?: "Данные обновлены"
-                    if (err != null) onShowError(err)
+                onRefreshAccount { ok, msg ->
+                    refreshMsg = if (ok) msg ?: "Данные обновлены" else ""
+                    if (!ok && msg != null) onShowError(msg)
                 }
             },
             enabled = !accountRefreshing,

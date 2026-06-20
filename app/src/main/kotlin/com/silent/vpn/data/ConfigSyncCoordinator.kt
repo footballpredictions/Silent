@@ -16,12 +16,14 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * Канал обновлений: sync-state → profile, hashes, theme.
- * Wi‑Fi — public API; mobile — только при поднятом VPN (tunnel proxy, без WG overlay).
+ * Канал обновлений: sync-state → profile, hashes, theme, подписка.
+ * Wi‑Fi — public API; mobile — только при поднятом VPN (tunnel proxy).
+ * Фоновый poll — раз в час, чтобы не дёргать WG overlay на LTE.
  */
 object ConfigSyncCoordinator {
     private const val TAG = "ConfigSync"
-    private const val POLL_MS = 45_000L
+    /** Единый интервал фонового sync (хеши/тема/профиль/подписка). */
+    private const val POLL_MS = 60 * 60 * 1000L
     private const val START_DELAY_MS = 5_000L
 
     private val tickMutex = Mutex()
@@ -146,7 +148,7 @@ object ConfigSyncCoordinator {
                 }
             }
 
-            // Пока main VPN активен — всегда сверяем подписку с сервером (rev мог не измениться).
+            // Main VPN: сверяем подписку (rev мог не измениться при истечении на сервере).
             if (vpnUpForSync()) {
                 repo.fetchProfileLiveViaUser().getOrNull()?.let { profile ->
                     listener.onProfile(profile)

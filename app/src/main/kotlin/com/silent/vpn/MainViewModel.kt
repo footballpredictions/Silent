@@ -61,7 +61,7 @@ import javax.inject.Inject
 import retrofit2.Response
 
 private const val BOOTSTRAP_SESSION_MS = 2 * 60 * 1000L
-private const val EPHEMERAL_TUNNEL_WAIT_ITER = 75
+private const val EPHEMERAL_TUNNEL_WAIT_ITER = 120
 private const val BOOTSTRAP_EXPIRED_MSG =
     "Время временного интернета истекло (2 мин). Закройте приложение и запустите снова."
 /** Пока открыт экран «Устройства/Сессии» и VPN ВЫКЛЮЧЕН — обновляем список по public API. */
@@ -587,14 +587,14 @@ class MainViewModel @Inject constructor(
      * Краткий bootstrap-туннель для API на LTE (белые списки): профиль, хеши, WG-config.
      * Только по действию пользователя или перед connect; не фоновый poll.
      */
-    private suspend fun runEphemeralApiBootstrap(context: Context, force: Boolean = false): Boolean {
+    private suspend fun runEphemeralApiBootstrap(
+        context: Context,
+        force: Boolean = false,
+        apiBlock: (suspend () -> Boolean)? = null,
+    ): Boolean {
         if (!repo.isLoggedIn() || !isHashReady()) return false
         if (silentBootstrapSync || bootstrapVpnMode) return false
-        if (SilentVpnService.isRunning && WdttTunnelManager.running.value &&
-            !WdttTunnelManager.isBootstrapMode()
-        ) {
-            return false
-        }
+        if (repo.isMainVpnTunnelUp()) return false
         if (!repo.mayRunEphemeralSync(force)) {
             DebugLog.i("MainViewModel", "ephemeral sync throttled")
             return false
@@ -620,23 +620,47 @@ class MainViewModel @Inject constructor(
 
             DebugLog.i("MainViewModel", "ephemeral API bootstrap start")
             launchVpnService(context.applicationContext, config, forceBootstrap = true)
-            repeat(EPHEMERAL_TUNNEL_WAIT_ITER) {
-                delay(200)
-                if (WdttTunnelManager.tunnelReady.value && WdttTunnelManager.isBootstrapMode()) {
-                    withEphemeralApiTunnel {
-                        repo.fetchProfileLive().onSuccess { p ->
-                            _profile.value = p
-                        }
-                        syncServerHashes()
-                        applyRefreshVpnConfigDirect(fp)
-                    }
-                    repo.markEphemeralSyncUsed()
-                    DebugLog.i("MainViewModel", "ephemeral API bootstrap OK")
-                    return true
+            var apiOk = false
+            var attempt = 0
+            while (attempt < EPHEMERAL_TUNNEL_WAIT_ITER && !apiOk) {
+                delay(250)
+                if (!WdttTunnelManager.tunnelReady.value || !WdttTunnelManager.isBootstrapMode()) {
+                    attempt++
+                    continue
                 }
+                if (WdttTunnelManager.activeWorkers.value < 1 && attempt < 24) {
+                    attempt++
+                    continue
+                }
+                // Bootstrap-VPN включает app в туннель (APP_EXCLUDED=false) — без этого HTTP к 10.66.66.1 не идёт.
+                if (WdttTunnelManager.isBootstrapMode() && SilentRepository.APP_EXCLUDED_FROM_VPN && attempt < 32) {
+                    attempt++
+                    continue
+                }
+                if (attempt == 0 || attempt == 8 || attempt == 16) delay(800)
+                val ok = runCatching {
+                    withEphemeralBackendApi {
+                        if (apiBlock != null) {
+                            apiBlock()
+                        } else {
+                            ephemeralAccountSync(fp)
+                        }
+                    }
+                }.getOrElse { e ->
+                    DebugLog.w("MainViewModel", "ephemeral API attempt failed: ${e.message}")
+                    false
+                }
+                if (ok) {
+                    apiOk = true
+                    repo.markEphemeralSyncUsed()
+                    DebugLog.i("MainViewModel", "ephemeral API bootstrap OK (attempt ${attempt + 1})")
+                }
+                attempt++
             }
-            DebugLog.w("MainViewModel", "ephemeral API bootstrap timeout")
-            return false
+            if (!apiOk) {
+                DebugLog.w("MainViewModel", "ephemeral API bootstrap: profile/API not fetched")
+            }
+            return apiOk
         } catch (e: Exception) {
             DebugLog.w("MainViewModel", "ephemeral API bootstrap: ${e.message}")
             return false
@@ -644,11 +668,37 @@ class MainViewModel @Inject constructor(
             stopVpnLocally(context.applicationContext)
             repo.clearTunnelApiBase()
             silentBootstrapSync = false
+            withContext(Dispatchers.IO) {
+                VpnConnectHelper.ensureCleanSlate(context.applicationContext)
+            }
         }
     }
 
-    private suspend fun <T> withEphemeralApiTunnel(block: suspend () -> T): T {
-        repo.ensureBootstrapTunnelApi()
+    /** Профиль/подписка через уже поднятый ephemeral tunnel (без повторного routing). */
+    private suspend fun ephemeralAccountSync(fp: String): Boolean {
+        val tunnel = WdttTunnelManager.tunnelApiBase()
+        if (!tryFetchProfileOnBase(tunnel)) {
+            DebugLog.w(
+                "MainViewModel",
+                "ephemeral profile fetch failed via $tunnel excluded=${SilentRepository.APP_EXCLUDED_FROM_VPN}",
+            )
+            return false
+        }
+        runCatching { syncServerHashes() }
+        runCatching { applyRefreshVpnConfigDirect(fp) }
+        return true
+    }
+
+    /** API через ephemeral/bootstrap tunnel — тот же канал, что login/register на LTE. */
+    private suspend fun <T> withEphemeralBackendApi(block: suspend () -> T): T {
+        awaitTunnelApiReady()
+        if (!WdttTunnelManager.isBootstrapMode() || !WdttTunnelManager.tunnelReady.value) {
+            error("ephemeral tunnel not ready")
+        }
+        if (!SilentRepository.APP_EXCLUDED_FROM_VPN) {
+            repo.ensureBootstrapTunnelApi()
+            return block()
+        }
         return WdttTunnelManager.withApiOverlay {
             repo.useApiBase(WdttTunnelManager.tunnelApiBase())
             repo.invalidateApiClient()
@@ -683,18 +733,32 @@ class MainViewModel @Inject constructor(
             if (_accountRefreshing.value) return@launch
             _accountRefreshing.value = true
             try {
+                val subBefore = _profile.value?.subscription?.is_active
                 var ok = tryTunnelAccountRefresh()
                 if (!ok) ok = tryPublicAccountRefresh()
                 if (!ok) ok = runEphemeralApiBootstrap(appContext, force = force)
+                val subAfter = _profile.value?.subscription?.is_active
                 val msg = when {
-                    ok -> null
+                    ok -> {
+                        when {
+                            subAfter == true ->
+                                "Данные обновлены · подписка активна"
+                            subAfter == false ->
+                                "Данные обновлены · подписка не активна"
+                            else -> "Данные обновлены"
+                        }
+                    }
                     repo.isMainVpnTunnelUp() ->
                         "Не удалось обновить через VPN-туннель. Подождите несколько секунд и повторите."
                     !force && !repo.mayRunEphemeralSync(force = true) -> {
                         val sec = repo.ephemeralSyncCooldownSec()
                         if (sec != null) "Подождите $sec сек. перед повтором." else null
                     }
-                    else -> "Не удалось обновить данные. Попробуйте Wi‑Fi или подключите VPN."
+                    else ->
+                        "Не удалось получить профиль с сервера. Дождитесь подключения служебного туннеля и повторите."
+                }
+                if (ok && subBefore == subAfter && subBefore != null) {
+                    DebugLog.i("MainViewModel", "refreshAccountData: subscription unchanged (active=$subAfter)")
                 }
                 onResult?.invoke(ok, msg)
             } finally {
@@ -1209,7 +1273,7 @@ class MainViewModel @Inject constructor(
             _vpnState.value == VpnState.DISCONNECTING ||
             (!force && WdttTunnelManager.isApiOverlayActive())
         ) {
-            return _profile.value != null
+            return !force && _profile.value != null
         }
         if (
             WdttTunnelManager.tunnelReady.value &&
@@ -1227,7 +1291,7 @@ class MainViewModel @Inject constructor(
             if (force) {
                 return repo.fetchProfileLive().fold(
                     onSuccess = { p ->
-                        _profile.value = p
+                        applyServerProfile(p)
                         p.vk_user_id?.let { repo.saveVkUserId(it) }
                         true
                     },
@@ -1257,7 +1321,7 @@ class MainViewModel @Inject constructor(
         for (base in repo.apiBaseCandidates(wg)) {
             if (tryFetchProfileOnBase(base)) return true
         }
-        return _profile.value != null
+        return !force && _profile.value != null
     }
 
     private suspend fun tryFetchProfileViaRepoApi(): Boolean {
@@ -1265,7 +1329,7 @@ class MainViewModel @Inject constructor(
             val res = repo.getApi().getProfile()
             if (res.isSuccessful) {
                 val p = res.body()!!
-                _profile.value = p
+                applyServerProfile(p)
                 repo.saveCachedProfile(p)
                 p.vk_user_id?.let { repo.saveVkUserId(it) }
                 DebugLog.i("MainViewModel", "fetchProfile OK via ${repo.getServerUrl()}")
@@ -1287,7 +1351,7 @@ class MainViewModel @Inject constructor(
             val res = repo.getApi().getProfile()
             if (res.isSuccessful) {
                 val p = res.body()!!
-                _profile.value = p
+                applyServerProfile(p)
                 repo.saveCachedProfile(p)
                 p.vk_user_id?.let { repo.saveVkUserId(it) }
                 DebugLog.i("MainViewModel", "fetchProfile OK via $base")
@@ -2146,35 +2210,34 @@ class MainViewModel @Inject constructor(
         SessionTrace.exit("MainViewModel.disconnect")
     }
 
+    private suspend fun checkPromoApi(code: String): String {
+        val res = repo.getApi().checkPromo(PromoCheckRequest(code, "monthly"))
+        if (res.isSuccessful) return "Скидка ${res.body()!!.discount_percent}%!"
+        return parseError(res.errorBody()?.string() ?: "") ?: "Не найден"
+    }
+
     fun checkPromo(code: String, onResult: (String) -> Unit) {
         viewModelScope.launch {
-            suspend fun applyPromo(): Result<String> = runCatching {
-                val res = repo.withUserBackendApi {
-                    repo.getApi().checkPromo(PromoCheckRequest(code, "monthly"))
+            if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
+                val ok = runEphemeralApiBootstrap(appContext, force = true) {
+                    runCatching { checkPromoApi(code) }
+                        .fold(
+                            onSuccess = { msg -> onResult(msg); true },
+                            onFailure = { e ->
+                                onResult(repo.humanizeHashFetchError(e.message))
+                                false
+                            },
+                        )
                 }
-                if (res.isSuccessful) {
-                    "Скидка ${res.body()!!.discount_percent}%!"
-                } else {
-                    parseError(res.errorBody()?.string() ?: "") ?: "Не найден"
+                if (!ok) {
+                    onResult("Не удалось проверить промокод. Повторите.")
                 }
+                return@launch
             }
-
             runCatching {
-                onResult(applyPromo().getOrThrow())
-            }.onFailure { first ->
-                val msg = first.message.orEmpty()
-                val canEphemeral = !repo.isMainVpnTunnelUp() &&
-                    repo.isOnMobileData() &&
-                    repo.isPublicConnectFailure(msg)
-                if (canEphemeral && runEphemeralApiBootstrap(appContext, force = true)) {
-                    runCatching {
-                        onResult(applyPromo().getOrThrow())
-                    }.onFailure { second ->
-                        onResult(second.message ?: "Ошибка")
-                    }
-                } else {
-                    onResult(repo.humanizeHashFetchError(msg.ifBlank { "Ошибка" }))
-                }
+                repo.withUserBackendApi { checkPromoApi(code) }
+            }.onSuccess { onResult(it) }.onFailure { e ->
+                onResult(repo.humanizeHashFetchError(e.message))
             }
         }
     }
@@ -2197,35 +2260,32 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    private suspend fun initPaymentApi(planType: String): String {
+        val res = repo.getApi().initPayment(com.silent.vpn.data.PaymentInitRequest(planType))
+        if (res.isSuccessful) return res.body()!!.url
+        throw IllegalStateException(parseError(res.errorBody()?.string() ?: "") ?: "Ошибка оплаты")
+    }
+
     fun initPayment(planType: String, onUrl: (String) -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
-            suspend fun requestPayment(): Result<String> = runCatching {
-                val res = repo.withUserBackendApi {
-                    repo.getApi().initPayment(com.silent.vpn.data.PaymentInitRequest(planType))
+            if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
+                val ok = runEphemeralApiBootstrap(appContext, force = true) {
+                    runCatching { initPaymentApi(planType) }
+                        .fold(
+                            onSuccess = { url -> onUrl(url); true },
+                            onFailure = { e ->
+                                onError(e.message ?: "Ошибка оплаты")
+                                false
+                            },
+                        )
                 }
-                if (res.isSuccessful) {
-                    res.body()!!.url
-                } else {
-                    error(parseError(res.errorBody()?.string() ?: "") ?: "Ошибка оплаты")
-                }
+                if (!ok) onError("Не удалось открыть оплату. Повторите.")
+                return@launch
             }
-
             runCatching {
-                requestPayment().getOrThrow().let(onUrl)
-            }.onFailure { first ->
-                val msg = first.message.orEmpty()
-                val canEphemeral = !repo.isMainVpnTunnelUp() &&
-                    repo.isOnMobileData() &&
-                    (repo.isPublicConnectFailure(msg) || msg.contains("Ошибка оплаты"))
-                if (canEphemeral && runEphemeralApiBootstrap(appContext, force = true)) {
-                    runCatching {
-                        requestPayment().getOrThrow().let(onUrl)
-                    }.onFailure { second ->
-                        onError(second.message ?: "Ошибка")
-                    }
-                } else {
-                    onError(msg.ifBlank { "Ошибка" })
-                }
+                repo.withUserBackendApi { initPaymentApi(planType) }
+            }.onSuccess { onUrl(it) }.onFailure { e ->
+                onError(e.message ?: "Ошибка")
             }
         }
     }
@@ -2241,14 +2301,11 @@ class MainViewModel @Inject constructor(
     /** Обновить UI; при истёкшей подписке на сервере — отключить main VPN. */
     private fun applyServerProfile(profile: UserProfile) {
         _profile.value = profile
+        if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) return
         val vpnActive = _vpnState.value == VpnState.CONNECTED ||
             _vpnState.value == VpnState.CONNECTING ||
-            SilentVpnService.isRunning
-        if (vpnActive &&
-            !bootstrapVpnMode &&
-            !WdttTunnelManager.isBootstrapMode() &&
-            !hasVpnAccessForProfile(profile)
-        ) {
+            (SilentVpnService.isRunning && repo.isMainVpnTunnelUp())
+        if (vpnActive && !hasVpnAccessForProfile(profile)) {
             DebugLog.i("MainViewModel", "subscription expired on server — disconnect VPN")
             _vpnError.value = subscriptionRequiredMessage()
             viewModelScope.launch { disconnect(appContext) }

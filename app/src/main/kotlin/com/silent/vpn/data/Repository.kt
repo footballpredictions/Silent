@@ -1453,6 +1453,11 @@ class SilentRepository @Inject constructor(
         return ok
     }
 
+    /** Профиль напрямую через текущий API base (внутри ephemeral/bootstrap tunnel). */
+    suspend fun fetchProfileDirect(): Result<UserProfile> = runCatching {
+        fetchProfileInternal()
+    }
+
     /** Профиль с сервера — без fallback на кеш; тот же канал, что сессии. */
     suspend fun fetchProfileLive(): Result<UserProfile> = runCatching {
         withRoutineBackendApi(block = { fetchProfileInternal() })

@@ -205,7 +205,7 @@ class MainActivity : ComponentActivity() {
                         accountRefreshing = accountRefreshing,
                         onRefreshAccount = { onDone ->
                             vm.refreshAccountData(force = true) { ok, msg ->
-                                onDone(if (ok) null else msg)
+                                onDone(ok, msg)
                             }
                         },
                     )

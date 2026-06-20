@@ -20,10 +20,16 @@ ensure_gradle() {
     return
   fi
   echo "[build] downloading gradle ${GRADLE_VERSION}"
+  # Битая/частичная установка — иначе unzip спрашивает replace? в неинтерактивной сборке → EOF
+  rm -rf "$GRADLE_DIR"
   tmp="$(mktemp -d)"
   wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -O "$tmp/gradle.zip"
-  unzip -q "$tmp/gradle.zip" -d /opt
+  unzip -q -o "$tmp/gradle.zip" -d /opt
   rm -rf "$tmp"
+  if [[ ! -x "$GRADLE_DIR/bin/gradle" ]]; then
+    echo "[build] gradle install failed: $GRADLE_DIR/bin/gradle missing" >&2
+    exit 1
+  fi
   export PATH="$GRADLE_DIR/bin:$PATH"
 }
 

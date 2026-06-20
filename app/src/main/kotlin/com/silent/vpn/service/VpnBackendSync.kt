@@ -16,12 +16,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Backend через VPN-туннель (overlay → 10.66.66.1) — РОВНО один сеанс за сессию:
- * - ПОСЛЕ tunnelReady: POST /connect + хеши (один overlay)
- * - ДО stop VPN: POST /disconnect (один overlay, с таймаутом)
+ * Backend через VPN-туннель — РОВНО один connect-sync за сессию:
+ * - ПОСЛЕ tunnelReady: POST /connect + хеши (Wi‑Fi: public/proxy; mobile: proxy/direct, без overlay)
+ * - ДО stop VPN: POST /disconnect (tunnel path, с таймаутом)
  *
- * Периодического heartbeat нет: онлайн-статус устройства держит сам wdtt-server
- * (server-to-server POST → set_device_online на backend).
+ * Периодического heartbeat нет: онлайн-статус устройства держит сам wdtt-server.
  */
 object VpnBackendSync {
     private const val TAG = "VpnBackendSync"
@@ -43,7 +42,6 @@ object VpnBackendSync {
     fun ensureBackendSyncAfterTunnel(scope: CoroutineScope, context: Context) {
         if (VpnSessionState.tunnelDataSyncCompleted) return
         if (syncJob?.isActive == true) return
-        if (repo(context).isOnMobileData()) return
         val now = System.currentTimeMillis()
         if (now - lastAttemptAtMs < RETRY_MIN_INTERVAL_MS) return
         lastAttemptAtMs = now

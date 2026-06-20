@@ -202,8 +202,14 @@ class SilentRepository @Inject constructor(
 
     fun isOnMobileData(): Boolean = VpnNetworkHelper.isOnMobileData(context)
 
-    /** ConfigSync / tunnel sync / hash reports — только Wi‑Fi (mobile: только bootstrap при входе). */
+    /** Фоновый ConfigSync без VPN — только Wi‑Fi. */
     fun allowsWifiBackgroundSync(): Boolean = !isOnMobileData()
+
+    /**
+     * Канал обновлений: Wi‑Fi всегда; mobile — только при поднятом main VPN (proxy/direct, без overlay).
+     */
+    fun allowsBackgroundConfigSync(): Boolean =
+        !isOnMobileData() || isMainVpnTunnelUp()
 
     /** VPN поднят, public недоступен — хеши/сессии только через proxy. */
     fun needsTunnelProxyForBackend(): Boolean =
@@ -228,9 +234,7 @@ class SilentRepository @Inject constructor(
         }
     }
 
-    /**
-     * ConfigSync, профиль, сессии — только Wi‑Fi (mobile: public если вызвано явно, без tunnel).
-     */
+    /** ConfigSync, профиль, сессии — Wi‑Fi public; mobile + VPN — tunnel proxy/direct без overlay. */
     suspend fun <T> withRoutineBackendApi(block: suspend () -> T): T {
         if (isOnMobileData()) {
             if (WdttTunnelManager.isBootstrapMode() && WdttTunnelManager.tunnelReady.value) {
@@ -1230,8 +1234,8 @@ class SilentRepository @Inject constructor(
 
     suspend fun reportHashFailure(hash: String, errorType: String, message: String): Result<Unit> {
         if (!isLoggedIn()) return Result.failure(IllegalStateException("not logged in"))
-        if (!allowsWifiBackgroundSync()) {
-            return Result.failure(IllegalStateException("hash report deferred until Wi‑Fi"))
+        if (!allowsBackgroundConfigSync()) {
+            return Result.failure(IllegalStateException("hash report deferred until Wi‑Fi or VPN"))
         }
         return runCatching {
             withBackendApi {
@@ -1244,8 +1248,8 @@ class SilentRepository @Inject constructor(
         items: List<Triple<String, String, String>>,
     ): Result<Unit> {
         if (!isLoggedIn() || items.isEmpty()) return Result.success(Unit)
-        if (!allowsWifiBackgroundSync()) {
-            return Result.failure(IllegalStateException("hash report batch deferred until Wi‑Fi"))
+        if (!allowsBackgroundConfigSync()) {
+            return Result.failure(IllegalStateException("hash report batch deferred until Wi‑Fi or VPN"))
         }
         return runCatching {
             withBackendApi {

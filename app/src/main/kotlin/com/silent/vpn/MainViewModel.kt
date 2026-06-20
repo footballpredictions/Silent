@@ -161,7 +161,7 @@ class MainViewModel @Inject constructor(
             repo.isLoggedIn() &&
                 !bootstrapVpnMode &&
                 _screen.value == AppScreen.MAIN &&
-                repo.allowsWifiBackgroundSync()
+                repo.allowsBackgroundConfigSync()
 
         override fun onWifiSyncTickStart() {
             flushPendingHashFailures()
@@ -227,9 +227,9 @@ class MainViewModel @Inject constructor(
     init {
         HashFailureReporter.install { hash, errorType, message ->
             if (!repo.isLoggedIn() || bootstrapVpnMode) return@install
-            if (repo.isOnMobileData()) {
+            if (repo.isOnMobileData() && !repo.allowsBackgroundConfigSync()) {
                 pendingHashFailures.add(Triple(hash, errorType, message))
-                DebugLog.i("MainViewModel", "hash failure queued (mobile): ${hash.take(8)}…")
+                DebugLog.i("MainViewModel", "hash failure queued (mobile, no VPN): ${hash.take(8)}…")
                 return@install
             }
             if (WdttTunnelManager.isWorkerRampUpActive() ||
@@ -648,7 +648,7 @@ class MainViewModel @Inject constructor(
 
     private fun flushPendingHashFailures() {
         if (pendingHashFailures.isEmpty() || !repo.isLoggedIn()) return
-        if (!repo.allowsWifiBackgroundSync()) return
+        if (!repo.allowsBackgroundConfigSync()) return
         val batch = mutableListOf<Triple<String, String, String>>()
         while (true) {
             val item = pendingHashFailures.poll() ?: break
@@ -704,14 +704,10 @@ class MainViewModel @Inject constructor(
             restoreCachedThemeToUi()
             refreshHashState()
 
-            if (repo.isOnMobileData()) {
-                DebugLog.i("MainViewModel", "tunnel sync skipped on mobile (Wi‑Fi channel only)")
-                backendSyncCompleted = true
-                VpnSessionState.tunnelDataSyncCompleted = true
-                return@launch
-            }
-
             if (!VpnSessionState.tunnelDataSyncCompleted) {
+                if (repo.isOnMobileData()) {
+                    repo.ensureTunnelApiProxy()
+                }
                 var ok = false
                 repeat(4) { attempt ->
                     if (ok || _vpnState.value == VpnState.DISCONNECTING) return@repeat
@@ -757,7 +753,7 @@ class MainViewModel @Inject constructor(
                     WdttTunnelManager.tunnelReady.value &&
                     !WdttTunnelManager.isBootstrapMode()
 
-                if (vpnUp && repo.allowsWifiBackgroundSync()) {
+                if (vpnUp && repo.allowsBackgroundConfigSync()) {
                     val ok = runCatching {
                         repo.withRoutineBackendApi {
                             val res = repo.getApi().checkUpdate("android", version)

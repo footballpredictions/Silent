@@ -16,8 +16,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * Канал обновлений по Wi‑Fi: sync-state → profile (подписка/сессии), hashes, theme.
- * Mobile internet: только первая загрузка при входе (bootstrap), без фонового poll.
+ * Канал обновлений: sync-state → profile, hashes, theme.
+ * Wi‑Fi — public API; mobile — только при поднятом VPN (tunnel proxy, без WG overlay).
  */
 object ConfigSyncCoordinator {
     private const val TAG = "ConfigSync"
@@ -85,8 +85,8 @@ object ConfigSyncCoordinator {
 
     private suspend fun tick(repo: SilentRepository, context: Context, listener: Listener) {
         tickMutex.withLock {
-            if (!repo.allowsWifiBackgroundSync()) {
-                Log.d(TAG, "skip: mobile data (Wi‑Fi sync only)")
+            if (!repo.allowsBackgroundConfigSync()) {
+                Log.d(TAG, "skip: mobile without VPN tunnel")
                 return
             }
             listener.onWifiSyncTickStart()

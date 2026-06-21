@@ -16,6 +16,7 @@
 | Tunnel API (через WG) | `http://10.66.66.1:8000` |
 | wdtt-server binary | `https://github.com/amurcanov/proxy-turn-vk-android/releases/latest/download/wdtt-server-linux-amd64` |
 | GitHub repo | `https://github.com/footballpredictions/Silent.git` |
+| **Landing (скачивание)** | `https://silentvpn3.github.io` → репо `silentvpn3/silentvpn3.github.io` (**отдельный** от Silent) |
 
 ---
 

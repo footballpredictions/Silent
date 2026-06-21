@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     HIVE_CELL_AGENT_PORT: int = 9100
     HIVE_PROVISION_SSH_USER: str = "root"
     HIVE_WDTT_BINARY_PATH: str = ""
+    # False = все VPN только на Улье (соты в админке, но трафик не уходит на worker)
+    HIVE_WORKER_ROUTING_ENABLED: bool = False
 
     # Subscription prices
     PRICE_MONTHLY: float = 199.0

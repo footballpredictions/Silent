@@ -77,13 +77,12 @@ def _is_valid_wg_key(key: str) -> bool:
     return True
 
 
-async def _get_next_wg_address(db: AsyncSession, cell_id=None) -> str:
+async def _get_next_wg_address(db: AsyncSession) -> str:
     subnet = ipaddress.IPv4Network(settings.WG_SUBNET)
     hosts = list(subnet.hosts())
-    q = select(Device.wg_address).where(Device.wg_address.isnot(None))
-    if cell_id is not None:
-        q = q.where(Device.cell_id == cell_id)
-    result = await db.execute(q)
+    result = await db.execute(
+        select(Device.wg_address).where(Device.wg_address.isnot(None))
+    )
     used = {row[0] for row in result.fetchall()}
     for host in hosts[1:]:
         addr = f"{host}/{subnet.prefixlen}"
@@ -415,8 +414,8 @@ async def ensure_device_session(
             )
 
     priv_key, pub_key = _generate_wg_keypair()
-    cell = await hive_service.pick_cell_for_new_device(db)
-    wg_address = await _get_next_wg_address(db, cell.id)
+    cell = await hive_service.pick_cell_for_new_device(db, user=user)
+    wg_address = await _get_next_wg_address(db)
     wdtt_pass = (settings.WDTT_MASTER_PASSWORD or "").strip() or generate_wdtt_password()
 
     device = Device(
@@ -486,8 +485,8 @@ async def register_device(
         pub_key = wg_public_key
         priv_key = ""
 
-    cell = await hive_service.pick_cell_for_new_device(db)
-    wg_address = await _get_next_wg_address(db, cell.id)
+    cell = await hive_service.pick_cell_for_new_device(db, user=user)
+    wg_address = await _get_next_wg_address(db)
     wdtt_pass = (settings.WDTT_MASTER_PASSWORD or "").strip() or generate_wdtt_password()
 
     device = Device(

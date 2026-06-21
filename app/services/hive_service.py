@@ -16,13 +16,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.security import encrypt_value, decrypt_value
-from app.models import Device, HiveCell
+from app.models import Device, HiveCell, User
 from app.services.hive_load import queen_accepting_new_vpn
 
 logger = logging.getLogger(__name__)
 
 CELL_STATUSES_ACTIVE = frozenset({"active"})
 CELL_STATUSES_ASSIGNABLE = frozenset({"active"})
+BOOTSTRAP_USER_EMAIL = "__bootstrap__@silent.local"
 
 
 def _validate_outbound_url(url: str) -> str:
@@ -136,13 +137,47 @@ async def _list_assignable_cells(db: AsyncSession) -> list[HiveCell]:
     return list(result.scalars().all())
 
 
-async def pick_cell_for_new_device(db: AsyncSession) -> HiveCell:
+async def migrate_devices_to_queen(db: AsyncSession) -> int:
+    """Вернуть всех клиентов на Улей (после отключения worker-routing)."""
+    queen = await ensure_queen_cell(db)
+    result = await db.execute(
+        select(func.count(Device.id)).where(
+            Device.is_active == True,
+            Device.cell_id != queen.id,
+        )
+    )
+    n = int(result.scalar_one())
+    if n <= 0:
+        return 0
+    from sqlalchemy import update
+
+    await db.execute(
+        update(Device)
+        .where(Device.is_active == True, Device.cell_id != queen.id)
+        .values(cell_id=queen.id)
+    )
+    await db.commit()
+    logger.warning("Hive: migrated %s device(s) back to queen", n)
+    return n
+
+
+async def pick_cell_for_new_device(
+    db: AsyncSession,
+    *,
+    user: User | None = None,
+) -> HiveCell:
     """
     Новое устройство:
     - по умолчанию Улей;
-    - если CPU/RAM Улья перегружены (и не идёт build-agent) — сота с минимумом онлайн VPN.
+    - bootstrap всегда Улей;
+    - если HIVE_WORKER_ROUTING_ENABLED и CPU/RAM перегружены — сота с минимумом онлайн VPN.
     """
     queen = await ensure_queen_cell(db)
+    if not settings.HIVE_WORKER_ROUTING_ENABLED:
+        return queen
+    if user is not None and user.email == BOOTSTRAP_USER_EMAIL:
+        return queen
+
     accepting, load_info = queen_accepting_new_vpn()
     if accepting:
         logger.debug(
@@ -187,8 +222,12 @@ async def resolve_cell_for_device(
     force_queen: bool = False,
 ) -> HiveCell:
     """Липкое назначение; перераспределение только для новых устройств."""
-    if force_queen:
-        return await ensure_queen_cell(db)
+    queen = await ensure_queen_cell(db)
+    if force_queen or not settings.HIVE_WORKER_ROUTING_ENABLED:
+        if device.cell_id != queen.id:
+            device.cell_id = queen.id
+            await db.commit()
+        return queen
 
     if device.cell_id:
         cell = await get_cell_by_id(db, device.cell_id)

@@ -102,13 +102,14 @@ def upload_dir(sftp, client, local_dir: Path, remote_dir: str) -> None:
 def docker_cp_and_restart(client, rel_paths: list[str], restart: bool = True, sleep_s: int = 12) -> None:
     files_sh = " ".join(f'"{f}"' for f in rel_paths)
     restart_cmd = f"docker compose restart api\nsleep {sleep_s}\n" if restart else ""
+    tunnel_fix = "python3 scripts/fix_tunnel_dnat.py 2>/dev/null || true\n" if restart else ""
     script = f"""#!/bin/bash
 set -e
 cd {REMOTE}
 for f in {files_sh}; do
   docker cp "$f" {CONTAINER}:/app/"$f"
 done
-{restart_cmd}curl -s http://localhost:8000/api/health
+{restart_cmd}{tunnel_fix}curl -s http://localhost:8000/api/health
 echo
 """
     sftp = client.open_sftp()

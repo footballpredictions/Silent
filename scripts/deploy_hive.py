@@ -28,6 +28,7 @@ hive_files = [
     "docker-compose.yml",
     "requirements.txt",
     "cell-agent/main.py",
+    "scripts/fix_tunnel_dnat.py",
 ]
 
 for rel in hive_files:
@@ -73,6 +74,7 @@ echo
 code=$(curl -s -o /dev/null -w "%{{http_code}}" -X POST http://localhost:8000/api/admin/hive/cells/auto -H "Content-Type: application/json" -d '{{}}')
 echo "hive POST /cells/auto: HTTP $code (expect 401/403/422, not 405)"
 if [ "$code" = "405" ]; then echo "ERROR: hive routes missing in container"; exit 1; fi
+python3 scripts/fix_tunnel_dnat.py || bash /tmp/fix_tunnel_dnat.sh
 """
 sftp2 = client.open_sftp()
 sftp2.putfo(io.BytesIO(script.encode()), "/tmp/deploy_hive.sh")

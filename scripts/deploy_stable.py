@@ -39,6 +39,13 @@ for root, _, names in os.walk(dist):
         sftp.put(str(lp), rp)
         print("ui", rel)
 
+fix_script = BACKEND_ROOT / "scripts" / "fix_tunnel_dnat.py"
+if fix_script.is_file():
+    rp = f"{REMOTE}/scripts/fix_tunnel_dnat.py"
+    client.exec_command("mkdir -p scripts")
+    sftp.put(str(fix_script), rp)
+    print("upload scripts/fix_tunnel_dnat.py")
+
 sftp.close()
 
 script = f"""#!/bin/bash
@@ -47,6 +54,7 @@ cd {REMOTE}
 find app ai -name '*.py' | while read f; do docker cp "$f" {CONTAINER}:/app/"$f"; done
 docker compose restart api nginx
 sleep 14
+python3 scripts/fix_tunnel_dnat.py
 curl -s http://localhost:8000/health
 echo
 curl -s -o /dev/null -w "admin: %{{http_code}}\\n" http://localhost:8000/

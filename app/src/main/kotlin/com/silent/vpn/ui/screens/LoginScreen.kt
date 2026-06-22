@@ -1,15 +1,20 @@
 package com.silent.vpn.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -59,8 +64,6 @@ fun LoginScreen(
     var showDebugLog by remember { mutableStateOf(false) }
     val fieldColors = loginTextFieldColors(ui)
 
-    val authTitle = theme?.login_step2_title?.replace(Regex("шаг\\s*2\\s*[—-]\\s*", RegexOption.IGNORE_CASE), "")
-        ?: "Вход или регистрация"
     val rememberLabel = theme?.login_remember_me_label ?: "Запомнить меня"
     val forgotLabel = theme?.login_forgot_password_label ?: "Забыли пароль?"
     val forgotTitle = theme?.login_forgot_title ?: "Восстановление пароля"
@@ -77,9 +80,8 @@ fun LoginScreen(
         modifier = Modifier.fillMaxSize().background(ui.bg).windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         Box(
-            modifier = Modifier.fillMaxWidth().background(ui.headerBg).padding(horizontal = 16.dp, vertical = 10.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
-            Text("SILENT VPN", color = ui.headerFg, fontSize = 11.sp, letterSpacing = 2.sp, modifier = Modifier.align(Alignment.CenterStart))
             DebugLogButton(onClick = { showDebugLog = true }, modifier = Modifier.align(Alignment.CenterEnd))
         }
 
@@ -96,8 +98,6 @@ fun LoginScreen(
 
             if (step == LoginStep.AUTH) {
                 Column {
-                    Text(authTitle, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = ui.fg, modifier = Modifier.padding(bottom = 12.dp))
-
                     when {
                         bootstrapConnecting -> {
                             Text(
@@ -143,20 +143,32 @@ fun LoginScreen(
                     }
 
                     Row(
-                        modifier = Modifier.fillMaxWidth().background(ui.tabBg, RoundedCornerShape(12.dp)).padding(4.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(ui.tabBg, RoundedCornerShape(12.dp))
+                            .padding(4.dp),
                     ) {
                         listOf("login" to "Войти", "register" to "Регистрация").forEach { (key, label) ->
                             val selected = tab == key
                             Box(
-                                modifier = Modifier.weight(1f).background(
-                                    if (selected) ui.primaryBtnBg else Color.Transparent,
-                                    RoundedCornerShape(10.dp),
-                                ).padding(vertical = 8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (selected) ui.primaryBtnBg else Color.Transparent)
+                                    .clickable {
+                                        tab = key
+                                        onClearError()
+                                        if (key == "login") onRegDoneDismiss()
+                                    }
+                                    .padding(vertical = 8.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                TextButton(onClick = { tab = key; onClearError(); if (key == "login") onRegDoneDismiss() }, contentPadding = PaddingValues(0.dp)) {
-                                    Text(label, color = if (selected) ui.primaryBtnFg else ui.hint, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                                }
+                                Text(
+                                    label,
+                                    color = if (selected) ui.primaryBtnFg else ui.hint,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                )
                             }
                         }
                     }
@@ -183,21 +195,34 @@ fun LoginScreen(
                         Text("Пароль", color = ui.label, fontSize = 12.sp)
                         OutlinedTextField(
                             value = password, onValueChange = { password = it }, modifier = Modifier.fillMaxWidth(),
-                            placeholder = { Text("••••••••", fontSize = 14.sp, color = ui.fieldPlaceholder) },
                             singleLine = true,
                             visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                             shape = RoundedCornerShape(12.dp), colors = fieldColors,
                             enabled = !sessionExpired,
                             trailingIcon = {
-                                TextButton(onClick = { showPassword = !showPassword }) {
-                                    Text(if (showPassword) "Скрыть" else "Показать", fontSize = 11.sp, color = ui.hint)
+                                IconButton(onClick = { showPassword = !showPassword }) {
+                                    Icon(
+                                        imageVector = if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = if (showPassword) "Скрыть пароль" else "Показать пароль",
+                                        tint = ui.fg.copy(alpha = 0.6f),
+                                        modifier = Modifier.size(16.dp),
+                                    )
                                 }
                             },
                         )
                         Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(checked = rememberMe, onCheckedChange = { rememberMe = it }, colors = CheckboxDefaults.colors(checkedColor = ui.fg), enabled = !sessionExpired)
+                                Checkbox(
+                                    checked = rememberMe,
+                                    onCheckedChange = { rememberMe = it },
+                                    colors = CheckboxDefaults.colors(
+                                        checkedColor = ui.fg,
+                                        checkmarkColor = ui.bg,
+                                        uncheckedColor = ui.border,
+                                    ),
+                                    enabled = !sessionExpired,
+                                )
                                 Text(rememberLabel, fontSize = 12.sp, color = ui.hint)
                             }
                             if (tab == "login") {

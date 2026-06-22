@@ -2,6 +2,8 @@ package com.silent.vpn.ui.screens
 
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
@@ -152,6 +154,13 @@ fun MainScreen(
         animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMediumLow),
         label = "toggle",
     )
+    val toggleInteraction = remember { MutableInteractionSource() }
+    val togglePressed by toggleInteraction.collectIsPressedAsState()
+    val togglePressScale by animateFloatAsState(
+        targetValue = if (togglePressed && !isTransitioning) 0.95f else 1f,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
+        label = "togglePress",
+    )
 
     Box(
         modifier = Modifier
@@ -220,8 +229,13 @@ fun MainScreen(
 
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    // Toggle 120x60 — как на PC
-                    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(120.dp, 60.dp)) {
+                    // Toggle 120x60 — как на PC (active:scale-95)
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(120.dp, 60.dp)
+                            .scale(togglePressScale),
+                    ) {
                         if (isConnected) {
                             Box(
                                 modifier = Modifier
@@ -233,8 +247,14 @@ fun MainScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
+                                .clip(CircleShape)
                                 .background(if (isConnected) toggleOn else toggleOff, CircleShape)
-                                .clickable(enabled = !isTransitioning, onClick = onToggle),
+                                .clickable(
+                                    enabled = !isTransitioning,
+                                    interactionSource = toggleInteraction,
+                                    indication = null,
+                                    onClick = onToggle,
+                                ),
                             contentAlignment = Alignment.CenterStart,
                         ) {
                             Box(
@@ -246,11 +266,6 @@ fun MainScreen(
                                     .border(2.dp, if (isConnected) toggleOn else toggleOff, CircleShape),
                             )
                         }
-                    }
-
-                    if (isTransitioning) {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = fg)
                     }
                 }
             }

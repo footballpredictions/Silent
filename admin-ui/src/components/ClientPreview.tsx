@@ -14,22 +14,13 @@ export type ClientTheme = {
   update_bar_progress_color?: string
   update_bar_label_available?: string
   update_bar_label_downloading?: string
-  login_step1_title?: string
-  login_step1_instruction?: string
-  login_hash_placeholder?: string
-  login_hash_button_text?: string
-  login_vk_mobile_url?: string
-  login_vk_mobile_link_text?: string
-  login_vk_pc_url?: string
-  login_vk_pc_link_text?: string
-  login_link_color?: string
-  login_step2_title?: string
   login_remember_me_label?: string
   login_forgot_password_label?: string
   login_forgot_title?: string
   login_forgot_instruction?: string
   login_reset_title?: string
   login_reset_button_text?: string
+  login_link_color?: string
   support_url?: string
   privacy_url?: string
   terms_url?: string
@@ -37,15 +28,16 @@ export type ClientTheme = {
 }
 
 type PreviewScreen =
-  | 'login_step1'
-  | 'login_step2'
+  | 'login'
+  | 'login_forgot'
+  | 'login_expired'
+  | 'login_reset_web'
   | 'main'
   | 'main_update'
   | 'main_download'
   | 'menu'
   | 'subscription'
   | 'exceptions'
-  | 'hashes'
   | 'promo'
   | 'devices'
   | 'support'
@@ -54,15 +46,16 @@ type PreviewScreen =
 export type { PreviewScreen }
 
 export const SCREEN_TABS: { id: PreviewScreen; label: string }[] = [
-  { id: 'login_step1', label: 'Вход 1' },
-  { id: 'login_step2', label: 'Вход 2' },
+  { id: 'login', label: 'Вход' },
+  { id: 'login_forgot', label: 'Восстановление' },
+  { id: 'login_expired', label: 'Время вышло' },
+  { id: 'login_reset_web', label: 'Сброс (web)' },
   { id: 'main', label: 'Главная' },
   { id: 'main_update', label: 'Обновление' },
   { id: 'main_download', label: 'Загрузка' },
   { id: 'menu', label: 'Меню' },
   { id: 'subscription', label: 'Подписка' },
   { id: 'exceptions', label: 'Исключения' },
-  { id: 'hashes', label: 'Хеши' },
   { id: 'promo', label: 'Промокод' },
   { id: 'devices', label: 'Сессии' },
   { id: 'support', label: 'Поддержка' },
@@ -72,12 +65,16 @@ export const SCREEN_TABS: { id: PreviewScreen; label: string }[] = [
 const MENU_ITEMS: { id: PreviewScreen; label: string; badge?: string }[] = [
   { id: 'subscription', label: 'Подписка', badge: 'Активна' },
   { id: 'exceptions', label: 'Исключения приложений' },
-  { id: 'hashes', label: 'Хеши' },
   { id: 'promo', label: 'Промокод' },
   { id: 'devices', label: 'Сессии', badge: '1/3' },
   { id: 'support', label: 'Поддержка' },
   { id: 'about', label: 'О сервисе' },
 ]
+
+const LOGIN_EXPIRED_TITLE = 'Время вышло'
+const LOGIN_EXPIRED_BODY =
+  'Время временного интернета истекло (2 мин). Закройте приложение и запустите снова.'
+const LOGIN_EXPIRED_BTN = 'Закрыть приложение'
 
 export default function ClientPreview({
   theme,
@@ -103,11 +100,11 @@ export default function ClientPreview({
   const w = 265
   const h = 606
   const scale = platform === 'pc' ? 0.72 : 0.72
-  const appTitle = (theme.app_name || 'Silent VPN').toUpperCase()
   const fg = theme.text_color
   const bg = theme.background_color
   const muted = `${fg}66`
   const green = '#16A34A'
+  const red = '#EF4444'
   const updateBg = theme.update_bar_background_color || '#2563EB'
   const updateFg = theme.update_bar_text_color || '#FFFFFF'
   const updateProgress = theme.update_bar_progress_color || '#1D4ED8'
@@ -118,10 +115,8 @@ export default function ClientPreview({
   const updateDownloading = screen === 'main_download'
   const updateProgressPct = 47
   const linkColor = theme.login_link_color || '#4680C2'
-  const vkLinkText = platform === 'pc'
-    ? (theme.login_vk_pc_link_text || 'VK Звонки в браузере')
-    : (theme.login_vk_mobile_link_text || 'ВКонтакте — раздел «Звонки»')
-  const isLoginPreview = screen === 'login_step1' || screen === 'login_step2'
+  const isLoginPreview =
+    screen === 'login' || screen === 'login_forgot' || screen === 'login_expired'
 
   const statusText = connected ? 'Подключено' : 'Отключено'
   const statusColor = connected ? green : muted
@@ -143,6 +138,27 @@ export default function ClientPreview({
     </div>
   )
 
+  const loginLogo = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 20 }}>
+      <div style={{
+        width: 48, height: 48, borderRadius: '50%',
+        background: `${fg}12`, marginBottom: 10,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 10, fontWeight: 700, color: fg, letterSpacing: 1,
+      }}>SV</div>
+      <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 3 }}>SILENT VPN</div>
+    </div>
+  )
+
+  const themeCheckbox = (checked = false) => (
+    <span style={{
+      width: 14, height: 14, borderRadius: 3, flexShrink: 0,
+      border: `1.5px solid ${checked ? fg : `${fg}55`}`,
+      background: checked ? fg : bg,
+      display: 'inline-block',
+    }} />
+  )
+
   const menuDrawer = () => (
     <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 10 }}>
       <div style={{
@@ -161,14 +177,14 @@ export default function ClientPreview({
           <button type="button" onClick={() => goTo('main')}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: fg, fontSize: 14, padding: 0 }}>✕</button>
         </div>
-        <div style={{ flex: 1, padding: '4px 0', overflow: 'auto' }}>
+        <div style={{ flex: 1, padding: '4px 8px', overflow: 'auto' }}>
           {MENU_ITEMS.map(item => (
             <button key={item.id} type="button" onClick={() => goTo(item.id)}
               style={{
                 width: '100%', textAlign: 'left', padding: '10px 12px', fontSize: 13,
                 background: 'none', border: 'none', cursor: 'pointer', color: fg,
                 display: 'flex', alignItems: 'center', gap: 6,
-                borderBottom: `0.5px solid ${fg}0F`,
+                borderRadius: 8,
               }}>
               <span style={{ flex: 1 }}>{item.label}</span>
               {item.badge && (
@@ -197,44 +213,22 @@ export default function ClientPreview({
       boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
       position: 'relative',
     }}>
-      {/* Title bar */}
-      <div style={{
-        height: 36, display: 'flex', alignItems: 'center', padding: '0 12px',
-        borderBottom: '0.5px solid #F3F4F6',
-      }}>
-        <button type="button" onClick={() => goTo('menu')}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: fg, fontSize: 14, padding: 0, visibility: isLoginPreview ? 'hidden' : 'visible' }}>☰</button>
-        <div style={{ flex: 1, textAlign: 'center', fontWeight: 700, fontSize: 12, letterSpacing: 4 }}>{appTitle}</div>
-        <div style={{ width: 16 }} />
-      </div>
-
-      {screen === 'login_step1' && (
-        <div style={{ flex: 1, padding: 16, overflow: 'auto' }}>
-          <div style={{ textAlign: 'center', marginBottom: 16 }}>
-            <div style={{ width: 40, height: 40, borderRadius: '50%', background: `${fg}15`, margin: '0 auto 8px' }} />
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 3 }}>{appTitle}</div>
-          </div>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{theme.login_step1_title || 'Шаг 1 — хеш звонка VK'}</div>
-          <div style={{ fontSize: 10, color: muted, lineHeight: 1.5, marginBottom: 10 }}>
-            {theme.login_step1_instruction || 'Инструкция…'}
-          </div>
-          <button type="button" style={{
-            background: 'none', border: 'none', color: linkColor, fontSize: 10, cursor: 'pointer', padding: 0, marginBottom: 12, textDecoration: 'underline',
-          }}>{vkLinkText}</button>
-          <input readOnly placeholder={theme.login_hash_placeholder || 'Хеш…'} style={{
-            width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 11,
-            borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
-          }} />
-          <button type="button" style={{
-            width: '100%', marginTop: 8, padding: '9px 0', borderRadius: 10, border: 'none',
-            background: theme.primary_color, color: bg, fontSize: 11, fontWeight: 600,
-          }}>{theme.login_hash_button_text || 'Подтвердить'}</button>
+      {!isLoginPreview && screen !== 'login_reset_web' && (
+        <div style={{
+          height: 36, display: 'flex', alignItems: 'center', padding: '0 12px',
+          borderBottom: '0.5px solid #F3F4F6',
+        }}>
+          <button type="button" onClick={() => goTo('menu')}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: fg, fontSize: 14, padding: 0 }}>☰</button>
+          <div style={{ flex: 1, textAlign: 'center', fontWeight: 700, fontSize: 12, letterSpacing: 4 }}>SILENT VPN</div>
+          <div style={{ width: 16 }} />
         </div>
       )}
 
-      {screen === 'login_step2' && (
-        <div style={{ flex: 1, padding: 16, overflow: 'auto' }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 12 }}>{theme.login_step2_title || 'Шаг 2 — вход'}</div>
+      {screen === 'login' && (
+        <div style={{ flex: 1, padding: '24px 16px 16px', overflow: 'auto' }}>
+          {loginLogo()}
+          <p style={{ fontSize: 11, fontWeight: 500, color: green, marginBottom: 12 }}>VPN включён</p>
           <div style={{ display: 'flex', borderRadius: 10, background: `${fg}0A`, padding: 3, marginBottom: 12 }}>
             <div style={{ flex: 1, textAlign: 'center', padding: '6px 0', fontSize: 10, fontWeight: 600, background: theme.primary_color, color: bg, borderRadius: 8 }}>Войти</div>
             <div style={{ flex: 1, textAlign: 'center', padding: '6px 0', fontSize: 10, color: muted }}>Регистрация</div>
@@ -250,16 +244,92 @@ export default function ClientPreview({
             borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
           }} />
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, fontSize: 10 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: muted }}>
-              <span style={{ width: 12, height: 12, border: `1px solid ${fg}44`, borderRadius: 3 }} />
+            <label style={{ display: 'flex', alignItems: 'center', gap: 5, color: muted }}>
+              {themeCheckbox(true)}
               {theme.login_remember_me_label || 'Запомнить меня'}
             </label>
-            <span style={{ color: linkColor }}>{theme.login_forgot_password_label || 'Забыли пароль?'}</span>
+            <span style={{ color: linkColor, fontSize: 10 }}>{theme.login_forgot_password_label || 'Забыли пароль?'}</span>
           </div>
           <button type="button" style={{
-            width: '100%', padding: '9px 0', borderRadius: 10, border: 'none',
+            width: '100%', padding: '10px 0', borderRadius: 10, border: 'none',
             background: theme.primary_color, color: bg, fontSize: 11, fontWeight: 600,
           }}>Войти</button>
+        </div>
+      )}
+
+      {screen === 'login_forgot' && (
+        <div style={{ flex: 1, padding: '24px 16px 16px', overflow: 'auto' }}>
+          {loginLogo()}
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{theme.login_forgot_title || 'Восстановление пароля'}</div>
+          <div style={{ fontSize: 10, color: muted, lineHeight: 1.5, marginBottom: 12 }}>
+            {theme.login_forgot_instruction || 'Введите email — мы отправим ссылку.'}
+          </div>
+          <div style={{ fontSize: 10, color: muted, marginBottom: 4 }}>Email</div>
+          <input readOnly placeholder="you@example.com" style={{
+            width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 11, marginBottom: 10,
+            borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
+          }} />
+          <button type="button" style={{
+            width: '100%', padding: '10px 0', borderRadius: 10, border: 'none',
+            background: theme.primary_color, color: bg, fontSize: 11, fontWeight: 600,
+          }}>Отправить письмо</button>
+          <button type="button" style={{
+            width: '100%', marginTop: 12, background: 'none', border: 'none', color: muted, fontSize: 10, cursor: 'pointer',
+          }}>← Назад к входу</button>
+        </div>
+      )}
+
+      {screen === 'login_expired' && (
+        <div style={{ flex: 1, padding: '24px 16px 16px', overflow: 'auto' }}>
+          {loginLogo()}
+          <div style={{
+            borderRadius: 14, padding: '18px 16px', textAlign: 'center',
+            border: `1px solid ${red}2E`, background: `${red}0D`,
+          }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: '50%', margin: '0 auto 10px',
+              background: `${red}1A`, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 16,
+            }}>⏱</div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{LOGIN_EXPIRED_TITLE}</div>
+            <div style={{ fontSize: 10, color: muted, lineHeight: 1.5, marginBottom: 14 }}>{LOGIN_EXPIRED_BODY}</div>
+            <button type="button" style={{
+              width: '100%', padding: '10px 0', borderRadius: 10, border: 'none',
+              background: fg, color: bg, fontSize: 11, fontWeight: 600,
+            }}>{LOGIN_EXPIRED_BTN}</button>
+          </div>
+          <p style={{ fontSize: 9, color: `${fg}55`, textAlign: 'center', marginTop: 10, lineHeight: 1.4 }}>
+            Тексты панели «Время вышло» зашиты в приложениях (bootstrap 2 мин)
+          </p>
+        </div>
+      )}
+
+      {screen === 'login_reset_web' && (
+        <div style={{
+          flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: 16, background: '#0a0a0a',
+        }}>
+          <div style={{
+            width: '100%', background: '#111', border: '1px solid #222',
+            borderRadius: 14, padding: '24px 20px', textAlign: 'center',
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 3, color: '#fff', opacity: 0.5, marginBottom: 16 }}>SILENT VPN</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#fff', marginBottom: 8 }}>
+              {theme.login_reset_title || 'Новый пароль'}
+            </div>
+            <p style={{ fontSize: 11, color: '#888', marginBottom: 14 }}>Аккаунт: <strong style={{ color: '#ccc' }}>user@mail.ru</strong></p>
+            <input readOnly type="password" placeholder="••••••••" style={{
+              width: '100%', boxSizing: 'border-box', padding: '10px 12px', fontSize: 11, marginBottom: 10,
+              borderRadius: 10, border: '1px solid #333', background: '#1a1a1a', color: '#fff',
+            }} />
+            <button type="button" style={{
+              width: '100%', padding: '11px 0', borderRadius: 10, border: 'none',
+              background: '#fff', color: '#000', fontSize: 11, fontWeight: 700,
+            }}>{theme.login_reset_button_text || 'Сохранить пароль'}</button>
+            <p style={{ fontSize: 10, color: '#555', marginTop: 14, lineHeight: 1.5 }}>
+              Страница из письма «Забыли пароль?» — открывается в браузере
+            </p>
+          </div>
         </div>
       )}
 
@@ -300,7 +370,7 @@ export default function ClientPreview({
                 <span style={{ position: 'relative' }}>
                   {updateDownloading
                     ? `${downloadLabel} ${updateProgressPct}%`
-                    : `${updateLabel} v1.0.73`}
+                    : `${updateLabel} v1.0.144`}
                 </span>
               </button>
             ) : (
@@ -354,28 +424,6 @@ export default function ClientPreview({
         </>
       ))}
 
-      {screen === 'hashes' && subPage('Хеши', (
-        <>
-          <div style={{ fontSize: 11, color: muted, marginBottom: 10 }}>Bootstrap и серверные хеши VK</div>
-          {[
-            ['Bootstrap', 'a1b2c3d4…', green],
-            ['Сервер #0', 'e5f6g7h8…', green],
-            ['Сервер #1', 'i9j0k1l2…', muted],
-          ].map(([label, hash, dotColor]) => (
-            <div key={label} style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '8px 0', borderBottom: `0.5px solid ${fg}12`, fontSize: 11,
-            }}>
-              <div style={{ width: 6, height: 6, borderRadius: '50%', background: dotColor as string }} />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600, fontSize: 12 }}>{label}</div>
-                <div style={{ fontFamily: 'monospace', color: muted, marginTop: 2 }}>{hash}</div>
-              </div>
-            </div>
-          ))}
-        </>
-      ))}
-
       {screen === 'promo' && subPage('Промокод', (
         <>
           <input readOnly value="" placeholder="Введите код" style={{
@@ -421,7 +469,7 @@ export default function ClientPreview({
 
       {screen === 'about' && subPage('Silent VPN', (
         <div style={{ fontSize: 12, color: muted, lineHeight: 1.6 }}>
-          <p style={{ margin: '0 0 6px' }}>Версия 1.0.18</p>
+          <p style={{ margin: '0 0 6px' }}>Версия 1.0.144</p>
           <p style={{ margin: 0 }}>WireGuard-туннель через VK TURN/DTLS</p>
         </div>
       ))}
@@ -447,7 +495,7 @@ export default function ClientPreview({
         {shell}
       </div>
       <p style={{ textAlign: 'center', fontSize: 11, color: '#666', marginTop: 8 }}>
-        Единый UI для Android, iOS и PC · {w}×{h}px
+        Единый UI для Android, iOS и PC · bootstrap-хеш в сборке, без шага VK
       </p>
     </div>
   )

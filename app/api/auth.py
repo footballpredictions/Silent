@@ -22,6 +22,7 @@ from app.core.security import (
 )
 from app.services.email_service import send_verification_email, send_password_reset_email
 from app.services.subscription_service import apply_post_verification_benefits
+from app.services.theme_settings import load_theme
 from app.services.vpn_service import ensure_device_session
 from app.config import settings
 
@@ -221,13 +222,17 @@ async def reset_password_page(token: str, request: Request, db: AsyncSession = D
         ), status_code=400)
 
     token_js = json.dumps(token)
+    theme = await load_theme(db)
+    reset_title = theme.login_reset_title or "Новый пароль"
+    reset_btn = theme.login_reset_button_text or "Сохранить пароль"
+    app_brand = (theme.app_name or "Silent VPN").strip() or "Silent VPN"
 
     return HTMLResponse(f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Silent VPN — сброс пароля</title>
+<title>{app_brand} — сброс пароля</title>
 <style>
   *{{margin:0;padding:0;box-sizing:border-box}}
   body{{background:#0a0a0a;font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:16px}}
@@ -246,12 +251,12 @@ async def reset_password_page(token: str, request: Request, db: AsyncSession = D
 </head>
 <body>
 <div class="card">
-  <div class="brand">SILENT VPN</div>
-  <h1 id="title">Новый пароль</h1>
+  <div class="brand">{app_brand.upper()}</div>
+  <h1 id="title">{reset_title}</h1>
   <p>Аккаунт: <strong>{user.email}</strong></p>
   <label for="pw">Новый пароль (мин. 8 символов)</label>
   <input type="password" id="pw" minlength="8" autocomplete="new-password">
-  <button type="button" id="saveBtn">Сохранить пароль</button>
+  <button type="button" id="saveBtn">{reset_btn}</button>
   <div class="err" id="err"></div>
   <div class="ok" id="ok"></div>
   <p class="hint">Смените пароль здесь, затем откройте приложение Silent VPN и войдите с новым паролем.</p>

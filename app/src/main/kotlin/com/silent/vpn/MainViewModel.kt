@@ -910,6 +910,7 @@ class MainViewModel @Inject constructor(
     private var backendSyncJob: Job? = null
     private var resumeProfileJob: Job? = null
     private var connectJob: Job? = null
+    private var disconnectJob: Job? = null
     /** До завершения VpnBackendSync не дергаем overlay из polling. */
     private var backendSyncCompleted: Boolean
         get() = VpnSessionState.backendSyncCompleted
@@ -1928,10 +1929,10 @@ class MainViewModel @Inject constructor(
 
     fun connect(context: Context) {
         SessionTrace.enter("MainViewModel.connect", "state=${_vpnState.value}")
-        if (_vpnState.value == VpnState.CONNECTING) {
-            DebugLog.i("MainViewModel", "connect: cancel stale CONNECTING and retry")
-            connectJob?.cancel()
-            connectJob = null
+        if (_vpnState.value == VpnState.CONNECTING || _vpnState.value == VpnState.DISCONNECTING) {
+            DebugLog.i("MainViewModel", "connect ignored: operation in progress")
+            SessionTrace.exit("MainViewModel.connect", "busy")
+            return
         }
         if (VpnSessionState.isActive()) {
             SessionTrace.mark("MainViewModel.connect", "attach existing session")
@@ -1949,6 +1950,9 @@ class MainViewModel @Inject constructor(
         }
         resumeProfileJob?.cancel()
         connectJob?.cancel()
+        disconnectJob?.cancel()
+        _vpnState.value = VpnState.CONNECTING
+        _vpnError.value = null
         connectJob = viewModelScope.launch {
             DebugLog.i("MainViewModel", "connect() start")
             bootstrapVpnMode = false
@@ -1957,8 +1961,6 @@ class MainViewModel @Inject constructor(
             if (VpnNetworkHelper.isOtherVpnActive(context)) {
                 DebugLog.i("MainViewModel", "Подключение заменит другой активный VPN")
             }
-            _vpnState.value = VpnState.CONNECTING
-            _vpnError.value = null
             try {
             runCatching {
                 restoreCachedProfileToUi()
@@ -2209,12 +2211,17 @@ class MainViewModel @Inject constructor(
 
     fun disconnect(context: Context) {
         SessionTrace.enter("MainViewModel.disconnect")
+        if (_vpnState.value == VpnState.DISCONNECTING) {
+            SessionTrace.exit("MainViewModel.disconnect", "already disconnecting")
+            return
+        }
         if (_vpnState.value == VpnState.DISCONNECTED && !SilentVpnService.isRunning) {
             SessionTrace.exit("MainViewModel.disconnect", "already off")
             return
         }
         connectJob?.cancel()
         connectJob = null
+        disconnectJob?.cancel()
         tunnelSyncWatchJob?.cancel()
         tunnelSyncWatchJob = null
         backendSyncJob?.cancel()
@@ -2228,10 +2235,16 @@ class MainViewModel @Inject constructor(
         bootstrapVpnMode = false
         markLocalDeviceOffline()
         repo.invalidatePublicReachabilityCache()
-        _vpnState.value = VpnState.DISCONNECTED
-        stopVpnLocally(context)
-        checkForAppUpdate()
-        SessionTrace.exit("MainViewModel.disconnect")
+        _vpnState.value = VpnState.DISCONNECTING
+        disconnectJob = viewModelScope.launch {
+            try {
+                stopVpnLocally(context)
+                checkForAppUpdate()
+            } finally {
+                _vpnState.value = VpnState.DISCONNECTED
+                SessionTrace.exit("MainViewModel.disconnect")
+            }
+        }
     }
 
     private suspend fun checkPromoApi(code: String): String {

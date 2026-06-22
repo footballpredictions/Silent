@@ -188,9 +188,9 @@ class MainActivity : ComponentActivity() {
                                     if (intent != null) vpnPermissionLauncher.launch(intent)
                                     else vm.connect(this@MainActivity)
                                 }
-                                VpnState.CONNECTED, VpnState.DISCONNECTING ->
+                                VpnState.CONNECTED ->
                                     vm.disconnect(this@MainActivity)
-                                VpnState.CONNECTING -> { /* reference: не рвём connect повторным toggle */ }
+                                VpnState.CONNECTING, VpnState.DISCONNECTING -> Unit
                             }
                         },
                         onLogout = { vm.logout(this@MainActivity) },

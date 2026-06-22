@@ -23,9 +23,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.silent.vpn.BuildConfig
@@ -43,6 +46,59 @@ import com.silent.vpn.ui.theme.UiDimens
 import com.silent.vpn.ui.theme.UiFont
 import com.silent.vpn.ui.theme.displayAppName
 import com.silent.vpn.ui.theme.mutedFg
+
+private const val THUMB_SIZE_DP = 48f
+private const val TRACK_WIDTH_DP = 120f
+private const val TRACK_HEIGHT_DP = 60f
+private const val THUMB_PULSE_PEAK = 1.10f
+private const val THUMB_PULSE_MS = 520
+
+@Composable
+private fun VpnToggleThumb(
+    active: Boolean,
+    isConnected: Boolean,
+    travelX: Dp,
+    bg: Color,
+    toggleOn: Color,
+    toggleOff: Color,
+) {
+    val scaleAnim = remember { Animatable(1f) }
+    LaunchedEffect(active) {
+        if (!active) {
+            scaleAnim.snapTo(1f)
+            return@LaunchedEffect
+        }
+        while (true) {
+            scaleAnim.animateTo(THUMB_PULSE_PEAK, tween(THUMB_PULSE_MS, easing = FastOutSlowInEasing))
+            scaleAnim.animateTo(1f, tween(THUMB_PULSE_MS, easing = FastOutSlowInEasing))
+        }
+    }
+    val scale by scaleAnim.asState()
+    val showBorder = !active || isConnected
+    val borderColor = if (isConnected) toggleOn else toggleOff
+    Box(
+        modifier = Modifier
+            .padding(start = 4.dp)
+            .offset(x = travelX)
+            .size(THUMB_SIZE_DP.dp)
+            .zIndex(1f)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                clip = false
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(bg, CircleShape)
+                .then(
+                    if (showBorder) Modifier.border(2.dp, borderColor, CircleShape) else Modifier,
+                ),
+        )
+    }
+}
 
 enum class VpnState { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
 
@@ -134,6 +190,14 @@ fun MainScreen(
 
     val isConnected = vpnState == VpnState.CONNECTED
     val isTransitioning = vpnState == VpnState.CONNECTING || vpnState == VpnState.DISCONNECTING
+    var toggleBusy by remember { mutableStateOf(false) }
+    LaunchedEffect(vpnState) {
+        when (vpnState) {
+            VpnState.CONNECTED, VpnState.DISCONNECTED -> toggleBusy = false
+            else -> Unit
+        }
+    }
+    val thumbActive = isTransitioning || toggleBusy
 
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(vpnError) {
@@ -157,7 +221,7 @@ fun MainScreen(
     val toggleInteraction = remember { MutableInteractionSource() }
     val togglePressed by toggleInteraction.collectIsPressedAsState()
     val togglePressScale by animateFloatAsState(
-        targetValue = if (togglePressed && !isTransitioning) 0.95f else 1f,
+        targetValue = if (togglePressed && !thumbActive) 0.95f else 1f,
         animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
         label = "togglePress",
     )
@@ -230,40 +294,48 @@ fun MainScreen(
                     Spacer(modifier = Modifier.height(24.dp))
 
                     // Toggle 120x60 — как на PC (active:scale-95)
+                    val thumbTravel = (TRACK_WIDTH_DP - THUMB_SIZE_DP - 8f).dp
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
-                            .size(120.dp, 60.dp)
-                            .scale(togglePressScale),
+                            .padding(vertical = 14.dp)
+                            .size(TRACK_WIDTH_DP.dp, TRACK_HEIGHT_DP.dp + 28.dp),
                     ) {
-                        if (isConnected) {
+                        Box(
+                            contentAlignment = Alignment.CenterStart,
+                            modifier = Modifier
+                                .size(TRACK_WIDTH_DP.dp, TRACK_HEIGHT_DP.dp)
+                                .scale(togglePressScale)
+                                .clickable(
+                                    enabled = !thumbActive,
+                                    interactionSource = toggleInteraction,
+                                    indication = null,
+                                    onClick = {
+                                        toggleBusy = true
+                                        onToggle()
+                                    },
+                                ),
+                        ) {
+                            if (isConnected) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .scale(pulseScale)
+                                        .background(toggleOn.copy(alpha = 0.2f), CircleShape),
+                                )
+                            }
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .scale(pulseScale)
-                                    .background(toggleOn.copy(alpha = 0.2f), CircleShape),
+                                    .background(if (isConnected) toggleOn else toggleOff, CircleShape),
                             )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(CircleShape)
-                                .background(if (isConnected) toggleOn else toggleOff, CircleShape)
-                                .clickable(
-                                    enabled = !isTransitioning,
-                                    interactionSource = toggleInteraction,
-                                    indication = null,
-                                    onClick = onToggle,
-                                ),
-                            contentAlignment = Alignment.CenterStart,
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .padding(start = 4.dp)
-                                    .offset(x = (120.dp - 48.dp - 8.dp) * toggleOffset)
-                                    .size(48.dp)
-                                    .background(bg, CircleShape)
-                                    .border(2.dp, if (isConnected) toggleOn else toggleOff, CircleShape),
+                            VpnToggleThumb(
+                                active = thumbActive,
+                                isConnected = isConnected,
+                                travelX = thumbTravel * toggleOffset,
+                                bg = bg,
+                                toggleOn = toggleOn,
+                                toggleOff = toggleOff,
                             )
                         }
                     }

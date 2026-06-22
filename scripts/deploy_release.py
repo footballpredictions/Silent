@@ -9,7 +9,7 @@ import io
 import os
 import sys
 
-from _deploy_common import CONTAINER, REMOTE_BACKEND, connect
+from _deploy_common import CONTAINER, REMOTE_BACKEND, connect, run_ssh
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -44,9 +44,10 @@ def main() -> None:
 
     client = connect()
     sftp = client.open_sftp()
-    client.exec_command(f"mkdir -p {remote_dir}")
-    client.exec_command(f"find {remote_dir} -maxdepth 1 -type f -delete 2>/dev/null || true")
+    run_ssh(client, f"mkdir -p {remote_dir}")
+    run_ssh(client, f"find {remote_dir} -maxdepth 1 -type f -delete 2>/dev/null || true")
     sftp.put(local_file, remote_file)
+    run_ssh(client, f"test -f {remote_file}")
     print(f"uploaded {remote_file} ({size // (1024 * 1024)} MB)")
 
     manifest_py = f"""
@@ -71,7 +72,6 @@ print("manifest ok", version, filename)
     deploy_sh = f"""#!/bin/bash
 set -e
 docker exec {CONTAINER} mkdir -p {container_dir}
-docker exec {CONTAINER} sh -c 'find {container_dir} -maxdepth 1 -type f -delete 2>/dev/null || true'
 docker cp "{remote_file}" "{CONTAINER}:{container_dest}"
 docker cp /tmp/write_manifest_pc.py {CONTAINER}:/tmp/write_manifest_pc.py
 docker exec {CONTAINER} python /tmp/write_manifest_pc.py
@@ -81,10 +81,12 @@ echo
     sftp.putfo(io.BytesIO(deploy_sh.encode()), "/tmp/deploy_pc_release.sh")
     sftp.close()
     _, out, err = client.exec_command("bash /tmp/deploy_pc_release.sh 2>&1", timeout=600)
-    print(out.read().decode("utf-8", errors="replace"))
-    e = err.read().decode("utf-8", errors="replace")
-    if e.strip():
-        print("ERR:", e)
+    deploy_out = out.read().decode("utf-8", errors="replace")
+    deploy_code = out.channel.recv_exit_status()
+    print(deploy_out)
+    if deploy_code != 0:
+        e = err.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"deploy script failed ({deploy_code})\n{e or deploy_out}")
     client.close()
     print("Done.")
 

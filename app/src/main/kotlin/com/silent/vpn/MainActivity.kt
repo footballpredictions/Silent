@@ -113,6 +113,7 @@ class MainActivity : ComponentActivity() {
             val updateDownloading by vm.updateDownloading.collectAsState()
             val accountRefreshing by vm.accountRefreshing.collectAsState()
             val forgotSent by vm.forgotSent.collectAsState()
+            val bootstrapExpired by vm.bootstrapExpired.collectAsState()
 
             LaunchedEffect(Unit) {
                 handleTileConnectIntent(intent)
@@ -157,11 +158,20 @@ class MainActivity : ComponentActivity() {
                         bootstrapConnecting = bootstrapConnecting,
                         bootstrapReady = bootstrapReady,
                         bootstrapSecondsLeft = bootstrapSecondsLeft,
+                        bootstrapExpired = bootstrapExpired,
                         onClearError = vm::clearAuthError,
                         onRegDoneDismiss = vm::dismissRegDone,
                         onSyncBootstrap = {
                             vm.reconcileLoginBootstrapSession(this@MainActivity)
                             vm.ensureBootstrapForAuthFlow(this@MainActivity)
+                        },
+                        onCloseApp = {
+                            vm.shutdownBeforeExit(this@MainActivity)
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                                finishAndRemoveTask()
+                            } else {
+                                finishAffinity()
+                            }
                         },
                     )
                     AppScreen.MAIN -> MainScreen(

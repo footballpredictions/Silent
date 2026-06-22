@@ -121,6 +121,10 @@ class MainViewModel @Inject constructor(
     private val _bootstrapSecondsLeft = MutableStateFlow<Int?>(null)
     val bootstrapSecondsLeft: StateFlow<Int?> = _bootstrapSecondsLeft
 
+    /** Bootstrap-сессия истекла — блокируем повторный VPN и показываем экран закрытия. */
+    private val _bootstrapExpired = MutableStateFlow(false)
+    val bootstrapExpired: StateFlow<Boolean> = _bootstrapExpired
+
     /** VPN для входа/регистрации/сброса пароля готов (сервис + туннель), единый источник для UI. */
     private val _bootstrapReady = MutableStateFlow(false)
     val bootstrapReady: StateFlow<Boolean> = _bootstrapReady
@@ -1213,6 +1217,7 @@ class MainViewModel @Inject constructor(
 
     /** Автоподключение bootstrap VPN на экране входа (хеш зашит в BuildConfig). */
     fun ensureBootstrapForAuthFlow(context: Context) {
+        if (_bootstrapExpired.value) return
         reconcileLoginBootstrapSession(context)
         if (!isHashReady()) return
         if (bootstrapVpnMode && SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) return
@@ -1226,6 +1231,7 @@ class MainViewModel @Inject constructor(
      * ViewModel может пересоздаться, а FGS+туннель остаются — без этого UI «отключается».
      */
     fun reconcileLoginBootstrapSession(context: Context) {
+        if (_bootstrapExpired.value) return
         if (repo.isLoggedIn()) {
             _bootstrapReady.value = false
             return
@@ -1717,11 +1723,27 @@ class MainViewModel @Inject constructor(
         repo.clearTunnelApiBase()
         _vpnState.value = VpnState.DISCONNECTED
         _statusMsg.value = BOOTSTRAP_EXPIRED_MSG
+        _bootstrapExpired.value = true
+        updateBootstrapReadyFlag()
+    }
+
+    /** Остановить VPN и сервисы перед полным закрытием приложения с экрана входа. */
+    fun shutdownBeforeExit(context: Context) {
+        cancelBootstrapSessionTimeout()
+        resetBootstrapDeadline()
+        bootstrapVpnMode = false
+        bootstrapContext = null
+        bootstrapConnectingInternal = false
+        _bootstrapConnecting.value = false
+        stopVpnLocally(context)
+        repo.clearTunnelApiBase()
+        _vpnState.value = VpnState.DISCONNECTED
         updateBootstrapReadyFlag()
     }
 
     /** Bootstrap VPN on login screen — reach backend through user's VK hash. */
     fun ensureBootstrapVpn(context: Context) {
+        if (_bootstrapExpired.value) return
         if (repo.isLoggedIn() || !isHashReady()) return
         if (bootstrapConnectingInternal) return
         if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
@@ -1749,6 +1771,7 @@ class MainViewModel @Inject constructor(
                 }
                 bootstrapVpnMode = true
                 bootstrapContext = context.applicationContext
+                _bootstrapExpired.value = false
                 _vpnState.value = VpnState.CONNECTING
                 val intent = Intent(context, SilentVpnService::class.java).apply {
                     action = SilentVpnService.ACTION_CONNECT

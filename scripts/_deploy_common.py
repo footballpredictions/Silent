@@ -42,3 +42,14 @@ def connect(timeout: int = 30):
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(host, username=user, password=password, timeout=timeout)
     return client
+
+
+def run_ssh(client, cmd: str, timeout: int = 120) -> str:
+    """Выполнить SSH-команду и дождаться завершения (без гонок с SFTP/docker cp)."""
+    _, out, err = client.exec_command(cmd, timeout=timeout)
+    code = out.channel.recv_exit_status()
+    stdout = out.read().decode("utf-8", errors="replace")
+    stderr = err.read().decode("utf-8", errors="replace")
+    if code != 0:
+        raise RuntimeError(f"SSH failed ({code}): {cmd}\n{stderr or stdout}")
+    return stdout

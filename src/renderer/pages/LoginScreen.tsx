@@ -9,6 +9,7 @@ import api, {
   formatApiError,
   getRememberMe,
   getRememberedEmail,
+  getRememberedPassword,
   saveRememberMe,
 } from '../api'
 import {
@@ -20,13 +21,16 @@ import {
   ensureBootstrapTunnelApi,
   disconnectBootstrapVpn,
   isBootstrapVpnActive,
+  isBootstrapExpired,
   prefetchLoginDataViaBootstrap,
   refreshBootstrapSessionTimer,
   setBootstrapStatusListener,
+  shutdownBootstrapBeforeExit,
 } from '../bootstrapVpn'
+import LoginExpiredPanel from '../components/LoginExpiredPanel'
+import ThemeCheckbox from '../components/ThemeCheckbox'
 import SilentLogo from '../components/SilentLogo'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
-import TitleBar from '../components/TitleBar'
 import WindowControls from '../components/WindowControls'
 import { pushLog } from '../debugLog'
 import { authStrings as s } from '../authStrings'
@@ -57,28 +61,29 @@ export default function LoginScreen({
   const [statusMsg, setStatusMsg] = useState('')
   const [bootstrapConnecting, setBootstrapConnecting] = useState(false)
   const [bootstrapReady, setBootstrapReady] = useState(isBootstrapVpnActive())
+  const [bootstrapExpired, setBootstrapExpired] = useState(isBootstrapExpired())
   const [showDebugLog, setShowDebugLog] = useState(false)
 
-  const authTitle = (theme?.login_step2_title || s.authTitle)
-    .replace(/^шаг\s*2\s*[—-]\s*/i, '')
   const rememberLabel = theme?.login_remember_me_label || 'Запомнить меня'
   const forgotLabel = theme?.login_forgot_password_label || 'Забыли пароль?'
   const forgotTitle = theme?.login_forgot_title || 'Восстановление пароля'
   const forgotHint = theme?.login_forgot_instruction || 'Введите email — мы отправим ссылку.'
   const linkColor = theme?.login_link_color || ui.linkColor
 
-  const sessionExpired =
-    statusMsg.includes('Закройте приложение') || statusMsg.includes('истекло')
+  const sessionExpired = bootstrapExpired || isBootstrapExpired()
 
   useEffect(() => {
-    const saved = getRememberedEmail()
-    if (saved) {
-      setEmail(saved)
+    const savedEmail = getRememberedEmail()
+    const savedPassword = getRememberedPassword()
+    if (savedEmail) {
+      setEmail(savedEmail)
       setRememberMe(true)
     }
+    if (savedPassword) setPassword(savedPassword)
   }, [])
 
   useEffect(() => {
+    if (sessionExpired) return
     const active = isBootstrapVpnActive()
     setBootstrapReady(active)
     if (active) {
@@ -102,7 +107,9 @@ export default function LoginScreen({
 
     setBootstrapStatusListener(msg => {
       setStatusMsg(msg)
-      setBootstrapReady(isBootstrapVpnActive())
+      const expired = isBootstrapExpired()
+      setBootstrapExpired(expired)
+      setBootstrapReady(!expired && isBootstrapVpnActive())
     })
     return () => {
       cancelled = true
@@ -140,7 +147,7 @@ export default function LoginScreen({
   }
 
   const finishAuth = async () => {
-    saveRememberMe(email, rememberMe)
+    saveRememberMe(email, password, rememberMe)
     const sessionResult = await openLoginSession()
     if (!sessionResult.ok) {
       if (sessionResult.subscriptionExpired) {
@@ -195,7 +202,7 @@ export default function LoginScreen({
         return
       }
       await api.post('/api/auth/register', { email, password })
-      saveRememberMe(email, rememberMe)
+      saveRememberMe(email, password, rememberMe)
       setRegDone(true)
     } catch (err: any) {
       setError(formatApiError(err, 'Ошибка регистрации'))
@@ -258,28 +265,22 @@ export default function LoginScreen({
   )
 
   const statusBlock = () => {
+    if (sessionExpired) return null
     if (bootstrapConnecting) {
       return (
         <p className="text-[12px] mb-3" style={{ color: ui.hint }}>
-          {statusMsg || s.connectingWait}
+          {statusMsg || 'Подключение… подождите'}
         </p>
       )
     }
-    if (sessionExpired) {
-      return (
-        <p className="text-[12px] font-medium mb-3" style={{ color: ui.red }}>
-          {statusMsg}
-        </p>
-      )
-    }
-    if (bootstrapReady && statusMsg.toLowerCase().includes('осталось')) {
+    if (bootstrapReady) {
       return (
         <p className="text-[12px] font-medium mb-3" style={{ color: ui.green }}>
-          {statusMsg}
+          {statusMsg || 'VPN включён'}
         </p>
       )
     }
-    if (statusMsg && !bootstrapReady) {
+    if (statusMsg) {
       return (
         <p className="text-[12px] mb-3" style={{ color: ui.red }}>
           {statusMsg}
@@ -289,43 +290,54 @@ export default function LoginScreen({
     return null
   }
 
+  const handleCloseApp = () => {
+    void shutdownBootstrapBeforeExit().finally(() => {
+      ;(window as any).electronAPI?.quitApp?.()
+    })
+  }
+
   return (
     <div
       className="flex flex-col h-full"
       style={{ background: ui.bg, color: ui.fg, fontFamily: ui.fontFamily }}
     >
-      <TitleBar
-        title="SILENT VPN"
-        headerBg={ui.headerBg}
-        headerFg={ui.headerFg}
-        right={
-          <>
-            <DebugLogButton onClick={() => setShowDebugLog(true)} />
-            <WindowControls />
-          </>
-        }
-      />
+      <div
+        className="flex justify-end px-4 py-2.5"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
+        <div
+          className="flex items-center gap-2"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          <DebugLogButton onClick={() => setShowDebugLog(true)} />
+          <WindowControls />
+        </div>
+      </div>
 
-      <div className="flex-1 overflow-y-auto px-5 py-6">
-        <div className="flex flex-col items-center mb-5 w-full">
+      <div className="flex-1 overflow-y-auto px-5 pt-6 pb-5">
+        <div className="flex flex-col items-center w-full">
           <SilentLogo size={56} />
-          <p className="mt-3 text-base font-bold tracking-[0.3em]" style={{ color: ui.fg }}>
+          <p className="mt-3 text-base font-bold tracking-[0.2em]" style={{ color: ui.fg }}>
             SILENT VPN
           </p>
         </div>
 
         {step === 'auth' && (
-          <div>
-            <p className="text-[13px] font-semibold mb-3" style={{ color: ui.fg }}>
-              {authTitle}
-            </p>
+          <div className="mt-5">
             {statusBlock()}
 
-            <div className="flex rounded-xl p-1 mb-4" style={{ background: ui.tabBg }}>
+            <div
+              className="flex rounded-xl p-1 mb-4"
+              style={{
+                background: ui.tabBg,
+                opacity: sessionExpired ? 0.4 : 1,
+              }}
+            >
               {(['login', 'register'] as const).map(key => (
                 <button
                   key={key}
                   type="button"
+                  disabled={sessionExpired}
                   onClick={() => {
                     setTab(key)
                     setError('')
@@ -337,29 +349,41 @@ export default function LoginScreen({
                     color: tab === key ? ui.primaryBtnFg : ui.hint,
                   }}
                 >
-                  {key === 'login' ? s.login : s.register}
+                  {key === 'login' ? 'Войти' : 'Регистрация'}
                 </button>
               ))}
             </div>
 
-            {regDone ? (
-              <div className="text-center py-8">
+            {sessionExpired ? (
+              <LoginExpiredPanel
+                fg={ui.fg}
+                hint={ui.hint}
+                accentColor={ui.red}
+                primaryBtnBg={ui.primaryBtnBg}
+                primaryBtnFg={ui.primaryBtnFg}
+                onCloseApp={handleCloseApp}
+              />
+            ) : regDone ? (
+              <div className="text-center pt-8">
                 <p className="font-medium text-sm" style={{ color: ui.fg }}>{s.confirmEmail}</p>
                 <p className="text-xs mt-1" style={{ color: ui.hint }}>{s.emailSent(email)}</p>
+                <p className="text-[11px] mt-0.5 text-center leading-relaxed" style={{ color: ui.hint }}>
+                  Откройте ссылку из письма (браузер или почта) — временный VPN включён
+                </p>
                 <button
                   type="button"
                   onClick={() => { setTab('login'); setRegDone(false) }}
                   className="mt-4 text-xs hover:opacity-80"
-                  style={{ color: ui.fg }}
+                  style={{ color: ui.fg, background: 'none', border: 'none', cursor: 'pointer' }}
                 >
-                  {s.login}
+                  Войти
                 </button>
               </div>
             ) : (
               <form onSubmit={tab === 'login' ? handleLogin : handleRegister}>
-                <label className="text-xs" style={{ color: ui.label }}>{s.email}</label>
+                <p className="text-xs mb-1" style={{ color: ui.label }}>Email</p>
                 <input
-                  className={fieldCls + ' mt-1 mb-3'}
+                  className={fieldCls + ' mb-3'}
                   style={{
                     background: ui.fieldBg,
                     color: ui.fieldText,
@@ -370,18 +394,17 @@ export default function LoginScreen({
                   onChange={e => setEmail(e.target.value)}
                   placeholder="you@example.com"
                   required
-                  disabled={sessionExpired}
                 />
-                <label className="text-xs" style={{ color: ui.label }}>{s.password}</label>
-                {passwordField(password, setPassword, showPassword, () => setShowPassword(v => !v), sessionExpired)}
-                <div className="flex items-center justify-between mb-3 text-xs">
+                <p className="text-xs mb-1" style={{ color: ui.label }}>Пароль</p>
+                {passwordField(password, setPassword, showPassword, () => setShowPassword(v => !v), false)}
+                <div className="flex items-center justify-between py-2 text-xs">
                   <label className="flex items-center gap-2 cursor-pointer" style={{ color: ui.hint }}>
-                    <input
-                      type="checkbox"
+                    <ThemeCheckbox
                       checked={rememberMe}
-                      onChange={e => setRememberMe(e.target.checked)}
-                      className="rounded"
-                      disabled={sessionExpired}
+                      onChange={setRememberMe}
+                      fg={ui.fg}
+                      bg={ui.bg}
+                      border={ui.border}
                     />
                     {rememberLabel}
                   </label>
@@ -389,9 +412,8 @@ export default function LoginScreen({
                     <button
                       type="button"
                       onClick={() => { setForgotEmail(email); setStep('forgot'); setError(''); setForgotSent(false) }}
-                      className="hover:opacity-80"
+                      className="hover:opacity-80 text-[11px]"
                       style={{ color: linkColor, background: 'none', border: 'none', cursor: 'pointer' }}
-                      disabled={sessionExpired}
                     >
                       {forgotLabel}
                     </button>
@@ -402,11 +424,11 @@ export default function LoginScreen({
                 )}
                 <button
                   type="submit"
-                  disabled={loading || sessionExpired || !bootstrapReady || !email.trim() || !password.trim()}
-                  className="w-full py-3 rounded-xl text-sm font-semibold disabled:opacity-40"
+                  disabled={loading || !bootstrapReady || !email.trim() || !password.trim()}
+                  className="w-full h-12 rounded-xl text-sm font-semibold disabled:opacity-40"
                   style={{ background: ui.primaryBtnBg, color: ui.primaryBtnFg }}
                 >
-                  {loading ? '…' : tab === 'login' ? s.login : s.registerSubmit}
+                  {loading ? '…' : tab === 'login' ? 'Войти' : 'Зарегистрироваться'}
                 </button>
               </form>
             )}
@@ -414,8 +436,19 @@ export default function LoginScreen({
         )}
 
         {step === 'forgot' && (
-          <div>
-            <p className="text-sm font-semibold mb-2" style={{ color: ui.fg }}>{forgotTitle}</p>
+          <div className="mt-5">
+            {sessionExpired ? (
+              <LoginExpiredPanel
+                fg={ui.fg}
+                hint={ui.hint}
+                accentColor={ui.red}
+                primaryBtnBg={ui.primaryBtnBg}
+                primaryBtnFg={ui.primaryBtnFg}
+                onCloseApp={handleCloseApp}
+              />
+            ) : (
+              <>
+            <p className="text-sm font-semibold" style={{ color: ui.fg }}>{forgotTitle}</p>
             <p className="text-xs mb-4 leading-relaxed" style={{ color: ui.hint }}>{forgotHint}</p>
             {forgotSent ? (
               <div className="text-xs text-center py-6 space-y-2">
@@ -455,11 +488,13 @@ export default function LoginScreen({
             <button
               type="button"
               onClick={() => { setStep('auth'); setError('') }}
-              className="w-full mt-4 text-xs opacity-60 hover:opacity-100"
-              style={{ color: ui.fg, background: 'none', border: 'none', cursor: 'pointer' }}
+              className="w-full mt-4 text-xs hover:opacity-80"
+              style={{ color: ui.hint, background: 'none', border: 'none', cursor: 'pointer' }}
             >
               ← Назад к входу
             </button>
+              </>
+            )}
           </div>
         )}
       </div>

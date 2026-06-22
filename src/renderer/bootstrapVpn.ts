@@ -1,4 +1,4 @@
-import { clearBootstrapHash, getBootstrapHash, type VpnConfigPayload } from './vkConfig'
+import { getBootstrapHash, type VpnConfigPayload } from './vkConfig'
 import { pushLog } from './debugLog'
 import { SessionTrace } from './sessionTrace'
 import { buildLocalBootstrapConfig } from './bootstrapVpnConfig'
@@ -36,6 +36,7 @@ export async function fetchBootstrapConfig(): Promise<VpnConfigPayload | null> {
 }
 
 let bootstrapActive = false
+let bootstrapExpired = false
 let bootstrapTimeoutTimer: ReturnType<typeof setInterval> | null = null
 let bootstrapSessionDeadline = 0
 let statusListener: ((msg: string) => void) | null = null
@@ -88,20 +89,22 @@ function resetBootstrapDeadline() {
 }
 
 async function expireBootstrapSession() {
-  if (!bootstrapActive) return
+  if (!bootstrapActive && !bootstrapExpired) return
   pushLog('Bootstrap', `session expired (${BOOTSTRAP_SESSION_MS / 1000}s)`)
   resetBootstrapDeadline()
   bootstrapActive = false
-  clearBootstrapHash()
+  bootstrapExpired = true
   clearTunnelApiBase()
   await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
-  notifyStatus(
-    s.bootstrapExpired,
-  )
+  notifyStatus(s.bootstrapExpired)
 }
 
 export function isBootstrapVpnActive(): boolean {
   return bootstrapActive
+}
+
+export function isBootstrapExpired(): boolean {
+  return bootstrapExpired
 }
 
 /** Перед login/register — API только через WG (10.66.66.1), не публичный URL. */
@@ -124,8 +127,22 @@ export function forceNewBootstrapSessionTimer(): void {
   startBootstrapSessionTimeout(true)
 }
 
+/** Остановить VPN перед полным закрытием приложения с экрана входа. */
+export async function shutdownBootstrapBeforeExit(): Promise<void> {
+  cancelBootstrapSessionTimeout()
+  resetBootstrapDeadline()
+  bootstrapActive = false
+  clearTunnelApiBase()
+  await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
+}
+
 /** Connect bootstrap VPN on login screen — reach backend before Silent login. */
 export async function ensureBootstrapVpn(): Promise<boolean> {
+  if (bootstrapExpired) {
+    pushLog('Bootstrap', 'session expired — re-bootstrap blocked')
+    notifyStatus(s.bootstrapExpired)
+    return false
+  }
   const boot = getBootstrapHash()
   if (!boot) {
     pushLog('Bootstrap', 'no bootstrap hash', 'E')
@@ -161,6 +178,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
     return false
   }
   bootstrapActive = true
+  bootstrapExpired = false
 
   const ok = await waitVpnReady(90_000, bootCfg.stream_count ?? 9, true)
   pushLog('Bootstrap', ok ? 'VPN ready' : 'VPN timeout', ok ? 'I' : 'E')

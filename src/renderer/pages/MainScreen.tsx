@@ -19,6 +19,7 @@ import { disconnectBootstrapVpn, isBootstrapVpnActive } from '../bootstrapVpn'
 import { fetchVpnConfigWithKeys } from '../vpnConfigFetch'
 import { waitVpnReady } from '../vpnReady'
 import { warmupBrowsingPath } from '../warmupBrowsingPath'
+import VpnToggle from '../components/VpnToggle'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import WindowControls from '../components/WindowControls'
 import { AppErrorBoundary } from '../components/AppErrorBoundary'
@@ -47,6 +48,8 @@ import {
   resetConfigSyncOnLogout,
   seedConfigSyncRevision,
 } from '../configSync'
+
+const isDevBuild = import.meta.env.DEV
 
 interface DeviceInfo {
   id: string
@@ -159,6 +162,7 @@ export default function MainScreen({
 }) {
   const [connected, setConnected] = useState(false)
   const [connecting, setConnecting] = useState(false)
+  const [disconnecting, setDisconnecting] = useState(false)
   const [profile, setProfile] = useState<Profile | null>(() => getCachedProfile<Profile>())
   const [clientTheme, setClientTheme] = useState<any>(initialTheme)
   const sessionDeviceId = getSessionDeviceId()
@@ -178,11 +182,37 @@ export default function MainScreen({
   const [updateProgress, setUpdateProgress] = useState(0)
   const [hashSyncKey, setHashSyncKey] = useState(0)
 
+  const applyServerProfile = useCallback((p: Profile) => {
+    setProfile(p)
+    saveCachedProfile(p)
+    if (isBootstrapVpnActive()) return
+    const vpnActive = connected || connecting || disconnecting
+    const hasAccess = p.is_admin || p.subscription?.is_active
+    if (vpnActive && !hasAccess) {
+      pushLog('Main', 'subscription expired on server — disconnect VPN', 'W')
+      void (async () => {
+        let fp: string | null = null
+        try { fp = getDeviceFingerprint() } catch { /* ignore */ }
+        setMainVpnSessionActive(false)
+        if (fp) await notifyDisconnect(fp)
+        if ((window as any).electronAPI?.vpnDisconnect) {
+          await (window as any).electronAPI.vpnDisconnect()
+        }
+        onlineMarkedRef.current = false
+        setConnected(false)
+        setConnecting(false)
+        setDisconnecting(false)
+        alert('Пробный период закончился. Оформите подписку в меню → Подписка.')
+        setMenuOpen(true)
+        setMenuPage('subscription')
+      })()
+    }
+  }, [connected, connecting, disconnecting])
+
   const fetchProfile = useCallback(async () => {
     try {
       const res = await api.get('/api/users/me')
-      setProfile(res.data)
-      saveCachedProfile(res.data)
+      applyServerProfile(res.data as Profile)
       if (res.data.vk_user_id) saveVkUserId(res.data.vk_user_id)
       return res.data as Profile
     } catch {
@@ -190,9 +220,10 @@ export default function MainScreen({
       if (cached) setProfile(cached)
       return cached
     }
-  }, [])
+  }, [applyServerProfile])
 
   useEffect(() => {
+    void seedConfigSyncRevision()
     fetchProfile()
     const subMsg = localStorage.getItem('silent_subscription_msg')
     if (subMsg) {
@@ -213,13 +244,13 @@ export default function MainScreen({
     setMainVpnSessionActive(connected)
     startConfigSync({
       onTheme: t => setClientTheme(t),
-      onProfile: p => setProfile(p as Profile),
+      onProfile: p => applyServerProfile(p as Profile),
       onHashesUpdated: () => setHashSyncKey(k => k + 1),
       isVpnConnected: () => connected,
-      isPollAllowed: () => connected && !connecting,
+      isPollAllowed: () => !connecting && !disconnecting,
     })
     return () => stopConfigSync()
-  }, [connected])
+  }, [connected, connecting, disconnecting, applyServerProfile])
 
   useEffect(() => {
     api.get('/api/vpn/theme').then(r => setClientTheme(r.data)).catch(() => {})
@@ -392,15 +423,40 @@ export default function MainScreen({
   const DEVICE_FINGERPRINT = () => getDeviceFingerprint()
 
   const handleToggle = async () => {
-    if (connectLockRef.current || connecting) return
+    if (connectLockRef.current || connecting || disconnecting) return
+
+    if (connected) {
+      connectLockRef.current = true
+      setConnected(false)
+      setDisconnecting(true)
+      pushLog('Main', 'disconnect')
+      SessionTrace.enter('Main.connect', 'disconnect')
+      try {
+        const fp = DEVICE_FINGERPRINT()
+        setMainVpnSessionActive(false)
+        await notifyDisconnect(fp)
+        if ((window as any).electronAPI?.vpnDisconnect) {
+          await (window as any).electronAPI.vpnDisconnect()
+        }
+        onlineMarkedRef.current = false
+        fetchProfile()
+      } catch (err: any) {
+        if (err.response?.status === 402 || err.response?.status === 403) alert(err.response.data.detail)
+      } finally {
+        connectLockRef.current = false
+        setDisconnecting(false)
+      }
+      return
+    }
+
     connectLockRef.current = true
     setConnecting(true)
     if (!connected) {
       setActiveWorkers(0)
       clearVpnLogs()
     }
-    pushLog('Main', connected ? 'disconnect' : 'connect start')
-    SessionTrace.enter('Main.connect', connected ? 'disconnect' : 'start')
+    pushLog('Main', 'connect start')
+    SessionTrace.enter('Main.connect', 'start')
     try {
       const fp = DEVICE_FINGERPRINT()
       if (!connected) {
@@ -485,14 +541,6 @@ export default function MainScreen({
           void warmupBrowsingPath().catch(() => null)
         }
         setConnected(true)
-      } else {
-        setMainVpnSessionActive(false)
-        await notifyDisconnect(fp)
-        if ((window as any).electronAPI?.vpnDisconnect) {
-          await (window as any).electronAPI.vpnDisconnect()
-        }
-        onlineMarkedRef.current = false
-        setConnected(false)
       }
       fetchProfile()
     } catch (err: any) {
@@ -550,13 +598,15 @@ export default function MainScreen({
   const updateLabelAvailable = clientTheme?.update_bar_label_available || 'Доступно обновление'
   const updateLabelDownloading = clientTheme?.update_bar_label_downloading || 'Скачивание…'
 
-  const statusLabel = connecting
+  const statusLabel = disconnecting
+    ? 'Отключение…'
+    : connecting
     ? 'Подключение…'
     : connected
       ? 'Подключено'
       : 'Отключено'
-  const statusColor = connecting ? `${fg}99` : connected ? GREEN : muted
-  const localOnline = connected || connecting
+  const statusColor = connecting || disconnecting ? `${fg}99` : connected ? GREEN : muted
+  const localOnline = connected || connecting || disconnecting
 
   return (
     <div className="relative flex flex-col h-full overflow-hidden" style={{ background: bg, color: fg, fontFamily }}>
@@ -593,28 +643,16 @@ export default function MainScreen({
           </div>
         </div>
 
-        <button onClick={handleToggle} disabled={connecting}
-          className="relative flex items-center transition-all active:scale-95"
-          style={{ width: 120, height: 60 }}>
-          <div className="toggle-track absolute inset-0 rounded-full"
-            style={{ background: connected ? toggleOn : toggleOff }} />
-          {connected && (
-            <div className="pulse-ring absolute inset-0 rounded-full opacity-20"
-              style={{ background: toggleOn }} />
-          )}
-          <div className="toggle-thumb absolute w-12 h-12 rounded-full shadow-lg"
-            style={{
-              background: bg,
-              border: `2px solid ${connected ? toggleOn : toggleOff}`,
-              transform: `translateX(${connected ? '64px' : '4px'})`,
-              top: '4px',
-            }} />
-        </button>
-
-        {connecting && (
-          <div className="w-4 h-4 border-2 rounded-full animate-spin"
-            style={{ borderColor: `${fg}33`, borderTopColor: fg }} />
-        )}
+        <VpnToggle
+          connected={connected}
+          connecting={connecting}
+          disconnecting={disconnecting}
+          toggleOn={toggleOn}
+          toggleOff={toggleOff}
+          fg={fg}
+          bg={bg}
+          onToggle={() => void handleToggle()}
+        />
       </div>
 
       <div className="absolute bottom-0 left-0 right-0 p-4 border-t" style={{ background: bg, borderColor: '#F3F4F6' }}>
@@ -737,7 +775,7 @@ export default function MainScreen({
               {[
                 { key: 'subscription', label: 'Подписка' },
                 { key: 'exceptions', label: 'Исключения приложений' },
-                { key: 'hashes', label: 'Хеши' },
+                ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
                 { key: 'promo', label: 'Промокод' },
                 { key: 'devices', label: `Сессии (${profile?.devices_count || 0}/${profile?.max_devices || 3})` },
                 { key: 'support', label: 'Поддержка' },

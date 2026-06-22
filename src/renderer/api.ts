@@ -10,6 +10,7 @@ const DEVICE_FP_KEY = 'silent_device_fingerprint'
 const SESSION_DEVICE_KEY = 'silent_session_device_id'
 const REMEMBER_ME_KEY = 'silent_remember_me'
 const REMEMBER_EMAIL_KEY = 'silent_remember_email'
+const REMEMBER_PASSWORD_KEY = 'silent_remember_password'
 
 export function getServerUrl(): string {
   return localStorage.getItem(SERVER_URL_KEY) || ''
@@ -122,13 +123,19 @@ export function getRememberedEmail(): string {
   return getRememberMe() ? (localStorage.getItem(REMEMBER_EMAIL_KEY) || '') : ''
 }
 
-export function saveRememberMe(email: string, remember: boolean): void {
+export function getRememberedPassword(): string {
+  return getRememberMe() ? (localStorage.getItem(REMEMBER_PASSWORD_KEY) || '') : ''
+}
+
+export function saveRememberMe(email: string, password: string, remember: boolean): void {
   if (remember) {
     localStorage.setItem(REMEMBER_ME_KEY, '1')
     localStorage.setItem(REMEMBER_EMAIL_KEY, email.trim())
+    localStorage.setItem(REMEMBER_PASSWORD_KEY, password)
   } else {
     localStorage.removeItem(REMEMBER_ME_KEY)
     localStorage.removeItem(REMEMBER_EMAIL_KEY)
+    localStorage.removeItem(REMEMBER_PASSWORD_KEY)
   }
 }
 

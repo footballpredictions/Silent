@@ -18,7 +18,8 @@ import { enableTunnelApi, isMainVpnSessionActive } from './tunnelApi'
 import type { ClientTheme } from './clientTheme'
 import { flushPendingHashFailures } from './hashFailureReporter'
 
-const POLL_MS = 60_000
+/** Фоновый sync раз в час — как Android ConfigSyncCoordinator. */
+const POLL_MS = 60 * 60 * 1000
 const START_DELAY_MS = 5_000
 const SYNC_STATE_TIMEOUT_MS = 45_000
 
@@ -88,7 +89,9 @@ async function tick(): Promise<void> {
     const needHashes = state.changed?.includes('hashes') ?? state.hashes > getSyncHashesRev()
     const needTheme = state.changed?.includes('theme') ?? state.theme > getSyncThemeRev()
     const needProfile = state.changed?.includes('profile') ?? state.profile > getSyncProfileRev()
-    if (!needHashes && !needTheme && !needProfile) return
+    const vpnUp = opts.isVpnConnected()
+
+    if (!needHashes && !needTheme && !needProfile && !vpnUp) return
 
     if (needHashes || needTheme || needProfile) {
       pushLog('ConfigSync', `sync: hashes=${needHashes} theme=${needTheme} profile=${needProfile}`)
@@ -141,6 +144,23 @@ async function tick(): Promise<void> {
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e)
         pushLog('ConfigSync', `profile fetch: ${msg}`, 'W')
+      }
+    }
+
+    // Main VPN: сверяем подписку (rev мог не измениться при истечении на сервере).
+    if (vpnUp) {
+      try {
+        const res = await withSyncApi(() => api.get('/api/users/me'))
+        if (res.data) {
+          opts.onProfile(res.data)
+          pushLog(
+            'ConfigSync',
+            `subscription check active=${(res.data as { subscription?: { is_active?: boolean } }).subscription?.is_active ?? '?'}`,
+          )
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e)
+        pushLog('ConfigSync', `subscription profile: ${msg}`, 'W')
       }
     }
   } finally {

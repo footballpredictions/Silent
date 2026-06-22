@@ -207,6 +207,7 @@ class MainViewModel @Inject constructor(
     val forgotSent: StateFlow<Boolean> = _forgotSent
 
     val lastEmail: String get() = repo.getLastEmail().orEmpty()
+    val lastPassword: String get() = repo.getRememberedPassword().orEmpty()
     val rememberMe: Boolean get() = repo.getRememberMe()
     val repository: SilentRepository get() = repo
 
@@ -1461,7 +1462,7 @@ class MainViewModel @Inject constructor(
                     } else {
                         val tokens = res.body()!!
                         repo.saveTokens(tokens.access_token, tokens.refresh_token)
-                        repo.saveRememberMe(email, rememberMe)
+                        repo.saveRememberMe(email, password, rememberMe)
                         if (!openLoginSession()) {
                             if (repo.isLoggedIn()) {
                                 syncLoginDataViaBootstrapTunnel(registerIfNeeded = true)
@@ -1569,7 +1570,7 @@ class MainViewModel @Inject constructor(
                         _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Ошибка регистрации"
                         restartBootstrapTimerIfNeeded()
                     } else {
-                        repo.saveRememberMe(email, rememberMe)
+                        repo.saveRememberMe(email, password, rememberMe)
                         _regEmail.value = email
                         _regDone.value = true
                         refreshBootstrapCountdownNow()

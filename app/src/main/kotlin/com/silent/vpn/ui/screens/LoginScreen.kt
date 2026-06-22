@@ -36,6 +36,7 @@ private enum class LoginStep { AUTH, FORGOT }
 fun LoginScreen(
     theme: ThemeData? = null,
     initialEmail: String = "",
+    initialPassword: String = "",
     initialRememberMe: Boolean = false,
     forgotSent: Boolean = false,
     onLogin: (email: String, password: String, rememberMe: Boolean) -> Unit,
@@ -58,7 +59,7 @@ fun LoginScreen(
     var step by remember { mutableStateOf(LoginStep.AUTH) }
     var tab by remember { mutableStateOf("login") }
     var email by remember(initialEmail) { mutableStateOf(initialEmail) }
-    var password by remember { mutableStateOf("") }
+    var password by remember(initialPassword) { mutableStateOf(initialPassword) }
     var showPassword by remember { mutableStateOf(false) }
     var rememberMe by remember(initialRememberMe) { mutableStateOf(initialRememberMe) }
     var showDebugLog by remember { mutableStateOf(false) }

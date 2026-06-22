@@ -142,6 +142,7 @@ class MainActivity : ComponentActivity() {
                     AppScreen.LOGIN -> LoginScreen(
                         theme = theme,
                         initialEmail = vm.lastEmail,
+                        initialPassword = vm.lastPassword,
                         initialRememberMe = vm.rememberMe,
                         forgotSent = forgotSent,
                         onLogin = { email, password, remember -> vm.login(email, password, remember, this@MainActivity) },

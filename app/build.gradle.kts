@@ -16,7 +16,7 @@ val keystoreProperties = Properties().apply {
 }
 
 /** Debug: фиксированный VK-хеш для bootstrap VPN на экране входа. Release — только через -PbootstrapVkHash. */
-private val debugBootstrapVkHash = "6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY"
+private val debugBootstrapVkHash = "vP_C4iBk9QZEetqR0a_MqiPJkeOyBEV1B_G6uViHuVU"
 
 android {
     namespace = "com.silent.vpn"
@@ -26,8 +26,8 @@ android {
         applicationId = "com.silent.vpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 143
-        versionName = "1.0.143"
+        versionCode = 144
+        versionName = "1.0.144"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")

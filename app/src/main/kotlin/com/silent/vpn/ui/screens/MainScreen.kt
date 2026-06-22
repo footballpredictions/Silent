@@ -23,7 +23,17 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import android.graphics.Matrix
+import android.graphics.Paint as AndroidPaint
+import android.graphics.SweepGradient
+import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.sin
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -52,6 +62,81 @@ private const val TRACK_WIDTH_DP = 120f
 private const val TRACK_HEIGHT_DP = 60f
 private const val THUMB_PULSE_PEAK = 1.10f
 private const val THUMB_PULSE_MS = 520
+private const val SNAKE_STROKE_DP = 4f
+private const val SNAKE_ROTATION_MS = 2200
+private const val SNAKE_TAIL_START = 0.020f
+private const val SNAKE_HEAD_POS = 0.875f
+
+/** Стопы по часовой от кончика хвоста к голове — без обхода через зазор (иначе полосы). */
+private fun buildSnakeGradientArrays(snakeColor: Color): Pair<IntArray, FloatArray> {
+    val colors = mutableListOf<Int>()
+    val positions = mutableListOf<Float>()
+    val transparent = Color.Transparent.toArgb()
+    val span = SNAKE_HEAD_POS - SNAKE_TAIL_START
+    val steps = 96
+
+    positions.add(0f)
+    colors.add(transparent)
+    positions.add(SNAKE_TAIL_START - 0.002f)
+    colors.add(transparent)
+
+    for (i in 0..steps) {
+        val t = i / steps.toFloat()
+        val pos = SNAKE_TAIL_START + span * t
+        val alpha = t.pow(4.4f) * 0.98f
+        positions.add(pos)
+        colors.add(snakeColor.copy(alpha = alpha).toArgb())
+    }
+
+    var gap = SNAKE_HEAD_POS + 0.003f
+    while (gap <= 1f) {
+        positions.add(gap)
+        colors.add(transparent)
+        gap += 0.02f
+    }
+    positions.add(1f)
+    colors.add(transparent)
+
+    return colors.toIntArray() to positions.toFloatArray()
+}
+
+private fun DrawScope.drawToggleSnakeRing(
+    snakeColor: Color,
+    rotationDeg: Float,
+    strokePx: Float,
+) {
+    val center = Offset(size.width / 2f, size.height / 2f)
+    val radius = (size.minDimension - strokePx) / 2f
+    val (colors, positions) = buildSnakeGradientArrays(snakeColor)
+    drawIntoCanvas { canvas ->
+        val shader = SweepGradient(center.x, center.y, colors, positions).apply {
+            val matrix = Matrix()
+            matrix.setRotate(rotationDeg - 90f, center.x, center.y)
+            setLocalMatrix(matrix)
+        }
+        val paint = AndroidPaint().apply {
+            isAntiAlias = true
+            isDither = true
+            style = AndroidPaint.Style.STROKE
+            strokeWidth = strokePx
+            strokeCap = AndroidPaint.Cap.ROUND
+            this.shader = shader
+        }
+        canvas.nativeCanvas.drawCircle(center.x, center.y, radius, paint)
+    }
+    val headAngleRad = Math.toRadians(
+        (rotationDeg - 90f + SNAKE_HEAD_POS * 360f).toDouble(),
+    )
+    val capCenter = Offset(
+        center.x + radius * cos(headAngleRad).toFloat(),
+        center.y + radius * sin(headAngleRad).toFloat(),
+    )
+    drawCircle(
+        color = snakeColor,
+        radius = strokePx / 2f,
+        center = capCenter,
+    )
+}
 
 @Composable
 private fun VpnToggleThumb(
@@ -61,6 +146,7 @@ private fun VpnToggleThumb(
     bg: Color,
     toggleOn: Color,
     toggleOff: Color,
+    snakeColor: Color,
 ) {
     val scaleAnim = remember { Animatable(1f) }
     LaunchedEffect(active) {
@@ -75,7 +161,19 @@ private fun VpnToggleThumb(
     }
     val scale by scaleAnim.asState()
     val showBorder = !active || isConnected
+    val showSnake = active && !isConnected
     val borderColor = if (isConnected) toggleOn else toggleOff
+    val snakeSpin = rememberInfiniteTransition(label = "thumbSnake")
+    val snakeRotation by snakeSpin.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(SNAKE_ROTATION_MS, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "snakeRot",
+    )
+    val density = LocalDensity.current
     Box(
         modifier = Modifier
             .padding(start = 4.dp)
@@ -97,6 +195,16 @@ private fun VpnToggleThumb(
                     if (showBorder) Modifier.border(2.dp, borderColor, CircleShape) else Modifier,
                 ),
         )
+        if (showSnake) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val strokePx = with(density) { SNAKE_STROKE_DP.dp.toPx() }
+                drawToggleSnakeRing(
+                    snakeColor = snakeColor,
+                    rotationDeg = snakeRotation,
+                    strokePx = strokePx,
+                )
+            }
+        }
     }
 }
 
@@ -336,6 +444,7 @@ fun MainScreen(
                                 bg = bg,
                                 toggleOn = toggleOn,
                                 toggleOff = toggleOff,
+                                snakeColor = fg,
                             )
                         }
                     }

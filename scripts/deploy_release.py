@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import os
+import shlex
 import sys
 
 from _deploy_common import CONTAINER, REMOTE_BACKEND, connect, run_ssh
@@ -47,7 +48,7 @@ def main() -> None:
     run_ssh(client, f"mkdir -p {remote_dir}")
     run_ssh(client, f"find {remote_dir} -maxdepth 1 -type f -delete 2>/dev/null || true")
     sftp.put(local_file, remote_file)
-    run_ssh(client, f"test -f {remote_file}")
+    run_ssh(client, f"test -f {shlex.quote(remote_file)}")
     print(f"uploaded {remote_file} ({size // (1024 * 1024)} MB)")
 
     manifest_py = f"""

@@ -51,6 +51,8 @@ object WdttTunnelManager {
     private const val ZERO_TRAFFIC_MB_THRESHOLD = 0.08
     /** Воркеры поднялись, но WG/relay не гоняет байты (типично после doze / «тихой» смены сети). */
     private const val DATA_PATH_STUCK_MS = 45_000L
+    /** Краткий провал «Активных: 0» в логе (speedtest) — не рвать сессию. */
+    private const val TRANSPORT_WORKER_HYSTERESIS_MS = 45_000L
 
     private enum class WgConfigSource { NONE, API_CACHE, GETCONF }
 
@@ -361,8 +363,8 @@ object WdttTunnelManager {
         }
     }
 
-    /** Как PC: WG когда libclient слушает :9000 или есть ≥1 воркер. */
-    private fun isLibclientListenReady(): Boolean {
+    /** Как PC: libclient слушает :9000 — готов принимать трафик (счётчик воркеров не используем). */
+    fun isLibclientListenReady(): Boolean {
         val port = lastParams?.listenPort ?: 9000
         return runCatching {
             Socket().use { socket ->
@@ -373,11 +375,11 @@ object WdttTunnelManager {
     }
 
     private suspend fun awaitLibclientReadyForWg(maxMs: Long = 90_000L): Boolean {
-        if (activeWorkers.value >= 1 || isLibclientListenReady()) return true
+        if (activeWorkers.value >= 1) return true
         val deadline = System.currentTimeMillis() + maxMs
         var logged = false
         while (System.currentTimeMillis() < deadline && running.value) {
-            if (activeWorkers.value >= 1 || isLibclientListenReady()) return true
+            if (activeWorkers.value >= 1) return true
             if (!isLibclientProcessAlive()) return false
             if (!logged) {
                 updateLog("wg_wait_workers", "WireGuard: ждём libclient…", 2)
@@ -385,7 +387,7 @@ object WdttTunnelManager {
             }
             delay(400)
         }
-        return activeWorkers.value >= 1 || isLibclientListenReady()
+        return activeWorkers.value >= 1
     }
 
     private fun wgSourceRank(source: WgConfigSource): Int = when (source) {
@@ -405,8 +407,10 @@ object WdttTunnelManager {
         if (!tunnelReady.value || workers < 1) return false
         if (ManlCaptchaWebViewManager.isCaptchaPending || captchaInProgress) return false
         if (isWorkerRampUpActive()) return false
+        if (backendSyncInProgress) return false
         val sinceFirst = firstWorkersAtMs
         if (sinceFirst <= 0L) return false
+        if (System.currentTimeMillis() - sinceFirst < 180_000L) return false
         return System.currentTimeMillis() - sinceFirst >= DATA_PATH_STUCK_MS
     }
 
@@ -1174,7 +1178,9 @@ object WdttTunnelManager {
                 }
                 if (workers <= 0) {
                     if (zeroWorkersSince == 0L) zeroWorkersSince = System.currentTimeMillis()
-                    else if (
+                    if (isTransportHealthy()) {
+                        zeroWorkersSince = 0L
+                    } else if (
                         wrapAuthTimeoutCount >= 3 &&
                         processStartedAtMs > 0L &&
                         System.currentTimeMillis() - processStartedAtMs > 30_000 &&
@@ -1270,7 +1276,8 @@ object WdttTunnelManager {
         if (!tunnelReady.value || !running.value) return false
         if (isWorkerRampUpActive()) return false
         if (isCaptchaInProgress() || ManlCaptchaWebViewManager.isCaptchaPending) return false
-        if (activeWorkers.value <= 0) return false
+        if (!isTransportReadyStrict()) return false
+        if (System.currentTimeMillis() - processStartedAtMs < 300_000L) return false
         val params = lastParams ?: return false
         val normalized = hashes.map { it.trim() }.filter { it.isNotBlank() }.distinct()
             .take(HashChannelHelper.MAX_HASHES)
@@ -1332,7 +1339,7 @@ object WdttTunnelManager {
         return proc != null && proc.isAlive
     }
 
-    /** Bootstrap готов к входу: WG + живой libclient + хотя бы один воркер. */
+    /** Bootstrap готов к входу: WG + живой libclient + ≥1 воркер. */
     fun isBootstrapLinkReady(): Boolean =
         isBootstrapMode &&
             tunnelReady.value &&
@@ -1350,11 +1357,12 @@ object WdttTunnelManager {
         if (isNetworkRecoverySuppressed()) return false
         if (ManlCaptchaWebViewManager.isCaptchaPending || captchaInProgress) return false
         if (isWorkerRampUpActive()) return false
+        if (backendSyncInProgress) return false
         if (!isLibclientProcessAlive()) return false
         val workers = activeWorkers.value
         if (workers < 1) return false
         val sinceFirst = firstWorkersAtMs
-        if (sinceFirst <= 0L || System.currentTimeMillis() - sinceFirst < thresholdMs) return false
+        if (sinceFirst <= 0L || System.currentTimeMillis() - sinceFirst < 180_000L) return false
         val trafficMb = parseTrafficMb(stats.value)
         val bumpAt = lastTrafficBumpAtMs
         // Только «был трафик, но замер» — не idle с нуля (иначе kill через ~45 с без сёрфинга).
@@ -1378,8 +1386,19 @@ object WdttTunnelManager {
         return activeWorkers.value in 1 until total
     }
 
+    /** POST /connect + sync — не перезапускать libclient/WG во время HTTP-синхронизации. */
+    @Volatile
+    private var backendSyncInProgress = false
+
+    fun setBackendSyncInProgress(active: Boolean) {
+        backendSyncInProgress = active
+    }
+
+    fun isBackendSyncInProgress(): Boolean = backendSyncInProgress
+
     fun isApiOverlayActive(): Boolean = apiOverlayActive
     fun isNetworkRecoverySuppressed(): Boolean {
+        if (backendSyncInProgress) return true
         if (apiOverlayActive || suppressNetworkRecovery || (wgHelper?.isWgTransitionActive() == true)) {
             return true
         }
@@ -1396,17 +1415,26 @@ object WdttTunnelManager {
     /** WG поднят — VPN включён; воркеры могут ещё набираться. */
     fun isInternetReady(): Boolean = tunnelReady.value && running.value
 
-    fun isTransportHealthy(): Boolean {
+    /** WG + libclient + ≥1 воркер прямо сейчас (connect, UI, WG gate). */
+    fun isTransportReadyStrict(): Boolean {
         if (!tunnelReady.value) return false
         if (!isLibclientProcessAlive()) return false
         return activeWorkers.value >= 1
     }
 
-    /** Долго нет активных воркеров при живом процессе — вероятно «завис» после doze/смены сети. */
+    /** Для recovery: strict или 45с после последнего воркера (мигание счётчика при speedtest). */
+    fun isTransportHealthy(): Boolean {
+        if (isTransportReadyStrict()) return true
+        val last = lastActiveAtMs
+        return last > 0L && System.currentTimeMillis() - last < TRANSPORT_WORKER_HYSTERESIS_MS
+    }
+
+    /** Долго нет воркеров при живом процессе — вероятно «завис» после doze/смены сети. */
     fun isTransportStale(thresholdMs: Long): Boolean {
         if (!tunnelReady.value || !running.value) return false
         val proc = process ?: return false
         if (!proc.isAlive) return false
+        if (isTransportHealthy()) return false
         val last = lastActiveAtMs
         if (last <= 0L) return false
         return activeWorkers.value <= 0 && System.currentTimeMillis() - last > thresholdMs

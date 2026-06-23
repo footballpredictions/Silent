@@ -159,6 +159,10 @@ class MainViewModel @Inject constructor(
             clearBootstrapIfServerHashesReady(items)
             refreshHashState()
             if (applyToTunnel) {
+                if (System.currentTimeMillis() - lastTunnelAttachAtMs < 300_000L) {
+                    DebugLog.i("MainViewModel", "hash apply deferred — session stabilizing")
+                    return
+                }
                 val serverHashes = items.activeServerHashes().map { it.hash }
                 if (serverHashes.isNotEmpty()) {
                     val applied = WdttTunnelManager.applyUpdatedVkHashes(appContext, serverHashes)
@@ -306,13 +310,18 @@ class MainViewModel @Inject constructor(
         }
         viewModelScope.launch {
             WdttTunnelManager.activeWorkers.collect { workers ->
-                if (workers < 1 || !bootstrapVpnMode || repo.isLoggedIn()) return@collect
-                bootstrapContext?.let { ctx ->
-                    activateBootstrapWhenLinkReady(
-                        ctx,
-                        forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
-                    )
+                if (bootstrapVpnMode && !repo.isLoggedIn()) {
+                    if (workers >= 1) {
+                        bootstrapContext?.let { ctx ->
+                            activateBootstrapWhenLinkReady(
+                                ctx,
+                                forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
+                            )
+                        }
+                    }
+                    return@collect
                 }
+                promoteMainVpnConnectedIfHealthy()
             }
         }
         viewModelScope.launch {
@@ -344,16 +353,16 @@ class MainViewModel @Inject constructor(
                             ) {
                                 _vpnState.value = VpnState.CONNECTING
                             }
-                        } else {
-                            _vpnState.value = VpnState.CONNECTED
-                            onVpnTunnelReady()
-                            updateBootstrapReadyFlag()
+                        } else if (WdttTunnelManager.isTransportReadyStrict()) {
+                            promoteMainVpnConnectedIfHealthy()
+                        } else if (_vpnState.value != VpnState.CONNECTING) {
+                            _vpnState.value = VpnState.CONNECTING
                         }
                     }
                 } else if (
                     _vpnState.value == VpnState.CONNECTED &&
                     !WdttTunnelManager.running.value &&
-                    WdttTunnelManager.activeWorkers.value < 1
+                    !WdttTunnelManager.isTransportReadyStrict()
                 ) {
                     _vpnState.value = VpnState.DISCONNECTED
                     backendSyncCompleted = false
@@ -477,6 +486,18 @@ class MainViewModel @Inject constructor(
     /** Главный экран только после входа; bootstrap/pre-login остаётся на LOGIN. */
     private fun isMainVpnSessionForUi(): Boolean =
         repo.isLoggedIn() && !bootstrapVpnMode && !WdttTunnelManager.isBootstrapMode()
+
+    /** CONNECTED при WG + ≥1 воркер (не при одном tunnelReady). */
+    private fun promoteMainVpnConnectedIfHealthy() {
+        if (_vpnState.value == VpnState.DISCONNECTING) return
+        if (!SilentVpnService.isRunning || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) return
+        if (!repo.isLoggedIn()) return
+        if (!WdttTunnelManager.isTransportReadyStrict()) return
+        if (_vpnState.value == VpnState.CONNECTED) return
+        _vpnState.value = VpnState.CONNECTED
+        onVpnTunnelReady()
+        updateBootstrapReadyFlag()
+    }
 
     private fun restoreVpnUiAfterForeground() {
         if (_vpnState.value != VpnState.CONNECTED) {
@@ -1300,7 +1321,7 @@ class MainViewModel @Inject constructor(
             _vpnState.value == VpnState.CONNECTED
     }
 
-    /** Таймер 2 мин и «Канал готов» — только когда WG + воркеры реально подняты. */
+    /** Таймер 2 мин и «Канал готов» — WG + libclient :9000. */
     private fun activateBootstrapWhenLinkReady(
         context: Context,
         forceNewDeadline: Boolean = false,
@@ -2038,7 +2059,7 @@ class MainViewModel @Inject constructor(
                 val cached = loadCachedVpnConfig()
                 if (cached != null && isConfigConnectable(cached)) {
                     val config = wdttConnectConfig(resolveMainVpnConfig(cached))
-                    if (WdttTunnelManager.isTransportHealthy()) {
+                    if (WdttTunnelManager.isTransportReadyStrict()) {
                         _vpnState.value = VpnState.CONNECTED
                         attachExistingSession()
                         return@launch
@@ -2218,41 +2239,22 @@ class MainViewModel @Inject constructor(
         repo.mergeSavedHashesIntoCachedConfig()
     }
 
-    /** WG + libclient + ≥1 воркер — иначе UI не показывает «подключено» с нулями. */
+    /** WG + ≥1 воркер; без retry CONNECT (гонка stop/connect). */
     private suspend fun waitForTunnelReady(context: Context, @Suppress("UNUSED_PARAMETER") totalWorkers: Int) {
         repeat(225) {
             delay(200)
             if (_vpnState.value != VpnState.CONNECTING) return
-            if (WdttTunnelManager.isTransportHealthy()) {
+            if (WdttTunnelManager.isTransportReadyStrict()) {
                 _vpnState.value = VpnState.CONNECTED
                 onVpnTunnelReady()
                 return
             }
         }
         if (_vpnState.value != VpnState.CONNECTING) return
-        if (WdttTunnelManager.isTransportHealthy()) {
+        if (WdttTunnelManager.isTransportReadyStrict()) {
             _vpnState.value = VpnState.CONNECTED
             onVpnTunnelReady()
             return
-        }
-        // WG UP, но 0 воркеров — зомби после гонки CONNECT/disconnect
-        if (WdttTunnelManager.tunnelReady.value &&
-            WdttTunnelManager.isLibclientProcessAlive() &&
-            WdttTunnelManager.activeWorkers.value < 1
-        ) {
-            DebugLog.w("MainViewModel", "waitForTunnelReady: WG up, 0 workers — retry CONNECT")
-            val retry = VpnTileConnect.buildConnectIntentFromCache(context)
-                ?: return stopVpnAfterConnectTimeout(context, "Туннель без воркеров")
-            androidx.core.content.ContextCompat.startForegroundService(context, retry)
-            repeat(150) {
-                delay(200)
-                if (_vpnState.value != VpnState.CONNECTING) return
-                if (WdttTunnelManager.isTransportHealthy()) {
-                    _vpnState.value = VpnState.CONNECTED
-                    onVpnTunnelReady()
-                    return
-                }
-            }
         }
         stopVpnAfterConnectTimeout(
             context,
@@ -2413,7 +2415,7 @@ class MainViewModel @Inject constructor(
         if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) return
         val vpnActive = _vpnState.value == VpnState.CONNECTED ||
             _vpnState.value == VpnState.CONNECTING ||
-            (SilentVpnService.isRunning && repo.isMainVpnTunnelUp())
+            VpnSessionState.isActive()
         if (vpnActive && !hasVpnAccessForProfile(profile)) {
             DebugLog.i("MainViewModel", "subscription expired on server — disconnect VPN")
             _vpnError.value = subscriptionRequiredMessage()

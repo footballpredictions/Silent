@@ -29,7 +29,7 @@ object VpnConnectHelper {
 
     /** После force-kill / залипшей плитки — WG или libclient могли остаться в системе. */
     fun needsStaleCleanup(context: Context): Boolean {
-        if (SilentVpnService.isRunning && WdttTunnelManager.isTransportHealthy()) {
+        if (SilentVpnService.isRunning && WdttTunnelManager.isTransportReadyStrict()) {
             return false
         }
         return VpnServiceTracker.isSessionMarkedActive(context) ||

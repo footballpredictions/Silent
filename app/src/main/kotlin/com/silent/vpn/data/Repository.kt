@@ -104,8 +104,9 @@ class SilentRepository @Inject constructor(
         return _api!!
     }
 
-    /** HTTP к 10.66.66.x при поднятом VPN — bind к VPN Network при необходимости. */
+    /** HTTP к 10.66.66.x — bind только когда app excluded из WG; in-tunnel идёт через маршрут VPN. */
     private fun resolveVpnNetworkForApi(url: String): Network? {
+        if (!APP_EXCLUDED_FROM_VPN) return null
         if (!isMainVpnTunnelUp()) return null
         if (url.startsWith(TunnelApiProxy.baseUrl())) return null
         if (!url.contains(WG_TUNNEL_GATEWAY) && !url.contains("10.66.")) return null
@@ -133,7 +134,7 @@ class SilentRepository @Inject constructor(
                 }
                 val host = req.url.host
                 val viaTunnelGw = host == WG_TUNNEL_GATEWAY || host.startsWith("10.66.")
-                if (viaTunnelGw && isMainVpnTunnelUp()) {
+                if (viaTunnelGw && isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
                     val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
                     val network = VpnNetworkHelper.getSilentVpnNetwork(context)
                     if (network != null) {
@@ -452,16 +453,16 @@ class SilentRepository @Inject constructor(
         }
     }
 
-    /** Основной VPN: app в туннеле — API только 10.66.66.1. */
+    /** Основной VPN: app в туннеле — API только 10.66.66.1 (без сброса клиента каждый тик). */
     fun prepareMainVpnDirectApi() {
         if (!isMainVpnTunnelUp()) return
         if (TunnelApiProxy.isActive()) {
             TunnelApiProxy.stop()
         }
-        clearTunnelApiBase()
-        useApiBase(tunnelApiBase())
-        invalidateApiClient()
-        Log.i(TAG, "API via main tunnel (direct): ${tunnelApiBase()}")
+        val target = tunnelApiBase()
+        if (tunnelApiBaseUrl == target) return
+        useApiBase(target)
+        Log.i(TAG, "API via main tunnel (direct): $target")
     }
 
     fun tunnelApiBaseUrl(): String =
@@ -519,11 +520,16 @@ class SilentRepository @Inject constructor(
     suspend fun <T> withTunnelApiWhenExcluded(block: suspend () -> T): T =
         withTunnelApiWhenExcludedInternal(block, allowDuringRampUp = false)
 
+    /** WG-слой поднят (API 10.66.66.1). Для UI «подключено» — [VpnSessionState.isActive]. */
     fun isMainVpnTunnelUp(): Boolean =
         com.silent.vpn.service.SilentVpnService.isRunning &&
             com.silent.vpn.vpn.WdttTunnelManager.running.value &&
             com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value &&
             !com.silent.vpn.vpn.WdttTunnelManager.isBootstrapMode()
+
+    /** End-to-end: WG + libclient :9000. */
+    fun isMainVpnTransportReady(): Boolean =
+        isMainVpnTunnelUp() && com.silent.vpn.vpn.WdttTunnelManager.isTransportReadyStrict()
 
     /**
      * Main VPN tunnel API — только proxy/direct bind, без overlay.
@@ -987,10 +993,19 @@ class SilentRepository @Inject constructor(
      */
     suspend fun syncAllViaTunnel(): Boolean = tunnelSyncMutex.withLock {
         if (!isLoggedIn()) return@withLock false
+        WdttTunnelManager.setBackendSyncInProgress(true)
+        try {
+            return@withLock syncAllViaTunnelInternal()
+        } finally {
+            WdttTunnelManager.setBackendSyncInProgress(false)
+        }
+    }
+
+    private suspend fun syncAllViaTunnelInternal(): Boolean {
         prepareTunnelApiFromCachedConfig()
         invalidatePublicReachabilityCache()
 
-        if (!isMainVpnTunnelUp()) return@withLock false
+        if (!isMainVpnTunnelUp()) return false
 
         if (!APP_EXCLUDED_FROM_VPN) {
             prepareMainVpnDirectApi()
@@ -999,7 +1014,7 @@ class SilentRepository @Inject constructor(
         }
 
         if (!isOnMobileData() && postConnectViaPublic()) {
-            return@withLock runCatching {
+            return runCatching {
                 syncHashesAndConfigAfterConnect()
                 syncProfileAndThemeAfterConnect()
                 Log.i(TAG, "syncAll OK (public connect + hashes/profile)")
@@ -1012,7 +1027,7 @@ class SilentRepository @Inject constructor(
             "syncAllViaTunnel: excluded=$APP_EXCLUDED_FROM_VPN mobile=${isOnMobileData()} proxy=${TunnelApiProxy.isActive()}",
         )
 
-        return@withLock runCatching {
+        return runCatching {
             withTunnelBackendBlock {
                 val url = getServerUrl()
                 val online = postConnectOnlineViaTunnel()

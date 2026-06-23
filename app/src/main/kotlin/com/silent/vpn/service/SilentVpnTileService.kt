@@ -69,10 +69,7 @@ class SilentVpnTileService : TileService() {
         }
     }
 
-    private fun isVpnConnected(): Boolean =
-        VpnSessionState.isActive() ||
-            (SilentVpnService.isRunning && WdttTunnelManager.running.value && WdttTunnelManager.tunnelReady.value) ||
-            (VpnServiceTracker.isSessionMarkedActive(this) && WdttTunnelManager.tunnelReady.value)
+    private fun isVpnConnected(): Boolean = VpnSessionState.isActive()
 
     private fun performClick() {
         runCatching {

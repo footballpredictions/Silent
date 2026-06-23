@@ -15,11 +15,11 @@ object VpnSessionState {
     @Volatile
     var tunnelDataSyncCompleted: Boolean = false
 
-    /** Туннель реально работает: WG + живой libclient + ≥1 воркер. */
+    /** Туннель работает: WG + libclient + ≥1 воркер (с гистерезисом при speedtest). */
     fun isActive(): Boolean =
         SilentVpnService.isRunning &&
             WdttTunnelManager.running.value &&
-            WdttTunnelManager.isTransportHealthy()
+            WdttTunnelManager.isTransportReadyStrict()
 
     /** Идёт подключение или капча. */
     fun isBusy(): Boolean =

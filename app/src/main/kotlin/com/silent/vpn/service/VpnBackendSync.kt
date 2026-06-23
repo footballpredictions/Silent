@@ -101,18 +101,14 @@ object VpnBackendSync {
             if (!WdttTunnelManager.isWorkerRampUpActive()) break
             delay(500)
         }
-        val workerDeadline = System.currentTimeMillis() + 60_000L
-        while (System.currentTimeMillis() < workerDeadline && scope.isActive) {
+        val listenDeadline = System.currentTimeMillis() + 60_000L
+        while (System.currentTimeMillis() < listenDeadline && scope.isActive) {
             if (!WdttTunnelManager.running.value) return false
-            if (WdttTunnelManager.activeWorkers.value >= 1) {
-                return WdttTunnelManager.tunnelReady.value
-            }
+            if (WdttTunnelManager.isTransportHealthy()) return true
             if (!WdttTunnelManager.isLibclientProcessAlive()) return false
             delay(400)
         }
-        return WdttTunnelManager.tunnelReady.value &&
-            WdttTunnelManager.running.value &&
-            WdttTunnelManager.activeWorkers.value >= 1
+        return WdttTunnelManager.isTransportHealthy()
     }
 
     fun stop() {

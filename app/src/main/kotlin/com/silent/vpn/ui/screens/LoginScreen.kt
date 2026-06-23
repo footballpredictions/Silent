@@ -120,7 +120,7 @@ fun LoginScreen(
                         when {
                             bootstrapConnecting -> {
                                 Text(
-                                    statusMsg.ifBlank { "Подключение… подождите" },
+                                    "Подключение… подождите",
                                     fontSize = 12.sp,
                                     color = ui.hint,
                                     modifier = Modifier.padding(bottom = 12.dp),

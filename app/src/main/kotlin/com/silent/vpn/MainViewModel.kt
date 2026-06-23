@@ -289,6 +289,10 @@ class MainViewModel @Inject constructor(
                     DebugLog.e("MainViewModel", "WDTT error: $err")
                     _vpnError.value = err
                     if (bootstrapVpnMode) {
+                        if (bootstrapConnectingInternal || !WdttTunnelManager.isBootstrapLinkReady()) {
+                            DebugLog.w("MainViewModel", "bootstrap ramp-up error (ignored): $err")
+                            return@collect
+                        }
                         _vpnState.value = VpnState.DISCONNECTED
                         bootstrapVpnMode = false
                         cancelBootstrapSessionTimeout()
@@ -299,19 +303,31 @@ class MainViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            WdttTunnelManager.activeWorkers.collect { workers ->
+                if (workers < 1 || !bootstrapVpnMode || repo.isLoggedIn()) return@collect
+                bootstrapContext?.let { ctx ->
+                    activateBootstrapWhenLinkReady(
+                        ctx,
+                        forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
             WdttTunnelManager.tunnelReady.collect { ready ->
                 if (ready) {
                     if (_vpnState.value == VpnState.DISCONNECTING) return@collect
                     DebugLog.i("MainViewModel", "tunnel ready")
                     if (bootstrapVpnMode && WdttTunnelManager.isBootstrapMode()) {
-                        _vpnState.value = VpnState.CONNECTED
-                        onVpnTunnelReady()
                         val ctx = bootstrapContext
-                        if (ctx != null) {
-                            startBootstrapSessionTimeout(
+                        if (ctx == null || !activateBootstrapWhenLinkReady(
                                 ctx,
                                 forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
                             )
+                        ) {
+                            if (_vpnState.value != VpnState.CONNECTING) {
+                                _vpnState.value = VpnState.CONNECTING
+                            }
                         }
                     } else if (silentBootstrapSync) {
                         // Ephemeral API sync — runEphemeralApiBootstrap polls tunnelReady itself.
@@ -319,14 +335,18 @@ class MainViewModel @Inject constructor(
                         if (!repo.isLoggedIn() && _screen.value == AppScreen.LOGIN) {
                             bootstrapVpnMode = true
                             bootstrapContext = bootstrapContext ?: appContext
-                            startBootstrapSessionTimeout(
-                                appContext,
-                                forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
-                            )
+                            if (!activateBootstrapWhenLinkReady(
+                                    appContext,
+                                    forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
+                                ) && _vpnState.value != VpnState.CONNECTING
+                            ) {
+                                _vpnState.value = VpnState.CONNECTING
+                            }
+                        } else {
+                            _vpnState.value = VpnState.CONNECTED
+                            onVpnTunnelReady()
+                            updateBootstrapReadyFlag()
                         }
-                        _vpnState.value = VpnState.CONNECTED
-                        onVpnTunnelReady()
-                        updateBootstrapReadyFlag()
                     }
                 } else if (
                     _vpnState.value == VpnState.CONNECTED &&
@@ -1221,7 +1241,7 @@ class MainViewModel @Inject constructor(
         if (_bootstrapExpired.value) return
         reconcileLoginBootstrapSession(context)
         if (!isHashReady()) return
-        if (bootstrapVpnMode && SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) return
+        if (bootstrapVpnMode && SilentVpnService.isRunning && WdttTunnelManager.isBootstrapLinkReady()) return
         if (_vpnState.value != VpnState.CONNECTING && !bootstrapConnectingInternal) {
             ensureBootstrapVpn(context)
         }
@@ -1245,20 +1265,17 @@ class MainViewModel @Inject constructor(
         if (serviceUp && tunnelUp && isHashReady() && (bootstrapTunnel || _screen.value == AppScreen.LOGIN)) {
             bootstrapVpnMode = true
             bootstrapContext = ctx
-            if (_vpnState.value != VpnState.CONNECTED) {
-                _vpnState.value = VpnState.CONNECTED
-                onVpnTunnelReady(initialConnect = false)
+            if (WdttTunnelManager.isBootstrapLinkReady()) {
+                activateBootstrapWhenLinkReady(
+                    ctx,
+                    forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
+                )
+                DebugLog.i("MainViewModel", "reconcileLoginBootstrapSession: bootstrap VPN active")
+            } else if (WdttTunnelManager.isBootstrapMode() && serviceUp) {
+                DebugLog.i("MainViewModel", "reconcileLoginBootstrapSession: bootstrap ramp-up, re-sync")
+                _vpnState.value = VpnState.CONNECTING
+                ensureBootstrapVpn(ctx)
             }
-            WdttTunnelManager.lastWgAddress()?.takeIf { it.isNotBlank() }?.let {
-                repo.setTunnelApiFromWgAddress(it)
-            } ?: run {
-                if (bootstrapTunnel) repo.ensureBootstrapTunnelApi()
-            }
-            startBootstrapSessionTimeout(
-                ctx,
-                forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
-            )
-            DebugLog.i("MainViewModel", "reconcileLoginBootstrapSession: bootstrap VPN active")
         } else if (!serviceUp && bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
             bootstrapVpnMode = false
             cancelBootstrapSessionTimeout()
@@ -1270,9 +1287,39 @@ class MainViewModel @Inject constructor(
     private fun updateBootstrapReadyFlag() {
         _bootstrapReady.value = !repo.isLoggedIn() &&
             bootstrapVpnMode &&
-            SilentVpnService.isRunning &&
-            WdttTunnelManager.tunnelReady.value &&
+            WdttTunnelManager.isBootstrapLinkReady() &&
             _vpnState.value == VpnState.CONNECTED
+    }
+
+    /** Таймер 2 мин и «Канал готов» — только когда WG + воркеры реально подняты. */
+    private fun activateBootstrapWhenLinkReady(
+        context: Context,
+        forceNewDeadline: Boolean = false,
+        vpnConfig: VpnConfig? = null,
+    ): Boolean {
+        if (!bootstrapVpnMode || !WdttTunnelManager.isBootstrapLinkReady()) return false
+        if (_vpnState.value != VpnState.CONNECTED) {
+            _vpnState.value = VpnState.CONNECTED
+        }
+        if (vpnConfig != null) {
+            onVpnTunnelReady(vpnConfig)
+        } else if (bootstrapDeadlineMs <= 0L) {
+            onVpnTunnelReady()
+        }
+        repo.ensureBootstrapTunnelApi()
+        startBootstrapSessionTimeout(context, forceNewDeadline = forceNewDeadline)
+        return true
+    }
+
+    private suspend fun awaitBootstrapLink(context: Context, config: VpnConfig, maxTicks: Int = 60): Boolean {
+        repeat(maxTicks) {
+            delay(500)
+            if (_vpnState.value != VpnState.CONNECTING && _vpnState.value != VpnState.CONNECTED) return false
+            if (activateBootstrapWhenLinkReady(context, forceNewDeadline = true, vpnConfig = config)) {
+                return true
+            }
+        }
+        return false
     }
 
     private suspend fun fetchProfileNow(force: Boolean = false): Boolean {
@@ -1654,7 +1701,7 @@ class MainViewModel @Inject constructor(
     }
 
     private fun startBootstrapSessionTimeout(context: Context, forceNewDeadline: Boolean = false) {
-        if (!bootstrapVpnMode) return
+        if (!bootstrapVpnMode || !WdttTunnelManager.isBootstrapLinkReady()) return
         val now = System.currentTimeMillis()
         if (forceNewDeadline || bootstrapDeadlineMs <= now) {
             bootstrapDeadlineMs = now + BOOTSTRAP_SESSION_MS
@@ -1676,7 +1723,7 @@ class MainViewModel @Inject constructor(
     }
 
     private fun refreshBootstrapCountdownNow() {
-        if (!bootstrapVpnMode || bootstrapDeadlineMs <= 0L) {
+        if (!bootstrapVpnMode || !WdttTunnelManager.isBootstrapLinkReady() || bootstrapDeadlineMs <= 0L) {
             _bootstrapSecondsLeft.value = null
             updateBootstrapReadyFlag()
             return
@@ -1747,7 +1794,7 @@ class MainViewModel @Inject constructor(
         if (_bootstrapExpired.value) return
         if (repo.isLoggedIn() || !isHashReady()) return
         if (bootstrapConnectingInternal) return
-        if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
+        if (bootstrapVpnMode && WdttTunnelManager.isBootstrapLinkReady() && _vpnState.value == VpnState.CONNECTED) {
             bootstrapContext = context.applicationContext
             resumeBootstrapTimerIfNeeded()
             return
@@ -1774,23 +1821,26 @@ class MainViewModel @Inject constructor(
                 bootstrapContext = context.applicationContext
                 _bootstrapExpired.value = false
                 _vpnState.value = VpnState.CONNECTING
-                val intent = Intent(context, SilentVpnService::class.java).apply {
-                    action = SilentVpnService.ACTION_CONNECT
-                    putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(config))
-                    putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, true)
-                }
-                ContextCompat.startForegroundService(context, intent)
-                repeat(60) {
-                    delay(500)
-                    if (_vpnState.value != VpnState.CONNECTING) return@launch
-                    if (WdttTunnelManager.tunnelReady.value && WdttTunnelManager.running.value) {
-                        _vpnState.value = VpnState.CONNECTED
-                        onVpnTunnelReady(config)
-                        repo.ensureBootstrapTunnelApi()
-                        startBootstrapSessionTimeout(context, forceNewDeadline = true)
-                        return@launch
+                var connected = false
+                for (attempt in 0 until 2) {
+                    if (attempt > 0) {
+                        DebugLog.i("MainViewModel", "ensureBootstrapVpn: повтор (как после смены сети)")
+                        stopVpnLocally(context)
+                        delay(2500)
+                        _vpnState.value = VpnState.CONNECTING
+                    }
+                    val intent = Intent(context, SilentVpnService::class.java).apply {
+                        action = SilentVpnService.ACTION_CONNECT
+                        putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(config))
+                        putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, true)
+                    }
+                    ContextCompat.startForegroundService(context, intent)
+                    if (awaitBootstrapLink(context, config)) {
+                        connected = true
+                        break
                     }
                 }
+                if (connected) return@launch
                 if (_vpnState.value == VpnState.CONNECTING) {
                     cancelBootstrapSessionTimeout()
                     stopVpnLocally(context)
@@ -1822,13 +1872,11 @@ class MainViewModel @Inject constructor(
     private fun resumeBootstrapTimerIfNeeded() {
         val ctx = bootstrapContext ?: appContext
         if (bootstrapVpnMode && !repo.isLoggedIn()) {
-            if (SilentVpnService.isRunning && WdttTunnelManager.tunnelReady.value) {
-                if (_vpnState.value != VpnState.CONNECTED) {
-                    _vpnState.value = VpnState.CONNECTED
-                }
-                startBootstrapSessionTimeout(ctx, forceNewDeadline = false)
+            if (SilentVpnService.isRunning && WdttTunnelManager.isBootstrapLinkReady()) {
+                activateBootstrapWhenLinkReady(ctx, forceNewDeadline = false)
+            } else {
+                updateBootstrapReadyFlag()
             }
-            updateBootstrapReadyFlag()
         }
     }
 

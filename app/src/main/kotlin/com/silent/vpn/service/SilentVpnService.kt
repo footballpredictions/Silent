@@ -74,8 +74,10 @@ class SilentVpnService : Service() {
         private const val NETWORK_RECOVERY_DELAY_MS = 2_500L
         /** Сколько ждать «больного» транспорта перед restart. */
         private const val TRANSPORT_UNHEALTHY_MS = 20_000L
-        /** Нет активных воркеров дольше этого — restart (doze / screen off). */
-        private const val TRANSPORT_STALE_MS = 120_000L
+    /** Нет активных воркеров дольше этого — restart (doze / screen off). */
+    private const val TRANSPORT_STALE_MS = 120_000L
+    /** Пауза libclient без восстановления сети — принудительный restart. */
+    private const val PAUSED_NETWORK_TIMEOUT_MS = 45_000L
         private const val NOTIF_UPDATE_MIN_MS = 3_000L
         const val ACTION_CONNECT = "com.silent.vpn.CONNECT"
         const val ACTION_DISCONNECT = "com.silent.vpn.DISCONNECT"
@@ -108,6 +110,7 @@ class SilentVpnService : Service() {
     private var transportUnhealthySinceMs = 0L
     private var isTunnelPaused = false
     private var pausedForNetwork = false
+    private var pausedForNetworkSinceMs = 0L
     private var lastUnderlyingInternet: Boolean? = null
     private var phoneCallActive = false
     private var transportWatchdogJob: Job? = null
@@ -158,8 +161,10 @@ class SilentVpnService : Service() {
                         ensureTunnelApiProxyAsync()
                         postVpnNotification(stats)
                         VpnTileHelper.requestUpdate(this@SilentVpnService)
+                        checkLibclientZombie()
                         checkTransportHealth()
                         checkUnderlyingNetwork()
+                        checkPausedNetworkTimeout()
                         if (
                             WdttTunnelManager.tunnelReady.value &&
                             WdttTunnelManager.running.value &&
@@ -255,6 +260,7 @@ class SilentVpnService : Service() {
                 transportUnhealthySinceMs = 0L
                 phoneCallActive = false
                 pausedForNetwork = false
+                pausedForNetworkSinceMs = 0L
                 lastUnderlyingInternet = null
                 lastNotifBody = ""
                 lastNotifUpdateMs = 0L
@@ -439,6 +445,7 @@ class SilentVpnService : Service() {
         transportUnhealthySinceMs = 0L
         phoneCallActive = false
         pausedForNetwork = false
+        pausedForNetworkSinceMs = 0L
         lastUnderlyingInternet = null
         performanceLocksHeld = false
         lastNotifBody = ""
@@ -623,6 +630,7 @@ class SilentVpnService : Service() {
 
     private fun recoverTransportAfterNetwork(reason: String) {
         pausedForNetwork = false
+        pausedForNetworkSinceMs = 0L
         isTunnelPaused = false
         DebugLog.i("VpnService", "network recovery: $reason")
         scope.launch(Dispatchers.IO) {
@@ -650,27 +658,58 @@ class SilentVpnService : Service() {
         if (!isRunning || !WdttTunnelManager.tunnelReady.value) return
         if (WdttTunnelManager.isNetworkRecoverySuppressed()) return
         if (phoneCallActive) return
-        if (System.currentTimeMillis() - connectStartedAtMs < NETWORK_GRACE_MS) return
+        val graceMs = if (WdttTunnelManager.isBootstrapMode()) LIBCLIENT_START_GRACE_MS else NETWORK_GRACE_MS
+        if (System.currentTimeMillis() - connectStartedAtMs < graceMs) return
 
         val anyOnline = VpnNetworkHelper.hasAnyUnderlyingInternet(this)
         val validatedOnline = VpnNetworkHelper.hasUnderlyingInternet(this)
         val wasOnline = lastUnderlyingInternet
 
         if (wasOnline == true && !anyOnline) {
-            if (!pausedForNetwork) {
+            if (WdttTunnelManager.isBootstrapMode()) {
+                scheduleNetworkRecovery("bootstrap_net_lost", 1_000L)
+            } else if (!pausedForNetwork) {
                 DebugLog.i("VpnService", "underlying internet lost — pause libclient")
                 pausedForNetwork = true
+                pausedForNetworkSinceMs = System.currentTimeMillis()
                 isTunnelPaused = true
                 WdttTunnelManager.pause()
             }
-        } else if ((wasOnline == false || pausedForNetwork) && validatedOnline) {
+        } else if (pausedForNetwork && validatedOnline) {
             scheduleNetworkRecovery("internet_restored", 1_500L)
         }
         lastUnderlyingInternet = validatedOnline
     }
 
+    /** libclient убит pause(), но recovery не сработал — только основной VPN, не bootstrap. */
+    private fun checkLibclientZombie() {
+        if (WdttTunnelManager.isBootstrapMode()) return
+        if (!isRunning || !WdttTunnelManager.tunnelReady.value) return
+        if (!WdttTunnelManager.running.value) return
+        if (WdttTunnelManager.isLibclientProcessAlive()) return
+        if (WdttTunnelManager.isNetworkRecoverySuppressed()) return
+        if (System.currentTimeMillis() - connectStartedAtMs < NETWORK_GRACE_MS) return
+        scheduleNetworkRecovery("libclient_dead")
+    }
+
+    private fun checkPausedNetworkTimeout() {
+        if (!pausedForNetwork || pausedForNetworkSinceMs <= 0L) return
+        if (!isRunning || !WdttTunnelManager.tunnelReady.value) return
+        val timeout = if (WdttTunnelManager.isBootstrapMode()) 12_000L else PAUSED_NETWORK_TIMEOUT_MS
+        if (System.currentTimeMillis() - pausedForNetworkSinceMs < timeout) return
+        DebugLog.i("VpnService", "paused network timeout — force recovery")
+        scheduleNetworkRecovery("paused_timeout", 500L)
+    }
+
     private fun checkTransportHealth() {
-        if (pausedForNetwork) return
+        if (WdttTunnelManager.isBootstrapMode()) {
+            if (pausedForNetwork) checkPausedNetworkTimeout()
+            return
+        }
+        if (pausedForNetwork) {
+            checkPausedNetworkTimeout()
+            return
+        }
         if (!isRunning || !WdttTunnelManager.tunnelReady.value || !WdttTunnelManager.running.value) {
             transportUnhealthySinceMs = 0L
             return
@@ -692,6 +731,9 @@ class SilentVpnService : Service() {
         }
         if (WdttTunnelManager.isTransportStale(TRANSPORT_STALE_MS)) {
             scheduleNetworkRecovery("stale")
+        }
+        if (WdttTunnelManager.isDataPathStuck()) {
+            scheduleNetworkRecovery("data_path_stuck")
         }
     }
 

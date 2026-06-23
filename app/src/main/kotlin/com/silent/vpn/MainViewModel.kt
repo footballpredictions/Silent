@@ -546,16 +546,11 @@ class MainViewModel @Inject constructor(
                     _screen.value = AppScreen.LOGIN
                 }
             }
-            SilentVpnService.isRunning -> {
-                _vpnState.value = VpnState.CONNECTED
-                if (isMainVpnSessionForUi()) {
-                    SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "CONNECTED attach")
-                    attachExistingSession()
-                } else {
-                    SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "bootstrap attach")
-                    _screen.value = AppScreen.LOGIN
-                    reconcileLoginBootstrapSession(appContext)
+            SilentVpnService.isRunning || WdttTunnelManager.running.value -> {
+                if (_vpnState.value != VpnState.CONNECTING) {
+                    _vpnState.value = VpnState.CONNECTING
                 }
+                SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "CONNECTING")
             }
             else -> {
                 _vpnState.value = VpnState.DISCONNECTED
@@ -2043,7 +2038,7 @@ class MainViewModel @Inject constructor(
                 val cached = loadCachedVpnConfig()
                 if (cached != null && isConfigConnectable(cached)) {
                     val config = wdttConnectConfig(resolveMainVpnConfig(cached))
-                    if (WdttTunnelManager.running.value) {
+                    if (WdttTunnelManager.isTransportHealthy()) {
                         _vpnState.value = VpnState.CONNECTED
                         attachExistingSession()
                         return@launch
@@ -2223,26 +2218,51 @@ class MainViewModel @Inject constructor(
         repo.mergeSavedHashesIntoCachedConfig()
     }
 
-    /** WG поднимается за 3–5 с; ждём до 45 с (капча/сеть). */
+    /** WG + libclient + ≥1 воркер — иначе UI не показывает «подключено» с нулями. */
     private suspend fun waitForTunnelReady(context: Context, @Suppress("UNUSED_PARAMETER") totalWorkers: Int) {
         repeat(225) {
             delay(200)
             if (_vpnState.value != VpnState.CONNECTING) return
-            if (WdttTunnelManager.tunnelReady.value && WdttTunnelManager.running.value) {
+            if (WdttTunnelManager.isTransportHealthy()) {
                 _vpnState.value = VpnState.CONNECTED
                 onVpnTunnelReady()
                 return
             }
         }
         if (_vpnState.value != VpnState.CONNECTING) return
-        if (WdttTunnelManager.tunnelReady.value) {
+        if (WdttTunnelManager.isTransportHealthy()) {
             _vpnState.value = VpnState.CONNECTED
             onVpnTunnelReady()
             return
         }
-        val err = WdttTunnelManager.lastError.value
-            ?: WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
-            ?: "Таймаут: VPN не подключился"
+        // WG UP, но 0 воркеров — зомби после гонки CONNECT/disconnect
+        if (WdttTunnelManager.tunnelReady.value &&
+            WdttTunnelManager.isLibclientProcessAlive() &&
+            WdttTunnelManager.activeWorkers.value < 1
+        ) {
+            DebugLog.w("MainViewModel", "waitForTunnelReady: WG up, 0 workers — retry CONNECT")
+            val retry = VpnTileConnect.buildConnectIntentFromCache(context)
+                ?: return stopVpnAfterConnectTimeout(context, "Туннель без воркеров")
+            androidx.core.content.ContextCompat.startForegroundService(context, retry)
+            repeat(150) {
+                delay(200)
+                if (_vpnState.value != VpnState.CONNECTING) return
+                if (WdttTunnelManager.isTransportHealthy()) {
+                    _vpnState.value = VpnState.CONNECTED
+                    onVpnTunnelReady()
+                    return
+                }
+            }
+        }
+        stopVpnAfterConnectTimeout(
+            context,
+            WdttTunnelManager.lastError.value
+                ?: WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
+                ?: "Таймаут: VPN не подключился",
+        )
+    }
+
+    private suspend fun stopVpnAfterConnectTimeout(context: Context, err: String) {
         stopVpnLocally(context)
         withContext(Dispatchers.IO) {
             VpnConnectHelper.ensureCleanSlate(context, force = true)

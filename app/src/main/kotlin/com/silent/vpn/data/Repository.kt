@@ -915,15 +915,10 @@ class SilentRepository @Inject constructor(
 
     fun getTotalWorkers(activeHashCount: Int = getSavedHashItems().activeServerHashCount().coerceAtLeast(1)): Int {
         val capped = activeHashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)
-        if (!BuildConfig.DEBUG) {
-            return HashChannelHelper.normalizeTotalWorkers(
-                HashChannelHelper.WORKERS_PER_GROUP * 4,
-                capped,
-            )
-        }
         val max = HashChannelHelper.maxTotalWorkers(capped)
+        val recommended = HashChannelHelper.recommendedTotalWorkers(capped)
         if (prefs.contains(PREF_HASH_TOTAL_WORKERS)) {
-            val raw = prefs.getInt(PREF_HASH_TOTAL_WORKERS, HashChannelHelper.WORKERS_PER_GROUP)
+            val raw = prefs.getInt(PREF_HASH_TOTAL_WORKERS, recommended)
             if (raw > max) {
                 saveTotalWorkers(max, capped)
                 return max
@@ -941,12 +936,8 @@ class SilentRepository @Inject constructor(
                 .apply()
             return migrated
         }
-        val firstInstall = HashChannelHelper.normalizeTotalWorkers(
-            HashChannelHelper.WORKERS_PER_GROUP * 4,
-            capped,
-        )
-        saveTotalWorkers(firstInstall, capped)
-        return firstInstall
+        saveTotalWorkers(recommended, capped)
+        return recommended
     }
 
     fun saveTotalWorkers(value: Int, activeHashCount: Int = getSavedHashItems().activeServerHashCount().coerceAtLeast(1)) {

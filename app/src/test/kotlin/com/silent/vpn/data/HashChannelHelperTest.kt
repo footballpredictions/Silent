@@ -89,6 +89,13 @@ class HashChannelHelperTest {
     }
 
     @Test
+    fun `recommendedTotalWorkers matches backend formula`() {
+        assertEquals(27, HashChannelHelper.recommendedTotalWorkers(1))
+        assertEquals(54, HashChannelHelper.recommendedTotalWorkers(2))
+        assertEquals(108, HashChannelHelper.recommendedTotalWorkers(4))
+    }
+
+    @Test
     fun `signalBars thresholds`() {
         assertEquals(0, HashChannelHelper.signalBars(0, 36))
         assertEquals(1, HashChannelHelper.signalBars(1, 36))

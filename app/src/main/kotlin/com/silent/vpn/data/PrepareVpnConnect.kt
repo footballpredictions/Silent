@@ -78,7 +78,13 @@ suspend fun SilentRepository.prepareVpnConnectConfig(
         hashItems.activeServerHashes().size,
         1,
     ).coerceAtMost(HashChannelHelper.MAX_HASHES)
-    val workers = resolveWorkersForLibclient(activeCount)
+    val userWorkers = resolveWorkersForLibclient(activeCount)
+    val serverWorkers = merged.stream_count.takeIf { it >= HashChannelHelper.WORKERS_PER_GROUP }
+    val workers = if (serverWorkers != null && serverWorkers > userWorkers) {
+        HashChannelHelper.workersForLibclient(serverWorkers, activeCount)
+    } else {
+        userWorkers
+    }
     merged = merged.copy(stream_count = workers)
     DebugLog.i(
         "PrepareVpnConnect",

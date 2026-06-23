@@ -30,8 +30,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Foreground sync по активному основному VPN — без своего VpnService и без WG overlay.
- * HTTP идёт через TunnelApiProxy / bind к VPN Network (приложение excluded из WG).
+ * Foreground sync по активному основному VPN — без WG overlay.
+ * HTTP через tunnel API direct (app в WG) или proxy (bootstrap legacy).
  */
 class VpnDataSyncService : Service() {
     companion object {
@@ -117,8 +117,12 @@ class VpnDataSyncService : Service() {
         val ok = withTimeoutOrNull(120_000L) {
             runCatching {
                 repo.setTunnelApiFromWgAddress(WdttTunnelManager.lastWgAddress())
-                if (!repo.ensureTunnelApiProxy()) {
-                    Log.w(TAG, "tunnel API not ready")
+                if (SilentRepository.APP_EXCLUDED_FROM_VPN) {
+                    if (!repo.ensureTunnelApiProxy()) {
+                        Log.w(TAG, "tunnel proxy not ready")
+                    }
+                } else {
+                    repo.prepareMainVpnDirectApi()
                 }
                 if (!VpnSessionState.tunnelDataSyncCompleted) {
                     val initial = repo.syncAllViaTunnel()

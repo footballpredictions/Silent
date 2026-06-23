@@ -14,6 +14,10 @@ object HashChannelHelper {
     fun maxTotalWorkers(activeHashCount: Int): Int =
         activeHashCount.coerceIn(1, MAX_HASHES) * MAX_WORKERS_PER_HASH
 
+    /** Как backend recommended_stream_count: activeHashes × 27 (max 108). */
+    fun recommendedTotalWorkers(activeHashCount: Int): Int =
+        maxTotalWorkers(activeHashCount).coerceAtMost(LIBCLIENT_MAX_WORKERS)
+
     fun normalizeTotalWorkers(value: Int, activeHashCount: Int): Int {
         val max = maxTotalWorkers(activeHashCount)
         val stepped = ((value + WORKERS_PER_GROUP / 2) / WORKERS_PER_GROUP) * WORKERS_PER_GROUP

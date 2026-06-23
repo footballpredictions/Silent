@@ -23,6 +23,8 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CancellationException
 import java.io.File
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -41,12 +43,10 @@ data class LogEntry(
 object WdttTunnelManager {
     private const val TAG = "WdttTunnelManager"
     private const val NETWORK_RESTART_GRACE_MS = 30_000L
-    /** GETCONF в libclient ждёт ответ до 15 с — кеш раньше даёт устаревший WG и 0 трафика. */
-    private const val MAIN_WG_CACHE_FALLBACK_MS = 22_000L
-    private const val MAIN_WG_CACHE_FALLBACK_AFTER_ERR_MS = 28_000L
-    /** QS-плитка: libclient уже слушает :9000, WG можно поднять до ramp-up воркеров. */
-    private const val TILE_WG_CACHE_FALLBACK_MS = 3_000L
-    private const val TILE_WG_CACHE_FALLBACK_AFTER_ERR_MS = 5_000L
+    /** Короткий fallback на API-кеш WG после ≥1 воркера; GETCONF апгрейдит конфиг позже. */
+    private const val MAIN_WG_CACHE_FALLBACK_MS = 3_000L
+    private const val MAIN_WG_CACHE_FALLBACK_AFTER_ERR_MS = 5_000L
+    private const val SOFT_ROUTE_RECOVERY_DEBOUNCE_MS = 8_000L
     private const val ZERO_TRAFFIC_RESTART_MS = 35_000L
     private const val ZERO_TRAFFIC_MB_THRESHOLD = 0.08
     /** Воркеры поднялись, но WG/relay не гоняет байты (типично после doze / «тихой» смены сети). */
@@ -101,6 +101,7 @@ object WdttTunnelManager {
     @Volatile private var suppressNetworkRecovery = false
     private var overlayRestoreSuppressed = false
     private var lastOverlayEndedMs = 0L
+    private var lastSoftRouteRecoveryMs = 0L
     private val minOverlayIntervalMs = 60_000L
     private val overlayEnterDelayMs = 800L
 
@@ -211,6 +212,7 @@ object WdttTunnelManager {
                         groupHashPrefix.clear()
                         wgExcludeIps.clear()
                         seedWgExcludeIps(params.serverIp)
+                        VkNetworkExcludes.resolveExcludeIps().forEach { wgExcludeIps.add(it) }
                         wgConfigPending = false
                         appliedWgConfigSource = WgConfigSource.NONE
                         lastGetconfErrorMs = 0L
@@ -359,17 +361,31 @@ object WdttTunnelManager {
         }
     }
 
-    /** Как PC: WG только после ≥1 воркера libclient (WDTT к серверу уже жив). */
+    /** Как PC: WG когда libclient слушает :9000 или есть ≥1 воркер. */
+    private fun isLibclientListenReady(): Boolean {
+        val port = lastParams?.listenPort ?: 9000
+        return runCatching {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress("127.0.0.1", port), 400)
+            }
+            true
+        }.getOrDefault(false)
+    }
+
     private suspend fun awaitLibclientReadyForWg(maxMs: Long = 90_000L): Boolean {
-        if (activeWorkers.value >= 1) return true
+        if (activeWorkers.value >= 1 || isLibclientListenReady()) return true
         val deadline = System.currentTimeMillis() + maxMs
-        updateLog("wg_wait_workers", "WireGuard: ждём воркеров libclient…", 2)
+        var logged = false
         while (System.currentTimeMillis() < deadline && running.value) {
-            if (activeWorkers.value >= 1) return true
+            if (activeWorkers.value >= 1 || isLibclientListenReady()) return true
             if (!isLibclientProcessAlive()) return false
+            if (!logged) {
+                updateLog("wg_wait_workers", "WireGuard: ждём libclient…", 2)
+                logged = true
+            }
             delay(400)
         }
-        return activeWorkers.value >= 1
+        return activeWorkers.value >= 1 || isLibclientListenReady()
     }
 
     private fun wgSourceRank(source: WgConfigSource): Int = when (source) {
@@ -403,11 +419,6 @@ object WdttTunnelManager {
             applyWireGuard(freshConf, WgConfigSource.GETCONF, forceReapply = true)
             return true
         }
-        if (tunnelReady.value && lastWgConfig != null) {
-            updateLog("wg_reapply", "WireGuard: повторное применение (0 трафика)", 2)
-            reapplyWireGuardForNetworkChange(context.applicationContext)
-            return true
-        }
         return false
     }
 
@@ -423,7 +434,11 @@ object WdttTunnelManager {
             lower.contains("i/o timeout") ||
             lower.contains("network is unreachable") ||
             lower.contains("no route to host") ||
-            lower.contains("context deadline exceeded")
+            lower.contains("context deadline exceeded") ||
+            lower.contains("client.timeout exceeded") ||
+            lower.contains("request canceled") ||
+            lower.contains("anonym_token.outdated") ||
+            lower.contains("missing turn_server")
     }
 
     private fun isVkAuthFatal(message: String): Boolean =
@@ -489,18 +504,23 @@ object WdttTunnelManager {
         return true
     }
 
-    /** Опрос wg-turn.conf — libclient часто пишет только в файл, без box в stdout. */
+    /** Опрос wg-turn.conf — только пока GETCONF ещё не применён. */
     private fun startConfFilePoller(context: Context) {
         confPollJob?.cancel()
         confPollJob = scope.launch {
             while (isActive && running.value && needsConfFilePoll()) {
-                readConfFile(context)?.let { conf ->
+                val conf = readConfFile(context)
+                if (conf != null) {
+                    if (appliedWgConfigSource == WgConfigSource.GETCONF &&
+                        conf.trim() == lastWgConfig?.trim()
+                    ) {
+                        return@launch
+                    }
                     wgConfigPending = true
-                    updateLog("wg_file", "WireGuard конфиг из файла", 2)
                     scheduleWireGuardApply(conf, WgConfigSource.GETCONF)
                     if (appliedWgConfigSource == WgConfigSource.GETCONF) return@launch
                 }
-                delay(400)
+                delay(800)
             }
         }
     }
@@ -518,45 +538,29 @@ object WdttTunnelManager {
         }
     }
 
-    /** Main VPN: WG из кеша только после таймаута GETCONF (15 с в libclient) и появления воркеров. */
+    /** Main VPN: WG из API-кеша после ≥1 воркера; GETCONF апгрейдит когда готов. */
     private fun scheduleMainApiWgFallback(params: Params) {
         mainWgFallbackJob?.cancel()
         val fallback = deferredApiWgConfig ?: return
         if (params.isBootstrap) return
         mainWgFallbackJob = scope.launch {
-            if (params.fastWgCache) {
-                val recentGetconfErr =
-                    lastGetconfErrorMs > 0L &&
-                        System.currentTimeMillis() - lastGetconfErrorMs < 30_000L
-                delay(
-                    if (recentGetconfErr) TILE_WG_CACHE_FALLBACK_AFTER_ERR_MS
-                    else TILE_WG_CACHE_FALLBACK_MS,
-                )
-                if (!running.value) return@launch
-                if (readConfFile(lastContext) != null) return@launch
-                if (appliedWgConfigSource == WgConfigSource.GETCONF) return@launch
-                if (tunnelReady.value && appliedWgConfigSource != WgConfigSource.NONE) return@launch
-                updateLog("wg_cache_fallback", "WireGuard из кеша (плитка)", 2)
-                scheduleWireGuardApply(fallback, WgConfigSource.API_CACHE)
-                return@launch
+            val workerDeadline = System.currentTimeMillis() + 45_000L
+            while (running.value && activeWorkers.value < 1 && System.currentTimeMillis() < workerDeadline) {
+                delay(400)
             }
+            if (!running.value || activeWorkers.value < 1) return@launch
             val recentGetconfErr =
                 lastGetconfErrorMs > 0L &&
                     System.currentTimeMillis() - lastGetconfErrorMs < 30_000L
-            val delayMs = when {
-                recentGetconfErr -> MAIN_WG_CACHE_FALLBACK_AFTER_ERR_MS
-                else -> MAIN_WG_CACHE_FALLBACK_MS
-            }
-            delay(delayMs)
+            delay(
+                if (recentGetconfErr) MAIN_WG_CACHE_FALLBACK_AFTER_ERR_MS
+                else MAIN_WG_CACHE_FALLBACK_MS,
+            )
             if (!running.value) return@launch
             if (readConfFile(lastContext) != null) return@launch
             if (appliedWgConfigSource == WgConfigSource.GETCONF) return@launch
-            if (activeWorkers.value < 1) {
-                delay(5_000L)
-                if (activeWorkers.value < 1) return@launch
-            }
             if (tunnelReady.value && appliedWgConfigSource != WgConfigSource.NONE) return@launch
-            updateLog("wg_cache_fallback", "WireGuard из кеша (GETCONF timeout)", 2)
+            updateLog("wg_cache_fallback", "WireGuard из кеша (API)", 2)
             scheduleWireGuardApply(fallback, WgConfigSource.API_CACHE)
         }
     }
@@ -1005,6 +1009,20 @@ object WdttTunnelManager {
         return tunnelReady.value
     }
 
+    /**
+     * Wi‑Fi↔LTE / validated без kill libclient — только hot-reload маршрутов WG.
+     * Полный restartTransport оставляем для unhealthy/stale/data_path_stuck.
+     */
+    fun softRecoverRoutesAfterNetwork(context: Context) {
+        if (!tunnelReady.value || isBootstrapMode || apiOverlayActive) return
+        val now = System.currentTimeMillis()
+        if (now - lastSoftRouteRecoveryMs < SOFT_ROUTE_RECOVERY_DEBOUNCE_MS) return
+        lastSoftRouteRecoveryMs = now
+        lastContext = context.applicationContext
+        reloadMainAllowedIps()
+        reapplyWireGuardForNetworkChange(context.applicationContext)
+    }
+
     /** После Wi‑Fi↔LTE / восстановления сети — обновить AllowedIPs (mobile API route). */
     fun reapplyWireGuardForNetworkChange(context: Context) {
         if (!tunnelReady.value || isBootstrapMode || apiOverlayActive) return
@@ -1195,7 +1213,8 @@ object WdttTunnelManager {
                 }
                 if (shouldCheckZeroTraffic(workers)) {
                     val trafficMb = parseTrafficMb(stats.value)
-                    if (trafficMb < ZERO_TRAFFIC_MB_THRESHOLD) {
+                    val hadTraffic = lastTrafficBumpAtMs > 0L && trafficMb >= ZERO_TRAFFIC_MB_THRESHOLD
+                    if (hadTraffic && trafficMb < ZERO_TRAFFIC_MB_THRESHOLD) {
                         if (zeroTrafficSince == 0L) zeroTrafficSince = System.currentTimeMillis()
                         else if (System.currentTimeMillis() - zeroTrafficSince > ZERO_TRAFFIC_RESTART_MS) {
                             if (recoverStuckDataPath(context, trafficMb)) {
@@ -1337,9 +1356,11 @@ object WdttTunnelManager {
         val sinceFirst = firstWorkersAtMs
         if (sinceFirst <= 0L || System.currentTimeMillis() - sinceFirst < thresholdMs) return false
         val trafficMb = parseTrafficMb(stats.value)
-        if (trafficMb < ZERO_TRAFFIC_MB_THRESHOLD) return true
         val bumpAt = lastTrafficBumpAtMs
-        return bumpAt > 0L && System.currentTimeMillis() - bumpAt > thresholdMs * 2
+        // Только «был трафик, но замер» — не idle с нуля (иначе kill через ~45 с без сёрфинга).
+        if (bumpAt <= 0L) return false
+        return trafficMb >= ZERO_TRAFFIC_MB_THRESHOLD &&
+            System.currentTimeMillis() - bumpAt > thresholdMs * 2
     }
 
     fun wgConfigSettled(): Boolean = tunnelReady.value

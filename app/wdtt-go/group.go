@@ -73,6 +73,13 @@ func WorkerGroup(
 		creds = &Credentials{User: user, Pass: pass, TurnURLs: turnURLs, CacheStreamID: credStreamID}
 	} else {
 		log.Printf("[ГРУППА #%d] Ошибка кредов: %v", groupID, err)
+		if signalReady != nil {
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				close(signalReady)
+				log.Printf("[ГРУППА #%d] Эстафета следующей группе (креды не получены)", groupID)
+			}()
+		}
 		return
 	}
 
@@ -110,7 +117,7 @@ func WorkerGroup(
 		return true
 	}
 
-	// Сигнализируем следующей группе, что мы успешно запустились (креды получены + 2 сек форы)
+	// Сигнализируем следующей группе (как reference proxy-turn-vk-android: 2 с форы)
 	if signalReady != nil {
 		go func() {
 			time.Sleep(2000 * time.Millisecond)
@@ -122,8 +129,8 @@ func WorkerGroup(
 	for i, wid := range workerIDs {
 		wg.Add(1)
 
-		// Stagger: 100мс между воркерами — меньше одновременных DTLS при ramp-up
-		workerDelay := time.Duration(i) * 100 * time.Millisecond
+		// Stagger: 500мс между воркерами — как reference
+		workerDelay := time.Duration(i) * 500 * time.Millisecond
 
 		go func(wid int, delay time.Duration) {
 			defer wg.Done()

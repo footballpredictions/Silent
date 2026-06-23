@@ -681,7 +681,12 @@ object WdttTunnelManager {
                                 lastActiveAtMs = now
                                 if (prevActive < 1) firstWorkersAtMs = now
                                 wrapAuthTimeoutCount = 0
-                                if (prevActive < 1) tryApplyWireGuardUp()
+                                if (prevActive < 1) {
+                                    tryApplyWireGuardUp()
+                                    if (isBootstrapMode && wgExcludeIps.isNotEmpty()) {
+                                        reloadBootstrapAllowedIps()
+                                    }
+                                }
                             } else if (prevActive > 0) {
                                 firstWorkersAtMs = 0L
                             }

@@ -55,7 +55,7 @@ fun resolveBootstrapIncludedApps(context: Context): Set<String> {
 }
 
 /**
- * Main VPN: Silent и VK вне WG (libclient/TURN напрямую на белых списках).
+ * Main VPN: Silent в туннеле (API 10.66.66.1); VK — excludeApplications.
  * Bootstrap: includeApplications — Silent + браузеры + почта.
  */
 fun resolveExcludedAppPackages(context: Context, includeAppInTunnel: Boolean = false): Set<String> {

@@ -67,7 +67,7 @@ class SilentRepository @Inject constructor(
         const val VK_APP_ID = 54610377L
         const val VK_GROUP_ID = 239092728L
         const val WG_TUNNEL_GATEWAY = "10.66.66.1"
-        /** false только при apiOverlayMode (краткий overlay для HTTP к 10.66.66.1). */
+        /** false — Silent в WG (API 10.66.66.1); true только когда VPN выключен. */
         var APP_EXCLUDED_FROM_VPN = true
 
         /** Сериализация config-sync — не параллелить с overlay/connect. */
@@ -104,11 +104,11 @@ class SilentRepository @Inject constructor(
         return _api!!
     }
 
-    /** Excluded app: HTTP к 10.66.66.1 — только через VPN Network (как Chrome в туннеле). */
+    /** HTTP к 10.66.66.x при поднятом VPN — bind к VPN Network при необходимости. */
     private fun resolveVpnNetworkForApi(url: String): Network? {
-        if (!APP_EXCLUDED_FROM_VPN || !isMainVpnTunnelUp()) return null
+        if (!isMainVpnTunnelUp()) return null
         if (url.startsWith(TunnelApiProxy.baseUrl())) return null
-        if (!url.contains(WG_TUNNEL_GATEWAY)) return null
+        if (!url.contains(WG_TUNNEL_GATEWAY) && !url.contains("10.66.")) return null
         return VpnNetworkHelper.getSilentVpnNetwork(context)
     }
 
@@ -133,7 +133,7 @@ class SilentRepository @Inject constructor(
                 }
                 val host = req.url.host
                 val viaTunnelGw = host == WG_TUNNEL_GATEWAY || host.startsWith("10.66.")
-                if (viaTunnelGw && APP_EXCLUDED_FROM_VPN && isMainVpnTunnelUp()) {
+                if (viaTunnelGw && isMainVpnTunnelUp()) {
                     val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
                     val network = VpnNetworkHelper.getSilentVpnNetwork(context)
                     if (network != null) {
@@ -277,7 +277,6 @@ class SilentRepository @Inject constructor(
 
     /** ConfigSync, профиль, сессии — Wi‑Fi public; mobile + VPN — tunnel proxy/direct без overlay. */
     suspend fun <T> withRoutineBackendApi(
-        allowOverlayFallback: Boolean = false,
         block: suspend () -> T,
     ): T {
         if (isOnMobileData()) {
@@ -287,7 +286,7 @@ class SilentRepository @Inject constructor(
                 return block()
             }
             if (isMainVpnTunnelUp()) {
-                return withTunnelBackendBlock(allowOverlayFallback, block)
+                return withTunnelBackendBlock(block)
             }
             useApiBase(getPublicServerUrl())
             invalidateApiClient()
@@ -302,84 +301,52 @@ class SilentRepository @Inject constructor(
             return runCatching { block() }.getOrElse { e ->
                 if (tunnelUp) {
                     Log.w(TAG, "public API failed on VPN Wi‑Fi: ${e.message}, tunnel fallback")
-                    withTunnelBackendBlock(allowOverlayFallback, block)
+                    withTunnelBackendBlock(block)
                 } else {
                     throw e
                 }
             }
         }
 
-        return withTunnelBackendBlock(allowOverlayFallback, block)
+        return withTunnelBackendBlock(block)
     }
 
-    /** Промокод, подписка, оплата — при сбое direct/proxy краткий overlay (как ephemeral). */
+    /** Промокод, подписка, оплата — тот же канал, что ConfigSync (proxy/tunnel, без overlay). */
     suspend fun <T> withUserBackendApi(block: suspend () -> T): T =
-        withRoutineBackendApi(allowOverlayFallback = true, block = block)
+        withRoutineBackendApi(block = block)
 
-    /** Proxy → direct bind; overlay fallback только для withUserBackendApi. */
+    /** Proxy (excluded) или direct 10.66.66.1 (app в туннеле). */
     private suspend fun <T> withTunnelBackendBlock(
-        allowOverlayFallback: Boolean = false,
         block: suspend () -> T,
     ): T {
         if (!APP_EXCLUDED_FROM_VPN && isMainVpnTunnelUp()) {
-            useApiBase(tunnelApiBase())
-            invalidateApiClient()
-            Log.i(TAG, "tunnel API direct (app in VPN, no overlay)")
+            prepareMainVpnDirectApi()
+            Log.i(TAG, "tunnel API direct (app in VPN)")
             return block()
         }
 
         var last: Throwable? = null
-
-        if (isMainVpnTunnelUp()) {
-            repeat(3) { attempt ->
-                useApiBase(tunnelApiBase())
-                invalidateApiClient()
-                val result = runCatching { block() }
-                if (result.isSuccess && !isTunnelBackendFailure(result.getOrNull())) {
-                    Log.i(TAG, "tunnel API direct bind OK")
-                    return result.getOrThrow()
-                }
-                last = result.exceptionOrNull()
-                if (result.isFailure) {
-                    Log.w(TAG, "tunnel direct attempt ${attempt + 1}: ${last?.message}")
-                } else {
-                    Log.w(TAG, "tunnel direct attempt ${attempt + 1}: bad HTTP via tunnel")
-                }
-                invalidateApiClient()
-                if (attempt < 2) delay(500)
-            }
-            Log.i(TAG, "tunnel direct failed → proxy ${TunnelApiProxy.baseUrl()}")
-        }
-
-        repeat(4) { attempt ->
+        repeat(5) { attempt ->
             if (prepareTunnelApiBase()) {
                 val result = runCatching { block() }
                 if (result.isSuccess && !isTunnelBackendFailure(result.getOrNull())) {
+                    Log.i(TAG, "tunnel API via proxy OK (${TunnelApiProxy.baseUrl()})")
                     return result.getOrThrow()
                 }
                 last = result.exceptionOrNull()
                 if (result.isFailure) {
                     Log.w(TAG, "tunnel proxy attempt ${attempt + 1}: ${last?.message}")
                 } else {
-                    Log.w(TAG, "tunnel proxy attempt ${attempt + 1}: upstream failed")
+                    Log.w(TAG, "tunnel proxy attempt ${attempt + 1}: upstream HTTP ${(result.getOrNull() as? retrofit2.Response<*>)?.code()}")
                 }
                 invalidateApiClient()
             } else {
                 Log.w(TAG, "tunnel proxy not ready (attempt ${attempt + 1})")
-                if (attempt < 3) ensureTunnelApiProxy()
+                ensureTunnelApiProxy()
             }
-            if (attempt < 3) delay(750)
+            if (attempt < 4) delay(800)
         }
 
-        if (allowOverlayFallback && APP_EXCLUDED_FROM_VPN && isMainVpnTunnelUp()) {
-            Log.i(TAG, "tunnel API → brief overlay fallback")
-            useApiBase(tunnelApiBase())
-            invalidateApiClient()
-            return com.silent.vpn.vpn.WdttTunnelManager.withApiOverlayBrief(
-                block = block,
-                allowDuringRampUp = true,
-            )
-        }
         throw last ?: IllegalStateException("tunnel backend unavailable")
     }
 
@@ -485,6 +452,18 @@ class SilentRepository @Inject constructor(
         }
     }
 
+    /** Основной VPN: app в туннеле — API только 10.66.66.1. */
+    fun prepareMainVpnDirectApi() {
+        if (!isMainVpnTunnelUp()) return
+        if (TunnelApiProxy.isActive()) {
+            TunnelApiProxy.stop()
+        }
+        clearTunnelApiBase()
+        useApiBase(tunnelApiBase())
+        invalidateApiClient()
+        Log.i(TAG, "API via main tunnel (direct): ${tunnelApiBase()}")
+    }
+
     fun tunnelApiBaseUrl(): String =
         if (shouldUseTunnelApiProxy()) TunnelApiProxy.baseUrl()
         else "http://$WG_TUNNEL_GATEWAY:8000"
@@ -521,12 +500,15 @@ class SilentRepository @Inject constructor(
         _apiCacheKey = null
     }
 
-    /** true когда app excluded из WG и overlay ещё нужен (прокси не поднят). */
-    fun needsTunnelApiOverlay(): Boolean =
+    /** true когда app excluded и прокси ещё не поднят (нужно дождаться tunnel proxy). */
+    fun needsTunnelApiProxy(): Boolean =
         APP_EXCLUDED_FROM_VPN &&
             com.silent.vpn.service.SilentVpnService.isRunning &&
             com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value &&
             !TunnelApiProxy.isActive()
+
+    @Deprecated("Use needsTunnelApiProxy", ReplaceWith("needsTunnelApiProxy()"))
+    fun needsTunnelApiOverlay(): Boolean = needsTunnelApiProxy()
 
     suspend fun ensureTunnelApiProxy(): Boolean = prepareTunnelApiBase()
 
@@ -551,20 +533,16 @@ class SilentRepository @Inject constructor(
         return withTunnelBackendBlock(block = block)
     }
 
-    /** Backend API для UI/ConfigSync — без overlay (overlay только для withUserBackendApi). */
+    /** Backend API для UI/ConfigSync — tunnel proxy на mobile, public на Wi‑Fi. */
     suspend fun <T> withBackendApi(block: suspend () -> T): T = withRoutineBackendApi(block = block)
 
-    /** Долгая загрузка APK — overlay без throttle. */
+    /** Долгая загрузка APK — через tunnel proxy, без overlay. */
     suspend fun <T> withTunnelApiForUpdateDownload(block: suspend () -> T): T {
-        if (!APP_EXCLUDED_FROM_VPN) return block()
-        if (!com.silent.vpn.service.SilentVpnService.isRunning) return block()
-        if (!com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value) {
+        if (!isMainVpnTunnelUp()) {
             Log.w(TAG, "withTunnelApiForUpdateDownload: tunnel not ready")
             error("VPN tunnel not ready for update download")
         }
-        useApiBase(tunnelApiBaseUrl())
-        invalidateApiClient()
-        return com.silent.vpn.vpn.WdttTunnelManager.withApiOverlayForDownload { block() }
+        return withTunnelBackendBlock(block = block)
     }
 
     private suspend fun <T> withTunnelApiWhenExcludedInternal(
@@ -636,7 +614,7 @@ class SilentRepository @Inject constructor(
     }
 
     fun needsOverlayForUpdateDownload(base: String): Boolean =
-        needsTunnelApiOverlay() && isTunnelApiBase(base)
+        isMainVpnTunnelUp() && isTunnelApiBase(base)
 
     private fun isTunnelApiBase(base: String): Boolean {
         if (base.isBlank()) return false
@@ -1021,6 +999,14 @@ class SilentRepository @Inject constructor(
         prepareTunnelApiFromCachedConfig()
         invalidatePublicReachabilityCache()
 
+        if (!isMainVpnTunnelUp()) return@withLock false
+
+        if (!APP_EXCLUDED_FROM_VPN) {
+            prepareMainVpnDirectApi()
+        } else {
+            ensureTunnelApiProxy()
+        }
+
         if (!isOnMobileData() && postConnectViaPublic()) {
             return@withLock runCatching {
                 syncHashesAndConfigAfterConnect()
@@ -1029,8 +1015,6 @@ class SilentRepository @Inject constructor(
                 true
             }.getOrOrLog(false)
         }
-
-        if (!isMainVpnTunnelUp()) return@withLock false
 
         Log.i(
             TAG,
@@ -1473,9 +1457,9 @@ class SilentRepository @Inject constructor(
         withRoutineBackendApi(block = { fetchProfileInternal() })
     }
 
-    /** Профиль при активном VPN (promo/подписка/контроль доступа) — с overlay fallback. */
+    /** Профиль при активном VPN — tunnel proxy, без overlay. */
     suspend fun fetchProfileLiveViaUser(): Result<UserProfile> = runCatching {
-        withUserBackendApi { fetchProfileInternal() }
+        withRoutineBackendApi(block = { fetchProfileInternal() })
     }
 
     private suspend fun fetchProfileInternal(): UserProfile {

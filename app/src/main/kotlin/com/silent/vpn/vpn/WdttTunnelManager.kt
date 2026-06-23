@@ -176,7 +176,13 @@ object WdttTunnelManager {
         scope.launch {
             startStopMutex.withLock {
                 try {
-                    if (running.value && !isSwitching) return@withLock
+                    if (running.value && !isSwitching) {
+                        DebugLog.w("WdttTunnel", "start: stale running=true — kill libclient and restart")
+                        killProcess()
+                        running.value = false
+                        tunnelReady.value = false
+                        activeWorkers.value = 0
+                    }
 
                     val appContext = context.applicationContext
                     if (!isSwitching) {
@@ -204,6 +210,7 @@ object WdttTunnelManager {
                         sessionVkHashes = emptyList()
                         groupHashPrefix.clear()
                         wgExcludeIps.clear()
+                        seedWgExcludeIps(params.serverIp)
                         wgConfigPending = false
                         appliedWgConfigSource = WgConfigSource.NONE
                         lastGetconfErrorMs = 0L
@@ -342,6 +349,27 @@ object WdttTunnelManager {
         listOf("wg-turn.conf", "wg.conf").forEach { name ->
             runCatching { File(context.filesDir, name).delete() }
         }
+    }
+
+    /** Сервер WDTT вне AllowedIPs (как PC main.js) — стабильные маршруты до GETCONF/TURN. */
+    private fun seedWgExcludeIps(serverIp: String) {
+        val ip = serverIp.trim()
+        if (ip.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) {
+            wgExcludeIps.add(ip)
+        }
+    }
+
+    /** Как PC: WG только после ≥1 воркера libclient (WDTT к серверу уже жив). */
+    private suspend fun awaitLibclientReadyForWg(maxMs: Long = 90_000L): Boolean {
+        if (activeWorkers.value >= 1) return true
+        val deadline = System.currentTimeMillis() + maxMs
+        updateLog("wg_wait_workers", "WireGuard: ждём воркеров libclient…", 2)
+        while (System.currentTimeMillis() < deadline && running.value) {
+            if (activeWorkers.value >= 1) return true
+            if (!isLibclientProcessAlive()) return false
+            delay(400)
+        }
+        return activeWorkers.value >= 1
     }
 
     private fun wgSourceRank(source: WgConfigSource): Int = when (source) {
@@ -580,14 +608,24 @@ object WdttTunnelManager {
                     null
                 }
             val applySource = if (pendingWgConfigOverride != null) pendingWgConfigSource else source
-            pendingWgConfigOverride = null
             if (conf.isNullOrBlank()) {
+                pendingWgConfigOverride = null
                 if (!wgConfigPending) {
                     updateLog("wg_wait", "Ожидание WireGuard-конфига от сервера (GETCONF)…", 50)
                 }
                 return@launch
             }
-            if (!shouldAcceptWgApply(applySource, conf)) return@launch
+            if (!shouldAcceptWgApply(applySource, conf)) {
+                pendingWgConfigOverride = null
+                return@launch
+            }
+            if (!awaitLibclientReadyForWg()) {
+                pendingWgConfigOverride = conf
+                pendingWgConfigSource = applySource
+                updateLog("wg_defer", "WireGuard отложен — нет воркеров", 50)
+                return@launch
+            }
+            pendingWgConfigOverride = null
             val force = tunnelReady.value && wgSourceRank(applySource) > wgSourceRank(appliedWgConfigSource)
             applyWireGuard(conf, applySource, forceReapply = force)
         }
@@ -701,8 +739,12 @@ object WdttTunnelManager {
                     }
 
                     Regex("""TURN UDP \(([\d.]+):\d+\)""").find(lineTrim)?.groupValues?.getOrNull(1)?.let { turnIp ->
-                        if (isBootstrapMode && wgExcludeIps.add(turnIp)) {
-                            reloadBootstrapAllowedIps()
+                        if (wgExcludeIps.add(turnIp)) {
+                            if (isBootstrapMode) {
+                                reloadBootstrapAllowedIps()
+                            } else {
+                                reloadMainAllowedIps()
+                            }
                         }
                     }
 
@@ -959,15 +1001,15 @@ object WdttTunnelManager {
     }
 
     private fun mobileApiRouteEnabled(): Boolean {
-        val ctx = lastContext ?: return false
-        return !isBootstrapMode &&
-            SilentRepository.APP_EXCLUDED_FROM_VPN &&
-            VpnNetworkHelper.isOnMobileData(ctx)
+        if (isBootstrapMode || !SilentRepository.APP_EXCLUDED_FROM_VPN) return false
+        return tunnelReady.value
     }
 
     /** После Wi‑Fi↔LTE / восстановления сети — обновить AllowedIPs (mobile API route). */
     fun reapplyWireGuardForNetworkChange(context: Context) {
         if (!tunnelReady.value || isBootstrapMode || apiOverlayActive) return
+        // Ждём финальный GETCONF — иначе лишний DOWN/UP поверх кеша при включении.
+        if (needsConfFilePoll()) return
         val config = lastWgConfig ?: return
         lastContext = context.applicationContext
         scope.launch {
@@ -1381,7 +1423,7 @@ object WdttTunnelManager {
     }
 
     suspend fun <T> withApiOverlayForDownload(block: suspend () -> T): T {
-        if (!needsWgOverlayReload()) return block()
+        if (!needsWgOverlayReload() || !isBootstrapMode) return block()
         if (!running.value) return block()
         val config = lastWgConfig ?: return block()
         val helper = wgHelper ?: return block()
@@ -1408,8 +1450,8 @@ object WdttTunnelManager {
         block: suspend () -> T,
         allowDuringRampUp: Boolean = false,
     ): T {
+        if (!needsWgOverlayReload() || !isBootstrapMode) return block()
         if (overlayRestoreSuppressed) error("VPN API overlay suppressed")
-        if (!needsWgOverlayReload()) return block()
         if (!running.value) return block()
         if (isWorkerRampUpActive() && !allowDuringRampUp) {
             throw ApiOverlayBlockedException("overlay blocked during ramp-up")
@@ -1451,7 +1493,7 @@ object WdttTunnelManager {
     }
 
     fun ensureApiOverlayOff() {
-        if (overlayRestoreSuppressed || !apiOverlayActive || !needsWgOverlayReload()) {
+        if (overlayRestoreSuppressed || !apiOverlayActive) {
             apiOverlayActive = false
             return
         }
@@ -1460,8 +1502,36 @@ object WdttTunnelManager {
         scope.launch {
             wgApplyMutex.withLock {
                 if (!apiOverlayActive) return@withLock
+                updateLog("overlay_off", "API overlay OFF (restore)", 50)
                 helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
                 apiOverlayActive = false
+            }
+        }
+    }
+
+    /** Основной VPN: TURN вне AllowedIPs без overlay (hot reload). */
+    private fun reloadMainAllowedIps() {
+        if (isBootstrapMode || !tunnelReady.value || apiOverlayActive) return
+        if (needsConfFilePoll()) return
+        if (activeWorkers.value < 1) return
+        val config = lastWgConfig ?: return
+        if (wgApplyJob?.isActive == true) return
+        wgApplyJob = scope.launch {
+            wgApplyMutex.withLock {
+                if (isBootstrapMode || !tunnelReady.value || apiOverlayActive) return@withLock
+                try {
+                    withContext(NonCancellable + Dispatchers.Main) {
+                        wgHelper?.startTunnel(
+                            config,
+                            wgExcludeIps.toList(),
+                            isBootstrap = false,
+                            mobileApiRoute = mobileApiRouteEnabled(),
+                        )
+                    }
+                    updateLog("main_routes", "Main VPN: маршруты обновлены (TURN вне VPN)", 2)
+                } catch (e: Exception) {
+                    DebugLog.w("WdttTunnel", "main route reload: ${e.message}")
+                }
             }
         }
     }

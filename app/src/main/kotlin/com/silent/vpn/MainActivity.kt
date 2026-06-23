@@ -111,7 +111,6 @@ class MainActivity : ComponentActivity() {
             val updateInfo by vm.updateInfo.collectAsState()
             val updateProgress by vm.updateProgress.collectAsState()
             val updateDownloading by vm.updateDownloading.collectAsState()
-            val accountRefreshing by vm.accountRefreshing.collectAsState()
             val forgotSent by vm.forgotSent.collectAsState()
             val bootstrapExpired by vm.bootstrapExpired.collectAsState()
 
@@ -213,12 +212,6 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onUpdatePolling = vm::setUpdatePolling,
-                        accountRefreshing = accountRefreshing,
-                        onRefreshAccount = { onDone ->
-                            vm.refreshAccountData(force = true) { ok, msg ->
-                                onDone(ok, msg)
-                            }
-                        },
                     )
                 }
             }

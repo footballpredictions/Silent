@@ -50,7 +50,11 @@ object VpnBackendSync {
             if (!waitForTunnel(scope)) return@launch
             if (!repo(context).isLoggedIn() || WdttTunnelManager.isBootstrapMode()) return@launch
             val r = repo(context)
-            r.ensureTunnelApiProxy()
+            if (!SilentRepository.APP_EXCLUDED_FROM_VPN) {
+                r.prepareMainVpnDirectApi()
+            } else {
+                r.ensureTunnelApiProxy()
+            }
             val ok = runCatching { r.syncAllViaTunnel() }.getOrDefault(false)
             if (ok) {
                 VpnSessionState.tunnelDataSyncCompleted = true
@@ -94,10 +98,21 @@ object VpnBackendSync {
         val rampDeadline = System.currentTimeMillis() + 30_000L
         while (System.currentTimeMillis() < rampDeadline && scope.isActive) {
             if (!WdttTunnelManager.running.value) return false
-            if (!WdttTunnelManager.isWorkerRampUpActive()) return true
+            if (!WdttTunnelManager.isWorkerRampUpActive()) break
             delay(500)
         }
-        return WdttTunnelManager.tunnelReady.value && WdttTunnelManager.running.value
+        val workerDeadline = System.currentTimeMillis() + 60_000L
+        while (System.currentTimeMillis() < workerDeadline && scope.isActive) {
+            if (!WdttTunnelManager.running.value) return false
+            if (WdttTunnelManager.activeWorkers.value >= 1) {
+                return WdttTunnelManager.tunnelReady.value
+            }
+            if (!WdttTunnelManager.isLibclientProcessAlive()) return false
+            delay(400)
+        }
+        return WdttTunnelManager.tunnelReady.value &&
+            WdttTunnelManager.running.value &&
+            WdttTunnelManager.activeWorkers.value >= 1
     }
 
     fun stop() {

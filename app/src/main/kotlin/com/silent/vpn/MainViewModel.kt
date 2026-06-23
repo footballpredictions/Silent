@@ -280,6 +280,8 @@ class MainViewModel @Inject constructor(
                 reconcileLoginBootstrapSession(appContext)
             }
         }
+        com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener = configSyncListener
+        com.silent.vpn.sync.VpnDataSyncBridge.onCycleCompleted = { checkForAppUpdate() }
         checkForAppUpdate()
         viewModelScope.launch {
             WdttTunnelManager.lastError.collect { err ->
@@ -734,7 +736,7 @@ class MainViewModel @Inject constructor(
     private suspend fun tryTunnelAccountRefresh(): Boolean {
         if (!repo.isMainVpnTunnelUp()) return false
         return runCatching {
-            repo.withUserBackendApi {
+            repo.withBackendApi {
                 val profileOk = fetchProfileNow(force = true)
                 if (profileOk) syncServerHashes()
                 profileOk
@@ -997,8 +999,16 @@ class MainViewModel @Inject constructor(
             refreshHashState()
 
             if (!VpnSessionState.tunnelDataSyncCompleted) {
-                if (repo.isOnMobileData()) {
-                    repo.ensureTunnelApiProxy()
+                if (
+                    !bootstrapVpnMode &&
+                    !WdttTunnelManager.isBootstrapMode() &&
+                    WdttTunnelManager.tunnelReady.value
+                ) {
+                    if (!SilentRepository.APP_EXCLUDED_FROM_VPN) {
+                        repo.prepareMainVpnDirectApi()
+                    } else if (repo.isOnMobileData()) {
+                        repo.ensureTunnelApiProxy()
+                    }
                 }
                 var ok = false
                 repeat(4) { attempt ->
@@ -1189,7 +1199,7 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun <T> withBootstrapBackendApi(block: suspend () -> T): T {
-        if (isBootstrapAuthVpnActive()) {
+        if (isBootstrapAuthVpnActive() && !SilentRepository.APP_EXCLUDED_FROM_VPN) {
             repo.ensureBootstrapTunnelApi()
             return block()
         }
@@ -1202,6 +1212,10 @@ class MainViewModel @Inject constructor(
                 repo.invalidateApiClient()
                 block()
             }
+        }
+        if (isBootstrapAuthVpnActive()) {
+            repo.ensureBootstrapTunnelApi()
+            return block()
         }
         return block()
     }
@@ -2303,24 +2317,18 @@ class MainViewModel @Inject constructor(
 
     fun checkPromo(code: String, onResult: (String) -> Unit) {
         viewModelScope.launch {
-            if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
-                val ok = runEphemeralApiBootstrap(appContext, force = true) {
-                    runCatching { checkPromoApi(code) }
-                        .fold(
-                            onSuccess = { msg -> onResult(msg); true },
-                            onFailure = { e ->
-                                onResult(repo.humanizeHashFetchError(e.message))
-                                false
-                            },
-                        )
-                }
-                if (!ok) {
-                    onResult("Не удалось проверить промокод. Повторите.")
-                }
+            if (!repo.isMainVpnTunnelUp()) {
+                onResult(
+                    if (repo.isOnMobileData()) {
+                        "Включите VPN — промокод проверяется через основной канал."
+                    } else {
+                        "Подключите VPN или дождитесь сети Wi‑Fi."
+                    },
+                )
                 return@launch
             }
             runCatching {
-                repo.withUserBackendApi { checkPromoApi(code) }
+                repo.withBackendApi { checkPromoApi(code) }
             }.onSuccess { onResult(it) }.onFailure { e ->
                 onResult(repo.humanizeHashFetchError(e.message))
             }
@@ -2353,22 +2361,18 @@ class MainViewModel @Inject constructor(
 
     fun initPayment(planType: String, onUrl: (String) -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
-            if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
-                val ok = runEphemeralApiBootstrap(appContext, force = true) {
-                    runCatching { initPaymentApi(planType) }
-                        .fold(
-                            onSuccess = { url -> onUrl(url); true },
-                            onFailure = { e ->
-                                onError(e.message ?: "Ошибка оплаты")
-                                false
-                            },
-                        )
-                }
-                if (!ok) onError("Не удалось открыть оплату. Повторите.")
+            if (!repo.isMainVpnTunnelUp()) {
+                onError(
+                    if (repo.isOnMobileData()) {
+                        "Включите VPN — оплата идёт через основной канал."
+                    } else {
+                        "Подключите VPN или используйте Wi‑Fi."
+                    },
+                )
                 return@launch
             }
             runCatching {
-                repo.withUserBackendApi { initPaymentApi(planType) }
+                repo.withBackendApi { initPaymentApi(planType) }
             }.onSuccess { onUrl(it) }.onFailure { e ->
                 onError(e.message ?: "Ошибка")
             }

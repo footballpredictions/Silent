@@ -255,8 +255,6 @@ fun MainScreen(
     updateProgress: Int = 0,
     onUpdateClick: () -> Unit = {},
     onUpdatePolling: (Boolean) -> Unit = {},
-    accountRefreshing: Boolean = false,
-    onRefreshAccount: (onDone: (Boolean, String?) -> Unit) -> Unit = {},
 ) {
     val bg = parseColor(theme?.background_color ?: "#FFFFFF", Color.White)
     val fg = parseColor(theme?.text_color ?: "#000000", Color.Black)
@@ -619,9 +617,6 @@ fun MainScreen(
                         MenuPage.SUBSCRIPTION -> MenuSubscription(
                             profile = profile,
                             fg = fg,
-                            showMobileHint = vpnState == VpnState.DISCONNECTED && repo.isOnMobileData(),
-                            accountRefreshing = accountRefreshing,
-                            onRefreshAccount = onRefreshAccount,
                             onBack = { menuPage = MenuPage.ROOT },
                             onInitPayment = onInitPayment,
                             onOpenUrl = onOpenUrl,
@@ -657,55 +652,19 @@ private fun MenuSimplePage(title: String, body: String, fg: Color, onBack: () ->
 private fun MenuSubscription(
     profile: UserProfile?,
     fg: Color,
-    showMobileHint: Boolean,
-    accountRefreshing: Boolean,
-    onRefreshAccount: (onDone: (Boolean, String?) -> Unit) -> Unit,
     onBack: () -> Unit,
     onInitPayment: (String, (String) -> Unit, (String) -> Unit) -> Unit,
     onOpenUrl: (String) -> Unit,
     onShowError: (String) -> Unit,
 ) {
-    var refreshMsg by remember { mutableStateOf("") }
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
-        if (showMobileHint) {
-            Text(
-                "На мобильном интернете с блокировками данные обновляются через краткий служебный туннель (не полный VPN).",
-                fontSize = 11.sp,
-                color = fg.copy(alpha = 0.45f),
-                modifier = Modifier.padding(bottom = 8.dp),
-            )
-        }
-        Button(
-            onClick = {
-                refreshMsg = ""
-                onRefreshAccount { ok, msg ->
-                    refreshMsg = if (ok) msg ?: "Данные обновлены" else ""
-                    if (!ok && msg != null) onShowError(msg)
-                }
-            },
-            enabled = !accountRefreshing,
-            colors = ButtonDefaults.buttonColors(containerColor = fg.copy(alpha = 0.12f), contentColor = fg),
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-        ) {
-            if (accountRefreshing) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = fg,
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-            }
-            Text(
-                if (accountRefreshing) "Обновление…" else "Обновить статус",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-        if (refreshMsg.isNotBlank() && !accountRefreshing) {
-            Text(refreshMsg, fontSize = 11.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(bottom = 8.dp))
-        }
+        Text(
+            "Подписка и оплата обновляются автоматически при включённом VPN.",
+            fontSize = 11.sp,
+            color = fg.copy(alpha = 0.45f),
+            modifier = Modifier.padding(bottom = 12.dp),
+        )
         if (profile?.subscription?.is_active == true) {
             val planType = profile.subscription.plan_type
             val planLabel = when (planType) {

@@ -36,19 +36,8 @@ async def get_stats(
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
 
-    # DB stats
-    total_users = (await db.execute(select(func.count(User.id)))).scalar_one()
-    active_subs = (await db.execute(
-        select(func.count(Subscription.id))
-        .where(Subscription.status == "active", Subscription.expires_at > datetime.utcnow())
-    )).scalar_one()
-    connected_devices = (await db.execute(
-        select(func.count(Device.id)).where(Device.is_connected == True)
-    )).scalar_one()
-
-    # VK hashes — все пользователи + legacy (без user_id)
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
-    from ai.vk_manager import MAX_HASHES
+    from app.services.subscription_service import user_has_active_subscription, is_user_admin
 
     users_result = await db.execute(
         select(User)
@@ -56,6 +45,19 @@ async def get_stats(
         .order_by(User.created_at.desc())
     )
     all_users = users_result.scalars().all()
+
+    active_subs = 0
+    for u in all_users:
+        if is_user_admin(u) or await user_has_active_subscription(u, db):
+            active_subs += 1
+
+    connected_devices = (await db.execute(
+        select(func.count(Device.id)).where(Device.is_connected == True)
+    )).scalar_one()
+    total_users = len(all_users)
+
+    # VK hashes — все пользователи + legacy (без user_id)
+    from ai.vk_manager import MAX_HASHES
 
     hashes_result = await db.execute(
         select(VkHash)
@@ -195,7 +197,7 @@ async def list_users(
     from app.services.subscription_service import is_user_admin, get_display_subscription
     for user in users:
         admin = is_user_admin(user)
-        individual_test = bool(user.is_test_user)
+        individual_test = bool(getattr(user, "test_mode_personal", False))
         excluded = bool(getattr(user, "test_mode_excluded", False))
         in_test = (not admin) and (individual_test or (global_test and not excluded))
         sub = await get_display_subscription(db, user, in_test_mode=in_test)

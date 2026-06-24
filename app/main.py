@@ -69,6 +69,9 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS test_mode_excluded BOOLEAN NOT NULL DEFAULT FALSE"
         ))
         await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS test_mode_personal BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        await conn.execute(text(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS bootstrap_hash VARCHAR(255)"
         ))
         await conn.execute(text(
@@ -138,10 +141,18 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("Hive queen init skipped: %s", e)
         try:
-            from app.services.subscription_service import reconcile_stale_test_subscriptions
+            from app.services.subscription_service import (
+                reconcile_stale_test_subscriptions,
+                clear_legacy_global_test_flags,
+            )
+            from app.services.test_mode_settings import is_registration_test_mode_enabled
             fixed = await reconcile_stale_test_subscriptions(db)
             if fixed:
                 logger.info("Reconciled %s stale test subscription(s)", fixed)
+            if not await is_registration_test_mode_enabled(db):
+                legacy = await clear_legacy_global_test_flags(db)
+                if legacy:
+                    logger.info("Cleared legacy is_test_user on %s user(s)", legacy)
         except Exception as e:
             logger.warning("Test subscription reconcile skipped: %s", e)
 

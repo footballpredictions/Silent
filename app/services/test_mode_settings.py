@@ -32,7 +32,9 @@ async def set_registration_test_mode(db: AsyncSession, enabled: bool) -> tuple[b
         from app.services.subscription_service import (
             cleanup_global_test_subscriptions,
             clear_test_mode_exclusions,
+            clear_legacy_global_test_flags,
         )
         affected = await cleanup_global_test_subscriptions(db)
+        await clear_legacy_global_test_flags(db)
         await clear_test_mode_exclusions(db)
     return enabled, affected

@@ -7,6 +7,9 @@ from pathlib import Path
 
 from _deploy_common import BACKEND_ROOT, CONTAINER, REMOTE, connect, run
 
+# Bash-тело из fix_tunnel_dnat.py (на VPS нет _deploy_common для python-версии)
+from fix_tunnel_dnat import FIX_SH
+
 client = connect()
 sftp = client.open_sftp()
 
@@ -42,9 +45,11 @@ for root, _, names in os.walk(dist):
 fix_script = BACKEND_ROOT / "scripts" / "fix_tunnel_dnat.py"
 if fix_script.is_file():
     rp = f"{REMOTE}/scripts/fix_tunnel_dnat.py"
-    client.exec_command("mkdir -p scripts")
+    client.exec_command(f"mkdir -p {REMOTE}/scripts")
     sftp.put(str(fix_script), rp)
     print("upload scripts/fix_tunnel_dnat.py")
+    sftp.putfo(io.BytesIO(FIX_SH.encode()), "/tmp/fix_tunnel_dnat.sh")
+    print("upload /tmp/fix_tunnel_dnat.sh")
 
 sftp.close()
 
@@ -54,7 +59,7 @@ cd {REMOTE}
 find app ai -name '*.py' | while read f; do docker cp "$f" {CONTAINER}:/app/"$f"; done
 docker compose restart api nginx
 sleep 14
-python3 scripts/fix_tunnel_dnat.py
+bash /tmp/fix_tunnel_dnat.sh
 curl -s http://localhost:8000/health
 echo
 curl -s -o /dev/null -w "admin: %{{http_code}}\\n" http://localhost:8000/

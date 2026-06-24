@@ -20,7 +20,8 @@ def is_user_admin(user: User) -> bool:
 
 
 def is_test_user(user: User) -> bool:
-    return bool(getattr(user, "is_test_user", False))
+    """Explicit per-user test toggle (not legacy global mass-sync)."""
+    return bool(getattr(user, "test_mode_personal", False))
 
 
 def is_test_mode_excluded(user: User) -> bool:
@@ -28,7 +29,7 @@ def is_test_mode_excluded(user: User) -> bool:
 
 
 async def user_in_test_mode(user: User, db: AsyncSession) -> bool:
-    """Test access: personal flag, or global test mode unless user is excluded."""
+    """Personal test, or global test mode unless user is excluded."""
     if is_user_admin(user):
         return False
     if is_test_user(user):
@@ -149,12 +150,14 @@ async def exit_user_test_mode(db: AsyncSession, user: User, *, excluded: bool = 
         raise HTTPException(status_code=400, detail="Администратору тестовый режим не нужен")
 
     user.is_test_user = False
+    user.test_mode_personal = False
     user.test_mode_excluded = excluded
     cancelled = await _cancel_active_test_subscriptions(db, user)
     restored = await _restore_previous_subscription(db, user)
     await db.commit()
     return {
         "is_test_user": False,
+        "test_mode_personal": False,
         "test_mode_excluded": excluded,
         "cancelled_subscriptions": cancelled,
         "restored_subscription": restored.plan_type if restored else None,
@@ -167,6 +170,7 @@ async def enroll_user_in_test_mode(db: AsyncSession, user: User) -> Subscription
         raise HTTPException(status_code=400, detail="Администратору тестовый режим не нужен")
 
     user.is_test_user = True
+    user.test_mode_personal = True
     user.test_mode_excluded = False
     now = datetime.utcnow()
 
@@ -208,7 +212,7 @@ async def set_user_personal_test_mode(db: AsyncSession, user: User, enabled: boo
 
     if enabled:
         sub = await enroll_user_in_test_mode(db, user)
-        return {"is_test_user": True, "test_mode_excluded": False, "expires_at": sub.expires_at}
+        return {"is_test_user": True, "test_mode_personal": True, "test_mode_excluded": False, "expires_at": sub.expires_at}
 
     global_on = await is_registration_test_mode_enabled(db)
     return await exit_user_test_mode(db, user, excluded=global_on)
@@ -224,6 +228,24 @@ async def clear_test_mode_exclusions(db: AsyncSession) -> int:
         user.test_mode_excluded = False
     await db.commit()
     return len(users)
+
+
+async def clear_legacy_global_test_flags(db: AsyncSession) -> int:
+    """When global test turns off: drop legacy is_test_user mass-sync; keep test_mode_personal only."""
+    result = await db.execute(select(User))
+    cleared = 0
+    for user in result.scalars().all():
+        if is_user_admin(user):
+            continue
+        changed = False
+        if user.is_test_user and not getattr(user, "test_mode_personal", False):
+            user.is_test_user = False
+            changed = True
+        if changed:
+            cleared += 1
+    if cleared:
+        await db.commit()
+    return cleared
 
 
 async def cleanup_global_test_subscriptions(db: AsyncSession) -> int:

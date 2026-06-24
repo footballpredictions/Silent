@@ -5,6 +5,7 @@ import io
 from pathlib import Path
 
 from _deploy_common import BACKEND_ROOT, CONTAINER, REMOTE, connect, run, upload_dir, upload_file
+from fix_tunnel_dnat import FIX_SH
 
 FILES = [
     "app/main.py",
@@ -15,6 +16,10 @@ FILES = [
     "app/api/users.py",
     "app/api/auth.py",
     "app/api/vpn.py",
+    "app/services/vpn_service.py",
+    "app/models/user.py",
+    "app/services/subscription_service.py",
+    "app/services/test_mode_settings.py",
     "app/services/vk_agent_auth.py",
     "app/models/__init__.py",
     "app/models/vk_link_session.py",
@@ -46,8 +51,9 @@ curl -s http://localhost:8000/api/health
 echo
 """
 sftp2 = client.open_sftp()
+sftp2.putfo(io.BytesIO(FIX_SH.encode()), "/tmp/fix_tunnel_dnat.sh")
 sftp2.putfo(io.BytesIO(script.encode()), "/tmp/deploy_api.sh")
 sftp2.close()
-run(client, "bash /tmp/deploy_api.sh 2>&1", timeout=120)
+run(client, "bash /tmp/deploy_api.sh 2>&1 && bash /tmp/fix_tunnel_dnat.sh 2>&1", timeout=120)
 client.close()
 print("Done")

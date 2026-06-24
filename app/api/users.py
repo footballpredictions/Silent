@@ -9,7 +9,13 @@ from app.schemas.vpn import DisconnectRequest
 from app.core.deps import get_current_user
 from app.core.security import verify_password, hash_password
 from app.config import settings
-from app.services.subscription_service import is_user_admin, ensure_admin_flag, ensure_trial_subscription, user_in_test_mode
+from app.services.subscription_service import (
+    is_user_admin,
+    ensure_admin_flag,
+    ensure_trial_subscription,
+    user_in_test_mode,
+    get_display_subscription,
+)
 from app.services.vpn_service import (
     end_device_session,
     count_active_sessions,
@@ -49,13 +55,8 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
             days_left=9999,
         )
     else:
-        result = await db.execute(
-            select(Subscription)
-            .where(Subscription.user_id == user.id, Subscription.status == "active")
-            .order_by(Subscription.expires_at.desc())
-        )
-        sub = result.scalars().first()
-        if sub and sub.is_active:
+        sub = await get_display_subscription(db, user, in_test_mode=False)
+        if sub:
             subscription_info = SubscriptionInfo(
                 is_active=True,
                 plan_type=sub.plan_type,

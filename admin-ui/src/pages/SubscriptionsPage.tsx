@@ -9,6 +9,8 @@ interface UserRow {
   is_active: boolean
   is_admin?: boolean
   is_test_user?: boolean
+  test_mode_excluded?: boolean
+  in_test_mode?: boolean
   subscription: { active: boolean; plan: string | null; expires_at: string | null }
 }
 
@@ -31,7 +33,8 @@ const PLAN_NAMES: Record<string, string> = {
 }
 
 function subscriptionLabel(u: UserRow): string {
-  if (u.is_test_user || u.subscription.plan === 'test') return 'Тест · безлимит'
+  const inTest = u.in_test_mode ?? u.is_test_user
+  if (inTest || u.subscription.plan === 'test') return 'Тест · безлимит'
   if (u.is_admin || u.subscription.plan === 'unlimited') return '∞'
   if (!u.subscription.active) return 'Нет'
   const plan = PLAN_NAMES[u.subscription.plan || ''] || u.subscription.plan || 'Активна'
@@ -97,9 +100,10 @@ export default function SubscriptionsPage({ token }: { token: string }) {
       const n = body.users_affected ?? 0
       setSuccess(
         body.enabled
-          ? `Тестовый режим включён — безлимит для всех пользователей${n ? ` (${n} обновлено)` : ''}`
-          : `Тестовый режим выключен — обычные подписки${n ? ` (${n} обновлено)` : ''}`
+          ? 'Глобальный тестовый режим включён — безлимит для всех пользователей'
+          : `Глобальный тестовый режим выключен${n ? ` (очищено тест-подписок: ${n})` : ''}`
       )
+      await fetchUsers()
     } finally {
       setTestModeBusy(false)
     }
@@ -107,6 +111,35 @@ export default function SubscriptionsPage({ token }: { token: string }) {
 
   const isPlanActive = (u: UserRow, planType: string) =>
     u.subscription.active && u.subscription.plan === planType
+
+  const toggleUserTestMode = async (u: UserRow) => {
+    const key = `${u.id}:test`
+    setActionKey(key)
+    setError(null)
+    setSuccess(null)
+    const currentlyInTest = u.in_test_mode ?? false
+    const next = !currentlyInTest
+    try {
+      const res = await fetch(`/api/admin/users/${u.id}/test-mode`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(body.detail || 'Не удалось изменить тестовый режим пользователя')
+        return
+      }
+      setSuccess(
+        next
+          ? `Безлимит включён для ${u.email}`
+          : `Безлимит выключен для ${u.email}`
+      )
+      await fetchUsers()
+    } finally {
+      setActionKey(null)
+    }
+  }
 
   const togglePlan = async (u: UserRow, planType: string, planLabel: string) => {
     const key = `${u.id}:${planType}`
@@ -179,9 +212,9 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                 ? 'bg-purple-500/15 border-purple-500/50 text-purple-300'
                 : 'bg-[#111] border-[#333] text-[#ccc] hover:border-[#555]'
             }`}
-            title="Безлимитный доступ для всех пользователей"
+            title="Глобальный безлимит для всех пользователей"
           >
-            <span className="font-medium">Тест</span>
+            <span className="font-medium">Тест (все)</span>
             <span
               className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${
                 testMode ? 'bg-purple-500' : 'bg-[#333]'
@@ -208,7 +241,8 @@ export default function SubscriptionsPage({ token }: { token: string }) {
 
       {testMode && (
         <div className="bg-purple-500/10 border border-purple-500/30 text-purple-300 text-sm rounded-lg px-4 py-3">
-          Тестовый режим активен: все пользователи получают безлимитный доступ к интернету.
+          Глобальный тестовый режим активен: все пользователи получают безлимит.
+          Чтобы отключить одного — выключите его персональный переключатель в таблице.
         </div>
       )}
 
@@ -231,14 +265,15 @@ export default function SubscriptionsPage({ token }: { token: string }) {
               <th className="text-left px-4 py-3">Email</th>
               <th className="text-left px-4 py-3">Текущая подписка</th>
               <th className="text-left px-4 py-3">Статус</th>
+              <th className="text-center px-4 py-3">Тест</th>
               <th className="px-4 py-3 text-right">Планы</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={5} className="text-center py-12 text-[#555]">Загрузка...</td></tr>
+              <tr><td colSpan={6} className="text-center py-12 text-[#555]">Загрузка...</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={5} className="text-center py-12 text-[#555]">Нет пользователей</td></tr>
+              <tr><td colSpan={6} className="text-center py-12 text-[#555]">Нет пользователей</td></tr>
             ) : (
               filtered.map(u => (
                 <tr key={u.id} className="border-b border-[#1a1a1a] hover:bg-[#151515] transition-colors">
@@ -248,13 +283,23 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                       <span>{u.email}</span>
                       {u.is_test_user && (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                          Тест
+                          Личный
+                        </span>
+                      )}
+                      {u.test_mode_excluded && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300/90 border border-amber-500/30">
+                          Исключён
+                        </span>
+                      )}
+                      {(u.in_test_mode ?? false) && testMode && !u.is_test_user && !u.test_mode_excluded && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400/80 border border-purple-500/25">
+                          Глоб.
                         </span>
                       )}
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`text-xs ${u.subscription.active || u.is_admin || u.is_test_user ? 'text-green-400' : 'text-[#555]'}`}>
+                    <span className={`text-xs ${u.subscription.active || u.is_admin || (u.in_test_mode ?? u.is_test_user) ? 'text-green-400' : 'text-[#555]'}`}>
                       {subscriptionLabel(u)}
                     </span>
                   </td>
@@ -268,10 +313,39 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                       </span>
                     </div>
                   </td>
+                  <td className="px-4 py-3 text-center">
+                    {u.is_admin ? (
+                      <span className="text-xs text-[#555]">—</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => toggleUserTestMode(u)}
+                        disabled={actionKey === `${u.id}:test`}
+                        title={
+                          (u.in_test_mode ?? false)
+                            ? 'Выключить безлимит для этого пользователя'
+                            : 'Включить безлимит для этого пользователя'
+                        }
+                        className="inline-flex items-center disabled:opacity-40"
+                      >
+                        <span
+                          className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${
+                            (u.in_test_mode ?? false) ? 'bg-purple-500' : 'bg-[#333]'
+                          }`}
+                        >
+                          <span
+                            className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+                              (u.in_test_mode ?? false) ? 'translate-x-4' : 'translate-x-0.5'
+                            }`}
+                          />
+                        </span>
+                      </button>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     {u.is_admin ? (
                       <div className="text-right text-xs font-semibold text-amber-400/90">Админ</div>
-                    ) : u.is_test_user ? (
+                    ) : (u.in_test_mode ?? false) ? (
                       <div className="text-right text-xs font-semibold text-purple-300/90">Тест · ∞</div>
                     ) : (
                       <div className="flex items-center justify-end gap-1.5 flex-wrap">

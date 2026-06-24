@@ -15,6 +15,7 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_test_user: Mapped[bool] = mapped_column(Boolean, default=False)
+    test_mode_excluded: Mapped[bool] = mapped_column(Boolean, default=False)
     verification_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reset_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
     vk_user_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True, index=True)

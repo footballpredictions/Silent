@@ -66,6 +66,9 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_test_user BOOLEAN NOT NULL DEFAULT FALSE"
         ))
         await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS test_mode_excluded BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        await conn.execute(text(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS bootstrap_hash VARCHAR(255)"
         ))
         await conn.execute(text(
@@ -134,6 +137,13 @@ async def lifespan(app: FastAPI):
                 await migrate_devices_to_queen(db)
         except Exception as e:
             logger.warning("Hive queen init skipped: %s", e)
+        try:
+            from app.services.subscription_service import reconcile_stale_test_subscriptions
+            fixed = await reconcile_stale_test_subscriptions(db)
+            if fixed:
+                logger.info("Reconciled %s stale test subscription(s)", fixed)
+        except Exception as e:
+            logger.warning("Test subscription reconcile skipped: %s", e)
 
     # Start VK tunnel monitor + nightly OTA rebuild scheduler
     from ai.tunnel_monitor import start_monitor_background

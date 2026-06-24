@@ -23,12 +23,18 @@ def is_test_user(user: User) -> bool:
     return bool(getattr(user, "is_test_user", False))
 
 
+def is_test_mode_excluded(user: User) -> bool:
+    return bool(getattr(user, "test_mode_excluded", False))
+
+
 async def user_in_test_mode(user: User, db: AsyncSession) -> bool:
-    """Test access: per-user flag or global test mode (all non-admin users)."""
+    """Test access: personal flag, or global test mode unless user is excluded."""
     if is_user_admin(user):
         return False
     if is_test_user(user):
         return True
+    if is_test_mode_excluded(user):
+        return False
     from app.services.test_mode_settings import is_registration_test_mode_enabled
     return await is_registration_test_mode_enabled(db)
 
@@ -53,12 +59,31 @@ async def get_active_subscription(db: AsyncSession, user: User) -> Subscription 
     return None
 
 
+async def get_display_subscription(
+    db: AsyncSession, user: User, *, in_test_mode: bool
+) -> Subscription | None:
+    """Active subscription for UI/API; ignores stale test rows when not in test mode."""
+    result = await db.execute(
+        select(Subscription)
+        .where(Subscription.user_id == user.id, Subscription.status == "active")
+        .order_by(Subscription.expires_at.desc())
+    )
+    for sub in result.scalars().all():
+        if not sub.is_active:
+            continue
+        if sub.plan_type == TEST_PLAN and not in_test_mode:
+            continue
+        return sub
+    return None
+
+
 async def ensure_trial_subscription(db: AsyncSession, user: User) -> Subscription | None:
     """One-time 3-day trial for users who never had any subscription."""
     if is_user_admin(user):
         return None
 
-    active = await get_active_subscription(db, user)
+    in_test = await user_in_test_mode(user, db)
+    active = await get_display_subscription(db, user, in_test_mode=in_test)
     if active:
         return active
 
@@ -83,12 +108,66 @@ async def ensure_trial_subscription(db: AsyncSession, user: User) -> Subscriptio
     return trial
 
 
+async def _cancel_active_test_subscriptions(db: AsyncSession, user: User) -> int:
+    cancelled = 0
+    active_result = await db.execute(
+        select(Subscription).where(
+            Subscription.user_id == user.id,
+            Subscription.status == "active",
+            Subscription.plan_type == TEST_PLAN,
+        )
+    )
+    for sub in active_result.scalars().all():
+        sub.status = "cancelled"
+        cancelled += 1
+    return cancelled
+
+
+async def _restore_previous_subscription(db: AsyncSession, user: User) -> Subscription | None:
+    """Reactivate latest cancelled non-test subscription still within expiry."""
+    now = datetime.utcnow()
+    result = await db.execute(
+        select(Subscription)
+        .where(
+            Subscription.user_id == user.id,
+            Subscription.status == "cancelled",
+            Subscription.plan_type != TEST_PLAN,
+            Subscription.expires_at > now,
+        )
+        .order_by(Subscription.expires_at.desc())
+    )
+    sub = result.scalars().first()
+    if not sub:
+        return None
+    sub.status = "active"
+    return sub
+
+
+async def exit_user_test_mode(db: AsyncSession, user: User, *, excluded: bool = False) -> dict:
+    """Leave test mode: clear flags, cancel test subs, restore paid/trial if possible."""
+    if is_user_admin(user):
+        raise HTTPException(status_code=400, detail="Администратору тестовый режим не нужен")
+
+    user.is_test_user = False
+    user.test_mode_excluded = excluded
+    cancelled = await _cancel_active_test_subscriptions(db, user)
+    restored = await _restore_previous_subscription(db, user)
+    await db.commit()
+    return {
+        "is_test_user": False,
+        "test_mode_excluded": excluded,
+        "cancelled_subscriptions": cancelled,
+        "restored_subscription": restored.plan_type if restored else None,
+    }
+
+
 async def enroll_user_in_test_mode(db: AsyncSession, user: User) -> Subscription:
     """Mark user as test and grant unlimited-style subscription."""
     if is_user_admin(user):
         raise HTTPException(status_code=400, detail="Администратору тестовый режим не нужен")
 
     user.is_test_user = True
+    user.test_mode_excluded = False
     now = datetime.utcnow()
 
     active_result = await db.execute(
@@ -112,55 +191,85 @@ async def enroll_user_in_test_mode(db: AsyncSession, user: User) -> Subscription
     return subscription
 
 
-async def sync_all_users_for_test_mode(db: AsyncSession, enabled: bool) -> int:
-    """Enable/disable test mode for every non-admin user."""
+async def unenroll_user_from_test_mode(db: AsyncSession, user: User) -> int:
+    """Disable per-user test mode and cancel test-plan subscriptions."""
+    data = await exit_user_test_mode(db, user, excluded=False)
+    return data["cancelled_subscriptions"]
+
+
+async def exclude_user_from_global_test_mode(db: AsyncSession, user: User) -> dict:
+    """Opt user out of global test mode while keeping personal test off."""
+    return await exit_user_test_mode(db, user, excluded=True)
+
+
+async def set_user_personal_test_mode(db: AsyncSession, user: User, enabled: bool) -> dict:
+    """Toggle per-user test mode; respects global test mode exclusions."""
+    from app.services.test_mode_settings import is_registration_test_mode_enabled
+
+    if enabled:
+        sub = await enroll_user_in_test_mode(db, user)
+        return {"is_test_user": True, "test_mode_excluded": False, "expires_at": sub.expires_at}
+
+    global_on = await is_registration_test_mode_enabled(db)
+    return await exit_user_test_mode(db, user, excluded=global_on)
+
+
+async def clear_test_mode_exclusions(db: AsyncSession) -> int:
+    """Reset per-user global exclusions when global test mode turns off."""
+    result = await db.execute(
+        select(User).where(User.test_mode_excluded == True)  # noqa: E712
+    )
+    users = result.scalars().all()
+    for user in users:
+        user.test_mode_excluded = False
+    await db.commit()
+    return len(users)
+
+
+async def cleanup_global_test_subscriptions(db: AsyncSession) -> int:
+    """When global test mode turns off, cancel test subs for users without individual flag."""
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
 
-    result = await db.execute(select(User))
     affected = 0
-    now = datetime.utcnow()
-
+    result = await db.execute(select(User))
     for user in result.scalars().all():
-        if is_user_admin(user) or user.email == BOOTSTRAP_USER_EMAIL:
+        if is_user_admin(user) or user.email == BOOTSTRAP_USER_EMAIL or is_test_user(user):
             continue
-
-        changed = False
-        if enabled:
-            if not user.is_test_user:
-                user.is_test_user = True
-                changed = True
-            active = await get_active_subscription(db, user)
-            if not active:
-                db.add(Subscription(
-                    user_id=user.id,
-                    plan_type=TEST_PLAN,
-                    status="active",
-                    amount_paid=0,
-                    started_at=now,
-                    expires_at=now + timedelta(days=36500),
-                ))
-                changed = True
-        else:
-            if user.is_test_user:
-                user.is_test_user = False
-                changed = True
-            active_result = await db.execute(
-                select(Subscription).where(
-                    Subscription.user_id == user.id,
-                    Subscription.status == "active",
-                    Subscription.plan_type == TEST_PLAN,
-                )
+        active_result = await db.execute(
+            select(Subscription).where(
+                Subscription.user_id == user.id,
+                Subscription.status == "active",
+                Subscription.plan_type == TEST_PLAN,
             )
-            for sub in active_result.scalars().all():
-                if sub.is_active:
-                    sub.status = "cancelled"
-                    changed = True
-
-        if changed:
-            affected += 1
-
+        )
+        for sub in active_result.scalars().all():
+            if sub.is_active:
+                sub.status = "cancelled"
+                affected += 1
     await db.commit()
     return affected
+
+
+async def reconcile_stale_test_subscriptions(db: AsyncSession) -> int:
+    """Cancel test subs left in DB for users no longer in test mode."""
+    from app.services.test_mode_settings import is_registration_test_mode_enabled
+
+    global_test = await is_registration_test_mode_enabled(db)
+    fixed = 0
+    result = await db.execute(select(User))
+    for user in result.scalars().all():
+        if is_user_admin(user):
+            continue
+        in_test = is_test_user(user) or (global_test and not is_test_mode_excluded(user))
+        if in_test:
+            continue
+        cancelled = await _cancel_active_test_subscriptions(db, user)
+        if cancelled:
+            await _restore_previous_subscription(db, user)
+            fixed += cancelled
+    if fixed:
+        await db.commit()
+    return fixed
 
 
 async def apply_post_verification_benefits(db: AsyncSession, user: User) -> Subscription | None:
@@ -168,13 +277,7 @@ async def apply_post_verification_benefits(db: AsyncSession, user: User) -> Subs
     if is_user_admin(user):
         return None
 
-    from app.services.test_mode_settings import is_registration_test_mode_enabled
-
-    sub: Subscription | None
-    if await is_registration_test_mode_enabled(db):
-        sub = await enroll_user_in_test_mode(db, user)
-    else:
-        sub = await ensure_trial_subscription(db, user)
+    sub = await ensure_trial_subscription(db, user)
 
     try:
         from app.services.vk_agent_auth import is_agent_enabled
@@ -194,7 +297,7 @@ async def user_has_active_subscription(user: User, db: AsyncSession) -> bool:
     if is_user_admin(user) or await user_in_test_mode(user, db):
         return True
     await ensure_trial_subscription(db, user)
-    sub = await get_active_subscription(db, user)
+    sub = await get_display_subscription(db, user, in_test_mode=False)
     return sub is not None
 
 
@@ -204,7 +307,7 @@ async def require_active_subscription(user: User, db: AsyncSession) -> None:
         return
 
     await ensure_trial_subscription(db, user)
-    sub = await get_active_subscription(db, user)
+    sub = await get_display_subscription(db, user, in_test_mode=False)
     if not sub:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,

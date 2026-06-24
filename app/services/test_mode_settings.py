@@ -27,6 +27,12 @@ async def set_registration_test_mode(db: AsyncSession, enabled: bool) -> tuple[b
         db.add(AppSetting(key=REGISTRATION_TEST_MODE_KEY, value=value))
     await db.commit()
 
-    from app.services.subscription_service import sync_all_users_for_test_mode
-    affected = await sync_all_users_for_test_mode(db, enabled)
+    affected = 0
+    if not enabled:
+        from app.services.subscription_service import (
+            cleanup_global_test_subscriptions,
+            clear_test_mode_exclusions,
+        )
+        affected = await cleanup_global_test_subscriptions(db)
+        await clear_test_mode_exclusions(db)
     return enabled, affected

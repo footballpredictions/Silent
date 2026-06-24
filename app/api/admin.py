@@ -192,23 +192,19 @@ async def list_users(
     global_test = await is_registration_test_mode_enabled(db)
 
     out = []
+    from app.services.subscription_service import is_user_admin, get_display_subscription
     for user in users:
-        sub_result = await db.execute(
-            select(Subscription).where(
-                Subscription.user_id == user.id, Subscription.status == "active"
-            ).order_by(Subscription.expires_at.desc())
-        )
-        sub = sub_result.scalars().first()
+        admin = is_user_admin(user)
+        individual_test = bool(user.is_test_user)
+        excluded = bool(getattr(user, "test_mode_excluded", False))
+        in_test = (not admin) and (individual_test or (global_test and not excluded))
+        sub = await get_display_subscription(db, user, in_test_mode=in_test)
         dev_count = (await db.execute(
             select(func.count(Device.id)).where(Device.user_id == user.id, Device.is_active == True)
         )).scalar_one()
         hash_count = (await db.execute(
             select(func.count(VkHash.id)).where(VkHash.user_id == user.id, VkHash.is_active == True)
         )).scalar_one()
-
-        from app.services.subscription_service import is_user_admin
-        admin = is_user_admin(user)
-        in_test = global_test or bool(user.is_test_user)
 
         out.append({
             "id": str(user.id),
@@ -217,7 +213,9 @@ async def list_users(
             "is_verified": user.is_verified,
             "is_active": user.is_active,
             "is_admin": admin,
-            "is_test_user": in_test,
+            "is_test_user": individual_test,
+            "test_mode_excluded": excluded,
+            "in_test_mode": in_test,
             "created_at": user.created_at,
             "bootstrap_hash": (user.bootstrap_hash[:12] + "...") if user.bootstrap_hash else None,
             "server_hashes": hash_count,
@@ -304,6 +302,35 @@ async def revoke_user_subscription(
 
     cancelled = await revoke_subscription(db, user)
     return {"status": "revoked", "cancelled": cancelled}
+
+
+class UserTestModeRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/users/{user_id}/test-mode")
+async def set_user_test_mode(
+    user_id: str,
+    req: UserTestModeRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Персональный тестовый режим (безлимит) для одного пользователя."""
+    import uuid
+    from app.services.subscription_service import set_user_personal_test_mode, is_user_admin
+
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if is_user_admin(user):
+        raise HTTPException(status_code=400, detail="Администратору тестовый режим не нужен")
+
+    data = await set_user_personal_test_mode(db, user, req.enabled)
+    return {
+        "status": "enabled" if req.enabled else "disabled",
+        **data,
+    }
 
 
 @router.post("/users/{user_id}/ban")

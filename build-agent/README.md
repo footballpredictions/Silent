@@ -13,7 +13,7 @@ AI-агент VK создаёт **новый bootstrap-хеш**, клониру�
 build-agent/
   sync_repo.sh       # git fetch / pull при изменениях
   build_android.sh
-  build_pc.sh        # Docker + electronuserland/builder:wine
+  build_pc.sh        # golang Docker (wdtt PE) + electronuserland/builder:wine (NSIS)
   secrets/           # keystore (не в git)
   workspace/         # клоны репо (не в git)
 ```
@@ -53,6 +53,8 @@ python scripts/deploy_build_agent.py
 | `BUILD_AGENT_ROOT` | `/app/build-agent` |
 | `BUILD_AGENT_GIT_URL` | GitHub Silent |
 | `BUILD_AGENT_TIMEOUT_SEC` | 3600 |
+| `BUILD_AGENT_HOST_ROOT` | путь хоста к `build-agent` (обязателен для Docker mount PC) |
+| `PC_MIN_INSTALLER_BYTES` | 81000000 — отклонить установщик без wdtt |
 
 Опционально: `build-agent/secrets/git_token` — PAT для приватного clone.
 

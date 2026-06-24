@@ -131,6 +131,19 @@ async def create_bootstrap_hash(db: AsyncSession) -> str:
         await manager.close()
 
 
+# Без wdtt-client.exe NSIS ~79 MB; полный установщик ~83 MB (см. build-agent/build_pc.sh).
+_PC_MIN_INSTALLER_BYTES = int(os.environ.get("PC_MIN_INSTALLER_BYTES", "81000000"))
+
+
+def _verify_pc_installer(artifact_path: str) -> None:
+    size = os.path.getsize(artifact_path)
+    if size < _PC_MIN_INSTALLER_BYTES:
+        raise BuildAgentError(
+            f"PC installer too small ({size} bytes): wdtt-client.exe likely missing "
+            f"(expected >= {_PC_MIN_INSTALLER_BYTES})"
+        )
+
+
 def _path_size(path: Path) -> int:
     if path.is_file():
         try:
@@ -297,6 +310,8 @@ async def build_platform(
 
             repo = _WORKSPACE / platform
             version = _read_pc_version(repo) if platform == "pc" else _read_android_version(repo)
+            if platform == "pc":
+                _verify_pc_installer(artifact_path)
             info = _publish(platform, artifact_path, version)
             freed_mb = (await asyncio.to_thread(_cleanup_platform_workspace, platform)) // (1024 * 1024)
 

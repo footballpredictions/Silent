@@ -83,6 +83,20 @@ export default function LoginScreen({
   }, [])
 
   useEffect(() => {
+    const api_ = (window as any).electronAPI
+    if (!api_) return
+    const onVpnError = (msg: string) => {
+      const text = String(msg || '').trim()
+      if (!text) return
+      pushLog('Login', text, 'E')
+      setStatusMsg(text)
+      setBootstrapReady(false)
+      setBootstrapConnecting(false)
+    }
+    api_.onVpnError?.(onVpnError)
+  }, [])
+
+  useEffect(() => {
     if (sessionExpired) return
     const active = isBootstrapVpnActive()
     setBootstrapReady(active)

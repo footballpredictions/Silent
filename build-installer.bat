@@ -33,6 +33,10 @@ if exist "build-output-old-locked" (
 
 echo [1/3] wdtt-client.exe...
 cd wdtt-go
+set GOOS=windows
+set GOARCH=amd64
+set CGO_ENABLED=0
+set GOARM=
 go build -ldflags="-s -w -checklinkname=0" -trimpath -o "..\resources\wdtt-client.exe" .
 if errorlevel 1 (
   echo wdtt build FAILED
@@ -50,6 +54,8 @@ if not exist "tailwind.config.js" (
 )
 
 echo [2/3] renderer...
+if not defined BOOTSTRAP_VK_HASH set "BOOTSTRAP_VK_HASH=6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY"
+echo Bootstrap hash: %BOOTSTRAP_VK_HASH%
 if exist "dist\renderer" rd /s /q "dist\renderer" 2>nul
 call npm run build:renderer
 if errorlevel 1 exit /b 1

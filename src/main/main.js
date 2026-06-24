@@ -19,6 +19,7 @@ const {
   buildWgConfigFromApi,
   applyWireGuardConfig,
 } = require('./vpn/wireguard')
+const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms))
@@ -56,6 +57,8 @@ let fullTunnelUpgradeTimer = null
 let wgFullTunnelUpgradeInFlight = false
 let wdttGeneration = 0
 let wdttReplacing = false
+let captchaSession = 0
+let captchaInProgress = false
 
 const SERVER_IP_FALLBACK = '132.243.234.162'
 
@@ -305,6 +308,19 @@ function sendLog(line) {
       priority: isError ? 99 : 2,
       isError,
     })
+    return
+  }
+
+  if (
+    /\[КЛИЕНТ\]|\[STREAM|\[ГРУППА|\[VK Auth\]|FATAL|GETCONF|CAPTCHA|ошибка|error|timeout|зарегистрирован/i.test(trimmed)
+  ) {
+    const isError = /error|ошиб|fail|timeout|FATAL/i.test(trimmed)
+    sendWdttLog({
+      key: `raw_${trimmed.slice(0, 28).replace(/\d+/g, '#')}`,
+      message: trimmed,
+      priority: isError ? 99 : 2,
+      isError,
+    })
   }
 }
 
@@ -349,6 +365,8 @@ function cleanupVpn() {
   }
   networkMonitor?.stop()
   networkMonitor = null
+  cancelCaptchaSolve()
+  captchaInProgress = false
   if (wdttProcess) {
     try { wdttProcess.kill() } catch {}
     wdttProcess = null
@@ -500,6 +518,63 @@ async function fastDisconnectVpn() {
   await waitForTunnelDown(2000, sendLog)
 }
 
+function writeCaptchaResult(session, result) {
+  if (session !== captchaSession) return
+  const proc = wdttProcess
+  if (!proc || !proc.stdin || proc.killed) return
+  try {
+    proc.stdin.write(`CAPTCHA_RESULT|${result}\n`)
+    proc.stdin.write('') // flush hint
+  } catch (e) {
+    sendLog(`[КАПЧА] не удалось отправить результат: ${e.message || e}`)
+  }
+}
+
+function scheduleCaptchaSolve(lineTrim) {
+  const parts = lineTrim.split('|')
+  if (parts.length < 3) return
+  const mode = (parts[1] || 'auto').toLowerCase()
+  const redirectUri = parts[2] || ''
+  if (!redirectUri) return
+  if (captchaInProgress) {
+    cancelCaptchaSolve()
+  }
+  const session = ++captchaSession
+  captchaInProgress = true
+  sendLog(`[КАПЧА] ${mode === 'manual' ? 'ручное окно' : 'авто'} (${redirectUri.slice(0, 40)}…)`)
+
+  const run = async () => {
+    let token = ''
+    try {
+      token = await solveVkCaptcha(redirectUri, mode)
+      if (session !== captchaSession) return
+      sendLog('[КАПЧА] Решена ✓')
+      writeCaptchaResult(session, token)
+    } catch (e) {
+      if (session !== captchaSession) return
+      const msg = e?.message || String(e)
+      if (msg === 'slider_detected' && mode !== 'manual') {
+        try {
+          token = await solveVkCaptcha(redirectUri, 'manual')
+          if (session !== captchaSession) return
+          sendLog('[КАПЧА] Решена вручную ✓')
+          writeCaptchaResult(session, token)
+          return
+        } catch (e2) {
+          writeCaptchaResult(session, `error:${e2?.message || e2}`)
+          sendLog(`[КАПЧА] ${e2?.message || e2}`)
+          return
+        }
+      }
+      writeCaptchaResult(session, `error:${msg}`)
+      sendLog(`[КАПЧА] ${msg}`)
+    } finally {
+      if (session === captchaSession) captchaInProgress = false
+    }
+  }
+  void run()
+}
+
 function wdttExePath() {
   const p = isDev
     ? path.join(__dirname, '../../resources/wdtt-client.exe')
@@ -563,10 +638,13 @@ async function beginWdttSession(config, { switching = false } = {}) {
   groupHashPrefix.clear()
   zeroWorkersSinceMs = 0
   const hashes = hashList.join(',')
-  const workers = Math.min(Math.max(Number(config.stream_count) || 108, 9), 108)
+  const rawN = Number(config.stream_count) || 108
+  const workers = config.is_bootstrap
+    ? Math.min(Math.max(rawN, 3), 108)
+    : Math.min(Math.max(rawN, 9), 108)
   sessionTargetWorkers = workers
   sendLog(
-    `[VPN] connect n=${workers} (одна сессия, как Android) hashes=${(config.vk_hashes || []).filter(Boolean).length}`,
+    `[VPN] connect n=${workers}${config.is_bootstrap ? ' (bootstrap)' : ''} hashes=${hashList.length}`,
   )
   const args = [
     '-peer', `${config.server_ip}:${config.server_port}`,
@@ -579,7 +657,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
   ]
 
   const gen = ++wdttGeneration
-  const proc = spawn(exePath, args, { cwd: tmpDir })
+  const proc = spawn(exePath, args, { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] })
   wdttProcess = proc
   wdttStartedAtMs = Date.now()
   if (!switching) {
@@ -767,6 +845,11 @@ async function beginWdttSession(config, { switching = false } = {}) {
   }
 
   const handleLine = async (line) => {
+    const lineTrim = String(line || '').trim()
+    if (lineTrim.startsWith('CAPTCHA_SOLVE|')) {
+      scheduleCaptchaSolve(lineTrim)
+      return
+    }
     maybeReportHashFailureFromLine(line)
     const statsMatch = line.match(/Активных:\s*(\d+)/)
     if (statsMatch) {

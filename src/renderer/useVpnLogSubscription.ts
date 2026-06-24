@@ -35,8 +35,15 @@ export function useVpnLogSubscription(enabled = true) {
       )
     }
 
+    const onVpnError = (msg: string) => {
+      const text = String(msg || '').trim()
+      if (!text) return
+      pushAppLog('VPN', text, 'E')
+    }
+
     api_.onWdttLog?.(onWdtt)
     api_.onDebugLog?.(onDebug)
+    api_.onVpnError?.(onVpnError)
     api_.onHashFailure?.(onHashFailure)
     return () => {
       api_.removeDebugLogListeners?.()

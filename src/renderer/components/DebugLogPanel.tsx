@@ -7,7 +7,6 @@ import {
 } from '../vpnLogStore'
 
 export function DebugLogButton({ onClick }: { onClick: () => void }) {
-  if (!import.meta.env.DEV) return null
   return (
     <button
       type="button"

@@ -1001,6 +1001,11 @@ class PromoCreateRequest(BaseModel):
     expires_at: Optional[datetime] = None
 
 
+class BuildConfigRequest(BaseModel):
+    pc_enabled: Optional[bool] = None
+    android_enabled: Optional[bool] = None
+
+
 @router.post("/promo")
 async def create_promo(
     req: PromoCreateRequest,
@@ -1094,6 +1099,38 @@ async def updates_build_status(
 ):
     from app.services.build_agent_service import get_build_status
     return await get_build_status(db)
+
+
+@router.post("/updates/build-stop")
+async def updates_build_stop(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.build_agent_service import request_stop_build
+    return await request_stop_build(db)
+
+
+@router.get("/updates/build-config")
+async def updates_build_config(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.build_agent_service import set_nightly_build_flags
+    return await set_nightly_build_flags(db)
+
+
+@router.post("/updates/build-config")
+async def updates_set_build_config(
+    req: BuildConfigRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.build_agent_service import set_nightly_build_flags
+    return await set_nightly_build_flags(
+        db,
+        pc_enabled=req.pc_enabled,
+        android_enabled=req.android_enabled,
+    )
 
 
 @router.post("/updates/build/{platform}")

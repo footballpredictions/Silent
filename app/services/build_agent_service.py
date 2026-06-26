@@ -9,6 +9,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -23,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 _BUILD_LOCK = asyncio.Lock()
 _BUILD_RUNNING = False
+_STOP_REQUESTED = False
+_ACTIVE_PROC: Optional[subprocess.Popen] = None
+_ACTIVE_PROC_LOCK = threading.Lock()
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
 _BUILD_AGENT_ROOT = Path(os.environ.get("BUILD_AGENT_ROOT", _BACKEND_ROOT / "build-agent"))
@@ -104,15 +109,52 @@ def is_build_running() -> bool:
 
 async def get_build_status(db: AsyncSession) -> dict:
     running = _BUILD_RUNNING
+    nightly_pc = await _setting(db, "build_agent_nightly_pc_enabled")
+    nightly_android = await _setting(db, "build_agent_nightly_android_enabled")
     return {
         "running": running,
+        "stop_requested": _STOP_REQUESTED,
         "status": await _setting(db, "build_agent_status") or "idle",
         "message": await _setting(db, "build_agent_message"),
         "last_at": await _setting(db, "build_agent_last_at"),
         "last_platform": await _setting(db, "build_agent_last_platform"),
         "bootstrap_hash": await _setting(db, "build_agent_bootstrap_hash"),
         "nightly_date": await _setting(db, "build_agent_nightly_date"),
+        "nightly_pc_enabled": nightly_pc != "0",
+        "nightly_android_enabled": nightly_android != "0",
     }
+
+
+async def set_nightly_build_flags(
+    db: AsyncSession,
+    *,
+    pc_enabled: Optional[bool] = None,
+    android_enabled: Optional[bool] = None,
+) -> dict:
+    if pc_enabled is not None:
+        await _set_setting(db, "build_agent_nightly_pc_enabled", "1" if pc_enabled else "0")
+    if android_enabled is not None:
+        await _set_setting(db, "build_agent_nightly_android_enabled", "1" if android_enabled else "0")
+    return {
+        "nightly_pc_enabled": (await _setting(db, "build_agent_nightly_pc_enabled")) != "0",
+        "nightly_android_enabled": (await _setting(db, "build_agent_nightly_android_enabled")) != "0",
+    }
+
+
+async def request_stop_build(db: AsyncSession) -> dict:
+    global _STOP_REQUESTED
+    if not _BUILD_RUNNING:
+        return {"running": False, "requested": False, "message": "Сборка сейчас не выполняется"}
+    _STOP_REQUESTED = True
+    with _ACTIVE_PROC_LOCK:
+        proc = _ACTIVE_PROC
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    await set_build_log(db, "Остановка сборки запрошена админом…", status="running")
+    return {"running": True, "requested": True, "message": "Остановка запрошена"}
 
 
 async def create_bootstrap_hash(db: AsyncSession) -> str:
@@ -218,19 +260,51 @@ def _cleanup_platform_workspace(platform: str) -> int:
 
 
 def _run_shell(script: Path, platform: str, bootstrap_hash: str, timeout: int) -> str:
+    global _ACTIVE_PROC
     env = os.environ.copy()
     env["BUILD_AGENT_ROOT"] = str(_BUILD_AGENT_ROOT)
     env["BUILD_AGENT_WORKSPACE"] = str(_WORKSPACE)
     env["BOOTSTRAP_VK_HASH"] = bootstrap_hash
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         ["bash", str(script), bootstrap_hash],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
-        timeout=timeout,
         env=env,
         cwd=str(_BUILD_AGENT_ROOT),
     )
-    out = (proc.stdout or "") + (proc.stderr or "")
+    with _ACTIVE_PROC_LOCK:
+        _ACTIVE_PROC = proc
+    start = time.monotonic()
+    timed_out = False
+    try:
+        while proc.poll() is None:
+            if _STOP_REQUESTED:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=8)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                break
+            if time.monotonic() - start > timeout:
+                timed_out = True
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                break
+            time.sleep(0.5)
+        out = proc.communicate(timeout=15)[0] if proc.stdout else ""
+    finally:
+        with _ACTIVE_PROC_LOCK:
+            _ACTIVE_PROC = None
+    if timed_out:
+        raise BuildAgentError(f"Build script timeout after {timeout}s")
+    if _STOP_REQUESTED:
+        raise BuildAgentError("Build stopped by admin request")
     if proc.returncode != 0:
         lines = out.strip().splitlines()
         tail = "\n".join(lines[-120:]) if lines else f"exit {proc.returncode}"
@@ -270,7 +344,7 @@ async def build_platform(
     reuse_hash: str | None = None,
 ) -> dict:
     """Sync repo, embed new bootstrap hash, build release, publish to update/."""
-    global _BUILD_RUNNING
+    global _BUILD_RUNNING, _STOP_REQUESTED
 
     if platform not in update_service.PLATFORMS:
         raise BuildAgentError(f"Unknown platform: {platform}")
@@ -283,6 +357,7 @@ async def build_platform(
         raise BuildAgentError(f"Missing build script: {script}")
 
     async with _BUILD_LOCK:
+        _STOP_REQUESTED = False
         _BUILD_RUNNING = True
         bootstrap_hash = reuse_hash
         try:
@@ -339,6 +414,7 @@ async def build_platform(
             raise
         finally:
             _BUILD_RUNNING = False
+            _STOP_REQUESTED = False
 
 
 async def run_nightly_release_builds(db: AsyncSession) -> None:
@@ -362,9 +438,20 @@ async def run_nightly_release_builds(db: AsyncSession) -> None:
         bootstrap_hash=bootstrap_hash,
     )
 
+    pc_enabled = (await _setting(db, "build_agent_nightly_pc_enabled")) != "0"
+    android_enabled = (await _setting(db, "build_agent_nightly_android_enabled")) != "0"
+    platforms = []
+    if android_enabled:
+        platforms.append("android")
+    if pc_enabled:
+        platforms.append("pc")
+    if not platforms:
+        await set_build_log(db, "Ночная сборка отключена для всех платформ", status="ok")
+        return
+
     results = []
     errors = []
-    for platform in ("android", "pc"):
+    for platform in platforms:
         try:
             info = await build_platform(db, platform, force=True, reuse_hash=bootstrap_hash)
             results.append(f"{platform}=ok")

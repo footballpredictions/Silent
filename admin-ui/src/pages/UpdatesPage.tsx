@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Download, Trash2, Upload, Hammer } from 'lucide-react'
+import { Download, Trash2, Upload, Hammer, Square } from 'lucide-react'
 
 interface UpdateInfo {
   platform: string
@@ -12,12 +12,20 @@ interface UpdateInfo {
 
 interface BuildStatus {
   running: boolean
+  stop_requested?: boolean
   status: string
   message: string | null
   last_at: string | null
   last_platform: string | null
   bootstrap_hash: string | null
   nightly_date: string | null
+  nightly_pc_enabled?: boolean
+  nightly_android_enabled?: boolean
+}
+
+interface BuildConfig {
+  nightly_pc_enabled: boolean
+  nightly_android_enabled: boolean
 }
 
 function formatSize(bytes: number): string {
@@ -53,6 +61,9 @@ export default function UpdatesPage({ token }: { token: string }) {
   const [uploading, setUploading] = useState<string | null>(null)
   const [building, setBuilding] = useState<string | null>(null)
   const [buildStatus, setBuildStatus] = useState<BuildStatus | null>(null)
+  const [buildConfig, setBuildConfig] = useState<BuildConfig | null>(null)
+  const [savingConfig, setSavingConfig] = useState(false)
+  const [stoppingBuild, setStoppingBuild] = useState(false)
   const pcRef = useRef<HTMLInputElement>(null)
   const androidRef = useRef<HTMLInputElement>(null)
 
@@ -65,12 +76,20 @@ export default function UpdatesPage({ token }: { token: string }) {
     } catch { /* ignore */ }
   }
 
+  const loadBuildConfig = async () => {
+    try {
+      const res = await fetch('/api/admin/updates/build-config', { headers })
+      if (res.ok) setBuildConfig(await res.json())
+    } catch { /* ignore */ }
+  }
+
   const load = async () => {
     setLoading(true)
     try {
       const res = await fetch('/api/admin/updates', { headers })
       if (res.ok) setItems(await res.json())
       await loadBuildStatus()
+      await loadBuildConfig()
     } catch { /* ignore */ }
     setLoading(false)
   }
@@ -144,6 +163,59 @@ export default function UpdatesPage({ token }: { token: string }) {
     }
   }
 
+  const stopBuild = async () => {
+    setStoppingBuild(true)
+    setMsg('')
+    try {
+      const res = await fetch('/api/admin/updates/build-stop', {
+        method: 'POST',
+        headers,
+      })
+      const data: { detail?: string; message?: string } = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setMsg(typeof data.detail === 'string' ? data.detail : `Ошибка (${res.status})`)
+      } else {
+        setMsg(data.message || 'Остановка сборки запрошена')
+        await loadBuildStatus()
+      }
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Ошибка сети')
+    } finally {
+      setStoppingBuild(false)
+    }
+  }
+
+  const setNightlyFlag = async (platform: 'pc' | 'android', enabled: boolean) => {
+    const prev = buildConfig
+    const next: BuildConfig = {
+      nightly_pc_enabled: platform === 'pc' ? enabled : !!prev?.nightly_pc_enabled,
+      nightly_android_enabled: platform === 'android' ? enabled : !!prev?.nightly_android_enabled,
+    }
+    setBuildConfig(next)
+    setSavingConfig(true)
+    setMsg('')
+    try {
+      const body = platform === 'pc' ? { pc_enabled: enabled } : { android_enabled: enabled }
+      const res = await fetch('/api/admin/updates/build-config', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok) {
+        setBuildConfig(prev)
+        setMsg(typeof data?.detail === 'string' ? data.detail : `Ошибка (${res.status})`)
+      } else if (data) {
+        setBuildConfig(data as BuildConfig)
+      }
+    } catch (e) {
+      setBuildConfig(prev)
+      setMsg(e instanceof Error ? e.message : 'Ошибка сети')
+    } finally {
+      setSavingConfig(false)
+    }
+  }
+
   useEffect(() => {
     if (buildStatus && !buildStatus.running && building) {
       setBuilding(null)
@@ -198,15 +270,50 @@ export default function UpdatesPage({ token }: { token: string }) {
                     <p className="text-sm text-[#555] mt-2">Нет загруженной версии</p>
                   )}
                 </div>
-                {item.version && (
+                <div className="flex items-center gap-2">
                   <button
-                    onClick={() => remove(item.platform)}
-                    className="p-2 text-[#666] hover:text-red-400 transition-colors"
-                    title="Удалить"
+                    type="button"
+                    onClick={() => setNightlyFlag(item.platform as 'pc' | 'android', !(
+                      item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled : !!buildConfig?.nightly_android_enabled
+                    ))}
+                    disabled={savingConfig}
+                    title="Включить/выключить ночную автосборку платформы"
+                    className="inline-flex items-center gap-2 text-[#ccc] disabled:opacity-50"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <span className="text-xs font-medium">Авто 00:00</span>
+                    <span
+                      className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${
+                        (item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled : !!buildConfig?.nightly_android_enabled)
+                          ? 'bg-purple-500'
+                          : 'bg-[#333]'
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+                          (item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled : !!buildConfig?.nightly_android_enabled)
+                            ? 'translate-x-4'
+                            : 'translate-x-0.5'
+                        }`}
+                      />
+                    </span>
+                    <span className={`text-[11px] ${
+                      (item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled : !!buildConfig?.nightly_android_enabled)
+                        ? 'text-purple-300'
+                        : 'text-[#666]'
+                    }`}>
+                      {(item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled : !!buildConfig?.nightly_android_enabled) ? 'ON' : 'OFF'}
+                    </span>
                   </button>
-                )}
+                  {item.version && (
+                    <button
+                      onClick={() => remove(item.platform)}
+                      className="p-2 text-[#666] hover:text-red-400 transition-colors"
+                      title="Удалить"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="mt-4 pt-4 border-t border-[#222] flex flex-wrap items-center gap-3">
@@ -249,6 +356,22 @@ export default function UpdatesPage({ token }: { token: string }) {
                   {building === item.platform || (buildStatus?.running && buildStatus.last_platform === item.platform)
                     ? 'Сборка...'
                     : 'Собрать релиз в update'}
+                </button>
+                <button
+                  disabled={
+                    !buildStatus?.running ||
+                    buildStatus.last_platform !== item.platform ||
+                    stoppingBuild ||
+                    !!buildStatus.stop_requested
+                  }
+                  onClick={stopBuild}
+                  className="inline-flex items-center gap-2 bg-[#2a1111] border border-[#4a2222] text-red-300 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#331414] disabled:opacity-50"
+                  title="Остановить текущую сборку этой платформы"
+                >
+                  <Square className="w-4 h-4" />
+                  {buildStatus?.running && buildStatus.last_platform === item.platform
+                    ? (buildStatus.stop_requested ? 'Остановка запрошена…' : (stoppingBuild ? 'Останавливаем…' : 'Остановить сборку'))
+                    : 'Остановить сборку'}
                 </button>
               </div>
             </div>

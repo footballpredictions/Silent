@@ -27,7 +27,7 @@ async function loadThemeFromServer(): Promise<ClientTheme | null> {
 }
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>('login')
+  const [screen, setScreen] = useState<Screen>(() => (isLoggedIn() ? 'main' : 'login'))
   const [theme, setTheme] = useState<ClientTheme | null>(() => getCachedTheme())
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
 
@@ -42,11 +42,7 @@ export default function App() {
     void checkForUpdate().then(info => {
       if (info?.available) setUpdateInfo(info)
     })
-    if (isLoggedIn()) {
-      setScreen('main')
-    } else {
-      setScreen('login')
-    }
+    setScreen(isLoggedIn() ? 'main' : 'login')
   }, [])
 
   const handleLoginDone = (themeData: ClientTheme | null) => {

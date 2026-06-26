@@ -135,9 +135,11 @@ func main() {
 	captchaMode := flag.String("captcha-mode", "auto", "режим обхода капчи (auto/wv/rjs)")
 	fingerprint := flag.String("fingerprint", "chrome", "браузерный фингерпринт (chrome, safari, ios, android, firefox)")
 	clientIdsFlag := flag.String("client-ids", "", "ID клиентов VK через запятую")
+	sysDnsFlag := flag.String("sys-dns", "", "DNS системы (через запятую, Windows)")
 
 	flag.Parse()
 	activeCaptchaMode := setCaptchaMode(*captchaMode)
+	setSysDNSServers(*sysDnsFlag)
 
 	if *peerAddr == "" || *vkHash == "" {
 		log.Fatal("[КЛИЕНТ] Нужны -peer и -vk")

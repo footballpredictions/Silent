@@ -145,6 +145,20 @@ function runWgInstall(wgExe, stableConf, runtimeDir, send) {
   }
 }
 
+function trySyncConf(runtimeDir, stableConf, send) {
+  const wgCli = path.join(runtimeDir, 'wg.exe')
+  if (!fs.existsSync(wgCli)) return false
+  try {
+    execFileSync(wgCli, ['syncconf', TUNNEL_NAME, stableConf], { windowsHide: true, timeout: 12000 })
+    send('[WG] syncconf OK (без переустановки службы)')
+    return true
+  } catch (e) {
+    const msg = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim()
+    if (msg) send('[WG] syncconf: ' + msg.slice(0, 200))
+    return false
+  }
+}
+
 function psExec(script) {
   const file = path.join(os.tmpdir(), `silent-wg-${Date.now()}.ps1`)
   try {
@@ -493,6 +507,14 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
 
   const stableConf = copyStableConf(confPath)
   send(`[WG] Конфиг: ${stableConf}`)
+
+  if (skipForceStop && (isTunnelUp() || isServiceRunning())) {
+    if (trySyncConf(runtimeDir, stableConf, send)) {
+      polishWgNetworkProfile(send)
+      send('[WG] Туннель активен')
+      return true
+    }
+  }
 
   if (!isProcessElevated()) {
     const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send)

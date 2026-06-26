@@ -138,7 +138,7 @@ func WorkerGroup(
 	if ramp != nil && groupID > ramp.bootGroups {
 		ramp.passToNext(groupID-ramp.bootGroups-1, true)
 	} else {
-		passCascade(signalReady, groupID, true, 2*time.Second)
+		passCascade(signalReady, groupID, true, 1*time.Second)
 	}
 
 	for i, wid := range workerIDs {

@@ -3,9 +3,10 @@ import { traceUi } from './debugLog'
 const TAG = 'SilentTrace'
 
 function log(prefix: string, node: string, detail = '') {
+  if (!import.meta.env.DEV) return
   const body = detail ? `${node} | ${detail}` : node
   const msg = `${TAG} ${prefix} ${body}`
-  if (import.meta.env.DEV) console.log(msg)
+  console.log(msg)
   traceUi(TAG, msg)
 }
 

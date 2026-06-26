@@ -168,7 +168,7 @@ function createWindow() {
     },
     icon: resolveAssetPath('assets/icon.png'),
     title: 'Silent VPN',
-    show: false,
+    show: true,
   })
 
   if (!app.isPackaged && process.env.NODE_ENV === 'development') {
@@ -185,7 +185,6 @@ function createWindow() {
       mainWindow.focus()
     }
   })
-  mainWindow.once('ready-to-show', () => mainWindow.show())
   mainWindow.on('close', (e) => {
     if (!isQuitting && tray) {
       e.preventDefault()
@@ -299,6 +298,11 @@ function sendLog(line) {
     return
   }
 
+  // Сильный шум из VK Auth (десятки строк/сек) забивает IPC и фризит UI.
+  if (/\[VK Auth\]\s+(Trying credentials|Failed with|Both VK credentials failed|Success with)/i.test(trimmed)) {
+    return
+  }
+
   if (/^\[WG\]|^\[VPN\]|^\[Update\]/.test(trimmed)) {
     const isError = /error|ошиб|fail|таймаут/i.test(trimmed)
     const tag = trimmed.startsWith('[WG]') ? 'WireGuard' : 'VPN'
@@ -334,7 +338,6 @@ function clearFullTunnelUpgradeTimer() {
 function quitAppFully() {
   if (isQuitting) return
   isQuitting = true
-  cleanupVpn()
   if (tray && !tray.isDestroyed()) {
     tray.destroy()
     tray = null
@@ -343,7 +346,7 @@ function quitAppFully() {
     mainWindow.removeAllListeners('close')
     mainWindow.close()
   }
-  app.quit()
+  setImmediate(() => app.quit())
 }
 
 function cleanupVpn() {
@@ -410,16 +413,26 @@ function scheduleTunnelReadyPoll(sendLogFn) {
 }
 
 const WORKERS_PER_GROUP = 9
+const FULL_TUNNEL_TARGET_CAP = 27
 
-/** PC: «готов» = WG поднят + ≥1 воркер (моментально). Остальные — фоном. */
+function fullTunnelTargetWorkers() {
+  if (vpnBootstrapMode) return 1
+  const target = Math.max(1, sessionTargetWorkers || 1)
+  if (target <= WORKERS_PER_GROUP) return target
+  return Math.min(target, FULL_TUNNEL_TARGET_CAP)
+}
+
+/** PC: для main-VPN считаем «готов» только на полном наборе воркеров. */
 function minWorkersForTunnelReady(isBootstrap = false) {
   if (isBootstrap || vpnBootstrapMode) return 1
-  return 1
+  return fullTunnelTargetWorkers()
 }
 
 function isVpnReadyForUi() {
   if (tunnelReadySent) return true
-  return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
+  if (vpnBootstrapMode) return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
+  // Для основного VPN считаем «готово» только после полного туннеля и полного набора воркеров.
+  return wgApplied && !wgCredPhase && activeWorkerCount >= minWorkersForTunnelReady(false) && isWdttAlive()
 }
 
 async function stopWdttForReplace(sendLogFn, reason = 'replace') {
@@ -441,7 +454,7 @@ function ensureVpnReadyEvent(sendLogFn) {
   tunnelReadySent = true
   clearTunnelReadyPoll()
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('vpn-ready', true)
+    mainWindow.webContents.send('vpn-ready', { ok: true, bootstrap: vpnBootstrapMode })
   }
   sendLogFn?.(`[VPN] tunnel ready (WG + ${activeWorkerCount}/${sessionTargetWorkers} workers)`)
 }
@@ -749,16 +762,20 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
   const maybeScheduleFullTunnelUpgrade = () => {
     if (!wgCredPhase || fullTunnelUpgradeTimer) return
+    // Не переключаемся в full-tunnel слишком рано: ждём полный набор воркеров.
     fullTunnelUpgradeTimer = setTimeout(() => {
       fullTunnelUpgradeTimer = null
-      void upgradeToFullTunnel('timeout')
-    }, 12_000)
+      if (activeWorkerCount >= fullTunnelTargetWorkers()) {
+        void upgradeToFullTunnel('timeout-full-workers')
+      }
+    }, 20_000)
   }
 
   const onCredGroupResolved = (groupId) => {
     if (!wgCredPhase) return
     credGroupsResolved += 1
-    if (credGroupsResolved >= expectedCredGroups || groupId >= expectedCredGroups) {
+    const readyForFullWorkers = activeWorkerCount >= fullTunnelTargetWorkers()
+    if ((credGroupsResolved >= expectedCredGroups || groupId >= expectedCredGroups) && readyForFullWorkers) {
       void upgradeToFullTunnel(`group #${groupId}`)
     }
   }
@@ -844,7 +861,17 @@ async function beginWdttSession(config, { switching = false } = {}) {
     return tryApplyWg(text, 'wdtt-file')
   }
 
-  const handleLine = async (line) => {
+  let applyFromFileQueued = false
+  const requestApplyFromFile = () => {
+    if (applyFromFileQueued || wgApplied || wgInstallInFlight) return
+    applyFromFileQueued = true
+    setImmediate(() => {
+      applyFromFileQueued = false
+      void applyFromFile()
+    })
+  }
+
+  const handleLine = (line) => {
     const lineTrim = String(line || '').trim()
     if (lineTrim.startsWith('CAPTCHA_SOLVE|')) {
       scheduleCaptchaSolve(lineTrim)
@@ -855,6 +882,14 @@ async function beginWdttSession(config, { switching = false } = {}) {
     if (statsMatch) {
       activeWorkerCount = parseInt(statsMatch[1], 10)
       if (activeWorkerCount > 0) zeroWorkersSinceMs = 0
+      if (
+        wgCredPhase &&
+        wgApplied &&
+        activeWorkerCount >= fullTunnelTargetWorkers() &&
+        !wgFullTunnelUpgradeInFlight
+      ) {
+        void upgradeToFullTunnel(`workers>=${fullTunnelTargetWorkers()}`)
+      }
       if (wgApplied) ensureVpnReadyEvent(sendLog)
       const now = Date.now()
       if (now - lastStatsLogToUiAt >= 8000) {
@@ -880,7 +915,15 @@ async function beginWdttSession(config, { switching = false } = {}) {
     if (regMatch) {
       activeWorkerCount = parseInt(regMatch[1], 10)
       if (!wgApplied && !wgInstallInFlight && activeWorkerCount >= 1) {
-        await applyFromFile()
+        requestApplyFromFile()
+      }
+      if (
+        wgCredPhase &&
+        wgApplied &&
+        activeWorkerCount >= fullTunnelTargetWorkers() &&
+        !wgFullTunnelUpgradeInFlight
+      ) {
+        void upgradeToFullTunnel(`workers>=${fullTunnelTargetWorkers()}`)
       }
       if (wgApplied) ensureVpnReadyEvent(sendLog)
     }
@@ -891,7 +934,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
         wgFailed = false
         wgAttempted = false
       }
-      await applyFromFile()
+      requestApplyFromFile()
       return
     }
 
@@ -903,6 +946,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
   let collecting = false
   const boxBuilder = []
   const parseBox = async (line) => {
+    if (!config.is_bootstrap) return
     if (line.includes('╔') && line.includes('WireGuard')) {
       collecting = true
       boxBuilder.length = 0
@@ -939,6 +983,10 @@ async function beginWdttSession(config, { switching = false } = {}) {
     clearWgRetries()
     if (wdttProcess === proc) wdttProcess = null
     activeWorkerCount = 0
+    if (transportSwitching && vpnSessionActive && !isQuitting) {
+      // Это плановое переключение транспорта — UI не трогаем и WG не опускаем.
+      return
+    }
     if (vpnSessionActive && wgApplied && !isQuitting && !transportSwitching) {
       sendLog(`[VPN] wdtt завершился (code=${code}), WG остаётся — перезапуск транспорта…`)
       transportSwitching = true
@@ -963,7 +1011,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       if (wgApplied || wgFailed) clearWgRetries()
       return
     }
-    applyFromFile()
+    if (config.is_bootstrap) void applyFromFile()
   }, 500)
 
   // Bootstrap: запасной конфиг с API. Основной VPN — только wg-turn.conf / box (GETCONF).
@@ -979,13 +1027,19 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
 ipcMain.handle('vpn-connect', async (_, config) => {
   trace().enter('Main.vpnConnect', `bootstrap=${!!config?.is_bootstrap} n=${config?.stream_count ?? '?'}`)
+  const wantBootstrap = !!config?.is_bootstrap
   if (vpnConnectInFlight) {
     sendLog('[VPN] connect: уже выполняется, без перезапуска')
     ensureVpnReadyEvent(sendLog)
     return { success: true, skipped: true }
   }
 
-  if (vpnSessionActive && isTransportHealthy()) {
+  if (!wantBootstrap && vpnBootstrapMode) {
+    sendLog('[VPN] connect: смена bootstrap → main, полный перезапуск')
+    await cleanupVpnAsync()
+  }
+
+  if (vpnSessionActive && isTransportHealthy() && wantBootstrap === vpnBootstrapMode) {
     sendLog('[VPN] connect: туннель уже работает')
     ensureVpnReadyEvent(sendLog)
     return { success: true, alreadyActive: true }
@@ -1040,7 +1094,8 @@ ipcMain.handle('vpn-read-config', async () => {
 })
 
 ipcMain.handle('vpn-is-ready', async () => ({
-  ready: isVpnReadyForUi(),
+  ready: isVpnReadyForUi() && !vpnBootstrapMode,
+  bootstrap: vpnBootstrapMode && isVpnReadyForUi(),
   workers: activeWorkerCount,
   target: sessionTargetWorkers,
   min: minWorkersForTunnelReady(vpnBootstrapMode),
@@ -1174,9 +1229,6 @@ ipcMain.handle('app-update-install', async (_, filePath) => {
 })
 
 app.whenReady().then(() => {
-  // Сироты wireguard.exe после краша / прошлых версий — убираем до подключения
-  forceStopWireGuard(isDev, __dirname, () => {})
-
   if (process.defaultApp) {
     if (process.argv.length >= 2) {
       app.setAsDefaultProtocolClient('silentvpn', process.execPath, [path.resolve(process.argv[1])])
@@ -1186,6 +1238,7 @@ app.whenReady().then(() => {
   }
   createWindow()
   createTray()
+  // Предыдущее фоновое forceStop на старте убрано: оно могло сбивать подключение при раннем клике.
 })
 
 app.on('before-quit', () => {

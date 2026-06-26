@@ -247,7 +247,7 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (str
 	defer vkRequestMu.Unlock()
 
 	// Throttle: 3-6 seconds between requests
-	minInterval := 3*time.Second + time.Duration(rand.Intn(3000))*time.Millisecond
+	minInterval := 2*time.Second + time.Duration(rand.Intn(2000))*time.Millisecond
 	elapsed := time.Since(globalLastVkFetchTime)
 
 	if !globalLastVkFetchTime.IsZero() && elapsed < minInterval {
@@ -659,24 +659,65 @@ func GetCreds(ctx context.Context, link string, streamID int) (string, string, [
 
 // ─── DNS dialer setup ───
 
+var sysDNSServers []string
+
+func setSysDNSServers(csv string) {
+	sysDNSServers = nil
+	for _, part := range strings.Split(csv, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if !strings.Contains(part, ":") {
+			part = net.JoinHostPort(part, "53")
+		}
+		if isYandexDNSAddress(part) {
+			continue
+		}
+		sysDNSServers = append(sysDNSServers, part)
+	}
+}
+
 func setupGlobalResolver() {
 	yandexDNSServers := []string{"77.88.8.8:53", "77.88.8.1:53"}
+
+	if len(sysDNSServers) > 0 {
+		log.Printf("[DNS] resolver: yandex → sys-dns=%v → system (tcp-first)", sysDNSServers)
+	} else {
+		log.Printf("[DNS] resolver: yandex → system (tcp-first)")
+	}
+
+	tryDial := func(ctx context.Context, server string) (net.Conn, error) {
+		conn, err := dialViaLan(ctx, "tcp", server, 1500*time.Millisecond)
+		if err == nil {
+			return conn, nil
+		}
+		if isConnRefused(err) {
+			if uc, uerr := dialViaLan(ctx, "udp", server, 1500*time.Millisecond); uerr == nil {
+				return uc, nil
+			}
+		}
+		return nil, err
+	}
 
 	net.DefaultResolver = &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			var lastErr error
 			for _, dns := range yandexDNSServers {
-				conn, err := dialViaLan(ctx, "udp", dns, 3*time.Second)
-				if err == nil {
+				if conn, err := tryDial(ctx, dns); err == nil {
 					return conn, nil
+				} else {
+					lastErr = err
 				}
-				lastErr = err
-				conn, err = dialViaLan(ctx, "tcp", dns, 3*time.Second)
-				if err == nil {
+			}
+
+			for _, dns := range sysDNSServers {
+				if conn, err := tryDial(ctx, dns); err == nil {
 					return conn, nil
+				} else {
+					lastErr = err
 				}
-				lastErr = err
 			}
 
 			address = strings.TrimSpace(address)
@@ -687,9 +728,19 @@ func setupGlobalResolver() {
 				}
 				lastErr = err
 			}
+			if lastErr == nil {
+				lastErr = fmt.Errorf("no DNS server reachable")
+			}
 			return nil, lastErr
 		},
 	}
+}
+
+func isConnRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "connection refused")
 }
 
 func isYandexDNSAddress(address string) bool {

@@ -6,6 +6,7 @@ import api, {
   saveSessionDeviceId,
   clearSessionFingerprint,
   clearTokens,
+  isLoggedIn,
   formatApiError,
   getRememberMe,
   getRememberedEmail,
@@ -20,19 +21,20 @@ import {
   ensureBootstrapVpn,
   ensureBootstrapTunnelApi,
   disconnectBootstrapVpn,
-  isBootstrapVpnActive,
   isBootstrapExpired,
   prefetchLoginDataViaBootstrap,
-  refreshBootstrapSessionTimer,
+  resetBootstrapRendererState,
   setBootstrapStatusListener,
   shutdownBootstrapBeforeExit,
 } from '../bootstrapVpn'
+import { clearTunnelApiBase } from '../tunnelApi'
 import LoginExpiredPanel from '../components/LoginExpiredPanel'
 import ThemeCheckbox from '../components/ThemeCheckbox'
 import SilentLogo from '../components/SilentLogo'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import WindowControls from '../components/WindowControls'
 import { pushLog } from '../debugLog'
+import { clearVpnLogs } from '../vpnLogStore'
 import { authStrings as s } from '../authStrings'
 import { themeToUi, type ClientTheme } from '../clientTheme'
 
@@ -58,11 +60,8 @@ export default function LoginScreen({
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [regDone, setRegDone] = useState(false)
-  const [statusMsg, setStatusMsg] = useState('')
-  const [bootstrapConnecting, setBootstrapConnecting] = useState(false)
-  const [bootstrapReady, setBootstrapReady] = useState(isBootstrapVpnActive())
-  const [bootstrapExpired, setBootstrapExpired] = useState(isBootstrapExpired())
   const [showDebugLog, setShowDebugLog] = useState(false)
+  const [bootstrapStatus, setBootstrapStatus] = useState('')
 
   const rememberLabel = theme?.login_remember_me_label || 'Запомнить меня'
   const forgotLabel = theme?.login_forgot_password_label || 'Забыли пароль?'
@@ -70,7 +69,7 @@ export default function LoginScreen({
   const forgotHint = theme?.login_forgot_instruction || 'Введите email — мы отправим ссылку.'
   const linkColor = theme?.login_link_color || ui.linkColor
 
-  const sessionExpired = bootstrapExpired || isBootstrapExpired()
+  const sessionExpired = isBootstrapExpired()
 
   useEffect(() => {
     const savedEmail = getRememberedEmail()
@@ -89,50 +88,36 @@ export default function LoginScreen({
       const text = String(msg || '').trim()
       if (!text) return
       pushLog('Login', text, 'E')
-      setStatusMsg(text)
-      setBootstrapReady(false)
-      setBootstrapConnecting(false)
+      setError(text)
     }
     api_.onVpnError?.(onVpnError)
   }, [])
 
   useEffect(() => {
-    if (sessionExpired) return
-    const active = isBootstrapVpnActive()
-    setBootstrapReady(active)
-    if (active) {
-      refreshBootstrapSessionTimer()
+    if (isLoggedIn()) {
+      // Авторизованный пользователь не должен запускать bootstrap на старте.
+      resetBootstrapRendererState()
       return
     }
-
-    let cancelled = false
-    void (async () => {
-      setBootstrapConnecting(true)
-      setStatusMsg(s.connectingWait)
-      setError('')
-      try {
-        const ok = await ensureBootstrapVpn()
-        if (cancelled) return
-        setBootstrapReady(ok && isBootstrapVpnActive())
-      } finally {
-        if (!cancelled) setBootstrapConnecting(false)
-      }
-    })()
-
-    setBootstrapStatusListener(msg => {
-      setStatusMsg(msg)
-      const expired = isBootstrapExpired()
-      setBootstrapExpired(expired)
-      setBootstrapReady(!expired && isBootstrapVpnActive())
+    if (sessionExpired) return
+    let alive = true
+    setBootstrapStatus(s.connectingWait)
+    setBootstrapStatusListener((msg) => {
+      if (!alive) return
+      setBootstrapStatus(msg)
+    })
+    void ensureBootstrapVpn().then((ok) => {
+      if (!alive || ok) return
+      setBootstrapStatus(s.bootstrapFail)
     })
     return () => {
-      cancelled = true
+      alive = false
       setBootstrapStatusListener(null)
     }
-  }, [])
+  }, [sessionExpired])
 
   const openLoginSession = async (): Promise<{ ok: boolean; subscriptionExpired?: boolean }> => {
-    ensureBootstrapTunnelApi()
+    clearTunnelApiBase()
     const fp = startNewSession()
     const boot = getBootstrapHash()
     try {
@@ -166,19 +151,18 @@ export default function LoginScreen({
     if (!sessionResult.ok) {
       if (sessionResult.subscriptionExpired) {
         await prefetchLoginDataViaBootstrap().catch(() => false)
-        await disconnectBootstrapVpn()
-        setBootstrapReady(false)
+        resetBootstrapRendererState()
         const themeRes = await api.get('/api/vpn/theme').catch(() => ({ data: theme }))
         onLogin(themeRes.data ?? theme)
-      } else {
-        refreshBootstrapSessionTimer()
       }
       return
     }
+    // После успешного входа bootstrap VPN больше не нужен:
+    // чистим его, чтобы главный тумблер всегда поднимал "основной" режим с нуля.
+    await disconnectBootstrapVpn().catch(() => null)
+    clearVpnLogs()
     await prefetchLoginDataViaBootstrap()
-    await disconnectBootstrapVpn()
-    setBootstrapReady(false)
-    setStatusMsg(s.internetOff)
+    resetBootstrapRendererState()
     const themeRes = await api.get('/api/vpn/theme').catch(() => ({ data: theme }))
     onLogin(themeRes.data ?? theme)
   }
@@ -188,11 +172,12 @@ export default function LoginScreen({
     setLoading(true)
     setError('')
     try {
-      if (!isBootstrapVpnActive() || !ensureBootstrapTunnelApi()) {
-        setError(s.needBootstrap)
-        return
+      if (ensureBootstrapTunnelApi()) {
+        pushLog('Login', 'auth via bootstrap tunnel')
+      } else {
+        clearTunnelApiBase()
+        pushLog('Login', 'auth public HTTPS')
       }
-      pushLog('Login', 'auth via tunnel API')
       const res = await api.post('/api/auth/login', { email, password })
       saveTokens(res.data.access_token, res.data.refresh_token)
       await finishAuth()
@@ -200,7 +185,6 @@ export default function LoginScreen({
       const msg = formatApiError(err, 'Ошибка входа')
       pushLog('Login', msg, 'E')
       setError(msg)
-      refreshBootstrapSessionTimer()
     } finally {
       setLoading(false)
     }
@@ -211,16 +195,12 @@ export default function LoginScreen({
     setLoading(true)
     setError('')
     try {
-      if (!isBootstrapVpnActive() || !ensureBootstrapTunnelApi()) {
-        setError(s.needBootstrap)
-        return
-      }
+      if (!ensureBootstrapTunnelApi()) clearTunnelApiBase()
       await api.post('/api/auth/register', { email, password })
       saveRememberMe(email, password, rememberMe)
       setRegDone(true)
     } catch (err: any) {
       setError(formatApiError(err, 'Ошибка регистрации'))
-      refreshBootstrapSessionTimer()
     } finally {
       setLoading(false)
     }
@@ -231,6 +211,7 @@ export default function LoginScreen({
     setLoading(true)
     setError('')
     try {
+      if (!ensureBootstrapTunnelApi()) clearTunnelApiBase()
       await api.post('/api/auth/forgot-password', { email: forgotEmail || email })
       setForgotSent(true)
     } catch (err: any) {
@@ -280,28 +261,13 @@ export default function LoginScreen({
 
   const statusBlock = () => {
     if (sessionExpired) return null
-    if (bootstrapConnecting) {
-      return (
-        <p className="text-[12px] mb-3" style={{ color: ui.hint }}>
-          {statusMsg || 'Подключение… подождите'}
-        </p>
-      )
-    }
-    if (bootstrapReady) {
-      return (
-        <p className="text-[12px] font-medium mb-3" style={{ color: ui.green }}>
-          {statusMsg || 'VPN включён'}
-        </p>
-      )
-    }
-    if (statusMsg) {
-      return (
-        <p className="text-[12px] mb-3" style={{ color: ui.red }}>
-          {statusMsg}
-        </p>
-      )
-    }
-    return null
+    const text = bootstrapStatus || s.channelReady
+    const isReady = /Канал готов|Осталось \d+:\d+/i.test(text)
+    return (
+      <p className="mb-4 text-xs leading-relaxed" style={{ color: isReady ? ui.green : ui.hint }}>
+        {text}
+      </p>
+    )
   }
 
   const handleCloseApp = () => {
@@ -438,7 +404,7 @@ export default function LoginScreen({
                 )}
                 <button
                   type="submit"
-                  disabled={loading || !bootstrapReady || !email.trim() || !password.trim()}
+                  disabled={loading || !email.trim() || !password.trim()}
                   className="w-full h-12 rounded-xl text-sm font-semibold disabled:opacity-40"
                   style={{ background: ui.primaryBtnBg, color: ui.primaryBtnFg }}
                 >

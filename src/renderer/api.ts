@@ -26,9 +26,12 @@ export function getPublicApiBaseUrl(): string {
 const api = axios.create({ timeout: 15000 })
 
 api.interceptors.request.use(cfg => {
-  cfg.baseURL = isTunnelApiActive() ? getApiBaseUrl() : getPublicApiBaseUrl()
+  const forcePublic = Boolean((cfg as any).__forcePublic)
+  cfg.baseURL = forcePublic
+    ? getPublicApiBaseUrl()
+    : (isTunnelApiActive() ? getApiBaseUrl() : getPublicApiBaseUrl())
   if (!cfg.timeout || cfg.timeout === 15000) {
-    cfg.timeout = isTunnelApiActive() ? 45_000 : 15_000
+    cfg.timeout = !forcePublic && isTunnelApiActive() ? 45_000 : 15_000
   }
   const token = localStorage.getItem(TOKEN_KEY)
   if (token) cfg.headers!['Authorization'] = `Bearer ${token}`
@@ -38,6 +41,13 @@ api.interceptors.request.use(cfg => {
 api.interceptors.response.use(
   r => r,
   async err => {
+    const cfg = err.config
+    if (cfg && !cfg.__publicRetry && isTunnelApiActive() && !err.response) {
+      cfg.__publicRetry = true
+      cfg.__forcePublic = true
+      cfg.baseURL = getPublicApiBaseUrl()
+      return api.request(cfg)
+    }
     if (err.response?.status === 401) {
       const refresh = localStorage.getItem(REFRESH_KEY)
       if (refresh) {

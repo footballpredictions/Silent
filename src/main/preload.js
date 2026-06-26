@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onVpnLog: (cb) => ipcRenderer.on('vpn-log', (_, line) => cb(line)),
   onWdttLog: (cb) => ipcRenderer.on('wdtt-log', (_, entry) => cb(entry)),
   onDebugLog: (cb) => ipcRenderer.on('debug-log', (_, payload) => cb(payload)),
-  onVpnReady: (cb) => ipcRenderer.on('vpn-ready', (_, ok) => cb(ok)),
+  onVpnReady: (cb) => ipcRenderer.on('vpn-ready', (_, payload) => cb(payload)),
   onVpnError: (cb) => ipcRenderer.on('vpn-error', (_, msg) => cb(msg)),
   onVpnStopped: (cb) => ipcRenderer.on('vpn-stopped', (_, code) => cb(code)),
   onHashFailure: (cb) => ipcRenderer.on('hash-failure', (_, payload) => cb(payload)),

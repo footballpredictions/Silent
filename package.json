@@ -1,6 +1,6 @@
 {
   "name": "silent-vpn-pc",
-  "version": "1.0.144",
+  "version": "1.0.145",
   "description": "Silent VPN PC Client",
   "main": "src/main/main.js",
   "scripts": {
@@ -31,7 +31,9 @@
       {
         "from": "resources/wireguard",
         "to": "wireguard",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "resources/wireguard-installer.msi",

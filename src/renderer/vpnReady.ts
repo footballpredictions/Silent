@@ -14,8 +14,11 @@ export async function waitVpnReady(
   let listenerOk: boolean | null = null
 
   if (electron.onVpnReady) {
-    electron.onVpnReady((ok: boolean) => {
-      if (ok) listenerOk = true
+    electron.onVpnReady((payload: boolean | { ok?: boolean; bootstrap?: boolean }) => {
+      const ok = typeof payload === 'object' ? !!payload?.ok : !!payload
+      const bootstrap = typeof payload === 'object' ? !!payload?.bootstrap : false
+      if (!ok) return
+      if (isBootstrap ? bootstrap : !bootstrap) listenerOk = true
     })
   }
 
@@ -24,7 +27,7 @@ export async function waitVpnReady(
     try {
       if (electron.vpnIsReady) {
         const r = await electron.vpnIsReady()
-        if (r?.ready) return true
+        if (isBootstrap ? r?.bootstrap : r?.ready && !r?.bootstrap) return true
       }
     } catch {
       /* ignore */

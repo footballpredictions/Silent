@@ -81,7 +81,9 @@ function createNetworkMonitor(state, actions) {
         actions.pauseWdtt('потеря сети')
       }
     } else if (!lastOnline && online) {
-      actions.restoreTransport('сеть восстановлена')
+      if (state.wgApplied && !actions.isTransportHealthy()) {
+        actions.restoreTransport('сеть восстановлена')
+      }
     }
     lastOnline = online
 

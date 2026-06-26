@@ -26,6 +26,11 @@ export async function prepareVpnConnectConfig(
   let items: HashItem[] = getSavedHashItems()
   const cachedActive = activeServerHashes(items).length
   const configHashes = (config.vk_hashes || []).map(h => h.trim()).filter(Boolean).length
+  if (cachedActive >= 4 || configHashes >= 4) {
+    const serverHashes = activeServerHashes(items).map(i => i.hash.trim()).filter(Boolean)
+    if (serverHashes.length > 0) merged = { ...merged, vk_hashes: serverHashes }
+    return applyWorkerCountForConnect(merged)
+  }
   if (cachedActive < 4 && configHashes < 4) {
     const hashSyncDeadline = cachedActive > 0 ? 3_000 : 8_000
     try {
@@ -75,14 +80,19 @@ export async function prepareVpnConnectConfig(
   }
 
   try {
-    const cfgRes = await api.get(`/api/vpn/config?fingerprint=${encodeURIComponent(fingerprint)}`)
-    const fresh = cfgRes.data as VpnConfigPayload
-    if (fresh.vk_hashes?.length) {
-      merged = {
-        ...merged,
-        ...fresh,
-        vk_hashes: fresh.vk_hashes,
-        stream_count: fresh.stream_count,
+    const cfgRes = await withTimeout(
+      api.get(`/api/vpn/config?fingerprint=${encodeURIComponent(fingerprint)}`),
+      2_500,
+    )
+    if (cfgRes) {
+      const fresh = cfgRes.data as VpnConfigPayload
+      if (fresh.vk_hashes?.length) {
+        merged = {
+          ...merged,
+          ...fresh,
+          vk_hashes: fresh.vk_hashes,
+          stream_count: fresh.stream_count,
+        }
       }
     }
   } catch {
@@ -91,10 +101,6 @@ export async function prepareVpnConnectConfig(
 
   // Одна сессия wdtt с полным n из настроек (как Android). Без фонового upgrade — он рвал транспорт (0 воркеров при живом WG).
   const prepared = applyWorkerCountForConnect(merged)
-  pushLog(
-    'Main',
-    `prepare n=${prepared.stream_count} hashes=${prepared.vk_hashes?.length ?? 0}`,
-  )
   return prepared
 }
 

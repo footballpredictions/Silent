@@ -191,17 +191,39 @@ export default function VpnToggle({
   bg: string
   onToggle: () => void
 }) {
-  const [toggleBusy, setToggleBusy] = useState(false)
+  const [pendingToggle, setPendingToggle] = useState(false)
   const [pressed, setPressed] = useState(false)
-  const interactionLocked = connecting || disconnecting || toggleBusy
+  const pendingTimeoutRef = useRef<number | null>(null)
+  const interactionLocked = connecting || disconnecting || pendingToggle
 
   useEffect(() => {
-    if (!connecting && !disconnecting) setToggleBusy(false)
+    if (connecting || disconnecting) {
+      if (pendingTimeoutRef.current) {
+        window.clearTimeout(pendingTimeoutRef.current)
+        pendingTimeoutRef.current = null
+      }
+      setPendingToggle(false)
+    }
+    if (!connecting && !disconnecting && connected) {
+      setPendingToggle(false)
+    }
   }, [connected, connecting, disconnecting])
+
+  useEffect(() => {
+    return () => {
+      if (pendingTimeoutRef.current) window.clearTimeout(pendingTimeoutRef.current)
+    }
+  }, [])
 
   const handleClick = useCallback(() => {
     if (interactionLocked) return
-    setToggleBusy(true)
+    setPendingToggle(true)
+    if (pendingTimeoutRef.current) window.clearTimeout(pendingTimeoutRef.current)
+    // Буфер до прихода IPC-статуса connecting/disconnecting, чтобы анимация не мигала.
+    pendingTimeoutRef.current = window.setTimeout(() => {
+      setPendingToggle(false)
+      pendingTimeoutRef.current = null
+    }, 2500)
     onToggle()
   }, [interactionLocked, onToggle])
 
@@ -244,7 +266,7 @@ export default function VpnToggle({
           style={{ background: connected ? toggleOn : toggleOff }}
         />
         <VpnToggleThumb
-          connecting={connecting}
+          connecting={connecting || (pendingToggle && !connected)}
           isConnected={connected}
           travelX={connected ? THUMB_TRAVEL : 0}
           bg={bg}

@@ -15,7 +15,11 @@ import {
   getVkUserId, saveVkUserId,
   type VpnConfigPayload,
 } from '../vkConfig'
-import { disconnectBootstrapVpn, isBootstrapVpnActive } from '../bootstrapVpn'
+import {
+  disconnectBootstrapVpn,
+  isBootstrapVpnActive,
+  resetBootstrapRendererState,
+} from '../bootstrapVpn'
 import { fetchVpnConfigWithKeys } from '../vpnConfigFetch'
 import { waitVpnReady } from '../vpnReady'
 import { warmupBrowsingPath } from '../warmupBrowsingPath'
@@ -177,6 +181,7 @@ export default function MainScreen({
   const [activeWorkers, setActiveWorkers] = useState(0)
   const connectLockRef = useRef(false)
   const onlineMarkedRef = useRef(false)
+  const subscriptionExpiredHandledRef = useRef(false)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(initialUpdateInfo)
   const [updateDownloading, setUpdateDownloading] = useState(false)
   const [updateProgress, setUpdateProgress] = useState(0)
@@ -188,21 +193,35 @@ export default function MainScreen({
     if (isBootstrapVpnActive()) return
     const vpnActive = connected || connecting || disconnecting
     const hasAccess = p.is_admin || p.subscription?.is_active
+    if (hasAccess) {
+      subscriptionExpiredHandledRef.current = false
+      return
+    }
     if (vpnActive && !hasAccess) {
+      if (subscriptionExpiredHandledRef.current) return
+      subscriptionExpiredHandledRef.current = true
       pushLog('Main', 'subscription expired on server — disconnect VPN', 'W')
       void (async () => {
+        setDisconnecting(true)
         let fp: string | null = null
-        try { fp = getDeviceFingerprint() } catch { /* ignore */ }
-        setMainVpnSessionActive(false)
-        if (fp) await notifyDisconnect(fp)
-        if ((window as any).electronAPI?.vpnDisconnect) {
-          await (window as any).electronAPI.vpnDisconnect()
+        try {
+          try { fp = getDeviceFingerprint() } catch { /* ignore */ }
+          setMainVpnSessionActive(false)
+          if (fp) await notifyDisconnect(fp)
+          if ((window as any).electronAPI?.vpnDisconnect) {
+            await (window as any).electronAPI.vpnDisconnect()
+          }
+        } catch (e) {
+          pushLog('Main', `forced disconnect: ${(e as Error)?.message || e}`, 'W')
+        } finally {
+          onlineMarkedRef.current = false
+          setConnected(false)
+          setConnecting(false)
+          setDisconnecting(false)
+          connectLockRef.current = false
         }
-        onlineMarkedRef.current = false
-        setConnected(false)
-        setConnecting(false)
-        setDisconnecting(false)
-        alert('Пробный период закончился. Оформите подписку в меню → Подписка.')
+        // Не используем alert: он блокирует UI и может зациклиться при частом profile sync.
+        pushLog('Main', 'Пробный период закончился. Откройте меню → Подписка', 'W')
         setMenuOpen(true)
         setMenuPage('subscription')
       })()
@@ -221,6 +240,24 @@ export default function MainScreen({
       return cached
     }
   }, [applyServerProfile])
+
+  useEffect(() => {
+    // На главном экране bootstrap-состояние не должно жить.
+    resetBootstrapRendererState()
+    const api_ = (window as any).electronAPI
+    void (async () => {
+      try {
+        const st = await api_?.vpnIsReady?.()
+        // Если после логина остался bootstrap-туннель — гасим его.
+        if (st?.bootstrap && !st?.ready) {
+          await disconnectBootstrapVpn()
+          pushLog('Main', 'stale bootstrap VPN stopped on main screen')
+        }
+      } catch {
+        /* ignore */
+      }
+    })()
+  }, [])
 
   useEffect(() => {
     void seedConfigSyncRevision()
@@ -310,6 +347,10 @@ export default function MainScreen({
     if (!api_?.onVpnStopped) return
     let mounted = true
     const onStopped = () => {
+      if (connecting && !connected) {
+        // Во время старта возможен краткий restart транспорта; не сбрасываем UI раньше времени.
+        return
+      }
       onlineMarkedRef.current = false
       setMainVpnSessionActive(false)
       resetHashFailureReporter()
@@ -325,7 +366,10 @@ export default function MainScreen({
       setConnecting(false)
       setConnected(false)
     }
-    const onReady = (ok: boolean) => {
+    const onReady = (payload: boolean | { ok?: boolean; bootstrap?: boolean }) => {
+      const ok = typeof payload === 'object' ? !!payload?.ok : !!payload
+      const bootstrap = typeof payload === 'object' ? !!payload?.bootstrap : false
+      if (!ok || bootstrap) return
       if (ok) {
         setConnected(true)
         setConnecting(false)
@@ -344,7 +388,7 @@ export default function MainScreen({
     api_.onVpnReady?.(onReady)
     api_.onVpnLog?.(onLog)
     return () => { mounted = false }
-  }, [markOnlineOnServer, applyTunnelApiFromCache])
+  }, [markOnlineOnServer, applyTunnelApiFromCache, connecting, connected])
 
   useEffect(() => {
     if (initialUpdateInfo?.available) setUpdateInfo(initialUpdateInfo)

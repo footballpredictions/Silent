@@ -6,7 +6,7 @@ import { applyBootstrapWorkerCount } from './hashChannelHelper'
 import { authStrings as s } from './authStrings'
 import { waitVpnReady } from './vpnReady'
 import { enableTunnelApi, clearTunnelApiBase } from './tunnelApi'
-import { syncLoginDataViaBootstrap } from './syncBootstrapData'
+import { syncLoginDataViaPublic } from './syncBootstrapData'
 
 const PRE_LOGIN_FP_KEY = 'silent_pre_login_fp'
 const BOOTSTRAP_SESSION_MS = 2 * 60 * 1000
@@ -41,6 +41,7 @@ let bootstrapTimeoutTimer: ReturnType<typeof setInterval> | null = null
 let bootstrapSessionDeadline = 0
 let statusListener: ((msg: string) => void) | null = null
 let lastBootstrapWgAddress: string | null = null
+let bootstrapEnsureGeneration = 0
 
 export function setBootstrapStatusListener(fn: ((msg: string) => void) | null) {
   statusListener = fn
@@ -90,6 +91,7 @@ function resetBootstrapDeadline() {
 
 async function expireBootstrapSession() {
   if (!bootstrapActive && !bootstrapExpired) return
+  bootstrapEnsureGeneration += 1
   pushLog('Bootstrap', `session expired (${BOOTSTRAP_SESSION_MS / 1000}s)`)
   resetBootstrapDeadline()
   bootstrapActive = false
@@ -129,6 +131,7 @@ export function forceNewBootstrapSessionTimer(): void {
 
 /** Остановить VPN перед полным закрытием приложения с экрана входа. */
 export async function shutdownBootstrapBeforeExit(): Promise<void> {
+  bootstrapEnsureGeneration += 1
   cancelBootstrapSessionTimeout()
   resetBootstrapDeadline()
   bootstrapActive = false
@@ -161,6 +164,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   }
 
   pushLog('Bootstrap', 'ensureBootstrapVpn start')
+  const runId = ++bootstrapEnsureGeneration
   SessionTrace.enter('Bootstrap.ensureVpn')
   const config = await fetchBootstrapConfig()
   if (!config?.vk_hashes?.length) {
@@ -181,6 +185,10 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   bootstrapExpired = false
 
   const ok = await waitVpnReady(90_000, bootCfg.stream_count ?? 9, true)
+  if (runId !== bootstrapEnsureGeneration || !bootstrapActive) {
+    // Сессия уже отменена (вход завершён/переключение режима) — игнорируем хвост.
+    return false
+  }
   pushLog('Bootstrap', ok ? 'VPN ready' : 'VPN timeout', ok ? 'I' : 'E')
   if (ok) {
     lastBootstrapWgAddress = bootCfg.assigned_ip || null
@@ -198,15 +206,23 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   return false
 }
 
-/** Профиль и хеши пока bootstrap ещё поднят (до отключения). */
+/** Профиль и хеши через публичный HTTPS (PC без bootstrap VPN). */
 export async function prefetchLoginDataViaBootstrap(): Promise<boolean> {
-  if (!bootstrapActive) return false
-  const { profile, hashesOk } = await syncLoginDataViaBootstrap(lastBootstrapWgAddress)
+  const { profile, hashesOk } = await syncLoginDataViaPublic()
   pushLog('Bootstrap', `prefetch profile=${!!profile} hashes=${hashesOk}`)
   return !!profile || hashesOk
 }
 
+/** Сброс флагов bootstrap без остановки основного VPN. */
+export function resetBootstrapRendererState(): void {
+  bootstrapEnsureGeneration += 1
+  cancelBootstrapSessionTimeout()
+  bootstrapActive = false
+  clearTunnelApiBase()
+}
+
 export async function disconnectBootstrapVpn(): Promise<void> {
+  bootstrapEnsureGeneration += 1
   cancelBootstrapSessionTimeout()
   bootstrapActive = false
   clearTunnelApiBase()

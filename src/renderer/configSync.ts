@@ -14,7 +14,6 @@ import { mapHashesResponse, saveHashItems } from './hashItemsStore'
 import { saveCachedTheme } from './themeStore'
 import { saveCachedProfile } from './profileStore'
 import { profileSyncFingerprint } from './profileFingerprint'
-import { enableTunnelApi, isMainVpnSessionActive } from './tunnelApi'
 import type { ClientTheme } from './clientTheme'
 import { flushPendingHashFailures } from './hashFailureReporter'
 
@@ -38,14 +37,7 @@ let startTimer: ReturnType<typeof setTimeout> | null = null
 let tickInFlight = false
 let opts: ConfigSyncOptions | null = null
 
-function applyTunnelApiForVpn(): void {
-  if (isMainVpnSessionActive() || (opts?.isVpnConnected() ?? false)) {
-    enableTunnelApi()
-  }
-}
-
 async function withSyncApi<T>(block: () => Promise<T>): Promise<T> {
-  applyTunnelApiForVpn()
   return block()
 }
 

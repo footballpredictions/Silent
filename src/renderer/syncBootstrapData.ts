@@ -9,11 +9,12 @@ import {
 } from './hashItemsStore'
 import { enableTunnelApi, clearTunnelApiBase } from './tunnelApi'
 import { saveCachedProfile } from './profileStore'
-/** Профиль и хеши через bootstrap WG (10.66.66.1), как Android syncLoginDataViaBootstrapTunnel. */
-export async function syncLoginDataViaBootstrap(
-  wgAddress?: string | null,
-): Promise<{ profile: Record<string, unknown> | null; hashesOk: boolean }> {
-  enableTunnelApi()
+/** Профиль и хеши через публичный HTTPS (PC без блокировок). */
+export async function syncLoginDataViaPublic(): Promise<{
+  profile: Record<string, unknown> | null
+  hashesOk: boolean
+}> {
+  clearTunnelApiBase()
   let profile: Record<string, unknown> | null = null
   let hashesOk = false
   for (let attempt = 1; attempt <= 2 && !profile; attempt++) {
@@ -62,4 +63,11 @@ export async function syncLoginDataViaBootstrap(
 
   clearTunnelApiBase()
   return { profile, hashesOk: hashesOk || activeServerHashes(getSavedHashItems()).length > 0 }
+}
+
+/** @deprecated PC: используйте syncLoginDataViaPublic */
+export async function syncLoginDataViaBootstrap(
+  _wgAddress?: string | null,
+): Promise<{ profile: Record<string, unknown> | null; hashesOk: boolean }> {
+  return syncLoginDataViaPublic()
 }

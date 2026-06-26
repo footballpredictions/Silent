@@ -1,5 +1,4 @@
 import api, { formatApiError } from './api'
-import { clearTunnelApiBase, isMainVpnSessionActive } from './tunnelApi'
 import { pushLog } from './debugLog'
 import type { VpnConfigPayload } from './vkConfig'
 
@@ -11,14 +10,8 @@ function isSubscriptionError(err: unknown): boolean {
   return (err as { response?: { status?: number } })?.response?.status === 402
 }
 
-/** Получить VPN-конфиг (register → /config). При активном VPN — только через tunnel API. */
+/** Получить VPN-конфиг (register → /config) через публичный HTTPS. */
 export async function fetchVpnConfigWithKeys(fingerprint: string): Promise<VpnConfigPayload | null> {
-  if (isMainVpnSessionActive()) {
-    // Полный туннель — public nip.io недоступен, не сбрасываем tunnel base.
-  } else {
-    clearTunnelApiBase()
-  }
-
   try {
     const reg = await api.post('/api/vpn/device/register', {
       device_name: 'PC',

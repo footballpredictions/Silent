@@ -2,7 +2,10 @@
 
 const TAG = 'SilentTrace'
 
+const isDev = process.env.NODE_ENV === 'development'
+
 function emit(prefix, node, detail, sendFn) {
+  if (!isDev) return
   const body = detail ? `${node} | ${detail}` : node
   const msg = `${TAG} ${prefix} ${body}`
   sendFn?.({ tag: TAG, level: 'T', message: msg })

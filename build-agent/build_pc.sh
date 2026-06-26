@@ -103,6 +103,19 @@ build_wdtt_client_docker() {
 }
 
 build_wdtt_client() {
+  local existing="$REPO/resources/wdtt-client.exe"
+  local force_rebuild="${PC_FORCE_REBUILD_WDTT:-0}"
+
+  # Если валидный Windows PE уже есть в репо — используем его.
+  # Это исключает падения на шаге go/docker в build-agent и гарантирует, что файл попадёт в installer.
+  if [[ "$force_rebuild" != "1" && -f "$existing" ]]; then
+    if verify_wdtt_pe "$existing"; then
+      echo "[build] reuse wdtt-client.exe from repo"
+      return 0
+    fi
+    echo "[build] existing wdtt-client.exe invalid, rebuilding..." >&2
+  fi
+
   if [[ -S /var/run/docker.sock ]] && command -v docker >/dev/null 2>&1; then
     build_wdtt_client_docker
   else
@@ -117,7 +130,13 @@ build_renderer() {
   rm -rf node_modules dist/renderer
   npm ci --no-audit --no-fund --legacy-peer-deps
   npm run build:renderer
-  css="$(find dist/renderer/assets -name '*.css' -type f | head -1)"
+  css=""
+  for f in dist/renderer/assets/*.css; do
+    if [[ -f "$f" ]]; then
+      css="$f"
+      break
+    fi
+  done
   if [[ -z "$css" || ! -s "$css" ]]; then
     echo "[build] renderer CSS missing" >&2
     exit 1

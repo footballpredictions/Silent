@@ -233,8 +233,8 @@ def _run_shell(script: Path, platform: str, bootstrap_hash: str, timeout: int) -
     out = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
         lines = out.strip().splitlines()
-        tail = "\n".join(lines[-40:]) if lines else f"exit {proc.returncode}"
-        raise BuildAgentError(f"Build script failed:\n{tail[-4000:]}")
+        tail = "\n".join(lines[-120:]) if lines else f"exit {proc.returncode}"
+        raise BuildAgentError(f"Build script failed (exit {proc.returncode}):\n{tail[-12000:]}")
     lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
     artifact = lines[-1] if lines else ""
     if artifact and not os.path.isabs(artifact):

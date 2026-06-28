@@ -183,6 +183,7 @@ export default function MainScreen({
   const connectLockRef = useRef(false)
   const onlineMarkedRef = useRef(false)
   const subscriptionExpiredHandledRef = useRef(false)
+  const pendingConnectAfterSubscriptionRefreshRef = useRef(false)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(initialUpdateInfo)
   const [updateDownloading, setUpdateDownloading] = useState(false)
   const [updateProgress, setUpdateProgress] = useState(0)
@@ -471,6 +472,7 @@ export default function MainScreen({
     if (connectLockRef.current || connecting || disconnecting) return
 
     if (connected) {
+      pendingConnectAfterSubscriptionRefreshRef.current = false
       connectLockRef.current = true
       setConnected(false)
       setDisconnecting(true)
@@ -515,6 +517,7 @@ export default function MainScreen({
         const p = await fetchProfile()
         const hasAccess = !p || p.is_admin || p.subscription?.is_active
         if (!hasAccess) {
+          pendingConnectAfterSubscriptionRefreshRef.current = true
           alert('Пробный период закончился. Оформите подписку в меню → Подписка.')
           setMenuOpen(true)
           setMenuPage('subscription')
@@ -531,6 +534,7 @@ export default function MainScreen({
             config = await fetchVpnConfigWithKeys(fp)
           } catch (e: any) {
             if (e.response?.status === 402) {
+              pendingConnectAfterSubscriptionRefreshRef.current = true
               alert(e.response?.data?.detail || 'Оформите подписку для доступа к интернету.')
               setMenuOpen(true)
               setMenuPage('subscription')
@@ -582,6 +586,7 @@ export default function MainScreen({
             await fetchProfile()
             return
           }
+          pendingConnectAfterSubscriptionRefreshRef.current = false
           await markOnlineOnServer()
           void warmupBrowsingPath().catch(() => null)
         }
@@ -589,12 +594,25 @@ export default function MainScreen({
       }
       fetchProfile()
     } catch (err: any) {
+      if (err.response?.status === 402 || err.response?.status === 403) {
+        pendingConnectAfterSubscriptionRefreshRef.current = true
+      }
       if (err.response?.status === 402 || err.response?.status === 403) alert(err.response.data.detail)
     } finally {
       connectLockRef.current = false
       setConnecting(false)
     }
   }
+
+  useEffect(() => {
+    if (!pendingConnectAfterSubscriptionRefreshRef.current) return
+    const hasAccess = !!(profile && (profile.is_admin || profile.subscription?.is_active))
+    if (!hasAccess) return
+    if (connected || connecting || disconnecting || connectLockRef.current) return
+    pendingConnectAfterSubscriptionRefreshRef.current = false
+    pushLog('Main', 'subscription restored — auto reconnect')
+    void handleToggle()
+  }, [profile, connected, connecting, disconnecting])
 
   const handleLogout = async () => {
     const fp = (() => { try { return DEVICE_FINGERPRINT() } catch { return null } })()

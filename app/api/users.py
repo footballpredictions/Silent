@@ -21,8 +21,9 @@ from app.services.vpn_service import (
     count_active_sessions,
     count_connected_sessions,
     clear_stale_online_status,
-    prune_idle_sessions,
     collapse_duplicate_devices,
+    touch_user_last_seen,
+    LAST_SEEN_TOUCH_MINUTES,
 )
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -30,9 +31,9 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 @router.get("/me", response_model=UserProfileResponse)
 async def get_profile(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    await touch_user_last_seen(db, user, min_interval_minutes=LAST_SEEN_TOUCH_MINUTES)
     await ensure_admin_flag(user, db)
     await clear_stale_online_status(db)
-    await prune_idle_sessions(db, user.id)
     await collapse_duplicate_devices(db, user.id)
     if not await user_in_test_mode(user, db):
         await ensure_trial_subscription(db, user)
@@ -163,6 +164,8 @@ async def remove_device(
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Устройство не найдено")
+    if device.is_connected:
+        device.is_connected = False
     await db.delete(device)
     await db.commit()
     return {"message": "Сессия удалена"}

@@ -32,6 +32,7 @@ from app.services.vpn_service import (
     clear_stale_online_status,
     set_device_online,
     mark_client_disconnect_latch,
+    touch_user_last_seen,
 )
 from app.services.subscription_service import (
     user_has_active_subscription,
@@ -226,6 +227,7 @@ async def connect(
     device.is_connected = True
     device.last_connected = datetime.utcnow()
     device.last_ip = req.last_ip
+    await touch_user_last_seen(db, user, commit=False)
     await db.commit()
     return {"status": "connected", "mode": "full" if await user_has_active_subscription(user, db) else "bootstrap"}
 

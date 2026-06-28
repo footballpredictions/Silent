@@ -35,6 +35,9 @@ interface Stats {
     user_id: string
     user_email: string
     user_connected: boolean
+    last_seen_at?: string | null
+    device_names?: string[]
+    online_device_names?: string[]
     slots_filled: number
     slots_max: number
     hashes: Array<{
@@ -94,6 +97,22 @@ function VkHashesCard({
   vkUsers?: Stats['vk_users']
   summary?: Stats['vk_hash_summary']
 }) {
+  const formatLastSeen = (iso?: string | null): string => {
+    if (!iso) return '—'
+    try {
+      const dt = new Date(iso)
+      return dt.toLocaleString('ru-RU', {
+        timeZone: 'Europe/Moscow',
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    } catch {
+      return '—'
+    }
+  }
+
   const users =
     vkUsers && vkUsers.length > 0
       ? vkUsers.map(u => [u.user_email, u] as const)
@@ -109,6 +128,9 @@ function VkHashesCard({
           {
             user_email: email,
             user_connected: slots[0]?.user_connected ?? false,
+            last_seen_at: null,
+            device_names: [],
+            online_device_names: [],
             slots_filled: slots.length,
             slots_max: 4,
             hashes: slots.map(h => ({
@@ -160,21 +182,38 @@ function VkHashesCard({
             <div key={email} className="border border-[#1e1e1e] rounded-lg overflow-hidden">
               <button
                 onClick={() => toggle(email)}
-                className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-[#181818] transition-colors text-left"
+                className="w-full px-3 py-2.5 hover:bg-[#181818] transition-colors text-left"
               >
-                {isOpen
-                  ? <ChevronDown className="w-3.5 h-3.5 text-[#555] shrink-0" />
-                  : <ChevronRight className="w-3.5 h-3.5 text-[#555] shrink-0" />
-                }
-                <div className={`w-2 h-2 rounded-full shrink-0 ${
-                  connected ? 'bg-green-400 shadow-[0_0_5px_#4ade80]' : 'bg-[#444]'
-                }`} />
-                <span className="text-sm text-white flex-1 min-w-0 truncate">{email}</span>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${
-                  filled >= max ? 'text-green-400/90 bg-green-400/10' : filled > 0 ? 'text-amber-400/90 bg-amber-400/10' : 'text-[#555] bg-[#222]'
-                }`}>
-                  {filled} / {max}
-                </span>
+                <div className="flex items-center gap-2 min-w-0">
+                  {isOpen
+                    ? <ChevronDown className="w-3.5 h-3.5 text-[#555] shrink-0" />
+                    : <ChevronRight className="w-3.5 h-3.5 text-[#555] shrink-0" />
+                  }
+                  <div className={`w-2 h-2 rounded-full shrink-0 ${
+                    connected ? 'bg-green-400 shadow-[0_0_5px_#4ade80]' : 'bg-[#444]'
+                  }`} />
+                  <span className="text-sm text-white flex-1 min-w-0 truncate">{email}</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${
+                    filled >= max ? 'text-green-400/90 bg-green-400/10' : filled > 0 ? 'text-amber-400/90 bg-amber-400/10' : 'text-[#555] bg-[#222]'
+                  }`}>
+                    {filled} / {max}
+                  </span>
+                </div>
+                <div className="mt-1 ml-[26px] text-[10px] min-w-0 truncate">
+                  {connected ? (
+                    <span className="text-green-400">
+                      Онлайн: {('online_device_names' in u && u.online_device_names && u.online_device_names.length > 0)
+                        ? u.online_device_names.join(', ')
+                        : 'устройство не определено'}
+                    </span>
+                  ) : (
+                    <span className="text-[#666]">
+                      Последний вход (МСК): {formatLastSeen('last_seen_at' in u ? u.last_seen_at : null)}
+                      {' · '}
+                      Устройства: {('device_names' in u && u.device_names && u.device_names.length > 0) ? u.device_names.join(', ') : '—'}
+                    </span>
+                  )}
+                </div>
               </button>
 
               {isOpen && (

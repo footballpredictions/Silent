@@ -45,6 +45,15 @@ async def get_stats(
         .order_by(User.created_at.desc())
     )
     all_users = users_result.scalars().all()
+    user_ids = [u.id for u in all_users]
+
+    devices_by_user: dict = {}
+    if user_ids:
+        devices_result = await db.execute(
+            select(Device).where(Device.user_id.in_(user_ids))
+        )
+        for d in devices_result.scalars().all():
+            devices_by_user.setdefault(d.user_id, []).append(d)
 
     active_subs = 0
     for u in all_users:
@@ -75,10 +84,21 @@ async def get_stats(
     flat_hashes = []
     for u in all_users:
         user_hashes = by_user_id.get(u.id, [])
-        dev_online = (await db.execute(
-            select(func.count(Device.id))
-            .where(Device.user_id == u.id, Device.is_connected == True)
-        )).scalar_one()
+        user_devices = devices_by_user.get(u.id, [])
+        dev_online = sum(1 for d in user_devices if d.is_connected)
+        last_seen = u.last_seen_at
+        for d in user_devices:
+            for ts in (d.last_connected, d.created_at):
+                if ts and (last_seen is None or ts > last_seen):
+                    last_seen = ts
+        device_names = []
+        online_device_names = []
+        for d in user_devices:
+            name = (d.device_name or "").strip()
+            if name and name not in device_names:
+                device_names.append(name)
+            if d.is_connected and name and name not in online_device_names:
+                online_device_names.append(name)
         # Один хеш на слот в отображении (дубликаты — артефакт старого агента)
         best_by_slot: dict[int, VkHash] = {}
         for h in user_hashes:
@@ -114,6 +134,9 @@ async def get_stats(
             "user_id": str(u.id),
             "user_email": u.email,
             "user_connected": dev_online > 0,
+            "last_seen_at": last_seen,
+            "device_names": device_names,
+            "online_device_names": online_device_names,
             "slots_filled": len(unique_hashes),
             "slots_max": MAX_HASHES,
             "hashes": slot_rows,

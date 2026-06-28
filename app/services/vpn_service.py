@@ -20,6 +20,40 @@ from app.services import hive_service
 
 logger = logging.getLogger(__name__)
 
+LAST_SEEN_TOUCH_MINUTES = 15
+DEVICE_LIMIT_HINT = (
+    "Удалите неиспользуемую сессию в меню → Сессии и войдите снова."
+)
+
+
+def device_limit_error() -> ValueError:
+    return ValueError(
+        f"Достигнут лимит {settings.MAX_DEVICES_PER_USER} устройств. {DEVICE_LIMIT_HINT}"
+    )
+
+
+async def touch_user_last_seen(
+    db: AsyncSession,
+    user: User | uuid.UUID,
+    *,
+    min_interval_minutes: int = 0,
+    commit: bool = True,
+) -> None:
+    """Последняя активность пользователя — не влияет на ConfigSync profile revision."""
+    user_id = user.id if isinstance(user, User) else user
+    result = await db.execute(select(User).where(User.id == user_id))
+    row = result.scalar_one_or_none()
+    if not row:
+        return
+    now = datetime.utcnow()
+    if min_interval_minutes > 0 and row.last_seen_at:
+        if (now - row.last_seen_at).total_seconds() < min_interval_minutes * 60:
+            return
+    row.last_seen_at = now
+    if commit:
+        await db.commit()
+
+
 # Клиент явно вызвал POST /disconnect — wdtt keepalive не должен снова ставить online=true.
 _client_disconnect_until: Dict[str, float] = {}
 CLIENT_DISCONNECT_LATCH_SEC = 90.0
@@ -184,6 +218,7 @@ async def set_device_online(db: AsyncSession, device_ref: str, online: bool) -> 
     device.is_connected = bool(online)
     if online:
         device.last_connected = datetime.utcnow()
+        await touch_user_last_seen(db, device.user_id, commit=False)
     await db.commit()
     return True
 
@@ -383,7 +418,6 @@ async def ensure_device_session(
 
     await clear_stale_online_status(db)
     await replace_same_type_session(db, user.id, device_type, fp)
-    await prune_idle_sessions(db, user.id)
 
     result = await db.execute(
         select(Device).where(
@@ -398,6 +432,7 @@ async def ensure_device_session(
         existing.device_type = device_type
         existing.is_connected = False
         existing.last_connected = datetime.utcnow()
+        await touch_user_last_seen(db, user, commit=False)
         await db.commit()
         await db.refresh(existing)
         await dedupe_same_type_devices(db, user.id, device_type, fp)
@@ -405,13 +440,7 @@ async def ensure_device_session(
 
     active_count = await count_active_sessions(db, user.id)
     if active_count >= settings.MAX_DEVICES_PER_USER:
-        freed = await prune_oldest_session_if_full(db, user.id)
-        active_count = await count_active_sessions(db, user.id)
-        if not freed and active_count >= settings.MAX_DEVICES_PER_USER:
-            raise ValueError(
-                f"Достигнут лимит {settings.MAX_DEVICES_PER_USER} устройств. "
-                "Выйдите из аккаунта на одном из них."
-            )
+        raise device_limit_error()
 
     priv_key, pub_key = _generate_wg_keypair()
     cell = await hive_service.pick_cell_for_new_device(db, user=user)
@@ -432,6 +461,7 @@ async def ensure_device_session(
         last_connected=datetime.utcnow(),
     )
     db.add(device)
+    await touch_user_last_seen(db, user, commit=False)
     await db.commit()
     await db.refresh(device)
     await dedupe_same_type_devices(db, user.id, device_type, fp)
@@ -448,8 +478,6 @@ async def register_device(
 ) -> VpnConfigResponse:
     await clear_stale_online_status(db)
     await replace_same_type_session(db, user.id, device_type, device_fingerprint)
-    await prune_idle_sessions(db, user.id)
-    await prune_old_sessions(db, user.id)
 
     result = await db.execute(
         select(Device).where(
@@ -465,6 +493,7 @@ async def register_device(
         if device_type:
             existing.device_type = device_type[:32]
         existing.last_connected = datetime.utcnow()
+        await touch_user_last_seen(db, user, commit=False)
         await db.commit()
         await db.refresh(existing)
         await dedupe_same_type_devices(db, user.id, device_type, device_fingerprint)
@@ -472,13 +501,7 @@ async def register_device(
 
     active_count = await count_active_sessions(db, user.id)
     if active_count >= settings.MAX_DEVICES_PER_USER:
-        freed = await prune_oldest_session_if_full(db, user.id)
-        active_count = await count_active_sessions(db, user.id)
-        if not freed and active_count >= settings.MAX_DEVICES_PER_USER:
-            raise ValueError(
-                f"Достигнут лимит {settings.MAX_DEVICES_PER_USER} устройств. "
-                "Выйдите из аккаунта на одном из них."
-            )
+        raise device_limit_error()
 
     priv_key, pub_key = _generate_wg_keypair()
     if wg_public_key:
@@ -499,8 +522,10 @@ async def register_device(
         wg_address=wg_address,
         wdtt_password=wdtt_pass,
         cell_id=cell.id,
+        last_connected=datetime.utcnow(),
     )
     db.add(device)
+    await touch_user_last_seen(db, user, commit=False)
     await db.commit()
     await db.refresh(device)
     await dedupe_same_type_devices(db, user.id, device_type, device_fingerprint)

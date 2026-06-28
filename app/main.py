@@ -75,6 +75,16 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS bootstrap_hash VARCHAR(255)"
         ))
         await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP"
+        ))
+        await conn.execute(text(
+            "UPDATE users u SET last_seen_at = sub.max_ts FROM ("
+            "  SELECT user_id, MAX(GREATEST("
+            "    COALESCE(last_connected, created_at), created_at"
+            "  )) AS max_ts FROM devices GROUP BY user_id"
+            ") sub WHERE u.id = sub.user_id AND u.last_seen_at IS NULL"
+        ))
+        await conn.execute(text(
             "ALTER TABLE vk_hashes ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id)"
         ))
         await conn.execute(text(

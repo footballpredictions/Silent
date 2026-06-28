@@ -23,6 +23,7 @@ class User(Base):
     vk_linked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     vk_config_published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     bootstrap_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

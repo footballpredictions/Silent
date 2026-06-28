@@ -137,6 +137,9 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
                 device_fingerprint=req.device.device_fingerprint,
             )
         except ValueError as e:
+            msg = str(e)
+            if "лимит" in msg.lower() and "устройств" in msg.lower():
+                raise HTTPException(status_code=403, detail=msg)
             logger.warning("login ensure_device_session: %s", e)
 
     return TokenResponse(

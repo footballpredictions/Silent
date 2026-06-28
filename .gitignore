@@ -17,6 +17,8 @@ releases/*.exe
 
 # Logs
 *.log
+__pycache__/
+*.pyc
 
 # OS
 .DS_Store

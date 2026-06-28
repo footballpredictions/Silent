@@ -17,12 +17,12 @@ import kotlinx.coroutines.sync.withLock
 
 /**
  * Канал обновлений: sync-state → profile, hashes, theme, подписка.
- * Wi‑Fi — public API; mobile + VPN — tunnel proxy (без overlay).
- * Фоновый poll на Wi‑Fi; при VPN — VpnDataSyncService каждые 30 мин.
+ * Wi‑Fi — public API; mobile — только при поднятом VPN (tunnel proxy).
+ * Фоновый poll — раз в час, чтобы не дёргать WG overlay на LTE.
  */
 object ConfigSyncCoordinator {
     private const val TAG = "ConfigSync"
-    /** Фоновый poll на Wi‑Fi (при VPN — чаще через VpnDataSyncService). */
+    /** Единый интервал фонового sync (хеши/тема/профиль/подписка). */
     private const val POLL_MS = 60 * 60 * 1000L
     private const val START_DELAY_MS = 5_000L
 

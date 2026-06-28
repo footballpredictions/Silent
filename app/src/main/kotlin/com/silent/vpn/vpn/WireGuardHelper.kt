@@ -198,7 +198,8 @@ class WireGuardHelper(context: Context) {
 
 
 
-            val parsed = Config.parse(ByteArrayInputStream(configToApply.toByteArray(Charsets.UTF_8)))
+            val normalizedConfig = normalizeInterfaceConfig(configToApply)
+            val parsed = Config.parse(ByteArrayInputStream(normalizedConfig.toByteArray(Charsets.UTF_8)))
 
             val ifaceBuilder = Interface.Builder()
 
@@ -345,8 +346,13 @@ class WireGuardHelper(context: Context) {
     private fun serverIpFromConfig(config: String): String {
         val endpoint = Regex("""(?m)^Endpoint\s*=\s*([^:\s]+)""")
             .find(config)?.groupValues?.getOrNull(1)?.trim().orEmpty()
-        return endpoint.takeIf { it.matches(Regex("""\d+\.\d+\.\d+\.\d+""")) }
-            ?: BootstrapVpnConfig.serverHost()
+        if (endpoint.matches(Regex("""\d+\.\d+\.\d+\.\d+""")) &&
+            endpoint != "127.0.0.1" &&
+            endpoint != "0.0.0.0"
+        ) {
+            return endpoint
+        }
+        return BootstrapVpnConfig.serverHost()
     }
 
     private fun wgSemanticKey(config: String): String {
@@ -368,6 +374,94 @@ class WireGuardHelper(context: Context) {
         ).joinToString("|")
 
     }
+
+    private fun normalizeInterfaceConfig(config: String): String {
+        var addressPatched = false
+        var dnsPatched = false
+        val lines = config.lines().map { line ->
+            val trimmed = line.trimStart()
+            when {
+                trimmed.startsWith("Address", ignoreCase = true) && line.contains("=") -> {
+                    val prefix = line.substringBefore("=")
+                    val raw = line.substringAfter("=").trim()
+                    val normalized = normalizeAddressList(raw)
+                    if (normalized != null && normalized != raw) {
+                        addressPatched = true
+                        "$prefix= $normalized"
+                    } else {
+                        line
+                    }
+                }
+                trimmed.startsWith("DNS", ignoreCase = true) && line.contains("=") -> {
+                    val prefix = line.substringBefore("=")
+                    val raw = line.substringAfter("=").trim()
+                    val normalized = normalizeDnsList(raw)
+                    if (normalized != raw) {
+                        dnsPatched = true
+                        "$prefix= $normalized"
+                    } else {
+                        line
+                    }
+                }
+                else -> line
+            }
+        }
+        if (addressPatched || dnsPatched) {
+            DebugLog.w(TAG, "WireGuard config normalized before parse (address=$addressPatched dns=$dnsPatched)")
+        }
+        return lines.joinToString("\n")
+    }
+
+    private fun normalizeAddressList(raw: String): String? {
+        val tokens = raw.split(",")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        if (tokens.isEmpty()) return null
+        val normalized = tokens.mapNotNull { token ->
+            when {
+                IPV4_CIDR.matches(token) -> sanitizeIpv4CidrToken(token)
+                IPV4.matches(token) -> sanitizeIpv4CidrToken("$token/32")
+                IPV6_CIDR.matches(token) -> token
+                IPV6.matches(token) -> "$token/128"
+                else -> null
+            }
+        }
+        return normalized.takeIf { it.isNotEmpty() }?.joinToString(", ")
+    }
+
+    private fun sanitizeIpv4CidrToken(token: String): String? {
+        val parts = token.split("/")
+        if (parts.size != 2) return null
+        val ip = parts[0].trim()
+        var prefix = parts[1].trim().toIntOrNull() ?: return null
+        if (prefix !in 0..32) prefix = 32
+
+        val octets = ip.split(".").map { it.toIntOrNull() ?: return null }
+        if (octets.size != 4) return null
+        if (octets.any { it !in 0..255 }) return null
+
+        val fixed = octets.toMutableList()
+        // Android VPN stack может падать с "Bad address" на сетевом адресе (например x.x.x.0/24).
+        // Для интерфейса WireGuard принудительно переводим такой адрес в хостовый.
+        if (prefix < 32 && fixed[3] == 0) {
+            fixed[3] = 2
+        }
+        if (prefix == 0) prefix = 32
+        return "${fixed[0]}.${fixed[1]}.${fixed[2]}.${fixed[3]}/$prefix"
+    }
+
+    private fun normalizeDnsList(raw: String): String {
+        val tokens = raw.split(",")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        val normalized = tokens.filter { IPV4.matches(it) || IPV6.matches(it) }
+        return if (normalized.isNotEmpty()) normalized.joinToString(", ") else "1.1.1.1, 77.88.8.8"
+    }
+
+    private val IPV4 = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+    private val IPV4_CIDR = Regex("""^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$""")
+    private val IPV6 = Regex("""^[0-9a-fA-F:]+$""")
+    private val IPV6_CIDR = Regex("""^[0-9a-fA-F:]+/(12[0-8]|1[01][0-9]|[1-9]?[0-9])$""")
 
 
 

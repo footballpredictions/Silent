@@ -44,6 +44,9 @@ object TunnelApiProxy {
     private const val UPSTREAM_PORT = 8000
     private const val MAX_HEADER_BYTES = 64 * 1024
     private const val MAX_BODY_BUFFER = 4 * 1024 * 1024
+    private const val OPEN_RETRY_COUNT = 3
+    private const val OPEN_RETRY_DELAY_MS = 180L
+    private const val VPN_NETWORK_WAIT_MS = 8_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val startMutex = Mutex()
@@ -202,12 +205,13 @@ object TunnelApiProxy {
         }
 
         val forwardHeaders = headers.filterKeys { !hopByHopHeader(it) }
-        val conn = runCatching {
-            withVpnBound(ctx) { network ->
-                openDirectConnection(network, method, upstreamPath, forwardHeaders, body)
-            }
-        }.getOrElse { e ->
-            Log.w(TAG, "upstream open: ${e.message}")
+        val conn = openConnectionWithRetry(
+            ctx = ctx,
+            method = method,
+            upstreamPath = upstreamPath,
+            forwardHeaders = forwardHeaders,
+            body = body,
+        ) ?: run {
             writeError(output, 502, "VPN upstream failed")
             return
         }
@@ -239,7 +243,7 @@ object TunnelApiProxy {
      * Excluded app: bindProcessToNetwork или Network.openConnection для upstream.
      */
     private fun <T> withVpnBound(context: Context, block: (Network) -> T): T {
-        val network = VpnNetworkHelper.getSilentVpnNetwork(context)
+        val network = awaitSilentVpnNetwork(context, VPN_NETWORK_WAIT_MS)
             ?: throw IllegalStateException("VPN network not found")
         synchronized(upstreamLock) {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -254,6 +258,35 @@ object TunnelApiProxy {
             Log.w(TAG, "bindProcessToNetwork failed — Network.openConnection")
             return block(network)
         }
+    }
+
+    private fun awaitSilentVpnNetwork(context: Context, timeoutMs: Long): Network? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            VpnNetworkHelper.getSilentVpnNetwork(context)?.let { return it }
+            Thread.sleep(150L)
+        }
+        return VpnNetworkHelper.getSilentVpnNetwork(context)
+    }
+
+    private fun openConnectionWithRetry(
+        ctx: Context,
+        method: String,
+        upstreamPath: String,
+        forwardHeaders: Map<String, String>,
+        body: ByteArray?,
+    ): HttpURLConnection? {
+        repeat(OPEN_RETRY_COUNT) { attempt ->
+            val conn = runCatching {
+                withVpnBound(ctx) { network ->
+                    openDirectConnection(network, method, upstreamPath, forwardHeaders, body)
+                }
+            }.getOrNull()
+            if (conn != null) return conn
+            if (attempt < OPEN_RETRY_COUNT - 1) Thread.sleep(OPEN_RETRY_DELAY_MS)
+        }
+        Log.w(TAG, "upstream open failed after retries")
+        return null
     }
 
     private fun openDirectConnection(

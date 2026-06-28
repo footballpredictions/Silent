@@ -34,8 +34,8 @@ def main() -> None:
 set -e
 cd {REMOTE}
 for f in {files_sh}; do docker cp "$f" {CONTAINER}:/app/"$f"; done
-docker cp admin-ui/dist/. {CONTAINER}:/app/admin-ui/dist/
-docker exec {CONTAINER} mkdir -p /app/update/pc /app/update/android
+docker cp admin-ui/dist/. {CONTAINER}:/app/admin-ui/dist/ || true
+docker exec {CONTAINER} mkdir -p /app/update/pc /app/update/android || true
 docker compose restart api
 sleep 8
 curl -s http://localhost:8000/api/health

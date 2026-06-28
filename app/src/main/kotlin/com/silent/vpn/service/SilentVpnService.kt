@@ -78,6 +78,10 @@ class SilentVpnService : Service() {
         /** Нет активных воркеров дольше этого — restart (doze / screen off). */
         private const val TRANSPORT_STALE_MS = 120_000L
         private const val NOTIF_UPDATE_MIN_MS = 3_000L
+        /** Если CONNECT прилетел повторно сразу после старта, считаем сервис "занятым". */
+        private const val CONNECT_BUSY_GRACE_MS = 15_000L
+        /** Защита от вечного "подключение…" для CONNECT из плитки при закрытом приложении. */
+        private const val TILE_CONNECT_START_TIMEOUT_MS = 35_000L
         const val ACTION_CONNECT = "com.silent.vpn.CONNECT"
         const val ACTION_DISCONNECT = "com.silent.vpn.DISCONNECT"
         /** Другой VPN подключился — Android отозвал наш VpnService. */
@@ -114,6 +118,7 @@ class SilentVpnService : Service() {
     private var transportWatchdogJob: Job? = null
     private var statsUpdaterJob: Job? = null
     private var disconnectJob: Job? = null
+    private var connectGuardJob: Job? = null
     @Volatile
     private var disconnectEpoch = 0
     @Volatile
@@ -154,6 +159,7 @@ class SilentVpnService : Service() {
                 if (isRunning) {
                     val stats = WdttTunnelManager.stats.value
                     if (WdttTunnelManager.tunnelReady.value) {
+                        connectGuardJob?.cancel()
                         ensureSessionWakeLock()
                         if (!VpnServiceTracker.isSessionMarkedActive(this@SilentVpnService)) {
                             VpnServiceTracker.markSessionActive(this@SilentVpnService, true)
@@ -243,6 +249,20 @@ class SilentVpnService : Service() {
                     }
                 }
                 if (isRunning) {
+                    val busy = WdttTunnelManager.running.value ||
+                        WdttTunnelManager.tunnelReady.value ||
+                        VpnSessionState.isActive() ||
+                        (System.currentTimeMillis() - connectStartedAtMs < CONNECT_BUSY_GRACE_MS)
+                    if (!busy) {
+                        // После падения/убитого транспорта флаг isRunning мог остаться true,
+                        // и плитка больше не могла инициировать новый CONNECT.
+                        SessionTrace.warn("SilentVpnService.CONNECT", "stale isRunning reset")
+                        DebugLog.w("VpnService", "stale isRunning=true without active transport; reset")
+                        isRunning = false
+                        VpnServiceTracker.markSessionActive(this, false)
+                    }
+                }
+                if (isRunning) {
                     SessionTrace.mark(
                         "SilentVpnService.CONNECT",
                         if (WdttTunnelManager.tunnelReady.value) "ignored — already connected"
@@ -270,6 +290,7 @@ class SilentVpnService : Service() {
                 setupPhoneCallMonitor()
                 startTransportWatchdog()
                 startStatsUpdater()
+                startConnectGuardIfNeeded()
                 try {
                     setupVpnOwnershipMonitor()
                     connect(configJson, intent.getBooleanExtra(EXTRA_IS_BOOTSTRAP, false))
@@ -434,6 +455,7 @@ class SilentVpnService : Service() {
         DebugLog.i("VpnService", "DISCONNECT")
         val epoch = ++disconnectEpoch
         disconnectJob?.cancel()
+        connectGuardJob?.cancel()
         isRunning = false
         SessionTrace.mark("SilentVpnService.disconnect", "isRunning=false epoch=$epoch")
         VpnServiceTracker.markSessionActive(this, false)
@@ -1011,6 +1033,7 @@ class SilentVpnService : Service() {
         transportWatchdogJob?.cancel()
         networkRecoveryJob?.cancel()
         statsUpdaterJob?.cancel()
+        connectGuardJob?.cancel()
         isRunning = false
         isTunnelPaused = false
         activeNetworks.clear()
@@ -1040,6 +1063,30 @@ class SilentVpnService : Service() {
         clearVpnNotification()
         VpnTileHelper.requestUpdate(this)
         if (stopService) stopSelf()
+    }
+
+    private fun startConnectGuardIfNeeded() {
+        connectGuardJob?.cancel()
+        if (!connectFromTile) return
+        connectGuardJob = scope.launch {
+            delay(TILE_CONNECT_START_TIMEOUT_MS)
+            if (!isRunning) return@launch
+            if (WdttTunnelManager.tunnelReady.value || VpnSessionState.isActive()) return@launch
+            val workers = WdttTunnelManager.activeWorkers.value
+            if (workers > 0) return@launch
+            SessionTrace.warn("SilentVpnService.CONNECT", "tile timeout no tunnel/workers")
+            DebugLog.w("VpnService", "tile connect timeout — reset stale startup")
+            runCatching {
+                VpnConnectHelper.ensureCleanSlate(this@SilentVpnService, force = true)
+            }.onFailure { e ->
+                DebugLog.w("VpnService", "tile timeout cleanSlate: ${e.message}")
+            }
+            isRunning = false
+            VpnServiceTracker.markSessionActive(this@SilentVpnService, false)
+            clearVpnNotification()
+            VpnTileHelper.requestUpdate(this@SilentVpnService)
+            stopSelf()
+        }
     }
 
     private fun loadSavedServerHashes(): List<String> {

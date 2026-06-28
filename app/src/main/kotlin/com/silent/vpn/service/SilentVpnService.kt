@@ -549,7 +549,7 @@ class SilentVpnService : Service() {
                     scheduleNetworkRecovery("available:$fp")
                 } else if (lastNetworkFingerprint.isEmpty() && fp.isNotEmpty()) {
                     lastNetworkFingerprint = fp
-                    if (isRunning && WdttTunnelManager.tunnelReady.value) {
+                    if (isRunning) {
                         scheduleNetworkRecovery("restored:$fp")
                     }
                 }
@@ -573,7 +573,7 @@ class SilentVpnService : Service() {
                 if (validated != lastNetworkValidated) {
                     val wasValidated = lastNetworkValidated
                     lastNetworkValidated = validated
-                    if (!wasValidated && validated && isRunning && WdttTunnelManager.tunnelReady.value) {
+                    if (!wasValidated && validated && isRunning) {
                         scheduleNetworkRecovery("validated")
                     }
                 }
@@ -583,7 +583,7 @@ class SilentVpnService : Service() {
                     scheduleNetworkRecovery("capabilities:$fp")
                 } else if (lastNetworkFingerprint.isEmpty() && fp.isNotEmpty()) {
                     lastNetworkFingerprint = fp
-                    if (isRunning && WdttTunnelManager.tunnelReady.value) {
+                    if (isRunning) {
                         scheduleNetworkRecovery("capabilities_restored:$fp")
                     }
                 }
@@ -637,7 +637,7 @@ class SilentVpnService : Service() {
 
     private fun requestNetworkRecovery(reason: String) {
         if (WdttTunnelManager.isNetworkRecoverySuppressed()) return
-        if (!isRunning || !WdttTunnelManager.tunnelReady.value) return
+        if (!isRunning) return
         if (phoneCallActive) return
         if (System.currentTimeMillis() - connectStartedAtMs < NETWORK_GRACE_MS) return
         if (lastNetworkFingerprint.isEmpty()) {
@@ -674,6 +674,11 @@ class SilentVpnService : Service() {
                     DebugLog.w("VpnService", "tunnel proxy restart: ${e.message}")
                 }
             }
+        }
+        if (!WdttTunnelManager.running.value || !WdttTunnelManager.tunnelReady.value) {
+            DebugLog.w("VpnService", "network recovery: transport down, resume")
+            WdttTunnelManager.resume()
+            return
         }
         WdttTunnelManager.restartTransportAfterNetwork()
         WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)

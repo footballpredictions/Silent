@@ -2375,6 +2375,27 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun deleteDevice(deviceId: String, onResult: (Boolean, String?) -> Unit) {
+        viewModelScope.launch {
+            runCatching {
+                val res = repo.withBackendApi { repo.getApi().deleteDevice(deviceId) }
+                if (res.isSuccessful) {
+                    val isSelf = deviceId == (_sessionDeviceId.value ?: repo.getSessionDeviceId())
+                    if (isSelf) {
+                        onResult(true, "__logout__")
+                    } else {
+                        loadProfile()
+                        onResult(true, null)
+                    }
+                } else {
+                    onResult(false, parseError(res.errorBody()?.string() ?: "") ?: "Не удалось удалить сессию")
+                }
+            }.onFailure {
+                onResult(false, it.message ?: "Ошибка")
+            }
+        }
+    }
+
     private suspend fun initPaymentApi(planType: String): String {
         val res = repo.getApi().initPayment(com.silent.vpn.data.PaymentInitRequest(planType))
         if (res.isSuccessful) return res.body()!!.url

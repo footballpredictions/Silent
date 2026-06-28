@@ -201,6 +201,17 @@ class MainActivity : ComponentActivity() {
                         },
                         onShowError = vm::showError,
                         onRenameDevice = vm::renameDevice,
+                        onDeleteDevice = { deviceId, onResult ->
+                            vm.deleteDevice(deviceId) { ok, msg ->
+                                if (ok && msg == "__logout__") {
+                                    vm.logout(this@MainActivity)
+                                    onResult(true, null)
+                                } else {
+                                    if (!ok && msg != null) vm.showError(msg)
+                                    onResult(ok, msg)
+                                }
+                            }
+                        },
                         onDevicesScreenActive = vm::setSessionsScreenActive,
                         onVpnProfilePolling = vm::setVpnProfilePolling,
                         updateInfo = updateInfo,

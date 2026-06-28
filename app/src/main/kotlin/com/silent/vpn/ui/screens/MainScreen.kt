@@ -248,6 +248,7 @@ fun MainScreen(
     onOpenUrl: (String) -> Unit,
     onShowError: (String) -> Unit,
     onRenameDevice: (deviceId: String, name: String, onResult: (Boolean, String?) -> Unit) -> Unit,
+    onDeleteDevice: (deviceId: String, onResult: (Boolean, String?) -> Unit) -> Unit,
     onDevicesScreenActive: (Boolean) -> Unit = {},
     onVpnProfilePolling: (Boolean) -> Unit = {},
     updateInfo: UpdateCheckResponse? = null,
@@ -625,7 +626,14 @@ fun MainScreen(
                         MenuPage.EXCEPTIONS -> AppExclusionsScreen(repo, fg, bg) { menuPage = MenuPage.ROOT }
                         MenuPage.HASHES -> MenuHashesScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.PROMO -> MenuPromo(fg, bg, promoCode, { promoCode = it }, promoMsg, { onCheckPromo(promoCode) { promoMsg = it } }) { menuPage = MenuPage.ROOT }
-                        MenuPage.DEVICES -> MenuDevices(profile, fg, sessionDeviceId, vpnState, onRenameDevice) { menuPage = MenuPage.ROOT }
+                        MenuPage.DEVICES -> MenuDevices(
+                            profile,
+                            fg,
+                            sessionDeviceId,
+                            vpnState,
+                            onRenameDevice,
+                            onDeleteDevice,
+                        ) { menuPage = MenuPage.ROOT }
                         MenuPage.SUPPORT -> MenuSimplePage("Поддержка", "По вопросам обратитесь через email или Telegram.", fg) { menuPage = MenuPage.ROOT }
                         MenuPage.ABOUT -> MenuSimplePage("Silent VPN", "Версия ${com.silent.vpn.BuildConfig.VERSION_NAME}\nWireGuard-туннель через VK TURN/DTLS", fg) { menuPage = MenuPage.ROOT }
                         else -> Unit
@@ -724,11 +732,14 @@ private fun MenuDevices(
     sessionDeviceId: String?,
     vpnState: VpnState,
     onRenameDevice: (deviceId: String, name: String, onResult: (Boolean, String?) -> Unit) -> Unit,
+    onDeleteDevice: (deviceId: String, onResult: (Boolean, String?) -> Unit) -> Unit,
     onBack: () -> Unit,
 ) {
     var renameTarget by remember { mutableStateOf<DeviceInfo?>(null) }
     var renameText by remember { mutableStateOf("") }
     var renameSaving by remember { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<DeviceInfo?>(null) }
+    var deleteSaving by remember { mutableStateOf(false) }
 
     if (renameTarget != null) {
         AlertDialog(
@@ -759,6 +770,37 @@ private fun MenuDevices(
             },
             dismissButton = {
                 TextButton(onClick = { if (!renameSaving) renameTarget = null }) {
+                    Text("Отмена")
+                }
+            },
+        )
+    }
+
+    deleteTarget?.let { target ->
+        val isSelf = !sessionDeviceId.isNullOrBlank() && target.id == sessionDeviceId
+        AlertDialog(
+            onDismissRequest = { if (!deleteSaving) deleteTarget = null },
+            title = { Text("Удалить сессию", fontSize = 14.sp) },
+            text = {
+                Text(
+                    if (isSelf) "Удалить эту сессию и выйти из аккаунта?" else "Удалить сессию этого устройства?",
+                    fontSize = 13.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !deleteSaving,
+                    onClick = {
+                        deleteSaving = true
+                        onDeleteDevice(target.id) { ok, _ ->
+                            deleteSaving = false
+                            if (ok) deleteTarget = null
+                        }
+                    },
+                ) { Text(if (deleteSaving) "…" else "Удалить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!deleteSaving) deleteTarget = null }) {
                     Text("Отмена")
                 }
             },
@@ -845,6 +887,12 @@ private fun MenuDevices(
                     modifier = Modifier.size(32.dp),
                 ) {
                     Icon(Icons.Default.Edit, contentDescription = "Подписать", tint = fg.copy(alpha = 0.45f), modifier = Modifier.size(16.dp))
+                }
+                IconButton(
+                    onClick = { deleteTarget = d },
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = "Удалить сессию", tint = fg.copy(alpha = 0.45f), modifier = Modifier.size(16.dp))
                 }
             }
         }

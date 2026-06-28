@@ -219,6 +219,9 @@ interface SilentApi {
         @Body req: DeviceRenameRequest,
     ): Response<Map<String, String>>
 
+    @DELETE("api/users/devices/{deviceId}")
+    suspend fun deleteDevice(@Path("deviceId") deviceId: String): Response<Map<String, String>>
+
     @POST("api/users/logout")
     suspend fun logoutSession(@Body req: DisconnectRequest): Response<Map<String, String>>
 

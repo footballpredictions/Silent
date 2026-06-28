@@ -297,10 +297,13 @@ def _run_shell(script: Path, platform: str, bootstrap_hash: str, timeout: int) -
                     pass
                 break
             time.sleep(0.5)
-        out = proc.communicate(timeout=15)[0] if proc.stdout else ""
+        stdout_data, _ = proc.communicate(timeout=15)
     finally:
         with _ACTIVE_PROC_LOCK:
             _ACTIVE_PROC = None
+    out = stdout_data if isinstance(stdout_data, str) else (stdout_data or "")
+    if out is None:
+        out = ""
     if timed_out:
         raise BuildAgentError(f"Build script timeout after {timeout}s")
     if _STOP_REQUESTED:

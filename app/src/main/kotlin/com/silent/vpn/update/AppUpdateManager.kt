@@ -27,6 +27,8 @@ object AppUpdateManager {
         val dir = File(context.cacheDir, "updates").apply { mkdirs() }
         dir.listFiles()?.forEach { it.delete() }
         val dest = File(dir, filename.ifBlank { "update.apk" })
+        val tmp = File(dir, "${dest.name}.part")
+        if (tmp.exists()) tmp.delete()
 
         val request = Request.Builder().url(url).build()
         client.newCall(request).execute().use { response ->
@@ -36,7 +38,7 @@ object AppUpdateManager {
             var received = 0L
             var lastPct = -1
             body.byteStream().use { input ->
-                dest.outputStream().use { output ->
+                tmp.outputStream().use { output ->
                     val buf = ByteArray(8192)
                     while (true) {
                         val n = input.read(buf)
@@ -49,10 +51,21 @@ object AppUpdateManager {
                                 lastPct = pct
                                 withContext(Dispatchers.Main) { onProgress(pct) }
                             }
+                            // Не ждём EOF после 100%: некоторые CDN держат сокет открытым.
+                            if (received >= total) break
                         }
                     }
+                    output.flush()
                 }
             }
+            if (total > 0 && received < total) {
+                throw IllegalStateException("Incomplete download: $received/$total")
+            }
+        }
+        if (dest.exists()) dest.delete()
+        if (!tmp.renameTo(dest)) {
+            tmp.copyTo(dest, overwrite = true)
+            tmp.delete()
         }
         dest
     }

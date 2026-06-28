@@ -8,6 +8,7 @@ import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -69,10 +70,22 @@ class MainActivity : ComponentActivity() {
     }
 
     private var pendingNotificationOpen = false
+    private var pendingInstallIntent: Intent? = null
 
     private val installUpdateLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { /* системный установщик APK */ }
+    private val unknownSourcesLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val installIntent = pendingInstallIntent ?: return@registerForActivityResult
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+            pendingInstallIntent = null
+            installUpdateLauncher.launch(installIntent)
+        } else {
+            vm.showError("Разрешите установку из неизвестных источников для завершения обновления")
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -219,7 +232,7 @@ class MainActivity : ComponentActivity() {
                         updateProgress = updateProgress,
                         onUpdateClick = {
                             vm.downloadAndInstallUpdate(this@MainActivity) { intent ->
-                                installUpdateLauncher.launch(intent)
+                                launchApkInstall(intent)
                             }
                         },
                         onUpdatePolling = vm::setUpdatePolling,
@@ -252,6 +265,19 @@ class MainActivity : ComponentActivity() {
         val prep = VpnService.prepare(this)
         if (prep != null) vpnPermissionLauncher.launch(prep)
         else vpnPermissionGranted.value = true
+    }
+
+    private fun launchApkInstall(intent: Intent) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+            installUpdateLauncher.launch(intent)
+            return
+        }
+        pendingInstallIntent = intent
+        val settingsIntent = Intent(
+            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+            Uri.parse("package:$packageName"),
+        )
+        unknownSourcesLauncher.launch(settingsIntent)
     }
 
     override fun onResume() {

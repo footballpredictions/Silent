@@ -260,8 +260,12 @@ class MainViewModel @Inject constructor(
         }
         if (repo.isLoggedIn()) {
             if (!repo.hasSessionFingerprint()) {
-                repo.clearTokens()
-                _screen.value = AppScreen.LOGIN
+                runCatching { repo.startNewSession() }
+                    .onFailure { e ->
+                        DebugLog.w("MainViewModel", "restore session fingerprint failed: ${e.message}")
+                        repo.clearTokens()
+                        _screen.value = AppScreen.LOGIN
+                    }
             } else {
                 _screen.value = AppScreen.MAIN
                 restoreCachedProfileToUi()

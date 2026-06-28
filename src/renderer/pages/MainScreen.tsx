@@ -178,6 +178,7 @@ export default function MainScreen({
   const [renameTarget, setRenameTarget] = useState<DeviceInfo | null>(null)
   const [renameText, setRenameText] = useState('')
   const [renameSaving, setRenameSaving] = useState(false)
+  const [deleteSavingId, setDeleteSavingId] = useState<string | null>(null)
   const [activeWorkers, setActiveWorkers] = useState(0)
   const connectLockRef = useRef(false)
   const onlineMarkedRef = useRef(false)
@@ -629,6 +630,28 @@ export default function MainScreen({
     }
   }
 
+  const deleteSession = async (d: DeviceInfo) => {
+    if (deleteSavingId) return
+    const isSelf = isCurrentSessionDevice(d, sessionDeviceId)
+    const msg = isSelf
+      ? 'Удалить эту сессию и выйти из аккаунта?'
+      : 'Удалить сессию этого устройства?'
+    if (!window.confirm(msg)) return
+    setDeleteSavingId(d.id)
+    try {
+      await api.delete(`/api/users/devices/${d.id}`)
+      if (isSelf) {
+        await handleLogout()
+      } else {
+        await fetchProfile()
+      }
+    } catch (e: any) {
+      alert(e.response?.data?.detail || 'Не удалось удалить сессию')
+    } finally {
+      setDeleteSavingId(null)
+    }
+  }
+
   const bg = clientTheme?.background_color || '#ffffff'
   const fg = clientTheme?.text_color || '#000000'
   const toggleOn = clientTheme?.toggle_on_color || '#000000'
@@ -980,6 +1003,14 @@ export default function MainScreen({
                       title="Подписать"
                     >
                       <Pencil className="w-3.5 h-3.5" style={{ color: muted }} />
+                    </button>
+                    <button
+                      onClick={() => void deleteSession(d)}
+                      disabled={deleteSavingId === d.id}
+                      className="p-1.5 rounded-lg hover:bg-gray-100 shrink-0 disabled:opacity-40"
+                      title="Удалить сессию"
+                    >
+                      <X className="w-3.5 h-3.5" style={{ color: muted }} />
                     </button>
                   </div>
                 )

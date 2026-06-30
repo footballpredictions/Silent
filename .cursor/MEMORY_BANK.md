@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.143** |
-| `Silent-Project/android/` | `android` | **1.0.135** |
+| `Silent-Project/pc/` | `pc` | **1.0.146** |
+| `Silent-Project/android/` | `android` | **1.0.146** |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -128,6 +128,34 @@ cmd /c build-installer.bat
 Готовый installer: `pc/build-release-v141-XXXXX/Silent VPN Setup X.X.X.exe` + копия в `pc/releases/`.
 
 **UI:** кнопка закрытия на главном экране PC (`quitApp`) — полный выход из приложения и трея.
+
+### Диагностика VK Smart Captcha (`pc/debug_captcha.py`)
+
+**Назначение:** локальный Python-скрипт, который **имитирует цепочку подключения wdtt-client к VK** без Electron/WebView — от `get_anonym_token` до `captchaNotRobot.check`. Показывает **точные JSON-ответы** на каждом шаге, чтобы понять, почему капча возвращает `BOT`, `error_limit`, `rate limit` и т.д.
+
+**Когда использовать:**
+
+- Отладка AUTO / Go v2 / WBV Auto на PC и Android (сравнить ответ API с тем, что шлёт Go)
+- Проверка PoW, `debug_info`, behavioral-полей (`cursor`, `connectionRtt`) после правок в `wdtt-go/captcha_v2*.go`
+- Диагностика «сгоревшего» `session_token` (Go v2 до WebView)
+
+**Запуск (Windows, из папки `pc/`):**
+
+```powershell
+cd pc
+pip install curl_cffi
+python debug_captcha.py
+```
+
+**Настройка:** в начале файла — `VK_HASH` (bootstrap-хеш для `calls.getAnonymousToken`). Секреты `CLIENT_ID` / `CLIENT_SECRET` — те же, что в Go-клиенте.
+
+**Важно (вывод диагностики):**
+
+- В `captchaNotRobot.*` поле `access_token` должно быть **пустым** — anonymous token туда не передавать (`invalid token type`)
+- Go v2 **до** WBV Auto сжигает `session_token` — в режиме AUTO сначала только WebView
+- Ответ `status: "BOT"` — поведенческие сигналы; нужны `sensors_delay`, cursor/metrics, актуальная версия captcha-скрипта
+
+**Файл в git:** ветка `pc`, корень репозитория (`pc/debug_captcha.py`). Не путать с deploy-скриптами — это **только dev/diag**, на прод не деплоится.
 
 ### Tunnel API
 
@@ -262,6 +290,7 @@ Silent-Project/                 ← рабочая папка (НЕ git), отк
 │   ├── DEPLOY.md
 │   └── docker-compose.yml
 ├── pc/                         ← git, ветка pc
+│   ├── debug_captcha.py        ← диагностика VK captcha (см. «Диагностика VK Smart Captcha»)
 │   ├── scripts/                deploy_release.py — OTA .exe
 │   └── build-installer.bat
 ├── android/                    ← git, ветка android
@@ -456,6 +485,11 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-06-30 — VK Smart Captcha: WBV Auto (PC + Android v1.0.146)
+
+- **PC (`pc`, v1.0.146):** AUTO → только WBV Auto (без Go v2 первым); невидимое окно Electron `opacity=0`; trusted clicks; очередь капчи. Диагностика: `pc/debug_captcha.py`.
+- **Android (`android`, v1.0.146):** `AutoCaptchaActivity` — WebView в иерархии окна (аналог PC); Go creds + captcha_v2 как на PC; одна попытка auto, manual — отдельным запросом от Go.
 
 ### 2026-06-18 — Build Agent: ночная OTA-сборка + кнопки в админке
 

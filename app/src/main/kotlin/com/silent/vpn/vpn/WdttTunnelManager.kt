@@ -103,8 +103,16 @@ object WdttTunnelManager {
     private val captchaSession = AtomicInteger(0)
     @Volatile private var captchaInProgress = false
     @Volatile private var captchaManualInProgress = false
+    @Volatile private var captchaQueueProcessing = false
+    private val captchaQueue = java.util.concurrent.ConcurrentLinkedQueue<CaptchaQueueEntry>()
     private var lastCaptchaRedirectUri: String? = null
     private var lastCaptchaScheduledMs = 0L
+
+    private data class CaptchaQueueEntry(
+        val requestMode: String,
+        val redirectUri: String,
+        val sessionToken: String,
+    )
 
     val running = MutableStateFlow(false)
     val tunnelReady = MutableStateFlow(false)
@@ -1490,12 +1498,6 @@ object WdttTunnelManager {
             lastContext?.let { ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(it) }
             return
         }
-        if (captchaInProgress) {
-            if (captchaSolveJob?.isActive == true) return
-            captchaInProgress = false
-            captchaManualInProgress = false
-        }
-        // Одна капча на все потоки (reference) — иначе 36× параллельно ломает VK API.
         val requestMode = when (parts.size) {
             3 -> parts[0].lowercase()
             else -> "selected"
@@ -1511,7 +1513,7 @@ object WdttTunnelManager {
             else -> return
         }
         val now = System.currentTimeMillis()
-        if (requestMode == "auto" && captchaInProgress &&
+        if (requestMode == "auto" &&
             redirectUri == lastCaptchaRedirectUri &&
             now - lastCaptchaScheduledMs < 30_000L
         ) {
@@ -1519,24 +1521,41 @@ object WdttTunnelManager {
         }
         lastCaptchaRedirectUri = redirectUri
         lastCaptchaScheduledMs = now
-        captchaInProgress = true
-        captchaSolveJob?.cancel()
-        CaptchaWebViewManager.cancelCurrentSolve()
-        val session = captchaSession.incrementAndGet()
+        captchaQueue.add(CaptchaQueueEntry(requestMode, redirectUri, sessionToken))
+        drainCaptchaQueue()
+    }
+
+    private fun drainCaptchaQueue() {
+        if (captchaQueueProcessing || captchaQueue.isEmpty()) return
+        captchaQueueProcessing = true
         captchaSolveJob = scope.launch {
             try {
-                withTimeout(90_000L) {
-                    handleCaptchaSolve(session, requestMode, redirectUri, sessionToken)
-                }
-            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                if (session == captchaSession.get()) {
-                    if (!shouldSuppressCaptchaLog("CAPTCHA_RESULT|error:captcha timeout")) {
-                        updateLog("captcha_timeout", "[КАПЧА] Таймаут 90с — повтор", 5, true)
+                while (true) {
+                    val entry = captchaQueue.poll() ?: break
+                    val session = captchaSession.incrementAndGet()
+                    try {
+                        val queueTimeoutMs = when (entry.requestMode) {
+                            "manual" -> 95_000L
+                            "auto" -> 32_000L
+                            else -> 90_000L
+                        }
+                        withTimeout(queueTimeoutMs) {
+                            handleCaptchaSolve(session, entry.requestMode, entry.redirectUri, entry.sessionToken)
+                        }
+                    } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                        if (session == captchaSession.get()) {
+                            if (!shouldSuppressCaptchaLog("CAPTCHA_RESULT|error:captcha timeout")) {
+                                updateLog("captcha_timeout", "[КАПЧА] Таймаут 90с — повтор", 5, true)
+                            }
+                            writeCaptchaResult(session, "error:captcha timeout")
+                        }
                     }
-                    writeCaptchaResult(session, "error:captcha timeout")
-                    captchaInProgress = false
-                    captchaManualInProgress = false
                 }
+            } finally {
+                captchaQueueProcessing = false
+                captchaInProgress = false
+                captchaManualInProgress = false
+                if (captchaQueue.isNotEmpty()) drainCaptchaQueue()
             }
         }
     }
@@ -1545,6 +1564,8 @@ object WdttTunnelManager {
         captchaSession.incrementAndGet()
         captchaInProgress = false
         captchaManualInProgress = false
+        captchaQueue.clear()
+        captchaQueueProcessing = false
         captchaSolveJob?.cancel()
         CaptchaWebViewManager.cancelCurrentSolve()
         ManlCaptchaWebViewManager.cancelCaptcha()
@@ -1590,24 +1611,15 @@ object WdttTunnelManager {
         redirectUri: String,
         sessionToken: String,
     ): String {
-        repeat(2) { attempt ->
-            try {
-                return CaptchaWebViewManager.solveCaptchaAsync(redirectUri, sessionToken)
-            } catch (e: IllegalStateException) {
-                if (e.message == CaptchaWebViewManager.ERROR_SLIDER_DETECTED) {
-                    captchaManualInProgress = true
-                    return ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
-                }
-                throw e
-            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                if (attempt == 1) {
-                    captchaManualInProgress = true
-                    return ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
-                }
+        try {
+            return CaptchaWebViewManager.solveCaptchaAsync(redirectUri, sessionToken)
+        } catch (e: IllegalStateException) {
+            if (e.message == CaptchaWebViewManager.ERROR_SLIDER_DETECTED) {
+                captchaManualInProgress = true
+                return ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
             }
+            throw e
         }
-        captchaManualInProgress = true
-        return ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
     }
 
     private fun writeCaptchaResult(session: Int, result: String) {

@@ -11,6 +11,9 @@ releases/
 releases/*.exe
 *.apk
 
+# Go build artifacts (local)
+wdtt-go/*.exe
+
 # Secrets
 .env
 .env.deploy

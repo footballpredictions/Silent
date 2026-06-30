@@ -103,8 +103,14 @@ func (s *captchaV2Session) solveSliderCaptcha(
 			browserFP,
 			hash,
 			string(answerData),
-			buildSliderCursorV2(guesses[i].Index, len(guesses)),
+			captchaV2BehaviorData{
+				Cursor:       buildSliderCursorV2(guesses[i].Index, len(guesses)),
+				Taps:         "[]",
+				ConnRtt:      buildConnectionRttV3(),
+				ConnDownlink: buildConnectionDownlinkV3(),
+			},
 			debugInfo,
+			"",
 		)
 		if err != nil {
 			return "", err

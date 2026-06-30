@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	mathrand "math/rand"
 	"regexp"
 	"strconv"
@@ -27,7 +28,7 @@ import (
 
 const (
 	captchaV2APIVersion    = "5.131"
-	captchaV2ScriptVersion = "1.1.1324"
+	captchaV2ScriptVersion = "1.1.1368"
 	captchaV2DeviceInfo    = `{"screenWidth":1920,"screenHeight":1080,"screenAvailWidth":1920,"screenAvailHeight":1080,"innerWidth":1920,"innerHeight":951,"devicePixelRatio":1,"language":"en-US","languages":["en-US","en"],"webdriver":false,"hardwareConcurrency":8,"notificationsPermission":"denied"}`
 )
 
@@ -101,11 +102,19 @@ func (e *captchaV2ShowTypeError) Error() string {
 	return "captcha show type mismatch: " + e.ShowType
 }
 
+type captchaV2SettingsResp struct {
+	Response struct {
+		SensorsDelay int    `json:"sensors_delay"`
+		Status       string `json:"status"`
+	} `json:"response"`
+}
+
 type captchaV2Session struct {
 	ctx          context.Context
 	client       tlsclient.HttpClient
 	profile      Profile
 	savedProfile *SavedProfile
+	anonToken    string // anonymous access_token from step 1 (passed to captchaNotRobot.*)
 }
 
 func solveVkCaptchaV2(
@@ -114,8 +123,9 @@ func solveVkCaptchaV2(
 	client tlsclient.HttpClient,
 	profile Profile,
 	savedProfile *SavedProfile,
+	anonToken string,
 ) (string, error) {
-	return solveVkCaptchaV2Attempts(ctx, captchaErr, client, profile, savedProfile, captchaV2MaxAttempts)
+	return solveVkCaptchaV2Attempts(ctx, captchaErr, client, profile, savedProfile, anonToken, captchaV2MaxAttempts)
 }
 
 func solveVkCaptchaV2Attempts(
@@ -124,6 +134,7 @@ func solveVkCaptchaV2Attempts(
 	client tlsclient.HttpClient,
 	profile Profile,
 	savedProfile *SavedProfile,
+	anonToken string,
 	maxAttempts int,
 ) (string, error) {
 	if captchaErr == nil || captchaErr.SessionToken == "" {
@@ -134,7 +145,7 @@ func solveVkCaptchaV2Attempts(
 	}
 	log.Printf("[КАПЧА] Решаю VK Smart Captcha автоматически (v2, попыток=%d)...", maxAttempts)
 
-	s := &captchaV2Session{ctx: ctx, client: client, profile: profile, savedProfile: savedProfile}
+	s := &captchaV2Session{ctx: ctx, client: client, profile: profile, savedProfile: savedProfile, anonToken: anonToken}
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		token, solveErr := s.solveOnce(captchaErr)
@@ -194,9 +205,38 @@ func (s *captchaV2Session) solveOnce(captchaErr *VkCaptchaError) (string, error)
 	}
 	log.Printf("[КАПЧА] v2 pow solved")
 
+	// v3: artificial delay after PoW — real browsers take 200–600ms to render the page
+	// before the user can interact; instant solve looks robotic.
+	select {
+	case <-s.ctx.Done():
+		return "", s.ctx.Err()
+	case <-time.After(time.Duration(200+mathrand.Intn(400)) * time.Millisecond):
+	}
+
 	base := captchaV2BaseValues(captchaErr.SessionToken)
-	if _, settingsErr := s.captchaRequest("captchaNotRobot.settings", base); settingsErr != nil {
+
+	// Call settings and parse sensors_delay — VK tells us how long to wait
+	// before collecting sensor data (real browsers respect this timing).
+	settingsRaw, settingsErr := s.captchaRequest("captchaNotRobot.settings", base)
+	if settingsErr != nil {
 		return "", fmt.Errorf("captcha settings failed: %w", settingsErr)
+	}
+	sensorsDelay := 200 // default fallback
+	if settingsRaw != nil {
+		if respMap, ok := settingsRaw["response"].(map[string]any); ok {
+			if d, ok := respMap["sensors_delay"].(float64); ok && d > 0 {
+				sensorsDelay = int(d)
+			}
+		}
+	}
+	log.Printf("[КАПЧА] v2 sensors_delay=%dms from settings", sensorsDelay)
+
+	// Wait sensors_delay + jitter (VK measures this; too fast = BOT signal)
+	waitMs := sensorsDelay + mathrand.Intn(150) + 50
+	select {
+	case <-s.ctx.Done():
+		return "", s.ctx.Err()
+	case <-time.After(time.Duration(waitMs) * time.Millisecond):
 	}
 
 	browserFP, err := captchaV2BrowserFP()
@@ -368,8 +408,9 @@ func (s *captchaV2Session) performCaptchaCheck(
 	browserFP string,
 	hash string,
 	answerJSON string,
-	cursor string,
+	behavior captchaV2BehaviorData,
 	debugInfo string,
+	anonToken string,
 ) (*captchaV2Check, error) {
 	values := [][2]string{
 		{"session_token", sessionToken},
@@ -378,15 +419,15 @@ func (s *captchaV2Session) performCaptchaCheck(
 		{"accelerometer", "[]"},
 		{"gyroscope", "[]"},
 		{"motion", "[]"},
-		{"cursor", cursor},
-		{"taps", "[]"},
-		{"connectionRtt", "[]"},
-		{"connectionDownlink", "[]"},
+		{"cursor", behavior.Cursor},
+		{"taps", behavior.Taps},
+		{"connectionRtt", behavior.ConnRtt},
+		{"connectionDownlink", behavior.ConnDownlink},
 		{"browser_fp", browserFP},
 		{"hash", hash},
 		{"answer", base64.StdEncoding.EncodeToString([]byte(answerJSON))},
 		{"debug_info", debugInfo},
-		{"access_token", ""},
+		{"access_token", anonToken},
 	}
 	resp, err := s.captchaRequest("captchaNotRobot.check", values)
 	if err != nil {
@@ -420,6 +461,127 @@ func parseCaptchaV2Check(raw map[string]any) (*captchaV2Check, error) {
 	return out, nil
 }
 
+// ─── v3: behavioral signals ───────────────────────────────────────────────
+
+// captchaV2BehaviorData holds all behavioral signals sent to captchaNotRobot.check.
+// v3 upgrade: cursor trajectory, connection metrics instead of empty arrays.
+type captchaV2BehaviorData struct {
+	Cursor       string // JSON [{x,y},...] mouse trajectory
+	Taps         string // JSON [[x,y],...] touch taps (desktop = [])
+	ConnRtt      string // JSON [ms,...] Network RTT samples
+	ConnDownlink string // JSON [mbps,...] Network downlink samples
+}
+
+// buildCheckboxBehaviorV3 generates realistic behavioral data for a checkbox captcha.
+func buildCheckboxBehaviorV3() captchaV2BehaviorData {
+	return captchaV2BehaviorData{
+		Cursor:       buildCheckboxCursorV3(),
+		Taps:         "[]",
+		ConnRtt:      buildConnectionRttV3(),
+		ConnDownlink: buildConnectionDownlinkV3(),
+	}
+}
+
+// buildCheckboxCursorV3 generates a plausible cursor trajectory ending at the checkbox.
+// Coordinates are in the 1920×951 viewport; checkbox is roughly center-left in the modal.
+func buildCheckboxCursorV3() string {
+	type cursorPoint struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+	}
+
+	// Checkbox sits in a centered modal (~500px wide at x≈710, y≈840 on 1920×951)
+	checkboxX := 700 + mathrand.Intn(60)
+	checkboxY := 830 + mathrand.Intn(40)
+
+	// User was reading the page somewhere in the upper area
+	startX := 750 + mathrand.Intn(250)
+	startY := 350 + mathrand.Intn(200)
+
+	points := make([]cursorPoint, 0, 24)
+
+	// Brief dwell at start (reading)
+	for i := 0; i < 1+mathrand.Intn(3); i++ {
+		points = append(points, cursorPoint{
+			X: startX + mathrand.Intn(6) - 3,
+			Y: startY + mathrand.Intn(6) - 3,
+		})
+	}
+
+	// Quadratic bezier sweep toward checkbox
+	transitSteps := 4 + mathrand.Intn(5)
+	arcOffX := mathrand.Intn(80) - 40
+	arcOffY := mathrand.Intn(50) + 20
+	for i := 1; i <= transitSteps; i++ {
+		t := float64(i) / float64(transitSteps+1)
+		cx := float64(startX+checkboxX)/2 + float64(arcOffX)
+		cy := float64(startY+checkboxY)/2 + float64(arcOffY)
+		bx := (1-t)*(1-t)*float64(startX) + 2*t*(1-t)*cx + t*t*float64(checkboxX)
+		by := (1-t)*(1-t)*float64(startY) + 2*t*(1-t)*cy + t*t*float64(checkboxY)
+		jitter := int((1-t)*6) + 1
+		points = append(points, cursorPoint{
+			X: int(math.Round(bx)) + mathrand.Intn(jitter*2+1) - jitter,
+			Y: int(math.Round(by)) + mathrand.Intn(jitter*2+1) - jitter,
+		})
+	}
+
+	// Precise approach
+	approachSteps := 3 + mathrand.Intn(3)
+	prev := points[len(points)-1]
+	for i := 1; i <= approachSteps; i++ {
+		t := float64(i) / float64(approachSteps)
+		ax := prev.X + int(math.Round(t*float64(checkboxX-prev.X))) + mathrand.Intn(4) - 2
+		ay := prev.Y + int(math.Round(t*float64(checkboxY-prev.Y))) + mathrand.Intn(4) - 2
+		points = append(points, cursorPoint{X: ax, Y: ay})
+	}
+
+	// Micro-settle near checkbox (click jitter)
+	for i := 0; i < 2+mathrand.Intn(3); i++ {
+		points = append(points, cursorPoint{
+			X: checkboxX + mathrand.Intn(8) - 4,
+			Y: checkboxY + mathrand.Intn(8) - 4,
+		})
+	}
+
+	data, err := json.Marshal(points)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+// buildConnectionRttV3 generates realistic Network RTT samples (ms).
+func buildConnectionRttV3() string {
+	base := 20 + mathrand.Intn(100) // 20–120 ms base
+	n := 3 + mathrand.Intn(3)
+	vals := make([]int, n)
+	for i := range vals {
+		v := base + mathrand.Intn(30) - 15
+		if v < 5 {
+			v = 5
+		}
+		vals[i] = v
+	}
+	data, _ := json.Marshal(vals)
+	return string(data)
+}
+
+// buildConnectionDownlinkV3 generates realistic Network downlink samples (Mbps).
+// Browser API reports rounded values; common home values: 1.5, 10, 50.
+func buildConnectionDownlinkV3() string {
+	buckets := []float64{1.5, 2.5, 5, 10, 10, 10, 25, 50, 100}
+	base := buckets[mathrand.Intn(len(buckets))]
+	n := 3 + mathrand.Intn(2)
+	vals := make([]float64, n)
+	for i := range vals {
+		vals[i] = base
+	}
+	data, _ := json.Marshal(vals)
+	return string(data)
+}
+
+// ─── end v3 behavioral signals ────────────────────────────────────────────
+
 func (s *captchaV2Session) solveCheckboxCaptcha(
 	sessionToken string,
 	browserFP string,
@@ -441,13 +603,15 @@ func (s *captchaV2Session) solveCheckboxCaptcha(
 		return "", fmt.Errorf("captcha componentDone failed: %w", err)
 	}
 
+	// v3: simulate user moving cursor to checkbox and clicking (300–750ms)
 	select {
 	case <-s.ctx.Done():
 		return "", s.ctx.Err()
-	case <-time.After(time.Duration(400+mathrand.Intn(250)) * time.Millisecond):
+	case <-time.After(time.Duration(300+mathrand.Intn(450)) * time.Millisecond):
 	}
 
-	check, err := s.performCaptchaCheck(sessionToken, browserFP, hash, "{}", "[]", debugInfo)
+	behavior := buildCheckboxBehaviorV3()
+	check, err := s.performCaptchaCheck(sessionToken, browserFP, hash, "{}", behavior, debugInfo, "")
 	if err != nil {
 		return "", err
 	}

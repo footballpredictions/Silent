@@ -59,6 +59,8 @@ let wdttGeneration = 0
 let wdttReplacing = false
 let captchaSession = 0
 let captchaInProgress = false
+let captchaQueue = []
+let captchaQueueDrainRunning = false
 
 const SERVER_IP_FALLBACK = '132.243.234.162'
 
@@ -370,6 +372,8 @@ function cleanupVpn() {
   networkMonitor = null
   cancelCaptchaSolve()
   captchaInProgress = false
+  captchaQueue = []
+  captchaQueueDrainRunning = false
   if (wdttProcess) {
     try { wdttProcess.kill() } catch {}
     wdttProcess = null
@@ -544,48 +548,60 @@ function writeCaptchaResult(session, result) {
 }
 
 function scheduleCaptchaSolve(lineTrim) {
+  captchaQueue.push(lineTrim)
+  void drainCaptchaQueue()
+}
+
+async function drainCaptchaQueue() {
+  if (captchaQueueDrainRunning) return
+  captchaQueueDrainRunning = true
+  try {
+    while (captchaQueue.length > 0) {
+      const lineTrim = captchaQueue.shift()
+      await runCaptchaSolve(lineTrim)
+    }
+  } finally {
+    captchaQueueDrainRunning = false
+    captchaInProgress = false
+  }
+}
+
+async function runCaptchaSolve(lineTrim) {
   const parts = lineTrim.split('|')
   if (parts.length < 3) return
   const mode = (parts[1] || 'auto').toLowerCase()
   const redirectUri = parts[2] || ''
   if (!redirectUri) return
-  if (captchaInProgress) {
-    cancelCaptchaSolve()
-  }
-  const session = ++captchaSession
+
   captchaInProgress = true
+  const session = ++captchaSession
   sendLog(`[КАПЧА] ${mode === 'manual' ? 'ручное окно' : 'авто'} (${redirectUri.slice(0, 40)}…)`)
 
-  const run = async () => {
-    let token = ''
-    try {
-      token = await solveVkCaptcha(redirectUri, mode)
-      if (session !== captchaSession) return
-      sendLog('[КАПЧА] Решена ✓')
-      writeCaptchaResult(session, token)
-    } catch (e) {
-      if (session !== captchaSession) return
-      const msg = e?.message || String(e)
-      if (msg === 'slider_detected' && mode !== 'manual') {
-        try {
-          token = await solveVkCaptcha(redirectUri, 'manual')
-          if (session !== captchaSession) return
-          sendLog('[КАПЧА] Решена вручную ✓')
-          writeCaptchaResult(session, token)
-          return
-        } catch (e2) {
-          writeCaptchaResult(session, `error:${e2?.message || e2}`)
-          sendLog(`[КАПЧА] ${e2?.message || e2}`)
-          return
-        }
+  let token = ''
+  try {
+    token = await solveVkCaptcha(redirectUri, mode)
+    if (session !== captchaSession) return
+    sendLog('[КАПЧА] Решена ✓')
+    writeCaptchaResult(session, token)
+  } catch (e) {
+    if (session !== captchaSession) return
+    const msg = e?.message || String(e)
+    if (msg === 'slider_detected' && mode !== 'manual') {
+      try {
+        token = await solveVkCaptcha(redirectUri, 'manual')
+        if (session !== captchaSession) return
+        sendLog('[КАПЧА] Решена вручную ✓')
+        writeCaptchaResult(session, token)
+        return
+      } catch (e2) {
+        writeCaptchaResult(session, `error:${e2?.message || e2}`)
+        sendLog(`[КАПЧА] ${e2?.message || e2}`)
+        return
       }
-      writeCaptchaResult(session, `error:${msg}`)
-      sendLog(`[КАПЧА] ${msg}`)
-    } finally {
-      if (session === captchaSession) captchaInProgress = false
     }
+    writeCaptchaResult(session, `error:${msg}`)
+    sendLog(`[КАПЧА] ${msg}`)
   }
-  void run()
 }
 
 function wdttExePath() {

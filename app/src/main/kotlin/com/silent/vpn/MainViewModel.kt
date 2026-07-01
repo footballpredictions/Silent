@@ -932,6 +932,8 @@ class MainViewModel @Inject constructor(
     private var resumeProfileJob: Job? = null
     private var connectJob: Job? = null
     private var disconnectJob: Job? = null
+    private var logoutJob: Job? = null
+    @Volatile private var logoutGeneration = 0
     /** До завершения VpnBackendSync не дергаем overlay из polling. */
     private var backendSyncCompleted: Boolean
         get() = VpnSessionState.backendSyncCompleted
@@ -1449,6 +1451,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun login(email: String, password: String, rememberMe: Boolean, activity: ComponentActivity? = null) {
+        invalidatePendingLogout()
         viewModelScope.launch {
             _authLoading.value = true
             _authError.value = null
@@ -1636,6 +1639,7 @@ class MainViewModel @Inject constructor(
     fun dismissRegDone() { _regDone.value = false; _regEmail.value = "" }
 
     fun goToMain(skipProfileFetch: Boolean = false) {
+        invalidatePendingLogout()
         _screen.value = AppScreen.MAIN
         startConfigSync()
         if (!skipProfileFetch && _profile.value == null) {
@@ -1876,47 +1880,91 @@ class MainViewModel @Inject constructor(
         return false
     }
 
+    private fun invalidatePendingLogout() {
+        logoutGeneration++
+        logoutJob?.cancel()
+        logoutJob = null
+    }
+
     fun logout(context: Context? = null) {
-        viewModelScope.launch {
-            val fp = if (repo.hasSessionFingerprint()) {
-                runCatching { repo.getDeviceFingerprint() }.getOrNull()
-            } else null
+        if (_screen.value == AppScreen.LOGIN) return
+        val gen = ++logoutGeneration
+        logoutJob?.cancel()
+        logoutJob = viewModelScope.launch {
+            try {
+                val fp = if (repo.hasSessionFingerprint()) {
+                    runCatching { repo.getDeviceFingerprint() }.getOrNull()
+                } else null
+                val accessToken = repo.getAccessToken()
 
-            if (_vpnState.value == VpnState.CONNECTED || _vpnState.value == VpnState.CONNECTING) {
-                context?.let { stopVpnLocally(it) }
-            }
-            bootstrapVpnMode = false
-            bootstrapContext = null
-            cancelBootstrapSessionTimeout()
+                bootstrapVpnMode = false
+                bootstrapContext = null
+                cancelBootstrapSessionTimeout()
+                resetBootstrapDeadline()
 
-            if (fp != null && repo.getAccessToken() != null) {
-                runCatching {
-                    val res = repo.getApi().logoutSession(DisconnectRequest(fp))
-                    if (!res.isSuccessful) {
-                        Log.w("MainViewModel", "logout API ${res.code()}")
+                if (_vpnState.value == VpnState.CONNECTED || _vpnState.value == VpnState.CONNECTING) {
+                    context?.let { stopVpnLocally(it) }
+                }
+
+                if (gen != logoutGeneration) return@launch
+
+                if (fp != null && accessToken != null) {
+                    runCatching {
+                        val res = repo.getApi().logoutSession(DisconnectRequest(fp))
+                        if (!res.isSuccessful) {
+                            Log.w("MainViewModel", "logout API ${res.code()}")
+                        }
                     }
                 }
-            }
 
-            repo.clearCachedProfile()  // сначала чистим кеш — до clearTokens, чтобы не было стейла
-            repo.clearSessionFingerprint()
-            repo.clearSessionDeviceId()
-            repo.clearCachedVpnConfig()
-            repo.clearSavedHashItems()
-            repo.clearSyncRevisions()
-            repo.clearTunnelApiBase()
-            stopConfigSync()
-            repo.clearTokens()
-            _sessionDeviceId.value = null
-            _profile.value = null
-            _vpnState.value = VpnState.DISCONNECTED
-            _screen.value = AppScreen.LOGIN
-            restoreCachedThemeToUi()
-            loadTheme()
-            _authError.value = null
-            _vpnError.value = null
-            _regDone.value = false
-            _forgotSent.value = false
+                if (gen != logoutGeneration) return@launch
+
+                stopConfigSync()
+                repo.clearCachedProfile()
+                repo.clearSessionFingerprint()
+                repo.clearSessionDeviceId()
+                repo.clearCachedVpnConfig()
+                repo.clearSavedHashItems()
+                repo.clearSyncRevisions()
+                repo.clearTunnelApiBase()
+                repo.clearTokens()
+
+                _sessionDeviceId.value = null
+                _profile.value = null
+                _vpnState.value = VpnState.DISCONNECTED
+                _authError.value = null
+                _vpnError.value = null
+                _regDone.value = false
+                _forgotSent.value = false
+                _bootstrapExpired.value = false
+                _statusMsg.value = ""
+                bootstrapConnectingInternal = false
+                _bootstrapConnecting.value = false
+                restoreCachedThemeToUi()
+                loadTheme()
+                _screen.value = AppScreen.LOGIN
+
+                if (gen != logoutGeneration) return@launch
+
+                context?.let { ctx ->
+                    repeat(24) {
+                        if (!SilentVpnService.isRunning && !WdttTunnelManager.running.value) return@repeat
+                        delay(250)
+                    }
+                    if (WdttTunnelManager.running.value) {
+                        runCatching { WdttTunnelManager.stopAndAwait() }
+                    }
+                    VpnBackendSync.stop()
+                    VpnSessionState.resetBackendSync()
+                    if (gen == logoutGeneration) {
+                        ensureBootstrapForAuthFlow(ctx)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MainViewModel", "logout: ${e.message}")
+            }
         }
     }
 

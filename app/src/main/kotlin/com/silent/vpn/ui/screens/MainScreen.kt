@@ -611,7 +611,7 @@ fun MainScreen(
                                 val text = if (badge != null) "$label  ·  $badge" else label
                                 MenuNavItem(label = text, fg = fg, onClick = { menuPage = page })
                             }
-                            MenuNavLogout(onClick = { menuOpen = false; onLogout() })
+                            MenuNavLogout(onClick = { onLogout(); menuOpen = false })
                         }
                     }
                     Box(

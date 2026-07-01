@@ -10,6 +10,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -64,7 +65,11 @@ fun MenuNavLogout(
         modifier = modifier
             .fillMaxWidth()
             .padding(top = 8.dp)
-            .clickable(onClick = onClick)
+            .clickable(
+                onClick = onClick,
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+            )
             .padding(
                 horizontal = UiDimens.menuItemPaddingH,
                 vertical = UiDimens.menuItemPaddingV,

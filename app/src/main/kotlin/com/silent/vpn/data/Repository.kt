@@ -861,10 +861,10 @@ class SilentRepository @Inject constructor(
 
     fun isExclusionsWhitelist(): Boolean = prefs.getBoolean(PREF_EXCLUSIONS_WHITELIST, false)
 
-    fun saveExcludedApps(packages: Set<String>, whitelist: Boolean) {
+    fun saveExcludedApps(packages: Set<String>) {
         prefs.edit()
             .putString(PREF_EXCLUDED_APPS, packages.joinToString(","))
-            .putBoolean(PREF_EXCLUSIONS_WHITELIST, whitelist)
+            .putBoolean(PREF_EXCLUSIONS_WHITELIST, false)
             .apply()
     }
 

@@ -125,7 +125,9 @@ func (s *captchaV2Session) solveSliderCaptcha(
 		if strings.EqualFold(check.Status, "error_limit") {
 			return "", errCaptchaV2RateLimit
 		}
+		log.Printf("[КАПЧА] v2 slider attempt %d status=%s", i+1, check.Status)
 	}
+	log.Printf("[КАПЧА] v2 slider guesses exhausted (attempts=%d)", limit)
 	return "", errors.New("slider guesses exhausted")
 }
 

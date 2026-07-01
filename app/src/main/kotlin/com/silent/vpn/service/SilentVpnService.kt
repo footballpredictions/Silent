@@ -415,6 +415,11 @@ class SilentVpnService : Service() {
                 )
             }
 
+            val vkCred = EntryPointAccessors.fromApplication(
+                applicationContext,
+                AppEntryPoint::class.java,
+            ).silentRepository().resolveVkCredLaunchParams()
+
             WdttTunnelManager.start(
                 this,
                 WdttTunnelManager.Params(
@@ -425,7 +430,8 @@ class SilentVpnService : Service() {
                     deviceId = libclientDeviceId,
                     workers = totalWorkers,
                     activeHashCount = activeHashCount,
-                    captchaMode = "auto",
+                    captchaMode = vkCred.captchaMode,
+                    vkAuthMode = vkCred.vkAuthMode,
                     apiWgConfig = apiWg,
                     isBootstrap = isBootstrap,
                     fastWgCache = fastWgCache,

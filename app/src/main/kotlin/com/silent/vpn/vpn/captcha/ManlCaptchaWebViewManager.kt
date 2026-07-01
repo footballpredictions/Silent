@@ -292,7 +292,6 @@ class ManlCaptchaActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ManlCaptchaWebViewManager.activeActivity = this
-        com.silent.vpn.MainActivity.isForeground = true
         val redirectUri = intent.getStringExtra("redirectUri") ?: return finish()
 
         setContent {
@@ -388,7 +387,6 @@ class ManlCaptchaActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        com.silent.vpn.MainActivity.isForeground = false
         if (ManlCaptchaWebViewManager.activeActivity === this) {
             ManlCaptchaWebViewManager.activeActivity = null
         }

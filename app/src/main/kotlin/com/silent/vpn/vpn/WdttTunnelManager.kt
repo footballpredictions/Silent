@@ -132,6 +132,7 @@ object WdttTunnelManager {
         val workers: Int = 12,
         val activeHashCount: Int = HashChannelHelper.MAX_HASHES,
         val captchaMode: String = "auto",
+        val vkAuthMode: String = "vkcalls",
         val apiWgConfig: String? = null,
         val isBootstrap: Boolean = false,
         /** Быстрый WG из кеша конфига (плитка QS, холодный старт). */
@@ -272,6 +273,7 @@ object WdttTunnelManager {
                                 "-device-id", params.deviceId,
                                 "-password", params.wdttPassword,
                                 "-captcha-mode", sanitizeCaptchaMode(params.captchaMode),
+                                "-vk-auth-mode", sanitizeVkAuthMode(params.vkAuthMode),
                             ),
                         )
                         systemDnsForLibclient(appContext).let { dns ->
@@ -311,8 +313,13 @@ object WdttTunnelManager {
     }
 
     private fun sanitizeCaptchaMode(mode: String): String = when (mode.lowercase()) {
-        "rjs", "wv", "auto" -> mode.lowercase()
+        "auto", "rjs", "wv", "manual" -> mode.lowercase()
         else -> "auto"
+    }
+
+    private fun sanitizeVkAuthMode(mode: String): String = when (mode.lowercase()) {
+        "legacy" -> "legacy"
+        else -> "vkcalls"
     }
 
     private fun systemDnsForLibclient(context: Context): String {
@@ -809,6 +816,43 @@ object WdttTunnelManager {
                                 "[КАПЧА WBV] $text",
                                 5,
                                 isError = !isCaptchaSuccessMessage(text) && isError,
+                            )
+                        }
+                        lineTrim.contains("[КАПЧА] Go v3") -> {
+                            val text = lineTrim.substringAfter("[КАПЧА] Go v3").trim()
+                            val err = text.contains("ошибка", true) || isError
+                            updateLog(
+                                "captcha_v3_${text.take(12).hashCode()}",
+                                "[КАПЧА Go v3] $text",
+                                5,
+                                isError = err,
+                            )
+                        }
+                        lineTrim.contains("[КАПЧА] v2 check") -> {
+                            val msg = Regex("""\[КАПЧА\] v2 check[^\n]*""").find(lineTrim)?.value ?: lineTrim
+                            updateLog(
+                                "captcha_v2check_${msg.hashCode()}",
+                                msg,
+                                5,
+                                isError = msg.contains("BOT", true),
+                            )
+                        }
+                        lineTrim.contains("[КАПЧА] v2 попытка") && lineTrim.contains("ошибка") -> {
+                            val text = lineTrim.substringAfter("[КАПЧА] ").trim()
+                            updateLog(
+                                "captcha_v2err_${text.take(12).hashCode()}",
+                                "[КАПЧА] $text",
+                                5,
+                                isError = true,
+                            )
+                        }
+                        lineTrim.contains("[КАПЧА] v2 slider") -> {
+                            val msg = Regex("""\[КАПЧА\] v2 slider[^\n]*""").find(lineTrim)?.value ?: lineTrim
+                            updateLog(
+                                "captcha_slider_${msg.hashCode()}",
+                                msg,
+                                5,
+                                isError = msg.contains("exhausted", true) || msg.contains("status=bot", true),
                             )
                         }
                         lineTrim.contains("Старт") || lineTrim.contains("Ожидайте") ->
@@ -1592,7 +1636,9 @@ object WdttTunnelManager {
             updateLog("captcha_solved", "[КАПЧА] Решена ✓", 5)
             writeCaptchaResult(session, token)
         } catch (e: CancellationException) {
-            throw e
+            if (session == captchaSession.get()) {
+                writeCaptchaResult(session, "error:cancelled")
+            }
         } catch (e: Exception) {
             if (session == captchaSession.get()) {
                 updateLog("captcha_err", "[КАПЧА] ${e.message}", 5, true)

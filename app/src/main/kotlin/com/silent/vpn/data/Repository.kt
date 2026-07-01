@@ -56,6 +56,16 @@ class SilentRepository @Inject constructor(
         const val PREF_HASH_CHANNELS_PER_HASH = "hash_channels_per_hash"
         const val PREF_HASH_TOTAL_WORKERS = "hash_total_workers"
         const val PREF_HASH_LEGACY_MIGRATED = "hash_total_workers_legacy_migrated"
+        /** vkcalls = VKCalls без капчи (default), auto = WBV auto+manual, manual = только ручная капча */
+        const val PREF_VK_CRED_STRATEGY = "vk_cred_strategy"
+        const val VK_CRED_VKCALLS = "vkcalls"
+        const val VK_CRED_AUTO = "auto"
+        const val VK_CRED_MANUAL = "manual"
+
+        /** @deprecated используйте VK_CRED_* */
+        const val PREF_CAPTCHA_BYPASS_MODE = "captcha_bypass_mode"
+        const val CAPTCHA_MODE_RJS = "rjs"
+        const val CAPTCHA_MODE_WV = "wv"
         const val PREF_CACHED_PROFILE = "cached_profile_json"
         const val PREF_CACHED_THEME = "cached_theme_json"
         const val PREF_SYNC_HASHES_REV = "config_sync_hashes_rev"
@@ -948,6 +958,54 @@ class SilentRepository @Inject constructor(
     }
 
     fun getSavedHashItemsUpdatedAt(): Long = prefs.getLong(PREF_SAVED_HASH_ITEMS_TS, 0L)
+
+    data class VkCredLaunchParams(
+        val vkAuthMode: String,
+        val captchaMode: String,
+    )
+
+    fun getVkCredStrategy(): String {
+        if (!BuildConfig.DEBUG) return VK_CRED_VKCALLS
+        return prefs.getString(PREF_VK_CRED_STRATEGY, VK_CRED_VKCALLS)?.let { stored ->
+            when (stored) {
+                VK_CRED_AUTO, VK_CRED_MANUAL -> stored
+                else -> VK_CRED_VKCALLS
+            }
+        } ?: VK_CRED_VKCALLS
+    }
+
+    fun setVkCredStrategy(strategy: String) {
+        if (!BuildConfig.DEBUG) return
+        val normalized = when (strategy) {
+            VK_CRED_AUTO, VK_CRED_MANUAL -> strategy
+            else -> VK_CRED_VKCALLS
+        }
+        prefs.edit().putString(PREF_VK_CRED_STRATEGY, normalized).apply()
+    }
+
+    fun resolveVkCredLaunchParams(): VkCredLaunchParams = when (getVkCredStrategy()) {
+        VK_CRED_AUTO -> VkCredLaunchParams(vkAuthMode = "legacy", captchaMode = "auto")
+        VK_CRED_MANUAL -> VkCredLaunchParams(vkAuthMode = "legacy", captchaMode = "manual")
+        else -> VkCredLaunchParams(vkAuthMode = "vkcalls", captchaMode = "auto")
+    }
+
+    fun vkCredStrategyLabel(strategy: String = getVkCredStrategy()): String = when (strategy) {
+        VK_CRED_AUTO -> "Авто капча"
+        VK_CRED_MANUAL -> "Ручная"
+        else -> "VKCalls"
+    }
+
+    /** @deprecated */
+    fun getCaptchaBypassMode(): String = getVkCredStrategy()
+
+    /** @deprecated */
+    fun setCaptchaBypassMode(mode: String) = setVkCredStrategy(
+        when (mode) {
+            CAPTCHA_MODE_WV -> VK_CRED_AUTO
+            CAPTCHA_MODE_RJS -> VK_CRED_MANUAL
+            else -> VK_CRED_VKCALLS
+        },
+    )
 
     fun getTotalWorkers(activeHashCount: Int = getSavedHashItems().activeServerHashCount().coerceAtLeast(1)): Int {
         val capped = activeHashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)

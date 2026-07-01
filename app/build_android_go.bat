@@ -13,9 +13,10 @@ if defined ANDROID_HOME (
   set "SDK_PATH=%ANDROID_SDK_ROOT%"
 ) else if exist "%PROJECT_ROOT%local.properties" (
   for /f "usebackq tokens=1,* delims==" %%A in ("%PROJECT_ROOT%local.properties") do (
-    if "%%A"=="sdk.dir" set "SDK_PATH=%%B"
+    if "%%A"=="sdk.dir"   set "SDK_PATH=%%B"
   )
   set "SDK_PATH=!SDK_PATH:\\=\!"
+  set "SDK_PATH=!SDK_PATH:C\:\=C:\!"
 ) else (
   set "SDK_PATH=C:\Users\silent27\AppData\Local\Android\Sdk"
 )

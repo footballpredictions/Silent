@@ -61,6 +61,8 @@
             android:excludeFromRecents="true"
             android:launchMode="singleTask"
             android:noHistory="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="false"
             android:taskAffinity=""
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 

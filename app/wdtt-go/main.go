@@ -20,14 +20,16 @@ import (
 var CaptchaResultChan = make(chan string, 1)
 
 var captchaModeValue atomic.Value
+var vkAuthModeValue atomic.Value
 
 func init() {
 	captchaModeValue.Store("auto")
+	vkAuthModeValue.Store("vkcalls")
 }
 
 func normalizeCaptchaMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "auto", "rjs", "wv":
+	case "auto", "rjs", "wv", "manual":
 		return strings.ToLower(strings.TrimSpace(mode))
 	default:
 		return "auto"
@@ -44,6 +46,29 @@ func getCaptchaMode() string {
 	mode, _ := captchaModeValue.Load().(string)
 	if mode == "" {
 		return "auto"
+	}
+	return mode
+}
+
+func normalizeVKAuthMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "legacy":
+		return "legacy"
+	default:
+		return "vkcalls"
+	}
+}
+
+func setVKAuthMode(mode string) string {
+	normalized := normalizeVKAuthMode(mode)
+	vkAuthModeValue.Store(normalized)
+	return normalized
+}
+
+func getVKAuthMode() string {
+	mode, _ := vkAuthModeValue.Load().(string)
+	if mode == "" {
+		return "vkcalls"
 	}
 	return mode
 }
@@ -127,7 +152,8 @@ func main() {
 
 	deviceID := flag.String("device-id", "unknown", "уникальный ID устройства")
 	connPassword := flag.String("password", "", "пароль подключения")
-	captchaMode := flag.String("captcha-mode", "auto", "режим обхода капчи (auto/wv/rjs)")
+	captchaMode := flag.String("captcha-mode", "auto", "режим обхода капчи (auto/wv/rjs/manual)")
+	vkAuthMode := flag.String("vk-auth-mode", "vkcalls", "режим VK TURN-кредов (vkcalls/legacy)")
 	fingerprint := flag.String("fingerprint", "chrome", "браузерный фингерпринт (chrome, safari, ios, android, firefox)")
 	clientIdsFlag := flag.String("client-ids", "", "ID клиентов VK через запятую")
 	sysDnsFlag := flag.String("sys-dns", "", "DNS оператора с Android (через запятую)")
@@ -136,6 +162,7 @@ func main() {
 	setAndroidSysDNSServers(*sysDnsFlag)
 	setupGlobalResolver()
 	activeCaptchaMode := setCaptchaMode(*captchaMode)
+	activeVKAuthMode := setVKAuthMode(*vkAuthMode)
 
 	if *peerAddr == "" || *vkHash == "" {
 		log.Fatal("[КЛИЕНТ] Нужны -peer и -vk")
@@ -233,8 +260,10 @@ func main() {
 		wrapStatus = "ON (password HKDF + RTP AEAD)"
 	}
 
-	captchaStatus := "AUTO: Go v2 x2 -> WBV Auto x2 -> Go v2 x1 -> Manual WBV"
+	captchaStatus := "AUTO: WBV Auto -> Manual WBV"
 	switch activeCaptchaMode {
+	case "manual":
+		captchaStatus = "Manual WBV only"
 	case "wv":
 		captchaStatus = "WBV selected in Android"
 	case "rjs":
@@ -251,6 +280,7 @@ func main() {
 	log.Printf("[КЛИЕНТ] WRAP: %s", wrapStatus)
 	log.Printf("[WRAP] Ключ выведен из пароля, режим RTP AEAD активен")
 	log.Printf("[КЛИЕНТ] Device ID: %s", *deviceID)
+	log.Printf("[КЛИЕНТ] VK Auth: %s", activeVKAuthMode)
 	log.Printf("[КЛИЕНТ] Captcha: %s", captchaStatus)
 	log.Println("[КЛИЕНТ] ═══════════════════════════════════════")
 

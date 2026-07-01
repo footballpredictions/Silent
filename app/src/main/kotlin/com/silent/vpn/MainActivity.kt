@@ -291,7 +291,7 @@ class MainActivity : ComponentActivity() {
         } else {
             vm.onAppResumed()
         }
-        if (!fromNotification) {
+        if (!fromNotification && ManlCaptchaWebViewManager.isCaptchaPending) {
             ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
         }
     }

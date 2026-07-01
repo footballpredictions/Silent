@@ -143,9 +143,9 @@ func solveVkCaptchaV2Attempts(
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
-	log.Printf("[КАПЧА] Решаю VK Smart Captcha автоматически (v2, попыток=%d)...", maxAttempts)
+	log.Printf("[КАПЧА] Решаю VK Smart Captcha автоматически (v3, попыток=%d)...", maxAttempts)
 
-	s := &captchaV2Session{ctx: ctx, client: client, profile: profile, savedProfile: savedProfile, anonToken: anonToken}
+	s := &captchaV2Session{ctx: ctx, client: client, profile: captchaV2DesktopProfile(), savedProfile: savedProfile, anonToken: anonToken}
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		token, solveErr := s.solveOnce(captchaErr)
@@ -303,6 +303,19 @@ func captchaV2BaseValues(sessionToken string) [][2]string {
 	}
 }
 
+func captchaV2DesktopProfile() Profile {
+	// Desktop Chrome 146 — совпадает с TLS profiles.Chrome_146 в getTokenChain.
+	if len(profileList) > 0 {
+		return profileList[0]
+	}
+	return Profile{
+		UserAgent:       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+		SecChUa:         `"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"`,
+		SecChUaMobile:   "?0",
+		SecChUaPlatform: `"Windows"`,
+	}
+}
+
 func captchaV2BrowserFP() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -427,7 +440,7 @@ func (s *captchaV2Session) performCaptchaCheck(
 		{"hash", hash},
 		{"answer", base64.StdEncoding.EncodeToString([]byte(answerJSON))},
 		{"debug_info", debugInfo},
-		{"access_token", anonToken},
+		{"access_token", ""},
 	}
 	resp, err := s.captchaRequest("captchaNotRobot.check", values)
 	if err != nil {
@@ -772,6 +785,16 @@ type VkCaptchaError struct {
 	SessionToken   string
 	CaptchaTs      string
 	CaptchaAttempt string
+}
+
+func (e *VkCaptchaError) Error() string {
+	if e == nil {
+		return "VK captcha required"
+	}
+	if e.ErrorMsg != "" {
+		return fmt.Sprintf("VK captcha: %s (code=%d)", e.ErrorMsg, e.ErrorCode)
+	}
+	return fmt.Sprintf("VK captcha required (code=%d)", e.ErrorCode)
 }
 
 func parseVkCaptchaError(errData map[string]interface{}) *VkCaptchaError {

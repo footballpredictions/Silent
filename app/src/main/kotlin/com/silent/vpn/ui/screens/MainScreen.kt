@@ -46,6 +46,7 @@ import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
 import com.silent.vpn.ui.components.MenuNavItem
 import com.silent.vpn.ui.components.MenuNavLogout
+import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.DeviceInfo
 import com.silent.vpn.data.UserProfile
@@ -210,7 +211,7 @@ private fun VpnToggleThumb(
 
 enum class VpnState { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
 
-private enum class MenuPage { ROOT, SUBSCRIPTION, EXCEPTIONS, HASHES, PROMO, DEVICES, SUPPORT, ABOUT }
+private enum class MenuPage { ROOT, SUBSCRIPTION, EXCEPTIONS, VK_CRED, HASHES, PROMO, DEVICES, SUPPORT, ABOUT }
 
 private fun deviceTypeLabel(type: String): String = when (type.lowercase()) {
     "android" -> "Android"
@@ -589,16 +590,26 @@ fun MainScreen(
                         HorizontalDivider(color = UiColors.Gray100, thickness = UiDimens.borderThin)
                         Column(modifier = Modifier.padding(UiDimens.menuNavPadding)) {
                             val items = buildList {
-                                add(MenuPage.SUBSCRIPTION to "Подписка")
-                                add(MenuPage.EXCEPTIONS to "Исключения приложений")
-                                if (BuildConfig.DEBUG) add(MenuPage.HASHES to "Хеши")
-                                add(MenuPage.PROMO to "Промокод")
-                                add(MenuPage.DEVICES to "Сессии (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})")
-                                add(MenuPage.SUPPORT to "Поддержка")
-                                add(MenuPage.ABOUT to "О сервисе")
+                                add(Triple(MenuPage.SUBSCRIPTION, "Подписка", null as String?))
+                                add(Triple(MenuPage.EXCEPTIONS, "Исключения приложений", null))
+                                if (BuildConfig.DEBUG) {
+                                    add(
+                                        Triple(
+                                            MenuPage.VK_CRED,
+                                            "Режим VK-кредов",
+                                            repo.vkCredStrategyLabel(),
+                                        ),
+                                    )
+                                }
+                                if (BuildConfig.DEBUG) add(Triple(MenuPage.HASHES, "Хеши", null))
+                                add(Triple(MenuPage.PROMO, "Промокод", null))
+                                add(Triple(MenuPage.DEVICES, "Сессии (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})", null))
+                                add(Triple(MenuPage.SUPPORT, "Поддержка", null))
+                                add(Triple(MenuPage.ABOUT, "О сервисе", null))
                             }
-                            items.forEach { (page, label) ->
-                                MenuNavItem(label = label, fg = fg, onClick = { menuPage = page })
+                            items.forEach { (page, label, badge) ->
+                                val text = if (badge != null) "$label  ·  $badge" else label
+                                MenuNavItem(label = text, fg = fg, onClick = { menuPage = page })
                             }
                             MenuNavLogout(onClick = { menuOpen = false; onLogout() })
                         }
@@ -624,6 +635,7 @@ fun MainScreen(
                             onShowError = onShowError,
                         )
                         MenuPage.EXCEPTIONS -> AppExclusionsScreen(repo, fg, bg) { menuPage = MenuPage.ROOT }
+                        MenuPage.VK_CRED -> MenuVkCredModeScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.HASHES -> MenuHashesScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.PROMO -> MenuPromo(fg, bg, promoCode, { promoCode = it }, promoMsg, { onCheckPromo(promoCode) { promoMsg = it } }) { menuPage = MenuPage.ROOT }
                         MenuPage.DEVICES -> MenuDevices(

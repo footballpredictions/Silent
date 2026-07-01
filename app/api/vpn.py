@@ -20,6 +20,7 @@ from app.schemas.vpn import (
     HashRefreshRequest,
     HashFailureReportRequest,
     InternalOnlineRequest,
+    InternalOnlineResponse,
 )
 from app.core.deps import get_verified_user
 from app.services.vpn_service import (
@@ -254,7 +255,7 @@ async def disconnect(
     return {"status": "disconnected"}
 
 
-@router.post("/internal/online")
+@router.post("/internal/online", response_model=InternalOnlineResponse)
 async def internal_online(
     req: InternalOnlineRequest,
     x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
@@ -263,15 +264,15 @@ async def internal_online(
 ):
     """Server-to-server online report from wdtt-server (no client JWT).
 
-    wdtt-server already tracks connected devices (activeDevices). It pushes
-    online=true on connect / periodic keepalive and online=false on drop, so
-    the client never needs to heartbeat the backend through the VPN.
+    wdtt-server pushes online=true on connect / keepalive and online=false on drop.
+    Response includes subscription_active / vpn_allowed — wdtt-server may drop the
+    session when vpn_allowed=false (same channel as online status, no client HTTP).
     """
     secret = (settings.INTERNAL_API_SECRET or "").strip()
     if not secret or not secrets.compare_digest(x_internal_secret, secret):
         raise HTTPException(status_code=403, detail="forbidden")
     await clear_stale_online_status(db)
-    ok = await set_device_online(db, req.device_id.strip(), bool(req.online))
+    result = await set_device_online(db, req.device_id.strip(), bool(req.online))
     if x_hive_cell_id.strip():
         from app.services import hive_service
         import uuid as _uuid
@@ -284,7 +285,7 @@ async def internal_online(
                 await db.commit()
         except (ValueError, TypeError):
             pass
-    return {"ok": ok}
+    return InternalOnlineResponse(**result)
 
 
 @router.post("/exclusions")

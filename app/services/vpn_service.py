@@ -177,12 +177,16 @@ async def clear_stale_online_status(db: AsyncSession) -> int:
     return len(devices)
 
 
-async def set_device_online(db: AsyncSession, device_ref: str, online: bool) -> bool:
+async def set_device_online(db: AsyncSession, device_ref: str, online: bool) -> dict:
     """Server-to-server: wdtt-server reports a device as connected/disconnected.
 
     device_ref is the value libclient receives as -device-id, which equals the
     backend Device.id (UUID string). Falls back to device_fingerprint for safety.
+
+    Returns subscription status so wdtt-server can drop sessions when access revoked.
     """
+    from app.services.subscription_service import user_has_active_subscription
+
     device = None
     try:
         device_uuid = uuid.UUID(device_ref)
@@ -205,7 +209,15 @@ async def set_device_online(db: AsyncSession, device_ref: str, online: bool) -> 
         device = result.scalar_one_or_none()
 
     if device is None:
-        return False
+        return {"ok": False, "subscription_active": False, "vpn_allowed": False}
+
+    user_result = await db.execute(select(User).where(User.id == device.user_id))
+    user = user_result.scalar_one_or_none()
+    sub_active = False
+    vpn_allowed = False
+    if user is not None:
+        sub_active = await user_has_active_subscription(user, db)
+        vpn_allowed = bool(user.is_admin or sub_active)
 
     if online and _disconnect_latch_active(
         device_ref,
@@ -213,14 +225,14 @@ async def set_device_online(db: AsyncSession, device_ref: str, online: bool) -> 
         device.device_fingerprint or "",
     ):
         logger.debug("ignore wdtt online=true — client disconnect latch active for %s", device_ref)
-        return True
+        return {"ok": True, "subscription_active": sub_active, "vpn_allowed": vpn_allowed}
 
     device.is_connected = bool(online)
     if online:
         device.last_connected = datetime.utcnow()
         await touch_user_last_seen(db, device.user_id, commit=False)
     await db.commit()
-    return True
+    return {"ok": True, "subscription_active": sub_active, "vpn_allowed": vpn_allowed}
 
 
 async def prune_idle_sessions(db: AsyncSession, user_id) -> int:

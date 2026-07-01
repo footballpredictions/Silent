@@ -62,6 +62,13 @@ class InternalOnlineRequest(BaseModel):
     online: bool = True
 
 
+class InternalOnlineResponse(BaseModel):
+    """Ответ keepalive: wdtt-server может рвать сессию при vpn_allowed=false."""
+    ok: bool
+    subscription_active: bool = True
+    vpn_allowed: bool = True
+
+
 class AppExclusionRequest(BaseModel):
     device_id: uuid.UUID
     mode: str  # blacklist, whitelist

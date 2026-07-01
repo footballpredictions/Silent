@@ -16,6 +16,7 @@ FILES = [
     "app/api/users.py",
     "app/api/auth.py",
     "app/api/vpn.py",
+    "app/schemas/vpn.py",
     "app/services/vpn_service.py",
     "app/models/user.py",
     "app/services/subscription_service.py",

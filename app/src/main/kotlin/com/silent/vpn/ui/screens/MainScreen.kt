@@ -279,11 +279,7 @@ fun MainScreen(
     }
     LaunchedEffect(vpnState, menuOpen, menuPage) {
         val onSessions = menuOpen && menuPage == MenuPage.DEVICES
-        onVpnProfilePolling(
-            vpnState == VpnState.CONNECTED ||
-                vpnState == VpnState.CONNECTING ||
-                onSessions,
-        )
+        onVpnProfilePolling(vpnState == VpnState.CONNECTED || onSessions)
     }
     LaunchedEffect(Unit) {
         onUpdatePolling(true)

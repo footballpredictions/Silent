@@ -6,6 +6,7 @@ import android.net.Network
 import android.util.Log
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.service.SilentVpnService
+import com.silent.vpn.sync.MobileSyncLog
 import com.silent.vpn.util.DebugLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -212,6 +213,7 @@ object TunnelApiProxy {
             forwardHeaders = forwardHeaders,
             body = body,
         ) ?: run {
+            MobileSyncLog.w("proxy", "upstream open failed path=$upstreamPath")
             writeError(output, 502, "VPN upstream failed")
             return
         }
@@ -232,7 +234,7 @@ object TunnelApiProxy {
             stream?.copyTo(output)
             output.flush()
         } catch (e: Exception) {
-            Log.w(TAG, "upstream forward: ${e.message}")
+            MobileSyncLog.w("proxy", "upstream forward: ${e.message}")
             writeError(output, 502, "Upstream error")
         } finally {
             conn.disconnect()

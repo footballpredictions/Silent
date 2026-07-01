@@ -42,6 +42,8 @@ import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.HashFailureReporter
 import com.silent.vpn.vpn.WdttTunnelManager
+import com.silent.vpn.sync.MobileSyncLog
+import com.silent.vpn.sync.TunnelSyncResult
 import com.silent.vpn.update.AppUpdateManager
 import com.silent.vpn.data.UpdateCheckResponse
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -140,6 +142,7 @@ class MainViewModel @Inject constructor(
     private var bootstrapDeadlineMs = 0L
     private var silentBootstrapSync = false
     private var profilePollJob: Job? = null
+    private var vpnProfilePollJob: Job? = null
     @Volatile private var sessionsFetchInFlight = false
     private var updateApiBaseUrl: String? = null
     /** One-shot: пользователь уже нажал CONNECT, ждём обновление подписки и повторяем автоматически. */
@@ -287,7 +290,10 @@ class MainViewModel @Inject constructor(
             }
         }
         com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener = configSyncListener
-        com.silent.vpn.sync.VpnDataSyncBridge.onCycleCompleted = { checkForAppUpdate() }
+        com.silent.vpn.sync.VpnDataSyncBridge.onCycleCompleted = {
+            applyCachedProfileAfterSync()
+            checkForAppUpdate()
+        }
         checkForAppUpdate()
         viewModelScope.launch {
             WdttTunnelManager.lastError.collect { err ->
@@ -333,6 +339,7 @@ class MainViewModel @Inject constructor(
                             )
                         }
                         _vpnState.value = VpnState.CONNECTED
+                        markLocalDeviceOnline()
                         onVpnTunnelReady()
                         updateBootstrapReadyFlag()
                     }
@@ -508,10 +515,24 @@ class MainViewModel @Inject constructor(
         syncSessionOnResume()
     }
 
+    /** На LTE до initial sync не показываем устаревшую подписку из кеша. */
+    private fun shouldDeferProfileUntilSync(): Boolean =
+        repo.isOnMobileData() &&
+            SilentRepository.APP_EXCLUDED_FROM_VPN &&
+            !VpnSessionState.tunnelDataSyncCompleted &&
+            (VpnSessionState.initialOverlaySyncActive ||
+                _vpnState.value == VpnState.CONNECTING ||
+                (_vpnState.value == VpnState.CONNECTED && SilentVpnService.isRunning))
+
     private fun restoreCachedProfileToUi() {
+        if (shouldDeferProfileUntilSync()) return
         repo.getCachedProfile()?.let { cached ->
             if (_profile.value == null) _profile.value = cached
         }
+    }
+
+    private fun applyCachedProfileAfterSync() {
+        repo.getCachedProfile()?.let { applyServerProfile(it, force = true) }
     }
 
     private fun restoreCachedThemeToUi(refreshFromSync: Boolean = false) {
@@ -970,6 +991,7 @@ class MainViewModel @Inject constructor(
             if (_vpnState.value != VpnState.CONNECTED) {
                 _vpnState.value = VpnState.CONNECTED
             }
+            markLocalDeviceOnline()
             if (!bootstrapVpnMode && repo.isLoggedIn()) {
                 watchTunnelDataSyncFromCache()
             }
@@ -983,6 +1005,10 @@ class MainViewModel @Inject constructor(
         repo.setTunnelApiFromWgAddress(wgAddr)
         repo.invalidatePublicReachabilityCache()
         restoreCachedThemeToUi()
+        if (!shouldDeferProfileUntilSync()) {
+            restoreCachedProfileToUi()
+        }
+        markLocalDeviceOnline()
         if (!bootstrapVpnMode && repo.isLoggedIn()) {
             watchTunnelDataSyncFromCache()
         }
@@ -990,13 +1016,21 @@ class MainViewModel @Inject constructor(
 
     /**
      * После tunnelReady — ждём [VpnDataSyncService] (один initial sync), обновляем UI из кеша.
+     * На LTE — variant 1: повторный fetch профиля (как перед connect).
      */
     private fun watchTunnelDataSyncFromCache() {
         tunnelSyncWatchJob?.cancel()
         tunnelSyncWatchJob = viewModelScope.launch {
-            restoreCachedProfileToUi()
+            val cachedSubBefore = _profile.value?.subscription?.is_active
+            MobileSyncLog.i(
+                "watch",
+                "start cachedSubActive=$cachedSubBefore mobile=${repo.isOnMobileData()}",
+            )
             restoreCachedThemeToUi()
             refreshHashState()
+            if (_vpnState.value == VpnState.CONNECTED) {
+                markLocalDeviceOnline()
+            }
 
             if (!VpnSessionState.tunnelDataSyncCompleted) {
                 val deadline = System.currentTimeMillis() + 120_000L
@@ -1014,15 +1048,20 @@ class MainViewModel @Inject constructor(
                 backendSyncCompleted = true
             }
 
-            restoreCachedProfileToUi()
+            MobileSyncLog.i(
+                "watch",
+                "sync wait done completed=${VpnSessionState.tunnelDataSyncCompleted} mobile=${repo.isOnMobileData()}",
+            )
+
             restoreCachedThemeToUi(refreshFromSync = true)
             refreshHashState()
             flushPendingHashFailures()
             if (VpnSessionState.tunnelDataSyncCompleted) {
-                repo.fetchProfileLiveViaUser().getOrNull()?.let { applyServerProfile(it) }
+                applyCachedProfileAfterSync()
             }
-            ConfigSyncCoordinator.tickNow(repo, appContext, configSyncListener)
-            seedConfigSyncRevision()
+            if (_vpnState.value == VpnState.CONNECTED && SilentVpnService.isRunning) {
+                markLocalDeviceOnline()
+            }
         }
     }
 
@@ -1103,9 +1142,10 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    /** Профиль приходит из initial sync при connect + кеша — без периодических overlay. */
+    /** Профиль приходит из initial sync + ConfigSync — без периодического overlay/poll. */
     fun setVpnProfilePolling(active: Boolean) {
-        // No-op: периодический поллинг убран, чтобы не дёргать WG overlay.
+        vpnProfilePollJob?.cancel()
+        vpnProfilePollJob = null
     }
 
     /** Главный экран: одна проверка OTA при открытии (только без VPN). */
@@ -1648,6 +1688,8 @@ class MainViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        vpnProfilePollJob?.cancel()
+        profilePollJob?.cancel()
         stopConfigSync()
         com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener = null
         com.silent.vpn.sync.VpnDataSyncBridge.onCycleCompleted = null
@@ -1978,6 +2020,7 @@ class MainViewModel @Inject constructor(
         pendingHashFailures.clear()
         hashFailureFlushJob?.cancel()
         hashFailureFlushJob = null
+        WdttTunnelManager.ensureApiOverlayOff()
         runCatching {
             val intent = Intent(context, SilentVpnService::class.java).apply {
                 action = SilentVpnService.ACTION_DISCONNECT
@@ -2026,16 +2069,39 @@ class MainViewModel @Inject constructor(
             }
             try {
             runCatching {
-                restoreCachedProfileToUi()
-                if (!hasVpnAccess() && repo.isOnMobileData() && !VpnSessionState.isActive()) {
-                    runEphemeralApiBootstrap(context, force = true)
+                if (!shouldDeferProfileUntilSync()) {
                     restoreCachedProfileToUi()
                 }
+                val subCached = _profile.value?.subscription?.is_active
+                MobileSyncLog.i(
+                    "connect",
+                    "pre-check subCached=$subCached mobile=${repo.isOnMobileData()} vpnUp=${VpnSessionState.isActive()}",
+                )
+                val cachedCfg = loadCachedVpnConfig()
+                val lteStaleSubConnect = repo.isOnMobileData() &&
+                    cachedCfg != null &&
+                    isConfigConnectable(cachedCfg)
                 if (!hasVpnAccess()) {
-                    pendingConnectAfterSubscriptionRefresh = true
-                    _vpnError.value = subscriptionRequiredMessage()
-                    _vpnState.value = VpnState.DISCONNECTED
-                    return@launch
+                    if (lteStaleSubConnect) {
+                        MobileSyncLog.i(
+                            "connect",
+                            "LTE stale sub cache — connect first, verify in one overlay sync",
+                        )
+                    } else if (repo.isOnMobileData() && !VpnSessionState.isActive()) {
+                        MobileSyncLog.i("connect", "no access on LTE — ephemeral bootstrap")
+                        runEphemeralApiBootstrap(context, force = true)
+                        restoreCachedProfileToUi()
+                        MobileSyncLog.i(
+                            "connect",
+                            "after ephemeral subActive=${_profile.value?.subscription?.is_active}",
+                        )
+                    }
+                    if (!hasVpnAccess() && !lteStaleSubConnect) {
+                        pendingConnectAfterSubscriptionRefresh = true
+                        _vpnError.value = subscriptionRequiredMessage()
+                        _vpnState.value = VpnState.DISCONNECTED
+                        return@launch
+                    }
                 }
 
                 val fp = runCatching { repo.getDeviceFingerprint() }.getOrElse {
@@ -2270,12 +2336,36 @@ class MainViewModel @Inject constructor(
 
     private fun markLocalDeviceOffline() {
         val sid = _sessionDeviceId.value ?: repo.getSessionDeviceId() ?: return
-        val p = _profile.value ?: return
+        val p = _profile.value ?: repo.getCachedProfile() ?: return
         val updated = p.devices.map { d ->
             if (d.id == sid) d.copy(is_connected = false) else d
         }
         val connectedCount = updated.count { it.is_connected }
-        _profile.value = p.copy(devices = updated, connected_count = connectedCount)
+        val next = p.copy(devices = updated, connected_count = connectedCount)
+        _profile.value = next
+        repo.saveCachedProfile(next)
+    }
+
+    private fun removeDeviceFromLocalProfile(deviceId: String) {
+        val p = _profile.value ?: repo.getCachedProfile() ?: return
+        val updated = p.devices.filter { it.id != deviceId }
+        val next = p.copy(
+            devices = updated,
+            devices_count = updated.size,
+            connected_count = updated.count { it.is_connected },
+        )
+        _profile.value = next
+        repo.saveCachedProfile(next)
+    }
+
+    private fun renameDeviceInLocalProfile(deviceId: String, name: String) {
+        val p = _profile.value ?: repo.getCachedProfile() ?: return
+        val updated = p.devices.map { d ->
+            if (d.id == deviceId) d.copy(device_name = name) else d
+        }
+        val next = p.copy(devices = updated)
+        _profile.value = next
+        repo.saveCachedProfile(next)
     }
 
     private fun markLocalDeviceOnline() {
@@ -2285,7 +2375,9 @@ class MainViewModel @Inject constructor(
             if (d.id == sid) d.copy(is_connected = true) else d
         }
         val connectedCount = updated.count { it.is_connected }
-        _profile.value = p.copy(devices = updated, connected_count = connectedCount)
+        val next = p.copy(devices = updated, connected_count = connectedCount)
+        _profile.value = next
+        repo.saveCachedProfile(next)
     }
 
     fun disconnect(context: Context) {
@@ -2363,11 +2455,11 @@ class MainViewModel @Inject constructor(
     fun renameDevice(deviceId: String, name: String, onResult: (Boolean, String?) -> Unit) {
         viewModelScope.launch {
             runCatching {
-                val res = repo.withBackendApi {
+                val res = repo.withUserBackendApi {
                     repo.getApi().renameDevice(deviceId, com.silent.vpn.data.DeviceRenameRequest(name))
                 }
                 if (res.isSuccessful) {
-                    loadProfile()
+                    renameDeviceInLocalProfile(deviceId, name)
                     onResult(true, null)
                 } else {
                     onResult(false, parseError(res.errorBody()?.string() ?: "") ?: "Ошибка переименования")
@@ -2381,13 +2473,13 @@ class MainViewModel @Inject constructor(
     fun deleteDevice(deviceId: String, onResult: (Boolean, String?) -> Unit) {
         viewModelScope.launch {
             runCatching {
-                val res = repo.withBackendApi { repo.getApi().deleteDevice(deviceId) }
+                val res = repo.withUserBackendApi { repo.getApi().deleteDevice(deviceId) }
                 if (res.isSuccessful) {
                     val isCurrentSession = deviceId == repo.getSessionDeviceId()
                     if (isCurrentSession) {
                         onResult(true, "__logout__")
                     } else {
-                        loadProfile()
+                        removeDeviceFromLocalProfile(deviceId)
                         onResult(true, null)
                     }
                 } else {
@@ -2438,12 +2530,17 @@ class MainViewModel @Inject constructor(
     }
 
     /** Обновить UI; при истёкшей подписке на сервере — отключить main VPN. */
-    private fun applyServerProfile(profile: UserProfile) {
+    private fun applyServerProfile(profile: UserProfile, force: Boolean = false) {
+        if (!force && shouldDeferProfileUntilSync()) {
+            repo.saveCachedProfile(profile)
+            return
+        }
         _profile.value = profile
         if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) return
         val hasAccess = hasVpnAccessForProfile(profile)
-        val vpnActive = _vpnState.value == VpnState.CONNECTED ||
-            _vpnState.value == VpnState.CONNECTING ||
+        val vpnFullyUp = _vpnState.value == VpnState.CONNECTED ||
+            (SilentVpnService.isRunning && repo.isMainVpnApiReady())
+        val vpnActive = vpnFullyUp || _vpnState.value == VpnState.CONNECTING ||
             (SilentVpnService.isRunning && repo.isMainVpnTunnelUp())
         if (pendingConnectAfterSubscriptionRefresh && hasAccess && !vpnActive && _vpnState.value == VpnState.DISCONNECTED) {
             pendingConnectAfterSubscriptionRefresh = false
@@ -2452,8 +2549,11 @@ class MainViewModel @Inject constructor(
             connect(appContext)
             return
         }
-        if (vpnActive && !hasAccess) {
-            DebugLog.i("MainViewModel", "subscription expired on server — disconnect VPN")
+        if (vpnFullyUp && !hasAccess) {
+            MobileSyncLog.w(
+                "profile",
+                "subscription inactive on server — disconnect VPN sub=${profile.subscription.plan_type}",
+            )
             _vpnError.value = subscriptionRequiredMessage()
             viewModelScope.launch { disconnect(appContext) }
         }

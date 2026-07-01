@@ -12,6 +12,9 @@ import com.google.gson.reflect.TypeToken
 import com.silent.vpn.vpn.TunnelApiProxy
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
+import com.silent.vpn.sync.MobileSyncLog
+import com.silent.vpn.sync.TunnelSyncResult
+import com.silent.vpn.service.VpnSessionState
 import dagger.hilt.android.qualifiers.ApplicationContext
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -114,9 +117,10 @@ class SilentRepository @Inject constructor(
         return _api!!
     }
 
-    /** Excluded app: HTTP к 10.66.66.1 — только через VPN Network (как Chrome в туннеле). */
+    /** Excluded app: без Network.bind/socketFactory (EPERM); mobileApiRoute в WG → прямой 10.66.66.1. */
     private fun resolveVpnNetworkForApi(url: String): Network? {
-        if (!APP_EXCLUDED_FROM_VPN || !isMainVpnTunnelUp()) return null
+        if (APP_EXCLUDED_FROM_VPN) return null
+        if (!isMainVpnTunnelUp()) return null
         if (url.startsWith(TunnelApiProxy.baseUrl())) return null
         if (!url.contains(WG_TUNNEL_GATEWAY)) return null
         return VpnNetworkHelper.getSilentVpnNetwork(context)
@@ -281,14 +285,8 @@ class SilentRepository @Inject constructor(
                 return block()
             }
             if (isMainVpnTunnelUp()) {
-                if (APP_EXCLUDED_FROM_VPN) {
-                    // На части устройств bind/openConnection к VPN network даёт EPERM.
-                    // В excluded-режиме сначала идём через стабильный public HTTPS.
-                    useApiBase(getPublicServerUrl())
-                    invalidateApiClient()
-                    val publicResult = runCatching { block() }
-                    if (publicResult.isSuccess) return publicResult.getOrThrow()
-                    Log.w(TAG, "mobile public API failed, tunnel fallback: ${publicResult.exceptionOrNull()?.message}")
+                if (APP_EXCLUDED_FROM_VPN && isOnMobileData() && !WdttTunnelManager.isApiOverlayActive()) {
+                    error("mobile routine API deferred — use initial sync overlay session")
                 }
                 return withTunnelBackendBlock(allowOverlayFallback, block)
             }
@@ -315,70 +313,71 @@ class SilentRepository @Inject constructor(
         return withTunnelBackendBlock(allowOverlayFallback, block)
     }
 
-    /** Промокод, подписка, оплата — через тот же канал VPN, без overlay. */
-    suspend fun <T> withUserBackendApi(block: suspend () -> T): T =
-        withRoutineBackendApi(allowOverlayFallback = false, block = block)
+    /** Промокод, подписка, оплата, сессии — один overlay на LTE при явном действии пользователя. */
+    suspend fun <T> withUserBackendApi(block: suspend () -> T): T {
+        if (VpnSessionState.initialOverlaySyncActive) {
+            if (WdttTunnelManager.isApiOverlayActive()) {
+                useApiBase(tunnelApiBase())
+                invalidateApiClient()
+                return block()
+            }
+            error("user API deferred — initial overlay sync in progress")
+        }
+        if (APP_EXCLUDED_FROM_VPN && isOnMobileData() && isMainVpnTunnelUp() &&
+            !WdttTunnelManager.isApiOverlayActive()
+        ) {
+            return WdttTunnelManager.withApiOverlayBrief(block, allowDuringRampUp = true)
+        }
+        return withRoutineBackendApi(allowOverlayFallback = false, block = block)
+    }
 
-    /** Proxy → direct bind; overlay fallback только для withUserBackendApi. */
+    /** App in tunnel — direct; excluded LTE — только внутри активного overlay-сессии. */
     private suspend fun <T> withTunnelBackendBlock(
         allowOverlayFallback: Boolean = false,
         block: suspend () -> T,
     ): T {
-        if (isMainVpnTunnelUp()) {
+        if (!isMainVpnTunnelUp()) {
+            throw IllegalStateException("tunnel backend unavailable")
+        }
+
+        if (!APP_EXCLUDED_FROM_VPN || WdttTunnelManager.isApiOverlayActive()) {
             useApiBase(tunnelApiBase())
             invalidateApiClient()
-            Log.i(TAG, "tunnel API direct")
+            MobileSyncLog.i("tunnel", "API direct ${tunnelApiBase()}")
             return block()
         }
 
-        var last: Throwable? = null
-
-        if (isMainVpnTunnelUp() && !APP_EXCLUDED_FROM_VPN) {
-            repeat(3) { attempt ->
-                useApiBase(tunnelApiBase())
-                invalidateApiClient()
-                val result = runCatching { block() }
-                if (result.isSuccess && !isTunnelBackendFailure(result.getOrNull())) {
-                    Log.i(TAG, "tunnel API direct bind OK")
-                    return result.getOrThrow()
-                }
-                last = result.exceptionOrNull()
-                if (result.isFailure) {
-                    Log.w(TAG, "tunnel direct attempt ${attempt + 1}: ${last?.message}")
-                } else {
-                    Log.w(TAG, "tunnel direct attempt ${attempt + 1}: bad HTTP via tunnel")
-                }
-                invalidateApiClient()
-                if (attempt < 2) delay(500)
-            }
-            Log.i(TAG, "tunnel direct failed → proxy ${TunnelApiProxy.baseUrl()}")
+        if (isOnMobileData()) {
+            throw IllegalStateException("mobile excluded API outside overlay session")
         }
 
+        var last: Throwable? = null
         repeat(4) { attempt ->
-            if (prepareTunnelApiBase()) {
+            if (prepareTunnelApiBaseLegacyProxy()) {
+                MobileSyncLog.i("tunnel", "proxy attempt ${attempt + 1} url=${getServerUrl()}")
                 val result = runCatching { block() }
                 if (result.isSuccess && !isTunnelBackendFailure(result.getOrNull())) {
                     return result.getOrThrow()
                 }
                 last = result.exceptionOrNull()
-                if (result.isFailure) {
-                    Log.w(TAG, "tunnel proxy attempt ${attempt + 1}: ${last?.message}")
-                } else {
-                    Log.w(TAG, "tunnel proxy attempt ${attempt + 1}: upstream failed")
-                }
                 invalidateApiClient()
                 val shouldRecycleProxy =
                     (result.isFailure && isTunnelUpstreamError(last?.message)) ||
                         (result.isSuccess && isTunnelBackendFailure(result.getOrNull()))
                 if (shouldRecycleProxy && attempt < 3) {
                     runCatching { TunnelApiProxy.stopAndAwait() }
-                    ensureTunnelApiProxy()
                 }
             } else {
-                Log.w(TAG, "tunnel proxy not ready (attempt ${attempt + 1})")
-                if (attempt < 3) ensureTunnelApiProxy()
+                MobileSyncLog.w("tunnel", "proxy not ready (attempt ${attempt + 1})")
             }
             if (attempt < 3) delay(750)
+        }
+
+        if (allowOverlayFallback) {
+            useApiBase(tunnelApiBase())
+            invalidateApiClient()
+            MobileSyncLog.i("tunnel", "API overlay brief (Wi‑Fi fallback)")
+            return WdttTunnelManager.withApiOverlayBrief(block, allowDuringRampUp = true)
         }
 
         throw last ?: IllegalStateException("tunnel backend unavailable")
@@ -423,7 +422,10 @@ class SilentRepository @Inject constructor(
             return
         }
         if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
-            useApiBase(tunnelApiBaseUrl())
+            if (isOnMobileData() && TunnelApiProxy.isActive()) {
+                TunnelApiProxy.stop()
+            }
+            useApiBase(tunnelApiBase())
             invalidateApiClient()
             return
         }
@@ -509,7 +511,8 @@ class SilentRepository @Inject constructor(
     }
 
     fun shouldUseTunnelApiProxy(): Boolean =
-        APP_EXCLUDED_FROM_VPN &&
+        !isOnMobileData() &&
+            APP_EXCLUDED_FROM_VPN &&
             WdttTunnelManager.tunnelReady.value &&
             WdttTunnelManager.running.value &&
             !WdttTunnelManager.isBootstrapMode() &&
@@ -518,7 +521,7 @@ class SilentRepository @Inject constructor(
     private suspend fun prepareTunnelApiBase(): Boolean {
         if (!WdttTunnelManager.tunnelReady.value || !WdttTunnelManager.running.value) return false
         if (WdttTunnelManager.isBootstrapMode()) return false
-        // При excluded=true идём напрямую на 10.66.66.1 через vpnNetwork.socketFactory (без локального proxy bind).
+        // mobileApiRoute: 10.66.66.0/24 в AllowedIPs — прямой HTTP без bind/proxy
         useApiBase(tunnelApiBase())
         invalidateApiClient()
         return true
@@ -540,7 +543,7 @@ class SilentRepository @Inject constructor(
         if (!TunnelApiProxy.ensureStarted(context, timeoutMs = 30_000L)) return false
         useApiBase(TunnelApiProxy.baseUrl())
         invalidateApiClient()
-        Log.i(TAG, "API via local proxy: ${TunnelApiProxy.baseUrl()}")
+        MobileSyncLog.i("tunnel", "API via local proxy ${TunnelApiProxy.baseUrl()} mobile=${isOnMobileData()}")
         return true
     }
 
@@ -556,7 +559,8 @@ class SilentRepository @Inject constructor(
             com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value &&
             !TunnelApiProxy.isActive()
 
-    suspend fun ensureTunnelApiProxy(): Boolean = prepareTunnelApiBase()
+    suspend fun ensureTunnelApiProxy(): Boolean =
+        if (isOnMobileData()) false else prepareTunnelApiBaseLegacyProxy()
 
     /**
      * Основной VPN: краткий overlay 10.66.66.0/24.
@@ -570,6 +574,12 @@ class SilentRepository @Inject constructor(
             com.silent.vpn.vpn.WdttTunnelManager.running.value &&
             com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value &&
             !com.silent.vpn.vpn.WdttTunnelManager.isBootstrapMode()
+
+    /** API/sync через VPN — только когда воркеры подняты (не во время ramp-up). */
+    fun isMainVpnApiReady(): Boolean =
+        isMainVpnTunnelUp() &&
+            com.silent.vpn.vpn.WdttTunnelManager.activeWorkers.value >= 1 &&
+            !com.silent.vpn.vpn.WdttTunnelManager.isWorkerRampUpActive()
 
     /**
      * Main VPN tunnel API — только proxy/direct bind, без overlay.
@@ -1066,10 +1076,14 @@ class SilentRepository @Inject constructor(
             .apply()
     }
 
-    /** POST /disconnect — public HTTPS, затем tunnel (как PC). */
+    /** POST /disconnect — public HTTPS; на LTE excluded wdtt сам шлёт offline (S2S). */
     suspend fun notifyDisconnectBeforeTunnelStop(): Boolean {
         if (!isLoggedIn()) return false
         if (postDisconnectViaPublic()) return true
+        if (isOnMobileData() && APP_EXCLUDED_FROM_VPN) {
+            Log.i(TAG, "disconnect: skip tunnel API on LTE (wdtt S2S offline)")
+            return false
+        }
         if (!isMainVpnTunnelUp()) {
             Log.w(TAG, "disconnect: tunnel not up")
             return false
@@ -1084,46 +1098,130 @@ class SilentRepository @Inject constructor(
         }.getOrOrLog(false)
     }
 
+    /** Сохранить rev sync-state после успешного initial sync (внутри overlay-сессии). */
+    suspend fun seedSyncRevisionsAfterTunnelSync() {
+        runCatching {
+            fetchSyncStateInternal()?.let { state ->
+                saveSyncThemeRev(state.theme)
+                saveSyncProfileRev(state.profile)
+                state.hashes.takeIf { it > 0L }?.let { saveSyncHashesRev(it) }
+            }
+        }.onFailure { e -> Log.w(TAG, "seed sync rev: ${e.message}") }
+    }
+
     /**
      * Полная синхронизация после включения главного VPN (как при login, но без overlay):
      * POST /connect → хеши → config → profile → theme через proxy / direct bind.
      */
-    suspend fun syncAllViaTunnel(): Boolean = tunnelSyncMutex.withLock {
-        if (!isLoggedIn()) return@withLock false
+    suspend fun syncAllViaTunnel(): Boolean = syncAllViaTunnelDetailed().ok
+
+    suspend fun syncAllViaTunnelDetailed(): TunnelSyncResult = tunnelSyncMutex.withLock {
+        val mobile = isOnMobileData()
+        val excluded = APP_EXCLUDED_FROM_VPN
+        val baseMeta = TunnelSyncResult(
+            mobile = mobile,
+            excludedApp = excluded,
+            proxyActive = TunnelApiProxy.isActive(),
+            apiUrl = getServerUrl(),
+        )
+        if (!isLoggedIn()) {
+            return@withLock baseMeta.copy(error = "not logged in").also { it.logSummary("syncAll") }
+        }
         prepareTunnelApiFromCachedConfig()
         invalidatePublicReachabilityCache()
 
-        if (!isOnMobileData() && postConnectViaPublic()) {
+        if (!mobile && postConnectViaPublic()) {
             return@withLock runCatching {
-                syncHashesAndConfigAfterConnect()
-                syncProfileAndThemeAfterConnect()
-                Log.i(TAG, "syncAll OK (public connect + hashes/profile)")
-                true
-            }.getOrOrLog(false)
-        }
-
-        if (!isMainVpnTunnelUp()) return@withLock false
-
-        Log.i(
-            TAG,
-            "syncAllViaTunnel: excluded=$APP_EXCLUDED_FROM_VPN mobile=${isOnMobileData()} proxy=${TunnelApiProxy.isActive()}",
-        )
-
-        return@withLock runCatching {
-            withTunnelBackendBlock {
-                val url = getServerUrl()
-                val online = postConnectOnlineViaTunnel()
-                if (!online) {
-                    Log.w(TAG, "syncAll: POST /connect failed via $url — continue hashes/profile")
-                }
                 val hashesOk = syncHashesAndConfigAfterConnect()
                 val profileOk = syncProfileAndThemeAfterConnect()
-                // Профиль обязателен: иначе подписка/сессии остаются устаревшими.
-                val ok = profileOk && (online || hashesOk)
-                Log.i(TAG, "syncAll via $url (connect=$online hashes=$hashesOk profile=$profileOk)")
-                ok
+                TunnelSyncResult(
+                    ok = true,
+                    connectOk = true,
+                    hashesOk = hashesOk,
+                    profileOk = profileOk,
+                    mobile = false,
+                    excludedApp = excluded,
+                    apiUrl = getPublicServerUrl(),
+                ).also { it.logSummary("syncAll") }
+            }.getOrElse { e ->
+                baseMeta.copy(error = e.message).also { it.logSummary("syncAll") }
             }
-        }.getOrOrLog(false)
+        }
+
+        if (!isMainVpnTunnelUp()) {
+            return@withLock baseMeta.copy(error = "main VPN tunnel not up").also { it.logSummary("syncAll") }
+        }
+
+        MobileSyncLog.i(
+            "syncAll",
+            "start excluded=$excluded mobile=$mobile proxy=${TunnelApiProxy.isActive()} wg=${WdttTunnelManager.lastWgAddress()}",
+        )
+
+        val syncResult = runCatching {
+            withTunnelBackendBlock(allowOverlayFallback = excluded && !mobile) {
+                performTunnelSyncCycle(mobile, excluded)
+            }
+        }.getOrElse { e ->
+            MobileSyncLog.e("syncAll", "sync exception", e)
+            baseMeta.copy(
+                apiUrl = getServerUrl(),
+                proxyActive = TunnelApiProxy.isActive(),
+                error = e.message,
+            )
+        }
+
+        syncResult.logSummary("syncAll")
+        return@withLock syncResult
+    }
+
+    private suspend fun performTunnelSyncCycle(
+        mobile: Boolean,
+        excluded: Boolean,
+        viaOverlay: Boolean = false,
+    ): TunnelSyncResult {
+        val url = getServerUrl()
+        val channel = when {
+            viaOverlay || WdttTunnelManager.isApiOverlayActive() -> "overlay"
+            shouldUseTunnelApiProxy() -> "proxy"
+            else -> "direct"
+        }
+        MobileSyncLog.i("syncAll", "cycle ($channel) API base=$url")
+        val connectCode = postConnectOnlineViaTunnel()
+        val online = connectCode in 200..299
+        if (!online) {
+            MobileSyncLog.w("syncAll", "POST /connect HTTP $connectCode via $url ($channel)")
+        } else {
+            MobileSyncLog.i("syncAll", "POST /connect OK via $url ($channel)")
+        }
+        val hashesOk = if (viaOverlay) {
+            runCatching {
+                syncHashesAndConfigAfterConnectDirect()
+            }.getOrDefault(false)
+        } else {
+            syncHashesAndConfigAfterConnectDirect()
+        }
+        val profileOk = if (viaOverlay) {
+            runCatching {
+                syncProfileAndThemeAfterConnectDirect()
+            }.getOrDefault(false)
+        } else {
+            syncProfileAndThemeAfterConnectDirect()
+        }
+        val subscriptionDenied = connectCode == 402
+        val ok = profileOk || (online && hashesOk) || subscriptionDenied
+        return TunnelSyncResult(
+            ok = ok,
+            connectOk = online,
+            connectHttpCode = connectCode,
+            subscriptionDenied = subscriptionDenied,
+            hashesOk = hashesOk,
+            profileOk = profileOk,
+            mobile = mobile,
+            excludedApp = excluded,
+            proxyActive = TunnelApiProxy.isActive(),
+            apiUrl = url,
+            error = if (ok) null else "profile=$profileOk connect=$online hashes=$hashesOk",
+        )
     }
 
     private suspend fun postConnectViaPublic(): Boolean {
@@ -1157,38 +1255,81 @@ class SilentRepository @Inject constructor(
         return false
     }
 
-    private suspend fun postConnectOnlineViaTunnel(): Boolean {
-        val res = runCatching {
+    private suspend fun postConnectOnlineViaTunnel(): Int {
+        val result = runCatching {
             getApi().connect(ConnectRequest(getDeviceFingerprint(), "android"))
-        }.getOrNull() ?: return false
+        }
+        val res = result.getOrNull()
+        if (res == null) {
+            MobileSyncLog.w(
+                "connect",
+                "POST /connect tunnel: ${result.exceptionOrNull()?.message} url=${getServerUrl()}",
+            )
+            return -1
+        }
         if (res.isSuccessful) {
-            Log.i(TAG, "POST /connect OK (tunnel)")
-            return true
+            MobileSyncLog.i("connect", "POST /connect OK tunnel url=${getServerUrl()}")
+            return res.code()
         }
         val err = runCatching { res.errorBody()?.string()?.take(200) }.getOrNull()
-        Log.w(TAG, "POST /connect tunnel HTTP ${res.code()}${err?.let { ": $it" } ?: ""}")
-        return false
+        MobileSyncLog.w(
+            "connect",
+            "POST /connect tunnel HTTP ${res.code()} url=${getServerUrl()}${err?.let { " body=$it" } ?: ""}",
+        )
+        return res.code()
+    }
+
+    /** Профиль/theme — вызывать уже внутри withRoutineBackendApi (без повторной обёртки). */
+    private suspend fun syncProfileAndThemeAfterConnectDirect(): Boolean {
+        var ok = false
+        val profileRes = getApi().getProfile()
+        if (profileRes.isSuccessful) {
+            profileRes.body()?.let { saveCachedProfile(it) }
+            MobileSyncLog.i(
+                "profile",
+                "syncAll profile OK subActive=${profileRes.body()?.subscription?.is_active} url=${getServerUrl()}",
+            )
+            ok = true
+        } else {
+            MobileSyncLog.w("profile", "syncAll profile HTTP ${profileRes.code()} url=${getServerUrl()}")
+        }
+        val themeRes = getApi().getTheme()
+        if (themeRes.isSuccessful) {
+            themeRes.body()?.let { saveCachedTheme(it) }
+            Log.i(TAG, "syncAll theme OK")
+            ok = true
+        }
+        return ok
+    }
+
+    private suspend fun syncHashesAndConfigAfterConnectDirect(): Boolean {
+        if (!isLoggedIn()) return false
+        var hashesOk = false
+        runCatching {
+            val items = fetchHashItemsOnce().getOrThrow()
+            if (items.isNotEmpty()) {
+                hashesOk = true
+                Log.i(TAG, "syncHashes OK tunnel-direct (${items.size} items)")
+            }
+        }.onFailure { e -> Log.w(TAG, "syncHashes tunnel-direct: ${e.message}") }
+        var configOk = false
+        val fp = getDeviceFingerprint()
+        runCatching {
+            val res = getApi().getConfig(fp)
+            if (res.isSuccessful) {
+                res.body()?.let { cacheVpnConfig(Gson().toJson(it)) }
+                configOk = true
+                Log.i(TAG, "syncConfig OK device=${res.body()?.device_id?.take(8)}")
+            }
+        }.onFailure { e -> Log.w(TAG, "syncConfig: ${e.message}") }
+        mergeSavedHashesIntoCachedConfig()
+        return hashesOk || configOk
     }
 
     private suspend fun syncProfileAndThemeAfterConnect(): Boolean {
         return runCatching {
             withRoutineBackendApi {
-                var ok = false
-                val profileRes = getApi().getProfile()
-                if (profileRes.isSuccessful) {
-                    profileRes.body()?.let { saveCachedProfile(it) }
-                    Log.i(TAG, "syncAll profile OK")
-                    ok = true
-                } else {
-                    Log.w(TAG, "syncAll profile HTTP ${profileRes.code()}")
-                }
-                val themeRes = getApi().getTheme()
-                if (themeRes.isSuccessful) {
-                    themeRes.body()?.let { saveCachedTheme(it) }
-                    Log.i(TAG, "syncAll theme OK")
-                    ok = true
-                }
-                ok
+                syncProfileAndThemeAfterConnectDirect()
             }
         }.onFailure { e -> Log.w(TAG, "syncAll profile/theme: ${e.message}") }
             .getOrDefault(false)

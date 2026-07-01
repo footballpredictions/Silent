@@ -188,9 +188,10 @@ class SilentVpnService : Service() {
         }
     }
 
-    /** Локальный прокси → 10.66.66.1 через VPN Network — без WG overlay. */
+    /** Локальный прокси — только Wi‑Fi fallback; LTE: direct 10.66.66.1 через mobileApiRoute. */
     private fun ensureTunnelApiProxyAsync() {
         if (WdttTunnelManager.isBootstrapMode()) return
+        if (VpnNetworkHelper.isOnMobileData(this)) return
         if (TunnelApiProxy.isActive()) return
         scope.launch(Dispatchers.IO) {
             runCatching {
@@ -680,17 +681,21 @@ class SilentVpnService : Service() {
         val trafficBeforeMb = currentTrafficMb()
         scope.launch(Dispatchers.IO) {
             if (!WdttTunnelManager.isBootstrapMode() && SilentRepository.APP_EXCLUDED_FROM_VPN) {
-                TunnelApiProxy.stopAndAwait()
                 runCatching {
-                    EntryPointAccessors.fromApplication(
+                    val repo = EntryPointAccessors.fromApplication(
                         applicationContext,
                         AppEntryPoint::class.java,
-                    ).silentRepository().apply {
-                        invalidatePublicReachabilityCache()
-                        ensureTunnelApiProxy()
+                    ).silentRepository()
+                    repo.invalidatePublicReachabilityCache()
+                    if (VpnNetworkHelper.isOnMobileData(this@SilentVpnService)) {
+                        TunnelApiProxy.stopAndAwait()
+                        repo.prepareMainVpnDirectApi()
+                    } else {
+                        TunnelApiProxy.stopAndAwait()
+                        repo.ensureTunnelApiProxy()
                     }
                 }.onFailure { e ->
-                    DebugLog.w("VpnService", "tunnel proxy restart: ${e.message}")
+                    DebugLog.w("VpnService", "tunnel API restart: ${e.message}")
                 }
             }
         }

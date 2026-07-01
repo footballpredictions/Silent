@@ -2,6 +2,7 @@ package com.silent.vpn.data
 
 import android.content.Context
 import android.util.Log
+import com.silent.vpn.sync.MobileSyncLog
 import com.silent.vpn.service.VpnSessionState
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.ui.screens.VpnState
@@ -17,7 +18,7 @@ import kotlinx.coroutines.sync.withLock
 
 /**
  * Канал обновлений: sync-state → profile, hashes, theme, подписка.
- * Wi‑Fi — public API; mobile — только при поднятом VPN (tunnel proxy).
+ * Wi‑Fi — public API; mobile + VPN — local proxy → 10.66.66.1 (openConnection, не socketFactory).
  * Фоновый poll — раз в час, чтобы не дёргать WG overlay на LTE.
  */
 object ConfigSyncCoordinator {
@@ -25,6 +26,8 @@ object ConfigSyncCoordinator {
     /** Единый интервал фонового sync (хеши/тема/профиль/подписка). */
     private const val POLL_MS = 60 * 60 * 1000L
     private const val START_DELAY_MS = 5_000L
+    /** Не трогаем ConfigSync сразу после initial sync — rev уже записан в VpnDataSyncService. */
+    private const val POST_TUNNEL_SYNC_QUIET_MS = 90_000L
 
     private val tickMutex = Mutex()
     private var pollJob: Job? = null
@@ -97,64 +100,76 @@ object ConfigSyncCoordinator {
                 Log.d(TAG, "skip: VPN busy")
                 return
             }
+            if (VpnSessionState.initialOverlaySyncActive) {
+                Log.d(TAG, "skip: initial overlay sync in progress")
+                return
+            }
             if (SilentVpnService.isRunning &&
                 !VpnSessionState.tunnelDataSyncCompleted &&
-                listener.vpnState() == VpnState.CONNECTING
+                (listener.vpnState() == VpnState.CONNECTING || repo.isOnMobileData())
             ) {
-                Log.d(TAG, "skip: initial connect sync")
+                MobileSyncLog.i("configSync", "skip: initial tunnel sync pending")
+                return
+            }
+            if (repo.isOnMobileData() &&
+                VpnSessionState.tunnelDataSyncCompleted &&
+                System.currentTimeMillis() - VpnSessionState.tunnelDataSyncFinishedAtMs < POST_TUNNEL_SYNC_QUIET_MS
+            ) {
+                Log.d(TAG, "skip: quiet period after initial tunnel sync")
                 return
             }
 
-            val stateResult = repo.fetchSyncState()
-            val state = stateResult.getOrNull()
-            if (state == null) {
-                Log.w(TAG, "sync-state failed: ${stateResult.exceptionOrNull()?.message}")
-                return
-            }
-
-            val needHashes = state.hashes > repo.getSyncHashesRev()
-            val needTheme = state.theme > repo.getSyncThemeRev()
-            val needProfile = state.profile > repo.getSyncProfileRev()
-
-            if (!needHashes && !needTheme && !needProfile) {
-                Log.d(TAG, "sync-state ok, no changes (h=${state.hashes} t=${state.theme} p=${state.profile})")
-                if (!vpnUpForSync()) return
+            if (repo.isOnMobileData() && SilentRepository.APP_EXCLUDED_FROM_VPN && vpnUpForSync()) {
+                WdttTunnelManager.withApiOverlayBrief(
+                    block = { runConfigSyncBody(repo, listener) },
+                )
             } else {
-                Log.i(TAG, "sync: hashes=$needHashes theme=$needTheme profile=$needProfile")
-                DebugLog.i(TAG, "sync: hashes=$needHashes theme=$needTheme profile=$needProfile")
-
-                if (needHashes) {
-                    val itemsResult = repo.fetchAndSaveHashItemsForSync()
-                    val items = itemsResult.getOrNull().orEmpty()
-                    if (items.isNotEmpty()) {
-                        applyHashItems(repo, listener, items, state.hashes)
-                    } else {
-                        Log.w(TAG, "hashes fetch failed: ${itemsResult.exceptionOrNull()?.message}")
-                    }
-                }
-                if (needTheme) {
-                    repo.fetchAndSaveThemeViaSync().getOrNull()?.let { theme ->
-                        repo.saveSyncThemeRev(state.theme)
-                        listener.onTheme(theme)
-                        Log.i(TAG, "theme updated")
-                    } ?: Log.w(TAG, "theme fetch failed")
-                }
-                if (needProfile) {
-                    repo.fetchAndSaveProfileViaSync().getOrNull()?.let { profile ->
-                        repo.saveSyncProfileRev(state.profile)
-                        listener.onProfile(profile)
-                        Log.i(TAG, "profile updated (devices=${profile.devices.count { it.is_connected }} online)")
-                    } ?: Log.w(TAG, "profile fetch failed")
-                }
+                runConfigSyncBody(repo, listener)
             }
+        }
+    }
 
-            // Main VPN: сверяем подписку (rev мог не измениться при истечении на сервере).
-            if (vpnUpForSync()) {
-                repo.fetchProfileLiveViaUser().getOrNull()?.let { profile ->
-                    listener.onProfile(profile)
-                    Log.i(TAG, "subscription check profile active=${profile.subscription.is_active}")
-                } ?: Log.w(TAG, "subscription profile fetch failed")
+    private suspend fun runConfigSyncBody(repo: SilentRepository, listener: Listener) {
+        val state = repo.fetchSyncState().getOrNull()
+        if (state == null) {
+            Log.w(TAG, "sync-state failed")
+            return
+        }
+
+        val needHashes = state.hashes > repo.getSyncHashesRev()
+        val needTheme = state.theme > repo.getSyncThemeRev()
+        val needProfile = state.profile > repo.getSyncProfileRev()
+
+        if (!needHashes && !needTheme && !needProfile) {
+            Log.d(TAG, "sync-state ok, no changes (h=${state.hashes} t=${state.theme} p=${state.profile})")
+            return
+        }
+
+        Log.i(TAG, "sync: hashes=$needHashes theme=$needTheme profile=$needProfile")
+        DebugLog.i(TAG, "sync: hashes=$needHashes theme=$needTheme profile=$needProfile")
+
+        if (needHashes) {
+            val itemsResult = repo.fetchAndSaveHashItemsForSync()
+            val items = itemsResult.getOrNull().orEmpty()
+            if (items.isNotEmpty()) {
+                applyHashItems(repo, listener, items, state.hashes)
+            } else {
+                Log.w(TAG, "hashes fetch failed: ${itemsResult.exceptionOrNull()?.message}")
             }
+        }
+        if (needTheme) {
+            repo.fetchAndSaveThemeViaSync().getOrNull()?.let { theme ->
+                repo.saveSyncThemeRev(state.theme)
+                listener.onTheme(theme)
+                Log.i(TAG, "theme updated")
+            } ?: Log.w(TAG, "theme fetch failed")
+        }
+        if (needProfile) {
+            repo.fetchAndSaveProfileViaSync().getOrNull()?.let { profile ->
+                repo.saveSyncProfileRev(state.profile)
+                listener.onProfile(profile)
+                Log.i(TAG, "profile updated (devices=${profile.devices.count { it.is_connected }} online)")
+            } ?: Log.w(TAG, "profile fetch failed")
         }
     }
 }

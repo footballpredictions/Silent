@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.runtime.Stable
 import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.SilentRepository
+import com.silent.vpn.service.VpnSessionState
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.vpn.captcha.CaptchaWebViewManager
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
@@ -1379,6 +1380,7 @@ object WdttTunnelManager {
     suspend fun <T> withApiOverlayBrief(
         block: suspend () -> T,
         allowDuringRampUp: Boolean = false,
+        skipIntervalThrottle: Boolean = false,
     ): T {
         if (overlayRestoreSuppressed) error("VPN API overlay suppressed")
         if (!needsWgOverlayReload()) return block()
@@ -1386,7 +1388,14 @@ object WdttTunnelManager {
         if (isWorkerRampUpActive() && !allowDuringRampUp) {
             throw ApiOverlayBlockedException("overlay blocked during ramp-up")
         }
-        if (!allowDuringRampUp && !apiOverlayActive) {
+        if (
+            !skipIntervalThrottle &&
+            VpnSessionState.initialOverlaySyncActive &&
+            !apiOverlayActive
+        ) {
+            throw ApiOverlayBlockedException("initial overlay sync in progress")
+        }
+        if (!skipIntervalThrottle && !allowDuringRampUp && !apiOverlayActive) {
             val since = System.currentTimeMillis() - lastOverlayEndedMs
             if (lastOverlayEndedMs > 0L && since < minOverlayIntervalMs) {
                 val waitMs = minOverlayIntervalMs - since

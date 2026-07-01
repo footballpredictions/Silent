@@ -39,7 +39,8 @@ class VpnDataSyncService : Service() {
         private const val CHANNEL_ID = "silent_vpn_status_v2"
         private const val NOTIF_ID = 1001
         private const val INITIAL_RETRY_MS = 8_000L
-        private const val INITIAL_DELAY_MS = 2_000L
+        private const val INITIAL_DELAY_MS = 400L
+        private const val INITIAL_DELAY_MOBILE_MS = 150L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -82,7 +83,13 @@ class VpnDataSyncService : Service() {
     private fun startLoop() {
         if (loopJob?.isActive == true) return
         loopJob = scope.launch {
-            delay(INITIAL_DELAY_MS)
+            val repo = repository()
+            val delayMs = if (SilentRepository.APP_EXCLUDED_FROM_VPN && repo.isOnMobileData()) {
+                INITIAL_DELAY_MOBILE_MS
+            } else {
+                INITIAL_DELAY_MS
+            }
+            delay(delayMs)
 
             if (!VpnSessionState.tunnelDataSyncCompleted) {
                 runInitialFullSync()
@@ -106,37 +113,57 @@ class VpnDataSyncService : Service() {
         SilentVpnService.isRunning &&
             WdttTunnelManager.tunnelReady.value &&
             WdttTunnelManager.running.value &&
+            !WdttTunnelManager.isBootstrapMode() &&
+            WdttTunnelManager.activeWorkers.value >= 1 &&
+            !WdttTunnelManager.isWorkerRampUpActive()
+
+    /** Для LTE overlay-sync достаточно tunnelReady — воркеры добираются в ramp-up. */
+    private fun canSyncOverlay(): Boolean =
+        SilentVpnService.isRunning &&
+            WdttTunnelManager.tunnelReady.value &&
+            WdttTunnelManager.running.value &&
             !WdttTunnelManager.isBootstrapMode()
 
-    /** Один полный sync за VPN-сессию (+ один retry при ошибке). */
-    private suspend fun runInitialFullSync() {
-        if (!canSync()) return
+    private suspend fun waitUntilSyncReady() {
         val repo = repository()
+        val overlayPath = SilentRepository.APP_EXCLUDED_FROM_VPN && repo.isOnMobileData()
+        val deadline = System.currentTimeMillis() + if (overlayPath) 45_000L else 90_000L
+        while (System.currentTimeMillis() < deadline) {
+            if (if (overlayPath) canSyncOverlay() else canSync()) return
+            if (!SilentVpnService.isRunning || !WdttTunnelManager.tunnelReady.value) return
+            delay(300)
+        }
+    }
+
+    /** Один полный sync за VPN-сессию; retry — внутри той же overlay-сессии на LTE. */
+    private suspend fun runInitialFullSync() {
+        waitUntilSyncReady()
+        val repo = repository()
+        val overlayPath = SilentRepository.APP_EXCLUDED_FROM_VPN && repo.isOnMobileData()
+        if (!(if (overlayPath) canSyncOverlay() else canSync())) return
         if (!repo.isLoggedIn()) return
 
         VpnDataSyncState.setSyncing()
         updateNotification("Синхронизация данных…")
-        Log.i(TAG, "initial sync start")
+        MobileSyncLog.i("syncService", "initial sync start mobile=${repo.isOnMobileData()}")
 
-        var ok = performFullSync(repo)
-        if (!ok && canSync()) {
-            Log.w(TAG, "initial sync retry in ${INITIAL_RETRY_MS}ms")
-            delay(INITIAL_RETRY_MS)
-            ok = performFullSync(repo)
-        }
+        if (overlayPath) VpnSessionState.initialOverlaySyncActive = true
+        val ok = performFullSync(repo)
 
         if (ok) {
             VpnSessionState.tunnelDataSyncCompleted = true
             VpnSessionState.backendSyncCompleted = true
+            VpnSessionState.tunnelDataSyncFinishedAtMs = System.currentTimeMillis()
             VpnDataSyncState.setOk()
             updateNotification("Данные актуальны")
             VpnDataSyncBridge.onCycleCompleted?.invoke()
-            Log.i(TAG, "initial sync OK")
+            MobileSyncLog.i("syncService", "initial sync OK")
         } else {
             VpnDataSyncState.setError("Не удалось синхронизировать данные")
             updateNotification("Ошибка синхронизации")
-            Log.w(TAG, "initial sync FAILED")
+            MobileSyncLog.w("syncService", "initial sync FAILED")
         }
+        if (overlayPath) VpnSessionState.initialOverlaySyncActive = false
 
         delay(2_000)
         if (canSync()) {
@@ -145,20 +172,39 @@ class VpnDataSyncService : Service() {
     }
 
     private suspend fun performFullSync(repo: SilentRepository): Boolean {
-        return withTimeoutOrNull(120_000L) {
+        val syncBody: suspend () -> Boolean = {
             runCatching {
                 repo.setTunnelApiFromWgAddress(WdttTunnelManager.lastWgAddress())
-                if (SilentRepository.APP_EXCLUDED_FROM_VPN) {
-                    if (!repo.ensureTunnelApiProxy()) {
-                        Log.w(TAG, "tunnel proxy not ready")
-                    }
-                } else {
-                    repo.prepareMainVpnDirectApi()
+                if (repo.isOnMobileData()) {
+                    com.silent.vpn.vpn.TunnelApiProxy.stopAndAwait()
                 }
-                repo.syncAllViaTunnel()
+                repo.prepareMainVpnDirectApi()
+                MobileSyncLog.i("syncService", "sync API url=${repo.getServerUrl()}")
+                var ok = repo.syncAllViaTunnel()
+                if (ok) {
+                    repo.seedSyncRevisionsAfterTunnelSync()
+                } else if (canSyncOverlay()) {
+                    MobileSyncLog.w("syncService", "sync retry inside overlay")
+                    delay(INITIAL_RETRY_MS)
+                    ok = repo.syncAllViaTunnel()
+                    if (ok) repo.seedSyncRevisionsAfterTunnelSync()
+                }
+                ok
             }.getOrElse { e ->
-                Log.e(TAG, "initial sync failed", e)
+                MobileSyncLog.e("syncService", "initial sync failed", e)
                 false
+            }
+        }
+        return withTimeoutOrNull(120_000L) {
+            if (SilentRepository.APP_EXCLUDED_FROM_VPN && repo.isOnMobileData()) {
+                MobileSyncLog.i("syncService", "overlay session start (LTE initial sync)")
+                com.silent.vpn.vpn.WdttTunnelManager.withApiOverlayBrief(
+                    block = syncBody,
+                    allowDuringRampUp = true,
+                    skipIntervalThrottle = true,
+                )
+            } else {
+                syncBody()
             }
         } ?: false
     }

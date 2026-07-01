@@ -15,6 +15,13 @@ object VpnSessionState {
     @Volatile
     var tunnelDataSyncCompleted: Boolean = false
 
+    @Volatile
+    var tunnelDataSyncFinishedAtMs: Long = 0L
+
+    /** Идёт единственный overlay initial sync — другие overlay не стартуют. */
+    @Volatile
+    var initialOverlaySyncActive: Boolean = false
+
     /** Туннель работает: WG + libclient + ≥1 воркер (с гистерезисом при speedtest). */
     fun isActive(): Boolean =
         SilentVpnService.isRunning &&
@@ -34,5 +41,7 @@ object VpnSessionState {
     fun resetBackendSync() {
         backendSyncCompleted = false
         tunnelDataSyncCompleted = false
+        tunnelDataSyncFinishedAtMs = 0L
+        initialOverlaySyncActive = false
     }
 }

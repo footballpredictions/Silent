@@ -12,7 +12,6 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.silent.vpn.MainActivity
 import com.silent.vpn.R
-import com.silent.vpn.data.ConfigSyncCoordinator
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.service.SilentVpnService
@@ -25,24 +24,21 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Foreground sync по активному основному VPN — без WG overlay.
- * HTTP через tunnel API direct (app в WG) или proxy (bootstrap legacy).
+ * Foreground sync по активному основному VPN.
+ * Один полный sync за VPN-сессию; затем «Синхронизация в фоне» без повторов.
  */
 class VpnDataSyncService : Service() {
     companion object {
         private const val TAG = "UpdateService"
         const val ACTION_START = "com.silent.vpn.sync.START"
         const val ACTION_STOP = "com.silent.vpn.sync.STOP"
-        // Используем тот же канал/id, что основной VPN FGS — в шторке одно уведомление.
         private const val CHANNEL_ID = "silent_vpn_status_v2"
         private const val NOTIF_ID = 1001
-        private const val POLL_MS = 5 * 60 * 1000L
-        private const val FAIL_RETRY_MS = 25_000L
+        private const val INITIAL_RETRY_MS = 8_000L
         private const val INITIAL_DELAY_MS = 2_000L
     }
 
@@ -87,10 +83,15 @@ class VpnDataSyncService : Service() {
         if (loopJob?.isActive == true) return
         loopJob = scope.launch {
             delay(INITIAL_DELAY_MS)
-            while (isActive && canSync()) {
-                val ok = runSyncCycle()
-                delay(if (ok) POLL_MS else FAIL_RETRY_MS)
+
+            if (!VpnSessionState.tunnelDataSyncCompleted) {
+                runInitialFullSync()
+            } else {
+                VpnDataSyncState.setOk()
+                updateNotification("Синхронизация в фоне")
+                delay(2_000)
             }
+
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
@@ -107,16 +108,44 @@ class VpnDataSyncService : Service() {
             WdttTunnelManager.running.value &&
             !WdttTunnelManager.isBootstrapMode()
 
-    private suspend fun runSyncCycle(): Boolean {
-        if (!canSync()) return false
+    /** Один полный sync за VPN-сессию (+ один retry при ошибке). */
+    private suspend fun runInitialFullSync() {
+        if (!canSync()) return
         val repo = repository()
-        if (!repo.isLoggedIn()) return false
+        if (!repo.isLoggedIn()) return
 
         VpnDataSyncState.setSyncing()
         updateNotification("Синхронизация данных…")
-        Log.i(TAG, "sync cycle start")
+        Log.i(TAG, "initial sync start")
 
-        val ok = withTimeoutOrNull(120_000L) {
+        var ok = performFullSync(repo)
+        if (!ok && canSync()) {
+            Log.w(TAG, "initial sync retry in ${INITIAL_RETRY_MS}ms")
+            delay(INITIAL_RETRY_MS)
+            ok = performFullSync(repo)
+        }
+
+        if (ok) {
+            VpnSessionState.tunnelDataSyncCompleted = true
+            VpnSessionState.backendSyncCompleted = true
+            VpnDataSyncState.setOk()
+            updateNotification("Данные актуальны")
+            VpnDataSyncBridge.onCycleCompleted?.invoke()
+            Log.i(TAG, "initial sync OK")
+        } else {
+            VpnDataSyncState.setError("Не удалось синхронизировать данные")
+            updateNotification("Ошибка синхронизации")
+            Log.w(TAG, "initial sync FAILED")
+        }
+
+        delay(2_000)
+        if (canSync()) {
+            updateNotification("Синхронизация в фоне")
+        }
+    }
+
+    private suspend fun performFullSync(repo: SilentRepository): Boolean {
+        return withTimeoutOrNull(120_000L) {
             runCatching {
                 repo.setTunnelApiFromWgAddress(WdttTunnelManager.lastWgAddress())
                 if (SilentRepository.APP_EXCLUDED_FROM_VPN) {
@@ -126,40 +155,12 @@ class VpnDataSyncService : Service() {
                 } else {
                     repo.prepareMainVpnDirectApi()
                 }
-                val synced = repo.syncAllViaTunnel()
-                if (synced) {
-                    VpnSessionState.tunnelDataSyncCompleted = true
-                    VpnSessionState.backendSyncCompleted = true
-                    Log.i(TAG, "syncAllViaTunnel OK")
-                } else {
-                    Log.w(TAG, "syncAllViaTunnel FAILED")
-                }
-                val listener = VpnDataSyncBridge.configSyncListener
-                if (listener != null && listener.isPollAllowed()) {
-                    ConfigSyncCoordinator.tickNow(repo, applicationContext, listener)
-                }
-                VpnDataSyncBridge.onCycleCompleted?.invoke()
-                synced
+                repo.syncAllViaTunnel()
             }.getOrElse { e ->
-                Log.e(TAG, "sync cycle failed", e)
+                Log.e(TAG, "initial sync failed", e)
                 false
             }
         } ?: false
-
-        if (ok) {
-            VpnDataSyncState.setOk()
-            updateNotification("Данные актуальны")
-            Log.i(TAG, "sync cycle OK")
-        } else {
-            VpnDataSyncState.setError("Не удалось синхронизировать данные")
-            updateNotification("Ошибка синхронизации")
-            Log.w(TAG, "sync cycle FAILED")
-        }
-        delay(2_000)
-        if (canSync()) {
-            updateNotification("Синхронизация в фоне")
-        }
-        return ok
     }
 
     private fun repository(): SilentRepository =

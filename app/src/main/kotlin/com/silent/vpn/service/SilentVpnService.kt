@@ -178,14 +178,6 @@ class SilentVpnService : Service() {
                         VpnTileHelper.requestUpdate(this@SilentVpnService)
                         checkTransportHealth()
                         checkUnderlyingNetwork()
-                        if (
-                            WdttTunnelManager.tunnelReady.value &&
-                            WdttTunnelManager.running.value &&
-                            !WdttTunnelManager.isBootstrapMode() &&
-                            !VpnSessionState.tunnelDataSyncCompleted
-                        ) {
-                            VpnBackendSync.ensureBackendSyncAfterTunnel(scope, this@SilentVpnService)
-                        }
                     } else if (WdttTunnelManager.running.value) {
                         startFg(buildConnectingNotification())
                     }

@@ -987,8 +987,7 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * После tunnelReady — явная синхронизация (как при login через bootstrap),
-     * через proxy/direct bind, без overlay и без пассивного ожидания VpnBackendSync.
+     * После tunnelReady — ждём [VpnDataSyncService] (один initial sync), обновляем UI из кеша.
      */
     private fun watchTunnelDataSyncFromCache() {
         tunnelSyncWatchJob?.cancel()
@@ -998,36 +997,28 @@ class MainViewModel @Inject constructor(
             refreshHashState()
 
             if (!VpnSessionState.tunnelDataSyncCompleted) {
-                if (repo.isOnMobileData()) {
-                    repo.ensureTunnelApiProxy()
+                val deadline = System.currentTimeMillis() + 120_000L
+                while (
+                    System.currentTimeMillis() < deadline &&
+                    !VpnSessionState.tunnelDataSyncCompleted &&
+                    _vpnState.value != VpnState.DISCONNECTING &&
+                    WdttTunnelManager.tunnelReady.value &&
+                    SilentVpnService.isRunning
+                ) {
+                    delay(500)
                 }
-                var ok = false
-                repeat(4) { attempt ->
-                    if (ok || _vpnState.value == VpnState.DISCONNECTING) return@repeat
-                    if (attempt == 0) delay(2_000) else delay(1_500)
-                    if (!WdttTunnelManager.tunnelReady.value || !SilentVpnService.isRunning) return@launch
-                    ok = runCatching { repo.syncAllViaTunnel() }.getOrDefault(false)
-                    if (ok) {
-                        VpnSessionState.tunnelDataSyncCompleted = true
-                        VpnSessionState.backendSyncCompleted = true
-                        DebugLog.i("MainViewModel", "main VPN data sync OK (attempt ${attempt + 1})")
-                    } else {
-                        DebugLog.w("MainViewModel", "main VPN data sync failed (attempt ${attempt + 1})")
-                    }
-                }
-                backendSyncCompleted = ok
+                backendSyncCompleted = VpnSessionState.tunnelDataSyncCompleted
             } else {
                 backendSyncCompleted = true
-                if (!repo.isPublicBackendReachable()) {
-                    repo.pullAfterTunnelReady()
-                }
             }
 
             restoreCachedProfileToUi()
             restoreCachedThemeToUi(refreshFromSync = true)
             refreshHashState()
             flushPendingHashFailures()
-            repo.fetchProfileLiveViaUser().getOrNull()?.let { applyServerProfile(it) }
+            if (VpnSessionState.tunnelDataSyncCompleted) {
+                repo.fetchProfileLiveViaUser().getOrNull()?.let { applyServerProfile(it) }
+            }
             ConfigSyncCoordinator.tickNow(repo, appContext, configSyncListener)
             seedConfigSyncRevision()
         }

@@ -101,6 +101,8 @@ class Settings(BaseSettings):
     HIVE_CAPACITY_PERCENTILE: float = 50.0
     # Доля онлайн, которые одновременно качают тяжёлый трафик (остальные — лёгкий фон)
     HIVE_CAPACITY_PEAK_ACTIVE_SHARE: float = 0.10
+    HIVE_CELL_CPU_POWER_RATIO_DEFAULT: float = 0.35
+    HIVE_CELL_MEM_POWER_RATIO_DEFAULT: float = 0.35
     HIVE_CAPACITY_FALLBACK_CPU_PER_USER: float = 2.0
     HIVE_CAPACITY_FALLBACK_MEM_PER_USER: float = 0.5
     # False = все VPN только на Улье (соты в админке, но трафик не уходит на worker)

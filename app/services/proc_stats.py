@@ -323,6 +323,45 @@ _load_cache_snap: dict | None = None
 _LOAD_CACHE_TTL = 2.5
 
 
+def _read_cpu_cores(proc_root: str | None = None) -> int:
+    root = proc_root or _host_proc_root() or "/proc"
+    path = os.path.join(root, "cpuinfo")
+    try:
+        count = 0
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("processor"):
+                    count += 1
+        return max(1, count)
+    except OSError:
+        return max(1, os.cpu_count() or 1)
+
+
+def _read_memory_total_gb(proc_root: str | None = None) -> float:
+    root = proc_root or _host_proc_root() or "/proc"
+    path = os.path.join(root, "meminfo")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    return round(kb / 1024 / 1024, 1)
+    except OSError:
+        pass
+    try:
+        return round(psutil.virtual_memory().total / (1024**3), 1)
+    except Exception:
+        return 0.0
+
+
+def _host_hardware_meta() -> dict:
+    proc_root = _host_proc_root()
+    return {
+        "cpu_cores": _read_cpu_cores(proc_root),
+        "memory_total_gb": _read_memory_total_gb(proc_root),
+    }
+
+
 def read_host_load(*, cpu_interval: float = 0.25) -> dict:
     """Нагрузка VPS-хоста (для Улья в Docker)."""
     global _load_cache_at, _load_cache_snap
@@ -349,4 +388,4 @@ def read_host_load(*, cpu_interval: float = 0.25) -> dict:
                 "memory_percent": round(float(mem.percent), 1),
             }
 
-    return {**snap, **read_network_load()}
+    return {**snap, **read_network_load(), **_host_hardware_meta()}

@@ -1,4 +1,4 @@
-"""Адаптивная ёмкость Улья: сэмплы нагрузки и расчёт max_online по типичной маржинальной нагрузке."""
+"""Адаптивная ёмкость Улья: CPU + RAM + канал с учётом железа каждой ноды."""
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class NodeHardware:
+    cpu_cores: float = 0.0
+    memory_total_gb: float = 0.0
+    link_capacity_mbps: float = 1000.0
+
+
+@dataclass
 class CapacityProfile:
     max_online: int
     bottleneck: str
@@ -29,6 +36,13 @@ class CapacityProfile:
     link_capacity_mbps: float
     baseline_cpu: float | None = None
     baseline_mem: float | None = None
+    cpu_cores: int | None = None
+    memory_total_gb: float | None = None
+    limit_cpu: int | None = None
+    limit_mem: int | None = None
+    limit_network: int | None = None
+    cpu_power_ratio: float | None = None
+    mem_power_ratio: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -42,7 +56,14 @@ class CapacityProfile:
             "link_capacity_mbps": self.link_capacity_mbps,
             "baseline_cpu": self.baseline_cpu,
             "baseline_mem": self.baseline_mem,
+            "cpu_cores": self.cpu_cores,
+            "memory_total_gb": self.memory_total_gb,
+            "limit_cpu": self.limit_cpu,
+            "limit_mem": self.limit_mem,
+            "limit_network": self.limit_network,
             "peak_active_share": float(settings.HIVE_CAPACITY_PEAK_ACTIVE_SHARE),
+            "cpu_power_ratio": self.cpu_power_ratio,
+            "mem_power_ratio": self.mem_power_ratio,
         }
 
 
@@ -66,12 +87,38 @@ def _network_mbps(load: dict) -> float:
     return max(rx, tx)
 
 
-def _link_capacity_mbps(load: dict | None) -> float:
-    if load:
-        cap = float(load.get("network_link_capacity_mbps") or 0)
-        if cap > 0:
-            return cap
-    return float(settings.HIVE_LINK_CAPACITY_MBPS)
+def _hardware_from_load(load: dict | None) -> NodeHardware:
+    load = load or {}
+    cores = float(load.get("cpu_cores") or 0)
+    ram_gb = float(load.get("memory_total_gb") or 0)
+    link = float(load.get("network_link_capacity_mbps") or 0)
+    return NodeHardware(
+        cpu_cores=cores if cores > 0 else 0.0,
+        memory_total_gb=ram_gb if ram_gb > 0 else 0.0,
+        link_capacity_mbps=link if link > 0 else float(settings.HIVE_LINK_CAPACITY_MBPS),
+    )
+
+
+def _hardware_ratios(cell: NodeHardware, queen: NodeHardware) -> tuple[float, float, float]:
+    default_cpu = float(settings.HIVE_CELL_CPU_POWER_RATIO_DEFAULT)
+    default_mem = float(settings.HIVE_CELL_MEM_POWER_RATIO_DEFAULT)
+
+    if cell.cpu_cores > 0 and queen.cpu_cores > 0:
+        cpu_r = max(0.05, min(1.0, cell.cpu_cores / queen.cpu_cores))
+    else:
+        cpu_r = default_cpu
+
+    if cell.memory_total_gb > 0 and queen.memory_total_gb > 0:
+        mem_r = max(0.05, min(1.0, cell.memory_total_gb / queen.memory_total_gb))
+    else:
+        mem_r = default_mem
+
+    if queen.link_capacity_mbps > 0:
+        net_r = max(0.05, cell.link_capacity_mbps / queen.link_capacity_mbps)
+    else:
+        net_r = 1.0
+
+    return cpu_r, mem_r, net_r
 
 
 def _baseline_metric(samples: list[HiveLoadSample], attr: str) -> float:
@@ -84,12 +131,80 @@ def _baseline_metric(samples: list[HiveLoadSample], attr: str) -> float:
     return float(_percentile(all_vals, 10) or 0)
 
 
-def fallback_max_online(link_capacity_mbps: float) -> int:
+def _limits_from_typicals(
+    typ_cpu: float,
+    typ_mem: float,
+    typ_mbps: float,
+    *,
+    baseline_cpu: float,
+    baseline_mem: float,
+    baseline_net: float,
+    link_capacity_mbps: float,
+) -> tuple[int, str, dict[str, int]]:
+    share = max(0.05, min(1.0, float(settings.HIVE_CAPACITY_PEAK_ACTIVE_SHARE)))
+    budget_cpu = max(0.15, typ_cpu * share)
+    budget_mem = max(0.05, typ_mem * share)
+    budget_mbps = max(0.0005, typ_mbps * share)
+
+    headroom_cpu = max(1.0, float(settings.HIVE_CPU_PERCENT_THRESHOLD) - baseline_cpu)
+    headroom_mem = max(1.0, float(settings.HIVE_MEM_PERCENT_THRESHOLD) - baseline_mem)
+    target_mbps = link_capacity_mbps * (settings.HIVE_BANDWIDTH_PERCENT_THRESHOLD / 100.0)
+    headroom_net = max(0.001, target_mbps - baseline_net)
+
+    limits = {
+        "cpu": max(1, int(headroom_cpu / budget_cpu)),
+        "memory": max(1, int(headroom_mem / budget_mem)),
+        "network": max(1, int(headroom_net / budget_mbps)),
+    }
+    bottleneck = min(limits, key=limits.get)
+    return limits[bottleneck], bottleneck, limits
+
+
+def _profile_from_limits(
+    *,
+    max_online: int,
+    bottleneck: str,
+    mode: str,
+    samples_count: int,
+    typ_cpu: float | None,
+    typ_mem: float | None,
+    typ_mbps: float | None,
+    link_capacity_mbps: float,
+    baseline_cpu: float,
+    baseline_mem: float,
+    limits: dict[str, int],
+    hardware: NodeHardware,
+    cpu_power_ratio: float | None = None,
+    mem_power_ratio: float | None = None,
+) -> CapacityProfile:
+    return CapacityProfile(
+        max_online=max_online,
+        bottleneck=bottleneck,
+        mode=mode,
+        samples_count=samples_count,
+        per_user_cpu_p95=round(typ_cpu, 2) if typ_cpu is not None else None,
+        per_user_mem_p95=round(typ_mem, 2) if typ_mem is not None else None,
+        per_user_mbps_p95=round(typ_mbps, 4) if typ_mbps is not None else None,
+        link_capacity_mbps=link_capacity_mbps,
+        baseline_cpu=round(baseline_cpu, 2),
+        baseline_mem=round(baseline_mem, 2),
+        cpu_cores=int(hardware.cpu_cores) if hardware.cpu_cores > 0 else None,
+        memory_total_gb=round(hardware.memory_total_gb, 1) if hardware.memory_total_gb > 0 else None,
+        limit_cpu=limits.get("cpu"),
+        limit_mem=limits.get("memory"),
+        limit_network=limits.get("network"),
+        cpu_power_ratio=round(cpu_power_ratio, 2) if cpu_power_ratio is not None else None,
+        mem_power_ratio=round(mem_power_ratio, 2) if mem_power_ratio is not None else None,
+    )
+
+
+def fallback_max_online(hardware: NodeHardware) -> int:
     util = max(0.01, float(settings.HIVE_LINK_TARGET_UTILIZATION_PERCENT) / 100.0)
     per_user_mbps = max(0.01, float(settings.HIVE_TARGET_ACTIVE_USER_MBPS))
     per_user_cpu = max(0.5, float(settings.HIVE_CAPACITY_FALLBACK_CPU_PER_USER))
     share = max(0.05, float(settings.HIVE_CAPACITY_PEAK_ACTIVE_SHARE))
-    by_net = int((link_capacity_mbps * util) // (per_user_mbps * share))
+    link = hardware.link_capacity_mbps
+    by_net = int((link * util) // (per_user_mbps * share))
     by_cpu = int(settings.HIVE_CPU_PERCENT_THRESHOLD // (per_user_cpu * share))
     by_mem = int(
         settings.HIVE_MEM_PERCENT_THRESHOLD
@@ -101,16 +216,16 @@ def fallback_max_online(link_capacity_mbps: float) -> int:
 def compute_max_online_from_samples(
     samples: list[HiveLoadSample],
     *,
-    link_capacity_mbps: float,
+    hardware: NodeHardware,
 ) -> CapacityProfile:
     min_samples = max(1, int(settings.HIVE_CAPACITY_MIN_SAMPLES))
     min_online = max(1, int(settings.HIVE_CAPACITY_MIN_ONLINE_FOR_LEARN))
     p = float(settings.HIVE_CAPACITY_PERCENTILE)
-    share = max(0.05, min(1.0, float(settings.HIVE_CAPACITY_PEAK_ACTIVE_SHARE)))
+    link_cap = hardware.link_capacity_mbps
 
     usable = [s for s in samples if s.online_count >= min_online]
     if len(usable) < min_samples:
-        cap = fallback_max_online(link_capacity_mbps)
+        cap = fallback_max_online(hardware)
         return CapacityProfile(
             max_online=cap,
             bottleneck="fallback",
@@ -119,7 +234,9 @@ def compute_max_online_from_samples(
             per_user_cpu_p95=None,
             per_user_mem_p95=None,
             per_user_mbps_p95=None,
-            link_capacity_mbps=link_capacity_mbps,
+            link_capacity_mbps=link_cap,
+            cpu_cores=int(hardware.cpu_cores) if hardware.cpu_cores > 0 else None,
+            memory_total_gb=round(hardware.memory_total_gb, 1) if hardware.memory_total_gb > 0 else None,
         )
 
     baseline_cpu = _baseline_metric(samples, "cpu_percent")
@@ -139,35 +256,89 @@ def compute_max_online_from_samples(
     typ_mem = _percentile(mem_marginal, p) or float(settings.HIVE_CAPACITY_FALLBACK_MEM_PER_USER)
     typ_mbps = _percentile(mbps_marginal, p) or max(0.001, float(settings.HIVE_TARGET_ACTIVE_USER_MBPS))
 
-    # Планируем ёмкость: не все онлайн одновременно качают 4K — только доля peak_active_share
-    budget_cpu = max(0.15, typ_cpu * share)
-    budget_mem = max(0.05, typ_mem * share)
-    budget_mbps = max(0.0005, typ_mbps * share)
+    max_online, bottleneck, limits = _limits_from_typicals(
+        typ_cpu,
+        typ_mem,
+        typ_mbps,
+        baseline_cpu=baseline_cpu,
+        baseline_mem=baseline_mem,
+        baseline_net=baseline_net,
+        link_capacity_mbps=link_cap,
+    )
 
-    by_cpu = int(settings.HIVE_CPU_PERCENT_THRESHOLD / budget_cpu)
-    by_mem = int(settings.HIVE_MEM_PERCENT_THRESHOLD / budget_mem)
-    target_mbps = link_capacity_mbps * (settings.HIVE_BANDWIDTH_PERCENT_THRESHOLD / 100.0)
-    by_net = int(target_mbps / budget_mbps)
-
-    limits = {
-        "cpu": max(1, by_cpu),
-        "memory": max(1, by_mem),
-        "network": max(1, by_net),
-    }
-    bottleneck = min(limits, key=limits.get)
-    max_online = limits[bottleneck]
-
-    return CapacityProfile(
+    return _profile_from_limits(
         max_online=max_online,
         bottleneck=bottleneck,
         mode="adaptive",
         samples_count=len(usable),
-        per_user_cpu_p95=round(typ_cpu, 2),
-        per_user_mem_p95=round(typ_mem, 2),
-        per_user_mbps_p95=round(typ_mbps, 4),
-        link_capacity_mbps=link_capacity_mbps,
-        baseline_cpu=round(baseline_cpu, 2),
-        baseline_mem=round(baseline_mem, 2),
+        typ_cpu=typ_cpu,
+        typ_mem=typ_mem,
+        typ_mbps=typ_mbps,
+        link_capacity_mbps=link_cap,
+        baseline_cpu=baseline_cpu,
+        baseline_mem=baseline_mem,
+        limits=limits,
+        hardware=hardware,
+        cpu_power_ratio=1.0,
+        mem_power_ratio=1.0,
+    )
+
+
+def _estimate_worker_from_queen(
+    cell_samples: list[HiveLoadSample],
+    queen_profile: CapacityProfile,
+    *,
+    cell_hw: NodeHardware,
+    queen_hw: NodeHardware,
+) -> CapacityProfile:
+    cpu_r, mem_r, _net_r = _hardware_ratios(cell_hw, queen_hw)
+    baseline_cpu = _baseline_metric(cell_samples, "cpu_percent") if cell_samples else 0.0
+    baseline_mem = _baseline_metric(cell_samples, "memory_percent") if cell_samples else 0.0
+    baseline_net = _baseline_metric(cell_samples, "network_mbps") if cell_samples else 0.0
+
+    typ_cpu = queen_profile.per_user_cpu_p95 or float(settings.HIVE_CAPACITY_FALLBACK_CPU_PER_USER)
+    typ_mem = queen_profile.per_user_mem_p95 or float(settings.HIVE_CAPACITY_FALLBACK_MEM_PER_USER)
+    typ_mbps = queen_profile.per_user_mbps_p95 or max(0.001, float(settings.HIVE_TARGET_ACTIVE_USER_MBPS))
+
+    # Слабее CPU/RAM на соте → тот же юзер даёт больший % загрузки
+    typ_cpu_cell = typ_cpu / cpu_r
+    typ_mem_cell = typ_mem / mem_r
+
+    max_online, bottleneck, limits = _limits_from_typicals(
+        typ_cpu_cell,
+        typ_mem_cell,
+        typ_mbps,
+        baseline_cpu=baseline_cpu,
+        baseline_mem=baseline_mem,
+        baseline_net=baseline_net,
+        link_capacity_mbps=cell_hw.link_capacity_mbps,
+    )
+
+    # CPU/RAM: сота не может вместить больше пропорционально железу, чем Улей
+    if queen_profile.limit_cpu:
+        limits["cpu"] = min(limits["cpu"], max(1, int(queen_profile.limit_cpu * cpu_r)))
+    if queen_profile.limit_mem:
+        limits["memory"] = min(limits["memory"], max(1, int(queen_profile.limit_mem * mem_r)))
+    # Канал: своя ширина (10 Гбит на соте vs 1 Гбит на Улье) — не режем по Улью
+    bottleneck = min(limits, key=limits.get)
+    max_online = limits[bottleneck]
+
+    usable = [s for s in cell_samples if s.online_count >= 1]
+    return _profile_from_limits(
+        max_online=max_online,
+        bottleneck=bottleneck,
+        mode="estimated",
+        samples_count=len(usable) or len(cell_samples),
+        typ_cpu=typ_cpu_cell,
+        typ_mem=typ_mem_cell,
+        typ_mbps=typ_mbps,
+        link_capacity_mbps=cell_hw.link_capacity_mbps,
+        baseline_cpu=baseline_cpu,
+        baseline_mem=baseline_mem,
+        limits=limits,
+        hardware=cell_hw,
+        cpu_power_ratio=cpu_r,
+        mem_power_ratio=mem_r,
     )
 
 
@@ -190,31 +361,24 @@ async def get_capacity_profile(
     load: dict | None = None,
 ) -> CapacityProfile:
     samples = await fetch_recent_samples(db, cell.id)
-    link_cap = _link_capacity_mbps(load)
-    profile = compute_max_online_from_samples(samples, link_capacity_mbps=link_cap)
+    hardware = _hardware_from_load(load)
+    profile = compute_max_online_from_samples(samples, hardware=hardware)
 
-    # Сота без онлайн-истории — оценка по Улью (тот же железный класс)
     if profile.mode == "fallback" and not cell.is_queen:
         from app.services.hive_service import get_queen_cell
 
         queen = await get_queen_cell(db)
         if queen and queen.id != cell.id:
+            _, queen_load = queen_accepting_new_vpn()
+            queen_hw = _hardware_from_load(queen_load)
             queen_samples = await fetch_recent_samples(db, queen.id)
-            queen_profile = compute_max_online_from_samples(
-                queen_samples, link_capacity_mbps=link_cap
-            )
+            queen_profile = compute_max_online_from_samples(queen_samples, hardware=queen_hw)
             if queen_profile.mode == "adaptive":
-                profile = CapacityProfile(
-                    max_online=queen_profile.max_online,
-                    bottleneck=queen_profile.bottleneck,
-                    mode="estimated",
-                    samples_count=queen_profile.samples_count,
-                    per_user_cpu_p95=queen_profile.per_user_cpu_p95,
-                    per_user_mem_p95=queen_profile.per_user_mem_p95,
-                    per_user_mbps_p95=queen_profile.per_user_mbps_p95,
-                    link_capacity_mbps=link_cap,
-                    baseline_cpu=queen_profile.baseline_cpu,
-                    baseline_mem=queen_profile.baseline_mem,
+                profile = _estimate_worker_from_queen(
+                    samples,
+                    queen_profile,
+                    cell_hw=hardware,
+                    queen_hw=queen_hw,
                 )
 
     configured = int(cell.max_clients or 0)
@@ -231,6 +395,13 @@ async def get_capacity_profile(
             link_capacity_mbps=profile.link_capacity_mbps,
             baseline_cpu=profile.baseline_cpu,
             baseline_mem=profile.baseline_mem,
+            cpu_cores=profile.cpu_cores,
+            memory_total_gb=profile.memory_total_gb,
+            limit_cpu=profile.limit_cpu,
+            limit_mem=profile.limit_mem,
+            limit_network=profile.limit_network,
+            cpu_power_ratio=profile.cpu_power_ratio,
+            mem_power_ratio=profile.mem_power_ratio,
         )
     return profile
 
@@ -259,7 +430,7 @@ async def record_sample(
         memory_percent=round(float(load.get("memory_percent") or 0), 2),
         network_mbps=round(_network_mbps(load), 4),
         network_util_percent=round(float(load.get("network_util_percent") or 0), 2),
-        link_capacity_mbps=round(_link_capacity_mbps(load), 1),
+        link_capacity_mbps=round(_hardware_from_load(load).link_capacity_mbps, 1),
     )
     db.add(sample)
     await db.commit()

@@ -9,6 +9,8 @@ interface CellLoad {
   network_mbps_tx?: number
   network_link_capacity_mbps?: number
   network_interface?: string | null
+  cpu_cores?: number | null
+  memory_total_gb?: number | null
   build_running?: boolean
   vpn_overloaded?: boolean
   wdtt_active?: boolean
@@ -23,6 +25,13 @@ interface CapacityProfile {
   per_user_mem_p95?: number | null
   per_user_mbps_p95?: number | null
   link_capacity_mbps: number
+  cpu_cores?: number | null
+  memory_total_gb?: number | null
+  limit_cpu?: number | null
+  limit_mem?: number | null
+  limit_network?: number | null
+  cpu_power_ratio?: number | null
+  mem_power_ratio?: number | null
 }
 
 interface HiveCell {
@@ -87,16 +96,39 @@ function fmtBandwidth(mbps: number): string {
   return '0'
 }
 
+function fmtLinkGbps(mbps: number): string {
+  if (mbps >= 1000) return `${(mbps / 1000).toFixed(0)} Гбит/с`
+  return `${mbps.toFixed(0)} Мбит/с`
+}
+
+function fmtHardware(cap?: CapacityProfile, load?: CellLoad): string {
+  const cores = cap?.cpu_cores ?? load?.cpu_cores
+  const ram = cap?.memory_total_gb ?? load?.memory_total_gb
+  const link = cap?.link_capacity_mbps ?? load?.network_link_capacity_mbps
+  const parts: string[] = []
+  if (cores) parts.push(`${cores} ядер`)
+  if (ram) parts.push(`${ram} ГБ RAM`)
+  if (link) parts.push(`канал ${fmtLinkGbps(link)}`)
+  return parts.join(' · ')
+}
+
 function fmtCapacityHint(cap?: CapacityProfile): string {
   if (!cap) return ''
   const parts = [capacityModeLabel[cap.mode] || cap.mode]
+  const hw = fmtHardware(cap)
+  if (hw) parts.push(hw)
   if (cap.bottleneck && cap.bottleneck !== 'fallback') {
     parts.push(`узкое место ${bottleneckLabel[cap.bottleneck] || cap.bottleneck}`)
   }
-  if (cap.per_user_cpu_p95 != null) parts.push(`~${cap.per_user_cpu_p95}% CPU/юзер`)
-  if (cap.per_user_mem_p95 != null) parts.push(`~${cap.per_user_mem_p95}% RAM/юзер`)
-  const net = fmtPerUserMbps(cap.per_user_mbps_p95)
-  if (net) parts.push(net)
+  if (cap.limit_cpu != null && cap.limit_mem != null && cap.limit_network != null) {
+    parts.push(`лимиты CPU ${cap.limit_cpu} / RAM ${cap.limit_mem} / сеть ${cap.limit_network}`)
+  }
+  if (cap.cpu_power_ratio != null && cap.cpu_power_ratio < 0.99) {
+    parts.push(`CPU ${Math.round(cap.cpu_power_ratio * 100)}% от Улья`)
+  }
+  if (cap.mem_power_ratio != null && cap.mem_power_ratio < 0.99) {
+    parts.push(`RAM ${Math.round(cap.mem_power_ratio * 100)}% от Улья`)
+  }
   if (cap.samples_count > 0) parts.push(`${cap.samples_count} замеров`)
   return parts.join(' · ')
 }
@@ -143,6 +175,9 @@ function CellLoadGrid({
           {netUtil.toFixed(1)}%
         </p>
         <p className="text-[10px] text-[#555] mt-0.5">{fmtBandwidth(netRx)}↓ {fmtBandwidth(netTx)}↑</p>
+        {(cell.load.network_link_capacity_mbps ?? 0) > 0 && (
+          <p className="text-[10px] text-[#444]">лимит {fmtLinkGbps(cell.load.network_link_capacity_mbps!)}</p>
+        )}
       </div>
     </div>
   )
@@ -429,6 +464,9 @@ export default function HivePage({ token }: { token: string }) {
                     <span className="text-xs text-[#888]">{statusLabel[cell.status] || cell.status}</span>
                   </div>
                   <p className="text-sm text-[#888] mt-1 font-mono">{cell.public_ip}:{cell.wdtt_port}</p>
+                  {(cell.capacity || cell.load) && (
+                    <p className="text-xs text-[#555] mt-1">{fmtHardware(cell.capacity, cell.load)}</p>
+                  )}
                   {summary && (
                     <CellLoadGrid
                       cell={cell}

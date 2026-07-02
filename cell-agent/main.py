@@ -193,6 +193,23 @@ def _network_status(interval: float = 0.2) -> tuple[str | None, float, float, fl
     return iface, round(rx_mbps, 1), round(tx_mbps, 1), round(util, 1), round(cap, 1)
 
 
+def _memory_total_gb() -> float:
+    try:
+        with open("/proc/meminfo", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    return round(kb / 1024 / 1024, 1)
+    except OSError:
+        pass
+    try:
+        import psutil
+
+        return round(psutil.virtual_memory().total / (1024**3), 1)
+    except Exception:
+        return 0.0
+
+
 @app.get("/v1/status")
 async def status(
     x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
@@ -229,6 +246,13 @@ async def status(
         network_interface, network_mbps_rx, network_mbps_tx, network_util_percent, network_link_capacity_mbps = _network_status(0.2)
     except Exception:
         pass
+    cpu_cores = 1
+    try:
+        import os
+
+        cpu_cores = max(1, os.cpu_count() or 1)
+    except Exception:
+        pass
     wg_key = WG_SERVER_PUBLIC_KEY
     if not wg_key:
         try:
@@ -250,4 +274,6 @@ async def status(
         "network_mbps_tx": network_mbps_tx,
         "network_util_percent": network_util_percent,
         "network_link_capacity_mbps": network_link_capacity_mbps,
+        "cpu_cores": cpu_cores,
+        "memory_total_gb": _memory_total_gb(),
     }

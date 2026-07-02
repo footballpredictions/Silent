@@ -342,6 +342,8 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
             "network_mbps_tx": round(float(data.get("network_mbps_tx") or 0), 1),
             "network_util_percent": round(float(data.get("network_util_percent") or 0), 1),
             "network_link_capacity_mbps": round(float(data.get("network_link_capacity_mbps") or settings.HIVE_LINK_CAPACITY_MBPS), 1),
+            "cpu_cores": int(data.get("cpu_cores") or 0) or None,
+            "memory_total_gb": round(float(data.get("memory_total_gb") or 0), 1) or None,
             "wdtt_active": bool(data.get("wdtt_active")),
         }
     except Exception as e:

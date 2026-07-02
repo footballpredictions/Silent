@@ -84,7 +84,7 @@ class SilentVpnService : Service() {
         /** Не перезапускать libclient повторно, если недавно уже рестартили и транспорт жив. */
         private const val MIN_TRANSPORT_RESTART_INTERVAL_MS = 90_000L
         /** Wi‑Fi: сверка подписки пока VPN-сервис жив (даже если UI в фоне). */
-        private const val WIFI_SUBSCRIPTION_CHECK_MS = 5 * 60 * 1000L
+        private const val WIFI_SUBSCRIPTION_CHECK_MS = 2 * 60 * 1000L
         private const val NOTIF_UPDATE_MIN_MS = 3_000L
         /** Если CONNECT прилетел повторно сразу после старта, считаем сервис "занятым". */
         private const val CONNECT_BUSY_GRACE_MS = 15_000L
@@ -313,7 +313,7 @@ class SilentVpnService : Service() {
                 pausedForNetwork = false
                 lastUnderlyingInternet = null
                 lastTransportRestartMs = 0L
-                lastNotifBody = ""
+                lastWifiSubscriptionCheckMs = 0L
                 lastNotifUpdateMs = 0L
                 tunnelProxyStarted = false
                 setupNetworkCallback()

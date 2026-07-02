@@ -296,14 +296,7 @@ fun MainScreen(
 
     val isConnected = vpnState == VpnState.CONNECTED
     val isTransitioning = vpnState == VpnState.CONNECTING || vpnState == VpnState.DISCONNECTING
-    var toggleBusy by remember { mutableStateOf(false) }
-    LaunchedEffect(vpnState) {
-        when (vpnState) {
-            VpnState.CONNECTED, VpnState.DISCONNECTED -> toggleBusy = false
-            else -> Unit
-        }
-    }
-    val thumbActive = isTransitioning || toggleBusy
+    val thumbActive = isTransitioning
 
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(vpnError) {
@@ -416,10 +409,7 @@ fun MainScreen(
                                     enabled = !thumbActive,
                                     interactionSource = toggleInteraction,
                                     indication = null,
-                                    onClick = {
-                                        toggleBusy = true
-                                        onToggle()
-                                    },
+                                    onClick = onToggle,
                                 ),
                         ) {
                             if (isConnected) {

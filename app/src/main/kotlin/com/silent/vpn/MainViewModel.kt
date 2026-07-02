@@ -178,6 +178,12 @@ class MainViewModel @Inject constructor(
                 _screen.value == AppScreen.MAIN &&
                 repo.allowsBackgroundConfigSync()
 
+        override fun isWifiSubscriptionPollAllowed(): Boolean =
+            repo.isLoggedIn() &&
+                !bootstrapVpnMode &&
+                _screen.value == AppScreen.MAIN &&
+                !repo.isOnMobileData()
+
         override fun onWifiSyncTickStart() {
             flushPendingHashFailures()
         }
@@ -298,6 +304,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             WdttTunnelManager.lastError.collect { err ->
                 if (!err.isNullOrBlank() &&
+                    !isIgnoredVpnError(err) &&
                     (_vpnState.value == VpnState.CONNECTING || _vpnState.value == VpnState.CONNECTED)
                 ) {
                     DebugLog.e("MainViewModel", "WDTT error: $err")
@@ -601,6 +608,8 @@ class MainViewModel @Inject constructor(
                             if (_profile.value != null) {
                                 disconnectBootstrapVpn(appContext)
                             }
+                        } else if (!repo.isOnMobileData()) {
+                            refreshWifiSubscriptionProfile()
                         } else {
                             fetchProfileNow(force = true)
                         }
@@ -1334,11 +1343,21 @@ class MainViewModel @Inject constructor(
 
     private suspend fun fetchProfileNow(force: Boolean = false): Boolean {
         if (
-            _vpnState.value == VpnState.CONNECTING ||
-            _vpnState.value == VpnState.DISCONNECTING ||
-            (!force && WdttTunnelManager.isApiOverlayActive())
+            !force &&
+            (_vpnState.value == VpnState.CONNECTING ||
+                _vpnState.value == VpnState.DISCONNECTING ||
+                WdttTunnelManager.isApiOverlayActive())
         ) {
-            return !force && _profile.value != null
+            return _profile.value != null
+        }
+        if (
+            force &&
+            repo.isOnMobileData() &&
+            (_vpnState.value == VpnState.CONNECTING ||
+                _vpnState.value == VpnState.DISCONNECTING ||
+                WdttTunnelManager.isApiOverlayActive())
+        ) {
+            return _profile.value != null
         }
         if (
             WdttTunnelManager.tunnelReady.value &&
@@ -2075,6 +2094,9 @@ class MainViewModel @Inject constructor(
                 if (!shouldDeferProfileUntilSync()) {
                     restoreCachedProfileToUi()
                 }
+                if (!repo.isOnMobileData()) {
+                    refreshWifiSubscriptionProfile()
+                }
                 val subCached = _profile.value?.subscription?.is_active
                 MobileSyncLog.i(
                     "connect",
@@ -2101,8 +2123,9 @@ class MainViewModel @Inject constructor(
                     }
                     if (!hasVpnAccess() && !lteStaleSubConnect) {
                         pendingConnectAfterSubscriptionRefresh = true
-                        _vpnError.value = subscriptionRequiredMessage()
                         _vpnState.value = VpnState.DISCONNECTED
+                        _vpnError.value = null
+                        _vpnError.value = subscriptionRequiredMessage()
                         return@launch
                     }
                 }
@@ -2147,9 +2170,14 @@ class MainViewModel @Inject constructor(
 
                 if (accessDenied) {
                     pendingConnectAfterSubscriptionRefresh = true
-                    _vpnError.value = apiError ?: subscriptionRequiredMessage()
                     _vpnState.value = VpnState.DISCONNECTED
-                    loadProfile()
+                    _vpnError.value = null
+                    _vpnError.value = apiError ?: subscriptionRequiredMessage()
+                    if (!repo.isOnMobileData()) {
+                        refreshWifiSubscriptionProfile()
+                    } else {
+                        loadProfile()
+                    }
                     return@launch
                 }
 
@@ -2182,6 +2210,11 @@ class MainViewModel @Inject constructor(
                 pendingConnectAfterSubscriptionRefresh = false
                 waitForTunnelReady(context, toConnect.stream_count)
             }.onFailure {
+                if (!shouldSurfaceConnectFailure(it)) {
+                    DebugLog.i("MainViewModel", "connect cancelled: ${it.message}")
+                    if (it is CancellationException) throw it
+                    return@onFailure
+                }
                 DebugLog.e("MainViewModel", "connect failed", it)
                 _vpnError.value = it.message ?: "Ошибка подключения"
                 _vpnState.value = VpnState.DISCONNECTED
@@ -2533,6 +2566,24 @@ class MainViewModel @Inject constructor(
     }
 
     /** Обновить UI; при истёкшей подписке на сервере — отключить main VPN. */
+    private suspend fun refreshWifiSubscriptionProfile(): Boolean {
+        if (repo.isOnMobileData()) return false
+        return repo.fetchAndSaveProfileViaSync().fold(
+            onSuccess = { profile ->
+                applyServerProfile(profile, force = true)
+                DebugLog.i(
+                    "MainViewModel",
+                    "wifi subscription refresh active=${profile.subscription.is_active}",
+                )
+                true
+            },
+            onFailure = { e ->
+                DebugLog.w("MainViewModel", "wifi subscription refresh: ${e.message}")
+                false
+            },
+        )
+    }
+
     private fun applyServerProfile(profile: UserProfile, force: Boolean = false) {
         if (!force && shouldDeferProfileUntilSync()) {
             repo.saveCachedProfile(profile)
@@ -2543,14 +2594,19 @@ class MainViewModel @Inject constructor(
         val hasAccess = hasVpnAccessForProfile(profile)
         val vpnFullyUp = _vpnState.value == VpnState.CONNECTED ||
             (SilentVpnService.isRunning && repo.isMainVpnApiReady())
-        val vpnActive = vpnFullyUp || _vpnState.value == VpnState.CONNECTING ||
-            (SilentVpnService.isRunning && repo.isMainVpnTunnelUp())
-        if (pendingConnectAfterSubscriptionRefresh && hasAccess && !vpnActive && _vpnState.value == VpnState.DISCONNECTED) {
+        if (pendingConnectAfterSubscriptionRefresh && hasAccess) {
             pendingConnectAfterSubscriptionRefresh = false
             _vpnError.value = null
-            DebugLog.i("MainViewModel", "subscription restored — auto reconnect")
-            connect(appContext)
-            return
+            if (_vpnState.value == VpnState.DISCONNECTED) {
+                DebugLog.i("MainViewModel", "subscription restored — auto reconnect")
+                connect(appContext)
+                return
+            }
+            if (_vpnState.value == VpnState.CONNECTING && !SilentVpnService.isRunning) {
+                DebugLog.i("MainViewModel", "subscription restored during connect — continue")
+            }
+        } else if (hasAccess && _vpnError.value == subscriptionRequiredMessage() && !vpnFullyUp) {
+            _vpnError.value = null
         }
         if (vpnFullyUp && !hasAccess) {
             MobileSyncLog.w(
@@ -2564,6 +2620,19 @@ class MainViewModel @Inject constructor(
 
     private fun subscriptionRequiredMessage() =
         "Пробный период закончился. Оформите подписку в меню → Подписка."
+
+    private fun isIgnoredVpnError(message: String?): Boolean {
+        if (message.isNullOrBlank()) return true
+        val lower = message.lowercase()
+        return lower.contains("cancel") ||
+            lower.contains("cancellation") ||
+            lower.contains("standalonecoroutine")
+    }
+
+    private fun shouldSurfaceConnectFailure(t: Throwable): Boolean {
+        if (t is CancellationException) return false
+        return !isIgnoredVpnError(t.message)
+    }
 
     /** Только для bootstrap-VPN на экране входа: хеш + device_id boot:… */
     private fun bootstrapLaunchConfig(config: VpnConfig): VpnConfig {

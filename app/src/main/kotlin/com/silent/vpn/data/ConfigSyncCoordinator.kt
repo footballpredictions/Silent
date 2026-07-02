@@ -26,7 +26,7 @@ object ConfigSyncCoordinator {
     /** Единый интервал фонового sync (хеши/тема/профиль/подписка). */
     private const val POLL_MS = 60 * 60 * 1000L
     /** Wi‑Fi: rev профиля не растёт при истечении expires_at — отдельная сверка подписки. */
-    private const val WIFI_SUBSCRIPTION_CHECK_MS = 5 * 60 * 1000L
+    private const val WIFI_SUBSCRIPTION_CHECK_MS = 2 * 60 * 1000L
     private const val START_DELAY_MS = 5_000L
     /** Не трогаем ConfigSync сразу после initial sync — rev уже записан в VpnDataSyncService. */
     private const val POST_TUNNEL_SYNC_QUIET_MS = 90_000L
@@ -41,6 +41,8 @@ object ConfigSyncCoordinator {
         fun onHashesUpdated(items: List<HashItemDto>, applyToTunnel: Boolean)
         fun onWifiSyncTickStart()
         fun isPollAllowed(): Boolean
+        /** Wi‑Fi: подписка через public API — VPN не нужен. */
+        fun isWifiSubscriptionPollAllowed(): Boolean
         fun vpnState(): VpnState
     }
 
@@ -63,7 +65,7 @@ object ConfigSyncCoordinator {
         wifiSubscriptionJob = scope.launch {
             delay(START_DELAY_MS)
             while (isActive) {
-                if (repo.isLoggedIn() && !repo.isOnMobileData() && listener.isPollAllowed()) {
+                if (listener.isWifiSubscriptionPollAllowed()) {
                     runCatching { refreshWifiSubscription(repo, listener) }
                         .onFailure { e ->
                             Log.w(TAG, "wifi subscription: ${e.message}")
@@ -73,6 +75,11 @@ object ConfigSyncCoordinator {
                 delay(WIFI_SUBSCRIPTION_CHECK_MS)
             }
         }
+    }
+
+    suspend fun refreshWifiSubscriptionNow(repo: SilentRepository, listener: Listener) {
+        if (!listener.isWifiSubscriptionPollAllowed()) return
+        refreshWifiSubscription(repo, listener)
     }
 
     fun stop() {
@@ -194,11 +201,9 @@ object ConfigSyncCoordinator {
         }
     }
 
-    /** Wi‑Fi public API: подписка может истечь без роста profile rev (expires_at в прошлом). */
+    /** Wi‑Fi public API: подписка может истечь/появиться без роста profile rev. */
     private suspend fun refreshWifiSubscription(repo: SilentRepository, listener: Listener) {
         if (repo.isOnMobileData()) return
-        if (!repo.allowsBackgroundConfigSync()) return
-        if (VpnSessionState.isBusy()) return
         if (VpnSessionState.initialOverlaySyncActive) return
         repo.fetchAndSaveProfileViaSync().getOrNull()?.let { profile ->
             listener.onProfile(profile)

@@ -41,7 +41,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.silent.vpn.BuildConfig
+import androidx.compose.ui.res.painterResource
+import com.silent.vpn.R
 import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
 import com.silent.vpn.ui.components.MenuNavItem
@@ -642,7 +643,11 @@ fun MainScreen(
                             onRenameDevice,
                             onDeleteDevice,
                         ) { menuPage = MenuPage.ROOT }
-                        MenuPage.SUPPORT -> MenuSimplePage("Поддержка", "По вопросам обратитесь через email или Telegram.", fg) { menuPage = MenuPage.ROOT }
+                        MenuPage.SUPPORT -> MenuSupport(
+                            theme = theme,
+                            fg = fg,
+                            onOpenUrl = onOpenUrl,
+                        ) { menuPage = MenuPage.ROOT }
                         MenuPage.ABOUT -> MenuSimplePage("Silent VPN", "Версия ${com.silent.vpn.BuildConfig.VERSION_NAME}\nWireGuard-туннель через VK TURN/DTLS", fg) { menuPage = MenuPage.ROOT }
                         else -> Unit
                     }
@@ -661,6 +666,46 @@ private fun MenuSimplePage(title: String, body: String, fg: Color, onBack: () ->
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
         Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
         Text(body, fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp))
+    }
+}
+
+@Composable
+private fun MenuSupport(
+    theme: ThemeData?,
+    fg: Color,
+    onOpenUrl: (String) -> Unit,
+    onBack: () -> Unit,
+) {
+    val muted = fg.copy(alpha = 0.5f)
+    val channel = theme?.telegram_channel_url?.takeIf { it.isNotBlank() } ?: "https://t.me/silentvpn3"
+    val support = theme?.support_url?.takeIf { it.isNotBlank() } ?: "https://t.me/silentvpn3?direct"
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
+        Text("Поддержка", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        Text("По вопросам обратитесь через Telegram.", fontSize = 12.sp, color = muted, modifier = Modifier.padding(top = 8.dp, bottom = 16.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+            listOf("Канал" to channel, "Поддержка" to support).forEach { (label, url) ->
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.clickable { onOpenUrl(url) },
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(Color(0xFFF3F4F6), RoundedCornerShape(16.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_telegram),
+                            contentDescription = label,
+                            tint = Color.Unspecified,
+                            modifier = Modifier.size(28.dp),
+                        )
+                    }
+                    Text(label, fontSize = 11.sp, color = muted, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+        }
     }
 }
 

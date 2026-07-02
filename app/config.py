@@ -91,6 +91,15 @@ class Settings(BaseSettings):
     HIVE_PROVISION_SSH_USER: str = "root"
     HIVE_WDTT_BINARY_PATH: str = ""
     HIVE_REBALANCE_EXISTING_DEVICES: bool = True
+    # Адаптивная ёмкость: сэмплы нагрузки и p95 на онлайн-пользователя
+    HIVE_CAPACITY_SAMPLE_INTERVAL_SEC: int = 30
+    HIVE_CAPACITY_SAMPLE_RETENTION_HOURS: int = 168
+    HIVE_CAPACITY_MAX_SAMPLES_PER_CELL: int = 3000
+    HIVE_CAPACITY_MIN_SAMPLES: int = 5
+    HIVE_CAPACITY_MIN_ONLINE_FOR_LEARN: int = 2
+    HIVE_CAPACITY_P95_PERCENTILE: float = 95.0
+    HIVE_CAPACITY_FALLBACK_CPU_PER_USER: float = 7.0
+    HIVE_CAPACITY_FALLBACK_MEM_PER_USER: float = 3.0
     # False = все VPN только на Улье (соты в админке, но трафик не уходит на worker)
     HIVE_WORKER_ROUTING_ENABLED: bool = False
 

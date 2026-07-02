@@ -12,7 +12,7 @@ class HiveCellCreateManual(BaseModel):
     wg_public_key: str = Field(..., min_length=40, max_length=512)
     wdtt_port: int = Field(default=56000, ge=1, le=65535)
     wg_port: int = Field(default=56001, ge=1, le=65535)
-    max_clients: int = Field(default=100, ge=1, le=10000)
+    max_clients: int = Field(default=0, ge=0, le=10000, description="0 = авто по нагрузке")
     priority: int = Field(default=100, ge=0, le=1000)
     tunnel_api_url: Optional[str] = Field(default=None, max_length=512)
 
@@ -29,7 +29,7 @@ class HiveCellCreateAgent(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     api_url: str = Field(..., min_length=8, max_length=512)
     password: str = Field(..., min_length=8, max_length=256)
-    max_clients: int = Field(default=100, ge=1, le=10000)
+    max_clients: int = Field(default=0, ge=0, le=10000, description="0 = авто по нагрузке")
     priority: int = Field(default=100, ge=0, le=1000)
 
     @field_validator("api_url")
@@ -44,7 +44,7 @@ class HiveCellSshRepair(BaseModel):
 
 class HiveCellUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=128)
-    max_clients: Optional[int] = Field(default=None, ge=1, le=10000)
+    max_clients: Optional[int] = Field(default=None, ge=0, le=10000)
     priority: Optional[int] = Field(default=None, ge=0, le=1000)
     status: Optional[str] = Field(default=None, pattern="^(active|draining|offline)$")
     wg_public_key: Optional[str] = Field(default=None, min_length=40, max_length=512)

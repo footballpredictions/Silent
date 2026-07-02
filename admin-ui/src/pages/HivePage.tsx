@@ -14,6 +14,17 @@ interface CellLoad {
   wdtt_active?: boolean
 }
 
+interface CapacityProfile {
+  max_online: number
+  bottleneck: string
+  mode: string
+  samples_count: number
+  per_user_cpu_p95?: number | null
+  per_user_mem_p95?: number | null
+  per_user_mbps_p95?: number | null
+  link_capacity_mbps: number
+}
+
 interface HiveCell {
   id: string
   name: string
@@ -22,6 +33,8 @@ interface HiveCell {
   wdtt_port: number
   wg_port: number
   max_online: number
+  max_clients?: number
+  capacity?: CapacityProfile
   online_count: number
   assigned_devices: number
   status: string
@@ -36,6 +49,7 @@ interface HiveSummary {
   worker_cells: number
   queen_accepting_vpn: boolean
   queen_load: CellLoad
+  queen_capacity?: CapacityProfile | null
   cpu_threshold: number
   mem_threshold: number
   bandwidth_threshold: number
@@ -44,6 +58,39 @@ interface HiveSummary {
   full_cells: number
   rebalanced_moved: number
   rebalanced_blocked: number
+}
+
+const bottleneckLabel: Record<string, string> = {
+  cpu: 'CPU',
+  memory: 'RAM',
+  network: 'канал',
+  fallback: 'оценка',
+  manual_cap: 'ручной потолок',
+}
+
+const capacityModeLabel: Record<string, string> = {
+  adaptive: 'по замерам',
+  fallback: 'оценка',
+  manual_cap: 'с потолком',
+}
+
+function fmtPerUserMbps(mbps: number | null | undefined): string {
+  if (mbps == null) return ''
+  if (mbps < 1) return `~${(mbps * 1000).toFixed(0)} Кбит/с на юзера`
+  return `~${mbps.toFixed(2)} Мбит/с на юзера`
+}
+
+function fmtCapacityHint(cap?: CapacityProfile): string {
+  if (!cap) return ''
+  const parts = [capacityModeLabel[cap.mode] || cap.mode]
+  if (cap.bottleneck && cap.bottleneck !== 'fallback') {
+    parts.push(`узкое место ${bottleneckLabel[cap.bottleneck] || cap.bottleneck}`)
+  }
+  if (cap.per_user_cpu_p95 != null) parts.push(`~${cap.per_user_cpu_p95}% CPU/юзер`)
+  const net = fmtPerUserMbps(cap.per_user_mbps_p95)
+  if (net) parts.push(net)
+  if (cap.samples_count > 0) parts.push(`${cap.samples_count} замеров`)
+  return parts.join(' · ')
 }
 
 const statusLabel: Record<string, string> = {
@@ -217,7 +264,7 @@ export default function HivePage({ token }: { token: string }) {
             Улей
           </h1>
           <p className="text-[#888] text-sm mt-1">
-            Балансировка по CPU/RAM/каналу и онлайн VPN. Сборка OTA в полночь не считается перегрузкой.
+            Лимит онлайн считается по замерам CPU/RAM/канала (p95 на пользователя). Сборка OTA не считается перегрузкой.
           </p>
         </div>
         <button type="button" onClick={() => { setLoading(true); load() }}
@@ -236,6 +283,9 @@ export default function HivePage({ token }: { token: string }) {
           <div className="bg-[#111] border border-[#222] rounded-xl p-4">
             <p className="text-[#666] text-xs uppercase">Онлайн VPN</p>
             <p className="text-2xl font-semibold mt-1">{summary.total_online_vpn} / {summary.total_capacity_online}</p>
+            {summary.queen_capacity && (
+              <p className="text-xs text-[#666] mt-1">{fmtCapacityHint(summary.queen_capacity)}</p>
+            )}
           </div>
           <div className="bg-[#111] border border-[#222] rounded-xl p-4">
             <p className="text-[#666] text-xs uppercase flex items-center gap-1"><Cpu className="w-3 h-3" /> CPU Улья</p>
@@ -334,6 +384,9 @@ export default function HivePage({ token }: { token: string }) {
                   )}
                   <p className={`text-xs mt-0.5 ${cell.online_count >= cell.max_online ? 'text-red-400' : 'text-[#666]'}`}>
                     онлайн лимит: {cell.online_count} / {cell.max_online}
+                    {cell.capacity && (
+                      <span className="block text-[#555] mt-0.5">{fmtCapacityHint(cell.capacity)}</span>
+                    )}
                   </p>
                   {cell.last_error && <p className="text-xs text-red-400 mt-2 whitespace-pre-wrap">{cell.last_error}</p>}
                 </div>

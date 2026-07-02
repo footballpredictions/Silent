@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.security import encrypt_value, decrypt_value
 from app.models import Device, HiveCell, User
+from app.services.hive_capacity import get_capacity_profile, max_online_for_cell
 from app.services.hive_load import queen_accepting_new_vpn
 
 logger = logging.getLogger(__name__)
@@ -123,20 +124,6 @@ async def count_assigned_on_cell(db: AsyncSession, cell_id: uuid.UUID) -> int:
     return int(result.scalar_one())
 
 
-def recommended_max_online_capacity() -> int:
-    util = max(1.0, float(settings.HIVE_LINK_TARGET_UTILIZATION_PERCENT))
-    link = max(1.0, float(settings.HIVE_LINK_CAPACITY_MBPS))
-    per_user = max(0.1, float(settings.HIVE_TARGET_ACTIVE_USER_MBPS))
-    return max(1, int((link * (util / 100.0)) // per_user))
-
-
-def max_online_for_cell(cell: HiveCell) -> int:
-    configured = int(cell.max_clients or 0)
-    if configured > 0:
-        return configured
-    return recommended_max_online_capacity()
-
-
 async def count_rebalance_candidates_on_cell(db: AsyncSession, cell_id: uuid.UUID) -> int:
     result = await db.execute(
         select(func.count(Device.id)).where(
@@ -223,7 +210,7 @@ async def pick_cell_for_new_device(
     candidates: list[tuple[HiveCell, int, int]] = []
     for cell in workers:
         online = await count_online_on_cell(db, cell.id)
-        cap = max_online_for_cell(cell)
+        cap = await max_online_for_cell(db, cell)
         if online < cap:
             candidates.append((cell, online, cap))
     if not candidates:
@@ -268,7 +255,7 @@ async def resolve_cell_for_device(
         if cell and cell.status in CELL_STATUSES_ASSIGNABLE:
             if settings.HIVE_REBALANCE_EXISTING_DEVICES:
                 online = await count_online_on_cell(db, cell.id)
-                if online >= max_online_for_cell(cell):
+                if online >= await max_online_for_cell(db, cell):
                     cell = await pick_cell_for_new_device(db)
                     if device.cell_id != cell.id:
                         device.cell_id = cell.id
@@ -372,6 +359,7 @@ def cell_to_response(
     online_count: int,
     assigned_devices: int,
     load: dict | None = None,
+    capacity: dict | None = None,
 ) -> dict:
     out = {
         "id": cell.id,
@@ -385,7 +373,8 @@ def cell_to_response(
         "has_agent": bool(cell.api_url and cell.api_secret_enc),
         "tunnel_api_url": cell.tunnel_api_url,
         "max_clients": cell.max_clients,
-        "max_online": max_online_for_cell(cell),
+        "max_online": capacity["max_online"] if capacity else 0,
+        "capacity": capacity,
         "online_count": online_count,
         "assigned_devices": assigned_devices,
         "status": cell.status,
@@ -423,8 +412,15 @@ async def list_cells_with_stats(db: AsyncSession) -> list[dict]:
             load = queen_load
         else:
             load = worker_load_map.get(cell.id)
+        capacity = (await get_capacity_profile(db, cell, load=load)).to_dict()
         out.append(
-            cell_to_response(cell, online_count=online, assigned_devices=assigned, load=load)
+            cell_to_response(
+                cell,
+                online_count=online,
+                assigned_devices=assigned,
+                load=load,
+                capacity=capacity,
+            )
         )
     return out
 
@@ -458,7 +454,8 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
     full_cells = 0
     for cell in assignable:
         online = await count_online_on_cell(db, cell.id)
-        cap = max_online_for_cell(cell)
+        load = queen_load if cell.is_queen else None
+        cap = await max_online_for_cell(db, cell, load=load)
         total_online += online
         total_capacity += cap
         if online >= cap:
@@ -484,7 +481,7 @@ async def rebalance_overloaded_cells(db: AsyncSession) -> dict:
     states: dict[uuid.UUID, dict] = {}
     for cell in cells:
         online = await count_online_on_cell(db, cell.id)
-        cap = max_online_for_cell(cell)
+        cap = await max_online_for_cell(db, cell)
         states[cell.id] = {"cell": cell, "online": online, "cap": cap}
 
     moved = 0

@@ -23,7 +23,7 @@ class HiveCell(Base):
     api_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Tunnel API на соте (если проксирует на улей) — для документации/health
     tunnel_api_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    max_clients: Mapped[int] = mapped_column(Integer, default=100)
+    max_clients: Mapped[int] = mapped_column(Integer, default=0)
     # pending | active | draining | offline | error
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     priority: Mapped[int] = mapped_column(Integer, default=100)

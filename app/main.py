@@ -129,6 +129,25 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_devices_cell_id ON devices (cell_id)"
         ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS hive_load_samples (
+                id UUID PRIMARY KEY,
+                cell_id UUID NOT NULL REFERENCES hive_cells(id) ON DELETE CASCADE,
+                sampled_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                online_count INTEGER NOT NULL DEFAULT 0,
+                cpu_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+                memory_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+                network_mbps DOUBLE PRECISION NOT NULL DEFAULT 0,
+                network_util_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+                link_capacity_mbps DOUBLE PRECISION NOT NULL DEFAULT 1000
+            )
+        """))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_hive_load_samples_cell_id ON hive_load_samples (cell_id)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_hive_load_samples_sampled_at ON hive_load_samples (sampled_at)"
+        ))
     logger.info("Database tables ready")
 
     from app.database import AsyncSessionLocal
@@ -172,11 +191,14 @@ async def lifespan(app: FastAPI):
 
     monitor_task = start_monitor_background()
     build_scheduler_task = start_release_build_scheduler()
+    from app.services.hive_capacity import start_hive_capacity_sampler
+
+    capacity_sampler_task = start_hive_capacity_sampler()
 
     yield
 
     # Shutdown
-    for task in (monitor_task, build_scheduler_task):
+    for task in (monitor_task, build_scheduler_task, capacity_sampler_task):
         task.cancel()
         try:
             await task

@@ -384,6 +384,14 @@ async def hive_summary(
     rebalance = await hive_service.rebalance_overloaded_cells(db)
     cells = await hive_service.list_cells_with_stats(db)
     extra = await hive_service.get_hive_summary_extra(db)
+    queen = await hive_service.get_queen_cell(db)
+    queen_capacity = None
+    if queen:
+        from app.services.hive_capacity import get_capacity_profile
+
+        queen_capacity = (
+            await get_capacity_profile(db, queen, load=extra.get("queen_load"))
+        ).to_dict()
     return {
         "cells_total": len(cells),
         "cells_active": sum(1 for c in cells if c["status"] == "active"),
@@ -399,4 +407,5 @@ async def hive_summary(
         "full_cells": extra["full_cells"],
         "rebalanced_moved": rebalance["moved"],
         "rebalanced_blocked": rebalance["blocked"],
+        "queen_capacity": queen_capacity,
     }

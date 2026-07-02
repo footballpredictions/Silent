@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.security import encrypt_value, decrypt_value
 from app.models import Device, HiveCell, User
-from app.services.hive_capacity import get_capacity_profile, max_online_for_cell
+from app.services.hive_capacity import _resolve_link_capacity_mbps, get_capacity_profile, max_online_for_cell
 from app.services.hive_load import queen_accepting_new_vpn
 
 logger = logging.getLogger(__name__)
@@ -334,6 +334,7 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
         data = resp.json()
         if not isinstance(data, dict):
             return None
+        link = _resolve_link_capacity_mbps(data, cell)
         return {
             "cpu_percent": round(float(data.get("cpu_percent") or 0), 1),
             "memory_percent": round(float(data.get("memory_percent") or 0), 1),
@@ -341,7 +342,7 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
             "network_mbps_rx": round(float(data.get("network_mbps_rx") or 0), 1),
             "network_mbps_tx": round(float(data.get("network_mbps_tx") or 0), 1),
             "network_util_percent": round(float(data.get("network_util_percent") or 0), 1),
-            "network_link_capacity_mbps": round(float(data.get("network_link_capacity_mbps") or settings.HIVE_LINK_CAPACITY_MBPS), 1),
+            "network_link_capacity_mbps": round(link, 1),
             "cpu_cores": int(data.get("cpu_cores") or 0) or None,
             "memory_total_gb": round(float(data.get("memory_total_gb") or 0), 1) or None,
             "wdtt_active": bool(data.get("wdtt_active")),
@@ -375,6 +376,7 @@ def cell_to_response(
         "has_agent": bool(cell.api_url and cell.api_secret_enc),
         "tunnel_api_url": cell.tunnel_api_url,
         "max_clients": cell.max_clients,
+        "link_capacity_mbps": float(cell.link_capacity_mbps) if cell.link_capacity_mbps else None,
         "max_online": capacity["max_online"] if capacity else 0,
         "capacity": capacity,
         "online_count": online_count,

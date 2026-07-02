@@ -305,6 +305,7 @@ Environment=CELL_AGENT_SECRET=$AGENT_SECRET
 Environment=CELL_PUBLIC_IP={host}
 Environment=WG_SERVER_PUBLIC_KEY=$WG_PUB
 Environment=HIVE_API_URL={hive_api}
+Environment=CELL_LINK_CAPACITY_MBPS={int(settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)}
 Environment=TUNNEL_API_URL=http://10.66.66.1:8000
 ExecStart=/opt/silent-vpn/cell-agent/venv/bin/uvicorn main:app --host 0.0.0.0 --port {agent_port}
 Restart=always
@@ -363,9 +364,15 @@ echo "WG_PUB=$WG_PUB"
         client.close()
 
 
-def upgrade_cell_agent_via_ssh(host: str, ssh_password: str) -> None:
-    """Обновить cell-agent на соте (мониторинг CPU/RAM) без полной переустановки."""
+def upgrade_cell_agent_via_ssh(
+    host: str,
+    ssh_password: str,
+    *,
+    link_capacity_mbps: float | None = None,
+) -> None:
+    """Обновить cell-agent на соте (мониторинг CPU/RAM/канал) без полной переустановки."""
     host = _validate_host(host)
+    link_mbps = int(link_capacity_mbps or settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)
     agent_path = CELL_AGENT_MAIN
     if not agent_path.is_file():
         fallback = Path("/app/cell-agent/main.py")
@@ -384,6 +391,13 @@ def upgrade_cell_agent_via_ssh(host: str, ssh_password: str) -> None:
         sftp.close()
         code, out, err = _run(
             client,
+            f"LINK={link_mbps}; "
+            f"if grep -q CELL_LINK_CAPACITY_MBPS /etc/systemd/system/silent-cell-agent.service 2>/dev/null; then "
+            f"sed -i \"s/Environment=CELL_LINK_CAPACITY_MBPS=.*/Environment=CELL_LINK_CAPACITY_MBPS=$LINK/\" "
+            f"/etc/systemd/system/silent-cell-agent.service; "
+            f"else sed -i \"/Environment=HIVE_API_URL/a Environment=CELL_LINK_CAPACITY_MBPS=$LINK\" "
+            f"/etc/systemd/system/silent-cell-agent.service; fi; "
+            f"systemctl daemon-reload; "
             f"/opt/silent-vpn/cell-agent/venv/bin/pip install -q psutil 2>/dev/null; "
             f"systemctl restart silent-cell-agent; sleep 2; "
             f"curl -sf http://127.0.0.1:{agent_port}/health",

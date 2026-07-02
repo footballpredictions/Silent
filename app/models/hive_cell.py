@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, DateTime, ForeignKey, Boolean, Integer, Text, func
+from sqlalchemy import String, DateTime, ForeignKey, Boolean, Integer, Float, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -24,6 +24,8 @@ class HiveCell(Base):
     # Tunnel API на соте (если проксирует на улей) — для документации/health
     tunnel_api_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     max_clients: Mapped[int] = mapped_column(Integer, default=0)
+    # 0 / NULL = авто; для сот по умолчанию 10 Гбит (см. HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)
+    link_capacity_mbps: Mapped[float | None] = mapped_column(Float, nullable=True)
     # pending | active | draining | offline | error
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     priority: Mapped[int] = mapped_column(Integer, default=100)

@@ -87,15 +87,29 @@ def _network_mbps(load: dict) -> float:
     return max(rx, tx)
 
 
-def _hardware_from_load(load: dict | None) -> NodeHardware:
+def _resolve_link_capacity_mbps(load: dict | None, cell: HiveCell | None) -> float:
+    queen_default = float(settings.HIVE_LINK_CAPACITY_MBPS)
+    agent = float((load or {}).get("network_link_capacity_mbps") or 0)
+    if cell is not None and cell.link_capacity_mbps and float(cell.link_capacity_mbps) > 0:
+        return float(cell.link_capacity_mbps)
+    if cell is not None and cell.is_queen:
+        return agent if agent > 0 else queen_default
+    if cell is not None and not cell.is_queen:
+        if agent > queen_default:
+            return agent
+        return float(settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)
+    return agent if agent > 0 else queen_default
+
+
+def _hardware_from_load(load: dict | None, cell: HiveCell | None = None) -> NodeHardware:
     load = load or {}
     cores = float(load.get("cpu_cores") or 0)
     ram_gb = float(load.get("memory_total_gb") or 0)
-    link = float(load.get("network_link_capacity_mbps") or 0)
+    link = _resolve_link_capacity_mbps(load, cell)
     return NodeHardware(
         cpu_cores=cores if cores > 0 else 0.0,
         memory_total_gb=ram_gb if ram_gb > 0 else 0.0,
-        link_capacity_mbps=link if link > 0 else float(settings.HIVE_LINK_CAPACITY_MBPS),
+        link_capacity_mbps=link,
     )
 
 
@@ -361,7 +375,7 @@ async def get_capacity_profile(
     load: dict | None = None,
 ) -> CapacityProfile:
     samples = await fetch_recent_samples(db, cell.id)
-    hardware = _hardware_from_load(load)
+    hardware = _hardware_from_load(load, cell)
     profile = compute_max_online_from_samples(samples, hardware=hardware)
 
     if profile.mode == "fallback" and not cell.is_queen:
@@ -370,7 +384,7 @@ async def get_capacity_profile(
         queen = await get_queen_cell(db)
         if queen and queen.id != cell.id:
             _, queen_load = queen_accepting_new_vpn()
-            queen_hw = _hardware_from_load(queen_load)
+            queen_hw = _hardware_from_load(queen_load, queen)
             queen_samples = await fetch_recent_samples(db, queen.id)
             queen_profile = compute_max_online_from_samples(queen_samples, hardware=queen_hw)
             if queen_profile.mode == "adaptive":
@@ -430,7 +444,7 @@ async def record_sample(
         memory_percent=round(float(load.get("memory_percent") or 0), 2),
         network_mbps=round(_network_mbps(load), 4),
         network_util_percent=round(float(load.get("network_util_percent") or 0), 2),
-        link_capacity_mbps=round(_hardware_from_load(load).link_capacity_mbps, 1),
+        link_capacity_mbps=round(_resolve_link_capacity_mbps(load, None), 1),
     )
     db.add(sample)
     await db.commit()
@@ -468,6 +482,11 @@ async def sample_all_cells(db: AsyncSession) -> None:
         cells = list(result.scalars().all())
 
     _, queen_load = queen_accepting_new_vpn()
+    queen = await ensure_queen_cell(db)
+    queen_load = {
+        **queen_load,
+        "network_link_capacity_mbps": _resolve_link_capacity_mbps(queen_load, queen),
+    }
     for cell in cells:
         online = await count_online_on_cell(db, cell.id)
         if cell.is_queen:

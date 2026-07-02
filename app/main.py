@@ -148,6 +148,13 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_hive_load_samples_sampled_at ON hive_load_samples (sampled_at)"
         ))
+        await conn.execute(text(
+            "ALTER TABLE hive_cells ADD COLUMN IF NOT EXISTS link_capacity_mbps DOUBLE PRECISION"
+        ))
+        await conn.execute(text(
+            "UPDATE hive_cells SET link_capacity_mbps = 10000 "
+            "WHERE is_queen = false AND (link_capacity_mbps IS NULL OR link_capacity_mbps <= 0)"
+        ))
     logger.info("Database tables ready")
 
     from app.database import AsyncSessionLocal

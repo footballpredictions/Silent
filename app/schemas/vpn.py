@@ -95,7 +95,8 @@ class ThemeResponse(BaseModel):
     font_family: str = "Inter"
     logo_url: str = "/static/logo.svg"
     app_name: str = "Silent VPN"
-    support_url: str = ""
+    support_url: str = "https://t.me/silentvpn3?direct"
+    telegram_channel_url: str = "https://t.me/silentvpn3"
     privacy_url: str = ""
     terms_url: str = ""
     # Bottom update bar (replaces subscription strip while update is available)

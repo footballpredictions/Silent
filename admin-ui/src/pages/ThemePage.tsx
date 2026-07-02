@@ -5,7 +5,8 @@ const defaultTheme = {
   primary_color: '#000000', background_color: '#FFFFFF', text_color: '#000000',
   accent_color: '#1A1A1A', toggle_on_color: '#000000', toggle_off_color: '#CCCCCC',
   font_family: 'Inter', logo_url: '/static/logo.svg', app_name: 'Silent VPN',
-  support_url: '', privacy_url: '', terms_url: '',
+  support_url: 'https://t.me/silentvpn3?direct', privacy_url: '', terms_url: '',
+  telegram_channel_url: 'https://t.me/silentvpn3',
   update_bar_background_color: '#2563EB', update_bar_text_color: '#FFFFFF',
   update_bar_progress_color: '#1D4ED8',
   update_bar_label_available: 'Доступно обновление', update_bar_label_downloading: 'Скачивание…',
@@ -31,7 +32,7 @@ const SCREEN_HINTS: Partial<Record<PreviewScreen, string>> = {
   exceptions: 'Список приложений (Android): фон, текст, основной цвет.',
   promo: 'Промокод: основной цвет (кнопка), фон, текст.',
   devices: 'Сессии: фон, текст.',
-  support: 'Поддержка: фон, текст. Ссылка — URL поддержки в «Главная».',
+  support: 'Поддержка: фон, текст. Два значка Telegram — канал и direct-поддержка.',
   about: 'О сервисе: фон, текст. Ссылки — политика и условия в «Главная».',
 }
 
@@ -192,7 +193,8 @@ export default function ThemePage({ token }: { token: string }) {
             {field('Тумблер (выкл)', 'toggle_off_color')}
             {field('Шрифт', 'font_family')}
             {field('URL логотипа', 'logo_url')}
-            {field('URL поддержки', 'support_url')}
+            {field('URL поддержки (Telegram direct)', 'support_url')}
+            {field('URL канала Telegram', 'telegram_channel_url')}
             {field('URL политики конфиденциальности', 'privacy_url')}
             {field('URL условий использования', 'terms_url')}
           </div>

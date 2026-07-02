@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.146** |
-| `Silent-Project/android/` | `android` | **1.0.146** |
+| `Silent-Project/pc/` | `pc` | **1.0.147** |
+| `Silent-Project/android/` | `android` | **1.0.147** |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  

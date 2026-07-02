@@ -27,6 +27,8 @@ export interface ClientTheme {
   login_forgot_instruction?: string
   login_reset_title?: string
   login_reset_button_text?: string
+  support_url?: string
+  telegram_channel_url?: string
 }
 
 function parseHex(color: string): { r: number; g: number; b: number } | null {

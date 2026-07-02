@@ -13,6 +13,7 @@ const TUNNEL_CONF_NAME = 'wg-turn.conf'
 const SERVICE_NAME = `WireGuardTunnel$${TUNNEL_NAME}`
 const STABLE_CONF_DIR = path.join(process.env.ProgramData || 'C:\\ProgramData', 'SilentVPN')
 const STABLE_WG_DIR = path.join(STABLE_CONF_DIR, 'wireguard')
+const FALLBACK_BACKEND_IP = '132.243.234.162'
 /** DNS: Cloudflare для CDN/YouTube, Yandex — VK/РФ. */
 const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
 
@@ -21,6 +22,8 @@ function normalizeDnsValue(_raw) {
 }
 
 let lastRuntimeDir = null
+/** Физический шлюз до установки WG — для bypass API/админки при full tunnel. */
+let savedPhysicalGateway = null
 
 function resourcesDir(isDev, dirname) {
   return isDev ? path.join(dirname, '../../resources') : process.resourcesPath
@@ -149,6 +152,10 @@ function trySyncConf(runtimeDir, stableConf, send) {
   const wgCli = path.join(runtimeDir, 'wg.exe')
   if (!fs.existsSync(wgCli)) return false
   try {
+    const raw = fs.readFileSync(stableConf, 'utf8')
+    const normalized = normalizeWgConfText(raw)
+    fs.writeFileSync(stableConf, normalized, 'utf8')
+    if (normalized !== raw) send?.('[WG] конфиг нормализован для syncconf')
     execFileSync(wgCli, ['syncconf', TUNNEL_NAME, stableConf], { windowsHide: true, timeout: 12000 })
     send('[WG] syncconf OK (без переустановки службы)')
     return true
@@ -205,6 +212,110 @@ function polishWgNetworkProfile(send) {
     )
     send?.('[WG] Адаптер wg-turn: профиль Private')
   } catch { /* ignore */ }
+}
+
+/** Сохранить default gateway до того, как WG перехватит маршруты. */
+function capturePhysicalGateway(send) {
+  try {
+    const out = execSync(
+      `powershell.exe -NoProfile -Command "$r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -ne '0.0.0.0' -and $_.InterfaceAlias -notmatch 'WireGuard|wg-turn' } | Sort-Object RouteMetric | Select-Object -First 1; if ($r) { $r | ConvertTo-Json -Compress }"`,
+      { encoding: 'utf8', windowsHide: true, timeout: 12000 },
+    ).trim()
+    if (!out) return null
+    const route = JSON.parse(out)
+    if (!route?.NextHop || route.InterfaceIndex == null) return null
+    savedPhysicalGateway = {
+      nextHop: String(route.NextHop),
+      ifIndex: Number(route.InterfaceIndex),
+      alias: String(route.InterfaceAlias || ''),
+    }
+    send?.(`[WG] Шлюз до VPN: ${savedPhysicalGateway.nextHop} (${savedPhysicalGateway.alias || savedPhysicalGateway.ifIndex})`)
+    return savedPhysicalGateway
+  } catch {
+    return null
+  }
+}
+
+function buildElevatedBypassBlock(ips) {
+  const list = [...new Set(ips.filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(String(ip).trim())))]
+  if (!list.length) return ''
+  const arr = list.map(ip => `'${ip}'`).join(', ')
+  return `
+  if ($phys) {
+    foreach ($ip in @(${arr})) {
+      cmd /c "route delete $ip" 2>$null | Out-Null
+      cmd /c "route add $ip mask 255.255.255.255 $($phys.NextHop) metric 0 if $($phys.InterfaceIndex)" 2>$null | Out-Null
+      Log "bypass $ip -> $($phys.NextHop) if $($phys.InterfaceIndex)"
+    }
+  }
+`
+}
+
+function bypassRoutePs1Lines(ips) {
+  const list = ips.map(ip => `'${ip}'`).join(', ')
+  return `
+$BypassIps = @(${list})
+$phys = $null
+if ('${(savedPhysicalGateway?.nextHop || '').replace(/'/g, "''")}' -and ${savedPhysicalGateway?.ifIndex ?? 0}) {
+  $phys = [PSCustomObject]@{ NextHop = '${(savedPhysicalGateway?.nextHop || '').replace(/'/g, "''")}'; InterfaceIndex = ${savedPhysicalGateway?.ifIndex ?? 0} }
+}
+if (-not $phys) {
+  $phys = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object {
+    $_.NextHop -ne '0.0.0.0' -and $_.InterfaceAlias -notmatch 'WireGuard|wg-turn'
+  } | Sort-Object RouteMetric | Select-Object -First 1
+}
+if (-not $phys) { exit 0 }
+foreach ($ip in $BypassIps) {
+  cmd /c "route delete $ip" 2>$null | Out-Null
+  cmd /c "route add $ip mask 255.255.255.255 $($phys.NextHop) metric 1 if $($phys.InterfaceIndex)" 2>$null | Out-Null
+  Remove-NetRoute -DestinationPrefix "$ip/32" -Confirm:$false -ErrorAction SilentlyContinue
+  New-NetRoute -DestinationPrefix "$ip/32" -NextHop $phys.NextHop -InterfaceIndex $phys.InterfaceIndex -RouteMetric 0 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+}
+`
+}
+
+/** Явный маршрут к API-серверу через физический шлюз (админка + public API при full tunnel). */
+function addServerBypassRoutes(excludeIPs, send) {
+  const ips = [...new Set(excludeIPs.filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(String(ip).trim())))]
+  if (!ips.length) return false
+  const scriptPath = path.join(os.tmpdir(), `silent-wg-bypass-${Date.now()}.ps1`)
+  const ps1 = `
+$ErrorActionPreference = 'SilentlyContinue'
+${bypassRoutePs1Lines(ips)}
+`
+  try {
+    fs.writeFileSync(scriptPath, ps1, 'utf8')
+    execSync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, {
+      windowsHide: true,
+      timeout: 15000,
+    })
+    send?.(`[WG] Bypass API: ${ips.join(', ')} → ${savedPhysicalGateway?.nextHop || 'шлюз'}`)
+    return true
+  } catch (e) {
+    send?.(`[WG] Bypass API не применён: ${e?.message || e}`, 'W')
+    return false
+  } finally {
+    try { fs.unlinkSync(scriptPath) } catch {}
+  }
+}
+
+function removeServerBypassRoutes(excludeIPs, send) {
+  const ips = [...new Set(excludeIPs.filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(String(ip).trim())))]
+  if (!ips.length) return
+  for (const ip of ips) {
+    try {
+      execSync(`route delete ${ip}`, { windowsHide: true, stdio: 'ignore', timeout: 5000 })
+    } catch { /* ignore */ }
+  }
+  send?.(`[WG] Bypass API снят: ${ips.join(', ')}`)
+  savedPhysicalGateway = null
+}
+
+function finalizeTunnelUp(send, excludeIPs, subnetOnly) {
+  polishWgNetworkProfile(send)
+  if (!subnetOnly && excludeIPs.length) {
+    addServerBypassRoutes(excludeIPs, send)
+  }
 }
 
 function logServiceState(send) {
@@ -302,7 +413,8 @@ async function waitForUdpPortFree(host, port, timeoutMs = 8000, send) {
 function copyStableConf(confPath) {
   fs.mkdirSync(STABLE_CONF_DIR, { recursive: true })
   const stable = path.join(STABLE_CONF_DIR, TUNNEL_CONF_NAME)
-  fs.copyFileSync(confPath, stable)
+  const normalized = normalizeWgConfText(fs.readFileSync(confPath, 'utf8'))
+  fs.writeFileSync(stable, normalized, 'utf8')
   return stable
 }
 
@@ -328,7 +440,8 @@ function forceStopWireGuard(isDev, dirname, send) {
   send?.('[WG] Остановка службы wg-turn (переустановка)...')
 }
 
-function stopWireGuardTunnel(isDev, dirname, send) {
+function stopWireGuardTunnel(isDev, dirname, send, excludeIPs = []) {
+  removeServerBypassRoutes(excludeIPs.length ? excludeIPs : [FALLBACK_BACKEND_IP], send)
   forceStopWireGuard(isDev, dirname, send)
 }
 
@@ -360,12 +473,38 @@ function countAllowedRoutes(allowedIPsValue) {
   return allowedIPsValue.split(',').map(s => s.trim()).filter(Boolean).length
 }
 
+/** wg.exe syncconf на Windows требует «Key = value» (с пробелами). Сервер иногда шлёт Address=… */
+function normalizeWgConfText(conf) {
+  const known = new Set([
+    'PrivateKey', 'Address', 'DNS', 'MTU', 'PublicKey', 'Endpoint',
+    'AllowedIPs', 'PersistentKeepalive', 'PresharedKey', 'ListenPort',
+  ])
+  return String(conf || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => {
+      const trimmed = line.trimEnd()
+      const eq = trimmed.indexOf('=')
+      if (eq <= 0) return trimmed
+      const key = trimmed.slice(0, eq).trim()
+      if (!known.has(key)) return trimmed
+      const val = trimmed.slice(eq + 1).trim()
+      const indent = line.match(/^(\s*)/)?.[1] || ''
+      return `${indent}${key} = ${val}`
+    })
+    .join('\n')
+}
+
 function buildAllowedIPsForWindows(excludeIPs, send) {
   if (!excludeIPs.length) return '0.0.0.0/0'
-  const split = generateExclusionAllowedIPs(excludeIPs)
+  // Только один IP — ровно 32 маршрута (лимит Windows WireGuard).
+  const ips = [...new Set(excludeIPs.filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(String(ip).trim())))]
+  const primary = ips.slice(0, 1)
+  const split = generateExclusionAllowedIPs(primary)
   const n = countAllowedRoutes(split)
   if (n > MAX_WINDOWS_ALLOWED_ROUTES) {
-    send?.(`[WG] Слишком много маршрутов (${n}) — AllowedIPs = 0.0.0.0/0`)
+    send?.(`[WG] Слишком много маршрутов (${n}) — AllowedIPs = 0.0.0.0/0`, 'W')
     return '0.0.0.0/0'
   }
   return split
@@ -394,22 +533,29 @@ function generateExclusionAllowedIPs(excludeIPs) {
   return networks.map(([n, p]) => `${numToIp(n)}/${p}`).join(', ')
 }
 
-function installTunnelElevated(wgExe, stableConf, runtimeDir, send) {
+function installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs = [], subnetOnly = false) {
   return new Promise((resolve) => {
     const logPath = path.join(STABLE_CONF_DIR, 'wg-install.log')
     const scriptPath = path.join(STABLE_CONF_DIR, 'wg-install.ps1')
     fs.mkdirSync(STABLE_CONF_DIR, { recursive: true })
+    const bypassPs1 = subnetOnly ? '' : buildElevatedBypassBlock(excludeIPs)
 
     const ps1 = `
 $log = '${logPath.replace(/'/g, "''")}'
 function Log($m) { Add-Content -Path $log -Value $m -Encoding UTF8 }
 Log "=== WG install $(Get-Date -Format o) ==="
 try {
+  $phys = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object {
+    $_.NextHop -ne '0.0.0.0' -and $_.InterfaceAlias -notmatch 'WireGuard|wg-turn'
+  } | Sort-Object RouteMetric | Select-Object -First 1
+  if ($phys) { Log "gateway=$($phys.NextHop) if=$($phys.InterfaceAlias)" }
   & '${wgExe.replace(/'/g, "''")}' /uninstalltunnelservice ${TUNNEL_NAME} 2>&1 | ForEach-Object { Log $_ }
   $out = & '${wgExe.replace(/'/g, "''")}' /installtunnelservice '${stableConf.replace(/'/g, "''")}' 2>&1
   $out | ForEach-Object { Log $_ }
   if ($LASTEXITCODE -ne 0) { Log "install exit=$LASTEXITCODE"; exit $LASTEXITCODE }
   sc.exe start '${SERVICE_NAME}' 2>&1 | ForEach-Object { Log $_ }
+  Start-Sleep -Seconds 2
+${bypassPs1}
   Log "OK"
   exit 0
 } catch {
@@ -436,7 +582,7 @@ try {
         return
       }
       const up = await waitForTunnelUp(35000, send)
-      if (up) polishWgNetworkProfile(send)
+      if (up) finalizeTunnelUp(send, excludeIPs, subnetOnly)
       resolve(up)
     })
 
@@ -452,6 +598,9 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   const subnetOnly = options.subnetOnly === true
   const skipForceStop = options.skipForceStop === true
   const reuseRuntime = options.reuseRuntime === true
+  if (!subnetOnly && excludeIPs.length) {
+    capturePhysicalGateway(send)
+  }
   const runtimeDir = prepareRuntimeDir(isDev, dirname, send, { reuse: reuseRuntime })
   if (!runtimeDir) {
     send('[WG] Нет wireguard.exe / wintun.dll — переустановите Silent VPN')
@@ -473,7 +622,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
       } else {
         const isFull = allowed === '0.0.0.0/0'
-        send?.(`[WG] AllowedIPs = ${isFull ? allowed : allowed.slice(0, 80) + (allowed.length > 80 ? '…' : '')}${isFull ? ' (полный туннель)' : ' (split, исключён сервер)'}`)
+        send?.(`[WG] AllowedIPs = ${isFull ? allowed + ' (полный туннель)' : allowed.slice(0, 72) + (allowed.length > 72 ? '…' : '') + ' (split, сервер вне туннеля)'}`)
         const dnsLine = conf.match(/^\s*DNS\s*=\s*(.+)$/m)
         const dns = normalizeDnsValue(dnsLine ? dnsLine[1] : '')
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
@@ -484,8 +633,8 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
         send?.(`[WG] DNS = ${dns}`)
       }
       conf = conf.replace(/AllowedIPs\s*=\s*.+/, `AllowedIPs = ${allowed}`)
-      fs.writeFileSync(confPath, conf)
-      fs.copyFileSync(confPath, path.join(STABLE_CONF_DIR, TUNNEL_CONF_NAME))
+      conf = normalizeWgConfText(conf)
+      fs.writeFileSync(confPath, conf, 'utf8')
     } catch (e) {
       send('[WG] AllowedIPs: ' + e.message)
     }
@@ -510,14 +659,17 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
 
   if (skipForceStop && (isTunnelUp() || isServiceRunning())) {
     if (trySyncConf(runtimeDir, stableConf, send)) {
-      polishWgNetworkProfile(send)
+      finalizeTunnelUp(send, excludeIPs, subnetOnly)
       send('[WG] Туннель активен')
       return true
     }
+    send?.('[WG] syncconf не удался — переустановка службы…', 'W')
+    forceStopWireGuard(isDev, dirname, send)
+    await sleep(1000)
   }
 
   if (!isProcessElevated()) {
-    const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send)
+    const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly)
     if (ok) {
       send('[WG] Туннель активен')
       try {
@@ -536,7 +688,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   runWgInstall(wgExe, stableConf, runtimeDir, send)
 
   if (await waitForTunnelUp(60000, send)) {
-    polishWgNetworkProfile(send)
+    finalizeTunnelUp(send, excludeIPs, subnetOnly)
     send('[WG] Туннель активен')
     return true
   }
@@ -557,6 +709,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
 module.exports = {
   TUNNEL_CONF_NAME,
   TUNNEL_NAME,
+  FALLBACK_BACKEND_IP,
   isProcessElevated,
   waitForPort,
   waitForWdttProxy,
@@ -570,4 +723,6 @@ module.exports = {
   stopWireGuardTunnel,
   buildWgConfigFromApi,
   applyWireGuardConfig,
+  addServerBypassRoutes,
+  normalizeWgConfText,
 }

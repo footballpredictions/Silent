@@ -2,7 +2,7 @@
 
 const TAG = 'SilentTrace'
 
-const isDev = process.env.NODE_ENV === 'development'
+const isDev = process.env.NODE_ENV === 'development' || process.env.DEBUG_BUILD === '1'
 
 function emit(prefix, node, detail, sendFn) {
   if (!isDev) return

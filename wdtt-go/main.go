@@ -20,14 +20,16 @@ import (
 var CaptchaResultChan = make(chan string, 1)
 
 var captchaModeValue atomic.Value
+var vkAuthModeValue atomic.Value
 
 func init() {
 	captchaModeValue.Store("auto")
+	vkAuthModeValue.Store("vkcalls")
 }
 
 func normalizeCaptchaMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "auto", "rjs", "wv":
+	case "auto", "rjs", "wv", "manual":
 		return strings.ToLower(strings.TrimSpace(mode))
 	default:
 		return "auto"
@@ -44,6 +46,29 @@ func getCaptchaMode() string {
 	mode, _ := captchaModeValue.Load().(string)
 	if mode == "" {
 		return "auto"
+	}
+	return mode
+}
+
+func normalizeVKAuthMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "legacy":
+		return "legacy"
+	default:
+		return "vkcalls"
+	}
+}
+
+func setVKAuthMode(mode string) string {
+	normalized := normalizeVKAuthMode(mode)
+	vkAuthModeValue.Store(normalized)
+	return normalized
+}
+
+func getVKAuthMode() string {
+	mode, _ := vkAuthModeValue.Load().(string)
+	if mode == "" {
+		return "vkcalls"
 	}
 	return mode
 }
@@ -132,14 +157,17 @@ func main() {
 
 	deviceID := flag.String("device-id", "unknown", "уникальный ID устройства")
 	connPassword := flag.String("password", "", "пароль подключения")
-	captchaMode := flag.String("captcha-mode", "auto", "режим обхода капчи (auto/wv/rjs)")
+	captchaMode := flag.String("captcha-mode", "auto", "режим обхода капчи (auto/wv/rjs/manual)")
+	vkAuthMode := flag.String("vk-auth-mode", "vkcalls", "режим VK TURN-кредов (vkcalls/legacy)")
 	fingerprint := flag.String("fingerprint", "chrome", "браузерный фингерпринт (chrome, safari, ios, android, firefox)")
 	clientIdsFlag := flag.String("client-ids", "", "ID клиентов VK через запятую")
 	sysDnsFlag := flag.String("sys-dns", "", "DNS системы (через запятую, Windows)")
 
 	flag.Parse()
 	activeCaptchaMode := setCaptchaMode(*captchaMode)
+	activeVKAuthMode := setVKAuthMode(*vkAuthMode)
 	setSysDNSServers(*sysDnsFlag)
+	log.Printf("[КЛИЕНТ] captcha-mode=%s vk-auth-mode=%s", activeCaptchaMode, activeVKAuthMode)
 
 	if *peerAddr == "" || *vkHash == "" {
 		log.Fatal("[КЛИЕНТ] Нужны -peer и -vk")
@@ -311,6 +339,7 @@ func main() {
 				}
 				finalConf = strings.Join(newLines, "\n")
 			}
+			finalConf = normalizeWgConfLines(finalConf)
 			fmt.Println()
 			fmt.Println("╔══════════════ WireGuard Конфиг ══════════════╗")
 			for _, line := range strings.Split(finalConf, "\n") {
@@ -380,4 +409,30 @@ func main() {
 	close(configCh)
 	<-configDone
 	log.Println("[КЛИЕНТ] Все воркеры завершены")
+}
+
+var wgConfKeys = map[string]bool{
+	"PrivateKey": true, "Address": true, "DNS": true, "MTU": true,
+	"PublicKey": true, "Endpoint": true, "AllowedIPs": true,
+	"PersistentKeepalive": true, "PresharedKey": true, "ListenPort": true,
+}
+
+// normalizeWgConfLines — Windows wg.exe syncconf требует «Key = value».
+func normalizeWgConfLines(conf string) string {
+	lines := strings.Split(conf, "\n")
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		eq := strings.Index(trim, "=")
+		if eq <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(trim[:eq])
+		if !wgConfKeys[key] {
+			continue
+		}
+		val := strings.TrimSpace(trim[eq+1:])
+		indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		lines[i] = indent + key + " = " + val
+	}
+	return strings.Join(lines, "\n")
 }

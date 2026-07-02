@@ -1,5 +1,6 @@
 import { getBootstrapHash, type VpnConfigPayload } from './vkConfig'
 import { pushLog } from './debugLog'
+import { attachVkCredLaunchParams } from './vkCredStore'
 import { SessionTrace } from './sessionTrace'
 import { buildLocalBootstrapConfig } from './bootstrapVpnConfig'
 import { applyBootstrapWorkerCount } from './hashChannelHelper'
@@ -173,7 +174,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
     return false
   }
 
-  const bootCfg = applyBootstrapWorkerCount(config, boot)
+  const bootCfg = attachVkCredLaunchParams(applyBootstrapWorkerCount(config, boot))
   pushLog('Bootstrap', `vpnConnect n=${bootCfg.stream_count} hashes=${bootCfg.vk_hashes?.length ?? 0}`)
   const res = await electron.vpnConnect(bootCfg)
   if (res?.error) {

@@ -1,10 +1,13 @@
 import axios from 'axios'
-import { getApiBaseUrl, isTunnelApiActive } from './tunnelApi'
+import { getApiBaseUrl, isMainVpnSessionActive, isTunnelApiActive } from './tunnelApi'
+import { installTunnelApiAdapter } from './tunnelApiClient'
 
 const SERVER_URL_KEY = 'silent_server_url'
 const TOKEN_KEY = 'silent_token'
 const REFRESH_KEY = 'silent_refresh'
 const FALLBACK_PUBLIC = 'https://132-243-234-162.nip.io'
+const SERVER_IP = '132.243.234.162'
+const SERVER_HOST = '132-243-234-162.nip.io'
 /** Один fingerprint на сессию — как Android PREF_DEVICE_FP. */
 const DEVICE_FP_KEY = 'silent_device_fingerprint'
 const SESSION_DEVICE_KEY = 'silent_session_device_id'
@@ -23,15 +26,24 @@ export function getPublicApiBaseUrl(): string {
   return (getServerUrl() || FALLBACK_PUBLIC).replace(/\/$/, '')
 }
 
+export function getDirectApiBaseUrl(): string {
+  return `https://${SERVER_IP}`
+}
+
 const api = axios.create({ timeout: 15000 })
+installTunnelApiAdapter(api)
 
 api.interceptors.request.use(cfg => {
-  const forcePublic = Boolean((cfg as any).__forcePublic)
-  cfg.baseURL = forcePublic
-    ? getPublicApiBaseUrl()
-    : (isTunnelApiActive() ? getApiBaseUrl() : getPublicApiBaseUrl())
-  if (!cfg.timeout || cfg.timeout === 15000) {
-    cfg.timeout = !forcePublic && isTunnelApiActive() ? 45_000 : 15_000
+  if (!isMainVpnSessionActive()) {
+    const forcePublic = Boolean((cfg as any).__forcePublic) || Boolean((cfg as any).__forcePublicDirect)
+    cfg.baseURL = forcePublic
+      ? getPublicApiBaseUrl()
+      : (isTunnelApiActive() ? getApiBaseUrl() : getPublicApiBaseUrl())
+    if (!cfg.timeout || cfg.timeout === 15000) {
+      cfg.timeout = !forcePublic && isTunnelApiActive() ? 45_000 : 15_000
+    }
+  } else if (!cfg.timeout || cfg.timeout === 15000) {
+    cfg.timeout = 25_000
   }
   const token = localStorage.getItem(TOKEN_KEY)
   if (token) cfg.headers!['Authorization'] = `Bearer ${token}`
@@ -42,7 +54,7 @@ api.interceptors.response.use(
   r => r,
   async err => {
     const cfg = err.config
-    if (cfg && !cfg.__publicRetry && isTunnelApiActive() && !err.response) {
+    if (cfg && !cfg.__publicRetry && isTunnelApiActive() && !err.response && !isMainVpnSessionActive()) {
       cfg.__publicRetry = true
       cfg.__forcePublic = true
       cfg.baseURL = getPublicApiBaseUrl()

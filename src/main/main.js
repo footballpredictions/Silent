@@ -2,6 +2,7 @@ const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, clipboard }
 const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
+const dns = require('dns')
 const https = require('https')
 const http = require('http')
 
@@ -18,14 +19,18 @@ const {
   isServiceRunning,
   buildWgConfigFromApi,
   applyWireGuardConfig,
+  addServerBypassRoutes,
+  normalizeWgConfText,
 } = require('./vpn/wireguard')
 const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
+const buildFlags = require('./buildFlags')
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms))
 }
 
 const isDev = process.env.NODE_ENV === 'development'
+const isDebugBuild = !!buildFlags.DEBUG_BUILD || process.env.DEBUG_BUILD === '1' || !app.isPackaged
 const WIN_WIDTH = 265
 const WIN_HEIGHT = 606
 
@@ -63,6 +68,8 @@ let captchaQueue = []
 let captchaQueueDrainRunning = false
 
 const SERVER_IP_FALLBACK = '132.243.234.162'
+let sessionExcludeIPs = [SERVER_IP_FALLBACK]
+let bypassRefreshTimer = null
 
 function normalizeServerIp(raw) {
   const s = String(raw || '').trim()
@@ -218,12 +225,14 @@ function createTray() {
 }
 
 function sendDebugLog(payload) {
+  if (!isDebugBuild) return
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('debug-log', payload)
   }
 }
 
 function sendWdttLog(entry) {
+  if (!isDebugBuild) return
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('wdtt-log', entry)
   }
@@ -378,7 +387,8 @@ function cleanupVpn() {
     try { wdttProcess.kill() } catch {}
     wdttProcess = null
   }
-  stopWireGuardTunnel(isDev, __dirname, sendLog)
+  stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
+  clearBypassRefresh()
   wgApplied = false
   tunnelReadySent = false
   clearTunnelReadyPoll()
@@ -417,7 +427,33 @@ function scheduleTunnelReadyPoll(sendLogFn) {
 }
 
 const WORKERS_PER_GROUP = 9
+/** YouTube 1080p+: full tunnel после 3 групп (27 воркеров). UI «подключено» — раньше. */
 const FULL_TUNNEL_TARGET_CAP = 27
+
+const FALLBACK_BACKEND_IP = SERVER_IP_FALLBACK
+
+function collectExcludeIPs(config) {
+  return new Set([normalizeServerIp(config?.server_ip)])
+}
+
+function clearBypassRefresh() {
+  if (bypassRefreshTimer) {
+    clearInterval(bypassRefreshTimer)
+    bypassRefreshTimer = null
+  }
+}
+
+function scheduleBypassRefresh(sendLogFn) {
+  clearBypassRefresh()
+  bypassRefreshTimer = setInterval(() => {
+    if (!wgApplied || wgCredPhase || vpnBootstrapMode) return
+    addServerBypassRoutes(sessionExcludeIPs, () => {})
+  }, 90_000)
+}
+
+function minCredGroupsForFullTunnel(total) {
+  return Math.min(3, Math.max(1, total))
+}
 
 function fullTunnelTargetWorkers() {
   if (vpnBootstrapMode) return 1
@@ -426,17 +462,16 @@ function fullTunnelTargetWorkers() {
   return Math.min(target, FULL_TUNNEL_TARGET_CAP)
 }
 
-/** PC: для main-VPN считаем «готов» только на полном наборе воркеров. */
 function minWorkersForTunnelReady(isBootstrap = false) {
   if (isBootstrap || vpnBootstrapMode) return 1
-  return fullTunnelTargetWorkers()
+  return WORKERS_PER_GROUP
 }
 
 function isVpnReadyForUi() {
   if (tunnelReadySent) return true
   if (vpnBootstrapMode) return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
-  // Для основного VPN считаем «готово» только после полного туннеля и полного набора воркеров.
-  return wgApplied && !wgCredPhase && activeWorkerCount >= minWorkersForTunnelReady(false) && isWdttAlive()
+  // «Подключено» после WG + 1 группы воркеров; full tunnel для YouTube — в фоне.
+  return wgApplied && activeWorkerCount >= WORKERS_PER_GROUP && isWdttAlive()
 }
 
 async function stopWdttForReplace(sendLogFn, reason = 'replace') {
@@ -623,6 +658,23 @@ ipcMain.handle('app-quit', () => {
   return true
 })
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url))
+ipcMain.handle('get-admin-panel-url', () => {
+  const vpnUp = wgApplied && isWdttAlive() && !vpnBootstrapMode
+  return vpnUp
+    ? 'http://10.66.66.1:8000/admin'
+    : 'https://132-243-234-162.nip.io/admin'
+})
+ipcMain.handle('open-admin-panel', async () => {
+  const vpnUp = wgApplied && isWdttAlive() && !vpnBootstrapMode
+  const url = vpnUp
+    ? 'http://10.66.66.1:8000/admin'
+    : 'https://132-243-234-162.nip.io/admin'
+  await shell.openExternal(url)
+  if (vpnUp) {
+    sendLog('[Admin] Открыта через туннель: http://10.66.66.1:8000/admin')
+  }
+  return url
+})
 ipcMain.handle('get-platform', () => process.platform)
 
 ipcMain.handle('clipboard-write', (_, text) => {
@@ -647,7 +699,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
   credGroupsResolved = 0
   wgFullTunnelUpgradeInFlight = false
   clearFullTunnelUpgradeTimer()
-  // Пока группы 2–4 запрашивают VK-креды через LAN — только 10.66.66.0/24, не 0.0.0.0/0.
+  // Subnet-only пока VK-креды; full tunnel после 27 воркеров — YouTube 1080p.
   wgCredPhase = !vpnBootstrapMode && expectedCredGroups > 1
   const exePath = wdttExePath()
   if (!fs.existsSync(exePath)) {
@@ -672,8 +724,10 @@ async function beginWdttSession(config, { switching = false } = {}) {
     ? Math.min(Math.max(rawN, 3), 108)
     : Math.min(Math.max(rawN, 9), 108)
   sessionTargetWorkers = workers
+  const captchaMode = String(config.captchaMode || config.captcha_mode || 'auto').trim() || 'auto'
+  const vkAuthMode = String(config.vkAuthMode || config.vk_auth_mode || 'vkcalls').trim() || 'vkcalls'
   sendLog(
-    `[VPN] connect n=${workers}${config.is_bootstrap ? ' (bootstrap)' : ''} hashes=${hashList.length}`,
+    `[VPN] connect n=${workers}${config.is_bootstrap ? ' (bootstrap)' : ''} hashes=${hashList.length} vk=${vkAuthMode} captcha=${captchaMode}`,
   )
   const args = [
     '-peer', `${config.server_ip}:${config.server_port}`,
@@ -682,7 +736,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
     '-device-id', String(config.device_id || ''),
     '-listen', '127.0.0.1:9000',
     '-n', String(workers),
-    '-captcha-mode', 'auto',
+    '-captcha-mode', captchaMode,
+    '-vk-auth-mode', vkAuthMode,
   ]
 
   const gen = ++wdttGeneration
@@ -697,8 +752,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
     activeWorkerCount = 0
   }
 
-  const excludeIPs = new Set()
-  if (config.server_ip) excludeIPs.add(config.server_ip)
+  const excludeIPs = collectExcludeIPs(config)
+  sessionExcludeIPs = [...excludeIPs]
   const apiConf = buildWgConfigFromApi(config)
 
   let wgAttempted = false
@@ -756,6 +811,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
       if (ok) {
         wgCredPhase = false
         sendLog('[WG] Полный туннель активен, DNS = 1.1.1.1 + 77.88.8.8')
+        addServerBypassRoutes([...excludeIPs], sendLog)
+        scheduleBypassRefresh(sendLog)
+        ensureVpnReadyEvent(sendLog)
       } else if (attempt < 3) {
         sendLog(`[WG] full tunnel retry ${attempt + 1}/3…`, 'W')
         wgFullTunnelUpgradeInFlight = false
@@ -784,14 +842,15 @@ async function beginWdttSession(config, { switching = false } = {}) {
       if (activeWorkerCount >= fullTunnelTargetWorkers()) {
         void upgradeToFullTunnel('timeout-full-workers')
       }
-    }, 20_000)
+    }, 8_000)
   }
 
   const onCredGroupResolved = (groupId) => {
     if (!wgCredPhase) return
     credGroupsResolved += 1
     const readyForFullWorkers = activeWorkerCount >= fullTunnelTargetWorkers()
-    if ((credGroupsResolved >= expectedCredGroups || groupId >= expectedCredGroups) && readyForFullWorkers) {
+    const minGroups = minCredGroupsForFullTunnel(expectedCredGroups)
+    if ((credGroupsResolved >= minGroups || groupId >= minGroups) && readyForFullWorkers) {
       void upgradeToFullTunnel(`group #${groupId}`)
     }
   }
@@ -809,12 +868,13 @@ async function beginWdttSession(config, { switching = false } = {}) {
         (m) => (m.includes('MTU =') ? m : m.trimEnd() + '\nMTU = 1280\n'),
       )
     }
+    normalizedConf = normalizeWgConfText(normalizedConf)
 
     wgInstallInFlight = true
 
     sendLog(`[WG] Применение конфига (${source})...`)
     sendLog('[WG] Ожидание WDTT UDP 127.0.0.1:9000...')
-    const proxyWaitMs = switching ? 8_000 : 12_000
+    const proxyWaitMs = switching ? 6_000 : 8_000
     const wdttReady = await waitForWdttProxy('127.0.0.1', 9000, proxyWaitMs, sendLog, confPath)
     if (!wdttReady) {
       wgInstallInFlight = false
@@ -1010,7 +1070,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
       return
     }
     transportSwitching = false
-    stopWireGuardTunnel(isDev, __dirname, sendLog)
+    stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
+    clearBypassRefresh()
     wgApplied = false
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('vpn-stopped', code)
@@ -1120,14 +1181,132 @@ ipcMain.handle('vpn-is-ready', async () => ({
 ipcMain.handle('app-version', () => app.getVersion())
 
 const UPDATE_PUBLIC_BASE = 'https://132-243-234-162.nip.io'
+const UPDATE_HOST = '132-243-234-162.nip.io'
 
-function fetchJsonGet(url) {
+function updateCheckBaseUrl() {
+  if (vpnSessionActive && wgApplied && !vpnBootstrapMode) {
+    return `https://${SERVER_IP_FALLBACK}`
+  }
+  return UPDATE_PUBLIC_BASE
+}
+
+/** PC: API через public HTTPS (IP сервера вне туннеля + bypass). Node не маршрутизирует 10.66.66.1 через WG. */
+function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 20000 }) {
   return new Promise((resolve, reject) => {
-    const proto = url.startsWith('https') ? https : http
-    const opts = url.startsWith('https') ? { rejectUnauthorized: false } : {}
-    const req = proto.get(url, opts, (res) => {
+    const path = reqPath.startsWith('/') ? reqPath : `/${reqPath}`
+    const opts = {
+      hostname: SERVER_IP_FALLBACK,
+      port: 443,
+      path,
+      method: String(method || 'GET').toUpperCase(),
+      rejectUnauthorized: false,
+      servername: UPDATE_HOST,
+      headers: { ...headers, Host: UPDATE_HOST },
+      timeout,
+    }
+    const req = https.request(opts, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        fetchJsonGet(res.headers.location).then(resolve).catch(reject)
+        publicDirectRequest({ method, path: res.headers.location, headers, body, timeout }).then(resolve).catch(reject)
+        res.resume()
+        return
+      }
+      let raw = ''
+      res.on('data', (chunk) => { raw += chunk })
+      res.on('end', () => {
+        let data = raw
+        try { data = JSON.parse(raw) } catch { /* plain text */ }
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          resolve({ status: res.statusCode, data })
+        } else {
+          const err = new Error(`HTTP ${res.statusCode}`)
+          err.response = { status: res.statusCode, data }
+          reject(err)
+        }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => {
+      req.destroy(new Error('API timeout'))
+    })
+    if (body != null && body !== '') {
+      const payload = typeof body === 'string' ? body : JSON.stringify(body)
+      if (!opts.headers['Content-Type']) opts.headers['Content-Type'] = 'application/json'
+      req.write(payload)
+    }
+    req.end()
+  })
+}
+
+function tunnelHttpRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 8000 }) {
+  return new Promise((resolve, reject) => {
+    const path = reqPath.startsWith('/') ? reqPath : `/${reqPath}`
+    const opts = {
+      hostname: '10.66.66.1',
+      port: 8000,
+      path,
+      method: String(method || 'GET').toUpperCase(),
+      headers: { ...headers, Host: '10.66.66.1' },
+      timeout,
+    }
+    const req = http.request(opts, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        tunnelHttpRequest({ method, path: res.headers.location, headers, body, timeout }).then(resolve).catch(reject)
+        res.resume()
+        return
+      }
+      let raw = ''
+      res.on('data', (chunk) => { raw += chunk })
+      res.on('end', () => {
+        let data = raw
+        try { data = JSON.parse(raw) } catch { /* plain text */ }
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          resolve({ status: res.statusCode, data })
+        } else {
+          const err = new Error(`HTTP ${res.statusCode}`)
+          err.response = { status: res.statusCode, data }
+          reject(err)
+        }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => {
+      req.destroy(new Error('Tunnel API timeout'))
+    })
+    if (body != null && body !== '') {
+      const payload = typeof body === 'string' ? body : JSON.stringify(body)
+      if (!opts.headers['Content-Type']) opts.headers['Content-Type'] = 'application/json'
+      req.write(payload)
+    }
+    req.end()
+  })
+}
+
+ipcMain.handle('tunnel-api-request', async (_, payload) => {
+  if (!wgApplied || vpnBootstrapMode) {
+    throw new Error('API unavailable')
+  }
+  const p = payload || {}
+  return publicDirectRequest({ ...p, timeout: p.timeout || 25_000 })
+})
+
+function fetchJsonGet(url, hostHeader = null) {
+  return new Promise((resolve, reject) => {
+    const urlObj = new URL(url)
+    const isHttps = urlObj.protocol === 'https:'
+    const proto = isHttps ? https : http
+    const opts = isHttps
+      ? {
+          hostname: urlObj.hostname,
+          port: urlObj.port || 443,
+          path: urlObj.pathname + urlObj.search,
+          rejectUnauthorized: false,
+          servername: hostHeader || urlObj.hostname,
+          headers: hostHeader ? { Host: hostHeader } : undefined,
+        }
+      : { hostname: urlObj.hostname, port: urlObj.port || 80, path: urlObj.pathname + urlObj.search }
+    const req = proto.get(opts, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        fetchJsonGet(res.headers.location, hostHeader).then(resolve).catch(reject)
         res.resume()
         return
       }
@@ -1154,9 +1333,11 @@ function fetchJsonGet(url) {
 }
 
 ipcMain.handle('app-update-check', async (_, { version, platform = 'pc' }) => {
-  const url = `${UPDATE_PUBLIC_BASE}/api/updates/check?platform=${encodeURIComponent(platform)}&version=${encodeURIComponent(version || '')}`
+  const base = updateCheckBaseUrl()
+  const hostHeader = base.includes(SERVER_IP_FALLBACK) ? UPDATE_HOST : null
+  const url = `${base}/api/updates/check?platform=${encodeURIComponent(platform)}&version=${encodeURIComponent(version || '')}`
   try {
-    return await fetchJsonGet(url)
+    return await fetchJsonGet(url, hostHeader)
   } catch (e) {
     sendLog(`[Update] check fail: ${e?.message || e}`)
     return null

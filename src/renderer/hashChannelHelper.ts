@@ -1,4 +1,5 @@
 import { activeServerHashCount, getSavedHashItems } from './hashItemsStore'
+import { isDebugBuild } from './debugBuild'
 
 export const WORKERS_PER_GROUP = 9
 export const MAX_WORKERS_PER_HASH = 27
@@ -69,7 +70,7 @@ export function migrateLegacyPerHash(oldPerHash: number, activeHashCount: number
 
 export function getTotalWorkers(activeHashCount = activeServerHashCount(getSavedHashItems()) || 1): number {
   const capped = Math.min(Math.max(activeHashCount, 1), MAX_HASHES)
-  if (!import.meta.env.DEV) {
+  if (!isDebugBuild) {
     return normalizeTotalWorkers(WORKERS_PER_GROUP * 4, capped)
   }
   const max = maxTotalWorkers(capped)

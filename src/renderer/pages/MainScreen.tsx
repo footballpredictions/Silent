@@ -23,6 +23,7 @@ import {
 import { fetchVpnConfigWithKeys } from '../vpnConfigFetch'
 import { waitVpnReady } from '../vpnReady'
 import { warmupBrowsingPath } from '../warmupBrowsingPath'
+import SupportTelegramLinks from '../components/SupportTelegramLinks'
 import VpnToggle from '../components/VpnToggle'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import WindowControls from '../components/WindowControls'
@@ -31,7 +32,10 @@ import { resolveAppName } from '../clientTheme'
 import { menuDrawerStyle, UI_COLORS } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
+import MenuVkCredModePanel from '../components/MenuVkCredModePanel'
 import { prepareVpnConnectConfig } from '../prepareVpnConnect'
+import { attachVkCredLaunchParams } from '../vkCredStore'
+import { isDebugBuild } from '../debugBuild'
 import { notifyDisconnect } from '../vpnBackendSync'
 import { pushLog, logI } from '../debugLog'
 import { clearVpnLogs } from '../vpnLogStore'
@@ -53,7 +57,7 @@ import {
   seedConfigSyncRevision,
 } from '../configSync'
 
-const isDevBuild = import.meta.env.DEV
+const isDevBuild = isDebugBuild
 
 interface DeviceInfo {
   id: string
@@ -109,7 +113,7 @@ interface Profile {
   max_devices: number
 }
 
-type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'hashes' | 'promo' | 'support' | 'about'
+type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'vk_cred' | 'hashes' | 'promo' | 'support' | 'about'
 
 const GREEN = '#16A34A'
 const TEST_PURPLE = '#9333EA'
@@ -573,7 +577,7 @@ export default function MainScreen({
         }
         if ((window as any).electronAPI?.vpnConnect) {
           pushLog('Main', 'vpnConnect start')
-          const connectCfg = await prepareVpnConnectConfig(config, fp)
+          const connectCfg = attachVkCredLaunchParams(await prepareVpnConnectConfig(config, fp))
           pushLog('Main', `vpnConnect n=${connectCfg.stream_count} hashes=${connectCfg.vk_hashes?.length ?? 0}`)
           const res = await (window as any).electronAPI.vpnConnect(connectCfg)
           if (res?.error) { pushLog('Main', `vpnConnect: ${res.error}`, 'E'); alert(res.error); return }
@@ -860,6 +864,7 @@ export default function MainScreen({
               {[
                 { key: 'subscription', label: 'Подписка' },
                 { key: 'exceptions', label: 'Исключения приложений' },
+                ...(isDevBuild ? [{ key: 'vk_cred', label: 'Режим VK-кредов' }] : []),
                 ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
                 { key: 'promo', label: 'Промокод' },
                 { key: 'devices', label: `Сессии (${profile?.devices_count || 0}/${profile?.max_devices || 3})` },
@@ -877,6 +882,24 @@ export default function MainScreen({
                   <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: muted }} />
                 </button>
               ))}
+              {profile?.is_admin && (
+                <button
+                  type="button"
+                  onClick={() => { void (window as typeof window & { electronAPI?: { openAdminPanel?: () => Promise<string> } }).electronAPI?.openAdminPanel?.() }}
+                  className="w-full flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg text-sm text-left transition-colors"
+                  style={{ color: fg }}
+                >
+                  <span className="flex w-full items-center gap-2">
+                    <span className="flex-1 leading-snug">Админ-панель</span>
+                    <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: muted }} />
+                  </span>
+                  {connected && (
+                    <span className="text-[10px] leading-tight" style={{ color: muted }}>
+                      При VPN: 10.66.66.1:8000/admin
+                    </span>
+                  )}
+                </button>
+              )}
               <button onClick={handleLogout}
                 className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-red-500 hover:bg-red-50 transition-colors mt-2">
                 Выйти
@@ -944,7 +967,15 @@ export default function MainScreen({
             </div>
           )}
 
-          {menuPage === 'hashes' && (
+          {menuPage === 'vk_cred' && isDevBuild && (
+            <MenuVkCredModePanel
+              fg={fg}
+              muted={muted}
+              vpnRunning={connected || connecting}
+              onBack={() => setMenuPage(null)}
+            />
+          )}
+          {menuPage === 'hashes' && isDevBuild && (
             <AppErrorBoundary key={`hashes-${hashSyncKey}`} onReset={() => setMenuPage(null)}>
               <MenuHashesPanel
                 key={hashSyncKey}
@@ -1039,8 +1070,13 @@ export default function MainScreen({
           {menuPage === 'support' && (
             <div className="flex-1 p-4 w-full overflow-y-auto">
               <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
-              <div className="text-sm font-semibold mb-3">Поддержка</div>
-              <p className="text-xs text-gray-500">По вопросам обратитесь через email или Telegram.</p>
+              <div className="text-sm font-semibold mb-3" style={{ color: fg }}>Поддержка</div>
+              <p className="text-xs" style={{ color: muted }}>По вопросам обратитесь через Telegram.</p>
+              <SupportTelegramLinks
+                channelUrl={clientTheme?.telegram_channel_url}
+                supportUrl={clientTheme?.support_url}
+                muted={muted}
+              />
             </div>
           )}
 

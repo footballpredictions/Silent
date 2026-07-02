@@ -1,6 +1,7 @@
-﻿/** Буфер логов для UI «Лог» — как Android DebugLog.kt */
+/** Буфер логов для UI «Лог» — как Android DebugLog.kt */
 
 import { pushAppLog } from './vpnLogStore'
+import { isDebugBuild } from './debugBuild'
 
 export type LogLevel = 'D' | 'I' | 'W' | 'E' | 'T'
 
@@ -15,7 +16,6 @@ export interface DebugLogItem {
 const KEY = 'silent_debug_logs'
 const MAX_ITEMS = 600
 const UI_FLUSH_MS = 1500
-const isDev = import.meta.env.DEV
 
 let listeners: Array<(items: DebugLogItem[]) => void> = []
 let pendingFlush: ReturnType<typeof setTimeout> | null = null
@@ -62,6 +62,7 @@ function dedupeKey(tag: string, message: string): string {
 }
 
 function append(level: LogLevel, tag: string, message: string, flushUi: boolean) {
+  if (!isDebugBuild) return
   const msg = String(message ?? '')
   const items = read()
   const key = dedupeKey(tag, msg)
@@ -97,31 +98,37 @@ export function subscribeLogs(cb: (items: DebugLogItem[]) => void): () => void {
 
 /** Verbose — только dev (libclient flood). */
 export function logD(tag: string, message: string) {
-  if (isDev) append('D', tag, message, false)
+  if (isDebugBuild) append('D', tag, message, false)
 }
 
 export function logI(tag: string, message: string) {
+  if (!isDebugBuild) return
   append('I', tag, message, true)
 }
 
 export function logW(tag: string, message: string) {
+  if (!isDebugBuild) return
   append('W', tag, message, true)
 }
 
 export function logE(tag: string, message: string) {
+  if (!isDebugBuild) return
   append('E', tag, message, true)
 }
 
 /** Только UI «Лог», без console. */
 export function traceUi(tag: string, message: string) {
+  if (!isDebugBuild) return
   append('T', tag, message, true)
 }
 
 export function pushLog(tag: string, message: string, level: 'I' | 'W' | 'E' = 'I') {
+  if (!isDebugBuild) return
   pushAppLog(tag, message, level)
 }
 
 export function ingestMainLog(payload: { tag?: string; level?: string; message?: string }) {
+  if (!isDebugBuild) return
   const tag = payload.tag || 'Main'
   const msg = payload.message || ''
   const lvl = (payload.level || 'I').toUpperCase()

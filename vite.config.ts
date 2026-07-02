@@ -11,17 +11,20 @@ function resolveBootstrapVkHash(mode: string): string {
   return DEBUG_BOOTSTRAP_HASH
 }
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig(({ mode }) => {
+  const isDebugBuild = mode === 'debug' || mode === 'development' || process.env.DEBUG_BUILD === '1'
+  return {
   plugins: [react()],
   base: './',
   root: '.',
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __BOOTSTRAP_VK_HASH__: JSON.stringify(resolveBootstrapVkHash(mode)),
+    __DEBUG_BUILD__: JSON.stringify(isDebugBuild),
   },
   build: {
     outDir: 'dist/renderer',
-    sourcemap: false,
+    sourcemap: isDebugBuild,
     charset: 'utf8',
   },
   server: {
@@ -30,4 +33,4 @@ export default defineConfig(({ mode }) => ({
       '/api': 'http://localhost:8000',
     },
   },
-}))
+}})

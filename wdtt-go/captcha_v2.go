@@ -427,7 +427,7 @@ func (s *captchaV2Session) performCaptchaCheck(
 		{"hash", hash},
 		{"answer", base64.StdEncoding.EncodeToString([]byte(answerJSON))},
 		{"debug_info", debugInfo},
-		{"access_token", anonToken},
+		{"access_token", ""},
 	}
 	resp, err := s.captchaRequest("captchaNotRobot.check", values)
 	if err != nil {
@@ -772,6 +772,16 @@ type VkCaptchaError struct {
 	SessionToken   string
 	CaptchaTs      string
 	CaptchaAttempt string
+}
+
+func (e *VkCaptchaError) Error() string {
+	if e == nil {
+		return "VK captcha required"
+	}
+	if e.ErrorMsg != "" {
+		return fmt.Sprintf("VK captcha: %s (code=%d)", e.ErrorMsg, e.ErrorCode)
+	}
+	return fmt.Sprintf("VK captcha required (code=%d)", e.ErrorCode)
 }
 
 func parseVkCaptchaError(errData map[string]interface{}) *VkCaptchaError {

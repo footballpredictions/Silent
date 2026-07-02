@@ -7,6 +7,8 @@ function getPublicServerUrl(): string {
 }
 
 export const WG_TUNNEL_GATEWAY = '10.66.66.1'
+export const WG_TUNNEL_ADMIN_URL = `http://${WG_TUNNEL_GATEWAY}:8000/admin`
+export const PUBLIC_ADMIN_URL = `${FALLBACK_PUBLIC}/admin`
 
 let mainVpnSessionActive = false
 let wgTunnelReady = false
@@ -20,9 +22,12 @@ export function setMainVpnSessionActive(active: boolean) {
     tunnelApiActive = false
     return
   }
-  // Main VPN активен: API должен идти через WG gateway.
-  tunnelApiBase = `http://${WG_TUNNEL_GATEWAY}:8000`
-  tunnelApiActive = true
+  // Renderer (Electron) не ходит на http://10.66.66.1 — API через HTTPS direct IP + bypass.
+  tunnelApiActive = false
+}
+
+export function getAdminPanelUrl(vpnConnected = false): string {
+  return vpnConnected ? WG_TUNNEL_ADMIN_URL : PUBLIC_ADMIN_URL
 }
 
 export function setWgTunnelReady(ready: boolean) {

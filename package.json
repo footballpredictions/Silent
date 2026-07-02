@@ -1,12 +1,14 @@
 {
   "name": "silent-vpn-pc",
-  "version": "1.0.146",
+  "version": "1.0.147",
   "description": "Silent VPN PC Client",
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
     "dev": "concurrently \"vite --port 3001\" \"wait-on http://localhost:3001 && electron .\"",
     "build:renderer": "vite build --outDir dist/renderer",
+    "build:renderer:debug": "vite build --mode debug --outDir dist/renderer",
+    "build:debug": "build-debug.bat",
     "build": "npm run build:installer",
     "build:installer": "build-installer.bat",
     "dist": "npm run build:installer"

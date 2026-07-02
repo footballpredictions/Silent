@@ -42,7 +42,7 @@ async function ensureDeviceRegistered(fp: string): Promise<boolean> {
   return false
 }
 
-/** PC: connect/disconnect — tunnel API после WG, иначе public HTTPS. */
+/** PC: connect/disconnect — tunnel API (10.66.66.1), fallback public direct IP. */
 export async function notifyConnect(vpnTunnelUp = false): Promise<boolean> {
   const fp = getDeviceFingerprint()
   let lastMsg = ''

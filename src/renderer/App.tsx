@@ -8,6 +8,7 @@ import { getCachedTheme, saveCachedTheme } from './themeStore'
 import { runAppStateMigrationIfNeeded } from './appStateMigration'
 import { checkForUpdate, getAppVersion, type UpdateInfo } from './updateCheck'
 import { useVpnLogSubscription } from './useVpnLogSubscription'
+import { isDebugBuild } from './debugBuild'
 
 const SERVER_URL = 'https://132-243-234-162.nip.io'
 
@@ -31,7 +32,7 @@ export default function App() {
   const [theme, setTheme] = useState<ClientTheme | null>(() => getCachedTheme())
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
 
-  useVpnLogSubscription(true)
+  useVpnLogSubscription(isDebugBuild)
 
   useEffect(() => {
     runAppStateMigrationIfNeeded()

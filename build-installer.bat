@@ -4,6 +4,8 @@ cd /d "%~dp0"
 
 echo === Silent VPN PC: clean + wdtt + NSIS installer ===
 
+echo module.exports = { DEBUG_BUILD: false };> src\main\buildFlags.js
+
 REM Уникальная папка сборки, чтобы electron-builder не пытался удалять заблокированный app.asar из прошлых прогонов.
 for /f %%R in ('powershell -NoProfile -Command "Get-Random -Minimum 1000 -Maximum 999999"') do set OUT_DIR=build-release-v141-%%R
 echo Output dir: !OUT_DIR!

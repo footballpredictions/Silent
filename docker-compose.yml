@@ -51,6 +51,7 @@ services:
       - /opt/android-sdk:/opt/android-sdk
       - /usr/local/bin/wdtt-server:/app/wdtt/wdtt-server:ro
       - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
     networks:
       - silent_net
     ports:

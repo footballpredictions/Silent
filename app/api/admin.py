@@ -19,6 +19,7 @@ from app.config import settings
 from app.schemas.vpn import ThemeResponse
 from app.services.theme_settings import load_theme
 from app.services.system_info import get_cpu_info
+from app.services.proc_stats import read_network_load
 from app.services import update_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -30,11 +31,12 @@ async def get_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Dashboard system stats."""
-    # System resources
-    cpu = psutil.cpu_percent(interval=0.5)
+    # System resources — CPU/RAM контейнера (быстро); канал — хост через /host/proc
+    cpu = float(psutil.cpu_percent(interval=0.1))
     cpu_info = get_cpu_info(cpu)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
+    net = read_network_load()
 
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
     from app.services.subscription_service import user_has_active_subscription, is_user_admin
@@ -86,7 +88,7 @@ async def get_stats(
         user_hashes = by_user_id.get(u.id, [])
         user_devices = devices_by_user.get(u.id, [])
         dev_online = sum(1 for d in user_devices if d.is_connected)
-        last_seen = u.last_seen_at
+        last_seen = getattr(u, "last_seen_at", None)
         for d in user_devices:
             for ts in (d.last_connected, d.created_at):
                 if ts and (last_seen is None or ts > last_seen):
@@ -134,7 +136,7 @@ async def get_stats(
             "user_id": str(u.id),
             "user_email": u.email,
             "user_connected": dev_online > 0,
-            "last_seen_at": last_seen,
+            "last_seen_at": last_seen.isoformat() if last_seen else None,
             "device_names": device_names,
             "online_device_names": online_device_names,
             "slots_filled": len(unique_hashes),
@@ -170,6 +172,11 @@ async def get_stats(
             "disk_total_gb": round(disk.total / 1e9, 1),
             "disk_used_gb": round(disk.used / 1e9, 1),
             "disk_percent": disk.percent,
+            "network_interface": net.get("network_interface"),
+            "network_mbps_rx": float(net.get("network_mbps_rx") or 0.0),
+            "network_mbps_tx": float(net.get("network_mbps_tx") or 0.0),
+            "network_util_percent": float(net.get("network_util_percent") or 0.0),
+            "network_link_capacity_mbps": float(net.get("network_link_capacity_mbps") or settings.HIVE_LINK_CAPACITY_MBPS),
         },
         "users": {
             "total": len(all_users),

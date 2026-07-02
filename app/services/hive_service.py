@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import uuid
 
 import httpx
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -123,6 +123,31 @@ async def count_assigned_on_cell(db: AsyncSession, cell_id: uuid.UUID) -> int:
     return int(result.scalar_one())
 
 
+def recommended_max_online_capacity() -> int:
+    util = max(1.0, float(settings.HIVE_LINK_TARGET_UTILIZATION_PERCENT))
+    link = max(1.0, float(settings.HIVE_LINK_CAPACITY_MBPS))
+    per_user = max(0.1, float(settings.HIVE_TARGET_ACTIVE_USER_MBPS))
+    return max(1, int((link * (util / 100.0)) // per_user))
+
+
+def max_online_for_cell(cell: HiveCell) -> int:
+    configured = int(cell.max_clients or 0)
+    if configured > 0:
+        return configured
+    return recommended_max_online_capacity()
+
+
+async def count_rebalance_candidates_on_cell(db: AsyncSession, cell_id: uuid.UUID) -> int:
+    result = await db.execute(
+        select(func.count(Device.id)).where(
+            Device.cell_id == cell_id,
+            Device.is_active == True,
+            Device.is_connected == False,
+        )
+    )
+    return int(result.scalar_one())
+
+
 async def refresh_cell_load(db: AsyncSession, cell: HiveCell) -> None:
     cell.last_seen_at = datetime.utcnow()
     cell.updated_at = datetime.utcnow()
@@ -149,8 +174,6 @@ async def migrate_devices_to_queen(db: AsyncSession) -> int:
     n = int(result.scalar_one())
     if n <= 0:
         return 0
-    from sqlalchemy import update
-
     await db.execute(
         update(Device)
         .where(Device.is_active == True, Device.cell_id != queen.id)
@@ -197,20 +220,31 @@ async def pick_cell_for_new_device(
         )
         return queen
 
-    best: HiveCell = workers[0]
-    best_online = await count_online_on_cell(db, best.id)
-    for cell in workers[1:]:
+    candidates: list[tuple[HiveCell, int, int]] = []
+    for cell in workers:
         online = await count_online_on_cell(db, cell.id)
+        cap = max_online_for_cell(cell)
+        if online < cap:
+            candidates.append((cell, online, cap))
+    if not candidates:
+        logger.warning("Hive: все соты заполнены, оставляем новое устройство на Улье")
+        return queen
+
+    best, best_online, best_cap = candidates[0]
+    for cell, online, cap in candidates[1:]:
         if online < best_online:
-            best = cell
-            best_online = online
+            best, best_online, best_cap = cell, online, cap
+        elif online == best_online and cap > best_cap:
+            best, best_online, best_cap = cell, online, cap
 
     logger.info(
-        "Hive pick: queen overloaded → %s (online=%s), queen cpu=%s mem=%s",
+        "Hive pick: queen overloaded → %s (online=%s/%s), queen cpu=%s mem=%s net=%s",
         best.name,
         best_online,
+        best_cap,
         load_info.get("cpu_percent"),
         load_info.get("memory_percent"),
+        load_info.get("network_util_percent"),
     )
     return best
 
@@ -232,6 +266,13 @@ async def resolve_cell_for_device(
     if device.cell_id:
         cell = await get_cell_by_id(db, device.cell_id)
         if cell and cell.status in CELL_STATUSES_ASSIGNABLE:
+            if settings.HIVE_REBALANCE_EXISTING_DEVICES:
+                online = await count_online_on_cell(db, cell.id)
+                if online >= max_online_for_cell(cell):
+                    cell = await pick_cell_for_new_device(db)
+                    if device.cell_id != cell.id:
+                        device.cell_id = cell.id
+                        await db.commit()
             return cell
         if cell and cell.status == "draining":
             return cell
@@ -309,6 +350,11 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
         return {
             "cpu_percent": round(float(data.get("cpu_percent") or 0), 1),
             "memory_percent": round(float(data.get("memory_percent") or 0), 1),
+            "network_interface": (data.get("network_interface") or None),
+            "network_mbps_rx": round(float(data.get("network_mbps_rx") or 0), 1),
+            "network_mbps_tx": round(float(data.get("network_mbps_tx") or 0), 1),
+            "network_util_percent": round(float(data.get("network_util_percent") or 0), 1),
+            "network_link_capacity_mbps": round(float(data.get("network_link_capacity_mbps") or settings.HIVE_LINK_CAPACITY_MBPS), 1),
             "wdtt_active": bool(data.get("wdtt_active")),
         }
     except Exception as e:
@@ -339,6 +385,7 @@ def cell_to_response(
         "has_agent": bool(cell.api_url and cell.api_secret_enc),
         "tunnel_api_url": cell.tunnel_api_url,
         "max_clients": cell.max_clients,
+        "max_online": max_online_for_cell(cell),
         "online_count": online_count,
         "assigned_devices": assigned_devices,
         "status": cell.status,
@@ -405,14 +452,80 @@ async def apply_agent_handshake_to_cell(cell: HiveCell, data: dict) -> None:
 async def get_hive_summary_extra(db: AsyncSession) -> dict:
     accepting, load = queen_accepting_new_vpn()
     workers = [c for c in await _list_assignable_cells(db) if not c.is_queen]
+    assignable = await _list_assignable_cells(db)
     total_online = 0
-    for cell in await _list_assignable_cells(db):
-        total_online += await count_online_on_cell(db, cell.id)
+    total_capacity = 0
+    full_cells = 0
+    for cell in assignable:
+        online = await count_online_on_cell(db, cell.id)
+        cap = max_online_for_cell(cell)
+        total_online += online
+        total_capacity += cap
+        if online >= cap:
+            full_cells += 1
     return {
         "queen_load": load,
         "queen_accepting_vpn": accepting,
         "worker_cells": len(workers),
         "total_online_vpn": total_online,
+        "total_capacity_online": total_capacity,
+        "full_cells": full_cells,
+        "all_cells_full": bool(assignable) and full_cells >= len(assignable),
         "cpu_threshold": settings.HIVE_CPU_PERCENT_THRESHOLD,
         "mem_threshold": settings.HIVE_MEM_PERCENT_THRESHOLD,
+        "bandwidth_threshold": settings.HIVE_BANDWIDTH_PERCENT_THRESHOLD,
     }
+
+
+async def rebalance_overloaded_cells(db: AsyncSession) -> dict:
+    if not settings.HIVE_REBALANCE_EXISTING_DEVICES:
+        return {"moved": 0, "blocked": 0}
+    cells = await _list_assignable_cells(db)
+    states: dict[uuid.UUID, dict] = {}
+    for cell in cells:
+        online = await count_online_on_cell(db, cell.id)
+        cap = max_online_for_cell(cell)
+        states[cell.id] = {"cell": cell, "online": online, "cap": cap}
+
+    moved = 0
+    blocked = 0
+    for src in cells:
+        src_state = states[src.id]
+        overload = src_state["online"] - src_state["cap"]
+        if overload <= 0:
+            continue
+        free_targets = [
+            st for st in states.values()
+            if st["cell"].id != src.id and st["online"] < st["cap"] and st["cell"].status == "active"
+        ]
+        free_targets.sort(key=lambda st: st["online"])
+        for _ in range(overload):
+            if not free_targets:
+                blocked += 1
+                break
+            target = free_targets[0]
+            q = await db.execute(
+                select(Device)
+                .where(
+                    Device.cell_id == src.id,
+                    Device.is_active == True,
+                    Device.is_connected == False,
+                )
+                .order_by(Device.last_connected.asc().nullsfirst(), Device.created_at.asc())
+                .limit(1)
+            )
+            candidate = q.scalar_one_or_none()
+            if not candidate:
+                blocked += 1
+                break
+            candidate.cell_id = target["cell"].id
+            moved += 1
+            src_state["online"] = max(0, src_state["online"] - 1)
+            target["online"] += 1
+            if target["online"] >= target["cap"]:
+                free_targets.pop(0)
+            else:
+                free_targets.sort(key=lambda st: st["online"])
+    if moved > 0:
+        await db.commit()
+    return {"moved": moved, "blocked": blocked}

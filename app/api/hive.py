@@ -110,6 +110,7 @@ async def list_hive_cells(
 ):
     await hive_service.ensure_queen_cell(db)
     await _sweep_stale_provisioning(db)
+    await hive_service.rebalance_overloaded_cells(db)
     return await hive_service.list_cells_with_stats(db)
 
 
@@ -380,6 +381,7 @@ async def hive_summary(
     db: AsyncSession = Depends(get_db),
 ):
     await hive_service.ensure_queen_cell(db)
+    rebalance = await hive_service.rebalance_overloaded_cells(db)
     cells = await hive_service.list_cells_with_stats(db)
     extra = await hive_service.get_hive_summary_extra(db)
     return {
@@ -391,4 +393,10 @@ async def hive_summary(
         "queen_accepting_vpn": extra["queen_accepting_vpn"],
         "cpu_threshold": extra["cpu_threshold"],
         "mem_threshold": extra["mem_threshold"],
+        "bandwidth_threshold": extra["bandwidth_threshold"],
+        "total_capacity_online": extra["total_capacity_online"],
+        "all_cells_full": extra["all_cells_full"],
+        "full_cells": extra["full_cells"],
+        "rebalanced_moved": rebalance["moved"],
+        "rebalanced_blocked": rebalance["blocked"],
     }

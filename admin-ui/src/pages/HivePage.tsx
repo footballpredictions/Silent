@@ -4,6 +4,11 @@ import { Hexagon, Plus, RefreshCw, Trash2, Wifi, WifiOff, Crown, Loader2, Cpu, H
 interface CellLoad {
   cpu_percent: number
   memory_percent: number
+  network_util_percent?: number
+  network_mbps_rx?: number
+  network_mbps_tx?: number
+  network_link_capacity_mbps?: number
+  network_interface?: string | null
   build_running?: boolean
   vpn_overloaded?: boolean
   wdtt_active?: boolean
@@ -16,6 +21,7 @@ interface HiveCell {
   public_ip: string
   wdtt_port: number
   wg_port: number
+  max_online: number
   online_count: number
   assigned_devices: number
   status: string
@@ -32,6 +38,12 @@ interface HiveSummary {
   queen_load: CellLoad
   cpu_threshold: number
   mem_threshold: number
+  bandwidth_threshold: number
+  total_capacity_online: number
+  all_cells_full: boolean
+  full_cells: number
+  rebalanced_moved: number
+  rebalanced_blocked: number
 }
 
 const statusLabel: Record<string, string> = {
@@ -43,14 +55,16 @@ const statusLabel: Record<string, string> = {
   error: 'Ошибка',
 }
 
-function fmtLoad(cell: HiveCell, cpuThreshold: number, memThreshold: number): string {
+function fmtLoad(cell: HiveCell, cpuThreshold: number, memThreshold: number, bwThreshold: number): string {
   if (!cell.load) return ''
-  const { cpu_percent, memory_percent, build_running, wdtt_active } = cell.load
+  const { cpu_percent, memory_percent, network_util_percent, build_running, wdtt_active } = cell.load
   const cpuHot = cpu_percent >= cpuThreshold
   const memHot = memory_percent >= memThreshold
+  const netHot = (network_util_percent ?? 0) >= bwThreshold
   const parts = [
     `CPU ${cpu_percent}%${cpuHot ? ' ⚠' : ''}`,
     `RAM ${memory_percent}%${memHot ? ' ⚠' : ''}`,
+    `Канал ${(network_util_percent ?? 0).toFixed(1)}%${netHot ? ' ⚠' : ''}`,
   ]
   if (cell.is_queen && build_running) parts.push('сборка OTA')
   if (!cell.is_queen && wdtt_active === false) parts.push('wdtt не запущен')
@@ -203,7 +217,7 @@ export default function HivePage({ token }: { token: string }) {
             Улей
           </h1>
           <p className="text-[#888] text-sm mt-1">
-            Балансировка по CPU/RAM и онлайн VPN. Сборка OTA в полночь не считается перегрузкой.
+            Балансировка по CPU/RAM/каналу и онлайн VPN. Сборка OTA в полночь не считается перегрузкой.
           </p>
         </div>
         <button type="button" onClick={() => { setLoading(true); load() }}
@@ -213,7 +227,7 @@ export default function HivePage({ token }: { token: string }) {
       </div>
       {metricsAt && (
         <p className="text-xs text-[#555] -mt-3">
-          Метрики CPU/RAM обновляются каждые 10 с · последнее: {metricsAt.toLocaleTimeString('ru')}
+          Метрики CPU/RAM/канала обновляются каждые 10 с · последнее: {metricsAt.toLocaleTimeString('ru')}
         </p>
       )}
 
@@ -221,7 +235,7 @@ export default function HivePage({ token }: { token: string }) {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="bg-[#111] border border-[#222] rounded-xl p-4">
             <p className="text-[#666] text-xs uppercase">Онлайн VPN</p>
-            <p className="text-2xl font-semibold mt-1">{summary.total_online_vpn}</p>
+            <p className="text-2xl font-semibold mt-1">{summary.total_online_vpn} / {summary.total_capacity_online}</p>
           </div>
           <div className="bg-[#111] border border-[#222] rounded-xl p-4">
             <p className="text-[#666] text-xs uppercase flex items-center gap-1"><Cpu className="w-3 h-3" /> CPU Улья</p>
@@ -246,7 +260,15 @@ export default function HivePage({ token }: { token: string }) {
                 <span className="text-orange-400">Перегруз — новые на соты</span>
               )}
             </p>
+            {summary.all_cells_full && (
+              <p className="text-xs text-red-400 mt-2">Все соты заполнены — добавьте новые соты</p>
+            )}
           </div>
+        </div>
+      )}
+      {summary && (summary.rebalanced_moved > 0 || summary.rebalanced_blocked > 0) && (
+        <div className="text-xs text-[#888]">
+          Перераспределение: перемещено {summary.rebalanced_moved}, не удалось переместить {summary.rebalanced_blocked}.
         </div>
       )}
 
@@ -294,8 +316,8 @@ export default function HivePage({ token }: { token: string }) {
                   </div>
                   <p className="text-sm text-[#888] mt-1 font-mono">{cell.public_ip}:{cell.wdtt_port}</p>
                   {cell.load && summary && (
-                    <p className={`text-xs mt-1 ${cell.load.vpn_overloaded || (cell.load.cpu_percent >= summary.cpu_threshold) || (cell.load.memory_percent >= summary.mem_threshold) ? 'text-amber-400' : 'text-[#666]'}`}>
-                      {fmtLoad(cell, summary.cpu_threshold, summary.mem_threshold)}
+                    <p className={`text-xs mt-1 ${cell.load.vpn_overloaded || (cell.load.cpu_percent >= summary.cpu_threshold) || (cell.load.memory_percent >= summary.mem_threshold) || ((cell.load.network_util_percent ?? 0) >= summary.bandwidth_threshold) ? 'text-amber-400' : 'text-[#666]'}`}>
+                      {fmtLoad(cell, summary.cpu_threshold, summary.mem_threshold, summary.bandwidth_threshold)}
                     </p>
                   )}
                   {!cell.load && !cell.is_queen && cell.status === 'active' && (
@@ -310,6 +332,9 @@ export default function HivePage({ token }: { token: string }) {
                   {cell.assigned_devices > 0 && !cell.is_queen && (
                     <p className="text-xs text-[#666] mt-0.5">назначено устройств: {cell.assigned_devices}</p>
                   )}
+                  <p className={`text-xs mt-0.5 ${cell.online_count >= cell.max_online ? 'text-red-400' : 'text-[#666]'}`}>
+                    онлайн лимит: {cell.online_count} / {cell.max_online}
+                  </p>
                   {cell.last_error && <p className="text-xs text-red-400 mt-2 whitespace-pre-wrap">{cell.last_error}</p>}
                 </div>
                 <div className="text-right">

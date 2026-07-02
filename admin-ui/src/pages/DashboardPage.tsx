@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Cpu, HardDrive, MemoryStick, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
+import { Cpu, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight, Activity } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
 interface Stats {
@@ -16,6 +16,11 @@ interface Stats {
     disk_total_gb: number
     disk_used_gb: number
     disk_percent: number
+    network_interface?: string | null
+    network_mbps_rx?: number
+    network_mbps_tx?: number
+    network_util_percent?: number
+    network_link_capacity_mbps?: number
   }
   users: {
     total: number
@@ -73,6 +78,12 @@ const StatCard = ({ icon: Icon, label, value, sub, color = 'white' }: any) => (
 const formatGhz = (mhz: number) => `${(mhz / 1000).toFixed(2)} GHz`
 const formatLiveMhz = (mhz: number) => `${mhz.toFixed(1)} MHz`
 
+const formatBandwidth = (mbps: number) => {
+  if (mbps >= 1) return `${mbps.toFixed(1)} Мбит/с`
+  if (mbps >= 0.001) return `${(mbps * 1000).toFixed(0)} Кбит/с`
+  return '0 Мбит/с'
+}
+
 const ProgressBar = ({ percent, label }: { percent: number; label: string }) => (
   <div className="mb-3">
     <div className="flex justify-between text-xs text-[#666] mb-1">
@@ -87,6 +98,49 @@ const ProgressBar = ({ percent, label }: { percent: number; label: string }) => 
     </div>
   </div>
 )
+
+type HistoryPoint = { t: string; v: number }
+
+function LoadAreaChart({
+  title,
+  subtitle,
+  data,
+  stroke,
+  fill,
+  seriesLabel,
+  emptyHint,
+}: {
+  title: string
+  subtitle?: string
+  data: HistoryPoint[]
+  stroke: string
+  fill: string
+  seriesLabel: string
+  emptyHint?: string
+}) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2 mb-3">
+        <h3 className="text-xs text-[#666] uppercase tracking-wider">{title}</h3>
+        {subtitle && <span className="text-[10px] text-[#555] truncate">{subtitle}</span>}
+      </div>
+      <ResponsiveContainer width="100%" height={96}>
+        <AreaChart data={data}>
+          <XAxis dataKey="t" hide />
+          <YAxis domain={[0, 100]} hide />
+          <Tooltip
+            contentStyle={{ background: '#111', border: '1px solid #222', borderRadius: 8, fontSize: 12 }}
+            formatter={(v: number) => [`${v.toFixed(1)}%`, seriesLabel]}
+          />
+          <Area type="monotone" dataKey="v" stroke={stroke} fill={fill} strokeWidth={1.5} dot={false} />
+        </AreaChart>
+      </ResponsiveContainer>
+      {data.length <= 1 && emptyHint && (
+        <p className="text-[10px] text-[#555] mt-1">{emptyHint}</p>
+      )}
+    </div>
+  )
+}
 
 function VkHashesCard({
   hashes,
@@ -250,7 +304,8 @@ function VkHashesCard({
 
 export default function DashboardPage({ token, onUnauthorized }: { token: string; onUnauthorized?: () => void }) {
   const [stats, setStats] = useState<Stats | null>(null)
-  const [cpuHistory, setCpuHistory] = useState<{ t: string; v: number }[]>([])
+  const [cpuHistory, setCpuHistory] = useState<HistoryPoint[]>([])
+  const [netHistory, setNetHistory] = useState<HistoryPoint[]>([])
   const [loading, setLoading] = useState(false)
 
   const fetchStats = async () => {
@@ -263,13 +318,18 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
         onUnauthorized?.()
         return
       }
-      if (!res.ok) return
+      if (!res.ok) {
+        console.error('stats HTTP', res.status)
+        return
+      }
       const data: Stats = await res.json()
       if (!data?.system) return
       setStats(data)
-      setCpuHistory(prev => [
+      const t = new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      setCpuHistory(prev => [...prev.slice(-19), { t, v: data.system.cpu_percent }])
+      setNetHistory(prev => [
         ...prev.slice(-19),
-        { t: new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' }), v: data.system.cpu_percent },
+        { t, v: data.system.network_util_percent ?? 0 },
       ])
     } catch (e) {
       console.error(e)
@@ -358,21 +418,43 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
           <ProgressBar percent={stats.system.cpu_percent} label={`CPU — ${stats.system.cpu_percent.toFixed(1)}%`} />
           <ProgressBar percent={stats.system.memory_percent} label={`RAM — ${stats.system.memory_used_gb} / ${stats.system.memory_total_gb} GB`} />
           <ProgressBar percent={stats.system.disk_percent} label={`Диск — ${stats.system.disk_used_gb} / ${stats.system.disk_total_gb} GB`} />
+          <div className="mt-1 pt-3 border-t border-[#1e1e1e]">
+            <div className="flex items-center gap-2 text-xs text-[#666] mb-1">
+              <Activity className="w-3.5 h-3.5" />
+              <span>
+                Канал{stats.system.network_interface ? ` (${stats.system.network_interface})` : ''}
+                {' · '}
+                {formatBandwidth(stats.system.network_mbps_rx ?? 0)}↓ / {formatBandwidth(stats.system.network_mbps_tx ?? 0)}↑
+                {' · '}
+                лимит {stats.system.network_link_capacity_mbps?.toFixed(0) ?? '1000'} Мбит/с
+              </span>
+            </div>
+            <ProgressBar
+              percent={stats.system.network_util_percent ?? 0}
+              label={`Загрузка канала — ${(stats.system.network_util_percent ?? 0).toFixed(1)}%`}
+            />
+          </div>
         </div>
 
-        <div className="bg-[#111] border border-[#222] rounded-xl p-5">
-          <h3 className="text-xs text-[#666] uppercase tracking-wider mb-4">CPU — загрузка (%)</h3>
-          <ResponsiveContainer width="100%" height={120}>
-            <AreaChart data={cpuHistory}>
-              <XAxis dataKey="t" hide />
-              <YAxis domain={[0, 100]} hide />
-              <Tooltip
-                contentStyle={{ background: '#111', border: '1px solid #222', borderRadius: 8, fontSize: 12 }}
-                formatter={(v: number) => [`${v.toFixed(1)}%`, 'CPU']}
-              />
-              <Area type="monotone" dataKey="v" stroke="#fff" fill="#ffffff15" strokeWidth={1.5} dot={false} />
-            </AreaChart>
-          </ResponsiveContainer>
+        <div className="bg-[#111] border border-[#222] rounded-xl p-5 flex flex-col gap-5">
+          <LoadAreaChart
+            title="CPU — загрузка (%)"
+            data={cpuHistory}
+            stroke="#fff"
+            fill="#ffffff15"
+            seriesLabel="CPU"
+          />
+          <div className="border-t border-[#1e1e1e] pt-5">
+            <LoadAreaChart
+              title="Канал — загрузка (%)"
+              subtitle={`${formatBandwidth(stats.system.network_mbps_rx ?? 0)}↓ / ${formatBandwidth(stats.system.network_mbps_tx ?? 0)}↑`}
+              data={netHistory}
+              stroke="#38bdf8"
+              fill="#38bdf815"
+              seriesLabel="Канал"
+              emptyHint="Первая точка — 0%. Следующие обновления покажут скорость."
+            />
+          </div>
         </div>
       </div>
 

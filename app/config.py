@@ -76,15 +76,21 @@ class Settings(BaseSettings):
     SESSION_IDLE_HOURS: int = 6
     TRIAL_DAYS: int = 3
 
-    # Hive (Улей / Соты) — лимит по CPU/RAM, не по числу пользователей
+    # Hive (Улей / Соты) — лимит по CPU/RAM/каналу + ёмкость по активным пользователям
     HIVE_CPU_PERCENT_THRESHOLD: float = 85.0
     HIVE_MEM_PERCENT_THRESHOLD: float = 88.0
+    HIVE_BANDWIDTH_PERCENT_THRESHOLD: float = 80.0
+    HIVE_LINK_CAPACITY_MBPS: float = 1000.0
+    HIVE_LINK_TARGET_UTILIZATION_PERCENT: float = 70.0
+    HIVE_TARGET_ACTIVE_USER_MBPS: float = 10.0
+    HIVE_NETWORK_INTERFACE: str = ""
     HIVE_CELL_HTTP_TIMEOUT_SEC: float = 15.0
     HIVE_PROVISION_SSH_TIMEOUT_SEC: int = 45
     HIVE_PROVISION_STALE_MINUTES: int = 20
     HIVE_CELL_AGENT_PORT: int = 9100
     HIVE_PROVISION_SSH_USER: str = "root"
     HIVE_WDTT_BINARY_PATH: str = ""
+    HIVE_REBALANCE_EXISTING_DEVICES: bool = True
     # False = все VPN только на Улье (соты в админке, но трафик не уходит на worker)
     HIVE_WORKER_ROUTING_ENABLED: bool = False
 

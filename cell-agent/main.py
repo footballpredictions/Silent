@@ -27,6 +27,8 @@ WDTT_PORT = int(os.environ.get("WDTT_PORT", "56000"))
 WG_PORT = int(os.environ.get("WG_PORT", "56001"))
 HIVE_API_URL = (os.environ.get("HIVE_API_URL") or "").strip().rstrip("/")
 TUNNEL_API_URL = (os.environ.get("TUNNEL_API_URL") or "http://10.66.66.1:8000").strip()
+CELL_LINK_CAPACITY_MBPS = float(os.environ.get("CELL_LINK_CAPACITY_MBPS") or "1000")
+CELL_NETWORK_INTERFACE = (os.environ.get("CELL_NETWORK_INTERFACE") or "").strip()
 
 
 def _auth(secret: str) -> None:
@@ -135,6 +137,62 @@ def _read_linux_load(*, cpu_interval: float = 0.2) -> tuple[float, float]:
     return cpu_percent, memory_percent
 
 
+def _default_iface() -> str:
+    if CELL_NETWORK_INTERFACE:
+        return CELL_NETWORK_INTERFACE
+    try:
+        with open("/proc/net/route", encoding="utf-8", errors="replace") as f:
+            next(f, None)
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 4 and parts[1] == "00000000" and parts[3] != "0000":
+                    return parts[0]
+    except OSError:
+        return ""
+    return ""
+
+
+def _read_net_bytes(iface: str) -> tuple[int, int]:
+    with open("/proc/net/dev", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            row = line.strip()
+            if ":" not in row:
+                continue
+            name, rest = row.split(":", 1)
+            if name.strip() != iface:
+                continue
+            vals = rest.split()
+            if len(vals) >= 16:
+                return int(vals[0]), int(vals[8])
+    return 0, 0
+
+
+def _iface_speed_mbps(iface: str) -> float:
+    try:
+        with open(f"/sys/class/net/{iface}/speed", encoding="utf-8", errors="replace") as f:
+            speed = float(f.read().strip())
+            if speed > 0:
+                return speed
+    except Exception:
+        pass
+    return max(1.0, CELL_LINK_CAPACITY_MBPS)
+
+
+def _network_status(interval: float = 0.2) -> tuple[str | None, float, float, float, float]:
+    iface = _default_iface()
+    if not iface:
+        return None, 0.0, 0.0, 0.0, max(1.0, CELL_LINK_CAPACITY_MBPS)
+    rx1, tx1 = _read_net_bytes(iface)
+    import time
+    time.sleep(interval)
+    rx2, tx2 = _read_net_bytes(iface)
+    rx_mbps = max(0.0, (rx2 - rx1) * 8.0 / interval / 1_000_000.0)
+    tx_mbps = max(0.0, (tx2 - tx1) * 8.0 / interval / 1_000_000.0)
+    cap = _iface_speed_mbps(iface)
+    util = min(100.0, (max(rx_mbps, tx_mbps) / max(1.0, cap)) * 100.0)
+    return iface, round(rx_mbps, 1), round(tx_mbps, 1), round(util, 1), round(cap, 1)
+
+
 @app.get("/v1/status")
 async def status(
     x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
@@ -143,6 +201,11 @@ async def status(
     wdtt_active = False
     cpu_percent = 0.0
     memory_percent = 0.0
+    network_interface = None
+    network_mbps_rx = 0.0
+    network_mbps_tx = 0.0
+    network_util_percent = 0.0
+    network_link_capacity_mbps = max(1.0, CELL_LINK_CAPACITY_MBPS)
     try:
         import subprocess
 
@@ -162,6 +225,10 @@ async def status(
         memory_percent = round(float(psutil.virtual_memory().percent), 1)
     except Exception:
         cpu_percent, memory_percent = _read_linux_load(cpu_interval=0.2)
+    try:
+        network_interface, network_mbps_rx, network_mbps_tx, network_util_percent, network_link_capacity_mbps = _network_status(0.2)
+    except Exception:
+        pass
     wg_key = WG_SERVER_PUBLIC_KEY
     if not wg_key:
         try:
@@ -178,4 +245,9 @@ async def status(
         "wg_public_key": wg_key,
         "cpu_percent": cpu_percent,
         "memory_percent": memory_percent,
+        "network_interface": network_interface,
+        "network_mbps_rx": network_mbps_rx,
+        "network_mbps_tx": network_mbps_tx,
+        "network_util_percent": network_util_percent,
+        "network_link_capacity_mbps": network_link_capacity_mbps,
     }

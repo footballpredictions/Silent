@@ -57,13 +57,23 @@ def main() -> None:
     print("=== 1) docker-compose.yml (127.0.0.1:8000) ===")
     upload_file(sftp, client, "docker-compose.yml")
 
-    print("\n=== 2) Recreate api container ===")
+    print("\n=== 2) Recreate api container (bind 127.0.0.1 only) ===")
     run(
         client,
-        f"cd {REMOTE} && docker compose up -d api --force-recreate 2>&1",
+        f"cd {REMOTE} && docker compose up -d api 2>&1",
         timeout=300,
     )
-    run(client, "sleep 8")
+    run(client, "sleep 6")
+
+    print("\n=== 2b) Sync app+ai into container (image may be stale) ===")
+    run(
+        client,
+        f"cd {REMOTE} && find app ai -name '*.py' | while read -r f; do docker cp \"$f\" backend-api-1:/app/\"$f\"; done",
+        timeout=300,
+    )
+    run(client, "docker exec backend-api-1 pip install -q httpx paramiko 2>/dev/null || true")
+    run(client, f"cd {REMOTE} && docker compose restart api 2>&1", timeout=120)
+    run(client, "sleep 12")
     run(client, f"cd {REMOTE} && docker compose ps api 2>&1")
 
     print("\n=== 3) Tunnel DNAT fix ===")

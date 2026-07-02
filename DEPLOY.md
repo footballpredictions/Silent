@@ -27,6 +27,8 @@ cd backend
 | `scripts/deploy_wdtt_systemd.py` | `python scripts/deploy_wdtt_systemd.py` | wdtt-server как systemd на VPS |
 | `scripts/deploy_hive.py` | `python scripts/deploy_hive.py` | Улей: Hive API, cell-agent, admin-ui/dist |
 | `scripts/deploy_cell_agent.py` | `python scripts/deploy_cell_agent.py <cell_ip>` | cell-agent на отдельной VPS-соте |
+| `scripts/restore_api_container.py` | `python scripts/restore_api_container.py` | Восстановить `app/`+`ai/` в контейнере после `compose up`/recreate |
+| `scripts/apply_security_phase1.py` | `python scripts/apply_security_phase1.py` | UFW, fail2ban, bind API `127.0.0.1:8000` (+ sync кода) |
 | `scripts/install.sh` | на сервере / через `deploy_helper install` | Первичная установка Docker + clone |
 | `scripts/gen_certs.sh` | на сервере | Перегенерация TLS |
 
@@ -178,6 +180,31 @@ curl -sSL https://raw.githubusercontent.com/footballpredictions/Silent/main/scri
 
 Или с Windows: `python scripts/deploy_helper.py install`
 
+## Docker: не сбрасывать код в контейнере
+
+Образ `backend-api` на VPS часто **старее** git. Актуальный Python — через `docker cp` (`deploy_*.py`), не через `--force-recreate`.
+
+| Команда | Риск |
+|---------|------|
+| `deploy_stable.py`, `deploy_hive.py`, … | ✅ Безопасно |
+| `docker compose restart api` | ✅ Безопасно |
+| `docker compose up -d api --force-recreate` | ❌ Улей 404, старый код, падение без `httpx` |
+
+**После `compose up` или смены `ports:` в `docker-compose.yml`:**
+
+```powershell
+python scripts/restore_api_container.py
+```
+
+См. `MEMORY_BANK.md` → «Docker: код в контейнере», «Безопасность VPS».
+
+## Безопасность (скрипты)
+
+| Скрипт | Назначение |
+|--------|------------|
+| `apply_security_phase1.py` | UFW, fail2ban, `127.0.0.1:8000` в compose (+ sync кода в контейнер) |
+| `restore_api_container.py` | Восстановить `app/` + `ai/` в контейнере после recreate |
+
 ## После установки
 
 SMTP, YuMoney, VK — см. разделы ниже в исторической документации или `MEMORY_BANK.md`.
@@ -194,6 +221,7 @@ docker compose logs -f api
 |------|----------|-----------|
 | 80 | TCP | HTTP → HTTPS |
 | 443 | TCP | HTTPS (API + Admin UI) |
+| 8000 | TCP | FastAPI — **только 127.0.0.1** на хосте (не с интернета) |
 | 56000 | UDP | WDTT/DTLS |
 | 56001 | UDP | WireGuard |
 

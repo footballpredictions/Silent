@@ -227,9 +227,46 @@ python debug_captcha.py
 
 **Env:** `HIVE_CPU_PERCENT_THRESHOLD`, `HIVE_MEM_PERCENT_THRESHOLD`, `HIVE_CELL_AGENT_PORT`, `HIVE_PROVISION_SSH_USER`, `WDTT_MASTER_PASSWORD`, `VPN_SERVER_IP`.
 
-**Деплой Hive:** только `docker cp` + `docker compose restart api nginx` — **не** `docker compose up -d api` (сбрасывает код в контейнере).
+**Деплой Hive:** только `docker cp` + `docker compose restart api nginx` — см. раздел **«Docker: код в контейнере»** ниже.
 
-### AI-агент VK (Zvonki / Calls)
+### Docker: код в контейнере (Agent ОБЯЗАН помнить)
+
+Образ `backend-api` на VPS **устаревает**. Актуальный Python попадает в контейнер через **`docker cp`** (скрипты `deploy_*.py`), а не через пересборку image при каждом деплое.
+
+| Действие | Можно? | Почему |
+|----------|--------|--------|
+| `python scripts/deploy_stable.py` / `deploy_hive.py` / … | ✅ | `docker cp` всех `.py` + `restart api` |
+| `docker compose restart api` | ✅ | Перезапуск без смены файлов в контейнере |
+| `docker compose up -d` (без recreate) | ⚠️ | Только если менялся **только** `docker-compose.yml` (порты/volumes) — **сразу после** синхронизировать код (см. ниже) |
+| `docker compose up -d api --force-recreate` | ❌ | Сбрасывает контейнер к **старому image** → пропадают Улей (`/api/admin/hive/*` → 404), новый код, иногда `httpx` |
+| Менять `ports:` в compose без `docker cp` | ❌ | То же: новый контейнер = старый image |
+
+**После любого `docker compose up` / recreate / смены `ports:` на VPS:**
+
+```powershell
+cd backend
+python scripts/restore_api_container.py
+# или полный: python scripts/deploy_stable.py
+```
+
+`restore_api_container.py`: заливает `app/` + `ai/` с рабочей копии → `docker cp` → `pip install httpx paramiko` → `restart api` → `fix_tunnel_dnat`.
+
+**Инцидент 2026-07-02:** `apply_security_phase1.py` сделал `--force-recreate` → админка: Улей 404, пользователи без устройств. Исправлено `restore_api_container.py`. В `apply_security_phase1.py` recreate убран.
+
+### Безопасность VPS (production)
+
+| Параметр | Значение на проде (2026-07-02) |
+|----------|--------------------------------|
+| API снаружи | Только **HTTPS :443** (nginx) |
+| API :8000 | Только **127.0.0.1** (`docker-compose.yml`) |
+| Tunnel | `10.66.66.1:8000` → DNAT на контейнер (клиенты через VPN) |
+| UFW | 22, 80, 443/tcp; 56000, 56001/udp |
+| fail2ban | sshd (5 попыток / 1 ч бан) |
+
+Скрипты: `scripts/apply_security_phase1.py` (UFW + compose ports), `scripts/restore_api_container.py` (восстановление кода после compose).
+
+**Не отключать SSH по паролю** без настройки ключей — иначе сломается деплой с Windows (`DEPLOY_PASS`).
+
 
 - Авторизация: VK Calls `silent_token` (app `7793118`)
 - Payload auth, hash heal, flood reset
@@ -436,6 +473,8 @@ cd backend
 | wdtt-server systemd | `python scripts/deploy_wdtt_systemd.py` | Установка/обновление wdtt.service |
 | **Улей (Hive)** | `python scripts/deploy_hive.py` | Hive API, cell-agent, admin-ui «Улей» |
 | cell-agent на соту | `python scripts/deploy_cell_agent.py <ip>` | Ручная установка agent на VPS-соту |
+| **Восстановить код в контейнере** | `python scripts/restore_api_container.py` | После `compose up`/recreate или 404 на `/api/admin/hive/*` |
+| **Hardening VPS (UFW, :8000 localhost)** | `python scripts/apply_security_phase1.py` | Без `--force-recreate`; после — проверить Улей в админке |
 
 **Детали и списки файлов каждого скрипта:** `backend/DEPLOY.md` (не дублировать здесь).
 

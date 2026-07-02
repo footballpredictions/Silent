@@ -27,6 +27,7 @@ import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.sync.VpnDataSyncScheduler
+import com.silent.vpn.sync.VpnDataSyncBridge
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vk.HashParser
@@ -82,6 +83,8 @@ class SilentVpnService : Service() {
         private const val RECOVERY_MIN_TRAFFIC_DELTA_MB = 0.05
         /** Не перезапускать libclient повторно, если недавно уже рестартили и транспорт жив. */
         private const val MIN_TRANSPORT_RESTART_INTERVAL_MS = 90_000L
+        /** Wi‑Fi: сверка подписки пока VPN-сервис жив (даже если UI в фоне). */
+        private const val WIFI_SUBSCRIPTION_CHECK_MS = 5 * 60 * 1000L
         private const val NOTIF_UPDATE_MIN_MS = 3_000L
         /** Если CONNECT прилетел повторно сразу после старта, считаем сервис "занятым". */
         private const val CONNECT_BUSY_GRACE_MS = 15_000L
@@ -122,6 +125,7 @@ class SilentVpnService : Service() {
     private var lastUnderlyingInternet: Boolean? = null
     private var phoneCallActive = false
     private var lastTransportRestartMs = 0L
+    private var lastWifiSubscriptionCheckMs = 0L
     private var transportWatchdogJob: Job? = null
     private var statsUpdaterJob: Job? = null
     private var disconnectJob: Job? = null
@@ -180,6 +184,7 @@ class SilentVpnService : Service() {
                         VpnTileHelper.requestUpdate(this@SilentVpnService)
                         checkTransportHealth()
                         checkUnderlyingNetwork()
+                        maybeRefreshWifiSubscription()
                     } else if (WdttTunnelManager.running.value) {
                         startFg(buildConnectingNotification())
                     }
@@ -187,6 +192,30 @@ class SilentVpnService : Service() {
                 delay(2000)
             }
             SessionTrace.exit("SilentVpnService.statsUpdater")
+        }
+    }
+
+    /** Wi‑Fi + main VPN: public /api/users/me — rev подписки на сервере не меняется при истечении. */
+    private fun maybeRefreshWifiSubscription() {
+        if (WdttTunnelManager.isBootstrapMode()) return
+        if (VpnNetworkHelper.isOnMobileData(this)) return
+        val now = System.currentTimeMillis()
+        if (now - lastWifiSubscriptionCheckMs < WIFI_SUBSCRIPTION_CHECK_MS) return
+        lastWifiSubscriptionCheckMs = now
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val repo = EntryPointAccessors.fromApplication(
+                    applicationContext,
+                    AppEntryPoint::class.java,
+                ).silentRepository()
+                if (!repo.isLoggedIn()) return@runCatching
+                val profile = repo.fetchProfileLive().getOrNull() ?: return@runCatching
+                repo.saveCachedProfile(profile)
+                VpnDataSyncBridge.configSyncListener?.onProfile(profile)
+                    ?: DebugLog.i("VpnService", "wifi subscription cached active=${profile.subscription.is_active}")
+            }.onFailure { e ->
+                DebugLog.w("VpnService", "wifi subscription check: ${e.message}")
+            }
         }
     }
 

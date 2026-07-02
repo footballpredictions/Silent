@@ -25,12 +25,15 @@ object ConfigSyncCoordinator {
     private const val TAG = "ConfigSync"
     /** Единый интервал фонового sync (хеши/тема/профиль/подписка). */
     private const val POLL_MS = 60 * 60 * 1000L
+    /** Wi‑Fi: rev профиля не растёт при истечении expires_at — отдельная сверка подписки. */
+    private const val WIFI_SUBSCRIPTION_CHECK_MS = 5 * 60 * 1000L
     private const val START_DELAY_MS = 5_000L
     /** Не трогаем ConfigSync сразу после initial sync — rev уже записан в VpnDataSyncService. */
     private const val POST_TUNNEL_SYNC_QUIET_MS = 90_000L
 
     private val tickMutex = Mutex()
     private var pollJob: Job? = null
+    private var wifiSubscriptionJob: Job? = null
 
     interface Listener {
         fun onTheme(theme: ThemeData)
@@ -57,11 +60,26 @@ object ConfigSyncCoordinator {
                 }
             }
         }
+        wifiSubscriptionJob = scope.launch {
+            delay(START_DELAY_MS)
+            while (isActive) {
+                if (repo.isLoggedIn() && !repo.isOnMobileData() && listener.isPollAllowed()) {
+                    runCatching { refreshWifiSubscription(repo, listener) }
+                        .onFailure { e ->
+                            Log.w(TAG, "wifi subscription: ${e.message}")
+                            DebugLog.w(TAG, "wifi subscription: ${e.message}")
+                        }
+                }
+                delay(WIFI_SUBSCRIPTION_CHECK_MS)
+            }
+        }
     }
 
     fun stop() {
         pollJob?.cancel()
+        wifiSubscriptionJob?.cancel()
         pollJob = null
+        wifiSubscriptionJob = null
     }
 
     suspend fun tickNow(repo: SilentRepository, context: Context, listener: Listener) {
@@ -142,6 +160,9 @@ object ConfigSyncCoordinator {
 
         if (!needHashes && !needTheme && !needProfile) {
             Log.d(TAG, "sync-state ok, no changes (h=${state.hashes} t=${state.theme} p=${state.profile})")
+            if (!repo.isOnMobileData()) {
+                refreshWifiSubscription(repo, listener)
+            }
             return
         }
 
@@ -171,5 +192,18 @@ object ConfigSyncCoordinator {
                 Log.i(TAG, "profile updated (devices=${profile.devices.count { it.is_connected }} online)")
             } ?: Log.w(TAG, "profile fetch failed")
         }
+    }
+
+    /** Wi‑Fi public API: подписка может истечь без роста profile rev (expires_at в прошлом). */
+    private suspend fun refreshWifiSubscription(repo: SilentRepository, listener: Listener) {
+        if (repo.isOnMobileData()) return
+        if (!repo.allowsBackgroundConfigSync()) return
+        if (VpnSessionState.isBusy()) return
+        if (VpnSessionState.initialOverlaySyncActive) return
+        repo.fetchAndSaveProfileViaSync().getOrNull()?.let { profile ->
+            listener.onProfile(profile)
+            Log.i(TAG, "wifi subscription check active=${profile.subscription.is_active}")
+            DebugLog.i(TAG, "wifi subscription check active=${profile.subscription.is_active}")
+        } ?: Log.w(TAG, "wifi subscription profile fetch failed")
     }
 }

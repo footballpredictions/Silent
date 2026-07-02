@@ -592,18 +592,21 @@ class MainViewModel @Inject constructor(
         syncVpnStateFromSystem()
         resumeProfileJob?.cancel()
         resumeProfileJob = viewModelScope.launch {
-            if (_profile.value == null && repo.isLoggedIn() && !VpnSessionState.isBusy()) {
-                runCatching {
-                    if (bootstrapVpnMode && SilentVpnService.isRunning) {
-                        withBootstrapBackendApi { fetchProfileNow(force = true) }
-                        if (_profile.value != null) {
-                            disconnectBootstrapVpn(appContext)
+            if (repo.isLoggedIn() && !VpnSessionState.isBusy()) {
+                val refreshOnResume = !repo.isOnMobileData() || _profile.value == null
+                if (refreshOnResume) {
+                    runCatching {
+                        if (bootstrapVpnMode && SilentVpnService.isRunning) {
+                            withBootstrapBackendApi { fetchProfileNow(force = true) }
+                            if (_profile.value != null) {
+                                disconnectBootstrapVpn(appContext)
+                            }
+                        } else {
+                            fetchProfileNow(force = true)
                         }
-                    } else {
-                        fetchProfileNow(force = true)
+                    }.onFailure { e ->
+                        DebugLog.w("MainViewModel", "resume profile fetch: ${e.message}")
                     }
-                }.onFailure { e ->
-                    DebugLog.w("MainViewModel", "resume profile fetch: ${e.message}")
                 }
             }
             restoreCachedProfileToUi()

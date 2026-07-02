@@ -57,8 +57,8 @@ export default function Layout({ children, onLogout }: { children: React.ReactNo
           <div className="flex items-center gap-3">
             <SilentLogo size={32} />
             <div>
-              <span className="font-bold text-lg tracking-widest block leading-tight">SILENT</span>
-              <p className="text-xs text-[#555]">Admin Panel</p>
+              <span className="font-bold text-base block leading-tight">Silent VPN</span>
+              <p className="text-xs text-[#555]">Админ панель</p>
             </div>
           </div>
         </div>
@@ -94,8 +94,8 @@ export default function Layout({ children, onLogout }: { children: React.ReactNo
           <div className="flex items-center gap-3">
             <SilentLogo size={28} />
             <div>
-              <span className="font-bold tracking-widest block leading-tight">SILENT</span>
-              <p className="text-xs text-[#555]">Admin Panel</p>
+              <span className="font-bold text-sm block leading-tight">Silent VPN</span>
+              <p className="text-xs text-[#555]">Админ панель</p>
             </div>
           </div>
           <button onClick={() => setDrawerOpen(false)} className="text-[#555] hover:text-white p-1">
@@ -129,7 +129,7 @@ export default function Layout({ children, onLogout }: { children: React.ReactNo
           </button>
           <div className="flex items-center gap-2">
             <SilentLogo size={20} />
-            <span className="font-bold tracking-widest text-sm">SILENT</span>
+            <span className="font-bold text-sm">Silent VPN</span>
           </div>
         </header>
 

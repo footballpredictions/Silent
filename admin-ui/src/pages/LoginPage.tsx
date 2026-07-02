@@ -34,8 +34,8 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
           <div className="inline-flex mb-4">
             <SilentLogo size={64} />
           </div>
-          <h1 className="text-2xl font-bold tracking-widest">SILENT</h1>
-          <p className="text-[#555] text-sm mt-1">Admin Panel</p>
+          <h1 className="text-2xl font-bold">Silent VPN</h1>
+          <p className="text-[#555] text-sm mt-1">Админ панель</p>
         </div>
 
         <form onSubmit={handleSubmit} className="bg-[#111] border border-[#222] rounded-2xl p-6 space-y-4">

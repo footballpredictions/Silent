@@ -5,7 +5,7 @@ export default function SilentLogo({ size = 56, className = '' }: { size?: numbe
   return (
     <img
       src={src}
-      alt="Silent"
+      alt="Silent VPN"
       width={size}
       height={size}
       className={className}

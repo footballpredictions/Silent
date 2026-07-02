@@ -46,7 +46,7 @@ struct SideMenuView: View {
                     }
                     menuItem("Поддержка") {
                         isShowing = false
-                        if let url = URL(string: vm.theme?.support_url ?? "") { UIApplication.shared.open(url) }
+                        vm.showSupport = true
                     }
                     menuItem("О сервисе") {
                         isShowing = false; vm.showAbout = true

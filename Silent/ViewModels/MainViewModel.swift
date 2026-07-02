@@ -12,6 +12,7 @@ class MainViewModel: ObservableObject {
     @Published var showPromo = false
     @Published var showDevices = false
     @Published var showAbout = false
+    @Published var showSupport = false
 
     private let api = APIService.shared
 

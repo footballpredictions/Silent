@@ -98,6 +98,9 @@ struct MainView: View {
             }
         }
         .background(vm.bg.ignoresSafeArea())
+        .sheet(isPresented: $vm.showSupport) {
+            SupportView(vm: vm)
+        }
     }
 
     var statusText: String {

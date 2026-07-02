@@ -96,10 +96,13 @@ class Settings(BaseSettings):
     HIVE_CAPACITY_SAMPLE_RETENTION_HOURS: int = 168
     HIVE_CAPACITY_MAX_SAMPLES_PER_CELL: int = 3000
     HIVE_CAPACITY_MIN_SAMPLES: int = 5
-    HIVE_CAPACITY_MIN_ONLINE_FOR_LEARN: int = 2
-    HIVE_CAPACITY_P95_PERCENTILE: float = 95.0
-    HIVE_CAPACITY_FALLBACK_CPU_PER_USER: float = 7.0
-    HIVE_CAPACITY_FALLBACK_MEM_PER_USER: float = 3.0
+    HIVE_CAPACITY_MIN_ONLINE_FOR_LEARN: int = 1
+    # p50 маржинальной нагрузки (не p95 — иначе один 4K-зритель занижает лимит для всех)
+    HIVE_CAPACITY_PERCENTILE: float = 50.0
+    # Доля онлайн, которые одновременно качают тяжёлый трафик (остальные — лёгкий фон)
+    HIVE_CAPACITY_PEAK_ACTIVE_SHARE: float = 0.10
+    HIVE_CAPACITY_FALLBACK_CPU_PER_USER: float = 2.0
+    HIVE_CAPACITY_FALLBACK_MEM_PER_USER: float = 0.5
     # False = все VPN только на Улье (соты в админке, но трафик не уходит на worker)
     HIVE_WORKER_ROUTING_ENABLED: bool = False
 

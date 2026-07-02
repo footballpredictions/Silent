@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Hexagon, Plus, RefreshCw, Trash2, Wifi, WifiOff, Crown, Loader2, Cpu, HardDrive } from 'lucide-react'
+import { Hexagon, Plus, RefreshCw, Trash2, Wifi, WifiOff, Crown, Loader2, Cpu, HardDrive, Activity } from 'lucide-react'
 
 interface CellLoad {
   cpu_percent: number
@@ -70,6 +70,7 @@ const bottleneckLabel: Record<string, string> = {
 
 const capacityModeLabel: Record<string, string> = {
   adaptive: 'по замерам',
+  estimated: 'оценка с Улья',
   fallback: 'оценка',
   manual_cap: 'с потолком',
 }
@@ -80,6 +81,12 @@ function fmtPerUserMbps(mbps: number | null | undefined): string {
   return `~${mbps.toFixed(2)} Мбит/с на юзера`
 }
 
+function fmtBandwidth(mbps: number): string {
+  if (mbps >= 1) return `${mbps.toFixed(1)} Мбит/с`
+  if (mbps >= 0.001) return `${(mbps * 1000).toFixed(0)} Кбит/с`
+  return '0'
+}
+
 function fmtCapacityHint(cap?: CapacityProfile): string {
   if (!cap) return ''
   const parts = [capacityModeLabel[cap.mode] || cap.mode]
@@ -87,10 +94,58 @@ function fmtCapacityHint(cap?: CapacityProfile): string {
     parts.push(`узкое место ${bottleneckLabel[cap.bottleneck] || cap.bottleneck}`)
   }
   if (cap.per_user_cpu_p95 != null) parts.push(`~${cap.per_user_cpu_p95}% CPU/юзер`)
+  if (cap.per_user_mem_p95 != null) parts.push(`~${cap.per_user_mem_p95}% RAM/юзер`)
   const net = fmtPerUserMbps(cap.per_user_mbps_p95)
   if (net) parts.push(net)
   if (cap.samples_count > 0) parts.push(`${cap.samples_count} замеров`)
   return parts.join(' · ')
+}
+
+function CellLoadGrid({
+  cell,
+  cpuThreshold,
+  memThreshold,
+  bwThreshold,
+}: {
+  cell: HiveCell
+  cpuThreshold: number
+  memThreshold: number
+  bwThreshold: number
+}) {
+  if (!cell.load) {
+    if (!cell.is_queen && cell.status === 'active') {
+      return <p className="text-xs text-[#555] mt-2">CPU/RAM/канал: cell-agent недоступен</p>
+    }
+    return null
+  }
+  const { cpu_percent, memory_percent, network_util_percent, network_mbps_rx, network_mbps_tx } = cell.load
+  const netRx = network_mbps_rx ?? 0
+  const netTx = network_mbps_tx ?? 0
+  const netUtil = network_util_percent ?? 0
+  const hot = cpu_percent >= cpuThreshold || memory_percent >= memThreshold || netUtil >= bwThreshold
+  return (
+    <div className={`grid grid-cols-3 gap-2 mt-3 ${hot ? 'opacity-100' : 'opacity-90'}`}>
+      <div className="bg-[#0a0a0a] border border-[#222] rounded-lg px-3 py-2">
+        <p className="text-[10px] text-[#666] uppercase flex items-center gap-1"><Cpu className="w-3 h-3" /> CPU</p>
+        <p className={`text-lg font-semibold mt-0.5 ${cpu_percent >= cpuThreshold ? 'text-amber-400' : ''}`}>
+          {cpu_percent}%
+        </p>
+      </div>
+      <div className="bg-[#0a0a0a] border border-[#222] rounded-lg px-3 py-2">
+        <p className="text-[10px] text-[#666] uppercase flex items-center gap-1"><HardDrive className="w-3 h-3" /> RAM</p>
+        <p className={`text-lg font-semibold mt-0.5 ${memory_percent >= memThreshold ? 'text-amber-400' : ''}`}>
+          {memory_percent}%
+        </p>
+      </div>
+      <div className="bg-[#0a0a0a] border border-[#222] rounded-lg px-3 py-2">
+        <p className="text-[10px] text-[#666] uppercase flex items-center gap-1"><Activity className="w-3 h-3" /> Канал</p>
+        <p className={`text-lg font-semibold mt-0.5 ${netUtil >= bwThreshold ? 'text-amber-400' : ''}`}>
+          {netUtil.toFixed(1)}%
+        </p>
+        <p className="text-[10px] text-[#555] mt-0.5">{fmtBandwidth(netRx)}↓ {fmtBandwidth(netTx)}↑</p>
+      </div>
+    </div>
+  )
 }
 
 const statusLabel: Record<string, string> = {
@@ -264,7 +319,7 @@ export default function HivePage({ token }: { token: string }) {
             Улей
           </h1>
           <p className="text-[#888] text-sm mt-1">
-            Лимит онлайн считается по замерам CPU/RAM/канала (p95 на пользователя). Сборка OTA не считается перегрузкой.
+            Лимит онлайн — по типичной маржинальной нагрузке (не «все в 4K»). ~10% онлайн считаются активными стримерами.
           </p>
         </div>
         <button type="button" onClick={() => { setLoading(true); load() }}
@@ -279,7 +334,7 @@ export default function HivePage({ token }: { token: string }) {
       )}
 
       {summary && ql && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <div className="bg-[#111] border border-[#222] rounded-xl p-4">
             <p className="text-[#666] text-xs uppercase">Онлайн VPN</p>
             <p className="text-2xl font-semibold mt-1">{summary.total_online_vpn} / {summary.total_capacity_online}</p>
@@ -297,6 +352,15 @@ export default function HivePage({ token }: { token: string }) {
             <p className="text-[#666] text-xs uppercase flex items-center gap-1"><HardDrive className="w-3 h-3" /> RAM Улья</p>
             <p className={`text-2xl font-semibold mt-1 ${ql.memory_percent >= summary.mem_threshold ? 'text-amber-400' : ''}`}>
               {ql.memory_percent}%
+            </p>
+          </div>
+          <div className="bg-[#111] border border-[#222] rounded-xl p-4">
+            <p className="text-[#666] text-xs uppercase flex items-center gap-1"><Activity className="w-3 h-3" /> Канал Улья</p>
+            <p className={`text-2xl font-semibold mt-1 ${(ql.network_util_percent ?? 0) >= summary.bandwidth_threshold ? 'text-amber-400' : ''}`}>
+              {(ql.network_util_percent ?? 0).toFixed(1)}%
+            </p>
+            <p className="text-xs text-[#555] mt-1">
+              {fmtBandwidth(ql.network_mbps_rx ?? 0)}↓ / {fmtBandwidth(ql.network_mbps_tx ?? 0)}↑
             </p>
           </div>
           <div className="bg-[#111] border border-[#222] rounded-xl p-4">
@@ -365,13 +429,18 @@ export default function HivePage({ token }: { token: string }) {
                     <span className="text-xs text-[#888]">{statusLabel[cell.status] || cell.status}</span>
                   </div>
                   <p className="text-sm text-[#888] mt-1 font-mono">{cell.public_ip}:{cell.wdtt_port}</p>
+                  {summary && (
+                    <CellLoadGrid
+                      cell={cell}
+                      cpuThreshold={summary.cpu_threshold}
+                      memThreshold={summary.mem_threshold}
+                      bwThreshold={summary.bandwidth_threshold}
+                    />
+                  )}
                   {cell.load && summary && (
-                    <p className={`text-xs mt-1 ${cell.load.vpn_overloaded || (cell.load.cpu_percent >= summary.cpu_threshold) || (cell.load.memory_percent >= summary.mem_threshold) || ((cell.load.network_util_percent ?? 0) >= summary.bandwidth_threshold) ? 'text-amber-400' : 'text-[#666]'}`}>
+                    <p className={`text-xs mt-2 ${cell.load.vpn_overloaded || (cell.load.cpu_percent >= summary.cpu_threshold) || (cell.load.memory_percent >= summary.mem_threshold) || ((cell.load.network_util_percent ?? 0) >= summary.bandwidth_threshold) ? 'text-amber-400' : 'text-[#555]'}`}>
                       {fmtLoad(cell, summary.cpu_threshold, summary.mem_threshold, summary.bandwidth_threshold)}
                     </p>
-                  )}
-                  {!cell.load && !cell.is_queen && cell.status === 'active' && (
-                    <p className="text-xs text-[#555] mt-1">CPU/RAM: cell-agent недоступен</p>
                   )}
                   {needsAgentUpgrade(cell) && (
                     <button type="button" disabled={busy === cell.id} onClick={() => upgradeAgent(cell)}

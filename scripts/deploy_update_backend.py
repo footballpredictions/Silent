@@ -13,6 +13,7 @@ FILES = [
     "app/api/updates.py",
     "app/services/update_service.py",
     "app/services/build_agent_service.py",
+    "app/services/github_release_service.py",
     "ai/release_build_scheduler.py",
 ]
 

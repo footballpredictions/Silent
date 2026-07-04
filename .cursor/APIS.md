@@ -16,7 +16,7 @@
 | Tunnel API (через WG) | `http://10.66.66.1:8000` |
 | wdtt-server binary | `https://github.com/amurcanov/proxy-turn-vk-android/releases/latest/download/wdtt-server-linux-amd64` |
 | GitHub repo | `https://github.com/footballpredictions/Silent.git` |
-| **Landing (скачивание)** | `https://silentvpn3.github.io` → репо `silentvpn3/silentvpn3.github.io` (**отдельный** от Silent) |
+| **Landing (скачивание)** | `https://silentvpn3.github.io` → репо [`silentvpn3/silentvpn3.github.io`](https://github.com/silentvpn3/silentvpn3.github.io) (**отдельный** от Silent). Файлы — **GitHub Releases** (`v1.0.x`), fallback `releases.json` на Pages |
 
 ---
 
@@ -131,6 +131,13 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 | POST | `/promo` | Admin | Создание промокода |
 | GET | `/promo` | Admin | Список промокодов |
 | GET | `/logs` | Admin | Буфер логов |
+| GET | `/updates` | Admin | Манифесты PC/Android в `update/` |
+| POST | `/updates/upload` | Admin | Загрузить .exe / .apk |
+| DELETE | `/updates/{platform}` | Admin | Удалить обновление |
+| POST | `/updates/build/{platform}` | Admin | Сборка на сервере → `update/` |
+| POST | `/updates/publish-github/{platform}` | Admin | GitHub Release + `releases.json` на silentvpn3.github.io |
+| POST | `/updates/publish-github` | Admin | Опубликовать все доступные платформы |
+| GET | `/updates/github-status` | Admin | `GITHUB_TOKEN` настроен? |
 
 ### Admin Hive — `/api/admin/hive`
 

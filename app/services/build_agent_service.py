@@ -394,6 +394,15 @@ async def build_platform(
             freed_mb = (await asyncio.to_thread(_cleanup_platform_workspace, platform)) // (1024 * 1024)
 
             msg = f"OK {platform} v{version} → {info['filename']}"
+            try:
+                from app.services.github_release_service import is_configured, publish_platform
+                if is_configured():
+                    gh = await publish_platform(platform)
+                    msg += f", GitHub ✓"
+                    info = {**info, "github_download_url": gh.get("download_url")}
+            except Exception as gh_err:
+                logger.warning("GitHub publish after build (%s): %s", platform, gh_err)
+                msg += f", GitHub: {str(gh_err)[:120]}"
             if freed_mb > 0:
                 msg += f", очищено ~{freed_mb} MB"
             await set_build_log(

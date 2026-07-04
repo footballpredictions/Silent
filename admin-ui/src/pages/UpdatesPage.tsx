@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Download, Trash2, Upload, Hammer, Square } from 'lucide-react'
+import { Download, Trash2, Upload, Hammer, Square, Github } from 'lucide-react'
 
 interface UpdateInfo {
   platform: string
@@ -8,6 +8,14 @@ interface UpdateInfo {
   uploaded_at: string | null
   size: number
   download_url?: string
+  github_download_url?: string
+  github_published_at?: string | null
+}
+
+interface GitHubStatus {
+  configured: boolean
+  repo: string
+  landing_url: string
 }
 
 interface BuildStatus {
@@ -64,6 +72,8 @@ export default function UpdatesPage({ token }: { token: string }) {
   const [buildConfig, setBuildConfig] = useState<BuildConfig | null>(null)
   const [savingConfig, setSavingConfig] = useState(false)
   const [stoppingBuild, setStoppingBuild] = useState(false)
+  const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null)
+  const [publishingGithub, setPublishingGithub] = useState<string | null>(null)
   const pcRef = useRef<HTMLInputElement>(null)
   const androidRef = useRef<HTMLInputElement>(null)
 
@@ -83,6 +93,13 @@ export default function UpdatesPage({ token }: { token: string }) {
     } catch { /* ignore */ }
   }
 
+  const loadGithubStatus = async () => {
+    try {
+      const res = await fetch('/api/admin/updates/github-status', { headers })
+      if (res.ok) setGithubStatus(await res.json())
+    } catch { /* ignore */ }
+  }
+
   const load = async () => {
     setLoading(true)
     try {
@@ -90,6 +107,7 @@ export default function UpdatesPage({ token }: { token: string }) {
       if (res.ok) setItems(await res.json())
       await loadBuildStatus()
       await loadBuildConfig()
+      await loadGithubStatus()
     } catch { /* ignore */ }
     setLoading(false)
   }
@@ -163,6 +181,28 @@ export default function UpdatesPage({ token }: { token: string }) {
     }
   }
 
+  const publishGithub = async (platform: string) => {
+    setPublishingGithub(platform)
+    setMsg('')
+    try {
+      const res = await fetch(`/api/admin/updates/publish-github/${platform}`, {
+        method: 'POST',
+        headers,
+      })
+      const data: { detail?: string; message?: string; download_url?: string } = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setMsg(typeof data.detail === 'string' ? data.detail : `Ошибка (${res.status})`)
+      } else {
+        setMsg(data.message || `Опубликовано на GitHub (${platformLabel[platform]})`)
+        await load()
+      }
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Ошибка сети')
+    } finally {
+      setPublishingGithub(null)
+    }
+  }
+
   const stopBuild = async () => {
     setStoppingBuild(true)
     setMsg('')
@@ -232,7 +272,21 @@ export default function UpdatesPage({ token }: { token: string }) {
         Клиенты проверяют обновления через VPN-туннель.
         AI-агент в <strong className="text-[#aaa]">00:00 МСК</strong> создаёт новый bootstrap-хеш
         и пересобирает релизы (версия не меняется).
+        Скачивание на{' '}
+        <a href="https://silentvpn3.github.io" target="_blank" rel="noreferrer" className="text-purple-300 underline">
+          silentvpn3.github.io
+        </a>{' '}
+        — через GitHub Releases (работает без VPS).
       </p>
+
+      {githubStatus && (
+        <div className="bg-[#111] border border-[#222] rounded-xl p-4 text-sm text-[#888]">
+          GitHub:{' '}
+          <span className={githubStatus.configured ? 'text-green-400' : 'text-yellow-400'}>
+            {githubStatus.configured ? `настроен (${githubStatus.repo})` : 'GITHUB_TOKEN не задан на сервере'}
+          </span>
+        </div>
+      )}
 
       {buildStatus && (buildStatus.running || buildStatus.message) && (
         <div className="bg-[#111] border border-[#222] rounded-xl p-4 text-sm text-[#888]">
@@ -265,6 +319,22 @@ export default function UpdatesPage({ token }: { token: string }) {
                       <p>Файл: {item.filename}</p>
                       <p>Размер: {formatSize(item.size)}</p>
                       <p>Загружено: {formatDate(item.uploaded_at)}</p>
+                      {item.github_download_url ? (
+                        <p>
+                          GitHub:{' '}
+                          <a
+                            href={item.github_download_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-purple-300 underline break-all"
+                          >
+                            опубликовано
+                          </a>
+                          {item.github_published_at ? ` (${formatDate(item.github_published_at)})` : ''}
+                        </p>
+                      ) : (
+                        <p className="text-[#666]">GitHub: не опубликовано</p>
+                      )}
                     </div>
                   ) : (
                     <p className="text-sm text-[#555] mt-2">Нет загруженной версии</p>
@@ -345,6 +415,15 @@ export default function UpdatesPage({ token }: { token: string }) {
                 >
                   <Upload className="w-4 h-4" />
                   {uploading === item.platform ? 'Загрузка...' : 'Загрузить файл'}
+                </button>
+                <button
+                  disabled={!item.version || !githubStatus?.configured || publishingGithub === item.platform}
+                  onClick={() => publishGithub(item.platform)}
+                  className="inline-flex items-center gap-2 bg-[#1a1a1a] border border-purple-900/50 text-purple-200 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#221a2a] disabled:opacity-50"
+                  title="Загрузить в GitHub Releases + обновить releases.json на silentvpn3.github.io"
+                >
+                  <Github className="w-4 h-4" />
+                  {publishingGithub === item.platform ? 'Публикация…' : 'Опубликовать на GitHub'}
                 </button>
                 <button
                   disabled={building === item.platform || buildStatus?.running}

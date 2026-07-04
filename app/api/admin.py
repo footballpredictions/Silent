@@ -1185,3 +1185,45 @@ async def updates_build_release(
         raise HTTPException(status_code=409, detail="Сборка уже выполняется")
     background_tasks.add_task(build_platform_background, platform)
     return {"message": f"Сборка {platform} запущена", "platform": platform}
+
+
+@router.get("/updates/github-status")
+async def updates_github_status(_: bool = Depends(get_admin_credentials)):
+    from app.services.github_release_service import GITHUB_OWNER, GITHUB_REPO, is_configured
+    return {
+        "configured": is_configured(),
+        "repo": f"{GITHUB_OWNER}/{GITHUB_REPO}",
+        "landing_url": "https://silentvpn3.github.io",
+    }
+
+
+@router.post("/updates/publish-github/{platform}")
+async def publish_update_to_github(
+    platform: str,
+    _: bool = Depends(get_admin_credentials),
+):
+    if platform not in update_service.PLATFORMS:
+        raise HTTPException(status_code=400, detail="Invalid platform")
+    from app.services.github_release_service import GitHubReleaseError, publish_platform
+    try:
+        info = await publish_platform(platform)
+        return {"message": f"Опубликовано на GitHub: {_platform_label(platform)} v{info['version']}", **info}
+    except GitHubReleaseError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/updates/publish-github")
+async def publish_all_updates_to_github(_: bool = Depends(get_admin_credentials)):
+    from app.services.github_release_service import GitHubReleaseError, publish_all_available
+    try:
+        items = await publish_all_available()
+        return {
+            "message": f"Опубликовано на GitHub: {len(items)} платформ(ы)",
+            "items": items,
+        }
+    except GitHubReleaseError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+def _platform_label(platform: str) -> str:
+    return "PC (Windows)" if platform == "pc" else "Android"

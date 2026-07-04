@@ -1,6 +1,7 @@
 """Автоматическая настройка VPN-соты по SSH (IP + root-пароль)."""
 from __future__ import annotations
 
+import hashlib
 import io
 import ipaddress
 import json
@@ -59,6 +60,11 @@ def _load_cell_agent_py() -> str:
         "cell-agent/main.py не найден на Улье. "
         "Запустите с ПК: cd backend && python scripts/deploy_stable.py"
     )
+
+
+def cell_agent_build_id() -> str:
+    """Хеш исходника cell-agent на Улье — для сравнения с сотами."""
+    return hashlib.sha256(_load_cell_agent_py().encode("utf-8")).hexdigest()[:16]
 
 
 def _validate_wdtt_blob(data: bytes, source: str) -> bytes:

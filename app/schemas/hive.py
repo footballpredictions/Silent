@@ -39,7 +39,12 @@ class HiveCellCreateAgent(BaseModel):
 
 
 class HiveCellSshRepair(BaseModel):
-    password: str = Field(..., min_length=4, max_length=256, description="SSH-пароль root соты")
+    password: Optional[str] = Field(
+        default=None,
+        min_length=4,
+        max_length=256,
+        description="SSH-пароль root соты; если не указан — используется сохранённый",
+    )
 
 
 class HiveCellUpdate(BaseModel):

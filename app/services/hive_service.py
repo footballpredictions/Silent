@@ -19,7 +19,12 @@ from app.config import settings
 from app.core.security import encrypt_value, decrypt_value
 from app.models import Device, HiveCell, User
 from app.services.hive_capacity import get_capacity_profile, max_online_for_cell
-from app.services.hive_load import queen_accepting_new_vpn
+from app.services.hive_load import (
+    is_vpn_overloaded,
+    load_stress_score,
+    queen_accepting_new_vpn,
+    queen_recovered_stable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -252,22 +257,23 @@ async def pick_cell_for_new_device(
         )
         return queen
 
-    candidates: list[tuple[HiveCell, int, int]] = []
+    candidates: list[tuple[HiveCell, int, int, float]] = []
     for cell in workers:
+        wload = await fetch_worker_cell_load(cell)
+        if wload and is_vpn_overloaded(wload):
+            continue
         online = await count_online_on_cell(db, cell.id)
-        cap = await max_online_for_cell(db, cell)
+        cap = await max_online_for_cell(db, cell, load=wload)
         if online < cap:
-            candidates.append((cell, online, cap))
+            candidates.append((cell, online, cap, load_stress_score(wload)))
     if not candidates:
-        logger.warning("Hive: все соты заполнены, оставляем новое устройство на Улье")
+        logger.warning("Hive: все соты заполнены или перегружены, оставляем новое устройство на Улье")
         return queen
 
-    best, best_online, best_cap = candidates[0]
-    for cell, online, cap in candidates[1:]:
-        if online < best_online:
-            best, best_online, best_cap = cell, online, cap
-        elif online == best_online and cap > best_cap:
-            best, best_online, best_cap = cell, online, cap
+    best, best_online, best_cap, _ = min(
+        candidates,
+        key=lambda item: (item[3], item[1], -item[2]),
+    )
 
     logger.info(
         "Hive pick: queen overloaded → %s (online=%s/%s), queen cpu=%s mem=%s net=%s",
@@ -299,8 +305,16 @@ async def resolve_cell_for_device(
         cell = await get_cell_by_id(db, device.cell_id)
         if cell and cell.status in CELL_STATUSES_ASSIGNABLE:
             if settings.HIVE_REBALANCE_EXISTING_DEVICES:
+                if cell.is_queen:
+                    _, cell_load = queen_accepting_new_vpn()
+                else:
+                    cell_load = await fetch_worker_cell_load(cell)
                 online = await count_online_on_cell(db, cell.id)
-                if online >= await max_online_for_cell(db, cell):
+                cap = await max_online_for_cell(db, cell, load=cell_load)
+                relocate = online >= cap
+                if settings.HIVE_REBALANCE_ON_HARDWARE and cell_load and is_vpn_overloaded(cell_load):
+                    relocate = True
+                if relocate:
                     cell = await pick_cell_for_new_device(db)
                     if device.cell_id != cell.id:
                         device.cell_id = cell.id
@@ -393,6 +407,7 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
             "cpu_cores": int(data.get("cpu_cores") or 0) or None,
             "memory_total_gb": round(float(data.get("memory_total_gb") or 0), 1) or None,
             "wdtt_active": bool(data.get("wdtt_active")),
+            "agent_build_id": (data.get("agent_build_id") or None),
         }
     except Exception as e:
         logger.debug("Hive: load %s failed: %s", cell.name, e)
@@ -401,6 +416,19 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
 
 def store_cell_secret(cell: HiveCell, password: str) -> None:
     cell.api_secret_enc = encrypt_value(password)
+
+
+def store_ssh_password(cell: HiveCell, password: str) -> None:
+    cell.ssh_password_enc = encrypt_value(password)
+
+
+def resolve_ssh_password(cell: HiveCell) -> str | None:
+    if not cell.ssh_password_enc:
+        return None
+    try:
+        return decrypt_value(cell.ssh_password_enc)
+    except Exception:
+        return None
 
 
 def cell_to_response(
@@ -421,6 +449,7 @@ def cell_to_response(
         "wg_public_key": cell.wg_public_key or "",
         "api_url": cell.api_url,
         "has_agent": bool(cell.api_url and cell.api_secret_enc),
+        "has_ssh_password": bool(cell.ssh_password_enc),
         "tunnel_api_url": cell.tunnel_api_url,
         "max_clients": cell.max_clients,
         "link_capacity_mbps": float(cell.link_capacity_mbps) if cell.link_capacity_mbps else None,
@@ -530,18 +559,68 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
     }
 
 
+async def _pop_offline_device(db: AsyncSession, cell_id: uuid.UUID) -> Device | None:
+    q = await db.execute(
+        select(Device)
+        .where(
+            Device.cell_id == cell_id,
+            Device.is_active == True,  # noqa: E712
+            Device.is_connected == False,  # noqa: E712
+        )
+        .order_by(Device.last_connected.asc().nullsfirst(), Device.created_at.asc())
+        .limit(1)
+    )
+    return q.scalar_one_or_none()
+
+
+def _pick_least_loaded_worker(
+    workers: list[HiveCell],
+    worker_loads: dict[uuid.UUID, dict | None],
+    states: dict[uuid.UUID, dict],
+) -> HiveCell | None:
+    best: HiveCell | None = None
+    best_score = float("inf")
+    for cell in workers:
+        if cell.status != "active":
+            continue
+        st = states.get(cell.id, {})
+        if st.get("online", 0) >= st.get("cap", 0):
+            continue
+        load = worker_loads.get(cell.id)
+        if load and is_vpn_overloaded(load):
+            continue
+        score = load_stress_score(load) + st.get("online", 0) * 0.01
+        if score < best_score:
+            best_score = score
+            best = cell
+    return best
+
+
 async def rebalance_overloaded_cells(db: AsyncSession) -> dict:
+    empty = {"moved": 0, "blocked": 0, "hardware": 0, "returned": 0}
     if not settings.HIVE_REBALANCE_EXISTING_DEVICES:
-        return {"moved": 0, "blocked": 0}
+        return empty
+    if not settings.HIVE_WORKER_ROUTING_ENABLED:
+        return {**empty, "routing_off": True}
+
     cells = await _list_assignable_cells(db)
+    queen = await ensure_queen_cell(db)
+    _, queen_load = queen_accepting_new_vpn()
+    workers = [c for c in cells if not c.is_queen]
+
+    worker_loads: dict[uuid.UUID, dict | None] = {}
+    for w in workers:
+        worker_loads[w.id] = await fetch_worker_cell_load(w)
+
     states: dict[uuid.UUID, dict] = {}
     for cell in cells:
         online = await count_online_on_cell(db, cell.id)
-        cap = await max_online_for_cell(db, cell)
-        states[cell.id] = {"cell": cell, "online": online, "cap": cap}
+        load = queen_load if cell.is_queen else worker_loads.get(cell.id)
+        cap = await max_online_for_cell(db, cell, load=load)
+        states[cell.id] = {"cell": cell, "online": online, "cap": cap, "load": load}
 
-    moved = 0
-    blocked = 0
+    moved = blocked = hardware = returned = 0
+
     for src in cells:
         src_state = states[src.id]
         overload = src_state["online"] - src_state["cap"]
@@ -551,23 +630,13 @@ async def rebalance_overloaded_cells(db: AsyncSession) -> dict:
             st for st in states.values()
             if st["cell"].id != src.id and st["online"] < st["cap"] and st["cell"].status == "active"
         ]
-        free_targets.sort(key=lambda st: st["online"])
+        free_targets.sort(key=lambda st: (load_stress_score(st.get("load")), st["online"]))
         for _ in range(overload):
             if not free_targets:
                 blocked += 1
                 break
             target = free_targets[0]
-            q = await db.execute(
-                select(Device)
-                .where(
-                    Device.cell_id == src.id,
-                    Device.is_active == True,
-                    Device.is_connected == False,
-                )
-                .order_by(Device.last_connected.asc().nullsfirst(), Device.created_at.asc())
-                .limit(1)
-            )
-            candidate = q.scalar_one_or_none()
+            candidate = await _pop_offline_device(db, src.id)
             if not candidate:
                 blocked += 1
                 break
@@ -578,7 +647,59 @@ async def rebalance_overloaded_cells(db: AsyncSession) -> dict:
             if target["online"] >= target["cap"]:
                 free_targets.pop(0)
             else:
-                free_targets.sort(key=lambda st: st["online"])
+                free_targets.sort(key=lambda st: (load_stress_score(st.get("load")), st["online"]))
+
+    if settings.HIVE_REBALANCE_ON_HARDWARE:
+        batch = max(1, int(settings.HIVE_REBALANCE_HARDWARE_BATCH))
+        for src in cells:
+            src_load = states[src.id].get("load")
+            if not src_load or not is_vpn_overloaded(src_load):
+                continue
+            for _ in range(batch):
+                if src.is_queen:
+                    target = _pick_least_loaded_worker(workers, worker_loads, states)
+                else:
+                    queen_st = states[queen.id]
+                    queen_ok = queen_load and not is_vpn_overloaded(queen_load)
+                    if queen_ok and queen_st["online"] < queen_st["cap"]:
+                        target = queen
+                    else:
+                        others = [w for w in workers if w.id != src.id]
+                        target = _pick_least_loaded_worker(others, worker_loads, states)
+                if not target:
+                    blocked += 1
+                    break
+                candidate = await _pop_offline_device(db, src.id)
+                if not candidate:
+                    break
+                candidate.cell_id = target.id
+                moved += 1
+                hardware += 1
+                states[src.id]["online"] = max(0, states[src.id]["online"] - 1)
+                states[target.id]["online"] += 1
+
+    if queen_recovered_stable() and workers:
+        batch = max(1, int(settings.HIVE_REBALANCE_RETURN_BATCH))
+        queen_st = states[queen.id]
+        if queen_load and not is_vpn_overloaded(queen_load):
+            for w in workers:
+                if queen_st["online"] >= queen_st["cap"]:
+                    break
+                w_load = worker_loads.get(w.id)
+                if w_load and is_vpn_overloaded(w_load):
+                    continue
+                for _ in range(batch):
+                    if queen_st["online"] >= queen_st["cap"]:
+                        break
+                    candidate = await _pop_offline_device(db, w.id)
+                    if not candidate:
+                        break
+                    candidate.cell_id = queen.id
+                    moved += 1
+                    returned += 1
+                    states[w.id]["online"] = max(0, states[w.id]["online"] - 1)
+                    queen_st["online"] += 1
+
     if moved > 0:
         await db.commit()
-    return {"moved": moved, "blocked": blocked}
+    return {"moved": moved, "blocked": blocked, "hardware": hardware, "returned": returned}

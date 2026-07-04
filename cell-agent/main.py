@@ -11,9 +11,12 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import secrets
-from typing import Optional
+import hashlib
+from pathlib import Path
+from typing import Any, Optional
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -29,6 +32,10 @@ HIVE_API_URL = (os.environ.get("HIVE_API_URL") or "").strip().rstrip("/")
 TUNNEL_API_URL = (os.environ.get("TUNNEL_API_URL") or "http://10.66.66.1:8000").strip()
 CELL_LINK_CAPACITY_MBPS = float(os.environ.get("CELL_LINK_CAPACITY_MBPS") or "1000")
 CELL_NETWORK_INTERFACE = (os.environ.get("CELL_NETWORK_INTERFACE") or "").strip()
+
+
+def agent_build_id() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
 
 
 def _auth(secret: str) -> None:
@@ -53,7 +60,7 @@ def _detect_public_ip() -> str:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "role": "hive-cell-agent"}
+    return {"status": "ok", "role": "hive-cell-agent", "agent_build_id": agent_build_id()}
 
 
 @app.post("/v1/handshake")
@@ -279,4 +286,24 @@ async def status(
         "network_link_sysfs_mbps": network_link_sysfs_mbps,
         "cpu_cores": cpu_cores,
         "memory_total_gb": _memory_total_gb(),
+        "agent_build_id": agent_build_id(),
     }
+
+
+HIVE_MANIFEST_PATH = Path("/etc/wdtt/hive_manifest.json")
+
+
+@app.post("/v1/sync-manifest")
+async def sync_manifest(
+    payload: dict[str, Any],
+    x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
+):
+    """Улей пушит список устройств соты (для автономии при падении API)."""
+    _auth(x_cell_agent_secret)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid manifest")
+    HIVE_MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = HIVE_MANIFEST_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, HIVE_MANIFEST_PATH)
+    return {"ok": True, "version": payload.get("version"), "device_count": payload.get("device_count")}

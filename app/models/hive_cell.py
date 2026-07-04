@@ -21,6 +21,8 @@ class HiveCell(Base):
     # Cell-agent (опционально): URL и зашифрованный пароль для handshake
     api_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     api_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # SSH root для provision / обновления cell-agent (Fernet)
+    ssh_password_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Tunnel API на соте (если проксирует на улей) — для документации/health
     tunnel_api_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     max_clients: Mapped[int] = mapped_column(Integer, default=0)

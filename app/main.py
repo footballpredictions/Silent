@@ -193,10 +193,9 @@ async def lifespan(app: FastAPI):
                 "UPDATE hive_cells SET link_capacity_mbps = 10000 "
                 "WHERE is_queen = false AND name ~* '^[[:space:]]*сота[[:space:]]*1([[:space:]]|$)'"
             ))
-            await conn.execute(text(
-                "UPDATE hive_cells SET link_capacity_mbps = 1000 "
-                "WHERE is_queen = false AND name !~* '^[[:space:]]*сота[[:space:]]*1([[:space:]]|$)'"
-            ))
+        await conn.execute(text(
+            "ALTER TABLE hive_cells ADD COLUMN IF NOT EXISTS ssh_password_enc TEXT"
+        ))
     logger.info("Database tables ready")
 
     from app.database import AsyncSessionLocal
@@ -241,13 +240,17 @@ async def lifespan(app: FastAPI):
     monitor_task = start_monitor_background()
     build_scheduler_task = start_release_build_scheduler()
     from app.services.hive_capacity import start_hive_capacity_sampler
+    from app.services.hive_rebalance_loop import start_hive_rebalance_loop
+    from app.services.hive_cell_maintenance_loop import start_hive_cell_maintenance_loop
 
     capacity_sampler_task = start_hive_capacity_sampler()
+    rebalance_task = start_hive_rebalance_loop()
+    cell_maintenance_task = start_hive_cell_maintenance_loop()
 
     yield
 
     # Shutdown
-    for task in (monitor_task, build_scheduler_task, capacity_sampler_task):
+    for task in (monitor_task, build_scheduler_task, capacity_sampler_task, rebalance_task, cell_maintenance_task):
         task.cancel()
         try:
             await task

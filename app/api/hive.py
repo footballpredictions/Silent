@@ -151,6 +151,7 @@ async def auto_connect_cell(
         last_seen_at=datetime.utcnow(),
     )
     hive_service.store_cell_secret(cell, agent_secret)
+    hive_service.store_ssh_password(cell, req.password)
     db.add(cell)
     await db.commit()
     await db.refresh(cell)
@@ -363,7 +364,7 @@ async def upgrade_cell_agent(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Обновить cell-agent на соте (CPU/RAM) — нужен SSH root-пароль."""
+    """Обновить cell-agent на соте — SSH из запроса или сохранённый при подключении."""
     cell = await hive_service.get_cell_by_id(db, cell_id)
     if not cell:
         raise HTTPException(status_code=404, detail="Сота не найдена")
@@ -372,17 +373,30 @@ async def upgrade_cell_agent(
     host = (cell.public_ip or "").strip()
     if not host:
         raise HTTPException(status_code=400, detail="У соты нет public_ip")
+
+    pwd = (req.password or "").strip()
+    if pwd:
+        hive_service.store_ssh_password(cell, pwd)
+    else:
+        pwd = hive_service.resolve_ssh_password(cell)
+    if not pwd:
+        raise HTTPException(
+            status_code=400,
+            detail="SSH-пароль не сохранён — введите пароль (будет сохранён для следующих обновлений)",
+        )
+
     try:
         await asyncio.to_thread(
             hive_provision_service.upgrade_cell_agent_via_ssh,
             host,
-            req.password,
+            pwd,
             link_capacity_mbps=float(cell.link_capacity_mbps or settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+    await db.commit()
     return {"ok": True, "message": "cell-agent обновлён — обновите страницу через несколько секунд"}
 
 
@@ -418,5 +432,7 @@ async def hive_summary(
         "full_cells": extra["full_cells"],
         "rebalanced_moved": rebalance["moved"],
         "rebalanced_blocked": rebalance["blocked"],
+        "rebalanced_hardware": rebalance.get("hardware", 0),
+        "rebalanced_returned": rebalance.get("returned", 0),
         "queen_capacity": queen_capacity,
     }

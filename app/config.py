@@ -108,8 +108,24 @@ class Settings(BaseSettings):
     HIVE_CELL_FIRST_LINK_CAPACITY_MBPS: float = 10000.0
     HIVE_CAPACITY_FALLBACK_CPU_PER_USER: float = 2.0
     HIVE_CAPACITY_FALLBACK_MEM_PER_USER: float = 0.5
-    # False = все VPN только на Улье (соты в админке, но трафик не уходит на worker)
-    HIVE_WORKER_ROUTING_ENABLED: bool = False
+    # Гистерезис: пороги «остыл» (~70% от порога перегрузки)
+    HIVE_COOLDOWN_CPU_PERCENT: float = 60.0
+    HIVE_COOLDOWN_MEM_PERCENT: float = 62.0
+    HIVE_COOLDOWN_NET_PERCENT: float = 56.0
+    HIVE_COOLDOWN_STABLE_SEC: int = 180
+    # Фоновая балансировка офлайн-устройств по CPU/RAM/каналу
+    HIVE_REBALANCE_INTERVAL_SEC: int = 30
+    HIVE_REBALANCE_ON_HARDWARE: bool = True
+    HIVE_REBALANCE_HARDWARE_BATCH: int = 3
+    HIVE_REBALANCE_RETURN_BATCH: int = 2
+    # Manifest устройств на соты (не полный дамп БД)
+    HIVE_CELL_MANIFEST_SYNC_ENABLED: bool = True
+    # Автообновление cell-agent на сотах (SSH из БД), интервал как в админке Улей
+    HIVE_CELL_MAINTENANCE_INTERVAL_SEC: int = 10
+    HIVE_CELL_AGENT_AUTO_UPGRADE_ENABLED: bool = True
+    HIVE_CELL_AGENT_UPGRADE_FAIL_COOLDOWN_SEC: int = 120
+    # True = новые VPN на соты при перегрузке Улья; офлайн переносится фоном
+    HIVE_WORKER_ROUTING_ENABLED: bool = True
 
     # Subscription prices
     PRICE_MONTHLY: float = 199.0

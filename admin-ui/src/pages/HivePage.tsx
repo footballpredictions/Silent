@@ -29,6 +29,7 @@ interface HiveCell {
   assigned_devices: number
   status: string
   last_error: string | null
+  has_ssh_password?: boolean
   load?: CellLoad
 }
 
@@ -47,6 +48,8 @@ interface HiveSummary {
   full_cells: number
   rebalanced_moved: number
   rebalanced_blocked: number
+  rebalanced_hardware?: number
+  rebalanced_returned?: number
 }
 
 function fmtBandwidth(mbps: number): string {
@@ -209,32 +212,6 @@ export default function HivePage({ token }: { token: string }) {
     return () => clearInterval(t)
   }, [cells, load])
 
-  const needsAgentUpgrade = (cell: HiveCell) =>
-    !cell.is_queen && cell.status === 'active' && cell.load &&
-    cell.load.cpu_percent === 0 && cell.load.memory_percent === 0
-
-  const upgradeAgent = async (cell: HiveCell) => {
-    const password = prompt(`SSH root-пароль для «${cell.name}» (${cell.public_ip}):`)
-    if (!password) return
-    setBusy(cell.id)
-    setError(null)
-    try {
-      const res = await fetch(`/api/admin/hive/cells/${cell.id}/upgrade-agent`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ password }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) setError(fmtDetail(data.detail))
-      else {
-        setSuccess(data.message || 'cell-agent обновлён')
-        await load(true)
-      }
-    } finally {
-      setBusy(null)
-    }
-  }
-
   const connectAuto = async (e: React.FormEvent) => {
     e.preventDefault()
     setBusy('auto')
@@ -307,7 +284,8 @@ export default function HivePage({ token }: { token: string }) {
             Улей
           </h1>
           <p className="text-[#888] text-sm mt-1">
-            Характеристики и нагрузка каждой ноды — с сервера, обновление каждые 10 с.
+            Характеристики и нагрузка — с сервера, обновление каждые 10 с.
+            Cell-agent на сотах синхронизируется с Ульем автоматически.
           </p>
         </div>
         <button type="button" onClick={() => { setLoading(true); load() }}
@@ -373,7 +351,21 @@ export default function HivePage({ token }: { token: string }) {
       )}
       {summary && (summary.rebalanced_moved > 0 || summary.rebalanced_blocked > 0) && (
         <div className="text-xs text-[#888]">
-          Перераспределение: перемещено {summary.rebalanced_moved}, не удалось переместить {summary.rebalanced_blocked}.
+          Перераспределение: перемещено {summary.rebalanced_moved}
+          {summary.rebalanced_hardware ? ` (по нагрузке ${summary.rebalanced_hardware})` : ''}
+          {summary.rebalanced_returned ? `, вернули на Улей ${summary.rebalanced_returned}` : ''}
+          {summary.rebalanced_blocked > 0 ? `, не удалось ${summary.rebalanced_blocked}` : ''}.
+        </div>
+      )}
+
+      {summary && (
+        <div className="bg-[#0d0d0d] border border-[#2a2a2a] rounded-lg px-4 py-3 text-xs text-[#888] leading-relaxed">
+          <p className="text-[#aaa] font-medium mb-1">Когда срабатывает балансировка</p>
+          <p>
+            Перегруз — если CPU ≥ {summary.cpu_threshold}%, RAM ≥ {summary.mem_threshold}% или канал ≥ {summary.bandwidth_threshold}%.
+            Тогда новые VPN идут на соты, офлайн-устройства переезжают фоном каждые ~30 с.
+            Онлайн-сессии не рвутся — смена ноды при следующем запросе конфига в приложении.
+          </p>
         </div>
       )}
 
@@ -420,6 +412,11 @@ export default function HivePage({ token }: { token: string }) {
                     <span className="text-xs text-[#888]">{statusLabel[cell.status] || cell.status}</span>
                   </div>
                   <p className="text-sm text-[#888] mt-1 font-mono">{cell.public_ip}:{cell.wdtt_port}</p>
+                  {!cell.is_queen && cell.status === 'active' && !cell.has_ssh_password && (
+                    <p className="text-xs text-amber-500 mt-0.5">
+                      SSH не сохранён — автообновление агента недоступно (переподключите соту)
+                    </p>
+                  )}
                   <CellHardwareLine cell={cell} />
                   {summary && (
                     <CellLoadGrid
@@ -428,12 +425,6 @@ export default function HivePage({ token }: { token: string }) {
                       memThreshold={summary.mem_threshold}
                       bwThreshold={summary.bandwidth_threshold}
                     />
-                  )}
-                  {needsAgentUpgrade(cell) && (
-                    <button type="button" disabled={busy === cell.id} onClick={() => upgradeAgent(cell)}
-                      className="text-xs mt-2 text-blue-400 hover:text-blue-300 underline disabled:opacity-50">
-                      Обновить мониторинг на соте (SSH)
-                    </button>
                   )}
                   {cell.assigned_devices > 0 && !cell.is_queen && (
                     <p className="text-xs text-[#666] mt-1">назначено устройств: {cell.assigned_devices}</p>

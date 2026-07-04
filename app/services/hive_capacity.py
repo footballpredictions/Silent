@@ -319,6 +319,115 @@ def fallback_max_online(hardware: NodeHardware) -> int:
     return max(1, min(by_net, by_cpu, by_mem))
 
 
+def _live_max_online_from_snapshot(
+    online_count: int,
+    load: dict,
+    *,
+    hardware: NodeHardware,
+    baseline_cpu: float,
+    baseline_mem: float,
+    baseline_net: float,
+) -> tuple[int, str, dict[str, int]]:
+    """Лимит прямо сейчас: (нагрузка − фон) / онлайн → сколько ещё влезет в железо."""
+    cpu = float(load.get("cpu_percent") or 0)
+    mem = float(load.get("memory_percent") or 0)
+    net_mbps = _network_mbps(load)
+    per_cpu = max(0.15, (cpu - baseline_cpu) / online_count)
+    per_mem = max(0.05, (mem - baseline_mem) / online_count)
+    per_net = max(0.0005, (net_mbps - baseline_net) / online_count)
+    return _limits_from_typicals(
+        per_cpu,
+        per_mem,
+        per_net,
+        baseline_cpu=baseline_cpu,
+        baseline_mem=baseline_mem,
+        baseline_net=baseline_net,
+        link_capacity_mbps=hardware.link_capacity_mbps,
+    )
+
+
+def _blend_live_capacity(
+    profile: CapacityProfile,
+    *,
+    online_count: int,
+    load: dict | None,
+    hardware: NodeHardware,
+    samples: list[HiveLoadSample],
+) -> CapacityProfile:
+    """Смешивает историю (сэмплы) с текущим снимком нагрузки — лимит меняется каждые 10 с."""
+    min_live = max(1, int(settings.HIVE_CAPACITY_MIN_ONLINE_FOR_LIVE))
+    if online_count < min_live or not load:
+        return profile
+
+    if samples:
+        b_cpu = _baseline_metric(samples, "cpu_percent")
+        b_mem = _baseline_metric(samples, "memory_percent")
+        b_net = _baseline_metric(samples, "network_mbps")
+    else:
+        b_cpu = min(float(load.get("cpu_percent") or 0), 12.0)
+        b_mem = min(float(load.get("memory_percent") or 0), 20.0)
+        b_net = 0.0
+
+    live_max, live_bn, live_limits = _live_max_online_from_snapshot(
+        online_count,
+        load,
+        hardware=hardware,
+        baseline_cpu=b_cpu,
+        baseline_mem=b_mem,
+        baseline_net=b_net,
+    )
+
+    weight = max(0.0, min(1.0, float(settings.HIVE_CAPACITY_LIVE_WEIGHT)))
+    if profile.mode in ("fallback", "estimated") or profile.samples_count < int(
+        settings.HIVE_CAPACITY_MIN_SAMPLES
+    ):
+        blended = live_max
+        mode = "live"
+    elif weight >= 0.99:
+        blended = live_max
+        mode = "live"
+    else:
+        blended = max(1, int(round((1.0 - weight) * profile.max_online + weight * live_max)))
+        mode = "adaptive+live"
+
+    bottleneck = live_bn if live_max <= profile.max_online else profile.bottleneck
+    limits = {
+        "cpu": live_limits.get("cpu", profile.limit_cpu),
+        "memory": live_limits.get("memory", profile.limit_mem),
+        "network": live_limits.get("network", profile.limit_network),
+    }
+    if profile.limit_cpu is not None:
+        limits["cpu"] = min(limits["cpu"], profile.limit_cpu) if mode != "live" else live_limits["cpu"]
+    if profile.limit_mem is not None:
+        limits["memory"] = (
+            min(limits["memory"], profile.limit_mem) if mode != "live" else live_limits["memory"]
+        )
+    if profile.limit_network is not None:
+        limits["network"] = (
+            min(limits["network"], profile.limit_network) if mode != "live" else live_limits["network"]
+        )
+
+    return CapacityProfile(
+        max_online=blended,
+        bottleneck=bottleneck,
+        mode=mode,
+        samples_count=profile.samples_count,
+        per_user_cpu_p95=profile.per_user_cpu_p95,
+        per_user_mem_p95=profile.per_user_mem_p95,
+        per_user_mbps_p95=profile.per_user_mbps_p95,
+        link_capacity_mbps=profile.link_capacity_mbps,
+        baseline_cpu=round(b_cpu, 2),
+        baseline_mem=round(b_mem, 2),
+        cpu_cores=profile.cpu_cores,
+        memory_total_gb=profile.memory_total_gb,
+        limit_cpu=limits.get("cpu"),
+        limit_mem=limits.get("memory"),
+        limit_network=limits.get("network"),
+        cpu_power_ratio=profile.cpu_power_ratio,
+        mem_power_ratio=profile.mem_power_ratio,
+    )
+
+
 def compute_max_online_from_samples(
     samples: list[HiveLoadSample],
     *,
@@ -466,7 +575,13 @@ async def get_capacity_profile(
     cell: HiveCell,
     *,
     load: dict | None = None,
+    online_count: int | None = None,
 ) -> CapacityProfile:
+    if online_count is None:
+        from app.services.hive_service import count_online_on_cell
+
+        online_count = await count_online_on_cell(db, cell.id)
+
     samples = await fetch_recent_samples(db, cell.id)
     hardware = _hardware_from_load(load, cell)
     profile = compute_max_online_from_samples(samples, hardware=hardware)
@@ -490,6 +605,14 @@ async def get_capacity_profile(
 
     if not cell.is_queen:
         profile = _scale_worker_profile(profile, hardware)
+
+    profile = _blend_live_capacity(
+        profile,
+        online_count=online_count,
+        load=load,
+        hardware=hardware,
+        samples=samples,
+    )
 
     configured = int(cell.max_clients or 0)
     if configured > 0:

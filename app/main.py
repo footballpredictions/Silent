@@ -193,9 +193,21 @@ async def lifespan(app: FastAPI):
                 "UPDATE hive_cells SET link_capacity_mbps = 10000 "
                 "WHERE is_queen = false AND name ~* '^[[:space:]]*сота[[:space:]]*1([[:space:]]|$)'"
             ))
+            await conn.execute(text(
+                "UPDATE hive_cells SET link_capacity_mbps = 1000 "
+                "WHERE is_queen = false AND name !~* '^[[:space:]]*сота[[:space:]]*1([[:space:]]|$)'"
+            ))
         await conn.execute(text(
             "ALTER TABLE hive_cells ADD COLUMN IF NOT EXISTS ssh_password_enc TEXT"
         ))
+        once_auto_cap = await conn.execute(text(
+            "INSERT INTO hive_schema_migrations (name) VALUES ('cell_auto_capacity_v1') "
+            "ON CONFLICT (name) DO NOTHING RETURNING name"
+        ))
+        if once_auto_cap.rowcount:
+            await conn.execute(text(
+                "UPDATE hive_cells SET max_clients = 0 WHERE max_clients > 0"
+            ))
     logger.info("Database tables ready")
 
     from app.database import AsyncSessionLocal

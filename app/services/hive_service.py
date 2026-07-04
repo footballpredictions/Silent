@@ -497,7 +497,7 @@ async def list_cells_with_stats(db: AsyncSession) -> list[dict]:
             load = queen_load
         else:
             load = worker_load_map.get(cell.id)
-        capacity = (await get_capacity_profile(db, cell, load=load)).to_dict()
+        capacity = (await get_capacity_profile(db, cell, load=load, online_count=online)).to_dict()
         out.append(
             cell_to_response(
                 cell,

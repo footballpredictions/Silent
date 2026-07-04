@@ -92,11 +92,14 @@ class Settings(BaseSettings):
     HIVE_WDTT_BINARY_PATH: str = ""
     HIVE_REBALANCE_EXISTING_DEVICES: bool = True
     # Адаптивная ёмкость: сэмплы нагрузки и p95 на онлайн-пользователя
-    HIVE_CAPACITY_SAMPLE_INTERVAL_SEC: int = 30
+    HIVE_CAPACITY_SAMPLE_INTERVAL_SEC: int = 10
     HIVE_CAPACITY_SAMPLE_RETENTION_HOURS: int = 168
     HIVE_CAPACITY_MAX_SAMPLES_PER_CELL: int = 3000
     HIVE_CAPACITY_MIN_SAMPLES: int = 5
     HIVE_CAPACITY_MIN_ONLINE_FOR_LEARN: int = 1
+    # Живой лимит: пересчёт от текущего онлайн и CPU/RAM/канала (обновляется каждые 10 с)
+    HIVE_CAPACITY_MIN_ONLINE_FOR_LIVE: int = 2
+    HIVE_CAPACITY_LIVE_WEIGHT: float = 0.65
     # p50 маржинальной нагрузки (не p95 — иначе один 4K-зритель занижает лимит для всех)
     HIVE_CAPACITY_PERCENTILE: float = 50.0
     # Доля онлайн, которые одновременно качают тяжёлый трафик (остальные — лёгкий фон)

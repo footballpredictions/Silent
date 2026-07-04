@@ -31,6 +31,16 @@ interface HiveCell {
   last_error: string | null
   has_ssh_password?: boolean
   load?: CellLoad
+  capacity?: { max_online: number; mode?: string; bottleneck?: string }
+}
+
+const capModeLabel: Record<string, string> = {
+  live: 'живой расчёт',
+  'adaptive+live': 'история + сейчас',
+  adaptive: 'по истории',
+  fallback: 'оценка по железу',
+  estimated: 'оценка',
+  manual_cap: 'ручной потолок',
 }
 
 interface HiveSummary {
@@ -431,6 +441,9 @@ export default function HivePage({ token }: { token: string }) {
                   )}
                   <p className={`text-xs mt-1 ${cell.online_count >= cell.max_online ? 'text-red-400' : 'text-[#666]'}`}>
                     онлайн лимит: {cell.online_count} / {cell.max_online}
+                    {cell.capacity?.mode && (
+                      <span className="text-[#555]"> · {capModeLabel[cell.capacity.mode] || cell.capacity.mode}</span>
+                    )}
                   </p>
                   {cell.last_error && <p className="text-xs text-red-400 mt-2 whitespace-pre-wrap">{cell.last_error}</p>}
                 </div>

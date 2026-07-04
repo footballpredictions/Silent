@@ -44,6 +44,7 @@ services:
       BUILD_AGENT_HOST_ROOT: /opt/silent-vpn/backend/build-agent
     volumes:
       - ./static:/app/static
+      - ./cell-agent:/app/cell-agent:ro
       - ./admin-ui/dist:/app/admin-ui/dist:ro
       - ./update:/app/update
       - ./build-agent:/app/build-agent

@@ -42,6 +42,15 @@ for root, _, names in os.walk(dist):
         sftp.put(str(lp), rp)
         print("ui", rel)
 
+cell_agent = BACKEND_ROOT / "cell-agent" / "main.py"
+if cell_agent.is_file():
+    rp = f"{REMOTE}/cell-agent/main.py"
+    client.exec_command(f"mkdir -p {REMOTE}/cell-agent")
+    sftp.put(str(cell_agent), rp)
+    print("upload cell-agent/main.py")
+else:
+    print("WARN: cell-agent/main.py missing locally")
+
 fix_script = BACKEND_ROOT / "scripts" / "fix_tunnel_dnat.py"
 if fix_script.is_file():
     rp = f"{REMOTE}/scripts/fix_tunnel_dnat.py"
@@ -57,6 +66,11 @@ script = f"""#!/bin/bash
 set -e
 cd {REMOTE}
 find app ai -name '*.py' | while read f; do docker cp "$f" {CONTAINER}:/app/"$f"; done
+docker exec {CONTAINER} mkdir -p /app/cell-agent
+if [ -f cell-agent/main.py ]; then
+  docker cp cell-agent/main.py {CONTAINER}:/app/cell-agent/main.py
+fi
+docker exec {CONTAINER} pip install -q paramiko httpx 2>/dev/null || true
 docker compose restart api nginx
 sleep 14
 bash /tmp/fix_tunnel_dnat.sh

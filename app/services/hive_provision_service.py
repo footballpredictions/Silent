@@ -19,6 +19,46 @@ logger = logging.getLogger(__name__)
 BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
 CELL_AGENT_MAIN = BACKEND_ROOT / "cell-agent" / "main.py"
 MIN_WDTT_BYTES = 500_000
+MIN_CELL_AGENT_BYTES = 500
+
+
+def _read_file_from_docker_host(host_path: str, inner_path: str = "/f") -> bytes | None:
+    """Читает файл с хоста Улья через docker.sock (из API-контейнера)."""
+    try:
+        r = subprocess.run(
+            [
+                "docker", "run", "--rm",
+                "-v", f"{host_path}:{inner_path}:ro",
+                "alpine:3.19",
+                "cat", inner_path,
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+        if r.returncode == 0 and len(r.stdout) >= MIN_CELL_AGENT_BYTES:
+            return r.stdout
+    except Exception as e:
+        logger.debug("docker read %s: %s", host_path, e)
+    return None
+
+
+def _load_cell_agent_py() -> str:
+    """Исходник cell-agent для заливки на соту (контейнер или хост Улья)."""
+    for p in (CELL_AGENT_MAIN, Path("/app/cell-agent/main.py")):
+        if p.is_file():
+            return p.read_text(encoding="utf-8")
+    for host_path in (
+        "/opt/silent-vpn/backend/cell-agent/main.py",
+        f"{BACKEND_ROOT}/cell-agent/main.py",
+    ):
+        data = _read_file_from_docker_host(host_path)
+        if data:
+            logger.info("Hive cell-agent: host %s (%s bytes)", host_path, len(data))
+            return data.decode("utf-8")
+    raise RuntimeError(
+        "cell-agent/main.py не найден на Улье. "
+        "Запустите с ПК: cd backend && python scripts/deploy_stable.py"
+    )
 
 
 def _validate_wdtt_blob(data: bytes, source: str) -> bytes:
@@ -203,15 +243,7 @@ def provision_cell_via_ssh(
 
     wdtt_binary = _load_wdtt_binary()
     logger.info("Hive provision: wdtt binary %s bytes → cell %s", len(wdtt_binary), host)
-    agent_path = CELL_AGENT_MAIN
-    if not agent_path.is_file():
-        fallback = Path("/app/cell-agent/main.py")
-        if fallback.is_file():
-            agent_path = fallback
-        else:
-            raise RuntimeError("cell-agent/main.py не найден на Улье")
-
-    agent_py = agent_path.read_text(encoding="utf-8")
+    agent_py = _load_cell_agent_py()
     passwords_json = json.dumps({"master": wdtt_master_password, "users": []})
     hive_meta = json.dumps({"hive_api_url": hive_api, "hive_cell_id": cell_id})
 
@@ -373,14 +405,7 @@ def upgrade_cell_agent_via_ssh(
     """Обновить cell-agent на соте (мониторинг CPU/RAM/канал) без полной переустановки."""
     host = _validate_host(host)
     link_mbps = int(link_capacity_mbps or settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)
-    agent_path = CELL_AGENT_MAIN
-    if not agent_path.is_file():
-        fallback = Path("/app/cell-agent/main.py")
-        if fallback.is_file():
-            agent_path = fallback
-        else:
-            raise RuntimeError("cell-agent/main.py не найден на Улье")
-    agent_py = agent_path.read_text(encoding="utf-8")
+    agent_py = _load_cell_agent_py()
     agent_port = settings.HIVE_CELL_AGENT_PORT
 
     client = _ssh_connect(host, ssh_password)

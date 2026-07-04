@@ -165,6 +165,7 @@ data class ThemeData(
     val login_forgot_instruction: String = "Введите email — мы отправим ссылку для установки нового пароля.",
     val login_reset_title: String = "Новый пароль",
     val login_reset_button_text: String = "Сохранить пароль",
+    val hive_standby_api_urls: String = "",
 )
 
 data class PaymentInitRequest(val plan_type: String, val promo_code: String? = null)

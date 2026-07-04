@@ -640,10 +640,17 @@ class SilentRepository @Inject constructor(
                 out.add("https://$gw")
             }
         }
+        standbyApiBasesFromTheme().forEach { out.add(it) }
         out.add("https://${BootstrapVpnConfig.serverHost()}")
         out.add("https://$DEFAULT_SERVER_HOST")
         out.add(getPublicServerUrl())
         return out.filter { it.isNotBlank() }.toList()
+    }
+
+    private fun standbyApiBasesFromTheme(): List<String> {
+        val raw = getCachedTheme()?.hive_standby_api_urls.orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return raw.split(",").map { it.trim() }.filter { it.isNotBlank() }
     }
 
     fun getPublicServerUrl(): String =

@@ -1,6 +1,8 @@
 import axios from 'axios'
 import { getApiBaseUrl, isMainVpnSessionActive, isTunnelApiActive } from './tunnelApi'
 import { installTunnelApiAdapter } from './tunnelApiClient'
+import { getCachedTheme } from './themeStore'
+import { standbyApiBasesFromTheme } from './clientTheme'
 
 const SERVER_URL_KEY = 'silent_server_url'
 const TOKEN_KEY = 'silent_token'
@@ -24,6 +26,15 @@ export function setServerUrl(url: string) {
 
 export function getPublicApiBaseUrl(): string {
   return (getServerUrl() || FALLBACK_PUBLIC).replace(/\/$/, '')
+}
+
+/** Публичные URL API: standby-соты из theme, затем основной Улей. */
+export function getPublicApiCandidateBases(): string[] {
+  const out = new Set<string>()
+  standbyApiBasesFromTheme(getCachedTheme()).forEach(u => out.add(u.replace(/\/$/, '')))
+  out.add(getPublicApiBaseUrl())
+  out.add(getDirectApiBaseUrl())
+  return [...out]
 }
 
 export function getDirectApiBaseUrl(): string {

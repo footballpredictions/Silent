@@ -29,6 +29,13 @@ export interface ClientTheme {
   login_reset_button_text?: string
   support_url?: string
   telegram_channel_url?: string
+  hive_standby_api_urls?: string
+}
+
+export function standbyApiBasesFromTheme(theme: ClientTheme | null): string[] {
+  const raw = (theme?.hive_standby_api_urls || '').trim()
+  if (!raw) return []
+  return raw.split(',').map(s => s.trim()).filter(Boolean)
 }
 
 function parseHex(color: string): { r: number; g: number; b: number } | null {

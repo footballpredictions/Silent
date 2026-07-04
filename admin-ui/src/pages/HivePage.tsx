@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Hexagon, Plus, RefreshCw, Trash2, Wifi, WifiOff, Crown, Loader2, Cpu, HardDrive, Activity } from 'lucide-react'
+import { Hexagon, Plus, RefreshCw, Trash2, Wifi, WifiOff, Crown, Loader2, Cpu, HardDrive, Activity, Server } from 'lucide-react'
 
 interface CellLoad {
   cpu_percent: number
@@ -7,31 +7,13 @@ interface CellLoad {
   network_util_percent?: number
   network_mbps_rx?: number
   network_mbps_tx?: number
-  network_link_capacity_mbps?: number
+  network_link_capacity_mbps?: number | null
   network_interface?: string | null
   cpu_cores?: number | null
   memory_total_gb?: number | null
   build_running?: boolean
   vpn_overloaded?: boolean
   wdtt_active?: boolean
-}
-
-interface CapacityProfile {
-  max_online: number
-  bottleneck: string
-  mode: string
-  samples_count: number
-  per_user_cpu_p95?: number | null
-  per_user_mem_p95?: number | null
-  per_user_mbps_p95?: number | null
-  link_capacity_mbps: number
-  cpu_cores?: number | null
-  memory_total_gb?: number | null
-  limit_cpu?: number | null
-  limit_mem?: number | null
-  limit_network?: number | null
-  cpu_power_ratio?: number | null
-  mem_power_ratio?: number | null
 }
 
 interface HiveCell {
@@ -43,7 +25,6 @@ interface HiveCell {
   wg_port: number
   max_online: number
   max_clients?: number
-  capacity?: CapacityProfile
   online_count: number
   assigned_devices: number
   status: string
@@ -58,7 +39,6 @@ interface HiveSummary {
   worker_cells: number
   queen_accepting_vpn: boolean
   queen_load: CellLoad
-  queen_capacity?: CapacityProfile | null
   cpu_threshold: number
   mem_threshold: number
   bandwidth_threshold: number
@@ -67,27 +47,6 @@ interface HiveSummary {
   full_cells: number
   rebalanced_moved: number
   rebalanced_blocked: number
-}
-
-const bottleneckLabel: Record<string, string> = {
-  cpu: 'CPU',
-  memory: 'RAM',
-  network: 'канал',
-  fallback: 'оценка',
-  manual_cap: 'ручной потолок',
-}
-
-const capacityModeLabel: Record<string, string> = {
-  adaptive: 'по замерам',
-  estimated: 'оценка с Улья',
-  fallback: 'оценка',
-  manual_cap: 'с потолком',
-}
-
-function fmtPerUserMbps(mbps: number | null | undefined): string {
-  if (mbps == null) return ''
-  if (mbps < 1) return `~${(mbps * 1000).toFixed(0)} Кбит/с на юзера`
-  return `~${mbps.toFixed(2)} Мбит/с на юзера`
 }
 
 function fmtBandwidth(mbps: number): string {
@@ -101,36 +60,53 @@ function fmtLinkGbps(mbps: number): string {
   return `${mbps.toFixed(0)} Мбит/с`
 }
 
-function fmtHardware(cap?: CapacityProfile, load?: CellLoad): string {
-  const cores = cap?.cpu_cores ?? load?.cpu_cores
-  const ram = cap?.memory_total_gb ?? load?.memory_total_gb
-  const link = cap?.link_capacity_mbps ?? load?.network_link_capacity_mbps
+/** Характеристики железа — только то, что отдаёт сервер (host / cell-agent). */
+function fmtHardware(load?: CellLoad): string {
+  if (!load) return ''
   const parts: string[] = []
-  if (cores) parts.push(`${cores} ядер`)
-  if (ram) parts.push(`${ram} ГБ RAM`)
-  if (link) parts.push(`канал ${fmtLinkGbps(link)}`)
+  if (load.cpu_cores) parts.push(`${load.cpu_cores} ядер`)
+  if (load.memory_total_gb) parts.push(`${load.memory_total_gb} ГБ RAM`)
+  if (load.network_link_capacity_mbps && load.network_link_capacity_mbps > 0) {
+    parts.push(`канал ${fmtLinkGbps(load.network_link_capacity_mbps)}`)
+  }
   return parts.join(' · ')
 }
 
-function fmtCapacityHint(cap?: CapacityProfile): string {
-  if (!cap) return ''
-  const parts = [capacityModeLabel[cap.mode] || cap.mode]
-  const hw = fmtHardware(cap)
-  if (hw) parts.push(hw)
-  if (cap.bottleneck && cap.bottleneck !== 'fallback') {
-    parts.push(`узкое место ${bottleneckLabel[cap.bottleneck] || cap.bottleneck}`)
+function CellHardwareLine({ cell }: { cell: HiveCell }) {
+  const hw = fmtHardware(cell.load)
+  if (!cell.load) {
+    if (cell.is_queen) {
+      return (
+        <p className="text-xs text-[#555] mt-1 flex items-center gap-1">
+          <Server className="w-3 h-3 shrink-0" />
+          характеристики сервера: нет данных
+        </p>
+      )
+    }
+    if (cell.status === 'active') {
+      return (
+        <p className="text-xs text-[#555] mt-1 flex items-center gap-1">
+          <Server className="w-3 h-3 shrink-0" />
+          характеристики: cell-agent недоступен
+        </p>
+      )
+    }
+    return null
   }
-  if (cap.limit_cpu != null && cap.limit_mem != null && cap.limit_network != null) {
-    parts.push(`лимиты CPU ${cap.limit_cpu} / RAM ${cap.limit_mem} / сеть ${cap.limit_network}`)
+  if (!hw) {
+    return (
+      <p className="text-xs text-[#555] mt-1 flex items-center gap-1">
+        <Server className="w-3 h-3 shrink-0" />
+        характеристики сервера: обновление…
+      </p>
+    )
   }
-  if (cap.cpu_power_ratio != null && cap.cpu_power_ratio < 0.99) {
-    parts.push(`CPU ${Math.round(cap.cpu_power_ratio * 100)}% от Улья`)
-  }
-  if (cap.mem_power_ratio != null && cap.mem_power_ratio < 0.99) {
-    parts.push(`RAM ${Math.round(cap.mem_power_ratio * 100)}% от Улья`)
-  }
-  if (cap.samples_count > 0) parts.push(`${cap.samples_count} замеров`)
-  return parts.join(' · ')
+  return (
+    <p className="text-sm text-[#bbb] mt-1.5 flex items-center gap-1.5">
+      <Server className="w-3.5 h-3.5 text-[#666] shrink-0" />
+      {hw}
+    </p>
+  )
 }
 
 function CellLoadGrid({
@@ -144,12 +120,7 @@ function CellLoadGrid({
   memThreshold: number
   bwThreshold: number
 }) {
-  if (!cell.load) {
-    if (!cell.is_queen && cell.status === 'active') {
-      return <p className="text-xs text-[#555] mt-2">CPU/RAM/канал: cell-agent недоступен</p>
-    }
-    return null
-  }
+  if (!cell.load) return null
   const { cpu_percent, memory_percent, network_util_percent, network_mbps_rx, network_mbps_tx } = cell.load
   const netRx = network_mbps_rx ?? 0
   const netTx = network_mbps_tx ?? 0
@@ -175,9 +146,6 @@ function CellLoadGrid({
           {netUtil.toFixed(1)}%
         </p>
         <p className="text-[10px] text-[#555] mt-0.5">{fmtBandwidth(netRx)}↓ {fmtBandwidth(netTx)}↑</p>
-        {(cell.load.network_link_capacity_mbps ?? 0) > 0 && (
-          <p className="text-[10px] text-[#444]">лимит {fmtLinkGbps(cell.load.network_link_capacity_mbps!)}</p>
-        )}
       </div>
     </div>
   )
@@ -190,22 +158,6 @@ const statusLabel: Record<string, string> = {
   draining: 'Вывод из эксплуатации',
   offline: 'Выключена',
   error: 'Ошибка',
-}
-
-function fmtLoad(cell: HiveCell, cpuThreshold: number, memThreshold: number, bwThreshold: number): string {
-  if (!cell.load) return ''
-  const { cpu_percent, memory_percent, network_util_percent, build_running, wdtt_active } = cell.load
-  const cpuHot = cpu_percent >= cpuThreshold
-  const memHot = memory_percent >= memThreshold
-  const netHot = (network_util_percent ?? 0) >= bwThreshold
-  const parts = [
-    `CPU ${cpu_percent}%${cpuHot ? ' ⚠' : ''}`,
-    `RAM ${memory_percent}%${memHot ? ' ⚠' : ''}`,
-    `Канал ${(network_util_percent ?? 0).toFixed(1)}%${netHot ? ' ⚠' : ''}`,
-  ]
-  if (cell.is_queen && build_running) parts.push('сборка OTA')
-  if (!cell.is_queen && wdtt_active === false) parts.push('wdtt не запущен')
-  return parts.join(' · ')
 }
 
 function fmtDetail(d: unknown): string {
@@ -344,6 +296,7 @@ export default function HivePage({ token }: { token: string }) {
   }
 
   const ql = summary?.queen_load
+  const queenHw = fmtHardware(ql)
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -354,7 +307,7 @@ export default function HivePage({ token }: { token: string }) {
             Улей
           </h1>
           <p className="text-[#888] text-sm mt-1">
-            Лимит онлайн — по типичной маржинальной нагрузке (не «все в 4K»). ~10% онлайн считаются активными стримерами.
+            Характеристики и нагрузка каждой ноды — с сервера, обновление каждые 10 с.
           </p>
         </div>
         <button type="button" onClick={() => { setLoading(true); load() }}
@@ -364,7 +317,7 @@ export default function HivePage({ token }: { token: string }) {
       </div>
       {metricsAt && (
         <p className="text-xs text-[#555] -mt-3">
-          Метрики CPU/RAM/канала обновляются каждые 10 с · последнее: {metricsAt.toLocaleTimeString('ru')}
+          Последнее обновление: {metricsAt.toLocaleTimeString('ru')}
         </p>
       )}
 
@@ -373,9 +326,6 @@ export default function HivePage({ token }: { token: string }) {
           <div className="bg-[#111] border border-[#222] rounded-xl p-4">
             <p className="text-[#666] text-xs uppercase">Онлайн VPN</p>
             <p className="text-2xl font-semibold mt-1">{summary.total_online_vpn} / {summary.total_capacity_online}</p>
-            {summary.queen_capacity && (
-              <p className="text-xs text-[#666] mt-1">{fmtCapacityHint(summary.queen_capacity)}</p>
-            )}
           </div>
           <div className="bg-[#111] border border-[#222] rounded-xl p-4">
             <p className="text-[#666] text-xs uppercase flex items-center gap-1"><Cpu className="w-3 h-3" /> CPU Улья</p>
@@ -414,6 +364,12 @@ export default function HivePage({ token }: { token: string }) {
             )}
           </div>
         </div>
+      )}
+      {queenHw && (
+        <p className="text-sm text-[#aaa] flex items-center gap-1.5 -mt-2">
+          <Server className="w-3.5 h-3.5 text-[#666]" />
+          Улей: {queenHw}
+        </p>
       )}
       {summary && (summary.rebalanced_moved > 0 || summary.rebalanced_blocked > 0) && (
         <div className="text-xs text-[#888]">
@@ -464,9 +420,7 @@ export default function HivePage({ token }: { token: string }) {
                     <span className="text-xs text-[#888]">{statusLabel[cell.status] || cell.status}</span>
                   </div>
                   <p className="text-sm text-[#888] mt-1 font-mono">{cell.public_ip}:{cell.wdtt_port}</p>
-                  {(cell.capacity || cell.load) && (
-                    <p className="text-xs text-[#555] mt-1">{fmtHardware(cell.capacity, cell.load)}</p>
-                  )}
+                  <CellHardwareLine cell={cell} />
                   {summary && (
                     <CellLoadGrid
                       cell={cell}
@@ -475,25 +429,17 @@ export default function HivePage({ token }: { token: string }) {
                       bwThreshold={summary.bandwidth_threshold}
                     />
                   )}
-                  {cell.load && summary && (
-                    <p className={`text-xs mt-2 ${cell.load.vpn_overloaded || (cell.load.cpu_percent >= summary.cpu_threshold) || (cell.load.memory_percent >= summary.mem_threshold) || ((cell.load.network_util_percent ?? 0) >= summary.bandwidth_threshold) ? 'text-amber-400' : 'text-[#555]'}`}>
-                      {fmtLoad(cell, summary.cpu_threshold, summary.mem_threshold, summary.bandwidth_threshold)}
-                    </p>
-                  )}
                   {needsAgentUpgrade(cell) && (
                     <button type="button" disabled={busy === cell.id} onClick={() => upgradeAgent(cell)}
-                      className="text-xs mt-1 text-blue-400 hover:text-blue-300 underline disabled:opacity-50">
+                      className="text-xs mt-2 text-blue-400 hover:text-blue-300 underline disabled:opacity-50">
                       Обновить мониторинг на соте (SSH)
                     </button>
                   )}
                   {cell.assigned_devices > 0 && !cell.is_queen && (
-                    <p className="text-xs text-[#666] mt-0.5">назначено устройств: {cell.assigned_devices}</p>
+                    <p className="text-xs text-[#666] mt-1">назначено устройств: {cell.assigned_devices}</p>
                   )}
-                  <p className={`text-xs mt-0.5 ${cell.online_count >= cell.max_online ? 'text-red-400' : 'text-[#666]'}`}>
+                  <p className={`text-xs mt-1 ${cell.online_count >= cell.max_online ? 'text-red-400' : 'text-[#666]'}`}>
                     онлайн лимит: {cell.online_count} / {cell.max_online}
-                    {cell.capacity && (
-                      <span className="block text-[#555] mt-0.5">{fmtCapacityHint(cell.capacity)}</span>
-                    )}
                   </p>
                   {cell.last_error && <p className="text-xs text-red-400 mt-2 whitespace-pre-wrap">{cell.last_error}</p>}
                 </div>

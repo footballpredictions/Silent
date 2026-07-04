@@ -153,8 +153,50 @@ async def lifespan(app: FastAPI):
         ))
         await conn.execute(text(
             "UPDATE hive_cells SET link_capacity_mbps = 10000 "
+            "WHERE is_queen = false AND (link_capacity_mbps IS NULL OR link_capacity_mbps <= 0) "
+            "AND id = (SELECT id FROM hive_cells WHERE is_queen = false "
+            "ORDER BY created_at ASC NULLS LAST LIMIT 1)"
+        ))
+        await conn.execute(text(
+            "UPDATE hive_cells SET link_capacity_mbps = 1000 "
             "WHERE is_queen = false AND (link_capacity_mbps IS NULL OR link_capacity_mbps <= 0)"
         ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS hive_schema_migrations (
+                name VARCHAR(128) PRIMARY KEY,
+                applied_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        """))
+        once = await conn.execute(text(
+            "INSERT INTO hive_schema_migrations (name) VALUES ('cell_link_cap_v2') "
+            "ON CONFLICT (name) DO NOTHING RETURNING name"
+        ))
+        if once.rowcount:
+            await conn.execute(text(
+                "UPDATE hive_cells SET link_capacity_mbps = 1000 "
+                "WHERE is_queen = false AND link_capacity_mbps = 10000 "
+                "AND id <> (SELECT id FROM hive_cells WHERE is_queen = false "
+                "ORDER BY created_at ASC NULLS LAST LIMIT 1)"
+            ))
+        await conn.execute(text(
+            "ALTER TABLE hive_load_samples ADD COLUMN IF NOT EXISTS cpu_cores INTEGER"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE hive_load_samples ADD COLUMN IF NOT EXISTS memory_total_gb DOUBLE PRECISION"
+        ))
+        once_v3 = await conn.execute(text(
+            "INSERT INTO hive_schema_migrations (name) VALUES ('cell_link_cap_v3') "
+            "ON CONFLICT (name) DO NOTHING RETURNING name"
+        ))
+        if once_v3.rowcount:
+            await conn.execute(text(
+                "UPDATE hive_cells SET link_capacity_mbps = 10000 "
+                "WHERE is_queen = false AND name ~* '^[[:space:]]*сота[[:space:]]*1([[:space:]]|$)'"
+            ))
+            await conn.execute(text(
+                "UPDATE hive_cells SET link_capacity_mbps = 1000 "
+                "WHERE is_queen = false AND name !~* '^[[:space:]]*сота[[:space:]]*1([[:space:]]|$)'"
+            ))
     logger.info("Database tables ready")
 
     from app.database import AsyncSessionLocal

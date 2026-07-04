@@ -228,6 +228,7 @@ def provision_cell_via_ssh(
     hive_api_base: str,
     wdtt_master_password: str,
     cell_id: str,
+    link_capacity_mbps: float | None = None,
 ) -> dict[str, Any]:
     host = _validate_host(host)
     if not ssh_password or len(ssh_password) < 4:
@@ -240,6 +241,7 @@ def provision_cell_via_ssh(
     agent_port = settings.HIVE_CELL_AGENT_PORT
     hive_ip = hive_public_ip.strip()
     hive_api = hive_api_base.rstrip("/")
+    link_mbps = int(link_capacity_mbps or settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)
 
     wdtt_binary = _load_wdtt_binary()
     logger.info("Hive provision: wdtt binary %s bytes → cell %s", len(wdtt_binary), host)
@@ -337,7 +339,7 @@ Environment=CELL_AGENT_SECRET=$AGENT_SECRET
 Environment=CELL_PUBLIC_IP={host}
 Environment=WG_SERVER_PUBLIC_KEY=$WG_PUB
 Environment=HIVE_API_URL={hive_api}
-Environment=CELL_LINK_CAPACITY_MBPS={int(settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)}
+Environment=CELL_LINK_CAPACITY_MBPS={link_mbps}
 Environment=TUNNEL_API_URL=http://10.66.66.1:8000
 ExecStart=/opt/silent-vpn/cell-agent/venv/bin/uvicorn main:app --host 0.0.0.0 --port {agent_port}
 Restart=always

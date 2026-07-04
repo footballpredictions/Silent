@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -97,15 +98,77 @@ def _resolve_link_capacity_mbps(load: dict | None, cell: HiveCell | None) -> flo
     if cell is not None and not cell.is_queen:
         if agent > queen_default:
             return agent
-        return float(settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)
+        return float(settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)  # 1 Гбит по умолчанию
     return agent if agent > 0 else queen_default
+
+
+def _resolve_link_capacity_for_capacity(load: dict | None, cell: HiveCell | None) -> float:
+    """Канал для расчёта ёмкости: БД соты → sysfs → env."""
+    if cell is not None and not cell.is_queen:
+        db_link = float(cell.link_capacity_mbps or 0)
+        if db_link > 0:
+            return db_link
+        m = re.search(r"(\d+)", cell.name or "", re.I)
+        if m and int(m.group(1)) == 1:
+            return float(settings.HIVE_CELL_FIRST_LINK_CAPACITY_MBPS)
+        return float(settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)
+    load = load or {}
+    sysfs = float(load.get("network_link_sysfs_mbps") or 0)
+    if sysfs > 0:
+        return sysfs
+    return _resolve_link_capacity_mbps(load, cell)
+
+
+def _worker_link_online_scale(cell_hw: NodeHardware) -> float:
+    """1 Гбит ≈ 10% от эталона 10 Гбит — лимит онлайн масштабируется."""
+    premium = float(settings.HIVE_CELL_FIRST_LINK_CAPACITY_MBPS)
+    link = cell_hw.link_capacity_mbps
+    if link <= 0 or premium <= 0:
+        return 1.0
+    return max(0.1, min(10.0, link / premium))
+
+
+def _scale_worker_profile(profile: CapacityProfile, cell_hw: NodeHardware) -> CapacityProfile:
+    scale = _worker_link_online_scale(cell_hw)
+    if abs(scale - 1.0) < 0.01:
+        return profile
+    new_max = max(1, int(round(profile.max_online * scale)))
+    limits = dict(
+        cpu=profile.limit_cpu,
+        memory=profile.limit_mem,
+        network=profile.limit_network,
+    )
+    if limits.get("network"):
+        limits["network"] = max(1, int(round(limits["network"] * scale)))
+    bottleneck = profile.bottleneck
+    if limits.get("network") and limits["network"] <= new_max:
+        bottleneck = "network"
+    return CapacityProfile(
+        max_online=new_max,
+        bottleneck=bottleneck,
+        mode=profile.mode,
+        samples_count=profile.samples_count,
+        per_user_cpu_p95=profile.per_user_cpu_p95,
+        per_user_mem_p95=profile.per_user_mem_p95,
+        per_user_mbps_p95=profile.per_user_mbps_p95,
+        link_capacity_mbps=profile.link_capacity_mbps,
+        baseline_cpu=profile.baseline_cpu,
+        baseline_mem=profile.baseline_mem,
+        cpu_cores=profile.cpu_cores,
+        memory_total_gb=profile.memory_total_gb,
+        limit_cpu=limits.get("cpu"),
+        limit_mem=limits.get("memory"),
+        limit_network=limits.get("network"),
+        cpu_power_ratio=profile.cpu_power_ratio,
+        mem_power_ratio=profile.mem_power_ratio,
+    )
 
 
 def _hardware_from_load(load: dict | None, cell: HiveCell | None = None) -> NodeHardware:
     load = load or {}
     cores = float(load.get("cpu_cores") or 0)
     ram_gb = float(load.get("memory_total_gb") or 0)
-    link = _resolve_link_capacity_mbps(load, cell)
+    link = _resolve_link_capacity_for_capacity(load, cell)
     return NodeHardware(
         cpu_cores=cores if cores > 0 else 0.0,
         memory_total_gb=ram_gb if ram_gb > 0 else 0.0,
@@ -133,6 +196,33 @@ def _hardware_ratios(cell: NodeHardware, queen: NodeHardware) -> tuple[float, fl
         net_r = 1.0
 
     return cpu_r, mem_r, net_r
+
+
+def _samples_for_current_hardware(
+    samples: list[HiveLoadSample],
+    hardware: NodeHardware,
+) -> list[HiveLoadSample]:
+    """Замеры с другого железа не участвуют в лимите — при смене VPS пересчёт сразу."""
+    if not samples:
+        return []
+    link = hardware.link_capacity_mbps
+    cores = int(hardware.cpu_cores) if hardware.cpu_cores > 0 else 0
+    ram = float(hardware.memory_total_gb) if hardware.memory_total_gb > 0 else 0.0
+
+    def _matches(s: HiveLoadSample) -> bool:
+        if link > 0:
+            sl = float(s.link_capacity_mbps or 0)
+            if sl > 0 and abs(sl - link) / max(link, 1) > 0.15:
+                return False
+        if cores > 0 and s.cpu_cores is not None and int(s.cpu_cores) > 0:
+            if int(s.cpu_cores) != cores:
+                return False
+        if ram > 0 and s.memory_total_gb is not None and float(s.memory_total_gb) > 0:
+            if abs(float(s.memory_total_gb) - ram) > 0.6:
+                return False
+        return True
+
+    return [s for s in samples if _matches(s)]
 
 
 def _baseline_metric(samples: list[HiveLoadSample], attr: str) -> float:
@@ -219,9 +309,11 @@ def fallback_max_online(hardware: NodeHardware) -> int:
     share = max(0.05, float(settings.HIVE_CAPACITY_PEAK_ACTIVE_SHARE))
     link = hardware.link_capacity_mbps
     by_net = int((link * util) // (per_user_mbps * share))
-    by_cpu = int(settings.HIVE_CPU_PERCENT_THRESHOLD // (per_user_cpu * share))
+    cpu_scale = max(0.2, hardware.cpu_cores / 4.0) if hardware.cpu_cores > 0 else 1.0
+    mem_scale = max(0.2, hardware.memory_total_gb / 8.0) if hardware.memory_total_gb > 0 else 1.0
+    by_cpu = int((settings.HIVE_CPU_PERCENT_THRESHOLD * cpu_scale) // (per_user_cpu * share))
     by_mem = int(
-        settings.HIVE_MEM_PERCENT_THRESHOLD
+        (settings.HIVE_MEM_PERCENT_THRESHOLD * mem_scale)
         // (max(0.1, settings.HIVE_CAPACITY_FALLBACK_MEM_PER_USER) * share)
     )
     return max(1, min(by_net, by_cpu, by_mem))
@@ -237,6 +329,7 @@ def compute_max_online_from_samples(
     p = float(settings.HIVE_CAPACITY_PERCENTILE)
     link_cap = hardware.link_capacity_mbps
 
+    samples = _samples_for_current_hardware(samples, hardware)
     usable = [s for s in samples if s.online_count >= min_online]
     if len(usable) < min_samples:
         cap = fallback_max_online(hardware)
@@ -395,6 +488,9 @@ async def get_capacity_profile(
                     queen_hw=queen_hw,
                 )
 
+    if not cell.is_queen:
+        profile = _scale_worker_profile(profile, hardware)
+
     configured = int(cell.max_clients or 0)
     if configured > 0:
         capped = min(configured, profile.max_online)
@@ -435,7 +531,10 @@ async def record_sample(
     cell_id: uuid.UUID,
     online_count: int,
     load: dict,
+    *,
+    cell: HiveCell | None = None,
 ) -> None:
+    hw = _hardware_from_load(load, cell)
     sample = HiveLoadSample(
         cell_id=cell_id,
         sampled_at=datetime.utcnow(),
@@ -444,7 +543,9 @@ async def record_sample(
         memory_percent=round(float(load.get("memory_percent") or 0), 2),
         network_mbps=round(_network_mbps(load), 4),
         network_util_percent=round(float(load.get("network_util_percent") or 0), 2),
-        link_capacity_mbps=round(_resolve_link_capacity_mbps(load, None), 1),
+        link_capacity_mbps=round(hw.link_capacity_mbps, 1),
+        cpu_cores=int(hw.cpu_cores) if hw.cpu_cores > 0 else None,
+        memory_total_gb=round(hw.memory_total_gb, 1) if hw.memory_total_gb > 0 else None,
     )
     db.add(sample)
     await db.commit()
@@ -495,7 +596,7 @@ async def sample_all_cells(db: AsyncSession) -> None:
             load = await fetch_worker_cell_load(cell)
             if not load:
                 continue
-        await record_sample(db, cell.id, online, load)
+        await record_sample(db, cell.id, online, load, cell=cell)
 
 
 async def capacity_sampler_loop() -> None:

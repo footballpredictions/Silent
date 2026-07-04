@@ -103,8 +103,9 @@ class Settings(BaseSettings):
     HIVE_CAPACITY_PEAK_ACTIVE_SHARE: float = 0.10
     HIVE_CELL_CPU_POWER_RATIO_DEFAULT: float = 0.35
     HIVE_CELL_MEM_POWER_RATIO_DEFAULT: float = 0.35
-    # Ширина канала сот (VPS часто не отдаёт speed в sysfs) — 10 Гбит/с
-    HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS: float = 10000.0
+    # Ширина канала сот: по умолчанию 1 Гбит; первая сота — 10 Гбит (см. hive_service.default_link_capacity_for_new_cell)
+    HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS: float = 1000.0
+    HIVE_CELL_FIRST_LINK_CAPACITY_MBPS: float = 10000.0
     HIVE_CAPACITY_FALLBACK_CPU_PER_USER: float = 2.0
     HIVE_CAPACITY_FALLBACK_MEM_PER_USER: float = 0.5
     # False = все VPN только на Улье (соты в админке, но трафик не уходит на worker)

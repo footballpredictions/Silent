@@ -77,6 +77,7 @@ async def _provision_cell_background(
                 hive_api_base=hive_api,
                 wdtt_master_password=wdtt_pass,
                 cell_id=str(cell_id),
+                link_capacity_mbps=float(cell.link_capacity_mbps or settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS),
             )
             cell = await hive_service.get_cell_by_id(db, cell_id)
             if not cell:
@@ -134,6 +135,7 @@ async def auto_connect_cell(
         raise HTTPException(status_code=400, detail="VPN_SERVER_IP не задан на Улье")
 
     hive_api = (settings.FRONTEND_URL or f"https://{settings.VPN_SERVER_IP}").strip()
+    link_cap = await hive_service.link_capacity_mbps_for_new_cell(name)
 
     cell = HiveCell(
         id=cell_id,
@@ -143,7 +145,7 @@ async def auto_connect_cell(
         wdtt_port=settings.VPN_SERVER_PORT,
         wg_port=settings.WG_PORT,
         max_clients=0,
-        link_capacity_mbps=float(settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS),
+        link_capacity_mbps=link_cap,
         priority=100,
         status="provisioning",
         last_seen_at=datetime.utcnow(),
@@ -177,6 +179,7 @@ async def add_cell_manual(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
+    link_cap = await hive_service.link_capacity_mbps_for_new_cell(req.name.strip())
     cell = HiveCell(
         name=req.name.strip(),
         is_queen=False,
@@ -185,7 +188,7 @@ async def add_cell_manual(
         wg_port=req.wg_port,
         wg_public_key=req.wg_public_key.strip(),
         max_clients=req.max_clients,
-        link_capacity_mbps=float(settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS),
+        link_capacity_mbps=link_cap,
         priority=req.priority,
         tunnel_api_url=(req.tunnel_api_url or "").strip() or None,
         status="active",
@@ -226,6 +229,8 @@ async def connect_cell_agent(
             detail="cell-agent не вернул public_ip или wg_public_key",
         )
 
+    link_cap = await hive_service.link_capacity_mbps_for_new_cell(req.name.strip())
+
     cell = HiveCell(
         name=req.name.strip(),
         is_queen=False,
@@ -235,7 +240,7 @@ async def connect_cell_agent(
         wg_public_key=wg_key,
         api_url=api_url,
         max_clients=req.max_clients,
-        link_capacity_mbps=float(settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS),
+        link_capacity_mbps=link_cap,
         priority=req.priority,
         status="pending",
     )

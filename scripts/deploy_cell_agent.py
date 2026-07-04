@@ -50,7 +50,7 @@ Environment=CELL_AGENT_SECRET={CELL_SECRET}
 Environment=CELL_PUBLIC_IP={PUBLIC_IP or cell_host}
 Environment=WG_SERVER_PUBLIC_KEY={WG_PUBKEY}
 Environment=HIVE_API_URL={HIVE_URL}
-Environment=CELL_LINK_CAPACITY_MBPS=10000
+Environment=CELL_LINK_CAPACITY_MBPS=1000
 Environment=TUNNEL_API_URL=http://10.66.66.1:8000
 ExecStart=/opt/silent-vpn/cell-agent/venv/bin/uvicorn main:app --host 0.0.0.0 --port {CELL_PORT}
 Restart=always

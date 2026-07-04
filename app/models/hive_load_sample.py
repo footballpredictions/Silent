@@ -28,3 +28,5 @@ class HiveLoadSample(Base):
     network_mbps: Mapped[float] = mapped_column(Float, default=0.0)
     network_util_percent: Mapped[float] = mapped_column(Float, default=0.0)
     link_capacity_mbps: Mapped[float] = mapped_column(Float, default=1000.0)
+    cpu_cores: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_total_gb: Mapped[float | None] = mapped_column(Float, nullable=True)

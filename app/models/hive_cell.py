@@ -24,7 +24,7 @@ class HiveCell(Base):
     # Tunnel API на соте (если проксирует на улей) — для документации/health
     tunnel_api_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     max_clients: Mapped[int] = mapped_column(Integer, default=0)
-    # 0 / NULL = авто; для сот по умолчанию 10 Гбит (см. HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)
+    # NULL / 0 = авто (1 Гбит, первая сота — 10 Гбит); иначе явное значение в Мбит/с
     link_capacity_mbps: Mapped[float | None] = mapped_column(Float, nullable=True)
     # pending | active | draining | offline | error
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)

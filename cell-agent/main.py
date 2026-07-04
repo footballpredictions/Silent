@@ -167,30 +167,31 @@ def _read_net_bytes(iface: str) -> tuple[int, int]:
     return 0, 0
 
 
-def _iface_speed_mbps(iface: str) -> float:
+def _iface_speed_mbps(iface: str) -> tuple[float, float | None]:
+    """(эффективная ёмкость, sysfs Мбит/с или None)."""
     try:
         with open(f"/sys/class/net/{iface}/speed", encoding="utf-8", errors="replace") as f:
             speed = float(f.read().strip())
             if speed > 0:
-                return speed
+                return speed, speed
     except Exception:
         pass
-    return max(1.0, CELL_LINK_CAPACITY_MBPS)
+    return max(1.0, CELL_LINK_CAPACITY_MBPS), None
 
 
-def _network_status(interval: float = 0.2) -> tuple[str | None, float, float, float, float]:
+def _network_status(interval: float = 0.2) -> tuple[str | None, float, float, float, float, float | None]:
     iface = _default_iface()
     if not iface:
-        return None, 0.0, 0.0, 0.0, max(1.0, CELL_LINK_CAPACITY_MBPS)
+        return None, 0.0, 0.0, 0.0, max(1.0, CELL_LINK_CAPACITY_MBPS), None
     rx1, tx1 = _read_net_bytes(iface)
     import time
     time.sleep(interval)
     rx2, tx2 = _read_net_bytes(iface)
     rx_mbps = max(0.0, (rx2 - rx1) * 8.0 / interval / 1_000_000.0)
     tx_mbps = max(0.0, (tx2 - tx1) * 8.0 / interval / 1_000_000.0)
-    cap = _iface_speed_mbps(iface)
+    cap, sysfs_cap = _iface_speed_mbps(iface)
     util = min(100.0, (max(rx_mbps, tx_mbps) / max(1.0, cap)) * 100.0)
-    return iface, round(rx_mbps, 1), round(tx_mbps, 1), round(util, 1), round(cap, 1)
+    return iface, round(rx_mbps, 1), round(tx_mbps, 1), round(util, 1), round(cap, 1), sysfs_cap
 
 
 def _memory_total_gb() -> float:
@@ -223,6 +224,7 @@ async def status(
     network_mbps_tx = 0.0
     network_util_percent = 0.0
     network_link_capacity_mbps = max(1.0, CELL_LINK_CAPACITY_MBPS)
+    network_link_sysfs_mbps: float | None = None
     try:
         import subprocess
 
@@ -243,7 +245,7 @@ async def status(
     except Exception:
         cpu_percent, memory_percent = _read_linux_load(cpu_interval=0.2)
     try:
-        network_interface, network_mbps_rx, network_mbps_tx, network_util_percent, network_link_capacity_mbps = _network_status(0.2)
+        network_interface, network_mbps_rx, network_mbps_tx, network_util_percent, network_link_capacity_mbps, network_link_sysfs_mbps = _network_status(0.2)
     except Exception:
         pass
     cpu_cores = 1
@@ -274,6 +276,7 @@ async def status(
         "network_mbps_tx": network_mbps_tx,
         "network_util_percent": network_util_percent,
         "network_link_capacity_mbps": network_link_capacity_mbps,
+        "network_link_sysfs_mbps": network_link_sysfs_mbps,
         "cpu_cores": cpu_cores,
         "memory_total_gb": _memory_total_gb(),
     }

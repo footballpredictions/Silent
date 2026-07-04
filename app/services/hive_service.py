@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import re
 import secrets
 from datetime import datetime
 from typing import Optional
@@ -25,6 +26,50 @@ logger = logging.getLogger(__name__)
 CELL_STATUSES_ACTIVE = frozenset({"active"})
 CELL_STATUSES_ASSIGNABLE = frozenset({"active"})
 BOOTSTRAP_USER_EMAIL = "__bootstrap__@silent.local"
+_CELL_NUM_RE = re.compile(r"(\d+)", re.IGNORECASE)
+
+
+def cell_name_number(name: str) -> int | None:
+    m = _CELL_NUM_RE.search(name or "")
+    return int(m.group(1)) if m else None
+
+
+def cell_list_sort_key(cell: HiveCell) -> tuple:
+    """Улей → соты по номеру в имени (Сота 1, Сота 2…), не по дате создания."""
+    if cell.is_queen:
+        return (0, 0, "")
+    num = cell_name_number(cell.name)
+    return (1, cell.priority, num if num is not None else 9999, cell.name or "")
+
+
+def link_capacity_mbps_for_cell(cell: HiveCell) -> float:
+    """«Сота 1» — 10 Гбит/с, остальные worker — 1 Гбит/с (если в БД не задано иное)."""
+    if cell.link_capacity_mbps and float(cell.link_capacity_mbps) > 0:
+        return float(cell.link_capacity_mbps)
+    num = cell_name_number(cell.name)
+    if num == 1:
+        return float(settings.HIVE_CELL_FIRST_LINK_CAPACITY_MBPS)
+    return float(settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)
+
+
+async def link_capacity_mbps_for_new_cell(name: str) -> float:
+    num = cell_name_number(name)
+    if num == 1:
+        return float(settings.HIVE_CELL_FIRST_LINK_CAPACITY_MBPS)
+    return float(settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)
+
+
+def display_link_capacity_mbps(cell: HiveCell, agent_data: dict) -> float | None:
+    """Канал для UI: sysfs с соты → значение в БД → env агента."""
+    sysfs = float(agent_data.get("network_link_sysfs_mbps") or 0)
+    if sysfs > 0:
+        return round(sysfs, 1)
+    if cell.link_capacity_mbps and float(cell.link_capacity_mbps) > 0:
+        return float(cell.link_capacity_mbps)
+    raw = float(agent_data.get("network_link_capacity_mbps") or 0)
+    if raw > 0:
+        return round(raw, 1)
+    return None
 
 
 def _validate_outbound_url(url: str) -> str:
@@ -334,7 +379,8 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
         data = resp.json()
         if not isinstance(data, dict):
             return None
-        raw_link = float(data.get("network_link_capacity_mbps") or 0)
+        link_display = display_link_capacity_mbps(cell, data)
+        sysfs = float(data.get("network_link_sysfs_mbps") or 0)
         return {
             "cpu_percent": round(float(data.get("cpu_percent") or 0), 1),
             "memory_percent": round(float(data.get("memory_percent") or 0), 1),
@@ -342,7 +388,8 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
             "network_mbps_rx": round(float(data.get("network_mbps_rx") or 0), 1),
             "network_mbps_tx": round(float(data.get("network_mbps_tx") or 0), 1),
             "network_util_percent": round(float(data.get("network_util_percent") or 0), 1),
-            "network_link_capacity_mbps": round(raw_link, 1) if raw_link > 0 else None,
+            "network_link_capacity_mbps": link_display,
+            "network_link_sysfs_mbps": round(sysfs, 1) if sysfs > 0 else None,
             "cpu_cores": int(data.get("cpu_cores") or 0) or None,
             "memory_total_gb": round(float(data.get("memory_total_gb") or 0), 1) or None,
             "wdtt_active": bool(data.get("wdtt_active")),
@@ -394,9 +441,14 @@ def cell_to_response(
 
 async def list_cells_with_stats(db: AsyncSession) -> list[dict]:
     result = await db.execute(
-        select(HiveCell).order_by(HiveCell.is_queen.desc(), HiveCell.priority.asc())
+        select(HiveCell).order_by(
+            HiveCell.is_queen.desc(),
+            HiveCell.priority.asc(),
+            HiveCell.created_at.asc(),
+        )
     )
-    cells = result.scalars().all()
+    cells = list(result.scalars().all())
+    cells.sort(key=cell_list_sort_key)
     _, queen_load = queen_accepting_new_vpn()
 
     workers = [c for c in cells if not c.is_queen]

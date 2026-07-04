@@ -124,3 +124,5 @@ class ThemeResponse(BaseModel):
     login_vk_pc_url: str = ""
     login_vk_pc_link_text: str = ""
     login_step2_title: str = ""
+    # HA: запасные URL API (соты) — через запятую, подставляется с Улья
+    hive_standby_api_urls: str = ""

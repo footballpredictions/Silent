@@ -43,23 +43,15 @@ def _read_file_from_docker_host(host_path: str, inner_path: str = "/f") -> bytes
     return None
 
 
-def _load_cell_agent_py() -> str:
-    """Исходник cell-agent для заливки на соту (контейнер или хост Улья)."""
-    for p in (CELL_AGENT_MAIN, Path("/app/cell-agent/main.py")):
+def _load_cell_agent_file(name: str) -> str:
+    for p in (BACKEND_ROOT / "cell-agent" / name, Path(f"/app/cell-agent/{name}")):
         if p.is_file():
             return p.read_text(encoding="utf-8")
-    for host_path in (
-        "/opt/silent-vpn/backend/cell-agent/main.py",
-        f"{BACKEND_ROOT}/cell-agent/main.py",
-    ):
-        data = _read_file_from_docker_host(host_path)
-        if data:
-            logger.info("Hive cell-agent: host %s (%s bytes)", host_path, len(data))
-            return data.decode("utf-8")
-    raise RuntimeError(
-        "cell-agent/main.py не найден на Улье. "
-        "Запустите с ПК: cd backend && python scripts/deploy_stable.py"
-    )
+    raise RuntimeError(f"cell-agent/{name} не найден на Улье")
+
+
+def _load_cell_agent_py() -> str:
+    return _load_cell_agent_file("main.py")
 
 
 def cell_agent_build_id() -> str:
@@ -252,6 +244,8 @@ def provision_cell_via_ssh(
     wdtt_binary = _load_wdtt_binary()
     logger.info("Hive provision: wdtt binary %s bytes → cell %s", len(wdtt_binary), host)
     agent_py = _load_cell_agent_py()
+    standby_py = _load_cell_agent_file("standby_runtime.py")
+    internal_secret = (settings.INTERNAL_API_SECRET or "").strip()
     passwords_json = json.dumps({"master": wdtt_master_password, "users": []})
     hive_meta = json.dumps({"hive_api_url": hive_api, "hive_cell_id": cell_id})
 
@@ -330,7 +324,7 @@ chmod 600 /etc/wdtt/wg_public.key
 
 echo "[hive] cell-agent..."
 python3 -m venv /opt/silent-vpn/cell-agent/venv
-/opt/silent-vpn/cell-agent/venv/bin/pip install -q fastapi 'uvicorn[standard]' psutil
+/opt/silent-vpn/cell-agent/venv/bin/pip install -q fastapi 'uvicorn[standard]' psutil httpx
 
 AGENT_SECRET=$(cat /tmp/hive_agent_secret.txt)
 cat > /etc/systemd/system/silent-cell-agent.service << AGEOF
@@ -345,6 +339,10 @@ Environment=CELL_AGENT_SECRET=$AGENT_SECRET
 Environment=CELL_PUBLIC_IP={host}
 Environment=WG_SERVER_PUBLIC_KEY=$WG_PUB
 Environment=HIVE_API_URL={hive_api}
+Environment=HIVE_QUEEN_IP={hive_ip}
+Environment=INTERNAL_API_SECRET={internal_secret}
+Environment=WG_INTERFACE=wdtt0
+Environment=STANDBY_API_PORT=8000
 Environment=CELL_LINK_CAPACITY_MBPS={link_mbps}
 Environment=TUNNEL_API_URL=http://10.66.66.1:8000
 ExecStart=/opt/silent-vpn/cell-agent/venv/bin/uvicorn main:app --host 0.0.0.0 --port {agent_port}
@@ -370,6 +368,7 @@ echo "WG_PUB=$WG_PUB"
         _ensure_remote_dir(client, "/opt/silent-vpn/cell-agent")
         sftp = client.open_sftp()
         sftp.putfo(io.BytesIO(agent_py.encode()), "/opt/silent-vpn/cell-agent/main.py")
+        sftp.putfo(io.BytesIO(standby_py.encode()), "/opt/silent-vpn/cell-agent/standby_runtime.py")
         sftp.putfo(io.BytesIO(wdtt_binary), "/tmp/hive_wdtt_server_bin")
         sftp.putfo(io.BytesIO(passwords_json.encode()), "/tmp/hive_wdtt_passwords.json")
         sftp.putfo(io.BytesIO(hive_meta.encode()), "/tmp/hive_meta.json")
@@ -414,6 +413,7 @@ def upgrade_cell_agent_via_ssh(
     host = _validate_host(host)
     link_mbps = int(link_capacity_mbps or settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)
     agent_py = _load_cell_agent_py()
+    standby_py = _load_cell_agent_file("standby_runtime.py")
     agent_port = settings.HIVE_CELL_AGENT_PORT
 
     client = _ssh_connect(host, ssh_password)
@@ -421,6 +421,7 @@ def upgrade_cell_agent_via_ssh(
         _ensure_remote_dir(client, "/opt/silent-vpn/cell-agent")
         sftp = client.open_sftp()
         sftp.putfo(io.BytesIO(agent_py.encode("utf-8")), "/opt/silent-vpn/cell-agent/main.py")
+        sftp.putfo(io.BytesIO(standby_py.encode("utf-8")), "/opt/silent-vpn/cell-agent/standby_runtime.py")
         sftp.close()
         code, out, err = _run(
             client,
@@ -431,7 +432,7 @@ def upgrade_cell_agent_via_ssh(
             f"else sed -i \"/Environment=HIVE_API_URL/a Environment=CELL_LINK_CAPACITY_MBPS=$LINK\" "
             f"/etc/systemd/system/silent-cell-agent.service; fi; "
             f"systemctl daemon-reload; "
-            f"/opt/silent-vpn/cell-agent/venv/bin/pip install -q psutil 2>/dev/null; "
+            f"/opt/silent-vpn/cell-agent/venv/bin/pip install -q psutil httpx 2>/dev/null; "
             f"systemctl restart silent-cell-agent; sleep 2; "
             f"curl -sf http://127.0.0.1:{agent_port}/health",
             timeout=90,

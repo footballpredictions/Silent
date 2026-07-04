@@ -18,10 +18,35 @@ import hashlib
 from pathlib import Path
 from typing import Any, Optional
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-app = FastAPI(title="Silent VPN Cell Agent", docs_url=None, redoc_url=None)
+try:
+    from standby_runtime import on_manifest_updated, standby_monitor_loop
+except ImportError:
+    on_manifest_updated = None  # type: ignore
+    standby_monitor_loop = None  # type: ignore
+
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
+    task = None
+    if standby_monitor_loop is not None:
+        import asyncio
+
+        task = asyncio.create_task(standby_monitor_loop())
+    yield
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except Exception:
+            pass
+
+
+app = FastAPI(title="Silent VPN Cell Agent", docs_url=None, redoc_url=None, lifespan=_lifespan)
 
 CELL_AGENT_SECRET = (os.environ.get("CELL_AGENT_SECRET") or "").strip()
 CELL_PUBLIC_IP = (os.environ.get("CELL_PUBLIC_IP") or "").strip()
@@ -306,4 +331,6 @@ async def sync_manifest(
     tmp = HIVE_MANIFEST_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, HIVE_MANIFEST_PATH)
+    if on_manifest_updated is not None:
+        on_manifest_updated(payload)
     return {"ok": True, "version": payload.get("version"), "device_count": payload.get("device_count")}

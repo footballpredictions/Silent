@@ -25,6 +25,10 @@ async def hive_cell_maintenance_loop() -> None:
                     logger.info("Hive cell-agent sync: upgraded %s cell(s)", agent_stats["upgraded"])
                 if settings.HIVE_CELL_MANIFEST_SYNC_ENABLED:
                     await sync_all_cell_manifests(db)
+                if settings.VPNBASE_GIT_ENABLED:
+                    from app.services.hive_vpnbase_export import push_vpnbase_export
+
+                    await push_vpnbase_export(db)
         except Exception as e:
             logger.warning("Hive cell maintenance cycle failed: %s", e)
         await asyncio.sleep(interval)

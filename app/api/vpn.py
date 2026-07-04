@@ -358,3 +358,11 @@ async def get_sync_state(
 async def get_theme(db: AsyncSession = Depends(get_db)):
     """Public endpoint — clients fetch UI theme from backend."""
     return await load_theme(db, persist_migration=True)
+
+
+@router.get("/hive-meta")
+async def get_hive_meta(db: AsyncSession = Depends(get_db)):
+    """Публично: Улей + standby-соты для failover клиентов."""
+    from app.services.hive_standby import hive_meta
+
+    return await hive_meta(db)

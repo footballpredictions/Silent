@@ -31,30 +31,9 @@ async def manifest_version(db: AsyncSession) -> int:
 
 
 async def build_cell_manifest(db: AsyncSession, cell: HiveCell) -> dict:
-    version = await manifest_version(db)
-    result = await db.execute(
-        select(Device).where(
-            Device.cell_id == cell.id,
-            Device.is_active == True,  # noqa: E712
-        )
-    )
-    devices = list(result.scalars().all())
-    return {
-        "version": version,
-        "generated_at": datetime.utcnow().isoformat() + "Z",
-        "cell_id": str(cell.id),
-        "cell_name": cell.name,
-        "device_count": len(devices),
-        "devices": [
-            {
-                "id": str(d.id),
-                "user_id": str(d.user_id),
-                "wg_public_key": (d.wg_public_key or "").strip(),
-                "is_connected": bool(d.is_connected),
-            }
-            for d in devices
-        ],
-    }
+    from app.services.hive_standby import build_cell_manifest_enriched
+
+    return await build_cell_manifest_enriched(db, cell)
 
 
 async def push_manifest_to_cell(cell: HiveCell, manifest: dict) -> bool:

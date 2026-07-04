@@ -129,6 +129,14 @@ class Settings(BaseSettings):
     HIVE_CELL_AGENT_UPGRADE_FAIL_COOLDOWN_SEC: int = 120
     # True = новые VPN на соты при перегрузке Улья; офлайн переносится фоном
     HIVE_WORKER_ROUTING_ENABLED: bool = True
+    # Standby / HA: manifest + Git backup (vpnbase)
+    HIVE_STANDBY_ENABLED: bool = True
+    VPNBASE_GIT_ENABLED: bool = False
+    VPNBASE_GIT_TOKEN: str = ""
+    VPNBASE_GIT_REPO: str = "silentvpn3/vpnbase"
+    VPNBASE_GIT_BRANCH: str = "main"
+    VPNBASE_GIT_PATH: str = "hive_export.enc"
+    VPNBASE_RAW_URL: str = ""
 
     # Subscription prices
     PRICE_MONTHLY: float = 199.0

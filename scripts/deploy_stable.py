@@ -42,14 +42,16 @@ for root, _, names in os.walk(dist):
         sftp.put(str(lp), rp)
         print("ui", rel)
 
-cell_agent = BACKEND_ROOT / "cell-agent" / "main.py"
-if cell_agent.is_file():
-    rp = f"{REMOTE}/cell-agent/main.py"
-    client.exec_command(f"mkdir -p {REMOTE}/cell-agent")
-    sftp.put(str(cell_agent), rp)
-    print("upload cell-agent/main.py")
-else:
-    print("WARN: cell-agent/main.py missing locally")
+cell_agent_dir = BACKEND_ROOT / "cell-agent"
+for name in ("main.py", "standby_runtime.py"):
+    cell_agent = cell_agent_dir / name
+    if cell_agent.is_file():
+        rp = f"{REMOTE}/cell-agent/{name}"
+        client.exec_command(f"mkdir -p {REMOTE}/cell-agent")
+        sftp.put(str(cell_agent), rp)
+        print(f"upload cell-agent/{name}")
+    else:
+        print(f"WARN: cell-agent/{name} missing locally")
 
 fix_script = BACKEND_ROOT / "scripts" / "fix_tunnel_dnat.py"
 if fix_script.is_file():
@@ -67,9 +69,11 @@ set -e
 cd {REMOTE}
 find app ai -name '*.py' | while read f; do docker cp "$f" {CONTAINER}:/app/"$f"; done
 docker exec {CONTAINER} mkdir -p /app/cell-agent
-if [ -f cell-agent/main.py ]; then
-  docker cp cell-agent/main.py {CONTAINER}:/app/cell-agent/main.py
-fi
+for f in cell-agent/main.py cell-agent/standby_runtime.py; do
+  if [ -f "$f" ]; then
+    docker cp "$f" {CONTAINER}:/app/"$f"
+  fi
+done
 docker exec {CONTAINER} pip install -q paramiko httpx 2>/dev/null || true
 docker compose restart api nginx
 sleep 14

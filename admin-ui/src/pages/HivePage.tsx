@@ -436,8 +436,13 @@ export default function HivePage({ token }: { token: string }) {
                       bwThreshold={summary.bandwidth_threshold}
                     />
                   )}
-                  {cell.assigned_devices > 0 && !cell.is_queen && (
-                    <p className="text-xs text-[#666] mt-1">назначено устройств: {cell.assigned_devices}</p>
+                  {cell.assigned_devices > cell.online_count && !cell.is_queen && (
+                    <p className="text-xs text-[#666] mt-1">
+                      привязано в БД: {cell.assigned_devices}
+                      {cell.assigned_devices > cell.online_count
+                        ? ` (офлайн ${cell.assigned_devices - cell.online_count})`
+                        : ''}
+                    </p>
                   )}
                   <p className={`text-xs mt-1 ${cell.online_count >= cell.max_online ? 'text-red-400' : 'text-[#666]'}`}>
                     онлайн лимит: {cell.online_count} / {cell.max_online}

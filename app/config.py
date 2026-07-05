@@ -120,7 +120,10 @@ class Settings(BaseSettings):
     HIVE_REBALANCE_INTERVAL_SEC: int = 30
     HIVE_REBALANCE_ON_HARDWARE: bool = True
     HIVE_REBALANCE_HARDWARE_BATCH: int = 3
-    HIVE_REBALANCE_RETURN_BATCH: int = 2
+    HIVE_REBALANCE_RETURN_BATCH: int = 5
+    # На соты только когда онлайн на Улье ≥ этой доли от лимита (CPU/RAM сами по себе не трогают)
+    HIVE_SPILL_ONLINE_FRACTION: float = 0.85
+    HIVE_SPILL_MIN_QUEEN_ONLINE: int = 0
     # Manifest устройств на соты (не полный дамп БД)
     HIVE_CELL_MANIFEST_SYNC_ENABLED: bool = True
     # Автообновление cell-agent на сотах (SSH из БД), интервал как в админке Улей

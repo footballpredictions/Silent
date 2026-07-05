@@ -23,7 +23,8 @@ from app.services.hive_load import (
     is_vpn_overloaded,
     load_stress_score,
     queen_accepting_new_vpn,
-    queen_recovered_stable,
+    queen_vpn_has_headroom,
+    queen_vpn_spill_threshold,
 )
 
 logger = logging.getLogger(__name__)
@@ -230,7 +231,7 @@ async def pick_cell_for_new_device(
     Новое устройство:
     - по умолчанию Улей;
     - bootstrap всегда Улей;
-    - если HIVE_WORKER_ROUTING_ENABLED и CPU/RAM перегружены — сота с минимумом онлайн VPN.
+    - если HIVE_WORKER_ROUTING_ENABLED и лимит онлайн на Улье заполнен (≥85%) или CPU/RAM перегружены при заполнении — сота.
     """
     queen = await ensure_queen_cell(db)
     if not settings.HIVE_WORKER_ROUTING_ENABLED:
@@ -239,6 +240,17 @@ async def pick_cell_for_new_device(
         return queen
 
     accepting, load_info = queen_accepting_new_vpn()
+    queen_online = await count_online_on_cell(db, queen.id)
+    queen_cap = await max_online_for_cell(db, queen, load=load_info)
+    if queen_vpn_has_headroom(queen_online, queen_cap):
+        logger.debug(
+            "Hive pick: queen VPN headroom online=%s cap=%s threshold=%s",
+            queen_online,
+            queen_cap,
+            queen_vpn_spill_threshold(queen_cap),
+        )
+        return queen
+
     if accepting:
         logger.debug(
             "Hive pick: queen OK cpu=%s mem=%s build=%s",
@@ -312,8 +324,11 @@ async def resolve_cell_for_device(
                 online = await count_online_on_cell(db, cell.id)
                 cap = await max_online_for_cell(db, cell, load=cell_load)
                 relocate = online >= cap
+                if relocate and queen_vpn_has_headroom(online, cap):
+                    relocate = False
                 if settings.HIVE_REBALANCE_ON_HARDWARE and cell_load and is_vpn_overloaded(cell_load):
-                    relocate = True
+                    if not queen_vpn_has_headroom(online, cap):
+                        relocate = True
                 if relocate:
                     cell = await pick_cell_for_new_device(db)
                     if device.cell_id != cell.id:
@@ -655,6 +670,10 @@ async def rebalance_overloaded_cells(db: AsyncSession) -> dict:
             src_load = states[src.id].get("load")
             if not src_load or not is_vpn_overloaded(src_load):
                 continue
+            if src.is_queen and queen_vpn_has_headroom(
+                states[src.id]["online"], states[src.id]["cap"]
+            ):
+                continue
             for _ in range(batch):
                 if src.is_queen:
                     target = _pick_least_loaded_worker(workers, worker_loads, states)
@@ -675,30 +694,19 @@ async def rebalance_overloaded_cells(db: AsyncSession) -> dict:
                 candidate.cell_id = target.id
                 moved += 1
                 hardware += 1
-                states[src.id]["online"] = max(0, states[src.id]["online"] - 1)
-                states[target.id]["online"] += 1
 
-    if queen_recovered_stable() and workers:
+    if workers and queen_load and not is_vpn_overloaded(queen_load):
         batch = max(1, int(settings.HIVE_REBALANCE_RETURN_BATCH))
         queen_st = states[queen.id]
-        if queen_load and not is_vpn_overloaded(queen_load):
+        if queen_vpn_has_headroom(queen_st["online"], queen_st["cap"]):
             for w in workers:
-                if queen_st["online"] >= queen_st["cap"]:
-                    break
-                w_load = worker_loads.get(w.id)
-                if w_load and is_vpn_overloaded(w_load):
-                    continue
                 for _ in range(batch):
-                    if queen_st["online"] >= queen_st["cap"]:
-                        break
                     candidate = await _pop_offline_device(db, w.id)
                     if not candidate:
                         break
                     candidate.cell_id = queen.id
                     moved += 1
                     returned += 1
-                    states[w.id]["online"] = max(0, states[w.id]["online"] - 1)
-                    queen_st["online"] += 1
 
     if moved > 0:
         await db.commit()

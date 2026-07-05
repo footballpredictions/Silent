@@ -94,6 +94,18 @@ def queen_recovered_stable() -> bool:
     return (time.monotonic() - _queen_cool_since) >= stable
 
 
+def queen_vpn_spill_threshold(cap: int) -> int:
+    """Порог онлайн на Улье: ниже — новых и офлайн не отправляем на соты (даже при всплеске CPU)."""
+    if cap <= 0:
+        return 1_000_000
+    by_fraction = int(cap * float(settings.HIVE_SPILL_ONLINE_FRACTION))
+    return max(int(settings.HIVE_SPILL_MIN_QUEEN_ONLINE), by_fraction, 1)
+
+
+def queen_vpn_has_headroom(online: int, cap: int) -> bool:
+    return int(online) < queen_vpn_spill_threshold(cap)
+
+
 def reset_queen_cooldown_state() -> None:
     global _queen_cool_since, _queen_was_overloaded
     _queen_cool_since = None

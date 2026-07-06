@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Search, Ban, CheckCircle, ShieldCheck, Trash2 } from 'lucide-react'
+import { Ban, CheckCircle, ShieldCheck, Trash2 } from 'lucide-react'
+import SearchInput from '../components/SearchInput'
 
 interface UserRow {
   id: string; display_id: string; email: string; is_verified: boolean; is_active: boolean
@@ -87,15 +88,12 @@ export default function UsersPage({ token }: { token: string }) {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <h1 className="text-xl font-bold">Пользователи</h1>
-        <div className="relative">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#555]" />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Поиск..."
-            className="w-full sm:w-auto bg-[#111] border border-[#222] rounded-lg pl-9 pr-4 py-2 text-sm text-white placeholder-[#555] focus:outline-none focus:border-[#444]"
-          />
-        </div>
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Поиск по email или ID…"
+          className="w-full sm:w-56"
+        />
       </div>
 
       {error && (

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Search, Calendar } from 'lucide-react'
+import { Calendar } from 'lucide-react'
+import SearchInput from '../components/SearchInput'
 
 interface UserRow {
   id: string
@@ -227,15 +228,12 @@ export default function SubscriptionsPage({ token }: { token: string }) {
               />
             </span>
           </button>
-          <div className="relative shrink-0">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#555]" />
-          <input
+          <SearchInput
             value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Поиск..."
-            className="w-full sm:w-auto bg-[#111] border border-[#222] rounded-lg pl-9 pr-4 py-2 text-sm text-white placeholder-[#555] focus:outline-none focus:border-[#444]"
+            onChange={setSearch}
+            placeholder="Поиск по email или ID…"
+            className="w-full sm:w-56 shrink-0"
           />
-          </div>
         </div>
       </div>
 

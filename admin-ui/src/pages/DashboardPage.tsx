@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Cpu, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight, Activity } from 'lucide-react'
+import SearchInput from '../components/SearchInput'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
 interface Stats {
@@ -200,6 +201,20 @@ function VkHashesCard({
   const [open, setOpen] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(users.map(([email]) => [email, false]))
   )
+  const [userSearch, setUserSearch] = useState('')
+
+  const filteredUsers = useMemo(() => {
+    const q = userSearch.trim().toLowerCase()
+    if (!q) return users
+    return users.filter(([email, u]) => {
+      if (email.toLowerCase().includes(q)) return true
+      const names = [
+        ...('device_names' in u && u.device_names ? u.device_names : []),
+        ...('online_device_names' in u && u.online_device_names ? u.online_device_names : []),
+      ]
+      return names.some(n => n.toLowerCase().includes(q))
+    })
+  }, [users, userSearch])
 
   const toggle = (email: string) =>
     setOpen(prev => ({ ...prev, [email]: !prev[email] }))
@@ -210,9 +225,17 @@ function VkHashesCard({
 
   return (
     <div className="bg-[#111] border border-[#222] rounded-xl p-5">
-      <h3 className="text-xs text-[#666] uppercase tracking-wider mb-1 flex items-center gap-2">
-        <Hash className="w-3.5 h-3.5" /> Серверные VK-хеши (по пользователям)
-      </h3>
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-1">
+        <h3 className="text-xs text-[#666] uppercase tracking-wider flex items-center gap-2 shrink-0">
+          <Hash className="w-3.5 h-3.5" /> Серверные VK-хеши (по пользователям)
+        </h3>
+        <SearchInput
+          value={userSearch}
+          onChange={setUserSearch}
+          placeholder="Поиск по email или устройству…"
+          className="flex-1 sm:max-w-xs sm:ml-auto w-full"
+        />
+      </div>
       <p className="text-[10px] text-[#555] mb-4">{summaryLine}</p>
       {summary && summary.legacy_orphan > 0 && (
         <p className="text-[10px] text-amber-400/80 mb-3">
@@ -225,8 +248,12 @@ function VkHashesCard({
         <p className="text-[#555] text-sm">Нет пользователей. Подключите AI-агента в разделе VK.</p>
       )}
 
+      {users.length > 0 && filteredUsers.length === 0 && (
+        <p className="text-[#555] text-sm">Никого не найдено по запросу «{userSearch.trim()}».</p>
+      )}
+
       <div className="space-y-1">
-        {users.map(([email, u]) => {
+        {filteredUsers.map(([email, u]) => {
           const isOpen = open[email]
           const slots = 'hashes' in u ? u.hashes : []
           const filled = 'slots_filled' in u ? u.slots_filled : slots.length

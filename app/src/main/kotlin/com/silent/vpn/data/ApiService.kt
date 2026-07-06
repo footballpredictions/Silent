@@ -50,6 +50,12 @@ data class UserProfile(
     val vk_user_id: Long? = null,
 )
 
+/** 0 или is_admin = безлимит слотов. */
+fun UserProfile.deviceLimitLabel(): String =
+    if (is_admin || max_devices <= 0) "∞" else max_devices.toString()
+
+fun UserProfile.sessionsBadge(): String = "${devices_count}/${deviceLimitLabel()}"
+
 data class VkGuestLinkStartResponse(val auth_url: String, val state: String)
 
 data class VkGuestStatusResponse(

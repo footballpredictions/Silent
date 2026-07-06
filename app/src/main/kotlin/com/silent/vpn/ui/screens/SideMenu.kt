@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.UserProfile
+import com.silent.vpn.data.sessionsBadge
 import com.silent.vpn.ui.theme.parseColor
 
 @Composable
@@ -90,7 +91,7 @@ fun SideMenuContent(
             }),
             Triple("Настройки", onSettings, null),
             Triple("Промокоды", onPromo, null),
-            Triple("Сессии", onDevices, "${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3}"),
+            Triple("Сессии", onDevices, profile?.sessionsBadge() ?: "0/3"),
             Triple("Поддержка", onSupport, null),
             Triple("О сервисе", onAbout, null),
         )

@@ -52,6 +52,8 @@ import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.DeviceInfo
 import com.silent.vpn.data.UserProfile
+import com.silent.vpn.data.deviceLimitLabel
+import com.silent.vpn.data.sessionsBadge
 import com.silent.vpn.data.UpdateCheckResponse
 import com.silent.vpn.ui.theme.parseColor
 import com.silent.vpn.ui.theme.UiColors
@@ -591,7 +593,7 @@ fun MainScreen(
                                 }
                                 if (BuildConfig.DEBUG) add(Triple(MenuPage.HASHES, "Хеши", null))
                                 add(Triple(MenuPage.PROMO, "Промокод", null))
-                                add(Triple(MenuPage.DEVICES, "Сессии (${profile?.devices_count ?: 0}/${profile?.max_devices ?: 3})", null))
+                                add(Triple(MenuPage.DEVICES, "Сессии (${profile?.sessionsBadge() ?: "0/3"})", null))
                                 add(Triple(MenuPage.SUPPORT, "Поддержка", null))
                                 add(Triple(MenuPage.ABOUT, "О сервисе", null))
                             }
@@ -854,7 +856,8 @@ private fun MenuDevices(
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
         Text("Сессии", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
-        val maxSlots = profile?.max_devices ?: 3
+        val maxSlotsLabel = profile?.deviceLimitLabel() ?: "3"
+        val maxSlots = profile?.max_devices?.takeIf { it > 0 } ?: Int.MAX_VALUE
         val slotsUsed = profile?.devices_count ?: profile?.devices?.size ?: 0
         val localOnline = vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING
         fun deviceOnline(d: DeviceInfo): Boolean {
@@ -866,15 +869,19 @@ private fun MenuDevices(
         val devices = profile?.devices.orEmpty()
         val listOnline = devices.count { deviceOnline(it) }
         val serverOnline = profile?.connected_count ?: listOnline
-        val onlineCount = serverOnline.coerceIn(0, maxSlots)
+        val onlineCount = if (profile?.is_admin == true || (profile?.max_devices ?: 3) <= 0) {
+            serverOnline
+        } else {
+            serverOnline.coerceIn(0, maxSlots)
+        }
         Text(
-            "VPN онлайн: $onlineCount из $maxSlots",
+            "VPN онлайн: $onlineCount из $maxSlotsLabel",
             fontSize = 11.sp,
             color = fg.copy(alpha = 0.45f),
             modifier = Modifier.padding(bottom = 4.dp),
         )
         Text(
-            "Занято слотов: $slotsUsed из $maxSlots",
+            "Занято слотов: $slotsUsed из $maxSlotsLabel",
             fontSize = 11.sp,
             color = fg.copy(alpha = 0.35f),
             modifier = Modifier.padding(bottom = 8.dp),

@@ -592,6 +592,27 @@ class SilentRepository @Inject constructor(
     /** Backend API для UI/ConfigSync — без overlay (overlay только для withUserBackendApi). */
     suspend fun <T> withBackendApi(block: suspend () -> T): T = withRoutineBackendApi(block = block)
 
+    /**
+     * OTA check/download — тот же канал, что ConfigSync на LTE (overlay + direct 10.66.66.1);
+     * на Wi‑Fi+VPN при 502 local proxy — overlay fallback.
+     */
+    suspend fun <T> withOtaBackendApi(block: suspend () -> T): T {
+        if (isOnMobileData() && APP_EXCLUDED_FROM_VPN && isMainVpnTunnelUp()) {
+            return WdttTunnelManager.withApiOverlayBrief(
+                block = {
+                    if (TunnelApiProxy.isActive()) {
+                        TunnelApiProxy.stopAndAwait()
+                    }
+                    prepareMainVpnDirectApi()
+                    block()
+                },
+                allowDuringRampUp = true,
+                skipIntervalThrottle = true,
+            )
+        }
+        return withRoutineBackendApi(allowOverlayFallback = true, block = block)
+    }
+
     /** Долгая загрузка APK — tunnel direct/proxy без overlay. */
     suspend fun <T> withTunnelApiForUpdateDownload(block: suspend () -> T): T {
         if (!isMainVpnTunnelUp()) {
@@ -656,14 +677,12 @@ class SilentRepository @Inject constructor(
     fun getPublicServerUrl(): String =
         prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
 
-    /** База для скачивания: public HTTPS, или tunnel если проверка/прокси уже через VPN. */
+    /** База для скачивания: при VPN — tunnel (direct/proxy), иначе public HTTPS. */
     fun resolveUpdateDownloadBase(preferredBase: String?): String {
-        val base = preferredBase?.trimEnd('/').orEmpty()
-        if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
-            if (isTunnelApiBase(base) || shouldUseTunnelApiProxy()) return tunnelApiBaseUrl()
-            if (base.startsWith("https://")) return base
-            return getPublicServerUrl().trimEnd('/')
+        if (isMainVpnTunnelUp() && (APP_EXCLUDED_FROM_VPN || isOnMobileData())) {
+            return tunnelApiBase().trimEnd('/')
         }
+        val base = preferredBase?.trimEnd('/').orEmpty()
         if (isTunnelApiBase(base) || shouldUseTunnelApiProxy()) return tunnelApiBaseUrl()
         if (base.startsWith("http://")) {
             if (APP_EXCLUDED_FROM_VPN && !TunnelApiProxy.isActive()) {
@@ -696,10 +715,16 @@ class SilentRepository @Inject constructor(
 
     fun buildDownloadClient(): OkHttpClient {
         val nipHost = DEFAULT_SERVER_HOST
+        val tunnelGw = WG_TUNNEL_GATEWAY
         return OkHttpClient.Builder()
             .addInterceptor { chain ->
                 var req = chain.request()
-                if (req.url.host.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) {
+                val host = req.url.host
+                // Host nip.io — только для public HTTPS по IP; tunnel 10.66.66.1 / localhost — как есть.
+                if (host.matches(Regex("""\d+\.\d+\.\d+\.\d+""")) &&
+                    host != tunnelGw &&
+                    !host.startsWith("127.")
+                ) {
                     req = req.newBuilder().header("Host", nipHost).build()
                 }
                 chain.proceed(req)

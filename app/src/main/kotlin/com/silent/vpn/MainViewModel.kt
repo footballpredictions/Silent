@@ -1119,7 +1119,7 @@ class MainViewModel @Inject constructor(
 
     private var updateCheckInFlight = false
 
-    /** OTA: без VPN — public HTTPS; при VPN на Wi‑Fi — через tunnel/proxy. */
+    /** OTA: Wi‑Fi — public HTTPS; mobile/LTE и Wi‑Fi+VPN — tunnel (overlay при excluded app). */
     fun checkForAppUpdate() {
         if (updateCheckInFlight) return
         updateCheckInFlight = true
@@ -1130,39 +1130,47 @@ class MainViewModel @Inject constructor(
                     WdttTunnelManager.tunnelReady.value &&
                     !WdttTunnelManager.isBootstrapMode()
 
+                var ok = false
                 if (vpnUp && repo.allowsBackgroundConfigSync()) {
-                    val ok = runCatching {
-                        repo.withRoutineBackendApi {
+                    ok = runCatching {
+                        repo.withOtaBackendApi {
                             val res = repo.getApi().checkUpdate(repo.getOtaPlatform(), version)
                             if (!res.isSuccessful) {
-                                DebugLog.w("MainViewModel", "checkUpdate HTTP ${res.code()} via tunnel")
-                                return@withRoutineBackendApi false
+                                DebugLog.w("MainViewModel", "checkUpdate HTTP ${res.code()} via tunnel/overlay")
+                                return@withOtaBackendApi false
                             }
                             val body = res.body()
                             if (body?.available == true) {
                                 _updateInfo.value = body
                                 updateApiBaseUrl = repo.getServerUrl().trimEnd('/')
-                                DebugLog.i("MainViewModel", "checkUpdate: available ${body.version} via tunnel")
+                                DebugLog.i("MainViewModel", "checkUpdate: available ${body.version} via VPN channel")
                             } else {
                                 _updateInfo.value = null
-                                DebugLog.i("MainViewModel", "checkUpdate: up to date v=$version via tunnel")
+                                DebugLog.i("MainViewModel", "checkUpdate: up to date v=$version via VPN channel")
                             }
                             true
                         }
                     }.getOrDefault(false)
-                    if (ok) return@launch
                 }
 
-                if (!vpnUp) {
+                if (!ok && !repo.isOnMobileData()) {
                     val bases = listOf(
                         repo.getPublicServerUrl().trimEnd('/'),
                         "https://${SilentRepository.DEFAULT_SERVER_HOST}",
                     ).distinct()
                     for (base in bases) {
-                        if (runCatching { tryCheckUpdateOnBase(base, version) }.getOrDefault(false)) break
+                        if (runCatching { tryCheckUpdateOnBase(base, version) }.getOrDefault(false)) {
+                            ok = true
+                            break
+                        }
                     }
-                } else {
-                    DebugLog.w("MainViewModel", "checkUpdate skipped: VPN up, tunnel check failed")
+                }
+
+                if (!ok) {
+                    DebugLog.w(
+                        "MainViewModel",
+                        "checkUpdate failed vpnUp=$vpnUp mobile=${repo.isOnMobileData()} excluded=${SilentRepository.APP_EXCLUDED_FROM_VPN}",
+                    )
                 }
             } catch (e: Exception) {
                 DebugLog.w("MainViewModel", "checkUpdate: ${e.message}")
@@ -1227,14 +1235,31 @@ class MainViewModel @Inject constructor(
     fun downloadAndInstallUpdate(context: Context, onInstallReady: (Intent) -> Unit) {
         val info = _updateInfo.value ?: return
         if (_updateDownloading.value) return
-        val downloadPath = info.download_url ?: return
+        val githubUrl = info.github_download_url?.takeIf { it.startsWith("http") }
+        val downloadPath = info.download_url
+        if (downloadPath == null && githubUrl == null) return
         viewModelScope.launch {
             _updateDownloading.value = true
             _updateProgress.value = 0
             try {
-                val base = repo.resolveUpdateDownloadBase(updateApiBaseUrl)
-                val url = repo.joinUpdateUrl(base, downloadPath)
-                DebugLog.i("MainViewModel", "update download url=$url overlay=${repo.needsOverlayForUpdateDownload(base)}")
+                val needsTunnel = repo.isMainVpnTunnelUp() &&
+                    (repo.isOnMobileData() || SilentRepository.APP_EXCLUDED_FROM_VPN)
+                val url = when {
+                    needsTunnel && downloadPath != null -> {
+                        val base = repo.resolveUpdateDownloadBase(updateApiBaseUrl)
+                        repo.joinUpdateUrl(base, downloadPath)
+                    }
+                    !needsTunnel && githubUrl != null -> githubUrl
+                    downloadPath != null -> {
+                        val base = repo.resolveUpdateDownloadBase(updateApiBaseUrl)
+                        repo.joinUpdateUrl(base, downloadPath)
+                    }
+                    else -> githubUrl!!
+                }
+                DebugLog.i(
+                    "MainViewModel",
+                    "update download url=$url tunnelSession=$needsTunnel mobile=${repo.isOnMobileData()}",
+                )
                 val download: suspend () -> java.io.File = {
                     AppUpdateManager.downloadApk(
                         context,
@@ -1243,8 +1268,8 @@ class MainViewModel @Inject constructor(
                         repo.buildDownloadClient(),
                     ) { pct -> _updateProgress.value = pct }
                 }
-                val file = if (repo.needsOverlayForUpdateDownload(base)) {
-                    repo.withTunnelApiForUpdateDownload { download() }
+                val file = if (needsTunnel) {
+                    repo.withOtaBackendApi { download() }
                 } else {
                     download()
                 }

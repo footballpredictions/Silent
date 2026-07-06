@@ -1,5 +1,9 @@
 """Public app update check API — reachable via VPN tunnel."""
-from fastapi import APIRouter, Query
+import os
+
+import httpx
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.services import update_service
 
@@ -16,3 +20,50 @@ async def check_update(
     if not info:
         return {"available": False}
     return info
+
+
+@router.get("/download/{platform}")
+async def download_update_file(platform: str):
+    """
+    Скачивание OTA через tunnel API (10.66.66.1).
+    LTE: приложение excluded из WG — GitHub напрямую недоступен; VPS стримит с диска или с GitHub.
+    """
+    p = platform.lower().strip()
+    if p not in update_service.PLATFORMS:
+        raise HTTPException(status_code=400, detail="Unknown platform")
+
+    latest = update_service.get_latest(p)
+    if not latest:
+        raise HTTPException(status_code=404, detail="No update published")
+
+    filename = latest.get("filename") or ("update.apk" if p == "android" else "update.exe")
+    file_path = latest.get("file_path")
+    if file_path and os.path.isfile(file_path):
+        media = (
+            "application/vnd.android.package-archive"
+            if p == "android"
+            else "application/octet-stream"
+        )
+        return FileResponse(file_path, filename=filename, media_type=media)
+
+    source_url = update_service.resolve_download_url(latest)
+    if not source_url or not source_url.startswith("http"):
+        raise HTTPException(status_code=404, detail="No download source")
+
+    async def stream_upstream():
+        async with httpx.AsyncClient(follow_redirects=True, timeout=600.0) as client:
+            async with client.stream("GET", source_url) as resp:
+                if resp.status_code >= 400:
+                    body = await resp.aread()
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Upstream HTTP {resp.status_code}: {body[:200]!r}",
+                    )
+                async for chunk in resp.aiter_bytes(chunk_size=65536):
+                    yield chunk
+
+    return StreamingResponse(
+        stream_upstream(),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

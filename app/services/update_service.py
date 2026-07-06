@@ -97,7 +97,7 @@ def get_latest(platform: str) -> Optional[dict]:
     }
 
 
-def _resolve_download_url(latest: dict) -> Optional[str]:
+def resolve_download_url(latest: dict) -> Optional[str]:
     """Приоритет: GitHub Releases (как landing), иначе локальный /update/ на VPS."""
     gh = (latest.get("github_download_url") or "").strip()
     if gh:
@@ -111,6 +111,10 @@ def _resolve_download_url(latest: dict) -> Optional[str]:
         from app.services.github_release_service import asset_download_url
         return asset_download_url(ver, fn)
     return None
+
+
+def _resolve_download_url(latest: dict) -> Optional[str]:
+    return resolve_download_url(latest)
 
 
 def check_update(platform: str, current_version: str) -> Optional[dict]:
@@ -135,6 +139,7 @@ def check_update(platform: str, current_version: str) -> Optional[dict]:
         out["github_download_url"] = gh
     elif primary.startswith("https://github.com/"):
         out["github_download_url"] = primary
+    out["tunnel_download_url"] = f"/api/updates/download/{platform}"
     return out
 
 

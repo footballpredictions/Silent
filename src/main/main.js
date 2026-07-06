@@ -1395,6 +1395,21 @@ async function releaseLocksForUpdateInstall() {
 
 function launchInstallerDetached(exePath) {
   return new Promise((resolve, reject) => {
+    if (process.platform === 'win32') {
+      // start "" — отдельный процесс под explorer.exe, не дочерний Electron (иначе quit убивает NSIS).
+      const child = spawn('cmd.exe', ['/d', '/s', '/c', 'start', '""', exePath], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      child.once('error', reject)
+      child.once('close', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(`start installer exit ${code}`))
+      })
+      child.unref()
+      return
+    }
     const child = spawn(exePath, [], {
       detached: true,
       stdio: 'ignore',
@@ -1494,17 +1509,8 @@ ipcMain.handle('app-update-install', async (_, filePath) => {
       }
     }
 
-    await sleep(400)
+    await sleep(800)
     quitAppFully()
-
-    const pid = process.pid
-    setTimeout(() => {
-      try {
-        const { exec } = require('child_process')
-        exec(`taskkill /F /PID ${pid} /T`, { windowsHide: true })
-      } catch { /* ignore */ }
-    }, 1200)
-
     return { ok: true }
   } catch (e) {
     isQuitting = false

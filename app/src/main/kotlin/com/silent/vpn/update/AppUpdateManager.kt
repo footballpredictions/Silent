@@ -38,6 +38,7 @@ object AppUpdateManager {
             val total = body.contentLength()
             var received = 0L
             var lastPct = -1
+            var lastIndeterminateBump = 0L
             body.byteStream().use { input ->
                 tmp.outputStream().use { output ->
                     val buf = ByteArray(64 * 1024)
@@ -53,6 +54,11 @@ object AppUpdateManager {
                                 withContext(Dispatchers.Main) { onProgress(pct) }
                             }
                             if (received >= total) break
+                        } else if (received - lastIndeterminateBump >= 256 * 1024) {
+                            lastIndeterminateBump = received
+                            val pct = (lastPct.coerceAtLeast(1) + 1).coerceAtMost(99)
+                            lastPct = pct
+                            withContext(Dispatchers.Main) { onProgress(pct) }
                         } else if (received > 0 && lastPct < 1) {
                             lastPct = 1
                             withContext(Dispatchers.Main) { onProgress(1) }

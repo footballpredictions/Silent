@@ -194,6 +194,7 @@ data class UpdateCheckResponse(
     val uploaded_at: String? = null,
     val download_url: String? = null,
     val github_download_url: String? = null,
+    val tunnel_download_url: String? = null,
 )
 
 data class SyncStateResponse(

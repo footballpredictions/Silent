@@ -742,25 +742,61 @@ class SilentRepository @Inject constructor(
         return base.trimEnd('/') + path.replace(" ", "%20")
     }
 
-    /** URL APK: GitHub Releases в приоритете; relative — public или tunnel. */
+    /**
+     * LTE+VPN excluded: GitHub недоступен — только tunnel /api/updates/download.
+     * Wi‑Fi+VPN: GitHub напрямую (без proxy/tunnel).
+     */
+    fun shouldUseTunnelUpdateDownload(): Boolean =
+        isOnMobileData() &&
+            APP_EXCLUDED_FROM_VPN &&
+            isMainVpnTunnelUp() &&
+            !com.silent.vpn.vpn.WdttTunnelManager.isBootstrapMode()
+
+    /**
+     * LTE excluded: overlay на всё скачивание + direct 10.66.66.1 (proxy даёт 502).
+     * Wi‑Fi: без обёртки — CDN/GitHub.
+     */
+    suspend fun <T> withUpdateDownloadRoute(block: suspend () -> T): T {
+        if (!shouldUseTunnelUpdateDownload()) return block()
+        if (!APP_EXCLUDED_FROM_VPN) {
+            prepareMainVpnDirectApi()
+            return block()
+        }
+        Log.i(TAG, "OTA download LTE overlay → http://$WG_TUNNEL_GATEWAY:8000")
+        return com.silent.vpn.vpn.WdttTunnelManager.withApiOverlayBrief(
+            block = {
+                if (TunnelApiProxy.isActive()) {
+                    TunnelApiProxy.stopAndAwait()
+                }
+                prepareMainVpnDirectApi()
+                block()
+            },
+            allowDuringRampUp = true,
+            skipIntervalThrottle = true,
+        )
+    }
+
+    /** URL APK: LTE+VPN — tunnel download; Wi‑Fi — GitHub/public. */
     fun resolveUpdateDownloadUrl(info: UpdateCheckResponse): String? {
+        if (shouldUseTunnelUpdateDownload()) {
+            val path = info.tunnel_download_url?.trim()?.takeIf { it.isNotBlank() }
+                ?: "/api/updates/download/${getOtaPlatform()}"
+            return joinUpdateUrl("http://$WG_TUNNEL_GATEWAY:8000", path)
+        }
         val gh = info.github_download_url?.trim()?.takeIf { it.startsWith("http") }
         val absolute = info.download_url?.trim()?.takeIf { it.startsWith("http") }
         if (gh != null) return gh
         if (absolute != null) return absolute
-        val path = info.download_url?.trim().orEmpty()
-        if (path.isBlank()) return null
-        val base = if (isOnMobileData() && isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
-            tunnelApiBase().trimEnd('/')
-        } else {
-            resolveUpdateDownloadBase(null)
-        }
-        return joinUpdateUrl(base, path)
+        val rel = info.download_url?.trim().orEmpty()
+        if (rel.isBlank()) return null
+        return joinUpdateUrl(resolveUpdateDownloadBase(null), rel)
     }
 
-    fun isPublicCdnUpdateUrl(url: String): Boolean =
-        url.contains("github.com", ignoreCase = true) ||
+    fun isPublicCdnUpdateUrl(url: String): Boolean {
+        if (shouldUseTunnelUpdateDownload()) return false
+        return url.contains("github.com", ignoreCase = true) ||
             url.startsWith("https://", ignoreCase = true)
+    }
 
     fun buildDownloadClient(): OkHttpClient {
         val nipHost = DEFAULT_SERVER_HOST

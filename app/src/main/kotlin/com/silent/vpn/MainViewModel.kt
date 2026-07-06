@@ -1261,13 +1261,9 @@ class MainViewModel @Inject constructor(
             _updateProgress.value = 0
             try {
                 val useCdn = repo.isPublicCdnUpdateUrl(primaryUrl)
-                val needsTunnel = !useCdn &&
-                    repo.isOnMobileData() &&
-                    repo.isMainVpnTunnelUp() &&
-                    SilentRepository.APP_EXCLUDED_FROM_VPN
                 DebugLog.i(
                     "MainViewModel",
-                    "update download url=$primaryUrl cdn=$useCdn tunnel=$needsTunnel",
+                    "update download url=$primaryUrl cdn=$useCdn lteTunnel=${repo.shouldUseTunnelUpdateDownload()}",
                 )
                 val downloadFrom: suspend (String) -> java.io.File = { url ->
                     AppUpdateManager.downloadApk(
@@ -1277,24 +1273,15 @@ class MainViewModel @Inject constructor(
                         repo.buildDownloadClient(),
                     ) { pct -> _updateProgress.value = pct }
                 }
-                val runDownload: suspend (String) -> java.io.File = { url ->
-                    if (needsTunnel) {
-                        if (repo.canUseMobileDirectTunnelApi()) {
-                            repo.prepareMainVpnDirectApi()
-                            downloadFrom(url)
-                        } else {
-                            repo.withOtaBackendApi { downloadFrom(url) }
-                        }
-                    } else {
-                        downloadFrom(url)
+                val file = repo.withUpdateDownloadRoute {
+                    runCatching { downloadFrom(primaryUrl) }.getOrElse { first ->
+                        if (repo.shouldUseTunnelUpdateDownload()) throw first
+                        val alt = fallbackGh?.takeIf { it != primaryUrl }
+                            ?: info.download_url?.trim()?.takeIf { it.startsWith("http") && it != primaryUrl }
+                        if (alt == null) throw first
+                        DebugLog.w("MainViewModel", "update retry from GitHub: $alt")
+                        downloadFrom(alt)
                     }
-                }
-                val file = runCatching { runDownload(primaryUrl) }.getOrElse { first ->
-                    val alt = fallbackGh?.takeIf { it != primaryUrl }
-                        ?: info.download_url?.trim()?.takeIf { it.startsWith("http") && it != primaryUrl }
-                    if (alt == null) throw first
-                    DebugLog.w("MainViewModel", "update retry from GitHub: $alt")
-                    downloadFrom(alt)
                 }
                 onInstallReady(AppUpdateManager.installApk(context, file, fromActivity = true))
             } catch (e: Exception) {

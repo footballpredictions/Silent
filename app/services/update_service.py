@@ -86,11 +86,13 @@ def get_latest(platform: str) -> Optional[dict]:
         return None
     file_path = os.path.join(_platform_dir(platform), m["filename"])
     if not os.path.isfile(file_path):
-        return None
+        # APK может быть только на GitHub после publish-github
+        if not m.get("github_download_url"):
+            return None
     return {
         **m,
         "platform": platform,
-        "file_path": file_path,
+        "file_path": file_path if os.path.isfile(file_path) else None,
         "download_url": f"/update/{platform}/{m['filename']}",
     }
 
@@ -101,7 +103,7 @@ def check_update(platform: str, current_version: str) -> Optional[dict]:
         return None
     if not is_newer(latest["version"], current_version):
         return None
-    return {
+    out = {
         "available": True,
         "version": latest["version"],
         "filename": latest["filename"],
@@ -109,6 +111,10 @@ def check_update(platform: str, current_version: str) -> Optional[dict]:
         "uploaded_at": latest.get("uploaded_at"),
         "download_url": latest["download_url"],
     }
+    gh = latest.get("github_download_url")
+    if gh:
+        out["github_download_url"] = gh
+    return out
 
 
 def _cleanup_platform_dir(platform: str, keep_filename: str) -> None:

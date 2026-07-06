@@ -22,6 +22,10 @@ function subscriptionLabel(u: UserRow): string {
   return until ? `${plan} · до ${until}` : plan || 'Активна'
 }
 
+function devicesLabel(u: UserRow): string {
+  return u.is_admin ? `${u.devices_count}/∞` : `${u.devices_count}/3`
+}
+
 export default function UsersPage({ token }: { token: string }) {
   const [users, setUsers] = useState<UserRow[]>([])
   const [search, setSearch] = useState('')
@@ -140,7 +144,7 @@ export default function UsersPage({ token }: { token: string }) {
                       {subscriptionLabel(u)}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-center">{u.devices_count}/3</td>
+                  <td className="px-4 py-3 text-center">{devicesLabel(u)}</td>
                   <td className="px-4 py-3">
                     <div className="flex flex-col gap-1">
                       <div className="flex items-center gap-2">

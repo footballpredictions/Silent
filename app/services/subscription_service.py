@@ -19,6 +19,17 @@ def is_user_admin(user: User) -> bool:
     return bool(user.is_admin) or user.email.lower() == settings.ADMIN_LOGIN.lower()
 
 
+def max_devices_for_user(user: User) -> int:
+    """0 = безлимит (админ)."""
+    if is_user_admin(user):
+        return 0
+    return settings.MAX_DEVICES_PER_USER
+
+
+def device_limit_applies(user: User) -> bool:
+    return not is_user_admin(user)
+
+
 def is_test_user(user: User) -> bool:
     """Explicit per-user test toggle (not legacy global mass-sync)."""
     return bool(getattr(user, "test_mode_personal", False))

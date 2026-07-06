@@ -15,6 +15,7 @@ from app.services.subscription_service import (
     ensure_trial_subscription,
     user_in_test_mode,
     get_display_subscription,
+    max_devices_for_user,
 )
 from app.services.vpn_service import (
     end_device_session,
@@ -95,7 +96,7 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
         devices=device_infos,
         devices_count=active_sessions,
         connected_count=connected,
-        max_devices=settings.MAX_DEVICES_PER_USER,
+        max_devices=max_devices_for_user(user),
         vk_linked=user.vk_user_id is not None,
         vk_user_id=user.vk_user_id,
     )

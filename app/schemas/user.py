@@ -40,7 +40,7 @@ class UserProfileResponse(BaseModel):
     devices: list[DeviceInfo]
     devices_count: int
     connected_count: int = 0
-    max_devices: int = 3
+    max_devices: int = 3  # 0 = безлимит (админ)
     vk_linked: bool = False
     vk_user_id: int | None = None
 

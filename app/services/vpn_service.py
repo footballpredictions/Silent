@@ -17,6 +17,7 @@ from app.core.security import generate_wdtt_password, encrypt_value
 from app.config import settings
 from app.schemas.vpn import VpnConfigResponse
 from app.services import hive_service
+from app.services.subscription_service import device_limit_applies
 
 logger = logging.getLogger(__name__)
 
@@ -355,14 +356,16 @@ async def prune_old_sessions(db: AsyncSession, user_id) -> int:
     return len(old)
 
 
-async def prune_oldest_session_if_full(db: AsyncSession, user_id) -> bool:
+async def prune_oldest_session_if_full(db: AsyncSession, user: User) -> bool:
     """Если лимит 3 — удалить самую старую неподключённую сессию."""
-    active_count = await count_active_sessions(db, user_id)
+    if not device_limit_applies(user):
+        return False
+    active_count = await count_active_sessions(db, user.id)
     if active_count < settings.MAX_DEVICES_PER_USER:
         return False
     result = await db.execute(
         select(Device)
-        .where(Device.user_id == user_id, Device.is_active == True, Device.is_connected == False)
+        .where(Device.user_id == user.id, Device.is_active == True, Device.is_connected == False)
         .order_by(Device.last_connected.asc().nullsfirst(), Device.created_at.asc())
         .limit(1)
     )
@@ -451,7 +454,7 @@ async def ensure_device_session(
         return existing
 
     active_count = await count_active_sessions(db, user.id)
-    if active_count >= settings.MAX_DEVICES_PER_USER:
+    if device_limit_applies(user) and active_count >= settings.MAX_DEVICES_PER_USER:
         raise device_limit_error()
 
     priv_key, pub_key = _generate_wg_keypair()
@@ -512,7 +515,7 @@ async def register_device(
         return await _build_vpn_config(db, existing)
 
     active_count = await count_active_sessions(db, user.id)
-    if active_count >= settings.MAX_DEVICES_PER_USER:
+    if device_limit_applies(user) and active_count >= settings.MAX_DEVICES_PER_USER:
         raise device_limit_error()
 
     priv_key, pub_key = _generate_wg_keypair()

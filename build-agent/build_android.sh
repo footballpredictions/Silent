@@ -13,6 +13,18 @@ GRADLE_DIR="/opt/gradle-${GRADLE_VERSION}"
 export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
 export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/default-java}"
 export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$ROOT/.gradle-cache/android}"
+
+pre_clean_workspace() {
+  echo "[build] pre-clean android workspace"
+  rm -rf \
+    "$REPO/app/build" \
+    "$REPO/app/.gradle" \
+    "$REPO/.gradle" \
+    "$REPO/build" \
+    "$GRADLE_USER_HOME"
+  mkdir -p "$GRADLE_USER_HOME"
+}
 
 ensure_gradle() {
   if [[ -x "$GRADLE_DIR/bin/gradle" ]]; then
@@ -57,13 +69,14 @@ if [[ -d "$SECRETS" ]]; then
   cp -a "$SECRETS/." "$REPO/keystore/"
 fi
 
+pre_clean_workspace
 ensure_sdk_packages
 ensure_gradle
 bash "$ROOT/build_android_go.sh" "$APP_DIR"
 cd "$APP_DIR"
 
 echo "[build] android release bootstrap=$BOOTSTRAP_HASH"
-gradle assembleRelease -PbootstrapVkHash="$BOOTSTRAP_HASH" --no-daemon -q
+gradle assembleRelease -PbootstrapVkHash="$BOOTSTRAP_HASH" --no-daemon -q --no-build-cache
 
 APK="$(find "$APP_DIR/build/outputs/apk/release" -maxdepth 1 -name '*.apk' -type f | head -1)"
 if [[ -z "$APK" || ! -f "$APK" ]]; then

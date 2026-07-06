@@ -15,6 +15,17 @@ MIN_WDTT_BYTES="${PC_MIN_WDTT_BYTES:-500000}"
 # shellcheck source=ensure_go.sh
 source "$ROOT/ensure_go.sh"
 
+pre_clean_workspace() {
+  echo "[build] pre-clean pc workspace"
+  rm -rf \
+    "$REPO/node_modules" \
+    "$REPO/dist" \
+    "$REPO/build-release-agent" \
+    "$REPO/build-output" \
+    "$REPO/resources/wdtt-client.exe"
+  rm -rf "$REPO"/build-release-v* "$REPO"/build-output-v* "$REPO"/build-fresh
+}
+
 bash "$ROOT/sync_repo.sh" pc
 
 if [[ ! -f "$REPO/package.json" ]]; then
@@ -26,6 +37,8 @@ if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   echo "[build] node/npm not found in API container" >&2
   exit 1
 fi
+
+pre_clean_workspace
 
 # docker.sock монтирует путь ХОСТА (BUILD_AGENT_HOST_ROOT), не /app/... внутри API-контейнера
 docker_repo_path() {

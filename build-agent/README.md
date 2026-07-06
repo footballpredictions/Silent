@@ -60,4 +60,8 @@ python scripts/deploy_build_agent.py
 
 ## Очистка диска
 
-После успешной публикации в `update/` backend удаляет артефакты в `workspace/{pc,android}/` (`node_modules`, `dist`, `build/`, installer cache и т.д.) — `git clean -fdx` + явное удаление тяжёлых папок.
+После **каждой** сборки (успех или ошибка) backend удаляет артефакты в `workspace/{pc,android}/` и изолированный Gradle-кеш `build-agent/.gradle-cache/` — `git clean -fdx` + явное удаление `build/`, `node_modules`, `jniLibs` и т.д.
+
+Перед сборкой — та же очистка (чистый workspace, без битых KSP-каталогов).
+
+Если места или inodes мало — сборка не стартует (`BUILD_AGENT_MIN_FREE_GB`, по умолчанию 6 GB).

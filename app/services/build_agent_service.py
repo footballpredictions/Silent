@@ -216,13 +216,41 @@ def _remove_path(path: Path) -> int:
     return size
 
 
-def _cleanup_platform_workspace(platform: str) -> int:
-    """Удалить артефакты сборки после публикации в update/."""
-    repo = _WORKSPACE / platform
-    if not repo.is_dir():
-        return 0
+_MIN_FREE_GB = float(os.environ.get("BUILD_AGENT_MIN_FREE_GB", "6"))
+_MIN_FREE_INODES_PCT = float(os.environ.get("BUILD_AGENT_MIN_FREE_INODES_PCT", "3"))
 
-    paths: list[Path] = []
+
+def _check_build_disk_space() -> None:
+    """Не начинать сборку при нехватке места или inodes (типичная причина KSP/Hilt mkdir fail)."""
+    try:
+        st = os.statvfs(_WORKSPACE if _WORKSPACE.is_dir() else _BUILD_AGENT_ROOT)
+    except OSError as e:
+        logger.warning("Build agent disk check skipped: %s", e)
+        return
+
+    free_bytes = st.f_bavail * st.f_frsize
+    free_gb = free_bytes / (1024 ** 3)
+    if free_gb < _MIN_FREE_GB:
+        raise BuildAgentError(
+            f"Недостаточно места на диске: {free_gb:.1f} GB свободно "
+            f"(нужно >= {_MIN_FREE_GB:g} GB). Очистите VPS или увеличьте диск."
+        )
+
+    if st.f_files > 0:
+        inode_free_pct = (st.f_favail / st.f_files) * 100
+        if inode_free_pct < _MIN_FREE_INODES_PCT:
+            raise BuildAgentError(
+                f"Недостаточно inodes: {inode_free_pct:.1f}% свободно "
+                f"(нужно >= {_MIN_FREE_INODES_PCT:g}%). Gradle/KSP часто падает с mkdir error."
+            )
+
+
+def _workspace_artifact_paths(platform: str) -> list[Path]:
+    repo = _WORKSPACE / platform
+    paths: list[Path] = [_BUILD_AGENT_ROOT / ".gradle-cache" / platform]
+    if not repo.is_dir():
+        return paths
+
     if platform == "pc":
         paths.extend([
             repo / "node_modules",
@@ -238,16 +266,23 @@ def _cleanup_platform_workspace(platform: str) -> int:
         paths.extend([
             repo / "app" / "build",
             repo / "app" / ".gradle",
+            repo / ".gradle",
+            repo / "build",
             repo / "keystore",
             repo / "app" / "src" / "main" / "jniLibs",
         ])
+    return paths
 
+
+def _cleanup_platform_workspace(platform: str, *, git_clean: bool = True) -> int:
+    """Удалить артефакты сборки (build/, Gradle-кеш, node_modules и т.д.)."""
+    repo = _WORKSPACE / platform
     freed = 0
-    for p in paths:
+    for p in _workspace_artifact_paths(platform):
         if p.exists():
             freed += _remove_path(p)
 
-    if (repo / ".git").is_dir():
+    if git_clean and (repo / ".git").is_dir():
         subprocess.run(
             ["git", "clean", "-fdx"],
             cwd=str(repo),
@@ -255,7 +290,9 @@ def _cleanup_platform_workspace(platform: str) -> int:
             timeout=180,
         )
 
-    logger.info("Build agent cleanup %s: ~%s MB freed", platform, freed // (1024 * 1024))
+    freed_mb = freed // (1024 * 1024)
+    if freed_mb > 0:
+        logger.info("Build agent cleanup %s: ~%s MB freed", platform, freed_mb)
     return freed
 
 
@@ -363,6 +400,7 @@ async def build_platform(
         _STOP_REQUESTED = False
         _BUILD_RUNNING = True
         bootstrap_hash = reuse_hash
+        cleanup_freed_mb = 0
         try:
             await set_build_log(
                 db,
@@ -370,6 +408,9 @@ async def build_platform(
                 status="running",
                 platform=platform,
             )
+
+            await asyncio.to_thread(_check_build_disk_space)
+            cleanup_freed_mb += (await asyncio.to_thread(_cleanup_platform_workspace, platform)) // (1024 * 1024)
 
             if not bootstrap_hash:
                 bootstrap_hash = await create_bootstrap_hash(db)
@@ -391,7 +432,6 @@ async def build_platform(
             if platform == "pc":
                 _verify_pc_installer(artifact_path)
             info = _publish(platform, artifact_path, version)
-            freed_mb = (await asyncio.to_thread(_cleanup_platform_workspace, platform)) // (1024 * 1024)
 
             msg = f"OK {platform} v{version} → {info['filename']}"
             try:
@@ -403,8 +443,8 @@ async def build_platform(
             except Exception as gh_err:
                 logger.warning("GitHub publish after build (%s): %s", platform, gh_err)
                 msg += f", GitHub: {str(gh_err)[:120]}"
-            if freed_mb > 0:
-                msg += f", очищено ~{freed_mb} MB"
+            if cleanup_freed_mb > 0:
+                msg += f", очищено ~{cleanup_freed_mb} MB"
             await set_build_log(
                 db,
                 msg,
@@ -416,15 +456,23 @@ async def build_platform(
             return {"platform": platform, "version": version, "bootstrap_hash": bootstrap_hash, **info}
         except Exception as e:
             err = str(e)[:800]
+            suffix = f", очищено ~{cleanup_freed_mb} MB" if cleanup_freed_mb > 0 else ""
             await set_build_log(
                 db,
-                f"Ошибка {platform}: {err}",
+                f"Ошибка {platform}: {err}{suffix}",
                 status="error",
                 platform=platform,
                 bootstrap_hash=bootstrap_hash,
             )
             raise
         finally:
+            try:
+                post_freed = (await asyncio.to_thread(_cleanup_platform_workspace, platform)) // (1024 * 1024)
+                if post_freed > 0:
+                    cleanup_freed_mb += post_freed
+                    logger.info("Build agent post-cleanup %s: ~%s MB (total ~%s MB)", platform, post_freed, cleanup_freed_mb)
+            except Exception:
+                logger.exception("Build agent post-cleanup failed for %s", platform)
             _BUILD_RUNNING = False
             _STOP_REQUESTED = False
 
@@ -472,10 +520,15 @@ async def run_nightly_release_builds(db: AsyncSession) -> None:
             errors.append(f"{platform}={e}")
 
     if errors:
+        failed_platform = next(
+            (p for p in platforms if any(e.startswith(f"{p}=") for e in errors)),
+            platforms[0],
+        )
         await set_build_log(
             db,
             f"Ночная сборка: {', '.join(results)}; ошибки: {'; '.join(errors)}",
             status="error",
+            platform=failed_platform,
             bootstrap_hash=bootstrap_hash,
         )
     else:

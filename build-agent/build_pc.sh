@@ -21,8 +21,7 @@ pre_clean_workspace() {
     "$REPO/node_modules" \
     "$REPO/dist" \
     "$REPO/build-release-agent" \
-    "$REPO/build-output" \
-    "$REPO/resources/wdtt-client.exe"
+    "$REPO/build-output"
   rm -rf "$REPO"/build-release-v* "$REPO"/build-output-v* "$REPO"/build-fresh
 }
 
@@ -88,15 +87,18 @@ build_wdtt_client_docker() {
   mkdir -p "$REPO/resources"
   docker pull "$GO_IMAGE"
   docker run --rm \
+    --entrypoint /usr/bin/bash \
     -v "${docker_repo}:/project" \
     -w /project/wdtt-go \
+    -e PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     -e GOTOOLCHAIN=auto \
     -e GOOS=windows \
     -e GOARCH=amd64 \
     -e CGO_ENABLED=0 \
     "$GO_IMAGE" \
-    bash -lc '
-      set -euo pipefail
+    -c 'set -euo pipefail
+      command -v go >/dev/null || { echo "go not in PATH: $PATH" >&2; exit 127; }
+      go version
       go mod download
       go build -ldflags="-s -w -checklinkname=0" -trimpath -o ../resources/wdtt-client.exe .
       test -f ../resources/wdtt-client.exe
@@ -110,8 +112,7 @@ build_wdtt_client_docker() {
         echo "wdtt-client.exe is not PE (magic=$magic)" >&2
         exit 1
       fi
-      echo "wdtt-client.exe OK ($sz bytes, PE)"
-    '
+      echo "wdtt-client.exe OK ($sz bytes, PE)"'
   verify_wdtt_pe "$REPO/resources/wdtt-client.exe"
 }
 
@@ -129,10 +130,13 @@ build_wdtt_client() {
     echo "[build] existing wdtt-client.exe invalid, rebuilding..." >&2
   fi
 
-  if [[ -S /var/run/docker.sock ]] && command -v docker >/dev/null 2>&1; then
+  if command -v go >/dev/null 2>&1; then
+    build_wdtt_client_host
+  elif [[ -S /var/run/docker.sock ]] && command -v docker >/dev/null 2>&1; then
     build_wdtt_client_docker
   else
-    build_wdtt_client_host
+    echo "[build] go not found and docker unavailable" >&2
+    exit 1
   fi
 }
 

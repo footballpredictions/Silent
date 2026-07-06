@@ -263,7 +263,6 @@ def _workspace_artifact_paths(platform: str) -> list[Path]:
             repo / "dist",
             repo / "build-release-agent",
             repo / "build-output",
-            repo / "resources" / "wdtt-client.exe",
         ])
         paths.extend(repo.glob("build-release-v*"))
         paths.extend(repo.glob("build-output-v*"))

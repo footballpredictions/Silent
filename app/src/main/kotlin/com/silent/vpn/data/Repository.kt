@@ -285,6 +285,10 @@ class SilentRepository @Inject constructor(
                 return block()
             }
             if (isMainVpnTunnelUp()) {
+                if (canUseMobileDirectTunnelApi()) {
+                    prepareMainVpnDirectApi()
+                    return block()
+                }
                 if (APP_EXCLUDED_FROM_VPN && isOnMobileData() && !WdttTunnelManager.isApiOverlayActive()) {
                     error("mobile routine API deferred — use initial sync overlay session")
                 }
@@ -331,7 +335,15 @@ class SilentRepository @Inject constructor(
         return withRoutineBackendApi(allowOverlayFallback = false, block = block)
     }
 
-    /** App in tunnel — direct; excluded LTE — только внутри активного overlay-сессии. */
+    /** LTE после initial sync: mobileApiRoute в WG — API без повторного overlay. */
+    fun canUseMobileDirectTunnelApi(): Boolean =
+        isOnMobileData() &&
+            APP_EXCLUDED_FROM_VPN &&
+            isMainVpnTunnelUp() &&
+            VpnSessionState.tunnelDataSyncCompleted &&
+            !WdttTunnelManager.isApiOverlayActive()
+
+    /** App in tunnel — direct; excluded LTE — overlay или mobileApiRoute после sync. */
     private suspend fun <T> withTunnelBackendBlock(
         allowOverlayFallback: Boolean = false,
         block: suspend () -> T,
@@ -344,6 +356,12 @@ class SilentRepository @Inject constructor(
             useApiBase(tunnelApiBase())
             invalidateApiClient()
             MobileSyncLog.i("tunnel", "API direct ${tunnelApiBase()}")
+            return block()
+        }
+
+        if (canUseMobileDirectTunnelApi()) {
+            prepareMainVpnDirectApi()
+            MobileSyncLog.i("tunnel", "API mobile direct ${tunnelApiBase()}")
             return block()
         }
 
@@ -593,11 +611,18 @@ class SilentRepository @Inject constructor(
     suspend fun <T> withBackendApi(block: suspend () -> T): T = withRoutineBackendApi(block = block)
 
     /**
-     * OTA check/download — тот же канал, что ConfigSync на LTE (overlay + direct 10.66.66.1);
-     * на Wi‑Fi+VPN при 502 local proxy — overlay fallback.
+     * OTA: LTE после initial sync — direct tunnel без overlay;
+     * до sync — один overlay; Wi‑Fi — public или proxy с overlay fallback.
      */
     suspend fun <T> withOtaBackendApi(block: suspend () -> T): T {
         if (isOnMobileData() && APP_EXCLUDED_FROM_VPN && isMainVpnTunnelUp()) {
+            if (canUseMobileDirectTunnelApi() || WdttTunnelManager.isApiOverlayActive()) {
+                if (TunnelApiProxy.isActive()) {
+                    TunnelApiProxy.stopAndAwait()
+                }
+                prepareMainVpnDirectApi()
+                return block()
+            }
             return WdttTunnelManager.withApiOverlayBrief(
                 block = {
                     if (TunnelApiProxy.isActive()) {
@@ -677,9 +702,13 @@ class SilentRepository @Inject constructor(
     fun getPublicServerUrl(): String =
         prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
 
-    /** База для скачивания: при VPN — tunnel (direct/proxy), иначе public HTTPS. */
+    /** База для скачивания APK: Wi‑Fi — public HTTPS; LTE+VPN — tunnel direct. */
     fun resolveUpdateDownloadBase(preferredBase: String?): String {
-        if (isMainVpnTunnelUp() && (APP_EXCLUDED_FROM_VPN || isOnMobileData())) {
+        if (!isOnMobileData()) {
+            preferredBase?.trimEnd('/')?.takeIf { it.startsWith("https://") }?.let { return it }
+            return getPublicServerUrl().trimEnd('/').ifBlank { "https://$DEFAULT_SERVER_HOST" }
+        }
+        if (isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
             return tunnelApiBase().trimEnd('/')
         }
         val base = preferredBase?.trimEnd('/').orEmpty()
@@ -713,10 +742,32 @@ class SilentRepository @Inject constructor(
         return base.trimEnd('/') + path.replace(" ", "%20")
     }
 
+    /** URL APK: GitHub Releases в приоритете; relative — public или tunnel. */
+    fun resolveUpdateDownloadUrl(info: UpdateCheckResponse): String? {
+        val gh = info.github_download_url?.trim()?.takeIf { it.startsWith("http") }
+        val absolute = info.download_url?.trim()?.takeIf { it.startsWith("http") }
+        if (gh != null) return gh
+        if (absolute != null) return absolute
+        val path = info.download_url?.trim().orEmpty()
+        if (path.isBlank()) return null
+        val base = if (isOnMobileData() && isMainVpnTunnelUp() && APP_EXCLUDED_FROM_VPN) {
+            tunnelApiBase().trimEnd('/')
+        } else {
+            resolveUpdateDownloadBase(null)
+        }
+        return joinUpdateUrl(base, path)
+    }
+
+    fun isPublicCdnUpdateUrl(url: String): Boolean =
+        url.contains("github.com", ignoreCase = true) ||
+            url.startsWith("https://", ignoreCase = true)
+
     fun buildDownloadClient(): OkHttpClient {
         val nipHost = DEFAULT_SERVER_HOST
         val tunnelGw = WG_TUNNEL_GATEWAY
         return OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
             .addInterceptor { chain ->
                 var req = chain.request()
                 val host = req.url.host

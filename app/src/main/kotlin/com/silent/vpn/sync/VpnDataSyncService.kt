@@ -183,6 +183,7 @@ class VpnDataSyncService : Service() {
                 var ok = repo.syncAllViaTunnel()
                 if (ok) {
                     repo.seedSyncRevisionsAfterTunnelSync()
+                    VpnDataSyncBridge.onOtaCheckInOverlaySession?.invoke()
                 } else if (canSyncOverlay()) {
                     MobileSyncLog.w("syncService", "sync retry inside overlay")
                     delay(INITIAL_RETRY_MS)

@@ -31,6 +31,7 @@ object AppUpdateManager {
         if (tmp.exists()) tmp.delete()
 
         val request = Request.Builder().url(url).build()
+        withContext(Dispatchers.Main) { onProgress(0) }
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw IllegalStateException("HTTP ${response.code}")
             val body = response.body ?: throw IllegalStateException("Empty body")
@@ -39,7 +40,7 @@ object AppUpdateManager {
             var lastPct = -1
             body.byteStream().use { input ->
                 tmp.outputStream().use { output ->
-                    val buf = ByteArray(8192)
+                    val buf = ByteArray(64 * 1024)
                     while (true) {
                         val n = input.read(buf)
                         if (n <= 0) break
@@ -51,8 +52,10 @@ object AppUpdateManager {
                                 lastPct = pct
                                 withContext(Dispatchers.Main) { onProgress(pct) }
                             }
-                            // Не ждём EOF после 100%: некоторые CDN держат сокет открытым.
                             if (received >= total) break
+                        } else if (received > 0 && lastPct < 1) {
+                            lastPct = 1
+                            withContext(Dispatchers.Main) { onProgress(1) }
                         }
                     }
                     output.flush()

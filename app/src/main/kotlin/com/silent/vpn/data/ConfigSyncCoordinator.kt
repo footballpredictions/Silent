@@ -145,9 +145,13 @@ object ConfigSyncCoordinator {
             }
 
             if (repo.isOnMobileData() && SilentRepository.APP_EXCLUDED_FROM_VPN && vpnUpForSync()) {
-                WdttTunnelManager.withApiOverlayBrief(
-                    block = { runConfigSyncBody(repo, listener) },
-                )
+                if (VpnSessionState.tunnelDataSyncCompleted) {
+                    runConfigSyncBody(repo, listener)
+                } else {
+                    WdttTunnelManager.withApiOverlayBrief(
+                        block = { runConfigSyncBody(repo, listener) },
+                    )
+                }
             } else {
                 runConfigSyncBody(repo, listener)
             }

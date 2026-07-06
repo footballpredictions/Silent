@@ -1354,77 +1354,6 @@ ipcMain.handle('app-update-check', async (_, { version, platform = 'pc' }) => {
   }
 })
 
-function taskkillImage(imageName) {
-  const { execSync } = require('child_process')
-  try {
-    execSync(`taskkill /F /IM ${imageName} /T`, { stdio: 'ignore', timeout: 10_000 })
-  } catch { /* ignore */ }
-}
-
-async function prepareDownloadDest(destPath) {
-  const dir = path.dirname(destPath)
-  fs.mkdirSync(dir, { recursive: true })
-  if (!fs.existsSync(destPath)) return destPath
-  for (let attempt = 0; attempt < 12; attempt++) {
-    try {
-      fs.unlinkSync(destPath)
-      return destPath
-    } catch (e) {
-      if (e.code !== 'EBUSY' && e.code !== 'EPERM') throw e
-      if (attempt === 3) taskkillImage('msiexec.exe')
-      await sleep(500)
-    }
-  }
-  const ext = path.extname(destPath)
-  const base = path.basename(destPath, ext)
-  return path.join(dir, `${base}-${Date.now()}${ext}`)
-}
-
-async function releaseLocksForUpdateInstall() {
-  isQuitting = true
-  sendLog('[Update] stopping VPN and helper processes…')
-  try {
-    networkMonitor?.stop()
-    await fastDisconnectVpn()
-  } catch { /* ignore */ }
-  for (const proc of ['wdtt-client.exe', 'wireguard.exe', 'wg.exe']) {
-    taskkillImage(proc)
-  }
-  await sleep(900)
-}
-
-function launchInstallerDetached(exePath) {
-  return new Promise((resolve, reject) => {
-    if (process.platform === 'win32') {
-      // start "" — отдельный процесс под explorer.exe, не дочерний Electron (иначе quit убивает NSIS).
-      const child = spawn('cmd.exe', ['/d', '/s', '/c', 'start', '""', exePath], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-      })
-      child.once('error', reject)
-      child.once('close', (code) => {
-        if (code === 0) resolve()
-        else reject(new Error(`start installer exit ${code}`))
-      })
-      child.unref()
-      return
-    }
-    const child = spawn(exePath, [], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: false,
-    })
-    child.once('error', reject)
-    child.unref()
-    if (child.pid) {
-      resolve()
-      return
-    }
-    reject(new Error('Не удалось запустить установщик'))
-  })
-}
-
 function downloadFileWithProgress(url, destPath, onProgress) {
   return new Promise((resolve, reject) => {
     const proto = url.startsWith('https') ? https : http
@@ -1442,24 +1371,17 @@ function downloadFileWithProgress(url, destPath, onProgress) {
       }
       const total = parseInt(res.headers['content-length'] || '0', 10)
       let received = 0
-      const file = fs.createWriteStream(destPath, { flags: 'wx' })
-      const cleanup = (err) => {
-        file.destroy()
-        fs.unlink(destPath, () => reject(err))
-      }
+      const file = fs.createWriteStream(destPath)
       res.on('data', (chunk) => {
         received += chunk.length
         if (total > 0 && onProgress) onProgress(Math.min(100, Math.round((received / total) * 100)))
       })
       res.pipe(file)
-      file.on('finish', () => {
-        file.close((err) => {
-          if (err) cleanup(err)
-          else resolve(destPath)
-        })
+      file.on('finish', () => file.close(() => resolve(destPath)))
+      file.on('error', (err) => {
+        fs.unlink(destPath, () => {})
+        reject(err)
       })
-      file.on('error', cleanup)
-      res.on('error', cleanup)
     })
     req.on('error', reject)
     req.setTimeout(600_000, () => {
@@ -1471,7 +1393,7 @@ function downloadFileWithProgress(url, destPath, onProgress) {
 ipcMain.handle('app-update-download', async (_, { url, filename }) => {
   try {
     const safeName = path.basename(filename || 'update.exe')
-    const dest = await prepareDownloadDest(path.join(app.getPath('temp'), safeName))
+    const dest = path.join(app.getPath('temp'), safeName)
     const sendProgress = (pct) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('update-progress', pct)
@@ -1480,12 +1402,6 @@ ipcMain.handle('app-update-download', async (_, { url, filename }) => {
     await downloadFileWithProgress(url, dest, sendProgress)
     return { ok: true, path: dest }
   } catch (e) {
-    if (e?.code === 'EEXIST') {
-      return { ok: false, error: 'Файл обновления занят другой программой. Закройте предыдущий установщик и повторите.' }
-    }
-    if (e?.code === 'EBUSY' || e?.code === 'EPERM') {
-      return { ok: false, error: 'Файл занят другой программой. Закройте установщик Silent VPN и повторите.' }
-    }
     return { ok: false, error: e?.message || String(e) }
   }
 })
@@ -1495,25 +1411,26 @@ ipcMain.handle('app-update-install', async (_, filePath) => {
     if (!filePath || !fs.existsSync(filePath)) {
       return { ok: false, error: 'File not found' }
     }
-    await releaseLocksForUpdateInstall()
+    isQuitting = true
+    sendLog('[Update] stopping VPN before install…')
+    try {
+      networkMonitor?.stop()
+      await fastDisconnectVpn()
+    } catch { /* ignore */ }
+    const { execSync } = require('child_process')
+    for (const proc of ['wdtt-client.exe', 'wireguard.exe', 'wg.exe']) {
+      try { execSync(`taskkill /F /IM ${proc} /T`, { stdio: 'ignore' }) } catch { /* ignore */ }
+    }
+    await sleep(800)
 
     sendLog('[Update] launching installer: ' + filePath)
-    try {
-      await launchInstallerDetached(filePath)
-    } catch (spawnErr) {
-      sendLog(`[Update] spawn failed (${spawnErr?.message || spawnErr}), shell.openPath fallback`)
-      const openErr = await shell.openPath(filePath)
-      if (openErr) {
-        isQuitting = false
-        return { ok: false, error: openErr }
-      }
+    const openErr = await shell.openPath(filePath)
+    if (openErr) {
+      return { ok: false, error: openErr }
     }
-
-    await sleep(800)
-    quitAppFully()
+    setTimeout(() => app.quit(), 1500)
     return { ok: true }
   } catch (e) {
-    isQuitting = false
     return { ok: false, error: e?.message || String(e) }
   }
 })

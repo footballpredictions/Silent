@@ -449,7 +449,7 @@ export default function MainScreen({
         setUpdateProgress(100)
         const inst = await api_.installUpdate(res.path)
         if (!inst?.ok) {
-          alert(inst?.error || 'Не удалось запустить установщик. Закройте другие окна Silent VPN и повторите.')
+          alert(inst?.error || 'Не удалось запустить установщик')
           setUpdateDownloading(false)
         }
         // при успехе приложение закроется — установщик NSIS откроется сам

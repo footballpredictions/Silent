@@ -21,10 +21,13 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.silent.vpn.ui.tv.tvSliderDpad
+import com.silent.vpn.util.rememberIsTv
 import kotlin.math.roundToInt
 
 /**
  * Ползунок как [input type=range] на PC/Electron: тонкая дорожка + круглый thumb.
+ * На TV: фокус + ←/→ двигают шарик (тот же вид).
  */
 @Composable
 fun PcStyleRangeSlider(
@@ -39,6 +42,7 @@ fun PcStyleRangeSlider(
 ) {
     val thumbSize = 18.dp
     val trackHeight = 4.dp
+    val isTv = rememberIsTv()
 
     fun snap(raw: Float): Int {
         val stepped = (raw / step).roundToInt() * step
@@ -49,7 +53,21 @@ fun PcStyleRangeSlider(
         modifier = modifier
             .fillMaxWidth()
             .height(28.dp)
-            .alpha(if (enabled) 1f else 0.45f),
+            .alpha(if (enabled) 1f else 0.45f)
+            .then(
+                if (isTv) {
+                    Modifier.tvSliderDpad(
+                        enabled = enabled,
+                        value = value,
+                        minValue = minValue,
+                        maxValue = maxValue,
+                        step = step,
+                        onValueChange = onValueChange,
+                    )
+                } else {
+                    Modifier
+                },
+            ),
     ) {
         val density = LocalDensity.current
         val widthPx = with(density) { maxWidth.toPx() }
@@ -70,22 +88,28 @@ fun PcStyleRangeSlider(
         Box(
             Modifier
                 .matchParentSize()
-                .pointerInput(enabled, minValue, maxValue, step, widthPx, thumbPx) {
-                    if (!enabled) return@pointerInput
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        down.consume()
-                        updateFromX(down.position.x)
-                        val pointerId = down.id
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == pointerId } ?: break
-                            if (!change.pressed) break
-                            updateFromX(change.position.x)
-                            change.consume()
+                .then(
+                    if (!isTv) {
+                        Modifier.pointerInput(enabled, minValue, maxValue, step, widthPx, thumbPx) {
+                            if (!enabled) return@pointerInput
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                down.consume()
+                                updateFromX(down.position.x)
+                                val pointerId = down.id
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                                    if (!change.pressed) break
+                                    updateFromX(change.position.x)
+                                    change.consume()
+                                }
+                            }
                         }
-                    }
-                },
+                    } else {
+                        Modifier
+                    },
+                ),
         ) {
             Box(
                 Modifier

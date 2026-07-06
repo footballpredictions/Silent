@@ -56,7 +56,7 @@ class WireGuardHelper(context: Context) {
 
 
 
-    private companion object {
+    companion object {
 
         val wgMutex = Mutex()
 
@@ -68,9 +68,9 @@ class WireGuardHelper(context: Context) {
 
         private const val TAG = "WireGuardHelper"
 
-    }
+        fun isWgTransitionActive(): Boolean = wgTransitionActive
 
-    /** Сброс WG даже если sharedTunnel=null (новый процесс после kill). */
+    }
     suspend fun forceStopSilentTunnel() = wgMutex.withLock {
         withContext(Dispatchers.IO) {
             runCatching {
@@ -83,10 +83,6 @@ class WireGuardHelper(context: Context) {
             lastAppliedSemanticKey = null
         }
     }
-
-    fun isWgTransitionActive(): Boolean = wgTransitionActive
-
-
 
     class WgTunnel : Tunnel {
 

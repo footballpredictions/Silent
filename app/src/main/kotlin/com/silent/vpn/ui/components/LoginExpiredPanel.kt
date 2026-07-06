@@ -16,7 +16,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material3.Button
+import com.silent.vpn.ui.tv.TvPrimaryButton
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -124,7 +124,7 @@ fun LoginExpiredPanel(
                 modifier = Modifier.alpha(bodyAlpha),
             )
             Spacer(modifier = Modifier.height(18.dp))
-            Button(
+            TvPrimaryButton(
                 onClick = onCloseApp,
                 modifier = Modifier
                     .fillMaxWidth()

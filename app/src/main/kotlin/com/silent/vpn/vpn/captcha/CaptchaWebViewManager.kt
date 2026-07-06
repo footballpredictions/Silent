@@ -9,6 +9,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import com.silent.vpn.util.DevicePlatform
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -19,6 +20,7 @@ object CaptchaWebViewManager {
 
     private const val TAG = "CaptchaWV"
     private const val CAPTCHA_TIMEOUT_MS = 29_000L
+    private const val CAPTCHA_TIMEOUT_TV_MS = 55_000L
     const val ERROR_SLIDER_DETECTED = "slider_detected"
 
     @Volatile
@@ -72,7 +74,8 @@ object CaptchaWebViewManager {
                     }
                     ctx.startActivity(intent)
                 }
-                withTimeout(CAPTCHA_TIMEOUT_MS) {
+                val timeoutMs = if (DevicePlatform.isTv(ctx)) CAPTCHA_TIMEOUT_TV_MS else CAPTCHA_TIMEOUT_MS
+                withTimeout(timeoutMs) {
                     deferred.await().getOrThrow()
                 }
             } catch (e: CancellationException) {

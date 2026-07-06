@@ -3,14 +3,16 @@ package com.silent.vpn.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import com.silent.vpn.ui.components.PcStyleRangeSlider
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import com.silent.vpn.ui.tv.TvTextButton
+import com.silent.vpn.ui.tv.tvListItemFocusable
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,6 +31,7 @@ import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.ui.theme.UiColors
 import com.silent.vpn.ui.theme.UiDimens
+import com.silent.vpn.util.rememberIsTv
 import com.silent.vpn.vpn.WdttTunnelManager
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -43,6 +46,8 @@ fun MenuHashesScreen(
     var loading by remember { mutableStateOf(repo.getSavedHashItems().isEmpty()) }
     var items by remember { mutableStateOf(repo.getSavedHashItems()) }
     var savedAt by remember { mutableStateOf(repo.getSavedHashItemsUpdatedAt()) }
+    val isTv = rememberIsTv()
+    val listState = rememberLazyListState()
 
     val activeWorkers by WdttTunnelManager.activeWorkers.collectAsState()
     val vpnRunning by WdttTunnelManager.running.collectAsState()
@@ -69,68 +74,84 @@ fun MenuHashesScreen(
         loading = false
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 64.dp),
     ) {
-        TextButton(onClick = onBack) {
-            Text("← Назад", fontSize = 12.sp, color = fg.copy(0.5f))
+        item {
+            TvTextButton(onClick = onBack, requestFocusOnOpen = true) {
+                Text("← Назад", fontSize = 12.sp, color = fg.copy(0.5f))
+            }
         }
-        Text("Хеши", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = fg)
-        Text(
-            "Кеш на устройстве. При подключении VPN список обновляется автоматически.",
-            fontSize = 11.sp,
-            color = fg.copy(0.5f),
-            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
-        )
-        if (savedAt > 0L) {
+        item {
+            Text("Хеши", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = fg)
             Text(
-                "Последнее обновление: ${formatSavedAt(savedAt)}",
-                fontSize = 10.sp,
-                color = fg.copy(0.4f),
-                modifier = Modifier.padding(bottom = 8.dp),
+                "Кеш на устройстве. При подключении VPN список обновляется автоматически.",
+                fontSize = 11.sp,
+                color = fg.copy(0.5f),
+                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+            )
+            if (savedAt > 0L) {
+                Text(
+                    "Последнее обновление: ${formatSavedAt(savedAt)}",
+                    fontSize = 10.sp,
+                    color = fg.copy(0.4f),
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
+        }
+        item {
+            ChannelStrengthSelector(
+                fg = fg,
+                totalWorkers = totalWorkers,
+                activeHashCount = activeHashCount,
+                maxTotalWorkers = maxTotalWorkers,
+                vpnRunning = SilentVpnService.isRunning,
+                onSelect = { value ->
+                    totalWorkers = value
+                    repo.saveTotalWorkers(value, activeHashCount)
+                },
             )
         }
-
-        ChannelStrengthSelector(
-            fg = fg,
-            totalWorkers = totalWorkers,
-            activeHashCount = activeHashCount,
-            maxTotalWorkers = maxTotalWorkers,
-            vpnRunning = SilentVpnService.isRunning,
-            onSelect = { value ->
-                totalWorkers = value
-                repo.saveTotalWorkers(value, activeHashCount)
-            },
-        )
-
-        if (SilentVpnService.isRunning && tunnelReady) {
-            Text(
-                "Активных каналов: $activeWorkers / $totalWorkers",
-                fontSize = 10.sp,
-                color = fg.copy(0.55f),
-                modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
-            )
-        } else {
-            Spacer(Modifier.height(8.dp))
+        item {
+            if (SilentVpnService.isRunning && tunnelReady) {
+                Text(
+                    "Активных каналов: $activeWorkers / $totalWorkers",
+                    fontSize = 10.sp,
+                    color = fg.copy(0.55f),
+                    modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+                )
+            } else {
+                Spacer(Modifier.height(8.dp))
+            }
         }
-
         when {
             loading -> {
-                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                item {
+                    Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                    }
                 }
             }
             serverItems.isEmpty() -> {
-                Text("Нет серверных хешей. Подключите VPN или попросите админа выдать слоты.", fontSize = 12.sp, color = fg.copy(0.5f))
+                item {
+                    Text(
+                        "Нет серверных хешей. Подключите VPN или попросите админа выдать слоты.",
+                        fontSize = 12.sp,
+                        color = fg.copy(0.5f),
+                    )
+                }
             }
             else -> {
-                serverItems.forEachIndexed { index, item ->
+                itemsIndexed(
+                    items = serverItems,
+                    key = { _, item -> item.hash.ifBlank { item.label } },
+                ) { index, item ->
                     HashRow(
                         item = item,
                         fg = fg,
+                        isTv = isTv,
                         signalBars = if (vpnRunning && item.status == "active" && item.is_active) {
                             HashChannelHelper.signalBars(activeWorkers, totalWorkers)
                         } else {
@@ -159,6 +180,7 @@ private fun ChannelStrengthSelector(
 ) {
     val stepped = HashChannelHelper.normalizeTotalWorkers(totalWorkers, activeHashCount)
     val muted = fg.copy(alpha = 0.5f)
+    val minWorkers = HashChannelHelper.WORKERS_PER_GROUP
 
     Column(
         modifier = Modifier
@@ -199,7 +221,7 @@ private fun ChannelStrengthSelector(
         PcStyleRangeSlider(
             value = stepped,
             onValueChange = { onSelect(HashChannelHelper.normalizeTotalWorkers(it, activeHashCount)) },
-            minValue = HashChannelHelper.WORKERS_PER_GROUP,
+            minValue = minWorkers,
             maxValue = maxTotalWorkers,
             step = HashChannelHelper.WORKERS_PER_GROUP,
             enabled = !vpnRunning,
@@ -243,6 +265,7 @@ private fun formatSavedAt(ts: Long): String {
 private fun HashRow(
     item: HashItemDto,
     fg: Color,
+    isTv: Boolean,
     signalBars: Int,
     maxChannels: Int,
 ) {
@@ -254,6 +277,7 @@ private fun HashRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(if (isTv) Modifier.tvListItemFocusable() else Modifier)
             .drawBehind {
                 val stroke = with(density) { UiDimens.borderThin.toPx() }
                 drawLine(

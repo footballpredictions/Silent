@@ -1,6 +1,7 @@
 package com.silent.vpn.ui.components
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -19,6 +20,8 @@ import androidx.compose.ui.unit.dp
 import com.silent.vpn.ui.theme.UiDimens
 import com.silent.vpn.ui.theme.UiFont
 import com.silent.vpn.ui.theme.mutedFg
+import com.silent.vpn.ui.tv.tvMenuClickable
+import com.silent.vpn.util.rememberIsTv
 
 @Composable
 fun MenuNavItem(
@@ -29,29 +32,44 @@ fun MenuNavItem(
     textColor: Color = fg,
     showChevron: Boolean = true,
 ) {
-    Row(
+    val isTv = rememberIsTv()
+    Box(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(
-                horizontal = UiDimens.menuItemPaddingH,
-                vertical = UiDimens.menuItemPaddingV,
+            .then(
+                if (isTv) {
+                    Modifier.tvMenuClickable(
+                        cornerRadius = 10.dp,
+                        onClick = onClick,
+                    )
+                } else {
+                    Modifier.clickable(onClick = onClick)
+                },
             ),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            label,
-            fontSize = UiFont.sm,
-            color = textColor,
-            modifier = Modifier.weight(1f),
-        )
-        if (showChevron) {
-            Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = mutedFg(fg, 0.3f),
-                modifier = Modifier.size(14.dp),
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = UiDimens.menuItemPaddingH,
+                    vertical = UiDimens.menuItemPaddingV,
+                ),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                label,
+                fontSize = UiFont.sm,
+                color = textColor,
+                modifier = Modifier.weight(1f),
             )
+            if (showChevron) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = mutedFg(fg, 0.3f),
+                    modifier = Modifier.size(14.dp),
+                )
+            }
         }
     }
 }
@@ -61,26 +79,35 @@ fun MenuNavLogout(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
+    val isTv = rememberIsTv()
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .padding(top = 8.dp)
-            .clickable(
-                onClick = onClick,
-                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                indication = null,
-            )
-            .padding(
-                horizontal = UiDimens.menuItemPaddingH,
-                vertical = UiDimens.menuItemPaddingV,
+            .then(
+                if (isTv) {
+                    Modifier.tvMenuClickable(
+                        cornerRadius = 10.dp,
+                        onClick = onClick,
+                    )
+                } else {
+                    Modifier.clickable(
+                        onClick = onClick,
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                    )
+                },
             ),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             "Выйти",
             fontSize = UiFont.sm,
             color = com.silent.vpn.ui.theme.UiColors.Red500,
             fontWeight = FontWeight.Normal,
+            modifier = Modifier.padding(
+                horizontal = UiDimens.menuItemPaddingH,
+                vertical = UiDimens.menuItemPaddingV,
+            ),
         )
     }
 }

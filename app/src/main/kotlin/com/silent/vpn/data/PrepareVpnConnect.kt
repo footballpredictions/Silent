@@ -21,7 +21,7 @@ suspend fun SilentRepository.prepareVpnConnectConfig(
         }
         val active = hashItems.activeServerHashes().size
         if (active < HashChannelHelper.MAX_HASHES) {
-            runCatching { getApi().requestHashRefresh(ConnectRequest(fingerprint, "android")) }
+            runCatching { getApi().requestHashRefresh(ConnectRequest(fingerprint, getApiDeviceType())) }
             val again = getApi().getVpnHashes()
             if (again.isSuccessful) {
                 val refreshed = again.body()?.toHashItems().orEmpty()

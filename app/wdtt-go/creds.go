@@ -184,8 +184,8 @@ func handleAuthError(streamID int) bool {
 var globalCaptchaLockout atomic.Int64
 
 const (
-	captchaAutoWebViewTimeout     = 30 * time.Second
-	captchaManualWebViewTimeout   = 60 * time.Second
+	captchaAutoWebViewTimeout     = 50 * time.Second
+	captchaManualWebViewTimeout   = 90 * time.Second
 	captchaSelectedWebViewTimeout = 120 * time.Second
 )
 
@@ -549,6 +549,9 @@ func solveCaptchaBySelectedMode(
 	case "wv":
 		log.Printf("[STREAM %d] [КАПЧА] WBV: режим из настроек Android (attempt %d)", streamID, attempt)
 		return requestWebViewCaptcha(streamID, captchaErr, "selected", captchaSelectedWebViewTimeout)
+	case "rjs-only":
+		log.Printf("[STREAM %d] [КАПЧА] RJS-ONLY: Go v2 без WebView (attempt %d)", streamID, attempt)
+		return solveVkCaptchaV2Attempts(ctx, captchaErr, client, profile, savedProfile, anonToken, 4)
 	case "rjs":
 		log.Printf("[STREAM %d] [КАПЧА] RJS: Go v2 выбран в настройках (attempt %d)", streamID, attempt)
 		token, solveErr := solveVkCaptchaV2Attempts(ctx, captchaErr, client, profile, savedProfile, anonToken, 2)
@@ -636,7 +639,13 @@ func isWebViewCaptchaTimeout(err error) bool {
 
 // ─── GetCreds returns TURN credentials for a given stream ───
 
-func GetCreds(ctx context.Context, link string, streamID int) (string, string, []string, error) {
+func GetCreds(ctx context.Context, link string, streamID int) (user, pass string, urls []string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[FATAL] panic GetCreds stream %d: %v", streamID, r)
+			err = fmt.Errorf("creds panic: %v", r)
+		}
+	}()
 	return getVkCredsCached(ctx, link, streamID)
 }
 

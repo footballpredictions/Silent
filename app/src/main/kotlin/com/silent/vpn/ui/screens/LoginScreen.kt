@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -14,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
@@ -22,7 +24,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -31,14 +41,38 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.silent.vpn.data.ThemeData
+import com.silent.vpn.ui.components.BrandHeader
 import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
 import com.silent.vpn.ui.components.LoginExpiredPanel
 import com.silent.vpn.ui.components.SilentLogo
+import com.silent.vpn.ui.tv.TvIconButton
+import com.silent.vpn.ui.tv.TvPrimaryButton
+import com.silent.vpn.ui.tv.TvTextButton
+import com.silent.vpn.ui.tv.tvClickable
+import com.silent.vpn.util.rememberIsTv
 import com.silent.vpn.ui.theme.loginTextFieldColors
 import com.silent.vpn.ui.theme.toLoginUi
 
 private enum class LoginStep { AUTH, FORGOT }
+
+private fun isInternalTransportStatus(msg: String): Boolean {
+    val m = msg.trim()
+    return m.equals("Ожидание данных…", ignoreCase = true) ||
+        m.equals("Ожидание данных...", ignoreCase = true) ||
+        m.startsWith("Трафик:", ignoreCase = true)
+}
+
+/** Ошибки bootstrap — красным; промежуточные «Подключение VPN…» в UI не показываем. */
+private fun isBootstrapFailureMessage(msg: String): Boolean {
+    val m = msg.trim()
+    if (m.isBlank() || isInternalTransportStatus(m)) return false
+    if (m.contains("Канал готов", ignoreCase = true)) return false
+    if (m.contains("Подтвердите email", ignoreCase = true)) return false
+    if (m.contains("Откройте ссылку", ignoreCase = true)) return false
+    if (m.startsWith("Подключение", ignoreCase = true)) return false
+    return true
+}
 
 @Composable
 fun LoginScreen(
@@ -73,25 +107,27 @@ fun LoginScreen(
     var showPassword by remember { mutableStateOf(false) }
     var rememberMe by remember(initialRememberMe) { mutableStateOf(initialRememberMe) }
     var showDebugLog by remember { mutableStateOf(false) }
+    val rememberMeFocus = remember { FocusRequester() }
     val fieldColors = loginTextFieldColors(ui)
+    val isTv = rememberIsTv()
+    val contentPadding = if (isTv) 48.dp else 20.dp
+    val fieldFontSize = if (isTv) 16.sp else 14.sp
+    val btnHeight = if (isTv) 56.dp else 48.dp
 
     val rememberLabel = theme?.login_remember_me_label ?: "Запомнить меня"
     val forgotLabel = theme?.login_forgot_password_label ?: "Забыли пароль?"
     val forgotTitle = theme?.login_forgot_title ?: "Восстановление пароля"
     val forgotHint = theme?.login_forgot_instruction ?: "Введите email — мы отправим ссылку."
 
+    val bootstrapMin = if (isTv) 3 else 2
     val expiredMessage = statusMsg.ifBlank {
-        "Время временного интернета истекло (2 мин). Закройте приложение и запустите снова."
+        "Время временного интернета истекло ($bootstrapMin мин). Закройте приложение и запустите снова."
     }
     val expiredBody = remember(expiredMessage) {
         expiredMessage
-            .replace(Regex("^Время временного интернета истекло\\s*\\(2 мин\\)\\.?\\s*", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("^Время временного интернета истекло\\s*\\(\\d+ мин\\)\\.?\\s*", RegexOption.IGNORE_CASE), "")
             .trim()
             .ifBlank { "Закройте приложение и откройте снова." }
-    }
-
-    LaunchedEffect(Unit) {
-        onSyncBootstrap()
     }
 
     Column(
@@ -105,12 +141,10 @@ fun LoginScreen(
 
         Column(
             modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp).padding(top = 24.dp, bottom = 20.dp),
+                .padding(horizontal = contentPadding).padding(top = if (isTv) 32.dp else 24.dp, bottom = 20.dp),
         ) {
             Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                SilentLogo()
-                Spacer(modifier = Modifier.height(12.dp))
-                Text("SILENT VPN", color = ui.fg, fontWeight = FontWeight.Bold, fontSize = 16.sp, letterSpacing = 3.sp)
+                BrandHeader(textColor = ui.fg)
             }
             Spacer(modifier = Modifier.height(20.dp))
 
@@ -118,35 +152,37 @@ fun LoginScreen(
                 Column {
                     if (!bootstrapExpired) {
                         when {
-                            bootstrapConnecting -> {
-                                Text(
-                                    "Подключение… подождите",
-                                    fontSize = 12.sp,
-                                    color = ui.hint,
-                                    modifier = Modifier.padding(bottom = 12.dp),
-                                )
-                            }
                             bootstrapReady -> {
                                 val sec = bootstrapSecondsLeft
+                                val readyText = when {
+                                    statusMsg.contains("Канал готов", ignoreCase = true) -> statusMsg
+                                    sec != null ->
+                                        "Канал готов. Осталось %d:%02d — войдите или зарегистрируйтесь"
+                                            .format(sec / 60, sec % 60)
+                                    statusMsg.isNotBlank() && !isInternalTransportStatus(statusMsg) -> statusMsg
+                                    else -> "Канал готов — войдите или зарегистрируйтесь"
+                                }
                                 Text(
-                                    when {
-                                        sec != null -> statusMsg.ifBlank {
-                                            "Канал готов. Осталось %d:%02d".format(sec / 60, sec % 60)
-                                        }
-                                        statusMsg.isNotBlank() -> statusMsg
-                                        else -> "VPN включён"
-                                    },
-                                    fontSize = 12.sp,
+                                    readyText,
+                                    fontSize = if (isTv) 14.sp else 12.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = ui.green,
                                     modifier = Modifier.padding(bottom = 12.dp),
                                 )
                             }
-                            statusMsg.isNotBlank() -> {
+                            isBootstrapFailureMessage(statusMsg) -> {
                                 Text(
                                     statusMsg,
-                                    fontSize = 12.sp,
+                                    fontSize = if (isTv) 14.sp else 12.sp,
                                     color = ui.red,
+                                    modifier = Modifier.padding(bottom = 12.dp),
+                                )
+                            }
+                            else -> {
+                                Text(
+                                    "Подключение… подождите",
+                                    fontSize = if (isTv) 14.sp else 12.sp,
+                                    color = ui.hint,
                                     modifier = Modifier.padding(bottom = 12.dp),
                                 )
                             }
@@ -165,22 +201,42 @@ fun LoginScreen(
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (selected) ui.primaryBtnBg else Color.Transparent)
-                                    .clickable(enabled = !bootstrapExpired) {
-                                        tab = key
-                                        onClearError()
-                                        if (key == "login") onRegDoneDismiss()
-                                    }
-                                    .padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center,
+                                    .then(
+                                        if (isTv) {
+                                            Modifier.tvClickable(
+                                                enabled = !bootstrapExpired,
+                                                cornerRadius = 10.dp,
+                                                ringOnly = true,
+                                                onClick = {
+                                                    tab = key
+                                                    onClearError()
+                                                    if (key == "login") onRegDoneDismiss()
+                                                },
+                                            )
+                                        } else {
+                                            Modifier.clickable(enabled = !bootstrapExpired) {
+                                                tab = key
+                                                onClearError()
+                                                if (key == "login") onRegDoneDismiss()
+                                            }
+                                        },
+                                    ),
                             ) {
-                                Text(
-                                    label,
-                                    color = if (selected) ui.primaryBtnFg else ui.hint,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(if (selected) ui.primaryBtnBg else Color.Transparent)
+                                        .padding(vertical = if (isTv) 12.dp else 8.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        label,
+                                        color = if (selected) ui.primaryBtnFg else ui.hint,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                }
                             }
                         }
                     }
@@ -220,20 +276,39 @@ fun LoginScreen(
                                     Text("Email", color = ui.label, fontSize = 12.sp)
                                     OutlinedTextField(
                                         value = email, onValueChange = { email = it }, modifier = Modifier.fillMaxWidth(),
-                                        placeholder = { Text("you@example.com", fontSize = 14.sp, color = ui.fieldPlaceholder) },
+                                        placeholder = { Text("you@example.com", fontSize = fieldFontSize, color = ui.fieldPlaceholder) },
                                         singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                                         shape = RoundedCornerShape(12.dp), colors = fieldColors,
                                     )
                                     Spacer(modifier = Modifier.height(12.dp))
                                     Text("Пароль", color = ui.label, fontSize = 12.sp)
                                     OutlinedTextField(
-                                        value = password, onValueChange = { password = it }, modifier = Modifier.fillMaxWidth(),
+                                        value = password, onValueChange = { password = it },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .then(
+                                                if (isTv) {
+                                                    Modifier.onPreviewKeyEvent { event ->
+                                                        if (
+                                                            event.type == KeyEventType.KeyDown &&
+                                                            event.key == Key.DirectionDown
+                                                        ) {
+                                                            rememberMeFocus.requestFocus()
+                                                            true
+                                                        } else {
+                                                            false
+                                                        }
+                                                    }
+                                                } else {
+                                                    Modifier
+                                                },
+                                            ),
                                         singleLine = true,
                                         visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                                         shape = RoundedCornerShape(12.dp), colors = fieldColors,
                                         trailingIcon = {
-                                            IconButton(onClick = { showPassword = !showPassword }) {
+                                            TvIconButton(onClick = { showPassword = !showPassword }) {
                                                 Icon(
                                                     imageVector = if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                                                     contentDescription = if (showPassword) "Скрыть пароль" else "Показать пароль",
@@ -243,21 +318,77 @@ fun LoginScreen(
                                             }
                                         },
                                     )
-                                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Checkbox(
-                                                checked = rememberMe,
-                                                onCheckedChange = { rememberMe = it },
-                                                colors = CheckboxDefaults.colors(
-                                                    checkedColor = ui.fg,
-                                                    checkmarkColor = ui.bg,
-                                                    uncheckedColor = ui.border,
-                                                ),
-                                            )
-                                            Text(rememberLabel, fontSize = 12.sp, color = ui.hint)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        if (isTv) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.weight(1f, fill = false),
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(48.dp)
+                                                        .focusRequester(rememberMeFocus)
+                                                        .focusProperties { canFocus = !bootstrapExpired }
+                                                        .tvClickable(
+                                                            enabled = !bootstrapExpired,
+                                                            cornerRadius = 6.dp,
+                                                            ringOnly = true,
+                                                            onClick = { rememberMe = !rememberMe },
+                                                        ),
+                                                    contentAlignment = Alignment.Center,
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(20.dp)
+                                                            .clip(RoundedCornerShape(4.dp))
+                                                            .border(
+                                                                1.dp,
+                                                                if (rememberMe) ui.fg else ui.border,
+                                                                RoundedCornerShape(4.dp),
+                                                            )
+                                                            .background(
+                                                                if (rememberMe) ui.fg else Color.Transparent,
+                                                                RoundedCornerShape(4.dp),
+                                                            ),
+                                                        contentAlignment = Alignment.Center,
+                                                    ) {
+                                                        if (rememberMe) {
+                                                            Icon(
+                                                                Icons.Default.Check,
+                                                                contentDescription = null,
+                                                                tint = ui.bg,
+                                                                modifier = Modifier.size(14.dp),
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                                Text(
+                                                    rememberLabel,
+                                                    fontSize = 12.sp,
+                                                    color = ui.hint,
+                                                    modifier = Modifier.padding(start = 8.dp, end = 8.dp),
+                                                )
+                                            }
+                                        } else {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Checkbox(
+                                                    checked = rememberMe,
+                                                    onCheckedChange = { rememberMe = it },
+                                                    colors = CheckboxDefaults.colors(
+                                                        checkedColor = ui.fg,
+                                                        checkmarkColor = ui.bg,
+                                                        uncheckedColor = ui.border,
+                                                    ),
+                                                )
+                                                Text(rememberLabel, fontSize = 12.sp, color = ui.hint)
+                                            }
                                         }
                                         if (tab == "login") {
-                                            TextButton(onClick = {
+                                            TvTextButton(onClick = {
                                                 onClearForgotSent()
                                                 step = LoginStep.FORGOT
                                                 onClearError()
@@ -267,18 +398,32 @@ fun LoginScreen(
                                         }
                                     }
                                     if (!error.isNullOrBlank()) Text(error, color = ui.red, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
-                                    Button(
+                                    TvPrimaryButton(
                                         onClick = {
                                             if (tab == "login") onLogin(email.trim(), password, rememberMe)
                                             else onRegister(email.trim(), password, rememberMe)
                                         },
                                         enabled = !loading && bootstrapReady && email.isNotBlank() && password.isNotBlank(),
-                                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                                        modifier = Modifier.fillMaxWidth().height(btnHeight),
                                         shape = RoundedCornerShape(12.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = ui.primaryBtnBg, contentColor = ui.primaryBtnFg),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = ui.primaryBtnBg,
+                                            contentColor = ui.primaryBtnFg,
+                                        ),
                                     ) {
-                                        if (loading) CircularProgressIndicator(modifier = Modifier.size(20.dp), color = ui.primaryBtnFg, strokeWidth = 2.dp)
-                                        else Text(if (tab == "login") "Войти" else "Зарегистрироваться", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                        if (loading) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(20.dp),
+                                                color = ui.primaryBtnFg,
+                                                strokeWidth = 2.dp,
+                                            )
+                                        } else {
+                                            Text(
+                                                if (tab == "login") "Войти" else "Зарегистрироваться",
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 14.sp,
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -311,7 +456,7 @@ fun LoginScreen(
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
                     )
-                    TextButton(onClick = { onClearForgotSent() }, modifier = Modifier.fillMaxWidth()) {
+                    TvTextButton(onClick = { onClearForgotSent() }, modifier = Modifier.fillMaxWidth()) {
                         Text("Отправить письмо снова", fontSize = 12.sp, color = ui.linkColor)
                     }
                 } else {
@@ -323,7 +468,7 @@ fun LoginScreen(
                     )
                     if (!error.isNullOrBlank()) Text(error, color = ui.red, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
                     Spacer(modifier = Modifier.height(12.dp))
-                    Button(
+                    TvPrimaryButton(
                         onClick = { onForgotPassword(email.trim()) },
                         enabled = !loading && email.isNotBlank(),
                         modifier = Modifier.fillMaxWidth(),
@@ -331,7 +476,7 @@ fun LoginScreen(
                         colors = ButtonDefaults.buttonColors(containerColor = ui.primaryBtnBg, contentColor = ui.primaryBtnFg),
                     ) { Text("Отправить письмо") }
                 }
-                TextButton(onClick = { onClearForgotSent(); step = LoginStep.AUTH; onClearError() }) {
+                TvTextButton(onClick = { onClearForgotSent(); step = LoginStep.AUTH; onClearError() }) {
                     Text("← Назад к входу", fontSize = 12.sp, color = ui.hint)
                 }
                 }

@@ -778,20 +778,15 @@ class SilentRepository @Inject constructor(
             ?: throw IllegalStateException("Session not started")
     }
 
-    /** Человекочитаемое имя устройства для списка сессий (напр. «Samsung SM-G991B»). */
-    fun getDeviceDisplayName(): String {
-        val manufacturer = (android.os.Build.MANUFACTURER ?: "").trim()
-        val model = (android.os.Build.MODEL ?: "").trim()
-        val raw = when {
-            model.isEmpty() -> manufacturer
-            manufacturer.isEmpty() -> model
-            model.startsWith(manufacturer, ignoreCase = true) -> model
-            else -> "$manufacturer $model"
-        }.trim()
-        return raw.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-            .ifBlank { "Android" }
-            .take(64)
-    }
+    /** Человекочитаемое имя устройства для списка сессий (напр. «Samsung SM-G991B» / «Xiaomi TV»). */
+    fun getDeviceDisplayName(): String =
+        com.silent.vpn.util.DevicePlatform.getDeviceDisplayName(context)
+
+    /** Тип устройства для API: `android` или `android_tv`. */
+    fun getApiDeviceType(): String =
+        com.silent.vpn.util.DevicePlatform.apiDeviceType(context)
+
+    fun getOtaPlatform(): String = com.silent.vpn.util.DevicePlatform.OTA_PLATFORM
 
     /**
      * Session fingerprint = СТАБИЛЬНЫЙ id устройства (один телефон = один ряд-сессия).
@@ -1232,7 +1227,7 @@ class SilentRepository @Inject constructor(
     }
 
     private suspend fun postConnectViaPublic(): Boolean {
-        val body = ConnectRequest(getDeviceFingerprint(), "android")
+        val body = ConnectRequest(getDeviceFingerprint(), getApiDeviceType())
         for (base in publicApiBases()) {
             val res = runCatching {
                 buildApi("$base/").connect(body)
@@ -1264,7 +1259,7 @@ class SilentRepository @Inject constructor(
 
     private suspend fun postConnectOnlineViaTunnel(): Int {
         val result = runCatching {
-            getApi().connect(ConnectRequest(getDeviceFingerprint(), "android"))
+            getApi().connect(ConnectRequest(getDeviceFingerprint(), getApiDeviceType()))
         }
         val res = result.getOrNull()
         if (res == null) {

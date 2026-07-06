@@ -6,6 +6,7 @@ import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.service.VpnSessionState
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.util.DevicePlatform
 import com.silent.vpn.vpn.captcha.CaptchaWebViewManager
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import kotlinx.coroutines.CoroutineScope
@@ -90,6 +91,7 @@ object WdttTunnelManager {
     private var lastWgConfig: String? = null
     private var isBootstrapMode = false
     private val wgExcludeIps = linkedSetOf<String>()
+    private var lastBootstrapRouteReloadMs = 0L
     private var sessionVkHashes: List<String> = emptyList()
     private val groupHashPrefix = mutableMapOf<Int, String>()
 
@@ -108,6 +110,8 @@ object WdttTunnelManager {
     private val captchaQueue = java.util.concurrent.ConcurrentLinkedQueue<CaptchaQueueEntry>()
     private var lastCaptchaRedirectUri: String? = null
     private var lastCaptchaScheduledMs = 0L
+    private var libclientCrashRestarts = 0
+    private val libclientStderrRing = ArrayDeque<String>(128)
 
     private data class CaptchaQueueEntry(
         val requestMode: String,
@@ -151,6 +155,67 @@ object WdttTunnelManager {
         if (!running.value) activeWorkers.value = 0
     }
 
+    /** Только logcat; в UI «Лог VPN» не дублируем. */
+    fun traceApp(key: String, message: String, isError: Boolean = false) {
+        if (isError) android.util.Log.w("App", message) else android.util.Log.i("App", message)
+    }
+
+    private fun mirrorErrorToAppLog(message: String) {
+        android.util.Log.w("libclient", message)
+    }
+
+    private fun ingestTurnHostsFromLine(line: String): Boolean {
+        if (!isBootstrapMode) return false
+        val match = Regex("""TURN:\s*\[([^\]]+)\]""").find(line) ?: return false
+        var added = false
+        match.groupValues[1].trim().split(Regex("\\s+")).forEach { hostPort ->
+            val ip = hostPort.substringBefore(':').trim()
+            if (ip.isNotBlank() && wgExcludeIps.add(ip)) {
+                added = true
+            }
+        }
+        return added
+    }
+
+    private fun appendStderrLine(line: String) {
+        if (line.isBlank()) return
+        synchronized(libclientStderrRing) {
+            libclientStderrRing.addLast(line)
+            while (libclientStderrRing.size > 128) libclientStderrRing.removeFirst()
+        }
+    }
+
+    private fun dumpStderrRingOnCrash() {
+        val tail = synchronized(libclientStderrRing) { libclientStderrRing.takeLast(48) }
+        if (tail.isEmpty()) return
+        mirrorErrorToAppLog("stderr (последние ${tail.size} строк):\n${tail.joinToString("\n")}")
+    }
+
+    private fun appendLibclientCrashLog(context: Context?) {
+        val dir = context?.filesDir ?: return
+        val crash = File(dir, "libclient-crash.log")
+        if (!crash.exists() || crash.length() == 0L) return
+        val tail = runCatching { crash.readText().lines().takeLast(24).joinToString("\n") }.getOrNull()
+            ?: return
+        if (tail.isNotBlank()) {
+            mirrorErrorToAppLog("libclient-crash.log:\n$tail")
+        }
+    }
+
+    private fun trimLogEntries(entries: List<LogEntry>): List<LogEntry> {
+        val max = 200
+        if (entries.size <= max) return entries
+        val errors = entries.filter { it.isError }
+        val normal = entries.filter { !it.isError }
+        val errorBudget = errors.size.coerceAtMost(30)
+        val normalBudget = (max - errorBudget).coerceAtLeast(40)
+        val keptErrors = if (errors.size <= errorBudget) errors else errors.takeLast(errorBudget)
+        val keptNormal = normal.takeLast(normalBudget)
+        return (keptErrors + keptNormal).sortedWith(
+            compareBy({ it.priority }, { if (it.isError) 1 else 0 }, { it.key }),
+        )
+    }
+
     private fun updateLog(key: String, message: String, priority: Int, isError: Boolean = false) {
         if (!isLoggingEnabled) return
         if (isError && logs.value.none { it.key == key }) {
@@ -173,7 +238,7 @@ object WdttTunnelManager {
             val sorted = current.sortedWith(
                 compareBy({ it.priority }, { if (it.isError) 1 else 0 }, { it.key }),
             )
-            if (sorted.size > 100) sorted.takeLast(100) else sorted
+            trimLogEntries(sorted)
         }
     }
 
@@ -187,6 +252,7 @@ object WdttTunnelManager {
                     if (!isSwitching) {
                         overlayRestoreSuppressed = false
                         clearLogs()
+                        libclientStderrRing.clear()
                         tunnelReady.value = false
                         stats.value = "Ожидание данных…"
                         activeWorkers.value = 0
@@ -198,6 +264,7 @@ object WdttTunnelManager {
                         wrapAuthTimeoutCount = 0
                         processStartedAtMs = 0L
                         lastActiveAtMs = 0L
+                        libclientCrashRestarts = 0
                         lastParams = params
                         lastContext = appContext
                         isBootstrapMode = params.isBootstrap
@@ -252,19 +319,25 @@ object WdttTunnelManager {
                         1,
                     )
 
-                    val libDir = appContext.applicationInfo.nativeLibraryDir
-                    val binaryPath = "$libDir/libclient.so"
-                    if (!File(binaryPath).exists()) {
-                        updateLog("binary_error", "Ошибка: libclient.so не найден", 99, true)
-                        lastError.value = "WDTT клиент не найден"
+                    val primaryPath = LibClientBinary.resolvePrimary(appContext)
+                    if (!File(primaryPath).exists()) {
+                        val abi = DevicePlatform.primaryAbi()
+                        updateLog("binary_error", "Ошибка: libclient.so не найден (ABI $abi)", 99, true)
+                        lastError.value = "WDTT-клиент не найден для $abi"
                         running.value = false
                         return@withLock
                     }
+                    updateLog(
+                        "device_info",
+                        "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} hw=${android.os.Build.HARDWARE} " +
+                            "ABI=${DevicePlatform.primaryAbi()} ABIs=${android.os.Build.SUPPORTED_ABIS.joinToString()}",
+                        1,
+                    )
 
                     deleteOldConf(appContext)
 
                     val cmd = buildList {
-                        add(binaryPath)
+                        add(primaryPath)
                         addAll(
                             listOf(
                                 "-peer", "${params.serverIp}:${params.serverPort}",
@@ -287,12 +360,8 @@ object WdttTunnelManager {
                         add("6287487,8202606")
                     }
 
-                    val pb = ProcessBuilder(cmd)
-                    pb.directory(appContext.filesDir)
-                    pb.redirectErrorStream(true)
-                    pb.environment()["LD_LIBRARY_PATH"] = libDir
-
-                    process = pb.start()
+                    val libDir = appContext.applicationInfo.nativeLibraryDir
+                    process = LibClientBinary.startLibclientProcess(appContext, cmd, libDir, appContext.filesDir)
                     processStartedAtMs = System.currentTimeMillis()
                     wrapAuthTimeoutCount = 0
                     lastActiveAtMs = 0L
@@ -305,7 +374,9 @@ object WdttTunnelManager {
                     scheduleMainApiWgFallback(params)
                     scheduleWgConfigRetry()
                 } catch (e: Exception) {
-                    updateLog("critical_start_error", "Критическая ошибка: ${e.message}", 99, true)
+                    val msg = "Критическая ошибка: ${e.message}"
+                    updateLog("critical_start_error", msg, 99, true)
+                    mirrorErrorToAppLog(msg)
                     lastError.value = e.message ?: "Ошибка запуска WDTT"
                     running.value = false
                 }
@@ -314,7 +385,7 @@ object WdttTunnelManager {
     }
 
     private fun sanitizeCaptchaMode(mode: String): String = when (mode.lowercase()) {
-        "auto", "rjs", "wv", "manual" -> mode.lowercase()
+        "auto", "rjs", "rjs-only", "wv", "manual" -> mode.lowercase()
         else -> "auto"
     }
 
@@ -544,7 +615,7 @@ object WdttTunnelManager {
         if (wgApplyScheduled) return
         wgApplyScheduled = true
         scope.launch {
-            delay(350)
+            delay(350L)
             wgApplyScheduled = false
             if (!running.value) return@launch
             val conf = pendingWgConfigOverride
@@ -605,6 +676,27 @@ object WdttTunnelManager {
                     val lineTrim = line
                         .replace(Regex("^\\d{4}/\\d{2}/\\d{2}\\s\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\s"), "")
                         .trim()
+                    appendStderrLine(lineTrim)
+
+                    if (
+                        lineTrim.contains("panic:", true) ||
+                        lineTrim.contains("fatal error:", true) ||
+                        lineTrim.startsWith("goroutine ") ||
+                        lineTrim.contains("[FATAL]") ||
+                        (lineTrim.contains(".go:") && lineTrim.contains("wdtt-go"))
+                    ) {
+                        mirrorErrorToAppLog(lineTrim.take(320))
+                    }
+
+                    if (isBootstrapMode && lineTrim.contains("Креды OK", true) && lineTrim.contains("TURN:")) {
+                        if (ingestTurnHostsFromLine(lineTrim)) {
+                            updateLog(
+                                "bootstrap_turn_early",
+                                "Bootstrap: TURN IP до WireGuard (${wgExcludeIps.size})",
+                                1,
+                            )
+                        }
+                    }
 
                     if (lineTrim.startsWith("CAPTCHA_SOLVE|")) {
                         val payload = lineTrim.substringAfter("CAPTCHA_SOLVE|")
@@ -774,7 +866,24 @@ object WdttTunnelManager {
                             return@forEachLine
                         }
                     }
-                    if (lineTrim.contains("[СЕССИЯ #") || lineTrim.contains("[ГРУППА #")) {
+                    if (lineTrim.contains("[СЕССИЯ #")) {
+                        return@forEachLine
+                    }
+                    if (lineTrim.contains("[ГРУППА #")) {
+                        if (isBootstrapMode && !tunnelReady.value) {
+                            val notable = lineTrim.contains("Запрос кредов", true) ||
+                                lineTrim.contains("Креды", true) ||
+                                lineTrim.contains("Ошибка", true) ||
+                                lineTrim.contains("капч", true)
+                            if (notable) {
+                                updateLog(
+                                    "boot_grp_${lineTrim.take(24).hashCode()}",
+                                    lineTrim.take(180),
+                                    2,
+                                    lineTrim.contains("Ошибка", true),
+                                )
+                            }
+                        }
                         return@forEachLine
                     }
 
@@ -792,6 +901,14 @@ object WdttTunnelManager {
                         lineTrim.contains("refused", true)
 
                     when {
+                        lineTrim.contains("[FATAL]") -> {
+                            updateLog("libclient_fatal", lineTrim, 99, true)
+                            mirrorErrorToAppLog(lineTrim)
+                            lastError.value = lineTrim
+                        }
+                        lineTrim.contains("[КЛИЕНТ] go") -> {
+                            updateLog("libclient_runtime", lineTrim, 1)
+                        }
                         lineTrim.contains("[КАПЧА] AUTO:") -> {
                             val text = lineTrim.substringAfter("[КАПЧА] AUTO:").trim()
                             updateLog(
@@ -928,6 +1045,16 @@ object WdttTunnelManager {
             } finally {
                 val proc = process
                 val alive = proc?.isAlive == true
+                if (!alive) {
+                    val code = runCatching { proc?.exitValue() }.getOrNull()
+                    if (code != null) {
+                        val msg = "libclient завершился (код $code)"
+                        updateLog("libclient_exit", msg, 99, true)
+                        dumpStderrRingOnCrash()
+                        appendLibclientCrashLog(lastContext)
+                        if (code != 0) mirrorErrorToAppLog(msg)
+                    }
+                }
                 if (!alive && !tunnelReady.value) {
                     running.value = false
                 }
@@ -1068,10 +1195,39 @@ object WdttTunnelManager {
             while (isActive && running.value) {
                 val proc = process
                 if (proc == null || !proc.isAlive) {
-                    updateLog("watchdog", "⚠ Процесс упал — перезапуск", 50, true)
+                    libclientCrashRestarts++
+                    dumpStderrRingOnCrash()
+                    appendLibclientCrashLog(lastContext)
+                    val exitCode = runCatching { proc?.exitValue() }.getOrNull()
+                    val label = if (isBootstrapMode) "libclient (bootstrap VPN)" else "libclient (VPN)"
+                    val codeSuffix = exitCode?.let { " код=$it" }.orEmpty()
+                    updateLog(
+                        "watchdog",
+                        "⚠ $label упал — перезапуск $libclientCrashRestarts$codeSuffix",
+                        50,
+                        true,
+                    )
+                    val maxRestarts = if (isBootstrapMode) {
+                        if (DevicePlatform.isTv(context)) 10 else 6
+                    } else {
+                        4
+                    }
+                    if (libclientCrashRestarts >= maxRestarts) {
+                        val hint = if (DevicePlatform.isTv(context)) {
+                            " На TV/приставке перезапустите приложение и проверьте интернет."
+                        } else {
+                            ""
+                        }
+                        handleCriticalError("VPN-клиент завершился ($libclientCrashRestarts раз).$hint")
+                        return@launch
+                    }
                     activeWorkers.value = 0
                     killProcess()
-                    delay(2000)
+                    delay(if (isBootstrapMode) {
+                        if (DevicePlatform.isTv(context)) 6_000L else 4_000L
+                    } else {
+                        2_000L
+                    })
                     if (running.value) start(context, params, isSwitching = true)
                     return@launch
                 }
@@ -1124,11 +1280,18 @@ object WdttTunnelManager {
                         return@launch
                     } else if (
                         System.currentTimeMillis() - zeroWorkersSince >
-                            if (processStartedAtMs > 0L && System.currentTimeMillis() - processStartedAtMs < 120_000) {
-                                60_000L
-                            } else {
-                                180_000L
-                            } &&
+                            (
+                                if (isBootstrapMode) {
+                                    120_000L
+                                } else if (
+                                    processStartedAtMs > 0L &&
+                                    System.currentTimeMillis() - processStartedAtMs < 120_000
+                                ) {
+                                    60_000L
+                                } else {
+                                    180_000L
+                                }
+                                ) &&
                         !ManlCaptchaWebViewManager.isCaptchaPending
                     ) {
                         sessionVkHashes.firstOrNull()?.let { h ->
@@ -1187,6 +1350,15 @@ object WdttTunnelManager {
     }
 
     fun restartTransport(forceNetwork: Boolean = false) {
+        if (isBootstrapMode && forceNetwork) {
+            updateLog("network_restart_skip", "[СЕТЬ] Bootstrap — мягкое восстановление", 50)
+            if (!running.value || process?.isAlive != true) {
+                val params = lastParams ?: return
+                val ctx = lastContext ?: return
+                scope.launch { start(ctx, params, isSwitching = true) }
+            }
+            return
+        }
         if (!forceNetwork) {
             val elapsed = System.currentTimeMillis() - processStartedAtMs
             if (processStartedAtMs > 0L && elapsed < NETWORK_RESTART_GRACE_MS) return
@@ -1287,7 +1459,7 @@ object WdttTunnelManager {
 
     fun isApiOverlayActive(): Boolean = apiOverlayActive
     fun isNetworkRecoverySuppressed(): Boolean {
-        if (apiOverlayActive || suppressNetworkRecovery || (wgHelper?.isWgTransitionActive() == true)) {
+        if (apiOverlayActive || suppressNetworkRecovery || WireGuardHelper.isWgTransitionActive()) {
             return true
         }
         if (wgApplyJob?.isActive == true || wgApplyScheduled) return true
@@ -1450,8 +1622,12 @@ object WdttTunnelManager {
     /** После появления TURN IP — расширить маршруты bootstrap (0.0.0.0/0 − TURN) для браузеров/почты. */
     private fun reloadBootstrapAllowedIps() {
         if (!isBootstrapMode || !tunnelReady.value || apiOverlayActive) return
+        if (WireGuardHelper.isWgTransitionActive()) return
+        val now = System.currentTimeMillis()
+        if (now - lastBootstrapRouteReloadMs < 8_000L) return
         val config = lastWgConfig ?: return
         if (wgApplyJob?.isActive == true) return
+        lastBootstrapRouteReloadMs = now
         wgApplyJob = scope.launch {
             wgApplyMutex.withLock {
                 if (!isBootstrapMode || !tunnelReady.value || apiOverlayActive) return@withLock
@@ -1494,8 +1670,15 @@ object WdttTunnelManager {
         val proc = process
         process = null
         if (proc != null) {
-            runCatching { proc.destroy() }
-            runCatching { proc.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS) }
+            runCatching {
+                proc.outputStream.write("STOP\n".toByteArray(Charsets.UTF_8))
+                proc.outputStream.flush()
+            }
+            runCatching { proc.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) }
+            if (proc.isAlive) {
+                runCatching { proc.destroy() }
+                runCatching { proc.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS) }
+            }
             if (proc.isAlive) runCatching { proc.destroyForcibly() }
         }
     }

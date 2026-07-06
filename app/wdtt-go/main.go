@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,7 +31,7 @@ func init() {
 
 func normalizeCaptchaMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "auto", "rjs", "wv", "manual":
+	case "auto", "rjs", "rjs-only", "wv", "manual":
 		return strings.ToLower(strings.TrimSpace(mode))
 	default:
 		return "auto"
@@ -83,6 +85,15 @@ func drainCaptchaResult() {
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	defer func() {
+		if r := recover(); r != nil {
+			writeCrashLog("main.panic", r)
+			log.Printf("[FATAL] panic: %v", r)
+			debug.PrintStack()
+			os.Exit(2)
+		}
+	}()
+	log.Printf("[КЛИЕНТ] %s %s/%s CPU=%d", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -109,7 +120,7 @@ func main() {
 	var pauseFlag int32
 
 	// STDIN для PAUSE/RESUME/STOP и CAPTCHA_RESULT
-	go func() {
+	safeGo("stdin", func() {
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
@@ -131,17 +142,19 @@ func main() {
 				log.Printf("[КАПЧА] Результат от Kotlin записан в канал")
 			}
 		}
-	}()
+	})
 
 	ppid := os.Getppid()
-	go func() {
-		for {
-			time.Sleep(2 * time.Second)
-			if os.Getppid() != ppid {
-				os.Exit(0)
+	if runtime.GOOS != "android" {
+		go func() {
+			for {
+				time.Sleep(2 * time.Second)
+				if os.Getppid() != ppid {
+					os.Exit(0)
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	host := flag.String("turn", "", "переопределить IP TURN")
 	port := flag.String("port", "", "переопределить порт TURN")
@@ -268,6 +281,8 @@ func main() {
 		captchaStatus = "WBV selected in Android"
 	case "rjs":
 		captchaStatus = "RJS Go v2 with WBV Auto fallback"
+	case "rjs-only":
+		captchaStatus = "RJS Go v2 only (no WebView)"
 	}
 
 	log.Println("[КЛИЕНТ] ═══════════════════════════════════════")
@@ -285,10 +300,11 @@ func main() {
 	log.Println("[КЛИЕНТ] ═══════════════════════════════════════")
 
 	stats := NewStats()
+	var shutdownOnce sync.Once
 	shutdownCh := make(chan struct{})
 	go func() {
 		<-ctx.Done()
-		close(shutdownCh)
+		shutdownOnce.Do(func() { close(shutdownCh) })
 	}()
 	go stats.RunLoop(shutdownCh)
 
@@ -369,16 +385,22 @@ func main() {
 
 		startHashIndex := g % hashCount
 		wg.Add(1)
-		go func(groupID int, isFirstGroup bool, configChan chan<- string, workerIds []int, hashIdx int,
-			wait <-chan struct{}, signal chan<- struct{}) {
+		isFirstGroup := isFirst
+		configChan := cc
+		workerIds := ids
+		hashIdx := startHashIndex
+		wait := waitReady
+		signal := signalNext
+		safeGo("worker-group", func() {
 			defer wg.Done()
-			WorkerGroup(ctx, groupID, hashIdx, tp, peer, disp, localPort,
+			WorkerGroup(ctx, gID, hashIdx, tp, peer, disp, localPort,
 				isFirstGroup, configChan, workerIds, &pauseFlag, *deviceID, *connPassword, stats, wait, signal)
-		}(gID, isFirst, cc, ids, startHashIndex, waitReady, signalNext)
+		})
 	}
 
 	wg.Wait()
-	close(configCh)
+	var configCloseOnce sync.Once
+	configCloseOnce.Do(func() { safeCloseStringChan(configCh) })
 	<-configDone
 	log.Println("[КЛИЕНТ] Все воркеры завершены")
 }

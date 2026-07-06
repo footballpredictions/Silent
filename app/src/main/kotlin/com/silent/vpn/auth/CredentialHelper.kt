@@ -1,6 +1,7 @@
 package com.silent.vpn.auth
 
 import androidx.activity.ComponentActivity
+import com.silent.vpn.util.DevicePlatform
 import androidx.credentials.CreatePasswordRequest
 import androidx.credentials.CredentialManager
 import androidx.credentials.exceptions.CreateCredentialException
@@ -9,6 +10,7 @@ object CredentialHelper {
     /** Предложить Google / менеджеру паролей сохранить учётные данные после успешного входа. */
     suspend fun offerSavePassword(activity: ComponentActivity, email: String, password: String) {
         if (email.isBlank() || password.isBlank()) return
+        if (DevicePlatform.isTv(activity)) return
         try {
             val cm = CredentialManager.create(activity)
             val request = CreatePasswordRequest(

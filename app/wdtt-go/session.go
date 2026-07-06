@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cbeuw/connutil"
@@ -22,13 +22,24 @@ const (
 	workerSendBuf      = 1024
 	sessionReadTimeout = 30 * time.Minute
 	readBufSize        = 1600
-	socketBufSize      = 4 * 1024 * 1024
+)
+
+func socketBufSizeBytes() int {
+	// TV-приставки arm32 (mt5867 и др.): 4 МБ × N сокетов → OOM / kill процесса.
+	if runtime.GOOS == "android" && runtime.GOARCH == "arm" {
+		return 512 * 1024
+	}
+	return 4 * 1024 * 1024
+}
+
+var socketBufSize = socketBufSizeBytes()
+
+const (
 	keepaliveByte      = 0xFF
 	keepaliveInterval  = 15 * time.Second
 )
 
-// Параллельный старт воркеров — лимит одновременных DTLS handshake.
-var handshakeSem = make(chan struct{}, 40)
+// Параллельный старт воркеров — лимит одновременных DTLS handshake (ёмкость в platform_init.go).
 
 // NullLoggerFactory подавляет логи pion
 type NullLoggerFactory struct{}
@@ -65,8 +76,13 @@ func RunSession(
 	creds *Credentials,
 	deviceID, password string,
 	stats *Stats,
-) (bool, error) {
-	configDelivered := false
+) (configDelivered bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[FATAL] panic RunSession #%d: %v", sessionID, r)
+			err = fmt.Errorf("session panic: %v", r)
+		}
+	}()
 
 	if len(creds.TurnURLs) == 0 {
 		return false, fmt.Errorf("нет TURN URL в учетных данных")
@@ -295,8 +311,8 @@ func RunSession(
 	}
 	log.Printf("[ВОРКЕР #%d] [DTLS] Соединение установлено ✓", sessionID)
 
-	atomic.AddInt32(&stats.ActiveConnections, 1)
-	defer atomic.AddInt32(&stats.ActiveConnections, -1)
+	stats.IncActive()
+	defer stats.DecActive()
 
 	// Запрос конфига
 	if getConfig && configCh != nil {

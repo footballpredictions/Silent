@@ -27,15 +27,25 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.silent.vpn.BuildConfig
+import com.silent.vpn.ui.tv.TvTextButton
+import com.silent.vpn.util.rememberIsTv
 import com.silent.vpn.vpn.LogEntry
 import com.silent.vpn.vpn.WdttTunnelManager
+import kotlinx.coroutines.launch
+
 @Composable
 fun DebugLogButton(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
+    focusEnabled: Boolean = true,
 ) {
     if (!BuildConfig.DEBUG) return
-    TextButton(onClick = onClick, modifier = modifier, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+    TvTextButton(
+        onClick = onClick,
+        enabled = focusEnabled,
+        modifier = modifier,
+        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+    ) {
         Text("Лог", fontSize = 10.sp, fontWeight = FontWeight.Medium, color = Color(0xFF6B7280))
     }
 }
@@ -47,11 +57,13 @@ fun DebugLogDialog(
 ) {
     if (!BuildConfig.DEBUG || !visible) return
     val context = LocalContext.current
+    val isTv = rememberIsTv()
     val currentLogs by WdttTunnelManager.logs.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(currentLogs.size) {
-        if (currentLogs.isNotEmpty()) {
+        if (!isTv && currentLogs.isNotEmpty()) {
             listState.animateScrollToItem(currentLogs.lastIndex)
         }
     }
@@ -81,17 +93,36 @@ fun DebugLogDialog(
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = {
+                    if (isTv) {
+                        TvTextButton(
+                            onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                            contentPadding = PaddingValues(horizontal = 4.dp),
+                        ) {
+                            Text("↑ Начало", color = Color(0xFF9CA3AF), fontSize = 11.sp)
+                        }
+                        TvTextButton(
+                            onClick = {
+                                scope.launch {
+                                    val last = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+                                    listState.animateScrollToItem(last)
+                                }
+                            },
+                            contentPadding = PaddingValues(horizontal = 4.dp),
+                        ) {
+                            Text("↓ Конец", color = Color(0xFF9CA3AF), fontSize = 11.sp)
+                        }
+                    }
+                    TvTextButton(onClick = {
                         val text = currentLogs.joinToString("\n") { "${it.message} (x${it.count})" }
                         copyToClipboard(context, text.ifBlank { "(пусто)" })
                         Toast.makeText(context, "Лог скопирован", Toast.LENGTH_SHORT).show()
                     }) {
                         Text("Копировать", color = Color(0xFF60A5FA), fontSize = 11.sp)
                     }
-                    TextButton(onClick = { WdttTunnelManager.clearLogs() }) {
+                    TvTextButton(onClick = { WdttTunnelManager.clearLogs() }) {
                         Text("Очистить", color = Color(0xFF9CA3AF), fontSize = 11.sp)
                     }
-                    TextButton(onClick = onDismiss) {
+                    TvTextButton(onClick = onDismiss) {
                         Text("Закрыть", color = Color(0xFF9CA3AF), fontSize = 11.sp)
                     }
                 }

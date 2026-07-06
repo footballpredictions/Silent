@@ -6,7 +6,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import com.silent.vpn.ui.tv.TvTextButton
+import com.silent.vpn.ui.tv.tvClickable
+import com.silent.vpn.util.rememberIsTv
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,7 +34,7 @@ fun MenuVkCredModeScreen(
             .padding(16.dp)
             .verticalScroll(rememberScrollState()),
     ) {
-        TextButton(onClick = onBack) {
+        TvTextButton(onClick = onBack, requestFocusOnOpen = true, requestFocusKey = "vk-cred") {
             Text("← Назад", fontSize = 12.sp, color = fg.copy(0.5f))
         }
 
@@ -101,7 +103,7 @@ fun MenuVkCredModeScreen(
                 )
             },
             confirmButton = {
-                TextButton(
+                TvTextButton(
                     onClick = {
                         repo.setVkCredStrategy(next)
                         mode = next
@@ -110,7 +112,7 @@ fun MenuVkCredModeScreen(
                 ) { Text("Применить") }
             },
             dismissButton = {
-                TextButton(onClick = { pendingMode = null }) { Text("Отмена") }
+                TvTextButton(onClick = { pendingMode = null }) { Text("Отмена") }
             },
         )
     }
@@ -125,16 +127,24 @@ private fun VkCredModeOption(
     fg: Color,
     onSelect: () -> Unit,
 ) {
+    val isTv = rememberIsTv()
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(
+                if (isTv && enabled) {
+                    Modifier.tvClickable(enabled = enabled, onClick = onSelect)
+                } else {
+                    Modifier
+                },
+            )
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.Top,
     ) {
         RadioButton(
             selected = selected,
-            onClick = { if (enabled) onSelect() },
-            enabled = enabled,
+            onClick = { if (enabled && !isTv) onSelect() },
+            enabled = enabled && !isTv,
         )
         Column(Modifier.padding(start = 4.dp, top = 12.dp)) {
             Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = fg.copy(if (enabled) 1f else 0.45f))

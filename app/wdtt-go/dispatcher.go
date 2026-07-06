@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,9 +32,7 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	returnChBuf    = 4096
-	writeLoopWorkers = 4
-	uploadRetryMs  = 30
+	uploadRetryMs = 30
 
 	// chunkSize — количество последовательных пакетов, отправляемых в один worker
 	// перед переключением на следующий.
@@ -76,7 +75,7 @@ func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) 
 	dctx, dcancel := context.WithCancel(ctx)
 	d := &Dispatcher{
 		localConn: localConn,
-		ReturnCh:  make(chan []byte, returnChBuf),
+		ReturnCh:  make(chan []byte, returnChBufSize),
 		ctx:       dctx,
 		cancel:    dcancel,
 		stats:     stats,
@@ -85,9 +84,9 @@ func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) 
 	empty := make([]*WorkerSlot, 0)
 	d.workers.Store(&empty)
 
-	d.wg.Add(1 + writeLoopWorkers)
+	d.wg.Add(1 + dispatcherWriteLoops)
 	go d.readLoop()
-	for i := 0; i < writeLoopWorkers; i++ {
+	for i := 0; i < dispatcherWriteLoops; i++ {
 		go d.writeLoop()
 	}
 	return d
@@ -95,6 +94,7 @@ func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) 
 
 func (d *Dispatcher) Shutdown() {
 	d.cancel()
+	_ = d.localConn.Close()
 	d.wg.Wait()
 }
 
@@ -132,7 +132,14 @@ func (d *Dispatcher) Unregister(slot *WorkerSlot) {
 //   - Между chunks — разные relay → максимальная агрегатная скорость
 //   - Нет блокировки, нет буферизации, нет дополнительного latency
 func (d *Dispatcher) readLoop() {
-	defer d.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			writeCrashLog("readLoop.panic", r)
+			log.Printf("[FATAL] panic readLoop: %v", r)
+			debug.PrintStack()
+		}
+		d.wg.Done()
+	}()
 
 	for {
 		if err := d.ctx.Err(); err != nil {
@@ -153,7 +160,7 @@ func (d *Dispatcher) readLoop() {
 		pkt = pkt[:n]
 
 		d.clientAddr.Store(&addr)
-		atomic.AddInt64(&d.stats.TotalBytesUp, int64(n))
+		d.stats.AddUp(int64(n))
 
 		workersPtr := d.workers.Load()
 		if workersPtr == nil || len(*workersPtr) == 0 {
@@ -223,7 +230,14 @@ func (d *Dispatcher) readLoop() {
 }
 
 func (d *Dispatcher) writeLoop() {
-	defer d.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			writeCrashLog("writeLoop.panic", r)
+			log.Printf("[FATAL] panic writeLoop: %v", r)
+			debug.PrintStack()
+		}
+		d.wg.Done()
+	}()
 
 	for {
 		select {
@@ -242,7 +256,7 @@ func (d *Dispatcher) writeLoop() {
 					return
 				}
 			}
-			atomic.AddInt64(&d.stats.TotalBytesDown, int64(len(pkt)))
+			d.stats.AddDown(int64(len(pkt)))
 			putPktBuf(pkt)
 		}
 	}

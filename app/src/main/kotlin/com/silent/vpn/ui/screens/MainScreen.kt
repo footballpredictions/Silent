@@ -5,6 +5,8 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -18,12 +20,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.Canvas
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
@@ -61,6 +67,13 @@ import com.silent.vpn.ui.theme.UiDimens
 import com.silent.vpn.ui.theme.UiFont
 import com.silent.vpn.ui.theme.displayAppName
 import com.silent.vpn.ui.theme.mutedFg
+import com.silent.vpn.ui.tv.TvIconButton
+import com.silent.vpn.ui.tv.TvPrimaryButton
+import com.silent.vpn.ui.tv.TvTextButton
+import com.silent.vpn.ui.tv.tvClickable
+import com.silent.vpn.ui.tv.tvConsumeFocusUp
+import com.silent.vpn.ui.tv.tvToggleClickable
+import com.silent.vpn.util.rememberIsTv
 
 private const val THUMB_SIZE_DP = 48f
 private const val TRACK_WIDTH_DP = 120f
@@ -73,17 +86,17 @@ private const val SNAKE_TAIL_START = 0.020f
 private const val SNAKE_HEAD_POS = 0.875f
 
 /** Стопы по часовой от кончика хвоста к голове — без обхода через зазор (иначе полосы). */
-private fun buildSnakeGradientArrays(snakeColor: Color): Pair<IntArray, FloatArray> {
+private fun buildSnakeGradientArrays(snakeColor: Color, gapColor: Color): Pair<IntArray, FloatArray> {
     val colors = mutableListOf<Int>()
     val positions = mutableListOf<Float>()
-    val transparent = Color.Transparent.toArgb()
+    val gapArgb = gapColor.toArgb()
     val span = SNAKE_HEAD_POS - SNAKE_TAIL_START
     val steps = 96
 
     positions.add(0f)
-    colors.add(transparent)
+    colors.add(gapArgb)
     positions.add(SNAKE_TAIL_START - 0.002f)
-    colors.add(transparent)
+    colors.add(gapArgb)
 
     for (i in 0..steps) {
         val t = i / steps.toFloat()
@@ -96,23 +109,24 @@ private fun buildSnakeGradientArrays(snakeColor: Color): Pair<IntArray, FloatArr
     var gap = SNAKE_HEAD_POS + 0.003f
     while (gap <= 1f) {
         positions.add(gap)
-        colors.add(transparent)
+        colors.add(gapArgb)
         gap += 0.02f
     }
     positions.add(1f)
-    colors.add(transparent)
+    colors.add(gapArgb)
 
     return colors.toIntArray() to positions.toFloatArray()
 }
 
 private fun DrawScope.drawToggleSnakeRing(
     snakeColor: Color,
+    thumbBg: Color,
     rotationDeg: Float,
     strokePx: Float,
 ) {
     val center = Offset(size.width / 2f, size.height / 2f)
     val radius = (size.minDimension - strokePx) / 2f
-    val (colors, positions) = buildSnakeGradientArrays(snakeColor)
+    val (colors, positions) = buildSnakeGradientArrays(snakeColor, thumbBg)
     drawIntoCanvas { canvas ->
         val shader = SweepGradient(center.x, center.y, colors, positions).apply {
             val matrix = Matrix()
@@ -195,16 +209,25 @@ private fun VpnToggleThumb(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(bg, CircleShape)
-                .then(
-                    if (showBorder) Modifier.border(2.dp, borderColor, CircleShape) else Modifier,
-                ),
+                .clip(CircleShape)
+                .background(bg, CircleShape),
         )
+        if (showBorder) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val borderPx = with(density) { 2.dp.toPx() }
+                drawCircle(
+                    color = borderColor,
+                    radius = size.minDimension / 2f - borderPx / 2f,
+                    style = Stroke(width = borderPx),
+                )
+            }
+        }
         if (showSnake) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val strokePx = with(density) { SNAKE_STROKE_DP.dp.toPx() }
                 drawToggleSnakeRing(
                     snakeColor = snakeColor,
+                    thumbBg = bg,
                     rotationDeg = snakeRotation,
                     strokePx = strokePx,
                 )
@@ -219,6 +242,7 @@ private enum class MenuPage { ROOT, SUBSCRIPTION, EXCEPTIONS, VK_CRED, HASHES, P
 
 private fun deviceTypeLabel(type: String): String = when (type.lowercase()) {
     "android" -> "Android"
+    "android_tv" -> "Android TV"
     "pc", "windows" -> "ПК"
     "ios" -> "iOS"
     else -> type.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
@@ -226,13 +250,14 @@ private fun deviceTypeLabel(type: String): String = when (type.lowercase()) {
 
 private fun defaultDeviceName(type: String): String = when (type.lowercase()) {
     "android" -> "Android"
+    "android_tv" -> "Android TV"
     "pc", "windows" -> "PC"
     "ios" -> "iOS"
     else -> deviceTypeLabel(type)
 }
 
 private fun sessionCustomLabel(d: DeviceInfo): String? {
-    val defaults = setOf("Android", "ПК", "PC", "iOS", "Windows")
+    val defaults = setOf("Android", "Android TV", "ПК", "PC", "iOS", "Windows")
     if (d.device_name in defaults || d.device_name.startsWith("Bootstrap-", ignoreCase = true)) return null
     return d.device_name
 }
@@ -296,6 +321,10 @@ fun MainScreen(
         }
     }
 
+    val isTv = rememberIsTv()
+    val toggleScale = if (isTv) 1.45f else 1f
+    val blockMainFocus = isTv && menuOpen
+
     val isConnected = vpnState == VpnState.CONNECTED
     val isTransitioning = vpnState == VpnState.CONNECTING || vpnState == VpnState.DISCONNECTING
     val thumbActive = isTransitioning
@@ -353,9 +382,12 @@ fun MainScreen(
                     .padding(horizontal = 4.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                IconButton(
+                TvIconButton(
                     onClick = { menuOpen = true; menuPage = MenuPage.ROOT },
                     modifier = Modifier.align(Alignment.CenterStart).size(28.dp),
+                    enabled = !blockMainFocus,
+                    requestFocusOnOpen = isTv && !menuOpen,
+                    requestFocusKey = menuOpen,
                 ) {
                     Icon(Icons.Default.Menu, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
                 }
@@ -366,10 +398,13 @@ fun MainScreen(
                     fontSize = UiFont.xs,
                     color = fg,
                 )
-                DebugLogButton(
-                    onClick = { showDebugLog = true },
-                    modifier = Modifier.align(Alignment.CenterEnd),
-                )
+                if (BuildConfig.DEBUG) {
+                    DebugLogButton(
+                        onClick = { showDebugLog = true },
+                        modifier = Modifier.align(Alignment.CenterEnd),
+                        focusEnabled = !blockMainFocus,
+                    )
+                }
             }
 
             // Main content
@@ -396,22 +431,41 @@ fun MainScreen(
 
                     // Toggle 120x60 — как на PC (active:scale-95)
                     val thumbTravel = (TRACK_WIDTH_DP - THUMB_SIZE_DP - 8f).dp
+                    val trackW = TRACK_WIDTH_DP.dp
+                    val trackH = TRACK_HEIGHT_DP.dp
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .padding(vertical = 14.dp)
-                            .size(TRACK_WIDTH_DP.dp, TRACK_HEIGHT_DP.dp + 28.dp),
+                            .size(trackW * toggleScale + 12.dp, trackH * toggleScale + 20.dp)
+                            .then(
+                                if (isTv) {
+                                    Modifier.tvToggleClickable(
+                                        enabled = !thumbActive && !blockMainFocus,
+                                        onClick = onToggle,
+                                    )
+                                } else {
+                                    Modifier
+                                },
+                            ),
                     ) {
                         Box(
                             contentAlignment = Alignment.CenterStart,
                             modifier = Modifier
-                                .size(TRACK_WIDTH_DP.dp, TRACK_HEIGHT_DP.dp)
+                                .scale(toggleScale)
+                                .size(trackW, trackH)
                                 .scale(togglePressScale)
-                                .clickable(
-                                    enabled = !thumbActive,
-                                    interactionSource = toggleInteraction,
-                                    indication = null,
-                                    onClick = onToggle,
+                                .then(
+                                    if (!isTv) {
+                                        Modifier.clickable(
+                                            enabled = !thumbActive,
+                                            interactionSource = toggleInteraction,
+                                            indication = null,
+                                            onClick = onToggle,
+                                        )
+                                    } else {
+                                        Modifier
+                                    },
                                 ),
                         ) {
                             if (isConnected) {
@@ -517,7 +571,7 @@ fun MainScreen(
                         )
                     }
                     else -> {
-                        Button(
+                        TvPrimaryButton(
                             onClick = { menuOpen = true; menuPage = MenuPage.SUBSCRIPTION },
                             colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = bg),
                             shape = RoundedCornerShape(12.dp),
@@ -570,38 +624,52 @@ fun MainScreen(
                                     )
                                 }
                             }
-                            IconButton(
+                            TvIconButton(
                                 onClick = { menuOpen = false; menuPage = MenuPage.ROOT },
                                 modifier = Modifier.size(24.dp),
+                                requestFocusOnOpen = isTv && menuOpen,
+                                requestFocusKey = menuOpen,
+                                blockFocusUp = isTv,
                             ) {
                                 Icon(Icons.Default.Close, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
                             }
                         }
                         HorizontalDivider(color = UiColors.Gray100, thickness = UiDimens.borderThin)
-                        Column(modifier = Modifier.padding(UiDimens.menuNavPadding)) {
-                            val items = buildList {
-                                add(Triple(MenuPage.SUBSCRIPTION, "Подписка", null as String?))
-                                add(Triple(MenuPage.EXCEPTIONS, "Исключения приложений", null))
-                                if (BuildConfig.DEBUG) {
-                                    add(
-                                        Triple(
-                                            MenuPage.VK_CRED,
-                                            "Режим VK-кредов",
-                                            repo.vkCredStrategyLabel(),
-                                        ),
-                                    )
-                                }
-                                if (BuildConfig.DEBUG) add(Triple(MenuPage.HASHES, "Хеши", null))
-                                add(Triple(MenuPage.PROMO, "Промокод", null))
-                                add(Triple(MenuPage.DEVICES, "Сессии (${profile?.sessionsBadge() ?: "0/3"})", null))
-                                add(Triple(MenuPage.SUPPORT, "Поддержка", null))
-                                add(Triple(MenuPage.ABOUT, "О сервисе", null))
+                        val menuItems = buildList {
+                            add(Triple(MenuPage.SUBSCRIPTION, "Подписка", null as String?))
+                            add(Triple(MenuPage.EXCEPTIONS, "Исключения приложений", null))
+                            if (BuildConfig.DEBUG) {
+                                add(
+                                    Triple(
+                                        MenuPage.VK_CRED,
+                                        "Режим VK-кредов",
+                                        repo.vkCredStrategyLabel(),
+                                    ),
+                                )
                             }
-                            items.forEach { (page, label, badge) ->
+                            if (BuildConfig.DEBUG) add(Triple(MenuPage.HASHES, "Хеши", null))
+                            add(Triple(MenuPage.PROMO, "Промокод", null))
+                            add(Triple(MenuPage.DEVICES, "Сессии (${profile?.sessionsBadge() ?: "0/3"})", null))
+                            add(Triple(MenuPage.SUPPORT, "Поддержка", null))
+                            add(Triple(MenuPage.ABOUT, "О сервисе", null))
+                        }
+                        LazyColumn(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(horizontal = UiDimens.menuNavPadding),
+                            contentPadding = PaddingValues(bottom = 32.dp),
+                        ) {
+                            items(
+                                items = menuItems,
+                                key = { (page, _, _) -> page.name },
+                            ) { (page, label, badge) ->
                                 val text = if (badge != null) "$label  ·  $badge" else label
                                 MenuNavItem(label = text, fg = fg, onClick = { menuPage = page })
                             }
-                            MenuNavLogout(onClick = { onLogout(); menuOpen = false })
+                            item(key = "logout") {
+                                MenuNavLogout(onClick = { onLogout(); menuOpen = false })
+                            }
                         }
                     }
                     Box(
@@ -615,7 +683,8 @@ fun MainScreen(
                         .fillMaxSize()
                         .background(bg),
                 ) {
-                    when (menuPage) {
+                    key(menuPage) {
+                        when (menuPage) {
                         MenuPage.SUBSCRIPTION -> MenuSubscription(
                             profile = profile,
                             fg = fg,
@@ -641,8 +710,14 @@ fun MainScreen(
                             fg = fg,
                             onOpenUrl = onOpenUrl,
                         ) { menuPage = MenuPage.ROOT }
-                        MenuPage.ABOUT -> MenuSimplePage("Silent VPN", "Версия ${com.silent.vpn.BuildConfig.VERSION_NAME}\nWireGuard-туннель через VK TURN/DTLS", fg) { menuPage = MenuPage.ROOT }
+                        MenuPage.ABOUT -> MenuSimplePage(
+                            title = "Silent VPN",
+                            body = "Версия ${com.silent.vpn.BuildConfig.VERSION_NAME}\nWireGuard-туннель через VK TURN/DTLS",
+                            fg = fg,
+                            focusKey = menuPage,
+                        ) { menuPage = MenuPage.ROOT }
                         else -> Unit
+                        }
                     }
                 }
             }
@@ -654,9 +729,47 @@ fun MainScreen(
 }
 
 @Composable
-private fun MenuSimplePage(title: String, body: String, fg: Color, onBack: () -> Unit) {
+private fun MenuSimplePage(
+    title: String,
+    body: String,
+    fg: Color,
+    focusKey: Any,
+    onBack: () -> Unit,
+) {
+    val isTv = rememberIsTv()
+    val backFocus = remember { FocusRequester() }
+    LaunchedEffect(focusKey) {
+        if (isTv) {
+            kotlinx.coroutines.delay(180)
+            runCatching { backFocus.requestFocus() }
+        }
+    }
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
+        if (isTv) {
+            Box(
+                modifier = Modifier
+                    .padding(bottom = 16.dp)
+                    .focusRequester(backFocus)
+                    .tvConsumeFocusUp()
+                    .defaultMinSize(minHeight = 36.dp)
+                    .tvClickable(cornerRadius = 8.dp, ringOnTop = true, onClick = onBack),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Text(
+                    "← Назад",
+                    fontSize = 12.sp,
+                    color = fg.copy(alpha = 0.4f),
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            }
+        } else {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.padding(bottom = 16.dp),
+            ) {
+                Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
+            }
+        }
         Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
         Text(body, fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp))
     }
@@ -673,14 +786,25 @@ private fun MenuSupport(
     val channel = theme?.telegram_channel_url?.takeIf { it.isNotBlank() } ?: "https://t.me/silentvpn3"
     val support = theme?.support_url?.takeIf { it.isNotBlank() } ?: "https://t.me/silentvpn3?direct"
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
+        TvTextButton(
+            onClick = onBack,
+            modifier = Modifier.padding(bottom = 16.dp),
+            requestFocusOnOpen = true,
+            requestFocusKey = "support",
+        ) {
+            Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
+        }
         Text("Поддержка", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
         Text("По вопросам обратитесь через Telegram.", fontSize = 12.sp, color = muted, modifier = Modifier.padding(top = 8.dp, bottom = 16.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
             listOf("Канал" to channel, "Поддержка" to support).forEach { (label, url) ->
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.clickable { onOpenUrl(url) },
+                    modifier = if (rememberIsTv()) {
+                        Modifier.tvClickable(cornerRadius = 16.dp, onClick = { onOpenUrl(url) })
+                    } else {
+                        Modifier.clickable { onOpenUrl(url) }
+                    },
                 ) {
                     Box(
                         modifier = Modifier
@@ -712,7 +836,14 @@ private fun MenuSubscription(
     onShowError: (String) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
-        Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
+        TvTextButton(
+            onClick = onBack,
+            modifier = Modifier.padding(bottom = 16.dp),
+            requestFocusOnOpen = true,
+            requestFocusKey = "subscription",
+        ) {
+            Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
+        }
         Text(
             "Подписка и оплата обновляются автоматически при включённом VPN.",
             fontSize = 11.sp,
@@ -742,7 +873,7 @@ private fun MenuSubscription(
         } else {
             Text("Выберите тариф", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
             listOf("monthly" to ("Месяц" to "199 ₽"), "quarterly" to ("3 месяца" to "499 ₽"), "yearly" to ("Год" to "1 499 ₽")).forEach { (id, labelPrice) ->
-                Button(
+                TvPrimaryButton(
                     onClick = { onInitPayment(id, onOpenUrl, onShowError) },
                     colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = Color.White),
                     shape = RoundedCornerShape(12.dp),
@@ -760,11 +891,23 @@ private fun MenuSubscription(
 
 @Composable
 private fun MenuPromo(fg: Color, bg: Color, promoCode: String, onPromoChange: (String) -> Unit, promoMsg: String, onApply: () -> Unit, onBack: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
+    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+        TvTextButton(
+            onClick = onBack,
+            modifier = Modifier.padding(bottom = 16.dp),
+            requestFocusOnOpen = true,
+            requestFocusKey = "promo",
+        ) {
+            Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
+        }
         Text("Промокод", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
         OutlinedTextField(value = promoCode, onValueChange = onPromoChange, placeholder = { Text("Введите код") }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), shape = RoundedCornerShape(12.dp))
-        Button(onClick = onApply, colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = bg), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        TvPrimaryButton(
+            onClick = onApply,
+            colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = bg),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        ) {
             Text("Применить", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         }
         if (promoMsg.isNotBlank()) Text(promoMsg, fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
@@ -801,10 +944,10 @@ private fun MenuDevices(
                 )
             },
             confirmButton = {
-                TextButton(
+                TvTextButton(
                     enabled = !renameSaving,
                     onClick = {
-                        val target = renameTarget ?: return@TextButton
+                        val target = renameTarget ?: return@TvTextButton
                         renameSaving = true
                         val name = renameText.trim().ifBlank { defaultDeviceName(target.device_type) }
                         onRenameDevice(target.id, name) { ok, _ ->
@@ -815,7 +958,7 @@ private fun MenuDevices(
                 ) { Text("Сохранить") }
             },
             dismissButton = {
-                TextButton(onClick = { if (!renameSaving) renameTarget = null }) {
+                TvTextButton(onClick = { if (!renameSaving) renameTarget = null }) {
                     Text("Отмена")
                 }
             },
@@ -834,7 +977,7 @@ private fun MenuDevices(
                 )
             },
             confirmButton = {
-                TextButton(
+                TvTextButton(
                     enabled = !deleteSaving,
                     onClick = {
                         deleteSaving = true
@@ -846,7 +989,7 @@ private fun MenuDevices(
                 ) { Text(if (deleteSaving) "…" else "Удалить") }
             },
             dismissButton = {
-                TextButton(onClick = { if (!deleteSaving) deleteTarget = null }) {
+                TvTextButton(onClick = { if (!deleteSaving) deleteTarget = null }) {
                     Text("Отмена")
                 }
             },
@@ -854,7 +997,14 @@ private fun MenuDevices(
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
-        Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f), modifier = Modifier.clickable(onClick = onBack).padding(bottom = 16.dp))
+        TvTextButton(
+            onClick = onBack,
+            modifier = Modifier.padding(bottom = 16.dp),
+            requestFocusOnOpen = true,
+            requestFocusKey = "devices",
+        ) {
+            Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
+        }
         Text("Сессии", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
         val maxSlotsLabel = profile?.deviceLimitLabel() ?: "3"
         val maxSlots = profile?.max_devices?.takeIf { it > 0 } ?: Int.MAX_VALUE
@@ -930,7 +1080,7 @@ private fun MenuDevices(
                         )
                     }
                 }
-                IconButton(
+                TvIconButton(
                     onClick = {
                         renameTarget = d
                         renameText = sessionCustomLabel(d).orEmpty()
@@ -939,7 +1089,7 @@ private fun MenuDevices(
                 ) {
                     Icon(Icons.Default.Edit, contentDescription = "Подписать", tint = fg.copy(alpha = 0.45f), modifier = Modifier.size(16.dp))
                 }
-                IconButton(
+                TvIconButton(
                     onClick = { deleteTarget = d },
                     modifier = Modifier.size(32.dp),
                 ) {

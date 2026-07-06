@@ -5,20 +5,28 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import com.silent.vpn.ui.tv.TvTextButton
+import com.silent.vpn.ui.tv.tvClickable
+import com.silent.vpn.util.rememberIsTv
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -80,6 +88,36 @@ private fun AppIcon(icon: Drawable?, modifier: Modifier = Modifier) {
 }
 
 @Composable
+private fun TvCheckbox(
+    checked: Boolean,
+    fg: Color,
+    bg: Color,
+    border: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .size(48.dp)
+            .tvClickable(cornerRadius = 6.dp, ringOnly = true, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(20.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .border(1.dp, if (checked) fg else border, RoundedCornerShape(4.dp))
+                .background(if (checked) fg else Color.Transparent, RoundedCornerShape(4.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (checked) {
+                Icon(Icons.Default.Check, contentDescription = null, tint = bg, modifier = Modifier.size(14.dp))
+            }
+        }
+    }
+}
+
+@Composable
 fun AppExclusionsScreen(
     repo: SilentRepository,
     fg: Color,
@@ -88,6 +126,7 @@ fun AppExclusionsScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val isTv = rememberIsTv()
     var apps by remember { mutableStateOf<List<AppItem>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var search by remember { mutableStateOf("") }
@@ -152,7 +191,9 @@ fun AppExclusionsScreen(
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        TextButton(onClick = onBack) { Text("← Назад", fontSize = 12.sp, color = fg.copy(0.5f)) }
+        TvTextButton(onClick = onBack, requestFocusOnOpen = true, requestFocusKey = "exclusions") {
+            Text("← Назад", fontSize = 12.sp, color = fg.copy(0.5f))
+        }
         Text("Исключения приложений", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = fg)
         Text(
             "Отмеченные приложения идут мимо VPN-туннеля",
@@ -164,12 +205,30 @@ fun AppExclusionsScreen(
             Modifier.fillMaxWidth().padding(top = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Показать системные", fontSize = 12.sp, color = fg, modifier = Modifier.weight(1f))
-            Checkbox(
-                checked = showSystemApps,
-                onCheckedChange = { showSystemApps = it },
-                colors = checkboxColors,
-            )
+            if (isTv) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TvCheckbox(
+                        checked = showSystemApps,
+                        fg = fg,
+                        bg = bg,
+                        border = fg.copy(alpha = 0.35f),
+                        onClick = { showSystemApps = !showSystemApps },
+                    )
+                    Text(
+                        "Показать системные",
+                        fontSize = 12.sp,
+                        color = fg,
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
+            } else {
+                Text("Показать системные", fontSize = 12.sp, color = fg, modifier = Modifier.weight(1f))
+                Checkbox(
+                    checked = showSystemApps,
+                    onCheckedChange = { showSystemApps = it },
+                    colors = checkboxColors,
+                )
+            }
         }
         OutlinedTextField(
             value = search,
@@ -184,17 +243,28 @@ fun AppExclusionsScreen(
                 CircularProgressIndicator()
             }
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(bottom = 48.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 items(displayApps, key = { it.packageName }) { app ->
                     val checked = selected.contains(app.packageName)
+                    val toggle = {
+                        saveSelection(
+                            if (checked) selected - app.packageName else selected + app.packageName,
+                        )
+                    }
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                saveSelection(
-                                    if (checked) selected - app.packageName else selected + app.packageName,
-                                )
-                            }
+                            .then(
+                                if (isTv) {
+                                    Modifier.tvClickable(cornerRadius = 10.dp, onClick = toggle)
+                                } else {
+                                    Modifier.clickable(onClick = toggle)
+                                },
+                            )
                             .padding(vertical = 6.dp, horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -204,11 +274,21 @@ fun AppExclusionsScreen(
                             Text(app.name, fontSize = 13.sp, color = fg, maxLines = 1)
                             Text(app.packageName, fontSize = 10.sp, color = fg.copy(0.4f), maxLines = 1)
                         }
-                        Checkbox(
-                            checked = checked,
-                            onCheckedChange = null,
-                            colors = checkboxColors,
-                        )
+                        if (isTv) {
+                            TvCheckbox(
+                                checked = checked,
+                                fg = fg,
+                                bg = bg,
+                                border = fg.copy(alpha = 0.35f),
+                                onClick = toggle,
+                            )
+                        } else {
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = null,
+                                colors = checkboxColors,
+                            )
+                        }
                     }
                 }
             }

@@ -13,7 +13,6 @@ import (
 
 
 const (
-	workersPerGroup  = 9
 	defaultCycleSecs = 36000
 )
 
@@ -34,7 +33,7 @@ func WorkerGroup(
 	deviceID, password string,
 	stats *Stats,
 	waitReady <-chan struct{},
-	signalReady chan<- struct{},
+	signalReady chan struct{},
 ) {
 	// Каскадный запуск: ждем свою очередь
 	if waitReady != nil {
@@ -59,6 +58,14 @@ func WorkerGroup(
 		time.Sleep(1 * time.Second)
 	}
 
+	if len(tp.Hashes) == 0 {
+		log.Printf("[ГРУППА #%d] Нет VK-хешей", groupID)
+		if signalReady != nil {
+			safeCloseChan(signalReady)
+		}
+		return
+	}
+
 	hash := tp.Hashes[hashIndex%len(tp.Hashes)]
 	shortHash := hash
 	if len(shortHash) > 8 {
@@ -75,8 +82,8 @@ func WorkerGroup(
 		log.Printf("[ГРУППА #%d] Ошибка кредов: %v", groupID, err)
 		if signalReady != nil {
 			go func() {
-				time.Sleep(500 * time.Millisecond)
-				close(signalReady)
+				time.Sleep(time.Duration(groupHandoffMs/2) * time.Millisecond)
+				safeCloseChan(signalReady)
 				log.Printf("[ГРУППА #%d] Эстафета следующей группе (креды не получены)", groupID)
 			}()
 		}
@@ -120,8 +127,8 @@ func WorkerGroup(
 	// Сигнализируем следующей группе (как reference proxy-turn-vk-android: 2 с форы)
 	if signalReady != nil {
 		go func() {
-			time.Sleep(2000 * time.Millisecond)
-			close(signalReady)
+			time.Sleep(time.Duration(groupHandoffMs) * time.Millisecond)
+			safeCloseChan(signalReady)
 			log.Printf("[ГРУППА #%d] Успешный старт! Передача эстафеты следующей группе...", groupID)
 		}()
 	}
@@ -129,11 +136,16 @@ func WorkerGroup(
 	for i, wid := range workerIDs {
 		wg.Add(1)
 
-		// Stagger: 500мс между воркерами — как reference
-		workerDelay := time.Duration(i) * 500 * time.Millisecond
+		// Stagger между воркерами (на arm32 короче — быстрее первый канал).
+		workerDelay := time.Duration(i*workerStaggerMs) * time.Millisecond
 
 		go func(wid int, delay time.Duration) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[FATAL] panic worker #%d: %v", wid, r)
+				}
+			}()
 
 			if delay > 0 {
 				select {
@@ -161,6 +173,10 @@ func WorkerGroup(
 				}
 
 				credsMu.RLock()
+				if creds == nil {
+					credsMu.RUnlock()
+					return
+				}
 				credsSnapshot := *creds
 				credsSnapshot.TurnURLs = cloneStringSlice(creds.TurnURLs)
 				credsMu.RUnlock()

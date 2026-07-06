@@ -81,6 +81,15 @@ object DebugLog {
 
     fun getText(): String = synchronized(this) { buffer.joinToString("\n") }
 
+    /** Сбросить отложенный UI-буфер (перед открытием диалога «Лог»). */
+    fun flushAll() {
+        synchronized(this) {
+            lastUiFlushMs = System.currentTimeMillis()
+            uiDirty = false
+            _text.value = buffer.joinToString("\n")
+        }
+    }
+
     fun clear() {
         synchronized(this) {
             buffer.clear()

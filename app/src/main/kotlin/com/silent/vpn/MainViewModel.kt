@@ -62,10 +62,7 @@ import kotlinx.coroutines.Job
 import javax.inject.Inject
 import retrofit2.Response
 
-private const val BOOTSTRAP_SESSION_MS = 2 * 60 * 1000L
 private const val EPHEMERAL_TUNNEL_WAIT_ITER = 120
-private const val BOOTSTRAP_EXPIRED_MSG =
-    "Время временного интернета истекло (2 мин). Закройте приложение и запустите снова."
 /** Пока открыт экран «Устройства/Сессии» и VPN ВЫКЛЮЧЕН — обновляем список по public API. */
 private const val SESSIONS_POLL_MS = 10 * 1000L
 
@@ -119,7 +116,7 @@ class MainViewModel @Inject constructor(
     private val _bootstrapConnecting = MutableStateFlow(false)
     val bootstrapConnecting: StateFlow<Boolean> = _bootstrapConnecting
 
-    /** Секунд до конца bootstrap-сессии (2 мин); null — таймер не идёт. */
+    /** Секунд до конца bootstrap-сессии; null — таймер не идёт. */
     private val _bootstrapSecondsLeft = MutableStateFlow<Int?>(null)
     val bootstrapSecondsLeft: StateFlow<Int?> = _bootstrapSecondsLeft
 
@@ -138,7 +135,7 @@ class MainViewModel @Inject constructor(
     private var bootstrapConnectingInternal = false
     private var bootstrapTimeoutJob: Job? = null
     private var bootstrapContext: Context? = null
-    /** Дедлайн 2 мин — один на сессию, не сбрасывается при переходе шаг 2 → шаг 1. */
+    /** Дедлайн bootstrap — один на сессию, не сбрасывается при переходе шаг 2 → шаг 1. */
     private var bootstrapDeadlineMs = 0L
     private var silentBootstrapSync = false
     private var profilePollJob: Job? = null
@@ -290,9 +287,12 @@ class MainViewModel @Inject constructor(
                 startConfigSync()
             }
         } else {
-            loadTheme()
-            if (SilentVpnService.isRunning && isHashReady()) {
-                reconcileLoginBootstrapSession(appContext)
+            repo.getCachedTheme()?.let { _theme.value = it }
+            viewModelScope.launch { loadTheme() }
+            viewModelScope.launch {
+                if (SilentVpnService.isRunning && isHashReady()) {
+                    reconcileLoginBootstrapSession(appContext)
+                }
             }
         }
         com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener = configSyncListener
@@ -300,7 +300,10 @@ class MainViewModel @Inject constructor(
             applyCachedProfileAfterSync()
             checkForAppUpdate()
         }
-        checkForAppUpdate()
+        viewModelScope.launch {
+            delay(2_000)
+            checkForAppUpdate()
+        }
         viewModelScope.launch {
             WdttTunnelManager.lastError.collect { err ->
                 if (!err.isNullOrBlank() &&
@@ -308,13 +311,16 @@ class MainViewModel @Inject constructor(
                     (_vpnState.value == VpnState.CONNECTING || _vpnState.value == VpnState.CONNECTED)
                 ) {
                     DebugLog.e("MainViewModel", "WDTT error: $err")
-                    _vpnError.value = err
                     if (bootstrapVpnMode) {
-                        _vpnState.value = VpnState.DISCONNECTED
-                        bootstrapVpnMode = false
-                        cancelBootstrapSessionTimeout()
-                        bootstrapContext?.let { stopVpnLocally(it) }
                         _statusMsg.value = err
+                        if (isBootstrapFatalError(err)) {
+                            _vpnState.value = VpnState.DISCONNECTED
+                            bootstrapVpnMode = false
+                            cancelBootstrapSessionTimeout()
+                            bootstrapContext?.let { stopVpnLocally(it) }
+                        }
+                    } else {
+                        _vpnError.value = err
                     }
                 }
             }
@@ -325,15 +331,20 @@ class MainViewModel @Inject constructor(
                     if (_vpnState.value == VpnState.DISCONNECTING) return@collect
                     DebugLog.i("MainViewModel", "tunnel ready")
                     if (bootstrapVpnMode && WdttTunnelManager.isBootstrapMode()) {
-                        _vpnState.value = VpnState.CONNECTED
-                        onVpnTunnelReady()
-                        val ctx = bootstrapContext
-                        if (ctx != null) {
-                            startBootstrapSessionTimeout(
-                                ctx,
-                                forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
-                            )
+                        val workersOk = !bootstrapRequiresActiveWorkers() ||
+                            WdttTunnelManager.activeWorkers.value >= 1
+                        if (workersOk) {
+                            _vpnState.value = VpnState.CONNECTED
+                            onVpnTunnelReady()
+                            val ctx = bootstrapContext
+                            if (ctx != null) {
+                                startBootstrapSessionTimeout(
+                                    ctx,
+                                    forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
+                                )
+                            }
                         }
+                        updateBootstrapReadyFlag()
                     } else if (silentBootstrapSync) {
                         // Ephemeral API sync — runEphemeralApiBootstrap polls tunnelReady itself.
                     } else if (SilentVpnService.isRunning) {
@@ -359,6 +370,31 @@ class MainViewModel @Inject constructor(
                     backendSyncCompleted = false
                     repo.clearTunnelApiBase()
                     markLocalDeviceOffline()
+                }
+            }
+        }
+        viewModelScope.launch {
+            WdttTunnelManager.activeWorkers.collect {
+                if (
+                    bootstrapRequiresActiveWorkers() &&
+                    bootstrapVpnMode &&
+                    WdttTunnelManager.isBootstrapMode()
+                ) {
+                    if (
+                        it >= 1 &&
+                        WdttTunnelManager.tunnelReady.value &&
+                        _vpnState.value == VpnState.CONNECTING
+                    ) {
+                        _vpnState.value = VpnState.CONNECTED
+                        onVpnTunnelReady()
+                        bootstrapContext?.let { ctx ->
+                            startBootstrapSessionTimeout(
+                                ctx,
+                                forceNewDeadline = bootstrapDeadlineMs <= System.currentTimeMillis(),
+                            )
+                        }
+                    }
+                    updateBootstrapReadyFlag()
                 }
             }
         }
@@ -403,7 +439,7 @@ class MainViewModel @Inject constructor(
         val prevBootstrap = bootstrapVpnMode
         try {
             var config = runCatching {
-                val res = repo.getApi().bootstrapConfig(BootstrapConfigRequest(bootHash, "android", fp))
+                val res = repo.getApi().bootstrapConfig(BootstrapConfigRequest(bootHash, repo.getApiDeviceType(), fp))
                 if (res.isSuccessful) bootstrapLaunchConfig(res.body()!!) else null
             }.getOrNull()
             if (config == null || config.vk_hashes.isEmpty()) {
@@ -446,7 +482,7 @@ class MainViewModel @Inject constructor(
             }.getOrNull()
             if (cfg == null && registerIfNeeded) {
                 val reg = repo.getApi().registerDevice(
-                    DeviceRegisterRequest(repo.getDeviceDisplayName(), "android", fp, null, repo.getBootstrapHash()),
+                    DeviceRegisterRequest(repo.getDeviceDisplayName(), repo.getApiDeviceType(), fp, null, repo.getBootstrapHash()),
                 )
                 if (reg.isSuccessful) cfg = reg.body()
             }
@@ -656,7 +692,7 @@ class MainViewModel @Inject constructor(
         try {
             repo.clearTunnelApiBase()
             var config = runCatching {
-                val res = repo.getApi().bootstrapConfig(BootstrapConfigRequest(boot, "android", fp))
+                val res = repo.getApi().bootstrapConfig(BootstrapConfigRequest(boot, repo.getApiDeviceType(), fp))
                 if (res.isSuccessful) bootstrapLaunchConfig(res.body()!!) else null
             }.getOrNull()
             if (config == null || config.vk_hashes.isEmpty()) {
@@ -674,7 +710,11 @@ class MainViewModel @Inject constructor(
                     attempt++
                     continue
                 }
-                if (WdttTunnelManager.activeWorkers.value < 1 && attempt < 24) {
+                if (
+                    bootstrapRequiresActiveWorkers() &&
+                    WdttTunnelManager.activeWorkers.value < 1 &&
+                    attempt < 24
+                ) {
                     attempt++
                     continue
                 }
@@ -833,7 +873,7 @@ class MainViewModel @Inject constructor(
             val regJob = async {
                 runCatching {
                     repo.getApi().registerDevice(
-                        DeviceRegisterRequest(repo.getDeviceDisplayName(), "android", fp, null, null),
+                        DeviceRegisterRequest(repo.getDeviceDisplayName(), repo.getApiDeviceType(), fp, null, null),
                     )
                 }.getOrNull()
             }
@@ -942,7 +982,7 @@ class MainViewModel @Inject constructor(
         repo.cacheVpnConfig(Gson().toJson(cfg))
         if (serverHashes.size < HashChannelHelper.MAX_HASHES) {
             runCatching {
-                repo.getApi().requestHashRefresh(ConnectRequest(fp, "android"))
+                repo.getApi().requestHashRefresh(ConnectRequest(fp, repo.getApiDeviceType()))
             }
         }
         return cfg
@@ -1093,7 +1133,7 @@ class MainViewModel @Inject constructor(
                 if (vpnUp && repo.allowsBackgroundConfigSync()) {
                     val ok = runCatching {
                         repo.withRoutineBackendApi {
-                            val res = repo.getApi().checkUpdate("android", version)
+                            val res = repo.getApi().checkUpdate(repo.getOtaPlatform(), version)
                             if (!res.isSuccessful) {
                                 DebugLog.w("MainViewModel", "checkUpdate HTTP ${res.code()} via tunnel")
                                 return@withRoutineBackendApi false
@@ -1167,7 +1207,7 @@ class MainViewModel @Inject constructor(
 
     private suspend fun tryCheckUpdateOnBase(base: String, version: String): Boolean {
         repo.useApiBase(base)
-        val res = repo.getApi().checkUpdate("android", version)
+        val res = repo.getApi().checkUpdate(repo.getOtaPlatform(), version)
         if (!res.isSuccessful) {
             DebugLog.w("MainViewModel", "checkUpdate HTTP ${res.code()} on $base")
             return false
@@ -1333,11 +1373,18 @@ class MainViewModel @Inject constructor(
         updateBootstrapReadyFlag()
     }
 
+    /** TV/arm32: ждём libclient-воркеров; телефон — достаточно tunnelReady (как раньше). */
+    private fun bootstrapRequiresActiveWorkers(): Boolean =
+        com.silent.vpn.util.DevicePlatform.isTv(appContext)
+
     private fun updateBootstrapReadyFlag() {
+        val workersOk = !bootstrapRequiresActiveWorkers() ||
+            WdttTunnelManager.activeWorkers.value >= 1
         _bootstrapReady.value = !repo.isLoggedIn() &&
             bootstrapVpnMode &&
             SilentVpnService.isRunning &&
             WdttTunnelManager.tunnelReady.value &&
+            workersOk &&
             _vpnState.value == VpnState.CONNECTED
     }
 
@@ -1533,7 +1580,7 @@ class MainViewModel @Inject constructor(
                 val ctx = activity?.applicationContext ?: appContext
                 val loginDevice = LoginDeviceInfo(
                     device_fingerprint = repo.startNewSession(),
-                    device_type = "android",
+                    device_type = repo.getApiDeviceType(),
                     device_name = repo.getDeviceDisplayName(),
                 )
                 var loginSucceeded = false
@@ -1739,7 +1786,7 @@ class MainViewModel @Inject constructor(
         if (!bootstrapVpnMode) return
         val now = System.currentTimeMillis()
         if (forceNewDeadline || bootstrapDeadlineMs <= now) {
-            bootstrapDeadlineMs = now + BOOTSTRAP_SESSION_MS
+            bootstrapDeadlineMs = now + com.silent.vpn.util.DevicePlatform.bootstrapSessionMs(appContext)
         }
         bootstrapContext = context.applicationContext
         refreshBootstrapCountdownNow()
@@ -1798,14 +1845,15 @@ class MainViewModel @Inject constructor(
     private fun expireBootstrapSession() {
         val ctx = bootstrapContext ?: return
         if (!bootstrapVpnMode || repo.isLoggedIn()) return
-        DebugLog.i("MainViewModel", "bootstrap session expired (${BOOTSTRAP_SESSION_MS / 1000}s)")
+        DebugLog.i("MainViewModel", "bootstrap session expired (${com.silent.vpn.util.DevicePlatform.bootstrapSessionMs(appContext) / 1000}s)")
         resetBootstrapDeadline()
         stopVpnLocally(ctx)
         bootstrapVpnMode = false
         bootstrapContext = null
         repo.clearTunnelApiBase()
         _vpnState.value = VpnState.DISCONNECTED
-        _statusMsg.value = BOOTSTRAP_EXPIRED_MSG
+        val min = com.silent.vpn.util.DevicePlatform.bootstrapSessionMinutes(appContext)
+        _statusMsg.value = "Время временного интернета истекло ($min мин). Закройте приложение и запустите снова."
         _bootstrapExpired.value = true
         updateBootstrapReadyFlag()
     }
@@ -1824,16 +1872,50 @@ class MainViewModel @Inject constructor(
         updateBootstrapReadyFlag()
     }
 
+    private fun friendlyBootstrapFailureMessage(): String? {
+        WdttTunnelManager.lastError.value?.takeIf { it.isNotBlank() }?.let { return it }
+        val stats = WdttTunnelManager.stats.value.trim()
+        if (stats.isBlank() || stats.contains("Ожидание данных", ignoreCase = true)) {
+            return if (com.silent.vpn.util.DevicePlatform.isTv(appContext)) {
+                "VPN не поднялся на приставке. Проверьте интернет и перезапустите приложение."
+            } else {
+                null
+            }
+        }
+        return stats.takeIf { !stats.contains("Ожидание данных", ignoreCase = true) }
+    }
+
     /** Bootstrap VPN on login screen — reach backend through user's VK hash. */
     fun ensureBootstrapVpn(context: Context) {
-        if (_bootstrapExpired.value) return
-        if (repo.isLoggedIn() || !isHashReady()) return
-        if (bootstrapConnectingInternal) return
+        if (_bootstrapExpired.value) {
+            WdttTunnelManager.traceApp("bootstrap_skip", "bootstrap пропущен: сессия истекла")
+            return
+        }
+        if (repo.isLoggedIn()) {
+            WdttTunnelManager.traceApp("bootstrap_skip", "bootstrap пропущен: уже вошли")
+            return
+        }
+        if (!isHashReady()) {
+            WdttTunnelManager.traceApp("bootstrap_skip", "bootstrap пропущен: нет хеша в сборке", isError = true)
+            return
+        }
+        if (bootstrapConnectingInternal) {
+            WdttTunnelManager.traceApp("bootstrap_skip", "bootstrap уже подключается")
+            return
+        }
         if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
             bootstrapContext = context.applicationContext
             resumeBootstrapTimerIfNeeded()
+            refreshBootstrapCountdownNow()
+            updateBootstrapReadyFlag()
+            WdttTunnelManager.traceApp("bootstrap_resume", "bootstrap уже подключён, таймер возобновлён")
             return
         }
+        val tv = com.silent.vpn.util.DevicePlatform.isTv(appContext)
+        WdttTunnelManager.traceApp(
+            "bootstrap_start",
+            "старт bootstrap VPN (TV=$tv, ABI=${com.silent.vpn.util.DevicePlatform.primaryAbi()})",
+        )
         DebugLog.i("MainViewModel", "ensureBootstrapVpn start")
         viewModelScope.launch {
             bootstrapConnectingInternal = true
@@ -1843,6 +1925,7 @@ class MainViewModel @Inject constructor(
                 val boot = HashParser.extract(repo.getBootstrapHash().orEmpty())
                     ?: run {
                         _statusMsg.value = "Неверный bootstrap-хеш в сборке приложения."
+                        WdttTunnelManager.traceApp("bootstrap_hash", "неверный bootstrap-хеш", isError = true)
                         return@launch
                     }
                 val fp = repo.getOrCreatePreLoginFingerprint()
@@ -1850,23 +1933,46 @@ class MainViewModel @Inject constructor(
 
                 if (config.vk_hashes.isEmpty()) {
                     _statusMsg.value = "Нет VK-хеша для bootstrap"
+                    WdttTunnelManager.traceApp("bootstrap_hash", "пустой vk_hashes в конфиге", isError = true)
                     return@launch
                 }
                 bootstrapVpnMode = true
                 bootstrapContext = context.applicationContext
                 _bootstrapExpired.value = false
                 _vpnState.value = VpnState.CONNECTING
+                WdttTunnelManager.traceApp(
+                    "bootstrap_connect",
+                    "FGS CONNECT device=${config.device_id.take(8)}… hashes=${config.vk_hashes.size}",
+                )
                 val intent = Intent(context, SilentVpnService::class.java).apply {
                     action = SilentVpnService.ACTION_CONNECT
                     putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(config))
                     putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, true)
                 }
                 ContextCompat.startForegroundService(context, intent)
-                repeat(60) {
+                val waitIterations = if (tv) 180 else 60
+                repeat(waitIterations) { attempt ->
                     delay(500)
                     if (_vpnState.value != VpnState.CONNECTING) return@launch
-                    if (WdttTunnelManager.tunnelReady.value && WdttTunnelManager.running.value) {
+                    val workers = WdttTunnelManager.activeWorkers.value
+                    val workersOk = !tv || workers >= 1
+                    if (attempt % 4 == 0 && tv) {
+                        _statusMsg.value = when {
+                            workers >= 1 -> "Подключение VPN… воркеры $workers"
+                            WdttTunnelManager.tunnelReady.value -> "Подключение VPN… WireGuard готов, ждём канал"
+                            else -> "Подключение VPN…"
+                        }
+                    }
+                    if (
+                        WdttTunnelManager.tunnelReady.value &&
+                        WdttTunnelManager.running.value &&
+                        workersOk
+                    ) {
                         _vpnState.value = VpnState.CONNECTED
+                        WdttTunnelManager.traceApp(
+                            "bootstrap_ok",
+                            "bootstrap OK: workers=$workers tunnel=${WdttTunnelManager.tunnelReady.value}",
+                        )
                         onVpnTunnelReady(config)
                         repo.ensureBootstrapTunnelApi()
                         startBootstrapSessionTimeout(context, forceNewDeadline = true)
@@ -1878,12 +1984,21 @@ class MainViewModel @Inject constructor(
                     stopVpnLocally(context)
                     bootstrapVpnMode = false
                     _vpnState.value = VpnState.DISCONNECTED
-                    _statusMsg.value = WdttTunnelManager.lastError.value
-                        ?: WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
+                    val failMsg = friendlyBootstrapFailureMessage()
                         ?: "Интернет через VPN не поднялся. Закройте приложение и запустите снова."
+                    WdttTunnelManager.traceApp(
+                        "bootstrap_timeout",
+                        "таймаут: running=${WdttTunnelManager.running.value} " +
+                            "tunnel=${WdttTunnelManager.tunnelReady.value} " +
+                            "workers=${WdttTunnelManager.activeWorkers.value} " +
+                            "stats=${WdttTunnelManager.stats.value}",
+                        isError = true,
+                    )
+                    _statusMsg.value = failMsg
                 }
             } catch (e: Exception) {
                 Log.e("MainViewModel", "bootstrap VPN", e)
+                WdttTunnelManager.traceApp("bootstrap_error", e.message ?: "ошибка bootstrap", isError = true)
                 cancelBootstrapSessionTimeout()
                 stopVpnLocally(context)
                 bootstrapVpnMode = false
@@ -1917,7 +2032,7 @@ class MainViewModel @Inject constructor(
     private suspend fun openLoginSession(): Boolean {
         val boot = repo.getBootstrapHash()
         val res = repo.getApi().registerDevice(
-            DeviceRegisterRequest(repo.getDeviceDisplayName(), "android", repo.getDeviceFingerprint(), null, boot)
+            DeviceRegisterRequest(repo.getDeviceDisplayName(), repo.getApiDeviceType(), repo.getDeviceFingerprint(), null, boot)
         )
         DebugLog.i("MainViewModel", "registerDevice HTTP ${res.code()}")
         if (res.isSuccessful) {
@@ -2320,7 +2435,7 @@ class MainViewModel @Inject constructor(
         }.getOrNull()
         if (cfg == null) {
             val res = repo.getApi().registerDevice(
-                DeviceRegisterRequest(repo.getDeviceDisplayName(), "android", fp, null, null),
+                DeviceRegisterRequest(repo.getDeviceDisplayName(), repo.getApiDeviceType(), fp, null, null),
             )
             if (!res.isSuccessful) return
             cfg = res.body()!!
@@ -2620,6 +2735,16 @@ class MainViewModel @Inject constructor(
 
     private fun subscriptionRequiredMessage() =
         "Пробный период закончился. Оформите подписку в меню → Подписка."
+
+    private fun isBootstrapFatalError(message: String): Boolean {
+        val lower = message.lowercase()
+        return lower.contains("vpn-клиент завершился") ||
+            lower.contains("несовместимый wrap") ||
+            lower.contains("неверный пароль") ||
+            lower.contains("не найден") ||
+            lower.contains("binary_error") ||
+            lower.contains("circuit_breaker")
+    }
 
     private fun isIgnoredVpnError(message: String?): Boolean {
         if (message.isNullOrBlank()) return true

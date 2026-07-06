@@ -16,6 +16,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import com.silent.vpn.util.DevicePlatform
 import kotlin.random.Random
 
 /**
@@ -40,17 +41,27 @@ class AutoCaptchaActivity : Activity() {
             return
         }
 
+        val isTv = DevicePlatform.isTv(this)
         window.apply {
-            setBackgroundDrawableResource(android.R.color.transparent)
-            addFlags(
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            )
-            attributes = attributes.apply {
-                alpha = 0.01f
-                width = WindowManager.LayoutParams.MATCH_PARENT
-                height = WindowManager.LayoutParams.MATCH_PARENT
+            setBackgroundDrawableResource(android.R.color.black)
+            if (isTv) {
+                addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                attributes = attributes.apply {
+                    alpha = 1f
+                    width = WindowManager.LayoutParams.MATCH_PARENT
+                    height = WindowManager.LayoutParams.MATCH_PARENT
+                }
+            } else {
+                addFlags(
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                )
+                attributes = attributes.apply {
+                    alpha = 0.01f
+                    width = WindowManager.LayoutParams.MATCH_PARENT
+                    height = WindowManager.LayoutParams.MATCH_PARENT
+                }
             }
         }
 
@@ -90,11 +101,15 @@ class AutoCaptchaActivity : Activity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun createWebView(redirectUri: String): WebView {
-        val vw = VIEWPORT_WIDTHS[Random.Default.nextInt(VIEWPORT_WIDTHS.size)]
-        val vh = VIEWPORT_HEIGHTS[Random.Default.nextInt(VIEWPORT_HEIGHTS.size)]
+        val isTv = DevicePlatform.isTv(this)
+        val vw = if (isTv) 1920 else VIEWPORT_WIDTHS[Random.Default.nextInt(VIEWPORT_WIDTHS.size)]
+        val vh = if (isTv) 1080 else VIEWPORT_HEIGHTS[Random.Default.nextInt(VIEWPORT_HEIGHTS.size)]
         val chromeBuild = CHROME_BUILDS[Random.Default.nextInt(CHROME_BUILDS.size)]
-        val ua =
+        val ua = if (isTv) {
+            "Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$chromeBuild Safari/537.36"
+        } else {
             "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$chromeBuild Mobile Safari/537.36"
+        }
 
         Log.d(TAG, "Fingerprint: ${vw}x${vh}, Chrome/$chromeBuild")
 

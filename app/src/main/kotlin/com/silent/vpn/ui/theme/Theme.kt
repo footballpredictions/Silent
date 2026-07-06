@@ -40,8 +40,11 @@ fun SilentTheme(
     content: @Composable () -> Unit,
 ) {
     val colorScheme = themeData?.toColorScheme(darkTheme)
-        ?: if (darkTheme) darkColorScheme(primary = Color.White, background = Color.Black)
-        else lightColorScheme(primary = Color.Black, background = Color.White)
+        ?: if (darkTheme) {
+            darkColorScheme(primary = Color.White, background = Color(0xFF0A0A0A))
+        } else {
+            lightColorScheme(primary = Color.Black, background = Color.White)
+        }
 
     ApplySystemBarAppearance(colorScheme.background)
 

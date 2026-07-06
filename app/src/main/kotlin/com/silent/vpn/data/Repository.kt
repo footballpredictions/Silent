@@ -285,10 +285,6 @@ class SilentRepository @Inject constructor(
                 return block()
             }
             if (isMainVpnTunnelUp()) {
-                if (canUseMobileDirectTunnelApi()) {
-                    prepareMainVpnDirectApi()
-                    return block()
-                }
                 if (APP_EXCLUDED_FROM_VPN && isOnMobileData() && !WdttTunnelManager.isApiOverlayActive()) {
                     error("mobile routine API deferred — use initial sync overlay session")
                 }
@@ -361,11 +357,25 @@ class SilentRepository @Inject constructor(
 
         if (canUseMobileDirectTunnelApi()) {
             prepareMainVpnDirectApi()
-            MobileSyncLog.i("tunnel", "API mobile direct ${tunnelApiBase()}")
-            return block()
+            val direct = runCatching { block() }
+            if (direct.isSuccess && !isTunnelBackendFailure(direct.getOrNull())) {
+                MobileSyncLog.i("tunnel", "API mobile direct ${tunnelApiBase()}")
+                return direct.getOrThrow()
+            }
+            MobileSyncLog.w(
+                "tunnel",
+                "API mobile direct failed → proxy/overlay: ${direct.exceptionOrNull()?.message}",
+            )
+            invalidateApiClient()
         }
 
         if (isOnMobileData()) {
+            if (allowOverlayFallback) {
+                useApiBase(tunnelApiBase())
+                invalidateApiClient()
+                MobileSyncLog.i("tunnel", "API overlay brief (LTE routine fallback)")
+                return WdttTunnelManager.withApiOverlayBrief(block, allowDuringRampUp = true)
+            }
             throw IllegalStateException("mobile excluded API outside overlay session")
         }
 

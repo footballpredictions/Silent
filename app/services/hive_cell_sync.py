@@ -20,8 +20,12 @@ _last_sync_at: datetime | None = None
 
 
 async def manifest_version(db: AsyncSession) -> int:
+    """Версия manifest: число устройств + время последнего изменения (last_connected / created_at)."""
     result = await db.execute(
-        select(func.count(Device.id), func.max(Device.updated_at)).where(Device.is_active == True)  # noqa: E712
+        select(
+            func.count(Device.id),
+            func.max(func.coalesce(Device.last_connected, Device.created_at)),
+        ).where(Device.is_active == True)  # noqa: E712
     )
     row = result.one()
     count = int(row[0] or 0)

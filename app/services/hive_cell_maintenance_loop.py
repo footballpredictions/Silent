@@ -28,7 +28,15 @@ async def hive_cell_maintenance_loop() -> None:
                 if settings.VPNBASE_GIT_ENABLED:
                     from app.services.hive_vpnbase_export import push_vpnbase_export
 
-                    await push_vpnbase_export(db)
+                    vpnbase_stats = await push_vpnbase_export(db)
+                    if vpnbase_stats.get("ok"):
+                        logger.info(
+                            "vpnbase export: v%s → %s",
+                            vpnbase_stats.get("version"),
+                            vpnbase_stats.get("repo"),
+                        )
+                    elif not vpnbase_stats.get("skipped"):
+                        logger.warning("vpnbase export failed: %s", vpnbase_stats)
         except Exception as e:
             logger.warning("Hive cell maintenance cycle failed: %s", e)
         await asyncio.sleep(interval)

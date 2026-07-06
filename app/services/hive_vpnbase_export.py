@@ -84,8 +84,9 @@ async def push_vpnbase_export(db: AsyncSession) -> dict:
                 body["sha"] = sha
             resp = await client.put(url, headers=headers, json=body)
         if resp.status_code not in (200, 201):
-            logger.warning("vpnbase git push failed: %s %s", resp.status_code, resp.text[:200])
-            return {"ok": False, "status": resp.status_code}
+            detail = resp.text[:500]
+            logger.warning("vpnbase git push failed: %s %s", resp.status_code, detail)
+            return {"ok": False, "status": resp.status_code, "detail": detail}
     except Exception as e:
         logger.warning("vpnbase git push error: %s", e)
         return {"ok": False, "error": str(e)}

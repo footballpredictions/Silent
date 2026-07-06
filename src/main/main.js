@@ -432,8 +432,12 @@ const FULL_TUNNEL_TARGET_CAP = 27
 
 const FALLBACK_BACKEND_IP = SERVER_IP_FALLBACK
 
+/** IP вне WG-туннеля: Улей (API) + peer WDTT (сота), иначе HTTPS к 132.243.234.162 идёт через VPN → RST. */
 function collectExcludeIPs(config) {
-  return new Set([normalizeServerIp(config?.server_ip)])
+  const ips = new Set([SERVER_IP_FALLBACK])
+  const peer = normalizeServerIp(config?.server_ip)
+  if (peer) ips.add(peer)
+  return [...ips]
 }
 
 function clearBypassRefresh() {
@@ -671,7 +675,7 @@ ipcMain.handle('open-admin-panel', async () => {
     : 'https://132-243-234-162.nip.io/admin'
   await shell.openExternal(url)
   if (vpnUp) {
-    sendLog('[Admin] Открыта через туннель: http://10.66.66.1:8000/admin')
+    sendLog('[Admin] Через tunnel API: http://10.66.66.1:8000/admin')
   }
   return url
 })
@@ -1286,7 +1290,13 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
     throw new Error('API unavailable')
   }
   const p = payload || {}
-  return publicDirectRequest({ ...p, timeout: p.timeout || 25_000 })
+  const opts = { ...p, timeout: p.timeout || 25_000 }
+  try {
+    return await publicDirectRequest(opts)
+  } catch (e) {
+    sendLog(`[API] HTTPS ${SERVER_IP_FALLBACK} fail: ${e?.message || e} → tunnel 10.66.66.1`)
+    return tunnelHttpRequest(opts)
+  }
 })
 
 function fetchJsonGet(url, hostHeader = null) {

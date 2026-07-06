@@ -26,6 +26,7 @@ export function setMainVpnSessionActive(active: boolean) {
   tunnelApiActive = false
 }
 
+/** При VPN — tunnel API (10.66.66.1); без VPN — public HTTPS. */
 export function getAdminPanelUrl(vpnConnected = false): string {
   return vpnConnected ? WG_TUNNEL_ADMIN_URL : PUBLIC_ADMIN_URL
 }

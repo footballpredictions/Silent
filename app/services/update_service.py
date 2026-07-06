@@ -97,11 +97,30 @@ def get_latest(platform: str) -> Optional[dict]:
     }
 
 
+def _resolve_download_url(latest: dict) -> Optional[str]:
+    """Приоритет: GitHub Releases (как landing), иначе локальный /update/ на VPS."""
+    gh = (latest.get("github_download_url") or "").strip()
+    if gh:
+        return gh
+    file_path = latest.get("file_path")
+    if file_path and os.path.isfile(file_path):
+        return latest.get("download_url")
+    fn = latest.get("filename")
+    ver = latest.get("version")
+    if fn and ver:
+        from app.services.github_release_service import asset_download_url
+        return asset_download_url(ver, fn)
+    return None
+
+
 def check_update(platform: str, current_version: str) -> Optional[dict]:
     latest = get_latest(platform)
     if not latest:
         return None
     if not is_newer(latest["version"], current_version):
+        return None
+    primary = _resolve_download_url(latest)
+    if not primary:
         return None
     out = {
         "available": True,
@@ -109,11 +128,13 @@ def check_update(platform: str, current_version: str) -> Optional[dict]:
         "filename": latest["filename"],
         "size": latest.get("size", 0),
         "uploaded_at": latest.get("uploaded_at"),
-        "download_url": latest["download_url"],
+        "download_url": primary,
     }
-    gh = latest.get("github_download_url")
+    gh = (latest.get("github_download_url") or "").strip()
     if gh:
         out["github_download_url"] = gh
+    elif primary.startswith("https://github.com/"):
+        out["github_download_url"] = primary
     return out
 
 

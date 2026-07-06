@@ -724,5 +724,6 @@ module.exports = {
   buildWgConfigFromApi,
   applyWireGuardConfig,
   addServerBypassRoutes,
+  capturePhysicalGateway,
   normalizeWgConfText,
 }

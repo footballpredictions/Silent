@@ -20,6 +20,7 @@ const {
   buildWgConfigFromApi,
   applyWireGuardConfig,
   addServerBypassRoutes,
+  capturePhysicalGateway,
   normalizeWgConfText,
 } = require('./vpn/wireguard')
 const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
@@ -661,22 +662,28 @@ ipcMain.handle('app-quit', () => {
   quitAppFully()
   return true
 })
-ipcMain.handle('open-external', (_, url) => shell.openExternal(url))
-ipcMain.handle('get-admin-panel-url', () => {
-  const vpnUp = wgApplied && isWdttAlive() && !vpnBootstrapMode
-  return vpnUp
-    ? 'http://10.66.66.1:8000/admin'
-    : 'https://132-243-234-162.nip.io/admin'
-})
-ipcMain.handle('open-admin-panel', async () => {
-  const vpnUp = wgApplied && isWdttAlive() && !vpnBootstrapMode
-  const url = vpnUp
-    ? 'http://10.66.66.1:8000/admin'
-    : 'https://132-243-234-162.nip.io/admin'
-  await shell.openExternal(url)
-  if (vpnUp) {
-    sendLog('[Admin] Через tunnel API: http://10.66.66.1:8000/admin')
+async function ensureNipIoBypassRoutes(sendLogFn = sendLog) {
+  if (!wgApplied || vpnBootstrapMode || sessionExcludeIPs.length === 0) return
+  capturePhysicalGateway(sendLogFn)
+  addServerBypassRoutes(sessionExcludeIPs, sendLogFn)
+  await sleep(500)
+}
+
+ipcMain.handle('open-external', async (_, url) => {
+  if (typeof url === 'string' && /132-243-234-162\.nip\.io|132\.243\.234\.162/.test(url)) {
+    await ensureNipIoBypassRoutes()
   }
+  await shell.openExternal(url)
+  return true
+})
+ipcMain.handle('get-admin-panel-url', () => 'https://132-243-234-162.nip.io/admin')
+ipcMain.handle('open-admin-panel', async () => {
+  const url = 'https://132-243-234-162.nip.io/admin'
+  if (wgApplied && isWdttAlive() && !vpnBootstrapMode) {
+    sendLog('[Admin] VPN on — bypass nip.io API IP, open ' + url)
+    await ensureNipIoBypassRoutes()
+  }
+  await shell.openExternal(url)
   return url
 })
 ipcMain.handle('get-platform', () => process.platform)
@@ -1294,10 +1301,10 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
   const p = payload || {}
   const opts = { ...p, timeout: p.timeout || 25_000 }
   try {
-    return await tunnelHttpRequest(opts)
-  } catch (tunnelErr) {
-    sendLog(`[API] tunnel 10.66.66.1 fail: ${tunnelErr?.message || tunnelErr} → HTTPS ${SERVER_IP_FALLBACK}`)
-    return publicDirectRequest(opts)
+    return await publicDirectRequest(opts)
+  } catch (e) {
+    sendLog(`[API] HTTPS ${SERVER_IP_FALLBACK} fail: ${e?.message || e} → tunnel 10.66.66.1`)
+    return tunnelHttpRequest(opts)
   }
 })
 

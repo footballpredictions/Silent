@@ -93,17 +93,33 @@ def _release_title(platform: str, version: str) -> str:
     return f"Silent VPN — Android v{version}"
 
 
-def _release_body(platform: str, version: str) -> str:
+def _combined_release_title(version: str) -> str:
+    return f"Silent VPN v{version}"
+
+
+def _release_title_for_assets(version: str, asset_names: list[str]) -> str:
+    has_pc = any(n.lower().endswith(".exe") for n in asset_names)
+    has_apk = any(n.lower().endswith(".apk") for n in asset_names)
+    if has_pc and has_apk:
+        return _combined_release_title(version)
+    if has_pc:
+        return _release_title("pc", version)
+    if has_apk:
+        return _release_title("android", version)
+    return _combined_release_title(version)
+
+
+def _release_body_for_assets(version: str, asset_names: list[str]) -> str:
     landing = "https://silentvpn3.github.io/"
-    if platform == "pc":
-        return (
-            f"Клиент Silent VPN для **Windows (ПК)** v{version}.\n\n"
-            f"Скачивание: {landing}"
-        )
-    return (
-        f"Клиент Silent VPN для **Android** v{version}.\n\n"
-        f"Скачивание: {landing}"
-    )
+    has_pc = any(n.lower().endswith(".exe") for n in asset_names)
+    has_apk = any(n.lower().endswith(".apk") for n in asset_names)
+    lines = [f"Клиенты Silent VPN v{version}.\n"]
+    if has_pc:
+        lines.append("- **Windows (ПК)** — установщик `.exe`")
+    if has_apk:
+        lines.append("- **Android** — `.apk`")
+    lines.append(f"\nСкачивание: {landing}")
+    return "\n".join(lines)
 
 
 async def _create_release(token: str, tag: str, version: str, platform: str) -> dict:
@@ -111,7 +127,7 @@ async def _create_release(token: str, tag: str, version: str, platform: str) -> 
     body = {
         "tag_name": tag,
         "name": _release_title(platform, version),
-        "body": _release_body(platform, version),
+        "body": _release_body_for_assets(version, [".exe" if platform == "pc" else ".apk"]),
         "draft": False,
         "prerelease": False,
         "generate_release_notes": False,
@@ -122,14 +138,14 @@ async def _create_release(token: str, tag: str, version: str, platform: str) -> 
     return resp.json()
 
 
-async def _update_release_meta(token: str, release: dict, version: str, platform: str) -> dict:
+async def _update_release_meta(token: str, release: dict, version: str, asset_names: list[str]) -> dict:
     release_id = release.get("id")
     if not release_id:
         return release
     url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/{release_id}"
     body = {
-        "name": _release_title(platform, version),
-        "body": _release_body(platform, version),
+        "name": _release_title_for_assets(version, asset_names),
+        "body": _release_body_for_assets(version, asset_names),
     }
     resp = await _request("PATCH", url, token=token, json_body=body, timeout=30.0)
     if resp.status_code >= 400:
@@ -144,14 +160,12 @@ async def _delete_asset(token: str, asset_id: int) -> None:
         raise GitHubReleaseError(f"Delete asset {asset_id}: HTTP {resp.status_code}")
 
 
-async def _clear_release_assets(token: str, release: dict) -> None:
+async def _remove_platform_assets(token: str, release: dict, platform: str) -> None:
+    """Удалить только файлы этой платформы (.exe / .apk), не трогая другую."""
+    ext = ".exe" if platform == "pc" else ".apk"
     for asset in release.get("assets") or []:
-        await _delete_asset(token, int(asset["id"]))
-
-
-async def _remove_existing_asset(token: str, release: dict, filename: str) -> None:
-    for asset in release.get("assets") or []:
-        if asset.get("name") == filename:
+        name = (asset.get("name") or "").lower()
+        if name.endswith(ext):
             await _delete_asset(token, int(asset["id"]))
 
 
@@ -265,6 +279,27 @@ def _patch_manifest_github(platform: str, download_url: str) -> None:
         logger.warning("manifest github fields: %s", e)
 
 
+async def _sync_peer_assets_from_server(token: str, release: dict, version: str) -> dict:
+    """Добавить на релиз файлы второй платформы с VPS (тот же v{version}), если их сняли."""
+    asset_names = {a.get("name") for a in release.get("assets") or [] if a.get("name")}
+    for platform in update_service.PLATFORMS:
+        latest = update_service.get_latest(platform)
+        if not latest or str(latest.get("version")) != str(version):
+            continue
+        filename = latest.get("filename")
+        file_path = latest.get("file_path")
+        if not filename or not file_path or not os.path.isfile(file_path):
+            continue
+        if filename in asset_names:
+            continue
+        uploaded = await _upload_release_asset(token, release, file_path, filename)
+        name = uploaded.get("name") or filename
+        asset_names.add(name)
+        logger.info("GitHub release %s: restored %s from server update/", version, name)
+    fresh = await _get_release_by_tag(token, release_tag(version))
+    return fresh or release
+
+
 async def publish_platform(platform: str, *, sync_landing: bool = True) -> dict:
     """Upload update/{platform} file to GitHub Release v{version}; replace asset if exists."""
     if platform not in update_service.PLATFORMS:
@@ -285,11 +320,15 @@ async def publish_platform(platform: str, *, sync_landing: bool = True) -> dict:
         release = await _create_release(token, tag, version, platform)
         logger.info("GitHub release created: %s (%s)", tag, platform)
     else:
-        release = await _update_release_meta(token, release, version, platform)
-        await _clear_release_assets(token, release)
+        await _remove_platform_assets(token, release, platform)
 
     uploaded = await _upload_release_asset(token, release, file_path, filename)
     asset_name = uploaded.get("name") or filename
+
+    release = await _get_release_by_tag(token, tag) or release
+    release = await _sync_peer_assets_from_server(token, release, version)
+    asset_names = [a.get("name") or "" for a in release.get("assets") or []]
+    release = await _update_release_meta(token, release, version, asset_names)
     download_url = uploaded.get("browser_download_url") or asset_download_url(version, asset_name)
     release_page = release.get("html_url") or f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tag/{tag}"
 

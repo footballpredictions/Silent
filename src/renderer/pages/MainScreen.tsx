@@ -132,6 +132,17 @@ function planLabel(planType: string | null | undefined): string {
   return PLAN_LABELS[planType] || planType
 }
 
+function deviceLimitLabel(profile: Profile | null | undefined): string {
+  if (!profile) return '3'
+  if (profile.is_admin || profile.max_devices <= 0) return '∞'
+  return String(profile.max_devices)
+}
+
+function sessionsBadge(profile: Profile | null | undefined): string {
+  const count = profile?.devices_count || 0
+  return `${count}/${deviceLimitLabel(profile)}`
+}
+
 function isUnlimitedLikePlan(profile: Profile | null | undefined): boolean {
   const plan = profile?.subscription?.plan_type
   return !!profile?.is_admin || plan === 'unlimited' || plan === 'test'
@@ -867,7 +878,7 @@ export default function MainScreen({
                 ...(isDevBuild ? [{ key: 'vk_cred', label: 'Режим VK-кредов' }] : []),
                 ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
                 { key: 'promo', label: 'Промокод' },
-                { key: 'devices', label: `Сессии (${profile?.devices_count || 0}/${profile?.max_devices || 3})` },
+                { key: 'devices', label: `Сессии (${sessionsBadge(profile)})` },
                 { key: 'support', label: 'Поддержка' },
                 { key: 'about', label: 'О сервисе' },
               ].map(({ key, label }) => (

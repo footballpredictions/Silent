@@ -450,7 +450,7 @@ function clearBypassRefresh() {
 function scheduleBypassRefresh(sendLogFn) {
   clearBypassRefresh()
   bypassRefreshTimer = setInterval(() => {
-    if (!wgApplied || wgCredPhase || vpnBootstrapMode) return
+    if (!wgApplied || vpnBootstrapMode) return
     addServerBypassRoutes(sessionExcludeIPs, () => {})
   }, 90_000)
 }
@@ -916,6 +916,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
       wgApplied = true
       wgAttempted = true
       clearWgRetries()
+      addServerBypassRoutes([...excludeIPs], sendLog)
+      scheduleBypassRefresh(sendLog)
       if (wgCredPhase) maybeScheduleFullTunnelUpgrade()
       scheduleTunnelReadyPoll(sendLog)
       ensureVpnReadyEvent(sendLog)
@@ -1292,10 +1294,10 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
   const p = payload || {}
   const opts = { ...p, timeout: p.timeout || 25_000 }
   try {
-    return await publicDirectRequest(opts)
-  } catch (e) {
-    sendLog(`[API] HTTPS ${SERVER_IP_FALLBACK} fail: ${e?.message || e} → tunnel 10.66.66.1`)
-    return tunnelHttpRequest(opts)
+    return await tunnelHttpRequest(opts)
+  } catch (tunnelErr) {
+    sendLog(`[API] tunnel 10.66.66.1 fail: ${tunnelErr?.message || tunnelErr} → HTTPS ${SERVER_IP_FALLBACK}`)
+    return publicDirectRequest(opts)
   }
 })
 

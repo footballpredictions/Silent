@@ -311,9 +311,9 @@ function removeServerBypassRoutes(excludeIPs, send) {
   savedPhysicalGateway = null
 }
 
-function finalizeTunnelUp(send, excludeIPs, subnetOnly) {
+function finalizeTunnelUp(send, excludeIPs, _subnetOnly) {
   polishWgNetworkProfile(send)
-  if (!subnetOnly && excludeIPs.length) {
+  if (excludeIPs.length) {
     addServerBypassRoutes(excludeIPs, send)
   }
 }
@@ -598,7 +598,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   const subnetOnly = options.subnetOnly === true
   const skipForceStop = options.skipForceStop === true
   const reuseRuntime = options.reuseRuntime === true
-  if (!subnetOnly && excludeIPs.length) {
+  if (excludeIPs.length) {
     capturePhysicalGateway(send)
   }
   const runtimeDir = prepareRuntimeDir(isDev, dirname, send, { reuse: reuseRuntime })

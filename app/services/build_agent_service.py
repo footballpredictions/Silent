@@ -84,6 +84,10 @@ async def _set_setting(db: AsyncSession, key: str, value: str) -> None:
     await db.commit()
 
 
+_MESSAGE_PREVIEW_LEN = 400
+_MESSAGE_FULL_LEN = 16_000
+
+
 async def set_build_log(
     db: AsyncSession,
     message: str,
@@ -95,7 +99,8 @@ async def set_build_log(
     ts = datetime.now(timezone.utc).isoformat()
     await _set_setting(db, "build_agent_last_at", ts)
     await _set_setting(db, "build_agent_status", status)
-    await _set_setting(db, "build_agent_message", message[:800])
+    await _set_setting(db, "build_agent_message", message[:_MESSAGE_PREVIEW_LEN])
+    await _set_setting(db, "build_agent_message_full", message[:_MESSAGE_FULL_LEN])
     if platform:
         await _set_setting(db, "build_agent_last_platform", platform)
     if bootstrap_hash:
@@ -116,6 +121,7 @@ async def get_build_status(db: AsyncSession) -> dict:
         "stop_requested": _STOP_REQUESTED,
         "status": await _setting(db, "build_agent_status") or "idle",
         "message": await _setting(db, "build_agent_message"),
+        "message_full": await _setting(db, "build_agent_message_full"),
         "last_at": await _setting(db, "build_agent_last_at"),
         "last_platform": await _setting(db, "build_agent_last_platform"),
         "bootstrap_hash": await _setting(db, "build_agent_bootstrap_hash"),
@@ -455,7 +461,7 @@ async def build_platform(
             logger.info("Build agent: %s", msg)
             return {"platform": platform, "version": version, "bootstrap_hash": bootstrap_hash, **info}
         except Exception as e:
-            err = str(e)[:800]
+            err = str(e)
             suffix = f", очищено ~{cleanup_freed_mb} MB" if cleanup_freed_mb > 0 else ""
             await set_build_log(
                 db,

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Download, Trash2, Upload, Hammer, Square, Github } from 'lucide-react'
+import { Download, Trash2, Upload, Hammer, Square, Github, Copy } from 'lucide-react'
 
 interface UpdateInfo {
   platform: string
@@ -23,6 +23,7 @@ interface BuildStatus {
   stop_requested?: boolean
   status: string
   message: string | null
+  message_full?: string | null
   last_at: string | null
   last_platform: string | null
   bootstrap_hash: string | null
@@ -74,6 +75,7 @@ export default function UpdatesPage({ token }: { token: string }) {
   const [stoppingBuild, setStoppingBuild] = useState(false)
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null)
   const [publishingGithub, setPublishingGithub] = useState<string | null>(null)
+  const [buildCopyToast, setBuildCopyToast] = useState(false)
   const pcRef = useRef<HTMLInputElement>(null)
   const androidRef = useRef<HTMLInputElement>(null)
 
@@ -263,6 +265,25 @@ export default function UpdatesPage({ token }: { token: string }) {
     }
   }, [buildStatus?.running, buildStatus?.status])
 
+  const copyBuildLog = async () => {
+    const text = buildStatus?.message_full || buildStatus?.message
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    setBuildCopyToast(true)
+    setTimeout(() => setBuildCopyToast(false), 2000)
+  }
+
   return (
     <div className="space-y-6 max-w-3xl">
       <h1 className="text-xl font-bold">Обновления клиентов</h1>
@@ -289,17 +310,47 @@ export default function UpdatesPage({ token }: { token: string }) {
       )}
 
       {buildStatus && (buildStatus.running || buildStatus.message) && (
-        <div className="bg-[#111] border border-[#222] rounded-xl p-4 text-sm text-[#888]">
-          <p>
-            Сборка:{' '}
-            <span className={buildStatus.running ? 'text-yellow-400' : buildStatus.status === 'ok' ? 'text-green-400' : 'text-red-400'}>
-              {buildStatus.running ? 'в процессе' : buildStatus.status}
-            </span>
-            {buildStatus.last_platform && ` (${platformLabel[buildStatus.last_platform] || buildStatus.last_platform})`}
-          </p>
-          {buildStatus.message && <p className="mt-1">{buildStatus.message}</p>}
-          {buildStatus.bootstrap_hash && (
-            <p className="mt-1 text-xs text-[#555]">Bootstrap: {buildStatus.bootstrap_hash.slice(0, 20)}…</p>
+        <div className="bg-[#111] border border-[#222] rounded-xl p-4 text-sm text-[#888] relative">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p>
+                Сборка:{' '}
+                <span className={buildStatus.running ? 'text-yellow-400' : buildStatus.status === 'ok' ? 'text-green-400' : 'text-red-400'}>
+                  {buildStatus.running ? 'в процессе' : buildStatus.status}
+                </span>
+                {buildStatus.last_platform && ` (${platformLabel[buildStatus.last_platform] || buildStatus.last_platform})`}
+              </p>
+              {buildStatus.message && (
+                <p
+                  className={`mt-1 break-words ${
+                    buildStatus.status === 'error' ? 'line-clamp-3 text-red-300/90' : ''
+                  }`}
+                  title={buildStatus.status === 'error' ? 'Краткий превью — полный текст через «Копировать»' : undefined}
+                >
+                  {buildStatus.message}
+                  {(buildStatus.message_full?.length ?? 0) > (buildStatus.message?.length ?? 0) && (
+                    <span className="text-[#555]"> …</span>
+                  )}
+                </p>
+              )}
+              {buildStatus.bootstrap_hash && (
+                <p className="mt-1 text-xs text-[#555]">Bootstrap: {buildStatus.bootstrap_hash.slice(0, 20)}…</p>
+              )}
+            </div>
+            {buildStatus.message && !buildStatus.running && (
+              <button
+                type="button"
+                onClick={copyBuildLog}
+                className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-[#1a1a1a] border border-[#333] text-[#ccc] hover:bg-[#222] hover:text-white transition-colors"
+                title="Скопировать полный текст лога/ошибки сборки"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                Копировать
+              </button>
+            )}
+          </div>
+          {buildCopyToast && (
+            <p className="absolute bottom-2 right-3 text-[11px] text-green-400">Скопировано</p>
           )}
         </div>
       )}

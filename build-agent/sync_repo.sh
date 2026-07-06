@@ -34,7 +34,13 @@ LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/$BRANCH")"
 if [[ "$LOCAL" != "$REMOTE" ]]; then
   echo "[sync] update $PLATFORM $LOCAL -> $REMOTE"
-  git reset --hard "origin/$BRANCH"
 else
   echo "[sync] $PLATFORM up to date ($LOCAL)"
+fi
+# Всегда сбрасываем рабочую копию: иначе удалённый tracked-файл (wdtt-client.exe)
+# не вернётся, если коммит не менялся после прошлой сборки.
+git reset --hard "origin/$BRANCH"
+# shallow clone: reset --hard иногда не выкладывает крупный бинарник на диск
+if [[ "$PLATFORM" == "pc" ]]; then
+  git checkout HEAD -- resources/wdtt-client.exe 2>/dev/null || true
 fi

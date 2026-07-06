@@ -27,6 +27,17 @@ pre_clean_workspace() {
 
 bash "$ROOT/sync_repo.sh" pc
 
+restore_wdtt_from_git() {
+  local f="$REPO/resources/wdtt-client.exe"
+  if [[ -f "$f" ]]; then
+    return 0
+  fi
+  if git -C "$REPO" ls-files --error-unmatch resources/wdtt-client.exe >/dev/null 2>&1; then
+    echo "[build] restore wdtt-client.exe from git index"
+    git -C "$REPO" checkout HEAD -- resources/wdtt-client.exe
+  fi
+}
+
 if [[ ! -f "$REPO/package.json" ]]; then
   echo "[build] missing package.json in $REPO" >&2
   exit 1
@@ -38,6 +49,7 @@ if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
 fi
 
 pre_clean_workspace
+restore_wdtt_from_git
 
 # docker.sock монтирует путь ХОСТА (BUILD_AGENT_HOST_ROOT), не /app/... внутри API-контейнера
 docker_repo_path() {

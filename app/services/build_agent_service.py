@@ -442,7 +442,7 @@ async def build_platform(
             try:
                 from app.services.github_release_service import is_configured, publish_platform
                 if is_configured():
-                    gh = await publish_platform(platform)
+                    gh = await publish_platform(platform, sync_peer=False)
                     msg += f", GitHub ✓"
                     info = {**info, "github_download_url": gh.get("download_url")}
             except Exception as gh_err:

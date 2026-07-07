@@ -59,6 +59,31 @@ def asset_download_url(version: str, filename: str) -> str:
     )
 
 
+def github_asset_filename(platform: str, filename: str, version: str = "") -> str:
+    """Имя файла на GitHub Releases (PC installer — точки, не пробелы)."""
+    safe = os.path.basename(filename or "")
+    if platform != "pc" or not safe.lower().endswith(".exe"):
+        return safe
+    if "." in safe.replace(" ", "") and " " not in safe:
+        return safe
+    ver = (version or "").strip()
+    m = re.search(r"(\d+\.\d+\.\d+)", safe)
+    if not ver and m:
+        ver = m.group(1)
+    if ver:
+        return f"Silent.VPN.Setup.{ver}.exe"
+    return safe.replace(" ", ".")
+
+
+def _release_has_platform_asset(release: dict, platform: str) -> bool:
+    ext = ".exe" if platform == "pc" else ".apk"
+    for asset in release.get("assets") or []:
+        name = (asset.get("name") or "").lower()
+        if name.endswith(ext):
+            return True
+    return False
+
+
 async def _request(
     method: str,
     url: str,
@@ -287,10 +312,14 @@ async def _sync_peer_assets_from_server(
     skip_platform: str | None = None,
 ) -> dict:
     """Добавить на релиз файлы другой платформы с VPS (тот же v{version}), если их нет."""
+    fresh = await _get_release_by_tag(token, release_tag(version))
+    release = fresh or release
     asset_names = {a.get("name") for a in release.get("assets") or [] if a.get("name")}
     ext_by_platform = {"pc": ".exe", "android": ".apk"}
     for platform in update_service.PLATFORMS:
         if platform == skip_platform:
+            continue
+        if _release_has_platform_asset(release, platform):
             continue
         latest = update_service.get_latest(platform)
         if not latest or str(latest.get("version")) != str(version):
@@ -299,20 +328,18 @@ async def _sync_peer_assets_from_server(
         file_path = latest.get("file_path")
         if not filename or not file_path or not os.path.isfile(file_path):
             continue
-        ext = ext_by_platform.get(platform, "")
-        if ext and any((n or "").lower().endswith(ext) for n in asset_names):
+        upload_name = github_asset_filename(platform, filename, str(version))
+        if upload_name in asset_names:
             continue
-        if filename in asset_names:
-            continue
-        uploaded = await _upload_release_asset(token, release, file_path, filename)
-        name = uploaded.get("name") or filename
+        uploaded = await _upload_release_asset(token, release, file_path, upload_name)
+        name = uploaded.get("name") or upload_name
         asset_names.add(name)
         logger.info("GitHub release %s: restored %s from server update/", version, name)
     fresh = await _get_release_by_tag(token, release_tag(version))
     return fresh or release
 
 
-async def publish_platform(platform: str, *, sync_landing: bool = True) -> dict:
+async def publish_platform(platform: str, *, sync_landing: bool = True, sync_peer: bool = True) -> dict:
     """Upload update/{platform} file to GitHub Release v{version}; replace asset if exists."""
     if platform not in update_service.PLATFORMS:
         raise GitHubReleaseError(f"Unknown platform: {platform}")
@@ -325,6 +352,9 @@ async def publish_platform(platform: str, *, sync_landing: bool = True) -> dict:
     version = latest["version"]
     filename = latest["filename"]
     file_path = latest["file_path"]
+    if not file_path or not os.path.isfile(file_path):
+        raise GitHubReleaseError(f"Файл обновления {platform} не найден на диске: {filename}")
+    upload_name = github_asset_filename(platform, filename, str(version))
     tag = release_tag(version)
 
     release = await _get_release_by_tag(token, tag)
@@ -334,11 +364,16 @@ async def publish_platform(platform: str, *, sync_landing: bool = True) -> dict:
     else:
         await _remove_platform_assets(token, release, platform)
 
-    uploaded = await _upload_release_asset(token, release, file_path, filename)
-    asset_name = uploaded.get("name") or filename
+    uploaded = await _upload_release_asset(token, release, file_path, upload_name)
+    asset_name = uploaded.get("name") or upload_name
 
     release = await _get_release_by_tag(token, tag) or release
-    release = await _sync_peer_assets_from_server(token, release, version, skip_platform=platform)
+    if sync_peer:
+        try:
+            release = await _sync_peer_assets_from_server(token, release, version, skip_platform=platform)
+        except GitHubReleaseError as e:
+            logger.warning("GitHub peer sync after %s publish: %s", platform, e)
+            release = await _get_release_by_tag(token, tag) or release
     asset_names = [a.get("name") or "" for a in release.get("assets") or []]
     release = await _update_release_meta(token, release, version, asset_names)
     download_url = uploaded.get("browser_download_url") or asset_download_url(version, asset_name)

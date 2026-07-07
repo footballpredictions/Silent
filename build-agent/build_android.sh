@@ -73,6 +73,15 @@ pre_clean_workspace
 ensure_sdk_packages
 ensure_gradle
 bash "$ROOT/build_android_go.sh" "$APP_DIR"
+
+for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+  so="$APP_DIR/src/main/jniLibs/$abi/libclient.so"
+  if [[ ! -s "$so" ]]; then
+    echo "[build] libclient.so missing for $abi — abort release" >&2
+    exit 1
+  fi
+done
+
 cd "$APP_DIR"
 
 echo "[build] android release bootstrap=$BOOTSTRAP_HASH"

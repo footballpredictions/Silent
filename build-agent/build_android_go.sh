@@ -22,24 +22,57 @@ NDK_VER="$(ls -1 "$NDK_ROOT" | sort -V | tail -1)"
 TOOLCHAIN="$NDK_ROOT/$NDK_VER/toolchains/llvm/prebuilt/linux-x86_64/bin"
 CC_ARM64="$TOOLCHAIN/aarch64-linux-android29-clang"
 CC_ARM32="$TOOLCHAIN/armv7a-linux-androideabi29-clang"
+CC_X86_64="$TOOLCHAIN/x86_64-linux-android29-clang"
+CC_X86="$TOOLCHAIN/i686-linux-android29-clang"
 
 if [[ ! -x "$CC_ARM64" || ! -x "$CC_ARM32" ]]; then
-  echo "[go] NDK clang not found in $TOOLCHAIN" >&2
+  echo "[go] NDK arm clang not found in $TOOLCHAIN" >&2
+  exit 1
+fi
+if [[ ! -x "$CC_X86_64" || ! -x "$CC_X86" ]]; then
+  echo "[go] NDK x86 clang not found in $TOOLCHAIN (need x86_64 + i686 for TV/emulator)" >&2
   exit 1
 fi
 
 echo "[go] using NDK $NDK_VER"
-mkdir -p "$JNI_DIR/arm64-v8a" "$JNI_DIR/armeabi-v7a"
+mkdir -p \
+  "$JNI_DIR/arm64-v8a" \
+  "$JNI_DIR/armeabi-v7a" \
+  "$JNI_DIR/x86_64" \
+  "$JNI_DIR/x86"
 cd "$GO_CLIENT_DIR"
 go mod download
 
 export GOOS=android CGO_ENABLED=1
-export GOARCH=arm64 GOARM=
-export CC="$CC_ARM64"
-go build -ldflags="-s -w -checklinkname=0" -trimpath -o "$JNI_DIR/arm64-v8a/libclient.so" .
+LDFLAGS="-s -w -checklinkname=0"
 
-export GOARCH=arm GOARM=7
-export CC="$CC_ARM32"
-go build -ldflags="-s -w -checklinkname=0" -trimpath -o "$JNI_DIR/armeabi-v7a/libclient.so" .
+build_abi() {
+  local label="$1"
+  local out="$2"
+  shift 2
+  echo "[go] $label..."
+  env "$@" go build -ldflags="$LDFLAGS" -trimpath -o "$out" .
+}
 
-echo "[go] libclient.so OK"
+build_abi "arm64-v8a" "$JNI_DIR/arm64-v8a/libclient.so" \
+  GOARCH=arm64 GOARM= GOARM64=v8.0 GOAMD64= GO386= CC="$CC_ARM64"
+
+build_abi "armeabi-v7a" "$JNI_DIR/armeabi-v7a/libclient.so" \
+  GOARCH=arm GOARM=7 GOARM64= GOAMD64= GO386= CC="$CC_ARM32"
+
+build_abi "x86_64" "$JNI_DIR/x86_64/libclient.so" \
+  GOARCH=amd64 GOARM= GOARM64= GOAMD64=v1 GO386= CC="$CC_X86_64"
+
+build_abi "x86" "$JNI_DIR/x86/libclient.so" \
+  GOARCH=386 GOARM= GOARM64= GOAMD64= GO386=sse2 CC="$CC_X86"
+
+for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+  so="$JNI_DIR/$abi/libclient.so"
+  if [[ ! -s "$so" ]]; then
+    echo "[go] missing libclient.so for $abi" >&2
+    exit 1
+  fi
+  echo "[go] OK $abi ($(stat -c%s "$so" 2>/dev/null || wc -c <"$so") bytes)"
+done
+
+echo "[go] libclient.so OK (4 ABIs)"

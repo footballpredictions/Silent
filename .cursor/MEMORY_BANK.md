@@ -525,6 +525,32 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-08 — Android instrumented-тесты на устройстве (Wi‑Fi/LTE/VPN)
+
+- В ветке `android` добавлены и стабилизированы `androidTest`: routing/promo/config-sync/network-recovery + LTE+VPN класс `LteWithVpnInstrumentedTest`.
+- Исправлен device-тест promo: cleartext для MockWebServer через `127.0.0.1` (`localhost` policy issue).
+- Для тестового раннера включено сохранение данных: `testInstrumentationRunnerArguments["clearPackageData"] = "false"`.
+- Добавлен запускной скрипт: `android/app/run_device_tests.bat`.
+- Финальный прогон на телефоне: `OK (17 tests)`.
+
+**Команды запуска (терминал, без Android Studio Run):**
+
+```powershell
+cd android\app
+.\gradlew.bat installDebug installDebugAndroidTest
+
+$adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+& $adb devices
+
+# Все instrumented-тесты
+& $adb shell am instrument -w com.silent.vpn.debug.test/com.silent.vpn.HiltTestRunner
+
+# Только LTE+VPN routing
+& $adb shell am instrument -w -e class com.silent.vpn.data.LteWithVpnInstrumentedTest com.silent.vpn.debug.test/com.silent.vpn.HiltTestRunner
+```
+
+**Важно:** запускать через `adb shell am instrument ...`; `connectedDebugAndroidTest`/Run all в Studio может переустанавливать APK и мешать сохранённой сессии.
+
 ### 2026-06-30 — VK Smart Captcha: WBV Auto (PC + Android v1.0.146)
 
 - **PC (`pc`, v1.0.146):** AUTO → только WBV Auto (без Go v2 первым); невидимое окно Electron `opacity=0`; trusted clicks; очередь капчи. Диагностика: `pc/debug_captcha.py`.

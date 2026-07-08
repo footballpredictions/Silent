@@ -21,7 +21,7 @@ Agent приступает к **первой невыполненной** зад
 
 ### QA / ручное тестирование
 
-- [ ] Android: прогнать OTA + ConfigSync на мобильной сети vs Wi-Fi (код готов в `8cbace5`, ручной прогон — нет)
+- [x] Android: прогнать OTA + ConfigSync на мобильной сети vs Wi-Fi (instrumented на устройстве: Wi‑Fi/LTE/LTE+VPN, `OK (17 tests)`) — 2026-07-08
 - [ ] PC: прогнать полный цикл bootstrap → login → connect → OTA через tunnel → disconnect
 
 ### Следующие релизы

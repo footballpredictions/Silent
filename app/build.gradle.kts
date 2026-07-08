@@ -28,7 +28,7 @@ android {
         targetSdk = 35
         versionCode = 150
         versionName = "1.0.150"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = "com.silent.vpn.HiltTestRunner"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
         }
@@ -134,6 +134,15 @@ dependencies {
     testImplementation(libs.kotlin.test)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+
+    // Instrumented tests (эмулятор или телефон по USB)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.rules)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.okhttp.mockwebserver)
+    androidTestImplementation("com.google.dagger:hilt-android-testing:2.53")
+    kspAndroidTest(libs.hilt.compiler)
 }
 
 gradle.taskGraph.whenReady {

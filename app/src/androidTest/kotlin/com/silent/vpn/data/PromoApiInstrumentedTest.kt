@@ -29,8 +29,10 @@ class PromoApiInstrumentedTest {
         NetworkAssumptions.assumeUnderlyingInternet()
         server = MockWebServer()
         server.start()
+        // Android блокирует cleartext к hostname «localhost»; в network_security_config разрешён 127.0.0.1
+        val baseUrl = server.url("/").newBuilder().host("127.0.0.1").build().toString()
         api = Retrofit.Builder()
-            .baseUrl(server.url("/"))
+            .baseUrl(baseUrl)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(SilentApi::class.java)

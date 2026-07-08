@@ -37,6 +37,8 @@ import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.WireGuardHelper
 import com.silent.vpn.vpn.WireGuardConfigBuilder
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
+import com.silent.vpn.policy.NetworkRecoveryPolicy
+import com.silent.vpn.policy.VpnNetworkConstants.MIN_TRANSPORT_RESTART_INTERVAL_MS
 import dagger.hilt.android.EntryPointAccessors
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -82,7 +84,6 @@ class SilentVpnService : Service() {
         private const val RECOVERY_VERIFY_DELAY_MS = 4_000L
         private const val RECOVERY_MIN_TRAFFIC_DELTA_MB = 0.05
         /** Не перезапускать libclient повторно, если недавно уже рестартили и транспорт жив. */
-        private const val MIN_TRANSPORT_RESTART_INTERVAL_MS = 90_000L
         /** Wi‑Fi: сверка подписки пока VPN-сервис жив (даже если UI в фоне). */
         private const val WIFI_SUBSCRIPTION_CHECK_MS = 2 * 60 * 1000L
         private const val NOTIF_UPDATE_MIN_MS = 3_000L
@@ -697,11 +698,8 @@ class SilentVpnService : Service() {
     }
 
     /** cell↔wifi — один transport_switch; available/capabilities не дублируют restart. */
-    private fun wifiCellTransportTarget(oldFp: String, newFp: String): String? = when {
-        oldFp == "cell" && newFp == "wifi" -> "wifi"
-        oldFp == "wifi" && newFp == "cell" -> "mobile"
-        else -> null
-    }
+    private fun wifiCellTransportTarget(oldFp: String, newFp: String): String? =
+        NetworkRecoveryPolicy.wifiCellTransportTarget(oldFp, newFp)
 
     private fun scheduleNetworkRecovery(reason: String, delayMs: Long = NETWORK_RECOVERY_DELAY_MS) {
         if (!isRunning) return
@@ -719,7 +717,7 @@ class SilentVpnService : Service() {
             return
         }
         if (!isRunning) return
-        if (phoneCallActive) return
+        if (NetworkRecoveryPolicy.shouldDeferRecoveryForPhoneCall(phoneCallActive)) return
         if (System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()) return
         if (lastNetworkFingerprint.isEmpty()) {
             val fp = currentDefaultNetworkFingerprint()
@@ -813,45 +811,26 @@ class SilentVpnService : Service() {
     }
 
     /** Ложные recovery (validated flip, idle verify) — не убивать libclient при живых воркерах. */
-    private fun isRealNetworkRecoveryReason(reason: String): Boolean {
-        val base = reason.substringBefore(':')
-        return base == "available" ||
-            base == "capabilities" ||
-            base == "capabilities_restored" ||
-            base == "restored" ||
-            base == "transport_switch" ||
-            base == "validated" ||
-            base == "internet_restored" ||
-            base == "phone_call_end"
-    }
+    private fun isRealNetworkRecoveryReason(reason: String): Boolean =
+        NetworkRecoveryPolicy.isRealNetworkRecoveryReason(reason)
 
-    private fun isSpuriousRecoveryReason(reason: String): Boolean {
-        val base = reason.substringBefore(':')
-        return base == "unhealthy" || base == "stale" || base == "watchdog_down"
-    }
+    private fun isSpuriousRecoveryReason(reason: String): Boolean =
+        NetworkRecoveryPolicy.isSpuriousRecoveryReason(reason)
 
-    private fun shouldSkipTransportRestart(reason: String): Boolean {
-        if (WdttTunnelManager.isBootstrapMode()) return true
-        if (isRealNetworkRecoveryReason(reason)) return false
-        if (!WdttTunnelManager.isTransportHealthy()) return false
-        if (WdttTunnelManager.isWorkerRampUpActive()) return true
-        val workers = WdttTunnelManager.activeWorkers.value
-        if (workers < 1) return false
-        val total = WdttTunnelManager.lastParams()?.workers ?: return isSpuriousRecoveryReason(reason)
-        if (workers < total / 2) return false
-        val sinceRestart = System.currentTimeMillis() - lastTransportRestartMs
-        if (isSpuriousRecoveryReason(reason)) {
-            if (lastTransportRestartMs > 0L && sinceRestart < MIN_TRANSPORT_RESTART_INTERVAL_MS) return true
-            return true
-        }
-        if (reason.startsWith("restart:") &&
-            lastTransportRestartMs > 0L &&
-            sinceRestart < MIN_TRANSPORT_RESTART_INTERVAL_MS
-        ) {
-            return true
-        }
-        return false
-    }
+    private fun shouldSkipTransportRestart(reason: String): Boolean =
+        NetworkRecoveryPolicy.shouldSkipTransportRestart(
+            NetworkRecoveryPolicy.TransportRestartInput(
+                bootstrapMode = WdttTunnelManager.isBootstrapMode(),
+                reason = reason,
+                transportHealthy = WdttTunnelManager.isTransportHealthy(),
+                workerRampUpActive = WdttTunnelManager.isWorkerRampUpActive(),
+                activeWorkers = WdttTunnelManager.activeWorkers.value,
+                totalWorkers = WdttTunnelManager.lastParams()?.workers,
+                lastTransportRestartMs = lastTransportRestartMs,
+                nowMs = System.currentTimeMillis(),
+                minRestartIntervalMs = MIN_TRANSPORT_RESTART_INTERVAL_MS,
+            ),
+        )
 
     private fun currentTrafficMb(): Double {
         val stats = WdttTunnelManager.stats.value
@@ -896,7 +875,7 @@ class SilentVpnService : Service() {
     private fun checkUnderlyingNetwork() {
         if (!isRunning || !WdttTunnelManager.tunnelReady.value) return
         if (WdttTunnelManager.isNetworkRecoverySuppressed()) return
-        if (phoneCallActive) return
+        if (NetworkRecoveryPolicy.shouldDeferRecoveryForPhoneCall(phoneCallActive)) return
         if (System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()) return
 
         val anyOnline = VpnNetworkHelper.hasAnyUnderlyingInternet(this)

@@ -2,6 +2,7 @@ package com.silent.vpn.data
 
 import android.content.Context
 import android.util.Log
+import com.silent.vpn.policy.ConfigSyncSkipPolicy
 import com.silent.vpn.sync.MobileSyncLog
 import com.silent.vpn.service.VpnSessionState
 import com.silent.vpn.service.SilentVpnService
@@ -28,8 +29,6 @@ object ConfigSyncCoordinator {
     /** Wi‑Fi: rev профиля не растёт при истечении expires_at — отдельная сверка подписки. */
     private const val WIFI_SUBSCRIPTION_CHECK_MS = 2 * 60 * 1000L
     private const val START_DELAY_MS = 5_000L
-    /** Не трогаем ConfigSync сразу после initial sync — rev уже записан в VpnDataSyncService. */
-    private const val POST_TUNNEL_SYNC_QUIET_MS = 90_000L
 
     private val tickMutex = Mutex()
     private var pollJob: Job? = null
@@ -115,43 +114,56 @@ object ConfigSyncCoordinator {
 
     private suspend fun tick(repo: SilentRepository, context: Context, listener: Listener) {
         tickMutex.withLock {
-            if (!repo.allowsBackgroundConfigSync()) {
-                Log.d(TAG, "skip: mobile without VPN tunnel")
-                return
+            val skip = ConfigSyncSkipPolicy.skipReason(
+                ConfigSyncSkipPolicy.TickInput(
+                    allowsBackgroundSync = repo.allowsBackgroundConfigSync(),
+                    vpnBusy = VpnSessionState.isBusy(),
+                    initialOverlaySyncActive = VpnSessionState.initialOverlaySyncActive,
+                    vpnServiceRunning = SilentVpnService.isRunning,
+                    tunnelDataSyncCompleted = VpnSessionState.tunnelDataSyncCompleted,
+                    onMobileData = repo.isOnMobileData(),
+                    vpnState = listener.vpnState(),
+                    nowMs = System.currentTimeMillis(),
+                    tunnelDataSyncFinishedAtMs = VpnSessionState.tunnelDataSyncFinishedAtMs,
+                ),
+            )
+            when (skip) {
+                ConfigSyncSkipPolicy.SkipReason.MOBILE_WITHOUT_VPN -> {
+                    Log.d(TAG, "skip: mobile without VPN tunnel")
+                    return
+                }
+                ConfigSyncSkipPolicy.SkipReason.VPN_BUSY -> {
+                    Log.d(TAG, "skip: VPN busy")
+                    return
+                }
+                ConfigSyncSkipPolicy.SkipReason.INITIAL_OVERLAY_SYNC -> {
+                    Log.d(TAG, "skip: initial overlay sync in progress")
+                    return
+                }
+                ConfigSyncSkipPolicy.SkipReason.TUNNEL_SYNC_PENDING -> {
+                    MobileSyncLog.i("configSync", "skip: initial tunnel sync pending")
+                    return
+                }
+                ConfigSyncSkipPolicy.SkipReason.QUIET_AFTER_TUNNEL_SYNC -> {
+                    Log.d(TAG, "skip: quiet period after initial tunnel sync")
+                    return
+                }
+                null -> Unit
             }
             listener.onWifiSyncTickStart()
 
-            if (VpnSessionState.isBusy()) {
-                Log.d(TAG, "skip: VPN busy")
-                return
-            }
-            if (VpnSessionState.initialOverlaySyncActive) {
-                Log.d(TAG, "skip: initial overlay sync in progress")
-                return
-            }
-            if (SilentVpnService.isRunning &&
-                !VpnSessionState.tunnelDataSyncCompleted &&
-                (listener.vpnState() == VpnState.CONNECTING || repo.isOnMobileData())
-            ) {
-                MobileSyncLog.i("configSync", "skip: initial tunnel sync pending")
-                return
-            }
-            if (repo.isOnMobileData() &&
-                VpnSessionState.tunnelDataSyncCompleted &&
-                System.currentTimeMillis() - VpnSessionState.tunnelDataSyncFinishedAtMs < POST_TUNNEL_SYNC_QUIET_MS
-            ) {
-                Log.d(TAG, "skip: quiet period after initial tunnel sync")
-                return
-            }
-
-            if (repo.isOnMobileData() && SilentRepository.APP_EXCLUDED_FROM_VPN && vpnUpForSync()) {
-                if (VpnSessionState.tunnelDataSyncCompleted) {
-                    runConfigSyncBody(repo, listener)
-                } else {
-                    WdttTunnelManager.withApiOverlayBrief(
-                        block = { runConfigSyncBody(repo, listener) },
-                    )
-                }
+            val mobileOverlay = ConfigSyncSkipPolicy.mobileSyncUsesOverlay(
+                ConfigSyncSkipPolicy.MobileSyncModeInput(
+                    onMobileData = repo.isOnMobileData(),
+                    appExcludedFromVpn = SilentRepository.APP_EXCLUDED_FROM_VPN,
+                    vpnUpForSync = vpnUpForSync(),
+                    tunnelDataSyncCompleted = VpnSessionState.tunnelDataSyncCompleted,
+                ),
+            )
+            if (mobileOverlay) {
+                WdttTunnelManager.withApiOverlayBrief(
+                    block = { runConfigSyncBody(repo, listener) },
+                )
             } else {
                 runConfigSyncBody(repo, listener)
             }

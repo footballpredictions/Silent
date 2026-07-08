@@ -29,6 +29,8 @@ android {
         versionCode = 150
         versionName = "1.0.150"
         testInstrumentationRunner = "com.silent.vpn.HiltTestRunner"
+        // Не сбрасывать данные приложения при каждом прогоне — сохраняется логин/VPN-разрешение.
+        testInstrumentationRunnerArguments["clearPackageData"] = "false"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
         }

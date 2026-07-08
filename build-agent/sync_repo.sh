@@ -39,6 +39,10 @@ else
 fi
 # Всегда сбрасываем рабочую копию: иначе удалённый tracked-файл (wdtt-client.exe)
 # не вернётся, если коммит не менялся после прошлой сборки.
+if [[ "$PLATFORM" == "android" ]]; then
+  # post-cleanup мог удалить jniLibs; битый путь (файл вместо папки) ломает reset --hard
+  rm -rf app/src/main/jniLibs 2>/dev/null || true
+fi
 git reset --hard "origin/$BRANCH"
 # shallow clone: reset --hard иногда не выкладывает крупный бинарник на диск
 if [[ "$PLATFORM" == "pc" ]]; then

@@ -274,7 +274,7 @@ def _workspace_artifact_paths(platform: str) -> list[Path]:
             repo / ".gradle",
             repo / "build",
             repo / "keystore",
-            repo / "app" / "src" / "main" / "jniLibs",
+            # jniLibs — артефакт build_android_go.sh, не tracked; не трогаем (ломает git reset)
         ])
     return paths
 

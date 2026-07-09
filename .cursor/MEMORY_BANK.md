@@ -525,6 +525,142 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-09 — Android: серые полосы status/nav в dark; PC push dark theme
+
+- Android dark: status bar + nav bar = `#2A2A32` (серые полоски), контент на `bg`; layout: strip → safeDrawing → bg
+- PC push: `110aa09` → `origin/pc` (тёмная тема, поля бонусов/исключений)
+- Android: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`
+
+### 2026-07-09 — PC + Android: поля ввода / чекбоксы в dark + sync с логином
+
+- PC: бонусы, исключения, rename — `fieldBg`/`fieldText`/`borderStrong`; чекбоксы исключений (тёмная: чёрный фон, белая галочка, белая рамка)
+- Android: то же для бонусов/поиска исключений; `themeTextFieldColors`; чекбоксы ThemeCheckbox
+- Android: appearance поднят в `MainActivityRoot` — логин и главная делят один режим (SilentTheme тоже)
+- PC: `pc/build-debug-216239/win-unpacked/Silent VPN.exe`
+- Android: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`
+
+### 2026-07-09 — PC + Android: тёмная тема (sun/moon)
+
+- PC: rAF-морфинг иконки (плавнее CSS); заголовок снова по центру (равные боковые слоты 76px)
+- Android: серп луны через Path.Difference; nav/status bar = цвет темы (не белая полоса); drawer surface + видимая обводка/разделитель на dark
+- PC: `pc/build-debug-732915/win-unpacked/Silent VPN.exe`
+- Android: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`
+
+### 2026-07-09 — PC: отключение тумблера без змейки + сразу можно включить
+
+- При выкл: без `pendingToggle`/змейки, сразу положение «выкл», lock не держим — можно сразу включить
+- Stop WG / notifyDisconnect в фоне (`waitWgStopIdle` на следующем connect)
+- Push: `24af756` → `origin/pc`
+- Debug: `pc/build-debug-117668/win-unpacked/Silent VPN.exe`
+
+### 2026-07-09 — PC: убрать «Не отвечает» на тумблере / логе / воркерах
+
+- Причина: лавина IPC `wdtt-log` (DTLS×36) + sync `notify()` на каждый апдейт + `net session` на install
+- Фикс: батч `wdtt-log-batch` 120мс; throttle notify логов 150мс; скрыть DTLS/READY flood; кэш `isProcessElevated` 60с; панель лога подписывается только когда открыта
+- Debug: `pc/build-debug-418357/win-unpacked/Silent VPN.exe`
+
+### 2026-07-09 — PC: async WG + быстрый UI (без wireguard-go)
+
+- Freeze: `execSync` в install/stop WG → async `wireguard.js` (из `29f6de7`)
+- UI «Подключено» после WG + 1 воркер; full tunnel ≥27 воркеров через **reinstall** (не syncconf — AllowedIPs на Windows не меняется)
+- Disconnect: UI сразу, stop в фоне; WRAP_AUTH_TIMEOUT скрыт в логе
+- Полный переход на wireguard-go (как Android GoBackend) — отдельная большая задача, пока не делаем
+- Debug: `pc/build-debug-992933/win-unpacked/Silent VPN.exe`
+
+### 2026-07-09 — PC: тумблер VPN как 6 июля (`d642b7d`)
+
+По просьбе: откат включения главного тумблера к последнему коммиту 6 июля.
+- `wireguard.js`, `VpnToggle.tsx` — точно из `d642b7d`
+- `main.js`: ready после 9 воркеров, subnet→full после 27, connect/disconnect/upgrade как тогда
+- `MainScreen` disconnect снова await (как 6 июля)
+- Сохранены сегодняшние login/bonuses/tunnel-api (не трогали)
+- Debug: `pc/build-debug-690967/win-unpacked/Silent VPN.exe`
+
+### 2026-07-09 — PC: откат «сразу full» — YouTube + реальные ConfigSync/Update
+
+Пользователь прав: Network Error в ConfigSync/Update — не «спам», а реальные проверки; глушить нельзя.
+«Мелкое разрешение» — full tunnel при ~9 воркерах (мало WDTT-полосы).
+- Вернули origin: subnet → full после ≥27 воркеров (reinstall в фоне).
+- ConfigSync/Update/seed снова сразу (без 20с задержки и без suppress).
+- Дольше ждём фоновый disconnect перед connect (до 8с), чтобы не было лишнего forceStop.
+- Debug: `pc/build-debug-828037/win-unpacked/Silent VPN.exe`
+
+### 2026-07-09 — PC: убрать ghost forceStop + тихий ConfigSync/Update
+
+По логу 12:39–12:40: `Остановка туннеля` перед первым install (~12с) + Network Error.
+- Не `forceStop` по ghost-адаптеру (`isTunnelUp`); только если `sc` Running.
+- `reuseRuntime: true`; stop без PowerShell CIM; install без лишнего uninstall.
+- `finalizeTunnelUp`/bypass в фоне → `vpn-ready` раньше.
+- ConfigSync/Update/seed: settle 60с с клика, первый tick через 20с; не логировать transient Network Error.
+- Debug: `pc/build-debug-518408/win-unpacked/Silent VPN.exe`
+
+### 2026-07-09 — PC: один WG install (full сразу) + тихий ConfigSync
+
+- ~10с: второй install после 27 воркеров (subnet→full). Main VPN теперь сразу split AllowedIPs — один install, VPN не ломается.
+- ConfigSync/Update Network Error при settle — `markVpnApiSettling` + не логировать transient.
+- WRAP_AUTH_TIMEOUT в логе: не пускать скрытые `[ВОРКЕР #]` в raw-fallback.
+- Debug: `pc/build-debug-444526/win-unpacked/Silent VPN.exe` (ещё не push)
+
+### 2026-07-09 — PC: VPN «on» без интернета после syncconf
+
+- Симптом: `syncconf OK`, трафик ~0, ConfigSync/Update Network Error.
+- Причина: на Windows `wg syncconf` **не применяет** смену AllowedIPs (остаётся `10.66.66.0/24`), а DNS уже на адаптере → DNS/интернет ломаются.
+- Фикс: full-tunnel снова через **reinstall** службы (`skipForceStop: false`); UI «Подключено» по-прежнему после 1 воркера (reinstall в фоне).
+- **Push:** `origin/pc` `064eaf0`
+- Debug: `pc/build-debug-276283/win-unpacked/Silent VPN.exe`
+
+### 2026-07-09 — PC: connect ~5–8с как origin/pc (не 14с)
+
+Сверка с [origin/pc](https://github.com/footballpredictions/Silent/commits/pc/) (`d642b7d`):
+- Лишний `forceStop` + `waitForTunnelDown(8s)` на **каждый** connect (служба уже снята после disconnect) — убран; stop только если `sc` ещё Running.
+- `waitWgStopIdle` capped 2.5с (не ждать полный uninstall).
+- UI «Подключено» после WG + **1** воркер (как e8c39e2), не ждать 9/26.
+- Hot path: `sc query` вместо PowerShell Get-NetAdapter; gateway capture в фоне.
+- Сохранены: быстрый login/logout, stable FP, syncconf strip Address, выкл без змейки.
+- **Push:** `origin/pc` `29f6de7` — fix(pc): fast login/connect/disconnect, bonuses UI, stable device FP
+- Debug: `pc/build-debug-500227/win-unpacked/Silent VPN.exe`
+
+### 2026-07-09 — PC: syncconf Address= + выкл без змейки
+
+- Долгое вкл: `wg syncconf` падал на `Address=` (wg-quick ключи) → fallback uninstall/reinstall. Фикс: strip Address/DNS/MTU в `wg-turn.sync.conf`.
+- Выкл: тумблер сразу OFF без змейки (`pendingToggle` только на connect).
+- Debug: `pc/build-debug-155464/win-unpacked/Silent VPN.exe`
+
+### 2026-07-09 — PC: быстрый connect/disconnect (тумблер не «мертвый»)
+
+- Долгое вкл: full-tunnel делал uninstall+reinstall WG (~10–20с). Теперь `skipForceStop` + `syncconf` AllowedIPs/DNS.
+- Долгое выкл / тумблер неактивен: UI ждал `notifyDisconnect` + `forceStopWireGuard`. Теперь UI сразу; stop в фоне; mutex `waitWgStopIdle` перед новым connect.
+- Debug: `pc/build-debug-853919/win-unpacked/Silent VPN.exe`
+
+### 2026-07-09 — PC: freeze при connect / лого / копировать + ECONNRESET
+
+- Причина: sync PowerShell/`sc`/`netstat`/`wg syncconf` на hot path connect + full-tunnel upgrade блокировали Electron main → «Не отвечает» при клике лого/копировать лог.
+- `ECONNRESET` на `10.66.66.1` — нормальный миг при переключении bootstrap→full tunnel (маршруты мигают).
+- `WRAP_AUTH_TIMEOUT` у части воркеров — шум при наборе 30/36; если туннель ready и трафик идёт — не критично.
+- Фикс: весь WG hot path async (`isTunnelUpAsync`, `trySyncConf`, `finalizeTunnelUp` await, `netstat` async); tunnel API — retry при upgrade + мягкий fallback на HTTPS.
+- Debug: `pc/build-debug-429094/win-unpacked/Silent VPN.exe`
+
+### 2026-07-09 — PC: UI не «Не отвечает» при ожидании канала
+
+- Причина: `execSync` в install/stop WireGuard блокировал Electron main.
+- Фикс: `runCmdAsync` / async `forceStopWireGuard` / `runWgInstall`; bootstrap стартует через 120ms после paint.
+
+### 2026-07-09 — PC: лимит после выхода + quit + Войти до bootstrap
+
+1. Stable device fingerprint (`silent_stable_device_fp`) — как Android; logout больше не плодит новый слот.
+2. «Закрыть приложение» при истечении bootstrap — сразу `quitApp` / `app.exit`, без ожидания WG.
+3. «Войти» / «Регистрация» disabled, пока нет «Канал готов. Осталось…».
+
+### 2026-07-09 — PC: быстрый выход
+
+- Было: `Выйти` ждал notifyDisconnect + vpnDisconnect + /logout → UI «мёртвый», жмут несколько раз.
+- Стало: сразу clearTokens + экран логина; сеть/WG в фоне (cap 4с), кнопка с guard `logoutBusyRef`.
+
+### 2026-07-09 — PC: быстрый вход (не ждать WG uninstall)
+
+- Было: `disconnectBootstrapVpn` → потом prefetch через public → timeout 15s + «Остановка службы».
+- Стало: prefetch/theme через tunnel **до** disconnect; `onLogin` сразу; bootstrap гасится в фоне.
+
 ### 2026-07-09 — PC/Android: logout если сессию удалили
 
 - При sync `/users/me`: если `sessionDeviceId` нет в `devices` — принудительный выход (токены, VPN, экран логина).

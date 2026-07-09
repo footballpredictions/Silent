@@ -10,6 +10,10 @@ const defaultTheme = {
   update_bar_background_color: '#2563EB', update_bar_text_color: '#FFFFFF',
   update_bar_progress_color: '#1D4ED8',
   update_bar_label_available: 'Доступно обновление', update_bar_label_downloading: 'Скачивание…',
+  dark_primary_color: '', dark_background_color: '', dark_text_color: '',
+  dark_accent_color: '', dark_toggle_on_color: '', dark_toggle_off_color: '',
+  dark_update_bar_background_color: '', dark_update_bar_text_color: '',
+  dark_update_bar_progress_color: '', dark_login_link_color: '',
   login_remember_me_label: 'Запомнить меня',
   login_forgot_password_label: 'Забыли пароль?',
   login_forgot_title: 'Восстановление пароля',
@@ -207,6 +211,17 @@ export default function ThemePage({ token }: { token: string }) {
             {field('Тумблер (вкл)', 'toggle_on_color')}
             {field('Тумблер (выкл)', 'toggle_off_color')}
             {field('Шрифт', 'font_family')}
+            <p className="text-xs text-[#888] pt-2">Тёмная тема (опционально — пусто = клиент сам инвертирует)</p>
+            {field('Тёмный фон', 'dark_background_color')}
+            {field('Тёмный текст', 'dark_text_color')}
+            {field('Тёмный основной', 'dark_primary_color')}
+            {field('Тёмный акцент', 'dark_accent_color')}
+            {field('Тёмный тумблер вкл', 'dark_toggle_on_color')}
+            {field('Тёмный тумблер выкл', 'dark_toggle_off_color')}
+            {field('Тёмный цвет ссылок', 'dark_login_link_color')}
+            {field('Тёмный фон update-bar', 'dark_update_bar_background_color')}
+            {field('Тёмный текст update-bar', 'dark_update_bar_text_color')}
+            {field('Тёмный прогресс update-bar', 'dark_update_bar_progress_color')}
             {field('URL логотипа', 'logo_url')}
             {field('URL поддержки (Telegram direct)', 'support_url')}
             {field('URL канала Telegram', 'telegram_channel_url')}

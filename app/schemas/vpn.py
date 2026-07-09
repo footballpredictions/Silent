@@ -105,6 +105,17 @@ class ThemeResponse(BaseModel):
     update_bar_progress_color: str = "#1D4ED8"
     update_bar_label_available: str = "Доступно обновление"
     update_bar_label_downloading: str = "Скачивание…"
+    # Optional dark palette (client toggle). Empty → client derives invert/fallback.
+    dark_primary_color: str = ""
+    dark_background_color: str = ""
+    dark_text_color: str = ""
+    dark_accent_color: str = ""
+    dark_toggle_on_color: str = ""
+    dark_toggle_off_color: str = ""
+    dark_update_bar_background_color: str = ""
+    dark_update_bar_text_color: str = ""
+    dark_update_bar_progress_color: str = ""
+    dark_login_link_color: str = ""
     # Login — bootstrap hash в сборке; один экран «Войти / Регистрация»
     login_link_color: str = "#4680C2"
     login_remember_me_label: str = "Запомнить меня"

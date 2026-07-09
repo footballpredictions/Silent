@@ -14,6 +14,16 @@ export type ClientTheme = {
   update_bar_progress_color?: string
   update_bar_label_available?: string
   update_bar_label_downloading?: string
+  dark_primary_color?: string
+  dark_background_color?: string
+  dark_text_color?: string
+  dark_accent_color?: string
+  dark_toggle_on_color?: string
+  dark_toggle_off_color?: string
+  dark_update_bar_background_color?: string
+  dark_update_bar_text_color?: string
+  dark_update_bar_progress_color?: string
+  dark_login_link_color?: string
   login_remember_me_label?: string
   login_forgot_password_label?: string
   login_forgot_title?: string

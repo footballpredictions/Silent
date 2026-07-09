@@ -39,14 +39,14 @@ fun SideMenuContent(
     val palette = theme.resolveThemePalette(appearanceMode)
     val bg = palette.surface
     val fg = palette.fg
-    val edge = if (palette.dark) Color(0xFF52525B) else palette.borderStrong
+    val edge = if (palette.dark) palette.border else palette.borderStrong
 
     Column(
         modifier = Modifier
             .fillMaxHeight()
             .width(280.dp)
             .background(bg)
-            .border(1.dp, edge)
+            .border(if (palette.dark) 0.5.dp else 1.dp, edge)
             .verticalScroll(rememberScrollState()),
     ) {
         // Header

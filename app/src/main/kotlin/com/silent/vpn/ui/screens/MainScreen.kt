@@ -625,7 +625,8 @@ fun MainScreen(
         if (menuOpen) {
             if (menuPage == MenuPage.ROOT) {
                 val drawerBg = palette.surface
-                val drawerEdge = if (palette.dark) Color(0xFF52525B) else palette.borderStrong
+                // Dark: тонкая/мягкая кромка (не #52525B — слишком выделялась)
+                val drawerEdge = if (palette.dark) palette.border else palette.borderStrong
                 Row(modifier = Modifier.fillMaxSize()) {
                     Column(
                         modifier = Modifier
@@ -633,7 +634,7 @@ fun MainScreen(
                             .fillMaxHeight()
                             .background(drawerBg)
                             .border(
-                                width = UiDimens.borderThin,
+                                width = if (palette.dark) 0.5.dp else UiDimens.borderThin,
                                 color = drawerEdge,
                             ),
                     ) {

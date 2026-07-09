@@ -786,7 +786,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
   credGroupsResolved = 0
   wgFullTunnelUpgradeInFlight = false
   clearFullTunnelUpgradeTimer()
-  // Subnet-only пока VK-креды; full tunnel после 27 воркеров — YouTube 1080p.
+  // Subnet-only пока VK-креды/набор воркеров; full tunnel после ≥27 — YouTube 1080p.
+  // (Эксперимент full+снятие defaults ломал DNS/api.vk.me — откат.)
   wgCredPhase = !vpnBootstrapMode && expectedCredGroups > 1
   const exePath = wdttExePath()
   if (!fs.existsSync(exePath)) {
@@ -929,7 +930,6 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
   const maybeScheduleFullTunnelUpgrade = () => {
     if (!wgCredPhase || fullTunnelUpgradeTimer) return
-    // Не переключаемся в full-tunnel слишком рано: ждём полный набор воркеров.
     fullTunnelUpgradeTimer = setTimeout(() => {
       fullTunnelUpgradeTimer = null
       if (activeWorkerCount >= fullTunnelTargetWorkers()) {
@@ -984,6 +984,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       skipWdttWait: true,
       subnetOnly: vpnBootstrapMode || wgCredPhase,
       skipForceStop: alreadyUp,
+      reuseRuntime: true,
     })
     const timeoutMs = isProcessElevated() ? 70000 : 90000
     let ok = false

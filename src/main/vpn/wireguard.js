@@ -759,7 +759,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
         ? '10.66.66.0/24'
         : buildAllowedIPsForWindows(excludeIPs, send)
       if (subnetOnly) {
-        send?.('[WG] AllowedIPs = 10.66.66.0/24 (bootstrap: только API)')
+        send?.('[WG] AllowedIPs = 10.66.66.0/24 (bootstrap/cred: только API)')
         // DNS через WG при split-route ломает резолв на Windows → «нет интернета»
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
       } else {

@@ -26,29 +26,31 @@ data class LoginUi(
     val green: Color = Color(0xFF16A34A),
     val red: Color = Color(0xFFEF4444),
     val linkColor: Color = Color(0xFF4680C2),
+    val dark: Boolean = false,
 )
 
-fun ThemeData?.toLoginUi(): LoginUi {
-    val bg = parseColor(this?.background_color ?: "#FFFFFF", Color.White)
-    val fg = parseColor(this?.text_color ?: "#000000", Color.Black)
-    val dark = isDarkBackground(bg)
+fun ThemeData?.toLoginUi(mode: AppearanceMode = AppearanceMode.LIGHT): LoginUi {
+    val p = resolveThemePalette(mode)
     return LoginUi(
-        bg = bg,
-        fg = fg,
-        fieldBg = if (dark) Color(0xFF161616) else Color(0xFFF3F4F6),
-        fieldText = fg,
-        fieldPlaceholder = if (dark) Color(0xFF9CA3AF) else Color(0xFF6B7280),
-        label = if (dark) Color(0xFFD1D5DB) else Color(0xFF374151),
-        hint = if (dark) Color(0xFF9CA3AF) else Color(0xFF6B7280),
-        border = if (dark) Color(0xFF374151) else Color(0xFFE5E7EB),
-        borderFocused = if (dark) Color(0xFFE5E7EB) else Color(0xFF111827),
-        tabBg = if (dark) Color(0xFF1F1F1F) else Color(0xFFF3F4F6),
-        divider = if (dark) Color(0xFF2A2A2A) else Color(0xFFE5E7EB),
-        headerBg = if (dark) Color.Black else bg,
-        headerFg = if (dark) Color(0xFF9CA3AF) else fg.copy(alpha = 0.6f),
-        primaryBtnBg = if (dark) Color.White else fg,
-        primaryBtnFg = if (dark) Color.Black else bg,
-        linkColor = parseColor(this?.login_link_color ?: "#4680C2", Color(0xFF4680C2)),
+        bg = p.bg,
+        fg = p.fg,
+        fieldBg = p.fieldBg,
+        fieldText = p.fieldText,
+        fieldPlaceholder = p.fieldPlaceholder,
+        label = p.label,
+        hint = p.hint,
+        border = p.borderStrong,
+        borderFocused = if (p.dark) Color(0xFFE5E7EB) else Color(0xFF111827),
+        tabBg = p.tabBg,
+        divider = p.divider,
+        headerBg = p.headerBg,
+        headerFg = p.headerFg,
+        primaryBtnBg = p.primaryBtnBg,
+        primaryBtnFg = p.primaryBtnFg,
+        green = p.green,
+        red = p.red,
+        linkColor = p.linkColor,
+        dark = p.dark,
     )
 }
 
@@ -65,4 +67,20 @@ fun loginTextFieldColors(ui: LoginUi): TextFieldColors = OutlinedTextFieldDefaul
     unfocusedBorderColor = ui.border,
     focusedPlaceholderColor = ui.fieldPlaceholder,
     unfocusedPlaceholderColor = ui.fieldPlaceholder,
+)
+
+/** Цвета полей ввода для меню (бонусы, исключения, переименование) — как на логине. */
+@Composable
+fun themeTextFieldColors(palette: ThemePalette): TextFieldColors = OutlinedTextFieldDefaults.colors(
+    focusedTextColor = palette.fieldText,
+    unfocusedTextColor = palette.fieldText,
+    disabledTextColor = palette.fieldText.copy(alpha = 0.5f),
+    cursorColor = palette.fieldText,
+    focusedContainerColor = palette.fieldBg,
+    unfocusedContainerColor = palette.fieldBg,
+    disabledContainerColor = palette.fieldBg,
+    focusedBorderColor = if (palette.dark) Color(0xFFE5E7EB) else Color(0xFF111827),
+    unfocusedBorderColor = palette.borderStrong,
+    focusedPlaceholderColor = palette.fieldPlaceholder,
+    unfocusedPlaceholderColor = palette.fieldPlaceholder,
 )

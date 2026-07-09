@@ -14,8 +14,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
@@ -35,6 +33,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import com.silent.vpn.data.SilentRepository
+import com.silent.vpn.ui.theme.ThemePalette
+import com.silent.vpn.ui.theme.themeTextFieldColors
 import com.silent.vpn.vpn.WdttTunnelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -87,31 +87,52 @@ private fun AppIcon(icon: Drawable?, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * Чекбокс: в тёмной теме — чёрный фон, белая галочка, белая рамка квадрата;
+ * в светлой — заливка fg, галочка bg, рамка приглушённая.
+ */
 @Composable
-private fun TvCheckbox(
+private fun ThemeCheckbox(
     checked: Boolean,
+    dark: Boolean,
     fg: Color,
     bg: Color,
-    border: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    focusable: Boolean = false,
 ) {
-    Box(
-        modifier = modifier
+    val border = if (dark) Color.White else fg.copy(alpha = 0.35f)
+    val fill = when {
+        !checked -> Color.Transparent
+        dark -> Color.Black
+        else -> fg
+    }
+    val checkTint = if (dark) Color.White else bg
+    val boxMod = if (focusable) {
+        modifier
             .size(48.dp)
-            .tvClickable(cornerRadius = 6.dp, ringOnly = true, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
+            .tvClickable(cornerRadius = 6.dp, ringOnly = true, onClick = onClick)
+    } else {
+        modifier
+            .size(24.dp)
+            .clickable(onClick = onClick)
+    }
+    Box(modifier = boxMod, contentAlignment = Alignment.Center) {
         Box(
             modifier = Modifier
                 .size(20.dp)
                 .clip(RoundedCornerShape(4.dp))
-                .border(1.dp, if (checked) fg else border, RoundedCornerShape(4.dp))
-                .background(if (checked) fg else Color.Transparent, RoundedCornerShape(4.dp)),
+                .border(1.dp, border, RoundedCornerShape(4.dp))
+                .background(fill, RoundedCornerShape(4.dp)),
             contentAlignment = Alignment.Center,
         ) {
             if (checked) {
-                Icon(Icons.Default.Check, contentDescription = null, tint = bg, modifier = Modifier.size(14.dp))
+                Icon(
+                    Icons.Default.Check,
+                    contentDescription = null,
+                    tint = checkTint,
+                    modifier = Modifier.size(14.dp),
+                )
             }
         }
     }
@@ -120,24 +141,20 @@ private fun TvCheckbox(
 @Composable
 fun AppExclusionsScreen(
     repo: SilentRepository,
-    fg: Color,
-    bg: Color,
+    palette: ThemePalette,
     onBack: () -> Unit,
 ) {
+    val fg = palette.fg
+    val bg = palette.bg
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val isTv = rememberIsTv()
+    val fieldColors = themeTextFieldColors(palette)
     var apps by remember { mutableStateOf<List<AppItem>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var search by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf(repo.getExcludedPackages()) }
     var showSystemApps by remember { mutableStateOf(false) }
-
-    val checkboxColors = CheckboxDefaults.colors(
-        checkedColor = fg,
-        uncheckedColor = fg,
-        checkmarkColor = Color.White,
-    )
 
     LaunchedEffect(Unit) {
         loading = true
@@ -207,12 +224,13 @@ fun AppExclusionsScreen(
         ) {
             if (isTv) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    TvCheckbox(
+                    ThemeCheckbox(
                         checked = showSystemApps,
+                        dark = palette.dark,
                         fg = fg,
                         bg = bg,
-                        border = fg.copy(alpha = 0.35f),
                         onClick = { showSystemApps = !showSystemApps },
+                        focusable = true,
                     )
                     Text(
                         "Показать системные",
@@ -223,10 +241,12 @@ fun AppExclusionsScreen(
                 }
             } else {
                 Text("Показать системные", fontSize = 12.sp, color = fg, modifier = Modifier.weight(1f))
-                Checkbox(
+                ThemeCheckbox(
                     checked = showSystemApps,
-                    onCheckedChange = { showSystemApps = it },
-                    colors = checkboxColors,
+                    dark = palette.dark,
+                    fg = fg,
+                    bg = bg,
+                    onClick = { showSystemApps = !showSystemApps },
                 )
             }
         }
@@ -234,13 +254,16 @@ fun AppExclusionsScreen(
             value = search,
             onValueChange = { search = it },
             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-            placeholder = { Text("Поиск...", fontSize = 13.sp) },
+            placeholder = {
+                Text("Поиск...", fontSize = 13.sp, color = palette.fieldPlaceholder)
+            },
             singleLine = true,
             shape = RoundedCornerShape(12.dp),
+            colors = fieldColors,
         )
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
+                CircularProgressIndicator(color = fg)
             }
         } else {
             LazyColumn(
@@ -274,21 +297,14 @@ fun AppExclusionsScreen(
                             Text(app.name, fontSize = 13.sp, color = fg, maxLines = 1)
                             Text(app.packageName, fontSize = 10.sp, color = fg.copy(0.4f), maxLines = 1)
                         }
-                        if (isTv) {
-                            TvCheckbox(
-                                checked = checked,
-                                fg = fg,
-                                bg = bg,
-                                border = fg.copy(alpha = 0.35f),
-                                onClick = toggle,
-                            )
-                        } else {
-                            Checkbox(
-                                checked = checked,
-                                onCheckedChange = null,
-                                colors = checkboxColors,
-                            )
-                        }
+                        ThemeCheckbox(
+                            checked = checked,
+                            dark = palette.dark,
+                            fg = fg,
+                            bg = bg,
+                            onClick = toggle,
+                            focusable = isTv,
+                        )
                     }
                 }
             }

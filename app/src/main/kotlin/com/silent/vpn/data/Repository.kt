@@ -74,6 +74,7 @@ class SilentRepository @Inject constructor(
         const val CAPTCHA_MODE_WV = "wv"
         const val PREF_CACHED_PROFILE = "cached_profile_json"
         const val PREF_CACHED_THEME = "cached_theme_json"
+        const val PREF_APPEARANCE_MODE = "appearance_mode"
         const val PREF_SYNC_HASHES_REV = "config_sync_hashes_rev"
         const val PREF_SYNC_THEME_REV = "config_sync_theme_rev"
         const val PREF_SYNC_PROFILE_REV = "config_sync_profile_rev"
@@ -855,6 +856,20 @@ class SilentRepository @Inject constructor(
     fun getCachedTheme(): ThemeData? {
         val json = prefs.getString(PREF_CACHED_THEME, null) ?: return null
         return runCatching { Gson().fromJson(json, ThemeData::class.java) }.getOrNull()
+    }
+
+    fun getAppearanceMode(): String =
+        prefs.getString(PREF_APPEARANCE_MODE, "light")?.takeIf { it == "dark" || it == "light" } ?: "light"
+
+    fun setAppearanceMode(mode: String) {
+        val normalized = if (mode == "dark") "dark" else "light"
+        prefs.edit().putString(PREF_APPEARANCE_MODE, normalized).apply()
+    }
+
+    fun toggleAppearanceMode(): String {
+        val next = if (getAppearanceMode() == "dark") "light" else "dark"
+        setAppearanceMode(next)
+        return next
     }
 
     fun isLoggedIn() = getAccessToken() != null

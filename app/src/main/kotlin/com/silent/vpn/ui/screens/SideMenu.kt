@@ -17,12 +17,15 @@ import androidx.compose.ui.unit.sp
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.UserProfile
 import com.silent.vpn.data.sessionsBadge
+import com.silent.vpn.ui.theme.AppearanceMode
+import com.silent.vpn.ui.theme.resolveThemePalette
 import com.silent.vpn.ui.theme.parseColor
 
 @Composable
 fun SideMenuContent(
     profile: UserProfile?,
     theme: ThemeData?,
+    appearanceMode: AppearanceMode = AppearanceMode.LIGHT,
     sessionDeviceId: String? = null,
     onClose: () -> Unit,
     onSubscription: () -> Unit,
@@ -33,14 +36,17 @@ fun SideMenuContent(
     onAbout: () -> Unit,
     onLogout: () -> Unit,
 ) {
-    val bg = parseColor(theme?.background_color ?: "#FFFFFF", Color.White)
-    val fg = parseColor(theme?.text_color ?: "#000000", Color.Black)
+    val palette = theme.resolveThemePalette(appearanceMode)
+    val bg = palette.surface
+    val fg = palette.fg
+    val edge = if (palette.dark) Color(0xFF52525B) else palette.borderStrong
 
     Column(
         modifier = Modifier
             .fillMaxHeight()
             .width(280.dp)
             .background(bg)
+            .border(1.dp, edge)
             .verticalScroll(rememberScrollState()),
     ) {
         // Header

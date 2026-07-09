@@ -3,29 +3,39 @@ package com.silent.vpn.ui.theme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
 import com.silent.vpn.data.ThemeData
 
 fun ThemeData.toColorScheme(dark: Boolean): ColorScheme {
-    val bg = parseColor(background_color, if (dark) Color.Black else Color.White)
-    val fg = parseColor(text_color, if (dark) Color.White else Color.Black)
-    val accent = parseColor(accent_color, Color(0xFF1A1A1A))
-    val primary = parseColor(primary_color, Color.Black)
+    val mode = if (dark) AppearanceMode.DARK else AppearanceMode.LIGHT
+    val p = resolveThemePalette(mode)
     return if (dark) {
-        darkColorScheme(primary = primary, background = bg, surface = bg, onBackground = fg, onSurface = fg)
+        darkColorScheme(
+            primary = p.primary,
+            background = p.bg,
+            surface = p.bg,
+            onBackground = p.fg,
+            onSurface = p.fg,
+            onPrimary = p.primaryBtnFg,
+        )
     } else {
-        lightColorScheme(primary = primary, background = bg, surface = bg, onBackground = fg, onSurface = fg)
+        lightColorScheme(
+            primary = p.primary,
+            background = p.bg,
+            surface = p.bg,
+            onBackground = p.fg,
+            onSurface = p.fg,
+            onPrimary = p.primaryBtnFg,
+        )
     }
 }
 
 fun parseColor(hex: String, fallback: Color): Color = try {
     Color(android.graphics.Color.parseColor(hex))
-} catch (_: Exception) { fallback }
+} catch (_: Exception) {
+    fallback
+}
 
 /** Светлый фон → тёмные иконки status bar; тёмный фон → светлые иконки. */
 fun isDarkBackground(color: Color): Boolean {
@@ -39,13 +49,16 @@ fun SilentTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    val colorScheme = themeData?.toColorScheme(darkTheme)
-        ?: if (darkTheme) {
-            darkColorScheme(primary = Color.White, background = Color(0xFF0A0A0A))
-        } else {
-            lightColorScheme(primary = Color.Black, background = Color.White)
-        }
+    val colorScheme = remember(themeData, darkTheme) {
+        themeData?.toColorScheme(darkTheme)
+            ?: if (darkTheme) {
+                darkColorScheme(primary = Color.White, background = Color(0xFF0B0B0F), surface = Color(0xFF0B0B0F))
+            } else {
+                lightColorScheme(primary = Color.Black, background = Color.White, surface = Color.White)
+            }
+    }
 
+    // Важно: фон из resolved dark palette, иначе nav bar остаётся «светлой» при белом theme.background_color
     ApplySystemBarAppearance(colorScheme.background)
 
     MaterialTheme(

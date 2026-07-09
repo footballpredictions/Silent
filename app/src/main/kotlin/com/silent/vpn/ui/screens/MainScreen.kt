@@ -54,6 +54,7 @@ import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
 import com.silent.vpn.ui.components.MenuNavItem
 import com.silent.vpn.ui.components.MenuNavLogout
+import com.silent.vpn.ui.components.ThemeModeToggle
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.DeviceInfo
@@ -61,12 +62,21 @@ import com.silent.vpn.data.UserProfile
 import com.silent.vpn.data.deviceLimitLabel
 import com.silent.vpn.data.sessionsBadge
 import com.silent.vpn.data.UpdateCheckResponse
+import com.silent.vpn.ui.theme.AppearanceMode
+import com.silent.vpn.ui.theme.DarkSystemBarStrip
+import com.silent.vpn.ui.theme.ThemePalette
+import com.silent.vpn.ui.theme.needsNeonGlow
+import com.silent.vpn.ui.theme.neonShadow
 import com.silent.vpn.ui.theme.parseColor
+import com.silent.vpn.ui.theme.resolveThemePalette
+import com.silent.vpn.ui.theme.themeTextFieldColors
 import com.silent.vpn.ui.theme.UiColors
 import com.silent.vpn.ui.theme.UiDimens
 import com.silent.vpn.ui.theme.UiFont
 import com.silent.vpn.ui.theme.displayAppName
 import com.silent.vpn.ui.theme.mutedFg
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.graphics.Shadow
 import com.silent.vpn.ui.tv.TvIconButton
 import com.silent.vpn.ui.tv.TvPrimaryButton
 import com.silent.vpn.ui.tv.TvTextButton
@@ -287,16 +297,20 @@ fun MainScreen(
     updateProgress: Int = 0,
     onUpdateClick: () -> Unit = {},
     onUpdatePolling: (Boolean) -> Unit = {},
+    appearanceMode: AppearanceMode = AppearanceMode.LIGHT,
+    onToggleAppearance: () -> Unit = {},
 ) {
-    val bg = parseColor(theme?.background_color ?: "#FFFFFF", Color.White)
-    val fg = parseColor(theme?.text_color ?: "#000000", Color.Black)
-    val toggleOn = parseColor(theme?.toggle_on_color ?: "#000000", Color.Black)
-    val toggleOff = parseColor(theme?.toggle_off_color ?: "#CCCCCC", Color(0xFFCCCCCC))
-    val updateBarBg = parseColor(theme?.update_bar_background_color ?: "#2563EB", Color(0xFF2563EB))
-    val updateBarFg = parseColor(theme?.update_bar_text_color ?: "#FFFFFF", Color.White)
-    val updateBarProgress = parseColor(theme?.update_bar_progress_color ?: "#1D4ED8", Color(0xFF1D4ED8))
+    val palette = remember(theme, appearanceMode) { theme.resolveThemePalette(appearanceMode) }
+    val bg = palette.bg
+    val fg = palette.fg
+    val toggleOn = palette.toggleOn
+    val toggleOff = palette.toggleOff
+    val updateBarBg = palette.updateBarBg
+    val updateBarFg = palette.updateBarFg
+    val updateBarProgress = palette.updateBarProgress
     val updateLabelAvailable = theme?.update_bar_label_available?.takeIf { it.isNotBlank() } ?: "Доступно обновление"
     val updateLabelDownloading = theme?.update_bar_label_downloading?.takeIf { it.isNotBlank() } ?: "Скачивание…"
+    val statusGreen = palette.green
 
     var menuOpen by remember { mutableStateOf(false) }
     var menuPage by remember { mutableStateOf(MenuPage.ROOT) }
@@ -362,16 +376,19 @@ fun MainScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(bg)
-            .windowInsetsPadding(WindowInsets.safeDrawing),
+            // Сначала серые полосы под status/nav (видны в зоне insets), затем контент на bg
+            .background(if (palette.dark) DarkSystemBarStrip else bg)
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .background(bg),
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             val density = LocalDensity.current
             // Title bar — название по центру, меню слева, лог справа
             val titleBarDivider = Modifier.drawBehind {
                 val stroke = with(density) { UiDimens.borderThin.toPx() }
+                val lineColor = if (palette.dark) Color(0xFF3F3F46) else palette.border
                 drawLine(
-                    color = UiColors.Gray100,
+                    color = lineColor,
                     start = Offset(0f, size.height - (stroke / 2f)),
                     end = Offset(size.width, size.height - (stroke / 2f)),
                     strokeWidth = stroke,
@@ -401,12 +418,22 @@ fun MainScreen(
                     fontSize = UiFont.xs,
                     color = fg,
                 )
-                if (BuildConfig.DEBUG) {
-                    DebugLogButton(
-                        onClick = { showDebugLog = true },
-                        modifier = Modifier.align(Alignment.CenterEnd),
-                        focusEnabled = !blockMainFocus,
+                Row(
+                    modifier = Modifier.align(Alignment.CenterEnd).padding(end = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    ThemeModeToggle(
+                        mode = appearanceMode,
+                        onToggle = onToggleAppearance,
+                        color = fg,
                     )
+                    if (BuildConfig.DEBUG) {
+                        DebugLogButton(
+                            onClick = { showDebugLog = true },
+                            focusEnabled = !blockMainFocus,
+                        )
+                    }
                 }
             }
 
@@ -421,13 +448,20 @@ fun MainScreen(
                             VpnState.DISCONNECTED -> "Отключено"
                         },
                         color = when (vpnState) {
-                            VpnState.CONNECTED -> Color(0xFF16A34A)
+                            VpnState.CONNECTED -> statusGreen
                             VpnState.DISCONNECTED -> fg.copy(alpha = 0.4f)
                             else -> fg.copy(alpha = 0.6f)
                         },
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
                         letterSpacing = 1.5.sp,
+                        style = TextStyle(
+                            shadow = when {
+                                vpnState == VpnState.CONNECTED && needsNeonGlow(statusGreen, palette.dark) ->
+                                    neonShadow(statusGreen)
+                                else -> null
+                            },
+                        ),
                     )
 
                     Spacer(modifier = Modifier.height(24.dp))
@@ -502,7 +536,7 @@ fun MainScreen(
             val bottomDivider = Modifier.drawBehind {
                 val stroke = with(density) { UiDimens.borderThin.toPx() }
                 drawLine(
-                    color = UiColors.Gray100,
+                    color = palette.border,
                     start = Offset(0f, stroke / 2f),
                     end = Offset(size.width, stroke / 2f),
                     strokeWidth = stroke,
@@ -556,7 +590,7 @@ fun MainScreen(
                         Text("Безлимит", color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
                     }
                     profile.is_admin || profile.subscription?.plan_type == "unlimited" -> {
-                        Text("Бессрочно", color = Color(0xFF16A34A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Бессрочно", color = statusGreen, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         Text("Полный доступ", color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
                     }
                     profile?.subscription?.is_active == true && profile.subscription.plan_type == "trial" -> {
@@ -567,7 +601,7 @@ fun MainScreen(
                         )
                     }
                     profile?.subscription?.is_active == true -> {
-                        Text("Оплачено", color = Color(0xFF16A34A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Оплачено", color = statusGreen, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         Text(
                             "до ${profile.subscription.expires_at?.take(10)?.split("-")?.reversed()?.joinToString(".")}",
                             color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
@@ -590,13 +624,18 @@ fun MainScreen(
         // Side drawer (половина) — только список; пункты меню на полный экран
         if (menuOpen) {
             if (menuPage == MenuPage.ROOT) {
+                val drawerBg = palette.surface
+                val drawerEdge = if (palette.dark) Color(0xFF52525B) else palette.borderStrong
                 Row(modifier = Modifier.fillMaxSize()) {
                     Column(
                         modifier = Modifier
                             .width(UiDimens.menuWidth)
                             .fillMaxHeight()
-                            .background(bg)
-                            .border(UiDimens.borderThin, UiColors.Gray200),
+                            .background(drawerBg)
+                            .border(
+                                width = UiDimens.borderThin,
+                                color = drawerEdge,
+                            ),
                     ) {
                         Row(
                             modifier = Modifier
@@ -637,7 +676,10 @@ fun MainScreen(
                                 Icon(Icons.Default.Close, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
                             }
                         }
-                        HorizontalDivider(color = UiColors.Gray100, thickness = UiDimens.borderThin)
+                        HorizontalDivider(
+                            color = if (palette.dark) Color(0xFF3F3F46) else palette.border,
+                            thickness = UiDimens.borderThin,
+                        )
                         val menuItems = buildList {
                             add(Triple(MenuPage.SUBSCRIPTION, "Подписка", null as String?))
                             add(Triple(MenuPage.EXCEPTIONS, "Исключения приложений", null))
@@ -701,15 +743,14 @@ fun MainScreen(
                             onOpenUrl = onOpenUrl,
                             onShowError = onShowError,
                         )
-                        MenuPage.EXCEPTIONS -> AppExclusionsScreen(repo, fg, bg) { menuPage = MenuPage.ROOT }
+                        MenuPage.EXCEPTIONS -> AppExclusionsScreen(repo, palette) { menuPage = MenuPage.ROOT }
                         MenuPage.VK_CRED -> MenuVkCredModeScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.HASHES -> MenuHashesScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.BONUSES -> {
                             val context = androidx.compose.ui.platform.LocalContext.current
                             MenuBonuses(
                                 theme = theme,
-                                fg = fg,
-                                bg = bg,
+                                palette = palette,
                                 referralInfo = referralInfo,
                                 referralCopyMsg = referralCopyMsg,
                                 onCopyText = { text, okMsg ->
@@ -736,6 +777,10 @@ fun MainScreen(
                             vpnState,
                             onRenameDevice,
                             onDeleteDevice,
+                            palette = palette,
+                            borderColor = palette.border,
+                            onlineColor = statusGreen,
+                            offlineColor = palette.muted,
                         ) { menuPage = MenuPage.ROOT }
                         MenuPage.SUPPORT -> MenuSupport(
                             theme = theme,
@@ -924,8 +969,7 @@ private fun MenuSubscription(
 @Composable
 private fun MenuBonuses(
     theme: ThemeData?,
-    fg: Color,
-    bg: Color,
+    palette: ThemePalette,
     referralInfo: com.silent.vpn.data.ReferralInfo?,
     referralCopyMsg: String,
     onCopyText: (String, String) -> Unit,
@@ -935,6 +979,9 @@ private fun MenuBonuses(
     onCheckPromo: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val fg = palette.fg
+    val bg = palette.bg
+    val fieldColors = themeTextFieldColors(palette)
     val title = theme?.bonuses_title?.takeIf { it.isNotBlank() }
         ?: theme?.menu_bonuses_label?.takeIf { it.isNotBlank() }
         ?: "Бонусы"
@@ -975,6 +1022,7 @@ private fun MenuBonuses(
             readOnly = true,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
+            colors = fieldColors,
         )
         TvPrimaryButton(
             onClick = {
@@ -1015,9 +1063,10 @@ private fun MenuBonuses(
         OutlinedTextField(
             value = promoCode,
             onValueChange = onPromoChange,
-            placeholder = { Text("Введите код") },
+            placeholder = { Text("Введите код", color = palette.fieldPlaceholder) },
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
+            colors = fieldColors,
         )
         TvPrimaryButton(
             onClick = onCheckPromo,
@@ -1050,12 +1099,17 @@ private fun MenuDevices(
     vpnState: VpnState,
     onRenameDevice: (deviceId: String, name: String, onResult: (Boolean, String?) -> Unit) -> Unit,
     onDeleteDevice: (deviceId: String, onResult: (Boolean, String?) -> Unit) -> Unit,
+    palette: ThemePalette,
+    borderColor: Color = Color(0xFFF3F4F6),
+    onlineColor: Color = Color(0xFF16A34A),
+    offlineColor: Color = Color(0xFFD1D5DB),
     onBack: () -> Unit,
 ) {
     var renameTarget by remember { mutableStateOf<DeviceInfo?>(null) }
     var renameText by remember { mutableStateOf("") }
     var renameSaving by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<DeviceInfo?>(null) }
+    val fieldColors = themeTextFieldColors(palette)
     var deleteSaving by remember { mutableStateOf(false) }
 
     if (renameTarget != null) {
@@ -1066,9 +1120,10 @@ private fun MenuDevices(
                 OutlinedTextField(
                     value = renameText,
                     onValueChange = { renameText = it.take(64) },
-                    placeholder = { Text("Например: Мой телефон") },
+                    placeholder = { Text("Например: Мой телефон", color = palette.fieldPlaceholder) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
+                    colors = fieldColors,
                 )
             },
             confirmButton = {
@@ -1173,7 +1228,7 @@ private fun MenuDevices(
                     .drawBehind {
                         val stroke = with(density) { UiDimens.borderThin.toPx() }
                         drawLine(
-                            color = UiColors.Gray100,
+                            color = borderColor,
                             start = Offset(0f, size.height - (stroke / 2f)),
                             end = Offset(size.width, size.height - (stroke / 2f)),
                             strokeWidth = stroke,
@@ -1184,7 +1239,7 @@ private fun MenuDevices(
             ) {
                 Box(
                     modifier = Modifier.size(10.dp).background(
-                        if (online) UiColors.Green500 else UiColors.Gray300,
+                        if (online) onlineColor else offlineColor,
                         CircleShape,
                     ),
                 )

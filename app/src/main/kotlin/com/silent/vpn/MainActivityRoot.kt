@@ -15,9 +15,14 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import com.silent.vpn.ui.screens.LoginScreen
 import com.silent.vpn.ui.screens.MainScreen
 import com.silent.vpn.ui.screens.VpnState
+import com.silent.vpn.ui.theme.AppearanceMode
+import com.silent.vpn.ui.theme.DarkSystemBarStrip
 import com.silent.vpn.ui.theme.SilentTheme
 import com.silent.vpn.util.LocalIsTv
 import com.silent.vpn.vpn.WdttTunnelManager
@@ -84,11 +89,16 @@ fun MainActivityRoot(
     }
 
     CompositionLocalProvider(LocalIsTv provides isTv) {
-        SilentTheme(themeData = theme) {
+        var appearanceDark by remember { mutableStateOf(vm.repository.getAppearanceMode() == "dark") }
+        val appearanceMode = if (appearanceDark) AppearanceMode.DARK else AppearanceMode.LIGHT
+        SilentTheme(themeData = theme, darkTheme = appearanceDark) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.background),
+                    .background(
+                        if (appearanceDark) DarkSystemBarStrip
+                        else MaterialTheme.colorScheme.background,
+                    ),
             ) {
                 when (screen) {
                     AppScreen.LOGIN -> LoginScreen(
@@ -128,6 +138,11 @@ fun MainActivityRoot(
                             } else {
                                 activity.finishAffinity()
                             }
+                        },
+                        appearanceMode = appearanceMode,
+                        onToggleAppearance = {
+                            val next = vm.repository.toggleAppearanceMode()
+                            appearanceDark = next == "dark"
                         },
                     )
                     AppScreen.MAIN -> MainScreen(
@@ -178,6 +193,11 @@ fun MainActivityRoot(
                             vm.downloadAndInstallUpdate(activity, onLaunchApkInstall)
                         },
                         onUpdatePolling = vm::setUpdatePolling,
+                        appearanceMode = appearanceMode,
+                        onToggleAppearance = {
+                            val next = vm.repository.toggleAppearanceMode()
+                            appearanceDark = next == "dark"
+                        },
                     )
                 }
             }

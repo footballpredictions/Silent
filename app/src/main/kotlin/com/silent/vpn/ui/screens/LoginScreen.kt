@@ -46,6 +46,14 @@ import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
 import com.silent.vpn.ui.components.LoginExpiredPanel
 import com.silent.vpn.ui.components.SilentLogo
+import com.silent.vpn.ui.components.ThemeModeToggle
+import com.silent.vpn.ui.theme.AppearanceMode
+import com.silent.vpn.ui.theme.DarkSystemBarStrip
+import com.silent.vpn.ui.theme.needsNeonGlow
+import com.silent.vpn.ui.theme.neonShadow
+import com.silent.vpn.ui.theme.toLoginUi
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.graphics.Shadow
 import com.silent.vpn.ui.tv.TvIconButton
 import com.silent.vpn.ui.tv.TvPrimaryButton
 import com.silent.vpn.ui.tv.TvTextButton
@@ -99,8 +107,10 @@ fun LoginScreen(
     onRegDoneDismiss: () -> Unit,
     onSyncBootstrap: () -> Unit = {},
     onCloseApp: () -> Unit = {},
+    appearanceMode: AppearanceMode = AppearanceMode.LIGHT,
+    onToggleAppearance: () -> Unit = {},
 ) {
-    val ui = remember(theme) { theme.toLoginUi() }
+    val ui = remember(theme, appearanceMode) { theme.toLoginUi(appearanceMode) }
     var step by remember { mutableStateOf(LoginStep.AUTH) }
     var tab by remember(initialReferralOrPromo) {
         mutableStateOf(if (initialReferralOrPromo.isNotBlank()) "register" else "login")
@@ -144,12 +154,27 @@ fun LoginScreen(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().background(ui.bg).windowInsetsPadding(WindowInsets.safeDrawing),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(if (ui.dark) DarkSystemBarStrip else ui.bg)
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .background(ui.bg),
     ) {
         Box(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
-            DebugLogButton(onClick = { showDebugLog = true }, modifier = Modifier.align(Alignment.CenterEnd))
+            Row(
+                modifier = Modifier.align(Alignment.CenterEnd),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                ThemeModeToggle(
+                    mode = appearanceMode,
+                    onToggle = onToggleAppearance,
+                    color = ui.fg,
+                )
+                DebugLogButton(onClick = { showDebugLog = true })
+            }
         }
 
         Column(
@@ -419,7 +444,14 @@ fun LoginScreen(
                                                 step = LoginStep.FORGOT
                                                 onClearError()
                                             }) {
-                                                Text(forgotLabel, fontSize = 11.sp, color = ui.linkColor)
+                                                Text(
+                                                    forgotLabel,
+                                                    fontSize = 11.sp,
+                                                    color = ui.linkColor,
+                                                    style = TextStyle(
+                                                        shadow = if (needsNeonGlow(ui.linkColor, ui.dark)) neonShadow(ui.linkColor) else null,
+                                                    ),
+                                                )
                                             }
                                         }
                                     }

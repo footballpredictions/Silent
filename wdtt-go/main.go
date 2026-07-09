@@ -25,6 +25,17 @@ var vkAuthModeValue atomic.Value
 func init() {
 	captchaModeValue.Store("auto")
 	vkAuthModeValue.Store("vkcalls")
+	// Без буфера stdout — Electron сразу видит [КОНФИГ] / Success (иначе десятки секунд).
+	log.SetOutput(&flushWriter{w: os.Stdout})
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+}
+
+type flushWriter struct{ w *os.File }
+
+func (f *flushWriter) Write(p []byte) (int, error) {
+	n, err := f.w.Write(p)
+	_ = f.w.Sync()
+	return n, err
 }
 
 func normalizeCaptchaMode(mode string) string {
@@ -250,6 +261,8 @@ func main() {
 		_ = uc.SetReadBuffer(socketBufSize)
 		_ = uc.SetWriteBuffer(socketBufSize)
 	}
+	log.Printf("[КЛИЕНТ] UDP listen OK %s", localConn.LocalAddr().String())
+	_ = os.Stdout.Sync()
 	stopLocalConn := context.AfterFunc(ctx, func() { _ = localConn.Close() })
 	defer stopLocalConn()
 
@@ -350,6 +363,8 @@ func main() {
 				log.Printf("[КОНФИГ] Ошибка сохранения: %v", err)
 			} else {
 				log.Println("[КОНФИГ] Сохранён в wg-turn.conf")
+				// Сразу в pipe Electron — иначе буфер stdout держит строку десятки секунд.
+				_ = os.Stdout.Sync()
 			}
 		case <-ctx.Done():
 		}

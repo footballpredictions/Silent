@@ -36,7 +36,7 @@ func isVirtualIface(name string) bool {
 
 		"vethernet", "hyper-v", "wsl", "docker", "vmware", "virtualbox",
 
-		"wireguard", "nordlynx", "tun", "tap", "npf", "loopback",
+		"wireguard", "wg-turn", "nordlynx", "tun", "tap", "npf", "loopback",
 
 		"bluetooth", "pseudo", "vethernet", "default switch",
 
@@ -346,6 +346,16 @@ func vkDirectResolver() *net.Resolver {
 
 	}
 
+}
+
+// dialTurnUDP — TURN с LocalAddr = Wi‑Fi/Ethernet (не wg-turn).
+// Иначе при AllowedIPs 0.0.0.0/1 UDP к TURN уходит в туннель → петля / EACCES.
+func dialTurnUDP(resolved *net.UDPAddr) (*net.UDPConn, error) {
+	var laddr *net.UDPAddr
+	if ip := getLanIPv4(); ip != nil {
+		laddr = &net.UDPAddr{IP: ip}
+	}
+	return net.DialUDP("udp", laddr, resolved)
 }
 
 

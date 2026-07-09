@@ -31,11 +31,12 @@ func putPktBuf(b []byte) {
 }
 
 const (
+	// Откат: chunk=256 на практике дал 2–5 Мбит (один медленный TURN).
+	// Рабочий профиль до эксперимента — chunk=16 + умеренные буферы.
 	returnChBuf      = 16384
-	writeLoopWorkers = 6
-	uploadRetryMs    = 50
+	writeLoopWorkers = 8
+	uploadRetryMs    = 30
 
-	// chunk=16 — как Android: один TCP-поток (YouTube) на одном TURN relay.
 	chunkSize = 16
 )
 

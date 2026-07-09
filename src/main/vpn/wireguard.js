@@ -484,34 +484,45 @@ async function waitForTunnelDown(maxMs = 15000, send) {
   return down
 }
 
-/** WDTT/WireGuard слушает UDP :9000, не TCP. */
+/** WDTT слушает UDP :9000. Bind-probe быстрее и надёжнее netstat (локаль/права). */
 async function isUdpPortListening(port, host = '127.0.0.1') {
-  try {
-    const { stdout } = await execAsync('netstat -ano -p udp', {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 8000,
+  const dgram = require('dgram')
+  return new Promise((resolve) => {
+    const s = dgram.createSocket('udp4')
+    let settled = false
+    const done = (v) => {
+      if (settled) return
+      settled = true
+      try { s.close() } catch { /* ignore */ }
+      resolve(v)
+    }
+    s.once('error', (e) => {
+      done(/EADDRINUSE/i.test(String(e?.message || e)))
     })
-    const out = String(stdout || '')
-    const portSuffix = `:${port}`
-    return out.split('\n').some(line => {
-      if (!line.includes(portSuffix)) return false
-      const local = line.trim().split(/\s+/)[1] || ''
-      return local.startsWith(host) || local.startsWith('0.0.0.0') || local === `[::]:${port}` || local === `*:${port}`
-    })
-  } catch {
-    return false
-  }
+    try {
+      s.bind(port, host, () => done(false))
+    } catch {
+      done(false)
+    }
+    setTimeout(() => done(false), 400)
+  })
 }
 
 function waitForPort(host, port, timeoutMs = 8000) {
   return waitForWdttProxy(host, port, timeoutMs)
 }
 
-/** Ждём локальный WDTT-прокси (UDP 9000) или готовый wg-turn.conf. */
+/**
+ * Ждём локальный WDTT UDP :9000.
+ * confPath: если задан — готовый GETCONF тоже ок (не для api-early!).
+ */
 async function waitForWdttProxy(host, port, timeoutMs = 60000, send, confPath = null) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
+    if (await isUdpPortListening(port, host)) {
+      send?.('[WG] WDTT: UDP прокси слушает ' + host + ':' + port)
+      return true
+    }
     if (confPath && fs.existsSync(confPath)) {
       try {
         const text = fs.readFileSync(confPath, 'utf8')
@@ -521,11 +532,7 @@ async function waitForWdttProxy(host, port, timeoutMs = 60000, send, confPath = 
         }
       } catch { /* ignore */ }
     }
-    if (await isUdpPortListening(port, host)) {
-      send?.('[WG] WDTT: UDP прокси слушает ' + host + ':' + port)
-      return true
-    }
-    await sleep(200)
+    await sleep(50)
   }
   send?.('[WG] WDTT: таймаут ожидания UDP ' + host + ':' + port)
   return false
@@ -638,17 +645,14 @@ function normalizeWgConfText(conf) {
 }
 
 function buildAllowedIPsForWindows(excludeIPs, send) {
-  if (!excludeIPs.length) return '0.0.0.0/0'
-  // Только один IP — ровно 32 маршрута (лимит Windows WireGuard).
-  const ips = [...new Set(excludeIPs.filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(String(ip).trim())))]
-  const primary = ips.slice(0, 1)
-  const split = generateExclusionAllowedIPs(primary)
-  const n = countAllowedRoutes(split)
-  if (n > MAX_WINDOWS_ALLOWED_ROUTES) {
-    send?.(`[WG] Слишком много маршрутов (${n}) — AllowedIPs = 0.0.0.0/0`, 'W')
-    return '0.0.0.0/0'
-  }
-  return split
+  // Windows WireGuard:
+  // - 0.0.0.0/0 → WFP kill-switch режет WDTT→VK (EACCES), даже с bypass /32
+  // - CIDR-exclude 1 IP ≈32 маршрута → 1–2 Мбит, YouTube не грузится
+  // - 0.0.0.0/1 + 128.0.0.0/1 = весь IPv4 БЕЗ kill-switch (2 маршрута);
+  //   peer/API/VK держим на физ. NIC через addServerBypassRoutes (/32).
+  void excludeIPs
+  send?.('[WG] AllowedIPs = 0.0.0.0/1, 128.0.0.0/1 (full без kill-switch; API/VK bypass)')
+  return '0.0.0.0/1, 128.0.0.0/1'
 }
 
 function generateExclusionAllowedIPs(excludeIPs) {
@@ -695,7 +699,7 @@ try {
   $out | ForEach-Object { Log $_ }
   if ($LASTEXITCODE -ne 0) { Log "install exit=$LASTEXITCODE"; exit $LASTEXITCODE }
   sc.exe start '${SERVICE_NAME}' 2>&1 | ForEach-Object { Log $_ }
-  Start-Sleep -Seconds 2
+  Start-Sleep -Milliseconds 400
 ${bypassPs1}
   Log "OK"
   exit 0
@@ -763,7 +767,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
         // DNS через WG при split-route ломает резолв на Windows → «нет интернета»
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
       } else {
-        const isFull = allowed === '0.0.0.0/0'
+        const isFull = allowed === '0.0.0.0/0' || allowed.startsWith('0.0.0.0/1')
         send?.(`[WG] AllowedIPs = ${isFull ? allowed + ' (полный туннель)' : allowed.slice(0, 72) + (allowed.length > 72 ? '…' : '') + ' (split, сервер вне туннеля)'}`)
         const dnsLine = conf.match(/^\s*DNS\s*=\s*(.+)$/m)
         const dns = normalizeDnsValue(dnsLine ? dnsLine[1] : '')
@@ -791,27 +795,27 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
 
   // sc query быстрее Get-NetAdapter
   const serviceUp = await isServiceRunningAsync()
-  if (skipForceStop && serviceUp) {
-    send('[WG] Туннель уже активен — без полной переустановки')
-  } else if (serviceUp || (await isTunnelUpAsync())) {
-    await forceStopWireGuard(isDev, dirname, () => {})
-    await sleep(200)
-  }
-  // Если уже остановлен (после disconnect) — не делаем второй uninstall
-
   const stableConf = copyStableConf(confPath)
   send(`[WG] Конфиг: ${stableConf}`)
 
-  if (skipForceStop && (await isServiceRunningAsync())) {
+  // Если служба уже есть — сначала syncconf (1с), не uninstall (5–15с).
+  if (serviceUp || skipForceStop) {
     if (await trySyncConf(runtimeDir, stableConf, send)) {
       await gatewayPromise
       await finalizeTunnelUp(send, excludeIPs, subnetOnly)
-      send('[WG] Туннель активен')
+      send('[WG] Туннель активен (syncconf)')
       return true
     }
-    send?.('[WG] syncconf не удался — переустановка службы…', 'W')
+    if (skipForceStop) {
+      send?.('[WG] syncconf не удался — переустановка службы…', 'W')
+    } else {
+      send?.('[WG] syncconf не удался — переустановка…', 'W')
+    }
     await forceStopWireGuard(isDev, dirname, send)
-    await sleep(400)
+    await sleep(200)
+  } else if (await isTunnelUpAsync()) {
+    await forceStopWireGuard(isDev, dirname, () => {})
+    await sleep(200)
   }
 
   if (!isProcessElevated()) {
@@ -881,4 +885,7 @@ module.exports = {
   capturePhysicalGateway,
   normalizeWgConfText,
   waitWgStopIdle,
+  trySyncConf,
+  copyStableConf,
+  prepareRuntimeDir,
 }

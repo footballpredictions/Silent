@@ -27,8 +27,8 @@ const (
 	keepaliveInterval  = 15 * time.Second
 )
 
-// Windows: не более 8 параллельных DTLS (32 ломает сокеты, 3 — медленный ramp).
-var handshakeSem = make(chan struct{}, 8)
+// Windows: 8 — медленный ramp; 32+ → VK rate-limit (Throttling 2s). 16 — баланс.
+var handshakeSem = make(chan struct{}, 16)
 
 // NullLoggerFactory подавляет логи pion
 type NullLoggerFactory struct{}
@@ -90,7 +90,7 @@ func RunSession(
 	if err != nil {
 		return false, fmt.Errorf("резолв TURN: %w", err)
 	}
-	c, err := net.DialUDP("udp", nil, resolved)
+	c, err := dialTurnUDP(resolved)
 	if err != nil {
 		return false, fmt.Errorf("подключение TURN UDP: %w", err)
 	}

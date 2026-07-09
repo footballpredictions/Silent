@@ -27,6 +27,7 @@ const {
   waitWgStopIdle,
 } = require('./vpn/wireguard')
 const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
+const { resolveVkExcludeIps, warmVkExcludeIps } = require('./vpn/vkNetworkExcludes')
 const buildFlags = require('./buildFlags')
 
 function sleep(ms) {
@@ -65,6 +66,8 @@ let expectedCredGroups = 1
 let credGroupsResolved = 0
 let fullTunnelUpgradeTimer = null
 let wgFullTunnelUpgradeInFlight = false
+/** После subnet→full reinstall маршруты мигают ~несколько секунд (EACCES/ECONNABORTED). */
+let wgRouteSettleUntil = 0
 let wdttGeneration = 0
 let wdttReplacing = false
 let captchaSession = 0
@@ -443,6 +446,7 @@ function cleanupVpn() {
   expectedCredGroups = 1
   credGroupsResolved = 0
   wgFullTunnelUpgradeInFlight = false
+  wgRouteSettleUntil = 0
   clearFullTunnelUpgradeTimer()
   vpnSessionActive = false
   pausedForNetwork = false
@@ -504,16 +508,23 @@ function scheduleTunnelReadyPoll(sendLogFn) {
 }
 
 const WORKERS_PER_GROUP = 9
-/** YouTube 1080p+: full tunnel после 3 групп (27 воркеров). UI «подключено» — раньше. */
-const FULL_TUNNEL_TARGET_CAP = 27
+/** Legacy: full после N воркеров (сейчас main сразу full после GETCONF). */
+const FULL_TUNNEL_TARGET_CAP = 9
 
 const FALLBACK_BACKEND_IP = SERVER_IP_FALLBACK
 
-/** IP вне WG-туннеля: Улей (API) + peer WDTT (сота), иначе HTTPS к 132.243.234.162 идёт через VPN → RST. */
-function collectExcludeIPs(config) {
+/**
+ * IP вне WG через host-route bypass (не через AllowedIPs-split):
+ * Улей/peer + VK API/login/TURN — иначе WDTT auth идёт в туннель / kill-switch.
+ */
+async function collectExcludeIPs(config) {
   const ips = new Set([SERVER_IP_FALLBACK])
   const peer = normalizeServerIp(config?.server_ip)
   if (peer) ips.add(peer)
+  try {
+    const vkIps = await resolveVkExcludeIps()
+    for (const ip of vkIps) ips.add(ip)
+  } catch { /* DNS fail — остаётся peer/API */ }
   return [...ips]
 }
 
@@ -551,7 +562,7 @@ function minWorkersForTunnelReady(isBootstrap = false) {
 
 function isVpnReadyForUi() {
   if (tunnelReadySent) return true
-  if (vpnBootstrapMode) return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
+  // WG + ≥1 воркер: api-early без GETCONF давал «Подключено» при мёртвом 10.66.66.1
   return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
 }
 
@@ -786,9 +797,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
   credGroupsResolved = 0
   wgFullTunnelUpgradeInFlight = false
   clearFullTunnelUpgradeTimer()
-  // Subnet-only пока VK-креды/набор воркеров; full tunnel после ≥27 — YouTube 1080p.
-  // (Эксперимент full+снятие defaults ломал DNS/api.vk.me — откат.)
-  wgCredPhase = !vpnBootstrapMode && expectedCredGroups > 1
+  // Main: один full install после GETCONF (без subnet→reinstall).
+  // VK Auth идёт до WG — EACCES нет. Subnet-early + upgrade давали ~2× install.
+  wgCredPhase = false
   const exePath = wdttExePath()
   if (!fs.existsSync(exePath)) {
     return { error: `wdtt-client.exe не найден: ${exePath}` }
@@ -814,8 +825,13 @@ async function beginWdttSession(config, { switching = false } = {}) {
   sessionTargetWorkers = workers
   const captchaMode = String(config.captchaMode || config.captcha_mode || 'auto').trim() || 'auto'
   const vkAuthMode = String(config.vkAuthMode || config.vk_auth_mode || 'vkcalls').trim() || 'vkcalls'
+  // Boot 9 (1 группа → быстрый GETCONF) → ramp до target.
+  const bootWorkers = config.is_bootstrap
+    ? workers
+    : Math.min(9, workers)
+  const useRamp = !config.is_bootstrap && workers > bootWorkers
   sendLog(
-    `[VPN] connect n=${workers}${config.is_bootstrap ? ' (bootstrap)' : ''} hashes=${hashList.length} vk=${vkAuthMode} captcha=${captchaMode}`,
+    `[VPN] connect n=${bootWorkers}${useRamp ? `→${workers}` : ''}${config.is_bootstrap ? ' (bootstrap)' : ''} hashes=${hashList.length} vk=${vkAuthMode} captcha=${captchaMode}`,
   )
   const args = [
     '-peer', `${config.server_ip}:${config.server_port}`,
@@ -823,10 +839,17 @@ async function beginWdttSession(config, { switching = false } = {}) {
     '-password', config.wdtt_password,
     '-device-id', String(config.device_id || ''),
     '-listen', '127.0.0.1:9000',
-    '-n', String(workers),
+    '-n', String(bootWorkers),
     '-captcha-mode', captchaMode,
     '-vk-auth-mode', vkAuthMode,
   ]
+  if (useRamp) {
+    args.push('-target-n', String(workers), '-ramp-first', '3s', '-ramp-next', '2s')
+  }
+
+  // DNS bypass в фоне — не блокировать spawn/подписку на stdout (раньше теряли секунды).
+  const excludePromise = collectExcludeIPs(config)
+  const apiConf = buildWgConfigFromApi(config)
 
   const gen = ++wdttGeneration
   const proc = spawn(exePath, args, { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -840,9 +863,10 @@ async function beginWdttSession(config, { switching = false } = {}) {
     activeWorkerCount = 0
   }
 
-  const excludeIPs = collectExcludeIPs(config)
+  let excludeIPs = [SERVER_IP_FALLBACK]
+  const peerIp = normalizeServerIp(config?.server_ip)
+  if (peerIp) excludeIPs.push(peerIp)
   sessionExcludeIPs = [...excludeIPs]
-  const apiConf = buildWgConfigFromApi(config)
 
   let wgAttempted = false
   let wgFailed = false
@@ -851,7 +875,13 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
   const clearWgRetries = () => {
     if (wgPoll) { clearInterval(wgPoll); wgPoll = null }
-    wgTimers.forEach(t => clearTimeout(t))
+    wgTimers.forEach((t) => {
+      if (t && typeof t.close === 'function') {
+        try { t.close() } catch { /* fs.watch */ }
+      } else {
+        try { clearTimeout(t) } catch { /* ignore */ }
+      }
+    })
     wgTimers = []
   }
 
@@ -905,9 +935,14 @@ async function beginWdttSession(config, { switching = false } = {}) {
       if (ok) {
         wgCredPhase = false
         sendLog('[WG] Полный туннель активен, DNS = 1.1.1.1 + 77.88.8.8')
+        // После reinstall маршруты мигают → EACCES/ECONNABORTED на API.
+        // Bypass сразу + ещё раз через 1с/3с, ConfigSync чуть позже.
+        wgRouteSettleUntil = Date.now() + 10_000
         await addServerBypassRoutes([...excludeIPs], sendLog)
         scheduleBypassRefresh(sendLog)
-        ensureVpnReadyEvent(sendLog)
+        setTimeout(() => { void addServerBypassRoutes([...excludeIPs], sendLog) }, 1000)
+        setTimeout(() => { void addServerBypassRoutes([...excludeIPs], sendLog) }, 3000)
+        setTimeout(() => { ensureVpnReadyEvent(sendLog) }, 1500)
       } else if (attempt < 3) {
         sendLog(`[WG] full tunnel retry ${attempt + 1}/3…`, 'W')
         wgFullTunnelUpgradeInFlight = false
@@ -967,7 +1002,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
     sendLog(`[WG] Применение конфига (${source})...`)
     sendLog('[WG] Ожидание WDTT UDP 127.0.0.1:9000...')
-    const proxyWaitMs = switching ? 6_000 : 8_000
+    // confPath: GETCONF уже на диске (wdtt-file) — не ждать лишний UDP poll
+    const proxyWaitMs = switching ? 4_000 : 6_000
     const wdttReady = await waitForWdttProxy('127.0.0.1', 9000, proxyWaitMs, sendLog, confPath)
     if (!wdttReady) {
       wgInstallInFlight = false
@@ -977,9 +1013,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
     }
 
     fs.writeFileSync(confPath, normalizedConf)
-    await sleep(150)
 
-    const alreadyUp = switching && (await isServiceRunningAsync())
+    // syncconf если служба уже есть (reconnect) — без uninstall
+    const alreadyUp = await isServiceRunningAsync()
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
       skipWdttWait: true,
       subnetOnly: vpnBootstrapMode || wgCredPhase,
@@ -1180,15 +1216,34 @@ async function beginWdttSession(config, { switching = false } = {}) {
     return { success: true }
   }
 
+  // Poll GETCONF каждые 150мс + fs.watch — WG сразу после первого успешного auth
   wgPoll = setInterval(() => {
     if (wgApplied || wgFailed || wgInstallInFlight) {
       if (wgApplied || wgFailed) clearWgRetries()
       return
     }
-    if (config.is_bootstrap) void applyFromFile()
-  }, 500)
+    void applyFromFile()
+  }, 150)
 
-  // Bootstrap: запасной конфиг с API. Основной VPN — только wg-turn.conf / box (GETCONF).
+  try {
+    const confWatcher = fs.watch(tmpDir, { persistent: false }, (_eventType, filename) => {
+      if (!filename || String(filename).toLowerCase() !== 'wg-turn.conf') return
+      if (wgApplied || wgFailed || wgInstallInFlight) return
+      requestApplyFromFile()
+    })
+    wgTimers.push(confWatcher)
+  } catch { /* watch недоступен — остаётся poll */ }
+
+  void excludePromise.then((resolved) => {
+    if (!resolved?.length) return
+    excludeIPs = resolved
+    sessionExcludeIPs = [...excludeIPs]
+    sendLog(`[WG] Bypass hosts: ${excludeIPs.length} (API/peer + VK)`)
+    if (wgApplied) void addServerBypassRoutes(excludeIPs, sendLog)
+  }).catch(() => {})
+
+  // НЕ api-early: чужие ключи + syncconf на Windows → мёртвый 10.66.66.1.
+  // Main: только GETCONF (wdtt-file). Bootstrap: api-fallback через 5с.
   if (apiConf && config.is_bootstrap) {
     wgTimers.push(setTimeout(async () => {
       if (wgApplied || wgFailed || wgInstallInFlight) return
@@ -1221,17 +1276,13 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
   vpnConnectInFlight = true
   try {
-    // Не ждать полный uninstall: cap 2.5с; applyWireGuardConfig сериализует stop.
-    await Promise.race([waitWgStopIdle(), sleep(2500)])
+    // Не ждать полный uninstall: cap 1.5с; не убивать живую WG — syncconf на connect.
+    await Promise.race([waitWgStopIdle(), sleep(1500)])
     if (wdttProcess && !transportSwitching && !isTransportHealthy()) {
       sendLog('[VPN] Переподключение: остановка предыдущей сессии...')
       await cleanupVpnAsync()
-    } else if (!wdttProcess && !wgApplied) {
-      if (await isServiceRunningAsync()) {
-        await forceStopWireGuard(isDev, __dirname, sendLog)
-        await waitForTunnelDown(3000, sendLog)
-      }
     }
+    // Службу wg-turn НЕ снимаем заранее — apply сделает syncconf (~1с) вместо install.
 
     const exePath = wdttExePath()
     if (!fs.existsSync(exePath)) {
@@ -1414,14 +1465,16 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
   const opts = { ...p, timeout: p.timeout || 25_000 }
   const path = opts.path || ''
   if (wgApplied) {
-    const maxAttempts = wgFullTunnelUpgradeInFlight || wgCredPhase ? 3 : 1
+    const settling = Date.now() < wgRouteSettleUntil
+    const fragile = wgFullTunnelUpgradeInFlight || wgCredPhase || settling
+    const maxAttempts = fragile ? 4 : 1
     let lastErr = null
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const res = await tunnelHttpRequest({
           ...opts,
-          // Во время upgrade маршруты мигают — короткий timeout + retry
-          timeout: wgFullTunnelUpgradeInFlight ? Math.min(opts.timeout || 8000, 5000) : opts.timeout,
+          // Во время upgrade/settle маршруты мигают — короткий timeout + retry
+          timeout: fragile ? Math.min(opts.timeout || 8000, 5000) : opts.timeout,
         })
         if (res.status >= 200 && res.status < 500) {
           if (res.status >= 400) {
@@ -1435,17 +1488,27 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
       } catch (e) {
         lastErr = e
         const msg = String(e?.message || e)
-        const transient = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|timeout|Tunnel API/i.test(msg)
+        // EACCES/ECONNABORTED — типично при WG reinstall (маршруты/адаптер мигают)
+        const transient = /ECONNRESET|ECONNREFUSED|ECONNABORTED|EACCES|ETIMEDOUT|timeout|Tunnel API/i.test(msg)
         if (transient && attempt < maxAttempts) {
-          await sleep(400 * attempt)
+          await sleep(500 * attempt)
           continue
         }
-        if (!(wgFullTunnelUpgradeInFlight && transient)) {
+        if (!(fragile && transient)) {
           sendLog(`[API] tunnel 10.66.66.1 fail: ${msg} → HTTPS ${SERVER_IP_FALLBACK}`)
         } else {
           sendLog(`[API] tunnel briefly unavailable during full-tunnel upgrade → HTTPS`)
         }
-        return publicDirectRequest(opts)
+        try {
+          return await publicDirectRequest(opts)
+        } catch (pubErr) {
+          const pubMsg = String(pubErr?.message || pubErr)
+          if (/EACCES|ECONNABORTED|ECONNRESET|ETIMEDOUT/i.test(pubMsg) && attempt < maxAttempts) {
+            await sleep(600 * attempt)
+            continue
+          }
+          throw pubErr
+        }
       }
     }
     sendLog(`[API] tunnel 10.66.66.1 fail: ${lastErr?.message || lastErr} → HTTPS ${SERVER_IP_FALLBACK}`)
@@ -1600,6 +1663,7 @@ app.whenReady().then(() => {
   }
   createWindow()
   createTray()
+  warmVkExcludeIps()
   // Предыдущее фоновое forceStop на старте убрано: оно могло сбивать подключение при раннем клике.
 })
 

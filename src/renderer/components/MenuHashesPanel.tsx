@@ -56,6 +56,21 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
   const [totalWorkers, setTotalWorkers] = useState(() => getTotalWorkers(activeHashCount))
 
   useEffect(() => {
+    setItems(getSavedHashItems())
+    setSavedAt(getSavedHashItemsUpdatedAt())
+    setTotalWorkers(getTotalWorkers(
+      Math.min(
+        Math.max(
+          getSavedHashItems().filter(i => i.status === 'active' && i.is_active && i.hash?.trim()).length,
+          1,
+        ),
+        MAX_HASHES,
+      ),
+    ))
+  }, [])
+
+  useEffect(() => {
+    // Не затирать выбор пользователя при remount/ConfigSync — только подтянуть из storage.
     setTotalWorkers(getTotalWorkers(activeHashCount))
   }, [activeHashCount])
 
@@ -63,10 +78,6 @@ export default function MenuHashesPanel({ fg, muted, onBack, vpnConnected = fals
     () => normalizeTotalWorkers(totalWorkers, activeHashCount),
     [totalWorkers, activeHashCount],
   )
-  useEffect(() => {
-    setItems(getSavedHashItems())
-    setSavedAt(getSavedHashItemsUpdatedAt())
-  }, [])
 
   const serverHashRows = serverItems.filter(i => i.source !== 'bootstrap')
 

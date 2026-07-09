@@ -7,6 +7,7 @@ const dns = require('dns').promises
 const VK_HOSTS = [
   'api.vk.ru',
   'api.vk.com',
+  'api.vk.me',
   'login.vk.ru',
   'login.vk.com',
   'id.vk.ru',
@@ -29,19 +30,26 @@ async function resolveVkExcludeIps() {
   if (cachedIps && now - cacheAt < CACHE_MS) return cachedIps
 
   const out = new Set()
-  for (const host of VK_HOSTS) {
-    try {
-      const addrs = await dns.resolve4(host)
-      for (const ip of addrs) {
-        if (IPV4.test(ip)) out.add(ip)
+  await Promise.all(
+    VK_HOSTS.map(async (host) => {
+      try {
+        const addrs = await dns.resolve4(host)
+        for (const ip of addrs) {
+          if (IPV4.test(ip)) out.add(ip)
+        }
+      } catch {
+        /* ignore */
       }
-    } catch {
-      /* ignore */
-    }
-  }
+    }),
+  )
   cachedIps = [...out]
   cacheAt = now
   return cachedIps
 }
 
-module.exports = { resolveVkExcludeIps, VK_HOSTS }
+/** Прогрев DNS при старте приложения — connect не ждёт resolve. */
+function warmVkExcludeIps() {
+  void resolveVkExcludeIps()
+}
+
+module.exports = { resolveVkExcludeIps, warmVkExcludeIps, VK_HOSTS }

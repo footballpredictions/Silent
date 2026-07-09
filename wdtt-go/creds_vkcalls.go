@@ -138,6 +138,8 @@ func getVKCredsViaVKCallsPath(ctx context.Context, link string, streamID int) (s
 		tlsclient.WithTimeoutSeconds(20),
 		tlsclient.WithClientProfile(profiles.Chrome_146),
 		tlsclient.WithCookieJar(tlsclient.NewCookieJar()),
+		// LAN bind: VK Auth не уходит в WG (иначе EACCES при early full).
+		tlsclient.WithDialer(newVkDirectDialer()),
 	)
 	if err != nil {
 		return "", "", nil, newVKCallsFailure("setup", vkCallsFailureSetup, fmt.Errorf("create tls client: %w", err))

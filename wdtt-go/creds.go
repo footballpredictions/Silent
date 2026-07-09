@@ -246,8 +246,8 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (str
 	vkRequestMu.Lock()
 	defer vkRequestMu.Unlock()
 
-	// Throttle: 3-6 seconds between requests
-	minInterval := 2*time.Second + time.Duration(rand.Intn(2000))*time.Millisecond
+	// Throttle: ~1–2s между VK Auth (было 2–4s — при 12 группах минуты ожидания)
+	minInterval := 1*time.Second + time.Duration(rand.Intn(800))*time.Millisecond
 	elapsed := time.Since(globalLastVkFetchTime)
 
 	if !globalLastVkFetchTime.IsZero() && elapsed < minInterval {

@@ -80,9 +80,10 @@ fun LoginScreen(
     initialEmail: String = "",
     initialPassword: String = "",
     initialRememberMe: Boolean = false,
+    initialReferralOrPromo: String = "",
     forgotSent: Boolean = false,
     onLogin: (email: String, password: String, rememberMe: Boolean) -> Unit,
-    onRegister: (email: String, password: String, rememberMe: Boolean) -> Unit,
+    onRegister: (email: String, password: String, rememberMe: Boolean, referralOrPromo: String) -> Unit,
     onForgotPassword: (email: String) -> Unit,
     onClearForgotSent: () -> Unit = {},
     loading: Boolean,
@@ -101,9 +102,12 @@ fun LoginScreen(
 ) {
     val ui = remember(theme) { theme.toLoginUi() }
     var step by remember { mutableStateOf(LoginStep.AUTH) }
-    var tab by remember { mutableStateOf("login") }
+    var tab by remember(initialReferralOrPromo) {
+        mutableStateOf(if (initialReferralOrPromo.isNotBlank()) "register" else "login")
+    }
     var email by remember(initialEmail) { mutableStateOf(initialEmail) }
     var password by remember(initialPassword) { mutableStateOf(initialPassword) }
+    var referralOrPromo by remember(initialReferralOrPromo) { mutableStateOf(initialReferralOrPromo) }
     var showPassword by remember { mutableStateOf(false) }
     var rememberMe by remember(initialRememberMe) { mutableStateOf(initialRememberMe) }
     var showDebugLog by remember { mutableStateOf(false) }
@@ -118,6 +122,15 @@ fun LoginScreen(
     val forgotLabel = theme?.login_forgot_password_label ?: "Забыли пароль?"
     val forgotTitle = theme?.login_forgot_title ?: "Восстановление пароля"
     val forgotHint = theme?.login_forgot_instruction ?: "Введите email — мы отправим ссылку."
+    val refPromoLabel = theme?.register_referral_or_promo_label ?: "Промокод или реферальный код"
+    val refPromoHint = theme?.register_referral_or_promo_hint ?: "Необязательно"
+
+    LaunchedEffect(initialReferralOrPromo) {
+        if (initialReferralOrPromo.isNotBlank()) {
+            referralOrPromo = initialReferralOrPromo
+            tab = "register"
+        }
+    }
 
     val bootstrapMin = if (isTv) 3 else 2
     val expiredMessage = statusMsg.ifBlank {
@@ -318,6 +331,19 @@ fun LoginScreen(
                                             }
                                         },
                                     )
+                                    if (tab == "register") {
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        Text(refPromoLabel, color = ui.label, fontSize = 12.sp)
+                                        OutlinedTextField(
+                                            value = referralOrPromo,
+                                            onValueChange = { referralOrPromo = it },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            placeholder = { Text(refPromoHint, fontSize = fieldFontSize, color = ui.fieldPlaceholder) },
+                                            singleLine = true,
+                                            shape = RoundedCornerShape(12.dp),
+                                            colors = fieldColors,
+                                        )
+                                    }
                                     Row(
                                         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -401,7 +427,7 @@ fun LoginScreen(
                                     TvPrimaryButton(
                                         onClick = {
                                             if (tab == "login") onLogin(email.trim(), password, rememberMe)
-                                            else onRegister(email.trim(), password, rememberMe)
+                                            else onRegister(email.trim(), password, rememberMe, referralOrPromo.trim())
                                         },
                                         enabled = !loading && bootstrapReady && email.isNotBlank() && password.isNotBlank(),
                                         modifier = Modifier.fillMaxWidth().height(btnHeight),

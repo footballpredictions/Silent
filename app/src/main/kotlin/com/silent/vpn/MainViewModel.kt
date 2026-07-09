@@ -23,6 +23,7 @@ import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.data.toHashItems
 import com.silent.vpn.data.PromoCheckRequest
+import com.silent.vpn.data.ReferralInfo
 import com.silent.vpn.data.RegisterRequest
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.data.ThemeData
@@ -103,6 +104,9 @@ class MainViewModel @Inject constructor(
 
     private val _regEmail = MutableStateFlow("")
     val regEmail: StateFlow<String> = _regEmail
+
+    private val _pendingReferralCode = MutableStateFlow("")
+    val pendingReferralCode: StateFlow<String> = _pendingReferralCode
 
     private val _bootstrapHash = MutableStateFlow(repo.getBootstrapHash())
     val bootstrapHash: StateFlow<String?> = _bootstrapHash
@@ -1719,7 +1723,7 @@ class MainViewModel @Inject constructor(
         return true
     }
 
-    fun register(email: String, password: String, rememberMe: Boolean) {
+    fun register(email: String, password: String, rememberMe: Boolean, referralOrPromo: String = "") {
         viewModelScope.launch {
             _authLoading.value = true
             _authError.value = null
@@ -1731,7 +1735,7 @@ class MainViewModel @Inject constructor(
                 }
                 awaitTunnelApiReady()
                 withBootstrapBackendApi {
-                    val res = registerAttempt(email, password)
+                    val res = registerAttempt(email, password, referralOrPromo)
                     if (!res.isSuccessful) {
                         _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Ошибка регистрации"
                         restartBootstrapTimerIfNeeded()
@@ -1755,17 +1759,22 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun registerAttempt(email: String, password: String): retrofit2.Response<Map<String, String>> {
+    private suspend fun registerAttempt(
+        email: String,
+        password: String,
+        referralOrPromo: String = "",
+    ): retrofit2.Response<Map<String, String>> {
         awaitTunnelApiReady()
         val bases = preLoginApiBases()
         if (bases.isEmpty()) {
             throw Exception("VPN ещё не готов. Дождитесь «Канал готов» на шаге 1.")
         }
         var lastError: Exception? = null
+        val code = referralOrPromo.trim().ifBlank { null }
         for (base in bases) {
             try {
                 repo.useApiBase(base)
-                val res = repo.getApi().register(RegisterRequest(email, password))
+                val res = repo.getApi().register(RegisterRequest(email, password, code))
                 DebugLog.i("MainViewModel", "register HTTP ${res.code()} on $base")
                 if (res.isSuccessful || res.code() in 400..499) return res
                 lastError = Exception(parseError(res.errorBody()?.string() ?: "") ?: "HTTP ${res.code()}")
@@ -2614,6 +2623,18 @@ class MainViewModel @Inject constructor(
         return parseError(res.errorBody()?.string() ?: "") ?: "Не найден"
     }
 
+    fun applyReferralDeepLink(code: String) {
+        val cleaned = code.trim()
+        if (cleaned.isBlank()) return
+        if (repo.isLoggedIn()) return
+        _pendingReferralCode.value = cleaned
+        _screen.value = AppScreen.LOGIN
+    }
+
+    fun clearPendingReferralCode() {
+        _pendingReferralCode.value = ""
+    }
+
     fun checkPromo(code: String, onResult: (String) -> Unit) {
         viewModelScope.launch {
             if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
@@ -2637,6 +2658,17 @@ class MainViewModel @Inject constructor(
             }.onSuccess { onResult(it) }.onFailure { e ->
                 onResult(repo.humanizeHashFetchError(e.message))
             }
+        }
+    }
+
+    fun loadReferral(onResult: (ReferralInfo?) -> Unit) {
+        viewModelScope.launch {
+            runCatching {
+                repo.withUserBackendApi {
+                    val res = repo.getApi().getReferral()
+                    if (res.isSuccessful) res.body() else null
+                }
+            }.onSuccess { onResult(it) }.onFailure { onResult(null) }
         }
     }
 
@@ -2739,6 +2771,13 @@ class MainViewModel @Inject constructor(
     private fun applyServerProfile(profile: UserProfile, force: Boolean = false) {
         if (!force && shouldDeferProfileUntilSync()) {
             repo.saveCachedProfile(profile)
+            return
+        }
+        // Сессию удалили с другого устройства — выходим из аккаунта.
+        val sid = _sessionDeviceId.value ?: repo.getSessionDeviceId()
+        if (!sid.isNullOrBlank() && !sid.startsWith("boot:") && profile.devices.none { it.id == sid }) {
+            DebugLog.w("MainViewModel", "current session missing in profile — logout")
+            logout(appContext)
             return
         }
         _profile.value = profile

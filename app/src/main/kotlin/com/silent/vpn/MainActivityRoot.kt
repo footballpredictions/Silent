@@ -54,9 +54,11 @@ fun MainActivityRoot(
     val updateDownloading by vm.updateDownloading.collectAsState()
     val forgotSent by vm.forgotSent.collectAsState()
     val bootstrapExpired by vm.bootstrapExpired.collectAsState()
+    val pendingReferralCode by vm.pendingReferralCode.collectAsState()
 
     LaunchedEffect(Unit) {
         activity.handleTileConnectIntent(initialIntent)
+        activity.handleReferralDeepLink(initialIntent)
     }
 
     LaunchedEffect(vpnPermissionGranted.value) {
@@ -94,11 +96,14 @@ fun MainActivityRoot(
                         initialEmail = vm.lastEmail,
                         initialPassword = vm.lastPassword,
                         initialRememberMe = vm.rememberMe,
+                        initialReferralOrPromo = pendingReferralCode,
                         forgotSent = forgotSent,
                         onLogin = { email, password, remember ->
                             vm.login(email, password, remember, activity)
                         },
-                        onRegister = vm::register,
+                        onRegister = { email, password, remember, referral ->
+                            vm.register(email, password, remember, referral)
+                        },
                         onForgotPassword = vm::forgotPassword,
                         onClearForgotSent = vm::clearForgotSent,
                         loading = authLoading,
@@ -146,6 +151,7 @@ fun MainActivityRoot(
                         onLogout = { vm.logout(activity) },
                         onClearVpnError = vm::clearVpnError,
                         onCheckPromo = vm::checkPromo,
+                        onLoadReferral = vm::loadReferral,
                         onInitPayment = vm::initPayment,
                         onOpenUrl = { url ->
                             activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))

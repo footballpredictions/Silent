@@ -174,6 +174,16 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         handleNotificationOpenIntent(intent)
         handleTileConnectIntent(intent)
+        handleReferralDeepLink(intent)
+    }
+
+    fun handleReferralDeepLink(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme != "silentvpn" || data.host != "ref") return
+        val code = data.getQueryParameter("code")?.trim().orEmpty()
+        if (code.isBlank()) return
+        intent.data = null
+        vm?.applyReferralDeepLink(code)
     }
 
     private fun handleNotificationOpenIntent(intent: Intent?) {

@@ -16,7 +16,11 @@ data class LoginRequest(
     val password: String,
     val device: LoginDeviceInfo? = null,
 )
-data class RegisterRequest(val email: String, val password: String)
+data class RegisterRequest(
+    val email: String,
+    val password: String,
+    val referral_or_promo: String? = null,
+)
 data class ForgotPasswordRequest(val email: String)
 data class TokenResponse(val access_token: String, val refresh_token: String)
 data class RefreshRequest(val refresh_token: String)
@@ -172,6 +176,18 @@ data class ThemeData(
     val login_reset_title: String = "Новый пароль",
     val login_reset_button_text: String = "Сохранить пароль",
     val hive_standby_api_urls: String = "",
+    val menu_bonuses_label: String = "Бонусы",
+    val bonuses_title: String = "Бонусы",
+    val bonuses_intro_text: String = "",
+    val bonuses_referral_title: String = "Ваша ссылка",
+    val bonuses_referral_hint: String = "Скопируйте и отправьте другу",
+    val bonuses_promo_title: String = "Промокод",
+    val bonuses_promo_hint: String = "Проверить скидку к тарифу",
+    val bonuses_rules_text: String = "",
+    val bonuses_copy_link_label: String = "Копировать ссылку",
+    val bonuses_copy_code_label: String = "Копировать код",
+    val register_referral_or_promo_label: String = "Промокод или реферальный код",
+    val register_referral_or_promo_hint: String = "Необязательно. Введите промокод или код из реферальной ссылки.",
 )
 
 data class PaymentInitRequest(val plan_type: String, val promo_code: String? = null)
@@ -184,6 +200,15 @@ data class PromoCheckResponse(
     val extra_days: Int,
     val original_price: Double,
     val discounted_price: Double,
+)
+
+data class ReferralInfo(
+    val referral_code: String,
+    val referral_link: String,
+    val invited_count: Int = 0,
+    val rewarded_count: Int = 0,
+    val pending_count: Int = 0,
+    val bonus_days: Int = 30,
 )
 
 data class UpdateCheckResponse(
@@ -222,6 +247,9 @@ interface SilentApi {
 
     @GET("api/users/me")
     suspend fun getProfile(): Response<UserProfile>
+
+    @GET("api/users/me/referral")
+    suspend fun getReferral(): Response<ReferralInfo>
 
     @PATCH("api/users/devices/{deviceId}")
     suspend fun renameDevice(

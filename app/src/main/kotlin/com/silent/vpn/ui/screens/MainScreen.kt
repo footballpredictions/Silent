@@ -238,7 +238,7 @@ private fun VpnToggleThumb(
 
 enum class VpnState { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
 
-private enum class MenuPage { ROOT, SUBSCRIPTION, EXCEPTIONS, VK_CRED, HASHES, PROMO, DEVICES, SUPPORT, ABOUT }
+private enum class MenuPage { ROOT, SUBSCRIPTION, EXCEPTIONS, VK_CRED, HASHES, BONUSES, DEVICES, SUPPORT, ABOUT }
 
 private fun deviceTypeLabel(type: String): String = when (type.lowercase()) {
     "android" -> "Android"
@@ -274,6 +274,7 @@ fun MainScreen(
     onLogout: () -> Unit,
     onClearVpnError: () -> Unit,
     onCheckPromo: (String, (String) -> Unit) -> Unit,
+    onLoadReferral: ((com.silent.vpn.data.ReferralInfo?) -> Unit) -> Unit = {},
     onInitPayment: (String, (String) -> Unit, (String) -> Unit) -> Unit,
     onOpenUrl: (String) -> Unit,
     onShowError: (String) -> Unit,
@@ -301,6 +302,8 @@ fun MainScreen(
     var menuPage by remember { mutableStateOf(MenuPage.ROOT) }
     var promoCode by remember { mutableStateOf("") }
     var promoMsg by remember { mutableStateOf("") }
+    var referralInfo by remember { mutableStateOf<com.silent.vpn.data.ReferralInfo?>(null) }
+    var referralCopyMsg by remember { mutableStateOf("") }
     var showDebugLog by remember { mutableStateOf(false) }
 
     LaunchedEffect(menuOpen, menuPage) {
@@ -648,7 +651,7 @@ fun MainScreen(
                                 )
                             }
                             if (BuildConfig.DEBUG) add(Triple(MenuPage.HASHES, "Хеши", null))
-                            add(Triple(MenuPage.PROMO, "Промокод", null))
+                            add(Triple(MenuPage.BONUSES, theme?.menu_bonuses_label?.takeIf { it.isNotBlank() } ?: "Бонусы", null))
                             add(Triple(MenuPage.DEVICES, "Сессии (${profile?.sessionsBadge() ?: "0/3"})", null))
                             add(Triple(MenuPage.SUPPORT, "Поддержка", null))
                             add(Triple(MenuPage.ABOUT, "О сервисе", null))
@@ -665,7 +668,12 @@ fun MainScreen(
                                 key = { (page, _, _) -> page.name },
                             ) { (page, label, badge) ->
                                 val text = if (badge != null) "$label  ·  $badge" else label
-                                MenuNavItem(label = text, fg = fg, onClick = { menuPage = page })
+                                MenuNavItem(label = text, fg = fg, onClick = {
+                                    menuPage = page
+                                    if (page == MenuPage.BONUSES) {
+                                        onLoadReferral { referralInfo = it }
+                                    }
+                                })
                             }
                             item(key = "logout") {
                                 MenuNavLogout(onClick = { onLogout(); menuOpen = false })
@@ -696,7 +704,31 @@ fun MainScreen(
                         MenuPage.EXCEPTIONS -> AppExclusionsScreen(repo, fg, bg) { menuPage = MenuPage.ROOT }
                         MenuPage.VK_CRED -> MenuVkCredModeScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.HASHES -> MenuHashesScreen(repo, fg) { menuPage = MenuPage.ROOT }
-                        MenuPage.PROMO -> MenuPromo(fg, bg, promoCode, { promoCode = it }, promoMsg, { onCheckPromo(promoCode) { promoMsg = it } }) { menuPage = MenuPage.ROOT }
+                        MenuPage.BONUSES -> {
+                            val context = androidx.compose.ui.platform.LocalContext.current
+                            MenuBonuses(
+                                theme = theme,
+                                fg = fg,
+                                bg = bg,
+                                referralInfo = referralInfo,
+                                referralCopyMsg = referralCopyMsg,
+                                onCopyText = { text, okMsg ->
+                                    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                        as? android.content.ClipboardManager
+                                    if (cm != null) {
+                                        cm.setPrimaryClip(android.content.ClipData.newPlainText("Silent VPN", text))
+                                        referralCopyMsg = okMsg
+                                    } else {
+                                        referralCopyMsg = "Не удалось скопировать"
+                                    }
+                                },
+                                promoCode = promoCode,
+                                onPromoChange = { promoCode = it },
+                                promoMsg = promoMsg,
+                                onCheckPromo = { onCheckPromo(promoCode) { promoMsg = it } },
+                                onBack = { menuPage = MenuPage.ROOT },
+                            )
+                        }
                         MenuPage.DEVICES -> MenuDevices(
                             profile,
                             fg,
@@ -890,27 +922,123 @@ private fun MenuSubscription(
 }
 
 @Composable
-private fun MenuPromo(fg: Color, bg: Color, promoCode: String, onPromoChange: (String) -> Unit, promoMsg: String, onApply: () -> Unit, onBack: () -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+private fun MenuBonuses(
+    theme: ThemeData?,
+    fg: Color,
+    bg: Color,
+    referralInfo: com.silent.vpn.data.ReferralInfo?,
+    referralCopyMsg: String,
+    onCopyText: (String, String) -> Unit,
+    promoCode: String,
+    onPromoChange: (String) -> Unit,
+    promoMsg: String,
+    onCheckPromo: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val title = theme?.bonuses_title?.takeIf { it.isNotBlank() }
+        ?: theme?.menu_bonuses_label?.takeIf { it.isNotBlank() }
+        ?: "Бонусы"
+    Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
         TvTextButton(
             onClick = onBack,
             modifier = Modifier.padding(bottom = 16.dp),
             requestFocusOnOpen = true,
-            requestFocusKey = "promo",
+            requestFocusKey = "bonuses",
         ) {
             Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
         }
-        Text("Промокод", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
-        OutlinedTextField(value = promoCode, onValueChange = onPromoChange, placeholder = { Text("Введите код") }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), shape = RoundedCornerShape(12.dp))
+        Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        val intro = theme?.bonuses_intro_text?.takeIf { it.isNotBlank() }
+            ?: theme?.bonuses_rules_text?.takeIf { it.isNotBlank() }
+            ?: "Рефералка: отправьте другу ссылку или код. Он регистрируется по ним и оплачивает любую подписку — оба получаете +30 дней. Один бонус на одного друга, до 10 наград за 30 дней.\n\nПромокод: отдельная скидка или доп. дни к тарифу — вводится при регистрации или проверяется здесь.\n\nУсловия программы могут измениться."
+        Text(
+            intro,
+            fontSize = 11.sp,
+            color = fg.copy(alpha = 0.5f),
+            modifier = Modifier.padding(top = 8.dp, bottom = 12.dp),
+        )
+        Text(
+            theme?.bonuses_referral_title?.takeIf { it.isNotBlank() } ?: "Ваша ссылка",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = fg,
+        )
+        Text(
+            theme?.bonuses_referral_hint?.takeIf { it.isNotBlank() } ?: "Скопируйте и отправьте другу",
+            fontSize = 11.sp,
+            color = fg.copy(alpha = 0.5f),
+            modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+        )
+        OutlinedTextField(
+            value = referralInfo?.referral_link ?: "…",
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+        )
         TvPrimaryButton(
-            onClick = onApply,
+            onClick = {
+                val link = referralInfo?.referral_link ?: return@TvPrimaryButton
+                onCopyText(link, "Ссылка скопирована")
+            },
             colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = bg),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
         ) {
-            Text("Применить", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(theme?.bonuses_copy_link_label ?: "Копировать ссылку", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
         }
-        if (promoMsg.isNotBlank()) Text(promoMsg, fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
+        if (referralInfo != null) {
+            Text(
+                "Приглашено: ${referralInfo.invited_count} · Награждено: ${referralInfo.rewarded_count}" +
+                    if (referralInfo.pending_count > 0) " · Ожидают оплату: ${referralInfo.pending_count}" else "",
+                fontSize = 11.sp,
+                color = fg.copy(alpha = 0.5f),
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        if (referralCopyMsg.isNotBlank()) {
+            Text(referralCopyMsg, fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 6.dp).fillMaxWidth(), textAlign = TextAlign.Center)
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            theme?.bonuses_promo_title?.takeIf { it.isNotBlank() } ?: "Промокод",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = fg,
+        )
+        Text(
+            theme?.bonuses_promo_hint?.takeIf { it.isNotBlank() } ?: "Проверить скидку к тарифу",
+            fontSize = 11.sp,
+            color = fg.copy(alpha = 0.5f),
+            modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+        )
+        OutlinedTextField(
+            value = promoCode,
+            onValueChange = onPromoChange,
+            placeholder = { Text("Введите код") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+        )
+        TvPrimaryButton(
+            onClick = onCheckPromo,
+            colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = bg),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        ) {
+            Text("Проверить", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+        if (promoMsg.isNotBlank()) {
+            Text(promoMsg, fontSize = 12.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
+        }
+        val footer = theme?.bonuses_rules_text?.takeIf { it.isNotBlank() }
+        if (footer != null && footer != intro) {
+            Text(
+                footer,
+                fontSize = 11.sp,
+                color = fg.copy(alpha = 0.5f),
+                modifier = Modifier.padding(top = 16.dp),
+            )
+        }
     }
 }
 

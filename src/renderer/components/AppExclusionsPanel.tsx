@@ -9,10 +9,69 @@ import {
 interface Props {
   fg: string
   muted: string
+  bg: string
+  fieldBg: string
+  fieldText: string
+  fieldPlaceholder: string
+  border: string
+  borderStrong: string
+  dark: boolean
   onBack: () => void
 }
 
-export default function AppExclusionsPanel({ fg, muted, onBack }: Props) {
+function ThemeCheck({
+  checked,
+  dark,
+  fg,
+  bg,
+}: {
+  checked: boolean
+  dark: boolean
+  fg: string
+  bg: string
+}) {
+  const border = dark ? '#FFFFFF' : fg
+  const fill = !checked ? 'transparent' : dark ? '#000000' : fg
+  const mark = dark ? '#FFFFFF' : bg
+  return (
+    <span
+      className="shrink-0 inline-flex items-center justify-center rounded"
+      style={{
+        width: 18,
+        height: 18,
+        border: `1.5px solid ${border}`,
+        background: fill,
+        boxSizing: 'border-box',
+      }}
+      aria-hidden
+    >
+      {checked && (
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+          <path
+            d="M2.5 6.2L4.8 8.5L9.5 3.5"
+            stroke={mark}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      )}
+    </span>
+  )
+}
+
+export default function AppExclusionsPanel({
+  fg,
+  muted,
+  bg,
+  fieldBg,
+  fieldText,
+  fieldPlaceholder,
+  border,
+  borderStrong,
+  dark,
+  onBack,
+}: Props) {
   const [apps, setApps] = useState<PcAppItem[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -58,9 +117,20 @@ export default function AppExclusionsPanel({ fg, muted, onBack }: Props) {
       })
   }, [apps, selected, search, showSystemApps])
 
+  const inactiveBtn = {
+    border: `1px solid ${borderStrong}`,
+    color: fg,
+    background: 'transparent',
+  }
+  const activeBtn = {
+    border: `1px solid ${fg}`,
+    color: bg,
+    background: fg,
+  }
+
   return (
     <div className="flex-1 p-4 overflow-y-auto text-left w-full self-stretch items-start">
-      <button type="button" onClick={onBack} className="text-xs text-gray-400 mb-4 block text-left">
+      <button type="button" onClick={onBack} className="text-xs mb-4 block text-left" style={{ color: muted }}>
         ← Назад
       </button>
       <div className="text-sm font-bold mb-1 text-left w-full" style={{ color: fg }}>
@@ -79,7 +149,8 @@ export default function AppExclusionsPanel({ fg, muted, onBack }: Props) {
               persist(next, false)
             }
           }}
-          className={`px-2 py-1 rounded-lg text-xs border ${!whitelist ? 'bg-black text-white border-black' : 'border-gray-200'}`}
+          className="px-2 py-1 rounded-lg text-xs"
+          style={!whitelist ? activeBtn : inactiveBtn}
         >
           ЧС
         </button>
@@ -91,33 +162,47 @@ export default function AppExclusionsPanel({ fg, muted, onBack }: Props) {
               persist(next, true)
             }
           }}
-          className={`px-2 py-1 rounded-lg text-xs border ${whitelist ? 'bg-black text-white border-black' : 'border-gray-200'}`}
+          className="px-2 py-1 rounded-lg text-xs"
+          style={whitelist ? activeBtn : inactiveBtn}
         >
           БС
         </button>
       </div>
 
-      <label className="flex items-center justify-between gap-2 mb-2 text-xs" style={{ color: fg }}>
+      <label className="flex items-center justify-between gap-2 mb-2 text-xs cursor-pointer" style={{ color: fg }}>
         <span>Показать системные</span>
-        <input
-          type="checkbox"
-          checked={showSystemApps}
-          onChange={e => setShowSystemApps(e.target.checked)}
-          className="accent-black"
-        />
+        <button
+          type="button"
+          onClick={() => setShowSystemApps(v => !v)}
+          className="p-0 border-0 bg-transparent"
+          aria-pressed={showSystemApps}
+        >
+          <ThemeCheck checked={showSystemApps} dark={dark} fg={fg} bg={bg} />
+        </button>
       </label>
 
       <input
         value={search}
         onChange={e => setSearch(e.target.value)}
         placeholder="Поиск..."
-        className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm mb-3 focus:outline-none focus:border-black"
-        style={{ userSelect: 'text' } as any}
+        className="theme-field w-full rounded-xl px-3 py-2 text-sm mb-3 focus:outline-none"
+        style={{
+          userSelect: 'text',
+          background: fieldBg,
+          color: fieldText,
+          border: `1px solid ${borderStrong}`,
+          ['--field-ph' as any]: fieldPlaceholder,
+        } as any}
+        onFocus={e => { e.currentTarget.style.borderColor = fg }}
+        onBlur={e => { e.currentTarget.style.borderColor = borderStrong }}
       />
 
       {loading ? (
         <div className="flex justify-center py-8">
-          <div className="w-5 h-5 border-2 rounded-full animate-spin border-gray-200 border-t-black" />
+          <div
+            className="w-5 h-5 border-2 rounded-full animate-spin"
+            style={{ borderColor: border, borderTopColor: fg }}
+          />
         </div>
       ) : (
         <div className="space-y-1">
@@ -132,12 +217,15 @@ export default function AppExclusionsPanel({ fg, muted, onBack }: Props) {
                   else next.add(app.id)
                   persist(next)
                 }}
-                className="w-full flex items-center gap-2 py-2 px-1 rounded-lg hover:bg-gray-50 text-left"
+                className="w-full flex items-center gap-2 py-2 px-1 rounded-lg text-left"
+                style={{ background: 'transparent' }}
+                onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = dark ? '#1F1F26' : '#F9FAFB' }}
+                onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
               >
                 {app.icon ? (
                   <img src={app.icon} alt="" className="w-9 h-9 rounded-lg object-contain shrink-0" />
                 ) : (
-                  <div className="w-9 h-9 rounded-lg bg-gray-100 shrink-0" />
+                  <div className="w-9 h-9 rounded-lg shrink-0" style={{ background: fieldBg }} />
                 )}
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-medium truncate" style={{ color: fg }}>{app.name}</div>
@@ -145,7 +233,7 @@ export default function AppExclusionsPanel({ fg, muted, onBack }: Props) {
                     <div className="text-[10px] truncate" style={{ color: muted }}>{app.installLocation}</div>
                   )}
                 </div>
-                <input type="checkbox" readOnly checked={checked} className="accent-black shrink-0" />
+                <ThemeCheck checked={checked} dark={dark} fg={fg} bg={bg} />
               </button>
             )
           })}

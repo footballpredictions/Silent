@@ -40,6 +40,12 @@ html, body, #root {
   transform-origin: center center;
 }
 
+/* Dark/light themed inputs — placeholder follows --field-ph */
+.theme-field::placeholder {
+  color: var(--field-ph, #6B7280);
+  opacity: 1;
+}
+
 /* Slide-in drawer */
 @keyframes slideIn {
   from { transform: translateX(-100%); }

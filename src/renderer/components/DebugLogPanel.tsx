@@ -13,7 +13,7 @@ export function DebugLogButton({ onClick }: { onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="px-1.5 py-0 text-[10px] font-medium hover:opacity-70 transition-opacity"
+      className="px-1 py-0 text-[10px] font-medium hover:opacity-70 transition-opacity shrink-0"
       style={{ WebkitAppRegion: 'no-drag', color: '#6B7280' } as React.CSSProperties}
       title="Логи"
     >

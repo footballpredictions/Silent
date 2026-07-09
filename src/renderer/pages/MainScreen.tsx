@@ -26,10 +26,12 @@ import { warmupBrowsingPath } from '../warmupBrowsingPath'
 import SupportTelegramLinks from '../components/SupportTelegramLinks'
 import VpnToggle from '../components/VpnToggle'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
+import ThemeModeToggle from '../components/ThemeModeToggle'
 import WindowControls from '../components/WindowControls'
 import { AppErrorBoundary } from '../components/AppErrorBoundary'
-import { resolveAppName } from '../clientTheme'
-import { menuDrawerStyle, UI_COLORS } from '../uiTokens'
+import { needsNeonGlow, neonTextShadow, resolveThemePalette } from '../clientTheme'
+import { useAppearanceMode } from '../appearanceStore'
+import { menuDrawerStyle } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
 import MenuVkCredModePanel from '../components/MenuVkCredModePanel'
@@ -115,9 +117,6 @@ interface Profile {
 
 type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'vk_cred' | 'hashes' | 'bonuses' | 'support' | 'about'
 
-const GREEN = '#16A34A'
-const TEST_PURPLE = '#9333EA'
-
 const PLAN_LABELS: Record<string, string> = {
   trial: 'Пробный период',
   test: 'Тестовый режим',
@@ -182,6 +181,7 @@ export default function MainScreen({
   const [connected, setConnected] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [disconnecting, setDisconnecting] = useState(false)
+  const [appearanceMode, toggleAppearance] = useAppearanceMode()
   const [profile, setProfile] = useState<Profile | null>(() => getCachedProfile<Profile>())
   const [clientTheme, setClientTheme] = useState<any>(initialTheme)
   const sessionDeviceId = getSessionDeviceId()
@@ -779,18 +779,22 @@ export default function MainScreen({
     }
   }
 
-  const bg = clientTheme?.background_color || '#ffffff'
-  const fg = clientTheme?.text_color || '#000000'
-  const toggleOn = clientTheme?.toggle_on_color || '#000000'
-  const toggleOff = clientTheme?.toggle_off_color || '#cccccc'
-  const fontFamily = clientTheme?.font_family ? `${clientTheme.font_family}, Inter, sans-serif` : 'Inter, sans-serif'
-  const appTitle = resolveAppName(clientTheme?.app_name).toUpperCase()
-  const muted = `${fg}66`
-  const updateBarBg = clientTheme?.update_bar_background_color || '#2563EB'
-  const updateBarFg = clientTheme?.update_bar_text_color || '#FFFFFF'
-  const updateBarProgress = clientTheme?.update_bar_progress_color || '#1D4ED8'
+  const palette = resolveThemePalette(clientTheme, appearanceMode)
+  const bg = palette.bg
+  const fg = palette.fg
+  const toggleOn = palette.toggleOn
+  const toggleOff = palette.toggleOff
+  const fontFamily = palette.fontFamily
+  const appTitle = palette.appTitle
+  const muted = palette.muted
+  const border = palette.border
+  const updateBarBg = palette.updateBarBg
+  const updateBarFg = palette.updateBarFg
+  const updateBarProgress = palette.updateBarProgress
   const updateLabelAvailable = clientTheme?.update_bar_label_available || 'Доступно обновление'
   const updateLabelDownloading = clientTheme?.update_bar_label_downloading || 'Скачивание…'
+  const GREEN = palette.green
+  const TEST_PURPLE = palette.purple
 
   const statusLabel = disconnecting
     ? 'Отключение…'
@@ -799,32 +803,40 @@ export default function MainScreen({
     : connected
       ? 'Подключено'
       : 'Отключено'
-  const statusColor = connecting || disconnecting ? `${fg}99` : connected ? GREEN : muted
+  const statusColor = connecting || disconnecting ? muted : connected ? GREEN : muted
+  const statusGlow = needsNeonGlow(statusColor, palette.dark) ? neonTextShadow(statusColor) : undefined
   const localOnline = connected || connecting || disconnecting
 
   return (
     <div className="relative flex flex-col h-full overflow-hidden" style={{ background: bg, color: fg, fontFamily }}>
       <div
-        className="h-9 flex-shrink-0 relative flex items-center border-b border-gray-100 px-2"
-        style={{ WebkitAppRegion: 'drag', background: bg } as React.CSSProperties}
+        className="h-9 flex-shrink-0 relative flex items-center border-b px-1.5"
+        style={{ WebkitAppRegion: 'drag', background: bg, borderColor: border } as React.CSSProperties}
       >
-        <button
-          onClick={() => { setMenuOpen(true); setMenuPage(null) }}
-          style={{ WebkitAppRegion: 'no-drag', color: fg } as React.CSSProperties}
-          className="p-1 hover:opacity-60 transition-opacity z-10"
+        {/* Равные боковые слоты → заголовок визуально по центру окна */}
+        <div
+          className="w-[76px] shrink-0 flex items-center justify-start"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
-          <Menu className="w-4 h-4" />
-        </button>
+          <button
+            onClick={() => { setMenuOpen(true); setMenuPage(null) }}
+            style={{ color: fg }}
+            className="p-1 hover:opacity-60 transition-opacity"
+          >
+            <Menu className="w-4 h-4" />
+          </button>
+        </div>
         <span
-          className="absolute left-1/2 -translate-x-1/2 text-xs font-bold tracking-widest truncate max-w-[120px] pointer-events-none"
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-xs font-bold tracking-widest truncate max-w-[100px] pointer-events-none text-center"
           style={{ color: fg }}
         >
           {appTitle}
         </span>
         <div
-          className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2 z-10"
+          className="ml-auto w-[76px] shrink-0 flex items-center justify-end gap-0"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
+          <ThemeModeToggle mode={appearanceMode} onToggle={toggleAppearance} color={fg} />
           <DebugLogButton onClick={() => setShowDebugLog(true)} />
           <WindowControls />
         </div>
@@ -832,7 +844,10 @@ export default function MainScreen({
 
       <div className="flex-1 flex flex-col items-center justify-center pb-16 gap-6 px-4">
         <div className="text-center">
-          <div className="text-xs font-medium tracking-widest uppercase" style={{ color: statusColor, letterSpacing: '0.15em' }}>
+          <div
+            className="text-xs font-medium tracking-widest uppercase"
+            style={{ color: statusColor, letterSpacing: '0.15em', textShadow: statusGlow }}
+          >
             {statusLabel}
           </div>
         </div>
@@ -849,7 +864,7 @@ export default function MainScreen({
         />
       </div>
 
-      <div className="absolute bottom-0 left-0 right-0 p-4 border-t" style={{ background: bg, borderColor: '#F3F4F6' }}>
+      <div className="absolute bottom-0 left-0 right-0 p-4 border-t" style={{ background: bg, borderColor: border }}>
         {updateInfo?.available ? (
           <button
             onClick={() => void handleUpdateClick()}
@@ -915,22 +930,30 @@ export default function MainScreen({
               value={renameText}
               onChange={e => setRenameText(e.target.value.slice(0, 64))}
               placeholder="Например: Рабочий ПК"
-              className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm mb-3 focus:outline-none focus:border-black"
-              style={{ userSelect: 'text' } as any}
+              className="theme-field w-full rounded-xl px-3 py-2 text-sm mb-3 focus:outline-none"
+              style={{
+                userSelect: 'text',
+                background: palette.fieldBg,
+                color: palette.fieldText,
+                border: `1px solid ${palette.borderStrong}`,
+                ['--field-ph' as any]: palette.fieldPlaceholder,
+              } as any}
               autoFocus
             />
             <div className="flex gap-2">
               <button
                 onClick={() => setRenameTarget(null)}
                 disabled={renameSaving}
-                className="flex-1 py-2 text-xs rounded-xl border border-gray-200"
+                className="flex-1 py-2 text-xs rounded-xl"
+                style={{ border: `1px solid ${palette.borderStrong}`, color: fg, background: 'transparent' }}
               >
                 Отмена
               </button>
               <button
                 onClick={saveRename}
                 disabled={renameSaving}
-                className="flex-1 py-2 text-xs rounded-xl text-white bg-black disabled:opacity-50"
+                className="flex-1 py-2 text-xs rounded-xl disabled:opacity-50"
+                style={{ background: fg, color: bg }}
               >
                 Сохранить
               </button>
@@ -943,11 +966,11 @@ export default function MainScreen({
         <div className="absolute inset-0 z-50 flex">
           <div
             className="h-full flex flex-col"
-            style={{ ...menuDrawerStyle, background: bg, borderRight: `1px solid ${UI_COLORS.gray200}` }}
+            style={{ ...menuDrawerStyle, background: bg, borderRight: `1px solid ${palette.borderStrong}` }}
           >
             <div
               className="p-4 flex items-center justify-between"
-              style={{ borderBottom: `1px solid ${UI_COLORS.gray100}` }}
+              style={{ borderBottom: `1px solid ${palette.border}` }}
             >
               <div>
                 <div className="text-xs font-semibold truncate max-w-[140px]">{profile?.email || '—'}</div>
@@ -1075,7 +1098,18 @@ export default function MainScreen({
 
           {menuPage === 'exceptions' && (
             <div className="flex-1 flex flex-col min-h-0 w-full h-full items-stretch text-left">
-              <AppExclusionsPanel fg={fg} muted={muted} onBack={() => setMenuPage(null)} />
+              <AppExclusionsPanel
+                fg={fg}
+                muted={muted}
+                bg={bg}
+                fieldBg={palette.fieldBg}
+                fieldText={palette.fieldText}
+                fieldPlaceholder={palette.fieldPlaceholder}
+                border={border}
+                borderStrong={palette.borderStrong}
+                dark={palette.dark}
+                onBack={() => setMenuPage(null)}
+              />
             </div>
           )}
 
@@ -1102,8 +1136,8 @@ export default function MainScreen({
 
           {menuPage === 'bonuses' && (
             <div className="flex-1 p-4 w-full overflow-y-auto">
-              <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
-              <div className="text-sm font-semibold mb-2">
+              <button onClick={() => setMenuPage(null)} className="text-xs mb-4" style={{ color: muted }}>← Назад</button>
+              <div className="text-sm font-semibold mb-2" style={{ color: fg }}>
                 {clientTheme?.bonuses_title || clientTheme?.menu_bonuses_label || 'Бонусы'}
               </div>
               <p className="text-[11px] mb-4 leading-relaxed whitespace-pre-line" style={{ color: muted }}>
@@ -1112,7 +1146,7 @@ export default function MainScreen({
                   || 'Рефералка: отправьте другу ссылку или код. Он регистрируется по ним и оплачивает любую подписку — оба получаете +30 дней. Один бонус на одного друга, до 10 наград за 30 дней.\n\nПромокод: отдельная скидка или доп. дни к тарифу — вводится при регистрации или проверяется здесь.\n\nУсловия программы могут измениться.'}
               </p>
 
-              <div className="text-sm font-semibold mb-1">
+              <div className="text-sm font-semibold mb-1" style={{ color: fg }}>
                 {clientTheme?.bonuses_referral_title || 'Ваша ссылка'}
               </div>
               <p className="text-[11px] mb-2 leading-relaxed" style={{ color: muted }}>
@@ -1122,8 +1156,14 @@ export default function MainScreen({
                 readOnly
                 value={referralInfo?.referral_link || ''}
                 placeholder={referralInfo ? '' : 'Загрузка…'}
-                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs focus:outline-none mb-2"
-                style={{ userSelect: 'text' } as any}
+                className="theme-field w-full rounded-xl px-3 py-2 text-xs focus:outline-none mb-2"
+                style={{
+                  userSelect: 'text',
+                  background: palette.fieldBg,
+                  color: palette.fieldText,
+                  border: `1px solid ${palette.borderStrong}`,
+                  ['--field-ph' as any]: palette.fieldPlaceholder,
+                } as any}
               />
               <button
                 type="button"
@@ -1140,7 +1180,8 @@ export default function MainScreen({
                     setReferralCopyMsg('Не удалось скопировать')
                   }
                 }}
-                className="w-full bg-black text-white rounded-xl py-2 text-xs font-semibold hover:bg-gray-800 transition-colors mb-2"
+                className="w-full rounded-xl py-2 text-xs font-semibold transition-colors mb-2"
+                style={{ background: fg, color: bg }}
               >
                 {referralInfo?.referral_link
                   ? (clientTheme?.bonuses_copy_link_label || 'Копировать ссылку')
@@ -1152,9 +1193,9 @@ export default function MainScreen({
                   {referralInfo.pending_count ? ` · Ожидают оплату: ${referralInfo.pending_count}` : ''}
                 </p>
               )}
-              {referralCopyMsg && <p className="text-xs text-gray-500 mb-3 text-center">{referralCopyMsg}</p>}
+              {referralCopyMsg && <p className="text-xs mb-3 text-center" style={{ color: muted }}>{referralCopyMsg}</p>}
 
-              <div className="text-sm font-semibold mb-1 mt-4">
+              <div className="text-sm font-semibold mb-1 mt-4" style={{ color: fg }}>
                 {clientTheme?.bonuses_promo_title || 'Промокод'}
               </div>
               <p className="text-[11px] mb-2" style={{ color: muted }}>
@@ -1162,17 +1203,24 @@ export default function MainScreen({
               </p>
               <input value={promoCode} onChange={e => setPromoCode(e.target.value)}
                 placeholder="Введите код"
-                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-black"
-                style={{ userSelect: 'text' } as any} />
+                className="theme-field w-full rounded-xl px-3 py-2 text-sm focus:outline-none"
+                style={{
+                  userSelect: 'text',
+                  background: palette.fieldBg,
+                  color: palette.fieldText,
+                  border: `1px solid ${palette.borderStrong}`,
+                  ['--field-ph' as any]: palette.fieldPlaceholder,
+                } as any} />
               <button onClick={async () => {
                 try {
                   const res = await api.post('/api/payments/promo/check', { code: promoCode, plan_type: 'monthly' })
                   setPromoMsg(`Скидка ${res.data.discount_percent}%!`)
                 } catch (e: any) { setPromoMsg(e.response?.data?.detail || 'Не найден') }
-              }} className="mt-2 w-full bg-black text-white rounded-xl py-2 text-xs font-semibold hover:bg-gray-800 transition-colors">
+              }} className="mt-2 w-full rounded-xl py-2 text-xs font-semibold transition-colors"
+                style={{ background: fg, color: bg }}>
                 Проверить
               </button>
-              {promoMsg && <p className="text-xs text-gray-500 mt-2 text-center">{promoMsg}</p>}
+              {promoMsg && <p className="text-xs mt-2 text-center" style={{ color: muted }}>{promoMsg}</p>}
 
               {!!(clientTheme?.bonuses_rules_text || '').trim() && (
                 <p className="text-[11px] mt-4 leading-relaxed whitespace-pre-line" style={{ color: muted }}>

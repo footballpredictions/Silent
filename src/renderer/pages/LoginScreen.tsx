@@ -31,11 +31,13 @@ import LoginExpiredPanel from '../components/LoginExpiredPanel'
 import ThemeCheckbox from '../components/ThemeCheckbox'
 import SilentLogo from '../components/SilentLogo'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
+import ThemeModeToggle from '../components/ThemeModeToggle'
 import WindowControls from '../components/WindowControls'
 import { pushLog } from '../debugLog'
 import { clearVpnLogs } from '../vpnLogStore'
 import { authStrings as s } from '../authStrings'
-import { themeToUi, type ClientTheme } from '../clientTheme'
+import { needsNeonGlow, neonTextShadow, themeToUi, type ClientTheme } from '../clientTheme'
+import { useAppearanceMode } from '../appearanceStore'
 
 type LoginStep = 'auth' | 'forgot'
 
@@ -48,7 +50,9 @@ export default function LoginScreen({
   onLogin: (theme: ClientTheme | null) => void
   initialReferralCode?: string
 }) {
-  const ui = useMemo(() => themeToUi(theme), [theme])
+  const [appearanceMode, toggleAppearance] = useAppearanceMode()
+  const ui = useMemo(() => themeToUi(theme, appearanceMode), [theme, appearanceMode])
+  const linkGlow = needsNeonGlow(ui.linkColor, ui.dark) ? neonTextShadow(ui.linkColor) : undefined
 
   const [step, setStep] = useState<LoginStep>('auth')
   const [tab, setTab] = useState<'login' | 'register'>(initialReferralCode ? 'register' : 'login')
@@ -70,7 +74,7 @@ export default function LoginScreen({
   const forgotLabel = theme?.login_forgot_password_label || 'Забыли пароль?'
   const forgotTitle = theme?.login_forgot_title || 'Восстановление пароля'
   const forgotHint = theme?.login_forgot_instruction || 'Введите email — мы отправим ссылку.'
-  const linkColor = theme?.login_link_color || ui.linkColor
+  const linkColor = ui.linkColor
   const refPromoLabel = theme?.register_referral_or_promo_label || 'Промокод или реферальный код'
   const refPromoHint = theme?.register_referral_or_promo_hint || 'Необязательно'
 
@@ -332,9 +336,10 @@ export default function LoginScreen({
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         <div
-          className="flex items-center gap-2"
+          className="flex items-center gap-1.5"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
+          <ThemeModeToggle mode={appearanceMode} onToggle={toggleAppearance} color={ui.fg} />
           <DebugLogButton onClick={() => setShowDebugLog(true)} />
           <WindowControls />
         </div>
@@ -457,7 +462,13 @@ export default function LoginScreen({
                       type="button"
                       onClick={() => { setForgotEmail(email); setStep('forgot'); setError(''); setForgotSent(false) }}
                       className="hover:opacity-80 text-[11px]"
-                      style={{ color: linkColor, background: 'none', border: 'none', cursor: 'pointer' }}
+                      style={{
+                        color: linkColor,
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        textShadow: linkGlow,
+                      }}
                     >
                       {forgotLabel}
                     </button>

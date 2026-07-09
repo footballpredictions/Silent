@@ -261,10 +261,44 @@ function sendDebugLog(payload) {
   }
 }
 
+/** Батч IPC логов: при наборе 36 воркеров иначе десятки send/сек → «Не отвечает». */
+const WDTT_LOG_FLUSH_MS = 120
+let wdttLogPending = new Map()
+let wdttLogFlushTimer = null
+
+function flushWdttLogBatch() {
+  wdttLogFlushTimer = null
+  if (!wdttLogPending.size) return
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    wdttLogPending.clear()
+    return
+  }
+  const batch = Array.from(wdttLogPending.values())
+  wdttLogPending.clear()
+  mainWindow.webContents.send('wdtt-log-batch', batch)
+}
+
 function sendWdttLog(entry) {
-  if (!isDebugBuild) return
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('wdtt-log', entry)
+  if (!isDebugBuild || !entry?.key) return
+  const prev = wdttLogPending.get(entry.key)
+  if (prev) {
+    wdttLogPending.set(entry.key, {
+      ...entry,
+      _hits: (prev._hits || 1) + 1,
+    })
+  } else {
+    wdttLogPending.set(entry.key, { ...entry, _hits: 1 })
+  }
+  if (entry.isError) {
+    if (wdttLogFlushTimer) {
+      clearTimeout(wdttLogFlushTimer)
+      wdttLogFlushTimer = null
+    }
+    flushWdttLogBatch()
+    return
+  }
+  if (!wdttLogFlushTimer) {
+    wdttLogFlushTimer = setTimeout(flushWdttLogBatch, WDTT_LOG_FLUSH_MS)
   }
 }
 
@@ -338,6 +372,9 @@ function sendLog(line) {
     sendWdttLog(parsed)
     return
   }
+
+  // parseLibclientLine → null: ретраи / DTLS flood / WRAP — не слать в UI
+  if (/\[ВОРКЕР #|\[СЕССИЯ #|WRAP_AUTH_TIMEOUT|\[DTLS\]|Рукопожатие|Соединение установлено|\[READY\]/i.test(trimmed)) return
 
   // Сильный шум из VK Auth (десятки строк/сек) забивает IPC и фризит UI.
   if (/\[VK Auth\]\s+(Trying credentials|Failed with|Both VK credentials failed|Success with)/i.test(trimmed)) {
@@ -508,14 +545,13 @@ function fullTunnelTargetWorkers() {
 
 function minWorkersForTunnelReady(isBootstrap = false) {
   if (isBootstrap || vpnBootstrapMode) return 1
-  // Как e8c39e2 / быстрый origin: UI после WG + 1 воркер; остальное фоном.
+  // UI «Подключено» после WG + 1 воркер (как Android); full tunnel ≥27 — в фоне.
   return 1
 }
 
 function isVpnReadyForUi() {
   if (tunnelReadySent) return true
   if (vpnBootstrapMode) return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
-  // «Подключено» сразу после WG + ≥1 воркер (не ждать 9). Full tunnel — в фоне.
   return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
 }
 
@@ -610,8 +646,8 @@ async function cleanupVpnAsync() {
 }
 
 async function fastDisconnectVpn() {
-  // cleanupVpn уже гасит wdtt и стартует stopWireGuardTunnel в фоне.
-  // Не ждём uninstall/sc — иначе тумблер «мертвый» 10–20с.
+  // cleanupVpn гасит wdtt и стартует stopWireGuardTunnel в фоне.
+  // Не ждём uninstall/sc — иначе тумблер «мёртвый» 10–20с.
   cleanupVpn()
 }
 
@@ -854,9 +890,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
         sendLog('[WG] full tunnel upgrade: нет wg-turn.conf', 'W')
         return
       }
-      // Windows: wg syncconf НЕ обновляет маршруты AllowedIPs (остаётся 10.66.66.0/24).
-      // Нужна переустановка службы — иначе «VPN on» без интернета + DNS/ConfigSync Error.
-      // UI уже «Подключено» после 1 воркера — reinstall идёт в фоне.
+      // skipForceStop:false — reinstall: syncconf на Windows НЕ меняет AllowedIPs
       const ok = await applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
         skipWdttWait: true,
         subnetOnly: false,
@@ -869,13 +903,11 @@ async function beginWdttSession(config, { switching = false } = {}) {
       }
       if (ok) {
         wgCredPhase = false
-        // Дать Windows применить маршруты после reinstall, затем bypass API
-        await sleep(400)
         sendLog('[WG] Полный туннель активен, DNS = 1.1.1.1 + 77.88.8.8')
         await addServerBypassRoutes([...excludeIPs], sendLog)
         scheduleBypassRefresh(sendLog)
         ensureVpnReadyEvent(sendLog)
-      } else if (attempt < 3 && vpnSessionActive) {
+      } else if (attempt < 3) {
         sendLog(`[WG] full tunnel retry ${attempt + 1}/3…`, 'W')
         wgFullTunnelUpgradeInFlight = false
         setTimeout(() => { void upgradeToFullTunnel(`${source}-retry`, attempt + 1) }, 3000)
@@ -885,7 +917,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       }
     } catch (e) {
       sendLog(`[WG] full tunnel upgrade: ${e?.message || e}`, 'W')
-      if (attempt < 3 && vpnSessionActive) {
+      if (attempt < 3) {
         wgFullTunnelUpgradeInFlight = false
         setTimeout(() => { void upgradeToFullTunnel(`${source}-retry`, attempt + 1) }, 3000)
         return
@@ -947,7 +979,6 @@ async function beginWdttSession(config, { switching = false } = {}) {
     fs.writeFileSync(confPath, normalizedConf)
     await sleep(150)
 
-    // sc query быстрее PowerShell Get-NetAdapter
     const alreadyUp = switching && (await isServiceRunningAsync())
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
       skipWdttWait: true,
@@ -1189,14 +1220,12 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
   vpnConnectInFlight = true
   try {
-    // Не ждать полный uninstall (как origin): cap 2.5с — иначе connect +14с.
-    // applyWireGuardConfig сам сериализует stop через enqueueWgStop.
+    // Не ждать полный uninstall: cap 2.5с; applyWireGuardConfig сериализует stop.
     await Promise.race([waitWgStopIdle(), sleep(2500)])
     if (wdttProcess && !transportSwitching && !isTransportHealthy()) {
       sendLog('[VPN] Переподключение: остановка предыдущей сессии...')
       await cleanupVpnAsync()
     } else if (!wdttProcess && !wgApplied) {
-      // Только если служба ещё жива — без второго полного forceStop «на всякий случай»
       if (await isServiceRunningAsync()) {
         await forceStopWireGuard(isDev, __dirname, sendLog)
         await waitForTunnelDown(3000, sendLog)

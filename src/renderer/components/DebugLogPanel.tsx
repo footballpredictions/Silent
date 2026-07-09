@@ -30,26 +30,11 @@ function entryColor(entry: LogEntry): string {
 }
 
 function TunnelLogLine({ entry }: { entry: LogEntry }) {
-  const [pulse, setPulse] = useState(false)
-  const prevCount = useRef(entry.count)
-
-  useEffect(() => {
-    if (entry.count !== prevCount.current) {
-      prevCount.current = entry.count
-      setPulse(true)
-      const t = setTimeout(() => setPulse(false), 200)
-      return () => clearTimeout(t)
-    }
-  }, [entry.count])
-
   return (
     <div className="flex items-center gap-2.5 py-[3px] w-full">
       <div
-        className="shrink-0 flex items-center justify-center rounded-xl min-w-[24px] h-[22px] px-1.5 transition-transform duration-200"
-        style={{
-          background: 'rgba(30, 58, 95, 0.4)',
-          transform: pulse ? 'scale(1.12)' : 'scale(1)',
-        }}
+        className="shrink-0 flex items-center justify-center rounded-xl min-w-[24px] h-[22px] px-1.5"
+        style={{ background: 'rgba(30, 58, 95, 0.4)' }}
       >
         <span className="text-[10px] font-bold leading-none" style={{ color: '#60A5FA' }}>
           {entry.count}
@@ -69,15 +54,23 @@ function TunnelLogLine({ entry }: { entry: LogEntry }) {
 }
 
 export default function DebugLogPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [items, setItems] = useState<LogEntry[]>(readVpnLogs())
+  const [items, setItems] = useState<LogEntry[]>(() => (open ? readVpnLogs() : []))
   const [copyToast, setCopyToast] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const openRef = useRef(open)
+  openRef.current = open
 
-  useEffect(() => subscribeVpnLogs(setItems), [])
+  useEffect(() => {
+    if (!open) return
+    setItems(readVpnLogs())
+    return subscribeVpnLogs(next => {
+      if (openRef.current) setItems(next)
+    })
+  }, [open])
 
   useEffect(() => {
     if (open && items.length > 0) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+      bottomRef.current?.scrollIntoView({ behavior: 'auto' })
     }
   }, [items.length, open])
 
@@ -88,13 +81,14 @@ export default function DebugLogPanel({ open, onClose }: { open: boolean; onClos
 
   if (!isDebugBuild || !open) return null
 
-  const copyLog = async () => {
+  const copyLog = () => {
     const text = logText || '(пусто)'
-    try {
-      await navigator.clipboard.writeText(text)
-    } catch {
-      const api = (window as any).electronAPI
-      if (api?.copyToClipboard) await api.copyToClipboard(text)
+    const api = (window as any).electronAPI
+    // IPC clipboard быстрее и не блокирует renderer как navigator.clipboard в Electron
+    if (api?.copyToClipboard) {
+      void api.copyToClipboard(text)
+    } else {
+      void navigator.clipboard.writeText(text).catch(() => {})
     }
     setCopyToast(true)
     setTimeout(() => setCopyToast(false), 2000)

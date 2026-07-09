@@ -79,14 +79,15 @@ function parseLibclientLine(lineTrim) {
     const text = (lineTrim.split('[TURN]')[1] || '').trim()
     return { key: `turn_${text.slice(0, 24)}`, message: `[TURN] ${text}`, priority: 2, isError: isError }
   }
+  // DTLS/READY на каждый воркер — шум (x36); в UI не шлём, статус есть в [СТАТИСТИКА]
   if (lineTrim.includes('Relay:') || lineTrim.includes('[DTLS] Рукопожатие')) {
-    return { key: 'dtls_start', message: '[DTLS] Рукопожатие…', priority: 1, isError: false }
+    return null
   }
   if (lineTrim.includes('DTLS ОК') || lineTrim.includes('Соединение установлено ✓')) {
-    return { key: 'dtls_ok', message: '[DTLS] Соединение установлено ✓', priority: 1, isError: false }
+    return null
   }
   if (lineTrim.includes('[READY]') || lineTrim.includes('Активна ✓')) {
-    return { key: 'ready_line', message: '[READY] Туннель готов ✓', priority: 2, isError: false }
+    return null
   }
   if (lineTrim.includes('зарегистрирован (всего:')) {
     return { key: 'workers_reg', message: lineTrim, priority: 2, isError: false }

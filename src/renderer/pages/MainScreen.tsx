@@ -544,19 +544,29 @@ export default function MainScreen({
 
     if (connected) {
       pendingConnectAfterSubscriptionRefreshRef.current = false
-      // Сразу OFF без disconnecting/змейки — stop в фоне
       setConnected(false)
-      setConnecting(false)
       setDisconnecting(false)
-      connectLockRef.current = false
+      setConnecting(false)
       pushLog('Main', 'disconnect')
       SessionTrace.enter('Main.connect', 'disconnect')
       const fp = DEVICE_FINGERPRINT()
       setMainVpnSessionActive(false)
       onlineMarkedRef.current = false
-      void notifyDisconnect(fp)
-      void (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
-      fetchProfile()
+      // UI сразу в «выкл»; lock не держим — можно сразу включить снова (stop в фоне + waitWgStopIdle)
+      connectLockRef.current = false
+      void (async () => {
+        try {
+          await notifyDisconnect(fp)
+        } catch (err: any) {
+          if (err.response?.status === 402 || err.response?.status === 403) alert(err.response.data.detail)
+        }
+        try {
+          if ((window as any).electronAPI?.vpnDisconnect) {
+            await (window as any).electronAPI.vpnDisconnect()
+          }
+        } catch { /* ignore */ }
+        fetchProfile()
+      })()
       return
     }
 

@@ -197,14 +197,16 @@ export default function VpnToggle({
   const interactionLocked = connecting || disconnecting || pendingToggle
 
   useEffect(() => {
-    // Сброс буфера только когда пришёл реальный статус (не при idle OFF —
-    // иначе pending на клике «вкл» гасится до setConnecting).
-    if (!(connecting || disconnecting || connected)) return
-    if (pendingTimeoutRef.current) {
-      window.clearTimeout(pendingTimeoutRef.current)
-      pendingTimeoutRef.current = null
+    if (connecting || disconnecting) {
+      if (pendingTimeoutRef.current) {
+        window.clearTimeout(pendingTimeoutRef.current)
+        pendingTimeoutRef.current = null
+      }
+      setPendingToggle(false)
     }
-    setPendingToggle(false)
+    if (!connecting && !disconnecting && connected) {
+      setPendingToggle(false)
+    }
   }, [connected, connecting, disconnecting])
 
   useEffect(() => {
@@ -215,20 +217,23 @@ export default function VpnToggle({
 
   const handleClick = useCallback(() => {
     if (interactionLocked) return
-    if (pendingTimeoutRef.current) window.clearTimeout(pendingTimeoutRef.current)
-    if (connected) {
-      // Выключение: сразу OFF, без змейки
-      setPendingToggle(false)
-    } else {
-      // Включение: короткий буфер до IPC connecting
+    // Змейка только при включении. При выключении — сразу в исходное положение, без спиннера.
+    if (!connected) {
       setPendingToggle(true)
+      if (pendingTimeoutRef.current) window.clearTimeout(pendingTimeoutRef.current)
       pendingTimeoutRef.current = window.setTimeout(() => {
         setPendingToggle(false)
         pendingTimeoutRef.current = null
       }, 2500)
+    } else {
+      setPendingToggle(false)
+      if (pendingTimeoutRef.current) {
+        window.clearTimeout(pendingTimeoutRef.current)
+        pendingTimeoutRef.current = null
+      }
     }
     onToggle()
-  }, [interactionLocked, connected, onToggle])
+  }, [connected, interactionLocked, onToggle])
 
   const pressScale = pressed && !interactionLocked ? 0.95 : 1
 

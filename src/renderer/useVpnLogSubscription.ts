@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { ingestWdttLog, pushAppLog } from './vpnLogStore'
+import { ingestWdttLog, ingestWdttLogBatch, pushAppLog } from './vpnLogStore'
 import { reportHashFailure } from './hashFailureReporter'
 
 /** Подписка на wdtt-log + debug-log из main (как Android WdttTunnelManager → DebugLogDialog). */
@@ -14,8 +14,21 @@ export function useVpnLogSubscription(enabled = true) {
       message?: string
       priority?: number
       isError?: boolean
+      _hits?: number
     }) => {
       ingestWdttLog(entry)
+    }
+
+    const onWdttBatch = (
+      batch: Array<{
+        key?: string
+        message?: string
+        priority?: number
+        isError?: boolean
+        _hits?: number
+      }>,
+    ) => {
+      ingestWdttLogBatch(batch)
     }
 
     const onDebug = (payload: { tag?: string; level?: string; message?: string }) => {
@@ -42,6 +55,7 @@ export function useVpnLogSubscription(enabled = true) {
     }
 
     api_.onWdttLog?.(onWdtt)
+    api_.onWdttLogBatch?.(onWdttBatch)
     api_.onDebugLog?.(onDebug)
     api_.onVpnError?.(onVpnError)
     api_.onHashFailure?.(onHashFailure)

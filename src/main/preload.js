@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   vpnReadConfig: () => ipcRenderer.invoke('vpn-read-config'),
   onVpnLog: (cb) => ipcRenderer.on('vpn-log', (_, line) => cb(line)),
   onWdttLog: (cb) => ipcRenderer.on('wdtt-log', (_, entry) => cb(entry)),
+  onWdttLogBatch: (cb) => ipcRenderer.on('wdtt-log-batch', (_, batch) => cb(batch)),
   onDebugLog: (cb) => ipcRenderer.on('debug-log', (_, payload) => cb(payload)),
   onVpnReady: (cb) => ipcRenderer.on('vpn-ready', (_, payload) => cb(payload)),
   onVpnError: (cb) => ipcRenderer.on('vpn-error', (_, msg) => cb(msg)),
@@ -24,6 +25,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeVpnListeners: () => {
     ipcRenderer.removeAllListeners('vpn-log')
     ipcRenderer.removeAllListeners('wdtt-log')
+    ipcRenderer.removeAllListeners('wdtt-log-batch')
     ipcRenderer.removeAllListeners('vpn-ready')
     ipcRenderer.removeAllListeners('vpn-error')
     ipcRenderer.removeAllListeners('vpn-stopped')

@@ -67,11 +67,17 @@ function findWintunDll(dir) {
   return fs.existsSync(p) ? p : null
 }
 
+let elevatedCache = { at: 0, value: false }
+
 function isProcessElevated() {
+  const now = Date.now()
+  if (now - elevatedCache.at < 60_000) return elevatedCache.value
   try {
-    execSync('net session', { stdio: 'ignore', windowsHide: true })
+    execSync('net session', { stdio: 'ignore', windowsHide: true, timeout: 3000 })
+    elevatedCache = { at: now, value: true }
     return true
   } catch {
+    elevatedCache = { at: now, value: false }
     return false
   }
 }
@@ -729,6 +735,8 @@ ${bypassPs1}
 }
 
 async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs = [], options = {}) {
+  // Отдать event loop UI (иначе клик тумблера → «Не отвечает» на секунду)
+  await sleep(0)
   const skipWdttWait = options.skipWdttWait === true
   const subnetOnly = options.subnetOnly === true
   const skipForceStop = options.skipForceStop === true

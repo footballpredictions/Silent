@@ -525,6 +525,12 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-09 — Push android + backend dark theme; deploy
+
+- Android: `5c66ff0` → `origin/android` (dark toggle, themed inputs, gray system bars)
+- Backend: `5962244` → `origin/main` (`dark_*` ThemeResponse + ThemePage/ClientPreview)
+- Deploy: `python scripts/deploy_stable.py` (после `npm run build` admin-ui)
+
 ### 2026-07-09 — Android: серые полосы status/nav в dark; PC push dark theme
 
 - Android dark: status bar + nav bar = `#2A2A32` (серые полоски), контент на `bg`; layout: strip → safeDrawing → bg

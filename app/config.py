@@ -146,6 +146,12 @@ class Settings(BaseSettings):
     PRICE_QUARTERLY: float = 499.0
     PRICE_YEARLY: float = 1499.0
 
+    # Referral (growth phase): +30/+30 after invitee's first paid plan.
+    # Soft anti-abuse: max rewarded bonuses per inviter per rolling 30 days.
+    # Policy may tighten after ~1000 users (see MEMORY_BANK).
+    REFERRAL_BONUS_DAYS: int = 30
+    REFERRAL_MONTHLY_REWARD_LIMIT: int = 10
+
     # CORS
     ALLOWED_ORIGINS: List[str] = ["*"]
 

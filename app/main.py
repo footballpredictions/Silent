@@ -11,6 +11,7 @@ import os
 from app.config import settings
 from app.database import engine, Base
 from sqlalchemy import text
+import app.models  # noqa: F401 — register ORM tables for create_all
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -208,6 +209,39 @@ async def lifespan(app: FastAPI):
             await conn.execute(text(
                 "UPDATE hive_cells SET max_clients = 0 WHERE max_clients > 0"
             ))
+        await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(16)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by_user_id UUID REFERENCES users(id)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_promo_code VARCHAR(50)"
+        ))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_referral_code "
+            "ON users (referral_code) WHERE referral_code IS NOT NULL"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_users_referred_by_user_id ON users (referred_by_user_id)"
+        ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS referral_rewards (
+                id UUID PRIMARY KEY,
+                inviter_id UUID NOT NULL REFERENCES users(id),
+                invitee_id UUID NOT NULL UNIQUE REFERENCES users(id),
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                payment_id UUID REFERENCES payments(id),
+                rewarded_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_referral_rewards_inviter_id ON referral_rewards (inviter_id)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_referral_rewards_invitee_id ON referral_rewards (invitee_id)"
+        ))
     logger.info("Database tables ready")
 
     from app.database import AsyncSessionLocal

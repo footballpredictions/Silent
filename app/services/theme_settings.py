@@ -10,17 +10,74 @@ from app.schemas.vpn import ThemeResponse
 _LEGACY_APP_NAMES = frozenset({"", "silent"})
 
 
+_DEFAULT_BONUSES_INTRO = (
+    "Рефералка: отправьте другу ссылку или код. Он регистрируется по ним и оплачивает любую подписку — "
+    "оба получаете +30 дней. Один бонус на одного друга, до 10 наград за 30 дней.\n\n"
+    "Промокод: отдельная скидка или доп. дни к тарифу — вводится при регистрации или проверяется здесь.\n\n"
+    "Условия программы могут измениться."
+)
+
+# Старые дублирующие тексты → одно intro + короткие подписи
+_LEGACY_REFERRAL_HINTS = frozenset({
+    "поделитесь ссылкой с другом. после его регистрации и оплаты любой подписки вы оба получите +1 месяц.",
+})
+_LEGACY_PROMO_HINTS = frozenset({
+    "введите промокод, чтобы проверить скидку к тарифу.",
+})
+_LEGACY_RULES_PREFIXES = (
+    "друг регистрируется по вашей ссылке",
+    "после оплаты приглашённым оба получают",
+)
+
+
 def normalize_theme_data(data: dict) -> dict:
-    name = (data.get("app_name") or "").strip()
+    out = dict(data)
+    name = (out.get("app_name") or "").strip()
     if name.lower() in _LEGACY_APP_NAMES:
-        out = dict(data)
         out["app_name"] = "Silent VPN"
-        return out
-    return data
+
+    intro = (out.get("bonuses_intro_text") or "").strip()
+    rules = (out.get("bonuses_rules_text") or "").strip()
+    ref_hint = (out.get("bonuses_referral_hint") or "").strip()
+    promo_hint = (out.get("bonuses_promo_hint") or "").strip()
+
+    if not intro:
+        if rules and rules.lower().startswith(_LEGACY_RULES_PREFIXES):
+            out["bonuses_intro_text"] = _DEFAULT_BONUSES_INTRO
+            out["bonuses_rules_text"] = ""
+        elif rules:
+            out["bonuses_intro_text"] = rules
+            out["bonuses_rules_text"] = ""
+        else:
+            out["bonuses_intro_text"] = _DEFAULT_BONUSES_INTRO
+    elif rules and rules.lower().startswith(_LEGACY_RULES_PREFIXES):
+        # Убрать дубль внизу, если intro уже есть
+        out["bonuses_rules_text"] = ""
+
+    if ref_hint.lower() in _LEGACY_REFERRAL_HINTS or not ref_hint:
+        out["bonuses_referral_hint"] = "Скопируйте и отправьте другу"
+    if promo_hint.lower() in _LEGACY_PROMO_HINTS or not promo_hint:
+        out["bonuses_promo_hint"] = "Проверить скидку к тарифу"
+    if not (out.get("bonuses_referral_title") or "").strip() or (
+        (out.get("bonuses_referral_title") or "").strip() == "Реферальная ссылка"
+    ):
+        out["bonuses_referral_title"] = "Ваша ссылка"
+
+    return out
 
 
 def theme_needs_migration(data: dict) -> bool:
-    return (data.get("app_name") or "").strip().lower() in _LEGACY_APP_NAMES
+    if (data.get("app_name") or "").strip().lower() in _LEGACY_APP_NAMES:
+        return True
+    if not (data.get("bonuses_intro_text") or "").strip():
+        return True
+    rules = (data.get("bonuses_rules_text") or "").strip().lower()
+    if rules.startswith(_LEGACY_RULES_PREFIXES):
+        return True
+    ref = (data.get("bonuses_referral_hint") or "").strip().lower()
+    if ref in _LEGACY_REFERRAL_HINTS:
+        return True
+    return False
 
 
 async def load_theme(db: AsyncSession, *, persist_migration: bool = False) -> ThemeResponse:
@@ -33,8 +90,10 @@ async def load_theme(db: AsyncSession, *, persist_migration: bool = False) -> Th
         try:
             raw = json.loads(setting.value)
             normalized = normalize_theme_data(raw)
-            if persist_migration and theme_needs_migration(raw):
-                setting.value = json.dumps(normalized)
+            # Автомиграция bonuses-текстов на проде (без дублей в UI)
+            should_persist = persist_migration or theme_needs_migration(raw)
+            if should_persist and normalized != raw:
+                setting.value = json.dumps(normalized, ensure_ascii=False)
                 await db.commit()
             theme = ThemeResponse(**normalized)
         except Exception:

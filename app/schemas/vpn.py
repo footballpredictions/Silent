@@ -126,3 +126,23 @@ class ThemeResponse(BaseModel):
     login_step2_title: str = ""
     # HA: запасные URL API (соты) — через запятую, подставляется с Улья
     hive_standby_api_urls: str = ""
+    # Bonuses / referral (server-driven copy)
+    menu_bonuses_label: str = "Бонусы"
+    bonuses_title: str = "Бонусы"
+    # Одно общее описание экрана (реф + промо). Короткие подписи у блоков — без повтора правил.
+    bonuses_intro_text: str = (
+        "Рефералка: отправьте другу ссылку или код. Он регистрируется по ним и оплачивает любую подписку — "
+        "оба получаете +30 дней. Один бонус на одного друга, до 10 наград за 30 дней.\n\n"
+        "Промокод: отдельная скидка или доп. дни к тарифу — вводится при регистрации или проверяется здесь.\n\n"
+        "Условия программы могут измениться."
+    )
+    bonuses_referral_title: str = "Ваша ссылка"
+    bonuses_referral_hint: str = "Скопируйте и отправьте другу"
+    bonuses_promo_title: str = "Промокод"
+    bonuses_promo_hint: str = "Проверить скидку к тарифу"
+    # Устарело как отдельный «хвост» — оставлено для совместимости; клиенты показывают bonuses_intro_text
+    bonuses_rules_text: str = ""
+    bonuses_copy_link_label: str = "Копировать ссылку"
+    bonuses_copy_code_label: str = "Копировать код"
+    register_referral_or_promo_label: str = "Промокод или реферальный код"
+    register_referral_or_promo_hint: str = "Необязательно. Введите промокод или код из реферальной ссылки."

@@ -525,6 +525,69 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-09 — PC/Android: logout если сессию удалили
+
+- При sync `/users/me`: если `sessionDeviceId` нет в `devices` — принудительный выход (токены, VPN, экран логина).
+- Сценарий: удалили PC-сессию с другого устройства → PC не должен висеть с пустым профилем и тумблером.
+
+### 2026-07-09 — PC login: HTTP 400 через tunnel не терять
+
+- Симптом: `tunnel 10.66.66.1 fail: HTTP 400 → HTTPS` — 4xx считался сбоем туннеля, тело ответа терялось.
+- Фикс: main `backendHttpRequest` resolve’ит любой статус; 4xx возвращается в renderer; JSON body + Content-Length явно.
+
+### 2026-07-09 — PC login: auth через bootstrap tunnel (как Android)
+
+- Симптом: bootstrap ready, но `Login: timeout 15000` + `Update: Network Error` — renderer xhr на public HTTPS при bootstrap не проходит.
+- Фикс: при bootstrap `setBootstrapApiRouting(true)` → axios через main IPC; main при `wgApplied` сначала `10.66.66.1`, иначе public HTTPS.
+
+### 2026-07-09 — PC: timeout 15s на логине
+
+- Причина: при bootstrap `enableTunnelApi()` ставил baseURL `http://10.66.66.1:8000` в renderer — Electron туда не ходит → timeout.
+- Фикс: без main VPN всегда `getPublicApiBaseUrl()`; login/register/forgot только public HTTPS.
+
+### 2026-07-09 — PC: реф-ссылка с VPN и без
+
+- `tunnel-api-request`: убрана блокировка `API unavailable` без WG — всегда сначала public HTTPS.
+- `loadReferral`: 3 пути (api → IPC public → forcePublic); JWT всегда в headers.
+- Ссылка должна грузиться и при включённом, и при выключенном VPN.
+
+### 2026-07-09 — PC: реф-ссылка «…» при VPN
+
+- Причина: `tunnelApiClient` не передавал `Authorization` в IPC (AxiosHeaders + `Object.entries`).
+- Фикс: `flattenAxiosHeaders` + fallback из `localStorage`; загрузка referral через `useEffect` + «Повторить».
+
+### 2026-07-09 — Бонусы: только «Копировать ссылку»
+
+- PC/Android: убрана кнопка «Копировать код» (путать с промокодом) — как в admin ClientPreview.
+- Остаётся одна кнопка «Копировать ссылку» на всю ширину.
+
+### 2026-07-09 — Тексты «Бонусы»: одно общее описание
+
+- Поле theme `bonuses_intro_text` — единый текст про реф + промо сверху экрана.
+- Подписи блоков короткие (`Скопируйте…` / `Проверить скидку…`); `bonuses_rules_text` обычно пустой (без дубля внизу).
+- Автомиграция старых theme-строк в `theme_settings.normalize_theme_data` при `GET /api/vpn/theme`.
+- Клиенты PC/Android + админка Оформление / preview обновлены.
+
+### 2026-07-09 — Реферальные ссылки и раздел «Бонусы»
+
+- **Backend (`main`):** `User.referral_code` / `referred_by_user_id` / `pending_promo_code`; таблица `referral_rewards`; `POST /auth/register` принимает `referral_or_promo` (реф **или** промо); `GET /users/me/referral`; после первой YuMoney-оплаты invitee — **+30 дней** обоим; theme-поля `menu_bonuses_*` / `bonuses_*` / `register_referral_or_promo_*`; админ preview «Бонусы».
+- **PC / Android:** меню «Бонусы» (реф-ссылка + промо), поле на регистрации, deep link `silentvpn://ref?code=…`.
+- **iOS:** вне scope (отдельная задача в TASKS).
+- **Деплой + QA (2026-07-09):** `deploy_stable.py` OK (health/admin 200, DNAT OK). Smoke `scripts/smoke_referral.py` (theme/register/invalid code). DB-симуляция награды в контейнере `remote_referral_db_test.py` → `REFERRAL_DB_OK`. Android unit: MockWebServer register/referral/theme + deep link; PC debug: `build-debug-918485`. Push ещё не делали.
+
+### Реферальная политика (growth, до ~1000 пользователей)
+
+| Параметр | Значение |
+|----------|----------|
+| Награда | +30 дней invitee + +30 дней inviter после **первой** оплаты любой подписки invitee |
+| Лимит | 1 бонус на invitee; **не более 10** наград inviter за скользящие 30 дней (`REFERRAL_MONTHLY_REWARD_LIMIT`) — при лимите invitee всё равно получает +30 |
+| UX-текст | `bonuses_intro_text`: как работают реф и промо + лимит + «условия могут измениться» |
+| Когда ужесточать | После ~1000 пользователей **или** если много monthly-only рефералов без повторных оплат → варианты: +15/+15, бонус только inviter, бонус только после quarterly/yearly |
+
+Осознанно щедрый оффер ради привлечения; юнит-экономика первой оплаты (особенно monthly 199₽) убыточна — это маркетинг, не ошибка.
+
+**Админка:** пункт меню «Бонусы» (`/bonuses`, бывш. «Промокоды») — вкладка промокодов + вкладка «Рефералы и статистика» (`GET /api/admin/bonuses/stats`). В списке пользователей бейджи «Реф» / «Промо».
+
 ### 2026-07-08 — Android instrumented-тесты на устройстве (Wi‑Fi/LTE/VPN)
 
 - В ветке `android` добавлены и стабилизированы `androidTest`: routing/promo/config-sync/network-recovery + LTE+VPN класс `LteWithVpnInstrumentedTest`.

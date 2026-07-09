@@ -1,0 +1,15 @@
+---
+description: Creation Factory — конвейер для новых сайтов/приложений/картинок
+alwaysApply: true
+---
+
+# Creation Factory
+
+Конвейер для любых новых задач «сайт/приложение/дизайн/изображение»:
+
+1) Дизайн-первым: `design-sources` + UI skills; в начале UI-части коротко укажи выбранные референсы.
+2) Изображения: `imagegen-frontend-web` или `imagegen-frontend-mobile`.
+3) Из картинки в код: `image-to-code-skill`.
+4) Реализация UI: `ui-styling` + `ui-ux-pro-max` (или `impeccable` для премиальной полировки).
+5) Если это Silent VPN — соблюдай правила `Server-driven UI` из Memory Bank.
+

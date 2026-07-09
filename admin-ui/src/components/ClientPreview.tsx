@@ -26,6 +26,18 @@ export type ClientTheme = {
   privacy_url?: string
   terms_url?: string
   logo_url?: string
+  menu_bonuses_label?: string
+  bonuses_title?: string
+  bonuses_intro_text?: string
+  bonuses_referral_title?: string
+  bonuses_referral_hint?: string
+  bonuses_promo_title?: string
+  bonuses_promo_hint?: string
+  bonuses_rules_text?: string
+  bonuses_copy_link_label?: string
+  bonuses_copy_code_label?: string
+  register_referral_or_promo_label?: string
+  register_referral_or_promo_hint?: string
 }
 
 type PreviewScreen =
@@ -39,7 +51,7 @@ type PreviewScreen =
   | 'menu'
   | 'subscription'
   | 'exceptions'
-  | 'promo'
+  | 'bonuses'
   | 'devices'
   | 'support'
   | 'about'
@@ -57,7 +69,7 @@ export const SCREEN_TABS: { id: PreviewScreen; label: string }[] = [
   { id: 'menu', label: 'Меню' },
   { id: 'subscription', label: 'Подписка' },
   { id: 'exceptions', label: 'Исключения' },
-  { id: 'promo', label: 'Промокод' },
+  { id: 'bonuses', label: 'Бонусы' },
   { id: 'devices', label: 'Сессии' },
   { id: 'support', label: 'Поддержка' },
   { id: 'about', label: 'О сервисе' },
@@ -66,7 +78,7 @@ export const SCREEN_TABS: { id: PreviewScreen; label: string }[] = [
 const MENU_ITEMS: { id: PreviewScreen; label: string; badge?: string }[] = [
   { id: 'subscription', label: 'Подписка', badge: 'Активна' },
   { id: 'exceptions', label: 'Исключения приложений' },
-  { id: 'promo', label: 'Промокод' },
+  { id: 'bonuses', label: 'Бонусы' },
   { id: 'devices', label: 'Сессии', badge: '1/3' },
   { id: 'support', label: 'Поддержка' },
   { id: 'about', label: 'О сервисе' },
@@ -241,6 +253,13 @@ export default function ClientPreview({
           }} />
           <div style={{ fontSize: 10, color: muted, marginBottom: 4 }}>Пароль</div>
           <input readOnly type="password" placeholder="••••••••" style={{
+            width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 11, marginBottom: 8,
+            borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
+          }} />
+          <div style={{ fontSize: 10, color: muted, marginBottom: 4 }}>
+            {theme.register_referral_or_promo_label || 'Промокод или реферальный код'}
+          </div>
+          <input readOnly placeholder={theme.register_referral_or_promo_hint || 'Необязательно'} style={{
             width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 11, marginBottom: 8,
             borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
           }} />
@@ -425,8 +444,33 @@ export default function ClientPreview({
         </>
       ))}
 
-      {screen === 'promo' && subPage('Промокод', (
+      {screen === 'bonuses' && subPage(theme.bonuses_title || theme.menu_bonuses_label || 'Бонусы', (
         <>
+          <div style={{ fontSize: 10, color: muted, lineHeight: 1.5, marginBottom: 12, whiteSpace: 'pre-line' }}>
+            {theme.bonuses_intro_text
+              || theme.bonuses_rules_text
+              || 'Рефералка: друг по ссылке/коду оплачивает подписку — оба +30 дней (до 10 наград / 30 дней). Промокод — скидка к тарифу. Условия могут измениться.'}
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+            {theme.bonuses_referral_title || 'Ваша ссылка'}
+          </div>
+          <div style={{ fontSize: 10, color: muted, lineHeight: 1.45, marginBottom: 8 }}>
+            {theme.bonuses_referral_hint || 'Скопируйте и отправьте другу'}
+          </div>
+          <input readOnly value="silentvpn://ref?code=ABCD1234" style={{
+            width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 11, marginBottom: 6,
+            borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
+          }} />
+          <button type="button" style={{
+            width: '100%', padding: '8px 0', borderRadius: 10, border: 'none', marginBottom: 14,
+            background: theme.primary_color, color: bg, fontSize: 12, fontWeight: 600, cursor: 'default',
+          }}>{theme.bonuses_copy_link_label || 'Копировать ссылку'}</button>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+            {theme.bonuses_promo_title || 'Промокод'}
+          </div>
+          <div style={{ fontSize: 10, color: muted, marginBottom: 8 }}>
+            {theme.bonuses_promo_hint || 'Проверить скидку к тарифу'}
+          </div>
           <input readOnly value="" placeholder="Введите код" style={{
             width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 12,
             borderRadius: 10, border: `1px solid ${fg}22`, background: bg, color: fg,
@@ -434,7 +478,12 @@ export default function ClientPreview({
           <button type="button" style={{
             marginTop: 8, width: '100%', padding: '8px 0', borderRadius: 10, border: 'none',
             background: theme.primary_color, color: bg, fontSize: 12, fontWeight: 600, cursor: 'default',
-          }}>Применить</button>
+          }}>Проверить</button>
+          {!!(theme.bonuses_rules_text || '').trim() && (
+            <div style={{ fontSize: 10, color: muted, lineHeight: 1.45, marginTop: 12, whiteSpace: 'pre-line' }}>
+              {theme.bonuses_rules_text}
+            </div>
+          )}
         </>
       ))}
 

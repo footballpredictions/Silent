@@ -39,13 +39,24 @@ async def register(
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email уже зарегистрирован")
 
+    from app.services.referral_service import (
+        resolve_referral_or_promo,
+        bind_referral_on_register,
+        generate_unique_referral_code,
+    )
+
+    inviter, promo = await resolve_referral_or_promo(db, req.referral_or_promo)
+
     token = generate_token()
     user = User(
         email=req.email,
         password_hash=hash_password(req.password),
         verification_token=token,
+        referral_code=await generate_unique_referral_code(db),
     )
     db.add(user)
+    await db.flush()
+    await bind_referral_on_register(db, user, inviter, promo)
     await db.commit()
 
     # Отправка письма в фоне — не блокирует ответ клиенту

@@ -5,7 +5,8 @@ alwaysApply: true
 # Инструкции для Agent
 
 - Полный контекст: `.cursor/MEMORY_BANK.md`, задачи: `.cursor/TASKS.md`, API: `.cursor/APIS.md`.
-- Memory Bank читается **в начале каждой сессии** (см. `.cursor/rules/memory-bank.mdc`).
+- Memory Bank и TASKS — **на каждое сообщение пользователя** (см. `.cursor/rules/memory-bank.mdc`), не только в новом чате.
+- Skills — **на каждую задачу**, включая **новые** skills по мере подключения (см. `.cursor/rules/skills-auto.mdc`).
 - Ответы пользователю: **на русском**.
 - **Рабочая папка:** `Silent-Project/` (не устаревший `Silent/` с корневыми `deploy_*.py`).
 - **Деплой:** шпаргалки `backend/DEPLOY.md`, `pc/DEPLOY.md`, `android/DEPLOY.md` — полные списки deploy-файлов в каждой ветке. Не создавать новые `deploy_*.py`. Индекс: MEMORY_BANK → «Деплой».

@@ -5,7 +5,7 @@ import DashboardPage from './pages/DashboardPage'
 import UsersPage from './pages/UsersPage'
 import SubscriptionsPage from './pages/SubscriptionsPage'
 import VkPage from './pages/VkPage'
-import PromoPage from './pages/PromoPage'
+import BonusesPage from './pages/BonusesPage'
 import ThemePage from './pages/ThemePage'
 import UpdatesPage from './pages/UpdatesPage'
 import HivePage from './pages/HivePage'
@@ -70,7 +70,8 @@ function App() {
               <Route path="/users" element={<UsersPage token={token} />} />
               <Route path="/subscriptions" element={<SubscriptionsPage token={token} />} />
               <Route path="/vk" element={<VkPage token={token} />} />
-              <Route path="/promo" element={<PromoPage token={token} />} />
+              <Route path="/promo" element={<BonusesPage token={token} />} />
+              <Route path="/bonuses" element={<BonusesPage token={token} />} />
               <Route path="/theme" element={<ThemePage token={token} />} />
               <Route path="/updates" element={<UpdatesPage token={token} />} />
               <Route path="/hive" element={<HivePage token={token} />} />

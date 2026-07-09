@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from app.database import get_db
-from app.models import User, Subscription, Device, VkHash, AppSetting, PromoCode, Payment, VkLinkSession
+from app.models import User, Subscription, Device, VkHash, AppSetting, PromoCode, Payment, VkLinkSession, ReferralReward
 from app.core.deps import get_admin_credentials
 from app.config import settings
 from app.schemas.vpn import ThemeResponse
@@ -251,6 +251,13 @@ async def list_users(
             "created_at": user.created_at,
             "bootstrap_hash": (user.bootstrap_hash[:12] + "...") if user.bootstrap_hash else None,
             "server_hashes": hash_count,
+            "referral_code": user.referral_code,
+            "referred_by_user_id": str(user.referred_by_user_id) if user.referred_by_user_id else None,
+            "pending_promo_code": user.pending_promo_code,
+            "acquisition": (
+                "referral" if user.referred_by_user_id
+                else ("promo" if user.pending_promo_code else "organic")
+            ),
             "subscription": {
                 "active": True if admin or in_test else (sub.is_active if sub else False),
                 "plan": "unlimited" if admin else ("test" if in_test else (sub.plan_type if sub else None)),
@@ -433,6 +440,14 @@ async def delete_user(
     await db.execute(delete(Device).where(Device.user_id == uid))
     await db.execute(delete(Payment).where(Payment.user_id == uid))
     await db.execute(delete(Subscription).where(Subscription.user_id == uid))
+    await db.execute(
+        delete(ReferralReward).where(
+            (ReferralReward.inviter_id == uid) | (ReferralReward.invitee_id == uid)
+        )
+    )
+    await db.execute(
+        update(User).where(User.referred_by_user_id == uid).values(referred_by_user_id=None)
+    )
     await db.delete(user)
     await db.commit()
     return {"status": "deleted", "id": user_id}
@@ -1074,6 +1089,122 @@ async def list_promos(
         }
         for p in promos
     ]
+
+
+@router.get("/bonuses/stats")
+async def bonuses_stats(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Summary + recent referral/promo acquisition for admin Bonuses page."""
+    from app.config import settings as app_settings
+
+    total_rewards = (await db.execute(select(func.count()).select_from(ReferralReward))).scalar_one()
+    pending = (await db.execute(
+        select(func.count()).select_from(ReferralReward).where(ReferralReward.status == "pending")
+    )).scalar_one()
+    rewarded = (await db.execute(
+        select(func.count()).select_from(ReferralReward).where(ReferralReward.status == "rewarded")
+    )).scalar_one()
+    referred_users = (await db.execute(
+        select(func.count()).select_from(User).where(User.referred_by_user_id.is_not(None))
+    )).scalar_one()
+    promo_pending_users = (await db.execute(
+        select(func.count()).select_from(User).where(User.pending_promo_code.is_not(None))
+    )).scalar_one()
+
+    # Top inviters by rewarded count
+    top_q = await db.execute(
+        select(
+            ReferralReward.inviter_id,
+            func.count().label("cnt"),
+        )
+        .where(ReferralReward.status == "rewarded")
+        .group_by(ReferralReward.inviter_id)
+        .order_by(func.count().desc())
+        .limit(20)
+    )
+    top_rows = top_q.all()
+    top_inviters = []
+    for inviter_id, cnt in top_rows:
+        u = (await db.execute(select(User).where(User.id == inviter_id))).scalar_one_or_none()
+        if not u:
+            continue
+        pending_cnt = (await db.execute(
+            select(func.count()).select_from(ReferralReward).where(
+                ReferralReward.inviter_id == inviter_id,
+                ReferralReward.status == "pending",
+            )
+        )).scalar_one()
+        invited_cnt = (await db.execute(
+            select(func.count()).select_from(ReferralReward).where(
+                ReferralReward.inviter_id == inviter_id,
+            )
+        )).scalar_one()
+        top_inviters.append({
+            "user_id": str(u.id),
+            "email": u.email,
+            "display_id": u.display_id,
+            "referral_code": u.referral_code,
+            "invited_count": int(invited_cnt or 0),
+            "rewarded_count": int(cnt or 0),
+            "pending_count": int(pending_cnt or 0),
+        })
+
+    # Recent referral pairs
+    recent_q = await db.execute(
+        select(ReferralReward).order_by(ReferralReward.created_at.desc()).limit(50)
+    )
+    recent = []
+    for r in recent_q.scalars().all():
+        inv = (await db.execute(select(User).where(User.id == r.inviter_id))).scalar_one_or_none()
+        tee = (await db.execute(select(User).where(User.id == r.invitee_id))).scalar_one_or_none()
+        recent.append({
+            "id": str(r.id),
+            "status": r.status,
+            "created_at": r.created_at,
+            "rewarded_at": r.rewarded_at,
+            "inviter_email": inv.email if inv else None,
+            "inviter_display_id": inv.display_id if inv else None,
+            "inviter_code": inv.referral_code if inv else None,
+            "invitee_email": tee.email if tee else None,
+            "invitee_display_id": tee.display_id if tee else None,
+            "source": "referral",
+        })
+
+    # Users who registered with pending promo (not yet consumed / still attached)
+    promo_users_q = await db.execute(
+        select(User)
+        .where(User.pending_promo_code.is_not(None))
+        .order_by(User.created_at.desc())
+        .limit(50)
+    )
+    promo_regs = [
+        {
+            "user_id": str(u.id),
+            "email": u.email,
+            "display_id": u.display_id,
+            "pending_promo_code": u.pending_promo_code,
+            "created_at": u.created_at,
+            "source": "promo",
+        }
+        for u in promo_users_q.scalars().all()
+    ]
+
+    return {
+        "summary": {
+            "referral_pairs_total": int(total_rewards or 0),
+            "referral_pending": int(pending or 0),
+            "referral_rewarded": int(rewarded or 0),
+            "users_from_referral": int(referred_users or 0),
+            "users_with_pending_promo": int(promo_pending_users or 0),
+            "bonus_days": app_settings.REFERRAL_BONUS_DAYS,
+            "monthly_reward_limit": app_settings.REFERRAL_MONTHLY_REWARD_LIMIT,
+        },
+        "top_inviters": top_inviters,
+        "recent_referrals": recent,
+        "pending_promo_registrations": promo_regs,
+    }
 
 
 # App updates (PC / Android)

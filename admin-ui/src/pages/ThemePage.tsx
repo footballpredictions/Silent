@@ -17,20 +17,33 @@ const defaultTheme = {
   login_link_color: '#4680C2',
   login_reset_title: 'Новый пароль',
   login_reset_button_text: 'Сохранить пароль',
+  menu_bonuses_label: 'Бонусы',
+  bonuses_title: 'Бонусы',
+  bonuses_intro_text:
+    'Рефералка: отправьте другу ссылку или код. Он регистрируется по ним и оплачивает любую подписку — оба получаете +30 дней. Один бонус на одного друга, до 10 наград за 30 дней.\n\nПромокод: отдельная скидка или доп. дни к тарифу — вводится при регистрации или проверяется здесь.\n\nУсловия программы могут измениться.',
+  bonuses_referral_title: 'Ваша ссылка',
+  bonuses_referral_hint: 'Скопируйте и отправьте другу',
+  bonuses_promo_title: 'Промокод',
+  bonuses_promo_hint: 'Проверить скидку к тарифу',
+  bonuses_rules_text: '',
+  bonuses_copy_link_label: 'Копировать ссылку',
+  bonuses_copy_code_label: 'Копировать код',
+  register_referral_or_promo_label: 'Промокод или реферальный код',
+  register_referral_or_promo_hint: 'Необязательно. Введите промокод или код из реферальной ссылки.',
 }
 
 type Theme = typeof defaultTheme
 
 /** Какие поля темы влияют на каждый экран предпросмотра */
 const SCREEN_HINTS: Partial<Record<PreviewScreen, string>> = {
-  login: 'Стартовый экран: bootstrap VPN автоматически (хеш в сборке). Табы «Войти» / «Регистрация».',
+  login: 'Стартовый экран: bootstrap VPN автоматически (хеш в сборке). Табы «Войти» / «Регистрация». Поле промо/реф на регистрации.',
   login_forgot: 'Экран из приложения после «Забыли пароль?».',
   login_expired: 'Панель при истечении 2 мин bootstrap. Тексты пока в коде клиентов.',
   login_reset_web: 'HTML-страница из письма — открывается в браузере, не в приложении.',
-  menu: 'Боковое меню: фон, текст, акцент, шрифт.',
+  menu: 'Боковое меню: фон, текст, акцент, шрифт. Пункт «Бонусы».',
   subscription: 'Тарифы: основной цвет (кнопки), фон, текст.',
   exceptions: 'Список приложений (Android): фон, текст, основной цвет.',
-  promo: 'Промокод: основной цвет (кнопка), фон, текст.',
+  bonuses: 'Бонусы: реферальная ссылка + промокод. Тексты и подписи ниже.',
   devices: 'Сессии: фон, текст.',
   support: 'Поддержка: фон, текст. Два значка Telegram — канал и direct-поддержка.',
   about: 'О сервисе: фон, текст. Ссылки — политика и условия в «Главная».',
@@ -153,6 +166,8 @@ export default function ThemePage({ token }: { token: string }) {
             {field('«Запомнить меня»', 'login_remember_me_label')}
             {field('«Забыли пароль?»', 'login_forgot_password_label')}
             {field('Цвет ссылок', 'login_link_color')}
+            {field('Подпись поля промо/реф', 'register_referral_or_promo_label')}
+            {fieldTextarea('Подсказка промо/реф', 'register_referral_or_promo_hint')}
             {colorFields()}
           </div>
         )
@@ -227,11 +242,26 @@ export default function ThemePage({ token }: { token: string }) {
         )
       case 'subscription':
       case 'exceptions':
-      case 'promo':
       case 'devices':
       case 'support':
       case 'about':
         return inheritedPanel(SCREEN_HINTS[screen] || '')
+      case 'bonuses':
+        return (
+          <div className="space-y-4">
+            <p className="text-xs text-[#666]">{SCREEN_HINTS.bonuses}</p>
+            {field('Пункт меню', 'menu_bonuses_label')}
+            {field('Заголовок экрана', 'bonuses_title')}
+            {fieldTextarea('Общее описание (реф + промо)', 'bonuses_intro_text')}
+            {field('Заголовок рефералки', 'bonuses_referral_title')}
+            {field('Подпись рефералки', 'bonuses_referral_hint')}
+            {field('Заголовок промо', 'bonuses_promo_title')}
+            {field('Подпись промо', 'bonuses_promo_hint')}
+            {fieldTextarea('Доп. текст внизу (обычно пусто)', 'bonuses_rules_text')}
+            {field('Кнопка копировать ссылку', 'bonuses_copy_link_label')}
+            {colorFields()}
+          </div>
+        )
       default:
         return null
     }

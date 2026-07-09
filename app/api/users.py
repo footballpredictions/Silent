@@ -26,8 +26,18 @@ from app.services.vpn_service import (
     touch_user_last_seen,
     LAST_SEEN_TOUCH_MINUTES,
 )
+from app.services.referral_service import get_referral_stats
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+@router.get("/me/referral")
+async def get_my_referral(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Referral code, deep link and invite stats for Bonuses screen."""
+    return await get_referral_stats(db, user)
 
 
 @router.get("/me", response_model=UserProfileResponse)

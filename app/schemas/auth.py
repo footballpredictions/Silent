@@ -6,6 +6,7 @@ import re
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
+    referral_or_promo: str | None = None
 
     @field_validator("password")
     @classmethod
@@ -13,6 +14,14 @@ class RegisterRequest(BaseModel):
         if len(v) < 8:
             raise ValueError("Пароль должен содержать минимум 8 символов")
         return v
+
+    @field_validator("referral_or_promo")
+    @classmethod
+    def normalize_referral_or_promo(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        code = v.strip()
+        return code or None
 
 
 class LoginDeviceInfo(BaseModel):

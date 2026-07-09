@@ -32,7 +32,7 @@
 
 | Метод | Путь | Auth | Описание |
 |-------|------|------|----------|
-| POST | `/register` | — | Регистрация, письмо верификации |
+| POST | `/register` | — | Регистрация `{ email, password, referral_or_promo? }`. Поле — либо реф-код пользователя, либо промокод (взаимоисключающе). Реф → `referred_by` + `ReferralReward(pending)`; промо → `pending_promo_code` (скидка при `/payments/init`) |
 | GET | `/verify-email?token=` | — | HTML-подтверждение email |
 | POST | `/login` | — | JWT access + refresh; опционально `device` → ensure_device_session |
 | POST | `/refresh` | — | Обновление токенов |
@@ -57,6 +57,7 @@
 | Метод | Путь | Auth | Описание |
 |-------|------|------|----------|
 | GET | `/me` | User | Профиль, подписка, устройства, лимиты |
+| GET | `/me/referral` | User | Реф-код, `silentvpn://ref?code=…`, счётчики invited/rewarded/pending |
 | POST | `/logout` | User | Выход: end_device_session по fingerprint |
 | POST | `/change-password` | User | Смена пароля (авторизован) |
 | PATCH | `/devices/{device_id}` | User | Переименование устройства |
@@ -90,9 +91,20 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 
 | Метод | Путь | Auth | Описание |
 |-------|------|------|----------|
-| POST | `/init` | User | `{ plan_type }` → URL YuMoney |
+| POST | `/init` | User | `{ plan_type, promo_code? }` → URL YuMoney; если `promo_code` пуст — берётся `user.pending_promo_code` |
 | POST | `/promo/check` | User | Проверка промокода |
-| POST | `/webhook` | Secret | YuMoney notification webhook |
+| GET | `/plans` | — | Тарифы |
+| POST | `/yumoney/notify` | YuMoney | Webhook: завершает payment → Subscription; если у плательщика `ReferralReward(pending)` и это **первая** completed-оплата — **+30 дней** invitee и inviter (`plan_type=referral_bonus`) |
+
+**Реферальная программа**
+
+- Deep link: `silentvpn://ref?code=<REFERRAL_CODE>`
+- Награда: после первой оплаты invitee — +`REFERRAL_BONUS_DAYS` (30) обоим; один бонус на invitee; самоприглашение запрещено
+- Антиабуз: не более `REFERRAL_MONTHLY_REWARD_LIMIT` (10) наград inviter за скользящие 30 дней — invitee всё равно получает бонус, inviter нет
+- Growth-фаза до ~1000 пользователей; условия могут ужесточиться (см. MEMORY_BANK → Реферальная политика)
+- Раздел клиентов «Бонусы»: реф-ссылка + проверка промокода
+- Theme-поля: `menu_bonuses_label`, `bonuses_*`, `register_referral_or_promo_*` (в `bonuses_rules_text` — лимит и «условия могут измениться»)
+- `GET /users/me/referral` также отдаёт `monthly_reward_limit`, `rewarded_last_30_days`
 
 ### Updates — `/api/updates`
 

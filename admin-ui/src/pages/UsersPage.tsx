@@ -11,6 +11,9 @@ interface UserRow {
   created_at: string; bootstrap_hash: string | null; server_hashes: number
   subscription: { active: boolean; plan: string | null; expires_at: string | null }
   devices_count: number
+  acquisition?: 'referral' | 'promo' | 'organic' | string
+  pending_promo_code?: string | null
+  referral_code?: string | null
 }
 
 function subscriptionLabel(u: UserRow): string {
@@ -131,6 +134,16 @@ export default function UsersPage({ token }: { token: string }) {
                       {(u.in_test_mode ?? u.is_test_user) && (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40">
                           Тест
+                        </span>
+                      )}
+                      {u.acquisition === 'referral' && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                          Реф
+                        </span>
+                      )}
+                      {u.acquisition === 'promo' && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30" title={u.pending_promo_code || ''}>
+                          Промо
                         </span>
                       )}
                     </div>

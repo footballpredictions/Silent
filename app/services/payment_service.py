@@ -61,11 +61,14 @@ async def create_payment_intent(
 
     amount, days = PLAN_PRICES[plan_type]
 
+    # Prefer explicit promo from client; else pending promo from registration
+    code = (promo_code or getattr(user, "pending_promo_code", None) or "").strip().upper() or None
+
     # Apply promo code
-    if promo_code:
+    if code:
         result = await db.execute(
             select(PromoCode).where(
-                PromoCode.code == promo_code.upper(),
+                PromoCode.code == code,
                 PromoCode.is_active == True,
             )
         )
@@ -74,6 +77,8 @@ async def create_payment_intent(
             if promo.expires_at is None or promo.expires_at > datetime.utcnow():
                 amount = amount * (1 - promo.discount_percent / 100)
                 days += promo.extra_days
+                if getattr(user, "pending_promo_code", None):
+                    user.pending_promo_code = None
 
     label = f"silent_{user.id}_{uuid.uuid4().hex[:8]}"
     wallet = _pick_wallet()
@@ -168,10 +173,21 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> bool:
     db.add(subscription)
     await db.commit()
 
+    from app.services.referral_service import apply_referral_reward_after_payment
+    await apply_referral_reward_after_payment(db, payment)
+
     # Send email
     result = await db.execute(select(User).where(User.id == payment.user_id))
     user = result.scalar_one_or_none()
     if user:
-        send_subscription_activated_email(user.email, payment.plan_type, subscription.expires_at)
+        # Refresh expires after possible referral bonus
+        sub_result = await db.execute(
+            select(Subscription)
+            .where(Subscription.user_id == payment.user_id, Subscription.status == "active")
+            .order_by(Subscription.expires_at.desc())
+        )
+        latest = sub_result.scalars().first()
+        expires = latest.expires_at if latest else subscription.expires_at
+        send_subscription_activated_email(user.email, payment.plan_type, expires)
 
     return True

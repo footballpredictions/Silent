@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { getApiBaseUrl, isMainVpnSessionActive, isTunnelApiActive } from './tunnelApi'
+import { isMainVpnSessionActive } from './tunnelApi'
 import { installTunnelApiAdapter } from './tunnelApiClient'
 import { getCachedTheme } from './themeStore'
 import { standbyApiBasesFromTheme } from './clientTheme'
@@ -10,8 +10,10 @@ const REFRESH_KEY = 'silent_refresh'
 const FALLBACK_PUBLIC = 'https://132-243-234-162.nip.io'
 const SERVER_IP = '132.243.234.162'
 const SERVER_HOST = '132-243-234-162.nip.io'
-/** Один fingerprint на сессию — как Android PREF_DEVICE_FP. */
+/** Текущий fingerprint сессии (как Android PREF_DEVICE_FP). */
 const DEVICE_FP_KEY = 'silent_device_fingerprint'
+/** Стабильный id ПК — переживает logout/перелогин (как Android PREF_STABLE_FP). */
+const STABLE_FP_KEY = 'silent_stable_device_fp'
 const SESSION_DEVICE_KEY = 'silent_session_device_id'
 const REMEMBER_ME_KEY = 'silent_remember_me'
 const REMEMBER_EMAIL_KEY = 'silent_remember_email'
@@ -45,13 +47,12 @@ const api = axios.create({ timeout: 15000 })
 installTunnelApiAdapter(api)
 
 api.interceptors.request.use(cfg => {
+  // PC renderer не ходит на http://10.66.66.1 — только public HTTPS.
+  // При main VPN запросы идут через main IPC (tunnelApiClient), не через этот baseURL.
   if (!isMainVpnSessionActive()) {
-    const forcePublic = Boolean((cfg as any).__forcePublic) || Boolean((cfg as any).__forcePublicDirect)
-    cfg.baseURL = forcePublic
-      ? getPublicApiBaseUrl()
-      : (isTunnelApiActive() ? getApiBaseUrl() : getPublicApiBaseUrl())
+    cfg.baseURL = getPublicApiBaseUrl()
     if (!cfg.timeout || cfg.timeout === 15000) {
-      cfg.timeout = !forcePublic && isTunnelApiActive() ? 45_000 : 15_000
+      cfg.timeout = 15_000
     }
   } else if (!cfg.timeout || cfg.timeout === 15000) {
     cfg.timeout = 25_000
@@ -65,17 +66,11 @@ api.interceptors.response.use(
   r => r,
   async err => {
     const cfg = err.config
-    if (cfg && !cfg.__publicRetry && isTunnelApiActive() && !err.response && !isMainVpnSessionActive()) {
-      cfg.__publicRetry = true
-      cfg.__forcePublic = true
-      cfg.baseURL = getPublicApiBaseUrl()
-      return api.request(cfg)
-    }
     if (err.response?.status === 401) {
       const refresh = localStorage.getItem(REFRESH_KEY)
       if (refresh) {
         try {
-          const refreshBase = isTunnelApiActive() ? getApiBaseUrl() : getPublicApiBaseUrl()
+          const refreshBase = getPublicApiBaseUrl()
           const res = await axios.post(`${refreshBase}/api/auth/refresh`, { refresh_token: refresh })
           localStorage.setItem(TOKEN_KEY, res.data.access_token)
           localStorage.setItem(REFRESH_KEY, res.data.refresh_token)
@@ -120,14 +115,29 @@ export function getDeviceFingerprint(): string {
   return fp
 }
 
-/** Новая сессия при входе — освобождает слот устройства (как Android). */
+/**
+ * Стабильный fingerprint ПК (один раз). Без него каждый вход = новый UUID = новый слот → «лимит 3».
+ * Как Android: ANDROID_ID / PREF_STABLE_FP.
+ */
+export function getStableDeviceFingerprint(): string {
+  let fp = localStorage.getItem(STABLE_FP_KEY)?.trim() || ''
+  if (fp) return fp
+  // Миграция: если уже был session fp — закрепить его как стабильный
+  const legacy = localStorage.getItem(DEVICE_FP_KEY)?.trim()
+  fp = legacy || `pc-${crypto.randomUUID()}`
+  localStorage.setItem(STABLE_FP_KEY, fp)
+  return fp
+}
+
+/** Новая сессия при входе — тот же fingerprint ПК (reuse слота на сервере). */
 export function startNewSession(): string {
   clearSessionDeviceId()
-  const fp = crypto.randomUUID()
+  const fp = getStableDeviceFingerprint()
   localStorage.setItem(DEVICE_FP_KEY, fp)
   return fp
 }
 
+/** Сброс только session-ключа; стабильный fp ПК не трогаем. */
 export function clearSessionFingerprint(): void {
   localStorage.removeItem(DEVICE_FP_KEY)
 }

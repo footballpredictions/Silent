@@ -30,6 +30,18 @@ export interface ClientTheme {
   support_url?: string
   telegram_channel_url?: string
   hive_standby_api_urls?: string
+  menu_bonuses_label?: string
+  bonuses_title?: string
+  bonuses_intro_text?: string
+  bonuses_referral_title?: string
+  bonuses_referral_hint?: string
+  bonuses_promo_title?: string
+  bonuses_promo_hint?: string
+  bonuses_rules_text?: string
+  bonuses_copy_link_label?: string
+  bonuses_copy_code_label?: string
+  register_referral_or_promo_label?: string
+  register_referral_or_promo_hint?: string
 }
 
 export function standbyApiBasesFromTheme(theme: ClientTheme | null): string[] {

@@ -113,7 +113,7 @@ interface Profile {
   max_devices: number
 }
 
-type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'vk_cred' | 'hashes' | 'promo' | 'support' | 'about'
+type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'vk_cred' | 'hashes' | 'bonuses' | 'support' | 'about'
 
 const GREEN = '#16A34A'
 const TEST_PURPLE = '#9333EA'
@@ -189,6 +189,15 @@ export default function MainScreen({
   const [menuPage, setMenuPage] = useState<MenuPage>(null)
   const [promoCode, setPromoCode] = useState('')
   const [promoMsg, setPromoMsg] = useState('')
+  const [referralInfo, setReferralInfo] = useState<{
+    referral_code: string
+    referral_link: string
+    invited_count: number
+    rewarded_count: number
+    pending_count: number
+    bonus_days: number
+  } | null>(null)
+  const [referralCopyMsg, setReferralCopyMsg] = useState('')
   const [showDebugLog, setShowDebugLog] = useState(false)
   const [renameTarget, setRenameTarget] = useState<DeviceInfo | null>(null)
   const [renameText, setRenameText] = useState('')
@@ -205,6 +214,31 @@ export default function MainScreen({
   const [hashSyncKey, setHashSyncKey] = useState(0)
 
   const applyServerProfile = useCallback((p: Profile) => {
+    // Сессию удалили с другого устройства / из меню — выходим из аккаунта (как Android).
+    const sid = getSessionDeviceId()
+    if (sid && Array.isArray(p.devices)) {
+      const stillHere = p.devices.some(d => isCurrentSessionDevice(d, sid))
+      if (!stillHere) {
+        pushLog('Main', 'current session missing in profile — logout', 'W')
+        void (async () => {
+          try {
+            setMainVpnSessionActive(false)
+            if (connected || connecting) {
+              await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
+            }
+          } catch { /* ignore */ }
+          clearCachedVpnConfig()
+          clearCachedProfile()
+          clearSessionDeviceId()
+          clearSessionFingerprint()
+          clearTokens()
+          resetConfigSyncOnLogout()
+          onLogout()
+        })()
+        return
+      }
+    }
+
     setProfile(p)
     saveCachedProfile(p)
     if (isBootstrapVpnActive()) return
@@ -243,7 +277,7 @@ export default function MainScreen({
         setMenuPage('subscription')
       })()
     }
-  }, [connected, connecting, disconnecting])
+  }, [connected, connecting, disconnecting, onLogout])
 
   const fetchProfile = useCallback(async () => {
     try {
@@ -293,6 +327,28 @@ export default function MainScreen({
     const id = window.setInterval(() => fetchProfile(), 30_000)
     return () => clearInterval(id)
   }, [menuPage, fetchProfile])
+
+  const loadReferral = useCallback(async () => {
+    try {
+      const r = await api.get('/api/users/me/referral')
+      if (r.data?.referral_link) {
+        setReferralInfo(r.data)
+        setReferralCopyMsg('')
+        return
+      }
+      setReferralInfo(null)
+      setReferralCopyMsg('Не удалось загрузить ссылку')
+    } catch (e: any) {
+      setReferralInfo(null)
+      const detail = e?.response?.data?.detail
+      setReferralCopyMsg(typeof detail === 'string' ? detail : 'Не удалось загрузить ссылку')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (menuPage !== 'bonuses') return
+    void loadReferral()
+  }, [menuPage, loadReferral])
 
   useEffect(() => {
     setMainVpnSessionActive(connected)
@@ -488,26 +544,19 @@ export default function MainScreen({
 
     if (connected) {
       pendingConnectAfterSubscriptionRefreshRef.current = false
-      connectLockRef.current = true
+      // Сразу OFF без disconnecting/змейки — stop в фоне
       setConnected(false)
-      setDisconnecting(true)
+      setConnecting(false)
+      setDisconnecting(false)
+      connectLockRef.current = false
       pushLog('Main', 'disconnect')
       SessionTrace.enter('Main.connect', 'disconnect')
-      try {
-        const fp = DEVICE_FINGERPRINT()
-        setMainVpnSessionActive(false)
-        await notifyDisconnect(fp)
-        if ((window as any).electronAPI?.vpnDisconnect) {
-          await (window as any).electronAPI.vpnDisconnect()
-        }
-        onlineMarkedRef.current = false
-        fetchProfile()
-      } catch (err: any) {
-        if (err.response?.status === 402 || err.response?.status === 403) alert(err.response.data.detail)
-      } finally {
-        connectLockRef.current = false
-        setDisconnecting(false)
-      }
+      const fp = DEVICE_FINGERPRINT()
+      setMainVpnSessionActive(false)
+      onlineMarkedRef.current = false
+      void notifyDisconnect(fp)
+      void (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
+      fetchProfile()
       return
     }
 
@@ -629,16 +678,27 @@ export default function MainScreen({
     void handleToggle()
   }, [profile, connected, connecting, disconnecting])
 
-  const handleLogout = async () => {
+  const logoutBusyRef = useRef(false)
+  const [loggingOut, setLoggingOut] = useState(false)
+
+  const handleLogout = () => {
+    if (logoutBusyRef.current) return
+    logoutBusyRef.current = true
+    setLoggingOut(true)
+    setMenuOpen(false)
+    setMenuPage(null)
+
     const fp = (() => { try { return DEVICE_FINGERPRINT() } catch { return null } })()
+    const token = localStorage.getItem('silent_token')
+    const needVpnStop = connected || connecting || disconnecting
+
+    // Сразу UI. Stable fingerprint переживает logout → следующий вход reuse слот (как Android).
     setMainVpnSessionActive(false)
-    if (fp) await notifyDisconnect(fp)
-    if (connected || connecting) {
-      await (window as any).electronAPI?.vpnDisconnect?.()
-    }
-    if (fp) {
-      await api.post('/api/users/logout', { device_fingerprint: fp }).catch(() => null)
-    }
+    setConnected(false)
+    setConnecting(false)
+    setDisconnecting(false)
+    connectLockRef.current = false
+    onlineMarkedRef.current = false
     clearCachedVpnConfig()
     clearCachedProfile()
     clearSessionDeviceId()
@@ -646,6 +706,30 @@ export default function MainScreen({
     clearTokens()
     resetConfigSyncOnLogout()
     onLogout()
+
+    void (async () => {
+      try {
+        if (fp && token) {
+          await Promise.race([
+            api.post(
+              '/api/users/logout',
+              { device_fingerprint: fp },
+              {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: 3_000,
+              } as any,
+            ),
+            new Promise<void>(r => setTimeout(r, 3_000)),
+          ])
+        }
+      } catch { /* ignore */ }
+      try {
+        if (needVpnStop) {
+          void (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
+        }
+      } catch { /* ignore */ }
+      logoutBusyRef.current = false
+    })()
   }
 
   const saveRename = async () => {
@@ -674,7 +758,7 @@ export default function MainScreen({
     try {
       await api.delete(`/api/users/devices/${d.id}`)
       if (isSelf) {
-        await handleLogout()
+        handleLogout()
       } else {
         await fetchProfile()
       }
@@ -877,7 +961,7 @@ export default function MainScreen({
                 { key: 'exceptions', label: 'Исключения приложений' },
                 ...(isDevBuild ? [{ key: 'vk_cred', label: 'Режим VK-кредов' }] : []),
                 ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
-                { key: 'promo', label: 'Промокод' },
+                { key: 'bonuses', label: clientTheme?.menu_bonuses_label || 'Бонусы' },
                 { key: 'devices', label: `Сессии (${sessionsBadge(profile)})` },
                 { key: 'support', label: 'Поддержка' },
                 { key: 'about', label: 'О сервисе' },
@@ -885,7 +969,10 @@ export default function MainScreen({
                 <button
                   key={key}
                   type="button"
-                  onClick={() => setMenuPage(key as MenuPage)}
+                  onClick={() => {
+                    setMenuPage(key as MenuPage)
+                    if (key === 'bonuses') void loadReferral()
+                  }}
                   className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors"
                   style={{ color: fg }}
                 >
@@ -911,9 +998,13 @@ export default function MainScreen({
                   )}
                 </button>
               )}
-              <button onClick={handleLogout}
-                className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-red-500 hover:bg-red-50 transition-colors mt-2">
-                Выйти
+              <button
+                type="button"
+                onClick={handleLogout}
+                disabled={loggingOut}
+                className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-red-500 hover:bg-red-50 transition-colors mt-2 disabled:opacity-50"
+              >
+                {loggingOut ? 'Выход…' : 'Выйти'}
               </button>
             </nav>
           </div>
@@ -999,10 +1090,66 @@ export default function MainScreen({
             </AppErrorBoundary>
           )}
 
-          {menuPage === 'promo' && (
+          {menuPage === 'bonuses' && (
             <div className="flex-1 p-4 w-full overflow-y-auto">
               <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
-              <div className="text-sm font-semibold mb-3">Промокод</div>
+              <div className="text-sm font-semibold mb-2">
+                {clientTheme?.bonuses_title || clientTheme?.menu_bonuses_label || 'Бонусы'}
+              </div>
+              <p className="text-[11px] mb-4 leading-relaxed whitespace-pre-line" style={{ color: muted }}>
+                {clientTheme?.bonuses_intro_text
+                  || clientTheme?.bonuses_rules_text
+                  || 'Рефералка: отправьте другу ссылку или код. Он регистрируется по ним и оплачивает любую подписку — оба получаете +30 дней. Один бонус на одного друга, до 10 наград за 30 дней.\n\nПромокод: отдельная скидка или доп. дни к тарифу — вводится при регистрации или проверяется здесь.\n\nУсловия программы могут измениться.'}
+              </p>
+
+              <div className="text-sm font-semibold mb-1">
+                {clientTheme?.bonuses_referral_title || 'Ваша ссылка'}
+              </div>
+              <p className="text-[11px] mb-2 leading-relaxed" style={{ color: muted }}>
+                {clientTheme?.bonuses_referral_hint || 'Скопируйте и отправьте другу'}
+              </p>
+              <input
+                readOnly
+                value={referralInfo?.referral_link || ''}
+                placeholder={referralInfo ? '' : 'Загрузка…'}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs focus:outline-none mb-2"
+                style={{ userSelect: 'text' } as any}
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  const link = referralInfo?.referral_link
+                  if (!link) {
+                    void loadReferral()
+                    return
+                  }
+                  try {
+                    await (window as any).electronAPI?.copyToClipboard?.(link)
+                    setReferralCopyMsg('Ссылка скопирована')
+                  } catch {
+                    setReferralCopyMsg('Не удалось скопировать')
+                  }
+                }}
+                className="w-full bg-black text-white rounded-xl py-2 text-xs font-semibold hover:bg-gray-800 transition-colors mb-2"
+              >
+                {referralInfo?.referral_link
+                  ? (clientTheme?.bonuses_copy_link_label || 'Копировать ссылку')
+                  : 'Повторить загрузку'}
+              </button>
+              {referralInfo && (
+                <p className="text-[11px] mb-3" style={{ color: muted }}>
+                  Приглашено: {referralInfo.invited_count} · Награждено: {referralInfo.rewarded_count}
+                  {referralInfo.pending_count ? ` · Ожидают оплату: ${referralInfo.pending_count}` : ''}
+                </p>
+              )}
+              {referralCopyMsg && <p className="text-xs text-gray-500 mb-3 text-center">{referralCopyMsg}</p>}
+
+              <div className="text-sm font-semibold mb-1 mt-4">
+                {clientTheme?.bonuses_promo_title || 'Промокод'}
+              </div>
+              <p className="text-[11px] mb-2" style={{ color: muted }}>
+                {clientTheme?.bonuses_promo_hint || 'Проверить скидку к тарифу'}
+              </p>
               <input value={promoCode} onChange={e => setPromoCode(e.target.value)}
                 placeholder="Введите код"
                 className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-black"
@@ -1013,9 +1160,15 @@ export default function MainScreen({
                   setPromoMsg(`Скидка ${res.data.discount_percent}%!`)
                 } catch (e: any) { setPromoMsg(e.response?.data?.detail || 'Не найден') }
               }} className="mt-2 w-full bg-black text-white rounded-xl py-2 text-xs font-semibold hover:bg-gray-800 transition-colors">
-                Применить
+                Проверить
               </button>
               {promoMsg && <p className="text-xs text-gray-500 mt-2 text-center">{promoMsg}</p>}
+
+              {!!(clientTheme?.bonuses_rules_text || '').trim() && (
+                <p className="text-[11px] mt-4 leading-relaxed whitespace-pre-line" style={{ color: muted }}>
+                  {clientTheme?.bonuses_rules_text}
+                </p>
+              )}
             </div>
           )}
 

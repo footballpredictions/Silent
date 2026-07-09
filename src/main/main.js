@@ -17,11 +17,14 @@ const {
   isProcessElevated,
   isTunnelUp,
   isServiceRunning,
+  isTunnelUpAsync,
+  isServiceRunningAsync,
   buildWgConfigFromApi,
   applyWireGuardConfig,
   addServerBypassRoutes,
   capturePhysicalGateway,
   normalizeWgConfText,
+  waitWgStopIdle,
 } = require('./vpn/wireguard')
 const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
 const buildFlags = require('./buildFlags')
@@ -41,6 +44,7 @@ let isQuitting = false
 let wdttProcess = null
 let wgApplied = false
 let pendingVkDeepLink = null
+let pendingRefDeepLink = null
 let vpnSessionActive = false
 let connectStartedAtMs = 0
 let pausedForNetwork = false
@@ -145,6 +149,25 @@ function handleDeepLink(url) {
       }
       return
     }
+    if (u.hostname === 'ref') {
+      const code = (u.searchParams.get('code') || '').trim()
+      if (!code) return
+      const payload = { code }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        const send = () => {
+          mainWindow.webContents.send('ref-deep-link', payload)
+          mainWindow.show()
+          mainWindow.focus()
+        }
+        if (mainWindow.webContents.isLoading()) {
+          pendingRefDeepLink = payload
+        } else {
+          send()
+        }
+      } else {
+        pendingRefDeepLink = payload
+      }
+    }
   } catch {}
 }
 
@@ -191,6 +214,12 @@ function createWindow() {
     if (pendingVkDeepLink) {
       mainWindow.webContents.send('vk-deep-link', pendingVkDeepLink)
       pendingVkDeepLink = null
+      mainWindow.show()
+      mainWindow.focus()
+    }
+    if (pendingRefDeepLink) {
+      mainWindow.webContents.send('ref-deep-link', pendingRefDeepLink)
+      pendingRefDeepLink = null
       mainWindow.show()
       mainWindow.focus()
     }
@@ -350,15 +379,24 @@ function clearFullTunnelUpgradeTimer() {
 function quitAppFully() {
   if (isQuitting) return
   isQuitting = true
-  if (tray && !tray.isDestroyed()) {
-    tray.destroy()
-    tray = null
-  }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.removeAllListeners('close')
-    mainWindow.close()
-  }
-  setImmediate(() => app.quit())
+  try {
+    if (tray && !tray.isDestroyed()) {
+      tray.destroy()
+      tray = null
+    }
+  } catch { /* ignore */ }
+  try {
+    cleanupVpn()
+  } catch { /* ignore */ }
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.removeAllListeners('close')
+      mainWindow.destroy()
+    }
+  } catch { /* ignore */ }
+  setImmediate(() => {
+    try { app.exit(0) } catch { app.quit() }
+  })
 }
 
 function cleanupVpn() {
@@ -388,7 +426,8 @@ function cleanupVpn() {
     try { wdttProcess.kill() } catch {}
     wdttProcess = null
   }
-  stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
+  // Не await — cleanupVpn синхронный; async stop не блокирует main/UI
+  void stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
   clearBypassRefresh()
   wgApplied = false
   tunnelReadySent = false
@@ -452,7 +491,7 @@ function scheduleBypassRefresh(sendLogFn) {
   clearBypassRefresh()
   bypassRefreshTimer = setInterval(() => {
     if (!wgApplied || vpnBootstrapMode) return
-    addServerBypassRoutes(sessionExcludeIPs, () => {})
+    void addServerBypassRoutes(sessionExcludeIPs, () => {})
   }, 90_000)
 }
 
@@ -469,14 +508,15 @@ function fullTunnelTargetWorkers() {
 
 function minWorkersForTunnelReady(isBootstrap = false) {
   if (isBootstrap || vpnBootstrapMode) return 1
-  return WORKERS_PER_GROUP
+  // Как e8c39e2 / быстрый origin: UI после WG + 1 воркер; остальное фоном.
+  return 1
 }
 
 function isVpnReadyForUi() {
   if (tunnelReadySent) return true
   if (vpnBootstrapMode) return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
-  // «Подключено» после WG + 1 группы воркеров; full tunnel для YouTube — в фоне.
-  return wgApplied && activeWorkerCount >= WORKERS_PER_GROUP && isWdttAlive()
+  // «Подключено» сразу после WG + ≥1 воркер (не ждать 9). Full tunnel — в фоне.
+  return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
 }
 
 async function stopWdttForReplace(sendLogFn, reason = 'replace') {
@@ -570,9 +610,9 @@ async function cleanupVpnAsync() {
 }
 
 async function fastDisconnectVpn() {
+  // cleanupVpn уже гасит wdtt и стартует stopWireGuardTunnel в фоне.
+  // Не ждём uninstall/sc — иначе тумблер «мертвый» 10–20с.
   cleanupVpn()
-  forceStopWireGuard(isDev, __dirname, sendLog)
-  await waitForTunnelDown(2000, sendLog)
 }
 
 function writeCaptchaResult(session, result) {
@@ -664,8 +704,8 @@ ipcMain.handle('app-quit', () => {
 })
 async function ensureNipIoBypassRoutes(sendLogFn = sendLog) {
   if (!wgApplied || vpnBootstrapMode || sessionExcludeIPs.length === 0) return
-  capturePhysicalGateway(sendLogFn)
-  addServerBypassRoutes(sessionExcludeIPs, sendLogFn)
+  await capturePhysicalGateway(sendLogFn)
+  await addServerBypassRoutes(sessionExcludeIPs, sendLogFn)
   await sleep(500)
 }
 
@@ -809,6 +849,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     clearFullTunnelUpgradeTimer()
     sendLog(`[WG] Переключение на полный туннель (${source})…`)
     try {
+      if (!vpnSessionActive) return
       if (!fs.existsSync(confPath)) {
         sendLog('[WG] full tunnel upgrade: нет wg-turn.conf', 'W')
         return
@@ -816,16 +857,21 @@ async function beginWdttSession(config, { switching = false } = {}) {
       const ok = await applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
         skipWdttWait: true,
         subnetOnly: false,
-        skipForceStop: false,
+        // syncconf AllowedIPs — без uninstall/reinstall (иначе 10–20с и «мёртвый» UI)
+        skipForceStop: true,
         reuseRuntime: true,
       })
+      if (!vpnSessionActive) {
+        sendLog('[WG] full tunnel upgrade отменён (disconnect)')
+        return
+      }
       if (ok) {
         wgCredPhase = false
         sendLog('[WG] Полный туннель активен, DNS = 1.1.1.1 + 77.88.8.8')
-        addServerBypassRoutes([...excludeIPs], sendLog)
+        await addServerBypassRoutes([...excludeIPs], sendLog)
         scheduleBypassRefresh(sendLog)
         ensureVpnReadyEvent(sendLog)
-      } else if (attempt < 3) {
+      } else if (attempt < 3 && vpnSessionActive) {
         sendLog(`[WG] full tunnel retry ${attempt + 1}/3…`, 'W')
         wgFullTunnelUpgradeInFlight = false
         setTimeout(() => { void upgradeToFullTunnel(`${source}-retry`, attempt + 1) }, 3000)
@@ -835,7 +881,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       }
     } catch (e) {
       sendLog(`[WG] full tunnel upgrade: ${e?.message || e}`, 'W')
-      if (attempt < 3) {
+      if (attempt < 3 && vpnSessionActive) {
         wgFullTunnelUpgradeInFlight = false
         setTimeout(() => { void upgradeToFullTunnel(`${source}-retry`, attempt + 1) }, 3000)
         return
@@ -897,10 +943,12 @@ async function beginWdttSession(config, { switching = false } = {}) {
     fs.writeFileSync(confPath, normalizedConf)
     await sleep(150)
 
+    // sc query быстрее PowerShell Get-NetAdapter
+    const alreadyUp = switching && (await isServiceRunningAsync())
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
       skipWdttWait: true,
       subnetOnly: vpnBootstrapMode || wgCredPhase,
-      skipForceStop: switching && (isTunnelUp() || isServiceRunning()),
+      skipForceStop: alreadyUp,
     })
     const timeoutMs = isProcessElevated() ? 70000 : 90000
     let ok = false
@@ -915,7 +963,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     } finally {
       wgInstallInFlight = false
     }
-    if (!ok && (isTunnelUp() || isServiceRunning())) {
+    if (!ok && (await isServiceRunningAsync())) {
       sendLog('[WG] Туннель/служба активны после таймаута — считаем успехом')
       ok = true
     }
@@ -923,7 +971,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       wgApplied = true
       wgAttempted = true
       clearWgRetries()
-      addServerBypassRoutes([...excludeIPs], sendLog)
+      await addServerBypassRoutes([...excludeIPs], sendLog)
       scheduleBypassRefresh(sendLog)
       if (wgCredPhase) maybeScheduleFullTunnelUpgrade()
       scheduleTunnelReadyPoll(sendLog)
@@ -1083,7 +1131,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       return
     }
     transportSwitching = false
-    stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
+    void stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
     clearBypassRefresh()
     wgApplied = false
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1137,13 +1185,18 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
   vpnConnectInFlight = true
   try {
+    // Не ждать полный uninstall (как origin): cap 2.5с — иначе connect +14с.
+    // applyWireGuardConfig сам сериализует stop через enqueueWgStop.
+    await Promise.race([waitWgStopIdle(), sleep(2500)])
     if (wdttProcess && !transportSwitching && !isTransportHealthy()) {
       sendLog('[VPN] Переподключение: остановка предыдущей сессии...')
       await cleanupVpnAsync()
     } else if (!wdttProcess && !wgApplied) {
-      forceStopWireGuard(isDev, __dirname, sendLog)
-      await waitForTunnelDown(8000, sendLog)
-      await sleep(400)
+      // Только если служба ещё жива — без второго полного forceStop «на всякий случай»
+      if (await isServiceRunningAsync()) {
+        await forceStopWireGuard(isDev, __dirname, sendLog)
+        await waitForTunnelDown(3000, sendLog)
+      }
     }
 
     const exePath = wdttExePath()
@@ -1203,67 +1256,102 @@ function updateCheckBaseUrl() {
   return UPDATE_PUBLIC_BASE
 }
 
-/** PC: API через public HTTPS (IP сервера вне туннеля + bypass). Node не маршрутизирует 10.66.66.1 через WG. */
+/** PC: API через public HTTPS (IP сервера вне туннеля + bypass). */
 function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 20000 }) {
-  return new Promise((resolve, reject) => {
-    const path = reqPath.startsWith('/') ? reqPath : `/${reqPath}`
-    const opts = {
-      hostname: SERVER_IP_FALLBACK,
-      port: 443,
-      path,
-      method: String(method || 'GET').toUpperCase(),
-      rejectUnauthorized: false,
-      servername: UPDATE_HOST,
-      headers: { ...headers, Host: UPDATE_HOST },
-      timeout,
-    }
-    const req = https.request(opts, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        publicDirectRequest({ method, path: res.headers.location, headers, body, timeout }).then(resolve).catch(reject)
-        res.resume()
-        return
-      }
-      let raw = ''
-      res.on('data', (chunk) => { raw += chunk })
-      res.on('end', () => {
-        let data = raw
-        try { data = JSON.parse(raw) } catch { /* plain text */ }
-        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-          resolve({ status: res.statusCode, data })
-        } else {
-          const err = new Error(`HTTP ${res.statusCode}`)
-          err.response = { status: res.statusCode, data }
-          reject(err)
-        }
-      })
-    })
-    req.on('error', reject)
-    req.on('timeout', () => {
-      req.destroy(new Error('API timeout'))
-    })
-    if (body != null && body !== '') {
-      const payload = typeof body === 'string' ? body : JSON.stringify(body)
-      if (!opts.headers['Content-Type']) opts.headers['Content-Type'] = 'application/json'
-      req.write(payload)
-    }
-    req.end()
+  return backendHttpRequest({
+    protocol: 'https',
+    hostname: SERVER_IP_FALLBACK,
+    port: 443,
+    path: reqPath,
+    method,
+    headers: { ...headers, Host: UPDATE_HOST },
+    body,
+    timeout,
+    rejectUnauthorized: false,
+    servername: UPDATE_HOST,
   })
 }
 
 function tunnelHttpRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 8000 }) {
+  return backendHttpRequest({
+    protocol: 'http',
+    hostname: '10.66.66.1',
+    port: 8000,
+    path: reqPath,
+    method,
+    headers: { ...headers, Host: '10.66.66.1' },
+    body,
+    timeout,
+  })
+}
+
+/** Любой HTTP-статус (включая 4xx) → resolve; сеть/таймаут → reject. */
+function backendHttpRequest({
+  protocol,
+  hostname,
+  port,
+  path: reqPath,
+  method = 'GET',
+  headers = {},
+  body = null,
+  timeout = 20000,
+  rejectUnauthorized,
+  servername,
+}) {
   return new Promise((resolve, reject) => {
     const path = reqPath.startsWith('/') ? reqPath : `/${reqPath}`
+    const hdrs = {}
+    for (const [k, v] of Object.entries(headers || {})) {
+      if (v == null) continue
+      const key = String(k)
+      // Не тащим чужой Content-Length — пересчитаем сами
+      if (key.toLowerCase() === 'content-length') continue
+      if (key.toLowerCase() === 'host') continue
+      hdrs[key] = String(v)
+    }
+    for (const [k, v] of Object.entries(headers || {})) {
+      if (k.toLowerCase() === 'host' && v != null) hdrs.Host = String(v)
+    }
+
+    let payload = null
+    if (body != null && body !== '') {
+      payload = typeof body === 'string' ? body : JSON.stringify(body)
+      if (!Object.keys(hdrs).some((k) => k.toLowerCase() === 'content-type')) {
+        hdrs['Content-Type'] = 'application/json'
+      }
+      hdrs['Content-Length'] = Buffer.byteLength(payload)
+    }
+
     const opts = {
-      hostname: '10.66.66.1',
-      port: 8000,
+      hostname,
+      port,
       path,
       method: String(method || 'GET').toUpperCase(),
-      headers: { ...headers, Host: '10.66.66.1' },
+      headers: hdrs,
       timeout,
     }
-    const req = http.request(opts, (res) => {
+    if (protocol === 'https') {
+      opts.rejectUnauthorized = rejectUnauthorized !== false ? false : true
+      if (servername) opts.servername = servername
+    }
+
+    const proto = protocol === 'https' ? https : http
+    const req = proto.request(opts, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        tunnelHttpRequest({ method, path: res.headers.location, headers, body, timeout }).then(resolve).catch(reject)
+        const loc = res.headers.location
+        const nextPath = loc.startsWith('http') ? new URL(loc).pathname + new URL(loc).search : loc
+        backendHttpRequest({
+          protocol,
+          hostname,
+          port,
+          path: nextPath,
+          method,
+          headers,
+          body,
+          timeout,
+          rejectUnauthorized,
+          servername,
+        }).then(resolve).catch(reject)
         res.resume()
         return
       }
@@ -1272,40 +1360,64 @@ function tunnelHttpRequest({ method = 'GET', path: reqPath, headers = {}, body =
       res.on('end', () => {
         let data = raw
         try { data = JSON.parse(raw) } catch { /* plain text */ }
-        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-          resolve({ status: res.statusCode, data })
-        } else {
-          const err = new Error(`HTTP ${res.statusCode}`)
-          err.response = { status: res.statusCode, data }
-          reject(err)
-        }
+        // 4xx/5xx тоже resolve — иначе login 400 теряется и ломает fallback
+        resolve({ status: res.statusCode || 0, data })
       })
     })
     req.on('error', reject)
     req.on('timeout', () => {
-      req.destroy(new Error('Tunnel API timeout'))
+      req.destroy(new Error(protocol === 'https' ? 'API timeout' : 'Tunnel API timeout'))
     })
-    if (body != null && body !== '') {
-      const payload = typeof body === 'string' ? body : JSON.stringify(body)
-      if (!opts.headers['Content-Type']) opts.headers['Content-Type'] = 'application/json'
-      req.write(payload)
-    }
+    if (payload != null) req.write(payload)
     req.end()
   })
 }
 
 ipcMain.handle('tunnel-api-request', async (_, payload) => {
-  if (!wgApplied || vpnBootstrapMode) {
-    throw new Error('API unavailable')
-  }
+  // Как Android: при поднятом WG API через 10.66.66.1; иначе / fallback — public HTTPS.
+  // Важно: HTTP 4xx — не «сбой туннеля», а ответ API (вернуть в renderer).
   const p = payload || {}
   const opts = { ...p, timeout: p.timeout || 25_000 }
-  try {
-    return await publicDirectRequest(opts)
-  } catch (e) {
-    sendLog(`[API] HTTPS ${SERVER_IP_FALLBACK} fail: ${e?.message || e} → tunnel 10.66.66.1`)
-    return tunnelHttpRequest(opts)
+  const path = opts.path || ''
+  if (wgApplied) {
+    const maxAttempts = wgFullTunnelUpgradeInFlight || wgCredPhase ? 3 : 1
+    let lastErr = null
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await tunnelHttpRequest({
+          ...opts,
+          // Во время upgrade маршруты мигают — короткий timeout + retry
+          timeout: wgFullTunnelUpgradeInFlight ? Math.min(opts.timeout || 8000, 5000) : opts.timeout,
+        })
+        if (res.status >= 200 && res.status < 500) {
+          if (res.status >= 400) {
+            sendLog(`[API] tunnel ${path} → HTTP ${res.status}`)
+          }
+          return res
+        }
+        // 5xx — попробовать public
+        sendLog(`[API] tunnel ${path} HTTP ${res.status} → HTTPS ${SERVER_IP_FALLBACK}`)
+        return await publicDirectRequest(opts)
+      } catch (e) {
+        lastErr = e
+        const msg = String(e?.message || e)
+        const transient = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|timeout|Tunnel API/i.test(msg)
+        if (transient && attempt < maxAttempts) {
+          await sleep(400 * attempt)
+          continue
+        }
+        if (!(wgFullTunnelUpgradeInFlight && transient)) {
+          sendLog(`[API] tunnel 10.66.66.1 fail: ${msg} → HTTPS ${SERVER_IP_FALLBACK}`)
+        } else {
+          sendLog(`[API] tunnel briefly unavailable during full-tunnel upgrade → HTTPS`)
+        }
+        return publicDirectRequest(opts)
+      }
+    }
+    sendLog(`[API] tunnel 10.66.66.1 fail: ${lastErr?.message || lastErr} → HTTPS ${SERVER_IP_FALLBACK}`)
+    return publicDirectRequest(opts)
   }
+  return publicDirectRequest(opts)
 })
 
 function fetchJsonGet(url, hostHeader = null) {

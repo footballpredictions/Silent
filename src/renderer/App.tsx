@@ -31,6 +31,7 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>(() => (isLoggedIn() ? 'main' : 'login'))
   const [theme, setTheme] = useState<ClientTheme | null>(() => getCachedTheme())
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [pendingReferralCode, setPendingReferralCode] = useState('')
 
   useVpnLogSubscription(isDebugBuild)
 
@@ -46,11 +47,28 @@ export default function App() {
     setScreen(isLoggedIn() ? 'main' : 'login')
   }, [])
 
+  useEffect(() => {
+    const api_ = (window as any).electronAPI
+    if (!api_?.onRefDeepLink) return
+    const onRef = (payload: { code?: string }) => {
+      const code = String(payload?.code || '').trim()
+      if (!code) return
+      if (isLoggedIn()) return
+      setPendingReferralCode(code)
+      setScreen('login')
+    }
+    api_.onRefDeepLink(onRef)
+    return () => {
+      api_.removeRefDeepLinkListeners?.()
+    }
+  }, [])
+
   const handleLoginDone = (themeData: ClientTheme | null) => {
     if (themeData) {
       setTheme(themeData)
       saveCachedTheme(themeData)
     }
+    setPendingReferralCode('')
     setScreen('main')
   }
 
@@ -67,7 +85,11 @@ export default function App() {
     <AppErrorBoundary key={getAppVersion()}>
       <div className="w-full h-full">
         {screen === 'login' && (
-          <LoginScreen theme={theme} onLogin={handleLoginDone} />
+          <LoginScreen
+            theme={theme}
+            onLogin={handleLoginDone}
+            initialReferralCode={pendingReferralCode}
+          />
         )}
         {screen === 'main' && (
           <MainScreen

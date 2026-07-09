@@ -6,8 +6,8 @@ import { buildLocalBootstrapConfig } from './bootstrapVpnConfig'
 import { applyBootstrapWorkerCount } from './hashChannelHelper'
 import { authStrings as s } from './authStrings'
 import { waitVpnReady } from './vpnReady'
-import { enableTunnelApi, clearTunnelApiBase } from './tunnelApi'
-import { syncLoginDataViaPublic } from './syncBootstrapData'
+import { enableTunnelApi, clearTunnelApiBase, setBootstrapApiRouting } from './tunnelApi'
+import { syncLoginDataViaTunnel } from './syncBootstrapData'
 
 const PRE_LOGIN_FP_KEY = 'silent_pre_login_fp'
 const BOOTSTRAP_SESSION_MS = 2 * 60 * 1000
@@ -97,6 +97,7 @@ async function expireBootstrapSession() {
   resetBootstrapDeadline()
   bootstrapActive = false
   bootstrapExpired = true
+  setBootstrapApiRouting(false)
   clearTunnelApiBase()
   await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
   notifyStatus(s.bootstrapExpired)
@@ -136,6 +137,7 @@ export async function shutdownBootstrapBeforeExit(): Promise<void> {
   cancelBootstrapSessionTimeout()
   resetBootstrapDeadline()
   bootstrapActive = false
+  setBootstrapApiRouting(false)
   clearTunnelApiBase()
   await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
 }
@@ -194,6 +196,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   if (ok) {
     lastBootstrapWgAddress = bootCfg.assigned_ip || null
     enableTunnelApi()
+    setBootstrapApiRouting(true)
     cancelBootstrapSessionTimeout()
     startBootstrapSessionTimeout(true)
     SessionTrace.mark('Bootstrap.tunnelReady')
@@ -201,15 +204,16 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   }
 
   bootstrapActive = false
+  setBootstrapApiRouting(false)
   clearTunnelApiBase()
   await electron.vpnDisconnect?.({ fast: true })
   notifyStatus(s.bootstrapFail)
   return false
 }
 
-/** Профиль и хеши через публичный HTTPS (PC без bootstrap VPN). */
+/** Профиль и хеши через tunnel (вызывать до disconnect bootstrap). */
 export async function prefetchLoginDataViaBootstrap(): Promise<boolean> {
-  const { profile, hashesOk } = await syncLoginDataViaPublic()
+  const { profile, hashesOk } = await syncLoginDataViaTunnel()
   pushLog('Bootstrap', `prefetch profile=${!!profile} hashes=${hashesOk}`)
   return !!profile || hashesOk
 }
@@ -219,6 +223,7 @@ export function resetBootstrapRendererState(): void {
   bootstrapEnsureGeneration += 1
   cancelBootstrapSessionTimeout()
   bootstrapActive = false
+  setBootstrapApiRouting(false)
   clearTunnelApiBase()
 }
 
@@ -226,6 +231,7 @@ export async function disconnectBootstrapVpn(): Promise<void> {
   bootstrapEnsureGeneration += 1
   cancelBootstrapSessionTimeout()
   bootstrapActive = false
+  setBootstrapApiRouting(false)
   clearTunnelApiBase()
   await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
 }

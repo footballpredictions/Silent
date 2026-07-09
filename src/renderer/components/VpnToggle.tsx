@@ -197,16 +197,14 @@ export default function VpnToggle({
   const interactionLocked = connecting || disconnecting || pendingToggle
 
   useEffect(() => {
-    if (connecting || disconnecting) {
-      if (pendingTimeoutRef.current) {
-        window.clearTimeout(pendingTimeoutRef.current)
-        pendingTimeoutRef.current = null
-      }
-      setPendingToggle(false)
+    // Сброс буфера только когда пришёл реальный статус (не при idle OFF —
+    // иначе pending на клике «вкл» гасится до setConnecting).
+    if (!(connecting || disconnecting || connected)) return
+    if (pendingTimeoutRef.current) {
+      window.clearTimeout(pendingTimeoutRef.current)
+      pendingTimeoutRef.current = null
     }
-    if (!connecting && !disconnecting && connected) {
-      setPendingToggle(false)
-    }
+    setPendingToggle(false)
   }, [connected, connecting, disconnecting])
 
   useEffect(() => {
@@ -217,15 +215,20 @@ export default function VpnToggle({
 
   const handleClick = useCallback(() => {
     if (interactionLocked) return
-    setPendingToggle(true)
     if (pendingTimeoutRef.current) window.clearTimeout(pendingTimeoutRef.current)
-    // Буфер до прихода IPC-статуса connecting/disconnecting, чтобы анимация не мигала.
-    pendingTimeoutRef.current = window.setTimeout(() => {
+    if (connected) {
+      // Выключение: сразу OFF, без змейки
       setPendingToggle(false)
-      pendingTimeoutRef.current = null
-    }, 2500)
+    } else {
+      // Включение: короткий буфер до IPC connecting
+      setPendingToggle(true)
+      pendingTimeoutRef.current = window.setTimeout(() => {
+        setPendingToggle(false)
+        pendingTimeoutRef.current = null
+      }, 2500)
+    }
     onToggle()
-  }, [interactionLocked, onToggle])
+  }, [interactionLocked, connected, onToggle])
 
   const pressScale = pressed && !interactionLocked ? 0.95 : 1
 

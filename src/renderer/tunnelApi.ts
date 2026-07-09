@@ -14,6 +14,8 @@ let mainVpnSessionActive = false
 let wgTunnelReady = false
 let tunnelApiActive = false
 let tunnelApiBase = `http://${WG_TUNNEL_GATEWAY}:8000`
+/** Bootstrap VPN на экране входа — API через main IPC (как Android tunnel). */
+let bootstrapApiRouting = false
 
 export function setMainVpnSessionActive(active: boolean) {
   mainVpnSessionActive = active
@@ -22,8 +24,21 @@ export function setMainVpnSessionActive(active: boolean) {
     tunnelApiActive = false
     return
   }
-  // Renderer (Electron) не ходит на http://10.66.66.1 — API через HTTPS direct IP + bypass.
+  // Renderer (Electron) не ходит на http://10.66.66.1 — API через main IPC.
   tunnelApiActive = false
+}
+
+export function setBootstrapApiRouting(active: boolean) {
+  bootstrapApiRouting = active
+}
+
+export function isBootstrapApiRouting(): boolean {
+  return bootstrapApiRouting
+}
+
+/** Main VPN или bootstrap — запросы через main IPC, не renderer xhr. */
+export function shouldRouteApiViaMain(): boolean {
+  return mainVpnSessionActive || bootstrapApiRouting
 }
 
 /** При VPN — tunnel API (10.66.66.1); без VPN — public HTTPS. */

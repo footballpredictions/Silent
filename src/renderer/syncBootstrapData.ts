@@ -7,32 +7,32 @@ import {
   getSavedHashItems,
   type HashItem,
 } from './hashItemsStore'
-import { enableTunnelApi, clearTunnelApiBase } from './tunnelApi'
 import { saveCachedProfile } from './profileStore'
-/** Профиль и хеши через публичный HTTPS (PC без блокировок). */
-export async function syncLoginDataViaPublic(): Promise<{
+
+/**
+ * Профиль + хеши при логине.
+ * Вызывать ПОКА bootstrap/main tunnel ещё поднят (axios → main IPC → 10.66.66.1).
+ * Не сбрасывать bootstrap routing — иначе renderer xhr на public зависает.
+ */
+export async function syncLoginDataViaTunnel(): Promise<{
   profile: Record<string, unknown> | null
   hashesOk: boolean
 }> {
-  clearTunnelApiBase()
   let profile: Record<string, unknown> | null = null
   let hashesOk = false
-  for (let attempt = 1; attempt <= 2 && !profile; attempt++) {
-    try {
-      const me = await api.get('/api/users/me')
-      profile = me.data as Record<string, unknown>
-      saveCachedProfile(profile)
-      pushLog('Bootstrap', `profile OK vk=${profile?.vk_user_id ?? '?'}`)
-      break
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
-      pushLog('Bootstrap', `profile FAIL (${attempt}/2): ${msg}`, 'W')
-      if (attempt < 2) await new Promise(r => setTimeout(r, 400))
-    }
+
+  try {
+    const me = await api.get('/api/users/me', { timeout: 20_000 })
+    profile = me.data as Record<string, unknown>
+    saveCachedProfile(profile)
+    pushLog('Bootstrap', `profile OK vk=${profile?.vk_user_id ?? '?'}`)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    pushLog('Bootstrap', `profile FAIL: ${msg}`, 'W')
   }
 
   try {
-    const hashesRes = await api.get('/api/vpn/hashes')
+    const hashesRes = await api.get('/api/vpn/hashes', { timeout: 20_000 })
     const downloaded = mapHashesResponse(hashesRes.data)
     if (downloaded.length > 0) {
       saveHashItems(downloaded)
@@ -44,30 +44,43 @@ export async function syncLoginDataViaPublic(): Promise<{
     pushLog('Bootstrap', `hashes FAIL: ${msg}`, 'W')
   }
 
-  let items: HashItem[] = getSavedHashItems()
+  // Опциональный refresh — не блокируем вход дольше 4с
+  const items: HashItem[] = getSavedHashItems()
   const active = activeServerHashes(items).length
   if (active < 4 && hashesOk) {
     try {
-      const fp = getDeviceFingerprint()
-      await api.post('/api/vpn/hashes/request-refresh', { device_fingerprint: fp })
-      const again = await api.get('/api/vpn/hashes')
-      const refreshed = mapHashesResponse(again.data)
-      if (refreshed.length > items.length) {
-        saveHashItems(refreshed)
-        pushLog('Bootstrap', `hashes refresh: ${refreshed.length} items`)
-      }
+      await Promise.race([
+        (async () => {
+          const fp = getDeviceFingerprint()
+          await api.post('/api/vpn/hashes/request-refresh', { device_fingerprint: fp }, { timeout: 4_000 })
+          const again = await api.get('/api/vpn/hashes', { timeout: 4_000 })
+          const refreshed = mapHashesResponse(again.data)
+          if (refreshed.length > items.length) {
+            saveHashItems(refreshed)
+            pushLog('Bootstrap', `hashes refresh: ${refreshed.length} items`)
+          }
+        })(),
+        new Promise<void>(r => setTimeout(r, 4_000)),
+      ])
     } catch {
-      /* AI refresh optional */
+      /* optional */
     }
   }
 
-  clearTunnelApiBase()
   return { profile, hashesOk: hashesOk || activeServerHashes(getSavedHashItems()).length > 0 }
 }
 
-/** @deprecated PC: используйте syncLoginDataViaPublic */
+/** @deprecated — используйте syncLoginDataViaTunnel при bootstrap */
+export async function syncLoginDataViaPublic(): Promise<{
+  profile: Record<string, unknown> | null
+  hashesOk: boolean
+}> {
+  return syncLoginDataViaTunnel()
+}
+
+/** @deprecated */
 export async function syncLoginDataViaBootstrap(
   _wgAddress?: string | null,
 ): Promise<{ profile: Record<string, unknown> | null; hashesOk: boolean }> {
-  return syncLoginDataViaPublic()
+  return syncLoginDataViaTunnel()
 }

@@ -6,7 +6,10 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const net = require('net')
-const { execSync, execFileSync, spawn } = require('child_process')
+const { exec, execSync, execFile, execFileSync, spawn } = require('child_process')
+const { promisify } = require('util')
+const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 const TUNNEL_NAME = 'wg-turn'
 const TUNNEL_CONF_NAME = 'wg-turn.conf'
@@ -24,6 +27,19 @@ function normalizeDnsValue(_raw) {
 let lastRuntimeDir = null
 /** Физический шлюз до установки WG — для bypass API/админки при full tunnel. */
 let savedPhysicalGateway = null
+/** Сериализация stop/install — disconnect в фоне не гоняется с новым connect. */
+let wgStopChain = Promise.resolve()
+
+function enqueueWgStop(fn) {
+  const next = wgStopChain.then(fn, fn)
+  wgStopChain = next.catch(() => {})
+  return next
+}
+
+/** Дождаться завершения фонового stop (disconnect) перед новым install. */
+function waitWgStopIdle() {
+  return wgStopChain
+}
 
 function resourcesDir(isDev, dirname) {
   return isDev ? path.join(dirname, '../../resources') : process.resourcesPath
@@ -131,14 +147,35 @@ function runCmd(cmd, cwd) {
   }
 }
 
-function runWgInstall(wgExe, stableConf, runtimeDir, send) {
+/** Async — не блокирует Electron main (иначе UI «Не отвечает» при bootstrap). */
+async function runCmdAsync(cmd, cwd, timeoutMs = 45000) {
+  try {
+    const { stdout, stderr } = await execAsync(cmd, {
+      cwd,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: timeoutMs,
+      maxBuffer: 2 * 1024 * 1024,
+    })
+    return [stdout, stderr].filter(Boolean).join('\n').trim() || null
+  } catch (e) {
+    const out = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim()
+    return out || null
+  }
+}
+
+async function runWgInstall(wgExe, stableConf, runtimeDir, send) {
   send('[WG] Установка службы WireGuardTunnel$wg-turn...')
-  runCmd(`"${wgExe}" /uninstalltunnelservice ${TUNNEL_NAME}`, runtimeDir)
-  const installOut = runCmd(`"${wgExe}" /installtunnelservice "${stableConf}"`, runtimeDir)
+  await runCmdAsync(`"${wgExe}" /uninstalltunnelservice ${TUNNEL_NAME}`, runtimeDir)
+  const installOut = await runCmdAsync(`"${wgExe}" /installtunnelservice "${stableConf}"`, runtimeDir)
   if (installOut) send('[WG] install: ' + installOut.slice(0, 300))
 
   try {
-    execSync(`sc start "${SERVICE_NAME}"`, { windowsHide: true, stdio: 'pipe', timeout: 20000, encoding: 'utf8' })
+    await execAsync(`sc start "${SERVICE_NAME}"`, {
+      windowsHide: true,
+      timeout: 20000,
+      encoding: 'utf8',
+    })
   } catch (e) {
     const msg = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim()
     // 1056 = служба уже запущена (installtunnelservice часто стартует сам)
@@ -148,15 +185,39 @@ function runWgInstall(wgExe, stableConf, runtimeDir, send) {
   }
 }
 
-function trySyncConf(runtimeDir, stableConf, send) {
+/**
+ * wg.exe syncconf понимает только ключи самого wg (не wg-quick).
+ * Address/DNS/MTU → «Line unrecognized» → ложный fallback на uninstall/reinstall.
+ */
+function stripConfForSyncconf(confText) {
+  const drop = new Set(['Address', 'DNS', 'MTU', 'PreUp', 'PostUp', 'PreDown', 'PostDown', 'SaveConfig', 'Table'])
+  return normalizeWgConfText(confText)
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim()
+      if (!t || t.startsWith('[') || t.startsWith('#')) return true
+      const eq = t.indexOf('=')
+      if (eq <= 0) return true
+      const key = t.slice(0, eq).trim()
+      return !drop.has(key)
+    })
+    .join('\n')
+}
+
+async function trySyncConf(runtimeDir, stableConf, send) {
   const wgCli = path.join(runtimeDir, 'wg.exe')
   if (!fs.existsSync(wgCli)) return false
+  const syncPath = path.join(STABLE_CONF_DIR, 'wg-turn.sync.conf')
   try {
     const raw = fs.readFileSync(stableConf, 'utf8')
-    const normalized = normalizeWgConfText(raw)
-    fs.writeFileSync(stableConf, normalized, 'utf8')
-    if (normalized !== raw) send?.('[WG] конфиг нормализован для syncconf')
-    execFileSync(wgCli, ['syncconf', TUNNEL_NAME, stableConf], { windowsHide: true, timeout: 12000 })
+    const forInstall = normalizeWgConfText(raw)
+    fs.writeFileSync(stableConf, forInstall, 'utf8')
+    const forSync = stripConfForSyncconf(forInstall)
+    fs.writeFileSync(syncPath, forSync, 'utf8')
+    await execFileAsync(wgCli, ['syncconf', TUNNEL_NAME, syncPath], {
+      windowsHide: true,
+      timeout: 12000,
+    })
     send('[WG] syncconf OK (без переустановки службы)')
     return true
   } catch (e) {
@@ -180,6 +241,19 @@ function psExec(script) {
   }
 }
 
+async function psExecAsync(script) {
+  const file = path.join(os.tmpdir(), `silent-wg-${Date.now()}-${Math.random().toString(36).slice(2)}.ps1`)
+  try {
+    fs.writeFileSync(file, script, 'utf8')
+    await execAsync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${file}"`, {
+      windowsHide: true,
+      timeout: 30000,
+    })
+  } catch { /* ignore */ } finally {
+    try { fs.unlinkSync(file) } catch {}
+  }
+}
+
 function isTunnelUp() {
   try {
     const out = execSync(
@@ -187,6 +261,18 @@ function isTunnelUp() {
       { windowsHide: true, encoding: 'utf8', timeout: 10000 },
     )
     return !!out.trim()
+  } catch {
+    return false
+  }
+}
+
+async function isTunnelUpAsync() {
+  try {
+    const { stdout } = await execAsync(
+      'powershell.exe -NoProfile -Command "Get-NetAdapter -EA SilentlyContinue | ? { ($_.Name -eq \'wg-turn\' -or $_.InterfaceDescription -match \'WireGuard Tunnel\') -and $_.Status -eq \'Up\' } | Select -First 1 -Expand Name"',
+      { windowsHide: true, encoding: 'utf8', timeout: 10000 },
+    )
+    return !!String(stdout || '').trim()
   } catch {
     return false
   }
@@ -203,10 +289,25 @@ function isServiceRunning() {
   }
 }
 
-/** Профиль Private — стабильнее маршруты/DNS на Windows (иконка в трее всё равно от Wi‑Fi). */
-function polishWgNetworkProfile(send) {
+async function isServiceRunningAsync() {
   try {
-    execSync(
+    const { stdout } = await execAsync(`sc query "${SERVICE_NAME}"`, {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 8000,
+    })
+    const out = String(stdout || '')
+    if (/\bSTATE\s*:\s*4\b/i.test(out) || /\bСостояние\s*:\s*4\b/i.test(out)) return true
+    return /\bRUNNING\b/i.test(out) || /\bРАБОТАЕТ\b/i.test(out)
+  } catch {
+    return false
+  }
+}
+
+/** Профиль Private — стабильнее маршруты/DNS на Windows (иконка в трее всё равно от Wi‑Fi). */
+async function polishWgNetworkProfile(send) {
+  try {
+    await execAsync(
       `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } | Select-Object -First 1; if ($a) { Set-NetConnectionProfile -InterfaceIndex $a.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue } }"`,
       { windowsHide: true, timeout: 12000 },
     )
@@ -215,12 +316,13 @@ function polishWgNetworkProfile(send) {
 }
 
 /** Сохранить default gateway до того, как WG перехватит маршруты. */
-function capturePhysicalGateway(send) {
+async function capturePhysicalGateway(send) {
   try {
-    const out = execSync(
+    const { stdout } = await execAsync(
       `powershell.exe -NoProfile -Command "$r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -ne '0.0.0.0' -and $_.InterfaceAlias -notmatch 'WireGuard|wg-turn' } | Sort-Object RouteMetric | Select-Object -First 1; if ($r) { $r | ConvertTo-Json -Compress }"`,
       { encoding: 'utf8', windowsHide: true, timeout: 12000 },
-    ).trim()
+    )
+    const out = String(stdout || '').trim()
     if (!out) return null
     const route = JSON.parse(out)
     if (!route?.NextHop || route.InterfaceIndex == null) return null
@@ -275,7 +377,7 @@ foreach ($ip in $BypassIps) {
 }
 
 /** Явный маршрут к API-серверу через физический шлюз (админка + public API при full tunnel). */
-function addServerBypassRoutes(excludeIPs, send) {
+async function addServerBypassRoutes(excludeIPs, send) {
   const ips = [...new Set(excludeIPs.filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(String(ip).trim())))]
   if (!ips.length) return false
   const scriptPath = path.join(os.tmpdir(), `silent-wg-bypass-${Date.now()}.ps1`)
@@ -285,7 +387,7 @@ ${bypassRoutePs1Lines(ips)}
 `
   try {
     fs.writeFileSync(scriptPath, ps1, 'utf8')
-    execSync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, {
+    await execAsync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, {
       windowsHide: true,
       timeout: 15000,
     })
@@ -299,29 +401,47 @@ ${bypassRoutePs1Lines(ips)}
   }
 }
 
-function removeServerBypassRoutes(excludeIPs, send) {
+async function removeServerBypassRoutes(excludeIPs, send) {
   const ips = [...new Set(excludeIPs.filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(String(ip).trim())))]
   if (!ips.length) return
   for (const ip of ips) {
     try {
-      execSync(`route delete ${ip}`, { windowsHide: true, stdio: 'ignore', timeout: 5000 })
+      await execAsync(`route delete ${ip}`, { windowsHide: true, timeout: 5000 })
     } catch { /* ignore */ }
   }
   send?.(`[WG] Bypass API снят: ${ips.join(', ')}`)
   savedPhysicalGateway = null
 }
 
-function finalizeTunnelUp(send, excludeIPs, _subnetOnly) {
-  polishWgNetworkProfile(send)
+async function applyWgDns(send) {
+  try {
+    await execAsync(
+      `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } | Select-Object -First 1; if ($a) { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses @('1.1.1.1','1.0.0.1','77.88.8.8') -ErrorAction SilentlyContinue } }"`,
+      { windowsHide: true, timeout: 12000 },
+    )
+    send?.('[WG] DNS на адаптере: 1.1.1.1, 1.0.0.1, 77.88.8.8')
+  } catch { /* ignore */ }
+}
+
+async function finalizeTunnelUp(send, excludeIPs, subnetOnly) {
+  await polishWgNetworkProfile(send)
+  if (!subnetOnly) {
+    await applyWgDns(send)
+  }
   if (excludeIPs.length) {
-    addServerBypassRoutes(excludeIPs, send)
+    await addServerBypassRoutes(excludeIPs, send)
   }
 }
 
-function logServiceState(send) {
+async function logServiceState(send) {
   try {
-    const out = execSync(`sc query "${SERVICE_NAME}"`, { encoding: 'utf8', windowsHide: true })
-    const state = (out.match(/STATE\s*:\s*\d+\s+(\S+)/) || [])[1] || '?'
+    const { stdout } = await execAsync(`sc query "${SERVICE_NAME}"`, {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 8000,
+    })
+    const out = String(stdout || '')
+    const state = (out.match(/STATE\s*:\s*\d+\s+(\S+)/) || out.match(/Состояние\s*:\s*\d+\s+(\S+)/) || [])[1] || '?'
     send(`[WG] Служба ${SERVICE_NAME}: ${state}`)
   } catch {
     send(`[WG] Служба ${SERVICE_NAME} не найдена`)
@@ -335,29 +455,38 @@ function sleep(ms) {
 async function waitForTunnelUp(maxMs = 30000, send) {
   const deadline = Date.now() + maxMs
   while (Date.now() < deadline) {
-    if (isTunnelUp() || isServiceRunning()) return true
-    await sleep(500)
+    // sc query быстрее Get-NetAdapter — UI ready раньше
+    if (await isServiceRunningAsync()) return true
+    await sleep(300)
   }
-  const up = isTunnelUp() || isServiceRunning()
-  if (!up) logServiceState(send)
+  const up = await isServiceRunningAsync()
+  if (!up) await logServiceState(send)
   return up
 }
 
 async function waitForTunnelDown(maxMs = 15000, send) {
   const deadline = Date.now() + maxMs
   while (Date.now() < deadline) {
-    if (!isTunnelUp() && !isServiceRunning()) return true
+    if (!(await isTunnelUpAsync()) && !(await isServiceRunningAsync())) return true
     await sleep(400)
   }
-  const down = !isTunnelUp() && !isServiceRunning()
-  if (!down) logServiceState(send)
+  const down = !(await isTunnelUpAsync()) && !(await isServiceRunningAsync())
+  if (!down) {
+    send?.('[WG] Туннель ещё не остановлен полностью')
+    await logServiceState(send)
+  }
   return down
 }
 
 /** WDTT/WireGuard слушает UDP :9000, не TCP. */
-function isUdpPortListening(port, host = '127.0.0.1') {
+async function isUdpPortListening(port, host = '127.0.0.1') {
   try {
-    const out = execSync('netstat -ano -p udp', { encoding: 'utf8', windowsHide: true, timeout: 8000 })
+    const { stdout } = await execAsync('netstat -ano -p udp', {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 8000,
+    })
+    const out = String(stdout || '')
     const portSuffix = `:${port}`
     return out.split('\n').some(line => {
       if (!line.includes(portSuffix)) return false
@@ -386,7 +515,7 @@ async function waitForWdttProxy(host, port, timeoutMs = 60000, send, confPath = 
         }
       } catch { /* ignore */ }
     }
-    if (isUdpPortListening(port, host)) {
+    if (await isUdpPortListening(port, host)) {
       send?.('[WG] WDTT: UDP прокси слушает ' + host + ':' + port)
       return true
     }
@@ -400,7 +529,7 @@ async function waitForWdttProxy(host, port, timeoutMs = 60000, send, confPath = 
 async function waitForUdpPortFree(host, port, timeoutMs = 8000, send) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (!isUdpPortListening(port, host)) {
+    if (!(await isUdpPortListening(port, host))) {
       send?.('[WG] UDP ' + host + ':' + port + ' свободен')
       return true
     }
@@ -418,31 +547,37 @@ function copyStableConf(confPath) {
   return stable
 }
 
-function forceStopWireGuard(isDev, dirname, send) {
-  send?.('[WG] Остановка туннеля...')
+async function forceStopWireGuard(isDev, dirname, send) {
+  return enqueueWgStop(async () => {
+    send?.('[WG] Остановка туннеля...')
 
-  const runtimeDir = lastRuntimeDir || prepareRuntimeDir(isDev, dirname, send) || STABLE_WG_DIR
-  const wgExe = path.join(runtimeDir, 'wireguard.exe')
+    const runtimeDir = lastRuntimeDir || prepareRuntimeDir(isDev, dirname, send) || STABLE_WG_DIR
+    const wgExe = path.join(runtimeDir, 'wireguard.exe')
 
-  if (fs.existsSync(wgExe)) {
-    runCmd(`"${wgExe}" /uninstalltunnelservice ${TUNNEL_NAME}`, runtimeDir)
-  }
+    if (fs.existsSync(wgExe)) {
+      await runCmdAsync(`"${wgExe}" /uninstalltunnelservice ${TUNNEL_NAME}`, runtimeDir, 20000)
+    }
 
-  try { execSync(`sc stop "${SERVICE_NAME}"`, { windowsHide: true, stdio: 'ignore' }) } catch {}
-  try { execSync(`sc delete "${SERVICE_NAME}"`, { windowsHide: true, stdio: 'ignore' }) } catch {}
+    try {
+      await execAsync(`sc stop "${SERVICE_NAME}"`, { windowsHide: true, timeout: 8000 })
+    } catch { /* ignore */ }
+    try {
+      await execAsync(`sc delete "${SERVICE_NAME}"`, { windowsHide: true, timeout: 8000 })
+    } catch { /* ignore */ }
 
-  psExec(`
-    Get-CimInstance Win32_Process -Filter "Name='wireguard.exe'" -ErrorAction SilentlyContinue |
-      Where-Object { $_.CommandLine -match 'wg-turn|SilentVPN|SilentVPN' } |
-      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-  `)
+    await psExecAsync(`
+      Get-CimInstance Win32_Process -Filter "Name='wireguard.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match 'wg-turn|SilentVPN|SilentVPN' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    `)
 
-  send?.('[WG] Остановка службы wg-turn (переустановка)...')
+    send?.('[WG] Остановка службы wg-turn (переустановка)...')
+  })
 }
 
-function stopWireGuardTunnel(isDev, dirname, send, excludeIPs = []) {
-  removeServerBypassRoutes(excludeIPs.length ? excludeIPs : [FALLBACK_BACKEND_IP], send)
-  forceStopWireGuard(isDev, dirname, send)
+async function stopWireGuardTunnel(isDev, dirname, send, excludeIPs = []) {
+  await removeServerBypassRoutes(excludeIPs.length ? excludeIPs : [FALLBACK_BACKEND_IP], send)
+  await forceStopWireGuard(isDev, dirname, send)
 }
 
 function buildWgConfigFromApi(config, listenPort = 9000) {
@@ -582,7 +717,7 @@ ${bypassPs1}
         return
       }
       const up = await waitForTunnelUp(35000, send)
-      if (up) finalizeTunnelUp(send, excludeIPs, subnetOnly)
+      if (up) await finalizeTunnelUp(send, excludeIPs, subnetOnly)
       resolve(up)
     })
 
@@ -598,9 +733,8 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   const subnetOnly = options.subnetOnly === true
   const skipForceStop = options.skipForceStop === true
   const reuseRuntime = options.reuseRuntime === true
-  if (excludeIPs.length) {
-    capturePhysicalGateway(send)
-  }
+  // Gateway в фоне — не блокировать install (как origin: sync без await-цепочки)
+  const gatewayPromise = excludeIPs.length ? capturePhysicalGateway(send) : Promise.resolve(null)
   const runtimeDir = prepareRuntimeDir(isDev, dirname, send, { reuse: reuseRuntime })
   if (!runtimeDir) {
     send('[WG] Нет wireguard.exe / wintun.dll — переустановите Silent VPN')
@@ -647,59 +781,69 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     send('[WG] WDTT активен, поднимаем WireGuard...')
   }
 
-  if (skipForceStop && (isTunnelUp() || isServiceRunning())) {
+  // sc query быстрее Get-NetAdapter
+  const serviceUp = await isServiceRunningAsync()
+  if (skipForceStop && serviceUp) {
     send('[WG] Туннель уже активен — без полной переустановки')
-  } else {
-    forceStopWireGuard(isDev, dirname, () => {})
-    await sleep(skipForceStop ? 300 : 1000)
+  } else if (serviceUp || (await isTunnelUpAsync())) {
+    await forceStopWireGuard(isDev, dirname, () => {})
+    await sleep(200)
   }
+  // Если уже остановлен (после disconnect) — не делаем второй uninstall
 
   const stableConf = copyStableConf(confPath)
   send(`[WG] Конфиг: ${stableConf}`)
 
-  if (skipForceStop && (isTunnelUp() || isServiceRunning())) {
-    if (trySyncConf(runtimeDir, stableConf, send)) {
-      finalizeTunnelUp(send, excludeIPs, subnetOnly)
+  if (skipForceStop && (await isServiceRunningAsync())) {
+    if (await trySyncConf(runtimeDir, stableConf, send)) {
+      await gatewayPromise
+      await finalizeTunnelUp(send, excludeIPs, subnetOnly)
       send('[WG] Туннель активен')
       return true
     }
     send?.('[WG] syncconf не удался — переустановка службы…', 'W')
-    forceStopWireGuard(isDev, dirname, send)
-    await sleep(1000)
+    await forceStopWireGuard(isDev, dirname, send)
+    await sleep(400)
   }
 
   if (!isProcessElevated()) {
     const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly)
     if (ok) {
+      await gatewayPromise
       send('[WG] Туннель активен')
       try {
         const wgCli = path.join(runtimeDir, 'wg.exe')
         if (fs.existsSync(wgCli)) {
-          const st = execFileSync(wgCli, ['show', TUNNEL_NAME], { encoding: 'utf8', windowsHide: true })
-          st.split('\n').filter(l => l.trim()).slice(0, 5).forEach(l => send('[WG] ' + l.trim()))
+          const { stdout: st } = await execFileAsync(wgCli, ['show', TUNNEL_NAME], {
+            encoding: 'utf8',
+            windowsHide: true,
+            timeout: 8000,
+          })
+          String(st || '').split('\n').filter(l => l.trim()).slice(0, 5).forEach(l => send('[WG] ' + l.trim()))
         }
-      } catch {}
+      } catch { /* ignore */ }
     } else {
       send('[WG] Запустите приложение через «Silent VPN (Admin).bat» или разрешите UAC')
     }
     return ok
   }
 
-  runWgInstall(wgExe, stableConf, runtimeDir, send)
+  await runWgInstall(wgExe, stableConf, runtimeDir, send)
 
   if (await waitForTunnelUp(60000, send)) {
-    finalizeTunnelUp(send, excludeIPs, subnetOnly)
+    await gatewayPromise
+    await finalizeTunnelUp(send, excludeIPs, subnetOnly)
     send('[WG] Туннель активен')
     return true
   }
 
-  logServiceState(send)
+  await logServiceState(send)
   try {
-    const evt = execSync(
+    const { stdout: evt } = await execAsync(
       `powershell.exe -NoProfile -Command "Get-WinEvent -LogName Application -MaxEvents 30 | Where-Object { $_.ProviderName -match 'WireGuard' } | Select-Object -First 3 -ExpandProperty Message"`,
       { encoding: 'utf8', windowsHide: true, timeout: 8000 },
     )
-    if (evt.trim()) send('[WG] Event log: ' + evt.trim().slice(0, 300))
+    if (String(evt || '').trim()) send('[WG] Event log: ' + String(evt).trim().slice(0, 300))
   } catch { /* ignore */ }
 
   send('[WG] Служба не поднялась — services.msc → WireGuardTunnel$wg-turn')
@@ -718,6 +862,8 @@ module.exports = {
   waitForTunnelDown,
   isTunnelUp,
   isServiceRunning,
+  isTunnelUpAsync,
+  isServiceRunningAsync,
   resetWireGuardState: () => {},
   forceStopWireGuard,
   stopWireGuardTunnel,
@@ -726,4 +872,5 @@ module.exports = {
   addServerBypassRoutes,
   capturePhysicalGateway,
   normalizeWgConfText,
+  waitWgStopIdle,
 }

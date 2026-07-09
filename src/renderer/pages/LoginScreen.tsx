@@ -19,15 +19,14 @@ import {
 } from '../vkConfig'
 import {
   ensureBootstrapVpn,
-  ensureBootstrapTunnelApi,
   disconnectBootstrapVpn,
   isBootstrapExpired,
+  isBootstrapVpnActive,
   prefetchLoginDataViaBootstrap,
   resetBootstrapRendererState,
-  setBootstrapStatusListener,
   shutdownBootstrapBeforeExit,
+  setBootstrapStatusListener,
 } from '../bootstrapVpn'
-import { clearTunnelApiBase } from '../tunnelApi'
 import LoginExpiredPanel from '../components/LoginExpiredPanel'
 import ThemeCheckbox from '../components/ThemeCheckbox'
 import SilentLogo from '../components/SilentLogo'
@@ -43,16 +42,19 @@ type LoginStep = 'auth' | 'forgot'
 export default function LoginScreen({
   theme,
   onLogin,
+  initialReferralCode = '',
 }: {
   theme: ClientTheme | null
   onLogin: (theme: ClientTheme | null) => void
+  initialReferralCode?: string
 }) {
   const ui = useMemo(() => themeToUi(theme), [theme])
 
   const [step, setStep] = useState<LoginStep>('auth')
-  const [tab, setTab] = useState<'login' | 'register'>('login')
+  const [tab, setTab] = useState<'login' | 'register'>(initialReferralCode ? 'register' : 'login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [referralOrPromo, setReferralOrPromo] = useState(initialReferralCode || '')
   const [showPassword, setShowPassword] = useState(false)
   const [rememberMe, setRememberMe] = useState(getRememberMe())
   const [forgotEmail, setForgotEmail] = useState('')
@@ -62,14 +64,24 @@ export default function LoginScreen({
   const [regDone, setRegDone] = useState(false)
   const [showDebugLog, setShowDebugLog] = useState(false)
   const [bootstrapStatus, setBootstrapStatus] = useState('')
+  const [bootstrapReady, setBootstrapReady] = useState(false)
 
   const rememberLabel = theme?.login_remember_me_label || 'Запомнить меня'
   const forgotLabel = theme?.login_forgot_password_label || 'Забыли пароль?'
   const forgotTitle = theme?.login_forgot_title || 'Восстановление пароля'
   const forgotHint = theme?.login_forgot_instruction || 'Введите email — мы отправим ссылку.'
   const linkColor = theme?.login_link_color || ui.linkColor
+  const refPromoLabel = theme?.register_referral_or_promo_label || 'Промокод или реферальный код'
+  const refPromoHint = theme?.register_referral_or_promo_hint || 'Необязательно'
 
   const sessionExpired = isBootstrapExpired()
+
+  useEffect(() => {
+    if (initialReferralCode) {
+      setReferralOrPromo(initialReferralCode)
+      setTab('register')
+    }
+  }, [initialReferralCode])
 
   useEffect(() => {
     const savedEmail = getRememberedEmail()
@@ -99,25 +111,43 @@ export default function LoginScreen({
       resetBootstrapRendererState()
       return
     }
-    if (sessionExpired) return
+    if (sessionExpired) {
+      setBootstrapReady(false)
+      return
+    }
     let alive = true
+    setBootstrapReady(false)
     setBootstrapStatus(s.connectingWait)
     setBootstrapStatusListener((msg) => {
       if (!alive) return
-      setBootstrapStatus(msg)
+      // Не блокировать paint — статус через rAF
+      requestAnimationFrame(() => {
+        if (!alive) return
+        setBootstrapStatus(msg)
+        setBootstrapReady(/Канал готов|Осталось \d+:\d+/i.test(msg))
+      })
     })
-    void ensureBootstrapVpn().then((ok) => {
-      if (!alive || ok) return
-      setBootstrapStatus(s.bootstrapFail)
-    })
+    // Дать UI отрисовать «Подключение…» до тяжёлого vpnConnect (WG install)
+    const startTimer = window.setTimeout(() => {
+      if (!alive) return
+      void ensureBootstrapVpn().then((ok) => {
+        if (!alive) return
+        if (ok) {
+          setBootstrapReady(true)
+          return
+        }
+        setBootstrapReady(false)
+        setBootstrapStatus(s.bootstrapFail)
+      })
+    }, 120)
     return () => {
       alive = false
+      window.clearTimeout(startTimer)
       setBootstrapStatusListener(null)
     }
   }, [sessionExpired])
 
   const openLoginSession = async (): Promise<{ ok: boolean; subscriptionExpired?: boolean }> => {
-    clearTunnelApiBase()
     const fp = startNewSession()
     const boot = getBootstrapHash()
     try {
@@ -150,21 +180,33 @@ export default function LoginScreen({
     const sessionResult = await openLoginSession()
     if (!sessionResult.ok) {
       if (sessionResult.subscriptionExpired) {
+        // Prefetch пока tunnel ещё жив, UI не ждём WG-uninstall
         await prefetchLoginDataViaBootstrap().catch(() => false)
-        resetBootstrapRendererState()
-        const themeRes = await api.get('/api/vpn/theme').catch(() => ({ data: theme }))
+        const themeRes = await api.get('/api/vpn/theme', { timeout: 15_000 }).catch(() => ({ data: theme }))
         onLogin(themeRes.data ?? theme)
+        void disconnectBootstrapVpn().catch(() => null)
+        resetBootstrapRendererState()
       }
       return
     }
-    // После успешного входа bootstrap VPN больше не нужен:
-    // чистим его, чтобы главный тумблер всегда поднимал "основной" режим с нуля.
-    await disconnectBootstrapVpn().catch(() => null)
+
+    // 1) Пока bootstrap WG поднят — профиль/хеши/тема через main IPC (быстро).
+    // 2) Сразу на главный экран — не ждём «Остановка службы wg-turn».
+    // 3) Bootstrap гасим в фоне.
     clearVpnLogs()
-    await prefetchLoginDataViaBootstrap()
-    resetBootstrapRendererState()
-    const themeRes = await api.get('/api/vpn/theme').catch(() => ({ data: theme }))
-    onLogin(themeRes.data ?? theme)
+    let themeData = theme
+    try {
+      await prefetchLoginDataViaBootstrap()
+      const themeRes = await api.get('/api/vpn/theme', { timeout: 15_000 })
+      if (themeRes.data) themeData = themeRes.data
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      pushLog('Login', `prefetch: ${msg}`, 'W')
+    }
+    onLogin(themeData)
+    void disconnectBootstrapVpn()
+      .catch(() => null)
+      .finally(() => resetBootstrapRendererState())
   }
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -172,13 +214,9 @@ export default function LoginScreen({
     setLoading(true)
     setError('')
     try {
-      if (ensureBootstrapTunnelApi()) {
-        pushLog('Login', 'auth via bootstrap tunnel')
-      } else {
-        clearTunnelApiBase()
-        pushLog('Login', 'auth public HTTPS')
-      }
-      const res = await api.post('/api/auth/login', { email, password })
+      // Как Android: при bootstrap API через main → 10.66.66.1 (renderer xhr на public timeout).
+      pushLog('Login', isBootstrapVpnActive() ? 'auth via bootstrap tunnel (main IPC)' : 'auth public HTTPS')
+      const res = await api.post('/api/auth/login', { email, password }, { timeout: 25_000 })
       saveTokens(res.data.access_token, res.data.refresh_token)
       await finishAuth()
     } catch (err: any) {
@@ -195,8 +233,10 @@ export default function LoginScreen({
     setLoading(true)
     setError('')
     try {
-      if (!ensureBootstrapTunnelApi()) clearTunnelApiBase()
-      await api.post('/api/auth/register', { email, password })
+      const payload: { email: string; password: string; referral_or_promo?: string } = { email, password }
+      const code = referralOrPromo.trim()
+      if (code) payload.referral_or_promo = code
+      await api.post('/api/auth/register', payload, { timeout: 25_000 })
       saveRememberMe(email, password, rememberMe)
       setRegDone(true)
     } catch (err: any) {
@@ -211,8 +251,7 @@ export default function LoginScreen({
     setLoading(true)
     setError('')
     try {
-      if (!ensureBootstrapTunnelApi()) clearTunnelApiBase()
-      await api.post('/api/auth/forgot-password', { email: forgotEmail || email })
+      await api.post('/api/auth/forgot-password', { email: forgotEmail || email }, { timeout: 25_000 })
       setForgotSent(true)
     } catch (err: any) {
       setError(formatApiError(err, 'Ошибка отправки'))
@@ -271,10 +310,17 @@ export default function LoginScreen({
   }
 
   const handleCloseApp = () => {
-    void shutdownBootstrapBeforeExit().finally(() => {
+    // Сразу quit — не ждать WG uninstall (иначе «Закрыть» кажется мёртвой).
+    // before-quit в main всё равно сделает cleanupVpn.
+    try {
       ;(window as any).electronAPI?.quitApp?.()
-    })
+    } catch { /* ignore */ }
+    void shutdownBootstrapBeforeExit().catch(() => null)
   }
+
+  const authBlocked = sessionExpired || !bootstrapReady
+  const authSubmitDisabled =
+    loading || authBlocked || !email.trim() || !password.trim()
 
   return (
     <div
@@ -377,6 +423,24 @@ export default function LoginScreen({
                 />
                 <p className="text-xs mb-1" style={{ color: ui.label }}>Пароль</p>
                 {passwordField(password, setPassword, showPassword, () => setShowPassword(v => !v), false)}
+                {tab === 'register' && (
+                  <>
+                    <p className="text-xs mb-1" style={{ color: ui.label }}>{refPromoLabel}</p>
+                    <input
+                      className={fieldCls + ' mb-3'}
+                      style={{
+                        background: ui.fieldBg,
+                        color: ui.fieldText,
+                        border: `1px solid ${ui.border}`,
+                      }}
+                      type="text"
+                      value={referralOrPromo}
+                      onChange={e => setReferralOrPromo(e.target.value)}
+                      placeholder={refPromoHint}
+                      autoComplete="off"
+                    />
+                  </>
+                )}
                 <div className="flex items-center justify-between py-2 text-xs">
                   <label className="flex items-center gap-2 cursor-pointer" style={{ color: ui.hint }}>
                     <ThemeCheckbox
@@ -404,11 +468,22 @@ export default function LoginScreen({
                 )}
                 <button
                   type="submit"
-                  disabled={loading || !email.trim() || !password.trim()}
+                  disabled={authSubmitDisabled}
                   className="w-full h-12 rounded-xl text-sm font-semibold disabled:opacity-40"
                   style={{ background: ui.primaryBtnBg, color: ui.primaryBtnFg }}
+                  title={
+                    !bootstrapReady && !sessionExpired
+                      ? 'Дождитесь готовности канала'
+                      : undefined
+                  }
                 >
-                  {loading ? '…' : tab === 'login' ? 'Войти' : 'Зарегистрироваться'}
+                  {loading
+                    ? '…'
+                    : !bootstrapReady && !sessionExpired
+                      ? 'Ожидание канала…'
+                      : tab === 'login'
+                        ? 'Войти'
+                        : 'Зарегистрироваться'}
                 </button>
               </form>
             )}

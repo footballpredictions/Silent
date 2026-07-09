@@ -854,11 +854,13 @@ async function beginWdttSession(config, { switching = false } = {}) {
         sendLog('[WG] full tunnel upgrade: нет wg-turn.conf', 'W')
         return
       }
+      // Windows: wg syncconf НЕ обновляет маршруты AllowedIPs (остаётся 10.66.66.0/24).
+      // Нужна переустановка службы — иначе «VPN on» без интернета + DNS/ConfigSync Error.
+      // UI уже «Подключено» после 1 воркера — reinstall идёт в фоне.
       const ok = await applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
         skipWdttWait: true,
         subnetOnly: false,
-        // syncconf AllowedIPs — без uninstall/reinstall (иначе 10–20с и «мёртвый» UI)
-        skipForceStop: true,
+        skipForceStop: false,
         reuseRuntime: true,
       })
       if (!vpnSessionActive) {
@@ -867,6 +869,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
       }
       if (ok) {
         wgCredPhase = false
+        // Дать Windows применить маршруты после reinstall, затем bypass API
+        await sleep(400)
         sendLog('[WG] Полный туннель активен, DNS = 1.1.1.1 + 77.88.8.8')
         await addServerBypassRoutes([...excludeIPs], sendLog)
         scheduleBypassRefresh(sendLog)

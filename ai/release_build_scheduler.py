@@ -29,9 +29,11 @@ async def scheduler_loop() -> None:
                         today = now.strftime("%Y-%m-%d")
                         last = await _setting(db, "build_agent_nightly_date")
                         if last != today:
+                            # Ставим дату ДО сборки — иначе два тика планировщика
+                            # (или два воркера uvicorn) стартуют nightly параллельно.
+                            await _set_setting(db, "build_agent_nightly_date", today)
                             logger.info("Running nightly OTA build for %s", today)
                             await run_nightly_release_builds(db)
-                            await _set_setting(db, "build_agent_nightly_date", today)
         except Exception as e:
             logger.exception("Release build scheduler error: %s", e)
 

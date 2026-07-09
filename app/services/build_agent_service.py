@@ -192,6 +192,38 @@ def _verify_pc_installer(artifact_path: str) -> None:
         )
 
 
+def _verify_android_apk(artifact_path: str) -> None:
+    """Reject unsigned / wrongly named APK before OTA publish."""
+    name = os.path.basename(artifact_path).lower()
+    if "unsigned" in name:
+        raise BuildAgentError(
+            f"Android APK is unsigned (filename={os.path.basename(artifact_path)}). "
+            "Keystore missing or build_android.sh picked the wrong artifact."
+        )
+    if not artifact_path.lower().endswith(".apk") or not os.path.isfile(artifact_path):
+        raise BuildAgentError(f"Android artifact is not an APK file: {artifact_path!r}")
+
+    sdk = os.environ.get("ANDROID_HOME", "/opt/android-sdk")
+    apksigner = None
+    bt = Path(sdk) / "build-tools"
+    if bt.is_dir():
+        candidates = sorted(bt.glob("*/apksigner"))
+        if candidates:
+            apksigner = str(candidates[-1])
+    if not apksigner or not os.path.isfile(apksigner):
+        logger.warning("apksigner not found — skip verify for %s", artifact_path)
+        return
+    proc = subprocess.run(
+        [apksigner, "verify", "--min-sdk-version", "26", artifact_path],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        tail = ((proc.stdout or "") + (proc.stderr or "")).strip()[-2000:]
+        raise BuildAgentError(f"Android APK signature verify failed:\n{tail}")
+
+
 def _path_size(path: Path) -> int:
     if path.is_file():
         try:
@@ -436,6 +468,8 @@ async def build_platform(
             version = _read_pc_version(repo) if platform == "pc" else _read_android_version(repo)
             if platform == "pc":
                 _verify_pc_installer(artifact_path)
+            elif platform == "android":
+                _verify_android_apk(artifact_path)
             info = _publish(platform, artifact_path, version)
 
             msg = f"OK {platform} v{version} → {info['filename']}"

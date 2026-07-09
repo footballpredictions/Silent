@@ -64,9 +64,21 @@ if [[ ! -d "$APP_DIR" ]]; then
   exit 1
 fi
 
-if [[ -d "$SECRETS" ]]; then
-  mkdir -p "$REPO/keystore"
-  cp -a "$SECRETS/." "$REPO/keystore/"
+if [[ ! -d "$SECRETS" ]]; then
+  echo "[build] missing keystore secrets: $SECRETS" >&2
+  echo "[build] deploy: python scripts/pack_build_secrets.py && python scripts/deploy_build_agent.py" >&2
+  exit 1
+fi
+if [[ ! -f "$SECRETS/keystore.properties" ]]; then
+  echo "[build] missing $SECRETS/keystore.properties" >&2
+  exit 1
+fi
+mkdir -p "$REPO/keystore"
+cp -a "$SECRETS/." "$REPO/keystore/"
+# После git clean/reset keystore мог пропасть — проверяем, что Gradle увидит signingConfig
+if [[ ! -f "$REPO/keystore/keystore.properties" ]]; then
+  echo "[build] keystore.properties not copied into workspace" >&2
+  exit 1
 fi
 
 pre_clean_workspace
@@ -87,9 +99,30 @@ cd "$APP_DIR"
 echo "[build] android release bootstrap=$BOOTSTRAP_HASH"
 gradle assembleRelease -PbootstrapVkHash="$BOOTSTRAP_HASH" --no-daemon -q --no-build-cache
 
-APK="$(find "$APP_DIR/build/outputs/apk/release" -maxdepth 1 -name '*.apk' -type f | head -1)"
+OUT_DIR="$APP_DIR/build/outputs/apk/release"
+# AGP кладёт и *-unsigned.apk, и подписанный. find|head без сортировки часто
+# берёт unsigned первым (ASCII: '-' < '.' → …-unsigned раньше …release.apk).
+mapfile -t APKS < <(
+  find "$OUT_DIR" -maxdepth 1 -type f -name '*.apk' ! -name '*unsigned*' -printf '%T@ %p\n' 2>/dev/null \
+    | sort -nr \
+    | awk '{ $1=""; sub(/^ /,""); print }'
+)
+APK="${APKS[0]:-}"
 if [[ -z "$APK" || ! -f "$APK" ]]; then
-  echo "[build] APK not found under $APP_DIR/build/outputs/apk/release" >&2
+  echo "[build] signed APK not found under $OUT_DIR (unsigned-only is not publishable)" >&2
+  find "$OUT_DIR" -maxdepth 1 -name '*.apk' -type f -printf '  %f\n' 2>/dev/null || true
   exit 1
 fi
+
+APKSIGNER="$(ls -1 "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | tail -1 || true)"
+if [[ -z "$APKSIGNER" || ! -x "$APKSIGNER" ]]; then
+  echo "[build] apksigner not found under $ANDROID_HOME/build-tools" >&2
+  exit 1
+fi
+if ! "$APKSIGNER" verify --min-sdk-version 26 "$APK" >/dev/null 2>&1; then
+  echo "[build] APK failed signature verify: $APK" >&2
+  "$APKSIGNER" verify --verbose "$APK" 2>&1 | tail -40 >&2 || true
+  exit 1
+fi
+echo "[build] signed OK: $(basename "$APK")"
 echo "$APK"

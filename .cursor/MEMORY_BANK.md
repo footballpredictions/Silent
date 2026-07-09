@@ -525,6 +525,21 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-09 — Nightly Android OTA: публиковался unsigned APK
+
+- Причина: `build_android.sh` брал `find … | head -1` → `SilentVPN-release-unsigned.apk` раньше подписанного (ASCII `-` < `.`)
+- Лог 00:00 МСК 2026-07-09: `OK … SilentVPN-release-unsigned-1.0.150.apk`; ручная кнопка 11:14 → подписанный
+- Доп.: планировщик стартовал nightly дважды (дата писалась после сборки)
+- Фикс: исключить `*unsigned*`, `apksigner verify`, fail без keystore; `_verify_android_apk` перед publish; nightly date до старта
+- Деплой: `deploy_build_agent.py` + `deploy_update_backend.py` OK (2026-07-09)
+
+### 2026-07-09 — Проверка: рефералы уже в main; одноразовые скрипты удалены
+
+- Рефералы/Bonuses: уже в `3ad7624` на `origin/main` (не «забытый» unstaged)
+- Удалены одноразовые: `cleanup_test_referral_users.py`, `remote_referral_db_test.py` + локальные `delete_*` GitHub tags/releases runners
+- Оставлены переиспользуемые: `smoke_referral.py`, `test_referral_unit.py`
+- Push cleanup: `8529952` → `origin/main`; working tree backend чистый
+
 ### 2026-07-09 — Push android + backend dark theme; deploy
 
 - Android: `5c66ff0` → `origin/android` (dark toggle, themed inputs, gray system bars)

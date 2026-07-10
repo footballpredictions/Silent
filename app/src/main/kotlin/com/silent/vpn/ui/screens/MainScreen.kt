@@ -248,7 +248,7 @@ private fun VpnToggleThumb(
 
 enum class VpnState { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
 
-private enum class MenuPage { ROOT, SUBSCRIPTION, EXCEPTIONS, VK_CRED, HASHES, BONUSES, DEVICES, SUPPORT, ABOUT }
+private enum class MenuPage { ROOT, SUBSCRIPTION, EXCEPTIONS, DNS, VK_CRED, HASHES, BONUSES, DEVICES, SUPPORT, ABOUT }
 
 private fun deviceTypeLabel(type: String): String = when (type.lowercase()) {
     "android" -> "Android"
@@ -687,6 +687,15 @@ fun MainScreen(
                             if (BuildConfig.DEBUG) {
                                 add(
                                     Triple(
+                                        MenuPage.DNS,
+                                        "DNS",
+                                        repo.getDnsPreset().title,
+                                    ),
+                                )
+                            }
+                            if (BuildConfig.DEBUG) {
+                                add(
+                                    Triple(
                                         MenuPage.VK_CRED,
                                         "Режим VK-кредов",
                                         repo.vkCredStrategyLabel(),
@@ -745,6 +754,7 @@ fun MainScreen(
                             onShowError = onShowError,
                         )
                         MenuPage.EXCEPTIONS -> AppExclusionsScreen(repo, palette) { menuPage = MenuPage.ROOT }
+                        MenuPage.DNS -> MenuDnsScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.VK_CRED -> MenuVkCredModeScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.HASHES -> MenuHashesScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.BONUSES -> {

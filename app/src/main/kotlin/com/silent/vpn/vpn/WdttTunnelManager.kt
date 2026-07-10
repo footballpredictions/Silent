@@ -2,7 +2,10 @@ package com.silent.vpn.vpn
 
 import android.content.Context
 import androidx.compose.runtime.Stable
+import com.silent.vpn.BuildConfig
+import com.silent.vpn.data.DnsPreset
 import com.silent.vpn.data.HashChannelHelper
+import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.service.VpnSessionState
 import com.silent.vpn.util.DebugLog
@@ -1140,6 +1143,22 @@ object WdttTunnelManager {
                     return@withLock
                 }
                 lastWgConfig = normalized
+                if (BuildConfig.DEBUG) {
+                    val dnsCtx = lastContext
+                    val dnsPreset = if (dnsCtx != null) {
+                        DnsPreset.fromId(
+                            SilentPrefs.open(dnsCtx)
+                                .getString(SilentRepository.PREF_DNS_PRESET, DnsPreset.DEFAULT.id),
+                        )
+                    } else {
+                        DnsPreset.DEFAULT
+                    }
+                    updateLog(
+                        "dns",
+                        "DNS: ${dnsPreset.title} (${dnsPreset.servers})",
+                        1,
+                    )
+                }
                 try {
                     withContext(NonCancellable + Dispatchers.Main) {
                         wgHelper?.startTunnel(

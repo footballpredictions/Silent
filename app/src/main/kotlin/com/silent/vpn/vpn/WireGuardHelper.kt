@@ -10,12 +10,14 @@ import android.net.VpnService
 
 import android.util.Log
 
-import com.silent.vpn.util.DebugLog
-
+import com.silent.vpn.BuildConfig
 import com.silent.vpn.SilentApp
 import com.silent.vpn.data.BootstrapVpnConfig
+import com.silent.vpn.data.DnsPreset
+import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.service.SilentGoBackendVpnService
+import com.silent.vpn.util.DebugLog
 
 import com.wireguard.android.backend.GoBackend
 
@@ -126,26 +128,31 @@ class WireGuardHelper(context: Context) {
 
             ensureGoBackendServiceStarted()
 
-
-
-            var configToApply = configString
+            // Debug: локальный пресет DNS. Release: только wg_dns с сервера (Яндекс).
+            var configToApply = if (BuildConfig.DEBUG) {
+                val preferredDns = resolvePreferredDns(appContext)
+                DebugLog.i(TAG, "DNS preset applied: $preferredDns")
+                patchDnsServers(configString, preferredDns)
+            } else {
+                configString
+            }
 
             if (!apiOverlayMode) {
                 if (isBootstrap) {
                     configToApply = if (excludeIPs.isNotEmpty()) {
-                        AllowedIpsHelper.patchAllowedIPs(configString, excludeIPs).also {
+                        AllowedIpsHelper.patchAllowedIPs(configToApply, excludeIPs).also {
                             DebugLog.i(TAG, "Bootstrap AllowedIPs: 0.0.0.0/0 − ${excludeIPs.size} host(s)")
                         }
                     } else {
                         AllowedIpsHelper.patchAllowedIPsForBootstrapAuth(
-                            configString,
-                            serverIpFromConfig(configString),
+                            configToApply,
+                            serverIpFromConfig(configToApply),
                         ).also {
                             DebugLog.i(TAG, "Bootstrap AllowedIPs: API + backend HTTPS")
                         }
                     }
                 } else if (excludeIPs.isNotEmpty()) {
-                    configToApply = AllowedIpsHelper.patchAllowedIPs(configString, excludeIPs).also {
+                    configToApply = AllowedIpsHelper.patchAllowedIPs(configToApply, excludeIPs).also {
                         DebugLog.i(TAG, "Main AllowedIPs: 0.0.0.0/0 − ${excludeIPs.size} host(s)")
                     }
                 }
@@ -267,17 +274,11 @@ class WireGuardHelper(context: Context) {
 
 
             if (parsed.`interface`.dnsServers.isNotEmpty()) {
-
                 ifaceBuilder.parseDnsServers(
-
                     parsed.`interface`.dnsServers.joinToString(", ") { it.hostAddress ?: "" },
-
                 )
-
             } else {
-
-                ifaceBuilder.parseDnsServers("1.1.1.1,77.88.8.8")
-
+                ifaceBuilder.parseDnsServers(DnsPreset.DEFAULT.servers)
             }
 
 
@@ -451,7 +452,35 @@ class WireGuardHelper(context: Context) {
             .map { it.trim() }
             .filter { it.isNotBlank() }
         val normalized = tokens.filter { IPV4.matches(it) || IPV6.matches(it) }
-        return if (normalized.isNotEmpty()) normalized.joinToString(", ") else "1.1.1.1, 77.88.8.8"
+        return if (normalized.isNotEmpty()) normalized.joinToString(", ") else DnsPreset.DEFAULT.servers
+    }
+
+    private fun resolvePreferredDns(context: Context): String = runCatching {
+        val id = SilentPrefs.open(context)
+            .getString(SilentRepository.PREF_DNS_PRESET, DnsPreset.DEFAULT.id)
+        DnsPreset.fromId(id).servers
+    }.getOrDefault(DnsPreset.DEFAULT.servers)
+
+    /** Подмена DNS в тексте конфига до parse/semanticKey — иначе GETCONF оставляет серверный Яндекс. */
+    private fun patchDnsServers(conf: String, dns: String): String {
+        val dnsLine = "DNS = $dns"
+        val lines = conf.lines().toMutableList()
+        var replaced = false
+        for (i in lines.indices) {
+            val trim = lines[i].trimStart()
+            if (trim.startsWith("DNS", ignoreCase = true) && trim.contains("=")) {
+                val indent = lines[i].takeWhile { it == ' ' || it == '\t' }
+                lines[i] = indent + dnsLine
+                replaced = true
+            }
+        }
+        if (replaced) return lines.joinToString("\n")
+        val ifaceIdx = lines.indexOfFirst { it.trim() == "[Interface]" }
+        if (ifaceIdx >= 0) {
+            lines.add(ifaceIdx + 1, dnsLine)
+            return lines.joinToString("\n")
+        }
+        return conf
     }
 
     private val IPV4 = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")

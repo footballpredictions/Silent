@@ -75,6 +75,7 @@ class SilentRepository @Inject constructor(
         const val PREF_CACHED_PROFILE = "cached_profile_json"
         const val PREF_CACHED_THEME = "cached_theme_json"
         const val PREF_APPEARANCE_MODE = "appearance_mode"
+        const val PREF_DNS_PRESET = "dns_preset"
         const val PREF_SYNC_HASHES_REV = "config_sync_hashes_rev"
         const val PREF_SYNC_THEME_REV = "config_sync_theme_rev"
         const val PREF_SYNC_PROFILE_REV = "config_sync_profile_rev"
@@ -870,6 +871,18 @@ class SilentRepository @Inject constructor(
         val next = if (getAppearanceMode() == "dark") "light" else "dark"
         setAppearanceMode(next)
         return next
+    }
+
+    fun getDnsPreset(): DnsPreset =
+        DnsPreset.fromId(prefs.getString(PREF_DNS_PRESET, DnsPreset.DEFAULT.id))
+
+    fun setDnsPreset(preset: DnsPreset) {
+        prefs.edit().putString(PREF_DNS_PRESET, preset.id).apply()
+    }
+
+    fun dnsServersForVpn(): String? {
+        if (!BuildConfig.DEBUG) return null
+        return getDnsPreset().servers
     }
 
     fun isLoggedIn() = getAccessToken() != null

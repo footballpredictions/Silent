@@ -105,22 +105,22 @@ class ApiServiceMockWebServerTest {
                     """
                     {
                       "available": true,
-                      "version": "1.0.151",
+                      "version": "1.0.152",
                       "filename": "app.apk",
                       "size": 27117932,
                       "download_url": "/api/updates/download/android",
-                      "github_download_url": "https://github.com/silentvpn3/silentvpn3.github.io/releases/download/v1.0.151/app.apk",
+                      "github_download_url": "https://github.com/silentvpn3/silentvpn3.github.io/releases/download/v1.0.152/app.apk",
                       "tunnel_download_url": "/api/updates/download/android"
                     }
                     """.trimIndent(),
                 ),
         )
 
-        val res = api.checkUpdate(platform = "android", version = "1.0.150")
+        val res = api.checkUpdate(platform = "android", version = "1.0.151")
         assertTrue(res.isSuccessful)
         val body = res.body()!!
         assertTrue(body.available)
-        assertEquals("1.0.151", body.version)
+        assertEquals("1.0.152", body.version)
         assertTrue(body.github_download_url!!.contains("github.com"))
         assertEquals("/api/updates/download/android", body.tunnel_download_url)
     }

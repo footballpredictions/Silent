@@ -1124,7 +1124,7 @@ class SilentRepository @Inject constructor(
         val capped = activeHashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)
         if (!BuildConfig.DEBUG) {
             return HashChannelHelper.normalizeTotalWorkers(
-                HashChannelHelper.WORKERS_PER_GROUP * 4,
+                HashChannelHelper.DEFAULT_TOTAL_WORKERS,
                 capped,
             )
         }
@@ -1149,7 +1149,7 @@ class SilentRepository @Inject constructor(
             return migrated
         }
         val firstInstall = HashChannelHelper.normalizeTotalWorkers(
-            HashChannelHelper.WORKERS_PER_GROUP * 4,
+            HashChannelHelper.DEFAULT_TOTAL_WORKERS,
             capped,
         )
         saveTotalWorkers(firstInstall, capped)

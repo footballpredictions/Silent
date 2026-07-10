@@ -1328,7 +1328,7 @@ class SilentVpnService : Service() {
         val activeHashes = activeHashCount.coerceIn(1, HashChannelHelper.MAX_HASHES)
         if (!BuildConfig.DEBUG) {
             return HashChannelHelper.workersForLibclient(
-                HashChannelHelper.normalizeTotalWorkers(HashChannelHelper.WORKERS_PER_GROUP * 4, activeHashes),
+                HashChannelHelper.normalizeTotalWorkers(HashChannelHelper.DEFAULT_TOTAL_WORKERS, activeHashes),
                 activeHashes,
             )
         }
@@ -1353,7 +1353,7 @@ class SilentVpnService : Service() {
                 )
             }
             else -> HashChannelHelper.normalizeTotalWorkers(
-                HashChannelHelper.WORKERS_PER_GROUP * 4,
+                HashChannelHelper.DEFAULT_TOTAL_WORKERS,
                 activeHashes,
             )
         }

@@ -9,7 +9,8 @@ object HashChannelHelper {
     const val MAX_WORKERS_PER_HASH = 27
     const val MAX_HASHES = 4
     const val LIBCLIENT_MAX_WORKERS = 108
-    const val DEFAULT_TOTAL_WORKERS = LIBCLIENT_MAX_WORKERS
+    /** Дефолт для пользователя: 7 групп × 9 (между 36 и max 108). */
+    const val DEFAULT_TOTAL_WORKERS = 63
 
     fun maxTotalWorkers(activeHashCount: Int): Int =
         activeHashCount.coerceIn(1, MAX_HASHES) * MAX_WORKERS_PER_HASH
@@ -64,8 +65,9 @@ object HashChannelHelper {
             oldPerHash <= 27 -> 27
             oldPerHash <= 36 -> 36
             oldPerHash <= 54 -> 54
+            oldPerHash <= 63 -> 63
             oldPerHash <= 72 -> 72
-            else -> DEFAULT_TOTAL_WORKERS
+            else -> LIBCLIENT_MAX_WORKERS
         }
         return normalizeTotalWorkers(asTotal, activeHashCount)
     }

@@ -96,6 +96,14 @@ class HashChannelHelperTest {
     }
 
     @Test
+    fun `default total workers is 63`() {
+        assertEquals(63, HashChannelHelper.DEFAULT_TOTAL_WORKERS)
+        assertEquals(63, HashChannelHelper.normalizeTotalWorkers(HashChannelHelper.DEFAULT_TOTAL_WORKERS, 4))
+        // При 2 хешах max=54 — дефолт клампится
+        assertEquals(54, HashChannelHelper.normalizeTotalWorkers(HashChannelHelper.DEFAULT_TOTAL_WORKERS, 2))
+    }
+
+    @Test
     fun `signalBars thresholds`() {
         assertEquals(0, HashChannelHelper.signalBars(0, 36))
         assertEquals(1, HashChannelHelper.signalBars(1, 36))

@@ -10,6 +10,8 @@ export interface UpdateInfo {
   size?: number
   uploaded_at?: string
   download_url?: string
+  github_download_url?: string
+  tunnel_download_url?: string
 }
 
 const APP_VERSION = __APP_VERSION__
@@ -42,7 +44,9 @@ function parseUpdateResponse(data: UpdateInfo | null | undefined): UpdateInfo | 
     filename,
     size: data.size,
     uploaded_at: data.uploaded_at,
-    download_url: data.download_url || `/update/pc/${encodeURIComponent(filename)}`,
+    download_url: data.download_url || data.github_download_url || `/update/pc/${encodeURIComponent(filename)}`,
+    github_download_url: data.github_download_url,
+    tunnel_download_url: data.tunnel_download_url || '/api/updates/download/pc',
   }
 }
 

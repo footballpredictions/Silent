@@ -1369,27 +1369,54 @@ function updateCheckQuery(platform, version) {
   return `/api/updates/check?platform=${encodeURIComponent(platform || 'pc')}&version=${encodeURIComponent(version || '')}`
 }
 
-/** Абсолютный URL для скачивания OTA: tunnel при VPN, иначе public HTTPS. */
-function resolveUpdateDownloadUrl(urlOrPath) {
+/**
+ * URL для скачивания OTA.
+ * - VPN on → всегда /api/updates/download/pc (tunnel), НЕ pathname от GitHub
+ * - VPN off → абсолютный GitHub/HTTPS как есть; relative → public nip.io
+ * Баг 1.0.152: GitHub URL превращался в http://10.66.66.1:8000/silentvpn3/... → 404 HTML → «100% / повреждён».
+ */
+function resolveUpdateDownloadUrl(urlOrPath, tunnelPath) {
+  if (shouldUseTunnelForOta()) {
+    const tp = String(tunnelPath || '/api/updates/download/pc').trim() || '/api/updates/download/pc'
+    const path = tp.startsWith('/') ? tp : `/${tp}`
+    return `${TUNNEL_API_ORIGIN}${path}`
+  }
   const raw = String(urlOrPath || '').trim()
   if (!raw) return null
-  let pathname = raw
-  let search = ''
   if (/^https?:\/\//i.test(raw)) {
-    try {
-      const u = new URL(raw)
-      pathname = u.pathname
-      search = u.search || ''
-    } catch {
-      return raw
+    return raw
+  }
+  const pathname = raw.startsWith('/') ? raw : `/${raw}`
+  return `${UPDATE_PUBLIC_BASE}${pathname}`
+}
+
+/** Минимальная проверка, что скачали NSIS/PE, а не HTML 404. */
+function assertValidPcInstaller(destPath, expectedSize) {
+  if (!destPath || !fs.existsSync(destPath)) {
+    throw new Error('Файл обновления не найден')
+  }
+  const st = fs.statSync(destPath)
+  const minBytes = 1_000_000
+  if (st.size < minBytes) {
+    try { fs.unlinkSync(destPath) } catch { /* ignore */ }
+    throw new Error(`Файл повреждён или пустой (${st.size} байт) — скачивание не удалось`)
+  }
+  const expect = Number(expectedSize) || 0
+  if (expect > minBytes && st.size < Math.floor(expect * 0.5)) {
+    try { fs.unlinkSync(destPath) } catch { /* ignore */ }
+    throw new Error(`Файл повреждён (ожидалось ~${expect} байт, получено ${st.size})`)
+  }
+  const fd = fs.openSync(destPath, 'r')
+  try {
+    const buf = Buffer.alloc(2)
+    fs.readSync(fd, buf, 0, 2, 0)
+    if (buf[0] !== 0x4d || buf[1] !== 0x5a) {
+      try { fs.unlinkSync(destPath) } catch { /* ignore */ }
+      throw new Error('Файл повреждён (это не установщик Windows)')
     }
-  } else if (!raw.startsWith('/')) {
-    pathname = `/${raw}`
+  } finally {
+    fs.closeSync(fd)
   }
-  if (shouldUseTunnelForOta()) {
-    return `${TUNNEL_API_ORIGIN}${pathname}${search}`
-  }
-  return `${UPDATE_PUBLIC_BASE}${pathname}${search}`
 }
 
 /** PC: API через public HTTPS (IP сервера вне туннеля + bypass). */
@@ -1676,7 +1703,10 @@ function downloadFileWithProgress(url, destPath, onProgress) {
       const file = fs.createWriteStream(destPath)
       res.on('data', (chunk) => {
         received += chunk.length
-        if (total > 0 && onProgress) onProgress(Math.min(100, Math.round((received / total) * 100)))
+        if (onProgress) {
+          if (total > 0) onProgress(Math.min(99, Math.round((received / total) * 100)))
+          else onProgress(Math.min(95, Math.round(received / (1024 * 1024)))) // без CL: грубо по МБ
+        }
       })
       res.pipe(file)
       file.on('finish', () => file.close(() => resolve(destPath)))
@@ -1692,21 +1722,23 @@ function downloadFileWithProgress(url, destPath, onProgress) {
   })
 }
 
-ipcMain.handle('app-update-download', async (_, { url, filename }) => {
+ipcMain.handle('app-update-download', async (_, { url, filename, tunnelUrl, expectedSize }) => {
   try {
     const safeName = path.basename(filename || 'update.exe')
     const dest = path.join(app.getPath('temp'), safeName)
-    const finalUrl = resolveUpdateDownloadUrl(url)
+    const finalUrl = resolveUpdateDownloadUrl(url, tunnelUrl)
     if (!finalUrl) {
       return { ok: false, error: 'Empty download URL' }
     }
-    sendLog(`[Update] download via ${finalUrl.startsWith(TUNNEL_API_ORIGIN) ? 'tunnel' : 'public'}`)
+    sendLog(`[Update] download via ${finalUrl.startsWith(TUNNEL_API_ORIGIN) ? 'tunnel' : 'public'}: ${finalUrl}`)
     const sendProgress = (pct) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('update-progress', pct)
       }
     }
     await downloadFileWithProgress(finalUrl, dest, sendProgress)
+    assertValidPcInstaller(dest, expectedSize)
+    sendProgress(100)
     return { ok: true, path: dest }
   } catch (e) {
     return { ok: false, error: e?.message || String(e) }

@@ -510,14 +510,18 @@ export default function MainScreen({
     if (!api_?.downloadUpdate) return
     setUpdateDownloading(true)
     setUpdateProgress(0)
-    // Relative path → main сам выберет tunnel или public (renderer не ходит на 10.66.66.1).
-    const dlPath = updateInfo.download_url.startsWith('http')
-      ? updateInfo.download_url
-      : (updateInfo.download_url.startsWith('/')
-        ? updateInfo.download_url
-        : `/${updateInfo.download_url}`)
+    // Relative / GitHub URL → main сам выберет tunnel (/api/updates/download/pc) или прямой GitHub.
+    const dlPath = updateInfo.download_url || updateInfo.github_download_url || ''
     try {
-      const res = await api_.downloadUpdate(dlPath, updateInfo.filename || 'update.exe')
+      const apiAny = api_ as any
+      const res = apiAny.downloadUpdateMeta
+        ? await apiAny.downloadUpdateMeta({
+            url: dlPath,
+            filename: updateInfo.filename || 'update.exe',
+            tunnelUrl: updateInfo.tunnel_download_url || '/api/updates/download/pc',
+            expectedSize: updateInfo.size || 0,
+          })
+        : await api_.downloadUpdate(dlPath, updateInfo.filename || 'update.exe')
       if (res?.ok && res.path && api_.installUpdate) {
         setUpdateProgress(100)
         const inst = await api_.installUpdate(res.path)

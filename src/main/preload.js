@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkForUpdate: (version) => ipcRenderer.invoke('app-update-check', { version, platform: 'pc' }),
   tunnelApiRequest: (payload) => ipcRenderer.invoke('tunnel-api-request', payload),
   downloadUpdate: (url, filename) => ipcRenderer.invoke('app-update-download', { url, filename }),
+  downloadUpdateMeta: (payload) => ipcRenderer.invoke('app-update-download', payload),
   installUpdate: (filePath) => ipcRenderer.invoke('app-update-install', filePath),
   onUpdateProgress: (cb) => ipcRenderer.on('update-progress', (_, pct) => cb(pct)),
   removeUpdateListeners: () => ipcRenderer.removeAllListeners('update-progress'),

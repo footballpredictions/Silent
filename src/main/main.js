@@ -1358,12 +1358,38 @@ ipcMain.handle('app-version', () => app.getVersion())
 
 const UPDATE_PUBLIC_BASE = 'https://132-243-234-162.nip.io'
 const UPDATE_HOST = '132-243-234-162.nip.io'
+const TUNNEL_API_ORIGIN = 'http://10.66.66.1:8000'
 
-function updateCheckBaseUrl() {
-  if (vpnSessionActive && wgApplied && !vpnBootstrapMode) {
-    return `https://${SERVER_IP_FALLBACK}`
+/** При полном VPN OTA только через tunnel — public IP hairpin через 0.0.0.0/0 не доходит. */
+function shouldUseTunnelForOta() {
+  return !!(wgApplied && vpnSessionActive && !vpnBootstrapMode)
+}
+
+function updateCheckQuery(platform, version) {
+  return `/api/updates/check?platform=${encodeURIComponent(platform || 'pc')}&version=${encodeURIComponent(version || '')}`
+}
+
+/** Абсолютный URL для скачивания OTA: tunnel при VPN, иначе public HTTPS. */
+function resolveUpdateDownloadUrl(urlOrPath) {
+  const raw = String(urlOrPath || '').trim()
+  if (!raw) return null
+  let pathname = raw
+  let search = ''
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw)
+      pathname = u.pathname
+      search = u.search || ''
+    } catch {
+      return raw
+    }
+  } else if (!raw.startsWith('/')) {
+    pathname = `/${raw}`
   }
-  return UPDATE_PUBLIC_BASE
+  if (shouldUseTunnelForOta()) {
+    return `${TUNNEL_API_ORIGIN}${pathname}${search}`
+  }
+  return `${UPDATE_PUBLIC_BASE}${pathname}${search}`
 }
 
 /** PC: API через public HTTPS (IP сервера вне туннеля + bypass). */
@@ -1586,24 +1612,57 @@ function fetchJsonGet(url, hostHeader = null) {
 }
 
 ipcMain.handle('app-update-check', async (_, { version, platform = 'pc' }) => {
-  const base = updateCheckBaseUrl()
-  const hostHeader = base.includes(SERVER_IP_FALLBACK) ? UPDATE_HOST : null
-  const url = `${base}/api/updates/check?platform=${encodeURIComponent(platform)}&version=${encodeURIComponent(version || '')}`
+  const q = updateCheckQuery(platform, version)
+  if (shouldUseTunnelForOta() || wgApplied) {
+    try {
+      const res = await tunnelHttpRequest({ method: 'GET', path: q, timeout: 15_000 })
+      if (res.status === 200 && res.data) {
+        sendLog('[Update] check via tunnel 10.66.66.1 OK')
+        return res.data
+      }
+      sendLog(`[Update] tunnel check HTTP ${res.status} → public`)
+    } catch (e) {
+      sendLog(`[Update] tunnel check fail: ${e?.message || e} → public`)
+    }
+  }
   try {
-    return await fetchJsonGet(url, hostHeader)
+    return await fetchJsonGet(`${UPDATE_PUBLIC_BASE}${q}`)
   } catch (e) {
-    sendLog(`[Update] check fail: ${e?.message || e}`)
-    return null
+    try {
+      return await fetchJsonGet(`https://${SERVER_IP_FALLBACK}${q}`, UPDATE_HOST)
+    } catch (e2) {
+      sendLog(`[Update] check fail: ${e2?.message || e2}`)
+      return null
+    }
   }
 })
 
 function downloadFileWithProgress(url, destPath, onProgress) {
   return new Promise((resolve, reject) => {
-    const proto = url.startsWith('https') ? https : http
-    const opts = url.startsWith('https') ? { rejectUnauthorized: false } : {}
-    const req = proto.get(url, opts, (res) => {
+    let urlObj
+    try {
+      urlObj = new URL(url)
+    } catch (e) {
+      reject(e)
+      return
+    }
+    const isHttps = urlObj.protocol === 'https:'
+    const proto = isHttps ? https : http
+    const opts = {
+      hostname: urlObj.hostname,
+      port: urlObj.port || (isHttps ? 443 : 80),
+      path: urlObj.pathname + urlObj.search,
+      timeout: 600_000,
+    }
+    if (isHttps) {
+      opts.rejectUnauthorized = false
+      if (urlObj.hostname === SERVER_IP_FALLBACK) opts.servername = UPDATE_HOST
+    }
+    const req = proto.get(opts, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        downloadFileWithProgress(res.headers.location, destPath, onProgress).then(resolve).catch(reject)
+        const loc = res.headers.location
+        const next = loc.startsWith('http') ? loc : `${urlObj.protocol}//${urlObj.host}${loc}`
+        downloadFileWithProgress(next, destPath, onProgress).then(resolve).catch(reject)
         res.resume()
         return
       }
@@ -1627,7 +1686,7 @@ function downloadFileWithProgress(url, destPath, onProgress) {
       })
     })
     req.on('error', reject)
-    req.setTimeout(600_000, () => {
+    req.on('timeout', () => {
       req.destroy(new Error('Download timeout'))
     })
   })
@@ -1637,12 +1696,17 @@ ipcMain.handle('app-update-download', async (_, { url, filename }) => {
   try {
     const safeName = path.basename(filename || 'update.exe')
     const dest = path.join(app.getPath('temp'), safeName)
+    const finalUrl = resolveUpdateDownloadUrl(url)
+    if (!finalUrl) {
+      return { ok: false, error: 'Empty download URL' }
+    }
+    sendLog(`[Update] download via ${finalUrl.startsWith(TUNNEL_API_ORIGIN) ? 'tunnel' : 'public'}`)
     const sendProgress = (pct) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('update-progress', pct)
       }
     }
-    await downloadFileWithProgress(url, dest, sendProgress)
+    await downloadFileWithProgress(finalUrl, dest, sendProgress)
     return { ok: true, path: dest }
   } catch (e) {
     return { ok: false, error: e?.message || String(e) }

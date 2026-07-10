@@ -50,7 +50,7 @@ import {
   saveCachedProfile,
   clearCachedProfile,
 } from '../profileStore'
-import { checkForUpdate, getAppVersion, getUpdateDownloadBase, type UpdateInfo } from '../updateCheck'
+import { checkForUpdate, getAppVersion, type UpdateInfo } from '../updateCheck'
 import { getApiBaseUrl } from '../tunnelApi'
 import { notifyConnect } from '../vpnBackendSync'
 import { flushPendingHashFailures, resetHashFailureReporter } from '../hashFailureReporter'
@@ -473,7 +473,9 @@ export default function MainScreen({
   useEffect(() => {
     let cancelled = false
     const run = async () => {
-      if (connected || connecting) return
+      // Раньше пропускали при connected — OTA не приходило, пока VPN включён.
+      // При VPN check/download идут через tunnel 10.66.66.1 (main.js).
+      if (connecting) return
       const info = await checkForUpdate()
       if (!cancelled && info?.available) setUpdateInfo(info)
     }
@@ -484,6 +486,16 @@ export default function MainScreen({
       clearInterval(id)
     }
   }, [connected, connecting])
+
+  // Сразу после выхода в full VPN — одна проверка через tunnel (как Android).
+  useEffect(() => {
+    if (!connected) return
+    let cancelled = false
+    void checkForUpdate().then(info => {
+      if (!cancelled && info?.available) setUpdateInfo(info)
+    })
+    return () => { cancelled = true }
+  }, [connected])
 
   useEffect(() => {
     const api_ = (window as any).electronAPI
@@ -498,10 +510,12 @@ export default function MainScreen({
     if (!api_?.downloadUpdate) return
     setUpdateDownloading(true)
     setUpdateProgress(0)
-    const base = getUpdateDownloadBase()
+    // Relative path → main сам выберет tunnel или public (renderer не ходит на 10.66.66.1).
     const dlPath = updateInfo.download_url.startsWith('http')
       ? updateInfo.download_url
-      : `${base}${updateInfo.download_url.startsWith('/') ? updateInfo.download_url : `/${updateInfo.download_url}`}`
+      : (updateInfo.download_url.startsWith('/')
+        ? updateInfo.download_url
+        : `/${updateInfo.download_url}`)
     try {
       const res = await api_.downloadUpdate(dlPath, updateInfo.filename || 'update.exe')
       if (res?.ok && res.path && api_.installUpdate) {
@@ -575,32 +589,56 @@ export default function MainScreen({
     }
 
     connectLockRef.current = true
+    // UI сразу: не ждать fetchProfile / prepare (раньше давало ~5–8с «Подключение…»).
     setConnecting(true)
+    setConnected(true)
+    setMainVpnSessionActive(true)
     if (!connected) {
       setActiveWorkers(0)
       clearVpnLogs()
     }
     pushLog('Main', 'connect start')
     SessionTrace.enter('Main.connect', 'start')
+    const connectGen = ++connectGenRef.current
     try {
       const fp = DEVICE_FINGERPRINT()
       if (!connected) {
         const api_ = (window as any).electronAPI
         const already = await api_?.vpnIsReady?.().catch(() => null)
+        if (connectGen !== connectGenRef.current) return
         if (already?.ready) {
-          setConnected(true)
+          setConnecting(false)
+          connectLockRef.current = false
           pushLog('Main', 'VPN уже поднят, UI синхронизирован')
           return
         }
-        const p = await fetchProfile()
-        const hasAccess = !p || p.is_admin || p.subscription?.is_active
-        if (!hasAccess) {
+        // Профиль в фоне не блокирует тумблер; доступ проверим по кешу + свежий fetch без await в критическом пути.
+        const cachedProfile = getCachedProfile<Profile>()
+        const cachedHasAccess = !cachedProfile || cachedProfile.is_admin || cachedProfile.subscription?.is_active
+        if (!cachedHasAccess) {
+          setConnected(false)
+          setConnecting(false)
+          setMainVpnSessionActive(false)
+          connectLockRef.current = false
           pendingConnectAfterSubscriptionRefreshRef.current = true
           alert('Пробный период закончился. Оформите подписку в меню → Подписка.')
           setMenuOpen(true)
           setMenuPage('subscription')
           return
         }
+        void fetchProfile().then(p => {
+          if (connectGen !== connectGenRef.current) return
+          const hasAccess = !p || p.is_admin || p.subscription?.is_active
+          if (!hasAccess) {
+            pendingConnectAfterSubscriptionRefreshRef.current = true
+            void (window as any).electronAPI?.vpnDisconnect?.()
+            setConnected(false)
+            setMainVpnSessionActive(false)
+            alert('Пробный период закончился. Оформите подписку в меню → Подписка.')
+            setMenuOpen(true)
+            setMenuPage('subscription')
+          }
+        }).catch(() => { /* ignore */ })
 
         let config: VpnConfigPayload | null = getCachedVpnConfig()
         if (config?.device_id) saveSessionDeviceId(String(config.device_id))
@@ -611,8 +649,11 @@ export default function MainScreen({
           try {
             config = await fetchVpnConfigWithKeys(fp)
           } catch (e: any) {
+            if (connectGen !== connectGenRef.current) return
             if (e.response?.status === 402) {
               pendingConnectAfterSubscriptionRefreshRef.current = true
+              setConnected(false)
+              setMainVpnSessionActive(false)
               alert(e.response?.data?.detail || 'Оформите подписку для доступа к интернету.')
               setMenuOpen(true)
               setMenuPage('subscription')
@@ -621,6 +662,7 @@ export default function MainScreen({
             }
             throw e
           }
+          if (connectGen !== connectGenRef.current) return
           if (config) {
             cacheVpnConfig(config)
             if (config.device_id) saveSessionDeviceId(String(config.device_id))
@@ -637,64 +679,36 @@ export default function MainScreen({
         }
         if (!config) {
           pushLog('Main', 'no VPN config', 'E')
+          setConnected(false)
+          setMainVpnSessionActive(false)
           alert('Сервер недоступен. Выйдите и настройте hash на экране входа.')
           return
         }
         if (!config.wg_private_key?.trim() || !config.server_public_key?.trim()) {
           pushLog('Main', 'missing WG keys', 'E')
+          setConnected(false)
+          setMainVpnSessionActive(false)
           alert('Нет ключей WireGuard. Перезайдите в аккаунт или проверьте сервер.')
           return
         }
 
-        // Тумблер ON сразу — визуал не ждёт prepare/воркеров; при ошибке откатим.
-        const connectGen = ++connectGenRef.current
-        setConnected(true)
         setConnecting(false)
-        setMainVpnSessionActive(true)
         connectLockRef.current = false
 
         if (isBootstrapVpnActive()) {
-          await disconnectBootstrapVpn()
-          if (connectGen !== connectGenRef.current) return
-          pushLog('Main', 'bootstrap VPN stopped before connect')
-        }
-
-        if ((window as any).electronAPI?.vpnConnect) {
-          pushLog('Main', 'vpnConnect start')
-          const connectCfg = attachVkCredLaunchParams(await prepareVpnConnectConfig(config, fp))
-          if (connectGen !== connectGenRef.current) return
-          pushLog('Main', `vpnConnect n=${connectCfg.stream_count} hashes=${connectCfg.vk_hashes?.length ?? 0}`)
-          const res = await (window as any).electronAPI.vpnConnect(connectCfg)
-          if (connectGen !== connectGenRef.current) return
-          if (res?.error) {
-            pushLog('Main', `vpnConnect: ${res.error}`, 'E')
-            setConnected(false)
-            setMainVpnSessionActive(false)
-            alert(res.error)
-            return
-          }
-          pendingConnectAfterSubscriptionRefreshRef.current = false
+          // Не блокируем UI — bootstrap гасим в фоне, затем connect.
           void (async () => {
-            const ready = await waitVpnReady(undefined, connectCfg.stream_count ?? 63)
+            await disconnectBootstrapVpn()
             if (connectGen !== connectGenRef.current) return
-            if (!ready) {
-              pushLog('Main', 'connect timeout', 'E')
-              setConnected(false)
-              setMainVpnSessionActive(false)
-              alert('WireGuard не поднялся. Установите Silent VPN 1.0.51+ или проверьте службу WireGuardTunnel$wg-turn')
-              await (window as any).electronAPI?.vpnDisconnect?.()
-              await api.post('/api/vpn/disconnect', { device_fingerprint: fp }).catch(() => null)
-              await fetchProfile()
-              return
-            }
-            await markOnlineOnServer()
-            void warmupBrowsingPath().catch(() => null)
-            fetchProfile()
+            pushLog('Main', 'bootstrap VPN stopped before connect')
+            await runMainVpnConnect(config!, fp, connectGen)
           })()
+        } else {
+          void runMainVpnConnect(config, fp, connectGen)
         }
       }
-      fetchProfile()
     } catch (err: any) {
+      if (connectGen !== connectGenRef.current) return
       if (err.response?.status === 402 || err.response?.status === 403) {
         pendingConnectAfterSubscriptionRefreshRef.current = true
       }
@@ -702,8 +716,55 @@ export default function MainScreen({
       setConnected(false)
       setMainVpnSessionActive(false)
     } finally {
-      connectLockRef.current = false
-      setConnecting(false)
+      if (connectGen === connectGenRef.current) {
+        connectLockRef.current = false
+        setConnecting(false)
+      }
+    }
+  }
+
+  const runMainVpnConnect = async (
+    config: VpnConfigPayload,
+    fp: string,
+    connectGen: number,
+  ) => {
+    try {
+      if (!(window as any).electronAPI?.vpnConnect) return
+      pushLog('Main', 'vpnConnect start')
+      // prepare не блокирует тумблер (уже ON); хеши из кеша — быстро.
+      const connectCfg = attachVkCredLaunchParams(await prepareVpnConnectConfig(config, fp))
+      if (connectGen !== connectGenRef.current) return
+      pushLog('Main', `vpnConnect n=${connectCfg.stream_count} hashes=${connectCfg.vk_hashes?.length ?? 0} vk=${connectCfg.vkAuthMode}`)
+      const res = await (window as any).electronAPI.vpnConnect(connectCfg)
+      if (connectGen !== connectGenRef.current) return
+      if (res?.error) {
+        pushLog('Main', `vpnConnect: ${res.error}`, 'E')
+        setConnected(false)
+        setMainVpnSessionActive(false)
+        alert(res.error)
+        return
+      }
+      pendingConnectAfterSubscriptionRefreshRef.current = false
+      const ready = await waitVpnReady(undefined, connectCfg.stream_count ?? 63)
+      if (connectGen !== connectGenRef.current) return
+      if (!ready) {
+        pushLog('Main', 'connect timeout', 'E')
+        setConnected(false)
+        setMainVpnSessionActive(false)
+        alert('WireGuard не поднялся. Установите Silent VPN 1.0.51+ или проверьте службу WireGuardTunnel$wg-turn')
+        await (window as any).electronAPI?.vpnDisconnect?.()
+        await api.post('/api/vpn/disconnect', { device_fingerprint: fp }).catch(() => null)
+        await fetchProfile()
+        return
+      }
+      await markOnlineOnServer()
+      void warmupBrowsingPath().catch(() => null)
+      fetchProfile()
+    } catch (err: any) {
+      if (connectGen !== connectGenRef.current) return
+      pushLog('Main', `vpnConnect failed: ${err?.message || err}`, 'E')
+      setConnected(false)
+      setMainVpnSessionActive(false)
     }
   }
 

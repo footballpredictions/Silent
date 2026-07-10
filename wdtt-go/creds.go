@@ -299,12 +299,29 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 	}
 
 	if getVKAuthMode() == "vkcalls" {
-		if user, pass, addrs, err := getVKCredsViaVKCallsPath(ctx, link, streamID); err == nil {
-			log.Printf("[STREAM %d] [VK Auth] Success via VK Calls path", streamID)
-			return user, pass, addrs, nil
-		} else {
-			log.Printf("[STREAM %d] [VK Auth] VK Calls path failed (%s), falling back to legacy", streamID, describeVKCallsFailure(err))
+		var lastVKCallsErr error
+		// 3 попытки VK Calls до legacy — иначе один сетевой сбой сразу открывает медленную капчу.
+		for attempt := 1; attempt <= 3; attempt++ {
+			user, pass, addrs, err := getVKCredsViaVKCallsPath(ctx, link, streamID)
+			if err == nil {
+				log.Printf("[STREAM %d] [VK Auth] Success via VK Calls path (attempt %d)", streamID, attempt)
+				return user, pass, addrs, nil
+			}
+			lastVKCallsErr = err
+			log.Printf("[STREAM %d] [VK Auth] VK Calls attempt %d/3 failed (%s)", streamID, attempt, describeVKCallsFailure(err))
+			if ctx.Err() != nil {
+				return "", "", nil, ctx.Err()
+			}
+			if attempt < 3 {
+				wait := time.Duration(350+rand.Intn(400)) * time.Millisecond
+				select {
+				case <-ctx.Done():
+					return "", "", nil, ctx.Err()
+				case <-time.After(wait):
+				}
+			}
 		}
+		log.Printf("[STREAM %d] [VK Auth] VK Calls exhausted (%s), falling back to legacy (captcha possible)", streamID, describeVKCallsFailure(lastVKCallsErr))
 	} else {
 		log.Printf("[STREAM %d] [VK Auth] Legacy mode selected, skipping VK Calls path", streamID)
 	}

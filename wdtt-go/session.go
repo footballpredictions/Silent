@@ -27,7 +27,7 @@ const (
 	keepaliveInterval  = 15 * time.Second
 )
 
-// Windows: 8 — медленный ramp; 32+ → VK rate-limit (Throttling 2s). 16 — баланс.
+// Windows: 16 — баланс (baseline 26431a9); 32+ → VK throttle.
 var handshakeSem = make(chan struct{}, 16)
 
 // NullLoggerFactory подавляет логи pion

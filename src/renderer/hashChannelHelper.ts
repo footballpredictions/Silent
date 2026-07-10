@@ -1,4 +1,5 @@
 import { activeServerHashCount, getSavedHashItems } from './hashItemsStore'
+import { isDebugBuild } from './debugBuild'
 
 export const WORKERS_PER_GROUP = 9
 export const MAX_WORKERS_PER_HASH = 27
@@ -70,6 +71,12 @@ export function migrateLegacyPerHash(oldPerHash: number, activeHashCount: number
 export function getTotalWorkers(activeHashCount = activeServerHashCount(getSavedHashItems()) || 1): number {
   const capped = Math.min(Math.max(activeHashCount, 1), MAX_HASHES)
   const max = maxTotalWorkers(capped)
+  // Debug: всегда max (108 при 4 хешах) — иначе старый localStorage=36 ломает baseline.
+  if (isDebugBuild) {
+    const forced = normalizeTotalWorkers(max, capped)
+    saveTotalWorkers(forced, capped)
+    return forced
+  }
   const stored = localStorage.getItem(TOTAL_WORKERS_KEY)
   if (stored != null && stored !== '') {
     const raw = Number(stored) || WORKERS_PER_GROUP
@@ -91,8 +98,8 @@ export function getTotalWorkers(activeHashCount = activeServerHashCount(getSaved
     localStorage.setItem(LEGACY_MIGRATED_KEY, '1')
     return migrated
   }
-  // Default: 36 (4×9) — стабильный connect; слайдер сохраняется в localStorage.
-  return normalizeTotalWorkers(WORKERS_PER_GROUP * 4, capped)
+  // Release default: max (как проверенный baseline @108).
+  return normalizeTotalWorkers(max, capped)
 }
 
 export function saveTotalWorkers(value: number, activeHashCount = activeServerHashCount(getSavedHashItems()) || 1): void {

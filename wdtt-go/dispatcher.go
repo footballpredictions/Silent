@@ -32,12 +32,11 @@ func putPktBuf(b []byte) {
 
 const (
 	// Откат: chunk=256 на практике дал 2–5 Мбит (один медленный TURN).
-	// Рабочий профиль до эксперимента — chunk=16 + умеренные буферы.
+	// Рабочий профиль — chunk=16 + умеренные буферы (MTU/chunk=8 не дали прироста).
 	returnChBuf      = 16384
 	writeLoopWorkers = 8
 	uploadRetryMs    = 30
-
-	chunkSize = 16
+	chunkSize        = 16
 )
 
 type WorkerSlot struct {
@@ -52,11 +51,21 @@ type Dispatcher struct {
 	mu         sync.Mutex
 	rrIndex    int
 	rrCount    int
+	chunkSeq   int // чередование групп (разные хеши/TURN), не подряд 0..8 одной группы
 	ReturnCh   chan []byte
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	stats      *Stats
+}
+
+// pickWorkerIndex — следующий chunk на другом слоте (stride), без привязки к порядку Register.
+// При параллельной волне воркеры регистрируются вперемешку — group×9 stride был бы неверным.
+func pickWorkerIndex(seq, nw int) int {
+	if nw <= 0 {
+		return 0
+	}
+	return (seq * 11) % nw
 }
 
 func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) *Dispatcher {
@@ -151,6 +160,9 @@ func (d *Dispatcher) readLoop() {
 		nw := len(ws)
 
 		sent := false
+		if d.rrCount == 0 {
+			d.rrIndex = pickWorkerIndex(d.chunkSeq, nw)
+		}
 		idx := d.rrIndex % nw
 
 		w := ws[idx]
@@ -159,7 +171,7 @@ func (d *Dispatcher) readLoop() {
 			sent = true
 			d.rrCount++
 			if d.rrCount >= chunkSize {
-				d.rrIndex = (idx + 1) % nw
+				d.chunkSeq++
 				d.rrCount = 0
 			}
 		default:
@@ -170,6 +182,7 @@ func (d *Dispatcher) readLoop() {
 					sent = true
 					d.rrIndex = altIdx
 					d.rrCount = 1
+					d.chunkSeq++
 				default:
 				}
 				if sent {
@@ -187,7 +200,7 @@ func (d *Dispatcher) readLoop() {
 					sent = true
 					d.rrCount++
 					if d.rrCount >= chunkSize {
-						d.rrIndex = (d.rrIndex + 1) % nw
+						d.chunkSeq++
 						d.rrCount = 0
 					}
 				case <-d.ctx.Done():
@@ -197,7 +210,7 @@ func (d *Dispatcher) readLoop() {
 				}
 			}
 			if !sent {
-				d.rrIndex = (idx + 1) % nw
+				d.chunkSeq++
 				d.rrCount = 0
 				putPktBuf(pkt)
 			}

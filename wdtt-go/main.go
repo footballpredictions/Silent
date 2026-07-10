@@ -341,7 +341,7 @@ func main() {
 				return
 			}
 			finalConf := rawConf
-			if !strings.Contains(finalConf, "MTU =") {
+					if !strings.Contains(finalConf, "MTU =") {
 				lines := strings.Split(finalConf, "\n")
 				var newLines []string
 				for _, line := range lines {
@@ -373,15 +373,30 @@ func main() {
 	var wg sync.WaitGroup
 	workerIDCounter := 1
 
-	// Группа 1 → WG; при рампе группы 2+ с паузой (один процесс, без restart).
-	var groupGate chan struct{}
-	firstGate := make(chan struct{})
-	close(firstGate)
-	groupGate = firstGate
+	// Boot: волны по числу хешей (параллельно разные TURN), не строгий каскад 1→2→…
+	// Группа сразу после boot (g==bootGroups) ждёт bootDone; дальше — рамп как раньше.
 	hashCount := len(hashes)
 	if hashCount < 1 {
 		hashCount = 1
 	}
+	waveSize := hashCount
+	if waveSize > bootGroups {
+		waveSize = bootGroups
+	}
+	if waveSize < 1 {
+		waveSize = 1
+	}
+
+	waveGates := make([]chan struct{}, 0, 4)
+	firstWave := make(chan struct{})
+	close(firstWave)
+	waveGates = append(waveGates, firstWave)
+	bootWaveCount := (bootGroups + waveSize - 1) / waveSize
+	for w := 1; w < bootWaveCount; w++ {
+		waveGates = append(waveGates, make(chan struct{}))
+	}
+	bootDone := make(chan struct{}) // мост boot → первая post-boot группа
+	log.Printf("[КЛИЕНТ] Boot: %d групп волнами по %d (хешей: %d), затем рамп до %d", bootGroups, waveSize, hashCount, targetWorkers)
 
 	for g := 0; g < numGroups; g++ {
 		isFirst := (g == 0)
@@ -402,11 +417,32 @@ func main() {
 		var signalNext chan struct{}
 		if ramp != nil && g > bootGroups {
 			waitReady = ramp.waitForGroup(g - bootGroups - 1)
+		} else if g == bootGroups && ramp != nil {
+			// Первая группа после boot: как раньше ждала cascade от последней boot-группы.
+			waitReady = bootDone
+		} else if g < bootGroups {
+			waveIdx := g / waveSize
+			waitReady = waveGates[waveIdx]
+			isWaveLeader := (g % waveSize) == 0
+			nextWave := waveIdx + 1
+			if isWaveLeader && nextWave < len(waveGates) {
+				signalNext = waveGates[nextWave]
+			} else if isWaveLeader && nextWave >= len(waveGates) {
+				// Последняя boot-волна → bootDone (старт post-boot / рамп-цепочки).
+				signalNext = bootDone
+			}
 		} else {
-			waitReady = groupGate
-			if g < numGroups-1 && (ramp == nil || g+1 <= bootGroups) {
-				signalNext = make(chan struct{})
-				groupGate = signalNext
+			// Без рампа: продолжаем волнами на все группы.
+			waveIdx := g / waveSize
+			for len(waveGates) <= waveIdx {
+				waveGates = append(waveGates, make(chan struct{}))
+			}
+			waitReady = waveGates[waveIdx]
+			if (g%waveSize) == 0 && waveIdx+1 < (numGroups+waveSize-1)/waveSize {
+				for len(waveGates) <= waveIdx+1 {
+					waveGates = append(waveGates, make(chan struct{}))
+				}
+				signalNext = waveGates[waveIdx+1]
 			}
 		}
 

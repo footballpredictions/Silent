@@ -236,23 +236,47 @@ func getVkCredsCached(ctx context.Context, link string, streamID int) (string, s
 }
 
 // ─── Serialized (throttled) fetcher ───
+// Throttle per hash-link: разные хеши в одной волне могут идти параллельно.
+// Глобальный mutex сериализовал волну из 4 хешей в ~4–8 с и убивал смысл параллели.
 
 var (
-	vkRequestMu           sync.Mutex
-	globalLastVkFetchTime time.Time
+	vkLinkMus sync.Map // link → *sync.Mutex
 )
 
+func vkMuForLink(link string) *sync.Mutex {
+	v, _ := vkLinkMus.LoadOrStore(link, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
+type vkLinkClock struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+func vkClockForLink(link string) *vkLinkClock {
+	v, _ := vkLinkLast.LoadOrStore(link, &vkLinkClock{})
+	return v.(*vkLinkClock)
+}
+
+var vkLinkLast sync.Map // link → *vkLinkClock
+
 func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (string, string, []string, error) {
-	vkRequestMu.Lock()
-	defer vkRequestMu.Unlock()
+	mu := vkMuForLink(link)
+	mu.Lock()
+	defer mu.Unlock()
 
-	// Throttle: ~1–2s между VK Auth (было 2–4s — при 12 группах минуты ожидания)
+	clock := vkClockForLink(link)
+	clock.mu.Lock()
 	minInterval := 1*time.Second + time.Duration(rand.Intn(800))*time.Millisecond
-	elapsed := time.Since(globalLastVkFetchTime)
+	elapsed := time.Since(clock.last)
+	wait := time.Duration(0)
+	if !clock.last.IsZero() && elapsed < minInterval {
+		wait = minInterval - elapsed
+	}
+	clock.mu.Unlock()
 
-	if !globalLastVkFetchTime.IsZero() && elapsed < minInterval {
-		wait := minInterval - elapsed
-		log.Printf("[STREAM %d] [VK Auth] Throttling: waiting %v to prevent rate limit...", streamID, wait.Truncate(time.Millisecond))
+	if wait > 0 {
+		log.Printf("[STREAM %d] [VK Auth] Throttling (same hash): waiting %v...", streamID, wait.Truncate(time.Millisecond))
 		select {
 		case <-ctx.Done():
 			return "", "", nil, ctx.Err()
@@ -260,11 +284,11 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (str
 		}
 	}
 
-	defer func() {
-		globalLastVkFetchTime = time.Now()
-	}()
-
-	return fetchVkCreds(ctx, link, streamID)
+	user, pass, addrs, err := fetchVkCreds(ctx, link, streamID)
+	clock.mu.Lock()
+	clock.last = time.Now()
+	clock.mu.Unlock()
+	return user, pass, addrs, err
 }
 
 // ─── Main credential fetcher (rotates through stable credential sets) ───

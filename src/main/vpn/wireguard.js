@@ -822,6 +822,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly)
     if (ok) {
       await gatewayPromise
+      await finalizeTunnelUp(send, excludeIPs, subnetOnly)
       send('[WG] Туннель активен')
       try {
         const wgCli = path.join(runtimeDir, 'wg.exe')

@@ -15,9 +15,11 @@ import (
 const (
 	workersPerGroup  = 9
 	defaultCycleSecs = 36000
+	// Пауза между волнами (по числу хешей). Внутри волны группы стартуют параллельно.
+	waveHandoffDelay = 400 * time.Millisecond
 )
 
-// passCascade — эстафета следующей группе (при ошибке кредов — без блокировки каскада).
+// passCascade — эстафета следующей волне (при ошибке кредов — без блокировки).
 func passCascade(signalReady chan<- struct{}, groupID int, success bool, delay time.Duration) {
 	if signalReady == nil {
 		return
@@ -26,9 +28,9 @@ func passCascade(signalReady chan<- struct{}, groupID int, success bool, delay t
 		time.Sleep(delay)
 		close(signalReady)
 		if success {
-			log.Printf("[ГРУППА #%d] Успешный старт! Передача эстафеты следующей группе...", groupID)
+			log.Printf("[ГРУППА #%d] Успешный старт! Передача эстафеты следующей волне...", groupID)
 		} else {
-			log.Printf("[ГРУППА #%d] Эстафета следующей группе (группа пропущена)", groupID)
+			log.Printf("[ГРУППА #%d] Эстафета следующей волне (группа пропущена)", groupID)
 		}
 	}()
 }
@@ -134,11 +136,11 @@ func WorkerGroup(
 		return true
 	}
 
-	// Boot-группы: каскад 2 с; post-boot — паузы рампа (один процесс).
+	// Boot: эстафета волне (не каждой группе); post-boot — рамп.
 	if ramp != nil && groupID > ramp.bootGroups {
 		ramp.passToNext(groupID-ramp.bootGroups-1, true)
 	} else {
-		passCascade(signalReady, groupID, true, 200*time.Millisecond)
+		passCascade(signalReady, groupID, true, waveHandoffDelay)
 	}
 
 	for i, wid := range workerIDs {

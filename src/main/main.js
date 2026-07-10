@@ -828,7 +828,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
   // Boot 9 (1 группа → быстрый GETCONF) → ramp до target.
   const bootWorkers = config.is_bootstrap
     ? workers
-    : Math.min(9, workers)
+    // Boot = по группе на каждый хеш (волна), иначе single-flow сидит на 1 хеше до рампа.
+    : Math.min(Math.max(9, hashList.length * 9), workers)
   const useRamp = !config.is_bootstrap && workers > bootWorkers
   sendLog(
     `[VPN] connect n=${bootWorkers}${useRamp ? `→${workers}` : ''}${config.is_bootstrap ? ' (bootstrap)' : ''} hashes=${hashList.length} vk=${vkAuthMode} captcha=${captchaMode}`,
@@ -990,10 +991,13 @@ async function beginWdttSession(config, { switching = false } = {}) {
     if (wgAttempted) return false
 
     let normalizedConf = confText
-    if (!normalizedConf.includes('MTU =')) {
+    // Baseline MTU 1280 (эксперимент 1380 не дал прироста скорости).
+    if (/^\s*MTU\s*=/m.test(normalizedConf)) {
+      normalizedConf = normalizedConf.replace(/^\s*MTU\s*=.*/m, 'MTU = 1280')
+    } else {
       normalizedConf = normalizedConf.replace(
         /(\[Interface\][^\[]*)/,
-        (m) => (m.includes('MTU =') ? m : m.trimEnd() + '\nMTU = 1280\n'),
+        (m) => m.trimEnd() + '\nMTU = 1280\n',
       )
     }
     normalizedConf = normalizeWgConfText(normalizedConf)

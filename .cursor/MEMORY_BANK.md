@@ -525,6 +525,43 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-10 — Android LTE field notes (две комнаты, 63 воркера OK)
+
+- Воркеры после отката LTE-тюнинга снова стабильно до 63
+- Комната A: full bars 4G, down ≤35, up 2–3 — плохой сектор/вышка, не «палки»
+- Комната B: down 40–99; корреляция: down≈40–45 → up≈то же; down 65–80 → up 40–50; down 85–99 → up 5–10
+- Гипотеза юзера: стык двух вышек/бендов — правдоподобно
+- Инверсия high-down→low-up: типично LTE (узкий uplink + ACK/scheduling при жирном downlink), не баг набора воркеров
+
+### 2026-07-10 — Android: откат LTE upload-cap/keepalive (регрессия)
+
+- После cap=36 + keepalive 30s: воркеры нестабильны (63→61, 50→43), download 50–60 (было 60–100), upload пик→просадка
+- Причина: keepalive 30s → TURN allocation timeout; upload-cap режет агрегат
+- **Откат** всего LTE-тюнинга к `811990b` + дефолт воркеров **63**; пересобран libclient/debug APK
+- Дальше: сначала стабильность набора воркеров, не эксперименты с uplink
+
+### 2026-07-10 — Android LTE: upload-cap 36 + keepalive 30s
+
+- **Откачено** (см. выше) — ухудшило скорость и стабильность воркеров
+
+- После cap=54 асимметрия осталась (download ≫ upload на LTE; Wi‑Fi ровный)
+- Усиление: **upload-cap 36**, chunk upload **32**, **keepalive 30s** на cellular
+- Download по-прежнему со всех n (63); в логе: `LTE: n=… upload-cap=36 keepalive=30s`
+- Debug APK пересобран
+
+### 2026-07-10 — Android LTE: upload-cap 54 при n>54
+
+- Наблюдение: Wi‑Fi up/down растут вместе; LTE до ~36–54 ровно, дальше download↑ upload↓
+- Причина: upload RR по всем TURN делит узкий uplink; download агрегируется со всех сессий
+- Первая попытка cap=54 — мало эффекта → см. усиление выше
+- Пересобран `libclient.so` (все ABI)
+
+### 2026-07-10 — Android TV: синий focus ring у переключателя темы
+
+- `ThemeModeToggle` использовал обычный `clickable` → на Smart TV фокус был, обводки нет
+- Подключён `tvClickable` + hit-area 44dp на TV (как `TvIconButton`)
+- Commit: `811990b` на `origin/android`
+
 ### 2026-07-10 — Android: дефолт воркеров 63
 
 - `HashChannelHelper.DEFAULT_TOTAL_WORKERS = 63` (7×9)

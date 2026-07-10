@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 import com.silent.vpn.MainActivity
 import com.silent.vpn.R
 import com.silent.vpn.SilentApp
+import com.silent.vpn.ui.BrandMarkIcons
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import kotlinx.coroutines.CancellationException
@@ -124,7 +125,8 @@ class SilentVpnTileService : TileService() {
         runCatching {
             qsTile?.apply {
                 label = getString(R.string.app_name)
-                icon = Icon.createWithResource(this@SilentVpnTileService, R.drawable.ic_tile_silent)
+                // Крупная Bold «S» — в QS система сильно уменьшает иконку.
+                icon = BrandMarkIcons.tileIcon()
                 when {
                     VpnTileConnect.isCaptchaPending() -> {
                         state = Tile.STATE_ACTIVE

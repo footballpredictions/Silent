@@ -16,6 +16,7 @@ import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.service.VpnSessionState
+import com.silent.vpn.ui.BrandMarkIcons
 import com.silent.vpn.vpn.WdttTunnelManager
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.CoroutineScope
@@ -237,7 +238,7 @@ class VpnDataSyncService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_tile_silent)
+            .setSmallIcon(BrandMarkIcons.iconCompat())
             .setContentTitle("Silent VPN")
             .setContentText(text)
             .setContentIntent(open)

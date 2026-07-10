@@ -28,6 +28,7 @@ import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.sync.VpnDataSyncScheduler
 import com.silent.vpn.sync.VpnDataSyncBridge
+import com.silent.vpn.ui.BrandMarkIcons
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vk.HashParser
@@ -1185,7 +1186,7 @@ class SilentVpnService : Service() {
     /** FG-уведомление на время подключения. */
     private fun buildConnectingNotification(): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_silent)
+            .setSmallIcon(BrandMarkIcons.iconCompat())
             .setContentTitle("Silent VPN — подключение…")
             .setContentText("Подключение к серверу…")
             .setContentIntent(openAppIntent())
@@ -1200,7 +1201,7 @@ class SilentVpnService : Service() {
     private fun buildActiveNotification(stats: String): Notification {
         val body = notificationBody(ready = true, stats = stats)
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_silent)
+            .setSmallIcon(BrandMarkIcons.iconCompat())
             .setContentTitle(notificationTitle(ready = true))
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))

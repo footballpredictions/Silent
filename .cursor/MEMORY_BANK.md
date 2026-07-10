@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.147** |
-| `Silent-Project/android/` | `android` | **1.0.147** |
+| `Silent-Project/pc/` | `pc` | **1.0.151** |
+| `Silent-Project/android/` | `android` | **1.0.151** |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -524,6 +524,154 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-07-10 — Android: дефолт воркеров 63
+
+- `HashChannelHelper.DEFAULT_TOTAL_WORKERS = 63` (7×9)
+- Release + first-install: `Repository.getTotalWorkers` / `SilentVpnService.repoResolveTotalWorkers` → 63 (было 36)
+- При 2 хешах normalize клампит до max 54
+- Commit: `b30896e` на `origin/android`
+
+### 2026-07-09 — PC throughput: волны по хешам вместо каскада (debug)
+
+- MTU 1380 / chunk=8 **не дали** прироста → откат MTU **1280**, chunk **16**
+- Каскад 1→2→… держит single-flow на 1 хеше; boot был `-n 9`
+- **Boot волны:** параллельно `hashCount` групп (при 4 хешах → `-n 36`), GetCreds throttle **per-hash** (не глобальный mutex)
+- Диспетчер: stride `seq*11 % nw` между chunk'ами (разнообразие TURN)
+- Рамп 36→108 как раньше (3s/2s)
+- Commit: `f69f04f` на `origin/pc`; debug: `pc/build-debug-245536`
+
+### 2026-07-09 — PC throughput →100: MTU 1380 + chunk=8 (debug)
+
+- Connect OK (~5с, syncconf, 108); потолок ~75–78 — single-flow + MTU 1280
+- Эксперимент: MTU **1380** (перезапись в conf), chunk **8** (чаще ротация TURN)
+- **Итог: без прироста** — откат (см. выше)
+- Debug: `pc/build-debug-698205`
+
+### 2026-07-09 — PC: откат «ускорения» → baseline + debug force 108
+
+- После `711353`: localStorage=36 → `n=9→36`, полный install (не syncconf), 0 МБ / Network Error
+- Откат polish/DNS-async и handshakeSem 24; debug снова форсит max workers (108)
+- Debug: `pc/build-debug-395813` — вернуть ≤5с @108 как `26431a9`
+
+### 2026-07-09 — PC baseline: ~75–78 Мбит @108, connect ≤5с (проверено)
+
+**Рабочий профиль (не ломать без теста):**
+
+| Параметр | Значение |
+|----------|----------|
+| AllowedIPs | `0.0.0.0/1, 128.0.0.0/1` (не голый `/0`, не CIDR-split ~32) |
+| Bypass | API peer + `resolveVkExcludeIps` (host `/32`) |
+| WDTT | TURN UDP + VK Calls на LAN-bind (`getLanIPv4`) |
+| WG | только GETCONF `wdtt-file`; reconnect → `syncconf` (не uninstall) |
+| Boot | `-n 9 -target-n 108` ramp 3s/2s |
+| UI ready | WG + ≥1 worker |
+| Запрещено | `api-early` full до GETCONF (мёртвый `10.66.66.1`, syncconf не меняет PrivateKey) |
+
+- Замер: Wi‑Fi, n=108, ~75–78 Мбит/с, «Подключено» ≤5 с, трафик сотни МБ
+- Commit: ветка `pc` (см. git log)
+
+### 2026-07-09 — PC: откат api-early (мёртвый VPN)
+
+- 5–6с «Подключено» но ETIMEDOUT 10.66.66.1 / 0.15 МБ: api-early ключи ≠ GETCONF; syncconf на Windows не меняет PrivateKey
+- Main: только `wdtt-file` (GETCONF); UI ready = WG + ≥1 worker; poll 150мс + watch
+- Boot 9→108, syncconf на reconnect, /1+/1 + LAN-bind — без early
+- Debug: после сборки — **не коммитили**
+
+### 2026-07-09 — PC: connect ~3с (баг api-early ждал GETCONF)
+
+- 11с: `waitForWdttProxy(confPath)` для api-early ждал файл GETCONF ~30с
+- Early: только UDP :9000 (bind-probe); conf пишем сразу; UI ready = WG up
+- Boot 9→108; лог `UDP listen OK` сразу после bind
+- Debug: `pc/build-debug-93593` — **не коммитили**
+
+### 2026-07-09 — PC: early full + LAN VKCalls + syncconf keep
+
+- ~78 Мбит @108 OK; старт ~10с — ещё uninstall перед connect
+- Не forceStop WG перед connect; syncconf если служба жива
+- `api-early` full снова: VK Calls + TURN на LAN-bind (без EACCES)
+- Boot 18→108; unbuffered Go logs; GETCONF → syncconf без uninstall
+- Debug: после сборки — **не коммитили**
+
+### 2026-07-09 — PC: WG сразу по файлу conf (не ждать stdout)
+
+- Conf на диске ~20:20:23, WG только ~20:21:05 — stdout Go буферизовался; poll 400мс + forceStop
+- `fs.watch` + poll 200мс; `Stdout.Sync` после GETCONF; syncconf если служба жива (без uninstall)
+- Debug: после сборки — **не коммитили**
+
+### 2026-07-09 — PC: один WG full + boot 36→108 ramp
+
+- Долгий старт: 2× install (subnet+full) + 12× VK Auth (~37с до Success)
+- Main: один full после GETCONF (без api-subnet-early / upgrade)
+- `-n 36 -target-n 108 -ramp-first 5s -ramp-next 3s` — ready после ~4 групп, 108 в фоне
+- Скорость ~70 сохраняем (/1+/1 + LAN-bind)
+- Debug: после сборки — **не коммитили**
+
+### 2026-07-09 — PC: откат api-early full → subnet-early + full@9
+
+- `api-early` full до VK Auth → EACCES login.vk.ru, 0 Мбит, HashFail
+- Main: `api-subnet-early` (только 10.66.66.0/24) → full `/1+/1` после ≥9 воркеров
+- handshakeSem 16; VK throttle 1–1.8с; cascade 200мс
+- Debug: после сборки — **не коммитили**
+
+### 2026-07-09 — PC: connect ~5с + throughput tweak (debug)
+
+- 73–74 Мбит @108 OK (близко к Android ~85); старт 13–14с — WG ждал GETCONF
+- Main: WG сразу из API (`api-early`), DNS bypass в фоне + warm при старте
+- UAC install sleep 2с→400мс; handshakeSem 32; writers 8 / uploadRetry 30мс
+- Debug: после сборки — **не коммитили**
+
+### 2026-07-09 — PC: скорость ~50 Мбит OK; быстрый connect + слайдер
+
+- Routing `/1+/1` + LAN-bind TURN: ~50 Мбит при n=36 (подтверждено)
+- Долгое вкл: убран subnet→full reinstall — main VPN сразу full
+- Слайдер «сила каналов»: снова читает/пишет localStorage (не форс 36)
+- DNS VK exclude — параллельный resolve
+- Debug: после сборки `pc/build-debug-*/win-unpacked` — **не коммитили**
+
+### 2026-07-09 — PC throughput: /1+/1 + LAN-bind TURN (debug)
+
+- Причина 1–2 Мбит: CIDR-split ~32 маршрутов; голый `0.0.0.0/0` — WFP kill-switch (EACCES VK)
+- Full: `AllowedIPs = 0.0.0.0/1, 128.0.0.0/1` (без kill-switch) + bypass API/VK
+- WDTT: TURN UDP `dialTurnUDP` с LocalAddr = Wi‑Fi (как excludeApplications на Android)
+- `handshakeSem` 8→24; workers debug=36; `resolveVkExcludeIps` + `api.vk.me`
+- Debug: `pc/build-debug-914676/win-unpacked/Silent VPN.exe` — **не коммитили**
+
+### 2026-07-09 — Throughput: Android OK (108→85), PC — split AllowedIPs
+
+- Android Wi‑Fi: 36→50–55, 108→80–85 Мбит — n работает; LTE 20–25 — лимит сети/TURN
+- Push `d1255a6` скорость не ломал (только reuseRuntime + комментарии)
+- PC на том же Wi‑Fi: в логе был split `0.0.0.0/1, 128…` вместо `0.0.0.0/0` — типичный Windows bottleneck
+- Фикс PC: full = `0.0.0.0/0` + bypass /32 на API (без CIDR-split); debug default workers = max
+- **Не коммитили** — тест debug
+
+### 2026-07-09 — Throughput: откат chunk=256 (ухудшило)
+
+- chunk=256 + большие буферы: PC 2–5 Мбит, Android Wi‑Fi/LTE 5–6 (было ~50 на 36)
+- Откат к рабочему: `chunkSize=16`, PC returnCh=16k/writers=6, Android returnCh=4k/writers=4
+- Вывод: узкое место не chunk; n=108 не помогает single-flow; PC отдельно хуже Android
+- Следующее: смотреть Windows WG path / какой TURN реально несёт поток / серверный wdtt
+- **Не коммитили** — debug тест
+
+### 2026-07-09 — PC: subnet→full connect (проверено ~5с ready)
+
+- Откат эксперимента full+defer (ломал DNS/`api.vk.me`)
+- Рабочий путь: subnet `10.66.66.0/24` → full после ≥27 воркеров (reinstall)
+- `reuseRuntime: true` на первом install; UI ready после WG+воркеров
+- Push: `origin/pc`
+
+### 2026-07-09 — PC debug: откат full+defer → subnet→full reinstall
+
+- Эксперимент «full AllowedIPs + снятие/metric defaults» ломал DNS (`api.vk.me` timeout) и набор воркеров
+- Вернули рабочий путь: subnet `10.66.66.0/24` → после ≥27 воркеров full через **reinstall** службы
+- UI «Подключено» по-прежнему после WG + 1 воркер
+- **Не коммитили** — debug для теста
+
+### 2026-07-09 — Bump 1.0.151 (PC + Android), пасхалка убрана
+
+- Пасхалка (собака на VPN-тумблере) удалена локально, в remote не попадала
+- Android: `44ec6cd` → `origin/android` (`versionCode`/`versionName` 1.0.151)
+- PC: bump `package.json` → 1.0.151 → `origin/pc`
 
 ### 2026-07-09 — Nightly Android OTA: публиковался unsigned APK
 

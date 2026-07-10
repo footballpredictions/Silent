@@ -32,6 +32,7 @@ Agent приступает к **первой невыполненной** зад
 
 - [x] Android: прогнать OTA + ConfigSync на мобильной сети vs Wi-Fi (instrumented на устройстве: Wi‑Fi/LTE/LTE+VPN, `OK (17 tests)`) — 2026-07-08
 - [ ] PC: прогнать полный цикл bootstrap → login → connect → OTA через tunnel → disconnect
+- [x] PC throughput baseline: ~75–78 Мбит @108, connect ≤5с (`26431a9` на `pc`) — 2026-07-09; дальше улучшать от этого профиля
 
 ### Следующие релизы
 

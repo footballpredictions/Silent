@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math/rand"
 	"net"
 	neturl "net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +33,109 @@ type VKCredentials struct {
 var vkCredentialsList = []VKCredentials{
 	{ClientID: "6287487", ClientSecret: "MuAxFaKDYDOICzGnEOhp"},
 	{ClientID: "8202606", ClientSecret: "lMRsTiMCyPnp5vfoldmn"},
+}
+
+// CallUnavailableError — неретраимая ошибка самого звонка/ссылки (завершён, удалён, битый join).
+// Капча и смена client_id это не чинят. Upstream: amurcanov/proxy-turn-vk-android@d95b65b
+type CallUnavailableError struct {
+	Code    int
+	Message string
+}
+
+func (e *CallUnavailableError) Error() string {
+	if e == nil {
+		return "VK call is unavailable"
+	}
+	if e.Message != "" {
+		return fmt.Sprintf("VK returns error: %s (error_code=%d)", e.Message, e.Code)
+	}
+	return fmt.Sprintf("VK call is unavailable (error_code=%d)", e.Code)
+}
+
+func asCallUnavailableError(err error) (*CallUnavailableError, bool) {
+	var callErr *CallUnavailableError
+	if errors.As(err, &callErr) {
+		return callErr, true
+	}
+	return nil, false
+}
+
+func fatalCallError(resp map[string]interface{}) *CallUnavailableError {
+	errObj, ok := resp["error"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	code := vkErrorCode(errObj["error_code"])
+	msg, _ := errObj["error_msg"].(string)
+	switch {
+	case code == 951, code == 954:
+		// VKCalls messages.*: call not found / invalid join link.
+	case code >= 950 && code <= 959:
+		// Adjacent VKCalls call-domain block (same family as 951/954).
+	case code >= 9000 && code <= 9999:
+		// Legacy calls.getAnonymousToken call-domain errors.
+	default:
+		// Fallback by message — VK иногда отдаёт call-ошибку под другим кодом.
+		low := strings.ToLower(msg)
+		if strings.Contains(low, "call not found") ||
+			strings.Contains(low, "invalid join link") ||
+			strings.Contains(low, "join link is not valid") ||
+			strings.Contains(low, "conversation not found") {
+			break
+		}
+		return nil
+	}
+
+	return &CallUnavailableError{Code: code, Message: msg}
+}
+
+// vkCallsShouldRetry — только сеть/decode; captcha/call/api ретраить бессмысленно.
+func vkCallsShouldRetry(err error) bool {
+	var failure *vkCallsFailure
+	if errors.As(err, &failure) {
+		switch failure.Kind {
+		case vkCallsFailureNetwork, vkCallsFailureDecode:
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// vkCallsShouldFallbackToLegacy — в режиме vkcalls не уходим в legacy+капчу
+// при call_unavailable или captcha-gate на free-path (иначе «сразу капча»).
+func vkCallsShouldFallbackToLegacy(err error) bool {
+	if _, ok := asCallUnavailableError(err); ok {
+		return false
+	}
+	var failure *vkCallsFailure
+	if errors.As(err, &failure) {
+		switch failure.Kind {
+		case vkCallsFailureCall, vkCallsFailureCaptcha:
+			return false
+		}
+	}
+	var captchaErr *VkCaptchaError
+	if errors.As(err, &captchaErr) {
+		return false
+	}
+	return true
+}
+
+func vkErrorCode(raw interface{}) int {
+	switch v := raw.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case string:
+		n, _ := strconv.Atoi(v)
+		return n
+	default:
+		return 0
+	}
 }
 
 // Full list of known credentials to match against when setting active client IDs
@@ -300,7 +405,7 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 
 	if getVKAuthMode() == "vkcalls" {
 		var lastVKCallsErr error
-		// 3 попытки VK Calls до legacy — иначе один сетевой сбой сразу открывает медленную капчу.
+		// До 3 попыток только на сеть/decode. Captcha/call — сразу стоп, без legacy.
 		for attempt := 1; attempt <= 3; attempt++ {
 			user, pass, addrs, err := getVKCredsViaVKCallsPath(ctx, link, streamID)
 			if err == nil {
@@ -308,9 +413,16 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 				return user, pass, addrs, nil
 			}
 			lastVKCallsErr = err
+			if callErr, ok := asCallUnavailableError(err); ok {
+				log.Printf("[STREAM %d] [VK Auth] VK Calls non-retryable call error — no legacy/captcha: %v", streamID, callErr)
+				return "", "", nil, callErr
+			}
 			log.Printf("[STREAM %d] [VK Auth] VK Calls attempt %d/3 failed (%s)", streamID, attempt, describeVKCallsFailure(err))
 			if ctx.Err() != nil {
 				return "", "", nil, ctx.Err()
+			}
+			if !vkCallsShouldRetry(err) {
+				break
 			}
 			if attempt < 3 {
 				wait := time.Duration(350+rand.Intn(400)) * time.Millisecond
@@ -321,7 +433,11 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 				}
 			}
 		}
-		log.Printf("[STREAM %d] [VK Auth] VK Calls exhausted (%s), falling back to legacy (captcha possible)", streamID, describeVKCallsFailure(lastVKCallsErr))
+		if !vkCallsShouldFallbackToLegacy(lastVKCallsErr) {
+			log.Printf("[STREAM %d] [VK Auth] VK Calls failed without legacy fallback (%s)", streamID, describeVKCallsFailure(lastVKCallsErr))
+			return "", "", nil, lastVKCallsErr
+		}
+		log.Printf("[STREAM %d] [VK Auth] VK Calls exhausted (%s), falling back to legacy", streamID, describeVKCallsFailure(lastVKCallsErr))
 	} else {
 		log.Printf("[STREAM %d] [VK Auth] Legacy mode selected, skipping VK Calls path", streamID)
 	}
@@ -342,6 +458,10 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 
 		lastErr = err
 		log.Printf("[STREAM %d] [VK Auth] Failed with client_id=%s: %v", streamID, creds.ClientID, err)
+
+		if callErr, ok := asCallUnavailableError(err); ok {
+			return "", "", nil, callErr
+		}
 
 		if strings.Contains(err.Error(), "CAPTCHA_WAIT_REQUIRED") || strings.Contains(err.Error(), "FATAL_CAPTCHA") {
 			return "", "", nil, err
@@ -449,9 +569,12 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 
 	// Step 2: getCallPreview (mimics real VK client behavior)
 	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&fields=photo_200&access_token=%s", link, token1)
-	_, err = doRequest(data, "https://api.vk.ru/method/calls.getCallPreview?v=5.275&client_id="+creds.ClientID)
+	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getCallPreview?v=5.275&client_id="+creds.ClientID)
 	if err != nil {
 		log.Printf("[STREAM %d] [VK Auth] Warning: getCallPreview failed: %v", streamID, err)
+	} else if callErr := fatalCallError(resp); callErr != nil {
+		log.Printf("[STREAM %d] [VK Auth] getCallPreview returned non-retryable call error: %v", streamID, callErr)
+		return "", "", nil, callErr
 	}
 
 	vkDelayRandom(200, 400)
@@ -471,6 +594,11 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		}
 
 		if errObj, hasErr := resp["error"].(map[string]interface{}); hasErr {
+			if callErr := fatalCallError(resp); callErr != nil {
+				log.Printf("[STREAM %d] [VK Auth] getAnonymousToken returned non-retryable call error: %v", streamID, callErr)
+				return "", "", nil, callErr
+			}
+
 			captchaErr := parseVkCaptchaError(errObj)
 			if captchaErr != nil && captchaErr.RedirectURI != "" && captchaErr.SessionToken != "" {
 				if attempt >= 3 {

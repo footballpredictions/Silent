@@ -17,10 +17,20 @@ const SERVICE_NAME = `WireGuardTunnel$${TUNNEL_NAME}`
 const STABLE_CONF_DIR = path.join(process.env.ProgramData || 'C:\\ProgramData', 'SilentVPN')
 const STABLE_WG_DIR = path.join(STABLE_CONF_DIR, 'wireguard')
 const FALLBACK_BACKEND_IP = '132.243.234.162'
-/** DNS: Cloudflare для CDN/YouTube, Yandex — VK/РФ. */
+/** DNS: Cloudflare+Yandex по умолчанию. Debug override — через options/config.dns_override. */
 const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
 
-function normalizeDnsValue(_raw) {
+function pickDnsServers(value) {
+  return String(value || '')
+    .split(/[,;\s]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+    .join(', ')
+}
+
+function normalizeDnsValue(raw, override) {
+  const fromOverride = pickDnsServers(override)
+  if (fromOverride) return fromOverride
   return WG_DNS
 }
 
@@ -599,7 +609,7 @@ function buildWgConfigFromApi(config, listenPort = 9000) {
   if (!priv || !pub) return null
   const addr = (config.wg_address || config.assigned_ip || '').trim()
   if (!addr) return null
-  const dns = normalizeDnsValue(config.wg_dns || config.dns)
+  const dns = normalizeDnsValue(config.wg_dns || config.dns, config.dns_override)
   return `[Interface]
 PrivateKey = ${priv}
 Address = ${addr}
@@ -770,7 +780,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
         const isFull = allowed === '0.0.0.0/0' || allowed.startsWith('0.0.0.0/1')
         send?.(`[WG] AllowedIPs = ${isFull ? allowed + ' (полный туннель)' : allowed.slice(0, 72) + (allowed.length > 72 ? '…' : '') + ' (split, сервер вне туннеля)'}`)
         const dnsLine = conf.match(/^\s*DNS\s*=\s*(.+)$/m)
-        const dns = normalizeDnsValue(dnsLine ? dnsLine[1] : '')
+        const dns = normalizeDnsValue(dnsLine ? dnsLine[1] : '', options.dnsOverride)
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
         conf = conf.replace(
           /(\[Interface\][^\[]*)/,

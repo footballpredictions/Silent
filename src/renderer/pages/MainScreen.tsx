@@ -34,6 +34,8 @@ import { useAppearanceMode } from '../appearanceStore'
 import { menuDrawerStyle } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
+import MenuDnsPanel from '../components/MenuDnsPanel'
+import { getDnsPreset } from '../dnsPreset'
 import MenuVkCredModePanel from '../components/MenuVkCredModePanel'
 import { prepareVpnConnectConfig } from '../prepareVpnConnect'
 import { attachVkCredLaunchParams } from '../vkCredStore'
@@ -115,7 +117,7 @@ interface Profile {
   max_devices: number
 }
 
-type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'vk_cred' | 'hashes' | 'bonuses' | 'support' | 'about'
+type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'vk_cred' | 'hashes' | 'dns' | 'bonuses' | 'support' | 'about'
 
 const PLAN_LABELS: Record<string, string> = {
   trial: 'Пробный период',
@@ -994,6 +996,7 @@ export default function MainScreen({
                 { key: 'exceptions', label: 'Исключения приложений' },
                 ...(isDevBuild ? [{ key: 'vk_cred', label: 'Режим VK-кредов' }] : []),
                 ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
+                ...(isDevBuild ? [{ key: 'dns', label: `DNS · ${getDnsPreset().title}` }] : []),
                 { key: 'bonuses', label: clientTheme?.menu_bonuses_label || 'Бонусы' },
                 { key: 'devices', label: `Сессии (${sessionsBadge(profile)})` },
                 { key: 'support', label: 'Поддержка' },
@@ -1132,6 +1135,14 @@ export default function MainScreen({
                 onBack={() => setMenuPage(null)}
               />
             </AppErrorBoundary>
+          )}
+          {menuPage === 'dns' && isDevBuild && (
+            <MenuDnsPanel
+              fg={fg}
+              muted={muted}
+              vpnConnected={connected}
+              onBack={() => setMenuPage(null)}
+            />
           )}
 
           {menuPage === 'bonuses' && (

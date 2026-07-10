@@ -54,6 +54,7 @@ let lastVpnConnectConfig = null
 let activeWorkerCount = 0
 let lastStatsLogToUiAt = 0
 let sessionTargetWorkers = 63
+let sessionDnsOverride = null
 let tunnelReadySent = false
 let wdttStartedAtMs = 0
 let networkMonitor = null
@@ -823,6 +824,10 @@ async function beginWdttSession(config, { switching = false } = {}) {
     ? Math.min(Math.max(rawN, 3), 108)
     : Math.min(Math.max(rawN, 9), 108)
   sessionTargetWorkers = workers
+  sessionDnsOverride = String(config.dns_override || '').trim() || null
+  if (sessionDnsOverride) {
+    sendLog(`[WG] DNS override (debug): ${sessionDnsOverride}`)
+  }
   const captchaMode = String(config.captchaMode || config.captcha_mode || 'auto').trim() || 'auto'
   const vkAuthMode = String(config.vkAuthMode || config.vk_auth_mode || 'vkcalls').trim() || 'vkcalls'
   // Boot 9 (1 группа → быстрый GETCONF) → ramp до target.
@@ -928,6 +933,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
         subnetOnly: false,
         skipForceStop: false,
         reuseRuntime: true,
+        dnsOverride: sessionDnsOverride,
       })
       if (!vpnSessionActive) {
         sendLog('[WG] full tunnel upgrade отменён (disconnect)')
@@ -935,7 +941,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       }
       if (ok) {
         wgCredPhase = false
-        sendLog('[WG] Полный туннель активен, DNS = 1.1.1.1 + 77.88.8.8')
+        sendLog(`[WG] Полный туннель активен, DNS = ${sessionDnsOverride || '1.1.1.1 + 77.88.8.8'}`)
         // После reinstall маршруты мигают → EACCES/ECONNABORTED на API.
         // Bypass сразу + ещё раз через 1с/3с, ConfigSync чуть позже.
         wgRouteSettleUntil = Date.now() + 10_000
@@ -1025,6 +1031,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       subnetOnly: vpnBootstrapMode || wgCredPhase,
       skipForceStop: alreadyUp,
       reuseRuntime: true,
+      dnsOverride: sessionDnsOverride,
     })
     const timeoutMs = isProcessElevated() ? 70000 : 90000
     let ok = false

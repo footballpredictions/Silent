@@ -4,6 +4,8 @@ import { attachVkCredLaunchParams } from './vkCredStore'
 import { SessionTrace } from './sessionTrace'
 import { buildLocalBootstrapConfig } from './bootstrapVpnConfig'
 import { applyBootstrapWorkerCount } from './hashChannelHelper'
+import { isDebugBuild } from './debugBuild'
+import { getDnsOverrideServers } from './dnsPreset'
 import { authStrings as s } from './authStrings'
 import { waitVpnReady } from './vpnReady'
 import { enableTunnelApi, clearTunnelApiBase, setBootstrapApiRouting } from './tunnelApi'
@@ -177,8 +179,11 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   }
 
   const bootCfg = attachVkCredLaunchParams(applyBootstrapWorkerCount(config, boot))
-  pushLog('Bootstrap', `vpnConnect n=${bootCfg.stream_count} hashes=${bootCfg.vk_hashes?.length ?? 0}`)
-  const res = await electron.vpnConnect(bootCfg)
+  const bootWithDns = isDebugBuild
+    ? { ...bootCfg, dns_override: getDnsOverrideServers(), wg_dns: getDnsOverrideServers() }
+    : bootCfg
+  pushLog('Bootstrap', `vpnConnect n=${bootWithDns.stream_count} hashes=${bootWithDns.vk_hashes?.length ?? 0}`)
+  const res = await electron.vpnConnect(bootWithDns)
   if (res?.error) {
     pushLog('Bootstrap', `vpnConnect error: ${res.error}`, 'E')
     notifyStatus(res.error)
@@ -187,14 +192,14 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   bootstrapActive = true
   bootstrapExpired = false
 
-  const ok = await waitVpnReady(90_000, bootCfg.stream_count ?? 9, true)
+  const ok = await waitVpnReady(90_000, bootWithDns.stream_count ?? 9, true)
   if (runId !== bootstrapEnsureGeneration || !bootstrapActive) {
     // Сессия уже отменена (вход завершён/переключение режима) — игнорируем хвост.
     return false
   }
   pushLog('Bootstrap', ok ? 'VPN ready' : 'VPN timeout', ok ? 'I' : 'E')
   if (ok) {
-    lastBootstrapWgAddress = bootCfg.assigned_ip || null
+    lastBootstrapWgAddress = bootWithDns.assigned_ip || null
     enableTunnelApi()
     setBootstrapApiRouting(true)
     cancelBootstrapSessionTimeout()

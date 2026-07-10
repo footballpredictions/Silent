@@ -15,6 +15,8 @@ export interface VpnConfigPayload {
   assigned_ip?: string
   wg_dns?: string
   dns?: string
+  /** Debug-only: принудительный DNS для WG (меню DNS). */
+  dns_override?: string
   mtu?: number
   keepalive?: number
   endpoint?: string

@@ -4,9 +4,8 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -19,9 +18,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.drawscope.withTransform
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.silent.vpn.ui.theme.AppearanceMode
+import com.silent.vpn.ui.tv.tvClickable
+import com.silent.vpn.util.rememberIsTv
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -37,6 +37,7 @@ fun ThemeModeToggle(
     modifier: Modifier = Modifier,
 ) {
     val dark = mode == AppearanceMode.DARK
+    val isTv = rememberIsTv()
     val progress = remember { Animatable(if (dark) 1f else 0f) }
     LaunchedEffect(dark) {
         progress.animateTo(
@@ -47,13 +48,12 @@ fun ThemeModeToggle(
 
     Box(
         modifier = modifier
-            .size(28.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                role = Role.Switch,
-                onClick = onToggle,
-            ),
+            .then(
+                if (isTv) Modifier.defaultMinSize(minWidth = 44.dp, minHeight = 44.dp)
+                else Modifier.size(28.dp),
+            )
+            // TV: синее кольцо фокуса как у меню / закрыть (TvIconButton).
+            .tvClickable(cornerRadius = 10.dp, ringOnTop = true, onClick = onToggle),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.size(22.dp)) {

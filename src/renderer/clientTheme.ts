@@ -183,7 +183,7 @@ export function resolveThemePalette(theme: ClientTheme | null, mode: AppearanceM
     green: dark ? '#4ADE80' : '#16A34A',
     red: '#EF4444',
     purple: dark ? '#C084FC' : '#9333EA',
-    fontFamily: theme?.font_family ? `${theme.font_family}, Inter, sans-serif` : 'Inter, sans-serif',
+    fontFamily: theme?.font_family ? `${theme.font_family}, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif` : "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
     appTitle: resolveAppName(theme?.app_name).toUpperCase(),
   }
 }

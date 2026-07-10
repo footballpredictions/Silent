@@ -7,6 +7,8 @@ const TRACK_H = 60
 const THUMB_TRAVEL = 64
 const SNAKE_STROKE = 4
 const SNAKE_ROTATION_MS = 2200
+/** Минимум ~1.5 круга змейки при мгновенном ON (как на Android видно эффект). */
+const SNAKE_MIN_VISIBLE_MS = Math.round(SNAKE_ROTATION_MS * 1.5)
 const SNAKE_TAIL_START = 0.02
 const SNAKE_HEAD_POS = 0.875
 const THUMB_PULSE_MS = 520
@@ -123,7 +125,7 @@ function SnakeRing({ color, size }: { color: string; size: number }) {
 }
 
 function VpnToggleThumb({
-  connecting,
+  showSnake,
   isConnected,
   travelX,
   bg,
@@ -131,7 +133,7 @@ function VpnToggleThumb({
   toggleOff,
   snakeColor,
 }: {
-  connecting: boolean
+  showSnake: boolean
   isConnected: boolean
   travelX: number
   bg: string
@@ -139,9 +141,8 @@ function VpnToggleThumb({
   toggleOff: string
   snakeColor: string
 }) {
-  const showSnake = connecting && !isConnected
-  const showBorder = !connecting || isConnected
-  const thumbPulse = connecting
+  const showBorder = !showSnake
+  const thumbPulse = showSnake
   const borderColor = isConnected ? toggleOn : toggleOff
 
   return (
@@ -194,20 +195,20 @@ export default function VpnToggle({
   const [pendingToggle, setPendingToggle] = useState(false)
   const [pressed, setPressed] = useState(false)
   const pendingTimeoutRef = useRef<number | null>(null)
+  // Пока змейка: бегунок слева, трек выкл. После 1.5 круга — сдвиг в ON.
+  const visualOn = connected && !pendingToggle && !disconnecting
+  const showSnake = (pendingToggle || (connecting && !visualOn)) && !disconnecting
   const interactionLocked = connecting || disconnecting || pendingToggle
 
   useEffect(() => {
-    if (connecting || disconnecting) {
+    if (disconnecting) {
       if (pendingTimeoutRef.current) {
         window.clearTimeout(pendingTimeoutRef.current)
         pendingTimeoutRef.current = null
       }
       setPendingToggle(false)
     }
-    if (!connecting && !disconnecting && connected) {
-      setPendingToggle(false)
-    }
-  }, [connected, connecting, disconnecting])
+  }, [disconnecting])
 
   useEffect(() => {
     return () => {
@@ -217,14 +218,14 @@ export default function VpnToggle({
 
   const handleClick = useCallback(() => {
     if (interactionLocked) return
-    // Змейка только при включении. При выключении — сразу в исходное положение, без спиннера.
+    // Змейка только при включении. При выключении — сразу в исходное положение.
     if (!connected) {
       setPendingToggle(true)
       if (pendingTimeoutRef.current) window.clearTimeout(pendingTimeoutRef.current)
       pendingTimeoutRef.current = window.setTimeout(() => {
         setPendingToggle(false)
         pendingTimeoutRef.current = null
-      }, 2500)
+      }, SNAKE_MIN_VISIBLE_MS)
     } else {
       setPendingToggle(false)
       if (pendingTimeoutRef.current) {
@@ -242,7 +243,7 @@ export default function VpnToggle({
       <div
         role="button"
         tabIndex={0}
-        aria-pressed={connected}
+        aria-pressed={visualOn}
         aria-busy={interactionLocked}
         onClick={handleClick}
         onKeyDown={e => {
@@ -263,7 +264,7 @@ export default function VpnToggle({
           cursor: interactionLocked ? 'default' : 'pointer',
         }}
       >
-        {connected && (
+        {visualOn && (
           <div
             className="absolute inset-0 rounded-full vpn-toggle-track-pulse pointer-events-none"
             style={{ background: rgba(toggleOn, 0.2) }}
@@ -271,12 +272,12 @@ export default function VpnToggle({
         )}
         <div
           className="absolute inset-0 rounded-full"
-          style={{ background: connected ? toggleOn : toggleOff }}
+          style={{ background: visualOn ? toggleOn : toggleOff }}
         />
         <VpnToggleThumb
-          connecting={connecting || (pendingToggle && !connected)}
-          isConnected={connected}
-          travelX={connected ? THUMB_TRAVEL : 0}
+          showSnake={showSnake}
+          isConnected={visualOn}
+          travelX={visualOn ? THUMB_TRAVEL : 0}
           bg={bg}
           toggleOn={toggleOn}
           toggleOff={toggleOff}
@@ -287,4 +288,4 @@ export default function VpnToggle({
   )
 }
 
-export { THUMB_PULSE_MS, TRACK_PULSE_MS }
+export { THUMB_PULSE_MS, TRACK_PULSE_MS, SNAKE_MIN_VISIBLE_MS }

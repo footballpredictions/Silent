@@ -205,8 +205,22 @@ function createWindow() {
     },
     icon: resolveAssetPath('assets/icon.png'),
     title: 'Silent VPN',
-    show: true,
+    // Не показывать пустое окно, пока renderer не готов (белый экран).
+    show: false,
   })
+
+  mainWindow.once('ready-to-show', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+  // Fallback: если ready-to-show завис — всё равно показать.
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show()
+    }
+  }, 2500)
 
   if (!app.isPackaged && process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:3001')

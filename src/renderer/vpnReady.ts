@@ -3,7 +3,7 @@ import { connectWaitTimeoutMs } from './hashChannelHelper'
 /** Ожидание готовности туннеля — как Android waitForTunnelReady. */
 export async function waitVpnReady(
   timeoutMs?: number,
-  totalWorkers = 108,
+  totalWorkers = 63,
   isBootstrap = false,
 ): Promise<boolean> {
   const deadlineMs = timeoutMs ?? connectWaitTimeoutMs(totalWorkers, isBootstrap)

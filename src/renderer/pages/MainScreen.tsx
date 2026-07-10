@@ -651,7 +651,7 @@ export default function MainScreen({
           pushLog('Main', `vpnConnect n=${connectCfg.stream_count} hashes=${connectCfg.vk_hashes?.length ?? 0}`)
           const res = await (window as any).electronAPI.vpnConnect(connectCfg)
           if (res?.error) { pushLog('Main', `vpnConnect: ${res.error}`, 'E'); alert(res.error); return }
-          const ready = await waitVpnReady(undefined, connectCfg.stream_count ?? 108)
+          const ready = await waitVpnReady(undefined, connectCfg.stream_count ?? 63)
           if (!ready) {
             pushLog('Main', 'connect timeout', 'E')
             alert('WireGuard не поднялся. Установите Silent VPN 1.0.51+ или проверьте службу WireGuardTunnel$wg-turn')

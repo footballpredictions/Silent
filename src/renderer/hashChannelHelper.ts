@@ -1,11 +1,11 @@
 import { activeServerHashCount, getSavedHashItems } from './hashItemsStore'
-import { isDebugBuild } from './debugBuild'
 
 export const WORKERS_PER_GROUP = 9
 export const MAX_WORKERS_PER_HASH = 27
 export const MAX_HASHES = 4
 export const LIBCLIENT_MAX_WORKERS = 108
-export const DEFAULT_TOTAL_WORKERS = LIBCLIENT_MAX_WORKERS
+/** Дефолт как Android: 7×9. Max по-прежнему 108. */
+export const DEFAULT_TOTAL_WORKERS = 63
 /** Bootstrap: только API в WG, 3 воркера (1 группа) — как Android, без нагрузки на login. */
 export const BOOTSTRAP_STREAM_COUNT = 3
 /** PC connect: 2 группы — хватает для 0.0.0.0/0 на десктопе, без 6× VK Auth. */
@@ -17,6 +17,9 @@ export const PC_CONNECT_MAX_WORKERS = 27
 export const CHANNELS_KEY = 'silent_hash_channels_per_hash'
 export const TOTAL_WORKERS_KEY = 'silent_hash_total_workers'
 export const LEGACY_MIGRATED_KEY = 'silent_hash_total_workers_legacy_migrated'
+/** One-shot: сброс старого debug-force 108 → дефолт 63. */
+const WORKERS_DEFAULT_REV_KEY = 'silent_hash_workers_default_rev'
+const WORKERS_DEFAULT_REV = '2'
 
 export function maxTotalWorkers(activeHashCount: number): number {
   return Math.min(Math.max(activeHashCount, 1), MAX_HASHES) * MAX_WORKERS_PER_HASH
@@ -63,20 +66,23 @@ export function migrateLegacyPerHash(oldPerHash: number, activeHashCount: number
         : oldPerHash <= 27 ? 27
           : oldPerHash <= 36 ? 36
             : oldPerHash <= 54 ? 54
-              : oldPerHash <= 72 ? 72
-                : DEFAULT_TOTAL_WORKERS
+              : oldPerHash <= 63 ? 63
+                : oldPerHash <= 72 ? 72
+                  : DEFAULT_TOTAL_WORKERS
   return normalizeTotalWorkers(asTotal, activeHashCount)
 }
 
 export function getTotalWorkers(activeHashCount = activeServerHashCount(getSavedHashItems()) || 1): number {
   const capped = Math.min(Math.max(activeHashCount, 1), MAX_HASHES)
   const max = maxTotalWorkers(capped)
-  // Debug: всегда max (108 при 4 хешах) — иначе старый localStorage=36 ломает baseline.
-  if (isDebugBuild) {
-    const forced = normalizeTotalWorkers(max, capped)
-    saveTotalWorkers(forced, capped)
-    return forced
+
+  if (localStorage.getItem(WORKERS_DEFAULT_REV_KEY) !== WORKERS_DEFAULT_REV) {
+    const fresh = normalizeTotalWorkers(DEFAULT_TOTAL_WORKERS, capped)
+    saveTotalWorkers(fresh, capped)
+    localStorage.setItem(WORKERS_DEFAULT_REV_KEY, WORKERS_DEFAULT_REV)
+    return fresh
   }
+
   const stored = localStorage.getItem(TOTAL_WORKERS_KEY)
   if (stored != null && stored !== '') {
     const raw = Number(stored) || WORKERS_PER_GROUP
@@ -98,8 +104,7 @@ export function getTotalWorkers(activeHashCount = activeServerHashCount(getSaved
     localStorage.setItem(LEGACY_MIGRATED_KEY, '1')
     return migrated
   }
-  // Release default: max (как проверенный baseline @108).
-  return normalizeTotalWorkers(max, capped)
+  return normalizeTotalWorkers(DEFAULT_TOTAL_WORKERS, capped)
 }
 
 export function saveTotalWorkers(value: number, activeHashCount = activeServerHashCount(getSavedHashItems()) || 1): void {

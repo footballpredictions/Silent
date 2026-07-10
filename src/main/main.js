@@ -53,7 +53,7 @@ let transportSwitching = false
 let lastVpnConnectConfig = null
 let activeWorkerCount = 0
 let lastStatsLogToUiAt = 0
-let sessionTargetWorkers = 108
+let sessionTargetWorkers = 63
 let tunnelReadySent = false
 let wdttStartedAtMs = 0
 let networkMonitor = null
@@ -818,7 +818,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
   groupHashPrefix.clear()
   zeroWorkersSinceMs = 0
   const hashes = hashList.join(',')
-  const rawN = Number(config.stream_count) || 108
+  const rawN = Number(config.stream_count) || 63
   const workers = config.is_bootstrap
     ? Math.min(Math.max(rawN, 3), 108)
     : Math.min(Math.max(rawN, 9), 108)

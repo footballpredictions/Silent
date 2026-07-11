@@ -11,7 +11,7 @@
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
 | `Silent-Project/pc/` | `pc` | **1.0.154** |
-| `Silent-Project/android/` | `android` | **1.0.153** |
+| `Silent-Project/android/` | `android` | **1.0.154** |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -524,6 +524,19 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-07-11 — Android 1.0.154: Telegram parity PC + hi-res S (push)
+
+- Version **1.0.154** → `origin/android`
+- Telegram: MTU 1200, anti-stall dispatcher, buffers, `TelegramPathWarmup`
+- TV/иконки: hi-res S assets (ранее debug)
+
+### 2026-07-11 — Android: Telegram parity с PC 1.0.154
+
+- wdtt-go: chunk=8, uploadRetry 50ms, retry **все** воркеры, SendCh 2048, socketBuf 8MB (arm32 TV без изменений)
+- writeLoops 8 / returnCh 8192 (phone); MTU **1200**
+- `TelegramPathWarmup` при full VPN ready (+4с/+12с)
+- Debug APK: `android/app/build/outputs/apk/debug/` (version пока 1.0.153)
 
 ### 2026-07-11 — PC 1.0.154: Telegram latency + exclusions (push)
 

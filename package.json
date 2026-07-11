@@ -9,6 +9,7 @@
     "build:renderer": "vite build --outDir dist/renderer",
     "build:renderer:debug": "vite build --mode debug --outDir dist/renderer",
     "build:debug": "build-debug.bat",
+    "test": "node --test test/**/*.test.js",
     "build": "npm run build:installer",
     "build:installer": "build-installer.bat",
     "dist": "npm run build:installer"

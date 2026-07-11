@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onRefDeepLink: (cb) => ipcRenderer.on('ref-deep-link', (_, payload) => cb(payload)),
   removeRefDeepLinkListeners: () => ipcRenderer.removeAllListeners('ref-deep-link'),
   listInstalledApps: () => ipcRenderer.invoke('list-installed-apps'),
+  saveAppExclusions: (payload) => ipcRenderer.invoke('save-app-exclusions', payload),
+  getAppExclusions: () => ipcRenderer.invoke('get-app-exclusions'),
   getAppVersion: () => ipcRenderer.invoke('app-version'),
   checkForUpdate: (version) => ipcRenderer.invoke('app-update-check', { version, platform: 'pc' }),
   tunnelApiRequest: (payload) => ipcRenderer.invoke('tunnel-api-request', payload),

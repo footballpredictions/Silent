@@ -455,6 +455,10 @@ function quitAppFully() {
 }
 
 function cleanupVpn() {
+  try {
+    const { clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
+    clearActiveExcludedExePaths()
+  } catch { /* ignore */ }
   resetHashFailureSessionState()
   vpnBootstrapMode = false
   wgCredPhase = false
@@ -753,9 +757,37 @@ function wdttExePath() {
   return p
 }
 
-ipcMain.handle('list-installed-apps', () => {
-  const { listInstalledApps } = require('./apps/listInstalledApps')
-  return listInstalledApps()
+ipcMain.handle('list-installed-apps', async () => {
+  try {
+    const { listInstalledApps } = require('./apps/listInstalledApps')
+    const apps = listInstalledApps()
+    const withIcon = apps.filter(a => a.icon).length
+    sendLog(`[Apps] ярлыки: ${apps.length}, иконок: ${withIcon}`)
+    return apps
+  } catch (e) {
+    sendLog(`[Apps] ошибка списка: ${e?.message || e}`)
+    return []
+  }
+})
+
+ipcMain.handle('save-app-exclusions', (_, payload) => {
+  try {
+    const { saveExclusionsState, defaultStatePath } = require('./apps/exclusionsState')
+    const filePath = defaultStatePath(app.getPath('userData'))
+    const selectedIds = Array.isArray(payload?.selectedIds) ? payload.selectedIds : []
+    const apps = Array.isArray(payload?.apps) ? payload.apps : []
+    const saved = saveExclusionsState({ filePath, selectedIds, apps })
+    sendLog(`[Apps] сохранены исключения: ${saved.exePaths.length} exe`)
+    return { ok: true, exePaths: saved.exePaths }
+  } catch (e) {
+    sendLog(`[Apps] save exclusions: ${e?.message || e}`)
+    return { ok: false, exePaths: [] }
+  }
+})
+
+ipcMain.handle('get-app-exclusions', () => {
+  const { loadExclusionsState, defaultStatePath } = require('./apps/exclusionsState')
+  return loadExclusionsState(defaultStatePath(app.getPath('userData')))
 })
 
 ipcMain.handle('window-minimize', () => mainWindow?.minimize())
@@ -807,6 +839,21 @@ ipcMain.handle('vk-guest-bootstrap', async (_, authUrl) => {
 async function beginWdttSession(config, { switching = false } = {}) {
   vpnBootstrapMode = !!config.is_bootstrap
   config.server_ip = normalizeServerIp(config.server_ip)
+
+  // Исключения приложений: план сессии (full VPN). Bootstrap — без user exclusions.
+  try {
+    const { getExcludedExePathsForVpn, defaultStatePath } = require('./apps/exclusionsState')
+    const { applyAppExclusionsForSession, clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
+    if (config.is_bootstrap) {
+      clearActiveExcludedExePaths()
+    } else {
+      const paths = getExcludedExePathsForVpn(defaultStatePath(app.getPath('userData')))
+      applyAppExclusionsForSession(paths, sendLog)
+    }
+  } catch (e) {
+    sendLog(`[Apps] exclusions plan: ${e?.message || e}`)
+  }
+
   const hashCount = (config.vk_hashes || []).filter(Boolean).length
   expectedCredGroups = Math.max(1, hashCount || 1)
   credGroupsResolved = 0

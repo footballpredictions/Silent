@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   getExcludedApps,
-  isExclusionsWhitelist,
+  resetStaleExclusions,
   saveExcludedApps,
   type PcAppItem,
 } from '../exclusionsStore'
@@ -19,6 +19,7 @@ interface Props {
   onBack: () => void
 }
 
+/** Как ThemeCheckbox на Android: dark — чёрный фон / белая галочка / белая рамка. */
 function ThemeCheck({
   checked,
   dark,
@@ -30,7 +31,6 @@ function ThemeCheck({
   fg: string
   bg: string
 }) {
-  const border = dark ? '#FFFFFF' : fg
   const fill = !checked ? 'transparent' : dark ? '#000000' : fg
   const mark = dark ? '#FFFFFF' : bg
   return (
@@ -39,7 +39,7 @@ function ThemeCheck({
       style={{
         width: 18,
         height: 18,
-        border: `1.5px solid ${border}`,
+        border: `1.5px solid ${dark ? '#FFFFFF' : `${fg}59`}`,
         background: fill,
         boxSizing: 'border-box',
       }}
@@ -60,6 +60,8 @@ function ThemeCheck({
   )
 }
 
+const STALE_RESET_KEY = 'pc_exclusions_startmenu_v1'
+
 export default function AppExclusionsPanel({
   fg,
   muted,
@@ -74,20 +76,43 @@ export default function AppExclusionsPanel({
 }: Props) {
   const [apps, setApps] = useState<PcAppItem[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [search, setSearch] = useState('')
-  const [selected, setSelected] = useState<Set<string>>(() => getExcludedApps())
-  const [whitelist, setWhitelist] = useState(isExclusionsWhitelist())
-  const [showSystemApps, setShowSystemApps] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(() => {
+    // Одноразовый сброс: старые id/БС давали «всё отмечено»
+    if (!localStorage.getItem(STALE_RESET_KEY)) {
+      resetStaleExclusions()
+      localStorage.setItem(STALE_RESET_KEY, '1')
+      return new Set()
+    }
+    return getExcludedApps()
+  })
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       setLoading(true)
+      setLoadFailed(false)
       try {
         const list = await (window as any).electronAPI?.listInstalledApps?.()
-        if (!cancelled) setApps(Array.isArray(list) ? list : [])
+        if (cancelled) return
+        const next = Array.isArray(list) ? list : []
+        setApps(next)
+
+        // Оставляем только id из текущего списка (устаревшие отсекаем)
+        const valid = new Set(next.map((a: PcAppItem) => a.id))
+        setSelected(prev => {
+          const kept = new Set([...prev].filter(id => valid.has(id)))
+          if (kept.size !== prev.size) saveExcludedApps(kept, next)
+          return kept
+        })
+
+        setLoadFailed(next.length === 0)
       } catch {
-        if (!cancelled) setApps([])
+        if (!cancelled) {
+          setApps([])
+          setLoadFailed(true)
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -95,19 +120,21 @@ export default function AppExclusionsPanel({
     return () => { cancelled = true }
   }, [])
 
-  const persist = (next: Set<string>, nextWhitelist = whitelist) => {
+  const persist = (next: Set<string>) => {
     setSelected(next)
-    setWhitelist(nextWhitelist)
-    saveExcludedApps(next, nextWhitelist)
+    saveExcludedApps(next, apps)
   }
 
   const displayApps = useMemo(() => {
     return apps
-      .filter(a => showSystemApps || !a.isSystem)
       .filter(a => {
         if (!search.trim()) return true
         const q = search.toLowerCase()
-        return a.name.toLowerCase().includes(q) || (a.installLocation || '').toLowerCase().includes(q)
+        return (
+          a.name.toLowerCase().includes(q) ||
+          (a.installLocation || '').toLowerCase().includes(q) ||
+          (a.exePath || '').toLowerCase().includes(q)
+        )
       })
       .sort((a, b) => {
         const aSel = selected.has(a.id) ? 1 : 0
@@ -115,71 +142,19 @@ export default function AppExclusionsPanel({
         if (aSel !== bSel) return bSel - aSel
         return a.name.localeCompare(b.name, 'ru')
       })
-  }, [apps, selected, search, showSystemApps])
-
-  const inactiveBtn = {
-    border: `1px solid ${borderStrong}`,
-    color: fg,
-    background: 'transparent',
-  }
-  const activeBtn = {
-    border: `1px solid ${fg}`,
-    color: bg,
-    background: fg,
-  }
+  }, [apps, selected, search])
 
   return (
     <div className="flex-1 p-4 overflow-y-auto text-left w-full self-stretch items-start">
       <button type="button" onClick={onBack} className="text-xs mb-4 block text-left" style={{ color: muted }}>
         ← Назад
       </button>
-      <div className="text-sm font-bold mb-1 text-left w-full" style={{ color: fg }}>
+      <div className="text-sm font-bold text-left w-full" style={{ color: fg }}>
         Исключения приложений
       </div>
-      <p className="text-[11px] mb-3 text-left w-full" style={{ color: muted }}>
-        {whitelist ? 'БС: неотмеченные идут через VPN' : 'ЧС: отмеченные исключены из VPN'}
+      <p className="text-[11px] mt-1 mb-3 text-left w-full" style={{ color: muted }}>
+        Отмеченные приложения идут мимо VPN-туннеля
       </p>
-
-      <div className="flex gap-2 mb-2">
-        <button
-          onClick={() => {
-            if (whitelist) {
-              const all = new Set(apps.map(a => a.id))
-              const next = new Set([...all].filter(id => !selected.has(id)))
-              persist(next, false)
-            }
-          }}
-          className="px-2 py-1 rounded-lg text-xs"
-          style={!whitelist ? activeBtn : inactiveBtn}
-        >
-          ЧС
-        </button>
-        <button
-          onClick={() => {
-            if (!whitelist) {
-              const all = new Set(apps.map(a => a.id))
-              const next = new Set([...all].filter(id => !selected.has(id)))
-              persist(next, true)
-            }
-          }}
-          className="px-2 py-1 rounded-lg text-xs"
-          style={whitelist ? activeBtn : inactiveBtn}
-        >
-          БС
-        </button>
-      </div>
-
-      <label className="flex items-center justify-between gap-2 mb-2 text-xs cursor-pointer" style={{ color: fg }}>
-        <span>Показать системные</span>
-        <button
-          type="button"
-          onClick={() => setShowSystemApps(v => !v)}
-          className="p-0 border-0 bg-transparent"
-          aria-pressed={showSystemApps}
-        >
-          <ThemeCheck checked={showSystemApps} dark={dark} fg={fg} bg={bg} />
-        </button>
-      </label>
 
       <input
         value={search}
@@ -204,8 +179,16 @@ export default function AppExclusionsPanel({
             style={{ borderColor: border, borderTopColor: fg }}
           />
         </div>
+      ) : loadFailed && displayApps.length === 0 ? (
+        <p className="text-xs py-6 text-left" style={{ color: muted }}>
+          Не удалось получить список программ. Проверьте права доступа или перезапустите приложение.
+        </p>
+      ) : displayApps.length === 0 ? (
+        <p className="text-xs py-6 text-left" style={{ color: muted }}>
+          Ничего не найдено
+        </p>
       ) : (
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           {displayApps.map(app => {
             const checked = selected.has(app.id)
             return (
@@ -217,21 +200,27 @@ export default function AppExclusionsPanel({
                   else next.add(app.id)
                   persist(next)
                 }}
-                className="w-full flex items-center gap-2 py-2 px-1 rounded-lg text-left"
+                className="w-full flex items-center gap-2.5 py-1.5 px-1 rounded-lg text-left"
                 style={{ background: 'transparent' }}
-                onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = dark ? '#1F1F26' : '#F9FAFB' }}
-                onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
+                onMouseEnter={e => {
+                  ;(e.currentTarget as HTMLButtonElement).style.background = dark ? '#1F1F26' : '#F9FAFB'
+                }}
+                onMouseLeave={e => {
+                  ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+                }}
               >
                 {app.icon ? (
-                  <img src={app.icon} alt="" className="w-9 h-9 rounded-lg object-contain shrink-0" />
+                  <img src={app.icon} alt="" className="w-9 h-9 object-contain shrink-0" />
                 ) : (
-                  <div className="w-9 h-9 rounded-lg shrink-0" style={{ background: fieldBg }} />
+                  <div
+                    className="w-9 h-9 shrink-0 flex items-center justify-center text-xs font-semibold"
+                    style={{ background: fieldBg, color: muted }}
+                  >
+                    {(app.name || '?').charAt(0).toUpperCase()}
+                  </div>
                 )}
                 <div className="flex-1 min-w-0">
-                  <div className="text-xs font-medium truncate" style={{ color: fg }}>{app.name}</div>
-                  {app.installLocation && (
-                    <div className="text-[10px] truncate" style={{ color: muted }}>{app.installLocation}</div>
-                  )}
+                  <div className="text-[13px] truncate" style={{ color: fg }}>{app.name}</div>
                 </div>
                 <ThemeCheck checked={checked} dark={dark} fg={fg} bg={bg} />
               </button>

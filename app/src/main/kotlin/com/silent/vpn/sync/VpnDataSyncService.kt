@@ -238,7 +238,7 @@ class VpnDataSyncService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(BrandMarkIcons.iconCompat())
+            .setSmallIcon(BrandMarkIcons.iconCompat(this))
             .setContentTitle("Silent VPN")
             .setContentText(text)
             .setContentIntent(open)

@@ -40,6 +40,7 @@ import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.vk.HashParser
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.SessionTrace
+import com.silent.vpn.vpn.TelegramPathWarmup
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.HashFailureReporter
 import com.silent.vpn.vpn.WdttTunnelManager
@@ -369,12 +370,16 @@ class MainViewModel @Inject constructor(
                         markLocalDeviceOnline()
                         onVpnTunnelReady()
                         updateBootstrapReadyFlag()
+                        if (!WdttTunnelManager.isBootstrapMode()) {
+                            TelegramPathWarmup.schedule(viewModelScope)
+                        }
                     }
                 } else if (
                     _vpnState.value == VpnState.CONNECTED &&
                     !WdttTunnelManager.running.value &&
                     WdttTunnelManager.activeWorkers.value < 1
                 ) {
+                    TelegramPathWarmup.cancel()
                     _vpnState.value = VpnState.DISCONNECTED
                     backendSyncCompleted = false
                     repo.clearTunnelApiBase()

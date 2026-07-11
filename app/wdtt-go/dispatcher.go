@@ -32,24 +32,9 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	uploadRetryMs = 30
-
-	// chunkSize — количество последовательных пакетов, отправляемых в один worker
-	// перед переключением на следующий.
-	//
-	// Зачем: при round-robin (chunk=1) каждый пакет летит через разный TURN relay
-	// с разным latency, что приводит к reorder на сервере. TCP внутри WireGuard
-	// интерпретирует reorder как потери → cwnd collapse → скорость single-flow
-	// падает до ~8 KB/s.
-	//
-	// С chunk=8: пакеты в пределах одного TCP congestion window (~10 пакетов при
-	// initial cwnd) уходят через один TURN relay → прилетают по порядку.
-	// Reorder возможен только между chunk-границами, что покрывается WG replay
-	// window (2048 пакетов).
-	//
-	// Агрегатная пропускная способность не меняется — все workers загружены
-	// равномерно по-прежнему (каждый получает 1/N от общего трафика за время).
-	chunkSize = 16
+	// Как PC 1.0.154: anti-stall Telegram (паузы mid-flow / превью).
+	uploadRetryMs = 50
+	chunkSize     = 8
 )
 
 type WorkerSlot struct {
@@ -89,6 +74,7 @@ func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) 
 	for i := 0; i < dispatcherWriteLoops; i++ {
 		go d.writeLoop()
 	}
+	log.Printf("[ДИСП] profile: chunk=%d writers=%d retry=%dms (Telegram parity PC 1.0.154)", chunkSize, dispatcherWriteLoops, uploadRetryMs)
 	return d
 }
 
@@ -202,18 +188,23 @@ func (d *Dispatcher) readLoop() {
 		}
 
 		if !sent {
-			// Кратко ждём слот — дроп upload убивает скорость отдачи (speedtest upload).
+			// Как PC: retry по всем воркерам (не только rrIndex) — иначе drop → TCP RTO.
 			deadline := time.Now().Add(uploadRetryMs * time.Millisecond)
 			for time.Now().Before(deadline) && !sent {
-				w := ws[d.rrIndex%nw]
-				select {
-				case w.SendCh <- pkt:
-					sent = true
-					d.rrCount++
-					if d.rrCount >= chunkSize {
-						d.rrIndex = (d.rrIndex + 1) % nw
-						d.rrCount = 0
+				for i := 0; i < nw && !sent; i++ {
+					alt := ws[(idx+i)%nw]
+					select {
+					case alt.SendCh <- pkt:
+						sent = true
+						d.rrIndex = (idx + i) % nw
+						d.rrCount = 1
+					default:
 					}
+				}
+				if sent {
+					break
+				}
+				select {
 				case <-d.ctx.Done():
 					putPktBuf(pkt)
 					return

@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	workerSendBuf      = 1024
+	workerSendBuf      = 2048 // как PC 1.0.154 — Telegram/file bursts
 	sessionReadTimeout = 30 * time.Minute
 	readBufSize        = 1600
 )
@@ -29,7 +29,8 @@ func socketBufSizeBytes() int {
 	if runtime.GOOS == "android" && runtime.GOARCH == "arm" {
 		return 512 * 1024
 	}
-	return 4 * 1024 * 1024
+	// Как PC Telegram latency: 8 МБ на телефон/arm64.
+	return 8 * 1024 * 1024
 }
 
 var socketBufSize = socketBufSizeBytes()

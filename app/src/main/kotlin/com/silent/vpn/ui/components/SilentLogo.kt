@@ -14,26 +14,31 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.silent.vpn.util.rememberIsTv
 
-/** Brand mark: black rounded square + white S (56dp / 16dp / 22sp on login screen). */
+/** Brand mark: black rounded square + white S. На TV крупнее, чтобы не мылить. */
 @Composable
 fun SilentLogo(
     modifier: Modifier = Modifier,
-    boxSize: Dp = 56.dp,
-    cornerRadius: Dp = 16.dp,
-    letterSize: TextUnit = 22.sp,
+    boxSize: Dp? = null,
+    cornerRadius: Dp? = null,
+    letterSize: TextUnit? = null,
 ) {
+    val isTv = rememberIsTv()
+    val resolvedBox = boxSize ?: if (isTv) 88.dp else 56.dp
+    val resolvedCorner = cornerRadius ?: if (isTv) 24.dp else 16.dp
+    val resolvedLetter = letterSize ?: if (isTv) 36.sp else 22.sp
     Box(
         modifier = modifier
-            .size(boxSize)
-            .background(Color.Black, RoundedCornerShape(cornerRadius)),
+            .size(resolvedBox)
+            .background(Color.Black, RoundedCornerShape(resolvedCorner)),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = "S",
             color = Color.White,
             fontWeight = FontWeight.Bold,
-            fontSize = letterSize,
+            fontSize = resolvedLetter,
         )
     }
 }

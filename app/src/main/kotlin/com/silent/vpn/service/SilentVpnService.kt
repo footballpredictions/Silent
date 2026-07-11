@@ -1186,7 +1186,7 @@ class SilentVpnService : Service() {
     /** FG-уведомление на время подключения. */
     private fun buildConnectingNotification(): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(BrandMarkIcons.iconCompat())
+            .setSmallIcon(BrandMarkIcons.iconCompat(this))
             .setContentTitle("Silent VPN — подключение…")
             .setContentText("Подключение к серверу…")
             .setContentIntent(openAppIntent())
@@ -1201,7 +1201,7 @@ class SilentVpnService : Service() {
     private fun buildActiveNotification(stats: String): Notification {
         val body = notificationBody(ready = true, stats = stats)
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(BrandMarkIcons.iconCompat())
+            .setSmallIcon(BrandMarkIcons.iconCompat(this))
             .setContentTitle(notificationTitle(ready = true))
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))

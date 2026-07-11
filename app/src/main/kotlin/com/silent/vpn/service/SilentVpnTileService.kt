@@ -123,10 +123,10 @@ class SilentVpnTileService : TileService() {
 
     private fun updateTile(connected: Boolean) {
         runCatching {
+            val service = this
             qsTile?.apply {
                 label = getString(R.string.app_name)
-                // Крупная Bold «S» — в QS система сильно уменьшает иконку.
-                icon = BrandMarkIcons.tileIcon()
+                icon = BrandMarkIcons.tileIcon(service)
                 when {
                     VpnTileConnect.isCaptchaPending() -> {
                         state = Tile.STATE_ACTIVE

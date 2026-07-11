@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Android TV launcher banner 320×180 dp -->
+<!-- Android TV launcher banner 320×180 dp — S из hi-res ic_brand_s -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item>
         <shape android:shape="rectangle">
@@ -10,6 +10,6 @@
     <item
         android:drawable="@drawable/ic_brand_s"
         android:gravity="center"
-        android:width="96dp"
-        android:height="96dp" />
+        android:width="120dp"
+        android:height="120dp" />
 </layer-list>

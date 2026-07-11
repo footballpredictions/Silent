@@ -208,17 +208,9 @@ class WireGuardHelper(context: Context) {
 
                 .parseAddresses(parsed.`interface`.addresses.joinToString(", ") { it.toString() })
 
-            val mtu = if (parsed.`interface`.mtu.isPresent) {
-
-                parsed.`interface`.mtu.get().coerceAtLeast(1280)
-
-            } else {
-
-                1280
-
-            }
-
+            val mtu = 1200
             ifaceBuilder.parseMtu(mtu.toString())
+            DebugLog.i(TAG, "MTU forced 1200 (Telegram parity PC 1.0.154)")
 
             ifaceBuilder.parsePrivateKey(parsed.`interface`.keyPair.privateKey.toBase64())
 

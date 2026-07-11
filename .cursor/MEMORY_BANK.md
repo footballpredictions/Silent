@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.151** |
-| `Silent-Project/android/` | `android` | **1.0.151** |
+| `Silent-Project/pc/` | `pc` | **1.0.154** |
+| `Silent-Project/android/` | `android` | **1.0.153** |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -524,6 +524,161 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-07-11 — PC 1.0.154: Telegram latency + exclusions (push)
+
+- Version **1.0.154** → `origin/pc`
+- Telegram: MTU 1200, anti-stall dispatcher (retry all workers, chunk=8, SendCh 2048), warmup DC/CDN/5222
+- Исключения: Start Menu icons, session plan, unit tests (`npm test`) — уже в `39dcaae`
+- Installer/OTA deploy — отдельно (нужен bootstrap hash + `build-installer.bat`)
+
+### 2026-07-11 — PC debug: Telegram preview vs player
+
+- Поле: превью крутится, по тапу видео ок; файлы ок; скачивание видео иногда виснет; зависит от канала
+- Прогрев: больше DC + порт 5222 + cdn*.telegram.org; повтор через 4с/12с (main) и 5с (renderer)
+- Anti-stall dispatcher (chunk8 / retry all workers) без изменений
+- Debug: `pc/build-debug-668774/win-unpacked/Silent VPN.exe`
+
+### 2026-07-11 — PC debug: anti-stall Telegram (пауза mid-flow)
+
+- Симптом: старт загрузки → пауза → снова ок (видео и файлы)
+- Причина: при полном SendCh retry шёл **только в один** воркер → drop → TCP RTO
+- Фикс: retry сканирует **все** воркеры; chunk **8**; uploadRetry **50ms**; SendCh **2048**
+- Debug: `pc/build-debug-672144/win-unpacked/Silent VPN.exe`
+
+### 2026-07-11 — PC debug: Telegram TTFB (старт видео)
+
+- Поле: MTU1200/chunk4 лучше, но «крутится» перед первым кадром; дальше прелоад быстрее
+- След. эксперимент: **chunk=2**, uploadRetry 15ms; **warmup TCP** к DC Telegram + HTTPS после VPN ready
+- Debug: `pc/build-debug-691277/win-unpacked/Silent VPN.exe`
+
+### 2026-07-11 — PC debug: Telegram latency (MTU/chunk/buf)
+
+- Без exclusions/локации (Telegram заблокирован без VPN)
+- Эксперимент: **MTU 1200**, **chunk=4**, **socketBuf 8MB**, writers=8
+- Лог: `[ДИСП] profile: chunk=4…` / `[WG] MTU = 1200`
+- Debug: `pc/build-debug-533280/win-unpacked/Silent VPN.exe` (не пушили)
+
+### 2026-07-11 — PC: исключения — тесты + план сессии VPN + push
+
+- Юнит/автотесты `npm test` (10): policy, state, session plan, Start Menu+icons, wiring в main
+- Renderer → IPC `save-app-exclusions` → `%userData%/app-exclusions.json`; full VPN грузит план в сессию
+- WireGuard Windows без process-split (нужен WFP) — план exe фиксируется и проверяется тестами
+
+### 2026-07-11 — PC: иконки исключений через ExtractAssociatedIcon
+
+- Electron `getFileIcon(.lnk)` давал «белый лист» — заменено на PowerShell `System.Drawing.Icon.ExtractAssociatedIcon` → PNG base64
+- Приоритет: IconLocation → TargetPath → .lnk; shell32/imageres пропускаются
+- Debug: `pc/build-debug-802012/win-unpacked/Silent VPN.exe`
+
+### 2026-07-11 — PC: исключения — ярлыки Пуск, сброс галочек
+
+- Список из Start Menu `.lnk` (иконка как на ярлыке), не ARP/uninstall
+- Сброс старых отметок (БС / все галочки); убран «Показать системные»
+- Debug: `pc/build-debug-602759/win-unpacked/Silent VPN.exe`
+
+### 2026-07-11 — PC: исключения приложений (список + UI как Android)
+
+- Список программ: PowerShell через temp `.ps1` + UTF-8 JSON (не `-Command`) — список больше не пустой
+- Иконки: `app.getFileIcon` для `.exe`/`.dll` (раньше `createFromPath` часто пустой)
+- UI как Android: без ЧС/БС, текст «Отмеченные приложения идут мимо VPN-туннеля»; миграция старого whitelist
+- Debug: `pc/build-debug-603167/win-unpacked/Silent VPN.exe`
+
+### 2026-07-10 — Landing: блок Telegram
+
+- Карточка «Наш канал в Telegram» + иконка → https://t.me/silentvpn3
+- Ссылка в футере; стиль как у download-карточек (монохром)
+
+### 2026-07-10 — Android: S на TV без пикселей
+
+- Перегенерированы `ic_brand_s` / `ic_stat_silent` / `ic_tile_silent` (до 384–512px + nodpi 512)
+- `BrandMarkIcons` рендерит ≥512px; notification/tile берут hi-res drawable
+- `SilentLogo` / `BrandHeader` на TV крупнее (88dp / 36sp)
+
+### 2026-07-10 — PC: OTA «100% / файл повреждён» (баг 1.0.152)
+
+- Причина: `resolveUpdateDownloadUrl` резал GitHub URL до pathname и клеил на `10.66.66.1` → 404 HTML вместо .exe
+- Фикс: при VPN → `/api/updates/download/pc`; без VPN → прямой GitHub; проверка MZ + размер перед install
+
+### 2026-07-10 — PC + Android: bump 1.0.153 — call-unavailable без капчи
+
+- Upstream `d95b65b`: `CallUnavailableError` (951/954/9xxx) — без legacy/капчи
+- VK Calls: ретраи только сеть/decode; captcha-gate на free-path тоже без legacy
+- Version **1.0.153** (PC + Android versionCode 153)
+
+### 2026-07-10 — Android: 3 попытки VK Calls до legacy/капчи
+
+- Как на PC: `fetchVkCreds` при `vkcalls` — 3 ретрая с паузой, потом legacy
+- Пересобран `libclient.so` + debug APK
+
+### 2026-07-10 — PC: снова мгновенный тумблер + VK Calls без ранней капчи
+
+- Тумблер ON сразу (не ждать `fetchProfile` / prepare) — убирает ~5–8с «Подключение…»
+- Go: при `vkcalls` 3 попытки VK Calls до legacy (раньше 1 сбой → сразу медленная капча)
+- OTA при VPN через tunnel
+- Push `origin/pc` `8467551`
+
+### 2026-07-10 — PC: OTA не приходило при включённом VPN
+
+- Причина: UI пропускал check при `connected`; main ходил на public IP (hairpin через full tunnel)
+- Фикс: check/download через `10.66.66.1:8000` при VPN; проверка сразу после connect + по таймеру
+
+### 2026-07-10 — Android: иконки status bar / QS tile (S)
+
+- S рисуется **тем же системным Bold**, что SilentLogo (`BrandMarkIcons`), не чужим vector-path
+- Плитка: крупный glyph (`tileIcon`, scale 0.92); уведомления — 0.70
+- Push `origin/android` `4a7b841`
+
+### 2026-07-10 — PC: bump 1.0.152 (без фикса Telegram)
+
+- Version **1.0.152**; Telegram media @63 — без фикса (нужен light path / wdtt-server src)
+- В коммите: мгновенный тумблер (змейка слева → потом ON), убран Google Fonts (белый экран), ready-to-show
+- Push `origin/pc`
+
+### 2026-07-10 — PC: змейка 1.5 круга + фикс белого экрана
+
+- VpnToggle: при мгновенном ON змейка крутит **~1.5 оборота** (3300 мс), бегунок уже справа
+- Белый экран 20–60с: убран `<link>` на **fonts.googleapis.com** (блокировка без VPN); `show:false` + `ready-to-show`
+- DNS пункт меню — сразу после «Исключения» (как Android)
+
+### 2026-07-10 — PC: default workers 63 + debug DNS menu
+
+- Дефолт воркеров **63** (как Android); убран debug-force 108; one-shot migration rev=2 → `eaa8480`
+- Меню **DNS** только debug (пресеты как Android); `dns_override` в WG; release без меню → `062fa63`
+- Debug build: `build-debug.bat`
+
+### 2026-07-10 — Android: bump 1.0.152 + откат reorder
+
+- Download reorder buffer: разницы нет / хуже → **откат** (не коммитился)
+- Sticky earlier тоже откат; Telegram@63 без фикса в диспетчере
+- Version **1.0.152** (versionCode 152) → push `origin/android`
+
+### 2026-07-10 — Android: download reorder — ОТКАТ (хуже / без разницы)
+
+- Пробовали reorder по WG counter на download; поле: без улучшения, местами хуже
+- Откат до chunk RR; файл `reorder.go` удалён, не пушился
+
+### 2026-07-10 — Android: sticky-until-busy — ОТКАТ (регрессия)
+
+- Поле: на **9** воркерах Telegram ок (~1с), на **63** — тупит; резать n нельзя
+- Пробовали sticky-until-busy (`len(SendCh)<64` → spill least-loaded): speedtest @63 → **2–3 МБ/с** down/up — как chunk=256, липнет к узкому TURN
+- **Откат** к chunk RR `chunkSize=16`; libclient + debug APK пересобраны
+- Telegram vs 63: другой путь (не sticky dispatcher)
+
+### 2026-07-10 — Telegram media slow vs other VPN (анализ)
+
+- Silent: speedtest выше, Telegram видео тупит; другой VPN 15–20 Мбит — Telegram моментально
+- DNS перебор не помог → не резолв
+- Вероятная причина: путь **WG→VK TURN→VPS** (RTT/reorder/пиринг до Telegram DC), не «мало Мбит»
+- YouTube ок: многопоточный CDN; Telegram media — чувствителен к latency/MTProto к DC
+- След. проверка: исключить `org.telegram.messenger` из VPN — если летает, корень в туннеле Silent
+
+### 2026-07-10 — Android: переключатель DNS (тест Telegram)
+
+- Меню → **DNS** (**только debug**): Яндекс, Cloudflare, Google, Quad9, OpenDNS, AdGuard, CleanBrowsing, Comodo, Verisign, Level3, UncensoredDNS, Alternate
+- Release: без меню/override, DNS только с сервера (`wg_dns` Яндекс)
+- В логе debug: `DNS: …`; commit `a6fdfa1` на `origin/android`
+- Debug APK: `app/build/outputs/apk/debug/SilentVPN-debug.apk`
 
 ### 2026-07-10 — Android LTE field notes (две комнаты, 63 воркера OK)
 

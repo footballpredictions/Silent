@@ -36,8 +36,9 @@ Agent приступает к **первой невыполненной** зад
 
 ### Следующие релизы
 
+- [x] PC: bump version → `1.0.154` → push `origin/pc` (Telegram latency + exclusions) — 2026-07-11
+- [ ] PC: `build-installer.bat` → `python scripts/deploy_release.py ...` (OTA 1.0.154)
 - [ ] Android: bump version → `assembleRelease` → push `origin/android` → `python scripts/deploy_release.py ...`
-- [ ] PC: bump version → `build-installer.bat` → push `origin/pc` → `python scripts/deploy_release.py ...`
 
 ---
 

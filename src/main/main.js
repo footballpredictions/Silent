@@ -459,6 +459,7 @@ function cleanupVpn() {
     const { clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
     clearActiveExcludedExePaths()
   } catch { /* ignore */ }
+  clearTelegramWarmupTimers()
   resetHashFailureSessionState()
   vpnBootstrapMode = false
   wgCredPhase = false
@@ -607,6 +608,76 @@ function ensureVpnReadyEvent(sendLogFn) {
     mainWindow.webContents.send('vpn-ready', { ok: true, bootstrap: vpnBootstrapMode })
   }
   sendLogFn?.(`[VPN] tunnel ready (WG + ${activeWorkerCount}/${sessionTargetWorkers} workers)`)
+  // Прогрев DC/CDN Telegram: сразу + повтор когда воркеры догонят (превью/медиа).
+  if (!vpnBootstrapMode) {
+    void warmupTelegramTcp(sendLogFn)
+    scheduleTelegramWarmupRetries(sendLogFn)
+  }
+}
+
+let telegramWarmupTimers = []
+
+function clearTelegramWarmupTimers() {
+  for (const t of telegramWarmupTimers) clearTimeout(t)
+  telegramWarmupTimers = []
+}
+
+function scheduleTelegramWarmupRetries(sendLogFn) {
+  clearTelegramWarmupTimers()
+  // Первый ready часто при части воркеров; превью Telegram любит «пустой» путь.
+  for (const ms of [4000, 12000]) {
+    telegramWarmupTimers.push(setTimeout(() => {
+      if (!vpnSessionActive || vpnBootstrapMode) return
+      void warmupTelegramTcp(sendLogFn)
+    }, ms))
+  }
+}
+
+/** TCP/DNS к DC + CDN Telegram — превью и media чувствительнее файлов. */
+function warmupTelegramTcp(sendLogFn) {
+  const net = require('net')
+  const dns = require('dns')
+  const targets = [
+    // DC1–5 (типичные egress для desktop TG)
+    { host: '149.154.175.50', port: 443 },
+    { host: '149.154.175.100', port: 443 },
+    { host: '149.154.167.51', port: 443 },
+    { host: '149.154.167.91', port: 443 },
+    { host: '91.108.56.165', port: 443 },
+    { host: '91.108.4.134', port: 443 },
+    { host: '91.108.8.68', port: 443 },
+    // MTProto часто 5222 (превью/медиа), не только 443
+    { host: '149.154.167.51', port: 5222 },
+    { host: '149.154.175.50', port: 5222 },
+    { host: '91.108.56.165', port: 5222 },
+    { host: 'api.telegram.org', port: 443 },
+  ]
+  sendLogFn?.(`[Apps] warmup Telegram DC/CDN (TCP, workers=${activeWorkerCount})…`)
+  for (const t of targets) {
+    try {
+      const sock = net.connect({ host: t.host, port: t.port, family: 4 }, () => {
+        try { sock.destroy() } catch { /* ignore */ }
+      })
+      sock.setTimeout(5000, () => {
+        try { sock.destroy() } catch { /* ignore */ }
+      })
+      sock.on('error', () => {})
+    } catch { /* ignore */ }
+  }
+  const names = [
+    'api.telegram.org',
+    'telegram.org',
+    'core.telegram.org',
+    'cdn1.telegram.org',
+    'cdn2.telegram.org',
+    'cdn3.telegram.org',
+    'cdn4.telegram.org',
+    'venus.web.telegram.org',
+    'flora.web.telegram.org',
+  ]
+  for (const name of names) {
+    try { dns.lookup(name, { family: 4 }, () => {}) } catch { /* ignore */ }
+  }
 }
 
 function pauseWdtt(reason) {
@@ -788,6 +859,11 @@ ipcMain.handle('save-app-exclusions', (_, payload) => {
 ipcMain.handle('get-app-exclusions', () => {
   const { loadExclusionsState, defaultStatePath } = require('./apps/exclusionsState')
   return loadExclusionsState(defaultStatePath(app.getPath('userData')))
+})
+
+ipcMain.handle('warmup-telegram-path', async () => {
+  warmupTelegramTcp(sendLog)
+  return true
 })
 
 ipcMain.handle('window-minimize', () => mainWindow?.minimize())
@@ -1058,15 +1134,16 @@ async function beginWdttSession(config, { switching = false } = {}) {
     if (wgAttempted) return false
 
     let normalizedConf = confText
-    // Baseline MTU 1280 (эксперимент 1380 не дал прироста скорости).
+    // Telegram latency experiment: MTU 1200 (меньше фрагментации поверх VK DTLS).
     if (/^\s*MTU\s*=/m.test(normalizedConf)) {
-      normalizedConf = normalizedConf.replace(/^\s*MTU\s*=.*/m, 'MTU = 1280')
+      normalizedConf = normalizedConf.replace(/^\s*MTU\s*=.*/m, 'MTU = 1200')
     } else {
       normalizedConf = normalizedConf.replace(
         /(\[Interface\][^\[]*)/,
-        (m) => m.trimEnd() + '\nMTU = 1280\n',
+        (m) => m.trimEnd() + '\nMTU = 1200\n',
       )
     }
+    sendLog('[WG] MTU = 1200 (Telegram latency experiment)')
     normalizedConf = normalizeWgConfText(normalizedConf)
 
     wgInstallInFlight = true

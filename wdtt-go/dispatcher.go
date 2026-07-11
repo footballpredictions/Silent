@@ -31,12 +31,12 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	// Откат: chunk=256 на практике дал 2–5 Мбит (один медленный TURN).
-	// Рабочий профиль — chunk=16 + умеренные буферы (MTU/chunk=8 не дали прироста).
+	// Anti-stall (Telegram video/files): chunk=2 давал старт ок, но паузы mid-flow
+	// (reorder/jitter + drop → TCP RTO). chunk=8 + длиннее retry + больше SendCh.
 	returnChBuf      = 16384
 	writeLoopWorkers = 8
-	uploadRetryMs    = 30
-	chunkSize        = 16
+	uploadRetryMs    = 50
+	chunkSize        = 8
 )
 
 type WorkerSlot struct {
@@ -86,6 +86,7 @@ func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) 
 	for i := 0; i < writeLoopWorkers; i++ {
 		go d.writeLoop()
 	}
+	log.Printf("[ДИСП] profile: chunk=%d writers=%d returnCh=%d (Telegram latency experiment)", chunkSize, writeLoopWorkers, returnChBuf)
 	return d
 }
 
@@ -192,17 +193,25 @@ func (d *Dispatcher) readLoop() {
 		}
 
 		if !sent {
+			// Раньше retry только в rrIndex — при полном канале одного воркера пакет
+			// дропался, хотя соседние свободны → TCP RTO («старт → пауза → ок»).
 			deadline := time.Now().Add(uploadRetryMs * time.Millisecond)
 			for time.Now().Before(deadline) && !sent {
-				w := ws[d.rrIndex%nw]
-				select {
-				case w.SendCh <- pkt:
-					sent = true
-					d.rrCount++
-					if d.rrCount >= chunkSize {
+				for i := 0; i < nw && !sent; i++ {
+					alt := ws[(idx+i)%nw]
+					select {
+					case alt.SendCh <- pkt:
+						sent = true
+						d.rrIndex = (idx + i) % nw
+						d.rrCount = 1
 						d.chunkSeq++
-						d.rrCount = 0
+					default:
 					}
+				}
+				if sent {
+					break
+				}
+				select {
 				case <-d.ctx.Done():
 					putPktBuf(pkt)
 					return

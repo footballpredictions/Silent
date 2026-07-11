@@ -763,6 +763,8 @@ export default function MainScreen({
       }
       await markOnlineOnServer()
       void warmupBrowsingPath().catch(() => null)
+      // Повторный прогрев когда воркеры догонят — превью TG иначе «ещё не загрузилось».
+      window.setTimeout(() => { void warmupBrowsingPath(8000).catch(() => null) }, 5000)
       fetchProfile()
     } catch (err: any) {
       if (connectGen !== connectGenRef.current) return

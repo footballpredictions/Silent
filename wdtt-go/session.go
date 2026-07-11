@@ -19,10 +19,11 @@ import (
 )
 
 const (
-	workerSendBuf      = 1024
+	workerSendBuf      = 2048 // absorb Telegram/file bursts (was 1024)
 	sessionReadTimeout = 30 * time.Minute
 	readBufSize        = 1600
-	socketBufSize      = 4 * 1024 * 1024
+	// Telegram latency experiment: чуть больше сокет-буфер (меньше дропа на burst видео).
+	socketBufSize      = 8 * 1024 * 1024
 	keepaliveByte      = 0xFF
 	keepaliveInterval  = 15 * time.Second
 )

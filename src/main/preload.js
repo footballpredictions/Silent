@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listInstalledApps: () => ipcRenderer.invoke('list-installed-apps'),
   saveAppExclusions: (payload) => ipcRenderer.invoke('save-app-exclusions', payload),
   getAppExclusions: () => ipcRenderer.invoke('get-app-exclusions'),
+  warmupTelegramPath: () => ipcRenderer.invoke('warmup-telegram-path'),
   getAppVersion: () => ipcRenderer.invoke('app-version'),
   checkForUpdate: (version) => ipcRenderer.invoke('app-update-check', { version, platform: 'pc' }),
   tunnelApiRequest: (payload) => ipcRenderer.invoke('tunnel-api-request', payload),

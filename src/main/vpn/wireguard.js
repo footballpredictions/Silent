@@ -614,7 +614,7 @@ function buildWgConfigFromApi(config, listenPort = 9000) {
 PrivateKey = ${priv}
 Address = ${addr}
 DNS = ${dns}
-MTU = 1280
+MTU = 1200
 
 [Peer]
 PublicKey = ${pub}

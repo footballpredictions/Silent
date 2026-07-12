@@ -141,10 +141,7 @@ func resolveUDPAddrNoRoute(network, address string) (*net.UDPAddr, error) {
 }
 
 func dialUDPForTURN(resolved *net.UDPAddr) (*net.UDPConn, error) {
-	// Prefer physical Wi‑Fi/LTE iface so TURN не уходит в WG tunnel.
-	if ip := getLanIPv4(); ip != nil {
-		return net.DialUDP("udp", &net.UDPAddr{IP: ip}, resolved)
-	}
+	// Без LocalAddr-bind: на Android bind к Wi‑Fi/LTE ломает UDP к TURN под VpnService.
 	laddr := defaultLocalUDPAddr(resolved)
 	return net.DialUDP("udp", laddr, resolved)
 }

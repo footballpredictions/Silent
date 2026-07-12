@@ -162,7 +162,8 @@ func getVKCredsViaVKCallsPath(ctx context.Context, link string, streamID int) (s
 		if ctx.Err() != nil {
 			return "", "", nil, ctx.Err()
 		}
-		if !vkCallsShouldRetry(err) {
+		// Flood/captcha/call — не долбим следующие хосты (усиливает rate-limit).
+		if !vkCallsShouldRetry(err) || vkCallsIsFlood(err) {
 			return "", "", nil, err
 		}
 		if hi+1 < len(vkCallsAPIHosts) {

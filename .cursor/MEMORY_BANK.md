@@ -525,6 +525,13 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-12 — Persistent login (до явного «Выйти»)
+
+- Android/PC: 401 / refresh fail / session missing / startNewSession fail — **не** clearTokens, экран MAIN
+- Session missing → re-register device, токены не трогаем
+- Backend: `REFRESH_TOKEN_EXPIRE_DAYS` **3650** (~10 лет); ротация на каждом `/auth/refresh`
+- Logout только: кнопка «Выйти» или удаление **своей** сессии в меню
+
 ### 2026-07-12 — Android: Telegram Boost без двух APK
 
 - Revoke: полный teardown FGS+libclient (нет зомби debug↔release)

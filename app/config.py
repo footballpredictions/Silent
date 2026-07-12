@@ -20,7 +20,9 @@ class Settings(BaseSettings):
     JWT_SECRET: str = secrets.token_hex(32)
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 дней
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    # Долгоживущий refresh: клиент остаётся авторизованным до явного «Выйти».
+    # При каждом /auth/refresh выдаётся новый refresh — активные пользователи обновляют срок.
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 3650  # ~10 лет
 
     # Email
     SMTP_HOST: str = "smtp.gmail.com"

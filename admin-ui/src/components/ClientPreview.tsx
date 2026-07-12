@@ -33,6 +33,8 @@ export type ClientTheme = {
   login_link_color?: string
   support_url?: string
   telegram_channel_url?: string
+  telegram_proxy_url?: string
+  telegram_proxy_menu_label?: string
   privacy_url?: string
   terms_url?: string
   logo_url?: string
@@ -216,6 +218,18 @@ export default function ClientPreview({
               <span style={{ color: `${fg}4D`, fontSize: 12 }}>›</span>
             </button>
           ))}
+          {(theme.telegram_proxy_url || '').trim() && (
+            <button type="button"
+              style={{
+                width: '100%', textAlign: 'left', padding: '10px 12px', fontSize: 13,
+                background: 'none', border: 'none', cursor: 'default', color: fg,
+                display: 'flex', alignItems: 'center', gap: 6,
+                borderRadius: 8,
+              }}>
+              <span style={{ flex: 1 }}>{theme.telegram_proxy_menu_label || 'Ускорить Telegram'}</span>
+              <span style={{ color: `${fg}4D`, fontSize: 12 }}>›</span>
+            </button>
+          )}
           <button type="button" style={{
             width: '100%', textAlign: 'left', padding: '10px 12px', fontSize: 13,
             background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444', marginTop: 4,

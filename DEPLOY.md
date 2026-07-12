@@ -25,6 +25,7 @@ cd backend
 | `scripts/deploy_config_sync.py` | `python scripts/deploy_config_sync.py` | ConfigSync / sync-state |
 | `scripts/deploy_update_backend.py` | `python scripts/deploy_update_backend.py` | OTA API (без .exe/.apk) + admin-ui/dist |
 | `scripts/deploy_wdtt_systemd.py` | `python scripts/deploy_wdtt_systemd.py` | wdtt-server как systemd на VPS |
+| `scripts/deploy_telegram_proxy.py` | `python scripts/deploy_telegram_proxy.py` | MTProto (mtg) для Telegram + theme URL |
 | `scripts/deploy_hive.py` | `python scripts/deploy_hive.py` | Улей: Hive API, cell-agent, admin-ui/dist |
 | `scripts/deploy_cell_agent.py` | `python scripts/deploy_cell_agent.py <cell_ip>` | cell-agent на отдельной VPS-соте |
 | `scripts/restore_api_container.py` | `python scripts/restore_api_container.py` | Восстановить `app/`+`ai/` в контейнере после `compose up`/recreate |

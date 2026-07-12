@@ -7,6 +7,8 @@ const defaultTheme = {
   font_family: 'Inter', logo_url: '/static/logo.svg', app_name: 'Silent VPN',
   support_url: 'https://t.me/silentvpn3?direct', privacy_url: '', terms_url: '',
   telegram_channel_url: 'https://t.me/silentvpn3',
+  telegram_proxy_url: '',
+  telegram_proxy_menu_label: 'Ускорить Telegram',
   update_bar_background_color: '#2563EB', update_bar_text_color: '#FFFFFF',
   update_bar_progress_color: '#1D4ED8',
   update_bar_label_available: 'Доступно обновление', update_bar_label_downloading: 'Скачивание…',
@@ -44,7 +46,7 @@ const SCREEN_HINTS: Partial<Record<PreviewScreen, string>> = {
   login_forgot: 'Экран из приложения после «Забыли пароль?».',
   login_expired: 'Панель при истечении 2 мин bootstrap. Тексты пока в коде клиентов.',
   login_reset_web: 'HTML-страница из письма — открывается в браузере, не в приложении.',
-  menu: 'Боковое меню: фон, текст, акцент, шрифт. Пункт «Бонусы».',
+  menu: 'Боковое меню: фон, текст, акцент, шрифт. Пункт «Бонусы». «Ускорить Telegram» если задан proxy URL.',
   subscription: 'Тарифы: основной цвет (кнопки), фон, текст.',
   exceptions: 'Список приложений (Android): фон, текст, основной цвет.',
   bonuses: 'Бонусы: реферальная ссылка + промокод. Тексты и подписи ниже.',
@@ -225,6 +227,8 @@ export default function ThemePage({ token }: { token: string }) {
             {field('URL логотипа', 'logo_url')}
             {field('URL поддержки (Telegram direct)', 'support_url')}
             {field('URL канала Telegram', 'telegram_channel_url')}
+            {field('Telegram proxy URL (tg:// или t.me/proxy)', 'telegram_proxy_url')}
+            {field('Пункт меню proxy', 'telegram_proxy_menu_label')}
             {field('URL политики конфиденциальности', 'privacy_url')}
             {field('URL условий использования', 'terms_url')}
           </div>
@@ -253,6 +257,8 @@ export default function ThemePage({ token }: { token: string }) {
             {field('Цвет текста', 'text_color')}
             {field('Акцентный цвет', 'accent_color')}
             {field('Шрифт', 'font_family')}
+            {field('Telegram proxy URL', 'telegram_proxy_url')}
+            {field('Пункт меню «Ускорить Telegram»', 'telegram_proxy_menu_label')}
           </div>
         )
       case 'subscription':

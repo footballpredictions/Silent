@@ -27,6 +27,7 @@ ufw allow 80/tcp comment 'HTTP redirect'
 ufw allow 443/tcp comment 'HTTPS API'
 ufw allow 56000/udp comment 'WDTT'
 ufw allow 56001/udp comment 'WireGuard'
+ufw allow 8443/tcp comment 'Silent Telegram MTProto'
 ufw --force enable
 ufw status verbose
 

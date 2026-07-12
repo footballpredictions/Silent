@@ -525,6 +525,14 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-12 — Telegram MTProto proxy (ускорение поверх VPN)
+
+- VPS: `silent-tg-proxy` (mtg) на `:8443`, `python scripts/deploy_telegram_proxy.py`
+- Theme: `telegram_proxy_url`, `telegram_proxy_menu_label`
+- Меню «Ускорить Telegram» — **только debug** (Android/PC/iOS); в release скрыто
+- Не исключение приложения: VPN обязателен; proxy — режим Telegram через наш exit
+- Ссылка: `/root/silent_tg_proxy.txt` на VPS + админка «Оформление»
+
 ### 2026-07-12 — Persistent login (до явного «Выйти»)
 
 - Android/PC: 401 / refresh fail / session missing / startNewSession fail — **не** clearTokens, экран MAIN

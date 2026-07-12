@@ -97,6 +97,9 @@ class ThemeResponse(BaseModel):
     app_name: str = "Silent VPN"
     support_url: str = "https://t.me/silentvpn3?direct"
     telegram_channel_url: str = "https://t.me/silentvpn3"
+    # MTProto/SOCKS ускорение Telegram поверх VPN (пусто = пункт меню скрыт)
+    telegram_proxy_url: str = ""
+    telegram_proxy_menu_label: str = "Ускорить Telegram"
     privacy_url: str = ""
     terms_url: str = ""
     # Bottom update bar (replaces subscription strip while update is available)

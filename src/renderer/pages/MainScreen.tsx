@@ -753,7 +753,13 @@ export default function MainScreen({
         pushLog('Main', 'connect timeout', 'E')
         setConnected(false)
         setMainVpnSessionActive(false)
-        alert('WireGuard не поднялся. Установите Silent VPN 1.0.51+ или проверьте службу WireGuardTunnel$wg-turn')
+        alert(
+          'WireGuard-туннель не поднялся.\n\n' +
+          '1) Закройте Silent VPN полностью (трей → Выход)\n' +
+          '2) Запустите снова от имени администратора\n' +
+          '3) В окне UAC нажмите «Да»\n\n' +
+          'Если не помогло: services.msc → WireGuardTunnel$wg-turn',
+        )
         await (window as any).electronAPI?.vpnDisconnect?.()
         await api.post('/api/vpn/disconnect', { device_fingerprint: fp }).catch(() => null)
         await fetchProfile()

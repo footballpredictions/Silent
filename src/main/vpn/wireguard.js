@@ -61,8 +61,6 @@ function findBundledDir(isDev, dirname) {
   const base = resourcesDir(isDev, dirname)
   const candidates = [
     path.join(base, 'wireguard'),
-    path.join(STABLE_WG_DIR),
-    SYSTEM_WG_DIR,
     base,
   ]
   for (const dir of candidates) {
@@ -75,6 +73,53 @@ function findWintunDll(dir) {
   if (!dir) return null
   const p = path.join(dir, 'wintun.dll')
   return fs.existsSync(p) ? p : null
+}
+
+function wgExeVersion(dir) {
+  const exe = path.join(dir || '', 'wireguard.exe')
+  if (!fs.existsSync(exe)) return '0'
+  try {
+    const out = execSync(
+      `powershell.exe -NoProfile -Command "(Get-Item -LiteralPath '${exe.replace(/'/g, "''")}').VersionInfo.ProductVersion"`,
+      { encoding: 'utf8', windowsHide: true, timeout: 5000 },
+    )
+    return String(out || '').trim() || '0'
+  } catch {
+    return '0'
+  }
+}
+
+/** semver-ish: "1.1" > "1.0.1" > "0.5.3" */
+function cmpVersion(a, b) {
+  const pa = String(a || '0').split(/[^\d]+/).filter(Boolean).map(n => parseInt(n, 10) || 0)
+  const pb = String(b || '0').split(/[^\d]+/).filter(Boolean).map(n => parseInt(n, 10) || 0)
+  const n = Math.max(pa.length, pb.length)
+  for (let i = 0; i < n; i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0)
+    if (d) return d
+  }
+  return 0
+}
+
+function pickBestWgSource(isDev, dirname, send) {
+  const candidates = []
+  const bundled = findBundledDir(isDev, dirname)
+  if (bundled) candidates.push({ dir: bundled, label: 'bundled' })
+  if (fs.existsSync(path.join(SYSTEM_WG_DIR, 'wireguard.exe'))) {
+    candidates.push({ dir: SYSTEM_WG_DIR, label: 'Program Files' })
+  }
+  if (fs.existsSync(path.join(STABLE_WG_DIR, 'wireguard.exe'))) {
+    candidates.push({ dir: STABLE_WG_DIR, label: 'ProgramData' })
+  }
+  let best = null
+  for (const c of candidates) {
+    const ver = wgExeVersion(c.dir)
+    if (!best || cmpVersion(ver, best.ver) > 0) {
+      best = { ...c, ver }
+    }
+  }
+  if (best) send?.(`[WG] WireGuard ${best.ver} ← ${best.label} (${best.dir})`)
+  return best
 }
 
 let elevatedCache = { at: 0, value: false }
@@ -92,65 +137,88 @@ function isProcessElevated() {
   }
 }
 
-/** Копируем wireguard.exe + wintun.dll в ProgramData — служба Windows не должна ссылаться на %TEMP%. */
+/**
+ * Runtime для службы: актуальный wireguard.exe (1.1+ / WireGuardNT).
+ * wintun.dll опционален (с 1.0 драйвер WireGuardNT, не Wintun).
+ * Не залипаем на старом ProgramData 0.5.3 при reuse.
+ */
 function prepareRuntimeDir(isDev, dirname, send, options = {}) {
+  const best = pickBestWgSource(isDev, dirname, send)
+  if (!best) {
+    send?.('[WG] Не найден wireguard.exe (resources/wireguard или Program Files\\WireGuard)')
+    return null
+  }
+
+  const stableVer = wgExeVersion(STABLE_WG_DIR)
   const reuse = options.reuse === true
-  if (reuse && fs.existsSync(path.join(STABLE_WG_DIR, 'wireguard.exe'))) {
+    && fs.existsSync(path.join(STABLE_WG_DIR, 'wireguard.exe'))
+    && cmpVersion(stableVer, best.ver) >= 0
+
+  if (reuse) {
     lastRuntimeDir = STABLE_WG_DIR
-    send?.(`[WG] Runtime: ${STABLE_WG_DIR} (reuse)`)
+    send?.(`[WG] Runtime: ${STABLE_WG_DIR} (reuse ${stableVer})`)
     return STABLE_WG_DIR
   }
 
-  const bundled = findBundledDir(isDev, dirname)
-  let srcDir = bundled
-  let wintunSrc = findWintunDll(bundled)
-
-  if (!srcDir || !wintunSrc) {
-    if (fs.existsSync(path.join(SYSTEM_WG_DIR, 'wireguard.exe'))) {
-      srcDir = SYSTEM_WG_DIR
-      wintunSrc = findWintunDll(SYSTEM_WG_DIR)
-      send?.('[WG] Используем WireGuard из Program Files')
-    }
-  }
-
-  if (!srcDir || !wintunSrc) {
-    if (fs.existsSync(path.join(STABLE_WG_DIR, 'wireguard.exe'))) {
-      lastRuntimeDir = STABLE_WG_DIR
-      send?.(`[WG] Runtime: ${STABLE_WG_DIR} (fallback)`)
-      return STABLE_WG_DIR
-    }
-    send?.('[WG] Не найдены wireguard.exe / wintun.dll (resources/wireguard или установка WireGuard)')
-    return null
+  // Program Files уже лучший и стабильный путь — служба может ссылаться туда напрямую.
+  if (best.dir === SYSTEM_WG_DIR) {
+    lastRuntimeDir = SYSTEM_WG_DIR
+    send?.(`[WG] Runtime: ${SYSTEM_WG_DIR} (system ${best.ver})`)
+    return SYSTEM_WG_DIR
   }
 
   fs.mkdirSync(STABLE_WG_DIR, { recursive: true })
   for (const name of ['wireguard.exe', 'wg.exe']) {
-    const src = path.join(srcDir, name)
+    const src = path.join(best.dir, name)
     const dest = path.join(STABLE_WG_DIR, name)
     if (!fs.existsSync(src)) continue
     try {
       fs.copyFileSync(src, dest)
     } catch (e) {
       if (e.code === 'EBUSY' && fs.existsSync(dest)) {
+        // Если в ProgramData старая версия и занята — лучше system, если есть.
+        if (fs.existsSync(path.join(SYSTEM_WG_DIR, 'wireguard.exe'))
+          && cmpVersion(wgExeVersion(SYSTEM_WG_DIR), stableVer) > 0) {
+          lastRuntimeDir = SYSTEM_WG_DIR
+          send?.(`[WG] ${name} занят — переключаемся на Program Files`)
+          return SYSTEM_WG_DIR
+        }
         send?.(`[WG] ${name} занят службой — используем ${dest}`)
       } else if (fs.existsSync(dest)) {
         send?.(`[WG] ${name}: ${e.message} — используем существующий`)
+      } else if (fs.existsSync(path.join(SYSTEM_WG_DIR, 'wireguard.exe'))) {
+        lastRuntimeDir = SYSTEM_WG_DIR
+        send?.(`[WG] Не удалось скопировать ${name} — Program Files`)
+        return SYSTEM_WG_DIR
       } else {
         throw e
       }
     }
   }
-  const wintunDest = path.join(STABLE_WG_DIR, 'wintun.dll')
-  try {
-    fs.copyFileSync(wintunSrc, wintunDest)
-  } catch (e) {
-    if (!(e.code === 'EBUSY' && fs.existsSync(wintunDest))) {
-      if (!fs.existsSync(wintunDest)) throw e
-      send?.(`[WG] wintun.dll: ${e.message} — используем существующий`)
+
+  const wintunSrc = findWintunDll(best.dir)
+  if (wintunSrc) {
+    const wintunDest = path.join(STABLE_WG_DIR, 'wintun.dll')
+    try {
+      fs.copyFileSync(wintunSrc, wintunDest)
+    } catch (e) {
+      if (!(e.code === 'EBUSY' && fs.existsSync(wintunDest))) {
+        send?.(`[WG] wintun.dll: ${e.message} (для WireGuardNT не обязателен)`)
+      }
     }
+  } else {
+    send?.('[WG] wintun.dll нет — OK для WireGuardNT 1.x')
   }
+
+  const copiedVer = wgExeVersion(STABLE_WG_DIR)
+  if (cmpVersion(best.ver, copiedVer) > 0 && fs.existsSync(path.join(SYSTEM_WG_DIR, 'wireguard.exe'))) {
+    lastRuntimeDir = SYSTEM_WG_DIR
+    send?.(`[WG] ProgramData остался ${copiedVer}, берём system ${best.ver}`)
+    return SYSTEM_WG_DIR
+  }
+
   lastRuntimeDir = STABLE_WG_DIR
-  send?.(`[WG] Runtime: ${STABLE_WG_DIR}`)
+  send?.(`[WG] Runtime: ${STABLE_WG_DIR} (${copiedVer})`)
   return STABLE_WG_DIR
 }
 
@@ -180,11 +248,21 @@ async function runCmdAsync(cmd, cwd, timeoutMs = 45000) {
   }
 }
 
+function isAccessDeniedOut(text) {
+  return /access is denied|отказано в доступе|error:\s*5\b|недостаточно привилегий/i.test(String(text || ''))
+}
+
 async function runWgInstall(wgExe, stableConf, runtimeDir, send) {
   send('[WG] Установка службы WireGuardTunnel$wg-turn...')
-  await runCmdAsync(`"${wgExe}" /uninstalltunnelservice ${TUNNEL_NAME}`, runtimeDir)
+  const uninstallOut = await runCmdAsync(`"${wgExe}" /uninstalltunnelservice ${TUNNEL_NAME}`, runtimeDir)
+  if (uninstallOut && isAccessDeniedOut(uninstallOut)) {
+    send('[WG] uninstall: Access is denied — нужны права администратора')
+  }
   const installOut = await runCmdAsync(`"${wgExe}" /installtunnelservice "${stableConf}"`, runtimeDir)
-  if (installOut) send('[WG] install: ' + installOut.slice(0, 300))
+  if (installOut) send('[WG] install: ' + installOut.slice(0, 400))
+  if (isAccessDeniedOut(installOut)) {
+    return { ok: false, accessDenied: true, out: installOut }
+  }
 
   try {
     await execAsync(`sc start "${SERVICE_NAME}"`, {
@@ -197,8 +275,12 @@ async function runWgInstall(wgExe, stableConf, runtimeDir, send) {
     // 1056 = служба уже запущена (installtunnelservice часто стартует сам)
     if (msg && !/1056|already running|уже запущен/i.test(msg)) {
       send('[WG] sc start: ' + msg.slice(0, 200))
+      if (isAccessDeniedOut(msg)) {
+        return { ok: false, accessDenied: true, out: msg }
+      }
     }
   }
+  return { ok: true, accessDenied: false, out: installOut }
 }
 
 /**
@@ -828,36 +910,47 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     await sleep(200)
   }
 
-  if (!isProcessElevated()) {
-    const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly)
-    if (ok) {
-      await gatewayPromise
-      await finalizeTunnelUp(send, excludeIPs, subnetOnly)
-      send('[WG] Туннель активен')
-      try {
-        const wgCli = path.join(runtimeDir, 'wg.exe')
-        if (fs.existsSync(wgCli)) {
-          const { stdout: st } = await execFileAsync(wgCli, ['show', TUNNEL_NAME], {
-            encoding: 'utf8',
-            windowsHide: true,
-            timeout: 8000,
-          })
-          String(st || '').split('\n').filter(l => l.trim()).slice(0, 5).forEach(l => send('[WG] ' + l.trim()))
-        }
-      } catch { /* ignore */ }
-    } else {
-      send('[WG] Запустите приложение через «Silent VPN (Admin).bat» или разрешите UAC')
-    }
-    return ok
-  }
-
-  await runWgInstall(wgExe, stableConf, runtimeDir, send)
-
-  if (await waitForTunnelUp(60000, send)) {
+  const finishOk = async () => {
     await gatewayPromise
     await finalizeTunnelUp(send, excludeIPs, subnetOnly)
     send('[WG] Туннель активен')
+    try {
+      const wgCli = path.join(runtimeDir, 'wg.exe')
+      if (fs.existsSync(wgCli)) {
+        const { stdout: st } = await execFileAsync(wgCli, ['show', TUNNEL_NAME], {
+          encoding: 'utf8',
+          windowsHide: true,
+          timeout: 8000,
+        })
+        String(st || '').split('\n').filter(l => l.trim()).slice(0, 5).forEach(l => send('[WG] ' + l.trim()))
+      }
+    } catch { /* ignore */ }
     return true
+  }
+
+  // Сброс кеша elevation — иначе 60с false-positive после смены прав.
+  elevatedCache = { at: 0, value: false }
+  const elevated = isProcessElevated()
+  send(elevated ? '[WG] Процесс с правами администратора' : '[WG] Без админа — нужен UAC для службы WireGuard')
+
+  if (!elevated) {
+    const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly)
+    if (ok) return finishOk()
+    send('[WG] Запустите «SilentVPN-Admin.bat» (рядом с exe) и нажмите «Да» в UAC')
+    return false
+  }
+
+  const installResult = await runWgInstall(wgExe, stableConf, runtimeDir, send)
+
+  if (await waitForTunnelUp(25000, send)) {
+    return finishOk()
+  }
+
+  // Ложный «elevated» или Access Denied — fallback на UAC-скрипт.
+  if (installResult.accessDenied || !(await isServiceRunningAsync())) {
+    send('[WG] Служба не создалась — повтор через UAC…')
+    const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly)
+    if (ok) return finishOk()
   }
 
   await logServiceState(send)
@@ -870,6 +963,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   } catch { /* ignore */ }
 
   send('[WG] Служба не поднялась — services.msc → WireGuardTunnel$wg-turn')
+  send('[WG] Закройте все Silent VPN и запустите через «SilentVPN-Admin.bat»')
   return false
 }
 

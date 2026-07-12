@@ -40,9 +40,12 @@ if errorlevel 1 (
 )
 
 for /d %%D in ("!OUT_DIR!\win-unpacked") do (
+  copy /Y "%~dp0SilentVPN-Admin.bat" "%%~fD\SilentVPN-Admin.bat" >nul
   echo.
   echo OK: %%~fD\Silent VPN.exe
-  echo Debug build — logs, hashes and VK modes enabled.
+  echo Admin: %%~fD\SilentVPN-Admin.bat
+  echo Debug build - logs, hashes and VK modes enabled.
+  echo IMPORTANT: for WireGuard use SilentVPN-Admin.bat ^(UAC^), not plain exe.
 )
 
 echo === DEBUG BUILD SUCCESS ===

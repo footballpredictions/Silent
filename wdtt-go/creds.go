@@ -105,7 +105,7 @@ func vkCallsShouldRetry(err error) bool {
 }
 
 // vkCallsShouldFallbackToLegacy — в режиме vkcalls не уходим в legacy+капчу
-// при call_unavailable или captcha-gate на free-path (иначе «сразу капча»).
+// при call_unavailable, captcha-gate или network (Wi‑Fi DPI) — иначе шторм капчи.
 func vkCallsShouldFallbackToLegacy(err error) bool {
 	if _, ok := asCallUnavailableError(err); ok {
 		return false
@@ -113,7 +113,7 @@ func vkCallsShouldFallbackToLegacy(err error) bool {
 	var failure *vkCallsFailure
 	if errors.As(err, &failure) {
 		switch failure.Kind {
-		case vkCallsFailureCall, vkCallsFailureCaptcha:
+		case vkCallsFailureCall, vkCallsFailureCaptcha, vkCallsFailureNetwork:
 			return false
 		}
 	}

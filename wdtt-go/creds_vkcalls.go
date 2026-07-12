@@ -20,9 +20,16 @@ import (
 
 const (
 	vkConnectClientID     = "8093730"
-	vkCallsAPIHost        = "api.vk.me"
 	vkCallsAnonAPIVersion = "5.276"
 )
+
+// Ротация хостов: на Wi‑Fi DPI часто ломает только api.vk.me (poison/RST),
+// api.vk.ru / api.vk.com часто ещё живы.
+var vkCallsAPIHosts = []string{
+	"api.vk.me",
+	"api.vk.ru",
+	"api.vk.com",
+}
 
 var vkCallsProfile = Profile{
 	UserAgent:       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
@@ -132,6 +139,27 @@ func getVKCredsViaVKCallsPath(ctx context.Context, link string, streamID int) (s
 		return "", "", nil, newVKCallsFailure("preflight", vkCallsFailureSkipped, fmt.Errorf("disabled by VK_SKIP_VKCALLS=1"))
 	}
 
+	var lastErr error
+	for hi, apiHost := range vkCallsAPIHosts {
+		user, pass, addrs, err := getVKCredsViaVKCallsHost(ctx, link, streamID, apiHost)
+		if err == nil {
+			return user, pass, addrs, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return "", "", nil, ctx.Err()
+		}
+		if !vkCallsShouldRetry(err) {
+			return "", "", nil, err
+		}
+		if hi+1 < len(vkCallsAPIHosts) {
+			log.Printf("[STREAM %d] [VKCalls] host %s failed (%s), trying next host", streamID, apiHost, describeVKCallsFailure(err))
+		}
+	}
+	return "", "", nil, lastErr
+}
+
+func getVKCredsViaVKCallsHost(ctx context.Context, link string, streamID int, apiHost string) (string, string, []string, error) {
 	deviceID := uuid.New().String()
 	name := generateName()
 	profile := vkCallsProfile
@@ -142,14 +170,14 @@ func getVKCredsViaVKCallsPath(ctx context.Context, link string, streamID int) (s
 		tlsclient.WithTimeoutSeconds(20),
 		tlsclient.WithClientProfile(profiles.Chrome_146),
 		tlsclient.WithCookieJar(tlsclient.NewCookieJar()),
-		// LAN bind: VK Auth не уходит в WG (иначе EACCES при early full).
+		// LAN bind + public DNS: VK Auth не уходит в WG / ISP poison.
 		tlsclient.WithDialer(newVkDirectDialer()),
 	)
 	if err != nil {
 		return "", "", nil, newVKCallsFailure("setup", vkCallsFailureSetup, fmt.Errorf("create tls client: %w", err))
 	}
 
-	log.Printf("[STREAM %d] [VKCalls] Identity - Name: %s | device_id=%s | TLS=Chrome_146 | UA: %s", streamID, name, deviceID, profile.UserAgent)
+	log.Printf("[STREAM %d] [VKCalls] Identity - Name: %s | device_id=%s | host=%s | TLS=Chrome_146 | UA: %s", streamID, name, deviceID, apiHost, profile.UserAgent)
 
 	doRequest := func(step string, url string) (map[string]interface{}, error) {
 		req, err := fhttp.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(nil))
@@ -186,7 +214,7 @@ func getVKCredsViaVKCallsPath(ctx context.Context, link string, streamID int) (s
 	step1 := "step1 auth.getAnonymToken"
 	step1URL := fmt.Sprintf(
 		"https://%s/method/auth.getAnonymToken?v=%s&client_id=%s&link=%s&device_id=%s&anonymName=%s&lang=en",
-		vkCallsAPIHost, vkCallsAnonAPIVersion, vkConnectClientID,
+		apiHost, vkCallsAnonAPIVersion, vkConnectClientID,
 		linkURL, deviceID, nameEnc,
 	)
 	resp1, err := doRequest(step1, step1URL)
@@ -198,12 +226,12 @@ func getVKCredsViaVKCallsPath(ctx context.Context, link string, streamID int) (s
 		return "", "", nil, newVKCallsFailure(step1, vkCallsFailureParse, fmt.Errorf("parse token: %w (resp: %s)", err, truncateVKCallsResp(resp1)))
 	}
 	anonymTokenEnc := neturl.QueryEscape(anonymToken)
-	log.Printf("[STREAM %d] [VKCalls] step1 OK, anonymous_token (%d chars)", streamID, len(anonymToken))
+	log.Printf("[STREAM %d] [VKCalls] step1 OK host=%s, anonymous_token (%d chars)", streamID, apiHost, len(anonymToken))
 
 	step2 := "step2 messages.getCallPreview"
 	step2URL := fmt.Sprintf(
 		"https://%s/method/messages.getCallPreview?v=%s&anonymous_token=%s&device_id=%s&extended=1&fields=first_name,last_name,photo_200&lang=en&link=%s",
-		vkCallsAPIHost, vkCallsAnonAPIVersion, anonymTokenEnc, deviceID, linkURL,
+		apiHost, vkCallsAnonAPIVersion, anonymTokenEnc, deviceID, linkURL,
 	)
 	resp2, err := doRequest(step2, step2URL)
 	if err != nil {
@@ -226,12 +254,12 @@ func getVKCredsViaVKCallsPath(ctx context.Context, link string, streamID int) (s
 	if err != nil {
 		return "", "", nil, newVKCallsFailure(step2, vkCallsFailureParse, fmt.Errorf("parse secret: %w", err))
 	}
-	log.Printf("[STREAM %d] [VKCalls] step2 OK, user_id=%s, secret (%d chars)", streamID, userIDStr, len(secret))
+	log.Printf("[STREAM %d] [VKCalls] step2 OK host=%s, user_id=%s, secret (%d chars)", streamID, apiHost, userIDStr, len(secret))
 
 	step3 := "step3 messages.getAnonymCallToken"
 	step3URL := fmt.Sprintf(
 		"https://%s/method/messages.getAnonymCallToken?v=%s&anonymous_token=%s&device_id=%s&link=%s&name=%s&user_id=%s&secret=%s&lang=en",
-		vkCallsAPIHost, vkCallsAnonAPIVersion, anonymTokenEnc, deviceID, linkURL,
+		apiHost, vkCallsAnonAPIVersion, anonymTokenEnc, deviceID, linkURL,
 		nameEnc, userIDStr, neturl.QueryEscape(secret),
 	)
 	resp3, err := doRequest(step3, step3URL)

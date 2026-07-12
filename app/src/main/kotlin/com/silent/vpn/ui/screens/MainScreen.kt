@@ -299,7 +299,6 @@ fun MainScreen(
     onUpdatePolling: (Boolean) -> Unit = {},
     appearanceMode: AppearanceMode = AppearanceMode.LIGHT,
     onToggleAppearance: () -> Unit = {},
-    onRefreshTelegramChannel: () -> Unit = {},
 ) {
     val palette = remember(theme, appearanceMode) { theme.resolveThemePalette(appearanceMode) }
     val bg = palette.bg
@@ -737,25 +736,19 @@ fun MainScreen(
                                                 ?: "Ускорить Telegram",
                                             fg = fg,
                                             onClick = {
-                                                onOpenUrl(proxyUrl)
+                                                // t.me/proxy в браузере → сайт; tg:// открывает клиент Telegram
+                                                val deep = when {
+                                                    proxyUrl.startsWith("tg://", ignoreCase = true) -> proxyUrl
+                                                    proxyUrl.contains("t.me/proxy?", ignoreCase = true) ->
+                                                        "tg://proxy?" + proxyUrl.substringAfter("t.me/proxy?", "")
+                                                    else -> proxyUrl
+                                                }
+                                                onOpenUrl(deep)
                                                 menuOpen = false
                                                 menuPage = MenuPage.ROOT
                                             },
                                         )
                                     }
-                                }
-                            }
-                            if (vpnState == VpnState.CONNECTED) {
-                                item(key = "tg_boost") {
-                                    MenuNavItem(
-                                        label = "Обновить канал Telegram",
-                                        fg = fg,
-                                        onClick = {
-                                            onRefreshTelegramChannel()
-                                            menuOpen = false
-                                            menuPage = MenuPage.ROOT
-                                        },
-                                    )
                                 }
                             }
                             item(key = "logout") {

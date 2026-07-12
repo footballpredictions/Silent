@@ -152,6 +152,8 @@ data class ThemeData(
     val app_name: String = "Silent VPN",
     val support_url: String = "https://t.me/silentvpn3?direct",
     val telegram_channel_url: String = "https://t.me/silentvpn3",
+    val telegram_proxy_url: String = "",
+    val telegram_proxy_menu_label: String = "Ускорить Telegram",
     val privacy_url: String = "",
     val terms_url: String = "",
     val update_bar_background_color: String = "#2563EB",

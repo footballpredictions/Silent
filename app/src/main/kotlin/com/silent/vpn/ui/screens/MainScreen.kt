@@ -728,6 +728,23 @@ fun MainScreen(
                                     }
                                 })
                             }
+                            if (BuildConfig.DEBUG) {
+                                val proxyUrl = theme?.telegram_proxy_url?.trim().orEmpty()
+                                if (proxyUrl.isNotEmpty()) {
+                                    item(key = "tg_proxy") {
+                                        MenuNavItem(
+                                            label = theme?.telegram_proxy_menu_label?.takeIf { it.isNotBlank() }
+                                                ?: "Ускорить Telegram",
+                                            fg = fg,
+                                            onClick = {
+                                                onOpenUrl(proxyUrl)
+                                                menuOpen = false
+                                                menuPage = MenuPage.ROOT
+                                            },
+                                        )
+                                    }
+                                }
+                            }
                             if (vpnState == VpnState.CONNECTED) {
                                 item(key = "tg_boost") {
                                     MenuNavItem(

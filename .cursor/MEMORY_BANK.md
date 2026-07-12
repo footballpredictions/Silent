@@ -525,6 +525,12 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-12 — Android: Telegram Boost без двух APK
+
+- Revoke: полный teardown FGS+libclient (нет зомби debug↔release)
+- Меню при VPN ON: «Обновить канал Telegram» → `refreshTelegramPath` (новые TURN + warmup)
+- Без sticky / Direct Exit
+
 ### 2026-07-11 — Android 1.0.154: Telegram parity PC + hi-res S (push)
 
 - Version **1.0.154** → `origin/android`

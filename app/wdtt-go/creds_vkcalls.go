@@ -46,6 +46,7 @@ const (
 	vkCallsFailureNetwork vkCallsFailureKind = "network"
 	vkCallsFailureDecode  vkCallsFailureKind = "decode"
 	vkCallsFailureVKAPI   vkCallsFailureKind = "vk_api"
+	vkCallsFailureFlood   vkCallsFailureKind = "flood"
 	vkCallsFailureCaptcha vkCallsFailureKind = "captcha"
 	vkCallsFailureCall    vkCallsFailureKind = "call_unavailable"
 	vkCallsFailureOKCDN   vkCallsFailureKind = "okcdn_api"
@@ -101,7 +102,19 @@ func vkCallsAPIErrorKind(err error) vkCallsFailureKind {
 	if errors.As(err, &captchaErr) {
 		return vkCallsFailureCaptcha
 	}
+	var apiErr *vkCallsVKAPIError
+	if errors.As(err, &apiErr) && isVKFloodControl(apiErr.Code, apiErr.Message) {
+		return vkCallsFailureFlood
+	}
 	return vkCallsFailureVKAPI
+}
+
+func isVKFloodControl(code int, msg string) bool {
+	if code == 9 {
+		return true
+	}
+	low := strings.ToLower(msg)
+	return strings.Contains(low, "flood control") || strings.Contains(low, "too many requests")
 }
 
 type vkCallsVKAPIError struct {

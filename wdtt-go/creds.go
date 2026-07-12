@@ -90,12 +90,12 @@ func fatalCallError(resp map[string]interface{}) *CallUnavailableError {
 	return &CallUnavailableError{Code: code, Message: msg}
 }
 
-// vkCallsShouldRetry — только сеть/decode; captcha/call/api ретраить бессмысленно.
+// vkCallsShouldRetry — сеть/decode/flood; captcha/call/api ретраить бессмысленно.
 func vkCallsShouldRetry(err error) bool {
 	var failure *vkCallsFailure
 	if errors.As(err, &failure) {
 		switch failure.Kind {
-		case vkCallsFailureNetwork, vkCallsFailureDecode:
+		case vkCallsFailureNetwork, vkCallsFailureDecode, vkCallsFailureFlood:
 			return true
 		default:
 			return false
@@ -105,7 +105,7 @@ func vkCallsShouldRetry(err error) bool {
 }
 
 // vkCallsShouldFallbackToLegacy — в режиме vkcalls не уходим в legacy+капчу
-// при call_unavailable, captcha-gate или network (Wi‑Fi DPI) — иначе шторм капчи.
+// при call/captcha/network/flood (иначе шторм капчи, как error_code=9 → legacy).
 func vkCallsShouldFallbackToLegacy(err error) bool {
 	if _, ok := asCallUnavailableError(err); ok {
 		return false
@@ -113,7 +113,7 @@ func vkCallsShouldFallbackToLegacy(err error) bool {
 	var failure *vkCallsFailure
 	if errors.As(err, &failure) {
 		switch failure.Kind {
-		case vkCallsFailureCall, vkCallsFailureCaptcha, vkCallsFailureNetwork:
+		case vkCallsFailureCall, vkCallsFailureCaptcha, vkCallsFailureNetwork, vkCallsFailureFlood:
 			return false
 		}
 	}
@@ -122,6 +122,11 @@ func vkCallsShouldFallbackToLegacy(err error) bool {
 		return false
 	}
 	return true
+}
+
+func vkCallsIsFlood(err error) bool {
+	var failure *vkCallsFailure
+	return errors.As(err, &failure) && failure.Kind == vkCallsFailureFlood
 }
 
 func vkErrorCode(raw interface{}) int {
@@ -363,7 +368,38 @@ func vkClockForLink(link string) *vkLinkClock {
 	return v.(*vkLinkClock)
 }
 
-var vkLinkLast sync.Map // link → *vkLinkClock
+var (
+	vkLinkLast          sync.Map // link → *vkLinkClock
+	globalVkCallsMu     sync.Mutex
+	globalVkCallsLast   time.Time
+	globalVkFloodUntil  atomic.Int64 // unix nano — пауза после error_code=9
+)
+
+func noteVkFloodCooldown() {
+	until := time.Now().Add(5*time.Second + time.Duration(rand.Intn(3000))*time.Millisecond).UnixNano()
+	for {
+		old := globalVkFloodUntil.Load()
+		if until <= old {
+			return
+		}
+		if globalVkFloodUntil.CompareAndSwap(old, until) {
+			return
+		}
+	}
+}
+
+func waitVkFloodCooldown(ctx context.Context, streamID int) error {
+	until := time.Unix(0, globalVkFloodUntil.Load())
+	if wait := time.Until(until); wait > 0 {
+		log.Printf("[STREAM %d] [VK Auth] Flood cooldown: waiting %v...", streamID, wait.Truncate(time.Millisecond))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	return nil
+}
 
 func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (string, string, []string, error) {
 	mu := vkMuForLink(link)
@@ -372,7 +408,7 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (str
 
 	clock := vkClockForLink(link)
 	clock.mu.Lock()
-	minInterval := 1*time.Second + time.Duration(rand.Intn(800))*time.Millisecond
+	minInterval := 2*time.Second + time.Duration(rand.Intn(1200))*time.Millisecond
 	elapsed := time.Since(clock.last)
 	wait := time.Duration(0)
 	if !clock.last.IsZero() && elapsed < minInterval {
@@ -387,6 +423,35 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (str
 			return "", "", nil, ctx.Err()
 		case <-time.After(wait):
 		}
+	}
+
+	// Глобальный spacing между любыми VK Calls (4 хеша параллельно → Flood control).
+	if getVKAuthMode() == "vkcalls" {
+		if err := waitVkFloodCooldown(ctx, streamID); err != nil {
+			return "", "", nil, err
+		}
+		globalVkCallsMu.Lock()
+		minGlobal := 2*time.Second + time.Duration(rand.Intn(1500))*time.Millisecond
+		if !globalVkCallsLast.IsZero() {
+			if gElapsed := time.Since(globalVkCallsLast); gElapsed < minGlobal {
+				gWait := minGlobal - gElapsed
+				globalVkCallsMu.Unlock()
+				log.Printf("[STREAM %d] [VK Auth] Global throttle: waiting %v...", streamID, gWait.Truncate(time.Millisecond))
+				select {
+				case <-ctx.Done():
+					return "", "", nil, ctx.Err()
+				case <-time.After(gWait):
+				}
+				globalVkCallsMu.Lock()
+			}
+		}
+		user, pass, addrs, err := fetchVkCreds(ctx, link, streamID)
+		globalVkCallsLast = time.Now()
+		globalVkCallsMu.Unlock()
+		clock.mu.Lock()
+		clock.last = time.Now()
+		clock.mu.Unlock()
+		return user, pass, addrs, err
 	}
 
 	user, pass, addrs, err := fetchVkCreds(ctx, link, streamID)
@@ -405,8 +470,11 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 
 	if getVKAuthMode() == "vkcalls" {
 		var lastVKCallsErr error
-		// До 3 попыток только на сеть/decode. Captcha/call — сразу стоп, без legacy.
+		// До 3 попыток на сеть/decode/flood. Captcha/call — сразу стоп, без legacy.
 		for attempt := 1; attempt <= 3; attempt++ {
+			if err := waitVkFloodCooldown(ctx, streamID); err != nil {
+				return "", "", nil, err
+			}
 			user, pass, addrs, err := getVKCredsViaVKCallsPath(ctx, link, streamID)
 			if err == nil {
 				log.Printf("[STREAM %d] [VK Auth] Success via VK Calls path (attempt %d)", streamID, attempt)
@@ -417,6 +485,10 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 				log.Printf("[STREAM %d] [VK Auth] VK Calls non-retryable call error — no legacy/captcha: %v", streamID, callErr)
 				return "", "", nil, callErr
 			}
+			if vkCallsIsFlood(err) {
+				noteVkFloodCooldown()
+				log.Printf("[STREAM %d] [VK Auth] VK Calls flood control — no legacy/captcha (%s)", streamID, describeVKCallsFailure(err))
+			}
 			log.Printf("[STREAM %d] [VK Auth] VK Calls attempt %d/3 failed (%s)", streamID, attempt, describeVKCallsFailure(err))
 			if ctx.Err() != nil {
 				return "", "", nil, ctx.Err()
@@ -426,6 +498,9 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 			}
 			if attempt < 3 {
 				wait := time.Duration(350+rand.Intn(400)) * time.Millisecond
+				if vkCallsIsFlood(err) {
+					wait = 2*time.Second + time.Duration(rand.Intn(2500))*time.Millisecond
+				}
 				select {
 				case <-ctx.Done():
 					return "", "", nil, ctx.Err()

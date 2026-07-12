@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct SideMenuView: View {
     @ObservedObject var vm: MainViewModel
@@ -48,6 +49,17 @@ struct SideMenuView: View {
                         isShowing = false
                         vm.showSupport = true
                     }
+                    #if DEBUG
+                    if let proxy = vm.theme?.telegram_proxy_url, !proxy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        let label = vm.theme?.telegram_proxy_menu_label.trimmingCharacters(in: .whitespacesAndNewlines)
+                        menuItem(label?.isEmpty == false ? label! : "Ускорить Telegram") {
+                            isShowing = false
+                            if let url = URL(string: proxy) {
+                                UIApplication.shared.open(url)
+                            }
+                        }
+                    }
+                    #endif
                     menuItem("О сервисе") {
                         isShowing = false; vm.showAbout = true
                     }

@@ -56,6 +56,8 @@ struct ThemeData: Decodable {
     var app_name: String = "Silent"
     var support_url: String = "https://t.me/silentvpn3?direct"
     var telegram_channel_url: String = "https://t.me/silentvpn3"
+    var telegram_proxy_url: String = ""
+    var telegram_proxy_menu_label: String = "Ускорить Telegram"
     var privacy_url: String = ""
     var terms_url: String = ""
 }

@@ -40,6 +40,7 @@ import MenuVkCredModePanel from '../components/MenuVkCredModePanel'
 import { prepareVpnConnectConfig } from '../prepareVpnConnect'
 import { attachVkCredLaunchParams } from '../vkCredStore'
 import { isDebugBuild } from '../debugBuild'
+import { telegramProxyDeepLink } from '../telegramProxyLink'
 import { notifyDisconnect } from '../vpnBackendSync'
 import { pushLog, logI } from '../debugLog'
 import { clearVpnLogs } from '../vpnLogStore'
@@ -1111,7 +1112,7 @@ export default function MainScreen({
                 <button
                   type="button"
                   onClick={() => {
-                    const url = String(clientTheme.telegram_proxy_url).trim()
+                    const url = telegramProxyDeepLink(String(clientTheme.telegram_proxy_url))
                     void (window as any).electronAPI?.openExternal?.(url)
                     setMenuOpen(false)
                     setMenuPage(null)

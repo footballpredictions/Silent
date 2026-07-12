@@ -41,6 +41,8 @@ export interface ClientTheme {
   login_reset_button_text?: string
   support_url?: string
   telegram_channel_url?: string
+  telegram_proxy_url?: string
+  telegram_proxy_menu_label?: string
   hive_standby_api_urls?: string
   menu_bonuses_label?: string
   bonuses_title?: string

@@ -1107,6 +1107,24 @@ export default function MainScreen({
                   <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: muted }} />
                 </button>
               ))}
+              {isDevBuild && !!(clientTheme?.telegram_proxy_url || '').trim() && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const url = String(clientTheme.telegram_proxy_url).trim()
+                    void (window as any).electronAPI?.openExternal?.(url)
+                    setMenuOpen(false)
+                    setMenuPage(null)
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors"
+                  style={{ color: fg }}
+                >
+                  <span className="flex-1 text-left leading-snug">
+                    {clientTheme?.telegram_proxy_menu_label || 'Ускорить Telegram'}
+                  </span>
+                  <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: muted }} />
+                </button>
+              )}
               {profile?.is_admin && (
                 <button
                   type="button"

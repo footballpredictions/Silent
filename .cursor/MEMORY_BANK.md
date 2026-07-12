@@ -525,11 +525,22 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-12 — Android: убран «Обновить канал Telegram»
+
+- Пункт меню удалён (старый TURN-refresh); в debug остаётся только «Ускорить Telegram» (proxy)
+- `refreshTelegramChannel` из ViewModel убран
+
+### 2026-07-12 — Android: Telegram debug-меню только в DEBUG
+
+- «Ускорить Telegram» — **только** `BuildConfig.DEBUG`
+- В release Telegram debug-пунктов нет
+
 ### 2026-07-12 — Telegram MTProto proxy (ускорение поверх VPN)
 
 - VPS: `silent-tg-proxy` (mtg) на `:8443`, `python scripts/deploy_telegram_proxy.py`
 - Theme: `telegram_proxy_url`, `telegram_proxy_menu_label`
 - Меню «Ускорить Telegram» — **только debug** (Android/PC/iOS); в release скрыто
+- Открытие: `tg://proxy?…` (не `https://t.me/proxy` — на PC иначе сайт скачивания)
 - Не исключение приложения: VPN обязателен; proxy — режим Telegram через наш exit
 - Ссылка: `/root/silent_tg_proxy.txt` на VPS + админка «Оформление»
 

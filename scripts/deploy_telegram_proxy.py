@@ -115,23 +115,25 @@ echo "PROXY_TG_LINK=$TG_LINK"
     print(out)
 
     https_link = ""
+    tg_link = ""
     for line in out.splitlines():
         if line.startswith("PROXY_HTTPS_LINK="):
             https_link = line.split("=", 1)[1].strip()
-            break
-    if not https_link:
+        elif line.startswith("PROXY_TG_LINK="):
+            tg_link = line.split("=", 1)[1].strip()
+    # В тему — tg:// чтобы клиенты открывали установленный Telegram, не сайт скачивания
+    theme_link = tg_link or https_link
+    if not theme_link:
         client.close()
-        raise SystemExit("Не удалось получить PROXY_HTTPS_LINK из вывода установки")
+        raise SystemExit("Не удалось получить PROXY_TG_LINK / PROXY_HTTPS_LINK")
 
     # Merge into theme via psql (asyncpg-only container has no psycopg2)
     patch_sh = f"""#!/bin/bash
 set -euo pipefail
-LINK={json.dumps(https_link)}
-LABEL='Ускорить Telegram'
 docker exec backend-db-1 psql -U silent -d silent_vpn -t -A -c "SELECT value FROM app_settings WHERE key='theme';" > /tmp/theme_raw.json
 python3 - <<'PY'
 import json
-link = {json.dumps(https_link)}
+link = {json.dumps(theme_link)}
 label = "Ускорить Telegram"
 with open("/tmp/theme_raw.json", encoding="utf-8") as f:
     raw = f.read().strip()
@@ -142,7 +144,6 @@ with open("/tmp/theme_patched.json", "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False)
 print("patched ok")
 PY
-# dollar-quoting to avoid escaping JSON
 python3 - <<'PY'
 from pathlib import Path
 payload = Path("/tmp/theme_patched.json").read_text(encoding="utf-8")
@@ -161,8 +162,11 @@ echo theme_proxy_ok
     run(client, f"docker compose -f /opt/silent-vpn/backend/docker-compose.yml restart api 2>&1 | tail -5", timeout=60)
     client.close()
     print("Done")
-    print("Ссылка (также в /root/silent_tg_proxy.txt):")
-    print(https_link)
+    print("Ссылка в теме (tg://):")
+    print(theme_link)
+    if https_link:
+        print("HTTPS (для браузера):")
+        print(https_link)
 
 
 if __name__ == "__main__":

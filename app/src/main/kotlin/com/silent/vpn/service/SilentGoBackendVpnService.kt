@@ -10,12 +10,12 @@ class SilentGoBackendVpnService : GoBackend.VpnService() {
     override fun onRevoke() {
         DebugLog.w("GoBackendVpn", "VPN revoked by system (another VPN connected)")
         super.onRevoke()
-        if (SilentVpnService.isRunning) {
-            startService(
-                Intent(this, SilentVpnService::class.java).apply {
-                    action = SilentVpnService.ACTION_EXTERNAL_REVOKED
-                },
-            )
-        }
+        // Всегда будим SilentVpnService: isRunning мог залипнуть false при зомби libclient/FGS
+        // (debug ↔ release — два applicationId).
+        startService(
+            Intent(this, SilentVpnService::class.java).apply {
+                action = SilentVpnService.ACTION_EXTERNAL_REVOKED
+            },
+        )
     }
 }

@@ -198,6 +198,7 @@ fun MainActivityRoot(
                             val next = vm.repository.toggleAppearanceMode()
                             appearanceDark = next == "dark"
                         },
+                        onRefreshTelegramChannel = { vm.refreshTelegramChannel() },
                     )
                 }
             }

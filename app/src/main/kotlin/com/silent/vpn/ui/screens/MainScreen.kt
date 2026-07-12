@@ -299,6 +299,7 @@ fun MainScreen(
     onUpdatePolling: (Boolean) -> Unit = {},
     appearanceMode: AppearanceMode = AppearanceMode.LIGHT,
     onToggleAppearance: () -> Unit = {},
+    onRefreshTelegramChannel: () -> Unit = {},
 ) {
     val palette = remember(theme, appearanceMode) { theme.resolveThemePalette(appearanceMode) }
     val bg = palette.bg
@@ -726,6 +727,19 @@ fun MainScreen(
                                         onLoadReferral { referralInfo = it }
                                     }
                                 })
+                            }
+                            if (vpnState == VpnState.CONNECTED) {
+                                item(key = "tg_boost") {
+                                    MenuNavItem(
+                                        label = "Обновить канал Telegram",
+                                        fg = fg,
+                                        onClick = {
+                                            onRefreshTelegramChannel()
+                                            menuOpen = false
+                                            menuPage = MenuPage.ROOT
+                                        },
+                                    )
+                                }
                             }
                             item(key = "logout") {
                                 MenuNavLogout(onClick = { onLogout(); menuOpen = false })

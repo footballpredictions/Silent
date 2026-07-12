@@ -1796,6 +1796,28 @@ class MainViewModel @Inject constructor(
     fun showError(msg: String) { _vpnError.value = msg }
     fun dismissRegDone() { _regDone.value = false; _regEmail.value = "" }
 
+    /**
+     * Меню «Обновить канал Telegram»: новые TURN без снятия WG
+     * (эффект как после переключения debug↔release, без двух APK).
+     */
+    fun refreshTelegramChannel(): Boolean {
+        if (_vpnState.value != VpnState.CONNECTED) {
+            showError("Сначала включите VPN")
+            return false
+        }
+        if (WdttTunnelManager.isBootstrapMode()) {
+            showError("Недоступно в режиме входа")
+            return false
+        }
+        val ok = WdttTunnelManager.refreshTelegramPath()
+        if (!ok) {
+            showError("Сейчас нельзя обновить канал (подождите воркеры / капчу)")
+        } else {
+            TelegramPathWarmup.schedule(viewModelScope)
+        }
+        return ok
+    }
+
     fun goToMain(skipProfileFetch: Boolean = false) {
         invalidatePendingLogout()
         _screen.value = AppScreen.MAIN

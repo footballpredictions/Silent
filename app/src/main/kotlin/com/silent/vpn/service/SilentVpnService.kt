@@ -361,9 +361,20 @@ class SilentVpnService : Service() {
             }
             ACTION_EXTERNAL_REVOKED -> {
                 SessionTrace.warn("SilentVpnService", "EXTERNAL_REVOKED")
-                if (isRunning) {
-                    DebugLog.w("VpnService", "DISCONNECT — VPN revoked by another app")
+                DebugLog.w("VpnService", "DISCONNECT — VPN revoked by another app (full teardown)")
+                // Даже при stale isRunning — гасим FGS + libclient (иначе два уведомления debug/release).
+                if (isRunning || WdttTunnelManager.running.value) {
                     disconnect()
+                } else {
+                    clearVpnNotification()
+                    VpnServiceTracker.markSessionActive(this, false)
+                    scope.launch(Dispatchers.IO) {
+                        runCatching { VpnConnectHelper.ensureCleanSlate(this@SilentVpnService, force = true) }
+                        withContext(Dispatchers.Main) {
+                            clearVpnNotification()
+                            stopSelf()
+                        }
+                    }
                 }
             }
             null -> {

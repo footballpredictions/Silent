@@ -1398,6 +1398,37 @@ object WdttTunnelManager {
     fun restartTransportAfterNetwork() = restartTransport(forceNetwork = true)
 
     /**
+     * «Обновить канал Telegram»: перезапуск libclient (новые TURN), WG не снимаем.
+     * Эффект как после переключения debug↔release — свежий путь без двух APK.
+     */
+    fun refreshTelegramPath(): Boolean {
+        if (isBootstrapMode) return false
+        if (!tunnelReady.value) return false
+        val params = lastParams ?: return false
+        val ctx = lastContext ?: return false
+        if (isCaptchaInProgress() || ManlCaptchaWebViewManager.isCaptchaPending) return false
+        updateLog("tg_boost", "Telegram: обновление канала (новые TURN)…", 1)
+        DebugLog.i("WdttTunnel", "refreshTelegramPath n=${params.workers}")
+        killProcess()
+        activeWorkers.value = 0
+        scope.launch {
+            delay(1_200)
+            if (!tunnelReady.value && lastWgConfig == null) return@launch
+            start(ctx, params, isSwitching = true)
+            // Прогрев DC после набора воркеров
+            delay(2_500)
+            if (tunnelReady.value && !isBootstrapMode) {
+                TelegramPathWarmup.kick(scope)
+            }
+            delay(6_000)
+            if (tunnelReady.value && activeWorkers.value >= 9 && !isBootstrapMode) {
+                TelegramPathWarmup.kick(scope)
+            }
+        }
+        return true
+    }
+
+    /**
      * Новые хеши с сервера — перезапуск libclient без снятия WireGuard.
      * Только при стабильном туннеле, не во время капчи/ramp-up.
      */

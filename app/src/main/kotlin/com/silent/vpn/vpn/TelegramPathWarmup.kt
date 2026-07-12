@@ -1,14 +1,14 @@
 package com.silent.vpn.vpn
 
 import com.silent.vpn.util.DebugLog
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.net.InetAddress
 
 /**
  * Прогрев DC/CDN Telegram через VPN — паритет с PC 1.0.154.
@@ -64,6 +64,14 @@ object TelegramPathWarmup {
             if (WdttTunnelManager.tunnelReady.value && !WdttTunnelManager.isBootstrapMode()) {
                 runOnce()
             }
+        }
+    }
+
+    /** Разовый прогрев после refreshTelegramPath / смены сети. */
+    fun kick(scope: CoroutineScope) {
+        scope.launch(Dispatchers.IO) {
+            if (!WdttTunnelManager.tunnelReady.value || WdttTunnelManager.isBootstrapMode()) return@launch
+            runOnce()
         }
     }
 

@@ -274,23 +274,21 @@ class MainViewModel @Inject constructor(
                 runCatching { repo.startNewSession() }
                     .onFailure { e ->
                         DebugLog.w("MainViewModel", "restore session fingerprint failed: ${e.message}")
-                        repo.clearTokens()
-                        _screen.value = AppScreen.LOGIN
+                        // Не clearTokens — пользователь остаётся авторизованным.
                     }
-            } else {
-                _screen.value = AppScreen.MAIN
-                restoreCachedProfileToUi()
-                restoreCachedThemeToUi()
-                syncVpnStateFromSystem()
-                viewModelScope.launch {
-                    runCatching { refreshSession() }
-                        .onFailure { e ->
-                            DebugLog.w("MainViewModel", "refreshSession: ${e.message}")
-                        }
-                }
-                repo.mergeSavedHashesIntoCachedConfig()
-                startConfigSync()
             }
+            _screen.value = AppScreen.MAIN
+            restoreCachedProfileToUi()
+            restoreCachedThemeToUi()
+            syncVpnStateFromSystem()
+            viewModelScope.launch {
+                runCatching { refreshSession() }
+                    .onFailure { e ->
+                        DebugLog.w("MainViewModel", "refreshSession: ${e.message}")
+                    }
+            }
+            repo.mergeSavedHashesIntoCachedConfig()
+            startConfigSync()
         } else {
             repo.getCachedTheme()?.let { _theme.value = it }
             viewModelScope.launch { loadTheme() }
@@ -1511,8 +1509,17 @@ class MainViewModel @Inject constructor(
                 return true
             }
             if (res.code() == 401) {
-                logout()
-                return false
+                DebugLog.w("MainViewModel", "profile 401 — refresh without logout")
+                return repo.fetchProfileLive().fold(
+                    onSuccess = { p ->
+                        applyServerProfile(p)
+                        true
+                    },
+                    onFailure = { e ->
+                        DebugLog.w("MainViewModel", "profile after refresh failed: ${e.message} — keep login")
+                        false
+                    },
+                )
             }
         } catch (e: Exception) {
             DebugLog.w("MainViewModel", "fetchProfile: ${e.message}")
@@ -1537,8 +1544,17 @@ class MainViewModel @Inject constructor(
                 return true
             }
             if (res.code() == 401) {
-                logout()
-                return false
+                DebugLog.w("MainViewModel", "profile 401 on $base — refresh without logout")
+                return repo.fetchProfileLive().fold(
+                    onSuccess = { p ->
+                        applyServerProfile(p)
+                        true
+                    },
+                    onFailure = { e ->
+                        DebugLog.w("MainViewModel", "profile refresh on $base failed: ${e.message} — keep login")
+                        false
+                    },
+                )
             }
         } catch (e: Exception) {
             DebugLog.w("MainViewModel", "fetchProfile on $base: ${e.message}")
@@ -2800,15 +2816,21 @@ class MainViewModel @Inject constructor(
             repo.saveCachedProfile(profile)
             return
         }
-        // Сессию удалили с другого устройства — выходим из аккаунта.
+        // Сессию удалили с сервера — не разлогиниваем: перерегистрируем устройство.
         val sid = _sessionDeviceId.value ?: repo.getSessionDeviceId()
         if (!sid.isNullOrBlank() && !sid.startsWith("boot:") && profile.devices.none { it.id == sid }) {
-            DebugLog.w("MainViewModel", "current session missing in profile — logout")
-            logout(appContext)
-            return
+            DebugLog.w("MainViewModel", "current session missing in profile — re-register, keep login")
+            _profile.value = profile
+            viewModelScope.launch {
+                runCatching { recoverMissingDeviceSession() }
+                    .onFailure { e -> DebugLog.w("MainViewModel", "session recover: ${e.message}") }
+            }
+            if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) return
+            // дальше — подписка/VPN как обычно
+        } else {
+            _profile.value = profile
+            if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) return
         }
-        _profile.value = profile
-        if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) return
         val hasAccess = hasVpnAccessForProfile(profile)
         val vpnFullyUp = _vpnState.value == VpnState.CONNECTED ||
             (SilentVpnService.isRunning && repo.isMainVpnApiReady())
@@ -2834,6 +2856,35 @@ class MainViewModel @Inject constructor(
             _vpnError.value = subscriptionRequiredMessage()
             viewModelScope.launch { disconnect(appContext) }
         }
+    }
+
+    /** Слот сессии пропал в /me — создать заново, токены не трогаем. */
+    private suspend fun recoverMissingDeviceSession() {
+        if (!repo.isLoggedIn()) return
+        if (!repo.hasSessionFingerprint()) {
+            runCatching { repo.startNewSession() }
+        }
+        val boot = repo.getBootstrapHash()
+        val res = repo.withUserBackendApi {
+            repo.getApi().registerDevice(
+                DeviceRegisterRequest(
+                    repo.getDeviceDisplayName(),
+                    repo.getApiDeviceType(),
+                    repo.getDeviceFingerprint(),
+                    null,
+                    boot,
+                ),
+            )
+        }
+        if (!res.isSuccessful) {
+            DebugLog.w("MainViewModel", "recover session register HTTP ${res.code()}")
+            return
+        }
+        val cfg = res.body() ?: return
+        repo.saveSessionDeviceId(cfg.device_id)
+        repo.cacheVpnConfig(Gson().toJson(cfg))
+        _sessionDeviceId.value = cfg.device_id
+        DebugLog.i("MainViewModel", "session recovered device_id=${cfg.device_id.take(8)}…")
     }
 
     private fun subscriptionRequiredMessage() =

@@ -68,8 +68,9 @@ api.interceptors.response.use(
     const cfg = err.config
     if (err.response?.status === 401) {
       const refresh = localStorage.getItem(REFRESH_KEY)
-      if (refresh) {
+      if (refresh && !(cfg as { _retry?: boolean })?._retry) {
         try {
+          ;(cfg as { _retry?: boolean })._retry = true
           const refreshBase = getPublicApiBaseUrl()
           const res = await axios.post(`${refreshBase}/api/auth/refresh`, { refresh_token: refresh })
           localStorage.setItem(TOKEN_KEY, res.data.access_token)
@@ -77,9 +78,8 @@ api.interceptors.response.use(
           err.config.headers['Authorization'] = `Bearer ${res.data.access_token}`
           return api.request(err.config)
         } catch {
-          localStorage.removeItem(TOKEN_KEY)
-          localStorage.removeItem(REFRESH_KEY)
-          window.location.reload()
+          // Не clearTokens / reload — пользователь остаётся авторизованным до явного «Выйти».
+          console.warn('[api] refresh failed — keep session')
         }
       }
     }

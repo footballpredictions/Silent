@@ -217,28 +217,25 @@ export default function MainScreen({
   const [hashSyncKey, setHashSyncKey] = useState(0)
 
   const applyServerProfile = useCallback((p: Profile) => {
-    // Сессию удалили с другого устройства / из меню — выходим из аккаунта (как Android).
+    // Сессия пропала на сервере — не разлогиниваем: перерегистрируем устройство.
     const sid = getSessionDeviceId()
     if (sid && Array.isArray(p.devices)) {
       const stillHere = p.devices.some(d => isCurrentSessionDevice(d, sid))
       if (!stillHere) {
-        pushLog('Main', 'current session missing in profile — logout', 'W')
+        pushLog('Main', 'current session missing — re-register, keep login', 'W')
         void (async () => {
           try {
-            setMainVpnSessionActive(false)
-            if (connected || connecting) {
-              await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
+            const fp = getDeviceFingerprint()
+            const config = await fetchVpnConfigWithKeys(fp)
+            if (config?.device_id) {
+              saveSessionDeviceId(String(config.device_id))
+              cacheVpnConfig(config)
+              pushLog('Main', `session recovered device=${String(config.device_id).slice(0, 8)}…`)
             }
-          } catch { /* ignore */ }
-          clearCachedVpnConfig()
-          clearCachedProfile()
-          clearSessionDeviceId()
-          clearSessionFingerprint()
-          clearTokens()
-          resetConfigSyncOnLogout()
-          onLogout()
+          } catch (e) {
+            pushLog('Main', `session recover fail: ${(e as Error)?.message || e}`, 'W')
+          }
         })()
-        return
       }
     }
 
@@ -280,7 +277,7 @@ export default function MainScreen({
         setMenuPage('subscription')
       })()
     }
-  }, [connected, connecting, disconnecting, onLogout])
+  }, [connected, connecting, disconnecting])
 
   const fetchProfile = useCallback(async () => {
     try {

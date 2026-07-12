@@ -105,7 +105,7 @@ func vkCallsShouldRetry(err error) bool {
 }
 
 // vkCallsShouldFallbackToLegacy — в режиме vkcalls не уходим в legacy+капчу
-// при call_unavailable или captcha-gate на free-path (иначе «сразу капча»).
+// при call_unavailable, captcha-gate или network (Wi‑Fi DPI) — иначе шторм капчи.
 func vkCallsShouldFallbackToLegacy(err error) bool {
 	if _, ok := asCallUnavailableError(err); ok {
 		return false
@@ -113,7 +113,7 @@ func vkCallsShouldFallbackToLegacy(err error) bool {
 	var failure *vkCallsFailure
 	if errors.As(err, &failure) {
 		switch failure.Kind {
-		case vkCallsFailureCall, vkCallsFailureCaptcha:
+		case vkCallsFailureCall, vkCallsFailureCaptcha, vkCallsFailureNetwork:
 			return false
 		}
 	}
@@ -470,6 +470,7 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		tlsclient.WithTimeoutSeconds(20),
 		tlsclient.WithClientProfile(profiles.Chrome_146),
 		tlsclient.WithCookieJar(jar),
+		tlsclient.WithDialer(newVkDirectDialer()),
 	)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("failed to initialize tls_client: %w", err)

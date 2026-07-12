@@ -4,6 +4,8 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.size
@@ -39,6 +41,7 @@ fun ThemeModeToggle(
     val dark = mode == AppearanceMode.DARK
     val isTv = rememberIsTv()
     val progress = remember { Animatable(if (dark) 1f else 0f) }
+    val phoneClick = remember { MutableInteractionSource() }
     LaunchedEffect(dark) {
         progress.animateTo(
             targetValue = if (dark) 1f else 0f,
@@ -52,8 +55,19 @@ fun ThemeModeToggle(
                 if (isTv) Modifier.defaultMinSize(minWidth = 44.dp, minHeight = 44.dp)
                 else Modifier.size(28.dp),
             )
-            // TV: синее кольцо фокуса как у меню / закрыть (TvIconButton).
-            .tvClickable(cornerRadius = 10.dp, ringOnTop = true, onClick = onToggle),
+            .then(
+                if (isTv) {
+                    // TV: синее кольцо фокуса как у меню / закрыть (TvIconButton).
+                    Modifier.tvClickable(cornerRadius = 10.dp, ringOnTop = true, onClick = onToggle)
+                } else {
+                    // Телефон: без ripple/муара при нажатии.
+                    Modifier.clickable(
+                        interactionSource = phoneClick,
+                        indication = null,
+                        onClick = onToggle,
+                    )
+                },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.size(22.dp)) {

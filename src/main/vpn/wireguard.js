@@ -138,6 +138,49 @@ function isProcessElevated() {
 }
 
 /**
+ * Если ProgramData залип на старом 0.5.3 (служба держит файл) —
+ * снять службу и перезаписать бинарники с best (как делает установщик).
+ */
+function forceRefreshProgramDataFrom(best, send) {
+  if (!best?.dir || !isProcessElevated()) return false
+  const stableVer = wgExeVersion(STABLE_WG_DIR)
+  if (!(cmpVersion(best.ver, stableVer) > 0)) return false
+
+  send?.(`[WG] ProgramData ${stableVer} устарел → ${best.ver}, сбрасываю службу…`)
+  const tryExe = [
+    path.join(SYSTEM_WG_DIR, 'wireguard.exe'),
+    path.join(best.dir, 'wireguard.exe'),
+    path.join(STABLE_WG_DIR, 'wireguard.exe'),
+  ]
+  for (const exe of tryExe) {
+    if (!fs.existsSync(exe)) continue
+    try {
+      runCmd(`"${exe}" /uninstalltunnelservice ${TUNNEL_NAME}`, path.dirname(exe))
+    } catch { /* ignore */ }
+  }
+  runCmd(`sc stop "${SERVICE_NAME}"`)
+  runCmd(`sc delete "${SERVICE_NAME}"`)
+
+  fs.mkdirSync(STABLE_WG_DIR, { recursive: true })
+  let copied = false
+  for (const name of ['wireguard.exe', 'wg.exe']) {
+    const src = path.join(best.dir, name)
+    const dest = path.join(STABLE_WG_DIR, name)
+    if (!fs.existsSync(src)) continue
+    try {
+      fs.copyFileSync(src, dest)
+      copied = true
+    } catch (e) {
+      send?.(`[WG] refresh ${name}: ${e.message}`)
+    }
+  }
+  if (copied) {
+    send?.(`[WG] ProgramData обновлён до ${wgExeVersion(STABLE_WG_DIR)}`)
+  }
+  return copied
+}
+
+/**
  * Runtime для службы: актуальный wireguard.exe (1.1+ / WireGuardNT).
  * wintun.dll опционален (с 1.0 драйвер WireGuardNT, не Wintun).
  * Не залипаем на старом ProgramData 0.5.3 при reuse.
@@ -148,6 +191,8 @@ function prepareRuntimeDir(isDev, dirname, send, options = {}) {
     send?.('[WG] Не найден wireguard.exe (resources/wireguard или Program Files\\WireGuard)')
     return null
   }
+
+  forceRefreshProgramDataFrom(best, send)
 
   const stableVer = wgExeVersion(STABLE_WG_DIR)
   const reuse = options.reuse === true
@@ -936,7 +981,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   if (!elevated) {
     const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly)
     if (ok) return finishOk()
-    send('[WG] Запустите «SilentVPN-Admin.bat» (рядом с exe) и нажмите «Да» в UAC')
+    send('[WG] Нужны права администратора (UAC). Переустановите Silent VPN или запустите SilentVPN-Admin.bat')
     return false
   }
 
@@ -963,7 +1008,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   } catch { /* ignore */ }
 
   send('[WG] Служба не поднялась — services.msc → WireGuardTunnel$wg-turn')
-  send('[WG] Закройте все Silent VPN и запустите через «SilentVPN-Admin.bat»')
+  send('[WG] Переустановите Silent VPN (установщик чинит WG 1.1) или SilentVPN-Admin.bat')
   return false
 }
 

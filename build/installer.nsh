@@ -23,7 +23,7 @@
   !insertmacro silentWgUninstallTunnel "$PROGRAMFILES64\WireGuard\wireguard.exe"
   !insertmacro silentWgUninstallTunnel "$PROGRAMFILES\WireGuard\wireguard.exe"
   !insertmacro silentWgUninstallTunnel "$INSTDIR\resources\wireguard\wireguard.exe"
-  !insertmacro silentWgUninstallTunnel "$COMMONPROGRAMDATA\SilentVPN\wireguard\wireguard.exe"
+  !insertmacro silentWgUninstallTunnel "$COMMONAPPDATA\SilentVPN\wireguard\wireguard.exe"
 
   ; $$ → литеральный $ в имени службы WireGuardTunnel$wg-turn
   nsExec::ExecToLog 'sc.exe stop "WireGuardTunnel$$wg-turn"'
@@ -46,25 +46,25 @@
   ${EndIf}
 
   ; ProgramData всегда актуальный 1.1 (сначала бандл, потом Program Files если есть)
-  CreateDirectory "$COMMONPROGRAMDATA\SilentVPN\wireguard"
+  CreateDirectory "$COMMONAPPDATA\SilentVPN\wireguard"
   ${If} ${FileExists} "$INSTDIR\resources\wireguard\wireguard.exe"
     DetailPrint "Copy bundled WireGuard → ProgramData\SilentVPN\wireguard"
-    CopyFiles /SILENT "$INSTDIR\resources\wireguard\wireguard.exe" "$COMMONPROGRAMDATA\SilentVPN\wireguard\wireguard.exe"
+    CopyFiles /SILENT "$INSTDIR\resources\wireguard\wireguard.exe" "$COMMONAPPDATA\SilentVPN\wireguard\wireguard.exe"
     ${If} ${FileExists} "$INSTDIR\resources\wireguard\wg.exe"
-      CopyFiles /SILENT "$INSTDIR\resources\wireguard\wg.exe" "$COMMONPROGRAMDATA\SilentVPN\wireguard\wg.exe"
+      CopyFiles /SILENT "$INSTDIR\resources\wireguard\wg.exe" "$COMMONAPPDATA\SilentVPN\wireguard\wg.exe"
     ${EndIf}
   ${EndIf}
 
   ${If} ${FileExists} "$PROGRAMFILES64\WireGuard\wireguard.exe"
     DetailPrint "Refresh ProgramData from Program Files\WireGuard"
-    CopyFiles /SILENT "$PROGRAMFILES64\WireGuard\wireguard.exe" "$COMMONPROGRAMDATA\SilentVPN\wireguard\wireguard.exe"
+    CopyFiles /SILENT "$PROGRAMFILES64\WireGuard\wireguard.exe" "$COMMONAPPDATA\SilentVPN\wireguard\wireguard.exe"
     ${If} ${FileExists} "$PROGRAMFILES64\WireGuard\wg.exe"
-      CopyFiles /SILENT "$PROGRAMFILES64\WireGuard\wg.exe" "$COMMONPROGRAMDATA\SilentVPN\wireguard\wg.exe"
+      CopyFiles /SILENT "$PROGRAMFILES64\WireGuard\wg.exe" "$COMMONAPPDATA\SilentVPN\wireguard\wg.exe"
     ${EndIf}
   ${ElseIf} ${FileExists} "$PROGRAMFILES\WireGuard\wireguard.exe"
-    CopyFiles /SILENT "$PROGRAMFILES\WireGuard\wireguard.exe" "$COMMONPROGRAMDATA\SilentVPN\wireguard\wireguard.exe"
+    CopyFiles /SILENT "$PROGRAMFILES\WireGuard\wireguard.exe" "$COMMONAPPDATA\SilentVPN\wireguard\wireguard.exe"
     ${If} ${FileExists} "$PROGRAMFILES\WireGuard\wg.exe"
-      CopyFiles /SILENT "$PROGRAMFILES\WireGuard\wg.exe" "$COMMONPROGRAMDATA\SilentVPN\wireguard\wg.exe"
+      CopyFiles /SILENT "$PROGRAMFILES\WireGuard\wg.exe" "$COMMONAPPDATA\SilentVPN\wireguard\wg.exe"
     ${EndIf}
   ${EndIf}
 
@@ -76,11 +76,11 @@
   !insertmacro silentWgUninstallTunnel "$PROGRAMFILES64\WireGuard\wireguard.exe"
   !insertmacro silentWgUninstallTunnel "$PROGRAMFILES\WireGuard\wireguard.exe"
   !insertmacro silentWgUninstallTunnel "$INSTDIR\resources\wireguard\wireguard.exe"
-  !insertmacro silentWgUninstallTunnel "$COMMONPROGRAMDATA\SilentVPN\wireguard\wireguard.exe"
+  !insertmacro silentWgUninstallTunnel "$COMMONAPPDATA\SilentVPN\wireguard\wireguard.exe"
   nsExec::ExecToLog 'sc.exe stop "WireGuardTunnel$$wg-turn"'
   Pop $0
   nsExec::ExecToLog 'sc.exe delete "WireGuardTunnel$$wg-turn"'
   Pop $0
   ; Оставляем Program Files\WireGuard (общий драйвер). Чистим только наш runtime.
-  RMDir /r "$COMMONPROGRAMDATA\SilentVPN\wireguard"
+  RMDir /r "$COMMONAPPDATA\SilentVPN\wireguard"
 !macroend

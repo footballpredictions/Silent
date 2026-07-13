@@ -90,22 +90,22 @@ describe('exclusionsState persistence', () => {
 
 describe('vpn session exclusions — приложение реально в плане сессии', () => {
   it('applyAppExclusionsForSession then assertExeExcludedInSession', () => {
-    clearActiveExcludedExePaths()
+    void clearActiveExcludedExePaths()
     const chrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
     const tg = 'C:\\Users\\me\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe'
     const logs = []
-    const result = applyAppExclusionsForSession([chrome, tg], (l) => logs.push(l))
+    const result = applyAppExclusionsForSession([chrome, tg], (l) => logs.push(l), { enableBypass: false })
     assert.equal(result.applied.length, 2)
     assert.equal(assertExeExcludedInSession(chrome), true)
     assert.equal(assertExeExcludedInSession(tg), true)
     assert.equal(assertExeExcludedInSession('C:\\Windows\\notepad.exe'), false)
     assert.equal(getActiveExcludedExePaths().length, 2)
     assert.ok(logs.some(l => /исключения сессии/.test(l)))
-    clearActiveExcludedExePaths()
+    void clearActiveExcludedExePaths()
   })
 
   it('full pipeline: UI selection → state file → VPN session plan', () => {
-    clearActiveExcludedExePaths()
+    void clearActiveExcludedExePaths()
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'silent-excl-pipe-'))
     const filePath = path.join(dir, 'app-exclusions.json')
     const apps = [
@@ -118,11 +118,11 @@ describe('vpn session exclusions — приложение реально в пл
     const forVpn = getExcludedExePathsForVpn(filePath)
     assert.deepEqual(forVpn, [apps[0].exePath])
 
-    applyAppExclusionsForSession(forVpn)
+    applyAppExclusionsForSession(forVpn, () => {}, { enableBypass: false })
     assert.equal(assertExeExcludedInSession(apps[0].exePath), true)
     assert.equal(assertExeExcludedInSession(apps[1].exePath), false)
 
-    clearActiveExcludedExePaths()
+    void clearActiveExcludedExePaths()
     fs.rmSync(dir, { recursive: true, force: true })
   })
 })
@@ -141,9 +141,9 @@ describe('listInstalledApps (Windows integration)', () => {
     const pick = withExe[0]
     const { exePaths } = resolveExcludedExePaths(new Set([pick.id]), apps)
     assert.ok(exePaths.includes(pick.exePath))
-    applyAppExclusionsForSession(exePaths)
+    applyAppExclusionsForSession(exePaths, () => {}, { enableBypass: false })
     assert.equal(assertExeExcludedInSession(pick.exePath), true)
-    clearActiveExcludedExePaths()
+    void clearActiveExcludedExePaths()
   })
 })
 

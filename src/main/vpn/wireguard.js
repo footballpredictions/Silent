@@ -512,25 +512,49 @@ async function capturePhysicalGateway(send) {
   }
 }
 
+function prefixToMask(prefix) {
+  const n = Math.min(32, Math.max(0, Number(prefix) || 32))
+  if (n === 0) return '0.0.0.0'
+  const mask = n === 32 ? 0xffffffff : ((0xffffffff << (32 - n)) >>> 0)
+  return [
+    (mask >>> 24) & 255,
+    (mask >>> 16) & 255,
+    (mask >>> 8) & 255,
+    mask & 255,
+  ].join('.')
+}
+
+function parseBypassTarget(raw) {
+  const s = String(raw || '').trim()
+  const m = s.match(/^(\d{1,3}(?:\.\d{1,3}){3})(?:\/(\d{1,2}))?$/)
+  if (!m) return null
+  const ip = m[1]
+  const prefix = m[2] != null ? Number(m[2]) : 32
+  if (prefix < 0 || prefix > 32) return null
+  return { ip, prefix, mask: prefixToMask(prefix), dest: `${ip}/${prefix}` }
+}
+
 function buildElevatedBypassBlock(ips) {
-  const list = [...new Set(ips.filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(String(ip).trim())))]
-  if (!list.length) return ''
-  const arr = list.map(ip => `'${ip}'`).join(', ')
+  const targets = [...new Set(ips.map(parseBypassTarget).filter(Boolean))]
+  if (!targets.length) return ''
+  const lines = targets.map(t =>
+    `    cmd /c "route delete ${t.ip}" 2>$null | Out-Null\n`
+    + `    cmd /c "route add ${t.ip} mask ${t.mask} $($phys.NextHop) metric 0 if $($phys.InterfaceIndex)" 2>$null | Out-Null\n`
+    + `    Log "bypass ${t.dest} -> $($phys.NextHop) if $($phys.InterfaceIndex)"`,
+  ).join('\n')
   return `
   if ($phys) {
-    foreach ($ip in @(${arr})) {
-      cmd /c "route delete $ip" 2>$null | Out-Null
-      cmd /c "route add $ip mask 255.255.255.255 $($phys.NextHop) metric 0 if $($phys.InterfaceIndex)" 2>$null | Out-Null
-      Log "bypass $ip -> $($phys.NextHop) if $($phys.InterfaceIndex)"
-    }
+${lines}
   }
 `
 }
 
 function bypassRoutePs1Lines(ips) {
-  const list = ips.map(ip => `'${ip}'`).join(', ')
+  const targets = [...new Set(ips.map(parseBypassTarget).filter(Boolean))]
+  if (!targets.length) return 'exit 0'
+  const arr = targets.map(t => `@{ Ip='${t.ip}'; Mask='${t.mask}'; Dest='${t.dest}' }`).join(', ')
   return `
-$BypassIps = @(${list})
+$BypassTargets = @(${arr})
 $phys = $null
 if ('${(savedPhysicalGateway?.nextHop || '').replace(/'/g, "''")}' -and ${savedPhysicalGateway?.ifIndex ?? 0}) {
   $phys = [PSCustomObject]@{ NextHop = '${(savedPhysicalGateway?.nextHop || '').replace(/'/g, "''")}'; InterfaceIndex = ${savedPhysicalGateway?.ifIndex ?? 0} }
@@ -540,50 +564,84 @@ if (-not $phys) {
     $_.NextHop -ne '0.0.0.0' -and $_.InterfaceAlias -notmatch 'WireGuard|wg-turn'
   } | Sort-Object RouteMetric | Select-Object -First 1
 }
-if (-not $phys) { exit 0 }
-foreach ($ip in $BypassIps) {
-  cmd /c "route delete $ip" 2>$null | Out-Null
-  cmd /c "route add $ip mask 255.255.255.255 $($phys.NextHop) metric 1 if $($phys.InterfaceIndex)" 2>$null | Out-Null
-  Remove-NetRoute -DestinationPrefix "$ip/32" -Confirm:$false -ErrorAction SilentlyContinue
-  New-NetRoute -DestinationPrefix "$ip/32" -NextHop $phys.NextHop -InterfaceIndex $phys.InterfaceIndex -RouteMetric 0 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+if (-not $phys) { exit 2 }
+$added = 0
+foreach ($t in $BypassTargets) {
+  cmd /c "route delete $($t.Ip)" 2>$null | Out-Null
+  cmd /c "route add $($t.Ip) mask $($t.Mask) $($phys.NextHop) metric 1 if $($phys.InterfaceIndex)" 2>$null | Out-Null
+  Remove-NetRoute -DestinationPrefix $t.Dest -Confirm:$false -ErrorAction SilentlyContinue
+  New-NetRoute -DestinationPrefix $t.Dest -NextHop $phys.NextHop -InterfaceIndex $phys.InterfaceIndex -RouteMetric 0 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+  if (Get-NetRoute -DestinationPrefix $t.Dest -ErrorAction SilentlyContinue) { $added++ }
+  elseif (cmd /c "route print $($t.Ip)" 2>$null | Select-String -SimpleMatch $t.Ip) { $added++ }
 }
+if ($added -lt 1) { exit 1 }
 `
 }
 
-/** Явный маршрут к API-серверу через физический шлюз (админка + public API при full tunnel). */
-async function addServerBypassRoutes(excludeIPs, send) {
-  const ips = [...new Set(excludeIPs.filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(String(ip).trim())))]
-  if (!ips.length) return false
-  const scriptPath = path.join(os.tmpdir(), `silent-wg-bypass-${Date.now()}.ps1`)
-  const ps1 = `
+/** Явный маршрут через физический шлюз: IP или CIDR (x.x.x.x/n). */
+async function addServerBypassRoutes(excludeIPs, send, options = {}) {
+  const targets = [...new Set(
+    (excludeIPs || []).map(parseBypassTarget).filter(Boolean).map(t => t.dest),
+  )]
+  if (!targets.length) return false
+  const quiet = options.quiet === true
+  const label = String(options.label || 'API').trim() || 'API'
+  const chunkSize = 40
+  let anyOk = false
+  for (let i = 0; i < targets.length; i += chunkSize) {
+    const chunk = targets.slice(i, i + chunkSize)
+    const scriptPath = path.join(os.tmpdir(), `silent-wg-bypass-${Date.now()}-${i}.ps1`)
+    const ps1 = `
 $ErrorActionPreference = 'SilentlyContinue'
-${bypassRoutePs1Lines(ips)}
+${bypassRoutePs1Lines(chunk)}
 `
-  try {
-    fs.writeFileSync(scriptPath, ps1, 'utf8')
-    await execAsync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, {
-      windowsHide: true,
-      timeout: 15000,
-    })
-    send?.(`[WG] Bypass API: ${ips.join(', ')} → ${savedPhysicalGateway?.nextHop || 'шлюз'}`)
-    return true
-  } catch (e) {
-    send?.(`[WG] Bypass API не применён: ${e?.message || e}`, 'W')
-    return false
-  } finally {
-    try { fs.unlinkSync(scriptPath) } catch {}
+    try {
+      fs.writeFileSync(scriptPath, ps1, 'utf8')
+      await execAsync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, {
+        windowsHide: true,
+        timeout: Math.min(120000, 20000 + chunk.length * 400),
+      })
+      anyOk = true
+    } catch (e) {
+      send?.(`[WG] Bypass ${label} chunk ${Math.floor(i / chunkSize) + 1}: ${e?.message || e}`, 'W')
+    } finally {
+      try { fs.unlinkSync(scriptPath) } catch {}
+    }
   }
+  if (!anyOk) {
+    send?.(`[WG] Bypass ${label} не применён`, 'W')
+    return false
+  }
+  if (!quiet) {
+    const preview = targets.length <= 6 ? targets.join(', ') : `${targets.slice(0, 6).join(', ')}…(+${targets.length - 6})`
+    send?.(`[WG] Bypass ${label}: ${preview} → ${savedPhysicalGateway?.nextHop || 'шлюз'}`)
+  }
+  return true
+}
+
+/** Снять host/CIDR routes без сброса сохранённого физического шлюза. */
+async function removeHostBypassRoutes(excludeIPs, send) {
+  const targets = [...new Set(
+    (excludeIPs || []).map(parseBypassTarget).filter(Boolean),
+  )]
+  if (!targets.length) return
+  for (const t of targets) {
+    try {
+      await execAsync(`route delete ${t.ip}`, { windowsHide: true, timeout: 5000 })
+    } catch { /* ignore */ }
+    try {
+      await execAsync(
+        `powershell.exe -NoProfile -Command "Remove-NetRoute -DestinationPrefix '${t.dest}' -Confirm:$false -ErrorAction SilentlyContinue"`,
+        { windowsHide: true, timeout: 5000 },
+      )
+    } catch { /* ignore */ }
+  }
+  send?.(`[WG] Bypass host routes сняты: ${targets.length}`)
 }
 
 async function removeServerBypassRoutes(excludeIPs, send) {
-  const ips = [...new Set(excludeIPs.filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(String(ip).trim())))]
-  if (!ips.length) return
-  for (const ip of ips) {
-    try {
-      await execAsync(`route delete ${ip}`, { windowsHide: true, timeout: 5000 })
-    } catch { /* ignore */ }
-  }
-  send?.(`[WG] Bypass API снят: ${ips.join(', ')}`)
+  await removeHostBypassRoutes(excludeIPs, send)
+  send?.(`[WG] Bypass API снят: ${(excludeIPs || []).join(', ')}`)
   savedPhysicalGateway = null
 }
 
@@ -1063,6 +1121,7 @@ module.exports = {
   buildWgConfigFromApi,
   applyWireGuardConfig,
   addServerBypassRoutes,
+  removeHostBypassRoutes,
   capturePhysicalGateway,
   normalizeWgConfText,
   waitWgStopIdle,

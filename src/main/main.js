@@ -457,7 +457,7 @@ function quitAppFully() {
 function cleanupVpn() {
   try {
     const { clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
-    clearActiveExcludedExePaths()
+    void clearActiveExcludedExePaths(sendLog)
   } catch { /* ignore */ }
   clearTelegramWarmupTimers()
   resetHashFailureSessionState()
@@ -844,11 +844,20 @@ ipcMain.handle('list-installed-apps', async () => {
 ipcMain.handle('save-app-exclusions', (_, payload) => {
   try {
     const { saveExclusionsState, defaultStatePath } = require('./apps/exclusionsState')
+    const { applyAppExclusionsForSession, clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
     const filePath = defaultStatePath(app.getPath('userData'))
     const selectedIds = Array.isArray(payload?.selectedIds) ? payload.selectedIds : []
-    const apps = Array.isArray(payload?.apps) ? payload.apps : []
-    const saved = saveExclusionsState({ filePath, selectedIds, apps })
+    const appsList = Array.isArray(payload?.apps) ? payload.apps : []
+    const saved = saveExclusionsState({ filePath, selectedIds, apps: appsList })
     sendLog(`[Apps] сохранены исключения: ${saved.exePaths.length} exe`)
+    // VPN уже поднят — сразу перезапустить bypass-монитор
+    if (wgApplied && !vpnBootstrapMode) {
+      if (saved.exePaths.length) {
+        applyAppExclusionsForSession(saved.exePaths, sendLog)
+      } else {
+        void clearActiveExcludedExePaths(sendLog)
+      }
+    }
     return { ok: true, exePaths: saved.exePaths }
   } catch (e) {
     sendLog(`[Apps] save exclusions: ${e?.message || e}`)
@@ -1084,6 +1093,13 @@ async function beginWdttSession(config, { switching = false } = {}) {
         wgRouteSettleUntil = Date.now() + 10_000
         await addServerBypassRoutes([...excludeIPs], sendLog)
         scheduleBypassRefresh(sendLog)
+        try {
+          const { refreshAppExclusionBypassAfterTunnel } = require('./apps/vpnAppExclusions')
+          await refreshAppExclusionBypassAfterTunnel(sendLog)
+          setTimeout(() => { void refreshAppExclusionBypassAfterTunnel(sendLog) }, 1500)
+        } catch (e) {
+          sendLog(`[Apps] bypass after full tunnel: ${e?.message || e}`)
+        }
         setTimeout(() => { void addServerBypassRoutes([...excludeIPs], sendLog) }, 1000)
         setTimeout(() => { void addServerBypassRoutes([...excludeIPs], sendLog) }, 3000)
         setTimeout(() => { ensureVpnReadyEvent(sendLog) }, 1500)
@@ -1194,6 +1210,12 @@ async function beginWdttSession(config, { switching = false } = {}) {
       clearWgRetries()
       await addServerBypassRoutes([...excludeIPs], sendLog)
       scheduleBypassRefresh(sendLog)
+      try {
+        const { refreshAppExclusionBypassAfterTunnel } = require('./apps/vpnAppExclusions')
+        await refreshAppExclusionBypassAfterTunnel(sendLog)
+      } catch (e) {
+        sendLog(`[Apps] bypass after tunnel: ${e?.message || e}`)
+      }
       if (wgCredPhase) maybeScheduleFullTunnelUpgrade()
       scheduleTunnelReadyPoll(sendLog)
       ensureVpnReadyEvent(sendLog)

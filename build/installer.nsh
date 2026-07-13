@@ -72,6 +72,9 @@
     ${EndIf}
   ${EndIf}
 
+  ; wintun.dll рядом с 1.1 ломает службу (SCM 7024) — только WireGuardNT
+  Delete "${SILENT_WG_DIR}\wintun.dll"
+
   DetailPrint "WireGuard repair done"
 !macroend
 

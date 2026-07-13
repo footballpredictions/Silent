@@ -108,9 +108,7 @@ function pickBestWgSource(isDev, dirname, send) {
   if (fs.existsSync(path.join(SYSTEM_WG_DIR, 'wireguard.exe'))) {
     candidates.push({ dir: SYSTEM_WG_DIR, label: 'Program Files' })
   }
-  if (fs.existsSync(path.join(STABLE_WG_DIR, 'wireguard.exe'))) {
-    candidates.push({ dir: STABLE_WG_DIR, label: 'ProgramData' })
-  }
+  // ProgramData — только цель копирования, не источник (залипает 0.5.3 / wintun.dll).
   let best = null
   for (const c of candidates) {
     const ver = wgExeVersion(c.dir)
@@ -134,6 +132,22 @@ function isProcessElevated() {
   } catch {
     elevatedCache = { at: now, value: false }
     return false
+  }
+}
+
+/**
+ * WireGuardNT 1.x + wintun.dll в той же папке → служба падает SCM 7024.
+ * wintun нужен только для legacy < 1.0.
+ */
+function cleanupLegacyWintun(dir, wgVer, send) {
+  if (!dir || cmpVersion(wgVer, '1.0') < 0) return
+  const wintun = path.join(dir, 'wintun.dll')
+  if (!fs.existsSync(wintun)) return
+  try {
+    fs.unlinkSync(wintun)
+    send?.('[WG] Удалён wintun.dll (WireGuardNT 1.x, иначе SCM 7024)')
+  } catch (e) {
+    send?.(`[WG] wintun.dll не удалить: ${e.message} — переключимся на Program Files`)
   }
 }
 
@@ -175,6 +189,7 @@ function forceRefreshProgramDataFrom(best, send) {
     }
   }
   if (copied) {
+    cleanupLegacyWintun(STABLE_WG_DIR, best.ver, send)
     send?.(`[WG] ProgramData обновлён до ${wgExeVersion(STABLE_WG_DIR)}`)
   }
   return copied
@@ -198,8 +213,10 @@ function prepareRuntimeDir(isDev, dirname, send, options = {}) {
   const reuse = options.reuse === true
     && fs.existsSync(path.join(STABLE_WG_DIR, 'wireguard.exe'))
     && cmpVersion(stableVer, best.ver) >= 0
+    && !fs.existsSync(path.join(STABLE_WG_DIR, 'wintun.dll'))
 
   if (reuse) {
+    cleanupLegacyWintun(STABLE_WG_DIR, stableVer, send)
     lastRuntimeDir = STABLE_WG_DIR
     send?.(`[WG] Runtime: ${STABLE_WG_DIR} (reuse ${stableVer})`)
     return STABLE_WG_DIR
@@ -207,6 +224,7 @@ function prepareRuntimeDir(isDev, dirname, send, options = {}) {
 
   // Program Files уже лучший и стабильный путь — служба может ссылаться туда напрямую.
   if (best.dir === SYSTEM_WG_DIR) {
+    cleanupLegacyWintun(STABLE_WG_DIR, best.ver, send)
     lastRuntimeDir = SYSTEM_WG_DIR
     send?.(`[WG] Runtime: ${SYSTEM_WG_DIR} (system ${best.ver})`)
     return SYSTEM_WG_DIR
@@ -241,21 +259,34 @@ function prepareRuntimeDir(isDev, dirname, send, options = {}) {
     }
   }
 
+  cleanupLegacyWintun(STABLE_WG_DIR, best.ver, send)
+
   const wintunSrc = findWintunDll(best.dir)
-  if (wintunSrc) {
+  if (wintunSrc && cmpVersion(best.ver, '1.0') < 0) {
     const wintunDest = path.join(STABLE_WG_DIR, 'wintun.dll')
     try {
       fs.copyFileSync(wintunSrc, wintunDest)
     } catch (e) {
       if (!(e.code === 'EBUSY' && fs.existsSync(wintunDest))) {
-        send?.(`[WG] wintun.dll: ${e.message} (для WireGuardNT не обязателен)`)
+        send?.(`[WG] wintun.dll: ${e.message}`)
       }
     }
-  } else {
-    send?.('[WG] wintun.dll нет — OK для WireGuardNT 1.x')
+  } else if (cmpVersion(best.ver, '1.0') >= 0) {
+    cleanupLegacyWintun(STABLE_WG_DIR, best.ver, send)
   }
 
   const copiedVer = wgExeVersion(STABLE_WG_DIR)
+  if (cmpVersion(copiedVer, best.ver) < 0) {
+    if (fs.existsSync(path.join(SYSTEM_WG_DIR, 'wireguard.exe'))) {
+      lastRuntimeDir = SYSTEM_WG_DIR
+      send?.(`[WG] ProgramData ${copiedVer} < ${best.ver} — Program Files`)
+      return SYSTEM_WG_DIR
+    }
+    lastRuntimeDir = best.dir
+    send?.(`[WG] ProgramData не обновлён — runtime ${best.dir}`)
+    return best.dir
+  }
+
   if (cmpVersion(best.ver, copiedVer) > 0 && fs.existsSync(path.join(SYSTEM_WG_DIR, 'wireguard.exe'))) {
     lastRuntimeDir = SYSTEM_WG_DIR
     send?.(`[WG] ProgramData остался ${copiedVer}, берём system ${best.ver}`)

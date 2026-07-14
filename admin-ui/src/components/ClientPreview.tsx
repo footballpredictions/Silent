@@ -141,6 +141,18 @@ export default function ClientPreview({
   const muted = `${fg}66`
   const green = '#16A34A'
   const red = '#EF4444'
+  // Как в PC/Android: в тёмной теме тарифы — белый фон / чёрный текст
+  const hexLum = (hex: string) => {
+    const h = String(hex || '').replace('#', '')
+    if (h.length < 6) return 1
+    const r = parseInt(h.slice(0, 2), 16) / 255
+    const g = parseInt(h.slice(2, 4), 16) / 255
+    const b = parseInt(h.slice(4, 6), 16) / 255
+    return 0.299 * r + 0.587 * g + 0.114 * b
+  }
+  const previewDark = hexLum(bg) < 0.45
+  const planBtnBg = previewDark ? '#ffffff' : (theme.primary_color || fg)
+  const planBtnFg = previewDark ? '#000000' : bg
   const updateBg = theme.update_bar_background_color || '#2563EB'
   const updateFg = theme.update_bar_text_color || '#FFFFFF'
   const updateProgress = theme.update_bar_progress_color || '#1D4ED8'
@@ -467,7 +479,7 @@ export default function ClientPreview({
               ].map(([label, price]) => (
                 <div key={label} style={{
                   display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  background: theme.primary_color, color: bg,
+                  background: planBtnBg, color: planBtnFg,
                   borderRadius: 12, padding: '10px 12px', fontSize: 12, fontWeight: 600,
                 }}>
                   <span>{label}</span><span>{price}</span>

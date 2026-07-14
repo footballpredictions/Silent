@@ -534,6 +534,20 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-14 — PC: timeout 15s на payments/init (браузер не открывался)
+
+- Симптом: клик по тарифу → `timeout of 15000ms exceeded`, браузер не открывается
+- Причина: без флага main VPN renderer ходил xhr на nip.io (15с) — часто таймаут; `openExternal` даже не вызывался
+- Фикс: все API через main IPC (`tunnelApiRequest`): WG→`10.66.66.1`, иначе public HTTPS по IP; timeout 30с
+
+### 2026-07-14 — PC: оплата при VPN + тарифы в тёмной теме
+
+- Симптом: «Месяц» → ожидание → ошибка; на сервере платежи остаются `pending` (init OK, YuMoney notify нет)
+- Причина: при full-tunnel VPN браузер не достучался до YuMoney / success nip.io
+- Фикс PC `open-external`: перед открытием ссылки оплаты — bypass-маршруты для `yoomoney.ru` / `money.yandex.ru` / nip.io (DNS с таймаутом 2с)
+- Тарифы в тёмной теме: белый фон / чёрный текст (`primaryBtnBg/Fg` на PC+Android; превью админки то же)
+- Нужна пересборка PC (и при необходимости Android), чтобы увидеть фикс
+
 ### 2026-07-14 — MTProto на primary 185.182 не работает (блок Telegram DC)
 
 - Theme кратко указывал на `185.182.65.175:8443`, клиенты: «прокси недоступен»

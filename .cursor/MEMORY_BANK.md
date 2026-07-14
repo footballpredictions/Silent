@@ -534,6 +534,23 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-14 — Landing: telegram.me вместо t.me (блокировка) + промо «2 месяца бесплатно» вместо trial 3 дня
+
+- **На будущее — `t.me` может быть заблокирован (РФ), `telegram.me` — рабочая альтернатива:** проверка показала `https://t.me/silentvpn3` → 403 Forbidden, а `https://telegram.me/silentvpn3` открывает канал нормально (тот же канал, тот же username — просто другой домен-алиас Telegram). Ссылка в самой группе/канале уже стояла как `telegram.me`, поэтому и работала там, а на лендинге была `t.me` → не открывалась у части пользователей. **Если где-то ещё всплывёт «не открывается ссылка на Telegram» — сначала проверить именно домен (`t.me` vs `telegram.me`), а не username/канал.**
+- Заменено в `landing/index.html`: карточка канала + ссылка в футере (оба вхождения `t.me/silentvpn3` → `telegram.me/silentvpn3`)
+- Промо на время теста: текст «3 дня trial бесплатно» в hero — зачёркнут (`.promo-old`, `text-decoration: line-through`), рядом — чёрный пульсирующий бейдж `.promo-badge` «Бесплатно 2 месяца — идёт тестирование» (монохромно, в стиле сайта, без чужих цветов); обновлён и `<meta name="description">`
+- `landing/` — отдельный репозиторий (`github.com/silentvpn3/silentvpn3.github.io`, GitHub Pages) — деплоя не требует, паблишится сразу после push в `main`
+- **Грабля с пушем:** `gh auth setup-git` (был вызван по ошибке в этом же тёрне) подставил глобальный `credential.helper` для `github.com` на аккаунт `footballpredictions` (нет прав на `silentvpn3/silentvpn3.github.io` → `Permission denied`). Фикс: `git config --global --unset-all credential.https://github.com.helper` (и `gist.github.com` аналогично) — возвращает обычный `git-credential-manager.exe`, который спрашивает нужный аккаunt интерактивно. **Для этого репо push всегда должен идти под аккаунтом `silentvpn3`, не `footballpredictions`** — если GCM всплывёт с выбором аккаунта, выбирать `silentvpn3`
+- После push в origin оказались новые коммиты автообновления `releases.json` (от build-agent/OTA) — понадобился `git fetch` + `git rebase origin/main` перед повторным push (конфликтов не было, т.к. трогали разные части файла)
+- Push `origin/main` (репозиторий `silentvpn3.github.io`) `22e289b..173a112`
+
+### 2026-07-14 — UI-фикс тёмной темы + отмена ожидания оплаты (клиенты, без правок бекенда)
+
+- **Баг тёмной темы (Android):** в `MenuSubscription` кнопки тарифов имели `containerColor = fg` (светлый в тёмной теме) и жёстко закодированный `contentColor = Color.White` → белый текст на белой кнопке. Фикс — `contentColor = bg` (тот же паттерн, что уже был у кнопки «Попробовать снова»), плюс явный `color = bg` на `Text` внутри `Row`. Файл: `android/app/src/main/kotlin/com/silent/vpn/ui/screens/MainScreen.kt`. `compileDebugKotlin` — `BUILD SUCCESSFUL`
+- **Вопрос пользователя:** платёж с неверным CVC — ЮMoney показал отказ в браузере, а клиент продолжал крутить спиннер «ждём оплаты». Разобрано: это **не баг бекенда** — ЮMoney по своей архитектуре шлёт HTTP-уведомление (`/yumoney/notify`) **только при реальном зачислении денег**; отказы/отклонения банком/неверный CVC/3-D Secure fail — вообще не долетают до нашего вебхука, серверу физически нечего проверять и не о чём сообщать клиенту. Это структурное ограничение выбранного подхода «без API ЮMoney», а не то, что можно починить в `payment_service.py`
+- **Смягчение UX (PC + Android, единый флоу):** раньше во время `waiting` не было способа выйти из ожидания — только 10 мин клиентского поллинга до `timeout`, либо 30 мин сервер-side TTL (`YUMONEY_PAYMENT_TTL_MINUTES`) до `expired`. Добавлена кнопка **«Отмена»** (`payment_cancel_button_text` — уже было в `ThemeResponse`/`ClientTheme`/`ThemeData`, но не использовалось в UI) прямо под спиннером `waiting` — сбрасывает `paymentState`→`idle` немедленно, без ожидания таймаута. Файлы: `android/.../ui/screens/MainScreen.kt`, `pc/src/renderer/pages/MainScreen.tsx`
+- Изменения только клиентские (UI), бекенд не трогали — деплой backend не требуется. Пуш клиентов — по отдельному запросу пользователя
+
 ### 2026-07-14 — Баг-фикс: реальные платежи зависали на «ждём подтверждения» (YuMoney `sign` vs `sha1_hash`)
 
 - Пользователь протестировал реальный платёж (15₽ на тестовых ценах) — деньги пришли (14.55₽ с учётом комиссии), но подписка осталась в статусе `pending`

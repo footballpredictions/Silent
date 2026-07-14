@@ -242,6 +242,20 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_referral_rewards_invitee_id ON referral_rewards (invitee_id)"
         ))
+        # YuMoney: идемпотентность нотификаций + аудит суммы + промокод намерения
+        await conn.execute(text(
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS operation_id VARCHAR(255)"
+        ))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_payments_operation_id "
+            "ON payments (operation_id) WHERE operation_id IS NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(10, 2)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS promo_code VARCHAR(50)"
+        ))
     logger.info("Database tables ready")
 
     from app.database import AsyncSessionLocal

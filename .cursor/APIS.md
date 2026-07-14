@@ -87,14 +87,18 @@
 GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 ```
 
-### Payments — `/api/payments` (на сервере)
+### Payments — `/api/payments` (на сервере, кастомный YuMoney QuickPay, без API YuMoney)
+
+Единый флоу для **всех** клиентов (PC/Android/iOS): `POST /init` → открыть `url` в системном браузере (не WebView, не проксируется через бекенд) → `GET /status/{label}` poll каждые ~4с до `completed`/`failed`/`expired` или таймаута (10 мин). Реализация: `app/services/payment_service.py`, план: `.cursor/PLAN_PAYMENTS_YUMONEY.md` (реализован + покрыт тестами `scripts/test_payment_unit.py`, 37/37 OK).
 
 | Метод | Путь | Auth | Описание |
 |-------|------|------|----------|
-| POST | `/init` | User | `{ plan_type, promo_code? }` → URL YuMoney; если `promo_code` пуст — берётся `user.pending_promo_code` |
+| POST | `/init` | User | `{ plan_type, promo_code? }` → `{ url, wallet, label, amount }`. `label` — `silent_<32 hex>` (высокая энтропия, `secrets.token_hex(16)`), кошелёк выбирается случайно из настроенных `YUMONEY_WALLET_1..10`. `url` — прямая ссылка `yoomoney.ru/quickpay/confirm.xml` (urlencoded), клиент открывает её во внешнем браузере как есть. Если `promo_code` пуст — берётся `user.pending_promo_code` (снимается только при успешной оплате, не здесь) |
+| GET | `/status/{label}` | User | Poll для клиента: `{ label, status, plan_type, amount }`, `status` = `pending`/`completed`/`failed`/`expired`. Только свои платежи (по `user_id`) — 404 на чужой label. `pending` дольше `YUMONEY_PAYMENT_TTL_MINUTES` (30) лениво помечается `expired` |
 | POST | `/promo/check` | User | Проверка промокода |
 | GET | `/plans` | — | Тарифы |
-| POST | `/yumoney/notify` | YuMoney | Webhook: завершает payment → Subscription; если у плательщика `ReferralReward(pending)` и это **первая** completed-оплата — **+30 дней** invitee и inviter (`plan_type=referral_bonus`) |
+| GET | `/success-page` | — | Публичная HTML-страница — `successURL` в QuickPay-ссылке; куда YuMoney возвращает браузер после оплаты. Не источник правды — активацию клиент узнаёт через poll `/status/{label}` |
+| POST | `/yumoney/notify` | YuMoney (HTTP-уведомление, подпись SHA1) | Webhook. Чеклист: `label` → найти `Payment` c `SELECT … FOR UPDATE`; подпись — секретом **того самого кошелька** (`YUMONEY_SECRET_N`); `codepro=false`, `unaccepted=false`, `currency=643`; уникальный `operation_id` (идемпотентность повторных нотификаций); сумма `withdraw_amount`/`amount` ≥ `YUMONEY_AMOUNT_TOLERANCE` (0.93) от ожидаемой — иначе `failed` (защита от `sum=1`). Невалидная подпись → HTTP 400 (без ack, чтобы YuMoney не считал подтверждённым); всё остальное (дубликат/ignored/уже обработан/провален) → HTTP 200 (без ack YuMoney будет ретраить бесконечно). Успех → `Subscription` активна, `PromoCode.use_count += 1` и `pending_promo_code` очищается (не на `/init`), реферальный бонус, email |
 
 **Реферальная программа**
 
@@ -215,6 +219,11 @@ Endpoint: `GET /api/vpn/theme` (публичный, без auth).
 | `login_forgot_password_label` | «Забыли пароль?» |
 | `login_forgot_title` / `login_forgot_instruction` | Forgot password |
 | `login_reset_title` / `login_reset_button_text` | Reset password |
+| `payment_waiting_title` / `payment_waiting_text` | Экран ожидания оплаты (после открытия браузера) |
+| `payment_success_title` / `payment_success_text` | Оплата подтверждена (poll вернул `completed`) |
+| `payment_failed_title` / `payment_failed_text` | Оплата не подтверждена (`failed`) |
+| `payment_timeout_title` / `payment_timeout_text` | Poll не дождался ответа за 10 мин |
+| `payment_retry_button_text` / `payment_cancel_button_text` | Кнопки экрана оплаты |
 
 ---
 
@@ -260,15 +269,19 @@ FRONTEND_URL
 ### YuMoney
 
 ```
-YUMONEY_WALLET_1
-YUMONEY_WALLET_2
-YUMONEY_SECRET
+YUMONEY_WALLET_1..YUMONEY_WALLET_10       # номер кошелька YuMoney (пусто = слот выключен)
+YUMONEY_SECRET_1..YUMONEY_SECRET_10       # секрет HTTP-уведомлений ИМЕННО этого кошелька (из кабинета YuMoney)
+YUMONEY_SECRET                            # фолбэк-секрет, если у кошелька свой не задан (не рекомендуется на проде)
+YUMONEY_AMOUNT_TOLERANCE=0.93             # допуск на комиссию YuMoney при сверке суммы webhook
+YUMONEY_PAYMENT_TTL_MINUTES=30            # pending-платёж дольше этого — лениво помечается expired
 PRICE_MONTHLY=199
 PRICE_QUARTERLY=499
 PRICE_YEARLY=1499
 ```
 
-Логика: `app/services/payment_service.py`. Два кошелька — случайный выбор.
+Логика: `app/services/payment_service.py` (план: `.cursor/PLAN_PAYMENTS_YUMONEY.md`). До **10 кошельков** — расширение только через новую пару `YUMONEY_WALLET_N`/`YUMONEY_SECRET_N` в `.env`, без правок кода. Случайный выбор кошелька на каждый `/payments/init`. **Настройка на стороне YuMoney (обязательно на каждый кошелёк):** кабинет → «Настройки для разработчиков» → «HTTP-уведомления» → включить, URL `https://<домен>/api/payments/yumoney/notify`, скопировать секретное слово в `YUMONEY_SECRET_N`.
+
+Тесты: `backend/scripts/test_payment_unit.py` (unit, без реальной БД — кошельки/подпись/весь чеклист notify/idempotency/статус, 37 тестов), `backend/scripts/smoke_payments.py` (прод, без реальной оплаты).
 
 ### Прочие secrets (`.env` на VPS)
 

@@ -36,6 +36,16 @@ const defaultTheme = {
   bonuses_copy_code_label: 'Копировать код',
   register_referral_or_promo_label: 'Промокод или реферальный код',
   register_referral_or_promo_hint: 'Необязательно. Введите промокод или код из реферальной ссылки.',
+  payment_waiting_title: 'Ждём подтверждения оплаты',
+  payment_waiting_text: 'Оплатите в открывшейся вкладке браузера. После оплаты вернитесь в приложение — подписка активируется автоматически, обычно в течение минуты.',
+  payment_success_title: 'Оплата прошла успешно',
+  payment_success_text: 'Подписка активирована. Спасибо за покупку!',
+  payment_failed_title: 'Оплата не прошла',
+  payment_failed_text: 'Платёж не был подтверждён. Попробуйте снова или обратитесь в поддержку.',
+  payment_timeout_title: 'Не дождались оплаты',
+  payment_timeout_text: 'Если вы уже оплатили — подождите ещё немного или проверьте позже в разделе «Подписка».',
+  payment_retry_button_text: 'Попробовать снова',
+  payment_cancel_button_text: 'Отмена',
 }
 
 type Theme = typeof defaultTheme
@@ -47,7 +57,7 @@ const SCREEN_HINTS: Partial<Record<PreviewScreen, string>> = {
   login_expired: 'Панель при истечении 2 мин bootstrap. Тексты пока в коде клиентов.',
   login_reset_web: 'HTML-страница из письма — открывается в браузере, не в приложении.',
   menu: 'Боковое меню: фон, текст, акцент, шрифт. Пункт «Бонусы». «Ускорить Telegram» если задан proxy URL.',
-  subscription: 'Тарифы: основной цвет (кнопки), фон, текст.',
+  subscription: 'Тарифы + оплата (YuMoney в браузере): один флоу для PC/Android/iOS. Основной цвет (кнопки), фон, текст, тексты ожидания/успеха/ошибки оплаты.',
   exceptions: 'Список приложений (Android): фон, текст, основной цвет.',
   bonuses: 'Бонусы: реферальная ссылка + промокод. Тексты и подписи ниже.',
   devices: 'Сессии: фон, текст.',
@@ -262,6 +272,22 @@ export default function ThemePage({ token }: { token: string }) {
           </div>
         )
       case 'subscription':
+        return (
+          <div className="space-y-4">
+            <p className="text-xs text-[#666]">{SCREEN_HINTS.subscription}</p>
+            {field('Заголовок «Ждём оплату»', 'payment_waiting_title')}
+            {fieldTextarea('Текст «Ждём оплату»', 'payment_waiting_text')}
+            {field('Заголовок «Успех»', 'payment_success_title')}
+            {fieldTextarea('Текст «Успех»', 'payment_success_text')}
+            {field('Заголовок «Не прошла»', 'payment_failed_title')}
+            {fieldTextarea('Текст «Не прошла»', 'payment_failed_text')}
+            {field('Заголовок «Не дождались»', 'payment_timeout_title')}
+            {fieldTextarea('Текст «Не дождались»', 'payment_timeout_text')}
+            {field('Кнопка «Попробовать снова»', 'payment_retry_button_text')}
+            {field('Кнопка «Отмена»', 'payment_cancel_button_text')}
+            {colorFields()}
+          </div>
+        )
       case 'exceptions':
       case 'devices':
       case 'support':

@@ -16,7 +16,7 @@ Agent приступает к **первой невыполненной** зад
 
 ### Продукт / монетизация
 
-- [ ] **Оплата YuMoney (кастомный QuickPay): реализовать по плану `.cursor/PLAN_PAYMENTS_YUMONEY.md`** — до 10 кошельков через .env, активация только по webhook, poll статуса в PC/Android, theme-поля оплаты. **Обязательно: полный прогон тестов §11 плана (имитация всех оплат/ошибок/обходов) — без него задача не закрыта**
+- [x] **Оплата YuMoney (кастомный QuickPay) по плану `.cursor/PLAN_PAYMENTS_YUMONEY.md`** — 2026-07-14: backend (10 кошельков через `.env`, per-wallet секрет, `label` высокой энтропии, `SELECT…FOR UPDATE`, `operation_id` идемпотентность, допуск на комиссию, codepro/unaccepted/currency, promo `use_count` при завершении), `GET /payments/status/{label}`, `GET /payments/success-page`, theme-поля `payment_*` (backend + admin-ui + PC + Android). Юнит-тесты `scripts/test_payment_unit.py` — **37/37 OK**; smoke `scripts/smoke_payments.py` готов (не гонялся на проде — нужны реальные секреты кошельков). **Осталось: задеплоить backend, собрать/пушнуть admin-ui, PC/Android релизы, владелец добавляет `YUMONEY_WALLET_N`/`YUMONEY_SECRET_N` в `.env` на VPS**
 
 - [x] Реферальные ссылки + раздел «Бонусы» (backend + PC + Android): промо/реф на регистрации, +30 дней обоим после первой оплаты invitee — 2026-07-09
 - [x] Реф-политика growth: лимит 10 наград/30д на inviter + текст «условия могут измениться» — 2026-07-09

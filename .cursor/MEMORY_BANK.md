@@ -51,7 +51,7 @@
 | VPN Core | wdtt-server (WireGuard over VK TURN/DTLS) |
 | Деплой | Docker Compose + Python SSH-скрипты с Windows |
 | Почта | SMTP (smtplib) с HTML-шаблонами |
-| Платежи | YuMoney (2 кошелька, случайный выбор) |
+| Платежи | YuMoney QuickPay (кастом, без API), до 10 кошельков, случайный выбор |
 
 ### Принцип работы VPN
 
@@ -304,9 +304,17 @@ python scripts/restore_api_container.py
 
 - Trial: 3 дня после верификации email
 - Test mode: безлимитный доступ для новых регистраций (toggle в админке)
-- YuMoney: 2 кошелька, случайный выбор; тарифы в `.env`
+- **YuMoney QuickPay (кастом, без API YuMoney)** — реализовано 2026-07-14 по плану `.cursor/PLAN_PAYMENTS_YUMONEY.md`:
+  - До **10 кошельков** через `.env` (`YUMONEY_WALLET_1..10` + `YUMONEY_SECRET_1..10`, свой секрет на кошелёк); случайный выбор на каждый `/payments/init`; расширение = только новые env-переменные
+  - Атрибуция платежа — уникальный `label` (`silent_<32 hex>`, `secrets.token_hex(16)`) на каждый intent, возвращается в webhook; `SELECT … FOR UPDATE` + unique `operation_id` — двое одновременно платящих не путаются, повторные нотификации не дублируют активацию
+  - Webhook-чеклист: подпись SHA1 секретом **именно того кошелька**, `codepro=false`, `unaccepted=false`, `currency=643`, сумма (`withdraw_amount`/`amount`) ≥ `YUMONEY_AMOUNT_TOLERANCE` (0.93) от ожидаемой — гасит и комиссию YuMoney, и атаки типа `sum=1`
+  - Невалидная подпись → HTTP 400 (не подтверждаем); всё остальное понятое (дубликат/ignored/mismatch) → HTTP 200, чтобы YuMoney не заретраил бесконечно
+  - **Единый флоу всех клиентов:** `/init` → открыть `url` (прямая ссылка `yoomoney.ru/quickpay/confirm.xml`, urlencoded) в **системном браузере** (PC: `openExternal`, Android: `ACTION_VIEW`) — не встраивается в приложение и не проксируется через бекенд; клиент poll'ит `GET /payments/status/{label}` каждые ~4с до `completed`/`failed`/`expired`, таймаут 10 мин. `successURL` = наш `GET /payments/success-page` (публичная HTML — YuMoney обязан туда вернуть браузер), но это не источник правды для клиента
+  - Promo `use_count` инкрементится и `pending_promo_code` очищается **только** при успешном завершении оплаты, не на `/init` (иначе неудачные платежи жгли бы промокод)
+  - Theme-поля `payment_waiting_*` / `payment_success_*` / `payment_failed_*` / `payment_timeout_*` / `payment_retry_button_text` — backend (`ThemeResponse`) + admin-ui (`ThemePage`/`ClientPreview`, экран «Подписка») + PC (`clientTheme.ts`, `MainScreen.tsx`) + Android (`ThemeData`, `MainViewModel.PaymentUiState`, `MenuSubscription`)
+  - **Тесты (обязательное условие плана — выполнено):** `backend/scripts/test_payment_unit.py` — 37 unit-тестов (кошельки/подпись/весь чеклист notify включая обходы sum=1, foreign-label race, idempotency, TTL) — **37/37 OK**; `backend/scripts/smoke_payments.py` — прод smoke без реальной оплаты (готов, не гонялся — нет прод-секретов)
+  - **Не сделано:** деплой backend на VPS, сборка/пуш admin-ui, PC/Android релизы с новым UI оплаты; владельцу нужно добавить реальные `YUMONEY_WALLET_N`/`YUMONEY_SECRET_N` в `.env` на VPS (в кабинете YuMoney каждого кошелька включить HTTP-уведомления на `/api/payments/yumoney/notify` и скопировать секрет)
 - Промокоды: CRUD в админке (`/api/admin/promo`)
-- **План доработки оплаты (кастомный QuickPay без API, до 10 кошельков, активация только по webhook): `.cursor/PLAN_PAYMENTS_YUMONEY.md`** — готовый план для реализующего агента, ещё не реализован
 
 ### Сброс пароля
 
@@ -526,14 +534,15 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
-### 2026-07-14 — План кастомной оплаты YuMoney (до 10 кошельков)
+### 2026-07-14 — Оплата YuMoney реализована (до 10 кошельков, единый флоу клиентов)
 
-- Полный план в **`.cursor/PLAN_PAYMENTS_YUMONEY.md`** — реализация ещё НЕ начата
-- Суть: QuickPay-ссылки с фикс. суммами (нет API), активация подписки **только** по HTTP-уведомлению YuMoney (без ручного подтверждения, как было в SilentShield)
-- Анти-гонка: уникальный `label` per-платёж + `FOR UPDATE` + unique `operation_id` — двое одновременно платящих не перепутаются
-- Кошельки: `YUMONEY_WALLET_1..10` + `YUMONEY_SECRET_1..10` в `.env` (per-wallet секрет!), случайный выбор, расширение без правок кода
-- Найдены баги текущего кода: двойной `_pick_wallet()`, нет проверки суммы/codepro, гонка notify, битый successURL, общий секрет — всё в плане §3
-- **Тесты обязательны** (план §11): имитация всех оплат/ошибок/обходов/гонок (unit) + smoke на проде + e2e — реализация не закрывается без зелёного прогона
+- Реализация по плану **`.cursor/PLAN_PAYMENTS_YUMONEY.md`** — подробности в разделе «Подписки и оплата» выше
+- Backend: `config.py` (10 кошельков + секреты + tolerance + TTL), `models/payment.py` (`operation_id`/`paid_amount`/`promo_code`/`expired`), `payment_service.py` переписан целиком (кошельки, подпись, весь webhook-чеклист, идемпотентность), `api/payments.py` (`GET /status/{label}`, `GET /success-page`)
+- Admin UI: `ThemePage.tsx` + `ClientPreview.tsx` — группа «Оплата» с превью состояний (тарифы/ожидание/успех/ошибка)
+- **Единый флоу PC + Android:** `/init` → системный браузер (не WebView, не проксируем) → poll `/status/{label}` → состояния из theme-полей
+- Тесты: `scripts/test_payment_unit.py` **37/37 OK** (venv создан/удалён локально для прогона — deps не в репо), `scripts/smoke_payments.py` готов для прод-проверки
+- **Не запушено** ни в одну ветку (main/pc/android) — ждём подтверждения пользователя; деплой backend + сборка admin-ui + релизы PC/Android — впереди
+- Владельцу нужно: в кабинете каждого YuMoney-кошелька включить HTTP-уведомления на `https://<домен>/api/payments/yumoney/notify`, скопировать секрет в `YUMONEY_WALLET_N`/`YUMONEY_SECRET_N` на VPS
 
 ### 2026-07-14 — VPS 502: deploy_api recreate без httpx/hive
 

@@ -14,10 +14,16 @@ class Payment(Base):
     amount: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
     wallet: Mapped[str] = mapped_column(String(50), nullable=False)
     yumoney_label: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    status: Mapped[str] = mapped_column(String(50), default="pending")  # pending, completed, failed
+    status: Mapped[str] = mapped_column(String(50), default="pending")  # pending, completed, failed, expired
     raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # YuMoney operation_id — уникален для идемпотентности повторных нотификаций
+    operation_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
+    # Фактически зачисленная сумма (withdraw_amount/amount из нотификации) — для аудита комиссии
+    paid_amount: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    # Промокод, применённый на момент создания платёжного намерения (use_count инкрементится при завершении)
+    promo_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="payments")
 

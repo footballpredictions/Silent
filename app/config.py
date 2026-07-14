@@ -33,10 +33,34 @@ class Settings(BaseSettings):
     EMAIL_FROM_NAME: str = "Silent VPN"
     FRONTEND_URL: str = "https://132-243-234-162.nip.io"
 
-    # YuMoney
+    # YuMoney — до 10 кошельков, каждый со своим секретом уведомлений.
+    # Добавление нового кошелька = только новая пара env-переменных, без изменения кода.
     YUMONEY_WALLET_1: str = ""
+    YUMONEY_SECRET_1: str = ""
     YUMONEY_WALLET_2: str = ""
+    YUMONEY_SECRET_2: str = ""
+    YUMONEY_WALLET_3: str = ""
+    YUMONEY_SECRET_3: str = ""
+    YUMONEY_WALLET_4: str = ""
+    YUMONEY_SECRET_4: str = ""
+    YUMONEY_WALLET_5: str = ""
+    YUMONEY_SECRET_5: str = ""
+    YUMONEY_WALLET_6: str = ""
+    YUMONEY_SECRET_6: str = ""
+    YUMONEY_WALLET_7: str = ""
+    YUMONEY_SECRET_7: str = ""
+    YUMONEY_WALLET_8: str = ""
+    YUMONEY_SECRET_8: str = ""
+    YUMONEY_WALLET_9: str = ""
+    YUMONEY_SECRET_9: str = ""
+    YUMONEY_WALLET_10: str = ""
+    YUMONEY_SECRET_10: str = ""
+    # Фолбэк-секрет, если у конкретного кошелька свой не задан (не рекомендуется для прода)
     YUMONEY_SECRET: str = ""
+    # Допуск на комиссию YuMoney при сверке суммы платежа (0.93 = принимаем от 93% ожидаемой суммы)
+    YUMONEY_AMOUNT_TOLERANCE: float = 0.93
+    # TTL ожидания оплаты — после этого pending платёж считается просроченным
+    YUMONEY_PAYMENT_TTL_MINUTES: int = 30
 
     # Admin
     ADMIN_LOGIN: str = "admin"

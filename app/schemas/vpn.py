@@ -160,3 +160,17 @@ class ThemeResponse(BaseModel):
     bonuses_copy_code_label: str = "Копировать код"
     register_referral_or_promo_label: str = "Промокод или реферальный код"
     register_referral_or_promo_hint: str = "Необязательно. Введите промокод или код из реферальной ссылки."
+    # Оплата (YuMoney QuickPay в браузере) — единые тексты для всех клиентов
+    payment_waiting_title: str = "Ждём подтверждения оплаты"
+    payment_waiting_text: str = (
+        "Оплатите в открывшейся вкладке браузера. После оплаты вернитесь в приложение — "
+        "подписка активируется автоматически, обычно в течение минуты."
+    )
+    payment_success_title: str = "Оплата прошла успешно"
+    payment_success_text: str = "Подписка активирована. Спасибо за покупку!"
+    payment_failed_title: str = "Оплата не прошла"
+    payment_failed_text: str = "Платёж не был подтверждён. Попробуйте снова или обратитесь в поддержку."
+    payment_timeout_title: str = "Не дождались оплаты"
+    payment_timeout_text: str = "Если вы уже оплатили — подождите ещё немного или проверьте позже в разделе «Подписка»."
+    payment_retry_button_text: str = "Попробовать снова"
+    payment_cancel_button_text: str = "Отмена"

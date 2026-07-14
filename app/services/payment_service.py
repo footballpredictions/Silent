@@ -1,10 +1,22 @@
-"""YuMoney payment service — redirects to payment page, verifies via notification."""
+"""YuMoney payment service — QuickPay redirect + HTTP notification, no API.
+
+Attribution model: every payment intent gets a high-entropy random `label`
+(`silent_<32 hex chars>`), stored with the intent and echoed back by YuMoney
+in the notification. The label is the only thing used to match a
+notification to a specific payment — this is what makes concurrent payments
+from different users unambiguous even though they may complete out of order.
+
+Multi-wallet: up to 10 wallets configured purely via env vars
+(YUMONEY_WALLET_1..10 / YUMONEY_SECRET_1..10). Adding wallet #11 support
+would still only require extending the range below — no other code changes.
+"""
 import random
-import uuid
+import secrets
 import hashlib
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import urlencode
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -21,33 +33,57 @@ PLAN_PRICES = {
     "yearly": (settings.PRICE_YEARLY, 365),
 }
 
-
-def _pick_wallet() -> str:
-    """Randomly select one of two YuMoney wallets."""
-    return random.choice([settings.YUMONEY_WALLET_1, settings.YUMONEY_WALLET_2])
+MAX_WALLETS = 10
+YUMONEY_QUICKPAY_URL = "https://yoomoney.ru/quickpay/confirm.xml"
 
 
-def build_payment_url(plan_type: str, label: str, amount: float) -> dict:
-    """Build YuMoney QuickPay redirect URL."""
-    wallet = _pick_wallet()
-    # YuMoney QuickPay URL format
-    base_url = "https://yoomoney.ru/quickpay/confirm.xml"
+def get_wallets() -> list[dict]:
+    """All configured wallets (env-driven, up to MAX_WALLETS). Empty slots skipped."""
+    wallets = []
+    for i in range(1, MAX_WALLETS + 1):
+        wallet = (getattr(settings, f"YUMONEY_WALLET_{i}", "") or "").strip()
+        if not wallet:
+            continue
+        secret = (getattr(settings, f"YUMONEY_SECRET_{i}", "") or "").strip() or settings.YUMONEY_SECRET
+        wallets.append({"wallet": wallet, "secret": secret})
+    return wallets
+
+
+def _pick_wallet() -> dict:
+    """Randomly select one configured wallet — spreads funds across all of them."""
+    wallets = get_wallets()
+    if not wallets:
+        raise RuntimeError(
+            "No YuMoney wallets configured — set YUMONEY_WALLET_1 (and _SECRET_1) at minimum"
+        )
+    return random.choice(wallets)
+
+
+def secret_for_wallet(wallet: str) -> str:
+    """Notification secret for a specific wallet address; falls back to shared secret."""
+    for w in get_wallets():
+        if w["wallet"] == wallet:
+            return w["secret"]
+    return settings.YUMONEY_SECRET
+
+
+def success_url() -> str:
+    """Public backend page YuMoney redirects the browser to after payment."""
+    return f"{settings.FRONTEND_URL.rstrip('/')}/api/payments/success-page"
+
+
+def build_payment_url(plan_type: str, label: str, amount: float, wallet: str) -> str:
+    """Build YuMoney QuickPay redirect URL (properly URL-encoded)."""
     params = {
         "receiver": wallet,
-        "quickpay-form": "send",
-        "targets": f"Silent VPN — {plan_type}",
+        "quickpay-form": "shop",
+        "targets": f"Silent VPN - {plan_type}",
         "paymentType": "AC",
-        "sum": str(amount),
+        "sum": f"{amount:.2f}",
         "label": label,
-        "successURL": f"{settings.APP_NAME}://payment/success",
+        "successURL": success_url(),
     }
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    return {
-        "url": f"{base_url}?{query}",
-        "wallet": wallet,
-        "label": label,
-        "amount": amount,
-    }
+    return f"{YUMONEY_QUICKPAY_URL}?{urlencode(params)}"
 
 
 async def create_payment_intent(
@@ -59,46 +95,60 @@ async def create_payment_intent(
     if plan_type not in PLAN_PRICES:
         raise ValueError(f"Unknown plan: {plan_type}")
 
-    amount, days = PLAN_PRICES[plan_type]
+    amount, _days = PLAN_PRICES[plan_type]
 
     # Prefer explicit promo from client; else pending promo from registration
     code = (promo_code or getattr(user, "pending_promo_code", None) or "").strip().upper() or None
+    applied_code = None
 
-    # Apply promo code
     if code:
         result = await db.execute(
             select(PromoCode).where(
                 PromoCode.code == code,
-                PromoCode.is_active == True,
+                PromoCode.is_active == True,  # noqa: E712
             )
         )
         promo = result.scalar_one_or_none()
         if promo and promo.use_count < promo.max_uses:
             if promo.expires_at is None or promo.expires_at > datetime.utcnow():
                 amount = amount * (1 - promo.discount_percent / 100)
-                days += promo.extra_days
-                if getattr(user, "pending_promo_code", None):
-                    user.pending_promo_code = None
+                applied_code = promo.code
+                # use_count incremented only on successful payment (process_payment_notification),
+                # not here — otherwise an abandoned/failed payment would burn the promo for nothing.
 
-    label = f"silent_{user.id}_{uuid.uuid4().hex[:8]}"
-    wallet = _pick_wallet()
+    amount = round(amount, 2)
+    label = f"silent_{secrets.token_hex(16)}"
+    wallet = _pick_wallet()["wallet"]
 
     payment = Payment(
         user_id=user.id,
         plan_type=plan_type,
-        amount=round(amount, 2),
+        amount=amount,
         wallet=wallet,
         yumoney_label=label,
         status="pending",
+        promo_code=applied_code,
     )
     db.add(payment)
     await db.commit()
 
-    return build_payment_url(plan_type, label, round(amount, 2))
+    logger.info(
+        "payment init: user=%s plan=%s amount=%.2f wallet=%s label=%s",
+        user.id, plan_type, amount, wallet, label,
+    )
+
+    return {
+        "url": build_payment_url(plan_type, label, amount, wallet),
+        "wallet": wallet,
+        "label": label,
+        "amount": amount,
+    }
 
 
 def _verify_yumoney_signature(data: dict, secret: str) -> bool:
-    """Verify YuMoney notification signature."""
+    """Verify YuMoney notification signature (per docs.yoomoney.ru http-notification)."""
+    if not secret:
+        return False
     notification_type = data.get("notification_type", "")
     operation_id = data.get("operation_id", "")
     amount = data.get("amount", "")
@@ -110,35 +160,23 @@ def _verify_yumoney_signature(data: dict, secret: str) -> bool:
 
     check_str = "&".join([
         notification_type, operation_id, amount, currency,
-        datetime_str, sender, codepro, secret, label
+        datetime_str, sender, codepro, secret, label,
     ])
     sha1 = hashlib.sha1(check_str.encode("utf-8")).hexdigest()
     return sha1 == data.get("sha1_hash", "")
 
 
-async def process_payment_notification(db: AsyncSession, data: dict) -> bool:
-    """Handle YuMoney HTTP notification and activate subscription."""
-    if not _verify_yumoney_signature(data, settings.YUMONEY_SECRET):
-        logger.warning("Invalid YuMoney signature")
-        return False
+def _signature_valid_for_any_wallet(data: dict) -> bool:
+    """Used only when the label doesn't match a known payment (e.g. cabinet test notification)."""
+    for w in get_wallets():
+        if _verify_yumoney_signature(data, w["secret"]):
+            return True
+    return bool(settings.YUMONEY_SECRET) and _verify_yumoney_signature(data, settings.YUMONEY_SECRET)
 
-    label = data.get("label", "")
-    if not label.startswith("silent_"):
-        return False
 
-    result = await db.execute(
-        select(Payment).where(Payment.yumoney_label == label, Payment.status == "pending")
-    )
-    payment = result.scalar_one_or_none()
-    if not payment:
-        return False
-
-    payment.status = "completed"
-    payment.completed_at = datetime.utcnow()
-    payment.raw_response = str(data)
-    await db.flush()
-
+async def _activate_subscription(db: AsyncSession, payment: Payment) -> Subscription:
     from app.services.subscription_service import TRIAL_PLAN
+
     trial_result = await db.execute(
         select(Subscription).where(
             Subscription.user_id == payment.user_id,
@@ -171,16 +209,114 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> bool:
         expires_at=base + timedelta(days=days),
     )
     db.add(subscription)
+    return subscription
+
+
+async def process_payment_notification(db: AsyncSession, data: dict) -> dict:
+    """
+    Handle YuMoney HTTP notification.
+
+    Returns {"ok": bool, "reason": str}:
+    - ok=False (invalid signature) → caller should respond 400 (never trust unsigned data).
+    - ok=True → caller responds 200 in all cases (including ignored/duplicate/failed), so
+      YuMoney does not endlessly retry a notification we already understood.
+    """
+    label = (data.get("label") or "").strip()
+    operation_id = (data.get("operation_id") or "").strip()
+
+    payment = None
+    if label.startswith("silent_"):
+        result = await db.execute(
+            select(Payment).where(Payment.yumoney_label == label).with_for_update()
+        )
+        payment = result.scalar_one_or_none()
+
+    if not payment:
+        if not _signature_valid_for_any_wallet(data):
+            logger.warning("payment notify: invalid signature, unknown/foreign label=%r", label)
+            return {"ok": False, "reason": "invalid_signature"}
+        logger.info("payment notify: signature ok but no matching payment for label=%r — ignoring", label)
+        return {"ok": True, "reason": "unknown_label"}
+
+    secret = secret_for_wallet(payment.wallet)
+    if not _verify_yumoney_signature(data, secret):
+        logger.warning(
+            "payment notify: invalid signature for label=%s wallet=%s", label, payment.wallet
+        )
+        return {"ok": False, "reason": "invalid_signature"}
+
+    if payment.status != "pending":
+        # Duplicate notification for an already-settled payment — respond 200, do nothing.
+        logger.info("payment notify: payment %s already %s — idempotent", payment.id, payment.status)
+        return {"ok": True, "reason": "already_processed"}
+
+    codepro = (data.get("codepro") or "false").strip().lower()
+    unaccepted = (data.get("unaccepted") or "false").strip().lower()
+    currency = (data.get("currency") or "643").strip()
+
+    if codepro == "true":
+        logger.warning("payment notify: codepro=true for payment=%s — protected code, funds withheld", payment.id)
+        return {"ok": True, "reason": "codepro"}
+    if unaccepted == "true":
+        logger.warning("payment notify: unaccepted=true for payment=%s", payment.id)
+        return {"ok": True, "reason": "unaccepted"}
+    if currency != "643":
+        logger.warning("payment notify: unexpected currency=%s for payment=%s", currency, payment.id)
+        return {"ok": True, "reason": "bad_currency"}
+
+    if operation_id:
+        dup_result = await db.execute(
+            select(Payment.id).where(Payment.operation_id == operation_id)
+        )
+        if dup_result.scalar_one_or_none():
+            logger.info("payment notify: duplicate operation_id=%s", operation_id)
+            return {"ok": True, "reason": "duplicate_operation"}
+
+    try:
+        received = float(data.get("withdraw_amount") or data.get("amount") or 0)
+    except (TypeError, ValueError):
+        received = 0.0
+
+    expected = float(payment.amount)
+    tolerance = settings.YUMONEY_AMOUNT_TOLERANCE
+    if expected > 0 and received < expected * tolerance:
+        logger.warning(
+            "payment notify: amount mismatch label=%s expected=%.2f got=%.2f (min=%.2f) — marking failed",
+            label, expected, received, expected * tolerance,
+        )
+        payment.status = "failed"
+        payment.raw_response = str(data)
+        await db.commit()
+        return {"ok": True, "reason": "amount_mismatch"}
+
+    payment.status = "completed"
+    payment.completed_at = datetime.utcnow()
+    payment.operation_id = operation_id or None
+    payment.paid_amount = round(received, 2)
+    payment.raw_response = str(data)
+    await db.flush()
+
+    if payment.promo_code:
+        promo_result = await db.execute(
+            select(PromoCode).where(PromoCode.code == payment.promo_code)
+        )
+        promo = promo_result.scalar_one_or_none()
+        if promo:
+            promo.use_count += 1
+        user_result = await db.execute(select(User).where(User.id == payment.user_id))
+        applied_user = user_result.scalar_one_or_none()
+        if applied_user and getattr(applied_user, "pending_promo_code", None) == payment.promo_code:
+            applied_user.pending_promo_code = None
+
+    subscription = await _activate_subscription(db, payment)
     await db.commit()
 
     from app.services.referral_service import apply_referral_reward_after_payment
     await apply_referral_reward_after_payment(db, payment)
 
-    # Send email
     result = await db.execute(select(User).where(User.id == payment.user_id))
     user = result.scalar_one_or_none()
     if user:
-        # Refresh expires after possible referral bonus
         sub_result = await db.execute(
             select(Subscription)
             .where(Subscription.user_id == payment.user_id, Subscription.status == "active")
@@ -190,4 +326,29 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> bool:
         expires = latest.expires_at if latest else subscription.expires_at
         send_subscription_activated_email(user.email, payment.plan_type, expires)
 
-    return True
+    logger.info("payment notify: payment=%s completed, subscription activated", payment.id)
+    return {"ok": True, "reason": "completed"}
+
+
+async def get_payment_status(db: AsyncSession, user: User, label: str) -> dict:
+    """Read-only status lookup for client polling. Lazily expires stale pending intents."""
+    result = await db.execute(
+        select(Payment).where(Payment.yumoney_label == label, Payment.user_id == user.id)
+    )
+    payment = result.scalar_one_or_none()
+    if not payment:
+        raise ValueError("not_found")
+
+    if payment.status == "pending":
+        created = payment.created_at or datetime.utcnow()
+        ttl = timedelta(minutes=settings.YUMONEY_PAYMENT_TTL_MINUTES)
+        if datetime.utcnow() - created > ttl:
+            payment.status = "expired"
+            await db.commit()
+
+    return {
+        "label": payment.yumoney_label,
+        "status": payment.status,
+        "plan_type": payment.plan_type,
+        "amount": float(payment.amount),
+    }

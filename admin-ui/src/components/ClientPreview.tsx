@@ -50,6 +50,16 @@ export type ClientTheme = {
   bonuses_copy_code_label?: string
   register_referral_or_promo_label?: string
   register_referral_or_promo_hint?: string
+  payment_waiting_title?: string
+  payment_waiting_text?: string
+  payment_success_title?: string
+  payment_success_text?: string
+  payment_failed_title?: string
+  payment_failed_text?: string
+  payment_timeout_title?: string
+  payment_timeout_text?: string
+  payment_retry_button_text?: string
+  payment_cancel_button_text?: string
 }
 
 type PreviewScreen =
@@ -121,6 +131,7 @@ export default function ClientPreview({
     else setInternalScreen(s)
   }
   const [connected, setConnected] = useState(true)
+  const [paymentPreviewState, setPaymentPreviewState] = useState<'plans' | 'waiting' | 'success' | 'failed'>('plans')
 
   const w = 265
   const h = 606
@@ -430,21 +441,72 @@ export default function ClientPreview({
       {screen === 'menu' && menuDrawer()}
 
       {screen === 'subscription' && subPage('Выберите тариф', (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {[
-            ['Месяц', '199 ₽'],
-            ['3 месяца', '499 ₽'],
-            ['Год', '1 499 ₽'],
-          ].map(([label, price]) => (
-            <div key={label} style={{
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              background: theme.primary_color, color: bg,
-              borderRadius: 12, padding: '10px 12px', fontSize: 12, fontWeight: 600,
-            }}>
-              <span>{label}</span><span>{price}</span>
+        <>
+          <div style={{ display: 'flex', gap: 4, marginBottom: 12, flexWrap: 'wrap' }}>
+            {([
+              ['plans', 'Тарифы'],
+              ['waiting', 'Ждём'],
+              ['success', 'Успех'],
+              ['failed', 'Ошибка'],
+            ] as const).map(([id, lbl]) => (
+              <button key={id} type="button" onClick={() => setPaymentPreviewState(id)} style={{
+                padding: '3px 8px', fontSize: 9, borderRadius: 6, cursor: 'pointer',
+                background: paymentPreviewState === id ? theme.primary_color : `${fg}0F`,
+                color: paymentPreviewState === id ? bg : muted,
+                border: 'none',
+              }}>{lbl}</button>
+            ))}
+          </div>
+
+          {paymentPreviewState === 'plans' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[
+                ['Месяц', '199 ₽'],
+                ['3 месяца', '499 ₽'],
+                ['Год', '1 499 ₽'],
+              ].map(([label, price]) => (
+                <div key={label} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  background: theme.primary_color, color: bg,
+                  borderRadius: 12, padding: '10px 12px', fontSize: 12, fontWeight: 600,
+                }}>
+                  <span>{label}</span><span>{price}</span>
+                </div>
+              ))}
+              <p style={{ fontSize: 9, color: `${fg}55`, marginTop: 6, lineHeight: 1.4 }}>
+                Оплата открывается в системном браузере (YuMoney). Не встраивается в приложение.
+              </p>
             </div>
-          ))}
-        </div>
+          )}
+
+          {paymentPreviewState !== 'plans' && (() => {
+            const cfg = {
+              waiting: { title: theme.payment_waiting_title || 'Ждём подтверждения оплаты', text: theme.payment_waiting_text || 'Оплатите в открывшейся вкладке браузера.', color: theme.accent_color || fg },
+              success: { title: theme.payment_success_title || 'Оплата прошла успешно', text: theme.payment_success_text || 'Подписка активирована.', color: green },
+              failed: { title: theme.payment_failed_title || 'Оплата не прошла', text: theme.payment_failed_text || 'Платёж не был подтверждён.', color: red },
+            }[paymentPreviewState as 'waiting' | 'success' | 'failed']
+            return (
+              <div style={{
+                borderRadius: 14, padding: '18px 16px', textAlign: 'center',
+                border: `1px solid ${cfg.color}2E`, background: `${cfg.color}0D`,
+              }}>
+                <div style={{
+                  width: 36, height: 36, borderRadius: '50%', margin: '0 auto 10px',
+                  background: `${cfg.color}1A`, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 16,
+                }}>{paymentPreviewState === 'waiting' ? '⏳' : paymentPreviewState === 'success' ? '✓' : '✗'}</div>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{cfg.title}</div>
+                <div style={{ fontSize: 10, color: muted, lineHeight: 1.5 }}>{cfg.text}</div>
+                {paymentPreviewState === 'failed' && (
+                  <button type="button" style={{
+                    width: '100%', marginTop: 14, padding: '10px 0', borderRadius: 10, border: 'none',
+                    background: fg, color: bg, fontSize: 11, fontWeight: 600, cursor: 'default',
+                  }}>{theme.payment_retry_button_text || 'Попробовать снова'}</button>
+                )}
+              </div>
+            )
+          })()}
+        </>
       ))}
 
       {screen === 'exceptions' && subPage('Исключения приложений', (

@@ -312,8 +312,8 @@ python scripts/restore_api_container.py
   - **Единый флоу всех клиентов:** `/init` → открыть `url` (прямая ссылка `yoomoney.ru/quickpay/confirm.xml`, urlencoded) в **системном браузере** (PC: `openExternal`, Android: `ACTION_VIEW`) — не встраивается в приложение и не проксируется через бекенд; клиент poll'ит `GET /payments/status/{label}` каждые ~4с до `completed`/`failed`/`expired`, таймаут 10 мин. `successURL` = наш `GET /payments/success-page` (публичная HTML — YuMoney обязан туда вернуть браузер), но это не источник правды для клиента
   - Promo `use_count` инкрементится и `pending_promo_code` очищается **только** при успешном завершении оплаты, не на `/init` (иначе неудачные платежи жгли бы промокод)
   - Theme-поля `payment_waiting_*` / `payment_success_*` / `payment_failed_*` / `payment_timeout_*` / `payment_retry_button_text` — backend (`ThemeResponse`) + admin-ui (`ThemePage`/`ClientPreview`, экран «Подписка») + PC (`clientTheme.ts`, `MainScreen.tsx`) + Android (`ThemeData`, `MainViewModel.PaymentUiState`, `MenuSubscription`)
-  - **Тесты (обязательное условие плана — выполнено):** `backend/scripts/test_payment_unit.py` — 37 unit-тестов (кошельки/подпись/весь чеклист notify включая обходы sum=1, foreign-label race, idempotency, TTL) — **37/37 OK**; `backend/scripts/smoke_payments.py` — прод smoke без реальной оплаты (готов, не гонялся — нет прод-секретов)
-  - **Не сделано:** деплой backend на VPS, сборка/пуш admin-ui, PC/Android релизы с новым UI оплаты; владельцу нужно добавить реальные `YUMONEY_WALLET_N`/`YUMONEY_SECRET_N` в `.env` на VPS (в кабинете YuMoney каждого кошелька включить HTTP-уведомления на `/api/payments/yumoney/notify` и скопировать секрет)
+  - **Тесты (обязательное условие плана — выполнено):** `backend/scripts/test_payment_unit.py` — 37 unit-тестов (кошельки/подпись/весь чеклист notify включая обходы sum=1, foreign-label race, idempotency, TTL) — **37/37 OK**; плюс живой прогон на проде реальными кошельками (см. запись 2026-07-14 в «Последние изменения» ниже) — signature/commission/sum=1/idempotency подтверждены на реальных `YUMONEY_WALLET_1/2`
+  - **Задеплоено на прод 2026-07-14**, оба реальных кошелька настроены и работают. **Осталось:** релизы PC/Android с новым UI оплаты (код в ветках, сборка/OTA не выполнялись)
 - Промокоды: CRUD в админке (`/api/admin/promo`)
 
 ### Сброс пароля
@@ -541,8 +541,14 @@ cd pc; npm install; npm run dev
 - Admin UI: `ThemePage.tsx` + `ClientPreview.tsx` — группа «Оплата» с превью состояний (тарифы/ожидание/успех/ошибка)
 - **Единый флоу PC + Android:** `/init` → системный браузер (не WebView, не проксируем) → poll `/status/{label}` → состояния из theme-полей
 - Тесты: `scripts/test_payment_unit.py` **37/37 OK** (venv создан/удалён локально для прогона — deps не в репо), `scripts/smoke_payments.py` готов для прод-проверки
-- **Не запушено** ни в одну ветку (main/pc/android) — ждём подтверждения пользователя; деплой backend + сборка admin-ui + релизы PC/Android — впереди
-- Владельцу нужно: в кабинете каждого YuMoney-кошелька включить HTTP-уведомления на `https://<домен>/api/payments/yumoney/notify`, скопировать секрет в `YUMONEY_WALLET_N`/`YUMONEY_SECRET_N` на VPS
+- Push `origin/main` (backend), `origin/pc`, `origin/android` — все три ветки
+- **Деплой на прод выполнен и проверен живыми кошельками (2026-07-14):**
+  - `.env` на VPS: `YUMONEY_WALLET_1=410016158181311` (15 цифр — старый кошелёк, подтверждён пользователем как рабочий), `YUMONEY_WALLET_2=4100116281560655`, оба с реальными `YUMONEY_SECRET_1/2` из личных кабинетов
+  - Т.к. `env_file: .env` в `docker-compose.yml` требует recreate контейнера для новых переменных — `docker compose up -d api` (recreate) → сразу `python scripts/deploy_stable.py` (restore кода из стабильного image + `fix_tunnel_dnat`), как предписано в разделе «Docker: код в контейнере»
+  - Проверено после деплоя: `\d payments` — все новые колонки на месте; Улей/`admin/stats`/`users/me` продолжают отвечать 200 без регрессии
+  - **Живой прогон обоих кошельков на проде:** 12 инициаций `/payments/init` (оба кошелька случайно выпадали), подпись каждого нотификейшена — секретом именно того кошелька → верно распознаётся; `sum=1`-атака (сумма 1₽ вместо 199₽) на обоих кошельках → `status=failed`, подписка не активируется; полный успешный платёж с реалистичной комиссией (~5%) → `status=completed`, повторная (replay) нотификация → `already_processed` (идемпотентность подтверждена)
+- Публичный URL для HTTP-уведомлений (уже указан в обоих кошельках): `https://132-243-234-162.nip.io/api/payments/yumoney/notify`
+- **Осталось:** релизы PC/Android с новым UI оплаты (код запушен в ветки `pc`/`android`, но `assembleRelease`/`build-installer` + OTA публикация не выполнялись)
 
 ### 2026-07-14 — VPS 502: deploy_api recreate без httpx/hive
 

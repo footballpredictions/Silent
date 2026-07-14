@@ -777,6 +777,8 @@ fun MainScreen(
                             theme = theme,
                             fg = fg,
                             bg = bg,
+                            primaryBtnBg = palette.primaryBtnBg,
+                            primaryBtnFg = palette.primaryBtnFg,
                             onBack = {
                                 if (paymentState != com.silent.vpn.PaymentUiState.WAITING) onResetPaymentState()
                                 menuPage = MenuPage.ROOT
@@ -955,6 +957,8 @@ private fun MenuSubscription(
     theme: ThemeData?,
     fg: Color,
     bg: Color,
+    primaryBtnBg: Color,
+    primaryBtnFg: Color,
     onBack: () -> Unit,
     onInitPayment: (String, (String, String) -> Unit, (String) -> Unit) -> Unit,
     paymentState: com.silent.vpn.PaymentUiState,
@@ -1020,13 +1024,17 @@ private fun MenuSubscription(
                                     onShowError,
                                 )
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = bg),
+                            // Тёмная тема: белая кнопка / чёрный текст (primaryBtn*)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = primaryBtnBg,
+                                contentColor = primaryBtnFg,
+                            ),
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                         ) {
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(labelPrice.first, fontSize = 12.sp, color = bg)
-                                Text(labelPrice.second, fontSize = 12.sp, color = bg)
+                                Text(labelPrice.first, fontSize = 12.sp, color = primaryBtnFg)
+                                Text(labelPrice.second, fontSize = 12.sp, color = primaryBtnFg)
                             }
                         }
                     }

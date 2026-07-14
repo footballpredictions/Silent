@@ -1020,13 +1020,13 @@ private fun MenuSubscription(
                                     onShowError,
                                 )
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = Color.White),
+                            colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = bg),
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                         ) {
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(labelPrice.first, fontSize = 12.sp)
-                                Text(labelPrice.second, fontSize = 12.sp)
+                                Text(labelPrice.first, fontSize = 12.sp, color = bg)
+                                Text(labelPrice.second, fontSize = 12.sp, color = bg)
                             }
                         }
                     }
@@ -1096,6 +1096,19 @@ private fun MenuSubscription(
                             strokeWidth = 2.dp,
                             color = color,
                         )
+                        // ЮMoney не присылает уведомление об отказе (неверный CVC, банк отклонил и
+                        // т.п.) — вебхук приходит только при реальном зачислении денег. Поэтому если
+                        // платёж не прошёл, узнать об этом раньше таймаута нечем — даём отменить вручную.
+                        TvTextButton(
+                            onClick = onResetPaymentState,
+                            modifier = Modifier.padding(top = 16.dp),
+                        ) {
+                            Text(
+                                theme?.payment_cancel_button_text ?: "Отмена",
+                                fontSize = 12.sp,
+                                color = fg.copy(alpha = 0.4f),
+                            )
+                        }
                     }
                     if (paymentState == com.silent.vpn.PaymentUiState.FAILED || paymentState == com.silent.vpn.PaymentUiState.TIMEOUT) {
                         TvPrimaryButton(

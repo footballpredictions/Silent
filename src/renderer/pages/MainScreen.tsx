@@ -1252,9 +1252,22 @@ export default function MainScreen({
                       <div className="text-sm font-semibold mb-1.5">{cfg.title}</div>
                       <div className="text-xs leading-relaxed" style={{ color: muted }}>{cfg.text}</div>
                       {paymentStatus === 'waiting' && (
-                        <div className="mt-3 flex justify-center">
-                          <span className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: `${cfg.color}55`, borderTopColor: 'transparent' }} />
-                        </div>
+                        <>
+                          <div className="mt-3 flex justify-center">
+                            <span className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: `${cfg.color}55`, borderTopColor: 'transparent' }} />
+                          </div>
+                          {/* ЮMoney не шлёт уведомление об отказе (неверный CVC, банк отклонил и т.п.) —
+                              вебхук приходит только при реальном зачислении денег, поэтому раньше
+                              таймаута об отказе узнать нечем — даём отменить вручную. */}
+                          <button
+                            type="button"
+                            onClick={() => { stopPaymentPoll(); setPaymentStatus('idle') }}
+                            className="mt-4 text-xs"
+                            style={{ color: muted }}
+                          >
+                            {clientTheme?.payment_cancel_button_text || 'Отмена'}
+                          </button>
+                        </>
                       )}
                       {(paymentStatus === 'failed' || paymentStatus === 'timeout') && (
                         <button

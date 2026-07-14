@@ -20,6 +20,7 @@ GITHUB_OWNER = os.environ.get("GITHUB_RELEASES_OWNER", "silentvpn3")
 GITHUB_REPO = os.environ.get("GITHUB_RELEASES_REPO", "silentvpn3.github.io")
 GITHUB_API = "https://api.github.com"
 RELEASES_JSON_PATH = "releases.json"
+INDEX_HTML_PATH = "index.html"
 API_BASE_DEFAULT = "https://132-243-234-162.nip.io"
 
 
@@ -215,6 +216,13 @@ async def _upload_release_asset(token: str, release: dict, file_path: str, filen
 
 
 async def _read_repo_file(token: str, path: str) -> tuple[Optional[dict], Optional[str]]:
+    text, sha = await _read_repo_text(token, path)
+    if text is None:
+        return None, None
+    return json.loads(text), sha
+
+
+async def _read_repo_text(token: str, path: str) -> tuple[Optional[str], Optional[str]]:
     url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{quote(path, safe='/')}"
     resp = await _request("GET", url, token=token, timeout=30.0)
     if resp.status_code == 404:
@@ -227,7 +235,7 @@ async def _read_repo_file(token: str, path: str) -> tuple[Optional[dict], Option
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         text = raw.decode("utf-8")
-    return json.loads(text), payload.get("sha")
+    return text, payload.get("sha")
 
 
 async def _write_repo_file(token: str, path: str, content: str, sha: Optional[str], message: str) -> None:
@@ -247,38 +255,163 @@ def _platform_label(platform: str) -> str:
     return "PC (Windows)" if platform == "pc" else "Android"
 
 
+def _format_size_mb(bytes_n: int | float | None) -> str:
+    n = int(bytes_n or 0)
+    mb = n / (1024 * 1024)
+    if mb >= 1:
+        return f"{mb:.1f} MB"
+    return f"{max(1, round(n / 1024))} KB"
+
+
+def _landing_entry_from_manifest(
+    platform: str,
+    manifest: dict,
+    download_url: str,
+    github_filename: str | None = None,
+) -> dict:
+    return {
+        "version": str(manifest["version"]),
+        "filename": github_filename or manifest["filename"],
+        "size": int(manifest.get("size") or 0),
+        "download_url": download_url,
+    }
+
+
+def _patch_index_html_releases(html: str, releases: dict) -> str:
+    """Обновить INLINE_FALLBACK + кнопки скачивания в index.html лендинга."""
+    pc = releases.get("pc") or {}
+    android = releases.get("android") or {}
+    if not pc.get("version") or not android.get("version"):
+        raise GitHubReleaseError("Для index.html нужны pc и android в releases")
+
+    inline = (
+        "const INLINE_FALLBACK = {\n"
+        "      pc: {\n"
+        f'        version: "{pc["version"]}",\n'
+        f'        size: {int(pc.get("size") or 0)},\n'
+        f'        filename: "{pc["filename"]}",\n'
+        f'        download_url: "{pc["download_url"]}",\n'
+        "      },\n"
+        "      android: {\n"
+        f'        version: "{android["version"]}",\n'
+        f'        size: {int(android.get("size") or 0)},\n'
+        f'        filename: "{android["filename"]}",\n'
+        f'        download_url: "{android["download_url"]}",\n'
+        "      },\n"
+        "    };"
+    )
+    patched, n = re.subn(
+        r"const INLINE_FALLBACK = \{.*?\};",
+        inline,
+        html,
+        count=1,
+        flags=re.S,
+    )
+    if n != 1:
+        raise GitHubReleaseError("INLINE_FALLBACK не найден в index.html")
+
+    replacements = [
+        (
+            r'id="pcDownload" href="[^"]*"',
+            f'id="pcDownload" href="{pc["download_url"]}"',
+        ),
+        (
+            r'id="androidDownload" href="[^"]*"',
+            f'id="androidDownload" href="{android["download_url"]}"',
+        ),
+        (
+            r'id="pcVersion" data-version="[^"]*">v[^<]*',
+            f'id="pcVersion" data-version="{pc["version"]}">v{pc["version"]}',
+        ),
+        (
+            r'id="androidVersion" data-version="[^"]*">v[^<]*',
+            f'id="androidVersion" data-version="{android["version"]}">v{android["version"]}',
+        ),
+        (
+            r'id="pcMeta"[^>]*>[^<]*',
+            f'id="pcMeta">{_format_size_mb(pc.get("size"))}',
+        ),
+        (
+            r'id="androidMeta"[^>]*>[^<]*',
+            f'id="androidMeta">{_format_size_mb(android.get("size"))}',
+        ),
+    ]
+    for pattern, repl in replacements:
+        patched, n = re.subn(pattern, repl, patched, count=1)
+        if n != 1:
+            logger.warning("index.html patch miss: %s", pattern)
+
+    return patched
+
+
+async def _sync_landing_index_html(token: str, releases: dict) -> None:
+    html, sha = await _read_repo_text(token, INDEX_HTML_PATH)
+    if not html:
+        raise GitHubReleaseError("index.html не найден в landing-репозитории")
+    patched = _patch_index_html_releases(html, releases)
+    if patched == html:
+        logger.info("index.html already up to date")
+        return
+    pc_v = (releases.get("pc") or {}).get("version")
+    and_v = (releases.get("android") or {}).get("version")
+    await _write_repo_file(
+        token,
+        INDEX_HTML_PATH,
+        patched,
+        sha,
+        f"index.html: PC v{pc_v}, Android v{and_v}",
+    )
+
+
+async def _build_landing_releases_snapshot(
+    platform: str,
+    manifest: dict,
+    download_url: str,
+    github_filename: str | None = None,
+) -> dict:
+    """Собрать полный pc+android снимок для releases.json / index.html."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    current: dict[str, Any] = {
+        "updated_at": now,
+        "api_base": API_BASE_DEFAULT,
+        "github_repo": f"{GITHUB_OWNER}/{GITHUB_REPO}",
+    }
+    current[platform] = _landing_entry_from_manifest(platform, manifest, download_url, github_filename)
+    for p in update_service.PLATFORMS:
+        if p == platform:
+            continue
+        local = update_service.get_latest(p)
+        if not local:
+            continue
+        gh = local.get("github_download_url") or asset_download_url(
+            local["version"],
+            github_asset_filename(p, local["filename"], str(local["version"])),
+        )
+        current[p] = _landing_entry_from_manifest(
+            p,
+            local,
+            gh,
+            github_asset_filename(p, local["filename"], str(local["version"])),
+        )
+    return current
+
+
 async def _sync_landing_releases_json(
     token: str,
     platform: str,
     manifest: dict,
     download_url: str,
     github_filename: str | None = None,
-) -> None:
+) -> dict:
     current, sha = await _read_repo_file(token, RELEASES_JSON_PATH)
     if not isinstance(current, dict):
         current = {}
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    entry = {
-        "version": manifest["version"],
-        "filename": github_filename or manifest["filename"],
-        "size": manifest.get("size", 0),
-        "download_url": download_url,
-    }
-    current["updated_at"] = now
-    current["api_base"] = current.get("api_base") or API_BASE_DEFAULT
-    current["github_repo"] = f"{GITHUB_OWNER}/{GITHUB_REPO}"
-    current[platform] = entry
+    snapshot = await _build_landing_releases_snapshot(platform, manifest, download_url, github_filename)
+    # Не затирать peer с лендинга, если локального файла нет
     for p in update_service.PLATFORMS:
-        local = update_service.get_latest(p)
-        if not local or p == platform:
-            continue
-        if p not in current or not current[p].get("download_url"):
-            current[p] = {
-                "version": local["version"],
-                "filename": local["filename"],
-                "size": local.get("size", 0),
-                "download_url": asset_download_url(local["version"], local["filename"]),
-            }
+        if p not in snapshot and isinstance(current.get(p), dict) and current[p].get("version"):
+            snapshot[p] = current[p]
+    current.update(snapshot)
     text = json.dumps(current, ensure_ascii=False, indent=2) + "\n"
     await _write_repo_file(
         token,
@@ -287,6 +420,7 @@ async def _sync_landing_releases_json(
         sha,
         f"releases.json: {_platform_label(platform)} v{manifest['version']}",
     )
+    return current
 
 
 def _patch_manifest_github(platform: str, download_url: str) -> None:
@@ -380,7 +514,13 @@ async def publish_platform(platform: str, *, sync_landing: bool = True, sync_pee
     release_page = release.get("html_url") or f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tag/{tag}"
 
     if sync_landing:
-        await _sync_landing_releases_json(token, platform, latest, download_url, asset_name)
+        snapshot = await _sync_landing_releases_json(
+            token, platform, latest, download_url, asset_name
+        )
+        try:
+            await _sync_landing_index_html(token, snapshot)
+        except GitHubReleaseError as e:
+            logger.warning("index.html landing sync failed: %s", e)
 
     _patch_manifest_github(platform, download_url)
 

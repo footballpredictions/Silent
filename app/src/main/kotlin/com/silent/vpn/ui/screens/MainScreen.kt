@@ -285,7 +285,10 @@ fun MainScreen(
     onClearVpnError: () -> Unit,
     onCheckPromo: (String, (String) -> Unit) -> Unit,
     onLoadReferral: ((com.silent.vpn.data.ReferralInfo?) -> Unit) -> Unit = {},
-    onInitPayment: (String, (String) -> Unit, (String) -> Unit) -> Unit,
+    onInitPayment: (String, (String, String) -> Unit, (String) -> Unit) -> Unit,
+    paymentState: com.silent.vpn.PaymentUiState = com.silent.vpn.PaymentUiState.IDLE,
+    onStartPaymentPoll: (String) -> Unit = {},
+    onResetPaymentState: () -> Unit = {},
     onOpenUrl: (String) -> Unit,
     onShowError: (String) -> Unit,
     onRenameDevice: (deviceId: String, name: String, onResult: (Boolean, String?) -> Unit) -> Unit,
@@ -771,9 +774,17 @@ fun MainScreen(
                         when (menuPage) {
                         MenuPage.SUBSCRIPTION -> MenuSubscription(
                             profile = profile,
+                            theme = theme,
                             fg = fg,
-                            onBack = { menuPage = MenuPage.ROOT },
+                            bg = bg,
+                            onBack = {
+                                if (paymentState != com.silent.vpn.PaymentUiState.WAITING) onResetPaymentState()
+                                menuPage = MenuPage.ROOT
+                            },
                             onInitPayment = onInitPayment,
+                            paymentState = paymentState,
+                            onStartPaymentPoll = onStartPaymentPoll,
+                            onResetPaymentState = onResetPaymentState,
                             onOpenUrl = onOpenUrl,
                             onShowError = onShowError,
                         )
@@ -941,12 +952,21 @@ private fun MenuSupport(
 @Composable
 private fun MenuSubscription(
     profile: UserProfile?,
+    theme: ThemeData?,
     fg: Color,
+    bg: Color,
     onBack: () -> Unit,
-    onInitPayment: (String, (String) -> Unit, (String) -> Unit) -> Unit,
+    onInitPayment: (String, (String, String) -> Unit, (String) -> Unit) -> Unit,
+    paymentState: com.silent.vpn.PaymentUiState,
+    onStartPaymentPoll: (String) -> Unit,
+    onResetPaymentState: () -> Unit,
     onOpenUrl: (String) -> Unit,
     onShowError: (String) -> Unit,
 ) {
+    val muted = fg.copy(alpha = 0.5f)
+    val green = Color(0xFF16A34A)
+    val red = Color(0xFFEF4444)
+
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         TvTextButton(
             onClick = onBack,
@@ -956,44 +976,136 @@ private fun MenuSubscription(
         ) {
             Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
         }
-        Text(
-            "Подписка и оплата обновляются автоматически при включённом VPN.",
-            fontSize = 11.sp,
-            color = fg.copy(alpha = 0.45f),
-            modifier = Modifier.padding(bottom = 12.dp),
-        )
-        if (profile?.subscription?.is_active == true) {
-            val planType = profile.subscription.plan_type
-            val planLabel = when (planType) {
-                "trial" -> "Пробный период"
-                "test" -> "Тестовый режим"
-                "monthly" -> "Месяц"
-                "quarterly" -> "3 месяца"
-                "yearly" -> "Год"
-                "unlimited" -> "Бессрочно"
-                else -> planType ?: "—"
+
+        when (paymentState) {
+            com.silent.vpn.PaymentUiState.IDLE -> {
+                Text(
+                    "Подписка и оплата обновляются автоматически при включённом VPN.",
+                    fontSize = 11.sp,
+                    color = fg.copy(alpha = 0.45f),
+                    modifier = Modifier.padding(bottom = 12.dp),
+                )
+                if (profile?.subscription?.is_active == true) {
+                    val planType = profile.subscription.plan_type
+                    val planLabel = when (planType) {
+                        "trial" -> "Пробный период"
+                        "test" -> "Тестовый режим"
+                        "monthly" -> "Месяц"
+                        "quarterly" -> "3 месяца"
+                        "yearly" -> "Год"
+                        "unlimited" -> "Бессрочно"
+                        else -> planType ?: "—"
+                    }
+                    val unlimitedLike = profile.is_admin || planType == "unlimited" || planType == "test"
+                    Text("Подписка активна", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+                    Text(
+                        if (unlimitedLike) "Тариф: $planLabel\nБезлимитный доступ"
+                        else "Тариф: $planLabel\nОсталось: ${profile.subscription.days_left} дней",
+                        fontSize = 12.sp,
+                        color = fg.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                } else {
+                    Text("Выберите тариф", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+                    listOf("monthly" to ("Месяц" to "199 ₽"), "quarterly" to ("3 месяца" to "499 ₽"), "yearly" to ("Год" to "1 499 ₽")).forEach { (id, labelPrice) ->
+                        TvPrimaryButton(
+                            onClick = {
+                                onInitPayment(
+                                    id,
+                                    { url, label ->
+                                        // Оплата всегда открывается во внешнем браузере, не встроена в приложение.
+                                        onOpenUrl(url)
+                                        onStartPaymentPoll(label)
+                                    },
+                                    onShowError,
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = Color.White),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        ) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(labelPrice.first, fontSize = 12.sp)
+                                Text(labelPrice.second, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                    Text(
+                        "Оплата откроется в системном браузере (YuMoney).",
+                        fontSize = 10.sp,
+                        color = fg.copy(alpha = 0.35f),
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
+                }
             }
-            val unlimitedLike = profile.is_admin || planType == "unlimited" || planType == "test"
-            Text("Подписка активна", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
-            Text(
-                if (unlimitedLike) "Тариф: $planLabel\nБезлимитный доступ"
-                else "Тариф: $planLabel\nОсталось: ${profile.subscription.days_left} дней",
-                fontSize = 12.sp,
-                color = fg.copy(alpha = 0.5f),
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        } else {
-            Text("Выберите тариф", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
-            listOf("monthly" to ("Месяц" to "199 ₽"), "quarterly" to ("3 месяца" to "499 ₽"), "yearly" to ("Год" to "1 499 ₽")).forEach { (id, labelPrice) ->
-                TvPrimaryButton(
-                    onClick = { onInitPayment(id, onOpenUrl, onShowError) },
-                    colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = Color.White),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            else -> {
+                val cfg = when (paymentState) {
+                    com.silent.vpn.PaymentUiState.WAITING -> Triple(
+                        theme?.payment_waiting_title ?: "Ждём подтверждения оплаты",
+                        theme?.payment_waiting_text ?: "Оплатите в открывшейся вкладке браузера. После оплаты вернитесь в приложение — подписка активируется автоматически.",
+                        fg,
+                    )
+                    com.silent.vpn.PaymentUiState.COMPLETED -> Triple(
+                        theme?.payment_success_title ?: "Оплата прошла успешно",
+                        theme?.payment_success_text ?: "Подписка активирована. Спасибо за покупку!",
+                        green,
+                    )
+                    com.silent.vpn.PaymentUiState.FAILED -> Triple(
+                        theme?.payment_failed_title ?: "Оплата не прошла",
+                        theme?.payment_failed_text ?: "Платёж не был подтверждён. Попробуйте снова или обратитесь в поддержку.",
+                        red,
+                    )
+                    else -> Triple(
+                        theme?.payment_timeout_title ?: "Не дождались оплаты",
+                        theme?.payment_timeout_text ?: "Если вы уже оплатили — подождите ещё немного или проверьте позже.",
+                        muted,
+                    )
+                }
+                val (title, text, color) = cfg
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(color.copy(alpha = 0.08f))
+                        .border(1.dp, color.copy(alpha = 0.18f), RoundedCornerShape(16.dp))
+                        .padding(vertical = 24.dp, horizontal = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(labelPrice.first, fontSize = 12.sp)
-                        Text(labelPrice.second, fontSize = 12.sp)
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(color.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            when (paymentState) {
+                                com.silent.vpn.PaymentUiState.WAITING -> "⏳"
+                                com.silent.vpn.PaymentUiState.COMPLETED -> "✓"
+                                com.silent.vpn.PaymentUiState.FAILED -> "✗"
+                                else -> "⏱"
+                            },
+                            fontSize = 16.sp,
+                        )
+                    }
+                    Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg, modifier = Modifier.padding(top = 10.dp))
+                    Text(text, fontSize = 12.sp, color = muted, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp))
+                    if (paymentState == com.silent.vpn.PaymentUiState.WAITING) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.padding(top = 14.dp).size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = color,
+                        )
+                    }
+                    if (paymentState == com.silent.vpn.PaymentUiState.FAILED || paymentState == com.silent.vpn.PaymentUiState.TIMEOUT) {
+                        TvPrimaryButton(
+                            onClick = onResetPaymentState,
+                            colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = bg),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                        ) {
+                            Text(theme?.payment_retry_button_text ?: "Попробовать снова", fontSize = 12.sp)
+                        }
                     }
                 }
             }

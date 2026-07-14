@@ -200,10 +200,21 @@ data class ThemeData(
     val bonuses_copy_code_label: String = "Копировать код",
     val register_referral_or_promo_label: String = "Промокод или реферальный код",
     val register_referral_or_promo_hint: String = "Необязательно. Введите промокод или код из реферальной ссылки.",
+    val payment_waiting_title: String = "Ждём подтверждения оплаты",
+    val payment_waiting_text: String = "Оплатите в открывшейся вкладке браузера. После оплаты вернитесь в приложение — подписка активируется автоматически, обычно в течение минуты.",
+    val payment_success_title: String = "Оплата прошла успешно",
+    val payment_success_text: String = "Подписка активирована. Спасибо за покупку!",
+    val payment_failed_title: String = "Оплата не прошла",
+    val payment_failed_text: String = "Платёж не был подтверждён. Попробуйте снова или обратитесь в поддержку.",
+    val payment_timeout_title: String = "Не дождались оплаты",
+    val payment_timeout_text: String = "Если вы уже оплатили — подождите ещё немного или проверьте позже в разделе «Подписка».",
+    val payment_retry_button_text: String = "Попробовать снова",
+    val payment_cancel_button_text: String = "Отмена",
 )
 
 data class PaymentInitRequest(val plan_type: String, val promo_code: String? = null)
 data class PaymentResponse(val url: String, val wallet: String, val label: String, val amount: Double)
+data class PaymentStatusResponse(val label: String, val status: String, val plan_type: String, val amount: Double)
 
 data class PromoCheckRequest(val code: String, val plan_type: String)
 data class PromoCheckResponse(
@@ -292,6 +303,9 @@ interface SilentApi {
 
     @POST("api/payments/init")
     suspend fun initPayment(@Body req: PaymentInitRequest): Response<PaymentResponse>
+
+    @GET("api/payments/status/{label}")
+    suspend fun getPaymentStatus(@Path("label") label: String): Response<PaymentStatusResponse>
 
     @POST("api/payments/promo/check")
     suspend fun checkPromo(@Body req: PromoCheckRequest): Response<PromoCheckResponse>

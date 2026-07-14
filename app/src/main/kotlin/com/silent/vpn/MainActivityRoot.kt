@@ -60,6 +60,7 @@ fun MainActivityRoot(
     val forgotSent by vm.forgotSent.collectAsState()
     val bootstrapExpired by vm.bootstrapExpired.collectAsState()
     val pendingReferralCode by vm.pendingReferralCode.collectAsState()
+    val paymentState by vm.paymentState.collectAsState()
 
     LaunchedEffect(Unit) {
         activity.handleTileConnectIntent(initialIntent)
@@ -168,6 +169,9 @@ fun MainActivityRoot(
                         onCheckPromo = vm::checkPromo,
                         onLoadReferral = vm::loadReferral,
                         onInitPayment = vm::initPayment,
+                        paymentState = paymentState,
+                        onStartPaymentPoll = vm::startPaymentPoll,
+                        onResetPaymentState = vm::resetPaymentState,
                         onOpenUrl = { url ->
                             activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                         },

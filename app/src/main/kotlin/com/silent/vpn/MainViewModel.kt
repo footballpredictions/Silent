@@ -70,6 +70,9 @@ private const val SESSIONS_POLL_MS = 10 * 1000L
 
 enum class AppScreen { LOGIN, MAIN }
 
+/** Единый флоу оплаты для всех клиентов: init → браузер → poll /payments/status/{label}. */
+enum class PaymentUiState { IDLE, WAITING, COMPLETED, FAILED, TIMEOUT }
+
 @HiltViewModel
 class MainViewModel @Inject constructor(
     private val repo: SilentRepository,
@@ -81,6 +84,10 @@ class MainViewModel @Inject constructor(
 
     private val _profile = MutableStateFlow<UserProfile?>(null)
     val profile: StateFlow<UserProfile?> = _profile
+
+    private val _paymentState = MutableStateFlow(PaymentUiState.IDLE)
+    val paymentState: StateFlow<PaymentUiState> = _paymentState
+    private var paymentPollJob: Job? = null
 
     private val _vpnState = MutableStateFlow(VpnState.DISCONNECTED)
     val vpnState: StateFlow<VpnState> = _vpnState
@@ -2732,19 +2739,20 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun initPaymentApi(planType: String): String {
+    private suspend fun initPaymentApi(planType: String): com.silent.vpn.data.PaymentResponse {
         val res = repo.getApi().initPayment(com.silent.vpn.data.PaymentInitRequest(planType))
-        if (res.isSuccessful) return res.body()!!.url
+        if (res.isSuccessful) return res.body()!!
         throw IllegalStateException(parseError(res.errorBody()?.string() ?: "") ?: "Ошибка оплаты")
     }
 
-    fun initPayment(planType: String, onUrl: (String) -> Unit, onError: (String) -> Unit) {
+    /** onUrl(url, label) — клиент открывает url во внешнем браузере и запускает poll по label. */
+    fun initPayment(planType: String, onUrl: (String, String) -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
             if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
                 val ok = runEphemeralApiBootstrap(appContext, force = true) {
                     runCatching { initPaymentApi(planType) }
                         .fold(
-                            onSuccess = { url -> onUrl(url); true },
+                            onSuccess = { r -> onUrl(r.url, r.label); true },
                             onFailure = { e ->
                                 onError(e.message ?: "Ошибка оплаты")
                                 false
@@ -2756,10 +2764,61 @@ class MainViewModel @Inject constructor(
             }
             runCatching {
                 repo.withUserBackendApi { initPaymentApi(planType) }
-            }.onSuccess { onUrl(it) }.onFailure { e ->
+            }.onSuccess { onUrl(it.url, it.label) }.onFailure { e ->
                 onError(e.message ?: "Ошибка")
             }
         }
+    }
+
+    private suspend fun paymentStatusApi(label: String): String {
+        val res = repo.getApi().getPaymentStatus(label)
+        if (res.isSuccessful) return res.body()!!.status
+        throw IllegalStateException(parseError(res.errorBody()?.string() ?: "") ?: "Ошибка проверки оплаты")
+    }
+
+    /** Единый poll для всех клиентов: раз в 4с до completed/failed/expired или таймаута 10 мин. */
+    fun startPaymentPoll(label: String) {
+        paymentPollJob?.cancel()
+        _paymentState.value = PaymentUiState.WAITING
+        paymentPollJob = viewModelScope.launch {
+            val deadline = System.currentTimeMillis() + 10 * 60 * 1000L
+            while (System.currentTimeMillis() < deadline) {
+                delay(4000)
+                val status = runCatching {
+                    if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
+                        var result: String? = null
+                        runEphemeralApiBootstrap(appContext, force = false) {
+                            result = runCatching { paymentStatusApi(label) }.getOrNull()
+                            result != null
+                        }
+                        result
+                    } else {
+                        repo.withUserBackendApi { paymentStatusApi(label) }
+                    }
+                }.getOrNull()
+                when (status) {
+                    "completed" -> {
+                        _paymentState.value = PaymentUiState.COMPLETED
+                        refreshAccountData()
+                        return@launch
+                    }
+                    "failed", "expired" -> {
+                        _paymentState.value = PaymentUiState.FAILED
+                        return@launch
+                    }
+                    else -> { /* pending — keep polling */ }
+                }
+            }
+            if (_paymentState.value == PaymentUiState.WAITING) {
+                _paymentState.value = PaymentUiState.TIMEOUT
+            }
+        }
+    }
+
+    fun resetPaymentState() {
+        paymentPollJob?.cancel()
+        paymentPollJob = null
+        _paymentState.value = PaymentUiState.IDLE
     }
 
     private fun hasVpnAccess(): Boolean = hasVpnAccessForProfile(_profile.value)

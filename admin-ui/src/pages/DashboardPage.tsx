@@ -155,7 +155,15 @@ function VkHashesCard({
   const formatLastSeen = (iso?: string | null): string => {
     if (!iso) return '—'
     try {
-      const dt = new Date(iso)
+      // Backend пишет naive UTC (datetime.utcnow).isoformat() без Z —
+      // без суффикса JS считает строку «локальным» временем и МСК уезжает на −3ч.
+      let s = String(iso).trim()
+      if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+        s = s.replace(' ', 'T')
+        if (!s.endsWith('Z')) s += 'Z'
+      }
+      const dt = new Date(s)
+      if (Number.isNaN(dt.getTime())) return '—'
       return dt.toLocaleString('ru-RU', {
         timeZone: 'Europe/Moscow',
         day: '2-digit',

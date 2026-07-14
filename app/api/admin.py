@@ -25,6 +25,16 @@ from app.services import update_service
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
+def _utc_iso(dt: datetime | None) -> str | None:
+    """Naive UTC → ISO with Z so admin UI can convert to Europe/Moscow correctly."""
+    if dt is None:
+        return None
+    s = dt.isoformat()
+    if dt.tzinfo is None and not s.endswith("Z") and "+" not in s[-6:]:
+        return s + "Z"
+    return s
+
+
 @router.get("/stats")
 async def get_stats(
     _: bool = Depends(get_admin_credentials),
@@ -136,7 +146,7 @@ async def get_stats(
             "user_id": str(u.id),
             "user_email": u.email,
             "user_connected": dev_online > 0,
-            "last_seen_at": last_seen.isoformat() if last_seen else None,
+            "last_seen_at": _utc_iso(last_seen),
             "device_names": device_names,
             "online_device_names": online_device_names,
             "slots_filled": len(unique_hashes),

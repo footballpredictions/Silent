@@ -1,5 +1,4 @@
 import axios from 'axios'
-import { isMainVpnSessionActive } from './tunnelApi'
 import { installTunnelApiAdapter } from './tunnelApiClient'
 import { getCachedTheme } from './themeStore'
 import { standbyApiBasesFromTheme } from './clientTheme'
@@ -47,15 +46,10 @@ const api = axios.create({ timeout: 15000 })
 installTunnelApiAdapter(api)
 
 api.interceptors.request.use(cfg => {
-  // PC renderer не ходит на http://10.66.66.1 — только public HTTPS.
-  // При main VPN запросы идут через main IPC (tunnelApiClient), не через этот baseURL.
-  if (!isMainVpnSessionActive()) {
-    cfg.baseURL = getPublicApiBaseUrl()
-    if (!cfg.timeout || cfg.timeout === 15000) {
-      cfg.timeout = 15_000
-    }
-  } else if (!cfg.timeout || cfg.timeout === 15000) {
-    cfg.timeout = 25_000
+  // API всегда через main IPC (tunnelApiClient). baseURL нужен только для редкого xhr-fallback.
+  if (!cfg.baseURL) cfg.baseURL = getPublicApiBaseUrl()
+  if (!cfg.timeout || cfg.timeout === 15000) {
+    cfg.timeout = 30_000
   }
   const token = localStorage.getItem(TOKEN_KEY)
   if (token) cfg.headers!['Authorization'] = `Bearer ${token}`
@@ -71,8 +65,12 @@ api.interceptors.response.use(
       if (refresh && !(cfg as { _retry?: boolean })?._retry) {
         try {
           ;(cfg as { _retry?: boolean })._retry = true
-          const refreshBase = getPublicApiBaseUrl()
-          const res = await axios.post(`${refreshBase}/api/auth/refresh`, { refresh_token: refresh })
+          // Тот же путь, что и остальные API (main IPC), не raw xhr на nip.io.
+          const res = await api.post(
+            '/api/auth/refresh',
+            { refresh_token: refresh },
+            { timeout: 30_000, headers: { Authorization: undefined } } as any,
+          )
           localStorage.setItem(TOKEN_KEY, res.data.access_token)
           localStorage.setItem(REFRESH_KEY, res.data.refresh_token)
           err.config.headers['Authorization'] = `Bearer ${res.data.access_token}`

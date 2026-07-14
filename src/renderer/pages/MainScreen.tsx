@@ -1294,7 +1294,7 @@ export default function MainScreen({
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <div className="text-sm font-semibold">Выберите тариф</div>
+                  <div className="text-sm font-semibold" style={{ color: fg }}>Выберите тариф</div>
                   {[
                     { id: 'monthly', label: 'Месяц', price: '199 ₽' },
                     { id: 'quarterly', label: '3 месяца', price: '499 ₽' },
@@ -1303,19 +1303,43 @@ export default function MainScreen({
                     <button key={plan.id}
                       onClick={async () => {
                         try {
-                          const res = await api.post('/api/payments/init', { plan_type: plan.id })
-                          // Открываем оплату сразу в системном браузере — не в нашем окне/бекенде.
-                          ;(window as any).electronAPI?.openExternal(res.data.url)
-                          startPaymentPoll(res.data.label)
+                          const res = await api.post(
+                            '/api/payments/init',
+                            { plan_type: plan.id },
+                            { timeout: 30_000 },
+                          )
+                          const url = res.data?.url
+                          const label = res.data?.label
+                          if (!url || !label) throw new Error('Сервер не вернул ссылку на оплату')
+                          // Системный браузер (не окно приложения). При VPN — bypass YuMoney/nip.io.
+                          // При включённом VPN main-процесс добавляет bypass для YuMoney/nip.io.
+                          const opened = await (window as any).electronAPI?.openExternal?.(url)
+                          if (opened === false) {
+                            try {
+                              await (window as any).electronAPI?.copyToClipboard?.(url)
+                            } catch { /* ignore */ }
+                            throw new Error('Не удалось открыть браузер. Ссылка скопирована — вставьте в Chrome/Edge вручную.')
+                          }
+                          startPaymentPoll(label)
                         } catch (e: any) {
-                          alert(e.response?.data?.detail || 'Ошибка')
+                          const d = e?.response?.data?.detail
+                          const msg = typeof d === 'string'
+                            ? d
+                            : Array.isArray(d)
+                              ? d.map((x: any) => x?.msg || x).filter(Boolean).join('; ')
+                              : (e?.message || 'Не удалось начать оплату')
+                          alert(msg)
                         }
                       }}
-                      className="w-full flex items-center justify-between bg-black text-white rounded-xl px-3 py-2.5 text-xs font-semibold hover:bg-gray-800 transition-colors">
+                      className="w-full flex items-center justify-between rounded-xl px-3 py-2.5 text-xs font-semibold transition-opacity hover:opacity-90"
+                      style={{ background: palette.primaryBtnBg, color: palette.primaryBtnFg }}>
                       <span>{plan.label}</span>
                       <span>{plan.price}</span>
                     </button>
                   ))}
+                  <p className="text-[10px] leading-relaxed" style={{ color: muted }}>
+                    Оплата откроется в системном браузере (YuMoney). После оплаты вернитесь сюда — статус обновится сам.
+                  </p>
                 </div>
               )}
             </div>

@@ -888,12 +888,59 @@ async function ensureNipIoBypassRoutes(sendLogFn = sendLog) {
   await sleep(500)
 }
 
-ipcMain.handle('open-external', async (_, url) => {
-  if (typeof url === 'string' && /132-243-234-162\.nip\.io|132\.243\.234\.162/.test(url)) {
-    await ensureNipIoBypassRoutes()
+function resolve4WithTimeout(host, ms = 2000) {
+  return Promise.race([
+    dns.promises.resolve4(host),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('dns timeout')), ms)),
+  ])
+}
+
+/** YuMoney/success page must leave full-tunnel VPN, иначе оплата в браузере зависает. */
+async function ensurePaymentBypassRoutes(url, sendLogFn = sendLog) {
+  if (!wgApplied || vpnBootstrapMode) return
+  const hosts = new Set()
+  try {
+    const u = new URL(String(url || ''))
+    if (u.hostname) hosts.add(u.hostname)
+  } catch { /* ignore */ }
+  hosts.add('yoomoney.ru')
+  hosts.add('money.yandex.ru')
+  hosts.add('132-243-234-162.nip.io')
+  const extra = []
+  await Promise.all([...hosts].map(async (host) => {
+    try {
+      const ips = await resolve4WithTimeout(host, 2000)
+      for (const ip of ips) {
+        if (ip && !sessionExcludeIPs.includes(ip) && !extra.includes(ip)) extra.push(ip)
+      }
+    } catch {
+      /* DNS fail/timeout — всё равно откроем браузер */
+    }
+  }))
+  try {
+    await capturePhysicalGateway(sendLogFn)
+    await addServerBypassRoutes([...sessionExcludeIPs, ...extra], sendLogFn)
+    await sleep(300)
+  } catch (e) {
+    sendLogFn('[payment-bypass] ' + (e && e.message ? e.message : e))
   }
-  await shell.openExternal(url)
-  return true
+}
+
+ipcMain.handle('open-external', async (_, url) => {
+  try {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+      sendLog('[open-external] invalid url')
+      return false
+    }
+    if (/132-243-234-162\.nip\.io|132\.243\.234\.162|yoomoney\.ru|money\.yandex\.ru/i.test(url)) {
+      await ensurePaymentBypassRoutes(url)
+    }
+    await shell.openExternal(url)
+    return true
+  } catch (e) {
+    sendLog('[open-external] fail: ' + (e && e.message ? e.message : e))
+    return false
+  }
 })
 ipcMain.handle('get-admin-panel-url', () => 'https://132-243-234-162.nip.io/admin')
 ipcMain.handle('open-admin-panel', async () => {

@@ -1,6 +1,6 @@
 import type { AxiosRequestConfig, AxiosResponse } from 'axios'
 import axios from 'axios'
-import { shouldRouteApiViaMain, getPublicApiBaseUrl } from './tunnelApi'
+import { getPublicApiBaseUrl } from './tunnelApi'
 
 type TunnelApiElectron = {
   tunnelApiRequest?: (payload: {
@@ -66,8 +66,9 @@ export function installTunnelApiAdapter(instance: ReturnType<typeof axios.create
   const xhrAdapter = axios.getAdapter('xhr')
   instance.defaults.adapter = async (config) => {
     const skipTunnel = Boolean((config as any).__skipTunnel) || Boolean((config as any).__forcePublic)
-    // Bootstrap или main VPN: API через main → 10.66.66.1 (как Android). Renderer xhr на public часто timeout.
-    if (!skipTunnel && shouldRouteApiViaMain() && electronTunnel()?.tunnelApiRequest) {
+    // Всегда через main IPC, если есть: WG → 10.66.66.1, иначе public HTTPS по IP.
+    // Renderer xhr на nip.io часто даёт «timeout of 15000ms exceeded» (VPN off или full-tunnel).
+    if (!skipTunnel && electronTunnel()?.tunnelApiRequest) {
       const headers = flattenAxiosHeaders(config.headers)
       // Axios мог уже stringify — нормализуем тело для IPC
       let body: unknown = config.data
@@ -83,7 +84,7 @@ export function installTunnelApiAdapter(instance: ReturnType<typeof axios.create
           path: buildTunnelPath(config),
           headers,
           body: body ?? null,
-          timeout: config.timeout || 25_000,
+          timeout: config.timeout || 30_000,
         })
         if (res.status >= 200 && res.status < 300) {
           return {

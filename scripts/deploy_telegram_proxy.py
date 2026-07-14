@@ -63,6 +63,8 @@ SECRET=$(tr -d '\\n\\r ' < "$SECRET_FILE")
 chmod 600 "$SECRET_FILE"
 
 # systemd
+# VPS без рабочего IPv6: mtg по умолчанию prefer-ipv6 → FakeTLS fronting падает
+# («cannot dial to the fronting domain» / Telegram «прокси недоступен»).
 cat > /etc/systemd/system/silent-tg-proxy.service << SVCEOF
 [Unit]
 Description=Silent VPN Telegram MTProto proxy (mtg)
@@ -71,7 +73,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$BIN simple-run 0.0.0.0:$PORT $SECRET
+ExecStart=$BIN simple-run -i prefer-ipv4 -n 1.1.1.1 0.0.0.0:$PORT $SECRET
 Restart=always
 RestartSec=3
 LimitNOFILE=65535

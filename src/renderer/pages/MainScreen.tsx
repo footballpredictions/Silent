@@ -207,6 +207,9 @@ export default function MainScreen({
   const [renameSaving, setRenameSaving] = useState(false)
   const [deleteSavingId, setDeleteSavingId] = useState<string | null>(null)
   const [activeWorkers, setActiveWorkers] = useState(0)
+  const [paymentStatus, setPaymentStatus] = useState<'idle' | 'waiting' | 'completed' | 'failed' | 'timeout'>('idle')
+  const paymentPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const paymentPollDeadlineRef = useRef(0)
   const connectLockRef = useRef(false)
   const connectGenRef = useRef(0)
   const onlineMarkedRef = useRef(false)
@@ -292,6 +295,42 @@ export default function MainScreen({
       return cached
     }
   }, [applyServerProfile])
+
+  const stopPaymentPoll = useCallback(() => {
+    if (paymentPollRef.current) {
+      clearInterval(paymentPollRef.current)
+      paymentPollRef.current = null
+    }
+  }, [])
+
+  const startPaymentPoll = useCallback((label: string) => {
+    stopPaymentPoll()
+    setPaymentStatus('waiting')
+    paymentPollDeadlineRef.current = Date.now() + 10 * 60 * 1000 // 10 минут ожидания
+    paymentPollRef.current = setInterval(async () => {
+      if (Date.now() > paymentPollDeadlineRef.current) {
+        stopPaymentPoll()
+        setPaymentStatus('timeout')
+        return
+      }
+      try {
+        const res = await api.get(`/api/payments/status/${label}`)
+        const status = res.data?.status
+        if (status === 'completed') {
+          stopPaymentPoll()
+          setPaymentStatus('completed')
+          await fetchProfile()
+        } else if (status === 'failed' || status === 'expired') {
+          stopPaymentPoll()
+          setPaymentStatus('failed')
+        }
+      } catch {
+        // Сеть моргнула — не обрываем ожидание, попробуем на следующем тике.
+      }
+    }, 4000)
+  }, [fetchProfile, stopPaymentPoll])
+
+  useEffect(() => () => stopPaymentPoll(), [stopPaymentPoll])
 
   useEffect(() => {
     // На главном экране bootstrap-состояние не должно жить.
@@ -1173,12 +1212,64 @@ export default function MainScreen({
             <div className="flex-1 p-4 overflow-y-auto w-full">
               <button
                 type="button"
-                onClick={() => setMenuPage(null)}
+                onClick={() => { setMenuPage(null); if (paymentStatus !== 'waiting') { stopPaymentPoll(); setPaymentStatus('idle') } }}
                 className="text-xs text-gray-400 mb-4 flex items-center gap-1"
               >
                 ← Назад
               </button>
-              {profile?.subscription?.is_active ? (
+
+              {paymentStatus !== 'idle' ? (
+                (() => {
+                  const cfg = {
+                    waiting: {
+                      title: clientTheme?.payment_waiting_title || 'Ждём подтверждения оплаты',
+                      text: clientTheme?.payment_waiting_text || 'Оплатите в открывшейся вкладке браузера. После оплаты вернитесь в приложение — подписка активируется автоматически.',
+                      color: palette.accent,
+                      icon: '⏳',
+                    },
+                    completed: {
+                      title: clientTheme?.payment_success_title || 'Оплата прошла успешно',
+                      text: clientTheme?.payment_success_text || 'Подписка активирована. Спасибо за покупку!',
+                      color: GREEN,
+                      icon: '✓',
+                    },
+                    failed: {
+                      title: clientTheme?.payment_failed_title || 'Оплата не прошла',
+                      text: clientTheme?.payment_failed_text || 'Платёж не был подтверждён. Попробуйте снова или обратитесь в поддержку.',
+                      color: palette.red,
+                      icon: '✗',
+                    },
+                    timeout: {
+                      title: clientTheme?.payment_timeout_title || 'Не дождались оплаты',
+                      text: clientTheme?.payment_timeout_text || 'Если вы уже оплатили — подождите ещё немного или проверьте позже.',
+                      color: muted,
+                      icon: '⏱',
+                    },
+                  }[paymentStatus]
+                  return (
+                    <div className="rounded-2xl text-center px-4 py-6" style={{ border: `1px solid ${cfg.color}2E`, background: `${cfg.color}0D` }}>
+                      <div className="w-9 h-9 rounded-full mx-auto mb-3 flex items-center justify-center text-base" style={{ background: `${cfg.color}1A` }}>{cfg.icon}</div>
+                      <div className="text-sm font-semibold mb-1.5">{cfg.title}</div>
+                      <div className="text-xs leading-relaxed" style={{ color: muted }}>{cfg.text}</div>
+                      {paymentStatus === 'waiting' && (
+                        <div className="mt-3 flex justify-center">
+                          <span className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: `${cfg.color}55`, borderTopColor: 'transparent' }} />
+                        </div>
+                      )}
+                      {(paymentStatus === 'failed' || paymentStatus === 'timeout') && (
+                        <button
+                          type="button"
+                          onClick={() => { stopPaymentPoll(); setPaymentStatus('idle') }}
+                          className="w-full mt-4 py-2.5 rounded-xl text-xs font-semibold"
+                          style={{ background: fg, color: bg }}
+                        >
+                          {clientTheme?.payment_retry_button_text || 'Попробовать снова'}
+                        </button>
+                      )}
+                    </div>
+                  )
+                })()
+              ) : profile?.subscription?.is_active ? (
                 <div className="space-y-2">
                   <div className="text-sm font-semibold">Подписка активна</div>
                   <div className="text-xs text-gray-500">
@@ -1200,7 +1291,9 @@ export default function MainScreen({
                       onClick={async () => {
                         try {
                           const res = await api.post('/api/payments/init', { plan_type: plan.id })
+                          // Открываем оплату сразу в системном браузере — не в нашем окне/бекенде.
                           ;(window as any).electronAPI?.openExternal(res.data.url)
+                          startPaymentPoll(res.data.label)
                         } catch (e: any) {
                           alert(e.response?.data?.detail || 'Ошибка')
                         }

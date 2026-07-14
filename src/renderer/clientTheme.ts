@@ -56,6 +56,16 @@ export interface ClientTheme {
   bonuses_copy_code_label?: string
   register_referral_or_promo_label?: string
   register_referral_or_promo_hint?: string
+  payment_waiting_title?: string
+  payment_waiting_text?: string
+  payment_success_title?: string
+  payment_success_text?: string
+  payment_failed_title?: string
+  payment_failed_text?: string
+  payment_timeout_title?: string
+  payment_timeout_text?: string
+  payment_retry_button_text?: string
+  payment_cancel_button_text?: string
 }
 
 export function standbyApiBasesFromTheme(theme: ClientTheme | null): string[] {

@@ -16,6 +16,8 @@ Agent приступает к **первой невыполненной** зад
 
 ### Продукт / монетизация
 
+- [ ] **Оплата YuMoney (кастомный QuickPay): реализовать по плану `.cursor/PLAN_PAYMENTS_YUMONEY.md`** — до 10 кошельков через .env, активация только по webhook, poll статуса в PC/Android, theme-поля оплаты
+
 - [x] Реферальные ссылки + раздел «Бонусы» (backend + PC + Android): промо/реф на регистрации, +30 дней обоим после первой оплаты invitee — 2026-07-09
 - [x] Реф-политика growth: лимит 10 наград/30д на inviter + текст «условия могут измениться» — 2026-07-09
 - [x] Админка «Бонусы» (бывш. Промокоды) + статистика рефералов/промо; cleanup тестовых ref.* — 2026-07-09
@@ -37,9 +39,12 @@ Agent приступает к **первой невыполненной** зад
 ### Следующие релизы
 
 - [x] Android: bump version → `1.0.154` → push `origin/android` (Telegram parity PC) — 2026-07-11
-- [ ] Android: `assembleRelease` → `python scripts/deploy_release.py ...` (OTA 1.0.154)
+- [x] Android: bump version → `1.0.155` → push `origin/android` (VK Calls Wi‑Fi DPI) — 2026-07-12
+- [ ] Android: `assembleRelease` → `python scripts/deploy_release.py ...` (OTA 1.0.155)
 - [x] PC: bump version → `1.0.154` → push `origin/pc` (Telegram latency + exclusions) — 2026-07-11
-- [ ] PC: `build-installer.bat` → `python scripts/deploy_release.py ...` (OTA 1.0.154)
+- [x] PC: bump version → `1.0.155` → push `origin/pc` (WG 1.1 + Wi‑Fi VK Calls) — 2026-07-12
+- [x] PC: bump version → `1.0.156` → push `origin/pc` (installer WG repair) — 2026-07-13
+- [ ] PC: `build-installer.bat` → `python scripts/deploy_release.py ...` (OTA 1.0.156)
 
 ---
 

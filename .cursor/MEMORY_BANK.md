@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.154** |
-| `Silent-Project/android/` | `android` | **1.0.154** |
+| `Silent-Project/pc/` | `pc` | **1.0.156** |
+| `Silent-Project/android/` | `android` | **1.0.155** |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -306,6 +306,7 @@ python scripts/restore_api_container.py
 - Test mode: безлимитный доступ для новых регистраций (toggle в админке)
 - YuMoney: 2 кошелька, случайный выбор; тарифы в `.env`
 - Промокоды: CRUD в админке (`/api/admin/promo`)
+- **План доработки оплаты (кастомный QuickPay без API, до 10 кошельков, активация только по webhook): `.cursor/PLAN_PAYMENTS_YUMONEY.md`** — готовый план для реализующего агента, ещё не реализован
 
 ### Сброс пароля
 
@@ -524,6 +525,159 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-07-14 — План кастомной оплаты YuMoney (до 10 кошельков)
+
+- Полный план в **`.cursor/PLAN_PAYMENTS_YUMONEY.md`** — реализация ещё НЕ начата
+- Суть: QuickPay-ссылки с фикс. суммами (нет API), активация подписки **только** по HTTP-уведомлению YuMoney (без ручного подтверждения, как было в SilentShield)
+- Анти-гонка: уникальный `label` per-платёж + `FOR UPDATE` + unique `operation_id` — двое одновременно платящих не перепутаются
+- Кошельки: `YUMONEY_WALLET_1..10` + `YUMONEY_SECRET_1..10` в `.env` (per-wallet секрет!), случайный выбор, расширение без правок кода
+- Найдены баги текущего кода: двойной `_pick_wallet()`, нет проверки суммы/codepro, гонка notify, битый successURL, общий секрет — всё в плане §3
+
+### 2026-07-14 — VPS 502: deploy_api recreate без httpx/hive
+
+- Не новый скрипт: штатный `deploy_api.py` сделал `compose up -d api` → старый image без `hive_cell`/`httpx` → админка 502
+- Починка: `restore_api_container.py` + `pip install httpx paramiko` → health OK, `/admin/` 200
+- В `restore_api_container.py` добавлен `pip install httpx paramiko` (как в deploy_stable)
+- Push `origin/main` `e383cf8` (MSK + restore httpx); WIP github_release не пушил
+- Дальше для правок админки/API: **`deploy_stable.py`**, не `deploy_api.py`
+
+- Push `origin/pc` `6245433` — версия **1.0.156** (без bump)
+- Перед установкой (`customInit`): kill процессов, снятие WG-службы, удаление папок `SilentVPN` / `Silent VPN` в Program Files, ProgramData, AppData всех Users
+- Деинсталляция (`customUnInstall` + `customRemoveFiles`): то же + `$INSTDIR`; `deleteAppDataOnUninstall: true`
+- Скрипт: `pc/build/silent-vpn-wipe.ps1`; Program Files\WireGuard (системный драйвер) не трогаем
+- После очистки установка заново кладёт `ProgramData\SilentVPN\wireguard` (WG 1.1)
+
+- Push `origin/pc` `ab99080` — версия остаётся **1.0.156**
+- Реальный bypass: platform packs (Steam SDR CIDR) + learning remote IP → маршрут через физ. шлюз
+- Список приложений: Desktop / Steam library / BlueStacks
+- Dota «не удалось вычислить задержку» — закрыто live `GetSDRConfig` + refresh после WG
+
+### 2026-07-12 — Android: убран кастомный DNS (LTE lookup timeout)
+
+- Лог LTE: `lookup api.vk.me: i/o timeout` → `context canceled`
+- Кастомный PreferGo/8.8.8.8 на мобильном DNS ломает резолв
+- Фикс: `newVkDirectDialer` без Resolver (system DNS); ротация хостов VK остаётся
+- Подтверждено LTE+Wi‑Fi; push `origin/android` `b7e2201` (без bump версии)
+
+### 2026-07-12 — Android: LTE снова (DNS оператора first)
+
+
+- Симптом после DPI-фикса: Wi‑Fi OK, мобильный интернет не коннектится
+- Причина: форс только `8.8.8.8/1.1.1.1` — на LTE часто режут/sinkhole
+- Фикс: DNS **сначала system (оператор)**, публичные — fallback; без LocalAddr
+
+### 2026-07-12 — Android: откат LAN-bind (ломал connect)
+
+
+- После Wi‑Fi DPI патча `LocalAddr` bind в dialer/TURN на Android → полный fail connect
+- Фикс: публичный DNS **без** LocalAddr; TURN снова `defaultLocalUDPAddr`; flood не ротирует хосты
+- Размер APK после `clean` меньше из‑за упаковки dex/кэша — не признак потери libclient (все ABI на месте)
+
+### 2026-07-12 — Telegram MTProto «недоступен»: mtg IPv6
+
+
+- Причина: `mtg` default `prefer-ipv6`, на VPS IPv6 unreachable → FakeTLS `cloudflare.com` fail (`cannot dial to the fronting domain`)
+- Фикс на проде: `simple-run -i prefer-ipv4 -n 1.1.1.1`; то же в `deploy_telegram_proxy.py`
+- Секрет/ссылка те же — в Telegram достаточно выкл/вкл прокси или подождать
+
+### 2026-07-12 — VK Calls Flood control (error 9) → без legacy/капчи
+
+
+- Лог: `kind=vk_api: error_code=9 Flood control, falling back to legacy` → капча (дыра как до 19c3c1e)
+- Фикс PC+Android: kind=`flood`; **нет** legacy fallback; retry + cooldown 5–8с; PC global throttle ~2–3.5с между VK Calls
+- Пересобраны wdtt-client / libclient (+ debug)
+
+### 2026-07-13 — PC: исключения приложений реально работают (bypass)
+
+- Было: меню только писало план в лог, сеть не менялась (нужен был WFP)
+- Сейчас: для **любых** выбранных .exe — монитор remote IP процесса (+ детей) → host-route /32 мимо VPN
+- Лог: `[Apps] bypass монитор…`, `[Apps] bypass +N IP`
+- Debug: пересобрать `build-debug.bat`
+
+### 2026-07-13 — PC: исключения — Steam / Desktop / BlueStacks
+
+
+- Было: только ярлыки `Start Menu\Programs` → не видно Steam-игры (.url), Desktop, BlueStacks Android
+- Фикс: Desktop + Start Menu + `.url` steam:// + Steam library (appmanifest) + BlueStacks `--package`
+- Debug: `build-debug-*\win-unpacked\SilentVPN-Admin.bat`
+
+### 2026-07-13 — Landing: PC 1.0.156 / Android 1.0.155 в index.html
+
+
+- Причина «видит 150»: `releases.json` уже 156, а `INLINE_FALLBACK` в `index.html` залип на 1.0.150
+- Фикс: `landing/` sync + push `22e289b` → silentvpn3.github.io
+
+### 2026-07-13 — PC: wintun.dll + WG 1.1 → SCM 7024 (регресс)
+
+
+- В `ProgramData\SilentVPN\wireguard` лежал `wintun.dll` рядом с wireguard 1.1 → служба падает
+- Фикс: не копировать wintun для ≥1.0; удалять из ProgramData; installer Delete wintun.dll
+- ProgramData больше не источник в pickBestWgSource
+
+### 2026-07-13 — PC: NSIS ProgramData литералом (нет $COMMONAPPDATA)
+
+- electron-builder makensis: нет `$COMMONPROGRAMDATA` и `$COMMONAPPDATA` → warning 6000 as error
+- Фикс: `!define SILENT_WG_DIR "C:\ProgramData\SilentVPN\wireguard"`
+
+### 2026-07-13 — PC: NSIS fix `$COMMONAPPDATA` (сборка Linux)
+
+
+- Ошибка CI: `unknown variable/constant "COMMONPROGRAMDATA\…"` → warning as error
+- В NSIS нет `$COMMONPROGRAMDATA`; нужен `$COMMONAPPDATA` (= `C:\ProgramData`)
+
+### 2026-07-13 — PC 1.0.156: установщик чинит WG 0.5.3↔1.1 (push)
+
+- `build/installer.nsh`: install/OTA — uninstall службы, MSI 1.1, ProgramData refresh
+- Runtime `forceRefreshProgramDataFrom`; `SilentVPN-Admin.bat` в extraFiles
+- Push `origin/pc` `1.0.156`
+
+### 2026-07-13 — PC: установщик сам чинит WG 0.5.3↔1.1 (без Admin.bat)
+
+- Проблема у пользователей на релизе: служба SCM 7024, залипший ProgramData 0.5.3
+- `build/installer.nsh` (`nsis.include`): при install/OTA — uninstall службы, MSI 1.1 если нет PF, копия 1.1 → ProgramData
+- Runtime: `forceRefreshProgramDataFrom` при elevated, если ProgramData старше бандла/system
+- `SilentVPN-Admin.bat` кладётся рядом с exe (`extraFiles`) как запасной вариант
+- Следующий `build-installer.bat` / OTA подхватит; версию не бампил — ждать «релиз»
+
+### 2026-07-12 — PC 1.0.155: WireGuard 1.1 + Wi‑Fi VK Calls (проверено + push)
+
+
+
+- WG: бандл/рантайм **1.1** (был 0.5.3 → SCM 7024); prefer Program Files; wintun optional; SilentVPN-Admin.bat
+- VK Calls Wi‑Fi: public DNS + host failover (как Android 1.0.155)
+- Alert WG: убран мёртвый «1.0.51+»
+- Version **1.0.155** → `origin/pc`
+
+### 2026-07-12 — PC: WG служба падает — бандл 0.5.3 vs системный 1.1
+
+
+- С админом: install OK, но SCM **7024** «ошибка в среде» — служба сразу умирает
+- Причина: Silent ставил `ProgramData\…\wireguard.exe` **0.5.3** при установленном драйвере **WireGuardNT 1.1**; код ещё требовал `wintun.dll` и игнорировал Program Files
+- Фикс: prefer newest (bundled/system) ≥1.1; wintun опционален; `reuse` не залипает на старой версии; бандл/MSI → 1.1; `SilentVPN-Admin.bat` чистит службу и копирует 1.1 в ProgramData
+
+### 2026-07-12 — PC: WG «служба не поднялась» = без админа (не DPI)
+
+
+- Лог: `Success via VK Calls` ✓, но `WireGuardTunnel$wg-turn` 1060 / Access is denied
+- Причина: debug exe реально **не elevated** (`TokenElevation=0`); служба WG ставится только с админом
+- ConfigSync Network Error — следствие (нет туннеля к `10.66.66.1`)
+- Фикс UX: явный лог elevation, Access Denied, fallback UAC; `Silent VPN (Admin).bat` копируется в win-unpacked; bat убивает старые процессы перед RunAs
+
+### 2026-07-12 — Android 1.0.155: VK Calls Wi‑Fi DPI (проверено + push)
+
+
+- Симптом: на Wi‑Fi → капча/connect timeout; на LTE OK. Лог: legacy `6287487` + `CAPTCHA_WAIT_REQUIRED` + WBV timeout
+- Причина: ISP DNS poison / DPI на `api.vk.me` → VK Calls network fail → legacy → шторм капчи
+- Фикс: публичный DNS `8.8.8.8`/`77.88.8.8`/`1.1.1.1`; ротация `api.vk.me`→`api.vk.ru`→`api.vk.com`; LAN dialer + WithDialer; network fail без legacy/капчи
+- QA: Wi‑Fi OK на debug. Version **1.0.155** → `origin/android`. PC патч локально, bump отдельно
+
+### 2026-07-12 — PC: устаревший текст ошибки WG «1.0.51»
+
+
+- Alert при timeout: больше не «установите 1.0.51+» — это был мёртвый текст
+- Реальная причина: служба `WireGuardTunnel$wg-turn` не поднялась (права/UAC)
+- Лаунчер: `pc/Silent VPN (Admin).bat`
 
 ### 2026-07-12 — Android: убран «Обновить канал Telegram»
 

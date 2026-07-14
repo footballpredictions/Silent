@@ -76,7 +76,7 @@
       "installerIcon": "assets/icon.ico",
       "installerHeaderIcon": "assets/icon.ico",
       "differentialPackage": false,
-      "deleteAppDataOnUninstall": false,
+      "deleteAppDataOnUninstall": true,
       "runAfterFinish": true,
       "allowElevation": true,
       "include": "build/installer.nsh"

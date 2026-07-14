@@ -17,6 +17,7 @@ Agent приступает к **первой невыполненной** зад
 ### Продукт / монетизация
 
 - [x] **Оплата YuMoney (кастомный QuickPay) по плану `.cursor/PLAN_PAYMENTS_YUMONEY.md`** — 2026-07-14: backend (10 кошельков через `.env`, per-wallet секрет, `label` высокой энтропии, `SELECT…FOR UPDATE`, `operation_id` идемпотентность, допуск на комиссию, codepro/unaccepted/currency, promo `use_count` при завершении), `GET /payments/status/{label}`, `GET /payments/success-page`, theme-поля `payment_*` (backend + admin-ui + PC + Android). Юнит-тесты **37/37 OK**; **задеплоено на прод**, 2 реальных кошелька настроены и проверены живыми уведомлениями (signature/commission/sum=1-атака/идемпотентность — все ОК). Push во все три ветки (`main`/`pc`/`android`). **Осталось:** релизы PC/Android с новым UI оплаты (`assembleRelease`/`build-installer` + OTA публикация)
+- [x] **Баг-фикс: YuMoney `sign` вместо устаревшего `sha1_hash`** — 2026-07-14: реальный тестовый платёж пользователя (15₽) зависал на «ждём подтверждения» — ЮMoney с 18.05.2026 перестали слать `sha1_hash`, шлют только `sign` (HMAC-SHA256 по отсортированным URL-encoded параметрам). Код проверял только старый `sha1_hash` → все реальные уведомления получали 400. Добавлена проверка `sign` (fallback на `sha1_hash`), +6 юнит-тестов (**43/43 OK**), задеплоено на прод и живьём подтверждено на обоих кошельках (`status: completed`). Push `main` + bump Android `1.0.156` + push `android`.
 
 - [x] Реферальные ссылки + раздел «Бонусы» (backend + PC + Android): промо/реф на регистрации, +30 дней обоим после первой оплаты invitee — 2026-07-09
 - [x] Реф-политика growth: лимит 10 наград/30д на inviter + текст «условия могут измениться» — 2026-07-09
@@ -40,7 +41,8 @@ Agent приступает к **первой невыполненной** зад
 
 - [x] Android: bump version → `1.0.154` → push `origin/android` (Telegram parity PC) — 2026-07-11
 - [x] Android: bump version → `1.0.155` → push `origin/android` (VK Calls Wi‑Fi DPI) — 2026-07-12
-- [ ] Android: `assembleRelease` → `python scripts/deploy_release.py ...` (OTA 1.0.155)
+- [x] Android: bump version → `1.0.156` → push `origin/android` (YuMoney payment flow) — 2026-07-14
+- [ ] Android: `assembleRelease` → `python scripts/deploy_release.py ...` (OTA 1.0.156)
 - [x] PC: bump version → `1.0.154` → push `origin/pc` (Telegram latency + exclusions) — 2026-07-11
 - [x] PC: bump version → `1.0.155` → push `origin/pc` (WG 1.1 + Wi‑Fi VK Calls) — 2026-07-12
 - [x] PC: bump version → `1.0.156` → push `origin/pc` (installer WG repair) — 2026-07-13

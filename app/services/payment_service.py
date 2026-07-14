@@ -13,10 +13,11 @@ would still only require extending the range below — no other code changes.
 import random
 import secrets
 import hashlib
+import hmac
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -145,9 +146,34 @@ async def create_payment_intent(
     }
 
 
-def _verify_yumoney_signature(data: dict, secret: str) -> bool:
-    """Verify YuMoney notification signature (per docs.yoomoney.ru http-notification)."""
+def _verify_yumoney_sign(data: dict, secret: str) -> bool:
+    """Verify the current `sign` param (HMAC-SHA256 over sorted, URL-encoded params).
+
+    Since 2026-05-18 YuMoney no longer sends `sha1_hash` at all — `sign` is the
+    only signature they emit now. Algorithm (docs.yoomoney.ru notification-p2p-incoming):
+    take every param except `sign`, sort keys A-Z, URL-encode (RFC 3986) each
+    value, join as `key=value` with `&` (empty value -> `key=`), then HMAC-SHA256
+    the resulting string with the notification secret, hex-encoded lowercase.
+    """
+    sign = data.get("sign", "")
+    if not secret or not sign:
+        return False
+    parts = []
+    for key in sorted(k for k in data.keys() if k != "sign"):
+        value = data.get(key) or ""
+        parts.append(f"{key}={quote(str(value), safe='')}")
+    check_str = "&".join(parts)
+    computed = hmac.new(secret.encode("utf-8"), check_str.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(computed, sign)
+
+
+def _verify_yumoney_sha1(data: dict, secret: str) -> bool:
+    """Legacy `sha1_hash` verification — kept as a fallback, though YuMoney stopped
+    sending this parameter entirely as of 2026-05-18."""
     if not secret:
+        return False
+    sha1_hash = data.get("sha1_hash", "")
+    if not sha1_hash:
         return False
     notification_type = data.get("notification_type", "")
     operation_id = data.get("operation_id", "")
@@ -163,7 +189,12 @@ def _verify_yumoney_signature(data: dict, secret: str) -> bool:
         datetime_str, sender, codepro, secret, label,
     ])
     sha1 = hashlib.sha1(check_str.encode("utf-8")).hexdigest()
-    return sha1 == data.get("sha1_hash", "")
+    return hmac.compare_digest(sha1, sha1_hash)
+
+
+def _verify_yumoney_signature(data: dict, secret: str) -> bool:
+    """Verify a YuMoney notification with whichever signature it actually sent."""
+    return _verify_yumoney_sign(data, secret) or _verify_yumoney_sha1(data, secret)
 
 
 def _signature_valid_for_any_wallet(data: dict) -> bool:

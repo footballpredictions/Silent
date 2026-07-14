@@ -203,6 +203,70 @@ class SignatureTests(unittest.TestCase):
         self.assertFalse(self.svc._verify_yumoney_signature(data, ""))
 
 
+class SignSignatureTests(unittest.TestCase):
+    """`sign` (HMAC-SHA256) is what YuMoney actually sends since 2026-05-18 — this
+    was the real production bug: notifications stopped carrying `sha1_hash`
+    entirely, so the old-only verifier rejected every real payment as
+    'invalid signature' while still passing self-signed sha1 unit tests."""
+
+    def setUp(self):
+        self.svc = _svc()
+        if not self.svc:
+            self.skipTest("fastapi/sqlalchemy stack not installed locally")
+
+    def _signed(self, secret: str, **fields) -> dict:
+        from urllib.parse import quote
+        data = {
+            "notification_type": "p2p-incoming",
+            "operation_id": "1234567",
+            "amount": "199.00",
+            "withdraw_amount": "199.00",
+            "currency": "643",
+            "datetime": "2026-07-14T10:00:00Z",
+            "sender": "41001151234567",
+            "codepro": "false",
+            "unaccepted": "false",
+            "label": "silent_abc123",
+        }
+        data.update(fields)
+        parts = [f"{k}={quote(str(v), safe='')}" for k, v in sorted(data.items())]
+        check_str = "&".join(parts)
+        data["sign"] = __import__("hmac").new(
+            secret.encode("utf-8"), check_str.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        return data
+
+    def test_valid_sign_accepted_with_no_sha1_hash_present(self):
+        """Reproduces the real production notification shape: `sign` only, no `sha1_hash`."""
+        data = self._signed("wallet-secret")
+        self.assertNotIn("sha1_hash", data)
+        self.assertTrue(self.svc._verify_yumoney_signature(data, "wallet-secret"))
+
+    def test_wrong_secret_rejected(self):
+        data = self._signed("wallet-secret")
+        self.assertFalse(self.svc._verify_yumoney_signature(data, "wrong-secret"))
+
+    def test_tampered_amount_rejected(self):
+        data = self._signed("wallet-secret")
+        data["amount"] = "1.00"
+        self.assertFalse(self.svc._verify_yumoney_signature(data, "wallet-secret"))
+
+    def test_tampered_label_rejected(self):
+        data = self._signed("wallet-secret")
+        data["label"] = "silent_someone_elses_payment"
+        self.assertFalse(self.svc._verify_yumoney_signature(data, "wallet-secret"))
+
+    def test_missing_sign_and_missing_sha1_hash_rejected(self):
+        data = self._signed("wallet-secret")
+        del data["sign"]
+        self.assertFalse(self.svc._verify_yumoney_signature(data, "wallet-secret"))
+
+    def test_sign_verification_ignores_unicode_fields_correctly(self):
+        """Extra optional fields (lastname etc, URL-encoded RFC 3986) must not break matching."""
+        data = self._signed("wallet-secret", city="Москва", email="a@example.ru")
+        self.assertTrue(self.svc._verify_yumoney_signature(data, "wallet-secret"))
+
+
 class CreatePaymentIntentTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.svc = _svc()
@@ -291,6 +355,10 @@ class ProcessNotificationTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(**base)
 
     def _signed_notification(self, secret="wallet-secret", **fields) -> dict:
+        """Shaped like a real 2026+ notification: `sign` only, no `sha1_hash` —
+        this is what production actually sends since YuMoney's 2026-05-18 migration."""
+        from urllib.parse import quote
+        import hmac as _hmac
         data = {
             "notification_type": "p2p-incoming",
             "operation_id": "op-1",
@@ -304,11 +372,9 @@ class ProcessNotificationTests(unittest.IsolatedAsyncioTestCase):
             "label": "silent_abc123",
         }
         data.update(fields)
-        check_str = "&".join([
-            data["notification_type"], data["operation_id"], data["amount"], data["currency"],
-            data["datetime"], data["sender"], data["codepro"], secret, data["label"],
-        ])
-        data["sha1_hash"] = hashlib.sha1(check_str.encode("utf-8")).hexdigest()
+        parts = [f"{k}={quote(str(v), safe='')}" for k, v in sorted(data.items())]
+        check_str = "&".join(parts)
+        data["sign"] = _hmac.new(secret.encode("utf-8"), check_str.encode("utf-8"), hashlib.sha256).hexdigest()
         return data
 
     async def test_invalid_signature_for_known_payment_rejected(self):

@@ -209,6 +209,39 @@ async def lifespan(app: FastAPI):
             await conn.execute(text(
                 "UPDATE hive_cells SET max_clients = 0 WHERE max_clients > 0"
             ))
+        # Proxy fleet (SOCKS) — отдельно от VPN; create_all + raw SQL safety net
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS proxy_nodes (
+                id UUID PRIMARY KEY,
+                name VARCHAR(128) NOT NULL,
+                role VARCHAR(32) NOT NULL DEFAULT 'dedicated',
+                public_ip VARCHAR(255) NOT NULL,
+                ssh_port INTEGER NOT NULL DEFAULT 22,
+                socks_port INTEGER NOT NULL DEFAULT 1080,
+                socks_user VARCHAR(128) NOT NULL DEFAULT '',
+                socks_pass_enc TEXT,
+                agent_url VARCHAR(512),
+                agent_secret_enc TEXT,
+                ssh_password_enc TEXT,
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+                priority INTEGER NOT NULL DEFAULT 100,
+                last_seen_at TIMESTAMP,
+                last_error TEXT,
+                previous_proxy_json TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_proxy_nodes_status ON proxy_nodes (status)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_proxy_nodes_public_ip ON proxy_nodes (public_ip)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_proxy_nodes_is_primary ON proxy_nodes (is_primary)"
+        ))
         await conn.execute(text(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(16)"
         ))
@@ -302,15 +335,24 @@ async def lifespan(app: FastAPI):
     from app.services.hive_capacity import start_hive_capacity_sampler
     from app.services.hive_rebalance_loop import start_hive_rebalance_loop
     from app.services.hive_cell_maintenance_loop import start_hive_cell_maintenance_loop
+    from app.services.proxy_health_loop import start_proxy_health_loop
 
     capacity_sampler_task = start_hive_capacity_sampler()
     rebalance_task = start_hive_rebalance_loop()
     cell_maintenance_task = start_hive_cell_maintenance_loop()
+    proxy_health_task = start_proxy_health_loop()
 
     yield
 
     # Shutdown
-    for task in (monitor_task, build_scheduler_task, capacity_sampler_task, rebalance_task, cell_maintenance_task):
+    for task in (
+        monitor_task,
+        build_scheduler_task,
+        capacity_sampler_task,
+        rebalance_task,
+        cell_maintenance_task,
+        proxy_health_task,
+    ):
         task.cancel()
         try:
             await task
@@ -344,6 +386,7 @@ from app.api.vpn import router as vpn_router
 from app.api.payments import router as payments_router
 from app.api.admin import router as admin_router
 from app.api.hive import router as hive_router
+from app.api.proxy import router as proxy_router
 from app.api.updates import router as updates_router
 from app.services import update_service
 
@@ -354,6 +397,7 @@ app.include_router(vpn_router, prefix="/api")
 app.include_router(payments_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
 app.include_router(hive_router, prefix="/api")
+app.include_router(proxy_router, prefix="/api")
 app.include_router(updates_router, prefix="/api")
 
 

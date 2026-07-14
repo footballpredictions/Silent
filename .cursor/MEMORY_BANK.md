@@ -534,6 +534,81 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-14 — MTProto на primary 185.182 не работает (блок Telegram DC)
+
+- Theme кратко указывал на `185.182.65.175:8443`, клиенты: «прокси недоступен»
+- `mtg doctor` / TCP: на primary **DC1–DC5 timeout**; Cloudflare OK. На Улье DC1–5+203 OK
+- Вывод: хостер primary режет Telegram DC — HTTP/SOCKS для сайтов ок, MTProto exit там невозможен
+- Theme возвращён на рабочий Улей: `tg://proxy?server=10.66.66.1&port=8443` (VPN ON)
+- Для MTProto на отдельном VPS нужен хостинг с доступом к Telegram DC
+
+### 2026-07-14 — Theme MTProto → новый primary proxy + cleanup football .env
+
+- Причина старого ускорителя: в `app_settings.theme` было `tg://proxy?server=10.66.66.1:8443` (mtg на Улье)
+- Обновлено на `185.182.65.175:8443` (MTProto на dedicated primary)
+- Football `.env`: оставлены только `API_FOOTBALL_PROXY_URL` + `GITHUB_HTTPS_PROXY` → primary HTTP `:3128`
+
+### 2026-07-14 — 502 админки: восстановление после recreate api
+
+- Причина: `docker compose up -d api` / recreate сбросил `docker cp` файлы; частичный cp `models/__init__.py` без hive-моделей → API падал → nginx 502
+- Фикс: `docker cp /opt/silent-vpn/backend/app/. → контейнер` + restart; health/admin снова **200**
+- `deploy_proxy.py`: только **restart** (не recreate) + после proxy-файлов полный sync `app/` с хоста + health gate
+
+### 2026-07-14 — Прокси-флот: сайты → отдельный proxy-VPS (не Улей)
+
+- Улей/админка только **управляют** отдельным прокси; VPN-соты не используются как exit для сайтов
+- Primary `185.182.65.175`: **HTTP `:3128`** (`top10proxy`) + **SOCKS5 `:1080`** + **MTProto `:8443`** (mtg `simple-run`) + agent `:9101`
+- `attached` = SSH на сайт → снос только старого proxy (whitelist) → `.env` на primary HTTP → PM2 reload; **не** ставим SOCKS на сайт
+- SSH порт как указан (для Jino **49452** без fallback на 22)
+- Футбол `475a0aa5ad19.vps.myjino.ru:49452`: env → `http://…@185.182.65.175:3128`, PM2 online; проверка curl через proxy → `185.182.65.175`
+- Деплой: `admin-ui` build + `python scripts/deploy_proxy.py`; в `.env` Улья `PROXY_HTTP_USER/PASS/PORT`
+
+### 2026-07-14 — Прокси attached «футбол»: ошибка SSH порта 49452
+
+- ~~Причина считали порт 49452 ошибочным~~ — **неверно**: у Jino SSH именно `:49452`
+- Актуальная схема — см. запись выше (сайт → primary proxy)
+
+### 2026-07-14 — Прокси-флот: тексты + health/ротация порта
+
+- UI/доки: убраны упоминания «футбольный» — подключается **любой** VPS (`dedicated` / `attached` safe)
+- Фоновый `proxy_health_loop` (каждые 60с): probe agent + TCP к SOCKS; после 3 фейлов → `POST /v1/rotate-port` на агенте (смена порта, ufw, restart silent-socks); без агента → `blocked`
+- `GET /api/admin/proxy/nodes/active` — пул endpoint’ов для сайтов/клиентов
+- Деплой: `python scripts/deploy_proxy.py` (+ обновление agent на нодах)
+
+### 2026-07-14 — Прокси-флот (SOCKS): админка + dedicated VPS
+
+- Новый раздел админки **«Прокси»** (`/proxy`): подключение VPS по IP + SSH пароль + порт (22)
+- Роли: `dedicated` (чистый proxy-VPS) / `attached` (VPS с другими сервисами — **safe cutover**: только whitelist proxy-софта, не трогает nginx/docker/сайт/БД/`/var/www`)
+- Стек на ноде: **sing-box SOCKS5** (`silent-socks`) + **proxy-agent** `:9101`
+- Backend: `proxy_nodes`, `/api/admin/proxy/*`, `proxy_provision_service`, `scripts/deploy_proxy.py`
+- VPN/Улей/wdtt **не менялись** (только additive API + admin-ui)
+- Primary нода: `185.182.65.175:1080` (user `silent`) — endpoint в админке кнопкой «Endpoint»
+- Деплой: `cd backend; npm run build` в `admin-ui` → `python scripts/deploy_proxy.py`
+
+### 2026-07-14 — Telegram MTProto proxy: не ускоритель поверх full VPN
+
+- С `server=10.66.66.1` прокси = лишний FakeTLS-хоп на том же exit → медиа медленнее, чем просто VPN
+- Вынос на public IP + exclude: в РФ Telegram без VPN обычно не нужен как отдельный путь — продукт = full VPN; «ускоритель» не ship'им в release (остаётся debug-эксперимент / можно убрать)
+- Вывод: для Silent VPN Telegram должен идти через VPN; отдельный mtg-прокси поверх туннеля не даёт выигрыша
+
+### 2026-07-14 — Telegram proxy: медиа крутится / не качается (DC 203 CDN)
+
+- Симптом 1: скачивание сразу срывается → `cannot dial to 203 dc: no addresses`
+- Симптом 2 (после `allow-fallback-on-unknown-dc=true`): крутится без прогресса — fallback на DC 3/5, CDN-медиа оттуда не отдаётся
+- Корень: CDN DC **203** (`getProxyConfig` → `91.105.192.110:443`) mtg узнаёт только через **auto-update** (нужен mtg **≥2.2.x**)
+- Фикс на VPS: mtg **2.2.8**, `auto-update=true`, `allow-fallback-on-unknown-dc=false`, `dns=https://1.1.1.1`; в логах `found 91.105.192.110:443 address for DC 203`; `mtg doctor` → DC 203 ✅
+- `backend/scripts/deploy_telegram_proxy.py` — default `MTG_VERSION=2.2.8`, те же флаги
+- **Проверить:** VPN + прокси → скачать файл/видео
+
+### 2026-07-14 — Telegram MTProto «прокси недоступен»: clock skew + tunnel GW
+
+- Симптом: прокси добавляется, статус «недоступен» (и на `132.243…`, и на `10.66.66.1`)
+- **Главная причина (логи mtg):** `invalid faketls client hello` / `incorrect timestamp` — часы VPS отставали на **~4 минуты** (`System clock synchronized: no`). FakeTLS допускает по умолчанию только ~3–5с
+- Сопутствующее: тема переведена на `server=10.66.66.1` (трафик через VPN); `10.66.66.1/32` на `lo`; REDIRECT на wdtt0 убран (ломал dest→`10.66.0.0`)
+- Фикс: `date -s` по HTTP Date с 1.1.1.1; chrony; mtg `config.toml` с `tolerate-time-skewness = "10m"`, `prefer-ip = only-ipv4`, `defense.blocklist.enabled = false` (firehol_level1 режет RFC1918/10.66.x)
+- Проверка: VPS `date -u` == Cloudflare Date; mtg `active`; `*:8443` слушает
+- **Проверить сейчас:** VPN ON → удалить старый прокси в Telegram → «Ускорить Telegram» заново
+
 ### 2026-07-14 — Landing: telegram.me вместо t.me (блокировка) + промо «2 месяца бесплатно» вместо trial 3 дня
 
 - **На будущее — `t.me` может быть заблокирован (РФ), `telegram.me` — рабочая альтернатива:** проверка показала `https://t.me/silentvpn3` → 403 Forbidden, а `https://telegram.me/silentvpn3` открывает канал нормально (тот же канал, тот же username — просто другой домен-алиас Telegram). Ссылка в самой группе/канале уже стояла как `telegram.me`, поэтому и работала там, а на лендинге была `t.me` → не открывалась у части пользователей. **Если где-то ещё всплывёт «не открывается ссылка на Telegram» — сначала проверить именно домен (`t.me` vs `telegram.me`), а не username/канал.**
@@ -740,6 +815,7 @@ cd pc; npm install; npm run dev
 - Меню «Ускорить Telegram» — **только debug** (Android/PC/iOS); в release скрыто
 - Открытие: `tg://proxy?…` (не `https://t.me/proxy` — на PC иначе сайт скачивания)
 - Не исключение приложения: VPN обязателен; proxy — режим Telegram через наш exit
+- **server в ссылке = `10.66.66.1` (tunnel GW)**, не публичный IP — иначе hairpin через VPN даёт «прокси недоступен» (фикс 2026-07-14)
 - Ссылка: `/root/silent_tg_proxy.txt` на VPS + админка «Оформление»
 
 ### 2026-07-12 — Persistent login (до явного «Выйти»)

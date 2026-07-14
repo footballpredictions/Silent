@@ -117,6 +117,21 @@ class Settings(BaseSettings):
     HIVE_PROVISION_SSH_USER: str = "root"
     HIVE_WDTT_BINARY_PATH: str = ""
     HIVE_REBALANCE_EXISTING_DEVICES: bool = True
+
+    # Proxy fleet (SOCKS) — отдельно от VPN/Улья; не меняет маршрутизацию WG
+    PROXY_PROVISION_SSH_USER: str = "root"
+    PROXY_PROVISION_SSH_TIMEOUT_SEC: int = 60
+    PROXY_AGENT_PORT: int = 9101
+    PROXY_AGENT_HTTP_TIMEOUT_SEC: float = 10.0
+    PROXY_SOCKS_PORT: int = 1080
+    PROXY_SOCKS_USER: str = "silent"
+    PROXY_HTTP_PORT: int = 3128
+    PROXY_HTTP_USER: str = "top10proxy"
+    # Пароль HTTP-прокси: задавать в .env на Улье (PROXY_HTTP_PASS), не в git
+    PROXY_HTTP_PASS: str = ""
+    PROXY_MTPROTO_PORT: int = 8443
+    PROXY_HEALTH_INTERVAL_SEC: int = 60
+    PROXY_HEALTH_FAIL_THRESHOLD: int = 3
     # Адаптивная ёмкость: сэмплы нагрузки и p95 на онлайн-пользователя
     HIVE_CAPACITY_SAMPLE_INTERVAL_SEC: int = 10
     HIVE_CAPACITY_SAMPLE_RETENTION_HOURS: int = 168

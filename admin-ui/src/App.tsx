@@ -9,6 +9,7 @@ import BonusesPage from './pages/BonusesPage'
 import ThemePage from './pages/ThemePage'
 import UpdatesPage from './pages/UpdatesPage'
 import HivePage from './pages/HivePage'
+import ProxyPage from './pages/ProxyPage'
 import Layout from './components/Layout'
 import { ErrorBoundary } from './components/ErrorBoundary'
 
@@ -75,6 +76,7 @@ function App() {
               <Route path="/theme" element={<ThemePage token={token} />} />
               <Route path="/updates" element={<UpdatesPage token={token} />} />
               <Route path="/hive" element={<HivePage token={token} />} />
+              <Route path="/proxy" element={<ProxyPage token={token} />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
           </Layout>

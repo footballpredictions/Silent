@@ -29,6 +29,7 @@ const {
 const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
 const { resolveVkExcludeIps, warmVkExcludeIps } = require('./vpn/vkNetworkExcludes')
 const buildFlags = require('./buildFlags')
+const { verifyWdttIntegrity, softTamperHints } = require('./integrity')
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms))
@@ -882,10 +883,32 @@ ipcMain.handle('app-quit', () => {
   return true
 })
 async function ensureNipIoBypassRoutes(sendLogFn = sendLog) {
-  if (!wgApplied || vpnBootstrapMode || sessionExcludeIPs.length === 0) return
+  if (!wgApplied || vpnBootstrapMode) return
+  const ips = new Set([SERVER_IP_FALLBACK, ...(sessionExcludeIPs || [])])
+  try {
+    const resolved = await resolve4WithTimeout('132-243-234-162.nip.io', 2000)
+    for (const ip of resolved || []) {
+      if (ip) ips.add(ip)
+    }
+  } catch { /* DNS fail — остаётся SERVER_IP */ }
+  const list = [...ips]
+  sessionExcludeIPs = [...new Set([...(sessionExcludeIPs || []), ...list])]
   await capturePhysicalGateway(sendLogFn)
   await addServerBypassRoutes(sessionExcludeIPs, sendLogFn)
-  await sleep(500)
+  await sleep(400)
+}
+
+/**
+ * Перед public HTTPS (fallback с туннеля / браузер): маршрут к VPS мимо WG.
+ * Без этого full-tunnel + hairpin → ETIMEDOUT на nip.io и на 132.243.234.162:443.
+ */
+async function ensurePublicApiBypass(sendLogFn = sendLog) {
+  if (!wgApplied || vpnBootstrapMode) return
+  try {
+    await ensureNipIoBypassRoutes(sendLogFn)
+  } catch (e) {
+    sendLogFn?.(`[API] public bypass: ${e?.message || e}`)
+  }
 }
 
 function resolve4WithTimeout(host, ms = 2000) {
@@ -906,7 +929,7 @@ async function ensurePaymentBypassRoutes(url, sendLogFn = sendLog) {
   hosts.add('yoomoney.ru')
   hosts.add('money.yandex.ru')
   hosts.add('132-243-234-162.nip.io')
-  const extra = []
+  const extra = [SERVER_IP_FALLBACK]
   await Promise.all([...hosts].map(async (host) => {
     try {
       const ips = await resolve4WithTimeout(host, 2000)
@@ -920,6 +943,7 @@ async function ensurePaymentBypassRoutes(url, sendLogFn = sendLog) {
   try {
     await capturePhysicalGateway(sendLogFn)
     await addServerBypassRoutes([...sessionExcludeIPs, ...extra], sendLogFn)
+    sessionExcludeIPs = [...new Set([...(sessionExcludeIPs || []), ...extra])]
     await sleep(300)
   } catch (e) {
     sendLogFn('[payment-bypass] ' + (e && e.message ? e.message : e))
@@ -997,6 +1021,16 @@ async function beginWdttSession(config, { switching = false } = {}) {
   const exePath = wdttExePath()
   if (!fs.existsSync(exePath)) {
     return { error: `wdtt-client.exe не найден: ${exePath}` }
+  }
+  const integrity = verifyWdttIntegrity({
+    isPackaged: app.isPackaged,
+    isDebugBuild,
+    exePath,
+    log: sendLog,
+  })
+  if (!integrity.ok) {
+    sendLog(`[Integrity] ${integrity.reason}`)
+    return { error: integrity.reason || 'Сборка повреждена' }
   }
 
   if (wdttProcess) {
@@ -1139,6 +1173,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
         // Bypass сразу + ещё раз через 1с/3с, ConfigSync чуть позже.
         wgRouteSettleUntil = Date.now() + 10_000
         await addServerBypassRoutes([...excludeIPs], sendLog)
+        await ensureNipIoBypassRoutes(sendLog)
         scheduleBypassRefresh(sendLog)
         try {
           const { refreshAppExclusionBypassAfterTunnel } = require('./apps/vpnAppExclusions')
@@ -1256,6 +1291,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       wgAttempted = true
       clearWgRetries()
       await addServerBypassRoutes([...excludeIPs], sendLog)
+      await ensureNipIoBypassRoutes(sendLog)
       scheduleBypassRefresh(sendLog)
       try {
         const { refreshAppExclusionBypassAfterTunnel } = require('./apps/vpnAppExclusions')
@@ -1735,17 +1771,24 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
   const p = payload || {}
   const opts = { ...p, timeout: p.timeout || 25_000 }
   const path = opts.path || ''
+
+  const viaPublic = async () => {
+    // Full tunnel без bypass → hairpin на VPS public IP / nip.io зависает.
+    await ensurePublicApiBypass(sendLog)
+    return publicDirectRequest(opts)
+  }
+
   if (wgApplied) {
     const settling = Date.now() < wgRouteSettleUntil
     const fragile = wgFullTunnelUpgradeInFlight || wgCredPhase || settling
-    const maxAttempts = fragile ? 4 : 1
+    const maxAttempts = fragile ? 4 : 2
     let lastErr = null
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const res = await tunnelHttpRequest({
           ...opts,
           // Во время upgrade/settle маршруты мигают — короткий timeout + retry
-          timeout: fragile ? Math.min(opts.timeout || 8000, 5000) : opts.timeout,
+          timeout: fragile ? Math.min(opts.timeout || 8000, 5000) : Math.min(opts.timeout || 8000, 8000),
         })
         if (res.status >= 200 && res.status < 500) {
           if (res.status >= 400) {
@@ -1755,13 +1798,15 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
         }
         // 5xx — попробовать public
         sendLog(`[API] tunnel ${path} HTTP ${res.status} → HTTPS ${SERVER_IP_FALLBACK}`)
-        return await publicDirectRequest(opts)
+        return await viaPublic()
       } catch (e) {
         lastErr = e
         const msg = String(e?.message || e)
         // EACCES/ECONNABORTED — типично при WG reinstall (маршруты/адаптер мигают)
         const transient = /ECONNRESET|ECONNREFUSED|ECONNABORTED|EACCES|ETIMEDOUT|timeout|Tunnel API/i.test(msg)
         if (transient && attempt < maxAttempts) {
+          // Восстановить bypass к API IP — иначе public fallback тоже мёртв
+          await ensurePublicApiBypass(sendLog)
           await sleep(500 * attempt)
           continue
         }
@@ -1771,10 +1816,11 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
           sendLog(`[API] tunnel briefly unavailable during full-tunnel upgrade → HTTPS`)
         }
         try {
-          return await publicDirectRequest(opts)
+          return await viaPublic()
         } catch (pubErr) {
           const pubMsg = String(pubErr?.message || pubErr)
           if (/EACCES|ECONNABORTED|ECONNRESET|ETIMEDOUT/i.test(pubMsg) && attempt < maxAttempts) {
+            await ensurePublicApiBypass(sendLog)
             await sleep(600 * attempt)
             continue
           }
@@ -1783,7 +1829,7 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
       }
     }
     sendLog(`[API] tunnel 10.66.66.1 fail: ${lastErr?.message || lastErr} → HTTPS ${SERVER_IP_FALLBACK}`)
-    return publicDirectRequest(opts)
+    return viaPublic()
   }
   return publicDirectRequest(opts)
 })
@@ -1846,9 +1892,11 @@ ipcMain.handle('app-update-check', async (_, { version, platform = 'pc' }) => {
     }
   }
   try {
+    await ensurePublicApiBypass(sendLog)
     return await fetchJsonGet(`${UPDATE_PUBLIC_BASE}${q}`)
   } catch (e) {
     try {
+      await ensurePublicApiBypass(sendLog)
       return await fetchJsonGet(`https://${SERVER_IP_FALLBACK}${q}`, UPDATE_HOST)
     } catch (e2) {
       sendLog(`[Update] check fail: ${e2?.message || e2}`)
@@ -1975,6 +2023,7 @@ app.whenReady().then(() => {
   } else {
     app.setAsDefaultProtocolClient('silentvpn')
   }
+  softTamperHints({ isPackaged: app.isPackaged, isDebugBuild, log: sendLog })
   createWindow()
   createTray()
   warmVkExcludeIps()

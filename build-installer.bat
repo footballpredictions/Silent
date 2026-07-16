@@ -46,6 +46,13 @@ if errorlevel 1 (
 )
 cd ..
 
+echo [1b/3] integrity hashes...
+call node scripts\gen_integrity_hashes.js
+if errorlevel 1 (
+  echo integrity hash gen FAILED
+  exit /b 1
+)
+
 if not exist "postcss.config.js" (
   echo ERROR: postcss.config.js missing - UI will break without Tailwind
   exit /b 1

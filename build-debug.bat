@@ -25,6 +25,7 @@ if errorlevel 1 (
   exit /b 1
 )
 cd ..
+call node scripts\gen_integrity_hashes.js
 
 echo [2/3] renderer (debug mode)...
 if exist "dist\renderer" rd /s /q "dist\renderer" 2>nul

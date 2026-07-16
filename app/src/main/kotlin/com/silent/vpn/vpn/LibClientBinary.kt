@@ -1,11 +1,13 @@
 package com.silent.vpn.vpn
 
 import android.content.Context
+import com.silent.vpn.security.AppIntegrity
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.DevicePlatform
 import com.silent.vpn.vpn.WdttTunnelManager
 import java.io.File
 import java.io.IOException
+import java.security.GeneralSecurityException
 
 /**
  * Путь к libclient. По умолчанию — [nativeLibraryDir].
@@ -42,6 +44,9 @@ object LibClientBinary {
         libDir: String,
         filesDir: File,
     ): Process {
+        if (!AppIntegrity.ensureOkForVpn(context)) {
+            throw GeneralSecurityException(AppIntegrity.failMessage())
+        }
         val primary = resolvePrimary(context)
         val commands = cmd.toMutableList()
         commands[0] = primary
@@ -50,6 +55,10 @@ object LibClientBinary {
         } catch (e: IOException) {
             if (!DevicePlatform.isTv(context)) throw e
             val fallback = resolveCodeCacheFallback(context)
+            // Fallback-копия: перепроверить хеш исходного libclient (копия из него)
+            if (!AppIntegrity.ensureOkForVpn(context)) {
+                throw GeneralSecurityException(AppIntegrity.failMessage())
+            }
             commands[0] = fallback
             DebugLog.w("LibClientBinary", "exec primary failed (${e.message}), retry $fallback")
             WdttTunnelManager.traceApp("libclient_fallback", "primary exec failed, retry codeCache")

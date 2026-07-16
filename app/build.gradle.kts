@@ -1,3 +1,8 @@
+import java.io.File
+import java.io.FileInputStream
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.security.cert.X509Certificate
 import java.util.Properties
 
 plugins {
@@ -18,6 +23,45 @@ val keystoreProperties = Properties().apply {
 /** Debug: фиксированный VK-хеш для bootstrap VPN на экране входа. Release — только через -PbootstrapVkHash. */
 private val debugBootstrapVkHash = "vP_C4iBk9QZEetqR0a_MqiPJkeOyBEV1B_G6uViHuVU"
 
+fun sha256FileHex(f: File): String {
+    if (!f.isFile) return ""
+    val md = MessageDigest.getInstance("SHA-256")
+    FileInputStream(f).use { input ->
+        val buf = ByteArray(8192)
+        while (true) {
+            val n = input.read(buf)
+            if (n <= 0) break
+            md.update(buf, 0, n)
+        }
+    }
+    return md.digest().joinToString("") { b -> "%02x".format(b) }
+}
+
+/** SHA-256 DER сертификата release-keystore (для pin в AppIntegrity). Пусто если keystore нет. */
+fun releaseCertSha256Hex(): String {
+    if (!keystorePropertiesFile.exists()) return ""
+    val storeFileName = keystoreProperties.getProperty("storeFile") ?: return ""
+    val storeFile = file("../keystore/$storeFileName")
+    if (!storeFile.isFile) return ""
+    val storePass = (keystoreProperties.getProperty("storePassword") ?: "").toCharArray()
+    val keyAlias = keystoreProperties.getProperty("keyAlias") ?: return ""
+    return try {
+        val ks = KeyStore.getInstance(KeyStore.getDefaultType())
+        FileInputStream(storeFile).use { ks.load(it, storePass) }
+        val cert = ks.getCertificate(keyAlias) as? X509Certificate ?: return ""
+        MessageDigest.getInstance("SHA-256").digest(cert.encoded)
+            .joinToString("") { b -> "%02x".format(b) }
+    } catch (_: Exception) {
+        ""
+    }
+}
+
+val libclientShaArm64 = sha256FileHex(file("src/main/jniLibs/arm64-v8a/libclient.so"))
+val libclientShaArm32 = sha256FileHex(file("src/main/jniLibs/armeabi-v7a/libclient.so"))
+val libclientShaX64 = sha256FileHex(file("src/main/jniLibs/x86_64/libclient.so"))
+val libclientShaX86 = sha256FileHex(file("src/main/jniLibs/x86/libclient.so"))
+val releaseCertSha = releaseCertSha256Hex()
+
 android {
     namespace = "com.silent.vpn"
     compileSdk = 35
@@ -26,8 +70,8 @@ android {
         applicationId = "com.silent.vpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 156
-        versionName = "1.0.156"
+        versionCode = 157
+        versionName = "1.0.157"
         testInstrumentationRunner = "com.silent.vpn.HiltTestRunner"
         // Не сбрасывать данные приложения при каждом прогоне — сохраняется логин/VPN-разрешение.
         testInstrumentationRunnerArguments["clearPackageData"] = "false"
@@ -59,12 +103,24 @@ android {
                 "BOOTSTRAP_VK_HASH",
                 "\"${releaseHash ?: debugBootstrapVkHash}\"",
             )
+            // Integrity pins (AppIntegrity) — хеши из jniLibs + отпечаток release-сертификата
+            buildConfigField("String", "RELEASE_CERT_SHA256", "\"$releaseCertSha\"")
+            buildConfigField("String", "LIBCLIENT_SHA256_ARM64", "\"$libclientShaArm64\"")
+            buildConfigField("String", "LIBCLIENT_SHA256_ARM32", "\"$libclientShaArm32\"")
+            buildConfigField("String", "LIBCLIENT_SHA256_X86_64", "\"$libclientShaX64\"")
+            buildConfigField("String", "LIBCLIENT_SHA256_X86", "\"$libclientShaX86\"")
         }
         debug {
             isMinifyEnabled = false
             applicationIdSuffix = ".debug"
             resValue("string", "app_name", "Silent VPN (debug)")
             buildConfigField("String", "BOOTSTRAP_VK_HASH", "\"$debugBootstrapVkHash\"")
+            // Debug: пустые pins → AppIntegrity пропускает проверки
+            buildConfigField("String", "RELEASE_CERT_SHA256", "\"\"")
+            buildConfigField("String", "LIBCLIENT_SHA256_ARM64", "\"\"")
+            buildConfigField("String", "LIBCLIENT_SHA256_ARM32", "\"\"")
+            buildConfigField("String", "LIBCLIENT_SHA256_X86_64", "\"\"")
+            buildConfigField("String", "LIBCLIENT_SHA256_X86", "\"\"")
         }
     }
     lint {

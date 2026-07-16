@@ -30,6 +30,7 @@ import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.UserProfile
 import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.data.VpnHashesResponse
+import com.silent.vpn.security.AppIntegrity
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.service.VpnBackendSync
 import com.silent.vpn.service.VpnServiceTracker
@@ -1960,6 +1961,12 @@ class MainViewModel @Inject constructor(
 
     /** Bootstrap VPN on login screen — reach backend through user's VK hash. */
     fun ensureBootstrapVpn(context: Context) {
+        if (!AppIntegrity.ensureOkForVpn(context)) {
+            _vpnError.value = AppIntegrity.failMessage()
+            _statusMsg.value = AppIntegrity.failMessage()
+            WdttTunnelManager.traceApp("integrity_fail", AppIntegrity.failMessage(), isError = true)
+            return
+        }
         if (_bootstrapExpired.value) {
             WdttTunnelManager.traceApp("bootstrap_skip", "bootstrap пропущен: сессия истекла")
             return
@@ -2244,6 +2251,12 @@ class MainViewModel @Inject constructor(
 
     fun connect(context: Context) {
         SessionTrace.enter("MainViewModel.connect", "state=${_vpnState.value}")
+        if (!AppIntegrity.ensureOkForVpn(context)) {
+            _vpnError.value = AppIntegrity.failMessage()
+            _vpnState.value = VpnState.DISCONNECTED
+            SessionTrace.exit("MainViewModel.connect", "integrity_fail")
+            return
+        }
         if (_vpnState.value == VpnState.CONNECTING || _vpnState.value == VpnState.DISCONNECTING) {
             DebugLog.i("MainViewModel", "connect ignored: operation in progress")
             SessionTrace.exit("MainViewModel.connect", "busy")

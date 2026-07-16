@@ -7,6 +7,7 @@ import android.os.Looper
 import android.webkit.WebView
 import com.silent.vpn.data.AppStateMigration
 import com.silent.vpn.di.AppEntryPoint
+import com.silent.vpn.security.AppIntegrity
 import com.silent.vpn.service.VpnServiceTracker
 import com.silent.vpn.service.VpnTileHelper
 import com.silent.vpn.util.DevicePlatform
@@ -20,6 +21,7 @@ class SilentApp : Application() {
     override fun onCreate() {
         super.onCreate()
         SessionTrace.mark("SilentApp.onCreate", BuildConfig.VERSION_NAME)
+        AppIntegrity.verifyAsync(this)
         AppStateMigration.runIfNeeded(this)
         Thread {
             runCatching {

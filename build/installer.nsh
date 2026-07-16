@@ -19,11 +19,12 @@
 !macro silentVpnWipeAll
   DetailPrint "Silent VPN: полная очистка SilentVPN / Silent VPN..."
 
-  nsExec::ExecToLog 'taskkill /F /IM "Silent VPN.exe" /T'
+  ; Без /T: иначе при OTA Setup ещё child Silent VPN.exe → taskkill убивает сам установщик
+  nsExec::ExecToLog 'taskkill /F /IM "Silent VPN.exe"'
   Pop $0
-  nsExec::ExecToLog 'taskkill /F /IM wdtt-client.exe /T'
+  nsExec::ExecToLog 'taskkill /F /IM wdtt-client.exe'
   Pop $0
-  nsExec::ExecToLog 'taskkill /F /IM wireguard.exe /T'
+  nsExec::ExecToLog 'taskkill /F /IM wireguard.exe'
   Pop $0
 
   !insertmacro silentWgUninstallTunnel "$PROGRAMFILES64\WireGuard\wireguard.exe"
@@ -73,11 +74,12 @@
 !macro customInstall
   DetailPrint "Silent VPN: WireGuard repair (service + ProgramData 1.1)..."
 
-  nsExec::ExecToLog 'taskkill /F /IM "Silent VPN.exe" /T'
+  ; Без /T — см. silentVpnWipeAll (OTA self-kill)
+  nsExec::ExecToLog 'taskkill /F /IM "Silent VPN.exe"'
   Pop $0
-  nsExec::ExecToLog 'taskkill /F /IM wdtt-client.exe /T'
+  nsExec::ExecToLog 'taskkill /F /IM wdtt-client.exe'
   Pop $0
-  nsExec::ExecToLog 'taskkill /F /IM wireguard.exe /T'
+  nsExec::ExecToLog 'taskkill /F /IM wireguard.exe'
   Pop $0
 
   !insertmacro silentWgUninstallTunnel "$PROGRAMFILES64\WireGuard\wireguard.exe"

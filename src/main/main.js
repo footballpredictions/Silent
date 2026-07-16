@@ -2052,63 +2052,58 @@ ipcMain.handle('app-update-download', async (_, { url, filename, tunnelUrl, expe
 })
 
 /**
- * Запуск OTA NSIS так, чтобы процесс пережил выход Electron.
- * shell.openPath привязывает .exe к дереву процессов → после app.quit() установщик пропадает.
+ * OTA: отложенный запуск Setup ПОСЛЕ выхода Electron.
+ *
+ * Почему не spawn/Start-Process сразу:
+ * 1) Job Object Electron убивает детей при app.exit
+ * 2) Клиент requireAdministrator → Setup стартует без UAC-паузы
+ * 3) NSIS customInit делает taskkill /IM "Silent VPN.exe" /T → если Setup ещё
+ *    child клиента, /T убивает и сам установщик (100% → тишина)
+ *
+ * Bat: sleep → start Setup → когда Silent VPN.exe уже мёртв, /T безобиден.
  */
-function launchPcInstallerDetached(filePath) {
-  return new Promise((resolve) => {
-    const abs = path.resolve(filePath)
-    if (!fs.existsSync(abs)) {
-      resolve({ ok: false, error: 'File not found' })
-      return
-    }
+function schedulePcInstallerAfterExit(filePath) {
+  const abs = path.resolve(filePath)
+  if (!fs.existsSync(abs)) {
+    return { ok: false, error: 'File not found' }
+  }
+  const logPath = path.join(app.getPath('temp'), 'silent-ota-launch.log')
+  const batPath = path.join(app.getPath('temp'), `silent-ota-launch-${Date.now()}.cmd`)
+  const setup = abs.replace(/"/g, '')
+  const logEsc = logPath.replace(/"/g, '')
+  const bat = [
+    '@echo off',
+    `echo [%date% %time%] waiting > "${logEsc}"`,
+    'ping -n 4 127.0.0.1 >nul',
+    `echo [%date% %time%] starting >> "${logEsc}"`,
+    `start "" "${setup}"`,
+    `echo [%date% %time%] start done >> "${logEsc}"`,
+    'ping -n 2 127.0.0.1 >nul',
+    'del "%~f0" >nul 2>&1',
+    '',
+  ].join('\r\n')
+  fs.writeFileSync(batPath, bat, 'utf8')
+  sendLog(`[Update] scheduled launcher: ${batPath}`)
+  try {
+    fs.writeFileSync(logPath, `[${new Date().toISOString()}] bat=${batPath}\nsetup=${setup}\n`, 'utf8')
+  } catch { /* ignore */ }
 
-    let settled = false
-    const finish = (ok, error) => {
-      if (settled) return
-      settled = true
-      resolve(ok ? { ok: true } : { ok: false, error: error || 'launch failed' })
-    }
-
-    const tryCmdStart = () => {
-      try {
-        // start "" path — пустой title; массивный spawn без лишних кавычек
-        const viaCmd = spawn(
-          process.env.ComSpec || 'cmd.exe',
-          ['/d', '/c', 'start', '', abs],
-          { detached: true, stdio: 'ignore', windowsHide: true },
-        )
-        viaCmd.once('error', (e) => finish(false, e?.message || String(e)))
-        viaCmd.unref()
-        setTimeout(() => finish(true), 500)
-      } catch (e) {
-        finish(false, e?.message || String(e))
-      }
-    }
-
-    try {
-      const child = spawn(abs, [], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: false,
-      })
-      child.once('error', (err) => {
-        sendLog(`[Update] spawn installer error: ${err?.message || err} → cmd start`)
-        tryCmdStart()
-      })
-      if (child.pid) {
-        child.unref()
-        sendLog(`[Update] installer pid=${child.pid}`)
-        setTimeout(() => finish(true), 500)
-      } else {
-        child.unref()
-        tryCmdStart()
-      }
-    } catch (e) {
-      sendLog(`[Update] spawn threw: ${e?.message || e} → cmd start`)
-      tryCmdStart()
-    }
+  // cmd /c start запускает bat в новом окне вне job; сам cmd сразу выходит
+  const child = spawn(
+    process.env.ComSpec || 'cmd.exe',
+    ['/d', '/c', 'start', '', '/min', batPath],
+    {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      windowsVerbatimArguments: true,
+    },
+  )
+  child.once('error', (e) => {
+    sendLog(`[Update] schedule launcher error: ${e?.message || e}`)
   })
+  child.unref()
+  return { ok: true, batPath, logPath }
 }
 
 ipcMain.handle('app-update-install', async (_, filePath) => {
@@ -2123,25 +2118,21 @@ ipcMain.handle('app-update-install', async (_, filePath) => {
     } catch { /* ignore */ }
     const { execSync } = require('child_process')
     for (const proc of ['wdtt-client.exe', 'wireguard.exe', 'wg.exe']) {
-      try { execSync(`taskkill /F /IM ${proc} /T`, { stdio: 'ignore' }) } catch { /* ignore */ }
+      try { execSync(`taskkill /F /IM ${proc}`, { stdio: 'ignore' }) } catch { /* ignore */ }
     }
-    await sleep(500)
+    await sleep(300)
 
-    sendLog('[Update] launching installer: ' + filePath)
-    const launched = await launchPcInstallerDetached(filePath)
-    if (!launched.ok) {
-      // Последний шанс — shell (может снова умереть с quit; лучше чем ничего)
-      const openErr = await shell.openPath(path.resolve(filePath))
-      if (openErr) {
-        return { ok: false, error: launched.error || openErr }
-      }
+    sendLog('[Update] schedule installer after exit: ' + filePath)
+    const scheduled = schedulePcInstallerAfterExit(filePath)
+    if (!scheduled.ok) {
+      return { ok: false, error: scheduled.error || 'schedule failed' }
     }
 
     isQuitting = true
-    // NSIS ждёт выхода Silent VPN.exe — закрываем после старта установщика
-    setTimeout(() => {
+    // Сразу выходим — bat подождёт ~3с и запустит Setup уже без нашего дерева процессов
+    setImmediate(() => {
       try { app.exit(0) } catch { app.quit() }
-    }, 800)
+    })
     return { ok: true }
   } catch (e) {
     return { ok: false, error: e?.message || String(e) }

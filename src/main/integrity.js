@@ -23,14 +23,16 @@ function sha256File(filePath) {
 }
 
 /**
- * @param {{ isPackaged: boolean, isDebugBuild: boolean, exePath: string, log?: (s: string) => void }} opts
+ * @param {{ isPackaged: boolean, isDebugBuild: boolean, exePath: string, log?: (s: string) => void, expectedSha?: string }} opts
  * @returns {{ ok: boolean, reason?: string }}
  */
-function verifyWdttIntegrity({ isPackaged, isDebugBuild, exePath, log }) {
+function verifyWdttIntegrity({ isPackaged, isDebugBuild, exePath, log, expectedSha }) {
   if (!isPackaged || isDebugBuild) {
     return { ok: true }
   }
-  const expected = String(hashes.WDTT_SHA256 || '').trim().toLowerCase()
+  const expected = String(
+    expectedSha != null ? expectedSha : (hashes.WDTT_SHA256 || ''),
+  ).trim().toLowerCase()
   if (!expected) {
     // Нет пина в сборке — не блокируем (старые/ручные пакеты), только warn
     log?.('[Integrity] WDTT_SHA256 пуст — пропуск проверки (пересоберите через build-installer.bat)')

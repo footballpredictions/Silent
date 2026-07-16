@@ -71,7 +71,7 @@ fun MenuVkCredModeScreen(
         )
         VkCredModeOption(
             title = "Авто капча",
-            subtitle = "Legacy + невидимый WBV Auto, затем ручной WebView",
+            subtitle = "Запасной режим: 9 воркеров. Legacy + WBV Auto, затем ручной WebView",
             selected = mode == SilentRepository.VK_CRED_AUTO,
             enabled = !SilentVpnService.isRunning,
             fg = fg,
@@ -79,7 +79,7 @@ fun MenuVkCredModeScreen(
         )
         VkCredModeOption(
             title = "Ручная капча",
-            subtitle = "Legacy + только видимый WebView (подтверждение пользователя)",
+            subtitle = "Запасной режим: 9 воркеров. Legacy + только видимый WebView",
             selected = mode == SilentRepository.VK_CRED_MANUAL,
             enabled = !SilentVpnService.isRunning,
             fg = fg,

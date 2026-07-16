@@ -79,16 +79,21 @@ suspend fun SilentRepository.prepareVpnConnectConfig(
         1,
     ).coerceAtMost(HashChannelHelper.MAX_HASHES)
     val userWorkers = resolveWorkersForLibclient(activeCount)
-    val serverWorkers = merged.stream_count.takeIf { it >= HashChannelHelper.WORKERS_PER_GROUP }
-    val workers = if (serverWorkers != null && serverWorkers > userWorkers) {
-        HashChannelHelper.workersForLibclient(serverWorkers, activeCount)
+    val workers = if (isLegacyCaptchaStrategy()) {
+        HashChannelHelper.LEGACY_CAPTCHA_WORKERS
     } else {
-        userWorkers
+        val serverWorkers = merged.stream_count.takeIf { it >= HashChannelHelper.WORKERS_PER_GROUP }
+        if (serverWorkers != null && serverWorkers > userWorkers) {
+            HashChannelHelper.workersForLibclient(serverWorkers, activeCount)
+        } else {
+            userWorkers
+        }
     }
     merged = merged.copy(stream_count = workers)
     DebugLog.i(
         "PrepareVpnConnect",
-        "n=$workers hashes=${merged.vk_hashes.size} activeHashes=$activeCount",
+        "n=$workers hashes=${merged.vk_hashes.size} activeHashes=$activeCount" +
+            if (isLegacyCaptchaStrategy()) " (legacy captcha)" else "",
     )
     return merged
 }

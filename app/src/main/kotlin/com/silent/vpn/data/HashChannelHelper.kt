@@ -11,6 +11,11 @@ object HashChannelHelper {
     const val LIBCLIENT_MAX_WORKERS = 108
     /** Дефолт для пользователя: 7 групп × 9 (между 36 и max 108). */
     const val DEFAULT_TOTAL_WORKERS = 63
+    /**
+     * Авто/ручная капча (legacy) — запасной режим: одна группа.
+     * Иначе 63 воркера = десятки капч, если основной VK Calls недоступен.
+     */
+    const val LEGACY_CAPTCHA_WORKERS = WORKERS_PER_GROUP
 
     fun maxTotalWorkers(activeHashCount: Int): Int =
         activeHashCount.coerceIn(1, MAX_HASHES) * MAX_WORKERS_PER_HASH

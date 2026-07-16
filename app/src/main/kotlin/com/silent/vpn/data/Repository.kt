@@ -1115,6 +1115,10 @@ class SilentRepository @Inject constructor(
         else -> VkCredLaunchParams(vkAuthMode = "vkcalls", captchaMode = "auto")
     }
 
+    /** Авто/ручная — запасной путь с капчей (не основной VK Calls). */
+    fun isLegacyCaptchaStrategy(strategy: String = getVkCredStrategy()): Boolean =
+        strategy == VK_CRED_AUTO || strategy == VK_CRED_MANUAL
+
     fun vkCredStrategyLabel(strategy: String = getVkCredStrategy()): String = when (strategy) {
         VK_CRED_AUTO -> "Авто капча"
         VK_CRED_MANUAL -> "Ручная"
@@ -1180,6 +1184,9 @@ class SilentRepository @Inject constructor(
 
     /** `-n` для libclient: итого потоков (кратно 9), как в reference WDTT. */
     fun resolveWorkersForLibclient(vkHashCount: Int): Int {
+        if (isLegacyCaptchaStrategy()) {
+            return HashChannelHelper.LEGACY_CAPTCHA_WORKERS
+        }
         val savedActive = getSavedHashItems().activeServerHashCount()
         val activeHashes = maxOf(vkHashCount, savedActive, 1).coerceAtMost(HashChannelHelper.MAX_HASHES)
         return HashChannelHelper.workersForLibclient(getTotalWorkers(activeHashes), activeHashes)

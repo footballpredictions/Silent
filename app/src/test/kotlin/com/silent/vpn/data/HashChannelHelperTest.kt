@@ -104,6 +104,12 @@ class HashChannelHelperTest {
     }
 
     @Test
+    fun `legacy captcha workers is one group`() {
+        assertEquals(9, HashChannelHelper.LEGACY_CAPTCHA_WORKERS)
+        assertEquals(HashChannelHelper.WORKERS_PER_GROUP, HashChannelHelper.LEGACY_CAPTCHA_WORKERS)
+    }
+
+    @Test
     fun `signalBars thresholds`() {
         assertEquals(0, HashChannelHelper.signalBars(0, 36))
         assertEquals(1, HashChannelHelper.signalBars(1, 36))

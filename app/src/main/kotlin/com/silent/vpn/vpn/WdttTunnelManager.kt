@@ -290,6 +290,8 @@ object WdttTunnelManager {
 
                     val workers = if (params.isBootstrap) {
                         params.workers.coerceIn(HashChannelHelper.WORKERS_PER_GROUP, 9)
+                    } else if (params.vkAuthMode.equals("legacy", ignoreCase = true)) {
+                        HashChannelHelper.LEGACY_CAPTCHA_WORKERS
                     } else {
                         HashChannelHelper.workersForLibclient(
                             params.workers,

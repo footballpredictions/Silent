@@ -22,6 +22,8 @@ FILES = [
     "app/services/subscription_service.py",
     "app/services/test_mode_settings.py",
     "app/services/vk_agent_auth.py",
+    "app/services/email_validation.py",
+    "app/services/rate_limiter.py",
     "app/models/__init__.py",
     "app/models/vk_link_session.py",
     "ai/vk_manager.py",
@@ -46,6 +48,7 @@ cd {REMOTE}
 docker compose up -d api
 sleep 4
 for f in {files_sh}; do docker cp "$f" {CONTAINER}:/app/$f; done
+docker exec {CONTAINER} pip install -q redis disposable-email-domains 2>/dev/null || true
 docker compose restart api
 sleep 12
 curl -s http://localhost:8000/api/health

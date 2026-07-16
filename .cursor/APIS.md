@@ -32,7 +32,7 @@
 
 | Метод | Путь | Auth | Описание |
 |-------|------|------|----------|
-| POST | `/register` | — | Регистрация `{ email, password, referral_or_promo? }`. Поле — либо реф-код пользователя, либо промокод (взаимоисключающе). Реф → `referred_by` + `ReferralReward(pending)`; промо → `pending_promo_code` (скидка при `/payments/init`) |
+| POST | `/register` | — | Регистрация `{ email, password, referral_or_promo? }`. Поле — либо реф-код пользователя, либо промокод (взаимоисключающе). Реф → `referred_by` + `ReferralReward(pending)`; промо → `pending_promo_code` (скидка при `/payments/init`). Анти-абуз: **429** при >`REGISTER_RATE_LIMIT_MAX` попыток с одного IP за `REGISTER_RATE_LIMIT_WINDOW_MINUTES` (Redis fixed-window, fail-open без Redis); **400** если домен email временный/одноразовый (`disposable-email-domains`) или не входит в `ALLOWED_EMAIL_DOMAINS` (whitelist, пусто = выключен) — см. `app/services/email_validation.py`, `app/services/rate_limiter.py` |
 | GET | `/verify-email?token=` | — | HTML-подтверждение email |
 | POST | `/login` | — | JWT access + refresh; опционально `device` → ensure_device_session |
 | POST | `/refresh` | — | Обновление токенов |
@@ -300,6 +300,16 @@ WDTT_WG_PORT
 INTERNAL_API_SECRET
 MAX_DEVICES_PER_USER=3
 ```
+
+### Анти-абуз регистрации (`.env`, не секреты — настройки)
+
+```
+ALLOWED_EMAIL_DOMAINS=["gmail.com","mail.ru","yandex.ru", ...]   # JSON-массив; [] = whitelist выключен
+REGISTER_RATE_LIMIT_MAX=8            # попыток /auth/register с одного IP
+REGISTER_RATE_LIMIT_WINDOW_MINUTES=30
+```
+
+Дефолты — в `app/config.py` (не нужно задавать в `.env`, если устраивает дефолтный список/лимит). Disposable-блоклист (`disposable-email-domains`, requirements.txt) работает всегда, без настроек — обновляется через `pip install -U` при деплое/пересборке. Логика: `app/services/email_validation.py`, `app/services/rate_limiter.py` (Redis fixed-window, fail-open без Redis).
 
 Сгенерированные пароли при install: `/root/silent_credentials.txt`
 

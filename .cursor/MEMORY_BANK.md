@@ -10,7 +10,7 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.156** |
+| `Silent-Project/pc/` | `pc` | **1.0.156** (`2586f6d` — payment IPC + YuMoney bypass) |
 | `Silent-Project/android/` | `android` | **1.0.156** |
 | `Silent-Project/ios/` | `ios` | начальная |
 
@@ -533,6 +533,61 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-07-16 — Backend: анти-абуз регистрации (временные почты + whitelist + rate limit по IP)
+
+- **Повод:** аудит показал, что `/auth/register` не имел никакой проверки домена email (только формат `EmailStr` + уникальность в БД) — пользователь зарегистрировался с `@suahi.com` (disposable-домен temp-mail.org). Проверка внешними базами: risk-score 91/100, но в самом популярном pip-блоклисте `disposable-email-domains` (7981 доменов) этого конкретного домена **не было** — временные почтовые сервисы генерируют новые домены быстрее, чем блоклисты успевают их подхватывать. Поэтому одного блоклиста недостаточно — нужен строгий **whitelist**.
+- **Три слоя защиты в `POST /auth/register` (`app/api/auth.py`):**
+  1. **Rate limit по IP** — `app/services/rate_limiter.py`, Redis `INCR`+`EXPIRE` (fixed window), дефолт `REGISTER_RATE_LIMIT_MAX=8` попыток за `REGISTER_RATE_LIMIT_WINDOW_MINUTES=30` (оба — в `config.py`, переопределяются через `.env`, деплой без правок кода). IP — `X-Real-IP`/`X-Forwarded-For` (за nginx) с фолбэком на `request.client.host` (прямые запросы через WG tunnel API). **Fail-open**: если Redis недоступен — не блокируем регистрацию (проверено).
+  2. **Disposable-блоклист** — пакет `disposable-email-domains` (requirements.txt, обновляется через `pip install -U` на каждый деплой/пересборку образа, ~8000 известных доменов), проверка домена и всех род. суффиксов (защита от поддоменов).
+  3. **Whitelist разрешённых доменов** — `settings.ALLOWED_EMAIL_DOMAINS` (`app/config.py`): если список не пуст — регистрация разрешена **только** с этих доменов. Дефолт: Gmail, Mail.ru/Yandex-семейство, Outlook/Hotmail/Live, iCloud, Yahoo, Proton, Rambler, VK, GMX, AOL, Zoho, Tutanota, mail.com. Пустой список в `.env` = whitelist выключен (остаётся только disposable-блоклист).
+- Логика домена: `app/services/email_validation.py` (`validate_registration_email_domain`) — сначала disposable, потом whitelist (если задан); ошибки — понятный русский текст в `HTTPException(400)`. Лимит — `HTTPException(429)`.
+- **Деплой:** нужен `pip install -r requirements.txt` в контейнере (новая зависимость `disposable-email-domains`) — обычный `deploy_stable.py`/`deploy_api.py` это делают. Redis уже поднят в docker-compose (`redis` сервис), просто раньше не использовался приложением — теперь первый живой юзкейс.
+- Протестировано локально (временный venv, не коммитился): `suahi.com` → блок (whitelist), `mailinator.com` → блок (disposable), `gmail.com`/`mail.ru` → пропуск, rate limiter fail-open без Redis подтверждён.
+- Файлы: `app/config.py`, `app/services/email_validation.py` (новый), `app/services/rate_limiter.py` (новый), `app/api/auth.py`, `requirements.txt`, `.cursor/APIS.md`.
+- **Деплой на прод выполнен 2026-07-16** (`python scripts/deploy_stable.py` + `npm run build` admin-ui): `health OK`, `admin: 200`, DNAT OK. В контейнер установлены `disposable-email-domains` (7981 доменов) + `redis`. Живая проверка:
+  - `@suahi.com` → 400 «только с популярных почтовых сервисов» (whitelist)
+  - `@mailinator.com` → 400 «временные / одноразовые»
+  - `@mail.ru` → 201 «Регистрация успешна»
+  - rate-limit: после 8 попыток с одного IP → 429; тестовые юзеры удалены из БД (`DELETE 6`)
+- `deploy_stable.py` / `deploy_api.py` / `restore_api_container.py` обновлены: `pip install … disposable-email-domains redis` при каждом деплое (чтобы пакет не пропадал после recreate).
+- **Не запушено** — ждать явной команды «пуш».
+
+### 2026-07-16 — Landing: откат лишнего Smart TV-контента, новый заголовок гайда
+
+- **Убран отдельный раздел «06 Smart TV» из гайда** (и пункт в TOC) — по фидбэку избыточно, поддержка TV уже понятна из карточки на главной. Удалён неиспользуемый CSS (`.demo-tv-frame`, `.demo-tv-screen`, `.demo-tv-stand`, `.demo-toggle.is-focused`) и JS (`runTv`)
+- **Карточка Android на главной вернута к исходному виду** — убрана заметка «Тот же файл — для Android TV и Smart TV» (и её CSS `.dl-tv-note`)
+- **Hero-текст на главной** дополнен: «Один аккаунт — компьютер, телефон и смарт ТВ» — единственное упоминание TV на сайте вместе с карточкой `04` в `features`
+- **Заголовок гайда переименован**: «От скачивания до первого VPN» → «Быстрый старт с Silent VPN» (звучало неестественно)
+- Кэш-бастинг `guide.css`/`guide.js` бампнут до `?v=4`
+- Файлы: `guide.css`, `guide.js`, `index.html`
+
+### 2026-07-16 — Landing: убраны кэш-артефакты + добавлена поддержка Smart TV
+
+- **Кэш-баг**: пользователь всё ещё видел старый текст с размерами тумблера в подписях под демо — `guide.css`/`guide.js` подключались без версии, браузер держал старые файлы в кэше. Добавлен `?v=3` к обоим подключениям в `index.html` — решает раз и навсегда для будущих правок (бампать версию при каждом деплое статики)
+- **Smart TV — реальная фича клиента** (Android `DevicePlatform.kt`: `leanback`/`FEATURE_TELEVISION` детект, `tv_banner.xml`, `LEANBACK_LAUNCHER` intent-filter, bootstrap-сессия 3 мин на TV vs 2 мин на телефоне) добавлена на лендинг:
+  - Главная: 4-я карточка в `features` («Работает на Smart TV»), заметка под карточкой скачивания Android («Тот же файл — для Android TV и Smart TV»), grid `features` на `auto-fit` под произвольное число карточек
+  - Гайд: новая секция `06 Smart TV` с TV-мокапом (widescreen-рамка + подставка, класс `.demo-tv-frame`/`.demo-tv-stand`) и отдельным демо `runTv` в `guide.js` — вместо мышиного курсора фокус-кольцо на тумблере (`.demo-toggle.is-focused`, чёрное кольцо 6px) имитирует навигацию пультом (стрелки + «ОК»)
+- Файлы: `guide.css`, `guide.js`, `index.html`
+
+### 2026-07-16 — Landing: гайд — правильный спиннер на тумблере + человеческий текст
+
+- **Баг «чайка вместо змейки» исправлен**: кольцо-спиннер вращалось по контуру всей вытянутой таблетки (120×60) — на такой форме дуга подсветки визуально «летит» диагональю. Перенёс спиннер на круглый бегунок (48px, класс `.demo-knob-spin` внутри `.demo-toggle-knob`, `is-connecting` вместо `is-spinning`) — теперь чистое вращение кольца вокруг круга, проверено скриншотами Playwright (`toggle_connecting.png`/`toggle_on.png`, локально, не коммитились)
+- **Весь текст гайда переписан** — убраны технические описания вёрстки для пользователя («логотип по центру», «тумблер 120×60», «активная — чёрная», «подпись в клиенте: …»); тексты в `index.html` (hero, 5 секций, footer CTA) и подписи-caption в `guide.js` заменены на обычные человеческие формулировки о том, что и зачем делает пользователь
+- Файлы: `guide.css`, `guide.js`, `index.html`
+
+### 2026-07-16 — Landing: SPA-инструкция с интерактивными демо
+
+- На [silentvpn3.github.io](https://silentvpn3.github.io/) гайд `#guide`: демо сверстаны по реальному LoginScreen PC/Android (логотип 56×16 + SILENT VPN по центру, серый «Подключение…» → зелёный «Канал готов. Осталось M:SS…», вкладки Войти/Регистрация с чёрным active, кнопка чёрная / «Ожидание канала…» пока не ready; вход = тот же экран без промо; тумблер 120×60; исключения с текстом клиента)
+- AI-картинки с чужим логотипом убраны — только HTML/CSS mockups. Файлы: `guide.css`, `guide.js`, правки `index.html`
+
+### 2026-07-16 — MCP + дизайн-стек: Playwright/Firecrawl подключены, ui-ux-pro-max v2, новые design-sources
+
+- **MCP (`C:\Users\silent27\.cursor\mcp.json`, создан):** `playwright` (`npx @playwright/mcp@latest` — браузерная автоматизация/скриншоты, полностью бесплатный) и `firecrawl` (hosted `https://mcp.firecrawl.dev/v2/mcp` — keyless free tier: scrape/search/interact без ключа; `branding`-формат вытаскивает цвета/шрифты сайта-референса). Требуется перезапуск Cursor для загрузки серверов
+- **codebase-memory-mcp v0.9.0 подключён** (официальный `install.ps1` → бинарник `C:/Users/silent27/.local/bin/codebase-memory-mcp.exe`, авто-запись в `mcp.json`): локальный граф знаний кодовой базы (tree-sitter + Hybrid LSP: Python/TS/Kotlin/Go/Swift), 15 инструментов — `get_architecture`, `trace_path`, `search_graph`, `detect_changes` (blast radius по git diff), `semantic_query`, dead code. 100% локально, без ключей. **Silent-Project уже проиндексирован**: 6254 узла / 28888 рёбер (все 4 ветки: backend+pc+android+ios). База: `~/.cache/codebase-memory-mcp/`. Инсталлер также сконфигурировал Gemini CLI. Использовать для вопросов «кто вызывает X», «что сломает правка Y» — вместо серии grep
+- **Не подключены (осознанно):** Perplexity MCP — API платный (нужен ключ с балансом), поиск уже есть встроенный; Glif MCP — нужен токен + кредиты, дублирует наши `imagegen-frontend-*`/`design` skills (репозиторий вообще в архиве)
+- **ui-ux-pro-max обновлён до v2** (`npx ui-ux-pro-max-cli init --ai cursor --global --force`): 67 стилей, 161 палитра, reasoning engine (161 industry-правило), design-system generator (`scripts/search.py --design-system`), 22 стека. Старые imagegen/design skills оставлены — генерацию картинок не заменяем, Glif хуже
+- **Правила design-sources (проектное + глобальное) переписаны:** добавлены `21st.dev` (готовые React/Tailwind компоненты), `motion.dev` (production-анимации), `saaslandingpage.com` (референсы лендингов); прописаны обязательные связки: UI → `ui-ux-pro-max` reasoning → `impeccable`/`soft-skill`; картинки → `imagegen-frontend-*` → `image-to-code-skill`; скрейпинг референсов → Firecrawl MCP; визуальная проверка → Playwright MCP
 
 ### 2026-07-14 — PC: timeout 15s на payments/init (браузер не открывался)
 

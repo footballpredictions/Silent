@@ -196,6 +196,31 @@ class Settings(BaseSettings):
     # CORS
     ALLOWED_ORIGINS: List[str] = ["*"]
 
+    # --- Анти-абуз регистрации ---
+    # Одноразовые/временные почты (suahi.com и т.п.) блокируются всегда через пакет
+    # disposable-email-domains (requirements.txt), независимо от списка ниже.
+    # Если список не пуст — регистрация разрешена ТОЛЬКО с этих доменов (whitelist).
+    # Пусто = отключить whitelist (проверяется только disposable-блоклист).
+    ALLOWED_EMAIL_DOMAINS: List[str] = [
+        "gmail.com", "googlemail.com",
+        "mail.ru", "bk.ru", "list.ru", "inbox.ru", "internet.ru",
+        "yandex.ru", "yandex.com", "yandex.by", "yandex.kz", "ya.ru",
+        "outlook.com", "hotmail.com", "live.com", "msn.com",
+        "icloud.com", "me.com", "mac.com",
+        "yahoo.com", "yahoo.ru",
+        "protonmail.com", "proton.me",
+        "rambler.ru",
+        "vk.com",
+        "gmx.com", "gmx.de",
+        "aol.com",
+        "zoho.com",
+        "tutanota.com", "tuta.io",
+        "mail.com",
+    ]
+    # Лимит регистраций с одного IP (антибот/скрипты, помимо email-проверок)
+    REGISTER_RATE_LIMIT_MAX: int = 8
+    REGISTER_RATE_LIMIT_WINDOW_MINUTES: int = 30
+
     # Build agent (OTA nightly + admin «Собрать релиз»)
     BUILD_AGENT_GIT_URL: str = "https://github.com/footballpredictions/Silent.git"
     BUILD_AGENT_TIMEOUT_SEC: int = 3600

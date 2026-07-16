@@ -74,7 +74,7 @@ for f in cell-agent/main.py cell-agent/standby_runtime.py; do
     docker cp "$f" {CONTAINER}:/app/"$f"
   fi
 done
-docker exec {CONTAINER} pip install -q paramiko httpx 2>/dev/null || true
+docker exec {CONTAINER} pip install -q paramiko httpx redis disposable-email-domains 2>/dev/null || true
 docker compose restart api nginx
 sleep 14
 bash /tmp/fix_tunnel_dnat.sh

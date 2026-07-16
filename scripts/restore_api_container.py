@@ -16,7 +16,7 @@ find app ai -name '*.py' | while read -r f; do
   docker cp "$f" backend-api-1:/app/"$f"
 done
 echo "=== deps (image often missing httpx after recreate) ==="
-docker exec backend-api-1 pip install -q paramiko httpx 2>/dev/null || true
+docker exec backend-api-1 pip install -q paramiko httpx redis disposable-email-domains 2>/dev/null || true
 echo "=== restart api ==="
 docker compose restart api
 sleep 14

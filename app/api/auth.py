@@ -24,6 +24,8 @@ from app.services.email_service import send_verification_email, send_password_re
 from app.services.subscription_service import apply_post_verification_benefits
 from app.services.theme_settings import load_theme
 from app.services.vpn_service import ensure_device_session
+from app.services.email_validation import validate_registration_email_domain
+from app.services.rate_limiter import check_ip_rate_limit, get_client_ip
 from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -32,9 +34,26 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(
     req: RegisterRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
+    if await check_ip_rate_limit(
+        request,
+        scope="register",
+        max_attempts=settings.REGISTER_RATE_LIMIT_MAX,
+        window_seconds=settings.REGISTER_RATE_LIMIT_WINDOW_MINUTES * 60,
+    ):
+        logger.warning(f"Register rate limit exceeded: ip={get_client_ip(request)}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Слишком много попыток регистрации с этого IP. Попробуйте позже.",
+        )
+
+    domain_error = validate_registration_email_domain(req.email)
+    if domain_error:
+        raise HTTPException(status_code=400, detail=domain_error)
+
     result = await db.execute(select(User).where(User.email == req.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email уже зарегистрирован")

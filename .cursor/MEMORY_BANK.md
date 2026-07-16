@@ -10,7 +10,7 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.157** (`a9a084b` — OTA delayed bat + NSIS no /T) |
+| `Silent-Project/pc/` | `pc` | **1.0.157** (`d3ba0da` — post-OTA first-launch WG settle) |
 | `Silent-Project/android/` | `android` | **1.0.157** (`4a4139f` — OTA progress Android 11–12) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
@@ -533,6 +533,11 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-07-16 — PC: первый запуск после OTA — WG fail + orphan wdtt/консоль
+
+- После install служба `wg-turn` снесена; `runAfterFinish` сразу стартует клиент → первый connect гоняется раньше готовности WG; `wdtt` без `windowsHide` всплывает отдельно.
+- Фикс: stamp `post-install.stamp` + пауза 2.5с и warm runtime; kill orphan wdtt на старте; `windowsHide` на wdtt/UAC; retry `runWgInstall` через 2с.
 
 ### 2026-07-16 — PC OTA: 100% → закрытие, установщик не открывался
 

@@ -10,7 +10,7 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.157** (`0eb1fd0` — legacy captcha 9 workers + WBV/vk.ru) |
+| `Silent-Project/pc/` | `pc` | **1.0.157** (`2a3e1d8` — OTA installer detach after 100%) |
 | `Silent-Project/android/` | `android` | **1.0.157** (`fc2eaa2` — legacy captcha 9 workers) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
@@ -533,6 +533,11 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-07-16 — PC OTA: после 100% клиент закрывался, установщик не открывался
+
+- **Причина:** `shell.openPath(setup.exe)` + `app.quit()` — установщик оставался в дереве процессов Electron и убивался вместе с клиентом.
+- **Фикс:** `spawn(detached+unref)` → fallback `cmd /c start "" path` → потом `app.exit`. NSIS успевает стартовать (UAC) до выхода.
 
 ### 2026-07-16 — PC: captcha domain vk.com→vk.ru + WG после капчи
 

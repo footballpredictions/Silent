@@ -1286,6 +1286,7 @@ class MainViewModel @Inject constructor(
                         url,
                         info.filename ?: "update.apk",
                         repo.buildDownloadClient(),
+                        expectedSize = info.size.coerceAtLeast(0L),
                     ) { pct -> _updateProgress.value = pct }
                 }
                 val file = repo.withUpdateDownloadRoute {

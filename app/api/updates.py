@@ -62,8 +62,18 @@ async def download_update_file(platform: str):
                 async for chunk in resp.aiter_bytes(chunk_size=65536):
                     yield chunk
 
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    # Клиенты (особенно Android 11–12) без Content-Length показывают 0% до конца загрузки.
+    size = latest.get("size") or 0
+    try:
+        size_i = int(size)
+    except (TypeError, ValueError):
+        size_i = 0
+    if size_i > 0:
+        headers["Content-Length"] = str(size_i)
+
     return StreamingResponse(
         stream_upstream(),
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=headers,
     )

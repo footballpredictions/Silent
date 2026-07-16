@@ -534,6 +534,12 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-16 — Android OTA: прогресс 0% на Android 11–12
+
+- **Симптом:** шкала/проценты зависают на 0%, потом сразу установка; на Android 16 ок. Скачивание работало.
+- **Причины:** (1) hop `withContext(Main)` на каждый chunk в цикле чтения; (2) нет `Content-Length` у StreamingResponse + не использовался `size` из `/updates/check`.
+- **Фикс:** прогресс с IO + throttle ~120 мс; `expectedSize = info.size`; backend выставляет `Content-Length` из manifest size.
+
 ### 2026-07-16 — PC OTA: после 100% клиент закрывался, установщик не открывался
 
 - **Причина:** `shell.openPath(setup.exe)` + `app.quit()` — установщик оставался в дереве процессов Electron и убивался вместе с клиентом.

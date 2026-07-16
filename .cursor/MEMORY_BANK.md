@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.156** (`2586f6d` — payment IPC + YuMoney bypass) |
-| `Silent-Project/android/` | `android` | **1.0.156** |
+| `Silent-Project/pc/` | `pc` | **1.0.157** (`0eb1fd0` — legacy captcha 9 workers + WBV/vk.ru) |
+| `Silent-Project/android/` | `android` | **1.0.157** (`fc2eaa2` — legacy captcha 9 workers) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -533,6 +533,42 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-07-16 — PC: captcha domain vk.com→vk.ru + WG после капчи
+
+- Redirect URI: `id.vk.com`→`id.vk.ru`, `domain=vk.com`→`domain=vk.ru` (`captchaRedirectUri.js`) — ручное окно грузилось медленно из‑за .com.
+- Пока капча в WebView — **не ставим WG** (иначе full-tunnel рвёт загрузку id.vk.ru → авто то работает то нет); после CAPTCHA_RESULT — `pendingWgAfterCaptcha`.
+- ConfigSync: не логировать ECONNABORTED/ETIMEDOUT; 10с quiet после капчи (tunnel-only).
+
+### 2026-07-16 — PC: manual captcha без AUTO + Update без ложного Network Error
+
+- **Баг:** в PC Go не было `case "manual"` (на Android был) → при «Ручная» сначала жгли AUTO 30с, потом окно manual с мёртвым session_token (вечная загрузка, нельзя кликнуть).
+- **Фикс:** `solveCaptchaBySelectedMode` — сразу `CAPTCHA_SOLVE|manual` как на Android; manual-окно `alwaysOnTop` + show сразу.
+- **Update:** `checkForUpdate` при `null` от main IPC больше не падал в axios public → ложный `Network Error` при VPN.
+- `captchaInProgress` ставится сразу в очередь CAPTCHA_SOLVE (пауза ConfigSync/Update).
+
+### 2026-07-16 — PC: откат ломающего captcha-prepare + правильный фикс таймаутов
+
+- **Откат:** агрессивный `ensureCaptchaNetworkReady` / DNS-wait / timeout 50s ломали **автокапчу** (0 workers, connect timeout). WebView снова как раньше (auto 28s), плюс только retry `-105` + `clearHostResolverCache` на retry; manual show/focus.
+- **Connect timeout:** legacy (auto/manual) ждёт VPN **120с** (`connectWaitTimeoutForAuth`), не 45с — капча+WG не укладывались.
+- **ConfigSync/Update spam:** пока `captchaInProgress && !wgApplied` — API на паузе (без `ECONNABORTED`×N); sync-state не логирует `CAPTCHA_BUSY`.
+- Go captcha timeouts: auto 30s / manual 90s. VK Calls не трогали.
+
+### 2026-07-16 — Авто/ручная капча: только 9 воркеров (запасной режим)
+
+- **Проблема:** при режиме «Авто капча» / «Ручная» libclient поднимал те же 63 потока, что и VK Calls → десятки параллельных капч.
+- **Правило:** VKCalls → полный n (дефолт 63). Legacy auto/manual → **ровно 9** (1 группа).
+- **PC:** `resolveWorkerCount` + `workerLimits.effectiveConnectWorkers` + Go `vk-auth-mode=legacy` clamp; UI подписи «Запасной режим: 9 воркеров».
+- **Android:** `resolveWorkersForLibclient` / `PrepareVpnConnect` / `WdttTunnelManager` + Go clamp; те же подписи в меню.
+- Тесты: PC `workerLimits.test.js` (в `npm test` 24/24); Android `LEGACY_CAPTCHA_WORKERS` в `HashChannelHelperTest`.
+
+### 2026-07-16 — PC + Android: защита целостности клиента (anti-tamper)
+
+- **Цель:** усложнить подмену/пересборку клиентов без поломки VPN-логики, TrustAll/cleartext `10.66.66.1`, debug и OTA/sideload. Play Integrity **не** делали (hard-fail сломает раздачу вне Play).
+- **Android:** `AppIntegrity` — release-only проверка SHA-256 подписи APK (`RELEASE_CERT_SHA256` из keystore на gradle) + SHA-256 `libclient.so` по ABI (из `jniLibs` на сборке). Вызов: `SilentApp.onCreate` (фон), `LibClientBinary` перед exec, `MainViewModel.connect` / `ensureBootstrapVpn`. Debug — полный skip. ProGuard: убран blanket `-keep com.silent.vpn.**`, точечные keep + `-allowaccessmodification`.
+- **PC:** `integrity.js` + `integrityHashes.js` (генерируется `scripts/gen_integrity_hashes.js` в `build-installer.bat` / `build-debug.bat` после go build) — перед spawn `wdtt-client.exe` в packaged release. Soft-hints (asar unpacked / ELECTRON_RUN_AS_NODE). `ignore-certificate-errors` **не трогали** (нужен для self-signed / паритет Android).
+- Fail mode: отказ **нового** VPN connect + понятное сообщение; уже поднятый туннель не рвём. Compile debug Kotlin — OK; PC mismatch smoke — OK.
+- **Юнит-тесты (2026-07-16):** Android `IntegrityCrypto` + `IntegrityCryptoTest` — push `76f3dab`. PC `test/integrity.test.js` — push `ba98e04` (`npm test` 21/21). Instrumented smoke `AppIntegrityInstrumentedSmokeTest` — push `b57b94b`.
 
 ### 2026-07-16 — Backend: анти-абуз регистрации (временные почты + whitelist + rate limit по IP)
 

@@ -11,7 +11,7 @@
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
 | `Silent-Project/pc/` | `pc` | **1.0.157** (`2a3e1d8` — OTA installer detach after 100%) |
-| `Silent-Project/android/` | `android` | **1.0.157** (`fc2eaa2` — legacy captcha 9 workers) |
+| `Silent-Project/android/` | `android` | **1.0.157** (`4a4139f` — OTA progress Android 11–12) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  

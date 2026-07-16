@@ -1,5 +1,5 @@
 ---
-description: Design sources — использовать React Bits, Refero Styles и uiverse для UI-задач
+description: Design sources — внешние референсы и связки skills+MCP для UI-задач
 alwaysApply: true
 ---
 
@@ -7,15 +7,35 @@ alwaysApply: true
 
 Для задач по UI/UX, визуальному стилю, компонентам, анимациям и редизайну:
 
-1. Используй не только skills, но и внешние референсы:
-   - `https://reactbits.dev/` — анимации и паттерны интерактивных React-компонентов
-   - `https://styles.refero.design/` — реальные дизайн-системы и `DESIGN.md`-подходы
-   - `https://uiverse.io/` — UI-компоненты и микро-взаимодействия
-2. Перед реализацией выбери лучший источник(и) под задачу:
-   - motion/interaction -> React Bits
-   - системный стиль, токены, язык интерфейса -> Refero Styles
-   - быстрые UI-идеи и готовые паттерны -> uiverse
-3. При конфликте с проектными правилами приоритет:
-   - server-driven UI и Memory Bank проекта выше внешних референсов.
-4. В каждом ответе по UI/дизайну **явно пиши короткую выжимку референсов**: какие сайты/паттерны выбраны и почему.
-5. Не копируй слепо; адаптируй под архитектуру проекта, доступность и производительность.
+## Внешние референсы
+
+- `https://reactbits.dev/` — анимации и паттерны интерактивных React-компонентов
+- `https://21st.dev/` — готовые React/Tailwind компоненты и шаблоны (heroes, pricing, bento, forms)
+- `https://motion.dev/` — production-анимации (Motion for React/JS): springs, layout, scroll, gestures
+- `https://styles.refero.design/` — реальные дизайн-системы и `DESIGN.md`-подходы
+- `https://uiverse.io/` — UI-компоненты и микро-взаимодействия (CSS/HTML)
+- `https://saaslandingpage.com/` — референсы лендингов SaaS (структура секций, паттерны конверсии)
+
+## Выбор источника по задаче
+
+| Задача | Источник |
+|---|---|
+| Анимации / motion / интерактив | Motion (`motion.dev`) — реализация; React Bits — паттерны |
+| Готовый React/Tailwind компонент (hero, pricing, navbar) | 21st.dev, затем uiverse |
+| Дизайн-система, токены, язык интерфейса | Refero Styles |
+| Лендинг: структура, секции, конверсия | saaslandingpage.com + reasoning `ui-ux-pro-max` |
+| Микро-взаимодействия (кнопки, лоадеры) | uiverse |
+
+## Обязательные связки (skills + MCP)
+
+1. **Любая UI-задача**: сначала `ui-ux-pro-max` (design-system reasoning: стиль + палитра + типографика + анти-паттерны), затем полировка `impeccable` / `soft-skill`.
+2. **Лендинг / веб-страница**: `ui-ux-pro-max` → референсы saaslandingpage.com + 21st.dev → анимации через Motion → финальная проверка `taste-skill`.
+3. **Генерация картинок / макетов**: `design` (логотипы/баннеры/иконки) или `imagegen-frontend-web` / `imagegen-frontend-mobile` (макеты экранов) → `image-to-code-skill` для переноса в код. Glif MCP не подключаем — свои imagegen-skills покрывают задачу.
+4. **Скрейпинг референсов**: Firecrawl MCP (`firecrawl_scrape` с форматом `branding` — извлекает цвета/шрифты/логотип сайта-референса; keyless free tier).
+5. **Визуальная проверка результата**: Playwright MCP — открыть страницу, скриншот, проверить вёрстку/интерактив.
+
+## Приоритеты
+
+- При конфликте: server-driven UI и Memory Bank проекта **выше** внешних референсов.
+- В каждом ответе по UI/дизайну **явно пиши короткую выжимку референсов**: какие сайты/паттерны/skills выбраны и почему.
+- Не копируй слепо; адаптируй под архитектуру проекта, доступность и производительность.

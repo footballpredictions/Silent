@@ -45,6 +45,11 @@ export function resolveVkCredLaunchParams(): VkCredLaunchParams {
   }
 }
 
+/** Авто/ручная — запасной путь с капчей (не основной VK Calls). */
+export function isLegacyCaptchaStrategy(strategy: string = getVkCredStrategy()): boolean {
+  return strategy === VK_CRED_AUTO || strategy === VK_CRED_MANUAL
+}
+
 export function attachVkCredLaunchParams<T extends Record<string, unknown>>(config: T): T & VkCredLaunchParams {
   const p = resolveVkCredLaunchParams()
   return { ...config, captchaMode: p.captchaMode, vkAuthMode: p.vkAuthMode }

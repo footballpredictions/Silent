@@ -27,9 +27,10 @@ const {
   waitWgStopIdle,
 } = require('./vpn/wireguard')
 const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
-const { resolveVkExcludeIps, warmVkExcludeIps } = require('./vpn/vkNetworkExcludes')
+const { resolveVkExcludeIps, warmVkExcludeIps, invalidateVkExcludeCache } = require('./vpn/vkNetworkExcludes')
 const buildFlags = require('./buildFlags')
 const { verifyWdttIntegrity, softTamperHints } = require('./integrity')
+const { effectiveConnectWorkers, WORKERS_PER_GROUP } = require('./workerLimits')
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms))
@@ -76,6 +77,12 @@ let captchaSession = 0
 let captchaInProgress = false
 let captchaQueue = []
 let captchaQueueDrainRunning = false
+/** После капчи не спамить public HTTPS пока WG/bypass не устаканятся. */
+let apiQuietUntil = 0
+/** GETCONF во время капчи — поднять WG сразу после CAPTCHA_RESULT. */
+let pendingWgAfterCaptcha = false
+/** Выставляется внутри vpnConnect → requestApplyFromFile. */
+let requestApplyWgAfterCaptcha = null
 
 const SERVER_IP_FALLBACK = '132.243.234.162'
 let sessionExcludeIPs = [SERVER_IP_FALLBACK]
@@ -528,7 +535,6 @@ function scheduleTunnelReadyPoll(sendLogFn) {
   }, 500)
 }
 
-const WORKERS_PER_GROUP = 9
 /** Legacy: full после N воркеров (сейчас main сразу full после GETCONF). */
 const FULL_TUNNEL_TARGET_CAP = 9
 
@@ -766,6 +772,7 @@ function writeCaptchaResult(session, result) {
 }
 
 function scheduleCaptchaSolve(lineTrim) {
+  captchaInProgress = true
   captchaQueue.push(lineTrim)
   void drainCaptchaQueue()
 }
@@ -781,6 +788,16 @@ async function drainCaptchaQueue() {
   } finally {
     captchaQueueDrainRunning = false
     captchaInProgress = false
+    apiQuietUntil = Date.now() + 10_000
+    if (pendingWgAfterCaptcha) {
+      pendingWgAfterCaptcha = false
+      sendLog('[WG] капча готова — поднимаем туннель')
+      if (typeof requestApplyWgAfterCaptcha === 'function') {
+        requestApplyWgAfterCaptcha()
+      }
+    } else if (wgApplied) {
+      void ensurePublicApiBypass(sendLog)
+    }
   }
 }
 
@@ -793,10 +810,22 @@ async function runCaptchaSolve(lineTrim) {
 
   captchaInProgress = true
   const session = ++captchaSession
-  sendLog(`[КАПЧА] ${mode === 'manual' ? 'ручное окно' : 'авто'} (${redirectUri.slice(0, 40)}…)`)
+  const { normalizeCaptchaRedirectUri } = require('./vk/captchaRedirectUri')
+  const uriForLog = normalizeCaptchaRedirectUri(redirectUri)
+  sendLog(`[КАПЧА] ${mode === 'manual' ? 'ручное окно' : 'авто'} (${uriForLog.slice(0, 48)}…)`)
 
   let token = ''
   try {
+    // Manual only: лёгкий bypass refresh (не блокируем auto DNS-ожиданием).
+    if (mode === 'manual' && wgApplied && !vpnBootstrapMode) {
+      try {
+        invalidateVkExcludeCache()
+        const vkIps = await resolveVkExcludeIps()
+        sessionExcludeIPs = [...new Set([...(sessionExcludeIPs || []), SERVER_IP_FALLBACK, ...vkIps])]
+        await capturePhysicalGateway(sendLog)
+        await addServerBypassRoutes(sessionExcludeIPs, sendLog)
+      } catch { /* ignore */ }
+    }
     token = await solveVkCaptcha(redirectUri, mode)
     if (session !== captchaSession) return
     sendLog('[КАПЧА] Решена ✓')
@@ -1047,21 +1076,30 @@ async function beginWdttSession(config, { switching = false } = {}) {
   zeroWorkersSinceMs = 0
   const hashes = hashList.join(',')
   const rawN = Number(config.stream_count) || 63
-  const workers = config.is_bootstrap
-    ? Math.min(Math.max(rawN, 3), 108)
-    : Math.min(Math.max(rawN, 9), 108)
-  sessionTargetWorkers = workers
+  const captchaMode = String(config.captchaMode || config.captcha_mode || 'auto').trim() || 'auto'
+  const vkAuthMode = String(config.vkAuthMode || config.vk_auth_mode || 'vkcalls').trim() || 'vkcalls'
+  const workers = effectiveConnectWorkers({
+    isBootstrap: !!config.is_bootstrap,
+    vkAuthMode,
+    streamCount: rawN,
+  })
   sessionDnsOverride = String(config.dns_override || '').trim() || null
   if (sessionDnsOverride) {
     sendLog(`[WG] DNS override (debug): ${sessionDnsOverride}`)
   }
-  const captchaMode = String(config.captchaMode || config.captcha_mode || 'auto').trim() || 'auto'
-  const vkAuthMode = String(config.vkAuthMode || config.vk_auth_mode || 'vkcalls').trim() || 'vkcalls'
+  // Legacy (авто/ручная капча) — запасной режим: ровно 1 группа, без рампа на 63.
+  const legacyCaptcha = !config.is_bootstrap && vkAuthMode === 'legacy'
+  sessionTargetWorkers = workers
   // Boot 9 (1 группа → быстрый GETCONF) → ramp до target.
   const bootWorkers = config.is_bootstrap
     ? workers
+    : legacyCaptcha
+      ? WORKERS_PER_GROUP
     // Boot = по группе на каждый хеш (волна), иначе single-flow сидит на 1 хеше до рампа.
     : Math.min(Math.max(9, hashList.length * 9), workers)
+  if (legacyCaptcha && rawN > WORKERS_PER_GROUP) {
+    sendLog(`[VPN] legacy/captcha: n ${rawN} → ${WORKERS_PER_GROUP} (без шторма капчи)`)
+  }
   const useRamp = !config.is_bootstrap && workers > bootWorkers
   sendLog(
     `[VPN] connect n=${bootWorkers}${useRamp ? `→${workers}` : ''}${config.is_bootstrap ? ' (bootstrap)' : ''} hashes=${hashList.length} vk=${vkAuthMode} captcha=${captchaMode}`,
@@ -1327,12 +1365,19 @@ async function beginWdttSession(config, { switching = false } = {}) {
   let applyFromFileQueued = false
   const requestApplyFromFile = () => {
     if (applyFromFileQueued || wgApplied || wgInstallInFlight) return
+    // Пока WebView капчи грузит id.vk.ru — не рвём сеть full-tunnel install.
+    if (captchaInProgress) {
+      pendingWgAfterCaptcha = true
+      sendLog('[WG] ждём капчу перед установкой туннеля')
+      return
+    }
     applyFromFileQueued = true
     setImmediate(() => {
       applyFromFileQueued = false
       void applyFromFile()
     })
   }
+  requestApplyWgAfterCaptcha = requestApplyFromFile
 
   const handleLine = (line) => {
     const lineTrim = String(line || '').trim()
@@ -1772,6 +1817,23 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
   const opts = { ...p, timeout: p.timeout || 25_000 }
   const path = opts.path || ''
 
+  // Во время капчи WG часто снят → public HTTPS ловит ECONNABORTED; ConfigSync/Update не долбим.
+  if (captchaInProgress && !wgApplied) {
+    const err = new Error('API paused during captcha')
+    err.code = 'CAPTCHA_BUSY'
+    throw err
+  }
+  // Сразу после капчи / WG settle — только tunnel, без шума public fallback.
+  if (Date.now() < apiQuietUntil && wgApplied) {
+    try {
+      const res = await tunnelHttpRequest({
+        ...opts,
+        timeout: Math.min(opts.timeout || 8000, 6000),
+      })
+      if (res.status >= 200 && res.status < 500) return res
+    } catch { /* fall through to normal path */ }
+  }
+
   const viaPublic = async () => {
     // Full tunnel без bypass → hairpin на VPS public IP / nip.io зависает.
     await ensurePublicApiBypass(sendLog)
@@ -1879,6 +1941,9 @@ function fetchJsonGet(url, hostHeader = null) {
 
 ipcMain.handle('app-update-check', async (_, { version, platform = 'pc' }) => {
   const q = updateCheckQuery(platform, version)
+  if (captchaInProgress && !wgApplied) {
+    return null
+  }
   if (shouldUseTunnelForOta() || wgApplied) {
     try {
       const res = await tunnelHttpRequest({ method: 'GET', path: q, timeout: 15_000 })

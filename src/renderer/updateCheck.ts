@@ -69,10 +69,17 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   const electron = (window as typeof window & { electronAPI?: { checkForUpdate?: (v: string) => Promise<UpdateInfo | null> } }).electronAPI
   if (electron?.checkForUpdate) {
     try {
+      // null = обновлений нет или check вернул пусто — НЕ ходим в public axios
+      // (при VPN это даёт ложный «Network Error»).
       const data = await electron.checkForUpdate(APP_VERSION)
-      const parsed = parseUpdateResponse(data)
-      if (parsed) return parsed
-    } catch { /* fallback */ }
+      return parseUpdateResponse(data)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (!/CAPTCHA_BUSY|paused during captcha/i.test(msg)) {
+        pushLog('Update', `check fail: ${msg}`, 'W')
+      }
+      return null
+    }
   }
   return checkViaRendererPublic()
 }

@@ -229,6 +229,11 @@ func main() {
 		*numW = workersPerGroup
 	}
 	*numW = (*numW / workersPerGroup) * workersPerGroup
+	// Legacy (авто/ручная капча) — запасной режим: одна группа, без шторма капчи.
+	if activeVKAuthMode == "legacy" && *numW > workersPerGroup {
+		log.Printf("[КЛИЕНТ] Legacy/captcha: лимит воркеров %d → %d", *numW, workersPerGroup)
+		*numW = workersPerGroup
+	}
 
 	tp := &TurnParams{
 		Host:    *host,
@@ -274,6 +279,13 @@ func main() {
 	targetWorkers := *numW
 	if *targetN > *numW {
 		targetWorkers = *targetN
+	}
+	if activeVKAuthMode == "legacy" {
+		if targetWorkers > workersPerGroup {
+			log.Printf("[КЛИЕНТ] Legacy/captcha: target-n %d → %d", targetWorkers, workersPerGroup)
+			targetWorkers = workersPerGroup
+		}
+		*targetN = 0 // без рампа
 	}
 	if targetWorkers < workersPerGroup {
 		targetWorkers = workersPerGroup

@@ -1,4 +1,5 @@
 const { BrowserWindow } = require('electron')
+const { normalizeCaptchaRedirectUri } = require('./captchaRedirectUri')
 
 const INTERCEPTOR_JS = `
 (function() {
@@ -98,15 +99,17 @@ function solveVkCaptcha(redirectUri, mode = 'auto') {
 
   const timeoutMs = mode === 'manual' ? 90_000 : 28_000
   const showWindow = mode === 'manual'
+  const loadUri = normalizeCaptchaRedirectUri(redirectUri)
 
   return new Promise((resolve, reject) => {
     activeSolve = { resolve, reject }
     const win = new BrowserWindow({
       width: 420,
       height: 520,
-      show: false,
+      show: showWindow,
       skipTaskbar: !showWindow,
       autoHideMenuBar: true,
+      alwaysOnTop: showWindow,
       title: mode === 'manual' ? 'VK — подтвердите, что вы не робот' : 'Silent VPN',
       webPreferences: {
         nodeIntegration: false,
@@ -121,9 +124,15 @@ function solveVkCaptcha(redirectUri, mode = 'auto') {
     if (!showWindow) {
       win.setOpacity(0)
       win.showInactive()
+    } else {
+      win.setOpacity(1)
+      win.show()
+      win.focus()
+      win.moveTop()
     }
 
     let settled = false
+    let deadline = Date.now() + timeoutMs
     const finish = (fn, val) => {
       if (settled) return
       settled = true
@@ -132,8 +141,7 @@ function solveVkCaptcha(redirectUri, mode = 'auto') {
       fn(val)
     }
 
-    const deadline = Date.now() + timeoutMs
-  const poll = async () => {
+    const poll = async () => {
       if (settled || win.isDestroyed()) return
       try {
         const state = await win.webContents.executeJavaScript(
@@ -148,6 +156,7 @@ function solveVkCaptcha(redirectUri, mode = 'auto') {
           // Slider challenge: show window to user for manual solve instead of failing.
           // Keep polling — when user solves it the token will appear.
           mode = 'manual'
+          deadline = Date.now() + 90_000
           if (!win.isDestroyed()) {
             try {
               win.setOpacity(1.0)
@@ -170,15 +179,19 @@ function solveVkCaptcha(redirectUri, mode = 'auto') {
     let networkRetries = 0
 
     const loadCaptchaPage = () => {
-      win.loadURL(redirectUri).catch(() => {
+      // После flap WG Chromium может держать NXDOMAIN — сбрасываем только на retry.
+      if (networkRetries > 0) {
+        try { win.webContents.session.clearHostResolverCache() } catch { /* ignore */ }
+      }
+      win.loadURL(loadUri).catch(() => {
         // Recoverable load errors are retried in did-fail-load; avoid racing finish(reject).
       })
     }
 
     win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       if (settled || !isMainFrame) return
-      // ERR_NETWORK_CHANGED (-21): WireGuard tunnel came up while page was loading — retry.
-      if (errorCode === -21 && networkRetries < 4) {
+      // -21 NETWORK_CHANGED / -105 NAME_NOT_RESOLVED: WG reconnect flap — retry.
+      if ((errorCode === -21 || errorCode === -105) && networkRetries < 4) {
         networkRetries++
         setTimeout(() => {
           if (!settled && !win.isDestroyed()) loadCaptchaPage()
@@ -232,4 +245,4 @@ function solveVkCaptcha(redirectUri, mode = 'auto') {
   })
 }
 
-module.exports = { solveVkCaptcha, cancelCaptchaSolve }
+module.exports = { solveVkCaptcha, cancelCaptchaSolve, normalizeCaptchaRedirectUri }

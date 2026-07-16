@@ -786,7 +786,12 @@ export default function MainScreen({
         return
       }
       pendingConnectAfterSubscriptionRefreshRef.current = false
-      const ready = await waitVpnReady(undefined, connectCfg.stream_count ?? 63)
+      const ready = await waitVpnReady(
+        undefined,
+        connectCfg.stream_count ?? 63,
+        false,
+        connectCfg.vkAuthMode,
+      )
       if (connectGen !== connectGenRef.current) return
       if (!ready) {
         pushLog('Main', 'connect timeout', 'E')

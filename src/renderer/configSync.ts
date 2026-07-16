@@ -56,7 +56,10 @@ async function fetchSyncState(): Promise<SyncStateResponse | null> {
     return res.data
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
-    pushLog('ConfigSync', `sync-state: ${msg}`, 'W')
+    // Капча / settle после WG — не засоряем лог ECONNABORTED/ETIMEDOUT.
+    if (!/CAPTCHA_BUSY|paused during captcha|ECONNABORTED|ETIMEDOUT|ECONNRESET/i.test(msg)) {
+      pushLog('ConfigSync', `sync-state: ${msg}`, 'W')
+    }
     return null
   }
 }

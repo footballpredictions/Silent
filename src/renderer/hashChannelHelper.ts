@@ -1,4 +1,5 @@
 import { activeServerHashCount, getSavedHashItems } from './hashItemsStore'
+import { getVkCredStrategy, VK_CRED_AUTO, VK_CRED_MANUAL } from './vkCredStore'
 
 export const WORKERS_PER_GROUP = 9
 export const MAX_WORKERS_PER_HASH = 27
@@ -6,6 +7,11 @@ export const MAX_HASHES = 4
 export const LIBCLIENT_MAX_WORKERS = 108
 /** Дефолт как Android: 7×9. Max по-прежнему 108. */
 export const DEFAULT_TOTAL_WORKERS = 63
+/**
+ * Авто/ручная капча (legacy) — запасной режим: одна группа.
+ * Иначе 63 воркера = десятки капч, если VK Calls недоступен.
+ */
+export const LEGACY_CAPTCHA_WORKERS = WORKERS_PER_GROUP
 /** Bootstrap: только API в WG, 3 воркера (1 группа) — как Android, без нагрузки на login. */
 export const BOOTSTRAP_STREAM_COUNT = 3
 /** PC connect: 2 группы — хватает для 0.0.0.0/0 на десктопе, без 6× VK Auth. */
@@ -44,6 +50,17 @@ export function groupsForWorkers(totalWorkers: number): number {
 export function connectWaitTimeoutMs(totalWorkers: number, isBootstrap = false): number {
   if (isBootstrap) return 90_000
   return 45_000
+}
+
+/** Legacy auto/manual captcha: капча + WG часто >45с — иначе ложный «connect timeout». */
+export function connectWaitTimeoutForAuth(
+  totalWorkers: number,
+  isBootstrap = false,
+  vkAuthMode?: string,
+): number {
+  if (isBootstrap) return connectWaitTimeoutMs(totalWorkers, true)
+  if (String(vkAuthMode || '').toLowerCase() === 'legacy') return 120_000
+  return connectWaitTimeoutMs(totalWorkers, false)
 }
 
 /**
@@ -149,7 +166,15 @@ function capHashes(hashes: string[] | undefined): string[] {
     .slice(0, MAX_HASHES)
 }
 
+/** Авто/ручная капча → ровно 9 воркеров; VKCalls → ползунок / дефолт 63. */
+export function isLegacyCaptchaStrategy(strategy = getVkCredStrategy()): boolean {
+  return strategy === VK_CRED_AUTO || strategy === VK_CRED_MANUAL
+}
+
 export function resolveWorkerCount(config: { vk_hashes?: string[]; stream_count?: number }): number {
+  if (isLegacyCaptchaStrategy()) {
+    return LEGACY_CAPTCHA_WORKERS
+  }
   const savedActive = activeServerHashCount(getSavedHashItems())
   const cappedHashes = capHashes(config.vk_hashes)
   const hashCount = Math.min(

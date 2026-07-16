@@ -293,7 +293,7 @@ var globalCaptchaLockout atomic.Int64
 
 const (
 	captchaAutoWebViewTimeout     = 30 * time.Second
-	captchaManualWebViewTimeout   = 60 * time.Second
+	captchaManualWebViewTimeout   = 90 * time.Second
 	captchaSelectedWebViewTimeout = 120 * time.Second
 )
 
@@ -786,6 +786,9 @@ func solveCaptchaBySelectedMode(
 	anonToken string,
 ) (string, error) {
 	switch getCaptchaMode() {
+	case "manual":
+		log.Printf("[STREAM %d] [КАПЧА] MANUAL: ручной WebView (attempt %d)", streamID, attempt)
+		return requestWebViewCaptcha(streamID, captchaErr, "manual", captchaManualWebViewTimeout)
 	case "wv":
 		log.Printf("[STREAM %d] [КАПЧА] WBV: режим из настроек Android (attempt %d)", streamID, attempt)
 		return requestWebViewCaptcha(streamID, captchaErr, "selected", captchaSelectedWebViewTimeout)

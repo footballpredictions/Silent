@@ -25,6 +25,11 @@ let cachedIps = null
 let cacheAt = 0
 const CACHE_MS = 5 * 60 * 1000
 
+function invalidateVkExcludeCache() {
+  cachedIps = null
+  cacheAt = 0
+}
+
 async function resolveVkExcludeIps() {
   const now = Date.now()
   if (cachedIps && now - cacheAt < CACHE_MS) return cachedIps
@@ -52,4 +57,4 @@ function warmVkExcludeIps() {
   void resolveVkExcludeIps()
 }
 
-module.exports = { resolveVkExcludeIps, warmVkExcludeIps, VK_HOSTS }
+module.exports = { resolveVkExcludeIps, warmVkExcludeIps, invalidateVkExcludeCache, VK_HOSTS }

@@ -10,7 +10,7 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.157** (`2a3e1d8` — OTA installer detach after 100%) |
+| `Silent-Project/pc/` | `pc` | **1.0.157** (`a9a084b` — OTA delayed bat + NSIS no /T) |
 | `Silent-Project/android/` | `android` | **1.0.157** (`4a4139f` — OTA progress Android 11–12) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
@@ -533,6 +533,13 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-07-16 — PC OTA: 100% → закрытие, установщик не открывался
+
+- **Не integrity** (только VPN connect).
+- **Корневая причина:** клиент `requireAdministrator` + NSIS `customInit` с `taskkill /IM "Silent VPN.exe" /T`. Setup стартует как child → `/T` убивает сам установщик.
+- **Фикс клиента:** bat в `%TEMP%` — sleep ~3с после `app.exit`, потом `start` Setup; лог `%TEMP%\silent-ota-launch.log`.
+- **Фикс NSIS:** `taskkill` без `/T` в `installer.nsh` (для следующих релизов на сервере).
 
 ### 2026-07-16 — Android OTA: прогресс 0% на Android 11–12
 

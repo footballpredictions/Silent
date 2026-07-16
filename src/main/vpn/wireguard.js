@@ -938,9 +938,9 @@ ${bypassPs1}
     send('[WG] Запрос UAC — нажмите «Да» для установки WireGuard...')
 
     const launcher = spawn('powershell.exe', [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-      `Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptPath.replace(/'/g, "''")}'`,
-    ], { windowsHide: false })
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-Command',
+      `Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptPath.replace(/'/g, "''")}'`,
+    ], { windowsHide: true })
 
     launcher.on('close', async (code) => {
       if (fs.existsSync(logPath)) {
@@ -1080,8 +1080,16 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     return finishOk()
   }
 
+  // Сразу после OTA служба/драйвер ещё «остывают» — один повтор без UAC.
+  send('[WG] Служба не поднялась — повтор установки через 2с…')
+  await sleep(2000)
+  const retryResult = await runWgInstall(wgExe, stableConf, runtimeDir, send)
+  if (await waitForTunnelUp(25000, send)) {
+    return finishOk()
+  }
+
   // Ложный «elevated» или Access Denied — fallback на UAC-скрипт.
-  if (installResult.accessDenied || !(await isServiceRunningAsync())) {
+  if (installResult.accessDenied || retryResult.accessDenied || !(await isServiceRunningAsync())) {
     send('[WG] Служба не создалась — повтор через UAC…')
     const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly)
     if (ok) return finishOk()

@@ -25,6 +25,7 @@ const {
   capturePhysicalGateway,
   normalizeWgConfText,
   waitWgStopIdle,
+  prepareRuntimeDir,
 } = require('./vpn/wireguard')
 const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
 const { resolveVkExcludeIps, warmVkExcludeIps, invalidateVkExcludeCache } = require('./vpn/vkNetworkExcludes')
@@ -1123,7 +1124,11 @@ async function beginWdttSession(config, { switching = false } = {}) {
   const apiConf = buildWgConfigFromApi(config)
 
   const gen = ++wdttGeneration
-  const proc = spawn(exePath, args, { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] })
+  const proc = spawn(exePath, args, {
+    cwd: tmpDir,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true, // иначе Go-консоль всплывает (особенно после OTA / runAfterFinish)
+  })
   wdttProcess = proc
   wdttStartedAtMs = Date.now()
   if (!switching) {
@@ -2139,7 +2144,7 @@ ipcMain.handle('app-update-install', async (_, filePath) => {
   }
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (process.defaultApp) {
     if (process.argv.length >= 2) {
       app.setAsDefaultProtocolClient('silentvpn', process.execPath, [path.resolve(process.argv[1])])
@@ -2148,10 +2153,28 @@ app.whenReady().then(() => {
     app.setAsDefaultProtocolClient('silentvpn')
   }
   softTamperHints({ isPackaged: app.isPackaged, isDebugBuild, log: sendLog })
+
+  // После OTA/установки: убиваем осиротевший wdtt и даём WireGuard дописаться.
+  try {
+    const { execSync } = require('child_process')
+    execSync('taskkill /F /IM wdtt-client.exe', { stdio: 'ignore', windowsHide: true })
+  } catch { /* нет процесса */ }
+
+  const postInstallStamp = path.join('C:\\ProgramData\\SilentVPN', 'post-install.stamp')
+  if (fs.existsSync(postInstallStamp)) {
+    try { fs.unlinkSync(postInstallStamp) } catch { /* ignore */ }
+    sendLog('[WG] Первый запуск после установки — ждём готовности WireGuard…')
+    await sleep(2500)
+    try {
+      prepareRuntimeDir(isDev, __dirname, sendLog)
+    } catch (e) {
+      sendLog(`[WG] post-install warm: ${e?.message || e}`)
+    }
+  }
+
   createWindow()
   createTray()
   warmVkExcludeIps()
-  // Предыдущее фоновое forceStop на старте убрано: оно могло сбивать подключение при раннем клике.
 })
 
 app.on('before-quit', () => {

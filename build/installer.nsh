@@ -131,6 +131,13 @@
 
   Delete "${SILENT_WG_DIR}\wintun.dll"
 
+  ; Маркер для клиента: первый запуск после install — подождать WG
+  CreateDirectory "${SILENT_PD_DIR}"
+  FileOpen $0 "${SILENT_PD_DIR}\post-install.stamp" w
+  FileWrite $0 "1"
+  FileClose $0
+
+  Sleep 1500
   DetailPrint "WireGuard repair done"
 !macroend
 

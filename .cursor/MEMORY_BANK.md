@@ -10,7 +10,7 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.157** (`d3ba0da` — post-OTA first-launch WG settle) |
+| `Silent-Project/pc/` | `pc` | **1.0.157** (`f774d5b` — OTA keep AppData/session + login fixes) |
 | `Silent-Project/android/` | `android` | **1.0.157** (`4a4139f` — OTA progress Android 11–12) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
@@ -533,6 +533,13 @@ cd pc; npm install; npm run dev
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
 ## Последние изменения
+
+### 2026-07-17 — PC: после OTA/ошибки WG — вылет на пустой логин + зависание входа
+
+- Логи пользователя с **debug** (`build-debug-135003`), не release. «Админ-панель» — кнопка для `profile.is_admin` (с ~1.0.147), не новая.
+- OTA `silentVpnWipeAll` сносил `%APPDATA%\Silent VPN` → токены и «Запомнить».
+- `device/register` при сетевой ошибке делал `clearTokens()`.
+- Фикс: OTA wipe без AppData; clearTokens только на 403/409; вход разрешён если bootstrap WG упал (public HTTPS).
 
 ### 2026-07-16 — PC: первый запуск после OTA — WG fail + orphan wdtt/консоль
 

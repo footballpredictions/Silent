@@ -120,7 +120,7 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 
 | Метод | Путь | Auth | Описание |
 |-------|------|------|----------|
-| GET | `/stats` | Admin | CPU/RAM/disk, users, VK hashes |
+| GET | `/stats` | Admin | CPU/RAM/disk, users (`connected_devices`, `peak_online_devices`, `peak_online_at`), VK hashes |
 | GET | `/users` | Admin | Список пользователей |
 | POST | `/users/{id}/grant-subscription` | Admin | Выдача подписки |
 | POST | `/users/{id}/revoke-subscription` | Admin | Отзыв подписки |

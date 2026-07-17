@@ -231,6 +231,9 @@ async def connect(
     device.last_ip = req.last_ip
     await touch_user_last_seen(db, user, commit=False)
     await db.commit()
+    from app.services.peak_online import record_online_peak
+
+    await record_online_peak(db)
     return {"status": "connected", "mode": "full" if await user_has_active_subscription(user, db) else "bootstrap"}
 
 

@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.157** (`f774d5b` — OTA keep AppData/session + login fixes) |
-| `Silent-Project/android/` | `android` | **1.0.157** (`4a4139f` — OTA progress Android 11–12) |
+| `Silent-Project/pc/` | `pc` | **1.0.158** (LEGACY_ESCALATE n=9, VK .ru, bypass mutex) |
+| `Silent-Project/android/` | `android` | **1.0.158** (LEGACY_ESCALATE n=9, VK .ru) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -534,6 +534,44 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-17 — PC: админка при VPN + белые списки → tunnel, не nip.io bypass
+
+- **Почему ломалось:** старый «фикс» открывал `https://nip.io` и ставил **bypass мимо VPN**. На Wi‑Fi/LTE с белыми списками ISP режет публичный nip.io вне туннеля → админка недоступна. Через VPN на тот же public IP — hairpin/timeout.
+- **Как на Android:** API/админка при VPN → `http://10.66.66.1:8000` (DNAT на api). Пользователь уже подтвердил `/dashboard` через tunnel.
+- **Фикс PC:** `open-admin-panel` / `get-admin-panel-url` — VPN ON → tunnel `/dashboard`, VPN OFF → public nip.io; **без** `ensureNipIoBypassRoutes` для админки. Подпись в меню: «при VPN: 10.66.66.1:8000».
+- Файлы: `pc/src/main/main.js`, `tunnelApi.ts`, `MainScreen.tsx`. Нужна пересборка/debug PC.
+
+### 2026-07-17 — Админка: пик онлайна на дашборде
+
+- Карточка «Онлайн»: вместо «подключений активно» — **максимум: N** (all-time peak concurrent VPN).
+- Хранение в `app_settings` (`peak_online_devices`, `peak_online_at`); обновление при `set_device_online` / connect и при `GET /api/admin/stats`.
+- Файлы: `app/services/peak_online.py`, `admin.py`, `vpn_service.py`, `vpn.py`, `DashboardPage.tsx`.
+
+### 2026-07-17 — Автокапча при error 10 шла с n=63 + VK домены .ru
+
+- **Баг:** VK Calls `error_code=10` → Go `falling back to legacy` **внутри** процесса с полным n=63 (шторм капчи). Запасные 9 воркеров только при старте с `vk-auth-mode=legacy`.
+- **Фикс:** in-process legacy из vkcalls **запрещён**; сигнал `LEGACY_ESCALATE_CAPTCHA` → хост перезапуск auto/manual с **n=9**.
+- **Домены:** приоритет `api.vk.ru` / `id.vk.ru` / `domain=vk.ru` / join `vk.ru/call/join` (без api.vk.com в ротации Go).
+
+### 2026-07-17 — PC: интернет пропадал после Bypass/Update (full tunnel)
+
+- **Симптом:** воркеры 63/63, интернет был → после `Bypass API chunk Command failed` / `Tunnel API timeout → public` сеть отваливалась.
+- **Причина:** `route delete` до успешного `add` + параллельные bypass (OTA Update ×N) сносили /32 peer+VK → blackhole при `0.0.0.0/1+128.0.0.0/1`.
+- **Фикс:** upsert (change/add, delete только чужой next-hop); mutex на bypass; не сбрасывать физ. шлюз до stop WG; throttle public bypass 3с.
+
+### 2026-07-17 — Flood control: каскад VKCalls → авто-капча → ручная
+
+- **Почему «фикс не работал»:** коммит flood (2026-07-12) намеренно **запрещал** legacy fallback при `error_code=9`, чтобы не было шторма капчи при n=63. Итог: bootstrap/main зависали на flood, запасные режимы не включались (`floodCount` на Android был мёртвый).
+- **Сейчас:** Go по-прежнему не падает в legacy внутри процесса; пишет `FLOOD_ESCALATE_CAPTCHA`. Хост (PC Electron + Android) при timeout/flood перезапускает с **auto (n=9)** → при провале **manual**. Throttle VK Calls усилен (PC ~3.5–5.5с, Android 4–7с; flood cooldown 8–12с).
+- Нужна пересборка `wdtt-client` / `libclient` + debug/release клиентов.
+
+### 2026-07-17 — Android 9: bootstrap — два бага libclient (API29 linker + Go 1.26 SIGSYS)
+
+- **Симптом:** временный интернет для входа не поднимается на Android 9 (Smart TV / эмулятор API 28).
+- **Баг 1 (код 1):** `CANNOT LINK … android_get_device_api_level` — NDK `*-android29-clang`. **Фикс:** API **24**, `minSdk=24` (`6df817e`).
+- **Баг 2 (код 159):** после фикса linker — `libclient завершился (код 159)` сразу. **159 = SIGSYS**: Go **1.26.0–1.26.2** на **32-bit** Android 8–10 пробует `futex_time64`, zygote seccomp убивает процесс ([go#77621](https://github.com/golang/go/issues/77621)). Эмулятор `ABI=x86` / TV `armeabi-v7a` — под ударом; arm64 не затронут этим багом.
+- **Фикс:** в `build_android_go.bat` `GOTOOLCHAIN=go1.26.3` + пересборка всех ABI. Перед debug/release всегда `build_android_go.bat`.
+
 ### 2026-07-17 — PC: после OTA/ошибки WG — вылет на пустой логин + зависание входа
 
 - Логи пользователя с **debug** (`build-debug-135003`), не release. «Админ-панель» — кнопка для `profile.is_admin` (с ~1.0.147), не новая.
@@ -837,10 +875,9 @@ cd pc; npm install; npm run dev
 
 ### 2026-07-12 — VK Calls Flood control (error 9) → без legacy/капчи
 
-
 - Лог: `kind=vk_api: error_code=9 Flood control, falling back to legacy` → капча (дыра как до 19c3c1e)
-- Фикс PC+Android: kind=`flood`; **нет** legacy fallback; retry + cooldown 5–8с; PC global throttle ~2–3.5с между VK Calls
-- Пересобраны wdtt-client / libclient (+ debug)
+- Фикс PC+Android: kind=`flood`; **нет** legacy fallback **внутри Go**; retry + cooldown; PC global throttle
+- **2026-07-17:** host-каскад auto→manual при `FLOOD_ESCALATE_CAPTCHA` / timeout (см. запись выше)
 
 ### 2026-07-13 — PC: исключения приложений реально работают (bypass)
 

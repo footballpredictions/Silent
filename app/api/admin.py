@@ -72,9 +72,12 @@ async def get_stats(
         if is_user_admin(u) or await user_has_active_subscription(u, db):
             active_subs += 1
 
+    from app.services.peak_online import record_online_peak
+
     connected_devices = (await db.execute(
         select(func.count(Device.id)).where(Device.is_connected == True)
     )).scalar_one()
+    peak_online, peak_online_at = await record_online_peak(db, int(connected_devices or 0))
     total_users = len(all_users)
 
     # VK hashes — все пользователи + legacy (без user_id)
@@ -192,6 +195,8 @@ async def get_stats(
             "total": len(all_users),
             "active_subscriptions": active_subs,
             "connected_devices": connected_devices,
+            "peak_online_devices": peak_online,
+            "peak_online_at": peak_online_at,
         },
         "vk_hash_summary": {
             "total_active": len(all_hashes),

@@ -233,6 +233,10 @@ async def set_device_online(db: AsyncSession, device_ref: str, online: bool) -> 
         device.last_connected = datetime.utcnow()
         await touch_user_last_seen(db, device.user_id, commit=False)
     await db.commit()
+    if online:
+        from app.services.peak_online import record_online_peak
+
+        await record_online_peak(db)
     return {"ok": True, "subscription_active": sub_active, "vpn_allowed": vpn_allowed}
 
 

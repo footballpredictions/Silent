@@ -1222,7 +1222,7 @@ export default function MainScreen({
                   </span>
                   {connected && (
                     <span className="text-[10px] leading-tight" style={{ color: muted }}>
-                      при VPN: 10.66.66.1:8000
+                      только 10.66.66.1 — не nip.io
                     </span>
                   )}
                 </button>

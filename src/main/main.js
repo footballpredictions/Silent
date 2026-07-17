@@ -1028,25 +1028,63 @@ ipcMain.handle('open-external', async (_, url) => {
  * - VPN ON → http://10.66.66.1:8000 (как Android API): белые списки ISP не режут,
  *   нет hairpin на публичный IP VPS.
  * - VPN OFF → https://nip.io
- * Нельзя: bypass nip.io мимо VPN — при белых списках (Wi‑Fi/LTE) публичный URL мёртв.
- * Нельзя: nip.io через full tunnel без hairpin DNAT — ETIMEDOUT (старый «фикс» bypass).
+ *
+ * Bypass 132.243… в логе WG — только для app API fallback / peer. Браузер на nip.io
+ * при VPN+whitelist уходит мимо туннеля и «через время» мёртв. Админку открывать
+ * только через кнопку приложения (tunnel), не закладку nip.io.
  */
+function isFullVpnUpForAdmin() {
+  if (vpnBootstrapMode) return false
+  return !!(
+    vpnSessionActive ||
+    wgApplied ||
+    (activeWorkerCount > 0 && isWdttAlive())
+  )
+}
+
 function resolveAdminPanelUrl() {
-  const viaTunnel = !!(wgApplied && isWdttAlive() && !vpnBootstrapMode)
-  return viaTunnel
+  // Пока full VPN жив — только tunnel. Нельзя откатываться на nip.io при кратком
+  // флапе isWdttAlive: публичный URL при whitelist + bypass = таймаут.
+  return isFullVpnUpForAdmin()
     ? `${TUNNEL_API_ORIGIN}/dashboard`
     : `${UPDATE_PUBLIC_BASE}/dashboard`
 }
 
+function probeTunnelAdminHealth() {
+  return new Promise((resolve) => {
+    try {
+      const http = require('http')
+      const req = http.get(`${TUNNEL_API_ORIGIN}/health`, { timeout: 3500 }, (res) => {
+        res.resume()
+        resolve(res.statusCode >= 200 && res.statusCode < 500)
+      })
+      req.on('error', () => resolve(false))
+      req.on('timeout', () => {
+        req.destroy()
+        resolve(false)
+      })
+    } catch {
+      resolve(false)
+    }
+  })
+}
+
 ipcMain.handle('get-admin-panel-url', () => resolveAdminPanelUrl())
 ipcMain.handle('open-admin-panel', async () => {
-  const url = resolveAdminPanelUrl()
-  const viaTunnel = url.startsWith(TUNNEL_API_ORIGIN)
-  sendLog(
-    viaTunnel
-      ? '[Admin] VPN on — tunnel 10.66.66.1:8000 (no nip.io bypass, whitelist-safe)'
-      : '[Admin] VPN off — public nip.io',
-  )
+  const viaTunnel = isFullVpnUpForAdmin()
+  const url = viaTunnel
+    ? `${TUNNEL_API_ORIGIN}/dashboard`
+    : `${UPDATE_PUBLIC_BASE}/dashboard`
+  if (viaTunnel) {
+    const ok = await probeTunnelAdminHealth()
+    sendLog(
+      ok
+        ? `[Admin] tunnel health OK → ${url}`
+        : `[Admin] tunnel health FAIL — всё равно ${url} (nip.io при VPN+whitelist не использовать)`,
+    )
+  } else {
+    sendLog('[Admin] VPN off — public nip.io')
+  }
   await shell.openExternal(url)
   return url
 })

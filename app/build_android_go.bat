@@ -34,10 +34,13 @@ for /f "delims=" %%D in ('dir /b /ad /o-n "%NDK_ROOT%"') do (
 :FoundNDK
 echo Using NDK: %NDK_VER%
 set "TOOLCHAIN=%NDK_ROOT%\%NDK_VER%\toolchains\llvm\prebuilt\windows-x86_64\bin"
-set "CC_PATH_ARM64=%TOOLCHAIN%\aarch64-linux-android29-clang.cmd"
-set "CC_PATH_ARM32=%TOOLCHAIN%\armv7a-linux-androideabi29-clang.cmd"
-set "CC_PATH_X86_64=%TOOLCHAIN%\x86_64-linux-android29-clang.cmd"
-set "CC_PATH_X86=%TOOLCHAIN%\i686-linux-android29-clang.cmd"
+REM API 24 = Android 7.0 (minSdk). API 29+ тянет android_get_device_api_level —
+REM на Android 9 (API 28) и ниже linker падает: CANNOT LINK EXECUTABLE libclient.so
+set "ANDROID_API=24"
+set "CC_PATH_ARM64=%TOOLCHAIN%\aarch64-linux-android%ANDROID_API%-clang.cmd"
+set "CC_PATH_ARM32=%TOOLCHAIN%\armv7a-linux-androideabi%ANDROID_API%-clang.cmd"
+set "CC_PATH_X86_64=%TOOLCHAIN%\x86_64-linux-android%ANDROID_API%-clang.cmd"
+set "CC_PATH_X86=%TOOLCHAIN%\i686-linux-android%ANDROID_API%-clang.cmd"
 
 if not exist "%CC_PATH_ARM64%" (
   echo Error: arm64 clang not found

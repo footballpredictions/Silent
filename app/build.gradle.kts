@@ -68,7 +68,7 @@ android {
 
     defaultConfig {
         applicationId = "com.silent.vpn"
-        minSdk = 26
+        minSdk = 24
         targetSdk = 35
         versionCode = 157
         versionName = "1.0.157"

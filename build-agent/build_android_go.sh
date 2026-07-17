@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Cross-compile wdtt libclient.so for Android (Linux host / Docker API container).
+# MUST stay in sync with android/app/build_android_go.bat (API 24 + Go ≥1.26.3).
 set -euo pipefail
 
 APP_DIR="${1:?app dir required}"
@@ -12,6 +13,10 @@ ROOT="${BUILD_AGENT_ROOT:-/app/build-agent}"
 # shellcheck source=ensure_go.sh
 source "$ROOT/ensure_go.sh"
 
+# Go 1.26.0–1.26.2: на 32-bit Android 8–10 runtime пробует futex_time64 → SIGSYS exit 159.
+# https://github.com/golang/go/issues/77621
+export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.3}"
+
 NDK_ROOT="$ANDROID_HOME/ndk"
 if [[ ! -d "$NDK_ROOT" ]]; then
   echo "[go] NDK not found under $NDK_ROOT — install via install_android_sdk_packages.sh" >&2
@@ -20,13 +25,16 @@ fi
 
 NDK_VER="$(ls -1 "$NDK_ROOT" | sort -V | tail -1)"
 TOOLCHAIN="$NDK_ROOT/$NDK_VER/toolchains/llvm/prebuilt/linux-x86_64/bin"
-CC_ARM64="$TOOLCHAIN/aarch64-linux-android29-clang"
-CC_ARM32="$TOOLCHAIN/armv7a-linux-androideabi29-clang"
-CC_X86_64="$TOOLCHAIN/x86_64-linux-android29-clang"
-CC_X86="$TOOLCHAIN/i686-linux-android29-clang"
+# API 24 = minSdk. API 29+ тянет android_get_device_api_level — на Android 9 (API 28)
+# linker: CANNOT LINK EXECUTABLE libclient.so (Smart TV / Amlogic и т.п.).
+ANDROID_API="${ANDROID_API:-24}"
+CC_ARM64="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
+CC_ARM32="$TOOLCHAIN/armv7a-linux-androideabi${ANDROID_API}-clang"
+CC_X86_64="$TOOLCHAIN/x86_64-linux-android${ANDROID_API}-clang"
+CC_X86="$TOOLCHAIN/i686-linux-android${ANDROID_API}-clang"
 
 if [[ ! -x "$CC_ARM64" || ! -x "$CC_ARM32" ]]; then
-  echo "[go] NDK arm clang not found in $TOOLCHAIN" >&2
+  echo "[go] NDK arm clang not found in $TOOLCHAIN (API $ANDROID_API)" >&2
   exit 1
 fi
 if [[ ! -x "$CC_X86_64" || ! -x "$CC_X86" ]]; then
@@ -34,7 +42,7 @@ if [[ ! -x "$CC_X86_64" || ! -x "$CC_X86" ]]; then
   exit 1
 fi
 
-echo "[go] using NDK $NDK_VER"
+echo "[go] using NDK $NDK_VER (API $ANDROID_API, GOTOOLCHAIN=$GOTOOLCHAIN)"
 mkdir -p \
   "$JNI_DIR/arm64-v8a" \
   "$JNI_DIR/armeabi-v7a" \
@@ -42,6 +50,7 @@ mkdir -p \
   "$JNI_DIR/x86"
 cd "$GO_CLIENT_DIR"
 go mod download
+go version
 
 export GOOS=android CGO_ENABLED=1
 LDFLAGS="-s -w -checklinkname=0"

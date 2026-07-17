@@ -534,6 +534,20 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-17 — PC: админка «через время» снова не открывается при VPN
+
+- В логе нормален `[WG] Bypass API: 132.243…` — это для app API/peer, **не** для браузерной админки.
+- При VPN+whitelist браузер на **nip.io** идёт мимо туннеля → отваливается; рабочий URL только `http://10.66.66.1:8000`.
+- Усилен `open-admin-panel`: пока full VPN жив — всегда tunnel (не откат на nip.io при флапе wdtt); probe `/health`; подпись в меню «только 10.66.66.1 — не nip.io».
+
+### 2026-07-17 — Android TV/Android 9 (Ugoos TOX1): bootstrap не стартует
+
+- **Железо:** Ugoos TOX1, Amlogic S905X3, Android 9 — типичный кейс «временный VPN не поднимается».
+- **Корень:** `libclient.so` с NDK **API 29** на API 28 падает (linker `android_get_device_api_level`, код 1); на 32-bit ещё SIGSYS код 159 (Go <1.26.3).
+- **Баг в пайплайне:** Windows `build_android_go.bat` уже API 24 + Go 1.26.3, а **ночной OTA** `backend/build-agent/build_android_go.sh` всё ещё собирал с **android29** → release/OTA для приставок оставался сломанным.
+- **Фикс:** `build_android_go.sh` = API 24 + `GOTOOLCHAIN=go1.26.3`; детект Ugoos/TOX/Amlogic в `DevicePlatform`; подсказки по кодам 1/159 в логе.
+- **Дальше:** пересобрать libclient + debug/release APK и отдать пользователю / OTA (после `build_android_go` + assemble).
+
 ### 2026-07-17 — PC: админка при VPN + белые списки → tunnel, не nip.io bypass
 
 - **Почему ломалось:** старый «фикс» открывал `https://nip.io` и ставил **bypass мимо VPN**. На Wi‑Fi/LTE с белыми списками ISP режет публичный nip.io вне туннеля → админка недоступна. Через VPN на тот же public IP — hairpin/timeout.

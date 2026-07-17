@@ -2021,45 +2021,91 @@ class MainViewModel @Inject constructor(
                 bootstrapContext = context.applicationContext
                 _bootstrapExpired.value = false
                 _vpnState.value = VpnState.CONNECTING
-                WdttTunnelManager.traceApp(
-                    "bootstrap_connect",
-                    "FGS CONNECT device=${config.device_id.take(8)}… hashes=${config.vk_hashes.size}",
-                )
-                val intent = Intent(context, SilentVpnService::class.java).apply {
-                    action = SilentVpnService.ACTION_CONNECT
-                    putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(config))
-                    putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, true)
-                }
-                ContextCompat.startForegroundService(context, intent)
+                repo.resetVkCredSessionEscalate()
+                WdttTunnelManager.consumeFloodEscalate()
+
                 val waitIterations = if (tv) 180 else 60
-                repeat(waitIterations) { attempt ->
-                    delay(500)
-                    if (_vpnState.value != VpnState.CONNECTING) return@launch
-                    val workers = WdttTunnelManager.activeWorkers.value
-                    val workersOk = !tv || workers >= 1
-                    if (attempt % 4 == 0 && tv) {
-                        _statusMsg.value = when {
-                            workers >= 1 -> "Подключение VPN… воркеры $workers"
-                            WdttTunnelManager.tunnelReady.value -> "Подключение VPN… WireGuard готов, ждём канал"
-                            else -> "Подключение VPN…"
+                var connectedOk = false
+
+                for (attempt in 0 until 3) {
+                    if (_vpnState.value != VpnState.CONNECTING && attempt > 0) break
+                    _vpnState.value = VpnState.CONNECTING
+                    val modeLabel = repo.vkCredStrategyLabel()
+                    WdttTunnelManager.traceApp(
+                        "bootstrap_connect",
+                        "FGS CONNECT attempt=${attempt + 1} mode=$modeLabel device=${config.device_id.take(8)}… hashes=${config.vk_hashes.size}",
+                    )
+                    if (attempt > 0) {
+                        _statusMsg.value = "Запасной режим: $modeLabel…"
+                        stopVpnLocally(context)
+                        repeat(20) {
+                            if (!SilentVpnService.isRunning && !WdttTunnelManager.running.value) return@repeat
+                            delay(200)
                         }
                     }
-                    if (
-                        WdttTunnelManager.tunnelReady.value &&
-                        WdttTunnelManager.running.value &&
-                        workersOk
-                    ) {
-                        _vpnState.value = VpnState.CONNECTED
-                        WdttTunnelManager.traceApp(
-                            "bootstrap_ok",
-                            "bootstrap OK: workers=$workers tunnel=${WdttTunnelManager.tunnelReady.value}",
-                        )
-                        onVpnTunnelReady(config)
-                        repo.ensureBootstrapTunnelApi()
-                        startBootstrapSessionTimeout(context, forceNewDeadline = true)
-                        return@launch
+                    val intent = Intent(context, SilentVpnService::class.java).apply {
+                        action = SilentVpnService.ACTION_CONNECT
+                        putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(config))
+                        putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, true)
                     }
+                    ContextCompat.startForegroundService(context, intent)
+
+                    var attemptOk = false
+                    for (tick in 0 until waitIterations) {
+                        delay(500)
+                        if (_vpnState.value != VpnState.CONNECTING) return@launch
+                        val workers = WdttTunnelManager.activeWorkers.value
+                        val workersOk = !tv || workers >= 1
+                        if (tick % 4 == 0 && tv) {
+                            _statusMsg.value = when {
+                                workers >= 1 -> "Подключение VPN… воркеры $workers"
+                                WdttTunnelManager.tunnelReady.value -> "Подключение VPN… WireGuard готов, ждём канал"
+                                else -> "Подключение VPN…"
+                            }
+                        }
+                        if (
+                            WdttTunnelManager.tunnelReady.value &&
+                            WdttTunnelManager.running.value &&
+                            workersOk
+                        ) {
+                            attemptOk = true
+                            break
+                        }
+                        if (
+                            tick >= 6 &&
+                            !repo.isLegacyCaptchaStrategy() &&
+                            workers < 1 &&
+                            WdttTunnelManager.consumeFloodEscalate()
+                        ) {
+                            break
+                        }
+                    }
+                    if (attemptOk) {
+                        connectedOk = true
+                        break
+                    }
+
+                    val flooded = WdttTunnelManager.consumeFloodEscalate()
+                    if (!repo.escalateVkCredSession()) break
+                    WdttTunnelManager.traceApp(
+                        "bootstrap_escalate",
+                        "timeout/flood escalate → ${repo.vkCredStrategyLabel()}${if (flooded) " (flood)" else ""}",
+                        isError = true,
+                    )
                 }
+
+                if (connectedOk) {
+                    _vpnState.value = VpnState.CONNECTED
+                    WdttTunnelManager.traceApp(
+                        "bootstrap_ok",
+                        "bootstrap OK: workers=${WdttTunnelManager.activeWorkers.value} tunnel=${WdttTunnelManager.tunnelReady.value}",
+                    )
+                    onVpnTunnelReady(config)
+                    repo.ensureBootstrapTunnelApi()
+                    startBootstrapSessionTimeout(context, forceNewDeadline = true)
+                    return@launch
+                }
+
                 if (_vpnState.value == VpnState.CONNECTING) {
                     cancelBootstrapSessionTimeout()
                     stopVpnLocally(context)
@@ -2077,10 +2123,10 @@ class MainViewModel @Inject constructor(
                     )
                     _statusMsg.value = failMsg
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e("MainViewModel", "bootstrap VPN", e)
-                WdttTunnelManager.traceApp("bootstrap_error", e.message ?: "ошибка bootstrap", isError = true)
-                cancelBootstrapSessionTimeout()
+                DebugLog.e("MainViewModel", "ensureBootstrapVpn failed", e)
                 stopVpnLocally(context)
                 bootstrapVpnMode = false
                 _vpnState.value = VpnState.DISCONNECTED
@@ -2362,7 +2408,7 @@ class MainViewModel @Inject constructor(
                         "connect device=${config.device_id.take(12)} n=${config.stream_count} vk=${config.vk_hashes.size}",
                     )
                     androidx.core.content.ContextCompat.startForegroundService(context, connectIntent)
-                    waitForTunnelReady(context, config.stream_count)
+                    waitForTunnelReady(context, config.stream_count, relaunchConfig = config)
                     return@launch
                 }
 
@@ -2411,7 +2457,7 @@ class MainViewModel @Inject constructor(
                 )
                 launchVpnService(context, toConnect)
                 pendingConnectAfterSubscriptionRefresh = false
-                waitForTunnelReady(context, toConnect.stream_count)
+                waitForTunnelReady(context, toConnect.stream_count, relaunchConfig = toConnect)
             }.onFailure {
                 if (!shouldSurfaceConnectFailure(it)) {
                     DebugLog.i("MainViewModel", "connect cancelled: ${it.message}")
@@ -2545,23 +2591,75 @@ class MainViewModel @Inject constructor(
         repo.mergeSavedHashesIntoCachedConfig()
     }
 
-    /** WG поднимается за 3–5 с; ждём до 45 с (капча/сеть). */
-    private suspend fun waitForTunnelReady(context: Context, @Suppress("UNUSED_PARAMETER") totalWorkers: Int) {
-        repeat(225) {
-            delay(200)
+    /** WG поднимается за 3–5 с; ждём до 45 с (капча/сеть). При flood — каскад auto→manual. */
+    private suspend fun waitForTunnelReady(
+        context: Context,
+        @Suppress("UNUSED_PARAMETER") totalWorkers: Int,
+        relaunchConfig: VpnConfig? = null,
+    ) {
+        repo.resetVkCredSessionEscalate()
+        WdttTunnelManager.consumeFloodEscalate()
+
+        for (attempt in 0 until 3) {
+            if (attempt > 0) {
+                if (relaunchConfig == null || !repo.escalateVkCredSession()) break
+                val mode = repo.vkCredStrategyLabel()
+                DebugLog.w("MainViewModel", "connect escalate → $mode")
+                WdttTunnelManager.traceApp(
+                    "connect_escalate",
+                    "→ $mode${if (WdttTunnelManager.consumeFloodEscalate()) " (flood)" else ""}",
+                    isError = true,
+                )
+                _statusMsg.value = "Запасной режим: $mode…"
+                stopVpnLocally(context)
+                repeat(20) {
+                    if (!SilentVpnService.isRunning && !WdttTunnelManager.running.value) return@repeat
+                    delay(200)
+                }
+                if (_vpnState.value != VpnState.CONNECTING && _vpnState.value != VpnState.DISCONNECTED) {
+                    return
+                }
+                _vpnState.value = VpnState.CONNECTING
+                launchVpnService(context, relaunchConfig)
+            }
+
+            val waitTicks = if (repo.isLegacyCaptchaStrategy()) 600 else 225
+            var ready = false
+            var escalateEarly = false
+            for (tick in 0 until waitTicks) {
+                delay(200)
+                if (_vpnState.value != VpnState.CONNECTING) return
+                if (WdttTunnelManager.tunnelReady.value && WdttTunnelManager.running.value) {
+                    ready = true
+                    break
+                }
+                // LEGACY_ESCALATE при 0 воркерах — не ждать 45с с n=63
+                if (
+                    tick >= 15 &&
+                    !repo.isLegacyCaptchaStrategy() &&
+                    WdttTunnelManager.activeWorkers.value < 1 &&
+                    WdttTunnelManager.consumeFloodEscalate()
+                ) {
+                    escalateEarly = true
+                    break
+                }
+            }
             if (_vpnState.value != VpnState.CONNECTING) return
-            if (WdttTunnelManager.tunnelReady.value && WdttTunnelManager.running.value) {
+            if (ready || WdttTunnelManager.tunnelReady.value) {
                 _vpnState.value = VpnState.CONNECTED
                 onVpnTunnelReady()
                 return
             }
+
+            if (relaunchConfig == null) break
+            val canEscalate = when (repo.getEffectiveVkCredStrategy()) {
+                SilentRepository.VK_CRED_MANUAL -> false
+                else -> true
+            }
+            if (!canEscalate) break
+            if (!escalateEarly) WdttTunnelManager.consumeFloodEscalate()
         }
-        if (_vpnState.value != VpnState.CONNECTING) return
-        if (WdttTunnelManager.tunnelReady.value) {
-            _vpnState.value = VpnState.CONNECTED
-            onVpnTunnelReady()
-            return
-        }
+
         val err = WdttTunnelManager.lastError.value
             ?: WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
             ?: "Таймаут: VPN не подключился"

@@ -82,6 +82,27 @@ object WdttTunnelManager {
     private val wgApplyMutex = Mutex()
 
     private var floodCount = 0
+    @Volatile
+    private var floodEscalatePending = false
+
+    fun consumeFloodEscalate(): Boolean {
+        val v = floodEscalatePending
+        floodEscalatePending = false
+        return v
+    }
+
+    fun noteFloodEscalateFromLog(line: String) {
+        val m = line.lowercase()
+        if (
+            m.contains("legacy_escalate_captcha") ||
+            m.contains("flood_escalate_captcha") ||
+            m.contains("flood control") ||
+            m.contains("kind=flood")
+        ) {
+            floodCount++
+            floodEscalatePending = true
+        }
+    }
     private var mismatchCount = 0
     private var refusedCount = 0
     private var currentHashErrorCount = 0
@@ -261,6 +282,7 @@ object WdttTunnelManager {
                         activeWorkers.value = 0
                         lastError.value = null
                         floodCount = 0
+                        floodEscalatePending = false
                         mismatchCount = 0
                         refusedCount = 0
                         currentHashErrorCount = 0
@@ -682,6 +704,8 @@ object WdttTunnelManager {
                         .replace(Regex("^\\d{4}/\\d{2}/\\d{2}\\s\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\s"), "")
                         .trim()
                     appendStderrLine(lineTrim)
+
+                    noteFloodEscalateFromLog(lineTrim)
 
                     if (
                         lineTrim.contains("panic:", true) ||

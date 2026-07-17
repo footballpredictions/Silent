@@ -21,7 +21,7 @@ object VkCallApi {
         .build()
 
     private val hashRegex = Regex("/join/([A-Za-z0-9_\\-]+)")
-    private val apiHosts = listOf("https://api.vk.ru/method/", "https://api.vk.com/method/")
+    private val apiHosts = listOf("https://api.vk.ru/method/")
 
     suspend fun createCallHash(accessToken: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {

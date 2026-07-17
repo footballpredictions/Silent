@@ -11,7 +11,7 @@ import java.util.concurrent.TimeUnit
 
 object VkConfigFetcher {
     private const val GROUP_ID = 239092728L
-    private const val API = "https://api.vk.com/method"
+    private const val API = "https://api.vk.ru/method"
     private const val CONFIG_MAX_AGE_SEC = 3600
 
     private val client = OkHttpClient.Builder()

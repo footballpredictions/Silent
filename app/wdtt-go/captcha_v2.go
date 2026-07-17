@@ -297,7 +297,7 @@ func (s *captchaV2Session) solveOnce(captchaErr *VkCaptchaError) (string, error)
 func captchaV2BaseValues(sessionToken string) [][2]string {
 	return [][2]string{
 		{"session_token", sessionToken},
-		{"domain", "vk.com"},
+		{"domain", "vk.ru"},
 		{"adFp", ""},
 		{"access_token", ""},
 	}
@@ -346,7 +346,7 @@ func (s *captchaV2Session) fetchDebugInfo(scriptURL string) (string, error) {
 	}
 	body, err := s.doRaw(fhttp.MethodGet, scriptURL, nil, map[string]string{
 		"Accept":  "text/javascript,*/*",
-		"Referer": "https://id.vk.com/",
+		"Referer": "https://id.vk.ru/",
 	})
 	if err != nil {
 		return "", err
@@ -402,8 +402,8 @@ func parseCaptchaV2Page(html string) (*captchaV2Page, error) {
 func (s *captchaV2Session) captchaRequest(method string, form [][2]string) (map[string]any, error) {
 	endpoint := "https://api.vk.ru/method/" + method + "?v=" + captchaV2APIVersion
 	body, err := s.doRaw(fhttp.MethodPost, endpoint, form, map[string]string{
-		"Origin":   "https://id.vk.com",
-		"Referer":  "https://id.vk.com/",
+		"Origin":   "https://id.vk.ru",
+		"Referer":  "https://id.vk.ru/",
 		"Priority": "u=1, i",
 	})
 	if err != nil {
@@ -427,7 +427,7 @@ func (s *captchaV2Session) performCaptchaCheck(
 ) (*captchaV2Check, error) {
 	values := [][2]string{
 		{"session_token", sessionToken},
-		{"domain", "vk.com"},
+		{"domain", "vk.ru"},
 		{"adFp", ""},
 		{"accelerometer", "[]"},
 		{"gyroscope", "[]"},
@@ -607,7 +607,7 @@ func (s *captchaV2Session) solveCheckboxCaptcha(
 	}
 	if _, err := s.captchaRequest("captchaNotRobot.componentDone", [][2]string{
 		{"session_token", sessionToken},
-		{"domain", "vk.com"},
+		{"domain", "vk.ru"},
 		{"adFp", ""},
 		{"browser_fp", browserFP},
 		{"device", deviceJSON},
@@ -687,8 +687,8 @@ func (s *captchaV2Session) doRaw(
 	req.Header.Set("Sec-Fetch-Site", "same-site")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Dest", "empty")
-	req.Header.Set("Origin", "https://vk.com")
-	req.Header.Set("Referer", "https://vk.com/")
+	req.Header.Set("Origin", "https://vk.ru")
+	req.Header.Set("Referer", "https://vk.ru/")
 	if form != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}

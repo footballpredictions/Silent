@@ -1090,6 +1090,14 @@ class SilentRepository @Inject constructor(
         val captchaMode: String,
     )
 
+    /**
+     * Эфемерный каскад на сессию подключения (не в prefs):
+     * 0 = базовый, 1 = авто-капча, 2 = ручная.
+     * Go при Flood control не падает в legacy внутри процесса — хост перезапускает с n=9.
+     */
+    @Volatile
+    private var sessionEscalateLevel = 0
+
     fun getVkCredStrategy(): String {
         if (!BuildConfig.DEBUG) return VK_CRED_VKCALLS
         return prefs.getString(PREF_VK_CRED_STRATEGY, VK_CRED_VKCALLS)?.let { stored ->
@@ -1109,17 +1117,49 @@ class SilentRepository @Inject constructor(
         prefs.edit().putString(PREF_VK_CRED_STRATEGY, normalized).apply()
     }
 
-    fun resolveVkCredLaunchParams(): VkCredLaunchParams = when (getVkCredStrategy()) {
+    fun getEffectiveVkCredStrategy(): String {
+        val base = getVkCredStrategy()
+        return when {
+            sessionEscalateLevel >= 2 -> VK_CRED_MANUAL
+            sessionEscalateLevel >= 1 -> if (base == VK_CRED_MANUAL) VK_CRED_MANUAL else VK_CRED_AUTO
+            else -> base
+        }
+    }
+
+    fun resetVkCredSessionEscalate() {
+        sessionEscalateLevel = 0
+    }
+
+    /** vkcalls→auto→manual. false = уже manual. */
+    fun escalateVkCredSession(): Boolean {
+        val current = getEffectiveVkCredStrategy()
+        if (current == VK_CRED_MANUAL) return false
+        if (current == VK_CRED_AUTO) {
+            sessionEscalateLevel = maxOf(sessionEscalateLevel, 2)
+            return true
+        }
+        if (sessionEscalateLevel < 1) {
+            sessionEscalateLevel = 1
+            return true
+        }
+        if (sessionEscalateLevel < 2) {
+            sessionEscalateLevel = 2
+            return true
+        }
+        return false
+    }
+
+    fun resolveVkCredLaunchParams(): VkCredLaunchParams = when (getEffectiveVkCredStrategy()) {
         VK_CRED_AUTO -> VkCredLaunchParams(vkAuthMode = "legacy", captchaMode = "auto")
         VK_CRED_MANUAL -> VkCredLaunchParams(vkAuthMode = "legacy", captchaMode = "manual")
         else -> VkCredLaunchParams(vkAuthMode = "vkcalls", captchaMode = "auto")
     }
 
     /** Авто/ручная — запасной путь с капчей (не основной VK Calls). */
-    fun isLegacyCaptchaStrategy(strategy: String = getVkCredStrategy()): Boolean =
+    fun isLegacyCaptchaStrategy(strategy: String = getEffectiveVkCredStrategy()): Boolean =
         strategy == VK_CRED_AUTO || strategy == VK_CRED_MANUAL
 
-    fun vkCredStrategyLabel(strategy: String = getVkCredStrategy()): String = when (strategy) {
+    fun vkCredStrategyLabel(strategy: String = getEffectiveVkCredStrategy()): String = when (strategy) {
         VK_CRED_AUTO -> "Авто капча"
         VK_CRED_MANUAL -> "Ручная"
         else -> "VKCalls"

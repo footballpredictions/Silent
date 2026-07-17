@@ -76,6 +76,10 @@ object DevicePlatform {
         val device = (Build.DEVICE ?: "").lowercase()
 
         if (man == "amazon" && (model.startsWith("aft") || product.contains("fire_tv"))) return true
+        // Ugoos / Amlogic STB (TOX1, X3 и т.п.) — часто без LEANBACK, но TV-приставки.
+        if (man.contains("ugoos") || model.contains("ugoos") || product.contains("ugoos")) return true
+        if (model.contains("tox1") || device.contains("tox1") || product.contains("tox1")) return true
+        if (man.contains("amlogic") || device.contains("amlogic") || product.contains("amlogic")) return true
         if (model.contains("android tv") || model.contains("google tv")) return true
         if (model.contains("bravia") || model.contains("philips tv")) return true
         if (model.endsWith("_tv") || device.endsWith("_tv") || product.endsWith("_tv")) return true

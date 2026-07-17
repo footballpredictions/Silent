@@ -1077,7 +1077,12 @@ object WdttTunnelManager {
                 if (!alive) {
                     val code = runCatching { proc?.exitValue() }.getOrNull()
                     if (code != null) {
-                        val msg = "libclient завершился (код $code)"
+                        val hint = when (code) {
+                            1 -> " (часто старый libclient / NDK API29 на Android 9 — нужна сборка с API 24)"
+                            159 -> " (SIGSYS: Go <1.26.3 на 32-bit Android 8–10)"
+                            else -> ""
+                        }
+                        val msg = "libclient завершился (код $code)$hint"
                         updateLog("libclient_exit", msg, 99, true)
                         dumpStderrRingOnCrash()
                         appendLibclientCrashLog(lastContext)

@@ -14,12 +14,10 @@
   ${EndIf}
 !macroend
 
-; Останавливает процессы / службу и удаляет папки SilentVPN и Silent VPN
-; в Program Files, ProgramData и AppData всех профилей Users.
-!macro silentVpnWipeAll
-  DetailPrint "Silent VPN: полная очистка SilentVPN / Silent VPN..."
+; Останавливает процессы / службу и чистит runtime VPN (без AppData — токены/«запомнить»).
+!macro silentVpnWipeRuntime
+  DetailPrint "Silent VPN: очистка runtime (служба/ProgramData)..."
 
-  ; Без /T: иначе при OTA Setup ещё child Silent VPN.exe → taskkill убивает сам установщик
   nsExec::ExecToLog 'taskkill /F /IM "Silent VPN.exe"'
   Pop $0
   nsExec::ExecToLog 'taskkill /F /IM wdtt-client.exe'
@@ -40,12 +38,20 @@
   Pop $0
   Sleep 400
 
+  RMDir /r "${SILENT_PD_DIR}"
+!macroend
+
+; Полная очистка включая AppData (только чистая установка / uninstall).
+!macro silentVpnWipeAll
+  DetailPrint "Silent VPN: полная очистка SilentVPN / Silent VPN..."
+
+  !insertmacro silentVpnWipeRuntime
+
   ; Известные каталоги (быстрый путь без PowerShell)
   RMDir /r "$PROGRAMFILES64\Silent VPN"
   RMDir /r "$PROGRAMFILES\Silent VPN"
   RMDir /r "$PROGRAMFILES64\SilentVPN"
   RMDir /r "$PROGRAMFILES\SilentVPN"
-  RMDir /r "${SILENT_PD_DIR}"
   RMDir /r "$APPDATA\Silent VPN"
   RMDir /r "$APPDATA\SilentVPN"
   RMDir /r "$LOCALAPPDATA\Silent VPN"
@@ -68,7 +74,12 @@
 
 ; До копирования файлов — убрать старые остатки
 !macro customInit
-  !insertmacro silentVpnWipeAll
+  ${if} ${isUpdated}
+    ; OTA: не трогаем AppData (JWT / «Запомнить меня»)
+    !insertmacro silentVpnWipeRuntime
+  ${else}
+    !insertmacro silentVpnWipeAll
+  ${endif}
 !macroend
 
 !macro customInstall

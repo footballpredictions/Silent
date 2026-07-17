@@ -173,8 +173,15 @@ export default function LoginScreen({
         return { ok: false, subscriptionExpired: true }
       }
       clearSessionFingerprint()
-      clearTokens()
-      setError(formatApiError(e, 'Достигнут лимит устройств (3). Выйдите на другом устройстве.'))
+      const status = Number((e as any).response?.status) || 0
+      // Только жёсткий отказ сервера (лимит устройств) — сбрасываем сессию.
+      // Таймаут/сеть после успешного login не должны выкидывать на пустой экран входа.
+      if (status === 403 || status === 409) {
+        clearTokens()
+      }
+      setError(formatApiError(e, status
+        ? 'Достигнут лимит устройств (3). Выйдите на другом устройстве.'
+        : 'Не удалось зарегистрировать устройство. Проверьте сеть и попробуйте снова.'))
       return { ok: false }
     }
   }
@@ -322,7 +329,7 @@ export default function LoginScreen({
     void shutdownBootstrapBeforeExit().catch(() => null)
   }
 
-  const authBlocked = sessionExpired || !bootstrapReady
+  const authBlocked = sessionExpired || (!bootstrapReady && !/не удалось|ошибк|fail|WireGuard/i.test(bootstrapStatus))
   const authSubmitDisabled =
     loading || authBlocked || !email.trim() || !password.trim()
 

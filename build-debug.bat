@@ -50,3 +50,6 @@ for /d %%D in ("!OUT_DIR!\win-unpacked") do (
 )
 
 echo === DEBUG BUILD SUCCESS ===
+
+REM Не оставлять DEBUG_BUILD=true в исходниках (иначе случайно уедет в release).
+echo module.exports = { DEBUG_BUILD: false };> src\main\buildFlags.js

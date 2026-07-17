@@ -1023,13 +1023,30 @@ ipcMain.handle('open-external', async (_, url) => {
     return false
   }
 })
-ipcMain.handle('get-admin-panel-url', () => 'https://132-243-234-162.nip.io/admin')
+/**
+ * Админка в системном браузере:
+ * - VPN ON → http://10.66.66.1:8000 (как Android API): белые списки ISP не режут,
+ *   нет hairpin на публичный IP VPS.
+ * - VPN OFF → https://nip.io
+ * Нельзя: bypass nip.io мимо VPN — при белых списках (Wi‑Fi/LTE) публичный URL мёртв.
+ * Нельзя: nip.io через full tunnel без hairpin DNAT — ETIMEDOUT (старый «фикс» bypass).
+ */
+function resolveAdminPanelUrl() {
+  const viaTunnel = !!(wgApplied && isWdttAlive() && !vpnBootstrapMode)
+  return viaTunnel
+    ? `${TUNNEL_API_ORIGIN}/dashboard`
+    : `${UPDATE_PUBLIC_BASE}/dashboard`
+}
+
+ipcMain.handle('get-admin-panel-url', () => resolveAdminPanelUrl())
 ipcMain.handle('open-admin-panel', async () => {
-  const url = 'https://132-243-234-162.nip.io/admin'
-  if (wgApplied && isWdttAlive() && !vpnBootstrapMode) {
-    sendLog('[Admin] VPN on — bypass nip.io API IP, open ' + url)
-    await ensureNipIoBypassRoutes()
-  }
+  const url = resolveAdminPanelUrl()
+  const viaTunnel = url.startsWith(TUNNEL_API_ORIGIN)
+  sendLog(
+    viaTunnel
+      ? '[Admin] VPN on — tunnel 10.66.66.1:8000 (no nip.io bypass, whitelist-safe)'
+      : '[Admin] VPN off — public nip.io',
+  )
   await shell.openExternal(url)
   return url
 })

@@ -7,8 +7,9 @@ function getPublicServerUrl(): string {
 }
 
 export const WG_TUNNEL_GATEWAY = '10.66.66.1'
-export const WG_TUNNEL_ADMIN_URL = `http://${WG_TUNNEL_GATEWAY}:8000/admin`
-export const PUBLIC_ADMIN_URL = `${FALLBACK_PUBLIC}/admin`
+/** При VPN — tunnel (белые списки / без hairpin). Без VPN — public HTTPS. */
+export const WG_TUNNEL_ADMIN_URL = `http://${WG_TUNNEL_GATEWAY}:8000/dashboard`
+export const PUBLIC_ADMIN_URL = `${FALLBACK_PUBLIC}/dashboard`
 
 let mainVpnSessionActive = false
 let wgTunnelReady = false

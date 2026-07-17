@@ -38,7 +38,13 @@ import MenuDnsPanel from '../components/MenuDnsPanel'
 import { getDnsPreset } from '../dnsPreset'
 import MenuVkCredModePanel from '../components/MenuVkCredModePanel'
 import { prepareVpnConnectConfig } from '../prepareVpnConnect'
-import { attachVkCredLaunchParams } from '../vkCredStore'
+import {
+  attachVkCredLaunchParams,
+  escalateVkCredSession,
+  getEffectiveVkCredStrategy,
+  resetVkCredSessionEscalate,
+  vkCredStrategyLabel,
+} from '../vkCredStore'
 import { isDebugBuild } from '../debugBuild'
 import { telegramProxyDeepLink } from '../telegramProxyLink'
 import { notifyDisconnect } from '../vpnBackendSync'
@@ -769,32 +775,65 @@ export default function MainScreen({
     fp: string,
     connectGen: number,
   ) => {
+    resetVkCredSessionEscalate()
+    await (window as any).electronAPI?.consumeFloodEscalate?.().catch(() => null)
+
     try {
       if (!(window as any).electronAPI?.vpnConnect) return
       pushLog('Main', 'vpnConnect start')
-      // prepare не блокирует тумблер (уже ON); хеши из кеша — быстро.
-      const connectCfg = attachVkCredLaunchParams(await prepareVpnConnectConfig(config, fp))
-      if (connectGen !== connectGenRef.current) return
-      pushLog('Main', `vpnConnect n=${connectCfg.stream_count} hashes=${connectCfg.vk_hashes?.length ?? 0} vk=${connectCfg.vkAuthMode}`)
-      const res = await (window as any).electronAPI.vpnConnect(connectCfg)
-      if (connectGen !== connectGenRef.current) return
-      if (res?.error) {
-        pushLog('Main', `vpnConnect: ${res.error}`, 'E')
-        setConnected(false)
-        setMainVpnSessionActive(false)
-        alert(res.error)
-        return
-      }
-      pendingConnectAfterSubscriptionRefreshRef.current = false
-      const ready = await waitVpnReady(
-        undefined,
-        connectCfg.stream_count ?? 63,
-        false,
-        connectCfg.vkAuthMode,
-      )
-      if (connectGen !== connectGenRef.current) return
-      if (!ready) {
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (connectGen !== connectGenRef.current) return
+        // prepare не блокирует тумблер (уже ON); хеши из кеша — быстро.
+        const connectCfg = attachVkCredLaunchParams(await prepareVpnConnectConfig(config, fp))
+        if (connectGen !== connectGenRef.current) return
+        const modeLabel = vkCredStrategyLabel(getEffectiveVkCredStrategy())
+        pushLog(
+          'Main',
+          `vpnConnect n=${connectCfg.stream_count} hashes=${connectCfg.vk_hashes?.length ?? 0} vk=${connectCfg.vkAuthMode} mode=${modeLabel}`,
+        )
+        const res = await (window as any).electronAPI.vpnConnect(connectCfg)
+        if (connectGen !== connectGenRef.current) return
+        if (res?.error) {
+          pushLog('Main', `vpnConnect: ${res.error}`, 'E')
+          await (window as any).electronAPI?.consumeFloodEscalate?.().catch(() => null)
+          if (escalateVkCredSession()) {
+            pushLog('Main', `escalate → ${vkCredStrategyLabel(getEffectiveVkCredStrategy())}`)
+            await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
+            continue
+          }
+          setConnected(false)
+          setMainVpnSessionActive(false)
+          alert(res.error)
+          return
+        }
+        pendingConnectAfterSubscriptionRefreshRef.current = false
+        const ready = await waitVpnReady(
+          undefined,
+          connectCfg.stream_count ?? 63,
+          false,
+          connectCfg.vkAuthMode,
+        )
+        if (connectGen !== connectGenRef.current) return
+        if (ready) {
+          await markOnlineOnServer()
+          void warmupBrowsingPath().catch(() => null)
+          window.setTimeout(() => { void warmupBrowsingPath(8000).catch(() => null) }, 5000)
+          fetchProfile()
+          return
+        }
+
         pushLog('Main', 'connect timeout', 'E')
+        await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
+        const flood = await (window as any).electronAPI?.consumeFloodEscalate?.().catch(() => null)
+        if (escalateVkCredSession()) {
+          pushLog(
+            'Main',
+            `timeout escalate → ${vkCredStrategyLabel(getEffectiveVkCredStrategy())}${flood?.escalate ? ' (flood)' : ''}`,
+          )
+          continue
+        }
+
         setConnected(false)
         setMainVpnSessionActive(false)
         alert(
@@ -804,16 +843,10 @@ export default function MainScreen({
           '3) В окне UAC нажмите «Да»\n\n' +
           'Если не помогло: services.msc → WireGuardTunnel$wg-turn',
         )
-        await (window as any).electronAPI?.vpnDisconnect?.()
         await api.post('/api/vpn/disconnect', { device_fingerprint: fp }).catch(() => null)
         await fetchProfile()
         return
       }
-      await markOnlineOnServer()
-      void warmupBrowsingPath().catch(() => null)
-      // Повторный прогрев когда воркеры догонят — превью TG иначе «ещё не загрузилось».
-      window.setTimeout(() => { void warmupBrowsingPath(8000).catch(() => null) }, 5000)
-      fetchProfile()
     } catch (err: any) {
       if (connectGen !== connectGenRef.current) return
       pushLog('Main', `vpnConnect failed: ${err?.message || err}`, 'E')

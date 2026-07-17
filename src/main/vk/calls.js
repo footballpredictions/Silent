@@ -15,7 +15,7 @@ async function vkGet(url) {
 }
 
 async function createCallHash(accessToken) {
-  const url = `https://api.vk.com/method/calls.start?access_token=${encodeURIComponent(accessToken)}&v=${VK_API_VERSION}&client_id=6287487`
+  const url = `https://api.vk.ru/method/calls.start?access_token=${encodeURIComponent(accessToken)}&v=${VK_API_VERSION}&client_id=6287487`
   const data = await vkGet(url)
   if (data.error) {
     const code = data.error.error_code
@@ -29,7 +29,7 @@ async function createCallHash(accessToken) {
 }
 
 async function resolveUserId(accessToken) {
-  const url = `https://api.vk.com/method/users.get?access_token=${encodeURIComponent(accessToken)}&v=${VK_API_VERSION}`
+  const url = `https://api.vk.ru/method/users.get?access_token=${encodeURIComponent(accessToken)}&v=${VK_API_VERSION}`
   const data = await vkGet(url)
   if (data.error) throw new Error(data.error.error_msg || 'users.get error')
   const id = data.response?.[0]?.id

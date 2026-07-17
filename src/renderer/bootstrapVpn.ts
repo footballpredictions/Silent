@@ -1,6 +1,12 @@
 import { getBootstrapHash, type VpnConfigPayload } from './vkConfig'
 import { pushLog } from './debugLog'
-import { attachVkCredLaunchParams } from './vkCredStore'
+import {
+  attachVkCredLaunchParams,
+  escalateVkCredSession,
+  getEffectiveVkCredStrategy,
+  resetVkCredSessionEscalate,
+  vkCredStrategyLabel,
+} from './vkCredStore'
 import { SessionTrace } from './sessionTrace'
 import { buildLocalBootstrapConfig } from './bootstrapVpnConfig'
 import { applyBootstrapWorkerCount } from './hashChannelHelper'
@@ -144,6 +150,15 @@ export async function shutdownBootstrapBeforeExit(): Promise<void> {
   await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
 }
 
+async function consumeFloodEscalateFlag(): Promise<boolean> {
+  try {
+    const res = await (window as any).electronAPI?.consumeFloodEscalate?.()
+    return !!res?.escalate
+  } catch {
+    return false
+  }
+}
+
 /** Connect bootstrap VPN on login screen — reach backend before Silent login. */
 export async function ensureBootstrapVpn(): Promise<boolean> {
   if (bootstrapExpired) {
@@ -178,40 +193,77 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
     return false
   }
 
-  const bootCfg = attachVkCredLaunchParams(applyBootstrapWorkerCount(config, boot))
-  const bootWithDns = isDebugBuild
-    ? { ...bootCfg, dns_override: getDnsOverrideServers(), wg_dns: getDnsOverrideServers() }
-    : bootCfg
-  pushLog('Bootstrap', `vpnConnect n=${bootWithDns.stream_count} hashes=${bootWithDns.vk_hashes?.length ?? 0}`)
-  const res = await electron.vpnConnect(bootWithDns)
-  if (res?.error) {
-    pushLog('Bootstrap', `vpnConnect error: ${res.error}`, 'E')
-    notifyStatus(res.error)
-    return false
-  }
-  bootstrapActive = true
-  bootstrapExpired = false
+  resetVkCredSessionEscalate()
+  await electron.consumeFloodEscalate?.().catch(() => null)
 
-  const ok = await waitVpnReady(90_000, bootWithDns.stream_count ?? 9, true)
-  if (runId !== bootstrapEnsureGeneration || !bootstrapActive) {
-    // Сессия уже отменена (вход завершён/переключение режима) — игнорируем хвост.
-    return false
-  }
-  pushLog('Bootstrap', ok ? 'VPN ready' : 'VPN timeout', ok ? 'I' : 'E')
-  if (ok) {
-    lastBootstrapWgAddress = bootWithDns.assigned_ip || null
-    enableTunnelApi()
-    setBootstrapApiRouting(true)
-    cancelBootstrapSessionTimeout()
-    startBootstrapSessionTimeout(true)
-    SessionTrace.mark('Bootstrap.tunnelReady')
-    return true
+  // vkcalls → (flood/timeout) → auto captcha → manual
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (runId !== bootstrapEnsureGeneration) return false
+
+    const bootCfg = attachVkCredLaunchParams(applyBootstrapWorkerCount(config, boot))
+    const bootWithDns = isDebugBuild
+      ? { ...bootCfg, dns_override: getDnsOverrideServers(), wg_dns: getDnsOverrideServers() }
+      : bootCfg
+    const modeLabel = vkCredStrategyLabel(getEffectiveVkCredStrategy())
+    pushLog(
+      'Bootstrap',
+      `vpnConnect n=${bootWithDns.stream_count} hashes=${bootWithDns.vk_hashes?.length ?? 0} mode=${modeLabel}`,
+    )
+    notifyStatus(
+      attempt === 0
+        ? 'Подключение канала…'
+        : `Запасной режим: ${modeLabel}…`,
+    )
+
+    const res = await electron.vpnConnect(bootWithDns)
+    if (runId !== bootstrapEnsureGeneration) return false
+    if (res?.error) {
+      pushLog('Bootstrap', `vpnConnect error: ${res.error}`, 'E')
+      await consumeFloodEscalateFlag()
+      if (escalateVkCredSession()) {
+        pushLog('Bootstrap', `escalate → ${vkCredStrategyLabel(getEffectiveVkCredStrategy())}`)
+        await electron.vpnDisconnect?.({ fast: true })
+        continue
+      }
+      notifyStatus(res.error)
+      return false
+    }
+
+    bootstrapActive = true
+    bootstrapExpired = false
+
+    const ok = await waitVpnReady(90_000, bootWithDns.stream_count ?? 9, true, bootWithDns.vkAuthMode)
+    if (runId !== bootstrapEnsureGeneration || !bootstrapActive) {
+      return false
+    }
+    if (ok) {
+      pushLog('Bootstrap', 'VPN ready')
+      lastBootstrapWgAddress = bootWithDns.assigned_ip || null
+      enableTunnelApi()
+      setBootstrapApiRouting(true)
+      cancelBootstrapSessionTimeout()
+      startBootstrapSessionTimeout(true)
+      SessionTrace.mark('Bootstrap.tunnelReady')
+      return true
+    }
+
+    pushLog('Bootstrap', 'VPN timeout', 'E')
+    bootstrapActive = false
+    setBootstrapApiRouting(false)
+    clearTunnelApiBase()
+    await electron.vpnDisconnect?.({ fast: true })
+
+    const flooded = await consumeFloodEscalateFlag()
+    if (escalateVkCredSession()) {
+      pushLog(
+        'Bootstrap',
+        `timeout escalate → ${vkCredStrategyLabel(getEffectiveVkCredStrategy())}${flooded ? ' (flood)' : ''}`,
+      )
+      continue
+    }
+    break
   }
 
-  bootstrapActive = false
-  setBootstrapApiRouting(false)
-  clearTunnelApiBase()
-  await electron.vpnDisconnect?.({ fast: true })
   notifyStatus(s.bootstrapFail)
   return false
 }

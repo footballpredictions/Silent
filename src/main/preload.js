@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   vpnDisconnect: (opts) => ipcRenderer.invoke('vpn-disconnect', opts),
   vpnIsReady: () => ipcRenderer.invoke('vpn-is-ready'),
   vpnReadConfig: () => ipcRenderer.invoke('vpn-read-config'),
+  consumeFloodEscalate: () => ipcRenderer.invoke('vpn-consume-flood-escalate'),
   onVpnLog: (cb) => ipcRenderer.on('vpn-log', (_, line) => cb(line)),
   onWdttLog: (cb) => ipcRenderer.on('wdtt-log', (_, entry) => cb(entry)),
   onWdttLogBatch: (cb) => ipcRenderer.on('wdtt-log-batch', (_, batch) => cb(batch)),

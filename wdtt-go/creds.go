@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"bytes"
@@ -23,7 +23,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// ─── VK Credential Sets (2 stable app_id with rotating fallback) ───
+// в”Ђв”Ђв”Ђ VK Credential Sets (2 stable app_id with rotating fallback) в”Ђв”Ђв”Ђ
 
 type VKCredentials struct {
 	ClientID     string
@@ -35,8 +35,8 @@ var vkCredentialsList = []VKCredentials{
 	{ClientID: "8202606", ClientSecret: "lMRsTiMCyPnp5vfoldmn"},
 }
 
-// CallUnavailableError — неретраимая ошибка самого звонка/ссылки (завершён, удалён, битый join).
-// Капча и смена client_id это не чинят. Upstream: amurcanov/proxy-turn-vk-android@d95b65b
+// CallUnavailableError вЂ” РЅРµСЂРµС‚СЂР°РёРјР°СЏ РѕС€РёР±РєР° СЃР°РјРѕРіРѕ Р·РІРѕРЅРєР°/СЃСЃС‹Р»РєРё (Р·Р°РІРµСЂС€С‘РЅ, СѓРґР°Р»С‘РЅ, Р±РёС‚С‹Р№ join).
+// РљР°РїС‡Р° Рё СЃРјРµРЅР° client_id СЌС‚Рѕ РЅРµ С‡РёРЅСЏС‚. Upstream: amurcanov/proxy-turn-vk-android@d95b65b
 type CallUnavailableError struct {
 	Code    int
 	Message string
@@ -76,7 +76,7 @@ func fatalCallError(resp map[string]interface{}) *CallUnavailableError {
 	case code >= 9000 && code <= 9999:
 		// Legacy calls.getAnonymousToken call-domain errors.
 	default:
-		// Fallback by message — VK иногда отдаёт call-ошибку под другим кодом.
+		// Fallback by message вЂ” VK РёРЅРѕРіРґР° РѕС‚РґР°С‘С‚ call-РѕС€РёР±РєСѓ РїРѕРґ РґСЂСѓРіРёРј РєРѕРґРѕРј.
 		low := strings.ToLower(msg)
 		if strings.Contains(low, "call not found") ||
 			strings.Contains(low, "invalid join link") ||
@@ -90,7 +90,7 @@ func fatalCallError(resp map[string]interface{}) *CallUnavailableError {
 	return &CallUnavailableError{Code: code, Message: msg}
 }
 
-// vkCallsShouldRetry — сеть/decode/flood; captcha/call/api ретраить бессмысленно.
+// vkCallsShouldRetry вЂ” СЃРµС‚СЊ/decode/flood; captcha/call/api СЂРµС‚СЂР°РёС‚СЊ Р±РµСЃСЃРјС‹СЃР»РµРЅРЅРѕ.
 func vkCallsShouldRetry(err error) bool {
 	var failure *vkCallsFailure
 	if errors.As(err, &failure) {
@@ -104,24 +104,10 @@ func vkCallsShouldRetry(err error) bool {
 	return false
 }
 
-// vkCallsShouldFallbackToLegacy — в режиме vkcalls не уходим в legacy+капчу
-// при call/captcha/network/flood (иначе шторм капчи, как error_code=9 → legacy).
+// vkCallsShouldFallbackToLegacy вЂ” РІ СЂРµР¶РёРјРµ vkcalls РќРРљРћР“Р”Рђ РЅРµ СѓС…РѕРґРёРј РІ legacy+РєР°РїС‡Сѓ
+// РІРЅСѓС‚СЂРё С‚РѕРіРѕ Р¶Рµ РїСЂРѕС†РµСЃСЃР° (n=63 в†’ С€С‚РѕСЂРј РєР°РїС‡Рё). РҐРѕСЃС‚ РїРµСЂРµР·Р°РїСѓСЃРєР°РµС‚ СЃ n=9 (auto/manual).
 func vkCallsShouldFallbackToLegacy(err error) bool {
-	if _, ok := asCallUnavailableError(err); ok {
-		return false
-	}
-	var failure *vkCallsFailure
-	if errors.As(err, &failure) {
-		switch failure.Kind {
-		case vkCallsFailureCall, vkCallsFailureCaptcha, vkCallsFailureNetwork, vkCallsFailureFlood:
-			return false
-		}
-	}
-	var captchaErr *VkCaptchaError
-	if errors.As(err, &captchaErr) {
-		return false
-	}
-	return true
+	return false
 }
 
 func vkCallsIsFlood(err error) bool {
@@ -175,7 +161,7 @@ func GetActiveClientIdsString() string {
 
 const vkCredentialAttemptLimit = 4
 
-// ─── Credential Caching ───
+// в”Ђв”Ђв”Ђ Credential Caching в”Ђв”Ђв”Ђ
 
 type TurnCredentials struct {
 	Username    string
@@ -287,7 +273,7 @@ func handleAuthError(streamID int) bool {
 	return false
 }
 
-// ─── Captcha lockout ───
+// в”Ђв”Ђв”Ђ Captcha lockout в”Ђв”Ђв”Ђ
 
 var globalCaptchaLockout atomic.Int64
 
@@ -297,14 +283,14 @@ const (
 	captchaSelectedWebViewTimeout = 120 * time.Second
 )
 
-// ─── Random delay ───
+// в”Ђв”Ђв”Ђ Random delay в”Ђв”Ђв”Ђ
 
 func vkDelayRandom(minMs, maxMs int) {
 	ms := minMs + rand.Intn(maxMs-minMs+1)
 	time.Sleep(time.Duration(ms) * time.Millisecond)
 }
 
-// ─── Cached credential fetcher ───
+// в”Ђв”Ђв”Ђ Cached credential fetcher в”Ђв”Ђв”Ђ
 
 func getVkCredsCached(ctx context.Context, link string, streamID int) (string, string, []string, error) {
 	cache := getStreamCache(streamID)
@@ -345,12 +331,12 @@ func getVkCredsCached(ctx context.Context, link string, streamID int) (string, s
 	return user, pass, cloneStringSlice(addrs), nil
 }
 
-// ─── Serialized (throttled) fetcher ───
-// Throttle per hash-link: разные хеши в одной волне могут идти параллельно.
-// Глобальный mutex сериализовал волну из 4 хешей в ~4–8 с и убивал смысл параллели.
+// в”Ђв”Ђв”Ђ Serialized (throttled) fetcher в”Ђв”Ђв”Ђ
+// Throttle per hash-link: СЂР°Р·РЅС‹Рµ С…РµС€Рё РІ РѕРґРЅРѕР№ РІРѕР»РЅРµ РјРѕРіСѓС‚ РёРґС‚Рё РїР°СЂР°Р»Р»РµР»СЊРЅРѕ.
+// Р“Р»РѕР±Р°Р»СЊРЅС‹Р№ mutex СЃРµСЂРёР°Р»РёР·РѕРІР°Р» РІРѕР»РЅСѓ РёР· 4 С…РµС€РµР№ РІ ~4вЂ“8 СЃ Рё СѓР±РёРІР°Р» СЃРјС‹СЃР» РїР°СЂР°Р»Р»РµР»Рё.
 
 var (
-	vkLinkMus sync.Map // link → *sync.Mutex
+	vkLinkMus sync.Map // link в†’ *sync.Mutex
 )
 
 func vkMuForLink(link string) *sync.Mutex {
@@ -369,14 +355,15 @@ func vkClockForLink(link string) *vkLinkClock {
 }
 
 var (
-	vkLinkLast          sync.Map // link → *vkLinkClock
+	vkLinkLast          sync.Map // link в†’ *vkLinkClock
 	globalVkCallsMu     sync.Mutex
 	globalVkCallsLast   time.Time
-	globalVkFloodUntil  atomic.Int64 // unix nano — пауза после error_code=9
+	globalVkFloodUntil  atomic.Int64 // unix nano вЂ” РїР°СѓР·Р° РїРѕСЃР»Рµ error_code=9
 )
 
 func noteVkFloodCooldown() {
-	until := time.Now().Add(5*time.Second + time.Duration(rand.Intn(3000))*time.Millisecond).UnixNano()
+	// Р”РѕР»СЊС€Рµ РґРµСЂР¶РёРј РїР°СѓР·Сѓ: РїР°СЂР°Р»Р»РµР»СЊРЅС‹Рµ С…РµС€Рё/СЂРµС‚СЂР°Рё РёРЅР°С‡Рµ СЃРЅРѕРІР° Р»РѕРІСЏС‚ error_code=9.
+	until := time.Now().Add(8*time.Second + time.Duration(rand.Intn(4000))*time.Millisecond).UnixNano()
 	for {
 		old := globalVkFloodUntil.Load()
 		if until <= old {
@@ -425,13 +412,13 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (str
 		}
 	}
 
-	// Глобальный spacing между любыми VK Calls (4 хеша параллельно → Flood control).
+	// Р“Р»РѕР±Р°Р»СЊРЅС‹Р№ spacing РјРµР¶РґСѓ Р»СЋР±С‹РјРё VK Calls (4 С…РµС€Р° РїР°СЂР°Р»Р»РµР»СЊРЅРѕ в†’ Flood control).
 	if getVKAuthMode() == "vkcalls" {
 		if err := waitVkFloodCooldown(ctx, streamID); err != nil {
 			return "", "", nil, err
 		}
 		globalVkCallsMu.Lock()
-		minGlobal := 2*time.Second + time.Duration(rand.Intn(1500))*time.Millisecond
+		minGlobal := 3500*time.Millisecond + time.Duration(rand.Intn(2000))*time.Millisecond
 		if !globalVkCallsLast.IsZero() {
 			if gElapsed := time.Since(globalVkCallsLast); gElapsed < minGlobal {
 				gWait := minGlobal - gElapsed
@@ -461,7 +448,7 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (str
 	return user, pass, addrs, err
 }
 
-// ─── Main credential fetcher (rotates through stable credential sets) ───
+// в”Ђв”Ђв”Ђ Main credential fetcher (rotates through stable credential sets) в”Ђв”Ђв”Ђ
 
 func fetchVkCreds(ctx context.Context, link string, streamID int) (string, string, []string, error) {
 	if time.Now().Unix() < globalCaptchaLockout.Load() {
@@ -470,7 +457,7 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 
 	if getVKAuthMode() == "vkcalls" {
 		var lastVKCallsErr error
-		// До 3 попыток на сеть/decode/flood. Captcha/call — сразу стоп, без legacy.
+		// Р”Рѕ 3 РїРѕРїС‹С‚РѕРє РЅР° СЃРµС‚СЊ/decode/flood. Captcha/call вЂ” СЃСЂР°Р·Сѓ СЃС‚РѕРї, Р±РµР· legacy.
 		for attempt := 1; attempt <= 3; attempt++ {
 			if err := waitVkFloodCooldown(ctx, streamID); err != nil {
 				return "", "", nil, err
@@ -482,12 +469,12 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 			}
 			lastVKCallsErr = err
 			if callErr, ok := asCallUnavailableError(err); ok {
-				log.Printf("[STREAM %d] [VK Auth] VK Calls non-retryable call error — no legacy/captcha: %v", streamID, callErr)
+				log.Printf("[STREAM %d] [VK Auth] VK Calls non-retryable call error вЂ” no legacy/captcha: %v", streamID, callErr)
 				return "", "", nil, callErr
 			}
 			if vkCallsIsFlood(err) {
 				noteVkFloodCooldown()
-				log.Printf("[STREAM %d] [VK Auth] VK Calls flood control — no legacy/captcha (%s)", streamID, describeVKCallsFailure(err))
+				log.Printf("[STREAM %d] [VK Auth] VK Calls flood control вЂ” no legacy/captcha (%s)", streamID, describeVKCallsFailure(err))
 			}
 			log.Printf("[STREAM %d] [VK Auth] VK Calls attempt %d/3 failed (%s)", streamID, attempt, describeVKCallsFailure(err))
 			if ctx.Err() != nil {
@@ -499,7 +486,7 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 			if attempt < 3 {
 				wait := time.Duration(350+rand.Intn(400)) * time.Millisecond
 				if vkCallsIsFlood(err) {
-					wait = 2*time.Second + time.Duration(rand.Intn(2500))*time.Millisecond
+					wait = 3*time.Second + time.Duration(rand.Intn(3000))*time.Millisecond
 				}
 				select {
 				case <-ctx.Done():
@@ -509,7 +496,9 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 			}
 		}
 		if !vkCallsShouldFallbackToLegacy(lastVKCallsErr) {
-			log.Printf("[STREAM %d] [VK Auth] VK Calls failed without legacy fallback (%s)", streamID, describeVKCallsFailure(lastVKCallsErr))
+			// РќРµ СѓС…РѕРґРёРј РІ legacy РІРЅСѓС‚СЂРё РїСЂРѕС†РµСЃСЃР° (С€С‚РѕСЂРј РєР°РїС‡Рё РїСЂРё n=63) вЂ”
+			// СЃРёРіРЅР°Р» РґР»СЏ Electron/Android: РїРµСЂРµР·Р°РїСѓСЃРє СЃ auto/manual Рё n=9.
+			log.Printf("[STREAM %d] [VK Auth] LEGACY_ESCALATE_CAPTCHA вЂ” host should switch to legacy captcha (%s)", streamID, describeVKCallsFailure(lastVKCallsErr))
 			return "", "", nil, lastVKCallsErr
 		}
 		log.Printf("[STREAM %d] [VK Auth] VK Calls exhausted (%s), falling back to legacy", streamID, describeVKCallsFailure(lastVKCallsErr))
@@ -560,7 +549,7 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 	return "", "", nil, fmt.Errorf("all VK credentials failed: %w", lastErr)
 }
 
-// ─── Token chain: anon_token → getCallPreview → getAnonymousToken → OK session → joinConversation → TURN creds ───
+// в”Ђв”Ђв”Ђ Token chain: anon_token в†’ getCallPreview в†’ getAnonymousToken в†’ OK session в†’ joinConversation в†’ TURN creds в”Ђв”Ђв”Ђ
 
 func getTokenChain(ctx context.Context, link string, streamID int, creds VKCredentials, jar tlsclient.CookieJar) (string, string, []string, error) {
 	profile := getRandomProfile()
@@ -643,7 +632,7 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 	vkDelayRandom(100, 150)
 
 	// Step 2: getCallPreview (mimics real VK client behavior)
-	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&fields=photo_200&access_token=%s", link, token1)
+	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&fields=photo_200&access_token=%s", link, token1)
 	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getCallPreview?v=5.275&client_id="+creds.ClientID)
 	if err != nil {
 		log.Printf("[STREAM %d] [VK Auth] Warning: getCallPreview failed: %v", streamID, err)
@@ -655,7 +644,7 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 	vkDelayRandom(200, 400)
 
 	// Step 3: getAnonymousToken (with captcha handling)
-	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
+	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
 	urlAddr := fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousToken?v=5.275&client_id=%s", creds.ClientID)
 
 	var token2 string
@@ -694,7 +683,7 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 					captchaAttempt = "1"
 				}
 
-				data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&captcha_key=&captcha_sid=%s&is_sound_captcha=0&success_token=%s&captcha_ts=%s&captcha_attempt=%s&access_token=%s",
+				data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=%s&captcha_key=&captcha_sid=%s&is_sound_captcha=0&success_token=%s&captcha_ts=%s&captcha_attempt=%s&access_token=%s",
 					link, escapedName, captchaErr.CaptchaSid, neturl.QueryEscape(successToken), captchaErr.CaptchaTs, captchaAttempt, token1)
 				continue
 			}
@@ -728,7 +717,7 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 
 	vkDelayRandom(100, 150)
 
-	// Step 5: joinConversationByLink → TURN creds
+	// Step 5: joinConversationByLink в†’ TURN creds
 	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&capabilities=2F7F&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", link, token2, token3)
 	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
 	if err != nil {
@@ -787,13 +776,13 @@ func solveCaptchaBySelectedMode(
 ) (string, error) {
 	switch getCaptchaMode() {
 	case "manual":
-		log.Printf("[STREAM %d] [КАПЧА] MANUAL: ручной WebView (attempt %d)", streamID, attempt)
+		log.Printf("[STREAM %d] [РљРђРџР§Рђ] MANUAL: СЂСѓС‡РЅРѕР№ WebView (attempt %d)", streamID, attempt)
 		return requestWebViewCaptcha(streamID, captchaErr, "manual", captchaManualWebViewTimeout)
 	case "wv":
-		log.Printf("[STREAM %d] [КАПЧА] WBV: режим из настроек Android (attempt %d)", streamID, attempt)
+		log.Printf("[STREAM %d] [РљРђРџР§Рђ] WBV: СЂРµР¶РёРј РёР· РЅР°СЃС‚СЂРѕРµРє Android (attempt %d)", streamID, attempt)
 		return requestWebViewCaptcha(streamID, captchaErr, "selected", captchaSelectedWebViewTimeout)
 	case "rjs":
-		log.Printf("[STREAM %d] [КАПЧА] RJS: Go v2 выбран в настройках (attempt %d)", streamID, attempt)
+		log.Printf("[STREAM %d] [РљРђРџР§Рђ] RJS: Go v2 РІС‹Р±СЂР°РЅ РІ РЅР°СЃС‚СЂРѕР№РєР°С… (attempt %d)", streamID, attempt)
 		token, solveErr := solveVkCaptchaV2Attempts(ctx, captchaErr, client, profile, savedProfile, anonToken, 2)
 		if solveErr == nil {
 			return token, nil
@@ -801,7 +790,7 @@ func solveCaptchaBySelectedMode(
 		if ctx.Err() != nil {
 			return "", solveErr
 		}
-		log.Printf("[STREAM %d] [КАПЧА] RJS: ошибка, fallback на WBV Auto: %v", streamID, solveErr)
+		log.Printf("[STREAM %d] [РљРђРџР§Рђ] RJS: РѕС€РёР±РєР°, fallback РЅР° WBV Auto: %v", streamID, solveErr)
 		return requestWebViewCaptcha(streamID, captchaErr, "auto", captchaAutoWebViewTimeout)
 	}
 
@@ -809,13 +798,13 @@ func solveCaptchaBySelectedMode(
 	// Go v2 attempts exhaust the session_token via captchaNotRobot API calls (BOT/rate_limit
 	// responses still consume the session), making the same token unusable for WBV Auto.
 	// WBV Auto uses VK's own JS which passes all bot-detection checks reliably.
-	// Single WBV Auto attempt — two attempts with the same session_token are useless:
+	// Single WBV Auto attempt вЂ” two attempts with the same session_token are useless:
 	// after the first times out or fails, the token is expired/invalidated by VK.
-	log.Printf("[STREAM %d] [КАПЧА] AUTO: WBV Auto (timeout %s, attempt %d)", streamID, captchaAutoWebViewTimeout, attempt)
+	log.Printf("[STREAM %d] [РљРђРџР§Рђ] AUTO: WBV Auto (timeout %s, attempt %d)", streamID, captchaAutoWebViewTimeout, attempt)
 
 	token, solveErr := requestWebViewCaptcha(streamID, captchaErr, "auto", captchaAutoWebViewTimeout)
 	if solveErr == nil {
-		log.Printf("[STREAM %d] [КАПЧА] AUTO: WBV Auto решил капчу", streamID)
+		log.Printf("[STREAM %d] [РљРђРџР§Рђ] AUTO: WBV Auto СЂРµС€РёР» РєР°РїС‡Сѓ", streamID)
 		return token, nil
 	}
 	if ctx.Err() != nil {
@@ -823,15 +812,15 @@ func solveCaptchaBySelectedMode(
 	}
 	lastErr := solveErr
 	if isWebViewCaptchaTimeout(solveErr) {
-		log.Printf("[STREAM %d] [КАПЧА] AUTO: WBV Auto timeout", streamID)
+		log.Printf("[STREAM %d] [РљРђРџР§Рђ] AUTO: WBV Auto timeout", streamID)
 	} else {
-		log.Printf("[STREAM %d] [КАПЧА] AUTO: WBV Auto ошибка: %v", streamID, solveErr)
+		log.Printf("[STREAM %d] [РљРђРџР§Рђ] AUTO: WBV Auto РѕС€РёР±РєР°: %v", streamID, solveErr)
 	}
 
-	log.Printf("[STREAM %d] [КАПЧА] AUTO: авто не прошло, открываем ручной WebView", streamID)
+	log.Printf("[STREAM %d] [РљРђРџР§Рђ] AUTO: Р°РІС‚Рѕ РЅРµ РїСЂРѕС€Р»Рѕ, РѕС‚РєСЂС‹РІР°РµРј СЂСѓС‡РЅРѕР№ WebView", streamID)
 	token, solveErr = requestWebViewCaptcha(streamID, captchaErr, "manual", captchaManualWebViewTimeout)
 	if solveErr == nil {
-		log.Printf("[STREAM %d] [КАПЧА] AUTO: ручной WebView решил капчу", streamID)
+		log.Printf("[STREAM %d] [РљРђРџР§Рђ] AUTO: СЂСѓС‡РЅРѕР№ WebView СЂРµС€РёР» РєР°РїС‡Сѓ", streamID)
 		return token, nil
 	}
 	if lastErr != nil {
@@ -871,7 +860,7 @@ func requestWebViewCaptcha(streamID int, captchaErr *VkCaptchaError, mode string
 		if strings.HasPrefix(lowerResult, "error:") {
 			return "", fmt.Errorf("webview captcha failed: %s", result)
 		}
-		log.Printf("[STREAM %d] [КАПЧА] WBV: %s solve succeeded", streamID, mode)
+		log.Printf("[STREAM %d] [РљРђРџР§Рђ] WBV: %s solve succeeded", streamID, mode)
 		return result, nil
 	case <-waitCtx.Done():
 		return "", fmt.Errorf("webview captcha timed out")
@@ -882,13 +871,13 @@ func isWebViewCaptchaTimeout(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "timed out")
 }
 
-// ─── GetCreds returns TURN credentials for a given stream ───
+// в”Ђв”Ђв”Ђ GetCreds returns TURN credentials for a given stream в”Ђв”Ђв”Ђ
 
 func GetCreds(ctx context.Context, link string, streamID int) (string, string, []string, error) {
 	return getVkCredsCached(ctx, link, streamID)
 }
 
-// ─── DNS dialer setup ───
+// в”Ђв”Ђв”Ђ DNS dialer setup в”Ђв”Ђв”Ђ
 
 var sysDNSServers []string
 
@@ -913,9 +902,9 @@ func setupGlobalResolver() {
 	yandexDNSServers := []string{"77.88.8.8:53", "77.88.8.1:53"}
 
 	if len(sysDNSServers) > 0 {
-		log.Printf("[DNS] resolver: yandex → sys-dns=%v → system (tcp-first)", sysDNSServers)
+		log.Printf("[DNS] resolver: yandex в†’ sys-dns=%v в†’ system (tcp-first)", sysDNSServers)
 	} else {
-		log.Printf("[DNS] resolver: yandex → system (tcp-first)")
+		log.Printf("[DNS] resolver: yandex в†’ system (tcp-first)")
 	}
 
 	tryDial := func(ctx context.Context, server string) (net.Conn, error) {

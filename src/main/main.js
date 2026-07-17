@@ -84,6 +84,26 @@ let apiQuietUntil = 0
 let pendingWgAfterCaptcha = false
 /** Выставляется внутри vpnConnect → requestApplyFromFile. */
 let requestApplyWgAfterCaptcha = null
+/** Flood control (VK error 9) — renderer каскад vkcalls→auto→manual. */
+let vkFloodEscalatePending = false
+
+function noteVkFloodFromLog(line) {
+  const m = String(line || '').toLowerCase()
+  if (
+    m.includes('legacy_escalate_captcha') ||
+    m.includes('flood_escalate_captcha') ||
+    m.includes('flood control') ||
+    m.includes('kind=flood')
+  ) {
+    vkFloodEscalatePending = true
+  }
+}
+
+function consumeVkFloodEscalate() {
+  const escalate = vkFloodEscalatePending
+  vkFloodEscalatePending = false
+  return { escalate }
+}
 
 const SERVER_IP_FALLBACK = '132.243.234.162'
 let sessionExcludeIPs = [SERVER_IP_FALLBACK]
@@ -394,6 +414,8 @@ function sendLog(line) {
   const trimmed = String(line || '').trim()
   if (!trimmed) return
 
+  noteVkFloodFromLog(trimmed)
+
   const parsed = parseLibclientLine(trimmed)
   if (parsed) {
     sendWdttLog(parsed)
@@ -423,7 +445,7 @@ function sendLog(line) {
   if (
     /\[КЛИЕНТ\]|\[STREAM|\[ГРУППА|\[VK Auth\]|FATAL|GETCONF|CAPTCHA|ошибка|error|timeout|зарегистрирован/i.test(trimmed)
   ) {
-    const isError = /error|ошиб|fail|timeout|FATAL/i.test(trimmed)
+    const isError = /error|ошиб|fail|timeout|FATAL|FLOOD_ESCALATE/i.test(trimmed)
     sendWdttLog({
       key: `raw_${trimmed.slice(0, 28).replace(/\d+/g, '#')}`,
       message: trimmed,
@@ -931,9 +953,14 @@ async function ensureNipIoBypassRoutes(sendLogFn = sendLog) {
 /**
  * Перед public HTTPS (fallback с туннеля / браузер): маршрут к VPS мимо WG.
  * Без этого full-tunnel + hairpin → ETIMEDOUT на nip.io и на 132.243.234.162:443.
+ * Не дёргать bypass чаще раза в 3с — иначе гонка маршрутов.
  */
+let lastPublicBypassAt = 0
 async function ensurePublicApiBypass(sendLogFn = sendLog) {
   if (!wgApplied || vpnBootstrapMode) return
+  const now = Date.now()
+  if (now - lastPublicBypassAt < 3000) return
+  lastPublicBypassAt = now
   try {
     await ensureNipIoBypassRoutes(sendLogFn)
   } catch (e) {
@@ -1560,6 +1587,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
 ipcMain.handle('vpn-connect', async (_, config) => {
   trace().enter('Main.vpnConnect', `bootstrap=${!!config?.is_bootstrap} n=${config?.stream_count ?? '?'}`)
+  vkFloodEscalatePending = false
   const wantBootstrap = !!config?.is_bootstrap
   if (vpnConnectInFlight) {
     sendLog('[VPN] connect: уже выполняется, без перезапуска')
@@ -1632,6 +1660,8 @@ ipcMain.handle('vpn-is-ready', async () => ({
   target: sessionTargetWorkers,
   min: minWorkersForTunnelReady(vpnBootstrapMode),
 }))
+
+ipcMain.handle('vpn-consume-flood-escalate', async () => consumeVkFloodEscalate())
 
 ipcMain.handle('app-version', () => app.getVersion())
 

@@ -23,12 +23,10 @@ const (
 	vkCallsAnonAPIVersion = "5.276"
 )
 
-// Ротация хостов: на Wi‑Fi DPI часто ломает только api.vk.me (poison/RST),
-// api.vk.ru / api.vk.com часто ещё живы.
+// Ротация хостов: api.vk.ru приоритет (VK уходит с .com); .me — fallback при DPI.
 var vkCallsAPIHosts = []string{
-	"api.vk.me",
 	"api.vk.ru",
-	"api.vk.com",
+	"api.vk.me",
 }
 
 var vkCallsProfile = Profile{
@@ -177,7 +175,7 @@ func getVKCredsViaVKCallsHost(ctx context.Context, link string, streamID int, ap
 	deviceID := uuid.New().String()
 	name := generateName()
 	profile := vkCallsProfile
-	linkURL := neturl.QueryEscape("https://vk.com/call/join/" + link)
+	linkURL := neturl.QueryEscape("https://vk.ru/call/join/" + link)
 	nameEnc := neturl.QueryEscape(name)
 
 	client, err := tlsclient.NewHttpClient(tlsclient.NewNoopLogger(),

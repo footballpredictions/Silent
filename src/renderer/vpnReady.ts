@@ -13,7 +13,9 @@ export async function waitVpnReady(
   if (!electron?.vpnConnect && !electron?.onVpnReady) return true
 
   const deadline = Date.now() + deadlineMs
+  const started = Date.now()
   let listenerOk: boolean | null = null
+  const legacy = String(vkAuthMode || '').toLowerCase() === 'legacy'
 
   if (electron.onVpnReady) {
     electron.onVpnReady((payload: boolean | { ok?: boolean; bootstrap?: boolean }) => {
@@ -30,6 +32,16 @@ export async function waitVpnReady(
       if (electron.vpnIsReady) {
         const r = await electron.vpnIsReady()
         if (isBootstrap ? r?.bootstrap : r?.ready && !r?.bootstrap) return true
+        // LEGACY_ESCALATE при 0 воркерах — не ждать полный timeout с n=63
+        if (
+          !legacy &&
+          Date.now() - started > 8_000 &&
+          !(r?.workers > 0) &&
+          electron.consumeFloodEscalate
+        ) {
+          const flood = await electron.consumeFloodEscalate()
+          if (flood?.escalate) return false
+        }
       }
     } catch {
       /* ignore */

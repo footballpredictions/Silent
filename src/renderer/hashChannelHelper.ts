@@ -1,5 +1,5 @@
 import { activeServerHashCount, getSavedHashItems } from './hashItemsStore'
-import { getVkCredStrategy, VK_CRED_AUTO, VK_CRED_MANUAL } from './vkCredStore'
+import { getEffectiveVkCredStrategy, isLegacyCaptchaStrategy as isLegacyFromStore } from './vkCredStore'
 
 export const WORKERS_PER_GROUP = 9
 export const MAX_WORKERS_PER_HASH = 27
@@ -167,8 +167,8 @@ function capHashes(hashes: string[] | undefined): string[] {
 }
 
 /** Авто/ручная капча → ровно 9 воркеров; VKCalls → ползунок / дефолт 63. */
-export function isLegacyCaptchaStrategy(strategy = getVkCredStrategy()): boolean {
-  return strategy === VK_CRED_AUTO || strategy === VK_CRED_MANUAL
+export function isLegacyCaptchaStrategy(strategy = getEffectiveVkCredStrategy()): boolean {
+  return isLegacyFromStore(strategy)
 }
 
 export function resolveWorkerCount(config: { vk_hashes?: string[]; stream_count?: number }): number {

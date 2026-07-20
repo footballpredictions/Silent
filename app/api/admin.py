@@ -1120,6 +1120,89 @@ async def set_theme(
     return {"message": "Theme updated"}
 
 
+@router.post("/theme/upload-home-bg")
+async def upload_home_bg(
+    file: UploadFile = File(...),
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload main-screen background image → /static/theme/home_bg.*"""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename")
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+        raise HTTPException(status_code=400, detail="Allowed: .jpg .jpeg .png .webp .gif")
+    static_dir = os.path.join(os.path.dirname(__file__), "..", "..", "static", "theme")
+    os.makedirs(static_dir, exist_ok=True)
+    # One canonical name so URL stays stable after replace
+    out_ext = ".jpg" if ext == ".jpeg" else ext
+    out_name = f"home_bg{out_ext}"
+    out_path = os.path.join(static_dir, out_name)
+    # Remove previous home_bg.* so only one file remains
+    for name in os.listdir(static_dir):
+        if name.startswith("home_bg."):
+            try:
+                os.remove(os.path.join(static_dir, name))
+            except OSError:
+                pass
+    content = await file.read()
+    if len(content) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Max size 8 MB")
+    with open(out_path, "wb") as f:
+        f.write(content)
+    url = f"/static/theme/{out_name}"
+    # Persist URL into theme so clients pick it up via ConfigSync
+    theme = await load_theme(db)
+    theme.home_bg_image_url = url
+    result = await db.execute(select(AppSetting).where(AppSetting.key == "theme"))
+    setting = result.scalar_one_or_none()
+    data = json.dumps(theme.model_dump())
+    if setting:
+        setting.value = data
+        setting.updated_at = datetime.utcnow()
+    else:
+        db.add(AppSetting(key="theme", value=data))
+    await db.commit()
+    return {"url": url, "message": "Home background uploaded"}
+
+
+@router.post("/theme/upload-logo")
+async def upload_logo(
+    file: UploadFile = File(...),
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload client logo → /static/logo.* and update theme.logo_url."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename")
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".svg"):
+        raise HTTPException(status_code=400, detail="Allowed: .jpg .png .webp .svg")
+    static_dir = os.path.join(os.path.dirname(__file__), "..", "..", "static")
+    os.makedirs(static_dir, exist_ok=True)
+    out_ext = ".jpg" if ext == ".jpeg" else ext
+    out_name = f"logo{out_ext}"
+    out_path = os.path.join(static_dir, out_name)
+    content = await file.read()
+    if len(content) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Max size 2 MB")
+    with open(out_path, "wb") as f:
+        f.write(content)
+    url = f"/static/{out_name}"
+    theme = await load_theme(db)
+    theme.logo_url = url
+    result = await db.execute(select(AppSetting).where(AppSetting.key == "theme"))
+    setting = result.scalar_one_or_none()
+    data = json.dumps(theme.model_dump())
+    if setting:
+        setting.value = data
+        setting.updated_at = datetime.utcnow()
+    else:
+        db.add(AppSetting(key="theme", value=data))
+    await db.commit()
+    return {"url": url, "message": "Logo uploaded"}
+
+
 # Promo codes
 class PromoCreateRequest(BaseModel):
     code: str

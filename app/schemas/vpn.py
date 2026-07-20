@@ -93,7 +93,9 @@ class ThemeResponse(BaseModel):
     toggle_on_color: str = "#000000"
     toggle_off_color: str = "#CCCCCC"
     font_family: str = "Inter"
-    logo_url: str = "/static/logo.svg"
+    logo_url: str = "/static/logo.png"
+    # Фон главного экрана (клиенты показывают как приглушённый ч/б, без blur)
+    home_bg_image_url: str = ""
     app_name: str = "Silent VPN"
     support_url: str = "https://t.me/silentvpn3?direct"
     telegram_channel_url: str = "https://t.me/silentvpn3"

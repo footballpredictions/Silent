@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react'
-import ClientPreview, { SCREEN_TABS, type PreviewScreen } from '../components/ClientPreview'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import ClientPreview, { SCREEN_TABS, type PreviewScreen, type ClientTheme } from '../components/ClientPreview'
 
 const defaultTheme = {
   primary_color: '#000000', background_color: '#FFFFFF', text_color: '#000000',
   accent_color: '#1A1A1A', toggle_on_color: '#000000', toggle_off_color: '#CCCCCC',
-  font_family: 'Inter', logo_url: '/static/logo.svg', app_name: 'Silent VPN',
+  font_family: 'Inter', logo_url: '/static/logo.png', home_bg_image_url: '',
+  app_name: 'Silent VPN',
   support_url: 'https://t.me/silentvpn3?direct', privacy_url: '', terms_url: '',
   telegram_channel_url: 'https://t.me/silentvpn3',
   telegram_proxy_url: '',
@@ -52,10 +53,11 @@ type Theme = typeof defaultTheme
 
 /** Какие поля темы влияют на каждый экран предпросмотра */
 const SCREEN_HINTS: Partial<Record<PreviewScreen, string>> = {
-  login: 'Стартовый экран: bootstrap VPN автоматически (хеш в сборке). Табы «Войти» / «Регистрация». Поле промо/реф на регистрации.',
+  login: 'Стартовый экран: bootstrap VPN автоматически (хеш в сборке). Табы «Войти» / «Регистрация». Поле промо/реф на регистрации. Логотип.',
   login_forgot: 'Экран из приложения после «Забыли пароль?».',
   login_expired: 'Панель при истечении 2 мин bootstrap. Тексты пока в коде клиентов.',
   login_reset_web: 'HTML-страница из письма — открывается в браузере, не в приложении.',
+  main: 'Главный экран: цвета, тумблер, логотип, фон. Лого и фон картинки пока только в debug PC/Android — release игнорирует. Переключатель тёмной темы справа — только превью.',
   menu: 'Боковое меню: фон, текст, акцент, шрифт. Пункт «Бонусы». «Ускорить Telegram» если задан proxy URL.',
   subscription: 'Тарифы + оплата (YuMoney в браузере): один флоу для PC/Android/iOS. Основной цвет (кнопки), фон, текст, тексты ожидания/успеха/ошибки оплаты.',
   exceptions: 'Список приложений (Android): фон, текст, основной цвет.',
@@ -65,18 +67,56 @@ const SCREEN_HINTS: Partial<Record<PreviewScreen, string>> = {
   about: 'О сервисе: фон, текст. Ссылки — политика и условия в «Главная».',
 }
 
+function invertHex(hex: string, fallback: string): string {
+  const h = String(hex || '').replace('#', '')
+  if (h.length !== 6) return fallback
+  const n = parseInt(h, 16)
+  if (Number.isNaN(n)) return fallback
+  const r = 255 - ((n >> 16) & 255)
+  const g = 255 - ((n >> 8) & 255)
+  const b = 255 - (n & 255)
+  const c = (x: number) => x.toString(16).padStart(2, '0')
+  return `#${c(r)}${c(g)}${c(b)}`
+}
+
+function pick(darkVal: string | undefined, lightVal: string, fallback: string): string {
+  const d = (darkVal || '').trim()
+  return d || fallback || lightVal
+}
+
+/** Только для превью: подставляет dark_* как обычные поля (как в клиентах). */
+function themeForPreview(theme: Theme, dark: boolean): ClientTheme {
+  if (!dark) return theme as ClientTheme
+  return {
+    ...theme,
+    background_color: pick(theme.dark_background_color, theme.background_color, '#0B0B0F'),
+    text_color: pick(theme.dark_text_color, theme.text_color, '#F5F5F7'),
+    primary_color: pick(theme.dark_primary_color, theme.primary_color, invertHex(theme.primary_color, '#FFFFFF')),
+    accent_color: pick(theme.dark_accent_color, theme.accent_color, invertHex(theme.accent_color, '#E5E7EB')),
+    toggle_on_color: pick(theme.dark_toggle_on_color, theme.toggle_on_color, '#FFFFFF'),
+    toggle_off_color: pick(theme.dark_toggle_off_color, theme.toggle_off_color, '#3F3F46'),
+    update_bar_background_color: pick(theme.dark_update_bar_background_color, theme.update_bar_background_color, theme.update_bar_background_color),
+    update_bar_text_color: pick(theme.dark_update_bar_text_color, theme.update_bar_text_color, theme.update_bar_text_color),
+    update_bar_progress_color: pick(theme.dark_update_bar_progress_color, theme.update_bar_progress_color, theme.update_bar_progress_color),
+    login_link_color: pick(theme.dark_login_link_color, theme.login_link_color, '#7DD3FC'),
+  } as ClientTheme
+}
+
 export default function ThemePage({ token }: { token: string }) {
   const [theme, setTheme] = useState<Theme>(defaultTheme)
   const [screen, setScreen] = useState<PreviewScreen>('login')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
+  const [previewDark, setPreviewDark] = useState(false)
+  const [uploading, setUploading] = useState<'logo' | 'home_bg' | null>(null)
+  const logoInputRef = useRef<HTMLInputElement>(null)
+  const homeBgInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     fetch('/api/admin/theme', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.json())
       .then(d => {
         const merged = { ...defaultTheme, ...d }
-        // Устаревшие поля шага 1 не показываем в форме — при сохранении не отправляем
         const {
           login_step1_title: _a,
           login_step1_instruction: _b,
@@ -93,6 +133,8 @@ export default function ThemePage({ token }: { token: string }) {
       })
   }, [token])
 
+  const previewTheme = useMemo(() => themeForPreview(theme, previewDark), [theme, previewDark])
+
   const save = async () => {
     setSaving(true)
     setMsg('')
@@ -102,11 +144,41 @@ export default function ThemePage({ token }: { token: string }) {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(theme),
       })
-      setMsg('Тема сохранена — клиенты подтянут при следующем входе')
+      setMsg('Тема сохранена — клиенты подтянут при следующем sync')
     } catch {
       setMsg('Ошибка')
     }
     setSaving(false)
+  }
+
+  const uploadAsset = async (kind: 'logo' | 'home_bg', file: File) => {
+    setUploading(kind)
+    setMsg('')
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      const endpoint = kind === 'logo' ? '/api/admin/theme/upload-logo' : '/api/admin/theme/upload-home-bg'
+      const r = await fetch(endpoint, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      })
+      const d = await r.json()
+      if (!r.ok) {
+        setMsg(d.detail || 'Ошибка загрузки')
+        return
+      }
+      if (kind === 'logo') {
+        setTheme(t => ({ ...t, logo_url: `${d.url}?t=${Date.now()}` }))
+      } else {
+        setTheme(t => ({ ...t, home_bg_image_url: `${d.url}?t=${Date.now()}` }))
+      }
+      setMsg(kind === 'logo' ? 'Логотип загружен и сохранён в теме' : 'Фон загружен и сохранён в теме')
+    } catch {
+      setMsg('Ошибка загрузки')
+    } finally {
+      setUploading(null)
+    }
   }
 
   const field = (label: string, key: keyof Theme) => (
@@ -116,7 +188,7 @@ export default function ThemePage({ token }: { token: string }) {
         <div className="flex items-center gap-2">
           <input
             type="color"
-            value={theme[key]}
+            value={theme[key] || '#000000'}
             onChange={e => setTheme({ ...theme, [key]: e.target.value })}
             className="w-10 h-10 rounded bg-transparent border border-[#2a2a2a] cursor-pointer"
           />
@@ -185,6 +257,29 @@ export default function ThemePage({ token }: { token: string }) {
             {field('Подпись поля промо/реф', 'register_referral_or_promo_label')}
             {fieldTextarea('Подсказка промо/реф', 'register_referral_or_promo_hint')}
             {colorFields()}
+            <div>
+              <label className="text-xs text-[#666] mb-1 block">Логотип (URL или загрузка)</label>
+              {field('URL логотипа', 'logo_url')}
+              <input
+                ref={logoInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                className="hidden"
+                onChange={e => {
+                  const f = e.target.files?.[0]
+                  if (f) void uploadAsset('logo', f)
+                  e.target.value = ''
+                }}
+              />
+              <button
+                type="button"
+                disabled={uploading === 'logo'}
+                onClick={() => logoInputRef.current?.click()}
+                className="mt-2 w-full border border-[#333] rounded-lg py-2 text-xs text-[#ccc] hover:border-[#555] disabled:opacity-50"
+              >
+                {uploading === 'logo' ? 'Загрузка…' : 'Загрузить логотип'}
+              </button>
+            </div>
           </div>
         )
       case 'login_forgot':
@@ -215,6 +310,7 @@ export default function ThemePage({ token }: { token: string }) {
       case 'main':
         return (
           <div className="space-y-4">
+            <p className="text-xs text-[#666]">{SCREEN_HINTS.main}</p>
             {field('Название приложения', 'app_name')}
             {field('Основной цвет', 'primary_color')}
             {field('Фон', 'background_color')}
@@ -223,7 +319,47 @@ export default function ThemePage({ token }: { token: string }) {
             {field('Тумблер (вкл)', 'toggle_on_color')}
             {field('Тумблер (выкл)', 'toggle_off_color')}
             {field('Шрифт', 'font_family')}
-            <p className="text-xs text-[#888] pt-2">Тёмная тема (опционально — пусто = клиент сам инвертирует)</p>
+            <div className="rounded-lg border border-[#2a2a2a] bg-[#0d0d0d] p-3 space-y-3">
+              <p className="text-xs text-[#888]">Фон главного экрана — любая картинка; в debug-клиентах как приглушённый ч/б (без blur). Release пока не показывает.</p>
+              {field('URL фона', 'home_bg_image_url')}
+              {theme.home_bg_image_url ? (
+                <div className="relative rounded-lg overflow-hidden border border-[#333] h-24">
+                  <img
+                    src={theme.home_bg_image_url}
+                    alt=""
+                    className="w-full h-full object-cover"
+                    style={{ filter: 'grayscale(100%)', opacity: 0.55 }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setTheme(t => ({ ...t, home_bg_image_url: '' }))}
+                    className="absolute top-2 right-2 text-[10px] px-2 py-1 rounded bg-black/70 text-white"
+                  >
+                    Убрать
+                  </button>
+                </div>
+              ) : null}
+              <input
+                ref={homeBgInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                className="hidden"
+                onChange={e => {
+                  const f = e.target.files?.[0]
+                  if (f) void uploadAsset('home_bg', f)
+                  e.target.value = ''
+                }}
+              />
+              <button
+                type="button"
+                disabled={uploading === 'home_bg'}
+                onClick={() => homeBgInputRef.current?.click()}
+                className="w-full border border-[#333] rounded-lg py-2 text-xs text-[#ccc] hover:border-[#555] disabled:opacity-50"
+              >
+                {uploading === 'home_bg' ? 'Загрузка…' : 'Загрузить картинку фона'}
+              </button>
+            </div>
+            <p className="text-xs text-[#888] pt-2">Тёмная тема (опционально — пусто = клиент сам инвертирует). Пользователь переключает в приложении; справа — только превью.</p>
             {field('Тёмный фон', 'dark_background_color')}
             {field('Тёмный текст', 'dark_text_color')}
             {field('Тёмный основной', 'dark_primary_color')}
@@ -322,6 +458,7 @@ export default function ThemePage({ token }: { token: string }) {
         <h1 className="text-xl font-bold">Оформление клиентов</h1>
         <p className="text-[#555] text-sm mt-1">
           Вход без шага VK — bootstrap в сборке. Выберите экран: слева настройки, справа предпросмотр.
+          {' '}Логотип и фон главной сейчас применяются только в debug PC/Android.
         </p>
       </div>
 
@@ -359,9 +496,26 @@ export default function ThemePage({ token }: { token: string }) {
         </div>
 
         <div className="bg-[#111] border border-[#222] rounded-xl p-6">
-          <h2 className="font-semibold mb-1 text-sm">Предпросмотр</h2>
-          <p className="text-xs text-[#666] mb-4">{activeLabel}</p>
-          <ClientPreview theme={theme} screen={screen} onScreenChange={setScreen} hideTabs />
+          <div className="flex items-center justify-between mb-1 gap-2">
+            <h2 className="font-semibold text-sm">Предпросмотр</h2>
+            <button
+              type="button"
+              onClick={() => setPreviewDark(d => !d)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                previewDark
+                  ? 'bg-white text-black border-white'
+                  : 'bg-[#1a1a1a] text-[#aaa] border-[#333] hover:border-[#555]'
+              }`}
+              title="Только превью — в клиенте пользователь переключает сам"
+            >
+              {previewDark ? 'Тёмная' : 'Светлая'}
+            </button>
+          </div>
+          <p className="text-xs text-[#666] mb-4">
+            {activeLabel}
+            {previewDark ? ' · превью тёмной темы' : ''}
+          </p>
+          <ClientPreview theme={previewTheme} screen={screen} onScreenChange={setScreen} hideTabs />
         </div>
       </div>
     </div>

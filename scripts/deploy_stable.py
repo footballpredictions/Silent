@@ -62,6 +62,15 @@ if fix_script.is_file():
     sftp.putfo(io.BytesIO(FIX_SH.encode()), "/tmp/fix_tunnel_dnat.sh")
     print("upload /tmp/fix_tunnel_dnat.sh")
 
+# Theme assets (logo + home_bg dir) — volume ./static:/app/static
+static_dir = BACKEND_ROOT / "static"
+client.exec_command(f"mkdir -p {REMOTE}/static/theme")
+for name in ("logo.png", "logo-32.png", "vk-agent-oauth.html"):
+    lp = static_dir / name
+    if lp.is_file():
+        sftp.put(str(lp), f"{REMOTE}/static/{name}")
+        print(f"static/{name}")
+
 sftp.close()
 
 script = f"""#!/bin/bash

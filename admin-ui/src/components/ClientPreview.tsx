@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import SilentLogo from './SilentLogo'
 
 export type ClientTheme = {
   primary_color: string
@@ -38,6 +39,7 @@ export type ClientTheme = {
   privacy_url?: string
   terms_url?: string
   logo_url?: string
+  home_bg_image_url?: string
   menu_bonuses_label?: string
   bonuses_title?: string
   bonuses_intro_text?: string
@@ -97,7 +99,7 @@ export const SCREEN_TABS: { id: PreviewScreen; label: string }[] = [
   { id: 'about', label: 'О сервисе' },
 ]
 
-const MENU_ITEMS: { id: PreviewScreen; label: string; badge?: string }[] = [
+const MENU_ITEMS_BASE: { id: PreviewScreen; label: string; badge?: string }[] = [
   { id: 'subscription', label: 'Подписка', badge: 'Активна' },
   { id: 'exceptions', label: 'Исключения приложений' },
   { id: 'bonuses', label: 'Бонусы' },
@@ -151,6 +153,9 @@ export default function ClientPreview({
     return 0.299 * r + 0.587 * g + 0.114 * b
   }
   const previewDark = hexLum(bg) < 0.45
+  const hairline = previewDark ? '#2A2A32' : '#F3F4F6'
+  const hairlineStrong = previewDark ? '#3F3F46' : '#E5E7EB'
+  const surfaceSoft = previewDark ? '#1F1F26' : '#f3f4f6'
   const planBtnBg = previewDark ? '#ffffff' : (theme.primary_color || fg)
   const planBtnFg = previewDark ? '#000000' : bg
   const updateBg = theme.update_bar_background_color || '#2563EB'
@@ -165,9 +170,16 @@ export default function ClientPreview({
   const linkColor = theme.login_link_color || '#4680C2'
   const isLoginPreview =
     screen === 'login' || screen === 'login_forgot' || screen === 'login_expired'
+  const appTitle = ((theme.app_name || 'Silent VPN').trim() || 'Silent VPN').toUpperCase()
+  const homeBgUrl = (theme.home_bg_image_url || '').trim()
+  const menuItems = MENU_ITEMS_BASE.map(item =>
+    item.id === 'bonuses'
+      ? { ...item, label: theme.menu_bonuses_label || item.label }
+      : item,
+  )
 
   const statusText = connected ? 'Подключено' : 'Отключено'
-  const statusColor = connected ? green : muted
+  const statusColor = connected ? (previewDark ? '#4ADE80' : green) : muted
 
   const goTo = (s: PreviewScreen) => setScreen(s)
 
@@ -186,17 +198,40 @@ export default function ClientPreview({
     </div>
   )
 
-  const loginLogo = () => (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 20 }}>
-      <div style={{
-        width: 48, height: 48, borderRadius: '50%',
-        background: `${fg}12`, marginBottom: 10,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: 10, fontWeight: 700, color: fg, letterSpacing: 1,
-      }}>SV</div>
-      <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 3 }}>SILENT VPN</div>
-    </div>
-  )
+  const resolveLogoSrc = () => {
+    const raw = (theme.logo_url || '').trim()
+    if (!raw) return '/logo.png'
+    if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('data:')) return raw
+    // Admin Vite public: /logo.png; API static: /static/logo.png
+    if (raw === '/static/logo.png' || raw.startsWith('/static/logo.png?')) return '/logo.png'
+    if (raw.startsWith('/static/logo.') || raw.startsWith('/static/logo?')) {
+      const ext = raw.split('?')[0].split('.').pop()
+      if (ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp') return '/logo.png'
+    }
+    return raw
+  }
+
+  const loginLogo = () => {
+    const src = resolveLogoSrc()
+    const useImg = /\.(png|jpe?g|webp|svg|gif)(\?|$)/i.test(src) || src.startsWith('data:')
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 20 }}>
+        {useImg ? (
+          <img
+            src={src}
+            alt=""
+            width={48}
+            height={48}
+            style={{ width: 48, height: 48, borderRadius: 14, objectFit: 'cover', marginBottom: 10 }}
+            onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+          />
+        ) : (
+          <div style={{ marginBottom: 10 }}><SilentLogo size={48} /></div>
+        )}
+        <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 3 }}>{appTitle}</div>
+      </div>
+    )
+  }
 
   const themeCheckbox = (checked = false) => (
     <span style={{
@@ -210,11 +245,11 @@ export default function ClientPreview({
   const menuDrawer = () => (
     <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 10 }}>
       <div style={{
-        width: 208, background: bg, borderRight: '0.5px solid #E5E7EB',
+        width: 208, background: bg, borderRight: `0.5px solid ${hairlineStrong}`,
         display: 'flex', flexDirection: 'column',
       }}>
         <div style={{
-          padding: 16, borderBottom: '0.5px solid #F3F4F6',
+          padding: 16, borderBottom: `0.5px solid ${hairline}`,
           display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
         }}>
           <div>
@@ -226,7 +261,7 @@ export default function ClientPreview({
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: fg, fontSize: 14, padding: 0 }}>✕</button>
         </div>
         <div style={{ flex: 1, padding: '4px 8px', overflow: 'auto' }}>
-          {MENU_ITEMS.map(item => (
+          {menuItems.map(item => (
             <button key={item.id} type="button" onClick={() => goTo(item.id)}
               style={{
                 width: '100%', textAlign: 'left', padding: '10px 12px', fontSize: 13,
@@ -276,11 +311,11 @@ export default function ClientPreview({
       {!isLoginPreview && screen !== 'login_reset_web' && (
         <div style={{
           height: 36, display: 'flex', alignItems: 'center', padding: '0 12px',
-          borderBottom: '0.5px solid #F3F4F6',
+          borderBottom: `0.5px solid ${hairline}`,
         }}>
           <button type="button" onClick={() => goTo('menu')}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: fg, fontSize: 14, padding: 0 }}>☰</button>
-          <div style={{ flex: 1, textAlign: 'center', fontWeight: 700, fontSize: 12, letterSpacing: 4 }}>SILENT VPN</div>
+          <div style={{ flex: 1, textAlign: 'center', fontWeight: 700, fontSize: 12, letterSpacing: 4 }}>{appTitle}</div>
           <div style={{ width: 16 }} />
         </div>
       )}
@@ -402,14 +437,30 @@ export default function ClientPreview({
 
       {showMain && (
         <>
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24 }}>
-            <div style={{ fontSize: 12, fontWeight: 500, letterSpacing: 2, color: statusColor, textTransform: 'uppercase' }}>
+          <div style={{
+            flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24,
+            position: 'relative', overflow: 'hidden',
+          }}>
+            {homeBgUrl ? (
+              <img
+                src={homeBgUrl}
+                alt=""
+                style={{
+                  position: 'absolute', inset: 0, width: '100%', height: '100%',
+                  objectFit: 'cover',
+                  filter: 'grayscale(100%) brightness(0.92) contrast(0.95)',
+                  opacity: previewDark ? 0.22 : 0.18,
+                  pointerEvents: 'none',
+                }}
+              />
+            ) : null}
+            <div style={{ position: 'relative', fontSize: 12, fontWeight: 500, letterSpacing: 2, color: statusColor, textTransform: 'uppercase' }}>
               {statusText}
             </div>
             <button type="button" onClick={() => setConnected(c => !c)} style={{
               width: 120, height: 60, borderRadius: 30, border: 'none', cursor: 'pointer',
               background: connected ? theme.toggle_on_color : theme.toggle_off_color,
-              position: 'relative', padding: 0,
+              position: 'relative', padding: 0, zIndex: 1,
             }}>
               <div style={{
                 position: 'absolute', top: 4,
@@ -421,7 +472,7 @@ export default function ClientPreview({
               }} />
             </button>
           </div>
-          <div style={{ borderTop: '0.5px solid #F3F4F6', padding: 16, textAlign: 'center' }}>
+          <div style={{ borderTop: `0.5px solid ${hairline}`, padding: 16, textAlign: 'center', position: 'relative', background: bg }}>
             {showUpdateBar ? (
               <button type="button" style={{
                 width: '100%', borderRadius: 12, border: 'none', cursor: 'default',
@@ -621,10 +672,10 @@ export default function ClientPreview({
             ].map(({ label, url }) => (
               <div key={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
                 <div style={{
-                  width: 48, height: 48, borderRadius: 16, background: '#f3f4f6',
+                  width: 48, height: 48, borderRadius: 16, background: surfaceSoft,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}>
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="#000">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill={fg}>
                     <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z" />
                   </svg>
                 </div>

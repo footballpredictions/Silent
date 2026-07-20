@@ -534,6 +534,20 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-20 — Оформление: деплой + лого/фон только debug
+
+- Логотип (`logo_url`) и фон главной (`home_bg_image_url`) применяются **только в debug** PC/Android; release игнорирует.
+- Деплой backend (theme API + admin-ui + static logo) без push.
+
+### 2026-07-20 — Оформление: лого, dark-превью, ч/б фон главной, debug radio
+
+- **Админка «Оформление»:** вместо круга «SV» — логотип (SilentLogo / `logo_url`); переключатель Светлая/Тёмная только для превью (пользователь в клиенте сам); на «Главная» — загрузка любой картинки фона.
+- **Backend:** `ThemeResponse.home_bg_image_url`; `POST /api/admin/theme/upload-home-bg` и `upload-logo` (сразу пишут URL в theme + bump revision); default `logo_url` → `/static/logo.png`.
+- **Клиенты PC/Android:** фон главной — grayscale + opacity ~0.18–0.22, без blur; лого из `logo_url` на логине; ConfigSync уже тянет theme.
+- **PC debug «Режим VK-кредов»:** радиокнопки и «Применить» в цветах темы (не синие системные).
+- **Android debug:** `RadioButton` selected/unselected = `fg` темы.
+- **iOS:** поле `home_bg_image_url` в `ThemeData` (рендер фона — когда UI догонит).
+
 ### 2026-07-20 — Админка устройства: ПК=«ПК», модель телефона, анти-дубли
 
 - ПК всегда «ПК» (поле имени убрано). Телефон: Client Hints / UA; если браузер скрыл модель — поле один раз + localStorage.

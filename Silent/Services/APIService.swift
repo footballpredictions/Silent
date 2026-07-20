@@ -53,6 +53,7 @@ struct ThemeData: Decodable {
     var toggle_off_color: String = "#CCCCCC"
     var font_family: String = "Inter"
     var logo_url: String = ""
+    var home_bg_image_url: String = ""
     var app_name: String = "Silent"
     var support_url: String = "https://t.me/silentvpn3?direct"
     var telegram_channel_url: String = "https://t.me/silentvpn3"

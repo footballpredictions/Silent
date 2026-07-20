@@ -984,11 +984,12 @@ export default function MainScreen({
   const statusGlow = needsNeonGlow(statusColor, palette.dark) ? neonTextShadow(statusColor) : undefined
   const localOnline = connected || connecting || disconnecting
   const homeBgSrc = isDevBuild
-    ? resolveThemeAssetUrl(
-        clientTheme?.home_bg_image_url,
-        getPublicApiBaseUrl() || getServerUrl() || '',
-      )
+    ? resolveThemeAssetUrl(clientTheme?.home_bg_image_url)
     : ''
+  const [homeBgFailed, setHomeBgFailed] = useState(false)
+  useEffect(() => {
+    setHomeBgFailed(false)
+  }, [homeBgSrc])
 
   return (
     <div className="relative flex flex-col h-full overflow-hidden" style={{ background: bg, color: fg, fontFamily }}>
@@ -1026,15 +1027,16 @@ export default function MainScreen({
       </div>
 
       <div className="flex-1 flex flex-col items-center justify-center pb-16 gap-6 px-4 relative overflow-hidden">
-        {homeBgSrc ? (
+        {homeBgSrc && !homeBgFailed ? (
           <img
             src={homeBgSrc}
             alt=""
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none select-none"
             style={{
-              filter: 'grayscale(100%) brightness(0.92) contrast(0.95)',
-              opacity: palette.dark ? 0.22 : 0.18,
+              filter: 'grayscale(100%) brightness(0.95) contrast(0.92)',
+              opacity: palette.dark ? 0.38 : 0.32,
             }}
+            onError={() => setHomeBgFailed(true)}
           />
         ) : null}
         <div className="text-center relative z-[1]">

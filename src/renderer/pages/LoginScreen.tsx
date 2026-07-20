@@ -12,8 +12,6 @@ import api, {
   getRememberedEmail,
   getRememberedPassword,
   saveRememberMe,
-  getPublicApiBaseUrl,
-  getServerUrl,
 } from '../api'
 import {
   cacheVpnConfig,
@@ -361,7 +359,7 @@ export default function LoginScreen({
             size={56}
             imageUrl={
               isDebugBuild
-                ? resolveThemeAssetUrl(theme?.logo_url, getPublicApiBaseUrl() || getServerUrl() || '')
+                ? resolveThemeAssetUrl(theme?.logo_url)
                 : undefined
             }
           />

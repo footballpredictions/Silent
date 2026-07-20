@@ -129,14 +129,43 @@ export function resolveAppName(raw?: string | null): string {
   return name
 }
 
-/** Absolute URL for theme assets (/static/..., relative paths). */
-export function resolveThemeAssetUrl(path: string | undefined | null, apiBase: string): string {
-  const raw = (path || '').trim()
+/** Absolute URL for theme assets (/static/...). Always use nip.io host — TLS cert is for nip.io, not raw IP. */
+export const THEME_ASSET_PUBLIC_BASE = 'https://132-243-234-162.nip.io'
+
+export function resolveThemeAssetUrl(
+  path: string | undefined | null,
+  _apiBase?: string,
+): string {
+  let raw = (path || '').trim()
   if (!raw) return ''
-  if (/^(https?:|data:|blob:)/i.test(raw)) return raw
-  const base = (apiBase || '').replace(/\/$/, '')
-  if (!base) return raw
-  return raw.startsWith('/') ? `${base}${raw}` : `${base}/${raw}`
+  // Drop cache-bust query from admin preview; keep path only for static files
+  const q = raw.indexOf('?')
+  const pathOnly = q >= 0 ? raw.slice(0, q) : raw
+  const query = q >= 0 ? raw.slice(q) : ''
+
+  if (/^(data:|blob:)/i.test(pathOnly)) return raw
+  if (/^https?:\/\//i.test(pathOnly)) {
+    try {
+      const u = new URL(pathOnly)
+      // Rewrite IP / wrong host → nip.io so Electron/Android TLS works
+      if (
+        u.hostname === '132.243.234.162' ||
+        u.hostname === '132-243-234-162.nip.io' ||
+        u.pathname.startsWith('/static/')
+      ) {
+        if (u.hostname === '132.243.234.162') {
+          u.hostname = '132-243-234-162.nip.io'
+          u.protocol = 'https:'
+        }
+        return `${u.origin}${u.pathname}${query || u.search}`
+      }
+      return raw
+    } catch {
+      return raw
+    }
+  }
+  const rel = pathOnly.startsWith('/') ? pathOnly : `/${pathOnly}`
+  return `${THEME_ASSET_PUBLIC_BASE}${rel}${query}`
 }
 
 export type AppearanceMode = 'light' | 'dark'

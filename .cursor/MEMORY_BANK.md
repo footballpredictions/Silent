@@ -534,6 +534,28 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-20 — Админка устройства: ПК=«ПК», модель телефона, анти-дубли
+
+- ПК всегда «ПК» (поле имени убрано). Телефон: Client Hints / UA; если браузер скрыл модель — поле один раз + localStorage.
+- Дубли: merge token↔fingerprint, collapse same UA+IP+type, dedupe при GET `/api/admin/sessions`.
+- Accept-CH для `Sec-CH-UA-Model`. MFA 2 мин + resend, глаз пароля — без изменений.
+
+### 2026-07-20 — Админка MFA: модель телефона / имя ПК, глаз пароля, 2 мин + resend
+
+- Устройства: телефон — модель (Client Hints / UA); ПК — было имя компьютера (отменено → снова «ПК»).
+- Логин: переключатель видимости пароля.
+- MFA: TTL **2 минуты**, `POST /api/auth/admin/mfa/resend`.
+- Деплой: `admin-ui` + `deploy_stable.py`.
+
+### 2026-07-20 — Админка: MFA по почте + trusted devices + один URL
+
+- Вход: пароль → код на `ADMIN_MFA_EMAIL` (`silent27@bk.ru`) → JWT с серверной сессией (`jti`). Запомненное устройство (`device_token`) пропускает MFA.
+- Меню щита у логотипа: активные сессии и trusted devices, отзыв (DELETE `/api/admin/sessions|devices`).
+- **Только** `Host: ADMIN_PUBLIC_HOST` (`132-243-234-162.nip.io`): UI + `/api/admin/*` + `/api/auth/admin/*`. Tunnel `10.66.66.1` для админки → **404** (клиентский VPN API через tunnel без изменений).
+- UI: «Запомнить логин» / «Запомнить это устройство», шаг ввода кода.
+- Env на VPS: `ADMIN_MFA_EMAIL`, `ADMIN_PUBLIC_HOST`. Деплой `deploy_stable` + `restore_api_container` (mkdir перед `docker cp` для новых пакетов).
+- **Следствие для PC/Android:** пункт «открыть админку» через `10.66.66.1` больше не работает — нужен публичный nip.io (при VPN+whitelist ISP может резать; отдельный фикс клиентов).
+
 ### 2026-07-17 — PC: админка «через время» снова не открывается при VPN
 
 - В логе нормален `[WG] Bypass API: 132.243…` — это для app API/peer, **не** для браузерной админки.

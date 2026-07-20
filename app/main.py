@@ -26,6 +26,31 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text(
+            "ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS label VARCHAR(128) NOT NULL DEFAULT ''"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS client_platform VARCHAR(64)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS client_mobile BOOLEAN"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS device_fingerprint VARCHAR(128)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE admin_trusted_devices ADD COLUMN IF NOT EXISTS device_fingerprint VARCHAR(128)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE admin_trusted_devices ADD COLUMN IF NOT EXISTS device_type VARCHAR(32) NOT NULL DEFAULT 'pc'"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE admin_trusted_devices ALTER COLUMN token_hash DROP NOT NULL"
+        ))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_admin_trusted_devices_fingerprint "
+            "ON admin_trusted_devices (device_fingerprint) WHERE device_fingerprint IS NOT NULL"
+        ))
+        await conn.execute(text(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS vk_user_id BIGINT"
         ))
         await conn.execute(text(
@@ -377,6 +402,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Admin UI/API only on ADMIN_PUBLIC_HOST (not via tunnel 10.66.66.1)
+from app.middleware.admin_host_guard import AdminHostGuardMiddleware
+
+app.add_middleware(AdminHostGuardMiddleware)
 
 # API routers
 from app.api.auth import router as auth_router

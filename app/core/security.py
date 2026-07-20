@@ -21,9 +21,15 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-def create_access_token(subject: Any, expires_delta: timedelta | None = None) -> str:
+def create_access_token(
+    subject: Any,
+    expires_delta: timedelta | None = None,
+    jti: str | None = None,
+) -> str:
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
-    payload = {"sub": str(subject), "exp": expire, "type": "access"}
+    payload: dict = {"sub": str(subject), "exp": expire, "type": "access"}
+    if jti:
+        payload["jti"] = jti
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 

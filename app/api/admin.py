@@ -14,15 +14,83 @@ from typing import Optional
 
 from app.database import get_db
 from app.models import User, Subscription, Device, VkHash, AppSetting, PromoCode, Payment, VkLinkSession, ReferralReward
-from app.core.deps import get_admin_credentials
+from app.core.deps import get_admin_credentials, get_admin_session_jti
 from app.config import settings
 from app.schemas.vpn import ThemeResponse
 from app.services.theme_settings import load_theme
 from app.services.system_info import get_cpu_info
 from app.services.proc_stats import read_network_load
 from app.services import update_service
+from app.services import admin_auth_service
+import uuid as uuid_mod
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@router.get("/sessions")
+async def list_admin_sessions(
+    _: bool = Depends(get_admin_credentials),
+    current_jti: str | None = Depends(get_admin_session_jti),
+    db: AsyncSession = Depends(get_db),
+):
+    """Trusted admin devices (one row per phone/PC), like user devices."""
+    sessions = await admin_auth_service.list_admin_sessions(db, current_jti)
+    return {"sessions": sessions, "devices": sessions}
+
+
+@router.post("/logout")
+async def admin_logout(
+    _: bool = Depends(get_admin_credentials),
+    current_jti: str | None = Depends(get_admin_session_jti),
+    db: AsyncSession = Depends(get_db),
+):
+    """Выход: закрыть текущую сессию, trusted device оставить."""
+    await admin_auth_service.revoke_session_by_jti(db, current_jti, revoke_device=False)
+    return {"ok": True}
+
+
+@router.delete("/sessions/{session_id}")
+async def revoke_admin_session(
+    session_id: str,
+    _: bool = Depends(get_admin_credentials),
+    current_jti: str | None = Depends(get_admin_session_jti),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        sid = uuid_mod.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid session id")
+    from sqlalchemy import select
+    from app.models.admin_auth import AdminSession
+    res = await db.execute(select(AdminSession).where(AdminSession.id == sid))
+    target = res.scalar_one_or_none()
+    was_current = bool(target and current_jti and target.token_jti == current_jti)
+    # Удаление из меню = забыть устройство целиком (как у пользователей)
+    if target and target.device_id:
+        ok = await admin_auth_service.revoke_trusted_device(db, target.device_id)
+    else:
+        ok = await admin_auth_service.revoke_admin_session(db, sid, revoke_device=True)
+        if not ok:
+            ok = await admin_auth_service.revoke_trusted_device(db, sid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True, "was_current": was_current}
+
+
+@router.delete("/devices/{device_id}")
+async def revoke_admin_device(
+    device_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        did = uuid_mod.UUID(device_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid device id")
+    ok = await admin_auth_service.revoke_trusted_device(db, did)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return {"ok": True}
 
 
 def _utc_iso(dt: datetime | None) -> str | None:

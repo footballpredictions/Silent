@@ -46,6 +46,14 @@ function App() {
   }
 
   const handleLogout = useCallback(() => {
+    const t = localStorage.getItem('admin_token')
+    // Закрыть сессию на сервере; admin_device_token не трогаем — то же устройство
+    if (t) {
+      fetch('/api/admin/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${t}` },
+      }).catch(() => {})
+    }
     localStorage.removeItem('admin_token')
     setToken(null)
   }, [])
@@ -64,7 +72,7 @@ function App() {
         {!token ? (
           <LoginPage onLogin={handleLogin} />
         ) : (
-          <Layout onLogout={handleLogout}>
+          <Layout token={token} onLogout={handleLogout}>
             <Routes>
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<DashboardPage token={token} onUnauthorized={handleLogout} />} />

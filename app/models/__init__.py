@@ -8,10 +8,12 @@ from app.models.payment import Payment, PromoCode
 from app.models.referral import ReferralReward
 from app.models.vk_hash import VkHash, VkCredentials, AppSetting
 from app.models.vk_link_session import VkLinkSession
+from app.models.admin_auth import AdminTrustedDevice, AdminSession, AdminMfaChallenge
 
 __all__ = [
     "User", "Subscription", "Device", "HiveCell", "HiveLoadSample", "ProxyNode",
     "Payment", "PromoCode", "ReferralReward",
     "VkHash", "VkCredentials", "AppSetting",
     "VkLinkSession",
+    "AdminTrustedDevice", "AdminSession", "AdminMfaChallenge",
 ]

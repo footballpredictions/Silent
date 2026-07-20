@@ -184,6 +184,30 @@ def send_subscription_activated_email(to_email: str, plan_type: str, expires_at:
     return _send(to_email, "Silent VPN — подписка активирована", _base_template(content))
 
 
+def send_admin_mfa_code_email(to_email: str, code: str, ttl_minutes: int = 10) -> bool:
+    content = f"""
+    <p style="margin:0 0 16px 0;color:#333333;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">
+      Запрос на вход в <strong>админ-панель Silent VPN</strong>.
+    </p>
+    <p style="margin:0 0 24px 0;color:#333333;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">
+      Код подтверждения:
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td align="center" style="padding:8px 0 24px 0;">
+          <div style="display:inline-block;background-color:#f5f5f5;border:1px solid #e0e0e0;border-radius:12px;padding:18px 32px;font-size:32px;font-weight:700;letter-spacing:8px;color:#000000;font-family:Consolas,Monaco,monospace;">
+            {code}
+          </div>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0;color:#888888;font-size:13px;line-height:1.6;font-family:Arial,sans-serif;">
+      Код действителен <strong>{ttl_minutes} минут</strong>. Если вы не пытались войти — смените пароль админки и проверьте безопасность почты.
+    </p>
+    """
+    return _send(to_email, "Silent VPN — код входа в админку", _base_template(content))
+
+
 def send_password_reset_email(to_email: str, token: str, base_url: str) -> bool:
     reset_url = f"{base_url}/api/auth/reset-password-page?token={token}"
     content = f"""

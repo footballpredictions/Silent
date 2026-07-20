@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.database import get_db
 from app.core.security import decode_token
 from app.models import User
-from app.config import settings
+from app.services.admin_auth_service import get_valid_session
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -42,12 +42,28 @@ async def get_verified_user(user: User = Depends(get_current_user)) -> User:
     return user
 
 
-def get_admin_credentials(
+async def get_admin_credentials(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    db: AsyncSession = Depends(get_db),
 ) -> bool:
     if not credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin auth required")
     payload = decode_token(credentials.credentials)
     if not payload or payload.get("sub") != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    # Legacy JWTs without jti are rejected — force re-login with MFA/session
+    session = await get_valid_session(db, payload.get("jti"))
+    if not session:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin session expired")
     return True
+
+
+async def get_admin_session_jti(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+) -> str | None:
+    if not credentials:
+        return None
+    payload = decode_token(credentials.credentials)
+    if not payload or payload.get("sub") != "admin":
+        return None
+    return payload.get("jti")

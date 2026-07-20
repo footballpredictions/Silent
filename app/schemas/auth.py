@@ -58,11 +58,40 @@ class ResetPasswordRequest(BaseModel):
 class AdminLoginRequest(BaseModel):
     login: str
     password: str
+    device_token: str | None = None
+    remember_device: bool = True
+    # Like user devices: stable fingerprint + phone/PC
+    device_fingerprint: str | None = None
+    device_type: str | None = None  # phone | pc | tablet
+    device_name: str | None = None  # «Телефон», «ПК», model
+    client_platform: str | None = None
+    client_mobile: bool | None = None
 
 
 class AdminTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    device_token: str | None = None
+    session_id: str | None = None
+    requires_mfa: bool = False
+    challenge_id: str | None = None
+    mfa_ttl_seconds: int | None = None
+
+
+class AdminMfaVerifyRequest(BaseModel):
+    challenge_id: str
+    code: str
+    remember_device: bool | None = None
+    device_token: str | None = None
+    device_fingerprint: str | None = None
+    device_type: str | None = None
+    device_name: str | None = None
+    client_platform: str | None = None
+    client_mobile: bool | None = None
+
+
+class AdminMfaResendRequest(BaseModel):
+    challenge_id: str
 
 
 class VkLinkStartResponse(BaseModel):

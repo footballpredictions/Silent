@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     # Admin
     ADMIN_LOGIN: str = "admin"
     ADMIN_PASSWORD: str = "change_me_123"
+    # MFA: код подтверждения входа на эту почту (пустая строка = MFA выключен)
+    ADMIN_MFA_EMAIL: str = "silent27@bk.ru"
+    # Только этот Host отдаёт админ UI/API (tunnel 10.66.66.1 — 404)
+    ADMIN_PUBLIC_HOST: str = "132-243-234-162.nip.io"
+    ADMIN_SESSION_HOURS: int = 12
+    ADMIN_MFA_CODE_TTL_MINUTES: int = 2
+    ADMIN_MFA_MAX_ATTEMPTS: int = 5
+    ADMIN_LOGIN_RATE_LIMIT_MAX: int = 10
+    ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 300
 
     # VK AI Assistant (Android client token for calls.create / TURN hashes)
     VK_LOGIN: str = ""

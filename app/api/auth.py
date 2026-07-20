@@ -13,7 +13,7 @@ from app.models import User
 from app.schemas.auth import (
     RegisterRequest, LoginRequest, TokenResponse,
     RefreshRequest, ForgotPasswordRequest, ResetPasswordRequest,
-    AdminLoginRequest, AdminTokenResponse,
+    AdminLoginRequest, AdminTokenResponse, AdminMfaVerifyRequest, AdminMfaResendRequest,
 )
 from app.core.security import (
     hash_password, verify_password,
@@ -26,7 +26,9 @@ from app.services.theme_settings import load_theme
 from app.services.vpn_service import ensure_device_session
 from app.services.email_validation import validate_registration_email_domain
 from app.services.rate_limiter import check_ip_rate_limit, get_client_ip
+from app.services import admin_auth_service
 from app.config import settings
+import uuid as uuid_mod
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -323,8 +325,191 @@ async def reset_password_page(token: str, request: Request, db: AsyncSession = D
 
 
 @router.post("/admin/login", response_model=AdminTokenResponse)
-async def admin_login(req: AdminLoginRequest):
+async def admin_login(
+    req: AdminLoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    if await check_ip_rate_limit(
+        request,
+        scope="admin_login",
+        max_attempts=settings.ADMIN_LOGIN_RATE_LIMIT_MAX,
+        window_seconds=settings.ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Слишком много попыток входа. Попробуйте позже.",
+        )
     if req.login != settings.ADMIN_LOGIN or req.password != settings.ADMIN_PASSWORD:
         raise HTTPException(status_code=401, detail="Неверные данные администратора")
-    token = create_access_token("admin", expires_delta=timedelta(hours=12))
-    return AdminTokenResponse(access_token=token)
+
+    device = await admin_auth_service.find_trusted_device(
+        db,
+        device_token=req.device_token,
+        fingerprint=req.device_fingerprint,
+    )
+    mfa_email = (settings.ADMIN_MFA_EMAIL or "").strip()
+
+    # Trusted device or MFA disabled → issue session immediately
+    if device or not mfa_email:
+        out_device_token = req.device_token
+        if req.device_fingerprint and (device is not None or (not mfa_email and req.remember_device)):
+            device, out_device_token = await admin_auth_service.upsert_trusted_device(
+                db,
+                request=request,
+                fingerprint=req.device_fingerprint,
+                device_type=req.device_type or "pc",
+                device_name=req.device_name or "ПК",
+                platform_hint=req.client_platform,
+                mobile_hint=req.client_mobile,
+                existing_device_token=req.device_token,
+                issue_token=True,
+            )
+        token, session_id = await admin_auth_service.create_admin_session(
+            db,
+            request=request,
+            device=device,
+            fingerprint=req.device_fingerprint,
+            platform_hint=req.client_platform,
+            mobile_hint=req.client_mobile,
+            device_type=req.device_type,
+            device_name=req.device_name,
+        )
+        return AdminTokenResponse(
+            access_token=token,
+            session_id=str(session_id),
+            device_token=out_device_token if device else None,
+        )
+
+    try:
+        challenge_id = await admin_auth_service.start_mfa_challenge(
+            db,
+            request=request,
+            remember_device=req.remember_device,
+            fingerprint=req.device_fingerprint,
+            device_type=req.device_type,
+            device_name=req.device_name,
+            platform_hint=req.client_platform,
+            mobile_hint=req.client_mobile,
+        )
+    except RuntimeError as e:
+        if str(e) == "email_send_failed":
+            raise HTTPException(
+                status_code=503,
+                detail="Не удалось отправить код на почту. Проверьте SMTP и попробуйте снова.",
+            )
+        raise HTTPException(status_code=500, detail="Ошибка MFA")
+
+    return AdminTokenResponse(
+        access_token="",
+        requires_mfa=True,
+        challenge_id=str(challenge_id),
+        mfa_ttl_seconds=settings.ADMIN_MFA_CODE_TTL_MINUTES * 60,
+    )
+
+
+@router.post("/admin/mfa/resend", response_model=AdminTokenResponse)
+async def admin_mfa_resend(
+    req: AdminMfaResendRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    if await check_ip_rate_limit(
+        request,
+        scope="admin_mfa_resend",
+        max_attempts=settings.ADMIN_LOGIN_RATE_LIMIT_MAX,
+        window_seconds=settings.ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Слишком много попыток. Попробуйте позже.",
+        )
+    try:
+        challenge_uuid = uuid_mod.UUID(req.challenge_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный challenge_id")
+
+    try:
+        new_id = await admin_auth_service.resend_mfa_challenge(
+            db, request=request, challenge_id=challenge_uuid
+        )
+    except ValueError as e:
+        msg = str(e)
+        if msg.startswith("too_early:"):
+            try:
+                sec = int(msg.split(":", 1)[1])
+            except ValueError:
+                sec = 60
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Повторная отправка через {sec} с.",
+            )
+        if msg == "challenge_not_found":
+            raise HTTPException(status_code=400, detail="Сессия подтверждения не найдена. Войдите снова.")
+        raise HTTPException(status_code=400, detail="Не удалось отправить код")
+    except RuntimeError as e:
+        if str(e) == "email_send_failed":
+            raise HTTPException(
+                status_code=503,
+                detail="Не удалось отправить код на почту. Проверьте SMTP и попробуйте снова.",
+            )
+        raise HTTPException(status_code=500, detail="Ошибка MFA")
+
+    return AdminTokenResponse(
+        access_token="",
+        requires_mfa=True,
+        challenge_id=str(new_id),
+        mfa_ttl_seconds=settings.ADMIN_MFA_CODE_TTL_MINUTES * 60,
+    )
+
+
+@router.post("/admin/mfa/verify", response_model=AdminTokenResponse)
+async def admin_mfa_verify(
+    req: AdminMfaVerifyRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    if await check_ip_rate_limit(
+        request,
+        scope="admin_mfa",
+        max_attempts=settings.ADMIN_LOGIN_RATE_LIMIT_MAX,
+        window_seconds=settings.ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Слишком много попыток. Попробуйте позже.",
+        )
+    try:
+        challenge_uuid = uuid_mod.UUID(req.challenge_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный challenge_id")
+
+    try:
+        token, device_token, session_id = await admin_auth_service.verify_mfa_and_login(
+            db,
+            request=request,
+            challenge_id=challenge_uuid,
+            code=req.code,
+            remember_device=req.remember_device,
+            existing_device_token=req.device_token,
+            fingerprint=req.device_fingerprint,
+            device_type=req.device_type,
+            device_name=req.device_name,
+            platform_hint=req.client_platform,
+            mobile_hint=req.client_mobile,
+        )
+    except ValueError as e:
+        msg = {
+            "invalid_challenge": "Код недействителен. Войдите снова.",
+            "expired": "Код истёк. Войдите снова.",
+            "too_many_attempts": "Слишком много неверных попыток. Войдите снова.",
+            "bad_code": "Неверный код подтверждения",
+        }.get(str(e), "Ошибка подтверждения")
+        status_code = 401 if str(e) in ("bad_code", "invalid_challenge", "expired") else 429
+        raise HTTPException(status_code=status_code, detail=msg)
+
+    return AdminTokenResponse(
+        access_token=token,
+        device_token=device_token,
+        session_id=str(session_id),
+    )

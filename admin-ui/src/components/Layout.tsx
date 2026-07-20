@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
 import { LayoutDashboard, Users, Hash, Gift, Palette, LogOut, Calendar, Menu, X, Download, Hexagon, Network } from 'lucide-react'
 import SilentLogo from './SilentLogo'
+import AdminDevicesMenu from './AdminDevicesMenu'
 
 const nav = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Дашборд' },
@@ -39,7 +40,15 @@ function NavItems({ onClose }: { onClose?: () => void }) {
   )
 }
 
-export default function Layout({ children, onLogout }: { children: React.ReactNode; onLogout: () => void }) {
+export default function Layout({
+  children,
+  token,
+  onLogout,
+}: {
+  children: React.ReactNode
+  token: string
+  onLogout: () => void
+}) {
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   // Close drawer on resize to desktop
@@ -57,10 +66,11 @@ export default function Layout({ children, onLogout }: { children: React.ReactNo
         <div className="p-6 border-b border-[#222]">
           <div className="flex items-center gap-3">
             <SilentLogo size={32} />
-            <div>
+            <div className="min-w-0 flex-1">
               <span className="font-bold text-base block leading-tight">Silent VPN</span>
               <p className="text-xs text-[#555]">Админ панель</p>
             </div>
+            <AdminDevicesMenu token={token} onLogout={onLogout} />
           </div>
         </div>
         <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
@@ -91,15 +101,16 @@ export default function Layout({ children, onLogout }: { children: React.ReactNo
           drawerOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="p-5 border-b border-[#222] flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="p-5 border-b border-[#222] flex items-center justify-between gap-2">
+          <div className="flex items-center gap-3 min-w-0">
             <SilentLogo size={28} />
-            <div>
+            <div className="min-w-0">
               <span className="font-bold text-sm block leading-tight">Silent VPN</span>
               <p className="text-xs text-[#555]">Админ панель</p>
             </div>
+            <AdminDevicesMenu token={token} onLogout={onLogout} />
           </div>
-          <button onClick={() => setDrawerOpen(false)} className="text-[#555] hover:text-white p-1">
+          <button onClick={() => setDrawerOpen(false)} className="text-[#555] hover:text-white p-1 shrink-0">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -128,10 +139,11 @@ export default function Layout({ children, onLogout }: { children: React.ReactNo
           >
             <Menu className="w-5 h-5" />
           </button>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
             <SilentLogo size={20} />
             <span className="font-bold text-sm">Silent VPN</span>
           </div>
+          <AdminDevicesMenu token={token} onLogout={onLogout} />
         </header>
 
         <main className="flex-1 overflow-auto">

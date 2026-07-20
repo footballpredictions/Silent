@@ -67,7 +67,10 @@ sftp.close()
 script = f"""#!/bin/bash
 set -e
 cd {REMOTE}
-find app ai -name '*.py' | while read f; do docker cp "$f" {CONTAINER}:/app/"$f"; done
+find app ai -name '*.py' | while read f; do
+  docker exec {CONTAINER} mkdir -p "/app/$(dirname "$f")"
+  docker cp "$f" {CONTAINER}:/app/"$f"
+done
 docker exec {CONTAINER} mkdir -p /app/cell-agent
 for f in cell-agent/main.py cell-agent/standby_runtime.py; do
   if [ -f "$f" ]; then

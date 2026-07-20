@@ -40,7 +40,9 @@
 | POST | `/reset-password` | — | Смена пароля по токену |
 | GET | `/app-reset?token=` | — | Редирект на web form сброса пароля |
 | GET | `/reset-password-page?token=` | — | HTML-форма смены пароля |
-| POST | `/admin/login` | — | JWT для админки |
+| POST | `/admin/login` | — | Пароль + опц. `device_token`; при новом устройстве `requires_mfa` + код на `ADMIN_MFA_EMAIL` (TTL 2 мин, `mfa_ttl_seconds`) |
+| POST | `/admin/mfa/verify` | — | Код из письма → JWT + опц. `device_token` (trusted device) |
+| POST | `/admin/mfa/resend` | — | После истечения TTL — новый код; body `{ challenge_id }` → новый `challenge_id` |
 | POST | `/resend-verification` | — | Повторная отправка письма верификации |
 
 ### VK Auth — `/api/auth/vk` (на сервере)
@@ -118,8 +120,13 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 
 ### Admin — `/api/admin`
 
+Админ UI/API доступны **только** с `Host: ADMIN_PUBLIC_HOST` (nip.io). Через tunnel `10.66.66.1` — 404. JWT админки содержит `jti` серверной сессии (отзыв через DELETE).
+
 | Метод | Путь | Auth | Описание |
 |-------|------|------|----------|
+| GET | `/sessions` | Admin | Активные сессии + trusted devices |
+| DELETE | `/sessions/{id}` | Admin | Отозвать сессию (+ устройство) |
+| DELETE | `/devices/{id}` | Admin | Отозвать trusted device и его сессии |
 | GET | `/stats` | Admin | CPU/RAM/disk, users (`connected_devices`, `peak_online_devices`, `peak_online_at`), VK hashes |
 | GET | `/users` | Admin | Список пользователей |
 | POST | `/users/{id}/grant-subscription` | Admin | Выдача подписки |

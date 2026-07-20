@@ -13,6 +13,7 @@ set -e
 cd /opt/silent-vpn/backend
 echo "=== sync app+ai from host into container ==="
 find app ai -name '*.py' | while read -r f; do
+  docker exec backend-api-1 mkdir -p "/app/$(dirname "$f")"
   docker cp "$f" backend-api-1:/app/"$f"
 done
 echo "=== deps (image often missing httpx after recreate) ==="
@@ -24,7 +25,10 @@ python3 scripts/fix_tunnel_dnat.py 2>&1 || true
 echo "=== verify ==="
 docker exec backend-api-1 test -f /app/app/api/hive.py && echo "hive.py OK"
 curl -sf http://127.0.0.1:8000/api/health && echo " health OK"
-hive_code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/api/admin/hive/cells)
+# Host must be ADMIN_PUBLIC_HOST — иначе AdminHostGuard вернёт 404
+hive_code=$(curl -s -o /dev/null -w "%{http_code}" \
+  -H "Host: 132-243-234-162.nip.io" \
+  http://127.0.0.1:8000/api/admin/hive/cells)
 echo "hive/cells HTTP ${hive_code} (expect 401 without token)"
 if [ "${hive_code}" = "404" ]; then
   echo "ERROR: hive routes still missing"

@@ -17,15 +17,17 @@ import androidx.compose.ui.unit.sp
 fun BrandHeader(
     modifier: Modifier = Modifier,
     textColor: Color = Color.White,
+    appTitle: String = "SILENT VPN",
+    logoUrl: String? = null,
 ) {
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        SilentLogo()
+        SilentLogo(imageUrl = logoUrl)
         Spacer(modifier = Modifier.height(12.dp))
         Text(
-            text = "SILENT VPN",
+            text = appTitle.ifBlank { "SILENT VPN" }.uppercase(),
             color = textColor,
             fontWeight = FontWeight.Bold,
             fontSize = 16.sp,

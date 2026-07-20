@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
 import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.ui.tv.tvClickable
@@ -145,6 +146,12 @@ private fun VkCredModeOption(
             selected = selected,
             onClick = { if (enabled && !isTv) onSelect() },
             enabled = enabled && !isTv,
+            colors = RadioButtonDefaults.colors(
+                selectedColor = fg,
+                unselectedColor = fg.copy(alpha = 0.45f),
+                disabledSelectedColor = fg.copy(alpha = 0.35f),
+                disabledUnselectedColor = fg.copy(alpha = 0.25f),
+            ),
         )
         Column(Modifier.padding(start = 4.dp, top = 12.dp)) {
             Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = fg.copy(if (enabled) 1f else 0.45f))

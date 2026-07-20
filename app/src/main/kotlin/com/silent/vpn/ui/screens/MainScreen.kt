@@ -52,9 +52,11 @@ import com.silent.vpn.BuildConfig
 import com.silent.vpn.R
 import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
+import com.silent.vpn.ui.components.HomeBgImage
 import com.silent.vpn.ui.components.MenuNavItem
 import com.silent.vpn.ui.components.MenuNavLogout
 import com.silent.vpn.ui.components.ThemeModeToggle
+import com.silent.vpn.ui.components.resolveThemeAssetUrl
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.DeviceInfo
@@ -440,8 +442,22 @@ fun MainScreen(
                 }
             }
 
-            // Main content
+            // Main content — фон из темы только в DEBUG (пока тестируем оформление)
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                val homeBgUrl = remember(theme?.home_bg_image_url) {
+                    if (!BuildConfig.DEBUG) ""
+                    else resolveThemeAssetUrl(
+                        theme?.home_bg_image_url,
+                        "https://${SilentRepository.DEFAULT_SERVER_HOST}",
+                    )
+                }
+                if (homeBgUrl.isNotBlank()) {
+                    HomeBgImage(
+                        url = homeBgUrl,
+                        dark = palette.dark,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         when (vpnState) {

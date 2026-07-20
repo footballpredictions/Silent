@@ -40,15 +40,17 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.silent.vpn.BuildConfig
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.ui.components.BrandHeader
 import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
 import com.silent.vpn.ui.components.LoginExpiredPanel
-import com.silent.vpn.ui.components.SilentLogo
 import com.silent.vpn.ui.components.ThemeModeToggle
+import com.silent.vpn.ui.components.resolveThemeAssetUrl
 import com.silent.vpn.ui.theme.AppearanceMode
 import com.silent.vpn.ui.theme.DarkSystemBarStrip
+import com.silent.vpn.ui.theme.displayAppName
 import com.silent.vpn.ui.theme.needsNeonGlow
 import com.silent.vpn.ui.theme.neonShadow
 import com.silent.vpn.ui.theme.toLoginUi
@@ -60,7 +62,6 @@ import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.ui.tv.tvClickable
 import com.silent.vpn.util.rememberIsTv
 import com.silent.vpn.ui.theme.loginTextFieldColors
-import com.silent.vpn.ui.theme.toLoginUi
 
 private enum class LoginStep { AUTH, FORGOT }
 
@@ -182,7 +183,16 @@ fun LoginScreen(
                 .padding(horizontal = contentPadding).padding(top = if (isTv) 32.dp else 24.dp, bottom = 20.dp),
         ) {
             Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                BrandHeader(textColor = ui.fg)
+                BrandHeader(
+                    textColor = ui.fg,
+                    appTitle = displayAppName(theme),
+                    // Лого из темы — только DEBUG, пока проверяем оформление
+                    logoUrl = if (!BuildConfig.DEBUG) null
+                    else resolveThemeAssetUrl(
+                        theme?.logo_url,
+                        "https://${com.silent.vpn.data.SilentRepository.DEFAULT_SERVER_HOST}",
+                    ).ifBlank { null },
+                )
             }
             Spacer(modifier = Modifier.height(20.dp))
 

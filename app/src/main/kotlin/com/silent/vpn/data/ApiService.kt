@@ -149,6 +149,7 @@ data class ThemeData(
     val toggle_off_color: String = "#CCCCCC",
     val font_family: String = "Inter",
     val logo_url: String = "",
+    val home_bg_image_url: String = "",
     val app_name: String = "Silent VPN",
     val support_url: String = "https://t.me/silentvpn3?direct",
     val telegram_channel_url: String = "https://t.me/silentvpn3",

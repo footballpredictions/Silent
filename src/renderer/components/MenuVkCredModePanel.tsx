@@ -11,6 +11,8 @@ import {
 type Props = {
   fg: string
   muted: string
+  bg: string
+  primary: string
   vpnRunning: boolean
   onBack: () => void
 }
@@ -21,6 +23,7 @@ function ModeOption({
   selected,
   enabled,
   fg,
+  muted,
   onSelect,
 }: {
   title: string
@@ -28,33 +31,39 @@ function ModeOption({
   selected: boolean
   enabled: boolean
   fg: string
+  muted: string
   onSelect: () => void
 }) {
   return (
     <label
-      className="flex items-start gap-2 py-2 cursor-pointer"
+      className="flex items-start gap-2.5 py-2 cursor-pointer"
       style={{ opacity: enabled ? 1 : 0.45 }}
     >
+      <span
+        className="mt-1 shrink-0 w-4 h-4 rounded-full border-2 flex items-center justify-center"
+        style={{ borderColor: selected ? fg : muted }}
+        aria-hidden
+      >
+        {selected ? (
+          <span className="w-2 h-2 rounded-full" style={{ background: fg }} />
+        ) : null}
+      </span>
       <input
         type="radio"
         checked={selected}
         disabled={!enabled}
         onChange={() => enabled && onSelect()}
-        className="mt-1 shrink-0"
+        className="sr-only"
       />
       <div>
         <div className="text-sm font-medium" style={{ color: fg }}>{title}</div>
-        <div className="text-xs leading-snug mt-0.5" style={{ color: mutedColor(fg) }}>{subtitle}</div>
+        <div className="text-xs leading-snug mt-0.5" style={{ color: muted }}>{subtitle}</div>
       </div>
     </label>
   )
 }
 
-function mutedColor(fg: string) {
-  return fg.includes('rgb') ? fg : `${fg}99`
-}
-
-export default function MenuVkCredModePanel({ fg, muted, vpnRunning, onBack }: Props) {
+export default function MenuVkCredModePanel({ fg, muted, bg, primary, vpnRunning, onBack }: Props) {
   const [mode, setMode] = useState(getVkCredStrategy())
   const [pending, setPending] = useState<string | null>(null)
 
@@ -67,6 +76,9 @@ export default function MenuVkCredModePanel({ fg, muted, vpnRunning, onBack }: P
     setMode(next)
     setPending(null)
   }
+
+  const btnBg = primary || fg
+  const btnFg = bg || '#FFFFFF'
 
   return (
     <div className="flex flex-col h-full p-4 overflow-y-auto">
@@ -89,6 +101,7 @@ export default function MenuVkCredModePanel({ fg, muted, vpnRunning, onBack }: P
         selected={mode === VK_CRED_VKCALLS}
         enabled={!vpnRunning}
         fg={fg}
+        muted={muted}
         onSelect={() => setPending(VK_CRED_VKCALLS)}
       />
       <ModeOption
@@ -97,6 +110,7 @@ export default function MenuVkCredModePanel({ fg, muted, vpnRunning, onBack }: P
         selected={mode === VK_CRED_AUTO}
         enabled={!vpnRunning}
         fg={fg}
+        muted={muted}
         onSelect={() => setPending(VK_CRED_AUTO)}
       />
       <ModeOption
@@ -105,13 +119,14 @@ export default function MenuVkCredModePanel({ fg, muted, vpnRunning, onBack }: P
         selected={mode === VK_CRED_MANUAL}
         enabled={!vpnRunning}
         fg={fg}
+        muted={muted}
         onSelect={() => setPending(VK_CRED_MANUAL)}
       />
 
       {pending && pending !== mode && (
         <div
           className="mt-4 p-3 rounded-xl text-xs space-y-3"
-          style={{ background: 'rgba(255,255,255,0.06)', color: fg }}
+          style={{ background: `${fg}0F`, color: fg }}
         >
           <div>
             Было: {vkCredStrategyLabel(mode)}
@@ -121,7 +136,12 @@ export default function MenuVkCredModePanel({ fg, muted, vpnRunning, onBack }: P
             <span style={{ color: muted }}>Применится при следующем подключении VPN.</span>
           </div>
           <div className="flex gap-2">
-            <button type="button" className="px-3 py-1 rounded-lg text-xs font-medium" style={{ background: '#2563EB', color: '#fff' }} onClick={() => apply(pending)}>
+            <button
+              type="button"
+              className="px-3 py-1 rounded-lg text-xs font-medium"
+              style={{ background: btnBg, color: btnFg }}
+              onClick={() => apply(pending)}
+            >
               Применить
             </button>
             <button type="button" className="px-3 py-1 rounded-lg text-xs" style={{ color: muted }} onClick={() => setPending(null)}>

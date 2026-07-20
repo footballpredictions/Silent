@@ -12,6 +12,8 @@ import api, {
   getRememberedEmail,
   getRememberedPassword,
   saveRememberMe,
+  getPublicApiBaseUrl,
+  getServerUrl,
 } from '../api'
 import {
   cacheVpnConfig,
@@ -36,8 +38,9 @@ import WindowControls from '../components/WindowControls'
 import { pushLog } from '../debugLog'
 import { clearVpnLogs } from '../vpnLogStore'
 import { authStrings as s } from '../authStrings'
-import { needsNeonGlow, neonTextShadow, themeToUi, type ClientTheme } from '../clientTheme'
+import { needsNeonGlow, neonTextShadow, themeToUi, resolveThemeAssetUrl, type ClientTheme } from '../clientTheme'
 import { useAppearanceMode } from '../appearanceStore'
+import { isDebugBuild } from '../debugBuild'
 
 type LoginStep = 'auth' | 'forgot'
 
@@ -354,9 +357,16 @@ export default function LoginScreen({
 
       <div className="flex-1 overflow-y-auto px-5 pt-6 pb-5">
         <div className="flex flex-col items-center w-full">
-          <SilentLogo size={56} />
+          <SilentLogo
+            size={56}
+            imageUrl={
+              isDebugBuild
+                ? resolveThemeAssetUrl(theme?.logo_url, getPublicApiBaseUrl() || getServerUrl() || '')
+                : undefined
+            }
+          />
           <p className="mt-3 text-base font-bold tracking-[0.2em]" style={{ color: ui.fg }}>
-            SILENT VPN
+            {ui.appTitle}
           </p>
         </div>
 

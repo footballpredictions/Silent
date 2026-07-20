@@ -44,6 +44,8 @@ export interface ClientTheme {
   telegram_proxy_url?: string
   telegram_proxy_menu_label?: string
   hive_standby_api_urls?: string
+  logo_url?: string
+  home_bg_image_url?: string
   menu_bonuses_label?: string
   bonuses_title?: string
   bonuses_intro_text?: string
@@ -125,6 +127,16 @@ export function resolveAppName(raw?: string | null): string {
   const name = (raw || '').trim()
   if (!name || name.toLowerCase() === 'silent') return 'Silent VPN'
   return name
+}
+
+/** Absolute URL for theme assets (/static/..., relative paths). */
+export function resolveThemeAssetUrl(path: string | undefined | null, apiBase: string): string {
+  const raw = (path || '').trim()
+  if (!raw) return ''
+  if (/^(https?:|data:|blob:)/i.test(raw)) return raw
+  const base = (apiBase || '').replace(/\/$/, '')
+  if (!base) return raw
+  return raw.startsWith('/') ? `${base}${raw}` : `${base}/${raw}`
 }
 
 export type AppearanceMode = 'light' | 'dark'

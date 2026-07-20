@@ -29,7 +29,7 @@ import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import ThemeModeToggle from '../components/ThemeModeToggle'
 import WindowControls from '../components/WindowControls'
 import { AppErrorBoundary } from '../components/AppErrorBoundary'
-import { needsNeonGlow, neonTextShadow, resolveThemePalette } from '../clientTheme'
+import { needsNeonGlow, neonTextShadow, resolveThemePalette, resolveThemeAssetUrl } from '../clientTheme'
 import { useAppearanceMode } from '../appearanceStore'
 import { menuDrawerStyle } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
@@ -983,6 +983,12 @@ export default function MainScreen({
   const statusColor = connecting || disconnecting ? muted : connected ? GREEN : muted
   const statusGlow = needsNeonGlow(statusColor, palette.dark) ? neonTextShadow(statusColor) : undefined
   const localOnline = connected || connecting || disconnecting
+  const homeBgSrc = isDevBuild
+    ? resolveThemeAssetUrl(
+        clientTheme?.home_bg_image_url,
+        getPublicApiBaseUrl() || getServerUrl() || '',
+      )
+    : ''
 
   return (
     <div className="relative flex flex-col h-full overflow-hidden" style={{ background: bg, color: fg, fontFamily }}>
@@ -1019,8 +1025,19 @@ export default function MainScreen({
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col items-center justify-center pb-16 gap-6 px-4">
-        <div className="text-center">
+      <div className="flex-1 flex flex-col items-center justify-center pb-16 gap-6 px-4 relative overflow-hidden">
+        {homeBgSrc ? (
+          <img
+            src={homeBgSrc}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+            style={{
+              filter: 'grayscale(100%) brightness(0.92) contrast(0.95)',
+              opacity: palette.dark ? 0.22 : 0.18,
+            }}
+          />
+        ) : null}
+        <div className="text-center relative z-[1]">
           <div
             className="text-xs font-medium tracking-widest uppercase"
             style={{ color: statusColor, letterSpacing: '0.15em', textShadow: statusGlow }}
@@ -1029,16 +1046,18 @@ export default function MainScreen({
           </div>
         </div>
 
-        <VpnToggle
-          connected={connected}
-          connecting={connecting}
-          disconnecting={disconnecting}
-          toggleOn={toggleOn}
-          toggleOff={toggleOff}
-          fg={fg}
-          bg={bg}
-          onToggle={() => void handleToggle()}
-        />
+        <div className="relative z-[1]">
+          <VpnToggle
+            connected={connected}
+            connecting={connecting}
+            disconnecting={disconnecting}
+            toggleOn={toggleOn}
+            toggleOff={toggleOff}
+            fg={fg}
+            bg={bg}
+            onToggle={() => void handleToggle()}
+          />
+        </div>
       </div>
 
       <div className="absolute bottom-0 left-0 right-0 p-4 border-t" style={{ background: bg, borderColor: border }}>
@@ -1404,6 +1423,8 @@ export default function MainScreen({
             <MenuVkCredModePanel
               fg={fg}
               muted={muted}
+              bg={bg}
+              primary={palette.primary}
               vpnRunning={connected || connecting}
               onBack={() => setMenuPage(null)}
             />

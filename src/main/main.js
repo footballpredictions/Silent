@@ -1024,66 +1024,27 @@ ipcMain.handle('open-external', async (_, url) => {
   }
 })
 /**
- * Админка в системном браузере:
- * - VPN ON → http://10.66.66.1:8000 (как Android API): белые списки ISP не режут,
- *   нет hairpin на публичный IP VPS.
- * - VPN OFF → https://nip.io
- *
- * Bypass 132.243… в логе WG — только для app API fallback / peer. Браузер на nip.io
- * при VPN+whitelist уходит мимо туннеля и «через время» мёртв. Админку открывать
- * только через кнопку приложения (tunnel), не закладку nip.io.
+ * Админка в системном браузере — всегда главная публичная ссылка nip.io.
+ * Tunnel 10.66.66.1 для /dashboard → 404 (Host guard: только ADMIN_PUBLIC_HOST).
+ * При VPN перед открытием — bypass nip.io, иначе full-tunnel / whitelist режут браузер.
  */
-function isFullVpnUpForAdmin() {
-  if (vpnBootstrapMode) return false
-  return !!(
-    vpnSessionActive ||
-    wgApplied ||
-    (activeWorkerCount > 0 && isWdttAlive())
-  )
-}
-
 function resolveAdminPanelUrl() {
-  // Пока full VPN жив — только tunnel. Нельзя откатываться на nip.io при кратком
-  // флапе isWdttAlive: публичный URL при whitelist + bypass = таймаут.
-  return isFullVpnUpForAdmin()
-    ? `${TUNNEL_API_ORIGIN}/dashboard`
-    : `${UPDATE_PUBLIC_BASE}/dashboard`
-}
-
-function probeTunnelAdminHealth() {
-  return new Promise((resolve) => {
-    try {
-      const http = require('http')
-      const req = http.get(`${TUNNEL_API_ORIGIN}/health`, { timeout: 3500 }, (res) => {
-        res.resume()
-        resolve(res.statusCode >= 200 && res.statusCode < 500)
-      })
-      req.on('error', () => resolve(false))
-      req.on('timeout', () => {
-        req.destroy()
-        resolve(false)
-      })
-    } catch {
-      resolve(false)
-    }
-  })
+  // Строка, не UPDATE_PUBLIC_BASE: константа объявлена ниже по файлу.
+  return 'https://132-243-234-162.nip.io/dashboard'
 }
 
 ipcMain.handle('get-admin-panel-url', () => resolveAdminPanelUrl())
 ipcMain.handle('open-admin-panel', async () => {
-  const viaTunnel = isFullVpnUpForAdmin()
-  const url = viaTunnel
-    ? `${TUNNEL_API_ORIGIN}/dashboard`
-    : `${UPDATE_PUBLIC_BASE}/dashboard`
-  if (viaTunnel) {
-    const ok = await probeTunnelAdminHealth()
-    sendLog(
-      ok
-        ? `[Admin] tunnel health OK → ${url}`
-        : `[Admin] tunnel health FAIL — всё равно ${url} (nip.io при VPN+whitelist не использовать)`,
-    )
-  } else {
-    sendLog('[Admin] VPN off — public nip.io')
+  const url = resolveAdminPanelUrl()
+  try {
+    if (vpnSessionActive || wgApplied) {
+      await ensurePublicApiBypass(sendLog)
+      sendLog(`[Admin] public nip.io (+ bypass) → ${url}`)
+    } else {
+      sendLog(`[Admin] public nip.io → ${url}`)
+    }
+  } catch (e) {
+    sendLog(`[Admin] bypass warn: ${e?.message || e} — всё равно ${url}`)
   }
   await shell.openExternal(url)
   return url
@@ -1170,7 +1131,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
   if (sessionDnsOverride) {
     sendLog(`[WG] DNS override (debug): ${sessionDnsOverride}`)
   }
-  // Legacy (авто/ручная капча) — запасной режим: ровно 1 группа, без рампа на 63.
+  // Legacy: boot 1 группа (капча), затем рамп до target — иначе YouTube без полосы @9.
   const legacyCaptcha = !config.is_bootstrap && vkAuthMode === 'legacy'
   sessionTargetWorkers = workers
   // Boot 9 (1 группа → быстрый GETCONF) → ramp до target.
@@ -1180,8 +1141,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
       ? WORKERS_PER_GROUP
     // Boot = по группе на каждый хеш (волна), иначе single-flow сидит на 1 хеше до рампа.
     : Math.min(Math.max(9, hashList.length * 9), workers)
-  if (legacyCaptcha && rawN > WORKERS_PER_GROUP) {
-    sendLog(`[VPN] legacy/captcha: n ${rawN} → ${WORKERS_PER_GROUP} (без шторма капчи)`)
+  if (legacyCaptcha && workers > WORKERS_PER_GROUP) {
+    sendLog(`[VPN] legacy/captcha: boot ${WORKERS_PER_GROUP} → target ${workers} (рамп, без шторма)`)
   }
   const useRamp = !config.is_bootstrap && workers > bootWorkers
   sendLog(
@@ -1198,7 +1159,10 @@ async function beginWdttSession(config, { switching = false } = {}) {
     '-vk-auth-mode', vkAuthMode,
   ]
   if (useRamp) {
-    args.push('-target-n', String(workers), '-ramp-first', '3s', '-ramp-next', '2s')
+    // Legacy: пауза между группами — каждая может снова пройти автокапчу.
+    const rampFirst = legacyCaptcha ? '6s' : '3s'
+    const rampNext = legacyCaptcha ? '5s' : '2s'
+    args.push('-target-n', String(workers), '-ramp-first', rampFirst, '-ramp-next', rampNext)
   }
 
   // DNS bypass в фоне — не блокировать spawn/подписку на stdout (раньше теряли секунды).

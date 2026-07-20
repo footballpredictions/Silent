@@ -8,10 +8,11 @@ export const LIBCLIENT_MAX_WORKERS = 108
 /** Дефолт как Android: 7×9. Max по-прежнему 108. */
 export const DEFAULT_TOTAL_WORKERS = 63
 /**
- * Авто/ручная капча (legacy) — запасной режим: одна группа.
- * Иначе 63 воркера = десятки капч, если VK Calls недоступен.
+ * Авто/ручная капча (legacy) — boot 9, цель после рампа 27 (YouTube-полоса).
+ * Иначе параллельный старт 63 = шторм капчи.
  */
 export const LEGACY_CAPTCHA_WORKERS = WORKERS_PER_GROUP
+export const LEGACY_CAPTCHA_TARGET_WORKERS = 27
 /** Bootstrap: только API в WG, 3 воркера (1 группа) — как Android, без нагрузки на login. */
 export const BOOTSTRAP_STREAM_COUNT = 3
 /** PC connect: 2 группы — хватает для 0.0.0.0/0 на десктопе, без 6× VK Auth. */
@@ -166,14 +167,14 @@ function capHashes(hashes: string[] | undefined): string[] {
     .slice(0, MAX_HASHES)
 }
 
-/** Авто/ручная капча → ровно 9 воркеров; VKCalls → ползунок / дефолт 63. */
+/** Авто/ручная капча → target 27 (boot 9 в main); VKCalls → ползунок / дефолт 63. */
 export function isLegacyCaptchaStrategy(strategy = getEffectiveVkCredStrategy()): boolean {
   return isLegacyFromStore(strategy)
 }
 
 export function resolveWorkerCount(config: { vk_hashes?: string[]; stream_count?: number }): number {
   if (isLegacyCaptchaStrategy()) {
-    return LEGACY_CAPTCHA_WORKERS
+    return LEGACY_CAPTCHA_TARGET_WORKERS
   }
   const savedActive = activeServerHashCount(getSavedHashItems())
   const cappedHashes = capHashes(config.vk_hashes)

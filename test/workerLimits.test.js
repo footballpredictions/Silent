@@ -1,6 +1,10 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
-const { effectiveConnectWorkers, WORKERS_PER_GROUP } = require('../src/main/workerLimits')
+const {
+  effectiveConnectWorkers,
+  WORKERS_PER_GROUP,
+  LEGACY_CAPTCHA_TARGET_WORKERS,
+} = require('../src/main/workerLimits')
 
 describe('effectiveConnectWorkers', () => {
   it('VK Calls keeps full stream_count (63)', () => {
@@ -10,14 +14,23 @@ describe('effectiveConnectWorkers', () => {
     )
   })
 
-  it('legacy auto/manual captcha caps to 9', () => {
+  it('legacy auto/manual captcha targets 27 (boot 9 separately)', () => {
     assert.equal(
       effectiveConnectWorkers({ isBootstrap: false, vkAuthMode: 'legacy', streamCount: 63 }),
-      WORKERS_PER_GROUP,
+      LEGACY_CAPTCHA_TARGET_WORKERS,
     )
     assert.equal(
       effectiveConnectWorkers({ isBootstrap: false, vkAuthMode: 'legacy', streamCount: 108 }),
-      9,
+      LEGACY_CAPTCHA_TARGET_WORKERS,
+    )
+    assert.equal(LEGACY_CAPTCHA_TARGET_WORKERS, 27)
+    assert.equal(WORKERS_PER_GROUP, 9)
+  })
+
+  it('legacy does not exceed stream_count when lower', () => {
+    assert.equal(
+      effectiveConnectWorkers({ isBootstrap: false, vkAuthMode: 'legacy', streamCount: 18 }),
+      18,
     )
   })
 

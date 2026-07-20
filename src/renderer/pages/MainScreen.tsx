@@ -1241,11 +1241,6 @@ export default function MainScreen({
                     <span className="flex-1 leading-snug">Админ-панель</span>
                     <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: muted }} />
                   </span>
-                  {connected && (
-                    <span className="text-[10px] leading-tight" style={{ color: muted }}>
-                      только 10.66.66.1 — не nip.io
-                    </span>
-                  )}
                 </button>
               )}
               <button

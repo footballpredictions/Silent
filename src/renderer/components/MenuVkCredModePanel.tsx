@@ -106,7 +106,7 @@ export default function MenuVkCredModePanel({ fg, muted, bg, primary, vpnRunning
       />
       <ModeOption
         title="Авто капча"
-        subtitle="Запасной режим: 9 воркеров. Legacy + WBV Auto, затем ручной WebView"
+        subtitle="Запасной: boot 9 → рамп 27. Legacy + WBV Auto, затем ручной WebView"
         selected={mode === VK_CRED_AUTO}
         enabled={!vpnRunning}
         fg={fg}
@@ -115,7 +115,7 @@ export default function MenuVkCredModePanel({ fg, muted, bg, primary, vpnRunning
       />
       <ModeOption
         title="Ручная капча"
-        subtitle="Запасной режим: 9 воркеров. Legacy + только видимый WebView"
+        subtitle="Запасной: boot 9 → рамп 27. Legacy + только видимый WebView"
         selected={mode === VK_CRED_MANUAL}
         enabled={!vpnRunning}
         fg={fg}

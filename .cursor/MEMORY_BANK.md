@@ -534,6 +534,20 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-20 — PC: YouTube после flood→капча (рамп 9→27)
+
+- **Симптом:** flood → автокапча → 9/9 OK, сайты ок, YouTube нет (Android с 9 ок — мобильный CDN легче).
+- **Причина:** legacy жёстко clamp n=9 без рампа; full tunnel @9 мало WDTT-полосы для desktop YouTube (как 2026-07-09).
+- **Фикс:** boot 9 (капча без шторма) → рамп до **27** (`-target-n`, паузы 6s/5s). Go больше не режет target-n в legacy.
+- Debug: `pc/build-debug-471885/win-unpacked/` (SilentVPN-Admin.bat). В логе ждать `n=9→27` и рост до 27 воркеров.
+
+### 2026-07-20 — PC: админка снова через главную ссылку nip.io
+
+- После MFA Host guard tunnel `10.66.66.1/dashboard` → **404**. Клиент снова открывает `https://132-243-234-162.nip.io/dashboard`.
+- При VPN перед `openExternal` — `ensurePublicApiBypass` (браузер доходит до nip.io).
+- Убрана подпись «только 10.66.66.1»; `getAdminPanelUrl` всегда `PUBLIC_ADMIN_URL`.
+- Debug: `pc/build-debug-208755/win-unpacked/Silent VPN.exe` (лучше `SilentVPN-Admin.bat`).
+
 ### 2026-07-20 — Фикс фона главной: nip.io URL + видимость
 
 - PC брал `https://132.243.234.162/static/...` → TLS fail → битый значок. Теперь всегда `nip.io`.
@@ -576,8 +590,7 @@ cd pc; npm install; npm run dev
 - **Только** `Host: ADMIN_PUBLIC_HOST` (`132-243-234-162.nip.io`): UI + `/api/admin/*` + `/api/auth/admin/*`. Tunnel `10.66.66.1` для админки → **404** (клиентский VPN API через tunnel без изменений).
 - UI: «Запомнить логин» / «Запомнить это устройство», шаг ввода кода.
 - Env на VPS: `ADMIN_MFA_EMAIL`, `ADMIN_PUBLIC_HOST`. Деплой `deploy_stable` + `restore_api_container` (mkdir перед `docker cp` для новых пакетов).
-- **Следствие для PC/Android:** пункт «открыть админку» через `10.66.66.1` больше не работает — нужен публичный nip.io (при VPN+whitelist ISP может резать; отдельный фикс клиентов).
-
+- **Следствие для PC:** пункт «Админ-панель» открывает **публичный nip.io** (+ bypass при VPN). Tunnel `/dashboard` → 404.
 ### 2026-07-17 — PC: админка «через время» снова не открывается при VPN
 
 - В логе нормален `[WG] Bypass API: 132.243…` — это для app API/peer, **не** для браузерной админки.

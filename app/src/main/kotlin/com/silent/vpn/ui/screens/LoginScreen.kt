@@ -48,6 +48,7 @@ import com.silent.vpn.ui.components.DebugLogDialog
 import com.silent.vpn.ui.components.LoginExpiredPanel
 import com.silent.vpn.ui.components.ThemeModeToggle
 import com.silent.vpn.ui.components.resolveThemeAssetUrl
+import com.silent.vpn.ui.components.isRasterThemeAsset
 import com.silent.vpn.ui.theme.AppearanceMode
 import com.silent.vpn.ui.theme.DarkSystemBarStrip
 import com.silent.vpn.ui.theme.displayAppName
@@ -186,12 +187,13 @@ fun LoginScreen(
                 BrandHeader(
                     textColor = ui.fg,
                     appTitle = displayAppName(theme),
-                    // Лого из темы — только DEBUG, пока проверяем оформление
-                    logoUrl = if (!BuildConfig.DEBUG) null
-                    else resolveThemeAssetUrl(
-                        theme?.logo_url,
-                        "https://${com.silent.vpn.data.SilentRepository.DEFAULT_SERVER_HOST}",
-                    ).ifBlank { null },
+                    // Лого из темы — только DEBUG; SVG BitmapFactory не умеет → только растр
+                    logoUrl = if (!BuildConfig.DEBUG) {
+                        null
+                    } else {
+                        val u = resolveThemeAssetUrl(theme?.logo_url)
+                        u.takeIf { it.isNotBlank() && isRasterThemeAsset(it) }
+                    },
                 )
             }
             Spacer(modifier = Modifier.height(20.dp))

@@ -169,9 +169,9 @@ export default function ThemePage({ token }: { token: string }) {
         return
       }
       if (kind === 'logo') {
-        setTheme(t => ({ ...t, logo_url: `${d.url}?t=${Date.now()}` }))
+        setTheme(t => ({ ...t, logo_url: d.url }))
       } else {
-        setTheme(t => ({ ...t, home_bg_image_url: `${d.url}?t=${Date.now()}` }))
+        setTheme(t => ({ ...t, home_bg_image_url: d.url }))
       }
       setMsg(kind === 'logo' ? 'Логотип загружен и сохранён в теме' : 'Фон загружен и сохранён в теме')
     } catch {
@@ -325,7 +325,7 @@ export default function ThemePage({ token }: { token: string }) {
               {theme.home_bg_image_url ? (
                 <div className="relative rounded-lg overflow-hidden border border-[#333] h-24">
                   <img
-                    src={theme.home_bg_image_url}
+                    src={theme.home_bg_image_url.includes('?') ? theme.home_bg_image_url : `${theme.home_bg_image_url}?t=${Date.now()}`}
                     alt=""
                     className="w-full h-full object-cover"
                     style={{ filter: 'grayscale(100%)', opacity: 0.55 }}

@@ -448,8 +448,8 @@ export default function ClientPreview({
                 style={{
                   position: 'absolute', inset: 0, width: '100%', height: '100%',
                   objectFit: 'cover',
-                  filter: 'grayscale(100%) brightness(0.92) contrast(0.95)',
-                  opacity: previewDark ? 0.22 : 0.18,
+                  filter: 'grayscale(100%) brightness(0.95) contrast(0.92)',
+                  opacity: previewDark ? 0.38 : 0.32,
                   pointerEvents: 'none',
                 }}
               />

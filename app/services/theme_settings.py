@@ -36,6 +36,17 @@ def normalize_theme_data(data: dict) -> dict:
     if name.lower() in _LEGACY_APP_NAMES:
         out["app_name"] = "Silent VPN"
 
+    # Strip cache-bust query from asset URLs; prefer PNG over SVG for Android BitmapFactory
+    for key in ("logo_url", "home_bg_image_url"):
+        val = (out.get(key) or "").strip()
+        if not val:
+            continue
+        if "?" in val:
+            val = val.split("?", 1)[0]
+        if key == "logo_url" and val.lower().endswith(".svg"):
+            val = "/static/logo.png"
+        out[key] = val
+
     intro = (out.get("bonuses_intro_text") or "").strip()
     rules = (out.get("bonuses_rules_text") or "").strip()
     ref_hint = (out.get("bonuses_referral_hint") or "").strip()
@@ -68,6 +79,12 @@ def normalize_theme_data(data: dict) -> dict:
 
 def theme_needs_migration(data: dict) -> bool:
     if (data.get("app_name") or "").strip().lower() in _LEGACY_APP_NAMES:
+        return True
+    logo = (data.get("logo_url") or "").strip()
+    if "?" in logo or logo.lower().endswith(".svg"):
+        return True
+    home = (data.get("home_bg_image_url") or "").strip()
+    if "?" in home:
         return True
     if not (data.get("bonuses_intro_text") or "").strip():
         return True

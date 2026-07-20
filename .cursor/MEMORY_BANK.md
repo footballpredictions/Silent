@@ -534,6 +534,14 @@ cd pc; npm install; npm run dev
 
 ## Последние изменения
 
+### 2026-07-20 — Фикс фона главной: nip.io URL + видимость
+
+- PC брал `https://132.243.234.162/static/...` → TLS fail → битый значок. Теперь всегда `nip.io`.
+- Opacity фона поднята (~0.32–0.38); onError скрывает битую картинку.
+- Android: тот же URL; SVG лого пропускаем (BitmapFactory); логи загрузки.
+- theme_settings: logo.svg→png, strip `?t=` из asset URL.
+- IPC fetch-theme-asset на PC **не нужен** (после рестарта клиента картинка ок) — откат незавершённого.
+
 ### 2026-07-20 — Оформление: деплой + лого/фон только debug
 
 - Логотип (`logo_url`) и фон главной (`home_bg_image_url`) применяются **только в debug** PC/Android; release игнорирует.

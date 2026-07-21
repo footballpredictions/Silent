@@ -532,7 +532,12 @@ cd pc; npm install; npm run dev
 | `deploy_all.py`, `check_*.py`, `fix_*.py` | `deploy_stable.py` / `deploy_helper.py check` |
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
-## Последние изменения
+### 2026-07-21 — PC: Win10 оставляет wg-turn после disconnect
+
+- **Симптом:** на Windows 10 после выключения VPN адаптер `wg-turn` остаётся Connected → нет интернета, пока не выключить вручную. На Win11 ок.
+- **Причина:** `forceStop` без проверки/elevation; install мог быть через UAC, uninstall — нет; плюс Win10 часто не рвёт адаптер после `sc stop`. Bypass снимали до stop → `/1+/1` в мёртвый туннель.
+- **Фикс:** stop → verify → Disable-NetAdapter → при залипании UAC uninstall; порядок: сначала туннель, потом bypass; перед install Enable disabled-адаптера.
+- Debug: `pc/build-debug-883533/win-unpacked/SilentVPN-Admin.bat` — проверить на Win10: выкл VPN → адаптер wg-turn не Connected.
 
 ### 2026-07-20 — PC: YouTube после flood→капча (рамп 9→27)
 

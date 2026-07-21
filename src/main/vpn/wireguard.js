@@ -831,6 +831,114 @@ function copyStableConf(confPath) {
   return stable
 }
 
+async function isWgStillPresentAsync() {
+  return (await isTunnelUpAsync()) || (await isServiceRunningAsync())
+}
+
+/**
+ * Win10 часто оставляет адаптер Up после sc stop / частичного uninstall —
+ * маршруты 0.0.0.0/1 остаются → «нет интернета» пока не выключить вручную.
+ */
+async function disableWgAdapters(send) {
+  await psExecAsync(`
+    Get-NetAdapter -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.Name -eq '${TUNNEL_NAME}' -or
+        $_.InterfaceDescription -match 'WireGuard'
+      } |
+      ForEach-Object {
+        try {
+          Disable-NetAdapter -Name $_.Name -Confirm:$false -ErrorAction Stop
+        } catch {
+          netsh.exe interface set interface name="$($_.Name)" admin=disabled 2>$null | Out-Null
+        }
+      }
+  `)
+  send?.('[WG] Адаптер wg-turn: попытка Disable-NetAdapter')
+}
+
+async function stopWgServiceLocal(wgExe, runtimeDir, send) {
+  if (wgExe && fs.existsSync(wgExe)) {
+    const out = await runCmdAsync(`"${wgExe}" /uninstalltunnelservice ${TUNNEL_NAME}`, runtimeDir, 20000)
+    if (out && isAccessDeniedOut(out)) {
+      send?.('[WG] uninstall: Access is denied')
+      return { accessDenied: true }
+    }
+  }
+  try {
+    await execAsync(`sc stop "${SERVICE_NAME}"`, { windowsHide: true, timeout: 8000 })
+  } catch { /* ignore */ }
+  await sleep(600)
+  try {
+    await execAsync(`sc delete "${SERVICE_NAME}"`, { windowsHide: true, timeout: 8000 })
+  } catch { /* ignore */ }
+  await psExecAsync(`
+    Get-CimInstance Win32_Process -Filter "Name='wireguard.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.CommandLine -match 'wg-turn|SilentVPN' } |
+      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  `)
+  return { accessDenied: false }
+}
+
+/** UAC-снятие туннеля — зеркало installTunnelElevated (нужно, если install был через RunAs). */
+function uninstallTunnelElevated(wgExe, runtimeDir, send) {
+  return new Promise((resolve) => {
+    const logPath = path.join(STABLE_CONF_DIR, 'wg-uninstall.log')
+    const scriptPath = path.join(STABLE_CONF_DIR, 'wg-uninstall.ps1')
+    fs.mkdirSync(STABLE_CONF_DIR, { recursive: true })
+    const exe = String(wgExe || '').replace(/'/g, "''")
+    const ps1 = `
+$log = '${logPath.replace(/'/g, "''")}'
+function Log($m) { Add-Content -Path $log -Value $m -Encoding UTF8 }
+Log "=== WG uninstall $(Get-Date -Format o) ==="
+try {
+  if (Test-Path '${exe}') {
+    & '${exe}' /uninstalltunnelservice ${TUNNEL_NAME} 2>&1 | ForEach-Object { Log $_ }
+  }
+  sc.exe stop '${SERVICE_NAME}' 2>&1 | ForEach-Object { Log $_ }
+  Start-Sleep -Milliseconds 800
+  sc.exe delete '${SERVICE_NAME}' 2>&1 | ForEach-Object { Log $_ }
+  Get-NetAdapter -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } |
+    ForEach-Object {
+      Log "disable adapter $($_.Name) ($($_.Status))"
+      try { Disable-NetAdapter -Name $_.Name -Confirm:$false -ErrorAction Stop }
+      catch { netsh.exe interface set interface name="$($_.Name)" admin=disabled 2>&1 | ForEach-Object { Log $_ } }
+    }
+  Log "OK"
+  exit 0
+} catch {
+  Log "ERROR: $_"
+  exit 1
+}
+`
+    fs.writeFileSync(scriptPath, ps1, 'utf8')
+    send?.('[WG] Запрос UAC — снятие wg-turn (иначе Win10 оставляет туннель)…')
+
+    const launcher = spawn('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-Command',
+      `Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptPath.replace(/'/g, "''")}'`,
+    ], { windowsHide: true })
+
+    launcher.on('close', async (code) => {
+      if (fs.existsSync(logPath)) {
+        const log = fs.readFileSync(logPath, 'utf8').trim()
+        log.split('\n').slice(-8).forEach((line) => { if (line.trim()) send?.('[WG] ' + line.trim()) })
+      }
+      if (code !== 0) {
+        send?.('[WG] UAC отменён или uninstall не удался')
+        resolve(false)
+        return
+      }
+      resolve(!(await isWgStillPresentAsync()))
+    })
+    launcher.on('error', () => {
+      send?.('[WG] Не удалось запустить UAC uninstall')
+      resolve(false)
+    })
+  })
+}
+
 async function forceStopWireGuard(isDev, dirname, send) {
   return enqueueWgStop(async () => {
     send?.('[WG] Остановка туннеля...')
@@ -838,30 +946,55 @@ async function forceStopWireGuard(isDev, dirname, send) {
     const runtimeDir = lastRuntimeDir || prepareRuntimeDir(isDev, dirname, send) || STABLE_WG_DIR
     const wgExe = path.join(runtimeDir, 'wireguard.exe')
 
-    if (fs.existsSync(wgExe)) {
-      await runCmdAsync(`"${wgExe}" /uninstalltunnelservice ${TUNNEL_NAME}`, runtimeDir, 20000)
+    const first = await stopWgServiceLocal(wgExe, runtimeDir, send)
+    await disableWgAdapters(send)
+    await sleep(400)
+
+    if (!(await isWgStillPresentAsync())) {
+      send?.('[WG] Туннель wg-turn снят')
+      return
     }
 
-    try {
-      await execAsync(`sc stop "${SERVICE_NAME}"`, { windowsHide: true, timeout: 8000 })
-    } catch { /* ignore */ }
-    try {
-      await execAsync(`sc delete "${SERVICE_NAME}"`, { windowsHide: true, timeout: 8000 })
-    } catch { /* ignore */ }
+    send?.('[WG] wg-turn ещё активен после stop — повтор…', 'W')
+    await stopWgServiceLocal(wgExe, runtimeDir, send)
+    await disableWgAdapters(send)
+    await sleep(500)
 
-    await psExecAsync(`
-      Get-CimInstance Win32_Process -Filter "Name='wireguard.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match 'wg-turn|SilentVPN|SilentVPN' } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    `)
+    if (!(await isWgStillPresentAsync())) {
+      send?.('[WG] Туннель wg-turn снят (повтор)')
+      return
+    }
 
-    send?.('[WG] Остановка службы wg-turn (переустановка)...')
+    // Install мог пройти через elevated UAC, а Electron без админа — локальный uninstall молча no-op на Win10.
+    if (!isProcessElevated() || first.accessDenied) {
+      const ok = await uninstallTunnelElevated(wgExe, runtimeDir, send)
+      if (ok) {
+        send?.('[WG] Туннель wg-turn снят (UAC)')
+        return
+      }
+    } else {
+      // Elevated, но адаптер залип (типично Win10) — ещё раз disable + uninstall
+      await stopWgServiceLocal(wgExe, runtimeDir, send)
+      await disableWgAdapters(send)
+      await sleep(800)
+      if (!(await isWgStillPresentAsync())) {
+        send?.('[WG] Туннель wg-turn снят (hard disable)')
+        return
+      }
+    }
+
+    send?.(
+      '[WG] Не удалось снять wg-turn — отключите адаптер в «Сетевые подключения» или запустите SilentVPN-Admin.bat',
+      'E',
+    )
+    await logServiceState(send)
   })
 }
 
 async function stopWireGuardTunnel(isDev, dirname, send, excludeIPs = []) {
-  await removeServerBypassRoutes(excludeIPs.length ? excludeIPs : [FALLBACK_BACKEND_IP], send)
+  // Сначала туннель: иначе bypass снят, а /1+/1 остаются → нет интернета (Win10).
   await forceStopWireGuard(isDev, dirname, send)
+  await removeServerBypassRoutes(excludeIPs.length ? excludeIPs : [FALLBACK_BACKEND_IP], send)
   savedPhysicalGateway = null
 }
 
@@ -1112,6 +1245,18 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   elevatedCache = { at: 0, value: false }
   const elevated = isProcessElevated()
   send(elevated ? '[WG] Процесс с правами администратора' : '[WG] Без админа — нужен UAC для службы WireGuard')
+
+  // Win10: прошлый disconnect мог только Disable-NetAdapter — перед install включим.
+  await psExecAsync(`
+    Get-NetAdapter -ErrorAction SilentlyContinue |
+      Where-Object {
+        ($_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard') -and
+        $_.Status -eq 'Disabled'
+      } |
+      ForEach-Object {
+        Enable-NetAdapter -Name $_.Name -Confirm:$false -ErrorAction SilentlyContinue
+      }
+  `)
 
   if (!elevated) {
     const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly)

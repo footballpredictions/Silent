@@ -1241,6 +1241,9 @@ export default function MainScreen({
                     <span className="flex-1 leading-snug">Админ-панель</span>
                     <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: muted }} />
                   </span>
+                  <span className="text-[10px] leading-snug pl-0" style={{ color: muted }}>
+                    {connected || connecting ? 'при VPN: 10.66.66.1:8000' : 'без VPN: nip.io'}
+                  </span>
                 </button>
               )}
               <button

@@ -7,9 +7,9 @@ function getPublicServerUrl(): string {
 }
 
 export const WG_TUNNEL_GATEWAY = '10.66.66.1'
-/** @deprecated tunnel /dashboard → 404 (Host guard). Оставляем константу для совместимости. */
+/** Админка при VPN — через tunnel gateway (Host guard пускает 10.66.66.1). */
 export const WG_TUNNEL_ADMIN_URL = `http://${WG_TUNNEL_GATEWAY}:8000/dashboard`
-/** Админ-панель — всегда публичный nip.io. */
+/** Админка без VPN — публичный nip.io. */
 export const PUBLIC_ADMIN_URL = `${FALLBACK_PUBLIC}/dashboard`
 
 let mainVpnSessionActive = false
@@ -43,9 +43,9 @@ export function shouldRouteApiViaMain(): boolean {
   return mainVpnSessionActive || bootstrapApiRouting
 }
 
-/** Админ-панель всегда nip.io (tunnel /dashboard недоступен после MFA Host guard). */
-export function getAdminPanelUrl(_vpnConnected = false): string {
-  return PUBLIC_ADMIN_URL
+/** VPN ON → tunnel admin; VPN OFF → nip.io. Реальное открытие — IPC open-admin-panel. */
+export function getAdminPanelUrl(vpnConnected = false): string {
+  return vpnConnected ? WG_TUNNEL_ADMIN_URL : PUBLIC_ADMIN_URL
 }
 
 export function setWgTunnelReady(ready: boolean) {

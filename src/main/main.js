@@ -1024,27 +1024,64 @@ ipcMain.handle('open-external', async (_, url) => {
   }
 })
 /**
- * Админка в системном браузере — всегда главная публичная ссылка nip.io.
- * Tunnel 10.66.66.1 для /dashboard → 404 (Host guard: только ADMIN_PUBLIC_HOST).
- * При VPN перед открытием — bypass nip.io, иначе full-tunnel / whitelist режут браузер.
+ * Админка в системном браузере.
+ * VPN ON (full) → http://10.66.66.1:8000/dashboard (через туннель, без bypass —
+ *   ISP whitelist часто режет nip.io вне VPN; Host guard пускает 10.66.66.1).
+ * VPN OFF / bootstrap → публичный nip.io.
  */
+const WG_TUNNEL_GATEWAY = '10.66.66.1'
+const PUBLIC_ADMIN_URL = 'https://132-243-234-162.nip.io/dashboard'
+const TUNNEL_ADMIN_URL = `http://${WG_TUNNEL_GATEWAY}:8000/dashboard`
+
+function shouldOpenAdminViaTunnel() {
+  return !!(vpnSessionActive || wgApplied) && !vpnBootstrapMode
+}
+
 function resolveAdminPanelUrl() {
-  // Строка, не UPDATE_PUBLIC_BASE: константа объявлена ниже по файлу.
-  return 'https://132-243-234-162.nip.io/dashboard'
+  return shouldOpenAdminViaTunnel() ? TUNNEL_ADMIN_URL : PUBLIC_ADMIN_URL
+}
+
+function probeTunnelAdminHealth(timeoutMs = 2500) {
+  return new Promise((resolve) => {
+    const req = http.get(
+      {
+        host: WG_TUNNEL_GATEWAY,
+        port: 8000,
+        path: '/health',
+        timeout: timeoutMs,
+      },
+      (res) => {
+        res.resume()
+        resolve(res.statusCode >= 200 && res.statusCode < 500)
+      },
+    )
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(false)
+    })
+    req.on('error', () => resolve(false))
+  })
 }
 
 ipcMain.handle('get-admin-panel-url', () => resolveAdminPanelUrl())
 ipcMain.handle('open-admin-panel', async () => {
-  const url = resolveAdminPanelUrl()
+  let url = resolveAdminPanelUrl()
   try {
-    if (vpnSessionActive || wgApplied) {
-      await ensurePublicApiBypass(sendLog)
-      sendLog(`[Admin] public nip.io (+ bypass) → ${url}`)
+    if (shouldOpenAdminViaTunnel()) {
+      const ok = await probeTunnelAdminHealth()
+      if (!ok) {
+        sendLog('[Admin] tunnel health fail — fallback nip.io + bypass', 'W')
+        url = PUBLIC_ADMIN_URL
+        await ensurePublicApiBypass(sendLog)
+        sendLog(`[Admin] public nip.io (+ bypass) → ${url}`)
+      } else {
+        sendLog(`[Admin] tunnel → ${url}`)
+      }
     } else {
       sendLog(`[Admin] public nip.io → ${url}`)
     }
   } catch (e) {
-    sendLog(`[Admin] bypass warn: ${e?.message || e} — всё равно ${url}`)
+    sendLog(`[Admin] warn: ${e?.message || e} — ${url}`)
   }
   await shell.openExternal(url)
   return url

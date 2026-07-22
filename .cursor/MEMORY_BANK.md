@@ -537,7 +537,9 @@ cd pc; npm install; npm run dev
 - **Симптом:** при включённом VPN «Админ-панель» не открывалась (nip.io + bypass — ISP whitelist режет вне туннеля).
 - **Backend:** `AdminHostGuard` пускает админ SPA + `/api/admin/*` / `/api/auth/admin/*` с `Host: 10.66.66.1` **и** `ADMIN_PUBLIC_HOST` (nip.io). Сырой IP / чужой Host → 404. Проверено на VPS: tunnel dashboard **200**, no-host **404**, admin API **401** (не 404).
 - **PC:** VPN ON → `http://10.66.66.1:8000/dashboard` без bypass; health-probe, при fail — fallback nip.io+bypass. VPN OFF → nip.io. Подпись в меню: «при VPN: 10.66.66.1:8000».
-- Деплой: `deploy_stable.py`. Debug: `pc/build-debug-420866/win-unpacked/` (`SilentVPN-Admin.bat`). Push не делали.
+- Деплой: `deploy_stable.py`. Debug: `pc/build-debug-420866/win-unpacked/` (`SilentVPN-Admin.bat`).
+- **Push:** `main` `109c77c`, `pc` `8883c6a` (без лишнего `wdtt-client.exe`/integrityHashes от debug-пересборки).
+- **Build-agent на VPS:** `build_pc.sh` / `build_android_go.sh` / `ensure_go.sh` **идентичны** локальным (API **24**, `GOTOOLCHAIN=go1.26.3`, PC **reuse** `wdtt-client.exe` из git без `PC_FORCE_REBUILD_WDTT=1`) — лишних расхождений в ночной сборке нет.
 
 ### 2026-07-22 — Landing: гайд — Подписка / Бонусы / Сессии
 

@@ -532,6 +532,12 @@ cd pc; npm install; npm run dev
 | `deploy_all.py`, `check_*.py`, `fix_*.py` | `deploy_stable.py` / `deploy_helper.py check` |
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
+### 2026-07-22 — Backend: паттерны анонимайзеров по аудиту БД (без удаления)
+
+- Аудит users (221 email): явные анонимайзеры/алиасы — см. отчёт в чате. **Никого не удаляли.**
+- Новые правила только на **будущие** регистрации: точечный Gmail (`a.b.c.d.e`, ≥4 точки), рандом local Mail.ru-анонимайзера (`504c52c1f5lc`…), `trialN@`. `stisss2107`-подобные ники не режем.
+- Деплой `deploy_stable.py`.
+
 ### 2026-07-22 — Backend: блок анонимайзеров почты + 1 trial на устройство
 
 - **Проблема:** Mail.ru анонимайзер (до 10 алиасов, часто `@internet.ru`) и hide-my-email/relay → новые аккаунты и бесплатный trial.

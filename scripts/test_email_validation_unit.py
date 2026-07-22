@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 from app.services.email_validation import (  # noqa: E402
     BLOCKED_EMAIL_DOMAINS,
     canonical_email,
+    classify_email_suspicion,
     validate_registration_email_domain,
 )
 
@@ -52,6 +53,32 @@ def test_internet_ru_not_in_whitelist_config():
     assert "internet.ru" in BLOCKED_EMAIL_DOMAINS
 
 
+def test_block_dotted_gmail_alias():
+    assert validate_registration_email_domain("x.ha.rp.erd.e.a.n@gmail.com")
+    assert validate_registration_email_domain("siets.ie.tn.oac.h@gmail.com")
+
+
+def test_block_mailru_random_anonymizer():
+    assert validate_registration_email_domain("504c52c1f5lc@mail.ru")
+    assert validate_registration_email_domain("trmq1h2hekdm@mail.ru")
+    assert validate_registration_email_domain("8vjzcomtkhzu@mail.ru")
+
+
+def test_allow_normal_mailru():
+    assert validate_registration_email_domain("chameleon31@mail.ru") is None
+    assert validate_registration_email_domain("vova.voloshin83@mail.ru") is None
+    assert validate_registration_email_domain("pixik96@mail.ru") is None
+
+
+def test_classify_report_helpers():
+    assert classify_email_suspicion("benirop916@suahi.com") == "disposable_domain"
+    assert classify_email_suspicion("na5me@internet.ru") == "anonymizer_domain"
+    assert classify_email_suspicion("504c52c1f5lc@mail.ru") == "mailru_anonymizer_local"
+    assert classify_email_suspicion("x.ha.rp.erd.e.a.n@gmail.com") == "dotted_alias"
+    assert classify_email_suspicion("reynsia7+5crp1@gmail.com") == "plus_alias"
+    assert classify_email_suspicion("igor.bykov.3006@gmail.com") is None
+
+
 def main():
     tests = [
         test_block_internet_ru_anonymizer,
@@ -61,6 +88,10 @@ def main():
         test_allow_gmail,
         test_canonical_gmail_dots,
         test_internet_ru_not_in_whitelist_config,
+        test_block_dotted_gmail_alias,
+        test_block_mailru_random_anonymizer,
+        test_allow_normal_mailru,
+        test_classify_report_helpers,
     ]
     failed = 0
     for t in tests:

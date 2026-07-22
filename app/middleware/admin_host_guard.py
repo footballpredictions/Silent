@@ -1,6 +1,11 @@
-"""Block admin UI and admin API unless Host matches ADMIN_PUBLIC_HOST.
+"""Restrict admin UI/API to known hosts.
 
-Tunnel API (10.66.66.1) keeps serving client VPN endpoints; admin surface → 404.
+Allowed:
+- ADMIN_PUBLIC_HOST (public nip.io via nginx)
+- WireGuard tunnel gateway 10.66.66.1 (PC/Android open admin while VPN is on —
+  ISP whitelist often blocks nip.io when bypassed outside the tunnel)
+
+Client VPN API on tunnel stays unrestricted (non-admin paths).
 """
 from __future__ import annotations
 
@@ -9,6 +14,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from app.config import settings
+
+# DNAT 10.66.66.1:8000 → api; browser Host is 10.66.66.1[:8000]
+_TUNNEL_ADMIN_HOSTS = frozenset({"10.66.66.1"})
 
 
 def _normalize_host(host: str) -> str:
@@ -27,6 +35,9 @@ def host_allows_admin(host_header: str) -> bool:
     host = _normalize_host(host_header)
     allowed = _normalize_host(settings.ADMIN_PUBLIC_HOST)
     if host and allowed and host == allowed:
+        return True
+    # VPN session: admin SPA + /api/admin/* via tunnel gateway (still login + MFA)
+    if host in _TUNNEL_ADMIN_HOSTS:
         return True
     if settings.DEBUG and host in ("localhost", "127.0.0.1", "::1"):
         return True

@@ -403,7 +403,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Admin UI/API only on ADMIN_PUBLIC_HOST (not via tunnel 10.66.66.1)
+# Admin UI/API: ADMIN_PUBLIC_HOST (nip.io) or tunnel gateway 10.66.66.1
 from app.middleware.admin_host_guard import AdminHostGuardMiddleware
 
 app.add_middleware(AdminHostGuardMiddleware)

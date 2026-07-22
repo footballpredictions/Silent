@@ -43,11 +43,13 @@ Agent приступает к **первой невыполненной** зад
 - [x] Android: bump version → `1.0.154` → push `origin/android` (Telegram parity PC) — 2026-07-11
 - [x] Android: bump version → `1.0.155` → push `origin/android` (VK Calls Wi‑Fi DPI) — 2026-07-12
 - [x] Android: bump version → `1.0.156` → push `origin/android` (YuMoney payment flow) — 2026-07-14
-- [ ] Android: `assembleRelease` → `python scripts/deploy_release.py ...` (OTA 1.0.156)
+- [x] Android: bump version → `1.0.159` → push `origin/android` (theme bg + Ugoos/TOX после 158) — 2026-07-22
+- [ ] Android: `assembleRelease` → `python scripts/deploy_release.py ...` (OTA 1.0.159)
 - [x] PC: bump version → `1.0.154` → push `origin/pc` (Telegram latency + exclusions) — 2026-07-11
 - [x] PC: bump version → `1.0.155` → push `origin/pc` (WG 1.1 + Wi‑Fi VK Calls) — 2026-07-12
 - [x] PC: bump version → `1.0.156` → push `origin/pc` (installer WG repair) — 2026-07-13
-- [ ] PC: `build-installer.bat` → `python scripts/deploy_release.py ...` (OTA 1.0.156)
+- [x] PC: bump version → `1.0.159` → push `origin/pc` (theme/admin/Win10 wg-turn после 158) — 2026-07-22
+- [ ] PC: `build-installer.bat` → `python scripts/deploy_release.py ...` (OTA 1.0.159)
 
 ---
 

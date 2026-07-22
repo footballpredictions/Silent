@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.158** (LEGACY_ESCALATE n=9, VK .ru, bypass mutex) |
-| `Silent-Project/android/` | `android` | **1.0.158** (LEGACY_ESCALATE n=9, VK .ru) |
+| `Silent-Project/pc/` | `pc` | **1.0.159** (после 158: theme bg, Win10 wg-turn, admin nip.io, Go 1.26.3) |
+| `Silent-Project/android/` | `android` | **1.0.159** (после 158: Ugoos/TOX, theme bg/logo debug, nip.io bg) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -531,6 +531,24 @@ cd pc; npm install; npm run dev
 | `deploy_update.py` | `pc/scripts/deploy_release.py` или `android/scripts/deploy_release.py` |
 | `deploy_all.py`, `check_*.py`, `fix_*.py` | `deploy_stable.py` / `deploy_helper.py check` |
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
+
+### 2026-07-22 — PC: админка при VPN снова через tunnel 10.66.66.1
+
+- **Симптом:** при включённом VPN «Админ-панель» не открывалась (nip.io + bypass — ISP whitelist режет вне туннеля).
+- **Backend:** `AdminHostGuard` пускает админ SPA + `/api/admin/*` / `/api/auth/admin/*` с `Host: 10.66.66.1` **и** `ADMIN_PUBLIC_HOST` (nip.io). Сырой IP / чужой Host → 404. Проверено на VPS: tunnel dashboard **200**, no-host **404**, admin API **401** (не 404).
+- **PC:** VPN ON → `http://10.66.66.1:8000/dashboard` без bypass; health-probe, при fail — fallback nip.io+bypass. VPN OFF → nip.io. Подпись в меню: «при VPN: 10.66.66.1:8000».
+- Деплой: `deploy_stable.py`. Debug: `pc/build-debug-420866/win-unpacked/` (`SilentVPN-Admin.bat`). Push не делали.
+
+### 2026-07-22 — Landing: гайд — Подписка / Бонусы / Сессии
+
+- В инструкцию `#guide` добавлены 3 интерактивных демо в том же стиле клиента (меню → экран, курсор, caption): **Подписка** (тарифы → ожидание YuMoney → успех), **Бонусы** (реф-ссылка + промокод), **Сессии** (онлайн-точки, подпись устройства).
+- TOC: +«Подписка» / «Бонусы» / «Сессии»; в меню демо «Устройства» → «Сессии (n/3)» как в PC/Android. Стиль/переходы не менялись; `guide.css`/`guide.js` → `?v=5`.
+- Push `silentvpn3.github.io` `main`: `b58578d` (rebase поверх sync релизов 1.0.159). Сайт: https://silentvpn3.github.io/#guide
+
+### 2026-07-22 — bump PC/Android 1.0.159 + push
+
+- Android `1.0.159` / code 159; PC `1.0.159`. Включает коммиты после 158 (theme bg, Ugoos, Win10 wg-turn, admin nip.io, Go pin) — без Wi‑Fi Telegram экспериментов (откатили).
+- Debug сборки; OTA release — отдельно.
 
 ### 2026-07-22 — build-agent: API 24 на VPS + GOTOOLCHAIN (Android/PC)
 

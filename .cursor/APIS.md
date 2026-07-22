@@ -120,7 +120,7 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 
 ### Admin — `/api/admin`
 
-Админ UI/API доступны **только** с `Host: ADMIN_PUBLIC_HOST` (nip.io). Через tunnel `10.66.66.1` — 404. JWT админки содержит `jti` серверной сессии (отзыв через DELETE).
+Админ UI/API: `Host: ADMIN_PUBLIC_HOST` (nip.io) **или** `Host: 10.66.66.1` (VPN tunnel — PC открывает админку при включённом VPN без bypass). Сырой публичный IP / чужой Host → 404. JWT админки содержит `jti` серверной сессии (отзыв через DELETE).
 
 | Метод | Путь | Auth | Описание |
 |-------|------|------|----------|

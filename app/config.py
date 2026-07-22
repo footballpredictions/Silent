@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = "change_me_123"
     # MFA: код подтверждения входа на эту почту (пустая строка = MFA выключен)
     ADMIN_MFA_EMAIL: str = "silent27@bk.ru"
-    # Только этот Host отдаёт админ UI/API (tunnel 10.66.66.1 — 404)
+    # Публичный Host админки (nginx). Tunnel 10.66.66.1 тоже разрешён в AdminHostGuard.
     ADMIN_PUBLIC_HOST: str = "132-243-234-162.nip.io"
     ADMIN_SESSION_HOURS: int = 12
     ADMIN_MFA_CODE_TTL_MINUTES: int = 2

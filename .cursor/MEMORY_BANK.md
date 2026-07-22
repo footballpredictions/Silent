@@ -532,6 +532,13 @@ cd pc; npm install; npm run dev
 | `deploy_all.py`, `check_*.py`, `fix_*.py` | `deploy_stable.py` / `deploy_helper.py check` |
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
+### 2026-07-22 — build-agent: API 24 на VPS + GOTOOLCHAIN (Android/PC)
+
+- **Почему release на сервере ломался при том же git:** на VPS оставался старый `build_android_go.sh` (**android29**); `deploy_stable` не трогает `build-agent/`.
+- **Фикс + деплой:** `build_android_go.sh` API 24 + жёсткий `GOTOOLCHAIN=go1.26.3`; `ensure_go.sh` не перетирает заданный toolchain; `python scripts/deploy_build_agent.py` — на хосте и в контейнере проверено.
+- **PC vs локально:** NDK/API29 к PC не относится (CGO=0 Windows). Выровняли Go 1.26.3 в `build_pc.sh` + локальных `build-debug.bat`/`build-installer.bat`. Отличие: сервер может **reuse** `wdtt-client.exe` из git (`PC_FORCE_REBUILD_WDTT=1` — пересобрать).
+- **OTA 1.0.158 на сервере ещё старая** — нужна пересборка Android release через build-agent.
+
 ### 2026-07-21 — PC: Win10 оставляет wg-turn после disconnect
 
 - **Симптом:** на Windows 10 после выключения VPN адаптер `wg-turn` остаётся Connected → нет интернета, пока не выключить вручную. На Win11 ок.

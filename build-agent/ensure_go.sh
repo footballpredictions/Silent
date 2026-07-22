@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Официальный Go (не apt golang 1.18). GOTOOLCHAIN=auto подтягивает версию из go.mod.
+# Официальный Go (не apt golang 1.18).
+# Если caller уже задал GOTOOLCHAIN (например go1.26.3) — не перетираем.
 set -euo pipefail
 
 GO_INSTALL_DIR="${GO_INSTALL_DIR:-/usr/local/go}"
@@ -7,7 +8,9 @@ GO_BOOTSTRAP_VERSION="${GO_BOOTSTRAP_VERSION:-1.24.2}"
 
 if [[ -x "$GO_INSTALL_DIR/bin/go" ]]; then
   export PATH="$GO_INSTALL_DIR/bin:$PATH"
-  export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
+  if [[ -z "${GOTOOLCHAIN:-}" ]]; then
+    export GOTOOLCHAIN=auto
+  fi
   return 0 2>/dev/null || exit 0
 fi
 
@@ -19,5 +22,7 @@ mkdir -p "$(dirname "$GO_INSTALL_DIR")"
 tar -C "$(dirname "$GO_INSTALL_DIR")" -xzf "$tmp/go.tgz"
 rm -rf "$tmp"
 export PATH="$GO_INSTALL_DIR/bin:$PATH"
-export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
+if [[ -z "${GOTOOLCHAIN:-}" ]]; then
+  export GOTOOLCHAIN=auto
+fi
 go version

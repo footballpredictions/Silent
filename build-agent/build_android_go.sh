@@ -13,9 +13,9 @@ ROOT="${BUILD_AGENT_ROOT:-/app/build-agent}"
 # shellcheck source=ensure_go.sh
 source "$ROOT/ensure_go.sh"
 
-# Go 1.26.0–1.26.2: на 32-bit Android 8–10 runtime пробует futex_time64 → SIGSYS exit 159.
-# https://github.com/golang/go/issues/77621
-export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.3}"
+# Жёстко (не ${VAR:-default}): ensure_go мог уже выставить auto.
+# Go 1.26.0–1.26.2 на 32-bit Android 8–10 → SIGSYS exit 159 (go#77621).
+export GOTOOLCHAIN=go1.26.3
 
 NDK_ROOT="$ANDROID_HOME/ndk"
 if [[ ! -d "$NDK_ROOT" ]]; then
@@ -25,8 +25,7 @@ fi
 
 NDK_VER="$(ls -1 "$NDK_ROOT" | sort -V | tail -1)"
 TOOLCHAIN="$NDK_ROOT/$NDK_VER/toolchains/llvm/prebuilt/linux-x86_64/bin"
-# API 24 = minSdk. API 29+ тянет android_get_device_api_level — на Android 9 (API 28)
-# linker: CANNOT LINK EXECUTABLE libclient.so (Smart TV / Amlogic и т.п.).
+# API 24 = minSdk. API 29+ → android_get_device_api_level → CANNOT LINK на Android 9.
 ANDROID_API="${ANDROID_API:-24}"
 CC_ARM64="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
 CC_ARM32="$TOOLCHAIN/armv7a-linux-androideabi${ANDROID_API}-clang"
@@ -84,4 +83,4 @@ for abi in arm64-v8a armeabi-v7a x86_64 x86; do
   echo "[go] OK $abi ($(stat -c%s "$so" 2>/dev/null || wc -c <"$so") bytes)"
 done
 
-echo "[go] libclient.so OK (4 ABIs)"
+echo "[go] libclient.so OK (4 ABIs, API $ANDROID_API, $GOTOOLCHAIN)"

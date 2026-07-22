@@ -11,9 +11,14 @@ GO_IMAGE="${PC_GO_BUILDER_IMAGE:-golang:1.24-bookworm}"
 # Без wdtt-client.exe установщик ~79 MB; с wdtt ~83 MB
 MIN_INSTALLER_BYTES="${PC_MIN_INSTALLER_BYTES:-81000000}"
 MIN_WDTT_BYTES="${PC_MIN_WDTT_BYTES:-500000}"
+# Как android build_android_go / локальный bat: фиксируем toolchain (go.mod = 1.26).
+# CGO=0 Windows — не Android SIGSYS, но единый Go для воспроизводимости.
+export GOTOOLCHAIN="${PC_GOTOOLCHAIN:-go1.26.3}"
 
 # shellcheck source=ensure_go.sh
 source "$ROOT/ensure_go.sh"
+# ensure_go не должен оставить auto, если мы уже задали версию
+export GOTOOLCHAIN="${PC_GOTOOLCHAIN:-go1.26.3}"
 
 pre_clean_workspace() {
   echo "[build] pre-clean pc workspace"
@@ -82,11 +87,12 @@ verify_wdtt_pe() {
 }
 
 build_wdtt_client_host() {
-  echo "[build] wdtt-client.exe (API container, linux -> windows)"
+  echo "[build] wdtt-client.exe (API container, linux -> windows, GOTOOLCHAIN=$GOTOOLCHAIN)"
   mkdir -p "$REPO/resources"
   cd "$REPO/wdtt-go"
   unset GOOS GOARCH GOARM CGO_ENABLED
   go mod download
+  go version
   GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
     go build -ldflags="-s -w -checklinkname=0" -trimpath -o ../resources/wdtt-client.exe .
   verify_wdtt_pe "$REPO/resources/wdtt-client.exe"
@@ -103,7 +109,7 @@ build_wdtt_client_docker() {
     -v "${docker_repo}:/project" \
     -w /project/wdtt-go \
     -e PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    -e GOTOOLCHAIN=auto \
+    -e GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.3}" \
     -e GOOS=windows \
     -e GOARCH=amd64 \
     -e CGO_ENABLED=0 \
@@ -111,6 +117,7 @@ build_wdtt_client_docker() {
     -c 'set -euo pipefail
       command -v go >/dev/null || { echo "go not in PATH: $PATH" >&2; exit 127; }
       go version
+      echo "GOTOOLCHAIN=$GOTOOLCHAIN"
       go mod download
       go build -ldflags="-s -w -checklinkname=0" -trimpath -o ../resources/wdtt-client.exe .
       test -f ../resources/wdtt-client.exe
@@ -132,11 +139,12 @@ build_wdtt_client() {
   local existing="$REPO/resources/wdtt-client.exe"
   local force_rebuild="${PC_FORCE_REBUILD_WDTT:-0}"
 
-  # Если валидный Windows PE уже есть в репо — используем его.
-  # Это исключает падения на шаге go/docker в build-agent и гарантирует, что файл попадёт в installer.
+  # Если валидный Windows PE уже есть в репо — используем его (быстрее).
+  # Отличие от локального build-installer.bat: там wdtt всегда пересобирается.
+  # Принудительно: PC_FORCE_REBUILD_WDTT=1
   if [[ "$force_rebuild" != "1" && -f "$existing" ]]; then
     if verify_wdtt_pe "$existing"; then
-      echo "[build] reuse wdtt-client.exe from repo"
+      echo "[build] reuse wdtt-client.exe from repo (set PC_FORCE_REBUILD_WDTT=1 to rebuild)"
       return 0
     fi
     echo "[build] existing wdtt-client.exe invalid, rebuilding..." >&2

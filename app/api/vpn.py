@@ -39,6 +39,7 @@ from app.services.subscription_service import (
     user_has_active_subscription,
     ensure_trial_subscription,
     require_active_subscription,
+    require_device_trial_not_reused,
     is_user_admin,
 )
 from app.services.theme_settings import load_theme
@@ -69,6 +70,7 @@ async def device_register(
     db: AsyncSession = Depends(get_db),
 ):
     await clear_stale_online_status(db)
+    await require_device_trial_not_reused(db, user, req.device_fingerprint)
     await ensure_trial_subscription(db, user)
     await require_active_subscription(user, db)
     has_sub = await user_has_active_subscription(user, db)
@@ -123,6 +125,7 @@ async def get_config(
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Сессия устройства не найдена. Войдите снова.")
+    await require_device_trial_not_reused(db, user, fingerprint)
     await ensure_trial_subscription(db, user)
     await require_active_subscription(user, db)
     has_sub = await user_has_active_subscription(user, db)

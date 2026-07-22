@@ -24,7 +24,10 @@ from app.services.email_service import send_verification_email, send_password_re
 from app.services.subscription_service import apply_post_verification_benefits
 from app.services.theme_settings import load_theme
 from app.services.vpn_service import ensure_device_session
-from app.services.email_validation import validate_registration_email_domain
+from app.services.email_validation import (
+    canonical_email,
+    validate_registration_email_domain,
+)
 from app.services.rate_limiter import check_ip_rate_limit, get_client_ip
 from app.services import admin_auth_service
 from app.config import settings
@@ -56,9 +59,27 @@ async def register(
     if domain_error:
         raise HTTPException(status_code=400, detail=domain_error)
 
-    result = await db.execute(select(User).where(User.email == req.email))
+    email_norm = req.email.strip().lower()
+    result = await db.execute(select(User).where(User.email == email_norm))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email уже зарегистрирован")
+
+    # Gmail: a.b@gmail.com ≡ ab@gmail.com ≡ ab@googlemail.com
+    canon = canonical_email(email_norm)
+    if canon.endswith("@gmail.com"):
+        from sqlalchemy import or_
+
+        gmail_rows = await db.execute(
+            select(User.email).where(
+                or_(
+                    User.email.ilike("%@gmail.com"),
+                    User.email.ilike("%@googlemail.com"),
+                )
+            )
+        )
+        for existing_email in gmail_rows.scalars().all():
+            if canonical_email(existing_email) == canon:
+                raise HTTPException(status_code=400, detail="Email уже зарегистрирован")
 
     from app.services.referral_service import (
         resolve_referral_or_promo,
@@ -70,7 +91,7 @@ async def register(
 
     token = generate_token()
     user = User(
-        email=req.email,
+        email=email_norm,
         password_hash=hash_password(req.password),
         verification_token=token,
         referral_code=await generate_unique_referral_code(db),
@@ -82,8 +103,8 @@ async def register(
 
     # Отправка письма в фоне — не блокирует ответ клиенту
     base_url = settings.FRONTEND_URL.rstrip("/")
-    background_tasks.add_task(send_verification_email, req.email, token, base_url)
-    logger.info(f"Register: {req.email}, verify link base: {base_url}")
+    background_tasks.add_task(send_verification_email, email_norm, token, base_url)
+    logger.info(f"Register: {email_norm}, verify link base: {base_url}")
 
     return {"message": "Регистрация успешна. Проверьте email для подтверждения."}
 

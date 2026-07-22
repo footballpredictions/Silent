@@ -532,13 +532,51 @@ cd pc; npm install; npm run dev
 | `deploy_all.py`, `check_*.py`, `fix_*.py` | `deploy_stable.py` / `deploy_helper.py check` |
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
-### 2026-07-22 — PC: админка при VPN снова через tunnel 10.66.66.1
+### 2026-07-22 — Backend: блок анонимайзеров почты + 1 trial на устройство
+
+- **Проблема:** Mail.ru анонимайзер (до 10 алиасов, часто `@internet.ru`) и hide-my-email/relay → новые аккаунты и бесплатный trial.
+- **Фикс email:** `internet.ru` убран из whitelist; hard-block `BLOCKED_EMAIL_DOMAINS` (internet.ru, privaterelay.appleid.com, duck.com, mozmail.com, SimpleLogin/AnonAddy…); запрет `+alias`; Gmail canonical uniqueness (точки/googlemail).
+- **Фикс trial:** `require_device_trial_not_reused` на `/vpn/device/register` и `/vpn/config` — один trial на `device_fingerprint` (алиасы на одном телефоне не дают второй бесплатный VPN). Платный аккаунт не блокируется.
+- Тесты: `scripts/test_email_validation_unit.py` 7/7. Клиенты не трогали.
+
+### 2026-07-22 — Откат локальных правок клиентов → origin
+
+- PC / Android / iOS: `git reset --hard origin/*` + `clean -fd`. Рабочие деревья чистые.
+- PC `8883c6a`, Android `d195bf3` (1.0.159), iOS `a454e6c`. Локальные soft-ramp / preflight / admin-эксперименты сняты.
+
+### 2026-07-22 — PC: админка снова nip.io (+bypass); откат soft-ramp Telegram
+
+- **Админка:** канон `fcfc87a` — всегда `https://132-243-234-162.nip.io/dashboard`. При VPN — `ensurePublicApiBypass`. Tunnel `10.66.66.1/dashboard` **не** открывать (MFA Host guard / решение пользователя). Откат ошибочного `8883c6a` и локального «always tunnel».
+- **Воркеры:** soft-ramp 10s/7s + chunk=24 ухудшил Telegram (видео не грузится) — возврат PC к **3s/2s** (legacy 6s/5s) + **chunk=8 / retry 50ms**. Android: убран target-n soft-cascade, dispatcher снова chunk=8; Wi‑Fi `-vk-dns-public` оставлен.
+- Debug PC: `pc/build-debug-850631/win-unpacked/` + `SilentVPN-Admin.bat`. Android debug APK после `assembleDebug`.
+
+### 2026-07-22 — PC: админка при VPN снова ломалась (fallback nip.io)
+
+- **ОТМЕНЕНО** пользователем: не открывать `10.66.66.1` — официальный URL nip.io (см. запись выше + `fcfc87a`).
+
+### 2026-07-22 — PC+Android: мягкий каскад воркеров (Telegram медиа без ↓n)
+
+- **ОТМЕНЕНО** пользователем: стало хуже, Telegram видео перестало грузиться. Откат к прежним паузам/chunk (см. запись выше).
+
+
+- **Симптом:** LTE ок, домашний Wi‑Fi — Silent не коннектится (Honor 200 Pro и др.). Отдельно: большой APK в Telegram по Wi‑Fi падает на 100% — это не Silent.
+- **Причина:** после `b7e2201` убрали PreferGo/8.8.8.8 (ломал LTE); на Wi‑Fi ISP DNS poison `api.vk.*` снова возможен.
+- **Фикс:** флаг `-vk-dns-public` только если `!isOnMobileData` → Go `creds_direct.go` PreferGo + 8.8.8.8/Yandex/CF **без** LocalAddr-bind; LTE без флага. Ротация хостов снова с `api.vk.com`.
+- Preflight чужого WDTT (PC+Android) — отдельно, уже в коде с прошлого шага.
+
+
+- **Симптом:** после другого VPN на той же технологии (qwdtt/wdtt/WireGuard) Silent «не подключается» / нет сети, помогает только перезагрузка Windows/телефона.
+- **Причина:** чужие WG-адаптеры Up + маршруты `0.0.0.0/1`/`128.0.0.0/1`, занятый UDP `:9000`, на Android — Always-On другого приложения или залипший чужой VpnService.
+- **PC:** `pc/src/main/vpn/preflightCleanup.js` перед `vpn-connect` — kill чужих wdtt/qwdtt/libclient, освобождение `:9000`, Disable чужих WG/Wintun (не `wg-turn`), снятие чужих `/1` маршрутов, `ipconfig /flushdns`.
+- **Android:** `VpnNetworkHelper.describeVpnConflict` — Always-On другого пакета = blocking + Intent в настройки VPN; иначе агрессивный `VpnConnectHelper.prepareForConnect` + пауза в `WireGuardHelper` перед захватом TUN.
+- Версии пока **1.0.159** (без bump); в релиз уйдёт следующим OTA.
+
 
 - **Симптом:** при включённом VPN «Админ-панель» не открывалась (nip.io + bypass — ISP whitelist режет вне туннеля).
 - **Backend:** `AdminHostGuard` пускает админ SPA + `/api/admin/*` / `/api/auth/admin/*` с `Host: 10.66.66.1` **и** `ADMIN_PUBLIC_HOST` (nip.io). Сырой IP / чужой Host → 404. Проверено на VPS: tunnel dashboard **200**, no-host **404**, admin API **401** (не 404).
-- **PC:** VPN ON → `http://10.66.66.1:8000/dashboard` без bypass; health-probe, при fail — fallback nip.io+bypass. VPN OFF → nip.io. Подпись в меню: «при VPN: 10.66.66.1:8000».
-- Деплой: `deploy_stable.py`. Debug: `pc/build-debug-420866/win-unpacked/` (`SilentVPN-Admin.bat`).
-- **Push:** `main` `109c77c`, `pc` `8883c6a` (без лишнего `wdtt-client.exe`/integrityHashes от debug-пересборки).
+- **PC:** VPN ON/OFF → **всегда** `https://132-243-234-162.nip.io/dashboard` + `ensurePublicApiBypass` при VPN (`fcfc87a`). Tunnel `/dashboard` не использовать.
+- Деплой: `deploy_stable.py`.
+- **Push:** `main` `109c77c`; админка nip.io — `pc` `fcfc87a` (не `8883c6a`).
 - **Build-agent на VPS:** `build_pc.sh` / `build_android_go.sh` / `ensure_go.sh` **идентичны** локальным (API **24**, `GOTOOLCHAIN=go1.26.3`, PC **reuse** `wdtt-client.exe` из git без `PC_FORCE_REBUILD_WDTT=1`) — лишних расхождений в ночной сборке нет.
 
 ### 2026-07-22 — Landing: гайд — Подписка / Бонусы / Сессии

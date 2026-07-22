@@ -120,6 +120,71 @@ async def ensure_trial_subscription(db: AsyncSession, user: User) -> Subscriptio
     return trial
 
 
+def _fingerprint_variants(fingerprint: str) -> set[str]:
+    fp = (fingerprint or "").strip()
+    if not fp:
+        return set()
+    raw = fp[5:] if fp.startswith("boot:") else fp
+    if not raw:
+        return set()
+    return {raw, f"boot:{raw}"}
+
+
+async def device_fingerprint_used_trial_elsewhere(
+    db: AsyncSession,
+    fingerprint: str,
+    *,
+    exclude_user_id,
+) -> bool:
+    """True, если fingerprint уже получал trial у другого аккаунта.
+
+    Режет обход trial через анонимайзер Mail.ru (до 10 алиасов) на одном устройстве.
+    """
+    variants = _fingerprint_variants(fingerprint)
+    if not variants:
+        return False
+
+    from app.models import Device
+
+    result = await db.execute(
+        select(Device.user_id)
+        .join(Subscription, Subscription.user_id == Device.user_id)
+        .where(
+            Device.device_fingerprint.in_(variants),
+            Device.user_id != exclude_user_id,
+            Subscription.plan_type == TRIAL_PLAN,
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def require_device_trial_not_reused(
+    db: AsyncSession,
+    user: User,
+    fingerprint: str,
+) -> None:
+    """Блок VPN/trial на устройстве, где trial уже был у другого аккаунта."""
+    if is_user_admin(user) or await user_in_test_mode(user, db):
+        return
+
+    in_test = await user_in_test_mode(user, db)
+    active = await get_display_subscription(db, user, in_test_mode=in_test)
+    if active and active.plan_type not in (TRIAL_PLAN, TEST_PLAN):
+        return
+
+    if await device_fingerprint_used_trial_elsewhere(
+        db, fingerprint, exclude_user_id=user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                "Пробный период на этом устройстве уже был использован. "
+                "Оформите подписку или войдите в прежний аккаунт."
+            ),
+        )
+
+
 async def _cancel_active_test_subscriptions(db: AsyncSession, user: User) -> int:
     cancelled = 0
     active_result = await db.execute(

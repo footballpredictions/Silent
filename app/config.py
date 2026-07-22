@@ -212,7 +212,9 @@ class Settings(BaseSettings):
     # Пусто = отключить whitelist (проверяется только disposable-блоклист).
     ALLOWED_EMAIL_DOMAINS: List[str] = [
         "gmail.com", "googlemail.com",
-        "mail.ru", "bk.ru", "list.ru", "inbox.ru", "internet.ru",
+        # Mail.ru основные ящики. internet.ru — анонимайзер / одноразовые «красивые»
+        # адреса → в BLOCKED_EMAIL_DOMAINS (email_validation.py), не сюда.
+        "mail.ru", "bk.ru", "list.ru", "inbox.ru",
         "yandex.ru", "yandex.com", "yandex.by", "yandex.kz", "ya.ru",
         "outlook.com", "hotmail.com", "live.com", "msn.com",
         "icloud.com", "me.com", "mac.com",

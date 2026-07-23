@@ -532,6 +532,15 @@ cd pc; npm install; npm run dev
 | `deploy_all.py`, `check_*.py`, `fix_*.py` | `deploy_stable.py` / `deploy_helper.py check` |
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
+### 2026-07-23 — Login 500: исчерпан пул WireGuard `10.66.66.0/24`
+
+- **Симптом:** регистрация OK, `POST /api/auth/login` → **500** (`RuntimeError: No available WireGuard addresses` в `ensure_device_session` → `_get_next_wg_address`). 128 ошибок за сутки.
+- **Причина:** backend выдавал IP только из `10.66.66.0/24` (~253 клиента), хотя **wdtt0 уже `10.66.0.0/16`**. В БД было 257 device-сессий → пул забит. `prune_idle_*` не вызывался.
+- **Важно:** удалялись только строки **`devices`** (VPN-сессии / WG-IP), **не `users`**. Аккаунты, подписки, email — на месте (233 users). После входа сессия создаётся заново.
+- **Срочно:** DELETE 165 idle offline device >6h.
+- **Расширение пула:** `WG_SUBNET=10.66.0.0/16` (~65k IP, минус `10.66.66.1` и `10.66.67.0/24` под TG). Задеплоено + `restore_api_container`.
+- **Код:** idle-prune/reclaim только devices; login `RuntimeError`→503; фикс `queen_load` в hive summary.
+
 ### 2026-07-22 — Backend: паттерны анонимайзеров по аудиту БД (без удаления)
 
 - Аудит users (221 email): явные анонимайзеры/алиасы — см. отчёт в чате. **Никого не удаляли.**

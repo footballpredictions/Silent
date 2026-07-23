@@ -112,18 +112,137 @@ def _is_valid_wg_key(key: str) -> bool:
     return True
 
 
-async def _get_next_wg_address(db: AsyncSession) -> str:
+def _wg_used_ips(raw_addresses) -> set[str]:
+    """Нормализует wg_address из БД к виду host IP ('10.66.66.N')."""
+    used: set[str] = set()
+    for raw in raw_addresses:
+        if not raw:
+            continue
+        s = str(raw).strip()
+        used.add(s.split("/", 1)[0])
+    return used
+
+
+def _wg_reserved_ips() -> set[ipaddress.IPv4Address]:
+    """IP, которые нельзя выдавать клиентам (gateway / служебные)."""
+    reserved: set[ipaddress.IPv4Address] = set()
+    # Tunnel API DNAT target — клиенты ходят на 10.66.66.1:8000
+    reserved.add(ipaddress.IPv4Address("10.66.66.1"))
+    # Telegram exit / wg-tg0 peers historically on 10.66.67.0/24
+    for host in ipaddress.IPv4Network("10.66.67.0/24").hosts():
+        reserved.add(host)
+    reserved.add(ipaddress.IPv4Address("10.66.67.0"))
+    reserved.add(ipaddress.IPv4Address("10.66.67.255"))
+    return reserved
+
+
+def _wg_candidate_hosts(subnet: ipaddress.IPv4Network):
+    """Сначала привычный 10.66.66.2–254, затем остальной WG_SUBNET (без list() на /16)."""
+    reserved = _wg_reserved_ips()
+    preferred = ipaddress.IPv4Network("10.66.66.0/24")
+    if preferred.subnet_of(subnet):
+        for host in preferred.hosts():
+            if host in reserved:
+                continue
+            # пропускаем .1 (уже в reserved)
+            yield host
+    for host in subnet.hosts():
+        if host in reserved:
+            continue
+        if preferred.subnet_of(subnet) and host in preferred:
+            continue  # уже отдали выше
+        yield host
+
+
+async def _find_free_wg_address(db: AsyncSession) -> str | None:
     subnet = ipaddress.IPv4Network(settings.WG_SUBNET)
-    hosts = list(subnet.hosts())
     result = await db.execute(
         select(Device.wg_address).where(Device.wg_address.isnot(None))
     )
-    used = {row[0] for row in result.fetchall()}
-    for host in hosts[1:]:
-        addr = f"{host}/{subnet.prefixlen}"
-        if str(host) not in used and addr not in used:
+    used = _wg_used_ips(row[0] for row in result.fetchall())
+    # Клиенту всегда /32 — peer identity; серверный wdtt0 уже /16.
+    for host in _wg_candidate_hosts(subnet):
+        if str(host) not in used:
+            return f"{host}/32"
+    return None
+
+
+async def prune_idle_sessions_global(db: AsyncSession) -> int:
+    """Удалить offline-сессии старше SESSION_IDLE_HOURS (только devices, не users).
+
+    Нужно, чтобы мёртвые сессии не держали WG IP. Аккаунты / подписки не трогает.
+    """
+    idle_cutoff = datetime.utcnow() - timedelta(hours=settings.SESSION_IDLE_HOURS)
+    result = await db.execute(
+        select(Device).where(
+            Device.is_connected == False,  # noqa: E712
+            or_(
+                Device.last_connected < idle_cutoff,
+                and_(Device.last_connected.is_(None), Device.created_at < idle_cutoff),
+            ),
+        )
+    )
+    idle = result.scalars().all()
+    for d in idle:
+        await db.delete(d)
+    if idle:
+        await db.commit()
+        logger.warning(
+            "prune_idle_sessions_global: removed %d offline device session(s) older than %dh",
+            len(idle),
+            settings.SESSION_IDLE_HOURS,
+        )
+    return len(idle)
+
+
+async def reclaim_oldest_offline_devices(db: AsyncSession, need: int = 1) -> int:
+    """При полном пуле — удалить самые старые offline device-сессии (не users)."""
+    if need <= 0:
+        return 0
+    need = min(need, 32)  # жёсткий потолок — не вычищать пачками тысячи
+    result = await db.execute(
+        select(Device)
+        .where(Device.is_connected == False)  # noqa: E712
+        .order_by(Device.last_connected.asc().nullsfirst(), Device.created_at.asc())
+        .limit(need)
+    )
+    victims = result.scalars().all()
+    for d in victims:
+        await db.delete(d)
+    if victims:
+        await db.commit()
+        logger.warning(
+            "reclaim_oldest_offline_devices: removed %d offline session(s) to free WG addresses",
+            len(victims),
+        )
+    return len(victims)
+
+
+async def _get_next_wg_address(db: AsyncSession) -> str:
+    """Следующий свободный клиентский IP в WG_SUBNET (~65k при 10.66.0.0/16).
+
+    При исчерпании: idle-prune → точечный reclaim offline-сессий → retry.
+    Пользователей (users) никогда не удаляет.
+    """
+    addr = await _find_free_wg_address(db)
+    if addr:
+        return addr
+
+    pruned = await prune_idle_sessions_global(db)
+    if pruned:
+        addr = await _find_free_wg_address(db)
+        if addr:
             return addr
-    raise RuntimeError("No available WireGuard addresses")
+
+    reclaimed = await reclaim_oldest_offline_devices(db, need=8)
+    if reclaimed:
+        addr = await _find_free_wg_address(db)
+        if addr:
+            return addr
+
+    raise RuntimeError(
+        "Нет свободных WireGuard-адресов. Попробуйте позже или удалите старые сессии."
+    )
 
 
 async def get_active_vk_hashes(db: AsyncSession, user_id=None) -> list[str]:

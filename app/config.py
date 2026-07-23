@@ -100,7 +100,8 @@ class Settings(BaseSettings):
     VPN_SERVER_IP: str = ""
     VPN_SERVER_PORT: int = 56000
     WG_PORT: int = 56001
-    WG_SUBNET: str = "10.66.66.0/24"
+    # wdtt0 на проде уже 10.66.0.0/16; /24 (~253 IP) — искусственный потолок backend.
+    WG_SUBNET: str = "10.66.0.0/16"
     MAX_DEVICES_PER_USER: int = 3
     WDTT_MASTER_PASSWORD: str = ""
     # Shared secret for server-to-server online reports from wdtt-server

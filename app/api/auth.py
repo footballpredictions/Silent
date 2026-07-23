@@ -168,7 +168,8 @@ def _html_page(success: bool, title: str, message: str) -> str:
 
 @router.post("/login", response_model=TokenResponse)
 async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == req.email))
+    email_norm = req.email.strip().lower()
+    result = await db.execute(select(User).where(User.email == email_norm))
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(req.password, user.password_hash):
@@ -194,6 +195,13 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
             if "лимит" in msg.lower() and "устройств" in msg.lower():
                 raise HTTPException(status_code=403, detail=msg)
             logger.warning("login ensure_device_session: %s", e)
+        except RuntimeError as e:
+            # Исчерпан WG-пул / сбой keygen — не 500, а понятный ответ клиенту
+            logger.error("login ensure_device_session RuntimeError: %s", e)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e) or "Сервис временно недоступен. Попробуйте позже.",
+            )
 
     return TokenResponse(
         access_token=create_access_token(user.id),

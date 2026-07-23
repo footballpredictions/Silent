@@ -93,7 +93,7 @@ services:
       WDTT_PASSWORD: ${WDTT_MASTER_PASSWORD:-change_this_password}
       WDTT_PORT: ${WDTT_PORT:-56000}
       WDTT_WG_PORT: ${WDTT_WG_PORT:-56001}
-      WDTT_SUBNET: "10.66.66.0/24"
+      WDTT_SUBNET: "10.66.0.0/16"
 
 volumes:
   postgres_data:

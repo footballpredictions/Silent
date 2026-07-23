@@ -546,7 +546,7 @@ async def apply_agent_handshake_to_cell(cell: HiveCell, data: dict) -> None:
 
 
 async def get_hive_summary_extra(db: AsyncSession) -> dict:
-    accepting, load = queen_accepting_new_vpn()
+    accepting, queen_load = queen_accepting_new_vpn()
     workers = [c for c in await _list_assignable_cells(db) if not c.is_queen]
     assignable = await _list_assignable_cells(db)
     total_online = 0
@@ -554,14 +554,14 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
     full_cells = 0
     for cell in assignable:
         online = await count_online_on_cell(db, cell.id)
-        load = queen_load if cell.is_queen else None
-        cap = await max_online_for_cell(db, cell, load=load)
+        cell_load = queen_load if cell.is_queen else None
+        cap = await max_online_for_cell(db, cell, load=cell_load)
         total_online += online
         total_capacity += cap
         if online >= cap:
             full_cells += 1
     return {
-        "queen_load": load,
+        "queen_load": queen_load,
         "queen_accepting_vpn": accepting,
         "worker_cells": len(workers),
         "total_online_vpn": total_online,

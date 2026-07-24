@@ -32,6 +32,13 @@ const { resolveVkExcludeIps, warmVkExcludeIps, invalidateVkExcludeCache } = requ
 const buildFlags = require('./buildFlags')
 const { verifyWdttIntegrity, softTamperHints } = require('./integrity')
 const { effectiveConnectWorkers, WORKERS_PER_GROUP } = require('./workerLimits')
+const {
+  beginOlcrtcSession,
+  stopOlcrtcSession,
+  isOlcrtcSessionActive,
+  isOlcrtcAlive,
+  setOlcrtcSessionDeadHandler,
+} = require('./vpn/olcrtcSession')
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms))
@@ -47,6 +54,8 @@ let tray = null
 let isQuitting = false
 let wdttProcess = null
 let wgApplied = false
+/** Debug: активен путь olcrtc (не WDTT/WG). */
+let vpnOlcrtcMode = false
 let pendingVkDeepLink = null
 let pendingRefDeepLink = null
 let vpnSessionActive = false
@@ -430,9 +439,12 @@ function sendLog(line) {
     return
   }
 
-  if (/^\[WG\]|^\[VPN\]|^\[Update\]/.test(trimmed)) {
-    const isError = /error|ошиб|fail|таймаут/i.test(trimmed)
-    const tag = trimmed.startsWith('[WG]') ? 'WireGuard' : 'VPN'
+  if (/^\[WG\]|^\[VPN\]|^\[Update\]|^\[olcrtc|^\[sing-box/.test(trimmed)) {
+    const isError = /error|ошиб|fail|таймаут|timeout|exit/i.test(trimmed)
+    let tag = 'VPN'
+    if (trimmed.startsWith('[WG]')) tag = 'WireGuard'
+    else if (trimmed.startsWith('[olcrtc')) tag = 'olcrtc'
+    else if (trimmed.startsWith('[sing-box')) tag = 'sing-box'
     sendWdttLog({
       key: `sys_${tag}_${trimmed.slice(0, 36).replace(/\d+/g, '#')}`,
       message: trimmed,
@@ -493,6 +505,10 @@ function cleanupVpn() {
   clearTelegramWarmupTimers()
   resetHashFailureSessionState()
   vpnBootstrapMode = false
+  vpnOlcrtcMode = false
+  try {
+    stopOlcrtcSession(sendLog)
+  } catch { /* ignore */ }
   wgCredPhase = false
   expectedCredGroups = 1
   credGroupsResolved = 0
@@ -538,8 +554,28 @@ function isWdttAlive() {
 const TRANSPORT_RESTART_GRACE_MS = 90_000
 
 function isTransportHealthy() {
+  if (vpnOlcrtcMode) {
+    return isOlcrtcSessionActive() && isOlcrtcAlive()
+  }
   return wgApplied && activeWorkerCount >= minWorkersForTunnelReady(vpnBootstrapMode) && isWdttAlive()
 }
+
+/** olcrtc peer умер → снять sing-box/флаги и сказать UI «выкл», иначе меню блокирует VK. */
+setOlcrtcSessionDeadHandler(({ code }) => {
+  sendLog(`[olcrtc] peer dead code=${code} → UI disconnect`)
+  if (!vpnOlcrtcMode && !vpnSessionActive) return
+  vpnOlcrtcMode = false
+  vpnSessionActive = false
+  tunnelReadySent = false
+  activeWorkerCount = 0
+  lastVpnConnectConfig = null
+  try {
+    stopOlcrtcSession(sendLog)
+  } catch { /* ignore */ }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('vpn-stopped', code ?? 1)
+  }
+})
 
 function clearTunnelReadyPoll() {
   if (tunnelReadyPollTimer) {
@@ -612,6 +648,9 @@ function minWorkersForTunnelReady(isBootstrap = false) {
 
 function isVpnReadyForUi() {
   if (tunnelReadySent) return true
+  if (vpnOlcrtcMode) {
+    return isOlcrtcSessionActive() && isOlcrtcAlive()
+  }
   // WG + ≥1 воркер: api-early без GETCONF давал «Подключено» при мёртвом 10.66.66.1
   return wgApplied && activeWorkerCount >= 1 && isWdttAlive()
 }
@@ -637,9 +676,13 @@ function ensureVpnReadyEvent(sendLogFn) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('vpn-ready', { ok: true, bootstrap: vpnBootstrapMode })
   }
-  sendLogFn?.(`[VPN] tunnel ready (WG + ${activeWorkerCount}/${sessionTargetWorkers} workers)`)
+  if (vpnOlcrtcMode) {
+    sendLogFn?.('[VPN] tunnel ready (olcrtc SOCKS + TUN)')
+  } else {
+    sendLogFn?.(`[VPN] tunnel ready (WG + ${activeWorkerCount}/${sessionTargetWorkers} workers)`)
+  }
   // Прогрев DC/CDN Telegram: сразу + повтор когда воркеры догонят (превью/медиа).
-  if (!vpnBootstrapMode) {
+  if (!vpnBootstrapMode && !vpnOlcrtcMode) {
     void warmupTelegramTcp(sendLogFn)
     scheduleTelegramWarmupRetries(sendLogFn)
   }
@@ -711,6 +754,7 @@ function warmupTelegramTcp(sendLogFn) {
 }
 
 function pauseWdtt(reason) {
+  if (vpnOlcrtcMode) return
   if (!vpnSessionActive || !wgApplied || pausedForNetwork) return
   sendLog(`[VPN] ${reason} — pause wdtt (WG остаётся)`)
   pausedForNetwork = true
@@ -723,7 +767,7 @@ function pauseWdtt(reason) {
 }
 
 function restoreTransport(reason) {
-  if (!vpnSessionActive || !lastVpnConnectConfig) return
+  if (!vpnSessionActive || !lastVpnConnectConfig || vpnOlcrtcMode) return
   const { hasUnderlyingInternet } = require('./vpn/networkRecovery')
   if (!hasUnderlyingInternet()) return
   if (isTransportHealthy()) {
@@ -736,12 +780,12 @@ function restoreTransport(reason) {
 }
 
 function scheduleWdttRelaunch(delayMs = 800) {
-  if (!vpnSessionActive || !lastVpnConnectConfig) return
+  if (!vpnSessionActive || !lastVpnConnectConfig || vpnOlcrtcMode) return
   if (wdttProcess && isWdttAlive()) return
   if (wdttRelaunchTimer) clearTimeout(wdttRelaunchTimer)
   wdttRelaunchTimer = setTimeout(() => {
     wdttRelaunchTimer = null
-    if (!vpnSessionActive || wdttProcess || !lastVpnConnectConfig) return
+    if (!vpnSessionActive || wdttProcess || !lastVpnConnectConfig || vpnOlcrtcMode) return
     transportSwitching = true
     sendLog('[VPN] Перезапуск wdtt-client…')
     trace().mark('Main.wdttRelaunch')
@@ -1645,6 +1689,10 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   trace().enter('Main.vpnConnect', `bootstrap=${!!config?.is_bootstrap} n=${config?.stream_count ?? '?'}`)
   vkFloodEscalatePending = false
   const wantBootstrap = !!config?.is_bootstrap
+  const wantOlcrtc =
+    isDebugBuild &&
+    String(config?.bypassFamily || config?.bypass_family || '').toLowerCase() === 'olcrtc'
+
   if (vpnConnectInFlight) {
     sendLog('[VPN] connect: уже выполняется, без перезапуска')
     ensureVpnReadyEvent(sendLog)
@@ -1656,14 +1704,54 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     await cleanupVpnAsync()
   }
 
-  if (vpnSessionActive && isTransportHealthy() && wantBootstrap === vpnBootstrapMode) {
+  if (vpnSessionActive && isTransportHealthy() && wantBootstrap === vpnBootstrapMode && wantOlcrtc === vpnOlcrtcMode) {
     sendLog('[VPN] connect: туннель уже работает')
     ensureVpnReadyEvent(sendLog)
     return { success: true, alreadyActive: true }
   }
 
+  // Мёртвый olcrtc / зависшая сессия — иначе UI «включён», меню блокирует смену на VK.
+  if (vpnSessionActive && !isTransportHealthy()) {
+    sendLog('[VPN] connect: мёртвая сессия — полный сброс')
+    await cleanupVpnAsync()
+  }
+
   vpnConnectInFlight = true
   try {
+    if (wantOlcrtc) {
+      if (vpnSessionActive) await cleanupVpnAsync()
+      lastVpnConnectConfig = config
+      vpnSessionActive = true
+      vpnOlcrtcMode = true
+      vpnBootstrapMode = wantBootstrap
+      connectStartedAtMs = Date.now()
+      pausedForNetwork = false
+      transportSwitching = false
+      tunnelReadySent = false
+      const result = await beginOlcrtcSession(config, {
+        log: sendLog,
+        onReady: () => {
+          activeWorkerCount = 1
+          ensureVpnReadyEvent(sendLog)
+        },
+      })
+      if (result.error) {
+        vpnSessionActive = false
+        vpnOlcrtcMode = false
+        lastVpnConnectConfig = null
+      } else {
+        startNetworkMonitor()
+      }
+      trace().exit('Main.vpnConnect', result.error ? `error=${result.error}` : 'olcrtc-ok')
+      return result
+    }
+
+    // WDTT после olcrtc: обязательно убить sing-box/olcrtc (иначе «VPN уже поднят» + code=4).
+    if (vpnOlcrtcMode || isOlcrtcAlive() || isOlcrtcSessionActive()) {
+      sendLog('[VPN] connect: смена olcrtc → WDTT, полный сброс')
+      await cleanupVpnAsync()
+    }
+
     // Не ждать полный uninstall: cap 1.5с; не убивать живую WG — syncconf на connect.
     await Promise.race([waitWgStopIdle(), sleep(1500)])
     if (wdttProcess && !transportSwitching && !isTransportHealthy()) {
@@ -1679,6 +1767,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
     lastVpnConnectConfig = config
     vpnSessionActive = true
+    vpnOlcrtcMode = false
     connectStartedAtMs = Date.now()
     pausedForNetwork = false
     transportSwitching = false
@@ -1712,6 +1801,7 @@ ipcMain.handle('vpn-read-config', async () => {
 ipcMain.handle('vpn-is-ready', async () => ({
   ready: isVpnReadyForUi() && !vpnBootstrapMode,
   bootstrap: vpnBootstrapMode && isVpnReadyForUi(),
+  olcrtc: !!vpnOlcrtcMode,
   workers: activeWorkerCount,
   target: sessionTargetWorkers,
   min: minWorkersForTunnelReady(vpnBootstrapMode),

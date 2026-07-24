@@ -49,6 +49,14 @@
       {
         "from": "assets/icon.png",
         "to": "assets/icon.png"
+      },
+      {
+        "from": "resources/olcrtc.exe",
+        "to": "olcrtc.exe"
+      },
+      {
+        "from": "resources/sing-box.exe",
+        "to": "sing-box.exe"
       }
     ],
     "extraFiles": [

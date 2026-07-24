@@ -129,7 +129,7 @@ export default function LoginScreen({
       requestAnimationFrame(() => {
         if (!alive) return
         setBootstrapStatus(msg)
-        setBootstrapReady(/Канал готов|Осталось \d+:\d+/i.test(msg))
+        setBootstrapReady(/Канал готов|Канал olcrtc готов|Осталось \d+:\d+/i.test(msg))
       })
     })
     // Дать UI отрисовать «Подключение…» до тяжёлого vpnConnect (WG install)
@@ -313,7 +313,7 @@ export default function LoginScreen({
   const statusBlock = () => {
     if (sessionExpired) return null
     const text = bootstrapStatus || s.channelReady
-    const isReady = /Канал готов|Осталось \d+:\d+/i.test(text)
+    const isReady = /Канал готов|Канал olcrtc готов|Осталось \d+:\d+/i.test(text)
     return (
       <p className="mb-4 text-xs leading-relaxed" style={{ color: isReady ? ui.green : ui.hint }}>
         {text}

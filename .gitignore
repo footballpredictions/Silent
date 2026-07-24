@@ -15,6 +15,14 @@ releases/*.exe
 # Go build artifacts (local)
 wdtt-go/*.exe
 
+# olcrtc / sing-box debug binaries (см. resources/OLCRTC_README.md)
+resources/olcrtc.exe
+resources/sing-box.exe
+resources/olcrtc/
+resources/sing-box/
+olcrtc/
+vendor/
+
 # Secrets
 .env
 .env.deploy

@@ -185,6 +185,8 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
 
   pushLog('Bootstrap', 'ensureBootstrapVpn start')
   const runId = ++bootstrapEnsureGeneration
+
+  // Bootstrap всегда VK/WDTT — варианты обхода только после входа (основной VPN).
   SessionTrace.enter('Bootstrap.ensureVpn')
   const config = await fetchBootstrapConfig()
   if (!config?.vk_hashes?.length) {

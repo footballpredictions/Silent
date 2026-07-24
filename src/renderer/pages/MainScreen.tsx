@@ -36,7 +36,7 @@ import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
 import MenuDnsPanel from '../components/MenuDnsPanel'
 import { getDnsPreset } from '../dnsPreset'
-import MenuVkCredModePanel from '../components/MenuVkCredModePanel'
+import MenuBypassPanel from '../components/MenuBypassPanel'
 import { prepareVpnConnectConfig } from '../prepareVpnConnect'
 import {
   attachVkCredLaunchParams,
@@ -45,6 +45,14 @@ import {
   resetVkCredSessionEscalate,
   vkCredStrategyLabel,
 } from '../vkCredStore'
+import {
+  buildOlcrtcConnectPayload,
+  getOlcrtcProvider,
+  isOlcrtcBypass,
+  olcrtcProviderLabel,
+  prefetchOlcrtcConfig,
+  resolveOlcrtcConfig,
+} from '../bypassStore'
 import { isDebugBuild } from '../debugBuild'
 import { telegramProxyDeepLink } from '../telegramProxyLink'
 import { notifyDisconnect } from '../vpnBackendSync'
@@ -124,7 +132,7 @@ interface Profile {
   max_devices: number
 }
 
-type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'vk_cred' | 'hashes' | 'dns' | 'bonuses' | 'support' | 'about'
+type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'bypass' | 'hashes' | 'dns' | 'bonuses' | 'support' | 'about'
 
 const PLAN_LABELS: Record<string, string> = {
   trial: 'Пробный период',
@@ -359,6 +367,7 @@ export default function MainScreen({
   useEffect(() => {
     void seedConfigSyncRevision()
     fetchProfile()
+    void prefetchOlcrtcConfig()
     const subMsg = localStorage.getItem('silent_subscription_msg')
     if (subMsg) {
       localStorage.removeItem('silent_subscription_msg')
@@ -465,7 +474,7 @@ export default function MainScreen({
     const api_ = (window as any).electronAPI
     if (!api_?.onVpnStopped) return
     let mounted = true
-    const onStopped = () => {
+    const onStopped = (code?: number) => {
       if (connecting && !connected) {
         // Во время старта возможен краткий restart транспорта; не сбрасываем UI раньше времени.
         return
@@ -476,6 +485,7 @@ export default function MainScreen({
       setConnected(false)
       setConnecting(false)
       setActiveWorkers(0)
+      pushLog('Main', `VPN stopped${code != null ? ` (code=${code})` : ''} — можно сменить обход`)
       void checkForUpdate().then(info => {
         if (info?.available) setUpdateInfo(info)
       })
@@ -636,10 +646,24 @@ export default function MainScreen({
     }
 
     connectLockRef.current = true
+    // olcrtc: сначала конфиг через IPC (пока WDTT ещё жив / bypass работает)
+    if (isOlcrtcBypass()) {
+      pushLog('Main', 'olcrtc-config prefetch…')
+      const pre = await resolveOlcrtcConfig({ preferCache: false })
+      if (!pre) {
+        connectLockRef.current = false
+        alert(
+          'Не удалось загрузить /api/vpn/olcrtc-config. Проверьте интернет или откройте меню → Варианты обхода (подтянуть конфиг).',
+        )
+        return
+      }
+      pushLog('Main', `olcrtc-config ok slot=${pre.assigned_slot || '?'} room=${pre.providers?.[getOlcrtcProvider()]?.room?.slice(0, 48) || '?'}`)
+    }
     // UI сразу: не ждать fetchProfile / prepare (раньше давало ~5–8с «Подключение…»).
     setConnecting(true)
     setConnected(true)
-    setMainVpnSessionActive(true)
+    // Для olcrtc не включаем tunnel API session — публичный nip.io.
+    setMainVpnSessionActive(!isOlcrtcBypass())
     if (!connected) {
       setActiveWorkers(0)
       clearVpnLogs()
@@ -653,11 +677,20 @@ export default function MainScreen({
         const api_ = (window as any).electronAPI
         const already = await api_?.vpnIsReady?.().catch(() => null)
         if (connectGen !== connectGenRef.current) return
-        if (already?.ready) {
+        // Не считать «уже поднят», если семья обхода сменилась (olcrtc ↔ VK).
+        const readySameMode =
+          already?.ready && Boolean(already?.olcrtc) === isOlcrtcBypass()
+        if (readySameMode) {
           setConnecting(false)
           connectLockRef.current = false
           pushLog('Main', 'VPN уже поднят, UI синхронизирован')
           return
+        }
+        if (already?.ready && Boolean(already?.olcrtc) !== isOlcrtcBypass()) {
+          pushLog('Main', 'смена обхода — полный reconnect')
+          try {
+            await api_?.vpnDisconnect?.({ slow: true })
+          } catch { /* ignore */ }
         }
         // Профиль в фоне не блокирует тумблер; доступ проверим по кешу + свежий fetch без await в критическом пути.
         const cachedProfile = getCachedProfile<Profile>()
@@ -781,6 +814,50 @@ export default function MainScreen({
     try {
       if (!(window as any).electronAPI?.vpnConnect) return
       pushLog('Main', 'vpnConnect start')
+
+      if (isOlcrtcBypass()) {
+        // Кеш с логина/ConfigSync — сеть может уже рваться при смене с WDTT.
+        const olcCfg = await resolveOlcrtcConfig({ preferCache: true })
+        if (!olcCfg) {
+          setConnected(false)
+          setMainVpnSessionActive(false)
+          alert('Не удалось загрузить /api/vpn/olcrtc-config (нет кеша). Откройте меню → Варианты обхода или проверьте интернет без VPN.')
+          return
+        }
+        const payload = buildOlcrtcConnectPayload(olcCfg, getOlcrtcProvider(), {
+          is_bootstrap: false,
+          device_fingerprint: fp,
+        })
+        if ('error' in payload) {
+          setConnected(false)
+          setMainVpnSessionActive(false)
+          alert(payload.error)
+          return
+        }
+        pushLog('Main', `vpnConnect olcrtc provider=${olcrtcProviderLabel()}`)
+        const res = await (window as any).electronAPI.vpnConnect(payload)
+        if (connectGen !== connectGenRef.current) return
+        if (res?.error) {
+          setConnected(false)
+          setMainVpnSessionActive(false)
+          alert(res.error)
+          return
+        }
+        const ready = await waitVpnReady(90_000, 1, false, 'olcrtc')
+        if (connectGen !== connectGenRef.current) return
+        if (ready) {
+          // olcrtc: API остаётся на публичном nip.io (без 10.66.66.1)
+          setMainVpnSessionActive(false)
+          await markOnlineOnServer()
+          fetchProfile()
+          return
+        }
+        setConnected(false)
+        setMainVpnSessionActive(false)
+        alert('olcrtc-туннель не поднялся (проверьте srv в админке и бинарники olcrtc/sing-box)')
+        await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
+        return
+      }
 
       for (let attempt = 0; attempt < 3; attempt++) {
         if (connectGen !== connectGenRef.current) return
@@ -1191,7 +1268,7 @@ export default function MainScreen({
                 { key: 'subscription', label: 'Подписка' },
                 { key: 'exceptions', label: 'Исключения приложений' },
                 ...(isDevBuild ? [{ key: 'dns', label: `DNS · ${getDnsPreset().title}` }] : []),
-                ...(isDevBuild ? [{ key: 'vk_cred', label: 'Режим VK-кредов' }] : []),
+                ...(isDevBuild ? [{ key: 'bypass', label: 'Варианты обхода' }] : []),
                 ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
                 { key: 'bonuses', label: clientTheme?.menu_bonuses_label || 'Бонусы' },
                 { key: 'devices', label: `Сессии (${sessionsBadge(profile)})` },
@@ -1419,8 +1496,8 @@ export default function MainScreen({
             </div>
           )}
 
-          {menuPage === 'vk_cred' && isDevBuild && (
-            <MenuVkCredModePanel
+          {menuPage === 'bypass' && isDevBuild && (
+            <MenuBypassPanel
               fg={fg}
               muted={muted}
               bg={bg}

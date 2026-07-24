@@ -547,6 +547,13 @@ cd pc; npm install; npm run dev
 | `deploy_all.py`, `check_*.py`, `fix_*.py` | `deploy_stable.py` / `deploy_helper.py check` |
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
+### 2026-07-24 — Whitelist email: ужатие доменов
+
+- Из `ALLOWED_EMAIL_DOMAINS` убраны Microsoft / Yahoo / Proton / Rambler / GMX / AOL / Zoho / Tutanota / mail.com / `vk.com`.
+- Осталось: Gmail, Mail.ru-семья, Yandex-семья, Apple (icloud/me/mac), **`vk.ru`**.
+- Уже зарегистрированные (outlook/yahoo/proton и т.д.) **не удалялись** — whitelist только на `/auth/register`; вход и VPN работают как раньше.
+- Задеплоено (`deploy_api.py`) + push `main`.
+
 ### 2026-07-24 — Вариант 2 обхода: olcrtc (debug) рядом с WDTT/VK
 
 - Админка: **«Варианты обхода»** (`/bypass`, redirect `/vk`) — секция 1 VK/WDTT + секция 2 olcrtc (key, Jitsi/WB/Telemost, YAML apply)

@@ -217,17 +217,8 @@ class Settings(BaseSettings):
         # адреса → в BLOCKED_EMAIL_DOMAINS (email_validation.py), не сюда.
         "mail.ru", "bk.ru", "list.ru", "inbox.ru",
         "yandex.ru", "yandex.com", "yandex.by", "yandex.kz", "ya.ru",
-        "outlook.com", "hotmail.com", "live.com", "msn.com",
         "icloud.com", "me.com", "mac.com",
-        "yahoo.com", "yahoo.ru",
-        "protonmail.com", "proton.me",
-        "rambler.ru",
-        "vk.com",
-        "gmx.com", "gmx.de",
-        "aol.com",
-        "zoho.com",
-        "tutanota.com", "tuta.io",
-        "mail.com",
+        "vk.ru",
     ]
     # Лимит регистраций с одного IP (антибот/скрипты, помимо email-проверок)
     REGISTER_RATE_LIMIT_MAX: int = 8

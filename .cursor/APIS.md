@@ -317,7 +317,7 @@ MAX_DEVICES_PER_USER=3
 ### Анти-абуз регистрации (`.env`, не секреты — настройки)
 
 ```
-ALLOWED_EMAIL_DOMAINS=["gmail.com","mail.ru","yandex.ru", ...]   # JSON-массив; [] = whitelist выключен
+ALLOWED_EMAIL_DOMAINS=["gmail.com","mail.ru","yandex.ru","icloud.com","vk.ru", ...]   # JSON-массив; [] = whitelist выключен
 REGISTER_RATE_LIMIT_MAX=8            # попыток /auth/register с одного IP
 REGISTER_RATE_LIMIT_WINDOW_MINUTES=30
 ```

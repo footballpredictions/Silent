@@ -41,6 +41,11 @@ def _hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _normalize_mfa_code(code: str) -> str:
+    """Только цифры: Mail.ru/HTML letter-spacing часто вставляет пробелы при копировании."""
+    return "".join(ch for ch in (code or "") if ch.isdigit())
+
+
 def _normalize_device_type(device_type: str | None, *, mobile_hint: bool | None, platform: str | None) -> str:
     t = (device_type or "").strip().lower()
     if t in ("phone", "android", "mobile"):
@@ -508,7 +513,8 @@ async def verify_mfa_and_login(
         raise ValueError("too_many_attempts")
 
     challenge.attempts += 1
-    if _hash_secret(code.strip()) != challenge.code_hash:
+    normalized = _normalize_mfa_code(code)
+    if len(normalized) != 6 or _hash_secret(normalized) != challenge.code_hash:
         await db.commit()
         raise ValueError("bad_code")
 

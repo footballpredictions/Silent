@@ -373,3 +373,20 @@ async def get_hive_meta(db: AsyncSession = Depends(get_db)):
     from app.services.hive_standby import hive_meta
 
     return await hive_meta(db)
+
+
+@router.get("/olcrtc-config")
+async def get_olcrtc_config(
+    device_type: str = "",
+    fingerprint: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    """Публичный конфиг варианта 2 (olcrtc). room из пула по device_type/fingerprint."""
+    from app.services.olcrtc_settings import load_olcrtc_settings, public_client_config
+
+    s = await load_olcrtc_settings(db)
+    return public_client_config(
+        s,
+        device_type=device_type or "",
+        fingerprint=fingerprint or "",
+    )

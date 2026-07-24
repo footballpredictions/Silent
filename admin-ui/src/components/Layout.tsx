@@ -8,7 +8,7 @@ const nav = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Дашборд' },
   { to: '/users', icon: Users, label: 'Пользователи' },
   { to: '/subscriptions', icon: Calendar, label: 'Подписки' },
-  { to: '/vk', icon: Hash, label: 'VK / Тоннели' },
+  { to: '/bypass', icon: Hash, label: 'Варианты обхода' },
   { to: '/hive', icon: Hexagon, label: 'Улей' },
   { to: '/proxy', icon: Network, label: 'Прокси' },
   { to: '/bonuses', icon: Gift, label: 'Бонусы' },

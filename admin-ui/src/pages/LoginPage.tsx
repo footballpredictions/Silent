@@ -5,7 +5,7 @@ const LOGIN_KEY = 'admin_login_remembered'
 const DEVICE_KEY = 'admin_device_token'
 const FP_KEY = 'admin_device_fp'
 const PHONE_MODEL_KEY = 'admin_phone_model'
-const MFA_TTL_DEFAULT = 120
+const MFA_TTL_DEFAULT = 600
 
 type DeviceInfo = {
   device_fingerprint: string
@@ -478,7 +478,7 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
         ) : (
           <form onSubmit={handleMfaSubmit} className="bg-[#111] border border-[#222] rounded-2xl p-6 space-y-4">
             <p className="text-sm text-[#aaa] text-center leading-relaxed">
-              Код отправлен на почту администратора. Введите его в течение 2 минут.
+              Код отправлен на почту администратора. Введите его в течение 10 минут.
             </p>
             <div>
               <label className="block text-xs text-[#888] mb-1.5 uppercase tracking-wider">Код из письма</label>

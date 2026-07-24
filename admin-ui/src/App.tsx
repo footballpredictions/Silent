@@ -4,7 +4,7 @@ import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import UsersPage from './pages/UsersPage'
 import SubscriptionsPage from './pages/SubscriptionsPage'
-import VkPage from './pages/VkPage'
+import BypassPage from './pages/BypassPage'
 import BonusesPage from './pages/BonusesPage'
 import ThemePage from './pages/ThemePage'
 import UpdatesPage from './pages/UpdatesPage'
@@ -78,7 +78,8 @@ function App() {
               <Route path="/dashboard" element={<DashboardPage token={token} onUnauthorized={handleLogout} />} />
               <Route path="/users" element={<UsersPage token={token} />} />
               <Route path="/subscriptions" element={<SubscriptionsPage token={token} />} />
-              <Route path="/vk" element={<VkPage token={token} />} />
+              <Route path="/bypass" element={<BypassPage token={token} />} />
+              <Route path="/vk" element={<Navigate to="/bypass" replace />} />
               <Route path="/promo" element={<BonusesPage token={token} />} />
               <Route path="/bonuses" element={<BonusesPage token={token} />} />
               <Route path="/theme" element={<ThemePage token={token} />} />

@@ -16,6 +16,14 @@ dist/
 ssl/
 wdtt/wdtt-server
 
+# olcrtc: linux binary + generated deploy yaml (локально / CI)
+olcrtc/olcrtc
+olcrtc/olcrtc-*
+update/olcrtc/
+scripts/probe_*.py
+scripts/_diag_*.py
+scripts/_probe_*.py
+
 # Secrets
 .env
 .env.deploy

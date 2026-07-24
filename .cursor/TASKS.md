@@ -12,6 +12,16 @@ Agent приступает к **первой невыполненной** зад
 
 - [x] Улей (Hive): автоподключение соты по IP + SSH root (wdtt, DNAT tunnel, cell-agent) — 2026-06-20
 - [x] Улей: фоновый провижининг, удаление зависших сот, CPU/RAM (хост + cell-agent), upgrade-agent — 2026-06-20
+- [x] **Вариант 2 обхода olcrtc** (debug): backend+админка «Варианты обхода», `deploy_olcrtc.py`, PC/Android UI+движок рядом с WDTT — 2026-07-24. Prod: Jitsi pool + `olcrtc@pc`/`@android`.
+- [x] **olcrtc room pool MVP (PC≠Android) + Wi‑Fi OK** — 2026-07-24:
+  - Разные комнаты: PC `meet.egovm.ru/SilentVpnOlcrtcHive`, Android `meet.playform.ru/SilentVpnOlcrtcHiveAndroid`
+  - Разные `data-pc` / `data-android` (общий `data/` ломал одновременную работу)
+  - API `GET /api/vpn/olcrtc-config?device_type=&fingerprint=`
+  - PC: dial/warm/fake-ip/DNS HTTPS reject; Android: hev TUN + libolcrtc.so
+  - **Проверено:** PC + Android **одновременно по Wi‑Fi** работают
+  - **LTE:** Jitsi/`meet.egovm.ru` (и смена host) часто режется DPI оператора — отложено
+- [ ] **olcrtc LTE / мобильный интернет:** перевести Android (и srv) на **WB Stream + Телемост** (или другой незаблокированный carrier), свежие room ID с сайтов, прогон на LTE. Не сегодня.
+- [ ] **olcrtc масштаб 1000+:** N комнат + N srv, онлайн/draining в админке, автоheal комнат, соты с srv
 - [ ] Документировать YuMoney webhook flow в APIS.md (`POST /api/payments/yumoney/notify` — в коде есть, описание flow — нет)
 
 ### Продукт / монетизация

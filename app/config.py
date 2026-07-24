@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     # Публичный Host админки (nginx). Tunnel 10.66.66.1 тоже разрешён в AdminHostGuard.
     ADMIN_PUBLIC_HOST: str = "132-243-234-162.nip.io"
     ADMIN_SESSION_HOURS: int = 12
-    ADMIN_MFA_CODE_TTL_MINUTES: int = 2
+    ADMIN_MFA_CODE_TTL_MINUTES: int = 10
     ADMIN_MFA_MAX_ATTEMPTS: int = 5
     ADMIN_LOGIN_RATE_LIMIT_MAX: int = 10
     ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 300

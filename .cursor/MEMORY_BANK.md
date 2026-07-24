@@ -206,6 +206,21 @@ python debug_captcha.py
 6. iOS (`Silent-Project/ios/`) — по тому же принципу
 7. Push: ветка `main` + **все** клиентские ветки; деплой backend
 
+### Варианты обхода (WDTT + olcrtc)
+
+Два **независимых** пути (debug UI; release всегда вариант 1):
+
+| | Вариант 1 | Вариант 2 |
+|---|-----------|-----------|
+| Стек | WireGuard → WDTT → VK TURN | TUN→SOCKS → olcrtc cnc → Jitsi/WB/Telemost → olcrtc srv |
+| Админка | `/bypass` секция 1 (бывш. VK / Тоннели) | `/bypass` секция 2 |
+| API | без изменений | `GET /api/vpn/olcrtc-config`, admin `/api/admin/bypass/olcrtc*` |
+| Клиенты | `bypass_family=wdtt` + `vk_cred_strategy` | `bypass_family=olcrtc` + `olcrtc_provider` |
+| Сервер | `wdtt.service` | `olcrtc@pc` / `olcrtc@android` (`/opt/silent-vpn/olcrtc/`), `python scripts/deploy_olcrtc.py` |
+| Доки | — | `backend/docs/olcrtc.md` |
+
+Источник olcrtc: https://github.com/openlibrecommunity/olcrtc
+
 ### Улей / Соты (Hive)
 
 Масштабирование VPN: **Улей** (главный VPS) + **соты** (дополнительные VPS). Новые устройства по умолчанию на Улье; при перегрузке CPU/RAM (пороги в `.env`) — на соту с минимумом онлайн VPN. **Сборка build-agent в 00:00 МСК не считается перегрузкой.**
@@ -532,6 +547,28 @@ cd pc; npm install; npm run dev
 | `deploy_all.py`, `check_*.py`, `fix_*.py` | `deploy_stable.py` / `deploy_helper.py check` |
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
+### 2026-07-24 — Вариант 2 обхода: olcrtc (debug) рядом с WDTT/VK
+
+- Админка: **«Варианты обхода»** (`/bypass`, redirect `/vk`) — секция 1 VK/WDTT + секция 2 olcrtc (key, Jitsi/WB/Telemost, YAML apply)
+- API: `GET/PUT /api/admin/bypass/olcrtc*`, публичный `GET /api/vpn/olcrtc-config`
+- VPS: `scripts/deploy_olcrtc.py` → systemd `olcrtc.service`, доки `backend/docs/olcrtc.md`
+- PC/Android debug: UI выбора семьи обхода; путь olcrtc = cnc SOCKS + sing-box/hev TUN (бинари не в git). Release форсирует WDTT. Путь VK не ломался.
+- **Prod seed (configure_olcrtc_prod.py):** `enabled=true`, все 3 провайдера в API; `olcrtc.service` жив на **Jitsi** `https://meet.egovm.ru/SilentVpnOlcrtcHive` (meet.jit.si требует token). WB/Telemost room ID — плейсхолдеры e2e (нужны свежие комнаты с сайтов, guest create недоступен). Android debug: bootstrap уходит в olcrtc при выборе варианта; бинарь в `assets/olcrtc/`.
+- **2026-07-24 fix SOCKS/VK:** PC — `olcrtc.exe`+`sing-box.exe` в `resources/` (SOCKS только после peer; таймаут 90с; abs data dir). Android — выбор bypass пишется сразу (без «Применить»), бинарь `GOOS=android` в assets. Debug: `pc/build-debug-358349/`, `SilentVPN-debug.apk`.
+- **2026-07-24 UX обхода:** вход/bootstrap **только VK**. olcrtc-config prefetch+кеш после логина. Выбор варианта только в меню после входа **с «Применить»**. Android: connect из кеша больше не форсирует WDTT при olcrtc. Debug: `pc/build-debug-550243/`, `SilentVPN-debug.apk`.
+- **2026-07-24 olcrtc hang/config:** PC — olcrtc-config через `tunnelApiRequest` IPC (+bypass) до connect. Android — SOCKS wait в фоне (не main), логи в `traceApp`; иначе UI «вечно Подключение» без лога. Debug: `pc/build-debug-665807/`.
+- **2026-07-24 Android Permission denied + PC sing-box:** Android 10+ нельзя exec из `filesDir` (`error=13`) — `libolcrtc.so` в `jniLibs/arm64-v8a` + запуск из `nativeLibraryDir` (fallback codeCache как libclient). PC: sing-box `address[]` вместо deprecated `inet4_address`; лог ready для olcrtc без «WG+workers». ICE TRACE `172.20.96.1→docker` на Win — шум интерфейсов, не блокер если SOCKS ready. Debug: `pc/build-debug-526945/`, `SilentVPN-debug.apk`.
+- **2026-07-24 olcrtc YouTube + Android empty log:** PC — block QUIC/UDP в sing-box (YouTube→TCP), DNS tcp через SOCKS, фильтр спама stderr. Android — `traceApp`→`logUi` (лог в UI), watchdog не зовёт WDTT resume при olcrtc, бинарь CGO+codeCache, без пустого TUN. Debug: `pc/build-debug-752310/`, `SilentVPN-debug.apk`. **Осталось:** Android TUN bridge (hev/sing-box) для трафика приложений; PC+Android не в одной комнате одновременно.
+- **2026-07-24 olcrtc regression fix:** PC — откат жёсткого DNS/block-all-UDP (ломало SOCKS code=4); при смене olcrtc→VK полный cleanup + `vpnIsReady.olcrtc` не блокирует reconnect. Android — exec **только** `nativeLibraryDir` (codeCache тоже noexec/error=13). Debug: `pc/build-debug-456033/`, `SilentVPN-debug.apk`.
+- **2026-07-24 olcrtc warmup + Android TUN:** PC — SOCKS dial-probe до `ready` (нет ложного «подключено» + долгого прогрева), тише xmpp/sing-box лог. Android — hev JNI (`libhev-socks5-tunnel.so`) + `OlcrtcVpnService` TUN→SOCKS после dial OK. Debug: `pc/build-debug-426668/`, `SilentVPN-debug.apk`.
+- **2026-07-24 hev crash + PC sites lag:** Android crash при варианте 2 = `NoSuchMethodError HevSocksTunnel.TProxyGetStats` (JNI RegisterNatives) + `ensureLoaded` на stop; фикс: добавить `TProxyGetStats`, stop только если lib уже loaded. PC: dial-probe по домену `www.gstatic.com` (DNS через peer), DNS TCP через SOCKS + block UDP:53/QUIC, фильтр ICE unreachable / socks code=4. Debug: `pc/build-debug-592311/`. **Масштаб:** одна Jitsi-комната ≠ 1000+ юзеров — см. TASKS «olcrtc room pool».
+- **2026-07-24 olcrtc faster + Android DNS/notif:** PC — dial ×2 + warm доменов, `sniff_override_destination`, фильтр ICE «no candidate pairs». Android — сайты не работали (UDP DNS через hev/SOCKS мёртв) → `excludeRoute` DNS API33+; уведомление «Подключение к серверу» не сменялось (postVpn только WDTT) → watch `OlcrtcTunnelManager.tunnelReady`. Debug: `pc/build-debug-886348/`, `SilentVPN-debug.apk`.
+- **2026-07-24 olcrtc death + logs + UDP:** UI не показывал `[olcrtc] dial/warm` (sendLog фильтр). После смерти peer UI оставался «вкл» → меню не давало сменить на VK; фикс: `setOlcrtcSessionDeadHandler` → `vpn-stopped` + cleanup мёртвой сессии на connect. Speedtest «нет интернета» — UDP через SOCKS мёртв → block all UDP (TCP-сайты ок). **Скорость ~5 Мбит и PC≠Android в одной комнате** — лимит datachannel + одна Hive-комната; полный pool — TASKS. Debug: `pc/build-debug-797197/`.
+- **2026-07-24 PC fake-ip:** минута после ready — DNS/DoH через peer (`tunnel to dns.google:443`×N). sing-box: fake-ip + hijack-dns + sniff. TASKS room pool расписан (MVP: N комнат + N srv + sticky выдача). Debug: `pc/build-debug-476140/`.
+- **2026-07-24 room pool MVP + PC log/DNS:** PC — reject DNS HTTPS/SVCB (EOF `mc.yandex.ru`), INFO stderr не как `:err`, фильтр `api2.cursor.sh`. Backend — пул Jitsi `pc`/`android`, `GET /olcrtc-config?device_type=&fingerprint=`, админка rooms, `olcrtc@pc`+`olcrtc@android` (Hive / HiveAndroid), crypto_key без ротации. Клиенты передают device_type. Prod проверен: android → HiveAndroid. Debug: `pc/build-debug-279338/`.
+- **2026-07-24 sing-box bad rdata:** hijack DNS только `:53` + block LLMNR/mDNS; фильтр `bad rdata` в UI. Debug: `pc/build-debug-696665/`, Android `assembleDebug` из `android/app`.
+- **2026-07-24 Android LTE + PC/Wi‑Fi conflict:** (1) оба srv делили `data/` → раздельно `data-pc`/`data-android`; (2) LTE `failed to send handshake` к meet.egovm.ru = DPI → Android-слот на `meet.playform.ru`; CONNECT `:8080` запасной. ICE `dummy0`/`fe80` — шум, в UI не показываем. **Wi‑Fi PC+Android одновременно — OK.** LTE → TASKS: WB/Telemost (не сегодня).
+
 ### 2026-07-23 — Login 500: исчерпан пул WireGuard `10.66.66.0/24`
 
 - **Симптом:** регистрация OK, `POST /api/auth/login` → **500** (`RuntimeError: No available WireGuard addresses` в `ensure_device_session` → `_get_next_wg_address`). 128 ошибок за сутки.
@@ -540,6 +577,17 @@ cd pc; npm install; npm run dev
 - **Срочно:** DELETE 165 idle offline device >6h.
 - **Расширение пула:** `WG_SUBNET=10.66.0.0/16` (~65k IP, минус `10.66.66.1` и `10.66.67.0/24` под TG). Задеплоено + `restore_api_container`.
 - **Код:** idle-prune/reclaim только devices; login `RuntimeError`→503; фикс `queen_load` в hive summary.
+
+### 2026-07-24 — MFA письмо: лого «всё ещё» — не из нашего MIME
+
+- Проверка на проде: исходящее MFA = `multipart/alternative` (text+html), **HAS_PNG=False**, без `logo.png`/`image/png`.
+- SMTP: `smtp.mail.ru` от `silent27@bk.ru`. Если вложение видно на **старых** письмах — это до фикса. Если на **новых** после запроса кода — смотреть подпись ящика Mail.ru (веб → Настройки → Подпись), не код Silent.
+
+### 2026-07-24 — Админка MFA: «неверный код» + PNG-лого в письме
+
+- **Код «неверный»:** при копировании из HTML Mail.ru часто вставляет пробелы из-за `letter-spacing` → хеш не совпадал. Нормализация: только цифры. TTL кода **2→10 мин** (письмо может идти дольше 2 мин).
+- **PNG в письме:** `_send` прикреплял `logo.png` как inline CID, но в HTML **не было** `cid:silent_logo` → клиенты показывали вложение. Вложение убрано.
+- Деплой: `deploy_stable.py` + admin-ui build.
 
 ### 2026-07-22 — Backend: паттерны анонимайзеров по аудиту БД (без удаления)
 

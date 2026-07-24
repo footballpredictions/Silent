@@ -81,6 +81,7 @@
 | POST | `/exclusions` | User | Исключения приложений (Android) |
 | GET | `/exclusions/{device_id}` | User | Получить исключения |
 | GET | `/theme` | — | **Публичная** тема UI (`ThemeResponse`) |
+| GET | `/olcrtc-config` | — | **Публичный** конфиг варианта 2 (olcrtc) для debug-клиентов |
 | GET | `/sync-state` | User | ConfigSync: ревизии theme/profile/hashes |
 
 **sync-state query params:**
@@ -151,6 +152,11 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 | POST | `/maintenance/cleanup-bootstrap` | Admin | Удалить bootstrap user |
 | GET | `/theme` | Admin | Чтение темы |
 | POST | `/theme` | Admin | Запись темы |
+| GET | `/bypass/olcrtc` | Admin | Настройки olcrtc (вариант 2) |
+| PUT | `/bypass/olcrtc` | Admin | Сохранить настройки olcrtc |
+| POST | `/bypass/olcrtc/generate-key` | Admin | Новый crypto.key |
+| GET | `/bypass/olcrtc/server-yaml` | Admin | Превью server.yaml |
+| POST | `/bypass/olcrtc/apply` | Admin | Записать yaml в `update/olcrtc/` для deploy |
 | POST | `/promo` | Admin | Создание промокода |
 | GET | `/promo` | Admin | Список промокодов |
 | GET | `/logs` | Admin | Буфер логов |

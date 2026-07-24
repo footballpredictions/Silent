@@ -27,6 +27,7 @@ cd backend
 | `scripts/deploy_wdtt_systemd.py` | `python scripts/deploy_wdtt_systemd.py` | wdtt-server как systemd на VPS |
 | `scripts/deploy_telegram_proxy.py` | `python scripts/deploy_telegram_proxy.py` | MTProto (mtg) для Telegram + theme URL |
 | `scripts/deploy_hive.py` | `python scripts/deploy_hive.py` | Улей: Hive API, cell-agent, admin-ui/dist |
+| `scripts/deploy_olcrtc.py` | `python scripts/deploy_olcrtc.py` | olcrtc srv (systemd) + API/админка «Варианты обхода» |
 | `scripts/deploy_cell_agent.py` | `python scripts/deploy_cell_agent.py <cell_ip>` | cell-agent на отдельной VPS-соте |
 | `scripts/restore_api_container.py` | `python scripts/restore_api_container.py` | Восстановить `app/`+`ai/` в контейнере после `compose up`/recreate |
 | `scripts/apply_security_phase1.py` | `python scripts/apply_security_phase1.py` | UFW, fail2ban, bind API `127.0.0.1:8000` (+ sync кода) |

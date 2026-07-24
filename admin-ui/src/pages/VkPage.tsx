@@ -402,7 +402,7 @@ export default function VkPage({ token }: { token: string }) {
   return (
     <div className="space-y-6 max-w-xl">
       <div>
-        <h1 className="text-xl font-bold">VK — серверный AI-агент</h1>
+        <h1 className="text-lg font-bold">VK — серверный AI-агент</h1>
         <p className="text-[#666] text-sm mt-1">
           Сервер создаёт до 4 хешей VK-звонков на каждого пользователя и следит, чтобы они не умирали.
         </p>

@@ -2,8 +2,6 @@ import smtplib
 import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.image import MIMEImage
-from pathlib import Path
 from datetime import datetime
 import logging
 
@@ -11,33 +9,19 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-LOGO_PATH = Path(__file__).parent.parent.parent / "static" / "logo.png"
 
-
-def _get_logo_cid() -> tuple[str, bytes | None]:
-    cid = "silent_logo"
-    if LOGO_PATH.exists():
-        return cid, LOGO_PATH.read_bytes()
-    return cid, None
-
-
-def _send(to_email: str, subject: str, html_body: str) -> bool:
+def _send(to_email: str, subject: str, html_body: str, plain_body: str | None = None) -> bool:
+    """Отправка HTML (+ опционально plain). Без вложений — лого как PNG-аттач
+    раньше уходил «в никуда» (в шаблоне нет cid:), клиенты почты показывали файл."""
     try:
-        msg = MIMEMultipart("related")
+        msg = MIMEMultipart("alternative")
         msg["From"] = f"{settings.EMAIL_FROM_NAME} <{settings.EMAIL_FROM}>"
         msg["To"] = to_email
         msg["Subject"] = subject
 
-        alt = MIMEMultipart("alternative")
-        msg.attach(alt)
-        alt.attach(MIMEText(html_body, "html", "utf-8"))
-
-        cid, logo_bytes = _get_logo_cid()
-        if logo_bytes:
-            img = MIMEImage(logo_bytes, "png")
-            img.add_header("Content-ID", f"<{cid}>")
-            img.add_header("Content-Disposition", "inline", filename="logo.png")
-            msg.attach(img)
+        plain = plain_body or "Silent VPN — откройте HTML-версию письма."
+        msg.attach(MIMEText(plain, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
 
         # Port 465 = implicit SSL (SMTP_SSL), port 587 = STARTTLS
         if settings.SMTP_PORT == 465:
@@ -205,7 +189,16 @@ def send_admin_mfa_code_email(to_email: str, code: str, ttl_minutes: int = 10) -
       Код действителен <strong>{ttl_minutes} минут</strong>. Если вы не пытались войти — смените пароль админки и проверьте безопасность почты.
     </p>
     """
-    return _send(to_email, "Silent VPN — код входа в админку", _base_template(content))
+    plain = (
+        f"Silent VPN — код входа в админку: {code}\n"
+        f"Действителен {ttl_minutes} мин. Вводите только цифры, без пробелов."
+    )
+    return _send(
+        to_email,
+        "Silent VPN — код входа в админку",
+        _base_template(content),
+        plain_body=plain,
+    )
 
 
 def send_password_reset_email(to_email: str, token: str, base_url: str) -> bool:

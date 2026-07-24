@@ -1524,3 +1524,171 @@ async def publish_all_updates_to_github(_: bool = Depends(get_admin_credentials)
 
 def _platform_label(platform: str) -> str:
     return "PC (Windows)" if platform == "pc" else "Android"
+
+
+# ─── Варианты обхода / olcrtc (вариант 2) ───────────────────────────────────
+
+
+class OlcrtcRoomBody(BaseModel):
+    id: str = ""
+    url: str = ""
+    max_clients: int = 4
+    device_types: list[str] = []
+
+
+class OlcrtcProviderBody(BaseModel):
+    enabled: bool = False
+    room: str = ""
+    transport: str = "datachannel"
+    rooms: list[OlcrtcRoomBody] = []
+
+
+class OlcrtcSettingsBody(BaseModel):
+    enabled: bool = False
+    crypto_key: str = ""
+    providers: dict[str, OlcrtcProviderBody] = {}
+    srv_status: Optional[str] = None
+    srv_message: Optional[str] = None
+
+
+@router.get("/bypass/olcrtc")
+async def get_olcrtc_bypass(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.olcrtc_settings import load_olcrtc_settings
+
+    s = await load_olcrtc_settings(db)
+    return s.to_dict()
+
+
+@router.put("/bypass/olcrtc")
+async def put_olcrtc_bypass(
+    body: OlcrtcSettingsBody,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.olcrtc_settings import (
+        OlcrtcProviderConfig,
+        OlcrtcRoomSlot,
+        OlcrtcSettings,
+        PROVIDERS,
+        DEFAULT_TRANSPORTS,
+        load_olcrtc_settings,
+        save_olcrtc_settings,
+    )
+
+    prev = await load_olcrtc_settings(db)
+    providers = {}
+    for name in PROVIDERS:
+        src = (body.providers or {}).get(name)
+        if src is None:
+            providers[name] = prev.providers.get(name) or OlcrtcProviderConfig(
+                transport=DEFAULT_TRANSPORTS[name]
+            )
+        else:
+            rooms = []
+            for i, r in enumerate(src.rooms or []):
+                url = (r.url or "").strip()
+                if not url:
+                    continue
+                rooms.append(
+                    OlcrtcRoomSlot(
+                        id=(r.id or f"r{i}").strip() or f"r{i}",
+                        url=url,
+                        max_clients=max(1, int(r.max_clients or 4)),
+                        device_types=[
+                            str(x).strip().lower()
+                            for x in (r.device_types or [])
+                            if str(x).strip()
+                        ],
+                    )
+                )
+            legacy = (src.room or "").strip()
+            if not rooms and legacy:
+                rooms = [
+                    OlcrtcRoomSlot(id="default", url=legacy, max_clients=8, device_types=[])
+                ]
+            providers[name] = OlcrtcProviderConfig(
+                enabled=bool(src.enabled),
+                room=legacy or (rooms[0].url if rooms else ""),
+                transport=(src.transport or DEFAULT_TRANSPORTS[name]).strip()
+                or DEFAULT_TRANSPORTS[name],
+                rooms=rooms,
+            )
+    key = (body.crypto_key or "").strip() or prev.crypto_key
+    if key and len(key) != 64:
+        raise HTTPException(status_code=400, detail="crypto_key must be 64 hex characters")
+    settings = OlcrtcSettings(
+        enabled=bool(body.enabled),
+        crypto_key=key,
+        providers=providers,
+        srv_status=body.srv_status if body.srv_status is not None else prev.srv_status,
+        srv_message=body.srv_message if body.srv_message is not None else prev.srv_message,
+    )
+    saved = await save_olcrtc_settings(db, settings)
+    return saved.to_dict()
+
+
+@router.post("/bypass/olcrtc/generate-key")
+async def generate_olcrtc_key(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.olcrtc_settings import (
+        generate_crypto_key,
+        load_olcrtc_settings,
+        save_olcrtc_settings,
+    )
+
+    s = await load_olcrtc_settings(db)
+    s.crypto_key = generate_crypto_key()
+    saved = await save_olcrtc_settings(db, s)
+    return {"crypto_key": saved.crypto_key, "settings": saved.to_dict()}
+
+
+@router.get("/bypass/olcrtc/server-yaml")
+async def get_olcrtc_server_yaml(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.olcrtc_settings import load_olcrtc_settings, render_all_server_yaml_files
+
+    s = await load_olcrtc_settings(db)
+    try:
+        files = render_all_server_yaml_files(s)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"yaml": files.get("default") or next(iter(files.values()), ""), "files": files}
+
+
+@router.post("/bypass/olcrtc/apply")
+async def apply_olcrtc_server_yaml(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Пишет server.yaml (+ server-pc/android.yaml) для deploy_olcrtc.py + systemd на хосте."""
+    from app.services.olcrtc_settings import (
+        load_olcrtc_settings,
+        save_olcrtc_settings,
+        write_all_server_yaml_files,
+    )
+
+    s = await load_olcrtc_settings(db)
+    try:
+        paths = write_all_server_yaml_files(s)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    s.srv_message = (
+        f"yaml written ({len(paths)} files); run: python scripts/deploy_olcrtc.py"
+    )
+    s.srv_status = "pending_apply"
+    await save_olcrtc_settings(db, s)
+    return {
+        "ok": True,
+        "paths": paths,
+        "message": s.srv_message,
+        "settings": s.to_dict(),
+    }

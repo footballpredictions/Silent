@@ -32,6 +32,7 @@ import com.silent.vpn.ui.BrandMarkIcons
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vk.HashParser
+import com.silent.vpn.vpn.OlcrtcTunnelManager
 import com.silent.vpn.vpn.TunnelApiProxy
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
@@ -293,6 +294,8 @@ class SilentVpnService : Service() {
                 if (isRunning) {
                     val busy = WdttTunnelManager.running.value ||
                         WdttTunnelManager.tunnelReady.value ||
+                        OlcrtcTunnelManager.running.value ||
+                        OlcrtcTunnelManager.tunnelReady.value ||
                         VpnSessionState.isActive() ||
                         (System.currentTimeMillis() - connectStartedAtMs < CONNECT_BUSY_GRACE_MS)
                     if (!busy) {
@@ -391,6 +394,26 @@ class SilentVpnService : Service() {
     private fun connect(configJson: String, forceBootstrap: Boolean = false) {
         try {
             val obj = JSONObject(configJson)
+            val bypassFamily = obj.optString("bypass_family", obj.optString("bypassFamily", "wdtt"))
+            if (bypassFamily.equals("olcrtc", ignoreCase = true)) {
+                SilentRepository.APP_EXCLUDED_FROM_VPN = true
+                // TUN через отдельный VpnService (этот класс — обычный Service).
+                startService(
+                    Intent(this, OlcrtcVpnService::class.java).apply {
+                        action = OlcrtcVpnService.ACTION_START
+                        putExtra(OlcrtcVpnService.EXTRA_CONFIG, configJson)
+                    },
+                )
+                DebugLog.i("VpnService", "olcrtc path → OlcrtcVpnService")
+                isRunning = true
+                SessionTrace.mark("SilentVpnService.connect", "isRunning=true olcrtc")
+                dataSyncServiceStarted = false
+                startFg(buildConnectingNotification())
+                watchOlcrtcReadyNotification()
+                VpnTileHelper.requestUpdate(this)
+                return
+            }
+
             val hashes = mutableListOf<String>()
             val arr = obj.optJSONArray("vk_hashes")
             if (arr != null) for (i in 0 until arr.length()) hashes.add(arr.getString(i))
@@ -579,6 +602,14 @@ class SilentVpnService : Service() {
                     return@launch
                 }
                 SilentRepository.APP_EXCLUDED_FROM_VPN = true
+                OlcrtcTunnelManager.stop()
+                runCatching {
+                    startService(
+                        Intent(this@SilentVpnService, OlcrtcVpnService::class.java).apply {
+                            action = OlcrtcVpnService.ACTION_STOP
+                        },
+                    )
+                }
                 WdttTunnelManager.prepareForShutdown()
                 if (isRunning) {
                     SessionTrace.mark("SilentVpnService.disconnect", "skipped teardown — reconnected")
@@ -1005,6 +1036,11 @@ class SilentVpnService : Service() {
         transportWatchdogJob = scope.launch {
             delay(1000)
             while (isActive && isRunning) {
+                // olcrtc: не трогать WDTT resume — иначе «вечное Подключение» без логов.
+                if (OlcrtcTunnelManager.running.value || OlcrtcTunnelManager.tunnelReady.value) {
+                    delay(2000)
+                    continue
+                }
                 if (!WdttTunnelManager.running.value && !isTunnelPaused) {
                     if (isWithinConnectGrace()) {
                         delay(2000)
@@ -1226,7 +1262,9 @@ class SilentVpnService : Service() {
     }
 
     private fun postVpnNotification(stats: String) {
-        if (!isRunning || !WdttTunnelManager.tunnelReady.value) return
+        val tunnelUp =
+            WdttTunnelManager.tunnelReady.value || OlcrtcTunnelManager.tunnelReady.value
+        if (!isRunning || !tunnelUp) return
         val body = notificationBody(ready = true, stats = stats)
         val now = System.currentTimeMillis()
         if (body == lastNotifBody && now - lastNotifUpdateMs < NOTIF_UPDATE_MIN_MS) return
@@ -1234,6 +1272,21 @@ class SilentVpnService : Service() {
         lastNotifUpdateMs = now
         lastNotifBody = body
         startFg(buildActiveNotification(stats))
+    }
+
+    /** olcrtc: SilentVpnService держит FG, а ready приходит из OlcrtcTunnelManager. */
+    private fun watchOlcrtcReadyNotification() {
+        scope.launch {
+            OlcrtcTunnelManager.tunnelReady.collect { ready ->
+                if (!isRunning) return@collect
+                if (ready) {
+                    startFg(buildActiveNotification("olcrtc · туннель активен"))
+                    VpnTileHelper.requestUpdate(this@SilentVpnService)
+                } else if (OlcrtcTunnelManager.running.value) {
+                    startFg(buildConnectingNotification())
+                }
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

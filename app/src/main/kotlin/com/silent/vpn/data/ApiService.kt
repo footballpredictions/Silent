@@ -140,6 +140,25 @@ data class VpnConfig(
 data class ConnectRequest(val device_fingerprint: String, val device_type: String, val last_ip: String? = null)
 data class DisconnectRequest(val device_fingerprint: String)
 
+data class OlcrtcProviderPublic(
+    val enabled: Boolean = false,
+    val room: String = "",
+    val transport: String = "datachannel",
+    val room_slot_id: String = "",
+    val rooms_count: Int = 0,
+)
+
+data class OlcrtcPublicConfig(
+    val enabled: Boolean = false,
+    val crypto_key: String = "",
+    val socks_host: String = "127.0.0.1",
+    val socks_port: Int = 8808,
+    val assigned_slot: String = "",
+    val device_type: String = "",
+    val jitsi_https_proxy: String = "",
+    val providers: Map<String, OlcrtcProviderPublic> = emptyMap(),
+)
+
 data class ThemeData(
     val primary_color: String = "#000000",
     val background_color: String = "#FFFFFF",
@@ -289,6 +308,12 @@ interface SilentApi {
 
     @GET("api/vpn/theme")
     suspend fun getTheme(): Response<ThemeData>
+
+    @GET("api/vpn/olcrtc-config")
+    suspend fun getOlcrtcConfig(
+        @Query("device_type") deviceType: String,
+        @Query("fingerprint") fingerprint: String,
+    ): Response<OlcrtcPublicConfig>
 
     @POST("api/vpn/device/register")
     suspend fun registerDevice(@Body req: DeviceRegisterRequest): Response<VpnConfig>

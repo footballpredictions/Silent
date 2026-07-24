@@ -179,9 +179,18 @@ object WdttTunnelManager {
         if (!running.value) activeWorkers.value = 0
     }
 
-    /** Только logcat; в UI «Лог VPN» не дублируем. */
-    fun traceApp(key: String, message: String, isError: Boolean = false) {
+    /**
+     * UI «Лог VPN» + logcat. Для olcrtc/диагностики — всегда в панель.
+     * (Ранее traceApp писал только logcat → лог в приложении пустой.)
+     */
+    fun logUi(key: String, message: String, priority: Int = 2, isError: Boolean = false) {
+        updateLog(key, message, priority, isError)
         if (isError) android.util.Log.w("App", message) else android.util.Log.i("App", message)
+    }
+
+    /** Совместимость: то же, что [logUi]. */
+    fun traceApp(key: String, message: String, isError: Boolean = false) {
+        logUi(key, message, priority = if (isError) 99 else 2, isError = isError)
     }
 
     private fun mirrorErrorToAppLog(message: String) {

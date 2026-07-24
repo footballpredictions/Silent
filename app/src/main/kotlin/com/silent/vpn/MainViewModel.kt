@@ -44,6 +44,7 @@ import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vpn.TelegramPathWarmup
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.HashFailureReporter
+import com.silent.vpn.vpn.OlcrtcTunnelManager
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.sync.MobileSyncLog
 import com.silent.vpn.sync.TunnelSyncResult
@@ -216,6 +217,9 @@ class MainViewModel @Inject constructor(
                 repo.saveSyncThemeRev(state.theme)
                 repo.saveSyncProfileRev(state.profile)
             }
+        }
+        if (BuildConfig.DEBUG) {
+            runCatching { repo.prefetchOlcrtcConfig() }
         }
     }
 
@@ -415,6 +419,19 @@ class MainViewModel @Inject constructor(
                         }
                     }
                     updateBootstrapReadyFlag()
+                }
+            }
+        }
+        viewModelScope.launch {
+            OlcrtcTunnelManager.tunnelReady.collect { ready ->
+                if (ready && repo.isOlcrtcBypass()) {
+                    if (_vpnState.value == VpnState.DISCONNECTING) return@collect
+                    DebugLog.i("MainViewModel", "olcrtc tunnel ready")
+                    _vpnState.value = VpnState.CONNECTED
+                    markLocalDeviceOnline()
+                    onVpnTunnelReady()
+                    // olcrtc: API на публичном nip.io, не 10.66.66.1
+                    repo.clearTunnelApiBase()
                 }
             }
         }
@@ -1976,6 +1993,7 @@ class MainViewModel @Inject constructor(
             WdttTunnelManager.traceApp("bootstrap_skip", "bootstrap пропущен: уже вошли")
             return
         }
+        // Bootstrap всегда VK/WDTT — olcrtc только для основного VPN после входа.
         if (!isHashReady()) {
             WdttTunnelManager.traceApp("bootstrap_skip", "bootstrap пропущен: нет хеша в сборке", isError = true)
             return
@@ -1992,6 +2010,10 @@ class MainViewModel @Inject constructor(
             WdttTunnelManager.traceApp("bootstrap_resume", "bootstrap уже подключён, таймер возобновлён")
             return
         }
+        ensureBootstrapVpnWdttContinue(context)
+    }
+
+    private fun ensureBootstrapVpnWdttContinue(context: Context) {
         val tv = com.silent.vpn.util.DevicePlatform.isTv(appContext)
         WdttTunnelManager.traceApp(
             "bootstrap_start",
@@ -2383,6 +2405,106 @@ class MainViewModel @Inject constructor(
                     if (repo.hasSessionFingerprint()) throw it
                     repo.startNewSession()
                 }
+
+                // Debug olcrtc: не брать WDTT из кеша — иначе всегда VK.
+                if (BuildConfig.DEBUG && repo.isOlcrtcBypass()) {
+                    WdttTunnelManager.traceApp("olcrtc", "connect start provider=${repo.getOlcrtcProvider()}")
+                    if (android.net.VpnService.prepare(context) != null) {
+                        _vpnError.value = "Нужно разрешение VPN"
+                        _vpnState.value = VpnState.DISCONNECTED
+                        return@launch
+                    }
+                    // Сеть до старта VPN; кеш только fallback (пул комнат — нужен свежий room)
+                    val olc = repo.resolveOlcrtcConfig(preferCache = false)
+                    val provider = repo.getOlcrtcProvider()
+                    val p = olc?.providers?.get(provider)
+                    if (olc == null || !olc.enabled || olc.crypto_key.length != 64 || p == null || !p.enabled || p.room.isBlank()) {
+                        val msg = "olcrtc-config нет (кеш/сеть). Откройте меню → Варианты обхода."
+                        WdttTunnelManager.traceApp("olcrtc", msg, isError = true)
+                        _vpnError.value = msg
+                        _vpnState.value = VpnState.DISCONNECTED
+                        return@launch
+                    }
+                    WdttTunnelManager.traceApp(
+                        "olcrtc",
+                        "config ok slot=${olc.assigned_slot.ifBlank { p.room_slot_id }} room=${p.room.take(48)}",
+                    )
+                    val stub = loadCachedVpnConfig() ?: VpnConfig(
+                        device_id = repo.getSessionDeviceId() ?: fp,
+                        server_ip = "127.0.0.1",
+                        server_port = 0,
+                        wdtt_password = "",
+                        wg_private_key = "",
+                        wg_address = "",
+                        wg_dns = "1.1.1.1",
+                        server_public_key = "",
+                        vk_hashes = emptyList(),
+                        stream_count = 1,
+                    )
+                    DebugLog.i("MainViewModel", "connect olcrtc provider=$provider")
+                    val json = org.json.JSONObject().apply {
+                        put("bypass_family", "olcrtc")
+                        put("bypassFamily", "olcrtc")
+                        put("olcrtc_provider", provider)
+                        put("olcrtc_room", p.room)
+                        put("olcrtc_crypto_key", olc.crypto_key)
+                        put("olcrtc_transport", p.transport.ifBlank { "datachannel" })
+                        put("olcrtc_socks_host", olc.socks_host.ifBlank { "127.0.0.1" })
+                        put("olcrtc_socks_port", olc.socks_port.takeIf { it > 0 } ?: 8808)
+                        if (repo.isOnMobileData() &&
+                            olc.jitsi_https_proxy.isNotBlank() &&
+                            p.room.contains("meet.egovm.ru")
+                        ) {
+                            put("olcrtc_https_proxy", olc.jitsi_https_proxy)
+                        }
+                        put("is_bootstrap", false)
+                        put("device_id", stub.device_id)
+                    }
+                    WdttTunnelManager.clearLogs()
+                    WdttTunnelManager.logUi("olcrtc_connect", "olcrtc connect provider=$provider", 1)
+                    val intent = Intent(context, SilentVpnService::class.java).apply {
+                        action = SilentVpnService.ACTION_CONNECT
+                        putExtra(SilentVpnService.EXTRA_CONFIG, json.toString())
+                        putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, false)
+                    }
+                    ContextCompat.startForegroundService(context, intent)
+                    pendingConnectAfterSubscriptionRefresh = false
+                    var olcOk = false
+                    for (tick in 0 until 90) {
+                        delay(1000)
+                        if (_vpnState.value != VpnState.CONNECTING) return@launch
+                        val err = OlcrtcTunnelManager.lastError.value
+                        if (err != null) {
+                            _vpnError.value = err
+                            _vpnState.value = VpnState.DISCONNECTED
+                            stopVpnLocally(context)
+                            return@launch
+                        }
+                        if (OlcrtcTunnelManager.tunnelReady.value) {
+                            olcOk = true
+                            break
+                        }
+                        if (tick == 5 || tick == 15 || tick == 30 || tick == 60) {
+                            WdttTunnelManager.logUi(
+                                "olcrtc_wait",
+                                "waiting SOCKS… ${tick}s running=${OlcrtcTunnelManager.running.value}",
+                            )
+                        }
+                    }
+                    if (olcOk) {
+                        _vpnState.value = VpnState.CONNECTED
+                        repo.clearTunnelApiBase()
+                        WdttTunnelManager.logUi("olcrtc_ok", "olcrtc connected (SOCKS)", 1)
+                        return@launch
+                    }
+                    val fail = OlcrtcTunnelManager.lastError.value ?: "olcrtc не поднялся (бинарь/room/peer)"
+                    WdttTunnelManager.logUi("olcrtc_fail", fail, 99, isError = true)
+                    _vpnError.value = fail
+                    _vpnState.value = VpnState.DISCONNECTED
+                    stopVpnLocally(context)
+                    return@launch
+                }
+
                 val cached = loadCachedVpnConfig()
                 if (cached != null && isConfigConnectable(cached)) {
                     val config = wdttConnectConfig(resolveMainVpnConfig(cached))
@@ -2534,6 +2656,44 @@ class MainViewModel @Inject constructor(
 
     private fun launchVpnService(context: Context, config: VpnConfig, forceBootstrap: Boolean = false) {
         val isBootstrap = forceBootstrap || bootstrapVpnMode
+        if (BuildConfig.DEBUG && repo.isOlcrtcBypass()) {
+            viewModelScope.launch {
+                val olc = repo.resolveOlcrtcConfig(preferCache = false)
+                val provider = repo.getOlcrtcProvider()
+                val p = olc?.providers?.get(provider)
+                if (olc == null || !olc.enabled || olc.crypto_key.length != 64 || p == null || !p.enabled || p.room.isBlank()) {
+                    _vpnError.value =
+                        "olcrtc: провайдер «${repo.olcrtcProviderLabel()}» не настроен / нет кеша (меню → Варианты обхода)"
+                    _vpnState.value = VpnState.DISCONNECTED
+                    return@launch
+                }
+                val json = org.json.JSONObject().apply {
+                    put("bypass_family", "olcrtc")
+                    put("bypassFamily", "olcrtc")
+                    put("olcrtc_provider", provider)
+                    put("olcrtc_room", p.room)
+                    put("olcrtc_crypto_key", olc.crypto_key)
+                    put("olcrtc_transport", p.transport.ifBlank { "datachannel" })
+                    put("olcrtc_socks_host", olc.socks_host.ifBlank { "127.0.0.1" })
+                    put("olcrtc_socks_port", olc.socks_port.takeIf { it > 0 } ?: 8808)
+                    if (repo.isOnMobileData() &&
+                        olc.jitsi_https_proxy.isNotBlank() &&
+                        p.room.contains("meet.egovm.ru")
+                    ) {
+                        put("olcrtc_https_proxy", olc.jitsi_https_proxy)
+                    }
+                    put("is_bootstrap", isBootstrap)
+                    put("device_id", config.device_id)
+                }
+                val intent = Intent(context, SilentVpnService::class.java).apply {
+                    action = SilentVpnService.ACTION_CONNECT
+                    putExtra(SilentVpnService.EXTRA_CONFIG, json.toString())
+                    putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, isBootstrap)
+                }
+                ContextCompat.startForegroundService(context, intent)
+            }
+            return
+        }
         val forService = if (isBootstrap) config else resolveMainVpnConfig(config)
         val wdttConfig = wdttConnectConfig(forService)
         val intent = Intent(context, SilentVpnService::class.java).apply {

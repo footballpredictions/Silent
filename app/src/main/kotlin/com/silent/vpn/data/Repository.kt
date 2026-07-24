@@ -68,6 +68,14 @@ class SilentRepository @Inject constructor(
         const val VK_CRED_AUTO = "auto"
         const val VK_CRED_MANUAL = "manual"
 
+        const val PREF_BYPASS_FAMILY = "bypass_family"
+        const val BYPASS_FAMILY_WDTT = "wdtt"
+        const val BYPASS_FAMILY_OLCRTC = "olcrtc"
+        const val PREF_OLCRTC_PROVIDER = "olcrtc_provider"
+        const val OLCRTC_JITSI = "jitsi"
+        const val OLCRTC_WBSTREAM = "wbstream"
+        const val OLCRTC_TELEMOST = "telemost"
+
         /** @deprecated используйте VK_CRED_* */
         const val PREF_CAPTCHA_BYPASS_MODE = "captcha_bypass_mode"
         const val CAPTCHA_MODE_RJS = "rjs"
@@ -1115,6 +1123,97 @@ class SilentRepository @Inject constructor(
             else -> VK_CRED_VKCALLS
         }
         prefs.edit().putString(PREF_VK_CRED_STRATEGY, normalized).apply()
+    }
+
+    fun getBypassFamily(): String {
+        if (!BuildConfig.DEBUG) return BYPASS_FAMILY_WDTT
+        return when (prefs.getString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_WDTT)) {
+            BYPASS_FAMILY_OLCRTC -> BYPASS_FAMILY_OLCRTC
+            else -> BYPASS_FAMILY_WDTT
+        }
+    }
+
+    fun setBypassFamily(family: String) {
+        if (!BuildConfig.DEBUG) return
+        val normalized = if (family == BYPASS_FAMILY_OLCRTC) BYPASS_FAMILY_OLCRTC else BYPASS_FAMILY_WDTT
+        prefs.edit().putString(PREF_BYPASS_FAMILY, normalized).apply()
+    }
+
+    fun isOlcrtcBypass(): Boolean = getBypassFamily() == BYPASS_FAMILY_OLCRTC
+
+    fun getOlcrtcProvider(): String {
+        if (!BuildConfig.DEBUG) return OLCRTC_JITSI
+        return when (val v = prefs.getString(PREF_OLCRTC_PROVIDER, OLCRTC_JITSI)) {
+            OLCRTC_WBSTREAM, OLCRTC_TELEMOST -> v
+            else -> OLCRTC_JITSI
+        }
+    }
+
+    fun setOlcrtcProvider(provider: String) {
+        if (!BuildConfig.DEBUG) return
+        val normalized = when (provider) {
+            OLCRTC_WBSTREAM, OLCRTC_TELEMOST -> provider
+            else -> OLCRTC_JITSI
+        }
+        prefs.edit().putString(PREF_OLCRTC_PROVIDER, normalized).apply()
+    }
+
+    fun olcrtcProviderLabel(provider: String = getOlcrtcProvider()): String = when (provider) {
+        OLCRTC_WBSTREAM -> "WB Stream"
+        OLCRTC_TELEMOST -> "Яндекс Телемост"
+        else -> "Jitsi Meet"
+    }
+
+    fun bypassFamilyLabel(family: String = getBypassFamily()): String =
+        if (family == BYPASS_FAMILY_OLCRTC) "olcrtc" else "VK / WDTT"
+
+    private val PREF_OLCRTC_CACHE = "olcrtc_config_cache_v4"
+
+    fun getCachedOlcrtcConfig(): OlcrtcPublicConfig? {
+        val raw = prefs.getString(PREF_OLCRTC_CACHE, null) ?: return null
+        return runCatching {
+            Gson().fromJson(raw, OlcrtcPublicConfig::class.java)
+        }.getOrNull()?.takeIf { it.enabled && it.crypto_key.length == 64 }
+    }
+
+    private fun saveOlcrtcCache(cfg: OlcrtcPublicConfig) {
+        if (!cfg.enabled || cfg.crypto_key.length != 64) return
+        prefs.edit().putString(PREF_OLCRTC_CACHE, Gson().toJson(cfg)).apply()
+    }
+
+    /** Публичный nip.io (не tunnel). Короткий timeout — не вешать connect. */
+    suspend fun fetchOlcrtcConfig(): OlcrtcPublicConfig? {
+        val publicBase = getPublicServerUrl().trimEnd('/')
+        val dt = runCatching { getApiDeviceType() }.getOrDefault("android")
+        val fp = runCatching { getDeviceFingerprint() }.getOrDefault("")
+        return try {
+            val api = buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 5L)
+            val res = api.getOlcrtcConfig(dt, fp)
+            val body = if (res.isSuccessful) res.body() else null
+            if (body != null && body.enabled && body.crypto_key.length == 64) {
+                saveOlcrtcCache(body)
+                body
+            } else {
+                getCachedOlcrtcConfig()
+            }
+        } catch (_: Exception) {
+            getCachedOlcrtcConfig()
+        }
+    }
+
+    suspend fun prefetchOlcrtcConfig() {
+        if (!BuildConfig.DEBUG) return
+        fetchOlcrtcConfig()
+    }
+
+    /** preferCache=true — для connect, когда сеть уже рвётся. */
+    suspend fun resolveOlcrtcConfig(preferCache: Boolean = false): OlcrtcPublicConfig? {
+        val cached = getCachedOlcrtcConfig()
+        if (preferCache && cached != null) {
+            // фон
+            return cached
+        }
+        return fetchOlcrtcConfig() ?: cached
     }
 
     fun getEffectiveVkCredStrategy(): String {

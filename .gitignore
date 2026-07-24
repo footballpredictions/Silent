@@ -24,8 +24,11 @@ keystore/*
 # Logs
 *.log
 
-# Native libclient (собирается build_android_go.sh / build_android_go.bat)
+# Native libs (собираются локально / CI: libclient, libolcrtc, libhev-socks5-tunnel)
 app/src/main/jniLibs/
+
+# Legacy olcrtc binaries in assets (используем jniLibs/libolcrtc.so)
+app/src/main/assets/olcrtc/
 
 # OS
 .DS_Store

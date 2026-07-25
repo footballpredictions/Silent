@@ -547,6 +547,14 @@ cd pc; npm install; npm run dev
 | `deploy_all.py`, `check_*.py`, `fix_*.py` | `deploy_stable.py` / `deploy_helper.py check` |
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
+### 2026-07-25 — Админка: «Доп. настройки» — отключение регистрации
+
+- Новое меню **«Доп. настройки»** (`/extra-settings`): тумблер «Отключить регистрацию».
+- `app_settings.registration_disabled` → `POST /api/auth/register` отвечает **503** с текстом «Ведутся технические работы. Регистрация временно недоступна.»
+- Вход для уже зарегистрированных не затрагивается. Клиенты (PC/Android) показывают `detail` из ответа API без отдельной сборки.
+- API: `GET/POST /api/admin/settings/registration`. Сервис: `app/services/registration_settings.py`.
+- Задеплоено на прод (`deploy_api.py`, в список файлов добавлен `registration_settings.py`). Push `main`.
+
 ### 2026-07-24 — Whitelist email: ужатие доменов
 
 - Из `ALLOWED_EMAIL_DOMAINS` убраны Microsoft / Yahoo / Proton / Rambler / GMX / AOL / Zoho / Tutanota / mail.com / `vk.com`.

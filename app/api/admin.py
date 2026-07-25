@@ -355,6 +355,10 @@ class RegistrationTestModeRequest(BaseModel):
     enabled: bool
 
 
+class RegistrationDisabledRequest(BaseModel):
+    disabled: bool
+
+
 @router.get("/subscriptions/registration-test-mode")
 async def get_registration_test_mode(
     _: bool = Depends(get_admin_credentials),
@@ -375,6 +379,42 @@ async def set_registration_test_mode_endpoint(
 
     enabled, affected = await set_registration_test_mode(db, req.enabled)
     return {"enabled": enabled, "users_affected": affected}
+
+
+@router.get("/settings/registration")
+async def get_registration_settings(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Доп. настройки: блокировка регистрации при инцидентах."""
+    from app.services.registration_settings import (
+        REGISTRATION_DISABLED_MESSAGE,
+        is_registration_disabled,
+    )
+
+    disabled = await is_registration_disabled(db)
+    return {
+        "registration_disabled": disabled,
+        "message": REGISTRATION_DISABLED_MESSAGE,
+    }
+
+
+@router.post("/settings/registration")
+async def set_registration_settings(
+    req: RegistrationDisabledRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.registration_settings import (
+        REGISTRATION_DISABLED_MESSAGE,
+        set_registration_disabled,
+    )
+
+    disabled = await set_registration_disabled(db, req.disabled)
+    return {
+        "registration_disabled": disabled,
+        "message": REGISTRATION_DISABLED_MESSAGE,
+    }
 
 
 class GrantSubscriptionRequest(BaseModel):

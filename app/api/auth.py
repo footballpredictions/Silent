@@ -43,6 +43,17 @@ async def register(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
+    from app.services.registration_settings import (
+        REGISTRATION_DISABLED_MESSAGE,
+        is_registration_disabled,
+    )
+
+    if await is_registration_disabled(db):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=REGISTRATION_DISABLED_MESSAGE,
+        )
+
     if await check_ip_rate_limit(
         request,
         scope="register",

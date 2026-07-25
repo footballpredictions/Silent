@@ -21,6 +21,7 @@ FILES = [
     "app/models/user.py",
     "app/services/subscription_service.py",
     "app/services/test_mode_settings.py",
+    "app/services/registration_settings.py",
     "app/services/vk_agent_auth.py",
     "app/services/email_validation.py",
     "app/services/rate_limiter.py",

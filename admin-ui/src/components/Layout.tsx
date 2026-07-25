@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Users, Hash, Gift, Palette, LogOut, Calendar, Menu, X, Download, Hexagon, Network } from 'lucide-react'
+import { LayoutDashboard, Users, Hash, Gift, Palette, LogOut, Calendar, Menu, X, Download, Hexagon, Network, Settings } from 'lucide-react'
 import SilentLogo from './SilentLogo'
 import AdminDevicesMenu from './AdminDevicesMenu'
 
@@ -14,6 +14,7 @@ const nav = [
   { to: '/bonuses', icon: Gift, label: 'Бонусы' },
   { to: '/theme', icon: Palette, label: 'Оформление' },
   { to: '/updates', icon: Download, label: 'Обновления' },
+  { to: '/extra-settings', icon: Settings, label: 'Доп. настройки' },
 ]
 
 function NavItems({ onClose }: { onClose?: () => void }) {

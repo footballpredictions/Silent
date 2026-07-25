@@ -32,7 +32,7 @@
 
 | Метод | Путь | Auth | Описание |
 |-------|------|------|----------|
-| POST | `/register` | — | Регистрация `{ email, password, referral_or_promo? }`. Поле — либо реф-код пользователя, либо промокод (взаимоисключающе). Реф → `referred_by` + `ReferralReward(pending)`; промо → `pending_promo_code` (скидка при `/payments/init`). Анти-абуз: **429** при >`REGISTER_RATE_LIMIT_MAX` попыток с одного IP за `REGISTER_RATE_LIMIT_WINDOW_MINUTES` (Redis fixed-window, fail-open без Redis); **400** если: hard-block анонимайзеров (`internet.ru`, Apple Hide My Email, Duck/Firefox Relay…), disposable-домен, `+alias`, или домен не в `ALLOWED_EMAIL_DOMAINS` (whitelist; `internet.ru` убран — Mail.ru анонимайзер). Gmail uniqueness по canonical (точки/googlemail). См. `email_validation.py`. Дополнительно: один trial на `device_fingerprint` (`require_device_trial_not_reused` в `/vpn/device/register`) — алиасы Mail.ru на одном устройстве не плодят бесплатный VPN |
+| POST | `/register` | — | Регистрация `{ email, password, referral_or_promo? }`. Поле — либо реф-код пользователя, либо промокод (взаимоисключающе). Реф → `referred_by` + `ReferralReward(pending)`; промо → `pending_promo_code` (скидка при `/payments/init`). При `app_settings.registration_disabled=true` → **503** «Ведутся технические работы. Регистрация временно недоступна.» (админка «Доп. настройки»). Анти-абуз: **429** при >`REGISTER_RATE_LIMIT_MAX` попыток с одного IP за `REGISTER_RATE_LIMIT_WINDOW_MINUTES` (Redis fixed-window, fail-open без Redis); **400** если: hard-block анонимайзеров (`internet.ru`, Apple Hide My Email, Duck/Firefox Relay…), disposable-домен, `+alias`, или домен не в `ALLOWED_EMAIL_DOMAINS` (whitelist; `internet.ru` убран — Mail.ru анонимайзер). Gmail uniqueness по canonical (точки/googlemail). См. `email_validation.py`. Дополнительно: один trial на `device_fingerprint` (`require_device_trial_not_reused` в `/vpn/device/register`) — алиасы Mail.ru на одном устройстве не плодят бесплатный VPN |
 | GET | `/verify-email?token=` | — | HTML-подтверждение email |
 | POST | `/login` | — | JWT access + refresh; опционально `device` → ensure_device_session |
 | POST | `/refresh` | — | Обновление токенов |
@@ -152,6 +152,8 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 | POST | `/maintenance/cleanup-bootstrap` | Admin | Удалить bootstrap user |
 | GET | `/theme` | Admin | Чтение темы |
 | POST | `/theme` | Admin | Запись темы |
+| GET | `/settings/registration` | Admin | Флаг `registration_disabled` + текст для клиентов |
+| POST | `/settings/registration` | Admin | Body `{ disabled: bool }` — вкл/выкл регистрацию (инциденты/техработы) |
 | GET | `/bypass/olcrtc` | Admin | Настройки olcrtc (вариант 2) |
 | PUT | `/bypass/olcrtc` | Admin | Сохранить настройки olcrtc |
 | POST | `/bypass/olcrtc/generate-key` | Admin | Новый crypto.key |

@@ -80,6 +80,8 @@
 | POST | `/internal/online` | S2S | Keepalive от wdtt-server |
 | GET | `/internal/threat-filter` | S2S | Хост sync DNAT: `{ enabled }` (`X-Internal-Secret`) |
 | POST | `/internal/threat-filter/meta` | S2S | Хост updater: `{ domains_count, list_updated_at }` после скачивания HaGeZi TIF |
+| GET | `/internal/vps-cleanup` | S2S | Хост cleaner: `{ enabled, interval_days, journal_max_mb, run_now, last_run_at }` |
+| POST | `/internal/vps-cleanup/meta` | S2S | Хост cleaner: `{ summary }` после прогона (сбрасывает `run_now`) |
 | POST | `/exclusions` | User | Исключения приложений (Android) |
 | GET | `/exclusions/{device_id}` | User | Получить исключения |
 | GET | `/theme` | — | **Публичная** тема UI (`ThemeResponse`) |
@@ -158,6 +160,8 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 | POST | `/settings/registration` | Admin | Body `{ disabled: bool }` — вкл/выкл регистрацию (инциденты/техработы) |
 | GET | `/settings/threat-filter` | Admin | DNS-фильтр угроз: `enabled`, `wg_dns`, `domains_count`, `list_updated_at` (HaGeZi TIF) |
 | POST | `/settings/threat-filter` | Admin | Body `{ enabled: bool }` — вкл/выкл; клиентам нужен reconnect для нового DNS |
+| GET | `/settings/vps-cleanup` | Admin | Автоочистка Улья: `enabled`, `interval_days`, `journal_max_mb`, `last_run_*` |
+| POST | `/settings/vps-cleanup` | Admin | Body `{ enabled, interval_days?, journal_max_mb?, run_now? }` — вкл + расписание; при первом вкл. ставит `run_now` |
 | GET | `/bypass/olcrtc` | Admin | Настройки olcrtc (вариант 2) |
 | PUT | `/bypass/olcrtc` | Admin | Сохранить настройки olcrtc |
 | POST | `/bypass/olcrtc/generate-key` | Admin | Новый crypto.key |

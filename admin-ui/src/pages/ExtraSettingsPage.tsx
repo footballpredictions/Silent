@@ -10,14 +10,29 @@ type ThreatStatus = {
   note?: string
 }
 
+type CleanupStatus = {
+  enabled: boolean
+  interval_days?: number
+  journal_max_mb?: number
+  run_now?: boolean
+  last_run_at?: string | null
+  last_summary?: string | null
+  note?: string
+}
+
 export default function ExtraSettingsPage({ token }: { token: string }) {
   const [disabled, setDisabled] = useState(false)
   const [message, setMessage] = useState(
     'Ведутся технические работы. Регистрация временно недоступна.'
   )
   const [threat, setThreat] = useState<ThreatStatus>({ enabled: false })
+  const [cleanup, setCleanup] = useState<CleanupStatus>({
+    enabled: false,
+    interval_days: 7,
+    journal_max_mb: 200,
+  })
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState<'reg' | 'threat' | null>(null)
+  const [busy, setBusy] = useState<'reg' | 'threat' | 'cleanup' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
@@ -27,22 +42,30 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
     setLoading(true)
     setError(null)
     try {
-      const [regRes, threatRes] = await Promise.all([
+      const [regRes, threatRes, cleanupRes] = await Promise.all([
         fetch('/api/admin/settings/registration', {
           headers: { Authorization: `Bearer ${token}` },
         }),
         fetch('/api/admin/settings/threat-filter', {
           headers: { Authorization: `Bearer ${token}` },
         }),
+        fetch('/api/admin/settings/vps-cleanup', {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
       ])
       const regData = await regRes.json().catch(() => ({}))
       const threatData = await threatRes.json().catch(() => ({}))
+      const cleanupData = await cleanupRes.json().catch(() => ({}))
       if (!regRes.ok) {
         setError(regData.detail || 'Не удалось загрузить настройки регистрации')
         return
       }
       if (!threatRes.ok) {
         setError(threatData.detail || 'Не удалось загрузить фильтр угроз')
+        return
+      }
+      if (!cleanupRes.ok) {
+        setError(cleanupData.detail || 'Не удалось загрузить автоочистку')
         return
       }
       setDisabled(!!regData.registration_disabled)
@@ -54,6 +77,15 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
         list_updated_at: threatData.list_updated_at,
         list_source: threatData.list_source,
         note: threatData.note,
+      })
+      setCleanup({
+        enabled: !!cleanupData.enabled,
+        interval_days: cleanupData.interval_days ?? 7,
+        journal_max_mb: cleanupData.journal_max_mb ?? 200,
+        run_now: !!cleanupData.run_now,
+        last_run_at: cleanupData.last_run_at,
+        last_summary: cleanupData.last_summary,
+        note: cleanupData.note,
       })
     } catch {
       setError('Не удалось загрузить настройки')
@@ -123,6 +155,49 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
           ? 'Фильтр угроз включён — клиентам нужен reconnect VPN для нового DNS'
           : 'Фильтр угроз выключен — DNS снова Яндекс (после reconnect)'
       )
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const saveCleanup = async (patch: Partial<CleanupStatus> & { enabled: boolean }) => {
+    setBusy('cleanup')
+    setError(null)
+    setSuccess(null)
+    try {
+      const res = await fetch('/api/admin/settings/vps-cleanup', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          enabled: patch.enabled,
+          interval_days: patch.interval_days ?? cleanup.interval_days ?? 7,
+          journal_max_mb: patch.journal_max_mb ?? cleanup.journal_max_mb ?? 200,
+          run_now: patch.run_now,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(data.detail || 'Не удалось сохранить автоочистку')
+        return
+      }
+      setCleanup({
+        enabled: !!data.enabled,
+        interval_days: data.interval_days ?? 7,
+        journal_max_mb: data.journal_max_mb ?? 200,
+        run_now: !!data.run_now,
+        last_run_at: data.last_run_at,
+        last_summary: data.last_summary,
+        note: data.note,
+      })
+      if (patch.run_now) {
+        setSuccess('Очистка поставлена в очередь — хост подхватит в ближайшие минуты')
+      } else if (data.enabled && !cleanup.enabled) {
+        setSuccess('Автоочистка включена — первый прогон скоро на Улье')
+      } else if (!data.enabled) {
+        setSuccess('Автоочистка выключена')
+      } else {
+        setSuccess('Параметры автоочистки сохранены')
+      }
     } finally {
       setBusy(null)
     }
@@ -235,6 +310,125 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
             )}
           </p>
           {threat.note && <p className="text-[#555] leading-relaxed pt-1">{threat.note}</p>}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-[#222] bg-[#111] p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-medium text-white">Автоочистка Улья (диск)</h2>
+            <p className="text-xs text-[#666] mt-1.5 leading-relaxed">
+              Раз в N дней (и сразу при включении): journal, apt cache, /tmp deploy-скрипты,
+              неиспользуемые Docker images и build cache. Volumes, БД и OTA-файлы не трогает.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={cleanup.enabled}
+            disabled={loading || busy !== null}
+            onClick={() => void saveCleanup({ enabled: !cleanup.enabled })}
+            className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+              cleanup.enabled ? 'bg-purple-500' : 'bg-[#333]'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+                cleanup.enabled ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="text-xs text-[#888] space-y-1">
+            <span>Интервал (дней)</span>
+            <input
+              type="number"
+              min={1}
+              max={30}
+              value={cleanup.interval_days ?? 7}
+              disabled={loading || busy !== null || !cleanup.enabled}
+              onChange={(e) =>
+                setCleanup((c) => ({
+                  ...c,
+                  interval_days: Math.max(1, Math.min(30, Number(e.target.value) || 7)),
+                }))
+              }
+              className="w-full rounded-lg border border-[#333] bg-[#0d0d0d] px-3 py-2 text-sm text-white disabled:opacity-40"
+            />
+          </label>
+          <label className="text-xs text-[#888] space-y-1">
+            <span>Journal max (МБ)</span>
+            <input
+              type="number"
+              min={50}
+              max={2000}
+              step={50}
+              value={cleanup.journal_max_mb ?? 200}
+              disabled={loading || busy !== null || !cleanup.enabled}
+              onChange={(e) =>
+                setCleanup((c) => ({
+                  ...c,
+                  journal_max_mb: Math.max(50, Math.min(2000, Number(e.target.value) || 200)),
+                }))
+              }
+              className="w-full rounded-lg border border-[#333] bg-[#0d0d0d] px-3 py-2 text-sm text-white disabled:opacity-40"
+            />
+          </label>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={loading || busy !== null || !cleanup.enabled}
+            onClick={() =>
+              void saveCleanup({
+                enabled: true,
+                interval_days: cleanup.interval_days,
+                journal_max_mb: cleanup.journal_max_mb,
+                run_now: false,
+              })
+            }
+            className="rounded-lg border border-[#333] bg-[#1a1a1a] px-3 py-1.5 text-xs text-[#ccc] hover:bg-[#222] disabled:opacity-40"
+          >
+            Сохранить параметры
+          </button>
+          <button
+            type="button"
+            disabled={loading || busy !== null || !cleanup.enabled}
+            onClick={() =>
+              void saveCleanup({
+                enabled: true,
+                interval_days: cleanup.interval_days,
+                journal_max_mb: cleanup.journal_max_mb,
+                run_now: true,
+              })
+            }
+            className="rounded-lg border border-purple-800/60 bg-purple-950/40 px-3 py-1.5 text-xs text-purple-200 hover:bg-purple-950/70 disabled:opacity-40"
+          >
+            Очистить сейчас
+          </button>
+        </div>
+
+        <div className="rounded-lg border border-[#1e1e1e] bg-[#0d0d0d] px-3 py-2.5 space-y-1.5 text-xs text-[#888]">
+          <p>
+            Статус:{' '}
+            <span className="text-[#ccc]">
+              {cleanup.enabled ? 'вкл' : 'выкл'}
+              {cleanup.run_now ? ' · в очереди' : ''}
+            </span>
+            {' · '}
+            раз в {cleanup.interval_days ?? 7} дн. · journal ≤ {cleanup.journal_max_mb ?? 200} МБ
+          </p>
+          <p>
+            Последний прогон:{' '}
+            <span className="text-[#ccc]">{cleanup.last_run_at || 'ещё не было'}</span>
+          </p>
+          {cleanup.last_summary && (
+            <p className="font-mono text-[11px] text-[#aaa] break-all">{cleanup.last_summary}</p>
+          )}
+          {cleanup.note && <p className="text-[#555] leading-relaxed pt-1">{cleanup.note}</p>}
         </div>
       </div>
     </div>

@@ -22,6 +22,7 @@ from app.schemas.vpn import (
     InternalOnlineRequest,
     InternalOnlineResponse,
     ThreatFilterMetaRequest,
+    VpsCleanupMetaRequest,
 )
 from app.core.deps import get_verified_user
 from app.services.vpn_service import (
@@ -329,6 +330,31 @@ async def internal_threat_filter_meta(
         domains_count=req.domains_count,
         list_updated_at=req.list_updated_at or "",
     )
+
+
+@router.get("/internal/vps-cleanup")
+async def internal_vps_cleanup_config(
+    x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Host cleaner polls schedule/enabled/run_now."""
+    _require_internal_secret(x_internal_secret)
+    from app.services.vps_cleanup_settings import get_vps_cleanup_host_payload
+
+    return await get_vps_cleanup_host_payload(db)
+
+
+@router.post("/internal/vps-cleanup/meta")
+async def internal_vps_cleanup_meta(
+    req: VpsCleanupMetaRequest,
+    x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Host cleaner reports last run; clears run_now."""
+    _require_internal_secret(x_internal_secret)
+    from app.services.vps_cleanup_settings import update_vps_cleanup_meta
+
+    return await update_vps_cleanup_meta(db, summary=req.summary or "", clear_run_now=True)
 
 
 @router.post("/exclusions")

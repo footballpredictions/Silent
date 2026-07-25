@@ -75,6 +75,11 @@ class ThreatFilterMetaRequest(BaseModel):
     list_updated_at: str = ""
 
 
+class VpsCleanupMetaRequest(BaseModel):
+    """Host cleaner → backend: last run summary."""
+    summary: str = ""
+
+
 class AppExclusionRequest(BaseModel):
     device_id: uuid.UUID
     mode: str  # blacklist, whitelist

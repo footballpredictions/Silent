@@ -447,6 +447,41 @@ async def set_threat_filter_settings(
     return await get_threat_filter_status(db)
 
 
+class VpsCleanupRequest(BaseModel):
+    enabled: bool
+    interval_days: int | None = None
+    journal_max_mb: int | None = None
+    run_now: bool | None = None
+
+
+@router.get("/settings/vps-cleanup")
+async def get_vps_cleanup_settings(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Доп. настройки: автоочистка Улья (journal/Docker/tmp)."""
+    from app.services.vps_cleanup_settings import get_vps_cleanup_status
+
+    return await get_vps_cleanup_status(db)
+
+
+@router.post("/settings/vps-cleanup")
+async def set_vps_cleanup_settings(
+    req: VpsCleanupRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.vps_cleanup_settings import set_vps_cleanup
+
+    return await set_vps_cleanup(
+        db,
+        enabled=req.enabled,
+        interval_days=req.interval_days,
+        journal_max_mb=req.journal_max_mb,
+        run_now=req.run_now,
+    )
+
+
 class GrantSubscriptionRequest(BaseModel):
     plan_type: str
 

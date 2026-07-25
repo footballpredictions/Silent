@@ -547,6 +547,12 @@ cd pc; npm install; npm run dev
 | `deploy_all.py`, `check_*.py`, `fix_*.py` | `deploy_stable.py` / `deploy_helper.py check` |
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
+### 2026-07-25 — Автоочистка Улья (Доп. настройки)
+
+- Тумблер **«Автоочистка Улья (диск)»** + интервал (дней) + лимит journal (МБ) + «Очистить сейчас».
+- Хост: `deploy_vps_cleanup.py` → timer каждые 15 мин опрашивает `GET /api/vpn/internal/vps-cleanup`; чистит journal/apt/tmp/unused Docker images+build cache (не volumes/OTA).
+- API: `GET/POST /api/admin/settings/vps-cleanup`, S2S meta. Сервис: `vps_cleanup_settings.py`.
+
 ### 2026-07-25 — Админка: фильтр угроз (DNS) + отключение регистрации
 
 - **«Доп. настройки»** (`/extra-settings`): тумблер регистрации + тумблер **«Фильтр угроз (DNS)»**.

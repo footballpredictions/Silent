@@ -26,6 +26,7 @@ cd backend
 | `scripts/deploy_update_backend.py` | `python scripts/deploy_update_backend.py` | OTA API (без .exe/.apk) + admin-ui/dist |
 | `scripts/deploy_wdtt_systemd.py` | `python scripts/deploy_wdtt_systemd.py` | wdtt-server как systemd на VPS |
 | `scripts/deploy_threat_dns.py` | `python scripts/deploy_threat_dns.py` | DNS-фильтр угроз (dnsmasq + HaGeZi TIF) на Улье |
+| `scripts/deploy_vps_cleanup.py` | `python scripts/deploy_vps_cleanup.py` | Автоочистка Улья (journal/Docker/tmp) + timer |
 | `scripts/deploy_telegram_proxy.py` | `python scripts/deploy_telegram_proxy.py` | MTProto (mtg) для Telegram + theme URL |
 | `scripts/deploy_hive.py` | `python scripts/deploy_hive.py` | Улей: Hive API, cell-agent, admin-ui/dist |
 | `scripts/deploy_olcrtc.py` | `python scripts/deploy_olcrtc.py` | olcrtc srv (systemd) + API/админка «Варианты обхода» |

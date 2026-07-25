@@ -52,6 +52,8 @@ import {
   olcrtcProviderLabel,
   prefetchOlcrtcConfig,
   resolveOlcrtcConfig,
+  startOlcrtcHeartbeatLoop,
+  stopOlcrtcHeartbeatLoop,
 } from '../bypassStore'
 import { isDebugBuild } from '../debugBuild'
 import { telegramProxyDeepLink } from '../telegramProxyLink'
@@ -485,6 +487,7 @@ export default function MainScreen({
       setConnected(false)
       setConnecting(false)
       setActiveWorkers(0)
+      stopOlcrtcHeartbeatLoop()
       pushLog('Main', `VPN stopped${code != null ? ` (code=${code})` : ''} — можно сменить обход`)
       void checkForUpdate().then(info => {
         if (info?.available) setUpdateInfo(info)
@@ -848,12 +851,14 @@ export default function MainScreen({
         if (ready) {
           // olcrtc: API остаётся на публичном nip.io (без 10.66.66.1)
           setMainVpnSessionActive(false)
+          startOlcrtcHeartbeatLoop()
           await markOnlineOnServer()
           fetchProfile()
           return
         }
         setConnected(false)
         setMainVpnSessionActive(false)
+        stopOlcrtcHeartbeatLoop()
         alert('olcrtc-туннель не поднялся (проверьте srv в админке и бинарники olcrtc/sing-box)')
         await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
         return

@@ -13,7 +13,7 @@ import { getStableDeviceFingerprint } from './api'
 const FAMILY_KEY = 'bypass_family'
 const OLCRTC_PROVIDER_KEY = 'olcrtc_provider'
 /** v3: android room → meet.small-dm.ru (LTE DPI) */
-const OLCRTC_CACHE_KEY = 'olcrtc_config_cache_v3'
+const OLCRTC_CACHE_KEY = 'olcrtc_config_cache_v5'
 
 export const BYPASS_FAMILY_WDTT = 'wdtt'
 export const BYPASS_FAMILY_OLCRTC = 'olcrtc'
@@ -85,6 +85,8 @@ export type OlcrtcPublicConfig = {
   socks_port?: number
   assigned_slot?: string
   device_type?: string
+  pool_denied?: boolean
+  pool_denied_detail?: string
   providers: Record<
     string,
     {
@@ -92,9 +94,62 @@ export type OlcrtcPublicConfig = {
       room: string
       transport: string
       room_slot_id?: string
+      room_db_id?: string
       rooms_count?: number
+      denied?: boolean
     }
   >
+}
+
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+
+export async function sendOlcrtcHeartbeat(online: boolean = true): Promise<void> {
+  try {
+    const cfg = readOlcrtcCache()
+    const prov = getOlcrtcProvider()
+    const roomDbId = cfg?.providers?.[prov]?.room_db_id
+    if (!roomDbId) return
+    const base = getPublicApiBaseUrl().replace(/\/$/, '')
+    const fp = await getStableDeviceFingerprint()
+    await fetch(`${base}/api/vpn/olcrtc-heartbeat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        room_db_id: roomDbId,
+        fingerprint: fp,
+        provider: prov,
+        online,
+      }),
+      cache: 'no-store',
+    })
+  } catch { /* ignore */ }
+}
+
+export function startOlcrtcHeartbeatLoop(): void {
+  stopOlcrtcHeartbeatLoop()
+  void sendOlcrtcHeartbeat(true)
+  heartbeatTimer = setInterval(() => {
+    void sendOlcrtcHeartbeat(true)
+  }, 45_000)
+}
+
+export function stopOlcrtcHeartbeatLoop(): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
+  void sendOlcrtcHeartbeat(false)
+}
+
+function readOlcrtcCache(): OlcrtcPublicConfig | null {
+  try {
+    const raw = localStorage.getItem(OLCRTC_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return parsed?.cfg || null
+  } catch {
+    return null
+  }
 }
 
 function olcrtcConfigPath(): string {
@@ -202,6 +257,13 @@ export function buildOlcrtcConnectPayload(
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> | { error: string } {
   const p = cfg.providers?.[provider]
+  if (p?.denied || (cfg.pool_denied && !p?.room)) {
+    return {
+      error:
+        cfg.pool_denied_detail ||
+        'Нет свободных комнат обхода. Попробуйте позже или другой провайдер.',
+    }
+  }
   if (!cfg.enabled || !cfg.crypto_key || !p?.enabled || !p.room) {
     return {
       error: `olcrtc: провайдер «${olcrtcProviderLabel(provider)}» не настроен в админке (Варианты обхода → 2)`,

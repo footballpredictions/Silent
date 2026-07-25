@@ -105,7 +105,38 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 | POST | `/promo/check` | User | Проверка промокода |
 | GET | `/plans` | — | Тарифы |
 | GET | `/success-page` | — | Публичная HTML-страница — `successURL` в QuickPay-ссылке; куда YuMoney возвращает браузер после оплаты. Не источник правды — активацию клиент узнаёт через poll `/status/{label}` |
-| POST | `/yumoney/notify` | YuMoney (HTTP-уведомление, подпись SHA1) | Webhook. Чеклист: `label` → найти `Payment` c `SELECT … FOR UPDATE`; подпись — секретом **того самого кошелька** (`YUMONEY_SECRET_N`); `codepro=false`, `unaccepted=false`, `currency=643`; уникальный `operation_id` (идемпотентность повторных нотификаций); сумма `withdraw_amount`/`amount` ≥ `YUMONEY_AMOUNT_TOLERANCE` (0.93) от ожидаемой — иначе `failed` (защита от `sum=1`). Невалидная подпись → HTTP 400 (без ack, чтобы YuMoney не считал подтверждённым); всё остальное (дубликат/ignored/уже обработан/провален) → HTTP 200 (без ack YuMoney будет ретраить бесконечно). Успех → `Subscription` активна, `PromoCode.use_count += 1` и `pending_promo_code` очищается (не на `/init`), реферальный бонус, email |
+| POST | `/yumoney/notify` | YuMoney (HTTP-уведомление) | Webhook — см. **YuMoney webhook flow** ниже |
+
+#### YuMoney webhook flow (`POST /api/payments/yumoney/notify`)
+
+Источник правды об оплате — **только** этот webhook (не `success-page`, не клиентский poll). Код: `app/api/payments.py` → `process_payment_notification` в `app/services/payment_service.py`.
+
+```mermaid
+sequenceDiagram
+  participant App as Client_PC_Android
+  participant API as Silent_API
+  participant YM as YuMoney
+  App->>API: POST /payments/init
+  API-->>App: url + label + wallet
+  App->>YM: открыть QuickPay URL в браузере
+  YM->>API: POST /payments/yumoney/notify (form)
+  API-->>YM: 400 invalid signature / 200 ok
+  App->>API: GET /payments/status/{label} poll
+  API-->>App: pending|completed|failed|expired
+```
+
+1. **Кабинет YuMoney (каждый кошелёк):** «Настройки для разработчиков» → HTTP-уведомления → URL `https://132-243-234-162.nip.io/api/payments/yumoney/notify` → секрет → `YUMONEY_SECRET_N` в `.env` (пара к `YUMONEY_WALLET_N`).
+2. **Тело:** `application/x-www-form-urlencoded` (form). Ключевые поля: `label`, `operation_id`, `amount` / `withdraw_amount`, `currency`, `codepro`, `unaccepted`, подпись `sign` (с 2026-05-18) или legacy `sha1_hash`.
+3. **Подпись:** `_verify_yumoney_sign` — HMAC-SHA256 по всем параметрам **кроме** `sign`, ключи A–Z, значения URL-encoded (RFC 3986), секрет кошелька. Fallback: старый `sha1_hash`. Секрет берётся от **кошелька платежа** (`Payment.wallet` → `YUMONEY_SECRET_N`), не «любой из списка» после нахождения payment; до нахождения — проверка «хоть один кошелёк» для отсечения мусора.
+4. **Блокировка строки:** `SELECT … FOR UPDATE` по `Payment` где `label=…`.
+5. **Чеклист отказа (payment → `failed` или ignore, ответ всё равно 200 если подпись валидна):** `codepro=true`, `unaccepted=true`, `currency≠643`, сумма `< expected * YUMONEY_AMOUNT_TOLERANCE` (0.93) — защита от `sum=1`.
+6. **Идемпотентность:** повтор с тем же `operation_id` → 200, без повторной активации подписки.
+7. **Успех:** `Payment.status=completed` → активная `Subscription` по `plan_type` → `PromoCode.use_count += 1` + очистка `pending_promo_code` → реферальный бонус (если есть) → email.
+8. **HTTP-коды наружу:**
+   - **400** — только `invalid signature` (YuMoney **не** должен считать доставленным; иначе можно «подтвердить» подделку ретраями).
+   - **200** `{status:ok, reason:…}` — подпись ок (в т.ч. duplicate / already completed / amount mismatch уже записан) — чтобы не было бесконечных ретраев.
+9. **Клиент:** после оплаты poll `GET /status/{label}` ~каждые 4 с до 10 мин; `success-page` — только UX возврата браузера, не активация.
+10. **Тесты:** `backend/scripts/test_payment_unit.py` (подпись `sign`/`sha1_hash`, commission, sum=1, идемпотентность).
 
 **Реферальная программа**
 
@@ -162,11 +193,14 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 | POST | `/settings/threat-filter` | Admin | Body `{ enabled: bool }` — вкл/выкл; клиентам нужен reconnect для нового DNS |
 | GET | `/settings/vps-cleanup` | Admin | Автоочистка Улья: `enabled`, `interval_days`, `journal_max_mb`, `last_run_*` |
 | POST | `/settings/vps-cleanup` | Admin | Body `{ enabled, interval_days?, journal_max_mb?, run_now? }` — вкл + расписание; при первом вкл. ставит `run_now` |
-| GET | `/bypass/olcrtc` | Admin | Настройки olcrtc (вариант 2) |
+| GET | `/bypass/olcrtc` | Admin | Настройки olcrtc (вариант 2); `providers.*.rooms[]` пул pc/android |
 | PUT | `/bypass/olcrtc` | Admin | Сохранить настройки olcrtc |
 | POST | `/bypass/olcrtc/generate-key` | Admin | Новый crypto.key |
-| GET | `/bypass/olcrtc/server-yaml` | Admin | Превью server.yaml |
+| GET | `/bypass/olcrtc/server-yaml` | Admin | Превью server.yaml (+ files pc/android) |
 | POST | `/bypass/olcrtc/apply` | Admin | Записать yaml в `update/olcrtc/` для deploy |
+| GET/PUT | `/bypass/olcrtc/room-agent` | Admin | Отдельный агент комнат WB/Telemost (не VK) |
+| POST | `/bypass/olcrtc/room-agent/run` | Admin | Создать недостающие комнаты сейчас |
+| PUT | `/bypass/olcrtc/room-accounts` | Admin | Playwright storage_state аккаунтов (без рандом-рег) |
 | POST | `/promo` | Admin | Создание промокода |
 | GET | `/promo` | Admin | Список промокодов |
 | GET | `/logs` | Admin | Буфер логов |

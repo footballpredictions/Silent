@@ -3,26 +3,46 @@
 Зашифрованный TCP-over-WebRTC туннель ([openlibrecommunity/olcrtc](https://github.com/openlibrecommunity/olcrtc)).
 На Silent VPN — **параллельный** debug-путь рядом с WDTT/VK, без WireGuard.
 
+## Масштаб 1000+ (Улей / соты)
+
+- Таблица `olcrtc_rooms` + sticky `olcrtc_room_sticky` (не комната на юзера).
+- Assign: sticky fingerprint → active room с `online_count < max_clients` (default 12).
+- Heartbeat: `POST /api/vpn/olcrtc-heartbeat` (PC/Android debug).
+- Draining в админке Bypass → пул комнат.
+- Unit на Улье: `python scripts/apply_olcrtc_units_from_db.py`
+- Unit на соте: `deploy_olcrtc_cell.py <ip>` + `POST /api/admin/bypass/olcrtc/rooms/{id}/push-cell` (cell-agent `/v1/olcrtc/apply`).
+- Агент: `target_capacity` (дефолт **1100**) + `target_free_ratio` (~10% под нагрузкой). Jitsi расширяет пул **без** аккаунтов.
+- Прогрев на Улье: `python scripts/seed_olcrtc_mass_pool.py` (`OLCRTC_TARGET_CAPACITY`, `OLCRTC_MAX_CLIENTS`).
+- Метрики: `GET /api/admin/bypass/olcrtc/pool-metrics` (`ready_for_1000` при capacity≥1100).
+
 ## Схема
 
 ```
 клиент → TUN (sing-box / hev) → olcrtc cnc SOCKS5 → Jitsi|WB|Telemost → olcrtc srv (Улей) → интернет
 ```
 
-## Пул комнат (MVP)
+## Пул комнат (все провайдеры)
 
-Одна Jitsi-комната **не** тянет PC + телефон одновременно (и не масштабируется на 1000+).
+Одна комната **не** тянет PC + телефон одновременно.
 
-| Slot | Комната | systemd | Клиенты |
-|------|---------|---------|---------|
-| `pc` | `https://meet.egovm.ru/SilentVpnOlcrtcHive` | `olcrtc@pc` | PC |
-| `android` | `https://meet.playform.ru/SilentVpnOlcrtcHiveAndroid` | `olcrtc@android` | Android / TV |
+| Slot | systemd | data-dir | Клиенты |
+|------|---------|----------|---------|
+| `pc` | `olcrtc@pc` | `data-pc` | PC |
+| `android` | `olcrtc@android` | `data-android` | Android / TV |
 
-`GET /api/vpn/olcrtc-config?device_type=pc|android&fingerprint=…` выдаёт `room` + `assigned_slot` sticky по типу устройства.
+**Важно:** один systemd-unit = один провайдер + один слот. Нельзя склеивать jitsi+wb+telemost failover в одном процессе — srv залипает на первом живом (обычно Jitsi), а клиент на Телемосте ждёт peer вечно.
 
-На Улье: **один процесс srv на комнату**, **разные `data-pc` / `data-android`**.
+Unit’ы: `olcrtc@pc-jitsi`, `olcrtc@pc-telemost`, `olcrtc@pc-wbstream`, `olcrtc@android-jitsi`, …
 
-**LTE / DPI:** `meet.egovm.ru` часто рвёт WebSocket на мобильном. Android-слот → `meet.playform.ru`. Дополнительно CONNECT-прокси Улья `:8080` (`jitsi_https_proxy`, `deploy_olcrtc_proxy.py`) — на случай если olcrtc учитывает `HTTPS_PROXY`.
+| Провайдер | Transport (default) | Создание комнаты |
+|-----------|---------------------|------------------|
+| Jitsi | `datachannel` | guest URL, без аккаунта |
+| WB Stream | `vp8channel` | вручную / room-agent (аккаунт) |
+| Телемост | `vp8channel` | вручную / room-agent (аккаунт) |
+
+`GET /api/vpn/olcrtc-config?device_type=pc|android&fingerprint=…` выдаёт `room` sticky по типу устройства **для каждого** провайдера.
+
+**LTE / DPI:** `meet.egovm.ru` часто рвёт WebSocket на мобильном → Android Jitsi на `meet.playform.ru`; для LTE предпочтительнее WB / Telemost (свежие room id).
 
 Seed/upgrade без смены crypto_key:
 
@@ -31,21 +51,45 @@ cd backend
 python scripts\configure_olcrtc_prod.py
 ```
 
+Android WB placeholder (`…ANDROID-REPLACE`) не отдаётся клиентам — замени свежим ID с сайта или через агента.
+
+## Агент комнат (отдельно от VK)
+
+`ai/olcrtc_room_agent.py` — **не** расширяет VK-агент хешей.
+
+- Не делает рандомную регистрацию (капча / ToS).
+- Пул **стабильных** аккаунтов: Playwright `storage_state` (cookies) в админке или env `OLCRTC_TELEMOST_STORAGE_STATE` / `OLCRTC_WBSTREAM_STORAGE_STATE`.
+- Цикл ~30 мин: пустые/placeholder слоты pc+android → create room → save settings → write YAML.
+- В Docker API часто нет chromium → host-скрипт:
+
+```powershell
+pip install playwright
+playwright install chromium
+python scripts\olcrtc_room_provision_host.py login telemost
+python scripts\olcrtc_room_provision_host.py login wbstream
+python scripts\olcrtc_room_provision_host.py create-all
+```
+
+Fallback всегда: вставить room id вручную в админке → «Записать YAML» → `deploy_olcrtc.py`.
+
 ## Админка
 
 Раздел **Варианты обхода** (`/bypass`):
 
 1. VK / WDTT — как раньше  
-2. olcrtc — `crypto.key`, **пул комнат Jitsi** (slot id / URL / device_types), «Записать YAML»
+2. olcrtc — `crypto.key`, **пул комнат** у Jitsi / WB / Telemost, «Записать YAML», блок **Агент комнат**
 
 ## API
 
 | Метод | Путь | Назначение |
 |-------|------|------------|
-| GET/PUT | `/api/admin/bypass/olcrtc` | настройки (+ `providers.jitsi.rooms[]`) |
+| GET/PUT | `/api/admin/bypass/olcrtc` | настройки (+ `providers.*.rooms[]`) |
 | POST | `/api/admin/bypass/olcrtc/generate-key` | новый key |
 | GET | `/api/admin/bypass/olcrtc/server-yaml` | превью (`files`: pc/android/default) |
 | POST | `/api/admin/bypass/olcrtc/apply` | запись `update/olcrtc/server*.yaml` |
+| GET/PUT | `/api/admin/bypass/olcrtc/room-agent` | enable / статус агента |
+| POST | `/api/admin/bypass/olcrtc/room-agent/run` | создать недостающие комнаты сейчас |
+| PUT | `/api/admin/bypass/olcrtc/room-accounts` | storage_state / path аккаунтов |
 | GET | `/api/vpn/olcrtc-config?device_type=&fingerprint=` | публичный конфиг (room из пула) |
 
 ## Деплой srv на Улей
@@ -61,7 +105,7 @@ python scripts\deploy_olcrtc.py
 На VPS:
 
 - бинарь + yaml: `/opt/silent-vpn/olcrtc/` (`server-pc.yaml`, `server-android.yaml`, legacy `server.yaml`)
-- systemd: `olcrtc@.service` → `olcrtc@pc`, `olcrtc@android` (legacy `olcrtc.service` отключается при пуле)
+- systemd: `olcrtc@.service` → `olcrtc@pc`, `olcrtc@android`
 
 Бинарь не в git — собрать у себя (`mage build` / `mage cross`) или скачать release.
 
@@ -69,4 +113,4 @@ python scripts\deploy_olcrtc.py
 
 - PC / Android: меню «Варианты обхода» → вариант 2 → Jitsi / WB Stream / Телемост  
 - Release всегда форсирует вариант 1 (WDTT/VK)
-- В логах: `olcrtc-config ok slot=android room=…HiveAndroid` — проверка, что пул сработал
+- Кэш конфига: PC `olcrtc_config_cache_v4`, Android `olcrtc_config_cache_v5`

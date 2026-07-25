@@ -88,7 +88,14 @@ def main() -> None:
     client = connect()
     sftp = client.open_sftp()
 
-    run(client, f"mkdir -p {REMOTE_OLCRTC}/data {REMOTE_OLCRTC}/data-pc {REMOTE_OLCRTC}/data-android")
+    # data dirs for slot-provider units (pc-telemost, android-jitsi, …)
+    run(
+        client,
+        f"mkdir -p {REMOTE_OLCRTC}/data {REMOTE_OLCRTC}/data-pc {REMOTE_OLCRTC}/data-android "
+        f"{REMOTE_OLCRTC}/data-pc-jitsi {REMOTE_OLCRTC}/data-pc-wbstream {REMOTE_OLCRTC}/data-pc-telemost "
+        f"{REMOTE_OLCRTC}/data-android-jitsi {REMOTE_OLCRTC}/data-android-wbstream "
+        f"{REMOTE_OLCRTC}/data-android-telemost",
+    )
 
     yaml_files = _local_yaml_files()
     uploaded_slots: list[str] = []
@@ -100,19 +107,17 @@ def main() -> None:
             if lp.name.startswith("server-") and lp.name.endswith(".yaml"):
                 uploaded_slots.append(lp.name[len("server-") : -len(".yaml")])
             elif lp.name == "server.yaml":
-                # legacy; ensure pc slot exists if no server-pc.yaml
-                if not any(f.name == "server-pc.yaml" for f in yaml_files):
-                    sftp.put(str(lp), f"{REMOTE_OLCRTC}/server-pc.yaml")
-                    print("also → server-pc.yaml (from server.yaml)")
-                    if "pc" not in uploaded_slots:
-                        uploaded_slots.append("pc")
+                if not any(f.name == "server-pc-jitsi.yaml" for f in yaml_files):
+                    sftp.put(str(lp), f"{REMOTE_OLCRTC}/server-pc-jitsi.yaml")
+                    print("also → server-pc-jitsi.yaml (from server.yaml)")
+                    if "pc-jitsi" not in uploaded_slots:
+                        uploaded_slots.append("pc-jitsi")
     else:
         print("WARN: local", LOCAL_DIR, "has no server*.yaml — leave remote as-is")
         run(
             client,
             f"ls -la {REMOTE_OLCRTC}/server*.yaml 2>/dev/null || echo yaml_MISSING",
         )
-        # discover remote slots
         listing = run(client, f"ls {REMOTE_OLCRTC}/server-*.yaml 2>/dev/null || true")
         for line in listing.splitlines():
             name = Path(line.strip()).name
@@ -153,11 +158,27 @@ def main() -> None:
     run(client, f"mv /tmp/olcrtc.service {UNIT_LEGACY}")
     run(client, "systemctl daemon-reload")
 
-    slots = sorted(set(uploaded_slots)) or ["pc"]
-    # Prefer pool units; disable legacy single service to avoid two srv in same room
+    slots = sorted(set(uploaded_slots)) or ["pc-jitsi"]
+    # Prefer per-provider units; stop legacy single + old multi-profile pc/android
     if slots:
         run(client, "systemctl disable --now olcrtc.service 2>/dev/null || true")
+        # Старые unit'ы с failover jitsi+wb+telemost в одном процессе — ломают telemost
+        if any("-" in s and s.split("-")[-1] in ("jitsi", "wbstream", "telemost") for s in slots):
+            for legacy in ("pc", "android"):
+                if legacy not in slots:
+                    run(
+                        client,
+                        f"systemctl disable --now olcrtc@{legacy}.service 2>/dev/null || true",
+                    )
+                    print(f"disabled legacy olcrtc@{legacy} (multi-provider failover)")
         for slot in slots:
+            # не поднимать голые pc/android если есть pc-jitsi и т.п.
+            if slot in ("pc", "android") and any(
+                s.startswith(f"{slot}-") for s in slots if s != slot
+            ):
+                run(client, f"systemctl disable --now olcrtc@{slot}.service 2>/dev/null || true")
+                print(f"skip legacy olcrtc@{slot} — используем {slot}-*")
+                continue
             check = run(
                 client,
                 f"test -f {REMOTE_OLCRTC}/server-{slot}.yaml && test -x {REMOTE_OLCRTC}/olcrtc "
@@ -185,8 +206,12 @@ def main() -> None:
     # sync API code for olcrtc endpoints (docker cp)
     api_files = [
         "app/services/olcrtc_settings.py",
+        "app/services/olcrtc_room_accounts.py",
         "app/api/admin.py",
         "app/api/vpn.py",
+        "app/main.py",
+        "ai/olcrtc_room_agent.py",
+        "ai/olcrtc_room_provision.py",
     ]
     for rel in api_files:
         lp = BACKEND_ROOT / rel.replace("/", os.sep)
@@ -219,7 +244,9 @@ def main() -> None:
 set -e
 cd {REMOTE}
 CONTAINER=${{DEPLOY_CONTAINER:-backend-api-1}}
-for f in app/services/olcrtc_settings.py app/api/admin.py app/api/vpn.py; do
+for f in app/services/olcrtc_settings.py app/services/olcrtc_room_accounts.py \\
+  app/api/admin.py app/api/vpn.py app/main.py \\
+  ai/olcrtc_room_agent.py ai/olcrtc_room_provision.py; do
   [ -f "$f" ] && docker cp "$f" "$CONTAINER:/app/$f"
 done
 # yaml из контейнера (после admin apply) → хост, если локально не заливали свежие

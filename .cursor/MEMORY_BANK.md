@@ -569,6 +569,46 @@ cd pc; npm install; npm run dev
 - API: `GET/POST /api/admin/settings/registration`. Сервис: `app/services/registration_settings.py`.
 - Задеплоено на прод (`deploy_api.py`, в список файлов добавлен `registration_settings.py`). Push `main`.
 
+### 2026-07-25 — olcrtc 1000+ закрытие задач (load-test + соты + LTE-path)
+
+- Load-test API: `scripts/loadtest_olcrtc_1000.py` → **pass** (1000 fingerprint, spill по 22+22 комнатам, denied 0).
+- Соты: `deploy_olcrtc_to_hive_cells.py` → olcrtc + cell-agent на `87.58.213.193`, `78.17.74.27` (`CELL_OLCRTC_OK`).
+- LTE-path: Android Telemost assign OK (`10347145470417`); Android WB без cookies — disabled.
+- YuMoney webhook flow задокументирован в `.cursor/APIS.md`.
+- Capacity после bump telemost/wb: **1175** слотов.
+
+### 2026-07-25 — olcrtc 1000+ прогрев пула (масса, не 1–2 юзера)
+
+- Цель: **≥1100 слотов** (`target_capacity`) ≈ 1000 online + 10%; `max_clients=25` на комнату.
+- Прод: `python scripts/seed_olcrtc_mass_pool.py` → Jitsi pc/android комнаты + **47 systemd unit’ов active**; agent `enabled`.
+- Агент создаёт **Jitsi без cookies**; WB/Telemost — только с `storage_state`.
+- `pool_denied=true` только если **ни один** провайдер не дал комнату (пустой WB больше не валит весь пул).
+- Assign: резерв слота при выдаче (`online_count+1` + `FOR UPDATE SKIP LOCKED`) — иначе без heartbeat все садились в 1 комнату.
+- Проверка: `python scripts/prove_olcrtc_scale.py` → `VERDICT pass=true` (capacity 1112, 60 fp → 22 rooms, denied 0).
+- Авто: assign sticky+cap; agent догоняет capacity; apply пачками по 8 unit’ов.
+
+### 2026-07-25 — olcrtc 1000+ каркас (Hive-плоскость)
+
+- БД `olcrtc_rooms` / `olcrtc_room_sticky`; assign sticky+max_clients; heartbeat API.
+- Админка: таблица пула (drain/active/off) + metrics; agent расширяет пул по free ratio / target_capacity.
+- Queen: `apply_olcrtc_units_from_db.py`; соты: `deploy_olcrtc_cell.py` + cell-agent `/v1/olcrtc/apply`.
+- Клиенты: cache bump, pool_denied текст, heartbeat loop.
+
+### 2026-07-25 — olcrtc: per-provider systemd (fix wait-for-peer)
+
+- Симптом: клиент Telemost `wait for peer` / code=1 — srv сидел в Jitsi (failover).
+- Фикс: отдельные unit’ы `olcrtc@{pc|android}-{jitsi|wbstream|telemost}`; YAML из DB через `apply_olcrtc_units_from_db.py`.
+- Prod: pc-telemost = `72153214476536`, android-telemost = `10347145470417`.
+
+### 2026-07-25 — olcrtc: пул WB/Telemost + room-agent
+
+- Пул `rooms[]` / `device_types` для **jitsi + wbstream + telemost** (PC≠Android).
+- `olcrtc@pc` / `@android`: failover profiles всех включённых провайдеров на слот.
+- Отдельный агент `ai/olcrtc_room_agent.py` (+ `olcrtc_room_accounts.py`, Playwright provision) — **не** VK-хеши; без рандомной регистрации.
+- Админка `/bypass`: редактор пула у всех провайдеров + блок агента.
+- Host: `scripts/olcrtc_room_provision_host.py`, seed `configure_olcrtc_prod.py`.
+- Клиенты: cache bump PC v4 / Android v5. Docs: `backend/docs/olcrtc.md`.
+
 ### 2026-07-24 — Whitelist email: ужатие доменов
 
 - Из `ALLOWED_EMAIL_DOMAINS` убраны Microsoft / Yahoo / Proton / Rambler / GMX / AOL / Zoho / Tutanota / mail.com / `vk.com`.

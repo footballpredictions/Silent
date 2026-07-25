@@ -1757,14 +1757,27 @@ async def get_olcrtc_server_yaml(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.services.olcrtc_settings import load_olcrtc_settings, render_all_server_yaml_files
+    from app.services.olcrtc_rooms_db import (
+        ensure_rooms_synced,
+        list_rooms,
+        render_unit_yaml,
+        sync_rooms_from_settings_json,
+    )
+    from app.services.olcrtc_settings import load_olcrtc_settings
 
     s = await load_olcrtc_settings(db)
+    await sync_rooms_from_settings_json(db, s)
+    await ensure_rooms_synced(db)
+    files: dict[str, str] = {}
     try:
-        files = render_all_server_yaml_files(s)
+        for r in await list_rooms(db):
+            if r.status not in ("active", "provisioning"):
+                continue
+            files[r.unit_name] = render_unit_yaml(s, r)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"yaml": files.get("default") or next(iter(files.values()), ""), "files": files}
+    default = files.get("pc-jitsi") or files.get("pc-telemost") or next(iter(files.values()), "")
+    return {"yaml": default, "files": files}
 
 
 @router.post("/bypass/olcrtc/apply")
@@ -1772,28 +1785,283 @@ async def apply_olcrtc_server_yaml(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Пишет server.yaml (+ server-pc/android.yaml) для deploy_olcrtc.py + systemd на хосте."""
-    from app.services.olcrtc_settings import (
-        load_olcrtc_settings,
-        save_olcrtc_settings,
-        write_all_server_yaml_files,
+    """Пишет server-*.yaml из БД-пула OlcrtcRoom (+ legacy aliases)."""
+    from app.services.olcrtc_settings import load_olcrtc_settings, save_olcrtc_settings
+    from app.services.olcrtc_rooms_db import (
+        ensure_rooms_synced,
+        sync_rooms_from_settings_json,
+        write_all_unit_yaml_from_db,
     )
 
     s = await load_olcrtc_settings(db)
+    await sync_rooms_from_settings_json(db, s)
+    await ensure_rooms_synced(db)
     try:
-        paths = write_all_server_yaml_files(s)
+        files = await write_all_unit_yaml_from_db(db)
+        paths = list(files.keys())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
     s.srv_message = (
-        f"yaml written ({len(paths)} files); run: python scripts/deploy_olcrtc.py"
+        f"yaml written ({len(paths)} units); run: python scripts/apply_olcrtc_units_from_db.py"
     )
     s.srv_status = "pending_apply"
     await save_olcrtc_settings(db, s)
     return {
         "ok": True,
         "paths": paths,
+        "units": paths,
         "message": s.srv_message,
         "settings": s.to_dict(),
     }
+
+
+@router.get("/bypass/olcrtc/rooms")
+async def list_olcrtc_rooms_admin(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.olcrtc_rooms_db import (
+        ensure_rooms_synced,
+        list_rooms,
+        pool_metrics,
+        room_to_dict,
+        sync_rooms_from_settings_json,
+    )
+
+    await sync_rooms_from_settings_json(db)
+    await ensure_rooms_synced(db)
+    rooms = await list_rooms(db)
+    return {
+        "rooms": [room_to_dict(r) for r in rooms],
+        "metrics": await pool_metrics(db),
+    }
+
+
+class OlcrtcRoomStatusBody(BaseModel):
+    status: str
+
+
+@router.post("/bypass/olcrtc/rooms/{room_id}/status")
+async def set_olcrtc_room_status(
+    room_id: str,
+    body: OlcrtcRoomStatusBody,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid as _uuid
+
+    from app.services.olcrtc_rooms_db import set_room_status
+
+    status = (body.status or "").strip().lower()
+    if status not in ("active", "draining", "offline", "provisioning", "error"):
+        raise HTTPException(status_code=400, detail="bad status")
+    try:
+        rid = _uuid.UUID(room_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bad room_id")
+    room = await set_room_status(db, rid, status)
+    if not room:
+        raise HTTPException(status_code=404, detail="room not found")
+    from app.services.olcrtc_rooms_db import room_to_dict
+
+    return {"ok": True, "room": room_to_dict(room)}
+
+
+class OlcrtcRoomCreateBody(BaseModel):
+    provider: str
+    room_url: str
+    slot_label: str = "pc"
+    device_types: list[str] = []
+    max_clients: int = 12
+    cell_id: Optional[str] = None
+
+
+@router.post("/bypass/olcrtc/rooms")
+async def create_olcrtc_room_admin(
+    body: OlcrtcRoomCreateBody,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid as _uuid
+
+    from app.services.olcrtc_assign import pick_cell_for_new_room
+    from app.services.olcrtc_rooms_db import create_room_row, room_to_dict
+
+    cell_id = None
+    if body.cell_id:
+        try:
+            cell_id = _uuid.UUID(body.cell_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="bad cell_id")
+    else:
+        cell = await pick_cell_for_new_room(db)
+        cell_id = None if getattr(cell, "is_queen", True) else cell.id
+    try:
+        row = await create_room_row(
+            db,
+            provider=(body.provider or "").strip(),
+            room_url=(body.room_url or "").strip(),
+            slot_label=(body.slot_label or "pc").strip() or "pc",
+            device_types=body.device_types or [(body.slot_label or "pc")],
+            max_clients=max(1, int(body.max_clients or 12)),
+            cell_id=cell_id,
+            status="active",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "room": room_to_dict(row)}
+
+
+@router.get("/bypass/olcrtc/pool-metrics")
+async def get_olcrtc_pool_metrics(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.olcrtc_rooms_db import ensure_rooms_synced, pool_metrics
+
+    await ensure_rooms_synced(db)
+    return await pool_metrics(db)
+
+
+@router.post("/bypass/olcrtc/rooms/{room_id}/push-cell")
+async def push_olcrtc_room_to_cell(
+    room_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.olcrtc_cell_push import push_room_to_cell
+
+    result = await push_room_to_cell(db, room_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("detail") or "push failed")
+    return result
+
+
+@router.post("/bypass/olcrtc/push-all-cells")
+async def push_all_olcrtc_cell_rooms(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.olcrtc_cell_push import push_all_cell_rooms
+
+    return await push_all_cell_rooms(db)
+
+
+class OlcrtcRoomAccountBody(BaseModel):
+    label: str = ""
+    storage_state: Optional[dict] = None
+    storage_state_path: str = ""
+    notes: str = ""
+
+
+class OlcrtcRoomAccountsBody(BaseModel):
+    telemost: list[OlcrtcRoomAccountBody] = []
+    wbstream: list[OlcrtcRoomAccountBody] = []
+
+
+class OlcrtcRoomAgentBody(BaseModel):
+    enabled: Optional[bool] = None
+    auto_apply_yaml: Optional[bool] = None
+    target_capacity: Optional[int] = None
+    target_free_ratio: Optional[float] = None
+    max_clients: Optional[int] = None
+
+
+@router.get("/bypass/olcrtc/room-agent")
+async def get_olcrtc_room_agent(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from ai.olcrtc_room_agent import load_agent_state
+    from app.services.olcrtc_room_accounts import load_room_accounts
+
+    state = await load_agent_state(db)
+    accounts = await load_room_accounts(db)
+    return {
+        "agent": state.to_dict(),
+        "accounts": accounts.public_dict(),
+    }
+
+
+@router.put("/bypass/olcrtc/room-agent")
+async def put_olcrtc_room_agent(
+    body: OlcrtcRoomAgentBody,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from ai.olcrtc_room_agent import load_agent_state, save_agent_state
+
+    state = await load_agent_state(db)
+    if body.enabled is not None:
+        state.enabled = bool(body.enabled)
+    if body.auto_apply_yaml is not None:
+        state.auto_apply_yaml = bool(body.auto_apply_yaml)
+    if body.target_capacity is not None:
+        state.target_capacity = max(0, int(body.target_capacity))
+    if body.target_free_ratio is not None:
+        state.target_free_ratio = max(0.0, min(1.0, float(body.target_free_ratio)))
+    if body.max_clients is not None:
+        state.max_clients = max(1, int(body.max_clients))
+    saved = await save_agent_state(db, state)
+    return {"agent": saved.to_dict()}
+
+
+@router.post("/bypass/olcrtc/room-agent/run")
+async def run_olcrtc_room_agent(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Немедленный цикл: Jitsi до target_capacity + WB/Telemost при наличии cookies."""
+    from ai.olcrtc_room_agent import heal_rooms
+
+    state = await heal_rooms(db, force=True)
+    return {
+        "ok": True,
+        "agent": state.to_dict(),
+        "message": "heal finished" if not state.last_error else "heal finished with errors",
+    }
+
+
+@router.put("/bypass/olcrtc/room-accounts")
+async def put_olcrtc_room_accounts(
+    body: OlcrtcRoomAccountsBody,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.olcrtc_room_accounts import (
+        OlcrtcRoomAccounts,
+        ProviderAccount,
+        load_room_accounts,
+        save_room_accounts,
+    )
+
+    prev = await load_room_accounts(db)
+
+    def _map(
+        items: list[OlcrtcRoomAccountBody],
+        prev_list: list,
+    ) -> list[ProviderAccount]:
+        out: list[ProviderAccount] = []
+        for i, it in enumerate(items):
+            state = it.storage_state if isinstance(it.storage_state, dict) else {}
+            # пустой JSON не затирает уже сохранённые cookies
+            if not state and i < len(prev_list) and prev_list[i].storage_state:
+                state = prev_list[i].storage_state
+            out.append(
+                ProviderAccount(
+                    label=(it.label or "").strip() or (prev_list[i].label if i < len(prev_list) else ""),
+                    storage_state=state,
+                    storage_state_path=(it.storage_state_path or "").strip(),
+                    notes=(it.notes or "").strip(),
+                )
+            )
+        return out
+
+    accounts = OlcrtcRoomAccounts(
+        telemost=_map(body.telemost or [], prev.telemost),
+        wbstream=_map(body.wbstream or [], prev.wbstream),
+    )
+    saved = await save_room_accounts(db, accounts)
+    return {"accounts": saved.public_dict()}

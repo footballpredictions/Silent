@@ -9,6 +9,7 @@ from app.models.referral import ReferralReward
 from app.models.vk_hash import VkHash, VkCredentials, AppSetting
 from app.models.vk_link_session import VkLinkSession
 from app.models.admin_auth import AdminTrustedDevice, AdminSession, AdminMfaChallenge
+from app.models.olcrtc_room import OlcrtcRoom, OlcrtcRoomSticky
 
 __all__ = [
     "User", "Subscription", "Device", "HiveCell", "HiveLoadSample", "ProxyNode",
@@ -16,4 +17,5 @@ __all__ = [
     "VkHash", "VkCredentials", "AppSetting",
     "VkLinkSession",
     "AdminTrustedDevice", "AdminSession", "AdminMfaChallenge",
+    "OlcrtcRoom", "OlcrtcRoomSticky",
 ]

@@ -47,20 +47,54 @@ const PROVIDER_META: { id: string; title: string; roomHint: string; defaultTrans
 
 const TRANSPORTS = ['datachannel', 'vp8channel', 'seichannel', 'videochannel']
 
-const DEFAULT_JITSI_ROOMS: RoomSlot[] = [
-  {
-    id: 'pc',
-    url: 'https://meet.egovm.ru/SilentVpnOlcrtcHive',
-    max_clients: 4,
-    device_types: ['pc'],
-  },
-  {
-    id: 'android',
-    url: 'https://meet.playform.ru/SilentVpnOlcrtcHiveAndroid',
-    max_clients: 4,
-    device_types: ['android'],
-  },
-]
+const DEFAULT_ROOMS: Record<string, RoomSlot[]> = {
+  jitsi: [
+    {
+      id: 'pc',
+      url: 'https://meet.egovm.ru/SilentVpnOlcrtcHive',
+      max_clients: 4,
+      device_types: ['pc'],
+    },
+    {
+      id: 'android',
+      url: 'https://meet.playform.ru/SilentVpnOlcrtcHiveAndroid',
+      max_clients: 4,
+      device_types: ['android'],
+    },
+  ],
+  wbstream: [
+    {
+      id: 'pc',
+      url: '',
+      max_clients: 4,
+      device_types: ['pc'],
+    },
+    {
+      id: 'android',
+      url: '',
+      max_clients: 4,
+      device_types: ['android'],
+    },
+  ],
+  telemost: [
+    {
+      id: 'pc',
+      url: '',
+      max_clients: 4,
+      device_types: ['pc'],
+    },
+    {
+      id: 'android',
+      url: '',
+      max_clients: 4,
+      device_types: ['android'],
+    },
+  ],
+}
+
+function defaultRoomsFor(id: string): RoomSlot[] {
+  return (DEFAULT_ROOMS[id] || []).map((r) => ({ ...r, device_types: [...r.device_types] }))
+}
 
 function emptySettings(): OlcrtcSettings {
   return {
@@ -73,7 +107,7 @@ function emptySettings(): OlcrtcSettings {
           enabled: false,
           room: '',
           transport: p.defaultTransport,
-          rooms: p.id === 'jitsi' ? DEFAULT_JITSI_ROOMS.map((r) => ({ ...r })) : [],
+          rooms: defaultRoomsFor(p.id),
         },
       ]),
     ),
@@ -88,7 +122,7 @@ function normalizeProvider(id: string, raw?: Partial<ProviderCfg>): ProviderCfg 
     enabled: false,
     room: '',
     transport: meta?.defaultTransport || 'datachannel',
-    rooms: id === 'jitsi' ? DEFAULT_JITSI_ROOMS.map((r) => ({ ...r })) : [],
+    rooms: defaultRoomsFor(id),
   }
   if (!raw) return base
   const rooms =
@@ -381,100 +415,90 @@ function OlcrtcSection({ token }: { token: string }) {
                 {meta.title}
               </label>
 
-              {meta.id === 'jitsi' ? (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-[#888]">
-                      Пул комнат (отдельный <code className="text-[#aaa]">olcrtc@slot</code> на
-                      сервере). PC и Android — разные комнаты.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => addRoom(meta.id)}
-                      className="text-xs flex items-center gap-1 text-[#aaa] hover:text-white"
-                    >
-                      <Plus className="w-3 h-3" /> Комната
-                    </button>
-                  </div>
-                  {rooms.map((r, idx) => (
-                    <div
-                      key={`${r.id}-${idx}`}
-                      className="border border-[#1a1a1a] rounded-lg p-3 space-y-2 bg-[#0a0a0a]"
-                    >
-                      <div className="flex flex-wrap gap-2">
-                        <div className="w-28">
-                          <label className="text-[10px] text-[#666]">slot id</label>
-                          <input
-                            value={r.id}
-                            onChange={(e) => setRoom(meta.id, idx, { id: e.target.value.trim() })}
-                            className="w-full mt-0.5 bg-[#111] border border-[#222] rounded px-2 py-1.5 text-xs font-mono text-white"
-                            placeholder="pc"
-                          />
-                        </div>
-                        <div className="w-20">
-                          <label className="text-[10px] text-[#666]">max</label>
-                          <input
-                            type="number"
-                            min={1}
-                            value={r.max_clients}
-                            onChange={(e) =>
-                              setRoom(meta.id, idx, {
-                                max_clients: Math.max(1, Number(e.target.value) || 4),
-                              })
-                            }
-                            className="w-full mt-0.5 bg-[#111] border border-[#222] rounded px-2 py-1.5 text-xs text-white"
-                          />
-                        </div>
-                        <div className="flex-1 min-w-[140px]">
-                          <label className="text-[10px] text-[#666]">
-                            device_types (через запятую)
-                          </label>
-                          <input
-                            value={(r.device_types || []).join(',')}
-                            onChange={(e) =>
-                              setRoom(meta.id, idx, {
-                                device_types: e.target.value
-                                  .split(',')
-                                  .map((x) => x.trim().toLowerCase())
-                                  .filter(Boolean),
-                              })
-                            }
-                            className="w-full mt-0.5 bg-[#111] border border-[#222] rounded px-2 py-1.5 text-xs text-white"
-                            placeholder="pc или android"
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => removeRoom(meta.id, idx)}
-                          className="self-end p-1.5 text-[#666] hover:text-red-400"
-                          title="Удалить"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                      <div>
-                        <label className="text-[10px] text-[#666]">URL комнаты</label>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-[#888]">
+                    Пул комнат → <code className="text-[#aaa]">olcrtc@slot</code>. PC и Android —
+                    разные room id (не шарить одну комнату).
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => addRoom(meta.id)}
+                    className="text-xs flex items-center gap-1 text-[#aaa] hover:text-white"
+                  >
+                    <Plus className="w-3 h-3" /> Комната
+                  </button>
+                </div>
+                {rooms.map((r, idx) => (
+                  <div
+                    key={`${r.id}-${idx}`}
+                    className="border border-[#1a1a1a] rounded-lg p-3 space-y-2 bg-[#0a0a0a]"
+                  >
+                    <div className="flex flex-wrap gap-2">
+                      <div className="w-28">
+                        <label className="text-[10px] text-[#666]">slot id</label>
                         <input
-                          value={r.url}
-                          onChange={(e) => setRoom(meta.id, idx, { url: e.target.value })}
-                          className="w-full mt-0.5 bg-[#111] border border-[#222] rounded-lg px-3 py-2 text-sm text-white"
-                          placeholder={meta.roomHint}
+                          value={r.id}
+                          onChange={(e) => setRoom(meta.id, idx, { id: e.target.value.trim() })}
+                          className="w-full mt-0.5 bg-[#111] border border-[#222] rounded px-2 py-1.5 text-xs font-mono text-white"
+                          placeholder="pc"
                         />
                       </div>
+                      <div className="w-20">
+                        <label className="text-[10px] text-[#666]">max</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={r.max_clients}
+                          onChange={(e) =>
+                            setRoom(meta.id, idx, {
+                              max_clients: Math.max(1, Number(e.target.value) || 4),
+                            })
+                          }
+                          className="w-full mt-0.5 bg-[#111] border border-[#222] rounded px-2 py-1.5 text-xs text-white"
+                        />
+                      </div>
+                      <div className="flex-1 min-w-[140px]">
+                        <label className="text-[10px] text-[#666]">
+                          device_types (через запятую)
+                        </label>
+                        <input
+                          value={(r.device_types || []).join(',')}
+                          onChange={(e) =>
+                            setRoom(meta.id, idx, {
+                              device_types: e.target.value
+                                .split(',')
+                                .map((x) => x.trim().toLowerCase())
+                                .filter(Boolean),
+                            })
+                          }
+                          className="w-full mt-0.5 bg-[#111] border border-[#222] rounded px-2 py-1.5 text-xs text-white"
+                          placeholder="pc или android"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeRoom(meta.id, idx)}
+                        className="self-end p-1.5 text-[#666] hover:text-red-400"
+                        title="Удалить"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div>
-                  <label className="text-xs text-[#888]">Room / URL</label>
-                  <input
-                    value={p.room}
-                    onChange={(e) => setProvider(meta.id, { room: e.target.value })}
-                    className="w-full mt-1 bg-[#111] border border-[#222] rounded-lg px-3 py-2 text-sm text-white"
-                    placeholder={meta.roomHint}
-                  />
-                </div>
-              )}
+                    <div>
+                      <label className="text-[10px] text-[#666]">
+                        {meta.id === 'jitsi' ? 'URL комнаты' : 'Room ID / URL'}
+                      </label>
+                      <input
+                        value={r.url}
+                        onChange={(e) => setRoom(meta.id, idx, { url: e.target.value })}
+                        className="w-full mt-0.5 bg-[#111] border border-[#222] rounded-lg px-3 py-2 text-sm text-white"
+                        placeholder={meta.roomHint}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
 
               <div>
                 <label className="text-xs text-[#888]">Transport</label>
@@ -537,6 +561,420 @@ function OlcrtcSection({ token }: { token: string }) {
 
       {msg ? <p className="text-sm text-emerald-400">{msg}</p> : null}
       {err ? <p className="text-sm text-red-400">{err}</p> : null}
+
+      <PoolRoomsSection token={token} />
+      <RoomAgentSection token={token} />
+    </div>
+  )
+}
+
+type PoolRoom = {
+  id: string
+  provider: string
+  room_url: string
+  slot_label: string
+  unit_name: string
+  status: string
+  max_clients: number
+  online_count: number
+  headroom: number
+  cell_id: string | null
+}
+
+type PoolMetrics = {
+  rooms_active: number
+  online_total: number
+  capacity_total: number
+  free_slots: number
+  fill_ratio: number
+}
+
+function PoolRoomsSection({ token }: { token: string }) {
+  const [rooms, setRooms] = useState<PoolRoom[]>([])
+  const [metrics, setMetrics] = useState<PoolMetrics | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [err, setErr] = useState('')
+  const authH = { Authorization: `Bearer ${token}` }
+
+  const load = useCallback(async () => {
+    setErr('')
+    try {
+      const res = await fetch('/api/admin/bypass/olcrtc/rooms', { headers: authH })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      setRooms(data.rooms || [])
+      setMetrics(data.metrics || null)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Ошибка пула')
+    }
+  }, [token])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const setStatus = async (id: string, status: string) => {
+    setBusy(true)
+    setErr('')
+    setMsg('')
+    try {
+      const res = await fetch(`/api/admin/bypass/olcrtc/rooms/${id}/status`, {
+        method: 'POST',
+        headers: { ...authH, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+      setMsg(`status → ${status}`)
+      await load()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Ошибка')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="border border-[#222] rounded-xl p-4 bg-[#0d0d0d] space-y-3 mt-8">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-medium text-white">Пул комнат (1000+ / Улей)</h3>
+        <button
+          type="button"
+          onClick={load}
+          className="text-xs text-[#888] hover:text-white flex items-center gap-1"
+        >
+          <RefreshCw className="w-3 h-3" /> Обновить
+        </button>
+      </div>
+      <p className="text-xs text-[#666]">
+        Sticky + max_clients. Draining — не выдаём новым. Unit на Улье/соте:{' '}
+        <code className="text-[#888]">olcrtc@unit_name</code>.
+      </p>
+      {metrics ? (
+        <p className="text-xs text-[#aaa]">
+          active {metrics.rooms_active} · online {metrics.online_total}/
+          {metrics.capacity_total} · free {metrics.free_slots} · fill{' '}
+          {Math.round((metrics.fill_ratio || 0) * 100)}%
+        </p>
+      ) : null}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs text-left">
+          <thead className="text-[#666]">
+            <tr>
+              <th className="py-1 pr-2">unit</th>
+              <th className="py-1 pr-2">prov</th>
+              <th className="py-1 pr-2">online</th>
+              <th className="py-1 pr-2">status</th>
+              <th className="py-1 pr-2">room</th>
+              <th className="py-1">actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rooms.map((r) => (
+              <tr key={r.id} className="border-t border-[#1a1a1a] text-[#ccc]">
+                <td className="py-1.5 pr-2 font-mono text-[10px]">{r.unit_name}</td>
+                <td className="py-1.5 pr-2">{r.provider}</td>
+                <td className="py-1.5 pr-2">
+                  {r.online_count}/{r.max_clients}
+                </td>
+                <td className="py-1.5 pr-2">{r.status}</td>
+                <td className="py-1.5 pr-2 font-mono text-[10px] max-w-[160px] truncate">
+                  {r.room_url}
+                </td>
+                <td className="py-1.5 space-x-1 whitespace-nowrap">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setStatus(r.id, 'draining')}
+                    className="text-[10px] text-amber-400 hover:underline"
+                  >
+                    drain
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setStatus(r.id, 'active')}
+                    className="text-[10px] text-emerald-400 hover:underline"
+                  >
+                    active
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setStatus(r.id, 'offline')}
+                    className="text-[10px] text-[#888] hover:underline"
+                  >
+                    off
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rooms.length === 0 ? (
+        <p className="text-xs text-[#666]">Пул пуст — сохрани провайдеры и Apply, или sync при старте API.</p>
+      ) : null}
+      {msg ? <p className="text-sm text-emerald-400">{msg}</p> : null}
+      {err ? <p className="text-sm text-red-400">{err}</p> : null}
+    </div>
+  )
+}
+
+type AgentInfo = {
+  enabled: boolean
+  last_run_at: string
+  last_error: string
+  last_ok: string
+  run_log: string[]
+  auto_apply_yaml: boolean
+  playwright_available: boolean
+}
+
+type AccountsPublic = {
+  telemost: { label: string; configured: boolean; storage_state_path: string; notes: string }[]
+  wbstream: { label: string; configured: boolean; storage_state_path: string; notes: string }[]
+}
+
+function RoomAgentSection({ token }: { token: string }) {
+  const [agent, setAgent] = useState<AgentInfo | null>(null)
+  const [accounts, setAccounts] = useState<AccountsPublic | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [err, setErr] = useState('')
+  const [tmPath, setTmPath] = useState('')
+  const [wbPath, setWbPath] = useState('')
+  const [tmJson, setTmJson] = useState('')
+  const [wbJson, setWbJson] = useState('')
+
+  const authH = { Authorization: `Bearer ${token}` }
+  const jsonH = { ...authH, 'Content-Type': 'application/json' }
+
+  const load = useCallback(async () => {
+    setErr('')
+    try {
+      const res = await fetch('/api/admin/bypass/olcrtc/room-agent', { headers: authH })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      setAgent(data.agent)
+      setAccounts(data.accounts)
+      const tm = data.accounts?.telemost?.[0]
+      const wb = data.accounts?.wbstream?.[0]
+      if (tm?.storage_state_path) setTmPath(tm.storage_state_path)
+      if (wb?.storage_state_path) setWbPath(wb.storage_state_path)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Ошибка агента')
+    }
+  }, [token])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const setEnabled = async (enabled: boolean) => {
+    setBusy(true)
+    setErr('')
+    setMsg('')
+    try {
+      const res = await fetch('/api/admin/bypass/olcrtc/room-agent', {
+        method: 'PUT',
+        headers: jsonH,
+        body: JSON.stringify({ enabled }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+      setAgent(data.agent)
+      setMsg(enabled ? 'Агент включён' : 'Агент выключен')
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Ошибка')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const runNow = async () => {
+    setBusy(true)
+    setErr('')
+    setMsg('')
+    try {
+      const res = await fetch('/api/admin/bypass/olcrtc/room-agent/run', {
+        method: 'POST',
+        headers: authH,
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+      setAgent(data.agent)
+      setMsg(data.message || 'Heal запущен')
+      await load()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Ошибка run')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const saveAccounts = async () => {
+    setBusy(true)
+    setErr('')
+    setMsg('')
+    try {
+      let tmState: Record<string, unknown> | undefined
+      let wbState: Record<string, unknown> | undefined
+      if (tmJson.trim()) {
+        tmState = JSON.parse(tmJson) as Record<string, unknown>
+      }
+      if (wbJson.trim()) {
+        wbState = JSON.parse(wbJson) as Record<string, unknown>
+      }
+      const res = await fetch('/api/admin/bypass/olcrtc/room-accounts', {
+        method: 'PUT',
+        headers: jsonH,
+        body: JSON.stringify({
+          telemost: [
+            {
+              label: 'primary',
+              storage_state_path: tmPath.trim(),
+              storage_state: tmState || {},
+              notes: '',
+            },
+          ],
+          wbstream: [
+            {
+              label: 'primary',
+              storage_state_path: wbPath.trim(),
+              storage_state: wbState || {},
+              notes: '',
+            },
+          ],
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+      setAccounts(data.accounts)
+      setTmJson('')
+      setWbJson('')
+      setMsg('Аккаунты сохранены (cookies не показываются обратно)')
+      await load()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Ошибка сохранения аккаунтов')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="border border-[#222] rounded-xl p-4 bg-[#0d0d0d] space-y-3 mt-8">
+      <h3 className="text-sm font-medium text-white">Агент комнат (WB / Телемост)</h3>
+      <p className="text-xs text-[#666]">
+        Отдельно от VK-агента хешей. Не регистрирует аккаунты сам — только создаёт комнаты под
+        твоими стабильными логинами (Playwright storage_state). PC и Android — разные room.
+        Fallback: вставь room id вручную в пул выше.
+      </p>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
+          <input
+            type="checkbox"
+            checked={Boolean(agent?.enabled)}
+            onChange={(e) => setEnabled(e.target.checked)}
+            disabled={busy}
+          />
+          Агент включён (цикл ~30 мин)
+        </label>
+        <span className="text-xs text-[#666]">
+          playwright:{' '}
+          <span className={agent?.playwright_available ? 'text-emerald-400' : 'text-amber-400'}>
+            {agent?.playwright_available ? 'ok' : 'нет в контейнере'}
+          </span>
+        </span>
+        <button
+          type="button"
+          onClick={runNow}
+          disabled={busy}
+          className="text-xs px-3 py-1.5 rounded border border-[#333] text-[#ccc] hover:text-white disabled:opacity-50"
+        >
+          Создать недостающие сейчас
+        </button>
+        <button
+          type="button"
+          onClick={load}
+          className="text-xs text-[#888] hover:text-white flex items-center gap-1"
+        >
+          <RefreshCw className="w-3 h-3" /> Обновить
+        </button>
+      </div>
+
+      {agent?.last_error ? (
+        <p className="text-xs text-amber-400 break-all">{agent.last_error}</p>
+      ) : null}
+      {agent?.last_run_at ? (
+        <p className="text-[10px] text-[#555]">
+          last run: {agent.last_run_at}
+          {agent.last_ok ? ` · last ok: ${agent.last_ok}` : ''}
+        </p>
+      ) : null}
+
+      <div className="grid md:grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <label className="text-xs text-[#888]">Telemost: путь storage_state на сервере</label>
+          <input
+            value={tmPath}
+            onChange={(e) => setTmPath(e.target.value)}
+            className="w-full bg-[#111] border border-[#222] rounded px-2 py-1.5 text-xs font-mono text-white"
+            placeholder="/opt/silent-vpn/olcrtc/telemost_state.json"
+          />
+          <label className="text-xs text-[#888]">или вставить JSON storage_state</label>
+          <textarea
+            value={tmJson}
+            onChange={(e) => setTmJson(e.target.value)}
+            rows={3}
+            className="w-full bg-[#111] border border-[#222] rounded px-2 py-1.5 text-xs font-mono text-white"
+            placeholder='{"cookies":[...],"origins":[...]}'
+          />
+          <p className="text-[10px] text-[#555]">
+            configured: {accounts?.telemost?.[0]?.configured ? 'yes' : 'no'}
+          </p>
+        </div>
+        <div className="space-y-2">
+          <label className="text-xs text-[#888]">WB Stream: путь storage_state</label>
+          <input
+            value={wbPath}
+            onChange={(e) => setWbPath(e.target.value)}
+            className="w-full bg-[#111] border border-[#222] rounded px-2 py-1.5 text-xs font-mono text-white"
+            placeholder="/opt/silent-vpn/olcrtc/wbstream_state.json"
+          />
+          <label className="text-xs text-[#888]">или вставить JSON storage_state</label>
+          <textarea
+            value={wbJson}
+            onChange={(e) => setWbJson(e.target.value)}
+            rows={3}
+            className="w-full bg-[#111] border border-[#222] rounded px-2 py-1.5 text-xs font-mono text-white"
+            placeholder='{"cookies":[...],"origins":[...]}'
+          />
+          <p className="text-[10px] text-[#555]">
+            configured: {accounts?.wbstream?.[0]?.configured ? 'yes' : 'no'}
+          </p>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={saveAccounts}
+        disabled={busy}
+        className="text-xs px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#333] text-[#ccc] hover:text-white disabled:opacity-50"
+      >
+        Сохранить аккаунты агента
+      </button>
+
+      {agent?.run_log && agent.run_log.length > 0 ? (
+        <pre className="text-[10px] bg-[#111] border border-[#222] rounded p-2 max-h-40 overflow-auto text-[#888]">
+          {agent.run_log.join('\n')}
+        </pre>
+      ) : null}
+
+      {msg ? <p className="text-sm text-emerald-400">{msg}</p> : null}
+      {err ? <p className="text-sm text-red-400">{err}</p> : null}
     </div>
   )
 }
@@ -548,7 +986,7 @@ export default function BypassPage({ token }: { token: string }) {
         <h1 className="text-xl font-semibold text-white mb-1">Варианты обхода</h1>
         <p className="text-sm text-[#888]">
           Вариант 1 — VK / WDTT (как раньше). Вариант 2 — olcrtc (Jitsi / WB Stream / Телемост),
-          debug-клиенты. Jitsi: пул комнат — PC и телефон не в одной комнате.
+          debug-клиенты. Пул комнат у всех трёх провайдеров — PC и телефон не в одной комнате.
         </p>
       </div>
 

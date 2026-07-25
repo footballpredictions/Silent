@@ -27,9 +27,17 @@ FILES = [
     "app/services/vk_agent_auth.py",
     "app/services/email_validation.py",
     "app/services/rate_limiter.py",
+    "app/services/olcrtc_settings.py",
+    "app/services/olcrtc_room_accounts.py",
+    "app/services/olcrtc_rooms_db.py",
+    "app/services/olcrtc_assign.py",
+    "app/services/olcrtc_cell_push.py",
     "app/models/__init__.py",
+    "app/models/olcrtc_room.py",
     "app/models/vk_link_session.py",
     "ai/vk_manager.py",
+    "ai/olcrtc_room_agent.py",
+    "ai/olcrtc_room_provision.py",
     "static/vk-agent-oauth.html",
 ]
 

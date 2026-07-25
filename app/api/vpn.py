@@ -2,6 +2,7 @@
 import json
 import secrets
 from fastapi import APIRouter, Depends, HTTPException, Header
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime
@@ -443,12 +444,39 @@ async def get_olcrtc_config(
     fingerprint: str = "",
     db: AsyncSession = Depends(get_db),
 ):
-    """Публичный конфиг варианта 2 (olcrtc). room из пула по device_type/fingerprint."""
-    from app.services.olcrtc_settings import load_olcrtc_settings, public_client_config
+    """Публичный конфиг варианта 2 (olcrtc). room из БД-пула (sticky + max_clients)."""
+    from app.services.olcrtc_assign import assign_public_config
+    from app.services.olcrtc_rooms_db import ensure_rooms_synced
 
-    s = await load_olcrtc_settings(db)
-    return public_client_config(
-        s,
+    await ensure_rooms_synced(db)
+    return await assign_public_config(
+        db,
         device_type=device_type or "",
         fingerprint=fingerprint or "",
+    )
+
+
+class OlcrtcHeartbeatBody(BaseModel):
+    room_db_id: str = ""
+    fingerprint: str = ""
+    provider: str = ""
+    online: bool = True
+
+
+@router.post("/olcrtc-heartbeat")
+async def post_olcrtc_heartbeat(
+    body: OlcrtcHeartbeatBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """Клиент держит online_count комнаты (cap для 1000+ пула)."""
+    from app.services.olcrtc_assign import heartbeat
+
+    if not (body.room_db_id or "").strip():
+        raise HTTPException(status_code=400, detail="room_db_id required")
+    return await heartbeat(
+        db,
+        room_db_id=body.room_db_id.strip(),
+        fingerprint=body.fingerprint or "",
+        provider=body.provider or "",
+        online=bool(body.online),
     )

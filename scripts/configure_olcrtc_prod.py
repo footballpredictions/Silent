@@ -1,7 +1,7 @@
 """Seed/upgrade olcrtc room pool on prod without rotating crypto_key.
 
 - Сохраняет существующий crypto_key (если есть и валидный)
-- Jitsi: две комнаты pc / android
+- Jitsi / WB Stream / Telemost: слоты pc + android (разные room id)
 - Пишет server.yaml + server-pc.yaml + server-android.yaml
 - Restart olcrtc@pc и olcrtc@android
 
@@ -23,13 +23,25 @@ from _deploy_common import BACKEND_ROOT, connect, run  # noqa: E402
 
 JITSI_PC = "https://meet.egovm.ru/SilentVpnOlcrtcHive"
 JITSI_ANDROID = "https://meet.playform.ru/SilentVpnOlcrtcHiveAndroid"
-JITSI_HTTPS_PROXY = "http://132.243.234.162:8080"
-TELEMOST_ROOM = "02789996238784"
-WB_ROOM = "019e23c2-a580-7550-b08a-7ac5342ca21f"
+
+# PC / Android — разные комнаты. Android WB: REPLACE до свежего ID с stream.wb.ru
+WB_PC = "019e23c2-a580-7550-b08a-7ac5342ca21f"
+WB_ANDROID = "019e23c2-a580-7550-b08a-ANDROID-REPLACE"
+TELEMOST_PC = "02789996238784"
+TELEMOST_ANDROID = "02789996238785"
+
 REMOTE_OLCRTC = "/opt/silent-vpn/olcrtc"
 
 
-def _srv_yaml(key: str, *, jitsi_url: str, jitsi_name: str, include_others: bool, data_dir: str) -> str:
+def _srv_yaml(
+    key: str,
+    *,
+    slot: str,
+    jitsi_url: str,
+    wb_room: str,
+    telemost_room: str,
+) -> str:
+    data_dir = f"data-{slot}"
     lines = [
         "mode: srv",
         "crypto:",
@@ -38,7 +50,7 @@ def _srv_yaml(key: str, *, jitsi_url: str, jitsi_name: str, include_others: bool
         '  dns: "8.8.8.8:53"',
         f"data: {data_dir}",
         "profiles:",
-        f"  - name: {jitsi_name}",
+        f"  - name: jitsi-{slot}",
         "    auth:",
         "      provider: jitsi",
         "    room:",
@@ -46,36 +58,33 @@ def _srv_yaml(key: str, *, jitsi_url: str, jitsi_name: str, include_others: bool
         "    net:",
         "      transport: datachannel",
         '      dns: "8.8.8.8:53"',
+        f"  - name: wbstream-{slot}",
+        "    auth:",
+        "      provider: wbstream",
+        "    room:",
+        f'      id: "{wb_room}"',
+        "    net:",
+        "      transport: vp8channel",
+        '      dns: "8.8.8.8:53"',
+        f"  - name: telemost-{slot}",
+        "    auth:",
+        "      provider: telemost",
+        "    room:",
+        f'      id: "{telemost_room}"',
+        "    net:",
+        "      transport: vp8channel",
+        '      dns: "8.8.8.8:53"',
+        "failover:",
+        "  retry_delay: 2s",
+        "  max_cycles: 0",
+        "",
     ]
-    if include_others:
-        lines.extend(
-            [
-                "  - name: wbstream",
-                "    auth:",
-                "      provider: wbstream",
-                "    room:",
-                f'      id: "{WB_ROOM}"',
-                "    net:",
-                "      transport: vp8channel",
-                '      dns: "8.8.8.8:53"',
-                "  - name: telemost",
-                "    auth:",
-                "      provider: telemost",
-                "    room:",
-                f'      id: "{TELEMOST_ROOM}"',
-                "    net:",
-                "      transport: vp8channel",
-                '      dns: "8.8.8.8:53"',
-            ]
-        )
-    lines.extend(["failover:", "  retry_delay: 2s", "  max_cycles: 0", ""])
     return "\n".join(lines)
 
 
 def main() -> None:
     client = connect()
 
-    # Read existing crypto_key from DB if present
     read_py = r"""
 import json, asyncio
 from sqlalchemy import text
@@ -139,32 +148,63 @@ asyncio.run(main())
                     },
                 ],
             },
-            "wbstream": {"enabled": True, "room": WB_ROOM, "transport": "vp8channel", "rooms": []},
+            "wbstream": {
+                "enabled": True,
+                "room": WB_PC,
+                "transport": "vp8channel",
+                "rooms": [
+                    {
+                        "id": "pc",
+                        "url": WB_PC,
+                        "max_clients": 4,
+                        "device_types": ["pc"],
+                    },
+                    {
+                        "id": "android",
+                        "url": WB_ANDROID,
+                        "max_clients": 4,
+                        "device_types": ["android"],
+                    },
+                ],
+            },
             "telemost": {
                 "enabled": True,
-                "room": TELEMOST_ROOM,
+                "room": TELEMOST_PC,
                 "transport": "vp8channel",
-                "rooms": [],
+                "rooms": [
+                    {
+                        "id": "pc",
+                        "url": TELEMOST_PC,
+                        "max_clients": 4,
+                        "device_types": ["pc"],
+                    },
+                    {
+                        "id": "android",
+                        "url": TELEMOST_ANDROID,
+                        "max_clients": 4,
+                        "device_types": ["android"],
+                    },
+                ],
             },
         },
         "srv_status": "active",
-        "srv_message": "room pool seeded by configure_olcrtc_prod.py",
+        "srv_message": "room pool (jitsi+wb+telemost pc/android) seeded by configure_olcrtc_prod.py",
     }
     payload_json = json.dumps(settings, ensure_ascii=False)
 
     yaml_pc = _srv_yaml(
         key,
+        slot="pc",
         jitsi_url=JITSI_PC,
-        jitsi_name="jitsi-pc",
-        include_others=True,
-        data_dir="data-pc",
+        wb_room=WB_PC,
+        telemost_room=TELEMOST_PC,
     )
     yaml_android = _srv_yaml(
         key,
+        slot="android",
         jitsi_url=JITSI_ANDROID,
-        jitsi_name="jitsi-android",
-        include_others=False,
-        data_dir="data-android",
+        wb_room=WB_ANDROID,
+        telemost_room=TELEMOST_ANDROID,
     )
 
     local_dir = BACKEND_ROOT / "update" / "olcrtc"
@@ -209,7 +249,6 @@ asyncio.run(main())
     )
     run(client, f"chmod 600 {REMOTE_OLCRTC}/server*.yaml")
 
-    # Ensure template unit exists (deploy_olcrtc may have set it; write minimal if missing)
     template = f"""[Unit]
 Description=Silent VPN olcrtc srv (%i)
 After=network-online.target
@@ -241,14 +280,17 @@ WantedBy=multi-user.target
     run(client, "sleep 10")
     run(
         client,
-        'curl -s "http://127.0.0.1:8000/api/vpn/olcrtc-config?device_type=pc" | head -c 500; echo',
+        'curl -s "http://127.0.0.1:8000/api/vpn/olcrtc-config?device_type=pc" | head -c 600; echo',
     )
     run(
         client,
-        'curl -s "http://127.0.0.1:8000/api/vpn/olcrtc-config?device_type=android" | head -c 500; echo',
+        'curl -s "http://127.0.0.1:8000/api/vpn/olcrtc-config?device_type=android" | head -c 600; echo',
     )
     client.close()
-    print("Done — Jitsi pool: Hive (pc) + HiveAndroid (android); olcrtc@pc + olcrtc@android")
+    print(
+        "Done — pool jitsi/wb/telemost: pc + android; "
+        "replace WB_ANDROID placeholder before LTE test"
+    )
 
 
 if __name__ == "__main__":

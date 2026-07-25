@@ -351,11 +351,24 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("Test subscription reconcile skipped: %s", e)
 
-    # Start VK tunnel monitor + nightly OTA rebuild scheduler
+    # Sync olcrtc JSON rooms → DB pool (1000+ scale)
+    try:
+        async with AsyncSessionLocal() as db:
+            from app.services.olcrtc_rooms_db import sync_rooms_from_settings_json
+
+            n = await sync_rooms_from_settings_json(db)
+            if n:
+                logger.info("Synced %s olcrtc rooms from settings JSON", n)
+    except Exception as e:
+        logger.warning("olcrtc rooms sync skipped: %s", e)
+
+    # Start VK tunnel monitor + olcrtc room agent + nightly OTA rebuild scheduler
     from ai.tunnel_monitor import start_monitor_background
+    from ai.olcrtc_room_agent import start_room_agent_background
     from ai.release_build_scheduler import start_release_build_scheduler
 
     monitor_task = start_monitor_background()
+    olcrtc_room_agent_task = start_room_agent_background()
     build_scheduler_task = start_release_build_scheduler()
     from app.services.hive_capacity import start_hive_capacity_sampler
     from app.services.hive_rebalance_loop import start_hive_rebalance_loop
@@ -372,6 +385,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     for task in (
         monitor_task,
+        olcrtc_room_agent_task,
         build_scheduler_task,
         capacity_sampler_task,
         rebalance_task,

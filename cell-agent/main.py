@@ -297,6 +297,31 @@ async def status(
                 wg_key = p.read_text(encoding="utf-8").strip()
         except Exception:
             pass
+    olcrtc_units = 0
+    olcrtc_active = 0
+    try:
+        import subprocess
+
+        r = subprocess.run(
+            ["systemctl", "list-units", "olcrtc@*.service", "--no-legend", "--state=active"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        lines = [ln for ln in (r.stdout or "").splitlines() if "olcrtc@" in ln]
+        olcrtc_active = len(lines)
+        r2 = subprocess.run(
+            ["systemctl", "list-unit-files", "olcrtc@*.service", "--no-legend"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        olcrtc_units = len(
+            [ln for ln in (r2.stdout or "").splitlines() if "olcrtc@" in ln]
+        )
+    except Exception:
+        pass
+
     return {
         "public_ip": _detect_public_ip(),
         "wdtt_active": wdtt_active,
@@ -312,7 +337,61 @@ async def status(
         "cpu_cores": cpu_cores,
         "memory_total_gb": _memory_total_gb(),
         "agent_build_id": agent_build_id(),
+        "olcrtc_units": olcrtc_units,
+        "olcrtc_peers_est": olcrtc_active,
+        "olcrtc_active_units": olcrtc_active,
     }
+
+
+class OlcrtcApplyBody(BaseModel):
+    unit_name: str
+    yaml_text: str
+    restart: bool = True
+
+
+@app.post("/v1/olcrtc/apply")
+async def olcrtc_apply(
+    body: OlcrtcApplyBody,
+    x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
+):
+    """Улей пушит server-{unit}.yaml и перезапускает olcrtc@unit на соте."""
+    _auth(x_cell_agent_secret)
+    import re
+    import subprocess
+
+    unit = (body.unit_name or "").strip()
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,120}", unit):
+        raise HTTPException(status_code=400, detail="bad unit_name")
+    if not (body.yaml_text or "").strip():
+        raise HTTPException(status_code=400, detail="yaml_text empty")
+    root = Path("/opt/silent-vpn/olcrtc")
+    root.mkdir(parents=True, exist_ok=True)
+    (root / f"data-{unit}").mkdir(parents=True, exist_ok=True)
+    path = root / f"server-{unit}.yaml"
+    path.write_text(body.yaml_text, encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    if body.restart:
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=30)
+        subprocess.run(
+            ["systemctl", "enable", f"olcrtc@{unit}.service"],
+            capture_output=True,
+            timeout=30,
+        )
+        r = subprocess.run(
+            ["systemctl", "restart", f"olcrtc@{unit}.service"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if r.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=(r.stderr or r.stdout or "restart failed")[:300],
+            )
+    return {"ok": True, "unit": unit, "path": str(path)}
 
 
 HIVE_MANIFEST_PATH = Path("/etc/wdtt/hive_manifest.json")

@@ -40,6 +40,44 @@ DEFAULT_JITSI_ROOMS = [
     },
 ]
 
+# Placeholder room IDs — заменить свежими с stream.wb.ru / telemost.yandex.ru
+# (или через olcrtc_room_agent). PC и Android обязаны быть разными.
+DEFAULT_WBSTREAM_ROOMS = [
+    {
+        "id": "pc",
+        "url": "019e23c2-a580-7550-b08a-7ac5342ca21f",
+        "max_clients": 4,
+        "device_types": ["pc"],
+    },
+    {
+        "id": "android",
+        "url": "019e23c2-a580-7550-b08a-ANDROID-REPLACE",
+        "max_clients": 4,
+        "device_types": ["android"],
+    },
+]
+
+DEFAULT_TELEMOST_ROOMS = [
+    {
+        "id": "pc",
+        "url": "02789996238784",
+        "max_clients": 4,
+        "device_types": ["pc"],
+    },
+    {
+        "id": "android",
+        "url": "02789996238785",
+        "max_clients": 4,
+        "device_types": ["android"],
+    },
+]
+
+_DEFAULT_ROOMS_BY_PROVIDER: dict[str, list[dict[str, Any]]] = {
+    "jitsi": DEFAULT_JITSI_ROOMS,
+    "wbstream": DEFAULT_WBSTREAM_ROOMS,
+    "telemost": DEFAULT_TELEMOST_ROOMS,
+}
+
 
 @dataclass
 class OlcrtcRoomSlot:
@@ -100,6 +138,18 @@ class OlcrtcSettings:
         }
 
 
+def _slots_from_defaults(name: str) -> list[OlcrtcRoomSlot]:
+    return [
+        OlcrtcRoomSlot(
+            id=r["id"],
+            url=r["url"],
+            max_clients=int(r.get("max_clients", 4)),
+            device_types=list(r.get("device_types") or []),
+        )
+        for r in _DEFAULT_ROOMS_BY_PROVIDER.get(name, [])
+    ]
+
+
 def _parse_rooms(raw: Any, legacy_room: str = "") -> list[OlcrtcRoomSlot]:
     out: list[OlcrtcRoomSlot] = []
     if isinstance(raw, list):
@@ -145,35 +195,16 @@ def _parse_rooms(raw: Any, legacy_room: str = "") -> list[OlcrtcRoomSlot]:
 
 
 def _default_providers() -> dict[str, OlcrtcProviderConfig]:
-    jitsi_rooms = [
-        OlcrtcRoomSlot(
-            id=r["id"],
-            url=r["url"],
-            max_clients=int(r.get("max_clients", 4)),
-            device_types=list(r.get("device_types") or []),
+    out: dict[str, OlcrtcProviderConfig] = {}
+    for name in PROVIDERS:
+        rooms = _slots_from_defaults(name)
+        out[name] = OlcrtcProviderConfig(
+            enabled=False,
+            room=rooms[0].url if rooms else "",
+            transport=DEFAULT_TRANSPORTS[name],
+            rooms=rooms,
         )
-        for r in DEFAULT_JITSI_ROOMS
-    ]
-    return {
-        "jitsi": OlcrtcProviderConfig(
-            enabled=False,
-            room=DEFAULT_JITSI_ROOMS[0]["url"],
-            transport=DEFAULT_TRANSPORTS["jitsi"],
-            rooms=jitsi_rooms,
-        ),
-        "wbstream": OlcrtcProviderConfig(
-            enabled=False,
-            room="",
-            transport=DEFAULT_TRANSPORTS["wbstream"],
-            rooms=[],
-        ),
-        "telemost": OlcrtcProviderConfig(
-            enabled=False,
-            room="",
-            transport=DEFAULT_TRANSPORTS["telemost"],
-            rooms=[],
-        ),
-    }
+    return out
 
 
 def generate_crypto_key() -> str:
@@ -188,19 +219,23 @@ def parse_settings(raw: dict[str, Any] | None) -> OlcrtcSettings:
         src = incoming.get(name) or {}
         legacy_room = str(src.get("room") or "").strip()
         rooms = _parse_rooms(src.get("rooms"), legacy_room)
-        # Миграция: старый одиночный jitsi room → пул pc/android, если rooms пуст
-        if name == "jitsi" and not rooms:
-            rooms = [
-                OlcrtcRoomSlot(
-                    id=r["id"],
-                    url=r["url"],
-                    max_clients=int(r.get("max_clients", 4)),
-                    device_types=list(r.get("device_types") or []),
-                )
-                for r in DEFAULT_JITSI_ROOMS
-            ]
-            if legacy_room:
+        # Миграция: пустой пул → дефолтные pc/android слоты
+        if not rooms:
+            rooms = _slots_from_defaults(name)
+            if legacy_room and rooms:
                 rooms[0].url = legacy_room
+        # Старый одиночный room без android-слота → добавить android из дефолта
+        elif name in ("wbstream", "telemost") and len(rooms) == 1:
+            defaults = _slots_from_defaults(name)
+            android_def = next((d for d in defaults if d.id == "android"), None)
+            only = rooms[0]
+            if only.id in ("default", "pc", "r0") and android_def:
+                if only.id == "default":
+                    only.id = "pc"
+                if not only.device_types:
+                    only.device_types = ["pc"]
+                if not any(r.id == "android" for r in rooms):
+                    rooms.append(android_def)
         providers[name] = OlcrtcProviderConfig(
             enabled=bool(src.get("enabled", False)),
             room=legacy_room or (rooms[0].url if rooms else ""),
@@ -245,6 +280,15 @@ async def save_olcrtc_settings(db: AsyncSession, settings: OlcrtcSettings) -> Ol
     return settings
 
 
+def normalize_device_type(device_type: str = "") -> str:
+    dt = (device_type or "").strip().lower()
+    if dt in ("ios", "android_tv", "android-tv"):
+        return "android"
+    if dt in ("pc", "android"):
+        return dt
+    return ""
+
+
 def assign_room_slot(
     provider: OlcrtcProviderConfig,
     *,
@@ -255,12 +299,7 @@ def assign_room_slot(
     rooms = provider.effective_rooms()
     if not rooms:
         return None
-    dt = (device_type or "").strip().lower()
-    if dt in ("ios", "android_tv", "android-tv"):
-        dt = "android"
-    if dt not in ("pc", "android"):
-        # неизвестный тип — sticky по fingerprint среди всех
-        dt = ""
+    dt = normalize_device_type(device_type)
 
     typed = [r for r in rooms if dt and dt in (r.device_types or [])]
     pool = typed if typed else rooms
@@ -282,15 +321,23 @@ def public_client_config(
     key_ok = len(settings.crypto_key) == 64
     providers_out: dict[str, Any] = {}
     assigned_slot: str | None = None
+    dt = normalize_device_type(device_type)
     for name, p in settings.providers.items():
         slot = assign_room_slot(p, device_type=device_type, fingerprint=fingerprint)
         room_url = slot.url if slot else ""
-        if name == "jitsi" and slot:
+        if slot and not assigned_slot:
             assigned_slot = slot.id
         enabled = bool(settings.enabled and p.enabled and key_ok and room_url)
+        # Placeholder android rooms — не отдаём клиенту как «готово»
+        if enabled and "REPLACE" in room_url.upper():
+            enabled = False
+            room_url = ""
+        # Клиенту отдаём нормализованный id (telemost: цифры без URL)
+        if enabled and room_url:
+            room_url = normalize_room_id(name, room_url)
         providers_out[name] = {
             "enabled": enabled,
-            "room": room_url if (settings.enabled and p.enabled and key_ok) else "",
+            "room": room_url if (settings.enabled and p.enabled and key_ok and enabled) else "",
             "transport": p.transport or DEFAULT_TRANSPORTS[name],
             "room_slot_id": slot.id if (enabled and slot) else "",
             "rooms_count": len(p.effective_rooms()),
@@ -301,60 +348,123 @@ def public_client_config(
         "providers": providers_out,
         "socks_host": "127.0.0.1",
         "socks_port": 8808,
-        "assigned_slot": assigned_slot or "",
-        "device_type": (device_type or "").strip().lower(),
+        "assigned_slot": assigned_slot or dt or "",
+        "device_type": dt,
         # LTE: HTTP CONNECT на :8080 (18443 часто режется оператором). olcrtc может игнор. env —
-        # основной обход DPI: android-комната на meet.playform.ru.
+        # основной обход DPI: android-комната на meet.playform.ru / WB / Telemost.
         "jitsi_https_proxy": "http://132.243.234.162:8080"
         if (settings.enabled and key_ok)
         else "",
     }
 
 
-def render_server_yaml(settings: OlcrtcSettings, *, slot_id: str | None = None) -> str:
-    """YAML для olcrtc mode=srv.
+def _room_matches_slot(room: OlcrtcRoomSlot, slot_id: str) -> bool:
+    sid = (slot_id or "").strip().lower()
+    if not sid:
+        return True
+    if room.id.strip().lower() == sid:
+        return True
+    if sid in (room.device_types or []):
+        return True
+    return False
 
-    slot_id: если задан — только эта jitsi-комната из пула (для systemd olcrtc@pc / @android).
-    Без slot_id — legacy: один yaml со всеми enabled провайдерами (первая jitsi-комната).
+
+def collect_pool_slot_ids(settings: OlcrtcSettings) -> list[str]:
+    """Уникальные slot id из всех enabled провайдеров (порядок: pc, android, …)."""
+    seen: list[str] = []
+    for name in PROVIDERS:
+        p = settings.providers.get(name)
+        if not p or not p.enabled:
+            continue
+        for r in p.effective_rooms():
+            sid = (r.id or "").strip()
+            if sid and sid not in seen:
+                seen.append(sid)
+    # Стабильный порядок: pc/android первыми
+    preferred = [s for s in ("pc", "android") if s in seen]
+    rest = [s for s in seen if s not in preferred]
+    return preferred + rest
+
+
+def normalize_room_id(provider: str, room: str) -> str:
+    """Клиент/сервер должны быть в одной комнате; Telemost — numeric id из URL."""
+    u = (room or "").strip()
+    if not u:
+        return ""
+    if provider == "telemost":
+        import re
+
+        m = re.search(r"/j/(\d+)", u)
+        if m:
+            return m.group(1)
+        if re.fullmatch(r"\d{8,}", u):
+            return u
+    return u
+
+
+def render_server_yaml(
+    settings: OlcrtcSettings,
+    *,
+    slot_id: str | None = None,
+    provider: str | None = None,
+) -> str:
+    """YAML для olcrtc mode=srv — ровно один провайдер + один слот.
+
+    Failover нескольких провайдеров в одном процессе нельзя: srv залипает на
+    первом живом (jitsi) и клиент на telemost/wb ждёт peer вечно.
+    Unit: olcrtc@pc-telemost ← server-pc-telemost.yaml
     """
     if not settings.crypto_key or len(settings.crypto_key) != 64:
         raise ValueError("crypto_key must be 64 hex characters")
 
+    names = [provider] if provider else list(PROVIDERS)
     profiles: list[tuple[str, str, str]] = []  # (name, provider, room_url)
 
-    jitsi = settings.providers.get("jitsi")
-    if jitsi and jitsi.enabled:
-        rooms = jitsi.effective_rooms()
-        if slot_id:
-            rooms = [r for r in rooms if r.id == slot_id]
-            if not rooms:
-                raise ValueError(f"jitsi room slot not found: {slot_id}")
-            for r in rooms:
-                profiles.append((f"jitsi-{r.id}", "jitsi", r.url))
-        else:
-            # Один srv: только первая комната (остальные — отдельные unit'ы)
-            if rooms:
-                r = rooms[0]
-                profiles.append((f"jitsi-{r.id}", "jitsi", r.url))
-
-    for name in ("wbstream", "telemost"):
+    for name in names:
+        if name not in PROVIDERS:
+            continue
         p = settings.providers.get(name)
         if not p or not p.enabled:
             continue
         rooms = p.effective_rooms()
         if not rooms:
             continue
-        # Для non-jitsi оставляем в «главном» yaml без slot_id
-        if slot_id and slot_id not in ("pc", "default", rooms[0].id):
-            continue
-        if slot_id and slot_id == "android":
-            continue
-        profiles.append((name, name, rooms[0].url))
+        if slot_id:
+            matched = [r for r in rooms if _room_matches_slot(r, slot_id)]
+            if not matched:
+                continue
+            for r in matched:
+                rid = normalize_room_id(name, r.url)
+                if is_placeholder_room(rid):
+                    continue
+                profiles.append((f"{name}-{r.id}", name, rid))
+        else:
+            r = rooms[0]
+            rid = normalize_room_id(name, r.url)
+            if not is_placeholder_room(rid):
+                profiles.append((f"{name}-{r.id}", name, rid))
 
     if not profiles:
-        raise ValueError("нужен хотя бы один включённый провайдер с room")
+        raise ValueError(
+            "нужен включённый провайдер с room"
+            + (f" provider={provider}" if provider else "")
+            + (f" slot={slot_id}" if slot_id else "")
+        )
 
-    data_dir = f"data-{slot_id}" if slot_id else "data"
+    # Один профиль на unit — без «залипания» на jitsi
+    pname, prov, room_url = profiles[0]
+    transport = (
+        settings.providers.get(prov).transport  # type: ignore[union-attr]
+        if settings.providers.get(prov)
+        else DEFAULT_TRANSPORTS.get(prov, "datachannel")
+    )
+    if slot_id and provider:
+        data_dir = f"data-{slot_id}-{provider}"
+    elif slot_id:
+        data_dir = f"data-{slot_id}"
+    else:
+        data_dir = "data"
+
     lines = [
         "mode: srv",
         "crypto:",
@@ -363,39 +473,67 @@ def render_server_yaml(settings: OlcrtcSettings, *, slot_id: str | None = None) 
         '  dns: "8.8.8.8:53"',
         f"data: {data_dir}",
         "profiles:",
+        f"  - name: {pname}",
+        "    auth:",
+        f"      provider: {prov}",
+        "    room:",
+        f'      id: "{room_url}"',
+        "    net:",
+        f"      transport: {transport}",
+        '      dns: "8.8.8.8:53"',
+        "failover:",
+        "  retry_delay: 2s",
+        "  max_cycles: 0",
+        "",
     ]
-    for pname, provider, room_url in profiles:
-        transport = (
-            settings.providers.get(provider).transport  # type: ignore[union-attr]
-            if settings.providers.get(provider)
-            else DEFAULT_TRANSPORTS.get(provider, "datachannel")
-        )
-        lines.append(f"  - name: {pname}")
-        lines.append("    auth:")
-        lines.append(f"      provider: {provider}")
-        lines.append("    room:")
-        lines.append(f'      id: "{room_url}"')
-        lines.append("    net:")
-        lines.append(f"      transport: {transport}")
-        lines.append('      dns: "8.8.8.8:53"')
-    lines.append("failover:")
-    lines.append("  retry_delay: 2s")
-    lines.append("  max_cycles: 0")
-    lines.append("")
     return "\n".join(lines)
 
 
+def collect_unit_ids(settings: OlcrtcSettings) -> list[str]:
+    """systemd instance ids: pc-jitsi, pc-telemost, android-jitsi, …"""
+    out: list[str] = []
+    for sid in collect_pool_slot_ids(settings):
+        for name in PROVIDERS:
+            p = settings.providers.get(name)
+            if not p or not p.enabled:
+                continue
+            matched = [
+                r
+                for r in p.effective_rooms()
+                if _room_matches_slot(r, sid) and not is_placeholder_room(r.url)
+            ]
+            if not matched:
+                continue
+            uid = f"{sid}-{name}"
+            if uid not in out:
+                out.append(uid)
+    return out
+
+
 def render_all_server_yaml_files(settings: OlcrtcSettings) -> dict[str, str]:
-    """slot_id → yaml. Для jitsi-пула: pc + android (+ legacy server.yaml = pc)."""
+    """unit_id → yaml. Отдельный srv на (slot, provider); legacy pc/android = *-jitsi."""
     out: dict[str, str] = {}
-    jitsi = settings.providers.get("jitsi")
-    if jitsi and jitsi.enabled and jitsi.effective_rooms():
-        rooms = jitsi.effective_rooms()
-        for r in rooms:
-            out[r.id] = render_server_yaml(settings, slot_id=r.id)
-        # legacy path
-        out["default"] = out.get("pc") or next(iter(out.values()))
-    else:
+    for uid in collect_unit_ids(settings):
+        # uid = "{slot}-{provider}"
+        parts = uid.rsplit("-", 1)
+        if len(parts) != 2 or parts[1] not in PROVIDERS:
+            continue
+        sid, prov = parts[0], parts[1]
+        out[uid] = render_server_yaml(settings, slot_id=sid, provider=prov)
+    if "pc-jitsi" in out:
+        out["pc"] = out["pc-jitsi"]
+        out["default"] = out["pc-jitsi"]
+    elif "pc-telemost" in out:
+        out["pc"] = out["pc-telemost"]
+        out["default"] = out["pc-telemost"]
+    elif out:
+        first = next(iter(out.values()))
+        out["default"] = first
+    if "android-jitsi" in out:
+        out["android"] = out["android-jitsi"]
+    elif "android-telemost" in out:
+        out["android"] = out["android-telemost"]
+    if not out:
         out["default"] = render_server_yaml(settings)
     return out
 
@@ -419,13 +557,14 @@ def render_client_yaml(
     slot = assign_room_slot(p, device_type=device_type, fingerprint=fingerprint)
     if not slot or not slot.url.strip():
         raise ValueError(f"room empty for {provider}")
+    room_id = normalize_room_id(provider, slot.url)
     return "\n".join(
         [
             "mode: cnc",
             "auth:",
             f"  provider: {provider}",
             "room:",
-            f'  id: "{slot.url}"',
+            f'  id: "{room_id}"',
             "crypto:",
             f'  key: "{settings.crypto_key}"',
             "net:",
@@ -471,3 +610,8 @@ def write_all_server_yaml_files(settings: OlcrtcSettings) -> list[str]:
         name = "server.yaml" if slot_id == "default" else f"server-{slot_id}.yaml"
         written.append(write_server_yaml_file(yaml_text, filename=name))
     return written
+
+
+def is_placeholder_room(url: str) -> bool:
+    u = (url or "").strip().upper()
+    return (not u) or ("REPLACE" in u) or u.endswith("-PLACEHOLDER")

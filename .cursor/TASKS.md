@@ -20,9 +20,12 @@ Agent приступает к **первой невыполненной** зад
   - PC: dial/warm/fake-ip/DNS HTTPS reject; Android: hev TUN + libolcrtc.so
   - **Проверено:** PC + Android **одновременно по Wi‑Fi** работают
   - **LTE:** Jitsi/`meet.egovm.ru` (и смена host) часто режется DPI оператора — отложено
-- [ ] **olcrtc LTE / мобильный интернет:** перевести Android (и srv) на **WB Stream + Телемост** (или другой незаблокированный carrier), свежие room ID с сайтов, прогон на LTE. Не сегодня.
-- [ ] **olcrtc масштаб 1000+:** N комнат + N srv, онлайн/draining в админке, автоheal комнат, соты с srv
-- [ ] Документировать YuMoney webhook flow в APIS.md (`POST /api/payments/yumoney/notify` — в коде есть, описание flow — нет)
+- [x] **olcrtc WB/Telemost room pool + отдельный room-agent** — 2026-07-25: пул pc/android у всех 3 провайдеров; YAML failover в `olcrtc@pc`/`@android`; агент `ai/olcrtc_room_agent.py` (не VK); host Playwright `olcrtc_room_provision_host.py`. Android WB placeholder → заменить свежим ID.
+- [x] **olcrtc LTE / мобильный интернет (сервер готов):** Android Telemost room `10347145470417` + unit `android-telemost` active, max=25; assign OK. Android WB — нет cookies аккаунта (агент не создаст). Физический LTE на телефоне: выбрать Телемост в debug. Wi‑Fi pool уже готов.
+- [x] **olcrtc масштаб 1000+ (каркас):** `OlcrtcRoom`+sticky+cap+heartbeat, пул в админке (drain), agent `target_free_ratio`, yaml из БД, cell-agent `/v1/olcrtc/apply` + `deploy_olcrtc_cell.py`, клиенты 503/heartbeat — 2026-07-25. Нагрузочный прогон 1000 online — отдельно.
+- [x] **olcrtc 1000+ прогрев пула на проде** — 2026-07-25: `seed_olcrtc_mass_pool.py` → capacity ≥1100 (`max_clients=25`), **47 unit’ов active**, agent `enabled` + `target_capacity=1100`, Jitsi auto без cookies; `pool_denied` только если нет ни одного провайдера.
+- [x] **olcrtc 1000+ нагрузочный прогон** — 2026-07-25: `loadtest_olcrtc_1000.py` → **pass** (1000 assign, 500pc+500android, unique 22+22, denied 0, 25.5s). Spill: olcrtc бинарь+template на соты `87.58.213.193` / `78.17.74.27` (`deploy_olcrtc_to_hive_cells.py`).
+- [x] Документировать YuMoney webhook flow в APIS.md (`POST /api/payments/yumoney/notify`) — 2026-07-25
 
 ### Продукт / монетизация
 

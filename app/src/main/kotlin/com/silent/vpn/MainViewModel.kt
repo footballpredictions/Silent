@@ -2418,6 +2418,14 @@ class MainViewModel @Inject constructor(
                     val olc = repo.resolveOlcrtcConfig(preferCache = false)
                     val provider = repo.getOlcrtcProvider()
                     val p = olc?.providers?.get(provider)
+                    if (p?.denied == true || (olc?.pool_denied == true && p?.room.isNullOrBlank())) {
+                        val msg = olc?.pool_denied_detail?.takeIf { it.isNotBlank() }
+                            ?: "Нет свободных комнат обхода. Попробуйте позже."
+                        WdttTunnelManager.traceApp("olcrtc", msg, isError = true)
+                        _vpnError.value = msg
+                        _vpnState.value = VpnState.DISCONNECTED
+                        return@launch
+                    }
                     if (olc == null || !olc.enabled || olc.crypto_key.length != 64 || p == null || !p.enabled || p.room.isBlank()) {
                         val msg = "olcrtc-config нет (кеш/сеть). Откройте меню → Варианты обхода."
                         WdttTunnelManager.traceApp("olcrtc", msg, isError = true)
@@ -2494,6 +2502,13 @@ class MainViewModel @Inject constructor(
                     if (olcOk) {
                         _vpnState.value = VpnState.CONNECTED
                         repo.clearTunnelApiBase()
+                        viewModelScope.launch {
+                            while (_vpnState.value == VpnState.CONNECTED && repo.isOlcrtcBypass()) {
+                                repo.sendOlcrtcHeartbeat(true)
+                                delay(45_000)
+                            }
+                            repo.sendOlcrtcHeartbeat(false)
+                        }
                         WdttTunnelManager.logUi("olcrtc_ok", "olcrtc connected (SOCKS)", 1)
                         return@launch
                     }

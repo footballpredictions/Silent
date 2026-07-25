@@ -145,7 +145,9 @@ data class OlcrtcProviderPublic(
     val room: String = "",
     val transport: String = "datachannel",
     val room_slot_id: String = "",
+    val room_db_id: String = "",
     val rooms_count: Int = 0,
+    val denied: Boolean = false,
 )
 
 data class OlcrtcPublicConfig(
@@ -156,7 +158,16 @@ data class OlcrtcPublicConfig(
     val assigned_slot: String = "",
     val device_type: String = "",
     val jitsi_https_proxy: String = "",
+    val pool_denied: Boolean = false,
+    val pool_denied_detail: String = "",
     val providers: Map<String, OlcrtcProviderPublic> = emptyMap(),
+)
+
+data class OlcrtcHeartbeatRequest(
+    val room_db_id: String = "",
+    val fingerprint: String = "",
+    val provider: String = "",
+    val online: Boolean = true,
 )
 
 data class ThemeData(
@@ -314,6 +325,9 @@ interface SilentApi {
         @Query("device_type") deviceType: String,
         @Query("fingerprint") fingerprint: String,
     ): Response<OlcrtcPublicConfig>
+
+    @POST("api/vpn/olcrtc-heartbeat")
+    suspend fun olcrtcHeartbeat(@Body req: OlcrtcHeartbeatRequest): Response<Map<String, Any>>
 
     @POST("api/vpn/device/register")
     suspend fun registerDevice(@Body req: DeviceRegisterRequest): Response<VpnConfig>

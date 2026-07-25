@@ -1167,7 +1167,7 @@ class SilentRepository @Inject constructor(
     fun bypassFamilyLabel(family: String = getBypassFamily()): String =
         if (family == BYPASS_FAMILY_OLCRTC) "olcrtc" else "VK / WDTT"
 
-    private val PREF_OLCRTC_CACHE = "olcrtc_config_cache_v4"
+    private val PREF_OLCRTC_CACHE = "olcrtc_config_cache_v6"
 
     fun getCachedOlcrtcConfig(): OlcrtcPublicConfig? {
         val raw = prefs.getString(PREF_OLCRTC_CACHE, null) ?: return null
@@ -1214,6 +1214,25 @@ class SilentRepository @Inject constructor(
             return cached
         }
         return fetchOlcrtcConfig() ?: cached
+    }
+
+    suspend fun sendOlcrtcHeartbeat(online: Boolean = true) {
+        try {
+            val cfg = getCachedOlcrtcConfig() ?: return
+            val prov = getOlcrtcProvider()
+            val roomDbId = cfg.providers[prov]?.room_db_id?.trim().orEmpty()
+            if (roomDbId.isEmpty()) return
+            val fp = getDeviceFingerprint()
+            getApi().olcrtcHeartbeat(
+                OlcrtcHeartbeatRequest(
+                    room_db_id = roomDbId,
+                    fingerprint = fp,
+                    provider = prov,
+                    online = online,
+                ),
+            )
+        } catch (_: Exception) {
+        }
     }
 
     fun getEffectiveVkCredStrategy(): String {

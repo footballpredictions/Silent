@@ -547,6 +547,14 @@ cd pc; npm install; npm run dev
 | `deploy_all.py`, `check_*.py`, `fix_*.py` | `deploy_stable.py` / `deploy_helper.py check` |
 | `pull_backend_files.py` | `git pull` на VPS или правки локально + deploy |
 
+### 2026-07-25 — Админка: фильтр угроз (DNS) + отключение регистрации
+
+- **«Доп. настройки»** (`/extra-settings`): тумблер регистрации + тумблер **«Фильтр угроз (DNS)»**.
+- Фильтр: на Улье `dnsmasq` + автообновление **HaGeZi TIF** (malware/phishing/scam) каждые 6ч (`deploy_threat_dns.py`). При вкл. `wg_dns=10.66.66.1` + DNAT `:53` с `10.66.0.0/16`. Выкл. → снова Яндекс DNS (нужен reconnect).
+- API: `GET/POST /api/admin/settings/threat-filter`, S2S `GET/POST /api/vpn/internal/threat-filter*`. Сервис: `threat_filter_settings.py`.
+- MVP только Улей (соты без dnsmasq пока не фильтруют). Регистрация: `registration_disabled` → **503** на `/auth/register`.
+- Задеплоено: admin-ui + API + `deploy_threat_dns.py` (dnsmasq на `10.66.66.1:53`, HaGeZi TIF ~2.08M доменов, timers 6h/1min). Тумблеры как в Подписках (`h-5 w-9`, `bg-purple-500`). Push `main`.
+
 ### 2026-07-25 — Админка: «Доп. настройки» — отключение регистрации
 
 - Новое меню **«Доп. настройки»** (`/extra-settings`): тумблер «Отключить регистрацию».

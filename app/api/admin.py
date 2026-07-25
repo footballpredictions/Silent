@@ -417,6 +417,36 @@ async def set_registration_settings(
     }
 
 
+class ThreatFilterRequest(BaseModel):
+    enabled: bool
+
+
+@router.get("/settings/threat-filter")
+async def get_threat_filter_settings(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Доп. настройки: DNS-фильтр угроз (HaGeZi TIF на Улье)."""
+    from app.services.threat_filter_settings import get_threat_filter_status
+
+    return await get_threat_filter_status(db)
+
+
+@router.post("/settings/threat-filter")
+async def set_threat_filter_settings(
+    req: ThreatFilterRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.threat_filter_settings import (
+        get_threat_filter_status,
+        set_threat_filter_enabled,
+    )
+
+    await set_threat_filter_enabled(db, req.enabled)
+    return await get_threat_filter_status(db)
+
+
 class GrantSubscriptionRequest(BaseModel):
     plan_type: str
 

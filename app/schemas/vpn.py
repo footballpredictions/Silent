@@ -69,6 +69,12 @@ class InternalOnlineResponse(BaseModel):
     vpn_allowed: bool = True
 
 
+class ThreatFilterMetaRequest(BaseModel):
+    """Host updater → backend: HaGeZi list meta after download."""
+    domains_count: int = 0
+    list_updated_at: str = ""
+
+
 class AppExclusionRequest(BaseModel):
     device_id: uuid.UUID
     mode: str  # blacklist, whitelist

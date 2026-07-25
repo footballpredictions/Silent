@@ -21,6 +21,7 @@ from app.schemas.vpn import (
     HashFailureReportRequest,
     InternalOnlineRequest,
     InternalOnlineResponse,
+    ThreatFilterMetaRequest,
 )
 from app.core.deps import get_verified_user
 from app.services.vpn_service import (
@@ -293,6 +294,41 @@ async def internal_online(
         except (ValueError, TypeError):
             pass
     return InternalOnlineResponse(**result)
+
+
+def _require_internal_secret(x_internal_secret: str) -> None:
+    secret = (settings.INTERNAL_API_SECRET or "").strip()
+    if not secret or not secrets.compare_digest(x_internal_secret, secret):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+@router.get("/internal/threat-filter")
+async def internal_threat_filter_status(
+    x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Host sync: is threat DNS filter enabled (for iptables DNAT)."""
+    _require_internal_secret(x_internal_secret)
+    from app.services.threat_filter_settings import is_threat_filter_enabled
+
+    return {"enabled": await is_threat_filter_enabled(db)}
+
+
+@router.post("/internal/threat-filter/meta")
+async def internal_threat_filter_meta(
+    req: ThreatFilterMetaRequest,
+    x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Host updater reports HaGeZi list size / timestamp after download."""
+    _require_internal_secret(x_internal_secret)
+    from app.services.threat_filter_settings import update_threat_filter_meta
+
+    return await update_threat_filter_meta(
+        db,
+        domains_count=req.domains_count,
+        list_updated_at=req.list_updated_at or "",
+    )
 
 
 @router.post("/exclusions")

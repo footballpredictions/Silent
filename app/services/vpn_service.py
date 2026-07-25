@@ -709,11 +709,13 @@ async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigRespon
     server_ip = cell.public_ip or settings.VPN_SERVER_IP
     server_port = cell.wdtt_port or settings.VPN_SERVER_PORT
 
+    from app.services.threat_filter_settings import resolve_wg_dns
+
     return VpnConfigResponse(
         device_id=str(device.id),
         wg_private_key=priv_key,
         wg_address=device.wg_address or "10.66.66.2/24",
-        wg_dns="77.88.8.8,77.88.8.1",
+        wg_dns=await resolve_wg_dns(db),
         server_ip=server_ip,
         server_port=server_port,
         server_public_key=server_pub_key,

@@ -424,7 +424,8 @@ class MainViewModel @Inject constructor(
         }
         viewModelScope.launch {
             OlcrtcTunnelManager.tunnelReady.collect { ready ->
-                if (ready && repo.isOlcrtcBypass()) {
+                if (!repo.isOlcrtcBypass()) return@collect
+                if (ready) {
                     if (_vpnState.value == VpnState.DISCONNECTING) return@collect
                     DebugLog.i("MainViewModel", "olcrtc tunnel ready")
                     _vpnState.value = VpnState.CONNECTED
@@ -432,6 +433,24 @@ class MainViewModel @Inject constructor(
                     onVpnTunnelReady()
                     // olcrtc: API на публичном nip.io, не 10.66.66.1
                     repo.clearTunnelApiBase()
+                    return@collect
+                }
+                // Peer closed / network recover: сервис ещё жив → CONNECTING, иначе DISCONNECTED.
+                when (_vpnState.value) {
+                    VpnState.CONNECTED -> {
+                        if (SilentVpnService.isRunning) {
+                            DebugLog.w("MainViewModel", "olcrtc ready=false — reconnecting")
+                            _vpnState.value = VpnState.CONNECTING
+                            WdttTunnelManager.logUi(
+                                "olcrtc_ui",
+                                "туннель оборван — переподключение…",
+                                2,
+                            )
+                        } else {
+                            _vpnState.value = VpnState.DISCONNECTED
+                        }
+                    }
+                    else -> Unit
                 }
             }
         }

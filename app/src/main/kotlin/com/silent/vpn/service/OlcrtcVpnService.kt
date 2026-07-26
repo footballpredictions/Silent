@@ -22,6 +22,8 @@ class OlcrtcVpnService : VpnService() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // Новый START после STOP — onDestroy предыдущего цикла не должен гасить peer.
+        suppressDestroyStop = false
         val err = OlcrtcTunnelManager.startFromConfigJson(this, configJson, vpnService = this)
         if (err != null) {
             DebugLog.e("OlcrtcVpn", err)
@@ -33,13 +35,18 @@ class OlcrtcVpnService : VpnService() {
 
     override fun onRevoke() {
         DebugLog.w("OlcrtcVpn", "revoked")
+        suppressDestroyStop = false
         OlcrtcTunnelManager.stop()
         stopSelf()
         super.onRevoke()
     }
 
     override fun onDestroy() {
-        OlcrtcTunnelManager.stop()
+        if (suppressDestroyStop) {
+            DebugLog.i("OlcrtcVpn", "onDestroy skip stop (reconnect in flight)")
+        } else {
+            OlcrtcTunnelManager.stop()
+        }
         super.onDestroy()
     }
 
@@ -47,5 +54,11 @@ class OlcrtcVpnService : VpnService() {
         const val ACTION_START = "com.silent.vpn.OLCRTC_VPN_START"
         const val ACTION_STOP = "com.silent.vpn.OLCRTC_VPN_STOP"
         const val EXTRA_CONFIG = "olcrtc_config_json"
+
+        /**
+         * SilentVpnService.recoverOlcrtc: STOP→START — не дать onDestroy убить новый процесс.
+         */
+        @Volatile
+        var suppressDestroyStop: Boolean = false
     }
 }

@@ -145,6 +145,12 @@ class SilentVpnService : Service() {
     private var connectFromTile = false
     @Volatile
     private var dataSyncServiceStarted = false
+    /** Активна сессия olcrtc (даже если peer временно упал и идёт reconnect). */
+    @Volatile
+    private var olcrtcSessionActive = false
+    @Volatile
+    private var lastOlcrtcConfigJson: String? = null
+    private var olcrtcRecoverJob: Job? = null
     private var performanceLocksHeld = false
     private var lastNotifUpdateMs = 0L
     private var lastNotifBody = ""
@@ -292,18 +298,24 @@ class SilentVpnService : Service() {
                     }
                 }
                 if (isRunning) {
+                    val withinGrace =
+                        System.currentTimeMillis() - connectStartedAtMs < CONNECT_BUSY_GRACE_MS
+                    // olcrtc running без ready после grace = мёртвый peer — не блокируем плитку.
+                    val olcrtcBusy =
+                        OlcrtcTunnelManager.tunnelReady.value ||
+                            (OlcrtcTunnelManager.running.value && withinGrace)
                     val busy = WdttTunnelManager.running.value ||
                         WdttTunnelManager.tunnelReady.value ||
-                        OlcrtcTunnelManager.running.value ||
-                        OlcrtcTunnelManager.tunnelReady.value ||
+                        olcrtcBusy ||
                         VpnSessionState.isActive() ||
-                        (System.currentTimeMillis() - connectStartedAtMs < CONNECT_BUSY_GRACE_MS)
+                        withinGrace
                     if (!busy) {
                         // После падения/убитого транспорта флаг isRunning мог остаться true,
                         // и плитка больше не могла инициировать новый CONNECT.
                         SessionTrace.warn("SilentVpnService.CONNECT", "stale isRunning reset")
                         DebugLog.w("VpnService", "stale isRunning=true without active transport; reset")
                         isRunning = false
+                        olcrtcSessionActive = false
                         VpnServiceTracker.markSessionActive(this, false)
                     }
                 }
@@ -356,7 +368,12 @@ class SilentVpnService : Service() {
             }
             ACTION_DISCONNECT -> {
                 SessionTrace.enter("SilentVpnService.DISCONNECT")
-                if (!isRunning && !WdttTunnelManager.running.value) {
+                if (
+                    !isRunning &&
+                    !WdttTunnelManager.running.value &&
+                    !OlcrtcTunnelManager.running.value &&
+                    !olcrtcSessionActive
+                ) {
                     stopSelf()
                     return START_NOT_STICKY
                 }
@@ -397,6 +414,11 @@ class SilentVpnService : Service() {
             val bypassFamily = obj.optString("bypass_family", obj.optString("bypassFamily", "wdtt"))
             if (bypassFamily.equals("olcrtc", ignoreCase = true)) {
                 SilentRepository.APP_EXCLUDED_FROM_VPN = true
+                lastOlcrtcConfigJson = configJson
+                olcrtcSessionActive = true
+                OlcrtcTunnelManager.setSessionDeadHandler { reason ->
+                    scheduleNetworkRecovery("olcrtc_peer_dead:$reason", 1_200L)
+                }
                 // TUN через отдельный VpnService (этот класс — обычный Service).
                 startService(
                     Intent(this, OlcrtcVpnService::class.java).apply {
@@ -545,7 +567,12 @@ class SilentVpnService : Service() {
     }
 
     private fun disconnect() {
-        if (!isRunning && !WdttTunnelManager.running.value) {
+        if (
+            !isRunning &&
+            !WdttTunnelManager.running.value &&
+            !OlcrtcTunnelManager.running.value &&
+            !olcrtcSessionActive
+        ) {
             VpnTileHelper.requestUpdate(this)
             stopSelf()
             return
@@ -554,7 +581,11 @@ class SilentVpnService : Service() {
         val epoch = ++disconnectEpoch
         disconnectJob?.cancel()
         connectGuardJob?.cancel()
+        olcrtcRecoverJob?.cancel()
         isRunning = false
+        olcrtcSessionActive = false
+        lastOlcrtcConfigJson = null
+        OlcrtcTunnelManager.setSessionDeadHandler(null)
         SessionTrace.mark("SilentVpnService.disconnect", "isRunning=false epoch=$epoch")
         VpnServiceTracker.markSessionActive(this, false)
         teardownVpnOwnershipMonitor()
@@ -764,18 +795,27 @@ class SilentVpnService : Service() {
     }
 
     private fun requestNetworkRecovery(reason: String) {
-        if (WdttTunnelManager.isNetworkRecoverySuppressed()) {
+        val olcrtcPath = olcrtcSessionActive ||
+            lastOlcrtcConfigJson != null ||
+            OlcrtcTunnelManager.running.value ||
+            OlcrtcTunnelManager.tunnelReady.value
+        if (!olcrtcPath && WdttTunnelManager.isNetworkRecoverySuppressed()) {
             // Если в момент события идёт WG/overlay transition, не теряем recovery-сигнал.
             scheduleNetworkRecovery("$reason:suppressed", 1_200L)
             return
         }
         if (!isRunning) return
         if (NetworkRecoveryPolicy.shouldDeferRecoveryForPhoneCall(phoneCallActive)) return
-        if (System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()) return
+        // peer_dead / phone_call — не режем grace (иначе после звонка «залипает»).
+        val skipGrace =
+            reason.startsWith("olcrtc_peer_dead") ||
+                reason.startsWith("phone_call_end") ||
+                reason.startsWith("watchdog_olcrtc")
+        if (!skipGrace && System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()) return
         if (lastNetworkFingerprint.isEmpty()) {
             val fp = currentDefaultNetworkFingerprint()
-            if (fp.isEmpty()) return
-            lastNetworkFingerprint = fp
+            if (fp.isEmpty() && !skipGrace) return
+            if (fp.isNotEmpty()) lastNetworkFingerprint = fp
         }
         val now = System.currentTimeMillis()
         val sinceLast = now - lastNetworkChangeTime
@@ -791,6 +831,15 @@ class SilentVpnService : Service() {
         pausedForNetwork = false
         isTunnelPaused = false
         DebugLog.i("VpnService", "network recovery: $reason")
+        if (
+            olcrtcSessionActive ||
+            lastOlcrtcConfigJson != null ||
+            OlcrtcTunnelManager.running.value ||
+            OlcrtcTunnelManager.tunnelReady.value
+        ) {
+            recoverOlcrtcAfterNetwork(reason)
+            return
+        }
         // Bootstrap / login: не убиваем libclient — иначе вход «крутится», API 10.66.66.1 недоступен.
         if (WdttTunnelManager.isBootstrapMode()) {
             if (!WdttTunnelManager.running.value || !WdttTunnelManager.tunnelReady.value) {
@@ -861,6 +910,74 @@ class SilentVpnService : Service() {
         WdttTunnelManager.restartTransportAfterNetwork()
         WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
         scheduleRecoveryVerification("restart:$reason", trafficBeforeMb)
+    }
+
+    /** Полный restart olcrtc peer (звонок / Wi‑Fi↔LTE / peer closed / потеря сигнала). */
+    private fun recoverOlcrtcAfterNetwork(reason: String) {
+        val cfg = lastOlcrtcConfigJson ?: OlcrtcTunnelManager.lastConfigJson()
+        if (cfg.isNullOrBlank()) {
+            DebugLog.w("VpnService", "olcrtc recovery skipped — no config ($reason)")
+            return
+        }
+        if (!isRunning) return
+        // Не дёргать два раза подряд (peer_dead + transport_switch).
+        val now = System.currentTimeMillis()
+        if (now - lastTransportRestartMs < 2_500L && !reason.startsWith("phone_call_end")) {
+            DebugLog.i("VpnService", "olcrtc recovery debounce ($reason)")
+            return
+        }
+        lastTransportRestartMs = now
+        lastOlcrtcConfigJson = cfg
+        olcrtcSessionActive = true
+        DebugLog.i("VpnService", "olcrtc recovery: $reason")
+        WdttTunnelManager.logUi("olcrtc_recover", "переподключение: $reason", 2)
+        startFg(buildConnectingNotification())
+        VpnTileHelper.requestUpdate(this)
+        val epoch = disconnectEpoch
+        olcrtcRecoverJob?.cancel()
+        olcrtcRecoverJob = scope.launch(Dispatchers.IO) {
+            try {
+                OlcrtcTunnelManager.setSessionDeadHandler { r ->
+                    scheduleNetworkRecovery("olcrtc_peer_dead:$r", 1_200L)
+                }
+                OlcrtcVpnService.suppressDestroyStop = true
+                OlcrtcTunnelManager.stop()
+                runCatching {
+                    startService(
+                        Intent(this@SilentVpnService, OlcrtcVpnService::class.java).apply {
+                            action = OlcrtcVpnService.ACTION_STOP
+                        },
+                    )
+                }
+                delay(1_000L)
+                if (!isRunning || epoch != disconnectEpoch) {
+                    OlcrtcVpnService.suppressDestroyStop = false
+                    SessionTrace.mark("SilentVpnService.olcrtcRecover", "aborted — disconnected")
+                    return@launch
+                }
+                startService(
+                    Intent(this@SilentVpnService, OlcrtcVpnService::class.java).apply {
+                        action = OlcrtcVpnService.ACTION_START
+                        putExtra(OlcrtcVpnService.EXTRA_CONFIG, cfg)
+                    },
+                )
+                withContext(Dispatchers.Main) {
+                    if (isRunning) {
+                        startFg(buildConnectingNotification())
+                        watchOlcrtcReadyNotification()
+                        VpnTileHelper.requestUpdate(this@SilentVpnService)
+                    }
+                }
+            } catch (e: Exception) {
+                DebugLog.e("VpnService", "olcrtc recovery failed: ${e.message}", e)
+                WdttTunnelManager.logUi(
+                    "olcrtc_recover_fail",
+                    "переподключение failed: ${e.message}",
+                    99,
+                    isError = true,
+                )
+            }
+        }
     }
 
     /** Ложные recovery (validated flip, idle verify) — не убивать libclient при живых воркерах. */
@@ -1036,8 +1153,23 @@ class SilentVpnService : Service() {
         transportWatchdogJob = scope.launch {
             delay(1000)
             while (isActive && isRunning) {
-                // olcrtc: не трогать WDTT resume — иначе «вечное Подключение» без логов.
-                if (OlcrtcTunnelManager.running.value || OlcrtcTunnelManager.tunnelReady.value) {
+                // olcrtc: watchdog своего транспорта; WDTT resume не трогаем.
+                if (
+                    olcrtcSessionActive ||
+                    lastOlcrtcConfigJson != null ||
+                    OlcrtcTunnelManager.running.value ||
+                    OlcrtcTunnelManager.tunnelReady.value
+                ) {
+                    if (
+                        olcrtcSessionActive &&
+                        !OlcrtcTunnelManager.tunnelReady.value &&
+                        !OlcrtcTunnelManager.running.value &&
+                        !isWithinConnectGrace() &&
+                        System.currentTimeMillis() - lastTransportRestartMs > 8_000L
+                    ) {
+                        DebugLog.w("VpnService", "transportWatchdog: olcrtc down — recover")
+                        scheduleNetworkRecovery("watchdog_olcrtc_down", 800L)
+                    }
                     delay(2000)
                     continue
                 }

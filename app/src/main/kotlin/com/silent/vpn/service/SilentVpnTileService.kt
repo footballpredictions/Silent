@@ -15,6 +15,7 @@ import com.silent.vpn.MainActivity
 import com.silent.vpn.R
 import com.silent.vpn.SilentApp
 import com.silent.vpn.ui.BrandMarkIcons
+import com.silent.vpn.vpn.OlcrtcTunnelManager
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import kotlinx.coroutines.CancellationException
@@ -27,7 +28,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
- * Quick Settings — как reference: [WdttTunnelManager.running] + [SilentVpnService.isRunning].
+ * Quick Settings — WDTT и olcrtc: [VpnSessionState.isActive].
  * После kill с VPN ON: OS может кешировать ACTIVE — принудительно синхронизируем.
  */
 @RequiresApi(Build.VERSION_CODES.N)
@@ -45,7 +46,9 @@ class SilentVpnTileService : TileService() {
                 combine(
                     WdttTunnelManager.running,
                     WdttTunnelManager.tunnelReady,
-                ) { _, _ -> Unit }.collect {
+                    OlcrtcTunnelManager.running,
+                    OlcrtcTunnelManager.tunnelReady,
+                ) { _, _, _, _ -> Unit }.collect {
                     updateTile(isVpnConnected())
                 }
             } catch (e: CancellationException) {

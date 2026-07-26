@@ -66,6 +66,10 @@ object OlcrtcTunnelManager {
     @Volatile private var lastFailHint: String = ""
     /** ICE PeerConnection connected — можно поднимать hev full-tunnel. */
     @Volatile private var iceConnected = false
+    /** Последний CONNECT JSON — для network/peer reconnect без UI. */
+    @Volatile private var cachedConfigJson: String? = null
+    @Volatile private var sessionDeadHandler: ((String) -> Unit)? = null
+    @Volatile private var lastPeerDeadAtMs = 0L
     /** Кэш OkHttp auth (room → file + expiry), чтобы reconnect был ближе к VK. */
     private data class PrefetchCache(val room: String, val file: File, val untilMs: Long)
     @Volatile private var telemostPrefetchCache: PrefetchCache? = null
@@ -73,6 +77,50 @@ object OlcrtcTunnelManager {
     private val worker = Executors.newSingleThreadExecutor { r ->
         Thread(r, "olcrtc-start").apply { isDaemon = true }
     }
+
+    fun lastConfigJson(): String? = cachedConfigJson
+
+    fun setSessionDeadHandler(handler: ((String) -> Unit)?) {
+        sessionDeadHandler = handler
+    }
+
+    /**
+     * Peer closed / process exit после ready → UI CONNECTING + SilentVpnService restart.
+     * Дебаунс: один сигнал на волну EOF/closed.
+     */
+    private fun notifyPeerDead(reason: String) {
+        if (!_running.value && !_tunnelReady.value) return
+        val now = System.currentTimeMillis()
+        if (now - lastPeerDeadAtMs < 4_000L) return
+        lastPeerDeadAtMs = now
+        val wasReady = _tunnelReady.value
+        _tunnelReady.value = false
+        iceConnected = false
+        DebugLog.w("Olcrtc", "peer dead: $reason wasReady=$wasReady")
+        WdttTunnelManager.logUi(
+            "olcrtc_peer_dead",
+            "связь оборвана ($reason) — переподключение…",
+            2,
+            isError = false,
+        )
+        sessionDeadHandler?.invoke(reason)
+    }
+
+    /** Per-stream EOF при живом peer — не красить весь лог красным. */
+    private fun isTransientStreamNoise(line: String): Boolean {
+        val l = line.lowercase()
+        return l.contains("remote not ready") ||
+            l.contains("connect failed: sid=") ||
+            l.contains("openstream failed") ||
+            (l.contains("read_err=eof") && l.contains("ack=[0]")) ||
+            (l.contains("closed pipe") && !l.contains("peer connection"))
+    }
+
+    private fun isPeerClosedLine(line: String): Boolean =
+        Regex(
+            """peer connection state changed:\s*closed|connection state changed:\s*closed|Setting new connection state:\s*Closed""",
+            RegexOption.IGNORE_CASE,
+        ).containsMatchIn(line)
 
     /** STUN/TURN Telemost + сигналинг — не гонять через hev 0.0.0.0/0. */
     private val TELEMOST_BYPASS_HOSTS = listOf(
@@ -86,6 +134,7 @@ object OlcrtcTunnelManager {
     )
 
     fun stop() {
+        // Сначала сбрасываем флаги — watchExit не должен слать peer_dead на штатный stop.
         _tunnelReady.value = false
         _running.value = false
         starting.set(false)
@@ -326,6 +375,7 @@ object OlcrtcTunnelManager {
                     while (br.readLine().also { line = it } != null) {
                         val l = line ?: continue
                         n++
+                        if (olcrtcProc !== proc) break
                         // pion: [pc]=PeerConnection, [ice]=ICE — не платформа PC
                         if (
                             l.contains("connection state changed to connected", ignoreCase = true) ||
@@ -333,7 +383,20 @@ object OlcrtcTunnelManager {
                             l.contains("Setting new connection state: Connected", ignoreCase = true) ||
                             Regex("""connection state.*connected""", RegexOption.IGNORE_CASE).containsMatchIn(l)
                         ) {
-                            iceConnected = true
+                            if (!isPeerClosedLine(l)) {
+                                iceConnected = true
+                            }
+                        }
+                        if (isPeerClosedLine(l)) {
+                            DebugLog.i("Olcrtc", l.take(300))
+                            WdttTunnelManager.logUi(
+                                "olcrtc_pc_closed",
+                                l.take(160),
+                                priority = 2,
+                                isError = false,
+                            )
+                            notifyPeerDead("peer_closed")
+                            continue
                         }
                         if (Regex(
                                 """\[ice\] TRACE|\[sctp\] TRACE|bufferedAmount|service-unavailable|extdisco|disco_1|\[xmpp|Failed to send packet|operation not permitted|Failed to ping without candidate|Failed to listen udp|fe80:|%dummy0|use of closed network connection""",
@@ -347,6 +410,7 @@ object OlcrtcTunnelManager {
                             """failed to allocate on TURN|failed to get server reflexive|all retransmissions failed|i/o timeout.*stun:|stun:turn\.tel\.yandex|turn\.tel\.yandex\.net""",
                             RegexOption.IGNORE_CASE,
                         ).containsMatchIn(l)
+                        val streamNoise = isTransientStreamNoise(l)
                         DebugLog.i("Olcrtc", l.take(300))
                         if (
                             l.contains("failed to send handshake", ignoreCase = true) ||
@@ -355,7 +419,10 @@ object OlcrtcTunnelManager {
                         ) {
                             lastFailHint =
                                 "WebSocket недоступен (часто DPI на LTE). Wi‑Fi или другой провайдер."
-                        } else if (l.contains("remote not ready", ignoreCase = true)) {
+                        } else if (
+                            l.contains("remote not ready", ignoreCase = true) &&
+                            !_tunnelReady.value
+                        ) {
                             lastFailHint =
                                 "peer srv не в комнате (проверьте olcrtc@android / не делите data/ с PC)"
                         }
@@ -369,6 +436,22 @@ object OlcrtcTunnelManager {
                                     isError = false,
                                 )
                             }
+                            continue
+                        }
+                        // Живой туннель + per-stream EOF — не красный «дисконнект» в UI.
+                        if (streamNoise && _tunnelReady.value) {
+                            if (n <= 8 || n % 25 == 0) {
+                                WdttTunnelManager.logUi(
+                                    "olcrtc_stream_noise",
+                                    "stream warn (туннель жив): ${l.take(120)}",
+                                    priority = 4,
+                                    isError = false,
+                                )
+                            }
+                            continue
+                        }
+                        if (streamNoise && !_tunnelReady.value) {
+                            // После peer closed — шум closed pipe, не засоряем красным.
                             continue
                         }
                         if (n <= 25 ||
@@ -417,9 +500,25 @@ object OlcrtcTunnelManager {
         Thread({
             try {
                 val code = proc.waitFor()
-                WdttTunnelManager.logUi("olcrtc_exit", "olcrtc process exit code=$code", 99, isError = code != 0)
-                if (_running.value && !_tunnelReady.value) {
-                    _lastError.value = "olcrtc вышел code=$code"
+                if (olcrtcProc !== proc && olcrtcProc != null) {
+                    // Процесс уже заменён новым стартом — не трогаем сессию.
+                    return@Thread
+                }
+                val wasReady = _tunnelReady.value
+                val stillWanted = _running.value
+                WdttTunnelManager.logUi(
+                    "olcrtc_exit",
+                    "olcrtc process exit code=$code",
+                    if (stillWanted) 2 else 3,
+                    isError = stillWanted && code != 0,
+                )
+                when {
+                    stillWanted && wasReady -> notifyPeerDead("process_exit:$code")
+                    stillWanted && !wasReady -> {
+                        _tunnelReady.value = false
+                        _lastError.value = "olcrtc вышел code=$code"
+                        notifyPeerDead("process_exit_early:$code")
+                    }
                 }
             } catch (_: Exception) {
             }
@@ -672,6 +771,7 @@ object OlcrtcTunnelManager {
     }
 
     fun startFromConfigJson(context: Context, json: String, vpnService: VpnService? = null): String? {
+        cachedConfigJson = json
         val obj = JSONObject(json)
         val svc = vpnService ?: (context as? VpnService)
         return start(

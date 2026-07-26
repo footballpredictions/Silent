@@ -1,8 +1,10 @@
 package com.silent.vpn.service
 
 import android.content.Context
+import android.content.Intent
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.SessionTrace
+import com.silent.vpn.vpn.OlcrtcTunnelManager
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.WireGuardHelper
@@ -32,9 +34,13 @@ object VpnConnectHelper {
         if (SilentVpnService.isRunning && WdttTunnelManager.isTransportReadyStrict()) {
             return false
         }
+        if (OlcrtcTunnelManager.tunnelReady.value) {
+            return false
+        }
         return VpnServiceTracker.isSessionMarkedActive(context) ||
             WdttTunnelManager.running.value ||
             WdttTunnelManager.tunnelReady.value ||
+            OlcrtcTunnelManager.running.value ||
             VpnNetworkHelper.findOurVpnNetwork(context) != null
     }
 
@@ -68,6 +74,17 @@ object VpnConnectHelper {
                 return
             }
             runBlocking {
+                if (OlcrtcTunnelManager.running.value || OlcrtcTunnelManager.tunnelReady.value) {
+                    runCatching { OlcrtcTunnelManager.stop() }
+                        .onFailure { e -> DebugLog.w(TAG, "tile reconnect olcrtc stop: ${e.message}") }
+                    runCatching {
+                        appCtx.startService(
+                            Intent(appCtx, OlcrtcVpnService::class.java).apply {
+                                action = OlcrtcVpnService.ACTION_STOP
+                            },
+                        )
+                    }
+                }
                 if (orphanWg || WdttTunnelManager.running.value || stale) {
                     runCatching { WdttTunnelManager.stopAndAwait() }
                         .onFailure { e -> DebugLog.w(TAG, "tile reconnect stopAndAwait: ${e.message}") }

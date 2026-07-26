@@ -9,7 +9,9 @@ import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.di.AppEntryPoint
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.vpn.VpnNetworkHelper
 import dagger.hilt.android.EntryPointAccessors
+import org.json.JSONObject
 
 /** Кеш конфига → CONNECT intent (как prepareVpnConnectConfig + vpnConnect на PC). */
 object VpnTileConnect {
@@ -22,8 +24,58 @@ object VpnTileConnect {
     fun buildConnectIntentFromCache(context: Context): Intent? {
         val repo = repository(context)
         if (!repo.isLoggedIn()) return null
+        if (repo.isOlcrtcBypass()) {
+            return buildOlcrtcConnectIntent(context, repo)
+        }
         val config = loadCachedConfig(repo) ?: return null
         return buildConnectIntent(context, repo, config)
+    }
+
+    private fun buildOlcrtcConnectIntent(context: Context, repo: SilentRepository): Intent? {
+        val olc = repo.getCachedOlcrtcConfig() ?: run {
+            DebugLog.w(TAG, "olcrtc tile: no cached config")
+            return null
+        }
+        val provider = repo.getOlcrtcProvider()
+        val p = olc.providers[provider]
+        if (p?.denied == true || (olc.pool_denied && p?.room.isNullOrBlank())) {
+            DebugLog.w(TAG, "olcrtc tile: pool denied")
+            return null
+        }
+        if (!olc.enabled || olc.crypto_key.length != 64 || p == null || !p.enabled || p.room.isBlank()) {
+            DebugLog.w(TAG, "olcrtc tile: incomplete config provider=$provider")
+            return null
+        }
+        val deviceId = repo.getSessionDeviceId()?.takeIf { it.isNotBlank() } ?: "android"
+        val json = JSONObject().apply {
+            put("bypass_family", "olcrtc")
+            put("bypassFamily", "olcrtc")
+            put("olcrtc_provider", provider)
+            put("olcrtc_room", p.room)
+            put("olcrtc_crypto_key", olc.crypto_key)
+            put("olcrtc_transport", p.transport.ifBlank { "datachannel" })
+            put("olcrtc_socks_host", olc.socks_host.ifBlank { "127.0.0.1" })
+            put("olcrtc_socks_port", olc.socks_port.takeIf { it > 0 } ?: 8808)
+            if (p.auth_token.isNotBlank()) {
+                put("olcrtc_auth_token", p.auth_token)
+            }
+            if (
+                VpnNetworkHelper.isOnMobileData(context) &&
+                olc.jitsi_https_proxy.isNotBlank() &&
+                (p.room.contains("meet.egovm.ru") || p.room.contains("meet.playform.ru"))
+            ) {
+                put("olcrtc_https_proxy", olc.jitsi_https_proxy)
+            }
+            put("is_bootstrap", false)
+            put("device_id", deviceId)
+        }
+        DebugLog.i(TAG, "CONNECT olcrtc provider=$provider room=${p.room.take(32)}")
+        return Intent(context, SilentVpnService::class.java).apply {
+            action = SilentVpnService.ACTION_CONNECT
+            putExtra(SilentVpnService.EXTRA_CONFIG, json.toString())
+            putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, false)
+            putExtra(SilentVpnService.EXTRA_FROM_TILE, true)
+        }
     }
 
     private fun buildConnectIntent(

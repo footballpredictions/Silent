@@ -41,6 +41,35 @@ const PROVIDER_META: { id: string; title: string; roomHint: string; defaultTrans
 
 const TRANSPORTS = ['datachannel', 'vp8channel', 'seichannel', 'videochannel']
 
+/** Старые английские srv_message из БД → по-русски (пока не перезапишут Apply). */
+function formatOlcrtcSrvMessage(raw: string): string {
+  const m = (raw || '').trim()
+  if (!m) return m
+  const yamlWritten = m.match(/yaml written\s*\((\d+)\s*units\)/i)
+  if (yamlWritten) {
+    return (
+      `YAML записан (${yamlWritten[1]} unit’ов). ` +
+      `На VPS выполните: python scripts/apply_olcrtc_units_from_db.py ` +
+      `(без этого srv останется на старом канале).`
+    )
+  }
+  if (/^room agent wrote/i.test(m)) {
+    const n = m.match(/(\d+)\s*units/i)?.[1] || '?'
+    return (
+      `Агент записал YAML (${n} unit’ов). ` +
+      `На VPS: python scripts/apply_olcrtc_units_from_db.py`
+    )
+  }
+  if (/rooms reconciled/i.test(m)) {
+    return m
+      .replace(/rooms reconciled updated=/i, 'Пул: изменено ')
+      .replace(/created=/i, ', создано ')
+      .replace(/yaml (\d+) units/i, 'YAML $1 unit’ов')
+      .replace(/run apply_olcrtc_units_from_db\.py/i, '→ python scripts/apply_olcrtc_units_from_db.py')
+  }
+  return m
+}
+
 const DEFAULT_ROOMS: Record<string, RoomSlot[]> = {
   wbstream: [
     {
@@ -371,7 +400,7 @@ function OlcrtcSection({ token }: { token: string }) {
       </div>
 
       {cfg.srv_message ? (
-        <p className="text-xs text-[#888] break-all">{cfg.srv_message}</p>
+        <p className="text-xs text-[#888] break-all">{formatOlcrtcSrvMessage(cfg.srv_message)}</p>
       ) : null}
 
       <div>

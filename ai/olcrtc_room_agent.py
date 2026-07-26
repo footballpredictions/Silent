@@ -400,8 +400,9 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
             try:
                 files = await write_all_unit_yaml_from_db(db)
                 settings.srv_message = (
-                    f"room agent wrote {len(files)} units; "
-                    "run apply_olcrtc_units_from_db.py / deploy_olcrtc_cell.py"
+                    f"Агент записал YAML ({len(files)} unit’ов). "
+                    f"На VPS: python scripts/apply_olcrtc_units_from_db.py "
+                    f"(или deploy_olcrtc_cell.py для сот)."
                 )
                 settings.srv_status = "pending_apply"
                 await save_olcrtc_settings(db, settings)

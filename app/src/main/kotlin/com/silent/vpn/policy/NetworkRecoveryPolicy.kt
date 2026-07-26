@@ -15,11 +15,15 @@ object NetworkRecoveryPolicy {
         return base == "available" ||
             base == "capabilities" ||
             base == "capabilities_restored" ||
+            base == "available_restored" ||
+            base == "lost_restored" ||
             base == "restored" ||
             base == "transport_switch" ||
             base == "validated" ||
             base == "internet_restored" ||
-            base == "phone_call_end"
+            base == "phone_call_end" ||
+            base == "olcrtc_peer_dead" ||
+            base == "watchdog_olcrtc_down"
     }
 
     fun isSpuriousRecoveryReason(reason: String): Boolean {

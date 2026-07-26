@@ -130,6 +130,33 @@ object VpnNetworkHelper {
         return onMobile
     }
 
+    /**
+     * Тип underlying (NOT_VPN) для Wi‑Fi↔LTE: eth > wifi > cell.
+     * Не смотрит default/VPN — иначе при живом туннеле fingerprint всегда «unknown».
+     */
+    fun underlyingTransportFingerprint(context: Context): String {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        var hasEth = false
+        var hasWifi = false
+        var hasCell = false
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+            when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> hasEth = true
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> hasWifi = true
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> hasCell = true
+            }
+        }
+        return when {
+            hasEth -> "eth"
+            hasWifi -> "wifi"
+            hasCell -> "cell"
+            else -> ""
+        }
+    }
+
     private fun hasUsableWifi(caps: NetworkCapabilities): Boolean {
         if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {

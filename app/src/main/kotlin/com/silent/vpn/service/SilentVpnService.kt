@@ -181,7 +181,11 @@ class SilentVpnService : Service() {
             SessionTrace.enter("SilentVpnService.statsUpdater")
             delay(300)
             while (isActive) {
-                if (!WdttTunnelManager.running.value && !isTunnelPaused) {
+                val olcrtcLive =
+                    olcrtcSessionActive ||
+                        OlcrtcTunnelManager.running.value ||
+                        OlcrtcTunnelManager.tunnelReady.value
+                if (!WdttTunnelManager.running.value && !olcrtcLive && !isTunnelPaused) {
                     if (!isRunning) {
                         stopSelf()
                         break
@@ -205,6 +209,17 @@ class SilentVpnService : Service() {
                         checkTransportHealth()
                         checkUnderlyingNetwork()
                         maybeRefreshWifiSubscription()
+                    } else if (olcrtcLive) {
+                        // Wi‑Fi↔LTE для olcrtc: раньше poll не вызывался (только WDTT ready).
+                        connectGuardJob?.cancel()
+                        ensureSessionWakeLock()
+                        checkUnderlyingNetwork()
+                        if (OlcrtcTunnelManager.tunnelReady.value) {
+                            postVpnNotification("olcrtc · туннель активен")
+                            VpnTileHelper.requestUpdate(this@SilentVpnService)
+                        } else {
+                            startFg(buildConnectingNotification())
+                        }
                     } else if (WdttTunnelManager.running.value) {
                         startFg(buildConnectingNotification())
                     }
@@ -677,42 +692,22 @@ class SilentVpnService : Service() {
         if (networkCallback != null) return
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         activeNetworks.clear()
-        lastNetworkFingerprint = currentDefaultNetworkFingerprint()
+        // Underlying NOT_VPN — не default/VPN (иначе Wi‑Fi↔LTE не видно при живом туннеле).
+        lastNetworkFingerprint = VpnNetworkHelper.underlyingTransportFingerprint(this)
         lastNetworkValidated = VpnNetworkHelper.hasUnderlyingInternet(this)
         lastUnderlyingInternet = lastNetworkValidated
         lastMobileDataState = VpnNetworkHelper.isOnMobileData(this)
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 activeNetworks.add(network)
-                val fp = fingerprintForNetwork(network)
-                val caps = connectivityManager?.getNetworkCapabilities(network)
-                val validated = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
-                } else {
-                    true
-                }
-                if (lastNetworkFingerprint.isNotEmpty() && fp.isNotEmpty() && fp != lastNetworkFingerprint) {
-                    val old = lastNetworkFingerprint
-                    lastNetworkFingerprint = fp
-                    val switch = wifiCellTransportTarget(old, fp)
-                    if (switch != null) {
-                        if (validated) scheduleNetworkRecovery("transport_switch:$switch", 600L)
-                    } else if (validated) {
-                        scheduleNetworkRecovery("available:$fp")
-                    }
-                } else if (lastNetworkFingerprint.isEmpty() && fp.isNotEmpty()) {
-                    lastNetworkFingerprint = fp
-                    if (isRunning && validated) {
-                        scheduleNetworkRecovery("restored:$fp")
-                    }
-                }
+                maybeRecoverOnUnderlyingChange("available")
             }
 
             override fun onLost(network: Network) {
                 activeNetworks.remove(network)
-                if (activeNetworks.isEmpty()) {
-                    lastNetworkFingerprint = ""
-                }
+                // Wi‑Fi выкл при живом LTE: cell уже в activeNetworks — без этого fingerprint
+                // остаётся "wifi" и transport_switch не приходит.
+                maybeRecoverOnUnderlyingChange("lost")
             }
 
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
@@ -730,40 +725,48 @@ class SilentVpnService : Service() {
                         scheduleNetworkRecovery("validated")
                     }
                 }
-                val fp = networkFingerprint(caps)
-                if (lastNetworkFingerprint.isNotEmpty() && fp.isNotEmpty() && fp != lastNetworkFingerprint) {
-                    val old = lastNetworkFingerprint
-                    lastNetworkFingerprint = fp
-                    val switch = wifiCellTransportTarget(old, fp)
-                    if (switch != null) {
-                        if (validated) scheduleNetworkRecovery("transport_switch:$switch", 600L)
-                    } else if (validated) {
-                        scheduleNetworkRecovery("capabilities:$fp")
-                    }
-                } else if (lastNetworkFingerprint.isEmpty() && fp.isNotEmpty()) {
-                    lastNetworkFingerprint = fp
-                    if (isRunning && validated) {
-                        scheduleNetworkRecovery("capabilities_restored:$fp")
-                    }
-                }
+                maybeRecoverOnUnderlyingChange("capabilities")
             }
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            connectivityManager?.registerDefaultNetworkCallback(networkCallback!!)
-        } else {
-            val request = NetworkRequest.Builder()
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-                .build()
-            connectivityManager?.registerNetworkCallback(request, networkCallback!!)
+        // Всегда NOT_VPN: default callback при VPN = сеть туннеля → wifi/cell не детектятся.
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        connectivityManager?.registerNetworkCallback(request, networkCallback!!)
+    }
+
+    /** Сверка underlying fingerprint (wifi/cell) и schedule transport_switch / restored. */
+    private fun maybeRecoverOnUnderlyingChange(source: String) {
+        if (!isRunning) return
+        val fp = VpnNetworkHelper.underlyingTransportFingerprint(this)
+        val validated = VpnNetworkHelper.hasUnderlyingInternet(this)
+        if (fp.isEmpty()) {
+            lastNetworkFingerprint = ""
+            return
+        }
+        if (lastNetworkFingerprint.isEmpty()) {
+            lastNetworkFingerprint = fp
+            if (validated) {
+                scheduleNetworkRecovery("${source}_restored:$fp", 800L)
+            }
+            return
+        }
+        if (fp == lastNetworkFingerprint) return
+        val old = lastNetworkFingerprint
+        lastNetworkFingerprint = fp
+        val switch = wifiCellTransportTarget(old, fp)
+        if (switch != null) {
+            DebugLog.i("VpnService", "underlying $source: $old → $fp → transport_switch:$switch")
+            // LTE часто ещё не VALIDATED сразу после Wi‑Fi off — не ждём validated.
+            scheduleNetworkRecovery("transport_switch:$switch", 600L)
+        } else if (validated) {
+            scheduleNetworkRecovery("$source:$fp")
         }
     }
 
-    private fun currentDefaultNetworkFingerprint(): String {
-        val cm = connectivityManager ?: return ""
-        val network = cm.activeNetwork ?: return ""
-        return fingerprintForNetwork(network)
-    }
+    private fun currentDefaultNetworkFingerprint(): String =
+        VpnNetworkHelper.underlyingTransportFingerprint(this)
 
     private fun fingerprintForNetwork(network: Network): String {
         val cm = connectivityManager ?: return ""
@@ -806,15 +809,16 @@ class SilentVpnService : Service() {
         }
         if (!isRunning) return
         if (NetworkRecoveryPolicy.shouldDeferRecoveryForPhoneCall(phoneCallActive)) return
-        // peer_dead / phone_call — не режем grace (иначе после звонка «залипает»).
+        // peer_dead / phone_call / wifi↔lte — не режем grace (иначе после смены сети «залипает»).
         val skipGrace =
             reason.startsWith("olcrtc_peer_dead") ||
                 reason.startsWith("phone_call_end") ||
-                reason.startsWith("watchdog_olcrtc")
+                reason.startsWith("watchdog_olcrtc") ||
+                reason.startsWith("transport_switch:")
         if (!skipGrace && System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()) return
         if (lastNetworkFingerprint.isEmpty()) {
             val fp = currentDefaultNetworkFingerprint()
-            if (fp.isEmpty() && !skipGrace) return
+            if (fp.isEmpty() && !skipGrace && !reason.startsWith("internet_restored")) return
             if (fp.isNotEmpty()) lastNetworkFingerprint = fp
         }
         val now = System.currentTimeMillis()
@@ -920,15 +924,29 @@ class SilentVpnService : Service() {
             return
         }
         if (!isRunning) return
-        // Не дёргать два раза подряд (peer_dead + transport_switch).
         val now = System.currentTimeMillis()
-        if (now - lastTransportRestartMs < 2_500L && !reason.startsWith("phone_call_end")) {
+        if (reason.startsWith("transport_switch:")) {
+            val target = reason.removePrefix("transport_switch:")
+            if (target == lastTransportSwitchTarget && now - lastTransportSwitchMs < 30_000L) {
+                DebugLog.i("VpnService", "olcrtc transport switch duplicate ($target) — skip")
+                return
+            }
+            lastTransportSwitchTarget = target
+            lastTransportSwitchMs = now
+        } else if (
+            now - lastTransportRestartMs < 2_500L &&
+            !reason.startsWith("phone_call_end") &&
+            !reason.startsWith("internet_restored")
+        ) {
+            // Не глотать wifi↔lte: transport_switch обработан выше.
             DebugLog.i("VpnService", "olcrtc recovery debounce ($reason)")
             return
         }
         lastTransportRestartMs = now
         lastOlcrtcConfigJson = cfg
         olcrtcSessionActive = true
+        pausedForNetwork = false
+        isTunnelPaused = false
         DebugLog.i("VpnService", "olcrtc recovery: $reason")
         WdttTunnelManager.logUi("olcrtc_recover", "переподключение: $reason", 2)
         startFg(buildConnectingNotification())
@@ -949,10 +967,20 @@ class SilentVpnService : Service() {
                         },
                     )
                 }
-                delay(1_000L)
+                // После Wi‑Fi off дать LTE подняться (VALIDATED), иначе dial сразу падает.
+                val waitMs = if (reason.startsWith("transport_switch:")) 1_800L else 1_000L
+                delay(waitMs)
                 if (!isRunning || epoch != disconnectEpoch) {
                     OlcrtcVpnService.suppressDestroyStop = false
                     SessionTrace.mark("SilentVpnService.olcrtcRecover", "aborted — disconnected")
+                    return@launch
+                }
+                if (!VpnNetworkHelper.hasAnyUnderlyingInternet(this@SilentVpnService)) {
+                    DebugLog.w("VpnService", "olcrtc recovery deferred — no underlying internet")
+                    pausedForNetwork = true
+                    isTunnelPaused = true
+                    OlcrtcVpnService.suppressDestroyStop = false
+                    scheduleNetworkRecovery("internet_restored", 2_000L)
                     return@launch
                 }
                 startService(
@@ -1041,45 +1069,84 @@ class SilentVpnService : Service() {
         }
     }
 
-    /** Пауза libclient при полном обрыве; resume через scheduleNetworkRecovery при возврате сети. */
+    /** Пауза при полном обрыве; Wi‑Fi↔LTE → transport_switch (WDTT и olcrtc). */
     private fun checkUnderlyingNetwork() {
-        if (!isRunning || !WdttTunnelManager.tunnelReady.value) return
-        if (WdttTunnelManager.isNetworkRecoverySuppressed()) return
+        val olcrtcLive =
+            olcrtcSessionActive ||
+                OlcrtcTunnelManager.running.value ||
+                OlcrtcTunnelManager.tunnelReady.value
+        val wdttLive = WdttTunnelManager.tunnelReady.value
+        if (!isRunning || (!wdttLive && !olcrtcLive)) return
+        if (!olcrtcLive && WdttTunnelManager.isNetworkRecoverySuppressed()) return
         if (NetworkRecoveryPolicy.shouldDeferRecoveryForPhoneCall(phoneCallActive)) return
-        if (System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()) return
+        // transport_switch не блокируем grace — иначе первые секунды после connect «залипают».
+        if (
+            !olcrtcLive &&
+            System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()
+        ) {
+            return
+        }
 
         val anyOnline = VpnNetworkHelper.hasAnyUnderlyingInternet(this)
         val validatedOnline = VpnNetworkHelper.hasUnderlyingInternet(this)
         val wasOnline = lastUnderlyingInternet
         val mobileNow = VpnNetworkHelper.isOnMobileData(this)
         val mobileWas = lastMobileDataState
+        val underlyingFp = VpnNetworkHelper.underlyingTransportFingerprint(this)
 
         if (wasOnline == true && !anyOnline) {
             if (!pausedForNetwork) {
-                DebugLog.i("VpnService", "underlying internet lost — pause libclient")
+                DebugLog.i(
+                    "VpnService",
+                    "underlying internet lost — pause ${if (olcrtcLive) "olcrtc" else "libclient"}",
+                )
                 pausedForNetwork = true
                 isTunnelPaused = true
-                WdttTunnelManager.pause()
+                if (olcrtcLive) {
+                    OlcrtcTunnelManager.stop()
+                } else {
+                    WdttTunnelManager.pause()
+                }
             }
-        } else if ((wasOnline == false || pausedForNetwork) && validatedOnline) {
+        } else if ((wasOnline == false || pausedForNetwork) && (validatedOnline || anyOnline)) {
             scheduleNetworkRecovery("internet_restored", 1_500L)
+        }
+        // Синхронизируем fingerprint из poll (callback мог пропустить dual-network lost).
+        if (underlyingFp.isNotEmpty() &&
+            lastNetworkFingerprint.isNotEmpty() &&
+            underlyingFp != lastNetworkFingerprint
+        ) {
+            val old = lastNetworkFingerprint
+            val switch = wifiCellTransportTarget(old, underlyingFp)
+            if (switch != null) {
+                lastNetworkFingerprint = underlyingFp
+                DebugLog.i("VpnService", "poll underlying $old → $underlyingFp → transport_switch:$switch")
+                scheduleNetworkRecovery("transport_switch:$switch", 600L)
+                lastMobileDataState = mobileNow
+                lastUnderlyingInternet = validatedOnline || anyOnline
+                return
+            }
+            lastNetworkFingerprint = underlyingFp
+        } else if (underlyingFp.isNotEmpty() && lastNetworkFingerprint.isEmpty()) {
+            lastNetworkFingerprint = underlyingFp
         }
         if (
             !WdttTunnelManager.isBootstrapMode() &&
             mobileWas != null &&
             mobileWas != mobileNow
         ) {
-            if (validatedOnline) {
+            // После Wi‑Fi off LTE часто ещё без VALIDATED — хватит anyOnline.
+            if (validatedOnline || anyOnline) {
                 val to = if (mobileNow) "mobile" else "wifi"
                 DebugLog.i("VpnService", "network type switch detected -> $to; force recovery")
                 scheduleNetworkRecovery("transport_switch:$to", 600L)
                 lastMobileDataState = mobileNow
             }
-            // Wi‑Fi выкл: LTE ещё не VALIDATED — не обновляем lastMobileDataState, иначе switch пропустим.
+            // Wi‑Fi выкл: LTE ещё не up — не обновляем lastMobileDataState, иначе switch пропустим.
         } else {
             lastMobileDataState = mobileNow
         }
-        lastUnderlyingInternet = validatedOnline
+        lastUnderlyingInternet = validatedOnline || (olcrtcLive && anyOnline)
     }
 
     private fun checkTransportHealth() {

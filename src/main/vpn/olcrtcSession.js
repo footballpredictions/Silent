@@ -3,11 +3,19 @@
  * Не трогает WDTT/WireGuard.
  */
 const { spawn, execSync } = require('child_process')
+const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
 const net = require('net')
 const { app } = require('electron')
 const { prefetchTelemost, prefetchWbstream } = require('./olcrtcPrefetch')
+
+/** Случайный login/pass на сессию — SOCKS без auth = любой локальный процесс жжёт peer/room. */
+function generateSocksCreds() {
+  const user = `s${crypto.randomBytes(6).toString('hex')}`
+  const pass = crypto.randomBytes(18).toString('base64url')
+  return { user, pass }
+}
 
 let olcrtcProc = null
 let singboxProc = null
@@ -72,35 +80,62 @@ function waitForPort(host, port, timeoutMs, log) {
   })
 }
 
-/** Один SOCKS5 CONNECT по домену (peer резолвит DNS). */
-function socksDialDomainOnce(socksHost, socksPort, domain, timeoutMs = 2500) {
+/** Один SOCKS5 CONNECT по домену (peer резолвит DNS). RFC1929 если user/pass заданы. */
+function socksDialDomainOnce(socksHost, socksPort, domain, timeoutMs = 2500, socksUser = '', socksPass = '') {
   return new Promise((resolve) => {
+    const needAuth = Boolean(socksUser)
     const socket = net.connect({ host: socksHost, port: socksPort }, () => {
-      socket.write(Buffer.from([0x05, 0x01, 0x00]))
+      // method 0x02 = username/password; 0x00 = no auth
+      socket.write(Buffer.from(needAuth ? [0x05, 0x01, 0x02] : [0x05, 0x01, 0x00]))
     })
-    let stage = 0
+    let stage = 0 // 0=greet, 1=auth, 2=connect-resp
     let buf = Buffer.alloc(0)
     const done = (ok) => {
       socket.destroy()
       resolve(ok)
     }
+    const sendConnect = () => {
+      const req = Buffer.alloc(5 + domain.length + 2)
+      req[0] = 0x05
+      req[1] = 0x01
+      req[2] = 0x00
+      req[3] = 0x03
+      req[4] = domain.length
+      req.write(domain, 5)
+      req.writeUInt16BE(443, 5 + domain.length)
+      socket.write(req)
+      stage = 2
+    }
     socket.on('data', (chunk) => {
       buf = Buffer.concat([buf, chunk])
       if (stage === 0) {
         if (buf.length < 2) return
-        if (buf[0] !== 0x05 || buf[1] !== 0x00) return done(false)
+        if (buf[0] !== 0x05) return done(false)
+        const method = buf[1]
         buf = buf.subarray(2)
-        stage = 1
-        const req = Buffer.alloc(5 + domain.length + 2)
-        req[0] = 0x05
-        req[1] = 0x01
-        req[2] = 0x00
-        req[3] = 0x03
-        req[4] = domain.length
-        req.write(domain, 5)
-        req.writeUInt16BE(443, 5 + domain.length)
-        socket.write(req)
+        if (needAuth) {
+          if (method !== 0x02) return done(false)
+          const ub = Buffer.from(socksUser, 'utf8')
+          const pb = Buffer.from(socksPass, 'utf8')
+          if (ub.length > 255 || pb.length > 255) return done(false)
+          const auth = Buffer.alloc(3 + ub.length + pb.length)
+          auth[0] = 0x01
+          auth[1] = ub.length
+          ub.copy(auth, 2)
+          auth[2 + ub.length] = pb.length
+          pb.copy(auth, 3 + ub.length)
+          socket.write(auth)
+          stage = 1
+          return
+        }
+        if (method !== 0x00) return done(false)
+        sendConnect()
       } else if (stage === 1) {
+        if (buf.length < 2) return
+        if (buf[0] !== 0x01 || buf[1] !== 0x00) return done(false)
+        buf = buf.subarray(2)
+        sendConnect()
+      } else if (stage === 2) {
         if (buf.length < 2) return
         done(buf[1] === 0x00)
       }
@@ -114,7 +149,7 @@ function socksDialDomainOnce(socksHost, socksPort, domain, timeoutMs = 2500) {
  * Ждём стабильный peer: 2 успешных dial подряд + параллельный warm популярных доменов
  * (сайты не ждут минуту после ready).
  */
-async function waitForSocksDial(host, port, timeoutMs, log) {
+async function waitForSocksDial(host, port, timeoutMs, log, socksUser = '', socksPass = '') {
   const deadline = Date.now() + timeoutMs
   const probeHost = 'www.gstatic.com'
   const warmHosts = [
@@ -126,7 +161,7 @@ async function waitForSocksDial(host, port, timeoutMs, log) {
   ]
   let streak = 0
   while (Date.now() < deadline) {
-    const ok = await socksDialDomainOnce(host, port, probeHost, 2800)
+    const ok = await socksDialDomainOnce(host, port, probeHost, 2800, socksUser, socksPass)
     if (!ok) {
       streak = 0
       await new Promise((r) => setTimeout(r, 280))
@@ -137,10 +172,12 @@ async function waitForSocksDial(host, port, timeoutMs, log) {
       await new Promise((r) => setTimeout(r, 200))
       continue
     }
-    log?.(`[olcrtc] SOCKS dial OK ×2 → ${probeHost}:443`)
+    log?.(`[olcrtc] SOCKS dial OK ×2 → ${probeHost}:443 (auth=on)`)
     // Прогрев DNS на peer (не блокируем ready дольше ~1с)
     await Promise.race([
-      Promise.allSettled(warmHosts.map((d) => socksDialDomainOnce(host, port, d, 2000))),
+      Promise.allSettled(
+        warmHosts.map((d) => socksDialDomainOnce(host, port, d, 2000, socksUser, socksPass)),
+      ),
       new Promise((r) => setTimeout(r, 1000)),
     ])
     log?.(`[olcrtc] SOCKS warm done (${warmHosts.length} hosts)`)
@@ -218,9 +255,20 @@ function renderClientYaml(config) {
   }
   const socksHost = String(config.olcrtc_socks_host || '127.0.0.1')
   const socksPort = Number(config.olcrtc_socks_port || 8808)
+  const socksUser = String(config.olcrtc_socks_user || '')
+  const socksPass = String(config.olcrtc_socks_pass || '')
   // JWT WB только на srv — клиенту guest. Не прокидывать auth_token.
   if (!room || key.length !== 64) {
     throw new Error('olcrtc: нужны room и crypto_key (64 hex) из /api/vpn/olcrtc-config')
+  }
+  const socksLines = [
+    'socks:',
+    `  host: "${socksHost}"`,
+    `  port: ${socksPort}`,
+  ]
+  if (socksUser) {
+    socksLines.push(`  user: "${socksUser.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`)
+    socksLines.push(`  pass: "${socksPass.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`)
   }
   return [
     'mode: cnc',
@@ -233,15 +281,13 @@ function renderClientYaml(config) {
     'net:',
     `  transport: ${transport}`,
     '  dns: "1.1.1.1:53"',
-    'socks:',
-    `  host: "${socksHost}"`,
-    `  port: ${socksPort}`,
+    ...socksLines,
     'data: data',
     '',
   ].join('\n')
 }
 
-function renderSingboxConfig(socksHost, socksPort) {
+function renderSingboxConfig(socksHost, socksPort, socksUser = '', socksPass = '') {
   // fake-ip + sniff: не гоняем DNS через peer на каждый сайт.
   // HTTPS/SVCB RR через SOCKS часто EOF — reject.
   // hijack только :53 (не protocol=dns) — иначе Win LLMNR/мусор → «bad rdata».
@@ -291,6 +337,9 @@ function renderSingboxConfig(socksHost, socksPort) {
           server: socksHost,
           server_port: socksPort,
           version: '5',
+          ...(socksUser
+            ? { username: socksUser, password: socksPass || '' }
+            : {}),
         },
         { type: 'direct', tag: 'direct' },
         { type: 'block', tag: 'block' },
@@ -339,6 +388,9 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
 
   const socksHost = String(config.olcrtc_socks_host || '127.0.0.1')
   const socksPort = Number(config.olcrtc_socks_port || 8808)
+  const { user: socksUser, pass: socksPass } = generateSocksCreds()
+  config.olcrtc_socks_user = socksUser
+  config.olcrtc_socks_pass = socksPass
   const provider = String(config.olcrtc_provider || 'telemost').toLowerCase()
   const room = String(config.olcrtc_room || '').trim()
   let yaml
@@ -355,7 +407,8 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
   const sbPath = path.join(tmp, 'silent-olcrtc-singbox.json')
   yaml = yaml.replace(/\ndata: data\n/, `\ndata: "${dataDir.replace(/\\/g, '/')}"\n`)
   fs.writeFileSync(yamlPath, yaml, 'utf8')
-  fs.writeFileSync(sbPath, renderSingboxConfig(socksHost, socksPort), 'utf8')
+  fs.writeFileSync(sbPath, renderSingboxConfig(socksHost, socksPort, socksUser, socksPass), 'utf8')
+  log?.(`[olcrtc] SOCKS auth user=${socksUser} (per-session)`)
 
   let connFile = null
   let staticHosts = {}
@@ -466,7 +519,7 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
   }
   log?.(`[olcrtc] SOCKS listen ${socksHost}:${socksPort}`)
 
-  const dialOk = await waitForSocksDial(socksHost, socksPort, 60_000, log)
+  const dialOk = await waitForSocksDial(socksHost, socksPort, 60_000, log, socksUser, socksPass)
   if (!dialOk) {
     stopOlcrtcSession(log)
     return { error: 'olcrtc SOCKS слушает, но peer не отвечает (dial timeout)' }

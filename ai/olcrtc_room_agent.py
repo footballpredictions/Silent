@@ -59,7 +59,9 @@ TARGET_CAPACITY = 1100
 TARGET_ROOMS_TELEMOST = 4
 TARGET_ROOMS_WBSTREAM = 4
 MAX_CREATE_PER_CYCLE = 24
-DEFAULT_MAX_CLIENTS = 1000
+# 1–2 клиента на комнату: Telemost SFU ~10 Мбит на всю комнату (не на клиента).
+# 1000 на комнату = все делят один потолок → 3–20 Мбит и ниже.
+DEFAULT_MAX_CLIENTS = 2
 
 
 @dataclass

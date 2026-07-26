@@ -572,6 +572,12 @@ cd pc; npm install; npm run dev
 - API: `GET/POST /api/admin/settings/registration`. Сервис: `app/services/registration_settings.py`.
 - Задеплоено на прод (`deploy_api.py`, в список файлов добавлен `registration_settings.py`). Push `main`.
 
+### 2026-07-26 — Android olcrtc: reconnect + плитка + EOF noise
+
+- Симптомы: `remote not ready (EOF)` в логе при живом VPN; после `peer … closed` / звонка / Wi‑Fi↔LTE — без reconnect, VPN-иконка «залипает»; QS-плитка не включала/выключала olcrtc.
+- Фикс: `OlcrtcTunnelManager` — peer_closed/process_exit → `sessionDeadHandler`; transient stream EOF не красные при `tunnelReady`; `SilentVpnService.recoverOlcrtcAfterNetwork` (сеть/звонок/watchdog); `VpnSessionState` + `VpnTileConnect` + tile combine на olcrtc; UI → CONNECTING при обрыве.
+- Debug APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`. Push не делался.
+
 ### 2026-07-26 — libolcrtc CGO: netlinkrib permission denied
 
 - После OkHttp auth: `load interfaces: netlinkrib: permission denied` (Android 11+ SELinux).
@@ -602,6 +608,14 @@ cd pc; npm install; npm run dev
 - Оболочка одна (cnc SOCKS+hev), движки разные: **WB=`livekit`**, **Telemost=`goolom`** (ICE/WS) — логи и скорость connect разные по природе.
 - YouTube: Cronet IPv6+QUIC мимо IPv4-TUN; плюс hev UDP. Фикс: `allowFamily(AF_INET)`; hev udp reject; dial→hev (не hev до dial на TM — шторм CONNECT).
 - В логе: `engine=livekit|goolom`, `IPv4-only`, `warm TCP www.youtube.com OK`, `tunnel to …googlevideo…`.
+
+### 2026-07-26 — olcrtc скорость (vp8 60/64 + max_clients=2)
+
+- Причина 3–20 Мбит: (1) YAML без `vp8.fps/batch` (дефолт 30); (2) `max_clients=1000` — все делят один SFU; (3) потолок Telemost ~10 Мбит в коде olcrtc (`vp8channel/kcp.go`).
+- Порядок скорости (docs): `datachannel` > `vp8` > `sei` > `video`. Telemost = только vp8; WB DC нужен moderator.
+- Фикс: srv+cnc `vp8: fps:60 batch_size:64`; agent/rooms `max_clients=2`; hev MTU 1400. Прод YAML+units перезапущены.
+- Референс: https://github.com/openlibrecommunity/olcrtc — community URI `vp8-fps=60`.
+- Debug: `pc/build-debug-153216/`, `SilentVPN-debug.apk`. Пуш — по просьбе.
 
 ### 2026-07-26 — Hardening + SOCKS5 auth (olcrtc)
 

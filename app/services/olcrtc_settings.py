@@ -23,6 +23,21 @@ DEFAULT_TRANSPORTS = {
 # Jitsi убран (DPI LTE / meet.*). Остались WB Stream + Яндекс Телемост.
 PROVIDERS = ("telemost", "wbstream")
 
+# Скорость vp8channel (см. docs/uri.md community: vp8-fps=60; settings: batch↑ = скорость↑).
+# Потолок Telemost SFU ~10 Мбит (vendor vp8channel/kcp.go) — выше физически не выжать.
+# datachannel быстрее, но у Telemost DC снят; у WB DC нужен moderator token.
+VP8_FPS = 60
+VP8_BATCH = 64
+
+
+def yaml_vp8_tuning(indent: str = "") -> list[str]:
+    """Блок vp8: для srv/cnc при transport=vp8channel."""
+    return [
+        f"{indent}vp8:",
+        f"{indent}  fps: {VP8_FPS}",
+        f"{indent}  batch_size: {VP8_BATCH}",
+    ]
+
 # Placeholder room IDs — заменить свежими с stream.wb.ru / telemost.yandex.ru
 # (или через olcrtc_room_agent). PC и Android обязаны быть разными.
 DEFAULT_WBSTREAM_ROOMS = [
@@ -467,19 +482,32 @@ def render_server_yaml(
         "net:",
         '  dns: "8.8.8.8:53"',
         f"data: {data_dir}",
-        "profiles:",
-        f"  - name: {pname}",
-        *auth_block,
-        "    room:",
-        f'      id: "{room_url}"',
-        "    net:",
-        f"      transport: {transport}",
-        '      dns: "8.8.8.8:53"',
-        "failover:",
-        "  retry_delay: 2s",
-        "  max_cycles: 0",
-        "",
     ]
+    # Shared defaults (profile может переопределить).
+    if transport == "vp8channel":
+        lines.extend(yaml_vp8_tuning(""))
+    lines.extend(
+        [
+            "profiles:",
+            f"  - name: {pname}",
+            *auth_block,
+            "    room:",
+            f'      id: "{room_url}"',
+            "    net:",
+            f"      transport: {transport}",
+            '      dns: "8.8.8.8:53"',
+        ]
+    )
+    if transport == "vp8channel":
+        lines.extend(yaml_vp8_tuning("    "))
+    lines.extend(
+        [
+            "failover:",
+            "  retry_delay: 2s",
+            "  max_cycles: 0",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -560,25 +588,26 @@ def render_client_yaml(
     if tok:
         esc = tok.replace("\\", "\\\\").replace('"', '\\"')
         auth_lines.append(f'  token: "{esc}"')
-    return "\n".join(
-        [
-            "mode: cnc",
-            *auth_lines,
-            "room:",
-            f'  id: "{room_id}"',
-            "crypto:",
-            f'  key: "{settings.crypto_key}"',
-            "net:",
-            f"  transport: {p.transport}",
-            '  dns: "8.8.8.8:53"',
-            "socks:",
-            f'  host: "{socks_host}"',
-            f"  port: {socks_port}",
-            # user/pass генерирует клиент на сессию (RFC1929) — в API не кладём.
-            "data: data",
-            "",
-        ]
-    )
+    transport = p.transport or DEFAULT_TRANSPORTS.get(provider, "vp8channel")
+    lines = [
+        "mode: cnc",
+        *auth_lines,
+        "room:",
+        f'  id: "{room_id}"',
+        "crypto:",
+        f'  key: "{settings.crypto_key}"',
+        "net:",
+        f"  transport: {transport}",
+        '  dns: "8.8.8.8:53"',
+        "socks:",
+        f'  host: "{socks_host}"',
+        f"  port: {socks_port}",
+        # user/pass генерирует клиент на сессию (RFC1929) — в API не кладём.
+    ]
+    if transport == "vp8channel":
+        lines.extend(yaml_vp8_tuning(""))
+    lines.extend(["data: data", ""])
+    return "\n".join(lines)
 
 
 def apply_yaml_paths() -> list[Path]:

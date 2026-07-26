@@ -18,6 +18,7 @@ from app.services.olcrtc_settings import (
     load_olcrtc_settings,
     normalize_room_id,
     write_server_yaml_file,
+    yaml_vp8_tuning,
 )
 
 
@@ -356,14 +357,18 @@ def render_unit_yaml(settings: OlcrtcSettings, room: OlcrtcRoom) -> str:
     if tok:
         esc = tok.replace("\\", "\\\\").replace('"', '\\"')
         auth_block.append(f'      token: "{esc}"')
-    return "\n".join(
+    lines = [
+        "mode: srv",
+        "crypto:",
+        f'  key: "{settings.crypto_key}"',
+        "net:",
+        '  dns: "8.8.8.8:53"',
+        f"data: {room.data_dir}",
+    ]
+    if transport == "vp8channel":
+        lines.extend(yaml_vp8_tuning(""))
+    lines.extend(
         [
-            "mode: srv",
-            "crypto:",
-            f'  key: "{settings.crypto_key}"',
-            "net:",
-            '  dns: "8.8.8.8:53"',
-            f"data: {room.data_dir}",
             "profiles:",
             f"  - name: {room.unit_name}",
             *auth_block,
@@ -372,12 +377,19 @@ def render_unit_yaml(settings: OlcrtcSettings, room: OlcrtcRoom) -> str:
             "    net:",
             f"      transport: {transport}",
             '      dns: "8.8.8.8:53"',
+        ]
+    )
+    if transport == "vp8channel":
+        lines.extend(yaml_vp8_tuning("    "))
+    lines.extend(
+        [
             "failover:",
             "  retry_delay: 2s",
             "  max_cycles: 0",
             "",
         ]
     )
+    return "\n".join(lines)
 
 
 async def write_all_unit_yaml_from_db(db: AsyncSession) -> dict[str, str]:

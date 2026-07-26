@@ -148,6 +148,8 @@ data class OlcrtcProviderPublic(
     val room_db_id: String = "",
     val rooms_count: Int = 0,
     val denied: Boolean = false,
+    /** WB Stream account JWT — без него guest getToken → 403 */
+    val auth_token: String = "",
 )
 
 data class OlcrtcPublicConfig(
@@ -168,6 +170,14 @@ data class OlcrtcHeartbeatRequest(
     val fingerprint: String = "",
     val provider: String = "",
     val online: Boolean = true,
+)
+
+data class OlcrtcRoomFailureRequest(
+    val room_db_id: String = "",
+    val fingerprint: String = "",
+    val provider: String = "",
+    val device_type: String = "android",
+    val detail: String = "",
 )
 
 data class ThemeData(
@@ -328,6 +338,9 @@ interface SilentApi {
 
     @POST("api/vpn/olcrtc-heartbeat")
     suspend fun olcrtcHeartbeat(@Body req: OlcrtcHeartbeatRequest): Response<Map<String, Any>>
+
+    @POST("api/vpn/olcrtc-room-failure")
+    suspend fun olcrtcRoomFailure(@Body req: OlcrtcRoomFailureRequest): Response<Map<String, Any>>
 
     @POST("api/vpn/device/register")
     suspend fun registerDevice(@Body req: DeviceRegisterRequest): Response<VpnConfig>

@@ -1166,7 +1166,7 @@ class SilentRepository @Inject constructor(
     }
 
     fun bypassFamilyLabel(family: String = getBypassFamily()): String =
-        if (family == BYPASS_FAMILY_OLCRTC) "olcrtc" else "VK / WDTT"
+        if (family == BYPASS_FAMILY_OLCRTC) "olcrtc" else "VK"
 
     private val PREF_OLCRTC_CACHE = "olcrtc_config_cache_v9"
 

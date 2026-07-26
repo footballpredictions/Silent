@@ -9,22 +9,18 @@ app/src/main/jniLibs/arm64-v8a/libolcrtc.so
 app/src/main/jniLibs/armeabi-v7a/libolcrtc.so   # опционально
 ```
 
-Сборка (из `Silent-Project/vendor/olcrtc`, CGO off):
+## Сборка — обязательно CGO + NDK
+
+На Android 11+ `net.Interfaces()` → `netlinkrib: permission denied`.  
+Нужен `getifaddrs` через cgo (`pionnet_android.go`).
 
 ```bat
+cd android\app\olcrtc
 build_olcrtc_android.bat
 ```
 
-или вручную:
+Скрипт берёт NDK из `ANDROID_HOME` / `local.properties` (как `build_android_go.bat` для libclient).
 
-```powershell
-cd vendor\olcrtc
-$env:CGO_ENABLED="0"; $env:GOOS="android"; $env:GOARCH="arm64"
-go build -trimpath -ldflags "-s -w -checklinkname=0" -o ..\..\android\app\src\main\jniLibs\arm64-v8a\libolcrtc.so ./cmd/olcrtc
-```
+`CGO_ENABLED=0` **не использовать** для Telemost/WB — ICE упадёт на `load interfaces`.
 
 `jniLibs/` в `.gitignore` — бинарь локальный / CI.
-
-TUN→SOCKS на Android пока опционален (SOCKS-only достаточно для debug connect).
-
-Upstream: https://github.com/openlibrecommunity/olcrtc

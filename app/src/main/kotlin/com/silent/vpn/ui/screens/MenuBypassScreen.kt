@@ -33,14 +33,12 @@ fun MenuBypassScreen(
     var pendingFamily by remember { mutableStateOf<String?>(null) }
     var pendingVk by remember { mutableStateOf<String?>(null) }
     var pendingOlc by remember { mutableStateOf<String?>(null) }
-    var olcCached by remember { mutableStateOf(repo.getCachedOlcrtcConfig() != null) }
     val scope = rememberCoroutineScope()
     val vpnRunning = SilentVpnService.isRunning
 
     LaunchedEffect(Unit) {
         if (BuildConfig.DEBUG) {
             repo.prefetchOlcrtcConfig()
-            olcCached = repo.getCachedOlcrtcConfig() != null
         }
     }
 
@@ -61,19 +59,7 @@ fun MenuBypassScreen(
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold,
             color = fg,
-            modifier = Modifier.padding(bottom = 4.dp),
-        )
-        Text(
-            "Только debug. Вход всегда через VK. Здесь — основной VPN. Нужно «Применить».",
-            fontSize = 12.sp,
-            color = fg.copy(0.55f),
-            modifier = Modifier.padding(bottom = 12.dp),
-        )
-        Text(
-            "olcrtc-config: ${if (olcCached) "загружен" else "ещё нет"}",
-            fontSize = 12.sp,
-            color = fg.copy(0.55f),
-            modifier = Modifier.padding(bottom = 12.dp),
+            modifier = Modifier.padding(bottom = 16.dp),
         )
 
         if (vpnRunning) {
@@ -85,10 +71,8 @@ fun MenuBypassScreen(
             )
         }
 
-        Text("1. VK / WDTT", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg)
         BypassOption(
-            title = "Вариант 1 — VK / WDTT",
-            subtitle = "WireGuard через VK TURN",
+            title = "VK",
             selected = effectiveFamily == SilentRepository.BYPASS_FAMILY_WDTT,
             enabled = !vpnRunning,
             fg = fg,
@@ -98,7 +82,6 @@ fun MenuBypassScreen(
             Column(Modifier.padding(start = 12.dp)) {
                 BypassOption(
                     title = "VKCalls",
-                    subtitle = "api.vk.me — без капчи",
                     selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_VKCALLS,
                     enabled = !vpnRunning,
                     fg = fg,
@@ -106,7 +89,6 @@ fun MenuBypassScreen(
                 )
                 BypassOption(
                     title = "Авто капча",
-                    subtitle = "Legacy + WBV Auto",
                     selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_AUTO,
                     enabled = !vpnRunning,
                     fg = fg,
@@ -114,7 +96,6 @@ fun MenuBypassScreen(
                 )
                 BypassOption(
                     title = "Ручная капча",
-                    subtitle = "Legacy + WebView",
                     selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_MANUAL,
                     enabled = !vpnRunning,
                     fg = fg,
@@ -123,11 +104,9 @@ fun MenuBypassScreen(
             }
         }
 
-        Spacer(Modifier.height(12.dp))
-        Text("2. olcrtc", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        Spacer(Modifier.height(8.dp))
         BypassOption(
-            title = "Вариант 2 — olcrtc",
-            subtitle = "Телемост / WB Stream",
+            title = "olcrtc",
             selected = effectiveFamily == SilentRepository.BYPASS_FAMILY_OLCRTC,
             enabled = !vpnRunning,
             fg = fg,
@@ -137,7 +116,6 @@ fun MenuBypassScreen(
             Column(Modifier.padding(start = 12.dp)) {
                 BypassOption(
                     title = "Яндекс Телемост",
-                    subtitle = "рекомендуется",
                     selected = (pendingOlc ?: olcProvider) == SilentRepository.OLCRTC_TELEMOST,
                     enabled = !vpnRunning,
                     fg = fg,
@@ -145,7 +123,6 @@ fun MenuBypassScreen(
                 )
                 BypassOption(
                     title = "WB Stream",
-                    subtitle = "vp8channel",
                     selected = (pendingOlc ?: olcProvider) == SilentRepository.OLCRTC_WBSTREAM,
                     enabled = !vpnRunning,
                     fg = fg,
@@ -170,9 +147,8 @@ fun MenuBypassScreen(
             title = { Text("Применить?") },
             text = {
                 Text(
-                    "Семья: ${repo.bypassFamilyLabel(family)}" +
-                        (pendingFamily?.let { " → ${repo.bypassFamilyLabel(it)}" } ?: "") +
-                        "\nПрименится при следующем подключении.",
+                    "${repo.bypassFamilyLabel(family)}" +
+                        (pendingFamily?.let { " → ${repo.bypassFamilyLabel(it)}" } ?: ""),
                 )
             },
             confirmButton = {
@@ -192,10 +168,7 @@ fun MenuBypassScreen(
                     pendingFamily = null
                     pendingVk = null
                     pendingOlc = null
-                    scope.launch {
-                        repo.prefetchOlcrtcConfig()
-                        olcCached = repo.getCachedOlcrtcConfig() != null
-                    }
+                    scope.launch { repo.prefetchOlcrtcConfig() }
                 }) { Text("Применить", color = fg) }
             },
             dismissButton = {
@@ -212,7 +185,6 @@ fun MenuBypassScreen(
 @Composable
 private fun BypassOption(
     title: String,
-    subtitle: String,
     selected: Boolean,
     enabled: Boolean,
     fg: Color,
@@ -223,7 +195,7 @@ private fun BypassOption(
             .fillMaxWidth()
             .tvClickable(enabled = enabled, onClick = onSelect)
             .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.Top,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         RadioButton(
             selected = selected,
@@ -231,9 +203,12 @@ private fun BypassOption(
             enabled = enabled,
             colors = RadioButtonDefaults.colors(selectedColor = fg, unselectedColor = fg.copy(0.4f)),
         )
-        Column(Modifier.padding(start = 4.dp)) {
-            Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = fg.copy(if (enabled) 1f else 0.45f))
-            Text(subtitle, fontSize = 12.sp, color = fg.copy(0.55f))
-        }
+        Text(
+            title,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            color = fg.copy(if (enabled) 1f else 0.45f),
+            modifier = Modifier.padding(start = 4.dp),
+        )
     }
 }

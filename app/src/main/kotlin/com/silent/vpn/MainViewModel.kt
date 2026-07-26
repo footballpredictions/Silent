@@ -2415,7 +2415,8 @@ class MainViewModel @Inject constructor(
                         return@launch
                     }
                     // Сеть до старта VPN; кеш только fallback (пул комнат — нужен свежий room)
-                    val olc = repo.resolveOlcrtcConfig(preferCache = false)
+                    val olc = repo.syncOlcrtcLiveChannel()
+                        ?: repo.resolveOlcrtcConfig(preferCache = false)
                     val provider = repo.getOlcrtcProvider()
                     val p = olc?.providers?.get(provider)
                     if (p?.denied == true || (olc?.pool_denied == true && p?.room.isNullOrBlank())) {
@@ -2459,9 +2460,14 @@ class MainViewModel @Inject constructor(
                         put("olcrtc_transport", p.transport.ifBlank { "datachannel" })
                         put("olcrtc_socks_host", olc.socks_host.ifBlank { "127.0.0.1" })
                         put("olcrtc_socks_port", olc.socks_port.takeIf { it > 0 } ?: 8808)
+                        if (p.auth_token.isNotBlank()) {
+                            put("olcrtc_auth_token", p.auth_token)
+                        }
+                        // HTTPS_PROXY Улья — только Jitsi (meet.*). Telemost/WB = whitelist,
+                        // auth через OkHttp на телефоне; при блоках наш VPS недоступен.
                         if (repo.isOnMobileData() &&
                             olc.jitsi_https_proxy.isNotBlank() &&
-                            p.room.contains("meet.egovm.ru")
+                            (p.room.contains("meet.egovm.ru") || p.room.contains("meet.playform.ru"))
                         ) {
                             put("olcrtc_https_proxy", olc.jitsi_https_proxy)
                         }
@@ -2514,6 +2520,17 @@ class MainViewModel @Inject constructor(
                     }
                     val fail = OlcrtcTunnelManager.lastError.value ?: "olcrtc не поднялся (бинарь/room/peer)"
                     WdttTunnelManager.logUi("olcrtc_fail", fail, 99, isError = true)
+                    runCatching {
+                        val next = repo.reportOlcrtcRoomFailure(fail)
+                        val room = next?.providers?.get(repo.getOlcrtcProvider())?.room
+                        if (!room.isNullOrBlank()) {
+                            WdttTunnelManager.logUi(
+                                "olcrtc_reassign",
+                                "новый канал после failure: ${room.take(48)}",
+                                1,
+                            )
+                        }
+                    }
                     _vpnError.value = fail
                     _vpnState.value = VpnState.DISCONNECTED
                     stopVpnLocally(context)
@@ -2673,7 +2690,8 @@ class MainViewModel @Inject constructor(
         val isBootstrap = forceBootstrap || bootstrapVpnMode
         if (BuildConfig.DEBUG && repo.isOlcrtcBypass()) {
             viewModelScope.launch {
-                val olc = repo.resolveOlcrtcConfig(preferCache = false)
+                val olc = repo.syncOlcrtcLiveChannel()
+                    ?: repo.resolveOlcrtcConfig(preferCache = false)
                 val provider = repo.getOlcrtcProvider()
                 val p = olc?.providers?.get(provider)
                 if (olc == null || !olc.enabled || olc.crypto_key.length != 64 || p == null || !p.enabled || p.room.isBlank()) {
@@ -2691,9 +2709,12 @@ class MainViewModel @Inject constructor(
                     put("olcrtc_transport", p.transport.ifBlank { "datachannel" })
                     put("olcrtc_socks_host", olc.socks_host.ifBlank { "127.0.0.1" })
                     put("olcrtc_socks_port", olc.socks_port.takeIf { it > 0 } ?: 8808)
+                    if (p.auth_token.isNotBlank()) {
+                        put("olcrtc_auth_token", p.auth_token)
+                    }
                     if (repo.isOnMobileData() &&
                         olc.jitsi_https_proxy.isNotBlank() &&
-                        p.room.contains("meet.egovm.ru")
+                        (p.room.contains("meet.egovm.ru") || p.room.contains("meet.playform.ru"))
                     ) {
                         put("olcrtc_https_proxy", olc.jitsi_https_proxy)
                     }

@@ -450,7 +450,8 @@ object OlcrtcTunnelManager {
         // 198.18.0.0/15 — как sing-box fake-ip на PC; mapdns отвечает на 198.18.0.2:53.
         val hevYaml = buildString {
             appendLine("tunnel:")
-            appendLine("  mtu: 1280")
+            // 1400 ≈ KCP MTU olcrtc; 1280 резал TCP MSS без нужды.
+            appendLine("  mtu: 1400")
             appendLine("  ipv4: 198.18.0.1")
             appendLine("socks5:")
             appendLine("  port: ${params.socksPort}")
@@ -478,7 +479,7 @@ object OlcrtcTunnelManager {
         return try {
             val builder = vpnService.Builder()
                 .setSession("Silent olcrtc")
-                .setMtu(1280)
+                .setMtu(1400)
                 .addAddress("198.18.0.1", 30)
                 .addRoute("0.0.0.0", 0)
                 // Только mapdns — не 8.8.8.8 (на LTE часто мёртв; UDP в TUN тоже мёртв).
@@ -1130,6 +1131,10 @@ object OlcrtcTunnelManager {
             val pw = p.socksPass.replace("\\", "\\\\").replace("\"", "\\\"")
             lines += "  user: \"$u\""
             lines += "  pass: \"$pw\""
+        }
+        // Community URI vp8-fps=60 — выше emission rate к потолку SFU.
+        if (transport == "vp8channel") {
+            lines += listOf("vp8:", "  fps: 60", "  batch_size: 64")
         }
         lines += listOf("data: data", "")
         return lines.joinToString("\n")

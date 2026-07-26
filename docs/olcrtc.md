@@ -57,20 +57,27 @@ Android WB placeholder (`…ANDROID-REPLACE`) не отдаётся клиент
 
 `ai/olcrtc_room_agent.py` — **не** расширяет VK-агент хешей.
 
-- Не делает рандомную регистрацию (капча / ToS).
-- Пул **стабильных** аккаунтов: Playwright `storage_state` (cookies) в админке или env `OLCRTC_TELEMOST_STORAGE_STATE` / `OLCRTC_WBSTREAM_STORAGE_STATE`.
-- Цикл ~30 мин: пустые/placeholder слоты pc+android → create room → save settings → write YAML.
-- В Docker API часто нет chromium → host-скрипт:
+- Создаёт **Jitsi + Telemost + WB Stream** (не только Jitsi).
+- Не делает рандомную регистрацию. Нужен один раз `storage_state` (cookies) Яндекс/WB.
+- Chromium крутится на **хосте Улья** (systemd `silent-olcrtc-host-provision`, `:9101`), API в Docker вызывает его.
+- Цикл ~30 мин: heal `error` → догнать `target_rooms_telemost/wbstream` → Jitsi до `target_capacity` → YAML.
 
 ```powershell
+# 1) Host Playwright на VPS
+cd backend
+python scripts\deploy_olcrtc_host_provision.py
+
+# 2) Один раз залогинься локально и вставь JSON в админке «Агент комнат»
 pip install playwright
 playwright install chromium
 python scripts\olcrtc_room_provision_host.py login telemost
 python scripts\olcrtc_room_provision_host.py login wbstream
-python scripts\olcrtc_room_provision_host.py create-all
+# файлы: update/olcrtc/agent_states/*_state.json → вставить в админку
+
+# 3) В админке: агент ON → «Создать недостающие сейчас»
 ```
 
-Fallback всегда: вставить room id вручную в админке → «Записать YAML» → `deploy_olcrtc.py`.
+Fallback: room id вручную → «Записать YAML» → `deploy_olcrtc.py`.
 
 ## Админка
 

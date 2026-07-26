@@ -480,3 +480,29 @@ async def post_olcrtc_heartbeat(
         provider=body.provider or "",
         online=bool(body.online),
     )
+
+
+class OlcrtcRoomFailureBody(BaseModel):
+    room_db_id: str = ""
+    fingerprint: str = ""
+    provider: str = ""
+    device_type: str = ""
+    detail: str = ""
+
+
+@router.post("/olcrtc-room-failure")
+async def post_olcrtc_room_failure(
+    body: OlcrtcRoomFailureBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """Peer dead / SOCKS timeout → сброс sticky, комната error, следующий connect — новый канал."""
+    from app.services.olcrtc_assign import report_room_failure
+
+    return await report_room_failure(
+        db,
+        room_db_id=body.room_db_id or "",
+        fingerprint=body.fingerprint or "",
+        provider=body.provider or "",
+        device_type=body.device_type or "",
+        detail=body.detail or "",
+    )

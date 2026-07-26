@@ -165,7 +165,35 @@ async def save_room_accounts(db: AsyncSession, accounts: OlcrtcRoomAccounts) -> 
     else:
         db.add(AppSetting(key=ACCOUNTS_KEY, value=payload))
     await db.commit()
-    return await load_room_accounts(db)
+    saved = await load_room_accounts(db)
+    await sync_wbstream_auth_token_to_settings(db, saved)
+    return saved
+
+
+async def sync_wbstream_auth_token_to_settings(
+    db: AsyncSession,
+    accounts: OlcrtcRoomAccounts | None = None,
+) -> str:
+    """Достаёт JWT из WB storage_state → providers.wbstream.auth_token (для YAML + клиенты)."""
+    from app.services.olcrtc_settings import load_olcrtc_settings, save_olcrtc_settings
+
+    acc = accounts or await load_room_accounts(db)
+    tok = ""
+    for a in acc.wbstream:
+        tok = extract_wb_access_token(resolve_storage_state(a))
+        if tok:
+            break
+    if not tok:
+        return ""
+    settings = await load_olcrtc_settings(db)
+    p = settings.providers.get("wbstream")
+    if not p:
+        return tok
+    if (p.auth_token or "").strip() == tok:
+        return tok
+    p.auth_token = tok
+    await save_olcrtc_settings(db, settings)
+    return tok
 
 
 def resolve_storage_state(account: ProviderAccount) -> dict[str, Any] | None:
@@ -179,3 +207,40 @@ def resolve_storage_state(account: ProviderAccount) -> dict[str, Any] | None:
         except Exception:
             return None
     return None
+
+
+def extract_wb_access_token(storage_state: dict[str, Any] | None) -> str:
+    """JWT accessToken из Playwright storage_state (localStorage wb_auth_auth_slice)."""
+    if not storage_state:
+        return ""
+    for origin in storage_state.get("origins") or []:
+        if not isinstance(origin, dict):
+            continue
+        for item in origin.get("localStorage") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            raw = item.get("value")
+            if name == "wb_auth_auth_slice" and isinstance(raw, str) and raw.strip():
+                try:
+                    data = json.loads(raw)
+                    tok = str((data or {}).get("accessToken") or "").strip()
+                    if tok.startswith("eyJ"):
+                        return tok
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+            # иногда токен лежит напрямую
+            if isinstance(raw, str) and raw.strip().startswith("eyJ") and "access" in name.lower():
+                return raw.strip()
+    return ""
+
+
+async def resolve_wbstream_access_token(db: AsyncSession) -> str:
+    """Актуальный WB account token для auth.token (не guest)."""
+    accounts = await load_room_accounts(db)
+    for acc in accounts.wbstream:
+        state = resolve_storage_state(acc)
+        tok = extract_wb_access_token(state)
+        if tok:
+            return tok
+    return ""

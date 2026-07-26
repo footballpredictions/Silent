@@ -155,6 +155,17 @@ async def assign_public_config(
 ) -> dict[str, Any]:
     """Как public_client_config, но room из БД с cap/sticky. 503 → error_code в JSON."""
     settings = await load_olcrtc_settings(db)
+    # WB: если auth_token ещё не в settings — подтянуть из cookies аккаунта
+    wb = settings.providers.get("wbstream")
+    if wb and wb.enabled and not (wb.auth_token or "").strip():
+        try:
+            from app.services.olcrtc_room_accounts import resolve_wbstream_access_token
+
+            tok = await resolve_wbstream_access_token(db)
+            if tok:
+                wb.auth_token = tok
+        except Exception:
+            pass
     key_ok = len(settings.crypto_key) == 64
     providers_out: dict[str, Any] = {}
     assigned_slot = ""
@@ -183,6 +194,8 @@ async def assign_public_config(
             else:
                 enabled = False
                 denied = True
+        # WB: auth_token только на srv (host). Клиенту guest — иначе тот же JWT
+        # выбивает srv из комнаты (reconnect reason=carrier → wait for peer).
         providers_out[name] = {
             "enabled": enabled,
             "room": room_url if enabled else "",
@@ -219,6 +232,78 @@ async def assign_public_config(
         else "",
         "pool_denied": pool_denied,
         "pool_denied_detail": NO_ROOM_DETAIL if pool_denied else "",
+    }
+
+
+async def report_room_failure(
+    db: AsyncSession,
+    *,
+    room_db_id: str = "",
+    fingerprint: str = "",
+    provider: str = "",
+    device_type: str = "",
+    detail: str = "",
+) -> dict[str, Any]:
+    """Клиент: peer dead / timeout → сброс sticky и пометка комнаты error.
+
+    Следующий /olcrtc-config выдаст другую active-комнату (если есть),
+    а не залипший протухший Telemost/Jitsi id.
+    """
+    await ensure_rooms_synced(db)
+    cleared_sticky = 0
+    marked = False
+    rid = None
+    if (room_db_id or "").strip():
+        try:
+            rid = uuid.UUID(room_db_id.strip())
+        except ValueError:
+            rid = None
+    if rid:
+        room = await db.get(OlcrtcRoom, rid)
+        if room:
+            room.status = "error"
+            room.online_count = 0
+            room.last_error = (detail or "client peer dead")[:500]
+            marked = True
+            from sqlalchemy import delete
+
+            from app.models.olcrtc_room import OlcrtcRoomSticky
+
+            res = await db.execute(
+                delete(OlcrtcRoomSticky).where(OlcrtcRoomSticky.room_id == rid)
+            )
+            cleared_sticky += int(res.rowcount or 0)
+    fp = fingerprint.strip()
+    prov = (provider or "").strip().lower()
+    dt = normalize_device_type(device_type) or "pc"
+    if fp and prov:
+        from sqlalchemy import delete
+
+        from app.models.olcrtc_room import OlcrtcRoomSticky
+
+        res = await db.execute(
+            delete(OlcrtcRoomSticky).where(
+                OlcrtcRoomSticky.fingerprint == fp[:128],
+                OlcrtcRoomSticky.provider == prov,
+                OlcrtcRoomSticky.device_type == dt,
+            )
+        )
+        cleared_sticky += int(res.rowcount or 0)
+    await db.commit()
+    logger.warning(
+        "olcrtc room failure room=%s provider=%s fp=%s marked=%s sticky=%s detail=%s",
+        room_db_id,
+        prov,
+        fp[:12],
+        marked,
+        cleared_sticky,
+        (detail or "")[:80],
+    )
+    return {
+        "ok": True,
+        "marked_error": marked,
+        "sticky_cleared": cleared_sticky,
+        "hint": "fetch /olcrtc-config again for a new room",
     }
 
 

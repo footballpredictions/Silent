@@ -95,9 +95,11 @@ async def create_telemost_room(storage_state: dict[str, Any], *, headless: bool 
             context = await browser.new_context(storage_state=storage_state)
             page = await context.new_page()
             await page.goto("https://telemost.yandex.ru/", wait_until="domcontentloaded", timeout=60000)
-            # Кнопки UI меняются — несколько селекторов
+            await page.wait_for_timeout(2000)
             created = False
             for sel in (
+                '[data-testid="create-call-button"]',
+                'button:has-text("Создать видеовстречу")',
                 'button:has-text("Создать встречу")',
                 'button:has-text("Новая встреча")',
                 'a:has-text("Создать встречу")',
@@ -106,12 +108,18 @@ async def create_telemost_room(storage_state: dict[str, Any], *, headless: bool 
             ):
                 try:
                     loc = page.locator(sel).first
-                    if await loc.count() > 0:
-                        await loc.click(timeout=5000)
+                    if await loc.count() > 0 and await loc.is_visible():
+                        await loc.click(timeout=8000)
                         created = True
                         break
                 except Exception:
                     continue
+            if not created:
+                try:
+                    await page.get_by_text("Создать видеовстречу", exact=False).first.click(timeout=5000)
+                    created = True
+                except Exception:
+                    pass
             if not created:
                 await browser.close()
                 return ProvisionResult(
@@ -119,16 +127,26 @@ async def create_telemost_room(storage_state: dict[str, Any], *, headless: bool 
                     provider="telemost",
                     message="не найдена кнопка создания встречи (UI Яндекса изменился или нет логина)",
                 )
-            await page.wait_for_timeout(4000)
+            # ждём редирект на /j/<id>
+            room_id = ""
             url = page.url
-            room_id = _extract_telemost_id(url)
-            # Иногда ID появляется в буфере/шаринге
-            if not room_id or room_id == "telemost.yandex.ru":
-                for sel in ('input[readonly]', 'input[value*="/j/"]', '[data-testid="meeting-link"]'):
+            for _ in range(20):
+                await page.wait_for_timeout(500)
+                url = page.url
+                room_id = _extract_telemost_id(url)
+                if room_id and re.fullmatch(r"\d{8,}", room_id):
+                    break
+            if not room_id or not re.fullmatch(r"\d{8,}", room_id):
+                for sel in (
+                    'input[readonly]',
+                    'input[value*="/j/"]',
+                    '[data-testid="meeting-link"]',
+                    'input[type="text"]',
+                ):
                     try:
                         val = await page.locator(sel).first.input_value(timeout=2000)
                         room_id = _extract_telemost_id(val) or room_id
-                        if room_id and room_id.isdigit():
+                        if room_id and re.fullmatch(r"\d{8,}", room_id):
                             break
                     except Exception:
                         continue
@@ -168,7 +186,6 @@ async def create_wbstream_room(storage_state: dict[str, Any], *, headless: bool 
             browser = await p.chromium.launch(headless=headless)
             context = await browser.new_context(storage_state=storage_state)
             page = await context.new_page()
-            # Публичный вход stream.wb.ru / meetings
             for start in (
                 "https://stream.wb.ru/",
                 "https://stream-meetup.wildberries.ru/",
@@ -178,8 +195,11 @@ async def create_wbstream_room(storage_state: dict[str, Any], *, headless: bool 
                     break
                 except Exception:
                     continue
+            await page.wait_for_timeout(2500)
             created = False
             for sel in (
+                'button:has-text("Новая видеовстреча")',
+                'text=Новая видеовстреча',
                 'button:has-text("Создать")',
                 'button:has-text("Новая комната")',
                 'button:has-text("Create")',
@@ -187,12 +207,20 @@ async def create_wbstream_room(storage_state: dict[str, Any], *, headless: bool 
             ):
                 try:
                     loc = page.locator(sel).first
-                    if await loc.count() > 0:
-                        await loc.click(timeout=5000)
+                    if await loc.count() > 0 and await loc.is_visible():
+                        await loc.click(timeout=8000)
                         created = True
                         break
                 except Exception:
                     continue
+            if not created:
+                for label in ("Новая видеовстреча", "Новая встреча", "Создать встречу"):
+                    try:
+                        await page.get_by_text(label, exact=False).first.click(timeout=5000)
+                        created = True
+                        break
+                    except Exception:
+                        continue
             if not created:
                 await browser.close()
                 return ProvisionResult(
@@ -200,9 +228,18 @@ async def create_wbstream_room(storage_state: dict[str, Any], *, headless: bool 
                     provider="wbstream",
                     message="не найдена кнопка создания комнаты WB (нужен логин / UI изменился)",
                 )
-            await page.wait_for_timeout(4000)
+            room_id = ""
             url = page.url
-            room_id = _extract_wb_id(url)
+            for _ in range(24):
+                await page.wait_for_timeout(500)
+                url = page.url
+                room_id = _extract_wb_id(url)
+                if room_id and re.search(
+                    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                    room_id,
+                    re.I,
+                ):
+                    break
             await browser.close()
             if not room_id or "REPLACE" in room_id.upper():
                 return ProvisionResult(

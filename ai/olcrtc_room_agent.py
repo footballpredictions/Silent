@@ -59,7 +59,7 @@ TARGET_CAPACITY = 1100
 TARGET_ROOMS_TELEMOST = 4
 TARGET_ROOMS_WBSTREAM = 4
 MAX_CREATE_PER_CYCLE = 24
-DEFAULT_MAX_CLIENTS = 25
+DEFAULT_MAX_CLIENTS = 1000
 
 
 @dataclass
@@ -209,7 +209,19 @@ async def _provision_playwright(
     _log(state, f"{provider}/{slot_label}: creating room (host/local)…")
     result = await create_room_best(provider, storage, headless=True)
     if not result.ok or not result.room_id:
-        state.last_error = f"{provider}/{slot_label}: fail — {result.message}"
+        raw = (result.message or "").strip()
+        hint = raw
+        low = raw.lower()
+        if "all connection attempts failed" in low or "err_connection" in low:
+            hint = (
+                f"{raw} — Playwright на хосте не достучался до сайта "
+                f"{'stream.wb.ru' if provider == 'wbstream' else 'telemost.yandex.ru'}. "
+                f"Проверьте cookies аккаунта (Сохранить аккаунты), сеть Улья и "
+                f"silent-olcrtc-host-provision (systemctl status)."
+            )
+        elif "storage_state" in low or "нет storage" in low:
+            hint = f"{raw} — заново сохраните storage_state в админке (аккаунт протух)."
+        state.last_error = f"{provider}/{slot_label}: ошибка — {hint}"
         _log(state, state.last_error)
         return False
     cell = await pick_cell_for_new_room(db)

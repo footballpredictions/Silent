@@ -192,13 +192,19 @@ async def reconcile_rooms_from_settings(
             if row:
                 old = (row.room_url or "").strip()
                 new = url.strip()
-                row.max_clients = max(1, int(slot.max_clients or row.max_clients or 12))
+                new_max = max(1, int(slot.max_clients or row.max_clients or 12))
+                touched = False
+                if int(row.max_clients or 0) != new_max:
+                    row.max_clients = new_max
+                    touched = True
                 row.device_types = dts
                 row.slot_label = slot_id
                 if p.enabled and row.status == "offline":
                     row.status = "active"
-                if not p.enabled:
+                    touched = True
+                if not p.enabled and row.status != "offline":
                     row.status = "offline"
+                    touched = True
                 if old != new:
                     row.room_url = new
                     row.online_count = 0
@@ -208,8 +214,24 @@ async def reconcile_rooms_from_settings(
                     sticky_cleared += await _clear_sticky_for_provider_slot(
                         db, provider=name, slot_label=slot_id
                     )
+                    touched = True
+                # Хвосты агента pc-telemost-2, pc-wbstream-3 — тот же slot → тот же max
+                for sib in existing:
+                    if (
+                        sib.provider == name
+                        and sib.slot_label == slot_id
+                        and sib.id != row.id
+                        and sib.status in ("active", "provisioning", "offline", "error")
+                        and int(sib.max_clients or 0) != new_max
+                    ):
+                        sib.max_clients = new_max
+                        touched = True
+                        if sib.unit_name not in changed_units:
+                            changed_units.append(sib.unit_name)
+                if touched:
                     updated += 1
-                    changed_units.append(row.unit_name)
+                    if row.unit_name not in changed_units:
+                        changed_units.append(row.unit_name)
                 by_unit[row.unit_name] = row
             else:
                 unit = primary_unit

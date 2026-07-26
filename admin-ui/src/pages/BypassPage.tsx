@@ -352,7 +352,14 @@ function OlcrtcSection({ token }: { token: string }) {
           Вариант 2 включён (отдавать конфиг клиентам)
         </label>
         <span className="text-xs text-[#666]">
-          srv: <span className="text-[#aaa]">{cfg.srv_status || 'unknown'}</span>
+          srv:{' '}
+          <span className="text-[#aaa]">
+            {cfg.srv_status === 'pending_apply'
+              ? 'ожидает apply на VPS'
+              : cfg.srv_status === 'ok' || cfg.srv_status === 'running'
+                ? 'ок'
+                : cfg.srv_status || 'неизвестно'}
+          </span>
         </span>
         <button
           type="button"
@@ -640,10 +647,10 @@ function PoolRoomsSection({ token }: { token: string }) {
         </button>
       </div>
       <p className="text-xs text-[#666]">
-        Это общий пул, не «комната на одного пользователя». Колонка online — сколько
-        клиентов сейчас сидят на комнате / лимит (например 0/25 = никто онлайн, до 25
-        одновременно). Telemost/WB
-        обычно 1–2 на платформу. Sticky + draining. Unit:{' '}
+        online/max — сколько клиентов онлайн сейчас / лимит одновременных на эту комнату.
+        Unit’ы вида <code className="text-[#888]">pc-telemost-2</code> — доп. комнаты агента
+        (не хвосты split-tunnel). Max правится в слотах провайдера выше → Сохранить (подтянется
+        и на -2/-3). Sticky + drain. systemd:{' '}
         <code className="text-[#888]">olcrtc@unit_name</code>.
       </p>
       {metrics ? (

@@ -1743,15 +1743,20 @@ async def put_olcrtc_bypass(
         try:
             files = await write_all_unit_yaml_from_db(db)
             saved.srv_status = "pending_apply"
+            changed = ", ".join(recon.get("changed_units") or []) or "—"
             saved.srv_message = (
-                f"rooms reconciled updated={recon.get('updated')} created={recon.get('created')}; "
-                f"yaml {len(files)} units; run apply_olcrtc_units_from_db.py "
-                f"(changed: {', '.join(recon.get('changed_units') or [])})"
+                f"Пул обновлён: изменено {recon.get('updated') or 0}, "
+                f"создано {recon.get('created') or 0}; YAML для {len(files)} unit’ов записан. "
+                f"На сервере выполните: python scripts/apply_olcrtc_units_from_db.py "
+                f"(иначе srv останется на старом канале). Затронуты: {changed}"
             )
             await save_olcrtc_settings(db, saved)
         except Exception as e:
             saved.srv_status = "pending_apply"
-            saved.srv_message = f"rooms reconciled but yaml failed: {e}"
+            saved.srv_message = (
+                f"Пул обновлён, но запись YAML не удалась: {e}. "
+                f"Проверьте права на /opt/silent-vpn/olcrtc/"
+            )
             await save_olcrtc_settings(db, saved)
     out = saved.to_dict()
     out["reconcile"] = recon
@@ -1830,8 +1835,11 @@ async def apply_olcrtc_server_yaml(
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
     s.srv_message = (
-        f"yaml written ({len(paths)} units); reconcile={recon}; "
-        "run: python scripts/apply_olcrtc_units_from_db.py"
+        f"YAML записан ({len(paths)} unit’ов). "
+        f"Пул: изменено {recon.get('updated') or 0}, создано {recon.get('created') or 0}, "
+        f"sticky сброшено {recon.get('sticky_cleared') or 0}. "
+        f"Чтобы поднять srv, на VPS: python scripts/apply_olcrtc_units_from_db.py "
+        f"(без этого клиенты получат новые room id, а процесс — старые)."
     )
     s.srv_status = "pending_apply"
     await save_olcrtc_settings(db, s)

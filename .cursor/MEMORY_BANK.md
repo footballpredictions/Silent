@@ -576,7 +576,7 @@ cd pc; npm install; npm run dev
 
 - Симптомы: `remote not ready (EOF)` в логе при живом VPN; после `peer … closed` / звонка / Wi‑Fi↔LTE — без reconnect, VPN-иконка «залипает»; QS-плитка не включала/выключала olcrtc.
 - Фикс: `OlcrtcTunnelManager` — peer_closed/process_exit → `sessionDeadHandler`; transient stream EOF не красные при `tunnelReady`; `SilentVpnService.recoverOlcrtcAfterNetwork` (сеть/звонок/watchdog); `VpnSessionState` + `VpnTileConnect` + tile combine на olcrtc; UI → CONNECTING при обрыве.
-- Debug APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`. Push не делался.
+- Debug APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`. Push: `android` `8efee00`; backend vp8 YAML `main` `fe2d6f5`; `pc` vp8 уже был `358569f`.
 
 ### 2026-07-26 — libolcrtc CGO: netlinkrib permission denied
 

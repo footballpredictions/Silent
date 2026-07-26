@@ -1700,8 +1700,8 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
   if (vpnConnectInFlight) {
     sendLog('[VPN] connect: уже выполняется, без перезапуска')
-    ensureVpnReadyEvent(sendLog)
-    return { success: true, skipped: true }
+    // Не врать UI success — иначе olcrtc «готов», пока SOCKS ещё нет.
+    return { error: 'подключение уже выполняется', skipped: true }
   }
 
   if (!wantBootstrap && vpnBootstrapMode) {
@@ -1725,6 +1725,8 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   try {
     if (wantOlcrtc) {
       if (vpnSessionActive) await cleanupVpnAsync()
+      // После WG/sing-box cleanup — короткая пауза, иначе ICE в 172.19.0.1.
+      await new Promise((r) => setTimeout(r, 400))
       lastVpnConnectConfig = config
       vpnSessionActive = true
       vpnOlcrtcMode = true

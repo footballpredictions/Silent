@@ -399,10 +399,12 @@ export function buildOlcrtcConnectPayload(
     olcrtc_provider: provider,
     olcrtc_room: p.room,
     olcrtc_crypto_key: cfg.crypto_key,
-    olcrtc_transport: p.transport || 'datachannel',
+    olcrtc_transport:
+      p.transport ||
+      (provider === OLCRTC_TELEMOST || provider === OLCRTC_WBSTREAM ? 'vp8channel' : 'datachannel'),
     olcrtc_socks_host: cfg.socks_host || '127.0.0.1',
     olcrtc_socks_port: cfg.socks_port || 8808,
-    ...(p.auth_token ? { olcrtc_auth_token: p.auth_token } : {}),
+    // auth_token WB — только на srv; клиент guest (иначе carrier reconnect).
     ...extra,
   }
 }

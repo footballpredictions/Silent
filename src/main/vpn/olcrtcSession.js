@@ -2,16 +2,28 @@
  * Debug-only: olcrtc cnc (SOCKS5) + sing-box TUN → SOCKS.
  * Не трогает WDTT/WireGuard.
  */
-const { spawn } = require('child_process')
+const { spawn, execSync } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 const net = require('net')
 const { app } = require('electron')
+const { prefetchTelemost, prefetchWbstream } = require('./olcrtcPrefetch')
 
 let olcrtcProc = null
 let singboxProc = null
 let sessionActive = false
 let ready = false
+/** Последние строки stderr olcrtc — на timeout показать причину. */
+let lastOlcrtcLines = []
+
+function pushOlcrtcLine(line) {
+  lastOlcrtcLines.push(line)
+  if (lastOlcrtcLines.length > 40) lastOlcrtcLines.shift()
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms))
+}
 
 function findExe(names) {
   const files = Array.isArray(names) ? names : [names]
@@ -155,18 +167,18 @@ function stopOlcrtcSession(log) {
   killProc(olcrtcProc, 'olcrtc', log)
   olcrtcProc = null
   try {
-    require('child_process').execSync('taskkill /F /IM olcrtc.exe /T', {
-      stdio: 'ignore',
-      windowsHide: true,
-    })
+    execSync('taskkill /F /IM olcrtc.exe /T', { stdio: 'ignore', windowsHide: true })
   } catch { /* ignore */ }
   try {
-    require('child_process').execSync('taskkill /F /IM sing-box.exe /T', {
-      stdio: 'ignore',
-      windowsHide: true,
-    })
+    execSync('taskkill /F /IM sing-box.exe /T', { stdio: 'ignore', windowsHide: true })
   } catch { /* ignore */ }
+  // Дать Win снять TUN 172.19.0.1 — иначе ICE ходит в мёртвый iface → unreachable.
   log?.('[olcrtc] session stopped')
+}
+
+async function stopOlcrtcSessionAndSettle(log) {
+  stopOlcrtcSession(log)
+  await sleep(600)
 }
 
 let onSessionDead = null
@@ -199,28 +211,28 @@ function renderClientYaml(config) {
   const provider = String(config.olcrtc_provider || config.olcrtcProvider || 'telemost')
   const room = String(config.olcrtc_room || config.olcrtcRoom || '').trim()
   const key = String(config.olcrtc_crypto_key || config.olcrtcCryptoKey || '').trim()
-  const transport = String(config.olcrtc_transport || config.olcrtcTransport || 'datachannel').trim()
+  let transport = String(config.olcrtc_transport || config.olcrtcTransport || '').trim()
+  if (!transport) {
+    transport =
+      provider === 'telemost' || provider === 'wbstream' ? 'vp8channel' : 'datachannel'
+  }
   const socksHost = String(config.olcrtc_socks_host || '127.0.0.1')
   const socksPort = Number(config.olcrtc_socks_port || 8808)
-  const authToken = String(config.olcrtc_auth_token || config.olcrtcAuthToken || '').trim()
+  // JWT WB только на srv — клиенту guest. Не прокидывать auth_token.
   if (!room || key.length !== 64) {
     throw new Error('olcrtc: нужны room и crypto_key (64 hex) из /api/vpn/olcrtc-config')
   }
-  const authLines = ['auth:', `  provider: ${provider}`]
-  if (authToken) {
-    const esc = authToken.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-    authLines.push(`  token: "${esc}"`)
-  }
   return [
     'mode: cnc',
-    ...authLines,
+    'auth:',
+    `  provider: ${provider}`,
     'room:',
     `  id: "${room}"`,
     'crypto:',
     `  key: "${key}"`,
     'net:',
     `  transport: ${transport}`,
-    '  dns: "8.8.8.8:53"',
+    '  dns: "1.1.1.1:53"',
     'socks:',
     `  host: "${socksHost}"`,
     `  port: ${socksPort}`,
@@ -307,7 +319,9 @@ function renderSingboxConfig(socksHost, socksPort) {
  * @returns {Promise<{ success?: boolean, error?: string }>}
  */
 async function beginOlcrtcSession(config, { log, onReady } = {}) {
-  stopOlcrtcSession(log)
+  // Полный сброс + пауза: иначе ICE цепляется к 172.19.0.1 (старый sing-box TUN).
+  await stopOlcrtcSessionAndSettle(log)
+  lastOlcrtcLines = []
   const olcrtcPath = findExe(['olcrtc.exe', 'olcrtc'])
   if (!olcrtcPath) {
     return {
@@ -325,6 +339,8 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
 
   const socksHost = String(config.olcrtc_socks_host || '127.0.0.1')
   const socksPort = Number(config.olcrtc_socks_port || 8808)
+  const provider = String(config.olcrtc_provider || 'telemost').toLowerCase()
+  const room = String(config.olcrtc_room || '').trim()
   let yaml
   try {
     yaml = renderClientYaml(config)
@@ -337,26 +353,52 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
   fs.mkdirSync(dataDir, { recursive: true })
   const yamlPath = path.join(tmp, 'silent-olcrtc-client.yaml')
   const sbPath = path.join(tmp, 'silent-olcrtc-singbox.json')
-  // Absolute data path; без debug:true — меньше ICE/XMPP TRACE в лог.
   yaml = yaml.replace(/\ndata: data\n/, `\ndata: "${dataDir.replace(/\\/g, '/')}"\n`)
   fs.writeFileSync(yamlPath, yaml, 'utf8')
   fs.writeFileSync(sbPath, renderSingboxConfig(socksHost, socksPort), 'utf8')
 
+  let connFile = null
+  let staticHosts = {}
+  if (provider === 'telemost') {
+    const pre = await prefetchTelemost(room, dataDir, log)
+    connFile = pre.connFile || null
+    staticHosts = pre.staticHosts || {}
+  } else if (provider === 'wbstream') {
+    const pre = await prefetchWbstream(room, dataDir, log)
+    connFile = pre.connFile || null
+    staticHosts = pre.staticHosts || {}
+  }
+
+  const env = { ...process.env }
+  if (connFile && fs.existsSync(connFile)) {
+    if (provider === 'telemost') env.OLCRTC_TELEMOST_CONN_FILE = connFile
+    if (provider === 'wbstream') env.OLCRTC_WBSTREAM_CONN_FILE = connFile
+  }
+  const hostPairs = Object.entries(staticHosts)
+  if (hostPairs.length) {
+    env.OLCRTC_STATIC_HOSTS = hostPairs.map(([h, ip]) => `${h}=${ip}`).join(';')
+    log?.(`[olcrtc] STATIC_HOSTS=${hostPairs.length}`)
+  }
+
   sessionActive = true
   ready = false
   log?.(`[olcrtc] start ${olcrtcPath}`)
-  log?.(`[olcrtc] provider=${config.olcrtc_provider || 'telemost'} room=${String(config.olcrtc_room || '').slice(0, 60)} yaml=${yamlPath}`)
+  log?.(
+    `[olcrtc] provider=${provider} room=${room.slice(0, 60)} prefetch=${connFile ? 'yes' : 'no'} yaml=${yamlPath}`,
+  )
 
   olcrtcProc = spawn(olcrtcPath, [yamlPath], {
     cwd: dataDir,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
+    env,
   })
   let earlyExitCode = null
   let peerPendingLogged = false
   olcrtcProc.stdout?.on('data', (buf) => {
     const line = String(buf).trim()
     if (!line) return
+    pushOlcrtcLine(line)
     if (
       /\[ice\] TRACE:|\[sctp\] TRACE:|bufferedAmount|\[xmpp|Failed to send packet|unreachable network|wsasendto/i.test(
         line,
@@ -369,8 +411,14 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
   olcrtcProc.stderr?.on('data', (buf) => {
     const line = String(buf).trim()
     if (!line) return
+    pushOlcrtcLine(line)
+    // Важные вехи — всегда в UI
+    if (/SOCKS5 server listening|using prefetched|telemost:|wbstream:|vp8channel: peer latched|session .+ opened/i.test(line)) {
+      log?.(`[olcrtc] ${line.slice(0, 300)}`)
+      return
+    }
     if (
-      /\[ice\] TRACE:|\[sctp\] TRACE:|bufferedAmount|service-unavailable|extdisco|disco_1|\[xmpp|Failed to send packet|unreachable network|wsasendto|Ignore nominate|Failed to ping without candidate pairs|Connection is not possible yet|remote not ready|leave-muc handshake|Failed to accept RTCP|Failed to listen udp|tunnel to dns\.google|tunnel to api2\.cursor\.sh|ICE connection state changed|peer connection state changed|Setting new connection state|bridge open sctp|session .+ opened|SOCKS5 server listening/i.test(
+      /\[ice\] TRACE:|\[sctp\] TRACE:|bufferedAmount|service-unavailable|extdisco|disco_1|\[xmpp|Failed to send packet|unreachable network|wsasendto|Ignore nominate|Failed to ping without candidate pairs|Connection is not possible yet|remote not ready|leave-muc handshake|Failed to accept RTCP|Failed to listen udp|tunnel to dns\.google|tunnel to api2\.cursor\.sh|ICE connection state changed|peer connection state changed|Setting new connection state|bridge open sctp|failed to get server reflexive|failed to allocate on TURN/i.test(
         line,
       )
     ) {
@@ -383,7 +431,6 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
       }
       return
     }
-    // olcrtc пишет INFO в stderr — не помечать как :err
     if (/\bINFO\b|^\d{4}\/\d{2}\/\d{2}/.test(line) && !/\b(ERROR|FATAL|WARN)\b/i.test(line)) {
       log?.(`[olcrtc] ${line.slice(0, 300)}`)
       return
@@ -405,13 +452,15 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
     }
   })
 
-  // SOCKS поднимается раньше peer; dial-probe ждёт реальную готовность (без долгого «прогрева» после ready).
+  // SOCKS только ПОСЛЕ peer (bringUpLink) — ждём до 90с.
   const socksUp = await waitForPort(socksHost, socksPort, 90_000, log)
   if (!socksUp) {
+    const tail = lastOlcrtcLines.slice(-8).join(' | ').slice(0, 400)
+    if (tail) log?.(`[olcrtc] last: ${tail}`)
     const hint =
       earlyExitCode != null
-        ? `olcrtc вышел с кодом ${earlyExitCode} до SOCKS (нет peer/room/key или Jitsi недоступен)`
-        : `olcrtc SOCKS не поднялся на ${socksHost}:${socksPort} (ждём peer srv в комнате)`
+        ? `olcrtc вышел с кодом ${earlyExitCode} до SOCKS (peer/room/auth)`
+        : `olcrtc SOCKS не поднялся на ${socksHost}:${socksPort} (нет peer srv или ICE в мёртвый TUN — выключите VPN и повторите)`
     stopOlcrtcSession(log)
     return { error: hint }
   }

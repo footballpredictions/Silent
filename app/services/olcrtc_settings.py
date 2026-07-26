@@ -16,29 +16,12 @@ from app.models import AppSetting
 OLCRTC_SETTINGS_KEY = "olcrtc_settings"
 
 DEFAULT_TRANSPORTS = {
-    "jitsi": "datachannel",
     "wbstream": "vp8channel",
     "telemost": "vp8channel",
 }
 
-PROVIDERS = ("jitsi", "wbstream", "telemost")
-
-# MVP: две Jitsi-комнаты — разные data-dir + разные room.
-# Android: meet.playform.ru (meet.egovm.ru на LTE часто DPI / handshake fail).
-DEFAULT_JITSI_ROOMS = [
-    {
-        "id": "pc",
-        "url": "https://meet.egovm.ru/SilentVpnOlcrtcHive",
-        "max_clients": 4,
-        "device_types": ["pc"],
-    },
-    {
-        "id": "android",
-        "url": "https://meet.playform.ru/SilentVpnOlcrtcHiveAndroid",
-        "max_clients": 4,
-        "device_types": ["android"],
-    },
-]
+# Jitsi убран (DPI LTE / meet.*). Остались WB Stream + Яндекс Телемост.
+PROVIDERS = ("telemost", "wbstream")
 
 # Placeholder room IDs — заменить свежими с stream.wb.ru / telemost.yandex.ru
 # (или через olcrtc_room_agent). PC и Android обязаны быть разными.
@@ -73,7 +56,6 @@ DEFAULT_TELEMOST_ROOMS = [
 ]
 
 _DEFAULT_ROOMS_BY_PROVIDER: dict[str, list[dict[str, Any]]] = {
-    "jitsi": DEFAULT_JITSI_ROOMS,
     "wbstream": DEFAULT_WBSTREAM_ROOMS,
     "telemost": DEFAULT_TELEMOST_ROOMS,
 }
@@ -101,6 +83,8 @@ class OlcrtcProviderConfig:
     room: str = ""
     transport: str = "datachannel"
     rooms: list[OlcrtcRoomSlot] = field(default_factory=list)
+    # WB Stream: JWT аккаунта (не guest). Нужен когда комната запрещает гостей / для datachannel.
+    auth_token: str = ""
 
     def effective_rooms(self) -> list[OlcrtcRoomSlot]:
         if self.rooms:
@@ -130,6 +114,7 @@ class OlcrtcSettings:
                     "room": p.room,
                     "transport": p.transport,
                     "rooms": [r.to_dict() for r in p.rooms],
+                    "auth_token": p.auth_token or "",
                 }
                 for name, p in self.providers.items()
             },
@@ -242,6 +227,7 @@ def parse_settings(raw: dict[str, Any] | None) -> OlcrtcSettings:
             transport=str(src.get("transport") or DEFAULT_TRANSPORTS[name]).strip()
             or DEFAULT_TRANSPORTS[name],
             rooms=rooms,
+            auth_token=str(src.get("auth_token") or "").strip(),
         )
     key = str(data.get("crypto_key") or "").strip()
     return OlcrtcSettings(
@@ -335,6 +321,8 @@ def public_client_config(
         # Клиенту отдаём нормализованный id (telemost: цифры без URL)
         if enabled and room_url:
             room_url = normalize_room_id(name, room_url)
+        # WB auth_token — только srv YAML (host). В public config не отдаём:
+        # один JWT на srv+cnc → carrier reconnect, клиент wait for peer.
         providers_out[name] = {
             "enabled": enabled,
             "room": room_url if (settings.enabled and p.enabled and key_ok and enabled) else "",
@@ -350,11 +338,8 @@ def public_client_config(
         "socks_port": 8808,
         "assigned_slot": assigned_slot or dt or "",
         "device_type": dt,
-        # LTE: HTTP CONNECT на :8080 (18443 часто режется оператором). olcrtc может игнор. env —
-        # основной обход DPI: android-комната на meet.playform.ru / WB / Telemost.
-        "jitsi_https_proxy": "http://132.243.234.162:8080"
-        if (settings.enabled and key_ok)
-        else "",
+        # Legacy field (Jitsi HTTPS_PROXY) — пусто; TM/WB не используют Улей-прокси.
+        "jitsi_https_proxy": "",
     }
 
 
@@ -411,7 +396,7 @@ def render_server_yaml(
     """YAML для olcrtc mode=srv — ровно один провайдер + один слот.
 
     Failover нескольких провайдеров в одном процессе нельзя: srv залипает на
-    первом живом (jitsi) и клиент на telemost/wb ждёт peer вечно.
+    первом живом и клиент на другом провайдере ждёт peer вечно.
     Unit: olcrtc@pc-telemost ← server-pc-telemost.yaml
     """
     if not settings.crypto_key or len(settings.crypto_key) != 64:
@@ -451,19 +436,29 @@ def render_server_yaml(
             + (f" slot={slot_id}" if slot_id else "")
         )
 
-    # Один профиль на unit — без «залипания» на jitsi
+    # Один профиль на unit — без залипания на чужом провайдере
     pname, prov, room_url = profiles[0]
+    pcfg = settings.providers.get(prov)
     transport = (
-        settings.providers.get(prov).transport  # type: ignore[union-attr]
-        if settings.providers.get(prov)
+        pcfg.transport
+        if pcfg
         else DEFAULT_TRANSPORTS.get(prov, "datachannel")
     )
+    auth_token = (pcfg.auth_token or "").strip() if pcfg else ""
     if slot_id and provider:
         data_dir = f"data-{slot_id}-{provider}"
     elif slot_id:
         data_dir = f"data-{slot_id}"
     else:
         data_dir = "data"
+
+    auth_block = [
+        "    auth:",
+        f"      provider: {prov}",
+    ]
+    if auth_token:
+        esc = auth_token.replace("\\", "\\\\").replace('"', '\\"')
+        auth_block.append(f'      token: "{esc}"')
 
     lines = [
         "mode: srv",
@@ -474,8 +469,7 @@ def render_server_yaml(
         f"data: {data_dir}",
         "profiles:",
         f"  - name: {pname}",
-        "    auth:",
-        f"      provider: {prov}",
+        *auth_block,
         "    room:",
         f'      id: "{room_url}"',
         "    net:",
@@ -490,7 +484,7 @@ def render_server_yaml(
 
 
 def collect_unit_ids(settings: OlcrtcSettings) -> list[str]:
-    """systemd instance ids: pc-jitsi, pc-telemost, android-jitsi, …"""
+    """systemd instance ids: pc-telemost, android-wbstream, …"""
     out: list[str] = []
     for sid in collect_pool_slot_ids(settings):
         for name in PROVIDERS:
@@ -511,7 +505,7 @@ def collect_unit_ids(settings: OlcrtcSettings) -> list[str]:
 
 
 def render_all_server_yaml_files(settings: OlcrtcSettings) -> dict[str, str]:
-    """unit_id → yaml. Отдельный srv на (slot, provider); legacy pc/android = *-jitsi."""
+    """unit_id → yaml. Отдельный srv на (slot, provider); legacy pc/android → *-telemost."""
     out: dict[str, str] = {}
     for uid in collect_unit_ids(settings):
         # uid = "{slot}-{provider}"
@@ -520,19 +514,19 @@ def render_all_server_yaml_files(settings: OlcrtcSettings) -> dict[str, str]:
             continue
         sid, prov = parts[0], parts[1]
         out[uid] = render_server_yaml(settings, slot_id=sid, provider=prov)
-    if "pc-jitsi" in out:
-        out["pc"] = out["pc-jitsi"]
-        out["default"] = out["pc-jitsi"]
-    elif "pc-telemost" in out:
+    if "pc-telemost" in out:
         out["pc"] = out["pc-telemost"]
         out["default"] = out["pc-telemost"]
+    elif "pc-wbstream" in out:
+        out["pc"] = out["pc-wbstream"]
+        out["default"] = out["pc-wbstream"]
     elif out:
         first = next(iter(out.values()))
         out["default"] = first
-    if "android-jitsi" in out:
-        out["android"] = out["android-jitsi"]
-    elif "android-telemost" in out:
+    if "android-telemost" in out:
         out["android"] = out["android-telemost"]
+    elif "android-wbstream" in out:
+        out["android"] = out["android-wbstream"]
     if not out:
         out["default"] = render_server_yaml(settings)
     return out
@@ -558,11 +552,18 @@ def render_client_yaml(
     if not slot or not slot.url.strip():
         raise ValueError(f"room empty for {provider}")
     room_id = normalize_room_id(provider, slot.url)
+    auth_lines = [
+        "auth:",
+        f"  provider: {provider}",
+    ]
+    tok = (p.auth_token or "").strip()
+    if tok:
+        esc = tok.replace("\\", "\\\\").replace('"', '\\"')
+        auth_lines.append(f'  token: "{esc}"')
     return "\n".join(
         [
             "mode: cnc",
-            "auth:",
-            f"  provider: {provider}",
+            *auth_lines,
             "room:",
             f'  id: "{room_id}"',
             "crypto:",

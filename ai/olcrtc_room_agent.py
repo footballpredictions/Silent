@@ -1,19 +1,17 @@
-"""Агент провижининга комнат olcrtc под массу (1000+).
+"""Агент провижининга комнат olcrtc (Jitsi + Telemost + WB Stream).
 
 Не связан с VK-агентом хешей. Не делает рандомную регистрацию.
 
 Масштаб:
-- Jitsi: создаёт URL без аккаунта (guest room name) → основной путь на массу.
-- WB/Telemost: только через Playwright storage_state стабильных аккаунтов.
-- Держит capacity_total >= target_capacity (дефолт 1100 = 1000 online + ~10%).
-- free_ratio — доп. запас под нагрузкой (когда online > 0).
+- Jitsi: guest URL без аккаунта → основной объём до target_capacity.
+- Telemost / WB: Playwright на host-сервисе (Chromium вне Docker) + storage_state.
+- Держит минимум active-комнат на TM/WB (target_rooms_*), heal status=error.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -41,22 +39,27 @@ from app.services.olcrtc_rooms_db import (
     write_all_unit_yaml_from_db,
 )
 from app.services.olcrtc_assign import pick_cell_for_new_room, reconcile_stale_online
-from ai.olcrtc_room_provision import create_room, playwright_available
+from ai.olcrtc_host_provision_client import (
+    create_room_best,
+    host_provision_status,
+    push_storage_to_host,
+)
+from ai.olcrtc_room_provision import playwright_available
 
 logger = logging.getLogger(__name__)
 
 AGENT_KEY = "olcrtc_room_agent"
 CHECK_INTERVAL_SECONDS = 1800  # 30 min
 STARTUP_DELAY_SECONDS = 25
-PROVIDERS_PLAYWRIGHT = ("wbstream", "telemost")
+PROVIDERS_PLAYWRIGHT = ("telemost", "wbstream")
 REQUIRED_SLOTS = ("pc", "android")
 TARGET_FREE_RATIO = 0.10
-TARGET_CAPACITY = 1100  # слотов под ~1000 online + запас
+TARGET_CAPACITY = 1100
+# Сколько active-комнат держать на TM/WB (pc+android суммарно)
+TARGET_ROOMS_TELEMOST = 4
+TARGET_ROOMS_WBSTREAM = 4
 MAX_CREATE_PER_CYCLE = 24
 DEFAULT_MAX_CLIENTS = 25
-
-JITSI_BASE_PC = "https://meet.egovm.ru/SilentVpnOlcrtcHive"
-JITSI_BASE_ANDROID = "https://meet.playform.ru/SilentVpnOlcrtcHiveAndroid"
 
 
 @dataclass
@@ -70,6 +73,8 @@ class AgentState:
     auto_apply_yaml: bool = True
     target_free_ratio: float = TARGET_FREE_RATIO
     target_capacity: int = TARGET_CAPACITY
+    target_rooms_telemost: int = TARGET_ROOMS_TELEMOST
+    target_rooms_wbstream: int = TARGET_ROOMS_WBSTREAM
     max_clients: int = DEFAULT_MAX_CLIENTS
 
     def to_dict(self) -> dict[str, Any]:
@@ -83,9 +88,11 @@ class AgentState:
             "auto_apply_yaml": self.auto_apply_yaml,
             "target_free_ratio": self.target_free_ratio,
             "target_capacity": self.target_capacity,
+            "target_rooms_telemost": self.target_rooms_telemost,
+            "target_rooms_wbstream": self.target_rooms_wbstream,
             "max_clients": self.max_clients,
             "playwright_available": playwright_available(),
-            "managed_providers": ["jitsi", *PROVIDERS_PLAYWRIGHT],
+            "managed_providers": list(PROVIDERS_PLAYWRIGHT),
         }
 
 
@@ -108,6 +115,8 @@ def parse_agent_state(raw: dict[str, Any] | None) -> AgentState:
         auto_apply_yaml=bool(d.get("auto_apply_yaml", True)),
         target_free_ratio=float(d.get("target_free_ratio") or TARGET_FREE_RATIO),
         target_capacity=max(0, int(d.get("target_capacity") or TARGET_CAPACITY)),
+        target_rooms_telemost=max(0, int(d.get("target_rooms_telemost") or TARGET_ROOMS_TELEMOST)),
+        target_rooms_wbstream=max(0, int(d.get("target_rooms_wbstream") or TARGET_ROOMS_WBSTREAM)),
         max_clients=max(1, int(d.get("max_clients") or DEFAULT_MAX_CLIENTS)),
     )
 
@@ -135,6 +144,8 @@ async def save_agent_state(db: AsyncSession, state: AgentState) -> AgentState:
             "auto_apply_yaml": state.auto_apply_yaml,
             "target_free_ratio": state.target_free_ratio,
             "target_capacity": state.target_capacity,
+            "target_rooms_telemost": state.target_rooms_telemost,
+            "target_rooms_wbstream": state.target_rooms_wbstream,
             "max_clients": state.max_clients,
         },
         ensure_ascii=False,
@@ -169,33 +180,22 @@ def _needs_room(url: str) -> bool:
     return is_placeholder_room(url)
 
 
-def _jitsi_url(slot_label: str) -> str:
-    base = JITSI_BASE_ANDROID if slot_label == "android" else JITSI_BASE_PC
-    suffix = secrets.token_hex(3)
-    return f"{base}-{suffix}"
+def _storage_for(accounts: Any, provider: str) -> dict[str, Any] | None:
+    acc_list = accounts.telemost if provider == "telemost" else accounts.wbstream
+    for acc in acc_list:
+        storage = resolve_storage_state(acc)
+        if storage:
+            return storage
+    return None
 
 
-async def _provision_jitsi(
-    db: AsyncSession,
-    state: AgentState,
-    *,
-    slot_label: str,
-) -> bool:
-    url = _jitsi_url(slot_label)
-    cell = await pick_cell_for_new_room(db)
-    cell_id = None if getattr(cell, "is_queen", True) else cell.id
-    row = await create_room_row(
-        db,
-        provider="jitsi",
-        room_url=url,
-        slot_label=slot_label,
-        device_types=[slot_label],
-        max_clients=state.max_clients,
-        cell_id=cell_id,
-        status="active",
-    )
-    _log(state, f"jitsi/{slot_label}: ok → {url} unit={row.unit_name}")
-    return True
+async def _sync_storage_to_host(state: AgentState, accounts: Any) -> None:
+    for provider in PROVIDERS_PLAYWRIGHT:
+        storage = _storage_for(accounts, provider)
+        if not storage:
+            continue
+        ok = await push_storage_to_host(provider, storage)
+        _log(state, f"host storage {provider}: {'ok' if ok else 'skip/fail'}")
 
 
 async def _provision_playwright(
@@ -204,14 +204,10 @@ async def _provision_playwright(
     *,
     provider: str,
     slot_label: str,
-    storage: dict,
+    storage: dict[str, Any] | None,
 ) -> bool:
-    if not playwright_available():
-        state.last_error = f"{provider}/{slot_label}: playwright недоступен"
-        _log(state, state.last_error)
-        return False
-    _log(state, f"{provider}/{slot_label}: creating room…")
-    result = await create_room(provider, storage, headless=True)
+    _log(state, f"{provider}/{slot_label}: creating room (host/local)…")
+    result = await create_room_best(provider, storage, headless=True)
     if not result.ok or not result.room_id:
         state.last_error = f"{provider}/{slot_label}: fail — {result.message}"
         _log(state, state.last_error)
@@ -228,7 +224,10 @@ async def _provision_playwright(
         cell_id=cell_id,
         status="active",
     )
-    _log(state, f"{provider}/{slot_label}: ok → {result.room_id} unit={row.unit_name}")
+    _log(
+        state,
+        f"{provider}/{slot_label}: ok → {result.room_id} unit={row.unit_name} via={result.message}",
+    )
     return True
 
 
@@ -254,6 +253,17 @@ async def _slot_capacity(db: AsyncSession, *, provider: str, slot: str) -> int:
     )
 
 
+async def _active_room_count(db: AsyncSession, *, provider: str) -> int:
+    rooms = await list_rooms(db, provider=provider, status="active")
+    return len(rooms)
+
+
+async def _pick_slot_for_provider(db: AsyncSession, *, provider: str) -> str:
+    pc_cap = await _slot_capacity(db, provider=provider, slot="pc")
+    an_cap = await _slot_capacity(db, provider=provider, slot="android")
+    return "pc" if pc_cap <= an_cap else "android"
+
+
 async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
     state = await load_agent_state(db)
     if not state.enabled and not force:
@@ -268,7 +278,49 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
     settings = await load_olcrtc_settings(db)
     accounts = await load_room_accounts(db)
 
-    # 1) минимум pc/android для WB/Telemost (нужны cookies)
+    host_st = await host_provision_status()
+    _log(
+        state,
+        f"host-provision reachable={host_st.get('reachable')} "
+        f"pw={host_st.get('playwright')} tm_state={host_st.get('telemost_state')} "
+        f"wb_state={host_st.get('wbstream_state')} url={host_st.get('url') or '-'}",
+    )
+    await _sync_storage_to_host(state, accounts)
+
+    # 0) status=error → пересоздать
+    error_rooms = await list_rooms(db, status="error")
+    for room in error_rooms[:12]:
+        slot = (room.slot_label or "pc").strip().lower() or "pc"
+        if room.provider == "jitsi":
+            # Jitsi снят с поддержки — drain старых комнат
+            room.status = "draining"
+            room.last_error = "jitsi removed"
+            created_any = True
+            _log(state, f"drain legacy jitsi/{slot} unit={room.unit_name}")
+            continue
+        if room.provider in PROVIDERS_PLAYWRIGHT:
+            storage = _storage_for(accounts, room.provider)
+            result = await create_room_best(room.provider, storage, headless=True)
+            if result.ok and result.room_id:
+                room.room_url = result.room_id
+                room.status = "active"
+                room.online_count = 0
+                room.last_error = ""
+                created_any = True
+                _log(
+                    state,
+                    f"heal error {room.provider}/{slot}: → {result.room_id} unit={room.unit_name}",
+                )
+            else:
+                _log(
+                    state,
+                    f"heal error {room.provider}/{slot}: fail — {result.message}",
+                )
+                state.last_error = result.message[:200]
+    if created_any:
+        await db.commit()
+
+    # 1) минимум pc/android в settings JSON (placeholder → создать)
     for provider in PROVIDERS_PLAYWRIGHT:
         pcfg = settings.providers.get(provider)
         if not pcfg or not pcfg.enabled:
@@ -277,75 +329,57 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
         rooms = list(pcfg.rooms) if pcfg.rooms else []
         for sid in REQUIRED_SLOTS:
             _ensure_slot(rooms, sid)
-        acc_list = accounts.telemost if provider == "telemost" else accounts.wbstream
-        storage = None
-        for acc in acc_list:
-            storage = resolve_storage_state(acc)
-            if storage:
-                break
+        storage = _storage_for(accounts, provider)
         for sid in REQUIRED_SLOTS:
             slot = _ensure_slot(rooms, sid)
             if not _needs_room(slot.url):
-                # если в JSON есть, но в БД нет — sync уже сделал; иначе skip
-                continue
-            if not storage:
-                state.last_error = f"{provider}/{sid}: нет storage_state"
-                _log(state, state.last_error)
                 continue
             if await _provision_playwright(
                 db, state, provider=provider, slot_label=sid, storage=storage
             ):
                 created_any = True
+                # обновить JSON слот свежим id из БД
+                active = await list_rooms(db, provider=provider, status="active")
+                for r in active:
+                    if r.slot_label == sid or sid in (r.device_types or []):
+                        slot.url = r.room_url
+                        break
+        pcfg.rooms = rooms
         settings.providers[provider] = pcfg
 
-    # 2) масштаб: capacity до target_capacity (Jitsi — основной автопуть)
+    # 2) догнать target_rooms для TM/WB (не только placeholder)
+    created_cycle = 0
+    for provider in PROVIDERS_PLAYWRIGHT:
+        pcfg = settings.providers.get(provider)
+        if not pcfg or not pcfg.enabled:
+            continue
+        target = (
+            state.target_rooms_telemost
+            if provider == "telemost"
+            else state.target_rooms_wbstream
+        )
+        storage = _storage_for(accounts, provider)
+        while created_cycle < MAX_CREATE_PER_CYCLE:
+            n = await _active_room_count(db, provider=provider)
+            if n >= target:
+                _log(state, f"{provider}: rooms ok {n}/{target}")
+                break
+            slot_label = await _pick_slot_for_provider(db, provider=provider)
+            if await _provision_playwright(
+                db, state, provider=provider, slot_label=slot_label, storage=storage
+            ):
+                created_any = True
+            else:
+                break
+            created_cycle += 1
+
+    # 3) метрики пула (TM+WB only; Jitsi не расширяем)
     metrics = await pool_metrics(db)
     _log(
         state,
         f"pool free={metrics.get('free_slots')}/{metrics.get('capacity_total')} "
         f"online={metrics.get('online_total')} target_cap={state.target_capacity}",
     )
-    created_cycle = 0
-    jitsi_cfg = settings.providers.get("jitsi")
-    jitsi_on = bool(jitsi_cfg and jitsi_cfg.enabled)
-
-    while _needs_expand(metrics, state) and created_cycle < MAX_CREATE_PER_CYCLE:
-        # балансируем pc/android по ёмкости jitsi
-        if jitsi_on:
-            pc_cap = await _slot_capacity(db, provider="jitsi", slot="pc")
-            an_cap = await _slot_capacity(db, provider="jitsi", slot="android")
-            slot_label = "pc" if pc_cap <= an_cap else "android"
-            if await _provision_jitsi(db, state, slot_label=slot_label):
-                created_any = True
-                metrics = await pool_metrics(db)
-            created_cycle += 1
-            continue
-
-        # fallback: playwright providers если jitsi выключен
-        provider = PROVIDERS_PLAYWRIGHT[created_cycle % len(PROVIDERS_PLAYWRIGHT)]
-        pcfg = settings.providers.get(provider)
-        if not pcfg or not pcfg.enabled:
-            created_cycle += 1
-            if created_cycle >= MAX_CREATE_PER_CYCLE:
-                break
-            continue
-        acc_list = accounts.telemost if provider == "telemost" else accounts.wbstream
-        storage = None
-        for acc in acc_list:
-            storage = resolve_storage_state(acc)
-            if storage:
-                break
-        if not storage:
-            state.last_error = f"pool expand: нет аккаунта для {provider}"
-            _log(state, state.last_error)
-            break
-        slot_label = REQUIRED_SLOTS[created_cycle % len(REQUIRED_SLOTS)]
-        if await _provision_playwright(
-            db, state, provider=provider, slot_label=slot_label, storage=storage
-        ):
-            created_any = True
-            metrics = await pool_metrics(db)
-        created_cycle += 1
 
     if created_any:
         await save_olcrtc_settings(db, settings)

@@ -6,10 +6,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, func
+from sqlalchemy import delete, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.olcrtc_room import OlcrtcRoom
+from app.models.olcrtc_room import OlcrtcRoom, OlcrtcRoomSticky
 from app.services.olcrtc_settings import (
     DEFAULT_TRANSPORTS,
     OlcrtcSettings,
@@ -71,7 +71,7 @@ async def get_room(db: AsyncSession, room_id: uuid.UUID) -> OlcrtcRoom | None:
 
 
 async def sync_rooms_from_settings_json(db: AsyncSession, settings: OlcrtcSettings | None = None) -> int:
-    """Одноразовая/идемпотентная миграция JSON rooms[] → olcrtc_rooms."""
+    """Одноразовая/идемпотентная миграция JSON rooms[] → olcrtc_rooms (только CREATE)."""
     settings = settings or await load_olcrtc_settings(db)
     existing = await list_rooms(db)
     by_key = {(r.provider, r.room_url.strip()): r for r in existing}
@@ -114,6 +114,139 @@ async def sync_rooms_from_settings_json(db: AsyncSession, settings: OlcrtcSettin
     if created:
         await db.commit()
     return created
+
+
+async def _clear_sticky_for_room(db: AsyncSession, room_id: uuid.UUID) -> int:
+    res = await db.execute(
+        delete(OlcrtcRoomSticky).where(OlcrtcRoomSticky.room_id == room_id)
+    )
+    return int(res.rowcount or 0)
+
+
+async def _clear_sticky_for_provider_slot(
+    db: AsyncSession, *, provider: str, slot_label: str
+) -> int:
+    """Сброс sticky по провайдеру+типу устройства (слот pc/android), чтобы клиенты
+    не залипали на старой комнате после смены URL в админке."""
+    dt = (slot_label or "").strip().lower()
+    if dt not in ("pc", "android"):
+        # слот r2 и т.п. — чистим весь provider
+        res = await db.execute(
+            delete(OlcrtcRoomSticky).where(OlcrtcRoomSticky.provider == provider)
+        )
+        return int(res.rowcount or 0)
+    res = await db.execute(
+        delete(OlcrtcRoomSticky).where(
+            OlcrtcRoomSticky.provider == provider,
+            OlcrtcRoomSticky.device_type == dt,
+        )
+    )
+    return int(res.rowcount or 0)
+
+
+async def reconcile_rooms_from_settings(
+    db: AsyncSession, settings: OlcrtcSettings | None = None
+) -> dict[str, Any]:
+    """Применить rooms[] из админки к OlcrtcRoom: UPDATE url по slot+provider.
+
+    Раньше sync только создавал новые строки → смена канала в UI не меняла
+    то, что отдаёт /api/vpn/olcrtc-config (и sticky держал старый room_id).
+    """
+    settings = settings or await load_olcrtc_settings(db)
+    existing = await list_rooms(db)
+    by_unit = {r.unit_name: r for r in existing}
+    # primary unit: pc-telemost, android-wbstream, …
+    updated = 0
+    created = 0
+    sticky_cleared = 0
+    changed_units: list[str] = []
+
+    for name in PROVIDERS:
+        p = settings.providers.get(name)
+        if not p:
+            continue
+        for slot in p.effective_rooms():
+            url = normalize_room_id(name, slot.url)
+            if is_placeholder_room(url) or not url:
+                continue
+            slot_id = (slot.id or "pc").strip() or "pc"
+            dts = list(slot.device_types) or (
+                [slot_id] if slot_id in ("pc", "android") else []
+            )
+            primary_unit = _slug_unit(slot_id, name)
+            row = by_unit.get(primary_unit)
+            # fallback: первая active с тем же provider+slot_label
+            if not row:
+                for r in existing:
+                    if (
+                        r.provider == name
+                        and r.slot_label == slot_id
+                        and r.status in ("active", "provisioning", "offline")
+                    ):
+                        # предпочесть unit без суффикса -N
+                        if r.unit_name == primary_unit or not row:
+                            row = r
+                            if r.unit_name == primary_unit:
+                                break
+
+            if row:
+                old = (row.room_url or "").strip()
+                new = url.strip()
+                row.max_clients = max(1, int(slot.max_clients or row.max_clients or 12))
+                row.device_types = dts
+                row.slot_label = slot_id
+                if p.enabled and row.status == "offline":
+                    row.status = "active"
+                if not p.enabled:
+                    row.status = "offline"
+                if old != new:
+                    row.room_url = new
+                    row.online_count = 0
+                    row.last_healthy_at = _now()
+                    row.last_error = None
+                    sticky_cleared += await _clear_sticky_for_room(db, row.id)
+                    sticky_cleared += await _clear_sticky_for_provider_slot(
+                        db, provider=name, slot_label=slot_id
+                    )
+                    updated += 1
+                    changed_units.append(row.unit_name)
+                by_unit[row.unit_name] = row
+            else:
+                unit = primary_unit
+                n = 2
+                while unit in by_unit:
+                    unit = _slug_unit(slot_id, name, str(n))
+                    n += 1
+                row = OlcrtcRoom(
+                    provider=name,
+                    room_url=url,
+                    slot_label=slot_id,
+                    device_types=dts,
+                    cell_id=None,
+                    unit_name=unit,
+                    data_dir=f"data-{unit}",
+                    status="active" if p.enabled else "offline",
+                    max_clients=max(1, int(slot.max_clients or 12)),
+                    online_count=0,
+                    last_healthy_at=_now(),
+                )
+                db.add(row)
+                by_unit[unit] = row
+                existing.append(row)
+                created += 1
+                changed_units.append(unit)
+                sticky_cleared += await _clear_sticky_for_provider_slot(
+                    db, provider=name, slot_label=slot_id
+                )
+
+    if updated or created:
+        await db.commit()
+    return {
+        "updated": updated,
+        "created": created,
+        "sticky_cleared": sticky_cleared,
+        "changed_units": changed_units,
+    }
 
 
 async def ensure_rooms_synced(db: AsyncSession) -> None:
@@ -187,11 +320,20 @@ async def create_room_row(
 def render_unit_yaml(settings: OlcrtcSettings, room: OlcrtcRoom) -> str:
     if not settings.crypto_key or len(settings.crypto_key) != 64:
         raise ValueError("crypto_key must be 64 hex characters")
+    pcfg = settings.providers.get(room.provider)
     transport = (
-        settings.providers.get(room.provider).transport
-        if settings.providers.get(room.provider)
+        pcfg.transport
+        if pcfg
         else DEFAULT_TRANSPORTS.get(room.provider, "datachannel")
     )
+    auth_block = [
+        "    auth:",
+        f"      provider: {room.provider}",
+    ]
+    tok = (pcfg.auth_token or "").strip() if pcfg else ""
+    if tok:
+        esc = tok.replace("\\", "\\\\").replace('"', '\\"')
+        auth_block.append(f'      token: "{esc}"')
     return "\n".join(
         [
             "mode: srv",
@@ -202,8 +344,7 @@ def render_unit_yaml(settings: OlcrtcSettings, room: OlcrtcRoom) -> str:
             f"data: {room.data_dir}",
             "profiles:",
             f"  - name: {room.unit_name}",
-            "    auth:",
-            f"      provider: {room.provider}",
+            *auth_block,
             "    room:",
             f'      id: "{room.room_url}"',
             "    net:",
@@ -232,7 +373,7 @@ async def write_all_unit_yaml_from_db(db: AsyncSession) -> dict[str, str]:
         out[r.unit_name] = text
         write_server_yaml_file(text, filename=f"server-{r.unit_name}.yaml")
     # legacy aliases
-    for prefer in ("pc-jitsi", "pc-telemost", "android-jitsi", "android-telemost"):
+    for prefer in ("pc-telemost", "pc-wbstream", "android-telemost", "android-wbstream"):
         if prefer in out:
             if prefer.startswith("pc-"):
                 write_server_yaml_file(out[prefer], filename="server-pc.yaml")

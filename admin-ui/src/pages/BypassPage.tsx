@@ -26,20 +26,14 @@ type OlcrtcSettings = {
 
 const PROVIDER_META: { id: string; title: string; roomHint: string; defaultTransport: string }[] = [
   {
-    id: 'jitsi',
-    title: 'Jitsi Meet',
-    roomHint: 'https://meet.egovm.ru/SilentVpnOlcrtcHive…',
-    defaultTransport: 'datachannel',
-  },
-  {
-    id: 'wbstream',
-    title: 'WB Stream',
+    id: 'telemost',
+    title: 'Яндекс Телемост',
     roomHint: 'room-id',
     defaultTransport: 'vp8channel',
   },
   {
-    id: 'telemost',
-    title: 'Яндекс Телемост',
+    id: 'wbstream',
+    title: 'WB Stream',
     roomHint: 'room-id',
     defaultTransport: 'vp8channel',
   },
@@ -48,20 +42,6 @@ const PROVIDER_META: { id: string; title: string; roomHint: string; defaultTrans
 const TRANSPORTS = ['datachannel', 'vp8channel', 'seichannel', 'videochannel']
 
 const DEFAULT_ROOMS: Record<string, RoomSlot[]> = {
-  jitsi: [
-    {
-      id: 'pc',
-      url: 'https://meet.egovm.ru/SilentVpnOlcrtcHive',
-      max_clients: 4,
-      device_types: ['pc'],
-    },
-    {
-      id: 'android',
-      url: 'https://meet.playform.ru/SilentVpnOlcrtcHiveAndroid',
-      max_clients: 4,
-      device_types: ['android'],
-    },
-  ],
   wbstream: [
     {
       id: 'pc',
@@ -211,7 +191,17 @@ function OlcrtcSection({ token }: { token: string }) {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
       setCfg(mergeSettings(data))
-      setMsg('Сохранено')
+      const r = data.reconcile as
+        | { updated?: number; created?: number; changed_units?: string[] }
+        | undefined
+      if (r && (r.updated || r.created)) {
+        setMsg(
+          `Сохранено → БД комнат обновлена (upd=${r.updated || 0}, new=${r.created || 0}). ` +
+            `Дальше: «Записать YAML» + python scripts/apply_olcrtc_units_from_db.py — иначе srv сидит на старом канале.`,
+        )
+      } else {
+        setMsg('Сохранено')
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Ошибка сохранения')
     } finally {
@@ -487,7 +477,7 @@ function OlcrtcSection({ token }: { token: string }) {
                     </div>
                     <div>
                       <label className="text-[10px] text-[#666]">
-                        {meta.id === 'jitsi' ? 'URL комнаты' : 'Room ID / URL'}
+                        Room ID / URL
                       </label>
                       <input
                         value={r.url}
@@ -547,10 +537,12 @@ function OlcrtcSection({ token }: { token: string }) {
       </div>
 
       <p className="text-xs text-[#666]">
-        После «Записать YAML»: на Windows{' '}
-        <code className="text-[#888]">cd backend; python scripts/deploy_olcrtc.py</code> — бинарь +
-        systemd <code className="text-[#888]">olcrtc@pc</code> /{' '}
-        <code className="text-[#888]">olcrtc@android</code> на Улье.
+        Смена канала Telemost/WB: <b>Сохранить</b> (пишет в БД пула) → «Записать YAML» → на
+        Windows{' '}
+        <code className="text-[#888]">
+          cd backend; python scripts/apply_olcrtc_units_from_db.py
+        </code>{' '}
+        (рестарт unit’ов). Без apply клиент может получить новый room id, а peer на сервере — старый.
       </p>
 
       {yamlPreview ? (
@@ -648,7 +640,10 @@ function PoolRoomsSection({ token }: { token: string }) {
         </button>
       </div>
       <p className="text-xs text-[#666]">
-        Sticky + max_clients. Draining — не выдаём новым. Unit на Улье/соте:{' '}
+        Это общий пул, не «комната на одного пользователя». Колонка online — сколько
+        клиентов сейчас сидят на комнате / лимит (например 0/25 = никто онлайн, до 25
+        одновременно). Telemost/WB
+        обычно 1–2 на платформу. Sticky + draining. Unit:{' '}
         <code className="text-[#888]">olcrtc@unit_name</code>.
       </p>
       {metrics ? (
@@ -664,7 +659,9 @@ function PoolRoomsSection({ token }: { token: string }) {
             <tr>
               <th className="py-1 pr-2">unit</th>
               <th className="py-1 pr-2">prov</th>
-              <th className="py-1 pr-2">online</th>
+              <th className="py-1 pr-2" title="сейчас онлайн / max одновременных на эту комнату">
+                online/max
+              </th>
               <th className="py-1 pr-2">status</th>
               <th className="py-1 pr-2">room</th>
               <th className="py-1">actions</th>
@@ -730,6 +727,18 @@ type AgentInfo = {
   run_log: string[]
   auto_apply_yaml: boolean
   playwright_available: boolean
+  target_rooms_telemost?: number
+  target_rooms_wbstream?: number
+  target_capacity?: number
+}
+
+type HostProvisionInfo = {
+  reachable?: boolean
+  playwright?: boolean
+  telemost_state?: boolean
+  wbstream_state?: boolean
+  url?: string
+  error?: string
 }
 
 type AccountsPublic = {
@@ -740,6 +749,7 @@ type AccountsPublic = {
 function RoomAgentSection({ token }: { token: string }) {
   const [agent, setAgent] = useState<AgentInfo | null>(null)
   const [accounts, setAccounts] = useState<AccountsPublic | null>(null)
+  const [hostProv, setHostProv] = useState<HostProvisionInfo | null>(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
@@ -759,6 +769,7 @@ function RoomAgentSection({ token }: { token: string }) {
       const data = await res.json()
       setAgent(data.agent)
       setAccounts(data.accounts)
+      setHostProv(data.host_provision || null)
       const tm = data.accounts?.telemost?.[0]
       const wb = data.accounts?.wbstream?.[0]
       if (tm?.storage_state_path) setTmPath(tm.storage_state_path)
@@ -865,11 +876,11 @@ function RoomAgentSection({ token }: { token: string }) {
 
   return (
     <div className="border border-[#222] rounded-xl p-4 bg-[#0d0d0d] space-y-3 mt-8">
-      <h3 className="text-sm font-medium text-white">Агент комнат (WB / Телемост)</h3>
+      <h3 className="text-sm font-medium text-white">Агент комнат (Телемост + WB)</h3>
       <p className="text-xs text-[#666]">
-        Отдельно от VK-агента хешей. Не регистрирует аккаунты сам — только создаёт комнаты под
-        твоими стабильными логинами (Playwright storage_state). PC и Android — разные room.
-        Fallback: вставь room id вручную в пул выше.
+        Создаёт комнаты Телемост/WB через host Playwright (Chromium на Улье) и один раз
+        сохранённый storage_state. Не регистрирует аккаунты. Цель — target_rooms (по умолчанию
+        4 на провайдера). После peer dead — heal/пересоздание.
       </p>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -883,9 +894,17 @@ function RoomAgentSection({ token }: { token: string }) {
           Агент включён (цикл ~30 мин)
         </label>
         <span className="text-xs text-[#666]">
-          playwright:{' '}
-          <span className={agent?.playwright_available ? 'text-emerald-400' : 'text-amber-400'}>
-            {agent?.playwright_available ? 'ok' : 'нет в контейнере'}
+          host:{' '}
+          <span className={hostProv?.reachable ? 'text-emerald-400' : 'text-amber-400'}>
+            {hostProv?.reachable
+              ? `ok${hostProv.playwright ? '+pw' : ' (нет chromium)'} tm=${hostProv.telemost_state ? '1' : '0'} wb=${hostProv.wbstream_state ? '1' : '0'}`
+              : hostProv?.error || 'недоступен — deploy_olcrtc_host_provision.py'}
+          </span>
+        </span>
+        <span className="text-xs text-[#666]">
+          docker-pw:{' '}
+          <span className={agent?.playwright_available ? 'text-emerald-400' : 'text-[#555]'}>
+            {agent?.playwright_available ? 'ok' : 'нет'}
           </span>
         </span>
         <button
@@ -985,8 +1004,8 @@ export default function BypassPage({ token }: { token: string }) {
       <div>
         <h1 className="text-xl font-semibold text-white mb-1">Варианты обхода</h1>
         <p className="text-sm text-[#888]">
-          Вариант 1 — VK / WDTT (как раньше). Вариант 2 — olcrtc (Jitsi / WB Stream / Телемост),
-          debug-клиенты. Пул комнат у всех трёх провайдеров — PC и телефон не в одной комнате.
+          Вариант 1 — VK / WDTT (как раньше). Вариант 2 — olcrtc (Телемост / WB Stream),
+          debug-клиенты. Пул комнат — PC и телефон не в одной комнате.
         </p>
       </div>
 

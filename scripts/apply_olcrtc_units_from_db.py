@@ -79,13 +79,25 @@ asyncio.run(main())
     run(
         client,
         f"mkdir -p {REMOTE_OLCRTC}/data "
-        f"{REMOTE_OLCRTC}/data-pc-jitsi {REMOTE_OLCRTC}/data-pc-telemost "
-        f"{REMOTE_OLCRTC}/data-android-jitsi {REMOTE_OLCRTC}/data-android-telemost",
+        f"{REMOTE_OLCRTC}/data-pc-telemost {REMOTE_OLCRTC}/data-pc-wbstream "
+        f"{REMOTE_OLCRTC}/data-android-telemost {REMOTE_OLCRTC}/data-android-wbstream",
+    )
+    # Jitsi units off
+    run(
+        client,
+        "systemctl list-units 'olcrtc@*-jitsi*' --all --no-legend 2>/dev/null "
+        "| awk '{print $1}' | while read u; do systemctl disable --now \"$u\" 2>/dev/null || true; done",
     )
     sync = f"""#!/bin/bash
 set -e
+# не тащить legacy *-jitsi*
+rm -f {REMOTE_OLCRTC}/server-*-jitsi.yaml {REMOTE_OLCRTC}/server-*-jitsi-*.yaml 2>/dev/null || true
+docker exec backend-api-1 sh -c 'rm -f /app/update/olcrtc/server-*-jitsi*.yaml 2>/dev/null || true'
 for y in $(docker exec backend-api-1 sh -c 'ls /app/update/olcrtc/server*.yaml 2>/dev/null' || true); do
   bn=$(basename "$y")
+  case "$bn" in
+    *jitsi*) echo "skip $bn"; continue ;;
+  esac
   docker cp "backend-api-1:$y" "{REMOTE_OLCRTC}/$bn"
   echo "sync $bn"
 done
@@ -103,7 +115,7 @@ chmod 600 {REMOTE_OLCRTC}/server*.yaml 2>/dev/null || true
         name = Path(line.strip()).name
         if name.startswith("server-") and name.endswith(".yaml"):
             slot = name[len("server-") : -len(".yaml")]
-            if slot in ("pc", "android"):
+            if slot in ("pc", "android") or slot.endswith("-jitsi") or "-jitsi-" in slot:
                 continue
             slots.append(slot)
 

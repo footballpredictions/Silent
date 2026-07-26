@@ -569,6 +569,99 @@ cd pc; npm install; npm run dev
 - API: `GET/POST /api/admin/settings/registration`. Сервис: `app/services/registration_settings.py`.
 - Задеплоено на прод (`deploy_api.py`, в список файлов добавлен `registration_settings.py`). Push `main`.
 
+### 2026-07-26 — libolcrtc CGO: netlinkrib permission denied
+
+- После OkHttp auth: `load interfaces: netlinkrib: permission denied` (Android 11+ SELinux).
+- Причина: сборка `CGO_ENABLED=0` → `net.Interfaces()`. Нужен NDK+CGO `getifaddrs`.
+- `build_olcrtc_android.bat` как libclient (`CGO=1`, NDK API 24). nocgo fallback — пустой список iface.
+
+### 2026-07-26 — olcrtc: Jitsi убран (только Telemost + WB)
+
+- Backend `PROVIDERS = (telemost, wbstream)`; агент без `_provision_jitsi`; админка Bypass без Jitsi.
+- Клиенты default → `telemost`; legacy prefs `jitsi` → telemost.
+- Прод: `purge_olcrtc_jitsi.py` + `apply_olcrtc_units_from_db.py` (disable `olcrtc@*-jitsi`).
+
+### 2026-07-26 — Chrome «Сеть недоступна» при olcrtc
+
+- Не падение VPN: Chrome/Android captive-portal в момент `establish` (generate_204).
+- Сайты при этом работают; попап при каждом вкл. Смягчение: warm `connectivitycheck.gstatic.com` до tunnelReady, `setUnderlyingNetworks`, `setMetered(false)`.
+- Если останется: в Chrome/системе выкл. «Частный DNS» (Private DNS) Auto — часто ложный offline на VPN.
+
+### 2026-07-26 — Android olcrtc: сайты/админка нет, Telegram ок = DNS
+
+- Симптом: Telegram работает, YouTube/админка/сайты — нет (не только YT).
+- Причина: olcrtc SOCKS TCP-only; UDP DNS в TUN мёртв; VPN DNS `8.8.8.8` на LTE часто тоже мёртв. Telegram ходит по IP.
+- Фикс как PC fake-ip: hev `mapdns` `198.18.0.2` → fake-ip → SOCKS CONNECT по домену; `allowFamily(AF_INET)`; exclude системный DNS + ICE hosts.
+- В логе: `mapdns=fake-ip`, `warm TCP www.google.com OK` / `nip.io OK`.
+
+### 2026-07-26 — Android olcrtc: YouTube IPv6 + почему TM≠WB
+
+- Оболочка одна (cnc SOCKS+hev), движки разные: **WB=`livekit`**, **Telemost=`goolom`** (ICE/WS) — логи и скорость connect разные по природе.
+- YouTube: Cronet IPv6+QUIC мимо IPv4-TUN; плюс hev UDP. Фикс: `allowFamily(AF_INET)`; hev udp reject; dial→hev (не hev до dial на TM — шторм CONNECT).
+- В логе: `engine=livekit|goolom`, `IPv4-only`, `warm TCP www.youtube.com OK`, `tunnel to …googlevideo…`.
+
+### 2026-07-26 — Android olcrtc: YouTube (QUIC) + быстрее Telemost
+
+- Симптом: TM/WB connect OK, в логе `tunnel to 172.217…` / gstatic, но YouTube не играет; Telemost connect дольше WB.
+- Причина YouTube: hev `udp: tcp` (не RFC) + olcrtc SOCKS без ответа на UDP ASSOCIATE → QUIC зависает (на PC — block QUIC в sing-box).
+- Фикс: hev `udp: udp` + короткий `udp-read-write-timeout`; olcrtc `REP=0x07` на non-CONNECT; кэш OkHttp auth 4 мин; warm youtube/ytimg.
+- Debug APK: `SilentVPN-debug.apk`.
+
+### 2026-07-26 — LTE: Go DNS timeout + WB guest TLS
+
+- Симптомы после CGO: WB `guest-register` Post fail (Go TLS); Telemost OkHttp OK → `lookup goloom.strm.yandex.net: i/o timeout`.
+- Фикс: OkHttp prefetch WB (`OLCRTC_WBSTREAM_CONN_FILE`); Java DNS → `OLCRTC_STATIC_HOSTS` → Go `protect.DialContext` dial tcp4 по IP; YAML DNS = системный, не 8.8.8.8.
+- Debug APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`. Ждать в логе: `WB auth OkHttp OK`, `STATIC_HOSTS=…`, `prefetched` / без `goloom… i/o timeout`.
+
+### 2026-07-26 — LTE Telemost: OkHttp whitelist + без ANR
+
+- VK ≠ TM/WB: VK — TURN по хешу; TM/WB — HTTP auth + WebRTC SFU.
+- OkHttp → Yandex → `OLCRTC_TELEMOST_CONN_FILE` (не Улей). Старт только в `worker` (без ANR).
+
+### 2026-07-26 — WB: JWT только на srv (не на клиенте)
+
+- Один `auth.token` на srv+cnc → WB выбивает host (`reconnect reason=carrier`) → клиент `wait for peer`.
+- JWT только в server YAML; `/olcrtc-config` без `auth_token`; клиент = guest. Telemost Android OK.
+
+### 2026-07-26 — Android WB YAML: trimIndent ломал transport
+
+- После `auth.token`: вставка строки с другим отступом → `trimIndent()` → битый YAML → `transport required`.
+- Фикс: сборка YAML через `joinToString` (как PC); fallback transport `vp8channel` для WB/Telemost; hev `stopIfLoaded` перед повторным TUN.
+
+### 2026-07-26 — Android WB: guest 403 → auth.token аккаунта
+
+- Симптом: `carrier auth failed … get token status 403 … guests` при `provider=wbstream` (комната без гостей).
+- olcrtc: если нет `auth.token` — guest register → getToken 403. Нужен JWT из `wb_auth_auth_slice.accessToken`.
+- Backend: `providers.wbstream.auth_token` → `/olcrtc-config` + srv YAML `auth.token`; sync из storage_state (`sync_olcrtc_wb_auth_token.py`).
+- PC/Android: пишут `auth.token` в client YAML. Прод: token в settings, `olcrtc@pc-wbstream`/`android-wbstream` active.
+- **Нужна пересборка Android debug** (и PC debug, если тестируете WB на ПК).
+
+### 2026-07-26 — Android Telemost ICE WARN (TURN timeout)
+
+- Причина: hev full-tunnel до/во время STUN к `turn.tel.yandex.net`; UI красил `fail` как error. `[pc]` в логе = pion PeerConnection, не Windows.
+- Фикс `OlcrtcTunnelManager`: пауза после SOCKS dial → hev; `excludeRoute` Yandex/WB hosts (API 33+); ICE TURN noise не как fatal в UI; post-TUN dial.
+
+### 2026-07-26 — Telemost/WB rooms созданы и залиты на прод
+
+- Cookies с ПК залиты; селекторы create обновлены (`create-call-button`, «Новая видеовстреча»).
+- PC Telemost `77258956512770`, Android `41676137683602`; WB pc/android UUID в пуле.
+- YAML + `olcrtc@*-telemost/wbstream` active; sticky сброшен. Клиенту: выкл/вкл VPN.
+
+### 2026-07-26 — olcrtc agent: автосоздание Telemost + WB (host Playwright)
+
+- Host systemd `silent-olcrtc-host-provision` `:9101` (Chromium вне Docker).
+- Агент создаёт Jitsi + Telemost + WB: `target_rooms_telemost/wbstream` (дефолт 4), heal `error`.
+- Деплой: `deploy_olcrtc_host_provision.py` + `deploy_stable.py`. Нужен один раз storage_state в админке.
+- Без cookies: host `tm_state=0 wb_state=0` — комнаты TM/WB не создаст.
+
+### 2026-07-26 — olcrtc: live-канал + room-failure + пояснение пула
+
+- `POST /api/vpn/olcrtc-room-failure` — peer dead → sticky сброс, комната `error`; агент пытается heal (Jitsi авто; Telemost/WB только с cookies).
+- PC/Android: в «Варианты обхода» живой room id; лог `канал:…` / `канал сменился:…`; при peer dead — report + новый `/olcrtc-config`.
+- Админка пул: подпись `online/max` = сейчас онлайн / лимит на комнату (0/25 ≠ «25 человек в созвоне навсегда»).
+- PC debug: `build-debug-453069`. Backend+admin задеплоены (`deploy_stable.py`).
+- Важно: Telemost `72153214476536` в логе — протухший peer; без нового room URL или Playwright cookies агент не создаст Телемост сам.
+
 ### 2026-07-25 — olcrtc 1000+ закрытие задач (load-test + соты + LTE-path)
 
 - Load-test API: `scripts/loadtest_olcrtc_1000.py` → **pass** (1000 fingerprint, spill по 22+22 комнатам, denied 0).
@@ -576,6 +669,7 @@ cd pc; npm install; npm run dev
 - LTE-path: Android Telemost assign OK (`10347145470417`); Android WB без cookies — disabled.
 - YuMoney webhook flow задокументирован в `.cursor/APIS.md`.
 - Capacity после bump telemost/wb: **1175** слотов.
+- **Деплой:** `deploy_api.py` + admin-ui OK (health 200). **Push:** `main` `fc8228b`; `pc` `8f12002` (раньше).
 
 ### 2026-07-25 — olcrtc 1000+ прогрев пула (масса, не 1–2 юзера)
 

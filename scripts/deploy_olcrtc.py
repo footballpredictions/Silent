@@ -88,13 +88,12 @@ def main() -> None:
     client = connect()
     sftp = client.open_sftp()
 
-    # data dirs for slot-provider units (pc-telemost, android-jitsi, …)
+    # data dirs for slot-provider units (pc-telemost, android-wbstream, …)
     run(
         client,
         f"mkdir -p {REMOTE_OLCRTC}/data {REMOTE_OLCRTC}/data-pc {REMOTE_OLCRTC}/data-android "
-        f"{REMOTE_OLCRTC}/data-pc-jitsi {REMOTE_OLCRTC}/data-pc-wbstream {REMOTE_OLCRTC}/data-pc-telemost "
-        f"{REMOTE_OLCRTC}/data-android-jitsi {REMOTE_OLCRTC}/data-android-wbstream "
-        f"{REMOTE_OLCRTC}/data-android-telemost",
+        f"{REMOTE_OLCRTC}/data-pc-wbstream {REMOTE_OLCRTC}/data-pc-telemost "
+        f"{REMOTE_OLCRTC}/data-android-wbstream {REMOTE_OLCRTC}/data-android-telemost",
     )
 
     yaml_files = _local_yaml_files()
@@ -107,11 +106,11 @@ def main() -> None:
             if lp.name.startswith("server-") and lp.name.endswith(".yaml"):
                 uploaded_slots.append(lp.name[len("server-") : -len(".yaml")])
             elif lp.name == "server.yaml":
-                if not any(f.name == "server-pc-jitsi.yaml" for f in yaml_files):
-                    sftp.put(str(lp), f"{REMOTE_OLCRTC}/server-pc-jitsi.yaml")
-                    print("also → server-pc-jitsi.yaml (from server.yaml)")
-                    if "pc-jitsi" not in uploaded_slots:
-                        uploaded_slots.append("pc-jitsi")
+                if not any(f.name == "server-pc-telemost.yaml" for f in yaml_files):
+                    sftp.put(str(lp), f"{REMOTE_OLCRTC}/server-pc-telemost.yaml")
+                    print("also → server-pc-telemost.yaml (from server.yaml)")
+                    if "pc-telemost" not in uploaded_slots:
+                        uploaded_slots.append("pc-telemost")
     else:
         print("WARN: local", LOCAL_DIR, "has no server*.yaml — leave remote as-is")
         run(
@@ -158,12 +157,17 @@ def main() -> None:
     run(client, f"mv /tmp/olcrtc.service {UNIT_LEGACY}")
     run(client, "systemctl daemon-reload")
 
-    slots = sorted(set(uploaded_slots)) or ["pc-jitsi"]
-    # Prefer per-provider units; stop legacy single + old multi-profile pc/android
+    slots = sorted(set(uploaded_slots)) or ["pc-telemost"]
+    # Prefer per-provider units; stop legacy single + old multi-profile pc/android + jitsi
     if slots:
         run(client, "systemctl disable --now olcrtc.service 2>/dev/null || true")
-        # Старые unit'ы с failover jitsi+wb+telemost в одном процессе — ломают telemost
-        if any("-" in s and s.split("-")[-1] in ("jitsi", "wbstream", "telemost") for s in slots):
+        # Выключить все legacy *-jitsi
+        run(
+            client,
+            "systemctl list-units 'olcrtc@*-jitsi.service' --all --no-legend 2>/dev/null "
+            "| awk '{print $1}' | while read u; do systemctl disable --now \"$u\" 2>/dev/null || true; done",
+        )
+        if any("-" in s and s.split("-")[-1] in ("wbstream", "telemost") for s in slots):
             for legacy in ("pc", "android"):
                 if legacy not in slots:
                     run(
@@ -172,7 +176,11 @@ def main() -> None:
                     )
                     print(f"disabled legacy olcrtc@{legacy} (multi-provider failover)")
         for slot in slots:
-            # не поднимать голые pc/android если есть pc-jitsi и т.п.
+            # не поднимать голые pc/android и *-jitsi
+            if slot.endswith("-jitsi"):
+                run(client, f"systemctl disable --now olcrtc@{slot}.service 2>/dev/null || true")
+                print(f"disabled olcrtc@{slot} (jitsi removed)")
+                continue
             if slot in ("pc", "android") and any(
                 s.startswith(f"{slot}-") for s in slots if s != slot
             ):

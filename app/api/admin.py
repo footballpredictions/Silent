@@ -1732,7 +1732,30 @@ async def put_olcrtc_bypass(
         srv_message=body.srv_message if body.srv_message is not None else prev.srv_message,
     )
     saved = await save_olcrtc_settings(db, settings)
-    return saved.to_dict()
+    # JSON rooms[] → БД OlcrtcRoom (иначе /olcrtc-config отдаёт старый канал)
+    from app.services.olcrtc_rooms_db import (
+        reconcile_rooms_from_settings,
+        write_all_unit_yaml_from_db,
+    )
+
+    recon = await reconcile_rooms_from_settings(db, saved)
+    if recon.get("updated") or recon.get("created"):
+        try:
+            files = await write_all_unit_yaml_from_db(db)
+            saved.srv_status = "pending_apply"
+            saved.srv_message = (
+                f"rooms reconciled updated={recon.get('updated')} created={recon.get('created')}; "
+                f"yaml {len(files)} units; run apply_olcrtc_units_from_db.py "
+                f"(changed: {', '.join(recon.get('changed_units') or [])})"
+            )
+            await save_olcrtc_settings(db, saved)
+        except Exception as e:
+            saved.srv_status = "pending_apply"
+            saved.srv_message = f"rooms reconciled but yaml failed: {e}"
+            await save_olcrtc_settings(db, saved)
+    out = saved.to_dict()
+    out["reconcile"] = recon
+    return out
 
 
 @router.post("/bypass/olcrtc/generate-key")
@@ -1776,7 +1799,7 @@ async def get_olcrtc_server_yaml(
             files[r.unit_name] = render_unit_yaml(s, r)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    default = files.get("pc-jitsi") or files.get("pc-telemost") or next(iter(files.values()), "")
+    default = files.get("pc-telemost") or files.get("pc-wbstream") or next(iter(files.values()), "")
     return {"yaml": default, "files": files}
 
 
@@ -1793,7 +1816,10 @@ async def apply_olcrtc_server_yaml(
         write_all_unit_yaml_from_db,
     )
 
+    from app.services.olcrtc_rooms_db import reconcile_rooms_from_settings
+
     s = await load_olcrtc_settings(db)
+    recon = await reconcile_rooms_from_settings(db, s)
     await sync_rooms_from_settings_json(db, s)
     await ensure_rooms_synced(db)
     try:
@@ -1804,7 +1830,8 @@ async def apply_olcrtc_server_yaml(
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
     s.srv_message = (
-        f"yaml written ({len(paths)} units); run: python scripts/apply_olcrtc_units_from_db.py"
+        f"yaml written ({len(paths)} units); reconcile={recon}; "
+        "run: python scripts/apply_olcrtc_units_from_db.py"
     )
     s.srv_status = "pending_apply"
     await save_olcrtc_settings(db, s)
@@ -1812,6 +1839,7 @@ async def apply_olcrtc_server_yaml(
         "ok": True,
         "paths": paths,
         "units": paths,
+        "reconcile": recon,
         "message": s.srv_message,
         "settings": s.to_dict(),
     }
@@ -1966,6 +1994,8 @@ class OlcrtcRoomAgentBody(BaseModel):
     auto_apply_yaml: Optional[bool] = None
     target_capacity: Optional[int] = None
     target_free_ratio: Optional[float] = None
+    target_rooms_telemost: Optional[int] = None
+    target_rooms_wbstream: Optional[int] = None
     max_clients: Optional[int] = None
 
 
@@ -1974,14 +2004,17 @@ async def get_olcrtc_room_agent(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
+    from ai.olcrtc_host_provision_client import host_provision_status
     from ai.olcrtc_room_agent import load_agent_state
     from app.services.olcrtc_room_accounts import load_room_accounts
 
     state = await load_agent_state(db)
     accounts = await load_room_accounts(db)
+    host = await host_provision_status()
     return {
         "agent": state.to_dict(),
         "accounts": accounts.public_dict(),
+        "host_provision": host,
     }
 
 
@@ -2002,6 +2035,10 @@ async def put_olcrtc_room_agent(
         state.target_capacity = max(0, int(body.target_capacity))
     if body.target_free_ratio is not None:
         state.target_free_ratio = max(0.0, min(1.0, float(body.target_free_ratio)))
+    if body.target_rooms_telemost is not None:
+        state.target_rooms_telemost = max(0, int(body.target_rooms_telemost))
+    if body.target_rooms_wbstream is not None:
+        state.target_rooms_wbstream = max(0, int(body.target_rooms_wbstream))
     if body.max_clients is not None:
         state.max_clients = max(1, int(body.max_clients))
     saved = await save_agent_state(db, state)
@@ -2013,7 +2050,7 @@ async def run_olcrtc_room_agent(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Немедленный цикл: Jitsi до target_capacity + WB/Telemost при наличии cookies."""
+    """Немедленный цикл: Jitsi + Telemost + WB (host Playwright) до целевых комнат."""
     from ai.olcrtc_room_agent import heal_rooms
 
     state = await heal_rooms(db, force=True)
@@ -2030,6 +2067,7 @@ async def put_olcrtc_room_accounts(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
+    from ai.olcrtc_host_provision_client import push_storage_to_host
     from app.services.olcrtc_room_accounts import (
         OlcrtcRoomAccounts,
         ProviderAccount,
@@ -2064,4 +2102,27 @@ async def put_olcrtc_room_accounts(
         wbstream=_map(body.wbstream or [], prev.wbstream),
     )
     saved = await save_room_accounts(db, accounts)
-    return {"accounts": saved.public_dict()}
+    host_pushed = {"telemost": False, "wbstream": False}
+    for provider, lst in (("telemost", saved.telemost), ("wbstream", saved.wbstream)):
+        for acc in lst:
+            if acc.storage_state:
+                host_pushed[provider] = await push_storage_to_host(provider, acc.storage_state)
+                if host_pushed[provider]:
+                    break
+    # WB JWT → settings + переписать srv YAML (guest 403 без auth.token)
+    wb_token_synced = False
+    try:
+        from app.services.olcrtc_room_accounts import sync_wbstream_auth_token_to_settings
+        from app.services.olcrtc_rooms_db import write_all_unit_yaml_from_db
+
+        tok = await sync_wbstream_auth_token_to_settings(db, saved)
+        wb_token_synced = bool(tok)
+        if tok:
+            await write_all_unit_yaml_from_db(db)
+    except Exception:
+        pass
+    return {
+        "accounts": saved.public_dict(),
+        "host_pushed": host_pushed,
+        "wb_auth_token_synced": wb_token_synced,
+    }

@@ -80,7 +80,7 @@ export function olcrtcProviderLabel(provider: string = getOlcrtcProvider()): str
 }
 
 export function bypassFamilyLabel(family: string = getBypassFamily()): string {
-  return family === BYPASS_FAMILY_OLCRTC ? 'olcrtc' : 'VK / WDTT'
+  return family === BYPASS_FAMILY_OLCRTC ? 'olcrtc' : 'VK'
 }
 
 export type OlcrtcPublicConfig = {

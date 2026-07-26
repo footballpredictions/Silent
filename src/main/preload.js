@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onVpnReady: (cb) => ipcRenderer.on('vpn-ready', (_, payload) => cb(payload)),
   onVpnError: (cb) => ipcRenderer.on('vpn-error', (_, msg) => cb(msg)),
   onVpnStopped: (cb) => ipcRenderer.on('vpn-stopped', (_, code) => cb(code)),
+  onOlcrtcRoomDead: (cb) => ipcRenderer.on('olcrtc-room-dead', (_, payload) => cb(payload)),
   onHashFailure: (cb) => ipcRenderer.on('hash-failure', (_, payload) => cb(payload)),
   removeVpnListeners: () => {
     ipcRenderer.removeAllListeners('vpn-log')
@@ -30,6 +31,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('vpn-ready')
     ipcRenderer.removeAllListeners('vpn-error')
     ipcRenderer.removeAllListeners('vpn-stopped')
+    ipcRenderer.removeAllListeners('olcrtc-room-dead')
     ipcRenderer.removeAllListeners('hash-failure')
   },
   removeDebugLogListeners: () => {

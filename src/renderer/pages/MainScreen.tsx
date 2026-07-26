@@ -51,9 +51,13 @@ import {
   isOlcrtcBypass,
   olcrtcProviderLabel,
   prefetchOlcrtcConfig,
+  reportOlcrtcRoomFailure,
   resolveOlcrtcConfig,
   startOlcrtcHeartbeatLoop,
+  startOlcrtcLiveSyncLoop,
   stopOlcrtcHeartbeatLoop,
+  stopOlcrtcLiveSyncLoop,
+  syncOlcrtcLiveChannel,
 } from '../bypassStore'
 import { isDebugBuild } from '../debugBuild'
 import { telegramProxyDeepLink } from '../telegramProxyLink'
@@ -488,10 +492,16 @@ export default function MainScreen({
       setConnecting(false)
       setActiveWorkers(0)
       stopOlcrtcHeartbeatLoop()
+      stopOlcrtcLiveSyncLoop()
       pushLog('Main', `VPN stopped${code != null ? ` (code=${code})` : ''} — можно сменить обход`)
       void checkForUpdate().then(info => {
         if (info?.available) setUpdateInfo(info)
       })
+    }
+    const onOlcrtcRoomDead = (payload?: { code?: number; reason?: string }) => {
+      const detail = `peer dead code=${payload?.code ?? '?'} ${payload?.reason || ''}`.trim()
+      pushLog('olcrtc', detail)
+      void reportOlcrtcRoomFailure(detail)
     }
     const onError = (msg: string) => {
       pushLog('VPN', msg, 'E')
@@ -506,6 +516,10 @@ export default function MainScreen({
         setConnected(true)
         setConnecting(false)
         void markOnlineOnServer()
+        if (isOlcrtcBypass()) {
+          startOlcrtcLiveSyncLoop()
+          void syncOlcrtcLiveChannel()
+        }
       }
     }
     const onLog = (line: string) => {
@@ -516,6 +530,7 @@ export default function MainScreen({
       if (reg) setActiveWorkers(parseInt(reg[1], 10))
     }
     api_.onVpnStopped(onStopped)
+    api_.onOlcrtcRoomDead?.(onOlcrtcRoomDead)
     api_.onVpnError?.(onError)
     api_.onVpnReady?.(onReady)
     api_.onVpnLog?.(onLog)
@@ -525,6 +540,19 @@ export default function MainScreen({
   useEffect(() => {
     if (initialUpdateInfo?.available) setUpdateInfo(initialUpdateInfo)
   }, [initialUpdateInfo])
+
+  /** Админ/агент сменил room — лог уже в syncOlcrtcLiveChannel; здесь просим переподключить. */
+  useEffect(() => {
+    const onChanged = (ev: Event) => {
+      const d = (ev as CustomEvent).detail as { nextRoom?: string } | undefined
+      pushLog(
+        'olcrtc',
+        `канал обновлён в настройках${d?.nextRoom ? `: ${String(d.nextRoom).slice(0, 40)}` : ''} — выключите и включите VPN`,
+      )
+    }
+    window.addEventListener('silent-olcrtc-room-changed', onChanged)
+    return () => window.removeEventListener('silent-olcrtc-room-changed', onChanged)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -652,7 +680,7 @@ export default function MainScreen({
     // olcrtc: сначала конфиг через IPC (пока WDTT ещё жив / bypass работает)
     if (isOlcrtcBypass()) {
       pushLog('Main', 'olcrtc-config prefetch…')
-      const pre = await resolveOlcrtcConfig({ preferCache: false })
+      const pre = (await syncOlcrtcLiveChannel()) || (await resolveOlcrtcConfig({ preferCache: false }))
       if (!pre) {
         connectLockRef.current = false
         alert(
@@ -660,7 +688,11 @@ export default function MainScreen({
         )
         return
       }
-      pushLog('Main', `olcrtc-config ok slot=${pre.assigned_slot || '?'} room=${pre.providers?.[getOlcrtcProvider()]?.room?.slice(0, 48) || '?'}`)
+      const room = pre.providers?.[getOlcrtcProvider()]?.room || '?'
+      pushLog(
+        'Main',
+        `olcrtc-config ok slot=${pre.assigned_slot || '?'} provider=${olcrtcProviderLabel()} room=${String(room).slice(0, 48)}`,
+      )
     }
     // UI сразу: не ждать fetchProfile / prepare (раньше давало ~5–8с «Подключение…»).
     setConnecting(true)
@@ -819,8 +851,10 @@ export default function MainScreen({
       pushLog('Main', 'vpnConnect start')
 
       if (isOlcrtcBypass()) {
-        // Кеш с логина/ConfigSync — сеть может уже рваться при смене с WDTT.
-        const olcCfg = await resolveOlcrtcConfig({ preferCache: true })
+        // Всегда свежий конфиг (канал из админки), кеш — только fallback если сеть мертва.
+        const olcCfg =
+          (await resolveOlcrtcConfig({ preferCache: false })) ||
+          (await resolveOlcrtcConfig({ preferCache: true }))
         if (!olcCfg) {
           setConnected(false)
           setMainVpnSessionActive(false)

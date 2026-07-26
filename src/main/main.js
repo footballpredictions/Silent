@@ -561,7 +561,7 @@ function isTransportHealthy() {
 }
 
 /** olcrtc peer умер → снять sing-box/флаги и сказать UI «выкл», иначе меню блокирует VK. */
-setOlcrtcSessionDeadHandler(({ code }) => {
+setOlcrtcSessionDeadHandler(({ code, reason }) => {
   sendLog(`[olcrtc] peer dead code=${code} → UI disconnect`)
   if (!vpnOlcrtcMode && !vpnSessionActive) return
   vpnOlcrtcMode = false
@@ -573,6 +573,11 @@ setOlcrtcSessionDeadHandler(({ code }) => {
     stopOlcrtcSession(sendLog)
   } catch { /* ignore */ }
   if (mainWindow && !mainWindow.isDestroyed()) {
+    // Отдельно от ручного vpn-disconnect: UI сбросит sticky и подтянет новый room.
+    mainWindow.webContents.send('olcrtc-room-dead', {
+      code: code ?? 1,
+      reason: reason || 'peer dead',
+    })
     mainWindow.webContents.send('vpn-stopped', code ?? 1)
   }
 })

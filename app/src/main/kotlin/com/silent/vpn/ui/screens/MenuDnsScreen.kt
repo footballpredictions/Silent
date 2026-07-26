@@ -43,29 +43,34 @@ fun MenuDnsScreen(
             .padding(16.dp)
             .verticalScroll(rememberScrollState()),
     ) {
-        TvTextButton(onClick = onBack, requestFocusOnOpen = true, requestFocusKey = "dns") {
-            Text("← Назад", fontSize = 12.sp, color = fg.copy(0.5f))
+        TvTextButton(
+            onClick = onBack,
+            modifier = Modifier.padding(bottom = 16.dp),
+            requestFocusOnOpen = true,
+            requestFocusKey = "dns",
+        ) {
+            Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
         }
 
         Text(
             "DNS",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
             color = fg,
             modifier = Modifier.padding(bottom = 4.dp),
         )
         Text(
             "Только debug-сборка. В release DNS всегда с сервера (Яндекс). Применяется при следующем подключении VPN.",
-            fontSize = 12.sp,
-            color = fg.copy(0.55f),
+            fontSize = 11.sp,
+            color = fg.copy(alpha = 0.45f),
             modifier = Modifier.padding(bottom = 16.dp),
         )
 
         if (SilentVpnService.isRunning) {
             Text(
                 "Отключите VPN перед сменой DNS.",
-                fontSize = 12.sp,
-                color = fg.copy(0.7f),
+                fontSize = 11.sp,
+                color = fg.copy(alpha = 0.45f),
                 modifier = Modifier.padding(bottom = 12.dp),
             )
         }

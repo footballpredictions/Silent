@@ -85,7 +85,7 @@ fun MenuHashesScreen(
             }
         }
         item {
-            Text("Хеши", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = fg)
+            Text("Хеши", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = fg)
             Text(
                 "Кеш на устройстве. При подключении VPN список обновляется автоматически.",
                 fontSize = 11.sp,

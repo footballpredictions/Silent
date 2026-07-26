@@ -50,23 +50,29 @@ fun MenuBypassScreen(
             .padding(16.dp)
             .verticalScroll(rememberScrollState()),
     ) {
-        TvTextButton(onClick = onBack, requestFocusOnOpen = true, requestFocusKey = "bypass") {
-            Text("← Назад", fontSize = 12.sp, color = fg.copy(0.5f))
+        TvTextButton(
+            onClick = onBack,
+            modifier = Modifier.padding(bottom = 16.dp),
+            requestFocusOnOpen = true,
+            requestFocusKey = "bypass",
+        ) {
+            Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
         }
 
+        // Как Подписка / Сессии / Бонусы: 14sp SemiBold (не 18 Bold).
         Text(
             "Варианты обхода",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
             color = fg,
-            modifier = Modifier.padding(bottom = 16.dp),
+            modifier = Modifier.padding(bottom = 12.dp),
         )
 
         if (vpnRunning) {
             Text(
                 "Отключите VPN перед сменой варианта.",
-                fontSize = 12.sp,
-                color = fg.copy(0.7f),
+                fontSize = 11.sp,
+                color = fg.copy(alpha = 0.45f),
                 modifier = Modifier.padding(bottom = 12.dp),
             )
         }
@@ -207,7 +213,7 @@ private fun BypassOption(
             title,
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
-            color = fg.copy(if (enabled) 1f else 0.45f),
+            color = if (enabled) fg else fg.copy(alpha = 0.45f),
             modifier = Modifier.padding(start = 4.dp),
         )
     }

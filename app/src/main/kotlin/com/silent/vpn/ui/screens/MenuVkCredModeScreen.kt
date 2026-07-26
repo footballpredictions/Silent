@@ -35,29 +35,34 @@ fun MenuVkCredModeScreen(
             .padding(16.dp)
             .verticalScroll(rememberScrollState()),
     ) {
-        TvTextButton(onClick = onBack, requestFocusOnOpen = true, requestFocusKey = "vk-cred") {
-            Text("← Назад", fontSize = 12.sp, color = fg.copy(0.5f))
+        TvTextButton(
+            onClick = onBack,
+            modifier = Modifier.padding(bottom = 16.dp),
+            requestFocusOnOpen = true,
+            requestFocusKey = "vk-cred",
+        ) {
+            Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
         }
 
         Text(
             "Режим VK-кредов",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
             color = fg,
             modifier = Modifier.padding(bottom = 4.dp),
         )
         Text(
             "Только debug-сборка. В release всегда VKCalls.",
-            fontSize = 12.sp,
-            color = fg.copy(0.55f),
+            fontSize = 11.sp,
+            color = fg.copy(alpha = 0.45f),
             modifier = Modifier.padding(bottom = 16.dp),
         )
 
         if (SilentVpnService.isRunning) {
             Text(
                 "Отключите VPN перед сменой режима.",
-                fontSize = 12.sp,
-                color = fg.copy(0.7f),
+                fontSize = 11.sp,
+                color = fg.copy(alpha = 0.45f),
                 modifier = Modifier.padding(bottom = 12.dp),
             )
         }

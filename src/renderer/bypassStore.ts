@@ -13,14 +13,15 @@ import { getStableDeviceFingerprint } from './api'
 const FAMILY_KEY = 'bypass_family'
 const OLCRTC_PROVIDER_KEY = 'olcrtc_provider'
 /** v3: android room → meet.small-dm.ru (LTE DPI) */
-const OLCRTC_CACHE_KEY = 'olcrtc_config_cache_v5'
+const OLCRTC_CACHE_KEY = 'olcrtc_config_cache_v9'
 
 export const BYPASS_FAMILY_WDTT = 'wdtt'
 export const BYPASS_FAMILY_OLCRTC = 'olcrtc'
 
-export const OLCRTC_JITSI = 'jitsi'
 export const OLCRTC_WBSTREAM = 'wbstream'
 export const OLCRTC_TELEMOST = 'telemost'
+/** @deprecated Jitsi убран — миграция старых prefs → telemost */
+export const OLCRTC_JITSI = 'jitsi'
 
 export {
   getVkCredStrategy,
@@ -47,18 +48,22 @@ export function setBypassFamily(family: string) {
 }
 
 export function getOlcrtcProvider(): string {
-  if (!isDebugBuild) return OLCRTC_JITSI
+  if (!isDebugBuild) return OLCRTC_TELEMOST
   try {
     const v = localStorage.getItem(OLCRTC_PROVIDER_KEY)
-    if (v === OLCRTC_WBSTREAM || v === OLCRTC_TELEMOST || v === OLCRTC_JITSI) return v
+    if (v === OLCRTC_WBSTREAM || v === OLCRTC_TELEMOST) return v
+    // старый jitsi → telemost
+    if (v === OLCRTC_JITSI) return OLCRTC_TELEMOST
   } catch { /* ignore */ }
-  return OLCRTC_JITSI
+  return OLCRTC_TELEMOST
 }
 
 export function setOlcrtcProvider(provider: string) {
   if (!isDebugBuild) return
   const normalized =
-    provider === OLCRTC_WBSTREAM || provider === OLCRTC_TELEMOST ? provider : OLCRTC_JITSI
+    provider === OLCRTC_WBSTREAM || provider === OLCRTC_TELEMOST
+      ? provider
+      : OLCRTC_TELEMOST
   localStorage.setItem(OLCRTC_PROVIDER_KEY, normalized)
 }
 
@@ -70,7 +75,7 @@ export function olcrtcProviderLabel(provider: string = getOlcrtcProvider()): str
   switch (provider) {
     case OLCRTC_WBSTREAM: return 'WB Stream'
     case OLCRTC_TELEMOST: return 'Яндекс Телемост'
-    default: return 'Jitsi Meet'
+    default: return 'Яндекс Телемост'
   }
 }
 
@@ -97,6 +102,8 @@ export type OlcrtcPublicConfig = {
       room_db_id?: string
       rooms_count?: number
       denied?: boolean
+      /** WB Stream: JWT аккаунта (не guest) — guest getToken → 403 */
+      auth_token?: string
     }
   >
 }
@@ -110,7 +117,7 @@ export async function sendOlcrtcHeartbeat(online: boolean = true): Promise<void>
     const roomDbId = cfg?.providers?.[prov]?.room_db_id
     if (!roomDbId) return
     const base = getPublicApiBaseUrl().replace(/\/$/, '')
-    const fp = await getStableDeviceFingerprint()
+    const fp = getStableDeviceFingerprint()
     await fetch(`${base}/api/vpn/olcrtc-heartbeat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -166,7 +173,125 @@ function olcrtcConfigPath(): string {
 function saveOlcrtcCache(cfg: OlcrtcPublicConfig) {
   try {
     localStorage.setItem(OLCRTC_CACHE_KEY, JSON.stringify({ at: Date.now(), cfg }))
+    try {
+      window.dispatchEvent(new CustomEvent('silent-olcrtc-config', { detail: cfg }))
+    } catch { /* ignore */ }
   } catch { /* ignore */ }
+}
+
+export function clearOlcrtcCache(): void {
+  try {
+    localStorage.removeItem(OLCRTC_CACHE_KEY)
+  } catch { /* ignore */ }
+}
+
+/** Текущий room id выбранного провайдера (из кеша после /olcrtc-config). */
+export function getLiveOlcrtcRoom(provider: string = getOlcrtcProvider()): string {
+  const cfg = getCachedOlcrtcConfig()
+  return (cfg?.providers?.[provider]?.room || '').trim()
+}
+
+/**
+ * Подтянуть /olcrtc-config; если room сменился — лог + событие для UI настроек.
+ * Вызывать при connect, ConfigSync и после peer-dead.
+ */
+export async function syncOlcrtcLiveChannel(opts?: {
+  log?: (msg: string) => void
+}): Promise<OlcrtcPublicConfig | null> {
+  const prov = getOlcrtcProvider()
+  const prevRoom = getLiveOlcrtcRoom(prov)
+  const cfg = await fetchOlcrtcConfig()
+  if (!cfg) return null
+  const nextRoom = (cfg.providers?.[prov]?.room || '').trim()
+  if (nextRoom && nextRoom !== prevRoom) {
+    const msg = prevRoom
+      ? `канал сменился: ${olcrtcProviderLabel(prov)} ${prevRoom.slice(0, 28)} → ${nextRoom.slice(0, 28)}`
+      : `канал: ${olcrtcProviderLabel(prov)} room=${nextRoom.slice(0, 48)}`
+    opts?.log?.(msg)
+    try {
+      const { pushLog } = await import('./debugLog')
+      pushLog('olcrtc', msg)
+    } catch { /* ignore */ }
+    if (prevRoom) {
+      try {
+        window.dispatchEvent(
+          new CustomEvent('silent-olcrtc-room-changed', {
+            detail: { provider: prov, prevRoom, nextRoom },
+          }),
+        )
+      } catch { /* ignore */ }
+    }
+  }
+  return cfg
+}
+
+/** Peer dead / SOCKS timeout → сервер снимет sticky; клиент сбросит кеш и возьмёт новый room. */
+export async function reportOlcrtcRoomFailure(detail: string = ''): Promise<OlcrtcPublicConfig | null> {
+  const cfg = getCachedOlcrtcConfig()
+  const prov = getOlcrtcProvider()
+  const roomDbId = cfg?.providers?.[prov]?.room_db_id || ''
+  const oldRoom = cfg?.providers?.[prov]?.room || ''
+  try {
+    const fp = getStableDeviceFingerprint()
+    const base = getPublicApiBaseUrl().replace(/\/$/, '')
+    const electron = (window as unknown as {
+      electronAPI?: {
+        tunnelApiRequest?: (p: {
+          method: string
+          path: string
+          body?: unknown
+          timeout?: number
+        }) => Promise<{ status: number; data: unknown }>
+      }
+    }).electronAPI
+    const body = {
+      room_db_id: roomDbId,
+      fingerprint: fp,
+      provider: prov,
+      device_type: 'pc',
+      detail: detail || `peer dead room=${oldRoom}`,
+    }
+    if (electron?.tunnelApiRequest) {
+      await electron.tunnelApiRequest({
+        method: 'POST',
+        path: '/api/vpn/olcrtc-room-failure',
+        body,
+        timeout: 15_000,
+      })
+    } else {
+      await fetch(`${base}/api/vpn/olcrtc-room-failure`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        cache: 'no-store',
+      })
+    }
+  } catch { /* ignore */ }
+  clearOlcrtcCache()
+  try {
+    const { pushLog } = await import('./debugLog')
+    pushLog('olcrtc', `room failure → сброс sticky, ищем новый канал (${detail || oldRoom})`)
+  } catch { /* ignore */ }
+  return syncOlcrtcLiveChannel()
+}
+
+let liveSyncTimer: ReturnType<typeof setInterval> | null = null
+
+/** Пока VPN/сессия olcrtc — раз в минуту сверять room с сервером (админ сменил канал). */
+export function startOlcrtcLiveSyncLoop(): void {
+  if (!isDebugBuild) return
+  stopOlcrtcLiveSyncLoop()
+  void syncOlcrtcLiveChannel()
+  liveSyncTimer = setInterval(() => {
+    void syncOlcrtcLiveChannel()
+  }, 60_000)
+}
+
+export function stopOlcrtcLiveSyncLoop(): void {
+  if (liveSyncTimer) {
+    clearInterval(liveSyncTimer)
+    liveSyncTimer = null
+  }
 }
 
 export function getCachedOlcrtcConfig(): OlcrtcPublicConfig | null {
@@ -277,6 +402,7 @@ export function buildOlcrtcConnectPayload(
     olcrtc_transport: p.transport || 'datachannel',
     olcrtc_socks_host: cfg.socks_host || '127.0.0.1',
     olcrtc_socks_port: cfg.socks_port || 8808,
+    ...(p.auth_token ? { olcrtc_auth_token: p.auth_token } : {}),
     ...extra,
   }
 }

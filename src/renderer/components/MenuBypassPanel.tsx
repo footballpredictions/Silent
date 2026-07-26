@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import {
   BYPASS_FAMILY_OLCRTC,
   BYPASS_FAMILY_WDTT,
-  OLCRTC_JITSI,
   OLCRTC_TELEMOST,
   OLCRTC_WBSTREAM,
   VK_CRED_AUTO,
@@ -11,6 +10,7 @@ import {
   bypassFamilyLabel,
   getBypassFamily,
   getCachedOlcrtcConfig,
+  getLiveOlcrtcRoom,
   getOlcrtcProvider,
   getVkCredStrategy,
   olcrtcProviderLabel,
@@ -18,6 +18,7 @@ import {
   setBypassFamily,
   setOlcrtcProvider,
   setVkCredStrategy,
+  syncOlcrtcLiveChannel,
   vkCredStrategyLabel,
 } from '../bypassStore'
 
@@ -84,13 +85,27 @@ export default function MenuBypassPanel({ fg, muted, bg, primary, vpnRunning, on
   const [pendingVk, setPendingVk] = useState<string | null>(null)
   const [pendingOlc, setPendingOlc] = useState<string | null>(null)
   const [olcCached, setOlcCached] = useState(!!getCachedOlcrtcConfig())
+  const [liveRoom, setLiveRoom] = useState(() => getLiveOlcrtcRoom(getOlcrtcProvider()))
 
   const btnBg = primary || fg
   const btnFg = bg || '#FFFFFF'
 
   useEffect(() => {
-    void prefetchOlcrtcConfig().then((c) => setOlcCached(!!c))
-  }, [])
+    const refresh = () => {
+      const prov = pendingOlc || olcProvider
+      setOlcCached(!!getCachedOlcrtcConfig())
+      setLiveRoom(getLiveOlcrtcRoom(prov))
+    }
+    void prefetchOlcrtcConfig().then(() => refresh())
+    void syncOlcrtcLiveChannel().then(() => refresh())
+    const onCfg = () => refresh()
+    window.addEventListener('silent-olcrtc-config', onCfg)
+    const t = window.setInterval(refresh, 2000)
+    return () => {
+      window.removeEventListener('silent-olcrtc-config', onCfg)
+      window.clearInterval(t)
+    }
+  }, [olcProvider, pendingOlc])
 
   const apply = () => {
     if (pendingFamily) {
@@ -134,6 +149,13 @@ export default function MenuBypassPanel({ fg, muted, bg, primary, vpnRunning, on
       )}
       <p className="text-xs mb-3" style={{ color: muted }}>
         olcrtc-config: {olcCached ? 'загружен' : 'ещё нет (подтянется с публичного API)'}
+        {effectiveFamily === BYPASS_FAMILY_OLCRTC && liveRoom ? (
+          <>
+            <br />
+            Канал ({olcrtcProviderLabel(pendingOlc || olcProvider)}):{' '}
+            <span style={{ color: fg, wordBreak: 'break-all' }}>{liveRoom}</span>
+          </>
+        ) : null}
       </p>
 
       <div className="text-xs font-semibold mb-1" style={{ color: fg }}>1. VK / WDTT</div>
@@ -181,7 +203,7 @@ export default function MenuBypassPanel({ fg, muted, bg, primary, vpnRunning, on
       <div className="text-xs font-semibold mb-1 mt-3" style={{ color: fg }}>2. olcrtc</div>
       <ModeOption
         title="Вариант 2 — olcrtc"
-        subtitle="TCP-over-WebRTC: Jitsi / WB Stream / Телемост"
+        subtitle="TCP-over-WebRTC: Телемост / WB Stream"
         selected={effectiveFamily === BYPASS_FAMILY_OLCRTC}
         enabled={!vpnRunning}
         fg={fg}
@@ -191,13 +213,13 @@ export default function MenuBypassPanel({ fg, muted, bg, primary, vpnRunning, on
       {effectiveFamily === BYPASS_FAMILY_OLCRTC && (
         <div className="ml-3 mb-2 border-l pl-3" style={{ borderColor: `${muted}44` }}>
           <ModeOption
-            title="Jitsi Meet"
-            subtitle="рекомендуется datachannel"
-            selected={(pendingOlc || olcProvider) === OLCRTC_JITSI}
+            title="Яндекс Телемост"
+            subtitle="рекомендуется (LTE)"
+            selected={(pendingOlc || olcProvider) === OLCRTC_TELEMOST}
             enabled={!vpnRunning}
             fg={fg}
             muted={muted}
-            onSelect={() => setPendingOlc(OLCRTC_JITSI)}
+            onSelect={() => setPendingOlc(OLCRTC_TELEMOST)}
           />
           <ModeOption
             title="WB Stream"
@@ -207,15 +229,6 @@ export default function MenuBypassPanel({ fg, muted, bg, primary, vpnRunning, on
             fg={fg}
             muted={muted}
             onSelect={() => setPendingOlc(OLCRTC_WBSTREAM)}
-          />
-          <ModeOption
-            title="Яндекс Телемост"
-            subtitle="vp8channel"
-            selected={(pendingOlc || olcProvider) === OLCRTC_TELEMOST}
-            enabled={!vpnRunning}
-            fg={fg}
-            muted={muted}
-            onSelect={() => setPendingOlc(OLCRTC_TELEMOST)}
           />
         </div>
       )}

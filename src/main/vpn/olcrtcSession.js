@@ -196,19 +196,24 @@ function isOlcrtcAlive() {
 }
 
 function renderClientYaml(config) {
-  const provider = String(config.olcrtc_provider || config.olcrtcProvider || 'jitsi')
+  const provider = String(config.olcrtc_provider || config.olcrtcProvider || 'telemost')
   const room = String(config.olcrtc_room || config.olcrtcRoom || '').trim()
   const key = String(config.olcrtc_crypto_key || config.olcrtcCryptoKey || '').trim()
   const transport = String(config.olcrtc_transport || config.olcrtcTransport || 'datachannel').trim()
   const socksHost = String(config.olcrtc_socks_host || '127.0.0.1')
   const socksPort = Number(config.olcrtc_socks_port || 8808)
+  const authToken = String(config.olcrtc_auth_token || config.olcrtcAuthToken || '').trim()
   if (!room || key.length !== 64) {
     throw new Error('olcrtc: нужны room и crypto_key (64 hex) из /api/vpn/olcrtc-config')
   }
+  const authLines = ['auth:', `  provider: ${provider}`]
+  if (authToken) {
+    const esc = authToken.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+    authLines.push(`  token: "${esc}"`)
+  }
   return [
     'mode: cnc',
-    'auth:',
-    `  provider: ${provider}`,
+    ...authLines,
     'room:',
     `  id: "${room}"`,
     'crypto:',
@@ -340,7 +345,7 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
   sessionActive = true
   ready = false
   log?.(`[olcrtc] start ${olcrtcPath}`)
-  log?.(`[olcrtc] provider=${config.olcrtc_provider || 'jitsi'} room=${String(config.olcrtc_room || '').slice(0, 60)} yaml=${yamlPath}`)
+  log?.(`[olcrtc] provider=${config.olcrtc_provider || 'telemost'} room=${String(config.olcrtc_room || '').slice(0, 60)} yaml=${yamlPath}`)
 
   olcrtcProc = spawn(olcrtcPath, [yamlPath], {
     cwd: dataDir,

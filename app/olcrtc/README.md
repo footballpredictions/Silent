@@ -6,7 +6,9 @@ Android **нельзя** запускать бинарь из `filesDir` (error=
 
 ```
 app/src/main/jniLibs/arm64-v8a/libolcrtc.so
-app/src/main/jniLibs/armeabi-v7a/libolcrtc.so   # опционально
+app/src/main/jniLibs/armeabi-v7a/libolcrtc.so
+app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
+app/src/main/jniLibs/armeabi-v7a/libhev-socks5-tunnel.so   # ТВ/приставки (armeabi-v7a)
 ```
 
 ## Сборка — обязательно CGO + NDK

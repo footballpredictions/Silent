@@ -572,6 +572,12 @@ cd pc; npm install; npm run dev
 - API: `GET/POST /api/admin/settings/registration`. Сервис: `app/services/registration_settings.py`.
 - Задеплоено на прод (`deploy_api.py`, в список файлов добавлен `registration_settings.py`). Push `main`.
 
+### 2026-07-26 — Wi‑Fi→LTE reconnect (olcrtc + VK)
+
+- Баг: при VPN `registerDefaultNetworkCallback` видел туннель, не underlying; poll `checkUnderlyingNetwork` только при WDTT ready → olcrtc после выкл. Wi‑Fi не переподключался.
+- Фикс: callback только NOT_VPN; `underlyingTransportFingerprint`; poll для olcrtc; `onLost` → transport_switch; LTE wait ~1.8s перед restart olcrtc. VK тот же callback/poll (VALIDATED не обязателен для switch).
+- Push: `android` `8991030`.
+
 ### 2026-07-26 — UI: шрифты debug-меню = как Подписка/Сессии
 
 - Android/PC «Варианты обхода», DNS, VK-креды: заголовок `14sp SemiBold` / `text-sm font-semibold` (было 18 Bold / text-base–lg bold).

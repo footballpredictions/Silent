@@ -572,6 +572,12 @@ cd pc; npm install; npm run dev
 - API: `GET/POST /api/admin/settings/registration`. Сервис: `app/services/registration_settings.py`.
 - Задеплоено на прод (`deploy_api.py`, в список файлов добавлен `registration_settings.py`). Push `main`.
 
+### 2026-07-26 — UI: шрифты debug-меню = как Подписка/Сессии
+
+- Android/PC «Варианты обхода», DNS, VK-креды: заголовок `14sp SemiBold` / `text-sm font-semibold` (было 18 Bold / text-base–lg bold).
+- Подсказки и «Назад» — те же alpha/размеры, что у Бонусы/Сессии.
+- Push: `android` `db65dc8`; `pc` `a06cbfc`.
+
 ### 2026-07-26 — Android olcrtc: reconnect + плитка + EOF noise
 
 - Симптомы: `remote not ready (EOF)` в логе при живом VPN; после `peer … closed` / звонка / Wi‑Fi↔LTE — без reconnect, VPN-иконка «залипает»; QS-плитка не включала/выключала olcrtc.

@@ -23,10 +23,12 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URLEncoder
+import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import android.util.Base64
 
 /**
  * Debug-only: olcrtc cnc (SOCKS5). Старт неблокирующий — SOCKS ждём в фоне,
@@ -40,6 +42,9 @@ object OlcrtcTunnelManager {
         val transport: String,
         val socksHost: String = "127.0.0.1",
         val socksPort: Int = 8808,
+        /** Per-session SOCKS5 RFC1929 — без auth любой локальный процесс жжёт peer. */
+        val socksUser: String = "",
+        val socksPass: String = "",
         val isBootstrap: Boolean = false,
         /** LTE DPI: HTTP CONNECT к Улью, дальше meet.egovm.ru */
         val httpsProxy: String = "",
@@ -124,16 +129,25 @@ object OlcrtcTunnelManager {
                 return "olcrtc: libolcrtc.so не найден в nativeLibraryDir (jniLibs)"
             }
 
+        // Per-session SOCKS login/pass — закрываем 127.0.0.1:8808 от чужих приложений.
+        val sessionParams =
+            if (params.socksUser.isNotBlank()) {
+                params
+            } else {
+                val creds = generateSocksCreds()
+                params.copy(socksUser = creds.first, socksPass = creds.second)
+            }
+
         val appCtx = context.applicationContext
         _running.value = true
-        val engineHint = when (params.provider.lowercase()) {
+        val engineHint = when (sessionParams.provider.lowercase()) {
             "wbstream" -> "livekit"
             "telemost" -> "goolom"
             else -> "goolom"
         }
         WdttTunnelManager.logUi(
             "olcrtc_start",
-            "start ${params.provider} engine=$engineHint room=${params.room.take(36)}…",
+            "start ${sessionParams.provider} engine=$engineHint room=${sessionParams.room.take(36)}… socksAuth=on",
             1,
         )
 
@@ -159,7 +173,7 @@ object OlcrtcTunnelManager {
                 val dataDir = File(appCtx.filesDir, "olcrtc-data").apply { mkdirs() }
                 val dns = systemDnsHostPort(appCtx)
                 val yamlFile = File(appCtx.filesDir, "olcrtc-client.yaml")
-                val yaml = renderClientYaml(params, dns)
+                val yaml = renderClientYaml(sessionParams, dns)
                     .replace(Regex("""(?m)^data: data$"""), "data: \"${dataDir.absolutePath}\"")
                 yamlFile.writeText(yaml)
 
@@ -167,22 +181,27 @@ object OlcrtcTunnelManager {
                 var telemostConnFile: File? = null
                 var wbConnFile: File? = null
                 when {
-                    params.provider.equals("telemost", ignoreCase = true) -> {
-                        telemostConnFile = prefetchTelemostConnViaOkHttp(appCtx, params.room, staticHosts)
+                    sessionParams.provider.equals("telemost", ignoreCase = true) -> {
+                        telemostConnFile =
+                            prefetchTelemostConnViaOkHttp(appCtx, sessionParams.room, staticHosts)
                     }
-                    params.provider.equals("wbstream", ignoreCase = true) -> {
-                        wbConnFile = prefetchWbstreamConnViaOkHttp(appCtx, params.room, staticHosts)
+                    sessionParams.provider.equals("wbstream", ignoreCase = true) -> {
+                        wbConnFile =
+                            prefetchWbstreamConnViaOkHttp(appCtx, sessionParams.room, staticHosts)
                     }
                 }
                 // Часто нужные whitelist-хосты заранее (Java DNS работает, Go — нет)
                 resolveInto(staticHosts, "stream.wb.ru", "goloom.strm.yandex.net", "rtc-el-02.wb.ru")
 
-                DebugLog.i("Olcrtc", "start provider=${params.provider} bin=$olcrtcBin dns=$dns hosts=${staticHosts.size}")
+                DebugLog.i(
+                    "Olcrtc",
+                    "start provider=${sessionParams.provider} bin=$olcrtcBin dns=$dns hosts=${staticHosts.size} socksUser=${sessionParams.socksUser}",
+                )
                 val libDir = appCtx.applicationInfo.nativeLibraryDir
-                if (params.httpsProxy.isNotBlank()) {
+                if (sessionParams.httpsProxy.isNotBlank()) {
                     WdttTunnelManager.logUi(
                         "olcrtc_proxy",
-                        "HTTPS_PROXY=${params.httpsProxy.take(48)} (legacy)",
+                        "HTTPS_PROXY=${sessionParams.httpsProxy.take(48)} (legacy)",
                         1,
                     )
                 }
@@ -192,7 +211,7 @@ object OlcrtcTunnelManager {
                     yamlFile.absolutePath,
                     dataDir,
                     libDir,
-                    params.httpsProxy,
+                    sessionParams.httpsProxy,
                     telemostConnFile = telemostConnFile,
                     wbConnFile = wbConnFile,
                     staticHosts = staticHosts,
@@ -201,7 +220,7 @@ object OlcrtcTunnelManager {
                 pipeLogs(proc)
                 watchExit(proc)
 
-                if (!waitForSocks(params.socksHost, params.socksPort, 90_000)) {
+                if (!waitForSocks(sessionParams.socksHost, sessionParams.socksPort, 90_000)) {
                     val exited = try {
                         proc.exitValue()
                     } catch (_: Exception) {
@@ -212,7 +231,7 @@ object OlcrtcTunnelManager {
                         exited != null ->
                             "olcrtc вышел code=$exited до SOCKS (бинарь/room/peer)"
                         else ->
-                            "olcrtc SOCKS не поднялся на ${params.socksHost}:${params.socksPort}"
+                            "olcrtc SOCKS не поднялся на ${sessionParams.socksHost}:${sessionParams.socksPort}"
                     }
                     _lastError.value = msg
                     WdttTunnelManager.logUi("olcrtc_socks_fail", msg, 99, isError = true)
@@ -221,15 +240,15 @@ object OlcrtcTunnelManager {
                 }
                 WdttTunnelManager.logUi(
                     "olcrtc_socks",
-                    "SOCKS listen ${params.socksHost}:${params.socksPort}",
+                    "SOCKS listen ${sessionParams.socksHost}:${sessionParams.socksPort} auth=on",
                     1,
                 )
                 // Telemost=goolom ICE дольше LiveKit: dial ДО hev, иначе шторм CONNECT
                 // от приложений пока peer не готов → ещё медленнее (waiting SOCKS 5s+).
                 waitForIceSettled(
-                    if (params.provider.equals("telemost", ignoreCase = true)) 4_000L else 1_200L,
+                    if (sessionParams.provider.equals("telemost", ignoreCase = true)) 4_000L else 1_200L,
                 )
-                if (!waitForSocksDial(params.socksHost, params.socksPort, 45_000)) {
+                if (!waitForSocksDial(sessionParams, 45_000)) {
                     val msg = "olcrtc SOCKS слушает, но peer не отвечает (dial timeout)"
                     _lastError.value = msg
                     WdttTunnelManager.logUi("olcrtc_dial_fail", msg, 99, isError = true)
@@ -239,7 +258,7 @@ object OlcrtcTunnelManager {
                 WdttTunnelManager.logUi("olcrtc_dial", "SOCKS dial OK", 1)
                 iceConnected = true
                 if (vpnService != null) {
-                    val tunErr = attachHevTun(appCtx, params, vpnService)
+                    val tunErr = attachHevTun(appCtx, sessionParams, vpnService)
                     if (tunErr != null) {
                         _lastError.value = tunErr
                         WdttTunnelManager.logUi("olcrtc_tun_fail", tunErr, 99, isError = true)
@@ -257,13 +276,13 @@ object OlcrtcTunnelManager {
                 // Chrome/Android «Сеть недоступна»: captive-portal probe в момент establish.
                 // Прогрев generate_204-хостов ДО tunnelReady — меньше ложного offline.
                 Thread.sleep(250)
-                socksDialOnce(params.socksHost, params.socksPort, "connectivitycheck.gstatic.com", 6_000)
-                socksDialOnce(params.socksHost, params.socksPort, "www.gstatic.com", 5_000)
+                socksDialOnce(sessionParams, "connectivitycheck.gstatic.com", 6_000)
+                socksDialOnce(sessionParams, "www.gstatic.com", 5_000)
                 _tunnelReady.value = true
                 WdttTunnelManager.logUi("olcrtc_ready", "tunnelReady (SOCKS + hev TUN)", 1)
-                warmSocksDial(params.socksHost, params.socksPort, "www.google.com")
-                warmSocksDial(params.socksHost, params.socksPort, "132-243-234-162.nip.io")
-                warmSocksDial(params.socksHost, params.socksPort, "www.youtube.com")
+                warmSocksDial(sessionParams, "www.google.com")
+                warmSocksDial(sessionParams, "132-243-234-162.nip.io")
+                warmSocksDial(sessionParams, "www.youtube.com")
             } catch (e: Exception) {
                 val msg = e.message ?: "olcrtc background start failed"
                 _lastError.value = msg
@@ -429,28 +448,33 @@ object OlcrtcTunnelManager {
         Thread.sleep(200)
         val conf = File(context.filesDir, "hev-olcrtc.yml")
         // 198.18.0.0/15 — как sing-box fake-ip на PC; mapdns отвечает на 198.18.0.2:53.
-        conf.writeText(
-            """
-            tunnel:
-              mtu: 1280
-              ipv4: 198.18.0.1
-            socks5:
-              port: ${params.socksPort}
-              address: ${params.socksHost}
-              udp: 'udp'
-            mapdns:
-              address: 198.18.0.2
-              port: 53
-              network: 198.18.0.0
-              netmask: 255.254.0.0
-              cache-size: 10000
-            misc:
-              log-level: warn
-              connect-timeout: 8000
-              tcp-read-write-timeout: 300000
-              udp-read-write-timeout: 800
-            """.trimIndent() + "\n",
-        )
+        val hevYaml = buildString {
+            appendLine("tunnel:")
+            appendLine("  mtu: 1280")
+            appendLine("  ipv4: 198.18.0.1")
+            appendLine("socks5:")
+            appendLine("  port: ${params.socksPort}")
+            appendLine("  address: ${params.socksHost}")
+            appendLine("  udp: 'udp'")
+            if (params.socksUser.isNotBlank()) {
+                val u = params.socksUser.replace("'", "''")
+                val p = params.socksPass.replace("'", "''")
+                appendLine("  username: '$u'")
+                appendLine("  password: '$p'")
+            }
+            appendLine("mapdns:")
+            appendLine("  address: 198.18.0.2")
+            appendLine("  port: 53")
+            appendLine("  network: 198.18.0.0")
+            appendLine("  netmask: 255.254.0.0")
+            appendLine("  cache-size: 10000")
+            appendLine("misc:")
+            appendLine("  log-level: warn")
+            appendLine("  connect-timeout: 8000")
+            appendLine("  tcp-read-write-timeout: 300000")
+            appendLine("  udp-read-write-timeout: 800")
+        }
+        conf.writeText(hevYaml)
         return try {
             val builder = vpnService.Builder()
                 .setSession("Silent olcrtc")
@@ -551,11 +575,23 @@ object OlcrtcTunnelManager {
         return n
     }
 
+    private fun generateSocksCreds(): Pair<String, String> {
+        val rnd = SecureRandom()
+        val userBytes = ByteArray(6)
+        val passBytes = ByteArray(18)
+        rnd.nextBytes(userBytes)
+        rnd.nextBytes(passBytes)
+        val user = "s" + userBytes.joinToString("") { "%02x".format(it) }
+        val pass =
+            Base64.encodeToString(passBytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        return user to pass
+    }
+
     /** SOCKS5 CONNECT по домену — peer + DNS через туннель (как на PC). */
-    private fun waitForSocksDial(host: String, port: Int, timeoutMs: Long): Boolean {
+    private fun waitForSocksDial(params: Params, timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
-            if (socksDialOnce(host, port, "www.gstatic.com", soTimeoutMs = 4000)) {
+            if (socksDialOnce(params, "www.gstatic.com", soTimeoutMs = 4000)) {
                 return true
             }
             Thread.sleep(250)
@@ -563,10 +599,10 @@ object OlcrtcTunnelManager {
         return false
     }
 
-    private fun warmSocksDial(host: String, port: Int, domain: String) {
+    private fun warmSocksDial(params: Params, domain: String) {
         Thread({
             repeat(3) {
-                if (socksDialOnce(host, port, domain, soTimeoutMs = 10000)) {
+                if (socksDialOnce(params, domain, soTimeoutMs = 10000)) {
                     WdttTunnelManager.logUi("olcrtc_warm", "warm TCP $domain OK", 2)
                     return@Thread
                 }
@@ -576,16 +612,44 @@ object OlcrtcTunnelManager {
         }, "olcrtc-warm").apply { isDaemon = true }.start()
     }
 
-    private fun socksDialOnce(host: String, port: Int, domain: String, soTimeoutMs: Int): Boolean {
+    /** SOCKS5 CONNECT + optional RFC1929 user/pass. */
+    private fun socksDialOnce(params: Params, domain: String, soTimeoutMs: Int): Boolean {
+        val host = params.socksHost
+        val port = params.socksPort
         val domainBytes = domain.toByteArray(Charsets.US_ASCII)
         if (domainBytes.size > 255) return false
+        val needAuth = params.socksUser.isNotBlank()
         return try {
             Socket().use { s ->
                 s.soTimeout = soTimeoutMs
                 s.connect(InetSocketAddress(host, port), 800)
-                s.getOutputStream().write(byteArrayOf(0x05, 0x01, 0x00))
+                val out = s.getOutputStream()
+                val inp = s.getInputStream()
+                out.write(
+                    if (needAuth) byteArrayOf(0x05, 0x01, 0x02) else byteArrayOf(0x05, 0x01, 0x00),
+                )
                 val greet = ByteArray(2)
-                if (s.getInputStream().read(greet) < 2 || greet[0] != 0x05.toByte() || greet[1] != 0x00.toByte()) {
+                if (inp.read(greet) < 2 || greet[0] != 0x05.toByte()) return false
+                if (needAuth) {
+                    if (greet[1] != 0x02.toByte()) return false
+                    val ub = params.socksUser.toByteArray(Charsets.UTF_8)
+                    val pb = params.socksPass.toByteArray(Charsets.UTF_8)
+                    if (ub.size > 255 || pb.size > 255) return false
+                    val auth = ByteArray(3 + ub.size + pb.size)
+                    auth[0] = 0x01
+                    auth[1] = ub.size.toByte()
+                    System.arraycopy(ub, 0, auth, 2, ub.size)
+                    auth[2 + ub.size] = pb.size.toByte()
+                    System.arraycopy(pb, 0, auth, 3 + ub.size, pb.size)
+                    out.write(auth)
+                    val authResp = ByteArray(2)
+                    if (inp.read(authResp) < 2 ||
+                        authResp[0] != 0x01.toByte() ||
+                        authResp[1] != 0x00.toByte()
+                    ) {
+                        return false
+                    }
+                } else if (greet[1] != 0x00.toByte()) {
                     return false
                 }
                 val req = ByteArray(5 + domainBytes.size + 2)
@@ -597,9 +661,9 @@ object OlcrtcTunnelManager {
                 val p = 5 + domainBytes.size
                 req[p] = 0x01
                 req[p + 1] = 0xBB.toByte() // 443
-                s.getOutputStream().write(req)
+                out.write(req)
                 val resp = ByteArray(2)
-                s.getInputStream().read(resp) >= 2 && resp[1] == 0x00.toByte()
+                inp.read(resp) >= 2 && resp[1] == 0x00.toByte()
             }
         } catch (_: Exception) {
             false
@@ -1060,9 +1124,14 @@ object OlcrtcTunnelManager {
             "socks:",
             "  host: \"${p.socksHost}\"",
             "  port: ${p.socksPort}",
-            "data: data",
-            "",
         )
+        if (p.socksUser.isNotBlank()) {
+            val u = p.socksUser.replace("\\", "\\\\").replace("\"", "\\\"")
+            val pw = p.socksPass.replace("\\", "\\\\").replace("\"", "\\\"")
+            lines += "  user: \"$u\""
+            lines += "  pass: \"$pw\""
+        }
+        lines += listOf("data: data", "")
         return lines.joinToString("\n")
     }
 }

@@ -5,10 +5,9 @@ Android **нельзя** запускать бинарь из `filesDir` (error=
 Нужен `libolcrtc.so` в jniLibs (как `libclient.so`):
 
 ```
-app/src/main/jniLibs/arm64-v8a/libolcrtc.so
-app/src/main/jniLibs/armeabi-v7a/libolcrtc.so
-app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
-app/src/main/jniLibs/armeabi-v7a/libhev-socks5-tunnel.so   # ТВ/приставки (armeabi-v7a)
+app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86,x86_64}/libolcrtc.so
+app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86,x86_64}/libhev-socks5-tunnel.so
+# arm = телефоны/ТВ; x86/x86_64 = эмулятор (и редкие x86-боксы)
 ```
 
 ## Сборка — обязательно CGO + NDK

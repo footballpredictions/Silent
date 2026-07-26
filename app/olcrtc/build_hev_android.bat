@@ -33,7 +33,11 @@ if errorlevel 1 exit /b 1
 
 if not exist "%JNI%\arm64-v8a" mkdir "%JNI%\arm64-v8a"
 if not exist "%JNI%\armeabi-v7a" mkdir "%JNI%\armeabi-v7a"
-copy /Y "%HEV%\libs\arm64-v8a\libhev-socks5-tunnel.so" "%JNI%\arm64-v8a\" >nul
-copy /Y "%HEV%\libs\armeabi-v7a\libhev-socks5-tunnel.so" "%JNI%\armeabi-v7a\" >nul
-echo OK: hev → jniLibs arm64 + armeabi-v7a
+for %%A in (arm64-v8a armeabi-v7a x86 x86_64) do (
+  if not exist "%JNI%\%%A" mkdir "%JNI%\%%A"
+  if exist "%HEV%\libs\%%A\libhev-socks5-tunnel.so" (
+    copy /Y "%HEV%\libs\%%A\libhev-socks5-tunnel.so" "%JNI%\%%A\" >nul
+  )
+)
+echo OK: hev → jniLibs arm64 + armeabi-v7a + x86 + x86_64
 endlocal

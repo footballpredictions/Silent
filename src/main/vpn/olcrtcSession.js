@@ -270,6 +270,9 @@ function renderClientYaml(config) {
     socksLines.push(`  user: "${socksUser.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`)
     socksLines.push(`  pass: "${socksPass.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`)
   }
+  // Community URI: vp8-fps=60 — ближе к потолку SFU (~10 Мбит Telemost).
+  const vp8Lines =
+    transport === 'vp8channel' ? ['vp8:', '  fps: 60', '  batch_size: 64'] : []
   return [
     'mode: cnc',
     'auth:',
@@ -282,6 +285,7 @@ function renderClientYaml(config) {
     `  transport: ${transport}`,
     '  dns: "1.1.1.1:53"',
     ...socksLines,
+    ...vp8Lines,
     'data: data',
     '',
   ].join('\n')

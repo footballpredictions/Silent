@@ -34,8 +34,8 @@ export default function MenuDnsPanel({ fg, muted, onBack, vpnConnected = false }
         ← Назад
       </button>
 
-      <h2 className="text-lg font-bold mb-1" style={{ color: fg }}>DNS</h2>
-      <p className="text-xs mb-4 leading-relaxed" style={{ color: muted }}>
+      <h2 className="text-sm font-semibold mb-1" style={{ color: fg }}>DNS</h2>
+      <p className="text-[11px] mb-4 leading-relaxed" style={{ color: muted }}>
         Только debug-сборка. В release DNS не из этого меню. Применяется при следующем подключении VPN.
       </p>
 
@@ -84,8 +84,8 @@ export default function MenuDnsPanel({ fg, muted, onBack, vpnConnected = false }
             className="w-full max-w-sm rounded-xl p-4 shadow-lg"
             style={{ background: 'var(--bg, #fff)', color: fg }}
           >
-            <div className="text-base font-semibold mb-2">Сменить DNS?</div>
-            <p className="text-sm mb-4 leading-relaxed" style={{ color: muted }}>
+            <div className="text-sm font-semibold mb-2">Сменить DNS?</div>
+            <p className="text-xs mb-4 leading-relaxed" style={{ color: muted }}>
               Было: {preset.title}
               <br />
               Будет: {pending.title} ({pending.servers})

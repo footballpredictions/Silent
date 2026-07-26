@@ -116,12 +116,13 @@ export default function MenuBypassPanel({ fg, muted, bg, primary, vpnRunning, on
 
   return (
     <div className="relative flex flex-col h-full p-4 overflow-y-auto">
-      <button type="button" onClick={onBack} className="text-xs self-start mb-2 hover:opacity-70" style={{ color: muted }}>
+      <button type="button" onClick={onBack} className="text-xs self-start mb-4 hover:opacity-70" style={{ color: muted }}>
         ← Назад
       </button>
-      <h2 className="text-base font-bold mb-4" style={{ color: fg }}>Варианты обхода</h2>
+      {/* Как Подписка / Сессии / Хеши: text-sm font-semibold */}
+      <h2 className="text-sm font-semibold mb-3" style={{ color: fg }}>Варианты обхода</h2>
       {vpnRunning && (
-        <p className="text-xs mb-3" style={{ color: muted }}>
+        <p className="text-[11px] mb-3" style={{ color: muted }}>
           Отключите VPN перед сменой варианта.
         </p>
       )}
@@ -208,15 +209,15 @@ export default function MenuBypassPanel({ fg, muted, bg, primary, vpnRunning, on
             aria-modal="true"
             aria-labelledby="bypass-apply-title"
           >
-            <div id="bypass-apply-title" className="text-base font-semibold">Применить?</div>
-            <div className="text-sm" style={{ color: muted }}>
+            <div id="bypass-apply-title" className="text-sm font-semibold">Применить?</div>
+            <div className="text-xs" style={{ color: muted }}>
               {bypassFamilyLabel(family)}
               {pendingFamily ? ` → ${bypassFamilyLabel(pendingFamily)}` : ''}
             </div>
             <div className="flex gap-2 justify-end">
               <button
                 type="button"
-                className="px-3 py-1.5 rounded-lg text-sm"
+                className="px-3 py-1.5 rounded-lg text-xs"
                 style={{ color: muted }}
                 onClick={cancel}
               >
@@ -224,7 +225,7 @@ export default function MenuBypassPanel({ fg, muted, bg, primary, vpnRunning, on
               </button>
               <button
                 type="button"
-                className="px-3 py-1.5 rounded-lg text-sm font-medium"
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold"
                 style={{ background: btnBg, color: btnFg }}
                 onClick={apply}
               >

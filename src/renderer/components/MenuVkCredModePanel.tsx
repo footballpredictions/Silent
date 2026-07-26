@@ -82,11 +82,11 @@ export default function MenuVkCredModePanel({ fg, muted, bg, primary, vpnRunning
 
   return (
     <div className="flex flex-col h-full p-4 overflow-y-auto">
-      <button type="button" onClick={onBack} className="text-xs self-start mb-2 hover:opacity-70" style={{ color: muted }}>
+      <button type="button" onClick={onBack} className="text-xs self-start mb-4 hover:opacity-70" style={{ color: muted }}>
         ← Назад
       </button>
-      <h2 className="text-base font-bold mb-1" style={{ color: fg }}>Режим VK-кредов</h2>
-      <p className="text-xs mb-4 leading-snug" style={{ color: muted }}>
+      <h2 className="text-sm font-semibold mb-1" style={{ color: fg }}>Режим VK-кредов</h2>
+      <p className="text-[11px] mb-4 leading-snug" style={{ color: muted }}>
         Только debug-сборка. В release всегда VKCalls.
       </p>
       {vpnRunning && (

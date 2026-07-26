@@ -34,10 +34,13 @@ def _unit() -> str:
         [Service]
         Type=simple
         WorkingDirectory={REMOTE_HP}
+        # Docker bridge → host; снаружи режет UFW (только 172.16.0.0/12).
         Environment=OLCRTC_HOST_PROVISION_BIND=0.0.0.0
         Environment=OLCRTC_HOST_PROVISION_PORT=9101
         Environment=OLCRTC_HOST_PROVISION_STATE_DIR={REMOTE_STATES}
         Environment=OLCRTC_BACKEND_ROOT={REMOTE_HP}
+        # X-Internal-Secret для /v1/*
+        EnvironmentFile=-/opt/silent-vpn/backend/.env
         ExecStart={REMOTE_HP}/venv/bin/python {REMOTE_HP}/olcrtc_host_provision_server.py
         Restart=on-failure
         RestartSec=5
@@ -90,12 +93,18 @@ systemctl restart silent-olcrtc-host-provision
 ufw allow from 172.16.0.0/12 to any port 9101 proto tcp comment 'olcrtc-host-provision' || true
 iptables -C INPUT -s 172.16.0.0/12 -p tcp --dport 9101 -j ACCEPT 2>/dev/null || \
   iptables -I INPUT -s 172.16.0.0/12 -p tcp --dport 9101 -j ACCEPT
+# Лишний UDP (ничего не слушает)
+ufw delete allow 56002/udp >/dev/null 2>&1 || true
+ufw delete allow 56002/udp >/dev/null 2>&1 || true
 sleep 2
 systemctl is-active silent-olcrtc-host-provision
-curl -sS http://127.0.0.1:9101/v1/status || true
+SECRET=$(grep -E '^INTERNAL_API_SECRET=' /opt/silent-vpn/backend/.env | head -1 | cut -d= -f2- | tr -d '\\r' | tr -d '"' | tr -d "'")
+curl -sS -H "X-Internal-Secret: $SECRET" http://127.0.0.1:9101/v1/status || true
+echo
+curl -sS -o /dev/null -w 'noauth_status=%{{http_code}}\\n' http://127.0.0.1:9101/v1/status || true
 """,
         )
-        print("OK: silent-olcrtc-host-provision on 127.0.0.1:9101")
+        print("OK: silent-olcrtc-host-provision :9101 (UFW docker + X-Internal-Secret)")
         print(f"States: {REMOTE_STATES}/telemost_state.json , wbstream_state.json")
         print("One-time login (Windows): python scripts/olcrtc_room_provision_host.py login telemost")
         print("Then upload JSON via admin «Агент комнат» or scp to agent_states/")

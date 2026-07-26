@@ -574,6 +574,7 @@ def render_client_yaml(
             "socks:",
             f'  host: "{socks_host}"',
             f"  port: {socks_port}",
+            # user/pass генерирует клиент на сессию (RFC1929) — в API не кладём.
             "data: data",
             "",
         ]

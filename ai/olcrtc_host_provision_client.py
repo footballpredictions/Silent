@@ -1,6 +1,7 @@
 """Клиент host-side Playwright provision (Chromium на Улье, не в Docker API).
 
-Сервис: systemd ``silent-olcrtc-host-provision`` → ``127.0.0.1:9101``
+Сервис: systemd ``silent-olcrtc-host-provision`` → ``:9101`` (UFW docker-only).
+Auth: ``X-Internal-Secret: INTERNAL_API_SECRET``.
 Из контейнера: ``host.docker.internal`` или ``172.17.0.1``.
 """
 from __future__ import annotations
@@ -35,13 +36,21 @@ def _candidate_urls() -> list[str]:
     return out
 
 
+def _auth_headers() -> dict[str, str]:
+    secret = (os.environ.get("INTERNAL_API_SECRET") or "").strip()
+    if not secret:
+        return {}
+    return {"X-Internal-Secret": secret}
+
+
 async def host_provision_status() -> dict[str, Any]:
     """Статус host-сервиса (для админки)."""
     last_err = ""
+    headers = _auth_headers()
     for base in _candidate_urls():
         try:
             async with httpx.AsyncClient(timeout=4.0) as client:
-                r = await client.get(f"{base}/v1/status")
+                r = await client.get(f"{base}/v1/status", headers=headers)
                 if r.status_code == 200:
                     data = r.json()
                     data["url"] = base
@@ -71,10 +80,11 @@ async def create_room_via_host(
     if storage_state:
         body["storage_state"] = storage_state
     last_err = ""
+    headers = _auth_headers()
     for base in _candidate_urls():
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(f"{base}/v1/create", json=body)
+                r = await client.post(f"{base}/v1/create", json=body, headers=headers)
                 data = r.json() if r.content else {}
                 if r.status_code == 200 and data.get("ok") and data.get("room_id"):
                     return ProvisionResult(
@@ -97,12 +107,14 @@ async def create_room_via_host(
 async def push_storage_to_host(provider: str, storage_state: dict[str, Any]) -> bool:
     if not storage_state:
         return False
+    headers = _auth_headers()
     for base in _candidate_urls():
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 r = await client.post(
                     f"{base}/v1/storage",
                     json={"provider": provider, "storage_state": storage_state},
+                    headers=headers,
                 )
                 if r.status_code == 200:
                     return True

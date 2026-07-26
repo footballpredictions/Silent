@@ -270,15 +270,18 @@ python scripts/restore_api_container.py
 
 ### Безопасность VPS (production)
 
-| Параметр | Значение на проде (2026-07-02) |
+| Параметр | Значение на проде (2026-07-26) |
 |----------|--------------------------------|
 | API снаружи | Только **HTTPS :443** (nginx) |
 | API :8000 | Только **127.0.0.1** (`docker-compose.yml`) |
 | Tunnel | `10.66.66.1:8000` → DNAT на контейнер (клиенты через VPN) |
-| UFW | 22, 80, 443/tcp; 56000, 56001/udp |
+| UFW | 22, 80, 443/tcp; 56000, 56001/udp; 8443/tcp (MTProto); 443/udp; 9101 только `172.16.0.0/12` |
+| CONNECT 8080/18443 | Только **127.0.0.1** (публичный UFW снят — был open proxy abuse) |
+| host-provision :9101 | UFW docker-only + **X-Internal-Secret** (`INTERNAL_API_SECRET`) |
+| olcrtc SOCKS | Локально `127.0.0.1:8808` + **per-session user/pass** (RFC1929) на PC/Android |
 | fail2ban | sshd (5 попыток / 1 ч бан) |
 
-Скрипты: `scripts/apply_security_phase1.py` (UFW + compose ports), `scripts/restore_api_container.py` (восстановление кода после compose).
+Скрипты: `scripts/apply_security_phase1.py` (UFW + compose ports), `scripts/restore_api_container.py` (восстановление кода после compose), `scripts/deploy_olcrtc_host_provision.py`.
 
 **Не отключать SSH по паролю** без настройки ключей — иначе сломается деплой с Windows (`DEPLOY_PASS`).
 
@@ -599,6 +602,13 @@ cd pc; npm install; npm run dev
 - Оболочка одна (cnc SOCKS+hev), движки разные: **WB=`livekit`**, **Telemost=`goolom`** (ICE/WS) — логи и скорость connect разные по природе.
 - YouTube: Cronet IPv6+QUIC мимо IPv4-TUN; плюс hev UDP. Фикс: `allowFamily(AF_INET)`; hev udp reject; dial→hev (не hev до dial на TM — шторм CONNECT).
 - В логе: `engine=livekit|goolom`, `IPv4-only`, `warm TCP www.youtube.com OK`, `tunnel to …googlevideo…`.
+
+### 2026-07-26 — Hardening + SOCKS5 auth (olcrtc)
+
+- VPS: публичный CONNECT 8080/18443 закрыт ранее; убран лишний UFW `56002/udp`; host-provision `:9101` — `X-Internal-Secret` (без секрета → 401), UFW только Docker.
+- olcrtc локальный SOCKS без auth = любой процесс на устройстве жжёт peer/room. Фикс: **автогенерация login/pass на сессию** → `socks.user`/`socks.pass` в YAML + sing-box/hev + dial-probe RFC1929.
+- Proxy-флот SOCKS (`silent-socks`) уже с user/pass — не трогали.
+- Debug: `pc/build-debug-597808/`, `android/.../SilentVPN-debug.apk` (SOCKS auth). Пуш — после проверки пользователем.
 
 ### 2026-07-26 — Android olcrtc: YouTube (QUIC) + быстрее Telemost
 

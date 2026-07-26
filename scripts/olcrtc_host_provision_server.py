@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """Host Playwright HTTP для создания комнат Telemost / WB Stream.
 
-Слушает только 127.0.0.1:9101. Docker API ходит через 172.17.0.1 / host.docker.internal.
-
-Запуск (systemd):
-  /opt/silent-vpn/olcrtc/host-provision/venv/bin/python olcrtc_host_provision_server.py
+Bind: 0.0.0.0:9101 (Docker bridge → host), UFW только 172.16.0.0/12.
+Auth: X-Internal-Secret = INTERNAL_API_SECRET (как у S2S API).
 
 Endpoints:
-  GET  /health
-  GET  /v1/status
-  POST /v1/create   {"provider":"telemost"|"wbstream","storage_state"?:{},"headless"?:true}
-  POST /v1/storage  {"provider":"...","storage_state":{}}
+  GET  /health          — без секрета (liveness)
+  GET  /v1/status       — нужен секрет
+  POST /v1/create       — нужен секрет
+  POST /v1/storage      — нужен секрет
 """
 from __future__ import annotations
 
@@ -18,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +28,12 @@ log = logging.getLogger("olcrtc-host-provision")
 
 HOST = os.environ.get("OLCRTC_HOST_PROVISION_BIND", "127.0.0.1")
 PORT = int(os.environ.get("OLCRTC_HOST_PROVISION_PORT", "9101"))
+# Совпадает с backend INTERNAL_API_SECRET (EnvironmentFile .env).
+INTERNAL_SECRET = (
+    os.environ.get("OLCRTC_HOST_PROVISION_SECRET")
+    or os.environ.get("INTERNAL_API_SECRET")
+    or ""
+).strip()
 STATE_DIR = Path(
     os.environ.get(
         "OLCRTC_HOST_PROVISION_STATE_DIR",
@@ -88,6 +93,7 @@ def _status() -> dict[str, Any]:
         "wbstream_state": _state_path("wbstream").is_file(),
         "state_dir": str(STATE_DIR),
         "bind": f"{HOST}:{PORT}",
+        "auth_required": bool(INTERNAL_SECRET),
     }
 
 
@@ -130,6 +136,17 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _authorized(self) -> bool:
+        if not INTERNAL_SECRET:
+            # Без секрета — только loopback (fail-closed для публичного bind).
+            peer = self.client_address[0] if self.client_address else ""
+            if peer in ("127.0.0.1", "::1"):
+                return True
+            log.warning("reject %s: INTERNAL_API_SECRET не задан", peer)
+            return False
+        got = (self.headers.get("X-Internal-Secret") or "").strip()
+        return bool(got) and secrets.compare_digest(got, INTERNAL_SECRET)
+
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
@@ -147,11 +164,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True})
             return
         if path == "/v1/status":
+            if not self._authorized():
+                self._send(401, {"ok": False, "message": "unauthorized"})
+                return
             self._send(200, _status())
             return
         self._send(404, {"ok": False, "message": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._authorized():
+            self._send(401, {"ok": False, "message": "unauthorized"})
+            return
         path = urlparse(self.path).path
         body = self._read_json()
         if path == "/v1/storage":
@@ -184,8 +207,19 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if not INTERNAL_SECRET:
+        log.warning(
+            "INTERNAL_API_SECRET / OLCRTC_HOST_PROVISION_SECRET пуст — "
+            "API кроме /health только с loopback"
+        )
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
-    log.info("listening on %s:%s state_dir=%s", HOST, PORT, STATE_DIR)
+    log.info(
+        "listening on %s:%s state_dir=%s auth=%s",
+        HOST,
+        PORT,
+        STATE_DIR,
+        "on" if INTERNAL_SECRET else "loopback-only",
+    )
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

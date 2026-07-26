@@ -227,9 +227,8 @@ async def assign_public_config(
         "socks_port": 8808,
         "assigned_slot": assigned_slot,
         "device_type": dt,
-        "jitsi_https_proxy": "http://132.243.234.162:8080"
-        if (settings.enabled and key_ok)
-        else "",
+        # Legacy Jitsi LTE proxy — публичный CONNECT закрыт; клиенты TM/WB не используют.
+        "jitsi_https_proxy": "",
         "pool_denied": pool_denied,
         "pool_denied_detail": NO_ROOM_DETAIL if pool_denied else "",
     }

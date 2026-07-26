@@ -72,9 +72,10 @@ class SilentRepository @Inject constructor(
         const val BYPASS_FAMILY_WDTT = "wdtt"
         const val BYPASS_FAMILY_OLCRTC = "olcrtc"
         const val PREF_OLCRTC_PROVIDER = "olcrtc_provider"
-        const val OLCRTC_JITSI = "jitsi"
         const val OLCRTC_WBSTREAM = "wbstream"
         const val OLCRTC_TELEMOST = "telemost"
+        /** @deprecated Jitsi убран — старые prefs мигрируют в telemost */
+        const val OLCRTC_JITSI = "jitsi"
 
         /** @deprecated используйте VK_CRED_* */
         const val PREF_CAPTCHA_BYPASS_MODE = "captcha_bypass_mode"
@@ -1142,10 +1143,10 @@ class SilentRepository @Inject constructor(
     fun isOlcrtcBypass(): Boolean = getBypassFamily() == BYPASS_FAMILY_OLCRTC
 
     fun getOlcrtcProvider(): String {
-        if (!BuildConfig.DEBUG) return OLCRTC_JITSI
-        return when (val v = prefs.getString(PREF_OLCRTC_PROVIDER, OLCRTC_JITSI)) {
+        if (!BuildConfig.DEBUG) return OLCRTC_TELEMOST
+        return when (val v = prefs.getString(PREF_OLCRTC_PROVIDER, OLCRTC_TELEMOST)) {
             OLCRTC_WBSTREAM, OLCRTC_TELEMOST -> v
-            else -> OLCRTC_JITSI
+            else -> OLCRTC_TELEMOST // включая legacy jitsi
         }
     }
 
@@ -1153,7 +1154,7 @@ class SilentRepository @Inject constructor(
         if (!BuildConfig.DEBUG) return
         val normalized = when (provider) {
             OLCRTC_WBSTREAM, OLCRTC_TELEMOST -> provider
-            else -> OLCRTC_JITSI
+            else -> OLCRTC_TELEMOST
         }
         prefs.edit().putString(PREF_OLCRTC_PROVIDER, normalized).apply()
     }
@@ -1161,13 +1162,13 @@ class SilentRepository @Inject constructor(
     fun olcrtcProviderLabel(provider: String = getOlcrtcProvider()): String = when (provider) {
         OLCRTC_WBSTREAM -> "WB Stream"
         OLCRTC_TELEMOST -> "Яндекс Телемост"
-        else -> "Jitsi Meet"
+        else -> "Яндекс Телемост"
     }
 
     fun bypassFamilyLabel(family: String = getBypassFamily()): String =
         if (family == BYPASS_FAMILY_OLCRTC) "olcrtc" else "VK / WDTT"
 
-    private val PREF_OLCRTC_CACHE = "olcrtc_config_cache_v6"
+    private val PREF_OLCRTC_CACHE = "olcrtc_config_cache_v9"
 
     fun getCachedOlcrtcConfig(): OlcrtcPublicConfig? {
         val raw = prefs.getString(PREF_OLCRTC_CACHE, null) ?: return null
@@ -1233,6 +1234,54 @@ class SilentRepository @Inject constructor(
             )
         } catch (_: Exception) {
         }
+    }
+
+    fun getLiveOlcrtcRoom(provider: String = getOlcrtcProvider()): String =
+        getCachedOlcrtcConfig()?.providers?.get(provider)?.room?.trim().orEmpty()
+
+    fun clearOlcrtcCache() {
+        prefs.edit().remove(PREF_OLCRTC_CACHE).apply()
+    }
+
+    /** Peer dead / SOCKS timeout → сброс sticky на сервере + новый /olcrtc-config. */
+    suspend fun reportOlcrtcRoomFailure(detail: String = ""): OlcrtcPublicConfig? {
+        val cfg = getCachedOlcrtcConfig()
+        val prov = getOlcrtcProvider()
+        val roomDbId = cfg?.providers?.get(prov)?.room_db_id.orEmpty()
+        val oldRoom = cfg?.providers?.get(prov)?.room.orEmpty()
+        try {
+            val publicBase = getPublicServerUrl().trimEnd('/')
+            val api = buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 8L)
+            api.olcrtcRoomFailure(
+                OlcrtcRoomFailureRequest(
+                    room_db_id = roomDbId,
+                    fingerprint = getDeviceFingerprint(),
+                    provider = prov,
+                    device_type = runCatching { getApiDeviceType() }.getOrDefault("android"),
+                    detail = detail.ifBlank { "peer dead room=$oldRoom" },
+                ),
+            )
+        } catch (_: Exception) {
+        }
+        clearOlcrtcCache()
+        return fetchOlcrtcConfig()
+    }
+
+    /** Сверить room с сервером; при смене — лог. */
+    suspend fun syncOlcrtcLiveChannel(): OlcrtcPublicConfig? {
+        val prov = getOlcrtcProvider()
+        val prev = getLiveOlcrtcRoom(prov)
+        val cfg = fetchOlcrtcConfig() ?: return null
+        val next = cfg.providers[prov]?.room?.trim().orEmpty()
+        if (next.isNotEmpty() && next != prev) {
+            val msg = if (prev.isEmpty()) {
+                "канал: ${olcrtcProviderLabel(prov)} room=${next.take(48)}"
+            } else {
+                "канал сменился: ${olcrtcProviderLabel(prov)} ${prev.take(28)} → ${next.take(28)}"
+            }
+            com.silent.vpn.util.DebugLog.i("olcrtc", msg)
+        }
+        return cfg
     }
 
     fun getEffectiveVkCredStrategy(): String {

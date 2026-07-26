@@ -127,7 +127,7 @@ fun MenuBypassScreen(
         Text("2. olcrtc", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg)
         BypassOption(
             title = "Вариант 2 — olcrtc",
-            subtitle = "Jitsi / WB Stream / Телемост",
+            subtitle = "Телемост / WB Stream",
             selected = effectiveFamily == SilentRepository.BYPASS_FAMILY_OLCRTC,
             enabled = !vpnRunning,
             fg = fg,
@@ -136,12 +136,12 @@ fun MenuBypassScreen(
         if (effectiveFamily == SilentRepository.BYPASS_FAMILY_OLCRTC) {
             Column(Modifier.padding(start = 12.dp)) {
                 BypassOption(
-                    title = "Jitsi Meet",
-                    subtitle = "datachannel",
-                    selected = (pendingOlc ?: olcProvider) == SilentRepository.OLCRTC_JITSI,
+                    title = "Яндекс Телемост",
+                    subtitle = "рекомендуется",
+                    selected = (pendingOlc ?: olcProvider) == SilentRepository.OLCRTC_TELEMOST,
                     enabled = !vpnRunning,
                     fg = fg,
-                    onSelect = { pendingOlc = SilentRepository.OLCRTC_JITSI },
+                    onSelect = { pendingOlc = SilentRepository.OLCRTC_TELEMOST },
                 )
                 BypassOption(
                     title = "WB Stream",
@@ -150,14 +150,6 @@ fun MenuBypassScreen(
                     enabled = !vpnRunning,
                     fg = fg,
                     onSelect = { pendingOlc = SilentRepository.OLCRTC_WBSTREAM },
-                )
-                BypassOption(
-                    title = "Яндекс Телемост",
-                    subtitle = "vp8channel",
-                    selected = (pendingOlc ?: olcProvider) == SilentRepository.OLCRTC_TELEMOST,
-                    enabled = !vpnRunning,
-                    fg = fg,
-                    onSelect = { pendingOlc = SilentRepository.OLCRTC_TELEMOST },
                 )
             }
         }

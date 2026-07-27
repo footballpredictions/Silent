@@ -706,8 +706,13 @@ object OlcrtcTunnelManager {
     /**
      * TUN → SOCKS через hev.
      *
-     * Без fake-ip/mapdns: DNS = пресет (Яндекс по умолчанию), как WDTT.
-     * UDP DNS в olcrtc SOCKS мёртв → excludeRoute DNS IP (резолв вне TUN, TCP через peer).
+     * olcrtc SOCKS = только TCP CONNECT: UDP:53 в TUN мёртв.
+     * Поэтому mapdns/fake-ip (как раньше / как PC): VPN DNS = 198.18.0.2,
+     * приложения получают fake IP → SOCKS CONNECT по домену → резолв на peer.
+     *
+     * Меню DnsPreset для olcrtc намеренно не ставим в Builder: на LTE
+     * UDP к 1.1.1.1/8.8.8.8 вне TUN оператор часто режет → «интернет пропал».
+     * (WDTT по-прежнему берёт пресет — DNS идёт через WG на VPS.)
      */
     private fun attachHevTun(context: Context, params: Params, vpnService: VpnService): String? {
         if (!HevSocksTunnel.ensureLoaded()) {
@@ -721,13 +726,14 @@ object OlcrtcTunnelManager {
         }
         tunFd = null
         Thread.sleep(200)
-        val dnsServers = resolveOlcrtcDnsServers(context)
+        val menuDns = resolveOlcrtcDnsServers(context)
         val conf = File(context.filesDir, "hev-olcrtc.yml")
+        // 198.18.0.0/15 — как sing-box fake-ip на PC; mapdns отвечает на 198.18.0.2:53.
         val hevYaml = buildString {
             appendLine("tunnel:")
             // 1400 ≈ KCP MTU olcrtc; 1280 резал TCP MSS без нужды.
             appendLine("  mtu: 1400")
-            appendLine("  ipv4: 10.111.0.1")
+            appendLine("  ipv4: 198.18.0.1")
             appendLine("socks5:")
             appendLine("  port: ${params.socksPort}")
             appendLine("  address: ${params.socksHost}")
@@ -738,7 +744,11 @@ object OlcrtcTunnelManager {
                 appendLine("  username: '$u'")
                 appendLine("  password: '$p'")
             }
-            // mapdns/fake-ip отключены — DNS через пресет (меню DNS / Яндекс).
+            appendLine("mapdns:")
+            appendLine("  address: 198.18.0.2")
+            appendLine("  port: 53")
+            appendLine("  netmask: 255.254.0.0")
+            appendLine("  cache-size: 10000")
             appendLine("misc:")
             appendLine("  log-level: warn")
             appendLine("  connect-timeout: 8000")
@@ -750,23 +760,22 @@ object OlcrtcTunnelManager {
             val builder = vpnService.Builder()
                 .setSession("Silent olcrtc")
                 .setMtu(1400)
-                .addAddress("10.111.0.1", 30)
+                .addAddress("198.18.0.1", 30)
                 .addRoute("0.0.0.0", 0)
-            for (dns in dnsServers) {
-                runCatching { builder.addDnsServer(dns) }
-            }
+                // Только mapdns — не 8.8.8.8/1.1.1.1 (на LTE часто мёртв вне TUN).
+                .addDnsServer("198.18.0.2")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 runCatching { builder.allowFamily(OsConstants.AF_INET) }
                 WdttTunnelManager.logUi(
                     "olcrtc_tun_v4",
-                    "IPv4-only DNS=${dnsServers.joinToString(",")} (без fake-ip)",
+                    "IPv4-only + mapdns fake-ip (меню DNS=${menuDns.joinToString(",")} — для olcrtc не в LTE)",
                     2,
                 )
             }
-            // API 33+: DNS IP вне TUN (UDP:53 через SOCKS мёртв); ICE Telemost/WB напрямую.
+            // API 33+: ICE/STUN Telemost/WB напрямую; системный DNS — fallback для приложений,
+            // которые игнорируют VPN DNS (иначе снова UDP:53 в TUN → сайты мертвы).
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val excludeHosts = linkedSetOf<String>()
-                excludeHosts.addAll(dnsServers)
                 excludeHosts.addAll(systemDnsIpv4Hosts(context))
                 if (params.provider.equals("telemost", ignoreCase = true) ||
                     params.provider.equals("wbstream", ignoreCase = true)
@@ -781,7 +790,7 @@ object OlcrtcTunnelManager {
                 }
                 WdttTunnelManager.logUi(
                     "olcrtc_tun_excl",
-                    "excludeRoute hosts=${excludeHosts.size} ips≈$excluded dns=${dnsServers.firstOrNull()}",
+                    "excludeRoute hosts=${excludeHosts.size} ips≈$excluded mapdns=198.18.0.2",
                     2,
                 )
             }
@@ -808,7 +817,7 @@ object OlcrtcTunnelManager {
             }
             WdttTunnelManager.logUi(
                 "olcrtc_tun",
-                "hev TUN ok fd=${pfd.fd} dns=${dnsServers.joinToString(",")} (без fake-ip)",
+                "hev TUN ok fd=${pfd.fd} mapdns=fake-ip (сайты≠Telegram-IP)",
                 1,
             )
             null

@@ -60,7 +60,10 @@ fun MenuDnsScreen(
             modifier = Modifier.padding(bottom = 4.dp),
         )
         Text(
-            "Только debug-сборка. В release DNS всегда с сервера (Яндекс). Применяется при следующем подключении VPN.",
+            "Только debug-сборка. В release DNS всегда с сервера (Яндекс). " +
+                "Для WDTT пресет идёт через туннель. Для olcrtc на мобильном " +
+                "используется fake-ip (резолв на peer) — смена Cloudflare/Google " +
+                "не ломает LTE (оператор часто режет чужой UDP:53).",
             fontSize = 11.sp,
             color = fg.copy(alpha = 0.45f),
             modifier = Modifier.padding(bottom = 16.dp),

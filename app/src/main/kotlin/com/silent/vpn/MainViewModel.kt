@@ -2351,7 +2351,7 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun connect(context: Context) {
+    fun connect(context: Context, olcrtcReassignAttempt: Int = 0) {
         SessionTrace.enter("MainViewModel.connect", "state=${_vpnState.value}")
         if (!AppIntegrity.ensureOkForVpn(context)) {
             _vpnError.value = AppIntegrity.failMessage()
@@ -2558,17 +2558,31 @@ class MainViewModel @Inject constructor(
                                 err.contains("code=1", ignoreCase = true) ||
                                 err.contains("канал", ignoreCase = true)
                             ) {
+                                var newRoom: String? = null
                                 runCatching {
                                     repo.clearOlcrtcCache()
                                     val next = repo.reportOlcrtcRoomFailure(err)
-                                    val room = next?.providers?.get(repo.getOlcrtcProvider())?.room
-                                    if (!room.isNullOrBlank()) {
+                                    newRoom = next?.providers?.get(repo.getOlcrtcProvider())?.room
+                                    if (!newRoom.isNullOrBlank()) {
                                         WdttTunnelManager.logUi(
                                             "olcrtc_reassign",
-                                            "новый канал после early fail: ${room.take(48)}",
+                                            "новый канал после early fail: ${newRoom.take(48)}",
                                             1,
                                         )
                                     }
+                                }
+                                if (!newRoom.isNullOrBlank() && olcrtcReassignAttempt < 1) {
+                                    _vpnError.value = null
+                                    _vpnState.value = VpnState.DISCONNECTED
+                                    stopVpnLocally(context)
+                                    delay(500)
+                                    WdttTunnelManager.logUi(
+                                        "olcrtc_retry",
+                                        "авто-повтор на новой комнате (attempt=${olcrtcReassignAttempt + 1})",
+                                        1,
+                                    )
+                                    connect(context, olcrtcReassignAttempt + 1)
+                                    return@launch
                                 }
                             }
                             _vpnState.value = VpnState.DISCONNECTED
@@ -2595,16 +2609,30 @@ class MainViewModel @Inject constructor(
                     }
                     val fail = OlcrtcTunnelManager.lastError.value ?: "olcrtc не поднялся (бинарь/room/peer)"
                     WdttTunnelManager.logUi("olcrtc_fail", fail, 99, isError = true)
+                    var newRoom: String? = null
                     runCatching {
                         val next = repo.reportOlcrtcRoomFailure(fail)
-                        val room = next?.providers?.get(repo.getOlcrtcProvider())?.room
-                        if (!room.isNullOrBlank()) {
+                        newRoom = next?.providers?.get(repo.getOlcrtcProvider())?.room
+                        if (!newRoom.isNullOrBlank()) {
                             WdttTunnelManager.logUi(
                                 "olcrtc_reassign",
-                                "новый канал после failure: ${room.take(48)}",
+                                "новый канал после failure: ${newRoom.take(48)}",
                                 1,
                             )
                         }
+                    }
+                    if (!newRoom.isNullOrBlank() && olcrtcReassignAttempt < 1) {
+                        _vpnError.value = null
+                        _vpnState.value = VpnState.DISCONNECTED
+                        stopVpnLocally(context)
+                        delay(500)
+                        WdttTunnelManager.logUi(
+                            "olcrtc_retry",
+                            "авто-повтор на новой комнате (attempt=${olcrtcReassignAttempt + 1})",
+                            1,
+                        )
+                        connect(context, olcrtcReassignAttempt + 1)
+                        return@launch
                     }
                     _vpnError.value = fail
                     _vpnState.value = VpnState.DISCONNECTED

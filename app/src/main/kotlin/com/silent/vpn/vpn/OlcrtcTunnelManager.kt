@@ -1027,7 +1027,9 @@ object OlcrtcTunnelManager {
             .followRedirects(true)
         runCatching {
             val cm = context.getSystemService(ConnectivityManager::class.java)
-            val net = cm?.activeNetwork
+            // Если основной VK-VPN уже поднят и app excluded, Telemost/WB signaling на LTE
+            // должен идти через VPN-сеть, а не напрямую в заблокированный интернет.
+            val net = VpnNetworkHelper.getSilentVpnNetwork(context) ?: cm?.activeNetwork
             if (net != null) builder.socketFactory(net.socketFactory)
         }
         return builder.build()

@@ -13,6 +13,7 @@ import com.silent.vpn.data.BootstrapConfigRequest
 import com.silent.vpn.data.BootstrapVpnConfig
 import com.silent.vpn.data.ConnectRequest
 import com.silent.vpn.data.DeviceRegisterRequest
+import com.silent.vpn.data.DeviceInfo
 import com.silent.vpn.data.DisconnectRequest
 import com.silent.vpn.data.ForgotPasswordRequest
 import com.silent.vpn.data.ConfigSyncCoordinator
@@ -2911,11 +2912,19 @@ class MainViewModel @Inject constructor(
         _vpnState.value = VpnState.DISCONNECTED
     }
 
+    private fun isCurrentSessionDevice(d: DeviceInfo, sessionId: String, fp: String): Boolean {
+        val did = d.id
+        if (did == sessionId) return true
+        if (did.length >= 8 && sessionId.length >= 8 && (did.startsWith(sessionId) || sessionId.startsWith(did))) return true
+        return fp.isNotBlank() && d.device_fingerprint?.trim() == fp
+    }
+
     private fun markLocalDeviceOffline() {
         val sid = _sessionDeviceId.value ?: repo.getSessionDeviceId() ?: return
+        val fp = runCatching { repo.getDeviceFingerprint() }.getOrDefault("")
         val p = _profile.value ?: repo.getCachedProfile() ?: return
         val updated = p.devices.map { d ->
-            if (d.id == sid) d.copy(is_connected = false) else d
+            if (isCurrentSessionDevice(d, sid, fp)) d.copy(is_connected = false) else d
         }
         val connectedCount = updated.count { it.is_connected }
         val next = p.copy(devices = updated, connected_count = connectedCount)
@@ -2947,9 +2956,10 @@ class MainViewModel @Inject constructor(
 
     private fun markLocalDeviceOnline() {
         val sid = _sessionDeviceId.value ?: repo.getSessionDeviceId() ?: return
+        val fp = runCatching { repo.getDeviceFingerprint() }.getOrDefault("")
         val p = _profile.value ?: repo.getCachedProfile() ?: return
         val updated = p.devices.map { d ->
-            if (d.id == sid) d.copy(is_connected = true) else d
+            if (isCurrentSessionDevice(d, sid, fp)) d.copy(is_connected = true) else d
         }
         val connectedCount = updated.count { it.is_connected }
         val next = p.copy(devices = updated, connected_count = connectedCount)

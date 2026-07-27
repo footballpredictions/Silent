@@ -36,6 +36,7 @@ data class DeviceInfo(
     val id: String,
     val device_name: String,
     val device_type: String,
+    val device_fingerprint: String? = null,
     val is_connected: Boolean,
     val last_connected: String?,
 )

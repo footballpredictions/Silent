@@ -572,11 +572,25 @@ cd pc; npm install; npm run dev
 - API: `GET/POST /api/admin/settings/registration`. Сервис: `app/services/registration_settings.py`.
 - Задеплоено на прод (`deploy_api.py`, в список файлов добавлен `registration_settings.py`). Push `main`.
 
-### 2026-07-26 — Wi‑Fi→LTE reconnect (olcrtc + VK)
+### 2026-07-27 — olcrtc DNS без fake-ip (Яндекс + меню DNS)
 
-- Баг: при VPN `registerDefaultNetworkCallback` видел туннель, не underlying; poll `checkUnderlyingNetwork` только при WDTT ready → olcrtc после выкл. Wi‑Fi не переподключался.
-- Фикс: callback только NOT_VPN; `underlyingTransportFingerprint`; poll для olcrtc; `onLost` → transport_switch; LTE wait ~1.8s перед restart olcrtc. VK тот же callback/poll (VALIDATED не обязателен для switch).
-- Push: `android` `8991030`.
+- Android hev: mapdns/fake-ip выкл; DNS = `DnsPreset` (Яндекс default), excludeRoute DNS IP (UDP через SOCKS мёртв).
+- PC sing-box: fake-ip выкл; `tcp://` DNS через SOCKS из `dns_override` / меню DNS.
+- «О сервисе»: после VK TURN/DTLS — строка «плюс Olcrtc».
+- Push: `android` + `pc`. Откат fake-ip — по результату теста скорости.
+
+### 2026-07-27 — olcrtc «иногда отваливается» после peer closed
+
+- Симптом: Telemost живёт десятки минут → `[pc] closed` → OpenStream timeout; UI «как подключено», reconnect нет.
+- Причины: (1) goolom сам reconnect, а мы сразу kill на closed; (2) watchdog ждал `!running`, а процесс жив при мёртвом peer; (3) та же комната после expiry.
+- Фикс: grace 12с на peer_closed (отмена если снова Connected / SOCKS жив); SOCKS probe watchdog; stuck `running&&!ready`; на peer_dead — `reportOlcrtcRoomFailure` + новый room в JSON. Push `android` `b21ec61`.
+
+### 2026-07-26 — Wi‑Fi↔LTE reconnect правильно (на базе `8991030`)
+
+- База: последний push `8991030` (NOT_VPN + transport_switch обе стороны).
+- Баг петли: после `stop()` `olcrtcProc=null`, старый `watchExit` слал `process_exit_early` на уже новый старт → `session stopped`×N.
+- Фикс: stale exit всегда ignore (`olcrtcProc !== proc`); `process_exit_early` без peer_dead; `stop(silent)` + suppress peer_dead; `awaitUnderlyingReady(prefer wifi|cell)` до restart; blackout не сбрасывает fingerprint; кеш olcrtc не сносить на LTE; connect LTE `preferCache`.
+- Покрывает: Wi‑Fi→LTE и LTE→Wi‑Fi (оба `transport_switch`). Debug APK локально.
 
 ### 2026-07-26 — UI: шрифты debug-меню = как Подписка/Сессии
 

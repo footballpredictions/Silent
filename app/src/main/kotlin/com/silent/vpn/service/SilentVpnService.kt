@@ -1036,7 +1036,8 @@ class SilentVpnService : Service() {
         } else if (
             now - lastTransportRestartMs < 12_000L &&
             !reason.startsWith("phone_call_end") &&
-            !reason.startsWith("internet_restored")
+            !reason.startsWith("internet_restored") &&
+            !reason.contains(":retry")
         ) {
             DebugLog.i("VpnService", "olcrtc recovery debounce ($reason)")
             return
@@ -1055,12 +1056,13 @@ class SilentVpnService : Service() {
         olcrtcRecovering = true
         olcrtcRecoverJob = scope.launch(Dispatchers.IO) {
             try {
-                OlcrtcTunnelManager.suppressPeerDeadFor(30_000L)
+                OlcrtcTunnelManager.suppressPeerDeadFor(45_000L)
                 OlcrtcTunnelManager.setSessionDeadHandler { r ->
                     if (r.startsWith("process_exit_early")) return@setSessionDeadHandler
                     if (isOlcrtcRecoverInFlight()) return@setSessionDeadHandler
                     scheduleNetworkRecovery("olcrtc_peer_dead:$r", 2_500L)
                 }
+                // 1) Снять мёртвый TUN сразу — иначе 0.0.0.0/0 без peer = «нет интернета».
                 OlcrtcVpnService.suppressDestroyStop = true
                 OlcrtcTunnelManager.stop(silent = true)
                 runCatching {
@@ -1070,17 +1072,20 @@ class SilentVpnService : Service() {
                         },
                     )
                 }
+                delay(200L)
+
+                // 2) Ждём LTE/Wi‑Fi (prefer ≤3.5с, потом любой транспорт — самолётик/LTE).
                 val preferTransport = pendingOlcrtcPreferTransport ?: preferFromReason
                 WdttTunnelManager.logUi(
                     "net_wait",
                     "ждём готовность сети${preferTransport?.let { " ($it)" } ?: ""}…",
                     2,
                 )
-                val waitMs = if (preferTransport != null) 22_000L else 5_000L
                 val netOk = VpnNetworkHelper.awaitUnderlyingReady(
                     this@SilentVpnService,
-                    timeoutMs = waitMs,
+                    timeoutMs = 18_000L,
                     preferTransport = preferTransport,
+                    preferHoldMs = 3_500L,
                 )
                 if (!isRunning || epoch != disconnectEpoch) {
                     SessionTrace.mark("SilentVpnService.olcrtcRecover", "aborted — disconnected")
@@ -1088,20 +1093,32 @@ class SilentVpnService : Service() {
                 }
                 if (!netOk) {
                     DebugLog.w("VpnService", "olcrtc recovery deferred — no underlying internet")
+                    WdttTunnelManager.logUi(
+                        "olcrtc_recover_wait",
+                        "нет сети — интернет без VPN, ждём…",
+                        2,
+                    )
                     pausedForNetwork = true
                     isTunnelPaused = true
-                    scheduleNetworkRecovery("internet_restored", 3_000L)
+                    scheduleNetworkRecovery("internet_restored", 2_500L)
                     return@launch
                 }
+
+                // 3) Старт из кеша. На LTE nip.io fetch часто вешает recover — не делаем.
+                val onMobile = VpnNetworkHelper.isOnMobileData(this@SilentVpnService)
                 var cfgToUse = cfg
-                if (
-                    reason.startsWith("olcrtc_peer_dead") ||
-                    reason.startsWith("watchdog_olcrtc")
+                if (!onMobile &&
+                    (reason.startsWith("olcrtc_peer_dead") || reason.startsWith("watchdog_olcrtc"))
                 ) {
-                    cfgToUse = refreshOlcrtcConfigJson(cfg, reason)
+                    cfgToUse = withTimeoutOrNull(2_500L) {
+                        refreshOlcrtcConfigJson(cfg, reason)
+                    } ?: cfg
                     lastOlcrtcConfigJson = cfgToUse
+                } else {
+                    WdttTunnelManager.logUi("olcrtc_recover", "старт из кеша (без fetch)", 2)
                 }
-                OlcrtcTunnelManager.suppressPeerDeadFor(20_000L)
+
+                OlcrtcTunnelManager.suppressPeerDeadFor(25_000L)
                 lastTransportRestartMs = System.currentTimeMillis()
                 startService(
                     Intent(this@SilentVpnService, OlcrtcVpnService::class.java).apply {
@@ -1114,6 +1131,33 @@ class SilentVpnService : Service() {
                         startFg(buildConnectingNotification())
                         watchOlcrtcReadyNotification()
                         VpnTileHelper.requestUpdate(this@SilentVpnService)
+                    }
+                }
+                // 4) Не висеть вечно в «переподключение».
+                val ready = withTimeoutOrNull(55_000L) {
+                    while (isActive && isRunning && epoch == disconnectEpoch) {
+                        if (OlcrtcTunnelManager.tunnelReady.value) return@withTimeoutOrNull true
+                        val err = OlcrtcTunnelManager.lastError.value
+                        if (!err.isNullOrBlank() && !OlcrtcTunnelManager.running.value) {
+                            return@withTimeoutOrNull false
+                        }
+                        delay(400L)
+                    }
+                    false
+                } ?: false
+                if (ready) {
+                    pausedForNetwork = false
+                    isTunnelPaused = false
+                    WdttTunnelManager.logUi("olcrtc_recover_ok", "переподключение OK", 1)
+                } else if (isRunning && epoch == disconnectEpoch) {
+                    WdttTunnelManager.logUi(
+                        "olcrtc_recover_fail",
+                        "переподключение не поднялось — выкл/вкл VPN",
+                        99,
+                        isError = true,
+                    )
+                    if (!reason.contains(":retry")) {
+                        scheduleNetworkRecovery("$reason:retry", 4_000L)
                     }
                 }
             } catch (e: CancellationException) {

@@ -159,42 +159,45 @@ object VpnNetworkHelper {
     }
 
     /**
-     * Ждём VALIDATED underlying. [preferTransport]: "wifi"|"cell"|null.
-     * Нужно до restart peer: иначе handshake timeout после Wi‑Fi↔LTE.
+     * Ждём underlying сеть. [preferTransport]: "wifi"|"cell"|null.
+     * После [preferHoldMs] принимаем любой VALIDATED/any — иначе LTE после самолёта залипает
+     * на ожидании wifi, которого уже нет.
      */
     suspend fun awaitUnderlyingReady(
         context: Context,
         timeoutMs: Long = 20_000L,
         preferTransport: String? = null,
+        preferHoldMs: Long = 4_000L,
     ): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMs
+        val started = System.currentTimeMillis()
+        val deadline = started + timeoutMs
         val want = when (preferTransport) {
             "wifi", "eth" -> "wifi"
             "mobile", "cell" -> "cell"
             else -> null
         }
         while (System.currentTimeMillis() < deadline) {
+            val elapsed = System.currentTimeMillis() - started
             val fp = underlyingTransportFingerprint(context)
             val validated = hasUnderlyingInternet(context)
+            val any = hasAnyUnderlyingInternet(context)
             if (validated) {
                 val match = when (want) {
                     "wifi" -> fp == "wifi" || fp == "eth"
                     "cell" -> fp == "cell"
                     else -> fp.isNotEmpty()
                 }
-                if (match) {
-                    DebugLog.i(TAG, "awaitUnderlyingReady ok fp=$fp prefer=$want")
+                if (match || want == null || elapsed >= preferHoldMs) {
+                    DebugLog.i(TAG, "awaitUnderlyingReady ok fp=$fp prefer=$want elapsed=${elapsed}ms")
                     return true
                 }
             }
-            // Без prefer (watchdog): хватит any INTERNET — не ждать VALIDATED минутами.
-            if (want == null && hasAnyUnderlyingInternet(context) &&
-                System.currentTimeMillis() + timeoutMs - deadline > 1_500L
-            ) {
-                DebugLog.i(TAG, "awaitUnderlyingReady any-ok fp=$fp")
+            // LTE после airplane часто долго без VALIDATED — any INTERNET достаточно.
+            if (any && elapsed >= 1_200L && (want == null || elapsed >= preferHoldMs)) {
+                DebugLog.i(TAG, "awaitUnderlyingReady any-ok fp=$fp elapsed=${elapsed}ms")
                 return true
             }
-            delay(300L)
+            delay(250L)
         }
         val any = hasAnyUnderlyingInternet(context)
         DebugLog.w(

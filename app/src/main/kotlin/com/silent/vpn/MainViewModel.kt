@@ -218,9 +218,7 @@ class MainViewModel @Inject constructor(
                 repo.saveSyncProfileRev(state.profile)
             }
         }
-        if (BuildConfig.DEBUG) {
-            runCatching { repo.prefetchOlcrtcConfig() }
-        }
+        runCatching { repo.prefetchOlcrtcConfig() }
     }
 
     private val _updateInfo = MutableStateFlow<UpdateCheckResponse?>(null)
@@ -433,6 +431,7 @@ class MainViewModel @Inject constructor(
                     onVpnTunnelReady()
                     // olcrtc: API на публичном nip.io, не 10.66.66.1
                     repo.clearTunnelApiBase()
+                    startOlcrtcHeartbeatLoop()
                     return@collect
                 }
                 // Peer closed / network recover: сервис ещё жив → CONNECTING, иначе DISCONNECTED.
@@ -447,6 +446,8 @@ class MainViewModel @Inject constructor(
                                 2,
                             )
                         } else {
+                            stopOlcrtcHeartbeatLoop()
+                            viewModelScope.launch { runCatching { repo.leaveOlcrtcRoom() } }
                             _vpnState.value = VpnState.DISCONNECTED
                         }
                     }
@@ -560,6 +561,17 @@ class MainViewModel @Inject constructor(
         clearBootstrapIfServerHashesReady(items)
         repo.mergeSavedHashesIntoCachedConfig()
         clearBootstrapHashAfterLogin()
+        // olcrtc Telemost/WB — пока bootstrap-туннель жив (после disconnect nip.io на LTE мёртв).
+        runCatching {
+            repo.ensureBootstrapTunnelApi()
+            val olc = repo.prefetchOlcrtcConfig()
+            DebugLog.i(
+                "MainViewModel",
+                "login olcrtc-config ${if (olc != null) "OK provider=${repo.getOlcrtcProvider()}" else "FAIL"}",
+            )
+        }.onFailure { e ->
+            DebugLog.w("MainViewModel", "login olcrtc-config: ${e.message}")
+        }
         // ВАЖНО: тянем профиль напрямую по tunnel-base, пока активен API-overlay.
         // fetchProfileNow() здесь нельзя — он сразу выходит при isApiOverlayActive()==true,
         // поэтому профиль не грузился, и пользователь видел «Включите главный тумблер».
@@ -1061,6 +1073,7 @@ class MainViewModel @Inject constructor(
     private var resumeProfileJob: Job? = null
     private var connectJob: Job? = null
     private var disconnectJob: Job? = null
+    private var olcrtcHeartbeatJob: Job? = null
     private var logoutJob: Job? = null
     @Volatile private var logoutGeneration = 0
     /** До завершения VpnBackendSync не дергаем overlay из polling. */
@@ -2433,6 +2446,11 @@ class MainViewModel @Inject constructor(
                         _vpnState.value = VpnState.DISCONNECTED
                         return@launch
                     }
+                    // Пока VK/WDTT ещё жив — тянем /olcrtc-config через туннель (LTE без Wi‑Fi).
+                    if (repo.isMainVpnTunnelUp()) {
+                        WdttTunnelManager.traceApp("olcrtc", "prefetch via live VK tunnel")
+                        runCatching { repo.prefetchOlcrtcConfig() }
+                    }
                     // LTE: nip.io часто недоступен без VPN — сначала кеш; на Wi‑Fi — свежий room.
                     val olc = if (repo.isOnMobileData()) {
                         repo.resolveOlcrtcConfig(preferCache = true)
@@ -2532,13 +2550,7 @@ class MainViewModel @Inject constructor(
                     if (olcOk) {
                         _vpnState.value = VpnState.CONNECTED
                         repo.clearTunnelApiBase()
-                        viewModelScope.launch {
-                            while (_vpnState.value == VpnState.CONNECTED && repo.isOlcrtcBypass()) {
-                                repo.sendOlcrtcHeartbeat(true)
-                                delay(45_000)
-                            }
-                            repo.sendOlcrtcHeartbeat(false)
-                        }
+                        startOlcrtcHeartbeatLoop()
                         WdttTunnelManager.logUi("olcrtc_ok", "olcrtc connected (SOCKS)", 1)
                         return@launch
                     }
@@ -2714,6 +2726,9 @@ class MainViewModel @Inject constructor(
         val isBootstrap = forceBootstrap || bootstrapVpnMode
         if (repo.isOlcrtcBypass()) {
             viewModelScope.launch {
+                if (repo.isMainVpnTunnelUp()) {
+                    runCatching { repo.prefetchOlcrtcConfig() }
+                }
                 val olc = if (repo.isOnMobileData()) {
                     repo.resolveOlcrtcConfig(preferCache = true)
                         ?: repo.syncOlcrtcLiveChannel()
@@ -2942,6 +2957,26 @@ class MainViewModel @Inject constructor(
         repo.saveCachedProfile(next)
     }
 
+    private fun startOlcrtcHeartbeatLoop() {
+        olcrtcHeartbeatJob?.cancel()
+        olcrtcHeartbeatJob = viewModelScope.launch {
+            try {
+                while (_vpnState.value == VpnState.CONNECTED && repo.isOlcrtcBypass()) {
+                    repo.sendOlcrtcHeartbeat(true)
+                    delay(45_000)
+                }
+            } finally {
+                // Leave при отмене job / disconnect — не копить online.
+                runCatching { repo.leaveOlcrtcRoom() }
+            }
+        }
+    }
+
+    private fun stopOlcrtcHeartbeatLoop() {
+        olcrtcHeartbeatJob?.cancel()
+        olcrtcHeartbeatJob = null
+    }
+
     fun disconnect(context: Context) {
         SessionTrace.enter("MainViewModel.disconnect")
         if (_vpnState.value == VpnState.DISCONNECTING) {
@@ -2973,6 +3008,11 @@ class MainViewModel @Inject constructor(
         _vpnState.value = VpnState.DISCONNECTING
         disconnectJob = viewModelScope.launch {
             try {
+                // Leave комнаты ДО stop VPN — иначе на LTE leave не доходит.
+                if (repo.isOlcrtcBypass()) {
+                    stopOlcrtcHeartbeatLoop()
+                    runCatching { repo.leaveOlcrtcRoom() }
+                }
                 stopVpnLocally(context)
                 checkForAppUpdate()
             } finally {

@@ -532,10 +532,15 @@ class SilentRepository @Inject constructor(
                     Log.i(TAG, "syncConfig OK device=${res.body()?.device_id?.take(8)}")
                 }
             }
-        }.onFailure { e ->
-            Log.w(TAG, "syncConfig: ${e.message}")
-        }
+            }.onFailure { e ->
+                Log.w(TAG, "syncConfig: ${e.message}")
+            }
         mergeSavedHashesIntoCachedConfig()
+        runCatching { fetchOlcrtcConfig() }
+            .onSuccess { cfg ->
+                if (cfg != null) Log.i(TAG, "olcrtc-config OK after connect sync")
+            }
+            .onFailure { e -> Log.w(TAG, "olcrtc-config after connect: ${e.message}") }
         return hashesOk || configOk
     }
 
@@ -1178,21 +1183,86 @@ class SilentRepository @Inject constructor(
         prefs.edit().putString(PREF_OLCRTC_CACHE, Gson().toJson(cfg)).apply()
     }
 
-    /** Публичный nip.io (не tunnel). Короткий timeout — не вешать connect. */
-    suspend fun fetchOlcrtcConfig(): OlcrtcPublicConfig? {
-        val publicBase = getPublicServerUrl().trimEnd('/')
+    private fun acceptOlcrtcConfig(body: OlcrtcPublicConfig?): OlcrtcPublicConfig? {
+        if (body != null && body.enabled && body.crypto_key.length == 64) {
+            saveOlcrtcCache(body)
+            return body
+        }
+        return null
+    }
+
+    /** Уже внутри tunnel/overlay-сессии — только getApi(), без смены маршрута. */
+    private suspend fun fetchOlcrtcConfigDirect(): OlcrtcPublicConfig? {
         val dt = runCatching { getApiDeviceType() }.getOrDefault("android")
         val fp = runCatching { getDeviceFingerprint() }.getOrDefault("")
+        val prov = getOlcrtcProvider()
         return try {
-            val api = buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 5L)
-            val res = api.getOlcrtcConfig(dt, fp)
-            val body = if (res.isSuccessful) res.body() else null
-            if (body != null && body.enabled && body.crypto_key.length == 64) {
-                saveOlcrtcCache(body)
-                body
-            } else {
-                getCachedOlcrtcConfig()
+            val res = getApi().getOlcrtcConfig(dt, fp, prov)
+            acceptOlcrtcConfig(if (res.isSuccessful) res.body() else null)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * /olcrtc-config: при живом VK-туннеле — через 10.66.66.1 (LTE / белые списки),
+     * иначе публичный nip.io. Без Wi‑Fi nip.io часто недоступен — кеш заполняется
+     * при sync после connect VK и из меню «Варианты обхода» при включённом VPN.
+     * provider= выбранный канал — sticky/online только у него.
+     */
+    suspend fun fetchOlcrtcConfig(): OlcrtcPublicConfig? {
+        val dt = runCatching { getApiDeviceType() }.getOrDefault("android")
+        val fp = runCatching { getDeviceFingerprint() }.getOrDefault("")
+        val prov = getOlcrtcProvider()
+
+        suspend fun fetchOnce(api: SilentApi): OlcrtcPublicConfig? {
+            val res = api.getOlcrtcConfig(dt, fp, prov)
+            return acceptOlcrtcConfig(if (res.isSuccessful) res.body() else null)
+        }
+
+        val tunnelReady =
+            isMainVpnTunnelUp() ||
+                (WdttTunnelManager.isBootstrapMode() && WdttTunnelManager.tunnelReady.value)
+
+        if (tunnelReady) {
+            if (VpnSessionState.initialOverlaySyncActive || WdttTunnelManager.isApiOverlayActive()) {
+                runCatching {
+                    prepareMainVpnDirectApi()
+                    fetchOnce(getApi())
+                }.getOrNull()?.let {
+                    Log.i(TAG, "olcrtc-config OK via overlay tunnel provider=$prov")
+                    return it
+                }
             }
+            runCatching {
+                withUserBackendApi { fetchOnce(getApi()) }
+            }.getOrNull()?.let {
+                Log.i(TAG, "olcrtc-config OK via user tunnel API provider=$prov")
+                return it
+            }
+            runCatching {
+                withOtaBackendApi { fetchOnce(getApi()) }
+            }.getOrNull()?.let {
+                Log.i(TAG, "olcrtc-config OK via ota tunnel API provider=$prov")
+                return it
+            }
+            // Bootstrap login: tunnel base уже выставлен — прямой getApi без overlay.
+            if (WdttTunnelManager.isBootstrapMode() && WdttTunnelManager.tunnelReady.value) {
+                runCatching {
+                    ensureBootstrapTunnelApi()
+                    fetchOnce(getApi())
+                }.getOrNull()?.let {
+                    Log.i(TAG, "olcrtc-config OK via bootstrap tunnel provider=$prov")
+                    return it
+                }
+            }
+            Log.w(TAG, "olcrtc-config tunnel failed, try public")
+        }
+
+        return try {
+            val publicBase = getPublicServerUrl().trimEnd('/')
+            val api = buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 5L)
+            fetchOnce(api) ?: getCachedOlcrtcConfig()
         } catch (_: Exception) {
             getCachedOlcrtcConfig()
         }
@@ -1219,14 +1289,53 @@ class SilentRepository @Inject constructor(
             val roomDbId = cfg.providers[prov]?.room_db_id?.trim().orEmpty()
             if (roomDbId.isEmpty()) return
             val fp = getDeviceFingerprint()
-            getApi().olcrtcHeartbeat(
-                OlcrtcHeartbeatRequest(
-                    room_db_id = roomDbId,
-                    fingerprint = fp,
-                    provider = prov,
-                    online = online,
-                ),
+            val dt = runCatching { getApiDeviceType() }.getOrDefault("android")
+            val req = OlcrtcHeartbeatRequest(
+                room_db_id = roomDbId,
+                fingerprint = fp,
+                provider = prov,
+                device_type = dt,
+                online = online,
             )
+            // Leave / heartbeat: сначала публичный nip.io (olcrtc-сессия без 10.66),
+            // при живом VK — tunnel. Ошибки глотаем, но leave обязателен до stop VPN.
+            val publicBase = getPublicServerUrl().trimEnd('/')
+            runCatching {
+                buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 8L)
+                    .olcrtcHeartbeat(req)
+            }.onFailure {
+                if (isMainVpnTunnelUp()) {
+                    runCatching { withUserBackendApi { getApi().olcrtcHeartbeat(req) } }
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Leave комнаты перед disconnect — sticky снимается на сервере. */
+    suspend fun leaveOlcrtcRoom() {
+        try {
+            val cfg = getCachedOlcrtcConfig() ?: return
+            val fp = getDeviceFingerprint()
+            val dt = runCatching { getApiDeviceType() }.getOrDefault("android")
+            val publicBase = getPublicServerUrl().trimEnd('/')
+            val api = buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 8L)
+            // Снять sticky по всем провайдерам из кеша (assign резервирует telemost+wb).
+            for ((prov, p) in cfg.providers) {
+                val roomDbId = p.room_db_id?.trim().orEmpty()
+                if (roomDbId.isEmpty()) continue
+                runCatching {
+                    api.olcrtcHeartbeat(
+                        OlcrtcHeartbeatRequest(
+                            room_db_id = roomDbId,
+                            fingerprint = fp,
+                            provider = prov,
+                            device_type = dt,
+                            online = false,
+                        ),
+                    )
+                }
+            }
         } catch (_: Exception) {
         }
     }
@@ -1244,18 +1353,21 @@ class SilentRepository @Inject constructor(
         val prov = getOlcrtcProvider()
         val roomDbId = cfg?.providers?.get(prov)?.room_db_id.orEmpty()
         val oldRoom = cfg?.providers?.get(prov)?.room.orEmpty()
+        val req = OlcrtcRoomFailureRequest(
+            room_db_id = roomDbId,
+            fingerprint = getDeviceFingerprint(),
+            provider = prov,
+            device_type = runCatching { getApiDeviceType() }.getOrDefault("android"),
+            detail = detail.ifBlank { "peer dead room=$oldRoom" },
+        )
         try {
-            val publicBase = getPublicServerUrl().trimEnd('/')
-            val api = buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 8L)
-            api.olcrtcRoomFailure(
-                OlcrtcRoomFailureRequest(
-                    room_db_id = roomDbId,
-                    fingerprint = getDeviceFingerprint(),
-                    provider = prov,
-                    device_type = runCatching { getApiDeviceType() }.getOrDefault("android"),
-                    detail = detail.ifBlank { "peer dead room=$oldRoom" },
-                ),
-            )
+            if (isMainVpnTunnelUp()) {
+                withUserBackendApi { getApi().olcrtcRoomFailure(req) }
+            } else {
+                val publicBase = getPublicServerUrl().trimEnd('/')
+                val api = buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 8L)
+                api.olcrtcRoomFailure(req)
+            }
         } catch (_: Exception) {
         }
         // Не clearOlcrtcCache() до успешного fetch: на LTE nip.io часто недоступен.
@@ -1625,6 +1737,10 @@ class SilentRepository @Inject constructor(
             Log.i(TAG, "syncAll theme OK")
             ok = true
         }
+        runCatching { fetchOlcrtcConfigDirect() }
+            .onSuccess { cfg ->
+                if (cfg != null) Log.i(TAG, "olcrtc-config OK with profile/theme tunnel")
+            }
         return ok
     }
 
@@ -1649,6 +1765,11 @@ class SilentRepository @Inject constructor(
             }
         }.onFailure { e -> Log.w(TAG, "syncConfig: ${e.message}") }
         mergeSavedHashesIntoCachedConfig()
+        runCatching { fetchOlcrtcConfigDirect() }
+            .onSuccess { cfg ->
+                if (cfg != null) Log.i(TAG, "olcrtc-config OK tunnel-direct")
+            }
+            .onFailure { e -> Log.w(TAG, "olcrtc-config tunnel-direct: ${e.message}") }
         return hashesOk || configOk
     }
 

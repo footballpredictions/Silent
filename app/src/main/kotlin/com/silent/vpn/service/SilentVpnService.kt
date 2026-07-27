@@ -1203,8 +1203,20 @@ class SilentVpnService : Service() {
                         99,
                         isError = true,
                     )
-                    if (OlcrtcRecoveryPolicy.shouldScheduleRecoverRetry(olcrtcEverReady, reason)) {
+                    val retry = OlcrtcRecoveryPolicy.shouldScheduleRecoverRetry(olcrtcEverReady, reason)
+                    if (retry && reason.count { it == ':' } < 2) {
+                        // не больше 2 авто-retry, иначе «тихо мёртвый» Connected
                         scheduleNetworkRecovery("$reason:retry", 4_000L)
+                    } else {
+                        WdttTunnelManager.logUi(
+                            "olcrtc_dead",
+                            "обход остановлен — нет связи с комнатой",
+                            99,
+                            isError = true,
+                        )
+                        withContext(Dispatchers.Main) {
+                            disconnect()
+                        }
                     }
                 }
             } catch (e: CancellationException) {

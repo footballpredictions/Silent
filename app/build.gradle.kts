@@ -134,7 +134,13 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
     packaging {
-        jniLibs { useLegacyPackaging = true }
+        jniLibs {
+            useLegacyPackaging = true
+            // AppIntegrity pins SHA-256 of jniLibs/libclient.so. AGP stripReleaseDebugSymbols
+            // rewrites the ELF even when size is unchanged → runtime hash mismatch and
+            // «VPN-модуль изменён или повреждён». Keep symbols so packaged == pinned.
+            keepDebugSymbols += listOf("**/libclient.so")
+        }
     }
     sourceSets {
         getByName("main") {

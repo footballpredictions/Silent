@@ -169,6 +169,7 @@ data class OlcrtcHeartbeatRequest(
     val room_db_id: String = "",
     val fingerprint: String = "",
     val provider: String = "",
+    val device_type: String = "android",
     val online: Boolean = true,
 )
 
@@ -334,6 +335,7 @@ interface SilentApi {
     suspend fun getOlcrtcConfig(
         @Query("device_type") deviceType: String,
         @Query("fingerprint") fingerprint: String,
+        @Query("provider") provider: String = "",
     ): Response<OlcrtcPublicConfig>
 
     @POST("api/vpn/olcrtc-heartbeat")

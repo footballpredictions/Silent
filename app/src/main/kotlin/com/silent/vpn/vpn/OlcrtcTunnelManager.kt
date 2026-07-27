@@ -230,7 +230,7 @@ object OlcrtcTunnelManager {
             "olcrtc_peer_dead",
             "связь оборвана ($reason) — переподключение…",
             2,
-            isError = false,
+            isError = true,
         )
         sessionDeadHandler?.invoke(reason)
     }

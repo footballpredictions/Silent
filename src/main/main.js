@@ -1695,7 +1695,6 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   vkFloodEscalatePending = false
   const wantBootstrap = !!config?.is_bootstrap
   const wantOlcrtc =
-    isDebugBuild &&
     String(config?.bypassFamily || config?.bypass_family || '').toLowerCase() === 'olcrtc'
 
   if (vpnConnectInFlight) {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { isDebugBuild } from '../debugBuild'
 import {
   BYPASS_FAMILY_OLCRTC,
   BYPASS_FAMILY_WDTT,
@@ -135,7 +136,7 @@ export default function MenuBypassPanel({ fg, muted, bg, primary, vpnRunning, on
         muted={muted}
         onSelect={() => setPendingFamily(BYPASS_FAMILY_WDTT)}
       />
-      {effectiveFamily === BYPASS_FAMILY_WDTT && (
+      {effectiveFamily === BYPASS_FAMILY_WDTT && isDebugBuild && (
         <div className="ml-3 mb-2 border-l pl-3" style={{ borderColor: `${muted}44` }}>
           <ModeOption
             title="VKCalls"

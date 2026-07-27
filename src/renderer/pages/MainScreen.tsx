@@ -1307,7 +1307,7 @@ export default function MainScreen({
                 { key: 'subscription', label: 'Подписка' },
                 { key: 'exceptions', label: 'Исключения приложений' },
                 ...(isDevBuild ? [{ key: 'dns', label: `DNS · ${getDnsPreset().title}` }] : []),
-                ...(isDevBuild ? [{ key: 'bypass', label: 'Варианты обхода' }] : []),
+                { key: 'bypass', label: 'Варианты обхода' },
                 ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
                 { key: 'bonuses', label: clientTheme?.menu_bonuses_label || 'Бонусы' },
                 { key: 'devices', label: `Сессии (${sessionsBadge(profile)})` },
@@ -1535,7 +1535,7 @@ export default function MainScreen({
             </div>
           )}
 
-          {menuPage === 'bypass' && isDevBuild && (
+          {menuPage === 'bypass' && (
             <MenuBypassPanel
               fg={fg}
               muted={muted}

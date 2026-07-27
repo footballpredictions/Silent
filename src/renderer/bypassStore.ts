@@ -1,4 +1,3 @@
-import { isDebugBuild } from './debugBuild'
 import {
   getVkCredStrategy,
   setVkCredStrategy,
@@ -34,7 +33,6 @@ export {
 }
 
 export function getBypassFamily(): string {
-  if (!isDebugBuild) return BYPASS_FAMILY_WDTT
   try {
     const v = localStorage.getItem(FAMILY_KEY)
     if (v === BYPASS_FAMILY_OLCRTC) return BYPASS_FAMILY_OLCRTC
@@ -43,13 +41,11 @@ export function getBypassFamily(): string {
 }
 
 export function setBypassFamily(family: string) {
-  if (!isDebugBuild) return
   const normalized = family === BYPASS_FAMILY_OLCRTC ? BYPASS_FAMILY_OLCRTC : BYPASS_FAMILY_WDTT
   localStorage.setItem(FAMILY_KEY, normalized)
 }
 
 export function getOlcrtcProvider(): string {
-  if (!isDebugBuild) return OLCRTC_TELEMOST
   try {
     const v = localStorage.getItem(OLCRTC_PROVIDER_KEY)
     if (v === OLCRTC_WBSTREAM || v === OLCRTC_TELEMOST) return v
@@ -60,7 +56,6 @@ export function getOlcrtcProvider(): string {
 }
 
 export function setOlcrtcProvider(provider: string) {
-  if (!isDebugBuild) return
   const normalized =
     provider === OLCRTC_WBSTREAM || provider === OLCRTC_TELEMOST
       ? provider
@@ -280,7 +275,6 @@ let liveSyncTimer: ReturnType<typeof setInterval> | null = null
 
 /** Пока VPN/сессия olcrtc — раз в минуту сверять room с сервером (админ сменил канал). */
 export function startOlcrtcLiveSyncLoop(): void {
-  if (!isDebugBuild) return
   stopOlcrtcLiveSyncLoop()
   void syncOlcrtcLiveChannel()
   liveSyncTimer = setInterval(() => {
@@ -360,7 +354,6 @@ export async function fetchOlcrtcConfig(
 
 /** Подтянуть конфиг заранее (после логина / вместе с ConfigSync). */
 export async function prefetchOlcrtcConfig(): Promise<OlcrtcPublicConfig | null> {
-  if (!isDebugBuild) return null
   return fetchOlcrtcConfig()
 }
 

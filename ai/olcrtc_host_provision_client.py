@@ -69,6 +69,36 @@ async def host_provision_status() -> dict[str, Any]:
     }
 
 
+async def host_unit_health(unit: str) -> dict[str, Any]:
+    """Проверка olcrtc@unit: active + Link connected без свежих 401/403/404."""
+    name = (unit or "").strip()
+    if not name:
+        return {"ok": False, "healthy": False, "message": "empty unit"}
+    headers = _auth_headers()
+    last_err = ""
+    for base in _candidate_urls():
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(
+                    f"{base}/v1/unit-health",
+                    params={"unit": name},
+                    headers=headers,
+                )
+                if r.status_code == 200:
+                    data = r.json() if r.content else {}
+                    data["url"] = base
+                    return data
+                last_err = f"{base} HTTP {r.status_code}"
+        except Exception as e:
+            last_err = f"{base}: {e}"
+    return {
+        "ok": False,
+        "healthy": None,  # неизвестно — не валим комнату
+        "unit": name,
+        "message": last_err or "unreachable",
+    }
+
+
 async def create_room_via_host(
     provider: str,
     storage_state: dict[str, Any] | None = None,

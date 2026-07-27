@@ -7,6 +7,7 @@ Auth: X-Internal-Secret = INTERNAL_API_SECRET (как у S2S API).
 Endpoints:
   GET  /health          — без секрета (liveness)
   GET  /v1/status       — нужен секрет
+  GET  /v1/unit-health?unit=android-wbstream — нужен секрет
   POST /v1/create       — нужен секрет
   POST /v1/storage      — нужен секрет
 """
@@ -16,12 +17,14 @@ import asyncio
 import json
 import logging
 import os
+import re
 import secrets
+import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("olcrtc-host-provision")
@@ -97,6 +100,70 @@ def _status() -> dict[str, Any]:
     }
 
 
+def _unit_health(unit: str) -> dict[str, Any]:
+    """systemd + journal: host реально в комнате (Link connected) или нет."""
+    name = (unit or "").strip()
+    if not name or not re.match(r"^[a-z0-9._-]+$", name, re.I):
+        return {"ok": False, "message": "bad unit"}
+    svc = f"olcrtc@{name}.service"
+    try:
+        active = (
+            subprocess.check_output(
+                ["systemctl", "is-active", svc],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+            )
+            .strip()
+        )
+    except Exception:
+        active = "unknown"
+    journal = ""
+    try:
+        journal = subprocess.check_output(
+            [
+                "journalctl",
+                "-u",
+                svc,
+                "-n",
+                "40",
+                "--no-pager",
+                "-o",
+                "cat",
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=8,
+        )
+    except Exception as e:
+        return {
+            "ok": False,
+            "unit": name,
+            "active": active,
+            "healthy": None,  # неизвестно — агент не удаляет
+            "message": f"journal: {e}"[:120],
+        }
+    low = journal.lower()
+    linked = "link connected" in low
+    peers_zero = "current peers count: 0" in low and linked
+    last_lines = "\n".join(journal.strip().splitlines()[-8:]).lower()
+    recent_fatal = any(
+        x in last_lines
+        for x in ("status 404", "status 401", "status 403", "invalid_token", "guests cannot")
+    )
+    healthy = active == "active" and linked and not recent_fatal
+    return {
+        "ok": True,
+        "unit": name,
+        "active": active,
+        "healthy": healthy,
+        "link_connected": linked,
+        "peers_zero_ok": peers_zero,
+        "recent_fatal": recent_fatal,
+        "message": "healthy" if healthy else ("fatal" if recent_fatal else active),
+    }
+
+
 async def _create(provider: str, storage_state: dict[str, Any] | None, headless: bool) -> dict[str, Any]:
     from ai.olcrtc_room_provision import create_room, playwright_available
 
@@ -168,6 +235,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(401, {"ok": False, "message": "unauthorized"})
                 return
             self._send(200, _status())
+            return
+        if path == "/v1/unit-health":
+            if not self._authorized():
+                self._send(401, {"ok": False, "message": "unauthorized"})
+                return
+            qs = parse_qs(urlparse(self.path).query)
+            unit = (qs.get("unit") or [""])[0]
+            self._send(200, _unit_health(unit))
             return
         self._send(404, {"ok": False, "message": "not found"})
 

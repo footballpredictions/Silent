@@ -45,6 +45,7 @@ from app.services.olcrtc_assign import pick_cell_for_new_room, reconcile_stale_o
 from ai.olcrtc_host_provision_client import (
     create_room_best,
     host_provision_status,
+    host_unit_health,
     push_storage_to_host,
 )
 from ai.olcrtc_room_liveness import probe_room
@@ -227,7 +228,11 @@ async def _sync_wb_auth(db: AsyncSession, state: AgentState) -> bool:
 
 
 async def _prune_dead_rooms(db: AsyncSession, state: AgentState) -> int:
-    """Проверить active TM/WB; мёртвые — hard-delete (+sticky)."""
+    """Проверить active TM/WB; мёртвые — hard-delete (+sticky).
+
+    Guest HTTP-join ≠ host в комнате. Пустая «живая» room даёт 403 guest на клиенте.
+    После guest-ok дополнительно смотрим journal olcrtc@unit (Link connected).
+    """
     if not state.liveness_prune:
         _log(state, "liveness_prune=off — skip")
         return 0
@@ -239,7 +244,19 @@ async def _prune_dead_rooms(db: AsyncSession, state: AgentState) -> int:
         for provider in PROVIDERS_PLAYWRIGHT:
             for r in await list_rooms(db, provider=provider, status=st):
                 err = (r.last_error or "").lower()
-                if "liveness" in err or "not found" in err or "протух" in err:
+                if any(
+                    x in err
+                    for x in (
+                        "liveness",
+                        "not found",
+                        "протух",
+                        "guests cannot",
+                        "status 403",
+                        "status 404",
+                        "host unhealthy",
+                        "мертв",
+                    )
+                ):
                     rooms.append(r)
 
     seen: set[Any] = set()
@@ -258,7 +275,7 @@ async def _prune_dead_rooms(db: AsyncSession, state: AgentState) -> int:
         if is_placeholder_room(room.room_url):
             continue
         probe = await probe_room(room.provider, room.room_url)
-        item = {
+        item: dict[str, Any] = {
             "unit": room.unit_name,
             "provider": room.provider,
             "room": (room.room_url or "")[:48],
@@ -268,6 +285,38 @@ async def _prune_dead_rooms(db: AsyncSession, state: AgentState) -> int:
         }
         details.append(item)
         if probe.is_alive:
+            # Guest join OK — проверяем, что host unit реально в комнате.
+            unit = (room.unit_name or "").strip()
+            if unit:
+                uh = await host_unit_health(unit)
+                item["host"] = {
+                    "healthy": uh.get("healthy"),
+                    "active": uh.get("active"),
+                    "link": uh.get("link_connected"),
+                    "msg": str(uh.get("message") or "")[:80],
+                }
+                if uh.get("healthy") is False:
+                    dead_n += 1
+                    reason = (
+                        f"host unhealthy: {uh.get('message') or uh.get('active')}"
+                    )[:500]
+                    _log(
+                        state,
+                        f"liveness HOST-DEAD {room.provider}/{unit} "
+                        f"room={room.room_url[:36]} — {reason[:80]}",
+                    )
+                    ok = await delete_room_row(db, room.id, reason=reason)
+                    if ok:
+                        deleted += 1
+                        item["deleted"] = True
+                        item["alive"] = False
+                    else:
+                        room.status = "error"
+                        room.last_error = reason
+                    continue
+                if uh.get("healthy") is None:
+                    # host-provision недоступен — не валим, guest-ok достаточно
+                    item["host_skip"] = True
             alive_n += 1
             room.last_healthy_at = datetime.now(timezone.utc).replace(tzinfo=None)
             room.last_error = None

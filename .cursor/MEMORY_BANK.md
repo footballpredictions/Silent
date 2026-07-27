@@ -579,6 +579,19 @@ cd pc; npm install; npm run dev
 - Версии: Android `versionCode/Name 160` / `1.0.160`; PC `package.json 1.0.160`.
 - Релизы: `assembleRelease` + `build-installer.bat` OK. Push `android` + `pc`.
 
+### 2026-07-27 — OTA 1.0.160 rebuild (Android + PC)
+
+- Android: `assembleRelease` с bootstrap hash as-is; OTA `SilentVPN-release-1.0.160.apk` (72MB) — LTE cache v10 + WB 403 reassign.
+- PC: `build-installer.bat` → `Silent VPN Setup 1.0.160.exe` (91MB) перезалит (кодовых диффов не было, свежий билд).
+- Версия без bump: **1.0.160**.
+
+### 2026-07-27 — agent: host-in-room + client auto-retry (почему «не перемещает»)
+
+- **Почему:** liveness считал комнату живой по guest-join HTTP, даже если host `olcrtc@*-wbstream` не в комнате → клиент `guests cannot create rooms`; `report_room_failure` не ставил `status=error`; Android после reassign **не reconnect**.
+- **Фикс backend (задеплоено):** `report_room_failure` → `status=error` при guest 403/404/мертв; host-provision `GET /v1/unit-health` (Link connected); agent prune удаляет host-unhealthy; heal пересоздаёт.
+- **Фикс Android (в коде, нужен OTA):** после early-fail/timeout — один авто-повтор `connect` на новой комнате.
+- YouTube серые превью на A12 + Telemost: отдельно от WB — CDN thumbs (`i.ytimg.com`/`yt3.ggpht.com`) часто ломаются DNS/QUIC при живом SOCKS; видео может идти.
+
 ### 2026-07-27 — olcrtc agent: liveness prune + create
 
 - `ai/olcrtc_room_liveness.py`: WB guest-join / Telemost cloud-api → alive|dead|unknown

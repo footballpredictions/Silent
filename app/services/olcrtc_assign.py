@@ -335,12 +335,31 @@ async def report_room_failure(
     device_type: str = "",
     detail: str = "",
 ) -> dict[str, Any]:
-    """Клиент: peer dead → снять sticky этого fingerprint (не валить всю комнату)."""
+    """Клиент: peer/room dead → снять sticky; при фатале комнаты — status=error (агент пересоздаст)."""
     await ensure_rooms_synced(db)
     cleared_sticky = 0
+    marked_error = 0
     affected_rooms: set[uuid.UUID] = set()
     fp = fingerprint.strip()
     prov = (provider or "").strip().lower()
+    detail_l = (detail or "").lower()
+    # Фатал комнаты (не «личный» дисконнект): guest 403 / 404 / host не в комнате.
+    room_fatal = any(
+        x in detail_l
+        for x in (
+            "guests cannot create",
+            "гост",
+            "мертв",
+            "not found",
+            "status 404",
+            "status 403",
+            "wait for peer",
+            "peer srv",
+            "auth.token",
+            "invalid_token",
+            "liveness",
+        )
+    )
     if (room_db_id or "").strip():
         try:
             affected_rooms.add(uuid.UUID(room_db_id.strip()))
@@ -364,18 +383,22 @@ async def report_room_failure(
             await _recount_room_online(db, room)
             if detail:
                 room.last_error = detail[:500]
+            if room_fatal and room.status == "active":
+                room.status = "error"
+                marked_error += 1
     await db.commit()
     logger.warning(
-        "olcrtc room failure room=%s provider=%s fp=%s sticky=%s detail=%s",
+        "olcrtc room failure room=%s provider=%s fp=%s sticky=%s error=%s detail=%s",
         room_db_id,
         prov,
         fp[:12],
         cleared_sticky,
+        marked_error,
         (detail or "")[:80],
     )
     return {
         "ok": True,
-        "marked_error": False,
+        "marked_error": marked_error > 0,
         "sticky_cleared": cleared_sticky,
         "hint": "fetch /olcrtc-config again for a new room",
     }

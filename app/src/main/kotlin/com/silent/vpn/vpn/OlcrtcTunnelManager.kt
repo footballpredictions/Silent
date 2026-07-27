@@ -472,13 +472,12 @@ object OlcrtcTunnelManager {
                         isError = true,
                     )
                 }
-                // Chrome/Android «Сеть недоступна»: captive-portal probe в момент establish.
-                // Прогрев generate_204-хостов ДО tunnelReady — меньше ложного offline.
-                Thread.sleep(250)
-                socksDialOnce(sessionParams, "connectivitycheck.gstatic.com", 6_000)
-                socksDialOnce(sessionParams, "www.gstatic.com", 5_000)
                 _tunnelReady.value = true
                 WdttTunnelManager.logUi("olcrtc_ready", "tunnelReady (SOCKS + hev TUN)", 1)
+                // Не держим стартовый трафик YouTube/Chrome за синхронными probe:
+                // tunnelReady сразу после SOCKS+TUN, а captive-portal прогрев уводим в фон.
+                warmSocksDial(sessionParams, "connectivitycheck.gstatic.com")
+                warmSocksDial(sessionParams, "www.gstatic.com")
                 warmSocksDial(sessionParams, "www.google.com")
                 warmSocksDial(sessionParams, "132-243-234-162.nip.io")
                 warmSocksDial(sessionParams, "www.youtube.com")

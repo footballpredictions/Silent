@@ -31,10 +31,10 @@ object OlcrtcRecoveryPolicy {
      * Если за это окно были «tunnel to …» — peer жив, SOCKS probe к gstatic
      * может таймаутиться из‑за нагрузки (Яндекс.Интернетометр / Speedtest).
      */
-    const val RECENT_TUNNEL_TRAFFIC_MS = 20_000L
+    const val RECENT_TUNNEL_TRAFFIC_MS = 35_000L
 
-    /** Telemost PC closed — дать goolom самовосстановиться. */
-    const val PEER_CLOSED_GRACE_MS = 12_000L
+    /** Telemost/WB closed — даём peer шанс самовосстановиться без лишнего restart. */
+    const val PEER_CLOSED_GRACE_MS = 18_000L
 
     /** Prefetch connection-details TTL (OkHttp cache). */
     const val PREFETCH_TTL_MS = 4 * 60_000L

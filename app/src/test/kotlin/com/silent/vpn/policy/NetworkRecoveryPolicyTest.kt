@@ -83,8 +83,12 @@ class NetworkRecoveryPolicyTest {
     }
 
     @Test
-    fun `defer recovery during phone call`() {
-        assertTrue(NetworkRecoveryPolicy.shouldDeferRecoveryForPhoneCall(phoneCallActive = true))
-        assertFalse(NetworkRecoveryPolicy.shouldDeferRecoveryForPhoneCall(phoneCallActive = false))
+    fun `olcrtc recovery reasons are real not spurious`() {
+        assertTrue(NetworkRecoveryPolicy.isRealNetworkRecoveryReason("olcrtc_peer_dead:x"))
+        assertTrue(NetworkRecoveryPolicy.isRealNetworkRecoveryReason("watchdog_olcrtc_down"))
+        assertTrue(NetworkRecoveryPolicy.isRealNetworkRecoveryReason("watchdog_olcrtc_stuck"))
+        assertTrue(NetworkRecoveryPolicy.isRealNetworkRecoveryReason("watchdog_olcrtc_socks"))
+        assertTrue(NetworkRecoveryPolicy.isRealNetworkRecoveryReason("transport_switch:mobile"))
+        assertFalse(NetworkRecoveryPolicy.isSpuriousRecoveryReason("watchdog_olcrtc_down"))
     }
 }

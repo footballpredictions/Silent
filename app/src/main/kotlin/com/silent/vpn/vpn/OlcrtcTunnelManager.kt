@@ -11,6 +11,7 @@ import com.silent.vpn.BuildConfig
 import com.silent.vpn.data.DnsPreset
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
+import com.silent.vpn.policy.OlcrtcRecoveryPolicy
 import com.silent.vpn.util.DebugLog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -120,11 +121,19 @@ object OlcrtcTunnelManager {
         peerClosedPending = false
     }
 
+    private fun clearPrefetchCaches() {
+        if (!OlcrtcRecoveryPolicy.shouldInvalidatePrefetchOnStop()) return
+        telemostPrefetchCache?.file?.let { runCatching { it.delete() } }
+        wbPrefetchCache?.file?.let { runCatching { it.delete() } }
+        telemostPrefetchCache = null
+        wbPrefetchCache = null
+    }
+
     /**
      * Telemost: PC closed часто с последующим internal reconnect.
      * Ждём [graceMs] — если снова Connected, restart не нужен.
      */
-    private fun schedulePeerClosedGrace(reason: String, graceMs: Long = 12_000L) {
+    private fun schedulePeerClosedGrace(reason: String, graceMs: Long = OlcrtcRecoveryPolicy.PEER_CLOSED_GRACE_MS) {
         if (!_running.value) return
         val now = System.currentTimeMillis()
         if (now < suppressPeerDeadUntilMs) {
@@ -142,21 +151,34 @@ object OlcrtcTunnelManager {
         peerClosedGraceFuture?.cancel(false)
         peerClosedGraceFuture = scheduler.schedule({
             try {
-                if (!_running.value) return@schedule
-                if (iceConnected) {
+                if (
+                    OlcrtcRecoveryPolicy.shouldNotifyPeerDeadAfterGrace(
+                        OlcrtcRecoveryPolicy.PeerClosedGraceInput(
+                            running = _running.value,
+                            iceConnected = iceConnected,
+                            socksHealthy = probeSocksHealthy(),
+                        ),
+                    )
+                ) {
                     peerClosedPending = false
-                    WdttTunnelManager.logUi("olcrtc_pc_ok", "peer восстановился сам", 2)
-                    return@schedule
-                }
-                // SOCKS ещё отвечает — peer datachannel жив, closed мог быть вторичный PC.
-                if (probeSocksHealthy()) {
+                    notifyPeerDead(reason)
+                } else {
                     peerClosedPending = false
-                    iceConnected = true
-                    WdttTunnelManager.logUi("olcrtc_pc_ok", "peer closed, но SOCKS жив — без restart", 2)
-                    return@schedule
+                    if (!_running.value) return@schedule
+                    when {
+                        iceConnected -> {
+                            WdttTunnelManager.logUi("olcrtc_pc_ok", "peer восстановился сам", 2)
+                        }
+                        probeSocksHealthy() -> {
+                            iceConnected = true
+                            WdttTunnelManager.logUi(
+                                "olcrtc_pc_ok",
+                                "peer closed, но SOCKS жив — без restart",
+                                2,
+                            )
+                        }
+                    }
                 }
-                peerClosedPending = false
-                notifyPeerDead(reason)
             } catch (e: Exception) {
                 DebugLog.w("Olcrtc", "peer closed grace: ${e.message}")
                 peerClosedPending = false
@@ -241,6 +263,9 @@ object OlcrtcTunnelManager {
         cancelPeerClosedGrace()
         openStreamFailStreak.set(0)
         activeParams = null
+        // Prefetch connection-details живут считанные минуты, но после peer closed/recover
+        // могут быть уже протухшими для нового процесса и давать media timeout.
+        clearPrefetchCaches()
         _tunnelReady.value = false
         _running.value = false
         starting.set(false)
@@ -1017,21 +1042,27 @@ object OlcrtcTunnelManager {
         staticHosts: MutableMap<String, String>,
     ): File? {
         val cached = telemostPrefetchCache
-        if (cached != null &&
-            cached.room == room &&
-            cached.untilMs > System.currentTimeMillis() &&
-            cached.file.isFile
+        if (
+            OlcrtcRecoveryPolicy.shouldReusePrefetchCache(
+                OlcrtcRecoveryPolicy.PrefetchReuseInput(
+                    cachedRoom = cached?.room,
+                    requestRoom = room,
+                    untilMs = cached?.untilMs ?: 0L,
+                    nowMs = System.currentTimeMillis(),
+                    fileExists = cached?.file?.isFile == true,
+                ),
+            )
         ) {
             WdttTunnelManager.logUi("olcrtc_tm_auth", "Yandex auth cache hit", 1)
             runCatching {
-                val media = JSONObject(cached.file.readText())
+                val media = JSONObject(cached!!.file.readText())
                     .optJSONObject("client_configuration")
                     ?.optString("media_server_url")
                     .orEmpty()
                 hostFromUrl(media)?.let { resolveInto(staticHosts, it) }
             }
             resolveInto(staticHosts, "cloud-api.yandex.ru", "telemost.yandex.ru", "goloom.strm.yandex.net")
-            return cached.file
+            return cached!!.file
         }
         return try {
             val roomUrl =
@@ -1087,7 +1118,11 @@ object OlcrtcTunnelManager {
                 hostFromUrl(media)?.let { resolveInto(staticHosts, it) }
                 val f = File(context.filesDir, "telemost-conn.json")
                 f.writeText(body)
-                telemostPrefetchCache = PrefetchCache(room, f, System.currentTimeMillis() + 4 * 60_000L)
+                telemostPrefetchCache = PrefetchCache(
+                    room,
+                    f,
+                    System.currentTimeMillis() + OlcrtcRecoveryPolicy.PREFETCH_TTL_MS,
+                )
                 WdttTunnelManager.logUi("olcrtc_tm_auth", "Yandex auth OkHttp OK (whitelist)", 1)
                 f
             }
@@ -1105,18 +1140,24 @@ object OlcrtcTunnelManager {
         staticHosts: MutableMap<String, String>,
     ): File? {
         val cached = wbPrefetchCache
-        if (cached != null &&
-            cached.room == room &&
-            cached.untilMs > System.currentTimeMillis() &&
-            cached.file.isFile
+        if (
+            OlcrtcRecoveryPolicy.shouldReusePrefetchCache(
+                OlcrtcRecoveryPolicy.PrefetchReuseInput(
+                    cachedRoom = cached?.room,
+                    requestRoom = room,
+                    untilMs = cached?.untilMs ?: 0L,
+                    nowMs = System.currentTimeMillis(),
+                    fileExists = cached?.file?.isFile == true,
+                ),
+            )
         ) {
             WdttTunnelManager.logUi("olcrtc_wb_auth", "WB auth cache hit", 1)
             runCatching {
-                val url = JSONObject(cached.file.readText()).optString("url")
+                val url = JSONObject(cached!!.file.readText()).optString("url")
                 hostFromUrl(url)?.let { resolveInto(staticHosts, it) }
             }
             resolveInto(staticHosts, "stream.wb.ru", "rtc-el-02.wb.ru")
-            return cached.file
+            return cached!!.file
         }
         return try {
             val roomId = room.trim().removePrefix("https://stream.wb.ru/room/").trim('/')
@@ -1214,7 +1255,11 @@ object OlcrtcTunnelManager {
                 .toString()
             val f = File(context.filesDir, "wbstream-conn.json")
             f.writeText(out)
-            wbPrefetchCache = PrefetchCache(room, f, System.currentTimeMillis() + 4 * 60_000L)
+            wbPrefetchCache = PrefetchCache(
+                room,
+                f,
+                System.currentTimeMillis() + OlcrtcRecoveryPolicy.PREFETCH_TTL_MS,
+            )
             WdttTunnelManager.logUi("olcrtc_wb_auth", "WB auth OkHttp OK (whitelist)", 1)
             f
         } catch (e: Exception) {

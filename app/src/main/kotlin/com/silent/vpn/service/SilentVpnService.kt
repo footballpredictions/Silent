@@ -40,6 +40,7 @@ import com.silent.vpn.vpn.WireGuardHelper
 import com.silent.vpn.vpn.WireGuardConfigBuilder
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import com.silent.vpn.policy.NetworkRecoveryPolicy
+import com.silent.vpn.policy.OlcrtcRecoveryPolicy
 import com.silent.vpn.policy.VpnNetworkConstants.MIN_TRANSPORT_RESTART_INTERVAL_MS
 import dagger.hilt.android.EntryPointAccessors
 import com.google.gson.Gson
@@ -74,8 +75,6 @@ class SilentVpnService : Service() {
         private const val NETWORK_GRACE_MS = 12_000L
         /** transportWatchdog не kill сервис, пока libclient ещё стартует. */
         private const val LIBCLIENT_START_GRACE_MS = 45_000L
-        /** Первый connect olcrtc на LTE: MainViewModel ждёт SOCKS ~90с — recover не должен убивать старт. */
-        private const val OLCRTC_CONNECT_GRACE_MS = 95_000L
         /** Минимальный интервал между restartTransport (баланс скорость/стабильность). */
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 1_500L
         /** Задержка перед restart после возврата сети / звонка. */
@@ -181,10 +180,15 @@ class SilentVpnService : Service() {
         isRunning && System.currentTimeMillis() - connectStartedAtMs < LIBCLIENT_START_GRACE_MS
 
     private fun isOlcrtcInitialConnectInProgress(): Boolean =
-        olcrtcSessionActive &&
-            !olcrtcEverReady &&
-            isRunning &&
-            System.currentTimeMillis() - connectStartedAtMs < OLCRTC_CONNECT_GRACE_MS
+        OlcrtcRecoveryPolicy.isInitialConnectInProgress(
+            OlcrtcRecoveryPolicy.InitialConnectInput(
+                sessionActive = olcrtcSessionActive,
+                everReady = olcrtcEverReady,
+                isRunning = isRunning,
+                connectStartedAtMs = connectStartedAtMs,
+                nowMs = System.currentTimeMillis(),
+            ),
+        )
 
     /** Дольше grace на bootstrap — libclient и WG поднимаются медленнее, особенно на TV. */
     private fun networkGraceMs(): Long =
@@ -837,7 +841,11 @@ class SilentVpnService : Service() {
             return
         }
         if (!isRunning) return
-        if (isOlcrtcInitialConnectInProgress()) {
+        if (OlcrtcRecoveryPolicy.shouldSkipNetworkRecoveryDuringInitialConnect(
+                isOlcrtcInitialConnectInProgress(),
+                reason,
+            )
+        ) {
             DebugLog.i("VpnService", "recovery skipped — olcrtc initial connect ($reason)")
             return
         }
@@ -1025,46 +1033,56 @@ class SilentVpnService : Service() {
     /** Полный restart olcrtc peer (звонок / Wi‑Fi↔LTE / peer closed / потеря сигнала). */
     private fun recoverOlcrtcAfterNetwork(reason: String) {
         val cfg = lastOlcrtcConfigJson ?: OlcrtcTunnelManager.lastConfigJson()
-        if (cfg.isNullOrBlank()) {
-            DebugLog.w("VpnService", "olcrtc recovery skipped — no config ($reason)")
-            return
-        }
-        if (!isRunning) return
-        if (!olcrtcEverReady) {
-            DebugLog.i("VpnService", "olcrtc recovery skipped — never was ready ($reason)")
-            return
-        }
-        val preferFromReason = when {
-            reason.startsWith("transport_switch:wifi") -> "wifi"
-            reason.startsWith("transport_switch:mobile") -> "cell"
-            else -> null
-        }
-        // Никогда не cancel текущего recover (кроме disconnect) — иначе StandaloneCoroutine cancelled.
-        if (isOlcrtcRecoverInFlight()) {
-            if (preferFromReason != null) {
-                pendingOlcrtcPreferTransport = preferFromReason
-            }
-            DebugLog.i("VpnService", "olcrtc recovery already in flight — skip $reason")
-            return
-        }
+        val preferFromReason = OlcrtcRecoveryPolicy.preferTransportFromReason(reason)
         val now = System.currentTimeMillis()
-        if (preferFromReason != null) {
-            val target = preferFromReason
-            if (target == lastTransportSwitchTarget && now - lastTransportSwitchMs < 25_000L) {
-                DebugLog.i("VpnService", "olcrtc transport switch duplicate ($target) — skip")
+        val decision = OlcrtcRecoveryPolicy.decideRecover(
+            OlcrtcRecoveryPolicy.RecoverInput(
+                configJson = cfg,
+                isRunning = isRunning,
+                everReady = olcrtcEverReady,
+                recoverInFlight = isOlcrtcRecoverInFlight(),
+                reason = reason,
+                preferFromReason = preferFromReason,
+                lastTransportSwitchTarget = lastTransportSwitchTarget,
+                lastTransportSwitchMs = lastTransportSwitchMs,
+                lastTransportRestartMs = lastTransportRestartMs,
+                nowMs = now,
+            ),
+        )
+        when (decision) {
+            OlcrtcRecoveryPolicy.RecoverDecision.SKIP_NO_CONFIG -> {
+                DebugLog.w("VpnService", "olcrtc recovery skipped — no config ($reason)")
                 return
             }
-            lastTransportSwitchTarget = target
+            OlcrtcRecoveryPolicy.RecoverDecision.SKIP_NOT_RUNNING -> return
+            OlcrtcRecoveryPolicy.RecoverDecision.SKIP_NEVER_READY -> {
+                DebugLog.i("VpnService", "olcrtc recovery skipped — never was ready ($reason)")
+                return
+            }
+            OlcrtcRecoveryPolicy.RecoverDecision.SKIP_IN_FLIGHT -> {
+                if (preferFromReason != null) {
+                    pendingOlcrtcPreferTransport = preferFromReason
+                }
+                DebugLog.i("VpnService", "olcrtc recovery already in flight — skip $reason")
+                return
+            }
+            OlcrtcRecoveryPolicy.RecoverDecision.SKIP_SWITCH_DUP -> {
+                DebugLog.i(
+                    "VpnService",
+                    "olcrtc transport switch duplicate ($preferFromReason) — skip",
+                )
+                return
+            }
+            OlcrtcRecoveryPolicy.RecoverDecision.SKIP_DEBOUNCE -> {
+                DebugLog.i("VpnService", "olcrtc recovery debounce ($reason)")
+                return
+            }
+            OlcrtcRecoveryPolicy.RecoverDecision.ALLOW -> Unit
+        }
+        if (preferFromReason != null) {
+            lastTransportSwitchTarget = preferFromReason
             lastTransportSwitchMs = now
             pendingOlcrtcPreferTransport = preferFromReason
-        } else if (
-            now - lastTransportRestartMs < 12_000L &&
-            !reason.startsWith("phone_call_end") &&
-            !reason.startsWith("internet_restored") &&
-            !reason.contains(":retry")
-        ) {
-            DebugLog.i("VpnService", "olcrtc recovery debounce ($reason)")
-            return
         }
         lastTransportRestartMs = now
         lastOlcrtcConfigJson = cfg
@@ -1131,10 +1149,8 @@ class SilentVpnService : Service() {
 
                 // 3) Старт из кеша. На LTE nip.io fetch часто вешает recover — не делаем.
                 val onMobile = VpnNetworkHelper.isOnMobileData(this@SilentVpnService)
-                var cfgToUse = cfg
-                if (!onMobile &&
-                    (reason.startsWith("olcrtc_peer_dead") || reason.startsWith("watchdog_olcrtc"))
-                ) {
+                var cfgToUse = cfg!!
+                if (OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(onMobile, reason)) {
                     cfgToUse = withTimeoutOrNull(2_500L) {
                         refreshOlcrtcConfigJson(cfg, reason)
                     } ?: cfg
@@ -1181,7 +1197,7 @@ class SilentVpnService : Service() {
                         99,
                         isError = true,
                     )
-                    if (olcrtcEverReady && !reason.contains(":retry")) {
+                    if (OlcrtcRecoveryPolicy.shouldScheduleRecoverRetry(olcrtcEverReady, reason)) {
                         scheduleNetworkRecovery("$reason:retry", 4_000L)
                     }
                 }
@@ -1426,56 +1442,72 @@ class SilentVpnService : Service() {
             delay(1000)
             while (isActive && isRunning) {
                 // olcrtc: watchdog своего транспорта; WDTT resume не трогаем.
-                if (
-                    olcrtcSessionActive ||
-                    lastOlcrtcConfigJson != null ||
-                    OlcrtcTunnelManager.running.value ||
-                    OlcrtcTunnelManager.tunnelReady.value
-                ) {
-                    if (isOlcrtcRecoverInFlight() || isOlcrtcInitialConnectInProgress()) {
-                        delay(2000)
-                        continue
-                    }
-                    if (OlcrtcTunnelManager.isStarting()) {
-                        delay(2000)
-                        continue
-                    }
-                    val olcRun = OlcrtcTunnelManager.running.value
-                    val olcReady = OlcrtcTunnelManager.tunnelReady.value
-                    val sinceRestart = System.currentTimeMillis() - lastTransportRestartMs
-                    // Процесс жив, peer мёртв (tunnelReady=false) — раньше watchdog ждал !running и молчал.
                     if (
+                        OlcrtcRecoveryPolicy.isOlcrtcSessionLive(
+                            sessionActive = olcrtcSessionActive,
+                            running = OlcrtcTunnelManager.running.value,
+                            tunnelReady = OlcrtcTunnelManager.tunnelReady.value,
+                            lastConfigPresent = lastOlcrtcConfigJson != null,
+                        )
+                    ) {
+                    val action = OlcrtcRecoveryPolicy.decideWatchdog(
+                        OlcrtcRecoveryPolicy.WatchdogInput(
+                            sessionActive = olcrtcSessionActive,
+                            running = OlcrtcTunnelManager.running.value,
+                            tunnelReady = OlcrtcTunnelManager.tunnelReady.value,
+                            recoverInFlight = isOlcrtcRecoverInFlight(),
+                            initialConnectInProgress = isOlcrtcInitialConnectInProgress(),
+                            starting = OlcrtcTunnelManager.isStarting(),
+                            withinLibclientConnectGrace = isWithinConnectGrace(),
+                            sinceRestartMs = System.currentTimeMillis() - lastTransportRestartMs,
+                            socksHealthy = true, // probe only if SOCKS_DEAD candidate path
+                        ),
+                    )
+                    // SOCKS probe дорогой — только когда остальные условия SOCKS_DEAD уже почти ок.
+                    val resolved = if (
+                        action == OlcrtcRecoveryPolicy.WatchdogAction.NONE &&
                         olcrtcSessionActive &&
-                        olcRun &&
-                        !olcReady &&
+                        OlcrtcTunnelManager.tunnelReady.value &&
+                        !isOlcrtcRecoverInFlight() &&
+                        !isOlcrtcInitialConnectInProgress() &&
+                        !OlcrtcTunnelManager.isStarting() &&
                         !isWithinConnectGrace() &&
-                        sinceRestart > 25_000L
+                        System.currentTimeMillis() - lastTransportRestartMs >
+                            OlcrtcRecoveryPolicy.WATCHDOG_SOCKS_MS
                     ) {
-                        DebugLog.w("VpnService", "transportWatchdog: olcrtc stuck (running, not ready)")
-                        scheduleNetworkRecovery("watchdog_olcrtc_stuck", 800L)
-                    } else if (
-                        olcrtcSessionActive &&
-                        !olcRun &&
-                        !olcReady &&
-                        !isWithinConnectGrace() &&
-                        sinceRestart > 20_000L
-                    ) {
-                        DebugLog.w("VpnService", "transportWatchdog: olcrtc down — recover")
-                        scheduleNetworkRecovery("watchdog_olcrtc_down", 800L)
-                    } else if (
-                        olcrtcSessionActive &&
-                        olcReady &&
-                        sinceRestart > 25_000L &&
-                        !isWithinConnectGrace()
-                    ) {
-                        // Зомби: UI «подключено», peer/SOCKS мёртв после PC closed.
                         val healthy = withContext(Dispatchers.IO) {
                             OlcrtcTunnelManager.probeSocksHealthy()
                         }
-                        if (!healthy) {
+                        OlcrtcRecoveryPolicy.decideWatchdog(
+                            OlcrtcRecoveryPolicy.WatchdogInput(
+                                sessionActive = olcrtcSessionActive,
+                                running = OlcrtcTunnelManager.running.value,
+                                tunnelReady = OlcrtcTunnelManager.tunnelReady.value,
+                                recoverInFlight = false,
+                                initialConnectInProgress = false,
+                                starting = false,
+                                withinLibclientConnectGrace = false,
+                                sinceRestartMs = System.currentTimeMillis() - lastTransportRestartMs,
+                                socksHealthy = healthy,
+                            ),
+                        )
+                    } else {
+                        action
+                    }
+                    when (resolved) {
+                        OlcrtcRecoveryPolicy.WatchdogAction.STUCK -> {
+                            DebugLog.w("VpnService", "transportWatchdog: olcrtc stuck (running, not ready)")
+                            scheduleNetworkRecovery("watchdog_olcrtc_stuck", 800L)
+                        }
+                        OlcrtcRecoveryPolicy.WatchdogAction.DOWN -> {
+                            DebugLog.w("VpnService", "transportWatchdog: olcrtc down — recover")
+                            scheduleNetworkRecovery("watchdog_olcrtc_down", 800L)
+                        }
+                        OlcrtcRecoveryPolicy.WatchdogAction.SOCKS_DEAD -> {
                             DebugLog.w("VpnService", "transportWatchdog: olcrtc SOCKS dead — recover")
                             scheduleNetworkRecovery("watchdog_olcrtc_socks", 500L)
                         }
+                        OlcrtcRecoveryPolicy.WatchdogAction.NONE -> Unit
                     }
                     delay(2000)
                     continue

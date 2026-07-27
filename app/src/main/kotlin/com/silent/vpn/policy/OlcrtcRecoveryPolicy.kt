@@ -1,0 +1,268 @@
+package com.silent.vpn.policy
+
+/**
+ * Чистые решения olcrtc recover / LTE / Wi‑Fi↔cell.
+ * Логика вынесена из SilentVpnService / OlcrtcTunnelManager для юнит-тестов.
+ */
+object OlcrtcRecoveryPolicy {
+
+    /** MainViewModel ждёт SOCKS ~90с — recover не должен убивать первый connect. */
+    const val CONNECT_GRACE_MS = 95_000L
+
+    /** После transport_switch не дублируем restart на тот же target. */
+    const val TRANSPORT_SWITCH_DEDUP_MS = 25_000L
+
+    /** Общий debounce recover (не switch / не restore / не retry). */
+    const val RECOVER_DEBOUNCE_MS = 12_000L
+
+    /** Watchdog: процесс жив, tunnelReady=false слишком долго. */
+    const val WATCHDOG_STUCK_MS = 25_000L
+
+    /** Watchdog: процесс мёртв после ready-сессии. */
+    const val WATCHDOG_DOWN_MS = 20_000L
+
+    /** Watchdog: SOCKS probe при ready. */
+    const val WATCHDOG_SOCKS_MS = 25_000L
+
+    /** Telemost PC closed — дать goolom самовосстановиться. */
+    const val PEER_CLOSED_GRACE_MS = 12_000L
+
+    /** Prefetch connection-details TTL (OkHttp cache). */
+    const val PREFETCH_TTL_MS = 4 * 60_000L
+
+    enum class RecoverDecision {
+        ALLOW,
+        SKIP_NO_CONFIG,
+        SKIP_NOT_RUNNING,
+        SKIP_NEVER_READY,
+        SKIP_IN_FLIGHT,
+        SKIP_SWITCH_DUP,
+        SKIP_DEBOUNCE,
+    }
+
+    enum class WatchdogAction {
+        NONE,
+        STUCK,
+        DOWN,
+        SOCKS_DEAD,
+    }
+
+    data class RecoverInput(
+        val configJson: String?,
+        val isRunning: Boolean,
+        val everReady: Boolean,
+        val recoverInFlight: Boolean,
+        val reason: String,
+        val preferFromReason: String?,
+        val lastTransportSwitchTarget: String,
+        val lastTransportSwitchMs: Long,
+        val lastTransportRestartMs: Long,
+        val nowMs: Long,
+    )
+
+    data class InitialConnectInput(
+        val sessionActive: Boolean,
+        val everReady: Boolean,
+        val isRunning: Boolean,
+        val connectStartedAtMs: Long,
+        val nowMs: Long,
+        val graceMs: Long = CONNECT_GRACE_MS,
+    )
+
+    data class WatchdogInput(
+        val sessionActive: Boolean,
+        val running: Boolean,
+        val tunnelReady: Boolean,
+        val recoverInFlight: Boolean,
+        val initialConnectInProgress: Boolean,
+        val starting: Boolean,
+        val withinLibclientConnectGrace: Boolean,
+        val sinceRestartMs: Long,
+        val socksHealthy: Boolean,
+    )
+
+    data class PeerClosedGraceInput(
+        val running: Boolean,
+        val iceConnected: Boolean,
+        val socksHealthy: Boolean,
+    )
+
+    data class PrefetchReuseInput(
+        val cachedRoom: String?,
+        val requestRoom: String,
+        val untilMs: Long,
+        val nowMs: Long,
+        val fileExists: Boolean,
+    )
+
+    data class UnderlyingReadySample(
+        val elapsedMs: Long,
+        val fingerprint: String,
+        val validated: Boolean,
+        val anyInternet: Boolean,
+        val preferTransport: String?,
+        val preferHoldMs: Long = 3_500L,
+    )
+
+    fun preferTransportFromReason(reason: String): String? = when {
+        reason.startsWith("transport_switch:wifi") -> "wifi"
+        reason.startsWith("transport_switch:mobile") -> "cell"
+        else -> null
+    }
+
+    fun isInitialConnectInProgress(input: InitialConnectInput): Boolean =
+        input.sessionActive &&
+            !input.everReady &&
+            input.isRunning &&
+            input.nowMs - input.connectStartedAtMs < input.graceMs
+
+    /**
+     * Recover (stop→await→start) только после первого успешного tunnelReady в сессии.
+     * Иначе LTE/network callbacks убивают первый connect.
+     */
+    fun decideRecover(input: RecoverInput): RecoverDecision {
+        if (input.configJson.isNullOrBlank()) return RecoverDecision.SKIP_NO_CONFIG
+        if (!input.isRunning) return RecoverDecision.SKIP_NOT_RUNNING
+        if (!input.everReady) return RecoverDecision.SKIP_NEVER_READY
+        if (input.recoverInFlight) return RecoverDecision.SKIP_IN_FLIGHT
+
+        val prefer = input.preferFromReason
+        if (prefer != null) {
+            if (
+                prefer == input.lastTransportSwitchTarget &&
+                input.nowMs - input.lastTransportSwitchMs < TRANSPORT_SWITCH_DEDUP_MS
+            ) {
+                return RecoverDecision.SKIP_SWITCH_DUP
+            }
+            return RecoverDecision.ALLOW
+        }
+
+        if (
+            input.nowMs - input.lastTransportRestartMs < RECOVER_DEBOUNCE_MS &&
+            !input.reason.startsWith("phone_call_end") &&
+            !input.reason.startsWith("internet_restored") &&
+            !input.reason.contains(":retry")
+        ) {
+            return RecoverDecision.SKIP_DEBOUNCE
+        }
+        return RecoverDecision.ALLOW
+    }
+
+    /** После failed recover — один retry, только если сессия уже была ready. */
+    fun shouldScheduleRecoverRetry(everReady: Boolean, reason: String): Boolean =
+        everReady && !reason.contains(":retry")
+
+    /**
+     * На LTE nip.io fetch часто вешает recover — старт из кеша.
+     * Refresh room только на Wi‑Fi и только для peer_dead / watchdog.
+     */
+    fun shouldRefreshConfigOnRecover(onMobileData: Boolean, reason: String): Boolean {
+        if (onMobileData) return false
+        return reason.startsWith("olcrtc_peer_dead") || reason.startsWith("watchdog_olcrtc")
+    }
+
+    fun decideWatchdog(input: WatchdogInput): WatchdogAction {
+        if (!input.sessionActive) return WatchdogAction.NONE
+        if (input.recoverInFlight || input.initialConnectInProgress || input.starting) {
+            return WatchdogAction.NONE
+        }
+        if (input.withinLibclientConnectGrace) return WatchdogAction.NONE
+
+        return when {
+            input.running &&
+                !input.tunnelReady &&
+                input.sinceRestartMs > WATCHDOG_STUCK_MS -> WatchdogAction.STUCK
+
+            !input.running &&
+                !input.tunnelReady &&
+                input.sinceRestartMs > WATCHDOG_DOWN_MS -> WatchdogAction.DOWN
+
+            input.tunnelReady &&
+                input.sinceRestartMs > WATCHDOG_SOCKS_MS &&
+                !input.socksHealthy -> WatchdogAction.SOCKS_DEAD
+
+            else -> WatchdogAction.NONE
+        }
+    }
+
+    /**
+     * После grace PC closed: restart только если peer/SOCKS не ожили.
+     */
+    fun shouldNotifyPeerDeadAfterGrace(input: PeerClosedGraceInput): Boolean {
+        if (!input.running) return false
+        if (input.iceConnected) return false
+        if (input.socksHealthy) return false
+        return true
+    }
+
+    /** Prefetch connection-details нельзя переиспользовать после stop/recover. */
+    fun shouldInvalidatePrefetchOnStop(): Boolean = true
+
+    /**
+     * In-memory OkHttp prefetch: только живой TTL + тот же room + файл на диске.
+     * После stop() кэш обязан быть null → reuse=false.
+     */
+    fun shouldReusePrefetchCache(input: PrefetchReuseInput): Boolean {
+        val room = input.cachedRoom ?: return false
+        if (room != input.requestRoom) return false
+        if (!input.fileExists) return false
+        if (input.untilMs <= input.nowMs) return false
+        return true
+    }
+
+    /** Нормализация prefer для awaitUnderlyingReady. */
+    fun normalizePreferTransport(preferTransport: String?): String? = when (preferTransport) {
+        "wifi", "eth" -> "wifi"
+        "mobile", "cell" -> "cell"
+        else -> null
+    }
+
+    /**
+     * Решение «сеть готова» без Android API — для тестов LTE/airplane/preferHold.
+     * Зеркалит VpnNetworkHelper.awaitUnderlyingReady.
+     */
+    fun shouldAcceptUnderlyingReady(sample: UnderlyingReadySample): Boolean {
+        val want = normalizePreferTransport(sample.preferTransport)
+        if (sample.validated) {
+            val match = when (want) {
+                "wifi" -> sample.fingerprint == "wifi" || sample.fingerprint == "eth"
+                "cell" -> sample.fingerprint == "cell"
+                else -> sample.fingerprint.isNotEmpty()
+            }
+            if (match || want == null || sample.elapsedMs >= sample.preferHoldMs) {
+                return true
+            }
+        }
+        // LTE после airplane часто без VALIDATED — any INTERNET после 1.2с + preferHold.
+        if (
+            sample.anyInternet &&
+            sample.elapsedMs >= 1_200L &&
+            (want == null || sample.elapsedMs >= sample.preferHoldMs)
+        ) {
+            return true
+        }
+        return false
+    }
+
+    fun shouldAcceptUnderlyingReadyOnTimeout(anyInternet: Boolean): Boolean = anyInternet
+
+    /**
+     * Network recovery во время первого connect — пропускаем целиком
+     * (включая transport_switch / validated / watchdog).
+     */
+    fun shouldSkipNetworkRecoveryDuringInitialConnect(
+        initialConnectInProgress: Boolean,
+        reason: String,
+    ): Boolean {
+        if (!initialConnectInProgress) return false
+        // Disconnect / revoke не через этот путь — reason всегда network/peer.
+        return true
+    }
+
+    fun isOlcrtcSessionLive(
+        sessionActive: Boolean,
+        running: Boolean,
+        tunnelReady: Boolean,
+        lastConfigPresent: Boolean,
+    ): Boolean = sessionActive || running || tunnelReady || lastConfigPresent
+}

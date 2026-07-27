@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
+import com.silent.vpn.policy.OlcrtcRecoveryPolicy
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.util.DebugLog
 import kotlinx.coroutines.delay
@@ -171,30 +172,25 @@ object VpnNetworkHelper {
     ): Boolean {
         val started = System.currentTimeMillis()
         val deadline = started + timeoutMs
-        val want = when (preferTransport) {
-            "wifi", "eth" -> "wifi"
-            "mobile", "cell" -> "cell"
-            else -> null
-        }
+        val want = OlcrtcRecoveryPolicy.normalizePreferTransport(preferTransport)
         while (System.currentTimeMillis() < deadline) {
             val elapsed = System.currentTimeMillis() - started
             val fp = underlyingTransportFingerprint(context)
             val validated = hasUnderlyingInternet(context)
             val any = hasAnyUnderlyingInternet(context)
-            if (validated) {
-                val match = when (want) {
-                    "wifi" -> fp == "wifi" || fp == "eth"
-                    "cell" -> fp == "cell"
-                    else -> fp.isNotEmpty()
-                }
-                if (match || want == null || elapsed >= preferHoldMs) {
-                    DebugLog.i(TAG, "awaitUnderlyingReady ok fp=$fp prefer=$want elapsed=${elapsed}ms")
-                    return true
-                }
-            }
-            // LTE после airplane часто долго без VALIDATED — any INTERNET достаточно.
-            if (any && elapsed >= 1_200L && (want == null || elapsed >= preferHoldMs)) {
-                DebugLog.i(TAG, "awaitUnderlyingReady any-ok fp=$fp elapsed=${elapsed}ms")
+            if (
+                OlcrtcRecoveryPolicy.shouldAcceptUnderlyingReady(
+                    OlcrtcRecoveryPolicy.UnderlyingReadySample(
+                        elapsedMs = elapsed,
+                        fingerprint = fp,
+                        validated = validated,
+                        anyInternet = any,
+                        preferTransport = preferTransport,
+                        preferHoldMs = preferHoldMs,
+                    ),
+                )
+            ) {
+                DebugLog.i(TAG, "awaitUnderlyingReady ok fp=$fp prefer=$want elapsed=${elapsed}ms")
                 return true
             }
             delay(250L)
@@ -204,7 +200,7 @@ object VpnNetworkHelper {
             TAG,
             "awaitUnderlyingReady timeout prefer=$want fp=${underlyingTransportFingerprint(context)} any=$any",
         )
-        return any
+        return OlcrtcRecoveryPolicy.shouldAcceptUnderlyingReadyOnTimeout(any)
     }
 
     private fun hasUsableWifi(caps: NetworkCapabilities): Boolean {

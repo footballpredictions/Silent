@@ -579,6 +579,25 @@ cd pc; npm install; npm run dev
 - Версии: Android `versionCode/Name 160` / `1.0.160`; PC `package.json 1.0.160`.
 - Релизы: `assembleRelease` + `build-installer.bat` OK. Push `android` + `pc`.
 
+### 2026-07-27 — olcrtc agent: liveness prune + create
+
+- `ai/olcrtc_room_liveness.py`: WB guest-join / Telemost cloud-api → alive|dead|unknown
+- Агент каждые 15м: sync `auth.token` → probe → **hard-delete** мёртвых (+sticky) → heal error → create до `target_rooms_*`
+- Админка: `liveness_prune`, `last_liveness` в GET room-agent. Прод smoke: **9/9 alive**, yaml 9 units.
+
+### 2026-07-27 — WB hot bootstrap: account JWT + новые комнаты на прод
+
+- UI create: android `019fa3a0-3ff8-77fa-a5a5-2c87a48e34e0`, pc `019fa3a0-4ed6-7467-b45b-8b536cec1fec`
+- `scripts/wb_hot_bootstrap.py` + `wb_push_rooms.py`: account `authType=wb`, YAML `auth.token`, units restarted
+- Host: `Link connected` (не guest 403/404). JWT ttl ~60с — push сразу после логина.
+
+### 2026-07-27 — Realme Android 12: WB 403 + протухший auth.token
+
+- Лог: `room=019fa372…` (удалённая) + `guests cannot create rooms` / exit 1; Telemost — ICE+SOCKS, dial ещё шёл.
+- Причины: LTE `preferCache` отдавал мёртвый room без fetch; srv YAML без/с протухшим JWT (`invalid_token`); WB `accessToken` ttl ≈45–90с, порог «свежести» 60с мешал сохранить state.
+- Прод: WB временно `enabled=False`, units остановлены; Telemost active. Скрипт `scripts/wb_hot_bootstrap.py` + фикс TTL в `olcrtc_room_provision_host.py`.
+- Android: cache `v10`, `resolveOlcrtcConfig` всегда пробует fetch; early-fail → clear+reassign; hint на guest 403.
+
 ### 2026-07-27 — hotfix 1.0.161: Android integrity + PC bypass label
 
 - **Android:** release 1.0.160 падал с «VPN-модуль изменён или повреждён» — pin SHA-256 из `jniLibs`, а в APK попадал ELF после `strip*DebugSymbols` (размер тот же, хеш другой). Фикс: `keepDebugSymbols += "**/libclient.so"`.

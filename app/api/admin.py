@@ -2005,6 +2005,7 @@ class OlcrtcRoomAgentBody(BaseModel):
     target_rooms_telemost: Optional[int] = None
     target_rooms_wbstream: Optional[int] = None
     max_clients: Optional[int] = None
+    liveness_prune: Optional[bool] = None
 
 
 @router.get("/bypass/olcrtc/room-agent")
@@ -2049,6 +2050,8 @@ async def put_olcrtc_room_agent(
         state.target_rooms_wbstream = max(0, int(body.target_rooms_wbstream))
     if body.max_clients is not None:
         state.max_clients = max(1, int(body.max_clients))
+    if body.liveness_prune is not None:
+        state.liveness_prune = bool(body.liveness_prune)
     saved = await save_agent_state(db, state)
     return {"agent": saved.to_dict()}
 
@@ -2058,7 +2061,7 @@ async def run_olcrtc_room_agent(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Немедленный цикл: Jitsi + Telemost + WB (host Playwright) до целевых комнат."""
+    """Немедленный цикл: liveness prune + create Telemost/WB до target_rooms_*."""
     from ai.olcrtc_room_agent import heal_rooms
 
     state = await heal_rooms(db, force=True)

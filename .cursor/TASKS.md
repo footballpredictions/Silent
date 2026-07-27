@@ -26,6 +26,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] **olcrtc 1000+ прогрев пула на проде** — 2026-07-25: `seed_olcrtc_mass_pool.py` → capacity ≥1100 (`max_clients=25`), **47 unit’ов active**, agent `enabled` + `target_capacity=1100`, Jitsi auto без cookies; `pool_denied` только если нет ни одного провайдера.
 - [x] **olcrtc 1000+ нагрузочный прогон** — 2026-07-25: `loadtest_olcrtc_1000.py` → **pass** (1000 assign, 500pc+500android, unique 22+22, denied 0, 25.5s). Spill: olcrtc бинарь+template на соты `87.58.213.193` / `78.17.74.27` (`deploy_olcrtc_to_hive_cells.py`).
 - [x] Документировать YuMoney webhook flow в APIS.md (`POST /api/payments/yumoney/notify`) — 2026-07-25
+- [x] **olcrtc agent: liveness + prune + create** — 2026-07-27: HTTP probe WB/Telemost, удаление мёртвых комнат, sync `auth.token`, create до target; цикл 15м; задеплоено на прод (9/9 alive)
 
 ### Продукт / монетизация
 

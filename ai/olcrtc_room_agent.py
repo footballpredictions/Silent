@@ -1,11 +1,12 @@
-"""Агент провижининга комнат olcrtc (Jitsi + Telemost + WB Stream).
+"""Агент провижининга комнат olcrtc (Telemost + WB Stream).
 
 Не связан с VK-агентом хешей. Не делает рандомную регистрацию.
 
-Масштаб:
-- Jitsi: guest URL без аккаунта → основной объём до target_capacity.
-- Telemost / WB: Playwright на host-сервисе (Chromium вне Docker) + storage_state.
-- Держит минимум active-комнат на TM/WB (target_rooms_*), heal status=error.
+Цикл:
+1) sync WB auth.token из storage_state
+2) HTTP-liveness: жива/протухла/unknown → удалить мёртвые
+3) heal status=error → новая room на том же unit
+4) догнать target_rooms_* (Playwright host-provision)
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from app.models import AppSetting
 from app.services.olcrtc_room_accounts import (
     load_room_accounts,
     resolve_storage_state,
+    sync_wbstream_auth_token_to_settings,
 )
 from app.services.olcrtc_settings import (
     OlcrtcRoomSlot,
@@ -33,6 +35,7 @@ from app.services.olcrtc_settings import (
 )
 from app.services.olcrtc_rooms_db import (
     create_room_row,
+    delete_room_row,
     list_rooms,
     pool_metrics,
     sync_rooms_from_settings_json,
@@ -44,23 +47,22 @@ from ai.olcrtc_host_provision_client import (
     host_provision_status,
     push_storage_to_host,
 )
+from ai.olcrtc_room_liveness import probe_room
 from ai.olcrtc_room_provision import playwright_available
 
 logger = logging.getLogger(__name__)
 
 AGENT_KEY = "olcrtc_room_agent"
-CHECK_INTERVAL_SECONDS = 1800  # 30 min
+CHECK_INTERVAL_SECONDS = 900  # 15 min — быстрее ловим протухшие
 STARTUP_DELAY_SECONDS = 25
 PROVIDERS_PLAYWRIGHT = ("telemost", "wbstream")
 REQUIRED_SLOTS = ("pc", "android")
 TARGET_FREE_RATIO = 0.10
 TARGET_CAPACITY = 1100
-# Сколько active-комнат держать на TM/WB (pc+android суммарно)
 TARGET_ROOMS_TELEMOST = 4
 TARGET_ROOMS_WBSTREAM = 4
 MAX_CREATE_PER_CYCLE = 24
-# 1–2 клиента на комнату: Telemost SFU ~10 Мбит на всю комнату (не на клиента).
-# 1000 на комнату = все делят один потолок → 3–20 Мбит и ниже.
+MAX_PROBE_PER_CYCLE = 40
 DEFAULT_MAX_CLIENTS = 2
 
 
@@ -78,6 +80,8 @@ class AgentState:
     target_rooms_telemost: int = TARGET_ROOMS_TELEMOST
     target_rooms_wbstream: int = TARGET_ROOMS_WBSTREAM
     max_clients: int = DEFAULT_MAX_CLIENTS
+    liveness_prune: bool = True
+    last_liveness: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -93,6 +97,8 @@ class AgentState:
             "target_rooms_telemost": self.target_rooms_telemost,
             "target_rooms_wbstream": self.target_rooms_wbstream,
             "max_clients": self.max_clients,
+            "liveness_prune": self.liveness_prune,
+            "last_liveness": dict(self.last_liveness or {}),
             "playwright_available": playwright_available(),
             "managed_providers": list(PROVIDERS_PLAYWRIGHT),
         }
@@ -107,6 +113,9 @@ def parse_agent_state(raw: dict[str, Any] | None) -> AgentState:
     log = d.get("run_log") or []
     if not isinstance(log, list):
         log = []
+    live = d.get("last_liveness") or {}
+    if not isinstance(live, dict):
+        live = {}
     return AgentState(
         enabled=bool(d.get("enabled", False)),
         last_run_at=str(d.get("last_run_at") or ""),
@@ -120,6 +129,8 @@ def parse_agent_state(raw: dict[str, Any] | None) -> AgentState:
         target_rooms_telemost=max(0, int(d.get("target_rooms_telemost") or TARGET_ROOMS_TELEMOST)),
         target_rooms_wbstream=max(0, int(d.get("target_rooms_wbstream") or TARGET_ROOMS_WBSTREAM)),
         max_clients=max(1, int(d.get("max_clients") or DEFAULT_MAX_CLIENTS)),
+        liveness_prune=bool(d.get("liveness_prune", True)),
+        last_liveness=live,
     )
 
 
@@ -149,6 +160,8 @@ async def save_agent_state(db: AsyncSession, state: AgentState) -> AgentState:
             "target_rooms_telemost": state.target_rooms_telemost,
             "target_rooms_wbstream": state.target_rooms_wbstream,
             "max_clients": state.max_clients,
+            "liveness_prune": state.liveness_prune,
+            "last_liveness": state.last_liveness,
         },
         ensure_ascii=False,
     )
@@ -200,6 +213,107 @@ async def _sync_storage_to_host(state: AgentState, accounts: Any) -> None:
         _log(state, f"host storage {provider}: {'ok' if ok else 'skip/fail'}")
 
 
+async def _sync_wb_auth(db: AsyncSession, state: AgentState) -> bool:
+    """Достать JWT из WB storage_state → settings.providers.wbstream.auth_token."""
+    try:
+        tok = await sync_wbstream_auth_token_to_settings(db)
+        if tok:
+            _log(state, f"wb auth.token synced len={len(tok)}")
+            return True
+        _log(state, "wb auth.token: нет accessToken в storage_state")
+    except Exception as e:
+        _log(state, f"wb auth.token sync fail: {e}"[:160])
+    return False
+
+
+async def _prune_dead_rooms(db: AsyncSession, state: AgentState) -> int:
+    """Проверить active TM/WB; мёртвые — hard-delete (+sticky)."""
+    if not state.liveness_prune:
+        _log(state, "liveness_prune=off — skip")
+        return 0
+
+    rooms = []
+    for provider in PROVIDERS_PLAYWRIGHT:
+        rooms.extend(await list_rooms(db, provider=provider, status="active"))
+    for st in ("error", "draining"):
+        for provider in PROVIDERS_PLAYWRIGHT:
+            for r in await list_rooms(db, provider=provider, status=st):
+                err = (r.last_error or "").lower()
+                if "liveness" in err or "not found" in err or "протух" in err:
+                    rooms.append(r)
+
+    seen: set[Any] = set()
+    uniq = []
+    for r in rooms:
+        if r.id in seen:
+            continue
+        seen.add(r.id)
+        uniq.append(r)
+
+    alive_n = dead_n = unknown_n = deleted = 0
+    details: list[dict[str, Any]] = []
+    for room in uniq[:MAX_PROBE_PER_CYCLE]:
+        if room.provider not in PROVIDERS_PLAYWRIGHT:
+            continue
+        if is_placeholder_room(room.room_url):
+            continue
+        probe = await probe_room(room.provider, room.room_url)
+        item = {
+            "unit": room.unit_name,
+            "provider": room.provider,
+            "room": (room.room_url or "")[:48],
+            "alive": probe.alive,
+            "reason": probe.reason[:120],
+            "http": probe.http_status,
+        }
+        details.append(item)
+        if probe.is_alive:
+            alive_n += 1
+            room.last_healthy_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            room.last_error = None
+            if room.status != "active":
+                room.status = "active"
+            continue
+        if probe.alive is None:
+            unknown_n += 1
+            _log(
+                state,
+                f"liveness ? {room.provider}/{room.unit_name}: {probe.reason[:80]}",
+            )
+            continue
+        dead_n += 1
+        reason = f"liveness dead: {probe.reason}"[:500]
+        _log(
+            state,
+            f"liveness DEAD {room.provider}/{room.unit_name} "
+            f"room={room.room_url[:36]} — {probe.reason[:80]}",
+        )
+        ok = await delete_room_row(db, room.id, reason=reason)
+        if ok:
+            deleted += 1
+            item["deleted"] = True
+        else:
+            room.status = "error"
+            room.last_error = reason
+
+    await db.commit()
+    state.last_liveness = {
+        "at": _now_iso(),
+        "alive": alive_n,
+        "dead": dead_n,
+        "unknown": unknown_n,
+        "deleted": deleted,
+        "probed": len(details),
+        "sample": details[:12],
+    }
+    _log(
+        state,
+        f"liveness probed={len(details)} alive={alive_n} dead={dead_n} "
+        f"unknown={unknown_n} deleted={deleted}",
+    )
+    return deleted
+
+
 async def _provision_playwright(
     db: AsyncSession,
     state: AgentState,
@@ -221,7 +335,6 @@ async def _provision_playwright(
                 f"Нужен свежий storage_state после логина в браузере "
                 f"или OLCRTC_WB_PLAYWRIGHT_PROXY."
             )
-            # Не долбим WB каждые 30 мин — cooldown 6ч.
             state.cooldown_until = (
                 datetime.now(timezone.utc) + timedelta(hours=6)
             ).isoformat()
@@ -234,7 +347,6 @@ async def _provision_playwright(
             )
         elif "storage_state" in low or "нет storage" in low:
             hint = f"{raw} — заново сохраните storage_state в админке (аккаунт протух)."
-        # Не затираем более важную ошибку другим провайдером: WB antibot ≠ падение Telemost.
         if provider == "wbstream" and state.last_error and "telemost" in state.last_error.lower():
             _log(state, f"{provider}/{slot_label}: ошибка — {hint}")
         else:
@@ -273,19 +385,6 @@ def _wb_in_cooldown(state: AgentState) -> bool:
         return False
 
 
-def _needs_expand(metrics: dict[str, Any], state: AgentState) -> bool:
-    cap = int(metrics.get("capacity_total") or 0)
-    free = int(metrics.get("free_slots") or 0)
-    online = int(metrics.get("online_total") or 0)
-    target_cap = int(state.target_capacity or TARGET_CAPACITY)
-    if cap < target_cap:
-        return True
-    if online <= 0:
-        return False
-    ratio = (free / cap) if cap else 0.0
-    return ratio < float(state.target_free_ratio or TARGET_FREE_RATIO)
-
-
 async def _slot_capacity(db: AsyncSession, *, provider: str, slot: str) -> int:
     rooms = await list_rooms(db, provider=provider, status="active")
     return sum(
@@ -313,7 +412,7 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
 
     state.last_run_at = _now_iso()
     state.last_error = ""
-    created_any = False
+    changed = False
 
     await sync_rooms_from_settings_json(db)
     await reconcile_stale_online(db)
@@ -328,16 +427,22 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
         f"wb_state={host_st.get('wbstream_state')} url={host_st.get('url') or '-'}",
     )
     await _sync_storage_to_host(state, accounts)
+    if await _sync_wb_auth(db, state):
+        changed = True
+        settings = await load_olcrtc_settings(db)
 
-    # 0) status=error → пересоздать
+    deleted = await _prune_dead_rooms(db, state)
+    if deleted:
+        changed = True
+        settings = await load_olcrtc_settings(db)
+
     error_rooms = await list_rooms(db, status="error")
     for room in error_rooms[:12]:
         slot = (room.slot_label or "pc").strip().lower() or "pc"
         if room.provider == "jitsi":
-            # Jitsi снят с поддержки — drain старых комнат
             room.status = "draining"
             room.last_error = "jitsi removed"
-            created_any = True
+            changed = True
             _log(state, f"drain legacy jitsi/{slot} unit={room.unit_name}")
             continue
         if room.provider in PROVIDERS_PLAYWRIGHT:
@@ -353,18 +458,16 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
                 room.room_url = result.room_id
                 room.status = "active"
                 room.online_count = 0
-                room.last_error = ""
-                created_any = True
+                room.last_error = None
+                room.last_healthy_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                changed = True
                 _log(
                     state,
                     f"heal error {room.provider}/{slot}: → {result.room_id} unit={room.unit_name}",
                 )
             else:
                 msg = (result.message or "")[:200]
-                _log(
-                    state,
-                    f"heal error {room.provider}/{slot}: fail — {msg}",
-                )
+                _log(state, f"heal error {room.provider}/{slot}: fail — {msg}")
                 state.last_error = f"{room.provider}/{slot}: {msg}"
                 low = msg.lower()
                 if room.provider == "wbstream" and (
@@ -373,10 +476,13 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
                     state.cooldown_until = (
                         datetime.now(timezone.utc) + timedelta(hours=6)
                     ).isoformat()
-    if created_any:
+                elif "antibot" not in low:
+                    await delete_room_row(db, room.id, reason=f"heal fail: {msg}")
+                    changed = True
+                    _log(state, f"deleted unrecovered error unit={room.unit_name}")
+    if changed:
         await db.commit()
 
-    # 1) минимум pc/android в settings JSON (placeholder → создать)
     for provider in PROVIDERS_PLAYWRIGHT:
         pcfg = settings.providers.get(provider)
         if not pcfg or not pcfg.enabled:
@@ -399,8 +505,7 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
             if await _provision_playwright(
                 db, state, provider=provider, slot_label=sid, storage=storage
             ):
-                created_any = True
-                # обновить JSON слот свежим id из БД
+                changed = True
                 active = await list_rooms(db, provider=provider, status="active")
                 for r in active:
                     if r.slot_label == sid or sid in (r.device_types or []):
@@ -409,7 +514,6 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
         pcfg.rooms = rooms
         settings.providers[provider] = pcfg
 
-    # 2) догнать target_rooms для TM/WB (не только placeholder)
     created_cycle = 0
     for provider in PROVIDERS_PLAYWRIGHT:
         pcfg = settings.providers.get(provider)
@@ -432,12 +536,11 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
             if await _provision_playwright(
                 db, state, provider=provider, slot_label=slot_label, storage=storage
             ):
-                created_any = True
+                changed = True
             else:
                 break
             created_cycle += 1
 
-    # 3) метрики пула (TM+WB only; Jitsi не расширяем)
     metrics = await pool_metrics(db)
     _log(
         state,
@@ -445,16 +548,16 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
         f"online={metrics.get('online_total')} target_cap={state.target_capacity}",
     )
 
-    if created_any:
+    if changed:
         await save_olcrtc_settings(db, settings)
         state.last_ok = _now_iso()
         if state.auto_apply_yaml:
             try:
                 files = await write_all_unit_yaml_from_db(db)
                 settings.srv_message = (
-                    f"Агент записал YAML ({len(files)} unit’ов). "
-                    f"На VPS: python scripts/apply_olcrtc_units_from_db.py "
-                    f"(или deploy_olcrtc_cell.py для сот)."
+                    f"Агент: YAML {len(files)} unit’ов; liveness "
+                    f"del={state.last_liveness.get('deleted', 0)}. "
+                    f"На VPS: python scripts/apply_olcrtc_units_from_db.py"
                 )
                 settings.srv_status = "pending_apply"
                 await save_olcrtc_settings(db, settings)
@@ -463,7 +566,7 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
                 _log(state, f"yaml write error: {e}")
                 state.last_error = str(e)[:200]
     else:
-        _log(state, "no rooms created this cycle")
+        _log(state, "no pool changes this cycle")
 
     await save_agent_state(db, state)
     return state

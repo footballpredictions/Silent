@@ -340,6 +340,22 @@ async def create_room_row(
     return row
 
 
+async def delete_room_row(
+    db: AsyncSession,
+    room_id: uuid.UUID,
+    *,
+    reason: str = "",
+) -> bool:
+    """Hard-delete комнаты + sticky. YAML/unit чистит apply_olcrtc_units_from_db."""
+    room = await get_room(db, room_id)
+    if not room:
+        return False
+    await _clear_sticky_for_room(db, room_id)
+    await db.delete(room)
+    await db.commit()
+    return True
+
+
 def render_unit_yaml(settings: OlcrtcSettings, room: OlcrtcRoom) -> str:
     if not settings.crypto_key or len(settings.crypto_key) != 64:
         raise ValueError("crypto_key must be 64 hex characters")

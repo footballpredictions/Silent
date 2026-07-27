@@ -710,15 +710,13 @@ fun MainScreen(
                                     ),
                                 )
                             }
-                            if (BuildConfig.DEBUG) {
-                                add(
-                                    Triple(
-                                        MenuPage.BYPASS,
-                                        "Варианты обхода",
-                                        repo.bypassFamilyLabel(),
-                                    ),
-                                )
-                            }
+                            add(
+                                Triple(
+                                    MenuPage.BYPASS,
+                                    "Варианты обхода",
+                                    repo.bypassFamilyLabel(),
+                                ),
+                            )
                             if (BuildConfig.DEBUG) add(Triple(MenuPage.HASHES, "Хеши", null))
                             add(Triple(MenuPage.BONUSES, theme?.menu_bonuses_label?.takeIf { it.isNotBlank() } ?: "Бонусы", null))
                             add(Triple(MenuPage.DEVICES, "Сессии (${profile?.sessionsBadge() ?: "0/3"})", null))

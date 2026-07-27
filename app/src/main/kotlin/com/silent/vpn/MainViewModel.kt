@@ -2425,8 +2425,8 @@ class MainViewModel @Inject constructor(
                     repo.startNewSession()
                 }
 
-                // Debug olcrtc: не брать WDTT из кеша — иначе всегда VK.
-                if (BuildConfig.DEBUG && repo.isOlcrtcBypass()) {
+                // olcrtc: не брать WDTT из кеша — иначе всегда VK.
+                if (repo.isOlcrtcBypass()) {
                     WdttTunnelManager.traceApp("olcrtc", "connect start provider=${repo.getOlcrtcProvider()}")
                     if (android.net.VpnService.prepare(context) != null) {
                         _vpnError.value = "Нужно разрешение VPN"
@@ -2712,7 +2712,7 @@ class MainViewModel @Inject constructor(
 
     private fun launchVpnService(context: Context, config: VpnConfig, forceBootstrap: Boolean = false) {
         val isBootstrap = forceBootstrap || bootstrapVpnMode
-        if (BuildConfig.DEBUG && repo.isOlcrtcBypass()) {
+        if (repo.isOlcrtcBypass()) {
             viewModelScope.launch {
                 val olc = if (repo.isOnMobileData()) {
                     repo.resolveOlcrtcConfig(preferCache = true)

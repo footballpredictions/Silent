@@ -37,9 +37,7 @@ fun MenuBypassScreen(
     val vpnRunning = SilentVpnService.isRunning
 
     LaunchedEffect(Unit) {
-        if (BuildConfig.DEBUG) {
-            repo.prefetchOlcrtcConfig()
-        }
+        repo.prefetchOlcrtcConfig()
     }
 
     val effectiveFamily = pendingFamily ?: family
@@ -84,7 +82,7 @@ fun MenuBypassScreen(
             fg = fg,
             onSelect = { pendingFamily = SilentRepository.BYPASS_FAMILY_WDTT },
         )
-        if (effectiveFamily == SilentRepository.BYPASS_FAMILY_WDTT) {
+        if (effectiveFamily == SilentRepository.BYPASS_FAMILY_WDTT && BuildConfig.DEBUG) {
             Column(Modifier.padding(start = 12.dp)) {
                 BypassOption(
                     title = "VKCalls",

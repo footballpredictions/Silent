@@ -1127,7 +1127,6 @@ class SilentRepository @Inject constructor(
     }
 
     fun getBypassFamily(): String {
-        if (!BuildConfig.DEBUG) return BYPASS_FAMILY_WDTT
         return when (prefs.getString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_WDTT)) {
             BYPASS_FAMILY_OLCRTC -> BYPASS_FAMILY_OLCRTC
             else -> BYPASS_FAMILY_WDTT
@@ -1135,7 +1134,6 @@ class SilentRepository @Inject constructor(
     }
 
     fun setBypassFamily(family: String) {
-        if (!BuildConfig.DEBUG) return
         val normalized = if (family == BYPASS_FAMILY_OLCRTC) BYPASS_FAMILY_OLCRTC else BYPASS_FAMILY_WDTT
         prefs.edit().putString(PREF_BYPASS_FAMILY, normalized).apply()
     }
@@ -1143,7 +1141,6 @@ class SilentRepository @Inject constructor(
     fun isOlcrtcBypass(): Boolean = getBypassFamily() == BYPASS_FAMILY_OLCRTC
 
     fun getOlcrtcProvider(): String {
-        if (!BuildConfig.DEBUG) return OLCRTC_TELEMOST
         return when (val v = prefs.getString(PREF_OLCRTC_PROVIDER, OLCRTC_TELEMOST)) {
             OLCRTC_WBSTREAM, OLCRTC_TELEMOST -> v
             else -> OLCRTC_TELEMOST // включая legacy jitsi
@@ -1151,7 +1148,6 @@ class SilentRepository @Inject constructor(
     }
 
     fun setOlcrtcProvider(provider: String) {
-        if (!BuildConfig.DEBUG) return
         val normalized = when (provider) {
             OLCRTC_WBSTREAM, OLCRTC_TELEMOST -> provider
             else -> OLCRTC_TELEMOST
@@ -1203,7 +1199,6 @@ class SilentRepository @Inject constructor(
     }
 
     suspend fun prefetchOlcrtcConfig() {
-        if (!BuildConfig.DEBUG) return
         fetchOlcrtcConfig()
     }
 

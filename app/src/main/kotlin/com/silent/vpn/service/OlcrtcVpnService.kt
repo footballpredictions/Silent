@@ -12,7 +12,7 @@ class OlcrtcVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
         if (action == ACTION_STOP) {
-            OlcrtcTunnelManager.stop()
+            OlcrtcTunnelManager.stop(silent = true)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -45,7 +45,7 @@ class OlcrtcVpnService : VpnService() {
         if (suppressDestroyStop) {
             DebugLog.i("OlcrtcVpn", "onDestroy skip stop (reconnect in flight)")
         } else {
-            OlcrtcTunnelManager.stop()
+            OlcrtcTunnelManager.stop(silent = true)
         }
         super.onDestroy()
     }

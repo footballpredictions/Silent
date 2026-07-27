@@ -2433,9 +2433,14 @@ class MainViewModel @Inject constructor(
                         _vpnState.value = VpnState.DISCONNECTED
                         return@launch
                     }
-                    // Сеть до старта VPN; кеш только fallback (пул комнат — нужен свежий room)
-                    val olc = repo.syncOlcrtcLiveChannel()
-                        ?: repo.resolveOlcrtcConfig(preferCache = false)
+                    // LTE: nip.io часто недоступен без VPN — сначала кеш; на Wi‑Fi — свежий room.
+                    val olc = if (repo.isOnMobileData()) {
+                        repo.resolveOlcrtcConfig(preferCache = true)
+                            ?: repo.syncOlcrtcLiveChannel()
+                    } else {
+                        repo.syncOlcrtcLiveChannel()
+                            ?: repo.resolveOlcrtcConfig(preferCache = true)
+                    }
                     val provider = repo.getOlcrtcProvider()
                     val p = olc?.providers?.get(provider)
                     if (p?.denied == true || (olc?.pool_denied == true && p?.room.isNullOrBlank())) {
@@ -2709,8 +2714,13 @@ class MainViewModel @Inject constructor(
         val isBootstrap = forceBootstrap || bootstrapVpnMode
         if (BuildConfig.DEBUG && repo.isOlcrtcBypass()) {
             viewModelScope.launch {
-                val olc = repo.syncOlcrtcLiveChannel()
-                    ?: repo.resolveOlcrtcConfig(preferCache = false)
+                val olc = if (repo.isOnMobileData()) {
+                    repo.resolveOlcrtcConfig(preferCache = true)
+                        ?: repo.syncOlcrtcLiveChannel()
+                } else {
+                    repo.syncOlcrtcLiveChannel()
+                        ?: repo.resolveOlcrtcConfig(preferCache = true)
+                }
                 val provider = repo.getOlcrtcProvider()
                 val p = olc?.providers?.get(provider)
                 if (olc == null || !olc.enabled || olc.crypto_key.length != 64 || p == null || !p.enabled || p.room.isBlank()) {

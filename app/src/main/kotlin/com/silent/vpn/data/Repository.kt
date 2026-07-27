@@ -1263,8 +1263,9 @@ class SilentRepository @Inject constructor(
             )
         } catch (_: Exception) {
         }
-        clearOlcrtcCache()
-        return fetchOlcrtcConfig()
+        // Не clearOlcrtcCache() до успешного fetch: на LTE nip.io часто недоступен.
+        val next = fetchOlcrtcConfig()
+        return next ?: cfg
     }
 
     /** Сверить room с сервером; при смене — лог. */

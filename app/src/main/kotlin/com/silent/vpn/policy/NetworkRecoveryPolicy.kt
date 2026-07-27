@@ -23,7 +23,10 @@ object NetworkRecoveryPolicy {
             base == "internet_restored" ||
             base == "phone_call_end" ||
             base == "olcrtc_peer_dead" ||
-            base == "watchdog_olcrtc_down"
+            base == "watchdog_olcrtc_down" ||
+            base == "watchdog_olcrtc_stuck" ||
+            base == "watchdog_olcrtc_socks" ||
+            base == "underlying_blackout"
     }
 
     fun isSpuriousRecoveryReason(reason: String): Boolean {

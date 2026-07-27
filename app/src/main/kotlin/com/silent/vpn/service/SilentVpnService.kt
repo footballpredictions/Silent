@@ -742,7 +742,9 @@ class SilentVpnService : Service() {
         val fp = VpnNetworkHelper.underlyingTransportFingerprint(this)
         val validated = VpnNetworkHelper.hasUnderlyingInternet(this)
         if (fp.isEmpty()) {
-            lastNetworkFingerprint = ""
+            // Дыра wifi↔cell: НЕ сбрасывать fingerprint — иначе не будет transport_switch.
+            DebugLog.i("VpnService", "underlying $source: blackout (keep fp=$lastNetworkFingerprint)")
+            scheduleNetworkRecovery("underlying_blackout", 1_500L)
             return
         }
         if (lastNetworkFingerprint.isEmpty()) {
@@ -758,8 +760,8 @@ class SilentVpnService : Service() {
         val switch = wifiCellTransportTarget(old, fp)
         if (switch != null) {
             DebugLog.i("VpnService", "underlying $source: $old → $fp → transport_switch:$switch")
-            // LTE часто ещё не VALIDATED сразу после Wi‑Fi off — не ждём validated.
-            scheduleNetworkRecovery("transport_switch:$switch", 600L)
+            // Старт recover сразу, внутри ждём VALIDATED нужного транспорта.
+            scheduleNetworkRecovery("transport_switch:$switch", 400L)
         } else if (validated) {
             scheduleNetworkRecovery("$source:$fp")
         }
@@ -814,8 +816,20 @@ class SilentVpnService : Service() {
             reason.startsWith("olcrtc_peer_dead") ||
                 reason.startsWith("phone_call_end") ||
                 reason.startsWith("watchdog_olcrtc") ||
-                reason.startsWith("transport_switch:")
+                reason.startsWith("transport_switch:") ||
+                reason.startsWith("underlying_blackout") ||
+                reason.startsWith("internet_restored")
         if (!skipGrace && System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()) return
+        if (reason.startsWith("underlying_blackout")) {
+            // Только пауза при полной дыре; switch ждём когда fp снова появится.
+            if (!VpnNetworkHelper.hasAnyUnderlyingInternet(this)) {
+                if (!pausedForNetwork) {
+                    pausedForNetwork = true
+                    isTunnelPaused = true
+                }
+            }
+            return
+        }
         if (lastNetworkFingerprint.isEmpty()) {
             val fp = currentDefaultNetworkFingerprint()
             if (fp.isEmpty() && !skipGrace && !reason.startsWith("internet_restored")) return
@@ -909,11 +923,69 @@ class SilentVpnService : Service() {
             }
             lastTransportSwitchTarget = target
             lastTransportSwitchMs = now
+            // Ждём VALIDATED wifi/cell до restart libclient (иначе handshake timeout).
+            scope.launch(Dispatchers.IO) {
+                val prefer = if (target == "wifi") "wifi" else "cell"
+                WdttTunnelManager.logUi("net_wait", "ждём готовность сети ($prefer)…", 2)
+                val ok = VpnNetworkHelper.awaitUnderlyingReady(
+                    this@SilentVpnService,
+                    timeoutMs = 20_000L,
+                    preferTransport = prefer,
+                )
+                if (!isRunning || !ok) {
+                    DebugLog.w("VpnService", "wdtt transport switch deferred — net not ready")
+                    scheduleNetworkRecovery("internet_restored", 2_500L)
+                    return@launch
+                }
+                lastTransportRestartMs = System.currentTimeMillis()
+                WdttTunnelManager.restartTransportAfterNetwork()
+                WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
+                scheduleRecoveryVerification("restart:$reason", trafficBeforeMb)
+            }
+            return
         }
         lastTransportRestartMs = System.currentTimeMillis()
         WdttTunnelManager.restartTransportAfterNetwork()
         WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
         scheduleRecoveryVerification("restart:$reason", trafficBeforeMb)
+    }
+
+    /**
+     * peer_dead / watchdog: сброс sticky + новый room в JSON (кеш не сносим при fail fetch).
+     */
+    private suspend fun refreshOlcrtcConfigJson(oldJson: String, reason: String): String {
+        return try {
+            val repo = EntryPointAccessors.fromApplication(
+                applicationContext,
+                AppEntryPoint::class.java,
+            ).silentRepository()
+            val next = repo.reportOlcrtcRoomFailure(reason)
+                ?: repo.resolveOlcrtcConfig(preferCache = true)
+                ?: return oldJson
+            val provider = repo.getOlcrtcProvider()
+            val p = next.providers[provider] ?: return oldJson
+            if (p.room.isBlank() || next.crypto_key.length != 64) return oldJson
+            val obj = JSONObject(oldJson)
+            val prevRoom = obj.optString("olcrtc_room", "")
+            obj.put("olcrtc_room", p.room)
+            obj.put("olcrtc_crypto_key", next.crypto_key)
+            obj.put("olcrtc_provider", provider)
+            obj.put("olcrtc_transport", p.transport.ifBlank { obj.optString("olcrtc_transport", "datachannel") })
+            if (p.auth_token.isNotBlank()) {
+                obj.put("olcrtc_auth_token", p.auth_token)
+            }
+            if (prevRoom.isNotBlank() && prevRoom != p.room) {
+                WdttTunnelManager.logUi(
+                    "olcrtc_reassign",
+                    "новый канал: ${p.room.take(48)}",
+                    1,
+                )
+            }
+            obj.toString()
+        } catch (e: Exception) {
+            DebugLog.w("VpnService", "refreshOlcrtcConfigJson: ${e.message}")
+            oldJson
+        }
     }
 
     /** Полный restart olcrtc peer (звонок / Wi‑Fi↔LTE / peer closed / потеря сигнала). */
@@ -927,18 +999,17 @@ class SilentVpnService : Service() {
         val now = System.currentTimeMillis()
         if (reason.startsWith("transport_switch:")) {
             val target = reason.removePrefix("transport_switch:")
-            if (target == lastTransportSwitchTarget && now - lastTransportSwitchMs < 30_000L) {
+            if (target == lastTransportSwitchTarget && now - lastTransportSwitchMs < 25_000L) {
                 DebugLog.i("VpnService", "olcrtc transport switch duplicate ($target) — skip")
                 return
             }
             lastTransportSwitchTarget = target
             lastTransportSwitchMs = now
         } else if (
-            now - lastTransportRestartMs < 2_500L &&
+            now - lastTransportRestartMs < 6_000L &&
             !reason.startsWith("phone_call_end") &&
             !reason.startsWith("internet_restored")
         ) {
-            // Не глотать wifi↔lte: transport_switch обработан выше.
             DebugLog.i("VpnService", "olcrtc recovery debounce ($reason)")
             return
         }
@@ -952,14 +1023,22 @@ class SilentVpnService : Service() {
         startFg(buildConnectingNotification())
         VpnTileHelper.requestUpdate(this)
         val epoch = disconnectEpoch
+        val preferTransport = when {
+            reason.startsWith("transport_switch:wifi") -> "wifi"
+            reason.startsWith("transport_switch:mobile") -> "cell"
+            else -> null
+        }
         olcrtcRecoverJob?.cancel()
         olcrtcRecoverJob = scope.launch(Dispatchers.IO) {
             try {
+                OlcrtcTunnelManager.suppressPeerDeadFor(20_000L)
                 OlcrtcTunnelManager.setSessionDeadHandler { r ->
-                    scheduleNetworkRecovery("olcrtc_peer_dead:$r", 1_200L)
+                    // Не петля на process_exit_early от stale process.
+                    if (r.startsWith("process_exit_early")) return@setSessionDeadHandler
+                    scheduleNetworkRecovery("olcrtc_peer_dead:$r", 2_000L)
                 }
                 OlcrtcVpnService.suppressDestroyStop = true
-                OlcrtcTunnelManager.stop()
+                OlcrtcTunnelManager.stop(silent = true)
                 runCatching {
                     startService(
                         Intent(this@SilentVpnService, OlcrtcVpnService::class.java).apply {
@@ -967,26 +1046,43 @@ class SilentVpnService : Service() {
                         },
                     )
                 }
-                // После Wi‑Fi off дать LTE подняться (VALIDATED), иначе dial сразу падает.
-                val waitMs = if (reason.startsWith("transport_switch:")) 1_800L else 1_000L
-                delay(waitMs)
+                WdttTunnelManager.logUi(
+                    "net_wait",
+                    "ждём готовность сети${preferTransport?.let { " ($it)" } ?: ""}…",
+                    2,
+                )
+                val netOk = VpnNetworkHelper.awaitUnderlyingReady(
+                    this@SilentVpnService,
+                    timeoutMs = 22_000L,
+                    preferTransport = preferTransport,
+                )
                 if (!isRunning || epoch != disconnectEpoch) {
                     OlcrtcVpnService.suppressDestroyStop = false
                     SessionTrace.mark("SilentVpnService.olcrtcRecover", "aborted — disconnected")
                     return@launch
                 }
-                if (!VpnNetworkHelper.hasAnyUnderlyingInternet(this@SilentVpnService)) {
+                if (!netOk) {
                     DebugLog.w("VpnService", "olcrtc recovery deferred — no underlying internet")
                     pausedForNetwork = true
                     isTunnelPaused = true
                     OlcrtcVpnService.suppressDestroyStop = false
-                    scheduleNetworkRecovery("internet_restored", 2_000L)
+                    scheduleNetworkRecovery("internet_restored", 3_000L)
                     return@launch
                 }
+                // После долгого peer_closed комната Telemost часто мертва — подтянуть новый room.
+                var cfgToUse = cfg
+                if (
+                    reason.startsWith("olcrtc_peer_dead") ||
+                    reason.startsWith("watchdog_olcrtc")
+                ) {
+                    cfgToUse = refreshOlcrtcConfigJson(cfg, reason)
+                    lastOlcrtcConfigJson = cfgToUse
+                }
+                OlcrtcTunnelManager.suppressPeerDeadFor(12_000L)
                 startService(
                     Intent(this@SilentVpnService, OlcrtcVpnService::class.java).apply {
                         action = OlcrtcVpnService.ACTION_START
-                        putExtra(OlcrtcVpnService.EXTRA_CONFIG, cfg)
+                        putExtra(OlcrtcVpnService.EXTRA_CONFIG, cfgToUse)
                     },
                 )
                 withContext(Dispatchers.Main) {
@@ -1004,6 +1100,8 @@ class SilentVpnService : Service() {
                     99,
                     isError = true,
                 )
+            } finally {
+                OlcrtcVpnService.suppressDestroyStop = false
             }
         }
     }
@@ -1103,7 +1201,7 @@ class SilentVpnService : Service() {
                 pausedForNetwork = true
                 isTunnelPaused = true
                 if (olcrtcLive) {
-                    OlcrtcTunnelManager.stop()
+                    OlcrtcTunnelManager.stop(silent = true)
                 } else {
                     WdttTunnelManager.pause()
                 }
@@ -1227,15 +1325,42 @@ class SilentVpnService : Service() {
                     OlcrtcTunnelManager.running.value ||
                     OlcrtcTunnelManager.tunnelReady.value
                 ) {
+                    val olcRun = OlcrtcTunnelManager.running.value
+                    val olcReady = OlcrtcTunnelManager.tunnelReady.value
+                    val sinceRestart = System.currentTimeMillis() - lastTransportRestartMs
+                    // Процесс жив, peer мёртв (tunnelReady=false) — раньше watchdog ждал !running и молчал.
                     if (
                         olcrtcSessionActive &&
-                        !OlcrtcTunnelManager.tunnelReady.value &&
-                        !OlcrtcTunnelManager.running.value &&
+                        olcRun &&
+                        !olcReady &&
                         !isWithinConnectGrace() &&
-                        System.currentTimeMillis() - lastTransportRestartMs > 8_000L
+                        sinceRestart > 18_000L
+                    ) {
+                        DebugLog.w("VpnService", "transportWatchdog: olcrtc stuck (running, not ready)")
+                        scheduleNetworkRecovery("watchdog_olcrtc_stuck", 800L)
+                    } else if (
+                        olcrtcSessionActive &&
+                        !olcRun &&
+                        !olcReady &&
+                        !isWithinConnectGrace() &&
+                        sinceRestart > 8_000L
                     ) {
                         DebugLog.w("VpnService", "transportWatchdog: olcrtc down — recover")
                         scheduleNetworkRecovery("watchdog_olcrtc_down", 800L)
+                    } else if (
+                        olcrtcSessionActive &&
+                        olcReady &&
+                        sinceRestart > 20_000L &&
+                        !isWithinConnectGrace()
+                    ) {
+                        // Зомби: UI «подключено», peer/SOCKS мёртв после PC closed.
+                        val healthy = withContext(Dispatchers.IO) {
+                            OlcrtcTunnelManager.probeSocksHealthy()
+                        }
+                        if (!healthy) {
+                            DebugLog.w("VpnService", "transportWatchdog: olcrtc SOCKS dead — recover")
+                            scheduleNetworkRecovery("watchdog_olcrtc_socks", 500L)
+                        }
                     }
                     delay(2000)
                     continue

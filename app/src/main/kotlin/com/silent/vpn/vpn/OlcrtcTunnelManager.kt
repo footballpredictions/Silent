@@ -26,8 +26,10 @@ import java.net.URLEncoder
 import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import android.util.Base64
 
 /**
@@ -70,6 +72,17 @@ object OlcrtcTunnelManager {
     @Volatile private var cachedConfigJson: String? = null
     @Volatile private var sessionDeadHandler: ((String) -> Unit)? = null
     @Volatile private var lastPeerDeadAtMs = 0L
+    /** Recover/stop: старый watchExit не должен дергать peer_dead. */
+    @Volatile private var suppressPeerDeadUntilMs = 0L
+    /** Активные SOCKS-параметры — для health-probe из watchdog. */
+    @Volatile private var activeParams: Params? = null
+    /** Telemost/goolom сам переподключает PC — не убиваем процесс сразу на closed. */
+    @Volatile private var peerClosedPending = false
+    private var peerClosedGraceFuture: ScheduledFuture<*>? = null
+    private val openStreamFailStreak = AtomicInteger(0)
+    private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "olcrtc-grace").apply { isDaemon = true }
+    }
     /** Кэш OkHttp auth (room → file + expiry), чтобы reconnect был ближе к VK. */
     private data class PrefetchCache(val room: String, val file: File, val untilMs: Long)
     @Volatile private var telemostPrefetchCache: PrefetchCache? = null
@@ -84,6 +97,80 @@ object OlcrtcTunnelManager {
         sessionDeadHandler = handler
     }
 
+    fun suppressPeerDeadFor(ms: Long) {
+        suppressPeerDeadUntilMs = System.currentTimeMillis() + ms.coerceAtLeast(0L)
+    }
+
+    /** true если SOCKS dial к gstatic проходит (peer жив). */
+    fun probeSocksHealthy(): Boolean {
+        val p = activeParams ?: return false
+        if (!_running.value) return false
+        return socksDialOnce(p, "www.gstatic.com", soTimeoutMs = 3_500)
+    }
+
+    private fun cancelPeerClosedGrace() {
+        peerClosedGraceFuture?.cancel(false)
+        peerClosedGraceFuture = null
+        peerClosedPending = false
+    }
+
+    /**
+     * Telemost: PC closed часто с последующим internal reconnect.
+     * Ждём [graceMs] — если снова Connected, restart не нужен.
+     */
+    private fun schedulePeerClosedGrace(reason: String, graceMs: Long = 12_000L) {
+        if (!_running.value) return
+        val now = System.currentTimeMillis()
+        if (now < suppressPeerDeadUntilMs) {
+            DebugLog.i("Olcrtc", "peer closed grace suppressed: $reason")
+            return
+        }
+        if (peerClosedPending) return
+        peerClosedPending = true
+        iceConnected = false
+        WdttTunnelManager.logUi(
+            "olcrtc_pc_grace",
+            "peer closed — ждём самовосстановление ${graceMs / 1000}с…",
+            2,
+        )
+        peerClosedGraceFuture?.cancel(false)
+        peerClosedGraceFuture = scheduler.schedule({
+            try {
+                if (!_running.value) return@schedule
+                if (iceConnected) {
+                    peerClosedPending = false
+                    WdttTunnelManager.logUi("olcrtc_pc_ok", "peer восстановился сам", 2)
+                    return@schedule
+                }
+                // SOCKS ещё отвечает — peer datachannel жив, closed мог быть вторичный PC.
+                if (probeSocksHealthy()) {
+                    peerClosedPending = false
+                    iceConnected = true
+                    WdttTunnelManager.logUi("olcrtc_pc_ok", "peer closed, но SOCKS жив — без restart", 2)
+                    return@schedule
+                }
+                peerClosedPending = false
+                notifyPeerDead(reason)
+            } catch (e: Exception) {
+                DebugLog.w("Olcrtc", "peer closed grace: ${e.message}")
+                peerClosedPending = false
+                notifyPeerDead(reason)
+            }
+        }, graceMs, TimeUnit.MILLISECONDS)
+    }
+
+    private fun onPeerConnectedAgain() {
+        iceConnected = true
+        openStreamFailStreak.set(0)
+        if (peerClosedPending) {
+            cancelPeerClosedGrace()
+            WdttTunnelManager.logUi("olcrtc_pc_ok", "peer снова connected — без restart", 2)
+        }
+        if (_running.value && !_tunnelReady.value && probeSocksHealthy()) {
+            _tunnelReady.value = true
+        }
+    }
+
     /**
      * Peer closed / process exit после ready → UI CONNECTING + SilentVpnService restart.
      * Дебаунс: один сигнал на волну EOF/closed.
@@ -91,8 +178,13 @@ object OlcrtcTunnelManager {
     private fun notifyPeerDead(reason: String) {
         if (!_running.value && !_tunnelReady.value) return
         val now = System.currentTimeMillis()
-        if (now - lastPeerDeadAtMs < 4_000L) return
+        if (now < suppressPeerDeadUntilMs) {
+            DebugLog.i("Olcrtc", "peer dead suppressed: $reason")
+            return
+        }
+        if (now - lastPeerDeadAtMs < 8_000L) return
         lastPeerDeadAtMs = now
+        cancelPeerClosedGrace()
         val wasReady = _tunnelReady.value
         _tunnelReady.value = false
         iceConnected = false
@@ -133,8 +225,16 @@ object OlcrtcTunnelManager {
         "cloud-api.yandex.ru",
     )
 
-    fun stop() {
+    fun stop(silent: Boolean = false) {
         // Сначала сбрасываем флаги — watchExit не должен слать peer_dead на штатный stop.
+        if (!silent) {
+            suppressPeerDeadFor(3_000L)
+        } else {
+            suppressPeerDeadFor(15_000L)
+        }
+        cancelPeerClosedGrace()
+        openStreamFailStreak.set(0)
+        activeParams = null
         _tunnelReady.value = false
         _running.value = false
         starting.set(false)
@@ -155,8 +255,12 @@ object OlcrtcTunnelManager {
         } catch (_: Exception) {
         }
         tunFd = null
-        DebugLog.i("Olcrtc", "session stopped")
-        WdttTunnelManager.logUi("olcrtc_stop", "session stopped", 3)
+        if (!silent) {
+            DebugLog.i("Olcrtc", "session stopped")
+            WdttTunnelManager.logUi("olcrtc_stop", "session stopped", 3)
+        } else {
+            DebugLog.i("Olcrtc", "session stopped (silent)")
+        }
     }
 
     /**
@@ -187,6 +291,9 @@ object OlcrtcTunnelManager {
                 params.copy(socksUser = creds.first, socksPass = creds.second)
             }
 
+        cancelPeerClosedGrace()
+        openStreamFailStreak.set(0)
+        activeParams = sessionParams
         val appCtx = context.applicationContext
         _running.value = true
         val engineHint = when (sessionParams.provider.lowercase()) {
@@ -378,14 +485,18 @@ object OlcrtcTunnelManager {
                         if (olcrtcProc !== proc) break
                         // pion: [pc]=PeerConnection, [ice]=ICE — не платформа PC
                         if (
-                            l.contains("connection state changed to connected", ignoreCase = true) ||
-                            l.contains("ICE connection state changed to connected", ignoreCase = true) ||
-                            l.contains("Setting new connection state: Connected", ignoreCase = true) ||
-                            Regex("""connection state.*connected""", RegexOption.IGNORE_CASE).containsMatchIn(l)
+                            !isPeerClosedLine(l) &&
+                            (
+                                l.contains("connection state changed to connected", ignoreCase = true) ||
+                                    l.contains("ICE connection state changed to connected", ignoreCase = true) ||
+                                    l.contains("Setting new connection state: Connected", ignoreCase = true) ||
+                                    Regex(
+                                        """peer connection state changed:\s*connected""",
+                                        RegexOption.IGNORE_CASE,
+                                    ).containsMatchIn(l)
+                                )
                         ) {
-                            if (!isPeerClosedLine(l)) {
-                                iceConnected = true
-                            }
+                            onPeerConnectedAgain()
                         }
                         if (isPeerClosedLine(l)) {
                             DebugLog.i("Olcrtc", l.take(300))
@@ -395,8 +506,27 @@ object OlcrtcTunnelManager {
                                 priority = 2,
                                 isError = false,
                             )
-                            notifyPeerDead("peer_closed")
+                            // Не kill сразу — goolom сам делает reconnect publisher PC.
+                            schedulePeerClosedGrace("peer_closed", 12_000L)
                             continue
+                        }
+                        if (
+                            l.contains("subscriber media timeout", ignoreCase = true) ||
+                            l.contains("failed to connect link", ignoreCase = true)
+                        ) {
+                            schedulePeerClosedGrace("media_timeout", 4_000L)
+                        }
+                        if (l.contains("OpenStream failed", ignoreCase = true) && _tunnelReady.value) {
+                            val nFail = openStreamFailStreak.incrementAndGet()
+                            if (nFail >= 6) {
+                                openStreamFailStreak.set(0)
+                                schedulePeerClosedGrace("openstream_timeout", 3_000L)
+                            }
+                        } else if (
+                            l.contains("tunnel to ", ignoreCase = true) ||
+                            l.contains("Link connected", ignoreCase = true)
+                        ) {
+                            openStreamFailStreak.set(0)
                         }
                         if (Regex(
                                 """\[ice\] TRACE|\[sctp\] TRACE|bufferedAmount|service-unavailable|extdisco|disco_1|\[xmpp|Failed to send packet|operation not permitted|Failed to ping without candidate|Failed to listen udp|fe80:|%dummy0|use of closed network connection""",
@@ -500,8 +630,10 @@ object OlcrtcTunnelManager {
         Thread({
             try {
                 val code = proc.waitFor()
-                if (olcrtcProc !== proc && olcrtcProc != null) {
-                    // Процесс уже заменён новым стартом — не трогаем сессию.
+                // Важно: после stop() olcrtcProc=null — всё равно это СТАРЫЙ процесс.
+                // Раньше при null не выходили → process_exit_early на уже новом старте → recover×N.
+                if (olcrtcProc !== proc) {
+                    DebugLog.i("Olcrtc", "ignore exit of stale process code=$code")
                     return@Thread
                 }
                 val wasReady = _tunnelReady.value
@@ -513,11 +645,11 @@ object OlcrtcTunnelManager {
                     isError = stillWanted && code != 0,
                 )
                 when {
+                    // Только после ready: early exit во время старта обрабатывает startFromConfigJson.
                     stillWanted && wasReady -> notifyPeerDead("process_exit:$code")
                     stillWanted && !wasReady -> {
                         _tunnelReady.value = false
                         _lastError.value = "olcrtc вышел code=$code"
-                        notifyPeerDead("process_exit_early:$code")
                     }
                 }
             } catch (_: Exception) {

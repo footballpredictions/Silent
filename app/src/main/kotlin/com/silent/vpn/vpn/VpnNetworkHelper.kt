@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.util.DebugLog
+import kotlinx.coroutines.delay
 
 object VpnNetworkHelper {
     private const val TAG = "VpnNetworkHelper"
@@ -155,6 +156,45 @@ object VpnNetworkHelper {
             hasCell -> "cell"
             else -> ""
         }
+    }
+
+    /**
+     * Ждём VALIDATED underlying. [preferTransport]: "wifi"|"cell"|null.
+     * Нужно до restart peer: иначе handshake timeout после Wi‑Fi↔LTE.
+     */
+    suspend fun awaitUnderlyingReady(
+        context: Context,
+        timeoutMs: Long = 20_000L,
+        preferTransport: String? = null,
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        val want = when (preferTransport) {
+            "wifi", "eth" -> "wifi"
+            "mobile", "cell" -> "cell"
+            else -> null
+        }
+        while (System.currentTimeMillis() < deadline) {
+            val fp = underlyingTransportFingerprint(context)
+            val validated = hasUnderlyingInternet(context)
+            if (validated) {
+                val match = when (want) {
+                    "wifi" -> fp == "wifi" || fp == "eth"
+                    "cell" -> fp == "cell"
+                    else -> fp.isNotEmpty()
+                }
+                if (match) {
+                    DebugLog.i(TAG, "awaitUnderlyingReady ok fp=$fp prefer=$want")
+                    return true
+                }
+            }
+            delay(300L)
+        }
+        val any = hasAnyUnderlyingInternet(context)
+        DebugLog.w(
+            TAG,
+            "awaitUnderlyingReady timeout prefer=$want fp=${underlyingTransportFingerprint(context)} any=$any",
+        )
+        return any
     }
 
     private fun hasUsableWifi(caps: NetworkCapabilities): Boolean {

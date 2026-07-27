@@ -916,7 +916,8 @@ function RoomAgentSection({ token }: { token: string }) {
       <p className="text-xs text-[#666]">
         Создаёт комнаты Телемост/WB через host Playwright (Chromium на Улье) и один раз
         сохранённый storage_state. Не регистрирует аккаунты. Цель — target_rooms (по умолчанию
-        4 на провайдера). После peer dead — heal/пересоздание.
+        4 на провайдера). После peer dead — heal/пересоздание. WB с IP Улья может отдавать
+        antibot 498 — тогда нужен свежий storage_state или OLCRTC_WB_PLAYWRIGHT_PROXY.
       </p>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -977,7 +978,7 @@ function RoomAgentSection({ token }: { token: string }) {
             value={tmPath}
             onChange={(e) => setTmPath(e.target.value)}
             className="w-full bg-[#111] border border-[#222] rounded px-2 py-1.5 text-xs font-mono text-white"
-            placeholder="/opt/silent-vpn/olcrtc/telemost_state.json"
+            placeholder="/opt/silent-vpn/olcrtc/agent_states/telemost_state.json"
           />
           <label className="text-xs text-[#888]">или вставить JSON storage_state</label>
           <textarea
@@ -997,7 +998,7 @@ function RoomAgentSection({ token }: { token: string }) {
             value={wbPath}
             onChange={(e) => setWbPath(e.target.value)}
             className="w-full bg-[#111] border border-[#222] rounded px-2 py-1.5 text-xs font-mono text-white"
-            placeholder="/opt/silent-vpn/olcrtc/wbstream_state.json"
+            placeholder="/opt/silent-vpn/olcrtc/agent_states/wbstream_state.json"
           />
           <label className="text-xs text-[#888]">или вставить JSON storage_state</label>
           <textarea

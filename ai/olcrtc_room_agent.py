@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -214,7 +214,18 @@ async def _provision_playwright(
         raw = (result.message or "").strip()
         hint = raw
         low = raw.lower()
-        if "all connection attempts failed" in low or "err_connection" in low:
+        if "antibot" in low or "498" in low or "__wbaas" in low:
+            hint = (
+                f"{raw} — WB режет IP Улья (wbaas challenge). "
+                f"Telemost при этом может работать. "
+                f"Нужен свежий storage_state после логина в браузере "
+                f"или OLCRTC_WB_PLAYWRIGHT_PROXY."
+            )
+            # Не долбим WB каждые 30 мин — cooldown 6ч.
+            state.cooldown_until = (
+                datetime.now(timezone.utc) + timedelta(hours=6)
+            ).isoformat()
+        elif "all connection attempts failed" in low or "err_connection" in low:
             hint = (
                 f"{raw} — Playwright на хосте не достучался до сайта "
                 f"{'stream.wb.ru' if provider == 'wbstream' else 'telemost.yandex.ru'}. "
@@ -223,8 +234,12 @@ async def _provision_playwright(
             )
         elif "storage_state" in low or "нет storage" in low:
             hint = f"{raw} — заново сохраните storage_state в админке (аккаунт протух)."
-        state.last_error = f"{provider}/{slot_label}: ошибка — {hint}"
-        _log(state, state.last_error)
+        # Не затираем более важную ошибку другим провайдером: WB antibot ≠ падение Telemost.
+        if provider == "wbstream" and state.last_error and "telemost" in state.last_error.lower():
+            _log(state, f"{provider}/{slot_label}: ошибка — {hint}")
+        else:
+            state.last_error = f"{provider}/{slot_label}: ошибка — {hint}"
+            _log(state, state.last_error)
         return False
     cell = await pick_cell_for_new_room(db)
     cell_id = None if getattr(cell, "is_queen", True) else cell.id
@@ -243,6 +258,19 @@ async def _provision_playwright(
         f"{provider}/{slot_label}: ok → {result.room_id} unit={row.unit_name} via={result.message}",
     )
     return True
+
+
+def _wb_in_cooldown(state: AgentState) -> bool:
+    raw = (state.cooldown_until or "").strip()
+    if not raw:
+        return False
+    try:
+        until = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) < until
+    except Exception:
+        return False
 
 
 def _needs_expand(metrics: dict[str, Any], state: AgentState) -> bool:
@@ -313,6 +341,12 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
             _log(state, f"drain legacy jitsi/{slot} unit={room.unit_name}")
             continue
         if room.provider in PROVIDERS_PLAYWRIGHT:
+            if room.provider == "wbstream" and _wb_in_cooldown(state):
+                _log(
+                    state,
+                    f"heal error wbstream/{slot}: skip (antibot cooldown {state.cooldown_until})",
+                )
+                continue
             storage = _storage_for(accounts, room.provider)
             result = await create_room_best(room.provider, storage, headless=True)
             if result.ok and result.room_id:
@@ -326,11 +360,19 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
                     f"heal error {room.provider}/{slot}: → {result.room_id} unit={room.unit_name}",
                 )
             else:
+                msg = (result.message or "")[:200]
                 _log(
                     state,
-                    f"heal error {room.provider}/{slot}: fail — {result.message}",
+                    f"heal error {room.provider}/{slot}: fail — {msg}",
                 )
-                state.last_error = result.message[:200]
+                state.last_error = f"{room.provider}/{slot}: {msg}"
+                low = msg.lower()
+                if room.provider == "wbstream" and (
+                    "antibot" in low or "498" in low or "__wbaas" in low
+                ):
+                    state.cooldown_until = (
+                        datetime.now(timezone.utc) + timedelta(hours=6)
+                    ).isoformat()
     if created_any:
         await db.commit()
 
@@ -339,6 +381,12 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
         pcfg = settings.providers.get(provider)
         if not pcfg or not pcfg.enabled:
             _log(state, f"{provider}: skip (disabled)")
+            continue
+        if provider == "wbstream" and _wb_in_cooldown(state):
+            _log(
+                state,
+                f"wbstream: skip create until cooldown {state.cooldown_until} (antibot)",
+            )
             continue
         rooms = list(pcfg.rooms) if pcfg.rooms else []
         for sid in REQUIRED_SLOTS:
@@ -366,6 +414,8 @@ async def heal_rooms(db: AsyncSession, *, force: bool = False) -> AgentState:
     for provider in PROVIDERS_PLAYWRIGHT:
         pcfg = settings.providers.get(provider)
         if not pcfg or not pcfg.enabled:
+            continue
+        if provider == "wbstream" and _wb_in_cooldown(state):
             continue
         target = (
             state.target_rooms_telemost

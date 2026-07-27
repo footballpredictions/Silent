@@ -572,6 +572,39 @@ cd pc; npm install; npm run dev
 - API: `GET/POST /api/admin/settings/registration`. Сервис: `app/services/registration_settings.py`.
 - Задеплоено на прод (`deploy_api.py`, в список файлов добавлен `registration_settings.py`). Push `main`.
 
+### 2026-07-27 — olcrtc: speedtest/Intermeter не должен ронять VPN
+
+- Симптом: при Яндекс.Интернетометр / Speedtest — `туннель оборван — переподключение…` (SOCKS probe к gstatic таймаутится под нагрузкой → watchdog SOCKS_DEAD).
+- Фикс: учитывать свежий `tunnel to` как признак живого peer; SOCKS_DEAD только после 3 fail подряд и без recent traffic; VP8 track EOF = stream noise; openstream не escalate при живом трафике.
+- Debug APK собран локально (push по запросу).
+
+### 2026-07-27 — room-agent WB: antibot 498 + heal снова OK
+
+- Симптом в админке: `wbstream/pc: All connection attempts failed`, last ok со вчера; host `ok+pw tm=1 wb=1`.
+- На VPS: `stream.wb.ru` → **HTTP 498** + `__wbaas/challenges` (antibot по IP Улья); Telemost при этом живой (200).
+- Фикс Playwright: UA/args, ожидание challenge, явная ошибка antibot, proxy env `OLCRTC_WB_PLAYWRIGHT_PROXY`; агент — cooldown 6ч на WB antibot, Telemost не блокируется; пути storage → `agent_states/`.
+- После деплоя heal: Telemost 4/4, WB 5/4, `last_ok` обновлён, 9 unit’ов active. Deploy: `deploy_olcrtc_host_provision` + `deploy_api` + `apply_olcrtc_units_from_db`.
+
+### 2026-07-27 — olcrtc recover: unit/auto-тесты + policy
+
+- Вынесена чистая `OlcrtcRecoveryPolicy` (initial grace, everReady gate, Wi‑Fi↔LTE, debounce, watchdog, peer-closed grace, prefetch invalidate, await underlying).
+- `SilentVpnService` / `OlcrtcTunnelManager` / `VpnNetworkHelper` читают решения из policy.
+- Unit: `OlcrtcRecoveryPolicyTest` + доп. кейсы в `NetworkRecoveryPolicyTest` — **все `testDebugUnitTest` OK**.
+- Device smoke: `OlcrtcRecoveryDeviceTest` (fingerprint + policy на устройстве).
+- Исправлено по тестам/ревью: после stop prefetch не reuse (media timeout); peer-closed grace message SOCKS vs ICE; await только через policy.
+- Push — по запросу пользователя.
+
+### 2026-07-27 — olcrtc recover: LTE / самолётик без залипания
+
+- Симптом: UI «переподключение», интернета нет; на мобильной — только kill app + airplane.
+- Причины: мёртвый TUN 0.0.0.0/0 без peer; await застревал на prefer wifi; `reportOlcrtcRoomFailure`/nip.io на LTE вешал recover.
+- Фикс: stop TUN сразу (отдать интернет); await prefer≤3.5с → любой транспорт; на LTE старт только из кеша; ждать ready≤55с + 1 retry; без cancel in-flight. Push `android`.
+
+### 2026-07-27 — olcrtc recover: не cancel своим watchdog
+
+- Лог: `watchdog_olcrtc_down`×N → `StandaloneCoroutine was cancelled`.
+- Фикс: не cancel in-flight recover (кроме disconnect). Push `android` `370bb5a`.
+
 ### 2026-07-27 — olcrtc DNS без fake-ip (Яндекс + меню DNS)
 
 - Android hev: mapdns/fake-ip выкл; DNS = `DnsPreset` (Яндекс default), excludeRoute DNS IP (UDP через SOCKS мёртв).

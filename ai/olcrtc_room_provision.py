@@ -6,16 +6,27 @@
 
 Без storage_state (логин) создание невозможно — olcrtc API CreateRoom не поддерживает
 эти провайдеры. Аккаунты создаёшь вручную один раз; сюда кладётся cookies/session.
+
+WB (stream.wb.ru) с IP Улья часто отдаёт HTTP 498 + ``/__wbaas/challenges`` (antibot).
+Тогда нужен свежий storage_state после ручного логина или egress-прокси
+``OLCRTC_WB_PLAYWRIGHT_PROXY`` / ``OLCRTC_PLAYWRIGHT_PROXY``.
 """
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
 
 
 @dataclass
@@ -33,6 +44,65 @@ def playwright_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _playwright_proxy(provider: str) -> dict[str, str] | None:
+    """Опциональный HTTP(S) proxy для Chromium (residential / RU egress)."""
+    raw = (
+        os.environ.get(f"OLCRTC_{provider.upper()}_PLAYWRIGHT_PROXY")
+        or os.environ.get("OLCRTC_PLAYWRIGHT_PROXY")
+        or ""
+    ).strip()
+    if not raw:
+        return None
+    return {"server": raw}
+
+
+def _launch_args() -> list[str]:
+    return [
+        "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+    ]
+
+
+async def _page_looks_like_wb_antibot(page: Any) -> bool:
+    try:
+        url = (page.url or "").lower()
+        if "__wbaas" in url or "challenge" in url:
+            return True
+        html = (await page.content())[:4000].lower()
+        if "__wbaas/challenges" in html:
+            return True
+        if "wbaas" in html and "challenge" in html:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+async def _wait_out_wb_antibot(page: Any, *, max_ms: int = 25_000) -> bool:
+    """Ждём, пока challenge исчезнет (иногда JS challenge проходит сам)."""
+    elapsed = 0
+    step = 1500
+    while elapsed < max_ms:
+        if not await _page_looks_like_wb_antibot(page):
+            # UI встреч обычно появляется после challenge.
+            try:
+                if await page.locator('button:has-text("Новая"), button:has-text("Создать")').count() > 0:
+                    return True
+            except Exception:
+                pass
+            # Не antibot и не пустая заглушка — считаем ок.
+            try:
+                body = (await page.inner_text("body")).strip()
+                if len(body) > 40 and "challenge" not in body.lower():
+                    return True
+            except Exception:
+                return True
+        await page.wait_for_timeout(step)
+        elapsed += step
+    return not await _page_looks_like_wb_antibot(page)
 
 
 def _extract_telemost_id(url: str) -> str:
@@ -91,8 +161,20 @@ async def create_telemost_room(storage_state: dict[str, Any], *, headless: bool 
 
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=headless)
-            context = await browser.new_context(storage_state=storage_state)
+            launch_kwargs: dict[str, Any] = {
+                "headless": headless,
+                "args": _launch_args(),
+            }
+            proxy = _playwright_proxy("telemost")
+            if proxy:
+                launch_kwargs["proxy"] = proxy
+            browser = await p.chromium.launch(**launch_kwargs)
+            context = await browser.new_context(
+                storage_state=storage_state,
+                user_agent=_CHROME_UA,
+                locale="ru-RU",
+                viewport={"width": 1280, "height": 800},
+            )
             page = await context.new_page()
             await page.goto("https://telemost.yandex.ru/", wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(2000)
@@ -183,19 +265,66 @@ async def create_wbstream_room(storage_state: dict[str, Any], *, headless: bool 
 
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=headless)
-            context = await browser.new_context(storage_state=storage_state)
+            launch_kwargs: dict[str, Any] = {
+                "headless": headless,
+                "args": _launch_args(),
+            }
+            proxy = _playwright_proxy("wbstream")
+            if proxy:
+                launch_kwargs["proxy"] = proxy
+            browser = await p.chromium.launch(**launch_kwargs)
+            context = await browser.new_context(
+                storage_state=storage_state,
+                user_agent=_CHROME_UA,
+                locale="ru-RU",
+                viewport={"width": 1280, "height": 800},
+            )
             page = await context.new_page()
-            for start in (
-                "https://stream.wb.ru/",
-                "https://stream-meetup.wildberries.ru/",
-            ):
+            nav_errors: list[str] = []
+            opened = False
+            # stream-meetup.wildberries.ru с Улья часто NXDOMAIN — только stream.wb.ru.
+            for start in ("https://stream.wb.ru/",):
                 try:
-                    await page.goto(start, wait_until="domcontentloaded", timeout=45000)
+                    resp = await page.goto(start, wait_until="domcontentloaded", timeout=45000)
+                    status = resp.status if resp is not None else 0
+                    if status == 498 or await _page_looks_like_wb_antibot(page):
+                        # Даём challenge шанс пройти (JS), иначе явная ошибка.
+                        ok_challenge = await _wait_out_wb_antibot(page)
+                        if not ok_challenge or await _page_looks_like_wb_antibot(page):
+                            await browser.close()
+                            return ProvisionResult(
+                                ok=False,
+                                provider="wbstream",
+                                message=(
+                                    "WB antibot (HTTP 498 / __wbaas/challenges) блокирует IP Улья. "
+                                    "Обновите storage_state после ручного логина в обычном браузере "
+                                    "или задайте OLCRTC_WB_PLAYWRIGHT_PROXY (residential/RU egress)."
+                                ),
+                            )
+                    opened = True
                     break
-                except Exception:
+                except Exception as e:
+                    nav_errors.append(f"{start}: {e}")
                     continue
-            await page.wait_for_timeout(2500)
+            if not opened:
+                await browser.close()
+                detail = "; ".join(nav_errors)[:220] or "navigation failed"
+                return ProvisionResult(
+                    ok=False,
+                    provider="wbstream",
+                    message=f"не открылся stream.wb.ru ({detail})",
+                )
+            await page.wait_for_timeout(2000)
+            if await _page_looks_like_wb_antibot(page):
+                await browser.close()
+                return ProvisionResult(
+                    ok=False,
+                    provider="wbstream",
+                    message=(
+                        "WB antibot challenge не пройден — Playwright видит только "
+                        "__wbaas/challenges, кнопки создания нет"
+                    ),
+                )
             created = False
             for sel in (
                 'button:has-text("Новая видеовстреча")',
@@ -226,7 +355,11 @@ async def create_wbstream_room(storage_state: dict[str, Any], *, headless: bool 
                 return ProvisionResult(
                     ok=False,
                     provider="wbstream",
-                    message="не найдена кнопка создания комнаты WB (нужен логин / UI изменился)",
+                    message=(
+                        "не найдена кнопка создания комнаты WB "
+                        "(логин протух / UI изменился / antibot). "
+                        "Пересохраните storage_state в админке."
+                    ),
                 )
             room_id = ""
             url = page.url

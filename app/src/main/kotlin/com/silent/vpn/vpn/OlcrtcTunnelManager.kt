@@ -311,7 +311,16 @@ object OlcrtcTunnelManager {
      * в фоне — иначе VpnService/ANR (OkHttp до 45с → зависание и вылет).
      */
     fun start(context: Context, params: Params, vpnService: VpnService? = null): String? {
-        if (!starting.compareAndSet(false, true)) return "olcrtc: already starting"
+        // Honor/Realme: после code=1 starting/running могли залипнуть — не блокируем reconnect.
+        if (!starting.compareAndSet(false, true)) {
+            if (_running.value || olcrtcProc != null) {
+                DebugLog.w("Olcrtc", "start while busy — force reset")
+                stop(silent = true)
+            }
+            if (!starting.compareAndSet(false, true)) {
+                return "olcrtc: already starting"
+            }
+        }
         _lastError.value = null
         _tunnelReady.value = false
         iceConnected = false
@@ -419,7 +428,7 @@ object OlcrtcTunnelManager {
                 pipeLogs(proc)
                 watchExit(proc)
 
-                if (!waitForSocks(sessionParams.socksHost, sessionParams.socksPort, 90_000)) {
+                if (!waitForSocks(sessionParams.socksHost, sessionParams.socksPort, 90_000, proc)) {
                     val exited = try {
                         proc.exitValue()
                     } catch (_: Exception) {
@@ -432,9 +441,8 @@ object OlcrtcTunnelManager {
                         else ->
                             "olcrtc SOCKS не поднялся на ${sessionParams.socksHost}:${sessionParams.socksPort}"
                     }
-                    _lastError.value = msg
+                    markStartFailed(msg)
                     WdttTunnelManager.logUi("olcrtc_socks_fail", msg, 99, isError = true)
-                    stop()
                     return@execute
                 }
                 WdttTunnelManager.logUi(
@@ -447,11 +455,15 @@ object OlcrtcTunnelManager {
                 waitForIceSettled(
                     if (sessionParams.provider.equals("telemost", ignoreCase = true)) 4_000L else 1_200L,
                 )
-                if (!waitForSocksDial(sessionParams, 45_000)) {
-                    val msg = "olcrtc SOCKS слушает, но peer не отвечает (dial timeout)"
-                    _lastError.value = msg
+                WdttTunnelManager.logUi("olcrtc_dial_wait", "SOCKS dial… peer/ICE", 1)
+                if (!waitForSocksDial(sessionParams, 45_000, proc)) {
+                    val msg = if (lastFailHint.isNotBlank()) {
+                        lastFailHint
+                    } else {
+                        "olcrtc SOCKS слушает, но peer не отвечает (dial timeout)"
+                    }
+                    markStartFailed(msg)
                     WdttTunnelManager.logUi("olcrtc_dial_fail", msg, 99, isError = true)
-                    stop()
                     return@execute
                 }
                 WdttTunnelManager.logUi("olcrtc_dial", "SOCKS dial OK", 1)
@@ -459,9 +471,8 @@ object OlcrtcTunnelManager {
                 if (vpnService != null) {
                     val tunErr = attachHevTun(appCtx, sessionParams, vpnService)
                     if (tunErr != null) {
-                        _lastError.value = tunErr
+                        markStartFailed(tunErr)
                         WdttTunnelManager.logUi("olcrtc_tun_fail", tunErr, 99, isError = true)
-                        stop()
                         return@execute
                     }
                 } else {
@@ -483,15 +494,41 @@ object OlcrtcTunnelManager {
                 warmSocksDial(sessionParams, "www.youtube.com")
             } catch (e: Exception) {
                 val msg = e.message ?: "olcrtc background start failed"
-                _lastError.value = msg
+                markStartFailed(msg)
                 WdttTunnelManager.logUi("olcrtc_bg_fail", msg, 99, isError = true)
                 DebugLog.e("Olcrtc", "bg start failed", e)
-                stop()
             } finally {
                 starting.set(false)
             }
         }
         return null
+    }
+
+    /** Ранний fail: сбрасываем running сразу — иначе UI «Подключение…» и recover зависают. */
+    private fun markStartFailed(msg: String) {
+        _lastError.value = msg
+        _tunnelReady.value = false
+        _running.value = false
+        iceConnected = false
+        cancelPeerClosedGrace()
+        activeParams = null
+        runCatching { HevSocksTunnel.stopIfLoaded() }
+        try {
+            tunBridgeProc?.destroy()
+        } catch (_: Exception) {
+        }
+        tunBridgeProc = null
+        try {
+            olcrtcProc?.destroy()
+        } catch (_: Exception) {
+        }
+        olcrtcProc = null
+        try {
+            tunFd?.close()
+        } catch (_: Exception) {
+        }
+        tunFd = null
+        starting.set(false)
     }
 
     private fun stopKeepStarting() {
@@ -598,11 +635,46 @@ object OlcrtcTunnelManager {
                             lastFailHint =
                                 "WebSocket недоступен (часто DPI на LTE). Wi‑Fi или другой провайдер."
                         } else if (
-                            l.contains("remote not ready", ignoreCase = true) &&
-                            !_tunnelReady.value
+                            l.contains("netlinkrib", ignoreCase = true) ||
+                            l.contains("load interfaces", ignoreCase = true) ||
+                            (
+                                l.contains("permission denied", ignoreCase = true) &&
+                                    l.contains("interface", ignoreCase = true)
+                                )
+                        ) {
+                            lastFailHint =
+                                "нет доступа к сетевым интерфейсам (Android/Honor). Переустановите APK с оф. сайта"
+                        } else if (
+                            l.contains("wait for peer", ignoreCase = true) ||
+                            (
+                                l.contains("remote not ready", ignoreCase = true) &&
+                                    !_tunnelReady.value
+                                )
                         ) {
                             lastFailHint =
                                 "peer srv не в комнате (проверьте olcrtc@android / не делите data/ с PC)"
+                        } else if (
+                            l.contains("transport required", ignoreCase = true) ||
+                            l.contains("invalid crypto", ignoreCase = true)
+                        ) {
+                            lastFailHint = "битый olcrtc-config — откройте «Варианты обхода» и обновите"
+                        } else if (
+                            l.contains("guests cannot create rooms", ignoreCase = true) ||
+                            (
+                                l.contains("get token failed", ignoreCase = true) &&
+                                    l.contains("status 403", ignoreCase = true)
+                                )
+                        ) {
+                            lastFailHint =
+                                "WB: гости не могут создать комнату (host без auth.token / мёртвая room) — смените канал"
+                        } else if (
+                            l.contains("invalid_token", ignoreCase = true) ||
+                            (
+                                l.contains("join room failed", ignoreCase = true) &&
+                                    l.contains("status 401", ignoreCase = true)
+                                )
+                        ) {
+                            lastFailHint = "WB auth.token протух — нужен refresh cookies на сервере"
                         }
                         if (iceNoise) {
                             // В UI один раз как info, не как красная ошибка
@@ -693,11 +765,15 @@ object OlcrtcTunnelManager {
                     isError = stillWanted && code != 0,
                 )
                 when {
-                    // Только после ready: early exit во время старта обрабатывает startFromConfigJson.
+                    // Только после ready: early exit во время старта → markStartFailed (без залипания).
                     stillWanted && wasReady -> notifyPeerDead("process_exit:$code")
                     stillWanted && !wasReady -> {
-                        _tunnelReady.value = false
-                        _lastError.value = "olcrtc вышел code=$code"
+                        val msg = when {
+                            lastFailHint.isNotBlank() -> lastFailHint
+                            else -> "olcrtc вышел code=$code"
+                        }
+                        markStartFailed(msg)
+                        WdttTunnelManager.logUi("olcrtc_exit_early", msg, 99, isError = true)
                     }
                 }
             } catch (_: Exception) {
@@ -764,6 +840,7 @@ object OlcrtcTunnelManager {
             appendLine("mapdns:")
             appendLine("  address: 198.18.0.2")
             appendLine("  port: 53")
+            appendLine("  network: 198.18.0.0")
             appendLine("  netmask: 255.254.0.0")
             appendLine("  cache-size: 10000")
             appendLine("misc:")
@@ -890,9 +967,11 @@ object OlcrtcTunnelManager {
     }
 
     /** SOCKS5 CONNECT по домену — peer + DNS через туннель (как на PC). */
-    private fun waitForSocksDial(params: Params, timeoutMs: Long): Boolean {
+    private fun waitForSocksDial(params: Params, timeoutMs: Long, proc: Process? = null): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
+            if (proc != null && !isProcessAlive(proc)) return false
+            if (!_running.value) return false
             if (socksDialOnce(params, "www.gstatic.com", soTimeoutMs = 4000)) {
                 return true
             }
@@ -1236,16 +1315,20 @@ object OlcrtcTunnelManager {
                 .header("Content-Type", "application/json")
                 .build()
             client.newCall(joinReq).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    val body = resp.body?.string().orEmpty()
-                    WdttTunnelManager.logUi(
-                        "olcrtc_wb_auth",
-                        "WB join ${resp.code}: ${body.take(80)}",
-                        99,
-                        isError = true,
-                    )
-                    return null
-                }
+                    if (!resp.isSuccessful) {
+                        val body = resp.body?.string().orEmpty()
+                        WdttTunnelManager.logUi(
+                            "olcrtc_wb_auth",
+                            "WB join ${resp.code}: ${body.take(80)}",
+                            99,
+                            isError = true,
+                        )
+                        if (body.contains("guests cannot create rooms", ignoreCase = true)) {
+                            lastFailHint =
+                                "WB: гости не могут создать комнату (host без auth.token / мёртвая room) — смените канал"
+                        }
+                        return null
+                    }
             }
 
             val tokUrl =
@@ -1266,6 +1349,10 @@ object OlcrtcTunnelManager {
                         99,
                         isError = true,
                     )
+                    if (body.contains("guests cannot create rooms", ignoreCase = true)) {
+                        lastFailHint =
+                            "WB: гости не могут создать комнату (host без auth.token / мёртвая room) — смените канал"
+                    }
                     return null
                 }
                 val o = JSONObject(body)
@@ -1405,9 +1492,21 @@ object OlcrtcTunnelManager {
         return null
     }
 
-    private fun waitForSocks(host: String, port: Int, timeoutMs: Long): Boolean {
+    private fun isProcessAlive(proc: Process): Boolean =
+        try {
+            proc.exitValue()
+            false
+        } catch (_: IllegalThreadStateException) {
+            true
+        } catch (_: Exception) {
+            false
+        }
+
+    private fun waitForSocks(host: String, port: Int, timeoutMs: Long, proc: Process? = null): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
+            if (proc != null && !isProcessAlive(proc)) return false
+            if (!_running.value) return false
             try {
                 Socket().use { s ->
                     s.connect(InetSocketAddress(host, port), 800)

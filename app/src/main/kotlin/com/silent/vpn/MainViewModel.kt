@@ -2360,9 +2360,26 @@ class MainViewModel @Inject constructor(
             return
         }
         if (_vpnState.value == VpnState.CONNECTING || _vpnState.value == VpnState.DISCONNECTING) {
-            DebugLog.i("MainViewModel", "connect ignored: operation in progress")
-            SessionTrace.exit("MainViewModel.connect", "busy")
-            return
+            val stuckOlcrtc =
+                repo.isOlcrtcBypass() &&
+                    !OlcrtcTunnelManager.tunnelReady.value &&
+                    (
+                        !OlcrtcTunnelManager.lastError.value.isNullOrBlank() ||
+                            (
+                                !OlcrtcTunnelManager.running.value &&
+                                    !OlcrtcTunnelManager.isStarting() &&
+                                    SilentVpnService.isRunning
+                                )
+                        )
+            if (stuckOlcrtc) {
+                DebugLog.w("MainViewModel", "connect: unstick olcrtc CONNECTING after fail")
+                stopVpnLocally(context.applicationContext)
+                _vpnState.value = VpnState.DISCONNECTED
+            } else {
+                DebugLog.i("MainViewModel", "connect ignored: operation in progress")
+                SessionTrace.exit("MainViewModel.connect", "busy")
+                return
+            }
         }
         if (VpnSessionState.isActive()) {
             SessionTrace.mark("MainViewModel.connect", "attach existing session")
@@ -2533,6 +2550,27 @@ class MainViewModel @Inject constructor(
                         val err = OlcrtcTunnelManager.lastError.value
                         if (err != null) {
                             _vpnError.value = err
+                            WdttTunnelManager.logUi("olcrtc_fail", err, 99, isError = true)
+                            // Ранний exit (WB 403 guest / бинарь) — иначе sticky на мёртвой room.
+                            if (err.contains("гост", ignoreCase = true) ||
+                                err.contains("мертв", ignoreCase = true) ||
+                                err.contains("auth.token", ignoreCase = true) ||
+                                err.contains("code=1", ignoreCase = true) ||
+                                err.contains("канал", ignoreCase = true)
+                            ) {
+                                runCatching {
+                                    repo.clearOlcrtcCache()
+                                    val next = repo.reportOlcrtcRoomFailure(err)
+                                    val room = next?.providers?.get(repo.getOlcrtcProvider())?.room
+                                    if (!room.isNullOrBlank()) {
+                                        WdttTunnelManager.logUi(
+                                            "olcrtc_reassign",
+                                            "новый канал после early fail: ${room.take(48)}",
+                                            1,
+                                        )
+                                    }
+                                }
+                            }
                             _vpnState.value = VpnState.DISCONNECTED
                             stopVpnLocally(context)
                             return@launch

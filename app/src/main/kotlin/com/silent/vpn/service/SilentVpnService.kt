@@ -1185,7 +1185,11 @@ class SilentVpnService : Service() {
                     while (isActive && isRunning && epoch == disconnectEpoch) {
                         if (OlcrtcTunnelManager.tunnelReady.value) return@withTimeoutOrNull true
                         val err = OlcrtcTunnelManager.lastError.value
-                        if (!err.isNullOrBlank() && !OlcrtcTunnelManager.running.value) {
+                        // Раньше ждали !running — при code=1 running залипал → UI «Подключение» на минуту.
+                        if (!err.isNullOrBlank()) {
+                            return@withTimeoutOrNull false
+                        }
+                        if (!OlcrtcTunnelManager.running.value && !OlcrtcTunnelManager.isStarting()) {
                             return@withTimeoutOrNull false
                         }
                         delay(400L)
@@ -1792,6 +1796,18 @@ class SilentVpnService : Service() {
                 } else if (OlcrtcTunnelManager.running.value) {
                     startFg(buildConnectingNotification())
                 }
+            }
+        }
+        // Ранний code=1 / SOCKS fail: не оставлять FGS «Подключение…» на Honor/Realme.
+        scope.launch {
+            OlcrtcTunnelManager.lastError.collect { err ->
+                if (!isRunning || !olcrtcSessionActive) return@collect
+                if (err.isNullOrBlank()) return@collect
+                if (olcrtcEverReady || isOlcrtcRecoverInFlight()) return@collect
+                if (OlcrtcTunnelManager.tunnelReady.value) return@collect
+                DebugLog.w("VpnService", "olcrtc start failed — disconnect: $err")
+                WdttTunnelManager.logUi("olcrtc_start_dead", err, 99, isError = true)
+                disconnect()
             }
         }
     }

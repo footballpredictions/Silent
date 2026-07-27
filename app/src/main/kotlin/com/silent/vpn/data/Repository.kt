@@ -1169,7 +1169,7 @@ class SilentRepository @Inject constructor(
     fun bypassFamilyLabel(family: String = getBypassFamily()): String =
         if (family == BYPASS_FAMILY_OLCRTC) "olcrtc" else "VK"
 
-    private val PREF_OLCRTC_CACHE = "olcrtc_config_cache_v9"
+    private val PREF_OLCRTC_CACHE = "olcrtc_config_cache_v10"
 
     fun getCachedOlcrtcConfig(): OlcrtcPublicConfig? {
         val raw = prefs.getString(PREF_OLCRTC_CACHE, null) ?: return null
@@ -1272,14 +1272,15 @@ class SilentRepository @Inject constructor(
         fetchOlcrtcConfig()
     }
 
-    /** preferCache=true — для connect, когда сеть уже рвётся. */
+    /** preferCache=true — LTE: сначала короткий fetch, кеш только если сеть мертва. */
     suspend fun resolveOlcrtcConfig(preferCache: Boolean = false): OlcrtcPublicConfig? {
         val cached = getCachedOlcrtcConfig()
-        if (preferCache && cached != null) {
-            // фон
-            return cached
+        if (!preferCache) {
+            return fetchOlcrtcConfig() ?: cached
         }
-        return fetchOlcrtcConfig() ?: cached
+        // Раньше сразу return cached → Realme держал мёртвую WB-комнату часами.
+        val fresh = runCatching { fetchOlcrtcConfig() }.getOrNull()
+        return fresh ?: cached
     }
 
     suspend fun sendOlcrtcHeartbeat(online: Boolean = true) {

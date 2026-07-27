@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.159** (после 158: theme bg, Win10 wg-turn, admin nip.io, Go 1.26.3) |
-| `Silent-Project/android/` | `android` | **1.0.159** (после 158: Ugoos/TOX, theme bg/logo debug, nip.io bg) |
+| `Silent-Project/pc/` | `pc` | **1.0.160** (olcrtc bypass в release) |
+| `Silent-Project/android/` | `android` | **1.0.160** (olcrtc bypass в release) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -208,7 +208,7 @@ python debug_captcha.py
 
 ### Варианты обхода (WDTT + olcrtc)
 
-Два **независимых** пути (debug UI; release всегда вариант 1):
+Два **независимых** пути (меню «Варианты обхода» в release + debug):
 
 | | Вариант 1 | Вариант 2 |
 |---|-----------|-----------|
@@ -571,6 +571,13 @@ cd pc; npm install; npm run dev
 - Вход для уже зарегистрированных не затрагивается. Клиенты (PC/Android) показывают `detail` из ответа API без отдельной сборки.
 - API: `GET/POST /api/admin/settings/registration`. Сервис: `app/services/registration_settings.py`.
 - Задеплоено на прод (`deploy_api.py`, в список файлов добавлен `registration_settings.py`). Push `main`.
+
+### 2026-07-27 — olcrtc bypass в release 1.0.160 (PC + Android)
+
+- Меню «Варианты обхода» (VK / olcrtc + Telemost|WB) доступно в release, не только debug.
+- Сняты гейты `BuildConfig.DEBUG` / `isDebugBuild` на family/provider/connect/prefetch; DNS и хеши остались debug.
+- Версии: Android `versionCode/Name 160` / `1.0.160`; PC `package.json 1.0.160`.
+- Релизы: `assembleRelease` + `build-installer.bat` OK. Push `android` + `pc`.
 
 ### 2026-07-27 — olcrtc: speedtest/Intermeter не должен ронять VPN
 

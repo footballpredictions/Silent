@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.160** (olcrtc bypass в release) |
-| `Silent-Project/android/` | `android` | **1.0.160** (olcrtc bypass в release) |
+| `Silent-Project/pc/` | `pc` | **1.0.160** (olcrtc bypass в release; bypass label в меню) |
+| `Silent-Project/android/` | `android` | **1.0.160** (olcrtc release + integrity keepDebugSymbols + olcrtc-config via tunnel) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -579,6 +579,32 @@ cd pc; npm install; npm run dev
 - Версии: Android `versionCode/Name 160` / `1.0.160`; PC `package.json 1.0.160`.
 - Релизы: `assembleRelease` + `build-installer.bat` OK. Push `android` + `pc`.
 
+### 2026-07-27 — hotfix 1.0.161: Android integrity + PC bypass label
+
+- **Android:** release 1.0.160 падал с «VPN-модуль изменён или повреждён» — pin SHA-256 из `jniLibs`, а в APK попадал ELF после `strip*DebugSymbols` (размер тот же, хеш другой). Фикс: `keepDebugSymbols += "**/libclient.so"`.
+- **PC:** в боковом меню нет подписи выбранного обхода (на Android «Варианты обхода · VK/olcrtc»). Фикс: `bypassNavLabel` в `MainScreen`.
+- Версии: сначала ошибочно подняли до **1.0.161** — **откатили обратно на 1.0.160** (пользователь не просил bump). Фиксы остаются в коде 1.0.160.
+
+### 2026-07-27 — Android: olcrtc-config через VK-туннель (LTE)
+
+- Симптом: на мобильной сети «olcrtc-config нет (кеш/сеть)»; после Wi‑Fi конфиг подтягивался. VK работал.
+- Причина: `fetchOlcrtcConfig` ходил только на публичный nip.io (`vpnNetwork=null`) — на LTE/белых списках недоступен.
+- Фикс: при живом VK — `/olcrtc-config` через `10.66.66.1` (`withUserBackendApi` / overlay / direct); в `syncAll`/post-connect tunnel sync; prefetch в release; перед olcrtc-connect — prefetch пока WDTT ещё up.
+- Версия без bump: **1.0.160**.
+
+### 2026-07-27 — olcrtc online/sticky: дубли Android + PC не в online + silent dead
+
+- **Дубли online:** `online_count` был ±1; heartbeat искал sticky по `room.slot_label` вместо `device_type` → каждый reconnect/heartbeat +1. Фикс: `online_count = COUNT(sticky)`; leave удаляет sticky; reconcile чистит stale sticky.
+- **Leave:** Android/PC при disconnect шлют `online=false` по всем провайдерам из кеша **до** stop VPN; PC heartbeat через `tunnelApiRequest`.
+- **Silent dead:** peer_dead в лог как error; после 2 fail recover — полный disconnect с красным «обход остановлен».
+- Деплой: backend `olcrtc_assign.py` + `vpn.py`; клиенты android/pc.
+
+### 2026-07-27 — olcrtc: bootstrap prefetch + sticky только выбранный provider
+
+- Login через временный VPN: `syncLoginDataViaBootstrapTunnel` / `syncLoginDataViaTunnel` тянет `/olcrtc-config` до disconnect bootstrap.
+- `?provider=` в olcrtc-config: sticky/online только у Telemost **или** WB; остальные — peek без sticky; чужие sticky снимаются.
+- Версия клиентов без bump: **1.0.160**.
+
 ### 2026-07-27 — olcrtc: speedtest/Intermeter не должен ронять VPN
 
 - Симптом: при Яндекс.Интернетометр / Speedtest — `туннель оборван — переподключение…` (SOCKS probe к gstatic таймаутится под нагрузкой → watchdog SOCKS_DEAD).
@@ -1090,7 +1116,7 @@ cd pc; npm install; npm run dev
 ### 2026-07-16 — PC + Android: защита целостности клиента (anti-tamper)
 
 - **Цель:** усложнить подмену/пересборку клиентов без поломки VPN-логики, TrustAll/cleartext `10.66.66.1`, debug и OTA/sideload. Play Integrity **не** делали (hard-fail сломает раздачу вне Play).
-- **Android:** `AppIntegrity` — release-only проверка SHA-256 подписи APK (`RELEASE_CERT_SHA256` из keystore на gradle) + SHA-256 `libclient.so` по ABI (из `jniLibs` на сборке). Вызов: `SilentApp.onCreate` (фон), `LibClientBinary` перед exec, `MainViewModel.connect` / `ensureBootstrapVpn`. Debug — полный skip. ProGuard: убран blanket `-keep com.silent.vpn.**`, точечные keep + `-allowaccessmodification`.
+- **Android:** `AppIntegrity` — release-only проверка SHA-256 подписи APK (`RELEASE_CERT_SHA256` из keystore на gradle) + SHA-256 `libclient.so` по ABI (из `jniLibs` на сборке). **Обязательно** `packaging.jniLibs.keepDebugSymbols += "**/libclient.so"` — иначе AGP `strip*DebugSymbols` переписывает ELF (хеш ≠ pin) → «VPN-модуль изменён или повреждён». Вызов: `SilentApp.onCreate` (фон), `LibClientBinary` перед exec, `MainViewModel.connect` / `ensureBootstrapVpn`. Debug — полный skip. ProGuard: убран blanket `-keep com.silent.vpn.**`, точечные keep + `-allowaccessmodification`.
 - **PC:** `integrity.js` + `integrityHashes.js` (генерируется `scripts/gen_integrity_hashes.js` в `build-installer.bat` / `build-debug.bat` после go build) — перед spawn `wdtt-client.exe` в packaged release. Soft-hints (asar unpacked / ELECTRON_RUN_AS_NODE). `ignore-certificate-errors` **не трогали** (нужен для self-signed / паритет Android).
 - Fail mode: отказ **нового** VPN connect + понятное сообщение; уже поднятый туннель не рвём. Compile debug Kotlin — OK; PC mismatch smoke — OK.
 - **Юнит-тесты (2026-07-16):** Android `IntegrityCrypto` + `IntegrityCryptoTest` — push `76f3dab`. PC `test/integrity.test.js` — push `ba98e04` (`npm test` 21/21). Instrumented smoke `AppIntegrityInstrumentedSmokeTest` — push `b57b94b`.

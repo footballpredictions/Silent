@@ -442,9 +442,10 @@ async def get_hive_meta(db: AsyncSession = Depends(get_db)):
 async def get_olcrtc_config(
     device_type: str = "",
     fingerprint: str = "",
+    provider: str = "",
     db: AsyncSession = Depends(get_db),
 ):
-    """Публичный конфиг варианта 2 (olcrtc). room из БД-пула (sticky + max_clients)."""
+    """Публичный конфиг варианта 2 (olcrtc). sticky/online только у provider."""
     from app.services.olcrtc_assign import assign_public_config
     from app.services.olcrtc_rooms_db import ensure_rooms_synced
 
@@ -453,6 +454,7 @@ async def get_olcrtc_config(
         db,
         device_type=device_type or "",
         fingerprint=fingerprint or "",
+        preferred_provider=provider or "",
     )
 
 
@@ -460,6 +462,7 @@ class OlcrtcHeartbeatBody(BaseModel):
     room_db_id: str = ""
     fingerprint: str = ""
     provider: str = ""
+    device_type: str = ""
     online: bool = True
 
 
@@ -478,6 +481,7 @@ async def post_olcrtc_heartbeat(
         room_db_id=body.room_db_id.strip(),
         fingerprint=body.fingerprint or "",
         provider=body.provider or "",
+        device_type=body.device_type or "",
         online=bool(body.online),
     )
 

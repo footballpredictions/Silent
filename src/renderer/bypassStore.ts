@@ -112,17 +112,42 @@ export async function sendOlcrtcHeartbeat(online: boolean = true): Promise<void>
     const prov = getOlcrtcProvider()
     const roomDbId = cfg?.providers?.[prov]?.room_db_id
     if (!roomDbId) return
-    const base = getPublicApiBaseUrl().replace(/\/$/, '')
     const fp = getStableDeviceFingerprint()
+    const body = {
+      room_db_id: roomDbId,
+      fingerprint: fp,
+      provider: prov,
+      device_type: 'pc',
+      online,
+    }
+
+    const electron = (window as unknown as {
+      electronAPI?: {
+        tunnelApiRequest?: (p: {
+          method: string
+          path: string
+          body?: unknown
+          timeout?: number
+        }) => Promise<{ status: number; data: unknown }>
+      }
+    }).electronAPI
+
+    // Как /olcrtc-config: через main IPC (при VPN bypass / иначе public).
+    if (electron?.tunnelApiRequest) {
+      await electron.tunnelApiRequest({
+        method: 'POST',
+        path: '/api/vpn/olcrtc-heartbeat',
+        body,
+        timeout: 15_000,
+      })
+      return
+    }
+
+    const base = getPublicApiBaseUrl().replace(/\/$/, '')
     await fetch(`${base}/api/vpn/olcrtc-heartbeat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        room_db_id: roomDbId,
-        fingerprint: fp,
-        provider: prov,
-        online,
-      }),
+      body: JSON.stringify(body),
       cache: 'no-store',
     })
   } catch { /* ignore */ }
@@ -141,7 +166,58 @@ export function stopOlcrtcHeartbeatLoop(): void {
     clearInterval(heartbeatTimer)
     heartbeatTimer = null
   }
-  void sendOlcrtcHeartbeat(false)
+  void leaveOlcrtcRoom()
+}
+
+/** Снять sticky по всем провайдерам из кеша (assign резервирует несколько). */
+export async function leaveOlcrtcRoom(): Promise<void> {
+  try {
+    const cfg = readOlcrtcCache()
+    if (!cfg?.providers) {
+      await sendOlcrtcHeartbeat(false)
+      return
+    }
+    const fp = getStableDeviceFingerprint()
+    const electron = (window as unknown as {
+      electronAPI?: {
+        tunnelApiRequest?: (p: {
+          method: string
+          path: string
+          body?: unknown
+          timeout?: number
+        }) => Promise<{ status: number; data: unknown }>
+      }
+    }).electronAPI
+    for (const [prov, p] of Object.entries(cfg.providers)) {
+      const roomDbId = p?.room_db_id
+      if (!roomDbId) continue
+      const body = {
+        room_db_id: roomDbId,
+        fingerprint: fp,
+        provider: prov,
+        device_type: 'pc',
+        online: false,
+      }
+      try {
+        if (electron?.tunnelApiRequest) {
+          await electron.tunnelApiRequest({
+            method: 'POST',
+            path: '/api/vpn/olcrtc-heartbeat',
+            body,
+            timeout: 12_000,
+          })
+        } else {
+          const base = getPublicApiBaseUrl().replace(/\/$/, '')
+          await fetch(`${base}/api/vpn/olcrtc-heartbeat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            cache: 'no-store',
+          })
+        }
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
 }
 
 function readOlcrtcCache(): OlcrtcPublicConfig | null {
@@ -162,7 +238,11 @@ function olcrtcConfigPath(): string {
   } catch {
     /* до логина */
   }
-  const q = new URLSearchParams({ device_type: 'pc', fingerprint: fp })
+  const q = new URLSearchParams({
+    device_type: 'pc',
+    fingerprint: fp,
+    provider: getOlcrtcProvider(),
+  })
   return `/api/vpn/olcrtc-config?${q.toString()}`
 }
 

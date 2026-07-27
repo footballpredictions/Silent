@@ -8,18 +8,20 @@ import {
   type HashItem,
 } from './hashItemsStore'
 import { saveCachedProfile } from './profileStore'
+import { prefetchOlcrtcConfig } from './bypassStore'
 
 /**
- * Профиль + хеши при логине.
+ * Профиль + хеши + olcrtc-config при логине.
  * Вызывать ПОКА bootstrap/main tunnel ещё поднят (axios → main IPC → 10.66.66.1).
- * Не сбрасывать bootstrap routing — иначе renderer xhr на public зависает.
  */
 export async function syncLoginDataViaTunnel(): Promise<{
   profile: Record<string, unknown> | null
   hashesOk: boolean
+  olcrtcOk: boolean
 }> {
   let profile: Record<string, unknown> | null = null
   let hashesOk = false
+  let olcrtcOk = false
 
   try {
     const me = await api.get('/api/users/me', { timeout: 20_000 })
@@ -67,13 +69,27 @@ export async function syncLoginDataViaTunnel(): Promise<{
     }
   }
 
-  return { profile, hashesOk: hashesOk || activeServerHashes(getSavedHashItems()).length > 0 }
+  try {
+    const cfg = await prefetchOlcrtcConfig()
+    olcrtcOk = !!cfg
+    pushLog('Bootstrap', `olcrtc-config ${olcrtcOk ? 'OK' : 'FAIL'}`)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    pushLog('Bootstrap', `olcrtc-config FAIL: ${msg}`, 'W')
+  }
+
+  return {
+    profile,
+    hashesOk: hashesOk || activeServerHashes(getSavedHashItems()).length > 0,
+    olcrtcOk,
+  }
 }
 
 /** @deprecated — используйте syncLoginDataViaTunnel при bootstrap */
 export async function syncLoginDataViaPublic(): Promise<{
   profile: Record<string, unknown> | null
   hashesOk: boolean
+  olcrtcOk: boolean
 }> {
   return syncLoginDataViaTunnel()
 }
@@ -81,6 +97,6 @@ export async function syncLoginDataViaPublic(): Promise<{
 /** @deprecated */
 export async function syncLoginDataViaBootstrap(
   _wgAddress?: string | null,
-): Promise<{ profile: Record<string, unknown> | null; hashesOk: boolean }> {
+): Promise<{ profile: Record<string, unknown> | null; hashesOk: boolean; olcrtcOk: boolean }> {
   return syncLoginDataViaTunnel()
 }

@@ -272,8 +272,8 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
 
 /** Профиль и хеши через tunnel (вызывать до disconnect bootstrap). */
 export async function prefetchLoginDataViaBootstrap(): Promise<boolean> {
-  const { profile, hashesOk } = await syncLoginDataViaTunnel()
-  pushLog('Bootstrap', `prefetch profile=${!!profile} hashes=${hashesOk}`)
+  const { profile, hashesOk, olcrtcOk } = await syncLoginDataViaTunnel()
+  pushLog('Bootstrap', `prefetch profile=${!!profile} hashes=${hashesOk} olcrtc=${olcrtcOk}`)
   return !!profile || hashesOk
 }
 

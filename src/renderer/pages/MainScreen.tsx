@@ -47,6 +47,7 @@ import {
 } from '../vkCredStore'
 import {
   buildOlcrtcConnectPayload,
+  bypassFamilyLabel,
   getOlcrtcProvider,
   isOlcrtcBypass,
   olcrtcProviderLabel,
@@ -210,6 +211,7 @@ export default function MainScreen({
   const sessionDeviceId = getSessionDeviceId()
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuPage, setMenuPage] = useState<MenuPage>(null)
+  const [bypassNavLabel, setBypassNavLabel] = useState(() => bypassFamilyLabel())
   const [promoCode, setPromoCode] = useState('')
   const [promoMsg, setPromoMsg] = useState('')
   const [referralInfo, setReferralInfo] = useState<{
@@ -351,6 +353,10 @@ export default function MainScreen({
   }, [fetchProfile, stopPaymentPoll])
 
   useEffect(() => () => stopPaymentPoll(), [stopPaymentPoll])
+
+  useEffect(() => {
+    if (menuOpen) setBypassNavLabel(bypassFamilyLabel())
+  }, [menuOpen, menuPage])
 
   useEffect(() => {
     // На главном экране bootstrap-состояние не должно жить.
@@ -1119,7 +1125,11 @@ export default function MainScreen({
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <button
-            onClick={() => { setMenuOpen(true); setMenuPage(null) }}
+            onClick={() => {
+              setBypassNavLabel(bypassFamilyLabel())
+              setMenuOpen(true)
+              setMenuPage(null)
+            }}
             style={{ color: fg }}
             className="p-1 hover:opacity-60 transition-opacity"
           >
@@ -1307,7 +1317,7 @@ export default function MainScreen({
                 { key: 'subscription', label: 'Подписка' },
                 { key: 'exceptions', label: 'Исключения приложений' },
                 ...(isDevBuild ? [{ key: 'dns', label: `DNS · ${getDnsPreset().title}` }] : []),
-                { key: 'bypass', label: 'Варианты обхода' },
+                { key: 'bypass', label: `Варианты обхода · ${bypassNavLabel}` },
                 ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
                 { key: 'bonuses', label: clientTheme?.menu_bonuses_label || 'Бонусы' },
                 { key: 'devices', label: `Сессии (${sessionsBadge(profile)})` },
@@ -1542,7 +1552,10 @@ export default function MainScreen({
               bg={bg}
               primary={palette.primary}
               vpnRunning={connected || connecting}
-              onBack={() => setMenuPage(null)}
+              onBack={() => {
+                setBypassNavLabel(bypassFamilyLabel())
+                setMenuPage(null)
+              }}
             />
           )}
           {menuPage === 'hashes' && isDevBuild && (

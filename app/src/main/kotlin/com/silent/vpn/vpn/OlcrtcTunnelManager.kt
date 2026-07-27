@@ -7,6 +7,10 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.system.OsConstants
+import com.silent.vpn.BuildConfig
+import com.silent.vpn.data.DnsPreset
+import com.silent.vpn.data.SilentPrefs
+import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.util.DebugLog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -657,13 +661,26 @@ object OlcrtcTunnelManager {
         }, "olcrtc-exit").apply { isDaemon = true }.start()
     }
 
+    /** Как WDTT: debug — меню DNS; иначе Яндекс. */
+    private fun resolveOlcrtcDnsServers(context: Context): List<String> {
+        val raw = if (BuildConfig.DEBUG) {
+            val id = SilentPrefs.open(context)
+                .getString(SilentRepository.PREF_DNS_PRESET, DnsPreset.DEFAULT.id)
+            DnsPreset.fromId(id).servers
+        } else {
+            DnsPreset.DEFAULT.servers
+        }
+        return raw.split(",")
+            .map { it.trim() }
+            .filter { it.isNotBlank() && !it.contains(':') }
+            .ifEmpty { listOf("77.88.8.8", "77.88.8.1") }
+    }
+
     /**
      * TUN → SOCKS через hev.
      *
-     * Важно: olcrtc SOCKS = только TCP CONNECT. UDP DNS в TUN мёртв →
-     * Telegram (IP) ок, сайты/админка (нужен DNS) — нет.
-     * Как PC fake-ip: hev mapdns → локальный fake IP → SOCKS CONNECT по домену
-     * (резолв на peer/Улье), без UDP:53 через туннель.
+     * Без fake-ip/mapdns: DNS = пресет (Яндекс по умолчанию), как WDTT.
+     * UDP DNS в olcrtc SOCKS мёртв → excludeRoute DNS IP (резолв вне TUN, TCP через peer).
      */
     private fun attachHevTun(context: Context, params: Params, vpnService: VpnService): String? {
         if (!HevSocksTunnel.ensureLoaded()) {
@@ -677,13 +694,13 @@ object OlcrtcTunnelManager {
         }
         tunFd = null
         Thread.sleep(200)
+        val dnsServers = resolveOlcrtcDnsServers(context)
         val conf = File(context.filesDir, "hev-olcrtc.yml")
-        // 198.18.0.0/15 — как sing-box fake-ip на PC; mapdns отвечает на 198.18.0.2:53.
         val hevYaml = buildString {
             appendLine("tunnel:")
             // 1400 ≈ KCP MTU olcrtc; 1280 резал TCP MSS без нужды.
             appendLine("  mtu: 1400")
-            appendLine("  ipv4: 198.18.0.1")
+            appendLine("  ipv4: 10.111.0.1")
             appendLine("socks5:")
             appendLine("  port: ${params.socksPort}")
             appendLine("  address: ${params.socksHost}")
@@ -694,12 +711,7 @@ object OlcrtcTunnelManager {
                 appendLine("  username: '$u'")
                 appendLine("  password: '$p'")
             }
-            appendLine("mapdns:")
-            appendLine("  address: 198.18.0.2")
-            appendLine("  port: 53")
-            appendLine("  network: 198.18.0.0")
-            appendLine("  netmask: 255.254.0.0")
-            appendLine("  cache-size: 10000")
+            // mapdns/fake-ip отключены — DNS через пресет (меню DNS / Яндекс).
             appendLine("misc:")
             appendLine("  log-level: warn")
             appendLine("  connect-timeout: 8000")
@@ -711,18 +723,23 @@ object OlcrtcTunnelManager {
             val builder = vpnService.Builder()
                 .setSession("Silent olcrtc")
                 .setMtu(1400)
-                .addAddress("198.18.0.1", 30)
+                .addAddress("10.111.0.1", 30)
                 .addRoute("0.0.0.0", 0)
-                // Только mapdns — не 8.8.8.8 (на LTE часто мёртв; UDP в TUN тоже мёртв).
-                .addDnsServer("198.18.0.2")
+            for (dns in dnsServers) {
+                runCatching { builder.addDnsServer(dns) }
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 runCatching { builder.allowFamily(OsConstants.AF_INET) }
-                WdttTunnelManager.logUi("olcrtc_tun_v4", "IPv4-only + mapdns fake-ip", 2)
+                WdttTunnelManager.logUi(
+                    "olcrtc_tun_v4",
+                    "IPv4-only DNS=${dnsServers.joinToString(",")} (без fake-ip)",
+                    2,
+                )
             }
-            // API 33+: ICE/STUN Telemost/WB напрямую; системный DNS — fallback для приложений,
-            // которые игнорируют VPN DNS (иначе снова UDP:53 в TUN → сайты мертвы).
+            // API 33+: DNS IP вне TUN (UDP:53 через SOCKS мёртв); ICE Telemost/WB напрямую.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val excludeHosts = linkedSetOf<String>()
+                excludeHosts.addAll(dnsServers)
                 excludeHosts.addAll(systemDnsIpv4Hosts(context))
                 if (params.provider.equals("telemost", ignoreCase = true) ||
                     params.provider.equals("wbstream", ignoreCase = true)
@@ -737,7 +754,7 @@ object OlcrtcTunnelManager {
                 }
                 WdttTunnelManager.logUi(
                     "olcrtc_tun_excl",
-                    "excludeRoute hosts=${excludeHosts.size} ips≈$excluded mapdns=198.18.0.2",
+                    "excludeRoute hosts=${excludeHosts.size} ips≈$excluded dns=${dnsServers.firstOrNull()}",
                     2,
                 )
             }
@@ -764,7 +781,7 @@ object OlcrtcTunnelManager {
             }
             WdttTunnelManager.logUi(
                 "olcrtc_tun",
-                "hev TUN ok fd=${pfd.fd} mapdns=fake-ip (сайты≠Telegram-IP)",
+                "hev TUN ok fd=${pfd.fd} dns=${dnsServers.joinToString(",")} (без fake-ip)",
                 1,
             )
             null

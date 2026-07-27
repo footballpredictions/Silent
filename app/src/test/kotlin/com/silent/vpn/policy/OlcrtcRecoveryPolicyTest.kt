@@ -189,6 +189,37 @@ class OlcrtcRecoveryPolicyTest {
     }
 
     @Test
+    fun `non critical validated or callback events do not restart live olcrtc`() {
+        assertEquals(
+            OlcrtcRecoveryPolicy.RecoverDecision.SKIP_NON_CRITICAL_NETWORK,
+            recover(
+                reason = "validated",
+                prefer = null,
+                lastRestartMs = 10_000L,
+                now = 100_000L,
+            ),
+        )
+        assertEquals(
+            OlcrtcRecoveryPolicy.RecoverDecision.SKIP_NON_CRITICAL_NETWORK,
+            recover(
+                reason = "available:cell",
+                prefer = null,
+                lastRestartMs = 10_000L,
+                now = 100_000L,
+            ),
+        )
+        assertEquals(
+            OlcrtcRecoveryPolicy.RecoverDecision.SKIP_NON_CRITICAL_NETWORK,
+            recover(
+                reason = "capabilities:cell",
+                prefer = null,
+                lastRestartMs = 10_000L,
+                now = 100_000L,
+            ),
+        )
+    }
+
+    @Test
     fun `in-flight recover is not cancelled by second signal`() {
         assertEquals(
             OlcrtcRecoveryPolicy.RecoverDecision.SKIP_IN_FLIGHT,
@@ -323,6 +354,42 @@ class OlcrtcRecoveryPolicyTest {
                     withinLibclientConnectGrace = false,
                     sinceRestartMs = OlcrtcRecoveryPolicy.WATCHDOG_SOCKS_MS + 1,
                     socksHealthy = false,
+                    socksFailStreak = OlcrtcRecoveryPolicy.WATCHDOG_SOCKS_FAIL_STREAK,
+                ),
+            ),
+        )
+        assertEquals(
+            OlcrtcRecoveryPolicy.WatchdogAction.NONE,
+            OlcrtcRecoveryPolicy.decideWatchdog(
+                OlcrtcRecoveryPolicy.WatchdogInput(
+                    sessionActive = true,
+                    running = true,
+                    tunnelReady = true,
+                    recoverInFlight = false,
+                    initialConnectInProgress = false,
+                    starting = false,
+                    withinLibclientConnectGrace = false,
+                    sinceRestartMs = OlcrtcRecoveryPolicy.WATCHDOG_SOCKS_MS + 1,
+                    socksHealthy = false,
+                    socksFailStreak = 1, // один fail при speedtest — ещё не мёртв
+                ),
+            ),
+        )
+        assertEquals(
+            OlcrtcRecoveryPolicy.WatchdogAction.NONE,
+            OlcrtcRecoveryPolicy.decideWatchdog(
+                OlcrtcRecoveryPolicy.WatchdogInput(
+                    sessionActive = true,
+                    running = true,
+                    tunnelReady = true,
+                    recoverInFlight = false,
+                    initialConnectInProgress = false,
+                    starting = false,
+                    withinLibclientConnectGrace = false,
+                    sinceRestartMs = OlcrtcRecoveryPolicy.WATCHDOG_SOCKS_MS + 1,
+                    socksHealthy = false,
+                    socksFailStreak = OlcrtcRecoveryPolicy.WATCHDOG_SOCKS_FAIL_STREAK,
+                    recentTunnelTraffic = true, // speedtest/Intermeter идёт
                 ),
             ),
         )
@@ -339,6 +406,30 @@ class OlcrtcRecoveryPolicyTest {
                     withinLibclientConnectGrace = false,
                     sinceRestartMs = OlcrtcRecoveryPolicy.WATCHDOG_SOCKS_MS + 1,
                     socksHealthy = true,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `peer closed grace skips notify when recent tunnel traffic`() {
+        assertFalse(
+            OlcrtcRecoveryPolicy.shouldNotifyPeerDeadAfterGrace(
+                OlcrtcRecoveryPolicy.PeerClosedGraceInput(
+                    running = true,
+                    iceConnected = false,
+                    socksHealthy = false,
+                    recentTunnelTraffic = true,
+                ),
+            ),
+        )
+        assertTrue(
+            OlcrtcRecoveryPolicy.shouldNotifyPeerDeadAfterGrace(
+                OlcrtcRecoveryPolicy.PeerClosedGraceInput(
+                    running = true,
+                    iceConnected = false,
+                    socksHealthy = false,
+                    recentTunnelTraffic = false,
                 ),
             ),
         )

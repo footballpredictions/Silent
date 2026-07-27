@@ -87,6 +87,8 @@ object OlcrtcTunnelManager {
     @Volatile private var peerClosedPending = false
     private var peerClosedGraceFuture: ScheduledFuture<*>? = null
     private val openStreamFailStreak = AtomicInteger(0)
+    /** Последний успешный SOCKS tunnel (speedtest/Intermeter грузят peer — не SOCKS_DEAD). */
+    @Volatile private var lastTunnelActivityMs = 0L
     private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "olcrtc-grace").apply { isDaemon = true }
     }
@@ -108,10 +110,16 @@ object OlcrtcTunnelManager {
         suppressPeerDeadUntilMs = System.currentTimeMillis() + ms.coerceAtLeast(0L)
     }
 
+    /** Были ли «tunnel to …» недавно — peer жив даже если gstatic probe таймаутится. */
+    fun hasRecentTunnelTraffic(nowMs: Long = System.currentTimeMillis()): Boolean =
+        OlcrtcRecoveryPolicy.hasRecentTunnelTraffic(lastTunnelActivityMs, nowMs)
+
     /** true если SOCKS dial к gstatic проходит (peer жив). */
     fun probeSocksHealthy(): Boolean {
         val p = activeParams ?: return false
         if (!_running.value) return false
+        // При живом speedtest/Intermeter gstatic часто не успевает за 3.5с — не врём «мёртв».
+        if (hasRecentTunnelTraffic()) return true
         return socksDialOnce(p, "www.gstatic.com", soTimeoutMs = 3_500)
     }
 
@@ -157,6 +165,7 @@ object OlcrtcTunnelManager {
                             running = _running.value,
                             iceConnected = iceConnected,
                             socksHealthy = probeSocksHealthy(),
+                            recentTunnelTraffic = hasRecentTunnelTraffic(),
                         ),
                     )
                 ) {
@@ -232,6 +241,8 @@ object OlcrtcTunnelManager {
         return l.contains("remote not ready") ||
             l.contains("connect failed: sid=") ||
             l.contains("openstream failed") ||
+            l.contains("readvp8track closed") ||
+            (l.contains("readvp8track") && l.contains("err=eof")) ||
             (l.contains("read_err=eof") && l.contains("ack=[0]")) ||
             (l.contains("closed pipe") && !l.contains("peer connection"))
     }
@@ -262,6 +273,7 @@ object OlcrtcTunnelManager {
         }
         cancelPeerClosedGrace()
         openStreamFailStreak.set(0)
+        lastTunnelActivityMs = 0L
         activeParams = null
         // Prefetch connection-details живут считанные минуты, но после peer closed/recover
         // могут быть уже протухшими для нового процесса и давать media timeout.
@@ -548,15 +560,21 @@ object OlcrtcTunnelManager {
                             schedulePeerClosedGrace("media_timeout", 4_000L)
                         }
                         if (l.contains("OpenStream failed", ignoreCase = true) && _tunnelReady.value) {
-                            val nFail = openStreamFailStreak.incrementAndGet()
-                            if (nFail >= 6) {
+                            // Под нагрузкой (speedtest) OpenStream fail нормален — не escalate если трафик идёт.
+                            if (hasRecentTunnelTraffic()) {
                                 openStreamFailStreak.set(0)
-                                schedulePeerClosedGrace("openstream_timeout", 3_000L)
+                            } else {
+                                val nFail = openStreamFailStreak.incrementAndGet()
+                                if (nFail >= 6) {
+                                    openStreamFailStreak.set(0)
+                                    schedulePeerClosedGrace("openstream_timeout", 3_000L)
+                                }
                             }
                         } else if (
                             l.contains("tunnel to ", ignoreCase = true) ||
                             l.contains("Link connected", ignoreCase = true)
                         ) {
+                            lastTunnelActivityMs = System.currentTimeMillis()
                             openStreamFailStreak.set(0)
                         }
                         if (Regex(

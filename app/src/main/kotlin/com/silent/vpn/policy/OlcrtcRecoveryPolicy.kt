@@ -22,7 +22,16 @@ object OlcrtcRecoveryPolicy {
     const val WATCHDOG_DOWN_MS = 20_000L
 
     /** Watchdog: SOCKS probe при ready. */
-    const val WATCHDOG_SOCKS_MS = 25_000L
+    const val WATCHDOG_SOCKS_MS = 40_000L
+
+    /** Сколько подряд SOCKS fail нужно, прежде чем SOCKS_DEAD (speedtest грузит peer). */
+    const val WATCHDOG_SOCKS_FAIL_STREAK = 3
+
+    /**
+     * Если за это окно были «tunnel to …» — peer жив, SOCKS probe к gstatic
+     * может таймаутиться из‑за нагрузки (Яндекс.Интернетометр / Speedtest).
+     */
+    const val RECENT_TUNNEL_TRAFFIC_MS = 20_000L
 
     /** Telemost PC closed — дать goolom самовосстановиться. */
     const val PEER_CLOSED_GRACE_MS = 12_000L
@@ -38,6 +47,7 @@ object OlcrtcRecoveryPolicy {
         SKIP_IN_FLIGHT,
         SKIP_SWITCH_DUP,
         SKIP_DEBOUNCE,
+        SKIP_NON_CRITICAL_NETWORK,
     }
 
     enum class WatchdogAction {
@@ -79,12 +89,17 @@ object OlcrtcRecoveryPolicy {
         val withinLibclientConnectGrace: Boolean,
         val sinceRestartMs: Long,
         val socksHealthy: Boolean,
+        /** Подряд неудачных SOCKS probe (speedtest/Intermeter не должны ронять с 1 fail). */
+        val socksFailStreak: Int = 0,
+        /** Были ли SOCKS tunnel-сессии недавно (трафик идёт). */
+        val recentTunnelTraffic: Boolean = false,
     )
 
     data class PeerClosedGraceInput(
         val running: Boolean,
         val iceConnected: Boolean,
         val socksHealthy: Boolean,
+        val recentTunnelTraffic: Boolean = false,
     )
 
     data class PrefetchReuseInput(
@@ -137,6 +152,10 @@ object OlcrtcRecoveryPolicy {
             return RecoverDecision.ALLOW
         }
 
+        if (!isCriticalRecoverReason(input.reason)) {
+            return RecoverDecision.SKIP_NON_CRITICAL_NETWORK
+        }
+
         if (
             input.nowMs - input.lastTransportRestartMs < RECOVER_DEBOUNCE_MS &&
             !input.reason.startsWith("phone_call_end") &&
@@ -147,6 +166,17 @@ object OlcrtcRecoveryPolicy {
         }
         return RecoverDecision.ALLOW
     }
+
+    /**
+     * Для olcrtc обычные validated/available/capabilities события не должны ронять
+     * живой туннель: они часто мигают на Android без реальной потери peer/SOCKS.
+     */
+    fun isCriticalRecoverReason(reason: String): Boolean =
+        reason.startsWith("transport_switch:") ||
+            reason.startsWith("internet_restored") ||
+            reason.startsWith("phone_call_end") ||
+            reason.startsWith("olcrtc_peer_dead") ||
+            reason.startsWith("watchdog_olcrtc")
 
     /** После failed recover — один retry, только если сессия уже была ready. */
     fun shouldScheduleRecoverRetry(everReady: Boolean, reason: String): Boolean =
@@ -179,19 +209,27 @@ object OlcrtcRecoveryPolicy {
 
             input.tunnelReady &&
                 input.sinceRestartMs > WATCHDOG_SOCKS_MS &&
-                !input.socksHealthy -> WatchdogAction.SOCKS_DEAD
+                !input.socksHealthy &&
+                !input.recentTunnelTraffic &&
+                input.socksFailStreak >= WATCHDOG_SOCKS_FAIL_STREAK -> WatchdogAction.SOCKS_DEAD
 
             else -> WatchdogAction.NONE
         }
     }
 
+    /** Speedtest/Intermeter: живой «tunnel to» = peer не мёртв. */
+    fun hasRecentTunnelTraffic(lastTunnelActivityMs: Long, nowMs: Long): Boolean =
+        lastTunnelActivityMs > 0L && nowMs - lastTunnelActivityMs < RECENT_TUNNEL_TRAFFIC_MS
+
     /**
-     * После grace PC closed: restart только если peer/SOCKS не ожили.
+     * После grace PC closed: restart только если peer/SOCKS не ожили
+     * и нет свежего туннельного трафика (иначе speedtest ложно «убивает» сессию).
      */
     fun shouldNotifyPeerDeadAfterGrace(input: PeerClosedGraceInput): Boolean {
         if (!input.running) return false
         if (input.iceConnected) return false
         if (input.socksHealthy) return false
+        if (input.recentTunnelTraffic) return false
         return true
     }
 

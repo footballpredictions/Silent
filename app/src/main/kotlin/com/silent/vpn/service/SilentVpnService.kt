@@ -160,6 +160,8 @@ class SilentVpnService : Service() {
     /** Пока true — watchdog/peer_dead не стартуют второй recover. */
     @Volatile
     private var olcrtcRecovering = false
+    /** Подряд SOCKS probe fail — speedtest/Intermeter не должны ронять с одного таймаута. */
+    private var olcrtcSocksFailStreak = 0
     /** Если recover уже идёт — подсказать await wifi/cell при transport_switch. */
     @Volatile
     private var pendingOlcrtcPreferTransport: String? = null
@@ -1077,6 +1079,10 @@ class SilentVpnService : Service() {
                 DebugLog.i("VpnService", "olcrtc recovery debounce ($reason)")
                 return
             }
+            OlcrtcRecoveryPolicy.RecoverDecision.SKIP_NON_CRITICAL_NETWORK -> {
+                DebugLog.i("VpnService", "olcrtc recovery skipped — non-critical network event ($reason)")
+                return
+            }
             OlcrtcRecoveryPolicy.RecoverDecision.ALLOW -> Unit
         }
         if (preferFromReason != null) {
@@ -1450,6 +1456,7 @@ class SilentVpnService : Service() {
                             lastConfigPresent = lastOlcrtcConfigJson != null,
                         )
                     ) {
+                    val recentTraffic = OlcrtcTunnelManager.hasRecentTunnelTraffic()
                     val action = OlcrtcRecoveryPolicy.decideWatchdog(
                         OlcrtcRecoveryPolicy.WatchdogInput(
                             sessionActive = olcrtcSessionActive,
@@ -1461,6 +1468,8 @@ class SilentVpnService : Service() {
                             withinLibclientConnectGrace = isWithinConnectGrace(),
                             sinceRestartMs = System.currentTimeMillis() - lastTransportRestartMs,
                             socksHealthy = true, // probe only if SOCKS_DEAD candidate path
+                            socksFailStreak = olcrtcSocksFailStreak,
+                            recentTunnelTraffic = recentTraffic,
                         ),
                     )
                     // SOCKS probe дорогой — только когда остальные условия SOCKS_DEAD уже почти ок.
@@ -1472,11 +1481,17 @@ class SilentVpnService : Service() {
                         !isOlcrtcInitialConnectInProgress() &&
                         !OlcrtcTunnelManager.isStarting() &&
                         !isWithinConnectGrace() &&
+                        !recentTraffic &&
                         System.currentTimeMillis() - lastTransportRestartMs >
                             OlcrtcRecoveryPolicy.WATCHDOG_SOCKS_MS
                     ) {
                         val healthy = withContext(Dispatchers.IO) {
                             OlcrtcTunnelManager.probeSocksHealthy()
+                        }
+                        if (healthy) {
+                            olcrtcSocksFailStreak = 0
+                        } else {
+                            olcrtcSocksFailStreak += 1
                         }
                         OlcrtcRecoveryPolicy.decideWatchdog(
                             OlcrtcRecoveryPolicy.WatchdogInput(
@@ -1489,9 +1504,12 @@ class SilentVpnService : Service() {
                                 withinLibclientConnectGrace = false,
                                 sinceRestartMs = System.currentTimeMillis() - lastTransportRestartMs,
                                 socksHealthy = healthy,
+                                socksFailStreak = olcrtcSocksFailStreak,
+                                recentTunnelTraffic = OlcrtcTunnelManager.hasRecentTunnelTraffic(),
                             ),
                         )
                     } else {
+                        if (recentTraffic) olcrtcSocksFailStreak = 0
                         action
                     }
                     when (resolved) {
@@ -1504,7 +1522,11 @@ class SilentVpnService : Service() {
                             scheduleNetworkRecovery("watchdog_olcrtc_down", 800L)
                         }
                         OlcrtcRecoveryPolicy.WatchdogAction.SOCKS_DEAD -> {
-                            DebugLog.w("VpnService", "transportWatchdog: olcrtc SOCKS dead — recover")
+                            DebugLog.w(
+                                "VpnService",
+                                "transportWatchdog: olcrtc SOCKS dead (streak=$olcrtcSocksFailStreak) — recover",
+                            )
+                            olcrtcSocksFailStreak = 0
                             scheduleNetworkRecovery("watchdog_olcrtc_socks", 500L)
                         }
                         OlcrtcRecoveryPolicy.WatchdogAction.NONE -> Unit
@@ -1752,6 +1774,7 @@ class SilentVpnService : Service() {
                 if (!isRunning) return@collect
                 if (ready) {
                     olcrtcEverReady = true
+                    olcrtcSocksFailStreak = 0
                     startFg(buildActiveNotification("olcrtc · туннель активен"))
                     VpnTileHelper.requestUpdate(this@SilentVpnService)
                 } else if (OlcrtcTunnelManager.running.value) {

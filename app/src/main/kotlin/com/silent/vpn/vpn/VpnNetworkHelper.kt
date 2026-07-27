@@ -187,6 +187,13 @@ object VpnNetworkHelper {
                     return true
                 }
             }
+            // Без prefer (watchdog): хватит any INTERNET — не ждать VALIDATED минутами.
+            if (want == null && hasAnyUnderlyingInternet(context) &&
+                System.currentTimeMillis() + timeoutMs - deadline > 1_500L
+            ) {
+                DebugLog.i(TAG, "awaitUnderlyingReady any-ok fp=$fp")
+                return true
+            }
             delay(300L)
         }
         val any = hasAnyUnderlyingInternet(context)

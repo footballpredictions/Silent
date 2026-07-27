@@ -851,7 +851,7 @@ fun MainScreen(
                         ) { menuPage = MenuPage.ROOT }
                         MenuPage.ABOUT -> MenuSimplePage(
                             title = "Silent VPN",
-                            body = "Версия ${com.silent.vpn.BuildConfig.VERSION_NAME}\nWireGuard-туннель через VK TURN/DTLS\nплюс Olcrtc",
+                            body = "Версия ${com.silent.vpn.BuildConfig.VERSION_NAME}\nWireGuard-туннель через VK TURN/DTLS\n+ Olcrtc",
                             fg = fg,
                             focusKey = menuPage,
                         ) { menuPage = MenuPage.ROOT }

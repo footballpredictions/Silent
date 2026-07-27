@@ -585,6 +585,12 @@ cd pc; npm install; npm run dev
 - PC: `build-installer.bat` → `Silent VPN Setup 1.0.160.exe` (91MB) перезалит (кодовых диффов не было, свежий билд).
 - Версия без bump: **1.0.160**.
 
+### 2026-07-27 — релиз+пуш: host-unhealthy prune + Android auto-retry
+
+- Push `main` `3745e09`, `android` `9650dfb`.
+- OTA Android **1.0.160** пересобран (hash `6EJ_t4ee…`) + авто-retry после reassign.
+- Backend уже был на проде; git синхронизирован.
+
 ### 2026-07-27 — agent: host-in-room + client auto-retry (почему «не перемещает»)
 
 - **Почему:** liveness считал комнату живой по guest-join HTTP, даже если host `olcrtc@*-wbstream` не в комнате → клиент `guests cannot create rooms`; `report_room_failure` не ставил `status=error`; Android после reassign **не reconnect**.

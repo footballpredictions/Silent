@@ -1741,7 +1741,7 @@ export default function MainScreen({
               <div className="text-xs text-gray-500 space-y-1">
                 <p>Версия {getAppVersion()}</p>
                 <p>WireGuard-туннель через VK TURN/DTLS</p>
-                <p>плюс Olcrtc</p>
+                <p>+ Olcrtc</p>
               </div>
             </div>
           )}

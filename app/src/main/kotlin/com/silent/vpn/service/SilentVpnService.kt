@@ -74,6 +74,8 @@ class SilentVpnService : Service() {
         private const val NETWORK_GRACE_MS = 12_000L
         /** transportWatchdog не kill сервис, пока libclient ещё стартует. */
         private const val LIBCLIENT_START_GRACE_MS = 45_000L
+        /** Первый connect olcrtc на LTE: MainViewModel ждёт SOCKS ~90с — recover не должен убивать старт. */
+        private const val OLCRTC_CONNECT_GRACE_MS = 95_000L
         /** Минимальный интервал между restartTransport (баланс скорость/стабильность). */
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 1_500L
         /** Задержка перед restart после возврата сети / звонка. */
@@ -148,6 +150,9 @@ class SilentVpnService : Service() {
     /** Активна сессия olcrtc (даже если peer временно упал и идёт reconnect). */
     @Volatile
     private var olcrtcSessionActive = false
+    /** tunnelReady хоть раз в этой сессии — recover только после этого. */
+    @Volatile
+    private var olcrtcEverReady = false
     @Volatile
     private var lastOlcrtcConfigJson: String? = null
     private var olcrtcRecoverJob: Job? = null
@@ -174,6 +179,12 @@ class SilentVpnService : Service() {
 
     private fun isWithinConnectGrace(): Boolean =
         isRunning && System.currentTimeMillis() - connectStartedAtMs < LIBCLIENT_START_GRACE_MS
+
+    private fun isOlcrtcInitialConnectInProgress(): Boolean =
+        olcrtcSessionActive &&
+            !olcrtcEverReady &&
+            isRunning &&
+            System.currentTimeMillis() - connectStartedAtMs < OLCRTC_CONNECT_GRACE_MS
 
     /** Дольше grace на bootstrap — libclient и WG поднимаются медленнее, особенно на TV. */
     private fun networkGraceMs(): Long =
@@ -439,7 +450,10 @@ class SilentVpnService : Service() {
                 SilentRepository.APP_EXCLUDED_FROM_VPN = true
                 lastOlcrtcConfigJson = configJson
                 olcrtcSessionActive = true
+                olcrtcEverReady = false
+                lastTransportRestartMs = System.currentTimeMillis()
                 OlcrtcTunnelManager.setSessionDeadHandler { reason ->
+                    if (isOlcrtcInitialConnectInProgress()) return@setSessionDeadHandler
                     scheduleNetworkRecovery("olcrtc_peer_dead:$reason", 1_200L)
                 }
                 // TUN через отдельный VpnService (этот класс — обычный Service).
@@ -610,6 +624,7 @@ class SilentVpnService : Service() {
         pendingOlcrtcPreferTransport = null
         isRunning = false
         olcrtcSessionActive = false
+        olcrtcEverReady = false
         lastOlcrtcConfigJson = null
         OlcrtcTunnelManager.setSessionDeadHandler(null)
         SessionTrace.mark("SilentVpnService.disconnect", "isRunning=false epoch=$epoch")
@@ -750,6 +765,7 @@ class SilentVpnService : Service() {
     /** Сверка underlying fingerprint (wifi/cell) и schedule transport_switch / restored. */
     private fun maybeRecoverOnUnderlyingChange(source: String) {
         if (!isRunning) return
+        if (isOlcrtcInitialConnectInProgress()) return
         val fp = VpnNetworkHelper.underlyingTransportFingerprint(this)
         val validated = VpnNetworkHelper.hasUnderlyingInternet(this)
         if (fp.isEmpty()) {
@@ -821,6 +837,10 @@ class SilentVpnService : Service() {
             return
         }
         if (!isRunning) return
+        if (isOlcrtcInitialConnectInProgress()) {
+            DebugLog.i("VpnService", "recovery skipped — olcrtc initial connect ($reason)")
+            return
+        }
         if (NetworkRecoveryPolicy.shouldDeferRecoveryForPhoneCall(phoneCallActive)) return
         // peer_dead / phone_call / wifi↔lte — не режем grace (иначе после смены сети «залипает»).
         val skipGrace =
@@ -1010,6 +1030,10 @@ class SilentVpnService : Service() {
             return
         }
         if (!isRunning) return
+        if (!olcrtcEverReady) {
+            DebugLog.i("VpnService", "olcrtc recovery skipped — never was ready ($reason)")
+            return
+        }
         val preferFromReason = when {
             reason.startsWith("transport_switch:wifi") -> "wifi"
             reason.startsWith("transport_switch:mobile") -> "cell"
@@ -1060,6 +1084,7 @@ class SilentVpnService : Service() {
                 OlcrtcTunnelManager.setSessionDeadHandler { r ->
                     if (r.startsWith("process_exit_early")) return@setSessionDeadHandler
                     if (isOlcrtcRecoverInFlight()) return@setSessionDeadHandler
+                    if (isOlcrtcInitialConnectInProgress()) return@setSessionDeadHandler
                     scheduleNetworkRecovery("olcrtc_peer_dead:$r", 2_500L)
                 }
                 // 1) Снять мёртвый TUN сразу — иначе 0.0.0.0/0 без peer = «нет интернета».
@@ -1156,7 +1181,7 @@ class SilentVpnService : Service() {
                         99,
                         isError = true,
                     )
-                    if (!reason.contains(":retry")) {
+                    if (olcrtcEverReady && !reason.contains(":retry")) {
                         scheduleNetworkRecovery("$reason:retry", 4_000L)
                     }
                 }
@@ -1252,6 +1277,13 @@ class SilentVpnService : Service() {
         if (!isRunning || (!wdttLive && !olcrtcLive)) return
         if (!olcrtcLive && WdttTunnelManager.isNetworkRecoverySuppressed()) return
         if (NetworkRecoveryPolicy.shouldDeferRecoveryForPhoneCall(phoneCallActive)) return
+        if (isOlcrtcInitialConnectInProgress()) {
+            val anyOnline = VpnNetworkHelper.hasAnyUnderlyingInternet(this)
+            val validatedOnline = VpnNetworkHelper.hasUnderlyingInternet(this)
+            lastUnderlyingInternet = validatedOnline || anyOnline
+            lastMobileDataState = VpnNetworkHelper.isOnMobileData(this)
+            return
+        }
         // transport_switch не блокируем grace — иначе первые секунды после connect «залипают».
         if (
             !olcrtcLive &&
@@ -1400,7 +1432,11 @@ class SilentVpnService : Service() {
                     OlcrtcTunnelManager.running.value ||
                     OlcrtcTunnelManager.tunnelReady.value
                 ) {
-                    if (isOlcrtcRecoverInFlight()) {
+                    if (isOlcrtcRecoverInFlight() || isOlcrtcInitialConnectInProgress()) {
+                        delay(2000)
+                        continue
+                    }
+                    if (OlcrtcTunnelManager.isStarting()) {
                         delay(2000)
                         continue
                     }
@@ -1683,6 +1719,7 @@ class SilentVpnService : Service() {
             OlcrtcTunnelManager.tunnelReady.collect { ready ->
                 if (!isRunning) return@collect
                 if (ready) {
+                    olcrtcEverReady = true
                     startFg(buildActiveNotification("olcrtc · туннель активен"))
                     VpnTileHelper.requestUpdate(this@SilentVpnService)
                 } else if (OlcrtcTunnelManager.running.value) {

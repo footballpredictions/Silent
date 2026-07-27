@@ -69,6 +69,8 @@ object OlcrtcTunnelManager {
     private var tunBridgeProc: Process? = null
     private var tunFd: ParcelFileDescriptor? = null
     private val starting = AtomicBoolean(false)
+
+    fun isStarting(): Boolean = starting.get()
     @Volatile private var lastFailHint: String = ""
     /** ICE PeerConnection connected — можно поднимать hev full-tunnel. */
     @Volatile private var iceConnected = false

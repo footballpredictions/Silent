@@ -291,33 +291,30 @@ function renderClientYaml(config) {
   ].join('\n')
 }
 
-function renderSingboxConfig(socksHost, socksPort, socksUser = '', socksPass = '') {
-  // fake-ip + sniff: не гоняем DNS через peer на каждый сайт.
+function parseDnsServers(raw) {
+  const list = String(raw || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s && !s.includes(':'))
+  return list.length ? list : ['77.88.8.8', '77.88.8.1']
+}
+
+function renderSingboxConfig(socksHost, socksPort, socksUser = '', socksPass = '', dnsOverride = '') {
+  // Без fake-ip: DNS = пресет (Яндекс по умолчанию), TCP через SOCKS — как WDTT-логика.
   // HTTPS/SVCB RR через SOCKS часто EOF — reject.
   // hijack только :53 (не protocol=dns) — иначе Win LLMNR/мусор → «bad rdata».
+  const dnsList = parseDnsServers(dnsOverride)
+  const dnsServers = dnsList.map((ip, i) => ({
+    tag: i === 0 ? 'remote' : `remote${i}`,
+    address: `tcp://${ip}`,
+    detour: 'olcrtc-socks',
+  }))
   return JSON.stringify(
     {
       log: { level: 'error' },
       dns: {
-        servers: [
-          {
-            tag: 'remote',
-            address: 'tcp://8.8.8.8',
-            detour: 'olcrtc-socks',
-          },
-          {
-            tag: 'fakeip',
-            address: 'fakeip',
-          },
-        ],
-        rules: [
-          { query_type: ['HTTPS', 'SVCB'], action: 'reject' },
-          { query_type: ['A', 'AAAA'], server: 'fakeip' },
-        ],
-        fakeip: {
-          enabled: true,
-          inet4_range: '198.18.0.0/15',
-        },
+        servers: dnsServers,
+        rules: [{ query_type: ['HTTPS', 'SVCB'], action: 'reject' }],
         strategy: 'ipv4_only',
         independent_cache: true,
         final: 'remote',
@@ -411,8 +408,14 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
   const sbPath = path.join(tmp, 'silent-olcrtc-singbox.json')
   yaml = yaml.replace(/\ndata: data\n/, `\ndata: "${dataDir.replace(/\\/g, '/')}"\n`)
   fs.writeFileSync(yamlPath, yaml, 'utf8')
-  fs.writeFileSync(sbPath, renderSingboxConfig(socksHost, socksPort, socksUser, socksPass), 'utf8')
+  const dnsOverride = String(config.dns_override || config.wg_dns || '').trim()
+  fs.writeFileSync(
+    sbPath,
+    renderSingboxConfig(socksHost, socksPort, socksUser, socksPass, dnsOverride),
+    'utf8',
+  )
   log?.(`[olcrtc] SOCKS auth user=${socksUser} (per-session)`)
+  log?.(`[olcrtc] DNS=${dnsOverride || '77.88.8.8, 77.88.8.1'} (без fake-ip)`)
 
   let connFile = null
   let staticHosts = {}

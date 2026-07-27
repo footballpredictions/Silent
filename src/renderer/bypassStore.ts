@@ -9,6 +9,7 @@ import {
 } from './vkCredStore'
 import { getPublicApiBaseUrl } from './tunnelApi'
 import { getStableDeviceFingerprint } from './api'
+import { getDnsOverrideServers } from './dnsPreset'
 
 const FAMILY_KEY = 'bypass_family'
 const OLCRTC_PROVIDER_KEY = 'olcrtc_provider'
@@ -394,6 +395,8 @@ export function buildOlcrtcConnectPayload(
       error: `olcrtc: провайдер «${olcrtcProviderLabel(provider)}» не настроен в админке (Варианты обхода → 2)`,
     }
   }
+  // DNS пресет (меню DNS) — Яндекс по умолчанию; без fake-ip в sing-box.
+  const dnsServers = getDnsOverrideServers() || '77.88.8.8, 77.88.8.1'
   return {
     bypassFamily: BYPASS_FAMILY_OLCRTC,
     olcrtc_provider: provider,
@@ -404,6 +407,8 @@ export function buildOlcrtcConnectPayload(
       (provider === OLCRTC_TELEMOST || provider === OLCRTC_WBSTREAM ? 'vp8channel' : 'datachannel'),
     olcrtc_socks_host: cfg.socks_host || '127.0.0.1',
     olcrtc_socks_port: cfg.socks_port || 8808,
+    dns_override: dnsServers,
+    wg_dns: dnsServers,
     // auth_token WB — только на srv; клиент guest (иначе carrier reconnect).
     ...extra,
   }

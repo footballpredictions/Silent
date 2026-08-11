@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.160** (olcrtc bypass в release; bypass label в меню) |
-| `Silent-Project/android/` | `android` | **1.0.160** (olcrtc release + integrity keepDebugSymbols + olcrtc-config via tunnel) |
+| `Silent-Project/pc/` | `pc` | **1.0.161** (olcrtc снят из UI; WDTT only) |
+| `Silent-Project/android/` | `android` | **1.0.161** (olcrtc снят из UI; WDTT only) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -579,11 +579,84 @@ cd pc; npm install; npm run dev
 - Версии: Android `versionCode/Name 160` / `1.0.160`; PC `package.json 1.0.160`.
 - Релизы: `assembleRelease` + `build-installer.bat` OK. Push `android` + `pc`.
 
+### 2026-08-11 — olcrtc полностью снят с продукта
+
+- **Почему:** правки olcrtc на Улье снова били CPU рядом с `wdtt` и ломали быстрый VK.
+- **Прод:** `olcrtc@*` / host-provision / proxy — stop+disable; providers+agent `enabled=false`; sticky wipe; rooms offline.
+- **API:** `GET /api/vpn/olcrtc-config` всегда `enabled=false`.
+- **Админка:** секция olcrtc удалена; пункт меню «VK / хеши» (только VkPage).
+- **PC/Android:** `isOlcrtcBypass()=false`, меню «Варианты обхода» убрано из release (debug — только VK cred). Native `libolcrtc`/exe оставлены мёртвым кодом до отдельной чистки.
+- Клиентам для UI нужен следующий билд/OTA; на проде olcrtc уже не отдаётся.
+
+### 2026-08-11 — olcrtc WB session-mode (как Телемост)
+
+- **Проблема:** Playwright на `stream.wb.ru` с IP Улья → HTTP 498 antibot; «нет свободных комнат» при выборе ВБ.
+- **Решение:** create/delete через WB API (`POST/DELETE /api-room/api/v1/room`) с JWT из storage_state; `roomType=1`, `roomPrivacy=1`, `ownerId` из JWT `user`; уникальный title → `roomId`.
+- **Код:** `ai/olcrtc_wb_api.py`; `create_room_best` сначала API для wbstream; teardown → remote DELETE; оба провайдера enabled в session-mode.
+- **Прод smoke:** WB PC + Android assign/Link/release **PASS** (`olcrtc_enable_wb_session.py`).
+
+### 2026-08-11 — olcrtc session-mode («как VK»)
+
+- **Проблема:** shared-пул + autoscale/`min_free` + Playwright на Улье → Chromium-шторм, 502 host-provision, тормоза VK (инцидент 11.08).
+- **Модель:** create on demand (`ensure_session_room`) → max_clients=1 → leave/`failure` = `release_session_room` (sticky+delete+stop unit). Агент только prune+heal; `session_mode=true`; Telemost-only; `OLCRTC_HOST_ONLY=1`.
+- **Прод:** wipe `olcrtc_session_reset.py`, host-provision active, agent enabled session-mode. Smoke PC+Android Telemost assign/release **PASS**.
+- Клиенты: clear olcrtc cache on leave (PC `v10`, Android already `v10`).
+- Доки: `backend/docs/olcrtc.md`. Админка: рычаг Session-mode.
+
+### 2026-08-11 — Telemost Android exit=1: unit не поднят для room
+
+- Клиент получил `03337594714540` (`android-telemost-2`), а srv unit был **inactive** → ICE ok, SOCKS нет, code=1.
+- Причина: агент создал комнату в БД, `apply_units` из Docker падал на `127.0.0.1:9101`.
+- Фикс: `apply_olcrtc_units_from_db.py` → unit-2 **Link connected**; `OLCRTC_HOST_PROVISION_URL=http://172.17.0.1:9101` в compose.
+
+### 2026-08-11 — olcrtc pool redesign: on-demand scale + admin UX + RAM
+
+- Shared-пул сохранён (не delete-on-disconnect). При `pool_denied` — debounce heal/scale ~45с; цикл агента **150с**; idle GC дефолт **5 мин** (миграция со старых 45).
+- Heal error чистит sticky; Playwright `browser.close()` в `finally`; метрики без фейкового `target_capacity_hint=1100`.
+- Админка Bypass: вкладки Обзор / Комнаты / Агент (`OlcrtcManagePanel`).
+- RAM: `diag_memory` — **wdtt ~3.2GB** (главный), API ~400MB; на wdtt выставлены `MemoryHigh=4G` / `MemoryMax=6G` (без рестарта).
+- Деплой: `deploy_stable.py` + admin-ui dist. Тесты: `test_olcrtc_autoscale_unit.py` 9/9.
+
 ### 2026-07-27 — OTA 1.0.160 rebuild (Android + PC)
 
 - Android: `assembleRelease` с bootstrap hash as-is; OTA `SilentVPN-release-1.0.160.apk` (72MB) — LTE cache v10 + WB 403 reassign.
 - PC: `build-installer.bat` → `Silent VPN Setup 1.0.160.exe` (91MB) перезалит (кодовых диффов не было, свежий билд).
 - Версия без bump: **1.0.160**.
+
+### 2026-08-11 — Hive spill / random / olcrtc «нет комнат» + кнопки
+
+- **Почему при CPU 100% не раскидывало на соты:** spill только когда online на Улье ≥ ~85% ёмкости; CPU сам по себе не эвакуирует. Живых клиентов rebalance не двигает (только offline).
+- **Рандом queen/cell на каждый connect — хуже текущего:** рвёт sticky WG endpoint/pubkey, гонки manifest, обрывы. Оставляем sticky + spill gate.
+- **«Нет свободных» при 0/2:** `_least_loaded_room` лочил *все* active комнаты провайдера (`FOR UPDATE SKIP LOCKED`) → параллельный assign пустой. Фикс: фильтр слота + лок по одной.
+- **Кнопки статуса:** агент liveness возвращал draining→active; теперь admin hold + stop/start unit. Сортировка unit по числовому хвосту.
+- Задеплоено `deploy_api`.
+
+### 2026-08-11 — Улей CPU 100% / RAM ~9G
+
+- Постоянно: **wdtt-server ~113% CPU, ~3.3G RSS**, ~6200 UDP на `:56001` (живые WG-сессии).
+- Пики: Playwright host-provision (ThreadingHTTPServer) поднимал **несколько Chromium** → peak **6.4G**, load avg ~25 на 6 ядрах; 6× olcrtc@ ещё +~40% CPU.
+- Фикс: create под `Semaphore(1)`, `MemoryHigh/Max` на host-provision, `MAX_CREATE_PER_CYCLE=2`, рестарт provision + kill chrome. wdtt не рестартили (уронит всех клиентов).
+
+### 2026-08-11 — max_clients не применялся (везде 2, только pc-telemost 250)
+
+- «Записать YAML / применить» писало YAML без сохранения формы → max в UI не попадал в БД.
+- `reconcile` перестали писать max (защита от отката) → **Сохранить** тоже не меняло `0/2` в таблице.
+- Агент: onBlur не слал PUT, если число уже совпадало с agent (комнаты залипли на 2).
+- Фикс: reconcile снова пишет max на слот+хвосты; Apply сначала Save; кнопка «Применить» у мест агента; heal выравнивает max всех active под agent. Задеплоено.
+
+### 2026-08-11 — Админка olcrtc: нули в Обзоре + лишние комнаты + ложный WB error
+
+- **Нули в карточках** при «Всего свободно 1255»: UI ждал `metrics.by_slot`, при пустом/старом API показывал заглушки 0; теперь карточки считаются из списка `rooms`.
+- **Лишние комнаты после max=250:** `ensure_rooms_synced` на каждый GET откатывал `max_clients` из legacy JSON (250→2) → free мало → агент плодил `-2`/`-3`. Фикс: sync больше не трогает max; PUT агента пишет max и в JSON slots.
+- **WB «All connection attempts failed»** при живом пуле: Playwright-сбой досоздания больше не ставит `last_error`, если active-комнаты уже есть; подсказка в UI.
+- Задеплоено `deploy_stable` + `deploy_api` (admin-ui dist).
+
+### 2026-08-11 — Android olcrtc: Telegram ок, YouTube нет
+
+- Симптом: Telemost `tunnelReady` + SOCKS OK, Telegram жив, YouTube нет. В логе `mapdns=fake-ip`, warm `nip.io OK`.
+- Причины: (1) YouTube/Cronet **QUIC UDP:443** — olcrtc SOCKS только TCP; без `REP=0x07` на UDP ASSOCIATE клиент висит (патч был в vendor working tree, бинарь мог быть без него). (2) `allowFamily(AF_INET)` пускал **IPv6 мимо VPN в LTE** (в РФ YT часто мёртв, Telegram по IPv4 через SOCKS ок).
+- Фикс: пересобран `libolcrtc.so` с drain+`REP=0x07`; hev `ipv6` + VpnService `::/0` (без allowFamily AF_INET); warm `i.ytimg.com`; udp timeout 400ms; **1.0.162**.
+- Debug APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`. В логе ждать: `ipv6Tun=true`, `warm TCP www.youtube.com OK` / `i.ytimg.com OK`.
 
 ### 2026-07-27 — релиз+пуш: host-unhealthy prune + Android auto-retry
 
@@ -597,6 +670,32 @@ cd pc; npm install; npm run dev
 - **Фикс backend (задеплоено):** `report_room_failure` → `status=error` при guest 403/404/мертв; host-provision `GET /v1/unit-health` (Link connected); agent prune удаляет host-unhealthy; heal пересоздаёт.
 - **Фикс Android (в коде, нужен OTA):** после early-fail/timeout — один авто-повтор `connect` на новой комнате.
 - YouTube серые превью на A12 + Telemost: отдельно от WB — CDN thumbs (`i.ytimg.com`/`yt3.ggpht.com`) часто ломаются DNS/QUIC при живом SOCKS; видео может идти.
+
+### 2026-08-11 — Инцидент: VK «ждёт 1–2 мин» (не клиентский DNS)
+
+- Симптом у пользователя на **старом release и новом** клиенте: VK-путь работает, но долго.
+- На Улье: ~102 online / ~6700 активных WDTT-потоков; WRAP OK без ошибок; VK `auth.getAnonymToken` с Улья ~0.15с.
+- Параллельно **olcrtc host-provision** крутил Playwright и сыпал `POST /v1/create → 502` каждые ~55с (CPU chrome ~100%), рядом с `wdtt-server` ~113%.
+- **Срочно на проде:** `systemctl stop silent-olcrtc-host-provision` + `olcrtc_room_agent.enabled=false` (существующие комнаты живы). Соты 87.58 / 78.17: agent отвечает, **WDTT :56000/:56001 closed** — весь VPN на Улье.
+- Дальше: лог клиента за минуту ожидания (капча 90с?). Не путать с DNS-пушем `0eaf4b0`/`1135f8f`.
+
+### 2026-08-11 — DNS: пресет «Как на сервере» + свой DNS (Android + PC, release)
+
+- Меню **DNS** больше не debug-only: доступно в release на Android и PC.
+- Новый дефолт **«Как на сервере»** (`server`) — **ничего не подменяет**, DNS берётся из `wg_dns` (важно для «Фильтр угроз (DNS)» = `10.66.66.1`). Прежний дефолт «Яндекс» остался обычным пресетом.
+- Новый пункт **«Свой DNS»**: поле ввода, до 3 адресов IPv4/IPv6 через запятую, валидация + нормализация; невалидный ввод не даёт применить.
+- Android: `DnsPreset` + `object DnsSettings` (единая точка чтения prefs → адреса; `override`/`describe`/`shortLabel`/`ipv4Servers` для olcrtc), `PREF_DNS_CUSTOM`, `MenuDnsScreen` (поле + `themeTextFieldColors`), сняты гейты `BuildConfig.DEBUG` в `WireGuardHelper`, `SilentVpnService`, `OlcrtcTunnelManager`, `MainScreen`.
+- PC: `dnsPreset.ts` (`server`/`custom`, `sanitizeCustomServers`, `dnsMenuLabel`), `MenuDnsPanel` (поле + валидация), сняты гейты `isDebugBuild` в `prepareVpnConnect`/`bootstrapVpn`/меню.
+- PC `normalizeDnsValue`: при пустом override теперь берётся **серверный** `wg_dns` (раньше всегда хардкод `1.1.1.1, 1.0.0.1, 77.88.8.8` — фильтр угроз не работал).
+- `DnsPreset.DEFAULT` пустой ⇒ везде, где нужен fallback-адрес, используется `DnsPreset.FALLBACK` (Яндекс).
+- Тесты: Android `DnsPresetTest` (10), PC `test/dns.test.js` (6). Android 1.0.161 debug собран.
+
+### 2026-08-11 — Регрессия ЧС/БС: туннель рвал воркеры (fix)
+
+- Симптом: после коммита ЧС/БС «воркеры набираются и сразу ошибка» на любой сети; DNS/DoH тут ни при чём.
+- **Причина:** в `WireGuardHelper` из `excludeKey` пропала ветка `isBootstrap && !apiOverlayMode -> "bootstrap-companion"`. `wgSemanticKey` считает только PrivateKey/Address/PublicKey/Endpoint, поэтому ключ стал меняться на **каждый новый TURN-адрес** → `DOWN/UP` туннеля → обрыв уже набранных воркеров. Ветка возвращена.
+- Ещё два дефекта того же коммита: в **БС** `included.add(packageName)` тащил Silent в туннель (libclient замыкался сам на себя) — теперь self только при `apiOverlayMode`, VK-пакеты исключены, пустой БС → fallback в ЧС; резолв доменных правил сайтов выполнялся синхронно под `wgApplyMutex`/`Dispatchers.Main` — теперь фоново (`refreshSiteBypassExcludes` async + `resolveSiteBypassExcludes` для UI-пути).
+- **DoH-эксперимент откатан** (Go `dns.go`/`doh.go` + Kotlin) — в `git stash` ветки `android` как `doh-dns-experiment`; DNS работает как в 1.0.160. Проверено пользователем: Wi-Fi + мобильный OK.
 
 ### 2026-08-11 — PC: Яндекс.Браузер в списке исключений
 

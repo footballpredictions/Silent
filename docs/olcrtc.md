@@ -1,78 +1,76 @@
 # olcrtc (вариант 2 обхода)
 
 Зашифрованный TCP-over-WebRTC туннель ([openlibrecommunity/olcrtc](https://github.com/openlibrecommunity/olcrtc)).
-На Silent VPN — **параллельный** debug-путь рядом с WDTT/VK, без WireGuard.
+На Silent VPN — **параллельный** путь рядом с WDTT/VK.
 
-## Масштаб 1000+ (Улей / соты)
+## Session-mode («как VK») — текущий прод (2026-08-11)
 
-- Таблица `olcrtc_rooms` + sticky `olcrtc_room_sticky` (не комната на юзера).
-- Assign: sticky fingerprint → active room с `online_count < max_clients` (default 12).
-- Heartbeat: `POST /api/vpn/olcrtc-heartbeat` (PC/Android debug).
-- Draining в админке Bypass → пул комнат.
-- Unit на Улье: `python scripts/apply_olcrtc_units_from_db.py`
-- Unit на соте: `deploy_olcrtc_cell.py <ip>` + `POST /api/admin/bypass/olcrtc/rooms/{id}/push-cell` (cell-agent `/v1/olcrtc/apply`).
-- Агент: `target_capacity` (дефолт **1100**) + `target_free_ratio` (~10% под нагрузкой). Jitsi расширяет пул **без** аккаунтов.
-- Прогрев на Улье: `python scripts/seed_olcrtc_mass_pool.py` (`OLCRTC_TARGET_CAPACITY`, `OLCRTC_MAX_CLIENTS`).
-- Метрики: `GET /api/admin/bypass/olcrtc/pool-metrics` (`ready_for_1000` при capacity≥1100).
+Модель lifecycle как у VK-хешей: **создал комнату под сессию → srv host в комнате → при leave удалил**.
+
+| Правило | Значение |
+|---------|----------|
+| Create | on demand в `ensure_session_room` при `/olcrtc-config` |
+| max_clients | **1** (одна сессия = одна комната = один unit) |
+| Leave | `olcrtc-heartbeat online=false` / failure → `release_session_room` (sticky + delete + `systemctl stop`) |
+| Playwright | только `silent-olcrtc-host-provision`, `Semaphore(1)` / `OLCRTC_HOST_CREATE_PARALLEL=1`; in-container fallback **выкл** (`OLCRTC_HOST_ONLY=1`) |
+| Агент | prune host-unhealthy + heal `error` + optional `bootstrap_warm`; **без** `_autoscale_pool` / create-spam |
+| Провайдер | **Telemost** (WB/Jitsi выкл. в агенте до стабилизации) |
+
+Wipe / reset:
+
+```powershell
+cd backend
+python scripts\olcrtc_session_reset.py
+python scripts\olcrtc_enable_session_agent.py   # session_mode + enabled
+python scripts\olcrtc_smoke_session.py          # PC+Android assign/release
+```
+
+Админка Bypass → Агент: чекбокс **Session-mode**, без «держать свободных ≥4».
+
+Legacy pool-mode (`session_mode=false`) оставлен в коде, на проде не использовать.
+
+## Legacy: масштаб 1000+ (отключён)
+
+- Таблица `olcrtc_rooms` + sticky `olcrtc_room_sticky`.
+- Старый shared-пул + `min_free_per_slot` autoscale — вызывал Chromium-шторм на Улье (инцидент 11.08).
+- Документ ниже сохранён как справочник API/unit’ов.
 
 ## Схема
 
 ```
-клиент → TUN (sing-box / hev) → olcrtc cnc SOCKS5 → Jitsi|WB|Telemost → olcrtc srv (Улей) → интернет
+клиент → TUN (sing-box / hev) → olcrtc cnc SOCKS5 → Telemost → olcrtc srv (Улей) → интернет
 ```
 
-## Пул комнат (все провайдеры)
+## Пул / слоты
 
 Одна комната **не** тянет PC + телефон одновременно.
 
 | Slot | systemd | data-dir | Клиенты |
 |------|---------|----------|---------|
-| `pc` | `olcrtc@pc` | `data-pc` | PC |
-| `android` | `olcrtc@android` | `data-android` | Android / TV |
-
-**Важно:** один systemd-unit = один провайдер + один слот. Нельзя склеивать jitsi+wb+telemost failover в одном процессе — srv залипает на первом живом (обычно Jitsi), а клиент на Телемосте ждёт peer вечно.
-
-Unit’ы: `olcrtc@pc-jitsi`, `olcrtc@pc-telemost`, `olcrtc@pc-wbstream`, `olcrtc@android-jitsi`, …
+| `pc` | `olcrtc@pc-telemost*` | `data-pc-telemost*` | PC |
+| `android` | `olcrtc@android-telemost*` | `data-android-telemost*` | Android / TV |
 
 | Провайдер | Transport (default) | Создание комнаты |
 |-----------|---------------------|------------------|
-| Jitsi | `datachannel` | guest URL, без аккаунта |
-| WB Stream | `vp8channel` | вручную / room-agent (аккаунт) |
-| Телемост | `vp8channel` | вручную / room-agent (аккаунт) |
+| Телемост | `vp8channel` | session ensure / host Playwright |
+| WB Stream | `vp8channel` | выкл. до стабилизации |
+| Jitsi | — | purge |
 
-`GET /api/vpn/olcrtc-config?device_type=pc|android&fingerprint=…` выдаёт `room` sticky по типу устройства **для каждого** провайдера.
-
-**LTE / DPI:** `meet.egovm.ru` часто рвёт WebSocket на мобильном → Android Jitsi на `meet.playform.ru`; для LTE предпочтительнее WB / Telemost (свежие room id).
-
-Seed/upgrade без смены crypto_key:
-
-```powershell
-cd backend
-python scripts\configure_olcrtc_prod.py
-```
-
-Android WB placeholder (`…ANDROID-REPLACE`) не отдаётся клиентам — замени свежим ID с сайта или через агента.
+`GET /api/vpn/olcrtc-config?device_type=pc|android&fingerprint=…&provider=telemost` → session room.
 
 ## Агент комнат (отдельно от VK)
 
 `ai/olcrtc_room_agent.py` — **не** расширяет VK-агент хешей.
 
-- Создаёт **Jitsi + Telemost + WB Stream** (не только Jitsi).
-- Не делает рандомную регистрацию. Нужен один раз `storage_state` (cookies) Яндекс/WB.
-- Chromium крутится на **хосте Улья** (systemd `silent-olcrtc-host-provision`, `:9101`), API в Docker вызывает его.
-- Цикл ~30 мин: heal `error` → догнать `target_rooms_telemost/wbstream` → Jitsi до `target_capacity` → YAML.
+- Session-mode: prune + heal error; `bootstrap_warm` (0–1 spare).
+- Chromium на **хосте Улья** (`silent-olcrtc-host-provision`, `:9101`).
+- Цикл ~2.5 мин.
 
 ```powershell
-# 1) Host Playwright на VPS
 cd backend
 python scripts\deploy_olcrtc_host_provision.py
-
-# 2) Один раз залогинься локально и вставь JSON в админке «Агент комнат»
-pip install playwright
-playwright install chromium
-python scripts\olcrtc_room_provision_host.py login telemost
-python scripts\olcrtc_room_provision_host.py login wbstream
-# файлы: update/olcrtc/agent_states/*_state.json → вставить в админку
+python scripts\olcrtc_session_reset.py
+```
 
 # 3) В админке: агент ON → «Создать недостающие сейчас»
 ```

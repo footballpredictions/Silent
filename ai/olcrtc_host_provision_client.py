@@ -18,9 +18,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_URLS = (
     os.environ.get("OLCRTC_HOST_PROVISION_URL", "").strip(),
-    "http://host.docker.internal:9101",
+    "http://172.17.0.1:9101",  # docker0 — основной путь из api-контейнера
     "http://172.18.0.1:9101",  # docker compose bridge
-    "http://172.17.0.1:9101",  # docker0
+    "http://host.docker.internal:9101",
+    # 127.0.0.1 внутри контейнера — не хост; оставляем только для локального запуска без Docker
     "http://127.0.0.1:9101",
 )
 
@@ -99,6 +100,34 @@ async def host_unit_health(unit: str) -> dict[str, Any]:
     }
 
 
+async def apply_units_via_host(
+    units: dict[str, str],
+    remove: list[str] | None = None,
+) -> dict[str, Any]:
+    """Развернуть YAML и поднять/погасить olcrtc@<unit> на хосте.
+
+    Без этого новая комната остаётся строкой в БД: srv в неё не заходит и
+    клиент видит «мёртвую» комнату.
+    """
+    if not units and not remove:
+        return {"ok": True, "applied": [], "removed": [], "skipped": "nothing to do"}
+    body = {"units": units or {}, "remove": remove or []}
+    headers = _auth_headers()
+    last_err = ""
+    for base in _candidate_urls():
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                r = await client.post(f"{base}/v1/units/apply", json=body, headers=headers)
+                data = r.json() if r.content else {}
+                if r.status_code == 200 and data.get("ok"):
+                    data["url"] = base
+                    return data
+                last_err = str(data.get("message") or f"HTTP {r.status_code}")
+        except Exception as e:
+            last_err = f"{base}: {e}"[:200]
+    return {"ok": False, "message": last_err or "host provision unreachable"}
+
+
 async def create_room_via_host(
     provider: str,
     storage_state: dict[str, Any] | None = None,
@@ -158,11 +187,57 @@ async def create_room_best(
     storage_state: dict[str, Any] | None,
     *,
     headless: bool = True,
+    access_token: str = "",
 ) -> ProvisionResult:
-    """Host Playwright (предпочтительно) → fallback in-container."""
+    """Создание комнаты: WB → HTTP API (без Playwright); Telemost → host Playwright.
+
+    Env:
+      OLCRTC_HOST_ONLY=1 (default on prod) — без Playwright в Docker API
+      OLCRTC_ALLOW_INCONTAINER_PLAYWRIGHT=1 — разрешить fallback (dev)
+    """
+    prov = (provider or "").strip().lower()
+
+    # WB: API с queen IP работает; Playwright на stream.wb.ru → 498 antibot.
+    if prov == "wbstream":
+        from app.services.olcrtc_room_accounts import extract_wb_access_token
+        from ai.olcrtc_wb_api import create_wbstream_room_api
+
+        tok = (access_token or "").strip() or extract_wb_access_token(storage_state)
+        if tok:
+            api = await create_wbstream_room_api(tok)
+            if api.ok:
+                return api
+            api_err = api.message
+        else:
+            api_err = "wb api: нет token"
+        # fallback на Playwright (прокси / свежий login) — редко нужен
+    else:
+        api_err = ""
+
+    host_only = (os.environ.get("OLCRTC_HOST_ONLY") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+    allow_local = (os.environ.get("OLCRTC_ALLOW_INCONTAINER_PLAYWRIGHT") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
     host = await create_room_via_host(provider, storage_state, headless=headless)
     if host.ok:
         return host
+
+    if host_only and not allow_local:
+        msg = host.message or (
+            "host-provision недоступен — "
+            "systemctl start silent-olcrtc-host-provision (in-container Playwright запрещён)"
+        )
+        if api_err:
+            msg = f"{api_err}; {msg}"
+        return ProvisionResult(ok=False, provider=provider, message=msg)
+
     if playwright_available() and storage_state:
         from ai.olcrtc_room_provision import create_room
 

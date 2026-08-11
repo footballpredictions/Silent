@@ -26,7 +26,14 @@ Agent приступает к **первой невыполненной** зад
 - [x] **olcrtc 1000+ прогрев пула на проде** — 2026-07-25: `seed_olcrtc_mass_pool.py` → capacity ≥1100 (`max_clients=25`), **47 unit’ов active**, agent `enabled` + `target_capacity=1100`, Jitsi auto без cookies; `pool_denied` только если нет ни одного провайдера.
 - [x] **olcrtc 1000+ нагрузочный прогон** — 2026-07-25: `loadtest_olcrtc_1000.py` → **pass** (1000 assign, 500pc+500android, unique 22+22, denied 0, 25.5s). Spill: olcrtc бинарь+template на соты `87.58.213.193` / `78.17.74.27` (`deploy_olcrtc_to_hive_cells.py`).
 - [x] Документировать YuMoney webhook flow в APIS.md (`POST /api/payments/yumoney/notify`) — 2026-07-25
+- [x] **olcrtc pool redesign** — 2026-08-11: on-demand scale при deny, цикл ~2.5м, idle GC 5м, heal sticky clear, админка Обзор/Комнаты/Агент, Playwright finally, wdtt MemoryHigh/Max; задеплоено
+- [x] **olcrtc session-mode («как VK»)** — 2026-08-11: create on demand / max_clients=1 / leave=teardown; агент prune+heal без autoscale; Telemost-only; host-only Playwright; wipe `olcrtc_session_reset.py`; smoke PC+Android PASS; PC/Android clear cache on leave
+- [x] **olcrtc полностью снят** — 2026-08-11: прод stop units/host-provision; API always disabled; админка без секции 2; PC/Android force WDTT, меню обхода убрано из release
+- [x] **olcrtc WB session-mode** — 2026-08-11: create/delete через WB HTTP API (не Playwright; antibot 498 обход); `ai/olcrtc_wb_api.py`; smoke PC+Android PASS; провайдер включён рядом с Телемост — **отозвано** (см. «olcrtc полностью снят»)
 - [x] **olcrtc agent: liveness + prune + create** — 2026-07-27: HTTP probe WB/Telemost, удаление мёртвых комнат, sync `auth.token`, create до target; цикл 15м; задеплоено на прод (9/9 alive)
+- [x] **Android: fix регрессии ЧС/БС** — 2026-08-11: возвращён `bootstrap-companion` в `excludeKey` (туннель пересоздавался на каждый TURN-адрес и рвал воркеры), БС не тащит Silent в туннель, резолв правил сайтов ушёл в фон; DoH-эксперимент откатан в stash. Проверено на Wi-Fi и мобильном.
+- [x] **DNS: «Как на сервере» + свой DNS в release (Android + PC)** — 2026-08-11: меню DNS открыто в release, дефолт не подменяет `wg_dns` (фильтр угроз жив), свой ввод до 3 адресов с валидацией; PC `normalizeDnsValue` больше не игнорирует серверный DNS. Тесты: `DnsPresetTest` + `pc/test/dns.test.js`
+- [ ] PC: собрать debug/installer с новым меню DNS и проверить свой DNS на живом подключении
 
 ### Продукт / монетизация
 

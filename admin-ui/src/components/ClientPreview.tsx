@@ -690,7 +690,6 @@ export default function ClientPreview({
         <div style={{ fontSize: 12, color: muted, lineHeight: 1.6 }}>
           <p style={{ margin: '0 0 6px' }}>Версия 1.0.144</p>
           <p style={{ margin: 0 }}>WireGuard-туннель через VK TURN/DTLS</p>
-          <p style={{ margin: 0 }}>+ Olcrtc</p>
         </div>
       ))}
     </div>

@@ -598,6 +598,28 @@ cd pc; npm install; npm run dev
 - **Фикс Android (в коде, нужен OTA):** после early-fail/timeout — один авто-повтор `connect` на новой комнате.
 - YouTube серые превью на A12 + Telemost: отдельно от WB — CDN thumbs (`i.ytimg.com`/`yt3.ggpht.com`) часто ломаются DNS/QUIC при живом SOCKS; видео может идти.
 
+### 2026-08-11 — PC: Яндекс.Браузер в списке исключений
+
+- Симптом: Яндекс Браузер установлен, в «Исключения → Приложения» не видно.
+- Фикс `listInstalledApps`: реестр StartMenuInternet/App Paths/Uninstall + LocalAppData/USERPROFILE, versioned `Application\<ver>\browser.exe`, ярлыки Яндекса не режутся SKIP_NAME; stub→browser.exe рядом.
+- Тест: фейковое дерево LOCALAPPDATA. Пересобрать PC debug.
+
+### 2026-08-11 — Исключения UI: единая кнопка «Добавить» + БС = все отмечены
+
+- Сайты: поле на всю ширину + primary-кнопка «Добавить» снизу (PC `primaryBtn*`, Android `TvPrimaryButton`) — без боковой обрезанной кнопки.
+- БС: при переключении и при пустом выборе — **все приложения уже отмечены**; пользователь снимает лишние. ЧС — пустой старт.
+
+### 2026-08-11 — Исключения: ЧС/БС + сайты (домен/IP) + PC список
+
+- **ЧС/БС приложений** возвращены (как до `c2dec06` / эталон SpaceNeuroX):
+  - ЧС — выбранные мимо VPN (`excludeApplications` / host-bypass exe)
+  - БС — только выбранные через VPN (`includeApplications` / bypass всех остальных exe)
+  - Смена режима сбрасывает выбор
+- **Сайты:** ручной список домен/IP/CIDR/wildcard → DNS → дыры в AllowedIPs (Android, компактный complement) или host-routes (PC). Лимит 100 правил. UI вкладки «Сайты | Приложения», меню «Исключения».
+- **PC список программ:** Start Menu + Uninstall registry + явный скан `%LOCALAPPDATA%\Yandex` / Program Files\Yandex; фикс PS `-Include` через `\*`.
+- Файлы: Android `SiteBypassRoutes.kt`, `AppExclusionsScreen`, `AppExclusionPackages`, `AllowedIpsHelper`; PC `siteBypass.js`, `exclusionsPolicy`/`State`, `listInstalledApps`, `AppExclusionsPanel`.
+- iOS — вне объёма. Тесты: `npm test` (PC exclusions) + unit `SiteBypassRoutes`/`AllowedIpsHelper`.
+
 ### 2026-07-27 — olcrtc agent: liveness prune + create
 
 - `ai/olcrtc_room_liveness.py`: WB guest-join / Telemost cloud-api → alive|dead|unknown

@@ -13,7 +13,7 @@ import { getDnsOverrideServers } from './dnsPreset'
 const FAMILY_KEY = 'bypass_family'
 const OLCRTC_PROVIDER_KEY = 'olcrtc_provider'
 /** v3: android room → meet.small-dm.ru (LTE DPI) */
-const OLCRTC_CACHE_KEY = 'olcrtc_config_cache_v9'
+const OLCRTC_CACHE_KEY = 'olcrtc_config_cache_v10'
 
 export const BYPASS_FAMILY_WDTT = 'wdtt'
 export const BYPASS_FAMILY_OLCRTC = 'olcrtc'
@@ -33,16 +33,17 @@ export {
 }
 
 export function getBypassFamily(): string {
+  // olcrtc снят: всегда WDTT (VK). Старый localStorage игнорируем.
   try {
-    const v = localStorage.getItem(FAMILY_KEY)
-    if (v === BYPASS_FAMILY_OLCRTC) return BYPASS_FAMILY_OLCRTC
+    if (localStorage.getItem(FAMILY_KEY) === BYPASS_FAMILY_OLCRTC) {
+      localStorage.setItem(FAMILY_KEY, BYPASS_FAMILY_WDTT)
+    }
   } catch { /* ignore */ }
   return BYPASS_FAMILY_WDTT
 }
 
-export function setBypassFamily(family: string) {
-  const normalized = family === BYPASS_FAMILY_OLCRTC ? BYPASS_FAMILY_OLCRTC : BYPASS_FAMILY_WDTT
-  localStorage.setItem(FAMILY_KEY, normalized)
+export function setBypassFamily(_family: string) {
+  localStorage.setItem(FAMILY_KEY, BYPASS_FAMILY_WDTT)
 }
 
 export function getOlcrtcProvider(): string {
@@ -64,7 +65,7 @@ export function setOlcrtcProvider(provider: string) {
 }
 
 export function isOlcrtcBypass(): boolean {
-  return getBypassFamily() === BYPASS_FAMILY_OLCRTC
+  return false
 }
 
 export function olcrtcProviderLabel(provider: string = getOlcrtcProvider()): string {
@@ -75,8 +76,8 @@ export function olcrtcProviderLabel(provider: string = getOlcrtcProvider()): str
   }
 }
 
-export function bypassFamilyLabel(family: string = getBypassFamily()): string {
-  return family === BYPASS_FAMILY_OLCRTC ? 'olcrtc' : 'VK'
+export function bypassFamilyLabel(_family: string = getBypassFamily()): string {
+  return 'VK'
 }
 
 export type OlcrtcPublicConfig = {
@@ -175,6 +176,7 @@ export async function leaveOlcrtcRoom(): Promise<void> {
     const cfg = readOlcrtcCache()
     if (!cfg?.providers) {
       await sendOlcrtcHeartbeat(false)
+      clearOlcrtcCache()
       return
     }
     const fp = getStableDeviceFingerprint()
@@ -218,6 +220,7 @@ export async function leaveOlcrtcRoom(): Promise<void> {
       } catch { /* ignore */ }
     }
   } catch { /* ignore */ }
+  clearOlcrtcCache()
 }
 
 function readOlcrtcCache(): OlcrtcPublicConfig | null {

@@ -1317,7 +1317,7 @@ export default function MainScreen({
                 { key: 'subscription', label: 'Подписка' },
                 { key: 'exceptions', label: 'Исключения' },
                 { key: 'dns', label: `DNS · ${dnsMenuLabel()}` },
-                { key: 'bypass', label: `Варианты обхода · ${bypassNavLabel}` },
+                ...(isDevBuild ? [{ key: 'bypass', label: `VK (debug) · ${bypassNavLabel}` }] : []),
                 ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
                 { key: 'bonuses', label: clientTheme?.menu_bonuses_label || 'Бонусы' },
                 { key: 'devices', label: `Сессии (${sessionsBadge(profile)})` },

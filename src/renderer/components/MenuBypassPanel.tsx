@@ -1,21 +1,13 @@
 import { useEffect, useState } from 'react'
 import { isDebugBuild } from '../debugBuild'
 import {
-  BYPASS_FAMILY_OLCRTC,
-  BYPASS_FAMILY_WDTT,
-  OLCRTC_TELEMOST,
-  OLCRTC_WBSTREAM,
   VK_CRED_AUTO,
   VK_CRED_MANUAL,
   VK_CRED_VKCALLS,
-  bypassFamilyLabel,
-  getBypassFamily,
-  getOlcrtcProvider,
   getVkCredStrategy,
-  prefetchOlcrtcConfig,
   setBypassFamily,
-  setOlcrtcProvider,
   setVkCredStrategy,
+  BYPASS_FAMILY_WDTT,
 } from '../bypassStore'
 
 type Props = {
@@ -68,165 +60,91 @@ function ModeOption({
   )
 }
 
+/** Debug: режимы VK-креденшалов. Olcrtc убран. */
 export default function MenuBypassPanel({ fg, muted, bg, primary, vpnRunning, onBack }: Props) {
-  const [family, setFamily] = useState(getBypassFamily())
   const [vkMode, setVkMode] = useState(getVkCredStrategy())
-  const [olcProvider, setOlcProvider] = useState(getOlcrtcProvider())
-  const [pendingFamily, setPendingFamily] = useState<string | null>(null)
   const [pendingVk, setPendingVk] = useState<string | null>(null)
-  const [pendingOlc, setPendingOlc] = useState<string | null>(null)
 
   const btnBg = primary || fg
   const btnFg = bg || '#FFFFFF'
 
   useEffect(() => {
-    void prefetchOlcrtcConfig()
+    setBypassFamily(BYPASS_FAMILY_WDTT)
   }, [])
 
+  if (!isDebugBuild) {
+    return (
+      <div className="relative flex flex-col h-full p-4 overflow-y-auto">
+        <button type="button" onClick={onBack} className="text-xs self-start mb-4 hover:opacity-70" style={{ color: muted }}>
+          ← Назад
+        </button>
+        <h2 className="text-sm font-semibold mb-3" style={{ color: fg }}>Обход</h2>
+        <p className="text-[12px]" style={{ color: muted }}>
+          Только VK / WDTT. Другие варианты отключены.
+        </p>
+      </div>
+    )
+  }
+
   const apply = () => {
-    if (pendingFamily) {
-      setBypassFamily(pendingFamily)
-      setFamily(pendingFamily)
-    }
     if (pendingVk) {
       setVkCredStrategy(pendingVk)
       setVkMode(pendingVk)
     }
-    if (pendingOlc) {
-      setOlcrtcProvider(pendingOlc)
-      setOlcProvider(pendingOlc)
-    }
-    setPendingFamily(null)
     setPendingVk(null)
-    setPendingOlc(null)
-    void prefetchOlcrtcConfig()
   }
 
-  const cancel = () => {
-    setPendingFamily(null)
-    setPendingVk(null)
-    setPendingOlc(null)
-  }
-
-  const hasPending =
-    (pendingFamily && pendingFamily !== family) ||
-    (pendingVk && pendingVk !== vkMode) ||
-    (pendingOlc && pendingOlc !== olcProvider)
-
-  const effectiveFamily = pendingFamily || family
+  const hasPending = pendingVk && pendingVk !== vkMode
 
   return (
     <div className="relative flex flex-col h-full p-4 overflow-y-auto">
       <button type="button" onClick={onBack} className="text-xs self-start mb-4 hover:opacity-70" style={{ color: muted }}>
         ← Назад
       </button>
-      {/* Как Подписка / Сессии / Хеши: text-sm font-semibold */}
-      <h2 className="text-sm font-semibold mb-3" style={{ color: fg }}>Варианты обхода</h2>
+      <h2 className="text-sm font-semibold mb-3" style={{ color: fg }}>VK (debug)</h2>
       {vpnRunning && (
         <p className="text-[11px] mb-3" style={{ color: muted }}>
-          Отключите VPN перед сменой варианта.
+          Отключите VPN перед сменой режима.
         </p>
       )}
-
       <ModeOption
-        title="VK"
-        selected={effectiveFamily === BYPASS_FAMILY_WDTT}
+        title="VKCalls"
+        selected={(pendingVk || vkMode) === VK_CRED_VKCALLS}
         enabled={!vpnRunning}
         fg={fg}
         muted={muted}
-        onSelect={() => setPendingFamily(BYPASS_FAMILY_WDTT)}
+        onSelect={() => setPendingVk(VK_CRED_VKCALLS)}
       />
-      {effectiveFamily === BYPASS_FAMILY_WDTT && isDebugBuild && (
-        <div className="ml-3 mb-2 border-l pl-3" style={{ borderColor: `${muted}44` }}>
-          <ModeOption
-            title="VKCalls"
-            selected={(pendingVk || vkMode) === VK_CRED_VKCALLS}
-            enabled={!vpnRunning}
-            fg={fg}
-            muted={muted}
-            onSelect={() => setPendingVk(VK_CRED_VKCALLS)}
-          />
-          <ModeOption
-            title="Авто капча"
-            selected={(pendingVk || vkMode) === VK_CRED_AUTO}
-            enabled={!vpnRunning}
-            fg={fg}
-            muted={muted}
-            onSelect={() => setPendingVk(VK_CRED_AUTO)}
-          />
-          <ModeOption
-            title="Ручная капча"
-            selected={(pendingVk || vkMode) === VK_CRED_MANUAL}
-            enabled={!vpnRunning}
-            fg={fg}
-            muted={muted}
-            onSelect={() => setPendingVk(VK_CRED_MANUAL)}
-          />
-        </div>
-      )}
-
       <ModeOption
-        title="olcrtc"
-        selected={effectiveFamily === BYPASS_FAMILY_OLCRTC}
+        title="Авто капча"
+        selected={(pendingVk || vkMode) === VK_CRED_AUTO}
         enabled={!vpnRunning}
         fg={fg}
         muted={muted}
-        onSelect={() => setPendingFamily(BYPASS_FAMILY_OLCRTC)}
+        onSelect={() => setPendingVk(VK_CRED_AUTO)}
       />
-      {effectiveFamily === BYPASS_FAMILY_OLCRTC && (
-        <div className="ml-3 mb-2 border-l pl-3" style={{ borderColor: `${muted}44` }}>
-          <ModeOption
-            title="Яндекс Телемост"
-            selected={(pendingOlc || olcProvider) === OLCRTC_TELEMOST}
-            enabled={!vpnRunning}
-            fg={fg}
-            muted={muted}
-            onSelect={() => setPendingOlc(OLCRTC_TELEMOST)}
-          />
-          <ModeOption
-            title="WB Stream"
-            selected={(pendingOlc || olcProvider) === OLCRTC_WBSTREAM}
-            enabled={!vpnRunning}
-            fg={fg}
-            muted={muted}
-            onSelect={() => setPendingOlc(OLCRTC_WBSTREAM)}
-          />
-        </div>
-      )}
-
+      <ModeOption
+        title="Ручная капча"
+        selected={(pendingVk || vkMode) === VK_CRED_MANUAL}
+        enabled={!vpnRunning}
+        fg={fg}
+        muted={muted}
+        onSelect={() => setPendingVk(VK_CRED_MANUAL)}
+      />
       {hasPending && (
         <div
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4"
           style={{ background: 'rgba(0,0,0,0.45)' }}
-          onClick={cancel}
-          onKeyDown={(e) => { if (e.key === 'Escape') cancel() }}
-          role="presentation"
         >
-          <div
-            className="w-full max-w-sm rounded-2xl p-4 shadow-xl space-y-4"
-            style={{ background: bg || '#1a1a1a', color: fg }}
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="bypass-apply-title"
-          >
-            <div id="bypass-apply-title" className="text-sm font-semibold">Применить?</div>
-            <div className="text-xs" style={{ color: muted }}>
-              {bypassFamilyLabel(family)}
-              {pendingFamily ? ` → ${bypassFamilyLabel(pendingFamily)}` : ''}
-            </div>
+          <div className="w-full max-w-sm rounded-xl p-4 border" style={{ background: bg || '#111', borderColor: `${muted}44` }}>
+            <p className="text-sm mb-3" style={{ color: fg }}>Применить режим VK?</p>
             <div className="flex gap-2 justify-end">
-              <button
-                type="button"
-                className="px-3 py-1.5 rounded-lg text-xs"
-                style={{ color: muted }}
-                onClick={cancel}
-              >
+              <button type="button" className="text-xs px-3 py-1.5" style={{ color: muted }} onClick={() => setPendingVk(null)}>
                 Отмена
               </button>
               <button
                 type="button"
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold"
+                className="text-xs px-3 py-1.5 rounded"
                 style={{ background: btnBg, color: btnFg }}
                 onClick={apply}
               >

@@ -168,14 +168,26 @@ class WireGuardHelper(context: Context) {
 
 
 
+            val appPolicyKey = if (isBootstrap && !apiOverlayMode) {
+                "bootstrap-companion"
+            } else {
+                runCatching {
+                    val p = resolveAppTunnelPolicy(
+                        appContext,
+                        apiOverlayMode || !SilentRepository.APP_EXCLUDED_FROM_VPN,
+                    )
+                    val mode = if (p.whitelist) "wl" else "bl"
+                    "$mode:${p.packages.sorted().joinToString(",")}"
+                }.getOrDefault("apps?")
+            }
             val excludeKey = when {
-                isBootstrap && !apiOverlayMode -> "bootstrap-companion"
                 apiOverlayMode -> "overlay-app-in"
                 mobileApiRoute -> "mobile-api-${excludeIPs.sorted().joinToString(",")}"
                 else -> excludeIPs.sorted().joinToString(",")
             }
 
-            val semanticKey = wgSemanticKey(configToApply) + "|ex=$excludeKey|ov=$apiOverlayMode"
+            val semanticKey =
+                wgSemanticKey(configToApply) + "|ex=$excludeKey|apps=$appPolicyKey|ov=$apiOverlayMode"
 
             if (sharedTunnel != null && semanticKey.isNotBlank() && semanticKey == lastAppliedSemanticKey) {
 
@@ -227,10 +239,20 @@ class WireGuardHelper(context: Context) {
             } else {
                 val includeAppInTunnel = apiOverlayMode || !SilentRepository.APP_EXCLUDED_FROM_VPN
                 runCatching {
-                    val excluded = resolveExcludedAppPackages(appContext, includeAppInTunnel)
-                    if (excluded.isNotEmpty()) {
-                        ifaceBuilder.excludeApplications(excluded)
-                        DebugLog.i(TAG, "App exclusions: ${excluded.size} (bootstrap=$isBootstrap overlay=$apiOverlayMode)")
+                    val policy = resolveAppTunnelPolicy(appContext, includeAppInTunnel)
+                    if (policy.packages.isEmpty()) return@runCatching
+                    if (policy.whitelist) {
+                        ifaceBuilder.includeApplications(policy.packages)
+                        DebugLog.i(
+                            TAG,
+                            "App БС includeApplications: ${policy.packages.size} (overlay=$apiOverlayMode)",
+                        )
+                    } else {
+                        ifaceBuilder.excludeApplications(policy.packages)
+                        DebugLog.i(
+                            TAG,
+                            "App ЧС excludeApplications: ${policy.packages.size} (overlay=$apiOverlayMode)",
+                        )
                     }
                 }
             }

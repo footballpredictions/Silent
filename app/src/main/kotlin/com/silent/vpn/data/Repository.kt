@@ -57,6 +57,8 @@ class SilentRepository @Inject constructor(
         const val PREF_SESSION_DEVICE_ID = "session_device_id"
         const val PREF_EXCLUDED_APPS = "excluded_apps"
         const val PREF_EXCLUSIONS_WHITELIST = "exclusions_whitelist"
+        /** Правила обхода сайтов: домен / IP / CIDR / wildcard, по одному на строку. */
+        const val PREF_BYPASS_ROUTES = "bypass_routes"
         const val PREF_SAVED_HASH_ITEMS = "saved_hash_items"
         const val PREF_SAVED_HASH_ITEMS_TS = "saved_hash_items_ts"
         const val PREF_HASH_CHANNELS_PER_HASH = "hash_channels_per_hash"
@@ -1001,11 +1003,29 @@ class SilentRepository @Inject constructor(
 
     fun isExclusionsWhitelist(): Boolean = prefs.getBoolean(PREF_EXCLUSIONS_WHITELIST, false)
 
-    fun saveExcludedApps(packages: Set<String>) {
+    fun saveExcludedApps(packages: Set<String>, whitelist: Boolean = false) {
         prefs.edit()
             .putString(PREF_EXCLUDED_APPS, packages.joinToString(","))
-            .putBoolean(PREF_EXCLUSIONS_WHITELIST, false)
+            .putBoolean(PREF_EXCLUSIONS_WHITELIST, whitelist)
             .apply()
+    }
+
+    /**
+     * Смена ЧС↔БС.
+     * ЧС — пустой выбор; БС — [packages] (обычно все приложения уже отмечены).
+     */
+    fun saveExceptionsMode(whitelist: Boolean, packages: Set<String> = emptySet()) {
+        prefs.edit()
+            .putString(PREF_EXCLUDED_APPS, if (whitelist) packages.joinToString(",") else "")
+            .putBoolean(PREF_EXCLUSIONS_WHITELIST, whitelist)
+            .apply()
+    }
+
+    fun getBypassRoutesRaw(): String =
+        prefs.getString(PREF_BYPASS_ROUTES, "")?.trim().orEmpty()
+
+    fun saveBypassRoutes(raw: String) {
+        prefs.edit().putString(PREF_BYPASS_ROUTES, raw.trim()).apply()
     }
 
     fun getVkUserId(): Long = prefs.getLong(PREF_VK_USER_ID, 0L)

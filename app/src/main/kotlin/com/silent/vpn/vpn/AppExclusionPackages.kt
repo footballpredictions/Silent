@@ -54,27 +54,51 @@ fun resolveBootstrapIncludedApps(context: Context): Set<String> {
     return out
 }
 
+data class AppTunnelPolicy(
+    /** true = БС: только эти пакеты через VPN (includeApplications). */
+    val whitelist: Boolean,
+    val packages: Set<String>,
+)
+
 /**
- * Main VPN: Silent в туннеле (API 10.66.66.1); VK — excludeApplications.
- * Bootstrap: includeApplications — Silent + браузеры + почта.
+ * Main VPN: Silent в туннеле (API 10.66.66.1); VK — вне туннеля.
+ * ЧС: excludeApplications(user + VK [+ self если нужно]).
+ * БС: includeApplications(user ∪ self); VK не включаем.
  */
-fun resolveExcludedAppPackages(context: Context, includeAppInTunnel: Boolean = false): Set<String> {
+fun resolveAppTunnelPolicy(context: Context, includeAppInTunnel: Boolean = false): AppTunnelPolicy {
     val prefs = SilentPrefs.open(context)
     val userSelected = prefs.getString(SilentRepository.PREF_EXCLUDED_APPS, "")
         ?.split(",")
         ?.filter { it.isNotBlank() }
         ?.toSet()
         ?: emptySet()
-
+    val whitelist = prefs.getBoolean(SilentRepository.PREF_EXCLUSIONS_WHITELIST, false)
     val pm = context.packageManager
+
+    if (whitelist) {
+        val included = LinkedHashSet<String>()
+        included.add(context.packageName)
+        included.addAll(userSelected)
+        val filtered = included.filter { isPackageInstalled(pm, it) }.toSet()
+        DebugLog.i("AppExclusions", "БС includeApplications: ${filtered.size}")
+        return AppTunnelPolicy(whitelist = true, packages = filtered)
+    }
+
     val excluded = LinkedHashSet<String>()
     if (!includeAppInTunnel) {
         excluded.add(context.packageName)
     }
     excluded.addAll(VK_TUNNEL_PACKAGES)
     excluded.addAll(userSelected)
+    val filtered = excluded.filter { isPackageInstalled(pm, it) }.toSet()
+    DebugLog.i("AppExclusions", "ЧС excludeApplications: ${filtered.size}")
+    return AppTunnelPolicy(whitelist = false, packages = filtered)
+}
 
-    return excluded.filter { pkg -> isPackageInstalled(pm, pkg) }.toSet()
+/** @deprecated используйте [resolveAppTunnelPolicy] */
+fun resolveExcludedAppPackages(context: Context, includeAppInTunnel: Boolean = false): Set<String> {
+    val policy = resolveAppTunnelPolicy(context, includeAppInTunnel)
+    return if (policy.whitelist) emptySet() else policy.packages
 }
 
 private fun isPackageInstalled(pm: PackageManager, pkg: String): Boolean = runCatching {

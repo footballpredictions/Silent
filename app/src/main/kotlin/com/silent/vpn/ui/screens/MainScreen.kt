@@ -700,7 +700,7 @@ fun MainScreen(
                         )
                         val menuItems = buildList {
                             add(Triple(MenuPage.SUBSCRIPTION, "Подписка", null as String?))
-                            add(Triple(MenuPage.EXCEPTIONS, "Исключения приложений", null))
+                            add(Triple(MenuPage.EXCEPTIONS, "Исключения", null))
                             if (BuildConfig.DEBUG) {
                                 add(
                                     Triple(

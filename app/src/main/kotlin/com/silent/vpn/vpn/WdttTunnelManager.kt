@@ -115,7 +115,10 @@ object WdttTunnelManager {
     private var lastWgConfig: String? = null
     private var isBootstrapMode = false
     private val wgExcludeIps = linkedSetOf<String>()
+    /** CIDR/IP из пользовательских исключений сайтов (PREF_BYPASS_ROUTES). */
+    private val siteBypassCidrs = linkedSetOf<String>()
     private var lastBootstrapRouteReloadMs = 0L
+    private var lastSiteBypassRefreshMs = 0L
     private var sessionVkHashes: List<String> = emptyList()
     private val groupHashPrefix = mutableMapOf<Int, String>()
 
@@ -208,6 +211,32 @@ object WdttTunnelManager {
             }
         }
         return added
+    }
+
+    /** Пересобрать IP/CIDR исключений сайтов из prefs. */
+    private fun refreshSiteBypassExcludes(context: Context?, force: Boolean = false) {
+        val ctx = context ?: lastContext ?: return
+        val now = System.currentTimeMillis()
+        if (!force && now - lastSiteBypassRefreshMs < 2_000L) return
+        lastSiteBypassRefreshMs = now
+        val raw = SilentPrefs.open(ctx)
+            .getString(SilentRepository.PREF_BYPASS_ROUTES, "")
+            ?.trim()
+            .orEmpty()
+        siteBypassCidrs.clear()
+        if (raw.isBlank()) return
+        val result = SiteBypassRoutes.resolveExcludeTargets(raw)
+        siteBypassCidrs.addAll(result.excludeCidrs)
+        if (result.excludeCount > 0) {
+            DebugLog.i(TAG, "Site bypass: ${result.excludeCount} hole(s), unresolved=${result.unresolved.size}")
+        }
+    }
+
+    /** TURN/VK excludes + пользовательские сайты. */
+    private fun effectiveExcludeIps(context: Context? = lastContext): List<String> {
+        refreshSiteBypassExcludes(context)
+        if (siteBypassCidrs.isEmpty()) return wgExcludeIps.toList()
+        return (wgExcludeIps + siteBypassCidrs).toList()
     }
 
     private fun appendStderrLine(line: String) {
@@ -307,6 +336,9 @@ object WdttTunnelManager {
                         sessionVkHashes = emptyList()
                         groupHashPrefix.clear()
                         wgExcludeIps.clear()
+                        siteBypassCidrs.clear()
+                        lastSiteBypassRefreshMs = 0L
+                        refreshSiteBypassExcludes(appContext, force = true)
                         wgConfigPending = false
                         appliedWgConfigSource = WgConfigSource.NONE
                         lastGetconfErrorMs = 0L
@@ -1146,7 +1178,7 @@ object WdttTunnelManager {
                     withContext(NonCancellable + Dispatchers.Main) {
                         wgHelper?.startTunnel(
                             config,
-                            wgExcludeIps.toList(),
+                            effectiveExcludeIps(),
                             isBootstrap = false,
                             mobileApiRoute = mobileApiRouteEnabled(),
                         )
@@ -1203,7 +1235,7 @@ object WdttTunnelManager {
                     withContext(NonCancellable + Dispatchers.Main) {
                         wgHelper?.startTunnel(
                             normalized,
-                            wgExcludeIps.toList(),
+                            effectiveExcludeIps(),
                             isBootstrap = isBootstrapMode,
                             mobileApiRoute = mobileApiRouteEnabled(),
                         )
@@ -1598,7 +1630,7 @@ object WdttTunnelManager {
         return wgApplyMutex.withLock {
             suppressNetworkRecovery = true
             updateLog("overlay_on", "API overlay ON (bootstrap)", 50)
-            helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = true)
+            helper.startTunnel(config, effectiveExcludeIps(), isBootstrapMode, apiOverlayMode = true)
             apiOverlayActive = true
             delay(overlayEnterDelayMs)
             try {
@@ -1606,7 +1638,7 @@ object WdttTunnelManager {
             } finally {
                 if (apiOverlayActive) {
                     updateLog("overlay_off", "API overlay OFF", 50)
-                    helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
+                    helper.startTunnel(config, effectiveExcludeIps(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
                     apiOverlayActive = false
                     lastOverlayEndedMs = System.currentTimeMillis()
                 }
@@ -1623,14 +1655,14 @@ object WdttTunnelManager {
         return wgApplyMutex.withLock {
             if (apiOverlayActive) return@withLock block()
             suppressNetworkRecovery = true
-            helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = true)
+            helper.startTunnel(config, effectiveExcludeIps(), isBootstrapMode, apiOverlayMode = true)
             apiOverlayActive = true
             delay(overlayEnterDelayMs)
             try {
                 block()
             } finally {
                 if (apiOverlayActive) {
-                    helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
+                    helper.startTunnel(config, effectiveExcludeIps(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
                     apiOverlayActive = false
                     lastOverlayEndedMs = System.currentTimeMillis()
                 }
@@ -1671,7 +1703,7 @@ object WdttTunnelManager {
             if (apiOverlayActive) return@withLock block()
             suppressNetworkRecovery = true
             updateLog("overlay_on", "API overlay brief ON (10.66.66.0/24)", 50)
-            helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = true)
+            helper.startTunnel(config, effectiveExcludeIps(), isBootstrapMode, apiOverlayMode = true)
             apiOverlayActive = true
             delay(if (allowDuringRampUp) 350L else overlayEnterDelayMs)
             try {
@@ -1682,7 +1714,7 @@ object WdttTunnelManager {
                     if (apiOverlayActive) {
                         updateLog("overlay_off", "API overlay brief OFF", 50)
                         runCatching {
-                            helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
+                            helper.startTunnel(config, effectiveExcludeIps(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
                         }
                         apiOverlayActive = false
                         lastOverlayEndedMs = System.currentTimeMillis()
@@ -1703,7 +1735,7 @@ object WdttTunnelManager {
         scope.launch {
             wgApplyMutex.withLock {
                 if (!apiOverlayActive) return@withLock
-                helper.startTunnel(config, wgExcludeIps.toList(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
+                helper.startTunnel(config, effectiveExcludeIps(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
                 apiOverlayActive = false
             }
         }
@@ -1723,7 +1755,7 @@ object WdttTunnelManager {
                 if (!isBootstrapMode || !tunnelReady.value || apiOverlayActive) return@withLock
                 try {
                     withContext(NonCancellable + Dispatchers.Main) {
-                        wgHelper?.startTunnel(config, wgExcludeIps.toList(), isBootstrap = true)
+                        wgHelper?.startTunnel(config, effectiveExcludeIps(), isBootstrap = true)
                     }
                     updateLog("bootstrap_routes", "Bootstrap: маршруты обновлены (TURN вне VPN)", 2)
                 } catch (e: Exception) {
@@ -1738,12 +1770,14 @@ object WdttTunnelManager {
         val config = lastWgConfig ?: return
         lastContext = context.applicationContext
         scope.launch {
+            SiteBypassRoutes.clearResolveCache()
+            refreshSiteBypassExcludes(context.applicationContext, force = true)
             wgHelper?.stopTunnel()
             delay(200)
             withContext(Dispatchers.Main) {
                 wgHelper?.startTunnel(
                     config,
-                    wgExcludeIps.toList(),
+                    effectiveExcludeIps(context.applicationContext),
                     isBootstrap = isBootstrapMode,
                     mobileApiRoute = mobileApiRouteEnabled(),
                 )

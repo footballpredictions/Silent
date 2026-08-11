@@ -1,6 +1,5 @@
 import api from './api'
 import { applyWorkerCountForConnect } from './hashChannelHelper'
-import { isDebugBuild } from './debugBuild'
 import { getDnsOverrideServers } from './dnsPreset'
 import {
   activeServerHashes,
@@ -12,9 +11,10 @@ import {
 import type { VpnConfigPayload } from './vkConfig'
 import { pushLog } from './debugLog'
 
-function withDebugDns(config: VpnConfigPayload): VpnConfigPayload {
-  if (!isDebugBuild) return config
+/** Пресет «Как на сервере» не подменяет wg_dns — конфиг остаётся серверным. */
+function withDnsPreset(config: VpnConfigPayload): VpnConfigPayload {
   const servers = getDnsOverrideServers()
+  if (!servers) return config
   return { ...config, dns_override: servers, wg_dns: servers }
 }
 
@@ -37,7 +37,7 @@ export async function prepareVpnConnectConfig(
   if (cachedActive >= 4 || configHashes >= 4) {
     const serverHashes = activeServerHashes(items).map(i => i.hash.trim()).filter(Boolean)
     if (serverHashes.length > 0) merged = { ...merged, vk_hashes: serverHashes }
-    return withDebugDns(applyWorkerCountForConnect(merged))
+    return withDnsPreset(applyWorkerCountForConnect(merged))
   }
   if (cachedActive < 4 && configHashes < 4) {
     const hashSyncDeadline = cachedActive > 0 ? 3_000 : 8_000
@@ -109,7 +109,7 @@ export async function prepareVpnConnectConfig(
 
   // Одна сессия wdtt с полным n из настроек (как Android). Без фонового upgrade — он рвал транспорт (0 воркеров при живом WG).
   const prepared = applyWorkerCountForConnect(merged)
-  return withDebugDns(prepared)
+  return withDnsPreset(prepared)
 }
 
 let hashesTunnelSyncInFlight: Promise<boolean> | null = null

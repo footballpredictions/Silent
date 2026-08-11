@@ -1252,7 +1252,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
   })
   sessionDnsOverride = String(config.dns_override || '').trim() || null
   if (sessionDnsOverride) {
-    sendLog(`[WG] DNS override (debug): ${sessionDnsOverride}`)
+    sendLog(`[WG] DNS из меню: ${sessionDnsOverride}`)
   }
   // Legacy: boot 1 группа (капча), затем рамп до target — иначе YouTube без полосы @9.
   const legacyCaptcha = !config.is_bootstrap && vkAuthMode === 'legacy'

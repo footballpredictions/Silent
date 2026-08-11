@@ -10,7 +10,6 @@ import {
 import { SessionTrace } from './sessionTrace'
 import { buildLocalBootstrapConfig } from './bootstrapVpnConfig'
 import { applyBootstrapWorkerCount } from './hashChannelHelper'
-import { isDebugBuild } from './debugBuild'
 import { getDnsOverrideServers } from './dnsPreset'
 import { authStrings as s } from './authStrings'
 import { waitVpnReady } from './vpnReady'
@@ -203,8 +202,9 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
     if (runId !== bootstrapEnsureGeneration) return false
 
     const bootCfg = attachVkCredLaunchParams(applyBootstrapWorkerCount(config, boot))
-    const bootWithDns = isDebugBuild
-      ? { ...bootCfg, dns_override: getDnsOverrideServers(), wg_dns: getDnsOverrideServers() }
+    const dnsServers = getDnsOverrideServers()
+    const bootWithDns = dnsServers
+      ? { ...bootCfg, dns_override: dnsServers, wg_dns: dnsServers }
       : bootCfg
     const modeLabel = vkCredStrategyLabel(getEffectiveVkCredStrategy())
     pushLog(

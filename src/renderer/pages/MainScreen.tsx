@@ -35,7 +35,7 @@ import { menuDrawerStyle } from '../uiTokens'
 import AppExclusionsPanel from '../components/AppExclusionsPanel'
 import MenuHashesPanel from '../components/MenuHashesPanel'
 import MenuDnsPanel from '../components/MenuDnsPanel'
-import { getDnsPreset } from '../dnsPreset'
+import { dnsMenuLabel } from '../dnsPreset'
 import MenuBypassPanel from '../components/MenuBypassPanel'
 import { prepareVpnConnectConfig } from '../prepareVpnConnect'
 import {
@@ -1316,7 +1316,7 @@ export default function MainScreen({
               {[
                 { key: 'subscription', label: 'Подписка' },
                 { key: 'exceptions', label: 'Исключения' },
-                ...(isDevBuild ? [{ key: 'dns', label: `DNS · ${getDnsPreset().title}` }] : []),
+                { key: 'dns', label: `DNS · ${dnsMenuLabel()}` },
                 { key: 'bypass', label: `Варианты обхода · ${bypassNavLabel}` },
                 ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
                 { key: 'bonuses', label: clientTheme?.menu_bonuses_label || 'Бонусы' },
@@ -1572,7 +1572,7 @@ export default function MainScreen({
               />
             </AppErrorBoundary>
           )}
-          {menuPage === 'dns' && isDevBuild && (
+          {menuPage === 'dns' && (
             <MenuDnsPanel
               fg={fg}
               muted={muted}

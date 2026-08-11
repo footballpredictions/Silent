@@ -17,7 +17,7 @@ const SERVICE_NAME = `WireGuardTunnel$${TUNNEL_NAME}`
 const STABLE_CONF_DIR = path.join(process.env.ProgramData || 'C:\\ProgramData', 'SilentVPN')
 const STABLE_WG_DIR = path.join(STABLE_CONF_DIR, 'wireguard')
 const FALLBACK_BACKEND_IP = '132.243.234.162'
-/** DNS: Cloudflare+Yandex по умолчанию. Debug override — через options/config.dns_override. */
+/** DNS: Cloudflare+Yandex по умолчанию. Меню DNS — через options/config.dns_override. */
 const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
 
 function pickDnsServers(value) {
@@ -31,6 +31,9 @@ function pickDnsServers(value) {
 function normalizeDnsValue(raw, override) {
   const fromOverride = pickDnsServers(override)
   if (fromOverride) return fromOverride
+  // Пресет «Как на сервере»: wg_dns из конфига (в т.ч. 10.66.66.1 при фильтре угроз).
+  const fromServer = pickDnsServers(raw)
+  if (fromServer) return fromServer
   return WG_DNS
 }
 
@@ -1327,4 +1330,5 @@ module.exports = {
   trySyncConf,
   copyStableConf,
   prepareRuntimeDir,
+  normalizeDnsValue,
 }

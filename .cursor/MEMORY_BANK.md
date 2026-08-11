@@ -579,6 +579,19 @@ cd pc; npm install; npm run dev
 - Версии: Android `versionCode/Name 160` / `1.0.160`; PC `package.json 1.0.160`.
 - Релизы: `assembleRelease` + `build-installer.bat` OK. Push `android` + `pc`.
 
+### 2026-08-11 — olcrtc 2.0 Phase 2 (Telemost + Сота 1) + фикс админки 502
+
+- **502 админка/API:** контейнер API падал на `ImportError apply_units_via_host` / missing `agent_leader` — полный `deploy_stable` + harden `main.py` (агенты не валят lifespan). Health **200**.
+- Phase 2: Telemost `GetConnectionInfo` + Dial (vendor olcrtc), `olcrtc2-srv`/`cnc`, деплой на **Соту 1** `87.58.213.193` (`CELL_OLCRTC2_OK`, unit с MemoryMax/CPUQuota). Улей не трогали.
+- Старт srv: `/opt/silent-vpn/olcrtc2/olcrtc2.env` → `OLCRTC2_ROOM` + `OLCRTC2_KEY`.
+
+### 2026-08-11 — olcrtc 2.0 Phase 1 (loopback SOCKS)
+
+- `backend/olcrtc2/`: MockCarrier `DialPair` → `secure` (XChaCha20-Poly1305) → smux → SOCKS5 cnc + srv egress
+- Тесты: `go test ./...` OK; smoke `go run ./cmd/olcrtc2-smoke` → PASS
+- План: Phase 0–1 отмечены в `.cursor/PLAN_OLCRTC2.md` / `backend/docs/PLAN_OLCRTC2.md`
+- **Не деплоить на Улей** рядом с `wdtt`
+
 ### 2026-08-11 — olcrtc 2.0 старт (каркас)
 
 - План: `.cursor/PLAN_OLCRTC2.md` / `backend/docs/PLAN_OLCRTC2.md`

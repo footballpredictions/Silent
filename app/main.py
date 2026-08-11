@@ -362,39 +362,52 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("olcrtc rooms sync skipped: %s", e)
 
-    # Start VK tunnel monitor + olcrtc room agent + nightly OTA rebuild scheduler
-    from ai.tunnel_monitor import start_monitor_background
-    from ai.olcrtc_room_agent import start_room_agent_background
-    from ai.release_build_scheduler import start_release_build_scheduler
+    # Фоновые агенты — только в одном воркере (uvicorn --workers N поднимает
+    # lifespan в каждом, без лидера агенты дублируются).
+    # Импорты изолированы: сбой одного модуля НЕ должен валить весь API (502).
+    agents_task = None
+    try:
+        from ai.tunnel_monitor import monitor_loop as vk_tunnel_monitor_loop
+        from ai.release_build_scheduler import scheduler_loop as release_build_loop
+        from app.services.agent_leader import start_when_leader
+        from app.services.hive_capacity import capacity_sampler_loop
+        from app.services.hive_rebalance_loop import hive_rebalance_loop
+        from app.services.hive_cell_maintenance_loop import hive_cell_maintenance_loop
+        from app.services.proxy_health_loop import proxy_health_loop
 
-    monitor_task = start_monitor_background()
-    olcrtc_room_agent_task = start_room_agent_background()
-    build_scheduler_task = start_release_build_scheduler()
-    from app.services.hive_capacity import start_hive_capacity_sampler
-    from app.services.hive_rebalance_loop import start_hive_rebalance_loop
-    from app.services.hive_cell_maintenance_loop import start_hive_cell_maintenance_loop
-    from app.services.proxy_health_loop import start_proxy_health_loop
+        agent_specs: list = [
+            ("vk_tunnel_monitor", vk_tunnel_monitor_loop),
+            ("release_build_scheduler", release_build_loop),
+            ("hive_capacity_sampler", capacity_sampler_loop),
+            ("hive_rebalance", hive_rebalance_loop),
+            ("hive_cell_maintenance", hive_cell_maintenance_loop),
+            ("proxy_health", proxy_health_loop),
+        ]
+        # olcrtc v1 agents — optional (disabled on prod; missing files must not 502)
+        try:
+            from ai.olcrtc_room_agent import monitor_loop as olcrtc_room_agent_loop
+            from app.services.olcrtc_pool_loop import olcrtc_pool_loop
 
-    capacity_sampler_task = start_hive_capacity_sampler()
-    rebalance_task = start_hive_rebalance_loop()
-    cell_maintenance_task = start_hive_cell_maintenance_loop()
-    proxy_health_task = start_proxy_health_loop()
+            agent_specs.extend(
+                [
+                    ("olcrtc_room_agent", olcrtc_room_agent_loop),
+                    ("olcrtc_pool", olcrtc_pool_loop),
+                ]
+            )
+        except Exception as e:
+            logger.warning("olcrtc background agents skipped: %s", e)
+
+        agents_task = start_when_leader("silent_background_agents", agent_specs)
+    except Exception as e:
+        logger.error("background agents failed to start (API still up): %s", e)
 
     yield
 
     # Shutdown
-    for task in (
-        monitor_task,
-        olcrtc_room_agent_task,
-        build_scheduler_task,
-        capacity_sampler_task,
-        rebalance_task,
-        cell_maintenance_task,
-        proxy_health_task,
-    ):
-        task.cancel()
+    if agents_task is not None:
+        agents_task.cancel()
         try:
-            await task
+            await agents_task
         except Exception:
             pass
     await engine.dispose()

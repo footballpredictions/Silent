@@ -39,6 +39,9 @@ FILES = [
     "ai/olcrtc_room_agent.py",
     "ai/olcrtc_room_provision.py",
     "ai/olcrtc_room_liveness.py",
+    "ai/olcrtc_host_provision_client.py",
+    "app/services/agent_leader.py",
+    "app/services/olcrtc_pool_loop.py",
     "static/vk-agent-oauth.html",
 ]
 

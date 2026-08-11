@@ -29,6 +29,7 @@ cd backend
 | `scripts/deploy_vps_cleanup.py` | `python scripts/deploy_vps_cleanup.py` | Автоочистка Улья (journal/Docker/tmp) + timer |
 | `scripts/deploy_telegram_proxy.py` | `python scripts/deploy_telegram_proxy.py` | MTProto (mtg) для Telegram + theme URL |
 | `scripts/deploy_hive.py` | `python scripts/deploy_hive.py` | Улей: Hive API, cell-agent, admin-ui/dist |
+| `scripts/deploy_olcrtc2_cell.py` | `python scripts/deploy_olcrtc2_cell.py [cell_ip]` | olcrtc2-srv на соту (дефолт Сота 1 `87.58.213.193`); **не** на Улей |
 | `scripts/deploy_olcrtc.py` | `python scripts/deploy_olcrtc.py` | olcrtc srv (systemd) + API/админка «Варианты обхода» |
 | `scripts/deploy_olcrtc_host_provision.py` | `python scripts/deploy_olcrtc_host_provision.py` | Host Playwright `:9101` — автосоздание комнат Telemost/WB для room-agent |
 | `scripts/deploy_cell_agent.py` | `python scripts/deploy_cell_agent.py <cell_ip>` | cell-agent на отдельной VPS-соте |

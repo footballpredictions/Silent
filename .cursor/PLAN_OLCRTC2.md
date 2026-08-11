@@ -1,7 +1,7 @@
 # PLAN — olcrtc 2.0 (WDTT-совместимый носитель Телемост / WB)
 
 Дата: 2026-08-11  
-Статус: старт реализации (каркас). **На Улей рядом с `wdtt` не деплоить**, пока нет изоляции на соте.
+Статус: Phase 2 done (Telemost carrier + srv на Соте 1). **На Улей рядом с `wdtt` не деплоить.**
 
 ## Цель
 
@@ -71,20 +71,24 @@ DC — опционально для WB с account token.
 
 ## Фазы
 
-### Phase 0 — каркас (сейчас)
+### Phase 0 — каркас
 - [x] План в `.cursor/PLAN_OLCRTC2.md`
-- [ ] Go module `backend/olcrtc2/` + interface Carrier
-- [ ] stubs telemost/wbstream
-- [ ] unit test compile
-- [ ] **не** трогать prod wdtt / не поднимать на queen
+- [x] Go module `backend/olcrtc2/` + interface Carrier
+- [x] stubs telemost/wbstream
+- [x] unit test compile
+- [x] **не** трогать prod wdtt / не поднимать на queen
 
-### Phase 1 — srv/cnc loopback
-- SOCKS cnc ↔ srv через mock carrier (без реального SFU)
-- Smoke на localhost
+### Phase 1 — srv/cnc loopback ✅ 2026-08-11
+- [x] SOCKS cnc ↔ srv через mock carrier (без реального SFU)
+- [x] AEAD (XChaCha20-Poly1305) + smux поверх `PacketConn`
+- [x] Smoke на localhost: `go test ./...` + `go run ./cmd/olcrtc2-smoke`
 
-### Phase 2 — Telemost headless
-- Join существующей комнаты (API create отдельно)
-- Exit на **тестовой соте**
+### Phase 2 — Telemost headless ✅ 2026-08-11 (сота 1)
+- [x] Telemost `GetConnectionInfo` + headless Dial через `vendor/olcrtc` (Goolom)
+- [x] `olcrtc2-srv` / `olcrtc2-cnc` (AEAD+smux+SOCKS поверх carrier)
+- [x] Exit на **Соте 1** `87.58.213.193`: `python scripts/deploy_olcrtc2_cell.py` → `CELL_OLCRTC2_OK`
+- [x] Улей / `wdtt` не трогали; unit `MemoryMax=512M` `CPUQuota=50%`
+- Старт на соте после `OLCRTC2_ROOM` + `OLCRTC2_KEY` в `/opt/silent-vpn/olcrtc2/olcrtc2.env`
 
 ### Phase 3 — WB Stream
 - Переиспользовать JWT create/delete из `ai/olcrtc_wb_api.py`

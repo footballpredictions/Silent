@@ -3,7 +3,7 @@ package com.silent.vpn.vpn
 import android.content.Context
 import androidx.compose.runtime.Stable
 import com.silent.vpn.BuildConfig
-import com.silent.vpn.data.DnsPreset
+import com.silent.vpn.data.DnsSettings
 import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
@@ -119,6 +119,7 @@ object WdttTunnelManager {
     private val siteBypassCidrs = linkedSetOf<String>()
     private var lastBootstrapRouteReloadMs = 0L
     private var lastSiteBypassRefreshMs = 0L
+    @Volatile private var siteBypassResolving = false
     private var sessionVkHashes: List<String> = emptyList()
     private val groupHashPrefix = mutableMapOf<Int, String>()
 
@@ -213,30 +214,80 @@ object WdttTunnelManager {
         return added
     }
 
-    /** Пересобрать IP/CIDR исключений сайтов из prefs. */
+    /**
+     * Пересобрать IP/CIDR исключений сайтов из prefs.
+     * Резолв доменов — только в фоне: вызовы startTunnel идут из Dispatchers.Main и под
+     * wgApplyMutex, сетевой запрос там блокирует поднятие туннеля.
+     */
     private fun refreshSiteBypassExcludes(context: Context?, force: Boolean = false) {
         val ctx = context ?: lastContext ?: return
         val now = System.currentTimeMillis()
-        if (!force && now - lastSiteBypassRefreshMs < 2_000L) return
+        if (!force && now - lastSiteBypassRefreshMs < 30_000L) return
         lastSiteBypassRefreshMs = now
         val raw = SilentPrefs.open(ctx)
             .getString(SilentRepository.PREF_BYPASS_ROUTES, "")
             ?.trim()
             .orEmpty()
-        siteBypassCidrs.clear()
-        if (raw.isBlank()) return
-        val result = SiteBypassRoutes.resolveExcludeTargets(raw)
-        siteBypassCidrs.addAll(result.excludeCidrs)
-        if (result.excludeCount > 0) {
-            DebugLog.i(TAG, "Site bypass: ${result.excludeCount} hole(s), unresolved=${result.unresolved.size}")
+        if (raw.isBlank()) {
+            val changed = synchronized(siteBypassCidrs) {
+                val had = siteBypassCidrs.isNotEmpty()
+                siteBypassCidrs.clear()
+                had
+            }
+            if (changed) DebugLog.i(TAG, "Site bypass: правил нет")
+            return
+        }
+        if (siteBypassResolving) return
+        siteBypassResolving = true
+        scope.launch {
+            try {
+                val result = SiteBypassRoutes.resolveExcludeTargets(raw)
+                val changed = synchronized(siteBypassCidrs) {
+                    if (siteBypassCidrs.toList() == result.excludeCidrs) {
+                        false
+                    } else {
+                        siteBypassCidrs.clear()
+                        siteBypassCidrs.addAll(result.excludeCidrs)
+                        true
+                    }
+                }
+                if (changed) {
+                    DebugLog.i(
+                        TAG,
+                        "Site bypass: ${result.excludeCount} hole(s), unresolved=${result.unresolved.size}",
+                    )
+                }
+            } finally {
+                siteBypassResolving = false
+            }
         }
     }
 
-    /** TURN/VK excludes + пользовательские сайты. */
+    /** Резолв с ожиданием результата — только из корутины (сохранение правил в UI). */
+    private suspend fun resolveSiteBypassExcludes(context: Context) = withContext(Dispatchers.IO) {
+        lastSiteBypassRefreshMs = System.currentTimeMillis()
+        val raw = SilentPrefs.open(context)
+            .getString(SilentRepository.PREF_BYPASS_ROUTES, "")
+            ?.trim()
+            .orEmpty()
+        val next = if (raw.isBlank()) {
+            emptyList()
+        } else {
+            SiteBypassRoutes.resolveExcludeTargets(raw).excludeCidrs
+        }
+        synchronized(siteBypassCidrs) {
+            siteBypassCidrs.clear()
+            siteBypassCidrs.addAll(next)
+        }
+        DebugLog.i(TAG, "Site bypass: ${next.size} hole(s)")
+    }
+
+    /** TURN/VK excludes + пользовательские сайты (кэш, без сетевых вызовов). */
     private fun effectiveExcludeIps(context: Context? = lastContext): List<String> {
         refreshSiteBypassExcludes(context)
-        if (siteBypassCidrs.isEmpty()) return wgExcludeIps.toList()
-        return (wgExcludeIps + siteBypassCidrs).toList()
+        val sites = synchronized(siteBypassCidrs) { siteBypassCidrs.toList() }
+        if (sites.isEmpty()) return wgExcludeIps.toList()
+        return (wgExcludeIps + sites).toList()
     }
 
     private fun appendStderrLine(line: String) {
@@ -1215,22 +1266,7 @@ object WdttTunnelManager {
                     return@withLock
                 }
                 lastWgConfig = normalized
-                if (BuildConfig.DEBUG) {
-                    val dnsCtx = lastContext
-                    val dnsPreset = if (dnsCtx != null) {
-                        DnsPreset.fromId(
-                            SilentPrefs.open(dnsCtx)
-                                .getString(SilentRepository.PREF_DNS_PRESET, DnsPreset.DEFAULT.id),
-                        )
-                    } else {
-                        DnsPreset.DEFAULT
-                    }
-                    updateLog(
-                        "dns",
-                        "DNS: ${dnsPreset.title} (${dnsPreset.servers})",
-                        1,
-                    )
-                }
+                lastContext?.let { updateLog("dns", "DNS: ${DnsSettings.describe(it)}", 1) }
                 try {
                     withContext(NonCancellable + Dispatchers.Main) {
                         wgHelper?.startTunnel(
@@ -1771,7 +1807,7 @@ object WdttTunnelManager {
         lastContext = context.applicationContext
         scope.launch {
             SiteBypassRoutes.clearResolveCache()
-            refreshSiteBypassExcludes(context.applicationContext, force = true)
+            resolveSiteBypassExcludes(context.applicationContext)
             wgHelper?.stopTunnel()
             delay(200)
             withContext(Dispatchers.Main) {

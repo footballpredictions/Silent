@@ -87,6 +87,8 @@ class SilentRepository @Inject constructor(
         const val PREF_CACHED_THEME = "cached_theme_json"
         const val PREF_APPEARANCE_MODE = "appearance_mode"
         const val PREF_DNS_PRESET = "dns_preset"
+        /** Свой DNS пользователя: адреса через запятую. */
+        const val PREF_DNS_CUSTOM = "dns_custom_servers"
         const val PREF_SYNC_HASHES_REV = "config_sync_hashes_rev"
         const val PREF_SYNC_THEME_REV = "config_sync_theme_rev"
         const val PREF_SYNC_PROFILE_REV = "config_sync_profile_rev"
@@ -896,10 +898,23 @@ class SilentRepository @Inject constructor(
         prefs.edit().putString(PREF_DNS_PRESET, preset.id).apply()
     }
 
-    fun dnsServersForVpn(): String? {
-        if (!BuildConfig.DEBUG) return null
-        return getDnsPreset().servers
+    fun getCustomDnsRaw(): String = prefs.getString(PREF_DNS_CUSTOM, "").orEmpty()
+
+    /** Свой DNS: сохраняем нормализованный список, пресет переводим в CUSTOM. */
+    fun setCustomDns(raw: String): String? {
+        val servers = DnsPreset.sanitizeCustomServers(raw)
+        prefs.edit()
+            .putString(PREF_DNS_CUSTOM, servers.orEmpty())
+            .apply()
+        return servers
     }
+
+    fun dnsDescription(): String = DnsSettings.describe(getDnsPreset(), getCustomDnsRaw())
+
+    fun dnsMenuLabel(): String = DnsSettings.shortLabel(getDnsPreset(), getCustomDnsRaw())
+
+    /** null — DNS остаётся тот, что прислал сервер (`wg_dns`). */
+    fun dnsServersForVpn(): String? = DnsSettings.override(getDnsPreset(), getCustomDnsRaw())
 
     fun isLoggedIn() = getAccessToken() != null
 

@@ -701,15 +701,13 @@ fun MainScreen(
                         val menuItems = buildList {
                             add(Triple(MenuPage.SUBSCRIPTION, "Подписка", null as String?))
                             add(Triple(MenuPage.EXCEPTIONS, "Исключения", null))
-                            if (BuildConfig.DEBUG) {
-                                add(
-                                    Triple(
-                                        MenuPage.DNS,
-                                        "DNS",
-                                        repo.getDnsPreset().title,
-                                    ),
-                                )
-                            }
+                            add(
+                                Triple(
+                                    MenuPage.DNS,
+                                    "DNS",
+                                    repo.dnsMenuLabel(),
+                                ),
+                            )
                             add(
                                 Triple(
                                     MenuPage.BYPASS,
@@ -803,7 +801,7 @@ fun MainScreen(
                             onShowError = onShowError,
                         )
                         MenuPage.EXCEPTIONS -> AppExclusionsScreen(repo, palette) { menuPage = MenuPage.ROOT }
-                        MenuPage.DNS -> MenuDnsScreen(repo, fg) { menuPage = MenuPage.ROOT }
+                        MenuPage.DNS -> MenuDnsScreen(repo, palette) { menuPage = MenuPage.ROOT }
                         MenuPage.BYPASS -> MenuBypassScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.HASHES -> MenuHashesScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.BONUSES -> {

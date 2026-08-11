@@ -77,11 +77,18 @@ fun resolveAppTunnelPolicy(context: Context, includeAppInTunnel: Boolean = false
 
     if (whitelist) {
         val included = LinkedHashSet<String>()
-        included.add(context.packageName)
+        // Silent в туннеле только на время API overlay: libclient держит транспорт до VK TURN,
+        // внутри собственного туннеля он замыкается сам на себя.
+        if (includeAppInTunnel) included.add(context.packageName)
         included.addAll(userSelected)
+        included.removeAll(VK_TUNNEL_PACKAGES)
         val filtered = included.filter { isPackageInstalled(pm, it) }.toSet()
-        DebugLog.i("AppExclusions", "БС includeApplications: ${filtered.size}")
-        return AppTunnelPolicy(whitelist = true, packages = filtered)
+        if (filtered.isNotEmpty()) {
+            DebugLog.i("AppExclusions", "БС includeApplications: ${filtered.size}")
+            return AppTunnelPolicy(whitelist = true, packages = filtered)
+        }
+        // Пустой белый список означал бы «в туннеле все приложения» — падаем в ЧС.
+        DebugLog.w("AppExclusions", "БС пуст → ЧС")
     }
 
     val excluded = LinkedHashSet<String>()

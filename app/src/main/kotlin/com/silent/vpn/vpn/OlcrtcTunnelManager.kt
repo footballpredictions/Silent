@@ -6,9 +6,8 @@ import android.net.IpPrefix
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.system.OsConstants
 import com.silent.vpn.BuildConfig
-import com.silent.vpn.data.DnsPreset
+import com.silent.vpn.data.DnsSettings
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.policy.OlcrtcRecoveryPolicy
@@ -492,6 +491,7 @@ object OlcrtcTunnelManager {
                 warmSocksDial(sessionParams, "www.google.com")
                 warmSocksDial(sessionParams, "132-243-234-162.nip.io")
                 warmSocksDial(sessionParams, "www.youtube.com")
+                warmSocksDial(sessionParams, "i.ytimg.com")
             } catch (e: Exception) {
                 val msg = e.message ?: "olcrtc background start failed"
                 markStartFailed(msg)
@@ -781,20 +781,9 @@ object OlcrtcTunnelManager {
         }, "olcrtc-exit").apply { isDaemon = true }.start()
     }
 
-    /** Как WDTT: debug — меню DNS; иначе Яндекс. */
-    private fun resolveOlcrtcDnsServers(context: Context): List<String> {
-        val raw = if (BuildConfig.DEBUG) {
-            val id = SilentPrefs.open(context)
-                .getString(SilentRepository.PREF_DNS_PRESET, DnsPreset.DEFAULT.id)
-            DnsPreset.fromId(id).servers
-        } else {
-            DnsPreset.DEFAULT.servers
-        }
-        return raw.split(",")
-            .map { it.trim() }
-            .filter { it.isNotBlank() && !it.contains(':') }
-            .ifEmpty { listOf("77.88.8.8", "77.88.8.1") }
-    }
+    /** Как WDTT: меню DNS (свой ввод тоже); hev понимает только IPv4. */
+    private fun resolveOlcrtcDnsServers(context: Context): List<String> =
+        DnsSettings.ipv4Servers(context)
 
     /**
      * TUN → SOCKS через hev.
@@ -827,9 +816,14 @@ object OlcrtcTunnelManager {
             // 1400 ≈ KCP MTU olcrtc; 1280 резал TCP MSS без нужды.
             appendLine("  mtu: 1400")
             appendLine("  ipv4: 198.18.0.1")
+            // IPv6 в TUN без маршрута наружу — Cronet/YouTube не уходят в LTE IPv6
+            // (в РФ часто режется, при этом Telegram по IPv4 через SOCKS жив).
+            appendLine("  ipv6: 'fdfe:dcba:9876::1'")
             appendLine("socks5:")
             appendLine("  port: ${params.socksPort}")
             appendLine("  address: ${params.socksHost}")
+            // Как PC sing-box block UDP/QUIC: olcrtc SOCKS = TCP CONNECT only.
+            // udp:'udp' + короткий timeout → ASSOCIATE → REP=0x07 → TCP fallback.
             appendLine("  udp: 'udp'")
             if (params.socksUser.isNotBlank()) {
                 val u = params.socksUser.replace("'", "''")
@@ -847,7 +841,8 @@ object OlcrtcTunnelManager {
             appendLine("  log-level: warn")
             appendLine("  connect-timeout: 8000")
             appendLine("  tcp-read-write-timeout: 300000")
-            appendLine("  udp-read-write-timeout: 800")
+            // Быстрый fail QUIC (как block на PC), иначе YouTube висит на UDP:443.
+            appendLine("  udp-read-write-timeout: 400")
         }
         conf.writeText(hevYaml)
         return try {
@@ -858,14 +853,19 @@ object OlcrtcTunnelManager {
                 .addRoute("0.0.0.0", 0)
                 // Только mapdns — не 8.8.8.8/1.1.1.1 (на LTE часто мёртв вне TUN).
                 .addDnsServer("198.18.0.2")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                runCatching { builder.allowFamily(OsConstants.AF_INET) }
-                WdttTunnelManager.logUi(
-                    "olcrtc_tun_v4",
-                    "IPv4-only + mapdns fake-ip (меню DNS=${menuDns.joinToString(",")} — для olcrtc не в LTE)",
-                    2,
-                )
+            // Не allowFamily(AF_INET): иначе IPv6 YouTube/Cronet уходит мимо VPN в LTE.
+            // Ловим ::/0 в TUN → hev без рабочего IPv6 SOCKS → Happy Eyeballs → IPv4.
+            var ipv6Tun = false
+            runCatching {
+                builder.addAddress("fdfe:dcba:9876::1", 128)
+                builder.addRoute("::", 0)
+                ipv6Tun = true
             }
+            WdttTunnelManager.logUi(
+                "olcrtc_tun_v4",
+                "mapdns fake-ip ipv6Tun=$ipv6Tun (меню DNS=${menuDns.joinToString(",")} — для olcrtc не в LTE)",
+                2,
+            )
             // API 33+: ICE/STUN Telemost/WB напрямую; системный DNS — fallback для приложений,
             // которые игнорируют VPN DNS (иначе снова UDP:53 в TUN → сайты мертвы).
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

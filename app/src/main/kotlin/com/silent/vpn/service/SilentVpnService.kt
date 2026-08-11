@@ -488,16 +488,12 @@ class SilentVpnService : Service() {
             }
 
             val vpnConfig = runCatching { Gson().fromJson(configJson, VpnConfig::class.java) }.getOrNull()
-            val dnsOverride = if (BuildConfig.DEBUG) {
-                runCatching {
-                    EntryPointAccessors.fromApplication(
-                        applicationContext,
-                        AppEntryPoint::class.java,
-                    ).silentRepository().dnsServersForVpn()
-                }.getOrNull()
-            } else {
-                null
-            }
+            val dnsOverride = runCatching {
+                EntryPointAccessors.fromApplication(
+                    applicationContext,
+                    AppEntryPoint::class.java,
+                ).silentRepository().dnsServersForVpn()
+            }.getOrNull()
             // apiWg — fallback если GETCONF не пришёл за ~22 с (не ранний подъём WG).
             val apiWg = vpnConfig?.let { WireGuardConfigBuilder.fromVpnConfig(it, dnsOverride = dnsOverride) }
 

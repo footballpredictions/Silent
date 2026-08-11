@@ -14,6 +14,7 @@ import com.silent.vpn.BuildConfig
 import com.silent.vpn.SilentApp
 import com.silent.vpn.data.BootstrapVpnConfig
 import com.silent.vpn.data.DnsPreset
+import com.silent.vpn.data.DnsSettings
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.service.SilentGoBackendVpnService
@@ -128,9 +129,9 @@ class WireGuardHelper(context: Context) {
 
             ensureGoBackendServiceStarted()
 
-            // Debug: локальный пресет DNS. Release: только wg_dns с сервера (Яндекс).
-            var configToApply = if (BuildConfig.DEBUG) {
-                val preferredDns = resolvePreferredDns(appContext)
+            // Пресет «Как на сервере» ничего не подменяет — wg_dns приходит с сервера.
+            val preferredDns = DnsSettings.override(appContext)
+            var configToApply = if (preferredDns != null) {
                 DebugLog.i(TAG, "DNS preset applied: $preferredDns")
                 patchDnsServers(configString, preferredDns)
             } else {
@@ -181,6 +182,9 @@ class WireGuardHelper(context: Context) {
                 }.getOrDefault("apps?")
             }
             val excludeKey = when {
+                // Bootstrap: TURN-адреса добавляются по мере набора воркеров. Ключ держим
+                // константным, иначе каждый новый адрес пересоздаёт туннель и рвёт воркеры.
+                isBootstrap && !apiOverlayMode -> "bootstrap-companion"
                 apiOverlayMode -> "overlay-app-in"
                 mobileApiRoute -> "mobile-api-${excludeIPs.sorted().joinToString(",")}"
                 else -> excludeIPs.sorted().joinToString(",")
@@ -292,7 +296,7 @@ class WireGuardHelper(context: Context) {
                     parsed.`interface`.dnsServers.joinToString(", ") { it.hostAddress ?: "" },
                 )
             } else {
-                ifaceBuilder.parseDnsServers(DnsPreset.DEFAULT.servers)
+                ifaceBuilder.parseDnsServers(DnsPreset.FALLBACK.servers)
             }
 
 
@@ -466,14 +470,8 @@ class WireGuardHelper(context: Context) {
             .map { it.trim() }
             .filter { it.isNotBlank() }
         val normalized = tokens.filter { IPV4.matches(it) || IPV6.matches(it) }
-        return if (normalized.isNotEmpty()) normalized.joinToString(", ") else DnsPreset.DEFAULT.servers
+        return if (normalized.isNotEmpty()) normalized.joinToString(", ") else DnsPreset.FALLBACK.servers
     }
-
-    private fun resolvePreferredDns(context: Context): String = runCatching {
-        val id = SilentPrefs.open(context)
-            .getString(SilentRepository.PREF_DNS_PRESET, DnsPreset.DEFAULT.id)
-        DnsPreset.fromId(id).servers
-    }.getOrDefault(DnsPreset.DEFAULT.servers)
 
     /** Подмена DNS в тексте конфига до parse/semanticKey — иначе GETCONF оставляет серверный Яндекс. */
     private fun patchDnsServers(conf: String, dns: String): String {

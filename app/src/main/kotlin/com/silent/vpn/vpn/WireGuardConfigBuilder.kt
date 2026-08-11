@@ -10,7 +10,7 @@ object WireGuardConfigBuilder {
         val pub = cfg.server_public_key.trim()
         if (priv.isBlank() || pub.isBlank()) return null
         val dns = dnsOverride?.takeIf { it.isNotBlank() }
-            ?: cfg.wg_dns.ifBlank { DnsPreset.DEFAULT.servers }
+            ?: cfg.wg_dns.ifBlank { DnsPreset.FALLBACK.servers }
         return buildString {
             appendLine("[Interface]")
             appendLine("PrivateKey = $priv")

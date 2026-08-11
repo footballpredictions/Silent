@@ -1315,7 +1315,7 @@ export default function MainScreen({
             <nav className="flex-1 p-2 overflow-y-auto">
               {[
                 { key: 'subscription', label: 'Подписка' },
-                { key: 'exceptions', label: 'Исключения приложений' },
+                { key: 'exceptions', label: 'Исключения' },
                 ...(isDevBuild ? [{ key: 'dns', label: `DNS · ${getDnsPreset().title}` }] : []),
                 { key: 'bypass', label: `Варианты обхода · ${bypassNavLabel}` },
                 ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
@@ -1540,6 +1540,8 @@ export default function MainScreen({
                 border={border}
                 borderStrong={palette.borderStrong}
                 dark={palette.dark}
+                primaryBtnBg={palette.primaryBtnBg}
+                primaryBtnFg={palette.primaryBtnFg}
                 onBack={() => setMenuPage(null)}
               />
             </div>

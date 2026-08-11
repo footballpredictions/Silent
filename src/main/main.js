@@ -502,6 +502,10 @@ function cleanupVpn() {
     const { clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
     void clearActiveExcludedExePaths(sendLog)
   } catch { /* ignore */ }
+  try {
+    const { clearSiteBypass } = require('./apps/siteBypass')
+    void clearSiteBypass(sendLog)
+  } catch { /* ignore */ }
   clearTelegramWarmupTimers()
   resetHashFailureSessionState()
   vpnBootstrapMode = false
@@ -950,8 +954,9 @@ ipcMain.handle('save-app-exclusions', (_, payload) => {
     const filePath = defaultStatePath(app.getPath('userData'))
     const selectedIds = Array.isArray(payload?.selectedIds) ? payload.selectedIds : []
     const appsList = Array.isArray(payload?.apps) ? payload.apps : []
-    const saved = saveExclusionsState({ filePath, selectedIds, apps: appsList })
-    sendLog(`[Apps] сохранены исключения: ${saved.exePaths.length} exe`)
+    const whitelist = !!payload?.whitelist
+    const saved = saveExclusionsState({ filePath, selectedIds, apps: appsList, whitelist })
+    sendLog(`[Apps] сохранены исключения (${whitelist ? 'БС' : 'ЧС'}): ${saved.exePaths.length} exe`)
     // VPN уже поднят — сразу перезапустить bypass-монитор
     if (wgApplied && !vpnBootstrapMode) {
       if (saved.exePaths.length) {
@@ -960,7 +965,7 @@ ipcMain.handle('save-app-exclusions', (_, payload) => {
         void clearActiveExcludedExePaths(sendLog)
       }
     }
-    return { ok: true, exePaths: saved.exePaths }
+    return { ok: true, exePaths: saved.exePaths, whitelist }
   } catch (e) {
     sendLog(`[Apps] save exclusions: ${e?.message || e}`)
     return { ok: false, exePaths: [] }
@@ -970,6 +975,35 @@ ipcMain.handle('save-app-exclusions', (_, payload) => {
 ipcMain.handle('get-app-exclusions', () => {
   const { loadExclusionsState, defaultStatePath } = require('./apps/exclusionsState')
   return loadExclusionsState(defaultStatePath(app.getPath('userData')))
+})
+
+ipcMain.handle('save-site-bypass', async (_, payload) => {
+  try {
+    const {
+      saveSiteBypassState,
+      defaultSiteBypassPath,
+      applySiteBypass,
+      clearSiteBypass,
+      parseRules,
+    } = require('./apps/siteBypass')
+    const filePath = defaultSiteBypassPath(app.getPath('userData'))
+    const rules = parseRules(Array.isArray(payload?.rules) ? payload.rules.join('\n') : '')
+    saveSiteBypassState(filePath, rules)
+    if (wgApplied && !vpnBootstrapMode) {
+      if (rules.length) return await applySiteBypass(rules, sendLog)
+      await clearSiteBypass(sendLog)
+      return { ok: true, targets: [], unresolved: [] }
+    }
+    return { ok: true, targets: [], unresolved: [], deferred: true }
+  } catch (e) {
+    sendLog(`[Sites] save: ${e?.message || e}`)
+    return { ok: false, targets: [], unresolved: [] }
+  }
+})
+
+ipcMain.handle('get-site-bypass', () => {
+  const { loadSiteBypassState, defaultSiteBypassPath } = require('./apps/siteBypass')
+  return loadSiteBypassState(defaultSiteBypassPath(app.getPath('userData')))
 })
 
 ipcMain.handle('warmup-telegram-path', async () => {
@@ -1155,15 +1189,18 @@ async function beginWdttSession(config, { switching = false } = {}) {
   vpnBootstrapMode = !!config.is_bootstrap
   config.server_ip = normalizeServerIp(config.server_ip)
 
-  // Исключения приложений: план сессии (full VPN). Bootstrap — без user exclusions.
+  // Исключения приложений + сайты: план сессии (full VPN). Bootstrap — без user exclusions.
   try {
     const { getExcludedExePathsForVpn, defaultStatePath } = require('./apps/exclusionsState')
     const { applyAppExclusionsForSession, clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
+    const { applySiteBypassFromFile, clearSiteBypass, defaultSiteBypassPath } = require('./apps/siteBypass')
     if (config.is_bootstrap) {
       clearActiveExcludedExePaths()
+      void clearSiteBypass(sendLog)
     } else {
       const paths = getExcludedExePathsForVpn(defaultStatePath(app.getPath('userData')))
       applyAppExclusionsForSession(paths, sendLog)
+      void applySiteBypassFromFile(defaultSiteBypassPath(app.getPath('userData')), sendLog)
     }
   } catch (e) {
     sendLog(`[Apps] exclusions plan: ${e?.message || e}`)

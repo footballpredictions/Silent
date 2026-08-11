@@ -115,7 +115,9 @@ function buildPsScript(outJsonPath) {
     '$list = New-Object System.Collections.Generic.List[object]',
     '$seenLnk = New-Object "System.Collections.Generic.HashSet[string]"',
     'foreach ($dir in $dirs) {',
-    "  Get-ChildItem -LiteralPath $dir -Recurse -Include *.lnk,*.url -ErrorAction SilentlyContinue | ForEach-Object {",
+    // -Include требует суффикс \\* в PS 5.1
+    "  $scan = if ($dir.EndsWith('\\')) { $dir + '*' } else { $dir + '\\*' }",
+    "  Get-ChildItem -Path $scan -Recurse -Include *.lnk,*.url -ErrorAction SilentlyContinue | ForEach-Object {",
     '    $key = $_.FullName.ToLowerInvariant()',
     '    if (-not $seenLnk.Add($key)) { return }',
     '    Add-ShortcutRow $_.FullName $shell $list',
@@ -346,7 +348,9 @@ function collectShortcutApps() {
     let targetPath = String(row.TargetPath || '').trim()
     const args = String(row.Arguments || '').trim()
     if (!name || !lnkPath) continue
-    if (SKIP_NAME_RE.test(name)) continue
+    // Яндекс / Yandex никогда не отфильтровываем по «служебным» словам в имени
+    const isYandexName = /яндекс|yandex/i.test(name) || /\\yandex\\/i.test(lnkPath)
+    if (!isYandexName && SKIP_NAME_RE.test(name)) continue
     if (SKIP_FOLDER_RE.test(lnkPath.replace(/\//g, '\\'))) continue
 
     const steamAppId = parseSteamAppIdFromTarget(targetPath)
@@ -387,9 +391,25 @@ function collectShortcutApps() {
       exePath = targetPath
       dedupeKey = targetPath.toLowerCase()
     } else {
-      if (targetPath && SKIP_TARGET_RE.test(targetPath)) continue
+      if (targetPath && SKIP_TARGET_RE.test(targetPath) && !isYandexName) continue
       if (targetPath && /\.exe$/i.test(targetPath) && fs.existsSync(targetPath)) {
         exePath = targetPath
+      }
+      // Ярлык Яндекса часто на updater/stub — ищем browser.exe рядом
+      if (isYandexName && (!exePath || !/browser\.exe$/i.test(exePath))) {
+        const near = [
+          targetPath && path.join(path.dirname(targetPath), 'browser.exe'),
+          targetPath && path.join(path.dirname(targetPath), 'Yandex.exe'),
+          process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Yandex', 'YandexBrowser', 'Application', 'browser.exe'),
+          process.env.USERPROFILE && path.join(process.env.USERPROFILE, 'AppData', 'Local', 'Yandex', 'YandexBrowser', 'Application', 'browser.exe'),
+        ].filter(Boolean)
+        for (const cand of near) {
+          if (fs.existsSync(cand)) {
+            exePath = cand
+            displayName = /браузер|browser/i.test(name) ? 'Яндекс Браузер' : name
+            break
+          }
+        }
       }
       if (!installLocation && exePath) installLocation = path.dirname(exePath)
     }
@@ -424,16 +444,341 @@ function collectShortcutApps() {
   return apps
 }
 
+/** Яндекс / известные пути (часто без ярлыка в Programs; versioned Application\x.y\browser.exe). */
+function collectYandexApps() {
+  const out = []
+  const seen = new Set()
+
+  const add = (exePath, name, source = 'yandex') => {
+    const exe = String(exePath || '').trim()
+    if (!exe || !/\.exe$/i.test(exe) || !fs.existsSync(exe)) return
+    if (/uninstall|setup|update|crash|elevate|notification_helper|chrome_proxy|software_reporter/i.test(exe)) return
+    const key = exe.toLowerCase().replace(/\//g, '\\')
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({
+      id: makeId(exe, exe),
+      name,
+      installLocation: path.dirname(exe),
+      exePath: exe,
+      lnkPath: '',
+      publisher: 'Yandex',
+      isSystem: false,
+      icon: null,
+      source,
+    })
+  }
+
+  const roots = [
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Yandex'),
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'YandexBrowser'),
+    process.env.USERPROFILE && path.join(process.env.USERPROFILE, 'AppData', 'Local', 'Yandex'),
+    process.env.USERPROFILE && path.join(process.env.USERPROFILE, 'AppData', 'Local', 'YandexBrowser'),
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Yandex'),
+    process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'Yandex'),
+    process.env.ProgramData && path.join(process.env.ProgramData, 'Yandex'),
+  ].filter(Boolean)
+
+  const productHints = [
+    { dirRe: /YandexBrowser/i, exeRe: /^(browser|yandex)\.exe$/i, name: 'Яндекс Браузер' },
+    { dirRe: /YandexDisk/i, exeRe: /^YandexDisk\d*\.exe$/i, name: 'Яндекс Диск' },
+    { dirRe: /YandexMusic/i, exeRe: /^YandexMusic\.exe$/i, name: 'Яндекс Музыка' },
+    { dirRe: /YandexMessenger|Yandex\.Messenger/i, exeRe: /\.exe$/i, name: 'Яндекс Мессенджер' },
+    { dirRe: /Telemost|YandexTelemost/i, exeRe: /\.exe$/i, name: 'Яндекс Телемост' },
+    { dirRe: /Alice/i, exeRe: /^Alice\.exe$/i, name: 'Алиса' },
+  ]
+
+  const walkFind = (dir, depth, maxDepth) => {
+    if (depth > maxDepth || !fs.existsSync(dir)) return
+    let entries
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name)
+      if (ent.isDirectory()) {
+        if (/cache|crash|temp|update|setup|Crashpad|ShaderCache|GPUCache|Code Cache/i.test(ent.name)) continue
+        walkFind(full, depth + 1, maxDepth)
+        continue
+      }
+      if (!/\.exe$/i.test(ent.name)) continue
+      const lower = full.toLowerCase()
+      // Главный бинарь браузера
+      if (/\\yandexbrowser\\application\\(?:[\d.]+\\)?browser\.exe$/i.test(lower) ||
+          /\\yandexbrowser\\application\\(?:[\d.]+\\)?yandex\.exe$/i.test(lower)) {
+        add(full, 'Яндекс Браузер', 'yandex-scan')
+        continue
+      }
+      for (const h of productHints) {
+        if (h.dirRe.test(full) && h.exeRe.test(ent.name)) {
+          add(full, h.name, 'yandex-scan')
+          break
+        }
+      }
+    }
+  }
+
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue
+    // Прямые кандидаты
+    const direct = [
+      [path.join(root, 'YandexBrowser', 'Application', 'browser.exe'), 'Яндекс Браузер'],
+      [path.join(root, 'Application', 'browser.exe'), 'Яндекс Браузер'],
+      [path.join(root, 'YandexBrowser', 'Application', 'Yandex.exe'), 'Яндекс Браузер'],
+      [path.join(root, 'YandexDisk', 'YandexDisk2.exe'), 'Яндекс Диск'],
+      [path.join(root, 'YandexDisk', 'YandexDisk.exe'), 'Яндекс Диск'],
+    ]
+    for (const [p, name] of direct) add(p, name, 'yandex')
+
+    // Versioned Application\<ver>\browser.exe
+    const appDirs = [
+      path.join(root, 'YandexBrowser', 'Application'),
+      path.join(root, 'Application'),
+    ]
+    for (const appDir of appDirs) {
+      if (!fs.existsSync(appDir)) continue
+      try {
+        for (const ent of fs.readdirSync(appDir, { withFileTypes: true })) {
+          if (!ent.isDirectory()) continue
+          if (!/^\d+\./.test(ent.name)) continue
+          add(path.join(appDir, ent.name, 'browser.exe'), 'Яндекс Браузер', 'yandex-ver')
+          add(path.join(appDir, ent.name, 'Yandex.exe'), 'Яндекс Браузер', 'yandex-ver')
+        }
+      } catch { /* ignore */ }
+    }
+    walkFind(root, 0, 6)
+  }
+
+  // Реестр: StartMenuInternet / App Paths / Uninstall (DisplayIcon) — надёжнее ярлыков
+  try {
+    const stamp = `${Date.now()}-${process.pid}`
+    const psPath = path.join(os.tmpdir(), `silent-yandex-${stamp}.ps1`)
+    const jsonPath = path.join(os.tmpdir(), `silent-yandex-${stamp}.json`)
+    const outLit = jsonPath.replace(/'/g, "''")
+    const script = [
+      '$ErrorActionPreference = "SilentlyContinue"',
+      '$paths = New-Object "System.Collections.Generic.HashSet[string]" ([StringComparer]::OrdinalIgnoreCase)',
+      'function Add-Exe([string]$p) {',
+      '  if ([string]::IsNullOrWhiteSpace($p)) { return }',
+      '  $p = $p.Trim().Trim(\'"\')',
+      '  if ($p -match \',\\d+$\' ) { $p = ($p -split \',\')[0].Trim().Trim(\'"\') }',
+      '  if ($p -notmatch \'(?i)\\.exe$\') { return }',
+      '  if (Test-Path -LiteralPath $p) { [void]$paths.Add((Resolve-Path -LiteralPath $p).Path) }',
+      '}',
+      // StartMenuInternet clients
+      "Get-ChildItem 'HKCU:\\Software\\Clients\\StartMenuInternet','HKLM:\\SOFTWARE\\Clients\\StartMenuInternet' -EA SilentlyContinue | ForEach-Object {",
+      "  if ($_.PSChildName -notmatch '(?i)yandex') { return }",
+      "  $cmd = (Get-ItemProperty -LiteralPath ($_.PSPath + '\\shell\\open\\command') -EA SilentlyContinue).'(default)'",
+      "  if ($cmd -match '\"([^\"]+\\.exe)\"') { Add-Exe $Matches[1] } elseif ($cmd -match '(\\S+\\.exe)') { Add-Exe $Matches[1] }",
+      '}',
+      // App Paths
+      "Get-ChildItem 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths','HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths' -EA SilentlyContinue | ForEach-Object {",
+      "  if ($_.PSChildName -notmatch '(?i)(yandex|browser)') { return }",
+      "  $def = (Get-ItemProperty -LiteralPath $_.PSPath -EA SilentlyContinue).'(default)'",
+      '  Add-Exe $def',
+      '}',
+      // Uninstall entries named Yandex / Яндекс
+      "$uRoots = @('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*')",
+      'Get-ItemProperty $uRoots -EA SilentlyContinue | ForEach-Object {',
+      "  $name = [string]$_.DisplayName",
+      "  if ($name -notmatch '(?i)yandex|яндекс') { return }",
+      '  Add-Exe ([string]$_.DisplayIcon)',
+      '  $loc = [string]$_.InstallLocation',
+      '  if ($loc -and (Test-Path -LiteralPath $loc)) {',
+      "    Get-ChildItem -LiteralPath $loc -Recurse -Filter browser.exe -File -EA SilentlyContinue | Select-Object -First 3 | ForEach-Object { Add-Exe $_.FullName }",
+      "    Get-ChildItem -LiteralPath $loc -Recurse -Filter Yandex.exe -File -EA SilentlyContinue | Select-Object -First 3 | ForEach-Object { Add-Exe $_.FullName }",
+      '  }',
+      '}',
+      // Yandex-specific keys
+      "foreach ($p in @('HKCU:\\Software\\Yandex\\YandexBrowser','HKLM:\\SOFTWARE\\Yandex\\YandexBrowser')) {",
+      '  if (-not (Test-Path -LiteralPath $p)) { continue }',
+      '  $props = Get-ItemProperty -LiteralPath $p -EA SilentlyContinue',
+      '  foreach ($n in @($props.PSObject.Properties.Name)) {',
+      '    $v = [string]$props.$n',
+      "    if ($v -match '(?i)\\.exe') { Add-Exe $v }",
+      "    if ($v -match '(?i)YandexBrowser' -and (Test-Path -LiteralPath $v)) {",
+      "      Get-ChildItem -LiteralPath $v -Recurse -Filter browser.exe -File -EA SilentlyContinue | Select-Object -First 2 | ForEach-Object { Add-Exe $_.FullName }",
+      '    }',
+      '  }',
+      '}',
+      '$list = @($paths | ForEach-Object { [pscustomobject]@{ ExePath = $_ } })',
+      '$json = ($list | ConvertTo-Json -Compress -Depth 3)',
+      'if ([string]::IsNullOrWhiteSpace($json)) { $json = "[]" }',
+      `$utf8 = New-Object System.Text.UTF8Encoding $false`,
+      `[System.IO.File]::WriteAllText('${outLit}', $json, $utf8)`,
+    ].join('\r\n')
+
+    fs.writeFileSync(psPath, '\uFEFF' + script, 'utf8')
+    execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],
+      { timeout: 45000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+    )
+    if (fs.existsSync(jsonPath)) {
+      let text = fs.readFileSync(jsonPath, 'utf8')
+      if (text.charCodeAt(0) === 0xfeff) text = text.slice(1)
+      text = text.trim()
+      if (text) {
+        const parsed = JSON.parse(text)
+        const rows = Array.isArray(parsed) ? parsed : [parsed]
+        for (const row of rows) {
+          const exe = String(row.ExePath || '').trim()
+          if (!exe) continue
+          const leaf = path.basename(exe).toLowerCase()
+          const name = leaf === 'browser.exe' || leaf === 'yandex.exe'
+            ? 'Яндекс Браузер'
+            : /disk/i.test(leaf) ? 'Яндекс Диск'
+            : /music/i.test(leaf) ? 'Яндекс Музыка'
+            : 'Яндекс'
+          add(exe, name, 'yandex-reg')
+        }
+      }
+    }
+    try { fs.unlinkSync(psPath) } catch { /* ignore */ }
+    try { fs.unlinkSync(jsonPath) } catch { /* ignore */ }
+  } catch (e) {
+    console.error('[Apps] yandex registry scan failed:', e?.message || e)
+  }
+
+  return out
+}
+
+/** ARP / Uninstall registry — DisplayName + InstallLocation/DisplayIcon. */
+function collectUninstallApps() {
+  if (process.platform !== 'win32') return []
+  const stamp = `${Date.now()}-${process.pid}`
+  const tmpDir = os.tmpdir()
+  const psPath = path.join(tmpDir, `silent-arp-${stamp}.ps1`)
+  const jsonPath = path.join(tmpDir, `silent-arp-${stamp}.json`)
+  const outLit = jsonPath.replace(/'/g, "''")
+  const script = [
+    '$ErrorActionPreference = "SilentlyContinue"',
+    '$list = New-Object System.Collections.Generic.List[object]',
+    '$roots = @(',
+    "  'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',",
+    "  'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',",
+    "  'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'",
+    ')',
+    'Get-ItemProperty $roots -EA SilentlyContinue | ForEach-Object {',
+    '  $name = [string]$_.DisplayName',
+    '  if ([string]::IsNullOrWhiteSpace($name)) { return }',
+    '  if ($name -match "(?i)(update|redistributable|runtime|sdk|driver|hotfix|kb\\d)") { return }',
+    '  $icon = [string]$_.DisplayIcon',
+    '  $loc = [string]$_.InstallLocation',
+    '  $exe = $null',
+    "  if ($icon) { $exe = (($icon -split ',')[0]).Trim().Trim('\"') }",
+    '  if ($exe -and -not ($exe -match "(?i)\\.exe$")) { $exe = $null }',
+    '  if (-not $exe -and $loc -and (Test-Path -LiteralPath $loc)) {',
+    '    $hit = Get-ChildItem -LiteralPath $loc -Filter *.exe -File -EA SilentlyContinue | Select-Object -First 1',
+    '    if ($hit) { $exe = $hit.FullName }',
+    '  }',
+    '  if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { return }',
+    '  $list.Add([pscustomobject]@{ Name = $name; ExePath = $exe; InstallLocation = $loc; Publisher = [string]$_.Publisher })',
+    '}',
+    `$json = ($list | ConvertTo-Json -Compress -Depth 3)`,
+    'if ([string]::IsNullOrWhiteSpace($json)) { $json = "[]" }',
+    `$utf8 = New-Object System.Text.UTF8Encoding $false`,
+    `[System.IO.File]::WriteAllText('${outLit}', $json, $utf8)`,
+  ].join('\r\n')
+
+  try {
+    fs.writeFileSync(psPath, '\uFEFF' + script, 'utf8')
+    execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],
+      { timeout: 60000, windowsHide: true, maxBuffer: 20 * 1024 * 1024 },
+    )
+    if (!fs.existsSync(jsonPath)) return []
+    let text = fs.readFileSync(jsonPath, 'utf8')
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1)
+    text = text.trim()
+    if (!text) return []
+    const parsed = JSON.parse(text)
+    const rows = Array.isArray(parsed) ? parsed : [parsed]
+    return rows.map(row => {
+      const name = String(row.Name || '').trim()
+      let exePath = String(row.ExePath || '').trim()
+      if (!name) return null
+      const isYandex = /яндекс|yandex/i.test(name)
+      if (!isYandex && SKIP_NAME_RE.test(name)) return null
+      // Яндекс: DisplayIcon часто .ico или stub — добираем browser.exe из InstallLocation / LocalAppData
+      if (isYandex && (!exePath || !/\.exe$/i.test(exePath) || !fs.existsSync(exePath) || !/browser\.exe$/i.test(exePath))) {
+        const loc = String(row.InstallLocation || '').trim()
+        const candidates = []
+        if (loc) {
+          candidates.push(path.join(loc, 'browser.exe'))
+          candidates.push(path.join(loc, 'Application', 'browser.exe'))
+        }
+        candidates.push(
+          process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Yandex', 'YandexBrowser', 'Application', 'browser.exe'),
+          process.env.USERPROFILE && path.join(process.env.USERPROFILE, 'AppData', 'Local', 'Yandex', 'YandexBrowser', 'Application', 'browser.exe'),
+        )
+        for (const c of candidates.filter(Boolean)) {
+          if (fs.existsSync(c)) {
+            exePath = c
+            break
+          }
+        }
+      }
+      if (!exePath || !/\.exe$/i.test(exePath) || !fs.existsSync(exePath)) return null
+      if (!isYandex && SKIP_TARGET_RE.test(exePath)) return null
+      return {
+        id: makeId(exePath, exePath),
+        name: isYandex && /браузер|browser/i.test(name) ? 'Яндекс Браузер' : name,
+        installLocation: String(row.InstallLocation || '').trim() || path.dirname(exePath),
+        exePath,
+        lnkPath: '',
+        publisher: String(row.Publisher || '').trim() || (isYandex ? 'Yandex' : ''),
+        isSystem: false,
+        icon: null,
+        source: isYandex ? 'uninstall-yandex' : 'uninstall',
+      }
+    }).filter(Boolean)
+  } catch (e) {
+    console.error('[Apps] uninstall scan failed:', e?.message || e)
+    return []
+  } finally {
+    try { fs.unlinkSync(psPath) } catch { /* ignore */ }
+    try { fs.unlinkSync(jsonPath) } catch { /* ignore */ }
+  }
+}
+
+function mergeAppLists(...lists) {
+  const byExe = new Map()
+  const byId = new Map()
+  for (const list of lists) {
+    for (const app of list || []) {
+      const exeKey = app.exePath ? String(app.exePath).toLowerCase().replace(/\//g, '\\') : ''
+      if (exeKey && byExe.has(exeKey)) {
+        const prev = byExe.get(exeKey)
+        if (!prev.icon && app.icon) prev.icon = app.icon
+        continue
+      }
+      if (byId.has(app.id)) continue
+      byId.set(app.id, app)
+      if (exeKey) byExe.set(exeKey, app)
+    }
+  }
+  return [...byId.values()]
+}
+
 function listInstalledApps() {
   if (process.platform !== 'win32') return []
 
-  const apps = collectShortcutApps()
+  const shortcuts = collectShortcutApps()
+  const yandex = collectYandexApps()
+  const uninstall = collectUninstallApps()
+  const apps = mergeAppLists(shortcuts, yandex, uninstall)
   apps.sort((a, b) => a.name.localeCompare(b.name, 'ru'))
   const withIcon = apps.filter(a => a.icon).length
   const steamN = apps.filter(a => String(a.source || '').startsWith('steam')).length
-  const bsN = apps.filter(a => a.source === 'bluestacks').length
+  const yaN = apps.filter(a =>
+    String(a.source || '').includes('yandex') || /яндекс|yandex/i.test(a.name || ''),
+  ).length
   console.log(
-    `[Apps] total=${apps.length} icons=${withIcon} steam=${steamN} bluestacks=${bsN}`,
+    `[Apps] total=${apps.length} icons=${withIcon} steam=${steamN} yandex=${yaN} uninstall=${uninstall.length}`,
   )
   return apps
 }
@@ -445,4 +790,6 @@ module.exports = {
   parseBlueStacksPackage,
   findSteamGameExe,
   extractVdfString,
+  collectYandexApps,
+  normalizePath: (p) => String(p || '').toLowerCase().replace(/\//g, '\\'),
 }

@@ -4,7 +4,7 @@
  */
 const fs = require('fs')
 const path = require('path')
-const { resolveExcludedExePaths } = require('./exclusionsPolicy')
+const { resolveBypassExePaths } = require('./exclusionsPolicy')
 
 const DEFAULT_FILE_NAME = 'app-exclusions.json'
 
@@ -17,13 +17,20 @@ function defaultStatePath(userDataPath) {
  * @param {string} opts.filePath
  * @param {string[]} opts.selectedIds
  * @param {Array<{id:string,name?:string,exePath?:string|null}>} opts.apps
+ * @param {boolean} [opts.whitelist]
  */
-function saveExclusionsState({ filePath, selectedIds, apps }) {
-  const resolved = resolveExcludedExePaths(selectedIds, apps)
+function saveExclusionsState({ filePath, selectedIds, apps, whitelist = false }) {
+  const resolved = resolveBypassExePaths({ selectedIds, apps, whitelist: !!whitelist })
   const payload = {
-    version: 1,
+    version: 2,
     updatedAt: new Date().toISOString(),
+    whitelist: !!whitelist,
     selectedIds: [...(selectedIds instanceof Set ? selectedIds : selectedIds || [])],
+    apps: (apps || []).map(a => ({
+      id: a.id,
+      name: a.name || '',
+      exePath: a.exePath || null,
+    })),
     entries: resolved.entries,
     exePaths: resolved.exePaths,
   }
@@ -35,23 +42,31 @@ function saveExclusionsState({ filePath, selectedIds, apps }) {
 function loadExclusionsState(filePath) {
   try {
     if (!fs.existsSync(filePath)) {
-      return { version: 1, selectedIds: [], entries: [], exePaths: [] }
+      return { version: 2, whitelist: false, selectedIds: [], apps: [], entries: [], exePaths: [] }
     }
     const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'))
     const selectedIds = Array.isArray(raw.selectedIds) ? raw.selectedIds : []
+    const apps = Array.isArray(raw.apps) ? raw.apps : []
+    const whitelist = !!raw.whitelist
     const entries = Array.isArray(raw.entries) ? raw.entries : []
-    const exePaths = Array.isArray(raw.exePaths)
+    let exePaths = Array.isArray(raw.exePaths)
       ? raw.exePaths
       : entries.map(e => e.exePath).filter(Boolean)
+    // Пересчёт с актуальным whitelist, если есть каталог apps
+    if (apps.length) {
+      exePaths = resolveBypassExePaths({ selectedIds, apps, whitelist }).exePaths
+    }
     return {
-      version: raw.version || 1,
+      version: raw.version || 2,
+      whitelist,
       selectedIds,
+      apps,
       entries,
       exePaths,
       updatedAt: raw.updatedAt || null,
     }
   } catch {
-    return { version: 1, selectedIds: [], entries: [], exePaths: [] }
+    return { version: 2, whitelist: false, selectedIds: [], apps: [], entries: [], exePaths: [] }
   }
 }
 

@@ -10,9 +10,14 @@ const path = require('path')
 
 const {
   resolveExcludedExePaths,
+  resolveBypassExePaths,
   isProcessExcluded,
   normalizePath,
 } = require('../src/main/apps/exclusionsPolicy')
+const {
+  parseRules,
+  normalizeRuleInput,
+} = require('../src/main/apps/siteBypass')
 const {
   saveExclusionsState,
   loadExclusionsState,
@@ -61,6 +66,34 @@ describe('exclusionsPolicy', () => {
 
   it('normalizePath lowercases and unifies separators', () => {
     assert.equal(normalizePath('C:/Foo/Bar.EXE'), 'c:\\foo\\bar.exe')
+  })
+
+  it('whitelist mode bypasses all except selected', () => {
+    const { exePaths } = resolveBypassExePaths({
+      selectedIds: ['chrome'],
+      apps,
+      whitelist: true,
+    })
+    assert.ok(exePaths.some(p => /Telegram\.exe$/i.test(p)))
+    assert.ok(!exePaths.some(p => /chrome\.exe$/i.test(p)))
+  })
+
+  it('blacklist mode matches resolveExcludedExePaths', () => {
+    const a = resolveBypassExePaths({ selectedIds: ['telegram'], apps, whitelist: false })
+    const b = resolveExcludedExePaths(['telegram'], apps)
+    assert.deepEqual(a.exePaths, b.exePaths)
+  })
+})
+
+describe('siteBypass rules', () => {
+  it('normalizeRuleInput strips url', () => {
+    assert.equal(normalizeRuleInput('https://ozon.ru/product/1'), 'ozon.ru')
+    assert.equal(normalizeRuleInput('10.0.0.0/8'), '10.0.0.0/8')
+  })
+
+  it('parseRules dedupes and caps', () => {
+    const rules = parseRules('ozon.ru\n#x\nozon.ru\n1.2.3.4')
+    assert.deepEqual(rules, ['ozon.ru', '1.2.3.4'])
   })
 })
 
@@ -113,8 +146,8 @@ describe('vpn session exclusions — приложение реально в пл
       { id: 'edge', name: 'Edge', exePath: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe' },
     ]
 
-    // Пользователь отметил только Chrome
-    saveExclusionsState({ filePath, selectedIds: ['chrome'], apps })
+    // Пользователь отметил только Chrome (ЧС)
+    saveExclusionsState({ filePath, selectedIds: ['chrome'], apps, whitelist: false })
     const forVpn = getExcludedExePathsForVpn(filePath)
     assert.deepEqual(forVpn, [apps[0].exePath])
 
@@ -122,8 +155,41 @@ describe('vpn session exclusions — приложение реально в пл
     assert.equal(assertExeExcludedInSession(apps[0].exePath), true)
     assert.equal(assertExeExcludedInSession(apps[1].exePath), false)
 
+    // БС: только Chrome через VPN → Edge мимо
+    saveExclusionsState({ filePath, selectedIds: ['chrome'], apps, whitelist: true })
+    const wlVpn = getExcludedExePathsForVpn(filePath)
+    assert.ok(wlVpn.includes(apps[1].exePath))
+    assert.ok(!wlVpn.includes(apps[0].exePath))
+
     void clearActiveExcludedExePaths()
     fs.rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('collectYandexApps finds versioned browser.exe', () => {
+  it('discovers Application\\browser.exe and Application\\x.y\\browser.exe under LOCALAPPDATA', () => {
+    const { collectYandexApps } = require('../src/main/apps/listInstalledApps')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'silent-yandex-'))
+    const appDir = path.join(dir, 'Yandex', 'YandexBrowser', 'Application')
+    const verDir = path.join(appDir, '25.6.1.1000')
+    fs.mkdirSync(verDir, { recursive: true })
+    const stub = Buffer.from('MZ') // minimal so existsSync passes; we don't execute
+    const direct = path.join(appDir, 'browser.exe')
+    const versioned = path.join(verDir, 'browser.exe')
+    fs.writeFileSync(direct, stub)
+    fs.writeFileSync(versioned, stub)
+
+    const prev = process.env.LOCALAPPDATA
+    process.env.LOCALAPPDATA = dir
+    try {
+      const found = collectYandexApps()
+      const exes = found.map(a => String(a.exePath || '').toLowerCase().replace(/\//g, '\\'))
+      assert.ok(exes.some(p => p.endsWith('\\browser.exe')), 'ожидался browser.exe')
+      assert.ok(found.some(a => /яндекс браузер/i.test(a.name)))
+    } finally {
+      process.env.LOCALAPPDATA = prev
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
@@ -154,5 +220,7 @@ describe('VPN wiring in main.js', () => {
     assert.match(mainSrc, /applyAppExclusionsForSession/)
     assert.match(mainSrc, /save-app-exclusions/)
     assert.match(mainSrc, /clearActiveExcludedExePaths/)
+    assert.match(mainSrc, /save-site-bypass/)
+    assert.match(mainSrc, /applySiteBypassFromFile/)
   })
 })

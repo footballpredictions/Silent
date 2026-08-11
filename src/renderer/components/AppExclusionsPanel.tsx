@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   getExcludedApps,
+  getSiteBypassRules,
+  isExclusionsWhitelist,
   resetStaleExclusions,
   saveExcludedApps,
+  saveExceptionsMode,
+  saveSiteBypassRules,
   type PcAppItem,
 } from '../exclusionsStore'
 
@@ -16,10 +20,13 @@ interface Props {
   border: string
   borderStrong: string
   dark: boolean
+  primaryBtnBg: string
+  primaryBtnFg: string
   onBack: () => void
 }
 
-/** Как ThemeCheckbox на Android: dark — чёрный фон / белая галочка / белая рамка. */
+type Pane = 'sites' | 'apps'
+
 function ThemeCheck({
   checked,
   dark,
@@ -60,7 +67,49 @@ function ThemeCheck({
   )
 }
 
-const STALE_RESET_KEY = 'pc_exclusions_startmenu_v1'
+function ModeChip({
+  label,
+  active,
+  fg,
+  bg,
+  onClick,
+}: {
+  label: string
+  active: boolean
+  fg: string
+  bg: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-xs px-3 py-1.5 rounded-lg"
+      style={{
+        background: active ? fg : 'transparent',
+        color: active ? bg : fg,
+        border: `1px solid ${active ? fg : `${fg}40`}`,
+      }}
+    >
+      {label}
+    </button>
+  )
+}
+
+const STALE_RESET_KEY = 'pc_exclusions_startmenu_v2'
+const MAX_SITE_RULES = 100
+
+function normalizeSiteRule(raw: string): string {
+  let s = raw.trim()
+  if (!s) return ''
+  if (/^https?:\/\//i.test(s)) {
+    try { s = new URL(s).hostname || s } catch { /* keep */ }
+  } else if (s.includes('/') && !/^\d+\.\d+\.\d+\.\d+\/\d{1,2}$/.test(s)) {
+    const before = s.split('/')[0]
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(before)) s = before
+  }
+  return s.trim().replace(/\.$/, '')
+}
 
 export default function AppExclusionsPanel({
   fg,
@@ -72,14 +121,17 @@ export default function AppExclusionsPanel({
   border,
   borderStrong,
   dark,
+  primaryBtnBg,
+  primaryBtnFg,
   onBack,
 }: Props) {
+  const [pane, setPane] = useState<Pane>('apps')
   const [apps, setApps] = useState<PcAppItem[]>([])
   const [loading, setLoading] = useState(true)
   const [loadFailed, setLoadFailed] = useState(false)
   const [search, setSearch] = useState('')
+  const [whitelist, setWhitelist] = useState(() => isExclusionsWhitelist())
   const [selected, setSelected] = useState<Set<string>>(() => {
-    // Одноразовый сброс: старые id/БС давали «всё отмечено»
     if (!localStorage.getItem(STALE_RESET_KEY)) {
       resetStaleExclusions()
       localStorage.setItem(STALE_RESET_KEY, '1')
@@ -87,6 +139,11 @@ export default function AppExclusionsPanel({
     }
     return getExcludedApps()
   })
+
+  const [siteRules, setSiteRules] = useState<string[]>(() => getSiteBypassRules())
+  const [newRule, setNewRule] = useState('')
+  const [siteHint, setSiteHint] = useState<string | null>(null)
+  const [siteBusy, setSiteBusy] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -99,11 +156,16 @@ export default function AppExclusionsPanel({
         const next = Array.isArray(list) ? list : []
         setApps(next)
 
-        // Оставляем только id из текущего списка (устаревшие отсекаем)
         const valid = new Set(next.map((a: PcAppItem) => a.id))
         setSelected(prev => {
+          // БС + пустой выбор → отметить все
+          if (whitelist && prev.size === 0 && next.length > 0) {
+            const all = new Set(next.map((a: PcAppItem) => a.id))
+            saveExcludedApps(all, next, true)
+            return all
+          }
           const kept = new Set([...prev].filter(id => valid.has(id)))
-          if (kept.size !== prev.size) saveExcludedApps(kept, next)
+          if (kept.size !== prev.size) saveExcludedApps(kept, next, whitelist)
           return kept
         })
 
@@ -120,9 +182,59 @@ export default function AppExclusionsPanel({
     return () => { cancelled = true }
   }, [])
 
-  const persist = (next: Set<string>) => {
+  const persistApps = (next: Set<string>, wl = whitelist) => {
     setSelected(next)
-    saveExcludedApps(next, apps)
+    setWhitelist(wl)
+    saveExcludedApps(next, apps, wl)
+  }
+
+  const switchMode = (toWhitelist: boolean) => {
+    if (whitelist === toWhitelist) return
+    setWhitelist(toWhitelist)
+    if (toWhitelist) {
+      const all = new Set(apps.map(a => a.id))
+      setSelected(all)
+      saveExceptionsMode(true, apps)
+    } else {
+      setSelected(new Set())
+      saveExceptionsMode(false, apps)
+    }
+  }
+
+  const persistSites = async (rules: string[]) => {
+    setSiteBusy(true)
+    setSiteHint(null)
+    try {
+      const capped = rules.slice(0, MAX_SITE_RULES)
+      setSiteRules(capped)
+      saveSiteBypassRules(capped)
+      const res = await (window as any).electronAPI?.saveSiteBypass?.({ rules: capped })
+      if (res?.unresolved?.length) {
+        setSiteHint(`Не резолвится: ${res.unresolved.slice(0, 2).join(', ')}`)
+      } else if (res?.targets?.length) {
+        setSiteHint(`Маршрутов: ${res.targets.length}`)
+      }
+    } catch (e: any) {
+      setSiteHint(`Ошибка: ${e?.message || e}`)
+    } finally {
+      setSiteBusy(false)
+    }
+  }
+
+  const addSiteRule = () => {
+    const rule = normalizeSiteRule(newRule)
+    if (!rule || siteBusy) return
+    if (siteRules.some(r => r.toLowerCase() === rule.toLowerCase())) {
+      setSiteHint('Уже в списке')
+      setNewRule('')
+      return
+    }
+    if (siteRules.length >= MAX_SITE_RULES) {
+      setSiteHint(`Лимит ${MAX_SITE_RULES} сайтов`)
+      return
+    }
+    setNewRule('')
+    void persistSites([...siteRules, rule])
   }
 
   const displayApps = useMemo(() => {
@@ -150,83 +262,157 @@ export default function AppExclusionsPanel({
         ← Назад
       </button>
       <div className="text-sm font-bold text-left w-full" style={{ color: fg }}>
-        Исключения приложений
+        Исключения
       </div>
-      <p className="text-[11px] mt-1 mb-3 text-left w-full" style={{ color: muted }}>
-        Отмеченные приложения идут мимо VPN-туннеля
-      </p>
 
-      <input
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-        placeholder="Поиск..."
-        className="theme-field w-full rounded-xl px-3 py-2 text-sm mb-3 focus:outline-none"
-        style={{
-          userSelect: 'text',
-          background: fieldBg,
-          color: fieldText,
-          border: `1px solid ${borderStrong}`,
-          ['--field-ph' as any]: fieldPlaceholder,
-        } as any}
-        onFocus={e => { e.currentTarget.style.borderColor = fg }}
-        onBlur={e => { e.currentTarget.style.borderColor = borderStrong }}
-      />
+      <div className="flex gap-2 mt-3 mb-3">
+        <ModeChip label="Сайты" active={pane === 'sites'} fg={fg} bg={bg} onClick={() => setPane('sites')} />
+        <ModeChip label="Приложения" active={pane === 'apps'} fg={fg} bg={bg} onClick={() => setPane('apps')} />
+      </div>
 
-      {loading ? (
-        <div className="flex justify-center py-8">
-          <div
-            className="w-5 h-5 border-2 rounded-full animate-spin"
-            style={{ borderColor: border, borderTopColor: fg }}
+      {pane === 'sites' ? (
+        <>
+          <p className="text-[11px] mb-3 text-left w-full" style={{ color: muted }}>
+            Домен или IP идут мимо VPN (ozon.ru, 1.2.3.4, 10.0.0.0/8)
+          </p>
+          <input
+            value={newRule}
+            onChange={e => setNewRule(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') addSiteRule() }}
+            placeholder="домен или IP…"
+            disabled={siteBusy}
+            className="theme-field w-full rounded-xl px-3 py-2.5 text-sm focus:outline-none mb-2"
+            style={{
+              background: fieldBg,
+              color: fieldText,
+              border: `1px solid ${borderStrong}`,
+              ['--field-ph' as any]: fieldPlaceholder,
+            } as any}
           />
-        </div>
-      ) : loadFailed && displayApps.length === 0 ? (
-        <p className="text-xs py-6 text-left" style={{ color: muted }}>
-          Не удалось получить список программ. Проверьте права доступа или перезапустите приложение.
-        </p>
-      ) : displayApps.length === 0 ? (
-        <p className="text-xs py-6 text-left" style={{ color: muted }}>
-          Ничего не найдено
-        </p>
-      ) : (
-        <div className="space-y-1.5">
-          {displayApps.map(app => {
-            const checked = selected.has(app.id)
-            return (
-              <button
-                key={app.id}
-                onClick={() => {
-                  const next = new Set(selected)
-                  if (checked) next.delete(app.id)
-                  else next.add(app.id)
-                  persist(next)
-                }}
-                className="w-full flex items-center gap-2.5 py-1.5 px-1 rounded-lg text-left"
-                style={{ background: 'transparent' }}
-                onMouseEnter={e => {
-                  ;(e.currentTarget as HTMLButtonElement).style.background = dark ? '#1F1F26' : '#F9FAFB'
-                }}
-                onMouseLeave={e => {
-                  ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
-                }}
-              >
-                {app.icon ? (
-                  <img src={app.icon} alt="" className="w-9 h-9 object-contain shrink-0" />
-                ) : (
-                  <div
-                    className="w-9 h-9 shrink-0 flex items-center justify-center text-xs font-semibold"
-                    style={{ background: fieldBg, color: muted }}
+          <button
+            type="button"
+            onClick={addSiteRule}
+            disabled={siteBusy || !newRule.trim()}
+            className="w-full rounded-xl py-2.5 text-sm font-semibold mb-2 disabled:opacity-40 transition-opacity"
+            style={{ background: primaryBtnBg, color: primaryBtnFg }}
+          >
+            Добавить
+          </button>
+          {siteHint && (
+            <p className="text-[11px] mb-2" style={{ color: muted }}>{siteHint}</p>
+          )}
+          <p className="text-[10px] mb-2" style={{ color: muted }}>
+            {siteRules.length} / {MAX_SITE_RULES}
+          </p>
+          {siteRules.length === 0 ? (
+            <p className="text-xs py-6 text-left" style={{ color: muted }}>
+              Список пуст. Добавьте домен или IP.
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {siteRules.map(rule => (
+                <div
+                  key={rule}
+                  className="flex items-center gap-2 py-1.5 px-1"
+                >
+                  <span className="flex-1 text-[13px] truncate" style={{ color: fg }}>{rule}</span>
+                  <button
+                    type="button"
+                    disabled={siteBusy}
+                    onClick={() => void persistSites(siteRules.filter(r => r !== rule))}
+                    className="text-xs px-2"
+                    style={{ color: muted }}
                   >
-                    {(app.name || '?').charAt(0).toUpperCase()}
-                  </div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] truncate" style={{ color: fg }}>{app.name}</div>
+                    ✕
+                  </button>
                 </div>
-                <ThemeCheck checked={checked} dark={dark} fg={fg} bg={bg} />
-              </button>
-            )
-          })}
-        </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="text-[11px] mb-2 text-left w-full" style={{ color: muted }}>
+            {whitelist ? 'БС: только выбранные через VPN' : 'ЧС: выбранные мимо VPN'}
+          </p>
+          <div className="flex gap-2 mb-3">
+            <ModeChip label="ЧС" active={!whitelist} fg={fg} bg={bg} onClick={() => switchMode(false)} />
+            <ModeChip label="БС" active={whitelist} fg={fg} bg={bg} onClick={() => switchMode(true)} />
+          </div>
+
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Поиск..."
+            className="theme-field w-full rounded-xl px-3 py-2 text-sm mb-3 focus:outline-none"
+            style={{
+              userSelect: 'text',
+              background: fieldBg,
+              color: fieldText,
+              border: `1px solid ${borderStrong}`,
+              ['--field-ph' as any]: fieldPlaceholder,
+            } as any}
+            onFocus={e => { e.currentTarget.style.borderColor = fg }}
+            onBlur={e => { e.currentTarget.style.borderColor = borderStrong }}
+          />
+
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <div
+                className="w-5 h-5 border-2 rounded-full animate-spin"
+                style={{ borderColor: border, borderTopColor: fg }}
+              />
+            </div>
+          ) : loadFailed && displayApps.length === 0 ? (
+            <p className="text-xs py-6 text-left" style={{ color: muted }}>
+              Не удалось получить список программ. Проверьте права доступа или перезапустите приложение.
+            </p>
+          ) : displayApps.length === 0 ? (
+            <p className="text-xs py-6 text-left" style={{ color: muted }}>
+              Ничего не найдено
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {displayApps.map(app => {
+                const checked = selected.has(app.id)
+                return (
+                  <button
+                    key={app.id}
+                    onClick={() => {
+                      const next = new Set(selected)
+                      if (checked) next.delete(app.id)
+                      else next.add(app.id)
+                      persistApps(next)
+                    }}
+                    className="w-full flex items-center gap-2.5 py-1.5 px-1 rounded-lg text-left"
+                    style={{ background: 'transparent' }}
+                    onMouseEnter={e => {
+                      ;(e.currentTarget as HTMLButtonElement).style.background = dark ? '#1F1F26' : '#F9FAFB'
+                    }}
+                    onMouseLeave={e => {
+                      ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+                    }}
+                  >
+                    {app.icon ? (
+                      <img src={app.icon} alt="" className="w-9 h-9 object-contain shrink-0" />
+                    ) : (
+                      <div
+                        className="w-9 h-9 shrink-0 flex items-center justify-center text-xs font-semibold"
+                        style={{ background: fieldBg, color: muted }}
+                      >
+                        {(app.name || '?').charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] truncate" style={{ color: fg }}>{app.name}</div>
+                    </div>
+                    <ThemeCheck checked={checked} dark={dark} fg={fg} bg={bg} />
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </>
       )}
     </div>
   )

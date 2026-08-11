@@ -579,6 +579,16 @@ cd pc; npm install; npm run dev
 - Версии: Android `versionCode/Name 160` / `1.0.160`; PC `package.json 1.0.160`.
 - Релизы: `assembleRelease` + `build-installer.bat` OK. Push `android` + `pc`.
 
+### 2026-08-11 — olcrtc 2.0 старт (каркас)
+
+- План: `.cursor/PLAN_OLCRTC2.md` / `backend/docs/PLAN_OLCRTC2.md`
+- Go: `backend/olcrtc2/` — Carrier interface, MockCarrier tests, stubs telemost/wbstream
+- Правило: **не деплоить на Улей** рядом с `wdtt`, пока нет соты
+
+### 2026-08-11 — клиенты 1.0.161 (olcrtc UI снят)
+
+- Android/PC: version **1.0.161**, force WDTT, меню обхода убрано из release. Push `android`/`pc`/`main`.
+
 ### 2026-08-11 — olcrtc полностью снят с продукта
 
 - **Почему:** правки olcrtc на Улье снова били CPU рядом с `wdtt` и ломали быстрый VK.

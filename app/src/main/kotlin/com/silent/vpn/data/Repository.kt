@@ -1167,18 +1167,19 @@ class SilentRepository @Inject constructor(
     }
 
     fun getBypassFamily(): String {
-        return when (prefs.getString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_WDTT)) {
-            BYPASS_FAMILY_OLCRTC -> BYPASS_FAMILY_OLCRTC
-            else -> BYPASS_FAMILY_WDTT
+        // olcrtc снят: всегда WDTT. Старый pref сбрасываем.
+        val raw = prefs.getString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_WDTT)
+        if (raw == BYPASS_FAMILY_OLCRTC) {
+            prefs.edit().putString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_WDTT).apply()
         }
+        return BYPASS_FAMILY_WDTT
     }
 
-    fun setBypassFamily(family: String) {
-        val normalized = if (family == BYPASS_FAMILY_OLCRTC) BYPASS_FAMILY_OLCRTC else BYPASS_FAMILY_WDTT
-        prefs.edit().putString(PREF_BYPASS_FAMILY, normalized).apply()
+    fun setBypassFamily(@Suppress("UNUSED_PARAMETER") family: String) {
+        prefs.edit().putString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_WDTT).apply()
     }
 
-    fun isOlcrtcBypass(): Boolean = getBypassFamily() == BYPASS_FAMILY_OLCRTC
+    fun isOlcrtcBypass(): Boolean = false
 
     fun getOlcrtcProvider(): String {
         return when (val v = prefs.getString(PREF_OLCRTC_PROVIDER, OLCRTC_TELEMOST)) {
@@ -1201,8 +1202,7 @@ class SilentRepository @Inject constructor(
         else -> "Яндекс Телемост"
     }
 
-    fun bypassFamilyLabel(family: String = getBypassFamily()): String =
-        if (family == BYPASS_FAMILY_OLCRTC) "olcrtc" else "VK"
+    fun bypassFamilyLabel(@Suppress("UNUSED_PARAMETER") family: String = getBypassFamily()): String = "VK"
 
     private val PREF_OLCRTC_CACHE = "olcrtc_config_cache_v10"
 
@@ -1373,6 +1373,9 @@ class SilentRepository @Inject constructor(
                 }
             }
         } catch (_: Exception) {
+        } finally {
+            // Session-mode: не держать sticky к снесённой комнате после wipe/leave.
+            clearOlcrtcCache()
         }
     }
 

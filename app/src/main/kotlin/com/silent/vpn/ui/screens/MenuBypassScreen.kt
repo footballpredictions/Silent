@@ -19,28 +19,21 @@ import androidx.compose.ui.unit.sp
 import com.silent.vpn.BuildConfig
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.service.SilentVpnService
-import kotlinx.coroutines.launch
 
+/** Debug: режимы VK. Olcrtc убран из продукта. */
 @Composable
 fun MenuBypassScreen(
     repo: SilentRepository,
     fg: Color,
     onBack: () -> Unit,
 ) {
-    var family by remember { mutableStateOf(repo.getBypassFamily()) }
     var vkMode by remember { mutableStateOf(repo.getVkCredStrategy()) }
-    var olcProvider by remember { mutableStateOf(repo.getOlcrtcProvider()) }
-    var pendingFamily by remember { mutableStateOf<String?>(null) }
     var pendingVk by remember { mutableStateOf<String?>(null) }
-    var pendingOlc by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
     val vpnRunning = SilentVpnService.isRunning
 
     LaunchedEffect(Unit) {
-        repo.prefetchOlcrtcConfig()
+        repo.setBypassFamily(SilentRepository.BYPASS_FAMILY_WDTT)
     }
-
-    val effectiveFamily = pendingFamily ?: family
 
     Column(
         Modifier
@@ -57,18 +50,26 @@ fun MenuBypassScreen(
             Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
         }
 
-        // Как Подписка / Сессии / Бонусы: 14sp SemiBold (не 18 Bold).
         Text(
-            "Варианты обхода",
+            if (BuildConfig.DEBUG) "VK (debug)" else "Обход",
             fontSize = 14.sp,
             fontWeight = FontWeight.SemiBold,
             color = fg,
             modifier = Modifier.padding(bottom = 12.dp),
         )
 
+        if (!BuildConfig.DEBUG) {
+            Text(
+                "Только VK / WDTT. Другие варианты отключены.",
+                fontSize = 12.sp,
+                color = fg.copy(alpha = 0.55f),
+            )
+            return@Column
+        }
+
         if (vpnRunning) {
             Text(
-                "Отключите VPN перед сменой варианта.",
+                "Отключите VPN перед сменой режима.",
                 fontSize = 11.sp,
                 color = fg.copy(alpha = 0.45f),
                 modifier = Modifier.padding(bottom = 12.dp),
@@ -76,111 +77,44 @@ fun MenuBypassScreen(
         }
 
         BypassOption(
-            title = "VK",
-            selected = effectiveFamily == SilentRepository.BYPASS_FAMILY_WDTT,
+            title = "VKCalls",
+            selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_VKCALLS,
             enabled = !vpnRunning,
             fg = fg,
-            onSelect = { pendingFamily = SilentRepository.BYPASS_FAMILY_WDTT },
+            onSelect = { pendingVk = SilentRepository.VK_CRED_VKCALLS },
         )
-        if (effectiveFamily == SilentRepository.BYPASS_FAMILY_WDTT && BuildConfig.DEBUG) {
-            Column(Modifier.padding(start = 12.dp)) {
-                BypassOption(
-                    title = "VKCalls",
-                    selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_VKCALLS,
-                    enabled = !vpnRunning,
-                    fg = fg,
-                    onSelect = { pendingVk = SilentRepository.VK_CRED_VKCALLS },
-                )
-                BypassOption(
-                    title = "Авто капча",
-                    selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_AUTO,
-                    enabled = !vpnRunning,
-                    fg = fg,
-                    onSelect = { pendingVk = SilentRepository.VK_CRED_AUTO },
-                )
-                BypassOption(
-                    title = "Ручная капча",
-                    selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_MANUAL,
-                    enabled = !vpnRunning,
-                    fg = fg,
-                    onSelect = { pendingVk = SilentRepository.VK_CRED_MANUAL },
-                )
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
         BypassOption(
-            title = "olcrtc",
-            selected = effectiveFamily == SilentRepository.BYPASS_FAMILY_OLCRTC,
+            title = "Авто капча",
+            selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_AUTO,
             enabled = !vpnRunning,
             fg = fg,
-            onSelect = { pendingFamily = SilentRepository.BYPASS_FAMILY_OLCRTC },
+            onSelect = { pendingVk = SilentRepository.VK_CRED_AUTO },
         )
-        if (effectiveFamily == SilentRepository.BYPASS_FAMILY_OLCRTC) {
-            Column(Modifier.padding(start = 12.dp)) {
-                BypassOption(
-                    title = "Яндекс Телемост",
-                    selected = (pendingOlc ?: olcProvider) == SilentRepository.OLCRTC_TELEMOST,
-                    enabled = !vpnRunning,
-                    fg = fg,
-                    onSelect = { pendingOlc = SilentRepository.OLCRTC_TELEMOST },
-                )
-                BypassOption(
-                    title = "WB Stream",
-                    selected = (pendingOlc ?: olcProvider) == SilentRepository.OLCRTC_WBSTREAM,
-                    enabled = !vpnRunning,
-                    fg = fg,
-                    onSelect = { pendingOlc = SilentRepository.OLCRTC_WBSTREAM },
-                )
-            }
-        }
+        BypassOption(
+            title = "Ручная капча",
+            selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_MANUAL,
+            enabled = !vpnRunning,
+            fg = fg,
+            onSelect = { pendingVk = SilentRepository.VK_CRED_MANUAL },
+        )
     }
 
-    val hasPending =
-        (pendingFamily != null && pendingFamily != family) ||
-            (pendingVk != null && pendingVk != vkMode) ||
-            (pendingOlc != null && pendingOlc != olcProvider)
-
+    val hasPending = pendingVk != null && pendingVk != vkMode
     if (hasPending) {
         AlertDialog(
-            onDismissRequest = {
-                pendingFamily = null
-                pendingVk = null
-                pendingOlc = null
-            },
-            title = { Text("Применить?") },
-            text = {
-                Text(
-                    "${repo.bypassFamilyLabel(family)}" +
-                        (pendingFamily?.let { " → ${repo.bypassFamilyLabel(it)}" } ?: ""),
-                )
-            },
+            onDismissRequest = { pendingVk = null },
+            title = { Text("Применить режим VK?") },
             confirmButton = {
                 TvTextButton(onClick = {
-                    pendingFamily?.let {
-                        repo.setBypassFamily(it)
-                        family = it
-                    }
                     pendingVk?.let {
                         repo.setVkCredStrategy(it)
                         vkMode = it
                     }
-                    pendingOlc?.let {
-                        repo.setOlcrtcProvider(it)
-                        olcProvider = it
-                    }
-                    pendingFamily = null
                     pendingVk = null
-                    pendingOlc = null
-                    scope.launch { repo.prefetchOlcrtcConfig() }
-                }) { Text("Применить", color = fg) }
+                }) { Text("Применить") }
             },
             dismissButton = {
-                TvTextButton(onClick = {
-                    pendingFamily = null
-                    pendingVk = null
-                    pendingOlc = null
-                }) { Text("Отмена", color = fg.copy(0.6f)) }
+                TvTextButton(onClick = { pendingVk = null }) { Text("Отмена") }
             },
         )
     }
@@ -198,20 +132,22 @@ private fun BypassOption(
         Modifier
             .fillMaxWidth()
             .tvClickable(enabled = enabled, onClick = onSelect)
-            .padding(vertical = 8.dp),
+            .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RadioButton(
             selected = selected,
-            onClick = if (enabled) onSelect else null,
+            onClick = { if (enabled) onSelect() },
             enabled = enabled,
-            colors = RadioButtonDefaults.colors(selectedColor = fg, unselectedColor = fg.copy(0.4f)),
+            colors = RadioButtonDefaults.colors(
+                selectedColor = fg,
+                unselectedColor = fg.copy(alpha = 0.4f),
+            ),
         )
         Text(
             title,
             fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-            color = if (enabled) fg else fg.copy(alpha = 0.45f),
+            color = if (enabled) fg else fg.copy(alpha = 0.4f),
             modifier = Modifier.padding(start = 4.dp),
         )
     }

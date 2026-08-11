@@ -70,8 +70,8 @@ android {
         applicationId = "com.silent.vpn"
         minSdk = 24
         targetSdk = 35
-        versionCode = 162
-        versionName = "1.0.162"
+        versionCode = 161
+        versionName = "1.0.161"
         testInstrumentationRunner = "com.silent.vpn.HiltTestRunner"
         // Не сбрасывать данные приложения при каждом прогоне — сохраняется логин/VPN-разрешение.
         testInstrumentationRunnerArguments["clearPackageData"] = "false"

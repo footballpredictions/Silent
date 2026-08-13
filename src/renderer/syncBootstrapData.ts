@@ -8,7 +8,7 @@ import {
   type HashItem,
 } from './hashItemsStore'
 import { saveCachedProfile } from './profileStore'
-import { prefetchOlcrtcConfig } from './bypassStore'
+import { prefetchOlcrtcBothProviders } from './bypassStore'
 
 /**
  * Профиль + хеши + olcrtc-config при логине.
@@ -70,9 +70,9 @@ export async function syncLoginDataViaTunnel(): Promise<{
   }
 
   try {
-    const cfg = await prefetchOlcrtcConfig()
-    olcrtcOk = !!cfg
-    pushLog('Bootstrap', `olcrtc-config ${olcrtcOk ? 'OK' : 'FAIL'}`)
+    const { tm, wb } = await prefetchOlcrtcBothProviders()
+    olcrtcOk = tm || wb
+    pushLog('Bootstrap', `olcrtc-config both tm=${tm} wb=${wb}`)
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     pushLog('Bootstrap', `olcrtc-config FAIL: ${msg}`, 'W')

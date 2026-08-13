@@ -55,6 +55,10 @@
         "to": "olcrtc.exe"
       },
       {
+        "from": "resources/olcrtc2-cnc.exe",
+        "to": "olcrtc2-cnc.exe"
+      },
+      {
         "from": "resources/sing-box.exe",
         "to": "sing-box.exe"
       }

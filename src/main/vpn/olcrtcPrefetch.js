@@ -1,6 +1,6 @@
 /**
- * Prefetch Telemost / WB auth в Electron (как OkHttp на Android),
- * чтобы Go olcrtc не упирался в TLS/DNS до peer.
+ * Prefetch Telemost / WB auth в Electron (как OkHttp whitelist на Android).
+ * Важно: Chromium net / IPv4 — Node https часто таймаутит, если остался WG/TUN.
  */
 const https = require('https')
 const http = require('http')
@@ -10,90 +10,143 @@ const path = require('path')
 const { randomUUID } = require('crypto')
 const { URL } = require('url')
 
-function httpGetJson(urlStr, headers = {}, timeoutMs = 20_000) {
+async function resolveIpv4(hostname) {
+  try {
+    const r = await dns.lookup(hostname, { family: 4 })
+    return r?.address || ''
+  } catch {
+    return ''
+  }
+}
+
+/** Chromium net.fetch (Electron) — ближе к Android OkHttp, чем Node https. */
+async function electronFetchJson(urlStr, { method = 'GET', headers = {}, body, timeoutMs = 45_000 } = {}) {
+  const { net } = require('electron')
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), timeoutMs)
+  try {
+    const init = {
+      method,
+      headers,
+      signal: ac.signal,
+    }
+    if (body != null) {
+      init.body = typeof body === 'string' ? body : JSON.stringify(body)
+      if (!headers['Content-Type'] && !headers['content-type']) {
+        init.headers = { ...headers, 'Content-Type': 'application/json' }
+      }
+    }
+    const res = await net.fetch(urlStr, init)
+    const text = await res.text()
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`)
+    }
+    if (!text) return {}
+    try {
+      return JSON.parse(text)
+    } catch {
+      return {}
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Fallback: Node https на IPv4 + SNI (не AAAA Happy Eyeballs). */
+function nodeHttpJson(urlStr, { method = 'GET', headers = {}, body, timeoutMs = 45_000, ipv4 } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr)
     const lib = u.protocol === 'http:' ? http : https
-    const req = lib.request(
-      {
-        protocol: u.protocol,
-        hostname: u.hostname,
-        port: u.port || (u.protocol === 'http:' ? 80 : 443),
-        path: u.pathname + u.search,
-        method: 'GET',
-        headers,
-        timeout: timeoutMs,
+    const payload = body == null ? null : typeof body === 'string' ? body : JSON.stringify(body)
+    const hdrs = { ...headers }
+    if (payload != null && !hdrs['Content-Type'] && !hdrs['content-type']) {
+      hdrs['Content-Type'] = 'application/json'
+    }
+    if (payload != null) {
+      hdrs['Content-Length'] = Buffer.byteLength(payload)
+    }
+    const opts = {
+      protocol: u.protocol,
+      hostname: ipv4 || u.hostname,
+      servername: u.hostname,
+      port: u.port || (u.protocol === 'http:' ? 80 : 443),
+      path: u.pathname + u.search,
+      method,
+      headers: {
+        Host: u.hostname,
+        ...hdrs,
       },
-      (res) => {
-        const chunks = []
-        res.on('data', (c) => chunks.push(c))
-        res.on('end', () => {
-          const body = Buffer.concat(chunks).toString('utf8')
-          if (res.statusCode < 200 || res.statusCode >= 300) {
-            reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 120)}`))
-            return
-          }
-          try {
-            resolve(JSON.parse(body))
-          } catch (e) {
-            reject(e)
-          }
-        })
-      },
-    )
+      timeout: timeoutMs,
+      family: 4,
+    }
+    const req = lib.request(opts, (res) => {
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8')
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`HTTP ${res.statusCode}: ${text.slice(0, 120)}`))
+          return
+        }
+        try {
+          resolve(text ? JSON.parse(text) : {})
+        } catch (e) {
+          reject(e)
+        }
+      })
+    })
     req.on('error', reject)
     req.on('timeout', () => {
       req.destroy()
       reject(new Error('timeout'))
     })
+    if (payload != null) req.write(payload)
     req.end()
   })
 }
 
-function httpPostJson(urlStr, payload, headers = {}, timeoutMs = 20_000) {
-  return new Promise((resolve, reject) => {
+async function httpGetJson(urlStr, headers = {}, timeoutMs = 45_000) {
+  try {
+    return await electronFetchJson(urlStr, { method: 'GET', headers, timeoutMs })
+  } catch (e1) {
     const u = new URL(urlStr)
-    const body = JSON.stringify(payload)
-    const lib = u.protocol === 'http:' ? http : https
-    const req = lib.request(
-      {
-        protocol: u.protocol,
-        hostname: u.hostname,
-        port: u.port || (u.protocol === 'http:' ? 80 : 443),
-        path: u.pathname + u.search,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(body),
-          ...headers,
-        },
-        timeout: timeoutMs,
-      },
-      (res) => {
-        const chunks = []
-        res.on('data', (c) => chunks.push(c))
-        res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8')
-          if (res.statusCode < 200 || res.statusCode >= 300) {
-            reject(new Error(`HTTP ${res.statusCode}: ${text.slice(0, 120)}`))
-            return
-          }
-          try {
-            resolve(text ? JSON.parse(text) : {})
-          } catch {
-            resolve({})
-          }
-        })
-      },
-    )
-    req.on('error', reject)
-    req.on('timeout', () => {
-      req.destroy()
-      reject(new Error('timeout'))
+    const ip = await resolveIpv4(u.hostname)
+    try {
+      return await nodeHttpJson(urlStr, {
+        method: 'GET',
+        headers,
+        timeoutMs,
+        ipv4: ip || undefined,
+      })
+    } catch (e2) {
+      throw new Error(`${e1.message || e1}; fallback: ${e2.message || e2}`)
+    }
+  }
+}
+
+async function httpPostJson(urlStr, payload, headers = {}, timeoutMs = 45_000) {
+  try {
+    return await electronFetchJson(urlStr, {
+      method: 'POST',
+      headers,
+      body: payload,
+      timeoutMs,
     })
-    req.write(body)
-    req.end()
-  })
+  } catch (e1) {
+    const u = new URL(urlStr)
+    const ip = await resolveIpv4(u.hostname)
+    try {
+      return await nodeHttpJson(urlStr, {
+        method: 'POST',
+        headers,
+        body: payload,
+        timeoutMs,
+        ipv4: ip || undefined,
+      })
+    } catch (e2) {
+      throw new Error(`${e1.message || e1}; fallback: ${e2.message || e2}`)
+    }
+  }
 }
 
 async function resolveHosts(hosts, into) {
@@ -102,7 +155,9 @@ async function resolveHosts(hosts, into) {
     try {
       const r = await dns.lookup(h, { family: 4 })
       if (r?.address) into[h] = r.address
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -121,7 +176,16 @@ async function prefetchTelemost(room, dataDir, log) {
     `https://cloud-api.yandex.ru/telemost_front/v2/telemost/conferences/${enc}/connection` +
     '?next_gen_media_platform_allowed=true&display_name=silent-pc&waiting_room_supported=true'
   const staticHosts = {}
-  await resolveHosts(['cloud-api.yandex.ru', 'telemost.yandex.ru', 'goloom.strm.yandex.net'], staticHosts)
+  await resolveHosts(
+    [
+      'cloud-api.yandex.ru',
+      'telemost.yandex.ru',
+      'goloom.strm.yandex.net',
+      'turn.tel.yandex.net',
+      'stun.rtc.yandex.net',
+    ],
+    staticHosts,
+  )
   try {
     const info = await httpGetJson(url, {
       'User-Agent':
@@ -143,7 +207,7 @@ async function prefetchTelemost(room, dataDir, log) {
     if (mediaHost) await resolveHosts([mediaHost], staticHosts)
     const file = path.join(dataDir, 'telemost-conn.json')
     fs.writeFileSync(file, JSON.stringify(info), 'utf8')
-    log?.('[olcrtc] Telemost auth prefetch OK')
+    log?.('[olcrtc] Telemost auth prefetch OK (electron/net)')
     return { connFile: file, staticHosts }
   } catch (e) {
     log?.(`[olcrtc] Telemost prefetch fail: ${e.message || e}`)
@@ -158,7 +222,15 @@ async function prefetchWbstream(room, dataDir, log) {
     .replace(/\/$/, '')
   if (!roomId) return {}
   const staticHosts = {}
-  await resolveHosts(['stream.wb.ru', 'rtc-el-02.wb.ru'], staticHosts)
+  await resolveHosts(
+    [
+      'stream.wb.ru',
+      'rtc-el-01.wb.ru',
+      'rtc-el-02.wb.ru',
+      'stream-meetup.wildberries.ru',
+    ],
+    staticHosts,
+  )
   const ua =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
   try {
@@ -179,33 +251,37 @@ async function prefetchWbstream(room, dataDir, log) {
       return { staticHosts }
     }
     await httpPostJson(
-      `https://stream.wb.ru/api-room/api/v1/room/${roomId}/join`,
+      `https://stream.wb.ru/api-room/api/v1/room/${encodeURIComponent(roomId)}/join`,
       {},
       { 'User-Agent': ua, Authorization: `Bearer ${accessToken}` },
     )
-    const tok = await httpGetJson(
-      `https://stream.wb.ru/api-room-manager/v2/room/${roomId}/connection-details` +
-        '?deviceType=PARTICIPANT_DEVICE_TYPE_WEB_DESKTOP&displayName=silent-pc',
+    const details = await httpGetJson(
+      `https://stream.wb.ru/api-room-manager/v2/room/${encodeURIComponent(roomId)}/connection-details?deviceType=PARTICIPANT_DEVICE_TYPE_WEB_DESKTOP&displayName=silent-pc`,
       { 'User-Agent': ua, Authorization: `Bearer ${accessToken}` },
     )
-    const serverUrl = tok?.serverUrl || 'wss://rtc-el-02.wb.ru'
-    const roomToken = tok?.roomToken || ''
-    if (!roomToken) {
-      log?.('[olcrtc] WB prefetch: пустой roomToken')
+    const serverUrl = details?.serverUrl || details?.url || 'wss://rtc-el-02.wb.ru'
+    const roomToken = details?.roomToken || details?.participantToken || details?.token || ''
+    if (!serverUrl || !roomToken) {
+      log?.('[olcrtc] WB prefetch: нет serverUrl/token')
       return { staticHosts }
     }
-    const h = hostFromUrl(serverUrl)
-    if (h) await resolveHosts([h], staticHosts)
+    const mediaHost = hostFromUrl(serverUrl)
+    if (mediaHost) await resolveHosts([mediaHost], staticHosts)
     const file = path.join(dataDir, 'wbstream-conn.json')
     fs.writeFileSync(
       file,
       JSON.stringify({ url: serverUrl, token: roomToken, roomID: roomId }),
       'utf8',
     )
-    log?.('[olcrtc] WB auth prefetch OK')
-    return { connFile: file, staticHosts }
+    log?.('[olcrtc] WB auth prefetch OK (electron/net)')
+    return { file, staticHosts }
   } catch (e) {
-    log?.(`[olcrtc] WB prefetch fail: ${e.message || e}`)
+    const msg = String(e.message || e)
+    if (/498/.test(msg)) {
+      log?.('[olcrtc] WB prefetch 498 (antibot) — Go guest сам (норма)')
+    } else {
+      log?.(`[olcrtc] WB prefetch soft-miss: ${msg.slice(0, 160)}`)
+    }
     return { staticHosts }
   }
 }
@@ -213,4 +289,5 @@ async function prefetchWbstream(room, dataDir, log) {
 module.exports = {
   prefetchTelemost,
   prefetchWbstream,
+  resolveHosts,
 }

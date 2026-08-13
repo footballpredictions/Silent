@@ -51,14 +51,11 @@ import {
   getOlcrtcProvider,
   isOlcrtcBypass,
   olcrtcProviderLabel,
-  prefetchOlcrtcConfig,
   reportOlcrtcRoomFailure,
   resolveOlcrtcConfig,
   startOlcrtcHeartbeatLoop,
-  startOlcrtcLiveSyncLoop,
   stopOlcrtcHeartbeatLoop,
   stopOlcrtcLiveSyncLoop,
-  syncOlcrtcLiveChannel,
 } from '../bypassStore'
 import { isDebugBuild } from '../debugBuild'
 import { telegramProxyDeepLink } from '../telegramProxyLink'
@@ -379,7 +376,7 @@ export default function MainScreen({
   useEffect(() => {
     void seedConfigSyncRevision()
     fetchProfile()
-    void prefetchOlcrtcConfig()
+    // olcrtc-config — только login/syncBootstrap, не на каждом заходе на главный.
     const subMsg = localStorage.getItem('silent_subscription_msg')
     if (subMsg) {
       localStorage.removeItem('silent_subscription_msg')
@@ -497,7 +494,7 @@ export default function MainScreen({
       setConnected(false)
       setConnecting(false)
       setActiveWorkers(0)
-      stopOlcrtcHeartbeatLoop()
+      stopOlcrtcHeartbeatLoop({ leave: true })
       stopOlcrtcLiveSyncLoop()
       pushLog('Main', `VPN stopped${code != null ? ` (code=${code})` : ''} — можно сменить обход`)
       void checkForUpdate().then(info => {
@@ -523,8 +520,7 @@ export default function MainScreen({
         setConnecting(false)
         void markOnlineOnServer()
         if (isOlcrtcBypass()) {
-          startOlcrtcLiveSyncLoop()
-          void syncOlcrtcLiveChannel()
+          startOlcrtcHeartbeatLoop()
         }
       }
     }
@@ -683,21 +679,20 @@ export default function MainScreen({
     }
 
     connectLockRef.current = true
-    // olcrtc: сначала конфиг через IPC (пока WDTT ещё жив / bypass работает)
+    // olcrtc: только dual-cache (без сети на каждый connect).
     if (isOlcrtcBypass()) {
-      pushLog('Main', 'olcrtc-config prefetch…')
-      const pre = (await syncOlcrtcLiveChannel()) || (await resolveOlcrtcConfig({ preferCache: false }))
+      const pre = await resolveOlcrtcConfig({ preferCache: true })
       if (!pre) {
         connectLockRef.current = false
         alert(
-          'Не удалось загрузить /api/vpn/olcrtc-config. Проверьте интернет или откройте меню → Варианты обхода (подтянуть конфиг).',
+          'Нет кеша olcrtc2-config. Войдите снова или включите VK и дождитесь синхронизации.',
         )
         return
       }
       const room = pre.providers?.[getOlcrtcProvider()]?.room || '?'
       pushLog(
         'Main',
-        `olcrtc-config ok slot=${pre.assigned_slot || '?'} provider=${olcrtcProviderLabel()} room=${String(room).slice(0, 48)}`,
+        `olcrtc-config cache slot=${pre.assigned_slot || '?'} provider=${olcrtcProviderLabel()} room=${String(room).slice(0, 48)}`,
       )
     }
     // UI сразу: не ждать fetchProfile / prepare (раньше давало ~5–8с «Подключение…»).
@@ -857,14 +852,12 @@ export default function MainScreen({
       pushLog('Main', 'vpnConnect start')
 
       if (isOlcrtcBypass()) {
-        // Всегда свежий конфиг (канал из админки), кеш — только fallback если сеть мертва.
-        const olcCfg =
-          (await resolveOlcrtcConfig({ preferCache: false })) ||
-          (await resolveOlcrtcConfig({ preferCache: true }))
+        // Dual-cache: сеть только если слота нет (после login/sync).
+        const olcCfg = await resolveOlcrtcConfig({ preferCache: true })
         if (!olcCfg) {
           setConnected(false)
           setMainVpnSessionActive(false)
-          alert('Не удалось загрузить /api/vpn/olcrtc-config (нет кеша). Откройте меню → Варианты обхода или проверьте интернет без VPN.')
+          alert('Нет кеша olcrtc2-config. Войдите снова или sync при VK.')
           return
         }
         const payload = buildOlcrtcConnectPayload(olcCfg, getOlcrtcProvider(), {
@@ -898,7 +891,7 @@ export default function MainScreen({
         }
         setConnected(false)
         setMainVpnSessionActive(false)
-        stopOlcrtcHeartbeatLoop()
+        stopOlcrtcHeartbeatLoop({ leave: true })
         alert('olcrtc-туннель не поднялся (проверьте srv в админке и бинарники olcrtc/sing-box)')
         await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
         return
@@ -1317,7 +1310,7 @@ export default function MainScreen({
                 { key: 'subscription', label: 'Подписка' },
                 { key: 'exceptions', label: 'Исключения' },
                 { key: 'dns', label: `DNS · ${dnsMenuLabel()}` },
-                ...(isDevBuild ? [{ key: 'bypass', label: `VK (debug) · ${bypassNavLabel}` }] : []),
+                ...(isDevBuild ? [{ key: 'bypass', label: `Варианты обхода · ${bypassNavLabel}` }] : []),
                 ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
                 { key: 'bonuses', label: clientTheme?.menu_bonuses_label || 'Бонусы' },
                 { key: 'devices', label: `Сессии (${sessionsBadge(profile)})` },
@@ -1554,6 +1547,10 @@ export default function MainScreen({
               bg={bg}
               primary={palette.primary}
               vpnRunning={connected || connecting}
+              onVpnStoppedForSwitch={() => {
+                setConnected(false)
+                setConnecting(false)
+              }}
               onBack={() => {
                 setBypassNavLabel(bypassFamilyLabel())
                 setMenuPage(null)

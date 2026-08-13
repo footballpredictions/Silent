@@ -9,14 +9,23 @@ import {
 import { getPublicApiBaseUrl } from './tunnelApi'
 import { getStableDeviceFingerprint } from './api'
 import { getDnsOverrideServers } from './dnsPreset'
+import { isDebugBuild } from './debugBuild'
 
 const FAMILY_KEY = 'bypass_family'
 const OLCRTC_PROVIDER_KEY = 'olcrtc_provider'
-/** v3: android room → meet.small-dm.ru (LTE DPI) */
-const OLCRTC_CACHE_KEY = 'olcrtc_config_cache_v10'
+/** v12: dual-cache telemost / wbstream (не затирают друг друга). */
+const OLCRTC_CACHE_KEY_LEGACY = 'olcrtc_config_cache_v11'
+function olcrtcCacheKey(provider: string = getOlcrtcProvider()): string {
+  const p =
+    provider === OLCRTC_WBSTREAM || provider === OLCRTC_TELEMOST
+      ? provider
+      : OLCRTC_TELEMOST
+  return `olcrtc_config_cache_v12_${p}`
+}
 
 export const BYPASS_FAMILY_WDTT = 'wdtt'
 export const BYPASS_FAMILY_OLCRTC = 'olcrtc'
+export const BYPASS_FAMILY_OLCRTC2 = 'olcrtc2'
 
 export const OLCRTC_WBSTREAM = 'wbstream'
 export const OLCRTC_TELEMOST = 'telemost'
@@ -33,16 +42,27 @@ export {
 }
 
 export function getBypassFamily(): string {
-  // olcrtc снят: всегда WDTT (VK). Старый localStorage игнорируем.
+  if (!isDebugBuild) return BYPASS_FAMILY_WDTT
   try {
-    if (localStorage.getItem(FAMILY_KEY) === BYPASS_FAMILY_OLCRTC) {
+    const v = localStorage.getItem(FAMILY_KEY)
+    if (v === BYPASS_FAMILY_OLCRTC2) return BYPASS_FAMILY_OLCRTC2
+    // старый olcrtc v1 больше не поддерживается → WDTT
+    if (v === BYPASS_FAMILY_OLCRTC) {
       localStorage.setItem(FAMILY_KEY, BYPASS_FAMILY_WDTT)
     }
   } catch { /* ignore */ }
   return BYPASS_FAMILY_WDTT
 }
 
-export function setBypassFamily(_family: string) {
+export function setBypassFamily(family: string) {
+  if (!isDebugBuild) {
+    localStorage.setItem(FAMILY_KEY, BYPASS_FAMILY_WDTT)
+    return
+  }
+  if (family === BYPASS_FAMILY_OLCRTC || family === BYPASS_FAMILY_OLCRTC2) {
+    localStorage.setItem(FAMILY_KEY, BYPASS_FAMILY_OLCRTC2)
+    return
+  }
   localStorage.setItem(FAMILY_KEY, BYPASS_FAMILY_WDTT)
 }
 
@@ -50,7 +70,6 @@ export function getOlcrtcProvider(): string {
   try {
     const v = localStorage.getItem(OLCRTC_PROVIDER_KEY)
     if (v === OLCRTC_WBSTREAM || v === OLCRTC_TELEMOST) return v
-    // старый jitsi → telemost
     if (v === OLCRTC_JITSI) return OLCRTC_TELEMOST
   } catch { /* ignore */ }
   return OLCRTC_TELEMOST
@@ -65,7 +84,7 @@ export function setOlcrtcProvider(provider: string) {
 }
 
 export function isOlcrtcBypass(): boolean {
-  return false
+  return isDebugBuild && getBypassFamily() === BYPASS_FAMILY_OLCRTC2
 }
 
 export function olcrtcProviderLabel(provider: string = getOlcrtcProvider()): string {
@@ -76,7 +95,10 @@ export function olcrtcProviderLabel(provider: string = getOlcrtcProvider()): str
   }
 }
 
-export function bypassFamilyLabel(_family: string = getBypassFamily()): string {
+export function bypassFamilyLabel(family: string = getBypassFamily()): string {
+  if (family === BYPASS_FAMILY_OLCRTC2 || family === BYPASS_FAMILY_OLCRTC) {
+    return `olcrtc / ${olcrtcProviderLabel()}`
+  }
   return 'VK'
 }
 
@@ -112,7 +134,15 @@ export async function sendOlcrtcHeartbeat(online: boolean = true): Promise<void>
     const cfg = readOlcrtcCache()
     const prov = getOlcrtcProvider()
     const roomDbId = cfg?.providers?.[prov]?.room_db_id
-    if (!roomDbId) return
+    if (!roomDbId) {
+      if (online) {
+        try {
+          const { pushLog } = await import('./debugLog')
+          pushLog('olcrtc', 'heartbeat skip: нет room_db_id в кеше', 'W')
+        } catch { /* ignore */ }
+      }
+      return
+    }
     const fp = getStableDeviceFingerprint()
     const body = {
       room_db_id: roomDbId,
@@ -135,48 +165,76 @@ export async function sendOlcrtcHeartbeat(online: boolean = true): Promise<void>
 
     // Как /olcrtc-config: через main IPC (при VPN bypass / иначе public).
     if (electron?.tunnelApiRequest) {
-      await electron.tunnelApiRequest({
+      const res = await electron.tunnelApiRequest({
         method: 'POST',
-        path: '/api/vpn/olcrtc-heartbeat',
+        path: '/api/vpn/olcrtc2-heartbeat',
         body,
         timeout: 15_000,
       })
+      if (online && (res?.status < 200 || res?.status >= 300)) {
+        try {
+          const { pushLog } = await import('./debugLog')
+          pushLog('olcrtc', `heartbeat HTTP ${res?.status}`, 'W')
+        } catch { /* ignore */ }
+      }
       return
     }
 
     const base = getPublicApiBaseUrl().replace(/\/$/, '')
-    await fetch(`${base}/api/vpn/olcrtc-heartbeat`, {
+    const res = await fetch(`${base}/api/vpn/olcrtc2-heartbeat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       cache: 'no-store',
     })
-  } catch { /* ignore */ }
+    if (online && !res.ok) {
+      try {
+        const { pushLog } = await import('./debugLog')
+        pushLog('olcrtc', `heartbeat HTTP ${res.status}`, 'W')
+      } catch { /* ignore */ }
+    }
+  } catch (e) {
+    if (online) {
+      try {
+        const { pushLog } = await import('./debugLog')
+        pushLog('olcrtc', `heartbeat fail: ${e instanceof Error ? e.message : e}`, 'W')
+      } catch { /* ignore */ }
+    }
+  }
 }
 
+/** Запуск heartbeat. НЕ делает leave — иначе sticky снимается и agent рвёт комнату. */
 export function startOlcrtcHeartbeatLoop(): void {
-  stopOlcrtcHeartbeatLoop()
-  void sendOlcrtcHeartbeat(true)
-  heartbeatTimer = setInterval(() => {
-    void sendOlcrtcHeartbeat(true)
-  }, 45_000)
-}
-
-export function stopOlcrtcHeartbeatLoop(): void {
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer)
     heartbeatTimer = null
   }
-  void leaveOlcrtcRoom()
+  void sendOlcrtcHeartbeat(true)
+  // Сервер HEARTBEAT_STALE_SEC=300 — интервал с запасом.
+  heartbeatTimer = setInterval(() => {
+    void sendOlcrtcHeartbeat(true)
+  }, 30_000)
 }
 
-/** Снять sticky по всем провайдерам из кеша (assign резервирует несколько). */
+/** Только остановить таймер. Leave — отдельно при disconnect. */
+export function stopOlcrtcHeartbeatLoop(opts?: { leave?: boolean }): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
+  if (opts?.leave) {
+    void leaveOlcrtcRoom()
+  }
+}
+
+/** Leave текущего провайдера: sticky offline, dual-cache соседнего не трогаем. */
 export async function leaveOlcrtcRoom(): Promise<void> {
   try {
-    const cfg = readOlcrtcCache()
-    if (!cfg?.providers) {
+    const prov = getOlcrtcProvider()
+    const cfg = readOlcrtcCache(prov)
+    const roomDbId = cfg?.providers?.[prov]?.room_db_id
+    if (!roomDbId) {
       await sendOlcrtcHeartbeat(false)
-      clearOlcrtcCache()
       return
     }
     const fp = getStableDeviceFingerprint()
@@ -190,51 +248,60 @@ export async function leaveOlcrtcRoom(): Promise<void> {
         }) => Promise<{ status: number; data: unknown }>
       }
     }).electronAPI
-    for (const [prov, p] of Object.entries(cfg.providers)) {
-      const roomDbId = p?.room_db_id
-      if (!roomDbId) continue
-      const body = {
-        room_db_id: roomDbId,
-        fingerprint: fp,
-        provider: prov,
-        device_type: 'pc',
-        online: false,
-      }
-      try {
-        if (electron?.tunnelApiRequest) {
-          await electron.tunnelApiRequest({
-            method: 'POST',
-            path: '/api/vpn/olcrtc-heartbeat',
-            body,
-            timeout: 12_000,
-          })
-        } else {
-          const base = getPublicApiBaseUrl().replace(/\/$/, '')
-          await fetch(`${base}/api/vpn/olcrtc-heartbeat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            cache: 'no-store',
-          })
-        }
-      } catch { /* ignore */ }
+    const body = {
+      room_db_id: roomDbId,
+      fingerprint: fp,
+      provider: prov,
+      device_type: 'pc',
+      online: false,
     }
+    try {
+      if (electron?.tunnelApiRequest) {
+        await electron.tunnelApiRequest({
+          method: 'POST',
+          path: '/api/vpn/olcrtc2-heartbeat',
+          body,
+          timeout: 12_000,
+        })
+      } else {
+        const base = getPublicApiBaseUrl().replace(/\/$/, '')
+        await fetch(`${base}/api/vpn/olcrtc2-heartbeat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          cache: 'no-store',
+        })
+      }
+    } catch { /* ignore */ }
   } catch { /* ignore */ }
-  clearOlcrtcCache()
+  // Кеш слотов не чистим — TM↔WB switch читает dual-cache.
 }
 
-function readOlcrtcCache(): OlcrtcPublicConfig | null {
+function readOlcrtcCache(provider: string = getOlcrtcProvider()): OlcrtcPublicConfig | null {
   try {
-    const raw = localStorage.getItem(OLCRTC_CACHE_KEY)
-    if (!raw) return null
+    const raw = localStorage.getItem(olcrtcCacheKey(provider))
+    if (!raw) {
+      // миграция со старого единого ключа
+      const legacy = localStorage.getItem(OLCRTC_CACHE_KEY_LEGACY)
+      if (!legacy) return null
+      const parsed = JSON.parse(legacy)
+      const cfg = (parsed?.cfg || parsed) as OlcrtcPublicConfig | null
+      if (!cfg?.providers?.[provider]?.room) return null
+      saveOlcrtcCache(cfg, provider)
+      return cfg
+    }
     const parsed = JSON.parse(raw)
-    return parsed?.cfg || null
+    const cfg = (parsed?.cfg || parsed) as OlcrtcPublicConfig | null
+    if (!cfg?.enabled || (cfg.crypto_key?.length ?? 0) !== 64) return null
+    const room = (cfg.providers?.[provider]?.room || '').trim()
+    if (!room || cfg.providers?.[provider]?.enabled === false) return null
+    return cfg
   } catch {
     return null
   }
 }
 
-function olcrtcConfigPath(): string {
+function olcrtcConfigPath(provider: string = getOlcrtcProvider()): string {
   let fp = ''
   try {
     fp = getStableDeviceFingerprint()
@@ -244,14 +311,34 @@ function olcrtcConfigPath(): string {
   const q = new URLSearchParams({
     device_type: 'pc',
     fingerprint: fp,
-    provider: getOlcrtcProvider(),
+    provider,
   })
-  return `/api/vpn/olcrtc-config?${q.toString()}`
+  return `/api/vpn/olcrtc2-config?${q.toString()}`
 }
 
-function saveOlcrtcCache(cfg: OlcrtcPublicConfig) {
+function saveOlcrtcCache(cfg: OlcrtcPublicConfig, forProvider?: string) {
   try {
-    localStorage.setItem(OLCRTC_CACHE_KEY, JSON.stringify({ at: Date.now(), cfg }))
+    const slots = Object.entries(cfg.providers || {})
+    let wrote = false
+    for (const [rawKey, slot] of slots) {
+      const k = String(rawKey || '').trim().toLowerCase()
+      if (k !== OLCRTC_TELEMOST && k !== OLCRTC_WBSTREAM) continue
+      if (slot?.denied || !slot?.enabled || !String(slot.room || '').trim()) continue
+      localStorage.setItem(olcrtcCacheKey(k), JSON.stringify({ at: Date.now(), cfg }))
+      wrote = true
+    }
+    // Ответ с одним слотом — сохранить явно под запрошенный provider.
+    if (!wrote && forProvider) {
+      const p = cfg.providers?.[forProvider]
+      if (p?.enabled && String(p.room || '').trim() && !p.denied) {
+        localStorage.setItem(olcrtcCacheKey(forProvider), JSON.stringify({ at: Date.now(), cfg }))
+        wrote = true
+      }
+    }
+    if (!wrote) return
+    try {
+      localStorage.removeItem(OLCRTC_CACHE_KEY_LEGACY)
+    } catch { /* ignore */ }
     try {
       window.dispatchEvent(new CustomEvent('silent-olcrtc-config', { detail: cfg }))
     } catch { /* ignore */ }
@@ -260,27 +347,35 @@ function saveOlcrtcCache(cfg: OlcrtcPublicConfig) {
 
 export function clearOlcrtcCache(): void {
   try {
-    localStorage.removeItem(OLCRTC_CACHE_KEY)
+    localStorage.removeItem(olcrtcCacheKey(OLCRTC_TELEMOST))
+    localStorage.removeItem(olcrtcCacheKey(OLCRTC_WBSTREAM))
+    localStorage.removeItem(OLCRTC_CACHE_KEY_LEGACY)
   } catch { /* ignore */ }
+}
+
+export function getCachedOlcrtcConfigForProvider(
+  provider: string = getOlcrtcProvider(),
+): OlcrtcPublicConfig | null {
+  return readOlcrtcCache(provider)
 }
 
 /** Текущий room id выбранного провайдера (из кеша после /olcrtc-config). */
 export function getLiveOlcrtcRoom(provider: string = getOlcrtcProvider()): string {
-  const cfg = getCachedOlcrtcConfig()
+  const cfg = getCachedOlcrtcConfigForProvider(provider)
   return (cfg?.providers?.[provider]?.room || '').trim()
 }
 
 /**
- * Подтянуть /olcrtc-config; если room сменился — лог + событие для UI настроек.
- * Вызывать при connect, ConfigSync и после peer-dead.
+ * Подтянуть /olcrtc2-config (редко: login / VK sync / peer-dead).
+ * Не вызывать при TM↔WB switch.
  */
 export async function syncOlcrtcLiveChannel(opts?: {
   log?: (msg: string) => void
 }): Promise<OlcrtcPublicConfig | null> {
   const prov = getOlcrtcProvider()
   const prevRoom = getLiveOlcrtcRoom(prov)
-  const cfg = await fetchOlcrtcConfig()
-  if (!cfg) return null
+  const cfg = await fetchOlcrtcConfig(undefined, prov)
+  if (!cfg) return getCachedOlcrtcConfigForProvider(prov)
   const nextRoom = (cfg.providers?.[prov]?.room || '').trim()
   if (nextRoom && nextRoom !== prevRoom) {
     const msg = prevRoom
@@ -304,10 +399,10 @@ export async function syncOlcrtcLiveChannel(opts?: {
   return cfg
 }
 
-/** Peer dead / SOCKS timeout → сервер снимет sticky; клиент сбросит кеш и возьмёт новый room. */
+/** Peer dead → сброс только слота текущего провайдера + новый assign. */
 export async function reportOlcrtcRoomFailure(detail: string = ''): Promise<OlcrtcPublicConfig | null> {
-  const cfg = getCachedOlcrtcConfig()
   const prov = getOlcrtcProvider()
+  const cfg = getCachedOlcrtcConfigForProvider(prov)
   const roomDbId = cfg?.providers?.[prov]?.room_db_id || ''
   const oldRoom = cfg?.providers?.[prov]?.room || ''
   try {
@@ -333,12 +428,12 @@ export async function reportOlcrtcRoomFailure(detail: string = ''): Promise<Olcr
     if (electron?.tunnelApiRequest) {
       await electron.tunnelApiRequest({
         method: 'POST',
-        path: '/api/vpn/olcrtc-room-failure',
+        path: '/api/vpn/olcrtc2-room-failure',
         body,
         timeout: 15_000,
       })
     } else {
-      await fetch(`${base}/api/vpn/olcrtc-room-failure`, {
+      await fetch(`${base}/api/vpn/olcrtc2-room-failure`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -346,7 +441,9 @@ export async function reportOlcrtcRoomFailure(detail: string = ''): Promise<Olcr
       })
     }
   } catch { /* ignore */ }
-  clearOlcrtcCache()
+  try {
+    localStorage.removeItem(olcrtcCacheKey(prov))
+  } catch { /* ignore */ }
   try {
     const { pushLog } = await import('./debugLog')
     pushLog('olcrtc', `room failure → сброс sticky, ищем новый канал (${detail || oldRoom})`)
@@ -356,13 +453,9 @@ export async function reportOlcrtcRoomFailure(detail: string = ''): Promise<Olcr
 
 let liveSyncTimer: ReturnType<typeof setInterval> | null = null
 
-/** Пока VPN/сессия olcrtc — раз в минуту сверять room с сервером (админ сменил канал). */
+/** Live-sync по таймеру отключён (лишние /olcrtc2-config). Оставлено API для совместимости. */
 export function startOlcrtcLiveSyncLoop(): void {
   stopOlcrtcLiveSyncLoop()
-  void syncOlcrtcLiveChannel()
-  liveSyncTimer = setInterval(() => {
-    void syncOlcrtcLiveChannel()
-  }, 60_000)
 }
 
 export function stopOlcrtcLiveSyncLoop(): void {
@@ -373,29 +466,25 @@ export function stopOlcrtcLiveSyncLoop(): void {
 }
 
 export function getCachedOlcrtcConfig(): OlcrtcPublicConfig | null {
-  try {
-    const raw = localStorage.getItem(OLCRTC_CACHE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as { cfg?: OlcrtcPublicConfig }
-    const cfg = parsed?.cfg
-    if (!cfg?.enabled || !cfg.crypto_key || cfg.crypto_key.length !== 64) return null
-    return cfg
-  } catch {
-    return null
-  }
+  return getCachedOlcrtcConfigForProvider(getOlcrtcProvider())
 }
 
-/** Всегда через main IPC (bypass при VPN) → публичный API. Renderer fetch на nip.io часто таймаутит. */
+/** Всегда через main IPC (bypass при VPN) → публичный API. */
 export async function fetchOlcrtcConfig(
   _baseUrl?: string,
+  forProvider?: string,
 ): Promise<OlcrtcPublicConfig | null> {
+  const prov =
+    forProvider === OLCRTC_WBSTREAM || forProvider === OLCRTC_TELEMOST
+      ? forProvider
+      : getOlcrtcProvider()
   const parseAndCache = (raw: unknown): OlcrtcPublicConfig | null => {
     const cfg = raw as OlcrtcPublicConfig
-    if (cfg?.enabled && cfg.crypto_key?.length === 64) {
-      saveOlcrtcCache(cfg)
-      return cfg
+    if (!cfg || typeof cfg !== 'object') return null
+    if (cfg.enabled && cfg.crypto_key?.length === 64) {
+      saveOlcrtcCache(cfg, prov)
     }
-    return null
+    return cfg
   }
 
   try {
@@ -412,12 +501,12 @@ export async function fetchOlcrtcConfig(
     if (electron?.tunnelApiRequest) {
       const res = await electron.tunnelApiRequest({
         method: 'GET',
-        path: olcrtcConfigPath(),
-        timeout: 20_000,
+        path: olcrtcConfigPath(prov),
+        timeout: 90_000,
       })
       if (res?.status >= 200 && res.status < 300) {
-        const cached = parseAndCache(res.data)
-        if (cached) return cached
+        const parsed = parseAndCache(res.data)
+        if (parsed) return parsed
       }
     }
   } catch {
@@ -426,29 +515,39 @@ export async function fetchOlcrtcConfig(
 
   try {
     const base = (_baseUrl || getPublicApiBaseUrl()).replace(/\/$/, '')
-    const res = await fetch(`${base}${olcrtcConfigPath()}`, { cache: 'no-store' })
-    if (!res.ok) return getCachedOlcrtcConfig()
+    const res = await fetch(`${base}${olcrtcConfigPath(prov)}`, { cache: 'no-store' })
+    if (!res.ok) return getCachedOlcrtcConfigForProvider(prov)
     const cfg = parseAndCache(await res.json())
-    return cfg || getCachedOlcrtcConfig()
+    if (cfg) return cfg
+    return getCachedOlcrtcConfigForProvider(prov)
   } catch {
-    return getCachedOlcrtcConfig()
+    return getCachedOlcrtcConfigForProvider(prov)
   }
 }
 
-/** Подтянуть конфиг заранее (после логина / вместе с ConfigSync). */
+/** Прогрев обоих слотов — login / sync при VK. */
+export async function prefetchOlcrtcBothProviders(): Promise<{ tm: boolean; wb: boolean }> {
+  const tmCfg = await fetchOlcrtcConfig(undefined, OLCRTC_TELEMOST)
+  const wbCfg = await fetchOlcrtcConfig(undefined, OLCRTC_WBSTREAM)
+  const tm = !!(tmCfg?.providers?.[OLCRTC_TELEMOST]?.room || getCachedOlcrtcConfigForProvider(OLCRTC_TELEMOST))
+  const wb = !!(wbCfg?.providers?.[OLCRTC_WBSTREAM]?.room || getCachedOlcrtcConfigForProvider(OLCRTC_WBSTREAM))
+  return { tm, wb }
+}
+
+/** Один слот (текущий) — совместимость. Для login лучше prefetchOlcrtcBothProviders. */
 export async function prefetchOlcrtcConfig(): Promise<OlcrtcPublicConfig | null> {
   return fetchOlcrtcConfig()
 }
 
-/** Кеш → сеть. Для connect: не ждать сеть, если кеш уже есть. */
+/** Кеш first. Сеть только если слота нет. */
 export async function resolveOlcrtcConfig(opts?: {
   preferCache?: boolean
 }): Promise<OlcrtcPublicConfig | null> {
   const cached = getCachedOlcrtcConfig()
-  if (opts?.preferCache && cached) {
-    void fetchOlcrtcConfig() // обновить в фоне
+  if (opts?.preferCache !== false && cached) {
     return cached
   }
+  if (cached) return cached
   return (await fetchOlcrtcConfig()) || cached
 }
 
@@ -474,7 +573,7 @@ export function buildOlcrtcConnectPayload(
   // DNS пресет (меню DNS) — Яндекс по умолчанию; без fake-ip в sing-box.
   const dnsServers = getDnsOverrideServers() || '77.88.8.8, 77.88.8.1'
   return {
-    bypassFamily: BYPASS_FAMILY_OLCRTC,
+    bypassFamily: BYPASS_FAMILY_OLCRTC2,
     olcrtc_provider: provider,
     olcrtc_room: p.room,
     olcrtc_crypto_key: cfg.crypto_key,

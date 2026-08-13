@@ -689,7 +689,10 @@ async function removeHostBypassRoutes(excludeIPs, send) {
 
 async function removeServerBypassRoutes(excludeIPs, send) {
   await removeHostBypassRoutes(excludeIPs, send)
-  send?.(`[WG] Bypass API снят: ${(excludeIPs || []).join(', ')}`)
+  const list = (excludeIPs || []).filter(Boolean)
+  if (list.length) {
+    send?.(`[WG] Bypass API снят: ${list.join(', ')}`)
+  }
   // Шлюз не сбрасываем здесь — нужен при reconnect/full tunnel.
 }
 
@@ -944,6 +947,13 @@ try {
 
 async function forceStopWireGuard(isDev, dirname, send) {
   return enqueueWgStop(async () => {
+    const alreadyDown =
+      !(await isWgStillPresentAsync()) && !(await isServiceRunningAsync())
+    if (alreadyDown) {
+      // Нет службы/адаптера — не спамить «Остановка» при каждом olcrtc connect.
+      return
+    }
+
     send?.('[WG] Остановка туннеля...')
 
     const runtimeDir = lastRuntimeDir || prepareRuntimeDir(isDev, dirname, send) || STABLE_WG_DIR

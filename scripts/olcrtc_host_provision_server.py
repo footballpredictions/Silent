@@ -10,6 +10,7 @@ Endpoints:
   GET  /v1/unit-health?unit=android-wbstream — нужен секрет
   POST /v1/create       — нужен секрет
   POST /v1/storage      — нужен секрет
+  POST /v1/units/apply  — нужен секрет; yaml + systemctl enable/stop для комнат
 """
 from __future__ import annotations
 
@@ -19,8 +20,10 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -43,6 +46,14 @@ STATE_DIR = Path(
         "/opt/silent-vpn/olcrtc/agent_states",
     )
 )
+# Где живут бинарь, server-<unit>.yaml и data-<unit>/ для olcrtc@<unit>.
+OLCRTC_DIR = Path(os.environ.get("OLCRTC_DIR", "/opt/silent-vpn/olcrtc"))
+UNIT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,60}$", re.I)
+# ThreadingHTTPServer иначе поднимает N Chromium параллельно → CPU 100% + RAM 6G+.
+_CREATE_SEM = threading.Semaphore(
+    max(1, int(os.environ.get("OLCRTC_HOST_CREATE_PARALLEL", "1")))
+)
+_CREATE_WAIT_SEC = max(30, int(os.environ.get("OLCRTC_HOST_CREATE_WAIT_SEC", "180")))
 
 # ai/ рядом с backend на VPS или локально
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -97,6 +108,83 @@ def _status() -> dict[str, Any]:
         "state_dir": str(STATE_DIR),
         "bind": f"{HOST}:{PORT}",
         "auth_required": bool(INTERNAL_SECRET),
+    }
+
+
+def _systemctl(*args: str, timeout: int = 30) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(
+            ["systemctl", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, (proc.stdout + proc.stderr).strip()[:300]
+    except Exception as e:
+        return 1, str(e)[:200]
+
+
+def _apply_units(units: dict[str, str], remove: list[str]) -> dict[str, Any]:
+    """YAML + systemd для комнат пула: агент поднимает/гасит unit'ы сам."""
+    if not OLCRTC_DIR.is_dir():
+        return {"ok": False, "message": f"нет {OLCRTC_DIR}"}
+    binary = OLCRTC_DIR / "olcrtc"
+    if not binary.is_file():
+        return {"ok": False, "message": f"нет бинаря {binary}"}
+
+    applied: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
+    changed_units: list[str] = []
+
+    for unit, yaml_text in (units or {}).items():
+        name = (unit or "").strip()
+        if not UNIT_NAME_RE.match(name) or not isinstance(yaml_text, str) or not yaml_text.strip():
+            applied.append({"unit": name, "ok": False, "message": "bad unit/yaml"})
+            continue
+        path = OLCRTC_DIR / f"server-{name}.yaml"
+        try:
+            previous = path.read_text(encoding="utf-8") if path.is_file() else ""
+            if previous != yaml_text:
+                path.write_text(yaml_text, encoding="utf-8")
+                os.chmod(path, 0o600)
+                changed_units.append(name)
+            (OLCRTC_DIR / f"data-{name}").mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            applied.append({"unit": name, "ok": False, "message": str(e)[:150]})
+            continue
+        svc = f"olcrtc@{name}.service"
+        code, out = _systemctl("is-active", svc, timeout=10)
+        needs_start = out.strip() != "active" or name in changed_units
+        if needs_start:
+            _systemctl("enable", svc, timeout=20)
+            code, out = _systemctl("restart", svc, timeout=60)
+        else:
+            code, out = 0, "already active"
+        applied.append({"unit": name, "ok": code == 0, "message": out[:150]})
+
+    for unit in remove or []:
+        name = (unit or "").strip()
+        if not UNIT_NAME_RE.match(name):
+            continue
+        svc = f"olcrtc@{name}.service"
+        code, out = _systemctl("disable", "--now", svc, timeout=45)
+        try:
+            (OLCRTC_DIR / f"server-{name}.yaml").unlink(missing_ok=True)
+            data_dir = OLCRTC_DIR / f"data-{name}"
+            if data_dir.is_dir():
+                shutil.rmtree(data_dir, ignore_errors=True)
+        except Exception as e:
+            out = f"{out}; files: {e}"[:200]
+        removed.append({"unit": name, "ok": True, "message": out[:150]})
+
+    if changed_units or removed:
+        _systemctl("daemon-reload", timeout=30)
+    return {
+        "ok": True,
+        "applied": applied,
+        "removed": removed,
+        "started": sum(1 for a in applied if a.get("ok")),
+        "stopped": len(removed),
     }
 
 
@@ -264,18 +352,43 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(500, {"ok": False, "message": str(e)[:200]})
             return
+        if path == "/v1/units/apply":
+            units = body.get("units")
+            remove = body.get("remove") or []
+            if not isinstance(units, dict) or not isinstance(remove, list):
+                self._send(400, {"ok": False, "message": "units{} + remove[] required"})
+                return
+            try:
+                result = _apply_units(units, [str(x) for x in remove])
+                self._send(200 if result.get("ok") else 500, result)
+            except Exception as e:
+                log.exception("units apply failed")
+                self._send(500, {"ok": False, "message": str(e)[:300]})
+            return
         if path == "/v1/create":
             provider = str(body.get("provider") or "").strip().lower()
             state = body.get("storage_state")
             if not isinstance(state, dict):
                 state = None
             headless = bool(body.get("headless", True))
+            got = _CREATE_SEM.acquire(timeout=_CREATE_WAIT_SEC)
+            if not got:
+                self._send(
+                    503,
+                    {
+                        "ok": False,
+                        "message": "create busy: другой Playwright ещё работает",
+                    },
+                )
+                return
             try:
                 result = asyncio.run(_create(provider, state, headless))
                 self._send(200 if result.get("ok") else 502, result)
             except Exception as e:
                 log.exception("create failed")
                 self._send(500, {"ok": False, "message": str(e)[:300]})
+            finally:
+                _CREATE_SEM.release()
             return
         self._send(404, {"ok": False, "message": "not found"})
 

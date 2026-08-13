@@ -579,6 +579,588 @@ cd pc; npm install; npm run dev
 - Версии: Android `versionCode/Name 160` / `1.0.160`; PC `package.json 1.0.160`.
 - Релизы: `assembleRelease` + `build-installer.bat` OK. Push `android` + `pc`.
 
+### 2026-08-13 — Android WB: ICE/TURN в hev (CIDR exclude)
+
+- PC жил 6–9+ мин; Android: TURN `185.62.200.94` → ICE closed → handshake fail → exit 143 → hardReset spam.
+- Причина: exclude только hostname `stream.wb.ru` (часто `185.62.202.8`), не весь `185.62.192.0/18` как на PC sing-box.
+- Фикс: hev TUN `excludeCidrRoutes` WB `185.62.192.0/18` + TM `37.9.0.0/16`; hosts rtc-el-*; STATIC_HOSTS /32; mute x509/TURN noise; grace на handshake reconnect fail.
+- APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`.
+
+### 2026-08-13 — PC+Android «зелёный вис» (missed_pong / stream_dead)
+
+- PC ~15 мин + Android ~1 мин → оба повисли; PC: `control missed pong` → socks_health_fail. Комнаты разные (не один WB room).
+- Баг клиента: `missed_pong` только логировался; health/grace пропускались из‑за «recent traffic» / fake SOCKS → UI зелёный, sticky не сбрасывался (Android снова `svpn_a44a…`).
+- Фикс PC+Android: `peerLivenessSuspect` → force SOCKS dial, grace 8с, stream_dead streak; тест forceLivenessCheck.
+- Сборки: `SilentVPN-debug.apk` + `pc/build-debug-744175/win-unpacked/SilentVPN-Admin.bat`.
+
+### 2026-08-12 — olcrtc2 был ВЫКЛ + кеш мёртвых комнат (WB 404 / TM code=1)
+
+- Диагностика: `enabled: false` (после 500 в админке Save с дефолтом выкл). Клиент брал stale cache → WB join 404 / Telemost exit до SOCKS. Комнат из лога в БД уже нет.
+- Включил продукт + heal пула; leave снова teardown; assign только при carrier=True; клиент без cache-fallback, кеш v15.
+- Админка: Save запрещён пока load не OK (нельзя случайно выключить).
+- APK: `SilentVPN-debug.apk`. В админке должно быть «Включён» + цифры Warm.
+
+### 2026-08-12 — админка olcrtc2 HTTP 500 (пул «—», ключ не генерится)
+
+- Причина: битый module docstring в `olcrtc2_assign.py` после soft-leave (лишняя `"""`) → SyntaxError → `/api/admin/olcrtc2` 500.
+- Фикс задеплоен (`deploy_api.py`). Обновить страницу админки → цифры пула + «Сгенерировать» ключ.
+
+### 2026-08-13 — PC Telemost смерть ~10 мин (sticky + prune)
+
+- Причина: `stopOlcrtcHeartbeatLoop()` всегда делал **leave** → sticky снималась; при `start` тоже leave. Agent prune (stale 180с + excess warm) **teardown** живой комнаты → peer «RTP closed».
+- PC: stop без leave (leave только на disconnect); HB 30с + лог fail.
+- Backend: `HEARTBEAT_STALE_SEC=300`; excess tear пропускает recent-healthy &lt;15 мин.
+- Деплой API + PC debug.
+
+### 2026-08-13 — Android Telemost fix + конфиг только login/sync
+
+- Android Telemost: откат **mapdns** (регрессия) → снова DNS=real, IPv4-only, udp→tcp, TG via VPN.
+- Конфиг olcrtc2: fetch **только** login + sync при VK; TM↔WB = dual-cache без сети.
+- PC: dual-cache `v12_telemost`/`v12_wbstream`; убраны prefetch в меню/connect/live-sync loop.
+- APK: пересобрать debug.
+
+### 2026-08-13 — PC Telemost «умер» через ~9 мин + ложные ERROR
+
+- Симптом: после tunnelReady ICE `Failed to read` / sing-box `connection … forcibly closed` → peer мрёт.
+- Причина: blanket `udp→block` + `process_name` на Win без админа часто не матчит cnc → TURN refresh не проходит.
+- Фикс: **direct ip_cidr** (staticHosts + conn JSON + `37.9.0.0/16` для Telemost) до UDP-block; mute ICE/RST шум; WG stop ждёт idle до olcrtc; dead-handler для olcrtc2.
+- PC: пересобрать debug (`build-debug.bat`).
+
+### 2026-08-13 — Android Telemost latency vs PC (тот же Wi‑Fi)
+
+- PC быстрый: sing-box DNS через SOCKS + sniff(domain) + мгновенный block QUIC.
+- Android был медленнее: DNS снаружи + CONNECT по IP; QUIC в TUN висел до udp-timeout.
+- Фикс: **mapdns** (CONNECT по имени, как PC sniff) + `udp:tcp` timeout **150мс** + pipeline/tcp-fastopen; IPv4-only; TG via VPN.
+- APK: `SilentVPN-debug.apk`. Лог: `mapdns=fake-ip (паритет PC)`, `QUIC-fastfail`.
+
+### 2026-08-13 — PC WB TURN refresh + Android скорость как PC
+
+- WB ~2мин: `Fail to refresh permissions` — `olcrtc2-cnc.exe` после TUN уходил в sing-box (UDP TURN мёртв). Фикс: **cnc/olcrtc → direct** в process_name.
+- Android: убраны ICE settle 1.2с + pre-hev TLS 4с (на PC их нет) → ready быстрее; health с 45с; hev connect-timeout 3.5с.
+- APK + PC debug пересобрать.
+
+### 2026-08-13 — PC: ложный «туннель не поднялся» при живом olcrtc2
+
+- Симптом: Telemost/WB работают, но alert «проверьте srv/бинарники»; в логе `socks5 code=4`.
+- Корень: `isVpnReadyForUi()` смотрел только olcrtc **v1**, не olcrtc2 → `vpn-ready` не слался → `waitVpnReady` timeout.
+- Фикс: ready = olcrtc2 **или** v1; mute SOCKS code=4; лог `SOCKS auth … RFC1929 → cnc + sing-box`.
+- Debug: пересборка.
+
+### 2026-08-13 — PC: лог-шум + Cursor жрал Telemost
+
+- WB/TM работали; в логе ложные `[olcrtc2:err]` (pion INFO на stderr) + `api2.cursor.sh`×сотни через TUN → Telemost потом падал.
+- Фикс: Cursor/Silent/Code → **direct** в sing-box; mute ICE/WSL/UDP noise; WB 498 = soft (Go guest сам).
+- Debug: пересборка `build-debug.bat`.
+
+### 2026-08-13 — PC: Telemost/WB timeout + меню без «Применить»
+
+- Симптом: prefetch timeout → Go cloud-api/WB guest тоже timeout; меню с кнопкой подтверждения.
+- Корень auth: остаток WG/TUN ловил HTTPS (на Android — whitelist OkHttp). Фикс: **всегда cleanupVpn** перед olcrtc; prefetch через **Electron net.fetch** + IPv4 fallback.
+- Меню: выбор применяется сразу (без кнопки/диалога); при живом VPN — стоп → смена.
+- Debug: пересобрать `build-debug.bat`.
+
+### 2026-08-13 — PC olcrtc2: паритет с Android (не «один сервер»)
+
+- `olcrtc2Session.js` был упрощённый: SOCKS port → сразу sing-box, без dial, без UDP/QUIC block, без Telemost prefetch.
+- Как Android/v1: ipv4_only + DNS TCP без fake-ip; block UDP/QUIC; waitForSocksDial до TUN; Telemost/WB CONN_FILE + STATIC_HOSTS; forceKill; soft post-TUN.
+- Debug: `pc/build-debug.bat` → `build-debug-*/win-unpacked`.
+
+### 2026-08-13 — оба через VPN (YT+TG), без выкидывания Telegram
+
+- Пользователь: Telegram тоже должен идти через VPN — иначе смысл обхода.
+- Вернул профиль «оба более-менее жили»: `Telegram via VPN`, IPv4-only, mapdns off, udp→tcp, pre-hev TLS, без ::/0/hev-ipv6 и без disallow TG.
+- APK: `SilentVPN-debug.apk`. Лог: `Telegram via VPN`, `tgVia=vpn`, `pre-hev CONNECT+TLS`, `tunnelReady`.
+
+### 2026-08-13 — откат к лучшему рабочему (как 1.0.160 + TG вне TM)
+
+- IPv6 sink / hev-ipv6 / TG-via-VPN на TM ломали YouTube и давали exit 141.
+- Вернул профиль **160**: mapdns fake-ip + IPv4-only `allowFamily`, ICE settle 4с на TM, soft post-hev (без hard-fail).
+- Telemost: **Telegram вне TUN** (`tgVia=direct`); WB: TG через VPN.
+- APK: `SilentVPN-debug.apk`. Лог: `mapdns=fake-ip (как 160)`, `tgVia=direct`, `tunnelReady`.
+
+### 2026-08-13 — IPv6 sink ломал Telemost (exit 141)
+
+- Симптом: `SOCKS мёртв сразу после hev`, `exit code=141`, `vpn_onDestroy`×N, YT мёртв, вкл нестабильно.
+- Причина: `::/0` без hev-ipv6 глотал **AAAA TURN/STUN Telemost** → ICE в чёрную дыру → peer/SIGPIPE.
+- hev-ipv6 раньше забивал vp8 (YT мёртв). Откат на **IPv4-only + allowFamily(AF_INET)** (как 160): ICE на LTE AAAA жив, трафик сайтов IPv4 через hev.
+- Tradeoff: возможны серые ~HE при reopen YT (AAAA→LTE). Стабильность важнее.
+- APK: `SilentVPN-debug.apk`. Лог: `IPv4-only (allowFamily…`.
+
+### 2026-08-13 — серые экраны при КАЖДОМ открытии YT (VPN жив)
+
+- Симптом: зашёл в YT → ~10с серое; вышел и снова → опять серое; VPN не рвался. То же TG.
+- Это не cold-start SFU: `allowFamily(AF_INET)` пускал **AAAA на LTE** → Happy Eyeballs таймаут при каждом старте приложения, потом IPv4 через VPN.
+- Фикс: IPv6 в hev (`ipv6` + `::/0`), убран allowFamily; убран бесполезный app-heat.
+- APK: `SilentVPN-debug.apk`. Лог: `IPv4+IPv6 via hev`, `no AAAA→LTE`.
+
+### 2026-08-13 — задержка TG/YT = первый CONNECT после hev
+
+- Не «магия канала»: после TUN первый SOCKS CONNECT (SFU data-path + TG DC / ytimg) долгий → часики в приложениях.
+- Фикс UX: `heatAppsBeforeReady` (ytimg + api.telegram.org + DC) **после hev, до tunnelReady** — ждём на тумблере ~2–4с, открытие TG/YT уже тёплое. Без фонового flood.
+- APK: `SilentVPN-debug.apk`. Лог: `app-heat N/3 …ms (ytimg+tg до ready)`.
+
+### 2026-08-13 — TM≠WB носитель: goolom vs livekit
+
+- Пользователь прав: один `libolcrtc2`/`vp8channel`, но **разный SFU**: Telemost=`goolom` (Яндекс), WB=`livekit` (WB stream) + разные соты. WB шире по медиатрубе — отсюда быстрые TG+YT на WB.
+- Клиент больше не режет TM отдельно (warm skip / idle flood / частый health) — старт как у WB: warm pre-TUN + тот же settle/health.
+- Пул: TM `max_clients=3`, WB `25` (на одного юзера не влияет). Дальше ускорять TM = носитель/сота, не «ещё warm».
+- APK: `SilentVPN-debug.apk`.
+
+### 2026-08-13 — откат агрессивного bg warm (YT ещё медленнее)
+
+- 5× YouTube TLS + 5× TG DC сразу после ready забивали Telemost/vp8 → YouTube дольше, TG без пользы.
+- Фикс: убран flood; pre-hev только gstatic; idle warm 1× ytimg + 1× api.telegram.org через 1.8с и только если канал свободен.
+- APK: `SilentVPN-debug.apk`.
+
+### 2026-08-13 — Telemost: серый YT ~5с + TG часики 10–15с
+
+- После ready канал холодный (`warm skip`): первый YouTube CDN и первый TG DC через vp8 долго.
+- Фикс: фоновый `startPostReadyWarm` сразу после tunnelReady (ytimg/ggpht/youtubei + api.telegram.org/DC) — тумблер не ждёт; hev connect-timeout 5с.
+- APK: `SilentVPN-debug.apk`. В логе: `bg warm yt=… tg=…`.
+
+### 2026-08-13 — Telemost: TG + быстрее (значок≈тумблер)
+
+- YouTube ок; Telegram мёртв из‑за `disallow Telegram … direct`; значок VPN до тумблера ~10с (hev → долгий post-hev TLS×4).
+- Фикс: TG снова через VPN (как WB); TLS **до** hev; после TUN один быстрый dial → сразу ready; ICE settle 1.2с max (не 4с).
+- APK: `SilentVPN-debug.apk`. Лог: `Telegram via VPN`, `pre-hev CONNECT+TLS OK`, `post-hev dial OK`, без `disallow Telegram`.
+
+### 2026-08-13 — Telemost vs WB: порядок ICE + TUN parity
+
+- Симптом: после mapdns/OEM фикса всё ещё `post-hev CONNECT+TLS OK`, сайты нет; WB на том же коде ок.
+- Сравнение с 1.0.160 / WB: у TM был settle ICE 800мс (нужно **4с**), double YouTube-warm до/после hev (flood vp8), exclude≈43 + TG CIDR (у WB ~DNS+2 host), `::/0` blackhole IPv6 (TLS-probe IPv4 ок, Chrome AAAA мёртв).
+- Фикс: telemost ICE settle 4с; warm skip на TM; exclude только turn/stun (+DNS) как WB-паттерн; без TG CIDR (только disallow pkgs); IPv4-only + allowFamily как 160/WB.
+- APK: `SilentVPN-debug.apk`. Лог: `settle=4000ms`, `YouTube warm skip`, `tgCidr=0`, `IPv4-only`, ips≈≪43.
+
+### 2026-08-13 — Telemost ready/лог ок, сайты нет (mapdns + OEM + IPv6 leak)
+
+- Лог пользователя: `tunnelReady` + `post-hev OK` + `tgVia=direct`, но трафика нет; тумблер крутится, значок VPN уже есть. Комната `940386…` / unit `o2-5777716db841` на соте **active**.
+- Корень: (1) LTE `mapdns=fake-ip` — dial по домену из Silent OK, Chrome получает `198.18.x` без reverse → peer EOF; (2) `disallow OEM pkgs=185` (`com.vivo.*`) выкидывал OEM-браузеры мимо VPN; (3) `allowFamily(AF_INET)` пускал YouTube по IPv6 мимо hev.
+- Фикс: mapdns выкл (реальный DNS + exclude); OEM только точный список push/analytics; `::/0` blackhole вместо allowFamily; post-hev = CONNECT **+ TLS** probe.
+- APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`. В логе ждать: `mapdns=off`, `DNS=real`, `OEM pkgs` ≪ 185, `post-hev CONNECT+TLS OK`.
+
+### 2026-08-12 — Telemost мёртв при живом WB (регресс TG via VPN)
+
+- **Симптом:** после hardReset WB переключается ок; Telemost «лог нормальный / ICE+SOCKS», сайты нет.
+- **Сравнение с 160 / lib:** `libolcrtc2.so` уже hardcode `vp8channel` fps=60 batch=64 (как YAML v1); srv transport=vp8channel; пул TM на `87.58.213.193` живой. Не баг бинаря.
+- **Корень:** в hardReset-фиксе ошибочно вернули `bypassTelegramOutsideTun=false` для обоих («как 160») → фон TG жрёт узкий Telemost/vp8 → «вкл без интернета».
+- **Фикс:** снова `bypassTelegramOutsideTun(telemost)=true` (WB — TG в VPN); убран широкий exclude `yandex.ru`, добавлен `goloom.strm.yandex.net`.
+- APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`. В логе на TM ждать `tgVia=direct`.
+
+### 2026-08-12 — hardReset TM→WB (без kill app) + post-hev SOCKS gate
+
+- **Факт:** cold start WB ок; после Телемоста WB «вкл, не пашет» пока не убьёшь приложение; Телемост cold тоже пустой при зелёном ICE.
+- **Причина:** hev/native/`suppressDestroyStop` не чистились как при kill; post-hev dial игнорировался → зелёный тумблер без трафика.
+- **Фикс:** `hardReset` (destroyForcibly + двойной hev stop) на stop/start/Apply; post-hev SOCKS обязателен иначе fail; exclude hosts только своего провайдера. *(TG на TM — см. запись выше; не через VPN.)*
+- APK: `SilentVPN-debug.apk`.
+
+### 2026-08-12 — Telemost: TG вне TUN + max_clients=3 (vp8 budget)
+
+- Лог: `tgVia=vpn` + `Telegram via VPN (telemost)` при ICE connected → ничего не грузит (TG жрёт vp8).
+- WB: первый раз YT+TG ок; после свитча TG ок / YT нет — отдельно; на WB TG остаётся в VPN.
+- Фикс: `bypassTelegramOutsideTun(telemost)=true`; Telemost `max_clients=3`, WB=25.
+- Деплой + APK debug.
+
+### 2026-08-12 — возврат pool 1.0.160 (leave≠teardown, max_clients=25)
+
+- **Почему ломалось:** session-mode `max_clients=1` + leave/park/teardown убивали комнаты при Telemost↔WB; клиентский кеш указывал на мёртвый URL (TM wedge / WB join 404).
+- **Как в 26–27 июля / [olcrtc](https://github.com/openlibrecommunity/olcrtc):** одна srv-комната шарится многими cnc; leave только sticky; Telemost room ~сутки, WB пока жив owner/srv ([issue #93](https://github.com/openlibrecommunity/olcrtc/issues/93)).
+- **Сервер:** soft leave = clear sticky + recount; assign в shared pool `online < max_clients`; prune не рвёт комнаты со sticky; `DEFAULT_MAX_CLIENTS=25`.
+- **Клиент:** dual-cache + preferCache / Apply cache-only как 160; cache key v16.
+- Деплой: `deploy_api.py` + `heal_olcrtc2_pool_max_clients.py`. APK: `SilentVPN-debug.apk`.
+
+### 2026-08-12 — park sticky + Apply revalidate (не cache-only после soft leave)
+
+- **Симптом:** TM→WB→TM «включается но не грузит» → снова WB «нет конфига» / join 404.
+- **Причина:** soft leave снимал sticky → комната в warm → prune/чужой claim рвали URL; клиент `swap cache-only` / preferCache поднимал мёртвую room без carrier-probe.
+- **Сервер:** leave = **park sticky** (не warm); `HEARTBEAT_STALE_SEC=600`.
+- **Клиент:** Apply всегда assign/revalidate selected; leave → dirty slot → connect без preferCache.
+- Деплой: `deploy_api.py`. APK: `SilentVPN-debug.apk`.
+
+### 2026-08-12 — почему «конфиги стираются» при Telemost↔WB + dual-cache keep
+
+- **Симптом:** logout→TM (YT еле, TG нет)→Apply WB (bootstrap, TG ок, YT нет)→Apply TM → bootstrap не поднимается, «нет конфига».
+- **Причина:** Apply при живом VPN делал leave → клиент **wipe слота** + сервер **teardown** комнаты. Второй слот часто пустой → третий switch требовал bootstrap и рвался.
+- **Комнаты в пуле** (warm) не стирались — стирался **клиентский sticky-кеш** и **назначенная** комната.
+- **Фикс:** leave = soft-warm на сервере (sticky снят, unit+room живы) + клиент `keepCache` обоих слотов; wipe только `reportOlcrtcRoomFailure`. Connect `preferCache` если слот есть. TG через VPN на обоих; IPv4-only Telemost+WB.
+- Деплой: `deploy_api.py` (soft leave). APK: `SilentVPN-debug.apk`.
+
+### 2026-08-12 — dual-cache как 1.0.160 + soft leave + Telemost IPv4
+
+- **Почему ломалось vs 160:** session-mode leave=teardown сносил комнату → клиентский кеш указывал на мёртвый room; force-prefetch на Apply создавал новые и затирал смысл dual-cache.
+- **Сервер:** leave/heartbeat_offline → soft keep sticky+unit (~10м, `HEARTBEAT_STALE_SEC=600`); failure → tear. Agent prune сносит протухшее.
+- **Клиент:** login/Wi‑Fi → `prefetchOlcrtcBothProviders`; Apply при живом слоте = swap cache-only; leave keepCache.
+- **Telemost серый YouTube:** IPv4-only TUN всегда (не только LTE).
+- Деплой: `deploy_api.py`; APK: `SilentVPN-debug.apk`.
+
+### 2026-08-12 — Wi‑Fi без :443: ephemeral не только LTE + Apply/connect mutex
+
+- Лог: `ensureApi … mobile=false` → только public FAIL → NO_SESSION; Apply отменял connect mid-ephemeral (`StandaloneCoroutine was cancelled`).
+- `ensureOlcrtcConfigApi`: после public miss на Wi‑Fi тот же ephemeral+tunnel-only; Mutex сериализует Apply/connect.
+- Connect miss / force-fetch / roomFailure retry — ensure всегда (не только `isOnMobileData`).
+- Apply: `cancelPendingOlcrtcConnectForApply` до ensure.
+- preferCache и на Wi‑Fi, если queen unreachable.
+- APK: `SilentVPN-debug.apk`
+
+### 2026-08-12 — фикс LTE: leave не wipe + tunnel-only fetch
+
+- Лог: WB connect OK, leave wipe → Apply ephemeral 30с била **public** `:443` вместо 10.66 → оба пустые.
+- Leave **не стирает** v14-кеш; LTE connect = preferCache; Assign только через `fetchOlcrtcConfigTunnelOnly` в ephemeral.
+- Apply больше не долбит public prefetch после ensure.
+- APK: `SilentVPN-debug.apk`
+
+### 2026-08-12 — лог LTE: WB «нет сессии» без bootstrap + Telemost slow
+
+- По SVPN_OLC: после leave на LTE prefetch WB ~40мс FAIL (nip.io без VK) → NO_SESSION; после re-login через tunnel WB OK.
+- Фикс: `ensureOlcrtcConfigApi` (ephemeral bootstrap) на Apply и connect miss; Telemost LTE → IPv4-only (меньше зависаний YouTube на v6).
+- В логе ждать: `[CFG] LTE: ephemeral bootstrap` → `accept OK` → без NO_SESSION.
+- APK: `SilentVPN-debug.apk`
+
+### 2026-08-12 — Logcat SVPN_OLC + фикс Apply race wipe
+
+- Тег Logcat: `SVPN_OLC`, флаги `[CFG]|[CACHE]|[APPLY]|[CONN]|[LEAVE]|[FAIL]|[HB]|[TM]|[WB]|[SESS]|[TUN]|[AUTH]`.
+- Фильтр Android Studio: `tag:SVPN_OLC` (или `package:com.silent.vpn tag:SVPN_OLC`).
+- Apply: leave только старого, wait stop, потом setProvider; late-leave без session snapshot не трогает prefs.
+- APK: `SilentVPN-debug.apk`
+
+### 2026-08-12 — автотесты сессии + Apply stop + bind session
+
+- Юнит-тесты `OlcrtcSessionPolicyTest` (+ recovery): heartbeat leave, v14 кеш, leave по snapshot, denied accept, Apply при VPN.
+- Policy `OlcrtcSessionPolicy`; Repository `bindOlcrtcSession` / fail/leave по сессии не prefs; Apply при смене канала → leave+DISCONNECT.
+- Сервер smoke carrier: 5/5 WB + 5/5 Telemost alive. `test_olcrtc2_session_rules_unit.py` 4/4 ok.
+- APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`
+
+### 2026-08-12 — аудит: heartbeat leave рвал сессии + Telemost leak
+
+- **P0:** `startOlcrtcHeartbeatLoop` вызывался дважды → `cancel` → `finally { leaveOlcrtcRoom() }` при живом VPN: teardown room + wipe кеша → «нет сессии» / зелёный труп Telemost.
+- Фикс: leave только на disconnect (снимок provider/room); heartbeat без leave в finally; не перезапускать активный loop.
+- Кеш: denied/пустая room не пишется и не возвращается из accept (fallback на кеш); Apply force-fetch выбранного провайдера.
+- TUN: убран `allowFamily(AF_INET)` only + IPv6 `::/0` в TUN (анти-leak YouTube QUIC мимо hev); hev уже `udp: tcp`.
+- APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`
+
+### 2026-08-12 — Telemost «лог ок, сайты нет»
+
+- Клиент: SOCKS+TUN ready, warm YT pre-TUN ok. На соте `o2-bc3f…` Google :443 шли ~1 мин, затем **control missed pong → liveness** — UI оставался зелёным.
+- Корень: hev `udp: udp` пускал **QUIC** в узкий Telemost/vp8 (на PC olcrtc UDP/QUIC block).
+- Фикс: hev `udp: tcp` + health-watch SOCKS после ready → peer_dead/красный лог.
+- APK: `SilentVPN-debug.apk`
+
+### 2026-08-12 — конфиги Telemost и WB раздельные
+
+- Да, раньше один слот кеша — затирали друг друга → «нет сессии» при переключении.
+- Сейчас: `olcrtc_config_cache_v14_telemost` и `…_wbstream` отдельно; legacy v13 не читаем.
+- «Применить» греет **оба** слота (пустой добирает с API, полный не трогает).
+- APK: `SilentVPN-debug.apk`
+
+### 2026-08-12 — «нет сессии» при Telemost↔WB + Telemost без YouTube
+
+- Смена провайдера: wipe всего кеша + async prefetch → тумблер раньше fetch → «нет сессии».
+- Фикс: кеш **v14 per-provider**; смена не стирает другой слот; leave/fail чистит только свой; Apply **ждёт** fetch; connect force-fetch.
+- Вылет на LOGIN — уже пофикшен ранее.
+- Telemost «вкл, YouTube нет» без красного — отдельно (трафик/vp8); сначала стабилизировать сессии.
+- APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`
+
+### 2026-08-12 — вылет на LOGIN + «нет сессии» при смене Telemost↔WB
+
+- Корень LOGIN: `WdttTunnelManager.stopInternal` не сбрасывал `isBootstrapMode` → после входа `isMainVpnSessionForUi=false` → экран входа при первом VPN.
+- Корень конфигов: ICE kill@8с по media «connected» рвал Telemost до SOCKS → `clearOlcrtcCache` → «нет сессии»; API отдаёт один provider в кеше → смена WB↔TM без fetch = пусто.
+- Фикс: reset bootstrap flag; убран ICE kill@8с; кеш только для текущего provider; смена провайдера чистит кеш.
+- APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`
+
+### 2026-08-12 — Android debug APK (carrier fail / нет конфига)
+
+- Сборка: `assembleDebug` OK. APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`
+- Включено: retry после мёртвой room, без возврата старого cfg, текст вместо «olcrtc-config нет».
+
+### 2026-08-12 — WB join 404 / Telemost ICE без SOCKS (логи 14:02)
+
+- Логи: `svpn_3b36…` WB join 404 + «olcrtc-config нет»; Telemost `265127…` ICE/pc connected → code=1 до SOCKS (~15с = `wait for peer`).
+- На момент разбора обе room **уже сняты** из БД; пул: WB android~20, Telemost~23; smoke carrier **join/connection ok**.
+- Корень WB: systemd active ≠ живая конференция (join 404). Фикс API: `_carrier_room_alive` (WB join / TM connection) на sticky+warm assign + heal WB; деплой `deploy_api.py`.
+- Telemost «ICE ок / SOCKS нет»: cnc поднимает SOCKS **после** `bringUpLink`/`waitForPeer`; media к Яндексу ≠ peer olcrtc2-srv → timeout ~15с → code=1.
+- Клиент: не возвращать мёртвый cfg (`?: cfg` убран); retry fetch после fail; яснее текст вместо «olcrtc-config нет». Нужен новый APK.
+- Скрипты: `diag_olcrtc2_rooms_now.py`, `smoke_olcrtc2_carrier.py`.
+
+### 2026-08-12 — WB join 404 + «нет конфига» + loadtest
+
+- WB: клиент цеплялся к мёртвой `svpn_*` (guest/join 404). На Соте 2 за 2ч **146× not found** при active systemd.
+- Баг клиента: `reportOlcrtcRoomFailure` при сбое fetch возвращал **старый cfg** → «новый канал» = та же мёртвая room.
+- Фикс клиента: clear cache, не возвращать old cfg, early-fail на join 404/not found.
+- Сервер: rebuild WB warm, prune; smoke assign OK (telemost+WB).
+- SOCKS :5678 без auth — **не наш** (наш olcrtc = :8808 с auth). Вероятно другое приложение на устройстве.
+- APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`
+
+### 2026-08-12 — olcrtc2: гонка assign + loadtest 20 юзеров
+
+- Симптом: 2–3 подключились — остальным «нет места»; Телемост «не летает».
+- Корень: concurrent `/olcrtc2-config` без claim-lock → **N fingerprint на 1 комнату** (max_clients=1 нарушен; Telemost до 6 fp/room). Warm только `warm_pool_per_dt=3`.
+- Фикс: claim-lock + `FOR UPDATE SKIP LOCKED` + резерв `online_count`; warm default/prod **12**.
+- Скрипт: `backend/scripts/loadtest_olcrtc2_sessions.py` (+ `diag_olcrtc2_telemost.py`). Отчёты: `backend/scripts/reports/`.
+- Host’ы Telemost на Соте 1 сами OK (MODE=telemost, Link connected, тот же srv md5 что WB).
+
+### 2026-08-12 — WB: YouTube ок, Telegram нет
+
+- В логе было `disallow Telegram … direct` + tgCidr exclude — TG шёл мимо VPN (оптимизация Telemost/vp8).
+- На WB YouTube и так летает; у ISP с DPI Telegram без VPN мёртв.
+- Фикс: на `wbstream` Telegram **через VPN**; bypass TG только для `telemost`.
+- В логе ищи: `Telegram via VPN (provider=wbstream)`, `tgVia=vpn`.
+
+### 2026-08-12 — WB 403 guests: auto-upgrade затирал фикс cell-agent
+
+- Симптом: клиент `guests cannot create rooms` / guest JWT; на Соте 2 srv `mode=telemost` на `svpn_*` → Telemost 404.
+- Корневая причина: ручной фикс `main.py` на соте перезаписывался `hive_cell_agent_auto` со **старого** `/opt/silent-vpn/backend/cell-agent/main.py` на Улье.
+- Фикс: синхронизирован `cell-agent/main.py` на queen + Cell 1/2; apply пишет `MODE=wbstream` + `OLCRTC2_AUTH_TOKEN`; 6 WB host unit’ов **Link connected**.
+- `upgrade_cell_agent_olcrtc2.py` теперь сначала кладёт agent на queen, потом на соту.
+- Клиенту: Apply → WB Stream → VPN (сменить канал если старый sticky).
+
+### 2026-08-12 — UI как 160 + фикс WB host JWT
+
+- Меню обхода снова как 1.0.160: VK | olcrtc → Яндекс Телемост / WB Stream (движок olcrtc2).
+- WB ошибка «гости не могут создать комнату»: apply теперь требует/рефрешет account JWT; heal tear WB без token + warm.
+- APK debug пересобран. Пуш не делали.
+
+### 2026-08-12 — olcrtc2 WB Phase 3 (Сота 2)
+
+- Go: `olcrtc2-srv/cnc` mode=telemost|wbstream; pkg Token→auth; library carrier WB.
+- cell-agent apply: реальный MODE + `OLCRTC2_AUTH_TOKEN`; deploy srv на Соту 1+2.
+- Агент warm: `providers_enabled` оба; create WB API с queen; remote DELETE при tear.
+- Админка: чекбоксы warm + IP Сота1/2. PC/Android debug: выбор Телемост/WB.
+- Бинарники: `olcrtc2-cnc.exe`, `libolcrtc2.so`, srv на сотах. Пуш не делали.
+- Docs: `.cursor/OLCRTC2_AGENT.md`.
+
+### 2026-08-12 — olcrtc2: provider→cell + egress probe
+
+- Роли: Улей = WDTT only; Сота 1 `87.58.213.193` = Telemost; Сота 2 `78.17.74.27` = WB (`cells.telemost` / `cells.wbstream`).
+- Settings/assign/create: `cell_ip_for_provider`; админка — два IP; agent_status отдаёт `cells`.
+- Egress probe `scripts/probe_olcrtc2_cell_egress.py`: Сота 1 YouTube TTFB ~0.38с / TCP 26–82ms; Сота 2 ещё быстрее (~0.16с). Узкое место — Telemost/vp8, не «мертвый» Google с соты.
+- Docs: `.cursor/OLCRTC2_AGENT.md`.
+
+### 2026-08-12 — YouTube минута на Wi‑Fi: fake-ip 198.18 + Telegram жрёт vp8
+
+- Лог: warm 3/3 ок, CDN sid открылся, потом минутами `149.154.*` / `redirector`; на LTE `tunnel to 198.18.0.5` → EOF (mapdns leak).
+- PC olcrtc: DNS без fake-ip (tcp через SOCKS). Android mapdns на Wi‑Fi ломал googlevideo.
+- Фикс: Wi‑Fi = real DNS (меню) + exclude DNS; LTE = mapdns; Telegram CIDR+pkg вне TUN.
+- В логе: `real DNS (Wi‑Fi как PC)`, `disallow Telegram`, нет `tunnel to 198.18.*`.
+- APK: `SilentVPN-debug.apk`.
+
+### 2026-08-12 — YouTube 10–20с vs 160: warm ДО hev TUN
+
+- Тумблер уже ~3–4с (`tunnelReady`); «предзагрузка» YouTube — после TUN VK/TG/vivo жрут Telemost/vp8, CDN `rr*googlevideo` через 20–30с / на Wi‑Fi только redirector.
+- 1.0.160: тот же vp8, но прогрев path до открытия full-tunnel.
+- Фикс: `YouTube warm pre-TUN` (youtube/ytimg/redirector по SOCKS) → затем hev.
+- ICE `failed … 10.112…` после TUN — шум (STUN с не того iface), сессия уже up.
+- APK: `SilentVPN-debug.apk`. В логе: `YouTube warm pre-TUN N/3 …ms` до `hev TUN ok`.
+
+### 2026-08-12 — YouTube Wi‑Fi grey + LTE false ICE-kill
+
+- Лог Wi‑Fi: tunnelReady ок, `youtubei`/`redirector` есть, CDN `rr*googlevideo` нет; vivo/stsdk жрёт Telemost/vp8 ([olcrtc](https://github.com/openlibrecommunity/olcrtc): Telemost=только vp8, скорость datachannel>vp8).
+- LTE: `peer latched` → ложный kill «ICE без SOCKS 8с»; auto-reassign не сработал на «SOCKS не поднялся».
+- Фикс: kill только без peer latch; lastFailHint+reassign на SOCKS fail; `disallow OEM` (vivo/bbk/…) из hev TUN.
+- В логе: `disallow OEM noise pkgs=N`, нет `ICE без peer/SOCKS 8с` при latch.
+- APK: `SilentVPN-debug.apk`.
+
+### 2026-08-12 — LTE: мёртвый preferCache + ICE без SOCKS 8с
+
+- Лог: `preferCache room=876118` → ICE+KCP → 15с `code=1` → override `273778` OK; Wi‑Fi sync ~0.9с → tunnelReady ~2.5с.
+- LTE больше не берёт кеш вслепую: softRefresh ≤3с → кеш; `lastFailed` room пропускается через reassign.
+- `waitForSocks`: ICE Connected без SOCKS 8с → kill + reassign (не ждать code=1 ~15с).
+- STUN warn после TUN с `10.112.*` — пост-ready ICE через VPN; сессия уже up (не блокер тумблера).
+- APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`.
+
+### 2026-08-12 — убрана долгая «предзагрузка» после tunnelReady
+
+- Wi‑Fi+LTE работают; задержка — `warm TCP google/youtube/nip` на узком Telemost/vp8.
+- Фикс: после hev только короткий `connectivitycheck` (2с); warm google/yt/nip снят.
+- APK: `SilentVPN-debug.apk`. В логе не должно быть `warm TCP www.google.com`.
+
+### 2026-08-12 — откат получения olcrtc-config к схеме 1.0.160
+
+- Пользователь: «нет конфига» на Wi‑Fi и LTE после dirty/bad-room/bootstrap.
+- Вернул как в **1.0.160**: LTE `preferCache=true` сразу из кеша; Wi‑Fi `sync` затем кеш; leave/failure **не** затирают кеш; убраны dirty/bad-room/ephemeral bootstrap для конфига.
+- Кеш key `v13` (чистый старт). Один раз Wi‑Fi → Меню → Применить → дальше кеш работает на LTE.
+- APK: `SilentVPN-debug.apk`.
+
+### 2026-08-12 — olcrtc2 LTE «нет конфига» при переключении с Wi‑Fi
+
+- Wi‑Fi OK (есть delay — пол Telemost/vp8). LTE: leave чистил кеш + nip.io мёртв → «нет конфига».
+- Как VK-хеш в сборке: на LTE перед Telemost — **ephemeral bootstrap** (зашитый hash) → `/olcrtc2-config` через `10.66.66.1` → стоп bootstrap → olcrtc.
+- Leave снова **не затирает** olcrtc-кеш (только dirty); bad-room только на failure.
+- В логе ищи: `LTE: ephemeral VK bootstrap → /olcrtc2-config`.
+- APK: `SilentVPN-debug.apk`.
+
+### 2026-08-12 — olcrtc2: tunnelReady на LTE, но «ничего не грузит» + Wi‑Fi «нет конфига»
+
+- Вердикт: **backend OK** (room `491033` unit active; SOCKS dial OK = peer жив). Ломал **клиент**.
+- vs **1.0.160**: после hev не было `connectivitycheck.gstatic.com` до ready → Android не VALIDATED VPN; убран warm TCP.
+- «Нет конфига»: dirty без fallback на кеш после wipe.
+- Фикс: как 160 — 204-прогрев до ready + warm google/nip/youtube; кеш-fallback для non-bad rooms; leave snapshot→clear.
+- APK: `SilentVPN-debug.apk`.
+
+### 2026-08-12 — olcrtc2: клиент снова `251431` после wipe пула
+
+- Причина: soft-refresh 1.2с → miss → кеш v11 с orphan Telemost (srv снесён) → code=1; после fail «нет конфига».
+- Сервер OK: warm android отдаёт `122624…` (assign smoke PASS).
+- Фикс APK: кеш **v12** (сброс), бан `251431` + bad-rooms, connect ждёт fresh до **12–15с**, dirty без fallback на кеш.
+- APK: `SilentVPN-debug.apk`. Меню → Применить → Телемост; room ≠ 251431.
+
+### 2026-08-12 — olcrtc2: Wi‑Fi+LTE code=1 одна wedged-комната `251431…`
+
+- Симптом: ICE connected → SOCKS нет → code=1; «новый канал после early fail» = **тот же** room id.
+- Причина: leave делал restart в той же Telemost-комнате (не лечит wedge); `ensure_unit_ready` видит только systemd active; failure возвращал старый cfg/ту же warm.
+- Фикс API: leave/failure → **всегда teardown** комнаты (как VK); heal wipe+`ensure_warm_pool`.
+- Фикс Android: `reportOlcrtcRoomFailure` не принимает тот же room id (иначе ложный «новый канал»).
+- API задеплоен; пул пересоздан; APK пересобран.
+
+### 2026-08-12 — olcrtc2 LTE: code=1 + tunnelReady без трафика (vs 160)
+
+- Лог: room `104945…` ICE connected → `code=1` до SOCKS (wedged + cache-first без refresh).
+- Потом room `251431…` tunnelReady, но на мобильном ничего не грузит: `ipv6Tun=true` + `excludeRoute ips≈12` (вместо ~36).
+- Сверка с **1.0.160 Telemost** (не WDTT): IPv4-only `allowFamily(AF_INET)`, полный DNS exclude multi-A, udp-timeout 800.
+- Фикс: вернуть IPv4-only+mapdns; exclude = STATIC+getAllByName; soft-refresh всегда ≤1.2с (dirty ≤2.5с).
+- APK: `SilentVPN-debug.apk`.
+
+### 2026-08-12 — olcrtc2: медленный connect + «10с до первой загрузки»
+
+- Симптом: Wi‑Fi/LTE tunnelReady ок, но тумблер дольше чем раньше; после ready ~10с «тишины» у YouTube/Telegram.
+- Не баг пути: логи `SOCKS dial OK` / `ICE already connected` — туннель жив.
+- Самозадержки клиента: soft-refresh **всегда** ждал до 3.5с `/olcrtc2-config`; ICE sleep до 4с; excludeRoute DNS×11; hev connect-timeout 8с.
+- Фикс: **cache-first** + dirty только после leave/failure; ICE wait 0.8с; STATIC_HOSTS → exclude без повторного DNS; hev connect-timeout 5с.
+- Улей/WDTT (~75 Мбит, RTT VPS) Telemost/vp8 (телефон→Яндекс SFU→сота) **не догонит** по первой загрузке — это пол, не клиентский sleep.
+- APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`.
+
+### 2026-08-12 — olcrtc2: долгое «Отключение» + code=1 после leave
+
+- Причина disconnect spinner: leave ждал `apply+settle 8с` на API; ползунок в DISCONNECTING.
+- Причина code=1: connect из кеша в комнату, пока srv ещё restart / wedged (`690531…`).
+- Фикс API: leave → `warming` + restart в фоне (HTTP сразу); stale warming tear агентом.
+- Фикс Android: leave timeout 2с параллельно stop VPN; connect soft-refresh 3.5с, иначе кеш.
+- Пул re-apply; API задеплоен. Нужен новый debug APK для UI/connect.
+
+### 2026-08-12 — olcrtc2 code=1 после leave→warm (wedged Telemost)
+
+- Симптом: peer connected → SOCKS 15с → `olcrtc вышел code=1 до SOCKS` (Wi‑Fi и LTE).
+- Причина: leave оставлял unit «active» без restart → srv wedged в комнате; клиент ICE к Яндексу ок, peer/SOCKS нет.
+- Фикс: leave/heartbeat_offline → `apply_olcrtc2_unit` (restart) + settle; warm assign снова через `ensure_unit_ready`.
+- Прод: `deploy_api.py` + force re-apply всех warm unit’ов на Соте 1; sticky сброшены. Новый APK не нужен.
+
+### 2026-08-12 — olcrtc2 конфиг без VK: leave не убивает кеш/комнату
+
+- Баг: `leaveOlcrtcRoom()` всегда `clearOlcrtcCache()` + leave teardown комнаты → после disconnect Wi‑Fi/LTE снова «включите VK».
+- Фикс API: leave/heartbeat_offline → sticky off, комната **в warm** (srv жив); teardown только `failure:*`.
+- Фикс Android: кеш не чистить на leave; connect = `resolveOlcrtcConfigForConnect()` (кеш сразу); denied не затирает кеш; убран текст «включите VK».
+- API задеплоен; APK пересобран. Один раз Применить если кеш уже пустой.
+
+### 2026-08-12 — olcrtc2 «нет конфига / включите VK»: вернули LTE-кеш
+
+- Как было (2026-07-27): конфиг на LTE через VK `10.66.66.1` или из кеша; nip.io с LTE часто мёртв.
+- Регресс: после code=1 делали `clearOlcrtcCache` + долгий ensure_unit_ready на warm → пустой кеш + таймаут → текст про VK.
+- Фикс: не сносить кеш до нового assign; LTE без туннеля — connect из кеша сразу; warm assign только быстрый probe; heal агента без re-apply×8с.
+- API задеплоен; APK пересобран.
+
+### 2026-08-12 — olcrtc2 code=1: sticky на мёртвый unit
+
+- Лог: SOCKS auth=on, peer connected, exit code=1 до SOCKS. Room `487312…` уже не в БД.
+- Причина: после замены `olcrtc2-srv` sticky указывал на unit без env (crash-loop `o2-c532`, status=2) — ICE к Telemost есть, srv в комнате нет.
+- Фикс: cell-agent `POST /v1/olcrtc2/status`; assign `ensure_unit_ready` на sticky/warm; агент heal+teardown мёртвых; settle 8с.
+- Crash-loop unit вычищен; API+cell-agent задеплоены.
+
+### 2026-08-12 — откат latency-тюнинга + SOCKS5 auth (YourVPNDead)
+
+- IPv4-only / QUIC 40мс / KCP 2ms **ухудшили** YouTube~10с и Telegram~20с — откат к dual-stack + udp 150 + KCP 5мс; сота srv обновлён.
+- YourVPNDead: `SOCKS5 без auth на 8808` — у olcrtc2 creds намеренно обнулялись. Фикс: per-session RFC1929 → hev + `OLCRTC2_SOCKS_USER/PASS` в cnc; PC sing-box тоже.
+- Exit IP соты через SOCKS — норма для VPN; без auth любой app мог ходить. С auth — только hev/sing-box.
+- Референсы GitHub ([поиск olcrtc](https://github.com/search?q=olcrtc&type=repositories)): [olcbox](https://github.com/alananisimov/olcbox) / [WireTurn](https://github.com/spkprsnts/WireTurn) — тот же hev+локальный SOCKS; upstream [olcrtc#8](https://github.com/openlibrecommunity/olcrtc/issues/8) уже имел SOCKS auth.
+- APK `SilentVPN-debug.apk` ~07:51.
+
+### 2026-08-12 — olcrtc2 latency: IPv4-only hev + KCP 2ms
+
+- После warm-dial: Telegram всё ещё 1–5с — HE по IPv6 в TUN (SOCKS IPv6 hang) + QUIC wait 150мс + пол Telemost SFU.
+- Android hev: **ipv4-only** (`allowFamily(AF_INET)`), `udp-read-write-timeout:40`, `tcp-fastopen`, connect 3с.
+- KCP `SetNoDelay(1,2,2,1)` в vendor (нужны новый `libolcrtc2.so` + `olcrtc2-srv` на соте).
+- Пол Telemost (телефон→Яндекс SFU→сота) WDTT на Улье не догонит — это не баг клиента.
+
+### 2026-08-12 — olcrtc2 Android: убрана пачка warm TCP после tunnelReady
+
+- Симптом: «предзагрузка» перед страницами/видео; в логе `warm TCP …nip.io OK (x8)`.
+- Причина: после ready шли 8 параллельных SOCKS CONNECT (gstatic/google/yt/nip.io) — на Telemost/vp8 забивали канал.
+- На Улье (WDTT) этого почти не замечали (шире канал). `[pc]` в логе = PeerConnection (pion), не ПК-клиент.
+- Фикс: убраны warm-dial’ы; tunnel уже проверен `waitForSocksDial(gstatic)`.
+
+### 2026-08-11 — olcrtc2 warm-пул (вместо create-on-demand 90с)
+
+- Почему ~1.5 мин: session-mode создавал комнату Playwright **на каждый connect**; prune ещё и сносил idle.
+- Фикс: `warm_pool_per_dt=3` (pc+android), агент `ensure_warm_pool` + prune **хранит** свободные; assign = warm hit ~1с.
+- После apply — sleep 5с (srv в комнате), меньше peer-connected→code=1.
+- Прод: free pc=3 / android=3. Админка: Warm PC/Android + поле запаса.
+- Deploy: `deploy_api.py` (API+agent+admin-ui).
+
+### 2026-08-11 — olcrtc2 «конфиг нет кеш/сеть»
+
+- Причина: `/olcrtc2-config` ждёт Playwright 30–90с, клиент рвал через **5–20с**; на LTE nip.io + пустой кеш после failure.
+- Фикс: readTimeout **120с** / connect 30с; кеш не сносить пока нет нового; LTE hint — VK/Wi‑Fi → Применить.
+- APK пересобран.
+
+### 2026-08-11 — olcrtc2 LTE: OkHttp CONN_FILE (как v1)
+
+- Симптом LTE: `carrier auth failed: Get cloud-api.yandex.ru…` → code=1 до SOCKS.
+- Причина: Go TLS/DNS на мобильном не достучится до Telemost API; Wi‑Fi ок.
+- Фикс: перед `libolcrtc2` — `prefetchTelemostConnViaOkHttp` → `OLCRTC_TELEMOST_CONN_FILE` + `OLCRTC_STATIC_HOSTS` (как старый olcrtc).
+- YouTube медленнее «одного сервера»: Telemost/vp8 потолок ~10 Мбит + RTT соты; fps60 уже; WDTT быстрее.
+- APK `SilentVPN-debug.apk` ~20:25.
+
+### 2026-08-11 — olcrtc2: кеш мёртвой комнаты + YouTube/Telegram
+
+- Первая долгая ошибка: LTE `preferCache` брал старый room без srv → timeout.
+- Фикс: connect всегда `syncOlcrtcLiveChannel` сначала; `reportOlcrtcRoomFailure` чистит кеш.
+- YouTube при tunnelReady: vp8 **fps 60**; hev UDP timeout 150мс (QUIC→TCP); warm googlevideo.
+- Telegram «думает» — нормальная задержка Telemost/vp8 (не WDTT).
+- APK + srv на Соте 1 обновлены.
+
+### 2026-08-11 — olcrtc2 Android code=1: DataChannel→vp8channel
+
+- Симптом: peer connected ~15с → `datachannel timeout` / exit 1 / SOCKS нет (Android + srv на соте).
+- Причина: Telemost SFU **не открывает** WebRTC DataChannel; туннель только через **vp8channel** (как olcrtc v1).
+- Фикс: `vendor/olcrtc/cmd/olcrtc2-{cnc,srv}` → `client.Run`/`server.Run` + `vp8channel`; ICE filter режет `10.66/16`; sticky до active; prune grace.
+- Задеплоено: srv на Соту 1, assign на queen; APK `SilentVPN-debug.apk` (~20:02); PC `pc/resources/olcrtc2-cnc.exe`.
+
+### 2026-08-11 — olcrtc 2.0: Android native + клиенты для теста
+
+- `libolcrtc2.so` (arm64/armv7) из `backend/olcrtc2/cmd/olcrtc2-cnc`; меню Telemost снова активно.
+- PC debug: `pc/build-debug-977561/`; Android: `SilentVPN-debug.apk`.
+- Инструкция агента: `.cursor/OLCRTC2_AGENT.md`.
+
+### 2026-08-11 — olcrtc 2.0 продукт готов к PC-тесту
+
+- Smoke PASS: create Telemost на Соте 1 → assign → `olcrtc2@unit` → release teardown.
+- Вкл: `enabled`+`agent_enabled`, Playwright `silent-olcrtc2-host-provision` на `87.58.213.193:9101`.
+- Тест: PC `build-debug-534461` → Обход → Телемост → Применить → VPN → YouTube.
+- Android native olcrtc2 — ещё нет (меню Telemost disabled).
+
+### 2026-08-11 — olcrtc 2.0 Phase P каркас (session-mode + агент)
+
+- `Olcrtc2Room`/`Olcrtc2Sticky`, `olcrtc2_assign` (1 fp=1 room), `GET /olcrtc2-config` → assign
+- cell-agent `/v1/olcrtc2/apply|teardown|create`; агент prune; админка agent+pool stats
+- Telemost create только через соту `:9101` (не queen). Нужен deploy host-provision на Соту 1.
+
+### 2026-08-11 — olcrtc 2.0: заказчик = продукт session-mode, не smoke
+
+- Нужно сразу: агент создаёт комнату **под каждого** пользователя (1=1), cap, heartbeat, teardown — как v1 session-mode, exit только на **соте**.
+- Ручной Room ID в админке — только diag; продукт = assign on demand.
+- План переписан: `.cursor/PLAN_OLCRTC2.md` → Phase P (приоритет).
+
+### 2026-08-11 — фикс crash debug клиентов (PC UI + Android Hilt)
+
+- **PC:** `isDebugBuild()` вызывали как функцию, а это boolean → падение UI. Фикс в `bypassStore.ts`; debug `pc/build-debug-534461/`.
+- **Android:** установленный debug APK без Hilt `SilentApp_GeneratedInjector` → мгновенный FATAL. Чистый `assembleDebug`; WDTT-only до native olcrtc2; APK `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`.
+
+### 2026-08-11 — olcrtc 2.0 Phase 4 partial (админка + debug клиенты)
+
+- Почему не было в админке: Phase 2 = только srv на соте; UI/API — Phase 4.
+- Админка: «Варианты обхода» → секция olcrtc 2.0 (room/key/apply сота).
+- API: `GET /api/vpn/olcrtc2-config`; admin `/api/admin/olcrtc2`.
+- PC debug: меню VK|Телемост, `olcrtc2-cnc.exe` + sing-box (`build-debug-534461`).
+- Android debug: меню показывает Telemost как «скоро»; connect только WDTT до libolcrtc2.
+- Проверка: админка room+ключ → «Применить на соту» → PC debug → Обход → Телемост → Применить → VPN.
+
 ### 2026-08-11 — olcrtc 2.0 Phase 2 (Telemost + Сота 1) + фикс админки 502
 
 - **502 админка/API:** контейнер API падал на `ImportError apply_units_via_host` / missing `agent_leader` — полный `deploy_stable` + harden `main.py` (агенты не валят lifespan). Health **200**.

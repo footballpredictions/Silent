@@ -645,4 +645,10 @@ def write_all_server_yaml_files(settings: OlcrtcSettings) -> list[str]:
 
 def is_placeholder_room(url: str) -> bool:
     u = (url or "").strip().upper()
-    return (not u) or ("REPLACE" in u) or u.endswith("-PLACEHOLDER")
+    if not u:
+        return True
+    if "REPLACE" in u:
+        return True
+    if u == "PLACEHOLDER" or u.endswith("-PLACEHOLDER") or "PLACEHOLDER" in u:
+        return True
+    return False

@@ -39,11 +39,16 @@ def _unit() -> str:
         Environment=OLCRTC_HOST_PROVISION_PORT=9101
         Environment=OLCRTC_HOST_PROVISION_STATE_DIR={REMOTE_STATES}
         Environment=OLCRTC_BACKEND_ROOT={REMOTE_HP}
+        Environment=OLCRTC_HOST_CREATE_PARALLEL=1
         # X-Internal-Secret для /v1/*
         EnvironmentFile=-/opt/silent-vpn/backend/.env
         ExecStart={REMOTE_HP}/venv/bin/python {REMOTE_HP}/olcrtc_host_provision_server.py
         Restart=on-failure
         RestartSec=5
+        # Playwright/Chromium: не раздувать Улей (раньше peak 6.4G)
+        MemoryHigh=1500M
+        MemoryMax=2500M
+        TasksMax=200
 
         [Install]
         WantedBy=multi-user.target

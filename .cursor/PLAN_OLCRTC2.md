@@ -1,116 +1,84 @@
-# PLAN — olcrtc 2.0 (WDTT-совместимый носитель Телемост / WB)
+# PLAN — olcrtc 2.0 (продукт: session-mode + агент)
 
 Дата: 2026-08-11  
-Статус: Phase 2 done (Telemost carrier + srv на Соте 1). **На Улей рядом с `wdtt` не деплоить.**
+Статус: **цель = продукт на 100–500+ online**, не smoke одной комнаты.  
+Жёстко: exit и create комнат — **только на соте**. Playwright/Chromium **никогда** рядом с `wdtt` на Улье.
 
-## Цель
+## Что заказчик хочет (канон)
 
-Один продукт Silent VPN с **двумя носителями**, которые **не убивают друг друга**:
+Как у VK-хешей / olcrtc v1 **session-mode**:
+
+1. Клиент включает «Телемост» → `GET /api/vpn/olcrtc2-config`  
+2. Backend **сам** выдаёт комнату под fingerprint (sticky)  
+3. Если комнаты нет → **агент создаёт** новую (1 юзер = 1 комната, `max_clients=1`)  
+4. Leave / stale heartbeat → **teardown** комнаты + unit на соте  
+5. Одновременно могут сидеть **сотни** людей — у каждого своя комната/сессия  
+6. Админ **не** вставляет Room ID вручную для каждого юзера (ручная комната — только diag)
+
+Одна галка «Room ID» в админке — **временный stub**, не продукт. Заменяется агентом.
+
+## Носители
 
 | Канал | Носитель | Exit |
 |-------|----------|------|
-| VK | существующий **WDTT** (DTLS/RTP → VK TURN) | `wdtt.service` на Улье |
-| Телемост / WB | **olcrtc 2.0** (Pion headless → SFU) | **отдельная сота / VPS**, не queen |
+| VK | WDTT | Улей `wdtt.service` |
+| Телемост / WB | olcrtc 2.0 | **Сота** (`olcrtc2@…`), не queen |
 
-«Совместим с WDTT» для нас значит:
-
-1. Снаружи для приложений — тот же **WireGuard** (как сейчас у VK).
-2. Та же **модель сессии**, что у VK-хешей: create on demand → leave = teardown.
-3. Один клиентский фасад (`BypassRouter`): VK | Телемост | WB.
-4. Общий crypto/session API на backend (не Playwright-шторм на Улье).
-5. **Жёсткая изоляция CPU/RAM** от `wdtt` (главный урок 2026-08-11).
-
-Не значит: впихнуть Телемост/ВБ внутрь текущего бинаря `wdtt-server` без нового транспорта.
-
-## Что изучили на GitHub
-
-| Репо | Урок |
-|------|------|
-| [openlibrecommunity/olcrtc](https://github.com/openlibrecommunity/olcrtc) | carrier = jitsi/telemost/wbstream; transport DC/VP8; SOCKS cnc↔srv. Наш v1 был этим + Playwright на Улье → конфликт с WDTT. |
-| [kulikov0/whitelist-bypass](https://github.com/kulikov0/whitelist-bypass) | **Headless Pion** creator/joiner для VK/Telemost/WB/DION; без браузера; session create; SOCKS; VP8 когда DC режут. Ближайший референс для 2.0. |
-| [Kavun-Sama/jazztun](https://github.com/Kavun-Sama/jazztun) | Salute Jazz как отдельный носитель (позже, не MVP). |
-| [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt) | WDTT = WG через VK TURN; подтверждает: носитель VK ≠ носитель Яндекс/ВБ. |
-| net4people/bbs#618 | Паттерн: carrier adapter снизу, tunnel mux сверху, headless Pion. |
-
-## Архитектура 2.0
+## Поток продукта
 
 ```text
-Apps → VpnService/WG
-         │
-         ▼
-   Silent client (PC/Android)
-         │  BypassRouter
-         ├─ family=wdtt  → libclient/WDTT → VK TURN → queen wdtt-server → net
-         └─ family=olcrtc2
-               → olcrtc2-cnc (Pion) → Telemost|WB SFU
-               → olcrtc2-srv (на СОТЕ) → net
+Клиент (PC/Android debug → потом release)
+    → GET /olcrtc2-config?fingerprint=&device_type=
+    → queen API: sticky | create-on-demand
+         ├─ DB: Olcrtc2Room + Sticky (max=1)
+         ├─ create room: cell-agent / host на СОТЕ (не Улей)
+         └─ apply unit: olcrtc2@<id> на СОТЕ (Memory/CPU quota)
+    → клиент: olcrtc2-cnc join room → AEAD/smux → SOCKS → WG/TUN
+    → heartbeat
+    → leave / stale → teardown room+unit на соте
 ```
 
-### Слои Go-модуля `olcrtc2`
+## Фазы (переставлены под продукт)
 
-1. **carrier/** — адаптеры `telemost`, `wbstream` (join/create, ICE, pub/sub).
-2. **tunnel/** — AEAD + mux (smux или свой framing как WDTT-friendly datagram).
-3. **edge/** — `cnc` (SOCKS5 + optional UDP ASSOCIATE) / `srv` (egress).
-4. **session/** — create/leave hooks под наш backend API.
+### Phase 0–2 — фундамент ✅
+- Go `olcrtc2` (carrier Telemost, AEAD, smux, cnc/srv)
+- Деплой бинаря на Соту 1, изоляция от WDTT
 
-MVP transport: **VP8 channel** (Телемост/WB стабильнее DC).  
-DC — опционально для WB с account token.
+### Phase P (продукт session) — **smoke PASS 2026-08-11**
+- [x] Модели `Olcrtc2Room` / `Olcrtc2Sticky`
+- [x] `olcrtc2_assign.py`: sticky + create on demand + leave teardown + heartbeat
+- [x] `GET /olcrtc2-config` → assign
+- [x] Агент `ai/olcrtc2_room_agent.py`: prune stale
+- [x] Create Telemost на **соте** `:9101` (Playwright)
+- [x] cell-agent: `/v1/olcrtc2/apply|teardown|create`
+- [x] Админка: агент + pool stats
+- [x] Deploy host-provision на Соту 1 + enable agent
+- [x] Server smoke: assign → unit → release
+- [ ] PC debug live YouTube (ручной тест)
+- [ ] Android native olcrtc2
+- [ ] Loadtest 100 / 500 session
 
-### Backend
+### Phase C — клиенты
+- [ ] PC debug: уже cnc; переключить на assign-конфиг
+- [ ] Android: **native olcrtc2** (обязательно для выбора в меню)
+- [ ] Release: после green на 50–100 session
 
-- Новый namespace API: `/api/vpn/olcrtc2-config` (не включать старый `/olcrtc-config` на queen).
-- Session assign/release как у VK (sticky fingerprint, max=1).
-- Room create: **только HTTP API** (WB уже есть `olcrtc_wb_api.py`; Telemost — API/headless, **без Playwright на Улье**).
-- Deploy srv **только на cell** (`deploy_olcrtc2_cell.py`), UFW, Memory/CPU quota.
+### Phase W — WB Stream
+- JWT create/delete из `olcrtc_wb_api.py` в тот же assign
 
-### Клиенты
-
-- Снова пункт меню, но `family=olcrtc2` и бинарь `olcrtc2`, не старый olcrtc.
-- Взаимное исключение: WDTT↑ ⇒ olcrtc2↓ и наоборот.
-- Prefetch конфига через tunnel после логина (как hashes).
-
-## Фазы
-
-### Phase 0 — каркас
-- [x] План в `.cursor/PLAN_OLCRTC2.md`
-- [x] Go module `backend/olcrtc2/` + interface Carrier
-- [x] stubs telemost/wbstream
-- [x] unit test compile
-- [x] **не** трогать prod wdtt / не поднимать на queen
-
-### Phase 1 — srv/cnc loopback ✅ 2026-08-11
-- [x] SOCKS cnc ↔ srv через mock carrier (без реального SFU)
-- [x] AEAD (XChaCha20-Poly1305) + smux поверх `PacketConn`
-- [x] Smoke на localhost: `go test ./...` + `go run ./cmd/olcrtc2-smoke`
-
-### Phase 2 — Telemost headless ✅ 2026-08-11 (сота 1)
-- [x] Telemost `GetConnectionInfo` + headless Dial через `vendor/olcrtc` (Goolom)
-- [x] `olcrtc2-srv` / `olcrtc2-cnc` (AEAD+smux+SOCKS поверх carrier)
-- [x] Exit на **Соте 1** `87.58.213.193`: `python scripts/deploy_olcrtc2_cell.py` → `CELL_OLCRTC2_OK`
-- [x] Улей / `wdtt` не трогали; unit `MemoryMax=512M` `CPUQuota=50%`
-- Старт на соте после `OLCRTC2_ROOM` + `OLCRTC2_KEY` в `/opt/silent-vpn/olcrtc2/olcrtc2.env`
-
-### Phase 3 — WB Stream
-- Переиспользовать JWT create/delete из `ai/olcrtc_wb_api.py`
-- Account token для srv
-
-### Phase 4 — клиенты + админка
-- Меню, connect path, admin «olcrtc 2.0»
-- Только после Phase 2 green на соте
-
-### Phase 5 — harden
-- CPU/mem limits, session GC, LTE проверка, OTA
+### Phase H — harden
+- 100 / 500 online loadtest, LTE, OTA, лимиты Memory/CPU на соте
 
 ## Жёсткие запреты
 
 - Playwright / Chromium на Улье рядом с `wdtt`
-- Shared pool autoscale 1000+ на queen
-- Одновременный WDTT + olcrtc2 в одном процессе клиента
-- Деплой olcrtc2-srv на `132.243.234.162` до явного OK
+- Одна общая комната на всех как «продукт»
+- olcrtc2-srv на `132.243.234.162`
+- Одновременный WDTT + olcrtc2 в одном клиентском процессе
 
 ## Критерий «готово к продукту»
 
-1. VK на Улье без регрессии (connect &lt; 15с при ~100 online).
-2. Телемост и WB на соте: assign → tunnelReady → YouTube TCP → leave teardown.
-3. Переключение VK↔Телемост без kill app.
-4. Админка не показывает мёртвый olcrtc v1.
+1. VK на Улье без регрессии.  
+2. 100+ одновременных Telemost-сессий на соте (assign → ready → YouTube → leave teardown).  
+3. Админ не клепает Room ID руками.  
+4. Android и PC переключают VK ↔ Телемост без kill app.

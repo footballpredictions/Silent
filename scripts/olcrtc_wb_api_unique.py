@@ -1,0 +1,87 @@
+"""WB API: unique titles + delete."""
+from __future__ import annotations
+
+import io
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from _deploy_common import connect, run  # noqa: E402
+
+
+def main() -> None:
+    client = connect()
+    sftp = client.open_sftp()
+    py = r'''
+import asyncio, base64, json, time, httpx, uuid
+from app.database import AsyncSessionLocal
+from app.services.olcrtc_room_accounts import resolve_wbstream_access_token
+
+def jwt_payload(tok: str) -> dict:
+    part = tok.split(".")[1]
+    pad = "=" * (-len(part) % 4)
+    return json.loads(base64.urlsafe_b64decode(part + pad))
+
+async def main():
+    async with AsyncSessionLocal() as db:
+        tok = await resolve_wbstream_access_token(db)
+        owner = str(jwt_payload(tok).get("user") or "")
+        headers = {
+            "Authorization": f"Bearer {tok}",
+            "Content-Type": "application/json",
+            "Origin": "https://stream.wb.ru",
+            "Referer": "https://stream.wb.ru/",
+            "User-Agent": "Mozilla/5.0",
+        }
+        ids = []
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            for i in range(2):
+                title = f"svpn-{uuid.uuid4().hex[:10]}"
+                body = {
+                    "roomInfo": {
+                        "title": title,
+                        "isPublic": False,
+                        "ownerId": owner,
+                        "roomType": 1,
+                        "roomPrivacy": 1,
+                    }
+                }
+                r = await client.post(
+                    "https://stream.wb.ru/api-room/api/v1/room",
+                    headers=headers,
+                    json=body,
+                )
+                print(f"create title={title} -> {r.status_code} {(r.text or '')[:200]}")
+                if r.status_code in (200, 201):
+                    rid = (r.json() or {}).get("roomId")
+                    ids.append(rid)
+            for rid in ids:
+                for method in ("DELETE", "POST"):
+                    urls = [
+                        f"https://stream.wb.ru/api-room/api/v1/room/{rid}",
+                        f"https://stream.wb.ru/api-room/api/v1/room/{rid}/close",
+                        f"https://stream.wb.ru/api-room/api/v1/room/{rid}/delete",
+                        f"https://stream.wb.ru/api-room/api/v1/room/{rid}/finish",
+                    ]
+                    for url in urls:
+                        if method == "DELETE":
+                            r = await client.delete(url, headers=headers)
+                        else:
+                            r = await client.post(url, headers=headers, content=b"{}")
+                        print(f"{method} {url.split('/api/v1/')[-1]} -> {r.status_code} {(r.text or '')[:120]}")
+                        if r.status_code < 300:
+                            break
+
+asyncio.run(main())
+'''
+    sftp.putfo(io.BytesIO(py.encode()), "/tmp/wb_api_unique.py")
+    run(client, "docker cp /tmp/wb_api_unique.py backend-api-1:/tmp/wb_api_unique.py")
+    print(run(client, "docker exec -w /app -e PYTHONPATH=/app backend-api-1 python /tmp/wb_api_unique.py"))
+    sftp.close()
+    client.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -52,19 +52,40 @@ def _slug_unit(slot: str, provider: str, suffix: str = "") -> str:
     return re.sub(r"[^a-zA-Z0-9_-]+", "-", base).strip("-")[:120]
 
 
+def _unit_sort_key(unit_name: str) -> tuple:
+    """pc-telemost, pc-telemost-2, …-10 — числовой хвост, не лексикографика."""
+    name = (unit_name or "").strip()
+    if "-" in name:
+        base, maybe = name.rsplit("-", 1)
+        if maybe.isdigit():
+            return (base, int(maybe))
+    return (name, 0)
+
+
 async def list_rooms(
     db: AsyncSession,
     *,
     provider: str | None = None,
     status: str | None = None,
 ) -> list[OlcrtcRoom]:
-    q = select(OlcrtcRoom).order_by(OlcrtcRoom.provider, OlcrtcRoom.slot_label, OlcrtcRoom.unit_name)
+    q = select(OlcrtcRoom).order_by(
+        OlcrtcRoom.provider, OlcrtcRoom.slot_label, OlcrtcRoom.created_at, OlcrtcRoom.unit_name
+    )
     if provider:
         q = q.where(OlcrtcRoom.provider == provider)
     if status:
         q = q.where(OlcrtcRoom.status == status)
     result = await db.execute(q)
-    return list(result.scalars().all())
+    rows = list(result.scalars().all())
+    rows.sort(
+        key=lambda r: (
+            r.provider or "",
+            r.slot_label or "",
+            _unit_sort_key(r.unit_name or ""),
+            r.created_at or datetime(1970, 1, 1),
+        )
+    )
+    return rows
 
 
 async def get_room(db: AsyncSession, room_id: uuid.UUID) -> OlcrtcRoom | None:
@@ -195,12 +216,16 @@ async def reconcile_rooms_from_settings(
                 new = url.strip()
                 new_max = max(1, int(slot.max_clients or row.max_clients or 12))
                 touched = False
+                # max из Сохранить/Применить (settings JSON) → все комнаты слота,
+                # включая хвосты android-telemost-2. GET /rooms больше не зовёт
+                # reconcile — только явный save/apply, отката «само» нет.
                 if int(row.max_clients or 0) != new_max:
                     row.max_clients = new_max
                     touched = True
                 row.device_types = dts
                 row.slot_label = slot_id
-                if p.enabled and row.status == "offline":
+                admin_hold = (row.last_error or "").startswith("admin:")
+                if p.enabled and row.status == "offline" and not admin_hold:
                     row.status = "active"
                     touched = True
                 if not p.enabled and row.status != "offline":
@@ -216,11 +241,10 @@ async def reconcile_rooms_from_settings(
                         db, provider=name, slot_label=slot_id
                     )
                     touched = True
-                # Хвосты агента pc-telemost-2, pc-wbstream-3 — тот же slot → тот же max
                 for sib in existing:
                     if (
                         sib.provider == name
-                        and sib.slot_label == slot_id
+                        and (sib.slot_label or "") == slot_id
                         and sib.id != row.id
                         and sib.status in ("active", "provisioning", "offline", "error")
                         and int(sib.max_clients or 0) != new_max
@@ -291,9 +315,12 @@ async def set_room_status(
     room.status = status
     if error is not None:
         room.last_error = error[:500]
-    if status == "active":
+    elif status == "active":
         room.last_healthy_at = _now()
         room.last_error = None
+    elif status in ("draining", "offline"):
+        # Маркер ручного действия — liveness не должен откатывать статус.
+        room.last_error = f"admin:{status}"
     await db.commit()
     await db.refresh(room)
     return room
@@ -450,6 +477,61 @@ async def pool_metrics(db: AsyncSession) -> dict[str, Any]:
             "capacity": sum(int(r.max_clients or 0) for r in pr),
             "free": sum(max(0, int(r.max_clients) - int(r.online_count or 0)) for r in pr),
         }
+    # Комната слота pc не принимает Android — общий free вводит в заблуждение,
+    # поэтому считаем ёмкость отдельно по каждой платформе.
+    by_slot: list[dict[str, Any]] = []
+    for name in PROVIDERS:
+        for slot in ("pc", "android"):
+            pr = [
+                r
+                for r in active
+                if r.provider == name
+                and (
+                    (r.slot_label or "").strip().lower() == slot
+                    or slot in [str(x).lower() for x in (r.device_types or [])]
+                    or (r.unit_name or "").startswith(f"{slot}-")
+                )
+            ]
+            by_slot.append(
+                {
+                    "provider": name,
+                    "slot": slot,
+                    "rooms": len(pr),
+                    "online": sum(int(r.online_count or 0) for r in pr),
+                    "capacity": sum(int(r.max_clients or 0) for r in pr),
+                    "free": sum(
+                        max(0, int(r.max_clients) - int(r.online_count or 0)) for r in pr
+                    ),
+                }
+            )
+    agent_enabled = False
+    session_mode = True
+    min_free = 4
+    max_rooms = 12
+    max_clients = 2
+    idle_ttl = 5
+    check_iv = 150
+    try:
+        from ai.olcrtc_room_agent import CHECK_INTERVAL_SECONDS, load_agent_state
+
+        state = await load_agent_state(db)
+        agent_enabled = bool(state.enabled)
+        session_mode = bool(state.session_mode)
+        min_free = int(state.min_free_per_slot)
+        max_rooms = int(state.max_rooms_per_slot)
+        max_clients = int(state.max_clients)
+        idle_ttl = int(state.idle_room_ttl_min)
+        check_iv = int(CHECK_INTERVAL_SECONDS)
+    except Exception:
+        pass
+    # Session-mode: пустой список комнат — норма (создаются при подключении).
+    # Не пугать «нет свободных» и не звать «Создать запас».
+    if session_mode:
+        shortage = False
+    else:
+        shortage = any(s["free"] <= 0 for s in by_slot) or (
+            free <= 0 and len(active) > 0
+        )
     return {
         "rooms_total": len(rooms),
         "rooms_active": len(active),
@@ -458,9 +540,14 @@ async def pool_metrics(db: AsyncSession) -> dict[str, Any]:
         "capacity_total": capacity,
         "free_slots": free,
         "fill_ratio": round(online / capacity, 3) if capacity else 0.0,
-        "target_free_ratio": 0.10,
-        "target_capacity_hint": 1100,
         "by_provider": by_provider,
-        "denied_hint": free <= 0,
-        "ready_for_1000": capacity >= 1100,
+        "by_slot": by_slot,
+        "denied_hint": shortage,
+        "session_mode": session_mode,
+        "agent_enabled": agent_enabled,
+        "min_free_per_slot": min_free,
+        "max_rooms_per_slot": max_rooms,
+        "max_clients": max_clients,
+        "idle_room_ttl_min": idle_ttl,
+        "check_interval_seconds": check_iv,
     }

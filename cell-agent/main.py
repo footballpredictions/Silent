@@ -394,6 +394,251 @@ async def olcrtc_apply(
     return {"ok": True, "unit": unit, "path": str(path)}
 
 
+class Olcrtc2ApplyBody(BaseModel):
+    unit_name: str
+    room: str
+    crypto_key: str
+    provider: str = "telemost"
+    auth_token: str = ""  # WB account JWT for srv (required for wbstream)
+    restart: bool = True
+
+
+class Olcrtc2TeardownBody(BaseModel):
+    unit_name: str
+
+
+class Olcrtc2CreateBody(BaseModel):
+    provider: str = "telemost"
+    storage_state: dict[str, Any] = {}
+
+
+@app.post("/v1/olcrtc2/apply")
+async def olcrtc2_apply(
+    body: Olcrtc2ApplyBody,
+    x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
+):
+    """Per-session olcrtc2@unit: env + restart (Telemost exit on cell, not queen)."""
+    _auth(x_cell_agent_secret)
+    import re
+    import subprocess
+
+    unit = (body.unit_name or "").strip()
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,120}", unit):
+        raise HTTPException(status_code=400, detail="bad unit_name")
+    room = (body.room or "").strip()
+    key = (body.crypto_key or "").strip().lower()
+    if not room or len(key) != 64:
+        raise HTTPException(status_code=400, detail="room and 64-hex crypto_key required")
+    prov = (body.provider or "telemost").strip().lower()
+    mode = "wbstream" if prov == "wbstream" else "telemost"
+    auth_token = (body.auth_token or "").strip()
+    import logging as _logging
+
+    _logging.getLogger("uvicorn.error").info(
+        "olcrtc2_apply unit=%s provider=%r mode=%s tok_len=%s room=%s",
+        unit,
+        body.provider,
+        mode,
+        len(auth_token),
+        room[:40],
+    )
+    if mode == "wbstream" and not auth_token.startswith("eyJ"):
+        raise HTTPException(
+            status_code=400,
+            detail="wbstream requires auth_token (account JWT eyJ…)",
+        )
+    root = Path("/opt/silent-vpn/olcrtc2")
+    env_dir = root / "env.d"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    env_path = env_dir / f"{unit}.env"
+    lines = [
+        f"OLCRTC2_MODE={mode}",
+        f"OLCRTC2_ROOM={room}",
+        f"OLCRTC2_KEY={key}",
+    ]
+    if auth_token:
+        # escape newlines in JWT (should be single line)
+        lines.append(f"OLCRTC2_AUTH_TOKEN={auth_token.replace(chr(10), '').replace(chr(13), '')}")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        env_path.chmod(0o600)
+    except OSError:
+        pass
+    # Ensure template unit exists
+    unit_path = Path("/etc/systemd/system/olcrtc2@.service")
+    if not unit_path.is_file():
+        unit_path.write_text(
+            f"""[Unit]
+Description=Silent VPN olcrtc2-srv %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={root}
+EnvironmentFile=-{root}/env.d/%i.env
+ExecStart={root}/olcrtc2-srv
+Restart=on-failure
+RestartSec=5
+MemoryMax=512M
+CPUQuota=50%
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+""",
+            encoding="utf-8",
+        )
+    if body.restart:
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=30)
+        subprocess.run(
+            ["systemctl", "enable", f"olcrtc2@{unit}.service"],
+            capture_output=True,
+            timeout=30,
+        )
+        r = subprocess.run(
+            ["systemctl", "restart", f"olcrtc2@{unit}.service"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if r.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=(r.stderr or r.stdout or "restart failed")[:300],
+            )
+        active = subprocess.run(
+            ["systemctl", "is-active", f"olcrtc2@{unit}.service"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if (active.stdout or "").strip() != "active":
+            raise HTTPException(status_code=500, detail="unit not active after restart")
+    return {"ok": True, "unit": unit, "env": str(env_path)}
+
+
+class Olcrtc2StatusBody(BaseModel):
+    unit_name: str = ""
+
+
+@app.post("/v1/olcrtc2/status")
+async def olcrtc2_status(
+    body: Olcrtc2StatusBody,
+    x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
+):
+    """is-active + env presence — queen не выдаёт комнату с мёртвым srv."""
+    _auth(x_cell_agent_secret)
+    import re
+    import subprocess
+
+    unit = (body.unit_name or "").strip()
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,120}", unit):
+        raise HTTPException(status_code=400, detail="bad unit_name")
+    env_path = Path(f"/opt/silent-vpn/olcrtc2/env.d/{unit}.env")
+    active = subprocess.run(
+        ["systemctl", "is-active", f"olcrtc2@{unit}.service"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    state = (active.stdout or "").strip()
+    has_env = env_path.is_file()
+    room = ""
+    if has_env:
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("OLCRTC2_ROOM="):
+                    room = line.split("=", 1)[1].strip()
+                    break
+        except OSError:
+            pass
+    return {
+        "ok": True,
+        "unit": unit,
+        "active": state == "active",
+        "state": state,
+        "has_env": has_env,
+        "room": room[:80],
+    }
+
+
+@app.post("/v1/olcrtc2/teardown")
+async def olcrtc2_teardown(
+    body: Olcrtc2TeardownBody,
+    x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
+):
+    _auth(x_cell_agent_secret)
+    import re
+    import subprocess
+
+    unit = (body.unit_name or "").strip()
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,120}", unit):
+        raise HTTPException(status_code=400, detail="bad unit_name")
+    subprocess.run(
+        ["systemctl", "stop", f"olcrtc2@{unit}.service"],
+        capture_output=True,
+        timeout=60,
+    )
+    subprocess.run(
+        ["systemctl", "disable", f"olcrtc2@{unit}.service"],
+        capture_output=True,
+        timeout=30,
+    )
+    env_path = Path(f"/opt/silent-vpn/olcrtc2/env.d/{unit}.env")
+    try:
+        env_path.unlink(missing_ok=True)
+    except TypeError:
+        if env_path.is_file():
+            env_path.unlink()
+    except OSError:
+        pass
+    return {"ok": True, "unit": unit}
+
+
+@app.post("/v1/olcrtc2/create")
+async def olcrtc2_create(
+    body: Olcrtc2CreateBody,
+    x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
+):
+    """Create Telemost room on CELL (Playwright). Never run this on WDTT queen."""
+    _auth(x_cell_agent_secret)
+    provider = (body.provider or "telemost").strip().lower()
+    if provider != "telemost":
+        raise HTTPException(status_code=400, detail="cell create supports telemost only")
+    # Prefer local host-provision on same machine :9101
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(
+                "http://127.0.0.1:9101/v1/create",
+                json={
+                    "provider": "telemost",
+                    "storage_state": body.storage_state or {},
+                    "headless": True,
+                },
+            )
+        if r.status_code == 200:
+            data = r.json() if r.content else {}
+            room_id = str(data.get("room_id") or data.get("room") or "").strip()
+            if data.get("ok") and room_id:
+                return {"ok": True, "room_id": room_id, "message": data.get("message") or "ok"}
+            return {
+                "ok": False,
+                "message": str(data.get("message") or data.get("detail") or r.text)[:300],
+            }
+        return {"ok": False, "message": f"local provision HTTP {r.status_code}: {(r.text or '')[:200]}"}
+    except Exception as e:
+        return {
+            "ok": False,
+            "message": (
+                f"Playwright create unavailable on cell: {e}. "
+                "Deploy silent-olcrtc-host-provision on this cell (:9101)."
+            )[:300],
+        }
+
+
 HIVE_MANIFEST_PATH = Path("/etc/wdtt/hive_manifest.json")
 
 

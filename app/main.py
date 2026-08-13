@@ -397,6 +397,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("olcrtc background agents skipped: %s", e)
 
+        try:
+            from ai.olcrtc2_room_agent import monitor_loop as olcrtc2_room_agent_loop
+
+            agent_specs.append(("olcrtc2_room_agent", olcrtc2_room_agent_loop))
+        except Exception as e:
+            logger.warning("olcrtc2 agent skipped: %s", e)
+
         agents_task = start_when_leader("silent_background_agents", agent_specs)
     except Exception as e:
         logger.error("background agents failed to start (API still up): %s", e)

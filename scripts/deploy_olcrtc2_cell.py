@@ -119,7 +119,21 @@ def main() -> None:
         return client.exec_command(cmd, timeout=120)[1].read().decode()
 
     print(sh(f"mkdir -p {REMOTE}"))
-    sftp.put(str(bin_local), f"{REMOTE}/olcrtc2-srv")
+    # Binary may be busy (olcrtc2@unit). Stop instances, upload via .new, then replace.
+    print(
+        sh(
+            "systemctl stop 'olcrtc2@*.service' 2>/dev/null || true; "
+            "systemctl stop olcrtc2-srv.service 2>/dev/null || true; "
+            "sleep 1"
+        )
+    )
+    sftp.put(str(bin_local), f"{REMOTE}/olcrtc2-srv.new")
+    print(
+        sh(
+            f"mv -f {REMOTE}/olcrtc2-srv.new {REMOTE}/olcrtc2-srv; "
+            f"chmod +x {REMOTE}/olcrtc2-srv"
+        )
+    )
     # env template if missing
     try:
         sftp.stat(f"{REMOTE}/olcrtc2.env")

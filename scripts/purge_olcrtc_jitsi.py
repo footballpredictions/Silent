@@ -43,12 +43,15 @@ async def main():
         raw = settings.to_dict()
         raw["providers"] = {k: v for k, v in raw.get("providers", {}).items() if k in PROVIDERS}
         settings = parse_settings(raw)
-        # ensure telemost/wb enabled if olcrtc on
+        # ensure telemost + wbstream enabled in session mode (jitsi already purged)
         if settings.enabled:
             for name in PROVIDERS:
                 p = settings.providers.get(name)
-                if p and not p.enabled and any(r.url.strip() for r in p.effective_rooms()):
+                if not p:
+                    continue
+                if name in ("telemost", "wbstream"):
                     p.enabled = True
+                settings.providers[name] = p
         await save_olcrtc_settings(db, settings)
         print("settings providers", list(settings.providers.keys()))
 

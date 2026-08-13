@@ -445,7 +445,7 @@ async def get_olcrtc_config(
     provider: str = "",
     db: AsyncSession = Depends(get_db),
 ):
-    """Публичный конфиг варианта 2 (olcrtc). sticky/online только у provider."""
+    """Legacy olcrtc v1 — всегда disabled (kill 2026-08-11). См. /olcrtc2-config."""
     from app.services.olcrtc_assign import assign_public_config
     from app.services.olcrtc_rooms_db import ensure_rooms_synced
 
@@ -455,6 +455,76 @@ async def get_olcrtc_config(
         device_type=device_type or "",
         fingerprint=fingerprint or "",
         preferred_provider=provider or "",
+    )
+
+
+@router.get("/olcrtc2-config")
+async def get_olcrtc2_config(
+    device_type: str = "",
+    fingerprint: str = "",
+    provider: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    """Публичный конфиг olcrtc 2.0 — session assign (1 fp = 1 room) на соте."""
+    from app.services.olcrtc2_assign import assign_public_config
+
+    return await assign_public_config(
+        db,
+        device_type=device_type or "",
+        fingerprint=fingerprint or "",
+        preferred_provider=provider or "",
+    )
+
+
+class Olcrtc2HeartbeatBody(BaseModel):
+    room_db_id: str = ""
+    fingerprint: str = ""
+    provider: str = ""
+    device_type: str = ""
+    online: bool = True
+
+
+@router.post("/olcrtc2-heartbeat")
+async def post_olcrtc2_heartbeat(
+    body: Olcrtc2HeartbeatBody,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.olcrtc2_assign import heartbeat
+
+    if not (body.room_db_id or "").strip():
+        raise HTTPException(status_code=400, detail="room_db_id required")
+    return await heartbeat(
+        db,
+        room_db_id=body.room_db_id.strip(),
+        fingerprint=body.fingerprint or "",
+        provider=body.provider or "",
+        device_type=body.device_type or "",
+        online=bool(body.online),
+    )
+
+
+class Olcrtc2RoomFailureBody(BaseModel):
+    room_db_id: str = ""
+    fingerprint: str = ""
+    provider: str = ""
+    device_type: str = ""
+    detail: str = ""
+
+
+@router.post("/olcrtc2-room-failure")
+async def post_olcrtc2_room_failure(
+    body: Olcrtc2RoomFailureBody,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.olcrtc2_assign import report_room_failure
+
+    return await report_room_failure(
+        db,
+        room_db_id=body.room_db_id or "",
+        fingerprint=body.fingerprint or "",
+        provider=body.provider or "",
+        device_type=body.device_type or "",
+        detail=body.detail or "",
     )
 
 

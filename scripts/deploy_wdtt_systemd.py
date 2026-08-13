@@ -48,6 +48,9 @@ ExecStart=/usr/local/bin/wdtt-server -listen 0.0.0.0:56000 -wg-port 56001 -confi
 Restart=always
 RestartSec=3
 LimitNOFILE=65535
+# RSS на проде ~3GB при малом online — мягкий/жёсткий потолок, чтобы не сожрать всю RAM Улья
+MemoryHigh=4G
+MemoryMax=6G
 
 [Install]
 WantedBy=multi-user.target

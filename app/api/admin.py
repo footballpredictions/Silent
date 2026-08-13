@@ -447,6 +447,81 @@ async def set_threat_filter_settings(
     return await get_threat_filter_status(db)
 
 
+class Olcrtc2SettingsRequest(BaseModel):
+    enabled: bool | None = None
+    agent_enabled: bool | None = None
+    provider: str | None = None
+    room: str | None = None
+    crypto_key: str | None = None
+    socks_port: int | None = None
+    cell_ip: str | None = None
+    cell_ip_wbstream: str | None = None
+    cell_provision_url: str | None = None
+    cells: dict[str, str] | None = None
+    providers_enabled: list[str] | None = None
+    transport: str | None = None
+    warm_pool_per_dt: int | None = None
+    target_online: int | None = None
+    generate_key: bool | None = None
+
+
+@router.get("/olcrtc2")
+async def get_olcrtc2_admin(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """olcrtc 2.0 — session-mode + агент, exit на соте (не WDTT queen)."""
+    from ai.olcrtc2_room_agent import agent_status
+    from app.services.olcrtc2_settings import load_olcrtc2_settings
+
+    settings = await load_olcrtc2_settings(db)
+    status = await agent_status(db)
+    return {**settings, "agent": status}
+
+
+@router.post("/olcrtc2")
+async def set_olcrtc2_admin(
+    req: Olcrtc2SettingsRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    import secrets
+
+    from ai.olcrtc2_room_agent import agent_status
+    from app.services.olcrtc2_settings import load_olcrtc2_settings, save_olcrtc2_settings
+
+    patch = req.model_dump(exclude_none=True)
+    if patch.pop("generate_key", False):
+        patch["crypto_key"] = secrets.token_hex(32)
+    try:
+        data = await save_olcrtc2_settings(db, patch)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    status = await agent_status(db)
+    return {**data, "agent": status}
+
+
+@router.get("/olcrtc2/stats")
+async def get_olcrtc2_stats(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from ai.olcrtc2_room_agent import agent_status
+
+    return await agent_status(db)
+
+
+@router.post("/olcrtc2/apply-cell")
+async def apply_olcrtc2_cell_admin(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Diag: одна статическая room → env на соту. Продукт использует per-unit apply."""
+    from app.services.olcrtc2_cell import apply_olcrtc2_to_cell
+
+    return await apply_olcrtc2_to_cell(db)
+
+
 class VpsCleanupRequest(BaseModel):
     enabled: bool
     interval_days: int | None = None
@@ -1888,7 +1963,14 @@ async def set_olcrtc_room_status(
 ):
     import uuid as _uuid
 
-    from app.services.olcrtc_rooms_db import set_room_status
+    from ai.olcrtc_host_provision_client import apply_units_via_host
+    from app.services.olcrtc_rooms_db import (
+        render_unit_yaml,
+        room_to_dict,
+        set_room_status,
+        write_server_yaml_file,
+    )
+    from app.services.olcrtc_settings import load_olcrtc_settings
 
     status = (body.status or "").strip().lower()
     if status not in ("active", "draining", "offline", "provisioning", "error"):
@@ -1900,9 +1982,90 @@ async def set_olcrtc_room_status(
     room = await set_room_status(db, rid, status)
     if not room:
         raise HTTPException(status_code=404, detail="room not found")
-    from app.services.olcrtc_rooms_db import room_to_dict
+    unit_msg = ""
+    unit = (room.unit_name or "").strip()
+    if unit and status in ("offline", "active"):
+        try:
+            if status == "offline":
+                host = await apply_units_via_host({}, [unit])
+                unit_msg = "srv остановлен" if host.get("ok") else str(host.get("message") or "")
+            else:
+                settings = await load_olcrtc_settings(db)
+                yaml_text = render_unit_yaml(settings, room)
+                write_server_yaml_file(yaml_text, filename=f"server-{unit}.yaml")
+                host = await apply_units_via_host({unit: yaml_text}, [])
+                unit_msg = "srv поднят" if host.get("ok") else str(host.get("message") or "")
+        except Exception as e:
+            unit_msg = str(e)[:160]
+    return {
+        "ok": True,
+        "room": room_to_dict(room),
+        "unit": unit,
+        "unit_message": unit_msg,
+    }
 
-    return {"ok": True, "room": room_to_dict(room)}
+
+@router.delete("/bypass/olcrtc/rooms/{room_id}")
+async def delete_olcrtc_room_admin(
+    room_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Убрать комнату из пула и погасить её srv на Улье."""
+    import uuid as _uuid
+
+    from ai.olcrtc_host_provision_client import apply_units_via_host
+    from app.services.olcrtc_rooms_db import delete_room_row, get_room
+
+    try:
+        rid = _uuid.UUID(room_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bad room_id")
+    room = await get_room(db, rid)
+    if not room:
+        raise HTTPException(status_code=404, detail="room not found")
+    unit = room.unit_name
+    await delete_room_row(db, rid, reason="удалено из админки")
+    host = await apply_units_via_host({}, [unit])
+    return {
+        "ok": True,
+        "unit": unit,
+        "unit_stopped": bool(host.get("ok")),
+        "message": f"Комната {unit} удалена"
+        + ("" if host.get("ok") else f"; srv не погашен: {host.get('message')}"),
+    }
+
+
+@router.post("/bypass/olcrtc/rooms/{room_id}/release")
+async def release_olcrtc_room_admin(
+    room_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Снять закрепления с комнаты — места сразу освобождаются."""
+    import uuid as _uuid
+
+    from app.models.olcrtc_room import OlcrtcRoomSticky
+    from app.services.olcrtc_rooms_db import get_room, room_to_dict
+
+    try:
+        rid = _uuid.UUID(room_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bad room_id")
+    room = await get_room(db, rid)
+    if not room:
+        raise HTTPException(status_code=404, detail="room not found")
+    result = await db.execute(
+        delete(OlcrtcRoomSticky).where(OlcrtcRoomSticky.room_id == rid)
+    )
+    room.online_count = 0
+    await db.commit()
+    await db.refresh(room)
+    return {
+        "ok": True,
+        "released": int(result.rowcount or 0),
+        "room": room_to_dict(room),
+    }
 
 
 class OlcrtcRoomCreateBody(BaseModel):
@@ -2006,6 +2169,13 @@ class OlcrtcRoomAgentBody(BaseModel):
     target_rooms_wbstream: Optional[int] = None
     max_clients: Optional[int] = None
     liveness_prune: Optional[bool] = None
+    min_free_per_slot: Optional[int] = None
+    min_rooms_per_slot: Optional[int] = None
+    max_rooms_per_slot: Optional[int] = None
+    idle_room_ttl_min: Optional[int] = None
+    auto_units: Optional[bool] = None
+    session_mode: Optional[bool] = None
+    bootstrap_warm: Optional[int] = None
 
 
 @router.get("/bypass/olcrtc/room-agent")
@@ -2049,9 +2219,44 @@ async def put_olcrtc_room_agent(
     if body.target_rooms_wbstream is not None:
         state.target_rooms_wbstream = max(0, int(body.target_rooms_wbstream))
     if body.max_clients is not None:
+        # Правка «мест в комнате» должна менять и уже созданные комнаты,
+        # иначе настройка выглядит сломанной: цифры в пуле остаются старыми.
+        # Даже если число то же (агент уже 200, комнаты залипли на 2) — всё равно UPDATE.
         state.max_clients = max(1, int(body.max_clients))
+        from app.models.olcrtc_room import OlcrtcRoom
+        from app.services.olcrtc_settings import load_olcrtc_settings, save_olcrtc_settings
+
+        result = await db.execute(
+            update(OlcrtcRoom).values(max_clients=state.max_clients)
+        )
+        settings = await load_olcrtc_settings(db)
+        for pcfg in settings.providers.values():
+            for slot in list(pcfg.rooms or []):
+                slot.max_clients = state.max_clients
+        await save_olcrtc_settings(db, settings)
+        await db.commit()
+        # чтобы UI сразу показал новый max в таблице комнат
+        _ = result.rowcount
     if body.liveness_prune is not None:
         state.liveness_prune = bool(body.liveness_prune)
+    if body.min_free_per_slot is not None:
+        state.min_free_per_slot = max(0, int(body.min_free_per_slot))
+    if body.min_rooms_per_slot is not None:
+        state.min_rooms_per_slot = max(0, int(body.min_rooms_per_slot))
+    if body.max_rooms_per_slot is not None:
+        state.max_rooms_per_slot = max(1, int(body.max_rooms_per_slot))
+    if body.idle_room_ttl_min is not None:
+        state.idle_room_ttl_min = max(1, int(body.idle_room_ttl_min))
+    if body.auto_units is not None:
+        state.auto_units = bool(body.auto_units)
+    if body.session_mode is not None:
+        state.session_mode = bool(body.session_mode)
+        if state.session_mode:
+            state.min_free_per_slot = 0
+            state.min_rooms_per_slot = 0
+            state.max_clients = 1
+    if body.bootstrap_warm is not None:
+        state.bootstrap_warm = max(0, min(2, int(body.bootstrap_warm)))
     saved = await save_agent_state(db, state)
     return {"agent": saved.to_dict()}
 
@@ -2061,7 +2266,7 @@ async def run_olcrtc_room_agent(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Немедленный цикл: liveness prune + create Telemost/WB до target_rooms_*."""
+    """Немедленный цикл: prune + heal (+ session: без autoscale)."""
     from ai.olcrtc_room_agent import heal_rooms
 
     state = await heal_rooms(db, force=True)

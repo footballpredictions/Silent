@@ -579,6 +579,39 @@ cd pc; npm install; npm run dev
 - Версии: Android `versionCode/Name 160` / `1.0.160`; PC `package.json 1.0.160`.
 - Релизы: `assembleRelease` + `build-installer.bat` OK. Push `android` + `pc`.
 
+### 2026-08-13 — Android: нет логов / не коннектится после reinstall
+
+- Bypass сбрасывался на WDTT → тишина в SVPN_OLC. Debug дефолт → olcrtc2.
+- API был `https://132.243.234.162` (TLS hang); → nip.io + migrate prefs.
+- `olcrtc2-config` bind на первый LTE при Wi‑Fi → hang; prefer Wi‑Fi/Ethernet.
+- Ephemeral на Wi‑Fi скипался из‑за «users/me OK»; для assign всегда пробуем.
+- APK установлен; ICE connected / connect path ожил.
+
+### 2026-08-13 — Android: cold-start olcrtc без re-login
+
+- После reinstall кеш olcrtc пуст; assign раньше только на login → «выйти/зайти». Живую WB-room вшить нельзя (404).
+- Фикс: при старте сессии auto-warm Telemost+WB (как login); connect cache-miss без 120с public hang; Wi‑Fi probe 12/20с → ephemeral VK.
+- APK: `SilentVPN-debug.apk`.
+
+### 2026-08-13 — Android «через раз»: reassign timeout 2.5с → WB 404
+
+- Лог: peer suspect/dead (socks_api_fail) сработал; recover с `withTimeout(2500)` → stale room `svpn_8fa7…` → join 404.
+- Фикс: reassign timeout 60с; peer_dead всегда refresh (в т.ч. LTE); не стартовать ту же room; без cache-fallback после failure.
+- PC green hang: UI жив, cnc/TUN нет с ~16:11, sticky HB по public — выкл/вкл; нужен socks-liveness как на Android.
+- APK: `SilentVPN-debug.apk` (установлен). Watch: `phone_watch_20260813-164816/`.
+
+### 2026-08-13 — Android green hang: SOCKS/sid fail → reassign
+
+- После ready ~1–2 мин: flood `remote not ready` / sid timeout при редких `tunnel to`; HB уходил на Wi‑Fi (`OK via default`) → UI зелёный, сайты нет.
+- Фикс: `streamDeadStreak` не сбрасывать на `tunnel to`; после 3 → suspect, после 6 → `peer_dead`; `noteSocksPathFail` с HB; online=true не через underlying при ready; watchdog probe при suspect.
+- APK поставлен: `SilentVPN-debug.apk` на телефон.
+
+### 2026-08-13 — TM idle тяжелее WB; warm→2; endurance 60м
+
+- Сота1: idle Telemost unit ≈ 6–13% CPU (Yandex SFU) → 50–60% при 8 warm без клиентов.
+- Сота2: idle WB ≈ 2–3% → при сессии ~15–25% норма. Не «неровные комнаты», разная цена unit.
+- `warm_pool_per_dt=2` (по 2 free на dt); sticky/busy сохранены. Endurance WB 60м запущен.
+
 ### 2026-08-13 — warm shrink: CPU Сота1 без «нет комнат»
 
 - `warm_pool_per_dt=4` (уже было 4 после агента; раньше раздувало до ~20→40+ unit).

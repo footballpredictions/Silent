@@ -579,6 +579,12 @@ cd pc; npm install; npm run dev
 - Версии: Android `versionCode/Name 160` / `1.0.160`; PC `package.json 1.0.160`.
 - Релизы: `assembleRelease` + `build-installer.bat` OK. Push `android` + `pc`.
 
+### 2026-08-13 — push: olcrtc2 за 2 дня (main + pc + android)
+
+- `main` `0a8976f` — pool/agent/admin/WB max_clients=1/warm scale
+- `pc` `8679c13` — olcrtc2 session, hosts-only guest, missed_pong liveness
+- `android` `28997f1` — TUN CIDR, liveness suspect, bypass menu
+
 ### 2026-08-13 — Android WB: ICE/TURN в hev (CIDR exclude)
 
 - PC жил 6–9+ мин; Android: TURN `185.62.200.94` → ICE closed → handshake fail → exit 143 → hardReset spam.

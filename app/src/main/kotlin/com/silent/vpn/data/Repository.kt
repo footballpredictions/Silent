@@ -43,7 +43,7 @@ class SilentRepository @Inject constructor(
 ) {
     companion object {
         private const val TAG = "SilentRepository"
-        const val DEFAULT_SERVER_URL = "https://132.243.234.162"
+        const val DEFAULT_SERVER_URL = "https://132-243-234-162.nip.io"
         const val DEFAULT_SERVER_HOST = "132-243-234-162.nip.io"
         const val PREF_SERVER_URL = "server_url"
         const val PREF_ACCESS_TOKEN = "access_token"
@@ -755,8 +755,16 @@ class SilentRepository @Inject constructor(
         return raw.split(",").map { it.trim() }.filter { it.isNotBlank() }
     }
 
-    fun getPublicServerUrl(): String =
-        prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
+    fun getPublicServerUrl(): String {
+        val raw = prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
+        // Старый дефолт по IP: TLS к сертификату nip.io часто hang/fail на assign.
+        if (raw.contains("132.243.234.162") && !raw.contains("nip.io")) {
+            val fixed = DEFAULT_SERVER_URL
+            prefs.edit().putString(PREF_SERVER_URL, fixed).apply()
+            return fixed
+        }
+        return raw
+    }
 
     fun resolveUpdateDownloadBase(preferredBase: String?): String =
         UpdateUrlResolver.resolveUpdateDownloadBase(otaUrlInput(preferredBase))
@@ -1181,13 +1189,16 @@ class SilentRepository @Inject constructor(
 
     fun getBypassFamily(): String {
         if (!BuildConfig.DEBUG) return BYPASS_FAMILY_WDTT
-        val raw = prefs.getString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_WDTT)
+        // Debug: после reinstall prefs пусты — дефолт olcrtc2 (иначе «нет логов» и WDTT без хешей).
+        val raw = prefs.getString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_OLCRTC2)
         if (raw == BYPASS_FAMILY_OLCRTC2) return BYPASS_FAMILY_OLCRTC2
         // legacy v1 → WDTT (несовместим с olcrtc2-srv)
         if (raw == BYPASS_FAMILY_OLCRTC) {
             prefs.edit().putString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_WDTT).apply()
+            return BYPASS_FAMILY_WDTT
         }
-        return BYPASS_FAMILY_WDTT
+        if (raw == BYPASS_FAMILY_WDTT) return BYPASS_FAMILY_WDTT
+        return BYPASS_FAMILY_OLCRTC2
     }
 
     fun setBypassFamily(family: String) {
@@ -1463,20 +1474,12 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
             Log.i(TAG, "olcrtc-config: skip lastFailed room=${cachedRoom.take(24)}")
             return reportOlcrtcRoomFailure("skip lastFailed room=$cachedRoom")
         }
-        // Кеша нет — один assign (не при каждом switch).
-        val fresh = runCatching { fetchOlcrtcConfig(prov) }.getOrNull()
-        val room = fresh?.providers?.get(prov)?.room?.trim().orEmpty()
-        if (room.isNotBlank() && bad != null && room == bad) {
-            return reportOlcrtcRoomFailure("skip lastFailed room=$room")
-        }
-        if (room.isNotBlank()) {
-            com.silent.vpn.util.OlcrtcDiag.i(
-                com.silent.vpn.util.OlcrtcDiag.CFG,
-                "connect fresh assign provider=$prov room=${room.take(24)}",
-            )
-            return fresh
-        }
-        Log.w(TAG, "olcrtc-config: no room for provider=$prov")
+        // Кеша нет — без длинного public fetch (до 120с hang на nip.io).
+        // Connect → ensureOlcrtcConfigApi: короткий public → ephemeral VK (как login).
+        com.silent.vpn.util.OlcrtcDiag.w(
+            com.silent.vpn.util.OlcrtcDiag.CFG,
+            "connect cache miss provider=$prov — defer to ensureOlcrtcConfigApi",
+        )
         return null
     }
 
@@ -1507,8 +1510,15 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
      *
      * [forProvider] — явный провайдер (не трогает prefs). Нужно, чтобы прогреть
      * telemost и wbstream в разные слоты кеша без смены текущего канала.
+     *
+     * [publicConnectSec]/[publicReadSec] — для probe с Wi‑Fi (короткий miss → ephemeral),
+     * не ждать 120с на мёртвом nip.io после переустановки.
      */
-    suspend fun fetchOlcrtcConfig(forProvider: String? = null): OlcrtcPublicConfig? {
+    suspend fun fetchOlcrtcConfig(
+        forProvider: String? = null,
+        publicConnectSec: Long = 30L,
+        publicReadSec: Long = 120L,
+    ): OlcrtcPublicConfig? {
         val dt = runCatching { getApiDeviceType() }.getOrDefault("android")
         val fp = runCatching { getDeviceFingerprint() }.getOrElse { stableDeviceFingerprint() }
         val prov = when (val p = (forProvider ?: getOlcrtcProvider()).trim().lowercase()) {
@@ -1583,20 +1593,36 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
 
         return try {
             val publicBase = getPublicServerUrl().trimEnd('/')
-            // LTE: bind к cellular/wifi, не к VPN; долгий read под create room.
+            // Prefer Wi‑Fi/Ethernet: firstOrNull часто берёт LTE при dual-stack → nip.io hang,
+            // пока /users/me по default route (Wi‑Fi) жив.
             val net = runCatching {
                 val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
-                cm?.allNetworks?.firstOrNull { n ->
-                    val caps = cm.getNetworkCapabilities(n) ?: return@firstOrNull false
-                    !caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) &&
-                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                } ?: cm?.activeNetwork
+                    ?: return@runCatching null
+                fun usable(n: android.net.Network): Boolean {
+                    val caps = cm.getNetworkCapabilities(n) ?: return false
+                    if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) return false
+                    return caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                }
+                cm.allNetworks.firstOrNull { n ->
+                    usable(n) &&
+                        (
+                            cm.getNetworkCapabilities(n)
+                                ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true ||
+                                cm.getNetworkCapabilities(n)
+                                    ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) == true
+                            )
+                } ?: cm.activeNetwork?.takeIf { usable(it) }
+                    ?: cm.allNetworks.firstOrNull { usable(it) }
             }.getOrNull()
+            com.silent.vpn.util.OlcrtcDiag.i(
+                com.silent.vpn.util.OlcrtcDiag.CFG,
+                "public fetch bind net=${net != null} base=$publicBase provider=$prov",
+            )
             val api = buildApi(
                 "$publicBase/",
                 vpnNetwork = net,
-                connectTimeoutSec = olcrtcConnectSec,
-                readTimeoutSec = olcrtcReadSec,
+                connectTimeoutSec = publicConnectSec.coerceIn(5L, 60L),
+                readTimeoutSec = publicReadSec.coerceIn(8L, 180L),
             )
             fetchOnce(api) ?: getCachedOlcrtcConfigForProvider(prov).also {
                 if (it == null) {
@@ -1747,6 +1773,15 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
                 )
                 return
             }
+            // online=true через Wi‑Fi при мёртвом SOCKS = зелёный вис (sticky жив, сайты нет).
+            // Underlying оставляем только для leave/offline и когда SOCKS ещё не поднят.
+            if (online && OlcrtcTunnelManager.tunnelReady.value) {
+                com.silent.vpn.util.OlcrtcDiag.w(
+                    com.silent.vpn.util.OlcrtcDiag.HB,
+                    "heartbeat socks fail — skip underlying online (tunnel not healthy)",
+                )
+                return
+            }
             val publicBase = getPublicServerUrl().trimEnd('/')
             val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
             val vpnNet = VpnNetworkHelper.getSilentVpnNetwork(context)
@@ -1814,6 +1849,8 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
                 com.silent.vpn.util.OlcrtcDiag.HB,
                 "socks CONNECT fail host=$host:$port",
             )
+            // Underlying Wi‑Fi HB не лечит data plane — эскалация в TunnelManager.
+            OlcrtcTunnelManager.noteSocksPathFail("connect")
             return false
         }
         return try {
@@ -1841,7 +1878,10 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
                 out.write(bodyBytes)
                 out.flush()
                 val statusLine = ssl.getInputStream().bufferedReader(Charsets.US_ASCII).readLine()
-                    ?: return false
+                    ?: run {
+                        OlcrtcTunnelManager.noteSocksPathFail("empty_status")
+                        return false
+                    }
                 val code = statusLine.split(' ').getOrNull(1)?.toIntOrNull() ?: 0
                 val ok = code in 200..299
                 if (!ok) {
@@ -1849,6 +1889,9 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
                         com.silent.vpn.util.OlcrtcDiag.HB,
                         "socks HTTP $code status=$statusLine",
                     )
+                    OlcrtcTunnelManager.noteSocksPathFail("http_$code")
+                } else {
+                    OlcrtcTunnelManager.noteSocksPathOk()
                 }
                 ok
             } finally {
@@ -1860,6 +1903,7 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
                 com.silent.vpn.util.OlcrtcDiag.HB,
                 "socks POST err=${e.javaClass.simpleName}:${e.message?.take(60)}",
             )
+            OlcrtcTunnelManager.noteSocksPathFail("post_err")
             false
         }
     }

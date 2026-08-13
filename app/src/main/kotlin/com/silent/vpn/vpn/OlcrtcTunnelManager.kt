@@ -101,6 +101,8 @@ object OlcrtcTunnelManager {
     private var peerClosedGraceFuture: ScheduledFuture<*>? = null
     private val openStreamFailStreak = AtomicInteger(0)
     private val streamDeadStreak = AtomicInteger(0)
+    /** Heartbeat/API CONNECT через SOCKS при готовом туннеле. */
+    private val socksApiFailStreak = AtomicInteger(0)
     /** Последний успешный SOCKS tunnel (speedtest/Intermeter грузят peer — не SOCKS_DEAD). */
     @Volatile private var lastTunnelActivityMs = 0L
     /**
@@ -149,6 +151,27 @@ object OlcrtcTunnelManager {
     fun hasRecentTunnelTraffic(nowMs: Long = System.currentTimeMillis()): Boolean =
         OlcrtcRecoveryPolicy.hasRecentTunnelTraffic(lastTunnelActivityMs, nowMs)
 
+    /** missed_pong / stream_dead / socks API fail — не доверять «recent traffic». */
+    fun isPeerLivenessSuspect(): Boolean = peerLivenessSuspect
+
+    /** Heartbeat/API через SOCKS прошёл — data plane жив. */
+    fun noteSocksPathOk() {
+        socksApiFailStreak.set(0)
+    }
+
+    /**
+     * SOCKS CONNECT/POST к API упал при tunnelReady.
+     * Underlying Wi‑Fi HB не лечит data plane — после N fail → suspect → reassign.
+     */
+    fun noteSocksPathFail(detail: String = "socks_api") {
+        if (!_tunnelReady.value || !_running.value) return
+        val n = socksApiFailStreak.incrementAndGet()
+        DebugLog.w("Olcrtc", "socks path fail n=$n ($detail)")
+        if (n < OlcrtcRecoveryPolicy.SOCKS_API_FAIL_SUSPECT_STREAK) return
+        socksApiFailStreak.set(0)
+        markPeerLivenessSuspect("socks_api_fail", 4_000L)
+    }
+
     /** true если SOCKS dial к gstatic проходит (peer жив). */
     fun probeSocksHealthy(forceDial: Boolean = false): Boolean {
         val p = activeParams ?: return false
@@ -168,6 +191,25 @@ object OlcrtcTunnelManager {
             2,
         )
         schedulePeerClosedGrace(reason, graceMs)
+        // Не ждать 45с health-watch: быстрый force-dial пока UI ещё зелёный.
+        val p = activeParams ?: return
+        scheduler.schedule({
+            try {
+                if (!_running.value || !_tunnelReady.value || !peerLivenessSuspect) return@schedule
+                val ok = socksDialOnce(p, "www.gstatic.com", soTimeoutMs = 3_500) ||
+                    socksDialOnce(p, "connectivitycheck.gstatic.com", soTimeoutMs = 3_000)
+                if (ok) {
+                    peerLivenessSuspect = false
+                    healthFailStreak.set(0)
+                    socksApiFailStreak.set(0)
+                    DebugLog.i("Olcrtc", "suspect cleared by early dial ($reason)")
+                    return@schedule
+                }
+                notifyPeerDead("socks_suspect:$reason")
+            } catch (e: Exception) {
+                DebugLog.w("Olcrtc", "suspect dial: ${e.message}")
+            }
+        }, graceMs.coerceAtMost(4_000L).coerceAtLeast(1_500L), TimeUnit.MILLISECONDS)
     }
 
     private fun cancelPeerClosedGrace() {
@@ -200,6 +242,8 @@ object OlcrtcTunnelManager {
                     socksDialOnce(params, "connectivitycheck.gstatic.com", soTimeoutMs = 3_500)
                 if (ok) {
                     healthFailStreak.set(0)
+                    streamDeadStreak.set(0)
+                    socksApiFailStreak.set(0)
                     peerLivenessSuspect = false
                     return@scheduleWithFixedDelay
                 }
@@ -305,6 +349,7 @@ object OlcrtcTunnelManager {
         iceConnected = true
         openStreamFailStreak.set(0)
         streamDeadStreak.set(0)
+        socksApiFailStreak.set(0)
         peerLivenessSuspect = false
         if (peerClosedPending) {
             cancelPeerClosedGrace()
@@ -413,6 +458,7 @@ object OlcrtcTunnelManager {
         cancelHealthWatch()
         openStreamFailStreak.set(0)
         streamDeadStreak.set(0)
+        socksApiFailStreak.set(0)
         peerLivenessSuspect = false
         healthFailStreak.set(0)
         lastTunnelActivityMs = 0L
@@ -833,12 +879,13 @@ object OlcrtcTunnelManager {
                             l.contains("tunnel to ", ignoreCase = true) ||
                             l.contains("Link connected", ignoreCase = true)
                         ) {
+                            // Half-dead peer: редкие «tunnel to» при flood remote-not-ready.
+                            // Не сбрасываем streamDeadStreak / suspect — иначе зелёный вис.
                             lastTunnelActivityMs = System.currentTimeMillis()
                             openStreamFailStreak.set(0)
-                            streamDeadStreak.set(0)
-                            peerLivenessSuspect = false
                         }
-                        // remote not ready при готовом туннеле и без живого traffic → зелёный вис.
+                        // remote not ready / sid timeout при ready → зелёный вис (даже если
+                        // иногда проскакивает tunnel to). Считаем всегда, traffic не сбрасывает.
                         if (
                             _tunnelReady.value &&
                             (
@@ -849,14 +896,15 @@ object OlcrtcTunnelManager {
                                         )
                                 )
                         ) {
-                            if (hasRecentTunnelTraffic() && !peerLivenessSuspect) {
+                            val n = streamDeadStreak.incrementAndGet()
+                            if (n >= OlcrtcRecoveryPolicy.STREAM_DEAD_KILL_STREAK) {
                                 streamDeadStreak.set(0)
-                            } else {
-                                val n = streamDeadStreak.incrementAndGet()
-                                if (n >= 3) {
-                                    streamDeadStreak.set(0)
-                                    markPeerLivenessSuspect("stream_dead", 5_000L)
-                                }
+                                notifyPeerDead("stream_dead_flood")
+                            } else if (
+                                n >= OlcrtcRecoveryPolicy.STREAM_DEAD_SUSPECT_STREAK &&
+                                !peerLivenessSuspect
+                            ) {
+                                markPeerLivenessSuspect("stream_dead", 4_000L)
                             }
                         }
                         if (Regex(

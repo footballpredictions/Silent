@@ -999,13 +999,16 @@ class SilentVpnService : Service() {
                 AppEntryPoint::class.java,
             ).silentRepository()
             val next = repo.reportOlcrtcRoomFailure(reason)
-                ?: repo.resolveOlcrtcConfig(preferCache = true)
-                ?: return oldJson
+                ?: return oldJson // без stale cache fallback — иначе снова WB 404
             val provider = repo.getOlcrtcProvider()
             val p = next.providers[provider] ?: return oldJson
             if (p.room.isBlank() || next.crypto_key.length != 64) return oldJson
             val obj = JSONObject(oldJson)
             val prevRoom = obj.optString("olcrtc_room", "")
+            if (prevRoom.isNotBlank() && prevRoom == p.room) {
+                DebugLog.w("VpnService", "refreshOlcrtcConfigJson: same dead room — reject")
+                return oldJson
+            }
             obj.put("olcrtc_room", p.room)
             obj.put("olcrtc_crypto_key", next.crypto_key)
             obj.put("olcrtc_provider", provider)
@@ -1151,13 +1154,49 @@ class SilentVpnService : Service() {
                     return@launch
                 }
 
-                // 3) Старт из кеша. На LTE nip.io fetch часто вешает recover — не делаем.
+                // 3) peer_dead / watchdog → обязательно новая room.
+                // Раньше timeout 2.5с → fallback на старый JSON → WB join 404 («через раз»).
                 val onMobile = VpnNetworkHelper.isOnMobileData(this@SilentVpnService)
                 var cfgToUse = cfg!!
                 if (OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(onMobile, reason)) {
-                    cfgToUse = withTimeoutOrNull(2_500L) {
+                    val oldRoom = runCatching {
+                        JSONObject(cfg).optString("olcrtc_room", "")
+                    }.getOrDefault("")
+                    WdttTunnelManager.logUi(
+                        "olcrtc_reassign_wait",
+                        "новый канал (assign)…",
+                        2,
+                    )
+                    val refreshed = withTimeoutOrNull(
+                        OlcrtcRecoveryPolicy.RECOVER_REASSIGN_TIMEOUT_MS,
+                    ) {
                         refreshOlcrtcConfigJson(cfg, reason)
-                    } ?: cfg
+                    }
+                    val newRoom = refreshed?.let {
+                        runCatching { JSONObject(it).optString("olcrtc_room", "") }.getOrNull()
+                    }.orEmpty()
+                    if (
+                        refreshed.isNullOrBlank() ||
+                        newRoom.isBlank() ||
+                        (oldRoom.isNotBlank() && newRoom == oldRoom)
+                    ) {
+                        DebugLog.w(
+                            "VpnService",
+                            "olcrtc reassign failed (timeout/same room) — не стартуем stale",
+                        )
+                        WdttTunnelManager.logUi(
+                            "olcrtc_reassign_fail",
+                            "не удалось получить новую комнату — повтор…",
+                            2,
+                            isError = true,
+                        )
+                        // Не поднимать мёртвую room: retry с :retry (один раз по политике).
+                        if (OlcrtcRecoveryPolicy.shouldScheduleRecoverRetry(olcrtcEverReady, reason)) {
+                            scheduleNetworkRecovery("${reason}:retry", 4_000L)
+                        }
+                        return@launch
+                    }
+                    cfgToUse = refreshed
                     lastOlcrtcConfigJson = cfgToUse
                 } else {
                     WdttTunnelManager.logUi("olcrtc_recover", "старт из кеша (без fetch)", 2)
@@ -1470,7 +1509,10 @@ class SilentVpnService : Service() {
                             lastConfigPresent = lastOlcrtcConfigJson != null,
                         )
                     ) {
-                    val recentTraffic = OlcrtcTunnelManager.hasRecentTunnelTraffic()
+                    val suspect = OlcrtcTunnelManager.isPeerLivenessSuspect()
+                    // Half-dead: «tunnel to» есть, но suspect — не считать traffic живым.
+                    val recentTraffic =
+                        !suspect && OlcrtcTunnelManager.hasRecentTunnelTraffic()
                     val action = OlcrtcRecoveryPolicy.decideWatchdog(
                         OlcrtcRecoveryPolicy.WatchdogInput(
                             sessionActive = olcrtcSessionActive,
@@ -1486,7 +1528,7 @@ class SilentVpnService : Service() {
                             recentTunnelTraffic = recentTraffic,
                         ),
                     )
-                    // SOCKS probe дорогой — только когда остальные условия SOCKS_DEAD уже почти ок.
+                    // SOCKS probe: при suspect — всегда; иначе только без recent traffic.
                     val resolved = if (
                         action == OlcrtcRecoveryPolicy.WatchdogAction.NONE &&
                         olcrtcSessionActive &&
@@ -1495,12 +1537,12 @@ class SilentVpnService : Service() {
                         !isOlcrtcInitialConnectInProgress() &&
                         !OlcrtcTunnelManager.isStarting() &&
                         !isWithinConnectGrace() &&
-                        !recentTraffic &&
+                        (suspect || !recentTraffic) &&
                         System.currentTimeMillis() - lastTransportRestartMs >
                             OlcrtcRecoveryPolicy.WATCHDOG_SOCKS_MS
                     ) {
                         val healthy = withContext(Dispatchers.IO) {
-                            OlcrtcTunnelManager.probeSocksHealthy()
+                            OlcrtcTunnelManager.probeSocksHealthy(forceDial = suspect)
                         }
                         if (healthy) {
                             olcrtcSocksFailStreak = 0
@@ -1519,7 +1561,7 @@ class SilentVpnService : Service() {
                                 sinceRestartMs = System.currentTimeMillis() - lastTransportRestartMs,
                                 socksHealthy = healthy,
                                 socksFailStreak = olcrtcSocksFailStreak,
-                                recentTunnelTraffic = OlcrtcTunnelManager.hasRecentTunnelTraffic(),
+                                recentTunnelTraffic = recentTraffic,
                             ),
                         )
                     } else {

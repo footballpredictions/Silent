@@ -33,6 +33,16 @@ object OlcrtcRecoveryPolicy {
      */
     const val RECENT_TUNNEL_TRAFFIC_MS = 35_000L
 
+    /**
+     * remote not ready / sid timeout: даже при редких «tunnel to» (half-dead peer)
+     * — зелёный вис. Не сбрасывать streak на traffic; после N → suspect / kill.
+     */
+    const val STREAM_DEAD_SUSPECT_STREAK = 3
+    const val STREAM_DEAD_KILL_STREAK = 6
+
+    /** Heartbeat/API через SOCKS fail при tunnelReady — data plane мёртв. */
+    const val SOCKS_API_FAIL_SUSPECT_STREAK = 2
+
     /** Telemost/WB closed — даём peer шанс самовосстановиться без лишнего restart. */
     const val PEER_CLOSED_GRACE_MS = 18_000L
 
@@ -188,13 +198,20 @@ object OlcrtcRecoveryPolicy {
         everReady && !reason.contains(":retry")
 
     /**
-     * На LTE nip.io fetch часто вешает recover — старт из кеша.
-     * Refresh room только на Wi‑Fi и только для peer_dead / watchdog.
+     * После peer_dead / watchdog нельзя стартовать ту же мёртвую room (WB 404).
+     * Раньше на LTE refresh отключали → stale room; теперь всегда reassign,
+     * с длинным timeout в SilentVpnService (create warm ~секунды–десятки с).
      */
+    @Suppress("UNUSED_PARAMETER")
     fun shouldRefreshConfigOnRecover(onMobileData: Boolean, reason: String): Boolean {
-        if (onMobileData) return false
-        return reason.startsWith("olcrtc_peer_dead") || reason.startsWith("watchdog_olcrtc")
+        return reason.startsWith("olcrtc_peer_dead") ||
+            reason.startsWith("watchdog_olcrtc") ||
+            reason.contains("socks_api_fail") ||
+            reason.contains("stream_dead")
     }
+
+    /** Сколько ждать reportOlcrtcRoomFailure + assign новой room. */
+    const val RECOVER_REASSIGN_TIMEOUT_MS = 60_000L
 
     fun decideWatchdog(input: WatchdogInput): WatchdogAction {
         if (!input.sessionActive) return WatchdogAction.NONE

@@ -299,6 +299,10 @@ class MainViewModel @Inject constructor(
             restoreCachedProfileToUi()
             restoreCachedThemeToUi()
             syncVpnStateFromSystem()
+            DebugLog.i(
+                "MainViewModel",
+                "session restore bypass=${repo.getBypassFamily()} olcrtc=${repo.isOlcrtcBypass()} provider=${repo.getOlcrtcProvider()}",
+            )
             viewModelScope.launch {
                 runCatching { refreshSession() }
                     .onFailure { e ->
@@ -307,6 +311,24 @@ class MainViewModel @Inject constructor(
             }
             repo.mergeSavedHashesIntoCachedConfig()
             startConfigSync()
+            // После переустановки APK olcrtc-кеш пуст; раньше прогрев был только на login.
+            // Тот же ephemeral/public путь — без «выйти и зайти».
+            if (repo.isOlcrtcBypass()) {
+                viewModelScope.launch {
+                    val need = listOf("telemost", "wbstream").filter {
+                        repo.getCachedOlcrtcConfigForProvider(it) == null
+                    }
+                    if (need.isEmpty()) return@launch
+                    com.silent.vpn.util.OlcrtcDiag.i(
+                        com.silent.vpn.util.OlcrtcDiag.CFG,
+                        "cold-start warm olcrtc slots=$need (no re-login)",
+                    )
+                    runCatching { ensureOlcrtcConfigApi(appContext, *need.toTypedArray()) }
+                        .onFailure { e ->
+                            DebugLog.w("MainViewModel", "cold-start olcrtc warm: ${e.message}")
+                        }
+                }
+            }
         } else {
             repo.getCachedTheme()?.let { _theme.value = it }
             viewModelScope.launch { loadTheme() }
@@ -763,7 +785,12 @@ class MainViewModel @Inject constructor(
             DebugLog.i("MainViewModel", "ephemeral sync throttled")
             return false
         }
-        if (!repo.isOnMobileData() && repo.isPublicBackendReachable(forceProbe = true)) {
+        // /users/me может жить по IP, а olcrtc2-config — нет. Для apiBlock (assign) ephemeral обязателен.
+        if (
+            apiBlock == null &&
+            !repo.isOnMobileData() &&
+            repo.isPublicBackendReachable(forceProbe = true)
+        ) {
             return false
         }
 
@@ -876,12 +903,18 @@ class MainViewModel @Inject constructor(
                 )
                 return@withLock any || allCached()
             }
-            // Wi‑Fi: сначала public; если queen мёртв — тот же ephemeral, что на LTE.
+            // Wi‑Fi: public assign может быть 20–60с (create room). Короче 45с → false miss.
             if (!repo.isOnMobileData()) {
                 var any = false
                 for (p in want) {
-                    if (runCatching { repo.fetchOlcrtcConfig(p) }.getOrNull()
-                            ?.providers?.get(p)?.room?.isNotBlank() == true
+                    if (
+                        runCatching {
+                            repo.fetchOlcrtcConfig(
+                                p,
+                                publicConnectSec = 20L,
+                                publicReadSec = 75L,
+                            )
+                        }.getOrNull()?.providers?.get(p)?.room?.isNotBlank() == true
                     ) {
                         any = true
                     }
@@ -908,6 +941,7 @@ class MainViewModel @Inject constructor(
                 var got = false
                 for (p in want) {
                     val cfg = repo.fetchOlcrtcConfigTunnelOnly(p)
+                        ?: repo.fetchOlcrtcConfig(p)
                     com.silent.vpn.util.OlcrtcDiag.i(
                         com.silent.vpn.util.OlcrtcDiag.CFG,
                         "ephemeral tunnel-only $p room=${cfg?.providers?.get(p)?.room?.take(28)}",

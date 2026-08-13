@@ -250,14 +250,15 @@ class OlcrtcRecoveryPolicyTest {
     }
 
     @Test
-    fun `LTE recover uses cache without nip fetch`() {
-        assertFalse(
+    fun `peer_dead always reassigns room even on LTE`() {
+        // Иначе stale room → WB 404 «через раз».
+        assertTrue(
             OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(
                 onMobileData = true,
                 reason = "olcrtc_peer_dead:peer_closed",
             ),
         )
-        assertFalse(
+        assertTrue(
             OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(
                 onMobileData = true,
                 reason = "watchdog_olcrtc_down",
@@ -266,7 +267,7 @@ class OlcrtcRecoveryPolicyTest {
         assertTrue(
             OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(
                 onMobileData = false,
-                reason = "olcrtc_peer_dead:peer_closed",
+                reason = "olcrtc_peer_dead:socks_api_fail",
             ),
         )
         assertTrue(

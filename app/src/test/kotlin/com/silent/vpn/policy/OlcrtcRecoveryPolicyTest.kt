@@ -433,6 +433,29 @@ class OlcrtcRecoveryPolicyTest {
                 ),
             ),
         )
+        // missed_pong: recent traffic не спасает — только реальный SOCKS.
+        assertTrue(
+            OlcrtcRecoveryPolicy.shouldNotifyPeerDeadAfterGrace(
+                OlcrtcRecoveryPolicy.PeerClosedGraceInput(
+                    running = true,
+                    iceConnected = false,
+                    socksHealthy = false,
+                    recentTunnelTraffic = true,
+                    forceLivenessCheck = true,
+                ),
+            ),
+        )
+        assertFalse(
+            OlcrtcRecoveryPolicy.shouldNotifyPeerDeadAfterGrace(
+                OlcrtcRecoveryPolicy.PeerClosedGraceInput(
+                    running = true,
+                    iceConnected = false,
+                    socksHealthy = true,
+                    recentTunnelTraffic = false,
+                    forceLivenessCheck = true,
+                ),
+            ),
+        )
     }
 
     @Test

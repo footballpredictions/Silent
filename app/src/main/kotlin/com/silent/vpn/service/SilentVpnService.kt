@@ -452,7 +452,9 @@ class SilentVpnService : Service() {
         try {
             val obj = JSONObject(configJson)
             val bypassFamily = obj.optString("bypass_family", obj.optString("bypassFamily", "wdtt"))
-            if (bypassFamily.equals("olcrtc", ignoreCase = true)) {
+            if (bypassFamily.equals("olcrtc", ignoreCase = true) ||
+                bypassFamily.equals("olcrtc2", ignoreCase = true)
+            ) {
                 SilentRepository.APP_EXCLUDED_FROM_VPN = true
                 lastOlcrtcConfigJson = configJson
                 olcrtcSessionActive = true

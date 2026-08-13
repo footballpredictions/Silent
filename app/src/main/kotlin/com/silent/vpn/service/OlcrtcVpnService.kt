@@ -12,7 +12,9 @@ class OlcrtcVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
         if (action == ACTION_STOP) {
-            OlcrtcTunnelManager.stop(silent = true)
+            // Всегда полный native reset — иначе TM→WB без kill app = «вкл, не пашет».
+            suppressDestroyStop = false
+            OlcrtcTunnelManager.hardReset("vpn_ACTION_STOP")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -27,6 +29,7 @@ class OlcrtcVpnService : VpnService() {
         val err = OlcrtcTunnelManager.startFromConfigJson(this, configJson, vpnService = this)
         if (err != null) {
             DebugLog.e("OlcrtcVpn", err)
+            OlcrtcTunnelManager.hardReset("vpn_start_fail")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -36,7 +39,7 @@ class OlcrtcVpnService : VpnService() {
     override fun onRevoke() {
         DebugLog.w("OlcrtcVpn", "revoked")
         suppressDestroyStop = false
-        OlcrtcTunnelManager.stop()
+        OlcrtcTunnelManager.hardReset("vpn_revoked")
         stopSelf()
         super.onRevoke()
     }
@@ -45,8 +48,9 @@ class OlcrtcVpnService : VpnService() {
         if (suppressDestroyStop) {
             DebugLog.i("OlcrtcVpn", "onDestroy skip stop (reconnect in flight)")
         } else {
-            OlcrtcTunnelManager.stop(silent = true)
+            OlcrtcTunnelManager.hardReset("vpn_onDestroy")
         }
+        suppressDestroyStop = false
         super.onDestroy()
     }
 

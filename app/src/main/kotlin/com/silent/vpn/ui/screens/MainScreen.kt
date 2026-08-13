@@ -305,6 +305,7 @@ fun MainScreen(
     onUpdatePolling: (Boolean) -> Unit = {},
     appearanceMode: AppearanceMode = AppearanceMode.LIGHT,
     onToggleAppearance: () -> Unit = {},
+    onEnsureOlcrtcApi: suspend (providers: Array<out String>) -> Boolean = { true },
 ) {
     val palette = remember(theme, appearanceMode) { theme.resolveThemePalette(appearanceMode) }
     val bg = palette.bg
@@ -712,7 +713,7 @@ fun MainScreen(
                                 add(
                                     Triple(
                                         MenuPage.BYPASS,
-                                        "VK (debug)",
+                                        "Варианты обхода",
                                         repo.bypassFamilyLabel(),
                                     ),
                                 )
@@ -804,7 +805,11 @@ fun MainScreen(
                         )
                         MenuPage.EXCEPTIONS -> AppExclusionsScreen(repo, palette) { menuPage = MenuPage.ROOT }
                         MenuPage.DNS -> MenuDnsScreen(repo, palette) { menuPage = MenuPage.ROOT }
-                        MenuPage.BYPASS -> MenuBypassScreen(repo, fg) { menuPage = MenuPage.ROOT }
+                        MenuPage.BYPASS -> MenuBypassScreen(
+                            repo,
+                            fg,
+                            onEnsureOlcrtcApi = onEnsureOlcrtcApi,
+                        ) { menuPage = MenuPage.ROOT }
                         MenuPage.HASHES -> MenuHashesScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.BONUSES -> {
                             val context = androidx.compose.ui.platform.LocalContext.current

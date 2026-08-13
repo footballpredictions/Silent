@@ -202,6 +202,10 @@ fun MainActivityRoot(
                             val next = vm.repository.toggleAppearanceMode()
                             appearanceDark = next == "dark"
                         },
+                        onEnsureOlcrtcApi = { providers ->
+                            vm.cancelPendingOlcrtcConnectForApply()
+                            vm.ensureOlcrtcConfigApi(activity, *providers)
+                        },
                     )
                 }
             }

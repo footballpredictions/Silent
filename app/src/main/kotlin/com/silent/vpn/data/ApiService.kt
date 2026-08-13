@@ -332,17 +332,17 @@ interface SilentApi {
     @GET("api/vpn/theme")
     suspend fun getTheme(): Response<ThemeData>
 
-    @GET("api/vpn/olcrtc-config")
+    @GET("api/vpn/olcrtc2-config")
     suspend fun getOlcrtcConfig(
         @Query("device_type") deviceType: String,
         @Query("fingerprint") fingerprint: String,
         @Query("provider") provider: String = "",
     ): Response<OlcrtcPublicConfig>
 
-    @POST("api/vpn/olcrtc-heartbeat")
+    @POST("api/vpn/olcrtc2-heartbeat")
     suspend fun olcrtcHeartbeat(@Body req: OlcrtcHeartbeatRequest): Response<Map<String, Any>>
 
-    @POST("api/vpn/olcrtc-room-failure")
+    @POST("api/vpn/olcrtc2-room-failure")
     suspend fun olcrtcRoomFailure(@Body req: OlcrtcRoomFailureRequest): Response<Map<String, Any>>
 
     @POST("api/vpn/device/register")

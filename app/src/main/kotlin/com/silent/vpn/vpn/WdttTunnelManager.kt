@@ -190,6 +190,10 @@ object WdttTunnelManager {
     fun logUi(key: String, message: String, priority: Int = 2, isError: Boolean = false) {
         updateLog(key, message, priority, isError)
         if (isError) android.util.Log.w("App", message) else android.util.Log.i("App", message)
+        // Все olcrtc-* события → единый фильтр Logcat: tag:SVPN_OLC
+        if (key.startsWith("olcrtc") || key.contains("olcrtc", ignoreCase = true)) {
+            com.silent.vpn.util.OlcrtcDiag.fromUiKey(key, message, isError)
+        }
     }
 
     /** Совместимость: то же, что [logUi]. */
@@ -1859,12 +1863,15 @@ object WdttTunnelManager {
         activeWorkers.value = 0
         stats.value = ""
         lastError.value = null
+        isBootstrapMode = false
     }
 
     private suspend fun stopInternal() {
         overlayRestoreSuppressed = true
         apiOverlayActive = false
         suppressNetworkRecovery = false
+        // После login bootstrap флаг иначе залипает → isMainVpnSessionForUi=false → экран входа.
+        isBootstrapMode = false
         wgApplyJob?.cancel()
         wgApplyScheduled = false
         cancelAllCaptchaSolvers()

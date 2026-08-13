@@ -49,7 +49,7 @@ object VpnTileConnect {
         val deviceId = repo.getSessionDeviceId()?.takeIf { it.isNotBlank() } ?: "android"
         val json = JSONObject().apply {
             put("bypass_family", "olcrtc")
-            put("bypassFamily", "olcrtc")
+            put("bypassFamily", "olcrtc2")
             put("olcrtc_provider", provider)
             put("olcrtc_room", p.room)
             put("olcrtc_crypto_key", olc.crypto_key)

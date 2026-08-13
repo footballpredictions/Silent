@@ -2,6 +2,7 @@ package com.silent.vpn
 
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.core.content.ContextCompat
@@ -64,6 +65,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import retrofit2.Response
 
@@ -153,6 +158,8 @@ class MainViewModel @Inject constructor(
     /** Дедлайн bootstrap — один на сессию, не сбрасывается при переходе шаг 2 → шаг 1. */
     private var bootstrapDeadlineMs = 0L
     private var silentBootstrapSync = false
+    /** Serialize Apply + connect ensure — иначе второй вызов видит silentBootstrapSync и сразу false. */
+    private val olcrtcConfigEnsureMutex = Mutex()
     private var profilePollJob: Job? = null
     private var vpnProfilePollJob: Job? = null
     @Volatile private var sessionsFetchInFlight = false
@@ -219,7 +226,7 @@ class MainViewModel @Inject constructor(
                 repo.saveSyncProfileRev(state.profile)
             }
         }
-        runCatching { repo.prefetchOlcrtcConfig() }
+        // olcrtc-config не тянем здесь — только login + sync при VK.
     }
 
     private val _updateInfo = MutableStateFlow<UpdateCheckResponse?>(null)
@@ -447,8 +454,7 @@ class MainViewModel @Inject constructor(
                                 2,
                             )
                         } else {
-                            stopOlcrtcHeartbeatLoop()
-                            viewModelScope.launch { runCatching { repo.leaveOlcrtcRoom() } }
+                            leaveOlcrtcSessionAndStopHeartbeat()
                             _vpnState.value = VpnState.DISCONNECTED
                         }
                     }
@@ -562,13 +568,13 @@ class MainViewModel @Inject constructor(
         clearBootstrapIfServerHashesReady(items)
         repo.mergeSavedHashesIntoCachedConfig()
         clearBootstrapHashAfterLogin()
-        // olcrtc Telemost/WB — пока bootstrap-туннель жив (после disconnect nip.io на LTE мёртв).
+        // olcrtc: оба слота (Telemost+WB) пока bootstrap-туннель жив — как 1.0.160 dual-cache.
         runCatching {
             repo.ensureBootstrapTunnelApi()
-            val olc = repo.prefetchOlcrtcConfig()
+            val (tm, wb) = repo.prefetchOlcrtcBothProviders()
             DebugLog.i(
                 "MainViewModel",
-                "login olcrtc-config ${if (olc != null) "OK provider=${repo.getOlcrtcProvider()}" else "FAIL"}",
+                "login olcrtc-config both tm=$tm wb=$wb selected=${repo.getOlcrtcProvider()}",
             )
         }.onFailure { e ->
             DebugLog.w("MainViewModel", "login olcrtc-config: ${e.message}")
@@ -580,8 +586,15 @@ class MainViewModel @Inject constructor(
     }
 
     /** Главный экран только после входа; bootstrap/pre-login остаётся на LOGIN. */
-    private fun isMainVpnSessionForUi(): Boolean =
-        repo.isLoggedIn() && !bootstrapVpnMode && !WdttTunnelManager.isBootstrapMode()
+    private fun isMainVpnSessionForUi(): Boolean {
+        if (!repo.isLoggedIn() || bootstrapVpnMode) return false
+        // Залипший WDTT bootstrap-флаг после входа не должен кидать на LOGIN при olcrtc.
+        if (WdttTunnelManager.isBootstrapMode() && !repo.isOlcrtcBypass()) return false
+        if (WdttTunnelManager.isBootstrapMode() && repo.isOlcrtcBypass()) {
+            WdttTunnelManager.clearStaleSession()
+        }
+        return true
+    }
 
     private fun restoreVpnUiAfterForeground() {
         if (_vpnState.value != VpnState.CONNECTED) {
@@ -826,6 +839,98 @@ class MainViewModel @Inject constructor(
             withContext(Dispatchers.IO) {
                 VpnConnectHelper.ensureCleanSlate(context.applicationContext)
             }
+        }
+    }
+
+    /**
+     * Public API (queen :443) часто недоступен с LTE и с «битого» Wi‑Fi → olcrtc-config пустой.
+     * Ephemeral VK bootstrap → fetch ТОЛЬКО через 10.66.66.1 → stop (кеш v14 остаётся).
+     * Mutex: Apply и connect не отменяют друг друга через silentBootstrapSync.
+     */
+    suspend fun ensureOlcrtcConfigApi(context: Context, vararg providers: String): Boolean =
+        olcrtcConfigEnsureMutex.withLock {
+            val want = providers
+                .map { com.silent.vpn.policy.OlcrtcSessionPolicy.normalizeProvider(it) }
+                .ifEmpty { listOf(repo.getOlcrtcProvider()) }
+                .distinct()
+            fun allCached(): Boolean = want.all { repo.getCachedOlcrtcConfigForProvider(it) != null }
+            if (allCached()) {
+                com.silent.vpn.util.OlcrtcDiag.i(
+                    com.silent.vpn.util.OlcrtcDiag.CFG,
+                    "ensureApi skip — all cached providers=$want",
+                )
+                return@withLock true
+            }
+            val bootUp = WdttTunnelManager.isBootstrapMode() && WdttTunnelManager.tunnelReady.value
+            val mainUp = repo.isMainVpnTunnelUp()
+            if (bootUp || mainUp) {
+                var any = false
+                for (p in want) {
+                    val cfg = runCatching { repo.fetchOlcrtcConfigTunnelOnly(p) }.getOrNull()
+                        ?: runCatching { repo.fetchOlcrtcConfig(p) }.getOrNull()
+                    if (cfg?.providers?.get(p)?.room?.isNotBlank() == true) any = true
+                }
+                com.silent.vpn.util.OlcrtcDiag.i(
+                    com.silent.vpn.util.OlcrtcDiag.CFG,
+                    "ensureApi via live tunnel boot=$bootUp main=$mainUp any=$any cached=${allCached()}",
+                )
+                return@withLock any || allCached()
+            }
+            // Wi‑Fi: сначала public; если queen мёртв — тот же ephemeral, что на LTE.
+            if (!repo.isOnMobileData()) {
+                var any = false
+                for (p in want) {
+                    if (runCatching { repo.fetchOlcrtcConfig(p) }.getOrNull()
+                            ?.providers?.get(p)?.room?.isNotBlank() == true
+                    ) {
+                        any = true
+                    }
+                }
+                if (any || allCached()) {
+                    com.silent.vpn.util.OlcrtcDiag.i(
+                        com.silent.vpn.util.OlcrtcDiag.CFG,
+                        "ensureApi direct public ok any=$any cached=${allCached()}",
+                    )
+                    return@withLock true
+                }
+                com.silent.vpn.util.OlcrtcDiag.w(
+                    com.silent.vpn.util.OlcrtcDiag.CFG,
+                    "WiFi public miss → ephemeral for olcrtc-config providers=$want",
+                )
+            } else {
+                com.silent.vpn.util.OlcrtcDiag.w(
+                    com.silent.vpn.util.OlcrtcDiag.CFG,
+                    "LTE: ephemeral bootstrap for olcrtc-config providers=$want",
+                )
+            }
+            val ok = runEphemeralApiBootstrap(context, force = true) {
+                repo.ensureBootstrapTunnelApi()
+                var got = false
+                for (p in want) {
+                    val cfg = repo.fetchOlcrtcConfigTunnelOnly(p)
+                    com.silent.vpn.util.OlcrtcDiag.i(
+                        com.silent.vpn.util.OlcrtcDiag.CFG,
+                        "ephemeral tunnel-only $p room=${cfg?.providers?.get(p)?.room?.take(28)}",
+                    )
+                    if (cfg?.providers?.get(p)?.room?.isNotBlank() == true) got = true
+                }
+                got
+            }
+            com.silent.vpn.util.OlcrtcDiag.i(
+                com.silent.vpn.util.OlcrtcDiag.CFG,
+                "ephemeral olcrtc-config ok=$ok mobile=${repo.isOnMobileData()} " +
+                    "tm=${repo.getCachedOlcrtcConfigForProvider("telemost") != null} " +
+                    "wb=${repo.getCachedOlcrtcConfigForProvider("wbstream") != null}",
+            )
+            ok || allCached()
+        }
+
+    /** Apply: остановить connect, иначе CancellationException рвёт ephemeral mid-flight. */
+    fun cancelPendingOlcrtcConnectForApply() {
+        connectJob?.cancel(CancellationException("olcrtc-apply"))
+        connectJob = null
+        if (_vpnState.value == VpnState.CONNECTING) {
+            _vpnState.value = VpnState.DISCONNECTED
         }
     }
 
@@ -1075,6 +1180,9 @@ class MainViewModel @Inject constructor(
     private var connectJob: Job? = null
     private var disconnectJob: Job? = null
     private var olcrtcHeartbeatJob: Job? = null
+    /** Провайдер/room сессии на момент connect — leave не читает prefs после Apply. */
+    @Volatile private var olcrtcSessionProvider: String? = null
+    @Volatile private var olcrtcSessionRoomDbId: String? = null
     private var logoutJob: Job? = null
     @Volatile private var logoutGeneration = 0
     /** До завершения VpnBackendSync не дергаем overlay из polling. */
@@ -1897,6 +2005,7 @@ class MainViewModel @Inject constructor(
         WdttTunnelManager.prepareForShutdown()
         stopVpnLocally(context)
         WdttTunnelManager.stopAndAwait()
+        WdttTunnelManager.clearStaleSession()
         SilentRepository.APP_EXCLUDED_FROM_VPN = true
         bootstrapVpnMode = false
         bootstrapContext = null
@@ -2264,6 +2373,9 @@ class MainViewModel @Inject constructor(
                 resetBootstrapDeadline()
 
                 if (_vpnState.value == VpnState.CONNECTED || _vpnState.value == VpnState.CONNECTING) {
+                    if (repo.isOlcrtcBypass()) {
+                        leaveOlcrtcSessionAndStopHeartbeat()
+                    }
                     context?.let { stopVpnLocally(it) }
                 }
 
@@ -2411,6 +2523,11 @@ class MainViewModel @Inject constructor(
                 DebugLog.i("MainViewModel", "Подключение заменит другой активный VPN")
             }
             try {
+            // После входа WDTT bootstrap мог оставить isBootstrapMode=true → вылет на LOGIN.
+            if (repo.isLoggedIn() && WdttTunnelManager.isBootstrapMode() && !WdttTunnelManager.running.value) {
+                WdttTunnelManager.clearStaleSession()
+            }
+            bootstrapVpnMode = false
             runCatching {
                 if (!shouldDeferProfileUntilSync()) {
                     restoreCachedProfileToUi()
@@ -2464,21 +2581,29 @@ class MainViewModel @Inject constructor(
                         _vpnState.value = VpnState.DISCONNECTED
                         return@launch
                     }
-                    // Пока VK/WDTT ещё жив — тянем /olcrtc-config через туннель (LTE без Wi‑Fi).
-                    if (repo.isMainVpnTunnelUp()) {
-                        WdttTunnelManager.traceApp("olcrtc", "prefetch via live VK tunnel")
-                        runCatching { repo.prefetchOlcrtcConfig() }
+                    val t0 = SystemClock.elapsedRealtime()
+                    fun olcMs() = SystemClock.elapsedRealtime() - t0
+                    // Кеш / сеть; при miss — ephemeral (Wi‑Fi без :443 и LTE одинаково).
+                    var olc = repo.resolveOlcrtcConfigForConnect()
+                    var provider = repo.getOlcrtcProvider()
+                    var p = olc?.providers?.get(provider)
+                    if (
+                        (olc == null || p == null || p.room.isBlank()) &&
+                        olcrtcReassignAttempt < 2
+                    ) {
+                        com.silent.vpn.util.OlcrtcDiag.w(
+                            com.silent.vpn.util.OlcrtcDiag.CFG,
+                            "connect miss → ensureOlcrtcConfigApi provider=$provider mobile=${repo.isOnMobileData()}",
+                        )
+                        ensureOlcrtcConfigApi(context, provider)
+                        olc = repo.resolveOlcrtcConfigForConnect()
+                        provider = repo.getOlcrtcProvider()
+                        p = olc?.providers?.get(provider)
                     }
-                    // LTE: nip.io часто недоступен без VPN — сначала кеш; на Wi‑Fi — свежий room.
-                    val olc = if (repo.isOnMobileData()) {
-                        repo.resolveOlcrtcConfig(preferCache = true)
-                            ?: repo.syncOlcrtcLiveChannel()
-                    } else {
-                        repo.syncOlcrtcLiveChannel()
-                            ?: repo.resolveOlcrtcConfig(preferCache = true)
-                    }
-                    val provider = repo.getOlcrtcProvider()
-                    val p = olc?.providers?.get(provider)
+                    WdttTunnelManager.traceApp(
+                        "olcrtc",
+                        "config resolve ${olcMs()}ms room=${olc?.providers?.get(provider)?.room?.take(24)}",
+                    )
                     if (p?.denied == true || (olc?.pool_denied == true && p?.room.isNullOrBlank())) {
                         val msg = olc?.pool_denied_detail?.takeIf { it.isNotBlank() }
                             ?: "Нет свободных комнат обхода. Попробуйте позже."
@@ -2488,7 +2613,33 @@ class MainViewModel @Inject constructor(
                         return@launch
                     }
                     if (olc == null || !olc.enabled || olc.crypto_key.length != 64 || p == null || !p.enabled || p.room.isBlank()) {
-                        val msg = "olcrtc-config нет (кеш/сеть). Откройте меню → Варианты обхода."
+                        // Полный fetch до ошибки — после смены провайдера кеш часто ещё пуст.
+                        if (olcrtcReassignAttempt < 2) {
+                            WdttTunnelManager.traceApp("olcrtc", "config miss → force fetch provider=$provider")
+                            ensureOlcrtcConfigApi(context, provider)
+                            val retry = repo.getCachedOlcrtcConfigForProvider(provider)
+                                ?: runCatching { repo.fetchOlcrtcConfigTunnelOnly(provider) }.getOrNull()
+                                ?: runCatching { repo.fetchOlcrtcConfig(provider) }.getOrNull()
+                            val rp = retry?.providers?.get(provider)
+                            if (retry != null && retry.enabled && retry.crypto_key.length == 64 &&
+                                rp != null && rp.enabled && rp.room.isNotBlank()
+                            ) {
+                                WdttTunnelManager.traceApp(
+                                    "olcrtc",
+                                    "config force-fetch ok room=${rp.room.take(40)}",
+                                )
+                                _vpnError.value = null
+                                _vpnState.value = VpnState.DISCONNECTED
+                                delay(150)
+                                connect(context, olcrtcReassignAttempt + 1)
+                                return@launch
+                            }
+                        }
+                        val msg = "Нет сессии обхода (пул/сеть). Меню → Варианты обхода → Применить, затем VPN."
+                        com.silent.vpn.util.OlcrtcDiag.e(
+                            com.silent.vpn.util.OlcrtcDiag.CFG,
+                            "NO_SESSION provider=$provider cacheTm=${repo.getCachedOlcrtcConfigForProvider("telemost") != null} cacheWb=${repo.getCachedOlcrtcConfigForProvider("wbstream") != null} enabled=${olc?.enabled} room=${p?.room}",
+                        )
                         WdttTunnelManager.traceApp("olcrtc", msg, isError = true)
                         _vpnError.value = msg
                         _vpnState.value = VpnState.DISCONNECTED
@@ -2513,7 +2664,7 @@ class MainViewModel @Inject constructor(
                     DebugLog.i("MainViewModel", "connect olcrtc provider=$provider")
                     val json = org.json.JSONObject().apply {
                         put("bypass_family", "olcrtc")
-                        put("bypassFamily", "olcrtc")
+                        put("bypassFamily", "olcrtc2")
                         put("olcrtc_provider", provider)
                         put("olcrtc_room", p.room)
                         put("olcrtc_crypto_key", olc.crypto_key)
@@ -2536,6 +2687,14 @@ class MainViewModel @Inject constructor(
                     }
                     WdttTunnelManager.clearLogs()
                     WdttTunnelManager.logUi("olcrtc_connect", "olcrtc connect provider=$provider", 1)
+                    com.silent.vpn.util.OlcrtcDiag.i(
+                        com.silent.vpn.util.OlcrtcDiag.CONN,
+                        "connect START provider=$provider room=${p.room.take(48)} roomDbId=${p.room_db_id}",
+                    )
+                    olcrtcSessionProvider = provider
+                    olcrtcSessionRoomDbId =
+                        p.room_db_id?.trim()?.takeIf { it.isNotEmpty() }
+                    repo.bindOlcrtcSession(provider, olcrtcSessionRoomDbId)
                     val intent = Intent(context, SilentVpnService::class.java).apply {
                         action = SilentVpnService.ACTION_CONNECT
                         putExtra(SilentVpnService.EXTRA_CONFIG, json.toString())
@@ -2554,13 +2713,20 @@ class MainViewModel @Inject constructor(
                             // Ранний exit (WB 403 guest / бинарь) — иначе sticky на мёртвой room.
                             if (err.contains("гост", ignoreCase = true) ||
                                 err.contains("мертв", ignoreCase = true) ||
+                                err.contains("мёртв", ignoreCase = true) ||
                                 err.contains("auth.token", ignoreCase = true) ||
                                 err.contains("code=1", ignoreCase = true) ||
-                                err.contains("канал", ignoreCase = true)
+                                err.contains("канал", ignoreCase = true) ||
+                                err.contains("без SOCKS", ignoreCase = true) ||
+                                err.contains("SOCKS не поднялся", ignoreCase = true) ||
+                                err.contains("not found", ignoreCase = true) ||
+                                err.contains("WB join 404", ignoreCase = true) ||
+                                err.contains("join room", ignoreCase = true)
                             ) {
                                 var newRoom: String? = null
                                 runCatching {
-                                    repo.clearOlcrtcCache()
+                                    // Не clearOlcrtcCache до нового assign — на LTE без VK
+                                    // nip.io мёртв → «нет конфига, включите VK».
                                     val next = repo.reportOlcrtcRoomFailure(err)
                                     newRoom = next?.providers?.get(repo.getOlcrtcProvider())?.room
                                     if (!newRoom.isNullOrBlank()) {
@@ -2584,6 +2750,27 @@ class MainViewModel @Inject constructor(
                                     connect(context, olcrtcReassignAttempt + 1)
                                     return@launch
                                 }
+                                if (newRoom.isNullOrBlank() && olcrtcReassignAttempt < 1) {
+                                    // Queen :443 мёртв → ephemeral + tunnel-only, не public fetch.
+                                    delay(400)
+                                    ensureOlcrtcConfigApi(context, repo.getOlcrtcProvider())
+                                    val late = repo.getCachedOlcrtcConfigForProvider(repo.getOlcrtcProvider())
+                                    val lateRoom = late?.providers?.get(repo.getOlcrtcProvider())?.room
+                                    if (!lateRoom.isNullOrBlank()) {
+                                        _vpnError.value = null
+                                        _vpnState.value = VpnState.DISCONNECTED
+                                        stopVpnLocally(context)
+                                        WdttTunnelManager.logUi(
+                                            "olcrtc_retry",
+                                            "авто-повтор после ensure: ${lateRoom.take(40)}",
+                                            1,
+                                        )
+                                        connect(context, olcrtcReassignAttempt + 1)
+                                        return@launch
+                                    }
+                                    _vpnError.value =
+                                        "Канал мёртв, новый ещё не готов. Подождите 10–20 с и включите VPN снова."
+                                }
                             }
                             _vpnState.value = VpnState.DISCONNECTED
                             stopVpnLocally(context)
@@ -2603,6 +2790,11 @@ class MainViewModel @Inject constructor(
                     if (olcOk) {
                         _vpnState.value = VpnState.CONNECTED
                         repo.clearTunnelApiBase()
+                        runCatching {
+                            repo.markOlcrtcRoomConnected(
+                                olc.providers[provider]?.room,
+                            )
+                        }
                         startOlcrtcHeartbeatLoop()
                         WdttTunnelManager.logUi("olcrtc_ok", "olcrtc connected (SOCKS)", 1)
                         return@launch
@@ -2793,27 +2985,20 @@ class MainViewModel @Inject constructor(
         val isBootstrap = forceBootstrap || bootstrapVpnMode
         if (repo.isOlcrtcBypass()) {
             viewModelScope.launch {
-                if (repo.isMainVpnTunnelUp()) {
-                    runCatching { repo.prefetchOlcrtcConfig() }
-                }
-                val olc = if (repo.isOnMobileData()) {
-                    repo.resolveOlcrtcConfig(preferCache = true)
-                        ?: repo.syncOlcrtcLiveChannel()
-                } else {
-                    repo.syncOlcrtcLiveChannel()
-                        ?: repo.resolveOlcrtcConfig(preferCache = true)
-                }
+                // Кеш с login/sync — без лишнего /olcrtc2-config перед стартом сервиса.
+                val olc = repo.resolveOlcrtcConfigForConnect()
                 val provider = repo.getOlcrtcProvider()
                 val p = olc?.providers?.get(provider)
                 if (olc == null || !olc.enabled || olc.crypto_key.length != 64 || p == null || !p.enabled || p.room.isBlank()) {
                     _vpnError.value =
-                        "olcrtc: провайдер «${repo.olcrtcProviderLabel()}» не настроен / нет кеша (меню → Варианты обхода)"
+                        olc?.pool_denied_detail?.takeIf { it.isNotBlank() }
+                            ?: "Нет olcrtc2-config. Меню → Варианты обхода → Применить."
                     _vpnState.value = VpnState.DISCONNECTED
                     return@launch
                 }
                 val json = org.json.JSONObject().apply {
                     put("bypass_family", "olcrtc")
-                    put("bypassFamily", "olcrtc")
+                    put("bypassFamily", "olcrtc2")
                     put("olcrtc_provider", provider)
                     put("olcrtc_room", p.room)
                     put("olcrtc_crypto_key", olc.crypto_key)
@@ -3034,23 +3219,62 @@ class MainViewModel @Inject constructor(
     }
 
     private fun startOlcrtcHeartbeatLoop() {
+        // Двойной старт (tunnelReady + connect) раньше cancel'ил job → finally leave
+        // рвал комнату и чистил кеш при живом VPN («нет сессии» / зелёный труп).
+        if (!com.silent.vpn.policy.OlcrtcSessionPolicy.shouldStartHeartbeat(
+                alreadyActive = olcrtcHeartbeatJob?.isActive == true,
+            )
+        ) {
+            DebugLog.d("MainViewModel", "olcrtc heartbeat already running")
+            return
+        }
         olcrtcHeartbeatJob?.cancel()
         olcrtcHeartbeatJob = viewModelScope.launch {
-            try {
-                while (_vpnState.value == VpnState.CONNECTED && repo.isOlcrtcBypass()) {
-                    repo.sendOlcrtcHeartbeat(true)
-                    delay(45_000)
-                }
-            } finally {
-                // Leave при отмене job / disconnect — не копить online.
-                runCatching { repo.leaveOlcrtcRoom() }
+            while (isActive && _vpnState.value == VpnState.CONNECTED && repo.isOlcrtcBypass()) {
+                val prov = olcrtcSessionProvider ?: repo.getOlcrtcProvider()
+                val roomDbId = olcrtcSessionRoomDbId
+                repo.sendOlcrtcHeartbeat(
+                    online = true,
+                    provider = prov,
+                    roomDbId = roomDbId,
+                )
+                delay(45_000)
             }
+            // Leave только из disconnect — shouldLeaveOnHeartbeatCancel()=false (см. OlcrtcSessionPolicyTest).
         }
     }
 
     private fun stopOlcrtcHeartbeatLoop() {
         olcrtcHeartbeatJob?.cancel()
         olcrtcHeartbeatJob = null
+    }
+
+    /** Остановка heartbeat + leave снимка сессии (не текущего prefs после смены канала). */
+    private fun leaveOlcrtcSessionAndStopHeartbeat() {
+        val session = olcrtcSessionProvider
+        val roomDbId = olcrtcSessionRoomDbId
+        stopOlcrtcHeartbeatLoop()
+        olcrtcSessionProvider = null
+        olcrtcSessionRoomDbId = null
+        repo.clearOlcrtcSessionBind()
+        // Без снимка не leave по prefs — иначе после Apply late-leave трёт НОВЫЙ слот.
+        if (session.isNullOrBlank()) {
+            com.silent.vpn.util.OlcrtcDiag.w(
+                com.silent.vpn.util.OlcrtcDiag.LEAVE,
+                "skip leave — no session snapshot (уже сброшен)",
+            )
+            return
+        }
+        val target = com.silent.vpn.policy.OlcrtcSessionPolicy.resolveLeaveTarget(
+            sessionProvider = session,
+            sessionRoomDbId = roomDbId,
+            prefsProvider = session,
+        )
+        viewModelScope.launch {
+            runCatching {
+                repo.leaveOlcrtcRoom(provider = target.provider, roomDbId = target.roomDbId)
+            }
+        }
     }
 
     fun disconnect(context: Context) {
@@ -3084,12 +3308,33 @@ class MainViewModel @Inject constructor(
         _vpnState.value = VpnState.DISCONNECTING
         disconnectJob = viewModelScope.launch {
             try {
-                // Leave комнаты ДО stop VPN — иначе на LTE leave не доходит.
+                // Leave в фоне с коротким таймаутом: API больше не ждёт restart 8с,
+                // но на LTE leave должен уйти до stop VPN. UI не крутим дольше ~2с.
                 if (repo.isOlcrtcBypass()) {
+                    val target = com.silent.vpn.policy.OlcrtcSessionPolicy.resolveLeaveTarget(
+                        sessionProvider = olcrtcSessionProvider,
+                        sessionRoomDbId = olcrtcSessionRoomDbId,
+                        prefsProvider = repo.getOlcrtcProvider(),
+                    )
                     stopOlcrtcHeartbeatLoop()
-                    runCatching { repo.leaveOlcrtcRoom() }
+                    olcrtcSessionProvider = null
+                    olcrtcSessionRoomDbId = null
+                    repo.clearOlcrtcSessionBind()
+                    val leaveJob = launch {
+                        runCatching {
+                            withTimeout(2_000) {
+                                repo.leaveOlcrtcRoom(
+                                    provider = target.provider,
+                                    roomDbId = target.roomDbId,
+                                )
+                            }
+                        }
+                    }
+                    stopVpnLocally(context)
+                    leaveJob.join()
+                } else {
+                    stopVpnLocally(context)
                 }
-                stopVpnLocally(context)
                 checkForAppUpdate()
             } finally {
                 _vpnState.value = VpnState.DISCONNECTED

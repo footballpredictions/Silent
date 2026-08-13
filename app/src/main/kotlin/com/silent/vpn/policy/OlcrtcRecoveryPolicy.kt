@@ -100,6 +100,11 @@ object OlcrtcRecoveryPolicy {
         val iceConnected: Boolean,
         val socksHealthy: Boolean,
         val recentTunnelTraffic: Boolean = false,
+        /**
+         * missed_pong / stream_dead: не доверяем «recent traffic» и fake SOCKS —
+         * только реальный dial (socksHealthy от force-probe).
+         */
+        val forceLivenessCheck: Boolean = false,
     )
 
     data class PrefetchReuseInput(
@@ -228,6 +233,9 @@ object OlcrtcRecoveryPolicy {
     fun shouldNotifyPeerDeadAfterGrace(input: PeerClosedGraceInput): Boolean {
         if (!input.running) return false
         if (input.iceConnected) return false
+        if (input.forceLivenessCheck) {
+            return !input.socksHealthy
+        }
         if (input.socksHealthy) return false
         if (input.recentTunnelTraffic) return false
         return true

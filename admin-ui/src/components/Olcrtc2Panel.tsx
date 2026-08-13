@@ -9,6 +9,7 @@ type AgentInfo = {
     rooms?: number
     active?: number
     online?: number
+    sessions?: number
     provisioning?: number
     error?: number
     warm_free_pc?: number
@@ -200,7 +201,7 @@ export default function Olcrtc2Panel({ token }: { token: string }) {
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs text-[#ccc]">
         <div className="rounded-lg bg-black/30 p-2">Комнат: {pool?.rooms ?? '—'}</div>
         <div className="rounded-lg bg-black/30 p-2">Active: {pool?.active ?? '—'}</div>
-        <div className="rounded-lg bg-black/30 p-2">Online: {pool?.online ?? '—'}</div>
+        <div className="rounded-lg bg-black/30 p-2">Online (sessions): {pool?.online ?? pool?.sessions ?? '—'}</div>
         <div className="rounded-lg bg-black/30 p-2">
           Warm PC: {pool?.warm_free_pc ?? '—'}
         </div>

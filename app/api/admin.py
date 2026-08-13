@@ -141,10 +141,32 @@ async def get_stats(
             active_subs += 1
 
     from app.services.peak_online import record_online_peak
+    from app.models.olcrtc2_room import Olcrtc2Sticky
+    from datetime import datetime, timedelta, timezone
 
-    connected_devices = (await db.execute(
-        select(func.count(Device.id)).where(Device.is_connected == True)
-    )).scalar_one()
+    # Device.is_connected (wdtt) ИЛИ свежий olcrtc2 sticky (обход без wdtt keepalive).
+    connected_ids = set(
+        (
+            await db.execute(select(Device.id).where(Device.is_connected == True))  # noqa: E712
+        ).scalars().all()
+    )
+    sticky_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=300)
+    sticky_fps = (
+        await db.execute(
+            select(Olcrtc2Sticky.fingerprint).where(Olcrtc2Sticky.updated_at >= sticky_cutoff)
+        )
+    ).scalars().all()
+    if sticky_fps:
+        extra = (
+            await db.execute(
+                select(Device.id).where(
+                    Device.is_active == True,  # noqa: E712
+                    Device.device_fingerprint.in_([str(f) for f in sticky_fps if f]),
+                )
+            )
+        ).scalars().all()
+        connected_ids.update(extra)
+    connected_devices = len(connected_ids)
     peak_online, peak_online_at = await record_online_peak(db, int(connected_devices or 0))
     total_users = len(all_users)
 
@@ -168,7 +190,12 @@ async def get_stats(
     for u in all_users:
         user_hashes = by_user_id.get(u.id, [])
         user_devices = devices_by_user.get(u.id, [])
+        sticky_fp_set = {str(f) for f in sticky_fps if f}
         dev_online = sum(1 for d in user_devices if d.is_connected)
+        if sticky_fp_set:
+            for d in user_devices:
+                if (d.device_fingerprint or "") in sticky_fp_set and not d.is_connected:
+                    dev_online += 1
         last_seen = getattr(u, "last_seen_at", None)
         for d in user_devices:
             for ts in (d.last_connected, d.created_at):
@@ -180,7 +207,8 @@ async def get_stats(
             name = (d.device_name or "").strip()
             if name and name not in device_names:
                 device_names.append(name)
-            if d.is_connected and name and name not in online_device_names:
+            sticky_on = (d.device_fingerprint or "") in sticky_fp_set
+            if (d.is_connected or sticky_on) and name and name not in online_device_names:
                 online_device_names.append(name)
         # Один хеш на слот в отображении (дубликаты — артефакт старого агента)
         best_by_slot: dict[int, VkHash] = {}

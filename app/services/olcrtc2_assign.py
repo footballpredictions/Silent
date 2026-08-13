@@ -227,6 +227,30 @@ async def _save_sticky(
         await db.commit()
 
 
+async def _touch_devices_online(db: AsyncSession, fingerprint: str) -> None:
+    """olcrtc без wdtt keepalive — иначе админка «онлайн» видит 0/1."""
+    fp = (fingerprint or "").strip()[:128]
+    if not fp:
+        return
+    try:
+        from app.models.device import Device
+
+        devices = (
+            await db.execute(
+                select(Device).where(
+                    Device.device_fingerprint == fp,
+                    Device.is_active == True,  # noqa: E712
+                )
+            )
+        ).scalars().all()
+        now = _now()
+        for d in devices:
+            d.is_connected = True
+            d.last_connected = now
+    except Exception:
+        logger.debug("olcrtc2 device touch failed", exc_info=True)
+
+
 async def _recount(db: AsyncSession, room: Olcrtc2Room) -> None:
     n = (
         await db.execute(
@@ -476,6 +500,7 @@ async def ensure_session_room(
                         cand.online_count = stickies
                         continue
                     await _save_sticky(db, fp, prov, dt, cand.id, commit=False)
+                    await _touch_devices_online(db, fp)
                     await _recount(db, cand)
                     cand.last_healthy_at = _now()
                     await db.commit()
@@ -523,7 +548,8 @@ async def ensure_session_room(
         )
         if not row:
             return None
-        await _save_sticky(db, fp, prov, dt, row.id, commit=True)
+        await _save_sticky(db, fp, prov, dt, row.id, commit=False)
+        await _touch_devices_online(db, fp)
         await _recount(db, row)
         row.last_healthy_at = _now()
         await db.commit()
@@ -567,6 +593,18 @@ async def ensure_warm_pool(db: AsyncSession) -> dict[str, Any]:
         if stickies > 0:
             healed += 1
             continue
+        # Sticky мог отвалиться (HB через VPN), а peer ещё жив — не tear.
+        healthy_age = None
+        if room.last_healthy_at:
+            healthy_age = (_now() - room.last_healthy_at).total_seconds()
+        if healthy_age is not None and healthy_age < RECENT_HEALTHY_KEEP_SEC:
+            logger.info(
+                "olcrtc2 warm heal keep recent-healthy unit=%s age=%.0fs (no sticky)",
+                room.unit_name,
+                healthy_age,
+            )
+            healed += 1
+            continue
         probe = await probe_olcrtc2_unit(db, room)
         unit_ok = bool(probe.get("unknown") or probe.get("active"))
         if not unit_ok:
@@ -594,13 +632,17 @@ async def ensure_warm_pool(db: AsyncSession) -> dict[str, Any]:
             await _tear_dead_room(db, room, reason="warm heal unit dead")
             torn += 1
             continue
-        do_carrier = (room.provider or "") == "wbstream" and carrier_budget > 0
-        if do_carrier:
+        # WB carrier HTTP-join на active опасен (max_clients=1 / antibot) —
+        # не tear по carrier, только unit. Иначе пустые warm + ложный 404 → каскад.
+        if (room.provider or "") == "wbstream" and carrier_budget > 0:
             carrier_budget -= 1
             carrier = await _carrier_room_alive(room)
             if carrier is False:
-                await _tear_dead_room(db, room, reason="warm heal carrier dead")
-                torn += 1
+                logger.warning(
+                    "olcrtc2 warm heal carrier soft-dead unit=%s — leave warm (no tear)",
+                    room.unit_name,
+                )
+                healed += 1
                 continue
         healed += 1
 
@@ -884,25 +926,7 @@ async def heartbeat(
             room.id,
             commit=False,
         )
-        # olcrtc без wdtt keepalive: иначе админка «онлайн» сбрасывается / видит 1.
-        try:
-            from app.models.device import Device
-
-            fp = fingerprint[:128]
-            devices = (
-                await db.execute(
-                    select(Device).where(
-                        Device.device_fingerprint == fp,
-                        Device.is_active == True,  # noqa: E712
-                    )
-                )
-            ).scalars().all()
-            now = _now()
-            for d in devices:
-                d.is_connected = True
-                d.last_connected = now
-        except Exception:
-            logger.debug("olcrtc2 heartbeat device touch failed", exc_info=True)
+        await _touch_devices_online(db, fingerprint)
     await _recount(db, room)
     await db.commit()
     return {"ok": True, "online_count": room.online_count}
@@ -1145,10 +1169,15 @@ async def pool_stats(db: AsyncSession) -> dict[str, Any]:
                 free_android += 1
             else:
                 free_pc += 1
+    sticky_total = int(
+        (await db.execute(select(func.count()).select_from(Olcrtc2Sticky))).scalar() or 0
+    )
     return {
         "rooms": len(rows),
         "active": len(active),
-        "online": sum(int(r.online_count or 0) for r in active),
+        # Sticky = живые сессии (не дрейфующий online_count).
+        "online": sticky_total,
+        "sessions": sticky_total,
         "provisioning": sum(1 for r in rows if r.status == "provisioning"),
         "error": sum(1 for r in rows if r.status == "error"),
         "warm_free_pc": free_pc,

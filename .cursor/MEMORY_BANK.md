@@ -579,6 +579,58 @@ cd pc; npm install; npm run dev
 - Версии: Android `versionCode/Name 160` / `1.0.160`; PC `package.json 1.0.160`.
 - Релизы: `assembleRelease` + `build-installer.bat` OK. Push `android` + `pc`.
 
+### 2026-08-13 — warm shrink: CPU Сота1 без «нет комнат»
+
+- `warm_pool_per_dt=4` (уже было 4 после агента; раньше раздувало до ~20→40+ unit).
+- Срезано 7 лишних free (6 telemost android + 1 wb pc); sticky/online не трогали.
+- Итог: 16 комнат = по 4 free на каждый `provider:dt` (TM pc/android + WB pc/android).
+- Сота1: olcrtc 40→8, load ~60→~8 (остывает). Запас Connect сохранён.
+
+### 2026-08-13 — endurance WB 40м: peer не умер
+
+- Отчёт: `backend/scripts/reports/endurance_olcrtc2_20260813-143623/summary.json`
+- PC ~2379с SOCKS 155/0 HB 77/2; Android ~2379с SOCKS 152/3 HB 79/0.
+- `dead_reason=process_exit:1` в конце лимита скрипта (не mid-run peer death).
+- Вывод: голый olcrtc2-cnc на Wi‑Fi держит WB ~40м; старые обрывы 2–15м — скорее клиент/heal/LTE, не «WB всегда падает».
+
+### 2026-08-13 — Сота 1 ~100% CPU при тесте WB на Соте 2
+
+- Hive: Сота1 CPU **100%** (load ~60 на 2 ядрах), Сота2 **~76%** (load ~6), TX ~32 Mbps — живой WB.
+- Причина Сота1: **~40 warm `olcrtc2-srv` Telemost** (unit’ы active), sticky Telemost=0; клиенты WB на Соте2 не при чём.
+- В БД: 40 telemost + 43 wbstream rooms; sticky только WB (2 pc + 2 android).
+- WDTT online на сотах = 0 (olcrtc не считается hive VPN); Улей ~102 WDTT, `wdtt-server` ~118% CPU.
+
+### 2026-08-13 — Android LTE HB: NetworkOnMainThread + nip.io
+
+- Лог: `socks CONNECT fail host=132.243.234.162:443` при живом VPN — SOCKS с Main → NOTM / битый IP Host.
+- Фикс: HB/leave/failure SOCKS на `Dispatchers.IO`; CONNECT+SNI всегда `132-243-234-162.nip.io`; IPv4 ATYP в SOCKS.
+- APK: `SilentVPN-debug.apk` — ждать `heartbeat OK via socks`, online=4.
+
+### 2026-08-13 — Android LTE: heartbeat через SOCKS (whitelist)
+
+- App в disallow → HB в underlying → nip.io режется БС на LTE → sticky нет → телефон не в сессиях.
+- VPN `Network.bind`/`socketFactory` для excluded app → EPERM (не работает).
+- Фикс: `POST /olcrtc2-heartbeat` (и leave/failure) через локальный SOCKS `127.0.0.1:8808` → peer → exit → nip.io.
+- `OlcrtcTunnelManager.openSocksTcp` + `activeSocksEndpoint`; APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`.
+
+### 2026-08-13 — endurance script PC+Android до смерти peer
+
+- `backend/scripts/endurance_olcrtc2_clients.py` — 2× olcrtc2-cnc (pc/android), HB + SOCKS probe, лог до exit/socks_fail.
+- Запуск: `cd backend; python scripts/endurance_olcrtc2_clients.py --minutes 40`
+- `--hb-via-socks` — HB как LTE через SOCKS. Отчёт: `scripts/reports/endurance_olcrtc2_*`.
+
+### 2026-08-13 — админка: вход сбрасывался (NameError в /stats)
+
+- В `get_stats` после правки online пропал `user_devices = …` → NameError → HTTP 500 → UI снимал `admin_token`.
+- Фикс задеплоен (`deploy_admin_stats_fix.py`).
+
+### 2026-08-13 — online=1 при 2×WB + смерть ~2 мин (warm heal)
+
+- Online в админке = sticky-сессии (+ Device по sticky fp); не только wdtt `is_connected`.
+- Warm heal: не tear WB по carrier; keep recent-healthy без sticky.
+- Android HB через underlying (не VPN), интервал 30с.
+- Деплой API + APK `SilentVPN-debug.apk`.
+
 ### 2026-08-13 — push: olcrtc2 за 2 дня (main + pc + android)
 
 - `main` `0a8976f` — pool/agent/admin/WB max_clients=1/warm scale

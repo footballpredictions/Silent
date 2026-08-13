@@ -14,6 +14,7 @@ import com.silent.vpn.policy.OlcrtcSessionPolicy
 import com.silent.vpn.policy.TunnelHttpPolicy
 import com.silent.vpn.policy.UpdateUrlResolver
 import com.silent.vpn.vpn.TunnelApiProxy
+import com.silent.vpn.vpn.OlcrtcTunnelManager
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.sync.MobileSyncLog
@@ -30,8 +31,10 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 @Singleton
@@ -1730,18 +1733,134 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
                 device_type = dt,
                 online = online,
             )
-            // Leave / heartbeat: сначала публичный nip.io (olcrtc-сессия без 10.66),
-            // при живом VK — tunnel. Ошибки глотаем, но leave обязателен до stop VPN.
-            val publicBase = getPublicServerUrl().trimEnd('/')
-            runCatching {
-                buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 8L)
-                    .olcrtcHeartbeat(req)
-            }.onFailure {
-                if (isMainVpnTunnelUp()) {
-                    runCatching { withUserBackendApi { getApi().olcrtcHeartbeat(req) } }
+            // LTE + app disallow: nip.io с underlying режется whitelist.
+            // VPN Network.bind для excluded app → EPERM. Рабочий путь: HTTP через
+            // локальный SOCKS (peer → exit → API), sticky появляется в сессиях.
+            // Важно: Socket только на IO — иначе NetworkOnMainThreadException → «CONNECT fail».
+            if (withContext(Dispatchers.IO) {
+                    postOlcrtcJsonViaSocks("api/vpn/olcrtc2-heartbeat", Gson().toJson(req))
                 }
+            ) {
+                com.silent.vpn.util.OlcrtcDiag.i(
+                    com.silent.vpn.util.OlcrtcDiag.HB,
+                    "heartbeat OK via socks",
+                )
+                return
+            }
+            val publicBase = getPublicServerUrl().trimEnd('/')
+            val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
+            val vpnNet = VpnNetworkHelper.getSilentVpnNetwork(context)
+            val underlying = cm?.allNetworks?.firstOrNull { n ->
+                val caps = cm.getNetworkCapabilities(n) ?: return@firstOrNull false
+                !caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) &&
+                    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            }
+            val onMobile = VpnNetworkHelper.isOnMobileData(context)
+            val attempts: List<Pair<android.net.Network?, String>> =
+                if (onMobile) {
+                    listOf(vpnNet to "vpn", underlying to "underlying", null to "default")
+                } else {
+                    listOf(underlying to "underlying", vpnNet to "vpn", null to "default")
+                }
+            var ok = false
+            for ((net, tag) in attempts) {
+                if (tag != "default" && net == null) continue
+                val res = runCatching {
+                    buildApi("$publicBase/", vpnNetwork = net, connectTimeoutSec = 10L)
+                        .olcrtcHeartbeat(req)
+                }.getOrNull()
+                if (res != null && res.isSuccessful) {
+                    com.silent.vpn.util.OlcrtcDiag.i(
+                        com.silent.vpn.util.OlcrtcDiag.HB,
+                        "heartbeat OK via $tag",
+                    )
+                    ok = true
+                    break
+                }
+                com.silent.vpn.util.OlcrtcDiag.w(
+                    com.silent.vpn.util.OlcrtcDiag.HB,
+                    "heartbeat $tag fail code=${res?.code()} err=${res?.errorBody()?.string()?.take(80)}",
+                )
+            }
+            if (!ok) {
+                com.silent.vpn.util.OlcrtcDiag.w(
+                    com.silent.vpn.util.OlcrtcDiag.HB,
+                    "heartbeat all paths failed online=$online",
+                )
             }
         } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * HTTPS POST к public API через olcrtc SOCKS (peer exit).
+     * Нужен на LTE: SilentVPN в disallow, underlying whitelist режет nip.io.
+     * Вызывать только с Dispatchers.IO (blocking sockets).
+     */
+    private fun postOlcrtcJsonViaSocks(apiPath: String, jsonBody: String): Boolean {
+        if (OlcrtcTunnelManager.activeSocksEndpoint() == null) {
+            com.silent.vpn.util.OlcrtcDiag.w(
+                com.silent.vpn.util.OlcrtcDiag.HB,
+                "socks skip — tunnel/SOCKS not ready",
+            )
+            return false
+        }
+        // Всегда nip.io: IP в CONNECT/SNI ломает nginx Host и часть SOCKS DNS.
+        val host = DEFAULT_SERVER_HOST
+        val port = 443
+        val path = "/" + apiPath.trimStart('/')
+        val tcp = OlcrtcTunnelManager.openSocksTcp(host, port) ?: run {
+            com.silent.vpn.util.OlcrtcDiag.w(
+                com.silent.vpn.util.OlcrtcDiag.HB,
+                "socks CONNECT fail host=$host:$port",
+            )
+            return false
+        }
+        return try {
+            tcp.soTimeout = 15_000
+            val ssl = TrustAllCerts.sslSocketFactory()
+                .createSocket(tcp, host, port, true) as javax.net.ssl.SSLSocket
+            ssl.soTimeout = 15_000
+            ssl.startHandshake()
+            try {
+                val bodyBytes = jsonBody.toByteArray(Charsets.UTF_8)
+                val token = getAccessToken()
+                val hdr = StringBuilder()
+                hdr.append("POST $path HTTP/1.1\r\n")
+                hdr.append("Host: $host\r\n")
+                hdr.append("Content-Type: application/json; charset=utf-8\r\n")
+                hdr.append("Accept: application/json\r\n")
+                hdr.append("Content-Length: ${bodyBytes.size}\r\n")
+                hdr.append("Connection: close\r\n")
+                if (!token.isNullOrBlank()) {
+                    hdr.append("Authorization: Bearer $token\r\n")
+                }
+                hdr.append("\r\n")
+                val out = ssl.getOutputStream()
+                out.write(hdr.toString().toByteArray(Charsets.US_ASCII))
+                out.write(bodyBytes)
+                out.flush()
+                val statusLine = ssl.getInputStream().bufferedReader(Charsets.US_ASCII).readLine()
+                    ?: return false
+                val code = statusLine.split(' ').getOrNull(1)?.toIntOrNull() ?: 0
+                val ok = code in 200..299
+                if (!ok) {
+                    com.silent.vpn.util.OlcrtcDiag.w(
+                        com.silent.vpn.util.OlcrtcDiag.HB,
+                        "socks HTTP $code status=$statusLine",
+                    )
+                }
+                ok
+            } finally {
+                runCatching { ssl.close() }
+            }
+        } catch (e: Exception) {
+            runCatching { tcp.close() }
+            com.silent.vpn.util.OlcrtcDiag.w(
+                com.silent.vpn.util.OlcrtcDiag.HB,
+                "socks POST err=${e.javaClass.simpleName}:${e.message?.take(60)}",
+            )
+            false
         }
     }
 
@@ -1783,29 +1902,26 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
             val api = buildApi("$publicBase/", vpnNetwork = net, connectTimeoutSec = 3L)
             suspend fun sendLeave(pName: String, id: String) {
                 if (id.isEmpty()) return
+                val leaveReq = OlcrtcHeartbeatRequest(
+                    room_db_id = id,
+                    fingerprint = fp,
+                    provider = pName,
+                    device_type = dt,
+                    online = false,
+                )
+                if (withContext(Dispatchers.IO) {
+                        postOlcrtcJsonViaSocks("api/vpn/olcrtc2-heartbeat", Gson().toJson(leaveReq))
+                    }
+                ) {
+                    return
+                }
                 runCatching {
-                    api.olcrtcHeartbeat(
-                        OlcrtcHeartbeatRequest(
-                            room_db_id = id,
-                            fingerprint = fp,
-                            provider = pName,
-                            device_type = dt,
-                            online = false,
-                        ),
-                    )
+                    api.olcrtcHeartbeat(leaveReq)
                 }.onFailure {
                     if (isMainVpnTunnelUp()) {
                         runCatching {
                             withUserBackendApi {
-                                getApi().olcrtcHeartbeat(
-                                    OlcrtcHeartbeatRequest(
-                                        room_db_id = id,
-                                        fingerprint = fp,
-                                        provider = pName,
-                                        device_type = dt,
-                                        online = false,
-                                    ),
-                                )
+                                getApi().olcrtcHeartbeat(leaveReq)
                             }
                         }
                     }
@@ -1872,12 +1988,30 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
             detail = detail.ifBlank { "peer dead room=$oldRoom" },
         )
         try {
-            if (isMainVpnTunnelUp()) {
-                withUserBackendApi { getApi().olcrtcRoomFailure(req) }
+            val publicBase = getPublicServerUrl().trimEnd('/')
+            val vpnNet = VpnNetworkHelper.getSilentVpnNetwork(context)
+            val onMobile = VpnNetworkHelper.isOnMobileData(context)
+            val socksOk = withContext(Dispatchers.IO) {
+                postOlcrtcJsonViaSocks(
+                    "api/vpn/olcrtc2-room-failure",
+                    Gson().toJson(req),
+                )
+            }
+            val sent = socksOk || if (onMobile && vpnNet != null) {
+                runCatching {
+                    buildApi("$publicBase/", vpnNetwork = vpnNet, connectTimeoutSec = 10L)
+                        .olcrtcRoomFailure(req)
+                }.isSuccess
             } else {
-                val publicBase = getPublicServerUrl().trimEnd('/')
-                val api = buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 8L)
-                api.olcrtcRoomFailure(req)
+                false
+            }
+            if (!sent) {
+                if (isMainVpnTunnelUp()) {
+                    withUserBackendApi { getApi().olcrtcRoomFailure(req) }
+                } else {
+                    buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 8L)
+                        .olcrtcRoomFailure(req)
+                }
             }
         } catch (_: Exception) {
         }

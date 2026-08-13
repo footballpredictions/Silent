@@ -3238,7 +3238,7 @@ class MainViewModel @Inject constructor(
                     provider = prov,
                     roomDbId = roomDbId,
                 )
-                delay(45_000)
+                delay(30_000)
             }
             // Leave только из disconnect — shouldLeaveOnHeartbeatCancel()=false (см. OlcrtcSessionPolicyTest).
         }

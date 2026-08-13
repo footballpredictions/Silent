@@ -67,11 +67,15 @@ object VpnNetworkHelper {
         return fallback
     }
 
-    /** WireGuard-сеть Silent — для HTTP к 10.66.66.1 когда app исключён из туннеля. */
+    /** Silent VPN-сеть (WG или hev/olcrtc) — для HTTP, когда app в disallow. */
     fun getSilentVpnNetwork(context: Context): Network? {
-        if (!SilentVpnService.isRunning && !WdttTunnelManager.tunnelReady.value) return null
+        val olcrtcUp =
+            runCatching { OlcrtcTunnelManager.tunnelReady.value || OlcrtcTunnelManager.running.value }
+                .getOrDefault(false)
+        val wdttUp = SilentVpnService.isRunning || WdttTunnelManager.tunnelReady.value
+        if (!olcrtcUp && !wdttUp) return null
         findOurVpnNetwork(context)?.let { return it }
-        if (!SilentVpnService.isRunning) return null
+        if (!SilentVpnService.isRunning && !olcrtcUp) return null
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         for (network in cm.allNetworks) {
             val caps = cm.getNetworkCapabilities(network) ?: continue

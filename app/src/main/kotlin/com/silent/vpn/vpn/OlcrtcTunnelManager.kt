@@ -62,6 +62,14 @@ object OlcrtcTunnelManager {
         val olcrtc2: Boolean = true,
     )
 
+    /** Локальный SOCKS для HTTP (app disallow → LTE HB через peer, не underlying nip.io). */
+    data class SocksEndpoint(
+        val host: String,
+        val port: Int,
+        val user: String,
+        val pass: String,
+    )
+
     private val _running = MutableStateFlow(false)
     val running: StateFlow<Boolean> = _running.asStateFlow()
     private val _tunnelReady = MutableStateFlow(false)
@@ -116,6 +124,18 @@ object OlcrtcTunnelManager {
     }
 
     fun lastConfigJson(): String? = cachedConfigJson
+
+    fun activeSocksEndpoint(): SocksEndpoint? {
+        val p = activeParams ?: return null
+        if (!_tunnelReady.value || !_running.value) return null
+        if (p.socksUser.isBlank() || p.socksPass.isBlank()) return null
+        return SocksEndpoint(
+            host = p.socksHost.ifBlank { "127.0.0.1" },
+            port = p.socksPort,
+            user = p.socksUser,
+            pass = p.socksPass,
+        )
+    }
 
     fun setSessionDeadHandler(handler: ((String) -> Unit)?) {
         sessionDeadHandler = handler
@@ -1280,61 +1300,174 @@ object OlcrtcTunnelManager {
         return false
     }
 
-    /** SOCKS5 CONNECT + optional RFC1929 user/pass. */
-    private fun socksDialOnce(params: Params, domain: String, soTimeoutMs: Int): Boolean {
-        val host = params.socksHost
-        val port = params.socksPort
-        val domainBytes = domain.toByteArray(Charsets.US_ASCII)
-        if (domainBytes.size > 255) return false
-        val needAuth = params.socksUser.isNotBlank()
+    /**
+     * TCP через локальный SOCKS5 (RFC1929) к destHost:destPort.
+     * Для HTTP API с LTE: app в disallow → underlying режется whitelist,
+     * а HTTP через SOCKS идёт peer → exit → nip.io.
+     */
+    fun openSocksTcp(
+        destHost: String,
+        destPort: Int,
+        soTimeoutMs: Int = 12_000,
+    ): Socket? {
+        val p = activeParams ?: return null
+        if (!_tunnelReady.value || !_running.value) return null
+        if (destHost.isBlank() || destPort !in 1..65535) return null
         return try {
-            Socket().use { s ->
-                s.soTimeout = soTimeoutMs
-                s.connect(InetSocketAddress(host, port), 800)
-                val out = s.getOutputStream()
-                val inp = s.getInputStream()
-                out.write(
-                    if (needAuth) byteArrayOf(0x05, 0x01, 0x02) else byteArrayOf(0x05, 0x01, 0x00),
-                )
-                val greet = ByteArray(2)
-                if (inp.read(greet) < 2 || greet[0] != 0x05.toByte()) return false
-                if (needAuth) {
-                    if (greet[1] != 0x02.toByte()) return false
-                    val ub = params.socksUser.toByteArray(Charsets.UTF_8)
-                    val pb = params.socksPass.toByteArray(Charsets.UTF_8)
-                    if (ub.size > 255 || pb.size > 255) return false
-                    val auth = ByteArray(3 + ub.size + pb.size)
-                    auth[0] = 0x01
-                    auth[1] = ub.size.toByte()
-                    System.arraycopy(ub, 0, auth, 2, ub.size)
-                    auth[2 + ub.size] = pb.size.toByte()
-                    System.arraycopy(pb, 0, auth, 3 + ub.size, pb.size)
-                    out.write(auth)
-                    val authResp = ByteArray(2)
-                    if (inp.read(authResp) < 2 ||
-                        authResp[0] != 0x01.toByte() ||
-                        authResp[1] != 0x00.toByte()
-                    ) {
-                        return false
-                    }
-                } else if (greet[1] != 0x00.toByte()) {
-                    return false
-                }
-                val req = ByteArray(5 + domainBytes.size + 2)
-                req[0] = 0x05
-                req[1] = 0x01
-                req[3] = 0x03
-                req[4] = domainBytes.size.toByte()
-                System.arraycopy(domainBytes, 0, req, 5, domainBytes.size)
-                val p = 5 + domainBytes.size
-                req[p] = 0x01
-                req[p + 1] = 0xBB.toByte() // 443
-                out.write(req)
-                val resp = ByteArray(2)
-                inp.read(resp) >= 2 && resp[1] == 0x00.toByte()
-            }
+            socksConnect(p, destHost, destPort, soTimeoutMs)
+        } catch (e: Exception) {
+            DebugLog.w("OlcrtcTunnel", "openSocksTcp ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+    }
+
+    /** SOCKS5 CONNECT + optional RFC1929 user/pass (probe: connect then close). */
+    private fun socksDialOnce(
+        params: Params,
+        domain: String,
+        soTimeoutMs: Int,
+        destPort: Int = 443,
+    ): Boolean {
+        return try {
+            socksConnect(params, domain, destPort, soTimeoutMs)?.use { true } ?: false
         } catch (_: Exception) {
             false
+        }
+    }
+
+    /** SOCKS5 CONNECT; caller owns returned Socket. */
+    private fun socksConnect(
+        params: Params,
+        domain: String,
+        destPort: Int,
+        soTimeoutMs: Int,
+    ): Socket? {
+        val host = params.socksHost.ifBlank { "127.0.0.1" }
+        val port = params.socksPort
+        val ipv4 = runCatching {
+            val m = Regex("""^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$""").matchEntire(domain.trim())
+            if (m == null) null
+            else {
+                val octets = m.groupValues.drop(1).map { it.toInt() }
+                if (octets.all { it in 0..255 }) octets.map { it.toByte() }.toByteArray() else null
+            }
+        }.getOrNull()
+        val domainBytes = if (ipv4 == null) domain.toByteArray(Charsets.US_ASCII) else null
+        if (ipv4 == null && (domainBytes == null || domainBytes.isEmpty() || domainBytes.size > 255)) {
+            return null
+        }
+        val needAuth = params.socksUser.isNotBlank()
+        return try {
+            val s = Socket()
+            s.soTimeout = soTimeoutMs
+            s.connect(InetSocketAddress(host, port), 2_000)
+            val out = s.getOutputStream()
+            val inp = s.getInputStream()
+            out.write(
+                if (needAuth) byteArrayOf(0x05, 0x01, 0x02) else byteArrayOf(0x05, 0x01, 0x00),
+            )
+            val greet = ByteArray(2)
+            if (inp.read(greet) < 2 || greet[0] != 0x05.toByte()) {
+                s.close()
+                return null
+            }
+            if (needAuth) {
+                if (greet[1] != 0x02.toByte()) {
+                    s.close()
+                    return null
+                }
+                val ub = params.socksUser.toByteArray(Charsets.UTF_8)
+                val pb = params.socksPass.toByteArray(Charsets.UTF_8)
+                if (ub.size > 255 || pb.size > 255) {
+                    s.close()
+                    return null
+                }
+                val auth = ByteArray(3 + ub.size + pb.size)
+                auth[0] = 0x01
+                auth[1] = ub.size.toByte()
+                System.arraycopy(ub, 0, auth, 2, ub.size)
+                auth[2 + ub.size] = pb.size.toByte()
+                System.arraycopy(pb, 0, auth, 3 + ub.size, pb.size)
+                out.write(auth)
+                val authResp = ByteArray(2)
+                if (inp.read(authResp) < 2 ||
+                    authResp[0] != 0x01.toByte() ||
+                    authResp[1] != 0x00.toByte()
+                ) {
+                    s.close()
+                    return null
+                }
+            } else if (greet[1] != 0x00.toByte()) {
+                s.close()
+                return null
+            }
+            val req = if (ipv4 != null) {
+                val r = ByteArray(4 + 4 + 2)
+                r[0] = 0x05
+                r[1] = 0x01
+                r[3] = 0x01
+                System.arraycopy(ipv4, 0, r, 4, 4)
+                r[8] = ((destPort ushr 8) and 0xff).toByte()
+                r[9] = (destPort and 0xff).toByte()
+                r
+            } else {
+                val db = domainBytes!!
+                val r = ByteArray(5 + db.size + 2)
+                r[0] = 0x05
+                r[1] = 0x01
+                r[3] = 0x03
+                r[4] = db.size.toByte()
+                System.arraycopy(db, 0, r, 5, db.size)
+                val p = 5 + db.size
+                r[p] = ((destPort ushr 8) and 0xff).toByte()
+                r[p + 1] = (destPort and 0xff).toByte()
+                r
+            }
+            out.write(req)
+            val resp = ByteArray(10)
+            var n = 0
+            while (n < 4) {
+                val r = inp.read(resp, n, 4 - n)
+                if (r < 0) {
+                    s.close()
+                    return null
+                }
+                n += r
+            }
+            if (resp[1] != 0x00.toByte()) {
+                s.close()
+                return null
+            }
+            val atyp = resp[3].toInt() and 0xff
+            val rest = when (atyp) {
+                0x01 -> 4 + 2
+                0x03 -> {
+                    val lenB = ByteArray(1)
+                    if (inp.read(lenB) < 1) {
+                        s.close()
+                        return null
+                    }
+                    (lenB[0].toInt() and 0xff) + 2
+                }
+                0x04 -> 16 + 2
+                else -> {
+                    s.close()
+                    return null
+                }
+            }
+            var skip = 0
+            val buf = ByteArray(rest.coerceAtMost(64))
+            while (skip < rest) {
+                val r = inp.read(buf, 0, (rest - skip).coerceAtMost(buf.size))
+                if (r < 0) {
+                    s.close()
+                    return null
+                }
+                skip += r
+            }
+            s
+        } catch (_: Exception) {
+            null
         }
     }
 

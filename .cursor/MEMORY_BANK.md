@@ -623,6 +623,33 @@ cd pc; npm install; npm run dev
 - Классификация в `hive_incidents.py` дополнена security-категориями (`security-auth-abuse`, `security-probing`) с чеклистом: проверка повторяющихся IP/UA, host/path, решение через nginx/фаервол/rate-limit.
 - Деплой: `deploy_api.py` обновлён (добавлены `hive_incidents.py`, `admin_host_guard.py`, дополнительные `hive_*` сервисы), прод health после деплоя `200`.
 
+### 2026-08-14 — Авто-сброс «залипшего online» устройств
+
+- Симптом: в Улье и в онлайн-метриках могли висеть «хвосты» (`is_connected=true`), если клиент пропал без `disconnect`/heartbeat.
+- Фикс: в `app/services/hive_cell_maintenance_loop.py` добавлен периодический вызов `clear_stale_online_status()` на каждом цикле обслуживания сот.
+- Правило offline: устройство переводится в offline, если `last_connected` старше `SESSION_ONLINE_TIMEOUT_MINUTES` (по умолчанию 10 минут).
+- Эффект: онлайн по сотам и общий online в админке сходится с фактом даже после сетевых отвалов/крашей клиента.
+- Деплой: выполнен через `backend/scripts/deploy_api.py`, API после рестарта отвечает `{"status":"ok","version":"1.0.0"}`.
+
+### 2026-08-14 — Улей: heartbeat звонка не должен «возвращать» device на Соту 1/2
+
+- Наблюдение: при активном VK/olcrtc звонке устройство уходило в online на Соте 1/2, хотя WDTT spill на эти соты выключен.
+- Корень: `olcrtc2` heartbeat в `_touch_devices_online()` принудительно перезаписывал `Device.cell_id = room.cell_id`.
+- Фикс: в `app/services/olcrtc2_assign.py` смена `cell_id` теперь только если у устройства `cell_id` ещё пустой (`None`), существующая WDTT-привязка (queen/worker) не перетирается.
+- Эффект: факт звонка остаётся online, но это больше не выглядит как обратный WDTT-баланс на 1/2.
+- Деплой: `backend/scripts/deploy_api.py`, health после рестарта `200/ok`.
+
+### 2026-08-15 — Burst warm при массовом входе (anti "нет свободной комнаты")
+
+- Проблема: при `warm=0/низком warm` и одновременных коннектах assign мог временно отдавать `Нет свободных комнат`, пока агент не успевал пополнить пул.
+- Фикс в `app/services/olcrtc2_assign.py`:
+  - добавлен трекинг `pool-denied` в коротком окне (`25с`);
+  - если накопилось `>=2` deny по провайдеру, включается burst-режим warm на `180с`;
+  - burst даёт `+1` к warm-цели (авто-откат после hold), чтобы сгладить входной шторм без постоянного большого idle.
+- Дополнительно: `TELEMOST_WARM_PER_DT_CAP` поднят до `2` (базовый warm остаётся 1/dt, но появляется запас для burst).
+- Ожидаемый эффект: меньше отказов в пике, при этом idle CPU не держится постоянно на повышенном уровне.
+- Деплой: `backend/scripts/deploy_api.py`, API health после рестарта `ok`.
+
 ### 2026-08-14 — ADB: первая прогрузка TM Android ~20с
 
 - Устройство: Vivo V2520A (`10AFB105UN003QC`), не Memu.

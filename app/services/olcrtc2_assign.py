@@ -9,6 +9,7 @@ import logging
 import secrets
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,6 +27,8 @@ from app.services.olcrtc2_cell_units import (
 )
 from app.services.olcrtc2_create import create_olcrtc2_room
 from app.services.olcrtc2_settings import (
+    TELEMOST_WARM_PER_DT_CAP,
+    WBSTREAM_WARM_PER_DT_CAP,
     denied_config,
     load_olcrtc2_settings,
     room_to_public_config,
@@ -62,6 +65,13 @@ _claim_locks_guard = asyncio.Lock()
 # first failure per (fp,provider,room) is soft (sticky clear only), second in window is hard teardown
 _failure_first_seen_at: dict[str, float] = {}
 FAILURE_HARD_ESCALATE_SEC = 25.0
+# Burst warm: при серии pool-denied временно повышаем warm-цель и затем авто-отпускаем.
+BURST_DENY_WINDOW_SEC = 20.0
+BURST_DENY_THRESHOLD = 3
+BURST_HOLD_SEC = 120.0
+BURST_WARM_BONUS_BY_PROVIDER = {"telemost": 1, "wbstream": 1}
+_pool_denied_events: deque[tuple[float, str, str]] = deque(maxlen=512)
+_burst_until_by_provider: dict[str, float] = {}
 
 
 def _now() -> datetime:
@@ -84,6 +94,45 @@ def _max_rooms_for_provider(provider: str, *, target_online: int, warm_per_dt: i
     seats = max(0, int(target_online or 0))
     occupied = (seats + max_c - 1) // max_c
     return occupied + 2 * max(0, int(warm_per_dt or 0))
+
+
+def _note_pool_denied(provider: str, device_type: str = "") -> None:
+    prov = _norm_prov(provider)
+    dt = _norm_dt(device_type)
+    now = time.time()
+    _pool_denied_events.append((now, prov, dt))
+    cutoff = now - BURST_DENY_WINDOW_SEC
+    recent = 0
+    for ts, p, _ in _pool_denied_events:
+        if p == prov and ts >= cutoff:
+            recent += 1
+    if recent >= BURST_DENY_THRESHOLD:
+        prev = _burst_until_by_provider.get(prov, 0.0)
+        until = now + BURST_HOLD_SEC
+        _burst_until_by_provider[prov] = max(prev, until)
+        logger.warning(
+            "olcrtc2 burst warm ON provider=%s recent_denied=%s hold=%ss",
+            prov,
+            recent,
+            int(BURST_HOLD_SEC),
+        )
+
+
+def _warm_target_with_burst(settings: dict[str, Any], provider: str) -> int:
+    base = warm_pool_for(settings, provider)
+    prov = _norm_prov(provider)
+    now = time.time()
+    until = _burst_until_by_provider.get(prov, 0.0)
+    if until <= now:
+        _burst_until_by_provider.pop(prov, None)
+        return base
+    bonus = int(BURST_WARM_BONUS_BY_PROVIDER.get(prov, 1) or 0)
+    target = max(0, base + bonus)
+    if prov == "telemost":
+        return min(TELEMOST_WARM_PER_DT_CAP, target)
+    if prov == "wbstream":
+        return min(WBSTREAM_WARM_PER_DT_CAP, target)
+    return target
 
 
 async def _count_provider_rooms(db: AsyncSession, provider: str) -> int:
@@ -257,12 +306,23 @@ async def _touch_devices_online(
             q = q.where(Device.device_type == dt)
         devices = (await db.execute(q)).scalars().all()
         now = _now()
+        queen_id: uuid.UUID | None = None
         for d in devices:
             d.is_connected = True
             d.last_connected = now
-            if cell_id and d.cell_id != cell_id:
-                # Для olcrtc сессий фиксируем реальную соту, иначе Hive может показывать 0 online.
+            if cell_id and d.cell_id is None:
+                # Не перетираем текущую WDTT-привязку соты (queen/worker),
+                # чтобы heartbeat звонка не выглядел как возврат балансировки на 1/2.
                 d.cell_id = cell_id
+            elif cell_id and d.cell_id == cell_id:
+                # Одноразово лечим старые записи, которые уже были "утащены" на olcrtc-соту.
+                if queen_id is None:
+                    from app.services.hive_service import ensure_queen_cell
+
+                    queen = await ensure_queen_cell(db)
+                    queen_id = queen.id
+                if queen_id:
+                    d.cell_id = queen_id
     except Exception:
         logger.debug("olcrtc2 device touch failed", exc_info=True)
 
@@ -716,7 +776,7 @@ async def ensure_warm_pool(db: AsyncSession) -> dict[str, Any]:
     headroom: dict[str, int] = {}
     combos: list[tuple[str, str, int]] = []
     for prov in enabled_providers(settings):
-        target = warm_pool_for(settings, prov)
+        target = _warm_target_with_burst(settings, prov)
         targets[prov] = target
         cap = _max_rooms_for_provider(
             prov, target_online=target_online, warm_per_dt=target
@@ -1070,6 +1130,7 @@ async def assign_public_config(
                 fingerprint=fp,
                 auth_token=row.auth_token or "",
             )
+        _note_pool_denied(prov, dt)
         return denied_config(
             settings,
             device_type=dt,

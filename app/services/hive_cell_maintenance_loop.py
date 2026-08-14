@@ -19,8 +19,13 @@ async def hive_cell_maintenance_loop() -> None:
             from app.database import AsyncSessionLocal
             from app.services.hive_cell_agent_auto import auto_upgrade_cell_agents
             from app.services.hive_cell_sync import sync_all_cell_manifests
+            from app.services.vpn_service import clear_stale_online_status
 
             async with AsyncSessionLocal() as db:
+                # Авто-чистка "залипшего online", если клиент исчез без корректного disconnect.
+                stale_off = await clear_stale_online_status(db)
+                if stale_off:
+                    logger.info("Hive stale-online cleanup: %s device(s) marked offline", stale_off)
                 agent_stats = await auto_upgrade_cell_agents(db)
                 if agent_stats.get("upgraded"):
                     logger.info("Hive cell-agent sync: upgraded %s cell(s)", agent_stats["upgraded"])

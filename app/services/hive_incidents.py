@@ -25,14 +25,14 @@ def _classify(msg: str) -> tuple[str, str, list[str]]:
     raw = (msg or "").lower()
     checks: list[str] = []
 
-    if any(x in raw for x in ("rate limit", "too many attempts", "bad_code", "mfa", "invalid_challenge", "admin host guard", "forbidden host")):
+    if any(x in raw for x in ("rate limit", "too many attempts", "bad_code", "mfa", "invalid_challenge")):
         checks = [
             "Проверить источник IP и частоту повторов (bruteforce/probing).",
             "При повторе — временно блокировать IP на nginx/фаерволе.",
         ]
         return "security-auth-abuse", "Подозрение на bruteforce/проброс авторизации", checks
 
-    if any(x in raw for x in ("scan", "probe", "bot", "/wp-", "/phpmyadmin", "/admin", "not found")):
+    if any(x in raw for x in ("scan", "probe", "bot", "/wp-", "/phpmyadmin", "/admin", "not found", "adminhostguard", "forbidden host")):
         checks = [
             "Проверить access.log nginx и user-agent/ip повторов.",
             "Ограничить доступ по IP/гео или ужесточить rate limits.",

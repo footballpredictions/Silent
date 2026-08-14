@@ -52,6 +52,7 @@ class HiveCellUpdate(BaseModel):
     max_clients: Optional[int] = Field(default=None, ge=0, le=10000)
     priority: Optional[int] = Field(default=None, ge=0, le=1000)
     status: Optional[str] = Field(default=None, pattern="^(active|draining|offline)$")
+    accepts_wdtt: Optional[bool] = None
     wg_public_key: Optional[str] = Field(default=None, min_length=40, max_length=512)
     public_ip: Optional[str] = Field(default=None, min_length=3, max_length=255)
     link_capacity_mbps: Optional[float] = Field(default=None, ge=0, le=100000)
@@ -72,6 +73,7 @@ class HiveCellResponse(BaseModel):
     online_count: int
     assigned_devices: int
     status: str
+    accepts_wdtt: bool = True
     priority: int
     last_seen_at: Optional[datetime]
     last_error: Optional[str]

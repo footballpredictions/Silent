@@ -13,11 +13,21 @@ import asyncio, json
 from sqlalchemy import select
 from app.database import AsyncSessionLocal
 from app.services.olcrtc2_assign import prune_stale_sessions, ensure_warm_pool, pool_stats
+from app.services.olcrtc2_settings import load_olcrtc2_settings, save_olcrtc2_settings
 from app.models.olcrtc2_room import Olcrtc2Room
 from collections import Counter
 
 async def main():
     async with AsyncSessionLocal() as db:
+        cur = await load_olcrtc2_settings(db)
+        await save_olcrtc2_settings(db, {
+            "warm_pool_per_dt": 2,
+            "warm_pool_by_provider": {"telemost": 2, "wbstream": 3},
+        })
+        print("SETTINGS", json.dumps({
+            "warm": (await load_olcrtc2_settings(db)).get("warm_pool_per_dt"),
+            "by": (await load_olcrtc2_settings(db)).get("warm_pool_by_provider"),
+        }))
         print("BEFORE", json.dumps(await pool_stats(db)))
         print("PRUNE", json.dumps(await prune_stale_sessions(db), default=str))
         print("WARM", json.dumps(await ensure_warm_pool(db), default=str))

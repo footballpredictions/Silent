@@ -1,4 +1,4 @@
-"""Bump all olcrtc2 rooms to max_clients=25 (shared pool like 1.0.160)."""
+"""Force occupancy 1:1 — all olcrtc2 rooms max_clients=1 (do NOT bump to 25)."""
 from __future__ import annotations
 
 import sys
@@ -16,7 +16,7 @@ from app.models.olcrtc2_room import Olcrtc2Room
 async def main():
     async with AsyncSessionLocal() as db:
         r = await db.execute(text(
-            "UPDATE olcrtc2_rooms SET max_clients = 25 WHERE COALESCE(max_clients, 0) < 25"
+            "UPDATE olcrtc2_rooms SET max_clients = 1 WHERE COALESCE(max_clients, 0) <> 1"
         ))
         await db.commit()
         rows = (await db.execute(select(Olcrtc2Room))).scalars().all()

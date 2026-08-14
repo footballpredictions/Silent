@@ -200,6 +200,56 @@ async def _list_assignable_cells(db: AsyncSession) -> list[HiveCell]:
     return list(result.scalars().all())
 
 
+async def olcrtc_exit_cell_ips(db: AsyncSession) -> set[str]:
+    """IP сот, занятых olcrtc2 (Телемост/WB) — не WDTT-балансир."""
+    from app.services.olcrtc2_settings import cell_ip_for_provider, load_olcrtc2_settings
+
+    s = await load_olcrtc2_settings(db)
+    ips = {
+        (cell_ip_for_provider(s, "telemost") or "").strip(),
+        (cell_ip_for_provider(s, "wbstream") or "").strip(),
+    }
+    return {ip for ip in ips if ip}
+
+
+def cell_accepts_wdtt_spill(cell: HiveCell, olcrtc_ips: set[str]) -> bool:
+    """Улей — да. Сота olcrtc2 — нет. Остальные (3, 4, …) — да."""
+    if cell.is_queen:
+        return True
+    if getattr(cell, "accepts_wdtt", True) is False:
+        return False
+    ip = (cell.public_ip or "").strip()
+    return ip not in olcrtc_ips
+
+
+async def list_wdtt_spill_workers(db: AsyncSession) -> list[HiveCell]:
+    reserved = await olcrtc_exit_cell_ips(db)
+    return [
+        c
+        for c in await _list_assignable_cells(db)
+        if not c.is_queen and cell_accepts_wdtt_spill(c, reserved)
+    ]
+
+
+async def sync_olcrtc_cells_no_wdtt_spill(db: AsyncSession) -> int:
+    """Пометить Сота 1/2 (olcrtc2 exit) как не-WDTT, чтобы баланс шёл на 3+."""
+    reserved = await olcrtc_exit_cell_ips(db)
+    if not reserved:
+        return 0
+    rows = (await db.execute(select(HiveCell).where(HiveCell.is_queen.is_(False)))).scalars().all()
+    n = 0
+    for cell in rows:
+        ip = (cell.public_ip or "").strip()
+        want = ip not in reserved
+        if bool(getattr(cell, "accepts_wdtt", True)) != want:
+            cell.accepts_wdtt = want
+            n += 1
+    if n:
+        await db.commit()
+        logger.info("Hive: marked %s olcrtc cell(s) accepts_wdtt=false", n)
+    return n
+
+
 async def migrate_devices_to_queen(db: AsyncSession) -> int:
     """Вернуть всех клиентов на Улей (после отключения worker-routing)."""
     queen = await ensure_queen_cell(db)
@@ -260,10 +310,11 @@ async def pick_cell_for_new_device(
         )
         return queen
 
-    workers = [c for c in await _list_assignable_cells(db) if not c.is_queen]
+    await sync_olcrtc_cells_no_wdtt_spill(db)
+    workers = await list_wdtt_spill_workers(db)
     if not workers:
         logger.warning(
-            "Hive: queen overloaded (cpu=%s mem=%s), сот нет — остаёмся на Улье",
+            "Hive: queen overloaded (cpu=%s mem=%s), WDTT-сот нет (1/2 заняты olcrtc) — остаёмся на Улье",
             load_info.get("cpu_percent"),
             load_info.get("memory_percent"),
         )
@@ -474,6 +525,7 @@ def cell_to_response(
         "assigned_devices": assigned_devices,
         "status": cell.status,
         "priority": cell.priority,
+        "accepts_wdtt": bool(cell.is_queen or getattr(cell, "accepts_wdtt", True)),
         "last_seen_at": cell.last_seen_at,
         "last_error": cell.last_error,
         "created_at": cell.created_at,
@@ -546,13 +598,18 @@ async def apply_agent_handshake_to_cell(cell: HiveCell, data: dict) -> None:
 
 
 async def get_hive_summary_extra(db: AsyncSession) -> dict:
+    await sync_olcrtc_cells_no_wdtt_spill(db)
     accepting, queen_load = queen_accepting_new_vpn()
-    workers = [c for c in await _list_assignable_cells(db) if not c.is_queen]
+    all_workers = [c for c in await _list_assignable_cells(db) if not c.is_queen]
+    spill_workers = await list_wdtt_spill_workers(db)
     assignable = await _list_assignable_cells(db)
+    reserved = await olcrtc_exit_cell_ips(db)
     total_online = 0
     total_capacity = 0
     full_cells = 0
     for cell in assignable:
+        if not cell.is_queen and not cell_accepts_wdtt_spill(cell, reserved):
+            continue
         online = await count_online_on_cell(db, cell.id)
         cell_load = queen_load if cell.is_queen else None
         cap = await max_online_for_cell(db, cell, load=cell_load)
@@ -560,14 +617,16 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
         total_capacity += cap
         if online >= cap:
             full_cells += 1
+    wdtt_nodes = 1 + len(spill_workers)  # queen + spill
     return {
         "queen_load": queen_load,
         "queen_accepting_vpn": accepting,
-        "worker_cells": len(workers),
+        "worker_cells": len(spill_workers),
+        "olcrtc_cells": len(all_workers) - len(spill_workers),
         "total_online_vpn": total_online,
         "total_capacity_online": total_capacity,
         "full_cells": full_cells,
-        "all_cells_full": bool(assignable) and full_cells >= len(assignable),
+        "all_cells_full": wdtt_nodes > 0 and full_cells >= wdtt_nodes,
         "cpu_threshold": settings.HIVE_CPU_PERCENT_THRESHOLD,
         "mem_threshold": settings.HIVE_MEM_PERCENT_THRESHOLD,
         "bandwidth_threshold": settings.HIVE_BANDWIDTH_PERCENT_THRESHOLD,
@@ -618,13 +677,16 @@ async def rebalance_overloaded_cells(db: AsyncSession) -> dict:
     if not settings.HIVE_WORKER_ROUTING_ENABLED:
         return {**empty, "routing_off": True}
 
+    await sync_olcrtc_cells_no_wdtt_spill(db)
+    reserved = await olcrtc_exit_cell_ips(db)
     cells = await _list_assignable_cells(db)
     queen = await ensure_queen_cell(db)
     _, queen_load = queen_accepting_new_vpn()
-    workers = [c for c in cells if not c.is_queen]
+    all_workers = [c for c in cells if not c.is_queen]
+    workers = [c for c in all_workers if cell_accepts_wdtt_spill(c, reserved)]
 
     worker_loads: dict[uuid.UUID, dict | None] = {}
-    for w in workers:
+    for w in all_workers:
         worker_loads[w.id] = await fetch_worker_cell_load(w)
 
     states: dict[uuid.UUID, dict] = {}
@@ -636,15 +698,24 @@ async def rebalance_overloaded_cells(db: AsyncSession) -> dict:
 
     moved = blocked = hardware = returned = 0
 
+    def _wdtt_targets(src_id):
+        found = [
+            st
+            for st in states.values()
+            if st["cell"].id != src_id
+            and st["online"] < st["cap"]
+            and st["cell"].status == "active"
+            and (st["cell"].is_queen or cell_accepts_wdtt_spill(st["cell"], reserved))
+        ]
+        found.sort(key=lambda st: (load_stress_score(st.get("load")), st["online"]))
+        return found
+
     for src in cells:
         src_state = states[src.id]
         overload = src_state["online"] - src_state["cap"]
         if overload <= 0:
             continue
-        free_targets = [
-            st for st in states.values()
-            if st["cell"].id != src.id and st["online"] < st["cap"] and st["cell"].status == "active"
-        ]
+        free_targets = _wdtt_targets(src.id)
         free_targets.sort(key=lambda st: (load_stress_score(st.get("load")), st["online"]))
         for _ in range(overload):
             if not free_targets:
@@ -707,6 +778,18 @@ async def rebalance_overloaded_cells(db: AsyncSession) -> dict:
                     candidate.cell_id = queen.id
                     moved += 1
                     returned += 1
+
+    # WDTT-клиенты не должны сидеть на olcrtc-сотах 1/2.
+    for src in all_workers:
+        if cell_accepts_wdtt_spill(src, reserved):
+            continue
+        while True:
+            candidate = await _pop_offline_device(db, src.id)
+            if not candidate:
+                break
+            candidate.cell_id = queen.id
+            moved += 1
+            returned += 1
 
     if moved > 0:
         await db.commit()

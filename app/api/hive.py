@@ -313,6 +313,8 @@ async def update_cell(
         cell.priority = req.priority
     if req.status is not None:
         cell.status = req.status
+    if req.accepts_wdtt is not None and not cell.is_queen:
+        cell.accepts_wdtt = bool(req.accepts_wdtt)
     if req.wg_public_key is not None and not cell.is_queen:
         cell.wg_public_key = req.wg_public_key.strip()
     if req.public_ip is not None and not cell.is_queen:

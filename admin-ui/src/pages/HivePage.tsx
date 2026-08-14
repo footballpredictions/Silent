@@ -28,6 +28,7 @@ interface HiveCell {
   online_count: number
   assigned_devices: number
   status: string
+  accepts_wdtt?: boolean
   last_error: string | null
   has_ssh_password?: boolean
   load?: CellLoad
@@ -373,7 +374,7 @@ export default function HivePage({ token }: { token: string }) {
           <p className="text-[#aaa] font-medium mb-1">Когда срабатывает балансировка</p>
           <p>
             Перегруз — если CPU ≥ {summary.cpu_threshold}%, RAM ≥ {summary.mem_threshold}% или канал ≥ {summary.bandwidth_threshold}%.
-            Тогда новые VPN идут на соты, офлайн-устройства переезжают фоном каждые ~30 с.
+            Тогда новые VPN идут на соты <b>3, 4, …</b> (WDTT-баланс). Соты 1 и 2 с olcrtc2 в баланс не входят.
             Онлайн-сессии не рвутся — смена ноды при следующем запросе конфига в приложении.
           </p>
         </div>
@@ -419,6 +420,9 @@ export default function HivePage({ token }: { token: string }) {
                       <WifiOff className="w-4 h-4 text-[#555]" />}
                     <h2 className="font-semibold">{cell.name}</h2>
                     {cell.is_queen && <span className="text-xs bg-amber-950 text-amber-300 px-2 py-0.5 rounded">Улей</span>}
+                    {!cell.is_queen && cell.accepts_wdtt === false && (
+                      <span className="text-xs bg-violet-950 text-violet-300 px-2 py-0.5 rounded">olcrtc — не WDTT-баланс</span>
+                    )}
                     <span className="text-xs text-[#888]">{statusLabel[cell.status] || cell.status}</span>
                   </div>
                   <p className="text-sm text-[#888] mt-1 font-mono">{cell.public_ip}:{cell.wdtt_port}</p>

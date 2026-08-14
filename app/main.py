@@ -226,6 +226,18 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "ALTER TABLE hive_cells ADD COLUMN IF NOT EXISTS ssh_password_enc TEXT"
         ))
+        await conn.execute(text(
+            "ALTER TABLE hive_cells ADD COLUMN IF NOT EXISTS accepts_wdtt BOOLEAN NOT NULL DEFAULT TRUE"
+        ))
+        once_olcrtc_wdtt = await conn.execute(text(
+            "INSERT INTO hive_schema_migrations (name) VALUES ('olcrtc_cells_no_wdtt_spill_v1') "
+            "ON CONFLICT (name) DO NOTHING RETURNING name"
+        ))
+        if once_olcrtc_wdtt.rowcount:
+            await conn.execute(text(
+                "UPDATE hive_cells SET accepts_wdtt = FALSE "
+                "WHERE is_queen = false AND public_ip IN ('87.58.213.193', '78.17.74.27')"
+            ))
         once_auto_cap = await conn.execute(text(
             "INSERT INTO hive_schema_migrations (name) VALUES ('cell_auto_capacity_v1') "
             "ON CONFLICT (name) DO NOTHING RETURNING name"

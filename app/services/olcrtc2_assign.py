@@ -1,4 +1,4 @@
-"""olcrtc 2.0 assign — pool как 1.0.160: shared room (max_clients≈25),
+"""olcrtc 2.0 assign — occupancy 1:1 (max_clients=1 TM и WB).
 sticky по fingerprint, leave = снять sticky (комнату НЕ убивать).
 failure/carrier-dead = teardown. Exit only on Hive cell.
 """
@@ -28,6 +28,7 @@ from app.services.olcrtc2_settings import (
     denied_config,
     load_olcrtc2_settings,
     room_to_public_config,
+    warm_pool_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,9 +38,11 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_STALE_SEC = 300
 # Не teardown «пустых» warm, если комната недавно была healthy (клиент ещё на peer).
 RECENT_HEALTHY_KEEP_SEC = 900
-DEFAULT_MAX_CLIENTS = 25  # legacy shared (не WB)
-TELEMOST_MAX_CLIENTS = 3  # vp8 узкий: >3 клиентов = «подключено, ничего не грузит»
-# WB тоже vp8channel: shared room убивает peer у соседей через минуты.
+# Excess idle (stickies=0): 15 мин keep оставлял 40 unit после inflate warm=20.
+EXCESS_WARM_KEEP_SEC = 90
+# Occupancy 1:1 — shared vp8channel рвёт соседей (TM и WB).
+DEFAULT_MAX_CLIENTS = 1
+TELEMOST_MAX_CLIENTS = 1
 WBSTREAM_MAX_CLIENTS = 1
 NO_ROOM_DETAIL = (
     "Нет свободных комнат olcrtc2. Агент пополняет warm-пул — повторите через 10–30 с."
@@ -459,8 +462,8 @@ async def ensure_session_room(
                 await db.delete(st)
                 await db.commit()
 
-        # Shared pool (1.0.160): комната с online < max_clients, не только empty.
-        # Claim под lock + FOR UPDATE, иначе concurrent переполнит max_clients.
+        # Occupancy 1:1: только пустая комната (stickies == 0), не shared max=3/25.
+        # Claim под lock + FOR UPDATE, иначе concurrent посадит 2 fp на одну room.
         for _warm_try in range(6):
             claim = await _claim_lock(f"{prov}:{dt}")
             reserved: Olcrtc2Room | None = None
@@ -472,13 +475,12 @@ async def ensure_session_room(
                             Olcrtc2Room.provider == prov,
                             Olcrtc2Room.device_type == dt,
                             Olcrtc2Room.status == "active",
-                            Olcrtc2Room.online_count < Olcrtc2Room.max_clients,
                         )
                         .order_by(
                             Olcrtc2Room.online_count.asc(),
                             Olcrtc2Room.created_at.asc(),
                         )
-                        .limit(12)
+                        .limit(16)
                         .with_for_update(skip_locked=True)
                     )
                 ).scalars().all()
@@ -493,10 +495,10 @@ async def ensure_session_room(
                         ).scalar()
                         or 0
                     )
-                    max_c = int(cand.max_clients or 0)
-                    if max_c < 1:
-                        max_c = _max_clients_for(prov)
-                    if stickies >= max_c:
+                    want_max = _max_clients_for(prov)
+                    if int(cand.max_clients or 0) != want_max:
+                        cand.max_clients = want_max
+                    if stickies > 0:
                         cand.online_count = stickies
                         continue
                     await _save_sticky(db, fp, prov, dt, cand.id, commit=False)
@@ -568,7 +570,6 @@ async def ensure_warm_pool(db: AsyncSession) -> dict[str, Any]:
     settings = await load_olcrtc2_settings(db)
     if not settings.get("enabled") or not settings.get("agent_enabled"):
         return {"ok": False, "skipped": "disabled"}
-    target = int(settings.get("warm_pool_per_dt") or 3)
     healed = 0
     torn = 0
     # Probe-only heal (без re-apply+sleep на всех комнатах — блокировало /olcrtc2-config).
@@ -662,17 +663,18 @@ async def ensure_warm_pool(db: AsyncSession) -> dict[str, Any]:
         torn += 1
         logger.warning("olcrtc2 warming stale tear unit=%s age=%.0fs", room.unit_name, age)
 
-    if target <= 0:
-        return {"ok": True, "created": 0, "healed": healed, "torn": torn, "target": 0}
     from app.services.olcrtc2_settings import enabled_providers
 
     target_online = int(settings.get("target_online") or 150)
     created = 0
     by_key: dict[str, int] = {}
+    targets: dict[str, int] = {}
     budget = WARM_CREATE_BUDGET
     headroom: dict[str, int] = {}
     combos: list[tuple[str, str, int]] = []
     for prov in enabled_providers(settings):
+        target = warm_pool_for(settings, prov)
+        targets[prov] = target
         cap = _max_rooms_for_provider(
             prov, target_online=target_online, warm_per_dt=target
         )
@@ -682,10 +684,15 @@ async def ensure_warm_pool(db: AsyncSession) -> dict[str, Any]:
             free = await _count_free_rooms(db, provider=prov, device_type=dt)
             by_key[f"{prov}:{dt}"] = free
             combos.append((prov, dt, free))
+    if not any(targets.values()):
+        return {"ok": True, "created": 0, "healed": healed, "torn": torn, "target": 0}
     combos.sort(key=lambda x: x[2])
     for prov, dt, free in combos:
         if budget <= 0:
             break
+        target = targets.get(prov, 0)
+        if target <= 0:
+            continue
         storage, wb_token = await _resolve_storage(db, prov)
         while free < target and budget > 0:
             if headroom.get(prov, 0) <= 0:
@@ -713,7 +720,7 @@ async def ensure_warm_pool(db: AsyncSession) -> dict[str, Any]:
         "healed_ok": healed,
         "torn": torn,
         "free": by_key,
-        "target": target,
+        "target": targets,
         "target_online": target_online,
         "providers": enabled_providers(settings),
     }
@@ -1037,7 +1044,6 @@ async def prune_stale_sessions(db: AsyncSession) -> dict[str, Any]:
     from datetime import timedelta
 
     settings = await load_olcrtc2_settings(db)
-    warm_target = int(settings.get("warm_pool_per_dt") or 3)
     cutoff = _now() - timedelta(seconds=HEARTBEAT_STALE_SEC)
 
     # 1) Снять протухшие sticky без убийства комнат
@@ -1120,14 +1126,16 @@ async def prune_stale_sessions(db: AsyncSession) -> dict[str, Any]:
 
     for key, rooms in free_kept.items():
         rooms.sort(key=lambda r: r.created_at or _now())
-        keep_n = max(0, warm_target)
+        prov = (key.split(":")[0] if ":" in key else "") or "telemost"
+        keep_n = max(0, warm_pool_for(settings, prov))
         excess = rooms[keep_n:]
         for room in excess:
             # Клиент мог потерять sticky (HB fail / баг leave), но peer ещё жив.
+            # Для idle excess 15 мин keep = Сота1 на 100% после inflate warm=20.
             healthy_at = room.last_healthy_at or room.created_at
             if healthy_at:
                 age = (_now() - healthy_at).total_seconds()
-                if age < RECENT_HEALTHY_KEEP_SEC:
+                if age < EXCESS_WARM_KEEP_SEC:
                     logger.info(
                         "olcrtc2 prune keep recent-healthy unit=%s age=%.0fs (skip excess tear)",
                         room.unit_name,
@@ -1144,7 +1152,10 @@ async def prune_stale_sessions(db: AsyncSession) -> dict[str, Any]:
         "ok": True,
         "torn_down": torn,
         "sticky_cleared": sticky_cleared,
-        "warm_target": warm_target,
+        "warm_target": {
+            "telemost": warm_pool_for(settings, "telemost"),
+            "wbstream": warm_pool_for(settings, "wbstream"),
+        },
     }
 
 

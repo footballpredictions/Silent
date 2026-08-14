@@ -40,8 +40,7 @@ UNIT = textwrap.dedent(
     ExecStart={REMOTE}/olcrtc2-srv
     Restart=on-failure
     RestartSec=5
-    MemoryMax=512M
-    CPUQuota=50%
+    MemoryMax=1G
     LimitNOFILE=65535
 
     [Install]

@@ -30,6 +30,8 @@ class HiveCell(Base):
     link_capacity_mbps: Mapped[float | None] = mapped_column(Float, nullable=True)
     # pending | active | draining | offline | error
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    # False: сота под olcrtc2 (Сота 1/2) — WDTT-баланс на неё не льём.
+    accepts_wdtt: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[int] = mapped_column(Integer, default=100)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

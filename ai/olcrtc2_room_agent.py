@@ -25,16 +25,22 @@ async def monitor_loop() -> None:
             async with AsyncSessionLocal() as db:
                 settings = await load_olcrtc2_settings(db)
                 if not _scale_defaults_done:
-                    from app.services.olcrtc2_settings import save_olcrtc2_settings
+                    from app.services.olcrtc2_settings import (
+                        TELEMOST_WARM_PER_DT_CAP,
+                        save_olcrtc2_settings,
+                    )
 
                     patch: dict[str, Any] = {}
-                    if int(settings.get("target_online") or 0) < 150:
-                        patch["target_online"] = 150
-                    if int(settings.get("warm_pool_per_dt") or 0) < 12:
-                        patch["warm_pool_per_dt"] = 20
+                    # Раньше <12 → 20 после каждого restart API → Сота1 100% CPU.
+                    if int(settings.get("warm_pool_per_dt") or 0) > TELEMOST_WARM_PER_DT_CAP:
+                        patch["warm_pool_per_dt"] = TELEMOST_WARM_PER_DT_CAP
+                        patch["warm_pool_by_provider"] = {
+                            "telemost": TELEMOST_WARM_PER_DT_CAP,
+                            "wbstream": 3,
+                        }
                     if patch:
                         settings = await save_olcrtc2_settings(db, patch)
-                        logger.info("olcrtc2 scale defaults: %s", patch)
+                        logger.info("olcrtc2 shrink warm defaults: %s", patch)
                     _scale_defaults_done = True
                 if settings.get("enabled") and settings.get("agent_enabled"):
                     warm = await ensure_warm_pool(db)
@@ -62,7 +68,8 @@ async def agent_status(db) -> dict[str, Any]:
         "agent_on": bool(settings.get("agent_enabled")),
         "session_mode": True,
         "interval_sec": INTERVAL_SEC,
-        "warm_pool_per_dt": int(settings.get("warm_pool_per_dt") or 20),
+        "warm_pool_per_dt": int(settings.get("warm_pool_per_dt") or 2),
+        "warm_pool_by_provider": settings.get("warm_pool_by_provider") or {},
         "target_online": int(settings.get("target_online") or 150),
         "pool": stats,
         "cell_ip": settings.get("cell_ip"),

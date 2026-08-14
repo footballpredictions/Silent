@@ -489,6 +489,7 @@ class Olcrtc2SettingsRequest(BaseModel):
     providers_enabled: list[str] | None = None
     transport: str | None = None
     warm_pool_per_dt: int | None = None
+    warm_pool_by_provider: dict[str, int] | None = None
     target_online: int | None = None
     generate_key: bool | None = None
 

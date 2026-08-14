@@ -32,6 +32,8 @@ type Settings = {
   cell_provision_url: string
   transport: string
   warm_pool_per_dt: number
+  warm_telemost: number
+  warm_wbstream: number
   target_online: number
   providers_enabled: string[]
   agent?: AgentInfo
@@ -48,9 +50,23 @@ const empty: Settings = {
   cell_ip_wbstream: '78.17.74.27',
   cell_provision_url: 'http://87.58.213.193:9101',
   transport: 'vp8channel',
-  warm_pool_per_dt: 20,
+  warm_pool_per_dt: 2,
+  warm_telemost: 2,
+  warm_wbstream: 3,
   target_online: 150,
   providers_enabled: ['telemost', 'wbstream'],
+}
+
+function warmFromFlags(flags: Record<string, any>): Pick<Settings, 'warm_pool_per_dt' | 'warm_telemost' | 'warm_wbstream'> {
+  const by = flags?.warm_pool_by_provider || {}
+  const legacy = Number(flags?.warm_pool_per_dt ?? 2)
+  const tm = Math.min(2, Number(by.telemost ?? Math.min(legacy, 2)))
+  const wb = Math.min(4, Number(by.wbstream ?? Math.min(legacy, 4)))
+  return {
+    warm_telemost: tm,
+    warm_wbstream: wb,
+    warm_pool_per_dt: Math.max(tm, wb),
+  }
 }
 
 export default function Olcrtc2Panel({ token }: { token: string }) {
@@ -79,7 +95,7 @@ export default function Olcrtc2Panel({ token }: { token: string }) {
         cell_ip_wbstream: flags.cells?.wbstream || empty.cell_ip_wbstream,
         cell_provision_url: flags.cell_provision_url || empty.cell_provision_url,
         transport: flags.transport || 'vp8channel',
-        warm_pool_per_dt: Number(flags.warm_pool_per_dt ?? 20),
+        ...warmFromFlags(flags),
         target_online: Number(flags.target_online ?? 150),
         providers_enabled: Array.isArray(flags.providers_enabled) && flags.providers_enabled.length
           ? flags.providers_enabled
@@ -121,7 +137,8 @@ export default function Olcrtc2Panel({ token }: { token: string }) {
         cells: { telemost: s.cell_ip, wbstream: s.cell_ip_wbstream },
         providers_enabled: s.providers_enabled,
         transport: s.transport,
-        warm_pool_per_dt: s.warm_pool_per_dt,
+        warm_pool_per_dt: Math.max(s.warm_telemost, s.warm_wbstream),
+        warm_pool_by_provider: { telemost: s.warm_telemost, wbstream: s.warm_wbstream },
         target_online: s.target_online,
         ...extra,
       }
@@ -146,7 +163,7 @@ export default function Olcrtc2Panel({ token }: { token: string }) {
         cell_ip_wbstream: flags.cells?.wbstream || empty.cell_ip_wbstream,
         cell_provision_url: flags.cell_provision_url || empty.cell_provision_url,
         transport: flags.transport || 'vp8channel',
-        warm_pool_per_dt: Number(flags.warm_pool_per_dt ?? 20),
+        ...warmFromFlags(flags),
         target_online: Number(flags.target_online ?? 150),
         providers_enabled: Array.isArray(flags.providers_enabled) && flags.providers_enabled.length
           ? flags.providers_enabled
@@ -258,14 +275,25 @@ export default function Olcrtc2Panel({ token }: { token: string }) {
 
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="text-xs text-[#aaa] space-y-1">
-          Запас пустых комнат (PC и Android отдельно)
+          Запас Telemost на PC/Android (Сота 1, idle тяжёлый — макс. 2)
           <input
             type="number"
             min={0}
-            max={40}
+            max={2}
             className="w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2 text-sm text-white"
-            value={s.warm_pool_per_dt}
-            onChange={(e) => setS({ ...s, warm_pool_per_dt: Number(e.target.value || 0) })}
+            value={s.warm_telemost}
+            onChange={(e) => setS({ ...s, warm_telemost: Number(e.target.value || 0) })}
+          />
+        </label>
+        <label className="text-xs text-[#aaa] space-y-1">
+          Запас WB на PC/Android (Сота 2, макс. 4)
+          <input
+            type="number"
+            min={0}
+            max={4}
+            className="w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2 text-sm text-white"
+            value={s.warm_wbstream}
+            onChange={(e) => setS({ ...s, warm_wbstream: Number(e.target.value || 0) })}
           />
         </label>
         <label className="text-xs text-[#aaa] space-y-1">

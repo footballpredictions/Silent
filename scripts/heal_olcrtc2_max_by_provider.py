@@ -1,4 +1,4 @@
-"""Set Telemost max_clients=3, WB=25 (vp8 vs wide channel)."""
+"""Set occupancy 1:1 — Telemost and WB max_clients=1 (shared vp8 kills neighbors)."""
 from __future__ import annotations
 
 import io
@@ -17,10 +17,7 @@ from app.models.olcrtc2_room import Olcrtc2Room
 async def main():
     async with AsyncSessionLocal() as db:
         await db.execute(text(
-            "UPDATE olcrtc2_rooms SET max_clients = 3 WHERE provider = 'telemost'"
-        ))
-        await db.execute(text(
-            "UPDATE olcrtc2_rooms SET max_clients = 25 WHERE provider = 'wbstream' AND COALESCE(max_clients,0) < 25"
+            "UPDATE olcrtc2_rooms SET max_clients = 1 WHERE provider IN ('telemost', 'wbstream')"
         ))
         await db.commit()
         rows = (await db.execute(select(Olcrtc2Room))).scalars().all()

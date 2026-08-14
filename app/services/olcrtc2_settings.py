@@ -25,6 +25,9 @@ DEFAULT_CELL_TELEMOST = "87.58.213.193"  # Сота 1
 DEFAULT_CELL_WB = "78.17.74.27"  # Сота 2
 DEFAULT_CELL_IP = DEFAULT_CELL_TELEMOST
 QUEEN_IP = "132.243.234.162"
+# Сота 1: idle Telemost unit 6–13% CPU. 20×pc + 20×android ≈ 100% на 2 ядрах.
+TELEMOST_WARM_PER_DT_CAP = 2
+WBSTREAM_WARM_PER_DT_CAP = 4
 
 
 def _provision_url(ip: str) -> str:
@@ -53,9 +56,9 @@ def _defaults() -> dict[str, Any]:
         },
         # Какие провайдеры греет агент (assign клиент выбирает сам)
         "providers_enabled": ["telemost", "wbstream"],
-        # Запас готовых пустых комнат на каждый device_type (pc/android).
-        # Не 150 сразу: агент догоняет по мере подключений, запас не даёт «нет комнат».
-        "warm_pool_per_dt": 20,
+        # Запас пустых комнат на device_type. TM idle ≈6–13% CPU/unit — не 20.
+        "warm_pool_per_dt": 2,
+        "warm_pool_by_provider": {"telemost": 2, "wbstream": 3},
         # Цель онлайн на провайдера (WB и Телемост по отдельности, PC+Android вместе).
         "target_online": 150,
     }
@@ -131,6 +134,49 @@ def _normalize_providers_enabled(raw: Any, *, fallback: list[str]) -> list[str]:
                 out.append(pl)
     return out or list(fallback)
 
+
+def _normalize_warm_by_provider(raw: Any, *, fallback: int) -> dict[str, int]:
+    fb = max(0, int(fallback or 2))
+    out = {
+        "telemost": min(fb, TELEMOST_WARM_PER_DT_CAP),
+        "wbstream": min(fb, WBSTREAM_WARM_PER_DT_CAP),
+    }
+    if isinstance(raw, dict):
+        if raw.get("telemost") is not None:
+            try:
+                out["telemost"] = max(0, min(TELEMOST_WARM_PER_DT_CAP, int(raw["telemost"])))
+            except (TypeError, ValueError):
+                pass
+        if raw.get("wbstream") is not None:
+            try:
+                out["wbstream"] = max(0, min(WBSTREAM_WARM_PER_DT_CAP, int(raw["wbstream"])))
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def warm_pool_for(settings: dict[str, Any], provider: str) -> int:
+    """Сколько пустых комнат держать на pc и на android отдельно."""
+    prov = (provider or "").strip().lower()
+    by = settings.get("warm_pool_by_provider")
+    if isinstance(by, dict) and by.get(prov) is not None:
+        try:
+            n = int(by[prov])
+        except (TypeError, ValueError):
+            n = int(settings.get("warm_pool_per_dt") or 2)
+    else:
+        try:
+            n = int(settings.get("warm_pool_per_dt") or 2)
+        except (TypeError, ValueError):
+            n = 2
+    n = max(0, n)
+    if prov == "telemost":
+        return min(n, TELEMOST_WARM_PER_DT_CAP)
+    if prov == "wbstream":
+        return min(n, WBSTREAM_WARM_PER_DT_CAP)
+    return min(n, 2)
+
+
 async def load_olcrtc2_settings(db: AsyncSession) -> dict[str, Any]:
     row = (
         await db.execute(select(AppSetting).where(AppSetting.key == SETTINGS_KEY))
@@ -164,9 +210,13 @@ async def load_olcrtc2_settings(db: AsyncSession) -> dict[str, Any]:
     out["agent_enabled"] = bool(out.get("agent_enabled", True))
     out["session_mode"] = True
     try:
-        out["warm_pool_per_dt"] = max(0, min(40, int(out.get("warm_pool_per_dt") or 20)))
+        out["warm_pool_per_dt"] = max(0, min(8, int(out.get("warm_pool_per_dt") or 2)))
     except (TypeError, ValueError):
-        out["warm_pool_per_dt"] = 20
+        out["warm_pool_per_dt"] = 2
+    out["warm_pool_by_provider"] = _normalize_warm_by_provider(
+        out.get("warm_pool_by_provider"),
+        fallback=out["warm_pool_per_dt"],
+    )
     try:
         out["target_online"] = max(0, min(1000, int(out.get("target_online") or 150)))
     except (TypeError, ValueError):
@@ -209,7 +259,12 @@ async def save_olcrtc2_settings(db: AsyncSession, patch: dict[str, Any]) -> dict
     if "transport" in patch and patch["transport"]:
         cur["transport"] = str(patch["transport"])
     if "warm_pool_per_dt" in patch and patch["warm_pool_per_dt"] is not None:
-        cur["warm_pool_per_dt"] = max(0, min(40, int(patch["warm_pool_per_dt"])))
+        cur["warm_pool_per_dt"] = max(0, min(8, int(patch["warm_pool_per_dt"])))
+    if "warm_pool_by_provider" in patch and patch["warm_pool_by_provider"] is not None:
+        cur["warm_pool_by_provider"] = _normalize_warm_by_provider(
+            patch["warm_pool_by_provider"],
+            fallback=int(cur.get("warm_pool_per_dt") or 2),
+        )
     if "target_online" in patch and patch["target_online"] is not None:
         cur["target_online"] = max(0, min(1000, int(patch["target_online"])))
     if "providers_enabled" in patch:

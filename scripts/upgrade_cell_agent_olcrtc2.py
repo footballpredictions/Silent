@@ -54,6 +54,7 @@ def main() -> None:
     # Сначала queen: иначе hive auto-upgrade затрёт соту старым cell-agent/main.py
     sftp.putfo(io.BytesIO(agent), f"{REMOTE}/cell-agent/main.py")
     print(f"synced queen {REMOTE}/cell-agent/main.py")
+    run(queen, f"docker cp {REMOTE}/cell-agent/main.py backend-api-1:/app/cell-agent/main.py")
     sftp.putfo(io.BytesIO(CREDS_PY.encode()), "/tmp/olcrtc2_cell_creds.py")
     run(queen, "docker cp /tmp/olcrtc2_cell_creds.py backend-api-1:/tmp/olcrtc2_cell_creds.py")
     _, stdout, _ = queen.exec_command(

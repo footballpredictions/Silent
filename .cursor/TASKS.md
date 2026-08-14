@@ -8,6 +8,23 @@ Agent приступает к **первой невыполненной** зад
 
 ## Открытые задачи
 
+### olcrtc стабильность (план 2026-08-14)
+
+Полный план: `.cursor/PLAN_OLCRTC_STABILITY.md`.
+
+- [x] **Фаза A — PC меню обхода как 1.0.160:** диалог «Применить?» + `VK → olcrtc` (не футер Было/Будет)
+- [x] **Фаза B — 1 комната на клиента:** Telemost `max_clients=1`; assign empty; heal БД на проде; скрипты max=3/25 исправлены
+- [x] **Фаза C — доставка конфигов:** LTE/БС без public fallback при живом tunnel; dual-cache изоляция; PC timeout olcrtc 90с
+- [x] **Фаза D — устойчивость (код):** HB через SOCKS/tunnel; failure после liveness streak; lastFailed не стартуем
+- [x] **Сота 1 CPU:** warm TM cap=2 (агент больше не ставит 20); prune 73→11 — 2026-08-14
+- [x] **WDTT-баланс мимо olcrtc:** Сота 1/2 не spill; только 3+ / Улей — 2026-08-14
+- [x] **Android: не рвать комнату** на liveness/stream_dead — native reconnect; рестарт только process_exit
+- [x] **Android: TM freeze / нет конфига WB / вылет VK** — без gstatic-проб на живом туннеле; Apply fetch пустых слотов; hardReset при уходе на VK
+- [x] **Сота 1 сеть/CPU:** egress ~320 Мбит ок; снят `CPUQuota=50%` с живых olcrtc2 (без рестарта сессий)
+- [x] **Сота 2 сеть/CPU:** то же (WB); egress ~540 Мбит, steal 0%; квота снята без рестарта
+- [x] **Android TM reconnect + PC тумблер/лог/обход:** epoch не убивает новый SOCKS; PC статус как Android; лог чистится на connect; bypass commit/localStorage
+- [ ] **Фаза D — endurance:** 40 мин WB+TM Wi‑Fi/LTE на PC+Android debug (ручной прогон; APK + PC `build-debug-19811`)
+
 ### Инфраструктура и репозиторий
 
 - [x] Улей (Hive): автоподключение соты по IP + SSH root (wdtt, DNAT tunnel, cell-agent) — 2026-06-20

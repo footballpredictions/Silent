@@ -466,9 +466,8 @@ async def olcrtc2_apply(
         pass
     # Ensure template unit exists
     unit_path = Path("/etc/systemd/system/olcrtc2@.service")
-    if not unit_path.is_file():
-        unit_path.write_text(
-            f"""[Unit]
+    # Без CPUQuota=50%: Telemost/vp8 упирается в пол-ядра → секундные «зависания».
+    desired_unit = f"""[Unit]
 Description=Silent VPN olcrtc2-srv %i
 After=network-online.target
 Wants=network-online.target
@@ -480,15 +479,16 @@ EnvironmentFile=-{root}/env.d/%i.env
 ExecStart={root}/olcrtc2-srv
 Restart=on-failure
 RestartSec=5
-MemoryMax=512M
-CPUQuota=50%
+MemoryMax=1G
 LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
-""",
-            encoding="utf-8",
-        )
+"""
+    cur_unit = unit_path.read_text(encoding="utf-8") if unit_path.is_file() else ""
+    if cur_unit != desired_unit:
+        unit_path.write_text(desired_unit, encoding="utf-8")
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=30)
     if body.restart:
         subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=30)
         subprocess.run(

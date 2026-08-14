@@ -221,6 +221,9 @@ python debug_captcha.py
 
 Источник olcrtc: https://github.com/openlibrecommunity/olcrtc
 
+**Актуальный план стабильности (2026-08-14, код влит):** `.cursor/PLAN_OLCRTC_STABILITY.md`  
+Occupancy **1 клиент = 1 комната** (TM+WB `max_clients=1`, прод heal). Конфиг на БС/LTE **только** через `10.66.66.1` / SOCKS. PC меню обхода — кнопка «Применить» внизу как 1.0.160. Endurance 40 мин — ручной прогон.
+
 ### Улей / Соты (Hive)
 
 Масштабирование VPN: **Улей** (главный VPS) + **соты** (дополнительные VPS). Новые устройства по умолчанию на Улье; при перегрузке CPU/RAM (пороги в `.env`) — на соту с минимумом онлайн VPN. **Сборка build-agent в 00:00 МСК не считается перегрузкой.**
@@ -571,6 +574,107 @@ cd pc; npm install; npm run dev
 - Вход для уже зарегистрированных не затрагивается. Клиенты (PC/Android) показывают `detail` из ответа API без отдельной сборки.
 - API: `GET/POST /api/admin/settings/registration`. Сервис: `app/services/registration_settings.py`.
 - Задеплоено на прод (`deploy_api.py`, в список файлов добавлен `registration_settings.py`). Push `main`.
+
+### 2026-08-14 — Android: Telemost убивался onDestroy, кеш комнаты стирался
+
+- Лог TM: комната есть, ICE connected, затем `hardReset: vpn_onDestroy` ×4 и `code=1`. WB→TM «нет конфига», TM не встаёт даже после VK/рестарта.
+- Причина: на каждый connect копились коллекторы `lastError` → disconnect; stale `OlcrtcVpnService.onDestroy` убивал новый старт; `code=1` после нашего kill вызывал `reportOlcrtcRoomFailure` и **стирал слот Телемоста**.
+- Фикс: один watch-job; onDestroy/STOP игнорируют более новый epoch; leftover hardReset только если VpnService уже мёртв; первый `code=1` — повтор той же комнаты без wipe.
+
+### 2026-08-14 — Android: один путь смены канала, без «ждём конфиг»
+
+- Переключение WB↔TM↔VK шло двумя путями: тумблер гасил VpnService **без** `hardReset` native/hev, Apply ещё и ждал fetch («Получение сессии…»). leftover WB накладывался на Телемост → «нет конфига», затем вылет на VK (DISCONNECT мёртвого FGS).
+- **Один путь:** радио можно выбрать при живом VPN; Apply — cache-only (слоты с login и с включённого VK), leave + `hardReset`, DISCONNECT только если сервис жив. Тумблер OFF тоже сносит leftover.
+- ICE `Failed to find pair for add binding` — шум pion (IPv4 srflx vs пустой IPv6 related), не красная ошибка. Туннель при этом живой.
+- PC: диалог Apply больше не показывает «Ждём конфиг канала…».
+
+### 2026-08-14 — Android: reconnect Телемоста; PC тумблер как Android
+
+- После выкл. тумблера на TM старый worker `waitForSocksDial` делал `hardReset(start_failed)` и убивал **новый** процесс → вечное «Подключение» / «SOCKS слушает, peer не отвечает». Лечится только kill app. Теперь epoch: старый worker не трогает новый connect; ждём свободный :8808.
+- PC: сразу ставили `connected=true` и снимали `connecting` до vpnConnect → «Подключено» пока змейка крутится, UPPERCASE текст. Как Android: серое «Подключение...» → зелёное «Подключено» когда тумблер уехал.
+- Лог: каждый connect чистит панель (olcrtc тоже). Обход TM/WB/VK пишется commit/localStorage — после закрытия приложения тот же канал.
+- Сборки: Android `SilentVPN-debug.apk`; PC `pc/build-debug-19811/win-unpacked/SilentVPN-Admin.bat`.
+
+### 2026-08-14 — PC меню обхода как 1.0.160 (диалог, не футер)
+
+- Было не то: футер «Было/Будет» + вечные кнопки + подсказка про VPN (как VkCredMode). В 160 — нижний диалог **«Применить?»** и строка **«VK → olcrtc»**.
+- PC `MenuBypassPanel`: радио pending, подтверждение оверлеем как Android. Текст смены семейства `VK → olcrtc`, внутри — `Телемост → WB Stream`.
+- Android: тот же короткий текст в AlertDialog (не `olcrtc / WB Stream`).
+- PC debug: `pc/build-debug-507804/win-unpacked/SilentVPN-Admin.bat`.
+
+### 2026-08-14 — PC VK: тумблер снова сразу ON (как 1.0.160)
+
+- После серого «Подключение...» UI ждал `waitVpnReady` (WG + воркер) → 5–8 с на VK. В 160: `setConnected(true)` сразу, prepare/воркеры в фоне.
+- Вернул: тумблер и «Подключено» сразу; `waitVpnReady` только проверяет туннель и при фейле откатывает. Краткий restart wdtt не гасит UI (`connectInFlightRef`).
+- PC debug: `pc/build-debug-552402/win-unpacked/SilentVPN-Admin.bat`.
+
+### 2026-08-14 — PC: змейка 1.5 оборота + диалог обхода как Android 160
+
+- Змейка: vpnConnect сразу, UI «Подключение...» минимум **1.5 оборота** (`SNAKE_MIN_VISIBLE_MS`), потом бегунок ON и «Подключено». Не ждать воркер.
+- Обход: в 160 это **Material AlertDialog** по центру (скругление 28, поля по бокам), не нижний шит на всю ширину и не дерево с вертикальной чертой. Радио 20px, вложенность `padding 12`, щель 8px между VK и olcrtc.
+- PC debug: `pc/build-debug-235620/win-unpacked/SilentVPN-Admin.bat`.
+
+### 2026-08-14 — Сота 2: тот же CPUQuota 50%, канал ещё лучше
+
+- WB-сота `78.17.74.27`: YouTube ~15 мс, Cloudflare 20 МБ ≈ **67 МБ/с (~540 Мбит)**, steal **0%**, load 0.2. Интернет в порядке.
+- Был тот же шаблон: `CPUQuota=50%` / `MemoryMax=512M` на всех `olcrtc2@`. Снято без рестарта (7 живых → infinity / 1G), BBR+fq, `tcp_slow_start_after_idle=0`. cell-agent обновлён.
+- 5 старых unit в `failed` (не running) — на трафик не влияют.
+
+### 2026-08-14 — Сота 1: интернет ок, резали CPUQuota 50%
+
+- Egress живой: YouTube TCP ~27мс / TTFB 0.19с, Cloudflare 20 МБ ≈ **40 МБ/с (~320 Мбит)**. Канал соты не «плохой».
+- Резали **каждому** `olcrtc2@` `CPUQuota=50%` (пол-ядра) при 5 процессах на **2 vCPU** + steal ~10–13% (гипервизор). vp8 упирался в квоту → секундные подвисания как «обрыв».
+- Снято без рестарта сессий: `CPUQuota=infinity`, `MemoryMax=1G`, BBR+fq, `tcp_slow_start_after_idle=0`, буферы/backlog. Шаблон unit + cell-agent, чтобы apply снова не ставил 50%.
+- Потолок Телемоста (vp8 / SFU) никуда не делся — это не WDTT.
+
+### 2026-08-14 — Android: подвисание Телемоста + «нет конфига» TM→WB + вылет на VK
+
+- **Подвисание на несколько секунд (видео / Telegram «соединение»):** не смена комнаты. На узком Telemost/vp8 клиент сам делал SOCKS-пробы к gstatic (health watch, liveness suspect, watchdog) — они крали полосу. Пробы при живом туннеле выключены; native ICE-reconnect Telemost всё ещё может дать короткий буфер.
+- **TM→WB «нет конфига»:** Apply был cache-only. Слот WB часто пуст (prefetch только login/VK). Теперь Применить само fetch’ит пустые слоты (TM и WB), соседний не затирается.
+- **Вылет при включении VK:** leftover `libolcrtc2`/hev + `startForegroundService(DISCONNECT)` при уже выключенном VPN. Теперь hardReset + `startService`, DISCONNECT только если сервис ещё жив.
+- Debug APK: пересборка `SilentVPN-debug.apk`.
+
+### 2026-08-14 — Android hang: не рвать комнату; WDTT-баланс мимо Сота 1/2
+
+- **Почему рвало:** olcrtc2-srv закрывает сессию по control liveness (~4 мин missed pong) и **сам reconnect**. Android делал hardReset + новый assign → минута «зависло». Теперь glitch (stream_dead/peer_closed/SOCKS) **не** рестартит процесс и **не** меняет комнату. Рестарт только если native умер (`process_exit`).
+- **Балансир:** вчерашнего исключения Сота 1/2 из WDTT **не было** — `pick_cell` брал все active. Теперь Сота 1 (`87.58…`) и 2 (`78.17…`) `accepts_wdtt=false`; spill только на 3, 4, … (если нет — Улей). Админка: бейдж «olcrtc — не WDTT-баланс».
+- Деплой `deploy_api.py`. Debug APK: `SilentVPN-debug.apk`.
+
+### 2026-08-14 — Сота 1 100% CPU + Android WB hang ~1 мин
+
+- **Не max_clients=1.** После `deploy_api` агент снова делал `warm<12 → 20`. На проде было **76 комнат / 2 сессии**: TM 19+20 на Соте 1, WB 17+20 на Соте 2.
+- Срезали: cap TM warm=2 / WB=3; агент больше не раздувает до 20; excess idle tear 90с (не 15 мин). Prune: **73→11** (TM 2+2, WB 3+4).
+- Android Wi‑Fi: srv `session close reason=liveness duration=4m2s`, клиент ждал новый канал **60с**. Теперь первый stream_dead/peer_closed — та же комната; reassign timeout 20с; grace 18с.
+- Деплой `deploy_api.py` + `prune_olcrtc2_warm.py`. Debug APK — пересборка.
+
+### 2026-08-14 — olcrtc стабильность A–D (код + деплой API)
+
+План: `.cursor/PLAN_OLCRTC_STABILITY.md`. **Не release** — debug-сборки PC/Android.
+
+- **A.** PC `MenuBypassPanel`: pending + «Применить»/«Отмена» внизу (как 1.0.160 / `MenuVkCredModePanel`). Цвета из темы.
+- **B.** `TELEMOST_MAX_CLIENTS=1` (как WB); assign только empty (`stickies==0`). Heal-скрипты больше не ставят 3/25. Прод: `deploy_api.py` + `heal_olcrtc2_max_by_provider.py` → все active rooms max=1 (TM pc/android 8+8, WB 2+2).
+- **C.** Dual-cache изолирован (PC `olcrtcCachePolicy.mjs`, Android `isolateProviderKeysForCache`). PC `tunnel-api-request`: olcrtc2 timeout 90с, **без** public fallback при живом WG. Android: tunnel fail / LTE → не public. Prefetch не refresh’ит живой слот.
+- **D.** PC HB/leave/failure через SOCKS `10.66.66.1:8000`; `missed_pong` не убивает без SOCKS streak (2/3). Android `SOCKS_API_FAIL_SUSPECT_STREAK=3`. lastFailed room не стартуем. Endurance 40 мин — вручную.
+
+Тесты: backend `test_olcrtc2_session_rules_unit.py` 5/5; PC `npm test` 41/41; Android `OlcrtcSessionPolicyTest` BUILD SUCCESSFUL.
+
+### 2026-08-14 — ПЛАН: olcrtc стабильность (комнаты / конфиги / меню PC)
+
+Заказчик: улучшать olcrtc. Код **не начинать** без команды. Полный план: `.cursor/PLAN_OLCRTC_STABILITY.md`.
+
+**1. Комнаты отваливаются (WB / Телемост)**  
+Корень: Telemost `max_clients=3` (shared vp8); WB уже 1. HB на БС уходит в public/underlying → sticky stale → prune. Ложный `/olcrtc2-room-failure` teardown. Кеш мёртвой room.  
+Канон: **1 fp = 1 комната**, leave=soft sticky (не session-mode teardown 11.08), failure=teardown только этой room.
+
+**2. Конфиги затираются / не доезжают**  
+ПК Wi‑Fi без БС — ок. Android Wi‑Fi ок; **LTE почти всегда белые списки** → до Улья только VPN `10.66.66.1`.  
+Корень: PC `tunnel-api-request` режет timeout до 8с и падает в nip.io (второй assign затирает живую room). Android public fallback на LTE. `saveOlcrtcCache` может писать чужой слот. prefetchBoth refresh’ит живые слоты.  
+Канон: LTE/БС = только tunnel; dual-cache изолирован; denied не писать в кеш.
+
+**3. Меню обхода PC**  
+Сейчас Apply сразу по клику. Нужно как 1.0.160 / `MenuVkCredModePanel`: pending + **«Применить» внизу**.
+
+Порядок фаз: A меню PC → B max_clients=1 + heal БД → C доставка конфигов PC/Android → D liveness/endurance.
 
 ### 2026-07-27 — olcrtc bypass в release 1.0.160 (PC + Android)
 

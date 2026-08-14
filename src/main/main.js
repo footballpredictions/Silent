@@ -45,6 +45,7 @@ const {
   isOlcrtc2SessionActive,
   isOlcrtc2Alive,
   setOlcrtc2SessionDeadHandler,
+  olcrtc2ApiViaSocks,
 } = require('./vpn/olcrtc2Session')
 
 function bypassFamilyOf(config) {
@@ -2086,12 +2087,20 @@ function backendHttpRequest({
   })
 }
 
+function isOlcrtc2ApiPath(path) {
+  return /\/olcrtc2-(config|heartbeat|room-failure)/.test(String(path || ''))
+}
+
 ipcMain.handle('tunnel-api-request', async (_, payload) => {
   // Как Android: при поднятом WG API через 10.66.66.1; иначе / fallback — public HTTPS.
   // Важно: HTTP 4xx — не «сбой туннеля», а ответ API (вернуть в renderer).
   const p = payload || {}
   const opts = { ...p, timeout: p.timeout || 25_000 }
   const path = opts.path || ''
+  const olcrtc2 = isOlcrtc2ApiPath(path)
+  const tunnelTimeout = olcrtc2
+    ? Math.max(opts.timeout || 90_000, 90_000)
+    : Math.min(opts.timeout || 8000, 8000)
 
   // Во время капчи WG часто снят → public HTTPS ловит ECONNABORTED; ConfigSync/Update не долбим.
   if (captchaInProgress && !wgApplied) {
@@ -2104,7 +2113,7 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
     try {
       const res = await tunnelHttpRequest({
         ...opts,
-        timeout: Math.min(opts.timeout || 8000, 6000),
+        timeout: olcrtc2 ? tunnelTimeout : Math.min(opts.timeout || 8000, 6000),
       })
       if (res.status >= 200 && res.status < 500) return res
     } catch { /* fall through to normal path */ }
@@ -2125,8 +2134,11 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
       try {
         const res = await tunnelHttpRequest({
           ...opts,
-          // Во время upgrade/settle маршруты мигают — короткий timeout + retry
-          timeout: fragile ? Math.min(opts.timeout || 8000, 5000) : Math.min(opts.timeout || 8000, 8000),
+          timeout: olcrtc2
+            ? tunnelTimeout
+            : fragile
+              ? Math.min(opts.timeout || 8000, 5000)
+              : tunnelTimeout,
         })
         if (res.status >= 200 && res.status < 500) {
           if (res.status >= 400) {
@@ -2134,19 +2146,29 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
           }
           return res
         }
-        // 5xx — попробовать public
+        // 5xx — olcrtc2 не уводим на public (БС + второй assign затирает комнату).
+        if (olcrtc2) {
+          sendLog(`[API] tunnel ${path} HTTP ${res.status} — без public fallback`)
+          const err = new Error(`Tunnel API HTTP ${res.status}`)
+          err.code = 'OLCRTC_TUNNEL_ONLY'
+          throw err
+        }
         sendLog(`[API] tunnel ${path} HTTP ${res.status} → HTTPS ${SERVER_IP_FALLBACK}`)
         return await viaPublic()
       } catch (e) {
         lastErr = e
+        if (e?.code === 'OLCRTC_TUNNEL_ONLY') throw e
         const msg = String(e?.message || e)
         // EACCES/ECONNABORTED — типично при WG reinstall (маршруты/адаптер мигают)
         const transient = /ECONNRESET|ECONNREFUSED|ECONNABORTED|EACCES|ETIMEDOUT|timeout|Tunnel API/i.test(msg)
         if (transient && attempt < maxAttempts) {
-          // Восстановить bypass к API IP — иначе public fallback тоже мёртв
-          await ensurePublicApiBypass(sendLog)
+          if (!olcrtc2) await ensurePublicApiBypass(sendLog)
           await sleep(500 * attempt)
           continue
+        }
+        if (olcrtc2) {
+          sendLog(`[API] tunnel 10.66.66.1 fail (olcrtc2, no public): ${msg}`)
+          throw lastErr || e
         }
         if (!(fragile && transient)) {
           sendLog(`[API] tunnel 10.66.66.1 fail: ${msg} → HTTPS ${SERVER_IP_FALLBACK}`)
@@ -2166,10 +2188,18 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
         }
       }
     }
+    if (olcrtc2) {
+      sendLog(`[API] tunnel 10.66.66.1 fail (olcrtc2, no public): ${lastErr?.message || lastErr}`)
+      throw lastErr || new Error('Tunnel API fail')
+    }
     sendLog(`[API] tunnel 10.66.66.1 fail: ${lastErr?.message || lastErr} → HTTPS ${SERVER_IP_FALLBACK}`)
     return viaPublic()
   }
   return publicDirectRequest(opts)
+})
+
+ipcMain.handle('olcrtc2-api-via-socks', async (_, payload) => {
+  return olcrtc2ApiViaSocks(payload || {})
 })
 
 function fetchJsonGet(url, hostHeader = null) {

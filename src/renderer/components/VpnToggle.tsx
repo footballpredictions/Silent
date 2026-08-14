@@ -195,9 +195,9 @@ export default function VpnToggle({
   const [pendingToggle, setPendingToggle] = useState(false)
   const [pressed, setPressed] = useState(false)
   const pendingTimeoutRef = useRef<number | null>(null)
-  // Пока змейка: бегунок слева, трек выкл. После 1.5 круга — сдвиг в ON.
-  const visualOn = connected && !pendingToggle && !disconnecting
-  const showSnake = (pendingToggle || (connecting && !visualOn)) && !disconnecting
+  // Пока змейка (1.5 оборота): бегунок слева. Потом сдвиг в ON.
+  const visualOn = connected && !connecting && !disconnecting && !pendingToggle
+  const showSnake = !visualOn && !disconnecting && (pendingToggle || connecting)
   const interactionLocked = connecting || disconnecting || pendingToggle
 
   useEffect(() => {

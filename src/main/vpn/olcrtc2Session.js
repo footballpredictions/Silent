@@ -21,6 +21,9 @@ let peerClosedGraceTimer = null
 let healthFailStreak = 0
 /** missed_pong: не доверяем recent traffic / не молчим до socks_health. */
 let peerLivenessSuspect = false
+let socksHealthRunner = null
+/** Активный SOCKS olcrtc2 — HB/failure через 10.66.66.1, не public nip.io. */
+let activeSocks = null
 
 function setOlcrtc2SessionDeadHandler(fn) {
   onSessionDead = typeof fn === 'function' ? fn : null
@@ -151,6 +154,132 @@ async function waitForSocksDial(host, port, timeoutMs, log, socksUser = '', sock
     await sleep(280)
   }
   return false
+}
+
+/**
+ * HTTP JSON через SOCKS olcrtc → 10.66.66.1:8000 (LTE / белые списки).
+ */
+function olcrtc2ApiViaSocks({ method = 'POST', path = '', body = null, timeout = 15000 } = {}) {
+  return new Promise((resolve) => {
+    const ep = activeSocks
+    if (!ep || !ready) {
+      resolve({ ok: false, status: 0, reason: 'no socks' })
+      return
+    }
+    const apiPath = String(path || '').startsWith('/') ? String(path) : `/${path}`
+    const payload = body == null ? '' : typeof body === 'string' ? body : JSON.stringify(body)
+    const needAuth = Boolean(ep.user)
+    const socket = net.connect({ host: ep.host, port: ep.port }, () => {
+      socket.write(Buffer.from(needAuth ? [0x05, 0x01, 0x02] : [0x05, 0x01, 0x00]))
+    })
+    let stage = 0
+    let buf = Buffer.alloc(0)
+    let settled = false
+    const done = (result) => {
+      if (settled) return
+      settled = true
+      try {
+        socket.destroy()
+      } catch {
+        /* ignore */
+      }
+      resolve(result)
+    }
+    const sendConnect = () => {
+      const req = Buffer.alloc(10)
+      req[0] = 0x05
+      req[1] = 0x01
+      req[2] = 0x00
+      req[3] = 0x01
+      req[4] = 10
+      req[5] = 66
+      req[6] = 66
+      req[7] = 1
+      req.writeUInt16BE(8000, 8)
+      socket.write(req)
+      stage = 2
+    }
+    const sendHttp = () => {
+      const lines = [
+        `${String(method || 'POST').toUpperCase()} ${apiPath} HTTP/1.1`,
+        'Host: 10.66.66.1:8000',
+        'Content-Type: application/json',
+        `Content-Length: ${Buffer.byteLength(payload)}`,
+        'Connection: close',
+        '',
+        payload,
+      ]
+      socket.write(lines.join('\r\n'))
+      stage = 3
+      buf = Buffer.alloc(0)
+    }
+    socket.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk])
+      if (stage === 0) {
+        if (buf.length < 2) return
+        if (buf[0] !== 0x05) return done({ ok: false, status: 0, reason: 'socks ver' })
+        const methodByte = buf[1]
+        buf = buf.subarray(2)
+        if (needAuth) {
+          if (methodByte !== 0x02) return done({ ok: false, status: 0, reason: 'socks auth method' })
+          const ub = Buffer.from(ep.user, 'utf8')
+          const pb = Buffer.from(ep.pass || '', 'utf8')
+          const auth = Buffer.alloc(3 + ub.length + pb.length)
+          auth[0] = 0x01
+          auth[1] = ub.length
+          ub.copy(auth, 2)
+          auth[2 + ub.length] = pb.length
+          pb.copy(auth, 3 + ub.length)
+          socket.write(auth)
+          stage = 1
+          return
+        }
+        if (methodByte !== 0x00) return done({ ok: false, status: 0, reason: 'socks method' })
+        sendConnect()
+      } else if (stage === 1) {
+        if (buf.length < 2) return
+        if (buf[0] !== 0x01 || buf[1] !== 0x00) return done({ ok: false, status: 0, reason: 'socks auth' })
+        buf = buf.subarray(2)
+        sendConnect()
+      } else if (stage === 2) {
+        if (buf.length < 4) return
+        if (buf[1] !== 0x00) return done({ ok: false, status: 0, reason: 'socks connect' })
+        const atyp = buf[3]
+        let need = 10
+        if (atyp === 3) {
+          if (buf.length < 5) return
+          need = 5 + buf[4] + 2
+        } else if (atyp === 4) need = 22
+        if (buf.length < need) return
+        buf = Buffer.alloc(0)
+        sendHttp()
+      } else if (stage === 3) {
+        const text = buf.toString('utf8')
+        const sep = text.indexOf('\r\n\r\n')
+        if (sep < 0) return
+        const header = text.slice(0, sep)
+        const m = header.match(/^HTTP\/1\.\d\s+(\d+)/)
+        const status = m ? parseInt(m[1], 10) : 0
+        const cl = header.match(/content-length:\s*(\d+)/i)
+        const bodyBuf = buf.subarray(sep + 4)
+        if (cl && bodyBuf.length < parseInt(cl[1], 10)) return
+        let data = null
+        try {
+          data = JSON.parse(bodyBuf.toString('utf8'))
+        } catch {
+          /* empty / non-json */
+        }
+        done({
+          ok: status >= 200 && status < 500,
+          status,
+          data,
+          reason: status ? '' : 'bad http',
+        })
+      }
+    })
+    socket.on('error', (e) => done({ ok: false, status: 0, reason: e?.message || 'socks err' }))
+    socket.setTimeout(timeout, () => done({ ok: false, status: 0, reason: 'timeout' }))
+  })
 }
 
 function killProc(proc, name, log) {
@@ -372,6 +501,7 @@ function cancelPeerClosedGrace() {
 }
 
 function cancelHealthWatch() {
+  socksHealthRunner = null
   if (healthWatchTimer) {
     clearInterval(healthWatchTimer)
     healthWatchTimer = null
@@ -386,6 +516,13 @@ function markPeerLivenessSuspect(reason, graceMs, log) {
   peerLivenessSuspect = true
   lastTunnelActivityMs = 0
   log?.(`[olcrtc2] peer suspect (${reason}) — force SOCKS check`)
+  try {
+    socksHealthRunner?.()
+  } catch {
+    /* ignore */
+  }
+  // missed_pong сам по себе не убивает сессию — только SOCKS fail streak.
+  if (reason === 'missed_pong') return
   schedulePeerClosedGrace(reason, graceMs, log)
 }
 
@@ -394,6 +531,7 @@ function notifySessionDead(code, reason, log) {
   sessionActive = false
   ready = false
   peerLivenessSuspect = false
+  activeSocks = null
   cancelHealthWatch()
   cancelPeerClosedGrace()
   killProc(singboxProc, 'sing-box', log)
@@ -450,7 +588,7 @@ function startSocksHealthWatch(socksHost, socksPort, socksUser, socksPass, log) 
         return
       }
       healthFailStreak += 1
-      const need = peerLivenessSuspect ? 1 : 2
+      const need = peerLivenessSuspect ? 2 : 3
       log?.(
         `[olcrtc2] SOCKS health miss ${healthFailStreak}/${need} (${tag})` +
           (peerLivenessSuspect ? ' suspect=yes' : '') +
@@ -466,6 +604,7 @@ function startSocksHealthWatch(socksHost, socksPort, socksUser, socksPass, log) 
   }
   setTimeout(() => void runProbe('t+45s'), 45_000)
   healthWatchTimer = setInterval(() => void runProbe('tick'), 45_000)
+  socksHealthRunner = () => void runProbe('suspect')
 }
 
 function pipeOlcrtc2Line(line, log) {
@@ -527,6 +666,7 @@ function pipeOlcrtc2Line(line, log) {
 async function stopOlcrtc2Session(log) {
   sessionActive = false
   ready = false
+  activeSocks = null
   cancelHealthWatch()
   cancelPeerClosedGrace()
   lastTunnelActivityMs = 0
@@ -757,6 +897,7 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
   await socksDialDomainOnce(socksHost, socksPort, 'www.gstatic.com', 3000, socksUser, socksPass)
   ready = true
   lastTunnelActivityMs = Date.now()
+  activeSocks = { host: socksHost, port: socksPort, user: socksUser, pass: socksPass }
   startSocksHealthWatch(socksHost, socksPort, socksUser, socksPass, log)
   log?.(`[olcrtc2] tunnelReady (SOCKS + sing-box TUN; TG+YT via VPN)`)
   onReady?.()
@@ -769,4 +910,5 @@ module.exports = {
   isOlcrtc2Alive,
   isOlcrtc2SessionActive,
   setOlcrtc2SessionDeadHandler,
+  olcrtc2ApiViaSocks,
 }

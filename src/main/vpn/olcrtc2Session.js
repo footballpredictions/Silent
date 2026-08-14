@@ -1,6 +1,6 @@
 /**
  * olcrtc 2.0 cnc: olcrtc2-cnc.exe + sing-box TUN→SOCKS.
- * Паритет с Android (TG+YT через VPN): ipv4_only, без fake-ip,
+ * Паритет с Android (TG+YT через VPN): ipv4_only, fake-ip (резолв на соте),
  * block UDP/QUIC, dial peer до TUN, Telemost/WB prefetch.
  */
 const { spawn, execSync } = require('child_process')
@@ -9,6 +9,9 @@ const fs = require('fs')
 const path = require('path')
 const net = require('net')
 const { app } = require('electron')
+
+/** fake-ip пул. Не 100.64/10 — на LTE это CGNAT оператора (конфликт маршрутов). */
+const FAKEIP_RANGE = '198.18.0.0/15'
 
 let cncProc = null
 let singboxProc = null
@@ -19,6 +22,9 @@ let healthWatchTimer = null
 let lastTunnelActivityMs = 0
 let peerClosedGraceTimer = null
 let healthFailStreak = 0
+/** ICE / peer latched из логов cnc — без gstatic-цикла до TUN. */
+let iceConnected = false
+let peerLatched = false
 /** missed_pong: не доверяем recent traffic / не молчим до socks_health. */
 let peerLivenessSuspect = false
 let socksHealthRunner = null
@@ -141,19 +147,60 @@ function socksDialDomainOnce(socksHost, socksPort, domain, timeoutMs = 2500, soc
   })
 }
 
-/** Ждём peer (как Android waitForSocksDial) — без пачки warm YouTube. */
-async function waitForSocksDial(host, port, timeoutMs, log, socksUser = '', socksPass = '') {
+/** Ждём ICE/peer latched из логов. gstatic-цикл на Telemost = секунды до первого YT. */
+async function waitForPeerReady(host, port, timeoutMs, log, socksUser = '', socksPass = '') {
   const deadline = Date.now() + timeoutMs
-  const probeHost = 'www.gstatic.com'
   while (Date.now() < deadline && sessionActive) {
-    const ok = await socksDialDomainOnce(host, port, probeHost, 3500, socksUser, socksPass)
-    if (ok) {
-      log?.(`[olcrtc2] SOCKS dial OK → ${probeHost}:443`)
+    if (iceConnected || peerLatched) {
+      log?.(
+        iceConnected
+          ? '[olcrtc2] peer ready (ICE)'
+          : '[olcrtc2] peer ready (latched)',
+      )
       return true
     }
-    await sleep(280)
+    await sleep(120)
   }
-  return false
+  if (iceConnected || peerLatched) return true
+  log?.('[olcrtc2] ICE не пришёл — один SOCKS dial fallback')
+  const ok = await socksDialDomainOnce(host, port, 'www.gstatic.com', 2500, socksUser, socksPass)
+  if (ok) log?.('[olcrtc2] SOCKS dial OK (fallback)')
+  return ok
+}
+
+/**
+ * После tunnelReady: короткий прогрев нескольких доменов.
+ *
+ * Один dial к `i.ytimg.com` не всегда успевает убрать «холодную» паузу на
+ * первом реальном запросе. Здесь даём 1 мягкую волну SOCKS CONNECT,
+ * не блокируя ready/UI.
+ *
+ * Важно: не используем gstatic/google в warm — раньше это давало регрессию.
+ */
+async function warmFirstLoadPath(
+  host,
+  port,
+  socksUser = '',
+  socksPass = '',
+  provider = 'telemost',
+  log,
+) {
+  const warmHosts = [
+    'www.cloudflare.com',
+    'i.ytimg.com',
+    'www.youtube.com',
+  ]
+  if (provider === 'wbstream') {
+    warmHosts.push('stream.wb.ru', 'wildberries.ru')
+  }
+  const rounds = 1
+  for (let round = 0; round < rounds && sessionActive && ready; round += 1) {
+    await Promise.allSettled(
+      warmHosts.map((d) => socksDialDomainOnce(host, port, d, 1200, socksUser, socksPass)),
+    )
+    if (round + 1 < rounds) await sleep(120)
+  }
+  log?.(`[olcrtc2] first-load warm done (${warmHosts.length} hosts x ${rounds})`)
 }
 
 /**
@@ -359,8 +406,12 @@ function collectDirectCidrs(staticHosts, connFile, provider) {
 }
 
 /**
- * sing-box: DNS TCP через SOCKS, ipv4_only, без fake-ip;
- * UDP/QUIC block; Cursor/IDE/cnc + TURN IP — direct (иначе peer мрёт на refresh).
+ * sing-box: fake-ip (резолв на соте), ipv4_only, UDP/QUIC block;
+ * Cursor/IDE/cnc + TURN IP — direct (иначе peer мрёт на refresh).
+ *
+ * fake-ip: домен отдаётся приложению как 198.18.x.x без обращения к DNS, а в
+ * SOCKS CONNECT уходит имя → резолвит olcrtc2-srv. Без него каждый холодный
+ * домен стоил TCP-стрим через VP8-несущую, отсюда медленная первая загрузка.
  */
 function renderSingboxConfig(
   socksHost,
@@ -377,6 +428,14 @@ function renderSingboxConfig(
     address: `tcp://${ip}`,
     detour: 'olcrtc2-socks',
   }))
+  // Хосты несущей (ICE/TURN/сигналинг) обязаны резолвиться ВНЕ туннеля:
+  // с fake-ip у direct-outbound был бы фейковый IP → peer мёртв.
+  dnsServers.push({
+    tag: 'carrier-dns',
+    address: `udp://${dnsList[0]}`,
+    detour: 'direct',
+  })
+  dnsServers.push({ tag: 'fakeip', address: 'fakeip' })
   const socksOutbound = {
     type: 'socks',
     tag: 'olcrtc2-socks',
@@ -388,6 +447,27 @@ function renderSingboxConfig(
     socksOutbound.username = socksUser
     socksOutbound.password = socksPass
   }
+  const directSuffixes = [
+    'cursor.sh',
+    'cursor.com',
+    'cursorapi.com',
+    'anthropic.com',
+    ...(provider === 'telemost'
+      ? [
+          'turn.tel.yandex.net',
+          'stun.rtc.yandex.net',
+          'goloom.strm.yandex.net',
+          'telemost.yandex.ru',
+          'cloud-api.yandex.ru',
+        ]
+      : [
+          'stream.wb.ru',
+          'rtc-el-01.wb.ru',
+          'rtc-el-02.wb.ru',
+          'wildberries.ru',
+          'wb.ru',
+        ]),
+  ]
   const routeRules = [
     {
       process_name: [
@@ -403,27 +483,7 @@ function renderSingboxConfig(
       outbound: 'direct',
     },
     {
-      domain_suffix: [
-        'cursor.sh',
-        'cursor.com',
-        'cursorapi.com',
-        'anthropic.com',
-        ...(provider === 'telemost'
-          ? [
-              'turn.tel.yandex.net',
-              'stun.rtc.yandex.net',
-              'goloom.strm.yandex.net',
-              'telemost.yandex.ru',
-              'cloud-api.yandex.ru',
-            ]
-          : [
-              'stream.wb.ru',
-              'rtc-el-01.wb.ru',
-              'rtc-el-02.wb.ru',
-              'wildberries.ru',
-              'wb.ru',
-            ]),
-      ],
+      domain_suffix: directSuffixes,
       outbound: 'direct',
     },
   ]
@@ -448,7 +508,13 @@ function renderSingboxConfig(
       log: { level: 'error' },
       dns: {
         servers: dnsServers,
-        rules: [{ query_type: ['HTTPS', 'SVCB'], action: 'reject' }],
+        rules: [
+          { query_type: ['HTTPS', 'SVCB'], action: 'reject' },
+          // Несущая — реальные IP вне туннеля, до fake-ip правила.
+          { domain_suffix: directSuffixes, server: 'carrier-dns' },
+          { query_type: ['A'], server: 'fakeip' },
+        ],
+        fakeip: { enabled: true, inet4_range: FAKEIP_RANGE },
         strategy: 'ipv4_only',
         independent_cache: true,
         final: 'remote',
@@ -474,6 +540,14 @@ function renderSingboxConfig(
         auto_detect_interface: true,
         rules: routeRules,
         final: 'olcrtc2-socks',
+      },
+      // Маппинг fake-ip живёт между сессиями — после реконнекта домены уже тёплые.
+      experimental: {
+        cache_file: {
+          enabled: true,
+          path: path.join(app.getPath('temp'), 'silent-olcrtc2-cache.db'),
+          store_fakeip: true,
+        },
       },
     },
     null,
@@ -558,53 +632,12 @@ function schedulePeerClosedGrace(reason, graceMs, log) {
   }, graceMs)
 }
 
-/** После tunnelReady: SOCKS-probe. Не убиваем при recent traffic / одном фейле. */
+/** После tunnelReady: пробы gstatic выключены (как Android) — крадут Telemost/vp8. */
 function startSocksHealthWatch(socksHost, socksPort, socksUser, socksPass, log) {
   cancelHealthWatch()
   healthFailStreak = 0
-  const runProbe = async (tag) => {
-    try {
-      if (!sessionActive || !ready) return
-      // Как Android: при живом tunnel to … не дергаем dial (крадёт полосу / ложные fail).
-      if (hasRecentTunnelTraffic() && !peerLivenessSuspect) {
-        healthFailStreak = 0
-        log?.(`[olcrtc2] health ok (${tag}, recent traffic)`)
-        return
-      }
-      const ok =
-        (await socksDialDomainOnce(socksHost, socksPort, 'www.gstatic.com', 5000, socksUser, socksPass)) ||
-        (await socksDialDomainOnce(
-          socksHost,
-          socksPort,
-          'connectivitycheck.gstatic.com',
-          4000,
-          socksUser,
-          socksPass,
-        ))
-      if (ok) {
-        healthFailStreak = 0
-        peerLivenessSuspect = false
-        log?.(`[olcrtc2] health ok (${tag}, dial)`)
-        return
-      }
-      healthFailStreak += 1
-      const need = peerLivenessSuspect ? 2 : 3
-      log?.(
-        `[olcrtc2] SOCKS health miss ${healthFailStreak}/${need} (${tag})` +
-          (peerLivenessSuspect ? ' suspect=yes' : '') +
-          (hasRecentTunnelTraffic() ? ' recent=yes' : ''),
-      )
-      // Один таймаут gstatic под нагрузкой ≠ мёртвый peer (ложный kill ~3–5 мин).
-      if (healthFailStreak < need || (hasRecentTunnelTraffic() && !peerLivenessSuspect)) return
-      log?.('[olcrtc2] SOCKS health fail — peer мёртв после ready')
-      notifySessionDead(1, 'socks_health_fail', log)
-    } catch (e) {
-      log?.(`[olcrtc2] health watch err: ${e?.message || e}`)
-    }
-  }
-  setTimeout(() => void runProbe('t+45s'), 45_000)
-  healthWatchTimer = setInterval(() => void runProbe('tick'), 45_000)
-  socksHealthRunner = () => void runProbe('suspect')
+  log?.('[olcrtc2] SOCKS health probe off (traffic/HB, не gstatic)')
+  socksHealthRunner = null
 }
 
 function pipeOlcrtc2Line(line, log) {
@@ -619,8 +652,12 @@ function pipeOlcrtc2Line(line, log) {
       line,
     )
   ) {
+    iceConnected = true
     peerLivenessSuspect = false
     cancelPeerClosedGrace()
+  }
+  if (/vp8channel: peer latched|session .+ opened/i.test(line)) {
+    peerLatched = true
   }
   if (/peer restart detected|failed to connect link|subscriber media timeout|control missed pong|session closed/i.test(line)) {
     log(`[olcrtc2:peer] ${line.slice(0, 300)}`)
@@ -667,6 +704,8 @@ async function stopOlcrtc2Session(log) {
   sessionActive = false
   ready = false
   activeSocks = null
+  iceConnected = false
+  peerLatched = false
   cancelHealthWatch()
   cancelPeerClosedGrace()
   lastTunnelActivityMs = 0
@@ -677,7 +716,7 @@ async function stopOlcrtc2Session(log) {
   killProc(cncProc, 'olcrtc2-cnc', log)
   cncProc = null
   forceKillWindows(log)
-  await sleep(700)
+  await sleep(250)
 }
 
 function isOlcrtc2Alive() {
@@ -726,7 +765,8 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
   const dnsOverride = String(config.dns_override || config.wg_dns || '').trim()
   log?.(`[olcrtc2] SOCKS auth user=${socksUser} (RFC1929 → cnc + sing-box)`)
   log?.(
-    `[olcrtc2] DNS=${dnsOverride || '77.88.8.8,77.88.8.1'} (без fake-ip; ipv4_only; UDP/QUIC block)`,
+    `[olcrtc2] DNS=${dnsOverride || '77.88.8.8,77.88.8.1'} ` +
+      `(fake-ip ${FAKEIP_RANGE} → резолв на соте; ipv4_only; UDP/QUIC block)`,
   )
 
   const provider = String(config.olcrtc_provider || config.olcrtcProvider || 'telemost')
@@ -734,6 +774,7 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
     .includes('wb')
     ? 'wbstream'
     : 'telemost'
+  const noTelemostPrefetch = Boolean(config.__olcrtcNoTelemostPrefetch)
 
   const dataDir = path.join(app.getPath('userData'), 'olcrtc2-data')
   fs.mkdirSync(dataDir, { recursive: true })
@@ -743,10 +784,12 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
   let staticHosts = {}
   try {
     const { prefetchTelemost, prefetchWbstream } = require('./olcrtcPrefetch')
-    if (provider === 'telemost') {
+    if (provider === 'telemost' && !noTelemostPrefetch) {
       const pre = await prefetchTelemost(room, dataDir, log)
       if (pre?.connFile) telemostConnFile = pre.connFile
       if (pre?.staticHosts) staticHosts = { ...staticHosts, ...pre.staticHosts }
+    } else if (provider === 'telemost') {
+      log?.('[olcrtc2] Telemost prefetch bypass (retry без CONN_FILE)')
     } else if (provider === 'wbstream') {
       const pre = await prefetchWbstream(room, dataDir, log)
       if (pre?.staticHosts) staticHosts = { ...staticHosts, ...pre.staticHosts }
@@ -822,6 +865,9 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
 
   sessionActive = true
   ready = false
+  iceConnected = false
+  peerLatched = false
+  let prefetchedHandshakeTimeout = false
   log?.(
     `[olcrtc2] start ${path.basename(cncPath)} mode=${provider} room=${room.slice(0, 40)} socks=${socksHost}:${socksPort} auth=on`,
   )
@@ -831,14 +877,24 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
     env,
   })
+  const markPrefetchHandshakeTimeout = (line) => {
+    if (!line || provider !== 'telemost' || !telemostConnFile || noTelemostPrefetch) return
+    if (/handshake client: read welcome|handshake: read hdr: timeout|handshake.*timeout/i.test(line)) {
+      prefetchedHandshakeTimeout = true
+    }
+  }
   cncProc.stdout?.on('data', (buf) => {
     for (const line of String(buf).split(/\r?\n/)) {
-      pipeOlcrtc2Line(line.trim(), log)
+      const t = line.trim()
+      markPrefetchHandshakeTimeout(t)
+      pipeOlcrtc2Line(t, log)
     }
   })
   cncProc.stderr?.on('data', (buf) => {
     for (const line of String(buf).split(/\r?\n/)) {
-      pipeOlcrtc2Line(line.trim(), log)
+      const t = line.trim()
+      markPrefetchHandshakeTimeout(t)
+      pipeOlcrtc2Line(t, log)
     }
   })
   cncProc.on('exit', (code) => {
@@ -861,20 +917,39 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
 
   const portOk = await waitForPort(socksHost, socksPort, 90_000, log)
   if (!portOk || !sessionActive) {
+    // Частый кейс Telemost: prefetched CONN_FILE устарел → handshake timeout, затем
+    // вторая попытка уже взлетает. Делаем эту попытку локально, без room-failure.
+    if (
+      provider === 'telemost' &&
+      telemostConnFile &&
+      prefetchedHandshakeTimeout &&
+      !noTelemostPrefetch
+    ) {
+      log?.('[olcrtc2] handshake timeout на prefetch → retry без CONN_FILE (та же room)')
+      await stopOlcrtc2Session(log)
+      return beginOlcrtc2Session(
+        {
+          ...config,
+          __olcrtcNoTelemostPrefetch: true,
+        },
+        { log, onReady },
+      )
+    }
     await stopOlcrtc2Session(log)
     return { error: 'olcrtc2: SOCKS не поднялся (комната/ключ/сота?)' }
   }
   log?.(`[olcrtc2] SOCKS listen ${socksHost}:${socksPort}`)
 
-  // Как Android: peer dial ДО TUN — иначе sing-box заливает мёртвый SOCKS.
-  log?.(`[olcrtc2] SOCKS dial… peer/ICE`)
-  const dialOk = await waitForSocksDial(socksHost, socksPort, 45_000, log, socksUser, socksPass)
+  // Peer = ICE/latched; Telemost на Wi‑Fi обычно <5с. 25с блокировали тумблер зря.
+  const peerWaitMs = provider === 'telemost' ? 8_000 : 25_000
+  log?.(`[olcrtc2] ждём ICE/peer… (${peerWaitMs / 1000}с)`)
+  const dialOk = await waitForPeerReady(socksHost, socksPort, peerWaitMs, log, socksUser, socksPass)
   if (!dialOk || !sessionActive) {
     await stopOlcrtc2Session(log)
-    return { error: 'olcrtc2: SOCKS слушает, но peer не отвечает (dial timeout)' }
+    return { error: 'olcrtc2: peer/ICE не поднялся (timeout)' }
   }
 
-  log?.(`[olcrtc2] SOCKS dial OK → sing-box (UDP/QUIC block; Cursor→direct)`)
+  log?.(`[olcrtc2] peer OK → sing-box (UDP/QUIC block; Cursor→direct)`)
   singboxProc = spawn(singboxPath, ['run', '-c', sbPath], {
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -892,14 +967,14 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
   singboxProc.on('exit', (code) => {
     log?.(`[sing-box] exited code=${code}`)
   })
-  await sleep(600)
-  // post-TUN soft probe (не hard-fail)
-  await socksDialDomainOnce(socksHost, socksPort, 'www.gstatic.com', 3000, socksUser, socksPass)
+  await sleep(200)
   ready = true
   lastTunnelActivityMs = Date.now()
   activeSocks = { host: socksHost, port: socksPort, user: socksUser, pass: socksPass }
   startSocksHealthWatch(socksHost, socksPort, socksUser, socksPass, log)
   log?.(`[olcrtc2] tunnelReady (SOCKS + sing-box TUN; TG+YT via VPN)`)
+  // Не блокируем ready: короткий прогрев «первой страницы».
+  void warmFirstLoadPath(socksHost, socksPort, socksUser, socksPass, provider, log)
   onReady?.()
   return { success: true }
 }
@@ -911,4 +986,5 @@ module.exports = {
   isOlcrtc2SessionActive,
   setOlcrtc2SessionDeadHandler,
   olcrtc2ApiViaSocks,
+  renderSingboxConfig,
 }

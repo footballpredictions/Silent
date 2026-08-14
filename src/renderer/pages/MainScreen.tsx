@@ -913,8 +913,28 @@ export default function MainScreen({
           return
         }
         pushLog('Main', `vpnConnect olcrtc provider=${olcrtcProviderLabel()}`)
-        const res = await (window as any).electronAPI.vpnConnect(payload)
+        let res = await (window as any).electronAPI.vpnConnect(payload)
         if (connectGen !== connectGenRef.current) return
+        // Кеш мог указать на сорванную warm-комнату (warm=0 / prune) → SOCKS не слушает.
+        if (
+          res?.error &&
+          /SOCKS не поднялся|peer\/ICE не поднялся|комната\/ключ/i.test(String(res.error))
+        ) {
+          pushLog('Main', `olcrtc SOCKS fail → новая комната (${String(res.error).slice(0, 80)})`)
+          const fresh = await reportOlcrtcRoomFailure(String(res.error))
+          if (connectGen !== connectGenRef.current) return
+          if (fresh) {
+            const payload2 = buildOlcrtcConnectPayload(fresh, getOlcrtcProvider(), {
+              is_bootstrap: false,
+              device_fingerprint: fp,
+            })
+            if (!('error' in payload2)) {
+              pushLog('Main', `vpnConnect olcrtc retry provider=${olcrtcProviderLabel()}`)
+              res = await (window as any).electronAPI.vpnConnect(payload2)
+              if (connectGen !== connectGenRef.current) return
+            }
+          }
+        }
         if (res?.error) {
           clearSnakeHold()
           setConnected(false)
@@ -1608,10 +1628,6 @@ export default function MainScreen({
               surface={palette.surface}
               primary={palette.primaryBtnBg || palette.primary}
               vpnRunning={connected || connecting}
-              onVpnStoppedForSwitch={() => {
-                setConnected(false)
-                setConnecting(false)
-              }}
               onBack={() => {
                 setBypassNavLabel(bypassFamilyLabel())
                 setMenuPage(null)

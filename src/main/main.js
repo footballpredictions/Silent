@@ -1806,7 +1806,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
       // Всегда полный сброс WG/sing-box ДО prefetch: иначе Node/Go HTTPS
       // к cloud-api/stream.wb уходит в мёртвый TUN → timeout (на Android — whitelist).
       await cleanupVpnAsync()
-      await new Promise((r) => setTimeout(r, 600))
+      await new Promise((r) => setTimeout(r, 250))
       lastVpnConnectConfig = config
       vpnSessionActive = true
       vpnOlcrtcMode = true

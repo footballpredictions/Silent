@@ -29,8 +29,6 @@ type Props = {
   primary: string
   vpnRunning: boolean
   onBack: () => void
-  /** После смены провайдера при живом VPN — UI сбросит тумблер. */
-  onVpnStoppedForSwitch?: () => void
 }
 
 function ModeOption({
@@ -115,7 +113,6 @@ export default function MenuBypassPanel({
   primary,
   vpnRunning,
   onBack,
-  onVpnStoppedForSwitch,
 }: Props) {
   const [family, setFamily] = useState(getBypassFamily())
   const [vkMode, setVkMode] = useState(getVkCredStrategy())
@@ -125,6 +122,7 @@ export default function MenuBypassPanel({
   const [pendingOlc, setPendingOlc] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
+  const switchLocked = busy || vpnRunning
 
   useEffect(() => {
     if (!isDebugBuild) {
@@ -160,17 +158,12 @@ export default function MenuBypassPanel({
     setPendingOlc(null)
   }
 
-  const stopVpnIfNeeded = async () => {
+  useEffect(() => {
     if (!vpnRunning) return
-    setHint('Останавливаю текущий канал…')
-    try {
-      await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
-    } catch {
-      /* ignore */
-    }
-    onVpnStoppedForSwitch?.()
-    await new Promise((r) => setTimeout(r, 400))
-  }
+    clearPending()
+    setHint('Отключите VPN перед сменой варианта обхода.')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vpnRunning])
 
   const applyPending = async () => {
     if (busy || !hasPending) return
@@ -183,7 +176,10 @@ export default function MenuBypassPanel({
     setBusy(true)
     setHint(null)
     try {
-      if (willChange) await stopVpnIfNeeded()
+      if (willChange && vpnRunning) {
+        setHint('Сначала отключите VPN, затем меняйте вариант обхода.')
+        return
+      }
 
       if (nextFamily !== family) {
         setBypassFamily(nextFamily)
@@ -228,12 +224,17 @@ export default function MenuBypassPanel({
       {hint ? (
         <p className="text-[11px] mb-2" style={{ color: muted }}>{hint}</p>
       ) : null}
+      {vpnRunning ? (
+        <p className="text-[11px] mb-2" style={{ color: muted }}>
+          Переключение недоступно: VPN активен.
+        </p>
+      ) : null}
 
       <div className="flex-1 overflow-y-auto min-h-0">
         <ModeOption
           title="VK"
           selected={selFamily === BYPASS_FAMILY_WDTT}
-          enabled={!busy}
+          enabled={!switchLocked}
           fg={fg}
           muted={muted}
           onSelect={() => setPendingFamily(BYPASS_FAMILY_WDTT)}
@@ -243,7 +244,7 @@ export default function MenuBypassPanel({
             <ModeOption
               title="VKCalls"
               selected={selVk === VK_CRED_VKCALLS}
-              enabled={!busy}
+              enabled={!switchLocked}
               fg={fg}
               muted={muted}
               onSelect={() => {
@@ -254,7 +255,7 @@ export default function MenuBypassPanel({
             <ModeOption
               title="Авто капча"
               selected={selVk === VK_CRED_AUTO}
-              enabled={!busy}
+              enabled={!switchLocked}
               fg={fg}
               muted={muted}
               onSelect={() => {
@@ -265,7 +266,7 @@ export default function MenuBypassPanel({
             <ModeOption
               title="Вручную"
               selected={selVk === VK_CRED_MANUAL}
-              enabled={!busy}
+              enabled={!switchLocked}
               fg={fg}
               muted={muted}
               onSelect={() => {
@@ -280,7 +281,7 @@ export default function MenuBypassPanel({
         <ModeOption
           title="olcrtc"
           selected={selFamily === BYPASS_FAMILY_OLCRTC2}
-          enabled={!busy}
+          enabled={!switchLocked}
           fg={fg}
           muted={muted}
           onSelect={() => setPendingFamily(BYPASS_FAMILY_OLCRTC2)}
@@ -290,7 +291,7 @@ export default function MenuBypassPanel({
             <ModeOption
               title="Яндекс Телемост"
               selected={selOlc === OLCRTC_TELEMOST}
-              enabled={!busy}
+              enabled={!switchLocked}
               fg={fg}
               muted={muted}
               onSelect={() => {
@@ -301,7 +302,7 @@ export default function MenuBypassPanel({
             <ModeOption
               title="WB Stream"
               selected={selOlc === OLCRTC_WBSTREAM}
-              enabled={!busy}
+              enabled={!switchLocked}
               fg={fg}
               muted={muted}
               onSelect={() => {
@@ -313,7 +314,7 @@ export default function MenuBypassPanel({
         )}
       </div>
 
-      {(hasPending) && (
+      {(hasPending && !switchLocked) && (
         <div
           className="absolute inset-0 z-20 flex items-center justify-center px-6"
           style={{ background: 'rgba(0,0,0,0.46)' }}

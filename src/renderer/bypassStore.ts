@@ -375,6 +375,9 @@ export async function syncOlcrtcLiveChannel(opts?: {
 }
 
 let lastFailedOlcrtcRoom = ''
+let lastFailureReportAtMs = 0
+let lastFailureReportRoom = ''
+const FAILURE_REPORT_DEBOUNCE_MS = 8_000
 
 /** Peer dead → сброс только слота текущего провайдера + новый assign. */
 export async function reportOlcrtcRoomFailure(detail: string = ''): Promise<OlcrtcPublicConfig | null> {
@@ -382,6 +385,14 @@ export async function reportOlcrtcRoomFailure(detail: string = ''): Promise<Olcr
   const cfg = getCachedOlcrtcConfigForProvider(prov)
   const roomDbId = cfg?.providers?.[prov]?.room_db_id || ''
   const oldRoom = cfg?.providers?.[prov]?.room || ''
+  const now = Date.now()
+  if (
+    oldRoom &&
+    oldRoom === lastFailureReportRoom &&
+    now - lastFailureReportAtMs < FAILURE_REPORT_DEBOUNCE_MS
+  ) {
+    return getCachedOlcrtcConfigForProvider(prov)
+  }
   if (oldRoom) lastFailedOlcrtcRoom = oldRoom
   try {
     const fp = getStableDeviceFingerprint()
@@ -394,9 +405,10 @@ export async function reportOlcrtcRoomFailure(detail: string = ''): Promise<Olcr
     }
     await postOlcrtc2Json('/api/vpn/olcrtc2-room-failure', body, 15_000)
   } catch { /* ignore */ }
-  try {
-    localStorage.removeItem(olcrtcCacheKey(prov))
-  } catch { /* ignore */ }
+  lastFailureReportAtMs = now
+  lastFailureReportRoom = oldRoom
+  // Кеш слота не затираем: сохраняем last-known-good до подтверждения новой room.
+  // Старт на старой room блокируется через lastFailedOlcrtcRoom.
   try {
     const { pushLog } = await import('./debugLog')
     pushLog('olcrtc', `room failure → сброс sticky, ищем новый канал (${detail || oldRoom})`)

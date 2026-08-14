@@ -150,15 +150,17 @@ async function httpPostJson(urlStr, payload, headers = {}, timeoutMs = 45_000) {
 }
 
 async function resolveHosts(hosts, into) {
-  for (const h of hosts) {
-    if (!h || into[h]) continue
-    try {
-      const r = await dns.lookup(h, { family: 4 })
-      if (r?.address) into[h] = r.address
-    } catch {
-      /* ignore */
-    }
-  }
+  const need = (hosts || []).filter((h) => h && !into[h])
+  await Promise.all(
+    need.map(async (h) => {
+      try {
+        const r = await dns.lookup(h, { family: 4 })
+        if (r?.address) into[h] = r.address
+      } catch {
+        /* ignore */
+      }
+    }),
+  )
 }
 
 function hostFromUrl(urlStr) {
@@ -171,11 +173,48 @@ function hostFromUrl(urlStr) {
 
 async function prefetchTelemost(room, dataDir, log) {
   const roomUrl = room.startsWith('https://') ? room : `https://telemost.yandex.ru/j/${room}`
+  const roomIdHint = String(room || '').replace(/^https?:\/\/[^/]+\/j\//, '').split(/[?#]/)[0]
+  const file = path.join(dataDir, 'telemost-conn.json')
+  const staticHosts = {}
+  // Диск-кеш: не бить cloud-api на каждый тумблер (cold start).
+  try {
+    if (fs.existsSync(file)) {
+      const st = fs.statSync(file)
+      const ttlMs = 4 * 60 * 1000
+      if (Date.now() - st.mtimeMs < ttlMs) {
+        const info = JSON.parse(fs.readFileSync(file, 'utf8'))
+        const diskRoom = String(info?.room_id || '')
+        if (
+          diskRoom &&
+          (diskRoom === roomIdHint ||
+            String(room).includes(diskRoom) ||
+            roomUrl.includes(diskRoom))
+        ) {
+          log?.('[olcrtc] Telemost auth disk hit')
+          await resolveHosts(
+            [
+              'cloud-api.yandex.ru',
+              'telemost.yandex.ru',
+              'goloom.strm.yandex.net',
+              'turn.tel.yandex.net',
+              'stun.rtc.yandex.net',
+            ],
+            staticHosts,
+          )
+          const media = info?.client_configuration?.media_server_url || ''
+          const mediaHost = hostFromUrl(media)
+          if (mediaHost) await resolveHosts([mediaHost], staticHosts)
+          return { connFile: file, staticHosts }
+        }
+      }
+    }
+  } catch {
+    /* network path */
+  }
   const enc = encodeURIComponent(roomUrl)
   const url =
     `https://cloud-api.yandex.ru/telemost_front/v2/telemost/conferences/${enc}/connection` +
     '?next_gen_media_platform_allowed=true&display_name=silent-pc&waiting_room_supported=true'
-  const staticHosts = {}
   await resolveHosts(
     [
       'cloud-api.yandex.ru',
@@ -205,7 +244,6 @@ async function prefetchTelemost(room, dataDir, log) {
     }
     const mediaHost = hostFromUrl(media)
     if (mediaHost) await resolveHosts([mediaHost], staticHosts)
-    const file = path.join(dataDir, 'telemost-conn.json')
     fs.writeFileSync(file, JSON.stringify(info), 'utf8')
     log?.('[olcrtc] Telemost auth prefetch OK (electron/net)')
     return { connFile: file, staticHosts }

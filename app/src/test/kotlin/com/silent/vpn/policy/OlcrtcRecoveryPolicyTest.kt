@@ -149,11 +149,20 @@ class OlcrtcRecoveryPolicyTest {
     }
 
     @Test
-    fun `recover debounce skips peer_dead but allows restore and retry`() {
+    fun `recover debounce skips process_exit but allows restore and retry`() {
+        assertEquals(
+            OlcrtcRecoveryPolicy.RecoverDecision.SKIP_NON_CRITICAL_NETWORK,
+            recover(
+                reason = "olcrtc_peer_dead:peer_closed",
+                prefer = null,
+                lastRestartMs = 95_000L,
+                now = 100_000L,
+            ),
+        )
         assertEquals(
             OlcrtcRecoveryPolicy.RecoverDecision.SKIP_DEBOUNCE,
             recover(
-                reason = "olcrtc_peer_dead:peer_closed",
+                reason = "olcrtc_peer_dead:process_exit:141",
                 prefer = null,
                 lastRestartMs = 95_000L,
                 now = 100_000L,
@@ -171,7 +180,7 @@ class OlcrtcRecoveryPolicyTest {
         assertEquals(
             OlcrtcRecoveryPolicy.RecoverDecision.ALLOW,
             recover(
-                reason = "olcrtc_peer_dead:peer_closed:retry",
+                reason = "olcrtc_peer_dead:process_exit:141:retry",
                 prefer = null,
                 lastRestartMs = 95_000L,
                 now = 100_000L,
@@ -250,9 +259,14 @@ class OlcrtcRecoveryPolicyTest {
     }
 
     @Test
-    fun `peer_dead always reassigns room even on LTE`() {
-        // Иначе stale room → WB 404 «через раз».
-        assertTrue(
+    fun `peer_dead stream_dead first recover keeps room — retry reassigns`() {
+        assertFalse(
+            OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(
+                onMobileData = false,
+                reason = "olcrtc_peer_dead:stream_dead",
+            ),
+        )
+        assertFalse(
             OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(
                 onMobileData = true,
                 reason = "olcrtc_peer_dead:peer_closed",
@@ -261,26 +275,43 @@ class OlcrtcRecoveryPolicyTest {
         assertTrue(
             OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(
                 onMobileData = true,
+                reason = "olcrtc_peer_dead:stream_dead:retry",
+            ),
+        )
+        assertFalse(
+            OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(
+                onMobileData = true,
                 reason = "watchdog_olcrtc_down",
-            ),
-        )
-        assertTrue(
-            OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(
-                onMobileData = false,
-                reason = "olcrtc_peer_dead:socks_api_fail",
-            ),
-        )
-        assertTrue(
-            OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(
-                onMobileData = false,
-                reason = "watchdog_olcrtc_socks",
             ),
         )
         assertFalse(
             OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(
                 onMobileData = false,
+                reason = "olcrtc_peer_dead:socks_api_fail",
+            ),
+        )
+        assertFalse(
+            OlcrtcRecoveryPolicy.shouldRestartOnPeerGlitch("stream_dead"),
+        )
+        assertFalse(
+            OlcrtcRecoveryPolicy.shouldRestartOnPeerGlitch("peer_closed"),
+        )
+        assertTrue(
+            OlcrtcRecoveryPolicy.shouldRestartOnPeerGlitch("process_exit:141"),
+        )
+        assertFalse(OlcrtcRecoveryPolicy.shouldProbeSocksWhileTunnelReady())
+        assertFalse(OlcrtcRecoveryPolicy.shouldForceSocksDialOnLivenessSuspect())
+        assertFalse(
+            OlcrtcRecoveryPolicy.shouldRefreshConfigOnRecover(
+                onMobileData = false,
                 reason = "transport_switch:wifi",
             ),
+        )
+        assertTrue(
+            OlcrtcRecoveryPolicy.shouldFallbackToCachedRoomOnReassignMiss("olcrtc_peer_dead:stream_dead"),
+        )
+        assertFalse(
+            OlcrtcRecoveryPolicy.shouldFallbackToCachedRoomOnReassignMiss("olcrtc_peer_dead:stream_dead:retry"),
         )
     }
 
@@ -343,7 +374,7 @@ class OlcrtcRecoveryPolicyTest {
             ),
         )
         assertEquals(
-            OlcrtcRecoveryPolicy.WatchdogAction.SOCKS_DEAD,
+            OlcrtcRecoveryPolicy.WatchdogAction.NONE,
             OlcrtcRecoveryPolicy.decideWatchdog(
                 OlcrtcRecoveryPolicy.WatchdogInput(
                     sessionActive = true,
@@ -719,9 +750,9 @@ class OlcrtcRecoveryPolicyTest {
             ),
         )
 
-        // 4) peer closed → recover
+        // 4) peer closed → native reconnect, без recover
         assertEquals(
-            OlcrtcRecoveryPolicy.RecoverDecision.ALLOW,
+            OlcrtcRecoveryPolicy.RecoverDecision.SKIP_NON_CRITICAL_NETWORK,
             recover(
                 everReady = true,
                 reason = "olcrtc_peer_dead:peer_closed",

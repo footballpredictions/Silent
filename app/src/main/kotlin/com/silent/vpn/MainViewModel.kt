@@ -32,6 +32,7 @@ import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.UserProfile
 import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.data.VpnHashesResponse
+import com.silent.vpn.policy.OlcrtcSessionPolicy
 import com.silent.vpn.security.AppIntegrity
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.service.VpnBackendSync
@@ -894,7 +895,6 @@ class MainViewModel @Inject constructor(
                 var any = false
                 for (p in want) {
                     val cfg = runCatching { repo.fetchOlcrtcConfigTunnelOnly(p) }.getOrNull()
-                        ?: runCatching { repo.fetchOlcrtcConfig(p) }.getOrNull()
                     if (cfg?.providers?.get(p)?.room?.isNotBlank() == true) any = true
                 }
                 com.silent.vpn.util.OlcrtcDiag.i(
@@ -941,7 +941,6 @@ class MainViewModel @Inject constructor(
                 var got = false
                 for (p in want) {
                     val cfg = repo.fetchOlcrtcConfigTunnelOnly(p)
-                        ?: repo.fetchOlcrtcConfig(p)
                     com.silent.vpn.util.OlcrtcDiag.i(
                         com.silent.vpn.util.OlcrtcDiag.CFG,
                         "ephemeral tunnel-only $p room=${cfg?.providers?.get(p)?.room?.take(28)}",
@@ -1326,6 +1325,33 @@ class MainViewModel @Inject constructor(
             if (_vpnState.value == VpnState.CONNECTED && SilentVpnService.isRunning) {
                 markLocalDeviceOnline()
             }
+            prefetchOlcrtcSlotsOnVkTunnel()
+        }
+    }
+
+    /**
+     * Конфиг TM/WB — при логине и при включённом VK, не в диалоге Apply.
+     * Не блокирует UI: пустые слоты дотягиваются через живой tunnel.
+     */
+    private suspend fun prefetchOlcrtcSlotsOnVkTunnel() {
+        if (repo.isOlcrtcBypass()) return
+        if (!repo.isLoggedIn()) return
+        if (!WdttTunnelManager.tunnelReady.value) return
+        if (WdttTunnelManager.isBootstrapMode()) return
+        val need = listOf("telemost", "wbstream").filter {
+            repo.getCachedOlcrtcConfigForProvider(it)
+                ?.providers?.get(it)?.room.isNullOrBlank()
+        }
+        if (need.isEmpty()) return
+        com.silent.vpn.util.OlcrtcDiag.i(
+            com.silent.vpn.util.OlcrtcDiag.CFG,
+            "VK tunnel prefetch olcrtc slots=$need",
+        )
+        runCatching {
+            repo.prepareMainVpnDirectApi()
+            repo.prefetchOlcrtcBothProviders()
+        }.onFailure { e ->
+            DebugLog.w("MainViewModel", "VK olcrtc prefetch: ${e.message}")
         }
     }
 
@@ -2486,13 +2512,24 @@ class MainViewModel @Inject constructor(
         hashFailureFlushJob?.cancel()
         hashFailureFlushJob = null
         WdttTunnelManager.ensureApiOverlayOff()
-        runCatching {
-            val intent = Intent(context, SilentVpnService::class.java).apply {
-                action = SilentVpnService.ACTION_DISCONNECT
-            }
-            context.startService(intent)
+        val leftoverNative = OlcrtcSessionPolicy.shouldHardResetLeftoverNative(
+            vpnServiceRunning = SilentVpnService.isRunning,
+            nativeRunning = OlcrtcTunnelManager.running.value,
+            tunnelReady = OlcrtcTunnelManager.tunnelReady.value,
+        )
+        // Не hardReset только потому что выбран olcrtc: ephemeral/bootstrap stop
+        // иначе убивает уже стартовавший Telemost и стирает комнату.
+        if (leftoverNative && !SilentVpnService.isRunning) {
+            OlcrtcTunnelManager.hardReset("disconnect_leftover")
         }
-        if (!SilentVpnService.isRunning) {
+        if (SilentVpnService.isRunning) {
+            runCatching {
+                val intent = Intent(context, SilentVpnService::class.java).apply {
+                    action = SilentVpnService.ACTION_DISCONNECT
+                }
+                context.startService(intent)
+            }
+        } else {
             WdttTunnelManager.stop()
         }
     }
@@ -2757,6 +2794,25 @@ class MainViewModel @Inject constructor(
                                 err.contains("WB join 404", ignoreCase = true) ||
                                 err.contains("join room", ignoreCase = true)
                             ) {
+                                if (
+                                    !OlcrtcSessionPolicy.shouldWipeCacheOnEarlyFail(
+                                        err,
+                                        olcrtcReassignAttempt,
+                                    ) &&
+                                    olcrtcReassignAttempt < 1
+                                ) {
+                                    _vpnError.value = null
+                                    _vpnState.value = VpnState.DISCONNECTED
+                                    stopVpnLocally(context)
+                                    delay(400)
+                                    WdttTunnelManager.logUi(
+                                        "olcrtc_retry",
+                                        "повтор той же комнаты (stale onDestroy/code=1)",
+                                        1,
+                                    )
+                                    connect(context, olcrtcReassignAttempt + 1)
+                                    return@launch
+                                }
                                 var newRoom: String? = null
                                 runCatching {
                                     // Не clearOlcrtcCache до нового assign — на LTE без VK
@@ -3318,6 +3374,15 @@ class MainViewModel @Inject constructor(
             return
         }
         if (_vpnState.value == VpnState.DISCONNECTED && !SilentVpnService.isRunning) {
+            if (
+                OlcrtcSessionPolicy.shouldHardResetLeftoverNative(
+                    vpnServiceRunning = false,
+                    nativeRunning = OlcrtcTunnelManager.running.value,
+                    tunnelReady = OlcrtcTunnelManager.tunnelReady.value,
+                )
+            ) {
+                OlcrtcTunnelManager.hardReset("disconnect_leftover")
+            }
             SessionTrace.exit("MainViewModel.disconnect", "already off")
             pendingConnectAfterSubscriptionRefresh = false
             return

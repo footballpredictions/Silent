@@ -81,8 +81,18 @@ object OlcrtcTunnelManager {
     private var tunBridgeProc: Process? = null
     private var tunFd: ParcelFileDescriptor? = null
     private val starting = AtomicBoolean(false)
+    /** Старый worker после выкл. не должен hardReset'ить новый connect. */
+    private val startEpoch = AtomicInteger(0)
 
     fun isStarting(): Boolean = starting.get()
+    fun currentEpoch(): Int = startEpoch.get()
+
+    /** onDestroy/STOP предыдущего цикла не должен убивать уже стартовавший connect. */
+    fun shouldIgnoreStaleVpnTeardown(bindEpoch: Int): Boolean {
+        if (starting.get()) return true
+        val cur = startEpoch.get()
+        return bindEpoch != 0 && bindEpoch < cur
+    }
     @Volatile private var lastFailHint: String = ""
     /** ICE PeerConnection connected — можно поднимать hev full-tunnel. */
     @Volatile private var iceConnected = false
@@ -157,6 +167,7 @@ object OlcrtcTunnelManager {
     /** Heartbeat/API через SOCKS прошёл — data plane жив. */
     fun noteSocksPathOk() {
         socksApiFailStreak.set(0)
+        lastTunnelActivityMs = System.currentTimeMillis()
     }
 
     /**
@@ -169,7 +180,9 @@ object OlcrtcTunnelManager {
         DebugLog.w("Olcrtc", "socks path fail n=$n ($detail)")
         if (n < OlcrtcRecoveryPolicy.SOCKS_API_FAIL_SUSPECT_STREAK) return
         socksApiFailStreak.set(0)
-        markPeerLivenessSuspect("socks_api_fail", 4_000L)
+        if (OlcrtcRecoveryPolicy.shouldForceSocksDialOnLivenessSuspect()) {
+            markPeerLivenessSuspect("socks_api_fail", 4_000L)
+        }
     }
 
     /** true если SOCKS dial к gstatic проходит (peer жив). */
@@ -184,14 +197,16 @@ object OlcrtcTunnelManager {
 
     private fun markPeerLivenessSuspect(reason: String, graceMs: Long = 8_000L) {
         peerLivenessSuspect = true
-        lastTunnelActivityMs = 0L
         WdttTunnelManager.logUi(
             "olcrtc_liveness",
-            "peer suspect ($reason) — принудительная проверка SOCKS",
+            "peer suspect ($reason) — без SOCKS-пробы (не рвём видео)",
             2,
         )
+        if (!OlcrtcRecoveryPolicy.shouldForceSocksDialOnLivenessSuspect()) {
+            return
+        }
+        lastTunnelActivityMs = 0L
         schedulePeerClosedGrace(reason, graceMs)
-        // Не ждать 45с health-watch: быстрый force-dial пока UI ещё зелёный.
         val p = activeParams ?: return
         scheduler.schedule({
             try {
@@ -209,7 +224,7 @@ object OlcrtcTunnelManager {
             } catch (e: Exception) {
                 DebugLog.w("Olcrtc", "suspect dial: ${e.message}")
             }
-        }, graceMs.coerceAtMost(4_000L).coerceAtLeast(1_500L), TimeUnit.MILLISECONDS)
+        }, graceMs.coerceAtLeast(1_500L), TimeUnit.MILLISECONDS)
     }
 
     private fun cancelPeerClosedGrace() {
@@ -224,12 +239,16 @@ object OlcrtcTunnelManager {
     }
 
     /**
-     * После tunnelReady UI зелёный, а Telemost peer может тихо умереть (missed pong).
-     * Периодический SOCKS-probe → peer_dead / красный лог, а не «всё ок, а сайты нет».
+     * gstatic probe на узком Telemost/vp8 крадёт полосу у YouTube/Telegram
+     * (секунды «буфера» / «появляется соединение»). Glitch не рестартит процесс —
+     * зонд больше не запускаем.
      */
     private fun startSocksHealthWatch(params: Params) {
         cancelHealthWatch()
-        // Telemost и WB — редкий health (ранний dial крал полосу у первого YT/TG).
+        if (!OlcrtcRecoveryPolicy.shouldProbeSocksWhileTunnelReady()) {
+            DebugLog.i("Olcrtc", "SOCKS health probe off (${params.provider})")
+            return
+        }
         val periodSec = 45L
         healthWatchFuture = scheduler.scheduleWithFixedDelay({
             try {
@@ -258,12 +277,6 @@ object OlcrtcTunnelManager {
                     return@scheduleWithFixedDelay
                 }
                 healthFailStreak.set(0)
-                WdttTunnelManager.logUi(
-                    "olcrtc_health",
-                    "SOCKS мёртв после ready (peer/liveness) — переподключение…",
-                    2,
-                    isError = true,
-                )
                 notifyPeerDead("socks_health_fail")
             } catch (e: Exception) {
                 DebugLog.w("Olcrtc", "health watch: ${e.message}")
@@ -301,7 +314,8 @@ object OlcrtcTunnelManager {
         peerClosedGraceFuture?.cancel(false)
         peerClosedGraceFuture = scheduler.schedule({
             try {
-                val force = peerLivenessSuspect
+                val force = peerLivenessSuspect &&
+                    OlcrtcRecoveryPolicy.shouldForceSocksDialOnLivenessSuspect()
                 val socksOk = probeSocksHealthy(forceDial = force)
                 if (
                     OlcrtcRecoveryPolicy.shouldNotifyPeerDeadAfterGrace(
@@ -366,6 +380,15 @@ object OlcrtcTunnelManager {
      */
     private fun notifyPeerDead(reason: String) {
         if (!_running.value && !_tunnelReady.value) return
+        if (!OlcrtcRecoveryPolicy.shouldRestartOnPeerGlitch(reason)) {
+            DebugLog.w("Olcrtc", "peer glitch ignored (native reconnect): $reason")
+            WdttTunnelManager.logUi(
+                "olcrtc_keep_room",
+                "сбой канала ($reason) — ждём восстановление без смены комнаты",
+                2,
+            )
+            return
+        }
         val now = System.currentTimeMillis()
         if (now < suppressPeerDeadUntilMs) {
             DebugLog.i("Olcrtc", "peer dead suppressed: $reason")
@@ -454,6 +477,7 @@ object OlcrtcTunnelManager {
 
     /** Убить native/hev/TUN так же жёстко, как force-stop приложения. */
     fun hardReset(reason: String = "") {
+        startEpoch.incrementAndGet()
         cancelPeerClosedGrace()
         cancelHealthWatch()
         openStreamFailStreak.set(0)
@@ -485,7 +509,7 @@ object OlcrtcTunnelManager {
         runCatching { HevSocksTunnel.stopIfLoaded() }
         Thread.sleep(80)
         if (reason.isNotBlank()) {
-            WdttTunnelManager.logUi("olcrtc_hard_reset", "hardReset: $reason", 2)
+            WdttTunnelManager.logUi("olcrtc_hard_reset_$reason", "hardReset: $reason", 2)
             DebugLog.w("Olcrtc", "hardReset: $reason")
         }
     }
@@ -494,9 +518,9 @@ object OlcrtcTunnelManager {
         if (proc == null) return
         try {
             proc.destroy()
-            if (!proc.waitFor(400, TimeUnit.MILLISECONDS)) {
+            if (!proc.waitFor(1_200, TimeUnit.MILLISECONDS)) {
                 proc.destroyForcibly()
-                proc.waitFor(400, TimeUnit.MILLISECONDS)
+                proc.waitFor(800, TimeUnit.MILLISECONDS)
             }
         } catch (e: Exception) {
             DebugLog.w("Olcrtc", "kill $label: ${e.message}")
@@ -526,6 +550,8 @@ object OlcrtcTunnelManager {
     fun start(context: Context, params: Params, vpnService: VpnService? = null): String? {
         // Как kill app: полный native reset до смены Telemost↔WB.
         hardReset("before_start")
+        val epoch = startEpoch.get()
+        WdttTunnelManager.clearLogs()
         if (!starting.compareAndSet(false, true)) {
             return "olcrtc: already starting"
         }
@@ -580,6 +606,7 @@ object OlcrtcTunnelManager {
 
         worker.execute {
             try {
+                if (epoch != startEpoch.get()) return@execute
                 // Ещё раз на worker: предыдущий hev/proc могли дожить досюда.
                 runCatching { HevSocksTunnel.stopIfLoaded() }
                 killProc(olcrtcProc, "olcrtc_pre")
@@ -598,6 +625,23 @@ object OlcrtcTunnelManager {
                 peerLatched = false
                 _tunnelReady.value = false
                 _running.value = true
+                run {
+                    val deadline = System.currentTimeMillis() + 2_000
+                    while (System.currentTimeMillis() < deadline) {
+                        if (epoch != startEpoch.get()) return@execute
+                        try {
+                            Socket().use {
+                                it.connect(
+                                    InetSocketAddress(sessionParams.socksHost, sessionParams.socksPort),
+                                    120,
+                                )
+                            }
+                            Thread.sleep(80)
+                        } catch (_: Exception) {
+                            break
+                        }
+                    }
+                }
 
                 val dataDir = File(appCtx.filesDir, "olcrtc-data").apply { mkdirs() }
                 val libDir = appCtx.applicationInfo.nativeLibraryDir
@@ -695,9 +739,9 @@ object OlcrtcTunnelManager {
                     }
                 olcrtcProc = proc
                 pipeLogs(proc)
-                watchExit(proc)
+                watchExit(proc, epoch)
 
-                if (!waitForSocks(sessionParams.socksHost, sessionParams.socksPort, 90_000, proc)) {
+                if (!waitForSocks(sessionParams.socksHost, sessionParams.socksPort, 90_000, proc, epoch)) {
                     val exited = try {
                         proc.exitValue()
                     } catch (_: Exception) {
@@ -710,8 +754,10 @@ object OlcrtcTunnelManager {
                         else ->
                             "olcrtc SOCKS не поднялся на ${sessionParams.socksHost}:${sessionParams.socksPort}"
                     }
-                    markStartFailed(msg)
-                    WdttTunnelManager.logUi("olcrtc_socks_fail", msg, 99, isError = true)
+                    if (epoch == startEpoch.get()) {
+                        markStartFailed(msg)
+                        WdttTunnelManager.logUi("olcrtc_socks_fail", msg, 99, isError = true)
+                    }
                     return@execute
                 }
                 WdttTunnelManager.logUi(
@@ -726,14 +772,16 @@ object OlcrtcTunnelManager {
                     "SOCKS dial… peer/ICE provider=${sessionParams.provider}",
                     1,
                 )
-                if (!waitForSocksDial(sessionParams, 45_000, proc)) {
+                if (!waitForSocksDial(sessionParams, 45_000, proc, epoch)) {
                     val msg = if (lastFailHint.isNotBlank()) {
                         lastFailHint
                     } else {
                         "olcrtc SOCKS слушает, но peer не отвечает (dial timeout)"
                     }
-                    markStartFailed(msg)
-                    WdttTunnelManager.logUi("olcrtc_dial_fail", msg, 99, isError = true)
+                    if (epoch == startEpoch.get()) {
+                        markStartFailed(msg)
+                        WdttTunnelManager.logUi("olcrtc_dial_fail", msg, 99, isError = true)
+                    }
                     return@execute
                 }
                 WdttTunnelManager.logUi("olcrtc_dial", "SOCKS dial OK", 1)
@@ -742,8 +790,10 @@ object OlcrtcTunnelManager {
                 if (vpnService != null) {
                     val tunErr = attachHevTun(appCtx, sessionParams, vpnService)
                     if (tunErr != null) {
-                        markStartFailed(tunErr)
-                        WdttTunnelManager.logUi("olcrtc_tun_fail", tunErr, 99, isError = true)
+                        if (epoch == startEpoch.get()) {
+                            markStartFailed(tunErr)
+                            WdttTunnelManager.logUi("olcrtc_tun_fail", tunErr, 99, isError = true)
+                        }
                         return@execute
                     }
                 } else {
@@ -760,6 +810,7 @@ object OlcrtcTunnelManager {
                     2,
                 )
                 Thread.sleep(80)
+                if (epoch != startEpoch.get()) return@execute
                 socksDialOnce(sessionParams, "www.gstatic.com", 2_000)
                 WdttTunnelManager.logUi("olcrtc_post_hev", "post-hev dial OK (как PC)", 1)
                 _tunnelReady.value = true
@@ -767,11 +818,13 @@ object OlcrtcTunnelManager {
                 startSocksHealthWatch(sessionParams)
             } catch (e: Exception) {
                 val msg = e.message ?: "olcrtc background start failed"
-                markStartFailed(msg)
-                WdttTunnelManager.logUi("olcrtc_bg_fail", msg, 99, isError = true)
-                DebugLog.e("Olcrtc", "bg start failed", e)
+                if (epoch == startEpoch.get()) {
+                    markStartFailed(msg)
+                    WdttTunnelManager.logUi("olcrtc_bg_fail", msg, 99, isError = true)
+                    DebugLog.e("Olcrtc", "bg start failed", e)
+                }
             } finally {
-                starting.set(false)
+                if (epoch == startEpoch.get()) starting.set(false)
             }
         }
         return null
@@ -904,7 +957,7 @@ object OlcrtcTunnelManager {
                                 n >= OlcrtcRecoveryPolicy.STREAM_DEAD_SUSPECT_STREAK &&
                                 !peerLivenessSuspect
                             ) {
-                                markPeerLivenessSuspect("stream_dead", 4_000L)
+        markPeerLivenessSuspect("stream_dead", OlcrtcRecoveryPolicy.PEER_CLOSED_GRACE_MS)
                             }
                         }
                         if (Regex(
@@ -916,7 +969,7 @@ object OlcrtcTunnelManager {
                         }
                         // Типичный шум Telemost/WB: часть TURN allocate/TLS fail при живом peer.
                         val iceNoise = Regex(
-                            """failed to allocate on TURN|failed to get server reflexive|all retransmissions failed|i/o timeout.*stun:|stun:turn\.tel\.yandex|turn\.tel\.yandex\.net|Failed to connect to relay|Failed to read from candidate|certificate has expired|x509: certificate|not yet valid""",
+                            """failed to allocate on TURN|failed to get server reflexive|all retransmissions failed|i/o timeout.*stun:|stun:turn\.tel\.yandex|turn\.tel\.yandex\.net|Failed to connect to relay|Failed to read from candidate|certificate has expired|x509: certificate|not yet valid|Failed to find pair for add binding|add binding response|related :::""",
                             RegexOption.IGNORE_CASE,
                         ).containsMatchIn(l)
                         val streamNoise = isTransientStreamNoise(l)
@@ -1040,12 +1093,15 @@ object OlcrtcTunnelManager {
         )
     }
 
-    private fun watchExit(proc: Process) {
+    private fun watchExit(proc: Process, epoch: Int) {
         Thread({
             try {
                 val code = proc.waitFor()
+                if (epoch != startEpoch.get()) {
+                    DebugLog.i("Olcrtc", "ignore exit after reset code=$code epoch=$epoch now=${startEpoch.get()}")
+                    return@Thread
+                }
                 // Важно: после stop() olcrtcProc=null — всё равно это СТАРЫЙ процесс.
-                // Раньше при null не выходили → process_exit_early на уже новом старте → recover×N.
                 if (olcrtcProc !== proc) {
                     DebugLog.i("Olcrtc", "ignore exit of stale process code=$code")
                     return@Thread
@@ -1059,7 +1115,6 @@ object OlcrtcTunnelManager {
                     isError = stillWanted && code != 0,
                 )
                 when {
-                    // Только после ready: early exit во время старта → markStartFailed (без залипания).
                     stillWanted && wasReady -> notifyPeerDead("process_exit:$code")
                     stillWanted && !wasReady -> {
                         val msg = when {
@@ -1335,9 +1390,15 @@ object OlcrtcTunnelManager {
     }
 
     /** SOCKS5 CONNECT по домену — peer + DNS через туннель (как на PC). */
-    private fun waitForSocksDial(params: Params, timeoutMs: Long, proc: Process? = null): Boolean {
+    private fun waitForSocksDial(
+        params: Params,
+        timeoutMs: Long,
+        proc: Process? = null,
+        epoch: Int = startEpoch.get(),
+    ): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
+            if (epoch != startEpoch.get()) return false
             if (proc != null && !isProcessAlive(proc)) return false
             if (!_running.value) return false
             if (socksDialOnce(params, "www.gstatic.com", soTimeoutMs = 4000)) {
@@ -2170,12 +2231,16 @@ object OlcrtcTunnelManager {
             false
         }
 
-    private fun waitForSocks(host: String, port: Int, timeoutMs: Long, proc: Process? = null): Boolean {
+    private fun waitForSocks(
+        host: String,
+        port: Int,
+        timeoutMs: Long,
+        proc: Process? = null,
+        epoch: Int = startEpoch.get(),
+    ): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
-        // НЕ kill по media-ICE: у Telemost/WB pion «connected» к SFU приходит за ~1с,
-        // а SOCKS — только после waitForPeer (~до 15с). Старый kill@8с рвал живые сессии
-        // и чистил кеш → «нет сессии» при смене провайдера.
         while (System.currentTimeMillis() < deadline) {
+            if (epoch != startEpoch.get()) return false
             if (proc != null && !isProcessAlive(proc)) return false
             if (!_running.value) return false
             try {

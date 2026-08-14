@@ -41,7 +41,7 @@ object OlcrtcRecoveryPolicy {
     const val STREAM_DEAD_KILL_STREAK = 6
 
     /** Heartbeat/API через SOCKS fail при tunnelReady — data plane мёртв. */
-    const val SOCKS_API_FAIL_SUSPECT_STREAK = 2
+    const val SOCKS_API_FAIL_SUSPECT_STREAK = 3
 
     /** Telemost/WB closed — даём peer шанс самовосстановиться без лишнего restart. */
     const val PEER_CLOSED_GRACE_MS = 18_000L
@@ -190,28 +190,55 @@ object OlcrtcRecoveryPolicy {
         reason.startsWith("transport_switch:") ||
             reason.startsWith("internet_restored") ||
             reason.startsWith("phone_call_end") ||
-            reason.startsWith("olcrtc_peer_dead") ||
-            reason.startsWith("watchdog_olcrtc")
+            reason.startsWith("olcrtc_peer_dead:process_exit") ||
+            reason.startsWith("watchdog_olcrtc_down") ||
+            reason.startsWith("watchdog_olcrtc_stuck")
+
+    /**
+     * Native olcrtc сам делает reconnect на liveness (~4 мин ping).
+     * Kotlin hardReset/смена комнаты = минута «зависло». Рестарт только если процесс умер.
+     */
+    fun shouldRestartOnPeerGlitch(reason: String): Boolean {
+        val r = reason.lowercase()
+        return r.contains("process_exit")
+    }
+
+    /**
+     * gstatic SOCKS-проба на узком Telemost/vp8 = секунды зависания YouTube/Telegram.
+     * Glitch всё равно не рестартит процесс — зонд только вредит полосе.
+     */
+    fun shouldProbeSocksWhileTunnelReady(): Boolean = false
+
+    fun shouldForceSocksDialOnLivenessSuspect(): Boolean = false
 
     /** После failed recover — один retry, только если сессия уже была ready. */
     fun shouldScheduleRecoverRetry(everReady: Boolean, reason: String): Boolean =
         everReady && !reason.contains(":retry")
 
     /**
-     * После peer_dead / watchdog нельзя стартовать ту же мёртвую room (WB 404).
-     * Раньше на LTE refresh отключали → stale room; теперь всегда reassign,
-     * с длинным timeout в SilentVpnService (create warm ~секунды–десятки с).
+     * После peer_dead / watchdog: новая room только на retry / 404.
+     * Первый stream_dead — комната на srv обычно жива (liveness reconnect ~4мин);
+     * 60с assign при живом sticky = «подвисло минуту».
      */
-    @Suppress("UNUSED_PARAMETER")
     fun shouldRefreshConfigOnRecover(onMobileData: Boolean, reason: String): Boolean {
-        return reason.startsWith("olcrtc_peer_dead") ||
-            reason.startsWith("watchdog_olcrtc") ||
-            reason.contains("socks_api_fail") ||
-            reason.contains("stream_dead")
+        if (reason.contains(":retry")) return true
+        if (
+            reason.contains("404") ||
+                reason.contains("conference") ||
+                reason.contains("not found", ignoreCase = true)
+        ) {
+            return true
+        }
+        // process_exit / stream_dead — та же комната; native reconnect, не новый assign.
+        return false
     }
 
+    /** Если assign не дал другую room — стартовать кеш, не сидеть минуту в CONNECTING. */
+    fun shouldFallbackToCachedRoomOnReassignMiss(reason: String): Boolean =
+        !reason.contains(":retry")
+
     /** Сколько ждать reportOlcrtcRoomFailure + assign новой room. */
-    const val RECOVER_REASSIGN_TIMEOUT_MS = 60_000L
+    const val RECOVER_REASSIGN_TIMEOUT_MS = 20_000L
 
     fun decideWatchdog(input: WatchdogInput): WatchdogAction {
         if (!input.sessionActive) return WatchdogAction.NONE
@@ -228,12 +255,6 @@ object OlcrtcRecoveryPolicy {
             !input.running &&
                 !input.tunnelReady &&
                 input.sinceRestartMs > WATCHDOG_DOWN_MS -> WatchdogAction.DOWN
-
-            input.tunnelReady &&
-                input.sinceRestartMs > WATCHDOG_SOCKS_MS &&
-                !input.socksHealthy &&
-                !input.recentTunnelTraffic &&
-                input.socksFailStreak >= WATCHDOG_SOCKS_FAIL_STREAK -> WatchdogAction.SOCKS_DEAD
 
             else -> WatchdogAction.NONE
         }

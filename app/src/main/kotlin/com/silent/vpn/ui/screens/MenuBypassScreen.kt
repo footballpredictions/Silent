@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
@@ -20,11 +19,12 @@ import androidx.compose.ui.unit.sp
 import com.silent.vpn.BuildConfig
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.policy.OlcrtcSessionPolicy
+import com.silent.vpn.service.OlcrtcVpnService
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.vpn.OlcrtcTunnelManager
+import android.content.Context
 import android.content.Intent
 import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
 fun MenuBypassScreen(
     repo: SilentRepository,
     fg: Color,
+    @Suppress("UNUSED_PARAMETER")
     onEnsureOlcrtcApi: suspend (providers: Array<out String>) -> Boolean = { true },
     onBack: () -> Unit,
 ) {
@@ -46,7 +47,6 @@ fun MenuBypassScreen(
     var applyHint by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val vpnRunning = SilentVpnService.isRunning
 
     LaunchedEffect(Unit) {
         if (!BuildConfig.DEBUG) {
@@ -93,15 +93,6 @@ fun MenuBypassScreen(
             return@Column
         }
 
-        if (vpnRunning) {
-            Text(
-                "Отключите VPN перед сменой варианта.",
-                fontSize = 11.sp,
-                color = fg.copy(alpha = 0.45f),
-                modifier = Modifier.padding(bottom = 12.dp),
-            )
-        }
-
         applyHint?.let { hint ->
             Text(
                 hint,
@@ -114,7 +105,7 @@ fun MenuBypassScreen(
         BypassOption(
             title = "VK",
             selected = selFamily == SilentRepository.BYPASS_FAMILY_WDTT,
-            enabled = !vpnRunning && !applying,
+            enabled = !applying,
             fg = fg,
             onSelect = { pendingFamily = SilentRepository.BYPASS_FAMILY_WDTT },
         )
@@ -123,21 +114,21 @@ fun MenuBypassScreen(
                 BypassOption(
                     title = "VKCalls",
                     selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_VKCALLS,
-                    enabled = !vpnRunning && !applying,
+                    enabled = !applying,
                     fg = fg,
                     onSelect = { pendingVk = SilentRepository.VK_CRED_VKCALLS },
                 )
                 BypassOption(
                     title = "Авто капча",
                     selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_AUTO,
-                    enabled = !vpnRunning && !applying,
+                    enabled = !applying,
                     fg = fg,
                     onSelect = { pendingVk = SilentRepository.VK_CRED_AUTO },
                 )
                 BypassOption(
                     title = "Вручную",
                     selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_MANUAL,
-                    enabled = !vpnRunning && !applying,
+                    enabled = !applying,
                     fg = fg,
                     onSelect = { pendingVk = SilentRepository.VK_CRED_MANUAL },
                 )
@@ -147,7 +138,7 @@ fun MenuBypassScreen(
         BypassOption(
             title = "olcrtc",
             selected = selFamily == SilentRepository.BYPASS_FAMILY_OLCRTC2,
-            enabled = !vpnRunning && !applying,
+            enabled = !applying,
             fg = fg,
             onSelect = { pendingFamily = SilentRepository.BYPASS_FAMILY_OLCRTC2 },
         )
@@ -156,14 +147,14 @@ fun MenuBypassScreen(
                 BypassOption(
                     title = "Яндекс Телемост",
                     selected = (pendingOlc ?: olcProvider) == SilentRepository.OLCRTC_TELEMOST,
-                    enabled = !vpnRunning && !applying,
+                    enabled = !applying,
                     fg = fg,
                     onSelect = { pendingOlc = SilentRepository.OLCRTC_TELEMOST },
                 )
                 BypassOption(
                     title = "WB Stream",
                     selected = (pendingOlc ?: olcProvider) == SilentRepository.OLCRTC_WBSTREAM,
-                    enabled = !vpnRunning && !applying,
+                    enabled = !applying,
                     fg = fg,
                     onSelect = { pendingOlc = SilentRepository.OLCRTC_WBSTREAM },
                 )
@@ -171,155 +162,97 @@ fun MenuBypassScreen(
         }
     }
 
-    if (hasPending || applying) {
+    if (hasPending) {
         AlertDialog(
             onDismissRequest = {
-                if (applying) return@AlertDialog
                 pendingFamily = null
                 pendingVk = null
                 pendingOlc = null
             },
-            title = { Text(if (applying) "Получение сессии…" else "Применить?") },
+            title = { Text("Применить?") },
             text = {
-                if (applying) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = fg,
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            "Ждём конфиг канала…",
-                            color = fg.copy(0.8f),
-                            fontSize = 12.sp,
-                        )
-                    }
-                } else {
-                    Text(
-                        repo.bypassFamilyLabel(family) +
-                            (pendingFamily?.let { " → ${repo.bypassFamilyLabel(it)}" } ?: ""),
-                    )
-                }
+                Text(
+                    bypassApplyLine(
+                        family = family,
+                        pendingFamily = pendingFamily,
+                        vkMode = vkMode,
+                        pendingVk = pendingVk,
+                        olc = olcProvider,
+                        pendingOlc = pendingOlc,
+                        repo = repo,
+                    ),
+                )
             },
             confirmButton = {
-                if (!applying) {
-                    TvTextButton(onClick = {
-                        applying = true
-                        applyHint = null
-                        scope.launch {
-                            try {
-                                pendingFamily?.let {
-                                    repo.setBypassFamily(it)
-                                    family = repo.getBypassFamily()
-                                }
-                                pendingVk?.let {
-                                    repo.setVkCredStrategy(it)
-                                    vkMode = it
-                                }
-                                pendingOlc?.let { nextProv ->
-                                    val cur = repo.getOlcrtcProvider()
-                                    val running =
-                                        SilentVpnService.isRunning || OlcrtcTunnelManager.running.value
-                                    if (OlcrtcSessionPolicy.shouldStopVpnBeforeProviderApply(
-                                            pendingProvider = nextProv,
-                                            currentProvider = cur,
-                                            vpnOrTunnelRunning = running,
-                                        )
-                                    ) {
-                                        // Сначала стоп старого канала. Leave только по cur (не prefs после set).
-                                        // Не clearSessionBind до leave — иначе ViewModel late-leave уйдёт в prefs=new.
-                                        com.silent.vpn.util.OlcrtcDiag.w(
-                                            com.silent.vpn.util.OlcrtcDiag.APPLY,
-                                            "stop before switch $cur → $nextProv running=$running",
-                                        )
-                                        val roomId = repo.sessionOlcrtcRoomDbId()
-                                            ?: repo.getCachedOlcrtcConfigForProvider(cur)
-                                                ?.providers?.get(cur)?.room_db_id
-                                        runCatching {
-                                            repo.leaveOlcrtcRoom(provider = cur, roomDbId = roomId)
-                                        }
-                                        // Как kill app: снести hev/native до DISCONNECT.
-                                        com.silent.vpn.vpn.OlcrtcTunnelManager.hardReset(
-                                            "apply_switch $cur→$nextProv",
-                                        )
-                                        runCatching {
-                                            val intent = Intent(
-                                                context,
-                                                SilentVpnService::class.java,
-                                            ).apply {
-                                                action = SilentVpnService.ACTION_DISCONNECT
-                                            }
-                                            ContextCompat.startForegroundService(context, intent)
-                                        }
-                                        repeat(30) {
-                                            if (!SilentVpnService.isRunning &&
-                                                !OlcrtcTunnelManager.running.value &&
-                                                !OlcrtcTunnelManager.tunnelReady.value
-                                            ) {
-                                                return@repeat
-                                            }
-                                            delay(200)
-                                        }
-                                        com.silent.vpn.vpn.OlcrtcTunnelManager.hardReset(
-                                            "apply_after_stop",
-                                        )
-                                        delay(300)
-                                        repo.clearOlcrtcSessionBind()
-                                        applyHint = "Старый канал остановлен → $nextProv"
-                                    }
-                                    com.silent.vpn.util.OlcrtcDiag.i(
-                                        com.silent.vpn.util.OlcrtcDiag.APPLY,
-                                        "apply provider=$nextProv",
-                                    )
-                                    repo.setOlcrtcProvider(nextProv)
-                                    olcProvider = nextProv
-                                }
-                                if (repo.getBypassFamily() == SilentRepository.BYPASS_FAMILY_OLCRTC2) {
-                                    // Только dual-cache: без сети при TM↔WB. Fetch — login / VK sync.
-                                    val selected = repo.getOlcrtcProvider()
-                                    val selectedRoom = repo.getCachedOlcrtcConfigForProvider(selected)
-                                        ?.providers?.get(selected)?.room?.trim().orEmpty()
-                                    com.silent.vpn.util.OlcrtcDiag.i(
-                                        com.silent.vpn.util.OlcrtcDiag.APPLY,
-                                        "swap cache-only $selected room=${selectedRoom.take(24)}",
-                                    )
-                                    val tm = repo.getCachedOlcrtcConfigForProvider(
-                                        SilentRepository.OLCRTC_TELEMOST,
-                                    ) != null
-                                    val wb = repo.getCachedOlcrtcConfigForProvider(
-                                        SilentRepository.OLCRTC_WBSTREAM,
-                                    ) != null
-                                    applyHint = when {
-                                        selectedRoom.isNotBlank() ->
-                                            "Готово: ${repo.olcrtcProviderLabel(selected)} · ${selectedRoom.take(28)}" +
-                                                " (TM=${if (tm) "ok" else "—"} WB=${if (wb) "ok" else "—"})"
-                                        else ->
-                                            "Нет кеша для ${repo.olcrtcProviderLabel(selected)}. " +
-                                                "Войдите снова или включите VK и синхронизацию."
-                                    }
-                                }
-                            } finally {
-                                pendingFamily = null
-                                pendingVk = null
-                                pendingOlc = null
-                                applying = false
-                            }
+                TvTextButton(onClick = {
+                    val nextFam = pendingFamily
+                    val nextVk = pendingVk
+                    val nextOlc = pendingOlc
+                    pendingFamily = null
+                    pendingVk = null
+                    pendingOlc = null
+                    applyHint = null
+                    applying = true
+                    scope.launch {
+                        try {
+                            applyBypassChoice(
+                                context = context,
+                                repo = repo,
+                                family = family,
+                                nextFam = nextFam,
+                                nextVk = nextVk,
+                                nextOlc = nextOlc,
+                                onFamily = { family = it },
+                                onVk = { vkMode = it },
+                                onOlc = { olcProvider = it },
+                                onHint = { applyHint = it },
+                            )
+                        } finally {
+                            applying = false
                         }
-                    }) { Text("Применить", color = fg) }
-                }
+                    }
+                }) { Text("Применить", color = fg) }
             },
             dismissButton = {
-                if (!applying) {
-                    TvTextButton(onClick = {
-                        pendingFamily = null
-                        pendingVk = null
-                        pendingOlc = null
-                    }) { Text("Отмена", color = fg.copy(0.6f)) }
-                }
+                TvTextButton(onClick = {
+                    pendingFamily = null
+                    pendingVk = null
+                    pendingOlc = null
+                }) { Text("Отмена", color = fg.copy(0.6f)) }
             },
         )
     }
+}
+
+/** Как 1.0.160: «VK → olcrtc»; внутри семейства — провайдер или режим VK. */
+private fun bypassApplyLine(
+    family: String,
+    pendingFamily: String?,
+    vkMode: String,
+    pendingVk: String?,
+    olc: String,
+    pendingOlc: String?,
+    repo: SilentRepository,
+): String {
+    val nextFam = pendingFamily ?: family
+    fun famName(f: String) =
+        if (f == SilentRepository.BYPASS_FAMILY_OLCRTC2 || f == SilentRepository.BYPASS_FAMILY_OLCRTC) {
+            "olcrtc"
+        } else {
+            "VK"
+        }
+    val from = famName(family)
+    val to = famName(nextFam)
+    if (from != to) return "$from → $to"
+    val nextOlc = pendingOlc ?: olc
+    if (nextFam == SilentRepository.BYPASS_FAMILY_OLCRTC2 && nextOlc != olc) {
+        return "${repo.olcrtcProviderLabel(olc)} → ${repo.olcrtcProviderLabel(nextOlc)}"
+    }
+    val nextVk = pendingVk ?: vkMode
+    if (nextFam == SilentRepository.BYPASS_FAMILY_WDTT && nextVk != vkMode) {
+        return "${repo.vkCredStrategyLabel(vkMode)} → ${repo.vkCredStrategyLabel(nextVk)}"
+    }
+    return "$from → $to"
 }
 
 @Composable
@@ -353,4 +286,134 @@ private fun BypassOption(
             modifier = Modifier.padding(start = 4.dp),
         )
     }
+}
+
+/**
+ * Один путь смены канала: leave + hardReset leftover, затем DISCONNECT
+ * только если VpnService ещё жив. Без fetch / «ждём конфиг» — слоты с login/VK.
+ */
+private suspend fun applyBypassChoice(
+    context: Context,
+    repo: SilentRepository,
+    family: String,
+    nextFam: String?,
+    nextVk: String?,
+    nextOlc: String?,
+    onFamily: (String) -> Unit,
+    onVk: (String) -> Unit,
+    onOlc: (String) -> Unit,
+    onHint: (String?) -> Unit,
+) {
+    val leftover =
+        OlcrtcTunnelManager.running.value || OlcrtcTunnelManager.tunnelReady.value
+    val running = SilentVpnService.isRunning || leftover
+    nextFam?.let { fam ->
+        if (
+            OlcrtcSessionPolicy.shouldHardResetOlcrtcOnFamilyLeave(family, fam) || leftover
+        ) {
+            com.silent.vpn.util.OlcrtcDiag.w(
+                com.silent.vpn.util.OlcrtcDiag.APPLY,
+                "stop leftover before family=$fam leftover=$leftover vpn=${SilentVpnService.isRunning}",
+            )
+            stopOlcrtcChannel(context, repo, repo.getOlcrtcProvider(), "apply_family_$fam")
+        }
+        repo.setBypassFamily(fam)
+        onFamily(repo.getBypassFamily())
+    }
+    nextVk?.let {
+        repo.setVkCredStrategy(it)
+        onVk(it)
+    }
+    nextOlc?.let { nextProv ->
+        val cur = repo.getOlcrtcProvider()
+        if (
+            OlcrtcSessionPolicy.shouldStopVpnBeforeProviderApply(
+                pendingProvider = nextProv,
+                currentProvider = cur,
+                vpnOrTunnelRunning = running,
+            ) || leftover
+        ) {
+            com.silent.vpn.util.OlcrtcDiag.w(
+                com.silent.vpn.util.OlcrtcDiag.APPLY,
+                "stop leftover $cur → $nextProv leftover=$leftover vpn=${SilentVpnService.isRunning}",
+            )
+            stopOlcrtcChannel(context, repo, cur, "apply_switch $cur→$nextProv")
+        }
+        repo.setOlcrtcProvider(nextProv)
+        onOlc(nextProv)
+    }
+    if (repo.getBypassFamily() != SilentRepository.BYPASS_FAMILY_OLCRTC2) {
+        onHint("Выбрано: VK")
+        return
+    }
+    val selected = repo.getOlcrtcProvider()
+    val selectedRoom = repo.getCachedOlcrtcConfigForProvider(selected)
+        ?.providers?.get(selected)?.room?.trim().orEmpty()
+    val tm = repo.getCachedOlcrtcConfigForProvider(SilentRepository.OLCRTC_TELEMOST)
+        ?.providers?.get(SilentRepository.OLCRTC_TELEMOST)?.room?.isNotBlank() == true
+    val wb = repo.getCachedOlcrtcConfigForProvider(SilentRepository.OLCRTC_WBSTREAM)
+        ?.providers?.get(SilentRepository.OLCRTC_WBSTREAM)?.room?.isNotBlank() == true
+    com.silent.vpn.util.OlcrtcDiag.i(
+        com.silent.vpn.util.OlcrtcDiag.APPLY,
+        "cache-only $selected room=${selectedRoom.take(24)} tm=$tm wb=$wb",
+    )
+    onHint(
+        if (selectedRoom.isNotBlank()) {
+            "Готово: ${repo.olcrtcProviderLabel(selected)} · ${selectedRoom.take(28)}" +
+                " (TM=${if (tm) "ok" else "—"} WB=${if (wb) "ok" else "—"})"
+        } else {
+            "Нет кеша ${repo.olcrtcProviderLabel(selected)}. Включите VK — конфиг подтянется сам."
+        },
+    )
+}
+
+/**
+ * Leave + native/hev reset. DISCONNECT через startService (не FGS) и только
+ * если VpnService ещё жив — иначе вылет на переходе к VK.
+ */
+private suspend fun stopOlcrtcChannel(
+    context: Context,
+    repo: SilentRepository,
+    provider: String,
+    reason: String,
+) {
+    val roomId = repo.sessionOlcrtcRoomDbId()
+        ?: repo.getCachedOlcrtcConfigForProvider(provider)
+            ?.providers?.get(provider)?.room_db_id
+    runCatching { repo.leaveOlcrtcRoom(provider = provider, roomDbId = roomId) }
+    OlcrtcTunnelManager.hardReset(reason)
+    OlcrtcVpnService.suppressDestroyStop = false
+    runCatching {
+        context.startService(
+            Intent(context, OlcrtcVpnService::class.java).apply {
+                action = OlcrtcVpnService.ACTION_STOP
+            },
+        )
+    }
+    delay(250)
+    // Native уже снесён. Не поднимать мёртвый VpnService ради DISCONNECT — вылет FGS.
+    if (SilentVpnService.isRunning) {
+        runCatching {
+            context.startService(
+                Intent(context, SilentVpnService::class.java).apply {
+                    action = SilentVpnService.ACTION_DISCONNECT
+                },
+            )
+        }
+        var waited = 0
+        while (
+            waited < 30 &&
+            (
+                SilentVpnService.isRunning ||
+                    OlcrtcTunnelManager.running.value ||
+                    OlcrtcTunnelManager.tunnelReady.value
+            )
+        ) {
+            delay(200)
+            waited++
+        }
+        OlcrtcTunnelManager.hardReset("${reason}_after_stop")
+        delay(300)
+    }
+    repo.clearOlcrtcSessionBind()
 }

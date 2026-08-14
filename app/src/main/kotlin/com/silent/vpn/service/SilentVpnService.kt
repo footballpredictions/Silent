@@ -155,6 +155,8 @@ class SilentVpnService : Service() {
     @Volatile
     private var lastOlcrtcConfigJson: String? = null
     private var olcrtcRecoverJob: Job? = null
+    private var olcrtcReadyWatchJob: Job? = null
+    private var olcrtcErrorWatchJob: Job? = null
     /** Поколение recover: finally старого job не должен сбрасывать флаг нового. */
     private val olcrtcRecoverGen = java.util.concurrent.atomic.AtomicInteger(0)
     /** Пока true — watchdog/peer_dead не стартуют второй recover. */
@@ -624,6 +626,8 @@ class SilentVpnService : Service() {
         connectGuardJob?.cancel()
         olcrtcRecoverGen.incrementAndGet()
         olcrtcRecoverJob?.cancel()
+        olcrtcReadyWatchJob?.cancel()
+        olcrtcErrorWatchJob?.cancel()
         olcrtcRecovering = false
         pendingOlcrtcPreferTransport = null
         isRunning = false
@@ -1180,24 +1184,40 @@ class SilentVpnService : Service() {
                         newRoom.isBlank() ||
                         (oldRoom.isNotBlank() && newRoom == oldRoom)
                     ) {
-                        DebugLog.w(
-                            "VpnService",
-                            "olcrtc reassign failed (timeout/same room) — не стартуем stale",
-                        )
-                        WdttTunnelManager.logUi(
-                            "olcrtc_reassign_fail",
-                            "не удалось получить новую комнату — повтор…",
-                            2,
-                            isError = true,
-                        )
-                        // Не поднимать мёртвую room: retry с :retry (один раз по политике).
-                        if (OlcrtcRecoveryPolicy.shouldScheduleRecoverRetry(olcrtcEverReady, reason)) {
-                            scheduleNetworkRecovery("${reason}:retry", 4_000L)
+                        if (
+                            OlcrtcRecoveryPolicy.shouldFallbackToCachedRoomOnReassignMiss(reason) &&
+                            oldRoom.isNotBlank()
+                        ) {
+                            DebugLog.w(
+                                "VpnService",
+                                "olcrtc reassign miss — start cached room=${oldRoom.take(24)}",
+                            )
+                            WdttTunnelManager.logUi(
+                                "olcrtc_reassign_cache",
+                                "новая комната не пришла — старт из кеша",
+                                2,
+                            )
+                            cfgToUse = cfg!!
+                        } else {
+                            DebugLog.w(
+                                "VpnService",
+                                "olcrtc reassign failed (timeout/same room) — не стартуем stale",
+                            )
+                            WdttTunnelManager.logUi(
+                                "olcrtc_reassign_fail",
+                                "не удалось получить новую комнату — повтор…",
+                                2,
+                                isError = true,
+                            )
+                            if (OlcrtcRecoveryPolicy.shouldScheduleRecoverRetry(olcrtcEverReady, reason)) {
+                                scheduleNetworkRecovery("${reason}:retry", 4_000L)
+                            }
+                            return@launch
                         }
-                        return@launch
+                    } else {
+                        cfgToUse = refreshed
+                        lastOlcrtcConfigJson = cfgToUse
                     }
-                    cfgToUse = refreshed
-                    lastOlcrtcConfigJson = cfgToUse
                 } else {
                     WdttTunnelManager.logUi("olcrtc_recover", "старт из кеша (без fetch)", 2)
                 }
@@ -1510,7 +1530,6 @@ class SilentVpnService : Service() {
                         )
                     ) {
                     val suspect = OlcrtcTunnelManager.isPeerLivenessSuspect()
-                    // Half-dead: «tunnel to» есть, но suspect — не считать traffic живым.
                     val recentTraffic =
                         !suspect && OlcrtcTunnelManager.hasRecentTunnelTraffic()
                     val action = OlcrtcRecoveryPolicy.decideWatchdog(
@@ -1523,51 +1542,15 @@ class SilentVpnService : Service() {
                             starting = OlcrtcTunnelManager.isStarting(),
                             withinLibclientConnectGrace = isWithinConnectGrace(),
                             sinceRestartMs = System.currentTimeMillis() - lastTransportRestartMs,
-                            socksHealthy = true, // probe only if SOCKS_DEAD candidate path
+                            socksHealthy = true,
                             socksFailStreak = olcrtcSocksFailStreak,
                             recentTunnelTraffic = recentTraffic,
                         ),
                     )
-                    // SOCKS probe: при suspect — всегда; иначе только без recent traffic.
-                    val resolved = if (
-                        action == OlcrtcRecoveryPolicy.WatchdogAction.NONE &&
-                        olcrtcSessionActive &&
-                        OlcrtcTunnelManager.tunnelReady.value &&
-                        !isOlcrtcRecoverInFlight() &&
-                        !isOlcrtcInitialConnectInProgress() &&
-                        !OlcrtcTunnelManager.isStarting() &&
-                        !isWithinConnectGrace() &&
-                        (suspect || !recentTraffic) &&
-                        System.currentTimeMillis() - lastTransportRestartMs >
-                            OlcrtcRecoveryPolicy.WATCHDOG_SOCKS_MS
-                    ) {
-                        val healthy = withContext(Dispatchers.IO) {
-                            OlcrtcTunnelManager.probeSocksHealthy(forceDial = suspect)
-                        }
-                        if (healthy) {
-                            olcrtcSocksFailStreak = 0
-                        } else {
-                            olcrtcSocksFailStreak += 1
-                        }
-                        OlcrtcRecoveryPolicy.decideWatchdog(
-                            OlcrtcRecoveryPolicy.WatchdogInput(
-                                sessionActive = olcrtcSessionActive,
-                                running = OlcrtcTunnelManager.running.value,
-                                tunnelReady = OlcrtcTunnelManager.tunnelReady.value,
-                                recoverInFlight = false,
-                                initialConnectInProgress = false,
-                                starting = false,
-                                withinLibclientConnectGrace = false,
-                                sinceRestartMs = System.currentTimeMillis() - lastTransportRestartMs,
-                                socksHealthy = healthy,
-                                socksFailStreak = olcrtcSocksFailStreak,
-                                recentTunnelTraffic = recentTraffic,
-                            ),
-                        )
-                    } else {
-                        if (recentTraffic) olcrtcSocksFailStreak = 0
-                        action
-                    }
+                    // gstatic probe на Telemost = секунды зависания YT/TG; SOCKS_DEAD
+                    // из decideWatchdog больше не приходит.
+                    if (recentTraffic) olcrtcSocksFailStreak = 0
+                    val resolved = action
                     when (resolved) {
                         OlcrtcRecoveryPolicy.WatchdogAction.STUCK -> {
                             DebugLog.w("VpnService", "transportWatchdog: olcrtc stuck (running, not ready)")
@@ -1825,7 +1808,9 @@ class SilentVpnService : Service() {
 
     /** olcrtc: SilentVpnService держит FG, а ready приходит из OlcrtcTunnelManager. */
     private fun watchOlcrtcReadyNotification() {
-        scope.launch {
+        olcrtcReadyWatchJob?.cancel()
+        olcrtcErrorWatchJob?.cancel()
+        olcrtcReadyWatchJob = scope.launch {
             OlcrtcTunnelManager.tunnelReady.collect { ready ->
                 if (!isRunning) return@collect
                 if (ready) {
@@ -1839,12 +1824,14 @@ class SilentVpnService : Service() {
             }
         }
         // Ранний code=1 / SOCKS fail: не оставлять FGS «Подключение…» на Honor/Realme.
-        scope.launch {
+        olcrtcErrorWatchJob = scope.launch {
             OlcrtcTunnelManager.lastError.collect { err ->
                 if (!isRunning || !olcrtcSessionActive) return@collect
                 if (err.isNullOrBlank()) return@collect
                 if (olcrtcEverReady || isOlcrtcRecoverInFlight()) return@collect
+                if (isOlcrtcInitialConnectInProgress()) return@collect
                 if (OlcrtcTunnelManager.tunnelReady.value) return@collect
+                if (OlcrtcTunnelManager.isStarting()) return@collect
                 DebugLog.w("VpnService", "olcrtc start failed — disconnect: $err")
                 WdttTunnelManager.logUi("olcrtc_start_dead", err, 99, isError = true)
                 disconnect()

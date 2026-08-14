@@ -9,10 +9,22 @@ import com.silent.vpn.vpn.OlcrtcTunnelManager
  * Debug olcrtc: отдельный [VpnService] (SilentVpnService — обычный Service + WG GoBackend).
  */
 class OlcrtcVpnService : VpnService() {
+    /** Epoch на момент START этой инстанции — stale STOP/onDestroy не трогают новый connect. */
+    private var bindEpoch: Int = 0
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
         if (action == ACTION_STOP) {
-            // Всегда полный native reset — иначе TM→WB без kill app = «вкл, не пашет».
+            if (
+                OlcrtcTunnelManager.isStarting() ||
+                OlcrtcTunnelManager.shouldIgnoreStaleVpnTeardown(bindEpoch)
+            ) {
+                DebugLog.i(
+                    "OlcrtcVpn",
+                    "stale STOP ignored bind=$bindEpoch now=${OlcrtcTunnelManager.currentEpoch()} starting=${OlcrtcTunnelManager.isStarting()}",
+                )
+                return START_STICKY
+            }
             suppressDestroyStop = false
             OlcrtcTunnelManager.hardReset("vpn_ACTION_STOP")
             stopSelf()
@@ -24,11 +36,13 @@ class OlcrtcVpnService : VpnService() {
             stopSelf()
             return START_NOT_STICKY
         }
-        // Новый START после STOP — onDestroy предыдущего цикла не должен гасить peer.
-        suppressDestroyStop = false
+        // Новый START: pending onDestroy прошлого цикла не должен гасить peer.
+        suppressDestroyStop = true
         val err = OlcrtcTunnelManager.startFromConfigJson(this, configJson, vpnService = this)
+        bindEpoch = OlcrtcTunnelManager.currentEpoch()
         if (err != null) {
             DebugLog.e("OlcrtcVpn", err)
+            suppressDestroyStop = false
             OlcrtcTunnelManager.hardReset("vpn_start_fail")
             stopSelf()
             return START_NOT_STICKY
@@ -38,6 +52,11 @@ class OlcrtcVpnService : VpnService() {
 
     override fun onRevoke() {
         DebugLog.w("OlcrtcVpn", "revoked")
+        if (OlcrtcTunnelManager.shouldIgnoreStaleVpnTeardown(bindEpoch)) {
+            DebugLog.i("OlcrtcVpn", "stale revoke ignored — newer session")
+            super.onRevoke()
+            return
+        }
         suppressDestroyStop = false
         OlcrtcTunnelManager.hardReset("vpn_revoked")
         stopSelf()
@@ -45,8 +64,14 @@ class OlcrtcVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        if (suppressDestroyStop) {
-            DebugLog.i("OlcrtcVpn", "onDestroy skip stop (reconnect in flight)")
+        if (
+            suppressDestroyStop ||
+            OlcrtcTunnelManager.shouldIgnoreStaleVpnTeardown(bindEpoch)
+        ) {
+            DebugLog.i(
+                "OlcrtcVpn",
+                "onDestroy skip stop suppress=$suppressDestroyStop bind=$bindEpoch now=${OlcrtcTunnelManager.currentEpoch()}",
+            )
         } else {
             OlcrtcTunnelManager.hardReset("vpn_onDestroy")
         }

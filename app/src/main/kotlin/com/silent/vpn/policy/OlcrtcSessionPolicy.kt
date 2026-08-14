@@ -92,6 +92,46 @@ object OlcrtcSessionPolicy {
      */
     fun shouldRevalidateSelectedOnApply(selectedRoomCached: Boolean): Boolean = !selectedRoomCached
 
+    /**
+     * Apply — только кеш. Fetch слотов: login + живой VK-туннель, не диалог «ждём конфиг».
+     */
+    fun providersToFetchOnApply(
+        @Suppress("UNUSED_PARAMETER") tmRoomOk: Boolean,
+        @Suppress("UNUSED_PARAMETER") wbRoomOk: Boolean,
+    ): List<String> = emptyList()
+
+    /** Тумблер выкл., native/hev ещё жив — hardReset, иначе WB накладывается на TM/VK. */
+    fun shouldHardResetLeftoverNative(
+        vpnServiceRunning: Boolean,
+        nativeRunning: Boolean,
+        tunnelReady: Boolean,
+    ): Boolean = nativeRunning || tunnelReady
+
+    /**
+     * code=1 на первой попытке часто stale onDestroy, не мёртвая комната.
+     * Wipe слота → «нет конфига» на WB→TM.
+     */
+    fun shouldWipeCacheOnEarlyFail(detail: String, attempt: Int): Boolean {
+        val d = detail.lowercase()
+        if (
+            d.contains("гост") || d.contains("auth.token") || d.contains("join room") ||
+            d.contains("wb join 404") || d.contains("not found")
+        ) {
+            return true
+        }
+        if (attempt == 0 && (d.contains("code=1") || d.contains("вышел"))) return false
+        return true
+    }
+
+    /** Уход с olcrtc на VK: снести native/hev даже если VpnService уже «выкл». */
+    fun shouldHardResetOlcrtcOnFamilyLeave(fromFamily: String, toFamily: String): Boolean {
+        fun isOlc(raw: String): Boolean {
+            val f = raw.trim().lowercase()
+            return f == "olcrtc" || f == "olcrtc2"
+        }
+        return isOlc(fromFamily) && !isOlc(toFamily)
+    }
+
     /** Connect: preferCache если слот есть (комната в пуле жива). */
     fun shouldPreferCacheOnConnect(slotDirtyAfterLeave: Boolean, hasCachedRoom: Boolean): Boolean =
         hasCachedRoom
@@ -108,6 +148,20 @@ object OlcrtcSessionPolicy {
         if (fetchedRoomNonBlank) return true
         if (!force && hadCacheBefore) return true
         return hasCacheAfter
+    }
+
+    /**
+     * В ключ кеша пишем только запрошенный провайдер.
+     * Ответ с двумя слотами не должен затирать соседа.
+     */
+    fun isolateProviderKeysForCache(
+        requestedProvider: String?,
+        incomingKeys: Collection<String>,
+    ): Set<String> {
+        val want = requestedProvider?.let { normalizeProvider(it) }
+        val incoming = incomingKeys.map { normalizeProvider(it) }.toSet()
+        if (want != null) return incoming.filter { it == want }.toSet()
+        return incoming.filter { it == PROVIDER_TELEMOST || it == PROVIDER_WBSTREAM }.toSet()
     }
 
     data class LeaveTarget(

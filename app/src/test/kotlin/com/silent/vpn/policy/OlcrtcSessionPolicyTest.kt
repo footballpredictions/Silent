@@ -296,6 +296,69 @@ class OlcrtcSessionPolicyTest {
     }
 
     @Test
+    fun `Apply never fetches — cache only from login or VK`() {
+        assertEquals(
+            emptyList<String>(),
+            OlcrtcSessionPolicy.providersToFetchOnApply(tmRoomOk = true, wbRoomOk = false),
+        )
+        assertEquals(
+            emptyList<String>(),
+            OlcrtcSessionPolicy.providersToFetchOnApply(tmRoomOk = false, wbRoomOk = false),
+        )
+    }
+
+    @Test
+    fun `first code=1 does not wipe TM cache`() {
+        assertFalse(
+            OlcrtcSessionPolicy.shouldWipeCacheOnEarlyFail("olcrtc вышел code=1", 0),
+        )
+        assertTrue(
+            OlcrtcSessionPolicy.shouldWipeCacheOnEarlyFail("olcrtc вышел code=1", 1),
+        )
+        assertTrue(
+            OlcrtcSessionPolicy.shouldWipeCacheOnEarlyFail("WB join 404", 0),
+        )
+    }
+
+    @Test
+    fun `leftover native after toggle off still needs hardReset`() {
+        assertTrue(
+            OlcrtcSessionPolicy.shouldHardResetLeftoverNative(
+                vpnServiceRunning = false,
+                nativeRunning = true,
+                tunnelReady = false,
+            ),
+        )
+        assertTrue(
+            OlcrtcSessionPolicy.shouldHardResetLeftoverNative(
+                vpnServiceRunning = false,
+                nativeRunning = false,
+                tunnelReady = true,
+            ),
+        )
+        assertFalse(
+            OlcrtcSessionPolicy.shouldHardResetLeftoverNative(
+                vpnServiceRunning = false,
+                nativeRunning = false,
+                tunnelReady = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `leaving olcrtc for VK always hard-resets leftover native`() {
+        assertTrue(
+            OlcrtcSessionPolicy.shouldHardResetOlcrtcOnFamilyLeave("olcrtc2", "wdtt"),
+        )
+        assertFalse(
+            OlcrtcSessionPolicy.shouldHardResetOlcrtcOnFamilyLeave("olcrtc2", "olcrtc2"),
+        )
+        assertFalse(
+            OlcrtcSessionPolicy.shouldHardResetOlcrtcOnFamilyLeave("wdtt", "wdtt"),
+        )
+    }
+
+    @Test
     fun `prefetch forces selected provider only`() {
         // Dual-cache: never force-refresh living slots (soft leave + sticky).
         assertFalse(OlcrtcSessionPolicy.shouldForcePrefetch("telemost", "telemost"))
@@ -349,5 +412,23 @@ class OlcrtcSessionPolicyTest {
         assertFalse(sw.missingSession)
         assertTrue(sw.fromStillCached)
         assertTrue(sw.toCached)
+    }
+
+    @Test
+    fun `save cache isolates requested provider — sibling not overwritten`() {
+        val incoming = setOf("telemost", "wbstream")
+        assertEquals(
+            setOf("telemost"),
+            OlcrtcSessionPolicy.isolateProviderKeysForCache("telemost", incoming),
+        )
+        assertEquals(
+            setOf("wbstream"),
+            OlcrtcSessionPolicy.isolateProviderKeysForCache("WBSTREAM", incoming),
+        )
+        assertTrue(
+            OlcrtcSessionPolicy.isolateProviderKeysForCache("telemost", incoming)
+                .contains("wbstream")
+                .not(),
+        )
     }
 }

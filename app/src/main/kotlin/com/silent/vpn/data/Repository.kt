@@ -1210,7 +1210,7 @@ class SilentRepository @Inject constructor(
             BYPASS_FAMILY_OLCRTC2 -> BYPASS_FAMILY_OLCRTC2
             else -> BYPASS_FAMILY_WDTT
         }
-        prefs.edit().putString(PREF_BYPASS_FAMILY, v).apply()
+        prefs.edit().putString(PREF_BYPASS_FAMILY, v).commit()
     }
 
     fun isOlcrtcBypass(): Boolean =
@@ -1229,7 +1229,7 @@ class SilentRepository @Inject constructor(
             else -> OLCRTC_TELEMOST
         }
         val prev = getOlcrtcProvider()
-        prefs.edit().putString(PREF_OLCRTC_PROVIDER, normalized).apply()
+        prefs.edit().putString(PREF_OLCRTC_PROVIDER, normalized).commit()
         // Кеш per-provider — не стираем при смене (иначе «нет сессии» до конца prefetch).
         olcrtcConnectOverride = null
         lastFailedOlcrtcRoom = null
@@ -1347,25 +1347,29 @@ class SilentRepository @Inject constructor(
         return cfg.takeIf { room.isNotBlank() && cfg.providers[prov]?.enabled != false }
     }
 
-    private fun saveOlcrtcCache(cfg: OlcrtcPublicConfig, sync: Boolean = false) {
+    private fun saveOlcrtcCache(cfg: OlcrtcPublicConfig, sync: Boolean = false, forProvider: String? = null) {
         if (!cfg.enabled || cfg.crypto_key.length != 64) return
-        val json = Gson().toJson(cfg)
+        val wantKeys = com.silent.vpn.policy.OlcrtcSessionPolicy.isolateProviderKeysForCache(
+            forProvider,
+            cfg.providers.keys,
+        )
         val ed = prefs.edit()
-        // Только слоты с живой room. Пустой/denied ответ не затирает чужой/свой кеш.
         var wrote = false
         for ((rawKey, slot) in cfg.providers) {
             val k = rawKey.trim().lowercase()
+            if (k !in wantKeys) continue
             if (k != OLCRTC_TELEMOST && k != OLCRTC_WBSTREAM) continue
             if (slot.denied == true || !slot.enabled || slot.room.isBlank()) continue
-            ed.putString(olcrtcCacheKey(k), json)
+            val isolated = cfg.copy(providers = mapOf(k to slot))
+            ed.putString(olcrtcCacheKey(k), Gson().toJson(isolated))
             wrote = true
         }
         if (!wrote) return
-        // Legacy больше не читаем — можно снести, чтобы не путать.
         ed.remove(PREF_OLCRTC_CACHE)
         if (sync) ed.commit() else ed.apply()
         for ((rawKey, slot) in cfg.providers) {
             val k = rawKey.trim().lowercase()
+            if (k !in wantKeys) continue
             if (k != OLCRTC_TELEMOST && k != OLCRTC_WBSTREAM) continue
             if (slot.denied == true || !slot.enabled || slot.room.isBlank()) continue
             clearOlcrtcSlotDirty(k)
@@ -1373,12 +1377,12 @@ class SilentRepository @Inject constructor(
         val rooms = cfg.providers.entries
             .filter {
                 val k = it.key.trim().lowercase()
-                k == OLCRTC_TELEMOST || k == OLCRTC_WBSTREAM
+                k in wantKeys && (k == OLCRTC_TELEMOST || k == OLCRTC_WBSTREAM)
             }
             .joinToString(",") { "${it.key}=${it.value.room.take(24)}" }
         com.silent.vpn.util.OlcrtcDiag.i(
             com.silent.vpn.util.OlcrtcDiag.CACHE,
-            "save slots=$rooms",
+            "save isolated=$wantKeys slots=$rooms",
         )
     }
 
@@ -1408,7 +1412,7 @@ class SilentRepository @Inject constructor(
             )
             return null
         }
-        saveOlcrtcCache(body, sync = syncCache)
+        saveOlcrtcCache(body, sync = syncCache, forProvider = prov)
         com.silent.vpn.util.OlcrtcDiag.i(
             com.silent.vpn.util.OlcrtcDiag.CFG,
             "accept OK provider=$prov room=${slot?.room?.take(40)} roomDbId=${slot?.room_db_id}",
@@ -1588,7 +1592,16 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
                     return it
                 }
             }
-            Log.w(TAG, "olcrtc-config tunnel failed, try public")
+            Log.w(TAG, "olcrtc-config tunnel failed, skip public (whitelist / overwrite)")
+            return getCachedOlcrtcConfigForProvider(prov)
+        }
+
+        if (VpnNetworkHelper.isOnMobileData(context)) {
+            com.silent.vpn.util.OlcrtcDiag.w(
+                com.silent.vpn.util.OlcrtcDiag.CFG,
+                "public fetch SKIP LTE/БС provider=$prov — нужен tunnel/ephemeral",
+            )
+            return getCachedOlcrtcConfigForProvider(prov)
         }
 
         return try {
@@ -1909,7 +1922,7 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
     }
 
     /**
-     * Leave: сервер снимает sticky (комната → warm); слот этого провайдера чистим.
+     * Leave: сервер снимает sticky (комната → warm); слот кеша НЕ чистим.
      * Соседний Telemost↔WB не трогаем (dual-cache).
      * Hard teardown только через reportOlcrtcRoomFailure.
      */
@@ -2071,7 +2084,7 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
             val next = when {
                 isMainVpnTunnelUp() ||
                     (WdttTunnelManager.isBootstrapMode() && WdttTunnelManager.tunnelReady.value) ->
-                    fetchOlcrtcConfigTunnelOnly(prov) ?: fetchOlcrtcConfig(prov)
+                    fetchOlcrtcConfigTunnelOnly(prov)
                 else -> fetchOlcrtcConfig(prov)
             }
             val nextRoom = next?.providers?.get(prov)?.room?.trim().orEmpty()
@@ -2079,7 +2092,7 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
                 if (badRoomSame(nextRoom, oldRoom)) {
                     Log.w(TAG, "olcrtc failure reassign got SAME dead room=${nextRoom.take(24)}")
                 } else {
-                    saveOlcrtcCache(next, sync = true)
+                    saveOlcrtcCache(next, sync = true, forProvider = prov)
                     olcrtcConnectOverride = next
                     Log.i(
                         TAG,

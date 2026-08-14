@@ -21,6 +21,7 @@ from app.schemas.hive import (
 )
 from app.services import hive_service
 from app.services import hive_provision_service
+from app.services.hive_incidents import list_incidents, clear_incidents, push_incident
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,20 @@ async def _provision_cell_background(
                 cell.last_error = str(e)[:500]
                 cell.updated_at = datetime.utcnow()
                 await db.commit()
+                push_incident(
+                    source="hive.provision",
+                    severity="error",
+                    cell_name=cell.name,
+                    cell_ip=cell.public_ip,
+                    message=f"Provision failed: {e}",
+                )
+            else:
+                push_incident(
+                    source="hive.provision",
+                    severity="error",
+                    cell_ip=host,
+                    message=f"Provision failed: {e}",
+                )
             logger.exception("Hive provision failed for %s: %s", host, e)
 
 
@@ -282,11 +297,25 @@ async def probe_cell(
         cell.last_error = str(e)[:500]
         cell.status = "error"
         await db.commit()
+        push_incident(
+            source="hive.probe",
+            severity="error",
+            cell_name=cell.name,
+            cell_ip=cell.public_ip,
+            message=f"Probe failed: {e}",
+        )
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         cell.last_error = str(e)[:500]
         cell.status = "error"
         await db.commit()
+        push_incident(
+            source="hive.probe",
+            severity="error",
+            cell_name=cell.name,
+            cell_ip=cell.public_ip,
+            message=f"Probe failed: {e}",
+        )
         raise HTTPException(status_code=502, detail=str(e)) from e
     online = await hive_service.count_online_on_cell(db, cell.id)
     assigned = await hive_service.count_assigned_on_cell(db, cell.id)
@@ -438,3 +467,20 @@ async def hive_summary(
         "rebalanced_returned": rebalance.get("returned", 0),
         "queen_capacity": queen_capacity,
     }
+
+
+@router.get("/incidents")
+async def hive_incidents(
+    limit: int = Query(200, ge=1, le=800),
+    _: bool = Depends(get_admin_credentials),
+):
+    items = list_incidents(limit)
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/incidents/clear")
+async def clear_hive_incidents(
+    _: bool = Depends(get_admin_credentials),
+):
+    clear_incidents()
+    return {"ok": True}

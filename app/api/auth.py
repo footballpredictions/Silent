@@ -30,6 +30,7 @@ from app.services.email_validation import (
 )
 from app.services.rate_limiter import check_ip_rate_limit, get_client_ip
 from app.services import admin_auth_service
+from app.services.hive_incidents import push_security_event
 from app.config import settings
 import uuid as uuid_mod
 
@@ -61,6 +62,12 @@ async def register(
         window_seconds=settings.REGISTER_RATE_LIMIT_WINDOW_MINUTES * 60,
     ):
         logger.warning(f"Register rate limit exceeded: ip={get_client_ip(request)}")
+        push_security_event(
+            source="register-rate-limit",
+            message="Register rate limit exceeded",
+            severity="warning",
+            client_ip=get_client_ip(request),
+        )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Слишком много попыток регистрации с этого IP. Попробуйте позже.",
@@ -376,11 +383,24 @@ async def admin_login(
         max_attempts=settings.ADMIN_LOGIN_RATE_LIMIT_MAX,
         window_seconds=settings.ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS,
     ):
+        push_security_event(
+            source="admin-login-rate-limit",
+            message="Admin login rate limit exceeded",
+            severity="error",
+            client_ip=get_client_ip(request),
+        )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Слишком много попыток входа. Попробуйте позже.",
         )
     if req.login != settings.ADMIN_LOGIN or req.password != settings.ADMIN_PASSWORD:
+        push_security_event(
+            source="admin-login-bad-credentials",
+            message="Admin login failed: bad credentials",
+            severity="error",
+            client_ip=get_client_ip(request),
+            details=f"login={req.login[:48]}",
+        )
         raise HTTPException(status_code=401, detail="Неверные данные администратора")
 
     device = await admin_auth_service.find_trusted_device(
@@ -460,6 +480,12 @@ async def admin_mfa_resend(
         max_attempts=settings.ADMIN_LOGIN_RATE_LIMIT_MAX,
         window_seconds=settings.ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS,
     ):
+        push_security_event(
+            source="admin-mfa-resend-rate-limit",
+            message="Admin MFA resend rate limit exceeded",
+            severity="warning",
+            client_ip=get_client_ip(request),
+        )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Слишком много попыток. Попробуйте позже.",
@@ -485,6 +511,12 @@ async def admin_mfa_resend(
                 detail=f"Повторная отправка через {sec} с.",
             )
         if msg == "challenge_not_found":
+            push_security_event(
+                source="admin-mfa-resend-invalid-challenge",
+                message="Admin MFA resend failed: challenge not found",
+                severity="warning",
+                client_ip=get_client_ip(request),
+            )
             raise HTTPException(status_code=400, detail="Сессия подтверждения не найдена. Войдите снова.")
         raise HTTPException(status_code=400, detail="Не удалось отправить код")
     except RuntimeError as e:
@@ -515,6 +547,12 @@ async def admin_mfa_verify(
         max_attempts=settings.ADMIN_LOGIN_RATE_LIMIT_MAX,
         window_seconds=settings.ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS,
     ):
+        push_security_event(
+            source="admin-mfa-verify-rate-limit",
+            message="Admin MFA verify rate limit exceeded",
+            severity="error",
+            client_ip=get_client_ip(request),
+        )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Слишком много попыток. Попробуйте позже.",
@@ -539,6 +577,14 @@ async def admin_mfa_verify(
             mobile_hint=req.client_mobile,
         )
     except ValueError as e:
+        reason = str(e)
+        if reason in ("bad_code", "invalid_challenge", "expired", "too_many_attempts"):
+            push_security_event(
+                source="admin-mfa-verify-failed",
+                message=f"Admin MFA verify failed: {reason}",
+                severity="error" if reason in ("too_many_attempts", "bad_code") else "warning",
+                client_ip=get_client_ip(request),
+            )
         msg = {
             "invalid_challenge": "Код недействителен. Войдите снова.",
             "expired": "Код истёк. Войдите снова.",

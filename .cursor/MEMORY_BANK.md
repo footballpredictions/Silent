@@ -602,6 +602,27 @@ cd pc; npm install; npm run dev
 - Эффект: меньше ложных `room-failure`, меньше churn sticky/warm, быстрее восстановление без смены комнаты.
 - Сборка: `pc/build-debug-8567/win-unpacked/SilentVPN-Admin.bat`.
 
+### 2026-08-14 — Улей: отдельный журнал инцидентов в админке (ошибки/падения)
+
+- Добавлен backend-буфер `app/services/hive_incidents.py` (кольцевой, dedup 45с): пишет только проблемные события `hive.provision`, `hive.probe`, `cell-agent.status`.
+- В `hive_service.fetch_worker_cell_load` теперь логируются провалы `/v1/status` (HTTP>=400 и network/timeout ошибки), чтобы видеть деградацию сот до ручного падения.
+- В `app/api/hive.py` добавлены endpoints:
+  - `GET /api/admin/hive/incidents?limit=...`
+  - `POST /api/admin/hive/incidents/clear`
+- В `admin-ui/src/pages/HivePage.tsx` добавлен блок **«Инциденты Улья»**: только ошибки/падения с авто-подсказкой причины (auth, timeout/DPI, DNS, порт/IP, ресурсы) и checklist для быстрой диагностики.
+- Цель: зафиксировать момент, когда «Улей через ~час перестаёт работать», и отделить сетевые блокировки (DPI/домен/порт/IP) от проблем ресурсов/процессов.
+
+### 2026-08-14 — Улей: security-инциденты (возможное вмешательство/брутфорс)
+
+- Инцидент-буфер расширен: помимо падений/таймаутов, пишет события безопасности (`security.*`), чтобы видеть не только «сломалось», но и «похоже ломают».
+- Источники:
+  - `security.admin-host-guard` — заблокированные попытки зайти на admin-поверхность с чужого Host/IP.
+  - `security.admin-login-bad-credentials` и `security.admin-login-rate-limit` — подбор пароля/шум на админ-логине.
+  - `security.admin-mfa-verify-failed`, `security.admin-mfa-verify-rate-limit`, `security.admin-mfa-resend-*` — злоупотребление MFA.
+  - `security.register-rate-limit` — аномальный burst регистраций по IP.
+- Классификация в `hive_incidents.py` дополнена security-категориями (`security-auth-abuse`, `security-probing`) с чеклистом: проверка повторяющихся IP/UA, host/path, решение через nginx/фаервол/rate-limit.
+- Деплой: `deploy_api.py` обновлён (добавлены `hive_incidents.py`, `admin_host_guard.py`, дополнительные `hive_*` сервисы), прод health после деплоя `200`.
+
 ### 2026-08-14 — ADB: первая прогрузка TM Android ~20с
 
 - Устройство: Vivo V2520A (`10AFB105UN003QC`), не Memu.

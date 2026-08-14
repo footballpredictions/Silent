@@ -5,6 +5,7 @@ import asyncio
 import logging
 
 from app.config import settings
+from app.services.hive_incidents import push_incident
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,11 @@ async def hive_rebalance_loop() -> None:
                     )
         except Exception as e:
             logger.warning("Hive rebalance cycle failed: %s", e)
+            push_incident(
+                source="hive.rebalance",
+                severity="error",
+                message=f"Hive rebalance cycle failed: {e}",
+            )
         await asyncio.sleep(interval)
 
 

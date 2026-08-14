@@ -19,6 +19,7 @@ from app.config import settings
 from app.core.security import encrypt_value, decrypt_value
 from app.models import Device, HiveCell, User
 from app.services.hive_capacity import get_capacity_profile, max_online_for_cell
+from app.services.hive_incidents import push_incident
 from app.services.hive_load import (
     is_vpn_overloaded,
     load_stress_score,
@@ -455,6 +456,14 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             resp = await client.get(url, headers=headers)
         if resp.status_code >= 400:
+            push_incident(
+                source="cell-agent.status",
+                severity="warning",
+                cell_name=cell.name,
+                cell_ip=cell.public_ip,
+                message=f"/v1/status HTTP {resp.status_code}",
+                details=resp.text[:220],
+            )
             return None
         data = resp.json()
         if not isinstance(data, dict):
@@ -477,6 +486,13 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
         }
     except Exception as e:
         logger.debug("Hive: load %s failed: %s", cell.name, e)
+        push_incident(
+            source="cell-agent.status",
+            severity="warning",
+            cell_name=cell.name,
+            cell_ip=cell.public_ip,
+            message=f"/v1/status failed: {e}",
+        )
         return None
 
 

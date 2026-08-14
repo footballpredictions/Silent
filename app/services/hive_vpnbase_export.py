@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.security import encrypt_value
 from app.models import HiveCell
+from app.services.hive_incidents import push_incident
 from app.services.hive_standby import build_cell_manifest_enriched
 
 logger = logging.getLogger(__name__)
@@ -86,9 +87,20 @@ async def push_vpnbase_export(db: AsyncSession) -> dict:
         if resp.status_code not in (200, 201):
             detail = resp.text[:500]
             logger.warning("vpnbase git push failed: %s %s", resp.status_code, detail)
+            push_incident(
+                source="hive.vpnbase",
+                severity="warning",
+                message=f"vpnbase git push HTTP {resp.status_code}",
+                details=detail,
+            )
             return {"ok": False, "status": resp.status_code, "detail": detail}
     except Exception as e:
         logger.warning("vpnbase git push error: %s", e)
+        push_incident(
+            source="hive.vpnbase",
+            severity="warning",
+            message=f"vpnbase git push error: {e}",
+        )
         return {"ok": False, "error": str(e)}
 
     _last_export_version = version

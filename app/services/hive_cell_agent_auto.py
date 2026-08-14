@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import HiveCell
+from app.services.hive_incidents import push_incident
 from app.services import hive_provision_service
 from app.services.hive_service import fetch_worker_cell_load, resolve_ssh_password
 
@@ -81,6 +82,14 @@ async def auto_upgrade_cell_agents(db: AsyncSession) -> dict:
         except Exception as e:
             _fail_until[cell.id] = now + cooldown
             logger.warning("Hive: cell-agent auto-upgrade %s failed: %s", cell.name, e)
+            push_incident(
+                source="hive.agent-upgrade",
+                severity="error",
+                cell_name=cell.name,
+                cell_ip=cell.public_ip,
+                message=f"Auto-upgrade cell-agent failed: {e}",
+                details=f"remote_id={remote_id or '?'} target_id={target_id}",
+            )
         finally:
             _upgrading.discard(cell.id)
 

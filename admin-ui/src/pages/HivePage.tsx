@@ -63,6 +63,19 @@ interface HiveSummary {
   rebalanced_returned?: number
 }
 
+interface HiveIncident {
+  ts: string
+  severity: string
+  source: string
+  cell_name?: string | null
+  cell_ip?: string | null
+  category: string
+  hint: string
+  message: string
+  details?: string
+  checks?: string[]
+}
+
 function fmtBandwidth(mbps: number): string {
   if (mbps >= 1) return `${mbps.toFixed(1)} Мбит/с`
   if (mbps >= 0.001) return `${(mbps * 1000).toFixed(0)} Кбит/с`
@@ -191,12 +204,14 @@ export default function HivePage({ token }: { token: string }) {
   const [success, setSuccess] = useState<string | null>(null)
   const [form, setForm] = useState({ host: '', password: '', name: '' })
   const [metricsAt, setMetricsAt] = useState<Date | null>(null)
+  const [incidents, setIncidents] = useState<HiveIncident[]>([])
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setError(null)
-    const [cellsRes, sumRes] = await Promise.all([
+    const [cellsRes, sumRes, incidentsRes] = await Promise.all([
       fetch('/api/admin/hive/cells', { headers: { Authorization: `Bearer ${token}` } }),
       fetch('/api/admin/hive/summary', { headers: { Authorization: `Bearer ${token}` } }),
+      fetch('/api/admin/hive/incidents?limit=120', { headers: { Authorization: `Bearer ${token}` } }),
     ])
     if (!cellsRes.ok) {
       setError('Не удалось загрузить соты')
@@ -205,6 +220,10 @@ export default function HivePage({ token }: { token: string }) {
     }
     setCells(await cellsRes.json())
     if (sumRes.ok) setSummary(await sumRes.json())
+    if (incidentsRes.ok) {
+      const data = await incidentsRes.json().catch(() => ({}))
+      setIncidents(Array.isArray(data.items) ? data.items : [])
+    }
     setMetricsAt(new Date())
     setLoading(false)
   }, [token])
@@ -281,6 +300,14 @@ export default function HivePage({ token }: { token: string }) {
     } finally {
       setBusy(null)
     }
+  }
+
+  const clearIncidents = async () => {
+    await fetch('/api/admin/hive/incidents/clear', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    await load(true)
   }
 
   const ql = summary?.queen_load
@@ -379,6 +406,53 @@ export default function HivePage({ token }: { token: string }) {
           </p>
         </div>
       )}
+
+      <div className="bg-[#111] border border-[#222] rounded-xl p-4 md:p-5">
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <div>
+            <h2 className="font-medium">Инциденты Улья (ошибки/падения)</h2>
+            <p className="text-xs text-[#666] mt-0.5">
+              Только проблемные события: таймауты, недоступность agent, ошибки доступа, подозрение на блокировки.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={clearIncidents}
+            className="text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] text-[#bbb] hover:text-white"
+          >
+            Очистить
+          </button>
+        </div>
+        {incidents.length === 0 ? (
+          <p className="text-xs text-[#666]">Инцидентов пока нет.</p>
+        ) : (
+          <div className="max-h-72 overflow-auto space-y-2 pr-1">
+            {incidents.map((it, idx) => (
+              <div key={`${it.ts}-${idx}`} className="bg-[#0a0a0a] border border-[#242424] rounded-lg px-3 py-2">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className={`${it.severity === 'error' ? 'text-red-400' : 'text-amber-300'} uppercase`}>
+                    {it.severity}
+                  </span>
+                  <span className="text-[#888]">{new Date(it.ts).toLocaleString('ru-RU')}</span>
+                  <span className="text-violet-300">{it.category}</span>
+                  <span className="text-[#777]">{it.source}</span>
+                  {(it.cell_name || it.cell_ip) && (
+                    <span className="text-[#999]">
+                      {it.cell_name || 'Сота'}{it.cell_ip ? ` (${it.cell_ip})` : ''}
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-[#ddd] mt-1">{it.message}</p>
+                <p className="text-xs text-amber-300 mt-1">{it.hint}</p>
+                {it.checks && it.checks.length > 0 && (
+                  <p className="text-xs text-[#777] mt-1">{it.checks.join(' · ')}</p>
+                )}
+                {it.details && <p className="text-xs text-[#666] mt-1 break-all">{it.details}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {error && (
         <div className="bg-red-950/40 border border-red-800 text-red-300 text-sm rounded-lg px-4 py-3 whitespace-pre-wrap">{error}</div>

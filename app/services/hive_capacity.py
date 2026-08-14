@@ -12,6 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services.hive_incidents import push_incident
 from app.models import HiveCell, HiveLoadSample
 from app.services.hive_load import queen_accepting_new_vpn
 
@@ -734,6 +735,11 @@ async def capacity_sampler_loop() -> None:
                 await sample_all_cells(db)
         except Exception as e:
             logger.warning("Hive capacity sample cycle failed: %s", e)
+            push_incident(
+                source="hive.capacity-sampler",
+                severity="warning",
+                message=f"Hive capacity sample cycle failed: {e}",
+            )
         await asyncio.sleep(interval)
 
 

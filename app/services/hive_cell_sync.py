@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.security import decrypt_value
 from app.models import Device, HiveCell
+from app.services.hive_incidents import push_incident
 from app.services.hive_service import _validate_outbound_url, get_cell_by_id
 
 logger = logging.getLogger(__name__)
@@ -45,11 +46,25 @@ async def push_manifest_to_cell(cell: HiveCell, manifest: dict) -> bool:
         return False
     try:
         pwd = decrypt_value(cell.api_secret_enc)
-    except Exception:
+    except Exception as e:
+        push_incident(
+            source="hive.manifest",
+            severity="error",
+            cell_name=cell.name,
+            cell_ip=cell.public_ip,
+            message=f"Не удалось расшифровать secret для sync-manifest: {e}",
+        )
         return False
     try:
         base = _validate_outbound_url(cell.api_url)
-    except ValueError:
+    except ValueError as e:
+        push_incident(
+            source="hive.manifest",
+            severity="error",
+            cell_name=cell.name,
+            cell_ip=cell.public_ip,
+            message=f"Некорректный api_url для sync-manifest: {e}",
+        )
         return False
     url = f"{base}/v1/sync-manifest"
     timeout = settings.HIVE_CELL_HTTP_TIMEOUT_SEC
@@ -62,10 +77,25 @@ async def push_manifest_to_cell(cell: HiveCell, manifest: dict) -> bool:
             )
         if resp.status_code >= 400:
             logger.debug("Hive manifest %s: HTTP %s", cell.name, resp.status_code)
+            push_incident(
+                source="hive.manifest",
+                severity="warning",
+                cell_name=cell.name,
+                cell_ip=cell.public_ip,
+                message=f"/v1/sync-manifest HTTP {resp.status_code}",
+                details=resp.text[:220],
+            )
             return False
         return True
     except Exception as e:
         logger.debug("Hive manifest %s failed: %s", cell.name, e)
+        push_incident(
+            source="hive.manifest",
+            severity="warning",
+            cell_name=cell.name,
+            cell_ip=cell.public_ip,
+            message=f"/v1/sync-manifest failed: {e}",
+        )
         return False
 
 

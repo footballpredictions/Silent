@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from app.config import settings
+from app.services.hive_incidents import push_security_event
 
 # DNAT 10.66.66.1:8000 → api; browser Host is 10.66.66.1[:8000]
 _TUNNEL_ADMIN_HOSTS = frozenset({"10.66.66.1"})
@@ -63,6 +64,18 @@ class AdminHostGuardMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         path = request.url.path or "/"
         if is_admin_surface(path) and not host_allows_admin(request.headers.get("host", "")):
+            client_ip = (
+                request.headers.get("x-real-ip")
+                or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+                or (request.client.host if request.client else "")
+            )
+            push_security_event(
+                source="admin-host-guard",
+                message="AdminHostGuard blocked forbidden host",
+                severity="warning",
+                client_ip=client_ip,
+                details=f"path={path} host={request.headers.get('host', '')[:120]}",
+            )
             return JSONResponse(status_code=404, content={"detail": "Not Found"})
         response = await call_next(request)
         if host_allows_admin(request.headers.get("host", "")):

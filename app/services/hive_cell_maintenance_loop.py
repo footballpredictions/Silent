@@ -5,6 +5,7 @@ import asyncio
 import logging
 
 from app.config import settings
+from app.services.hive_incidents import push_incident
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,19 @@ async def hive_cell_maintenance_loop() -> None:
                         )
                     elif not vpnbase_stats.get("skipped"):
                         logger.warning("vpnbase export failed: %s", vpnbase_stats)
+                        push_incident(
+                            source="hive.maintenance",
+                            severity="warning",
+                            message="vpnbase export failed",
+                            details=str(vpnbase_stats)[:400],
+                        )
         except Exception as e:
             logger.warning("Hive cell maintenance cycle failed: %s", e)
+            push_incident(
+                source="hive.maintenance",
+                severity="error",
+                message=f"Hive maintenance cycle failed: {e}",
+            )
         await asyncio.sleep(interval)
 
 

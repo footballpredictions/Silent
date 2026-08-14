@@ -28,6 +28,8 @@ Agent приступает к **первой невыполненной** зад
 - [x] **Android TM reconnect + PC тумблер/лог/обход:** epoch не убивает новый SOCKS; PC статус как Android; лог чистится на connect; bypass commit/localStorage
 - [x] **Первая загрузка медленная:** DNS шёл через VP8-несущую; вернули fake-ip (PC sing-box) / `mapdns` 198.19.0.0/16 (Android) — резолв на соте. APK + PC `build-debug-182837` — 2026-08-14
 - [x] **olcrtc2 cache safety + меню lock:** без раннего wipe слота на room-failure (Android/PC), debounce failure, soft→hard failure на backend; переключение обхода отключено при VPN ON — 2026-08-14
+- [x] **Улей: журнал инцидентов в админке:** отдельный поток только ошибок/падений (`/api/admin/hive/incidents`) с подсказками по DPI/портам/DNS/ресурсам — 2026-08-14
+- [x] **Улей: security-инциденты:** фиксация подозрительных вмешательств (admin host guard, brute-force admin/MFA, burst register rate-limit) в том же `/api/admin/hive/incidents` — 2026-08-14
 - [ ] **Соты: кеширующий DNS** (unbound/dnsmasq) + `OLCRTC2_DNS=127.0.0.1:53` — весь резолв теперь делает `olcrtc2-srv`
 - [ ] **Фаза D — endurance:** 40 мин WB+TM Wi‑Fi/LTE на PC+Android debug (ручной прогон; APK + PC `build-debug-182837`)
 

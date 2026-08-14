@@ -531,8 +531,8 @@ class OlcrtcRecoveryPolicyTest {
     }
 
     @Test
-    fun `prefetch must not reuse after stop and must expire`() {
-        assertTrue(OlcrtcRecoveryPolicy.shouldInvalidatePrefetchOnStop())
+    fun `prefetch survives stop and reuses same room file`() {
+        assertFalse(OlcrtcRecoveryPolicy.shouldInvalidatePrefetchOnStop())
 
         assertTrue(
             OlcrtcRecoveryPolicy.shouldReusePrefetchCache(
@@ -545,7 +545,18 @@ class OlcrtcRecoveryPolicyTest {
                 ),
             ),
         )
-        // После stop кэш null → reuse false (это чинит media timeout на recover).
+        // Диск после kill app: room с файла, не из RAM-null.
+        assertTrue(
+            OlcrtcRecoveryPolicy.shouldReusePrefetchCache(
+                OlcrtcRecoveryPolicy.PrefetchReuseInput(
+                    cachedRoom = "52725387300638",
+                    requestRoom = "https://telemost.yandex.ru/j/52725387300638",
+                    untilMs = 200_000L,
+                    nowMs = 100_000L,
+                    fileExists = true,
+                ),
+            ),
+        )
         assertFalse(
             OlcrtcRecoveryPolicy.shouldReusePrefetchCache(
                 OlcrtcRecoveryPolicy.PrefetchReuseInput(

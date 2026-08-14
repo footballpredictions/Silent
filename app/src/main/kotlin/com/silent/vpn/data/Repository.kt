@@ -1297,6 +1297,9 @@ class SilentRepository @Inject constructor(
     /** Последняя room с early-fail — не стартовать её снова из soft/cache. */
     @Volatile
     private var lastFailedOlcrtcRoom: String? = null
+    /** Anti-loop: не слать room-failure на один и тот же room слишком часто. */
+    private val olcrtcFailureReportAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val OLCRTC_FAILURE_REPORT_DEBOUNCE_MS = 8_000L
 
     /** После leave слот dirty → connect делает assign (carrier), не blind preferCache. */
     private val olcrtcDirtyAfterLeave = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -2033,6 +2036,15 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
         val roomDbId = olcrtcActiveRoomDbId
             ?: cfg?.providers?.get(prov)?.room_db_id.orEmpty()
         val oldRoom = cfg?.providers?.get(prov)?.room.orEmpty()
+        val nowMs = System.currentTimeMillis()
+        val lastReportMs = olcrtcFailureReportAtMs[prov] ?: 0L
+        if (oldRoom.isNotBlank() && oldRoom == lastFailedOlcrtcRoom && nowMs - lastReportMs < OLCRTC_FAILURE_REPORT_DEBOUNCE_MS) {
+            Log.w(
+                TAG,
+                "olcrtc roomFailure debounce provider=$prov room=${oldRoom.take(24)} dt=${nowMs - lastReportMs}ms",
+            )
+            return olcrtcConnectOverride ?: getCachedOlcrtcConfigForProvider(prov)
+        }
         com.silent.vpn.util.OlcrtcDiag.e(
             com.silent.vpn.util.OlcrtcDiag.FAIL,
             "roomFailure provider=$prov room=${oldRoom.take(40)} roomDbId=$roomDbId prefs=${getOlcrtcProvider()} detail=${detail.take(80)}",
@@ -2066,8 +2078,11 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
                 if (isMainVpnTunnelUp()) {
                     withUserBackendApi { getApi().olcrtcRoomFailure(req) }
                 } else {
-                    buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 8L)
-                        .olcrtcRoomFailure(req)
+                    // На LTE/белых списках olcrtc2 API только через VPN path.
+                    if (!onMobile) {
+                        buildApi("$publicBase/", vpnNetwork = null, connectTimeoutSec = 8L)
+                            .olcrtcRoomFailure(req)
+                    }
                 }
             }
         } catch (_: Exception) {
@@ -2075,8 +2090,9 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
         if (oldRoom.isNotBlank()) {
             lastFailedOlcrtcRoom = oldRoom
         }
-        // Только слот сессии — не затирать соседний провайдер.
-        clearOlcrtcCacheForProvider(prov)
+        olcrtcFailureReportAtMs[prov] = nowMs
+        // Кеш НЕ затираем: old room хранится как fallback until confirmed new room.
+        // Старт на old room блокируется через lastFailedOlcrtcRoom.
         olcrtcConnectOverride = null
         // После tear на сервере warm может ещё не успеть — 2–3 попытки assign.
         // Сначала tunnel (если жив), иначе public; на LTE без tunnel public часто ConnectException.
@@ -2094,6 +2110,9 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
                 } else {
                     saveOlcrtcCache(next, sync = true, forProvider = prov)
                     olcrtcConnectOverride = next
+                    if (nextRoom != oldRoom) {
+                        lastFailedOlcrtcRoom = oldRoom
+                    }
                     Log.i(
                         TAG,
                         "olcrtc failure reassign old=${oldRoom.take(20)} new=${nextRoom.take(20)} try=${attempt + 1}",

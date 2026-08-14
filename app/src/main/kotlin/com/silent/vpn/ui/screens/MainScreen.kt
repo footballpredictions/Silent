@@ -808,6 +808,7 @@ fun MainScreen(
                         MenuPage.BYPASS -> MenuBypassScreen(
                             repo,
                             fg,
+                            vpnState = vpnState,
                             onEnsureOlcrtcApi = onEnsureOlcrtcApi,
                         ) { menuPage = MenuPage.ROOT }
                         MenuPage.HASHES -> MenuHashesScreen(repo, fg) { menuPage = MenuPage.ROOT }

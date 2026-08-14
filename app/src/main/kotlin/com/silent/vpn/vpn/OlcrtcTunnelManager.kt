@@ -70,6 +70,13 @@ object OlcrtcTunnelManager {
         val pass: String,
     )
 
+    /** false → DNS=real через несущую (откат одной строкой). */
+    private const val OLCRTC2_MAPDNS = true
+    private const val MAPDNS_ADDRESS = "198.18.0.2"
+    /** Пул fake IP. Не 100.64.0.0/10 (дефолт hev) — это CGNAT LTE, ломает ICE. */
+    private const val MAPDNS_NETWORK = "198.19.0.0"
+    private const val MAPDNS_NETMASK = "255.255.0.0"
+
     private val _running = MutableStateFlow(false)
     val running: StateFlow<Boolean> = _running.asStateFlow()
     private val _tunnelReady = MutableStateFlow(false)
@@ -129,6 +136,8 @@ object OlcrtcTunnelManager {
     private data class PrefetchCache(val room: String, val file: File, val untilMs: Long)
     @Volatile private var telemostPrefetchCache: PrefetchCache? = null
     @Volatile private var wbPrefetchCache: PrefetchCache? = null
+    /** filesDir для wipe CONN_FILE при early fail (без Context в markStartFailed). */
+    @Volatile private var filesDirRef: File? = null
     /** IPv4 из STATIC_HOSTS — excludeRoute без повторного DNS (иначе +1–3с до TUN). */
     @Volatile private var lastStaticHostIps: Map<String, String> = emptyMap()
     private val worker = Executors.newSingleThreadExecutor { r ->
@@ -290,6 +299,21 @@ object OlcrtcTunnelManager {
         wbPrefetchCache?.file?.let { runCatching { it.delete() } }
         telemostPrefetchCache = null
         wbPrefetchCache = null
+    }
+
+    /**
+     * Early fail (media timeout / code=1 до SOCKS): диск CONN_FILE протух —
+     * следующий тумблер иначе снова 20с вхолостую на том же guest token.
+     * Обычный stop/before_start CONN_FILE не трогаем (cold start).
+     */
+    private fun invalidateTelemostConnFile(reason: String) {
+        telemostPrefetchCache?.file?.let { runCatching { it.delete() } }
+        telemostPrefetchCache = null
+        filesDirRef?.let { dir ->
+            runCatching { File(dir, "telemost-conn.json").delete() }
+        }
+        WdttTunnelManager.logUi("olcrtc_tm_auth", "CONN_FILE wipe ($reason)", 2)
+        DebugLog.i("Olcrtc", "CONN_FILE wipe: $reason")
     }
 
     /**
@@ -493,7 +517,9 @@ object OlcrtcTunnelManager {
         starting.set(false)
         iceConnected = false
         peerLatched = false
+        // CONN_FILE не трогаем на before_start — иначе каждый тумблер = полный Yandex auth.
         clearPrefetchCaches()
+        val hadNative = olcrtcProc != null || tunBridgeProc != null || tunFd != null
         runCatching { HevSocksTunnel.stopIfLoaded() }
         killProc(tunBridgeProc, "tunBridge")
         tunBridgeProc = null
@@ -504,10 +530,12 @@ object OlcrtcTunnelManager {
         } catch (_: Exception) {
         }
         tunFd = null
-        // Второй стоп hev — после close fd, иначе TProxy часто залипает до kill app.
-        Thread.sleep(120)
-        runCatching { HevSocksTunnel.stopIfLoaded() }
-        Thread.sleep(80)
+        // Слипы только если реально что-то убивали (cold start без leftover — без паузы).
+        if (hadNative) {
+            Thread.sleep(120)
+            runCatching { HevSocksTunnel.stopIfLoaded() }
+            Thread.sleep(80)
+        }
         if (reason.isNotBlank()) {
             WdttTunnelManager.logUi("olcrtc_hard_reset_$reason", "hardReset: $reason", 2)
             DebugLog.w("Olcrtc", "hardReset: $reason")
@@ -592,6 +620,7 @@ object OlcrtcTunnelManager {
         openStreamFailStreak.set(0)
         activeParams = sessionParams
         val appCtx = context.applicationContext
+        filesDirRef = appCtx.filesDir
         _running.value = true
         val engineHint = if (useOlcrtc2) "olcrtc2" else when (sessionParams.provider.lowercase()) {
             "wbstream" -> "livekit"
@@ -618,30 +647,44 @@ object OlcrtcTunnelManager {
                 } catch (_: Exception) {
                 }
                 tunFd = null
-                Thread.sleep(150)
-                runCatching { HevSocksTunnel.stopIfLoaded() }
+                // Порт свободен сразу — не ждём 2с. Слип только если :8808 ещё слушает.
+                run {
+                    var busy = false
+                    try {
+                        Socket().use {
+                            it.connect(
+                                InetSocketAddress(sessionParams.socksHost, sessionParams.socksPort),
+                                80,
+                            )
+                        }
+                        busy = true
+                    } catch (_: Exception) {
+                    }
+                    if (busy) {
+                        Thread.sleep(80)
+                        runCatching { HevSocksTunnel.stopIfLoaded() }
+                        val deadline = System.currentTimeMillis() + 1_200
+                        while (System.currentTimeMillis() < deadline) {
+                            if (epoch != startEpoch.get()) return@execute
+                            try {
+                                Socket().use {
+                                    it.connect(
+                                        InetSocketAddress(sessionParams.socksHost, sessionParams.socksPort),
+                                        80,
+                                    )
+                                }
+                                Thread.sleep(60)
+                            } catch (_: Exception) {
+                                break
+                            }
+                        }
+                    }
+                }
                 lastFailHint = ""
                 iceConnected = false
                 peerLatched = false
                 _tunnelReady.value = false
                 _running.value = true
-                run {
-                    val deadline = System.currentTimeMillis() + 2_000
-                    while (System.currentTimeMillis() < deadline) {
-                        if (epoch != startEpoch.get()) return@execute
-                        try {
-                            Socket().use {
-                                it.connect(
-                                    InetSocketAddress(sessionParams.socksHost, sessionParams.socksPort),
-                                    120,
-                                )
-                            }
-                            Thread.sleep(80)
-                        } catch (_: Exception) {
-                            break
-                        }
-                    }
-                }
 
                 val dataDir = File(appCtx.filesDir, "olcrtc-data").apply { mkdirs() }
                 val libDir = appCtx.applicationInfo.nativeLibraryDir
@@ -741,7 +784,11 @@ object OlcrtcTunnelManager {
                 pipeLogs(proc)
                 watchExit(proc, epoch)
 
-                if (!waitForSocks(sessionParams.socksHost, sessionParams.socksPort, 90_000, proc, epoch)) {
+                // Telemost: SOCKS слушает только после peer latch. 90с = минуты на мёртвом CONN_FILE.
+                val socksWaitMs =
+                    if (sessionParams.provider.equals("telemost", ignoreCase = true)) 12_000L
+                    else 90_000L
+                if (!waitForSocks(sessionParams.socksHost, sessionParams.socksPort, socksWaitMs, proc, epoch)) {
                     val exited = try {
                         proc.exitValue()
                     } catch (_: Exception) {
@@ -765,18 +812,20 @@ object OlcrtcTunnelManager {
                     "SOCKS listen ${sessionParams.socksHost}:${sessionParams.socksPort}",
                     1,
                 )
-                // Как PC: dial сам ждёт peer — без лишнего settle/TLS до TUN
-                // (на Android 1.2с+4с TLS давали «адское» ожидание до первого YT/TG).
+                // Telemost Wi‑Fi: ICE обычно за 2–5с. 25с держали тумблер при живом SOCKS.
+                val peerWaitMs =
+                    if (sessionParams.provider.equals("telemost", ignoreCase = true)) 8_000L
+                    else 25_000L
                 WdttTunnelManager.logUi(
                     "olcrtc_dial_wait",
-                    "SOCKS dial… peer/ICE provider=${sessionParams.provider}",
+                    "ждём ICE/peer… provider=${sessionParams.provider} max=${peerWaitMs / 1000}с",
                     1,
                 )
-                if (!waitForSocksDial(sessionParams, 45_000, proc, epoch)) {
+                if (!waitForPeerReady(sessionParams, peerWaitMs, proc, epoch)) {
                     val msg = if (lastFailHint.isNotBlank()) {
                         lastFailHint
                     } else {
-                        "olcrtc SOCKS слушает, но peer не отвечает (dial timeout)"
+                        "olcrtc: peer/ICE не поднялся (dial timeout)"
                     }
                     if (epoch == startEpoch.get()) {
                         markStartFailed(msg)
@@ -784,7 +833,13 @@ object OlcrtcTunnelManager {
                     }
                     return@execute
                 }
-                WdttTunnelManager.logUi("olcrtc_dial", "SOCKS dial OK", 1)
+                WdttTunnelManager.logUi(
+                    "olcrtc_dial",
+                    if (peerLatched) "peer ready (latched)"
+                    else if (iceConnected) "peer ready (ICE)"
+                    else "peer ready (SOCKS dial fallback)",
+                    1,
+                )
                 iceConnected = true
                 val tHev = System.currentTimeMillis()
                 if (vpnService != null) {
@@ -809,13 +864,16 @@ object OlcrtcTunnelManager {
                     "hev+exclude ${System.currentTimeMillis() - tHev}ms",
                     2,
                 )
-                Thread.sleep(80)
+                Thread.sleep(40)
                 if (epoch != startEpoch.get()) return@execute
-                socksDialOnce(sessionParams, "www.gstatic.com", 2_000)
-                WdttTunnelManager.logUi("olcrtc_post_hev", "post-hev dial OK (как PC)", 1)
                 _tunnelReady.value = true
                 WdttTunnelManager.logUi("olcrtc_ready", "tunnelReady (SOCKS + hev TUN)", 1)
                 startSocksHealthWatch(sessionParams)
+                // Не блокируем ready: прогрев первой загрузки в фоне (Android+PC parity).
+                worker.execute {
+                    if (epoch != startEpoch.get()) return@execute
+                    runCatching { warmFirstLoadPath(sessionParams, epoch) }
+                }
             } catch (e: Exception) {
                 val msg = e.message ?: "olcrtc background start failed"
                 if (epoch == startEpoch.get()) {
@@ -832,6 +890,9 @@ object OlcrtcTunnelManager {
 
     /** Ранний fail: сбрасываем running сразу — иначе UI «Подключение…» и recover зависают. */
     private fun markStartFailed(msg: String) {
+        if (!_tunnelReady.value) {
+            invalidateTelemostConnFile("start_failed:${msg.take(40)}")
+        }
         hardReset("start_failed")
         _lastError.value = msg
         starting.set(false)
@@ -908,6 +969,14 @@ object OlcrtcTunnelManager {
                             l.contains("handshake on reconnect failed", ignoreCase = true) ||
                             l.contains("control missed pong", ignoreCase = true)
                         ) {
+                            if (!_tunnelReady.value &&
+                                (
+                                    l.contains("subscriber media timeout", ignoreCase = true) ||
+                                        l.contains("failed to connect link", ignoreCase = true)
+                                    )
+                            ) {
+                                invalidateTelemostConnFile("media_timeout_before_ready")
+                            }
                             markPeerLivenessSuspect(
                                 when {
                                     l.contains("missed pong", ignoreCase = true) -> "missed_pong"
@@ -1130,13 +1199,19 @@ object OlcrtcTunnelManager {
         }, "olcrtc-exit").apply { isDaemon = true }.start()
     }
 
-    /** Меню DNS → VpnService (mapdns на Android ломал Telemost/ICE). */
+    /** Меню DNS → VpnService, когда mapdns выключен. */
     private fun resolveOlcrtcDnsServers(context: Context): List<String> =
         DnsSettings.ipv4Servers(context)
 
     /**
-     * TUN → SOCKS: IPv4-only, DNS=real, udp→tcp (блок QUIC), TG+YT via VPN.
-     * mapdns/fake-ip откатан — регрессия Telemost после «паритета PC».
+     * TUN → SOCKS: IPv4-only, mapdns/fake-ip, udp→tcp (блок QUIC), TG+YT via VPN.
+     *
+     * mapdns: приложение получает fake IP без сетевого запроса, а в SOCKS CONNECT
+     * уходит домен → резолвит olcrtc2-srv на соте. Без него каждый холодный домен
+     * стоил round-trip через VP8-несущую — отсюда медленная первая загрузка.
+     *
+     * Пул fake IP — 198.19.0.0/16, а не дефолтный hev 100.64.0.0/10: на LTE это
+     * CGNAT оператора, и пересечение ломало ICE/TURN (прошлый откат mapdns).
      */
     private fun attachHevTun(context: Context, params: Params, vpnService: VpnService): String? {
         if (!HevSocksTunnel.ensureLoaded()) {
@@ -1167,6 +1242,14 @@ object OlcrtcTunnelManager {
             val p = params.socksPass.replace("'", "''")
             appendLine("  username: '$u'")
             appendLine("  password: '$p'")
+            if (OLCRTC2_MAPDNS) {
+                appendLine("mapdns:")
+                appendLine("  address: $MAPDNS_ADDRESS")
+                appendLine("  port: 53")
+                appendLine("  network: $MAPDNS_NETWORK")
+                appendLine("  netmask: $MAPDNS_NETMASK")
+                appendLine("  cache-size: 10000")
+            }
             appendLine("misc:")
             appendLine("  log-level: warn")
             appendLine("  connect-timeout: 3500")
@@ -1176,7 +1259,11 @@ object OlcrtcTunnelManager {
         conf.writeText(hevYaml)
         WdttTunnelManager.logUi(
             "olcrtc_hev_udp",
-            "hev UDP→TCP (блок QUIC; DNS=real; TG+YT via VPN)",
+            if (OLCRTC2_MAPDNS) {
+                "hev UDP→TCP (блок QUIC; mapdns $MAPDNS_NETWORK; TG+YT via VPN)"
+            } else {
+                "hev UDP→TCP (блок QUIC; DNS=real; TG+YT via VPN)"
+            },
             2,
         )
         return try {
@@ -1186,18 +1273,30 @@ object OlcrtcTunnelManager {
                 .addAddress("198.18.0.1", 30)
                 .addRoute("0.0.0.0", 0)
             runCatching { builder.allowFamily(OsConstants.AF_INET) }
-            for (dns in menuDns) {
-                runCatching { builder.addDnsServer(dns) }
+            if (OLCRTC2_MAPDNS) {
+                runCatching { builder.addDnsServer(MAPDNS_ADDRESS) }
+            } else {
+                for (dns in menuDns) {
+                    runCatching { builder.addDnsServer(dns) }
+                }
             }
             WdttTunnelManager.logUi(
                 "olcrtc_tun",
-                "IPv4-only + DNS=real (${params.provider}; ${menuDns.joinToString(",")})",
+                if (OLCRTC2_MAPDNS) {
+                    "IPv4-only + mapdns $MAPDNS_ADDRESS (${params.provider}; " +
+                        "меню DNS не применяется — резолв на соте)"
+                } else {
+                    "IPv4-only + DNS=real (${params.provider}; ${menuDns.joinToString(",")})"
+                },
                 2,
             )
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val excludeHosts = linkedSetOf<String>()
+                // Системный DNS вне TUN — fallback для приложений, игнорирующих VPN DNS.
                 excludeHosts.addAll(systemDnsIpv4Hosts(context))
-                excludeHosts.addAll(menuDns)
+                if (!OLCRTC2_MAPDNS) {
+                    excludeHosts.addAll(menuDns)
+                }
                 val bypassCidrs: List<String>
                 if (params.provider.equals("telemost", ignoreCase = true)) {
                     excludeHosts.addAll(TELEMOST_BYPASS_HOSTS)
@@ -1223,7 +1322,7 @@ object OlcrtcTunnelManager {
                 WdttTunnelManager.logUi(
                     "olcrtc_tun_excl",
                     "excludeRoute hosts=${excludeHosts.size} cidrs=$cidrN ips≈$excluded " +
-                        "tgCidr=0 tgVia=vpn mapdns=off",
+                        "tgCidr=0 tgVia=vpn mapdns=${if (OLCRTC2_MAPDNS) MAPDNS_NETWORK else "off"}",
                     2,
                 )
             } else {
@@ -1264,7 +1363,11 @@ object OlcrtcTunnelManager {
             }
             WdttTunnelManager.logUi(
                 "olcrtc_tun",
-                "hev TUN ok fd=${pfd.fd} DNS=real (mapdns off)",
+                if (OLCRTC2_MAPDNS) {
+                    "hev TUN ok fd=${pfd.fd} mapdns=fake-ip (резолв домена на соте)"
+                } else {
+                    "hev TUN ok fd=${pfd.fd} DNS=real (mapdns off)"
+                },
                 1,
             )
             null
@@ -1389,8 +1492,13 @@ object OlcrtcTunnelManager {
         return user to pass
     }
 
-    /** SOCKS5 CONNECT по домену — peer + DNS через туннель (как на PC). */
-    private fun waitForSocksDial(
+    /**
+     * Peer готов до TUN: ICE/peer latched из логов native.
+     * gstatic-цикл здесь не нужен — на Telemost это секунды холостого трафика
+     * до первого YouTube (каждый fail = до 4с).
+     * Fallback: один короткий dial только если ICE так и не пришёл.
+     */
+    private fun waitForPeerReady(
         params: Params,
         timeoutMs: Long,
         proc: Process? = null,
@@ -1401,12 +1509,64 @@ object OlcrtcTunnelManager {
             if (epoch != startEpoch.get()) return false
             if (proc != null && !isProcessAlive(proc)) return false
             if (!_running.value) return false
-            if (socksDialOnce(params, "www.gstatic.com", soTimeoutMs = 4000)) {
-                return true
-            }
-            Thread.sleep(250)
+            if (iceConnected || peerLatched) return true
+            Thread.sleep(120)
         }
-        return false
+        if (iceConnected || peerLatched) return true
+        WdttTunnelManager.logUi(
+            "olcrtc_dial_fallback",
+            "ICE не пришёл за ${timeoutMs / 1000}с — один SOCKS dial",
+            2,
+        )
+        return socksDialOnce(params, "www.gstatic.com", soTimeoutMs = 2_500)
+    }
+
+    /** @deprecated оставлен для тестов/совместимости — см. [waitForPeerReady]. */
+    private fun waitForSocksDial(
+        params: Params,
+        timeoutMs: Long,
+        proc: Process? = null,
+        epoch: Int = startEpoch.get(),
+    ): Boolean = waitForPeerReady(params, timeoutMs, proc, epoch)
+
+    /**
+     * После tunnelReady: короткий прогрев нескольких доменов.
+     *
+     * Один dial (`i.ytimg.com`) не всегда успевает «раскачать» vp8channel/KCP, поэтому
+     * первый реальный сайт может ждать 8–12с. Делаем 1 мягкую волну коротких
+     * SOCKS CONNECT (без блокировки UI), чтобы убрать «пустую паузу» на первой загрузке.
+     *
+     * Важно: не используем gstatic/google в warm (их уже убирали как шум/регрессию).
+     */
+    private fun warmFirstLoadPath(params: Params, epoch: Int) {
+        val hosts =
+            linkedSetOf(
+                "www.cloudflare.com",
+                "i.ytimg.com",
+                "www.youtube.com",
+            )
+        // Для WB полезно прогреть и его CDN/API путь.
+        if (params.provider.equals("wbstream", ignoreCase = true)) {
+            hosts.add("stream.wb.ru")
+            hosts.add("wildberries.ru")
+        }
+        val rounds = 1
+        val perDialTimeoutMs = 1200
+        for (round in 1..rounds) {
+            if (epoch != startEpoch.get() || !_running.value || !_tunnelReady.value) return
+            for (host in hosts) {
+                if (epoch != startEpoch.get() || !_running.value || !_tunnelReady.value) return
+                runCatching { socksDialOnce(params, host, soTimeoutMs = perDialTimeoutMs) }
+            }
+            if (round != rounds) {
+                Thread.sleep(120)
+            }
+        }
+        WdttTunnelManager.logUi(
+            "olcrtc_warm",
+            "first-load warm done (${hosts.size} hosts × $rounds)",
+            2,
+        )
     }
 
     /**
@@ -1841,14 +2001,37 @@ object OlcrtcTunnelManager {
     }
 
     private fun resolveInto(out: MutableMap<String, String>, vararg hosts: String) {
-        for (h in hosts) {
-            if (h.isBlank() || out.containsKey(h.lowercase())) continue
+        val need = hosts.filter { it.isNotBlank() && !out.containsKey(it.lowercase()) }
+        if (need.isEmpty()) return
+        if (need.size == 1) {
+            val h = need[0]
             val ip = runCatching {
-                InetAddress.getAllByName(h).firstOrNull { it.hostAddress?.contains(':') != true }?.hostAddress
+                InetAddress.getAllByName(h)
+                    .firstOrNull { it.hostAddress?.contains(':') != true }?.hostAddress
             }.getOrNull()
-            if (!ip.isNullOrBlank()) {
-                out[h.lowercase()] = ip
+            if (!ip.isNullOrBlank()) out[h.lowercase()] = ip
+            return
+        }
+        // Параллельный DNS — на cold start 7 хостов подряд давали 1–3с.
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(need.size.coerceAtMost(6))
+        try {
+            val futures = need.map { h ->
+                pool.submit<Pair<String, String?>> {
+                    val ip = runCatching {
+                        InetAddress.getAllByName(h)
+                            .firstOrNull { it.hostAddress?.contains(':') != true }?.hostAddress
+                    }.getOrNull()
+                    h.lowercase() to ip
+                }
             }
+            for (f in futures) {
+                val (h, ip) = runCatching {
+                    f.get(2, java.util.concurrent.TimeUnit.SECONDS)
+                }.getOrNull() ?: continue
+                if (!ip.isNullOrBlank()) out[h] = ip
+            }
+        } finally {
+            pool.shutdownNow()
         }
     }
 
@@ -1886,6 +2069,36 @@ object OlcrtcTunnelManager {
             }
             resolveInto(staticHosts, "cloud-api.yandex.ru", "telemost.yandex.ru", "goloom.strm.yandex.net")
             return cached!!.file
+        }
+        // После kill app RAM пуст — поднять CONN_FILE с диска (тот же room, TTL).
+        val disk = File(context.filesDir, "telemost-conn.json")
+        if (disk.isFile) {
+            val body = runCatching { disk.readText() }.getOrNull().orEmpty()
+            val obj = runCatching { JSONObject(body) }.getOrNull()
+            val diskRoom = obj?.optString("room_id").orEmpty()
+            val until = disk.lastModified() + OlcrtcRecoveryPolicy.PREFETCH_TTL_MS
+            if (
+                body.isNotBlank() &&
+                OlcrtcRecoveryPolicy.shouldReusePrefetchCache(
+                    OlcrtcRecoveryPolicy.PrefetchReuseInput(
+                        cachedRoom = diskRoom.ifBlank { null },
+                        requestRoom = room,
+                        untilMs = until,
+                        nowMs = System.currentTimeMillis(),
+                        fileExists = true,
+                    ),
+                )
+            ) {
+                telemostPrefetchCache = PrefetchCache(room, disk, until)
+                WdttTunnelManager.logUi("olcrtc_tm_auth", "Yandex auth disk hit", 1)
+                runCatching {
+                    val media = obj?.optJSONObject("client_configuration")
+                        ?.optString("media_server_url").orEmpty()
+                    hostFromUrl(media)?.let { resolveInto(staticHosts, it) }
+                }
+                resolveInto(staticHosts, "cloud-api.yandex.ru", "telemost.yandex.ru", "goloom.strm.yandex.net")
+                return disk
+            }
         }
         return try {
             val roomUrl =

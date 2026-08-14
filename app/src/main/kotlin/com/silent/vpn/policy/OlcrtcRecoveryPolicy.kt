@@ -206,6 +206,7 @@ object OlcrtcRecoveryPolicy {
     /**
      * gstatic SOCKS-проба на узком Telemost/vp8 = секунды зависания YouTube/Telegram.
      * Glitch всё равно не рестартит процесс — зонд только вредит полосе.
+     * Старт: ждём ICE/peer latched, не dial к Google.
      */
     fun shouldProbeSocksWhileTunnelReady(): Boolean = false
 
@@ -279,16 +280,23 @@ object OlcrtcRecoveryPolicy {
         return true
     }
 
-    /** Prefetch connection-details нельзя переиспользовать после stop/recover. */
-    fun shouldInvalidatePrefetchOnStop(): Boolean = true
+    /**
+     * CONN_FILE / OkHttp prefetch: НЕ стирать на stop/before_start.
+     * Иначе каждый тумблер снова ждёт Yandex auth (главный cold-start).
+     * Wipe только при смене room или явном clear.
+     */
+    fun shouldInvalidatePrefetchOnStop(): Boolean = false
 
     /**
-     * In-memory OkHttp prefetch: только живой TTL + тот же room + файл на диске.
-     * После stop() кэш обязан быть null → reuse=false.
+     * In-memory или диск: тот же room + живой TTL + файл.
+     * cachedRoom может прийти с диска (после kill app), не только из RAM.
      */
     fun shouldReusePrefetchCache(input: PrefetchReuseInput): Boolean {
-        val room = input.cachedRoom ?: return false
-        if (room != input.requestRoom) return false
+        val room = input.cachedRoom?.trim().orEmpty()
+        if (room.isEmpty()) return false
+        val want = input.requestRoom.trim()
+        if (want.isEmpty()) return false
+        if (room != want && !want.contains(room) && !room.contains(want)) return false
         if (!input.fileExists) return false
         if (input.untilMs <= input.nowMs) return false
         return true

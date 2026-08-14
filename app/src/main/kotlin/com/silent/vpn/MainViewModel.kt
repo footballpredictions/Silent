@@ -2774,8 +2774,9 @@ class MainViewModel @Inject constructor(
                     ContextCompat.startForegroundService(context, intent)
                     pendingConnectAfterSubscriptionRefresh = false
                     var olcOk = false
-                    for (tick in 0 until 90) {
-                        delay(1000)
+                    // Первые ~15с опрос 200мс — иначе UI отстаёт от tunnelReady до 1с.
+                    for (tick in 0 until 300) {
+                        delay(if (tick < 75) 200 else 500)
                         if (_vpnState.value != VpnState.CONNECTING) return@launch
                         val err = OlcrtcTunnelManager.lastError.value
                         if (err != null) {
@@ -2870,10 +2871,13 @@ class MainViewModel @Inject constructor(
                             olcOk = true
                             break
                         }
-                        if (tick == 5 || tick == 15 || tick == 30 || tick == 60) {
+                        if (tick == 25 || tick == 75 || tick == 150 || tick == 250) {
+                            val elapsedMs =
+                                if (tick < 75) tick * 200
+                                else 75 * 200 + (tick - 75) * 500
                             WdttTunnelManager.logUi(
                                 "olcrtc_wait",
-                                "waiting SOCKS… ${tick}s running=${OlcrtcTunnelManager.running.value}",
+                                "waiting peer… ${elapsedMs / 1000}s running=${OlcrtcTunnelManager.running.value}",
                             )
                         }
                     }

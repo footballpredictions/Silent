@@ -69,16 +69,16 @@ class OlcrtcRecoveryDeviceTest {
     }
 
     @Test
-    fun prefetchInvalidatedOnStop_noStaleReuse() {
-        assertTrue(OlcrtcRecoveryPolicy.shouldInvalidatePrefetchOnStop())
-        assertFalse(
+    fun prefetchSurvivesStop_diskReuseOk() {
+        assertFalse(OlcrtcRecoveryPolicy.shouldInvalidatePrefetchOnStop())
+        assertTrue(
             OlcrtcRecoveryPolicy.shouldReusePrefetchCache(
                 OlcrtcRecoveryPolicy.PrefetchReuseInput(
-                    cachedRoom = null,
+                    cachedRoom = "room",
                     requestRoom = "room",
                     untilMs = System.currentTimeMillis() + 60_000L,
                     nowMs = System.currentTimeMillis(),
-                    fileExists = false,
+                    fileExists = true,
                 ),
             ),
         )

@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
 fun MenuBypassScreen(
     repo: SilentRepository,
     fg: Color,
+    vpnState: VpnState,
     @Suppress("UNUSED_PARAMETER")
     onEnsureOlcrtcApi: suspend (providers: Array<out String>) -> Boolean = { true },
     onBack: () -> Unit,
@@ -47,6 +48,7 @@ fun MenuBypassScreen(
     var applyHint by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val switchLocked = applying || vpnState != VpnState.DISCONNECTED
 
     LaunchedEffect(Unit) {
         if (!BuildConfig.DEBUG) {
@@ -60,6 +62,15 @@ fun MenuBypassScreen(
         (pendingFamily != null && pendingFamily != family) ||
             (pendingVk != null && pendingVk != vkMode) ||
             (pendingOlc != null && pendingOlc != olcProvider)
+
+    LaunchedEffect(vpnState) {
+        if (vpnState != VpnState.DISCONNECTED) {
+            pendingFamily = null
+            pendingVk = null
+            pendingOlc = null
+            applyHint = "Отключите VPN перед сменой варианта обхода."
+        }
+    }
 
     Column(
         Modifier
@@ -101,11 +112,19 @@ fun MenuBypassScreen(
                 modifier = Modifier.padding(bottom = 8.dp),
             )
         }
+        if (vpnState != VpnState.DISCONNECTED) {
+            Text(
+                "Переключение недоступно: VPN активен.",
+                fontSize = 11.sp,
+                color = fg.copy(alpha = 0.7f),
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
 
         BypassOption(
             title = "VK",
             selected = selFamily == SilentRepository.BYPASS_FAMILY_WDTT,
-            enabled = !applying,
+            enabled = !switchLocked,
             fg = fg,
             onSelect = { pendingFamily = SilentRepository.BYPASS_FAMILY_WDTT },
         )
@@ -114,21 +133,21 @@ fun MenuBypassScreen(
                 BypassOption(
                     title = "VKCalls",
                     selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_VKCALLS,
-                    enabled = !applying,
+                    enabled = !switchLocked,
                     fg = fg,
                     onSelect = { pendingVk = SilentRepository.VK_CRED_VKCALLS },
                 )
                 BypassOption(
                     title = "Авто капча",
                     selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_AUTO,
-                    enabled = !applying,
+                    enabled = !switchLocked,
                     fg = fg,
                     onSelect = { pendingVk = SilentRepository.VK_CRED_AUTO },
                 )
                 BypassOption(
                     title = "Вручную",
                     selected = (pendingVk ?: vkMode) == SilentRepository.VK_CRED_MANUAL,
-                    enabled = !applying,
+                    enabled = !switchLocked,
                     fg = fg,
                     onSelect = { pendingVk = SilentRepository.VK_CRED_MANUAL },
                 )
@@ -138,7 +157,7 @@ fun MenuBypassScreen(
         BypassOption(
             title = "olcrtc",
             selected = selFamily == SilentRepository.BYPASS_FAMILY_OLCRTC2,
-            enabled = !applying,
+            enabled = !switchLocked,
             fg = fg,
             onSelect = { pendingFamily = SilentRepository.BYPASS_FAMILY_OLCRTC2 },
         )
@@ -147,14 +166,14 @@ fun MenuBypassScreen(
                 BypassOption(
                     title = "Яндекс Телемост",
                     selected = (pendingOlc ?: olcProvider) == SilentRepository.OLCRTC_TELEMOST,
-                    enabled = !applying,
+                    enabled = !switchLocked,
                     fg = fg,
                     onSelect = { pendingOlc = SilentRepository.OLCRTC_TELEMOST },
                 )
                 BypassOption(
                     title = "WB Stream",
                     selected = (pendingOlc ?: olcProvider) == SilentRepository.OLCRTC_WBSTREAM,
-                    enabled = !applying,
+                    enabled = !switchLocked,
                     fg = fg,
                     onSelect = { pendingOlc = SilentRepository.OLCRTC_WBSTREAM },
                 )
@@ -162,7 +181,7 @@ fun MenuBypassScreen(
         }
     }
 
-    if (hasPending) {
+    if (hasPending && !switchLocked) {
         AlertDialog(
             onDismissRequest = {
                 pendingFamily = null

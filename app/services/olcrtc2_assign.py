@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -58,6 +59,9 @@ WARM_CREATE_BUDGET = 6
 # Claim под per-(provider,dt) lock: concurrent assign не переполнит max_clients.
 _claim_locks: dict[str, asyncio.Lock] = {}
 _claim_locks_guard = asyncio.Lock()
+# first failure per (fp,provider,room) is soft (sticky clear only), second in window is hard teardown
+_failure_first_seen_at: dict[str, float] = {}
+FAILURE_HARD_ESCALATE_SEC = 25.0
 
 
 def _now() -> datetime:
@@ -230,7 +234,13 @@ async def _save_sticky(
         await db.commit()
 
 
-async def _touch_devices_online(db: AsyncSession, fingerprint: str) -> None:
+async def _touch_devices_online(
+    db: AsyncSession,
+    fingerprint: str,
+    *,
+    device_type: str = "",
+    cell_id: uuid.UUID | None = None,
+) -> None:
     """olcrtc без wdtt keepalive — иначе админка «онлайн» видит 0/1."""
     fp = (fingerprint or "").strip()[:128]
     if not fp:
@@ -238,18 +248,21 @@ async def _touch_devices_online(db: AsyncSession, fingerprint: str) -> None:
     try:
         from app.models.device import Device
 
-        devices = (
-            await db.execute(
-                select(Device).where(
-                    Device.device_fingerprint == fp,
-                    Device.is_active == True,  # noqa: E712
-                )
-            )
-        ).scalars().all()
+        q = select(Device).where(
+            Device.device_fingerprint == fp,
+            Device.is_active == True,  # noqa: E712
+        )
+        dt = (device_type or "").strip().lower()
+        if dt:
+            q = q.where(Device.device_type == dt)
+        devices = (await db.execute(q)).scalars().all()
         now = _now()
         for d in devices:
             d.is_connected = True
             d.last_connected = now
+            if cell_id and d.cell_id != cell_id:
+                # Для olcrtc сессий фиксируем реальную соту, иначе Hive может показывать 0 online.
+                d.cell_id = cell_id
     except Exception:
         logger.debug("olcrtc2 device touch failed", exc_info=True)
 
@@ -438,7 +451,10 @@ async def ensure_session_room(
             row = await db.get(Olcrtc2Room, st.room_id)
             if row and row.status in ("active", "provisioning") and row.room_url:
                 unit_ok = await ensure_unit_ready(db, row)
-                carrier = await _carrier_room_alive(row) if unit_ok else False
+                # Telemost: не HTTP-probe на каждый assign (до 12с) — unit хватает.
+                carrier: bool | None = True
+                if unit_ok and (row.provider or "") == "wbstream":
+                    carrier = await _carrier_room_alive(row)
                 # sticky reconnect: None (сеть) не рвём; False (404) — tear.
                 if unit_ok and carrier is not False:
                     row.last_healthy_at = _now()
@@ -502,7 +518,12 @@ async def ensure_session_room(
                         cand.online_count = stickies
                         continue
                     await _save_sticky(db, fp, prov, dt, cand.id, commit=False)
-                    await _touch_devices_online(db, fp)
+                    await _touch_devices_online(
+                        db,
+                        fp,
+                        device_type=dt,
+                        cell_id=cand.cell_id,
+                    )
                     await _recount(db, cand)
                     cand.last_healthy_at = _now()
                     await db.commit()
@@ -513,19 +534,28 @@ async def ensure_session_room(
                 break
 
             unit_ok = await ensure_unit_ready(db, reserved)
-            carrier = await _carrier_room_alive(reserved) if unit_ok else False
-            if unit_ok and carrier is True:
+            # Как sticky: False = tear; None (сеть/5xx) ≠ мёртвая комната.
+            # Раньше требовали carrier is True → при ?/таймауте Yandex рвали warm
+            # и шли в on-demand (Playwright+settle 8с) → тумблер 30с+.
+            carrier: bool | None = None
+            if unit_ok and (reserved.provider or "") == "wbstream":
+                carrier = await _carrier_room_alive(reserved)
+            elif unit_ok:
+                # Telemost: unit active достаточно; HTTP connection probe до 12с и ложные tear.
+                carrier = True
+            if unit_ok and carrier is not False:
                 await _recount(db, reserved)
                 reserved.last_healthy_at = _now()
                 await db.commit()
                 logger.info(
-                    "olcrtc2 pool hit provider=%s dt=%s unit=%s room=%s online=%s/%s",
+                    "olcrtc2 pool hit provider=%s dt=%s unit=%s room=%s online=%s/%s carrier=%s",
                     prov,
                     dt,
                     reserved.unit_name,
                     reserved.room_url,
                     reserved.online_count,
                     reserved.max_clients,
+                    carrier,
                 )
                 return reserved
 
@@ -550,8 +580,21 @@ async def ensure_session_room(
         )
         if not row:
             return None
+        unit_ok = await ensure_unit_ready(db, row)
+        if not unit_ok:
+            logger.warning(
+                "olcrtc2 on-demand unit not ready unit=%s — teardown",
+                row.unit_name,
+            )
+            await _tear_dead_room(db, row, reason="on-demand unit not ready")
+            return None
         await _save_sticky(db, fp, prov, dt, row.id, commit=False)
-        await _touch_devices_online(db, fp)
+        await _touch_devices_online(
+            db,
+            fp,
+            device_type=dt,
+            cell_id=row.cell_id,
+        )
         await _recount(db, row)
         row.last_healthy_at = _now()
         await db.commit()
@@ -933,7 +976,12 @@ async def heartbeat(
             room.id,
             commit=False,
         )
-        await _touch_devices_online(db, fingerprint)
+        await _touch_devices_online(
+            db,
+            fingerprint,
+            device_type=_norm_dt(device_type or room.device_type),
+            cell_id=room.cell_id,
+        )
     await _recount(db, room)
     await db.commit()
     return {"ok": True, "online_count": room.online_count}
@@ -948,12 +996,26 @@ async def report_room_failure(
     device_type: str = "",
     detail: str = "",
 ) -> dict[str, Any]:
+    fp = (fingerprint or "").strip()[:128]
+    prov = (provider or "").strip().lower() or "telemost"
+    rid = (room_db_id or "").strip()
+    key = f"{fp}|{prov}|{rid}"
+    now = time.time()
+    last = _failure_first_seen_at.get(key)
+    hard = last is not None and (now - last) <= FAILURE_HARD_ESCALATE_SEC
+    if hard:
+        _failure_first_seen_at.pop(key, None)
+        reason = f"failure:{detail[:80]}"
+    else:
+        _failure_first_seen_at[key] = now
+        # first hit: keep room/unit, clear sticky only (client will request fresh config)
+        reason = f"suspect_failure:{detail[:80]}"
     return await release_session_room(
         db,
         room_db_id=room_db_id,
         fingerprint=fingerprint,
         provider=provider,
-        reason=f"failure:{detail[:80]}",
+        reason=reason,
     )
 
 

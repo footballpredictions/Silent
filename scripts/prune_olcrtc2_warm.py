@@ -21,8 +21,8 @@ async def main():
     async with AsyncSessionLocal() as db:
         cur = await load_olcrtc2_settings(db)
         await save_olcrtc2_settings(db, {
-            "warm_pool_per_dt": 2,
-            "warm_pool_by_provider": {"telemost": 2, "wbstream": 3},
+            "warm_pool_per_dt": 1,
+            "warm_pool_by_provider": {"telemost": 1, "wbstream": 2},
         })
         print("SETTINGS", json.dumps({
             "warm": (await load_olcrtc2_settings(db)).get("warm_pool_per_dt"),

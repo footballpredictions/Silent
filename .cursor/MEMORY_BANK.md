@@ -575,6 +575,82 @@ cd pc; npm install; npm run dev
 - API: `GET/POST /api/admin/settings/registration`. Сервис: `app/services/registration_settings.py`.
 - Задеплоено на прод (`deploy_api.py`, в список файлов добавлен `registration_settings.py`). Push `main`.
 
+### 2026-08-14 — Первая загрузка: DNS больше не ходит через несущую (fake-ip)
+
+- **Почему 1.0.160 грузился быстрее (не «один сервер»):** там Android поднимал hev с `mapdns` (fake-ip), PC — sing-box `fake-ip`. Клиент **не делал DNS вообще**: домен уходил в SOCKS CONNECT, резолвил `olcrtc-srv`. Плюс комнаты были Jitsi → транспорт `datachannel` (быстрее `vp8channel`; в Телемосте DataChannel вырезан).
+- **Что было сломано:** в olcrtc2 fake-ip убрали «для паритета» → каждый холодный домен = TCP-стрим через VP8-несущую до `77.88.8.8`. Первая загрузка = десятки таких RTT, дальше DNS-кеш → «всё летает».
+- **Фикс PC** (`src/main/vpn/olcrtc2Session.js`): `dns.fakeip` 198.18.0.0/15, отдельный `carrier-dns` (`detour: direct`) для ICE/TURN/сигналинг-доменов, `cache_file.store_fakeip` (маппинг живёт между сессиями). Проверено `sing-box check` на telemost и wbstream, `npm test` 41/41. sing-box **1.11.15** — `optimistic`/`store_dns` там ещё нет (1.14+), не использовать.
+- **Фикс Android** (`OlcrtcTunnelManager.kt`): `mapdns` вернут, VPN DNS = `198.18.0.2`. Пул fake IP — **198.19.0.0/16**, а не дефолт hev `100.64.0.0/10`: на LTE это CGNAT оператора (вероятная причина прошлого отката mapdns; в 1.0.160 `network` вообще не задавался → фейковые `0.0.x.x`).
+- Откат одной строкой: `OLCRTC2_MAPDNS = false` в `OlcrtcTunnelManager`.
+- Сборки: APK `android/SilentVPN-debug.apk`; PC `pc/build-debug-182837/win-unpacked/SilentVPN-Admin.bat`.
+- **Следующий шаг (не сделано):** кеширующий resolver на соте + `OLCRTC2_DNS=127.0.0.1:53` — теперь весь резолв делает srv.
+
+### 2026-08-14 — Кеш сессий olcrtc2: без раннего wipe + lock меню при VPN ON
+
+- **Android/PC bypass menu:** переключение варианта обхода теперь недоступно при активном VPN (ON/CONNECTING). Раньше на PC меню само гасило VPN и переключало канал; теперь только после ручного OFF.
+- **Android `Repository.reportOlcrtcRoomFailure`:** убран ранний `clearOlcrtcCacheForProvider()` — слот Telemost/WB не затирается на первом фейле. Старую room блокируем через `lastFailedOlcrtcRoom`, но cache держим как `last-known-good`.
+- **Android anti-loop:** debounce room-failure 8с на provider, чтобы ViewModel/Service не стреляли повторный failure каскадом.
+- **Android LTE/белые списки:** для `olcrtc2-room-failure` убран public fallback на mobile data (если нет tunnel-path), чтобы не ломать assign вне VPN.
+- **PC `bypassStore.reportOlcrtcRoomFailure`:** убран wipe localStorage слота; добавлен debounce 8с по той же room.
+- **Backend `olcrtc2_assign.report_room_failure`:** first-hit soft (`suspect_failure`, sticky clear only), второй fail в окне 25с — hard teardown. Это снижает лишние teardown/пересоздания на кратких сетевых сбоях.
+
+### 2026-08-14 — PC Telemost: handshake timeout на prefetch → локальный retry без CONN_FILE
+
+- Симптом в логах PC: `handshake client: read welcome ... timeout` и `olcrtc2: SOCKS не поднялся`, затем только второй connect с новым room успешен.
+- Корень: иногда prefetched `telemost-conn.json` протухает прямо перед стартом cnc; первый запуск падает ещё до `SOCKS5 server listening`.
+- Фикс в `pc/src/main/vpn/olcrtc2Session.js`: если first attempt упал на handshake-timeout и использовался `OLCRTC_TELEMOST_CONN_FILE`, делаем **авторетрай в том же connect** без CONN_FILE (та же room), без `room-failure`/teardown.
+- Эффект: меньше ложных `room-failure`, меньше churn sticky/warm, быстрее восстановление без смены комнаты.
+- Сборка: `pc/build-debug-8567/win-unpacked/SilentVPN-Admin.bat`.
+
+### 2026-08-14 — ADB: первая прогрузка TM Android ~20с
+
+- Устройство: Vivo V2520A (`10AFB105UN003QC`), не Memu.
+- Лог: `15:59:01` prefetch CONN_FILE → `waiting peer 5s/15s` → `15:59:21` `subscriber media timeout` / code=1. ICE не было.
+- Корень: диск `telemost-conn.json` **не** сбрасывался на fail (`shouldInvalidatePrefetchOnStop=false`) → повтор на том же guest token.
+- Фикс: wipe CONN_FILE на early fail/media_timeout; Telemost wait SOCKS **12с** (не 90). APK обновлён.
+
+### 2026-08-14 — Telemost Wi‑Fi старт >30с (не «мало комнат»)
+
+- **Корень 1 (API):** warm/sticky claim делал HTTP carrier-probe Telemost (до 12с); pool требовал `carrier is True` → при `?` шли в on-demand provision (~20с+settle). Логи: частые `provisioned`/`on-demand` вместо pool hit.
+- **Корень 2 (клиент):** ждали ICE до **25с** до tunnelReady + PC cleanup sleeps 600+700мс.
+- **Фикс:** TM assign без carrier HTTP (unit active достаточно; WB probe остаётся); ICE wait TM **8с**; PC sleeps 250мс.
+- Сборки: PC `build-debug-496328`; Android `assembleDebug` → `SilentVPN-debug.apk`. API задеплоен.
+
+### 2026-08-14 — PC «SOCKS не поднялся» после warm TM=0
+
+- **Корень:** PC connect = cache-only; после prune/warm=0 кеш указывал на мёртвую комнату → CNC не слушает SOCKS.
+- **Фикс сервер:** Telemost warm снова **1/dt** (pc+android = 2 unit); агент поднимает с 0→1; on-demand assign проверяет `ensure_unit_ready`.
+- **Фикс PC:** при SOCKS/peer fail → `reportOlcrtcRoomFailure` + один retry с новой комнатой.
+- Сборка: `pc/build-debug-144543/win-unpacked/SilentVPN-Admin.bat`.
+
+### 2026-08-14 — Сота 1 idle CPU: warm Telemost = 0
+
+- **Симптом:** 4 vCPU / ~4 GiB, мало комнат, 0 живых TM-клиентов, CPU всё равно 20–50%.
+- **Корень:** idle `olcrtc2-srv` (warm SFU Telemost) жрёт ~15–25% **на каждую** комнату без VPN-клиентов; плюс steal гипервизора до ~27%. Не Playwright и не «хвост» от 2 пробных коннектов.
+- **Фикс:** `TELEMOST_WARM_PER_DT_CAP=1`, default `warm_pool_by_provider.telemost=0` (create on assign); prune сорвал все TM unit на Соте 1 → **olcrtc2_running=0, CPU ~0% idle**.
+- **Цена:** первый Telemost-коннект без warm чуть дольше (создание комнаты). WB warm на Соте 2 без изменений (2/dt).
+- Деплой: `olcrtc2_settings.py` + `olcrtc2_room_agent.py` + restart api.
+
+### 2026-08-14 — Cold start Telemost: кеш CONN_FILE + меньше ожиданий
+
+- Главный тормоз: `hardReset(before_start)` стирал OkHttp CONN_FILE → каждый тумблер = полный Yandex auth.
+- Теперь prefetch живёт 4 мин (RAM+диск); DNS resolve параллельно; слипы hardReset только если был native; UI poll 200мс до ready.
+- PC: disk hit для telemost-conn.json; sleep после sing-box 600→200; один фоновый warm `i.ytimg.com` после ready (не блокирует).
+
+### 2026-08-14 — Убрали gstatic-пробы на старте olcrtc (Android+PC)
+
+- Зачем были: «peer жив?» до открытия TUN и периодический health.
+- На Telemost каждый dial к `www.gstatic.com` крадёт vp8 и даёт 2–4с на fail → долгая первая загрузка.
+- Теперь старт ждёт **ICE/peer latched** из логов; один dial только fallback. Health gstatic на PC тоже off (как Android).
+- Остаются: SOCKS listen; HB через SOCKS; TelegramPathWarmup только для **VK/WDTT**, не olcrtc; PC `warmupBrowsingPath` только VK.
+
+### 2026-08-14 — Анализ: обрывы TM + медленный Android cold start
+
+- Сота 1/2 после апгрейда: **4 vCPU / 3.8 GiB**, BBR+fq, steal ~0–2%. Egress YouTube TTFB ~0.16с — канал соты не «мёртвый».
+- Сота 1 под живыми TM: load ~2.5, каждый `olcrtc2` ~15–25% CPU — норма для vp8 encode, не квота 50%.
+- Обрывы «то да то нет»: в основном клиент (leftover hardReset / onDestroy / wipe кеша) — уже пофикшено; краткие фризы — ICE reconnect Telemost (18с grace), не смена комнаты.
+- Android первая загрузка дольше PC: cold path OkHttp+CONN_FILE+ICE+hev+excludeRoute, потом первый CDN через узкий vp8. После прогрева «более-менее» — ожидаемо. Потолок TM ≠ WDTT/WB.
+
 ### 2026-08-14 — Android: Telemost убивался onDestroy, кеш комнаты стирался
 
 - Лог TM: комната есть, ICE connected, затем `hardReset: vpn_onDestroy` ×4 и `code=1`. WB→TM «нет конфига», TM не встаёт даже после VK/рестарта.

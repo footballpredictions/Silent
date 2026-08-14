@@ -25,8 +25,8 @@ DEFAULT_CELL_TELEMOST = "87.58.213.193"  # Сота 1
 DEFAULT_CELL_WB = "78.17.74.27"  # Сота 2
 DEFAULT_CELL_IP = DEFAULT_CELL_TELEMOST
 QUEEN_IP = "132.243.234.162"
-# Сота 1: idle Telemost unit 6–13% CPU. 20×pc + 20×android ≈ 100% на 2 ядрах.
-TELEMOST_WARM_PER_DT_CAP = 2
+# Сота 1: idle Telemost unit ~15–25% CPU. Cap 1/dt (=2 unit pc+android) — баланс connect vs idle.
+TELEMOST_WARM_PER_DT_CAP = 1
 WBSTREAM_WARM_PER_DT_CAP = 4
 
 
@@ -56,9 +56,9 @@ def _defaults() -> dict[str, Any]:
         },
         # Какие провайдеры греет агент (assign клиент выбирает сам)
         "providers_enabled": ["telemost", "wbstream"],
-        # Запас пустых комнат на device_type. TM idle ≈6–13% CPU/unit — не 20.
-        "warm_pool_per_dt": 2,
-        "warm_pool_by_provider": {"telemost": 2, "wbstream": 3},
+        # 1 free на dt: cold assign (warm=0) → intermittent «SOCKS не поднялся» на PC.
+        "warm_pool_per_dt": 1,
+        "warm_pool_by_provider": {"telemost": 1, "wbstream": 2},
         # Цель онлайн на провайдера (WB и Телемост по отдельности, PC+Android вместе).
         "target_online": 150,
     }

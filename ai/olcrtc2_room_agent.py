@@ -31,13 +31,20 @@ async def monitor_loop() -> None:
                     )
 
                     patch: dict[str, Any] = {}
-                    # Раньше <12 → 20 после каждого restart API → Сота1 100% CPU.
+                    # Idle TM дорого, но warm=0 → PC «SOCKS не поднялся» на мёртвом кеше/cold create.
                     if int(settings.get("warm_pool_per_dt") or 0) > TELEMOST_WARM_PER_DT_CAP:
                         patch["warm_pool_per_dt"] = TELEMOST_WARM_PER_DT_CAP
                         patch["warm_pool_by_provider"] = {
                             "telemost": TELEMOST_WARM_PER_DT_CAP,
-                            "wbstream": 3,
+                            "wbstream": 2,
                         }
+                    by = settings.get("warm_pool_by_provider")
+                    if isinstance(by, dict) and int(by.get("telemost") or 0) == 0:
+                        patch["warm_pool_by_provider"] = {
+                            "telemost": TELEMOST_WARM_PER_DT_CAP,
+                            "wbstream": int(by.get("wbstream") or 2),
+                        }
+                        patch.setdefault("warm_pool_per_dt", TELEMOST_WARM_PER_DT_CAP)
                     if patch:
                         settings = await save_olcrtc2_settings(db, patch)
                         logger.info("olcrtc2 shrink warm defaults: %s", patch)

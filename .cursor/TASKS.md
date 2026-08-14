@@ -17,13 +17,19 @@ Agent приступает к **первой невыполненной** зад
 - [x] **Фаза C — доставка конфигов:** LTE/БС без public fallback при живом tunnel; dual-cache изоляция; PC timeout olcrtc 90с
 - [x] **Фаза D — устойчивость (код):** HB через SOCKS/tunnel; failure после liveness streak; lastFailed не стартуем
 - [x] **Сота 1 CPU:** warm TM cap=2 (агент больше не ставит 20); prune 73→11 — 2026-08-14
+- [x] **Сота 1 idle 20–50% без клиентов:** idle `olcrtc2-srv` warm; TM warm=0, units сняты, CPU≈0% — 2026-08-14
+- [x] **PC SOCKS miss после warm=0:** warm TM=1 + retry новой комнаты; debug `build-debug-144543` — 2026-08-14
+- [x] **TM Wi‑Fi старт >30с:** без carrier-probe на assign; ICE wait 8с; PC `496328` + APK — 2026-08-14
 - [x] **WDTT-баланс мимо olcrtc:** Сота 1/2 не spill; только 3+ / Улей — 2026-08-14
 - [x] **Android: не рвать комнату** на liveness/stream_dead — native reconnect; рестарт только process_exit
 - [x] **Android: TM freeze / нет конфига WB / вылет VK** — без gstatic-проб на живом туннеле; Apply fetch пустых слотов; hardReset при уходе на VK
 - [x] **Сота 1 сеть/CPU:** egress ~320 Мбит ок; снят `CPUQuota=50%` с живых olcrtc2 (без рестарта сессий)
 - [x] **Сота 2 сеть/CPU:** то же (WB); egress ~540 Мбит, steal 0%; квота снята без рестарта
 - [x] **Android TM reconnect + PC тумблер/лог/обход:** epoch не убивает новый SOCKS; PC статус как Android; лог чистится на connect; bypass commit/localStorage
-- [ ] **Фаза D — endurance:** 40 мин WB+TM Wi‑Fi/LTE на PC+Android debug (ручной прогон; APK + PC `build-debug-19811`)
+- [x] **Первая загрузка медленная:** DNS шёл через VP8-несущую; вернули fake-ip (PC sing-box) / `mapdns` 198.19.0.0/16 (Android) — резолв на соте. APK + PC `build-debug-182837` — 2026-08-14
+- [x] **olcrtc2 cache safety + меню lock:** без раннего wipe слота на room-failure (Android/PC), debounce failure, soft→hard failure на backend; переключение обхода отключено при VPN ON — 2026-08-14
+- [ ] **Соты: кеширующий DNS** (unbound/dnsmasq) + `OLCRTC2_DNS=127.0.0.1:53` — весь резолв теперь делает `olcrtc2-srv`
+- [ ] **Фаза D — endurance:** 40 мин WB+TM Wi‑Fi/LTE на PC+Android debug (ручной прогон; APK + PC `build-debug-182837`)
 
 ### Инфраструктура и репозиторий
 

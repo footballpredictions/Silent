@@ -132,6 +132,11 @@ export type OlcrtcPublicConfig = {
   >
 }
 
+type OlcrtcCacheEnvelope = {
+  at?: number
+  cfg?: OlcrtcPublicConfig
+}
+
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
 type ElectronOlcrtcApi = {
@@ -287,6 +292,18 @@ function readOlcrtcCache(provider: string = getOlcrtcProvider()): OlcrtcPublicCo
   }
 }
 
+function readOlcrtcCacheEnvelope(provider: string = getOlcrtcProvider()): OlcrtcCacheEnvelope | null {
+  try {
+    const raw = localStorage.getItem(olcrtcCacheKey(provider))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as OlcrtcCacheEnvelope
+    if (parsed && typeof parsed === 'object' && (parsed.cfg || parsed.at)) return parsed
+    return null
+  } catch {
+    return null
+  }
+}
+
 function olcrtcConfigPath(provider: string = getOlcrtcProvider()): string {
   let fp = ''
   try {
@@ -332,6 +349,27 @@ export function getCachedOlcrtcConfigForProvider(
   provider: string = getOlcrtcProvider(),
 ): OlcrtcPublicConfig | null {
   return readOlcrtcCache(provider)
+}
+
+export function getOlcrtcCacheAgeMs(provider: string = getOlcrtcProvider()): number | null {
+  const env = readOlcrtcCacheEnvelope(provider)
+  const at = Number(env?.at || 0)
+  if (!Number.isFinite(at) || at <= 0) return null
+  return Math.max(0, Date.now() - at)
+}
+
+export function shouldRefreshOlcrtcSlot(
+  provider: string = getOlcrtcProvider(),
+  opts?: { force?: boolean; maxAgeMs?: number },
+): boolean {
+  if (opts?.force) return true
+  const cfg = getCachedOlcrtcConfigForProvider(provider)
+  const room = (cfg?.providers?.[provider]?.room || '').trim()
+  if (!room) return true
+  const age = getOlcrtcCacheAgeMs(provider)
+  if (age == null) return true
+  const maxAge = opts?.maxAgeMs ?? 8 * 60 * 1000
+  return age >= maxAge
 }
 
 /** Текущий room id выбранного провайдера (из кеша после /olcrtc-config). */
@@ -501,6 +539,28 @@ export async function fetchOlcrtcConfig(
     return getCachedOlcrtcConfigForProvider(prov)
   } catch {
     return getCachedOlcrtcConfigForProvider(prov)
+  }
+}
+
+export async function refreshOlcrtcSlotFast(
+  provider: string,
+  timeoutMs = 15_000,
+): Promise<{ ok: boolean; room: string; timedOut: boolean }> {
+  const prov =
+    provider === OLCRTC_WBSTREAM || provider === OLCRTC_TELEMOST
+      ? provider
+      : getOlcrtcProvider()
+  const task = fetchOlcrtcConfig(undefined, prov)
+  const timeout = new Promise<null>((resolve) => {
+    setTimeout(() => resolve(null), Math.max(3_000, timeoutMs))
+  })
+  const cfg = (await Promise.race([task, timeout])) as OlcrtcPublicConfig | null
+  const fromCache = getCachedOlcrtcConfigForProvider(prov)
+  const room = (cfg?.providers?.[prov]?.room || fromCache?.providers?.[prov]?.room || '').trim()
+  return {
+    ok: Boolean(cfg && room),
+    room,
+    timedOut: cfg == null && !room,
   }
 }
 

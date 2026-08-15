@@ -14,6 +14,9 @@ import {
   getOlcrtcProvider,
   setOlcrtcProvider,
   getCachedOlcrtcConfigForProvider,
+  shouldRefreshOlcrtcSlot,
+  refreshOlcrtcSlotFast,
+  getOlcrtcCacheAgeMs,
   OLCRTC_TELEMOST,
   OLCRTC_WBSTREAM,
   bypassFamilyLabel,
@@ -199,11 +202,33 @@ export default function MenuBypassPanel({
       if (appliedFamily === BYPASS_FAMILY_OLCRTC2) {
         const cfg = getCachedOlcrtcConfigForProvider(appliedOlc)
         const room = cfg?.providers?.[appliedOlc]?.room?.trim() || ''
+        const switchedProvider = nextOlc !== olcProvider
+        const needRefresh = shouldRefreshOlcrtcSlot(appliedOlc, {
+          force: switchedProvider,
+          maxAgeMs: 8 * 60 * 1000,
+        })
         setHint(
           room
             ? `Выбрано: ${olcrtcProviderLabel(appliedOlc)} · ${room.slice(0, 28)} (кеш)`
             : `Выбрано: ${olcrtcProviderLabel(appliedOlc)} — нет кеша (включите VK)`,
         )
+        if (needRefresh) {
+          setHint(`Выбрано: ${olcrtcProviderLabel(appliedOlc)} · обновляем слот…`)
+          void refreshOlcrtcSlotFast(appliedOlc, 15_000).then(({ ok, room: nextRoom }) => {
+            const ageSec = Math.floor((getOlcrtcCacheAgeMs(appliedOlc) || 0) / 1000)
+            if (ok && nextRoom) {
+              setHint(`Обновлено: ${olcrtcProviderLabel(appliedOlc)} · ${nextRoom.slice(0, 28)} (age ${ageSec}s)`)
+            } else {
+              const fallbackRoom =
+                getCachedOlcrtcConfigForProvider(appliedOlc)?.providers?.[appliedOlc]?.room?.trim() || ''
+              setHint(
+                fallbackRoom
+                  ? `Оставлен кеш: ${olcrtcProviderLabel(appliedOlc)} · ${fallbackRoom.slice(0, 28)}`
+                  : `Оставлен кеш: ${olcrtcProviderLabel(appliedOlc)} · нет room`,
+              )
+            }
+          })
+        }
       } else {
         setHint(`Выбрано: ${bypassFamilyLabel(appliedFamily)}`)
       }

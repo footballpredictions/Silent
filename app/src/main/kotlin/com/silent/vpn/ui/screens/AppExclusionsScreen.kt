@@ -210,14 +210,6 @@ fun AppExclusionsScreen(
                     )
                 }
         }
-        // БС без выбора → отметить все (стартовая точка)
-        if (repo.isExclusionsWhitelist()) {
-            val all = apps.map { it.packageName }.toSet()
-            if (selected.isEmpty() && all.isNotEmpty()) {
-                selected = all
-                repo.saveExcludedApps(all, true)
-            }
-        }
         loading = false
     }
 
@@ -236,7 +228,7 @@ fun AppExclusionsScreen(
 
     fun switchMode(toWhitelist: Boolean) {
         if (whitelist == toWhitelist) return
-        val next = if (toWhitelist) apps.map { it.packageName }.toSet() else emptySet()
+        val next = emptySet<String>()
         repo.saveExceptionsMode(toWhitelist, next)
         selected = next
         whitelist = toWhitelist
@@ -469,6 +461,47 @@ fun AppExclusionsScreen(
                             fg = fg,
                             bg = bg,
                             onClick = { showSystemApps = !showSystemApps },
+                        )
+                    }
+                }
+                val visiblePackages = displayApps.map { it.packageName }.toSet()
+                val allVisibleSelected =
+                    visiblePackages.isNotEmpty() && visiblePackages.all { selected.contains(it) }
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    fun toggleAll() {
+                        if (visiblePackages.isEmpty()) return
+                        saveAppSelection(
+                            if (allVisibleSelected) selected - visiblePackages else selected + visiblePackages,
+                        )
+                    }
+                    if (isTv) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            ThemeCheckbox(
+                                checked = allVisibleSelected,
+                                dark = palette.dark,
+                                fg = fg,
+                                bg = bg,
+                                onClick = { toggleAll() },
+                                focusable = true,
+                            )
+                            Text(
+                                "Выделить все",
+                                fontSize = 12.sp,
+                                color = fg.copy(alpha = if (visiblePackages.isNotEmpty()) 1f else 0.45f),
+                                modifier = Modifier.padding(start = 4.dp),
+                            )
+                        }
+                    } else {
+                        Text("Выделить все", fontSize = 12.sp, color = fg, modifier = Modifier.weight(1f))
+                        ThemeCheckbox(
+                            checked = allVisibleSelected,
+                            dark = palette.dark,
+                            fg = fg,
+                            bg = bg,
+                            onClick = { toggleAll() },
                         )
                     }
                 }

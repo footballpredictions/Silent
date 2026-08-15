@@ -16,13 +16,13 @@ enum class DnsPreset(
     SERVER(
         id = "server",
         title = "Как на сервере",
-        subtitle = "DNS выдаёт Silent · рекомендуется",
+        subtitle = "legacy",
         servers = "",
     ),
     YANDEX(
         id = "yandex",
-        title = "Яндекс",
-        subtitle = "77.88.8.8",
+        title = "Яндекс (как на сервере)",
+        subtitle = "77.88.8.8 · рекомендуется",
         servers = "77.88.8.8, 77.88.8.1",
     ),
     CLOUDFLARE(
@@ -100,7 +100,7 @@ enum class DnsPreset(
     ;
 
     companion object {
-        val DEFAULT = SERVER
+        val DEFAULT = YANDEX
 
         /** Когда сервер не прислал `wg_dns` и подменять нечем. */
         val FALLBACK = YANDEX
@@ -111,11 +111,13 @@ enum class DnsPreset(
             """^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$""",
         )
 
-        fun fromId(id: String?): DnsPreset =
-            entries.firstOrNull { it.id == id } ?: DEFAULT
+        fun fromId(id: String?): DnsPreset = when (id) {
+            SERVER.id -> YANDEX
+            else -> entries.firstOrNull { it.id == id } ?: DEFAULT
+        }
 
-        /** Пресеты для меню: свой ввод показывается отдельной секцией. */
-        fun selectable(): List<DnsPreset> = entries.filter { it != CUSTOM }
+        /** Пресеты для меню: все публичные, кроме legacy `server` и отдельного `custom`. */
+        fun selectable(): List<DnsPreset> = entries.filter { it != CUSTOM && it != SERVER }
 
         /**
          * Нормализует ввод пользователя: адреса через запятую/пробел/перевод строки.
@@ -161,14 +163,13 @@ object DnsSettings {
     fun override(context: Context): String? = override(preset(context), customRaw(context))
 
     fun override(preset: DnsPreset, customRaw: String?): String? = when (preset) {
-        DnsPreset.SERVER -> null
         DnsPreset.CUSTOM -> DnsPreset.sanitizeCustomServers(customRaw)
+        DnsPreset.SERVER -> DnsPreset.YANDEX.servers
         else -> preset.servers
     }
 
     /** Что показать в меню и в логе VPN. */
     fun describe(preset: DnsPreset, customRaw: String?): String = when (preset) {
-        DnsPreset.SERVER -> preset.title
         DnsPreset.CUSTOM -> {
             val servers = DnsPreset.sanitizeCustomServers(customRaw)
             if (servers != null) "Свой: $servers" else "Свой DNS (не задан)"

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
@@ -17,6 +18,8 @@ import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModelProvider
+import com.silent.vpn.data.SilentPrefs
+import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.ui.components.LaunchSplash
 import com.silent.vpn.util.DevicePlatform
@@ -88,6 +91,16 @@ class MainActivity : ComponentActivity() {
     private var pendingNotificationOpen = false
     private var pendingInstallIntent: Intent? = null
 
+    private fun applyLaunchWindowBackground() {
+        val mode = runCatching {
+            SilentPrefs.open(this)
+                .getString(SilentRepository.PREF_APPEARANCE_MODE, null)
+                ?.takeIf { it == "dark" || it == "light" }
+        }.getOrNull()
+        val bg = if (mode == "dark") 0xFF0B0F1A.toInt() else 0xFFFFFFFF.toInt()
+        window.setBackgroundDrawable(ColorDrawable(bg))
+    }
+
     private val installUpdateLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { /* системный установщик APK */ }
@@ -110,6 +123,7 @@ class MainActivity : ComponentActivity() {
             enableEdgeToEdge()
         }
         super.onCreate(savedInstanceState)
+        applyLaunchWindowBackground()
         if (deviceIsTv) {
             WindowCompat.setDecorFitsSystemWindows(window, true)
         }

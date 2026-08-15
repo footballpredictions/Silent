@@ -78,8 +78,8 @@ fun MenuDnsScreen(
             modifier = Modifier.padding(bottom = 4.dp),
         )
         Text(
-            "По умолчанию DNS выдаёт сервер Silent. Можно выбрать публичный " +
-                "или указать свой. Применяется при следующем подключении VPN.",
+            "По умолчанию используется серверный Яндекс DNS. " +
+                "Можно выбрать другой публичный или указать свой. Применяется при следующем подключении VPN.",
             fontSize = 11.sp,
             color = fg.copy(alpha = 0.45f),
             modifier = Modifier.padding(bottom = 16.dp),

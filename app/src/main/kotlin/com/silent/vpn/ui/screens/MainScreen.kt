@@ -709,14 +709,14 @@ fun MainScreen(
                                     repo.dnsMenuLabel(),
                                 ),
                             )
+                            add(
+                                Triple(
+                                    MenuPage.BYPASS,
+                                    "Выбор сервера",
+                                    "сервер",
+                                ),
+                            )
                             if (BuildConfig.DEBUG) {
-                                add(
-                                    Triple(
-                                        MenuPage.BYPASS,
-                                        "Варианты обхода",
-                                        repo.bypassFamilyLabel(),
-                                    ),
-                                )
                                 add(Triple(MenuPage.HASHES, "Хеши", null))
                             }
                             add(Triple(MenuPage.BONUSES, theme?.menu_bonuses_label?.takeIf { it.isNotBlank() } ?: "Бонусы", null))
@@ -809,7 +809,7 @@ fun MainScreen(
                             repo,
                             fg,
                             vpnState = vpnState,
-                            onEnsureOlcrtcApi = onEnsureOlcrtcApi,
+                            onEnsureBypassApi = onEnsureOlcrtcApi,
                         ) { menuPage = MenuPage.ROOT }
                         MenuPage.HASHES -> MenuHashesScreen(repo, fg) { menuPage = MenuPage.ROOT }
                         MenuPage.BONUSES -> {
@@ -855,7 +855,7 @@ fun MainScreen(
                         ) { menuPage = MenuPage.ROOT }
                         MenuPage.ABOUT -> MenuSimplePage(
                             title = "Silent VPN",
-                            body = "Версия ${com.silent.vpn.BuildConfig.VERSION_NAME}\nWireGuard-туннель через VK TURN/DTLS\n+ Olcrtc",
+                            body = "Версия ${com.silent.vpn.BuildConfig.VERSION_NAME}\nWireGuard-туннель через VK TURN/DTLS",
                             fg = fg,
                             focusKey = menuPage,
                         ) { menuPage = MenuPage.ROOT }

@@ -564,12 +564,19 @@ class MainViewModel @Inject constructor(
         runCatching {
             val fp = repo.getDeviceFingerprint()
             var cfg = runCatching {
-                val res = repo.getApi().getConfig(fp)
+                val res = repo.getApi().getConfig(fp, repo.getPreferredServer())
                 if (res.isSuccessful) res.body() else null
             }.getOrNull()
             if (cfg == null && registerIfNeeded) {
                 val reg = repo.getApi().registerDevice(
-                    DeviceRegisterRequest(repo.getDeviceDisplayName(), repo.getApiDeviceType(), fp, null, repo.getBootstrapHash()),
+                    DeviceRegisterRequest(
+                        repo.getDeviceDisplayName(),
+                        repo.getApiDeviceType(),
+                        fp,
+                        null,
+                        repo.getBootstrapHash(),
+                        repo.getPreferredServer(),
+                    ),
                 )
                 if (reg.isSuccessful) cfg = reg.body()
             }
@@ -1080,7 +1087,14 @@ class MainViewModel @Inject constructor(
             val regJob = async {
                 runCatching {
                     repo.getApi().registerDevice(
-                        DeviceRegisterRequest(repo.getDeviceDisplayName(), repo.getApiDeviceType(), fp, null, null),
+                        DeviceRegisterRequest(
+                            repo.getDeviceDisplayName(),
+                            repo.getApiDeviceType(),
+                            fp,
+                            null,
+                            null,
+                            repo.getPreferredServer(),
+                        ),
                     )
                 }.getOrNull()
             }
@@ -1119,7 +1133,7 @@ class MainViewModel @Inject constructor(
 
             if (vpnConfig == null && !accessDenied) {
                 runCatching {
-                    val cfgRes = repo.getApi().getConfig(fp)
+                    val cfgRes = repo.getApi().getConfig(fp, repo.getPreferredServer())
                     if (cfgRes.isSuccessful) {
                         val candidate = cfgRes.body()!!
                         if (isConfigConnectable(candidate)) {
@@ -2360,7 +2374,14 @@ class MainViewModel @Inject constructor(
     private suspend fun openLoginSession(): Boolean {
         val boot = repo.getBootstrapHash()
         val res = repo.getApi().registerDevice(
-            DeviceRegisterRequest(repo.getDeviceDisplayName(), repo.getApiDeviceType(), repo.getDeviceFingerprint(), null, boot)
+            DeviceRegisterRequest(
+                repo.getDeviceDisplayName(),
+                repo.getApiDeviceType(),
+                repo.getDeviceFingerprint(),
+                null,
+                boot,
+                repo.getPreferredServer(),
+            )
         )
         DebugLog.i("MainViewModel", "registerDevice HTTP ${res.code()}")
         if (res.isSuccessful) {
@@ -2683,7 +2704,7 @@ class MainViewModel @Inject constructor(
                                 return@launch
                             }
                         }
-                        val msg = "Нет сессии обхода (пул/сеть). Меню → Варианты обхода → Применить, затем VPN."
+                        val msg = "Нет сессии обхода (пул/сеть). Меню → Выбор сервера → Применить, затем VPN."
                         com.silent.vpn.util.OlcrtcDiag.e(
                             com.silent.vpn.util.OlcrtcDiag.CFG,
                             "NO_SESSION provider=$provider cacheTm=${repo.getCachedOlcrtcConfigForProvider("telemost") != null} cacheWb=${repo.getCachedOlcrtcConfigForProvider("wbstream") != null} enabled=${olc?.enabled} room=${p?.room}",
@@ -3063,7 +3084,7 @@ class MainViewModel @Inject constructor(
                 if (olc == null || !olc.enabled || olc.crypto_key.length != 64 || p == null || !p.enabled || p.room.isBlank()) {
                     _vpnError.value =
                         olc?.pool_denied_detail?.takeIf { it.isNotBlank() }
-                            ?: "Нет olcrtc2-config. Меню → Варианты обхода → Применить."
+                            ?: "Нет olcrtc2-config. Меню → Выбор сервера → Применить."
                     _vpnState.value = VpnState.DISCONNECTED
                     return@launch
                 }
@@ -3127,12 +3148,19 @@ class MainViewModel @Inject constructor(
 
     private suspend fun applyRefreshVpnConfigDirect(fp: String) {
         var cfg = runCatching {
-            val res = repo.getApi().getConfig(fp)
+            val res = repo.getApi().getConfig(fp, repo.getPreferredServer())
             if (res.isSuccessful) res.body() else null
         }.getOrNull()
         if (cfg == null) {
             val res = repo.getApi().registerDevice(
-                DeviceRegisterRequest(repo.getDeviceDisplayName(), repo.getApiDeviceType(), fp, null, null),
+                DeviceRegisterRequest(
+                    repo.getDeviceDisplayName(),
+                    repo.getApiDeviceType(),
+                    fp,
+                    null,
+                    null,
+                    repo.getPreferredServer(),
+                ),
             )
             if (!res.isSuccessful) return
             cfg = res.body()!!
@@ -3688,6 +3716,7 @@ class MainViewModel @Inject constructor(
                     repo.getDeviceFingerprint(),
                     null,
                     boot,
+                    repo.getPreferredServer(),
                 ),
             )
         }

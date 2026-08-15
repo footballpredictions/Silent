@@ -79,6 +79,9 @@ class SilentRepository @Inject constructor(
         const val BYPASS_FAMILY_WDTT = "wdtt"
         const val BYPASS_FAMILY_OLCRTC = "olcrtc"
         const val BYPASS_FAMILY_OLCRTC2 = "olcrtc2"
+        const val PREF_PREFERRED_SERVER = "preferred_server"
+        const val SERVER_MAIN = "queen"
+        const val SERVER_CELL_PREFIX = "cell:"
         const val PREF_OLCRTC_PROVIDER = "olcrtc_provider"
         const val OLCRTC_WBSTREAM = "wbstream"
         const val OLCRTC_TELEMOST = "telemost"
@@ -542,7 +545,7 @@ class SilentRepository @Inject constructor(
         val fp = getDeviceFingerprint()
         runCatching {
             withRoutineBackendApi {
-                val res = getApi().getConfig(fp)
+                val res = getApi().getConfig(fp, getPreferredServer())
                 if (res.isSuccessful) {
                     res.body()?.let { cacheVpnConfig(Gson().toJson(it)) }
                     configOk = true
@@ -1169,7 +1172,6 @@ class SilentRepository @Inject constructor(
     private var sessionEscalateLevel = 0
 
     fun getVkCredStrategy(): String {
-        if (!BuildConfig.DEBUG) return VK_CRED_VKCALLS
         return prefs.getString(PREF_VK_CRED_STRATEGY, VK_CRED_VKCALLS)?.let { stored ->
             when (stored) {
                 VK_CRED_AUTO, VK_CRED_MANUAL -> stored
@@ -1179,7 +1181,6 @@ class SilentRepository @Inject constructor(
     }
 
     fun setVkCredStrategy(strategy: String) {
-        if (!BuildConfig.DEBUG) return
         val normalized = when (strategy) {
             VK_CRED_AUTO, VK_CRED_MANUAL -> strategy
             else -> VK_CRED_VKCALLS
@@ -1188,33 +1189,64 @@ class SilentRepository @Inject constructor(
     }
 
     fun getBypassFamily(): String {
-        if (!BuildConfig.DEBUG) return BYPASS_FAMILY_WDTT
-        // Debug: после reinstall prefs пусты — дефолт olcrtc2 (иначе «нет логов» и WDTT без хешей).
-        val raw = prefs.getString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_OLCRTC2)
-        if (raw == BYPASS_FAMILY_OLCRTC2) return BYPASS_FAMILY_OLCRTC2
-        // legacy v1 → WDTT (несовместим с olcrtc2-srv)
-        if (raw == BYPASS_FAMILY_OLCRTC) {
-            prefs.edit().putString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_WDTT).apply()
-            return BYPASS_FAMILY_WDTT
-        }
-        if (raw == BYPASS_FAMILY_WDTT) return BYPASS_FAMILY_WDTT
-        return BYPASS_FAMILY_OLCRTC2
+        return BYPASS_FAMILY_WDTT
     }
 
     fun setBypassFamily(family: String) {
-        if (!BuildConfig.DEBUG) {
-            prefs.edit().putString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_WDTT).apply()
-            return
-        }
-        val v = when (family) {
-            BYPASS_FAMILY_OLCRTC2 -> BYPASS_FAMILY_OLCRTC2
-            else -> BYPASS_FAMILY_WDTT
-        }
-        prefs.edit().putString(PREF_BYPASS_FAMILY, v).commit()
+        prefs.edit().putString(PREF_BYPASS_FAMILY, BYPASS_FAMILY_WDTT).commit()
     }
 
     fun isOlcrtcBypass(): Boolean =
-        BuildConfig.DEBUG && getBypassFamily() == BYPASS_FAMILY_OLCRTC2
+        false
+
+    fun getPreferredServer(): String {
+        val raw = prefs.getString(PREF_PREFERRED_SERVER, SERVER_MAIN)?.trim().orEmpty()
+        if (raw.equals("server1", ignoreCase = true)) return "server1"
+        if (raw.equals("server2", ignoreCase = true)) return "server2"
+        if (raw.equals("server3", ignoreCase = true)) return "server3"
+        return if (raw == SERVER_MAIN || raw.startsWith(SERVER_CELL_PREFIX)) raw else "server1"
+    }
+
+    fun setPreferredServer(server: String) {
+        val raw = server.trim()
+        val normalized = when {
+            raw.equals("server1", ignoreCase = true) -> "server1"
+            raw.equals("server2", ignoreCase = true) -> "server2"
+            raw.equals("server3", ignoreCase = true) -> "server3"
+            raw == SERVER_MAIN || raw.startsWith(SERVER_CELL_PREFIX) -> raw
+            else -> "server1"
+        }
+        prefs.edit().putString(PREF_PREFERRED_SERVER, normalized).apply()
+    }
+
+    suspend fun fetchVpnServers(): VpnServersResponse {
+        val fp = getDeviceFingerprint()
+        val res = getApi().getVpnServers(fp)
+        if (!res.isSuccessful) {
+            throw IllegalStateException("vpn servers HTTP ${res.code()}")
+        }
+        val body = res.body() ?: VpnServersResponse(getPreferredServer(), emptyList())
+        val selected = body.selected_server?.ifBlank { SERVER_MAIN } ?: SERVER_MAIN
+        setPreferredServer(selected)
+        return body.copy(selected_server = selected)
+    }
+
+    suspend fun selectVpnServer(serverKey: String): VpnServersResponse {
+        val key = serverKey.trim().ifBlank { SERVER_MAIN }
+        val res = getApi().selectVpnServer(
+            PreferredServerRequest(
+                device_fingerprint = getDeviceFingerprint(),
+                preferred_server = key,
+            ),
+        )
+        if (!res.isSuccessful) {
+            throw IllegalStateException("vpn select server HTTP ${res.code()}")
+        }
+        val body = res.body() ?: VpnServersResponse(key, emptyList())
+        val selected = body.selected_server?.ifBlank { SERVER_MAIN } ?: SERVER_MAIN
+        setPreferredServer(selected)
+        return body.copy(selected_server = selected)
+    }
 
     fun getOlcrtcProvider(): String {
         return when (val v = prefs.getString(PREF_OLCRTC_PROVIDER, OLCRTC_TELEMOST)) {
@@ -2460,7 +2492,11 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
     }
 
     private suspend fun postConnectViaPublic(): Boolean {
-        val body = ConnectRequest(getDeviceFingerprint(), getApiDeviceType())
+        val body = ConnectRequest(
+            getDeviceFingerprint(),
+            getApiDeviceType(),
+            preferred_server = getPreferredServer(),
+        )
         for (base in publicApiBases()) {
             val res = runCatching {
                 buildApi("$base/").connect(body)
@@ -2492,7 +2528,13 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
 
     private suspend fun postConnectOnlineViaTunnel(): Int {
         val result = runCatching {
-            getApi().connect(ConnectRequest(getDeviceFingerprint(), getApiDeviceType()))
+            getApi().connect(
+                ConnectRequest(
+                    getDeviceFingerprint(),
+                    getApiDeviceType(),
+                    preferred_server = getPreferredServer(),
+                ),
+            )
         }
         val res = result.getOrNull()
         if (res == null) {
@@ -2554,7 +2596,7 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
         var configOk = false
         val fp = getDeviceFingerprint()
         runCatching {
-            val res = getApi().getConfig(fp)
+            val res = getApi().getConfig(fp, getPreferredServer())
             if (res.isSuccessful) {
                 res.body()?.let { cacheVpnConfig(Gson().toJson(it)) }
                 configOk = true

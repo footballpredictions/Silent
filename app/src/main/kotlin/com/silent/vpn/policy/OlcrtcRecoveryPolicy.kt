@@ -224,6 +224,12 @@ object OlcrtcRecoveryPolicy {
     fun shouldRefreshConfigOnRecover(onMobileData: Boolean, reason: String): Boolean {
         if (reason.contains(":retry")) return true
         if (
+            reason.contains("decrypt_fail", ignoreCase = true) ||
+                reason.contains("message authentication failed", ignoreCase = true)
+        ) {
+            return true
+        }
+        if (
             reason.contains("404") ||
                 reason.contains("conference") ||
                 reason.contains("not found", ignoreCase = true)

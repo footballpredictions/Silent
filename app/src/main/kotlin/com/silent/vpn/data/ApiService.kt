@@ -117,6 +117,7 @@ data class DeviceRegisterRequest(
     val device_fingerprint: String,
     val wg_public_key: String?,
     val bootstrap_hash: String? = null,
+    val preferred_server: String? = null,
 )
 
 data class BootstrapConfigRequest(
@@ -136,9 +137,33 @@ data class VpnConfig(
     val wdtt_password: String,
     val vk_hashes: List<String>,
     val stream_count: Int,
+    val selected_server: String? = null,
 )
 
-data class ConnectRequest(val device_fingerprint: String, val device_type: String, val last_ip: String? = null)
+data class ConnectRequest(
+    val device_fingerprint: String,
+    val device_type: String,
+    val last_ip: String? = null,
+    val preferred_server: String? = null,
+)
+
+data class PreferredServerRequest(
+    val device_fingerprint: String,
+    val preferred_server: String,
+)
+
+data class VpnServerInfo(
+    val key: String,
+    val title: String,
+    val public_ip: String,
+    val wdtt_port: Int,
+    val online_count: Int = 0,
+)
+
+data class VpnServersResponse(
+    val selected_server: String? = null,
+    val servers: List<VpnServerInfo> = emptyList(),
+)
 data class DisconnectRequest(val device_fingerprint: String)
 
 data class OlcrtcProviderPublic(
@@ -349,10 +374,19 @@ interface SilentApi {
     suspend fun registerDevice(@Body req: DeviceRegisterRequest): Response<VpnConfig>
 
     @GET("api/vpn/config")
-    suspend fun getConfig(@Query("fingerprint") fingerprint: String): Response<VpnConfig>
+    suspend fun getConfig(
+        @Query("fingerprint") fingerprint: String,
+        @Query("preferred_server") preferredServer: String? = null,
+    ): Response<VpnConfig>
 
     @POST("api/vpn/connect")
     suspend fun connect(@Body req: ConnectRequest): Response<Map<String, String>>
+
+    @GET("api/vpn/servers")
+    suspend fun getVpnServers(@Query("fingerprint") fingerprint: String): Response<VpnServersResponse>
+
+    @POST("api/vpn/servers/select")
+    suspend fun selectVpnServer(@Body req: PreferredServerRequest): Response<VpnServersResponse>
 
     @POST("api/vpn/disconnect")
     suspend fun disconnect(@Body req: DisconnectRequest): Response<Map<String, String>>

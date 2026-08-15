@@ -16,7 +16,7 @@ enum class DnsPreset(
     SERVER(
         id = "server",
         title = "Как на сервере",
-        subtitle = "DNS выдаёт Silent · рекомендуется",
+        subtitle = "Рекомендуется",
         servers = "",
     ),
 
@@ -126,9 +126,25 @@ object DnsSettings {
     /** Адреса без IPv6 — для olcrtc/hev, который умеет только IPv4. */
     fun ipv4Servers(context: Context): List<String> {
         val raw = override(context) ?: DnsPreset.FALLBACK.servers
-        return raw.split(',')
+        return parseIpv4(raw).ifEmpty { parseIpv4(DnsPreset.FALLBACK.servers) }
+    }
+
+    /**
+     * Для olcrtc всегда держим fallback DNS в хвосте списка:
+     * сначала выбранный пользователем/сервером DNS, затем запасной.
+     * Это убирает ситуацию, когда WB застревает на fallback DNS,
+     * игнорируя явно заданный резолвер.
+     */
+    fun ipv4ServersForOlcrtc(context: Context, provider: String?): List<String> {
+        val fallback = parseIpv4(DnsPreset.FALLBACK.servers)
+        val custom = parseIpv4(override(context))
+        if (custom.isEmpty()) return fallback
+        val merged = custom + fallback
+        return merged.distinct().take(4)
+    }
+
+    private fun parseIpv4(raw: String?): List<String> =
+        raw.orEmpty().split(',')
             .map { it.trim() }
             .filter { it.isNotBlank() && !it.contains(':') }
-            .ifEmpty { DnsPreset.FALLBACK.servers.split(',').map { it.trim() } }
-    }
 }

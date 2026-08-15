@@ -72,24 +72,11 @@ fun resolveAppTunnelPolicy(context: Context, includeAppInTunnel: Boolean = false
         ?.filter { it.isNotBlank() }
         ?.toSet()
         ?: emptySet()
-    val whitelist = prefs.getBoolean(SilentRepository.PREF_EXCLUSIONS_WHITELIST, false)
     val pm = context.packageManager
 
-    if (whitelist) {
-        val included = LinkedHashSet<String>()
-        // Silent в туннеле только на время API overlay: libclient держит транспорт до VK TURN,
-        // внутри собственного туннеля он замыкается сам на себя.
-        if (includeAppInTunnel) included.add(context.packageName)
-        included.addAll(userSelected)
-        included.removeAll(VK_TUNNEL_PACKAGES)
-        val filtered = included.filter { isPackageInstalled(pm, it) }.toSet()
-        if (filtered.isNotEmpty()) {
-            DebugLog.i("AppExclusions", "БС includeApplications: ${filtered.size}")
-            return AppTunnelPolicy(whitelist = true, packages = filtered)
-        }
-        // Пустой белый список означал бы «в туннеле все приложения» — падаем в ЧС.
-        DebugLog.w("AppExclusions", "БС пуст → ЧС")
-    }
+    // Стабильность mobile first: применяем только ЧС-модель (как в 1.0.160),
+    // чтобы пользовательские режимы БС не выводили приложения из VPN-туннеля.
+    // Это устраняет сценарий "VPN подключен, но сайты/приложения не грузятся на LTE".
 
     val excluded = LinkedHashSet<String>()
     if (!includeAppInTunnel) {

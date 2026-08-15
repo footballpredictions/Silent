@@ -281,10 +281,9 @@ class SilentVpnService : Service() {
         }
     }
 
-    /** Локальный прокси — только Wi‑Fi fallback; LTE: direct 10.66.66.1 через mobileApiRoute. */
+    /** Локальный прокси: app excluded → bind к VPN Network, без overlay. */
     private fun ensureTunnelApiProxyAsync() {
         if (WdttTunnelManager.isBootstrapMode()) return
-        if (VpnNetworkHelper.isOnMobileData(this)) return
         if (TunnelApiProxy.isActive()) return
         scope.launch(Dispatchers.IO) {
             runCatching {
@@ -552,9 +551,9 @@ class SilentVpnService : Service() {
                 HashChannelHelper.hashesForLibclient(wdttHashes, totalWorkers)
             }
 
-            // Кеш-WG из плитки иногда залипает в состоянии Active=0 без реального транспорта.
-            // Для стабильности всегда ждём рабочий GETCONF/воркеры.
-            val fastWgCache = false
+            // Как 1.0.160: слот-совпадающий API/кеш поднимает WG сразу, GETCONF
+            // потом upgrade без DOWN/UP при тех же ключах. Не ждать 22 с.
+            val fastWgCache = !isBootstrap && !apiWg.isNullOrBlank()
             if (connectFromTile) {
                 DebugLog.i(
                     "VpnService",
@@ -840,6 +839,10 @@ class SilentVpnService : Service() {
             OlcrtcTunnelManager.running.value ||
             OlcrtcTunnelManager.tunnelReady.value
         if (!olcrtcPath && WdttTunnelManager.isNetworkRecoverySuppressed()) {
+            if (WdttTunnelManager.isWgApplySettling()) {
+                DebugLog.i("VpnService", "recovery dropped — WG settle ($reason)")
+                return
+            }
             // Если в момент события идёт WG/overlay transition, не теряем recovery-сигнал.
             scheduleNetworkRecovery("$reason:suppressed", 1_200L)
             return
@@ -855,13 +858,15 @@ class SilentVpnService : Service() {
         }
         if (NetworkRecoveryPolicy.shouldDeferRecoveryForPhoneCall(phoneCallActive)) return
         // peer_dead / phone_call / wifi↔lte — не режем grace (иначе после смены сети «залипает»).
+        // internet_restored на старте Улья (peer=API IP) выглядит как «сеть вернулась» и
+        // раньше обходил grace → повторный DOWN/UP WG («двойное подключение»).
         val skipGrace =
             reason.startsWith("olcrtc_peer_dead") ||
                 reason.startsWith("phone_call_end") ||
                 reason.startsWith("watchdog_olcrtc") ||
                 reason.startsWith("transport_switch:") ||
                 reason.startsWith("underlying_blackout") ||
-                reason.startsWith("internet_restored")
+                (pausedForNetwork && reason.startsWith("internet_restored"))
         if (!skipGrace && System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()) return
         if (reason.startsWith("underlying_blackout")) {
             // Только пауза при полной дыре; switch ждём когда fp снова появится.
@@ -920,8 +925,7 @@ class SilentVpnService : Service() {
                     ).silentRepository()
                     repo.invalidatePublicReachabilityCache()
                     if (VpnNetworkHelper.isOnMobileData(this@SilentVpnService)) {
-                        TunnelApiProxy.stopAndAwait()
-                        repo.prepareMainVpnDirectApi()
+                        repo.ensureTunnelApiProxy()
                     } else {
                         TunnelApiProxy.stopAndAwait()
                         repo.ensureTunnelApiProxy()

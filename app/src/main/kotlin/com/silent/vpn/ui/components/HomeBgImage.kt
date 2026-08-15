@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -44,29 +45,35 @@ fun HomeBgImage(
             return@LaunchedEffect
         }
         bitmap = withContext(Dispatchers.IO) {
-            runCatching {
-                val req = Request.Builder()
-                    .url(url)
-                    .header("Accept", "image/*,*/*")
-                    .get()
-                    .build()
-                homeBgHttp.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        Log.w(TAG, "HTTP ${resp.code} for $url")
-                        return@runCatching null
+            var last: android.graphics.Bitmap? = null
+            repeat(3) { attempt ->
+                last = runCatching {
+                    val req = Request.Builder()
+                        .url(url)
+                        .header("Accept", "image/*,*/*")
+                        .get()
+                        .build()
+                    homeBgHttp.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) {
+                            Log.w(TAG, "HTTP ${resp.code} for $url (try ${attempt + 1})")
+                            return@runCatching null
+                        }
+                        val bytes = resp.body?.bytes() ?: return@runCatching null
+                        val opts = BitmapFactory.Options().apply {
+                            inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+                        }
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts).also {
+                            if (it == null) Log.w(TAG, "decode failed (${bytes.size} bytes) $url")
+                            else Log.i(TAG, "loaded ${it.width}x${it.height} from $url")
+                        }
                     }
-                    val bytes = resp.body?.bytes() ?: return@runCatching null
-                    val opts = BitmapFactory.Options().apply {
-                        inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
-                    }
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts).also {
-                        if (it == null) Log.w(TAG, "decode failed (${bytes.size} bytes) $url")
-                        else Log.i(TAG, "loaded ${it.width}x${it.height} from $url")
-                    }
-                }
-            }.onFailure { e ->
-                Log.w(TAG, "load failed $url: ${e.message}")
-            }.getOrNull()
+                }.onFailure { e ->
+                    Log.w(TAG, "load failed $url try ${attempt + 1}: ${e.message}")
+                }.getOrNull()
+                if (last != null) return@withContext last
+                if (attempt < 2) delay(2_000)
+            }
+            last
         }
     }
     val bmp = bitmap ?: return

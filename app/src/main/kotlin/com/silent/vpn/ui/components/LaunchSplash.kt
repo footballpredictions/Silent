@@ -26,7 +26,7 @@ import com.silent.vpn.data.SilentRepository
 /** Адаптивный фон splash на телефоне и TV под светлую/тёмную тему. */
 
 val LaunchSplashBg = Color.White
-val LaunchSplashBgDark = Color(0xFF0B0F1A)
+val LaunchSplashBgDark = Color(0xFF0B0B0F)
 
 
 

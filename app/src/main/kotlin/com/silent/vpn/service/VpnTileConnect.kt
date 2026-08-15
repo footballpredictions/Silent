@@ -111,7 +111,22 @@ object VpnTileConnect {
             config = config.copy(device_id = sessionId)
         }
         if (!isConfigConnectable(repo, config)) return null
+        if (!cachedConfigMatchesPreferred(repo, config)) {
+            DebugLog.i(TAG, "skip cache: selected=${config.selected_server} want=${repo.getPreferredServer()} ip=${config.server_ip}")
+            return null
+        }
         return config
+    }
+
+    private fun cachedConfigMatchesPreferred(repo: SilentRepository, config: VpnConfig): Boolean {
+        val want = repo.getPreferredServer()
+        val selected = config.selected_server?.trim()?.lowercase().orEmpty()
+        val slot = when {
+            selected.isBlank() || selected == "queen" || selected == "main" -> "server1"
+            selected == "server1" || selected == "server2" || selected == "server3" -> selected
+            else -> return false
+        }
+        return slot == want
     }
 
     private fun isConfigConnectable(repo: SilentRepository, config: VpnConfig): Boolean {

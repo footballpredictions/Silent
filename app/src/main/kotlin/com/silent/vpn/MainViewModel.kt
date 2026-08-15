@@ -1074,6 +1074,8 @@ class MainViewModel @Inject constructor(
     )
 
     private suspend fun fetchVpnConfigForConnect(context: Context, fp: String): ConnectFetchResult {
+        // Как 1.0.160: сначала публичный register/getConfig. Ephemeral bootstrap
+        // (полные ~2 мин) — только если публичный API не дал конфиг.
         repo.clearTunnelApiBase()
         repo.useApiBase(repo.getPublicServerUrl())
         repo.invalidateApiClient()
@@ -1163,23 +1165,23 @@ class MainViewModel @Inject constructor(
             }
         }
 
-        if (!accessDenied && vpnConfig == null && (publicFailed || repo.isOnMobileData())) {
+        if (!accessDenied && vpnConfig == null && publicFailed) {
             if (runEphemeralApiBootstrap(context, force = true)) {
                 val cached = loadCachedVpnConfig()
-                vpnConfig = cached?.takeIf { isConfigConnectable(it) }
+                vpnConfig = cached?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
                 if (vpnConfig != null) {
                     repo.mergeSavedHashesIntoCachedConfig()
-                    vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
+                    vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
                 }
             }
         }
 
         if (vpnConfig == null) {
-            vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
+            vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
         }
         if (vpnConfig == null && repo.hasMainVpnServerHashes()) {
             ensureVpnConfigRestored(context)
-            vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
+            vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
         }
 
         return ConnectFetchResult(vpnConfig, apiError, accessDenied)
@@ -2601,15 +2603,13 @@ class MainViewModel @Inject constructor(
                 if (!shouldDeferProfileUntilSync()) {
                     restoreCachedProfileToUi()
                 }
-                if (!repo.isOnMobileData()) {
-                    refreshWifiSubscriptionProfile()
-                }
+                // Профиль не блокирует старт VPN (как 1.0.160) — иначе 6–10 оборотов змейки.
                 val subCached = _profile.value?.subscription?.is_active
                 MobileSyncLog.i(
                     "connect",
                     "pre-check subCached=$subCached mobile=${repo.isOnMobileData()} vpnUp=${VpnSessionState.isActive()}",
                 )
-                val cachedCfg = loadCachedVpnConfig()
+                val cachedCfg = loadCachedVpnConfig()?.takeIf { cachedConfigMatchesPreferred(it) }
                 val lteStaleSubConnect = repo.isOnMobileData() &&
                     cachedCfg != null &&
                     isConfigConnectable(cachedCfg)
@@ -2924,7 +2924,7 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
-                val cached = loadCachedVpnConfig()
+                val cached = loadCachedVpnConfig()?.takeIf { cachedConfigMatchesPreferred(it) }
                 if (cached != null && isConfigConnectable(cached)) {
                     val config = wdttConnectConfig(resolveMainVpnConfig(cached))
                     if (WdttTunnelManager.running.value) {
@@ -2946,9 +2946,14 @@ class MainViewModel @Inject constructor(
                     }
                     DebugLog.i(
                         "MainViewModel",
-                        "connect device=${config.device_id.take(12)} n=${config.stream_count} vk=${config.vk_hashes.size}",
+                        "connect cache slot=${repo.getPreferredServer()} selected=${config.selected_server} ip=${config.server_ip}",
                     )
                     androidx.core.content.ContextCompat.startForegroundService(context, connectIntent)
+                    viewModelScope.launch {
+                        if (!repo.isOnMobileData()) {
+                            runCatching { refreshWifiSubscriptionProfile() }
+                        }
+                    }
                     waitForTunnelReady(context, config.stream_count, relaunchConfig = config)
                     return@launch
                 }
@@ -2994,10 +2999,15 @@ class MainViewModel @Inject constructor(
                 val toConnect = wdttConnectConfig(resolveMainVpnConfig(vpnConfig!!))
                 DebugLog.i(
                     "MainViewModel",
-                    "connect device=${toConnect.device_id.take(12)} n=${toConnect.stream_count} vk=${toConnect.vk_hashes.size}",
+                    "connect fetch slot=${repo.getPreferredServer()} selected=${toConnect.selected_server} ip=${toConnect.server_ip} n=${toConnect.stream_count}",
                 )
                 launchVpnService(context, toConnect)
                 pendingConnectAfterSubscriptionRefresh = false
+                viewModelScope.launch {
+                    if (!repo.isOnMobileData()) {
+                        runCatching { refreshWifiSubscriptionProfile() }
+                    }
+                }
                 waitForTunnelReady(context, toConnect.stream_count, relaunchConfig = toConnect)
             }.onFailure {
                 if (!shouldSurfaceConnectFailure(it)) {
@@ -3029,6 +3039,31 @@ class MainViewModel @Inject constructor(
         }
         if (parsed.device_id != repo.getSessionDeviceId()) return null
         return parsed
+    }
+
+    private fun cachedConfigMatchesPreferred(config: VpnConfig): Boolean {
+        val want = repo.getPreferredServer()
+        val selected = config.selected_server?.trim()?.lowercase().orEmpty()
+        val slot = when {
+            selected.isBlank() -> "server1"
+            selected == "server1" || selected == "server2" || selected == "server3" -> selected
+            selected == "queen" || selected == "main" -> "server1"
+            else -> {
+                DebugLog.i(
+                    "MainViewModel",
+                    "skip cache: selected_server=$selected want=$want ip=${config.server_ip}",
+                )
+                return false
+            }
+        }
+        val ok = slot == want
+        if (!ok) {
+            DebugLog.i(
+                "MainViewModel",
+                "skip cache: slot=$slot want=$want ip=${config.server_ip}",
+            )
+        }
+        return ok
     }
 
     private fun isConfigConnectable(config: VpnConfig): Boolean =
@@ -3214,11 +3249,12 @@ class MainViewModel @Inject constructor(
                 launchVpnService(context, relaunchConfig)
             }
 
-            val waitTicks = if (repo.isLegacyCaptchaStrategy()) 600 else 225
-            var ready = false
+            val waitTicks = if (repo.isLegacyCaptchaStrategy()) 1200 else 450
+            var ready = WdttTunnelManager.tunnelReady.value && WdttTunnelManager.running.value
             var escalateEarly = false
             for (tick in 0 until waitTicks) {
-                delay(200)
+                if (ready) break
+                delay(100)
                 if (_vpnState.value != VpnState.CONNECTING) return
                 if (WdttTunnelManager.tunnelReady.value && WdttTunnelManager.running.value) {
                     ready = true
@@ -3226,7 +3262,7 @@ class MainViewModel @Inject constructor(
                 }
                 // LEGACY_ESCALATE при 0 воркерах — не ждать 45с с n=63
                 if (
-                    tick >= 15 &&
+                    tick >= 30 &&
                     !repo.isLegacyCaptchaStrategy() &&
                     WdttTunnelManager.activeWorkers.value < 1 &&
                     WdttTunnelManager.consumeFloodEscalate()

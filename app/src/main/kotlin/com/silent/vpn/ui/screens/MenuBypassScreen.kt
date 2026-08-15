@@ -16,6 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,11 +25,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.silent.vpn.data.SilentRepository
-import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.ui.tv.tvClickable
-import com.silent.vpn.vpn.OlcrtcTunnelManager
-import com.silent.vpn.vpn.WdttTunnelManager
+import kotlinx.coroutines.launch
 
 @Composable
 fun MenuBypassScreen(
@@ -41,13 +40,10 @@ fun MenuBypassScreen(
 ) {
     var selectedServerSlot by remember { mutableStateOf(slotForSelectedRaw(repo.getPreferredServer())) }
     var pendingServerSlot by remember { mutableStateOf<String?>(null) }
+    var applying by remember { mutableStateOf(false) }
     var applyHint by remember { mutableStateOf<String?>(null) }
-    val vpnRuntimeActive = SilentVpnService.isRunning ||
-        WdttTunnelManager.running.value ||
-        WdttTunnelManager.tunnelReady.value ||
-        OlcrtcTunnelManager.running.value ||
-        OlcrtcTunnelManager.tunnelReady.value
-    val switchLocked = vpnState == VpnState.CONNECTING || vpnRuntimeActive
+    val scope = rememberCoroutineScope()
+    val switchLocked = applying || vpnState == VpnState.CONNECTING || vpnState == VpnState.CONNECTED
 
     val hasPending =
         (pendingServerSlot != null && pendingServerSlot != selectedServerSlot)
@@ -139,12 +135,26 @@ fun MenuBypassScreen(
                 TvTextButton(onClick = {
                     val nextServer = pendingServerSlot
                     pendingServerSlot = null
-                    if (nextServer != null) {
-                        selectedServerSlot = slotForSelectedRaw(nextServer)
-                        repo.setPreferredServer(selectedServerSlot)
-                        applyHint = "Выбрано"
-                    } else {
-                        applyHint = null
+                    applyHint = null
+                    applying = true
+                    scope.launch {
+                        try {
+                            if (nextServer != null) {
+                                // Статичное UI-меню сохраняем, но сервер фиксируем и в backend:
+                                // часть getConfig-путей может не передавать preferred_server query.
+                                runCatching { repo.selectVpnServer(nextServer) }
+                                    .onFailure {
+                                        applyHint = "Не удалось применить сервер."
+                                    }
+                                selectedServerSlot = slotForSelectedRaw(nextServer)
+                                repo.setPreferredServer(selectedServerSlot)
+                                // После смены сервера не используем старый WG-кеш предыдущего слота.
+                                repo.clearCachedVpnConfig()
+                                if (applyHint == null) applyHint = "Выбрано"
+                            }
+                        } finally {
+                            applying = false
+                        }
                     }
                 }) { Text("Применить", color = fg) }
             },

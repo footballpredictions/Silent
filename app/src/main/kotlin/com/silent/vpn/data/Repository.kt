@@ -80,7 +80,7 @@ class SilentRepository @Inject constructor(
         const val BYPASS_FAMILY_OLCRTC = "olcrtc"
         const val BYPASS_FAMILY_OLCRTC2 = "olcrtc2"
         const val PREF_PREFERRED_SERVER = "preferred_server"
-        const val SERVER_MAIN = "queen"
+        const val SERVER_MAIN = "server1"
         const val SERVER_CELL_PREFIX = "cell:"
         const val PREF_OLCRTC_PROVIDER = "olcrtc_provider"
         const val OLCRTC_WBSTREAM = "wbstream"
@@ -319,10 +319,12 @@ class SilentRepository @Inject constructor(
                 return block()
             }
             if (isMainVpnTunnelUp()) {
-                if (APP_EXCLUDED_FROM_VPN && isOnMobileData() && !WdttTunnelManager.isApiOverlayActive()) {
-                    error("mobile routine API deferred — use initial sync overlay session")
+                if (APP_EXCLUDED_FROM_VPN && !WdttTunnelManager.isApiOverlayActive()) {
+                    if (prepareTunnelApiBaseLegacyProxy()) {
+                        return block()
+                    }
                 }
-                return withTunnelBackendBlock(allowOverlayFallback, block)
+                return withTunnelBackendBlock(allowOverlayFallback = false, block = block)
             }
             useApiBase(getPublicServerUrl())
             invalidateApiClient()
@@ -347,20 +349,19 @@ class SilentRepository @Inject constructor(
         return withTunnelBackendBlock(allowOverlayFallback, block)
     }
 
-    /** Промокод, подписка, оплата, сессии — один overlay на LTE при явном действии пользователя. */
+    /** Промокод, подписка, оплата, сессии — через proxy/direct, без overlay (overlay рвёт WG). */
     suspend fun <T> withUserBackendApi(block: suspend () -> T): T {
         if (VpnSessionState.initialOverlaySyncActive) {
-            if (WdttTunnelManager.isApiOverlayActive()) {
-                useApiBase(tunnelApiBase())
+            if (WdttTunnelManager.isApiOverlayActive() || TunnelApiProxy.isActive()) {
+                if (TunnelApiProxy.isActive()) {
+                    useApiBase(TunnelApiProxy.baseUrl())
+                } else {
+                    useApiBase(tunnelApiBase())
+                }
                 invalidateApiClient()
                 return block()
             }
             error("user API deferred — initial overlay sync in progress")
-        }
-        if (APP_EXCLUDED_FROM_VPN && isOnMobileData() && isMainVpnTunnelUp() &&
-            !WdttTunnelManager.isApiOverlayActive()
-        ) {
-            return WdttTunnelManager.withApiOverlayBrief(block, allowDuringRampUp = true)
         }
         return withRoutineBackendApi(allowOverlayFallback = false, block = block)
     }
@@ -398,6 +399,13 @@ class SilentRepository @Inject constructor(
     ): T {
         if (!isMainVpnTunnelUp()) {
             throw IllegalStateException("tunnel backend unavailable")
+        }
+
+        if (APP_EXCLUDED_FROM_VPN && !WdttTunnelManager.isApiOverlayActive()) {
+            if (prepareTunnelApiBaseLegacyProxy()) {
+                MobileSyncLog.i("tunnel", "API via proxy ${getServerUrl()}")
+                return block()
+            }
         }
 
         if (!APP_EXCLUDED_FROM_VPN || WdttTunnelManager.isApiOverlayActive()) {
@@ -588,8 +596,7 @@ class SilentRepository @Inject constructor(
     }
 
     fun shouldUseTunnelApiProxy(): Boolean =
-        !isOnMobileData() &&
-            APP_EXCLUDED_FROM_VPN &&
+        APP_EXCLUDED_FROM_VPN &&
             WdttTunnelManager.tunnelReady.value &&
             WdttTunnelManager.running.value &&
             !WdttTunnelManager.isBootstrapMode() &&
@@ -636,8 +643,7 @@ class SilentRepository @Inject constructor(
             com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value &&
             !TunnelApiProxy.isActive()
 
-    suspend fun ensureTunnelApiProxy(): Boolean =
-        if (isOnMobileData()) false else prepareTunnelApiBaseLegacyProxy()
+    suspend fun ensureTunnelApiProxy(): Boolean = prepareTunnelApiBaseLegacyProxy()
 
     /**
      * Основной VPN: краткий overlay 10.66.66.0/24.
@@ -675,26 +681,13 @@ class SilentRepository @Inject constructor(
      */
     suspend fun <T> withOtaBackendApi(block: suspend () -> T): T {
         if (isOnMobileData() && APP_EXCLUDED_FROM_VPN && isMainVpnTunnelUp()) {
-            if (canUseMobileDirectTunnelApi() || WdttTunnelManager.isApiOverlayActive()) {
-                if (TunnelApiProxy.isActive()) {
-                    TunnelApiProxy.stopAndAwait()
-                }
-                prepareMainVpnDirectApi()
+            if (prepareTunnelApiBaseLegacyProxy()) {
                 return block()
             }
-            return WdttTunnelManager.withApiOverlayBrief(
-                block = {
-                    if (TunnelApiProxy.isActive()) {
-                        TunnelApiProxy.stopAndAwait()
-                    }
-                    prepareMainVpnDirectApi()
-                    block()
-                },
-                allowDuringRampUp = true,
-                skipIntervalThrottle = true,
-            )
+            prepareMainVpnDirectApi()
+            return block()
         }
-        return withRoutineBackendApi(allowOverlayFallback = true, block = block)
+        return withRoutineBackendApi(allowOverlayFallback = false, block = block)
     }
 
     /** Долгая загрузка APK — tunnel direct/proxy без overlay. */
@@ -1204,7 +1197,7 @@ class SilentRepository @Inject constructor(
         if (raw.equals("server1", ignoreCase = true)) return "server1"
         if (raw.equals("server2", ignoreCase = true)) return "server2"
         if (raw.equals("server3", ignoreCase = true)) return "server3"
-        return if (raw == SERVER_MAIN || raw.startsWith(SERVER_CELL_PREFIX)) raw else "server1"
+        return "server1"
     }
 
     fun setPreferredServer(server: String) {
@@ -1213,7 +1206,6 @@ class SilentRepository @Inject constructor(
             raw.equals("server1", ignoreCase = true) -> "server1"
             raw.equals("server2", ignoreCase = true) -> "server2"
             raw.equals("server3", ignoreCase = true) -> "server3"
-            raw == SERVER_MAIN || raw.startsWith(SERVER_CELL_PREFIX) -> raw
             else -> "server1"
         }
         prefs.edit().putString(PREF_PREFERRED_SERVER, normalized).apply()
@@ -1226,9 +1218,7 @@ class SilentRepository @Inject constructor(
             throw IllegalStateException("vpn servers HTTP ${res.code()}")
         }
         val body = res.body() ?: VpnServersResponse(getPreferredServer(), emptyList())
-        val selected = body.selected_server?.ifBlank { SERVER_MAIN } ?: SERVER_MAIN
-        setPreferredServer(selected)
-        return body.copy(selected_server = selected)
+        return body
     }
 
     suspend fun selectVpnServer(serverKey: String): VpnServersResponse {
@@ -1243,9 +1233,8 @@ class SilentRepository @Inject constructor(
             throw IllegalStateException("vpn select server HTTP ${res.code()}")
         }
         val body = res.body() ?: VpnServersResponse(key, emptyList())
-        val selected = body.selected_server?.ifBlank { SERVER_MAIN } ?: SERVER_MAIN
-        setPreferredServer(selected)
-        return body.copy(selected_server = selected)
+        setPreferredServer(key)
+        return body
     }
 
     fun getOlcrtcProvider(): String {
@@ -2397,7 +2386,7 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
         prepareTunnelApiFromCachedConfig()
         invalidatePublicReachabilityCache()
 
-        if (!mobile && postConnectViaPublic()) {
+        if (!mobile && !WdttTunnelManager.isApiOverlayActive() && postConnectViaPublic()) {
             return@withLock runCatching {
                 val hashesOk = syncHashesAndConfigAfterConnect()
                 val profileOk = syncProfileAndThemeAfterConnect()
@@ -2424,9 +2413,10 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
             "start excluded=$excluded mobile=$mobile proxy=${TunnelApiProxy.isActive()} wg=${WdttTunnelManager.lastWgAddress()}",
         )
 
+        val overlayOn = WdttTunnelManager.isApiOverlayActive()
         val syncResult = runCatching {
-            withTunnelBackendBlock(allowOverlayFallback = excluded && !mobile) {
-                performTunnelSyncCycle(mobile, excluded)
+            withTunnelBackendBlock(allowOverlayFallback = false) {
+                performTunnelSyncCycle(mobile, excluded, viaOverlay = overlayOn)
             }
         }.getOrElse { e ->
             MobileSyncLog.e("syncAll", "sync exception", e)

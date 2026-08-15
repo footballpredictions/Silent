@@ -152,21 +152,7 @@ object ConfigSyncCoordinator {
             }
             listener.onWifiSyncTickStart()
 
-            val mobileOverlay = ConfigSyncSkipPolicy.mobileSyncUsesOverlay(
-                ConfigSyncSkipPolicy.MobileSyncModeInput(
-                    onMobileData = repo.isOnMobileData(),
-                    appExcludedFromVpn = SilentRepository.APP_EXCLUDED_FROM_VPN,
-                    vpnUpForSync = vpnUpForSync(),
-                    tunnelDataSyncCompleted = VpnSessionState.tunnelDataSyncCompleted,
-                ),
-            )
-            if (mobileOverlay) {
-                WdttTunnelManager.withApiOverlayBrief(
-                    block = { runConfigSyncBody(repo, listener) },
-                )
-            } else {
-                runConfigSyncBody(repo, listener)
-            }
+            runConfigSyncBody(repo, listener)
         }
     }
 

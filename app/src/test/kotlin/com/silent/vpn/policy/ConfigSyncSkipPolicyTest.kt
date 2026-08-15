@@ -93,8 +93,8 @@ class ConfigSyncSkipPolicyTest {
     }
 
     @Test
-    fun `mobile sync uses overlay until initial tunnel sync done`() {
-        assertTrue(
+    fun `mobile sync never uses overlay on connect`() {
+        assertFalse(
             ConfigSyncSkipPolicy.mobileSyncUsesOverlay(
                 ConfigSyncSkipPolicy.MobileSyncModeInput(
                     onMobileData = true,

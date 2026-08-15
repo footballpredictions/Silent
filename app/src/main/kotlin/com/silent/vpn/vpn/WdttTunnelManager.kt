@@ -127,6 +127,8 @@ object WdttTunnelManager {
     @Volatile private var suppressNetworkRecovery = false
     private var overlayRestoreSuppressed = false
     private var lastOverlayEndedMs = 0L
+    private var lastWgApplyAtMs = 0L
+    private var wgApplySettleJob: Job? = null
     private val minOverlayIntervalMs = 60_000L
     private val overlayEnterDelayMs = 800L
 
@@ -288,10 +290,10 @@ object WdttTunnelManager {
 
     /** TURN/VK excludes + пользовательские сайты (кэш, без сетевых вызовов). */
     private fun effectiveExcludeIps(context: Context? = lastContext): List<String> {
-        refreshSiteBypassExcludes(context)
-        val sites = synchronized(siteBypassCidrs) { siteBypassCidrs.toList() }
-        if (sites.isEmpty()) return wgExcludeIps.toList()
-        return (wgExcludeIps + sites).toList()
+        // Для стабильности main VPN используем только служебные исключения TURN/VK.
+        // Пользовательские site-bypass CIDR временно игнорируем: они могли
+        // разрывать маршрут на mobile data и давать "подключено, но без трафика".
+        return wgExcludeIps.toList()
     }
 
     private fun appendStderrLine(line: String) {
@@ -386,7 +388,7 @@ object WdttTunnelManager {
                         lastParams = params
                         lastContext = appContext
                         isBootstrapMode = params.isBootstrap
-                        // GETCONF — основной путь; apiWgConfig — отложенный fallback (10 с).
+                        // GETCONF — основной путь; apiWgConfig — ранний подъём (1.0.160) + fallback.
                         deferredApiWgConfig = params.apiWgConfig?.trim()?.takeIf { it.contains("[Interface]") }
                         sessionVkHashes = emptyList()
                         groupHashPrefix.clear()
@@ -495,6 +497,9 @@ object WdttTunnelManager {
                     startWatchdog(appContext, params)
                     scheduleBootstrapApiFallback(params)
                     scheduleMainApiWgFallback(params)
+                    if (params.fastWgCache && deferredApiWgConfig != null) {
+                        scheduleWireGuardApply(deferredApiWgConfig, WgConfigSource.API_CACHE)
+                    }
                     scheduleWgConfigRetry()
                 } catch (e: Exception) {
                     val msg = "Критическая ошибка: ${e.message}"
@@ -666,18 +671,11 @@ object WdttTunnelManager {
         if (params.isBootstrap) return
         mainWgFallbackJob = scope.launch {
             if (params.fastWgCache) {
-                val recentGetconfErr =
-                    lastGetconfErrorMs > 0L &&
-                        System.currentTimeMillis() - lastGetconfErrorMs < 30_000L
-                delay(
-                    if (recentGetconfErr) TILE_WG_CACHE_FALLBACK_AFTER_ERR_MS
-                    else TILE_WG_CACHE_FALLBACK_MS,
-                )
                 if (!running.value) return@launch
                 if (readConfFile(lastContext) != null) return@launch
                 if (appliedWgConfigSource == WgConfigSource.GETCONF) return@launch
                 if (tunnelReady.value && appliedWgConfigSource != WgConfigSource.NONE) return@launch
-                updateLog("wg_cache_fallback", "WireGuard из кеша (плитка)", 2)
+                updateLog("wg_cache_early", "WireGuard из кеша (как 1.0.160)", 2)
                 scheduleWireGuardApply(fallback, WgConfigSource.API_CACHE)
                 return@launch
             }
@@ -1224,6 +1222,11 @@ object WdttTunnelManager {
     /** После Wi‑Fi↔LTE / восстановления сети — обновить AllowedIPs (mobile API route). */
     fun reapplyWireGuardForNetworkChange(context: Context) {
         if (!tunnelReady.value || isBootstrapMode || apiOverlayActive) return
+        val sinceApply = System.currentTimeMillis() - lastWgApplyAtMs
+        if (lastWgApplyAtMs > 0L && sinceApply < 15_000L) {
+            DebugLog.i("WdttTunnel", "wg network reload skip — settle ${sinceApply}ms")
+            return
+        }
         val config = lastWgConfig ?: return
         lastContext = context.applicationContext
         scope.launch {
@@ -1283,6 +1286,13 @@ object WdttTunnelManager {
                     appliedWgConfigSource = source
                     tunnelReady.value = true
                     wgConfigPending = false
+                    lastWgApplyAtMs = System.currentTimeMillis()
+                    suppressNetworkRecovery = true
+                    wgApplySettleJob?.cancel()
+                    wgApplySettleJob = scope.launch {
+                        delay(15_000L)
+                        if (isActive) suppressNetworkRecovery = false
+                    }
                     if (source == WgConfigSource.GETCONF) {
                         confPollJob?.cancel()
                         wgConfigRetryJob?.cancel()
@@ -1300,6 +1310,26 @@ object WdttTunnelManager {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    val rawMsg = e.message.orEmpty()
+                    val keyFormatFail =
+                        rawMsg.contains("KeyFormatException", ignoreCase = true) ||
+                            e.javaClass.name.contains("KeyFormatException", ignoreCase = true)
+                    if (source == WgConfigSource.GETCONF && keyFormatFail && tunnelReady.value) {
+                        DebugLog.w("WdttTunnel", "GETCONF KeyFormatException — оставляем текущий WG")
+                        return@withLock
+                    }
+                    if (source == WgConfigSource.API_CACHE && keyFormatFail) {
+                        // Первый старт после апдейта/смены сервера может поймать битый stale WG-cache.
+                        // Не падаем: ждём GETCONF и пробуем нормальный серверный конфиг.
+                        deferredApiWgConfig = null
+                        lastWgConfig = null
+                        appliedWgConfigSource = WgConfigSource.NONE
+                        wgConfigPending = true
+                        updateLog("wg_cache_skip", "Кеш WG пропущен — ждём GETCONF", 50)
+                        scheduleWireGuardApply(source = WgConfigSource.GETCONF)
+                        scheduleWgConfigRetry()
+                        return@withLock
+                    }
                     if (tunnelReady.value) return@withLock
                     lastError.value = "WireGuard: ${e.message}"
                     updateLog("vpn_start_error", "Ошибка WireGuard: ${e.message}", 99, true)
@@ -1630,6 +1660,11 @@ object WdttTunnelManager {
         return false
     }
 
+    fun isWgApplySettling(): Boolean {
+        if (lastWgApplyAtMs <= 0L) return false
+        return System.currentTimeMillis() - lastWgApplyAtMs < 15_000L
+    }
+
     fun prepareForShutdown() {
         overlayRestoreSuppressed = true
     }
@@ -1870,6 +1905,9 @@ object WdttTunnelManager {
         overlayRestoreSuppressed = true
         apiOverlayActive = false
         suppressNetworkRecovery = false
+        wgApplySettleJob?.cancel()
+        wgApplySettleJob = null
+        lastWgApplyAtMs = 0L
         // После login bootstrap флаг иначе залипает → isMainVpnSessionForUi=false → экран входа.
         isBootstrapMode = false
         wgApplyJob?.cancel()

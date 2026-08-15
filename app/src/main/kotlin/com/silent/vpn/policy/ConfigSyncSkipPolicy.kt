@@ -52,12 +52,8 @@ object ConfigSyncSkipPolicy {
         return null
     }
 
-    /** LTE excluded: overlay только до завершения initial tunnel sync. */
-    fun mobileSyncUsesOverlay(input: MobileSyncModeInput): Boolean =
-        input.onMobileData &&
-            input.appExcludedFromVpn &&
-            input.vpnUpForSync &&
-            !input.tunnelDataSyncCompleted
+    /** Overlay на connect глушит интернет — sync только public/proxy. */
+    fun mobileSyncUsesOverlay(input: MobileSyncModeInput): Boolean = false
 
     fun wifiSubscriptionPollAllowed(onMobileData: Boolean): Boolean = !onMobileData
 }

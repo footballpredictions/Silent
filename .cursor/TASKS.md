@@ -33,6 +33,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] **Улей: авто-сброс stale online:** если `is_connected=true`, но heartbeat/`last_connected` просрочен — устройство автоматически уходит в offline (фон. maintenance loop) — 2026-08-14
 - [x] **olcrtc2 burst warm:** при серии `Нет свободных комнат` временно +1 warm по провайдеру (окно 25с, hold 180с, авто-откат) — 2026-08-15
 - [x] **Smart Apply Refresh (Android+PC):** после смены TM/WB — background refresh слота (TTL/dirty-aware, с тайм-бюджетом, без блокировки Apply) — 2026-08-15
+- [x] **UX исключений + DNS + splash:** `Выделить все` в исключениях (Android/PC), без авто-выбора в БС; DNS упрощён до `Яндекс (как на сервере)` + `Свой DNS`; тёмный splash на Android — 2026-08-15
 - [ ] **Соты: кеширующий DNS** (unbound/dnsmasq) + `OLCRTC2_DNS=127.0.0.1:53` — весь резолв теперь делает `olcrtc2-srv`
 - [ ] **Фаза D — endurance:** 40 мин WB+TM Wi‑Fi/LTE на PC+Android debug (ручной прогон; APK + PC `build-debug-182837`)
 

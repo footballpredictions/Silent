@@ -17,6 +17,7 @@ import {
   cacheVpnConfig,
   getBootstrapHash,
 } from '../vkConfig'
+import { getPreferredServer } from '../bypassStore'
 import {
   ensureBootstrapVpn,
   disconnectBootstrapVpn,
@@ -161,6 +162,7 @@ export default function LoginScreen({
         device_type: 'pc',
         device_fingerprint: fp,
         bootstrap_hash: boot || undefined,
+        preferred_server: getPreferredServer(),
       })
       saveSessionDeviceId(reg.data.device_id)
       cacheVpnConfig(reg.data)

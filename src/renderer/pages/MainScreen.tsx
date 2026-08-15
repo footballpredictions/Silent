@@ -81,6 +81,7 @@ import {
 } from '../configSync'
 
 const isDevBuild = isDebugBuild
+const isBypassEnabled = true
 
 interface DeviceInfo {
   id: string
@@ -1390,7 +1391,7 @@ export default function MainScreen({
                 { key: 'subscription', label: 'Подписка' },
                 { key: 'exceptions', label: 'Исключения' },
                 { key: 'dns', label: `DNS · ${dnsMenuLabel()}` },
-                ...(isDevBuild ? [{ key: 'bypass', label: `Варианты обхода · ${bypassNavLabel}` }] : []),
+                ...(isBypassEnabled ? [{ key: 'bypass', label: `Выбор сервера · ${bypassNavLabel}` }] : []),
                 ...(isDevBuild ? [{ key: 'hashes', label: 'Хеши' }] : []),
                 { key: 'bonuses', label: clientTheme?.menu_bonuses_label || 'Бонусы' },
                 { key: 'devices', label: `Сессии (${sessionsBadge(profile)})` },
@@ -1650,6 +1651,10 @@ export default function MainScreen({
             <MenuDnsPanel
               fg={fg}
               muted={muted}
+              bg={bg}
+              fieldBg={palette.fieldBg}
+              borderStrong={palette.borderStrong}
+              dark={palette.dark}
               vpnConnected={connected}
               onBack={() => setMenuPage(null)}
             />
@@ -1830,7 +1835,6 @@ export default function MainScreen({
               <div className="text-xs text-gray-500 space-y-1">
                 <p>Версия {getAppVersion()}</p>
                 <p>WireGuard-туннель через VK TURN/DTLS</p>
-                <p>+ Olcrtc</p>
               </div>
             </div>
           )}

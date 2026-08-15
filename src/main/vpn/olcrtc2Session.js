@@ -30,6 +30,7 @@ let peerLivenessSuspect = false
 let socksHealthRunner = null
 /** Активный SOCKS olcrtc2 — HB/failure через 10.66.66.1, не public nip.io. */
 let activeSocks = null
+let activeProvider = 'telemost'
 
 function setOlcrtc2SessionDeadHandler(fn) {
   onSessionDead = typeof fn === 'function' ? fn : null
@@ -586,6 +587,10 @@ function hasRecentTunnelTraffic(nowMs = Date.now()) {
   return nowMs - lastTunnelActivityMs < 25_000
 }
 
+function providerGraceMs(baseMs) {
+  return activeProvider === 'wbstream' ? Math.max(baseMs, 15_000) : baseMs
+}
+
 function markPeerLivenessSuspect(reason, graceMs, log) {
   peerLivenessSuspect = true
   lastTunnelActivityMs = 0
@@ -662,15 +667,15 @@ function pipeOlcrtc2Line(line, log) {
   if (/peer restart detected|failed to connect link|subscriber media timeout|control missed pong|session closed/i.test(line)) {
     log(`[olcrtc2:peer] ${line.slice(0, 300)}`)
     if (/control missed pong/i.test(line)) {
-      markPeerLivenessSuspect('missed_pong', 8_000, log)
+      markPeerLivenessSuspect('missed_pong', providerGraceMs(8_000), log)
     } else if (/failed to connect link|subscriber media timeout|session closed/i.test(line)) {
-      markPeerLivenessSuspect('peer_liveness', 8_000, log)
+      markPeerLivenessSuspect('peer_liveness', providerGraceMs(8_000), log)
     }
     return
   }
   if (/connection state changed to (closed|failed|disconnected)|peer connection state changed:\s*(closed|failed|disconnected)/i.test(line)) {
     log(`[olcrtc2:peer] ${line.slice(0, 300)}`)
-    schedulePeerClosedGrace('peer_closed', 12_000, log)
+    schedulePeerClosedGrace('peer_closed', providerGraceMs(12_000), log)
     return
   }
   if (
@@ -774,6 +779,7 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
     .includes('wb')
     ? 'wbstream'
     : 'telemost'
+  activeProvider = provider
   const noTelemostPrefetch = Boolean(config.__olcrtcNoTelemostPrefetch)
 
   const dataDir = path.join(app.getPath('userData'), 'olcrtc2-data')

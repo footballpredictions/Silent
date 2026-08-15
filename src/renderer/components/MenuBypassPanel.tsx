@@ -1,28 +1,10 @@
-import { useEffect, useState } from 'react'
-import { isDebugBuild } from '../debugBuild'
+import { useEffect, useMemo, useState } from 'react'
+import api from '../api'
+import { getStableDeviceFingerprint } from '../api'
 import {
-  VK_CRED_AUTO,
-  VK_CRED_MANUAL,
-  VK_CRED_VKCALLS,
-  getVkCredStrategy,
-  setBypassFamily,
-  setVkCredStrategy,
-  getBypassFamily,
-  BYPASS_FAMILY_WDTT,
-  BYPASS_FAMILY_OLCRTC,
-  BYPASS_FAMILY_OLCRTC2,
-  getOlcrtcProvider,
-  setOlcrtcProvider,
-  getCachedOlcrtcConfigForProvider,
-  shouldRefreshOlcrtcSlot,
-  refreshOlcrtcSlotFast,
-  getOlcrtcCacheAgeMs,
-  OLCRTC_TELEMOST,
-  OLCRTC_WBSTREAM,
-  bypassFamilyLabel,
-  olcrtcProviderLabel,
+  getPreferredServer,
+  setPreferredServer,
 } from '../bypassStore'
-import { vkCredStrategyLabel } from '../vkCredStore'
 
 type Props = {
   fg: string
@@ -80,29 +62,41 @@ function ModeOption({
   )
 }
 
-function familyName(family: string): string {
-  return family === BYPASS_FAMILY_OLCRTC2 || family === BYPASS_FAMILY_OLCRTC ? 'olcrtc' : 'VK'
+type VpnServerInfo = {
+  key: string
+  title: string
+  public_ip: string
+  wdtt_port: number
+  online_count: number
 }
 
-/** Как 1.0.160: «VK → olcrtc», внутри семейства — «Яндекс Телемост → WB Stream». */
-function applyDialogLine(
-  family: string,
-  selFamily: string,
-  vkMode: string,
-  selVk: string,
-  olcProvider: string,
-  selOlc: string,
-): string {
-  const from = familyName(family)
-  const to = familyName(selFamily)
-  if (from !== to) return `${from} → ${to}`
-  if (selFamily === BYPASS_FAMILY_OLCRTC2 && selOlc !== olcProvider) {
-    return `${olcrtcProviderLabel(olcProvider)} → ${olcrtcProviderLabel(selOlc)}`
+type VpnServersResponse = {
+  selected_server?: string | null
+  servers: VpnServerInfo[]
+}
+
+function slotForSelectedRaw(selectedRaw: string | null | undefined, servers: VpnServerInfo[]): 'server1' | 'server2' | 'server3' {
+  const raw = String(selectedRaw || '').trim().toLowerCase()
+  if (raw === 'server1' || raw === 'server2' || raw === 'server3') return raw
+  const idx = servers.findIndex((s) => s.key === raw)
+  if (idx === 1) return 'server2'
+  if (idx === 2) return 'server3'
+  return 'server1'
+}
+
+function slotIndex(slot: string): number {
+  if (slot === 'server2') return 2
+  if (slot === 'server3') return 3
+  return 1
+}
+
+function applyDialogLine(fromSlot: string, toSlot: string): string {
+  const fromIdx = slotIndex(fromSlot)
+  const toIdx = slotIndex(toSlot)
+  if (fromSlot !== toSlot) {
+    return `Сервер ${fromIdx} → Сервер ${toIdx}`
   }
-  if (selFamily === BYPASS_FAMILY_WDTT && selVk !== vkMode) {
-    return `${vkCredStrategyLabel(vkMode)} → ${vkCredStrategyLabel(selVk)}`
-  }
-  return `${from} → ${to}`
+  return `Сервер ${toIdx}`
 }
 
 /**
@@ -117,121 +111,80 @@ export default function MenuBypassPanel({
   vpnRunning,
   onBack,
 }: Props) {
-  const [family, setFamily] = useState(getBypassFamily())
-  const [vkMode, setVkMode] = useState(getVkCredStrategy())
-  const [olcProvider, setOlcProvider] = useState(getOlcrtcProvider())
-  const [pendingFamily, setPendingFamily] = useState<string | null>(null)
-  const [pendingVk, setPendingVk] = useState<string | null>(null)
-  const [pendingOlc, setPendingOlc] = useState<string | null>(null)
+  const [selectedServerSlot, setSelectedServerSlot] = useState<'server1' | 'server2' | 'server3'>(
+    slotForSelectedRaw(getPreferredServer(), []),
+  )
+  const [servers, setServers] = useState<VpnServerInfo[]>([])
+  const [pendingServerSlot, setPendingServerSlot] = useState<'server1' | 'server2' | 'server3' | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
   const switchLocked = busy || vpnRunning
 
-  useEffect(() => {
-    if (!isDebugBuild) {
-      setBypassFamily(BYPASS_FAMILY_WDTT)
-    }
-  }, [])
-
-  if (!isDebugBuild) {
-    return (
-      <div className="relative flex flex-col h-full p-4 overflow-y-auto">
-        <button type="button" onClick={onBack} className="text-xs self-start mb-4 hover:opacity-70" style={{ color: muted }}>
-          ← Назад
-        </button>
-        <h2 className="text-sm font-semibold mb-3" style={{ color: fg }}>Варианты обхода</h2>
-        <p className="text-[12px]" style={{ color: muted }}>
-          Только VK / WDTT. olcrtc — в debug-сборке.
-        </p>
-      </div>
-    )
-  }
-
-  const selFamily = pendingFamily ?? family
-  const selVk = pendingVk ?? vkMode
-  const selOlc = pendingOlc ?? olcProvider
+  const selServer = pendingServerSlot ?? selectedServerSlot
   const hasPending =
-    (pendingFamily != null && pendingFamily !== family) ||
-    (pendingVk != null && pendingVk !== vkMode) ||
-    (pendingOlc != null && pendingOlc !== olcProvider)
+    (pendingServerSlot != null && pendingServerSlot !== selectedServerSlot)
+
+  const visibleServers = useMemo(() => {
+    return servers.slice(0, 3)
+  }, [servers])
 
   const clearPending = () => {
-    setPendingFamily(null)
-    setPendingVk(null)
-    setPendingOlc(null)
+    setPendingServerSlot(null)
   }
+
+  useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      try {
+        const fp = getStableDeviceFingerprint()
+        const res = await api.get('/api/vpn/servers', { params: { fingerprint: fp } })
+        const data = res.data as VpnServersResponse
+        if (!mounted) return
+        setServers(Array.isArray(data.servers) ? data.servers : [])
+        const selected = slotForSelectedRaw(data.selected_server, Array.isArray(data.servers) ? data.servers : [])
+        setSelectedServerSlot(selected)
+        setPreferredServer(selected)
+      } catch {
+        if (mounted) setHint('Не удалось загрузить список серверов.')
+      }
+    })()
+    return () => { mounted = false }
+  }, [])
 
   useEffect(() => {
     if (!vpnRunning) return
     clearPending()
-    setHint('Отключите VPN перед сменой варианта обхода.')
+    setHint('Отключите VPN перед сменой сервера.')
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vpnRunning])
 
   const applyPending = async () => {
     if (busy || !hasPending) return
-    const nextFamily = pendingFamily ?? family
-    const nextVk = pendingVk ?? vkMode
-    const nextOlc = pendingOlc ?? olcProvider
+    const nextServer = pendingServerSlot ?? selectedServerSlot
     const willChange =
-      nextFamily !== family || nextVk !== vkMode || nextOlc !== olcProvider
+      nextServer !== selectedServerSlot
     clearPending()
     setBusy(true)
     setHint(null)
     try {
       if (willChange && vpnRunning) {
-        setHint('Сначала отключите VPN, затем меняйте вариант обхода.')
+        setHint('Сначала отключите VPN, затем меняйте сервер.')
         return
       }
-
-      if (nextFamily !== family) {
-        setBypassFamily(nextFamily)
-        setFamily(getBypassFamily())
-      }
-      if (nextVk !== vkMode) {
-        setVkCredStrategy(nextVk)
-        setVkMode(nextVk)
-      }
-      if (nextOlc !== olcProvider) {
-        setOlcrtcProvider(nextOlc)
-        setOlcProvider(getOlcrtcProvider())
-      }
-
-      const appliedFamily = getBypassFamily()
-      const appliedOlc = getOlcrtcProvider()
-      if (appliedFamily === BYPASS_FAMILY_OLCRTC2) {
-        const cfg = getCachedOlcrtcConfigForProvider(appliedOlc)
-        const room = cfg?.providers?.[appliedOlc]?.room?.trim() || ''
-        const switchedProvider = nextOlc !== olcProvider
-        const needRefresh = shouldRefreshOlcrtcSlot(appliedOlc, {
-          force: switchedProvider,
-          maxAgeMs: 8 * 60 * 1000,
+      if (nextServer !== selectedServerSlot) {
+        const fp = getStableDeviceFingerprint()
+        const res = await api.post('/api/vpn/servers/select', {
+          device_fingerprint: fp,
+          preferred_server: nextServer,
         })
-        setHint(
-          room
-            ? `Выбрано: ${olcrtcProviderLabel(appliedOlc)} · ${room.slice(0, 28)} (кеш)`
-            : `Выбрано: ${olcrtcProviderLabel(appliedOlc)} — нет кеша (включите VK)`,
-        )
-        if (needRefresh) {
-          setHint(`Выбрано: ${olcrtcProviderLabel(appliedOlc)} · обновляем слот…`)
-          void refreshOlcrtcSlotFast(appliedOlc, 15_000).then(({ ok, room: nextRoom }) => {
-            const ageSec = Math.floor((getOlcrtcCacheAgeMs(appliedOlc) || 0) / 1000)
-            if (ok && nextRoom) {
-              setHint(`Обновлено: ${olcrtcProviderLabel(appliedOlc)} · ${nextRoom.slice(0, 28)} (age ${ageSec}s)`)
-            } else {
-              const fallbackRoom =
-                getCachedOlcrtcConfigForProvider(appliedOlc)?.providers?.[appliedOlc]?.room?.trim() || ''
-              setHint(
-                fallbackRoom
-                  ? `Оставлен кеш: ${olcrtcProviderLabel(appliedOlc)} · ${fallbackRoom.slice(0, 28)}`
-                  : `Оставлен кеш: ${olcrtcProviderLabel(appliedOlc)} · нет room`,
-              )
-            }
-          })
-        }
-      } else {
-        setHint(`Выбрано: ${bypassFamilyLabel(appliedFamily)}`)
+        const data = res.data as VpnServersResponse
+        const nextServers = Array.isArray(data.servers) ? data.servers : []
+        if (nextServers.length > 0) setServers(nextServers)
+        const selected = slotForSelectedRaw(data.selected_server, nextServers.length ? nextServers : servers)
+        setSelectedServerSlot(selected)
+        setPreferredServer(selected)
       }
+      setHint('Выбрано')
     } finally {
       setBusy(false)
     }
@@ -245,7 +198,7 @@ export default function MenuBypassPanel({
       <button type="button" onClick={onBack} className="text-xs self-start mb-4 hover:opacity-70" style={{ color: muted }}>
         ← Назад
       </button>
-      <h2 className="text-sm font-semibold mb-3" style={{ color: fg }}>Варианты обхода</h2>
+      <h2 className="text-sm font-semibold mb-3" style={{ color: fg }}>Выбор сервера</h2>
       {hint ? (
         <p className="text-[11px] mb-2" style={{ color: muted }}>{hint}</p>
       ) : null}
@@ -256,87 +209,25 @@ export default function MenuBypassPanel({
       ) : null}
 
       <div className="flex-1 overflow-y-auto min-h-0">
-        <ModeOption
-          title="VK"
-          selected={selFamily === BYPASS_FAMILY_WDTT}
-          enabled={!switchLocked}
-          fg={fg}
-          muted={muted}
-          onSelect={() => setPendingFamily(BYPASS_FAMILY_WDTT)}
-        />
-        {selFamily === BYPASS_FAMILY_WDTT && (
-          <div style={{ paddingLeft: 12 }}>
-            <ModeOption
-              title="VKCalls"
-              selected={selVk === VK_CRED_VKCALLS}
-              enabled={!switchLocked}
-              fg={fg}
-              muted={muted}
-              onSelect={() => {
-                setPendingFamily(BYPASS_FAMILY_WDTT)
-                setPendingVk(VK_CRED_VKCALLS)
-              }}
-            />
-            <ModeOption
-              title="Авто капча"
-              selected={selVk === VK_CRED_AUTO}
-              enabled={!switchLocked}
-              fg={fg}
-              muted={muted}
-              onSelect={() => {
-                setPendingFamily(BYPASS_FAMILY_WDTT)
-                setPendingVk(VK_CRED_AUTO)
-              }}
-            />
-            <ModeOption
-              title="Вручную"
-              selected={selVk === VK_CRED_MANUAL}
-              enabled={!switchLocked}
-              fg={fg}
-              muted={muted}
-              onSelect={() => {
-                setPendingFamily(BYPASS_FAMILY_WDTT)
-                setPendingVk(VK_CRED_MANUAL)
-              }}
-            />
-          </div>
-        )}
-
-        <div style={{ height: 8 }} />
-        <ModeOption
-          title="olcrtc"
-          selected={selFamily === BYPASS_FAMILY_OLCRTC2}
-          enabled={!switchLocked}
-          fg={fg}
-          muted={muted}
-          onSelect={() => setPendingFamily(BYPASS_FAMILY_OLCRTC2)}
-        />
-        {selFamily === BYPASS_FAMILY_OLCRTC2 && (
-          <div style={{ paddingLeft: 12 }}>
-            <ModeOption
-              title="Яндекс Телемост"
-              selected={selOlc === OLCRTC_TELEMOST}
-              enabled={!switchLocked}
-              fg={fg}
-              muted={muted}
-              onSelect={() => {
-                setPendingFamily(BYPASS_FAMILY_OLCRTC2)
-                setPendingOlc(OLCRTC_TELEMOST)
-              }}
-            />
-            <ModeOption
-              title="WB Stream"
-              selected={selOlc === OLCRTC_WBSTREAM}
-              enabled={!switchLocked}
-              fg={fg}
-              muted={muted}
-              onSelect={() => {
-                setPendingFamily(BYPASS_FAMILY_OLCRTC2)
-                setPendingOlc(OLCRTC_WBSTREAM)
-              }}
-            />
-          </div>
-        )}
+        <div style={{ paddingLeft: 12 }}>
+          {[0, 1, 2].map((index) => {
+            const server = visibleServers[index]
+            const slot = `server${index + 1}` as 'server1' | 'server2' | 'server3'
+            return (
+            <div key={slot}>
+              <ModeOption
+                title={`Сервер ${index + 1}`}
+                selected={selServer === slot}
+                enabled={!switchLocked && !!server}
+                fg={fg}
+                muted={muted}
+                onSelect={() => {
+                  setPendingServerSlot(slot)
+                }}
+              />
+            </div>
+          )})}
+        </div>
       </div>
 
       {(hasPending && !switchLocked) && (
@@ -365,7 +256,7 @@ export default function MenuBypassPanel({
               Применить?
             </div>
             <p className="text-sm leading-5 mb-6" style={{ color: muted }}>
-              {applyDialogLine(family, selFamily, vkMode, selVk, olcProvider, selOlc)}
+              {applyDialogLine(selectedServerSlot, selServer)}
             </p>
             <div className="flex justify-end items-center gap-2">
                 <button

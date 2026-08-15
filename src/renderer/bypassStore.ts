@@ -8,12 +8,12 @@ import {
 } from './vkCredStore'
 import { getPublicApiBaseUrl } from './tunnelApi'
 import { getStableDeviceFingerprint } from './api'
-import { getDnsOverrideServers } from './dnsPreset'
-import { isDebugBuild } from './debugBuild'
+import { DNS_FALLBACK_SERVERS, getDnsOverrideServers } from './dnsPreset'
 import { isolateOlcrtcCachePayload } from './olcrtcCachePolicy.mjs'
 
 const FAMILY_KEY = 'bypass_family'
 const OLCRTC_PROVIDER_KEY = 'olcrtc_provider'
+const PREFERRED_SERVER_KEY = 'preferred_server'
 /** v12: dual-cache telemost / wbstream (не затирают друг друга). */
 const OLCRTC_CACHE_KEY_LEGACY = 'olcrtc_config_cache_v11'
 function olcrtcCacheKey(provider: string = getOlcrtcProvider()): string {
@@ -43,7 +43,6 @@ export {
 }
 
 export function getBypassFamily(): string {
-  if (!isDebugBuild) return BYPASS_FAMILY_WDTT
   try {
     const v = localStorage.getItem(FAMILY_KEY)
     if (v === BYPASS_FAMILY_OLCRTC2) return BYPASS_FAMILY_OLCRTC2
@@ -56,16 +55,32 @@ export function getBypassFamily(): string {
 }
 
 export function setBypassFamily(family: string) {
-  if (!isDebugBuild) {
-    try { localStorage.setItem(FAMILY_KEY, BYPASS_FAMILY_WDTT) } catch { /* ignore */ }
-    return
-  }
   const v =
     family === BYPASS_FAMILY_OLCRTC || family === BYPASS_FAMILY_OLCRTC2
       ? BYPASS_FAMILY_OLCRTC2
       : BYPASS_FAMILY_WDTT
   try {
     localStorage.setItem(FAMILY_KEY, v)
+  } catch { /* ignore */ }
+}
+
+export function getPreferredServer(): string {
+  try {
+    const raw = (localStorage.getItem(PREFERRED_SERVER_KEY) || '').trim().toLowerCase()
+    if (raw === 'server1' || raw === 'server2' || raw === 'server3') return raw
+    if (raw.startsWith('cell:') || raw === 'queen') return raw
+  } catch { /* ignore */ }
+  return 'server1'
+}
+
+export function setPreferredServer(server: string) {
+  const raw = (server || '').trim().toLowerCase()
+  const normalized =
+    (raw === 'server1' || raw === 'server2' || raw === 'server3' || raw === 'queen' || raw.startsWith('cell:'))
+      ? raw
+      : 'server1'
+  try {
+    localStorage.setItem(PREFERRED_SERVER_KEY, normalized)
   } catch { /* ignore */ }
 }
 
@@ -89,7 +104,7 @@ export function setOlcrtcProvider(provider: string) {
 }
 
 export function isOlcrtcBypass(): boolean {
-  return isDebugBuild && getBypassFamily() === BYPASS_FAMILY_OLCRTC2
+  return getBypassFamily() === BYPASS_FAMILY_OLCRTC2
 }
 
 export function olcrtcProviderLabel(provider: string = getOlcrtcProvider()): string {
@@ -101,10 +116,8 @@ export function olcrtcProviderLabel(provider: string = getOlcrtcProvider()): str
 }
 
 export function bypassFamilyLabel(family: string = getBypassFamily()): string {
-  if (family === BYPASS_FAMILY_OLCRTC2 || family === BYPASS_FAMILY_OLCRTC) {
-    return `olcrtc / ${olcrtcProviderLabel()}`
-  }
-  return 'VK'
+  void family
+  return 'сервер'
 }
 
 export type OlcrtcPublicConfig = {
@@ -617,8 +630,9 @@ export function buildOlcrtcConnectPayload(
       error: `olcrtc: провайдер «${olcrtcProviderLabel(provider)}» не настроен в админке (Варианты обхода → 2)`,
     }
   }
-  // DNS пресет (меню DNS) — Яндекс по умолчанию; без fake-ip в sing-box.
-  const dnsServers = getDnsOverrideServers() || '77.88.8.8, 77.88.8.1'
+  // Для olcrtc всегда держим fallback DNS:
+  // WB — fallback first (стабильность), TM — custom first.
+  const dnsServers = buildStableOlcrtcDnsServers(provider)
   return {
     bypassFamily: BYPASS_FAMILY_OLCRTC2,
     olcrtc_provider: provider,
@@ -634,4 +648,20 @@ export function buildOlcrtcConnectPayload(
     // auth_token WB — только на srv; клиент guest (иначе carrier reconnect).
     ...extra,
   }
+}
+
+function buildStableOlcrtcDnsServers(provider: string): string {
+  const fallback = DNS_FALLBACK_SERVERS.split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const custom = String(getDnsOverrideServers() || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(s))
+  if (!custom.length) return fallback.join(', ')
+  const merged =
+    provider === OLCRTC_WBSTREAM
+      ? [...fallback, ...custom]
+      : [...custom, ...fallback]
+  return Array.from(new Set(merged)).slice(0, 4).join(', ')
 }

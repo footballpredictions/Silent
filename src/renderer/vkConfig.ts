@@ -22,6 +22,7 @@ export interface VpnConfigPayload {
   endpoint?: string
   wdtt_password?: string
   device_id?: string
+  selected_server?: string
   stream_count?: number
   vk_hashes: string[]
 }

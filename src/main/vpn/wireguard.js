@@ -696,20 +696,26 @@ async function removeServerBypassRoutes(excludeIPs, send) {
   // Шлюз не сбрасываем здесь — нужен при reconnect/full tunnel.
 }
 
-async function applyWgDns(send) {
+async function applyWgDns(send, dnsValue = WG_DNS) {
+  const servers = pickDnsServers(dnsValue)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (!servers.length) return
+  const psServers = servers.map((s) => `'${s.replace(/'/g, "''")}'`).join(',')
   try {
     await execAsync(
-      `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } | Select-Object -First 1; if ($a) { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses @('1.1.1.1','1.0.0.1','77.88.8.8') -ErrorAction SilentlyContinue } }"`,
+      `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } | Select-Object -First 1; if ($a) { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses @(${psServers}) -ErrorAction SilentlyContinue } }"`,
       { windowsHide: true, timeout: 12000 },
     )
-    send?.('[WG] DNS на адаптере: 1.1.1.1, 1.0.0.1, 77.88.8.8')
+    send?.(`[WG] DNS на адаптере: ${servers.join(', ')}`)
   } catch { /* ignore */ }
 }
 
-async function finalizeTunnelUp(send, excludeIPs, subnetOnly) {
+async function finalizeTunnelUp(send, excludeIPs, subnetOnly, dnsValue = WG_DNS) {
   await polishWgNetworkProfile(send)
   if (!subnetOnly) {
-    await applyWgDns(send)
+    await applyWgDns(send, dnsValue)
   }
   if (excludeIPs.length) {
     await addServerBypassRoutes(excludeIPs, send)
@@ -1174,6 +1180,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   const wgExe = path.join(runtimeDir, 'wireguard.exe')
   send(`[WG] wireguard.exe: ${wgExe}`)
 
+  let resolvedDns = WG_DNS
   if (fs.existsSync(confPath)) {
     try {
       let conf = fs.readFileSync(confPath, 'utf8')
@@ -1189,6 +1196,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
         send?.(`[WG] AllowedIPs = ${isFull ? allowed + ' (полный туннель)' : allowed.slice(0, 72) + (allowed.length > 72 ? '…' : '') + ' (split, сервер вне туннеля)'}`)
         const dnsLine = conf.match(/^\s*DNS\s*=\s*(.+)$/m)
         const dns = normalizeDnsValue(dnsLine ? dnsLine[1] : '', options.dnsOverride)
+        resolvedDns = dns
         conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
         conf = conf.replace(
           /(\[Interface\][^\[]*)/,
@@ -1220,7 +1228,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   if (serviceUp || skipForceStop) {
     if (await trySyncConf(runtimeDir, stableConf, send)) {
       await gatewayPromise
-      await finalizeTunnelUp(send, excludeIPs, subnetOnly)
+      await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns)
       send('[WG] Туннель активен (syncconf)')
       return true
     }
@@ -1238,7 +1246,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
 
   const finishOk = async () => {
     await gatewayPromise
-    await finalizeTunnelUp(send, excludeIPs, subnetOnly)
+    await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns)
     send('[WG] Туннель активен')
     try {
       const wgCli = path.join(runtimeDir, 'wg.exe')

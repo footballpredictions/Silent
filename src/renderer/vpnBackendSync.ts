@@ -5,12 +5,14 @@ import api, { getDeviceFingerprint } from './api'
 import { pushLog } from './debugLog'
 
 import { cacheVpnConfig, getCachedVpnConfig } from './vkConfig'
+import { getPreferredServer, setPreferredServer } from './bypassStore'
 
 import { saveSessionDeviceId } from './api'
 
 const CONNECT_BODY = (fp: string) => ({
   device_fingerprint: fp,
   device_type: 'pc' as const,
+  preferred_server: getPreferredServer(),
 })
 
 function authHeaders() {
@@ -28,8 +30,10 @@ async function ensureDeviceRegistered(fp: string): Promise<boolean> {
       device_name: 'PC',
       device_type: 'pc',
       device_fingerprint: fp,
+      preferred_server: getPreferredServer(),
     })
     const config = res.data
+    if (config?.selected_server) setPreferredServer(String(config.selected_server))
     if (config?.device_id) {
       cacheVpnConfig(config)
       saveSessionDeviceId(String(config.device_id))

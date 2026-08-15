@@ -1,5 +1,3 @@
-import { isDebugBuild } from './debugBuild'
-
 const KEY = 'vk_cred_strategy'
 
 export const VK_CRED_VKCALLS = 'vkcalls'
@@ -20,7 +18,6 @@ export interface VkCredLaunchParams {
 let sessionEscalateLevel = 0
 
 export function getVkCredStrategy(): string {
-  if (!isDebugBuild) return VK_CRED_VKCALLS
   try {
     const stored = localStorage.getItem(KEY)
     if (stored === VK_CRED_AUTO || stored === VK_CRED_MANUAL) return stored

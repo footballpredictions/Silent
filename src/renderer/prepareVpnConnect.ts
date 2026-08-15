@@ -10,6 +10,7 @@ import {
 } from './hashItemsStore'
 import type { VpnConfigPayload } from './vkConfig'
 import { pushLog } from './debugLog'
+import { getPreferredServer } from './bypassStore'
 
 /** Пресет «Как на сервере» не подменяет wg_dns — конфиг остаётся серверным. */
 function withDnsPreset(config: VpnConfigPayload): VpnConfigPayload {
@@ -89,7 +90,9 @@ export async function prepareVpnConnectConfig(
 
   try {
     const cfgRes = await withTimeout(
-      api.get(`/api/vpn/config?fingerprint=${encodeURIComponent(fingerprint)}`),
+      api.get(
+        `/api/vpn/config?fingerprint=${encodeURIComponent(fingerprint)}&preferred_server=${encodeURIComponent(getPreferredServer())}`,
+      ),
       2_500,
     )
     if (cfgRes) {

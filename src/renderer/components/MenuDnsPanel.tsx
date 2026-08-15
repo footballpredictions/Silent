@@ -15,15 +15,27 @@ import {
 interface Props {
   fg: string
   muted: string
+  bg?: string
+  fieldBg?: string
+  borderStrong?: string
+  dark?: boolean
   onBack: () => void
   vpnConnected?: boolean
 }
 
-export default function MenuDnsPanel({ fg, muted, onBack, vpnConnected = false }: Props) {
+export default function MenuDnsPanel({
+  fg,
+  muted,
+  bg = '#0a0a0a',
+  fieldBg = '#1a1a1a',
+  borderStrong = '#2a2a2a',
+  dark = false,
+  onBack,
+  vpnConnected = false,
+}: Props) {
   const [preset, setPresetState] = useState(() => getDnsPreset())
   const [customInput, setCustomInput] = useState(() => getCustomDnsRaw())
   const [pending, setPending] = useState<DnsPreset | null>(null)
-  const [was, setWas] = useState(() => dnsDescription())
 
   const customServers = sanitizeCustomServers(customInput)
   const customTouched = customInput.trim().length > 0
@@ -41,13 +53,14 @@ export default function MenuDnsPanel({ fg, muted, onBack, vpnConnected = false }
     setDnsPreset(next)
     setPresetState(next)
     setPending(null)
-    setWas(dnsDescription())
   }
 
   const options: DnsPreset[] = [...DNS_PRESETS]
+  const beforeLabel = dnsApplyLabel(preset, customServers)
+  const afterLabel = pending ? dnsApplyLabel(pending, customServers) : ''
 
   return (
-    <div className="flex-1 p-4 overflow-y-auto w-full">
+    <div className="relative flex-1 p-4 overflow-y-auto w-full">
       <button
         type="button"
         onClick={onBack}
@@ -59,7 +72,7 @@ export default function MenuDnsPanel({ fg, muted, onBack, vpnConnected = false }
 
       <h2 className="text-sm font-semibold mb-1" style={{ color: fg }}>DNS</h2>
       <p className="text-[11px] mb-4 leading-relaxed" style={{ color: muted }}>
-        По умолчанию используется серверный Яндекс DNS. Можно выбрать другой публичный или указать свой.
+        Используйте рекомендуемый DNS или укажите свой.
         Применяется при следующем подключении VPN.
       </p>
 
@@ -126,37 +139,48 @@ export default function MenuDnsPanel({ fg, muted, onBack, vpnConnected = false }
       </button>
 
       {pending && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+        <div
+          className="absolute inset-0 z-20 flex items-center justify-center px-6"
+          style={{ background: 'rgba(0,0,0,0.46)' }}
+          onClick={() => setPending(null)}
+          role="presentation"
+        >
           <div
-            className="w-full max-w-sm rounded-xl p-4 shadow-lg"
-            style={{ background: 'var(--bg, #fff)', color: fg }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dns-apply-title"
+            className="w-full max-w-[280px] px-6 pt-5 pb-4"
+            style={{
+              background: fieldBg,
+              color: fg,
+              borderRadius: 28,
+              boxShadow: '0 8px 28px rgba(0,0,0,0.45)',
+            }}
+            onClick={(e) => e.stopPropagation()}
           >
-            <div className="text-sm font-semibold mb-2">Сменить DNS?</div>
-            <p className="text-xs mb-4 leading-relaxed" style={{ color: muted }}>
-              Было: {was}
-              <br />
-              Будет: {pending.title}
-              {pending.id === 'custom'
-                ? customServers && ` (${customServers})`
-                : pending.servers && ` (${pending.servers})`}
+            <div id="dns-apply-title" className="text-[22px] font-normal leading-7 mb-3">
+              Применить?
+            </div>
+            <p className="text-sm leading-5 mb-6" style={{ color: muted }}>
+              {beforeLabel} → {afterLabel}
               <br />
               <br />
               Переподключите VPN, чтобы применить.
             </p>
-            <div className="flex justify-end gap-2">
+            <div className="flex justify-end items-center gap-2">
               <button
                 type="button"
                 onClick={() => setPending(null)}
-                className="px-3 py-1.5 text-sm rounded-lg"
-                style={{ color: muted }}
+                className="px-3 py-2 text-sm"
+                style={{ color: `${fg}99` }}
               >
                 Отмена
               </button>
               <button
                 type="button"
                 onClick={() => apply(pending)}
-                className="px-3 py-1.5 text-sm rounded-lg font-medium"
-                style={{ color: fg }}
+                className="px-4 py-1.5 text-sm font-medium"
+                style={{ background: dark ? '#ffffff' : bg, color: dark ? '#111827' : fg, borderRadius: 20 }}
               >
                 Применить
               </button>
@@ -166,6 +190,11 @@ export default function MenuDnsPanel({ fg, muted, onBack, vpnConnected = false }
       )}
     </div>
   )
+}
+
+function dnsApplyLabel(preset: DnsPreset, customServers: string | null): string {
+  if (preset.id !== 'custom') return preset.title
+  return customServers ? `Свой DNS (${customServers})` : 'Свой DNS'
 }
 
 interface RowProps {
@@ -179,26 +208,35 @@ interface RowProps {
 
 function DnsOptionRow({ option, selected, disabled, fg, muted, onSelect }: RowProps) {
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={() => {
-        if (disabled) return
-        onSelect()
-      }}
-      className="w-full flex items-start gap-3 px-2 py-2.5 rounded-lg text-left transition-colors disabled:opacity-45"
-      style={{ color: fg }}
+    <label
+      className="flex items-center cursor-pointer"
+      style={{ opacity: disabled ? 0.45 : 1, padding: '8px 0' }}
     >
       <span
-        className="mt-1 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center"
-        style={{ borderColor: selected ? fg : muted }}
+        className="shrink-0 rounded-full flex items-center justify-center"
+        style={{
+          width: 20,
+          height: 20,
+          border: `2px solid ${selected ? fg : muted}`,
+          boxSizing: 'border-box',
+        }}
+        aria-hidden
       >
-        {selected && <span className="w-2 h-2 rounded-full" style={{ background: fg }} />}
+        {selected ? (
+          <span className="rounded-full" style={{ width: 10, height: 10, background: fg }} />
+        ) : null}
       </span>
-      <span className="min-w-0">
-        <span className="block text-sm font-medium">{option.title}</span>
-        <span className="block text-xs" style={{ color: muted }}>{option.subtitle}</span>
-      </span>
-    </button>
+      <input
+        type="radio"
+        checked={selected}
+        disabled={disabled}
+        onChange={() => !disabled && onSelect()}
+        className="sr-only"
+      />
+      <div className="min-w-0" style={{ marginLeft: 8 }}>
+        <div className="text-sm font-medium" style={{ color: fg }}>{option.title}</div>
+        <div className="text-xs" style={{ color: muted }}>{option.subtitle}</div>
+      </div>
+    </label>
   )
 }

@@ -650,6 +650,17 @@ cd pc; npm install; npm run dev
 - Ожидаемый эффект: меньше отказов в пике, при этом idle CPU не держится постоянно на повышенном уровне.
 - Деплой: `backend/scripts/deploy_api.py`, API health после рестарта `ok`.
 
+### 2026-08-15 — Smart Apply Refresh (Android + PC) без блокировки меню
+
+- Добавлен фоновой refresh слота после `Apply` при переключении Telemost/WB (или stale/dirty cache), вместо блокирующего fetch в диалоге.
+- Android:
+  - `Repository`: кеш слота обёрнут метаданными (`at` + `cfg`), добавлены `getOlcrtcCacheAgeMs()` и `shouldRefreshOlcrtcSlot()`.
+  - `MenuBypassScreen`: после Apply запускается background `onEnsureOlcrtcApi(...)` с тайм-бюджетом 22с, с подсказкой статуса в UI.
+- PC:
+  - `bypassStore`: добавлены `getOlcrtcCacheAgeMs()`, `shouldRefreshOlcrtcSlot()`, `refreshOlcrtcSlotFast(timeout)`.
+  - `MenuBypassPanel`: после Apply запускается неблокирующий refresh слота с обновлением подсказки.
+- Эффект: переключение остаётся мгновенным (как cache-only), но слот подтягивается/освежается автоматически и быстрее готов к следующему connect.
+
 ### 2026-08-14 — ADB: первая прогрузка TM Android ~20с
 
 - Устройство: Vivo V2520A (`10AFB105UN003QC`), не Memu.

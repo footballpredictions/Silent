@@ -16,7 +16,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -25,10 +24,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.silent.vpn.data.SilentRepository
-import com.silent.vpn.data.VpnServerInfo
+import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.ui.tv.tvClickable
-import kotlinx.coroutines.launch
+import com.silent.vpn.vpn.OlcrtcTunnelManager
+import com.silent.vpn.vpn.WdttTunnelManager
 
 @Composable
 fun MenuBypassScreen(
@@ -39,33 +39,25 @@ fun MenuBypassScreen(
     onEnsureBypassApi: suspend (providers: Array<out String>) -> Boolean = { true },
     onBack: () -> Unit,
 ) {
-    var selectedServerSlot by remember { mutableStateOf(slotForSelectedRaw(repo.getPreferredServer(), emptyList())) }
-    var servers by remember { mutableStateOf<List<VpnServerInfo>>(emptyList()) }
+    var selectedServerSlot by remember { mutableStateOf(slotForSelectedRaw(repo.getPreferredServer())) }
     var pendingServerSlot by remember { mutableStateOf<String?>(null) }
-    var applying by remember { mutableStateOf(false) }
     var applyHint by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-    val switchLocked = applying || vpnState != VpnState.DISCONNECTED
-
-    LaunchedEffect(Unit) {
-        runCatching { repo.fetchVpnServers() }
-            .onSuccess { data ->
-                servers = data.servers
-                selectedServerSlot = slotForSelectedRaw(data.selected_server, data.servers)
-                repo.setPreferredServer(selectedServerSlot)
-            }
-            .onFailure {
-                applyHint = "Не удалось загрузить список серверов."
-            }
-    }
+    val vpnRuntimeActive = SilentVpnService.isRunning ||
+        WdttTunnelManager.running.value ||
+        WdttTunnelManager.tunnelReady.value ||
+        OlcrtcTunnelManager.running.value ||
+        OlcrtcTunnelManager.tunnelReady.value
+    val switchLocked = vpnState == VpnState.CONNECTING || vpnRuntimeActive
 
     val hasPending =
         (pendingServerSlot != null && pendingServerSlot != selectedServerSlot)
 
-    LaunchedEffect(vpnState) {
-        if (vpnState != VpnState.DISCONNECTED) {
+    LaunchedEffect(switchLocked) {
+        if (switchLocked) {
             pendingServerSlot = null
             applyHint = "Отключите VPN перед сменой сервера."
+        } else if (applyHint == "Отключите VPN перед сменой сервера.") {
+            applyHint = null
         }
     }
 
@@ -101,7 +93,7 @@ fun MenuBypassScreen(
             )
         }
 
-        if (vpnState != VpnState.DISCONNECTED) {
+        if (switchLocked) {
             Text(
                 "Переключение недоступно: VPN активен.",
                 fontSize = 11.sp,
@@ -111,14 +103,12 @@ fun MenuBypassScreen(
         }
 
         Column(Modifier.padding(start = 12.dp)) {
-            val availableSlots = servers.take(3)
             for (index in 0..2) {
                 val slot = "server${index + 1}"
-                val enabledSlot = availableSlots.getOrNull(index) != null
                 BypassOption(
                     title = "Сервер ${index + 1}",
                     selected = (pendingServerSlot ?: selectedServerSlot) == slot,
-                    enabled = !switchLocked && enabledSlot,
+                    enabled = !switchLocked,
                     fg = fg,
                     onSelect = { pendingServerSlot = slot },
                 )
@@ -149,26 +139,12 @@ fun MenuBypassScreen(
                 TvTextButton(onClick = {
                     val nextServer = pendingServerSlot
                     pendingServerSlot = null
-                    applyHint = null
-                    applying = true
-                    scope.launch {
-                        try {
-                            nextServer?.let { key ->
-                                val selected = runCatching { repo.selectVpnServer(key) }
-                                    .getOrNull()
-                                selectedServerSlot = slotForSelectedRaw(selected?.selected_server, selected?.servers ?: servers)
-                                repo.setPreferredServer(selectedServerSlot)
-                            }
-                            runCatching { repo.fetchVpnServers() }
-                                .onSuccess { data ->
-                                    servers = data.servers
-                                    selectedServerSlot = slotForSelectedRaw(data.selected_server, data.servers)
-                                    repo.setPreferredServer(selectedServerSlot)
-                                }
-                            applyHint = "Выбрано"
-                        } finally {
-                            applying = false
-                        }
+                    if (nextServer != null) {
+                        selectedServerSlot = slotForSelectedRaw(nextServer)
+                        repo.setPreferredServer(selectedServerSlot)
+                        applyHint = "Выбрано"
+                    } else {
+                        applyHint = null
                     }
                 }) { Text("Применить", color = fg) }
             },
@@ -181,13 +157,11 @@ fun MenuBypassScreen(
     }
 }
 
-private fun slotForSelectedRaw(selectedRaw: String?, servers: List<VpnServerInfo>): String {
+private fun slotForSelectedRaw(selectedRaw: String?): String {
     val raw = selectedRaw?.trim()?.lowercase().orEmpty()
-    if (raw == "server1" || raw == "server2" || raw == "server3") return raw
-    val idx = servers.indexOfFirst { it.key == raw }
-    return when (idx) {
-        1 -> "server2"
-        2 -> "server3"
+    return when (raw) {
+        "server2" -> "server2"
+        "server3" -> "server3"
         else -> "server1"
     }
 }

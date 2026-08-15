@@ -312,6 +312,7 @@ fun MainScreen(
     val fg = palette.fg
     val toggleOn = palette.toggleOn
     val toggleOff = palette.toggleOff
+    val toggleSnakeColor = if (palette.dark) Color(0xFF9CA3AF) else fg
     val updateBarBg = palette.updateBarBg
     val updateBarFg = palette.updateBarFg
     val updateBarProgress = palette.updateBarProgress
@@ -543,7 +544,7 @@ fun MainScreen(
                                 bg = bg,
                                 toggleOn = toggleOn,
                                 toggleOff = toggleOff,
-                                snakeColor = fg,
+                                snakeColor = toggleSnakeColor,
                             )
                         }
                     }

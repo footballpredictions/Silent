@@ -17,12 +17,14 @@ class DnsPresetTest {
     fun `unknown id falls back to default`() {
         assertEquals(DnsPreset.DEFAULT, DnsPreset.fromId(null))
         assertEquals(DnsPreset.DEFAULT, DnsPreset.fromId("doh-something"))
-        assertEquals(DnsPreset.CLOUDFLARE, DnsPreset.fromId("cloudflare"))
+        assertEquals(DnsPreset.SERVER, DnsPreset.fromId("cloudflare"))
+        assertEquals(DnsPreset.SERVER, DnsPreset.fromId("yandex"))
+        assertEquals(DnsPreset.CUSTOM, DnsPreset.fromId("custom"))
     }
 
     @Test
-    fun `preset override returns its servers`() {
-        assertEquals("8.8.8.8, 8.8.4.4", DnsSettings.override(DnsPreset.GOOGLE, ""))
+    fun `server preset keeps backend dns`() {
+        assertNull(DnsSettings.override(DnsPreset.SERVER, ""))
     }
 
     @Test
@@ -66,13 +68,14 @@ class DnsPresetTest {
         assertEquals("Как на сервере", DnsSettings.describe(DnsPreset.SERVER, ""))
         assertEquals("Свой: 1.1.1.1", DnsSettings.describe(DnsPreset.CUSTOM, "1.1.1.1"))
         assertEquals("Свой DNS (не задан)", DnsSettings.describe(DnsPreset.CUSTOM, "oops"))
-        assertTrue(DnsSettings.describe(DnsPreset.YANDEX, "").startsWith("Яндекс ("))
         assertEquals("1.1.1.1", DnsSettings.shortLabel(DnsPreset.CUSTOM, "1.1.1.1"))
     }
 
     @Test
-    fun `custom is not in selectable list`() {
-        assertTrue(DnsPreset.selectable().none { it == DnsPreset.CUSTOM })
-        assertEquals(DnsPreset.SERVER, DnsPreset.selectable().first())
+    fun `only server is selectable`() {
+        val selectable = DnsPreset.selectable()
+        assertEquals(1, selectable.size)
+        assertEquals(DnsPreset.SERVER, selectable.first())
+        assertTrue(selectable.none { it == DnsPreset.CUSTOM })
     }
 }

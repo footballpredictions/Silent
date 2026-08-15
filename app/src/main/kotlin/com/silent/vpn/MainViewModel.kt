@@ -1325,33 +1325,10 @@ class MainViewModel @Inject constructor(
             if (_vpnState.value == VpnState.CONNECTED && SilentVpnService.isRunning) {
                 markLocalDeviceOnline()
             }
-            prefetchOlcrtcSlotsOnVkTunnel()
-        }
-    }
-
-    /**
-     * Конфиг TM/WB — при логине и при включённом VK, не в диалоге Apply.
-     * Не блокирует UI: пустые слоты дотягиваются через живой tunnel.
-     */
-    private suspend fun prefetchOlcrtcSlotsOnVkTunnel() {
-        if (repo.isOlcrtcBypass()) return
-        if (!repo.isLoggedIn()) return
-        if (!WdttTunnelManager.tunnelReady.value) return
-        if (WdttTunnelManager.isBootstrapMode()) return
-        val need = listOf("telemost", "wbstream").filter {
-            repo.getCachedOlcrtcConfigForProvider(it)
-                ?.providers?.get(it)?.room.isNullOrBlank()
-        }
-        if (need.isEmpty()) return
-        com.silent.vpn.util.OlcrtcDiag.i(
-            com.silent.vpn.util.OlcrtcDiag.CFG,
-            "VK tunnel prefetch olcrtc slots=$need",
-        )
-        runCatching {
-            repo.prepareMainVpnDirectApi()
-            repo.prefetchOlcrtcBothProviders()
-        }.onFailure { e ->
-            DebugLog.w("MainViewModel", "VK olcrtc prefetch: ${e.message}")
+            // Как в 1.0.160: на VK-сессии olcrtc-слоты не трогаем. `/olcrtc2-config` — это
+            // assign комнат на сервере, а не чтение; на каждом connect это лишний трафик
+            // в туннеле и занятые комнаты у пользователя, который olcrtc не включал.
+            // Слоты дотягиваются в Apply «Вариантов обхода» и перед olcrtc-connect.
         }
     }
 

@@ -3,7 +3,7 @@ package com.silent.vpn.data
 import android.content.Context
 
 /**
- * DNS туннеля: пресеты + свой ввод (меню «DNS»).
+ * DNS туннеля: «Как на сервере» + свой ввод (меню «DNS»).
  * [SERVER] — ничего не подменяет, DNS приходит с сервера в `wg_dns`
  * (в том числе `10.66.66.1`, когда включён фильтр угроз).
  */
@@ -16,80 +16,16 @@ enum class DnsPreset(
     SERVER(
         id = "server",
         title = "Как на сервере",
-        subtitle = "legacy",
+        subtitle = "DNS выдаёт Silent · рекомендуется",
         servers = "",
     ),
+
+    /** Не в меню: запасные адреса, когда сервер не прислал `wg_dns`. */
     YANDEX(
         id = "yandex",
-        title = "Яндекс (как на сервере)",
-        subtitle = "77.88.8.8 · рекомендуется",
+        title = "Яндекс",
+        subtitle = "77.88.8.8",
         servers = "77.88.8.8, 77.88.8.1",
-    ),
-    CLOUDFLARE(
-        id = "cloudflare",
-        title = "Cloudflare",
-        subtitle = "1.1.1.1",
-        servers = "1.1.1.1, 1.0.0.1",
-    ),
-    GOOGLE(
-        id = "google",
-        title = "Google",
-        subtitle = "8.8.8.8",
-        servers = "8.8.8.8, 8.8.4.4",
-    ),
-    QUAD9(
-        id = "quad9",
-        title = "Quad9",
-        subtitle = "9.9.9.9",
-        servers = "9.9.9.9, 149.112.112.112",
-    ),
-    OPENDNS(
-        id = "opendns",
-        title = "OpenDNS",
-        subtitle = "208.67.222.222",
-        servers = "208.67.222.222, 208.67.220.220",
-    ),
-    ADGUARD(
-        id = "adguard",
-        title = "AdGuard DNS",
-        subtitle = "94.140.14.14",
-        servers = "94.140.14.14, 94.140.15.15",
-    ),
-    CLEANBROWSING(
-        id = "cleanbrowsing",
-        title = "CleanBrowsing",
-        subtitle = "185.228.168.9",
-        servers = "185.228.168.9, 185.228.169.9",
-    ),
-    COMODO(
-        id = "comodo",
-        title = "Comodo Secure DNS",
-        subtitle = "8.26.56.26",
-        servers = "8.26.56.26, 8.20.247.20",
-    ),
-    VERISIGN(
-        id = "verisign",
-        title = "Verisign",
-        subtitle = "64.6.64.6",
-        servers = "64.6.64.6, 64.6.65.6",
-    ),
-    LEVEL3(
-        id = "level3",
-        title = "Level3",
-        subtitle = "4.2.2.1",
-        servers = "4.2.2.1, 4.2.2.2",
-    ),
-    UNCENSORED(
-        id = "uncensoreddns",
-        title = "UncensoredDNS",
-        subtitle = "91.239.100.100",
-        servers = "91.239.100.100, 89.233.43.71",
-    ),
-    ALTERNATE(
-        id = "alternate",
-        title = "Alternate DNS",
-        subtitle = "76.76.19.19",
-        servers = "76.76.19.19, 76.223.122.150",
     ),
     CUSTOM(
         id = "custom",
@@ -100,7 +36,7 @@ enum class DnsPreset(
     ;
 
     companion object {
-        val DEFAULT = YANDEX
+        val DEFAULT = SERVER
 
         /** Когда сервер не прислал `wg_dns` и подменять нечем. */
         val FALLBACK = YANDEX
@@ -111,13 +47,14 @@ enum class DnsPreset(
             """^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$""",
         )
 
-        fun fromId(id: String?): DnsPreset = when (id) {
-            SERVER.id -> YANDEX
-            else -> entries.firstOrNull { it.id == id } ?: DEFAULT
-        }
+        /**
+         * Публичные пресеты 1.0.161 (`yandex`, `cloudflare`, …) сворачиваем в [SERVER]:
+         * принудительный публичный DNS ломал резолв в туннеле.
+         */
+        fun fromId(id: String?): DnsPreset = if (id == CUSTOM.id) CUSTOM else SERVER
 
-        /** Пресеты для меню: все публичные, кроме legacy `server` и отдельного `custom`. */
-        fun selectable(): List<DnsPreset> = entries.filter { it != CUSTOM && it != SERVER }
+        /** Пресеты для меню: свой ввод показывается отдельной секцией. */
+        fun selectable(): List<DnsPreset> = listOf(SERVER)
 
         /**
          * Нормализует ввод пользователя: адреса через запятую/пробел/перевод строки.
@@ -163,13 +100,14 @@ object DnsSettings {
     fun override(context: Context): String? = override(preset(context), customRaw(context))
 
     fun override(preset: DnsPreset, customRaw: String?): String? = when (preset) {
+        DnsPreset.SERVER -> null
         DnsPreset.CUSTOM -> DnsPreset.sanitizeCustomServers(customRaw)
-        DnsPreset.SERVER -> DnsPreset.YANDEX.servers
         else -> preset.servers
     }
 
     /** Что показать в меню и в логе VPN. */
     fun describe(preset: DnsPreset, customRaw: String?): String = when (preset) {
+        DnsPreset.SERVER -> preset.title
         DnsPreset.CUSTOM -> {
             val servers = DnsPreset.sanitizeCustomServers(customRaw)
             if (servers != null) "Свой: $servers" else "Свой DNS (не задан)"

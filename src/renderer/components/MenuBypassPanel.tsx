@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import api from '../api'
 import { getStableDeviceFingerprint } from '../api'
 import {
   getPreferredServer,
   setPreferredServer,
 } from '../bypassStore'
+import { clearCachedVpnConfig } from '../vkConfig'
 
 type Props = {
   fg: string
@@ -118,16 +119,11 @@ export default function MenuBypassPanel({
   const [pendingServerSlot, setPendingServerSlot] = useState<'server1' | 'server2' | 'server3' | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
-  const [runtimeVpnActive, setRuntimeVpnActive] = useState<boolean>(vpnRunning)
-  const switchLocked = busy || runtimeVpnActive
+  const switchLocked = busy || vpnRunning
 
   const selServer = pendingServerSlot ?? selectedServerSlot
   const hasPending =
     (pendingServerSlot != null && pendingServerSlot !== selectedServerSlot)
-
-  const visibleServers = useMemo(() => {
-    return servers.slice(0, 3)
-  }, [servers])
 
   const clearPending = () => {
     setPendingServerSlot(null)
@@ -142,39 +138,16 @@ export default function MenuBypassPanel({
         const data = res.data as VpnServersResponse
         if (!mounted) return
         setServers(Array.isArray(data.servers) ? data.servers : [])
-        const selected = slotForSelectedRaw(data.selected_server, Array.isArray(data.servers) ? data.servers : [])
-        setSelectedServerSlot(selected)
-        setPreferredServer(selected)
+        // Локальный слот — источник правды. GET selected_server часто отстаёт
+        // (устройство ещё на соте) и откатывал «Сервер 1» обратно на 2/3.
+        const local = getPreferredServer()
+        setSelectedServerSlot(local)
       } catch {
         if (mounted) setHint('Не удалось загрузить список серверов.')
       }
     })()
     return () => { mounted = false }
   }, [])
-
-  useEffect(() => {
-    const api_ = (window as any).electronAPI
-    let cancelled = false
-    let timer: number | null = null
-    const syncRuntime = async () => {
-      try {
-        if (!api_?.vpnIsReady) {
-          if (!cancelled) setRuntimeVpnActive(vpnRunning)
-          return
-        }
-        const st = await api_.vpnIsReady()
-        if (!cancelled) setRuntimeVpnActive(!!st?.ready)
-      } catch {
-        if (!cancelled) setRuntimeVpnActive(vpnRunning)
-      }
-    }
-    void syncRuntime()
-    timer = window.setInterval(() => { void syncRuntime() }, 1200)
-    return () => {
-      cancelled = true
-      if (timer != null) window.clearInterval(timer)
-    }
-  }, [vpnRunning])
 
   useEffect(() => {
     if (!switchLocked) {
@@ -208,9 +181,10 @@ export default function MenuBypassPanel({
         const data = res.data as VpnServersResponse
         const nextServers = Array.isArray(data.servers) ? data.servers : []
         if (nextServers.length > 0) setServers(nextServers)
-        const selected = slotForSelectedRaw(data.selected_server, nextServers.length ? nextServers : servers)
-        setSelectedServerSlot(selected)
-        setPreferredServer(selected)
+        setSelectedServerSlot(nextServer)
+        setPreferredServer(nextServer)
+        // После смены слота не используем старый WG-кеш от предыдущего сервера.
+        clearCachedVpnConfig()
       }
       setHint('Выбрано')
     } finally {
@@ -239,14 +213,13 @@ export default function MenuBypassPanel({
       <div className="flex-1 overflow-y-auto min-h-0">
         <div style={{ paddingLeft: 12 }}>
           {[0, 1, 2].map((index) => {
-            const server = visibleServers[index]
             const slot = `server${index + 1}` as 'server1' | 'server2' | 'server3'
             return (
             <div key={slot}>
               <ModeOption
                 title={`Сервер ${index + 1}`}
                 selected={selServer === slot}
-                enabled={!switchLocked && !!server}
+                enabled={!switchLocked}
                 fg={fg}
                 muted={muted}
                 onSelect={() => {

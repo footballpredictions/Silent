@@ -48,7 +48,9 @@ import {
 import {
   buildOlcrtcConnectPayload,
   bypassFamilyLabel,
+  cachedConfigMatchesPreferred,
   getOlcrtcProvider,
+  getPreferredServer,
   isOlcrtcBypass,
   olcrtcProviderLabel,
   reportOlcrtcRoomFailure,
@@ -232,8 +234,13 @@ export default function MainScreen({
   const paymentPollDeadlineRef = useRef(0)
   const connectLockRef = useRef(false)
   const connectGenRef = useRef(0)
+  /** Инвалидирует отложенный vpnDisconnect после нового включения. */
+  const disconnectTokenRef = useRef(0)
+  /** Пользователь хочет VPN. После выкл игнорим stale vpn-ready / vpnIsReady. */
+  const userWantsVpnRef = useRef(false)
   /** Пока идёт vpnConnect/waitVpnReady — не сбрасывать UI на краткий restart wdtt. */
   const connectInFlightRef = useRef(false)
+  const [vpnReady, setVpnReady] = useState(false)
   const snakeHoldRef = useRef<number | null>(null)
   const onlineMarkedRef = useRef(false)
   const subscriptionExpiredHandledRef = useRef(false)
@@ -473,9 +480,10 @@ export default function MainScreen({
   useEffect(() => {
     const api_ = (window as any).electronAPI
     api_?.vpnIsReady?.().then((r: { ready?: boolean; workers?: number }) => {
-      if (r?.ready) {
+      if (r?.ready && userWantsVpnRef.current) {
         setConnected(true)
         setConnecting(false)
+        setVpnReady(true)
         if (r.workers) setActiveWorkers(r.workers)
         void markOnlineOnServer()
         pushLog('Main', `VPN уже активен (${r.workers ?? '?'} воркеров)`)
@@ -488,22 +496,36 @@ export default function MainScreen({
     if (!api_?.onVpnStopped) return
     let mounted = true
     const onStopped = (code?: number) => {
-      if (connectInFlightRef.current) {
+      if (connectInFlightRef.current && userWantsVpnRef.current) {
         // Во время старта возможен краткий restart транспорта; не сбрасываем UI раньше времени.
         return
       }
-      onlineMarkedRef.current = false
-      setMainVpnSessionActive(false)
-      resetHashFailureReporter()
-      setConnected(false)
-      setConnecting(false)
-      setActiveWorkers(0)
-      stopOlcrtcHeartbeatLoop({ leave: true })
-      stopOlcrtcLiveSyncLoop()
-      pushLog('Main', `VPN stopped${code != null ? ` (code=${code})` : ''} — можно сменить обход`)
-      void checkForUpdate().then(info => {
-        if (info?.available) setUpdateInfo(info)
-      })
+      void (async () => {
+        try {
+          const ready = await api_?.vpnIsReady?.()
+          if (!mounted) return
+          if (ready?.ready && userWantsVpnRef.current) {
+            pushLog('Main', 'vpn-stopped ignored — туннель ещё поднят')
+            return
+          }
+        } catch { /* fall through */ }
+        if (!mounted) return
+        if (userWantsVpnRef.current && connectInFlightRef.current) return
+        userWantsVpnRef.current = false
+        onlineMarkedRef.current = false
+        setMainVpnSessionActive(false)
+        resetHashFailureReporter()
+        setConnected(false)
+        setConnecting(false)
+        setVpnReady(false)
+        setActiveWorkers(0)
+        stopOlcrtcHeartbeatLoop({ leave: true })
+        stopOlcrtcLiveSyncLoop()
+        pushLog('Main', `VPN stopped${code != null ? ` (code=${code})` : ''} — можно сменить обход`)
+        void checkForUpdate().then(info => {
+          if (info?.available) setUpdateInfo(info)
+        })
+      })()
     }
     const onOlcrtcRoomDead = (payload?: { code?: number; reason?: string }) => {
       const detail = `peer dead code=${payload?.code ?? '?'} ${payload?.reason || ''}`.trim()
@@ -518,13 +540,17 @@ export default function MainScreen({
       }
       setConnecting(false)
       setConnected(false)
+      setVpnReady(false)
+      userWantsVpnRef.current = false
     }
     const onReady = (payload: boolean | { ok?: boolean; bootstrap?: boolean }) => {
       const ok = typeof payload === 'object' ? !!payload?.ok : !!payload
       const bootstrap = typeof payload === 'object' ? !!payload?.bootstrap : false
       if (!ok || bootstrap) return
+      if (!userWantsVpnRef.current) return
       if (ok) {
         setConnected(true)
+        setVpnReady(true)
         if (snakeHoldRef.current == null) setConnecting(false)
         void markOnlineOnServer()
         if (isOlcrtcBypass()) {
@@ -640,9 +666,10 @@ export default function MainScreen({
     const tick = async () => {
       try {
         const r = await api_?.vpnIsReady?.()
-        if (r?.ready) {
+        if (r?.ready && userWantsVpnRef.current) {
           setConnected(true)
           setConnecting(false)
+          setVpnReady(true)
           void markOnlineOnServer()
         }
       } catch { /* ignore */ }
@@ -661,6 +688,16 @@ export default function MainScreen({
     }
   }
 
+  const resetVpnUi = () => {
+    userWantsVpnRef.current = false
+    connectInFlightRef.current = false
+    clearSnakeHold()
+    setConnected(false)
+    setConnecting(false)
+    setVpnReady(false)
+    setMainVpnSessionActive(false)
+  }
+
   const startSnakeHold = (connectGen: number) => {
     clearSnakeHold()
     snakeHoldRef.current = window.setTimeout(() => {
@@ -670,14 +707,18 @@ export default function MainScreen({
   }
 
   const handleToggle = async () => {
-    if (connectLockRef.current || connecting || disconnecting) return
+    if (disconnecting) return
+    if (connectLockRef.current && !connecting && !connected) return
 
-    if (connected) {
+    if (connected || connecting) {
       connectGenRef.current += 1
+      const discToken = ++disconnectTokenRef.current
       connectInFlightRef.current = false
+      userWantsVpnRef.current = false
       clearSnakeHold()
       pendingConnectAfterSubscriptionRefreshRef.current = false
       setConnected(false)
+      setVpnReady(false)
       setDisconnecting(false)
       setConnecting(false)
       pushLog('Main', 'disconnect')
@@ -685,25 +726,33 @@ export default function MainScreen({
       const fp = DEVICE_FINGERPRINT()
       setMainVpnSessionActive(false)
       onlineMarkedRef.current = false
-      // UI сразу в «выкл»; lock не держим — можно сразу включить снова (stop в фоне + waitWgStopIdle)
+      // UI сразу в «выкл»; WG гасим сразу, notify — после. Иначе новый connect
+      // стартует поверх живого туннеля, а поздний vpnDisconnect его убивает.
       connectLockRef.current = false
       void (async () => {
-        try {
-          await notifyDisconnect(fp)
-        } catch (err: any) {
-          if (err.response?.status === 402 || err.response?.status === 403) alert(err.response.data.detail)
-        }
         try {
           if ((window as any).electronAPI?.vpnDisconnect) {
             await (window as any).electronAPI.vpnDisconnect()
           }
         } catch { /* ignore */ }
+        if (discToken !== disconnectTokenRef.current) {
+          pushLog('Main', 'disconnect skipped — уже новый connect')
+          return
+        }
+        try {
+          await notifyDisconnect(fp)
+        } catch (err: any) {
+          if (err.response?.status === 402 || err.response?.status === 403) alert(err.response.data.detail)
+        }
+        if (discToken !== disconnectTokenRef.current) return
         fetchProfile()
       })()
       return
     }
 
     connectLockRef.current = true
+    disconnectTokenRef.current += 1
+    userWantsVpnRef.current = true
     // olcrtc: только dual-cache (без сети на каждый connect).
     if (isOlcrtcBypass()) {
       const pre = await resolveOlcrtcConfig({ preferCache: true })
@@ -742,6 +791,7 @@ export default function MainScreen({
       if (readySameMode) {
         setConnected(true)
         setConnecting(false)
+        setVpnReady(true)
         connectInFlightRef.current = false
         connectLockRef.current = false
         clearSnakeHold()
@@ -757,11 +807,7 @@ export default function MainScreen({
       const cachedProfile = getCachedProfile<Profile>()
       const cachedHasAccess = !cachedProfile || cachedProfile.is_admin || cachedProfile.subscription?.is_active
       if (!cachedHasAccess) {
-        connectInFlightRef.current = false
-        clearSnakeHold()
-        setConnected(false)
-        setConnecting(false)
-        setMainVpnSessionActive(false)
+        resetVpnUi()
         connectLockRef.current = false
         pendingConnectAfterSubscriptionRefreshRef.current = true
         alert('Пробный период закончился. Оформите подписку в меню → Подписка.')
@@ -775,11 +821,7 @@ export default function MainScreen({
         if (!hasAccess) {
           pendingConnectAfterSubscriptionRefreshRef.current = true
           void (window as any).electronAPI?.vpnDisconnect?.()
-          connectInFlightRef.current = false
-          clearSnakeHold()
-          setConnected(false)
-          setConnecting(false)
-          setMainVpnSessionActive(false)
+          resetVpnUi()
           alert('Пробный период закончился. Оформите подписку в меню → Подписка.')
           setMenuOpen(true)
           setMenuPage('subscription')
@@ -787,6 +829,10 @@ export default function MainScreen({
       }).catch(() => { /* ignore */ })
 
       let config: VpnConfigPayload | null = getCachedVpnConfig()
+      if (config && !cachedConfigMatchesPreferred(config)) {
+        pushLog('Main', `skip cache: selected=${config.selected_server || ''} want=${getPreferredServer()} ip=${config.server_ip || ''}`)
+        config = null
+      }
       if (config?.device_id) saveSessionDeviceId(String(config.device_id))
       if (!config?.wg_private_key?.trim() || !config?.server_public_key?.trim() || !config?.vk_hashes?.length) {
         config = null
@@ -798,11 +844,7 @@ export default function MainScreen({
           if (connectGen !== connectGenRef.current) return
           if (e.response?.status === 402) {
             pendingConnectAfterSubscriptionRefreshRef.current = true
-            connectInFlightRef.current = false
-            clearSnakeHold()
-            setConnected(false)
-            setConnecting(false)
-            setMainVpnSessionActive(false)
+            resetVpnUi()
             alert(e.response?.data?.detail || 'Оформите подписку для доступа к интернету.')
             setMenuOpen(true)
             setMenuPage('subscription')
@@ -828,21 +870,13 @@ export default function MainScreen({
       }
       if (!config) {
         pushLog('Main', 'no VPN config', 'E')
-        connectInFlightRef.current = false
-        clearSnakeHold()
-        setConnected(false)
-        setConnecting(false)
-        setMainVpnSessionActive(false)
+        resetVpnUi()
         alert('Сервер недоступен. Выйдите и настройте hash на экране входа.')
         return
       }
       if (!config.wg_private_key?.trim() || !config.server_public_key?.trim()) {
         pushLog('Main', 'missing WG keys', 'E')
-        connectInFlightRef.current = false
-        clearSnakeHold()
-        setConnected(false)
-        setConnecting(false)
-        setMainVpnSessionActive(false)
+        resetVpnUi()
         alert('Нет ключей WireGuard. Перезайдите в аккаунт или проверьте сервер.')
         return
       }
@@ -866,11 +900,7 @@ export default function MainScreen({
         pendingConnectAfterSubscriptionRefreshRef.current = true
       }
       if (err.response?.status === 402 || err.response?.status === 403) alert(err.response.data.detail)
-      connectInFlightRef.current = false
-      clearSnakeHold()
-      setConnected(false)
-      setConnecting(false)
-      setMainVpnSessionActive(false)
+      resetVpnUi()
     } finally {
       if (connectGen === connectGenRef.current) {
         connectLockRef.current = false
@@ -894,10 +924,7 @@ export default function MainScreen({
         // Dual-cache: сеть только если слота нет (после login/sync).
         const olcCfg = await resolveOlcrtcConfig({ preferCache: true })
         if (!olcCfg) {
-          clearSnakeHold()
-          setConnected(false)
-          setConnecting(false)
-          setMainVpnSessionActive(false)
+          resetVpnUi()
           alert('Нет кеша olcrtc2-config. Войдите снова или sync при VK.')
           return
         }
@@ -906,16 +933,18 @@ export default function MainScreen({
           device_fingerprint: fp,
         })
         if ('error' in payload) {
-          clearSnakeHold()
-          setConnected(false)
-          setConnecting(false)
-          setMainVpnSessionActive(false)
+          resetVpnUi()
           alert(payload.error)
           return
         }
         pushLog('Main', `vpnConnect olcrtc provider=${olcrtcProviderLabel()}`)
         let res = await (window as any).electronAPI.vpnConnect(payload)
         if (connectGen !== connectGenRef.current) return
+        if (res?.cancelled) {
+          pushLog('Main', 'vpnConnect cancelled')
+          if (connectGen === connectGenRef.current) resetVpnUi()
+          return
+        }
         // Кеш мог указать на сорванную warm-комнату (warm=0 / prune) → SOCKS не слушает.
         if (
           res?.error &&
@@ -937,10 +966,7 @@ export default function MainScreen({
           }
         }
         if (res?.error) {
-          clearSnakeHold()
-          setConnected(false)
-          setConnecting(false)
-          setMainVpnSessionActive(false)
+          resetVpnUi()
           alert(res.error)
           return
         }
@@ -948,6 +974,7 @@ export default function MainScreen({
         if (connectGen !== connectGenRef.current) return
         if (ready) {
           setConnected(true)
+          setVpnReady(true)
           // connecting снимает змейка (1.5 оборота), не ready
           setMainVpnSessionActive(false)
           startOlcrtcHeartbeatLoop()
@@ -955,10 +982,7 @@ export default function MainScreen({
           fetchProfile()
           return
         }
-        clearSnakeHold()
-        setConnected(false)
-        setConnecting(false)
-        setMainVpnSessionActive(false)
+        resetVpnUi()
         stopOlcrtcHeartbeatLoop({ leave: true })
         alert('olcrtc-туннель не поднялся (проверьте srv в админке и бинарники olcrtc/sing-box)')
         await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
@@ -977,6 +1001,11 @@ export default function MainScreen({
         )
         const res = await (window as any).electronAPI.vpnConnect(connectCfg)
         if (connectGen !== connectGenRef.current) return
+        if (res?.cancelled) {
+          pushLog('Main', 'vpnConnect cancelled')
+          if (connectGen === connectGenRef.current) resetVpnUi()
+          return
+        }
         if (res?.error) {
           pushLog('Main', `vpnConnect: ${res.error}`, 'E')
           await (window as any).electronAPI?.consumeFloodEscalate?.().catch(() => null)
@@ -985,10 +1014,7 @@ export default function MainScreen({
             await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
             continue
           }
-          clearSnakeHold()
-          setConnected(false)
-          setConnecting(false)
-          setMainVpnSessionActive(false)
+          resetVpnUi()
           alert(res.error)
           return
         }
@@ -1002,6 +1028,7 @@ export default function MainScreen({
         if (connectGen !== connectGenRef.current) return
         if (ready) {
           setConnected(true)
+          setVpnReady(true)
           await markOnlineOnServer()
           void warmupBrowsingPath().catch(() => null)
           window.setTimeout(() => { void warmupBrowsingPath(8000).catch(() => null) }, 5000)
@@ -1020,10 +1047,7 @@ export default function MainScreen({
           continue
         }
 
-        clearSnakeHold()
-        setConnected(false)
-        setConnecting(false)
-        setMainVpnSessionActive(false)
+        resetVpnUi()
         alert(
           'WireGuard-туннель не поднялся.\n\n' +
           '1) Закройте Silent VPN полностью (трей → Выход)\n' +
@@ -1038,10 +1062,7 @@ export default function MainScreen({
     } catch (err: any) {
       if (connectGen !== connectGenRef.current) return
       pushLog('Main', `vpnConnect failed: ${err?.message || err}`, 'E')
-      clearSnakeHold()
-      setConnected(false)
-      setConnecting(false)
-      setMainVpnSessionActive(false)
+      resetVpnUi()
     } finally {
       if (connectGen === connectGenRef.current) {
         connectInFlightRef.current = false
@@ -1628,7 +1649,7 @@ export default function MainScreen({
               bg={bg}
               surface={palette.surface}
               primary={palette.primaryBtnBg || palette.primary}
-              vpnRunning={connected || connecting}
+              vpnRunning={vpnReady}
               onBack={() => {
                 setBypassNavLabel(bypassFamilyLabel())
                 setMenuPage(null)

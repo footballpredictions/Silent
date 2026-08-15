@@ -1,7 +1,7 @@
 import api, { formatApiError } from './api'
 import { pushLog } from './debugLog'
 import type { VpnConfigPayload } from './vkConfig'
-import { getPreferredServer, setPreferredServer } from './bypassStore'
+import { getPreferredServer } from './bypassStore'
 
 function hasWgKeys(config: VpnConfigPayload | null | undefined): boolean {
   return !!config?.wg_private_key?.trim() && !!config?.server_public_key?.trim()
@@ -22,9 +22,8 @@ export async function fetchVpnConfigWithKeys(fingerprint: string): Promise<VpnCo
       preferred_server: preferred,
     })
     const config = reg.data as VpnConfigPayload
-    if (config?.selected_server) setPreferredServer(config.selected_server)
     if (hasWgKeys(config)) {
-      pushLog('Main', `device/register OK device=${String(config.device_id || '').slice(0, 8)}`)
+      pushLog('Main', `device/register OK device=${String(config.device_id || '').slice(0, 8)} slot=${config.selected_server || ''} ip=${config.server_ip || ''} want=${preferred}`)
       return config
     }
   } catch (e) {
@@ -36,7 +35,6 @@ export async function fetchVpnConfigWithKeys(fingerprint: string): Promise<VpnCo
     const preferred = getPreferredServer()
     const cfg = await api.get(`/api/vpn/config?fingerprint=${encodeURIComponent(fingerprint)}&preferred_server=${encodeURIComponent(preferred)}`)
     const config = cfg.data as VpnConfigPayload
-    if (config?.selected_server) setPreferredServer(config.selected_server)
     if (hasWgKeys(config)) {
       pushLog('Main', `vpn/config OK device=${String(config.device_id || '').slice(0, 8)}`)
       return config

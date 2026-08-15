@@ -148,10 +148,10 @@ async function tick(): Promise<void> {
         const res = await withSyncApi(() => api.get('/api/users/me'))
         if (res.data) {
           opts.onProfile(res.data)
-          pushLog(
-            'ConfigSync',
-            `subscription check active=${(res.data as { subscription?: { is_active?: boolean } }).subscription?.is_active ?? '?'}`,
-          )
+          const active = (res.data as { subscription?: { is_active?: boolean } }).subscription?.is_active
+          if (active !== true) {
+            pushLog('ConfigSync', `subscription check active=${active ?? '?'}`, 'W')
+          }
         }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e)

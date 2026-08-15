@@ -44,6 +44,38 @@ let savedPhysicalGateway = null
 let wgStopChain = Promise.resolve()
 /** Сериализация bypass: параллельные delete+add → blackhole peer/VK и «нет интернета». */
 let bypassChain = Promise.resolve()
+/**
+ * Поколение apply/connect. Фоновый stop (fast disconnect) не должен
+ * Disable-NetAdapter после того, как уже стартовал новый туннель (Улей после соты).
+ */
+let wgApplyEpoch = 0
+
+function beginWgApply() {
+  wgApplyEpoch += 1
+  return wgApplyEpoch
+}
+
+function currentWgApplyEpoch() {
+  return wgApplyEpoch
+}
+
+function confCryptoIdentity(confText) {
+  const text = String(confText || '')
+  const priv = (text.match(/^\s*PrivateKey\s*=\s*(\S+)/m) || [])[1] || ''
+  const pub = (text.match(/^\s*PublicKey\s*=\s*(\S+)/m) || [])[1] || ''
+  if (!priv && !pub) return ''
+  return `${priv}|${pub}`
+}
+
+function lastStableConfText() {
+  try {
+    const p = path.join(STABLE_CONF_DIR, TUNNEL_CONF_NAME)
+    if (!fs.existsSync(p)) return ''
+    return fs.readFileSync(p, 'utf8')
+  } catch {
+    return ''
+  }
+}
 
 function enqueueWgStop(fn) {
   const next = wgStopChain.then(fn, fn)
@@ -407,6 +439,10 @@ async function trySyncConf(runtimeDir, stableConf, send) {
     return true
   } catch (e) {
     const msg = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim()
+    if (/No such file or directory|cannot find|не найден/i.test(msg)) {
+      send('[WG] syncconf пропущен — интерфейса ещё нет, ставим службу')
+      return false
+    }
     if (msg) send('[WG] syncconf: ' + msg.slice(0, 200))
     return false
   }
@@ -851,7 +887,11 @@ async function isWgStillPresentAsync() {
  * Win10 часто оставляет адаптер Up после sc stop / частичного uninstall —
  * маршруты 0.0.0.0/1 остаются → «нет интернета» пока не выключить вручную.
  */
-async function disableWgAdapters(send) {
+async function disableWgAdapters(send, epoch = null) {
+  if (epoch != null && epoch !== wgApplyEpoch) {
+    send?.('[WG] Disable-NetAdapter отменён — уже новый connect')
+    return
+  }
   await psExecAsync(`
     Get-NetAdapter -ErrorAction SilentlyContinue |
       Where-Object {
@@ -952,7 +992,12 @@ try {
 }
 
 async function forceStopWireGuard(isDev, dirname, send) {
+  const epoch = wgApplyEpoch
   return enqueueWgStop(async () => {
+    if (epoch !== wgApplyEpoch) {
+      send?.('[WG] stop отменён — уже новый connect')
+      return
+    }
     const alreadyDown =
       !(await isWgStillPresentAsync()) && !(await isServiceRunningAsync())
     if (alreadyDown) {
@@ -965,9 +1010,18 @@ async function forceStopWireGuard(isDev, dirname, send) {
     const runtimeDir = lastRuntimeDir || prepareRuntimeDir(isDev, dirname, send) || STABLE_WG_DIR
     const wgExe = path.join(runtimeDir, 'wireguard.exe')
 
+    // Сначала гасим адаптер — Windows сразу снимает «VPN включён»,
+    // uninstall службы может идти ещё 10–20 с.
+    if (epoch !== wgApplyEpoch) {
+      send?.('[WG] stop отменён перед Disable-NetAdapter — новый connect')
+      return
+    }
+    await disableWgAdapters(send, epoch)
+    if (epoch !== wgApplyEpoch) {
+      send?.('[WG] stop отменён до uninstall — новый connect')
+      return
+    }
     const first = await stopWgServiceLocal(wgExe, runtimeDir, send)
-    await disableWgAdapters(send)
-    await sleep(400)
 
     if (!(await isWgStillPresentAsync())) {
       send?.('[WG] Туннель wg-turn снят')
@@ -975,8 +1029,12 @@ async function forceStopWireGuard(isDev, dirname, send) {
     }
 
     send?.('[WG] wg-turn ещё активен после stop — повтор…', 'W')
+    if (epoch !== wgApplyEpoch) {
+      send?.('[WG] stop отменён (повтор) — новый connect')
+      return
+    }
     await stopWgServiceLocal(wgExe, runtimeDir, send)
-    await disableWgAdapters(send)
+    await disableWgAdapters(send, epoch)
     await sleep(500)
 
     if (!(await isWgStillPresentAsync())) {
@@ -984,6 +1042,10 @@ async function forceStopWireGuard(isDev, dirname, send) {
       return
     }
 
+    if (epoch !== wgApplyEpoch) {
+      send?.('[WG] stop отменён (UAC) — новый connect')
+      return
+    }
     // Install мог пройти через elevated UAC, а Electron без админа — локальный uninstall молча no-op на Win10.
     if (!isProcessElevated() || first.accessDenied) {
       const ok = await uninstallTunnelElevated(wgExe, runtimeDir, send)
@@ -994,7 +1056,7 @@ async function forceStopWireGuard(isDev, dirname, send) {
     } else {
       // Elevated, но адаптер залип (типично Win10) — ещё раз disable + uninstall
       await stopWgServiceLocal(wgExe, runtimeDir, send)
-      await disableWgAdapters(send)
+      await disableWgAdapters(send, epoch)
       await sleep(800)
       if (!(await isWgStillPresentAsync())) {
         send?.('[WG] Туннель wg-turn снят (hard disable)')
@@ -1011,8 +1073,13 @@ async function forceStopWireGuard(isDev, dirname, send) {
 }
 
 async function stopWireGuardTunnel(isDev, dirname, send, excludeIPs = []) {
+  const epoch = wgApplyEpoch
   // Сначала туннель: иначе bypass снят, а /1+/1 остаются → нет интернета (Win10).
   await forceStopWireGuard(isDev, dirname, send)
+  if (epoch !== wgApplyEpoch) {
+    send?.('[WG] bypass не снимаем — уже новый connect')
+    return
+  }
   await removeServerBypassRoutes(excludeIPs.length ? excludeIPs : [FALLBACK_BACKEND_IP], send)
   savedPhysicalGateway = null
 }
@@ -1165,6 +1232,7 @@ ${bypassPs1}
 async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs = [], options = {}) {
   // Отдать event loop UI (иначе клик тумблера → «Не отвечает» на секунду)
   await sleep(0)
+  await waitWgStopIdle()
   const skipWdttWait = options.skipWdttWait === true
   const subnetOnly = options.subnetOnly === true
   const skipForceStop = options.skipForceStop === true
@@ -1221,26 +1289,32 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
 
   // sc query быстрее Get-NetAdapter
   const serviceUp = await isServiceRunningAsync()
+  const incomingConf = fs.existsSync(confPath) ? fs.readFileSync(confPath, 'utf8') : ''
+  const oldIdentity = confCryptoIdentity(lastStableConfText())
+  const newIdentity = confCryptoIdentity(incomingConf)
+  const cryptoChanged = !!(oldIdentity && newIdentity && oldIdentity !== newIdentity)
+  if (cryptoChanged) {
+    send('[WG] ключи/peer сменились — полная переустановка, не syncconf')
+  }
   const stableConf = copyStableConf(confPath)
   send(`[WG] Конфиг: ${stableConf}`)
 
-  // Если служба уже есть — сначала syncconf (1с), не uninstall (5–15с).
-  if (serviceUp || skipForceStop) {
+  // Windows syncconf НЕ меняет PrivateKey/PublicKey/AllowedIPs.
+  // leftover служба после соты + syncconf на Улей → мёртвый 10.66.66.1 и leak (страна РФ).
+  const adapterUp = await isTunnelUpAsync()
+  const allowSyncconf = skipForceStop && serviceUp && adapterUp && !cryptoChanged
+  if (allowSyncconf) {
     if (await trySyncConf(runtimeDir, stableConf, send)) {
       await gatewayPromise
       await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns)
       send('[WG] Туннель активен (syncconf)')
       return true
     }
-    if (skipForceStop) {
-      send?.('[WG] syncconf не удался — переустановка службы…', 'W')
-    } else {
-      send?.('[WG] syncconf не удался — переустановка…', 'W')
-    }
+    send?.('[WG] syncconf не удался — переустановка службы…', 'W')
     await forceStopWireGuard(isDev, dirname, send)
     await sleep(200)
-  } else if (await isTunnelUpAsync()) {
-    await forceStopWireGuard(isDev, dirname, () => {})
+  } else if (serviceUp || (await isTunnelUpAsync())) {
+    await forceStopWireGuard(isDev, dirname, send)
     await sleep(200)
   }
 
@@ -1345,6 +1419,9 @@ module.exports = {
   capturePhysicalGateway,
   normalizeWgConfText,
   waitWgStopIdle,
+  beginWgApply,
+  currentWgApplyEpoch,
+  disableWgAdapters,
   trySyncConf,
   copyStableConf,
   prepareRuntimeDir,

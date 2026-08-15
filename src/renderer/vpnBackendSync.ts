@@ -5,7 +5,7 @@ import api, { getDeviceFingerprint } from './api'
 import { pushLog } from './debugLog'
 
 import { cacheVpnConfig, getCachedVpnConfig } from './vkConfig'
-import { getPreferredServer, setPreferredServer } from './bypassStore'
+import { getPreferredServer } from './bypassStore'
 
 import { saveSessionDeviceId } from './api'
 
@@ -33,7 +33,6 @@ async function ensureDeviceRegistered(fp: string): Promise<boolean> {
       preferred_server: getPreferredServer(),
     })
     const config = res.data
-    if (config?.selected_server) setPreferredServer(String(config.selected_server))
     if (config?.device_id) {
       cacheVpnConfig(config)
       saveSessionDeviceId(String(config.device_id))

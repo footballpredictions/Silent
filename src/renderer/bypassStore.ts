@@ -68,15 +68,28 @@ export function getPreferredServer(): string {
   try {
     const raw = (localStorage.getItem(PREFERRED_SERVER_KEY) || '').trim().toLowerCase()
     if (raw === 'server1' || raw === 'server2' || raw === 'server3') return raw
-    if (raw.startsWith('cell:') || raw === 'queen') return raw
   } catch { /* ignore */ }
   return 'server1'
+}
+
+export function slotFromSelectedServer(selected?: string | null): 'server1' | 'server2' | 'server3' | null {
+  const raw = String(selected || '').trim().toLowerCase()
+  if (raw === 'server1' || raw === 'server2' || raw === 'server3') return raw
+  if (raw === 'queen' || raw === 'main' || raw === '') return 'server1'
+  return null
+}
+
+export function cachedConfigMatchesPreferred(cfg: { selected_server?: string } | null | undefined): boolean {
+  if (!cfg) return false
+  const slot = slotFromSelectedServer(cfg.selected_server)
+  if (!slot) return false
+  return slot === getPreferredServer()
 }
 
 export function setPreferredServer(server: string) {
   const raw = (server || '').trim().toLowerCase()
   const normalized =
-    (raw === 'server1' || raw === 'server2' || raw === 'server3' || raw === 'queen' || raw.startsWith('cell:'))
+    (raw === 'server1' || raw === 'server2' || raw === 'server3')
       ? raw
       : 'server1'
   try {

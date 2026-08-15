@@ -26,6 +26,7 @@ const {
   normalizeWgConfText,
   waitWgStopIdle,
   prepareRuntimeDir,
+  beginWgApply,
 } = require('./vpn/wireguard')
 const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
 const { resolveVkExcludeIps, warmVkExcludeIps, invalidateVkExcludeCache } = require('./vpn/vkNetworkExcludes')
@@ -91,6 +92,8 @@ let wdttStartedAtMs = 0
 let networkMonitor = null
 let wdttRelaunchTimer = null
 let vpnConnectInFlight = false
+/** Растёт на каждый connect/disconnect — отменяет устаревший vpn-connect. */
+let vpnConnectSeq = 0
 let tunnelReadyPollTimer = null
 let vpnBootstrapMode = false
 let wgCredPhase = false
@@ -566,7 +569,8 @@ function cleanupVpn() {
     try { wdttProcess.kill() } catch {}
     wdttProcess = null
   }
-  // Не await — cleanupVpn синхронный; async stop не блокирует main/UI
+  // Не await — cleanupVpn синхронный; async stop не блокирует main/UI.
+  // Disable только внутри очереди stop (с epoch) — иначе догоняет уже новый туннель.
   void stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
   clearBypassRefresh()
   wgApplied = false
@@ -597,8 +601,9 @@ function isTransportHealthy() {
 
 /** olcrtc peer умер → снять sing-box/флаги и сказать UI «выкл», иначе меню блокирует VK. */
 function onOlcrtcFamilyDead({ code, reason }) {
+  if (!vpnOlcrtcMode) return
   sendLog(`[olcrtc] peer dead code=${code} → UI disconnect`)
-  if (!vpnOlcrtcMode && !vpnSessionActive) return
+  if (!vpnSessionActive) return
   vpnOlcrtcMode = false
   vpnSessionActive = false
   tunnelReadySent = false
@@ -692,6 +697,7 @@ function minWorkersForTunnelReady(isBootstrap = false) {
 }
 
 function isVpnReadyForUi() {
+  if (!vpnSessionActive) return false
   if (tunnelReadySent) return true
   if (vpnOlcrtcMode) {
     // olcrtc2 (Телемост/WB) и legacy olcrtc v1 — оба валидны.
@@ -1515,7 +1521,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
     fs.writeFileSync(confPath, normalizedConf)
 
-    // syncconf если служба уже есть (reconnect) — без uninstall
+    // syncconf только если служба жива И ключи/peer те же (reconnect).
+    // Улей↔сота: PublicKey другой — Windows syncconf его не меняет → 10.66.66.1 timeout + leak РФ.
     const alreadyUp = await isServiceRunningAsync()
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
       skipWdttWait: true,
@@ -1545,6 +1552,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
       wgApplied = true
       wgAttempted = true
       clearWgRetries()
+      // Handshake после смены сервера: ConfigSync не должен сразу уходить на public IP Улья.
+      wgRouteSettleUntil = Date.now() + 15_000
       await addServerBypassRoutes([...excludeIPs], sendLog)
       await ensureNipIoBypassRoutes(sendLog)
       scheduleBypassRefresh(sendLog)
@@ -1718,6 +1727,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
       scheduleWdttRelaunch(800)
       return
     }
+    // cleanupVpn уже гасит WG и сказал UI «выкл». Поздний close не должен
+    // Disable-NetAdapter / vpn-stopped поверх нового connect (Улей после соты).
+    if (!vpnSessionActive || isQuitting) return
     transportSwitching = false
     void stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
     clearBypassRefresh()
@@ -1770,38 +1782,71 @@ async function beginWdttSession(config, { switching = false } = {}) {
   return { success: true }
 }
 
+function sameVpnPeer(a, b) {
+  if (!a || !b) return false
+  const pubA = String(a.server_public_key || '').trim()
+  const pubB = String(b.server_public_key || '').trim()
+  const ipA = String(a.server_ip || '').trim()
+  const ipB = String(b.server_ip || '').trim()
+  if (pubA && pubB && pubA !== pubB) return false
+  if (ipA && ipB && ipA !== ipB) return false
+  return !!(pubA || ipA)
+}
+
+async function waitVpnConnectIdle(seq, timeoutMs = 20000) {
+  const started = Date.now()
+  while (vpnConnectInFlight) {
+    if (seq !== vpnConnectSeq) return false
+    if (Date.now() - started > timeoutMs) return false
+    await sleep(40)
+  }
+  return seq === vpnConnectSeq
+}
+
 ipcMain.handle('vpn-connect', async (_, config) => {
   trace().enter('Main.vpnConnect', `bootstrap=${!!config?.is_bootstrap} n=${config?.stream_count ?? '?'}`)
   vkFloodEscalatePending = false
   const wantBootstrap = !!config?.is_bootstrap
   const wantOlcrtc = wantOlcrtcFamily(config)
   const useOlcrtc2 = wantOlcrtc2Family(config)
+  const seq = ++vpnConnectSeq
 
   if (vpnConnectInFlight) {
-    sendLog('[VPN] connect: уже выполняется, без перезапуска')
-    // Не врать UI success — иначе olcrtc «готов», пока SOCKS ещё нет.
-    return { error: 'подключение уже выполняется', skipped: true }
+    sendLog('[VPN] connect: ждём завершения предыдущего…')
+    const idle = await waitVpnConnectIdle(seq)
+    if (!idle) {
+      sendLog('[VPN] connect: отменён (новый disconnect/connect)')
+      return { cancelled: true }
+    }
   }
 
   if (!wantBootstrap && vpnBootstrapMode) {
     sendLog('[VPN] connect: смена bootstrap → main, полный перезапуск')
     await cleanupVpnAsync()
+    if (seq !== vpnConnectSeq) return { cancelled: true }
   }
 
   if (vpnSessionActive && isTransportHealthy() && wantBootstrap === vpnBootstrapMode && wantOlcrtc === vpnOlcrtcMode) {
-    sendLog('[VPN] connect: туннель уже работает')
-    ensureVpnReadyEvent(sendLog)
-    return { success: true, alreadyActive: true }
+    if (sameVpnPeer(lastVpnConnectConfig, config)) {
+      sendLog('[VPN] connect: туннель уже работает')
+      ensureVpnReadyEvent(sendLog)
+      return { success: true, alreadyActive: true }
+    }
+    sendLog('[VPN] connect: другой сервер/peer — полный перезапуск')
+    await cleanupVpnAsync()
+    if (seq !== vpnConnectSeq) return { cancelled: true }
   }
 
   // Мёртвый olcrtc / зависшая сессия — иначе UI «включён», меню блокирует смену на VK.
   if (vpnSessionActive && !isTransportHealthy()) {
     sendLog('[VPN] connect: мёртвая сессия — полный сброс')
     await cleanupVpnAsync()
+    if (seq !== vpnConnectSeq) return { cancelled: true }
   }
 
   vpnConnectInFlight = true
   try {
+    if (seq !== vpnConnectSeq) return { cancelled: true }
     if (wantOlcrtc) {
       // Всегда полный сброс WG/sing-box ДО prefetch: иначе Node/Go HTTPS
       // к cloud-api/stream.wb уходит в мёртвый TUN → timeout (на Android — whitelist).
@@ -1846,10 +1891,14 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     if (vpnOlcrtcMode || isOlcrtcAlive() || isOlcrtcSessionActive() || isOlcrtc2Alive() || isOlcrtc2SessionActive()) {
       sendLog('[VPN] connect: смена olcrtc → WDTT, полный сброс')
       await cleanupVpnAsync()
+      if (seq !== vpnConnectSeq) return { cancelled: true }
     }
 
-    // Не ждать полный uninstall: cap 1.5с; не убивать живую WG — syncconf на connect.
-    await Promise.race([waitWgStopIdle(), sleep(1500)])
+    // Дождаться фонового stop: иначе /uninstalltunnelservice снимет уже новый wg-turn
+    // (1.5с cap оставлял гонку → 0 МБ и Tunnel API timeout).
+    beginWgApply()
+    await waitWgStopIdle()
+    if (seq !== vpnConnectSeq) return { cancelled: true }
     if (wdttProcess && !transportSwitching && !isTransportHealthy()) {
       sendLog('[VPN] Переподключение: остановка предыдущей сессии...')
       await cleanupVpnAsync()
@@ -1869,6 +1918,11 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     transportSwitching = false
 
     const result = await beginWdttSession(config, { switching: false })
+    if (seq !== vpnConnectSeq) {
+      sendLog('[VPN] connect: сессия отменена после старта — гасим')
+      await fastDisconnectVpn()
+      return { cancelled: true }
+    }
     if (!result.error) {
       startNetworkMonitor()
       startZeroWorkersWatchdog()
@@ -1881,6 +1935,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 })
 
 ipcMain.handle('vpn-disconnect', async (_, opts) => {
+  vpnConnectSeq += 1
   if (opts?.slow) {
     await cleanupVpnAsync()
     return { success: true }
@@ -2153,7 +2208,11 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
           err.code = 'OLCRTC_TUNNEL_ONLY'
           throw err
         }
-        sendLog(`[API] tunnel ${path} HTTP ${res.status} → HTTPS ${SERVER_IP_FALLBACK}`)
+        if (fragile) {
+          await sleep(400 * attempt)
+          continue
+        }
+        sendLog(`[API] tunnel HTTP ${res.status} — повтор через публичный API`)
         return await viaPublic()
       } catch (e) {
         lastErr = e
@@ -2162,7 +2221,7 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
         // EACCES/ECONNABORTED — типично при WG reinstall (маршруты/адаптер мигают)
         const transient = /ECONNRESET|ECONNREFUSED|ECONNABORTED|EACCES|ETIMEDOUT|timeout|Tunnel API/i.test(msg)
         if (transient && attempt < maxAttempts) {
-          if (!olcrtc2) await ensurePublicApiBypass(sendLog)
+          if (!olcrtc2 && !fragile) await ensurePublicApiBypass(sendLog)
           await sleep(500 * attempt)
           continue
         }
@@ -2170,11 +2229,12 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
           sendLog(`[API] tunnel 10.66.66.1 fail (olcrtc2, no public): ${msg}`)
           throw lastErr || e
         }
-        if (!(fragile && transient)) {
-          sendLog(`[API] tunnel 10.66.66.1 fail: ${msg} → HTTPS ${SERVER_IP_FALLBACK}`)
-        } else {
-          sendLog(`[API] tunnel briefly unavailable during full-tunnel upgrade → HTTPS`)
+        if (fragile && transient) {
+          sendLog('[API] tunnel ещё поднимается — ждём, без публичного API')
+          await sleep(600 * attempt)
+          continue
         }
+        sendLog(`[API] tunnel ${msg} — повтор через публичный API`)
         try {
           return await viaPublic()
         } catch (pubErr) {
@@ -2192,7 +2252,18 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
       sendLog(`[API] tunnel 10.66.66.1 fail (olcrtc2, no public): ${lastErr?.message || lastErr}`)
       throw lastErr || new Error('Tunnel API fail')
     }
-    sendLog(`[API] tunnel 10.66.66.1 fail: ${lastErr?.message || lastErr} → HTTPS ${SERVER_IP_FALLBACK}`)
+    if (Date.now() < wgRouteSettleUntil) {
+      const waitMs = Math.min(wgRouteSettleUntil - Date.now(), 8_000)
+      if (waitMs > 200) await sleep(waitMs)
+      try {
+        const res = await tunnelHttpRequest({
+          ...opts,
+          timeout: Math.min(opts.timeout || 12_000, 12_000),
+        })
+        if (res.status >= 200 && res.status < 500) return res
+      } catch { /* public ниже */ }
+    }
+    sendLog(`[API] tunnel ${lastErr?.message || lastErr} — публичный API`)
     return viaPublic()
   }
   return publicDirectRequest(opts)

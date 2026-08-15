@@ -1,5 +1,6 @@
 import { extractCallHash } from './hashConfig'
 import { getEmbeddedBootstrapHash } from './embeddedBootstrapHash'
+import { getPreferredServer, slotFromSelectedServer } from './bypassStore'
 
 const BOOT_HASH_KEY = 'silent_vk_bootstrap_hash'
 const VK_ACCESS_KEY = 'silent_vk_access_token'
@@ -61,7 +62,15 @@ export function saveVkUserId(id: number) {
 
 export function cacheVpnConfig(cfg: VpnConfigPayload) {
   if (!cfg.wg_private_key?.trim() || !cfg.server_public_key?.trim()) return
-  localStorage.setItem(VPN_CACHE_KEY, JSON.stringify(cfg))
+  const preferred = getPreferredServer()
+  const slot = slotFromSelectedServer(cfg.selected_server)
+  // Не переклеивать ключи другого слота на текущий preferred — иначе 3→2
+  // поднимает peer соты 2 при выбранном сервере 2.
+  if (slot && slot !== preferred) return
+  localStorage.setItem(VPN_CACHE_KEY, JSON.stringify({
+    ...cfg,
+    selected_server: slot || preferred,
+  }))
 }
 
 export function getCachedVpnConfig(): VpnConfigPayload | null {

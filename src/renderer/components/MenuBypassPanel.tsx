@@ -118,7 +118,8 @@ export default function MenuBypassPanel({
   const [pendingServerSlot, setPendingServerSlot] = useState<'server1' | 'server2' | 'server3' | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
-  const switchLocked = busy || vpnRunning
+  const [runtimeVpnActive, setRuntimeVpnActive] = useState<boolean>(vpnRunning)
+  const switchLocked = busy || runtimeVpnActive
 
   const selServer = pendingServerSlot ?? selectedServerSlot
   const hasPending =
@@ -152,11 +153,38 @@ export default function MenuBypassPanel({
   }, [])
 
   useEffect(() => {
-    if (!vpnRunning) return
+    const api_ = (window as any).electronAPI
+    let cancelled = false
+    let timer: number | null = null
+    const syncRuntime = async () => {
+      try {
+        if (!api_?.vpnIsReady) {
+          if (!cancelled) setRuntimeVpnActive(vpnRunning)
+          return
+        }
+        const st = await api_.vpnIsReady()
+        if (!cancelled) setRuntimeVpnActive(!!st?.ready)
+      } catch {
+        if (!cancelled) setRuntimeVpnActive(vpnRunning)
+      }
+    }
+    void syncRuntime()
+    timer = window.setInterval(() => { void syncRuntime() }, 1200)
+    return () => {
+      cancelled = true
+      if (timer != null) window.clearInterval(timer)
+    }
+  }, [vpnRunning])
+
+  useEffect(() => {
+    if (!switchLocked) {
+      if (hint === 'Отключите VPN перед сменой сервера.') setHint(null)
+      return
+    }
     clearPending()
     setHint('Отключите VPN перед сменой сервера.')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vpnRunning])
+  }, [switchLocked])
 
   const applyPending = async () => {
     if (busy || !hasPending) return
@@ -167,7 +195,7 @@ export default function MenuBypassPanel({
     setBusy(true)
     setHint(null)
     try {
-      if (willChange && vpnRunning) {
+      if (willChange && switchLocked) {
         setHint('Сначала отключите VPN, затем меняйте сервер.')
         return
       }
@@ -202,7 +230,7 @@ export default function MenuBypassPanel({
       {hint ? (
         <p className="text-[11px] mb-2" style={{ color: muted }}>{hint}</p>
       ) : null}
-      {vpnRunning ? (
+      {switchLocked ? (
         <p className="text-[11px] mb-2" style={{ color: muted }}>
           Переключение недоступно: VPN активен.
         </p>

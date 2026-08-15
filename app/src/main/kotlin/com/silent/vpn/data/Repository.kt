@@ -1289,6 +1289,10 @@ class SilentRepository @Inject constructor(
     private val PREF_OLCRTC_CACHE = "olcrtc_config_cache_v13" // legacy, только wipe
     private fun olcrtcCacheKey(provider: String): String =
         com.silent.vpn.policy.OlcrtcSessionPolicy.cacheKey(provider)
+    private data class OlcrtcCacheEnvelope(
+        val at: Long = 0L,
+        val cfg: OlcrtcPublicConfig? = null,
+    )
 
     /** One-shot после failure: retry обязан взять ЭТОТ cfg (не старый SharedPreferences). */
     @Volatile
@@ -1344,10 +1348,42 @@ class SilentRepository @Inject constructor(
         }
         val raw = prefs.getString(olcrtcCacheKey(prov), null) ?: return null
         val cfg = runCatching {
-            Gson().fromJson(raw, OlcrtcPublicConfig::class.java)
+            val env = Gson().fromJson(raw, OlcrtcCacheEnvelope::class.java)
+            env?.cfg ?: Gson().fromJson(raw, OlcrtcPublicConfig::class.java)
         }.getOrNull()?.takeIf { it.enabled && it.crypto_key.length == 64 } ?: return null
         val room = cfg.providers[prov]?.room?.trim().orEmpty()
         return cfg.takeIf { room.isNotBlank() && cfg.providers[prov]?.enabled != false }
+    }
+
+    fun getOlcrtcCacheAgeMs(provider: String = getOlcrtcProvider()): Long? {
+        val prov = when (provider) {
+            OLCRTC_WBSTREAM, OLCRTC_TELEMOST -> provider
+            else -> OLCRTC_TELEMOST
+        }
+        val raw = prefs.getString(olcrtcCacheKey(prov), null) ?: return null
+        val at = runCatching {
+            Gson().fromJson(raw, OlcrtcCacheEnvelope::class.java)?.at
+        }.getOrNull() ?: return null
+        if (at <= 0L) return null
+        return (System.currentTimeMillis() - at).coerceAtLeast(0L)
+    }
+
+    fun shouldRefreshOlcrtcSlot(
+        provider: String = getOlcrtcProvider(),
+        force: Boolean = false,
+        maxAgeMs: Long = 8 * 60 * 1000L,
+    ): Boolean {
+        val prov = when (provider) {
+            OLCRTC_WBSTREAM, OLCRTC_TELEMOST -> provider
+            else -> OLCRTC_TELEMOST
+        }
+        if (force) return true
+        if (isOlcrtcSlotDirty(prov)) return true
+        val cfg = getCachedOlcrtcConfigForProvider(prov) ?: return true
+        val room = cfg.providers[prov]?.room?.trim().orEmpty()
+        if (room.isBlank()) return true
+        val age = getOlcrtcCacheAgeMs(prov) ?: return true
+        return age >= maxAgeMs
     }
 
     private fun saveOlcrtcCache(cfg: OlcrtcPublicConfig, sync: Boolean = false, forProvider: String? = null) {
@@ -1364,7 +1400,8 @@ class SilentRepository @Inject constructor(
             if (k != OLCRTC_TELEMOST && k != OLCRTC_WBSTREAM) continue
             if (slot.denied == true || !slot.enabled || slot.room.isBlank()) continue
             val isolated = cfg.copy(providers = mapOf(k to slot))
-            ed.putString(olcrtcCacheKey(k), Gson().toJson(isolated))
+            val wrapped = OlcrtcCacheEnvelope(at = System.currentTimeMillis(), cfg = isolated)
+            ed.putString(olcrtcCacheKey(k), Gson().toJson(wrapped))
             wrote = true
         }
         if (!wrote) return

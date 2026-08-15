@@ -27,6 +27,7 @@ import android.content.Intent
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Как в 1.0.160: VK | olcrtc → Телемост | WB. Движок — olcrtc2. */
 @Composable
@@ -207,6 +208,7 @@ fun MenuBypassScreen(
                     val nextFam = pendingFamily
                     val nextVk = pendingVk
                     val nextOlc = pendingOlc
+                    val prevOlc = olcProvider
                     pendingFamily = null
                     pendingVk = null
                     pendingOlc = null
@@ -226,6 +228,14 @@ fun MenuBypassScreen(
                                 onOlc = { olcProvider = it },
                                 onHint = { applyHint = it },
                             )
+                            scope.launch {
+                                maybeRefreshOlcrtcSlotInBackground(
+                                    repo = repo,
+                                    switchedProvider = nextOlc != null && nextOlc != prevOlc,
+                                    onEnsureOlcrtcApi = onEnsureOlcrtcApi,
+                                    onHint = { applyHint = it },
+                                )
+                            }
                         } finally {
                             applying = false
                         }
@@ -382,6 +392,33 @@ private suspend fun applyBypassChoice(
                 " (TM=${if (tm) "ok" else "—"} WB=${if (wb) "ok" else "—"})"
         } else {
             "Нет кеша ${repo.olcrtcProviderLabel(selected)}. Включите VK — конфиг подтянется сам."
+        },
+    )
+}
+
+private suspend fun maybeRefreshOlcrtcSlotInBackground(
+    repo: SilentRepository,
+    switchedProvider: Boolean,
+    onEnsureOlcrtcApi: suspend (providers: Array<out String>) -> Boolean,
+    onHint: (String?) -> Unit,
+) {
+    if (repo.getBypassFamily() != SilentRepository.BYPASS_FAMILY_OLCRTC2) return
+    val provider = repo.getOlcrtcProvider()
+    val need = repo.shouldRefreshOlcrtcSlot(provider, force = switchedProvider)
+    if (!need) return
+    onHint("Выбрано: ${repo.olcrtcProviderLabel(provider)} · обновляем слот…")
+    val ok = withTimeoutOrNull(22_000L) {
+        onEnsureOlcrtcApi(arrayOf(provider))
+    } == true
+    val room = repo.getCachedOlcrtcConfigForProvider(provider)
+        ?.providers?.get(provider)?.room?.trim().orEmpty()
+    val ageSec = (repo.getOlcrtcCacheAgeMs(provider) ?: 0L) / 1000L
+    onHint(
+        if (ok && room.isNotBlank()) {
+            "Обновлено: ${repo.olcrtcProviderLabel(provider)} · ${room.take(28)} (age ${ageSec}s)"
+        } else {
+            "Оставлен кеш: ${repo.olcrtcProviderLabel(provider)}" +
+                if (room.isNotBlank()) " · ${room.take(28)}" else " · нет room"
         },
     )
 }

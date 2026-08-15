@@ -29,8 +29,7 @@ export interface DnsPreset {
 
 /** Выбираемые пресеты; свой ввод — отдельной секцией. */
 export const DNS_PRESETS: DnsPreset[] = [
-  { id: 'server', title: 'Как на сервере', subtitle: 'DNS выдаёт Silent · рекомендуется', servers: '' },
-  { id: 'yandex', title: 'Яндекс', subtitle: '77.88.8.8', servers: '77.88.8.8, 77.88.8.1' },
+  { id: 'yandex', title: 'Яндекс (как на сервере)', subtitle: '77.88.8.8 · рекомендуется', servers: '77.88.8.8, 77.88.8.1' },
   { id: 'cloudflare', title: 'Cloudflare', subtitle: '1.1.1.1', servers: '1.1.1.1, 1.0.0.1' },
   { id: 'google', title: 'Google', subtitle: '8.8.8.8', servers: '8.8.8.8, 8.8.4.4' },
   { id: 'quad9', title: 'Quad9', subtitle: '9.9.9.9', servers: '9.9.9.9, 149.112.112.112' },
@@ -84,6 +83,7 @@ export function sanitizeCustomServers(raw: string | null | undefined): string | 
 
 export function dnsPresetFromId(id: string | null | undefined): DnsPreset {
   if (id === 'custom') return DNS_PRESET_CUSTOM
+  if (id === 'server') return DNS_PRESETS[0]
   return DNS_PRESETS.find(p => p.id === id) || DNS_PRESET_DEFAULT
 }
 
@@ -125,7 +125,6 @@ export function setCustomDns(raw: string): string | null {
 /** Серверы для `dns_override`; пустая строка — оставить DNS сервера. */
 export function getDnsOverrideServers(): string {
   const preset = getDnsPreset()
-  if (preset.id === 'server') return ''
   if (preset.id === 'custom') return sanitizeCustomServers(getCustomDnsRaw()) || ''
   return preset.servers
 }
@@ -140,7 +139,6 @@ export function dnsMenuLabel(): string {
 /** Строка для диалога подтверждения и лога. */
 export function dnsDescription(): string {
   const preset = getDnsPreset()
-  if (preset.id === 'server') return preset.title
   if (preset.id === 'custom') {
     const servers = sanitizeCustomServers(getCustomDnsRaw())
     return servers ? `Свой: ${servers}` : 'Свой DNS (не задан)'

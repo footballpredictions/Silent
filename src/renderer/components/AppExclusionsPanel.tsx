@@ -158,12 +158,6 @@ export default function AppExclusionsPanel({
 
         const valid = new Set(next.map((a: PcAppItem) => a.id))
         setSelected(prev => {
-          // БС + пустой выбор → отметить все
-          if (whitelist && prev.size === 0 && next.length > 0) {
-            const all = new Set(next.map((a: PcAppItem) => a.id))
-            saveExcludedApps(all, next, true)
-            return all
-          }
           const kept = new Set([...prev].filter(id => valid.has(id)))
           if (kept.size !== prev.size) saveExcludedApps(kept, next, whitelist)
           return kept
@@ -191,14 +185,8 @@ export default function AppExclusionsPanel({
   const switchMode = (toWhitelist: boolean) => {
     if (whitelist === toWhitelist) return
     setWhitelist(toWhitelist)
-    if (toWhitelist) {
-      const all = new Set(apps.map(a => a.id))
-      setSelected(all)
-      saveExceptionsMode(true, apps)
-    } else {
-      setSelected(new Set())
-      saveExceptionsMode(false, apps)
-    }
+    setSelected(new Set())
+    saveExceptionsMode(toWhitelist, apps)
   }
 
   const persistSites = async (rules: string[]) => {
@@ -255,6 +243,19 @@ export default function AppExclusionsPanel({
         return a.name.localeCompare(b.name, 'ru')
       })
   }, [apps, selected, search])
+  const visibleIds = displayApps.map(app => app.id)
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selected.has(id))
+
+  const toggleSelectAll = () => {
+    if (visibleIds.length === 0) return
+    const next = new Set(selected)
+    if (allVisibleSelected) {
+      for (const id of visibleIds) next.delete(id)
+    } else {
+      for (const id of visibleIds) next.add(id)
+    }
+    persistApps(next)
+  }
 
   return (
     <div className="flex-1 p-4 overflow-y-auto text-left w-full self-stretch items-start">
@@ -338,6 +339,16 @@ export default function AppExclusionsPanel({
           <div className="flex gap-2 mb-3">
             <ModeChip label="ЧС" active={!whitelist} fg={fg} bg={bg} onClick={() => switchMode(false)} />
             <ModeChip label="БС" active={whitelist} fg={fg} bg={bg} onClick={() => switchMode(true)} />
+          </div>
+          <div
+            className="w-full flex items-center justify-between mb-2"
+            onClick={() => { if (visibleIds.length > 0) toggleSelectAll() }}
+            style={{ cursor: visibleIds.length > 0 ? 'pointer' : 'default', opacity: visibleIds.length > 0 ? 1 : 0.45 }}
+          >
+            <span className="text-xs" style={{ color: fg }}>
+              Выделить все
+            </span>
+            <ThemeCheck checked={allVisibleSelected} dark={dark} fg={fg} bg={bg} />
           </div>
 
           <input

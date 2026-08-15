@@ -59,7 +59,7 @@ export default function MenuDnsPanel({ fg, muted, onBack, vpnConnected = false }
 
       <h2 className="text-sm font-semibold mb-1" style={{ color: fg }}>DNS</h2>
       <p className="text-[11px] mb-4 leading-relaxed" style={{ color: muted }}>
-        По умолчанию DNS выдаёт сервер Silent. Можно выбрать публичный или указать свой.
+        По умолчанию используется серверный Яндекс DNS. Можно выбрать другой публичный или указать свой.
         Применяется при следующем подключении VPN.
       </p>
 

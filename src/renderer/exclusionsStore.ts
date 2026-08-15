@@ -39,15 +39,10 @@ export function saveExcludedApps(
 
 /**
  * Смена ЧС↔БС.
- * ЧС — пустой выбор; БС — все приложения уже отмечены (пользователь снимет лишнее).
+ * Всегда начинаем с пустого выбора — пользователь сам отмечает нужные.
  */
 export function saveExceptionsMode(whitelist: boolean, apps?: PcAppItem[]) {
-  if (whitelist) {
-    const all = new Set((apps || []).map(a => a.id))
-    saveExcludedApps(all, apps, true)
-  } else {
-    saveExcludedApps(new Set(), apps, false)
-  }
+  saveExcludedApps(new Set(), apps, whitelist)
 }
 
 /** Сброс старого БС / «все отмечены» после смены id (ярлыки). */

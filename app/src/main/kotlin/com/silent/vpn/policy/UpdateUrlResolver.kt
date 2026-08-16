@@ -21,19 +21,13 @@ object UpdateUrlResolver {
         val otaPlatform: String = "android",
     )
 
-    fun shouldUseTunnelUpdateDownload(input: OtaUrlInput): Boolean =
-        input.onMobileData &&
-            input.appExcludedFromVpn &&
-            input.mainVpnTunnelUp &&
-            !input.isBootstrapMode
+    /** App excluded: качаем с public/GitHub и при LTE+VPN. Tunnel — только если сами уйдём в fallback. */
+    fun shouldUseTunnelUpdateDownload(input: OtaUrlInput): Boolean = false
 
     fun resolveUpdateDownloadBase(input: OtaUrlInput): String {
-        if (!input.onMobileData) {
+        if (!input.onMobileData || input.appExcludedFromVpn) {
             input.preferredHttpsBase?.trimEnd('/')?.takeIf { it.startsWith("https://") }?.let { return it }
             return input.publicServerUrl.trimEnd('/').ifBlank { "https://$DEFAULT_SERVER_HOST" }
-        }
-        if (input.mainVpnTunnelUp && input.appExcludedFromVpn) {
-            return TUNNEL_API_BASE.trimEnd('/')
         }
         val base = input.preferredHttpsBase?.trimEnd('/').orEmpty()
         if (isTunnelApiBase(base) || input.tunnelProxyActive) return TUNNEL_API_BASE

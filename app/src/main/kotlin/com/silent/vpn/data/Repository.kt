@@ -307,7 +307,7 @@ class SilentRepository @Inject constructor(
         }
     }
 
-    /** ConfigSync, профиль, сессии — Wi‑Fi public; mobile + VPN — tunnel proxy/direct без overlay. */
+    /** ConfigSync, профиль, сессии, реферал, OTA — public first (VPN on/off). Tunnel/proxy только запасной. */
     suspend fun <T> withRoutineBackendApi(
         allowOverlayFallback: Boolean = false,
         block: suspend () -> T,
@@ -318,17 +318,20 @@ class SilentRepository @Inject constructor(
                 invalidateApiClient()
                 return block()
             }
-            if (isMainVpnTunnelUp()) {
-                if (APP_EXCLUDED_FROM_VPN && !WdttTunnelManager.isApiOverlayActive()) {
-                    if (prepareTunnelApiBaseLegacyProxy()) {
-                        return block()
-                    }
-                }
-                return withTunnelBackendBlock(allowOverlayFallback = false, block = block)
-            }
+            // App excluded: трафик приложения вне WG — public nip.io как при выкл. VPN.
             useApiBase(getPublicServerUrl())
             invalidateApiClient()
-            return block()
+            return runCatching { block() }.getOrElse { e ->
+                if (isMainVpnTunnelUp()) {
+                    Log.w(TAG, "public API failed on VPN LTE: ${e.message}, tunnel fallback")
+                    if (APP_EXCLUDED_FROM_VPN && prepareTunnelApiBaseLegacyProxy()) {
+                        return@getOrElse block()
+                    }
+                    withTunnelBackendBlock(allowOverlayFallback = false, block = block)
+                } else {
+                    throw e
+                }
+            }
         }
 
         val tunnelUp = isMainVpnTunnelUp()
@@ -349,20 +352,8 @@ class SilentRepository @Inject constructor(
         return withTunnelBackendBlock(allowOverlayFallback, block)
     }
 
-    /** Промокод, подписка, оплата, сессии — через proxy/direct, без overlay (overlay рвёт WG). */
+    /** Промокод, подписка, оплата, реферал — public/proxy, без overlay. */
     suspend fun <T> withUserBackendApi(block: suspend () -> T): T {
-        if (VpnSessionState.initialOverlaySyncActive) {
-            if (WdttTunnelManager.isApiOverlayActive() || TunnelApiProxy.isActive()) {
-                if (TunnelApiProxy.isActive()) {
-                    useApiBase(TunnelApiProxy.baseUrl())
-                } else {
-                    useApiBase(tunnelApiBase())
-                }
-                invalidateApiClient()
-                return block()
-            }
-            error("user API deferred — initial overlay sync in progress")
-        }
         return withRoutineBackendApi(allowOverlayFallback = false, block = block)
     }
 
@@ -2386,7 +2377,7 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
         prepareTunnelApiFromCachedConfig()
         invalidatePublicReachabilityCache()
 
-        if (!mobile && !WdttTunnelManager.isApiOverlayActive() && postConnectViaPublic()) {
+        if (!WdttTunnelManager.isApiOverlayActive() && postConnectViaPublic()) {
             return@withLock runCatching {
                 val hashesOk = syncHashesAndConfigAfterConnect()
                 val profileOk = syncProfileAndThemeAfterConnect()

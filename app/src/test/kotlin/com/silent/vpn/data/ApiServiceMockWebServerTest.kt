@@ -262,7 +262,7 @@ class ApiServiceMockWebServerTest {
     }
 
     @Test
-    fun `promo route policy uses overlay on lte excluded vpn`() {
+    fun `promo route policy uses routine on lte excluded vpn`() {
         val route = ApiRoutePolicy.userApiRoute(
             ApiRoutePolicy.RouteContext(
                 onMobileData = true,
@@ -274,6 +274,6 @@ class ApiServiceMockWebServerTest {
                 tunnelReady = true,
             ),
         )
-        assertEquals(ApiRoutePolicy.UserApiRoute.OVERLAY_BRIEF, route)
+        assertEquals(ApiRoutePolicy.UserApiRoute.ROUTINE, route)
     }
 }

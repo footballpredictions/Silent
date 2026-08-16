@@ -33,22 +33,25 @@ class UpdateUrlResolverTest {
     }
 
     @Test
-    fun `lte vpn uses tunnel download path`() {
+    fun `lte vpn prefers github like wifi`() {
         val url = UpdateUrlResolver.resolveUpdateDownloadUrl(
             baseInput(onMobileData = true, mainVpnTunnelUp = true).copy(
                 tunnelDownloadPath = "/api/updates/download/android",
-                githubDownloadUrl = "https://github.com/ignored.apk",
+                githubDownloadUrl = "https://github.com/silentvpn3/releases/apk.apk",
             ),
         )
-        assertEquals("http://10.66.66.1:8000/api/updates/download/android", url)
+        assertEquals("https://github.com/silentvpn3/releases/apk.apk", url)
     }
 
     @Test
-    fun `lte vpn default tunnel path when field missing`() {
+    fun `lte vpn uses public download when no github`() {
         val url = UpdateUrlResolver.resolveUpdateDownloadUrl(
-            baseInput(onMobileData = true, mainVpnTunnelUp = true).copy(otaPlatform = "android_tv"),
+            baseInput(onMobileData = true, mainVpnTunnelUp = true).copy(
+                downloadUrl = "/api/updates/download/android_tv",
+                otaPlatform = "android_tv",
+            ),
         )
-        assertEquals("http://10.66.66.1:8000/api/updates/download/android_tv", url)
+        assertEquals("https://132-243-234-162.nip.io/api/updates/download/android_tv", url)
     }
 
     @Test
@@ -66,8 +69,8 @@ class UpdateUrlResolverTest {
     }
 
     @Test
-    fun `shouldUseTunnelUpdateDownload true on lte excluded vpn`() {
-        assertTrue(
+    fun `shouldUseTunnelUpdateDownload false on lte excluded vpn`() {
+        assertFalse(
             UpdateUrlResolver.shouldUseTunnelUpdateDownload(
                 baseInput(onMobileData = true, mainVpnTunnelUp = true),
             ),
@@ -83,11 +86,11 @@ class UpdateUrlResolverTest {
     }
 
     @Test
-    fun `resolveUpdateDownloadBase lte vpn uses tunnel gateway`() {
+    fun `resolveUpdateDownloadBase lte vpn uses public host`() {
         val base = UpdateUrlResolver.resolveUpdateDownloadBase(
             baseInput(onMobileData = true, mainVpnTunnelUp = true),
         )
-        assertEquals("http://10.66.66.1:8000", base)
+        assertEquals("https://132-243-234-162.nip.io", base)
     }
 
     @Test

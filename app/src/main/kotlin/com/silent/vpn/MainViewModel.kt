@@ -1351,7 +1351,7 @@ class MainViewModel @Inject constructor(
     private var updateCheckInFlight = false
     private var otaCheckedThisVpnSession = false
 
-    /** OTA: Wi‑Fi — public HTTPS; LTE — overlay только до initial sync, потом direct tunnel. */
+    /** OTA: public HTTPS и с VPN, и без; tunnel только запасной. */
     fun checkForAppUpdate(inOverlaySession: Boolean = false) {
         if (updateCheckInFlight) return
         if (!inOverlaySession && otaCheckedThisVpnSession) return
@@ -1375,7 +1375,7 @@ class MainViewModel @Inject constructor(
                     }.getOrDefault(false)
                 }
 
-                if (!ok && !repo.isOnMobileData()) {
+                if (!ok) {
                     val bases = listOf(
                         repo.getPublicServerUrl().trimEnd('/'),
                         "https://${SilentRepository.DEFAULT_SERVER_HOST}",

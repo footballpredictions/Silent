@@ -33,6 +33,22 @@ def device_limit_error() -> ValueError:
     )
 
 
+def _device_has_preferred_server() -> bool:
+    return hasattr(Device, "preferred_server")
+
+
+def _set_device_server(device: Device, key: str, cell_id) -> None:
+    device.cell_id = cell_id
+    if _device_has_preferred_server():
+        device.preferred_server = key
+
+
+def _new_device(**kwargs) -> Device:
+    if not _device_has_preferred_server():
+        kwargs.pop("preferred_server", None)
+    return Device(**kwargs)
+
+
 async def touch_user_last_seen(
     db: AsyncSession,
     user: User | uuid.UUID,
@@ -584,8 +600,7 @@ async def ensure_device_session(
         # Login часто не шлёт preferred_server — пустая строка не должна сбрасывать слот в Улей.
         if pref_server:
             key, cell = await hive_service.resolve_manual_server_cell(db, pref_server)
-            existing.preferred_server = key
-            existing.cell_id = cell.id
+            _set_device_server(existing, key, cell.id)
         existing.is_connected = False
         existing.last_connected = datetime.utcnow()
         await touch_user_last_seen(db, user, commit=False)
@@ -603,7 +618,7 @@ async def ensure_device_session(
     wg_address = await _get_next_wg_address(db)
     wdtt_pass = (settings.WDTT_MASTER_PASSWORD or "").strip() or generate_wdtt_password()
 
-    device = Device(
+    device = _new_device(
         user_id=user.id,
         device_name=device_name,
         device_type=device_type,
@@ -653,8 +668,7 @@ async def register_device(
             existing.device_type = device_type[:32]
         if pref_server:
             key, cell = await hive_service.resolve_manual_server_cell(db, pref_server)
-            existing.preferred_server = key
-            existing.cell_id = cell.id
+            _set_device_server(existing, key, cell.id)
         existing.last_connected = datetime.utcnow()
         await touch_user_last_seen(db, user, commit=False)
         await db.commit()
@@ -675,7 +689,7 @@ async def register_device(
     wg_address = await _get_next_wg_address(db)
     wdtt_pass = (settings.WDTT_MASTER_PASSWORD or "").strip() or generate_wdtt_password()
 
-    device = Device(
+    device = _new_device(
         user_id=user.id,
         device_name=device_name,
         device_type=device_type,
@@ -709,11 +723,10 @@ async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigRespon
     else:
         hashes = await get_active_vk_hashes(db)
 
-    preferred_server = "queen" if is_bootstrap else (device.preferred_server or "").strip()
+    preferred_server = "queen" if is_bootstrap else (getattr(device, "preferred_server", None) or "").strip()
     selected_server, cell = await hive_service.resolve_manual_server_cell(db, preferred_server)
-    if device.cell_id != cell.id or device.preferred_server != selected_server:
-        device.cell_id = cell.id
-        device.preferred_server = selected_server
+    if device.cell_id != cell.id or getattr(device, "preferred_server", None) != selected_server:
+        _set_device_server(device, selected_server, cell.id)
         await db.commit()
     server_pub_key = (cell.wg_public_key or "").strip()
     if not server_pub_key:
@@ -772,8 +785,7 @@ async def set_device_preferred_server(
     if not device:
         return None
     key, cell = await hive_service.resolve_manual_server_cell(db, preferred_server)
-    device.preferred_server = key
-    device.cell_id = cell.id
+    _set_device_server(device, key, cell.id)
     await db.commit()
     await db.refresh(device)
     return device

@@ -1,4 +1,9 @@
-"""Деплой выбранных API-файлов + admin-ui/dist."""
+"""Точечный деплой выбранных API-файлов + admin-ui/dist.
+
+НЕ ИСПОЛЬЗОВАТЬ для прода-фиксов backend. Список FILES неполный:
+файл не в списке = старый код в контейнере (вход 500, 2026-08-16: не попал device.py).
+Канон: python scripts/deploy_stable.py (все app/**/*.py + ai/**/*.py).
+"""
 from __future__ import annotations
 
 import io
@@ -19,6 +24,7 @@ FILES = [
     "app/schemas/vpn.py",
     "app/services/vpn_service.py",
     "app/models/user.py",
+    "app/models/device.py",
     "app/services/subscription_service.py",
     "app/services/test_mode_settings.py",
     "app/services/registration_settings.py",

@@ -66,7 +66,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
   const fetchUsers = async () => {
     setLoading(true)
     setError(null)
-    const res = await fetch('/api/admin/users?limit=200', { headers })
+    const res = await fetch('/api/admin/users', { headers })
     if (!res.ok) {
       setError('Не удалось загрузить пользователей')
       setLoading(false)
@@ -202,6 +202,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
             Выдача подписок
           </h1>
           <p className="text-sm text-[#666] mt-1">Нажмите план чтобы выдать, повторно — чтобы забрать</p>
+          <p className="text-xs text-[#555] mt-1">{loading ? '…' : `${filtered.length} из ${users.length}`}</p>
         </div>
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
           <button

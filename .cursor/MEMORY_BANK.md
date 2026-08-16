@@ -253,11 +253,15 @@ Occupancy **1 клиент = 1 комната** (TM+WB `max_clients=1`, прод
 
 | Действие | Можно? | Почему |
 |----------|--------|--------|
-| `python scripts/deploy_stable.py` / `deploy_hive.py` / … | ✅ | `docker cp` всех `.py` + `restart api` |
+| `python scripts/deploy_stable.py` | ✅ | `docker cp` **всех** `app/**/*.py` + `ai/**/*.py` + restart. Единственный безопасный деплой backend на прод. |
+| `python scripts/deploy_hive.py` / тематические | ⚠️ | Только если скрипт явно копирует все затронутые файлы, включая `models/` |
+| `python scripts/deploy_api.py` | ❌ | Хардкод FILES. Нет файла в списке → в контейнере старый код → 500 (вход 2026-08-16: не попал `device.py`) |
 | `docker compose restart api` | ✅ | Перезапуск без смены файлов в контейнере |
 | `docker compose up -d` (без recreate) | ⚠️ | Только если менялся **только** `docker-compose.yml` (порты/volumes) — **сразу после** синхронизировать код (см. ниже) |
 | `docker compose up -d api --force-recreate` | ❌ | Сбрасывает контейнер к **старому image** → пропадают Улей (`/api/admin/hive/*` → 404), новый код, иногда `httpx` |
 | Менять `ports:` в compose без `docker cp` | ❌ | То же: новый контейнер = старый image |
+
+**Правило Agent (жёстко):** после любых правок backend на прод — только `python scripts/deploy_stable.py` (нужен `admin-ui/dist`). Не «ускорять» через `deploy_api.py` / ручной `docker cp` выбранных файлов. Разница — десятки секунд, цена — сломанный вход.
 
 **После любого `docker compose up` / recreate / смены `ports:` на VPS:**
 
@@ -495,8 +499,8 @@ cd backend
 | Статус сервисов | `python scripts/deploy_helper.py status` | `docker compose ps`, логи api |
 | Credentials после install | `python scripts/deploy_helper.py creds` | Показать admin-пароль с VPS |
 | **Первичная установка VPS** | `python scripts/deploy_helper.py install` | Новый сервер: clone main, .env, docker |
-| **Полный деплой backend** | `python scripts/deploy_stable.py` | Все `app/*.py` + `ai/*.py` + admin-ui/dist |
-| Точечный API-деплой | `python scripts/deploy_api.py` | auth, vpn, users, admin, vk_auth + dist |
+| **Деплой backend на прод (всегда)** | `python scripts/deploy_stable.py` | Все `app/**/*.py` + `ai/**/*.py` + admin-ui/dist. Не пропускать «ради скорости». |
+| `deploy_api.py` / тематические | **не для прода-фиксов** | Хардкод FILES: файл не в списке = старый код в контейнере (вход 500, 2026-08-16) |
 | VK Calls / агент | `python scripts/deploy_vk_calls.py` | VK auth, vk_manager, admin-ui |
 | ConfigSync | `python scripts/deploy_config_sync.py` | `sync-state` и связанные файлы |
 | OTA API на backend | `python scripts/deploy_update_backend.py` | Endpoint `/api/updates` (без .exe/.apk) |
@@ -508,14 +512,14 @@ cd backend
 
 **Детали и списки файлов каждого скрипта:** `backend/DEPLOY.md` (не дублировать здесь).
 
-**Типовой цикл после правок backend:**
+**Типовой цикл после правок backend (единственный для Agent):**
 
 ```powershell
 cd backend\admin-ui; npm run build; cd ..
 python scripts/deploy_stable.py
 ```
 
-Точечно (быстрее): `python scripts/deploy_api.py` или тематический скрипт из таблицы.
+Не использовать `deploy_api.py` «потому что быстрее»: он копирует только свой список FILES, не весь `app/`. Инцидент 2026-08-16 — сломанный вход, потому что не попал `app/models/device.py`.
 
 ### PC OTA (`pc` → `pc/scripts/`)
 
@@ -804,6 +808,21 @@ cd pc; npm install; npm run dev
 - Теперь любой `HB socks CONNECT fail` на WB сразу переводит сессию в recover-путь (без ожидания второй ошибки).
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
+
+### 2026-08-16 — Вход: Internal Server Error (модель Device)
+
+- После фикса онлайна Улья `deploy_api.py` копировал hive/vpn-код с `device.preferred_server`, но **не** `app/models/device.py`. Образ API был без поля → 500 на login/connect/servers/internal/online.
+- Модель залита в контейнер. Правило: на прод backend **только** `deploy_stable.py` (копирует все `.py`), не точечный FILES-список.
+
+### 2026-08-16 — Админка: все пользователи в списках
+
+- «Пользователи» и «Подписки» брали `limit=100/200`, дашборд считал всех — ранние аккаунты не находились поиском.
+- `GET /api/admin/users` без лимита отдаёт полный список.
+
+### 2026-08-16 — Временно все тарифы 15 ₽ (тест оплаты)
+
+- На проде `PRICE_MONTHLY/QUARTERLY/YEARLY=15`. Откат: 199 / 499 / 1499.
+- YuMoney берёт 15 ₽ с любого тарифа. Кнопки в уже стоящих клиентах 1.0.161 могут ещё показывать старые цифры — сумма в браузере будет 15.
 
 ### 2026-08-16 — Улей: онлайн на Сервере 2/3 (Сота 1/2)
 

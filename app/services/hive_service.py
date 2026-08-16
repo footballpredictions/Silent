@@ -162,11 +162,12 @@ async def apply_manual_server_cell(
     commit: bool = False,
 ) -> HiveCell:
     """Держать cell_id = выбранный Сервер 1/2/3, не отдавать слот балансиру."""
-    raw = preferred_server if preferred_server is not None else device.preferred_server
+    raw = preferred_server if preferred_server is not None else getattr(device, "preferred_server", None)
     key, cell = await resolve_manual_server_cell(db, raw)
-    if device.cell_id != cell.id or device.preferred_server != key:
+    if device.cell_id != cell.id or getattr(device, "preferred_server", None) != key:
         device.cell_id = cell.id
-        device.preferred_server = key
+        if hasattr(device, "preferred_server"):
+            device.preferred_server = key
         if commit:
             await db.commit()
     return cell
@@ -552,7 +553,7 @@ async def resolve_cell_for_device(
     force_queen: bool = False,
 ) -> HiveCell:
     """Липкое назначение; ручной Сервер 1/2/3 не трогаем."""
-    if is_manual_server_pin(device.preferred_server):
+    if is_manual_server_pin(getattr(device, "preferred_server", None)):
         return await apply_manual_server_cell(db, device, commit=True)
     queen = await ensure_queen_cell(db)
     if force_queen or not settings.HIVE_WORKER_ROUTING_ENABLED:

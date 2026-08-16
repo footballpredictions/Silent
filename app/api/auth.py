@@ -220,6 +220,8 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(e) or "Сервис временно недоступен. Попробуйте позже.",
             )
+        except (AttributeError, TypeError) as e:
+            logger.error("login ensure_device_session skipped: %s", e)
 
     return TokenResponse(
         access_token=create_access_token(user.id),

@@ -66,13 +66,16 @@ cd backend
 
 ## Какие исходники заливает каждый скрипт
 
-### `deploy_stable.py` — всё Python backend
+### `deploy_stable.py` — всё Python backend (**единственный деплой на прод**)
 
 - **Все** `app/**/*.py`
 - **Все** `ai/**/*.py`
 - `admin-ui/dist/**` (нужен `npm run build`)
+- `cell-agent/*.py`, `fix_tunnel_dnat`
 
-### `deploy_api.py`
+Не заменять на `deploy_api.py` «ради скорости»: точечный FILES-список легко забыть модель/сервис → 500 в контейнере (вход 2026-08-16, не попал `app/models/device.py`).
+
+### `deploy_api.py` — не использовать для прода-фиксов
 
 | Файл на VPS |
 |-------------|
@@ -150,20 +153,16 @@ python scripts/deploy_build_agent.py      # скрипты + secrets на VPS
 ## Типовые команды
 
 ```powershell
-# Полный деплой после правок backend
+# Единственный деплой backend на прод (все .py в контейнер)
 cd admin-ui; npm run build; cd ..
 python scripts/deploy_stable.py
-
-# Только API
-python scripts/deploy_api.py
-
-# VK / агент / VK ID
-python scripts/deploy_vk_calls.py
 
 # Диагностика
 python scripts/deploy_helper.py check
 python scripts/deploy_helper.py status
 ```
+
+`deploy_api.py` / `deploy_vk_calls.py` — не для прода-фиксов: копируют только свой FILES-список.
 
 Перед любым деплоем с admin-ui: `cd admin-ui && npm run build`.
 

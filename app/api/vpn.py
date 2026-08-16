@@ -243,9 +243,12 @@ async def get_vpn_servers(
     if device:
         from app.services import hive_service
 
-        selected, cell = await hive_service.resolve_manual_server_cell(db, device.preferred_server)
-        if device.preferred_server != selected or device.cell_id != cell.id:
-            device.preferred_server = selected
+        selected, cell = await hive_service.resolve_manual_server_cell(
+            db, getattr(device, "preferred_server", None)
+        )
+        if getattr(device, "preferred_server", None) != selected or device.cell_id != cell.id:
+            if hasattr(device, "preferred_server"):
+                device.preferred_server = selected
             device.cell_id = cell.id
             await db.commit()
     servers = await list_manual_vpn_servers(db)
@@ -271,7 +274,7 @@ async def select_vpn_server(
         raise HTTPException(status_code=404, detail="Сессия устройства не найдена. Войдите снова.")
     servers = await list_manual_vpn_servers(db)
     return VpnServersResponse(
-        selected_server=device.preferred_server or "server1",
+        selected_server=getattr(device, "preferred_server", None) or "server1",
         servers=[VpnServerInfo(**item) for item in servers],
     )
 

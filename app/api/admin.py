@@ -3,7 +3,7 @@ import json
 import os
 import psutil
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, BackgroundTasks, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import tempfile
@@ -310,13 +310,13 @@ async def get_stats(
 
 @router.get("/users")
 async def list_users(
-    skip: int = 0,
-    limit: int = 50,
+    skip: int = Query(0, ge=0),
+    limit: int | None = Query(None, ge=1, le=100000, description="Не задан — все пользователи"),
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
     admin_email = settings.ADMIN_LOGIN.lower()
-    result = await db.execute(
+    q = (
         select(User)
         .where(User.email != "__bootstrap__@silent.local")
         .order_by(
@@ -327,27 +327,66 @@ async def list_users(
             User.created_at.desc(),
         )
         .offset(skip)
-        .limit(limit)
     )
+    if limit is not None:
+        q = q.limit(limit)
+    result = await db.execute(q)
     users = result.scalars().all()
 
     from app.services.test_mode_settings import is_registration_test_mode_enabled
     global_test = await is_registration_test_mode_enabled(db)
 
+    from app.services.subscription_service import TEST_PLAN, is_user_admin
+
+    user_ids = [u.id for u in users]
+    dev_map: dict = {}
+    hash_map: dict = {}
+    subs_by_user: dict = {}
+    if user_ids:
+        for uid, n in (
+            await db.execute(
+                select(Device.user_id, func.count(Device.id))
+                .where(Device.user_id.in_(user_ids), Device.is_active == True)  # noqa: E712
+                .group_by(Device.user_id)
+            )
+        ).all():
+            dev_map[uid] = int(n)
+        for uid, n in (
+            await db.execute(
+                select(VkHash.user_id, func.count(VkHash.id))
+                .where(VkHash.user_id.in_(user_ids), VkHash.is_active == True)  # noqa: E712
+                .group_by(VkHash.user_id)
+            )
+        ).all():
+            hash_map[uid] = int(n)
+        for sub in (
+            await db.execute(
+                select(Subscription)
+                .where(
+                    Subscription.user_id.in_(user_ids),
+                    Subscription.status == "active",
+                )
+                .order_by(Subscription.expires_at.desc())
+            )
+        ).scalars().all():
+            subs_by_user.setdefault(sub.user_id, []).append(sub)
+
     out = []
-    from app.services.subscription_service import is_user_admin, get_display_subscription
     for user in users:
         admin = is_user_admin(user)
         individual_test = bool(getattr(user, "test_mode_personal", False))
         excluded = bool(getattr(user, "test_mode_excluded", False))
         in_test = (not admin) and (individual_test or (global_test and not excluded))
-        sub = await get_display_subscription(db, user, in_test_mode=in_test)
-        dev_count = (await db.execute(
-            select(func.count(Device.id)).where(Device.user_id == user.id, Device.is_active == True)
-        )).scalar_one()
-        hash_count = (await db.execute(
-            select(func.count(VkHash.id)).where(VkHash.user_id == user.id, VkHash.is_active == True)
-        )).scalar_one()
+        sub = None
+        for candidate in subs_by_user.get(user.id, []):
+            if not candidate.is_active:
+                continue
+            if candidate.plan_type == TEST_PLAN and not in_test:
+                continue
+            sub = candidate
+            break
+        hash_count = hash_map.get(user.id, 0)
+        dev_count = dev_map.get(user.id, 0)
 
         out.append({
             "id": str(user.id),

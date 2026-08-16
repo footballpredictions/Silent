@@ -42,7 +42,7 @@ export default function UsersPage({ token }: { token: string }) {
   const fetchUsers = async () => {
     setLoading(true)
     setError(null)
-    const res = await fetch('/api/admin/users?limit=100', { headers })
+    const res = await fetch('/api/admin/users', { headers })
     if (!res.ok) {
       setError('Не удалось загрузить пользователей')
       setLoading(false)
@@ -90,7 +90,10 @@ export default function UsersPage({ token }: { token: string }) {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <h1 className="text-xl font-bold">Пользователи</h1>
+        <div>
+          <h1 className="text-xl font-bold">Пользователи</h1>
+          <p className="text-xs text-[#666] mt-1">{loading ? '…' : `${filtered.length} из ${users.length}`}</p>
+        </div>
         <SearchInput
           value={search}
           onChange={setSearch}

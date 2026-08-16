@@ -107,7 +107,7 @@ export default function VkPage({ token }: { token: string }) {
     try {
       const [sr, ur] = await Promise.all([
         fetch('/api/admin/vk/status', { headers: authH }),
-        fetch('/api/admin/users?limit=100', { headers: authH }),
+        fetch('/api/admin/users', { headers: authH }),
       ])
       const s = await parseApi(sr)
       const u = await parseApi(ur)

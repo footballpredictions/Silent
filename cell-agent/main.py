@@ -676,6 +676,27 @@ async def olcrtc2_create(
 HIVE_MANIFEST_PATH = Path("/etc/wdtt/hive_manifest.json")
 
 
+class WgKickRequest(BaseModel):
+    wg_public_key: str
+
+
+@app.post("/v1/wg/kick")
+async def wg_kick(
+    req: WgKickRequest,
+    x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
+):
+    """Улей снимает живой WG peer при отзыве подписки."""
+    _auth(x_cell_agent_secret)
+    try:
+        from standby_runtime import kick_wg_peer
+    except ImportError:
+        kick_wg_peer = None  # type: ignore
+    if kick_wg_peer is None:
+        raise HTTPException(status_code=503, detail="standby_runtime unavailable")
+    ok = bool(kick_wg_peer(req.wg_public_key))
+    return {"ok": ok}
+
+
 @app.post("/v1/sync-manifest")
 async def sync_manifest(
     payload: dict[str, Any],

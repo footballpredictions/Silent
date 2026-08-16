@@ -26,6 +26,11 @@ async def hive_cell_maintenance_loop() -> None:
                 stale_off = await clear_stale_online_status(db)
                 if stale_off:
                     logger.info("Hive stale-online cleanup: %s device(s) marked offline", stale_off)
+                from app.services.vpn_kick import kick_connected_without_subscription
+
+                kicked = await kick_connected_without_subscription(db)
+                if kicked:
+                    logger.info("Hive vpn kick: %s connected device(s) without subscription", kicked)
                 agent_stats = await auto_upgrade_cell_agents(db)
                 if agent_stats.get("upgraded"):
                     logger.info("Hive cell-agent sync: upgraded %s cell(s)", agent_stats["upgraded"])

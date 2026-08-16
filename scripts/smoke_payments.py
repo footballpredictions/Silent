@@ -60,7 +60,7 @@ def main() -> int:
     check("plans has monthly/quarterly/yearly", {"monthly", "quarterly", "yearly"} <= plan_ids, str(plan_ids))
 
     r = client.get("/api/payments/success-page")
-    check("success-page", r.status_code == 200 and "text/html" in r.headers.get("content-type", ""), f"HTTP {r.status_code}")
+    check("success-page", r.status_code == 200 and "text/html" in r.headers.get("content-type", "") and "silentvpn://payment" in (r.text or ""), f"HTTP {r.status_code}")
 
     # Unsigned/forged notification must be rejected outright.
     r = client.post("/api/payments/yumoney/notify", data={

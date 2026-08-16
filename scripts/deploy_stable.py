@@ -80,13 +80,8 @@ find app ai -name '*.py' | while read f; do
   docker exec {CONTAINER} mkdir -p "/app/$(dirname "$f")"
   docker cp "$f" {CONTAINER}:/app/"$f"
 done
-docker exec {CONTAINER} mkdir -p /app/cell-agent
-for f in cell-agent/main.py cell-agent/standby_runtime.py; do
-  if [ -f "$f" ]; then
-    docker cp "$f" {CONTAINER}:/app/"$f"
-  fi
-done
 docker exec {CONTAINER} pip install -q paramiko httpx redis disposable-email-domains 2>/dev/null || true
+# cell-agent смонтирован :ro с хоста — docker cp туда падает; файлы уже на /opt/.../cell-agent
 docker compose restart api nginx
 sleep 14
 bash /tmp/fix_tunnel_dnat.sh

@@ -100,6 +100,7 @@ _PAYMENT_SUCCESS_HTML = """<!DOCTYPE html>
   .brand{color:#fff;font-size:13px;font-weight:700;letter-spacing:3px;margin-bottom:32px;opacity:0.5}
   h1{color:#fff;font-size:22px;font-weight:700;margin-bottom:16px}
   p{color:#888;font-size:15px;line-height:1.7}
+  a.btn{color:#fff;text-decoration:none;font-size:16px;display:inline-block;margin-top:28px;padding:12px 24px;border:1px solid #22c55e;border-radius:12px;background:#22c55e22}
   .hint{margin-top:24px;color:#555;font-size:13px}
 </style>
 </head>
@@ -108,9 +109,20 @@ _PAYMENT_SUCCESS_HTML = """<!DOCTYPE html>
   <div class="brand">SILENT VPN</div>
   <div class="icon">&#10003;</div>
   <h1>Оплата принята</h1>
-  <p>Подписка будет активирована автоматически в течение минуты — вернитесь в приложение.</p>
-  <p class="hint">Можно закрыть эту страницу.</p>
+  <p>Открываем приложение — подписка обновится на экране «Подписка».</p>
+  <a class="btn" href="silentvpn://payment" id="openApp">Вернуться в Silent VPN</a>
+  <p class="hint" id="hint">Если приложение не открылось — нажмите кнопку выше.</p>
 </div>
+<script>
+(function(){
+  var link = "silentvpn://payment";
+  try { window.location.href = link; } catch (e) {}
+  setTimeout(function(){
+    var el = document.getElementById("hint");
+    if (el) el.textContent = "Если приложение не открылось — нажмите «Вернуться в Silent VPN».";
+  }, 1200);
+})();
+</script>
 </body>
 </html>"""
 

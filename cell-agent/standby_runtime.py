@@ -78,6 +78,31 @@ def _wg_iface() -> str | None:
     return None
 
 
+def kick_wg_peer(public_key: str) -> bool:
+    """Снимает peer с живого wdtt0 — отзыв подписки без HTTP от клиента."""
+    pub = (public_key or "").strip()
+    if not pub or len(pub) < 40:
+        return False
+    iface = _wg_iface()
+    if not iface:
+        logger.warning("wg kick: interface not found")
+        return False
+    try:
+        r = subprocess.run(
+            ["wg", "set", iface, "peer", pub, "remove"],
+            capture_output=True,
+            timeout=10,
+        )
+        if r.returncode == 0:
+            logger.info("wg kick: removed peer %s… on %s", pub[:12], iface)
+            return True
+        logger.debug("wg kick %s: rc=%s", pub[:12], r.returncode)
+        return False
+    except Exception as e:
+        logger.debug("wg kick %s: %s", pub[:12], e)
+        return False
+
+
 def apply_manifest_peers(manifest: dict | None = None) -> int:
     """Синхронизирует WireGuard peers из manifest (для VPN без API Улья)."""
     global _last_peer_sync_version
@@ -97,6 +122,10 @@ def apply_manifest_peers(manifest: dict | None = None) -> int:
             continue
         pub = (d.get("wg_public_key") or "").strip()
         if not pub or len(pub) < 40:
+            continue
+        if not bool(d.get("vpn_allowed", True)):
+            if kick_wg_peer(pub):
+                applied += 1
             continue
         addr = (d.get("wg_address") or "10.66.66.2/32").strip()
         allowed = addr if "/" in addr else f"{addr}/32"

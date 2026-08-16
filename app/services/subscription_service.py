@@ -6,7 +6,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.models import User, Subscription
+from app.models import User, Subscription, Device
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -466,7 +466,7 @@ async def grant_manual_subscription(
 
 
 async def revoke_subscription(db: AsyncSession, user: User) -> int:
-    """Cancel all active subscriptions for the user. Returns count cancelled."""
+    """Cancel all active subscriptions and drop live VPN sessions."""
     active_result = await db.execute(
         select(Subscription)
         .where(Subscription.user_id == user.id, Subscription.status == "active")
@@ -476,5 +476,17 @@ async def revoke_subscription(db: AsyncSession, user: User) -> int:
         if sub.is_active:
             sub.status = "cancelled"
             cancelled += 1
+    user.updated_at = datetime.utcnow()
+    devices = await db.execute(
+        select(Device).where(Device.user_id == user.id, Device.is_connected == True)  # noqa: E712
+    )
+    for device in devices.scalars().all():
+        device.is_connected = False
     await db.commit()
+    try:
+        from app.services.vpn_kick import kick_user_vpn_sessions
+
+        await kick_user_vpn_sessions(db, user)
+    except Exception as e:
+        logger.warning("revoke: live VPN kick failed: %s", e, exc_info=True)
     return cancelled

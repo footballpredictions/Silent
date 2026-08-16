@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
-import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -27,19 +26,21 @@ from app.services.hive_load import (
     queen_vpn_has_headroom,
     queen_vpn_spill_threshold,
 )
+from app.services.hive_slots import (
+    cell_name_number,
+    is_manual_server_pin,
+    is_manual_server_slot,
+    parse_manual_slot,
+    slot_for_cell,
+    slot_title,
+)
 
 logger = logging.getLogger(__name__)
 
 CELL_STATUSES_ACTIVE = frozenset({"active"})
 CELL_STATUSES_ASSIGNABLE = frozenset({"active"})
 BOOTSTRAP_USER_EMAIL = "__bootstrap__@silent.local"
-_CELL_NUM_RE = re.compile(r"(\d+)", re.IGNORECASE)
 OLCRTC_STICKY_ONLINE_SEC = 300
-
-
-def cell_name_number(name: str) -> int | None:
-    m = _CELL_NUM_RE.search(name or "")
-    return int(m.group(1)) if m else None
 
 
 def cell_list_sort_key(cell: HiveCell) -> tuple:
@@ -54,19 +55,14 @@ def _server_key_for_cell(cell: HiveCell) -> str:
     return "queen" if cell.is_queen else f"cell:{cell.id}"
 
 
-MANUAL_SERVER_SLOTS = ("server1", "server2", "server3")
+def _manual_pin_sql():
+    """Любой ручной слот serverN (не queen/main)."""
+    return Device.preferred_server.like("server%")
 
 
-def slot_for_cell(cell: HiveCell) -> str:
-    """Фиксированные слоты UI: Сервер 1 = Улей, 2 = Сота 1, 3 = Сота 2."""
-    if cell.is_queen:
-        return "server1"
-    num = cell_name_number(cell.name)
-    if num == 1:
-        return "server2"
-    if num == 2:
-        return "server3"
-    return ""
+def _manual_worker_pin_sql():
+    """Пины на соты: server2, server3, server4… — не переносить на Улей."""
+    return and_(Device.preferred_server.like("server%"), Device.preferred_server != "server1")
 
 
 async def _worker_cells(db: AsyncSession) -> list[HiveCell]:
@@ -80,40 +76,55 @@ async def _worker_cells(db: AsyncSession) -> list[HiveCell]:
     return sorted(rows, key=cell_list_sort_key)
 
 
-async def _cell_for_manual_slot(db: AsyncSession, slot: str) -> HiveCell:
+async def _build_manual_server_entries(db: AsyncSession) -> list[tuple[str, str, HiveCell]]:
+    """Улей + каждая сота: Сервер 1, 2, 3, 4… по имени (Сота N → server{N+1})."""
     queen = await ensure_queen_cell(db)
-    if slot == "server1":
-        return queen
+    workers = await _worker_cells(db)
+    entries: list[tuple[str, str, HiveCell]] = [("server1", slot_title("server1"), queen)]
+    used = {"server1"}
+    for cell in workers:
+        slot = slot_for_cell(cell)
+        if not slot or slot in used:
+            n = 2
+            while f"server{n}" in used:
+                n += 1
+            slot = f"server{n}"
+        used.add(slot)
+        entries.append((slot, slot_title(slot), cell))
+    return entries
+
+
+async def _cell_for_manual_slot(db: AsyncSession, slot: str) -> HiveCell:
+    n = parse_manual_slot(slot)
+    if n is None or n <= 1:
+        return await ensure_queen_cell(db)
+    for key, _title, cell in await _build_manual_server_entries(db):
+        if key == slot:
+            return cell
     workers = await _worker_cells(db)
     by_num: dict[int, HiveCell] = {}
     for cell in workers:
         num = cell_name_number(cell.name)
         if num is not None and num not in by_num:
             by_num[num] = cell
-    if slot == "server2":
-        return by_num.get(1) or (workers[0] if workers else queen)
-    if slot == "server3":
-        return by_num.get(2) or (workers[1] if len(workers) > 1 else (workers[0] if workers else queen))
-    return queen
+    worker_num = n - 1
+    if worker_num in by_num:
+        return by_num[worker_num]
+    idx = n - 2
+    if 0 <= idx < len(workers):
+        return workers[idx]
+    return await ensure_queen_cell(db)
 
 
 async def manual_server_entries(db: AsyncSession) -> list[tuple[str, str, HiveCell]]:
-    """Три фиксированных слота, не список всех сот по индексу.
-
-    Лишние/offline соты больше не сдвигают Сервер 2/3 на «Сота 3».
-    """
-    titles = {"server1": "Сервер 1", "server2": "Сервер 2", "server3": "Сервер 3"}
-    entries: list[tuple[str, str, HiveCell]] = []
-    for slot in MANUAL_SERVER_SLOTS:
-        entries.append((slot, titles[slot], await _cell_for_manual_slot(db, slot)))
-    return entries
+    return await _build_manual_server_entries(db)
 
 
 async def resolve_manual_server_cell(
     db: AsyncSession,
     preferred_server: str | None,
 ) -> tuple[str, HiveCell]:
-    """Всегда возвращает ключ server1/2/3 и ячейку Улей / Сота 1 / Сота 2."""
+    """Ключ serverN и ячейка. Неизвестные слоты → Улей (server1)."""
     raw = (preferred_server or "").strip().lower()
     if raw.startswith("cell:"):
         raw_id = raw.split(":", 1)[1].strip()
@@ -127,17 +138,15 @@ async def resolve_manual_server_cell(
                 slot = slot_for_cell(direct)
                 if slot:
                     return slot, direct
-                return "server3", await _cell_for_manual_slot(db, "server3")
-    if raw in MANUAL_SERVER_SLOTS:
+                for key, _title, cell in await _build_manual_server_entries(db):
+                    if cell.id == direct.id:
+                        return key, direct
+                return "server1", await ensure_queen_cell(db)
+    if raw in ("queen", "main", ""):
+        return "server1", await _cell_for_manual_slot(db, "server1")
+    if is_manual_server_slot(raw):
         return raw, await _cell_for_manual_slot(db, raw)
     return "server1", await _cell_for_manual_slot(db, "server1")
-
-
-def is_manual_server_pin(preferred_server: str | None) -> bool:
-    return (preferred_server or "").strip().lower() in MANUAL_SERVER_SLOTS
-
-
-_SLOT_TITLES = {"server1": "Сервер 1", "server2": "Сервер 2", "server3": "Сервер 3"}
 
 
 def _device_on_cell_clause(cell: HiveCell):
@@ -148,7 +157,7 @@ def _device_on_cell_clause(cell: HiveCell):
             Device.preferred_server == slot,
             and_(
                 Device.cell_id == cell.id,
-                ~Device.preferred_server.in_(MANUAL_SERVER_SLOTS),
+                ~_manual_pin_sql(),
             ),
         )
     return Device.cell_id == cell.id
@@ -176,8 +185,7 @@ async def apply_manual_server_cell(
 async def repair_manual_server_cell_ids(db: AsyncSession) -> int:
     """Вернуть cell_id по preferred_server (server2→Сота 1, server3→Сота 2)."""
     n = 0
-    for slot in MANUAL_SERVER_SLOTS:
-        cell = await _cell_for_manual_slot(db, slot)
+    for slot, _title, cell in await _build_manual_server_entries(db):
         result = await db.execute(
             update(Device)
             .where(
@@ -459,7 +467,7 @@ async def migrate_devices_to_queen(db: AsyncSession) -> int:
         .where(
             Device.is_active == True,  # noqa: E712
             Device.cell_id != queen.id,
-            ~Device.preferred_server.in_(("server2", "server3")),
+            ~_manual_worker_pin_sql(),
         )
         .values(cell_id=queen.id)
     )
@@ -745,7 +753,7 @@ def cell_to_response(
         "priority": cell.priority,
         "accepts_wdtt": bool(cell.is_queen or getattr(cell, "accepts_wdtt", True)),
         "manual_slot": slot_for_cell(cell) or None,
-        "manual_slot_title": _SLOT_TITLES.get(slot_for_cell(cell) or ""),
+        "manual_slot_title": slot_title(slot_for_cell(cell)) if slot_for_cell(cell) else None,
         "last_seen_at": cell.last_seen_at,
         "last_error": cell.last_error,
         "created_at": cell.created_at,
@@ -866,7 +874,7 @@ async def _pop_offline_device(db: AsyncSession, cell_id: uuid.UUID) -> Device | 
             Device.cell_id == cell_id,
             Device.is_active == True,  # noqa: E712
             Device.is_connected == False,  # noqa: E712
-            ~Device.preferred_server.in_(MANUAL_SERVER_SLOTS),
+            ~_manual_pin_sql(),
         )
         .order_by(Device.last_connected.asc().nullsfirst(), Device.created_at.asc())
         .limit(1)

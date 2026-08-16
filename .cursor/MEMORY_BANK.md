@@ -809,7 +809,76 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
-### 2026-08-16 — Вход: Internal Server Error (модель Device)
+### 2026-08-17 — Оплата: временный VPN до возврата из браузера (не после SMS)
+
+- Webhook после SMS приходит раньше YuMoney success-page. Клиент больше не гасит bootstrap в фоне — иначе на LTE белый экран вместо «Вернуться в Silent VPN».
+- Подписка в UI помечается completed, туннель живёт, пока приложение в фоне; гасится на `onResume` / `silentvpn://payment`.
+- Android debug APK; PC — не стопать bootstrap, пока окно скрыто.
+
+### 2026-08-17 — Оплата: подтверждение не крутит спиннер, если подписка уже есть
+
+- Временный VPN оплаты больше не гасится при возврате из браузера «потому что профиль уже загружен» — только после `subscription.is_active`.
+- Если на главном подписка уже активна, экран «Подписка» сразу показывает успех, а не вечное ожидание webhook.
+- Если туннель упал в фоне — поднимаем его снова, пока подтверждение не завершилось. `runEphemeralApiBootstrap` во время ожидания оплаты не вызываем (он рвал hold в `finally`).
+- Android debug APK; PC тот же UX подтверждения.
+
+### 2026-08-17 — Оплата: вернуться в приложение, не на сайт; не выкидывать из аккаунта
+
+- YuMoney «вернуться на сайт» открывает `silentvpn://payment` (страница success с кнопкой и авто-редиректом).
+- Android больше не показывает экран входа из‑за временного VPN оплаты — сессия сохраняется, открывается «Подписка».
+- Профиль обновляется **пока bootstrap ещё жив**; туннель гасится после `subscription.is_active`.
+- Poll label сохраняется, чтобы после возврата из браузера добрать webhook.
+- Прод: `python scripts/deploy_stable.py` (только api+nginx, wdtt не трогали). Health 200, success-page с `silentvpn://payment`.
+
+### 2026-08-17 — Отзыв UX + любые серверы + YuMoney bootstrap
+
+- Snackbar «Failed to connect» при отзыве подписки больше не показывается: всегда текст про оформление подписки.
+- Слоты серверов универсальные: Улей=`server1`, Сота N=`server{N+1}` (Сота 3 → Сервер 4). Список в меню с `GET /api/vpn/servers`, не хардкод 1/2/3.
+- Оплата без интернета: по кнопке тарифа поднимается временный bootstrap VPN (как подтверждение почты) и держится, пока открыт YuMoney / идёт poll.
+- Android debug APK; backend слоты — `deploy_stable.py` когда добавите новую соту.
+
+### 2026-08-17 — Android: тумблер на том же сервере не видел отзыв подписки
+
+- Смена сервера + Connect шла в `getConfig` → 402. Тумблер на том же слоте поднимал WG из кеша (`connect cache slot=`) и API не спрашивал.
+- Теперь каждый Connect заново fetch’ит конфиг (на LTE через bootstrap). 402 → paywall, кеш WG чистится. Выдача подписки по-прежнему через тот же fetch (200).
+- Overlay после main VPN и kick чужих GETCONF-peer’ов не включаем.
+
+### 2026-08-16 — ИНЦИДЕНТ: kick GETCONF extras снимал VPN у всех на соте
+
+- Sweeper каждые ~10 с брал «самый свежий» GETCONF-peer на Соте 2 и удалял его. Это были чужие сессии (`10.66.0.16/19/27/30`).
+- Откат: kick только известный `Device.wg_public_key` / IP. Угадывание extras выключено.
+- Деплой: `python scripts/deploy_stable.py`. Пользователям на Соте 1/2: переподключить VPN.
+
+### 2026-08-16 — Отзыв на соте: один раз, потом GETCONF поднимает VPN снова
+
+- Лог телефона: Сота 2, живой GETCONF `wg=10.66.0.25`, handshake живой. «Ошибки» — `UAPIOpen permission denied` и `mobile excluded API outside overlay` (ожидаемо, overlay после main VPN нет).
+- Первый kick снимал leftover `10.66.0.23` (совпал с `last_connected`), живой peer не трогал. GETCONF сразу выдавал новый ключ. Sweeper ставил `is_connected=false` и больше не бил.
+- Фикс `vpn_kick.py`: на соте бить **самый свежий** GETCONF extra; не биндить leftover в `devices`; 25 мин watchlist после revoke; sweeper каждые ~10 с повторяет kick, пока GETCONF не перестанет поднимать peer.
+- Деплой: `python scripts/deploy_stable.py`. Overlay после main VPN не включаем.
+
+### 2026-08-16 — Отзыв VPN: kick по SSH на соту
+
+- Первый kick не сработал: клиент на соте, cell-agent ещё без `/v1/wg/kick`, HTTP 404, peer жил.
+- Теперь revoke снимает peer по SSH (`wg set wdtt0 peer remove`) — тот же канал, что провижининг. Плюс поиск по `allowed-ips`.
+- Стабильный деплой повторно, health OK.
+
+
+
+- Залит `python scripts/deploy_stable.py` (не точечный `deploy_api.py`).
+- `vpn_kick.py` + revoke снимают живой WG peer; cell-agent `/v1/wg/kick`.
+- `docker compose restart` только `api`/`nginx`. wdtt-server не трогали.
+- Tunnel health `10.66.66.1:8000` OK. Админку не пересобирали.
+- В `deploy_stable.py` убран `docker cp` в `cell-agent` (`:ro` volume обрывал скрипт до restart).
+
+### 2026-08-16 — LTE: отзыв подписки через GETCONF + снятие WG peer
+
+- HTTP overlay после включения на LTE не дотягивается до API (приложение excluded, nip.io в БС). Выдача подписки при connect работала, отзыв — нет.
+- Сервер при revoke снимает живой WireGuard peer (`wg set … remove`) на Улье и сотах. Это гасит интернет в туннеле без HTTP от клиента.
+- Клиент раз в 30 с повторяет GETCONF по уже живому DTLS. Если сервер ответит `DENIED:` — VPN гаснет и UI снимает подписку.
+- Overlay `/users/me` оставлен как запасной путь (таймер 2 мин только после успеха, повтор через 20 с при ошибке).
+- Нужен деплой backend (`deploy_stable.py`), иначе на проде peer не снимется. Debug APK с новым libclient.
+
+
 
 - После фикса онлайна Улья `deploy_api.py` копировал hive/vpn-код с `device.preferred_server`, но **не** `app/models/device.py`. Образ API был без поля → 500 на login/connect/servers/internal/online.
 - Модель залита в контейнер. Правило: на прод backend **только** `deploy_stable.py` (копирует все `.py`), не точечный FILES-список.
@@ -881,6 +950,36 @@ cd pc; npm install; npm run dev
 - Сота: `ECONNREFUSED 10.66.66.1:8000` больше не орём в лог — сразу public, туннель API не долбим.
 - Сборка: `pc/build-debug-510510/win-unpacked/SilentVPN-Admin.bat`.
 - Push `pc`: `37807de` `fix(pc): keep VKCalls connect and skip dead tunnel API noise`.
+
+### 2026-08-16 — Android LTE: Silent снова вне туннеля
+
+- Прошлая сборка держала приложение внутри WG на LTE → VK/TURN шли в свой туннель, воркеры замирали на 2–3, VPN не работал.
+- Main VPN снова **всегда** excludes Silent (как 1.0.160). Overlay только кратко для `/users/me` и initial sync. `bindProcessToNetwork` снят — он тоже уводил libclient в WG.
+- Сборка: `android/SilentVPN-debug.apk`.
+
+### 2026-08-16 — Android LTE: приложение в туннеле, без overlay
+
+- Overlay в 1.0.160 обновлял подписку только в момент включения: выдача с сервера видна, отзыв после включения — нет (приложение снова excluded, до API не достучаться).
+- На LTE Silent теперь сразу внутри WG (`0.0.0.0/0` не трогаем). HTTP на `10.66.66.1` весь сеанс. Интернет не мигает, старт не медленнее.
+- Опрос `/users/me` каждые 2 мин: и выдача, и отзыв. Если на сервере подписки нет — клиент сам гасит VPN.
+- Backend: revoke поднимает `user.updated_at` и сбрасывает online устройств.
+- Сборка: `android/SilentVPN-debug.apk`. Backend на прод — когда скажешь «деплой».
+
+### 2026-08-16 — Android LTE: снова overlay как в 1.0.160
+
+- В 1.0.160 приложение excluded из WG. На LTE public nip.io режется, proxy до `10.66.66.1` не доходит. Работал **один overlay при включении**: кратко AllowedIPs = `10.66.66.0/24` + приложение внутри туннеля → HTTP на `10.66.66.1`.
+- 1.0.161 сломал это: `082f7fd` убрал overlay, `31fa2ae` пошёл в public, потом proxy-only. Отсюда «Ошибка синхронизации», дёрганье тумблера и «подписка кончилась» при живой подписке.
+- Вернул путь 160: initial sync через `withApiOverlayBrief`, user API (промо/подписка/оплата) — overlay brief, TunnelApiProxy только на Wi‑Fi. Версию не поднимали.
+
+### 2026-08-16 — Android LTE: полный VPN + proxy, без дёрганья overlay
+
+- Overlay на тумблере рвал `0.0.0.0/0` → `10.66.66.0/24` (интернет мигал), HTTP за 350 мс не успевал → «Ошибка синхронизации». Потом ConfigSync на LTE ждал overlay вечно, подписку с сервера не брал.
+- Теперь полный туннель не трогаем. App excluded ходит в API через TunnelApiProxy (`127.0.0.1` → `10.66.66.1`), не через заблокированный nip.io. Подписка опрашивается и на LTE при живом VPN.
+
+### 2026-08-16 — Android: вернули overlay на тумблере (подписка на LTE)
+
+- Коммиты `082f7fd` (без overlay) и `31fa2ae` (public first) на мобильном интернете при блокировках nip.io не дотягивали `/users/me` → в UI «подписка кончилась», хотя она живая.
+- Снова: включение VPN → overlay `10.66.66.0/24` → профиль/хеши через `10.66.66.1`. Подписка/оплата на LTE — `withApiOverlayBrief`, не public API.
 
 ### 2026-08-16 — PC/Android: update + sync + реферал и с VPN, и без
 

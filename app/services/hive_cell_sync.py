@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.security import decrypt_value
-from app.models import Device, HiveCell
+from app.models import Device, HiveCell, User
 from app.services.hive_incidents import push_incident
 from app.services.hive_service import _validate_outbound_url, get_cell_by_id
 
@@ -20,8 +20,14 @@ _last_manifest_version: int = 0
 _last_sync_at: datetime | None = None
 
 
+def invalidate_manifest_cache() -> None:
+    """Force next sync_all_cell_manifests to push (subscription revoke)."""
+    global _last_manifest_version
+    _last_manifest_version = 0
+
+
 async def manifest_version(db: AsyncSession) -> int:
-    """Версия manifest: число устройств + время последнего изменения (last_connected / created_at)."""
+    """Версия manifest: устройства + last_connected + user.updated_at (отзыв подписки)."""
     result = await db.execute(
         select(
             func.count(Device.id),
@@ -32,7 +38,10 @@ async def manifest_version(db: AsyncSession) -> int:
     count = int(row[0] or 0)
     updated = row[1]
     ts = int(updated.timestamp()) if updated else 0
-    return count * 1_000_000 + (ts % 1_000_000)
+    user_row = await db.execute(select(func.max(User.updated_at)))
+    user_updated = user_row.scalar_one_or_none()
+    user_ts = int(user_updated.timestamp()) if user_updated else 0
+    return count * 1_000_000 + ((ts + user_ts) % 1_000_000)
 
 
 async def build_cell_manifest(db: AsyncSession, cell: HiveCell) -> dict:

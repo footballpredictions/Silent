@@ -26,6 +26,7 @@ FILES = [
     "app/models/user.py",
     "app/models/device.py",
     "app/services/subscription_service.py",
+    "app/services/vpn_kick.py",
     "app/services/test_mode_settings.py",
     "app/services/registration_settings.py",
     "app/services/threat_filter_settings.py",

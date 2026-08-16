@@ -32,6 +32,7 @@ import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.UserProfile
 import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.data.VpnHashesResponse
+import com.silent.vpn.policy.ConfigSyncSkipPolicy
 import com.silent.vpn.policy.OlcrtcSessionPolicy
 import com.silent.vpn.security.AppIntegrity
 import com.silent.vpn.service.SilentVpnService
@@ -97,6 +98,8 @@ class MainViewModel @Inject constructor(
     private val _paymentState = MutableStateFlow(PaymentUiState.IDLE)
     val paymentState: StateFlow<PaymentUiState> = _paymentState
     private var paymentPollJob: Job? = null
+    private val _openSubscriptionMenu = MutableStateFlow(false)
+    val openSubscriptionMenu: StateFlow<Boolean> = _openSubscriptionMenu
 
     private val _vpnState = MutableStateFlow(VpnState.DISCONNECTED)
     val vpnState: StateFlow<VpnState> = _vpnState
@@ -161,12 +164,15 @@ class MainViewModel @Inject constructor(
     private var silentBootstrapSync = false
     /** Serialize Apply + connect ensure — иначе второй вызов видит silentBootstrapSync и сразу false. */
     private val olcrtcConfigEnsureMutex = Mutex()
+    private val paymentBootstrapMutex = Mutex()
     private var profilePollJob: Job? = null
     private var vpnProfilePollJob: Job? = null
     @Volatile private var sessionsFetchInFlight = false
     private var updateApiBaseUrl: String? = null
     /** One-shot: пользователь уже нажал CONNECT, ждём обновление подписки и повторяем автоматически. */
     private var pendingConnectAfterSubscriptionRefresh = false
+    /** Временный bootstrap VPN для YuMoney, пока открыт браузер оплаты. */
+    private var paymentBootstrapHeld = false
     /** Должен быть объявлен до init — tunnelReady.collect может сработать в конструкторе. */
     private val pendingHashFailures = ConcurrentLinkedQueue<Triple<String, String, String>>()
     private var hashFailureFlushJob: Job? = null
@@ -177,7 +183,7 @@ class MainViewModel @Inject constructor(
         }
 
         override fun onProfile(profile: UserProfile) {
-            applyServerProfile(profile)
+            applyServerProfile(profile, force = true)
         }
 
         override fun onHashesUpdated(items: List<HashItemDto>, applyToTunnel: Boolean) {
@@ -202,7 +208,10 @@ class MainViewModel @Inject constructor(
             repo.isLoggedIn() &&
                 !bootstrapVpnMode &&
                 _screen.value == AppScreen.MAIN &&
-                !repo.isOnMobileData()
+                ConfigSyncSkipPolicy.subscriptionPollAllowed(
+                    onMobileData = repo.isOnMobileData(),
+                    mainVpnUp = repo.isMainVpnTunnelUp(),
+                )
 
         override fun onWifiSyncTickStart() {
             flushPendingHashFailures()
@@ -300,6 +309,7 @@ class MainViewModel @Inject constructor(
             restoreCachedProfileToUi()
             restoreCachedThemeToUi()
             syncVpnStateFromSystem()
+            restorePaymentBootstrapIfNeeded()
             DebugLog.i(
                 "MainViewModel",
                 "session restore bypass=${repo.getBypassFamily()} olcrtc=${repo.isOlcrtcBypass()} provider=${repo.getOlcrtcProvider()}",
@@ -342,6 +352,9 @@ class MainViewModel @Inject constructor(
         com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener = configSyncListener
         com.silent.vpn.sync.VpnDataSyncBridge.onCycleCompleted = {
             applyCachedProfileAfterSync()
+            viewModelScope.launch {
+                ConfigSyncCoordinator.refreshWifiSubscriptionNow(repo, configSyncListener)
+            }
         }
         com.silent.vpn.sync.VpnDataSyncBridge.onOtaCheckInOverlaySession = {
             checkForAppUpdate(inOverlaySession = true)
@@ -360,7 +373,14 @@ class MainViewModel @Inject constructor(
                     (_vpnState.value == VpnState.CONNECTING || _vpnState.value == VpnState.CONNECTED)
                 ) {
                     DebugLog.e("MainViewModel", "WDTT error: $err")
-                    if (bootstrapVpnMode) {
+                    if (paymentBootstrapHeld) {
+                        DebugLog.w("MainViewModel", "payment bootstrap WDTT: $err")
+                        if (isBootstrapFatalError(err) && isAppForeground() && isPaidSubscriptionConfirmed()) {
+                            paymentBootstrapHeld = false
+                            bootstrapVpnMode = false
+                            bootstrapContext?.let { stopVpnLocally(it) }
+                        }
+                    } else if (bootstrapVpnMode) {
                         _statusMsg.value = err
                         if (isBootstrapFatalError(err)) {
                             _vpnState.value = VpnState.DISCONNECTED
@@ -368,6 +388,9 @@ class MainViewModel @Inject constructor(
                             cancelBootstrapSessionTimeout()
                             bootstrapContext?.let { stopVpnLocally(it) }
                         }
+                    } else if (isSubscriptionAccessError(err)) {
+                        markLocalSubscriptionInactive()
+                        _vpnError.value = subscriptionRequiredMessage()
                     } else {
                         _vpnError.value = err
                     }
@@ -380,6 +403,11 @@ class MainViewModel @Inject constructor(
                     if (_vpnState.value == VpnState.DISCONNECTING) return@collect
                     DebugLog.i("MainViewModel", "tunnel ready")
                     if (bootstrapVpnMode && WdttTunnelManager.isBootstrapMode()) {
+                        if (paymentBootstrapHeld) {
+                            repo.ensureBootstrapTunnelApi()
+                            DebugLog.i("MainViewModel", "payment bootstrap tunnel ready")
+                            return@collect
+                        }
                         val workersOk = !bootstrapRequiresActiveWorkers() ||
                             WdttTunnelManager.activeWorkers.value >= 1
                         if (workersOk) {
@@ -639,13 +667,7 @@ class MainViewModel @Inject constructor(
             reconcileLoginBootstrapSession(appContext)
         }
         if (SilentVpnService.isRunning && VpnSessionState.isActive()) {
-            if (isMainVpnSessionForUi()) {
-                _screen.value = AppScreen.MAIN
-                restoreVpnUiAfterForeground()
-            } else {
-                _screen.value = AppScreen.LOGIN
-                restoreVpnUiAfterForeground()
-            }
+            routeVpnSessionUi()
             return
         }
         syncSessionOnResume()
@@ -654,20 +676,158 @@ class MainViewModel @Inject constructor(
     fun onAppResumed() {
         if (!repo.isLoggedIn()) {
             reconcileLoginBootstrapSession(appContext)
-        } else if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
+        } else if (bootstrapVpnMode && !paymentBootstrapHeld && _vpnState.value == VpnState.CONNECTED) {
             restartBootstrapTimerIfNeeded()
         }
         if (SilentVpnService.isRunning && VpnSessionState.isActive()) {
-            if (isMainVpnSessionForUi()) {
-                if (_screen.value != AppScreen.MAIN) _screen.value = AppScreen.MAIN
-                restoreVpnUiAfterForeground()
+            routeVpnSessionUi()
+            return
+        }
+        restorePaymentBootstrapIfNeeded()
+        syncSessionOnResume()
+    }
+
+    /** Залогиненный пользователь + bootstrap оплаты — остаёмся на главном, не на входе. */
+    private fun routeVpnSessionUi() {
+        if (!repo.isLoggedIn()) {
+            _screen.value = AppScreen.LOGIN
+            restoreVpnUiAfterForeground()
+            return
+        }
+        _screen.value = AppScreen.MAIN
+        restorePaymentBootstrapIfNeeded()
+        if (isMainVpnSessionForUi()) {
+            restoreVpnUiAfterForeground()
+        }
+    }
+
+    private fun requestOpenSubscription() {
+        _openSubscriptionMenu.value = true
+    }
+
+    fun consumeOpenSubscriptionMenu() {
+        _openSubscriptionMenu.value = false
+    }
+
+    private fun isPaymentConfirmationPending(): Boolean =
+        paymentBootstrapHeld ||
+            _paymentState.value == PaymentUiState.WAITING ||
+            repo.getPendingPaymentLabel().isNotBlank()
+
+    private fun isPaidSubscriptionConfirmed(): Boolean {
+        val p = _profile.value ?: return false
+        return p.is_admin || p.subscription.is_active
+    }
+
+    private fun isPaymentBootstrapTunnelUp(): Boolean =
+        WdttTunnelManager.isBootstrapMode() &&
+            SilentVpnService.isRunning &&
+            WdttTunnelManager.tunnelReady.value
+
+    private fun holdPaymentBootstrapIfRunning() {
+        paymentBootstrapHeld = true
+        bootstrapVpnMode = true
+        bootstrapContext = appContext
+        repo.ensureBootstrapTunnelApi()
+    }
+
+    private fun isAppForeground(): Boolean = MainActivity.isForeground
+
+    /** Успех в UI. Временный VPN пока не трогаем — YuMoney ещё грузит success-page. */
+    private fun markPaymentConfirmedUi() {
+        _paymentState.value = PaymentUiState.COMPLETED
+        _vpnError.value = null
+        pendingConnectAfterSubscriptionRefresh = false
+    }
+
+    /**
+     * Гасим временный VPN только в приложении.
+     * После SMS webhook приходит раньше страницы «Вернуться» — если выключить туннель
+     * в браузере, на LTE будет белый экран вместо success-page.
+     */
+    private fun finishPaymentIfAppVisible() {
+        markPaymentConfirmedUi()
+        if (isAppForeground()) {
+            releasePaymentBootstrapAfterReturn()
+        }
+    }
+
+    private fun releasePaymentBootstrapAfterReturn() {
+        paymentPollJob?.cancel()
+        paymentPollJob = null
+        markPaymentConfirmedUi()
+        repo.clearPendingPaymentLabel()
+        stopPaymentBootstrap(appContext)
+    }
+
+    private fun maybeCompletePaymentFromProfile(profile: UserProfile) {
+        if (!isPaymentConfirmationPending()) return
+        if (profile.is_admin || profile.subscription.is_active) {
+            finishPaymentIfAppVisible()
+        }
+    }
+
+    /** YuMoney «вернуться на сайт» → silentvpn://payment */
+    fun onPaymentReturnedFromBrowser() {
+        if (repo.isLoggedIn()) {
+            _screen.value = AppScreen.MAIN
+        }
+        requestOpenSubscription()
+        viewModelScope.launch {
+            if (isPaidSubscriptionConfirmed()) {
+                releasePaymentBootstrapAfterReturn()
+                return@launch
+            }
+            if (isPaymentBootstrapTunnelUp()) {
+                holdPaymentBootstrapIfRunning()
+            } else if (isPaymentConfirmationPending()) {
+                ensurePaymentBootstrapHeld(appContext)
+            }
+            val label = repo.getPendingPaymentLabel()
+            if (label.isNotBlank() &&
+                _paymentState.value != PaymentUiState.WAITING &&
+                _paymentState.value != PaymentUiState.COMPLETED
+            ) {
+                startPaymentPoll(label)
+            }
+            applyPaidSubscriptionIfReady()
+        }
+    }
+
+    private fun restorePaymentBootstrapIfNeeded() {
+        if (!repo.isLoggedIn()) return
+        if (isPaidSubscriptionConfirmed() && isPaymentConfirmationPending() && isAppForeground()) {
+            releasePaymentBootstrapAfterReturn()
+            return
+        }
+        val pending = repo.getPendingPaymentLabel()
+        val waiting = _paymentState.value == PaymentUiState.WAITING || pending.isNotBlank()
+        if (waiting) {
+            requestOpenSubscription()
+            if (isPaymentBootstrapTunnelUp()) {
+                holdPaymentBootstrapIfRunning()
             } else {
-                _screen.value = AppScreen.LOGIN
-                restoreVpnUiAfterForeground()
+                viewModelScope.launch { ensurePaymentBootstrapHeld(appContext) }
+            }
+            if (
+                pending.isNotBlank() &&
+                (_paymentState.value == PaymentUiState.IDLE || _paymentState.value == PaymentUiState.TIMEOUT)
+            ) {
+                startPaymentPoll(pending)
             }
             return
         }
-        syncSessionOnResume()
+        if (paymentBootstrapHeld && isPaymentBootstrapTunnelUp()) {
+            requestOpenSubscription()
+            return
+        }
+        val bootUp = WdttTunnelManager.isBootstrapMode() && SilentVpnService.isRunning
+        if (bootUp && pending.isBlank() && !paymentBootstrapHeld) {
+            DebugLog.i("MainViewModel", "leftover bootstrap while logged in — stop, keep session")
+            bootstrapVpnMode = false
+            stopVpnLocally(appContext)
+            repo.clearTunnelApiBase()
+        }
     }
 
     /** На LTE до initial sync не показываем устаревшую подписку из кеша. */
@@ -701,19 +861,29 @@ class MainViewModel @Inject constructor(
         VpnServiceTracker.reconcileStaleSession(appContext)
         when {
             VpnSessionState.isActive() -> {
-                _vpnState.value = VpnState.CONNECTED
                 restoreCachedProfileToUi()
                 restoreCachedThemeToUi()
-                if (!isMainVpnSessionForUi()) {
+                if (repo.isLoggedIn() && !isMainVpnSessionForUi()) {
+                    _screen.value = AppScreen.MAIN
+                    restorePaymentBootstrapIfNeeded()
+                } else if (!isMainVpnSessionForUi()) {
+                    _vpnState.value = VpnState.CONNECTED
                     _screen.value = AppScreen.LOGIN
+                } else {
+                    _vpnState.value = VpnState.CONNECTED
                 }
             }
             SilentVpnService.isRunning -> {
-                _vpnState.value = VpnState.CONNECTED
-                if (isMainVpnSessionForUi()) {
+                if (repo.isLoggedIn() && !isMainVpnSessionForUi()) {
+                    SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "logged-in bootstrap — stay MAIN")
+                    _screen.value = AppScreen.MAIN
+                    restorePaymentBootstrapIfNeeded()
+                } else if (isMainVpnSessionForUi()) {
+                    _vpnState.value = VpnState.CONNECTED
                     SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "CONNECTED attach")
                     attachExistingSession()
                 } else {
+                    _vpnState.value = VpnState.CONNECTED
                     SessionTrace.mark("MainViewModel.syncVpnStateFromSystem", "bootstrap attach")
                     _screen.value = AppScreen.LOGIN
                     reconcileLoginBootstrapSession(appContext)
@@ -753,7 +923,9 @@ class MainViewModel @Inject constructor(
                     runCatching {
                         if (bootstrapVpnMode && SilentVpnService.isRunning) {
                             withBootstrapBackendApi { fetchProfileNow(force = true) }
-                            if (_profile.value != null) {
+                            if (isPaidSubscriptionConfirmed() && isPaymentConfirmationPending() && isAppForeground()) {
+                                releasePaymentBootstrapAfterReturn()
+                            } else if (_profile.value != null && !isPaymentConfirmationPending()) {
                                 disconnectBootstrapVpn(appContext)
                             }
                         } else if (!repo.isOnMobileData()) {
@@ -874,6 +1046,108 @@ class MainViewModel @Inject constructor(
             withContext(Dispatchers.IO) {
                 VpnConnectHelper.ensureCleanSlate(context.applicationContext)
             }
+        }
+    }
+
+    private suspend fun needsPaymentInternetBridge(): Boolean {
+        if (hasVpnAccess()) return false
+        return repo.isOnMobileData() ||
+            repo.isMainVpnTunnelUp() ||
+            paymentBootstrapHeld ||
+            !repo.isPublicBackendReachable(forceProbe = true)
+    }
+
+    private suspend fun waitVpnServiceDown() {
+        repeat(24) {
+            if (!SilentVpnService.isRunning && !WdttTunnelManager.running.value) return
+            delay(250)
+        }
+    }
+
+    /** Как подтверждение почты при регистрации: bootstrap VPN остаётся включённым, пока идёт оплата. */
+    private suspend fun ensurePaymentBootstrapHeld(context: Context): Boolean =
+        paymentBootstrapMutex.withLock { ensurePaymentBootstrapHeldLocked(context) }
+
+    private suspend fun ensurePaymentBootstrapHeldLocked(context: Context): Boolean {
+        if (isPaidSubscriptionConfirmed()) {
+            markPaymentConfirmedUi()
+            if (isAppForeground()) {
+                releasePaymentBootstrapAfterReturn()
+                return true
+            }
+            if (isPaymentBootstrapTunnelUp()) {
+                holdPaymentBootstrapIfRunning()
+                return true
+            }
+        }
+        if (isPaymentBootstrapTunnelUp()) {
+            holdPaymentBootstrapIfRunning()
+            return true
+        }
+        if (repo.isMainVpnTunnelUp() || (SilentVpnService.isRunning && !WdttTunnelManager.isBootstrapMode())) {
+            DebugLog.i("MainViewModel", "payment bootstrap: stop main VPN first")
+            stopVpnLocally(context)
+            waitVpnServiceDown()
+        }
+        if (!isHashReady()) return false
+        val boot = HashParser.extract(repo.getBootstrapHash().orEmpty()) ?: return false
+        val fp = runCatching { repo.getDeviceFingerprint() }.getOrNull() ?: return false
+        var config = runCatching {
+            val res = repo.getApi().bootstrapConfig(BootstrapConfigRequest(boot, repo.getApiDeviceType(), fp))
+            if (res.isSuccessful) bootstrapLaunchConfig(res.body()!!) else null
+        }.getOrNull()
+        if (config == null || config.vk_hashes.isEmpty()) {
+            config = bootstrapLaunchConfig(BootstrapVpnConfig.build(boot, fp))
+        }
+        if (config.vk_hashes.isEmpty()) return false
+
+        paymentBootstrapHeld = true
+        bootstrapVpnMode = true
+        bootstrapContext = context.applicationContext
+        silentBootstrapSync = false
+        repo.clearTunnelApiBase()
+        DebugLog.i("MainViewModel", "payment bootstrap start")
+        launchVpnService(context.applicationContext, config, forceBootstrap = true)
+        var attempt = 0
+        while (attempt < EPHEMERAL_TUNNEL_WAIT_ITER) {
+            delay(250)
+            if (!paymentBootstrapHeld) return false
+            if (!WdttTunnelManager.tunnelReady.value || !WdttTunnelManager.isBootstrapMode()) {
+                attempt++
+                continue
+            }
+            if (
+                bootstrapRequiresActiveWorkers() &&
+                WdttTunnelManager.activeWorkers.value < 1 &&
+                attempt < 24
+            ) {
+                attempt++
+                continue
+            }
+            if (WdttTunnelManager.isBootstrapMode() && SilentRepository.APP_EXCLUDED_FROM_VPN && attempt < 32) {
+                attempt++
+                continue
+            }
+            repo.ensureBootstrapTunnelApi()
+            DebugLog.i("MainViewModel", "payment bootstrap held (attempt ${attempt + 1})")
+            return true
+        }
+        DebugLog.w("MainViewModel", "payment bootstrap: tunnel not ready")
+        stopPaymentBootstrap(context)
+        return false
+    }
+
+    private fun stopPaymentBootstrap(context: Context) {
+        if (!paymentBootstrapHeld && !(repo.isLoggedIn() && bootstrapVpnMode && WdttTunnelManager.isBootstrapMode())) {
+            paymentBootstrapHeld = false
+            return
+        }
+        DebugLog.i("MainViewModel", "payment bootstrap stop")
+        paymentBootstrapHeld = false
+        if (repo.isLoggedIn()) {
+            bootstrapVpnMode = false
+            stopVpnLocally(context)
+            repo.clearTunnelApiBase()
         }
     }
 
@@ -1030,41 +1304,97 @@ class MainViewModel @Inject constructor(
     /** Обновить профиль/подписку/хеши: tunnel (VPN ON) → Wi‑Fi public → ephemeral bootstrap (LTE). */
     fun refreshAccountData(force: Boolean = true, onResult: ((Boolean, String?) -> Unit)? = null) {
         viewModelScope.launch {
-            if (_accountRefreshing.value) return@launch
-            _accountRefreshing.value = true
-            try {
-                val subBefore = _profile.value?.subscription?.is_active
-                var ok = tryTunnelAccountRefresh()
+            val (ok, msg) = refreshAccountDataSuspend(force)
+            onResult?.invoke(ok, msg)
+        }
+    }
+
+    private suspend fun refreshAccountDataSuspend(force: Boolean = true): Pair<Boolean, String?> {
+        if (_accountRefreshing.value) return false to null
+        _accountRefreshing.value = true
+        try {
+            val subBefore = _profile.value?.subscription?.is_active
+            var ok = false
+            val paymentHold = isPaymentConfirmationPending()
+            if (paymentHold) {
+                if (!isPaymentBootstrapTunnelUp()) {
+                    runCatching { ensurePaymentBootstrapHeld(appContext) }
+                }
+                ok = runCatching {
+                    withEphemeralBackendApi { fetchProfileNow(force = true) }
+                }.getOrDefault(false)
+                if (!ok) {
+                    ok = tryPublicAccountRefresh()
+                    if (!ok && isPaymentBootstrapTunnelUp()) {
+                        repo.ensureBootstrapTunnelApi()
+                    }
+                }
+            } else {
+                if (paymentBootstrapHeld || (bootstrapVpnMode && WdttTunnelManager.isBootstrapMode() && repo.isLoggedIn())) {
+                    ok = runCatching {
+                        withEphemeralBackendApi { fetchProfileNow(force = true) }
+                    }.getOrDefault(false)
+                }
+                if (!ok) ok = tryTunnelAccountRefresh()
                 if (!ok) ok = tryPublicAccountRefresh()
                 if (!ok) ok = runEphemeralApiBootstrap(appContext, force = force)
-                val subAfter = _profile.value?.subscription?.is_active
-                val msg = when {
-                    ok -> {
-                        when {
-                            subAfter == true ->
-                                "Данные обновлены · подписка активна"
-                            subAfter == false ->
-                                "Данные обновлены · подписка не активна"
-                            else -> "Данные обновлены"
-                        }
-                    }
-                    repo.isMainVpnTunnelUp() ->
-                        "Не удалось обновить через VPN-туннель. Подождите несколько секунд и повторите."
-                    !force && !repo.mayRunEphemeralSync(force = true) -> {
-                        val sec = repo.ephemeralSyncCooldownSec()
-                        if (sec != null) "Подождите $sec сек. перед повтором." else null
-                    }
-                    else ->
-                        "Не удалось получить профиль с сервера. Дождитесь подключения служебного туннеля и повторите."
-                }
-                if (ok && subBefore == subAfter && subBefore != null) {
-                    DebugLog.i("MainViewModel", "refreshAccountData: subscription unchanged (active=$subAfter)")
-                }
-                onResult?.invoke(ok, msg)
-            } finally {
-                _accountRefreshing.value = false
             }
+            val subAfter = _profile.value?.subscription?.is_active
+            val msg = when {
+                ok -> {
+                    when {
+                        subAfter == true ->
+                            "Данные обновлены · подписка активна"
+                        subAfter == false ->
+                            "Данные обновлены · подписка не активна"
+                        else -> "Данные обновлены"
+                    }
+                }
+                repo.isMainVpnTunnelUp() ->
+                    "Не удалось обновить через VPN-туннель. Подождите несколько секунд и повторите."
+                !force && !repo.mayRunEphemeralSync(force = true) -> {
+                    val sec = repo.ephemeralSyncCooldownSec()
+                    if (sec != null) "Подождите $sec сек. перед повтором." else null
+                }
+                else ->
+                    "Не удалось получить профиль с сервера. Дождитесь подключения служебного туннеля и повторите."
+            }
+            if (ok && subBefore == subAfter && subBefore != null) {
+                DebugLog.i("MainViewModel", "refreshAccountData: subscription unchanged (active=$subAfter)")
+            }
+            return ok to msg
+        } finally {
+            _accountRefreshing.value = false
         }
+    }
+
+    private suspend fun applyPaidSubscriptionIfReady(): Boolean {
+        if (isPaidSubscriptionConfirmed()) {
+            finishPaymentIfAppVisible()
+            return true
+        }
+        for (attempt in 1..8) {
+            if (isPaidSubscriptionConfirmed() || _paymentState.value == PaymentUiState.COMPLETED) {
+                finishPaymentIfAppVisible()
+                return true
+            }
+            if (_accountRefreshing.value) {
+                delay(1500)
+                continue
+            }
+            val (ok, _) = refreshAccountDataSuspend(force = true)
+            if (ok && isPaidSubscriptionConfirmed()) {
+                DebugLog.i("MainViewModel", "payment subscription active (attempt $attempt)")
+                finishPaymentIfAppVisible()
+                return true
+            }
+            delay(1500)
+        }
+        if (isPaidSubscriptionConfirmed()) {
+            finishPaymentIfAppVisible()
+            return true
+        }
+        return false
     }
 
     private data class ConnectFetchResult(
@@ -1167,21 +1497,34 @@ class MainViewModel @Inject constructor(
 
         if (!accessDenied && vpnConfig == null && publicFailed) {
             if (runEphemeralApiBootstrap(context, force = true)) {
-                val cached = loadCachedVpnConfig()
-                vpnConfig = cached?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
-                if (vpnConfig != null) {
-                    repo.mergeSavedHashesIntoCachedConfig()
-                    vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
+                if (!hasVpnAccess()) {
+                    accessDenied = true
+                    apiError = subscriptionRequiredMessage()
+                } else {
+                    val cached = loadCachedVpnConfig()
+                    vpnConfig = cached?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
+                    if (vpnConfig != null) {
+                        repo.mergeSavedHashesIntoCachedConfig()
+                        vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
+                    }
                 }
             }
         }
 
-        if (vpnConfig == null) {
+        // LTE: после отзыва не поднимать старый WG, если API не подтвердил доступ.
+        if (vpnConfig == null && !accessDenied && hasVpnAccess() && !repo.isOnMobileData()) {
             vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
         }
-        if (vpnConfig == null && repo.hasMainVpnServerHashes()) {
+        if (vpnConfig == null && !accessDenied && hasVpnAccess() && !repo.isOnMobileData() && repo.hasMainVpnServerHashes()) {
             ensureVpnConfigRestored(context)
             vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
+        }
+
+        if (vpnConfig == null && !hasVpnAccess()) {
+            accessDenied = true
+            apiError = subscriptionRequiredMessage()
+        } else if (accessDenied) {
+            apiError = subscriptionRequiredMessage()
         }
 
         return ConnectFetchResult(vpnConfig, apiError, accessDenied)
@@ -1351,7 +1694,7 @@ class MainViewModel @Inject constructor(
     private var updateCheckInFlight = false
     private var otaCheckedThisVpnSession = false
 
-    /** OTA: public HTTPS и с VPN, и без; tunnel только запасной. */
+    /** OTA: Wi‑Fi — public HTTPS; LTE — overlay только до initial sync, потом direct tunnel. */
     fun checkForAppUpdate(inOverlaySession: Boolean = false) {
         if (updateCheckInFlight) return
         if (!inOverlaySession && otaCheckedThisVpnSession) return
@@ -1375,7 +1718,7 @@ class MainViewModel @Inject constructor(
                     }.getOrDefault(false)
                 }
 
-                if (!ok) {
+                if (!ok && !repo.isOnMobileData()) {
                     val bases = listOf(
                         repo.getPublicServerUrl().trimEnd('/'),
                         "https://${SilentRepository.DEFAULT_SERVER_HOST}",
@@ -1753,7 +2096,7 @@ class MainViewModel @Inject constructor(
             val res = repo.getApi().getProfile()
             if (res.isSuccessful) {
                 val p = res.body()!!
-                applyServerProfile(p)
+                applyServerProfile(p, force = true)
                 repo.saveCachedProfile(p)
                 p.vk_user_id?.let { repo.saveVkUserId(it) }
                 DebugLog.i("MainViewModel", "fetchProfile OK via $base")
@@ -2052,6 +2395,10 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun disconnectBootstrapVpn(context: Context) {
+        if (isPaymentConfirmationPending() && !isPaidSubscriptionConfirmed()) {
+            DebugLog.i("MainViewModel", "keep payment bootstrap until subscription confirmed")
+            return
+        }
         if (!bootstrapVpnMode) return
         cancelBootstrapSessionTimeout()
         bootstrapDeadlineMs = 0L
@@ -2542,6 +2889,15 @@ class MainViewModel @Inject constructor(
             SessionTrace.exit("MainViewModel.connect", "integrity_fail")
             return
         }
+        val stopPaymentFirst = paymentBootstrapHeld ||
+            (repo.isLoggedIn() && WdttTunnelManager.isBootstrapMode() && SilentVpnService.isRunning)
+        if (stopPaymentFirst) {
+            DebugLog.i("MainViewModel", "connect: stop payment/bootstrap VPN first")
+            paymentBootstrapHeld = false
+            bootstrapVpnMode = false
+            stopVpnLocally(context.applicationContext)
+            _vpnState.value = VpnState.DISCONNECTED
+        }
         if (_vpnState.value == VpnState.CONNECTING || _vpnState.value == VpnState.DISCONNECTING) {
             val stuckOlcrtc =
                 repo.isOlcrtcBypass() &&
@@ -2564,7 +2920,7 @@ class MainViewModel @Inject constructor(
                 return
             }
         }
-        if (VpnSessionState.isActive()) {
+        if (!stopPaymentFirst && VpnSessionState.isActive()) {
             SessionTrace.mark("MainViewModel.connect", "attach existing session")
             DebugLog.i("MainViewModel", "connect attach — shared session already active")
             _vpnState.value = VpnState.CONNECTED
@@ -2574,7 +2930,7 @@ class MainViewModel @Inject constructor(
             SessionTrace.exit("MainViewModel.connect", "attached")
             return
         }
-        if (_vpnState.value == VpnState.CONNECTED && SilentVpnService.isRunning) {
+        if (!stopPaymentFirst && _vpnState.value == VpnState.CONNECTED && SilentVpnService.isRunning) {
             SessionTrace.exit("MainViewModel.connect", "already connected")
             DebugLog.i("MainViewModel", "connect ignored: already connected")
             return
@@ -2586,6 +2942,9 @@ class MainViewModel @Inject constructor(
         _vpnError.value = null
         connectJob = viewModelScope.launch {
             DebugLog.i("MainViewModel", "connect() start")
+            if (stopPaymentFirst) {
+                waitVpnServiceDown()
+            }
             bootstrapVpnMode = false
             backendSyncCompleted = false
             otaCheckedThisVpnSession = false
@@ -2609,33 +2968,8 @@ class MainViewModel @Inject constructor(
                     "connect",
                     "pre-check subCached=$subCached mobile=${repo.isOnMobileData()} vpnUp=${VpnSessionState.isActive()}",
                 )
-                val cachedCfg = loadCachedVpnConfig()?.takeIf { cachedConfigMatchesPreferred(it) }
-                val lteStaleSubConnect = repo.isOnMobileData() &&
-                    cachedCfg != null &&
-                    isConfigConnectable(cachedCfg)
-                if (!hasVpnAccess()) {
-                    if (lteStaleSubConnect) {
-                        MobileSyncLog.i(
-                            "connect",
-                            "LTE stale sub cache — connect first, verify in one overlay sync",
-                        )
-                    } else if (repo.isOnMobileData() && !VpnSessionState.isActive()) {
-                        MobileSyncLog.i("connect", "no access on LTE — ephemeral bootstrap")
-                        runEphemeralApiBootstrap(context, force = true)
-                        restoreCachedProfileToUi()
-                        MobileSyncLog.i(
-                            "connect",
-                            "after ephemeral subActive=${_profile.value?.subscription?.is_active}",
-                        )
-                    }
-                    if (!hasVpnAccess() && !lteStaleSubConnect) {
-                        pendingConnectAfterSubscriptionRefresh = true
-                        _vpnState.value = VpnState.DISCONNECTED
-                        _vpnError.value = null
-                        _vpnError.value = subscriptionRequiredMessage()
-                        return@launch
-                    }
-                }
+                // Не стартуем из WG-кеша и не paywall по старому профилю: на том же
+                // сервере тумблер иначе игнорирует отзыв (402 только при смене слота).
 
                 val fp = runCatching { repo.getDeviceFingerprint() }.getOrElse {
                     if (repo.hasSessionFingerprint()) throw it
@@ -2924,46 +3258,17 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
-                val cached = loadCachedVpnConfig()?.takeIf { cachedConfigMatchesPreferred(it) }
-                if (cached != null && isConfigConnectable(cached)) {
-                    val config = wdttConnectConfig(resolveMainVpnConfig(cached))
-                    if (WdttTunnelManager.running.value) {
-                        _vpnState.value = VpnState.CONNECTED
-                        pendingConnectAfterSubscriptionRefresh = false
-                        attachExistingSession()
-                        return@launch
-                    }
-                    if (android.net.VpnService.prepare(context) != null) {
-                        _vpnError.value = "Нужно разрешение VPN"
-                        _vpnState.value = VpnState.DISCONNECTED
-                        return@launch
-                    }
-                    val connectIntent = VpnTileConnect.buildConnectIntentFromCache(context)
-                    if (connectIntent == null) {
-                        _vpnError.value = "Нет сохранённой конфигурации VPN"
-                        _vpnState.value = VpnState.DISCONNECTED
-                        return@launch
-                    }
-                    DebugLog.i(
-                        "MainViewModel",
-                        "connect cache slot=${repo.getPreferredServer()} selected=${config.selected_server} ip=${config.server_ip}",
-                    )
-                    androidx.core.content.ContextCompat.startForegroundService(context, connectIntent)
-                    viewModelScope.launch {
-                        if (!repo.isOnMobileData()) {
-                            runCatching { refreshWifiSubscriptionProfile() }
-                        }
-                    }
-                    waitForTunnelReady(context, config.stream_count, relaunchConfig = config)
-                    return@launch
-                }
-
+                DebugLog.i(
+                    "MainViewModel",
+                    "connect fetch slot=${repo.getPreferredServer()} (no WG cache skip)",
+                )
                 val fetch = fetchVpnConfigForConnect(context, fp)
                 var vpnConfig = fetch.vpnConfig
                 val apiError = fetch.apiError
                 val accessDenied = fetch.accessDenied
 
                 if (accessDenied) {
+                    repo.clearCachedVpnConfig()
                     pendingConnectAfterSubscriptionRefresh = true
                     _vpnState.value = VpnState.DISCONNECTED
                     _vpnError.value = null
@@ -2978,8 +3283,11 @@ class MainViewModel @Inject constructor(
 
                 if (vpnConfig == null) {
                     DebugLog.e("MainViewModel", apiError ?: "no vpn config")
-                    _vpnError.value = apiError
-                        ?: "Не удалось восстановить VPN. Проверьте интернет и повторите."
+                    _vpnError.value = if (!hasVpnAccess() && repo.isPublicConnectFailure(apiError)) {
+                        subscriptionRequiredMessage()
+                    } else {
+                        apiError ?: "Не удалось восстановить VPN. Проверьте интернет и повторите."
+                    }
                     _vpnState.value = VpnState.DISCONNECTED
                     return@launch
                 }
@@ -3016,7 +3324,7 @@ class MainViewModel @Inject constructor(
                     return@onFailure
                 }
                 DebugLog.e("MainViewModel", "connect failed", it)
-                _vpnError.value = it.message ?: "Ошибка подключения"
+                _vpnError.value = connectFailureMessage(it.message)
                 _vpnState.value = VpnState.DISCONNECTED
             }
             } catch (e: CancellationException) {
@@ -3043,18 +3351,13 @@ class MainViewModel @Inject constructor(
 
     private fun cachedConfigMatchesPreferred(config: VpnConfig): Boolean {
         val want = repo.getPreferredServer()
-        val selected = config.selected_server?.trim()?.lowercase().orEmpty()
-        val slot = when {
-            selected.isBlank() -> "server1"
-            selected == "server1" || selected == "server2" || selected == "server3" -> selected
-            selected == "queen" || selected == "main" -> "server1"
-            else -> {
-                DebugLog.i(
-                    "MainViewModel",
-                    "skip cache: selected_server=$selected want=$want ip=${config.server_ip}",
-                )
-                return false
-            }
+        val slot = SilentRepository.slotFromSelectedServer(config.selected_server)
+        if (slot == null) {
+            DebugLog.i(
+                "MainViewModel",
+                "skip cache: selected_server=${config.selected_server} want=$want ip=${config.server_ip}",
+            )
+            return false
         }
         val ok = slot == want
         if (!ok) {
@@ -3590,11 +3893,25 @@ class MainViewModel @Inject constructor(
     /** onUrl(url, label) — клиент открывает url во внешнем браузере и запускает poll по label. */
     fun initPayment(planType: String, onUrl: (String, String) -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
+            if (needsPaymentInternetBridge()) {
+                val ok = ensurePaymentBootstrapHeld(appContext)
+                if (!ok) {
+                    onError("Не удалось включить временный интернет для оплаты. Повторите.")
+                    return@launch
+                }
+                runCatching { withEphemeralBackendApi { initPaymentApi(planType) } }
+                    .onSuccess { rememberPaymentAndOpen(it.url, it.label, onUrl) }
+                    .onFailure { e ->
+                        stopPaymentBootstrap(appContext)
+                        onError(e.message ?: "Ошибка оплаты")
+                    }
+                return@launch
+            }
             if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
                 val ok = runEphemeralApiBootstrap(appContext, force = true) {
                     runCatching { initPaymentApi(planType) }
                         .fold(
-                            onSuccess = { r -> onUrl(r.url, r.label); true },
+                            onSuccess = { r -> rememberPaymentAndOpen(r.url, r.label, onUrl); true },
                             onFailure = { e ->
                                 onError(e.message ?: "Ошибка оплаты")
                                 false
@@ -3606,10 +3923,15 @@ class MainViewModel @Inject constructor(
             }
             runCatching {
                 repo.withUserBackendApi { initPaymentApi(planType) }
-            }.onSuccess { onUrl(it.url, it.label) }.onFailure { e ->
+            }.onSuccess { rememberPaymentAndOpen(it.url, it.label, onUrl) }.onFailure { e ->
                 onError(e.message ?: "Ошибка")
             }
         }
+    }
+
+    private fun rememberPaymentAndOpen(url: String, label: String, onUrl: (String, String) -> Unit) {
+        repo.savePendingPaymentLabel(label)
+        onUrl(url, label)
     }
 
     private suspend fun paymentStatusApi(label: String): String {
@@ -3618,16 +3940,49 @@ class MainViewModel @Inject constructor(
         throw IllegalStateException(parseError(res.errorBody()?.string() ?: "") ?: "Ошибка проверки оплаты")
     }
 
-    /** Единый poll для всех клиентов: раз в 4с до completed/failed/expired или таймаута 10 мин. */
+    /** Единый poll: статус оплаты + держим временный VPN, пока пользователь в браузере. */
     fun startPaymentPoll(label: String) {
         paymentPollJob?.cancel()
+        repo.savePendingPaymentLabel(label)
         _paymentState.value = PaymentUiState.WAITING
         paymentPollJob = viewModelScope.launch {
             val deadline = System.currentTimeMillis() + 10 * 60 * 1000L
-            while (System.currentTimeMillis() < deadline) {
+            while (true) {
+                val paid = isPaidSubscriptionConfirmed() || _paymentState.value == PaymentUiState.COMPLETED
+                if (paid && isAppForeground()) {
+                    releasePaymentBootstrapAfterReturn()
+                    return@launch
+                }
+                val hold = isPaymentConfirmationPending() || paid
+                if (hold && !isPaymentBootstrapTunnelUp()) {
+                    runCatching { ensurePaymentBootstrapHeld(appContext) }
+                }
+                if (paid) {
+                    markPaymentConfirmedUi()
+                    delay(2000)
+                    continue
+                }
+                if (System.currentTimeMillis() >= deadline) {
+                    applyPaidSubscriptionIfReady()
+                    if (isPaidSubscriptionConfirmed() || _paymentState.value == PaymentUiState.COMPLETED) {
+                        markPaymentConfirmedUi()
+                        delay(2000)
+                        continue
+                    }
+                    if (_paymentState.value == PaymentUiState.WAITING) {
+                        _paymentState.value = PaymentUiState.TIMEOUT
+                        stopPaymentBootstrap(appContext)
+                    }
+                    return@launch
+                }
                 delay(4000)
                 val status = runCatching {
-                    if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
+                    if (paymentBootstrapHeld || (bootstrapVpnMode && WdttTunnelManager.isBootstrapMode())) {
+                        if (!isPaymentBootstrapTunnelUp()) {
+                            ensurePaymentBootstrapHeld(appContext)
+                        }
+                        withEphemeralBackendApi { paymentStatusApi(label) }
+                    } else if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
                         var result: String? = null
                         runEphemeralApiBootstrap(appContext, force = false) {
                             result = runCatching { paymentStatusApi(label) }.getOrNull()
@@ -3640,19 +3995,22 @@ class MainViewModel @Inject constructor(
                 }.getOrNull()
                 when (status) {
                     "completed" -> {
-                        _paymentState.value = PaymentUiState.COMPLETED
-                        refreshAccountData()
-                        return@launch
+                        requestOpenSubscription()
+                        applyPaidSubscriptionIfReady()
+                        markPaymentConfirmedUi()
+                        if (isAppForeground()) {
+                            releasePaymentBootstrapAfterReturn()
+                            return@launch
+                        }
                     }
                     "failed", "expired" -> {
                         _paymentState.value = PaymentUiState.FAILED
+                        repo.clearPendingPaymentLabel()
+                        stopPaymentBootstrap(appContext)
                         return@launch
                     }
                     else -> { /* pending — keep polling */ }
                 }
-            }
-            if (_paymentState.value == PaymentUiState.WAITING) {
-                _paymentState.value = PaymentUiState.TIMEOUT
             }
         }
     }
@@ -3661,6 +4019,8 @@ class MainViewModel @Inject constructor(
         paymentPollJob?.cancel()
         paymentPollJob = null
         _paymentState.value = PaymentUiState.IDLE
+        repo.clearPendingPaymentLabel()
+        stopPaymentBootstrap(appContext)
     }
 
     private fun hasVpnAccess(): Boolean = hasVpnAccessForProfile(_profile.value)
@@ -3673,18 +4033,23 @@ class MainViewModel @Inject constructor(
 
     /** Обновить UI; при истёкшей подписке на сервере — отключить main VPN. */
     private suspend fun refreshWifiSubscriptionProfile(): Boolean {
-        if (repo.isOnMobileData()) return false
-        return repo.fetchAndSaveProfileViaSync().fold(
+        val result = if (repo.isOnMobileData()) {
+            if (!repo.isMainVpnTunnelUp()) return false
+            repo.fetchProfileLiveViaUser()
+        } else {
+            repo.fetchAndSaveProfileViaSync()
+        }
+        return result.fold(
             onSuccess = { profile ->
                 applyServerProfile(profile, force = true)
                 DebugLog.i(
                     "MainViewModel",
-                    "wifi subscription refresh active=${profile.subscription.is_active}",
+                    "subscription refresh active=${profile.subscription.is_active} mobile=${repo.isOnMobileData()}",
                 )
                 true
             },
             onFailure = { e ->
-                DebugLog.w("MainViewModel", "wifi subscription refresh: ${e.message}")
+                DebugLog.w("MainViewModel", "subscription refresh: ${e.message}")
                 false
             },
         )
@@ -3704,10 +4069,12 @@ class MainViewModel @Inject constructor(
                 runCatching { recoverMissingDeviceSession() }
                     .onFailure { e -> DebugLog.w("MainViewModel", "session recover: ${e.message}") }
             }
+            maybeCompletePaymentFromProfile(profile)
             if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) return
             // дальше — подписка/VPN как обычно
         } else {
             _profile.value = profile
+            maybeCompletePaymentFromProfile(profile)
             if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) return
         }
         val hasAccess = hasVpnAccessForProfile(profile)
@@ -3769,6 +4136,32 @@ class MainViewModel @Inject constructor(
 
     private fun subscriptionRequiredMessage() =
         "Пробный период закончился. Оформите подписку в меню → Подписка."
+
+    private fun connectFailureMessage(raw: String?): String {
+        if (!hasVpnAccess() && (raw.isNullOrBlank() || repo.isPublicConnectFailure(raw))) {
+            return subscriptionRequiredMessage()
+        }
+        return raw ?: "Ошибка подключения"
+    }
+
+    private fun isSubscriptionAccessError(message: String): Boolean {
+        val lower = message.lowercase()
+        return lower.contains("подписка недействительна") ||
+            lower.contains("срок пароля истёк") ||
+            lower.contains("доступ запрещён") ||
+            lower.contains("no_subscription")
+    }
+
+    private fun markLocalSubscriptionInactive() {
+        val p = _profile.value ?: return
+        if (!p.subscription.is_active) return
+        val next = p.copy(
+            subscription = p.subscription.copy(is_active = false, days_left = 0),
+        )
+        repo.saveCachedProfile(next)
+        _profile.value = next
+        DebugLog.i("MainViewModel", "local subscription marked inactive (in-band GETCONF/FATAL_AUTH)")
+    }
 
     private fun isBootstrapFatalError(message: String): Boolean {
         val lower = message.lowercase()

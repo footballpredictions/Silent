@@ -93,8 +93,8 @@ class ConfigSyncSkipPolicyTest {
     }
 
     @Test
-    fun `mobile sync never uses overlay on connect`() {
-        assertFalse(
+    fun `mobile sync uses overlay until initial tunnel sync done`() {
+        assertTrue(
             ConfigSyncSkipPolicy.mobileSyncUsesOverlay(
                 ConfigSyncSkipPolicy.MobileSyncModeInput(
                     onMobileData = true,
@@ -120,5 +120,12 @@ class ConfigSyncSkipPolicyTest {
     fun `wifi subscription poll only on wifi`() {
         assertTrue(ConfigSyncSkipPolicy.wifiSubscriptionPollAllowed(onMobileData = false))
         assertFalse(ConfigSyncSkipPolicy.wifiSubscriptionPollAllowed(onMobileData = true))
+    }
+
+    @Test
+    fun `subscription poll allowed on lte when vpn up`() {
+        assertTrue(ConfigSyncSkipPolicy.subscriptionPollAllowed(onMobileData = false, mainVpnUp = false))
+        assertTrue(ConfigSyncSkipPolicy.subscriptionPollAllowed(onMobileData = true, mainVpnUp = true))
+        assertFalse(ConfigSyncSkipPolicy.subscriptionPollAllowed(onMobileData = true, mainVpnUp = false))
     }
 }

@@ -61,10 +61,12 @@ fun MainActivityRoot(
     val bootstrapExpired by vm.bootstrapExpired.collectAsState()
     val pendingReferralCode by vm.pendingReferralCode.collectAsState()
     val paymentState by vm.paymentState.collectAsState()
+    val openSubscriptionMenu by vm.openSubscriptionMenu.collectAsState()
 
     LaunchedEffect(Unit) {
         activity.handleTileConnectIntent(initialIntent)
         activity.handleReferralDeepLink(initialIntent)
+        activity.handlePaymentDeepLink(initialIntent)
     }
 
     LaunchedEffect(vpnPermissionGranted.value) {
@@ -170,6 +172,8 @@ fun MainActivityRoot(
                         onLoadReferral = vm::loadReferral,
                         onInitPayment = vm::initPayment,
                         paymentState = paymentState,
+                        openSubscriptionMenu = openSubscriptionMenu,
+                        onSubscriptionMenuOpened = vm::consumeOpenSubscriptionMenu,
                         onStartPaymentPoll = vm::startPaymentPoll,
                         onResetPaymentState = vm::resetPaymentState,
                         onOpenUrl = { url ->

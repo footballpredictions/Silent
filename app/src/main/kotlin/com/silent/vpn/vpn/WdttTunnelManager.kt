@@ -852,7 +852,10 @@ object WdttTunnelManager {
                         }
                         val reason = when {
                             lineTrim.contains("неверный пароль", true) -> "Неверный пароль WDTT"
-                            lineTrim.contains("истёк", true) -> "Срок пароля истёк"
+                            lineTrim.contains("истёк", true) ||
+                                lineTrim.contains("no_subscription", true) ||
+                                lineTrim.contains("доступ запрещён", true) ->
+                                "Подписка недействительна"
                             lineTrim.contains("другому устройству", true) -> "Пароль привязан к другому устройству"
                             else -> "Ошибка авторизации WDTT"
                         }
@@ -1751,6 +1754,10 @@ object WdttTunnelManager {
         allowDuringRampUp: Boolean = false,
         skipIntervalThrottle: Boolean = false,
     ): T {
+        if (!isBootstrapMode) {
+            updateLog("overlay_skip", "main VPN: overlay off (access via GETCONF/DTLS)", 50)
+            return block()
+        }
         if (overlayRestoreSuppressed) error("VPN API overlay suppressed")
         if (!needsWgOverlayReload()) return block()
         if (!running.value) return block()
@@ -1780,7 +1787,7 @@ object WdttTunnelManager {
             updateLog("overlay_on", "API overlay brief ON (10.66.66.0/24)", 50)
             helper.startTunnel(config, effectiveExcludeIps(), isBootstrapMode, apiOverlayMode = true)
             apiOverlayActive = true
-            delay(if (allowDuringRampUp) 350L else overlayEnterDelayMs)
+            delay(overlayEnterDelayMs)
             try {
                 block()
             } finally {

@@ -19,8 +19,8 @@ import kotlinx.coroutines.sync.withLock
 
 /**
  * Канал обновлений: sync-state → profile, hashes, theme, подписка.
- * Wi‑Fi — public API; mobile + VPN — local proxy → 10.66.66.1 (openConnection, не socketFactory).
- * Фоновый poll — раз в час, чтобы не дёргать WG overlay на LTE.
+ * Wi‑Fi — public API; LTE + VPN — приложение в туннеле, прямой 10.66.66.1 (без overlay).
+ * Подписка сверяется каждые 2 мин (rev не растёт при revoke/истечении).
  */
 object ConfigSyncCoordinator {
     private const val TAG = "ConfigSync"
@@ -151,8 +151,21 @@ object ConfigSyncCoordinator {
                 null -> Unit
             }
             listener.onWifiSyncTickStart()
-
-            runConfigSyncBody(repo, listener)
+            val mobileOverlay = ConfigSyncSkipPolicy.mobileSyncUsesOverlay(
+                ConfigSyncSkipPolicy.MobileSyncModeInput(
+                    onMobileData = repo.isOnMobileData(),
+                    appExcludedFromVpn = SilentRepository.APP_EXCLUDED_FROM_VPN,
+                    vpnUpForSync = vpnUpForSync(),
+                    tunnelDataSyncCompleted = VpnSessionState.tunnelDataSyncCompleted,
+                ),
+            )
+            if (mobileOverlay) {
+                WdttTunnelManager.withApiOverlayBrief(
+                    block = { runConfigSyncBody(repo, listener) },
+                )
+            } else {
+                runConfigSyncBody(repo, listener)
+            }
         }
     }
 
@@ -203,14 +216,20 @@ object ConfigSyncCoordinator {
         }
     }
 
-    /** Wi‑Fi public API: подписка может истечь/появиться без роста profile rev. */
+    /** Подписка может смениться на сервере без роста profile rev — сверка каждые 2 мин. */
     private suspend fun refreshWifiSubscription(repo: SilentRepository, listener: Listener) {
-        if (repo.isOnMobileData()) return
         if (VpnSessionState.initialOverlaySyncActive) return
-        repo.fetchAndSaveProfileViaSync().getOrNull()?.let { profile ->
-            listener.onProfile(profile)
-            Log.i(TAG, "wifi subscription check active=${profile.subscription.is_active}")
-            DebugLog.i(TAG, "wifi subscription check active=${profile.subscription.is_active}")
-        } ?: Log.w(TAG, "wifi subscription profile fetch failed")
+        if (repo.isOnMobileData() && !repo.isMainVpnTunnelUp()) return
+        val profile = if (repo.isOnMobileData()) {
+            repo.fetchProfileLiveViaUser().getOrNull()
+        } else {
+            repo.fetchProfileLive().getOrNull()
+        } ?: run {
+            Log.w(TAG, "subscription profile fetch failed")
+            return
+        }
+        listener.onProfile(profile)
+        Log.i(TAG, "subscription check active=${profile.subscription.is_active} mobile=${repo.isOnMobileData()}")
+        DebugLog.i(TAG, "subscription check active=${profile.subscription.is_active}")
     }
 }

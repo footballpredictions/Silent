@@ -41,7 +41,7 @@ class VpnDataSyncService : Service() {
         private const val NOTIF_ID = 1001
         private const val INITIAL_RETRY_MS = 8_000L
         private const val INITIAL_DELAY_MS = 400L
-        private const val INITIAL_DELAY_MOBILE_MS = 400L
+        private const val INITIAL_DELAY_MOBILE_MS = 150L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -148,6 +148,7 @@ class VpnDataSyncService : Service() {
         updateNotification("Синхронизация данных…")
         MobileSyncLog.i("syncService", "initial sync start mobile=${repo.isOnMobileData()}")
 
+        if (overlayPath) VpnSessionState.initialOverlaySyncActive = true
         val ok = performFullSync(repo)
 
         if (ok) {
@@ -163,6 +164,7 @@ class VpnDataSyncService : Service() {
             updateNotification("Ошибка синхронизации")
             MobileSyncLog.w("syncService", "initial sync FAILED")
         }
+        if (overlayPath) VpnSessionState.initialOverlaySyncActive = false
 
         delay(2_000)
         if (canSync()) {
@@ -174,16 +176,17 @@ class VpnDataSyncService : Service() {
         val syncBody: suspend () -> Boolean = {
             runCatching {
                 repo.setTunnelApiFromWgAddress(WdttTunnelManager.lastWgAddress())
-                // Полный 0.0.0.0/0 не трогаем: Wi‑Fi — public, LTE — proxy bind.
-                // Overlay 10.66.66.0/24 глушит интернет до конца sync — так в 1.0.160 не было.
-                repo.ensureTunnelApiProxy()
-                MobileSyncLog.i("syncService", "sync API url=${repo.getServerUrl()} overlay=off")
+                if (repo.isOnMobileData()) {
+                    com.silent.vpn.vpn.TunnelApiProxy.stopAndAwait()
+                }
+                repo.prepareMainVpnDirectApi()
+                MobileSyncLog.i("syncService", "sync API url=${repo.getServerUrl()}")
                 var ok = repo.syncAllViaTunnel()
                 if (ok) {
                     repo.seedSyncRevisionsAfterTunnelSync()
                     VpnDataSyncBridge.onOtaCheckInOverlaySession?.invoke()
                 } else if (canSyncOverlay()) {
-                    MobileSyncLog.w("syncService", "sync retry without overlay")
+                    MobileSyncLog.w("syncService", "sync retry inside overlay")
                     delay(INITIAL_RETRY_MS)
                     ok = repo.syncAllViaTunnel()
                     if (ok) repo.seedSyncRevisionsAfterTunnelSync()
@@ -194,7 +197,22 @@ class VpnDataSyncService : Service() {
                 false
             }
         }
-        return withTimeoutOrNull(120_000L) { syncBody() } ?: false
+        return withTimeoutOrNull(120_000L) {
+            if (SilentRepository.APP_EXCLUDED_FROM_VPN &&
+                repo.isOnMobileData() &&
+                WdttTunnelManager.isBootstrapMode()
+            ) {
+                MobileSyncLog.i("syncService", "overlay session start (bootstrap only)")
+                WdttTunnelManager.withApiOverlayBrief(
+                    block = syncBody,
+                    allowDuringRampUp = true,
+                    skipIntervalThrottle = true,
+                )
+            } else {
+                MobileSyncLog.i("syncService", "sync without overlay (main VPN / GETCONF)")
+                syncBody()
+            }
+        } ?: false
     }
 
     private fun repository(): SilentRepository =

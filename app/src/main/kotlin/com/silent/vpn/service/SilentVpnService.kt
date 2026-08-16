@@ -267,10 +267,10 @@ class SilentVpnService : Service() {
         }
     }
 
-    /** Wi‑Fi + main VPN: public /api/users/me — rev подписки на сервере не меняется при истечении. */
+    /** Tunnel GETCONF / Wi‑Fi public: /api/users/me — rev подписки на сервере не меняется при истечении. */
     private fun maybeRefreshWifiSubscription() {
         if (WdttTunnelManager.isBootstrapMode()) return
-        if (VpnNetworkHelper.isOnMobileData(this)) return
+        if (VpnNetworkHelper.isOnMobileData(this) && WdttTunnelManager.isApiOverlayActive()) return
         val now = System.currentTimeMillis()
         if (now - lastWifiSubscriptionCheckMs < WIFI_SUBSCRIPTION_CHECK_MS) return
         lastWifiSubscriptionCheckMs = now
@@ -281,19 +281,27 @@ class SilentVpnService : Service() {
                     AppEntryPoint::class.java,
                 ).silentRepository()
                 if (!repo.isLoggedIn()) return@runCatching
-                val profile = repo.fetchProfileLive().getOrNull() ?: return@runCatching
+                if (repo.isOnMobileData() && !repo.isMainVpnTunnelUp()) return@runCatching
+                val profile = if (repo.isOnMobileData()) {
+                    repo.fetchProfileLiveViaUser().getOrNull()
+                } else {
+                    repo.fetchProfileLive().getOrNull()
+                } ?: error("subscription profile empty")
                 repo.saveCachedProfile(profile)
                 VpnDataSyncBridge.configSyncListener?.onProfile(profile)
-                    ?: DebugLog.i("VpnService", "wifi subscription cached active=${profile.subscription.is_active}")
+                    ?: DebugLog.i("VpnService", "subscription cached active=${profile.subscription.is_active}")
             }.onFailure { e ->
-                DebugLog.w("VpnService", "wifi subscription check: ${e.message}")
+                DebugLog.w("VpnService", "subscription check: ${e.message}")
+                lastWifiSubscriptionCheckMs =
+                    System.currentTimeMillis() - WIFI_SUBSCRIPTION_CHECK_MS + 20_000L
             }
         }
     }
 
-    /** Локальный прокси: app excluded → bind к VPN Network, без overlay. */
+    /** Локальный прокси: app excluded → bind к VPN Network. На LTE не поднимаем — overlay. */
     private fun ensureTunnelApiProxyAsync() {
         if (WdttTunnelManager.isBootstrapMode()) return
+        if (VpnNetworkHelper.isOnMobileData(this)) return
         if (TunnelApiProxy.isActive()) return
         scope.launch(Dispatchers.IO) {
             runCatching {
@@ -539,8 +547,11 @@ class SilentVpnService : Service() {
             // GETCONF: device_id из конфига (boot:fp / UUID backend). Не ANDROID_ID — на Silent VPS
             // пул 10.66.66.2–250; новый id при исчерпании пула → NOCONF.
             val libclientDeviceId = deviceId
-            // Bootstrap: app в туннеле. Main: app вне WG.
-            SilentRepository.APP_EXCLUDED_FROM_VPN = !isBootstrap
+            // Bootstrap: app в туннеле. Main: app вне WG (libclient/VK не через свой туннель).
+            SilentRepository.applyAppVpnExclusion(
+                isBootstrap = isBootstrap,
+                onMobileData = VpnNetworkHelper.isOnMobileData(this),
+            )
             DebugLog.i(
                 "VpnService",
                 "VPN app excluded=${SilentRepository.APP_EXCLUDED_FROM_VPN} mobile=${VpnNetworkHelper.isOnMobileData(this)} bootstrap=$isBootstrap",
@@ -943,9 +954,8 @@ class SilentVpnService : Service() {
                     ).silentRepository()
                     repo.invalidatePublicReachabilityCache()
                     if (VpnNetworkHelper.isOnMobileData(this@SilentVpnService)) {
-                        repo.ensureTunnelApiProxy()
-                    } else {
                         TunnelApiProxy.stopAndAwait()
+                    } else {
                         repo.ensureTunnelApiProxy()
                     }
                 }.onFailure { e ->

@@ -33,17 +33,25 @@ object ApiRoutePolicy {
             ctx.tunnelDataSyncCompleted &&
             !ctx.apiOverlayActive
 
-    /** LTE: app excluded → public как при выкл. VPN; overlay больше не нужен. */
+    /** Routine API на LTE+VPN до initial sync — только через overlay-сессию. */
     fun routineApiRouteOnMobile(ctx: RouteContext): RoutineApiRoute {
         if (ctx.bootstrapMode && ctx.tunnelReady) return RoutineApiRoute.BOOTSTRAP_TUNNEL
-        if (ctx.mainVpnTunnelUp && !ctx.appExcludedFromVpn) {
+        if (ctx.mainVpnTunnelUp) {
+            if (ctx.appExcludedFromVpn && !ctx.apiOverlayActive) {
+                return RoutineApiRoute.DEFER_UNTIL_OVERLAY
+            }
             return RoutineApiRoute.TUNNEL_BLOCK
         }
         return RoutineApiRoute.PUBLIC
     }
 
-    /** Promo / оплата / реферал — тот же public/proxy путь, без overlay. */
-    fun userApiRoute(ctx: RouteContext): UserApiRoute = UserApiRoute.ROUTINE
+    /** Promo / оплата / user action на LTE+VPN excluded. */
+    fun userApiRoute(ctx: RouteContext): UserApiRoute {
+        if (ctx.appExcludedFromVpn && ctx.onMobileData && ctx.mainVpnTunnelUp && !ctx.apiOverlayActive) {
+            return UserApiRoute.OVERLAY_BRIEF
+        }
+        return UserApiRoute.ROUTINE
+    }
 
     /** Wi‑Fi: public если доступен, иначе tunnel. */
     fun wifiRoutinePrefersPublic(ctx: RouteContext): Boolean =

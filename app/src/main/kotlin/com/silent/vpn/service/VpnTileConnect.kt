@@ -120,12 +120,7 @@ object VpnTileConnect {
 
     private fun cachedConfigMatchesPreferred(repo: SilentRepository, config: VpnConfig): Boolean {
         val want = repo.getPreferredServer()
-        val selected = config.selected_server?.trim()?.lowercase().orEmpty()
-        val slot = when {
-            selected.isBlank() || selected == "queen" || selected == "main" -> "server1"
-            selected == "server1" || selected == "server2" || selected == "server3" -> selected
-            else -> return false
-        }
+        val slot = SilentRepository.slotFromSelectedServer(config.selected_server) ?: return false
         return slot == want
     }
 

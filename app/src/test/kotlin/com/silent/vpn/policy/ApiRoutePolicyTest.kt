@@ -47,17 +47,17 @@ class ApiRoutePolicyTest {
     }
 
     @Test
-    fun `routine api on lte uses public when app excluded`() {
+    fun `routine api on lte defers until overlay before sync`() {
         assertEquals(
-            ApiRoutePolicy.RoutineApiRoute.PUBLIC,
+            ApiRoutePolicy.RoutineApiRoute.DEFER_UNTIL_OVERLAY,
             ApiRoutePolicy.routineApiRouteOnMobile(ctx(onMobileData = true, mainVpnTunnelUp = true)),
         )
     }
 
     @Test
-    fun `routine api on lte uses public even if overlay flag set`() {
+    fun `routine api on lte uses tunnel block after overlay path`() {
         assertEquals(
-            ApiRoutePolicy.RoutineApiRoute.PUBLIC,
+            ApiRoutePolicy.RoutineApiRoute.TUNNEL_BLOCK,
             ApiRoutePolicy.routineApiRouteOnMobile(
                 ctx(onMobileData = true, mainVpnTunnelUp = true, apiOverlayActive = true),
             ),
@@ -75,14 +75,24 @@ class ApiRoutePolicyTest {
     }
 
     @Test
-    fun `user api promo path uses routine on lte excluded`() {
+    fun `user api promo path uses overlay on lte excluded`() {
         assertEquals(
-            ApiRoutePolicy.UserApiRoute.ROUTINE,
+            ApiRoutePolicy.UserApiRoute.OVERLAY_BRIEF,
             ApiRoutePolicy.userApiRoute(ctx(onMobileData = true, mainVpnTunnelUp = true)),
         )
         assertEquals(
             ApiRoutePolicy.UserApiRoute.ROUTINE,
             ApiRoutePolicy.userApiRoute(ctx(onMobileData = true, mainVpnTunnelUp = true, apiOverlayActive = true)),
+        )
+    }
+
+    @Test
+    fun `user api on lte with app in tunnel uses routine`() {
+        assertEquals(
+            ApiRoutePolicy.UserApiRoute.ROUTINE,
+            ApiRoutePolicy.userApiRoute(
+                ctx(onMobileData = true, mainVpnTunnelUp = true).copy(appExcludedFromVpn = false),
+            ),
         )
     }
 

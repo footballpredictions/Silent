@@ -290,6 +290,8 @@ fun MainScreen(
     onLoadReferral: ((com.silent.vpn.data.ReferralInfo?) -> Unit) -> Unit = {},
     onInitPayment: (String, (String, String) -> Unit, (String) -> Unit) -> Unit,
     paymentState: com.silent.vpn.PaymentUiState = com.silent.vpn.PaymentUiState.IDLE,
+    openSubscriptionMenu: Boolean = false,
+    onSubscriptionMenuOpened: () -> Unit = {},
     onStartPaymentPoll: (String) -> Unit = {},
     onResetPaymentState: () -> Unit = {},
     onOpenUrl: (String) -> Unit,
@@ -327,6 +329,13 @@ fun MainScreen(
     var referralInfo by remember { mutableStateOf<com.silent.vpn.data.ReferralInfo?>(null) }
     var referralCopyMsg by remember { mutableStateOf("") }
     var showDebugLog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(openSubscriptionMenu) {
+        if (!openSubscriptionMenu) return@LaunchedEffect
+        menuOpen = true
+        menuPage = MenuPage.SUBSCRIPTION
+        onSubscriptionMenuOpened()
+    }
 
     LaunchedEffect(menuOpen, menuPage) {
         onDevicesScreenActive(menuOpen && menuPage == MenuPage.DEVICES)
@@ -989,6 +998,11 @@ private fun MenuSubscription(
     val muted = fg.copy(alpha = 0.5f)
     val green = Color(0xFF16A34A)
     val red = Color(0xFFEF4444)
+    val subActive = profile?.is_admin == true || profile?.subscription?.is_active == true
+    val uiPaymentState =
+        if (paymentState == com.silent.vpn.PaymentUiState.WAITING && subActive)
+            com.silent.vpn.PaymentUiState.COMPLETED
+        else paymentState
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         TvTextButton(
@@ -1000,7 +1014,7 @@ private fun MenuSubscription(
             Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
         }
 
-        when (paymentState) {
+        when (uiPaymentState) {
             com.silent.vpn.PaymentUiState.IDLE -> {
                 Text(
                     "Подписка и оплата обновляются автоматически при включённом VPN.",
@@ -1066,7 +1080,7 @@ private fun MenuSubscription(
                 }
             }
             else -> {
-                val cfg = when (paymentState) {
+                val cfg = when (uiPaymentState) {
                     com.silent.vpn.PaymentUiState.WAITING -> Triple(
                         theme?.payment_waiting_title ?: "Ждём подтверждения оплаты",
                         theme?.payment_waiting_text ?: "Оплатите в открывшейся вкладке браузера. После оплаты вернитесь в приложение — подписка активируется автоматически.",
@@ -1106,7 +1120,7 @@ private fun MenuSubscription(
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            when (paymentState) {
+                            when (uiPaymentState) {
                                 com.silent.vpn.PaymentUiState.WAITING -> "⏳"
                                 com.silent.vpn.PaymentUiState.COMPLETED -> "✓"
                                 com.silent.vpn.PaymentUiState.FAILED -> "✗"
@@ -1117,7 +1131,7 @@ private fun MenuSubscription(
                     }
                     Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg, modifier = Modifier.padding(top = 10.dp))
                     Text(text, fontSize = 12.sp, color = muted, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp))
-                    if (paymentState == com.silent.vpn.PaymentUiState.WAITING) {
+                    if (uiPaymentState == com.silent.vpn.PaymentUiState.WAITING) {
                         CircularProgressIndicator(
                             modifier = Modifier.padding(top = 14.dp).size(18.dp),
                             strokeWidth = 2.dp,
@@ -1137,7 +1151,7 @@ private fun MenuSubscription(
                             )
                         }
                     }
-                    if (paymentState == com.silent.vpn.PaymentUiState.FAILED || paymentState == com.silent.vpn.PaymentUiState.TIMEOUT) {
+                    if (uiPaymentState == com.silent.vpn.PaymentUiState.FAILED || uiPaymentState == com.silent.vpn.PaymentUiState.TIMEOUT) {
                         TvPrimaryButton(
                             onClick = onResetPaymentState,
                             colors = ButtonDefaults.buttonColors(containerColor = fg, contentColor = bg),

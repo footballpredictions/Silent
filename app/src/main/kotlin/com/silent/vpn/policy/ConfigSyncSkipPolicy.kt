@@ -52,8 +52,16 @@ object ConfigSyncSkipPolicy {
         return null
     }
 
-    /** Overlay на connect глушит интернет — sync только public/proxy. */
-    fun mobileSyncUsesOverlay(input: MobileSyncModeInput): Boolean = false
+    /** LTE excluded: overlay только до завершения initial tunnel sync. */
+    fun mobileSyncUsesOverlay(input: MobileSyncModeInput): Boolean =
+        input.onMobileData &&
+            input.appExcludedFromVpn &&
+            input.vpnUpForSync &&
+            !input.tunnelDataSyncCompleted
 
     fun wifiSubscriptionPollAllowed(onMobileData: Boolean): Boolean = !onMobileData
+
+    /** Wi‑Fi всегда; LTE — когда main VPN поднят (приложение в туннеле → 10.66.66.1). */
+    fun subscriptionPollAllowed(onMobileData: Boolean, mainVpnUp: Boolean): Boolean =
+        !onMobileData || mainVpnUp
 }

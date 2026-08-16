@@ -62,11 +62,12 @@ class LteWithVpnInstrumentedTest {
     }
 
     @Test
-    fun lte_withVpn_promoNeedsOverlayBrief() {
+    fun lte_withVpn_promoUsesOverlayBrief() {
+        val excluded = SilentRepository.APP_EXCLUDED_FROM_VPN
         val route = ApiRoutePolicy.userApiRoute(
             ApiRoutePolicy.RouteContext(
                 onMobileData = true,
-                appExcludedFromVpn = SilentRepository.APP_EXCLUDED_FROM_VPN,
+                appExcludedFromVpn = excluded,
                 mainVpnTunnelUp = true,
                 tunnelDataSyncCompleted = true,
                 apiOverlayActive = false,
@@ -74,7 +75,10 @@ class LteWithVpnInstrumentedTest {
                 tunnelReady = true,
             ),
         )
-        assertEquals(ApiRoutePolicy.UserApiRoute.OVERLAY_BRIEF, route)
+        assertEquals(
+            if (excluded) ApiRoutePolicy.UserApiRoute.OVERLAY_BRIEF else ApiRoutePolicy.UserApiRoute.ROUTINE,
+            route,
+        )
     }
 
     @Test

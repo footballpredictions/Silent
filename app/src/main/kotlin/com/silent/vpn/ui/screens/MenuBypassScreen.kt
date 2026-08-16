@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.silent.vpn.data.SilentRepository
+import com.silent.vpn.data.VpnServerInfo
 import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.ui.tv.tvClickable
 import kotlinx.coroutines.launch
@@ -38,15 +39,31 @@ fun MenuBypassScreen(
     onEnsureBypassApi: suspend (providers: Array<out String>) -> Boolean = { true },
     onBack: () -> Unit,
 ) {
-    var selectedServerSlot by remember { mutableStateOf(slotForSelectedRaw(repo.getPreferredServer())) }
+    var selectedServerSlot by remember { mutableStateOf(SilentRepository.normalizePreferredServer(repo.getPreferredServer())) }
     var pendingServerSlot by remember { mutableStateOf<String?>(null) }
     var applying by remember { mutableStateOf(false) }
     var applyHint by remember { mutableStateOf<String?>(null) }
+    var servers by remember { mutableStateOf(fallbackServerList(selectedServerSlot)) }
     val scope = rememberCoroutineScope()
     val switchLocked = applying || vpnState == VpnState.CONNECTING || vpnState == VpnState.CONNECTED
 
     val hasPending =
         (pendingServerSlot != null && pendingServerSlot != selectedServerSlot)
+
+    LaunchedEffect(Unit) {
+        runCatching { repo.fetchVpnServers() }
+            .onSuccess { body ->
+                if (body.servers.isNotEmpty()) {
+                    servers = body.servers
+                }
+                selectedServerSlot = SilentRepository.normalizePreferredServer(
+                    repo.getPreferredServer().ifBlank { body.selected_server },
+                )
+            }
+            .onFailure {
+                applyHint = applyHint ?: "Не удалось загрузить список серверов."
+            }
+    }
 
     LaunchedEffect(switchLocked) {
         if (switchLocked) {
@@ -99,10 +116,10 @@ fun MenuBypassScreen(
         }
 
         Column(Modifier.padding(start = 12.dp)) {
-            for (index in 0..2) {
-                val slot = "server${index + 1}"
+            servers.forEach { server ->
+                val slot = SilentRepository.normalizePreferredServer(server.key)
                 BypassOption(
-                    title = "Сервер ${index + 1}",
+                    title = server.title.ifBlank { slotTitle(slot) },
                     selected = (pendingServerSlot ?: selectedServerSlot) == slot,
                     enabled = !switchLocked,
                     fg = fg,
@@ -120,16 +137,7 @@ fun MenuBypassScreen(
             title = { Text("Применить?") },
             text = {
                 val nextServer = pendingServerSlot ?: selectedServerSlot
-                val fromIdx = slotIndex(selectedServerSlot)
-                val toIdx = slotIndex(nextServer)
-                val serverFrom = "Сервер $fromIdx"
-                val serverTo = "Сервер $toIdx"
-                val line = if (nextServer != selectedServerSlot) {
-                    "$serverFrom → $serverTo"
-                } else {
-                    serverTo
-                }
-                Text(line)
+                Text(applyDialogLine(selectedServerSlot, nextServer, servers))
             },
             confirmButton = {
                 TvTextButton(onClick = {
@@ -140,15 +148,15 @@ fun MenuBypassScreen(
                     scope.launch {
                         try {
                             if (nextServer != null) {
-                                // Статичное UI-меню сохраняем, но сервер фиксируем и в backend:
-                                // часть getConfig-путей может не передавать preferred_server query.
                                 runCatching { repo.selectVpnServer(nextServer) }
+                                    .onSuccess { body ->
+                                        if (body.servers.isNotEmpty()) servers = body.servers
+                                    }
                                     .onFailure {
                                         applyHint = "Не удалось применить сервер."
                                     }
-                                selectedServerSlot = slotForSelectedRaw(nextServer)
+                                selectedServerSlot = SilentRepository.normalizePreferredServer(nextServer)
                                 repo.setPreferredServer(selectedServerSlot)
-                                // После смены сервера не используем старый WG-кеш предыдущего слота.
                                 repo.clearCachedVpnConfig()
                                 if (applyHint == null) applyHint = "Выбрано"
                             }
@@ -167,21 +175,35 @@ fun MenuBypassScreen(
     }
 }
 
-private fun slotForSelectedRaw(selectedRaw: String?): String {
-    val raw = selectedRaw?.trim()?.lowercase().orEmpty()
-    return when (raw) {
-        "server2" -> "server2"
-        "server3" -> "server3"
-        else -> "server1"
+private fun slotTitle(slot: String): String {
+    val n = SilentRepository.slotFromSelectedServer(slot)?.removePrefix("server")
+    return if (n.isNullOrBlank()) slot else "Сервер $n"
+}
+
+private fun fallbackServerList(selected: String): List<VpnServerInfo> {
+    val maxSlot = SilentRepository.slotFromSelectedServer(selected)
+        ?.removePrefix("server")
+        ?.toIntOrNull()
+        ?: 3
+    val n = maxOf(3, maxSlot)
+    return (1..n).map { i ->
+        VpnServerInfo(
+            key = "server$i",
+            title = "Сервер $i",
+            public_ip = "",
+            wdtt_port = 0,
+            online_count = 0,
+        )
     }
 }
 
-private fun slotIndex(slot: String): Int =
-    when (slot) {
-        "server2" -> 2
-        "server3" -> 3
-        else -> 1
-    }
+private fun applyDialogLine(fromSlot: String, toSlot: String, servers: List<VpnServerInfo>): String {
+    fun title(key: String): String =
+        servers.firstOrNull { SilentRepository.normalizePreferredServer(it.key) == key }?.title
+            ?.ifBlank { null }
+            ?: slotTitle(key)
+    return if (fromSlot != toSlot) "${title(fromSlot)} → ${title(toSlot)}" else title(toSlot)
+}
 
 @Composable
 private fun BypassOption(

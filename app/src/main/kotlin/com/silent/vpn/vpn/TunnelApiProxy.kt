@@ -1,7 +1,6 @@
 package com.silent.vpn.vpn
 
 import android.content.Context
-import android.net.ConnectivityManager
 import android.net.Network
 import android.util.Log
 import com.silent.vpn.data.SilentRepository
@@ -51,7 +50,6 @@ object TunnelApiProxy {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val startMutex = Mutex()
-    private val upstreamLock = Any()
     private val active = AtomicBoolean(false)
 
     @Volatile private var appContext: Context? = null
@@ -242,24 +240,13 @@ object TunnelApiProxy {
     }
 
     /**
-     * Excluded app: bindProcessToNetwork или Network.openConnection для upstream.
+     * Только Network.openConnection. bindProcessToNetwork нельзя:
+     * он уводит libclient/VK в WG и воркеры замирают.
      */
     private fun <T> withVpnBound(context: Context, block: (Network) -> T): T {
         val network = awaitSilentVpnNetwork(context, VPN_NETWORK_WAIT_MS)
             ?: throw IllegalStateException("VPN network not found")
-        synchronized(upstreamLock) {
-            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val previous = cm.boundNetworkForProcess
-            if (cm.bindProcessToNetwork(network)) {
-                try {
-                    return block(network)
-                } finally {
-                    cm.bindProcessToNetwork(previous)
-                }
-            }
-            Log.w(TAG, "bindProcessToNetwork failed — Network.openConnection")
-            return block(network)
-        }
+        return block(network)
     }
 
     private fun awaitSilentVpnNetwork(context: Context, timeoutMs: Long): Network? {

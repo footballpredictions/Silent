@@ -189,6 +189,7 @@ class MainActivity : ComponentActivity() {
         handleNotificationOpenIntent(intent)
         handleTileConnectIntent(intent)
         handleReferralDeepLink(intent)
+        handlePaymentDeepLink(intent)
     }
 
     fun handleReferralDeepLink(intent: Intent?) {
@@ -198,6 +199,13 @@ class MainActivity : ComponentActivity() {
         if (code.isBlank()) return
         intent.data = null
         vm?.applyReferralDeepLink(code)
+    }
+
+    fun handlePaymentDeepLink(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme != "silentvpn" || data.host != "payment") return
+        intent.data = null
+        vm?.onPaymentReturnedFromBrowser()
     }
 
     private fun handleNotificationOpenIntent(intent: Intent?) {

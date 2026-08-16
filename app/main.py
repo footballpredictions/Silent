@@ -378,10 +378,11 @@ async def lifespan(app: FastAPI):
             )
             await db.commit()
             from app.config import settings as app_settings
-            from app.services.hive_service import migrate_devices_to_queen
+            from app.services.hive_service import migrate_devices_to_queen, repair_manual_server_cell_ids
 
             if not app_settings.HIVE_WORKER_ROUTING_ENABLED:
                 await migrate_devices_to_queen(db)
+            await repair_manual_server_cell_ids(db)
         except Exception as e:
             logger.warning("Hive queen init skipped: %s", e)
         try:

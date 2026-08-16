@@ -395,6 +395,9 @@ async def connect(
     if req.preferred_server:
         await set_device_preferred_server(db, user.id, req.device_fingerprint, req.preferred_server)
         await db.refresh(device)
+    else:
+        from app.services import hive_service as _hive
+        await _hive.apply_manual_server_cell(db, device, commit=False)
 
     device.is_connected = True
     device.last_connected = datetime.utcnow()
@@ -446,19 +449,22 @@ async def internal_online(
     if not secret or not secrets.compare_digest(x_internal_secret, secret):
         raise HTTPException(status_code=403, detail="forbidden")
     await clear_stale_online_status(db)
-    result = await set_device_online(db, req.device_id.strip(), bool(req.online))
+    cell_uuid = None
     if x_hive_cell_id.strip():
-        from app.services import hive_service
         import uuid as _uuid
 
         try:
-            cid = _uuid.UUID(x_hive_cell_id.strip())
-            cell = await hive_service.get_cell_by_id(db, cid)
-            if cell:
-                await hive_service.refresh_cell_load(db, cell)
-                await db.commit()
+            cell_uuid = _uuid.UUID(x_hive_cell_id.strip())
         except (ValueError, TypeError):
-            pass
+            cell_uuid = None
+    result = await set_device_online(db, req.device_id.strip(), bool(req.online), cell_id=cell_uuid)
+    if cell_uuid is not None:
+        from app.services import hive_service
+
+        cell = await hive_service.get_cell_by_id(db, cell_uuid)
+        if cell:
+            await hive_service.refresh_cell_load(db, cell)
+            await db.commit()
     return InternalOnlineResponse(**result)
 
 

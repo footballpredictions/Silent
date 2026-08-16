@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import uuid
 
 import httpx
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -133,6 +133,76 @@ async def resolve_manual_server_cell(
     return "server1", await _cell_for_manual_slot(db, "server1")
 
 
+def is_manual_server_pin(preferred_server: str | None) -> bool:
+    return (preferred_server or "").strip().lower() in MANUAL_SERVER_SLOTS
+
+
+_SLOT_TITLES = {"server1": "Сервер 1", "server2": "Сервер 2", "server3": "Сервер 3"}
+
+
+def _device_on_cell_clause(cell: HiveCell):
+    """Онлайн/привязка: ручной слот важнее устаревшего cell_id (балансир olcrtc сдвигал на Улей)."""
+    slot = slot_for_cell(cell)
+    if slot:
+        return or_(
+            Device.preferred_server == slot,
+            and_(
+                Device.cell_id == cell.id,
+                ~Device.preferred_server.in_(MANUAL_SERVER_SLOTS),
+            ),
+        )
+    return Device.cell_id == cell.id
+
+
+async def apply_manual_server_cell(
+    db: AsyncSession,
+    device: Device,
+    preferred_server: str | None = None,
+    *,
+    commit: bool = False,
+) -> HiveCell:
+    """Держать cell_id = выбранный Сервер 1/2/3, не отдавать слот балансиру."""
+    raw = preferred_server if preferred_server is not None else device.preferred_server
+    key, cell = await resolve_manual_server_cell(db, raw)
+    if device.cell_id != cell.id or device.preferred_server != key:
+        device.cell_id = cell.id
+        device.preferred_server = key
+        if commit:
+            await db.commit()
+    return cell
+
+
+async def repair_manual_server_cell_ids(db: AsyncSession) -> int:
+    """Вернуть cell_id по preferred_server (server2→Сота 1, server3→Сота 2)."""
+    n = 0
+    for slot in MANUAL_SERVER_SLOTS:
+        cell = await _cell_for_manual_slot(db, slot)
+        result = await db.execute(
+            update(Device)
+            .where(
+                Device.is_active == True,  # noqa: E712
+                Device.preferred_server == slot,
+                Device.cell_id != cell.id,
+            )
+            .values(cell_id=cell.id)
+        )
+        n += int(result.rowcount or 0)
+    queen = await ensure_queen_cell(db)
+    result = await db.execute(
+        update(Device)
+        .where(
+            Device.is_active == True,  # noqa: E712
+            Device.preferred_server.in_(("queen", "main")),
+        )
+        .values(cell_id=queen.id, preferred_server="server1")
+    )
+    n += int(result.rowcount or 0)
+    if n:
+        await db.commit()
+        logger.info("Hive: repaired cell_id for %s device(s) from preferred_server", n)
+    return n
+
+
 def link_capacity_mbps_for_cell(cell: HiveCell) -> float:
     """«Сота 1» — 10 Гбит/с, остальные worker — 1 Гбит/с (если в БД не задано иное)."""
     if cell.link_capacity_mbps and float(cell.link_capacity_mbps) > 0:
@@ -240,11 +310,14 @@ async def get_cell_by_id(db: AsyncSession, cell_id: uuid.UUID) -> Optional[HiveC
 
 
 async def count_online_on_cell(db: AsyncSession, cell_id: uuid.UUID) -> int:
+    cell = await get_cell_by_id(db, cell_id)
+    if not cell:
+        return 0
     result = await db.execute(
         select(func.count(Device.id)).where(
-            Device.cell_id == cell_id,
-            Device.is_active == True,
-            Device.is_connected == True,
+            Device.is_active == True,  # noqa: E712
+            Device.is_connected == True,  # noqa: E712
+            _device_on_cell_clause(cell),
         )
     )
     return int(result.scalar_one())
@@ -281,10 +354,13 @@ async def olcrtc_online_by_cell(
 
 
 async def count_assigned_on_cell(db: AsyncSession, cell_id: uuid.UUID) -> int:
+    cell = await get_cell_by_id(db, cell_id)
+    if not cell:
+        return 0
     result = await db.execute(
         select(func.count(Device.id)).where(
-            Device.cell_id == cell_id,
-            Device.is_active == True,
+            Device.is_active == True,  # noqa: E712
+            _device_on_cell_clause(cell),
         )
     )
     return int(result.scalar_one())
@@ -379,7 +455,11 @@ async def migrate_devices_to_queen(db: AsyncSession) -> int:
         return 0
     await db.execute(
         update(Device)
-        .where(Device.is_active == True, Device.cell_id != queen.id)
+        .where(
+            Device.is_active == True,  # noqa: E712
+            Device.cell_id != queen.id,
+            ~Device.preferred_server.in_(("server2", "server3")),
+        )
         .values(cell_id=queen.id)
     )
     await db.commit()
@@ -471,7 +551,9 @@ async def resolve_cell_for_device(
     *,
     force_queen: bool = False,
 ) -> HiveCell:
-    """Липкое назначение; перераспределение только для новых устройств."""
+    """Липкое назначение; ручной Сервер 1/2/3 не трогаем."""
+    if is_manual_server_pin(device.preferred_server):
+        return await apply_manual_server_cell(db, device, commit=True)
     queen = await ensure_queen_cell(db)
     if force_queen or not settings.HIVE_WORKER_ROUTING_ENABLED:
         if device.cell_id != queen.id:
@@ -661,6 +743,8 @@ def cell_to_response(
         "status": cell.status,
         "priority": cell.priority,
         "accepts_wdtt": bool(cell.is_queen or getattr(cell, "accepts_wdtt", True)),
+        "manual_slot": slot_for_cell(cell) or None,
+        "manual_slot_title": _SLOT_TITLES.get(slot_for_cell(cell) or ""),
         "last_seen_at": cell.last_seen_at,
         "last_error": cell.last_error,
         "created_at": cell.created_at,
@@ -739,9 +823,7 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
     await sync_olcrtc_cells_no_wdtt_spill(db)
     accepting, queen_load = queen_accepting_new_vpn()
     all_workers = [c for c in await _list_assignable_cells(db) if not c.is_queen]
-    spill_workers = await list_wdtt_spill_workers(db)
     assignable = await _list_assignable_cells(db)
-    reserved = await olcrtc_exit_cell_ips(db)
     total_online = 0
     total_online_olcrtc = 0
     total_capacity = 0
@@ -749,8 +831,6 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
     all_cells = [c for c in assignable]
     olcrtc_map = await olcrtc_online_by_cell(db, [c.id for c in all_cells])
     for cell in assignable:
-        if not cell.is_queen and not cell_accepts_wdtt_spill(cell, reserved):
-            continue
         online = await count_online_on_cell(db, cell.id)
         olc_online = int(olcrtc_map.get(cell.id, 0))
         cell_load = queen_load if cell.is_queen else None
@@ -760,12 +840,12 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
         total_capacity += cap
         if online >= cap:
             full_cells += 1
-    wdtt_nodes = 1 + len(spill_workers)  # queen + spill
+    wdtt_nodes = len(assignable)
     return {
         "queen_load": queen_load,
         "queen_accepting_vpn": accepting,
-        "worker_cells": len(spill_workers),
-        "olcrtc_cells": len(all_workers) - len(spill_workers),
+        "worker_cells": len(all_workers),
+        "olcrtc_cells": 0,
         "total_online_vpn": total_online,
         "total_online_olcrtc": total_online_olcrtc,
         "total_online_all": total_online + total_online_olcrtc,
@@ -785,6 +865,7 @@ async def _pop_offline_device(db: AsyncSession, cell_id: uuid.UUID) -> Device | 
             Device.cell_id == cell_id,
             Device.is_active == True,  # noqa: E712
             Device.is_connected == False,  # noqa: E712
+            ~Device.preferred_server.in_(MANUAL_SERVER_SLOTS),
         )
         .order_by(Device.last_connected.asc().nullsfirst(), Device.created_at.asc())
         .limit(1)
@@ -923,18 +1004,6 @@ async def rebalance_overloaded_cells(db: AsyncSession) -> dict:
                     candidate.cell_id = queen.id
                     moved += 1
                     returned += 1
-
-    # WDTT-клиенты не должны сидеть на olcrtc-сотах 1/2.
-    for src in all_workers:
-        if cell_accepts_wdtt_spill(src, reserved):
-            continue
-        while True:
-            candidate = await _pop_offline_device(db, src.id)
-            if not candidate:
-                break
-            candidate.cell_id = queen.id
-            moved += 1
-            returned += 1
 
     if moved > 0:
         await db.commit()

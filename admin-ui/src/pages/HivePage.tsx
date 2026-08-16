@@ -30,6 +30,8 @@ interface HiveCell {
   assigned_devices: number
   status: string
   accepts_wdtt?: boolean
+  manual_slot?: string | null
+  manual_slot_title?: string | null
   last_error: string | null
   has_ssh_password?: boolean
   load?: CellLoad
@@ -518,6 +520,11 @@ export default function HivePage({ token }: { token: string }) {
                       cell.status === 'provisioning' ? <Loader2 className="w-4 h-4 text-blue-400 animate-spin" /> :
                       <WifiOff className="w-4 h-4 text-[#555]" />}
                     <h2 className="font-semibold">{cell.name}</h2>
+                    {cell.manual_slot_title && (
+                      <span className="text-xs bg-[#1a1a1a] text-[#ccc] border border-[#333] px-2 py-0.5 rounded">
+                        {cell.manual_slot_title}
+                      </span>
+                    )}
                     {cell.is_queen && <span className="text-xs bg-amber-950 text-amber-300 px-2 py-0.5 rounded">Улей</span>}
                     <span className="text-xs text-[#888]">{statusLabel[cell.status] || cell.status}</span>
                   </div>

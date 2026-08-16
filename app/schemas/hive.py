@@ -76,6 +76,8 @@ class HiveCellResponse(BaseModel):
     assigned_devices: int
     status: str
     accepts_wdtt: bool = True
+    manual_slot: Optional[str] = None
+    manual_slot_title: Optional[str] = None
     priority: int
     last_seen_at: Optional[datetime]
     last_error: Optional[str]

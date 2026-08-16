@@ -297,7 +297,12 @@ async def clear_stale_online_status(db: AsyncSession) -> int:
     return len(devices)
 
 
-async def set_device_online(db: AsyncSession, device_ref: str, online: bool) -> dict:
+async def set_device_online(
+    db: AsyncSession,
+    device_ref: str,
+    online: bool,
+    cell_id: uuid.UUID | None = None,
+) -> dict:
     """Server-to-server: wdtt-server reports a device as connected/disconnected.
 
     device_ref is the value libclient receives as -device-id, which equals the
@@ -351,6 +356,12 @@ async def set_device_online(db: AsyncSession, device_ref: str, online: bool) -> 
     if online:
         device.last_connected = datetime.utcnow()
         await touch_user_last_seen(db, device.user_id, commit=False)
+        if cell_id is not None:
+            cell = await hive_service.get_cell_by_id(db, cell_id)
+            if cell:
+                device.cell_id = cell.id
+        else:
+            await hive_service.apply_manual_server_cell(db, device, commit=False)
     await db.commit()
     if online:
         from app.services.peak_online import record_online_peak

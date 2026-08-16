@@ -1,12 +1,14 @@
 import { connectWaitTimeoutForAuth } from './hashChannelHelper'
 
+export type VpnReadyWaitResult = true | false | 'flood'
+
 /** Ожидание готовности туннеля — как Android waitForTunnelReady. */
 export async function waitVpnReady(
   timeoutMs?: number,
   totalWorkers = 63,
   isBootstrap = false,
   vkAuthMode?: string,
-): Promise<boolean> {
+): Promise<VpnReadyWaitResult> {
   const deadlineMs =
     timeoutMs ?? connectWaitTimeoutForAuth(totalWorkers, isBootstrap, vkAuthMode)
   const electron = (window as any).electronAPI
@@ -32,15 +34,18 @@ export async function waitVpnReady(
       if (electron.vpnIsReady) {
         const r = await electron.vpnIsReady()
         if (isBootstrap ? r?.bootstrap : r?.ready && !r?.bootstrap) return true
-        // LEGACY_ESCALATE при 0 воркерах — не ждать полный timeout с n=63
+        if (!isBootstrap && (r?.workers > 0) && r?.wg) return true
+        // Flood control: vkcalls→автокапча. Не рвать, если WG уже ставится.
         if (
           !legacy &&
-          Date.now() - started > 8_000 &&
+          Date.now() - started > 15_000 &&
           !(r?.workers > 0) &&
+          !r?.wg &&
+          !r?.installing &&
           electron.consumeFloodEscalate
         ) {
           const flood = await electron.consumeFloodEscalate()
-          if (flood?.escalate) return false
+          if (flood?.escalate) return 'flood'
         }
       }
     } catch {

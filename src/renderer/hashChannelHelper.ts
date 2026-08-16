@@ -47,10 +47,10 @@ export function groupsForWorkers(totalWorkers: number): number {
   )
 }
 
-/** Bootstrap: WG + 1 воркер. Основной VPN: WG + ≥1 воркер — UI сразу, остальное фоном. */
+/** Основной VPN: 90с — полная переустановка WG на Windows часто >45с. */
 export function connectWaitTimeoutMs(totalWorkers: number, isBootstrap = false): number {
   if (isBootstrap) return 90_000
-  return 45_000
+  return 90_000
 }
 
 /** Legacy auto/manual captcha: капча + WG часто >45с — иначе ложный «connect timeout». */

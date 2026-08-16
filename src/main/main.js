@@ -117,6 +117,8 @@ let pendingWgAfterCaptcha = false
 let requestApplyWgAfterCaptcha = null
 /** Flood control (VK error 9) — renderer каскад vkcalls→auto→manual. */
 let vkFloodEscalatePending = false
+/** Сота: 10.66.66.1:8000 часто ECONNREFUSED — дальше сразу public. */
+let tunnelApiDown = false
 
 function noteVkFloodFromLog(line) {
   const m = String(line || '').toLowerCase()
@@ -134,6 +136,15 @@ function consumeVkFloodEscalate() {
   const escalate = vkFloodEscalatePending
   vkFloodEscalatePending = false
   return { escalate }
+}
+
+function shouldLogTunnelApiFallback() {
+  return !(captchaInProgress || Date.now() < apiQuietUntil || Date.now() < wgRouteSettleUntil)
+}
+
+function isTunnelApiRefused(err) {
+  const msg = String(err?.message || err || '')
+  return /ECONNREFUSED|ECONNRESET/i.test(msg)
 }
 
 const SERVER_IP_FALLBACK = '132.243.234.162'
@@ -553,6 +564,7 @@ function cleanupVpn() {
   vpnSessionActive = false
   pausedForNetwork = false
   transportSwitching = false
+  tunnelApiDown = false
   lastVpnConnectConfig = null
   activeWorkerCount = 0
   if (wdttRelaunchTimer) {
@@ -1806,6 +1818,7 @@ async function waitVpnConnectIdle(seq, timeoutMs = 20000) {
 ipcMain.handle('vpn-connect', async (_, config) => {
   trace().enter('Main.vpnConnect', `bootstrap=${!!config?.is_bootstrap} n=${config?.stream_count ?? '?'}`)
   vkFloodEscalatePending = false
+  tunnelApiDown = false
   const wantBootstrap = !!config?.is_bootstrap
   const wantOlcrtc = wantOlcrtcFamily(config)
   const useOlcrtc2 = wantOlcrtc2Family(config)
@@ -1956,6 +1969,8 @@ ipcMain.handle('vpn-is-ready', async () => ({
   workers: activeWorkerCount,
   target: sessionTargetWorkers,
   min: minWorkersForTunnelReady(vpnBootstrapMode),
+  wg: !!wgApplied,
+  installing: !!wgInstallInFlight,
 }))
 
 ipcMain.handle('vpn-consume-flood-escalate', async () => consumeVkFloodEscalate())
@@ -2164,7 +2179,7 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
     throw err
   }
   // Сразу после капчи / WG settle — только tunnel, без шума public fallback.
-  if (Date.now() < apiQuietUntil && wgApplied) {
+  if (Date.now() < apiQuietUntil && wgApplied && !tunnelApiDown) {
     try {
       const res = await tunnelHttpRequest({
         ...opts,
@@ -2178,6 +2193,10 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
     // Full tunnel без bypass → hairpin на VPS public IP / nip.io зависает.
     await ensurePublicApiBypass(sendLog)
     return publicDirectRequest(opts)
+  }
+
+  if (wgApplied && tunnelApiDown && !olcrtc2) {
+    return viaPublic()
   }
 
   if (wgApplied) {
@@ -2212,14 +2231,20 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
           await sleep(400 * attempt)
           continue
         }
-        sendLog(`[API] tunnel HTTP ${res.status} — повтор через публичный API`)
+        if (shouldLogTunnelApiFallback()) {
+          sendLog(`[API] tunnel HTTP ${res.status} — повтор через публичный API`)
+        }
         return await viaPublic()
       } catch (e) {
         lastErr = e
         if (e?.code === 'OLCRTC_TUNNEL_ONLY') throw e
         const msg = String(e?.message || e)
+        if (!olcrtc2 && isTunnelApiRefused(e)) {
+          tunnelApiDown = true
+          return await viaPublic()
+        }
         // EACCES/ECONNABORTED — типично при WG reinstall (маршруты/адаптер мигают)
-        const transient = /ECONNRESET|ECONNREFUSED|ECONNABORTED|EACCES|ETIMEDOUT|timeout|Tunnel API/i.test(msg)
+        const transient = /ECONNRESET|ECONNABORTED|EACCES|ETIMEDOUT|timeout|Tunnel API/i.test(msg)
         if (transient && attempt < maxAttempts) {
           if (!olcrtc2 && !fragile) await ensurePublicApiBypass(sendLog)
           await sleep(500 * attempt)
@@ -2234,7 +2259,9 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
           await sleep(600 * attempt)
           continue
         }
-        sendLog(`[API] tunnel ${msg} — повтор через публичный API`)
+        if (shouldLogTunnelApiFallback()) {
+          sendLog(`[API] tunnel ${msg} — повтор через публичный API`)
+        }
         try {
           return await viaPublic()
         } catch (pubErr) {
@@ -2252,7 +2279,7 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
       sendLog(`[API] tunnel 10.66.66.1 fail (olcrtc2, no public): ${lastErr?.message || lastErr}`)
       throw lastErr || new Error('Tunnel API fail')
     }
-    if (Date.now() < wgRouteSettleUntil) {
+    if (Date.now() < wgRouteSettleUntil && !tunnelApiDown) {
       const waitMs = Math.min(wgRouteSettleUntil - Date.now(), 8_000)
       if (waitMs > 200) await sleep(waitMs)
       try {
@@ -2263,7 +2290,9 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
         if (res.status >= 200 && res.status < 500) return res
       } catch { /* public ниже */ }
     }
-    sendLog(`[API] tunnel ${lastErr?.message || lastErr} — публичный API`)
+    if (shouldLogTunnelApiFallback() && !isTunnelApiRefused(lastErr)) {
+      sendLog(`[API] tunnel ${lastErr?.message || lastErr} — публичный API`)
+    }
     return viaPublic()
   }
   return publicDirectRequest(opts)
@@ -2321,30 +2350,33 @@ ipcMain.handle('app-update-check', async (_, { version, platform = 'pc' }) => {
   if (captchaInProgress && !wgApplied) {
     return null
   }
-  if (shouldUseTunnelForOta() || wgApplied) {
-    try {
-      const res = await tunnelHttpRequest({ method: 'GET', path: q, timeout: 15_000 })
-      if (res.status === 200 && res.data) {
-        sendLog('[Update] check via tunnel 10.66.66.1 OK')
-        return res.data
-      }
-      sendLog(`[Update] tunnel check HTTP ${res.status} → public`)
-    } catch (e) {
-      sendLog(`[Update] tunnel check fail: ${e?.message || e} → public`)
-    }
-  }
+  // Как ConfigSync: public через IP+Host (bypass). nip.io-hostname через полный
+  // туннель зависает → «Update check timeout». 10.66.66.1 часто ECONNREFUSED.
   try {
     await ensurePublicApiBypass(sendLog)
-    return await fetchJsonGet(`${UPDATE_PUBLIC_BASE}${q}`)
+    const res = await publicDirectRequest({ method: 'GET', path: q, timeout: 20_000 })
+    if (res.status === 200 && res.data) {
+      sendLog('[Update] check via public OK')
+      return res.data
+    }
+    sendLog(`[Update] public check HTTP ${res.status}`)
   } catch (e) {
+    sendLog(`[Update] public check fail: ${e?.message || e}`)
+  }
+  if (wgApplied) {
     try {
-      await ensurePublicApiBypass(sendLog)
-      return await fetchJsonGet(`https://${SERVER_IP_FALLBACK}${q}`, UPDATE_HOST)
-    } catch (e2) {
-      sendLog(`[Update] check fail: ${e2?.message || e2}`)
-      return null
+      const res = await tunnelHttpRequest({ method: 'GET', path: q, timeout: 5_000 })
+      if (res.status === 200 && res.data) {
+        sendLog('[Update] check via tunnel OK')
+        return res.data
+      }
+      sendLog(`[Update] tunnel check HTTP ${res.status}`)
+    } catch (e) {
+      sendLog(`[Update] tunnel check fail: ${e?.message || e}`)
     }
   }
+  sendLog('[Update] check fail')
+  return null
 })
 
 function downloadFileWithProgress(url, destPath, onProgress) {
@@ -2366,7 +2398,10 @@ function downloadFileWithProgress(url, destPath, onProgress) {
     }
     if (isHttps) {
       opts.rejectUnauthorized = false
-      if (urlObj.hostname === SERVER_IP_FALLBACK) opts.servername = UPDATE_HOST
+      if (urlObj.hostname === SERVER_IP_FALLBACK) {
+        opts.servername = UPDATE_HOST
+        opts.headers = { ...(opts.headers || {}), Host: UPDATE_HOST }
+      }
     }
     const req = proto.get(opts, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
@@ -2409,20 +2444,47 @@ ipcMain.handle('app-update-download', async (_, { url, filename, tunnelUrl, expe
   try {
     const safeName = path.basename(filename || 'update.exe')
     const dest = path.join(app.getPath('temp'), safeName)
-    const finalUrl = resolveUpdateDownloadUrl(url, tunnelUrl)
-    if (!finalUrl) {
+    const hivePath = String(tunnelUrl || '/api/updates/download/pc').trim() || '/api/updates/download/pc'
+    const hivePathNorm = hivePath.startsWith('/') ? hivePath : `/${hivePath}`
+    const candidates = []
+    // VPN on/off: hive по IP (в bypass), не 10.66.66.1 и не hostname nip.io.
+    candidates.push(`https://${SERVER_IP_FALLBACK}${hivePathNorm}`)
+    const raw = String(url || '').trim()
+    if (/^https?:\/\//i.test(raw) && !raw.includes('10.66.66.1')) {
+      candidates.push(raw)
+    }
+    if (wgApplied) {
+      candidates.push(`${TUNNEL_API_ORIGIN}${hivePathNorm}`)
+    }
+    const uniq = [...new Set(candidates.filter(Boolean))]
+    if (!uniq.length) {
       return { ok: false, error: 'Empty download URL' }
     }
-    sendLog(`[Update] download via ${finalUrl.startsWith(TUNNEL_API_ORIGIN) ? 'tunnel' : 'public'}: ${finalUrl}`)
+    await ensurePublicApiBypass(sendLog)
     const sendProgress = (pct) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('update-progress', pct)
       }
     }
-    await downloadFileWithProgress(finalUrl, dest, sendProgress)
-    assertValidPcInstaller(dest, expectedSize)
-    sendProgress(100)
-    return { ok: true, path: dest }
+    let lastErr = null
+    for (const finalUrl of uniq) {
+      const via = finalUrl.startsWith(TUNNEL_API_ORIGIN)
+        ? 'tunnel'
+        : finalUrl.includes(SERVER_IP_FALLBACK)
+          ? 'public-ip'
+          : 'public'
+      sendLog(`[Update] download try ${via}: ${finalUrl}`)
+      try {
+        await downloadFileWithProgress(finalUrl, dest, sendProgress)
+        assertValidPcInstaller(dest, expectedSize)
+        sendProgress(100)
+        return { ok: true, path: dest }
+      } catch (e) {
+        lastErr = e
+        sendLog(`[Update] download ${via} fail: ${e?.message || e}`)
+      }
+    }
+    return { ok: false, error: lastErr?.message || String(lastErr || 'download failed') }
   } catch (e) {
     return { ok: false, error: e?.message || String(e) }
   }

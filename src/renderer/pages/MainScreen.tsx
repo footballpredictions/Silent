@@ -972,7 +972,7 @@ export default function MainScreen({
         }
         const ready = await waitVpnReady(90_000, 1, false, 'olcrtc')
         if (connectGen !== connectGenRef.current) return
-        if (ready) {
+        if (ready === true) {
           setConnected(true)
           setVpnReady(true)
           // connecting снимает змейка (1.5 оборота), не ready
@@ -1026,7 +1026,9 @@ export default function MainScreen({
           connectCfg.vkAuthMode,
         )
         if (connectGen !== connectGenRef.current) return
-        if (ready) {
+        const late = await (window as any).electronAPI?.vpnIsReady?.().catch(() => null)
+        const tunnelUp = ready === true || !!(late?.ready || (late?.workers > 0 && late?.wg))
+        if (tunnelUp) {
           setConnected(true)
           setVpnReady(true)
           await markOnlineOnServer()
@@ -1036,17 +1038,16 @@ export default function MainScreen({
           return
         }
 
-        pushLog('Main', 'connect timeout', 'E')
-        await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
-        const flood = await (window as any).electronAPI?.consumeFloodEscalate?.().catch(() => null)
-        if (escalateVkCredSession()) {
+        if (ready === 'flood' && escalateVkCredSession()) {
           pushLog(
             'Main',
-            `timeout escalate → ${vkCredStrategyLabel(getEffectiveVkCredStrategy())}${flood?.escalate ? ' (flood)' : ''}`,
+            `flood escalate → ${vkCredStrategyLabel(getEffectiveVkCredStrategy())}`,
           )
+          await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
           continue
         }
 
+        pushLog('Main', 'connect timeout', 'E')
         resetVpnUi()
         alert(
           'WireGuard-туннель не поднялся.\n\n' +

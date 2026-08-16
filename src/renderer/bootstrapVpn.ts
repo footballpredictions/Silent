@@ -238,7 +238,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
     if (runId !== bootstrapEnsureGeneration || !bootstrapActive) {
       return false
     }
-    if (ok) {
+    if (ok === true) {
       pushLog('Bootstrap', 'VPN ready')
       lastBootstrapWgAddress = bootWithDns.assigned_ip || null
       enableTunnelApi()
@@ -255,11 +255,10 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
     clearTunnelApiBase()
     await electron.vpnDisconnect?.({ fast: true })
 
-    const flooded = await consumeFloodEscalateFlag()
-    if (escalateVkCredSession()) {
+    if (ok === 'flood' && escalateVkCredSession()) {
       pushLog(
         'Bootstrap',
-        `timeout escalate → ${vkCredStrategyLabel(getEffectiveVkCredStrategy())}${flooded ? ' (flood)' : ''}`,
+        `flood escalate → ${vkCredStrategyLabel(getEffectiveVkCredStrategy())}`,
       )
       continue
     }

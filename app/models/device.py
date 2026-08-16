@@ -17,6 +17,7 @@ class Device(Base):
     wg_private_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     wg_address: Mapped[str | None] = mapped_column(String(50), nullable=True)
     wdtt_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    preferred_server: Mapped[str] = mapped_column(String(64), nullable=False, default="queen")
     last_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     last_connected: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_connected: Mapped[bool] = mapped_column(Boolean, default=False)

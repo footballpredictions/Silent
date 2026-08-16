@@ -71,6 +71,8 @@ class HiveCellResponse(BaseModel):
     tunnel_api_url: Optional[str]
     max_clients: int
     online_count: int
+    olcrtc_online_count: int = 0
+    total_online_count: int = 0
     assigned_devices: int
     status: str
     accepts_wdtt: bool = True

@@ -24,6 +24,9 @@ from app.schemas.vpn import (
     InternalOnlineResponse,
     ThreatFilterMetaRequest,
     VpsCleanupMetaRequest,
+    PreferredServerRequest,
+    VpnServersResponse,
+    VpnServerInfo,
 )
 from app.core.deps import get_verified_user
 from app.services.vpn_service import (
@@ -37,6 +40,8 @@ from app.services.vpn_service import (
     set_device_online,
     mark_client_disconnect_latch,
     touch_user_last_seen,
+    set_device_preferred_server,
+    list_manual_vpn_servers,
 )
 from app.services.subscription_service import (
     user_has_active_subscription,
@@ -49,6 +54,21 @@ from app.services.theme_settings import load_theme
 from app.config import settings
 
 router = APIRouter(prefix="/vpn", tags=["vpn"])
+
+
+def _olcrtc_disabled_payload() -> dict:
+    return {
+        "enabled": False,
+        "crypto_key": "",
+        "socks_host": "127.0.0.1",
+        "socks_port": 8808,
+        "assigned_slot": "",
+        "device_type": "",
+        "pool_denied": True,
+        "pool_denied_detail": "olcrtc disabled",
+        "providers": {},
+        "session_mode": False,
+    }
 
 
 @router.post("/bootstrap-config", response_model=VpnConfigResponse)
@@ -96,6 +116,7 @@ async def device_register(
             device_type=req.device_type,
             device_fingerprint=req.device_fingerprint,
             wg_public_key=req.wg_public_key,
+            preferred_server=req.preferred_server,
         )
         result = await db.execute(
             select(Device).where(
@@ -115,6 +136,7 @@ async def device_register(
 @router.get("/config", response_model=VpnConfigResponse)
 async def get_config(
     fingerprint: str,
+    preferred_server: str | None = None,
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -135,6 +157,9 @@ async def get_config(
     from app.services.user_hash_service import ensure_user_server_hashes
 
     await ensure_user_server_hashes(db, user.id)
+    if preferred_server:
+        await set_device_preferred_server(db, user.id, fingerprint, preferred_server)
+        await db.refresh(device)
     return await build_vpn_config_for_user(db, device, user, has_sub)
 
 
@@ -200,6 +225,141 @@ async def report_hash_failure(
     return {"ok": True, "detail": detail}
 
 
+@router.get("/servers", response_model=VpnServersResponse)
+async def get_vpn_servers(
+    fingerprint: str,
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user.id,
+            Device.device_fingerprint == fingerprint,
+            Device.is_active == True,
+        )
+    )
+    device = result.scalar_one_or_none()
+    selected = "server1"
+    if device:
+        from app.services import hive_service
+
+        selected, cell = await hive_service.resolve_manual_server_cell(db, device.preferred_server)
+        if device.preferred_server != selected or device.cell_id != cell.id:
+            device.preferred_server = selected
+            device.cell_id = cell.id
+            await db.commit()
+    servers = await list_manual_vpn_servers(db)
+    return VpnServersResponse(
+        selected_server=selected,
+        servers=[VpnServerInfo(**item) for item in servers],
+    )
+
+
+@router.post("/servers/select", response_model=VpnServersResponse)
+async def select_vpn_server(
+    req: PreferredServerRequest,
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    device = await set_device_preferred_server(
+        db,
+        user.id,
+        req.device_fingerprint,
+        req.preferred_server,
+    )
+    if not device:
+        raise HTTPException(status_code=404, detail="Сессия устройства не найдена. Войдите снова.")
+    servers = await list_manual_vpn_servers(db)
+    return VpnServersResponse(
+        selected_server=device.preferred_server or "server1",
+        servers=[VpnServerInfo(**item) for item in servers],
+    )
+
+
+@router.get("/olcrtc-config")
+async def get_olcrtc_config(
+    device_type: str = "",
+    fingerprint: str = "",
+    provider: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    return _olcrtc_disabled_payload()
+
+
+@router.get("/olcrtc2-config")
+async def get_olcrtc2_config(
+    device_type: str = "",
+    fingerprint: str = "",
+    provider: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    return _olcrtc_disabled_payload()
+
+
+class Olcrtc2HeartbeatBody(BaseModel):
+    room_db_id: str = ""
+    fingerprint: str = ""
+    provider: str = ""
+    device_type: str = ""
+    online: bool = True
+
+
+@router.post("/olcrtc2-heartbeat")
+async def post_olcrtc2_heartbeat(
+    body: Olcrtc2HeartbeatBody,
+    db: AsyncSession = Depends(get_db),
+):
+    return {"ok": True, "disabled": True}
+
+
+class Olcrtc2RoomFailureBody(BaseModel):
+    room_db_id: str = ""
+    fingerprint: str = ""
+    provider: str = ""
+    device_type: str = ""
+    detail: str = ""
+
+
+@router.post("/olcrtc2-room-failure")
+async def post_olcrtc2_room_failure(
+    body: Olcrtc2RoomFailureBody,
+    db: AsyncSession = Depends(get_db),
+):
+    return {"ok": True, "disabled": True}
+
+
+class OlcrtcHeartbeatBody(BaseModel):
+    room_db_id: str = ""
+    fingerprint: str = ""
+    provider: str = ""
+    device_type: str = ""
+    online: bool = True
+
+
+@router.post("/olcrtc-heartbeat")
+async def post_olcrtc_heartbeat(
+    body: OlcrtcHeartbeatBody,
+    db: AsyncSession = Depends(get_db),
+):
+    return {"ok": True, "disabled": True}
+
+
+class OlcrtcRoomFailureBody(BaseModel):
+    room_db_id: str = ""
+    fingerprint: str = ""
+    provider: str = ""
+    device_type: str = ""
+    detail: str = ""
+
+
+@router.post("/olcrtc-room-failure")
+async def post_olcrtc_room_failure(
+    body: OlcrtcRoomFailureBody,
+    db: AsyncSession = Depends(get_db),
+):
+    return {"ok": True, "disabled": True}
+
+
 @router.post("/connect")
 async def connect(
     req: ConnectRequest,
@@ -231,6 +391,10 @@ async def connect(
                 status_code=403,
                 detail=f"Достигнут лимит {settings.MAX_DEVICES_PER_USER} одновременных подключений VPN.",
             )
+
+    if req.preferred_server:
+        await set_device_preferred_server(db, user.id, req.device_fingerprint, req.preferred_server)
+        await db.refresh(device)
 
     device.is_connected = True
     device.last_connected = datetime.utcnow()
@@ -438,145 +602,3 @@ async def get_hive_meta(db: AsyncSession = Depends(get_db)):
     return await hive_meta(db)
 
 
-@router.get("/olcrtc-config")
-async def get_olcrtc_config(
-    device_type: str = "",
-    fingerprint: str = "",
-    provider: str = "",
-    db: AsyncSession = Depends(get_db),
-):
-    """Legacy olcrtc v1 — всегда disabled (kill 2026-08-11). См. /olcrtc2-config."""
-    from app.services.olcrtc_assign import assign_public_config
-    from app.services.olcrtc_rooms_db import ensure_rooms_synced
-
-    await ensure_rooms_synced(db)
-    return await assign_public_config(
-        db,
-        device_type=device_type or "",
-        fingerprint=fingerprint or "",
-        preferred_provider=provider or "",
-    )
-
-
-@router.get("/olcrtc2-config")
-async def get_olcrtc2_config(
-    device_type: str = "",
-    fingerprint: str = "",
-    provider: str = "",
-    db: AsyncSession = Depends(get_db),
-):
-    """Публичный конфиг olcrtc 2.0 — session assign (1 fp = 1 room) на соте."""
-    from app.services.olcrtc2_assign import assign_public_config
-
-    return await assign_public_config(
-        db,
-        device_type=device_type or "",
-        fingerprint=fingerprint or "",
-        preferred_provider=provider or "",
-    )
-
-
-class Olcrtc2HeartbeatBody(BaseModel):
-    room_db_id: str = ""
-    fingerprint: str = ""
-    provider: str = ""
-    device_type: str = ""
-    online: bool = True
-
-
-@router.post("/olcrtc2-heartbeat")
-async def post_olcrtc2_heartbeat(
-    body: Olcrtc2HeartbeatBody,
-    db: AsyncSession = Depends(get_db),
-):
-    from app.services.olcrtc2_assign import heartbeat
-
-    if not (body.room_db_id or "").strip():
-        raise HTTPException(status_code=400, detail="room_db_id required")
-    return await heartbeat(
-        db,
-        room_db_id=body.room_db_id.strip(),
-        fingerprint=body.fingerprint or "",
-        provider=body.provider or "",
-        device_type=body.device_type or "",
-        online=bool(body.online),
-    )
-
-
-class Olcrtc2RoomFailureBody(BaseModel):
-    room_db_id: str = ""
-    fingerprint: str = ""
-    provider: str = ""
-    device_type: str = ""
-    detail: str = ""
-
-
-@router.post("/olcrtc2-room-failure")
-async def post_olcrtc2_room_failure(
-    body: Olcrtc2RoomFailureBody,
-    db: AsyncSession = Depends(get_db),
-):
-    from app.services.olcrtc2_assign import report_room_failure
-
-    return await report_room_failure(
-        db,
-        room_db_id=body.room_db_id or "",
-        fingerprint=body.fingerprint or "",
-        provider=body.provider or "",
-        device_type=body.device_type or "",
-        detail=body.detail or "",
-    )
-
-
-class OlcrtcHeartbeatBody(BaseModel):
-    room_db_id: str = ""
-    fingerprint: str = ""
-    provider: str = ""
-    device_type: str = ""
-    online: bool = True
-
-
-@router.post("/olcrtc-heartbeat")
-async def post_olcrtc_heartbeat(
-    body: OlcrtcHeartbeatBody,
-    db: AsyncSession = Depends(get_db),
-):
-    """Клиент держит online_count комнаты (cap для 1000+ пула)."""
-    from app.services.olcrtc_assign import heartbeat
-
-    if not (body.room_db_id or "").strip():
-        raise HTTPException(status_code=400, detail="room_db_id required")
-    return await heartbeat(
-        db,
-        room_db_id=body.room_db_id.strip(),
-        fingerprint=body.fingerprint or "",
-        provider=body.provider or "",
-        device_type=body.device_type or "",
-        online=bool(body.online),
-    )
-
-
-class OlcrtcRoomFailureBody(BaseModel):
-    room_db_id: str = ""
-    fingerprint: str = ""
-    provider: str = ""
-    device_type: str = ""
-    detail: str = ""
-
-
-@router.post("/olcrtc-room-failure")
-async def post_olcrtc_room_failure(
-    body: OlcrtcRoomFailureBody,
-    db: AsyncSession = Depends(get_db),
-):
-    """Peer dead / SOCKS timeout → сброс sticky, комната error, следующий connect — новый канал."""
-    from app.services.olcrtc_assign import report_room_failure
-
-    return await report_room_failure(
-        db,
-        room_db_id=body.room_db_id or "",
-        fingerprint=body.fingerprint or "",
-        provider=body.provider or "",
-        device_type=body.device_type or "",
-        detail=body.detail or "",
-    )

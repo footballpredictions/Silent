@@ -64,7 +64,7 @@ cd {REMOTE}
 for f in {' '.join(hive_files)}; do
   [ -f "$f" ] && docker cp "$f" {CONTAINER}:/app/"$f"
 done
-docker exec {CONTAINER} mkdir -p /app/cell-agent
+docker exec {CONTAINER} mkdir -p /app/cell-agent 2>/dev/null || true
 docker cp cell-agent/main.py {CONTAINER}:/app/cell-agent/main.py 2>/dev/null || true
 docker exec {CONTAINER} pip install -q paramiko httpx 2>/dev/null || true
 docker compose restart api nginx

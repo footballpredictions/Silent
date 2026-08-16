@@ -21,7 +21,14 @@ from app.schemas.hive import (
 )
 from app.services import hive_service
 from app.services import hive_provision_service
-from app.services.hive_incidents import list_incidents, clear_incidents, push_incident
+from app.services.hive_incidents import (
+    list_incidents,
+    clear_incidents,
+    clear_persisted_incidents,
+    push_incident,
+    get_admin_incidents_seen_at,
+    mark_admin_incidents_seen,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -475,7 +482,8 @@ async def hive_incidents(
     _: bool = Depends(get_admin_credentials),
 ):
     items = list_incidents(limit)
-    return {"items": items, "count": len(items)}
+    last_seen_at = await get_admin_incidents_seen_at()
+    return {"items": items, "count": len(items), "last_seen_at": last_seen_at}
 
 
 @router.post("/incidents/clear")
@@ -483,4 +491,13 @@ async def clear_hive_incidents(
     _: bool = Depends(get_admin_credentials),
 ):
     clear_incidents()
+    await clear_persisted_incidents()
     return {"ok": True}
+
+
+@router.post("/incidents/seen")
+async def mark_hive_incidents_seen(
+    _: bool = Depends(get_admin_credentials),
+):
+    seen_at = await mark_admin_incidents_seen()
+    return {"ok": True, "seen_at": seen_at}

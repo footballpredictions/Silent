@@ -546,6 +546,7 @@ async def ensure_device_session(
     device_name: str,
     device_type: str,
     device_fingerprint: str,
+    preferred_server: str | None = None,
 ) -> Device:
     """После login: сессия в списке устройств, offline до POST /vpn/connect."""
     device_type = (device_type or "android").strip().lower()[:32]
@@ -564,10 +565,16 @@ async def ensure_device_session(
         )
     )
     existing = result.scalar_one_or_none()
+    pref_server = (preferred_server or "").strip()
     if existing:
         existing.is_active = True
         existing.device_name = device_name
         existing.device_type = device_type
+        # Login часто не шлёт preferred_server — пустая строка не должна сбрасывать слот в Улей.
+        if pref_server:
+            key, cell = await hive_service.resolve_manual_server_cell(db, pref_server)
+            existing.preferred_server = key
+            existing.cell_id = cell.id
         existing.is_connected = False
         existing.last_connected = datetime.utcnow()
         await touch_user_last_seen(db, user, commit=False)
@@ -581,7 +588,7 @@ async def ensure_device_session(
         raise device_limit_error()
 
     priv_key, pub_key = _generate_wg_keypair()
-    cell = await hive_service.pick_cell_for_new_device(db, user=user)
+    pref_server, cell = await hive_service.resolve_manual_server_cell(db, pref_server)
     wg_address = await _get_next_wg_address(db)
     wdtt_pass = (settings.WDTT_MASTER_PASSWORD or "").strip() or generate_wdtt_password()
 
@@ -594,6 +601,7 @@ async def ensure_device_session(
         wg_private_key_enc=encrypt_value(priv_key),
         wg_address=wg_address,
         wdtt_password=wdtt_pass,
+        preferred_server=pref_server,
         cell_id=cell.id,
         is_connected=False,
         last_connected=datetime.utcnow(),
@@ -613,6 +621,7 @@ async def register_device(
     device_type: str,
     device_fingerprint: str,
     wg_public_key: Optional[str] = None,
+    preferred_server: str | None = None,
 ) -> VpnConfigResponse:
     await clear_stale_online_status(db)
     await replace_same_type_session(db, user.id, device_type, device_fingerprint)
@@ -624,12 +633,17 @@ async def register_device(
         )
     )
     existing = result.scalar_one_or_none()
+    pref_server = (preferred_server or "").strip()
     if existing:
         existing.is_active = True
         if device_name:
             existing.device_name = device_name[:64]
         if device_type:
             existing.device_type = device_type[:32]
+        if pref_server:
+            key, cell = await hive_service.resolve_manual_server_cell(db, pref_server)
+            existing.preferred_server = key
+            existing.cell_id = cell.id
         existing.last_connected = datetime.utcnow()
         await touch_user_last_seen(db, user, commit=False)
         await db.commit()
@@ -646,7 +660,7 @@ async def register_device(
         pub_key = wg_public_key
         priv_key = ""
 
-    cell = await hive_service.pick_cell_for_new_device(db, user=user)
+    pref_server, cell = await hive_service.resolve_manual_server_cell(db, pref_server)
     wg_address = await _get_next_wg_address(db)
     wdtt_pass = (settings.WDTT_MASTER_PASSWORD or "").strip() or generate_wdtt_password()
 
@@ -659,6 +673,7 @@ async def register_device(
         wg_private_key_enc=encrypt_value(priv_key) if priv_key else None,
         wg_address=wg_address,
         wdtt_password=wdtt_pass,
+        preferred_server=pref_server,
         cell_id=cell.id,
         last_connected=datetime.utcnow(),
     )
@@ -683,9 +698,12 @@ async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigRespon
     else:
         hashes = await get_active_vk_hashes(db)
 
-    cell = await hive_service.resolve_cell_for_device(
-        db, device, force_queen=is_bootstrap,
-    )
+    preferred_server = "queen" if is_bootstrap else (device.preferred_server or "").strip()
+    selected_server, cell = await hive_service.resolve_manual_server_cell(db, preferred_server)
+    if device.cell_id != cell.id or device.preferred_server != selected_server:
+        device.cell_id = cell.id
+        device.preferred_server = selected_server
+        await db.commit()
     server_pub_key = (cell.wg_public_key or "").strip()
     if not server_pub_key:
         server_pub_key = await get_server_public_key(db)
@@ -722,7 +740,49 @@ async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigRespon
         wdtt_password=(settings.WDTT_MASTER_PASSWORD or "").strip() or (device.wdtt_password or ""),
         vk_hashes=hashes,
         stream_count=9,
+        selected_server=selected_server,
     )
+
+
+async def set_device_preferred_server(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    device_fingerprint: str,
+    preferred_server: str,
+) -> Device | None:
+    result = await db.execute(
+        select(Device).where(
+            Device.user_id == user_id,
+            Device.device_fingerprint == device_fingerprint,
+            Device.is_active == True,
+        )
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        return None
+    key, cell = await hive_service.resolve_manual_server_cell(db, preferred_server)
+    device.preferred_server = key
+    device.cell_id = cell.id
+    await db.commit()
+    await db.refresh(device)
+    return device
+
+
+async def list_manual_vpn_servers(db: AsyncSession) -> list[dict]:
+    entries = await hive_service.manual_server_entries(db)
+    out: list[dict] = []
+    for key, title, cell in entries:
+        online = await hive_service.count_online_on_cell(db, cell.id)
+        out.append(
+            {
+                "key": key,
+                "title": title,
+                "public_ip": cell.public_ip or "",
+                "wdtt_port": int(cell.wdtt_port or settings.VPN_SERVER_PORT),
+                "online_count": int(online),
+            }
+        )
+    return out
 
 
 BOOTSTRAP_USER_EMAIL = "__bootstrap__@silent.local"

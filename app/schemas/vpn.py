@@ -9,6 +9,7 @@ class DeviceRegisterRequest(BaseModel):
     device_fingerprint: str
     wg_public_key: Optional[str] = None
     bootstrap_hash: Optional[str] = None
+    preferred_server: Optional[str] = None
 
 
 class HashRefreshRequest(BaseModel):
@@ -42,6 +43,7 @@ class VpnConfigResponse(BaseModel):
     wdtt_password: str
     vk_hashes: list[str]
     stream_count: int = 9  # libclient -n (workers), not hash count; bootstrap default 9
+    selected_server: str = "queen"
 
     model_config = {"from_attributes": True}
 
@@ -50,6 +52,25 @@ class ConnectRequest(BaseModel):
     device_fingerprint: str
     device_type: str
     last_ip: Optional[str] = None
+    preferred_server: Optional[str] = None
+
+
+class PreferredServerRequest(BaseModel):
+    device_fingerprint: str
+    preferred_server: str
+
+
+class VpnServerInfo(BaseModel):
+    key: str
+    title: str
+    public_ip: str
+    wdtt_port: int
+    online_count: int = 0
+
+
+class VpnServersResponse(BaseModel):
+    selected_server: str
+    servers: list[VpnServerInfo]
 
 
 class DisconnectRequest(BaseModel):

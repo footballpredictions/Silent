@@ -290,12 +290,29 @@ echo "[hive] net..."
 sysctl -w net.ipv4.ip_forward=1 || true
 ETH=$(ip route get 8.8.8.8 2>/dev/null | awk '{{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}}')
 if [ -n "$ETH" ]; then
-  iptables -t nat -C POSTROUTING -s 10.66.66.0/24 -o "$ETH" -j MASQUERADE 2>/dev/null || \\
-      iptables -t nat -A POSTROUTING -s 10.66.66.0/24 -o "$ETH" -j MASQUERADE
+  iptables -t nat -C POSTROUTING -s 10.66.0.0/16 -o "$ETH" -j MASQUERADE 2>/dev/null || \\
+      iptables -t nat -A POSTROUTING -s 10.66.0.0/16 -o "$ETH" -j MASQUERADE
   iptables -t nat -C PREROUTING -d 10.66.66.1 -p tcp --dport 8000 -j DNAT --to-destination {hive_ip}:8000 2>/dev/null || \\
       iptables -t nat -A PREROUTING -d 10.66.66.1 -p tcp --dport 8000 -j DNAT --to-destination {hive_ip}:8000
   iptables -t nat -C POSTROUTING -d {hive_ip} -p tcp --dport 8000 -j MASQUERADE 2>/dev/null || \\
       iptables -t nat -A POSTROUTING -d {hive_ip} -p tcp --dport 8000 -j MASQUERADE
+fi
+ip addr add 10.66.66.1/32 dev lo 2>/dev/null || true
+if command -v socat >/dev/null || apt-get install -y -qq socat; then
+  cat > /etc/systemd/system/silent-tunnel-api-proxy.service << 'TPEOF'
+[Unit]
+Description=Forward tunnel API 10.66.66.1:8000 to Hive
+After=network.target
+[Service]
+Type=simple
+ExecStart=/usr/bin/socat TCP-LISTEN:8000,bind=10.66.66.1,reuseaddr,fork TCP:{hive_ip}:8000
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target
+TPEOF
+  systemctl daemon-reload
+  systemctl enable --now silent-tunnel-api-proxy || true
 fi
 
 ufw allow 22/tcp 2>/dev/null || true

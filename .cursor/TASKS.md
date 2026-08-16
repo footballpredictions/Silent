@@ -34,6 +34,20 @@ Agent приступает к **первой невыполненной** зад
 - [x] **olcrtc2 burst warm:** при серии `Нет свободных комнат` временно +1 warm по провайдеру (окно 25с, hold 180с, авто-откат) — 2026-08-15
 - [x] **Smart Apply Refresh (Android+PC):** после смены TM/WB — background refresh слота (TTL/dirty-aware, с тайм-бюджетом, без блокировки Apply) — 2026-08-15
 - [x] **UX исключений + DNS + splash:** `Выделить все` в исключениях (Android/PC), без авто-выбора в БС; DNS упрощён до `Яндекс (как на сервере)` + `Свой DNS`; тёмный splash на Android — 2026-08-15
+- [x] **DNS-регрессия 1.0.161 (YouTube на VK-обходе):** откат к семантике 1.0.160 — дефолт `Как на сервере` (`wg_dns`, в т.ч. `10.66.66.1`), в меню только сервер + `Свой DNS`, миграция сохранённых публичных пресетов; PC-модалка DNS в стиле «Смены обхода» — 2026-08-15
+- [x] **Admin UI style unify + PC DNS dark modal:** единый строгий dark-стиль админки (чёрная база, синий/red/green акцент) + fix белого DNS-окна в тёмной теме PC — 2026-08-15
+- [x] **VK-обход: убран лишний olcrtc-prefetch:** `prefetchOlcrtcSlotsOnVkTunnel()` снят с post-sync (как в 1.0.160) — `/olcrtc2-config` делал assign комнат на каждом VK-connect; debug APK пересобран — 2026-08-15
+- [x] **Hive: видимый online для olcrtc2 по сотам:** backend считает свежие sticky по `cell_id` + админка показывает `wdtt/olcrtc/итого`, чтобы сессии не «терялись» в UI — 2026-08-15
+- [x] **Android WB: анти-зависание через несколько минут:** восстановлен recovery при `peer_closed/media_timeout/stream_dead` (WB форсирует liveness-check + restart, TM поведение сохранено) — 2026-08-15
+- [x] **olcrtc2: убрать фантомный online в sessions:** assign config больше не «touch» sticky; `pool_stats` считает только свежие sticky (окно heartbeat), чтобы без звонка не висели `sessions` — 2026-08-15
+- [x] **Android WB: decrypt/auth desync recovery:** при повторе `decrypt failed / message authentication failed` запускается WB-recover с reassign комнаты (вместо тихой смерти канала) — 2026-08-15
+- [x] **Android WB: убрать 1–2 мин подвис после peer closed:** для WB peer должен вернуться в `connected` в grace-окне, иначе сразу recover (не считаем «SOCKS жив» достаточным) — 2026-08-15
+- [x] **Android WB: DNS path fix для olcrtc2:** вместо `activeNetwork DNS / 1.1.1.1` используем provider-aware DNS из меню обхода (WB→fallback first), чтобы убрать подвисы от внешнего резолва — 2026-08-15
+- [x] **Android WB: fast recover по heartbeat socks-fail:** для WB после 2 подряд `HB socks CONNECT fail` сразу suspect/recover, чтобы не оставлять «зависший» канал — 2026-08-15
+- [x] **Android WB: ultra-fast recover по heartbeat socks-fail:** для WB порог снижён до 1 fail (немедленный recover), чтобы убрать даже краткие зависания — 2026-08-15
+- [x] **Выбор сервера 1/2/3 = Улей / Сота 1 / Сота 2:** маппинг по номеру соты (не индекс списка), persist `server1/2/3`, login не затирает слот; Android LTE как 1.0.160 (public API first) — 2026-08-15
+- [x] **PC: смена сервера сразу после выкл + Android LTE без overlay-рестарта WG:** лок меню по UI, не по умирающему туннелю; LTE API через proxy — 2026-08-15
+- [ ] **Проверить VK-обход на debug APK 12:09:** пропали ли серые экраны / задержка 10–20 с; если нет — снять экран «Лог» и смотреть `AppExclusions` (`БС пуст → ЧС`)
 - [ ] **Соты: кеширующий DNS** (unbound/dnsmasq) + `OLCRTC2_DNS=127.0.0.1:53` — весь резолв теперь делает `olcrtc2-srv`
 - [ ] **Фаза D — endurance:** 40 мин WB+TM Wi‑Fi/LTE на PC+Android debug (ручной прогон; APK + PC `build-debug-182837`)
 

@@ -69,30 +69,32 @@ function App() {
 
   return (
     <ErrorBoundary>
-      <BrowserRouter>
-        {!token ? (
-          <LoginPage onLogin={handleLogin} />
-        ) : (
-          <Layout token={token} onLogout={handleLogout}>
-            <Routes>
-              <Route path="/" element={<Navigate to="/dashboard" replace />} />
-              <Route path="/dashboard" element={<DashboardPage token={token} onUnauthorized={handleLogout} />} />
-              <Route path="/users" element={<UsersPage token={token} />} />
-              <Route path="/subscriptions" element={<SubscriptionsPage token={token} />} />
-              <Route path="/bypass" element={<BypassPage token={token} />} />
-              <Route path="/vk" element={<Navigate to="/bypass" replace />} />
-              <Route path="/promo" element={<BonusesPage token={token} />} />
-              <Route path="/bonuses" element={<BonusesPage token={token} />} />
-              <Route path="/theme" element={<ThemePage token={token} />} />
-              <Route path="/updates" element={<UpdatesPage token={token} />} />
-              <Route path="/hive" element={<HivePage token={token} />} />
-              <Route path="/proxy" element={<ProxyPage token={token} />} />
-              <Route path="/extra-settings" element={<ExtraSettingsPage token={token} />} />
-              <Route path="*" element={<Navigate to="/dashboard" replace />} />
-            </Routes>
-          </Layout>
-        )}
-      </BrowserRouter>
+      <div className="admin-theme">
+        <BrowserRouter>
+          {!token ? (
+            <LoginPage onLogin={handleLogin} />
+          ) : (
+            <Layout token={token} onLogout={handleLogout}>
+              <Routes>
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/dashboard" element={<DashboardPage token={token} onUnauthorized={handleLogout} />} />
+                <Route path="/users" element={<UsersPage token={token} />} />
+                <Route path="/subscriptions" element={<SubscriptionsPage token={token} />} />
+                <Route path="/bypass" element={<BypassPage token={token} />} />
+                <Route path="/vk" element={<Navigate to="/bypass" replace />} />
+                <Route path="/promo" element={<BonusesPage token={token} />} />
+                <Route path="/bonuses" element={<BonusesPage token={token} />} />
+                <Route path="/theme" element={<ThemePage token={token} />} />
+                <Route path="/updates" element={<UpdatesPage token={token} />} />
+                <Route path="/hive" element={<HivePage token={token} />} />
+                <Route path="/proxy" element={<ProxyPage token={token} />} />
+                <Route path="/extra-settings" element={<ExtraSettingsPage token={token} />} />
+                <Route path="*" element={<Navigate to="/dashboard" replace />} />
+              </Routes>
+            </Layout>
+          )}
+        </BrowserRouter>
+      </div>
     </ErrorBoundary>
   )
 }

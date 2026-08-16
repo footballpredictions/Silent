@@ -153,6 +153,15 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE devices ADD COLUMN IF NOT EXISTS cell_id UUID REFERENCES hive_cells(id)"
         ))
         await conn.execute(text(
+            "ALTER TABLE devices ADD COLUMN IF NOT EXISTS preferred_server VARCHAR(16) NOT NULL DEFAULT 'server1'"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE devices ALTER COLUMN preferred_server TYPE VARCHAR(64)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE devices ALTER COLUMN preferred_server SET DEFAULT 'server1'"
+        ))
+        await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_devices_cell_id ON devices (cell_id)"
         ))
         await conn.execute(text("""
@@ -191,6 +200,31 @@ async def lifespan(app: FastAPI):
             CREATE TABLE IF NOT EXISTS hive_schema_migrations (
                 name VARCHAR(128) PRIMARY KEY,
                 applied_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS hive_incidents (
+                id BIGSERIAL PRIMARY KEY,
+                ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                severity VARCHAR(16) NOT NULL,
+                source VARCHAR(128) NOT NULL,
+                cell_name VARCHAR(255),
+                cell_ip VARCHAR(255),
+                category VARCHAR(64) NOT NULL,
+                hint TEXT NOT NULL DEFAULT '',
+                message TEXT NOT NULL,
+                details TEXT NOT NULL DEFAULT '',
+                checks_json TEXT NOT NULL DEFAULT '[]'
+            )
+        """))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_hive_incidents_ts ON hive_incidents (ts DESC)"
+        ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS hive_incident_meta (
+                meta_key VARCHAR(64) PRIMARY KEY,
+                meta_value VARCHAR(255),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """))
         once = await conn.execute(text(
@@ -330,8 +364,11 @@ async def lifespan(app: FastAPI):
 
     from app.database import AsyncSessionLocal
     from app.services.hive_service import ensure_queen_cell
+    from app.services.hive_incidents import load_persisted_incidents
     from sqlalchemy import update as sql_update
     from app.models import Device
+
+    await load_persisted_incidents()
 
     async with AsyncSessionLocal() as db:
         try:
@@ -363,16 +400,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("Test subscription reconcile skipped: %s", e)
 
-    # Sync olcrtc JSON rooms → DB pool (1000+ scale)
-    try:
-        async with AsyncSessionLocal() as db:
-            from app.services.olcrtc_rooms_db import sync_rooms_from_settings_json
-
-            n = await sync_rooms_from_settings_json(db)
-            if n:
-                logger.info("Synced %s olcrtc rooms from settings JSON", n)
-    except Exception as e:
-        logger.warning("olcrtc rooms sync skipped: %s", e)
+    # VK-only mode: olcrtc room sync is disabled.
 
     # Фоновые агенты — только в одном воркере (uvicorn --workers N поднимает
     # lifespan в каждом, без лидера агенты дублируются).
@@ -395,26 +423,7 @@ async def lifespan(app: FastAPI):
             ("hive_cell_maintenance", hive_cell_maintenance_loop),
             ("proxy_health", proxy_health_loop),
         ]
-        # olcrtc v1 agents — optional (disabled on prod; missing files must not 502)
-        try:
-            from ai.olcrtc_room_agent import monitor_loop as olcrtc_room_agent_loop
-            from app.services.olcrtc_pool_loop import olcrtc_pool_loop
-
-            agent_specs.extend(
-                [
-                    ("olcrtc_room_agent", olcrtc_room_agent_loop),
-                    ("olcrtc_pool", olcrtc_pool_loop),
-                ]
-            )
-        except Exception as e:
-            logger.warning("olcrtc background agents skipped: %s", e)
-
-        try:
-            from ai.olcrtc2_room_agent import monitor_loop as olcrtc2_room_agent_loop
-
-            agent_specs.append(("olcrtc2_room_agent", olcrtc2_room_agent_loop))
-        except Exception as e:
-            logger.warning("olcrtc2 agent skipped: %s", e)
+        # VK-only mode: all olcrtc background agents are disabled.
 
         agents_task = start_when_leader("silent_background_agents", agent_specs)
     except Exception as e:

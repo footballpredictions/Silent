@@ -1,16 +1,62 @@
 """Кольцевой буфер инцидентов Улья/сот: только падения и ошибки."""
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
+
+from sqlalchemy import text
+
+from app.database import AsyncSessionLocal
 
 MAX_INCIDENTS = 800
 DEDUP_WINDOW_SEC = 45.0
 
 _incidents: deque[dict[str, Any]] = deque(maxlen=MAX_INCIDENTS)
 _last_seen: dict[str, float] = {}
+_persist_queue: deque[dict[str, Any]] = deque()
+_persist_worker_task: asyncio.Task | None = None
+
+logger = logging.getLogger(__name__)
+
+_INCIDENT_INSERT_SQL = text(
+    """
+    INSERT INTO hive_incidents (
+        ts, severity, source, cell_name, cell_ip, category, hint, message, details, checks_json
+    ) VALUES (
+        :ts, :severity, :source, :cell_name, :cell_ip, :category, :hint, :message, :details, :checks_json
+    )
+    """
+)
+
+_INCIDENT_SELECT_SQL = text(
+    """
+    SELECT
+        ts, severity, source, cell_name, cell_ip, category, hint, message, details, checks_json
+    FROM hive_incidents
+    ORDER BY ts DESC, id DESC
+    LIMIT :limit
+    """
+)
+
+_INCIDENT_CLEAR_SQL = text("DELETE FROM hive_incidents")
+
+_META_UPSERT_SQL = text(
+    """
+    INSERT INTO hive_incident_meta (meta_key, meta_value, updated_at)
+    VALUES ('admin_last_seen_at', :value, NOW())
+    ON CONFLICT (meta_key)
+    DO UPDATE SET meta_value = EXCLUDED.meta_value, updated_at = NOW()
+    """
+)
+
+_META_SELECT_SQL = text(
+    "SELECT meta_value FROM hive_incident_meta WHERE meta_key = 'admin_last_seen_at'"
+)
 
 
 def _utc_now_iso() -> str:
@@ -19,6 +65,32 @@ def _utc_now_iso() -> str:
 
 def _normalize_msg(msg: str) -> str:
     return " ".join((msg or "").strip().split())[:900]
+
+
+def _new_incident_payload(
+    *,
+    source: str,
+    severity: str,
+    cell_name: str,
+    cell_ip: str,
+    category: str,
+    hint: str,
+    message: str,
+    details: str,
+    checks: list[str],
+) -> dict[str, Any]:
+    return {
+        "ts": _utc_now_iso(),
+        "severity": (severity or "error").lower(),
+        "source": source,
+        "cell_name": cell_name or None,
+        "cell_ip": cell_ip or None,
+        "category": category,
+        "hint": hint,
+        "message": message,
+        "details": details,
+        "checks": checks,
+    }
 
 
 def _classify(msg: str) -> tuple[str, str, list[str]]:
@@ -102,20 +174,19 @@ def push_incident(
     _last_seen[dedup_key] = now
 
     category, hint, checks = _classify(f"{msg} {details}")
-    _incidents.appendleft(
-        {
-            "ts": _utc_now_iso(),
-            "severity": (severity or "error").lower(),
-            "source": source,
-            "cell_name": cell_name or None,
-            "cell_ip": cell_ip or None,
-            "category": category,
-            "hint": hint,
-            "message": msg,
-            "details": _normalize_msg(details) if details else "",
-            "checks": checks,
-        }
+    payload = _new_incident_payload(
+        source=source,
+        severity=severity,
+        cell_name=cell_name,
+        cell_ip=cell_ip,
+        category=category,
+        hint=hint,
+        message=msg,
+        details=_normalize_msg(details) if details else "",
+        checks=checks,
     )
+    _incidents.appendleft(payload)
+    _enqueue_persist(payload)
     return True
 
 
@@ -146,3 +217,111 @@ def list_incidents(limit: int = 200) -> list[dict[str, Any]]:
 def clear_incidents() -> None:
     _incidents.clear()
     _last_seen.clear()
+
+
+def _enqueue_persist(payload: dict[str, Any]) -> None:
+    global _persist_worker_task
+    _persist_queue.append(payload)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Нет event-loop (редкий синхронный контекст) — инцидент остаётся в RAM-логе.
+        return
+    if _persist_worker_task is None or _persist_worker_task.done():
+        _persist_worker_task = loop.create_task(_persist_worker())
+
+
+async def _persist_worker() -> None:
+    while _persist_queue:
+        payload = _persist_queue.popleft()
+        try:
+            async with AsyncSessionLocal() as db:
+                await db.execute(
+                    _INCIDENT_INSERT_SQL,
+                    {
+                        "ts": payload.get("ts"),
+                        "severity": payload.get("severity"),
+                        "source": payload.get("source"),
+                        "cell_name": payload.get("cell_name"),
+                        "cell_ip": payload.get("cell_ip"),
+                        "category": payload.get("category"),
+                        "hint": payload.get("hint"),
+                        "message": payload.get("message"),
+                        "details": payload.get("details") or "",
+                        "checks_json": json.dumps(payload.get("checks") or [], ensure_ascii=False),
+                    },
+                )
+                await db.commit()
+        except Exception as e:
+            logger.warning("Hive incidents persist failed: %s", e)
+
+
+async def load_persisted_incidents(limit: int = MAX_INCIDENTS) -> None:
+    lim = max(1, min(int(limit or MAX_INCIDENTS), MAX_INCIDENTS))
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = (
+                await db.execute(_INCIDENT_SELECT_SQL, {"limit": lim})
+            ).mappings().all()
+    except Exception as e:
+        logger.warning("Hive incidents bootstrap skipped: %s", e)
+        return
+
+    _incidents.clear()
+    for row in rows:
+        checks: list[str] = []
+        raw_checks = row.get("checks_json") or ""
+        if raw_checks:
+            try:
+                parsed = json.loads(raw_checks)
+                if isinstance(parsed, list):
+                    checks = [str(x) for x in parsed]
+            except Exception:
+                checks = []
+        _incidents.append(
+            {
+                "ts": row.get("ts").isoformat() if row.get("ts") else _utc_now_iso(),
+                "severity": row.get("severity") or "error",
+                "source": row.get("source") or "unknown",
+                "cell_name": row.get("cell_name"),
+                "cell_ip": row.get("cell_ip"),
+                "category": row.get("category") or "unknown",
+                "hint": row.get("hint") or "Требуется диагностика",
+                "message": row.get("message") or "",
+                "details": row.get("details") or "",
+                "checks": checks,
+            }
+        )
+
+
+async def clear_persisted_incidents() -> None:
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(_INCIDENT_CLEAR_SQL)
+            await db.commit()
+    except Exception as e:
+        logger.warning("Hive incidents clear in DB failed: %s", e)
+
+
+async def mark_admin_incidents_seen() -> str:
+    seen_at = _utc_now_iso()
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(_META_UPSERT_SQL, {"value": seen_at})
+            await db.commit()
+    except Exception as e:
+        logger.warning("Hive incidents mark-seen failed: %s", e)
+    return seen_at
+
+
+async def get_admin_incidents_seen_at() -> str | None:
+    try:
+        async with AsyncSessionLocal() as db:
+            row = (await db.execute(_META_SELECT_SQL)).mappings().first()
+    except Exception as e:
+        logger.warning("Hive incidents get-seen failed: %s", e)
+        return None
+    if not row:
+        return None
+    value = (row.get("meta_value") or "").strip()
+    return value or None

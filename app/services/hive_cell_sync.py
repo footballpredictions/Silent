@@ -89,12 +89,13 @@ async def push_manifest_to_cell(cell: HiveCell, manifest: dict) -> bool:
         return True
     except Exception as e:
         logger.debug("Hive manifest %s failed: %s", cell.name, e)
+        err = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
         push_incident(
             source="hive.manifest",
             severity="warning",
             cell_name=cell.name,
             cell_ip=cell.public_ip,
-            message=f"/v1/sync-manifest failed: {e}",
+            message=f"/v1/sync-manifest failed: {err}",
         )
         return False
 

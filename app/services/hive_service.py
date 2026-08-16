@@ -6,7 +6,7 @@ import ipaddress
 import logging
 import re
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlparse
 import uuid
@@ -34,6 +34,7 @@ CELL_STATUSES_ACTIVE = frozenset({"active"})
 CELL_STATUSES_ASSIGNABLE = frozenset({"active"})
 BOOTSTRAP_USER_EMAIL = "__bootstrap__@silent.local"
 _CELL_NUM_RE = re.compile(r"(\d+)", re.IGNORECASE)
+OLCRTC_STICKY_ONLINE_SEC = 300
 
 
 def cell_name_number(name: str) -> int | None:
@@ -47,6 +48,89 @@ def cell_list_sort_key(cell: HiveCell) -> tuple:
         return (0, 0, "")
     num = cell_name_number(cell.name)
     return (1, cell.priority, num if num is not None else 9999, cell.name or "")
+
+
+def _server_key_for_cell(cell: HiveCell) -> str:
+    return "queen" if cell.is_queen else f"cell:{cell.id}"
+
+
+MANUAL_SERVER_SLOTS = ("server1", "server2", "server3")
+
+
+def slot_for_cell(cell: HiveCell) -> str:
+    """Фиксированные слоты UI: Сервер 1 = Улей, 2 = Сота 1, 3 = Сота 2."""
+    if cell.is_queen:
+        return "server1"
+    num = cell_name_number(cell.name)
+    if num == 1:
+        return "server2"
+    if num == 2:
+        return "server3"
+    return ""
+
+
+async def _worker_cells(db: AsyncSession) -> list[HiveCell]:
+    rows = (
+        await db.execute(
+            select(HiveCell).where(
+                HiveCell.is_queen.is_(False),
+            )
+        )
+    ).scalars().all()
+    return sorted(rows, key=cell_list_sort_key)
+
+
+async def _cell_for_manual_slot(db: AsyncSession, slot: str) -> HiveCell:
+    queen = await ensure_queen_cell(db)
+    if slot == "server1":
+        return queen
+    workers = await _worker_cells(db)
+    by_num: dict[int, HiveCell] = {}
+    for cell in workers:
+        num = cell_name_number(cell.name)
+        if num is not None and num not in by_num:
+            by_num[num] = cell
+    if slot == "server2":
+        return by_num.get(1) or (workers[0] if workers else queen)
+    if slot == "server3":
+        return by_num.get(2) or (workers[1] if len(workers) > 1 else (workers[0] if workers else queen))
+    return queen
+
+
+async def manual_server_entries(db: AsyncSession) -> list[tuple[str, str, HiveCell]]:
+    """Три фиксированных слота, не список всех сот по индексу.
+
+    Лишние/offline соты больше не сдвигают Сервер 2/3 на «Сота 3».
+    """
+    titles = {"server1": "Сервер 1", "server2": "Сервер 2", "server3": "Сервер 3"}
+    entries: list[tuple[str, str, HiveCell]] = []
+    for slot in MANUAL_SERVER_SLOTS:
+        entries.append((slot, titles[slot], await _cell_for_manual_slot(db, slot)))
+    return entries
+
+
+async def resolve_manual_server_cell(
+    db: AsyncSession,
+    preferred_server: str | None,
+) -> tuple[str, HiveCell]:
+    """Всегда возвращает ключ server1/2/3 и ячейку Улей / Сота 1 / Сота 2."""
+    raw = (preferred_server or "").strip().lower()
+    if raw.startswith("cell:"):
+        raw_id = raw.split(":", 1)[1].strip()
+        try:
+            cell_uuid = uuid.UUID(raw_id)
+        except ValueError:
+            cell_uuid = None
+        if cell_uuid is not None:
+            direct = await get_cell_by_id(db, cell_uuid)
+            if direct is not None:
+                slot = slot_for_cell(direct)
+                if slot:
+                    return slot, direct
+                return "server3", await _cell_for_manual_slot(db, "server3")
+    if raw in MANUAL_SERVER_SLOTS:
+        return raw, await _cell_for_manual_slot(db, raw)
+    return "server1", await _cell_for_manual_slot(db, "server1")
 
 
 def link_capacity_mbps_for_cell(cell: HiveCell) -> float:
@@ -164,6 +248,36 @@ async def count_online_on_cell(db: AsyncSession, cell_id: uuid.UUID) -> int:
         )
     )
     return int(result.scalar_one())
+
+
+async def olcrtc_online_by_cell(
+    db: AsyncSession,
+    cell_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, int]:
+    """Свежие olcrtc2 sticky по сотам (для Hive UI/summary)."""
+    if not cell_ids:
+        return {}
+    from app.models.olcrtc2_room import Olcrtc2Room, Olcrtc2Sticky
+
+    cutoff = (
+        datetime.now(timezone.utc).replace(tzinfo=None)
+        - timedelta(seconds=OLCRTC_STICKY_ONLINE_SEC)
+    )
+    rows = await db.execute(
+        select(Olcrtc2Room.cell_id, func.count(Olcrtc2Sticky.id))
+        .join(Olcrtc2Sticky, Olcrtc2Sticky.room_id == Olcrtc2Room.id)
+        .where(
+            Olcrtc2Room.cell_id.is_not(None),
+            Olcrtc2Room.cell_id.in_(cell_ids),
+            Olcrtc2Sticky.updated_at >= cutoff,
+        )
+        .group_by(Olcrtc2Room.cell_id)
+    )
+    out: dict[uuid.UUID, int] = {}
+    for cid, n in rows.all():
+        if cid is not None:
+            out[cid] = int(n or 0)
+    return out
 
 
 async def count_assigned_on_cell(db: AsyncSession, cell_id: uuid.UUID) -> int:
@@ -486,12 +600,13 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
         }
     except Exception as e:
         logger.debug("Hive: load %s failed: %s", cell.name, e)
+        err = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
         push_incident(
             source="cell-agent.status",
             severity="warning",
             cell_name=cell.name,
             cell_ip=cell.public_ip,
-            message=f"/v1/status failed: {e}",
+            message=f"/v1/status failed: {err}",
         )
         return None
 
@@ -517,10 +632,12 @@ def cell_to_response(
     cell: HiveCell,
     *,
     online_count: int,
+    olcrtc_online_count: int = 0,
     assigned_devices: int,
     load: dict | None = None,
     capacity: dict | None = None,
 ) -> dict:
+    total_online = int(online_count or 0) + int(olcrtc_online_count or 0)
     out = {
         "id": cell.id,
         "name": cell.name,
@@ -538,6 +655,8 @@ def cell_to_response(
         "max_online": capacity["max_online"] if capacity else 0,
         "capacity": capacity,
         "online_count": online_count,
+        "olcrtc_online_count": int(olcrtc_online_count or 0),
+        "total_online_count": total_online,
         "assigned_devices": assigned_devices,
         "status": cell.status,
         "priority": cell.priority,
@@ -573,8 +692,10 @@ async def list_cells_with_stats(db: AsyncSession) -> list[dict]:
         worker_load_map[cell.id] = load if isinstance(load, dict) else None
 
     out = []
+    olcrtc_map = await olcrtc_online_by_cell(db, [c.id for c in cells])
     for cell in cells:
         online = await count_online_on_cell(db, cell.id)
+        olc_online = int(olcrtc_map.get(cell.id, 0))
         assigned = await count_assigned_on_cell(db, cell.id)
         if cell.is_queen:
             load = queen_load
@@ -585,6 +706,7 @@ async def list_cells_with_stats(db: AsyncSession) -> list[dict]:
             cell_to_response(
                 cell,
                 online_count=online,
+                olcrtc_online_count=olc_online,
                 assigned_devices=assigned,
                 load=load,
                 capacity=capacity,
@@ -621,15 +743,20 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
     assignable = await _list_assignable_cells(db)
     reserved = await olcrtc_exit_cell_ips(db)
     total_online = 0
+    total_online_olcrtc = 0
     total_capacity = 0
     full_cells = 0
+    all_cells = [c for c in assignable]
+    olcrtc_map = await olcrtc_online_by_cell(db, [c.id for c in all_cells])
     for cell in assignable:
         if not cell.is_queen and not cell_accepts_wdtt_spill(cell, reserved):
             continue
         online = await count_online_on_cell(db, cell.id)
+        olc_online = int(olcrtc_map.get(cell.id, 0))
         cell_load = queen_load if cell.is_queen else None
         cap = await max_online_for_cell(db, cell, load=cell_load)
         total_online += online
+        total_online_olcrtc += olc_online
         total_capacity += cap
         if online >= cap:
             full_cells += 1
@@ -640,6 +767,8 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
         "worker_cells": len(spill_workers),
         "olcrtc_cells": len(all_workers) - len(spill_workers),
         "total_online_vpn": total_online,
+        "total_online_olcrtc": total_online_olcrtc,
+        "total_online_all": total_online + total_online_olcrtc,
         "total_capacity_online": total_capacity,
         "full_cells": full_cells,
         "all_cells_full": wdtt_nodes > 0 and full_cells >= wdtt_nodes,

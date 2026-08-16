@@ -673,6 +673,305 @@ cd pc; npm install; npm run dev
 - Android splash:
   - добавлен тёмный вариант boot-экрана при тёмной теме (по сохранённому режиму `appearance_mode`, fallback на системную тему).
 
+### 2026-08-15 — DNS-меню 1.0.161: возврат к семантике 1.0.160 (НЕ причина тормозов VK)
+
+- **Симптом:** Android, обход VK — контент грузится 10–20 с, серые плейсхолдеры; на APK 1.0.160 всё работает мгновенно.
+- **Что меняли в `5c1eb5e`:** в `DnsPreset.kt` дефолт переехал `SERVER → YANDEX`, а `override(SERVER)` стал возвращать `YANDEX.servers` — клиент принудительно ставил публичный `77.88.8.8`.
+- **ВАЖНО — это оказалось не корнем.** Проверка прода (`app_settings`): `threat_filter_enabled = false` → `resolve_wg_dns()` отдаёт `DEFAULT_WG_DNS = "77.88.8.8,77.88.8.1"`, т.е. **ровно те же адреса**, что форсил «сломанный» пресет. Коммит был функционально no-op для DNS. `10.66.66.1` уезжает клиенту только при включённом фильтре угроз.
+- Откат всё равно оставлен: управление DNS должно принадлежать серверу (важно при включении фильтра угроз).
+- **Исправление (Android + PC):**
+  - вернули семантику 1.0.160: дефолт `Как на сервере`, `override = null` → DNS берётся из `wg_dns`;
+  - в меню остались только `Как на сервере` + `Свой DNS`;
+  - `fromId()` мигрирует сохранённые из 1.0.161 id (`yandex`, `cloudflare`, …) обратно в `server` — фикс применяется без сброса данных приложения;
+  - `DnsPresetTest` дополнен кейсом миграции публичных пресетов.
+- PC: `getDnsOverrideServers()` снова возвращает пустую строку для серверного пресета; `normalizeDnsValue` (уже) отдаёт серверный `wg_dns` при пустом override.
+- PC UI: модалка DNS приведена к шаблону окна `Применить?` из «Смены обхода» (заголовок, переход `X → Y`, кнопки).
+
+### 2026-08-15 — Разбор «сломали VK-звонок»: сегодняшние коммиты ни при чём
+
+Ревизия по просьбе пользователя. Сегодня в ветке `android` два коммита, **оба вне VK/WDTT-пути**:
+
+- `3dc4e3c` — только olcrtc: `OlcrtcCacheEnvelope` (поле `at`, чтение обратно совместимо) + фон-обновление слота в меню обхода, которое сразу выходит при `getBypassFamily() != BYPASS_FAMILY_OLCRTC2`.
+- `5c1eb5e` — `MainActivity`/`LaunchSplash`/`values-night` (тема запуска), `MenuDnsScreen` (текст), `AppExclusionsScreen` (чекбокс «Выделить все»), `DnsPreset` (см. запись выше — no-op).
+
+`SilentVpnService.kt`, `WdttTunnelManager.kt`, `WireGuardHelper.kt` сегодня **не трогали** (последнее изменение — `0eaf4b0`).
+
+**Реальная дельта 1.0.160 → текущий debug — 7 коммитов (08-11…08-15, ~3.7k строк).** Кандидаты в VK-пути:
+
+1. **`MainViewModel.prefetchOlcrtcSlotsOnVkTunnel()`** — в 1.0.160 отсутствует полностью. Теперь на **каждом** подключении в режиме VK, после sync, клиент тянет конфиги `telemost` + `wbstream`. На бэкенде `/olcrtc2-config` — не чтение, а assign: сервер занимает/поднимает комнаты. Это же объясняет фантомный «1 онлайн на WB» без релиза olcrtc.
+2. **`AppExclusionPackages.resolveAppTunnelPolicy`** (`28997f1`) — в БС появились `included.removeAll(VK_TUNNEL_PACKAGES)` и `if (includeAppInTunnel)` вместо безусловного добавления себя; пустой БС молча падает в ЧС (`«БС пуст → ЧС»`). Сегодняшний `5c1eb5e` убрал авто-выбор всех приложений в БС — пустой БС стал реальным сценарием.
+
+Логи с устройства недоступны: Vivo режет `logcat` для приложений — снимать через экран **«Лог»** в самом приложении.
+
+**Сделано:** `prefetchOlcrtcSlotsOnVkTunnel()` удалён из `watchTunnelDataSyncFromCache()` — как в 1.0.160, VK-сессия olcrtc-слоты не трогает. Слоты дотягиваются в Apply «Вариантов обхода» (Smart Apply Refresh) и перед olcrtc-connect. Debug APK пересобран и установлен (`SilentVPN-debug.apk`, 12:09).
+
+### 2026-08-15 — Admin UI: единый строгий dark-стиль + DNS modal fix (PC)
+
+- `backend/admin-ui`: добавлен общий контейнер `admin-theme` и единые style-токены в `src/index.css`:
+  - чёрный базовый фон, унифицированные панели/бордеры/типографика;
+  - смягчены «разношёрстные» оттенки через глобальные CSS-оверрайды;
+  - яркие белые CTA приведены к синему акценту.
+- `Layout`: активный пункт меню переведён с white-pill на синий акцент (в общей стилистике панели).
+- Цветовая нормализация акцентов: purple-тон глобально смещён к синему (допустимые акценты: синий/красный/зелёный).
+- `pc/src/renderer/components/MenuDnsPanel.tsx`: в тёмной теме модальное окно DNS больше не белое (явный dark background + border), `MainScreen` передаёт флаг `dark`.
+- Логика API/экранов не менялась — только визуальная часть.
+
+### 2026-08-15 — Hive: показать olcrtc-online по сотам (чтобы не «терялись» сессии)
+
+- Симптом: в `olcrtc2` видно `sessions/online`, но в карточках «Улья» это не отражалось (там считался только WDTT `Device.is_connected`), из-за чего создавалось впечатление «онлайн нет, а комнаты висят».
+- Backend (`app/services/hive_service.py`): добавлен подсчёт свежих `olcrtc2_sticky` (окно 300с) по `Olcrtc2Room.cell_id`; в ответ соты добавлены поля:
+  - `olcrtc_online_count`
+  - `total_online_count = online_count(wdtt) + olcrtc_online_count`
+- Summary (`/api/admin/hive/summary`) теперь отдаёт:
+  - `total_online_olcrtc`
+  - `total_online_all`
+- Schema (`app/schemas/hive.py`) расширена новыми полями, чтобы FastAPI не отбрасывал их из response_model.
+- Admin UI (`admin-ui/src/pages/HivePage.tsx`): в шапке и карточке соты показаны `wdtt / olcrtc / итого`, чтобы сразу видеть реальную онлайн-нагрузку и не путать её с warm-комнатами.
+
+### 2026-08-15 — Android WB зависал через несколько минут: восстановлен recovery-path
+
+- Симптом: WB на Android «висит» через несколько минут, на PC при этом работает.
+- Корень в клиенте Android: `markPeerLivenessSuspect()` при текущей policy (`shouldForceSocksDialOnLivenessSuspect=false`) делал ранний `return`, из-за чего recovery-грейс не запускался; часть зависаний оставалась без авто-восстановления.
+- Фикс в `android/app/src/main/kotlin/com/silent/vpn/vpn/OlcrtcTunnelManager.kt`:
+  - `markPeerLivenessSuspect()` теперь **всегда** запускает `schedulePeerClosedGrace(...)`;
+  - для `wbstream` включён `forceLivenessCheck` (форс-dial в grace-проверке), чтобы не маскировать half-dead состояние «остаточным трафиком»;
+  - добавлен `shouldForceRecoverForWb(reason)` — для WB разрешён auto-recover на `peer_closed/media_timeout/missed_pong/stream_dead/openstream_timeout/socks_*`.
+- Для Telemost поведение оставлено прежним (без агрессивного рестарта на transient glitch), чтобы не вернуть долгие перезапуски.
+- Проверка: `android/app` → `.\gradlew.bat compileDebugKotlin` — `BUILD SUCCESSFUL`.
+
+### 2026-08-15 — olcrtc2 sessions показывал «фантомный онлайн» без реального звонка
+
+- Симптом: в админке `olcrtc 2.0` мог висеть `Online (sessions)=N`, даже когда на WB/Telemost фактически никого нет.
+- Корень: `pool_stats()` считал **все** `olcrtc2_sticky`, а `sticky.updated_at` продлевался даже при обычном `GET /api/vpn/olcrtc2-config` (assign config без media).
+- Фикс (`app/services/olcrtc2_assign.py`):
+  - `_save_sticky(..., touch=False)` для путей assign (`ensure_session_room`), чтобы запрос конфига не продлевал «online»;
+  - heartbeat оставлен `touch=True` (реальный live-сигнал);
+  - `pool_stats()` теперь считает только **свежие sticky** (`updated_at >= now - HEARTBEAT_STALE_SEC`), а не весь исторический хвост.
+- Эффект: `sessions/online` в блоке olcrtc2 отражает фактическую активность, а не кэш/предзагрузку слота.
+- Деплой: `python scripts/deploy_api.py`, health/tunnel-check — OK.
+
+### 2026-08-15 — Android WB: «работает и потом умирает» (decrypt/auth fail)
+
+- Лог с устройства: после `tunnelReady` и `peer connected` периодически появляется
+  `muxconn: decrypt failed ... chacha20poly1305: message authentication failed`, после чего WB со временем «умирает».
+- До фикса этот паттерн не эскалировался в recovery: мог оставаться «полуживой» канал без быстрой смены комнаты.
+- Фикс в `OlcrtcTunnelManager.kt`:
+  - добавлен `decryptFailStreak`;
+  - при повторе `decrypt failed / message authentication failed` на WB (порог 2) → `markPeerLivenessSuspect("decrypt_fail", ...)`;
+  - для WB это доходит до `notifyPeerDead` и авто-recover.
+- Фикс в `OlcrtcRecoveryPolicy.kt`:
+  - `shouldRefreshConfigOnRecover()` теперь для `decrypt_fail` принудительно берёт **новую комнату** (reassign), а не стартует старый кеш.
+- Сборка: `compileDebugKotlin` + `assembleDebug` — `BUILD SUCCESSFUL`.
+
+### 2026-08-15 — Android WB: убран сценарий «подвис 1–2 мин и сам отвис»
+
+- Симптом после предыдущего фикса: на Android WB мог подвисать на несколько минут и потом «сам оживать».
+- Причина: при `peer_closed` WB мог оставаться в состоянии «SOCKS жив, но peer не вернулся в connected», и recovery не срабатывал.
+- Фикс (`OlcrtcTunnelManager.schedulePeerClosedGrace`):
+  - добавлен флаг `requirePeerReconnect` для WB;
+  - если для WB в grace-окне peer не вернулся в `connected`, запускаем recovery сразу, даже если SOCKS dial формально проходит.
+- Эффект: меньше «серых зависаний», быстрее принудительный reassign при полуживом WB-канале.
+- Параллельно по просьбе пользователя откатили admin-ui от синего акцента к чёрно-серой палитре:
+  - `backend/admin-ui/src/index.css` (токены/оверрайды CTA/фиолетовых акцентов),
+  - `backend/admin-ui/src/components/Layout.tsx` (active nav обратно в серый).
+- Деплой: `python scripts/deploy_api.py` — OK; Android debug пересобран (`assembleDebug`).
+
+### 2026-08-15 — Android WB: почему виснет при DNS=1.1.1.1 и почему потом «само отпускает»
+
+- Реальная причина: `olcrtc2` на Android брал DNS через `systemDnsHostPort(activeNetwork)`, а не через provider-aware DNS цепочку обхода. При выпадении в `1.1.1.1` (или сетевой DNS оператора) в WB режиме периодически получался полуживой канал: peer закрыт/десинхрон, но SOCKS ещё «жив».
+- Поэтому наблюдался паттерн пользователя: «через пару минут зависает, потом через 1–2 минуты отвисает, потом может снова».
+- Фикс в `OlcrtcTunnelManager.kt`:
+  - добавлен `olcrtcDnsHostPort(context, provider)` → берёт DNS из `resolveOlcrtcDnsServers` (`DnsSettings.ipv4ServersForOlcrtc`);
+  - для WB это fallback-first (стабильный резолв), а не `activeNetwork`/жёсткий `1.1.1.1`;
+  - логируется строка `olcrtc2_dns: dns=... provider=...` для быстрой проверки на устройстве.
+- Сборка: `compileDebugKotlin` + `assembleDebug` — успешно.
+
+### 2026-08-15 — Android WB: добивка против зависания (heartbeat socks fail)
+
+- По свежему логу: при живой сессии периодически возникают
+  `[HB] socks CONNECT fail host=132-243-234-162.nip.io:443`, но трафик ещё идёт.
+  Это и создаёт «подвис/потом отпустило» на Android.
+- Фикс в `OlcrtcTunnelManager.noteSocksPathFail`:
+  - для WB lowered threshold: `suspectStreak=2` (вместо общего 3);
+  - для WB всегда эскалация в `markPeerLivenessSuspect("socks_api_fail", ...)` (не зависит от global `shouldForceSocksDialOnLivenessSuspect=false`);
+  - grace учитывает `providerGraceMs`.
+- Эффект: WB быстрее уходит в controlled recover/reassign до долгого «залипания».
+- Сборка debug: `assembleDebug` — `BUILD SUCCESSFUL`.
+
+### 2026-08-15 — Android WB: финальная агрессия против фризов
+
+- По запросу «убрать зависание вообще»: для `wbstream` в `noteSocksPathFail()` порог эскалации снижен с 2 до 1.
+- Теперь любой `HB socks CONNECT fail` на WB сразу переводит сессию в recover-путь (без ожидания второй ошибки).
+- Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
+- Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
+
+### 2026-08-16 — PC: flood/звонок → автокапча как на Android
+
+- Android: 3с при flood + 0 воркеров, иначе таймаут — каскад vkcalls→автокапча→ручная. Не alert «туннель не поднялся».
+- PC ждал 90с и писал `connect timeout`, потому что `waitVpnReady` возвращал `false`, а эскалация была только при `ready === 'flood'` и ещё резалась `installing`/`wg`.
+- Теперь: flood с 3с; таймаут без воркеров тоже эскалирует; WG из кеша не блокирует.
+- Debug: `pc/build-debug-531973/win-unpacked/SilentVPN-Admin.bat`
+
+### 2026-08-16 — PC: flood не уходил в капчу, если WG уже из кеша
+
+- Лог: `kind=flood error_code=9`, `Активных: 0`, при этом `[WG] Bypass …` уже был — ранний туннель из кеша.
+- `waitVpnReady` требовал `!wg`, поэтому реальный flood ждал 90с без каскада vkcalls→автокапча.
+- Теперь эскалация при 0 воркерах после 15с; не рвём только если служба ещё ставится.
+- Debug: `pc/build-debug-430235/win-unpacked/SilentVPN-Admin.bat`
+
+### 2026-08-16 — PC debug: DNS как в 1.0.160
+
+- Сборка: `pc/build-debug-462169/win-unpacked/SilentVPN-Admin.bat` (UAC). В логе при полном туннеле: `DNS на адаптере: 1.1.1.1, 1.0.0.1, 77.88.8.8` (если не «Свой DNS» и не фильтр `10.66.66.1`).
+
+### 2026-08-16 — PC: Telegram сломался в 1.0.161 из‑за DNS (не отдельный код)
+
+- В 1.0.160 адаптер WG всегда ставил `1.1.1.1, 1.0.0.1, 77.88.8.8` (серверный `wg_dns` игнорировался).
+- В 1.0.161 меню «Как на сервере» стало прокидывать API `wg_dns` — обычно только Яндекс `77.88.8.8, 77.88.8.1`.
+- Telegram Desktop резолвит через системный DNS адаптера; Chrome/YouTube часто идут по DoH — поэтому YT жил, TG нет. На Android VpnService ловит DNS иначе.
+- Фикс: снова Cloudflare+Yandex, как в 160. Исключение — фильтр угроз `10.66.66.1`. Свой DNS из меню по-прежнему важнее.
+- Отдельный IPv6-disable / lock Telegram.exe не оставляем — в 160 этого не было.
+
+### 2026-08-16 — Android: DNS-текст как на PC + сон в кармане
+
+- Меню DNS: то же описание, что на PC — «Используйте рекомендуемый DNS или укажите свой. Применяется при следующем подключении VPN.» (убраны «Яндекс» и «публичный»).
+- Сон/карман: doze снимает VALIDATED на LTE → клиент думал, что сеть пропала, каждые 2 с слал `internet_restored` и рвал туннель; после паузы poll не видел resume. Теперь флаг сети = INTERNET без VALIDATED, пауза только после 8 с дыры, poll/watchdog/SCREEN_ON сами поднимают туннель.
+- Нагрев: отдельный wakelock не добавлял; часть жалоб могла быть от этого цикла restart в кармане. Остальной нагрев — OEM/SoC.
+
+### 2026-08-16 — Релизы 1.0.161 (без bump версии)
+
+- Хеш как есть: `6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY`. Версию не поднимали.
+- Android: `android/app/build/outputs/apk/release/SilentVPN-release.apk` (~89 МБ), 12:29 — DNS-текст + сон в кармане.
+- PC: `pc/build-release-v141-750629/Silent VPN Setup 1.0.161.exe` (~94 МБ), копия в `releases/` — DNS как 1.0.160 + flood/звонок → автокапча как Android.
+- OTA на сервер не заливали.
+
+### 2026-08-16 — PC: ложный timeout на VKCalls → невидимая автокапча
+
+- Лог: `timeout escalate → Авто капча` при живом автозвонке. 45с + flood-abort 8с сносили WG (полная переустановка службы) и поднимали legacy/капчу.
+- Капча только при реальном flood; VKCalls ждёт 90с; если WG уже ставится/есть воркеры — не эскалируем.
+- Шум `[API] tunnel … публичный API` во время капчи/settle приглушён.
+- Сота: `ECONNREFUSED 10.66.66.1:8000` больше не орём в лог — сразу public, туннель API не долбим.
+- Сборка: `pc/build-debug-510510/win-unpacked/SilentVPN-Admin.bat`.
+- Push `pc`: `37807de` `fix(pc): keep VKCalls connect and skip dead tunnel API noise`.
+
+### 2026-08-16 — PC/Android: update + sync + реферал и с VPN, и без
+
+- PC: `[Update] check fail: Update check timeout` — check шёл на hostname nip.io через полный туннель и зависал; `10.66.66.1` давал ECONNREFUSED. Теперь check/download как ConfigSync: public IP+Host (bypass), tunnel только запасной.
+- Android LTE: sync/реферал/OTA не пробовали public (app excluded) → «Ошибка синхронизации», ссылка «…». Public first и с VPN, и без.
+- Сборки: `android/SilentVPN-debug.apk`; PC `pc/build-debug-510510/win-unpacked/SilentVPN-Admin.bat`.
+- Push `android`: `31fa2ae` `fix(android): sync referral and OTA over public API`.
+
+### 2026-08-16 — Android: интернет сразу, без overlay на connect
+
+- В 1.0.160 туннель `0.0.0.0/0` уже давал картинки, а данные шли фоном (Wi‑Fi public / proxy). Overlay `10.66.66.0/24` как раз глушил интернет до конца sync.
+- Убрал overlay с initial sync и ConfigSync. Sync: Wi‑Fi public, LTE TunnelApiProxy, AllowedIPs не трогаем.
+- Сборка: `android/SilentVPN-debug.apk`.
+
+### 2026-08-16 — PC: syncconf после смены сервера
+
+- При выборе сервера незащищённый `Disable-NetAdapter` прошлого disconnect снимал уже новый `wg-turn` → `syncconf: No such file` и лишняя переустановка.
+- Disable только в очереди stop с epoch; syncconf не вызываем, если адаптера нет.
+- Сборка: `pc/build-debug-660125/win-unpacked/SilentVPN-Admin.bat`.
+
+### 2026-08-16 — PC tunnel API settle + Android overlay на Улье (Wi‑Fi)
+
+- **PC:** `Tunnel API timeout — публичный API` при живом туннеле: ConfigSync бил в `10.66.66.1` до готовности маршрутов. Теперь ждём settle и не орём «недоступен»; fallback тише.
+- **Android:** overlay initial sync не только LTE, а любой excluded (Улей / сервер 1–2 на Wi‑Fi). В overlay не уходим на public — обновляем WG-кеш через tunnel. Битый кеш не применяем (проверка ключей), без ошибки «невалиден».
+- Сборки: PC `pc/build-debug-437088/win-unpacked/SilentVPN-Admin.bat`; Android `android/SilentVPN-debug.apk`.
+
+### 2026-08-16 — PC: быстрый съём адаптера + Android overlay sync как 1.0.160
+
+- **PC:** после выкл Windows ещё писала «VPN включён», пока `uninstalltunnelservice` (10–20 с). Теперь `Disable-NetAdapter` сразу при disconnect, служба снимается в фоне.
+- **Android:** вернул LTE initial sync через `withApiOverlayBrief` как в 1.0.160 (кэш/хеши/профиль обновляются при включении). Прокси-only путь оставлял невалидный кеш.
+- Сборки: PC `pc/build-debug-271074/win-unpacked/SilentVPN-Admin.bat`; Android `android/SilentVPN-debug.apk`.
+
+### 2026-08-16 — PC: залипание «VPN активен» + Android змейка 1–2 оборота
+
+- **PC:** после неудачного/отменённого connect UI оставался «вкл», меню писало «Переключение недоступно: VPN активен». Тумблер нельзя было нажать во время «Подключение…». Теперь: выкл работает и во время connect; меню лочится только если туннель реально готов; stale `vpn-ready` после выкл игнорируется.
+- **Android:** до старта VPN ждался `refreshWifiSubscriptionProfile` — змейка 6–10 оборотов. Профиль ушёл в фон; WG из кеша поднимается сразу. Цель — 1–2 оборота как 1.0.160.
+- Сборки: PC `pc/build-debug-564328/win-unpacked/SilentVPN-Admin.bat`; Android `android/SilentVPN-debug.apk`.
+
+### 2026-08-16 — PC: выкл/смена 3→2 + Android скорость как 1.0.160
+
+- **PC:** выключение сначала ждало `notifyDisconnect` (API), и только потом гасило WG. Новое включение стартовало поверх живого туннеля, а поздний `vpnDisconnect` снимал уже новый `wg-turn` (bypass снят, peer соты 3 при выборе 2, 0 МБ). Теперь: WG гасится сразу; отложенный disconnect не убивает новый connect (`disconnectToken` + `vpnConnectSeq`); смена peer не возвращает `alreadyActive`.
+- **PC UI:** GET `/api/vpn/servers` больше не откатывает локальный слот — «Сервер 1» не прыгал обратно на 2/3. Кеш WG не переклеивается на чужой слот.
+- **Android:** снова ранний WG из слот-совпадающего API/кеша (как 1.0.160), без ожидания GETCONF 22 с. GETCONF upgrade без DOWN/UP при тех же ключах. IPv6 в WG не возвращали.
+- Сборки: PC `pc/build-debug-560830/win-unpacked/SilentVPN-Admin.bat`; Android `android/SilentVPN-debug.apk`.
+
+### 2026-08-16 — PC 0 МБ после reconnect + Android KeyFormatException
+
+- **PC:** фоновый `/uninstalltunnelservice` прошлого disconnect снимал уже новый `wg-turn` (cap ожидания 1.5с). 63 воркера, 0 МБ, Tunnel API timeout. Connect теперь ждёт полный stop; uninstall не стартует после нового connect.
+- **Android:** IPv6 в WG-конфиге давал `KeyFormatException` и «двойное» (кеш → ошибка → GETCONF). Откат к пути 1.0.160: только IPv4 AllowedIPs, битый кеш не роняет сессию.
+- Сборки: PC `pc/build-debug-152964/win-unpacked/SilentVPN-Admin.bat`; Android `android/SilentVPN-debug.apk`.
+
+### 2026-08-16 — Соты: tunnel API + Android IPv6 leak (страна РФ на Улье)
+
+- На сотах `10.66.66.1` висел на `lo` без слушателя :8000 → клиентский `ECONNREFUSED`, ConfigSync уходил на публичный IP Улья (в логе «ошибки главного улья» при работе на соте).
+- На сотах: `10.66.66.1/32` на lo + `socat` `silent-tunnel-api-proxy` → Улей `:8000`. Provision обновлён.
+- Android LTE: IPv4 через WG, IPv6 мог идти мимо туннеля. Попытка `::/0` в WG откатана (KeyFormatException) — см. запись выше.
+
+### 2026-08-16 — Улей (Сервер 1): двойное подключение + страна Россия
+
+- **PC:** после быстрого disconnect фоновый `Disable-NetAdapter` догонял уже готовый туннель; leftover `olcrtc` слал `vpn-stopped`; Windows `syncconf` при смене сота→Улей **не меняет PublicKey** → `10.66.66.1` timeout и leak (гео РФ при IP NL).
+- Фикс: поколение `wgApplyEpoch` отменяет stale stop; syncconf только если ключи/peer те же; `vpn-stopped` не сбрасывает UI если туннель жив; olcrtc-dead не трогает WDTT.
+- **Android LTE:** подъём WG на Улье (peer=API IP) давал `internet_restored` / network recovery → повторный DOWN/UP. 15с settle без reapply; `internet_restored` не обходит grace, если VPN не был на паузе.
+- Сборки: PC `pc/build-debug-839570/win-unpacked/SilentVPN-Admin.bat`; Android `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`.
+
+### 2026-08-15 — PC смена сервера без ожидания teardown + Android LTE без overlay
+
+- PC: меню сервера лочилось по `vpnIsReady` пока WG ещё умирал. Теперь лок только пока тумблер ON — после выкл слот можно сменить сразу.
+- Android LTE (ADB Vivo LTE): туннель Сота 2 поднимался за 3с, затем overlay заново рвал WG и 12с+ долбился в `10.66.66.1` — «двойное подключение» и интернет через ~2 мин.
+- Фикс: LTE API через TunnelApiProxy (bind к VPN), без overlay-рестарта WG. На сотах DNAT `10.66.66.1:8000` → Улей подтверждён.
+- PC debug пересобран; Android debug APK пересобран.
+
+### 2026-08-15 — Выбор сервера: слоты по Соте, не по индексу + LTE как 1.0.160
+
+- **Корень «всегда Улей / всегда Сота 3»:** `resolve_manual_server_cell` брал `entries[i]` по всем worker-сотам и писал в БД `queen`/`cell:uuid`. Login без `preferred_server` затирал слот пустой строкой → Улей. Лишние соты сдвигали Сервер 2/3.
+- **Фикс backend:** Сервер 1 = Улей, 2 = Сота 1 (номер в имени), 3 = Сота 2. В `Device.preferred_server` и `selected_server` только `server1/2/3`. Login/register не затирают слот пустой строкой.
+- **Android vs 1.0.160:** на LTE больше не стартует ephemeral bootstrap (~2 мин) до публичного `register/getConfig`. Кеш WG используется только если слот совпадает с выбранным сервером.
+- **PC:** то же правило кеша; debug пересобран после фикса.
+- Деплой: `python scripts/deploy_hive.py` из `backend/` (первый прогон не рестартнул API из‑за ro `cell-agent`; API/nginx перезапущены отдельно, health 200, `MANUAL_SERVER_SLOTS` в процессе).
+- PC debug: `pc/build-debug-435827/win-unpacked/SilentVPN-Admin.bat`
+- Android debug APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`
+
+### 2026-08-15 — VK-only: вынос olcrtc из активных точек + деплой
+
+- По запросу пользователя «полностью и деплой» вычищены активные точки `olcrtc`:
+  - backend `app/api/vpn.py`: удалены публичные `olcrtc*` endpoint'ы (`/olcrtc-config`, `/olcrtc2-config`, heartbeat/failure routes);
+  - admin-ui: удалён `Olcrtc2Panel`, `BypassPage` переведён в VK-only, из `HivePage` убраны `olcrtc`-подписи/бейджи;
+  - Android: `MenuBypassScreen.kt` переписан в чистый VK/WDTT экран (режим VK + динамический выбор сервера через `/api/vpn/servers`), без `olcrtc`-switch/leave/reset логики.
+- Проверки локально:
+  - `backend`: `python -m compileall app/main.py app/api/vpn.py` — OK;
+  - `backend/admin-ui`: `npm run build` — OK;
+  - `android/app`: `.\gradlew.bat compileDebugKotlin` — OK;
+  - `pc`: `npm run build:renderer` — OK.
+- Прод деплой:
+  - `python scripts/deploy_stable.py`;
+  - затем ручной `docker compose restart api nginx` на VPS (чтобы контейнер подхватил свежие роуты).
+- Пост-проверка прода:
+  - `GET /api/health` → `200`;
+  - `GET /api/vpn/olcrtc-config` → `404`;
+  - `GET /api/vpn/olcrtc2-config` → `404`;
+  - `GET /api/vpn/servers` → `401` (роут жив, нужна авторизация).
+
+### 2026-08-15 — hotfix после регрессии: Android не включает VPN + серверы 1/2/3
+
+- Причина регрессии совместимости: часть старых клиентов/потоков всё ещё обращается к `olcrtc*` API; после полного удаления роутов получали `404`.
+- Фикс backend (`app/api/vpn.py`): возвращены совместимые endpoint'ы
+  - `GET /api/vpn/olcrtc-config`, `GET /api/vpn/olcrtc2-config` → `200` с disabled payload;
+  - heartbeat/failure `POST /api/vpn/olcrtc*` и `POST /api/vpn/olcrtc2*` → `{"ok": true, "disabled": true}`.
+- UI на клиентах переведён в «Выбор сервера»:
+  - Android: `MenuBypassScreen.kt` + `MainScreen.kt` — выбор только `Сервер 1/2/3`, без UI «вариантов обхода»;
+  - PC: `MenuBypassPanel.tsx`, `MainScreen.tsx`, `bypassStore.ts` — аналогично `Сервер 1/2/3`.
+- Дополнительно для жалоб по Discord: в `scripts/deploy_threat_dns.py` добавлен allowlist `discord*` доменов.
+- Проверки:
+  - `android/app`: `.\gradlew.bat compileDebugKotlin` — OK;
+  - `pc`: `npm run build:renderer` — OK;
+  - `backend`: `python -m compileall app/api/vpn.py` — OK.
+- Деплой и валидация:
+  - `python scripts/deploy_api.py` (после `deploy_stable.py`) — обновление API в контейнере;
+  - прод-check: `GET /api/vpn/olcrtc-config` = `200`, `GET /api/vpn/olcrtc2-config` = `200`, `GET /api/health` = `200`;
+  - `python scripts/deploy_threat_dns.py` применён (на момент прогона `threat_filter enabled=false`, DNAT off).
+
 ### 2026-08-14 — ADB: первая прогрузка TM Android ~20с
 
 - Устройство: Vivo V2520A (`10AFB105UN003QC`), не Memu.

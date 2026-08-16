@@ -26,6 +26,7 @@ interface HiveCell {
   max_online: number
   max_clients?: number
   online_count: number
+  total_online_count?: number
   assigned_devices: number
   status: string
   accepts_wdtt?: boolean
@@ -48,6 +49,7 @@ interface HiveSummary {
   cells_total: number
   cells_active: number
   total_online_vpn: number
+  total_online_all?: number
   worker_cells: number
   queen_accepting_vpn: boolean
   queen_load: CellLoad
@@ -205,6 +207,7 @@ export default function HivePage({ token }: { token: string }) {
   const [form, setForm] = useState({ host: '', password: '', name: '' })
   const [metricsAt, setMetricsAt] = useState<Date | null>(null)
   const [incidents, setIncidents] = useState<HiveIncident[]>([])
+  const [incidentsSeenAt, setIncidentsSeenAt] = useState<string | null>(null)
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setError(null)
@@ -223,12 +226,26 @@ export default function HivePage({ token }: { token: string }) {
     if (incidentsRes.ok) {
       const data = await incidentsRes.json().catch(() => ({}))
       setIncidents(Array.isArray(data.items) ? data.items : [])
+      setIncidentsSeenAt(typeof data.last_seen_at === 'string' ? data.last_seen_at : null)
     }
     setMetricsAt(new Date())
     setLoading(false)
   }, [token])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    const markSeen = async () => {
+      const res = await fetch('/api/admin/hive/incidents/seen', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return
+      const data = await res.json().catch(() => ({}))
+      if (typeof data.seen_at === 'string') setIncidentsSeenAt(data.seen_at)
+    }
+    void markSeen()
+  }, [token])
 
   useEffect(() => {
     const t = setInterval(() => { load(true) }, 10000)
@@ -342,6 +359,9 @@ export default function HivePage({ token }: { token: string }) {
           <div className="bg-[#111] border border-[#222] rounded-xl p-4">
             <p className="text-[#666] text-xs uppercase">Онлайн VPN</p>
             <p className="text-2xl font-semibold mt-1">{summary.total_online_vpn} / {summary.total_capacity_online}</p>
+            <p className="text-xs text-[#666] mt-1">
+              всего: {summary.total_online_all ?? summary.total_online_vpn}
+            </p>
           </div>
           <div className="bg-[#111] border border-[#222] rounded-xl p-4">
             <p className="text-[#666] text-xs uppercase flex items-center gap-1"><Cpu className="w-3 h-3" /> CPU Улья</p>
@@ -401,7 +421,7 @@ export default function HivePage({ token }: { token: string }) {
           <p className="text-[#aaa] font-medium mb-1">Когда срабатывает балансировка</p>
           <p>
             Перегруз — если CPU ≥ {summary.cpu_threshold}%, RAM ≥ {summary.mem_threshold}% или канал ≥ {summary.bandwidth_threshold}%.
-            Тогда новые VPN идут на соты <b>3, 4, …</b> (WDTT-баланс). Соты 1 и 2 с olcrtc2 в баланс не входят.
+            Тогда новые VPN идут на свободные соты по текущему правилу балансировки.
             Онлайн-сессии не рвутся — смена ноды при следующем запросе конфига в приложении.
           </p>
         </div>
@@ -414,6 +434,11 @@ export default function HivePage({ token }: { token: string }) {
             <p className="text-xs text-[#666] mt-0.5">
               Только проблемные события: таймауты, недоступность agent, ошибки доступа, подозрение на блокировки.
             </p>
+            {incidentsSeenAt && (
+              <p className="text-[11px] text-[#555] mt-1">
+                Последний просмотр панели инцидентов: {new Date(incidentsSeenAt).toLocaleString('ru-RU')}
+              </p>
+            )}
           </div>
           <button
             type="button"
@@ -494,9 +519,6 @@ export default function HivePage({ token }: { token: string }) {
                       <WifiOff className="w-4 h-4 text-[#555]" />}
                     <h2 className="font-semibold">{cell.name}</h2>
                     {cell.is_queen && <span className="text-xs bg-amber-950 text-amber-300 px-2 py-0.5 rounded">Улей</span>}
-                    {!cell.is_queen && cell.accepts_wdtt === false && (
-                      <span className="text-xs bg-violet-950 text-violet-300 px-2 py-0.5 rounded">olcrtc — не WDTT-баланс</span>
-                    )}
                     <span className="text-xs text-[#888]">{statusLabel[cell.status] || cell.status}</span>
                   </div>
                   <p className="text-sm text-[#888] mt-1 font-mono">{cell.public_ip}:{cell.wdtt_port}</p>
@@ -531,8 +553,8 @@ export default function HivePage({ token }: { token: string }) {
                   {cell.last_error && <p className="text-xs text-red-400 mt-2 whitespace-pre-wrap">{cell.last_error}</p>}
                 </div>
                 <div className="text-right">
-                  <p className="text-lg font-semibold">{cell.online_count}</p>
-                  <p className="text-xs text-[#666]">онлайн VPN</p>
+                  <p className="text-lg font-semibold">{cell.total_online_count ?? cell.online_count}</p>
+                  <p className="text-xs text-[#666]">онлайн всего</p>
                 </div>
               </div>
               {!cell.is_queen && (

@@ -71,6 +71,38 @@ def _auth(secret: str) -> None:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
+def _pick_olcrtc2_dns(preferred: str = "") -> str:
+    """Prefer local caching DNS; fallback to resolv.conf or Yandex."""
+    cand = (preferred or "").strip()
+    if cand and ":" not in cand:
+        cand = f"{cand}:53"
+    if cand:
+        return cand
+
+    try:
+        import socket
+
+        with socket.create_connection(("127.0.0.1", 53), timeout=0.25):
+            return "127.0.0.1:53"
+    except Exception:
+        pass
+
+    try:
+        resolv = Path("/etc/resolv.conf")
+        if resolv.is_file():
+            for line in resolv.read_text(encoding="utf-8", errors="ignore").splitlines():
+                s = line.strip()
+                if not s.startswith("nameserver "):
+                    continue
+                ip = s.split(maxsplit=1)[1].strip()
+                if ip and ":" not in ip:
+                    return f"{ip}:53"
+    except Exception:
+        pass
+
+    return "77.88.8.8:53"
+
+
 def _detect_public_ip() -> str:
     if CELL_PUBLIC_IP:
         return CELL_PUBLIC_IP
@@ -400,6 +432,7 @@ class Olcrtc2ApplyBody(BaseModel):
     crypto_key: str
     provider: str = "telemost"
     auth_token: str = ""  # WB account JWT for srv (required for wbstream)
+    olcrtc_dns: str = ""  # e.g. 127.0.0.1:53 (local cache resolver on cell)
     restart: bool = True
 
 
@@ -455,6 +488,7 @@ async def olcrtc2_apply(
         f"OLCRTC2_MODE={mode}",
         f"OLCRTC2_ROOM={room}",
         f"OLCRTC2_KEY={key}",
+        f"OLCRTC2_DNS={_pick_olcrtc2_dns(body.olcrtc_dns)}",
     ]
     if auth_token:
         # escape newlines in JWT (should be single line)

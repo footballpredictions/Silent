@@ -255,6 +255,7 @@ async def _save_sticky(
     device_type: str,
     room_id: uuid.UUID,
     *,
+    touch: bool = True,
     commit: bool = True,
 ) -> None:
     fp = fingerprint[:128]
@@ -269,7 +270,9 @@ async def _save_sticky(
     ).scalar_one_or_none()
     if existing:
         existing.room_id = room_id
-        existing.updated_at = _now()
+        # Важно: assign config без реального media не должен продлевать "online".
+        if touch:
+            existing.updated_at = _now()
     else:
         db.add(
             Olcrtc2Sticky(
@@ -577,7 +580,7 @@ async def ensure_session_room(
                     if stickies > 0:
                         cand.online_count = stickies
                         continue
-                    await _save_sticky(db, fp, prov, dt, cand.id, commit=False)
+                    await _save_sticky(db, fp, prov, dt, cand.id, touch=False, commit=False)
                     await _touch_devices_online(
                         db,
                         fp,
@@ -648,7 +651,7 @@ async def ensure_session_room(
             )
             await _tear_dead_room(db, row, reason="on-demand unit not ready")
             return None
-        await _save_sticky(db, fp, prov, dt, row.id, commit=False)
+        await _save_sticky(db, fp, prov, dt, row.id, touch=False, commit=False)
         await _touch_devices_online(
             db,
             fp,
@@ -1283,6 +1286,9 @@ async def prune_stale_sessions(db: AsyncSession) -> dict[str, Any]:
 
 
 async def pool_stats(db: AsyncSession) -> dict[str, Any]:
+    from datetime import timedelta
+
+    cutoff = _now() - timedelta(seconds=HEARTBEAT_STALE_SEC)
     rows = (await db.execute(select(Olcrtc2Room))).scalars().all()
     active = [r for r in rows if r.status == "active"]
     free_pc = 0
@@ -1293,7 +1299,10 @@ async def pool_stats(db: AsyncSession) -> dict[str, Any]:
                 await db.execute(
                     select(func.count())
                     .select_from(Olcrtc2Sticky)
-                    .where(Olcrtc2Sticky.room_id == r.id)
+                    .where(
+                        Olcrtc2Sticky.room_id == r.id,
+                        Olcrtc2Sticky.updated_at >= cutoff,
+                    )
                 )
             ).scalar()
             or 0
@@ -1304,7 +1313,14 @@ async def pool_stats(db: AsyncSession) -> dict[str, Any]:
             else:
                 free_pc += 1
     sticky_total = int(
-        (await db.execute(select(func.count()).select_from(Olcrtc2Sticky))).scalar() or 0
+        (
+            await db.execute(
+                select(func.count())
+                .select_from(Olcrtc2Sticky)
+                .where(Olcrtc2Sticky.updated_at >= cutoff)
+            )
+        ).scalar()
+        or 0
     )
     return {
         "rooms": len(rows),

@@ -154,6 +154,14 @@ def main() -> None:
         server=/googlevideo.com/77.88.8.8
         server=/telegram.org/77.88.8.8
         server=/t.me/77.88.8.8
+        server=/discord.com/77.88.8.8
+        server=/discord.gg/77.88.8.8
+        server=/discordapp.com/77.88.8.8
+        server=/discord.media/77.88.8.8
+        server=/discordapp.net/77.88.8.8
+        server=/discordcdn.com/77.88.8.8
+        server=/discordsays.com/77.88.8.8
+        server=/discordstatus.com/77.88.8.8
         server=/github.com/77.88.8.8
         server=/githubusercontent.com/77.88.8.8
         """

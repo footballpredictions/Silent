@@ -15,6 +15,61 @@ body {
   margin: 0;
 }
 
+:root {
+  --admin-bg: #0a0a0a;
+  --admin-panel: #111111;
+  --admin-panel-soft: #1a1a1a;
+  --admin-panel-deep: #0d0d0d;
+  --admin-border: #222222;
+  --admin-border-strong: #333333;
+  --admin-text: #e5e7eb;
+  --admin-muted: #888888;
+  --admin-accent-blue: #2a2a2a;
+  --admin-accent-green: #22c55e;
+  --admin-accent-red: #ef4444;
+}
+
+.admin-theme {
+  background: var(--admin-bg);
+  color: var(--admin-text);
+}
+
+.admin-theme [class*="bg-[#0a0a0a]"] { background: var(--admin-bg) !important; }
+.admin-theme [class*="bg-[#111]"] { background: var(--admin-panel) !important; }
+.admin-theme [class*="bg-[#1a1a1a]"] { background: var(--admin-panel-soft) !important; }
+.admin-theme [class*="bg-[#0d0d0d]"] { background: var(--admin-panel-deep) !important; }
+.admin-theme [class*="border-[#222]"] { border-color: var(--admin-border) !important; }
+.admin-theme [class*="border-[#2a2a2a]"],
+.admin-theme [class*="border-[#333]"] { border-color: var(--admin-border-strong) !important; }
+.admin-theme [class*="text-[#555]"],
+.admin-theme [class*="text-[#666]"],
+.admin-theme [class*="text-[#777]"],
+.admin-theme [class*="text-[#888]"] { color: var(--admin-muted) !important; }
+.admin-theme [class*="text-[#aaa]"],
+.admin-theme [class*="text-[#bbb]"],
+.admin-theme [class*="text-[#ccc]"],
+.admin-theme [class*="text-[#ddd]"] { color: var(--admin-text) !important; }
+.admin-theme [class*="text-purple-"] { color: #a3a3a3 !important; }
+.admin-theme [class*="bg-purple-"] { background: rgba(64, 64, 64, 0.25) !important; }
+.admin-theme [class*="border-purple-"] { border-color: rgba(115, 115, 115, 0.45) !important; }
+
+/* Яркие белые CTA переводим в единый синий акцент. */
+.admin-theme [class*="bg-white"][class*="text-black"] {
+  background: #242424 !important;
+  color: #e5e5e5 !important;
+  border-color: #3a3a3a !important;
+}
+
+/* Базовая типографика/поля в едином ключе. */
+.admin-theme input,
+.admin-theme textarea,
+.admin-theme select {
+  color: var(--admin-text);
+}
+.admin-theme ::placeholder {
+  color: #6b7280;
+}
+
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: #111; }
 ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }

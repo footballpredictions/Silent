@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeVkDeepLinkListeners: () => ipcRenderer.removeAllListeners('vk-deep-link'),
   onRefDeepLink: (cb) => ipcRenderer.on('ref-deep-link', (_, payload) => cb(payload)),
   removeRefDeepLinkListeners: () => ipcRenderer.removeAllListeners('ref-deep-link'),
+  onPaymentDeepLink: (cb) => ipcRenderer.on('payment-deep-link', () => cb()),
+  removePaymentDeepLinkListeners: () => ipcRenderer.removeAllListeners('payment-deep-link'),
   listInstalledApps: () => ipcRenderer.invoke('list-installed-apps'),
   saveAppExclusions: (payload) => ipcRenderer.invoke('save-app-exclusions', payload),
   getAppExclusions: () => ipcRenderer.invoke('get-app-exclusions'),

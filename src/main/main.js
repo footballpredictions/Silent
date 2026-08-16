@@ -78,6 +78,7 @@ let wgApplied = false
 let vpnOlcrtcMode = false
 let pendingVkDeepLink = null
 let pendingRefDeepLink = null
+let pendingPaymentDeepLink = false
 let vpnSessionActive = false
 let connectStartedAtMs = 0
 let pausedForNetwork = false
@@ -242,6 +243,21 @@ function handleDeepLink(url) {
       } else {
         pendingRefDeepLink = payload
       }
+      return
+    }
+    if (u.hostname === 'payment') {
+      const send = () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('payment-deep-link')
+          mainWindow.show()
+          mainWindow.focus()
+        }
+      }
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoading()) {
+        send()
+      } else {
+        pendingPaymentDeepLink = true
+      }
     }
   } catch {}
 }
@@ -309,6 +325,12 @@ function createWindow() {
     if (pendingRefDeepLink) {
       mainWindow.webContents.send('ref-deep-link', pendingRefDeepLink)
       pendingRefDeepLink = null
+      mainWindow.show()
+      mainWindow.focus()
+    }
+    if (pendingPaymentDeepLink) {
+      mainWindow.webContents.send('payment-deep-link')
+      pendingPaymentDeepLink = false
       mainWindow.show()
       mainWindow.focus()
     }

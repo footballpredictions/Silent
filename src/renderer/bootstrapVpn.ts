@@ -289,7 +289,35 @@ export async function disconnectBootstrapVpn(): Promise<void> {
   bootstrapEnsureGeneration += 1
   cancelBootstrapSessionTimeout()
   bootstrapActive = false
+  paymentBootstrapHeld = false
   setBootstrapApiRouting(false)
   clearTunnelApiBase()
   await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
+}
+
+let paymentBootstrapHeld = false
+
+export function isPaymentBootstrapActive(): boolean {
+  return paymentBootstrapHeld && bootstrapActive
+}
+
+/** Временный интернет для YuMoney, пока открыт браузер оплаты (как email при регистрации). */
+export async function ensurePaymentBootstrapVpn(): Promise<boolean> {
+  paymentBootstrapHeld = true
+  bootstrapExpired = false
+  const ok = await ensureBootstrapVpn()
+  if (!ok) {
+    paymentBootstrapHeld = false
+    return false
+  }
+  cancelBootstrapSessionTimeout()
+  bootstrapSessionDeadline = 0
+  pushLog('Bootstrap', 'payment bootstrap held (no 2min timer)')
+  return true
+}
+
+export async function stopPaymentBootstrapVpn(): Promise<void> {
+  if (!paymentBootstrapHeld && !bootstrapActive) return
+  paymentBootstrapHeld = false
+  await disconnectBootstrapVpn()
 }

@@ -64,18 +64,24 @@ export function setBypassFamily(family: string) {
   } catch { /* ignore */ }
 }
 
+export function normalizePreferredServer(raw?: string | null): string {
+  const v = String(raw || '').trim().toLowerCase()
+  if (!v || v === 'queen' || v === 'main') return 'server1'
+  if (/^server\d+$/.test(v)) return v
+  return 'server1'
+}
+
 export function getPreferredServer(): string {
   try {
-    const raw = (localStorage.getItem(PREFERRED_SERVER_KEY) || '').trim().toLowerCase()
-    if (raw === 'server1' || raw === 'server2' || raw === 'server3') return raw
+    return normalizePreferredServer(localStorage.getItem(PREFERRED_SERVER_KEY))
   } catch { /* ignore */ }
   return 'server1'
 }
 
-export function slotFromSelectedServer(selected?: string | null): 'server1' | 'server2' | 'server3' | null {
+export function slotFromSelectedServer(selected?: string | null): string | null {
   const raw = String(selected || '').trim().toLowerCase()
-  if (raw === 'server1' || raw === 'server2' || raw === 'server3') return raw
-  if (raw === 'queen' || raw === 'main' || raw === '') return 'server1'
+  if (!raw || raw === 'queen' || raw === 'main') return 'server1'
+  if (/^server\d+$/.test(raw)) return raw
   return null
 }
 
@@ -87,11 +93,7 @@ export function cachedConfigMatchesPreferred(cfg: { selected_server?: string } |
 }
 
 export function setPreferredServer(server: string) {
-  const raw = (server || '').trim().toLowerCase()
-  const normalized =
-    (raw === 'server1' || raw === 'server2' || raw === 'server3')
-      ? raw
-      : 'server1'
+  const normalized = normalizePreferredServer(server)
   try {
     localStorage.setItem(PREFERRED_SERVER_KEY, normalized)
   } catch { /* ignore */ }

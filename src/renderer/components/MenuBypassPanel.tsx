@@ -4,6 +4,7 @@ import { getStableDeviceFingerprint } from '../api'
 import {
   getPreferredServer,
   setPreferredServer,
+  normalizePreferredServer,
 } from '../bypassStore'
 import { clearCachedVpnConfig } from '../vkConfig'
 
@@ -76,28 +77,18 @@ type VpnServersResponse = {
   servers: VpnServerInfo[]
 }
 
-function slotForSelectedRaw(selectedRaw: string | null | undefined, servers: VpnServerInfo[]): 'server1' | 'server2' | 'server3' {
-  const raw = String(selectedRaw || '').trim().toLowerCase()
-  if (raw === 'server1' || raw === 'server2' || raw === 'server3') return raw
-  const idx = servers.findIndex((s) => s.key === raw)
-  if (idx === 1) return 'server2'
-  if (idx === 2) return 'server3'
-  return 'server1'
+function slotTitle(slot: string): string {
+  const n = String(slot || '').replace(/^server/i, '')
+  return n && /^\d+$/.test(n) ? `Сервер ${n}` : slot
 }
 
-function slotIndex(slot: string): number {
-  if (slot === 'server2') return 2
-  if (slot === 'server3') return 3
-  return 1
-}
-
-function applyDialogLine(fromSlot: string, toSlot: string): string {
-  const fromIdx = slotIndex(fromSlot)
-  const toIdx = slotIndex(toSlot)
+function applyDialogLine(fromSlot: string, toSlot: string, servers: VpnServerInfo[]): string {
+  const titleOf = (key: string) =>
+    servers.find((s) => normalizePreferredServer(s.key) === key)?.title || slotTitle(key)
   if (fromSlot !== toSlot) {
-    return `Сервер ${fromIdx} → Сервер ${toIdx}`
+    return `${titleOf(fromSlot)} → ${titleOf(toSlot)}`
   }
-  return `Сервер ${toIdx}`
+  return titleOf(toSlot)
 }
 
 /**
@@ -112,11 +103,11 @@ export default function MenuBypassPanel({
   vpnRunning,
   onBack,
 }: Props) {
-  const [selectedServerSlot, setSelectedServerSlot] = useState<'server1' | 'server2' | 'server3'>(
-    slotForSelectedRaw(getPreferredServer(), []),
+  const [selectedServerSlot, setSelectedServerSlot] = useState(
+    normalizePreferredServer(getPreferredServer()),
   )
   const [servers, setServers] = useState<VpnServerInfo[]>([])
-  const [pendingServerSlot, setPendingServerSlot] = useState<'server1' | 'server2' | 'server3' | null>(null)
+  const [pendingServerSlot, setPendingServerSlot] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
   const switchLocked = busy || vpnRunning
@@ -140,7 +131,7 @@ export default function MenuBypassPanel({
         setServers(Array.isArray(data.servers) ? data.servers : [])
         // Локальный слот — источник правды. GET selected_server часто отстаёт
         // (устройство ещё на соте) и откатывал «Сервер 1» обратно на 2/3.
-        const local = getPreferredServer()
+        const local = normalizePreferredServer(getPreferredServer())
         setSelectedServerSlot(local)
       } catch {
         if (mounted) setHint('Не удалось загрузить список серверов.')
@@ -212,12 +203,16 @@ export default function MenuBypassPanel({
 
       <div className="flex-1 overflow-y-auto min-h-0">
         <div style={{ paddingLeft: 12 }}>
-          {[0, 1, 2].map((index) => {
-            const slot = `server${index + 1}` as 'server1' | 'server2' | 'server3'
+          {(servers.length > 0 ? servers : [
+            { key: 'server1', title: 'Сервер 1', public_ip: '', wdtt_port: 0, online_count: 0 },
+            { key: 'server2', title: 'Сервер 2', public_ip: '', wdtt_port: 0, online_count: 0 },
+            { key: 'server3', title: 'Сервер 3', public_ip: '', wdtt_port: 0, online_count: 0 },
+          ]).map((server) => {
+            const slot = normalizePreferredServer(server.key)
             return (
             <div key={slot}>
               <ModeOption
-                title={`Сервер ${index + 1}`}
+                title={server.title || slotTitle(slot)}
                 selected={selServer === slot}
                 enabled={!switchLocked}
                 fg={fg}
@@ -257,7 +252,7 @@ export default function MenuBypassPanel({
               Применить?
             </div>
             <p className="text-sm leading-5 mb-6" style={{ color: muted }}>
-              {applyDialogLine(selectedServerSlot, selServer)}
+              {applyDialogLine(selectedServerSlot, selServer, servers)}
             </p>
             <div className="flex justify-end items-center gap-2">
                 <button

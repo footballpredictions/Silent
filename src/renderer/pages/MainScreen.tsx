@@ -18,7 +18,10 @@ import {
 import {
   disconnectBootstrapVpn,
   isBootstrapVpnActive,
+  isPaymentBootstrapActive,
   resetBootstrapRendererState,
+  ensurePaymentBootstrapVpn,
+  stopPaymentBootstrapVpn,
 } from '../bootstrapVpn'
 import { fetchVpnConfigWithKeys } from '../vpnConfigFetch'
 import { waitVpnReady } from '../vpnReady'
@@ -341,18 +344,29 @@ export default function MainScreen({
       if (Date.now() > paymentPollDeadlineRef.current) {
         stopPaymentPoll()
         setPaymentStatus('timeout')
+        void stopPaymentBootstrapVpn().catch(() => null)
         return
       }
       try {
         const res = await api.get(`/api/payments/status/${label}`)
         const status = res.data?.status
         if (status === 'completed') {
-          stopPaymentPoll()
           setPaymentStatus('completed')
           await fetchProfile()
+          if (!document.hidden) {
+            stopPaymentPoll()
+            if (isPaymentBootstrapActive()) {
+              await stopPaymentBootstrapVpn().catch(() => null)
+            }
+          }
         } else if (status === 'failed' || status === 'expired') {
           stopPaymentPoll()
           setPaymentStatus('failed')
+          await stopPaymentBootstrapVpn().catch(() => null)
+        } else if (status === 'failed' || status === 'expired') {
+          stopPaymentPoll()
+          setPaymentStatus('failed')
+          await stopPaymentBootstrapVpn().catch(() => null)
         }
       } catch {
         // Сеть моргнула — не обрываем ожидание, попробуем на следующем тике.
@@ -363,18 +377,42 @@ export default function MainScreen({
   useEffect(() => () => stopPaymentPoll(), [stopPaymentPoll])
 
   useEffect(() => {
+    if (paymentStatus !== 'waiting' && paymentStatus !== 'completed') return
+    if (!(profile?.is_admin || profile?.subscription?.is_active)) return
+    if (paymentStatus === 'waiting') setPaymentStatus('completed')
+    if (typeof document !== 'undefined' && document.hidden) return
+    stopPaymentPoll()
+    void stopPaymentBootstrapVpn().catch(() => null)
+  }, [paymentStatus, profile, stopPaymentPoll])
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.hidden) return
+      const paid = profile?.is_admin || profile?.subscription?.is_active
+      if (paymentStatus === 'completed' || (paymentStatus === 'waiting' && paid)) {
+        stopPaymentPoll()
+        setPaymentStatus('completed')
+        void stopPaymentBootstrapVpn().catch(() => null)
+      }
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [paymentStatus, profile, stopPaymentPoll])
+
+  useEffect(() => {
     if (menuOpen) setBypassNavLabel(bypassFamilyLabel())
   }, [menuOpen, menuPage])
 
   useEffect(() => {
-    // На главном экране bootstrap-состояние не должно жить.
+    if (isPaymentBootstrapActive()) return
+    // На главном экране login-bootstrap не должен жить.
     resetBootstrapRendererState()
     const api_ = (window as any).electronAPI
     void (async () => {
       try {
+        if (isPaymentBootstrapActive()) return
         const st = await api_?.vpnIsReady?.()
-        // Если после логина остался bootstrap-туннель — гасим его.
-        if (st?.bootstrap && !st?.ready) {
+        if (st?.bootstrap && !st?.ready && !isPaymentBootstrapActive()) {
           await disconnectBootstrapVpn()
           pushLog('Main', 'stale bootstrap VPN stopped on main screen')
         }
@@ -393,6 +431,20 @@ export default function MainScreen({
       localStorage.removeItem('silent_subscription_msg')
       setMenuOpen(true)
       setMenuPage('subscription')
+    }
+  }, [fetchProfile])
+
+  useEffect(() => {
+    const api_ = (window as any).electronAPI
+    if (!api_?.onPaymentDeepLink) return
+    const onPay = () => {
+      setMenuOpen(true)
+      setMenuPage('subscription')
+      void fetchProfile()
+    }
+    api_.onPaymentDeepLink(onPay)
+    return () => {
+      api_.removePaymentDeepLinkListeners?.()
     }
   }, [fetchProfile])
 
@@ -1500,6 +1552,9 @@ export default function MainScreen({
 
               {paymentStatus !== 'idle' ? (
                 (() => {
+                  const paymentUiStatus = (paymentStatus === 'waiting' && (profile?.is_admin || profile?.subscription?.is_active))
+                    ? 'completed'
+                    : paymentStatus
                   const cfg = {
                     waiting: {
                       title: clientTheme?.payment_waiting_title || 'Ждём подтверждения оплаты',
@@ -1525,13 +1580,14 @@ export default function MainScreen({
                       color: muted,
                       icon: '⏱',
                     },
-                  }[paymentStatus]
+                  }[paymentUiStatus]
+                  if (!cfg) return null
                   return (
                     <div className="rounded-2xl text-center px-4 py-6" style={{ border: `1px solid ${cfg.color}2E`, background: `${cfg.color}0D` }}>
                       <div className="w-9 h-9 rounded-full mx-auto mb-3 flex items-center justify-center text-base" style={{ background: `${cfg.color}1A` }}>{cfg.icon}</div>
                       <div className="text-sm font-semibold mb-1.5">{cfg.title}</div>
                       <div className="text-xs leading-relaxed" style={{ color: muted }}>{cfg.text}</div>
-                      {paymentStatus === 'waiting' && (
+                      {paymentUiStatus === 'waiting' && (
                         <>
                           <div className="mt-3 flex justify-center">
                             <span className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: `${cfg.color}55`, borderTopColor: 'transparent' }} />
@@ -1541,7 +1597,11 @@ export default function MainScreen({
                               таймаута об отказе узнать нечем — даём отменить вручную. */}
                           <button
                             type="button"
-                            onClick={() => { stopPaymentPoll(); setPaymentStatus('idle') }}
+                            onClick={() => {
+                              stopPaymentPoll()
+                              setPaymentStatus('idle')
+                              void stopPaymentBootstrapVpn().catch(() => null)
+                            }}
                             className="mt-4 text-xs"
                             style={{ color: muted }}
                           >
@@ -1549,10 +1609,14 @@ export default function MainScreen({
                           </button>
                         </>
                       )}
-                      {(paymentStatus === 'failed' || paymentStatus === 'timeout') && (
+                      {(paymentUiStatus === 'failed' || paymentUiStatus === 'timeout') && (
                         <button
                           type="button"
-                          onClick={() => { stopPaymentPoll(); setPaymentStatus('idle') }}
+                          onClick={() => {
+                            stopPaymentPoll()
+                            setPaymentStatus('idle')
+                            void stopPaymentBootstrapVpn().catch(() => null)
+                          }}
                           className="w-full mt-4 py-2.5 rounded-xl text-xs font-semibold"
                           style={{ background: fg, color: bg }}
                         >
@@ -1583,6 +1647,45 @@ export default function MainScreen({
                     <button key={plan.id}
                       onClick={async () => {
                         try {
+                          const electron = (window as any).electronAPI
+                          if (!profile?.subscription?.is_active) {
+                            try {
+                              const st = await electron?.vpnIsReady?.()
+                              if (st?.ready && !st?.bootstrap) {
+                                await electron?.vpnDisconnect?.({ fast: true })
+                              }
+                            } catch { /* ignore */ }
+                            let initRes: { data?: { url?: string; label?: string } } | null = null
+                            try {
+                              initRes = await api.post(
+                                '/api/payments/init',
+                                { plan_type: plan.id },
+                                { timeout: 12_000 },
+                              )
+                            } catch {
+                              const bridged = await ensurePaymentBootstrapVpn()
+                              if (!bridged) {
+                                throw new Error('Не удалось включить временный интернет для оплаты. Повторите.')
+                              }
+                              initRes = await api.post(
+                                '/api/payments/init',
+                                { plan_type: plan.id },
+                                { timeout: 30_000 },
+                              )
+                            }
+                            const url = initRes?.data?.url
+                            const label = initRes?.data?.label
+                            if (!url || !label) throw new Error('Сервер не вернул ссылку на оплату')
+                            const opened = await electron?.openExternal?.(url)
+                            if (opened === false) {
+                              try {
+                                await electron?.copyToClipboard?.(url)
+                              } catch { /* ignore */ }
+                              throw new Error('Не удалось открыть браузер. Ссылка скопирована — вставьте в Chrome/Edge вручную.')
+                            }
+                            startPaymentPoll(label)
+                            return
+                          }
                           const res = await api.post(
                             '/api/payments/init',
                             { plan_type: plan.id },
@@ -1591,12 +1694,10 @@ export default function MainScreen({
                           const url = res.data?.url
                           const label = res.data?.label
                           if (!url || !label) throw new Error('Сервер не вернул ссылку на оплату')
-                          // Системный браузер (не окно приложения). При VPN — bypass YuMoney/nip.io.
-                          // При включённом VPN main-процесс добавляет bypass для YuMoney/nip.io.
-                          const opened = await (window as any).electronAPI?.openExternal?.(url)
+                          const opened = await electron?.openExternal?.(url)
                           if (opened === false) {
                             try {
-                              await (window as any).electronAPI?.copyToClipboard?.(url)
+                              await electron?.copyToClipboard?.(url)
                             } catch { /* ignore */ }
                             throw new Error('Не удалось открыть браузер. Ссылка скопирована — вставьте в Chrome/Edge вручную.')
                           }

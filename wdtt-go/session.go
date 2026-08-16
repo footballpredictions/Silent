@@ -24,8 +24,9 @@ const (
 	readBufSize        = 1600
 	// Telegram latency experiment: чуть больше сокет-буфер (меньше дропа на burst видео).
 	socketBufSize      = 8 * 1024 * 1024
-	keepaliveByte      = 0xFF
-	keepaliveInterval  = 15 * time.Second
+	keepaliveByte       = 0xFF
+	keepaliveInterval   = 15 * time.Second
+	accessCheckInterval = 30 * time.Second
 )
 
 // Windows: 16 — баланс (baseline 26431a9); 32+ → VK throttle.
@@ -340,12 +341,17 @@ func RunSession(
 	})
 	defer stopDTLS()
 
-	// DTLS Keepalive: prevents TURN allocation timeout and DTLS idle disconnect
+	// DTLS Keepalive + periodic GETCONF (LTE: HTTP overlay cannot revoke access)
 	go func() {
 		defer proxyWg.Done()
 		t := time.NewTicker(keepaliveInterval)
 		defer t.Stop()
 		ping := []byte{keepaliveByte}
+		access := time.NewTicker(accessCheckInterval)
+		defer access.Stop()
+		if !getConfig || deviceID == "" {
+			access.Stop()
+		}
 		for {
 			select {
 			case <-sessCtx.Done():
@@ -353,6 +359,15 @@ func RunSession(
 			case <-t.C:
 				_ = dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 				if _, err := dtlsConn.Write(ping); err != nil {
+					return
+				}
+			case <-access.C:
+				if !getConfig || deviceID == "" {
+					continue
+				}
+				log.Printf("[ВОРКЕР #%d] GETCONF access-check", sessionID)
+				_ = dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if _, err := dtlsConn.Write(getconfPayload(localPort, deviceID, password)); err != nil {
 					return
 				}
 			}
@@ -402,9 +417,14 @@ func RunSession(
 				return
 			}
 
-			// Skip keepalive pong from server
-			if n == 1 && pkt[0] == keepaliveByte {
+			kind, ctrlErr := ClassifyControlPayload(pkt[:n])
+			if kind != "data" {
 				putPktBuf(pkt)
+				if kind == "denied" {
+					log.Printf("[ВОРКЕР #%d] %v", sessionID, ctrlErr)
+					sessCancel()
+					return
+				}
 				continue
 			}
 

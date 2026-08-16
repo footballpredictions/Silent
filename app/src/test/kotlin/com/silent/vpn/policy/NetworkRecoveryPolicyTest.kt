@@ -91,4 +91,59 @@ class NetworkRecoveryPolicyTest {
         assertTrue(NetworkRecoveryPolicy.isRealNetworkRecoveryReason("transport_switch:mobile"))
         assertFalse(NetworkRecoveryPolicy.isSpuriousRecoveryReason("watchdog_olcrtc_down"))
     }
+
+    @Test
+    fun `doze validated drop is still online if radio has internet`() {
+        assertTrue(NetworkRecoveryPolicy.nextUnderlyingOnlineFlag(false, true))
+        assertFalse(NetworkRecoveryPolicy.nextUnderlyingOnlineFlag(false, false))
+        assertTrue(NetworkRecoveryPolicy.nextUnderlyingOnlineFlag(true, false))
+    }
+
+    @Test
+    fun `do not pause on brief radio hole`() {
+        assertFalse(
+            NetworkRecoveryPolicy.shouldPauseForLostInternet(
+                anyOnline = false,
+                alreadyPaused = false,
+                noInternetSinceMs = 1_000L,
+                nowMs = 5_000L,
+            ),
+        )
+        assertTrue(
+            NetworkRecoveryPolicy.shouldPauseForLostInternet(
+                anyOnline = false,
+                alreadyPaused = false,
+                noInternetSinceMs = 1_000L,
+                nowMs = 1_000L + NetworkRecoveryPolicy.PAUSE_AFTER_NO_INTERNET_MS,
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.shouldPauseForLostInternet(
+                anyOnline = true,
+                alreadyPaused = false,
+                noInternetSinceMs = 1L,
+                nowMs = 30_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun `restore after pause without validated`() {
+        assertTrue(
+            NetworkRecoveryPolicy.shouldRestoreAfterInternet(
+                wasOnline = false,
+                pausedForNetwork = true,
+                anyOnline = true,
+                validatedOnline = false,
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.shouldRestoreAfterInternet(
+                wasOnline = true,
+                pausedForNetwork = false,
+                anyOnline = true,
+                validatedOnline = false,
+            ),
+        )
+    }
 }

@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.media.AudioManager
 import android.net.ConnectivityManager
@@ -18,6 +20,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.silent.vpn.BuildConfig
 import com.silent.vpn.MainActivity
 import com.silent.vpn.R
@@ -83,6 +86,8 @@ class SilentVpnService : Service() {
         private const val TRANSPORT_UNHEALTHY_MS = 20_000L
         /** Нет активных воркеров дольше этого — restart (doze / screen off). */
         private const val TRANSPORT_STALE_MS = 120_000L
+        /** Карман/doze: не паузить libclient на коротком пропадании INTERNET. */
+        private const val PAUSE_AFTER_NO_INTERNET_MS = NetworkRecoveryPolicy.PAUSE_AFTER_NO_INTERNET_MS
         /** Вторая проверка после recovery: трафик должен начать расти (только после полного restart). */
         private const val RECOVERY_VERIFY_DELAY_MS = 4_000L
         private const val RECOVERY_MIN_TRAFFIC_DELTA_MB = 0.05
@@ -126,6 +131,8 @@ class SilentVpnService : Service() {
     private var transportUnhealthySinceMs = 0L
     private var isTunnelPaused = false
     private var pausedForNetwork = false
+    private var noInternetSinceMs = 0L
+    private var screenWakeReceiver: BroadcastReceiver? = null
     private var lastUnderlyingInternet: Boolean? = null
     private var lastMobileDataState: Boolean? = null
     private var phoneCallActive = false
@@ -247,6 +254,9 @@ class SilentVpnService : Service() {
                         } else {
                             startFg(buildConnectingNotification())
                         }
+                    } else if (pausedForNetwork || isTunnelPaused) {
+                        ensureSessionWakeLock()
+                        checkUnderlyingNetwork()
                     } else if (WdttTunnelManager.running.value) {
                         startFg(buildConnectingNotification())
                     }
@@ -380,6 +390,7 @@ class SilentVpnService : Service() {
                 transportUnhealthySinceMs = 0L
                 phoneCallActive = false
                 pausedForNetwork = false
+                noInternetSinceMs = 0L
                 lastUnderlyingInternet = null
                 lastMobileDataState = null
                 lastTransportRestartMs = 0L
@@ -387,6 +398,7 @@ class SilentVpnService : Service() {
                 lastNotifUpdateMs = 0L
                 tunnelProxyStarted = false
                 setupNetworkCallback()
+                setupScreenWakeMonitor()
                 setupPhoneCallMonitor()
                 startTransportWatchdog()
                 startStatsUpdater()
@@ -649,6 +661,7 @@ class SilentVpnService : Service() {
         transportUnhealthySinceMs = 0L
         phoneCallActive = false
         pausedForNetwork = false
+        noInternetSinceMs = 0L
         lastUnderlyingInternet = null
         lastMobileDataState = null
         lastTransportRestartMs = 0L
@@ -656,6 +669,7 @@ class SilentVpnService : Service() {
         lastNotifBody = ""
         lastNotifUpdateMs = 0L
         teardownNetworkCallback()
+        teardownScreenWakeMonitor()
         teardownPhoneCallMonitor()
         clearVpnNotification()
         VpnBackendSync.stop()
@@ -728,7 +742,10 @@ class SilentVpnService : Service() {
         // Underlying NOT_VPN — не default/VPN (иначе Wi‑Fi↔LTE не видно при живом туннеле).
         lastNetworkFingerprint = VpnNetworkHelper.underlyingTransportFingerprint(this)
         lastNetworkValidated = VpnNetworkHelper.hasUnderlyingInternet(this)
-        lastUnderlyingInternet = lastNetworkValidated
+        lastUnderlyingInternet = NetworkRecoveryPolicy.nextUnderlyingOnlineFlag(
+            lastNetworkValidated,
+            VpnNetworkHelper.hasAnyUnderlyingInternet(this),
+        )
         lastMobileDataState = VpnNetworkHelper.isOnMobileData(this)
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
@@ -896,6 +913,7 @@ class SilentVpnService : Service() {
     private fun recoverTransportAfterNetwork(reason: String) {
         pausedForNetwork = false
         isTunnelPaused = false
+        noInternetSinceMs = 0L
         DebugLog.i("VpnService", "network recovery: $reason")
         if (
             olcrtcSessionActive ||
@@ -1373,7 +1391,8 @@ class SilentVpnService : Service() {
                 OlcrtcTunnelManager.running.value ||
                 OlcrtcTunnelManager.tunnelReady.value
         val wdttLive = WdttTunnelManager.tunnelReady.value
-        if (!isRunning || (!wdttLive && !olcrtcLive)) return
+        if (!isRunning) return
+        if (!wdttLive && !olcrtcLive && !pausedForNetwork && !isTunnelPaused) return
         if (!olcrtcLive && WdttTunnelManager.isNetworkRecoverySuppressed()) return
         if (NetworkRecoveryPolicy.shouldDeferRecoveryForPhoneCall(phoneCallActive)) return
         if (isOlcrtcInitialConnectInProgress()) {
@@ -1384,8 +1403,11 @@ class SilentVpnService : Service() {
             return
         }
         // transport_switch не блокируем grace — иначе первые секунды после connect «залипают».
+        // Пауза после сна: grace не должен блокировать internet_restored.
         if (
             !olcrtcLive &&
+            !pausedForNetwork &&
+            !isTunnelPaused &&
             System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()
         ) {
             return
@@ -1397,9 +1419,19 @@ class SilentVpnService : Service() {
         val mobileNow = VpnNetworkHelper.isOnMobileData(this)
         val mobileWas = lastMobileDataState
         val underlyingFp = VpnNetworkHelper.underlyingTransportFingerprint(this)
+        val now = System.currentTimeMillis()
 
-        if (wasOnline == true && !anyOnline) {
-            if (!pausedForNetwork) {
+        if (!anyOnline) {
+            if (noInternetSinceMs == 0L) noInternetSinceMs = now
+            if (
+                NetworkRecoveryPolicy.shouldPauseForLostInternet(
+                    anyOnline = false,
+                    alreadyPaused = pausedForNetwork,
+                    noInternetSinceMs = noInternetSinceMs,
+                    nowMs = now,
+                    pauseAfterMs = PAUSE_AFTER_NO_INTERNET_MS,
+                )
+            ) {
                 DebugLog.i(
                     "VpnService",
                     "underlying internet lost — pause ${if (olcrtcLive) "olcrtc" else "libclient"}",
@@ -1412,8 +1444,18 @@ class SilentVpnService : Service() {
                     WdttTunnelManager.pause()
                 }
             }
-        } else if ((wasOnline == false || pausedForNetwork) && (validatedOnline || anyOnline)) {
-            scheduleNetworkRecovery("internet_restored", 1_500L)
+        } else {
+            noInternetSinceMs = 0L
+            if (
+                NetworkRecoveryPolicy.shouldRestoreAfterInternet(
+                    wasOnline = wasOnline,
+                    pausedForNetwork = pausedForNetwork,
+                    anyOnline = true,
+                    validatedOnline = validatedOnline,
+                )
+            ) {
+                scheduleNetworkRecovery("internet_restored", 1_500L)
+            }
         }
         // Синхронизируем fingerprint из poll (callback мог пропустить dual-network lost).
         if (underlyingFp.isNotEmpty() &&
@@ -1450,7 +1492,10 @@ class SilentVpnService : Service() {
         } else {
             lastMobileDataState = mobileNow
         }
-        lastUnderlyingInternet = validatedOnline || (olcrtcLive && anyOnline)
+        lastUnderlyingInternet = NetworkRecoveryPolicy.nextUnderlyingOnlineFlag(
+            validatedOnline,
+            anyOnline,
+        )
     }
 
     private fun checkTransportHealth() {
@@ -1577,6 +1622,14 @@ class SilentVpnService : Service() {
                     delay(2000)
                     continue
                 }
+                if (!WdttTunnelManager.running.value && (pausedForNetwork || isTunnelPaused)) {
+                    if (VpnNetworkHelper.hasAnyUnderlyingInternet(this@SilentVpnService)) {
+                        DebugLog.i("VpnService", "transportWatchdog: paused, internet back — resume")
+                        scheduleNetworkRecovery("internet_restored", 800L)
+                    }
+                    delay(2000)
+                    continue
+                }
                 if (!WdttTunnelManager.running.value && !isTunnelPaused) {
                     if (isWithinConnectGrace()) {
                         delay(2000)
@@ -1602,6 +1655,55 @@ class SilentVpnService : Service() {
     private fun teardownNetworkCallback() {
         networkCallback?.let { runCatching { connectivityManager?.unregisterNetworkCallback(it) } }
         networkCallback = null
+    }
+
+    /**
+     * После сна в кармане ConnectivityManager часто молчит, пока экран выключен.
+     * SCREEN_ON / разблокировка — толчок проверить сеть и снять паузу.
+     */
+    private fun setupScreenWakeMonitor() {
+        if (screenWakeReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (!isRunning) return
+                val action = intent?.action ?: return
+                if (action != Intent.ACTION_SCREEN_ON && action != Intent.ACTION_USER_PRESENT) return
+                if (pausedForNetwork || isTunnelPaused) {
+                    if (VpnNetworkHelper.hasAnyUnderlyingInternet(this@SilentVpnService)) {
+                        DebugLog.i("VpnService", "screen wake — resume after pause")
+                        scheduleNetworkRecovery("internet_restored", 400L)
+                    } else {
+                        checkUnderlyingNetwork()
+                    }
+                    return
+                }
+                if (!WdttTunnelManager.running.value && VpnNetworkHelper.hasAnyUnderlyingInternet(this@SilentVpnService)) {
+                    DebugLog.i("VpnService", "screen wake — libclient down, resume")
+                    WdttTunnelManager.resume()
+                }
+            }
+        }
+        screenWakeReceiver = receiver
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        runCatching {
+            ContextCompat.registerReceiver(
+                this,
+                receiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }.onFailure { e ->
+            DebugLog.w("VpnService", "screen wake receiver: ${e.message}")
+            screenWakeReceiver = null
+        }
+    }
+
+    private fun teardownScreenWakeMonitor() {
+        screenWakeReceiver?.let { runCatching { unregisterReceiver(it) } }
+        screenWakeReceiver = null
     }
 
     /** Отключиться только если другой VPN реально захватил сеть (uid ≠ наш). */
@@ -1882,6 +1984,8 @@ class SilentVpnService : Service() {
         connectGuardJob?.cancel()
         isRunning = false
         isTunnelPaused = false
+        pausedForNetwork = false
+        noInternetSinceMs = 0L
         activeNetworks.clear()
         lastNetworkFingerprint = ""
         transportUnhealthySinceMs = 0L
@@ -1891,6 +1995,7 @@ class SilentVpnService : Service() {
         VpnBackendSync.stop()
         tunnelProxyStarted = false
         teardownNetworkCallback()
+        teardownScreenWakeMonitor()
         teardownPhoneCallMonitor()
         teardownVpnOwnershipMonitor()
         performanceLocksHeld = false

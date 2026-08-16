@@ -4,6 +4,9 @@ import com.silent.vpn.policy.VpnNetworkConstants.MIN_TRANSPORT_RESTART_INTERVAL_
 
 object NetworkRecoveryPolicy {
 
+    /** Карман/doze: radio на секунды теряет INTERNET — не убиваем libclient сразу. */
+    const val PAUSE_AFTER_NO_INTERNET_MS = 8_000L
+
     fun wifiCellTransportTarget(oldFp: String, newFp: String): String? = when {
         oldFp == "cell" && newFp == "wifi" -> "wifi"
         oldFp == "wifi" && newFp == "cell" -> "mobile"
@@ -69,4 +72,31 @@ object NetworkRecoveryPolicy {
     }
 
     fun shouldDeferRecoveryForPhoneCall(phoneCallActive: Boolean): Boolean = phoneCallActive
+
+    /** Пауза только после устойчивой дыры, не по миганию VALIDATED. */
+    fun shouldPauseForLostInternet(
+        anyOnline: Boolean,
+        alreadyPaused: Boolean,
+        noInternetSinceMs: Long,
+        nowMs: Long,
+        pauseAfterMs: Long = PAUSE_AFTER_NO_INTERNET_MS,
+    ): Boolean {
+        if (alreadyPaused || anyOnline) return false
+        if (noInternetSinceMs <= 0L) return false
+        return nowMs - noInternetSinceMs >= pauseAfterMs
+    }
+
+    fun shouldRestoreAfterInternet(
+        wasOnline: Boolean?,
+        pausedForNetwork: Boolean,
+        anyOnline: Boolean,
+        validatedOnline: Boolean,
+    ): Boolean = (wasOnline == false || pausedForNetwork) && (anyOnline || validatedOnline)
+
+    /**
+     * Флаг «сеть была»: INTERNET на underlying, без требования VALIDATED.
+     * Иначе doze на LTE каждые 2 с шлёт internet_restored и рвёт туннель.
+     */
+    fun nextUnderlyingOnlineFlag(validatedOnline: Boolean, anyOnline: Boolean): Boolean =
+        validatedOnline || anyOnline
 }

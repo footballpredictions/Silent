@@ -31,9 +31,11 @@ function pickDnsServers(value) {
 function normalizeDnsValue(raw, override) {
   const fromOverride = pickDnsServers(override)
   if (fromOverride) return fromOverride
-  // Пресет «Как на сервере»: wg_dns из конфига (в т.ч. 10.66.66.1 при фильтре угроз).
   const fromServer = pickDnsServers(raw)
-  if (fromServer) return fromServer
+  // Фильтр угроз на улье — единственный серверный DNS, который нельзя подменять.
+  if (fromServer.split(/,\s*/).includes('10.66.66.1')) return fromServer
+  // Как в 1.0.160: Cloudflare + Yandex. Серверный только-Яндекс ломал Telegram Desktop
+  // (системный DNS), при том что Chrome/YouTube живут на DoH.
   return WG_DNS
 }
 

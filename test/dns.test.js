@@ -1,5 +1,5 @@
 /**
- * DNS туннеля: приоритет меню DNS → wg_dns с сервера → встроенный fallback.
+ * DNS туннеля: свой DNS → фильтр угроз 10.66.66.1 → как в 1.0.160 Cloudflare+Yandex.
  * Запуск: npm test
  */
 const { describe, it } = require('node:test')
@@ -12,9 +12,12 @@ describe('normalizeDnsValue', () => {
     assert.equal(normalizeDnsValue('77.88.8.8', '1.1.1.1, 1.0.0.1'), '1.1.1.1, 1.0.0.1')
   })
 
-  it('без override берёт DNS сервера (в т.ч. фильтр угроз)', () => {
+  it('фильтр угроз 10.66.66.1 не подменяется', () => {
     assert.equal(normalizeDnsValue('10.66.66.1', ''), '10.66.66.1')
-    assert.equal(normalizeDnsValue('77.88.8.8, 77.88.8.1', null), '77.88.8.8, 77.88.8.1')
+  })
+
+  it('серверный только-Яндекс как в 1.0.160 → Cloudflare+Yandex', () => {
+    assert.equal(normalizeDnsValue('77.88.8.8, 77.88.8.1', null), '1.1.1.1, 1.0.0.1, 77.88.8.8')
   })
 
   it('без override и без серверного — встроенный список', () => {
@@ -42,8 +45,13 @@ describe('buildWgConfigFromApi', () => {
     assert.match(conf, /^DNS = 9\.9\.9\.9$/m)
   })
 
-  it('без override остаётся серверный DNS', () => {
+  it('фильтр угроз остаётся серверным DNS', () => {
     const conf = buildWgConfigFromApi({ ...base, wg_dns: '10.66.66.1' })
     assert.match(conf, /^DNS = 10\.66\.66\.1$/m)
+  })
+
+  it('без override публичный серверный DNS как в 1.0.160', () => {
+    const conf = buildWgConfigFromApi({ ...base, wg_dns: '77.88.8.8, 77.88.8.1' })
+    assert.match(conf, /^DNS = 1\.1\.1\.1, 1\.0\.0\.1, 77\.88\.8\.8$/m)
   })
 })

@@ -1038,10 +1038,11 @@ export default function MainScreen({
           return
         }
 
-        if (ready === 'flood' && escalateVkCredSession()) {
+        // Как Android: flood / звонок не встал / 0 воркеров → автокапча, потом ручная.
+        if (!(late?.workers > 0) && escalateVkCredSession()) {
           pushLog(
             'Main',
-            `flood escalate → ${vkCredStrategyLabel(getEffectiveVkCredStrategy())}`,
+            `${ready === 'flood' ? 'flood' : 'timeout'} escalate → ${vkCredStrategyLabel(getEffectiveVkCredStrategy())}`,
           )
           await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
           continue

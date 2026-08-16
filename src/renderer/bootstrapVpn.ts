@@ -255,10 +255,10 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
     clearTunnelApiBase()
     await electron.vpnDisconnect?.({ fast: true })
 
-    if (ok === 'flood' && escalateVkCredSession()) {
+    if (escalateVkCredSession()) {
       pushLog(
         'Bootstrap',
-        `flood escalate → ${vkCredStrategyLabel(getEffectiveVkCredStrategy())}`,
+        `${ok === 'flood' ? 'flood' : 'timeout'} escalate → ${vkCredStrategyLabel(getEffectiveVkCredStrategy())}`,
       )
       continue
     }

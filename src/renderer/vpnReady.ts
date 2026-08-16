@@ -2,6 +2,9 @@ import { connectWaitTimeoutForAuth } from './hashChannelHelper'
 
 export type VpnReadyWaitResult = true | false | 'flood'
 
+/** Как Android waitForTunnelReady: flood/0 воркеров → каскад капчи, не «туннель не поднялся». */
+const FLOOD_ESCALATE_AFTER_MS = 3_000
+
 /** Ожидание готовности туннеля — как Android waitForTunnelReady. */
 export async function waitVpnReady(
   timeoutMs?: number,
@@ -35,13 +38,12 @@ export async function waitVpnReady(
         const r = await electron.vpnIsReady()
         if (isBootstrap ? r?.bootstrap : r?.ready && !r?.bootstrap) return true
         if (!isBootstrap && (r?.workers > 0) && r?.wg) return true
-        // Flood control: vkcalls→автокапча. Не рвать, если WG уже ставится.
+        // Android: tick>=30 (3с), 0 воркеров, flood/LEGACY_ESCALATE → капча.
+        // WG из кеша / installing не блокируют: звонок уже мёртв.
         if (
           !legacy &&
-          Date.now() - started > 15_000 &&
+          Date.now() - started >= FLOOD_ESCALATE_AFTER_MS &&
           !(r?.workers > 0) &&
-          !r?.wg &&
-          !r?.installing &&
           electron.consumeFloodEscalate
         ) {
           const flood = await electron.consumeFloodEscalate()
@@ -53,5 +55,15 @@ export async function waitVpnReady(
     }
     await new Promise(r => setTimeout(r, 200))
   }
-  return listenerOk === true
+  if (listenerOk) return true
+  try {
+    const r = await electron.vpnIsReady?.()
+    if (isBootstrap ? r?.bootstrap : r?.ready && !r?.bootstrap) return true
+    if (!isBootstrap && (r?.workers > 0) && r?.wg) return true
+    // Таймаут без воркеров = как Android: vkcalls/auto → следующий режим, не alert WG.
+    if (!(r?.workers > 0)) return 'flood'
+  } catch {
+    /* ignore */
+  }
+  return false
 }

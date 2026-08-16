@@ -22,7 +22,7 @@ from app.schemas.hive import (
 from app.services import hive_service
 from app.services import hive_provision_service
 from app.services.hive_incidents import (
-    list_incidents,
+    list_incidents_persisted,
     clear_incidents,
     clear_persisted_incidents,
     push_incident,
@@ -481,7 +481,7 @@ async def hive_incidents(
     limit: int = Query(200, ge=1, le=800),
     _: bool = Depends(get_admin_credentials),
 ):
-    items = list_incidents(limit)
+    items = await list_incidents_persisted(limit)
     last_seen_at = await get_admin_incidents_seen_at()
     return {"items": items, "count": len(items), "last_seen_at": last_seen_at}
 

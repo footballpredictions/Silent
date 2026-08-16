@@ -432,7 +432,7 @@ export default function HivePage({ token }: { token: string }) {
           <div>
             <h2 className="font-medium">Инциденты Улья (ошибки/падения)</h2>
             <p className="text-xs text-[#666] mt-0.5">
-              Только проблемные события: таймауты, недоступность agent, ошибки доступа, подозрение на блокировки.
+              Записи хранятся в базе, пока не нажмёте «Очистить». Не пропадают при обновлении страницы.
             </p>
             {incidentsSeenAt && (
               <p className="text-[11px] text-[#555] mt-1">

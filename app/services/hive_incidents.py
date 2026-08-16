@@ -59,8 +59,37 @@ _META_SELECT_SQL = text(
 )
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return _utc_now().isoformat()
+
+
+def _as_utc_dt(value: Any) -> datetime:
+    """asyncpg TIMESTAMPTZ ждёт datetime, не ISO-строку — иначе запись молча падает."""
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str) and value.strip():
+        raw = value.strip().replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            return _utc_now()
+    else:
+        return _utc_now()
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _public_ts(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return _utc_now_iso()
 
 
 def _normalize_msg(msg: str) -> str:
@@ -209,9 +238,48 @@ def push_security_event(
     )
 
 
+def _row_to_public(row: dict[str, Any]) -> dict[str, Any]:
+    checks: list[str] = []
+    raw_checks = row.get("checks_json") or row.get("checks") or ""
+    if isinstance(raw_checks, list):
+        checks = [str(x) for x in raw_checks]
+    elif raw_checks:
+        try:
+            parsed = json.loads(raw_checks)
+            if isinstance(parsed, list):
+                checks = [str(x) for x in parsed]
+        except Exception:
+            checks = []
+    return {
+        "ts": _public_ts(row.get("ts")),
+        "severity": row.get("severity") or "error",
+        "source": row.get("source") or "unknown",
+        "cell_name": row.get("cell_name"),
+        "cell_ip": row.get("cell_ip"),
+        "category": row.get("category") or "unknown",
+        "hint": row.get("hint") or "Требуется диагностика",
+        "message": row.get("message") or "",
+        "details": row.get("details") or "",
+        "checks": checks,
+    }
+
+
 def list_incidents(limit: int = 200) -> list[dict[str, Any]]:
     lim = max(1, min(int(limit or 200), MAX_INCIDENTS))
-    return list(_incidents)[:lim]
+    return [_row_to_public(item) for item in list(_incidents)[:lim]]
+
+
+async def list_incidents_persisted(limit: int = 200) -> list[dict[str, Any]]:
+    """Источник правды — Postgres, чтобы 2 uvicorn worker не прыгали RAM-буферами."""
+    lim = max(1, min(int(limit or 200), MAX_INCIDENTS))
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(_INCIDENT_SELECT_SQL, {"limit": lim})).mappings().all()
+    except Exception as e:
+        logger.warning("Hive incidents list from DB failed: %s", e)
+        return list_incidents(lim)
+    items = [_row_to_public(dict(row)) for row in rows]
+    return items or list_incidents(lim)
 
 
 def clear_incidents() -> None:
@@ -239,7 +307,7 @@ async def _persist_worker() -> None:
                 await db.execute(
                     _INCIDENT_INSERT_SQL,
                     {
-                        "ts": payload.get("ts"),
+                        "ts": _as_utc_dt(payload.get("ts")),
                         "severity": payload.get("severity"),
                         "source": payload.get("source"),
                         "cell_name": payload.get("cell_name"),
@@ -269,29 +337,7 @@ async def load_persisted_incidents(limit: int = MAX_INCIDENTS) -> None:
 
     _incidents.clear()
     for row in rows:
-        checks: list[str] = []
-        raw_checks = row.get("checks_json") or ""
-        if raw_checks:
-            try:
-                parsed = json.loads(raw_checks)
-                if isinstance(parsed, list):
-                    checks = [str(x) for x in parsed]
-            except Exception:
-                checks = []
-        _incidents.append(
-            {
-                "ts": row.get("ts").isoformat() if row.get("ts") else _utc_now_iso(),
-                "severity": row.get("severity") or "error",
-                "source": row.get("source") or "unknown",
-                "cell_name": row.get("cell_name"),
-                "cell_ip": row.get("cell_ip"),
-                "category": row.get("category") or "unknown",
-                "hint": row.get("hint") or "Требуется диагностика",
-                "message": row.get("message") or "",
-                "details": row.get("details") or "",
-                "checks": checks,
-            }
-        )
+        _incidents.append(_row_to_public(dict(row)))
 
 
 async def clear_persisted_incidents() -> None:

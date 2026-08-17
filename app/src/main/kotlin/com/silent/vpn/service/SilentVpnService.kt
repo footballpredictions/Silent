@@ -270,7 +270,7 @@ class SilentVpnService : Service() {
     /** Tunnel GETCONF / Wi‑Fi public: /api/users/me — rev подписки на сервере не меняется при истечении. */
     private fun maybeRefreshWifiSubscription() {
         if (WdttTunnelManager.isBootstrapMode()) return
-        if (VpnNetworkHelper.isOnMobileData(this) && WdttTunnelManager.isApiOverlayActive()) return
+        if (VpnNetworkHelper.isOnMobileData(this)) return
         val now = System.currentTimeMillis()
         if (now - lastWifiSubscriptionCheckMs < WIFI_SUBSCRIPTION_CHECK_MS) return
         lastWifiSubscriptionCheckMs = now

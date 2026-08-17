@@ -110,6 +110,8 @@ class WireGuardHelper(context: Context) {
 
         mobileApiRoute: Boolean = false,
 
+        includeAppOverlay: Boolean = false,
+
     ) = wgMutex.withLock {
 
         withContext(Dispatchers.IO) {
@@ -170,13 +172,13 @@ class WireGuardHelper(context: Context) {
 
 
 
-            val appPolicyKey = if (isBootstrap && !apiOverlayMode) {
+            val appPolicyKey = if (isBootstrap && !apiOverlayMode && !includeAppOverlay) {
                 "bootstrap-companion"
             } else {
                 runCatching {
                     val p = resolveAppTunnelPolicy(
                         appContext,
-                        apiOverlayMode || !SilentRepository.APP_EXCLUDED_FROM_VPN,
+                        apiOverlayMode || includeAppOverlay || !SilentRepository.APP_EXCLUDED_FROM_VPN,
                     )
                     val mode = if (p.whitelist) "wl" else "bl"
                     "$mode:${p.packages.sorted().joinToString(",")}"
@@ -185,14 +187,15 @@ class WireGuardHelper(context: Context) {
             val excludeKey = when {
                 // Bootstrap: TURN-адреса добавляются по мере набора воркеров. Ключ держим
                 // константным, иначе каждый новый адрес пересоздаёт туннель и рвёт воркеры.
-                isBootstrap && !apiOverlayMode -> "bootstrap-companion"
+                isBootstrap && !apiOverlayMode && !includeAppOverlay -> "bootstrap-companion"
+                includeAppOverlay -> "promo-app-in"
                 apiOverlayMode -> "overlay-app-in"
                 mobileApiRoute -> "mobile-api-${excludeIPs.sorted().joinToString(",")}"
                 else -> excludeIPs.sorted().joinToString(",")
             }
 
             val semanticKey =
-                wgSemanticKey(configToApply) + "|ex=$excludeKey|apps=$appPolicyKey|ov=$apiOverlayMode"
+                wgSemanticKey(configToApply) + "|ex=$excludeKey|apps=$appPolicyKey|ov=$apiOverlayMode|appin=$includeAppOverlay"
 
             if (sharedTunnel != null && semanticKey.isNotBlank() && semanticKey == lastAppliedSemanticKey) {
 
@@ -201,22 +204,6 @@ class WireGuardHelper(context: Context) {
                 return@withContext
 
             }
-
-
-
-            sharedTunnel?.let {
-
-                runCatching { backend.setState(it, Tunnel.State.DOWN, null) }
-
-                sharedTunnel = null
-
-                lastAppliedSemanticKey = null
-
-                delay(150)
-
-            }
-
-
 
             val normalizedConfig = normalizeInterfaceConfig(configToApply)
             val parsed = Config.parse(ByteArrayInputStream(normalizedConfig.toByteArray(Charsets.UTF_8)))
@@ -233,7 +220,7 @@ class WireGuardHelper(context: Context) {
 
 
 
-            if (isBootstrap && !apiOverlayMode) {
+            if (isBootstrap && !apiOverlayMode && !includeAppOverlay) {
                 runCatching {
                     val included = resolveBootstrapIncludedApps(appContext)
                     if (included.isNotEmpty()) {
@@ -242,7 +229,10 @@ class WireGuardHelper(context: Context) {
                     }
                 }
             } else {
-                val includeAppInTunnel = apiOverlayMode || !SilentRepository.APP_EXCLUDED_FROM_VPN
+                val includeAppInTunnel = apiOverlayMode || includeAppOverlay || !SilentRepository.APP_EXCLUDED_FROM_VPN
+                if (includeAppOverlay) {
+                    DebugLog.i(TAG, "Promo overlay: app in tunnel, keep AllowedIPs")
+                }
                 runCatching {
                     val policy = resolveAppTunnelPolicy(appContext, includeAppInTunnel)
                     if (policy.packages.isEmpty()) return@runCatching
@@ -320,23 +310,11 @@ class WireGuardHelper(context: Context) {
                     DebugLog.i(TAG, "WireGuard hot reload")
                     return@withContext
                 }.onFailure { e ->
-                    DebugLog.w(TAG, "WG hot reload failed: ${e.message}")
+                    // Живой туннель не гасим: DOWN/UP даёт долгое «выкл → вкл».
+                    DebugLog.w(TAG, "WG hot reload skipped, keep current tunnel: ${e.message}")
+                    return@withContext
                 }
             }
-
-            sharedTunnel?.let {
-
-                runCatching { backend.setState(it, Tunnel.State.DOWN, null) }
-
-                sharedTunnel = null
-
-                lastAppliedSemanticKey = null
-
-                delay(150)
-
-            }
-
-
 
             val newTunnel = WgTunnel()
 

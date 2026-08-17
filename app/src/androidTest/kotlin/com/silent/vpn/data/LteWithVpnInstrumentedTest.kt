@@ -82,7 +82,7 @@ class LteWithVpnInstrumentedTest {
     }
 
     @Test
-    fun lte_withVpn_configSyncUsesOverlayBeforeInitialSync() {
+    fun lte_withVpn_configSyncDoesNotUseOverlay() {
         val overlay = ConfigSyncSkipPolicy.mobileSyncUsesOverlay(
             ConfigSyncSkipPolicy.MobileSyncModeInput(
                 onMobileData = true,
@@ -91,7 +91,13 @@ class LteWithVpnInstrumentedTest {
                 tunnelDataSyncCompleted = false,
             ),
         )
-        assertTrue(overlay)
+        assertTrue(!overlay)
+        assertTrue(
+            ConfigSyncSkipPolicy.lteUsesInBandConfigSync(
+                onMobileData = true,
+                appExcludedFromVpn = SilentRepository.APP_EXCLUDED_FROM_VPN,
+            ),
+        )
     }
 
     @Test

@@ -109,6 +109,7 @@ class SilentRepository @Inject constructor(
         const val CAPTCHA_MODE_WV = "wv"
         const val PREF_CACHED_PROFILE = "cached_profile_json"
         const val PREF_CACHED_THEME = "cached_theme_json"
+        const val PREF_CACHED_REFERRAL = "cached_referral_json"
         const val PREF_APPEARANCE_MODE = "appearance_mode"
         const val PREF_DNS_PRESET = "dns_preset"
         /** Свой DNS пользователя: адреса через запятую. */
@@ -399,6 +400,40 @@ class SilentRepository @Inject constructor(
             )
         }
         return withRoutineBackendApi(allowOverlayFallback = false, block = block)
+    }
+
+    /**
+     * Проверка промокода.
+     * Живой main VPN не трогаем: только локальный proxy bind к уже поднятому WG.
+     * Overlay/startTunnel здесь запрещён — он мигает иконку и рвёт handshake.
+     */
+    suspend fun <T> withPromoCheckApi(block: suspend () -> T): T {
+        if (isMainVpnTunnelUp() && !WdttTunnelManager.isBootstrapMode()) {
+            val proxyOk = prepareTunnelApiBaseLegacyProxy()
+            if (proxyOk) {
+                MobileSyncLog.i("promo", "proxy promo API url=${getServerUrl()} (no overlay)")
+                return runCatching { block() }.getOrElse { e ->
+                    val msg = e.message.orEmpty()
+                    val retryPublic = isTunnelUpstreamError(msg) ||
+                        msg.contains("Failed to connect", ignoreCase = true) ||
+                        e is java.io.IOException
+                    if (retryPublic && !isOnMobileData() && isPublicBackendReachable()) {
+                        useApiBase(getPublicServerUrl())
+                        invalidateApiClient()
+                        MobileSyncLog.w("promo", "proxy failed, public fallback: ${e.message}")
+                        return@getOrElse block()
+                    }
+                    throw e
+                }
+            }
+            if (!isOnMobileData() && isPublicBackendReachable()) {
+                useApiBase(getPublicServerUrl())
+                invalidateApiClient()
+                return block()
+            }
+            error("failed to connect")
+        }
+        return withUserBackendApi(block)
     }
 
     fun canUseMobileDirectTunnelApi(): Boolean =
@@ -952,6 +987,73 @@ class SilentRepository @Inject constructor(
     fun getCachedTheme(): ThemeData? {
         val json = prefs.getString(PREF_CACHED_THEME, null) ?: return null
         return runCatching { Gson().fromJson(json, ThemeData::class.java) }.getOrNull()
+    }
+
+    fun saveCachedReferral(info: ReferralInfo) {
+        prefs.edit().putString(PREF_CACHED_REFERRAL, Gson().toJson(info)).apply()
+    }
+
+    fun getCachedReferral(): ReferralInfo? {
+        val json = prefs.getString(PREF_CACHED_REFERRAL, null) ?: return null
+        return runCatching { Gson().fromJson(json, ReferralInfo::class.java) }.getOrNull()
+    }
+
+    /** Данные с /vpn/config вместе с подпиской — без overlay HTTP после включения. */
+    fun applyClientSync(bundle: ClientSyncBundle?): Boolean {
+        if (bundle == null) return false
+        var applied = false
+        bundle.profile?.let {
+            saveCachedProfile(it)
+            com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener?.onProfile(it)
+            applied = true
+        }
+        bundle.theme?.let {
+            saveCachedTheme(it)
+            com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener?.onTheme(it)
+            applied = true
+        }
+        bundle.referral?.let {
+            saveCachedReferral(it)
+            applied = true
+        }
+        bundle.hashes?.takeIf { it.isNotEmpty() }?.let { hashes ->
+            runCatching {
+                val items = hashes.mapIndexed { i, h ->
+                    HashItemDto(
+                        hash = h,
+                        label = "Сервер ${i + 1}",
+                        source = "server",
+                        slot_index = i,
+                        is_active = true,
+                        status = "active",
+                    )
+                }
+                saveHashItems(items)
+                com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener?.onHashesUpdated(
+                    items,
+                    applyToTunnel = false,
+                )
+                applied = true
+            }
+        }
+        bundle.sync?.let { state ->
+            if (state.hashes > 0) saveSyncHashesRev(state.hashes)
+            if (state.theme > 0) saveSyncThemeRev(state.theme)
+            if (state.profile > 0) saveSyncProfileRev(state.profile)
+        }
+        return applied
+    }
+
+    fun applyCachedClientSync(): Boolean {
+        val json = getCachedVpnConfigRaw() ?: return false
+        val bundle = runCatching {
+            Gson().fromJson(json, VpnConfig::class.java)?.client_sync
+        }.getOrNull()
+        if (bundle == null) {
+            MobileSyncLog.i("clientSync", "cached vpn config has no client_sync")
+            return false
+        }
+        return applyClientSync(bundle)
     }
 
     fun getAppearanceMode(): String =
@@ -2935,6 +3037,9 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
             .putString(PREF_CACHED_CONFIG, json)
             .putLong(PREF_CACHED_CONFIG_TS, System.currentTimeMillis())
             .apply()
+        runCatching {
+            Gson().fromJson(json, VpnConfig::class.java)?.client_sync?.let { applyClientSync(it) }
+        }
     }
 
     fun getClipboardText(): String? {

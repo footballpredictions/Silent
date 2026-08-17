@@ -52,12 +52,18 @@ object ConfigSyncSkipPolicy {
         return null
     }
 
-    /** LTE excluded: overlay только до завершения initial tunnel sync. */
-    fun mobileSyncUsesOverlay(input: MobileSyncModeInput): Boolean =
-        input.onMobileData &&
-            input.appExcludedFromVpn &&
-            input.vpnUpForSync &&
-            !input.tunnelDataSyncCompleted
+    /**
+     * Overlay на основном VPN запрещён (рвёт handshake).
+     * LTE + excluded: профиль/тема/рефералка уже в client_sync с /vpn/config + GETCONF/DTLS.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun mobileSyncUsesOverlay(input: MobileSyncModeInput): Boolean = false
+
+    /** LTE: HTTP sync через proxy/10.66.66.1 недоступен (приложение вне WG). */
+    fun lteUsesInBandConfigSync(
+        onMobileData: Boolean,
+        appExcludedFromVpn: Boolean,
+    ): Boolean = onMobileData && appExcludedFromVpn
 
     fun wifiSubscriptionPollAllowed(onMobileData: Boolean): Boolean = !onMobileData
 

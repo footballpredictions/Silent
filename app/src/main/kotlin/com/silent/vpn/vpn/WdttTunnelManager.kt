@@ -1807,6 +1807,16 @@ object WdttTunnelManager {
         }
     }
 
+    /**
+     * Overlay на живом main VPN запрещён: startTunnel меняет excludeApplications,
+     * GoBackend пересобирает tun → иконка мигает, handshake падает, интернет мёртв.
+     * Промокод при включённом VPN идёт через TunnelApiProxy (см. withPromoCheckApi).
+     */
+    suspend fun <T> withPromoCheckOverlay(block: suspend () -> T): T {
+        updateLog("promo_overlay_skip", "promo: overlay off, keep main VPN", 50)
+        return block()
+    }
+
     fun ensureApiOverlayOff() {
         if (overlayRestoreSuppressed || !apiOverlayActive || !needsWgOverlayReload()) {
             apiOverlayActive = false

@@ -126,6 +126,14 @@ data class BootstrapConfigRequest(
     val device_fingerprint: String,
 )
 
+data class ClientSyncBundle(
+    val profile: UserProfile? = null,
+    val theme: ThemeData? = null,
+    val referral: ReferralInfo? = null,
+    val hashes: List<String>? = null,
+    val sync: SyncStateResponse? = null,
+)
+
 data class VpnConfig(
     val device_id: String,
     val wg_private_key: String,
@@ -138,6 +146,7 @@ data class VpnConfig(
     val vk_hashes: List<String>,
     val stream_count: Int,
     val selected_server: String? = null,
+    val client_sync: ClientSyncBundle? = null,
 )
 
 data class ConnectRequest(

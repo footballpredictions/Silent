@@ -14,6 +14,7 @@ import com.silent.vpn.MainActivity
 import com.silent.vpn.R
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.di.AppEntryPoint
+import com.silent.vpn.policy.ConfigSyncSkipPolicy
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.service.VpnSessionState
 import com.silent.vpn.ui.BrandMarkIcons
@@ -160,9 +161,16 @@ class VpnDataSyncService : Service() {
             VpnDataSyncBridge.onCycleCompleted?.invoke()
             MobileSyncLog.i("syncService", "initial sync OK")
         } else {
-            VpnDataSyncState.setError("Не удалось синхронизировать данные")
-            updateNotification("Ошибка синхронизации")
-            MobileSyncLog.w("syncService", "initial sync FAILED")
+            val cached = VpnDataSyncScheduler.completeFromClientSync(repo)
+            if (cached || repo.getCachedReferral() != null || repo.getCachedProfile() != null) {
+                updateNotification("Данные актуальны")
+                VpnDataSyncBridge.onCycleCompleted?.invoke()
+                MobileSyncLog.i("syncService", "HTTP sync failed — using client_sync/GETCONF cache")
+            } else {
+                VpnDataSyncState.setError("Не удалось синхронизировать данные")
+                updateNotification("Ошибка синхронизации")
+                MobileSyncLog.w("syncService", "initial sync FAILED")
+            }
         }
         if (overlayPath) VpnSessionState.initialOverlaySyncActive = false
 
@@ -173,6 +181,14 @@ class VpnDataSyncService : Service() {
     }
 
     private suspend fun performFullSync(repo: SilentRepository): Boolean {
+        if (
+            ConfigSyncSkipPolicy.lteUsesInBandConfigSync(
+                onMobileData = repo.isOnMobileData(),
+                appExcludedFromVpn = SilentRepository.APP_EXCLUDED_FROM_VPN,
+            )
+        ) {
+            return VpnDataSyncScheduler.completeFromClientSync(repo).let { true }
+        }
         val syncBody: suspend () -> Boolean = {
             runCatching {
                 repo.setTunnelApiFromWgAddress(WdttTunnelManager.lastWgAddress())

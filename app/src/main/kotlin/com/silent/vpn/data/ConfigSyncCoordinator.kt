@@ -150,6 +150,15 @@ object ConfigSyncCoordinator {
                 }
                 null -> Unit
             }
+            if (
+                ConfigSyncSkipPolicy.lteUsesInBandConfigSync(
+                    onMobileData = repo.isOnMobileData(),
+                    appExcludedFromVpn = SilentRepository.APP_EXCLUDED_FROM_VPN,
+                ) && vpnUpForSync()
+            ) {
+                Log.d(TAG, "skip: LTE in-band GETCONF/DTLS (no HTTP)")
+                return
+            }
             listener.onWifiSyncTickStart()
             val mobileOverlay = ConfigSyncSkipPolicy.mobileSyncUsesOverlay(
                 ConfigSyncSkipPolicy.MobileSyncModeInput(

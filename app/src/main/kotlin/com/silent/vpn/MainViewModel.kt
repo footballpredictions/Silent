@@ -173,6 +173,9 @@ class MainViewModel @Inject constructor(
     private var pendingConnectAfterSubscriptionRefresh = false
     /** Временный bootstrap VPN для YuMoney, пока открыт браузер оплаты. */
     private var paymentBootstrapHeld = false
+    /** Короткий bootstrap только для промокода — после проверки поднимаем main VPN обратно. */
+    private var promoBootstrapHeld = false
+    private val promoBootstrapMutex = Mutex()
     /** Должен быть объявлен до init — tunnelReady.collect может сработать в конструкторе. */
     private val pendingHashFailures = ConcurrentLinkedQueue<Triple<String, String, String>>()
     private var hashFailureFlushJob: Job? = null
@@ -208,9 +211,8 @@ class MainViewModel @Inject constructor(
             repo.isLoggedIn() &&
                 !bootstrapVpnMode &&
                 _screen.value == AppScreen.MAIN &&
-                ConfigSyncSkipPolicy.subscriptionPollAllowed(
+                ConfigSyncSkipPolicy.wifiSubscriptionPollAllowed(
                     onMobileData = repo.isOnMobileData(),
-                    mainVpnUp = repo.isMainVpnTunnelUp(),
                 )
 
         override fun onWifiSyncTickStart() {
@@ -380,6 +382,8 @@ class MainViewModel @Inject constructor(
                             bootstrapVpnMode = false
                             bootstrapContext?.let { stopVpnLocally(it) }
                         }
+                    } else if (promoBootstrapHeld) {
+                        DebugLog.w("MainViewModel", "promo bootstrap WDTT: $err")
                     } else if (bootstrapVpnMode) {
                         _statusMsg.value = err
                         if (isBootstrapFatalError(err)) {
@@ -399,6 +403,10 @@ class MainViewModel @Inject constructor(
         }
         viewModelScope.launch {
             WdttTunnelManager.tunnelReady.collect { ready ->
+                if (promoBootstrapHeld) {
+                    DebugLog.i("MainViewModel", "promo bootstrap tunnelReady=$ready")
+                    return@collect
+                }
                 if (ready) {
                     if (_vpnState.value == VpnState.DISCONNECTING) return@collect
                     DebugLog.i("MainViewModel", "tunnel ready")
@@ -456,6 +464,7 @@ class MainViewModel @Inject constructor(
         }
         viewModelScope.launch {
             WdttTunnelManager.activeWorkers.collect {
+                if (promoBootstrapHeld) return@collect
                 if (
                     bootstrapRequiresActiveWorkers() &&
                     bootstrapVpnMode &&
@@ -1045,6 +1054,83 @@ class MainViewModel @Inject constructor(
             silentBootstrapSync = false
             withContext(Dispatchers.IO) {
                 VpnConnectHelper.ensureCleanSlate(context.applicationContext)
+            }
+        }
+    }
+
+    /**
+     * Короткий bootstrap для промокода при живом main VPN.
+     * Overlay на main не используем: он рвёт handshake.
+     * Android не держит два VpnService — снимаем main, бьём API, сразу поднимаем тот же WG из кеша.
+     */
+    private suspend fun <T> runPromoShortBootstrap(context: Context, block: suspend () -> T): T {
+        return promoBootstrapMutex.withLock {
+            val saved = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
+                ?: error("failed to connect")
+            val ctx = context.applicationContext
+            val keepConnected = _vpnState.value == VpnState.CONNECTED || repo.isMainVpnTunnelUp()
+            val boot = HashParser.extract(repo.getBootstrapHash().orEmpty())
+                ?: error("failed to connect")
+            val fp = runCatching { repo.getDeviceFingerprint() }.getOrNull()
+                ?: error("failed to connect")
+            val bootCfg = bootstrapLaunchConfig(BootstrapVpnConfig.build(boot, fp))
+            if (bootCfg.vk_hashes.isEmpty()) error("failed to connect")
+
+            promoBootstrapHeld = true
+            val prevBootstrap = bootstrapVpnMode
+            var restored = false
+            try {
+                DebugLog.i("MainViewModel", "promo short bootstrap start")
+                if (SilentVpnService.isRunning) {
+                    stopVpnLocally(ctx)
+                    waitVpnServiceDown()
+                }
+                bootstrapVpnMode = true
+                launchVpnService(ctx, bootCfg, forceBootstrap = true)
+                var ready = false
+                var attempt = 0
+                while (attempt < 48 && !ready) {
+                    delay(250)
+                    ready = WdttTunnelManager.tunnelReady.value &&
+                        WdttTunnelManager.isBootstrapMode() &&
+                        (!bootstrapRequiresActiveWorkers() || WdttTunnelManager.activeWorkers.value >= 1)
+                    attempt++
+                }
+                if (!ready) error("failed to connect")
+                repo.ensureBootstrapTunnelApi()
+                block()
+            } finally {
+                DebugLog.i("MainViewModel", "promo restore main VPN")
+                bootstrapVpnMode = false
+                runCatching {
+                    if (SilentVpnService.isRunning) {
+                        stopVpnLocally(ctx)
+                        waitVpnServiceDown()
+                    }
+                    launchVpnService(ctx, saved, forceBootstrap = false)
+                    var attempt = 0
+                    while (attempt < 48 && !restored) {
+                        delay(250)
+                        restored = SilentVpnService.isRunning &&
+                            WdttTunnelManager.tunnelReady.value &&
+                            !WdttTunnelManager.isBootstrapMode()
+                        attempt++
+                    }
+                }.onFailure { e ->
+                    DebugLog.w("MainViewModel", "promo restore failed: ${e.message}")
+                }
+                promoBootstrapHeld = false
+                bootstrapVpnMode = prevBootstrap
+                repo.clearTunnelApiBase()
+                if (restored) {
+                    _vpnState.value = VpnState.CONNECTED
+                    _vpnError.value = null
+                    DebugLog.i("MainViewModel", "promo main VPN restored")
+                } else if (keepConnected) {
+                    _vpnState.value = VpnState.DISCONNECTED
+                    _vpnError.value = "Переподключите VPN"
+                    DebugLog.w("MainViewModel", "promo restore: main VPN did not come back")
+                }
             }
         }
     }
@@ -2958,10 +3044,11 @@ class MainViewModel @Inject constructor(
                 WdttTunnelManager.clearStaleSession()
             }
             bootstrapVpnMode = false
-            runCatching {
-                if (!shouldDeferProfileUntilSync()) {
-                    restoreCachedProfileToUi()
-                }
+                runCatching {
+                    if (!shouldDeferProfileUntilSync()) {
+                        restoreCachedProfileToUi()
+                    }
+                    repo.applyCachedClientSync()
                 // Профиль не блокирует старт VPN (как 1.0.160) — иначе 6–10 оборотов змейки.
                 val subCached = _profile.value?.subscription?.is_active
                 MobileSyncLog.i(
@@ -3266,6 +3353,7 @@ class MainViewModel @Inject constructor(
                 var vpnConfig = fetch.vpnConfig
                 val apiError = fetch.apiError
                 val accessDenied = fetch.accessDenied
+                vpnConfig?.client_sync?.let { repo.applyClientSync(it) }
 
                 if (accessDenied) {
                     repo.clearCachedVpnConfig()
@@ -3791,8 +3879,15 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun checkPromoApi(code: String): String {
-        val res = repo.getApi().checkPromo(PromoCheckRequest(code, "monthly"))
-        if (res.isSuccessful) return "Скидка ${res.body()!!.discount_percent}%!"
+        val normalized = code.trim().replace(Regex("\\s+"), "")
+        val res = repo.getApi().checkPromo(PromoCheckRequest(normalized, "monthly"))
+        if (com.silent.vpn.policy.TunnelHttpPolicy.isTunnelBackendFailure(res)) {
+            error("VPN upstream failed")
+        }
+        if (res.isSuccessful) {
+            val body = res.body() ?: error("empty promo response")
+            return "Скидка ${body.discount_percent}%!"
+        }
         return parseError(res.errorBody()?.string() ?: "") ?: "Не найден"
     }
 
@@ -3810,7 +3905,28 @@ class MainViewModel @Inject constructor(
 
     fun checkPromo(code: String, onResult: (String) -> Unit) {
         viewModelScope.launch {
-            if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
+            val vpnHeld = repo.isMainVpnTunnelUp() || SilentVpnService.isRunning
+            if (vpnHeld) {
+                if (WdttTunnelManager.isBootstrapMode()) {
+                    DebugLog.i("MainViewModel", "promo: already bootstrap, no switch")
+                    runCatching {
+                        withEphemeralBackendApi { checkPromoApi(code) }
+                    }.onSuccess { onResult(it) }.onFailure { e ->
+                        onResult(repo.humanizeHashFetchError(e.message))
+                    }
+                    return@launch
+                }
+                DebugLog.i("MainViewModel", "promo: short bootstrap then restore main VPN")
+                runCatching {
+                    runPromoShortBootstrap(appContext) { checkPromoApi(code) }
+                }.onSuccess { onResult(it) }.onFailure { e ->
+                    DebugLog.w("MainViewModel", "promo short bootstrap failed: ${e.message}")
+                    onResult(repo.humanizeHashFetchError(e.message))
+                }
+                return@launch
+            }
+            if (repo.isOnMobileData()) {
+                DebugLog.i("MainViewModel", "promo: ephemeral bootstrap (VPN off, LTE)")
                 val ok = runEphemeralApiBootstrap(appContext, force = true) {
                     runCatching { checkPromoApi(code) }
                         .fold(
@@ -3836,12 +3952,24 @@ class MainViewModel @Inject constructor(
 
     fun loadReferral(onResult: (ReferralInfo?) -> Unit) {
         viewModelScope.launch {
+            repo.getCachedReferral()?.let { cached ->
+                onResult(cached)
+            }
             runCatching {
                 repo.withUserBackendApi {
                     val res = repo.getApi().getReferral()
                     if (res.isSuccessful) res.body() else null
                 }
-            }.onSuccess { onResult(it) }.onFailure { onResult(null) }
+            }.onSuccess { fresh ->
+                if (fresh != null) {
+                    repo.saveCachedReferral(fresh)
+                    onResult(fresh)
+                } else if (repo.getCachedReferral() == null) {
+                    onResult(null)
+                }
+            }.onFailure {
+                if (repo.getCachedReferral() == null) onResult(null)
+            }
         }
     }
 

@@ -93,8 +93,8 @@ class ConfigSyncSkipPolicyTest {
     }
 
     @Test
-    fun `mobile sync uses overlay until initial tunnel sync done`() {
-        assertTrue(
+    fun `mobile sync never uses overlay on main VPN`() {
+        assertFalse(
             ConfigSyncSkipPolicy.mobileSyncUsesOverlay(
                 ConfigSyncSkipPolicy.MobileSyncModeInput(
                     onMobileData = true,
@@ -114,6 +114,13 @@ class ConfigSyncSkipPolicyTest {
                 ),
             ),
         )
+    }
+
+    @Test
+    fun `lte excluded uses in-band config sync`() {
+        assertTrue(ConfigSyncSkipPolicy.lteUsesInBandConfigSync(onMobileData = true, appExcludedFromVpn = true))
+        assertFalse(ConfigSyncSkipPolicy.lteUsesInBandConfigSync(onMobileData = false, appExcludedFromVpn = true))
+        assertFalse(ConfigSyncSkipPolicy.lteUsesInBandConfigSync(onMobileData = true, appExcludedFromVpn = false))
     }
 
     @Test

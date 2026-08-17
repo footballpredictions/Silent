@@ -76,13 +76,9 @@ class ConfigSyncDeviceTest {
     }
 
     @Test
-    fun lte_withVpn_beforeInitialSync_usesOverlay() {
+    fun lte_withVpn_doesNotUseOverlay() {
         NetworkAssumptions.assumeMobileData()
         NetworkAssumptions.assumeSilentVpnUp()
-        org.junit.Assume.assumeFalse(
-            "Нужен сценарий до initial sync",
-            VpnSessionState.tunnelDataSyncCompleted,
-        )
         val overlay = ConfigSyncSkipPolicy.mobileSyncUsesOverlay(
             ConfigSyncSkipPolicy.MobileSyncModeInput(
                 onMobileData = true,
@@ -91,6 +87,12 @@ class ConfigSyncDeviceTest {
                 tunnelDataSyncCompleted = false,
             ),
         )
-        assertTrue(overlay)
+        assertTrue(!overlay)
+        assertTrue(
+            ConfigSyncSkipPolicy.lteUsesInBandConfigSync(
+                onMobileData = true,
+                appExcludedFromVpn = SilentRepository.APP_EXCLUDED_FROM_VPN,
+            ),
+        )
     }
 }

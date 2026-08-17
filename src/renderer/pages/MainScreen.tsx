@@ -12,7 +12,7 @@ import api, {
 } from '../api'
 import {
   cacheVpnConfig, getCachedVpnConfig, clearCachedVpnConfig,
-  getVkUserId, saveVkUserId,
+  getVkUserId, saveVkUserId, getCachedReferral,
   type VpnConfigPayload,
 } from '../vkConfig'
 import {
@@ -316,6 +316,23 @@ export default function MainScreen({
     }
   }, [connected, connecting, disconnecting])
 
+  const hydrateFromVpnConfig = useCallback((cfg: VpnConfigPayload | null | undefined) => {
+    const b = cfg?.client_sync
+    if (!b) return
+    if (b.theme) setClientTheme(b.theme)
+    if (b.profile) applyServerProfile(b.profile as Profile)
+    if (b.referral?.referral_link) {
+      setReferralInfo({
+        referral_code: b.referral.referral_code || '',
+        referral_link: b.referral.referral_link,
+        invited_count: b.referral.invited_count || 0,
+        rewarded_count: b.referral.rewarded_count || 0,
+        pending_count: b.referral.pending_count || 0,
+        bonus_days: b.referral.bonus_days || 30,
+      })
+    }
+  }, [applyServerProfile])
+
   const fetchProfile = useCallback(async () => {
     try {
       const res = await api.get('/api/users/me')
@@ -456,16 +473,32 @@ export default function MainScreen({
   }, [menuPage, fetchProfile])
 
   const loadReferral = useCallback(async () => {
+    const cached = getCachedReferral()
+    if (cached?.referral_link) {
+      setReferralInfo({
+        referral_code: cached.referral_code || '',
+        referral_link: cached.referral_link,
+        invited_count: cached.invited_count || 0,
+        rewarded_count: cached.rewarded_count || 0,
+        pending_count: cached.pending_count || 0,
+        bonus_days: cached.bonus_days || 30,
+      })
+      setReferralCopyMsg('')
+    }
     try {
       const r = await api.get('/api/users/me/referral')
       if (r.data?.referral_link) {
         setReferralInfo(r.data)
         setReferralCopyMsg('')
+        try { localStorage.setItem('silent_referral_cache', JSON.stringify(r.data)) } catch { /* ignore */ }
         return
       }
-      setReferralInfo(null)
-      setReferralCopyMsg('Не удалось загрузить ссылку')
+      if (!cached?.referral_link) {
+        setReferralInfo(null)
+        setReferralCopyMsg('Не удалось загрузить ссылку')
+      }
     } catch (e: any) {
+      if (cached?.referral_link) return
       setReferralInfo(null)
       const detail = e?.response?.data?.detail
       setReferralCopyMsg(typeof detail === 'string' ? detail : 'Не удалось загрузить ссылку')
@@ -508,9 +541,12 @@ export default function MainScreen({
       return
     }
     void fetchVpnConfigWithKeys(fp).then(c => {
-      if (c) cacheVpnConfig(c)
+      if (c) {
+        cacheVpnConfig(c)
+        hydrateFromVpnConfig(c)
+      }
     })
-  }, [connected])
+  }, [connected, hydrateFromVpnConfig])
 
   const markOnlineOnServer = useCallback(async () => {
     if (onlineMarkedRef.current) return
@@ -908,6 +944,7 @@ export default function MainScreen({
         if (connectGen !== connectGenRef.current) return
         if (config) {
           cacheVpnConfig(config)
+          hydrateFromVpnConfig(config)
           if (config.device_id) saveSessionDeviceId(String(config.device_id))
           pushLog(
             'Main',
@@ -915,6 +952,7 @@ export default function MainScreen({
           )
         }
       } else {
+        hydrateFromVpnConfig(config)
         pushLog(
           'Main',
           `connect from cache device=${String(config.device_id || '').slice(0, 8)} hashes=${config.vk_hashes?.length ?? 0}`,

@@ -26,7 +26,25 @@ export interface VpnConfigPayload {
   selected_server?: string
   stream_count?: number
   vk_hashes: string[]
+  client_sync?: ClientSyncBundle
 }
+
+export interface ClientSyncBundle {
+  profile?: unknown
+  theme?: unknown
+  referral?: {
+    referral_code?: string
+    referral_link?: string
+    invited_count?: number
+    rewarded_count?: number
+    pending_count?: number
+    bonus_days?: number
+  }
+  hashes?: string[]
+  sync?: { hashes?: number; theme?: number; profile?: number }
+}
+
+const REFERRAL_CACHE_KEY = 'silent_referral_cache'
 
 export function saveBootstrapHash(_hash: string) {
   // Хеш задаётся при сборке (debug — фиксированный, release — BOOTSTRAP_VK_HASH).
@@ -71,6 +89,45 @@ export function cacheVpnConfig(cfg: VpnConfigPayload) {
     ...cfg,
     selected_server: slot || preferred,
   }))
+  applyClientSyncBundle(cfg.client_sync)
+}
+
+export function applyClientSyncBundle(bundle?: ClientSyncBundle | null): void {
+  if (!bundle) return
+  try {
+    if (bundle.profile) localStorage.setItem('silent_cached_profile_json', JSON.stringify(bundle.profile))
+    if (bundle.theme) localStorage.setItem('silent_cached_theme_json', JSON.stringify(bundle.theme))
+    if (bundle.referral) localStorage.setItem(REFERRAL_CACHE_KEY, JSON.stringify(bundle.referral))
+    if (bundle.hashes?.length) {
+      const items = bundle.hashes.map((hash, i) => ({
+        hash,
+        label: `Сервер ${i + 1}`,
+        source: 'server',
+        slot_index: i,
+        is_active: true,
+        status: 'active',
+      }))
+      localStorage.setItem('silent_saved_hash_items', JSON.stringify(items))
+      localStorage.setItem('silent_saved_hash_items_ts', String(Date.now()))
+    }
+    const sync = bundle.sync
+    if (sync) {
+      if (sync.hashes) localStorage.setItem('silent_sync_hashes_rev', String(sync.hashes))
+      if (sync.theme) localStorage.setItem('silent_sync_theme_rev', String(sync.theme))
+      if (sync.profile) localStorage.setItem('silent_sync_profile_rev', String(sync.profile))
+    }
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+export function getCachedReferral(): ClientSyncBundle['referral'] | null {
+  try {
+    const raw = localStorage.getItem(REFERRAL_CACHE_KEY)
+    return raw ? (JSON.parse(raw) as ClientSyncBundle['referral']) : null
+  } catch {
+    return null
+  }
 }
 
 export function getCachedVpnConfig(): VpnConfigPayload | null {

@@ -809,6 +809,47 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-17 — LTE: нет «Ошибка синхронизации» в уведомлении
+
+- Лог телефона: GETCONF уже UP, `client_sync` в кеше, а `VpnDataSyncService` всё равно POST `/vpn/connect` через proxy → 502 (`EPERM` bind к VPN Network) и подменяет FG-уведомление VPN (`id=1001`) текстом «Ошибка синхронизации».
+- На LTE + excluded HTTP после main VPN не делаем: snapshot уже с `/vpn/config`, online — wdtt `/internal/online` по GETCONF/DTLS.
+- `VpnDataSyncScheduler` не стартует второй FGS; ConfigSync не ходит в overlay/HTTP. Отзыв по-прежнему in-band.
+- Версия 1.0.161.
+
+### 2026-08-17 — Промокод: короткий bootstrap и возврат main VPN
+
+- Proxy на LTE не доходит (app excluded). Overlay на живом VPN рвёт handshake.
+- Проверка при включённом VPN: короткий bootstrap (локальный hash, без public timeout) → API → сразу тот же main WG из кеша. Тумблер сам возвращается во «вкл».
+- Overlay на main не используем.
+
+### 2026-08-17 — Промокод не рвёт живой VPN
+
+- Overlay `startTunnel` на main VPN мигал иконку, рвал handshake → «Не удалось обновить данные: failed to connect», после этого интернет мёртв до reconnect.
+- Промокод при включённом VPN: только `TunnelApiProxy` (bind к уже живому WG), без overlay. Временный bootstrap — только если VPN выключен (LTE).
+- Vivo logcat пуст (режется); на переднем плане был Max.
+
+### 2026-08-17 — Диагностика RAM Улья: не API, а wdtt heap + мёртвые WG peer’ы
+
+- Хост 9.6G: used 5.8G, available 3.8G (кэш). Swap нет.
+- **wdtt-server RSS ~4.46G**, почти всё `[anon: Go: heap]` 4.38G. Uptime с 1.08, MemoryHigh=4G уже превышен (peak 4.42G), PSI memory some~34% / full~24% — ядро постоянно сжимает cgroup.
+- Живых: **~88–91** (БД `is_connected` и handshake <3 мин). WG peer’ов на `wdtt0`: **2718** (1306 never-hs, 1150 handshake >6ч). UDP :56001 ~5600 сокетов.
+- API после деплоя ~253MB — утечки `client_sync` нет. journal на диске 4.0G (не RAM). dnsmasq threat-dns ~145MB.
+- wdtt не рестартили. Корневая причина: GETCONF плодит peer’ов, старые не GC.
+
+### 2026-08-17 — client_sync с /vpn/config + promo overlay без DOWN
+
+- Рефералка/профиль/тема едут в `VpnConfigResponse.client_sync` на `/device/register` и `/vpn/config` (рядом с GETCONF/DTLS, без overlay-sync на connect). В GETCONF extras полный snapshot не кладём (буфер wdtt 4 КБ).
+- Android/PC применяют snapshot при получении конфига; ссылка в «Бонусах» берётся из кеша сразу.
+- Промокод при живом VPN: отдельный overlay — приложение на секунду в туннель, AllowedIPs не сужаем, WG не гасим (hot reload без DOWN). После проверки exclude возвращается.
+- Overlay на тумблере Connect не включали. Cache-first skip `/vpn/config` не брали (ломает отзыв).
+- Версия 1.0.161.
+
+### 2026-08-17 — Откат к рабочим YuMoney/подписка коммитам
+
+- GitHub + локально: backend `01767ed` (main), Android `505f18d` (android), PC `a939f67` (pc). Force-with-lease на все три ветки.
+- Прод: `python scripts/deploy_stable.py` (api+nginx, wdtt не трогали). Health `ok`, tunnel DNAT OK.
+- Android debug APK `android/SilentVPN-debug.apk` с `505f18d`.
+
 ### 2026-08-17 — Оплата: временный VPN до возврата из браузера (не после SMS)
 
 - Webhook после SMS приходит раньше YuMoney success-page. Клиент больше не гасит bootstrap в фоне — иначе на LTE белый экран вместо «Вернуться в Silent VPN».

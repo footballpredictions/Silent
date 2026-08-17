@@ -857,15 +857,23 @@ async def build_vpn_config_for_user(
         return config
     server_hashes = await get_server_hashes_for_user(db, user)
     if server_hashes:
-        return config.model_copy(
+        config = config.model_copy(
             update={
                 "vk_hashes": server_hashes,
                 "stream_count": recommended_stream_count(len(server_hashes)),
             }
         )
-    boot = await get_bootstrap_hashes_for_user(db, user)
-    if boot:
-        return config.model_copy(update={"vk_hashes": boot, "stream_count": 9})
+    else:
+        boot = await get_bootstrap_hashes_for_user(db, user)
+        if boot:
+            config = config.model_copy(update={"vk_hashes": boot, "stream_count": 9})
+    try:
+        from app.services.client_sync_bundle import build_client_sync_bundle
+
+        bundle = await build_client_sync_bundle(db, user)
+        config = config.model_copy(update={"client_sync": bundle})
+    except Exception:
+        logger.warning("client_sync bundle failed", exc_info=True)
     return config
 
 

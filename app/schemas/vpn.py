@@ -31,6 +31,15 @@ class BootstrapConfigRequest(BaseModel):
     device_fingerprint: str
 
 
+class ClientSyncBundle(BaseModel):
+    """Profile/theme/referral/hashes — same payload as HTTP ConfigSync, delivered with VPN config."""
+    profile: Optional[dict] = None
+    theme: Optional[dict] = None
+    referral: Optional[dict] = None
+    hashes: list[str] = []
+    sync: Optional[dict] = None
+
+
 class VpnConfigResponse(BaseModel):
     """Complete VPN configuration sent to client."""
     device_id: uuid.UUID
@@ -44,6 +53,7 @@ class VpnConfigResponse(BaseModel):
     vk_hashes: list[str]
     stream_count: int = 9  # libclient -n (workers), not hash count; bootstrap default 9
     selected_server: str = "queen"
+    client_sync: Optional[ClientSyncBundle] = None
 
     model_config = {"from_attributes": True}
 

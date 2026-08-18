@@ -17,6 +17,7 @@ interface CellLoad {
   wg_peers_total?: number
   wg_peers_never_hs?: number
   wg_peers_live_3m?: number
+  wg_peers_live_known?: number
   wg_gc_last_removed?: number
 }
 
@@ -186,7 +187,8 @@ function CellLoadGrid({
     </div>
     {typeof cell.load.wg_peers_total === 'number' && (
       <p className="text-[11px] text-[#777] mt-2">
-        WG peer’ы: {cell.load.wg_peers_total} · never-hs {cell.load.wg_peers_never_hs ?? 0} · live {cell.load.wg_peers_live_3m ?? 0}
+        WG peer’ы (не онлайн): {cell.load.wg_peers_total} · never-hs {cell.load.wg_peers_never_hs ?? 0} · live {cell.load.wg_peers_live_3m ?? 0}
+        {typeof cell.load.wg_peers_live_known === 'number' ? ` · свои ${cell.load.wg_peers_live_known}` : ''}
         {(cell.load.wg_gc_last_removed ?? 0) > 0 ? ` · gc −${cell.load.wg_gc_last_removed}` : ''}
       </p>
     )}
@@ -341,8 +343,10 @@ export default function HivePage({ token }: { token: string }) {
     await load(true)
   }
 
-  const ql = summary?.queen_load
+  const queenCell = cells.find(c => c.is_queen)
+  const ql = queenCell?.load || summary?.queen_load
   const queenHw = fmtHardware(ql)
+  const hiveOnline = cells.reduce((n, c) => n + (c.online_count || 0), 0)
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -371,10 +375,12 @@ export default function HivePage({ token }: { token: string }) {
       {summary && ql && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <div className="bg-[#111] border border-[#222] rounded-xl p-4">
-            <p className="text-[#666] text-xs uppercase">Онлайн VPN</p>
-            <p className="text-2xl font-semibold mt-1">{summary.total_online_vpn} / {summary.total_capacity_online}</p>
+            <p className="text-[#666] text-xs uppercase">Онлайн всего</p>
+            <p className="text-2xl font-semibold mt-1">{hiveOnline} / {summary.total_capacity_online}</p>
             <p className="text-xs text-[#666] mt-1">
-              всего: {summary.total_online_all ?? summary.total_online_vpn}
+              {cells.filter(c => c.is_queen).reduce((n, c) => n + (c.online_count || 0), 0)} Улей
+              {' + '}
+              {cells.filter(c => !c.is_queen).reduce((n, c) => n + (c.online_count || 0), 0)} соты
             </p>
           </div>
           <div className="bg-[#111] border border-[#222] rounded-xl p-4">
@@ -563,9 +569,9 @@ export default function HivePage({ token }: { token: string }) {
                   {cell.last_error && <p className="text-xs text-red-400 mt-2 whitespace-pre-wrap">{cell.last_error}</p>}
                 </div>
                 <div className="text-right">
-                  <p className="text-lg font-semibold">{cell.total_online_count ?? cell.online_count}</p>
-                  <p className="text-xs text-[#666]">онлайн</p>
-                  {cell.manual_slot_title && (cell.total_online_count ?? cell.online_count) > 0 && (
+                  <p className="text-lg font-semibold">{cell.online_count}</p>
+                  <p className="text-xs text-[#666]">{cell.is_queen ? 'онлайн на Улье' : 'онлайн на соте'}</p>
+                  {cell.manual_slot_title && cell.online_count > 0 && (
                     <p className="text-[10px] text-emerald-400 mt-0.5">{cell.is_queen ? 'Улей' : (cell.name || cell.manual_slot_title)}</p>
                   )}
                 </div>

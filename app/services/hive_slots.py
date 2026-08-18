@@ -47,3 +47,61 @@ def slot_for_cell(cell) -> str:
     if num is not None and num >= 1:
         return f"server{num + 1}"
     return ""
+
+
+def device_on_node(
+    *,
+    cell_is_queen: bool,
+    cell_id,
+    cell_slot: str,
+    device_cell_id,
+    preferred: str | None,
+) -> bool:
+    """К какой ноде относится устройство в админке.
+
+    Default ``server1`` — не ручной пин: если cell_id на соте, устройство на соте.
+    Явный pin server2+ важнее устаревшего cell_id.
+    """
+    pref = (preferred or "").strip().lower()
+    pin_n = parse_manual_slot(pref)
+    worker_pin = pin_n is not None and pin_n != 1
+    if cell_is_queen:
+        if worker_pin:
+            return False
+        return device_cell_id == cell_id or device_cell_id is None
+    if cell_slot and pref == cell_slot.lower():
+        return True
+    if device_cell_id == cell_id and not worker_pin:
+        return True
+    return False
+
+
+def assign_online_to_cell_id(
+    *,
+    device_cell_id,
+    preferred: str | None,
+    queen_id,
+    slot_to_id: dict,
+    known_ids: set,
+):
+    """Каждый онлайн ровно на одной ноде: pin server2+ → сота, иначе cell_id, иначе Улей."""
+    pref = (preferred or "").strip().lower()
+    pin = parse_manual_slot(pref)
+    if pin is not None and pin >= 2:
+        cid = slot_to_id.get(f"server{pin}")
+        if cid in known_ids:
+            return cid
+    if device_cell_id in known_ids:
+        return device_cell_id
+    return queen_id
+
+
+def node_online_shown(
+    *,
+    is_queen: bool,
+    db_online: int,
+    wg_live: int = 0,
+    wg_live_known: int | None = None,
+) -> int:
+    """Карточка ноды = онлайн этой ноды из БД (без WG-мусора). wg_* только диагностика."""
+    return max(0, int(db_online or 0))

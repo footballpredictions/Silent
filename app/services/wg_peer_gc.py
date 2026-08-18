@@ -88,3 +88,45 @@ async def gc_stale_queen_peers(
         "known": len(known),
         "dump": len(peers),
     }
+
+
+def count_queen_wg_live_3m(*, window_sec: float = 180.0, known: set[str] | None = None) -> int:
+    """Живые handshake на wdtt0 Улья. known — только ключи устройств этой ноды."""
+    counts = queen_wg_peer_counts(known_connected=known, window_sec=window_sec)
+    if known is not None:
+        return int(counts.get("wg_peers_live_known") or 0)
+    return int(counts.get("wg_peers_live_3m") or 0)
+
+
+def queen_wg_peer_counts(
+    *,
+    known_connected: set[str] | None = None,
+    window_sec: float = 180.0,
+) -> dict[str, int]:
+    try:
+        peers = _queen_wg_dump()
+    except Exception:
+        return {
+            "wg_peers_total": 0,
+            "wg_peers_never_hs": 0,
+            "wg_peers_live_3m": 0,
+            "wg_peers_live_known": 0,
+            "wg_gc_last_removed": 0,
+        }
+    never = live = live_known = 0
+    known = known_connected or set()
+    for p in peers:
+        if p.handshake_age is None:
+            never += 1
+            continue
+        if p.handshake_age < window_sec:
+            live += 1
+            if p.pub in known:
+                live_known += 1
+    return {
+        "wg_peers_total": len(peers),
+        "wg_peers_never_hs": never,
+        "wg_peers_live_3m": live,
+        "wg_peers_live_known": live_known,
+        "wg_gc_last_removed": 0,
+    }

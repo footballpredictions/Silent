@@ -27,9 +27,11 @@ from app.services.hive_load import (
     queen_vpn_spill_threshold,
 )
 from app.services.hive_slots import (
+    assign_online_to_cell_id,
     cell_name_number,
     is_manual_server_pin,
     is_manual_server_slot,
+    node_online_shown,
     parse_manual_slot,
     slot_for_cell,
     slot_title,
@@ -150,15 +152,17 @@ async def resolve_manual_server_cell(
 
 
 def _device_on_cell_clause(cell: HiveCell):
-    """Онлайн/привязка: ручной слот важнее устаревшего cell_id (балансир olcrtc сдвигал на Улей)."""
+    """Онлайн ноды: default server1 + cell_id соты → сота, не Улей. Pin server2+ важнее cell_id."""
     slot = slot_for_cell(cell)
+    if cell.is_queen:
+        return and_(
+            or_(Device.cell_id == cell.id, Device.cell_id.is_(None)),
+            ~_manual_worker_pin_sql(),
+        )
     if slot:
         return or_(
             Device.preferred_server == slot,
-            and_(
-                Device.cell_id == cell.id,
-                ~_manual_pin_sql(),
-            ),
+            and_(Device.cell_id == cell.id, ~_manual_worker_pin_sql()),
         )
     return Device.cell_id == cell.id
 
@@ -319,17 +323,41 @@ async def get_cell_by_id(db: AsyncSession, cell_id: uuid.UUID) -> Optional[HiveC
 
 
 async def count_online_on_cell(db: AsyncSession, cell_id: uuid.UUID) -> int:
-    cell = await get_cell_by_id(db, cell_id)
-    if not cell:
-        return 0
-    result = await db.execute(
-        select(func.count(Device.id)).where(
-            Device.is_active == True,  # noqa: E712
-            Device.is_connected == True,  # noqa: E712
-            _device_on_cell_clause(cell),
+    counts, _total = await connected_devices_by_cell(db)
+    return int(counts.get(cell_id) or 0)
+
+
+async def connected_devices_by_cell(db: AsyncSession) -> tuple[dict[uuid.UUID, int], int]:
+    """Онлайн по нодам без пересечений: сумма = число is_connected."""
+    result = await db.execute(select(HiveCell))
+    cells = list(result.scalars().all())
+    queen = next((c for c in cells if c.is_queen), None)
+    if queen is None:
+        queen = await ensure_queen_cell(db)
+        cells.append(queen)
+    known = {c.id for c in cells}
+    slot_to_id = {slot_for_cell(c): c.id for c in cells if slot_for_cell(c)}
+    rows = (
+        await db.execute(
+            select(Device.cell_id, Device.preferred_server).where(
+                Device.is_active == True,  # noqa: E712
+                Device.is_connected == True,  # noqa: E712
+            )
         )
-    )
-    return int(result.scalar_one())
+    ).all()
+    counts: dict[uuid.UUID, int] = {c.id: 0 for c in cells}
+    total = 0
+    for device_cell_id, preferred in rows:
+        nid = assign_online_to_cell_id(
+            device_cell_id=device_cell_id,
+            preferred=preferred,
+            queen_id=queen.id,
+            slot_to_id=slot_to_id,
+            known_ids=known,
+        )
+        counts[nid] = counts.get(nid, 0) + 1
+        total += 1
+    return counts, total
 
 
 async def olcrtc_online_by_cell(
@@ -732,14 +760,13 @@ def cell_to_response(
     load: dict | None = None,
     capacity: dict | None = None,
 ) -> dict:
-    wg_live = 0
-    if load and not cell.is_queen:
-        try:
-            wg_live = int(load.get("wg_peers_live_3m") or 0)
-        except (TypeError, ValueError):
-            wg_live = 0
-    online_shown = max(int(online_count or 0), wg_live)
-    total_online = online_shown + int(olcrtc_online_count or 0)
+    online_shown = node_online_shown(
+        is_queen=bool(cell.is_queen),
+        db_online=int(online_count or 0),
+        wg_live=0,
+        wg_live_known=None,
+    )
+    total_online = online_shown
     out = {
         "id": cell.id,
         "name": cell.name,
@@ -798,12 +825,19 @@ async def list_cells_with_stats(db: AsyncSession) -> list[dict]:
 
     out = []
     olcrtc_map = await olcrtc_online_by_cell(db, [c.id for c in cells])
+    online_map, _online_total = await connected_devices_by_cell(db)
     for cell in cells:
-        online = await count_online_on_cell(db, cell.id)
+        online = int(online_map.get(cell.id) or 0)
         olc_online = int(olcrtc_map.get(cell.id, 0))
         assigned = await count_assigned_on_cell(db, cell.id)
         if cell.is_queen:
-            load = queen_load
+            load = dict(queen_load or {})
+            try:
+                from app.services.wg_peer_gc import queen_wg_peer_counts
+
+                load.update(queen_wg_peer_counts())
+            except Exception:
+                load.setdefault("wg_peers_live_3m", 0)
         else:
             load = worker_load_map.get(cell.id)
         capacity = (await get_capacity_profile(db, cell, load=load, online_count=online)).to_dict()
@@ -845,19 +879,17 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
     accepting, queen_load = queen_accepting_new_vpn()
     all_workers = [c for c in await _list_assignable_cells(db) if not c.is_queen]
     assignable = await _list_assignable_cells(db)
-    total_online = 0
+    online_map, total_online = await connected_devices_by_cell(db)
     total_online_olcrtc = 0
     total_capacity = 0
     full_cells = 0
     all_cells = [c for c in assignable]
     olcrtc_map = await olcrtc_online_by_cell(db, [c.id for c in all_cells])
     for cell in assignable:
-        online = await count_online_on_cell(db, cell.id)
+        online = int(online_map.get(cell.id) or 0)
         olc_online = int(olcrtc_map.get(cell.id, 0))
         cell_load = queen_load if cell.is_queen else None
         cap = await max_online_for_cell(db, cell, load=cell_load)
-        total_online += online
-        total_online_olcrtc += olc_online
         total_capacity += cap
         if online >= cap:
             full_cells += 1
@@ -869,7 +901,7 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
         "olcrtc_cells": 0,
         "total_online_vpn": total_online,
         "total_online_olcrtc": total_online_olcrtc,
-        "total_online_all": total_online + total_online_olcrtc,
+        "total_online_all": total_online,
         "total_capacity_online": total_capacity,
         "full_cells": full_cells,
         "all_cells_full": wdtt_nodes > 0 and full_cells >= wdtt_nodes,

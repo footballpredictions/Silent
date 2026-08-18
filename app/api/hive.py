@@ -455,10 +455,13 @@ async def hive_summary(
         queen_capacity = (
             await get_capacity_profile(db, queen, load=extra.get("queen_load"))
         ).to_dict()
+    total_online_vpn = sum(int(c.get("online_count") or 0) for c in cells)
+    total_online_all = total_online_vpn
     return {
         "cells_total": len(cells),
         "cells_active": sum(1 for c in cells if c["status"] == "active"),
-        "total_online_vpn": extra["total_online_vpn"],
+        "total_online_vpn": total_online_vpn,
+        "total_online_all": total_online_all,
         "worker_cells": extra["worker_cells"],
         "queen_load": extra["queen_load"],
         "queen_accepting_vpn": extra["queen_accepting_vpn"],

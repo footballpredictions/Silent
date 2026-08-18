@@ -418,6 +418,7 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
             <div className={`w-2.5 h-2.5 rounded-full ${stats.users.connected_devices > 0 ? 'bg-green-400 shadow-[0_0_6px_#4ade80]' : 'bg-[#444]'}`} />
           </div>
           <div className="text-2xl font-bold">{stats.users.connected_devices}</div>
+          <div className="text-[#555] text-xs mt-1">все ноды: Улей + соты</div>
           <div
             className="text-[#555] text-xs mt-1"
             title={

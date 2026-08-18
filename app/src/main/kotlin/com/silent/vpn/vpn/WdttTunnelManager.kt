@@ -1355,6 +1355,7 @@ object WdttTunnelManager {
             var lastRampWorkers = -1
             var rampStuckSince = 0L
             var zeroTrafficSince = 0L
+            var lastWatchdogSkipLogAt = 0L
             delay(10_000)
             while (isActive && running.value) {
                 val proc = process
@@ -1458,21 +1459,34 @@ object WdttTunnelManager {
                                 ) &&
                         !ManlCaptchaWebViewManager.isCaptchaPending
                     ) {
-                        sessionVkHashes.firstOrNull()?.let { h ->
-                            HashFailureReporter.report(
-                                scope,
-                                h,
-                                "no_connections",
-                                "0 active workers for 180s",
-                            )
+                        val trafficMb = parseTrafficMb(stats.value)
+                        if (tunnelReady.value && process?.isAlive == true) {
+                            val skipNow = System.currentTimeMillis()
+                            if (skipNow - lastWatchdogSkipLogAt > 60_000L) {
+                                lastWatchdogSkipLogAt = skipNow
+                                updateLog(
+                                    "watchdog_skip",
+                                    "0 воркеров, WG жив (трафик ${"%.2f".format(trafficMb)} МБ) — не рвём VPN",
+                                    50,
+                                )
+                            }
+                        } else {
+                            sessionVkHashes.firstOrNull()?.let { h ->
+                                HashFailureReporter.report(
+                                    scope,
+                                    h,
+                                    "no_connections",
+                                    "0 active workers for 180s",
+                                )
+                            }
+                            updateLog("watchdog_zombie", "⚠ 0 воркеров — перезапуск", 50, true)
+                            tunnelReady.value = false
+                            appliedWgConfigSource = WgConfigSource.NONE
+                            killProcess()
+                            delay(2000)
+                            if (running.value) start(context, params, isSwitching = true)
+                            return@launch
                         }
-                        updateLog("watchdog_zombie", "⚠ 0 воркеров — перезапуск", 50, true)
-                        tunnelReady.value = false
-                        appliedWgConfigSource = WgConfigSource.NONE
-                        killProcess()
-                        delay(2000)
-                        if (running.value) start(context, params, isSwitching = true)
-                        return@launch
                     }
                 } else {
                     zeroWorkersSince = 0L
@@ -1681,7 +1695,8 @@ object WdttTunnelManager {
     fun isTransportHealthy(): Boolean {
         if (!tunnelReady.value) return false
         val proc = process ?: return false
-        return proc.isAlive && activeWorkers.value >= 1
+        // Воркеры могут мигать (VK flood) при живом WG — не считаем туннель мёртвым.
+        return proc.isAlive
     }
 
     /** Долго нет активных воркеров при живом процессе — вероятно «завис» после doze/смены сети. */

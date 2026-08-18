@@ -458,6 +458,11 @@ function startZeroWorkersWatchdog() {
     const now = Date.now()
     if (!zeroWorkersSinceMs) zeroWorkersSinceMs = now
     else if (now - zeroWorkersSinceMs >= ZERO_WORKERS_RELAUNCH_MS) {
+      if (wgApplied && isWdttAlive()) {
+        zeroWorkersSinceMs = now
+        sendLog('[VPN] 0 воркеров, WG жив — не рвём VPN')
+        return
+      }
       zeroWorkersSinceMs = 0
       const hash = sessionVkHashes[0]
       if (hash && hash.length >= 6) {
@@ -630,7 +635,8 @@ function isTransportHealthy() {
       (isOlcrtc2SessionActive() && isOlcrtc2Alive())
     )
   }
-  return wgApplied && activeWorkerCount >= minWorkersForTunnelReady(vpnBootstrapMode) && isWdttAlive()
+  // WG + процесс живы; воркеры могут мигать (VK flood) — не считаем туннель мёртвым.
+  return wgApplied && isWdttAlive()
 }
 
 /** olcrtc peer умер → снять sing-box/флаги и сказать UI «выкл», иначе меню блокирует VK. */

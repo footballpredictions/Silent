@@ -109,6 +109,12 @@ class SilentRepository @Inject constructor(
         const val CAPTCHA_MODE_WV = "wv"
         const val PREF_CACHED_PROFILE = "cached_profile_json"
         const val PREF_CACHED_THEME = "cached_theme_json"
+        const val PREF_STANDBY_API_URLS = "standby_api_urls"
+        /** Если Улей не открывается до первой theme — известные соты на проде. */
+        val BAKED_STANDBY_API_URLS = listOf(
+            "http://87.58.213.193:9100",
+            "http://78.17.74.27:9100",
+        )
         const val PREF_CACHED_REFERRAL = "cached_referral_json"
         const val PREF_APPEARANCE_MODE = "appearance_mode"
         const val PREF_DNS_PRESET = "dns_preset"
@@ -542,11 +548,22 @@ class SilentRepository @Inject constructor(
     private fun isTunnelUpstreamError(message: String?): Boolean =
         TunnelHttpPolicy.isTunnelUpstreamError(message)
 
-    /** Public HTTPS — только fallback (Wi‑Fi); на mobile Chrome идёт через VPN, app excluded. */
-    private fun publicApiBases(): List<String> = listOf(
-        "https://$DEFAULT_SERVER_HOST",
-        getPublicServerUrl().trimEnd('/'),
-    ).distinct().filter { it.isNotBlank() }
+    /** Public HTTPS Улья, затем standby-соты (если Улей режут по IP). */
+    private fun publicApiBases(): List<String> {
+        val out = linkedSetOf<String>()
+        out.add("https://$DEFAULT_SERVER_HOST")
+        out.add(getPublicServerUrl().trimEnd('/'))
+        cachedStandbyApiBases().forEach { out.add(it) }
+        return out.filter { it.isNotBlank() }.distinct()
+    }
+
+    private fun cachedStandbyApiBases(): List<String> {
+        val fromPref = prefs.getString(PREF_STANDBY_API_URLS, null).orEmpty()
+        val fromTheme = getCachedTheme()?.hive_standby_api_urls.orEmpty()
+        val raw = if (fromPref.isNotBlank()) fromPref else fromTheme
+        val parsed = raw.split(",").map { it.trim() }.filter { it.isNotBlank() }
+        return (parsed + BAKED_STANDBY_API_URLS).distinct()
+    }
 
     private fun tunnelApiBase(): String = "http://$WG_TUNNEL_GATEWAY:8000"
 
@@ -817,6 +834,7 @@ class SilentRepository @Inject constructor(
             }
         }
         standbyApiBasesFromTheme().forEach { out.add(it) }
+        cachedStandbyApiBases().forEach { out.add(it) }
         out.add("https://${BootstrapVpnConfig.serverHost()}")
         out.add("https://$DEFAULT_SERVER_HOST")
         out.add(getPublicServerUrl())
@@ -981,7 +999,13 @@ class SilentRepository @Inject constructor(
     }
 
     fun saveCachedTheme(theme: ThemeData) {
-        prefs.edit().putString(PREF_CACHED_THEME, Gson().toJson(theme)).apply()
+        val urls = theme.hive_standby_api_urls.orEmpty().trim()
+        prefs.edit()
+            .putString(PREF_CACHED_THEME, Gson().toJson(theme))
+            .apply {
+                if (urls.isNotBlank()) putString(PREF_STANDBY_API_URLS, urls)
+            }
+            .apply()
     }
 
     fun getCachedTheme(): ThemeData? {

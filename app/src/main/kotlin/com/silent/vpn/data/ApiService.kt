@@ -167,6 +167,7 @@ data class VpnServerInfo(
     val public_ip: String,
     val wdtt_port: Int,
     val online_count: Int = 0,
+    val api_base: String = "",
 )
 
 data class VpnServersResponse(

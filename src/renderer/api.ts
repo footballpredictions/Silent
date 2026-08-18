@@ -29,12 +29,12 @@ export function getPublicApiBaseUrl(): string {
   return (getServerUrl() || FALLBACK_PUBLIC).replace(/\/$/, '')
 }
 
-/** Публичные URL API: standby-соты из theme, затем основной Улей. */
+/** Публичные URL API: основной Улей, затем standby-соты из theme. */
 export function getPublicApiCandidateBases(): string[] {
   const out = new Set<string>()
-  standbyApiBasesFromTheme(getCachedTheme()).forEach(u => out.add(u.replace(/\/$/, '')))
   out.add(getPublicApiBaseUrl())
   out.add(getDirectApiBaseUrl())
+  standbyApiBasesFromTheme(getCachedTheme()).forEach(u => out.add(u.replace(/\/$/, '')))
   return [...out]
 }
 

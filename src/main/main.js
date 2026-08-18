@@ -2008,6 +2008,8 @@ ipcMain.handle('app-version', () => app.getVersion())
 const UPDATE_PUBLIC_BASE = 'https://132-243-234-162.nip.io'
 const UPDATE_HOST = '132-243-234-162.nip.io'
 const TUNNEL_API_ORIGIN = 'http://10.66.66.1:8000'
+const BAKED_STANDBY_API = ['http://87.58.213.193:9100', 'http://78.17.74.27:9100']
+let standbyApiBases = []
 
 /** При полном VPN OTA только через tunnel — public IP hairpin через 0.0.0.0/0 не доходит. */
 function shouldUseTunnelForOta() {
@@ -2068,20 +2070,62 @@ function assertValidPcInstaller(destPath, expectedSize) {
   }
 }
 
-/** PC: API через public HTTPS (IP сервера вне туннеля + bypass). */
+/** PC: API через public HTTPS Улья, при недоступности — HTTP cell-agent сот. */
+function getPublicFailoverBases() {
+  const out = []
+  const seen = new Set()
+  const add = (raw) => {
+    const v = String(raw || '').replace(/\/$/, '')
+    if (!v || seen.has(v)) return
+    seen.add(v)
+    out.push(v)
+  }
+  add(`https://${UPDATE_HOST}`)
+  add(`https://${SERVER_IP_FALLBACK}`)
+  standbyApiBases.forEach(add)
+  BAKED_STANDBY_API.forEach(add)
+  return out
+}
+
+ipcMain.handle('set-standby-api-bases', (_, urls) => {
+  if (Array.isArray(urls)) {
+    standbyApiBases = urls.map((u) => String(u || '').replace(/\/$/, '')).filter(Boolean)
+  }
+  return true
+})
+
 function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 20000 }) {
-  return backendHttpRequest({
-    protocol: 'https',
-    hostname: SERVER_IP_FALLBACK,
-    port: 443,
-    path: reqPath,
-    method,
-    headers: { ...headers, Host: UPDATE_HOST },
-    body,
-    timeout,
-    rejectUnauthorized: false,
-    servername: UPDATE_HOST,
-  })
+  const bases = getPublicFailoverBases()
+  const tryOne = (index) => {
+    if (index >= bases.length) {
+      return Promise.reject(new Error('All public API bases failed'))
+    }
+    const base = bases[index]
+    let u
+    try {
+      u = new URL(base)
+    } catch {
+      return tryOne(index + 1)
+    }
+    const isHttps = u.protocol === 'https:'
+    const port = u.port ? Number(u.port) : isHttps ? 443 : 80
+    return backendHttpRequest({
+      protocol: isHttps ? 'https' : 'http',
+      hostname: u.hostname,
+      port,
+      path: reqPath,
+      method,
+      headers: { ...headers, Host: isHttps ? UPDATE_HOST : u.host },
+      body,
+      timeout: Math.min(timeout || 20000, index === 0 ? 20000 : 8000),
+      rejectUnauthorized: false,
+      servername: isHttps ? UPDATE_HOST : undefined,
+    }).catch((err) => {
+      sendLog(`[API] public ${u.hostname} fail: ${err?.message || err}`)
+      return tryOne(index + 1)
+    })
+  }
+  return tryOne(0)
 }
 
 function tunnelHttpRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 8000 }) {

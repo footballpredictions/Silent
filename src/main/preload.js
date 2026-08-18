@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppVersion: () => ipcRenderer.invoke('app-version'),
   checkForUpdate: (version) => ipcRenderer.invoke('app-update-check', { version, platform: 'pc' }),
   tunnelApiRequest: (payload) => ipcRenderer.invoke('tunnel-api-request', payload),
+  setStandbyApiBases: (urls) => ipcRenderer.invoke('set-standby-api-bases', urls),
   olcrtc2ApiViaSocks: (payload) => ipcRenderer.invoke('olcrtc2-api-via-socks', payload),
   downloadUpdate: (url, filename) => ipcRenderer.invoke('app-update-download', { url, filename }),
   downloadUpdateMeta: (payload) => ipcRenderer.invoke('app-update-download', payload),

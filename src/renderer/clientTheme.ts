@@ -72,8 +72,9 @@ export interface ClientTheme {
 
 export function standbyApiBasesFromTheme(theme: ClientTheme | null): string[] {
   const raw = (theme?.hive_standby_api_urls || '').trim()
-  if (!raw) return []
-  return raw.split(',').map(s => s.trim()).filter(Boolean)
+  const parsed = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : []
+  const baked = ['http://87.58.213.193:9100', 'http://78.17.74.27:9100']
+  return [...parsed, ...baked.filter(u => !parsed.includes(u))]
 }
 
 function parseHex(color: string): { r: number; g: number; b: number } | null {

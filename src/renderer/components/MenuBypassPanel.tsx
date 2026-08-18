@@ -70,6 +70,7 @@ type VpnServerInfo = {
   public_ip: string
   wdtt_port: number
   online_count: number
+  api_base?: string
 }
 
 type VpnServersResponse = {

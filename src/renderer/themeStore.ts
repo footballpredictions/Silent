@@ -1,6 +1,17 @@
 import type { ClientTheme } from './clientTheme'
+import { standbyApiBasesFromTheme } from './clientTheme'
 
 const THEME_KEY = 'silent_cached_theme_json'
+
+function pushStandbyToMain(theme: ClientTheme): void {
+  const urls = standbyApiBasesFromTheme(theme)
+  const electron = (window as unknown as { electronAPI?: { setStandbyApiBases?: (u: string[]) => void } }).electronAPI
+  try {
+    electron?.setStandbyApiBases?.(urls)
+  } catch {
+    /* ignore */
+  }
+}
 
 export function saveCachedTheme(theme: ClientTheme): void {
   try {
@@ -8,6 +19,7 @@ export function saveCachedTheme(theme: ClientTheme): void {
   } catch {
     /* ignore quota */
   }
+  pushStandbyToMain(theme)
 }
 
 export function getCachedTheme(): ClientTheme | null {

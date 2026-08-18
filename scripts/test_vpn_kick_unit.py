@@ -15,6 +15,7 @@ from app.services.vpn_kick_select import (  # noqa: E402
     device_looks_live,
     parse_wg_show_dump,
     pick_getconf_extras,
+    select_gc_extra_pubs,
 )
 
 
@@ -116,6 +117,21 @@ def test_device_looks_live_recent_last_connected():
     assert device_looks_live(old) is False
 
 
+def test_gc_keeps_device_key_even_if_never_hs():
+    known = {"devicekeyaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa="}
+    live = [
+        LivePeer("devicekeyaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=", "10.66.0.2", None),
+        LivePeer("deadextraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=", "10.66.0.9", None),
+        LivePeer("liveextraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=", "10.66.0.3", 30.0),
+        LivePeer("oldextraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=", "10.66.0.8", 7 * 3600.0),
+    ]
+    got = set(select_gc_extra_pubs(live, known))
+    assert "devicekeyaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=" not in got
+    assert "liveextraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=" not in got
+    assert "deadextraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=" in got
+    assert "oldextraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=" in got
+
+
 if __name__ == "__main__":
     test_parse_wg_show_dump()
     test_cell_never_guesses_extras()
@@ -124,4 +140,5 @@ if __name__ == "__main__":
     test_queen_solo_extras_all_kicked()
     test_device_looks_live_watch_overrides_stale()
     test_device_looks_live_recent_last_connected()
+    test_gc_keeps_device_key_even_if_never_hs()
     print("ok")

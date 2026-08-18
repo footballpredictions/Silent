@@ -408,7 +408,7 @@ SSH-секреты: `Silent-Project/.env.deploy` или `backend/.env.deploy` (�
 | `deploy_helper.py status` | `docker compose ps` + логи |
 | `deploy_helper.py creds` | Admin credentials с сервера |
 | `deploy_stable.py` | Полный деплой: все `app/` + `ai/` + admin-ui/dist |
-| `deploy_api.py` | Точечно: auth, vpn, users, admin, vk_auth + dist |
+| `deploy_api.py` | Алиас `deploy_stable.py` (полный `app/`+`ai/`) |
 | `deploy_vk_calls.py` | VK Calls auth + vk_manager + admin-ui |
 | `deploy_config_sync.py` | ConfigSync / sync-state |
 | `deploy_update_backend.py` | OTA API (без загрузки бинарников) |

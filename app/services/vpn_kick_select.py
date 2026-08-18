@@ -8,6 +8,9 @@ _CELL_LIVE_HS_SEC = 120.0
 _QUEEN_SOLO_EXTRAS = 2
 DEVICE_RECENT_SEC = 20 * 60
 _LAST_CONNECTED_MATCH_SEC = 180.0
+# GETCONF extras with no handshake, or handshake older than this, and not a Device key.
+STALE_EXTRA_HS_SEC = 6 * 3600.0
+NEVER_HS_GC_GRACE_SEC = 90.0
 
 
 def valid_wg_pub(pub: str) -> bool:
@@ -130,3 +133,26 @@ def pick_getconf_extras(
     """
     # Incident 2026-08-16: picking newest extra on a cell removed other clients.
     return []
+
+
+def select_gc_extra_pubs(
+    live: list[LivePeer],
+    known_device_pubs: set[str],
+    *,
+    stale_hs_sec: float = STALE_EXTRA_HS_SEC,
+) -> list[str]:
+    """GETCONF leftovers: never-handshake or hs older than stale_hs_sec.
+
+    Never removes Device.wg_public_key (connecting phone may still have hs=0).
+    Never removes extras with a recent handshake (another live session).
+    """
+    known = {p.strip() for p in known_device_pubs if valid_wg_pub(p)}
+    out: list[str] = []
+    for p in live:
+        if not valid_wg_pub(p.pub) or p.pub in known:
+            continue
+        if p.handshake_age is None:
+            out.append(p.pub)
+        elif p.handshake_age >= stale_hs_sec:
+            out.append(p.pub)
+    return out

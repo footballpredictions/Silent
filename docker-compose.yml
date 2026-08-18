@@ -75,32 +75,13 @@ services:
     networks:
       - silent_net
 
-  # wdtt VPN server (WireGuard over VK TURN)
-  wdtt:
-    image: alpine:3.19
-    restart: always
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    sysctls:
-      - net.ipv4.ip_forward=1
-      - net.ipv4.conf.all.src_valid_mark=1
-    volumes:
-      - ./wdtt:/opt/wdtt
-      - wdtt_data:/var/lib/wdtt
-    working_dir: /opt/wdtt
-    command: sh -c "chmod +x wdtt-server && ./wdtt-server"
-    network_mode: host
-    environment:
-      WDTT_PASSWORD: ${WDTT_MASTER_PASSWORD:-change_this_password}
-      WDTT_PORT: ${WDTT_PORT:-56000}
-      WDTT_WG_PORT: ${WDTT_WG_PORT:-56001}
-      WDTT_SUBNET: "10.66.0.0/16"
+  # wdtt-server — только systemd (wdtt.service), не Docker.
+  # Docker-сервис здесь специально нет: host network + :56000/56001 конфликтовали бы
+  # с живым wdtt.service. Контейнер backend-wdtt-1 (Created) снимается с хоста.
 
 volumes:
   postgres_data:
   redis_data:
-  wdtt_data:
 
 networks:
   silent_net:

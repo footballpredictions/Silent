@@ -36,24 +36,11 @@ async def hive_cell_maintenance_loop() -> None:
                     logger.info("Hive cell-agent sync: upgraded %s cell(s)", agent_stats["upgraded"])
                 if settings.HIVE_CELL_MANIFEST_SYNC_ENABLED:
                     await sync_all_cell_manifests(db)
-                if settings.VPNBASE_GIT_ENABLED:
-                    from app.services.hive_vpnbase_export import push_vpnbase_export
+                from app.services.wg_peer_gc import gc_stale_queen_peers
 
-                    vpnbase_stats = await push_vpnbase_export(db)
-                    if vpnbase_stats.get("ok"):
-                        logger.info(
-                            "vpnbase export: v%s → %s",
-                            vpnbase_stats.get("version"),
-                            vpnbase_stats.get("repo"),
-                        )
-                    elif not vpnbase_stats.get("skipped"):
-                        logger.warning("vpnbase export failed: %s", vpnbase_stats)
-                        push_incident(
-                            source="hive.maintenance",
-                            severity="warning",
-                            message="vpnbase export failed",
-                            details=str(vpnbase_stats)[:400],
-                        )
+                gc = await gc_stale_queen_peers(db)
+                if gc.get("removed"):
+                    logger.info("Hive wg peer gc: %s", gc)
         except Exception as e:
             logger.warning("Hive cell maintenance cycle failed: %s", e)
             push_incident(

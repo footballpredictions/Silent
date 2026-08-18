@@ -255,13 +255,13 @@ Occupancy **1 клиент = 1 комната** (TM+WB `max_clients=1`, прод
 |----------|--------|--------|
 | `python scripts/deploy_stable.py` | ✅ | `docker cp` **всех** `app/**/*.py` + `ai/**/*.py` + restart. Единственный безопасный деплой backend на прод. |
 | `python scripts/deploy_hive.py` / тематические | ⚠️ | Только если скрипт явно копирует все затронутые файлы, включая `models/` |
-| `python scripts/deploy_api.py` | ❌ | Хардкод FILES. Нет файла в списке → в контейнере старый код → 500 (вход 2026-08-16: не попал `device.py`) |
+| `python scripts/deploy_api.py` | ✅ алиас | С 18.08.2026 вызывает `deploy_stable.py`. Старый FILES-список удалён. |
 | `docker compose restart api` | ✅ | Перезапуск без смены файлов в контейнере |
 | `docker compose up -d` (без recreate) | ⚠️ | Только если менялся **только** `docker-compose.yml` (порты/volumes) — **сразу после** синхронизировать код (см. ниже) |
 | `docker compose up -d api --force-recreate` | ❌ | Сбрасывает контейнер к **старому image** → пропадают Улей (`/api/admin/hive/*` → 404), новый код, иногда `httpx` |
 | Менять `ports:` в compose без `docker cp` | ❌ | То же: новый контейнер = старый image |
 
-**Правило Agent (жёстко):** после любых правок backend на прод — только `python scripts/deploy_stable.py` (нужен `admin-ui/dist`). Не «ускорять» через `deploy_api.py` / ручной `docker cp` выбранных файлов. Разница — десятки секунд, цена — сломанный вход.
+**Правило Agent (жёстко):** после любых правок backend на прод — `python scripts/deploy_stable.py` (нужен `admin-ui/dist`). `deploy_api.py` — алиас того же полного копирования. Не делать ручной `docker cp` выбранных файлов.
 
 **После любого `docker compose up` / recreate / смены `ports:` на VPS:**
 
@@ -500,7 +500,7 @@ cd backend
 | Credentials после install | `python scripts/deploy_helper.py creds` | Показать admin-пароль с VPS |
 | **Первичная установка VPS** | `python scripts/deploy_helper.py install` | Новый сервер: clone main, .env, docker |
 | **Деплой backend на прод (всегда)** | `python scripts/deploy_stable.py` | Все `app/**/*.py` + `ai/**/*.py` + admin-ui/dist. Не пропускать «ради скорости». |
-| `deploy_api.py` / тематические | **не для прода-фиксов** | Хардкод FILES: файл не в списке = старый код в контейнере (вход 500, 2026-08-16) |
+| `deploy_api.py` | `python scripts/deploy_api.py` | **Алиас** `deploy_stable.py` (старый FILES-список снят) |
 | VK Calls / агент | `python scripts/deploy_vk_calls.py` | VK auth, vk_manager, admin-ui |
 | ConfigSync | `python scripts/deploy_config_sync.py` | `sync-state` и связанные файлы |
 | OTA API на backend | `python scripts/deploy_update_backend.py` | Endpoint `/api/updates` (без .exe/.apk) |
@@ -519,7 +519,7 @@ cd backend\admin-ui; npm run build; cd ..
 python scripts/deploy_stable.py
 ```
 
-Не использовать `deploy_api.py` «потому что быстрее»: он копирует только свой список FILES, не весь `app/`. Инцидент 2026-08-16 — сломанный вход, потому что не попал `app/models/device.py`.
+`deploy_api.py` — алиас `deploy_stable.py`. Тематические `deploy_vk_calls.py` / `deploy_hive.py` по-прежнему со своими FILES — для прода-фиксов не использовать. Инцидент 2026-08-16 — сломанный вход из‑за неполного FILES.
 
 ### PC OTA (`pc` → `pc/scripts/`)
 
@@ -808,6 +808,24 @@ cd pc; npm install; npm run dev
 - Теперь любой `HB socks CONNECT fail` на WB сразу переводит сессию в recover-путь (без ожидания второй ошибки).
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
+
+### 2026-08-18 — Обрывы VPN: GC peer’ов + клиенты не рвут туннель при 0 воркерах
+
+- Причина обрывов: таблица `wdtt0` была забита GETCONF-мусором (**2766** peer’ов, живых handshake ~54), плюс Android/PC убивали libclient, если воркеры мигали в 0 при живом WireGuard.
+- One-shot на хосте (`wg set … remove`, **без рестарта wdtt**, ключи `devices` не трогали): **2541** снято, **2766 → 225**, live hs&lt;3м **70**, never-hs **0**. Пользователей/подписок не удаляли.
+- Фоновый GC в API: `wg_peer_gc.py` из hive maintenance (~90 с). Снимает только extras: never-hs после 90 с grace и handshake &gt;6 ч. `Device.wg_public_key` не удаляет. Kick по-прежнему не угадывает GETCONF extras.
+- Android: `isTransportHealthy()` = WG + процесс жив (воркеры не обязательны); `watchdog_zombie` не `killProcess`, если туннель жив.
+- PC: то же — `isTransportHealthy()` без требования воркеров; watchdog 90 с не рестартит wdtt, если WG жив.
+- Прод API: точечный docker cp четырёх файлов + restart api/nginx, DNAT tunnel OK, health `ok`, wdtt `active`. Версия клиентов **1.0.161**. Debug APK: `android/SilentVPN-debug.apk`.
+- Пуш — когда скажешь «пуш» (вместе с vpnbase/compose с прошлого прохода).
+
+### 2026-08-18 — Аудит Улья: vpnbase GitHub снят, 0 воркеров из-за WG peers
+
+- Инциденты `hive.vpnbase` / `hive.maintenance` (422 sha, 503): это **не** архив Postgres и не удаление пользователей. Каждые ~10 с шифрованный hive-manifest уходил в `silentvpn3/vpnbase` (`VPNBASE_GIT_ENABLED=true`). API CPU ~113%. Реализация удалена из кода, флаги вычищены из `.env`. Standby cell-agent на сотах оставлен.
+- Обрывы VPN / «на одном телефоне 0 воркеров, на соседнем всё ок»: оператор ни при чём. `wdtt0` **2766** peer’ов при **54** live handshake (<3 мин), 1290 never-hs, 1256 hs>6ч; wdtt RSS **4.4 ГБ** (MemoryHigh 4 ГБ). Новый GETCONF на втором телефоне; живая сессия на первом. wdtt **не** рестартили.
+- Деплой backend: один канон `deploy_stable.py`; `deploy_api.py` стал алиасом (больше нет дырявого FILES).
+- Мёртвый контейнер `backend-wdtt-1` (Created, never started) снят. Сервис `wdtt` убран из `docker-compose.yml` — живой wdtt только systemd. `docker compose up` больше не поднимет второй wdtt на :56000.
+- GC peer’ов сделан 2026-08-18 (см. запись выше).
 
 ### 2026-08-17 — LTE: нет «Ошибка синхронизации» в уведомлении
 

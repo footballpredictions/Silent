@@ -30,8 +30,8 @@ alwaysApply: true
 | pc (`pc`) | `pc/scripts/` | `deploy_release.py` — OTA .exe |
 | android (`android`) | `android/scripts/` | `deploy_release.py` — OTA .apk |
 
-**Backend на прод:** только `python scripts/deploy_stable.py` (нужен `admin-ui/dist`).  
-Не использовать `deploy_api.py` / ручной `docker cp` выбранных файлов — список FILES неполный, в контейнере остаётся старый код (инцидент входа 2026-08-16: не попал `models/device.py` → 500).
+**Backend на прод:** `python scripts/deploy_stable.py` (нужен `admin-ui/dist`).  
+`deploy_api.py` — алиас того же полного копирования (с 18.08.2026). Не делать ручной `docker cp` выбранных файлов.
 
 Секреты: `Silent-Project/.env.deploy` (шаблон `backend/scripts/.env.deploy.example`).
 

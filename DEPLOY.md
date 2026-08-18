@@ -19,8 +19,8 @@ cd backend
 | `scripts/_deploy_common.py` | *(модуль)* | SSH, `.env.deploy`, upload — импортируется скриптами |
 | `scripts/.env.deploy.example` | *(шаблон)* | Пример `DEPLOY_HOST`, `DEPLOY_PASS`, … |
 | `scripts/deploy_helper.py` | `python scripts/deploy_helper.py <action>` | VPS: check / install / status / creds |
-| `scripts/deploy_stable.py` | `python scripts/deploy_stable.py` | Полный деплой всех `app/**/*.py`, `ai/**/*.py`, `admin-ui/dist` |
-| `scripts/deploy_api.py` | `python scripts/deploy_api.py` | Точечный API + admin-ui/dist |
+| `scripts/deploy_stable.py` | `python scripts/deploy_stable.py` | **Единственный** деплой backend на прод: все `app/**/*.py`, `ai/**/*.py`, `admin-ui/dist` |
+| `scripts/deploy_api.py` | `python scripts/deploy_api.py` | Алиас → `deploy_stable.py` (FILES-список больше не используется) |
 | `scripts/deploy_vk_calls.py` | `python scripts/deploy_vk_calls.py` | VK Calls, VK ID, агент + admin-ui/dist |
 | `scripts/deploy_config_sync.py` | `python scripts/deploy_config_sync.py` | ConfigSync / sync-state |
 | `scripts/deploy_update_backend.py` | `python scripts/deploy_update_backend.py` | OTA API (без .exe/.apk) + admin-ui/dist |
@@ -73,26 +73,7 @@ cd backend
 - `admin-ui/dist/**` (нужен `npm run build`)
 - `cell-agent/*.py`, `fix_tunnel_dnat`
 
-Не заменять на `deploy_api.py` «ради скорости»: точечный FILES-список легко забыть модель/сервис → 500 в контейнере (вход 2026-08-16, не попал `app/models/device.py`).
-
-### `deploy_api.py` — не использовать для прода-фиксов
-
-| Файл на VPS |
-|-------------|
-| `app/main.py` |
-| `app/config.py` |
-| `app/api/admin.py` |
-| `app/api/vk_auth.py` |
-| `app/services/vk_id_service.py` |
-| `app/api/users.py` |
-| `app/api/auth.py` |
-| `app/api/vpn.py` |
-| `app/services/vk_agent_auth.py` |
-| `app/models/__init__.py` |
-| `app/models/vk_link_session.py` |
-| `ai/vk_manager.py` |
-| `static/vk-agent-oauth.html` |
-| `admin-ui/dist/**` |
+`python scripts/deploy_api.py` теперь просто вызывает `deploy_stable.py` — точечный FILES больше не существует.
 
 ### `deploy_vk_calls.py`
 
@@ -162,7 +143,7 @@ python scripts/deploy_helper.py check
 python scripts/deploy_helper.py status
 ```
 
-`deploy_api.py` / `deploy_vk_calls.py` — не для прода-фиксов: копируют только свой FILES-список.
+`deploy_api.py` = `deploy_stable.py`. Тематические `deploy_vk_calls.py` / `deploy_hive.py` / `deploy_config_sync.py` по-прежнему со своими FILES — для прода-фиксов не использовать.
 
 Перед любым деплоем с admin-ui: `cd admin-ui && npm run build`.
 

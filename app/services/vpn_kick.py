@@ -113,6 +113,39 @@ def kick_wg_peer_on_queen(public_key: str, *, allowed_ip: str = "", force: bool 
         return False
 
 
+def remove_wg_peers_batch_on_queen(pubs: list[str], *, batch: int = 40) -> int:
+    """Снять пачку GETCONF-мусора одним nsenter. Не рестартит wdtt."""
+    keys = [p.strip() for p in pubs if _valid_wg_pub(p)]
+    if not keys:
+        return 0
+    removed = 0
+    for i in range(0, len(keys), max(1, batch)):
+        chunk = keys[i : i + batch]
+        parts = " ".join(f"peer {shlex.quote(p)} remove" for p in chunk)
+        inner = f"wg set wdtt0 {parts}"
+        try:
+            r = subprocess.run(
+                [
+                    "docker", "run", "--rm", "--privileged", "--pid=host",
+                    "alpine:3.19",
+                    "sh", "-c",
+                    "apk add -q --no-cache util-linux wireguard-tools >/dev/null 2>&1 || true; "
+                    "nsenter -t 1 -m -n -- sh -c \"$0\"",
+                    inner,
+                ],
+                capture_output=True,
+                timeout=60,
+            )
+            if r.returncode == 0:
+                removed += len(chunk)
+            else:
+                err = (r.stderr or r.stdout or b"").decode("utf-8", errors="replace")[:240]
+                logger.warning("queen wg gc batch failed n=%s rc=%s %s", len(chunk), r.returncode, err)
+        except Exception as e:
+            logger.warning("queen wg gc batch error: %s", e)
+    return removed
+
+
 def kick_wg_peer_via_ssh(host: str, password: str, public_key: str, *, allowed_ip: str = "") -> bool:
     """Снять peer на соте тем же SSH, что провижининг — не ждём обновления cell-agent."""
     pub = (public_key or "").strip()

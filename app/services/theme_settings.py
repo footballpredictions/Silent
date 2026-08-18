@@ -116,13 +116,12 @@ async def load_theme(db: AsyncSession, *, persist_migration: bool = False) -> Th
         except Exception:
             theme = ThemeResponse()
 
-    if not (theme.hive_standby_api_urls or "").strip():
-        try:
-            from app.services.hive_standby import standby_api_urls
+    try:
+        from app.services.hive_standby import standby_api_urls
 
-            urls = await standby_api_urls(db)
-            if urls:
-                theme.hive_standby_api_urls = ",".join(urls)
-        except Exception:
-            pass
+        urls = await standby_api_urls(db)
+        if urls:
+            theme.hive_standby_api_urls = ",".join(urls)
+    except Exception:
+        pass
     return theme

@@ -46,6 +46,7 @@ interface Stats {
     last_seen_at?: string | null
     device_names?: string[]
     online_device_names?: string[]
+    online_devices?: Array<{ name: string; node: string }>
     slots_filled: number
     slots_max: number
     hashes: Array<{
@@ -293,9 +294,12 @@ function VkHashesCard({
                 <div className="mt-1 ml-[26px] text-[10px] min-w-0 truncate">
                   {connected ? (
                     <span className="text-green-400">
-                      Онлайн: {('online_device_names' in u && u.online_device_names && u.online_device_names.length > 0)
-                        ? u.online_device_names.join(', ')
-                        : 'устройство не определено'}
+                      Онлайн:{' '}
+                      {('online_devices' in u && u.online_devices && u.online_devices.length > 0)
+                        ? u.online_devices.map(d => `${d.name} · ${d.node}`).join(', ')
+                        : ('online_device_names' in u && u.online_device_names && u.online_device_names.length > 0)
+                          ? u.online_device_names.join(', ')
+                          : 'устройство не определено'}
                     </span>
                   ) : (
                     <span className="text-[#666]">

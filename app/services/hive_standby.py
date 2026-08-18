@@ -4,12 +4,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import Device, HiveCell, User
 from app.services import hive_service
+from app.services.hive_slots import slot_for_cell
 from app.services.subscription_service import user_has_active_subscription
 
 logger = logging.getLogger(__name__)
@@ -29,19 +30,22 @@ async def get_standby_cells(db: AsyncSession) -> list[HiveCell]:
     return cells
 
 
+def cell_public_api_base(cell: HiveCell) -> str:
+    """Публичный API соты для клиента, если Улей не открывается (cell-agent :9100)."""
+    ip = (cell.public_ip or "").strip()
+    if not ip:
+        return ""
+    port = int(getattr(settings, "HIVE_CELL_AGENT_PORT", 9100) or 9100)
+    return f"http://{ip}:{port}"
+
+
 async def standby_api_urls(db: AsyncSession) -> list[str]:
-    """Публичные URL standby API для клиентов (theme / config sync)."""
+    """Публичные URL standby API для клиентов (theme / login / config)."""
     urls: list[str] = []
     for cell in await get_standby_cells(db):
-        ip = (cell.public_ip or "").strip()
-        if not ip:
-            continue
-        urls.append(f"https://{ip}")
-        urls.append(f"http://{ip}:8000")
-        if cell.api_url:
-            base = cell.api_url.strip().rstrip("/")
-            if base and base not in urls:
-                urls.append(base)
+        base = cell_public_api_base(cell)
+        if base:
+            urls.append(base)
     return urls
 
 
@@ -85,23 +89,46 @@ async def device_vpn_allowed(db: AsyncSession, user_id) -> bool:
 
 
 async def build_cell_manifest_enriched(db: AsyncSession, cell: HiveCell) -> dict:
-    """Manifest для автономии соты: peers + подписка + параметры VPN."""
+    """Manifest для автономии соты: устройства этой ноды и слота Сервер N, не вся БД."""
     from app.services.hive_cell_sync import manifest_version
 
     version = await manifest_version(db)
+    slot = slot_for_cell(cell)
+    clauses = [Device.cell_id == cell.id]
+    if slot:
+        clauses.append(Device.preferred_server == slot)
     result = await db.execute(
         select(Device).where(
-            Device.cell_id == cell.id,
             Device.is_active == True,  # noqa: E712
+            or_(*clauses),
         )
     )
-    devices = list(result.scalars().all())
+    seen: set[str] = set()
+    devices: list[Device] = []
+    for d in result.scalars().all():
+        key = str(d.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        devices.append(d)
     user_ids = {d.user_id for d in devices}
     allowed_map: dict = {}
     for uid in user_ids:
         allowed_map[uid] = await device_vpn_allowed(db, uid)
 
     wg_pub = (cell.wg_public_key or "").strip()
+    theme_blob = None
+    try:
+        from app.services.theme_settings import load_theme
+
+        theme_blob = (await load_theme(db)).model_dump()
+    except Exception:
+        theme_blob = None
+    meta = None
+    try:
+        meta = await hive_meta(db)
+    except Exception:
+        meta = None
     return {
         "version": version,
         "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -112,7 +139,10 @@ async def build_cell_manifest_enriched(db: AsyncSession, cell: HiveCell) -> dict
         "wg_port": int(cell.wg_port or settings.WG_PORT),
         "wg_server_public_key": wg_pub,
         "hive_api_url": (settings.FRONTEND_URL or "").strip().rstrip("/"),
+        "server_slot": slot or None,
         "device_count": len(devices),
+        "theme": theme_blob,
+        "hive_meta": meta,
         "devices": [
             {
                 "id": str(d.id),

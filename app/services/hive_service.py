@@ -688,6 +688,10 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
             "memory_total_gb": round(float(data.get("memory_total_gb") or 0), 1) or None,
             "wdtt_active": bool(data.get("wdtt_active")),
             "agent_build_id": (data.get("agent_build_id") or None),
+            "wg_peers_total": int(data.get("wg_peers_total") or 0),
+            "wg_peers_never_hs": int(data.get("wg_peers_never_hs") or 0),
+            "wg_peers_live_3m": int(data.get("wg_peers_live_3m") or 0),
+            "wg_gc_last_removed": int(data.get("wg_gc_last_removed") or 0),
         }
     except Exception as e:
         logger.debug("Hive: load %s failed: %s", cell.name, e)
@@ -728,7 +732,14 @@ def cell_to_response(
     load: dict | None = None,
     capacity: dict | None = None,
 ) -> dict:
-    total_online = int(online_count or 0) + int(olcrtc_online_count or 0)
+    wg_live = 0
+    if load and not cell.is_queen:
+        try:
+            wg_live = int(load.get("wg_peers_live_3m") or 0)
+        except (TypeError, ValueError):
+            wg_live = 0
+    online_shown = max(int(online_count or 0), wg_live)
+    total_online = online_shown + int(olcrtc_online_count or 0)
     out = {
         "id": cell.id,
         "name": cell.name,
@@ -745,7 +756,8 @@ def cell_to_response(
         "link_capacity_mbps": float(cell.link_capacity_mbps) if cell.link_capacity_mbps else None,
         "max_online": capacity["max_online"] if capacity else 0,
         "capacity": capacity,
-        "online_count": online_count,
+        "online_count": online_shown,
+        "online_count_db": int(online_count or 0),
         "olcrtc_online_count": int(olcrtc_online_count or 0),
         "total_online_count": total_online,
         "assigned_devices": assigned_devices,

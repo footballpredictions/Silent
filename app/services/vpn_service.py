@@ -376,6 +376,11 @@ async def set_device_online(
             cell = await hive_service.get_cell_by_id(db, cell_id)
             if cell:
                 device.cell_id = cell.id
+                from app.services.hive_slots import slot_for_cell
+
+                slot = slot_for_cell(cell)
+                if slot:
+                    device.preferred_server = slot
         else:
             await hive_service.apply_manual_server_cell(db, device, commit=False)
     await db.commit()
@@ -792,10 +797,16 @@ async def set_device_preferred_server(
 
 
 async def list_manual_vpn_servers(db: AsyncSession) -> list[dict]:
+    from app.services.hive_standby import cell_public_api_base
+
     entries = await hive_service.manual_server_entries(db)
     out: list[dict] = []
     for key, title, cell in entries:
         online = await hive_service.count_online_on_cell(db, cell.id)
+        if cell.is_queen:
+            api_base = (settings.FRONTEND_URL or "").strip().rstrip("/")
+        else:
+            api_base = cell_public_api_base(cell)
         out.append(
             {
                 "key": key,
@@ -803,6 +814,7 @@ async def list_manual_vpn_servers(db: AsyncSession) -> list[dict]:
                 "public_ip": cell.public_ip or "",
                 "wdtt_port": int(cell.wdtt_port or settings.VPN_SERVER_PORT),
                 "online_count": int(online),
+                "api_base": api_base,
             }
         )
     return out

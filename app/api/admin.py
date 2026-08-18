@@ -203,13 +203,20 @@ async def get_stats(
                     last_seen = ts
         device_names = []
         online_device_names = []
+        online_devices = []
+        from app.services.hive_slots import node_title_for_slot
+
         for d in user_devices:
             name = (d.device_name or "").strip()
             if name and name not in device_names:
                 device_names.append(name)
             sticky_on = (d.device_fingerprint or "") in sticky_fp_set
-            if (d.is_connected or sticky_on) and name and name not in online_device_names:
-                online_device_names.append(name)
+            if d.is_connected or sticky_on:
+                node = node_title_for_slot(getattr(d, "preferred_server", None) or "server1")
+                label = name or "устройство"
+                online_devices.append({"name": label, "node": node})
+                if name and name not in online_device_names:
+                    online_device_names.append(name)
         # Один хеш на слот в отображении (дубликаты — артефакт старого агента)
         best_by_slot: dict[int, VkHash] = {}
         for h in user_hashes:
@@ -248,6 +255,7 @@ async def get_stats(
             "last_seen_at": _utc_iso(last_seen),
             "device_names": device_names,
             "online_device_names": online_device_names,
+            "online_devices": online_devices,
             "slots_filled": len(unique_hashes),
             "slots_max": MAX_HASHES,
             "hashes": slot_rows,

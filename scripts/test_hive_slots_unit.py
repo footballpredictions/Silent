@@ -11,6 +11,7 @@ sys.modules.setdefault("app.database", SimpleNamespace(AsyncSessionLocal=None))
 
 from app.services.hive_slots import (  # noqa: E402
     is_manual_server_pin,
+    node_title_for_slot,
     parse_manual_slot,
     slot_for_cell,
     slot_title,
@@ -38,10 +39,26 @@ def test_manual_pin_any_server_n():
     assert not is_manual_server_pin("cell:abc")
     assert parse_manual_slot("server4") == 4
     assert slot_title("server4") == "Сервер 4"
+    assert node_title_for_slot("server1") == "Улей"
+    assert node_title_for_slot("server2") == "Сота 1"
+    assert node_title_for_slot("server3") == "Сота 2"
+
+
+def test_node_title_for_slot():
+    assert node_title_for_slot(None) == "Улей"
+    assert node_title_for_slot("server1") == "Улей"
+    assert node_title_for_slot("server2") == "Сота 1"
+
+
+def test_cell1_slot_is_server2_for_manifest():
+    assert slot_for_cell(SimpleNamespace(is_queen=False, name="Сота 1")) == "server2"
+    assert slot_for_cell(SimpleNamespace(is_queen=False, name="Сота 2")) == "server3"
 
 
 if __name__ == "__main__":
     test_slot_for_queen_and_named_cells()
     test_unnamed_worker_has_no_fixed_slot()
     test_manual_pin_any_server_n()
+    test_cell1_slot_is_server2_for_manifest()
+    test_node_title_for_slot()
     print("ok")

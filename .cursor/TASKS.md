@@ -54,7 +54,9 @@ Agent приступает к **первой невыполненной** зад
 
 ### Инфраструктура и репозиторий
 
-- [x] Улей (Hive): автоподключение соты по IP + SSH root (wdtt, DNAT tunnel, cell-agent) — 2026-06-20
+- [x] **Улей: автоподключение соты по IP + SSH root (wdtt, DNAT tunnel, cell-agent)** — 2026-06-20
+- [x] **Соты: локальный WG GC + snapshot слота (не копия всей БД)** — 2026-08-18: cell-agent GC как на Улье; `/v1/status` счётчики; manifest = `cell_id` ∪ `preferred_server`; Сота 1/2 апгрейд, extras сняты
+- [x] **Слой 3 failover + онлайн Улья/дашборд** — 2026-08-18: клиент бьёт в cell-agent :9100 если Улей недоступен; в Улье онлайн соты по WG live; в дашборде устройство · Улей/Сота N
 - [x] Улей: фоновый провижининг, удаление зависших сот, CPU/RAM (хост + cell-agent), upgrade-agent — 2026-06-20
 - [x] **Вариант 2 обхода olcrtc** (debug): backend+админка «Варианты обхода», `deploy_olcrtc.py`, PC/Android UI+движок рядом с WDTT — 2026-07-24. Prod: Jitsi pool + `olcrtc@pc`/`@android`.
 - [x] **olcrtc room pool MVP (PC≠Android) + Wi‑Fi OK** — 2026-07-24:

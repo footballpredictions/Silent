@@ -1,4 +1,4 @@
-"""Синхронизация VPN-manifest на worker-соты (без полного дампа БД)."""
+"""Синхронизация VPN-manifest на worker-соты (устройства слота, не полный дамп БД)."""
 from __future__ import annotations
 
 import logging

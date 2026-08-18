@@ -133,7 +133,6 @@ async def list_hive_cells(
 ):
     await hive_service.ensure_queen_cell(db)
     await _sweep_stale_provisioning(db)
-    await hive_service.rebalance_overloaded_cells(db)
     return await hive_service.list_cells_with_stats(db)
 
 
@@ -444,7 +443,8 @@ async def hive_summary(
     db: AsyncSession = Depends(get_db),
 ):
     await hive_service.ensure_queen_cell(db)
-    rebalance = await hive_service.rebalance_overloaded_cells(db)
+    # GET не должен двигать устройства: админка поллит /summary каждые 10 с.
+    rebalance = {"moved": 0, "blocked": 0, "hardware": 0, "returned": 0}
     cells = await hive_service.list_cells_with_stats(db)
     extra = await hive_service.get_hive_summary_extra(db)
     queen = await hive_service.get_queen_cell(db)

@@ -166,6 +166,26 @@ python debug_captcha.py
 
 ## Ключевые решения
 
+### Инвариант: не ломать старых клиентов, не ронять сервер и VPN (жёстко)
+
+Новые фичи (Hive, standby, GC, kick, failover, theme, API) **обязаны** быть обратно совместимы и fail-safe. Инцидент 2026-08-18: один фейл `/health` Улья переключал DNAT `10.66.66.1:8000` на localhost — VPN на сотах падал и «сам оживал».
+
+**Запрещено без явной просьбы пользователя и без debounce/теста:**
+
+- Рестарт `wdtt.service` на Улье или соте (уронит всех в туннеле)
+- Переключать iptables/DNAT туннеля (`10.66.66.1:8000`) по **одному** таймауту health/API
+- Снимать живые WG peer’ы «наугад» (GETCONF extras с свежим handshake; инцидент 2026-08-16)
+- Ломать API/поля, на которые ещё ходят клиенты 1.0.160 / 1.0.161 (не удалять роуты, не менять смысл `ThemeResponse`/login/config)
+- Рестарт `api`+`nginx` ради правки **только** cell-agent: старые агенты на сотах успевают увидеть «Улей мёртв» и снова дёрнуть DNAT
+
+**Как делать новые реализации:**
+
+- Старые клиенты продолжают работать без обновления (новые поля опциональны, дефолты как раньше)
+- Failover/standby — только после нескольких подтверждённых фейлов (~45 с), health сначала на IP Улья, не на одном nip.io
+- GC/kick трогает только мёртвые extras; ключи `devices` и live handshake не трогать
+- Деплой cell-agent: залить `/opt/silent-vpn/backend/cell-agent/` (volume `:ro`), **не** рестартить api; соты подтянут файл автоапгрейдом, пока Улей жив
+- После деплоя проверить: `wdtt` active, DNAT сот → `132.243.234.162:8000`, health API 200
+
 ### wdtt-server (systemd)
 
 - Один экземпляр wdtt-server на VPS как systemd-сервис
@@ -471,6 +491,7 @@ fix(pc): faster connect, less ConfigSync/OTA spam, bump 1.0.142
 5. Запускать скрипты **из папки своего репозитория** (`cd backend`, `cd pc`, `cd android`).
 6. Перед деплоем admin-ui: `cd backend\admin-ui; npm run build`.
 7. Зависимость: `pip install paramiko` (один раз на машине).
+8. **Не ронять VPN:** правка только `cell-agent/` → залить файлы на хост VPS, **без** `docker compose restart api nginx`. Полный `deploy_stable.py` рестартит API — старые агенты сот могут снова переключить DNAT (инцидент 2026-08-18).
 
 ### Секреты и пути
 
@@ -808,6 +829,36 @@ cd pc; npm install; npm run dev
 - Теперь любой `HB socks CONNECT fail` на WB сразу переводит сессию в recover-путь (без ожидания второй ошибки).
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
+
+### 2026-08-18 — VPN на соте пропал и через время вернулся: ложный standby DNAT
+
+- PC `my@silent27-99.ru` сидел на **Сота 2** (`server3`). wdtt на Улье/сотах **не рестартили**.
+- **Сервер:** слой 3 `standby_monitor_loop` при **одном** фейле `/health` Улья сразу делал DNAT `10.66.66.1:8000 → 127.0.0.1:8000`. Деплой `api+nginx` в 19:51 МСК + автоапгрейд cell-agent: Сота 2 в 16:51:58 UTC — «Улей недоступен». Сота 1 так флапала весь день (десятки раз). Туннель API на соте отваливался, клиент терял heartbeat; через время health ок → DNAT обратно на Улей.
+- **Локально:** `build-debug.bat` в ~20:00 убил `Silent VPN.exe` / `wdtt-client.exe`. PC `last_connected` 20:21 МСК — после нового debug.
+- Отдельно в 17:49 МСК админ `revoke-subscription` снял 2 Android Vivo этого аккаунта (не этот обрыв PC).
+- **Фикс на прод (без рестарта api/wdtt):** health сначала на `HIVE_QUEEN_IP:8000`; standby только после **3** фейлов (~45 с); при старте агента DNAT сразу на Улей. Файл залит в host `cell-agent/` (volume), автоапгрейд сот пока Улей жив. Тест: `scripts/test_cell_wg_gc_unit.py`. Правило навсегда: раздел «Инвариант: не ломать старых клиентов…».
+
+### 2026-08-18 — Слой 3 failover + онлайн сот в Улье + нода в дашборде
+
+- Клиент, если public API Улья не открывается, пробует cell-agent соты `http://IP:9100/api/*`. Пока Улей жив с точки зрения соты — запрос проксируется на Улей (вход/оплата работают, даже если клиенту режут IP Улья). Если Улей мёртв — снимок theme/hive-meta; login/оплата 503.
+- Theme всегда отдаёт актуальные `hive_standby_api_urls`. Android/PC кешируют URL + запас Сота 1/2. Админка: онлайн соты = max(БД, WG live &lt;3м); дашборд «Онлайн: устройство · Улей/Сота N» зелёным.
+- `/hive/cells` больше не вызывает rebalance на каждый poll.
+- Пуш / debug-сборки клиентов — по запросу.
+
+### 2026-08-18 — Соты автономны без копии всей БД: локальный WG GC + snapshot слота
+
+- Полный дамп Postgres на каждую соту **не делаем** (рассинхрон login/register, устаревание снимка, секреты × N, не спасает тех, чей endpoint — Улей).
+- **Слой 1:** cell-agent сам чистит GETCONF extras на `wdtt0` (те же правила, что на Улье: never-hs после 90 с, handshake >6 ч, ключи из manifest не трогать, wdtt не рестартить). Цикл в `standby_runtime.py`, без alpine с Улья. `agent_build_id` = hash `main.py`+`standby_runtime.py`.
+- **Слой 2:** manifest на соту — устройства с `cell_id` этой ноды **или** `preferred_server` = слот (Сота 1 → server2, Сота 2 → server3), плюс `vpn_allowed`. Не 800 строк всей БД. Поле `server_slot` в JSON.
+- Админка Улей: `WG peer’ы / never-hs / live` из `/v1/status`.
+- Прод: `deploy_stable.py` (api/nginx restart, DNAT tunnel OK, **wdtt не трогали**). Автоапгрейд агента на Соту 1 и 2. После GC: Сота 1 **157→50** (never-hs extras сняты, 33 ключа = snapshot слота), Сота 2 **111→49** (28 ключей слота). Обе `wdtt`+`silent-cell-agent` active. Тесты: `test_cell_wg_gc_unit.py`, `test_hive_slots_unit.py`, `test_vpn_kick_unit.py`.
+- Пуш — когда скажешь «пуш».
+
+### 2026-08-18 — Улей: текст балансировки + обрыв ~10 с от alpine GC
+
+- Текст «Перегруз — новые на соты» в админке остался, потому что при слотах Сервер 1/2/3 **не выключали** старый copy и `GET /summary` всё ещё вызывал `rebalance_overloaded_cells` на каждый poll (10 с). Живой VPN слот не перекидывает; клиент сам выбирает ноду.
+- Обрыв ~10 с ~14:58 UTC: GC/kick каждый раз делал `docker run alpine` + `apk add` на **docker0** (dmesg veth up/down). Kick 14:49, GC 15:00. Не рестарт wdtt.
+- Фикс: постоянный helper `silent-nsenter` (`--network host`), dump/kick/GC через `docker exec`; `/summary` больше не балансирует. HivePage: «Серверы», не «балансировка».
 
 ### 2026-08-18 — Обрывы VPN: GC peer’ов + клиенты не рвут туннель при 0 воркерах
 

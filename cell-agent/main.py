@@ -24,10 +24,11 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 try:
-    from standby_runtime import on_manifest_updated, standby_monitor_loop
+    from standby_runtime import on_manifest_updated, standby_monitor_loop, mount_failover_routes
 except ImportError:
     on_manifest_updated = None  # type: ignore
     standby_monitor_loop = None  # type: ignore
+    mount_failover_routes = None  # type: ignore
 
 
 @asynccontextmanager
@@ -60,7 +61,11 @@ CELL_NETWORK_INTERFACE = (os.environ.get("CELL_NETWORK_INTERFACE") or "").strip(
 
 
 def agent_build_id() -> str:
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+    h = hashlib.sha256(Path(__file__).read_bytes())
+    standby = Path(__file__).resolve().parent / "standby_runtime.py"
+    if standby.is_file():
+        h.update(standby.read_bytes())
+    return h.hexdigest()[:16]
 
 
 def _auth(secret: str) -> None:
@@ -354,6 +359,18 @@ async def status(
     except Exception:
         pass
 
+    wg_peers_total = wg_peers_never_hs = wg_peers_live_3m = wg_gc_last_removed = 0
+    try:
+        from standby_runtime import wg_peer_counts
+
+        counts = wg_peer_counts()
+        wg_peers_total = int(counts.get("total") or 0)
+        wg_peers_never_hs = int(counts.get("never_hs") or 0)
+        wg_peers_live_3m = int(counts.get("live_3m") or 0)
+        wg_gc_last_removed = int(counts.get("last_removed") or 0)
+    except Exception:
+        pass
+
     return {
         "public_ip": _detect_public_ip(),
         "wdtt_active": wdtt_active,
@@ -372,6 +389,10 @@ async def status(
         "olcrtc_units": olcrtc_units,
         "olcrtc_peers_est": olcrtc_active,
         "olcrtc_active_units": olcrtc_active,
+        "wg_peers_total": wg_peers_total,
+        "wg_peers_never_hs": wg_peers_never_hs,
+        "wg_peers_live_3m": wg_peers_live_3m,
+        "wg_gc_last_removed": wg_gc_last_removed,
     }
 
 
@@ -713,3 +734,7 @@ async def sync_manifest(
     if on_manifest_updated is not None:
         on_manifest_updated(payload)
     return {"ok": True, "version": payload.get("version"), "device_count": payload.get("device_count")}
+
+
+if mount_failover_routes is not None:
+    mount_failover_routes(app)

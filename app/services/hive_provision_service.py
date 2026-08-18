@@ -55,8 +55,14 @@ def _load_cell_agent_py() -> str:
 
 
 def cell_agent_build_id() -> str:
-    """Хеш исходника cell-agent на Улье — для сравнения с сотами."""
-    return hashlib.sha256(_load_cell_agent_py().encode("utf-8")).hexdigest()[:16]
+    """Хеш main.py + standby_runtime.py на Улье — для сравнения с сотами."""
+    h = hashlib.sha256()
+    h.update(_load_cell_agent_file("main.py").encode("utf-8"))
+    try:
+        h.update(_load_cell_agent_file("standby_runtime.py").encode("utf-8"))
+    except RuntimeError:
+        pass
+    return h.hexdigest()[:16]
 
 
 def _validate_wdtt_blob(data: bytes, source: str) -> bytes:

@@ -76,6 +76,7 @@ class VpnServerInfo(BaseModel):
     public_ip: str
     wdtt_port: int
     online_count: int = 0
+    api_base: str = ""
 
 
 class VpnServersResponse(BaseModel):

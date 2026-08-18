@@ -31,6 +31,14 @@ def slot_title(slot: str) -> str:
     return f"Сервер {n}" if n else (slot or "")
 
 
+def node_title_for_slot(slot: str | None) -> str:
+    """Подпись ноды для админки: Улей / Сота N (не «Сервер 2»)."""
+    n = parse_manual_slot(slot)
+    if n == 1 or n is None:
+        return "Улей"
+    return f"Сота {n - 1}"
+
+
 def slot_for_cell(cell) -> str:
     """Улей = server1, Сота N = server{N+1}. Новые соты → server4+ без правки клиентов."""
     if getattr(cell, "is_queen", False):

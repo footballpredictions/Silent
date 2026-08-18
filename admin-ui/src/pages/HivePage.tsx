@@ -14,6 +14,10 @@ interface CellLoad {
   build_running?: boolean
   vpn_overloaded?: boolean
   wdtt_active?: boolean
+  wg_peers_total?: number
+  wg_peers_never_hs?: number
+  wg_peers_live_3m?: number
+  wg_gc_last_removed?: number
 }
 
 interface HiveCell {
@@ -158,6 +162,7 @@ function CellLoadGrid({
   const netUtil = network_util_percent ?? 0
   const hot = cpu_percent >= cpuThreshold || memory_percent >= memThreshold || netUtil >= bwThreshold
   return (
+    <>
     <div className={`grid grid-cols-3 gap-2 mt-3 ${hot ? 'opacity-100' : 'opacity-90'}`}>
       <div className="bg-[#0a0a0a] border border-[#222] rounded-lg px-3 py-2">
         <p className="text-[10px] text-[#666] uppercase flex items-center gap-1"><Cpu className="w-3 h-3" /> CPU</p>
@@ -179,6 +184,13 @@ function CellLoadGrid({
         <p className="text-[10px] text-[#555] mt-0.5">{fmtBandwidth(netRx)}↓ {fmtBandwidth(netTx)}↑</p>
       </div>
     </div>
+    {typeof cell.load.wg_peers_total === 'number' && (
+      <p className="text-[11px] text-[#777] mt-2">
+        WG peer’ы: {cell.load.wg_peers_total} · never-hs {cell.load.wg_peers_never_hs ?? 0} · live {cell.load.wg_peers_live_3m ?? 0}
+        {(cell.load.wg_gc_last_removed ?? 0) > 0 ? ` · gc −${cell.load.wg_gc_last_removed}` : ''}
+      </p>
+    )}
+    </>
   )
 }
 
@@ -392,9 +404,9 @@ export default function HivePage({ token }: { token: string }) {
               {ql.build_running ? (
                 <span className="text-blue-400">Сборка OTA — VPN на Улье</span>
               ) : summary.queen_accepting_vpn ? (
-                <span className="text-emerald-400">Улей принимает VPN</span>
+                <span className="text-emerald-400">Улей в норме</span>
               ) : (
-                <span className="text-orange-400">Перегруз — новые на соты</span>
+                <span className="text-orange-400">Улей нагружен</span>
               )}
             </p>
             {summary.all_cells_full && (
@@ -409,22 +421,13 @@ export default function HivePage({ token }: { token: string }) {
           Улей: {queenHw}
         </p>
       )}
-      {summary && (summary.rebalanced_moved > 0 || summary.rebalanced_blocked > 0) && (
-        <div className="text-xs text-[#888]">
-          Перераспределение: перемещено {summary.rebalanced_moved}
-          {summary.rebalanced_hardware ? ` (по нагрузке ${summary.rebalanced_hardware})` : ''}
-          {summary.rebalanced_returned ? `, вернули на Улей ${summary.rebalanced_returned}` : ''}
-          {summary.rebalanced_blocked > 0 ? `, не удалось ${summary.rebalanced_blocked}` : ''}.
-        </div>
-      )}
-
       {summary && (
         <div className="bg-[#0d0d0d] border border-[#2a2a2a] rounded-lg px-4 py-3 text-xs text-[#888] leading-relaxed">
-          <p className="text-[#aaa] font-medium mb-1">Когда срабатывает балансировка</p>
+          <p className="text-[#aaa] font-medium mb-1">Серверы</p>
           <p>
-            Перегруз — если CPU ≥ {summary.cpu_threshold}%, RAM ≥ {summary.mem_threshold}% или канал ≥ {summary.bandwidth_threshold}%.
-            Тогда новые VPN идут на свободные соты по текущему правилу балансировки.
-            Онлайн-сессии не рвутся — смена ноды при следующем запросе конфига в приложении.
+            Клиент сам выбирает Сервер 1 (Улей), 2 или 3 — это отдельные ноды.
+            Живой VPN Улей не перекидывает. CPU ≥ {summary.cpu_threshold}%, RAM ≥ {summary.mem_threshold}%,
+            канал ≥ {summary.bandwidth_threshold}% — индикатор нагрузки, не авто-баланс.
           </p>
         </div>
       )}
@@ -561,7 +564,10 @@ export default function HivePage({ token }: { token: string }) {
                 </div>
                 <div className="text-right">
                   <p className="text-lg font-semibold">{cell.total_online_count ?? cell.online_count}</p>
-                  <p className="text-xs text-[#666]">онлайн всего</p>
+                  <p className="text-xs text-[#666]">онлайн</p>
+                  {cell.manual_slot_title && (cell.total_online_count ?? cell.online_count) > 0 && (
+                    <p className="text-[10px] text-emerald-400 mt-0.5">{cell.is_queen ? 'Улей' : (cell.name || cell.manual_slot_title)}</p>
+                  )}
                 </div>
               </div>
               {!cell.is_queen && (

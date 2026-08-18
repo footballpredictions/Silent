@@ -33,10 +33,63 @@ from app.services.vpn_kick_select import (
 
 logger = logging.getLogger(__name__)
 _recent_queen_kicks: dict[str, float] = {}
+_NSENTER_HELPER = "silent-nsenter"
 
 _valid_wg_pub = valid_wg_pub
 _addr_ip = addr_ip
 _LivePeer = LivePeer
+
+
+def _ensure_nsenter_helper() -> bool:
+    """Один alpine с nsenter/wg, --network host — без apk и без docker0 на каждый kick/GC."""
+    r = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", _NSENTER_HELPER],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if (r.stdout or "").strip() == "true":
+        return True
+    subprocess.run(["docker", "rm", "-f", _NSENTER_HELPER], capture_output=True, timeout=20)
+    started = subprocess.run(
+        [
+            "docker", "run", "-d",
+            "--name", _NSENTER_HELPER,
+            "--privileged", "--pid=host", "--network", "host",
+            "--restart", "unless-stopped",
+            "alpine:3.19",
+            "sh", "-c",
+            "apk add -q --no-cache util-linux wireguard-tools && exec sleep infinity",
+        ],
+        capture_output=True,
+        timeout=90,
+    )
+    if started.returncode != 0:
+        err = (started.stderr or started.stdout or b"").decode("utf-8", errors="replace")[:240]
+        logger.warning("nsenter helper start failed: %s", err)
+        return False
+    for _ in range(20):
+        ready = subprocess.run(
+            ["docker", "exec", _NSENTER_HELPER, "sh", "-c", "command -v nsenter && command -v wg"],
+            capture_output=True,
+            timeout=10,
+        )
+        if ready.returncode == 0:
+            return True
+        time.sleep(0.3)
+    logger.warning("nsenter helper not ready")
+    return False
+
+
+def _nsenter_host(script: str, *args: str, timeout: int = 45) -> subprocess.CompletedProcess:
+    if not _ensure_nsenter_helper():
+        raise RuntimeError("nsenter helper unavailable")
+    cmd = [
+        "docker", "exec", _NSENTER_HELPER,
+        "nsenter", "-t", "1", "-m", "-n", "--",
+        "sh", "-c", script, "_", *args,
+    ]
+    return subprocess.run(cmd, capture_output=True, timeout=timeout)
 
 
 def _ssh_wg_dump(host: str, password: str) -> list[_LivePeer]:
@@ -50,18 +103,14 @@ def _ssh_wg_dump(host: str, password: str) -> list[_LivePeer]:
 
 
 def _queen_wg_dump() -> list[_LivePeer]:
-    r = subprocess.run(
-        [
-            "docker", "run", "--rm", "--privileged", "--pid=host",
-            "alpine:3.19",
-            "sh", "-c",
-            "apk add -q --no-cache util-linux >/dev/null 2>&1 || true; "
-            "nsenter -t 1 -m -n -- sh -c "
-            "'wg show wdtt0 allowed-ips; echo ---HS---; wg show wdtt0 latest-handshakes'",
-        ],
-        capture_output=True,
-        timeout=45,
-    )
+    try:
+        r = _nsenter_host(
+            "wg show wdtt0 allowed-ips; echo ---HS---; wg show wdtt0 latest-handshakes",
+            timeout=45,
+        )
+    except Exception as e:
+        logger.warning("queen wg dump error: %s", e)
+        return []
     out = (r.stdout or b"").decode("utf-8", errors="replace")
     allowed, _, hs = out.partition("---HS---")
     return parse_wg_show_dump(allowed, hs)
@@ -86,20 +135,7 @@ def kick_wg_peer_on_queen(public_key: str, *, allowed_ip: str = "", force: bool 
         "fi; exit $ok"
     )
     try:
-        r = subprocess.run(
-            [
-                "docker", "run", "--rm", "--privileged", "--pid=host",
-                "alpine:3.19",
-                "sh", "-c",
-                "apk add -q --no-cache util-linux >/dev/null 2>&1 || true; "
-                "nsenter -t 1 -m -n -- sh -c \"$0\" _ \"$1\" \"$2\"",
-                inner,
-                pub,
-                ip,
-            ],
-            capture_output=True,
-            timeout=45,
-        )
+        r = _nsenter_host(inner, pub, ip, timeout=45)
         if r.returncode == 0:
             if stamp:
                 _recent_queen_kicks[stamp] = time.monotonic()
@@ -124,18 +160,7 @@ def remove_wg_peers_batch_on_queen(pubs: list[str], *, batch: int = 40) -> int:
         parts = " ".join(f"peer {shlex.quote(p)} remove" for p in chunk)
         inner = f"wg set wdtt0 {parts}"
         try:
-            r = subprocess.run(
-                [
-                    "docker", "run", "--rm", "--privileged", "--pid=host",
-                    "alpine:3.19",
-                    "sh", "-c",
-                    "apk add -q --no-cache util-linux wireguard-tools >/dev/null 2>&1 || true; "
-                    "nsenter -t 1 -m -n -- sh -c \"$0\"",
-                    inner,
-                ],
-                capture_output=True,
-                timeout=60,
-            )
+            r = _nsenter_host(inner, timeout=60)
             if r.returncode == 0:
                 removed += len(chunk)
             else:

@@ -107,6 +107,8 @@ class SilentVpnService : Service() {
         const val EXTRA_IS_BOOTSTRAP = "is_bootstrap"
         /** CONNECT с QS-плитки — полный сброс транспорта перед стартом. */
         const val EXTRA_FROM_TILE = "from_tile"
+        /** Подписка отозвана: не поднимать WG из кеша, ждать GETCONF. */
+        const val EXTRA_REQUIRE_GETCONF = "require_getconf"
         var isRunning = false
             private set
 
@@ -413,7 +415,11 @@ class SilentVpnService : Service() {
                 startConnectGuardIfNeeded()
                 try {
                     setupVpnOwnershipMonitor()
-                    connect(configJson, intent.getBooleanExtra(EXTRA_IS_BOOTSTRAP, false))
+                    connect(
+                        configJson,
+                        intent.getBooleanExtra(EXTRA_IS_BOOTSTRAP, false),
+                        intent.getBooleanExtra(EXTRA_REQUIRE_GETCONF, false),
+                    )
                 } catch (e: Exception) {
                     SessionTrace.warn("SilentVpnService.CONNECT", "startup failed: ${e.message}")
                     DebugLog.e("VpnService", "CONNECT startup failed", e)
@@ -469,7 +475,11 @@ class SilentVpnService : Service() {
         return START_STICKY
     }
 
-    private fun connect(configJson: String, forceBootstrap: Boolean = false) {
+    private fun connect(
+        configJson: String,
+        forceBootstrap: Boolean = false,
+        @Suppress("UNUSED_PARAMETER") requireGetconfExtra: Boolean = false,
+    ) {
         try {
             val obj = JSONObject(configJson)
             val bypassFamily = obj.optString("bypass_family", obj.optString("bypassFamily", "wdtt"))
@@ -574,13 +584,14 @@ class SilentVpnService : Service() {
                 HashChannelHelper.hashesForLibclient(wdttHashes, totalWorkers)
             }
 
-            // Как 1.0.160: слот-совпадающий API/кеш поднимает WG сразу, GETCONF
-            // потом upgrade без DOWN/UP при тех же ключах. Не ждать 22 с.
+            // Main VPN: сверка подписки на LTE — bootstrap при старте.
+            // Пока туннель живёт без перезапуска — режет сервер (WG kick), не клиентский GETCONF.
+            val requireGetconf = false
             val fastWgCache = !isBootstrap && !apiWg.isNullOrBlank()
             if (connectFromTile) {
                 DebugLog.i(
                     "VpnService",
-                    "tile connect fastWg=$fastWgCache apiWg=${!apiWg.isNullOrBlank()}",
+                    "tile connect fastWg=$fastWgCache requireGetconf=$requireGetconf apiWg=${!apiWg.isNullOrBlank()}",
                 )
             }
 
@@ -608,12 +619,13 @@ class SilentVpnService : Service() {
                     apiWgConfig = apiWg,
                     isBootstrap = isBootstrap,
                     fastWgCache = fastWgCache,
+                    requireGetconfAccess = requireGetconf,
                 ),
                 isSwitching = false,
             )
             DebugLog.i(
                 "VpnService",
-                "WDTT n=$totalWorkers vk=${libclientHashes.size}/$activeHashCount hashes",
+                "WDTT n=$totalWorkers vk=${libclientHashes.size}/$activeHashCount hashes requireGetconf=$requireGetconf",
             )
             isRunning = true
             SessionTrace.mark("SilentVpnService.connect", "isRunning=true")

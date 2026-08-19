@@ -108,6 +108,8 @@ class SilentRepository @Inject constructor(
         const val CAPTCHA_MODE_RJS = "rjs"
         const val CAPTCHA_MODE_WV = "wv"
         const val PREF_CACHED_PROFILE = "cached_profile_json"
+        /** 402/отзыв: не поднимать «оплачено» из старого client_sync в WG-кеше. */
+        const val PREF_VPN_ACCESS_DENIED = "vpn_access_denied"
         const val PREF_CACHED_THEME = "cached_theme_json"
         const val PREF_STANDBY_API_URLS = "standby_api_urls"
         /** Если Улей не открывается до первой theme — известные соты на проде. */
@@ -154,6 +156,7 @@ class SilentRepository @Inject constructor(
     private var _baseUrl: String = ""
     /** Когда VPN поднят — API через адрес в туннеле (10.66.66.1), иначе nip.io недоступен в белых списках. */
     private var tunnelApiBaseUrl: String? = null
+    @Volatile private var liveProfileAppliedAtMs = 0L
 
     @Volatile private var publicReachableCache: Boolean? = null
     @Volatile private var publicReachableCachedAtMs = 0L
@@ -989,13 +992,40 @@ class SilentRepository @Inject constructor(
         prefs.edit().putString(PREF_CACHED_PROFILE, Gson().toJson(profile)).apply()
     }
 
+    fun isVpnAccessDenied(): Boolean = prefs.getBoolean(PREF_VPN_ACCESS_DENIED, false)
+
+    fun setVpnAccessDenied(denied: Boolean) {
+        prefs.edit().putBoolean(PREF_VPN_ACCESS_DENIED, denied).apply()
+        if (denied) patchCachedVpnConfigProfileInactive()
+    }
+
+    /** Старый client_sync.profile с days_left не должен пережить отзыв. */
+    private fun patchCachedVpnConfigProfileInactive() {
+        val json = getCachedVpnConfigRaw() ?: return
+        val cfg = runCatching { Gson().fromJson(json, VpnConfig::class.java) }.getOrNull() ?: return
+        val sync = cfg.client_sync ?: return
+        val profile = sync.profile ?: return
+        if (!profile.subscription.is_active && profile.subscription.days_left <= 0) return
+        val nextProfile = profile.copy(
+            subscription = profile.subscription.copy(is_active = false, days_left = 0),
+        )
+        prefs.edit()
+            .putString(PREF_CACHED_CONFIG, Gson().toJson(cfg.copy(client_sync = sync.copy(profile = nextProfile))))
+            .apply()
+        Log.i(TAG, "cached VPN client_sync profile marked inactive")
+    }
+
     fun getCachedProfile(): UserProfile? {
         val json = prefs.getString(PREF_CACHED_PROFILE, null) ?: return null
         return runCatching { Gson().fromJson(json, UserProfile::class.java) }.getOrNull()
     }
 
     fun clearCachedProfile() {
-        prefs.edit().remove(PREF_CACHED_PROFILE).apply()
+        liveProfileAppliedAtMs = 0L
+        prefs.edit()
+            .remove(PREF_CACHED_PROFILE)
+            .remove(PREF_VPN_ACCESS_DENIED)
+            .apply()
     }
 
     fun saveCachedTheme(theme: ThemeData) {
@@ -1023,12 +1053,20 @@ class SilentRepository @Inject constructor(
     }
 
     /** Данные с /vpn/config вместе с подпиской — без overlay HTTP после включения. */
-    fun applyClientSync(bundle: ClientSyncBundle?): Boolean {
+    fun applyClientSync(bundle: ClientSyncBundle?, forceProfile: Boolean = false): Boolean {
         if (bundle == null) return false
         var applied = false
         bundle.profile?.let {
-            saveCachedProfile(it)
-            com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener?.onProfile(it)
+            if (!forceProfile && liveProfileAppliedAtMs > 0L) {
+                MobileSyncLog.i("clientSync", "skip client_sync profile — live /me already applied")
+            } else {
+                saveCachedProfile(it)
+                if (it.is_admin || it.subscription.is_active) {
+                    setVpnAccessDenied(false)
+                }
+                liveProfileAppliedAtMs = System.currentTimeMillis()
+                com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener?.onProfile(it)
+            }
             applied = true
         }
         bundle.theme?.let {
@@ -3154,6 +3192,12 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
         if (!res.isSuccessful) error("profile HTTP ${res.code()}")
         val body = res.body() ?: error("profile empty")
         saveCachedProfile(body)
+        liveProfileAppliedAtMs = System.currentTimeMillis()
+        if (body.is_admin || body.subscription.is_active) {
+            setVpnAccessDenied(false)
+        } else {
+            setVpnAccessDenied(true)
+        }
         Log.i(TAG, "fetchProfileLive OK via ${getServerUrl()} online=${body.devices.count { it.is_connected }}")
         return body
     }

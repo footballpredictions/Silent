@@ -62,6 +62,7 @@ fun MainActivityRoot(
     val pendingReferralCode by vm.pendingReferralCode.collectAsState()
     val paymentState by vm.paymentState.collectAsState()
     val openSubscriptionMenu by vm.openSubscriptionMenu.collectAsState()
+    val subscriptionProbeActive by vm.subscriptionProbeActive.collectAsState()
 
     LaunchedEffect(Unit) {
         activity.handleTileConnectIntent(initialIntent)
@@ -155,6 +156,7 @@ fun MainActivityRoot(
                         repo = vm.repository,
                         sessionDeviceId = sessionDeviceId,
                         vpnError = vpnError,
+                        subscriptionProbeActive = subscriptionProbeActive,
                         onToggle = {
                             when (vpnState) {
                                 VpnState.DISCONNECTED -> {

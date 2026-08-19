@@ -115,6 +115,8 @@ class MainViewModel @Inject constructor(
 
     private val _vpnError = MutableStateFlow<String?>(null)
     val vpnError: StateFlow<String?> = _vpnError
+    private val _subscriptionProbeActive = MutableStateFlow(false)
+    val subscriptionProbeActive: StateFlow<Boolean> = _subscriptionProbeActive
 
     private val _accountRefreshing = MutableStateFlow(false)
     val accountRefreshing: StateFlow<Boolean> = _accountRefreshing
@@ -171,11 +173,22 @@ class MainViewModel @Inject constructor(
     private var updateApiBaseUrl: String? = null
     /** One-shot: пользователь уже нажал CONNECT, ждём обновление подписки и повторяем автоматически. */
     private var pendingConnectAfterSubscriptionRefresh = false
+    /** Splash отозвал подписку: CONNECTED только после GETCONF, не из WG-кеша. */
+    @Volatile private var awaitingGetconfAccess = false
+    /** GETCONF выдал WG — доступ с сервера есть. Stale /me и кеш «нет» эту сессию не гасят. */
+    @Volatile private var getconfGrantedThisVpnSession = false
+    @Volatile private var getconfConfirmStarted = false
     /** Временный bootstrap VPN для YuMoney, пока открыт браузер оплаты. */
     private var paymentBootstrapHeld = false
     /** Короткий bootstrap только для промокода — после проверки поднимаем main VPN обратно. */
     private var promoBootstrapHeld = false
     private val promoBootstrapMutex = Mutex()
+    private val connectPrefetchMutex = Mutex()
+    private var launchPrefetchJob: Job? = null
+    private var prefetchedConnect: ConnectFetchResult? = null
+    private var prefetchedSlot: String? = null
+    private var pendingGetconfProfile: UserProfile? = null
+    @Volatile private var lastVpnConfigDenied = false
     /** Должен быть объявлен до init — tunnelReady.collect может сработать в конструкторе. */
     private val pendingHashFailures = ConcurrentLinkedQueue<Triple<String, String, String>>()
     private var hashFailureFlushJob: Job? = null
@@ -393,8 +406,11 @@ class MainViewModel @Inject constructor(
                             bootstrapContext?.let { stopVpnLocally(it) }
                         }
                     } else if (isSubscriptionAccessError(err)) {
+                        getconfGrantedThisVpnSession = false
                         markLocalSubscriptionInactive()
+                        awaitingGetconfAccess = false
                         _vpnError.value = subscriptionRequiredMessage()
+                        viewModelScope.launch { disconnect(appContext) }
                     } else {
                         _vpnError.value = err
                     }
@@ -539,7 +555,8 @@ class MainViewModel @Inject constructor(
         if (!SilentVpnService.isRunning) {
             syncServerHashes(preferPublicOnly = true)
         }
-        ensureVpnConfigRestored(appContext)
+        // WG-конфиг и подписка на LTE — prefetchConnectConfigAtLaunch на splash,
+        // не второй bootstrap (он мигал тумблер при включении VPN).
     }
 
     /**
@@ -851,12 +868,23 @@ class MainViewModel @Inject constructor(
     private fun restoreCachedProfileToUi() {
         if (shouldDeferProfileUntilSync()) return
         repo.getCachedProfile()?.let { cached ->
-            if (_profile.value == null) _profile.value = cached
+            if (_profile.value == null) {
+                _profile.value = cached
+            }
         }
     }
 
     private fun applyCachedProfileAfterSync() {
-        repo.getCachedProfile()?.let { applyServerProfile(it, force = true) }
+        if (awaitingGetconfAccess) {
+            DebugLog.i("MainViewModel", "skip cache profile — waiting GETCONF")
+            return
+        }
+        val cached = repo.getCachedProfile() ?: return
+        if (shouldIgnoreInactiveAfterGetconf(cached)) {
+            DebugLog.i("MainViewModel", "skip unpaid cache — GETCONF already granted")
+            return
+        }
+        applyServerProfile(cached, force = true)
     }
 
     private fun restoreCachedThemeToUi(refreshFromSync: Boolean = false) {
@@ -960,7 +988,7 @@ class MainViewModel @Inject constructor(
 
     /**
      * Краткий bootstrap-туннель для API на LTE (белые списки): профиль, хеши, WG-config.
-     * Только по действию пользователя или перед connect; не фоновый poll.
+     * На старте приложения (splash) и по действию пользователя; не фоновый poll.
      */
     private suspend fun runEphemeralApiBootstrap(
         context: Context,
@@ -970,6 +998,15 @@ class MainViewModel @Inject constructor(
         if (!repo.isLoggedIn() || !isHashReady()) return false
         if (silentBootstrapSync || bootstrapVpnMode) return false
         if (repo.isMainVpnTunnelUp()) return false
+        if (_vpnState.value == VpnState.CONNECTED) return false
+        // CONNECTING без main VPN — тумблер ждёт стартовый prefetch. Ephemeral старта должен дописать WG-кеш.
+        if (
+            _vpnState.value == VpnState.CONNECTING &&
+            SilentVpnService.isRunning &&
+            !WdttTunnelManager.isBootstrapMode()
+        ) {
+            return false
+        }
         if (!repo.mayRunEphemeralSync(force)) {
             DebugLog.i("MainViewModel", "ephemeral sync throttled")
             return false
@@ -1003,6 +1040,10 @@ class MainViewModel @Inject constructor(
             var apiOk = false
             var attempt = 0
             while (attempt < EPHEMERAL_TUNNEL_WAIT_ITER && !apiOk) {
+                if (ephemeralShouldYieldToUser()) {
+                    DebugLog.i("MainViewModel", "ephemeral API bootstrap: user took over VPN")
+                    break
+                }
                 delay(250)
                 if (!WdttTunnelManager.tunnelReady.value || !WdttTunnelManager.isBootstrapMode()) {
                     attempt++
@@ -1049,11 +1090,16 @@ class MainViewModel @Inject constructor(
             DebugLog.w("MainViewModel", "ephemeral API bootstrap: ${e.message}")
             return false
         } finally {
-            stopVpnLocally(context.applicationContext)
-            repo.clearTunnelApiBase()
+            val userTookOver = ephemeralShouldYieldToUser()
             silentBootstrapSync = false
-            withContext(Dispatchers.IO) {
-                VpnConnectHelper.ensureCleanSlate(context.applicationContext)
+            if (!userTookOver && WdttTunnelManager.isBootstrapMode()) {
+                stopVpnLocally(context.applicationContext)
+                repo.clearTunnelApiBase()
+                withContext(Dispatchers.IO) {
+                    VpnConnectHelper.ensureCleanSlate(context.applicationContext)
+                }
+            } else if (!userTookOver) {
+                repo.clearTunnelApiBase()
             }
         }
     }
@@ -1489,12 +1535,17 @@ class MainViewModel @Inject constructor(
         val accessDenied: Boolean,
     )
 
-    private suspend fun fetchVpnConfigForConnect(context: Context, fp: String): ConnectFetchResult {
-        // Как 1.0.160: сначала публичный register/getConfig. Ephemeral bootstrap
-        // (полные ~2 мин) — только если публичный API не дал конфиг.
+    private suspend fun fetchVpnConfigForConnect(
+        context: Context,
+        fp: String,
+        allowEphemeral: Boolean = true,
+    ): ConnectFetchResult {
+        // Splash: public + при необходимости ephemeral bootstrap.
+        // Тумблер ephemeral не вызывает — проверка подписки там через GETCONF/DTLS на main VPN.
         repo.clearTunnelApiBase()
         repo.useApiBase(repo.getPublicServerUrl())
         repo.invalidateApiClient()
+        lastVpnConfigDenied = false
 
         var vpnConfig: VpnConfig? = null
         var apiError: String? = null
@@ -1525,6 +1576,8 @@ class MainViewModel @Inject constructor(
                 when (regRes.code()) {
                     402, 403 -> {
                         accessDenied = true
+                        lastVpnConfigDenied = true
+                        applySubscriptionDeniedFromApi()
                         apiError = parseError(regRes.errorBody()?.string() ?: "")
                             ?: subscriptionRequiredMessage()
                         return@coroutineScope
@@ -1533,6 +1586,7 @@ class MainViewModel @Inject constructor(
                 if (regRes.isSuccessful) {
                     val candidate = regRes.body()!!
                     if (isConfigConnectable(candidate)) {
+                        repo.setVpnAccessDenied(false)
                         vpnConfig = candidate
                         repo.saveSessionDeviceId(candidate.device_id)
                         _sessionDeviceId.value = candidate.device_id
@@ -1555,16 +1609,19 @@ class MainViewModel @Inject constructor(
                     if (cfgRes.isSuccessful) {
                         val candidate = cfgRes.body()!!
                         if (isConfigConnectable(candidate)) {
+                            repo.setVpnAccessDenied(false)
                             vpnConfig = candidate
                             repo.cacheVpnConfig(Gson().toJson(candidate))
                         } else {
                             apiError = "Сервер вернул некорректный WireGuard-адрес. Повторите обновление профиля."
                             publicFailed = true
                         }
-                    } else if (cfgRes.code() == 402) {
+                    } else if (cfgRes.code() == 402 || cfgRes.code() == 403) {
                         apiError = parseError(cfgRes.errorBody()?.string() ?: "")
                             ?: subscriptionRequiredMessage()
                         accessDenied = true
+                        lastVpnConfigDenied = true
+                        applySubscriptionDeniedFromApi()
                     } else {
                         publicFailed = true
                     }
@@ -1581,39 +1638,175 @@ class MainViewModel @Inject constructor(
             }
         }
 
-        if (!accessDenied && vpnConfig == null && publicFailed) {
+        if (!accessDenied && vpnConfig == null && publicFailed && allowEphemeral) {
             if (runEphemeralApiBootstrap(context, force = true)) {
-                if (!hasVpnAccess()) {
+                if (userOwnsMainVpn()) {
+                    DebugLog.i("MainViewModel", "ephemeral bootstrap: user took over VPN — keep GETCONF result")
+                } else if (lastVpnConfigDenied) {
                     accessDenied = true
+                    applySubscriptionDeniedFromApi()
                     apiError = subscriptionRequiredMessage()
                 } else {
                     val cached = loadCachedVpnConfig()
-                    vpnConfig = cached?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
+                    // Свежий DTLS-ответ: любой слот (Улей / Сота N), не только preferred из старого кеша.
+                    vpnConfig = cached?.takeIf { isConfigConnectable(it) }
                     if (vpnConfig != null) {
+                        repo.setVpnAccessDenied(false)
                         repo.mergeSavedHashesIntoCachedConfig()
-                        vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
+                        vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
                     }
                 }
             }
         }
 
-        // LTE: после отзыва не поднимать старый WG, если API не подтвердил доступ.
-        if (vpnConfig == null && !accessDenied && hasVpnAccess() && !repo.isOnMobileData()) {
-            vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
+        // /me уже сказал «оплачено», а public /config на LTE закрыт: не выкидывать живой WG-кеш.
+        if (vpnConfig == null && !accessDenied && hasVpnAccess()) {
+            vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
         }
-        if (vpnConfig == null && !accessDenied && hasVpnAccess() && !repo.isOnMobileData() && repo.hasMainVpnServerHashes()) {
+        if (vpnConfig == null && !accessDenied && hasVpnAccess() && repo.hasMainVpnServerHashes()) {
             ensureVpnConfigRestored(context)
-            vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
+            vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
         }
 
-        if (vpnConfig == null && !hasVpnAccess()) {
-            accessDenied = true
-            apiError = subscriptionRequiredMessage()
+        if (vpnConfig != null) {
+            repo.setVpnAccessDenied(false)
+            lastVpnConfigDenied = false
+            accessDenied = false
         } else if (accessDenied) {
-            apiError = subscriptionRequiredMessage()
+            applySubscriptionDeniedFromApi()
+            apiError = apiError ?: subscriptionRequiredMessage()
         }
 
         return ConnectFetchResult(vpnConfig, apiError, accessDenied)
+    }
+
+    private fun warmConnectFetch(): ConnectFetchResult? {
+        val p = prefetchedConnect ?: return null
+        if (p.accessDenied) return null
+        if (prefetchedSlot != repo.getPreferredServer()) return null
+        val cfg = p.vpnConfig ?: return null
+        if (!isConfigConnectable(cfg) || !cachedConfigMatchesPreferred(cfg)) return null
+        return p
+    }
+
+    private fun rememberPrefetch(result: ConnectFetchResult) {
+        if (result.accessDenied || result.vpnConfig == null) {
+            prefetchedConnect = null
+            prefetchedSlot = null
+            return
+        }
+        prefetchedConnect = result
+        prefetchedSlot = repo.getPreferredServer()
+        result.vpnConfig.client_sync?.let { bundle ->
+            // WG-ключи уже в cacheVpnConfig. Профиль UI — из живого /me, не из client_sync без даты.
+            repo.applyClientSync(bundle.copy(profile = null))
+        }
+    }
+
+    private fun applySubscriptionDeniedFromApi() {
+        restoreCachedProfileToUi()
+        markLocalSubscriptionInactive()
+        // WG-кеш не трогаем: тумблер поднимает main VPN из кеша.
+        prefetchedConnect = null
+        prefetchedSlot = null
+    }
+
+    private fun rememberWarmConnectFromCache() {
+        val cfg = loadCachedVpnConfig()?.takeIf {
+            isConfigConnectable(it) && cachedConfigMatchesPreferred(it)
+        } ?: return
+        prefetchedConnect = ConnectFetchResult(cfg, null, false)
+        prefetchedSlot = repo.getPreferredServer()
+    }
+
+    /**
+     * Главный экран: /me и bootstrap в обе стороны (включить и выключить подписку).
+     * Тумблер сюда не ходит.
+     */
+    suspend fun prefetchConnectConfigAtLaunch(context: Context) {
+        connectPrefetchMutex.withLock {
+            if (!repo.isLoggedIn()) return
+            if (repo.isOlcrtcBypass()) return
+            if (userOwnsMainVpn() && connectableCachedConfig() != null) {
+                rememberWarmConnectFromCache()
+                return
+            }
+            refreshSubscriptionAtLaunch()
+            if (connectableCachedConfig() != null && !repo.isOnMobileData()) {
+                rememberWarmConnectFromCache()
+                if (userOwnsMainVpn()) return
+            }
+            if (android.net.VpnService.prepare(context) != null) {
+                DebugLog.i("MainViewModel", "launch prefetch skip config: no VPN permission")
+                if (connectableCachedConfig() != null) rememberWarmConnectFromCache()
+                return
+            }
+            val fp = runCatching { repo.getDeviceFingerprint() }.getOrElse {
+                if (repo.hasSessionFingerprint()) throw it
+                repo.startNewSession()
+            }
+            DebugLog.i("MainViewModel", "launch prefetch /vpn/config slot=${repo.getPreferredServer()}")
+            val fetch = fetchVpnConfigForConnect(context, fp, allowEphemeral = true)
+            if (fetch.accessDenied) {
+                applySubscriptionDeniedFromApi()
+                pendingConnectAfterSubscriptionRefresh = true
+                _vpnError.value = fetch.apiError ?: subscriptionRequiredMessage()
+                return
+            }
+            rememberPrefetch(fetch)
+            if (fetch.vpnConfig == null) {
+                rememberWarmConnectFromCache()
+            }
+            if (userOwnsMainVpn()) {
+                DebugLog.i("MainViewModel", "launch prefetch finished after user connect — keep GETCONF")
+            }
+        }
+    }
+
+    private fun connectableCachedConfig(): VpnConfig? =
+        warmConnectFetch()?.vpnConfig
+            ?: loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
+
+    /** Тумблер не делает свой bootstrap: дожидается стартовый prefetch, чтобы был WG-кеш под GETCONF. */
+    private suspend fun awaitStartPrefetchForToggleCache(context: Context) {
+        val job = launchPrefetchJob
+        if (silentBootstrapSync && job != null && job.isActive) {
+            DebugLog.i("MainViewModel", "toggle: wait ephemeral finish before GETCONF")
+            job.join()
+            return
+        }
+        if (connectableCachedConfig() != null) return
+        if (job != null && job.isActive) {
+            DebugLog.i("MainViewModel", "toggle: wait start prefetch for WG cache")
+            job.join()
+        }
+        if (connectableCachedConfig() != null) return
+        DebugLog.i("MainViewModel", "toggle: no WG cache yet — finish start prefetch")
+        prefetchConnectConfigAtLaunch(context)
+    }
+
+    /** Public /users/me на старте — живой ответ включает и выключает UI. Сеть недоступна — не трогаем кеш. */
+    private suspend fun refreshSubscriptionAtLaunch() {
+        repo.clearTunnelApiBase()
+        repo.useApiBase(repo.getPublicServerUrl())
+        repo.invalidateApiClient()
+        val live = repo.fetchProfileLive().getOrNull()
+        if (live == null) {
+            DebugLog.w("MainViewModel", "launch /me unreachable — keep cache, bootstrap will confirm")
+            return
+        }
+        applyServerProfile(live, force = true)
+        DebugLog.i(
+            "MainViewModel",
+            "launch /me active=${live.subscription.is_active} days=${live.subscription.days_left}",
+        )
+    }
+
+    fun startLaunchPrefetch(context: Context): Job {
+        launchPrefetchJob?.cancel()
+        return viewModelScope.launch {
+            prefetchConnectConfigAtLaunch(context)
+        }.also { launchPrefetchJob = it }
     }
 
     private suspend fun mergeHashesIntoConfig(
@@ -2321,6 +2514,7 @@ class MainViewModel @Inject constructor(
                 }
                 if (loginSucceeded) {
                     disconnectBootstrapVpn(ctx)
+                    rememberWarmConnectFromCache()
                     goToMain(skipProfileFetch = true)
                     startConfigSync()
                     if (offerSavePassword) {
@@ -2464,6 +2658,7 @@ class MainViewModel @Inject constructor(
     fun goToMain(skipProfileFetch: Boolean = false) {
         invalidatePendingLogout()
         _screen.value = AppScreen.MAIN
+        rememberWarmConnectFromCache()
         startConfigSync()
         if (!skipProfileFetch && _profile.value == null) {
             loadProfile()
@@ -2894,6 +3089,8 @@ class MainViewModel @Inject constructor(
                 repo.clearSyncRevisions()
                 repo.clearTunnelApiBase()
                 repo.clearTokens()
+                prefetchedConnect = null
+                prefetchedSlot = null
 
                 _sessionDeviceId.value = null
                 _profile.value = null
@@ -3026,8 +3223,13 @@ class MainViewModel @Inject constructor(
         disconnectJob?.cancel()
         _vpnState.value = VpnState.CONNECTING
         _vpnError.value = null
+        getconfGrantedThisVpnSession = false
+        getconfConfirmStarted = false
         connectJob = viewModelScope.launch {
             DebugLog.i("MainViewModel", "connect() start")
+            if (!repo.isOlcrtcBypass()) {
+                awaitStartPrefetchForToggleCache(context)
+            }
             if (stopPaymentFirst) {
                 waitVpnServiceDown()
             }
@@ -3048,15 +3250,16 @@ class MainViewModel @Inject constructor(
                     if (!shouldDeferProfileUntilSync()) {
                         restoreCachedProfileToUi()
                     }
-                    repo.applyCachedClientSync()
+                    if (hasVpnAccess()) {
+                        repo.applyCachedClientSync()
+                    }
                 // Профиль не блокирует старт VPN (как 1.0.160) — иначе 6–10 оборотов змейки.
                 val subCached = _profile.value?.subscription?.is_active
                 MobileSyncLog.i(
                     "connect",
                     "pre-check subCached=$subCached mobile=${repo.isOnMobileData()} vpnUp=${VpnSessionState.isActive()}",
                 )
-                // Не стартуем из WG-кеша и не paywall по старому профилю: на том же
-                // сервере тумблер иначе игнорирует отзыв (402 только при смене слота).
+                // Конфиг с splash; тумблер не делает второй bootstrap.
 
                 val fp = runCatching { repo.getDeviceFingerprint() }.getOrElse {
                     if (repo.hasSessionFingerprint()) throw it
@@ -3345,78 +3548,72 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
-                DebugLog.i(
-                    "MainViewModel",
-                    "connect fetch slot=${repo.getPreferredServer()} (no WG cache skip)",
-                )
-                val fetch = fetchVpnConfigForConnect(context, fp)
-                var vpnConfig = fetch.vpnConfig
-                val apiError = fetch.apiError
-                val accessDenied = fetch.accessDenied
-                vpnConfig?.client_sync?.let { repo.applyClientSync(it) }
-
-                if (accessDenied) {
-                    repo.clearCachedVpnConfig()
-                    pendingConnectAfterSubscriptionRefresh = true
-                    _vpnState.value = VpnState.DISCONNECTED
-                    _vpnError.value = null
-                    _vpnError.value = apiError ?: subscriptionRequiredMessage()
-                    if (!repo.isOnMobileData()) {
-                        refreshWifiSubscriptionProfile()
-                    } else {
-                        loadProfile()
-                    }
-                    return@launch
-                }
+                // Тумблер: main VPN из кеша, без второго bootstrap и без GETCONF-сверки.
+                // Подписка на LTE — только стартовый bootstrap; пока сессия жива — режет сервер.
+                val vpnConfig = connectableCachedConfig()
+                awaitingGetconfAccess = false
+                pendingGetconfProfile = null
 
                 if (vpnConfig == null) {
-                    DebugLog.e("MainViewModel", apiError ?: "no vpn config")
-                    _vpnError.value = if (!hasVpnAccess() && repo.isPublicConnectFailure(apiError)) {
+                    DebugLog.e("MainViewModel", "connect: no WG cache (toggle does not bootstrap)")
+                    awaitingGetconfAccess = false
+                    _subscriptionProbeActive.value = false
+                    pendingGetconfProfile = null
+                    _vpnError.value = if (!hasVpnAccess()) {
                         subscriptionRequiredMessage()
                     } else {
-                        apiError ?: "Не удалось восстановить VPN. Проверьте интернет и повторите."
+                        "Нет VPN-конфига. Закройте приложение и откройте снова."
                     }
                     _vpnState.value = VpnState.DISCONNECTED
                     return@launch
                 }
 
-                if (!isConfigConnectable(vpnConfig!!)) {
+                if (!isConfigConnectable(vpnConfig)) {
+                    awaitingGetconfAccess = false
+                    _subscriptionProbeActive.value = false
+                    pendingGetconfProfile = null
                     _vpnError.value = when {
-                        !repo.hasMainVpnServerHashes() && repo.resolveConnectVkHashes(vpnConfig!!.vk_hashes).isEmpty() ->
+                        !repo.hasMainVpnServerHashes() && repo.resolveConnectVkHashes(vpnConfig.vk_hashes).isEmpty() ->
                             "Нет серверных хешей. Перезайдите в аккаунт."
-                        vpnConfig!!.vk_hashes.isEmpty() -> "Нет VK-хеша. Введите хеш на экране входа."
-                        !hasValidWgAddress(vpnConfig!!.wg_address) -> "Некорректный WireGuard-адрес от сервера. Обновите профиль и повторите."
+                        vpnConfig.vk_hashes.isEmpty() -> "Нет VK-хеша. Введите хеш на экране входа."
+                        !hasValidWgAddress(vpnConfig.wg_address) -> "Некорректный WireGuard-адрес от сервера. Обновите профиль и повторите."
                         else -> "Нет ключей WireGuard на сервере. Перезайдите в аккаунт."
                     }
                     _vpnState.value = VpnState.DISCONNECTED
                     return@launch
                 }
 
-                val toConnect = wdttConnectConfig(resolveMainVpnConfig(vpnConfig!!))
+                val toConnect = wdttConnectConfig(resolveMainVpnConfig(vpnConfig))
                 DebugLog.i(
                     "MainViewModel",
-                    "connect fetch slot=${repo.getPreferredServer()} selected=${toConnect.selected_server} ip=${toConnect.server_ip} n=${toConnect.stream_count}",
+                    "connect cache slot=${repo.getPreferredServer()} selected=${toConnect.selected_server} ip=${toConnect.server_ip} n=${toConnect.stream_count}",
                 )
-                launchVpnService(context, toConnect)
-                pendingConnectAfterSubscriptionRefresh = false
-                viewModelScope.launch {
-                    if (!repo.isOnMobileData()) {
-                        runCatching { refreshWifiSubscriptionProfile() }
-                    }
-                }
-                waitForTunnelReady(context, toConnect.stream_count, relaunchConfig = toConnect)
+                launchVpnService(context, toConnect, requireGetconf = false)
+                pendingConnectAfterSubscriptionRefresh = !hasVpnAccess()
+                waitForTunnelReady(
+                    context,
+                    toConnect.stream_count,
+                    relaunchConfig = toConnect,
+                    requireGetconfAccess = false,
+                )
             }.onFailure {
                 if (!shouldSurfaceConnectFailure(it)) {
                     DebugLog.i("MainViewModel", "connect cancelled: ${it.message}")
+                    _subscriptionProbeActive.value = false
+                    pendingGetconfProfile = null
                     if (it is CancellationException) throw it
                     return@onFailure
                 }
                 DebugLog.e("MainViewModel", "connect failed", it)
+                _subscriptionProbeActive.value = false
+                pendingGetconfProfile = null
                 _vpnError.value = connectFailureMessage(it.message)
                 _vpnState.value = VpnState.DISCONNECTED
             }
             } catch (e: CancellationException) {
                 DebugLog.w("MainViewModel", "connect cancelled")
+                _subscriptionProbeActive.value = false
+                pendingGetconfProfile = null
                 // Не рвать уже запущенный сервис (плитка / CONNECT в процессе).
                 if (_vpnState.value == VpnState.CONNECTING && !SilentVpnService.isRunning) {
                     _vpnState.value = VpnState.DISCONNECTED
@@ -3499,7 +3696,12 @@ class MainViewModel @Inject constructor(
         )
     }
 
-    private fun launchVpnService(context: Context, config: VpnConfig, forceBootstrap: Boolean = false) {
+    private fun launchVpnService(
+        context: Context,
+        config: VpnConfig,
+        forceBootstrap: Boolean = false,
+        requireGetconf: Boolean = false,
+    ) {
         val isBootstrap = forceBootstrap || bootstrapVpnMode
         if (repo.isOlcrtcBypass()) {
             viewModelScope.launch {
@@ -3550,6 +3752,7 @@ class MainViewModel @Inject constructor(
             action = SilentVpnService.ACTION_CONNECT
             putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(wdttConfig))
             putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, isBootstrap)
+            putExtra(SilentVpnService.EXTRA_REQUIRE_GETCONF, !isBootstrap && requireGetconf)
         }
         ContextCompat.startForegroundService(context, intent)
     }
@@ -3573,9 +3776,19 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun applyRefreshVpnConfigDirect(fp: String) {
+        lastVpnConfigDenied = false
         var cfg = runCatching {
             val res = repo.getApi().getConfig(fp, repo.getPreferredServer())
-            if (res.isSuccessful) res.body() else null
+            when {
+                res.isSuccessful -> res.body()
+                res.code() == 402 || res.code() == 403 -> {
+                    if (userOwnsMainVpn()) return
+                    lastVpnConfigDenied = true
+                    applySubscriptionDeniedFromApi()
+                    return
+                }
+                else -> null
+            }
         }.getOrNull()
         if (cfg == null) {
             val res = repo.getApi().registerDevice(
@@ -3588,6 +3801,12 @@ class MainViewModel @Inject constructor(
                     repo.getPreferredServer(),
                 ),
             )
+            if (res.code() == 402 || res.code() == 403) {
+                if (userOwnsMainVpn()) return
+                lastVpnConfigDenied = true
+                applySubscriptionDeniedFromApi()
+                return
+            }
             if (!res.isSuccessful) return
             cfg = res.body()!!
         }
@@ -3606,6 +3825,12 @@ class MainViewModel @Inject constructor(
         }
         repo.cacheVpnConfig(Gson().toJson(cfg))
         repo.mergeSavedHashesIntoCachedConfig()
+        lastVpnConfigDenied = false
+        repo.setVpnAccessDenied(false)
+        cfg.client_sync?.let { bundle ->
+            repo.applyClientSync(bundle)
+            bundle.profile?.let { applyServerProfile(it, force = true) }
+        }
     }
 
     /** WG поднимается за 3–5 с; ждём до 45 с (капча/сеть). При flood — каскад auto→manual. */
@@ -3613,6 +3838,7 @@ class MainViewModel @Inject constructor(
         context: Context,
         @Suppress("UNUSED_PARAMETER") totalWorkers: Int,
         relaunchConfig: VpnConfig? = null,
+        requireGetconfAccess: Boolean = false,
     ) {
         repo.resetVkCredSessionEscalate()
         WdttTunnelManager.consumeFloodEscalate()
@@ -3637,17 +3863,28 @@ class MainViewModel @Inject constructor(
                     return
                 }
                 _vpnState.value = VpnState.CONNECTING
-                launchVpnService(context, relaunchConfig)
+                launchVpnService(context, relaunchConfig, requireGetconf = requireGetconfAccess)
             }
 
             val waitTicks = if (repo.isLegacyCaptchaStrategy()) 1200 else 450
-            var ready = WdttTunnelManager.tunnelReady.value && WdttTunnelManager.running.value
+            var ready = isTunnelReadyForConnect(requireGetconfAccess)
             var escalateEarly = false
             for (tick in 0 until waitTicks) {
                 if (ready) break
                 delay(100)
                 if (_vpnState.value != VpnState.CONNECTING) return
-                if (WdttTunnelManager.tunnelReady.value && WdttTunnelManager.running.value) {
+                val err = WdttTunnelManager.lastError.value.orEmpty()
+                if (isSubscriptionAccessError(err)) {
+                    stopVpnLocally(context)
+                    applySubscriptionDeniedFromApi()
+                    awaitingGetconfAccess = false
+                    pendingGetconfProfile = null
+                    _subscriptionProbeActive.value = false
+                    _vpnError.value = subscriptionRequiredMessage()
+                    _vpnState.value = VpnState.DISCONNECTED
+                    return
+                }
+                if (isTunnelReadyForConnect(requireGetconfAccess)) {
                     ready = true
                     break
                 }
@@ -3663,7 +3900,11 @@ class MainViewModel @Inject constructor(
                 }
             }
             if (_vpnState.value != VpnState.CONNECTING) return
-            if (ready || WdttTunnelManager.tunnelReady.value) {
+            if (ready || isTunnelReadyForConnect(requireGetconfAccess)) {
+                if (requireGetconfAccess) {
+                    awaitingGetconfAccess = false
+                    markLocalSubscriptionActiveFromGetconf()
+                }
                 _vpnState.value = VpnState.CONNECTED
                 onVpnTunnelReady()
                 return
@@ -3678,15 +3919,36 @@ class MainViewModel @Inject constructor(
             if (!escalateEarly) WdttTunnelManager.consumeFloodEscalate()
         }
 
-        val err = WdttTunnelManager.lastError.value
-            ?: WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
-            ?: "Таймаут: VPN не подключился"
+        val subDenied = isSubscriptionAccessError(WdttTunnelManager.lastError.value.orEmpty())
         stopVpnLocally(context)
         withContext(Dispatchers.IO) {
             VpnConnectHelper.ensureCleanSlate(context, force = true)
         }
-        _vpnError.value = err
+        if (requireGetconfAccess && subDenied) {
+            applySubscriptionDeniedFromApi()
+            awaitingGetconfAccess = false
+            pendingGetconfProfile = null
+            _subscriptionProbeActive.value = false
+            _vpnError.value = subscriptionRequiredMessage()
+        } else {
+            awaitingGetconfAccess = false
+            pendingGetconfProfile = null
+            _subscriptionProbeActive.value = false
+            val err = WdttTunnelManager.lastError.value
+                ?: WdttTunnelManager.stats.value.takeIf { it.isNotBlank() }
+                ?: "Таймаут: VPN не подключился"
+            _vpnError.value = err
+        }
         _vpnState.value = VpnState.DISCONNECTED
+    }
+
+    private fun isTunnelReadyForConnect(requireGetconfAccess: Boolean): Boolean {
+        if (!WdttTunnelManager.running.value) return false
+        return if (requireGetconfAccess) {
+            WdttTunnelManager.isGetconfWgUp()
+        } else {
+            WdttTunnelManager.tunnelReady.value
+        }
     }
 
     private fun isCurrentSessionDevice(d: DeviceInfo, sessionId: String, fp: String): Boolean {
@@ -3821,9 +4083,19 @@ class MainViewModel @Inject constructor(
             }
             SessionTrace.exit("MainViewModel.disconnect", "already off")
             pendingConnectAfterSubscriptionRefresh = false
+            awaitingGetconfAccess = false
+            getconfGrantedThisVpnSession = false
+            getconfConfirmStarted = false
+            pendingGetconfProfile = null
+            _subscriptionProbeActive.value = false
             return
         }
         pendingConnectAfterSubscriptionRefresh = false
+        awaitingGetconfAccess = false
+        getconfGrantedThisVpnSession = false
+        getconfConfirmStarted = false
+        pendingGetconfProfile = null
+        _subscriptionProbeActive.value = false
         connectJob?.cancel()
         connectJob = null
         disconnectJob?.cancel()
@@ -4151,13 +4423,87 @@ class MainViewModel @Inject constructor(
         stopPaymentBootstrap(appContext)
     }
 
-    private fun hasVpnAccess(): Boolean = hasVpnAccessForProfile(_profile.value)
+    /** Main VPN уже в руках пользователя (GETCONF) — HTTP bootstrap не должен его гасить. */
+    private fun userOwnsMainVpn(): Boolean {
+        if (bootstrapVpnMode || silentBootstrapSync || WdttTunnelManager.isBootstrapMode()) {
+            return false
+        }
+        if (repo.isMainVpnTunnelUp()) return true
+        if (_vpnState.value == VpnState.CONNECTED) return true
+        return _vpnState.value == VpnState.CONNECTING && SilentVpnService.isRunning
+    }
+
+    /** Тумблер в CONNECTING ещё ждёт кеш — это не захват main VPN. */
+    private fun ephemeralShouldYieldToUser(): Boolean {
+        if (WdttTunnelManager.isBootstrapMode()) return false
+        if (repo.isMainVpnTunnelUp()) return true
+        if (_vpnState.value == VpnState.CONNECTED) return true
+        return _vpnState.value == VpnState.CONNECTING && SilentVpnService.isRunning
+    }
+
+    private fun hasVpnAccess(): Boolean {
+        if (repo.isVpnAccessDenied()) {
+            val p = _profile.value
+            return p?.is_admin == true
+        }
+        return hasVpnAccessForProfile(_profile.value)
+    }
+
+    private fun shouldRequireGetconfAccess(): Boolean =
+        !hasVpnAccess() || lastVpnConfigDenied || pendingConnectAfterSubscriptionRefresh ||
+            repo.isVpnAccessDenied()
+
+    /**
+     * Тумблер: GETCONF/DTLS — второй канал сверки подписки, без HTTP и без overlay.
+     * Выдали WG — доступ есть, тумблер уже CONNECTED. DENIED обрабатывает lastError.
+     */
+    private fun markLocalSubscriptionActiveFromGetconf() {
+        if (getconfConfirmStarted) return
+        getconfConfirmStarted = true
+        lastVpnConfigDenied = false
+        pendingConnectAfterSubscriptionRefresh = false
+        getconfGrantedThisVpnSession = true
+        repo.setVpnAccessDenied(false)
+        _vpnError.value = null
+        _subscriptionProbeActive.value = false
+        val pending = pendingGetconfProfile
+        pendingGetconfProfile = null
+        val paid = when {
+            pending != null && profileHasPaidUi(pending) -> pending
+            _profile.value?.let { profileHasPaidUi(it) } == true -> _profile.value
+            else -> null
+        }
+        paid?.let {
+            applyServerProfile(it, force = true)
+            repo.saveCachedProfile(it)
+        }
+        DebugLog.i("MainViewModel", "GETCONF granted — keep main VPN, no HTTP recheck")
+    }
 
     private fun hasVpnAccessForProfile(p: UserProfile?): Boolean {
         if (p == null) return true
         if (p.is_admin) return true
         return p.subscription.is_active
     }
+
+    /** Есть чем нарисовать «Оплачено» / пробный / бессрочно — без фейка «Подписка активна». */
+    private fun profileHasPaidUi(p: UserProfile): Boolean {
+        if (p.is_admin) return true
+        val s = p.subscription
+        if (!s.is_active) return false
+        if (s.plan_type == "unlimited" || s.plan_type == "trial" || s.plan_type == "test") return true
+        return s.days_left > 0 || !s.expires_at.isNullOrBlank()
+    }
+
+    /** Main VPN уже поднят: сервер режет канал. Не гасим сами из stale-кеша «нет». */
+    private fun shouldIgnoreInactiveAfterGetconf(profile: UserProfile): Boolean {
+        if (hasVpnAccessForProfile(profile)) return false
+        if (bootstrapVpnMode || silentBootstrapSync) return false
+        return repo.isMainVpnTunnelUp()
+    }
+
+    private fun shouldKeepGetconfSessionDespiteInactiveProfile(profile: UserProfile): Boolean =
+        shouldIgnoreInactiveAfterGetconf(profile)
 
     /** Обновить UI; при истёкшей подписке на сервере — отключить main VPN. */
     private suspend fun refreshWifiSubscriptionProfile(): Boolean {
@@ -4188,6 +4534,10 @@ class MainViewModel @Inject constructor(
             repo.saveCachedProfile(profile)
             return
         }
+        if (shouldKeepGetconfSessionDespiteInactiveProfile(profile)) {
+            DebugLog.i("MainViewModel", "keep GETCONF session — ignore inactive profile")
+            return
+        }
         // Сессию удалили с сервера — не разлогиниваем: перерегистрируем устройство.
         val sid = _sessionDeviceId.value ?: repo.getSessionDeviceId()
         if (!sid.isNullOrBlank() && !sid.startsWith("boot:") && profile.devices.none { it.id == sid }) {
@@ -4198,14 +4548,27 @@ class MainViewModel @Inject constructor(
                     .onFailure { e -> DebugLog.w("MainViewModel", "session recover: ${e.message}") }
             }
             maybeCompletePaymentFromProfile(profile)
-            if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) return
+            if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) {
+                if (hasVpnAccessForProfile(profile)) repo.setVpnAccessDenied(false)
+                else repo.setVpnAccessDenied(true)
+                return
+            }
             // дальше — подписка/VPN как обычно
         } else {
             _profile.value = profile
             maybeCompletePaymentFromProfile(profile)
-            if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) return
+            if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) {
+                if (hasVpnAccessForProfile(profile)) repo.setVpnAccessDenied(false)
+                else repo.setVpnAccessDenied(true)
+                return
+            }
         }
         val hasAccess = hasVpnAccessForProfile(profile)
+        if (hasAccess) {
+            repo.setVpnAccessDenied(false)
+        } else {
+            repo.setVpnAccessDenied(true)
+        }
         val vpnFullyUp = _vpnState.value == VpnState.CONNECTED ||
             (SilentVpnService.isRunning && repo.isMainVpnApiReady())
         if (pendingConnectAfterSubscriptionRefresh && hasAccess) {
@@ -4223,6 +4586,10 @@ class MainViewModel @Inject constructor(
             _vpnError.value = null
         }
         if (vpnFullyUp && !hasAccess) {
+            if (awaitingGetconfAccess) {
+                DebugLog.i("MainViewModel", "GETCONF still confirming — ignore inactive cache")
+                return
+            }
             MobileSyncLog.w(
                 "profile",
                 "subscription inactive on server — disconnect VPN sub=${profile.subscription.plan_type}",
@@ -4276,19 +4643,21 @@ class MainViewModel @Inject constructor(
         val lower = message.lowercase()
         return lower.contains("подписка недействительна") ||
             lower.contains("срок пароля истёк") ||
+            lower.contains("срок действия пароля") ||
+            (lower.contains("истёк") && lower.contains("парол")) ||
             lower.contains("доступ запрещён") ||
             lower.contains("no_subscription")
     }
 
     private fun markLocalSubscriptionInactive() {
-        val p = _profile.value ?: return
-        if (!p.subscription.is_active) return
+        repo.setVpnAccessDenied(true)
+        val p = _profile.value ?: repo.getCachedProfile() ?: return
         val next = p.copy(
             subscription = p.subscription.copy(is_active = false, days_left = 0),
         )
         repo.saveCachedProfile(next)
         _profile.value = next
-        DebugLog.i("MainViewModel", "local subscription marked inactive (in-band GETCONF/FATAL_AUTH)")
+        DebugLog.i("MainViewModel", "local subscription marked inactive")
     }
 
     private fun isBootstrapFatalError(message: String): Boolean {

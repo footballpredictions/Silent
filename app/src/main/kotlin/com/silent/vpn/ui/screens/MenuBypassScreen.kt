@@ -157,7 +157,6 @@ fun MenuBypassScreen(
                                     }
                                 selectedServerSlot = SilentRepository.normalizePreferredServer(nextServer)
                                 repo.setPreferredServer(selectedServerSlot)
-                                repo.clearCachedVpnConfig()
                                 if (applyHint == null) applyHint = "Выбрано"
                             }
                         } finally {

@@ -94,6 +94,7 @@ object VpnTileConnect {
             putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(wdttConfig))
             putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, false)
             putExtra(SilentVpnService.EXTRA_FROM_TILE, true)
+            putExtra(SilentVpnService.EXTRA_REQUIRE_GETCONF, false)
         }
     }
 

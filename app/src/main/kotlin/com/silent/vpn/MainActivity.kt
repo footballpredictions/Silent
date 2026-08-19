@@ -139,10 +139,20 @@ class MainActivity : ComponentActivity() {
                 mutableStateOf<MainViewModel?>(if (skipSplash) requireVm() else null)
             }
             LaunchedEffect(Unit) {
-                if (bootVm != null) return@LaunchedEffect
+                if (bootVm != null) {
+                    val model = bootVm!!
+                    if (model.repository.isLoggedIn()) {
+                        model.startLaunchPrefetch(this@MainActivity)
+                    }
+                    return@LaunchedEffect
+                }
                 val minMs = if (deviceIsTv) SPLASH_MIN_TV_MS else SPLASH_MIN_PHONE_MS
                 val start = System.currentTimeMillis()
                 val model = requireVm()
+                if (model.repository.isLoggedIn()) {
+                    // Prefetch/bootstrap идут дальше уже на главном экране — splash не ждёт DTLS.
+                    model.startLaunchPrefetch(this@MainActivity)
+                }
                 val remain = minMs - (System.currentTimeMillis() - start)
                 if (remain > 0) delay(remain)
                 splashDoneThisProcess = true

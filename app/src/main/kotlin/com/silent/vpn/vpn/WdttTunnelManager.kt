@@ -114,6 +114,9 @@ object WdttTunnelManager {
     private var lastContext: Context? = null
     private var lastWgConfig: String? = null
     private var isBootstrapMode = false
+    /** Splash уже показал отзыв: WG только из GETCONF, кеш не поднимает интернет. */
+    @Volatile var requireGetconfAccess = false
+        private set
     private val wgExcludeIps = linkedSetOf<String>()
     /** CIDR/IP из пользовательских исключений сайтов (PREF_BYPASS_ROUTES). */
     private val siteBypassCidrs = linkedSetOf<String>()
@@ -156,6 +159,8 @@ object WdttTunnelManager {
     val stats = MutableStateFlow("Ожидание данных…")
     val activeWorkers = MutableStateFlow(0)
     val lastError = MutableStateFlow<String?>(null)
+    /** Живой GETCONF по DTLS (не вчерашний wg-turn.conf). Второй канал сверки подписки. */
+    val liveGetconfApplied = MutableStateFlow(false)
 
     data class Params(
         val serverIp: String,
@@ -172,7 +177,14 @@ object WdttTunnelManager {
         val isBootstrap: Boolean = false,
         /** Быстрый WG из кеша конфига (плитка QS, холодный старт). */
         val fastWgCache: Boolean = false,
+        /** Подписка отозвана локально — не применять API_CACHE, ждать GETCONF. */
+        val requireGetconfAccess: Boolean = false,
     )
+
+    fun isGetconfWgUp(): Boolean =
+        tunnelReady.value &&
+            appliedWgConfigSource == WgConfigSource.GETCONF &&
+            liveGetconfApplied.value
 
     class ApiOverlayBlockedException(message: String) : Exception(message)
 
@@ -373,6 +385,7 @@ object WdttTunnelManager {
                         clearLogs()
                         libclientStderrRing.clear()
                         tunnelReady.value = false
+                        liveGetconfApplied.value = false
                         stats.value = "Ожидание данных…"
                         activeWorkers.value = 0
                         lastError.value = null
@@ -388,6 +401,7 @@ object WdttTunnelManager {
                         lastParams = params
                         lastContext = appContext
                         isBootstrapMode = params.isBootstrap
+                        requireGetconfAccess = params.requireGetconfAccess
                         // GETCONF — основной путь; apiWgConfig — ранний подъём (1.0.160) + fallback.
                         deferredApiWgConfig = params.apiWgConfig?.trim()?.takeIf { it.contains("[Interface]") }
                         sessionVkHashes = emptyList()
@@ -404,6 +418,7 @@ object WdttTunnelManager {
                         killProcess()
                         activeWorkers.value = 0
                         stats.value = "Ожидание данных…"
+                        liveGetconfApplied.value = false
                     }
 
                     wgHelper = WireGuardHelper(appContext)
@@ -497,7 +512,11 @@ object WdttTunnelManager {
                     startWatchdog(appContext, params)
                     scheduleBootstrapApiFallback(params)
                     scheduleMainApiWgFallback(params)
-                    if (params.fastWgCache && deferredApiWgConfig != null) {
+                    if (
+                        params.fastWgCache &&
+                        !params.requireGetconfAccess &&
+                        deferredApiWgConfig != null
+                    ) {
                         scheduleWireGuardApply(deferredApiWgConfig, WgConfigSource.API_CACHE)
                     }
                     scheduleWgConfigRetry()
@@ -640,13 +659,15 @@ object WdttTunnelManager {
         confPollJob?.cancel()
         confPollJob = scope.launch {
             while (isActive && running.value && needsConfFilePoll()) {
-                readConfFile(context)?.let { conf ->
+                readLiveGetconfFile(context)?.let { conf ->
                     wgConfigPending = true
-                    updateLog("wg_file", "WireGuard конфиг из файла", 2)
+                    updateLog("wg_file", "WireGuard конфиг из GETCONF-файла", 2)
                     scheduleWireGuardApply(conf, WgConfigSource.GETCONF)
-                    if (appliedWgConfigSource == WgConfigSource.GETCONF) return@launch
+                    if (appliedWgConfigSource == WgConfigSource.GETCONF && liveGetconfApplied.value) {
+                        return@launch
+                    }
                 }
-                delay(400)
+                delay(150)
             }
         }
     }
@@ -668,11 +689,11 @@ object WdttTunnelManager {
     private fun scheduleMainApiWgFallback(params: Params) {
         mainWgFallbackJob?.cancel()
         val fallback = deferredApiWgConfig ?: return
-        if (params.isBootstrap) return
+        if (params.isBootstrap || params.requireGetconfAccess) return
         mainWgFallbackJob = scope.launch {
             if (params.fastWgCache) {
                 if (!running.value) return@launch
-                if (readConfFile(lastContext) != null) return@launch
+                if (readLiveGetconfFile(lastContext) != null) return@launch
                 if (appliedWgConfigSource == WgConfigSource.GETCONF) return@launch
                 if (tunnelReady.value && appliedWgConfigSource != WgConfigSource.NONE) return@launch
                 updateLog("wg_cache_early", "WireGuard из кеша (как 1.0.160)", 2)
@@ -688,7 +709,7 @@ object WdttTunnelManager {
             }
             delay(delayMs)
             if (!running.value) return@launch
-            if (readConfFile(lastContext) != null) return@launch
+            if (readLiveGetconfFile(lastContext) != null) return@launch
             if (appliedWgConfigSource == WgConfigSource.GETCONF) return@launch
             if (activeWorkers.value < 1) {
                 delay(5_000L)
@@ -701,9 +722,15 @@ object WdttTunnelManager {
     }
 
     private fun shouldAcceptWgApply(source: WgConfigSource, configOverride: String?): Boolean {
+        if (requireGetconfAccess && source != WgConfigSource.GETCONF) return false
         if (!tunnelReady.value) return true
         if (wgSourceRank(source) > wgSourceRank(appliedWgConfigSource)) return true
-        val normalized = configOverride?.trim() ?: readConfFile(lastContext)?.trim()
+        val normalized = configOverride?.trim()
+            ?: if (source == WgConfigSource.GETCONF) {
+                readLiveGetconfFile(lastContext)?.trim()
+            } else {
+                readConfFile(lastContext)?.trim()
+            }
         return source == WgConfigSource.GETCONF &&
             !normalized.isNullOrBlank() &&
             normalized != lastWgConfig
@@ -711,12 +738,12 @@ object WdttTunnelManager {
 
     /** Как reference: WG когда libclient выдал GETCONF (файл/stdout). */
     private fun tryApplyWireGuardUp() {
-        if (tunnelReady.value && appliedWgConfigSource == WgConfigSource.GETCONF) return
-        readConfFile(lastContext)?.let {
+        if (tunnelReady.value && appliedWgConfigSource == WgConfigSource.GETCONF && liveGetconfApplied.value) return
+        readLiveGetconfFile(lastContext)?.let {
             scheduleWireGuardApply(it, WgConfigSource.GETCONF)
             return
         }
-        if (isBootstrapMode) {
+        if (isBootstrapMode && !requireGetconfAccess) {
             scheduleWireGuardApply(source = WgConfigSource.API_CACHE)
         }
     }
@@ -740,7 +767,11 @@ object WdttTunnelManager {
             wgApplyScheduled = false
             if (!running.value) return@launch
             val conf = pendingWgConfigOverride
-                ?: readConfFile(lastContext)
+                ?: if (source == WgConfigSource.GETCONF) {
+                    readLiveGetconfFile(lastContext)
+                } else {
+                    readConfFile(lastContext)
+                }
                 ?: if (isBootstrapMode && source == WgConfigSource.API_CACHE) {
                     deferredApiWgConfig?.trim()?.takeIf { it.contains("[Interface]") }
                 } else {
@@ -766,11 +797,17 @@ object WdttTunnelManager {
         wgConfigRetryJob = scope.launch {
             repeat(90) {
                 if (!running.value) return@launch
-                if (tunnelReady.value && appliedWgConfigSource == WgConfigSource.GETCONF) return@launch
-                if (activeWorkers.value >= 1) {
-                    scheduleWireGuardApply(source = WgConfigSource.GETCONF)
+                if (tunnelReady.value && appliedWgConfigSource == WgConfigSource.GETCONF && liveGetconfApplied.value) {
+                    return@launch
                 }
-                if (tunnelReady.value && appliedWgConfigSource == WgConfigSource.GETCONF) return@launch
+                if (activeWorkers.value >= 1) {
+                    readLiveGetconfFile(lastContext)?.let {
+                        scheduleWireGuardApply(it, WgConfigSource.GETCONF)
+                    }
+                }
+                if (tunnelReady.value && appliedWgConfigSource == WgConfigSource.GETCONF && liveGetconfApplied.value) {
+                    return@launch
+                }
                 delay(500)
             }
         }
@@ -910,7 +947,7 @@ object WdttTunnelManager {
                         if (lineTrim.contains("Конфиг получен")) {
                             scope.launch {
                                 delay(300)
-                                readConfFile(lastContext)?.let {
+                                readLiveGetconfFile(lastContext)?.let {
                                     scheduleWireGuardApply(it, WgConfigSource.GETCONF)
                                 }
                             }
@@ -1152,7 +1189,7 @@ object WdttTunnelManager {
                         wgConfigPending = true
                         scope.launch {
                             delay(400)
-                            readConfFile(lastContext)?.let {
+                            readLiveGetconfFile(lastContext)?.let {
                                 scheduleWireGuardApply(it, WgConfigSource.GETCONF)
                             }
                         }
@@ -1194,17 +1231,23 @@ object WdttTunnelManager {
         }
     }
 
-    private fun readConfFile(context: Context?): String? {
+    private fun readConfFile(context: Context?, onlyAfterProcessStart: Boolean = false): String? {
         if (context == null) return null
         for (name in listOf("wg-turn.conf", "wg.conf")) {
             val f = File(context.filesDir, name)
-            if (f.exists() && f.length() > 20) {
-                val text = runCatching { f.readText().trim() }.getOrNull()
-                if (!text.isNullOrBlank() && text.contains("[Interface]")) return text
+            if (!f.exists() || f.length() <= 20) continue
+            if (onlyAfterProcessStart && processStartedAtMs > 0L && f.lastModified() <= processStartedAtMs) {
+                continue
             }
+            val text = runCatching { f.readText().trim() }.getOrNull()
+            if (!text.isNullOrBlank() && text.contains("[Interface]")) return text
         }
         return null
     }
+
+    /** Живой GETCONF: файл только после старта libclient, не вчерашний кеш. */
+    private fun readLiveGetconfFile(context: Context?): String? =
+        readConfFile(context, onlyAfterProcessStart = true)
 
     private fun resolveHashForGroup(groupId: Int): String? {
         groupHashPrefix[groupId]?.let { prefix ->
@@ -1287,6 +1330,10 @@ object WdttTunnelManager {
                         )
                     }
                     appliedWgConfigSource = source
+                    if (source == WgConfigSource.GETCONF) {
+                        requireGetconfAccess = false
+                        liveGetconfApplied.value = true
+                    }
                     tunnelReady.value = true
                     wgConfigPending = false
                     lastWgApplyAtMs = System.currentTimeMillis()
@@ -1501,7 +1548,7 @@ object WdttTunnelManager {
                     if (trafficMb < ZERO_TRAFFIC_MB_THRESHOLD) {
                         if (zeroTrafficSince == 0L) zeroTrafficSince = System.currentTimeMillis()
                         else if (System.currentTimeMillis() - zeroTrafficSince > ZERO_TRAFFIC_RESTART_MS) {
-                            val freshConf = readConfFile(context)
+                            val freshConf = readLiveGetconfFile(context)
                             if (freshConf != null) {
                                 updateLog("wg_getconf_upgrade", "WireGuard: GETCONF вместо кеша", 2)
                                 applyWireGuard(freshConf, WgConfigSource.GETCONF, forceReapply = true)
@@ -1927,10 +1974,12 @@ object WdttTunnelManager {
     fun clearStaleSession() {
         running.value = false
         tunnelReady.value = false
+        liveGetconfApplied.value = false
         activeWorkers.value = 0
         stats.value = ""
         lastError.value = null
         isBootstrapMode = false
+        requireGetconfAccess = false
     }
 
     private suspend fun stopInternal() {
@@ -1942,6 +1991,7 @@ object WdttTunnelManager {
         lastWgApplyAtMs = 0L
         // После login bootstrap флаг иначе залипает → isMainVpnSessionForUi=false → экран входа.
         isBootstrapMode = false
+        requireGetconfAccess = false
         wgApplyJob?.cancel()
         wgApplyScheduled = false
         cancelAllCaptchaSolvers()
@@ -1960,6 +2010,7 @@ object WdttTunnelManager {
             wgApplyJob?.cancel()
             running.value = false
             tunnelReady.value = false
+            liveGetconfApplied.value = false
             activeWorkers.value = 0
             stats.value = ""
             lastError.value = null

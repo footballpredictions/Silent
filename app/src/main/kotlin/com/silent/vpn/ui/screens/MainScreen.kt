@@ -283,6 +283,7 @@ fun MainScreen(
     repo: com.silent.vpn.data.SilentRepository,
     sessionDeviceId: String? = null,
     vpnError: String?,
+    subscriptionProbeActive: Boolean = false,
     onToggle: () -> Unit,
     onLogout: () -> Unit,
     onClearVpnError: () -> Unit,
@@ -630,9 +631,28 @@ fun MainScreen(
                     }
                     profile?.subscription?.is_active == true -> {
                         Text("Оплачено", color = statusGreen, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "до ${profile.subscription.expires_at?.take(10)?.split("-")?.reversed()?.joinToString(".")}",
-                            color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
+                        val expires = profile.subscription.expires_at
+                            ?.take(10)
+                            ?.split("-")
+                            ?.reversed()
+                            ?.joinToString(".")
+                            ?.takeIf { it.isNotBlank() && it != "null" }
+                        when {
+                            !expires.isNullOrBlank() -> Text(
+                                "до $expires",
+                                color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
+                            )
+                            profile.subscription.days_left > 0 -> Text(
+                                "осталось ${profile.subscription.days_left} дн.",
+                                color = fg.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                    }
+                    subscriptionProbeActive -> {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = fg.copy(alpha = 0.5f),
                         )
                     }
                     else -> {

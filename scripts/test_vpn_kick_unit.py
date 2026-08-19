@@ -280,9 +280,10 @@ def test_safe_deny_ip_and_wdtt_identities():
     assert is_safe_deny_ip("10.66.0.25")
     assert is_safe_deny_ip("10.66.2.104/32")
     assert not is_safe_deny_ip("10.66.66.1")
+    assert not is_safe_deny_ip("10.66.66.2")
     assert not is_safe_deny_ip("8.8.8.8")
     assert not is_safe_deny_ip("")
-    assert collect_ips("10.66.0.25/32", "10.66.66.1", "nope") == {"10.66.0.25"}
+    assert collect_ips("10.66.0.25/32", "10.66.66.1", "10.66.66.2", "nope") == {"10.66.0.25"}
     blob = {
         "devices": {
             "boot:abc": {"ip": "10.66.0.2", "pub_key": "x"},
@@ -294,6 +295,14 @@ def test_safe_deny_ip_and_wdtt_identities():
     assert "boot:abc" not in got
     assert got["dev-1"]["ip"] == "10.66.0.25"
     assert "ip" not in got.get("dev-2", {})
+    from app.services.vpn_deny_net import unpaid_ips_from_wdtt_only
+
+    mixed = {
+        "dev-1": {"ip": "10.66.0.25"},
+        "dev-2": {"ip": "10.66.66.2"},
+        "dev-3": {"ip": "10.66.5.144"},
+    }
+    assert unpaid_ips_from_wdtt_only(mixed) == {"10.66.0.25", "10.66.5.144"}
 
 
 if __name__ == "__main__":

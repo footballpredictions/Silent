@@ -19,9 +19,16 @@ logger = logging.getLogger(__name__)
 
 CHAIN = "SILENT_DENY"
 _DENY_NET = ipaddress.ip_network("10.66.0.0/16")
-_PROTECTED = frozenset({"10.66.66.1", "10.66.66.0", "0.0.0.0"})
+# 10.66.66.2 — дефолт manifest, если у устройства нет своего адреса; DROP его роняет чужих.
+_PROTECTED = frozenset({"10.66.66.1", "10.66.66.0", "10.66.66.2", "0.0.0.0"})
 _WDTT_PASSWORDS = "/etc/wdtt/passwords.json"
 _NSENTER_HELPER = "silent-nsenter"
+_last_queen_ips: frozenset[str] | None = None
+_DISABLE_SH = (
+    f"iptables -F {CHAIN} 2>/dev/null || true; "
+    f"while iptables -C FORWARD -j {CHAIN} 2>/dev/null; do "
+    f"iptables -D FORWARD -j {CHAIN} || break; done"
+)
 
 
 def is_safe_deny_ip(ip: str | None) -> bool:
@@ -44,6 +51,18 @@ def collect_ips(*values: str | None) -> set[str]:
         if is_safe_deny_ip(raw):
             out.add(raw)
     return out
+
+
+def unpaid_ips_from_wdtt_only(idents: dict[str, dict[str, str]]) -> set[str]:
+    """Только inner-IP из passwords.json. Не брать wg_address / leftover live."""
+    ips: set[str] = set()
+    for rec in idents.values():
+        if not isinstance(rec, dict):
+            continue
+        ip = (rec.get("ip") or "").strip().split("/", 1)[0]
+        if is_safe_deny_ip(ip):
+            ips.add(ip)
+    return ips
 
 
 def identities_from_wdtt_db(blob: dict, device_ids: list[str]) -> dict[str, dict[str, str]]:
@@ -167,21 +186,39 @@ def _iptables_sync_script(ips: set[str]) -> str:
     return " ; ".join(lines)
 
 
+def disable_queen_deny() -> None:
+    """Снять SILENT_DENY с FORWARD. Не рестартит wdtt."""
+    global _last_queen_ips
+    try:
+        _nsenter(_DISABLE_SH, timeout=20)
+    except Exception as e:
+        logger.warning("silent deny disable failed: %s", e)
+        return
+    _last_queen_ips = frozenset()
+
+
 def sync_queen_deny_ips(ips: set[str]) -> int:
     """Rebuild host FORWARD chain. Empty set = nobody denied (fail-open)."""
-    safe = {ip for ip in ips if is_safe_deny_ip(ip)}
+    global _last_queen_ips
+    safe = frozenset(ip for ip in ips if is_safe_deny_ip(ip))
+    if _last_queen_ips is not None and safe == _last_queen_ips:
+        return len(safe)
+    if not safe:
+        disable_queen_deny()
+        return 0
     try:
-        r = _nsenter(_iptables_sync_script(safe), timeout=30)
+        r = _nsenter(_iptables_sync_script(set(safe)), timeout=30)
     except Exception as e:
         logger.warning("silent deny sync failed: %s", e)
         return 0
     if r.returncode != 0:
         logger.warning("silent deny sync rc=%s %s", r.returncode, (r.stderr or "")[:200])
         return 0
-    if safe:
-        logger.warning("silent deny queen ips=%s", len(safe))
+    _last_queen_ips = safe
+    logger.warning("silent deny queen ips=%s", len(safe))
     return len(safe)
 
 
 def cell_sync_script(ips: set[str]) -> str:
+    """Только локально на ноде. Улей не должен пушить этот скрипт на соты."""
     return _iptables_sync_script(ips)

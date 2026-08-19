@@ -55,6 +55,13 @@ def watch_device_revoke(device_id, *, node_key: str = "") -> None:
         _watch_node[did] = node_key
 
 
+def clear_device_revoke_watch(device_id) -> None:
+    did = str(device_id)
+    _watch_until.pop(did, None)
+    _watch_node.pop(did, None)
+    _bound_extras.pop(did, None)
+
+
 def device_is_watched(device_id) -> bool:
     until = _watch_until.get(str(device_id), 0.0)
     return time.monotonic() < until
@@ -568,10 +575,11 @@ async def refresh_peer_snapshots(db: AsyncSession) -> None:
 
 
 async def sync_unpaid_deny_net(db: AsyncSession) -> int:
-    """DROP inner WG IPs of unpaid devices. GETCONF can re-add the peer; FORWARD still dies.
+    """DROP inner WG IPs of unpaid devices on the queen only.
 
-    IPs come from wdtt passwords.json (the address GETCONF actually issues) plus DB.
-    Empty unpaid set flushes the chain (paid users get internet back).
+    IPs come only from wdtt passwords.json (the address GETCONF actually issues).
+    Do not use DB wg_address / leftover live IPs and do not SSH the set onto cells:
+    that blocked the API event loop and dropped paying users (2026-08-19).
     """
     from app.services.subscription_service import (
         has_live_test_plan,
@@ -580,10 +588,9 @@ async def sync_unpaid_deny_net(db: AsyncSession) -> int:
         user_in_test_mode,
     )
     from app.services.vpn_deny_net import (
-        cell_sync_script,
-        collect_ips,
         read_host_wdtt_identities,
         sync_queen_deny_ips,
+        unpaid_ips_from_wdtt_only,
     )
 
     result = await db.execute(select(Device).where(Device.is_active == True))  # noqa: E712
@@ -617,37 +624,37 @@ async def sync_unpaid_deny_net(db: AsyncSession) -> int:
         unpaid.append(device)
     _ensure_nsenter_helper()
     idents = read_host_wdtt_identities([str(d.id) for d in unpaid])
-    ips: set[str] = set()
-    for device in unpaid:
-        rec = idents.get(str(device.id)) or {}
-        ips |= collect_ips(
-            rec.get("ip"),
-            device.wg_address,
-            getattr(device, "wg_live_address", None),
-        )
+    ips = unpaid_ips_from_wdtt_only(idents)
+    for rec in idents.values():
         pub = rec.get("pub") or ""
         if _valid_wg_pub(pub):
             kick_wg_peer_on_queen(pub, force=True)
-        if rec.get("ip"):
-            kick_wg_peer_on_queen("", allowed_ip=rec["ip"], force=True)
-    n = sync_queen_deny_ips(ips)
-    cells = (
-        await db.execute(select(HiveCell).where(HiveCell.is_queen == False))  # noqa: E712
-    ).scalars().all()
-    for cell in cells:
-        host = (cell.public_ip or "").strip()
-        pwd = resolve_ssh_password(cell) if host else ""
-        if not host or not pwd:
-            continue
+        ip = rec.get("ip") or ""
+        if ip:
+            kick_wg_peer_on_queen("", allowed_ip=ip, force=True)
+    return sync_queen_deny_ips(ips)
+
+
+async def restore_user_vpn_dataplane(db: AsyncSession, user: User) -> None:
+    """После выдачи подписки/теста: снять watch и DROP, обновить manifest сот."""
+    result = await db.execute(select(Device).where(Device.user_id == user.id))
+    cell_ids: set = set()
+    for device in result.scalars().all():
+        clear_device_revoke_watch(device.id)
+        if device.cell_id is not None:
+            cell_ids.add(device.cell_id)
+    from app.services.hive_cell_sync import invalidate_manifest_cache, sync_cell_manifest_by_id
+
+    invalidate_manifest_cache()
+    for cid in cell_ids:
         try:
-            client = _ssh_connect(host, pwd)
-            try:
-                ssh_run(client, cell_sync_script(ips), timeout=25)
-            finally:
-                client.close()
+            await sync_cell_manifest_by_id(db, cid)
         except Exception as e:
-            logger.warning("silent deny cell %s: %s", host, e)
-    return n
+            logger.warning("manifest push after restore failed: %s", e)
+    try:
+        await sync_unpaid_deny_net(db)
+    except Exception as e:
+        logger.warning("silent deny after restore: %s", e)
 
 
 async def kick_user_vpn_sessions(db: AsyncSession, user: User) -> int:
@@ -793,10 +800,16 @@ async def kick_connected_without_subscription(db: AsyncSession) -> int:
                 await sync_cell_manifest_by_id(db, cid)
             except Exception as e:
                 logger.warning("manifest push after sweeper kick failed: %s", e)
-    try:
-        await sync_unpaid_deny_net(db)
-    except Exception as e:
-        logger.warning("silent deny sweeper: %s", e)
+    if not getattr(kick_connected_without_subscription, "_deny_fail_open", False):
+        try:
+            from app.services.vpn_deny_net import disable_queen_deny
+
+            _ensure_nsenter_helper()
+            disable_queen_deny()
+            logger.warning("silent deny fail-open: queen SILENT_DENY removed")
+        except Exception as e:
+            logger.warning("silent deny fail-open: %s", e)
+        kick_connected_without_subscription._deny_fail_open = True  # type: ignore[attr-defined]
     return kicked
 
 

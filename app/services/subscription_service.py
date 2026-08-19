@@ -281,6 +281,12 @@ async def enroll_user_in_test_mode(db: AsyncSession, user: User) -> Subscription
     db.add(subscription)
     await db.commit()
     await db.refresh(subscription)
+    try:
+        from app.services.vpn_kick import restore_user_vpn_dataplane
+
+        await restore_user_vpn_dataplane(db, user)
+    except Exception as e:
+        logger.warning("enroll test: restore dataplane failed: %s", e)
     return subscription
 
 
@@ -489,6 +495,12 @@ async def grant_manual_subscription(
     db.add(subscription)
     await db.commit()
     await db.refresh(subscription)
+    try:
+        from app.services.vpn_kick import restore_user_vpn_dataplane
+
+        await restore_user_vpn_dataplane(db, user)
+    except Exception as e:
+        logger.warning("grant: restore dataplane failed: %s", e)
     return subscription
 
 

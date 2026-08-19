@@ -156,7 +156,9 @@ def kick_wg_peers_by_ip(allowed_ip: str) -> bool:
 
 
 _DENY_CHAIN = "SILENT_DENY"
-_DENY_PROTECTED = frozenset({"10.66.66.1", "10.66.66.0", "0.0.0.0"})
+_DENY_PROTECTED = frozenset({"10.66.66.1", "10.66.66.0", "10.66.66.2", "0.0.0.0"})
+_last_deny_ips: frozenset[str] | None = None
+_deny_bootstrapped = False
 
 
 def _safe_deny_ip(ip: str) -> bool:
@@ -204,9 +206,9 @@ def _wdtt_local_identities(device_ids: list[str]) -> dict[str, dict[str, str]]:
 
 
 def denied_ips_from_manifest(manifest: dict | None = None) -> set[str]:
+    """Только local passwords.json ∩ vpn_allowed=false. Manifest wg_address не брать."""
     m = manifest or _load_manifest() or {}
     ids: list[str] = []
-    ips: set[str] = set()
     for d in m.get("devices") or []:
         if not isinstance(d, dict):
             continue
@@ -215,24 +217,50 @@ def denied_ips_from_manifest(manifest: dict | None = None) -> set[str]:
         did = str(d.get("id") or "")
         if did and not did.startswith("boot:"):
             ids.append(did)
-        addr = (d.get("wg_address") or "").strip().split("/", 1)[0]
-        if _safe_deny_ip(addr):
-            ips.add(addr)
+    ips: set[str] = set()
     for rec in _wdtt_local_identities(ids).values():
         ip = rec.get("ip") or ""
         if _safe_deny_ip(ip):
             ips.add(ip)
-        pub = rec.get("pub") or ""
-        if pub:
-            kick_wg_peer(pub)
-        if ip:
-            kick_wg_peers_by_ip(ip)
     return ips
 
 
+def _disable_silent_deny() -> None:
+    subprocess.run(["iptables", "-F", _DENY_CHAIN], capture_output=True, timeout=5)
+    while True:
+        check = subprocess.run(
+            ["iptables", "-C", "FORWARD", "-j", _DENY_CHAIN],
+            capture_output=True,
+            timeout=5,
+        )
+        if check.returncode != 0:
+            break
+        rm = subprocess.run(
+            ["iptables", "-D", "FORWARD", "-j", _DENY_CHAIN],
+            capture_output=True,
+            timeout=5,
+        )
+        if rm.returncode != 0:
+            break
+
+
 def sync_silent_deny(manifest: dict | None = None) -> int:
-    """DROP GETCONF inner IPs for vpn_allowed=false. Does not restart wdtt."""
-    ips = sorted(denied_ips_from_manifest(manifest))
+    """DROP GETCONF inner IPs for vpn_allowed=false. Does not restart wdtt.
+
+    Не -F цепочку каждый цикл: это подмораживало платящих на dataplane.
+    """
+    global _last_deny_ips, _deny_bootstrapped
+    ips = frozenset(denied_ips_from_manifest(manifest))
+    if not _deny_bootstrapped:
+        _disable_silent_deny()
+        _deny_bootstrapped = True
+        _last_deny_ips = frozenset()
+    if _last_deny_ips is not None and ips == _last_deny_ips:
+        return len(ips)
+    if not ips:
+        _disable_silent_deny()
+        _last_deny_ips = frozenset()
+        return 0
     try:
         subprocess.run(["iptables", "-N", _DENY_CHAIN], capture_output=True, timeout=5)
     except Exception:
@@ -249,7 +277,7 @@ def sync_silent_deny(manifest: dict | None = None) -> int:
             capture_output=True,
             timeout=5,
         )
-    for ip in ips:
+    for ip in sorted(ips):
         subprocess.run(
             ["iptables", "-A", _DENY_CHAIN, "-s", f"{ip}/32", "-j", "DROP"],
             capture_output=True,
@@ -260,8 +288,8 @@ def sync_silent_deny(manifest: dict | None = None) -> int:
             capture_output=True,
             timeout=5,
         )
-    if ips:
-        logger.warning("silent deny cell ips=%s", len(ips))
+    _last_deny_ips = ips
+    logger.warning("silent deny cell ips=%s", len(ips))
     return len(ips)
 
 
@@ -379,21 +407,33 @@ def gc_stale_local_peers(*, grace_sec: float = NEVER_HS_GC_GRACE_SEC, limit: int
 
 
 def enforce_denied_manifest_peers(manifest: dict | None = None) -> int:
-    """Каждый цикл: нет vpn_allowed → снять ключ и все peer’ы с тем же IP."""
+    """Каждый цикл: нет vpn_allowed → снять ключ и peer с IP из local json, не из default wg_address."""
     m = manifest or _load_manifest()
     if not m:
         return 0
-    applied = 0
+    ids: list[str] = []
+    pubs: list[str] = []
     for d in m.get("devices") or []:
         if not isinstance(d, dict):
             continue
         if bool(d.get("vpn_allowed", True)):
             continue
+        did = str(d.get("id") or "")
+        if did and not did.startswith("boot:"):
+            ids.append(did)
         pub = (d.get("wg_public_key") or "").strip()
-        addr = (d.get("wg_address") or "").strip()
+        if pub and len(pub) >= 40:
+            pubs.append(pub)
+    applied = 0
+    for pub in pubs:
+        if kick_wg_peer(pub):
+            applied += 1
+    for rec in _wdtt_local_identities(ids).values():
+        pub = rec.get("pub") or ""
+        ip = rec.get("ip") or ""
         if pub and len(pub) >= 40 and kick_wg_peer(pub):
             applied += 1
-        if addr and kick_wg_peers_by_ip(addr):
+        if ip and _safe_deny_ip(ip) and kick_wg_peers_by_ip(ip):
             applied += 1
     return applied
 
@@ -420,8 +460,6 @@ def apply_manifest_peers(manifest: dict | None = None) -> int:
         addr = (d.get("wg_address") or "").strip()
         if not allowed_flag:
             if pub and len(pub) >= 40 and kick_wg_peer(pub):
-                applied += 1
-            if addr and kick_wg_peers_by_ip(addr):
                 applied += 1
             continue
         if not pub or len(pub) < 40:

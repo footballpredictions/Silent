@@ -830,6 +830,18 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-19 — Grant не снимал SILENT_DENY: my@silent27-99.ru не поднимался
+
+- После «Нет» в DROP остались GETCONF IP (`10.66.9.194/250`, `10.66.10.56`). Выдача monthly/unlimited/теста kick не отменяла и iptables не чистила — тумблер и смена сервера бесполезны.
+- Сейчас у аккаунта тест активен (`keep_dataplane=true`), устройства на Улье. Цепочку с Улья сняли, wdtt не трогали.
+- Код: `grant` / enroll test → `restore_user_vpn_dataplane` (снять watch + пересобрать deny без этих IP + manifest).
+
+### 2026-08-19 — SILENT_DENY ронял чужие аккаунты
+
+- Sweeper ~10 с синхронно SSH на обе соты и делал `iptables -F SILENT_DENY` на живом FORWARD. Это блокировало event loop API (туннель `10.66.66.1:8000` вис у всех) и подмораживало dataplane.
+- В DROP попадали leftover `wg_address` / `wg_live_address` и дефолт manifest `10.66.66.2`, не только `passwords.json` unpaid device.
+- Фикс: deny только json-IP на Улье, без SSH на соты; sweeper больше не пересобирает цепочку (fail-open снять `SILENT_DENY`); cell-agent не `-F` если набор IP тот же. **wdtt не рестартим.**
+
 ### 2026-08-19 — Отзыв подписки: DROP inner-IP, без рестарта wdtt
 
 - GETCONF с master-паролем всегда `upsert` того же peer из `/etc/wdtt/passwords.json` — kick WG не держит. Поле в конфиге читают только новые клиенты.

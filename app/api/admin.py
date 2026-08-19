@@ -141,7 +141,7 @@ async def get_stats(
             active_subs += 1
 
     from app.services.peak_online import record_online_peak
-    from app.services.hive_service import connected_devices_by_cell
+    from app.services.hive_service import connected_devices_by_cell, list_cells_with_stats
     from app.models.hive_cell import HiveCell
     from app.services.hive_slots import assign_online_to_cell_id, node_title_for_slot, slot_for_cell
 
@@ -151,7 +151,9 @@ async def get_stats(
     slot_to_id = {slot_for_cell(c): c.id for c in hive_cells if slot_for_cell(c)}
     id_to_slot = {c.id: slot_for_cell(c) or "server1" for c in hive_cells}
 
-    _by_node, connected_devices = await connected_devices_by_cell(db)
+    _by_node, _db_connected = await connected_devices_by_cell(db)
+    hive_online_cards = await list_cells_with_stats(db)
+    connected_devices = sum(int(c.get("online_count") or 0) for c in hive_online_cards)
     peak_online, peak_online_at = await record_online_peak(db, int(connected_devices or 0))
     total_users = len(all_users)
 

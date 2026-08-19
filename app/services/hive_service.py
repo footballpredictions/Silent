@@ -760,11 +760,14 @@ def cell_to_response(
     load: dict | None = None,
     capacity: dict | None = None,
 ) -> dict:
+    wg_live = None
+    if isinstance(load, dict) and "wg_peers_live_3m" in load:
+        wg_live = int(load.get("wg_peers_live_3m") or 0)
     online_shown = node_online_shown(
         is_queen=bool(cell.is_queen),
         db_online=int(online_count or 0),
-        wg_live=0,
-        wg_live_known=None,
+        wg_live=wg_live,
+        wg_live_known=load.get("wg_peers_live_known") if isinstance(load, dict) else None,
     )
     total_online = online_shown
     out = {
@@ -837,7 +840,7 @@ async def list_cells_with_stats(db: AsyncSession) -> list[dict]:
 
                 load.update(queen_wg_peer_counts())
             except Exception:
-                load.setdefault("wg_peers_live_3m", 0)
+                pass
         else:
             load = worker_load_map.get(cell.id)
         capacity = (await get_capacity_profile(db, cell, load=load, online_count=online)).to_dict()

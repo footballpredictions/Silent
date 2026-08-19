@@ -100,8 +100,11 @@ def node_online_shown(
     *,
     is_queen: bool,
     db_online: int,
-    wg_live: int = 0,
+    wg_live: int | None = None,
     wg_live_known: int | None = None,
 ) -> int:
-    """Карточка ноды = онлайн этой ноды из БД (без WG-мусора). wg_* только диагностика."""
+    """Карточка ноды = live WG peer'ы (handshake < 3 мин). Нет метрики ноды — запасной счётчик из БД."""
+    _ = is_queen, wg_live_known
+    if wg_live is not None:
+        return max(0, int(wg_live))
     return max(0, int(db_online or 0))

@@ -187,7 +187,7 @@ function CellLoadGrid({
     </div>
     {typeof cell.load.wg_peers_total === 'number' && (
       <p className="text-[11px] text-[#777] mt-2">
-        WG peer’ы (не онлайн): {cell.load.wg_peers_total} · never-hs {cell.load.wg_peers_never_hs ?? 0} · live {cell.load.wg_peers_live_3m ?? 0}
+        WG peer’ы: {cell.load.wg_peers_total} · never-hs {cell.load.wg_peers_never_hs ?? 0} · live {cell.load.wg_peers_live_3m ?? 0} (онлайн)
         {typeof cell.load.wg_peers_live_known === 'number' ? ` · свои ${cell.load.wg_peers_live_known}` : ''}
         {(cell.load.wg_gc_last_removed ?? 0) > 0 ? ` · gc −${cell.load.wg_gc_last_removed}` : ''}
       </p>

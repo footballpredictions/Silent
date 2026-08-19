@@ -33,6 +33,53 @@ def device_limit_error() -> ValueError:
     )
 
 
+def is_bootstrap_device_ref(device_ref: str) -> bool:
+    """Pre-login GETCONF (boot:fingerprint) must still get a WG config."""
+    ref = (device_ref or "").strip()
+    return (not ref) or ref == "unknown" or ref.startswith("boot:")
+
+
+async def lookup_device_vpn_access(db: AsyncSession, device_ref: str) -> dict:
+    """Subscription gate for GETCONF. No online/kick side effects."""
+    from app.services.subscription_service import user_has_active_subscription
+
+    if is_bootstrap_device_ref(device_ref):
+        return {"ok": True, "subscription_active": True, "vpn_allowed": True}
+
+    device = None
+    try:
+        device_uuid = uuid.UUID(device_ref.strip())
+    except (ValueError, AttributeError, TypeError):
+        device_uuid = None
+
+    if device_uuid is not None:
+        result = await db.execute(
+            select(Device).where(Device.id == device_uuid, Device.is_active == True)
+        )
+        device = result.scalar_one_or_none()
+
+    if device is None:
+        result = await db.execute(
+            select(Device).where(
+                Device.device_fingerprint == device_ref.strip(),
+                Device.is_active == True,
+            )
+        )
+        device = result.scalar_one_or_none()
+
+    if device is None:
+        return {"ok": False, "subscription_active": False, "vpn_allowed": False}
+
+    user_result = await db.execute(select(User).where(User.id == device.user_id))
+    user = user_result.scalar_one_or_none()
+    sub_active = False
+    vpn_allowed = False
+    if user is not None:
+        sub_active = await user_has_active_subscription(user, db)
+        vpn_allowed = bool(user.is_admin or sub_active)
+    return {"ok": True, "subscription_active": sub_active, "vpn_allowed": vpn_allowed}
+
+
 def _device_has_preferred_server() -> bool:
     return hasattr(Device, "preferred_server")
 
@@ -360,7 +407,7 @@ async def set_device_online(
         sub_active = await user_has_active_subscription(user, db)
         vpn_allowed = bool(user.is_admin or sub_active)
 
-    if online and _disconnect_latch_active(
+    if online and vpn_allowed and _disconnect_latch_active(
         device_ref,
         str(device.id),
         device.device_fingerprint or "",
@@ -368,6 +415,7 @@ async def set_device_online(
         logger.debug("ignore wdtt online=true — client disconnect latch active for %s", device_ref)
         return {"ok": True, "subscription_active": sub_active, "vpn_allowed": vpn_allowed}
 
+    prev_last_connected = device.last_connected
     device.is_connected = bool(online)
     if online:
         device.last_connected = datetime.utcnow()
@@ -388,6 +436,15 @@ async def set_device_online(
         from app.services.peak_online import record_online_peak
 
         await record_online_peak(db)
+    if online and not vpn_allowed and not (device.device_fingerprint or "").startswith("boot:"):
+        try:
+            from app.services.vpn_kick import kick_if_subscription_denied
+
+            await kick_if_subscription_denied(
+                db, device, session_last_connected=prev_last_connected,
+            )
+        except Exception as e:
+            logger.warning("unpaid online kick failed device=%s: %s", device.id, e)
     return {"ok": True, "subscription_active": sub_active, "vpn_allowed": vpn_allowed}
 
 

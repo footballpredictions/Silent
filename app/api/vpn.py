@@ -21,6 +21,7 @@ from app.schemas.vpn import (
     HashRefreshRequest,
     HashFailureReportRequest,
     InternalOnlineRequest,
+    InternalAccessRequest,
     InternalOnlineResponse,
     ThreatFilterMetaRequest,
     VpsCleanupMetaRequest,
@@ -429,6 +430,12 @@ async def disconnect(
     )
     device = result.scalar_one_or_none()
     if device:
+        try:
+            from app.services.vpn_kick import remember_device_live_peer
+
+            await remember_device_live_peer(db, device)
+        except Exception:
+            pass
         device.is_connected = False
         await db.commit()
         mark_client_disconnect_latch(str(device.id), device.device_fingerprint or "")
@@ -468,6 +475,20 @@ async def internal_online(
         if cell:
             await hive_service.refresh_cell_load(db, cell)
             await db.commit()
+    return InternalOnlineResponse(**result)
+
+
+@router.post("/internal/access", response_model=InternalOnlineResponse)
+async def internal_access(
+    req: InternalAccessRequest,
+    x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    """GETCONF gate: vpn_allowed without marking the device online."""
+    _require_internal_secret(x_internal_secret)
+    from app.services.vpn_service import lookup_device_vpn_access
+
+    result = await lookup_device_vpn_access(db, req.device_id.strip())
     return InternalOnlineResponse(**result)
 
 

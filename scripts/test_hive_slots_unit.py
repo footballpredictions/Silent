@@ -85,10 +85,12 @@ def test_device_on_node_default_server1_stays_on_cell():
     )
 
 
-def test_node_online_shown_is_db_only():
-    assert node_online_shown(is_queen=True, db_online=71, wg_live=95, wg_live_known=71) == 71
-    assert node_online_shown(is_queen=True, db_online=71, wg_live=95, wg_live_known=None) == 71
-    assert node_online_shown(is_queen=False, db_online=4, wg_live=9, wg_live_known=None) == 4
+def test_node_online_shown_is_wg_live():
+    assert node_online_shown(is_queen=True, db_online=79, wg_live=91) == 91
+    assert node_online_shown(is_queen=False, db_online=0, wg_live=8) == 8
+    assert node_online_shown(is_queen=False, db_online=2, wg_live=12) == 12
+    assert node_online_shown(is_queen=False, db_online=4, wg_live=0) == 0
+    assert node_online_shown(is_queen=True, db_online=71, wg_live=None) == 71
 
 
 def test_assign_online_unique_partition():
@@ -141,6 +143,6 @@ if __name__ == "__main__":
     test_cell1_slot_is_server2_for_manifest()
     test_node_title_for_slot()
     test_device_on_node_default_server1_stays_on_cell()
-    test_node_online_shown_is_db_only()
+    test_node_online_shown_is_wg_live()
     test_assign_online_unique_partition()
     print("ok")

@@ -230,7 +230,20 @@ async def exit_user_test_mode(db: AsyncSession, user: User, *, excluded: bool = 
     user.test_mode_excluded = excluded
     cancelled = await _cancel_active_test_subscriptions(db, user)
     restored = await _restore_previous_subscription(db, user)
+    if restored is None:
+        devices = await db.execute(
+            select(Device).where(Device.user_id == user.id, Device.is_connected == True)  # noqa: E712
+        )
+        for device in devices.scalars().all():
+            device.is_connected = False
     await db.commit()
+    if restored is None:
+        try:
+            from app.services.vpn_kick import kick_user_vpn_sessions
+
+            await kick_user_vpn_sessions(db, user)
+        except Exception as e:
+            logger.warning("exit test mode: live VPN kick failed: %s", e, exc_info=True)
     return {
         "is_test_user": False,
         "test_mode_personal": False,
@@ -391,8 +404,22 @@ async def apply_post_verification_benefits(db: AsyncSession, user: User) -> Subs
     return sub
 
 
+async def has_live_test_plan(db: AsyncSession, user: User) -> bool:
+    """Неотменённый test-план ещё действует — не режем канал (сейчас у всех бесплатный тест)."""
+    result = await db.execute(
+        select(Subscription).where(
+            Subscription.user_id == user.id,
+            Subscription.status == "active",
+            Subscription.plan_type == TEST_PLAN,
+        )
+    )
+    return any(sub.is_active for sub in result.scalars().all())
+
+
 async def user_has_active_subscription(user: User, db: AsyncSession) -> bool:
     if is_user_admin(user) or await user_in_test_mode(user, db):
+        return True
+    if await has_live_test_plan(db, user):
         return True
     await ensure_trial_subscription(db, user)
     sub = await get_display_subscription(db, user, in_test_mode=False)

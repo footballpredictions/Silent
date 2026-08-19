@@ -156,6 +156,12 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE devices ADD COLUMN IF NOT EXISTS preferred_server VARCHAR(16) NOT NULL DEFAULT 'server1'"
         ))
         await conn.execute(text(
+            "ALTER TABLE devices ADD COLUMN IF NOT EXISTS wg_live_public_key TEXT"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE devices ADD COLUMN IF NOT EXISTS wg_live_address VARCHAR(50)"
+        ))
+        await conn.execute(text(
             "ALTER TABLE devices ALTER COLUMN preferred_server TYPE VARCHAR(64)"
         ))
         await conn.execute(text(

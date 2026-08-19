@@ -90,6 +90,13 @@ def _wg_iface() -> str | None:
     return None
 
 
+def _addr_ip(wg_address: str | None) -> str:
+    raw = (wg_address or "").strip()
+    if not raw:
+        return ""
+    return raw.split("/", 1)[0].strip()
+
+
 def kick_wg_peer(public_key: str) -> bool:
     """Снимает peer с живого wdtt0 — отзыв подписки без HTTP от клиента."""
     pub = (public_key or "").strip()
@@ -113,6 +120,149 @@ def kick_wg_peer(public_key: str) -> bool:
     except Exception as e:
         logger.debug("wg kick %s: %s", pub[:12], e)
         return False
+
+
+def kick_wg_peers_by_ip(allowed_ip: str) -> bool:
+    """Снять все peer’ы с точным allowed-ips IP (GETCONF extra того же адреса)."""
+    ip = _addr_ip(allowed_ip)
+    if not ip:
+        return False
+    iface = _wg_iface()
+    if not iface:
+        return False
+    try:
+        r = subprocess.run(
+            ["wg", "show", iface, "allowed-ips"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return False
+    pubs: list[str] = []
+    for line in (r.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2 or not _valid_pub(parts[0]):
+            continue
+        for cidr in parts[1].split(","):
+            if _addr_ip(cidr) == ip:
+                pubs.append(parts[0].strip())
+                break
+    ok = False
+    for pub in pubs:
+        if kick_wg_peer(pub):
+            ok = True
+    return ok
+
+
+_DENY_CHAIN = "SILENT_DENY"
+_DENY_PROTECTED = frozenset({"10.66.66.1", "10.66.66.0", "0.0.0.0"})
+
+
+def _safe_deny_ip(ip: str) -> bool:
+    raw = (ip or "").strip().split("/", 1)[0]
+    if not raw or raw in _DENY_PROTECTED:
+        return False
+    parts = raw.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return False
+    if nums[0] != 10 or nums[1] != 66:
+        return False
+    return raw not in _DENY_PROTECTED
+
+
+def _wdtt_local_identities(device_ids: list[str]) -> dict[str, dict[str, str]]:
+    try:
+        blob = json.loads(Path("/etc/wdtt/passwords.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    devices = blob.get("devices") if isinstance(blob, dict) else None
+    if not isinstance(devices, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for did in device_ids:
+        key = str(did)
+        if key.startswith("boot:"):
+            continue
+        row = devices.get(key)
+        if not isinstance(row, dict):
+            continue
+        rec: dict[str, str] = {}
+        ip = (row.get("ip") or "").strip().split("/", 1)[0]
+        pub = (row.get("pub_key") or "").strip()
+        if _safe_deny_ip(ip):
+            rec["ip"] = ip
+        if pub:
+            rec["pub"] = pub
+        if rec:
+            out[key] = rec
+    return out
+
+
+def denied_ips_from_manifest(manifest: dict | None = None) -> set[str]:
+    m = manifest or _load_manifest() or {}
+    ids: list[str] = []
+    ips: set[str] = set()
+    for d in m.get("devices") or []:
+        if not isinstance(d, dict):
+            continue
+        if bool(d.get("vpn_allowed", True)):
+            continue
+        did = str(d.get("id") or "")
+        if did and not did.startswith("boot:"):
+            ids.append(did)
+        addr = (d.get("wg_address") or "").strip().split("/", 1)[0]
+        if _safe_deny_ip(addr):
+            ips.add(addr)
+    for rec in _wdtt_local_identities(ids).values():
+        ip = rec.get("ip") or ""
+        if _safe_deny_ip(ip):
+            ips.add(ip)
+        pub = rec.get("pub") or ""
+        if pub:
+            kick_wg_peer(pub)
+        if ip:
+            kick_wg_peers_by_ip(ip)
+    return ips
+
+
+def sync_silent_deny(manifest: dict | None = None) -> int:
+    """DROP GETCONF inner IPs for vpn_allowed=false. Does not restart wdtt."""
+    ips = sorted(denied_ips_from_manifest(manifest))
+    try:
+        subprocess.run(["iptables", "-N", _DENY_CHAIN], capture_output=True, timeout=5)
+    except Exception:
+        pass
+    subprocess.run(["iptables", "-F", _DENY_CHAIN], capture_output=True, timeout=5)
+    check = subprocess.run(
+        ["iptables", "-C", "FORWARD", "-j", _DENY_CHAIN],
+        capture_output=True,
+        timeout=5,
+    )
+    if check.returncode != 0:
+        subprocess.run(
+            ["iptables", "-I", "FORWARD", "1", "-j", _DENY_CHAIN],
+            capture_output=True,
+            timeout=5,
+        )
+    for ip in ips:
+        subprocess.run(
+            ["iptables", "-A", _DENY_CHAIN, "-s", f"{ip}/32", "-j", "DROP"],
+            capture_output=True,
+            timeout=5,
+        )
+        subprocess.run(
+            ["iptables", "-A", _DENY_CHAIN, "-d", f"{ip}/32", "-j", "DROP"],
+            capture_output=True,
+            timeout=5,
+        )
+    if ips:
+        logger.warning("silent deny cell ips=%s", len(ips))
+    return len(ips)
 
 
 def _valid_pub(pub: str) -> bool:
@@ -228,6 +378,26 @@ def gc_stale_local_peers(*, grace_sec: float = NEVER_HS_GC_GRACE_SEC, limit: int
     }
 
 
+def enforce_denied_manifest_peers(manifest: dict | None = None) -> int:
+    """Каждый цикл: нет vpn_allowed → снять ключ и все peer’ы с тем же IP."""
+    m = manifest or _load_manifest()
+    if not m:
+        return 0
+    applied = 0
+    for d in m.get("devices") or []:
+        if not isinstance(d, dict):
+            continue
+        if bool(d.get("vpn_allowed", True)):
+            continue
+        pub = (d.get("wg_public_key") or "").strip()
+        addr = (d.get("wg_address") or "").strip()
+        if pub and len(pub) >= 40 and kick_wg_peer(pub):
+            applied += 1
+        if addr and kick_wg_peers_by_ip(addr):
+            applied += 1
+    return applied
+
+
 def apply_manifest_peers(manifest: dict | None = None) -> int:
     """Синхронизирует WireGuard peers из manifest (для VPN без API Улья)."""
     global _last_peer_sync_version
@@ -246,13 +416,17 @@ def apply_manifest_peers(manifest: dict | None = None) -> int:
         if not isinstance(d, dict):
             continue
         pub = (d.get("wg_public_key") or "").strip()
-        if not pub or len(pub) < 40:
-            continue
-        if not bool(d.get("vpn_allowed", True)):
-            if kick_wg_peer(pub):
+        allowed_flag = bool(d.get("vpn_allowed", True))
+        addr = (d.get("wg_address") or "").strip()
+        if not allowed_flag:
+            if pub and len(pub) >= 40 and kick_wg_peer(pub):
+                applied += 1
+            if addr and kick_wg_peers_by_ip(addr):
                 applied += 1
             continue
-        addr = (d.get("wg_address") or "10.66.66.2/32").strip()
+        if not pub or len(pub) < 40:
+            continue
+        addr = addr or "10.66.66.2/32"
         allowed = addr if "/" in addr else f"{addr}/32"
         try:
             subprocess.run(
@@ -373,6 +547,26 @@ def create_standby_app() -> FastAPI:
         allowed = bool(dev.get("vpn_allowed", True))
         return InternalOnlineResponse(ok=True, subscription_active=allowed, vpn_allowed=allowed)
 
+    @standby.post("/api/vpn/internal/access", response_model=InternalOnlineResponse)
+    async def internal_access(
+        req: InternalOnlineRequest,
+        x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    ):
+        secret = INTERNAL_API_SECRET
+        if not secret or not secrets.compare_digest(x_internal_secret, secret):
+            raise HTTPException(status_code=403, detail="forbidden")
+        device_id = (req.device_id or "").strip()
+        if not device_id or device_id == "unknown" or device_id.startswith("boot:"):
+            return InternalOnlineResponse(ok=True, subscription_active=True, vpn_allowed=True)
+        manifest = _load_manifest()
+        if not manifest:
+            return InternalOnlineResponse(ok=True, subscription_active=True, vpn_allowed=True)
+        dev = _device_from_manifest(manifest, device_id)
+        if not dev:
+            return InternalOnlineResponse(ok=True, subscription_active=True, vpn_allowed=True)
+        allowed = bool(dev.get("vpn_allowed", True))
+        return InternalOnlineResponse(ok=True, subscription_active=allowed, vpn_allowed=allowed)
+
     return standby
 
 
@@ -410,6 +604,8 @@ async def standby_monitor_loop() -> None:
     while True:
         try:
             apply_manifest_peers()
+            enforce_denied_manifest_peers()
+            sync_silent_deny()
             gc_stale_local_peers()
             wg_peer_counts()
             healthy = await check_queen_health()

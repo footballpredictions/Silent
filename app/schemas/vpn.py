@@ -94,6 +94,11 @@ class InternalOnlineRequest(BaseModel):
     online: bool = True
 
 
+class InternalAccessRequest(BaseModel):
+    """wdtt-server -> backend: GETCONF subscription gate (no online side effects)."""
+    device_id: str
+
+
 class InternalOnlineResponse(BaseModel):
     """Ответ keepalive: wdtt-server может рвать сессию при vpn_allowed=false."""
     ok: bool

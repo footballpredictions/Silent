@@ -10,10 +10,10 @@ import logging
 import shlex
 import subprocess
 import time
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -23,17 +23,86 @@ from app.services.hive_incidents import push_incident
 from app.services.hive_provision_service import _run as ssh_run
 from app.services.hive_provision_service import _ssh_connect
 from app.services.hive_service import _validate_outbound_url, get_queen_cell, resolve_ssh_password
-from app.services.subscription_service import user_has_active_subscription
 from app.services.vpn_kick_select import (
     LivePeer,
     addr_ip,
     parse_wg_show_dump,
+    select_extra_by_last_connected,
+    select_owned_getconf_extras,
+    select_resurrected_extras,
+    should_keep_vpn_dataplane,
+    snapshot_ages,
+    snapshot_appeared,
     valid_wg_pub,
 )
 
 logger = logging.getLogger(__name__)
 _recent_queen_kicks: dict[str, float] = {}
 _NSENTER_HELPER = "silent-nsenter"
+_WATCH_SEC = 25 * 60
+_watch_until: dict[str, float] = {}
+_watch_node: dict[str, str] = {}
+_bound_extras: dict[str, set[str]] = {}
+_peer_snapshot: dict[str, set[str]] = {}
+_peer_ages: dict[str, dict[str, float | None]] = {}
+_QUEEN_NODE = "queen"
+
+
+def watch_device_revoke(device_id, *, node_key: str = "") -> None:
+    did = str(device_id)
+    _watch_until[did] = time.monotonic() + _WATCH_SEC
+    if node_key:
+        _watch_node[did] = node_key
+
+
+def device_is_watched(device_id) -> bool:
+    until = _watch_until.get(str(device_id), 0.0)
+    return time.monotonic() < until
+
+
+def _bind_extra_pub(device_id, pub: str) -> None:
+    p = (pub or "").strip()
+    if not _valid_wg_pub(p):
+        return
+    did = str(device_id)
+    _bound_extras.setdefault(did, set()).add(p)
+    watch_device_revoke(did)
+
+
+def _bound_pubs_for(device_id) -> set[str]:
+    return set(_bound_extras.get(str(device_id), set()))
+
+
+def _unique_watch_on_node(node_key: str, device_id) -> bool:
+    did = str(device_id)
+    now = time.monotonic()
+    others = [
+        d for d, until in _watch_until.items()
+        if until > now and _watch_node.get(d) == node_key and d != did
+    ]
+    return not others
+
+
+def _note_snapshot(node_key: str, live: list[_LivePeer]) -> tuple[set[str], dict[str, float | None]]:
+    cur = {p.pub for p in live if _valid_wg_pub(p.pub)}
+    appeared, snap = snapshot_appeared(_peer_snapshot.get(node_key), cur)
+    prev_ages = dict(_peer_ages.get(node_key) or {})
+    _peer_snapshot[node_key] = snap
+    _peer_ages[node_key] = snapshot_ages(live)
+    return appeared, prev_ages
+
+
+_WG_KICK_BY_IP_SH = (
+    "ok=1; "
+    'if [ -n "$1" ]; then wg set wdtt0 peer "$1" remove && ok=0; fi; '
+    'if [ -n "$2" ]; then '
+    'pubs=$(wg show wdtt0 allowed-ips 2>/dev/null | awk -v ip="$2" \''
+    "{ n=split($2,a,\",\"); for(i=1;i<=n;i++){ cidr=a[i]; sub(/\\/.*/,\"\",cidr); "
+    "if(cidr==ip) print $1 } }'"
+    "); "
+    'for p in $pubs; do wg set wdtt0 peer "$p" remove && ok=0; done; '
+    "fi; exit $ok"
+)
 
 _valid_wg_pub = valid_wg_pub
 _addr_ip = addr_ip
@@ -123,22 +192,13 @@ def kick_wg_peer_on_queen(public_key: str, *, allowed_ip: str = "", force: bool 
     if not _valid_wg_pub(pub) and not ip:
         return False
     now = time.monotonic()
-    stamp = pub or ip
-    if not force and stamp and now - _recent_queen_kicks.get(stamp, 0) < 90:
+    if pub and not force and now - _recent_queen_kicks.get(pub, 0) < 5:
         return True
-    inner = (
-        "ok=1; "
-        'if [ -n "$1" ]; then wg set wdtt0 peer "$1" remove && ok=0; fi; '
-        'if [ -n "$2" ]; then '
-        'p=$(wg show wdtt0 allowed-ips 2>/dev/null | awk -v ip="$2" \'$0 ~ ip {print $1; exit}\'); '
-        'if [ -n "$p" ]; then wg set wdtt0 peer "$p" remove && ok=0; fi; '
-        "fi; exit $ok"
-    )
     try:
-        r = _nsenter_host(inner, pub, ip, timeout=45)
+        r = _nsenter_host(_WG_KICK_BY_IP_SH, pub, ip, timeout=45)
         if r.returncode == 0:
-            if stamp:
-                _recent_queen_kicks[stamp] = time.monotonic()
+            if pub:
+                _recent_queen_kicks[pub] = time.monotonic()
             logger.warning("queen wg kick ok peer=%s ip=%s", (pub[:12] + "…") if pub else "-", ip or "-")
             return True
         err = (r.stderr or r.stdout or b"").decode("utf-8", errors="replace")[:240]
@@ -194,9 +254,13 @@ def kick_wg_peer_via_ssh(host: str, password: str, public_key: str, *, allowed_i
                 logger.warning("ssh wg kick %s peer=%s… rc=%s %s", host, pub[:12], code, (err or "")[:160])
         if ip:
             cmd = (
-                "p=$(wg show wdtt0 allowed-ips 2>/dev/null | "
-                f"awk -v ip={shlex.quote(ip)} '$0 ~ ip {{print $1; exit}}'); "
-                'if [ -z "$p" ]; then exit 2; fi; wg set wdtt0 peer "$p" remove'
+                "ok=1; "
+                "pubs=$(wg show wdtt0 allowed-ips 2>/dev/null | "
+                f"awk -v ip={shlex.quote(ip)} "
+                "'{ n=split($2,a,\",\"); for(i=1;i<=n;i++){ cidr=a[i]; "
+                "sub(/\\/.*/,\"\",cidr); if(cidr==ip) print $1 } }'); "
+                'for p in $pubs; do wg set wdtt0 peer "$p" remove && ok=0; done; '
+                "exit $ok"
             )
             code, _, err = ssh_run(client, cmd, timeout=20)
             if code == 0:
@@ -225,7 +289,10 @@ async def kick_wg_peer_on_cell(cell: HiveCell, public_key: str, *, allowed_ip: s
         return True
 
     pub = (public_key or "").strip()
-    if cell.is_queen or not cell.api_url or not _valid_wg_pub(pub):
+    ip = _addr_ip(allowed_ip)
+    if cell.is_queen or not cell.api_url:
+        return False
+    if not _valid_wg_pub(pub) and not ip:
         return False
     secret = ""
     if cell.api_secret_enc:
@@ -242,11 +309,15 @@ async def kick_wg_peer_on_cell(cell: HiveCell, public_key: str, *, allowed_ip: s
     url = f"{base}/v1/wg/kick"
     timeout = settings.HIVE_CELL_HTTP_TIMEOUT_SEC
     try:
+        payload = {"wg_public_key": pub or ""}
+        ip = _addr_ip(allowed_ip)
+        if ip:
+            payload["allowed_ip"] = ip
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             resp = await client.post(
                 url,
                 headers={"X-Cell-Agent-Secret": secret},
-                json={"wg_public_key": pub},
+                json=payload,
             )
         if resp.status_code >= 400:
             logger.warning("cell-agent wg kick %s HTTP %s", cell.name, resp.status_code)
@@ -298,45 +369,285 @@ async def _cell_has_other_recent_clients(db: AsyncSession, device: Device) -> bo
     return False
 
 
-async def kick_device_peers(db: AsyncSession, device: Device, *, force: bool = False) -> bool:
-    """Remove only this device's known WG key/IP. Never guess GETCONF extras.
+async def _dump_node_peers(db: AsyncSession, *, on_queen: bool, cell: HiveCell | None) -> list[_LivePeer]:
+    if on_queen or cell is None:
+        try:
+            return await asyncio.to_thread(_queen_wg_dump)
+        except Exception as e:
+            logger.warning("queen dump for kick failed: %s", e)
+            return []
+    host = (cell.public_ip or "").strip()
+    pwd = resolve_ssh_password(cell)
+    if not host or not pwd:
+        return []
+    try:
+        return await asyncio.to_thread(_ssh_wg_dump, host, pwd)
+    except Exception as e:
+        logger.warning("cell dump for kick %s failed: %s", cell.name, e)
+        return []
 
-    Guessing the newest extra on a cell kicked other paying clients (incident
-    2026-08-16). Revoke-while-connected on LTE still needs wdtt-server
-    DENIED:no_subscription — do not paper over it by deleting strangers' peers.
-    """
-    pub = (device.wg_public_key or "").strip()
-    addr = device.wg_address or ""
-    queen = await get_queen_cell(db)
-    on_queen = device.cell_id is None or (queen is not None and device.cell_id == queen.id)
-    cell = None if on_queen else (
-        await db.get(HiveCell, device.cell_id) if device.cell_id is not None else None
-    )
 
-    pubs = [p for p in [pub] if _valid_wg_pub(p)]
-    ips = [i for i in [_addr_ip(addr)] if i]
-    if not pubs and not ips:
-        logger.warning("vpn kick skip device %s — no wg key/address", device.id)
-        return False
-
+async def _kick_pubs_and_ip(
+    *,
+    on_queen: bool,
+    cell: HiveCell | None,
+    pubs: list[str],
+    allowed_ip: str,
+    force: bool,
+) -> bool:
     ok = False
+    ip = _addr_ip(allowed_ip)
     if on_queen or cell is None:
         for p in pubs:
             if kick_wg_peer_on_queen(p, force=force):
                 ok = True
-        for ip in ips:
+        if ip:
             if kick_wg_peer_on_queen("", allowed_ip=ip, force=force):
                 ok = True
         return ok
     if cell is None:
         return False
     for p in pubs:
-        if await kick_wg_peer_on_cell(cell, p):
+        if await kick_wg_peer_on_cell(cell, p, allowed_ip=""):
             ok = True
-    for ip in ips:
+    if ip:
         if await kick_wg_peer_on_cell(cell, "", allowed_ip=ip):
             ok = True
     return ok
+
+
+async def kick_device_peers(
+    db: AsyncSession,
+    device: Device,
+    *,
+    force: bool = False,
+    bind_new: bool = True,
+    session_last_connected=None,
+) -> bool:
+    """Cut this device's dataplane: known WG key, exact assigned IP, owned GETCONF extras.
+
+    Never picks “newest extra on the node” (incident 2026-08-16). Extra is owned if
+    its allowed-ips IP matches the device, we already bound it, it uniquely
+    appeared, leftover handshake ≈ last_connected, or a unique stale extra resurrected.
+    """
+    pub = (device.wg_public_key or "").strip()
+    addr = device.wg_address or ""
+    live_pub = (getattr(device, "wg_live_public_key", None) or "").strip()
+    live_addr = getattr(device, "wg_live_address", None) or ""
+    queen = await get_queen_cell(db)
+    on_queen = device.cell_id is None or (queen is not None and device.cell_id == queen.id)
+    cell = None if on_queen else (
+        await db.get(HiveCell, device.cell_id) if device.cell_id is not None else None
+    )
+    node_key = _QUEEN_NODE if on_queen or cell is None else str(cell.id)
+    watch_device_revoke(device.id, node_key=node_key)
+
+    known = await _known_wg_pubs(db)
+    live = await _dump_node_peers(db, on_queen=on_queen, cell=cell)
+    appeared, prev_ages = _note_snapshot(node_key, live) if bind_new else (set(), {})
+    bound = _bound_pubs_for(device.id)
+    if _valid_wg_pub(live_pub):
+        bound.add(live_pub)
+    last_ts = session_last_connected if session_last_connected is not None else device.last_connected
+    owned = select_owned_getconf_extras(
+        live,
+        known_pubs=known,
+        device_ip=addr,
+        appeared_pubs=appeared,
+        bound_pubs=bound,
+        unique_watch_on_node=bind_new and _unique_watch_on_node(node_key, device.id),
+    )
+    for extra in select_extra_by_last_connected(live, last_ts, known):
+        owned.append(extra)
+    for extra in select_resurrected_extras(live, prev_ages, known):
+        owned.append(extra)
+    extra_pubs = []
+    for p in owned:
+        if _valid_wg_pub(p.pub) and p.pub not in extra_pubs:
+            extra_pubs.append(p.pub)
+            _bind_extra_pub(device.id, p.pub)
+            if p.ip:
+                try:
+                    device.wg_live_public_key = p.pub
+                    device.wg_live_address = p.ip
+                except Exception:
+                    pass
+
+    pubs = []
+    for p in [pub, live_pub, *_bound_pubs_for(device.id), *extra_pubs]:
+        if _valid_wg_pub(p) and p not in pubs:
+            pubs.append(p)
+    ip = _addr_ip(addr) or _addr_ip(live_addr)
+    extra_ips = [i for i in [_addr_ip(addr), _addr_ip(live_addr)] if i]
+    try:
+        from app.services.vpn_deny_net import collect_ips, read_host_wdtt_identities
+
+        _ensure_nsenter_helper()
+        rec = read_host_wdtt_identities([str(device.id)]).get(str(device.id)) or {}
+        if _valid_wg_pub(rec.get("pub") or ""):
+            if rec["pub"] not in pubs:
+                pubs.append(rec["pub"])
+            _bind_extra_pub(device.id, rec["pub"])
+        extra_ips = list(dict.fromkeys([*extra_ips, *collect_ips(rec.get("ip"))]))
+    except Exception as e:
+        logger.debug("wdtt identity for kick: %s", e)
+    if not pubs and not extra_ips:
+        logger.warning("vpn kick skip device %s — no wg key/address", device.id)
+        return False
+
+    ok = await _kick_pubs_and_ip(
+        on_queen=on_queen, cell=cell, pubs=pubs, allowed_ip=ip, force=force,
+    )
+    for extra_ip in extra_ips:
+        if extra_ip != ip:
+            more = await _kick_pubs_and_ip(
+                on_queen=on_queen, cell=cell, pubs=[], allowed_ip=extra_ip, force=force,
+            )
+            ok = ok or more
+    # GETCONF extra may sit on the other node after server switch.
+    if cell is not None:
+        extra_ok = await _kick_pubs_and_ip(
+            on_queen=True, cell=None, pubs=pubs, allowed_ip=ip, force=force,
+        )
+        ok = ok or extra_ok
+        for extra_ip in extra_ips:
+            if extra_ip != ip:
+                more = await _kick_pubs_and_ip(
+                    on_queen=True, cell=None, pubs=[], allowed_ip=extra_ip, force=force,
+                )
+                ok = ok or more
+    elif on_queen:
+        if device.cell_id is not None and queen is not None and device.cell_id != queen.id:
+            other = await db.get(HiveCell, device.cell_id)
+            if other is not None:
+                extra_ok = await _kick_pubs_and_ip(
+                    on_queen=False, cell=other, pubs=pubs, allowed_ip=ip, force=force,
+                )
+                ok = ok or extra_ok
+    return ok
+
+
+async def remember_device_live_peer(db: AsyncSession, device: Device) -> bool:
+    """On toggle-off: bind leftover GETCONF extra (cache will reuse it)."""
+    queen = await get_queen_cell(db)
+    on_queen = device.cell_id is None or (queen is not None and device.cell_id == queen.id)
+    cell = None if on_queen else (
+        await db.get(HiveCell, device.cell_id) if device.cell_id is not None else None
+    )
+    node_key = _QUEEN_NODE if on_queen or cell is None else str(cell.id)
+    known = await _known_wg_pubs(db)
+    live = await _dump_node_peers(db, on_queen=on_queen, cell=cell)
+    _note_snapshot(node_key, live)
+    hits = select_extra_by_last_connected(live, device.last_connected, known)
+    if not hits:
+        hits = select_owned_getconf_extras(
+            live, known_pubs=known, device_ip=device.wg_address or "",
+        )
+    if len(hits) != 1:
+        return False
+    peer = hits[0]
+    device.wg_live_public_key = peer.pub
+    device.wg_live_address = peer.ip or None
+    _bind_extra_pub(device.id, peer.pub)
+    logger.warning(
+        "vpn remember live extra device=%s peer=%s ip=%s",
+        device.id,
+        peer.pub[:12] + "…",
+        peer.ip or "-",
+    )
+    return True
+
+
+async def refresh_peer_snapshots(db: AsyncSession) -> None:
+    """Keep handshake ages so leftover extras can be recognized after toggle-on."""
+    try:
+        live = await _dump_node_peers(db, on_queen=True, cell=None)
+        _note_snapshot(_QUEEN_NODE, live)
+    except Exception as e:
+        logger.debug("queen snapshot refresh: %s", e)
+
+
+async def sync_unpaid_deny_net(db: AsyncSession) -> int:
+    """DROP inner WG IPs of unpaid devices. GETCONF can re-add the peer; FORWARD still dies.
+
+    IPs come from wdtt passwords.json (the address GETCONF actually issues) plus DB.
+    Empty unpaid set flushes the chain (paid users get internet back).
+    """
+    from app.services.subscription_service import (
+        has_live_test_plan,
+        is_user_admin,
+        user_has_active_subscription,
+        user_in_test_mode,
+    )
+    from app.services.vpn_deny_net import (
+        cell_sync_script,
+        collect_ips,
+        read_host_wdtt_identities,
+        sync_queen_deny_ips,
+    )
+
+    result = await db.execute(select(Device).where(Device.is_active == True))  # noqa: E712
+    devices = [
+        d for d in result.scalars().all()
+        if not (d.device_fingerprint or "").startswith("boot:")
+    ]
+    if not devices:
+        _ensure_nsenter_helper()
+        return sync_queen_deny_ips(set())
+    user_ids = {d.user_id for d in devices}
+    users = {
+        u.id: u
+        for u in (await db.execute(select(User).where(User.id.in_(user_ids)))).scalars().all()
+    }
+    unpaid: list[Device] = []
+    for device in devices:
+        user = users.get(device.user_id)
+        if user is None:
+            continue
+        in_test = await user_in_test_mode(user, db)
+        live_test = await has_live_test_plan(db, user)
+        has_sub = await user_has_active_subscription(user, db)
+        if should_keep_vpn_dataplane(
+            is_admin=is_user_admin(user),
+            in_test_mode=in_test,
+            has_live_test_plan=live_test,
+            has_active_subscription=has_sub,
+        ):
+            continue
+        unpaid.append(device)
+    _ensure_nsenter_helper()
+    idents = read_host_wdtt_identities([str(d.id) for d in unpaid])
+    ips: set[str] = set()
+    for device in unpaid:
+        rec = idents.get(str(device.id)) or {}
+        ips |= collect_ips(
+            rec.get("ip"),
+            device.wg_address,
+            getattr(device, "wg_live_address", None),
+        )
+        pub = rec.get("pub") or ""
+        if _valid_wg_pub(pub):
+            kick_wg_peer_on_queen(pub, force=True)
+        if rec.get("ip"):
+            kick_wg_peer_on_queen("", allowed_ip=rec["ip"], force=True)
+    n = sync_queen_deny_ips(ips)
+    cells = (
+        await db.execute(select(HiveCell).where(HiveCell.is_queen == False))  # noqa: E712
+    ).scalars().all()
+    for cell in cells:
+        host = (cell.public_ip or "").strip()
+        pwd = resolve_ssh_password(cell) if host else ""
+        if not host or not pwd:
+            continue
+        try:
+            client = _ssh_connect(host, pwd)
+            try:
+                ssh_run(client, cell_sync_script(ips), timeout=25)
+            finally:
+                client.close()
+        except Exception as e:
+            logger.warning("silent deny cell %s: %s", host, e)
+    return n
 
 
 async def kick_user_vpn_sessions(db: AsyncSession, user: User) -> int:
@@ -354,7 +665,12 @@ async def kick_user_vpn_sessions(db: AsyncSession, user: User) -> int:
         fp = device.device_fingerprint or ""
         if fp.startswith("boot:"):
             continue
-        ok = await kick_device_peers(db, device, force=True)
+        if not (getattr(device, "wg_live_public_key", None) or "").strip():
+            try:
+                await remember_device_live_peer(db, device)
+            except Exception:
+                pass
+        ok = await kick_device_peers(db, device, force=True, bind_new=True)
         logger.warning(
             "vpn kick device user=%s type=%s cell=%s key=%s ok=%s",
             user.email,
@@ -380,6 +696,10 @@ async def kick_user_vpn_sessions(db: AsyncSession, user: User) -> int:
         except Exception as e:
             logger.warning("manifest push after kick failed: %s", e)
     logger.warning("vpn kick done user=%s removed=%s of %s", user.email, kicked, len(devices))
+    try:
+        await sync_unpaid_deny_net(db)
+    except Exception as e:
+        logger.warning("silent deny after kick: %s", e)
     if kicked:
         push_incident(
             source="vpn.kick",
@@ -391,17 +711,39 @@ async def kick_user_vpn_sessions(db: AsyncSession, user: User) -> int:
 
 
 async def kick_connected_without_subscription(db: AsyncSession) -> int:
-    """Sweeper: drop known WG keys of connected devices without a subscription.
+    """Страховка: нет подписки → сразу срезать dataplane, включая GETCONF extra этого устройства.
 
-    Does not guess GETCONF extras — that removed other clients on the same cell.
+    Не трогаем админов, тестовый режим и живой plan=test.
+    Не угадываем «самый свежий extra на соте» (инцидент 2026-08-16).
     """
+    from app.services.subscription_service import (
+        has_live_test_plan,
+        is_user_admin,
+        user_has_active_subscription,
+        user_in_test_mode,
+    )
+
+    cutoff = datetime.utcnow() - timedelta(minutes=20)
     result = await db.execute(
         select(Device).where(
-            Device.is_connected == True,  # noqa: E712
             Device.is_active == True,  # noqa: E712
+            or_(
+                Device.is_connected == True,  # noqa: E712
+                Device.last_connected >= cutoff,
+            ),
         )
     )
     devices = list(result.scalars().all())
+    watched_ids = {d for d, until in _watch_until.items() if until > time.monotonic()}
+    extra_ids: list = []
+    if watched_ids:
+        extra_q = await db.execute(
+            select(Device).where(Device.is_active == True)  # noqa: E712
+        )
+        for d in extra_q.scalars().all():
+            if str(d.id) in watched_ids and d not in devices:
+                extra_ids.append(d)
+    devices = devices + extra_ids
     if not devices:
         return 0
     user_ids = {d.user_id for d in devices}
@@ -412,19 +754,84 @@ async def kick_connected_without_subscription(db: AsyncSession) -> int:
         ).scalars().all()
     }
     kicked = 0
+    cell_ids: set = set()
+    seen: set[str] = set()
     for device in devices:
+        did = str(device.id)
+        if did in seen:
+            continue
+        seen.add(did)
         if (device.device_fingerprint or "").startswith("boot:"):
             continue
         user = users.get(device.user_id)
         if user is None:
             continue
-        if await user_has_active_subscription(user, db):
+        in_test = await user_in_test_mode(user, db)
+        live_test = await has_live_test_plan(db, user)
+        has_sub = await user_has_active_subscription(user, db)
+        if should_keep_vpn_dataplane(
+            is_admin=is_user_admin(user),
+            in_test_mode=in_test,
+            has_live_test_plan=live_test,
+            has_active_subscription=has_sub,
+        ):
             continue
-        if not await kick_device_peers(db, device, force=False):
+        if not await kick_device_peers(db, device, force=True, bind_new=True):
             continue
         device.is_connected = False
         kicked += 1
+        if device.cell_id is not None:
+            cell_ids.add(device.cell_id)
     if kicked:
         await db.commit()
         logger.warning("vpn kick sweeper: %s device(s) without subscription", kicked)
+        from app.services.hive_cell_sync import invalidate_manifest_cache, sync_cell_manifest_by_id
+
+        invalidate_manifest_cache()
+        for cid in cell_ids:
+            try:
+                await sync_cell_manifest_by_id(db, cid)
+            except Exception as e:
+                logger.warning("manifest push after sweeper kick failed: %s", e)
+    try:
+        await sync_unpaid_deny_net(db)
+    except Exception as e:
+        logger.warning("silent deny sweeper: %s", e)
     return kicked
+
+
+async def kick_if_subscription_denied(
+    db: AsyncSession,
+    device: Device,
+    *,
+    session_last_connected=None,
+) -> bool:
+    """Immediate cut when wdtt reports online for a user without subscription."""
+    did = str(device.id)
+    now = time.monotonic()
+    last: dict[str, float] = getattr(kick_if_subscription_denied, "_last", {})
+    if now - last.get(did, 0) < 8:
+        return False
+    last[did] = now
+    kick_if_subscription_denied._last = last  # type: ignore[attr-defined]
+    ok = await kick_device_peers(
+        db, device, force=True, bind_new=True, session_last_connected=session_last_connected,
+    )
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+    from app.services.hive_cell_sync import invalidate_manifest_cache, sync_cell_manifest_by_id
+
+    invalidate_manifest_cache()
+    if device.cell_id is not None:
+        try:
+            await sync_cell_manifest_by_id(db, device.cell_id)
+        except Exception as e:
+            logger.warning("manifest push after unpaid online kick failed: %s", e)
+    try:
+        await sync_unpaid_deny_net(db)
+    except Exception as e:
+        logger.warning("silent deny after unpaid online: %s", e)
+    return ok
+

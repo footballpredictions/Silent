@@ -13,6 +13,17 @@ STALE_EXTRA_HS_SEC = 6 * 3600.0
 NEVER_HS_GC_GRACE_SEC = 90.0
 
 
+def should_keep_vpn_dataplane(
+    *,
+    is_admin: bool,
+    in_test_mode: bool,
+    has_live_test_plan: bool,
+    has_active_subscription: bool,
+) -> bool:
+    """Fail-open: админ / глобальный тест / живой test-план / оплата. Режем только явный «нет»."""
+    return bool(is_admin or in_test_mode or has_live_test_plan or has_active_subscription)
+
+
 def valid_wg_pub(pub: str) -> bool:
     p = (pub or "").strip()
     return len(p) >= 40 and all(c.isalnum() or c in "+/=" for c in p)
@@ -125,13 +136,145 @@ def pick_getconf_extras(
     last_connected=None,
     now: float | None = None,
 ) -> list[LivePeer]:
-    """Choose GETCONF peers to cut for this device.
+    """Legacy helper — must stay empty.
 
-    On a cell leftover GETCONF keys are normal (n=5 in prod logs). The live
-    session is the newest handshake — not a stale last_connected leftover.
-    Queen has thousands of extras: never pick “newest of 90”.
+    Incident 2026-08-16: picking the newest extra on a cell removed other clients.
+    Use select_owned_getconf_extras (same IP / uniquely appeared extra).
     """
-    # Incident 2026-08-16: picking newest extra on a cell removed other clients.
+    return []
+
+
+def snapshot_appeared(previous: set[str] | None, current_pubs: set[str]) -> tuple[set[str], set[str]]:
+    """New pubs since last dump. First snapshot does not treat existing peers as new."""
+    cur = {p.strip() for p in current_pubs if valid_wg_pub(p)}
+    if previous is None:
+        return set(), cur
+    prev = {p.strip() for p in previous if valid_wg_pub(p)}
+    return cur - prev, cur
+
+
+def select_owned_getconf_extras(
+    live: list[LivePeer],
+    *,
+    known_pubs: set[str],
+    device_ip: str,
+    appeared_pubs: set[str] | None = None,
+    bound_pubs: set[str] | None = None,
+    unique_watch_on_node: bool = False,
+) -> list[LivePeer]:
+    """GETCONF extras that belong to THIS device.
+
+    Safe signals only:
+    - allowed-ips IP equals this device's assigned address (exact, not substring)
+    - extra pub we already bound to this device after a unique appear
+    - exactly one new extra on the node while this is the only watched device
+      (toggle after revoke). Never “newest of many” — that kicked strangers.
+    """
+    known = {p.strip() for p in known_pubs if valid_wg_pub(p)}
+    bound = {p.strip() for p in (bound_pubs or set()) if valid_wg_pub(p)}
+    appeared = {p.strip() for p in (appeared_pubs or set()) if valid_wg_pub(p)}
+    ip = addr_ip(device_ip)
+    by_pub = {p.pub: p for p in live if valid_wg_pub(p.pub)}
+    out: dict[str, LivePeer] = {}
+
+    if ip:
+        for p in live:
+            if not valid_wg_pub(p.pub) or p.pub in known:
+                continue
+            if p.ip == ip:
+                out[p.pub] = p
+
+    for pub in bound:
+        if pub in known:
+            continue
+        peer = by_pub.get(pub)
+        if peer is not None:
+            out[pub] = peer
+
+    if unique_watch_on_node:
+        fresh = [
+            p for p in live
+            if p.pub in appeared and p.pub not in known
+        ]
+        if len(fresh) == 1:
+            out[fresh[0].pub] = fresh[0]
+        unknown = [
+            p for p in live
+            if valid_wg_pub(p.pub) and p.pub not in known
+        ]
+        if len(unknown) == 1:
+            out[unknown[0].pub] = unknown[0]
+
+    return list(out.values())
+
+
+LAST_CONNECTED_UNIQUE_SEC = 12.0
+RESURRECT_STALE_SEC = 20.0
+RESURRECT_FRESH_SEC = 8.0
+
+
+def snapshot_ages(live: list[LivePeer]) -> dict[str, float | None]:
+    return {p.pub: p.handshake_age for p in live if valid_wg_pub(p.pub)}
+
+
+def select_extra_by_last_connected(
+    live: list[LivePeer],
+    last_connected,
+    known_pubs: set[str],
+    *,
+    now: float | None = None,
+    window_sec: float = LAST_CONNECTED_UNIQUE_SEC,
+) -> list[LivePeer]:
+    """Leftover GETCONF extra after toggle-off: handshake time ≈ last_connected.
+
+    Only if exactly one extra matches. Two matches → guess, return empty
+    (incident 2026-08-16 was “newest of many”).
+    """
+    epoch = ts_epoch(last_connected)
+    if epoch is None:
+        return []
+    known = {p.strip() for p in known_pubs if valid_wg_pub(p)}
+    now_ts = time.time() if now is None else now
+    hits: list[LivePeer] = []
+    for p in live:
+        if not valid_wg_pub(p.pub) or p.pub in known or p.handshake_age is None:
+            continue
+        hs_unix = now_ts - p.handshake_age
+        if abs(hs_unix - epoch) <= window_sec:
+            hits.append(p)
+    if len(hits) == 1:
+        return hits
+    return []
+
+
+def select_resurrected_extras(
+    live: list[LivePeer],
+    prev_ages: dict[str, float | None] | None,
+    known_pubs: set[str],
+    *,
+    stale_prev_sec: float = RESURRECT_STALE_SEC,
+    fresh_now_sec: float = RESURRECT_FRESH_SEC,
+) -> list[LivePeer]:
+    """Cache extra came back: was stale/never-hs on this node, now handshake <8s.
+
+    Unique resurrection only — two people reconnecting in the same window → skip.
+    """
+    if not prev_ages:
+        return []
+    known = {p.strip() for p in known_pubs if valid_wg_pub(p)}
+    hits: list[LivePeer] = []
+    for p in live:
+        if not valid_wg_pub(p.pub) or p.pub in known:
+            continue
+        if p.handshake_age is None or p.handshake_age > fresh_now_sec:
+            continue
+        if p.pub not in prev_ages:
+            continue
+        prev = prev_ages.get(p.pub)
+        if prev is None or prev >= stale_prev_sec:
+            hits.append(p)
+    if len(hits) == 1:
+        return hits
     return []
 
 

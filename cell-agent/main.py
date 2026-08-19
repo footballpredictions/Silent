@@ -698,7 +698,8 @@ HIVE_MANIFEST_PATH = Path("/etc/wdtt/hive_manifest.json")
 
 
 class WgKickRequest(BaseModel):
-    wg_public_key: str
+    wg_public_key: str = ""
+    allowed_ip: str = ""
 
 
 @app.post("/v1/wg/kick")
@@ -709,12 +710,17 @@ async def wg_kick(
     """Улей снимает живой WG peer при отзыве подписки."""
     _auth(x_cell_agent_secret)
     try:
-        from standby_runtime import kick_wg_peer
+        from standby_runtime import kick_wg_peer, kick_wg_peers_by_ip
     except ImportError:
         kick_wg_peer = None  # type: ignore
+        kick_wg_peers_by_ip = None  # type: ignore
     if kick_wg_peer is None:
         raise HTTPException(status_code=503, detail="standby_runtime unavailable")
-    ok = bool(kick_wg_peer(req.wg_public_key))
+    ok = False
+    if (req.wg_public_key or "").strip():
+        ok = bool(kick_wg_peer(req.wg_public_key)) or ok
+    if kick_wg_peers_by_ip is not None and (req.allowed_ip or "").strip():
+        ok = bool(kick_wg_peers_by_ip(req.allowed_ip)) or ok
     return {"ok": ok}
 
 

@@ -545,8 +545,12 @@ export default function MainScreen({
         cacheVpnConfig(c)
         hydrateFromVpnConfig(c)
       }
+    }).catch((e: { response?: { status?: number } }) => {
+      if (e.response?.status === 402 || e.response?.status === 403) {
+        void fetchProfile()
+      }
     })
-  }, [connected, hydrateFromVpnConfig])
+  }, [connected, hydrateFromVpnConfig, fetchProfile])
 
   const markOnlineOnServer = useCallback(async () => {
     if (onlineMarkedRef.current) return

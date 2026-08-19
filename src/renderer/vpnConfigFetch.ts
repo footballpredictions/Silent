@@ -40,6 +40,7 @@ export async function fetchVpnConfigWithKeys(fingerprint: string): Promise<VpnCo
       return config
     }
   } catch (e) {
+    if (isSubscriptionError(e)) throw e
     pushLog('Main', `vpn/config fail: ${formatApiError(e, 'Network Error')}`, 'W')
   }
 

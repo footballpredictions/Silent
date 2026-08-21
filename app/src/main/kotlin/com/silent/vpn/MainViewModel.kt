@@ -3897,8 +3897,16 @@ class MainViewModel @Inject constructor(
         lastVpnConfigDenied = false
         repo.setVpnAccessDenied(false)
         cfg.client_sync?.let { bundle ->
-            repo.applyClientSync(bundle)
-            bundle.profile?.let { applyServerProfile(it, force = true) }
+            // Тема/хеши — да; профиль — только если не затирает уже оплаченный UI.
+            repo.applyClientSync(bundle.copy(profile = null))
+            bundle.profile?.let { p ->
+                val keepPaid = _profile.value?.let { profileHasPaidUi(it) } == true && !profileHasPaidUi(p)
+                if (!keepPaid) {
+                    applyServerProfile(p, force = true)
+                } else {
+                    DebugLog.i("MainViewModel", "refreshVpnConfig: keep paid UI over stale client_sync")
+                }
+            }
         }
     }
 
@@ -4603,6 +4611,23 @@ class MainViewModel @Inject constructor(
             repo.saveCachedProfile(profile)
             return
         }
+        val currentPaid = _profile.value?.let { profileHasPaidUi(it) } == true
+        val incomingPaid = profileHasPaidUi(profile)
+        // После оплаты тумблер мог подтянуть stale client_sync «нет» с force=true — VPN живой, UI ломался.
+        if (currentPaid && !incomingPaid && !force) {
+            DebugLog.i("MainViewModel", "keep paid UI — ignore inactive profile without force")
+            return
+        }
+        if (currentPaid && !incomingPaid && force && getconfGrantedThisVpnSession) {
+            DebugLog.i("MainViewModel", "keep paid UI after GETCONF — ignore inactive force profile")
+            return
+        }
+        if (currentPaid && !incomingPaid && force &&
+            (_paymentState.value == PaymentUiState.COMPLETED || _paymentState.value == PaymentUiState.WAITING)
+        ) {
+            DebugLog.i("MainViewModel", "keep paid UI during payment — ignore inactive force profile")
+            return
+        }
         if (shouldKeepGetconfSessionDespiteInactiveProfile(profile)) {
             DebugLog.i("MainViewModel", "keep GETCONF session — ignore inactive profile")
             return
@@ -4617,6 +4642,9 @@ class MainViewModel @Inject constructor(
                     .onFailure { e -> DebugLog.w("MainViewModel", "session recover: ${e.message}") }
             }
             maybeCompletePaymentFromProfile(profile)
+            if (profileHasPaidUi(profile) || profile.is_admin || profile.subscription.is_active) {
+                repo.markLiveProfileApplied()
+            }
             if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) {
                 if (hasVpnAccessForProfile(profile)) repo.setVpnAccessDenied(false)
                 else repo.setVpnAccessDenied(true)
@@ -4626,6 +4654,9 @@ class MainViewModel @Inject constructor(
         } else {
             _profile.value = profile
             maybeCompletePaymentFromProfile(profile)
+            if (profileHasPaidUi(profile) || profile.is_admin || profile.subscription.is_active) {
+                repo.markLiveProfileApplied()
+            }
             if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) {
                 if (hasVpnAccessForProfile(profile)) repo.setVpnAccessDenied(false)
                 else repo.setVpnAccessDenied(true)
@@ -4635,6 +4666,7 @@ class MainViewModel @Inject constructor(
         val hasAccess = hasVpnAccessForProfile(profile)
         if (hasAccess) {
             repo.setVpnAccessDenied(false)
+            repo.markLiveProfileApplied()
         } else {
             repo.setVpnAccessDenied(true)
         }

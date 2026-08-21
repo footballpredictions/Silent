@@ -14,8 +14,9 @@ val VK_TUNNEL_PACKAGES = setOf(
 )
 
 /**
- * Bootstrap (шаг 1): в VPN только Silent + браузеры + почта — ссылки из писем открываются с телефона.
- * Остальные приложения (VK и т.д.) VPN не затрагивает.
+ * Bootstrap (шаг 1 / оплата): в VPN Silent + браузеры + почта + YuMoney/Сбер.
+ * YuMoney QuickPay часто открывает SberPay → приложение СберБанк Онлайн;
+ * без него на LTE с блокировкой оплата обрывается.
  */
 private val BOOTSTRAP_COMPANION_PACKAGES = listOf(
     "com.android.chrome",
@@ -28,6 +29,7 @@ private val BOOTSTRAP_COMPANION_PACKAGES = listOf(
     "com.brave.browser",
     "com.microsoft.emmx",
     "com.sec.android.app.sbrowser",
+    "com.huawei.browser",
     "com.yandex.browser",
     "com.yandex.browser.beta",
     "com.yandex.browser.alpha",
@@ -42,6 +44,15 @@ private val BOOTSTRAP_COMPANION_PACKAGES = listOf(
     "com.yandex.mail",
     "com.samsung.android.email.provider",
     "com.google.android.apps.messaging",
+    // YuMoney / кошелёк (если открывается как приложение, не только сайт)
+    "ru.yoo.money",
+    "ru.yandex.money",
+    "com.yandex.money",
+    // SberPay / СберБанк Онлайн — deep-link с страницы YuMoney
+    "ru.sberbankmobile",
+    "ru.sberbankmobile_alpha",
+    "ru.sberbank.sberbankid",
+    "ru.sberbank.salute",
 )
 
 fun resolveBootstrapIncludedApps(context: Context): Set<String> {

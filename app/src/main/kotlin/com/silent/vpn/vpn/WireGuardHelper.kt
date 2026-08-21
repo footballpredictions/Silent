@@ -47,7 +47,7 @@ import java.io.ByteArrayInputStream
 /**
 
  * WireGuard: split-tunnel (сервер/TURN вне WG), VK — excludeApplications.
- * Bootstrap: includeApplications (Silent + браузеры + почта), AllowedIPs → API + backend HTTPS.
+ * Bootstrap: includeApplications (Silent + браузеры + почта + YuMoney/Сбер), AllowedIPs → API + backend HTTPS.
  * apiOverlayMode: кратко AllowedIPs = 10.66.66.0/24 (только bootstrap).
  * После основного VPN overlay не используем — отзыв через GETCONF/DTLS.
  */

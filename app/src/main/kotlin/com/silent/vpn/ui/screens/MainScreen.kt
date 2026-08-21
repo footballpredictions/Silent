@@ -1047,8 +1047,11 @@ private fun MenuSubscription(
                     val planLabel = when (planType) {
                         "trial" -> "Пробный период"
                         "test" -> "Тестовый режим"
+                        "three_days" -> "3 дня"
                         "monthly" -> "Месяц"
+                        "two_months" -> "2 месяца"
                         "quarterly" -> "3 месяца"
+                        "half_year" -> "Полгода"
                         "yearly" -> "Год"
                         "unlimited" -> "Бессрочно"
                         else -> planType ?: "—"
@@ -1064,7 +1067,7 @@ private fun MenuSubscription(
                     )
                 } else {
                     Text("Выберите тариф", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
-                    listOf("monthly" to ("Месяц" to "199 ₽"), "quarterly" to ("3 месяца" to "499 ₽"), "yearly" to ("Год" to "1 499 ₽")).forEach { (id, labelPrice) ->
+                    listOf("monthly" to ("Месяц" to "199 ₽"), "two_months" to ("2 месяца" to "359 ₽"), "quarterly" to ("3 месяца" to "478 ₽")).forEach { (id, labelPrice) ->
                         TvPrimaryButton(
                             onClick = {
                                 onInitPayment(

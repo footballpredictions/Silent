@@ -1052,20 +1052,42 @@ class SilentRepository @Inject constructor(
         return runCatching { Gson().fromJson(json, ReferralInfo::class.java) }.getOrNull()
     }
 
+    /** Живой /me уже в UI — client_sync.profile не перетирает (после оплаты тумблер брал stale «нет»). */
+    fun markLiveProfileApplied() {
+        liveProfileAppliedAtMs = System.currentTimeMillis()
+    }
+
     /** Данные с /vpn/config вместе с подпиской — без overlay HTTP после включения. */
     fun applyClientSync(bundle: ClientSyncBundle?, forceProfile: Boolean = false): Boolean {
         if (bundle == null) return false
         var applied = false
         bundle.profile?.let {
-            if (!forceProfile && liveProfileAppliedAtMs > 0L) {
-                MobileSyncLog.i("clientSync", "skip client_sync profile — live /me already applied")
-            } else {
-                saveCachedProfile(it)
-                if (it.is_admin || it.subscription.is_active) {
-                    setVpnAccessDenied(false)
+            val current = getCachedProfile()
+            val wouldDowngradePaid =
+                current != null &&
+                    (current.is_admin || current.subscription.is_active) &&
+                    !it.is_admin &&
+                    !it.subscription.is_active
+            when {
+                !forceProfile && liveProfileAppliedAtMs > 0L -> {
+                    MobileSyncLog.i("clientSync", "skip client_sync profile — live /me already applied")
                 }
-                liveProfileAppliedAtMs = System.currentTimeMillis()
-                com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener?.onProfile(it)
+                !forceProfile && wouldDowngradePaid -> {
+                    MobileSyncLog.i(
+                        "clientSync",
+                        "skip stale inactive client_sync profile — paid subscription already cached",
+                    )
+                }
+                else -> {
+                    saveCachedProfile(it)
+                    if (it.is_admin || it.subscription.is_active) {
+                        setVpnAccessDenied(false)
+                        liveProfileAppliedAtMs = System.currentTimeMillis()
+                    } else if (forceProfile) {
+                        liveProfileAppliedAtMs = System.currentTimeMillis()
+                    }
+                    com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener?.onProfile(it)
+                }
             }
             applied = true
         }
@@ -1115,7 +1137,8 @@ class SilentRepository @Inject constructor(
             MobileSyncLog.i("clientSync", "cached vpn config has no client_sync")
             return false
         }
-        return applyClientSync(bundle)
+        // Профиль UI только из живого /me — в кеше WG часто старый client_sync до оплаты.
+        return applyClientSync(bundle.copy(profile = null))
     }
 
     fun getAppearanceMode(): String =
@@ -3100,7 +3123,10 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
             .putLong(PREF_CACHED_CONFIG_TS, System.currentTimeMillis())
             .apply()
         runCatching {
-            Gson().fromJson(json, VpnConfig::class.java)?.client_sync?.let { applyClientSync(it) }
+            // Не тащить profile из WG-кеша: после оплаты там ещё «нет», а /me уже «да».
+            Gson().fromJson(json, VpnConfig::class.java)?.client_sync?.let {
+                applyClientSync(it.copy(profile = null))
+            }
         }
     }
 

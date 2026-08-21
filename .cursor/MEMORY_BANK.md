@@ -830,6 +830,12 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-21 — Android: исключения сайтов снова работают
+
+- Причина: в `WdttTunnelManager.effectiveExcludeIps` с 16.08 user site-bypass CIDR **игнорировались** (временный костыль «для LTE») — UI сохранял `ozon.ru`, но дыры в AllowedIPs не применялись.
+- Фикс: merge `siteBypassCidrs` на **main** VPN (bootstrap без user-сайтов, как PC); после фонового DNS — soft reapply WG; apex/`*.` резолвят ещё `www`/`m`/`api`.
+- Файлы: `WdttTunnelManager.kt`, `SiteBypassRoutes.kt`.
+
 ### 2026-08-21 — Цены возвращены после теста (199/359/478)
 
 - Прод `.env`: monthly 199 / two_months 359 / quarterly 478 / yearly 1499; API plans OK; wdtt active.

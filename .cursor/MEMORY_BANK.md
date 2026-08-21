@@ -830,6 +830,13 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-21 — Android splash: bootstrap снова на boot + полоса прогресса
+
+- Рассинхрон: splash ~0.9 с → главный экран, а ephemeral/подписка ещё крутились — тумблер обгонял bootstrap.
+- Splash снова **ждёт** стартовый prefetch (макс. 18 с). Полоса загрузки из `accent_color` темы доходит до конца, когда `/me`+WG-кеш готовы.
+- Ускорение LTE: без холостых public HTTP (register/config/bootstrapConfig); сразу ephemeral с локальным boot-хешем; короче wait loop на splash.
+- Wi‑Fi: как раньше public `/me` + config. Тумблер по-прежнему без второго bootstrap. Debug: `android/SilentVPN-debug.apk`.
+
 ### 2026-08-21 — Кнопка «Очистить» инциденты возвращала те же записи
 
 - Пустой SELECT после DELETE падал в RAM-буфер другого uvicorn-воркера (`items or list_incidents`). Очередь persist дописывала старые строки в БД — те же timestamps через пару секунд.

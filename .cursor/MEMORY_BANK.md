@@ -830,6 +830,17 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-21 — Цены возвращены после теста (199/359/478)
+
+- Прод `.env`: monthly 199 / two_months 359 / quarterly 478 / yearly 1499; API plans OK; wdtt active.
+- Android: press на тарифах + быстрый payment bootstrap на LTE — пуш в `android`.
+
+### 2026-08-21 — Android оплата: кнопки + быстрый bootstrap; цены временно 50 ₽
+
+- Кнопки тарифов: press invert/scale + «Открываем…»; цены с `GET /api/payments/plans`.
+- Payment bootstrap на LTE: сразу локальный boot-хеш, короче wait loop; без forceProbe перед оплатой.
+- Прод `.env`: все `PRICE_*=50.0` (тест); wdtt active, DNAT OK. **Вернуть 199/359/478 после теста.**
+
 ### 2026-08-21 — Деплой: код поддержки подписок на прод
 
 - `deploy_stable.py`: OK. health local/tunnel `ok`, DNAT `10.66.66.1:8000` → API, **wdtt active** (не рестартили).

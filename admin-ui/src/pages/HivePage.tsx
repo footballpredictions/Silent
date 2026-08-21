@@ -336,11 +336,33 @@ export default function HivePage({ token }: { token: string }) {
   }
 
   const clearIncidents = async () => {
-    await fetch('/api/admin/hive/incidents/clear', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    await load(true)
+    if (busy === 'incidents') return
+    setBusy('incidents')
+    setError(null)
+    setIncidents([])
+    try {
+      const res = await fetch('/api/admin/hive/incidents/clear', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        setError('Не удалось очистить инциденты')
+        await load(true)
+        return
+      }
+      const listRes = await fetch('/api/admin/hive/incidents?limit=120', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (listRes.ok) {
+        const data = await listRes.json().catch(() => ({}))
+        setIncidents(Array.isArray(data.items) ? data.items : [])
+      }
+    } catch {
+      setError('Не удалось очистить инциденты')
+      await load(true)
+    } finally {
+      setBusy(null)
+    }
   }
 
   const queenCell = cells.find(c => c.is_queen)
@@ -454,9 +476,10 @@ export default function HivePage({ token }: { token: string }) {
           <button
             type="button"
             onClick={clearIncidents}
-            className="text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] text-[#bbb] hover:text-white"
+            disabled={busy === 'incidents' || incidents.length === 0}
+            className="text-xs px-3 py-1.5 rounded-lg border border-[#333] bg-[#1a1a1a] text-[#ddd] cursor-pointer select-none touch-manipulation transition duration-100 hover:text-white hover:border-[#555] hover:bg-[#222] active:scale-[0.96] active:bg-[#0a0a0a] disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
           >
-            Очистить
+            {busy === 'incidents' ? 'Удаляю…' : 'Очистить'}
           </button>
         </div>
         {incidents.length === 0 ? (

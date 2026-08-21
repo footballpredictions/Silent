@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.modules.setdefault("app.database", SimpleNamespace(AsyncSessionLocal=None))
 
-from app.services.hive_incidents import _as_utc_dt, _row_to_public  # noqa: E402
+from app.services.hive_incidents import _as_utc_dt, _row_to_public, should_persist_after_clear  # noqa: E402
 
 
 def test_iso_string_becomes_datetime():
@@ -47,9 +47,18 @@ def test_public_row_serializes_ts():
     assert row["checks"] == ["a", "b"]
 
 
+def test_clear_skips_stale_persist_queue():
+    cleared = "2026-08-21T09:11:29+00:00"
+    assert should_persist_after_clear("2026-08-21T09:11:27+00:00", cleared) is False
+    assert should_persist_after_clear("2026-08-21T09:12:00+00:00", cleared) is True
+    assert should_persist_after_clear("2026-08-21T09:11:27+00:00", None) is True
+    assert should_persist_after_clear("2026-08-21T09:11:27+00:00", "") is True
+
+
 if __name__ == "__main__":
     test_iso_string_becomes_datetime()
     test_zulu_iso_parsed()
     test_datetime_passthrough()
     test_public_row_serializes_ts()
+    test_clear_skips_stale_persist_queue()
     print("ok")

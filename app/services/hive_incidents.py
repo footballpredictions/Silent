@@ -44,6 +44,24 @@ _INCIDENT_SELECT_SQL = text(
 )
 
 _INCIDENT_CLEAR_SQL = text("DELETE FROM hive_incidents")
+_META_CLEARED_ENSURE_SQL = text(
+    """
+    INSERT INTO hive_incident_meta (meta_key, meta_value, updated_at)
+    VALUES ('incidents_cleared_at', '1970-01-01T00:00:00+00:00', NOW())
+    ON CONFLICT (meta_key) DO NOTHING
+    """
+)
+_META_CLEARED_LOCK_SQL = text(
+    "SELECT meta_value FROM hive_incident_meta WHERE meta_key = 'incidents_cleared_at' FOR UPDATE"
+)
+_META_CLEARED_UPSERT_SQL = text(
+    """
+    INSERT INTO hive_incident_meta (meta_key, meta_value, updated_at)
+    VALUES ('incidents_cleared_at', :value, NOW())
+    ON CONFLICT (meta_key)
+    DO UPDATE SET meta_value = EXCLUDED.meta_value, updated_at = NOW()
+    """
+)
 
 _META_UPSERT_SQL = text(
     """
@@ -94,6 +112,13 @@ def _public_ts(value: Any) -> str:
 
 def _normalize_msg(msg: str) -> str:
     return " ".join((msg or "").strip().split())[:900]
+
+
+def should_persist_after_clear(payload_ts: Any, cleared_at: Any) -> bool:
+    """Старые события не писать в БД после «Очистить» (очередь другого uvicorn-воркера)."""
+    if cleared_at is None or (isinstance(cleared_at, str) and not cleared_at.strip()):
+        return True
+    return _as_utc_dt(payload_ts) > _as_utc_dt(cleared_at)
 
 
 def _new_incident_payload(
@@ -279,12 +304,13 @@ async def list_incidents_persisted(limit: int = 200) -> list[dict[str, Any]]:
         logger.warning("Hive incidents list from DB failed: %s", e)
         return list_incidents(lim)
     items = [_row_to_public(dict(row)) for row in rows]
-    return items or list_incidents(lim)
+    return items
 
 
 def clear_incidents() -> None:
     _incidents.clear()
     _last_seen.clear()
+    _persist_queue.clear()
 
 
 def _enqueue_persist(payload: dict[str, Any]) -> None:
@@ -304,6 +330,12 @@ async def _persist_worker() -> None:
         payload = _persist_queue.popleft()
         try:
             async with AsyncSessionLocal() as db:
+                await db.execute(_META_CLEARED_ENSURE_SQL)
+                row = (await db.execute(_META_CLEARED_LOCK_SQL)).mappings().first()
+                cleared_at = (row or {}).get("meta_value") if row else None
+                if not should_persist_after_clear(payload.get("ts"), cleared_at):
+                    await db.rollback()
+                    continue
                 await db.execute(
                     _INCIDENT_INSERT_SQL,
                     {
@@ -343,6 +375,7 @@ async def load_persisted_incidents(limit: int = MAX_INCIDENTS) -> None:
 async def clear_persisted_incidents() -> None:
     try:
         async with AsyncSessionLocal() as db:
+            await db.execute(_META_CLEARED_UPSERT_SQL, {"value": _utc_now_iso()})
             await db.execute(_INCIDENT_CLEAR_SQL)
             await db.commit()
     except Exception as e:

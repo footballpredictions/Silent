@@ -18,7 +18,9 @@ interface UserRow {
 const PLANS = [
   { type: 'three_days', label: '3 дня',    days: 3 },
   { type: 'monthly',    label: 'Месяц',    days: 30 },
+  { type: 'two_months', label: '2 месяца', days: 60 },
   { type: 'quarterly',  label: '3 месяца', days: 90 },
+  { type: 'half_year',  label: 'Полгода',  days: 180 },
   { type: 'yearly',     label: 'Год',      days: 365 },
   { type: 'unlimited',  label: '∞',        days: null },
 ] as const
@@ -28,7 +30,9 @@ const PLAN_NAMES: Record<string, string> = {
   test:       'Тест',
   three_days: '3 дня',
   monthly:    'Месяц',
+  two_months: '2 месяца',
   quarterly:  '3 месяца',
+  half_year:  'Полгода',
   yearly:     'Год',
   unlimited:  '∞',
 }
@@ -257,7 +261,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
       )}
 
       <div className="bg-[#111] border border-[#222] rounded-xl overflow-x-auto">
-        <table className="w-full text-sm min-w-[580px]">
+        <table className="w-full text-sm min-w-[760px]">
           <thead>
             <tr className="border-b border-[#222] text-[#555] text-xs uppercase tracking-wider">
               <th className="text-left px-4 py-3">ID</th>

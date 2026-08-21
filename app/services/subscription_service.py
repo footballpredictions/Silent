@@ -449,7 +449,9 @@ async def require_active_subscription(user: User, db: AsyncSession) -> None:
 GRANTABLE_PLANS = {
     "three_days": 3,
     "monthly": 30,
+    "two_months": 60,
     "quarterly": 90,
+    "half_year": 180,
     "yearly": 365,
     "unlimited": 36500,  # ~100 лет
 }
@@ -464,7 +466,7 @@ async def grant_manual_subscription(
     if plan_type not in GRANTABLE_PLANS:
         raise HTTPException(
             status_code=400,
-            detail="plan_type: three_days, monthly, quarterly, yearly или unlimited",
+            detail="plan_type: three_days, monthly, two_months, quarterly, half_year, yearly или unlimited",
         )
     if is_user_admin(user):
         raise HTTPException(status_code=400, detail="Администратору подписка не нужна")

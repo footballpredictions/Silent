@@ -525,8 +525,8 @@ export default function ClientPreview({
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {[
                 ['Месяц', '199 ₽'],
-                ['3 месяца', '499 ₽'],
-                ['Год', '1 499 ₽'],
+                ['2 месяца', '359 ₽'],
+                ['3 месяца', '478 ₽'],
               ].map(([label, price]) => (
                 <div key={label} style={{
                   display: 'flex', justifyContent: 'space-between', alignItems: 'center',

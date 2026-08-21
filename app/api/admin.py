@@ -631,7 +631,7 @@ async def grant_user_subscription(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ручная выдача подписки (three_days / monthly / quarterly / yearly / unlimited)."""
+    """Ручная выдача подписки (three_days / monthly / two_months / quarterly / half_year / yearly / unlimited)."""
     import uuid
     from app.services.subscription_service import grant_manual_subscription
 

@@ -137,7 +137,9 @@ def send_subscription_activated_email(to_email: str, plan_type: str, expires_at:
     plan_names = {
         "three_days": "3 дня",
         "monthly": "Месячный",
-        "quarterly": "Квартальный",
+        "two_months": "2 месяца",
+        "quarterly": "3 месяца",
+        "half_year": "Полгода",
         "yearly": "Годовой",
         "unlimited": "Безлимитный",
     }

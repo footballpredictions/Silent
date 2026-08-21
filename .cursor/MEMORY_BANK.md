@@ -830,6 +830,34 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-21 — Цены возвращены после теста (199/359/478) + пуш
+
+- Тест оплаты 50 ₽ OK. Прод `.env`: monthly 199 / two_months 359 / quarterly 478 / yearly 1499.
+- Пуш: main (тарифы, админ grant, docs) + android (UI, post-pay bugfix, Sber bootstrap) + pc (тарифы, Sber bypass).
+
+### 2026-08-21 — Оплата: bootstrap VPN и для СберБанк Онлайн (SberPay)
+
+- YuMoney на телефоне открывает SberPay → `ru.sberbankmobile`; раньше в bootstrap `includeApplications` были только браузеры/почта — на LTE с блокировкой Сбер не ходил в интернет.
+- Android: в bootstrap добавлены пакеты YuMoney и Сбер (`ru.sberbankmobile` и др.).
+- PC: в payment-bypass при main VPN — хосты sberbank.ru / id.sber.ru и т.п. (цены теста 50 ₽ без изменений).
+
+### 2026-08-21 — Временно все тарифы 50 ₽ (тест оплаты) — откат выполнен
+
+- Было: `.env` PRICE_*=50. **Откат:** 199/359/478/1499 + recreate api. Пуш после успешного теста.
+
+### 2026-08-21 — Android: после оплаты тумблер гасил UI подписки
+
+- Симптом: оплата OK → «Оплачено» → тумблер ON → снова «Оформить подписку» / кнопки тарифов, VPN при этом живой; после перезахода UI нормальный.
+- Причина: `cacheVpnConfig` / `applyCachedClientSync` тащили stale `client_sync.profile` (до оплаты) поверх живого `/me`.
+- Фикс: client_sync без profile при кеше WG; не даунгрейдить paid→inactive; `markLiveProfileApplied` после живого профиля; не force-затирать paid UI во время payment/GETCONF.
+- Тарифы в UI: месяц 199 / 2 мес 359 / 3 мес 478 (PC+Android).
+
+### 2026-08-21 — Тарифы: магазин 199/359/478 + админ 2 мес и полгода
+
+- Магазин (`GET /api/payments/plans`): месяц 199₽ / 2 месяца 359₽ (`two_months`) / 3 месяца 478₽ (`quarterly`). Год убран из витрины, но `yearly` остаётся в `PLAN_PRICES` для старых клиентов.
+- Админ «Подписки»: к выдаче добавлены `two_months` (60д) и `half_year` (180д); остались 3 дня / месяц / 3 мес / год / ∞.
+- Цены: `PRICE_TWO_MONTHS`, `PRICE_QUARTERLY=478` в config + `.env`. PC/Android fallback UI обновлены под три тарифа.
+
 ### 2026-08-21 — Android splash: bootstrap снова на boot + полоса прогресса
 
 - Рассинхрон: splash ~0.9 с → главный экран, а ephemeral/подписка ещё крутились — тумблер обгонял bootstrap.

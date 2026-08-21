@@ -23,7 +23,7 @@ router = APIRouter(prefix="/payments", tags=["payments"])
 
 
 class PaymentInitRequest(BaseModel):
-    plan_type: str  # monthly, quarterly, yearly
+    plan_type: str  # monthly, two_months, quarterly (+ yearly для старых клиентов)
     promo_code: Optional[str] = None
 
 
@@ -150,6 +150,7 @@ async def check_promo(
 
     price_map = {
         "monthly": settings.PRICE_MONTHLY,
+        "two_months": settings.PRICE_TWO_MONTHS,
         "quarterly": settings.PRICE_QUARTERLY,
         "yearly": settings.PRICE_YEARLY,
     }
@@ -167,8 +168,9 @@ async def check_promo(
 
 @router.get("/plans")
 async def get_plans():
+    """Тарифы магазина в приложении (3 плана). yearly остаётся в PLAN_PRICES для старых клиентов."""
     return [
         {"id": "monthly", "name": "Месяц", "price": settings.PRICE_MONTHLY, "days": 30},
+        {"id": "two_months", "name": "2 месяца", "price": settings.PRICE_TWO_MONTHS, "days": 60},
         {"id": "quarterly", "name": "3 месяца", "price": settings.PRICE_QUARTERLY, "days": 90},
-        {"id": "yearly", "name": "Год", "price": settings.PRICE_YEARLY, "days": 365},
     ]

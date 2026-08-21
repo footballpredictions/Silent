@@ -103,7 +103,7 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 | POST | `/init` | User | `{ plan_type, promo_code? }` → `{ url, wallet, label, amount }`. `label` — `silent_<32 hex>` (высокая энтропия, `secrets.token_hex(16)`), кошелёк выбирается случайно из настроенных `YUMONEY_WALLET_1..10`. `url` — прямая ссылка `yoomoney.ru/quickpay/confirm.xml` (urlencoded), клиент открывает её во внешнем браузере как есть. Если `promo_code` пуст — берётся `user.pending_promo_code` (снимается только при успешной оплате, не здесь) |
 | GET | `/status/{label}` | User | Poll для клиента: `{ label, status, plan_type, amount }`, `status` = `pending`/`completed`/`failed`/`expired`. Только свои платежи (по `user_id`) — 404 на чужой label. `pending` дольше `YUMONEY_PAYMENT_TTL_MINUTES` (30) лениво помечается `expired` |
 | POST | `/promo/check` | User | Проверка промокода |
-| GET | `/plans` | — | Тарифы |
+| GET | `/plans` | — | Магазин: monthly / two_months / quarterly |
 | GET | `/success-page` | — | Публичная HTML-страница — `successURL` в QuickPay-ссылке; куда YuMoney возвращает браузер после оплаты. Не источник правды — активацию клиент узнаёт через poll `/status/{label}` |
 | POST | `/yumoney/notify` | YuMoney (HTTP-уведомление) | Webhook — см. **YuMoney webhook flow** ниже |
 
@@ -332,11 +332,14 @@ YUMONEY_SECRET                            # фолбэк-секрет, если 
 YUMONEY_AMOUNT_TOLERANCE=0.93             # допуск на комиссию YuMoney при сверке суммы webhook
 YUMONEY_PAYMENT_TTL_MINUTES=30            # pending-платёж дольше этого — лениво помечается expired
 PRICE_MONTHLY=199
-PRICE_QUARTERLY=499
+PRICE_TWO_MONTHS=359
+PRICE_QUARTERLY=478
 PRICE_YEARLY=1499
 ```
 
 Логика: `app/services/payment_service.py` (план: `.cursor/PLAN_PAYMENTS_YUMONEY.md`). До **10 кошельков** — расширение только через новую пару `YUMONEY_WALLET_N`/`YUMONEY_SECRET_N` в `.env`, без правок кода. Случайный выбор кошелька на каждый `/payments/init`. **Настройка на стороне YuMoney (обязательно на каждый кошелёк):** кабинет → «Настройки для разработчиков» → «HTTP-уведомления» → включить, URL `https://<домен>/api/payments/yumoney/notify`, скопировать секретное слово в `YUMONEY_SECRET_N`.
+
+Магазин в приложении (`GET /api/payments/plans`): `monthly` (30д/199₽), `two_months` (60д/359₽), `quarterly` (90д/478₽). `yearly` остаётся в `PLAN_PRICES` для старых клиентов 1.0.160/161. Админская выдача (`GRANTABLE_PLANS`): + `two_months`, `half_year` (180д).
 
 Тесты: `backend/scripts/test_payment_unit.py` (unit, без реальной БД — кошельки/подпись/весь чеклист notify/idempotency/статус, 37 тестов), `backend/scripts/smoke_payments.py` (прод, без реальной оплаты).
 

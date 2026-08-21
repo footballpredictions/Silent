@@ -186,9 +186,10 @@ class Settings(BaseSettings):
     # Standby / HA: локальный API на соте, если Улей недоступен (без GitHub-backup)
     HIVE_STANDBY_ENABLED: bool = True
 
-    # Subscription prices
+    # Subscription prices (магазин: месяц / 2 мес / 3 мес; yearly — для старых клиентов)
     PRICE_MONTHLY: float = 199.0
-    PRICE_QUARTERLY: float = 499.0
+    PRICE_TWO_MONTHS: float = 359.0
+    PRICE_QUARTERLY: float = 478.0  # 3 месяца
     PRICE_YEARLY: float = 1499.0
 
     # Referral (growth phase): +30/+30 after invitee's first paid plan.

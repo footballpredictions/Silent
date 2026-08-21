@@ -30,8 +30,9 @@ logger = logging.getLogger(__name__)
 
 PLAN_PRICES = {
     "monthly": (settings.PRICE_MONTHLY, 30),
-    "quarterly": (settings.PRICE_QUARTERLY, 90),
-    "yearly": (settings.PRICE_YEARLY, 365),
+    "two_months": (settings.PRICE_TWO_MONTHS, 60),
+    "quarterly": (settings.PRICE_QUARTERLY, 90),  # 3 месяца
+    "yearly": (settings.PRICE_YEARLY, 365),  # старые клиенты 1.0.160/161
 }
 
 MAX_WALLETS = 10

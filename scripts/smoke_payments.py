@@ -57,7 +57,8 @@ def main() -> int:
     r = client.get("/api/payments/plans")
     check("plans", r.status_code == 200, f"HTTP {r.status_code}")
     plan_ids = {p.get("id") for p in r.json()} if r.status_code == 200 else set()
-    check("plans has monthly/quarterly/yearly", {"monthly", "quarterly", "yearly"} <= plan_ids, str(plan_ids))
+    check("plans has monthly/two_months/quarterly", {"monthly", "two_months", "quarterly"} <= plan_ids, str(plan_ids))
+    check("plans has no yearly in shop", "yearly" not in plan_ids, str(plan_ids))
 
     r = client.get("/api/payments/success-page")
     check("success-page", r.status_code == 200 and "text/html" in r.headers.get("content-type", "") and "silentvpn://payment" in (r.text or ""), f"HTTP {r.status_code}")

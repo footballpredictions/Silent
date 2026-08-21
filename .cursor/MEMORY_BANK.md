@@ -830,6 +830,55 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-21 — Деплой: код поддержки подписок на прод
+
+- `deploy_stable.py`: OK. health local/tunnel `ok`, DNAT `10.66.66.1:8000` → API, **wdtt active** (не рестартили).
+- БД: колонки `payments.support_code` / `subscription_applied` / `manual_activated_at` на месте.
+- Код: `admin_subscription_ops.py` + email `support_code` в контейнере.
+
+### 2026-08-21 — Подписки: код поддержки после YuMoney + админка
+
+- После webhook YuMoney: `support_code` (SV-XXXX-XXXX) в письме; если активация упала — оплата completed, код для саппорта.
+- Админка «Подписки»: кнопка «Код оплаты», блок сирот, серверный поиск+пагинация (50), клик по строке → история оплат/периодов, ручная выдача по коду.
+- Референсы UI: существующий dark OLED админки + ui-ux-pro-max (search-first support).
+
+### 2026-08-21 — Тумблер: снова быстрый первый connect после splash
+
+- Убран второй `ensureCleanSlate` после splash-bootstrap — гонка со stop VPN ломала первое включение.
+- Тумблер ждёт только живой `launchPrefetchJob`, затем сразу идёт по WG-кешу (как раньше).
+- Splash/полоска без изменений.
+
+### 2026-08-21 — Splash: полоска медленнее под bootstrap, ускорение в конце
+
+- Основная фаза ~7.8 с → 86% (пока bootstrap start/load/stop), затем медленный creep.
+- Когда bootstrap выключен (progress=1) — ускоренный доезд ~320 мс до 100%, потом главный экран.
+- Debug: `android/SilentVPN-debug.apk`.
+
+### 2026-08-21 — Splash: bootstrap раньше, выключение до главного
+
+- Prefetch/bootstrap стартует в `onCreate` сразу (параллельно splash), а не в конце полоски.
+- После prefetch: `waitVpnServiceDown` — bootstrap гаснет ещё на splash; на главный экран уже без него.
+- Полоска: фаза 1 → 88% за ~2.6 с, фаза 2 медленно дальше (без залипания), по готовности доезд 180 мс.
+- Debug: `android/SilentVPN-debug.apk`.
+
+### 2026-08-21 — Splash: полоска доезжает до 100%
+
+- Быстрее (3.2 с → 96%) + после prefetch пауза 380 мс, чтобы finish-tween успел до ухода с splash.
+
+### 2026-08-21 — Splash: полоска быстрее (4 с до 90%)
+
+- 12 с → 4 с linear: за типичный bootstrap успевает почти до конца, потом доезд до 1.
+
+### 2026-08-21 — Splash: полоска течёт linear, без рывков
+
+- Убраны snap/floor от шагов bootstrap (они и давали рывки).
+- Один `animateTo(0.9, LinearEasing, 12с)` + `scaleX`; по готовности prefetch — доезд до 1.
+
+### 2026-08-21 — Splash: полоска загрузки плавно на весь bootstrap
+
+- Раньше progress дёргался дискретными шагами (0.08→0.4→1) и перезапускал tween.
+- Теперь полоса ~14 с плавно ease-out до 0.9; по завершению prefetch — доезд до 1. Реальные шаги только как floor.
+
 ### 2026-08-21 — Цены возвращены после теста (199/359/478) + пуш
 
 - Тест оплаты 50 ₽ OK. Прод `.env`: monthly 199 / two_months 359 / quarterly 478 / yearly 1499.

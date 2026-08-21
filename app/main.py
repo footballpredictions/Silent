@@ -366,6 +366,26 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "ALTER TABLE payments ADD COLUMN IF NOT EXISTS promo_code VARCHAR(50)"
         ))
+        await conn.execute(text(
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS support_code VARCHAR(32)"
+        ))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_payments_support_code "
+            "ON payments (support_code) WHERE support_code IS NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS subscription_applied "
+            "BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS manual_activated_at TIMESTAMP"
+        ))
+        # Старые completed без support_code не считаем «сиротами»
+        await conn.execute(text(
+            "UPDATE payments SET subscription_applied = TRUE "
+            "WHERE status = 'completed' AND support_code IS NULL "
+            "AND subscription_applied = FALSE"
+        ))
     logger.info("Database tables ready")
 
     from app.database import AsyncSessionLocal

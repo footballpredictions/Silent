@@ -38,6 +38,26 @@ PLAN_PRICES = {
 MAX_WALLETS = 10
 YUMONEY_QUICKPAY_URL = "https://yoomoney.ru/quickpay/confirm.xml"
 
+# Без O/0/I/1 — удобно диктовать в поддержку
+_SUPPORT_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def generate_support_code() -> str:
+    """Код вида SV-A7K2-9M3Q для письма и админки."""
+    left = "".join(secrets.choice(_SUPPORT_CODE_ALPHABET) for _ in range(4))
+    right = "".join(secrets.choice(_SUPPORT_CODE_ALPHABET) for _ in range(4))
+    return f"SV-{left}-{right}"
+
+
+def normalize_support_code(raw: str) -> str:
+    s = (raw or "").strip().upper().replace(" ", "")
+    if s.startswith("SV") and "-" not in s and len(s) >= 10:
+        # SVXXXXYYYY → SV-XXXX-YYYY
+        body = s[2:]
+        if len(body) == 8:
+            s = f"SV-{body[:4]}-{body[4:]}"
+    return s
+
 
 def get_wallets() -> list[dict]:
     """All configured wallets (env-driven, up to MAX_WALLETS). Empty slots skipped."""
@@ -326,6 +346,18 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> dict:
     payment.operation_id = operation_id or None
     payment.paid_amount = round(received, 2)
     payment.raw_response = str(data)
+    if not payment.support_code:
+        # Уникальный код для письма / ручной выдачи в админке
+        for _ in range(8):
+            code = generate_support_code()
+            exists = await db.execute(
+                select(Payment.id).where(Payment.support_code == code)
+            )
+            if exists.scalar_one_or_none() is None:
+                payment.support_code = code
+                break
+        if not payment.support_code:
+            payment.support_code = f"SV-{secrets.token_hex(4).upper()}"
     await db.flush()
 
     if payment.promo_code:
@@ -340,25 +372,64 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> dict:
         if applied_user and getattr(applied_user, "pending_promo_code", None) == payment.promo_code:
             applied_user.pending_promo_code = None
 
-    subscription = await _activate_subscription(db, payment)
-    await db.commit()
+    subscription = None
+    subscription_ok = False
+    try:
+        subscription = await _activate_subscription(db, payment)
+        payment.subscription_applied = True
+        subscription_ok = True
+        await db.commit()
+    except Exception:
+        logger.exception(
+            "payment notify: activate failed payment=%s — money kept, support_code=%s",
+            payment.id,
+            payment.support_code,
+        )
+        payment.subscription_applied = False
+        await db.commit()
 
-    from app.services.referral_service import apply_referral_reward_after_payment
-    await apply_referral_reward_after_payment(db, payment)
+    if subscription_ok:
+        from app.services.referral_service import apply_referral_reward_after_payment
+        try:
+            await apply_referral_reward_after_payment(db, payment)
+        except Exception:
+            logger.exception("payment notify: referral reward failed payment=%s", payment.id)
 
     result = await db.execute(select(User).where(User.id == payment.user_id))
     user = result.scalar_one_or_none()
     if user:
-        sub_result = await db.execute(
-            select(Subscription)
-            .where(Subscription.user_id == payment.user_id, Subscription.status == "active")
-            .order_by(Subscription.expires_at.desc())
-        )
-        latest = sub_result.scalars().first()
-        expires = latest.expires_at if latest else subscription.expires_at
-        send_subscription_activated_email(user.email, payment.plan_type, expires)
+        expires = None
+        if subscription is not None:
+            expires = subscription.expires_at
+        else:
+            sub_result = await db.execute(
+                select(Subscription)
+                .where(Subscription.user_id == payment.user_id, Subscription.status == "active")
+                .order_by(Subscription.expires_at.desc())
+            )
+            latest = sub_result.scalars().first()
+            if latest:
+                expires = latest.expires_at
+            else:
+                _, days = PLAN_PRICES.get(payment.plan_type, (0, 30))
+                expires = datetime.utcnow() + timedelta(days=days)
+        try:
+            send_subscription_activated_email(
+                user.email,
+                payment.plan_type,
+                expires,
+                support_code=payment.support_code,
+                subscription_ok=subscription_ok,
+            )
+        except Exception:
+            logger.exception("payment notify: email failed payment=%s", payment.id)
 
-    logger.info("payment notify: payment=%s completed, subscription activated", payment.id)
+    logger.info(
+        "payment notify: payment=%s completed applied=%s code=%s",
+        payment.id,
+        subscription_ok,
+        payment.support_code,
+    )
     return {"ok": True, "reason": "completed"}
 
 

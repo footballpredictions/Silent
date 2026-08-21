@@ -133,7 +133,14 @@ def send_verification_email(to_email: str, token: str, base_url: str) -> bool:
     return _send(to_email, "Silent VPN — подтвердите email", _base_template(content))
 
 
-def send_subscription_activated_email(to_email: str, plan_type: str, expires_at: datetime) -> bool:
+def send_subscription_activated_email(
+    to_email: str,
+    plan_type: str,
+    expires_at: datetime,
+    *,
+    support_code: str | None = None,
+    subscription_ok: bool = True,
+) -> bool:
     plan_names = {
         "three_days": "3 дня",
         "monthly": "Месячный",
@@ -144,11 +151,40 @@ def send_subscription_activated_email(to_email: str, plan_type: str, expires_at:
         "unlimited": "Безлимитный",
     }
     plan_name = plan_names.get(plan_type, plan_type)
-    expires_str = expires_at.strftime("%d.%m.%Y")
+    expires_str = expires_at.strftime("%d.%m.%Y") if expires_at else "—"
+    code = (support_code or "").strip().upper()
+
+    if subscription_ok:
+        lead = "Спасибо за оплату! Ваша подписка успешно активирована."
+    else:
+        lead = (
+            "Спасибо за оплату! Платёж получен. "
+            "Если доступ к VPN ещё не открылся — напишите в поддержку и укажите код ниже."
+        )
+
+    code_block = ""
+    if code:
+        code_block = f"""
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0;">
+      <tr>
+        <td style="background-color:#111111;border:1px solid #333333;padding:18px 20px;border-radius:8px;text-align:center;">
+          <p style="margin:0 0 8px 0;color:#999999;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;font-family:Arial,sans-serif;">
+            Код для поддержки
+          </p>
+          <p style="margin:0;color:#ffffff;font-size:22px;letter-spacing:0.12em;font-weight:700;font-family:Consolas,Monaco,monospace;">
+            {code}
+          </p>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0 0 16px 0;color:#555555;font-size:13px;line-height:1.6;font-family:Arial,sans-serif;">
+      Если подписка не подключилась в приложении — напишите в поддержку и предоставьте этот код.
+    </p>
+"""
 
     content = f"""
     <p style="margin:0 0 16px 0;color:#333333;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">
-      Спасибо за оплату! Ваша подписка успешно активирована.
+      {lead}
     </p>
     <table width="100%" cellpadding="0" cellspacing="0">
       <tr>
@@ -162,12 +198,17 @@ def send_subscription_activated_email(to_email: str, plan_type: str, expires_at:
         </td>
       </tr>
     </table>
+    {code_block}
     <p style="margin:16px 0 0 0;color:#333333;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">
-      Теперь вы можете подключиться к <strong>Silent VPN</strong> на своём устройстве.
-      Подключить можно до <strong>3 устройств</strong> одновременно.
+      Подключить можно до <strong>3 устройств</strong> одновременно в <strong>Silent VPN</strong>.
     </p>
     """
-    return _send(to_email, "Silent VPN — подписка активирована", _base_template(content))
+    subject = (
+        "Silent VPN — подписка активирована"
+        if subscription_ok
+        else "Silent VPN — оплата получена"
+    )
+    return _send(to_email, subject, _base_template(content))
 
 
 def send_admin_mfa_code_email(to_email: str, code: str, ttl_minutes: int = 10) -> bool:

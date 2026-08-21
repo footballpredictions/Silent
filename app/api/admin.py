@@ -443,6 +443,75 @@ async def set_registration_test_mode_endpoint(
     return {"enabled": enabled, "users_affected": affected}
 
 
+@router.get("/subscriptions/users")
+async def list_subscription_users_endpoint(
+    q: str = Query("", description="email или display_id"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=10, le=500),
+    filter: str = Query("all", description="all|active|inactive|unpaid"),
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Список для меню Подписки: пагинация; при q — все совпадения по базе."""
+    from app.services.admin_subscription_ops import list_subscription_users
+
+    mode = (filter or "all").strip().lower()
+    if mode not in ("all", "active", "inactive", "unpaid"):
+        mode = "all"
+    return await list_subscription_users(
+        db, q=q, page=page, page_size=page_size, filter_mode=mode
+    )
+
+
+@router.get("/subscriptions/orphan-payments")
+async def list_orphan_payments_endpoint(
+    limit: int = Query(30, ge=1, le=100),
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Оплаты completed без выданной подписки."""
+    from app.services.admin_subscription_ops import list_orphan_payments
+
+    return {"items": await list_orphan_payments(db, limit=limit)}
+
+
+@router.get("/subscriptions/by-code/{code}")
+async def lookup_subscription_by_code(
+    code: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.admin_subscription_ops import lookup_payment_by_support_code
+
+    data = await lookup_payment_by_support_code(db, code)
+    if not data:
+        raise HTTPException(status_code=404, detail="Код не найден")
+    return data
+
+
+@router.post("/subscriptions/by-code/{code}/activate")
+async def activate_subscription_by_code(
+    code: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ручная выдача подписки по коду из письма после оплаты YuMoney."""
+    from app.services.admin_subscription_ops import activate_subscription_by_support_code
+
+    return await activate_subscription_by_support_code(db, code)
+
+
+@router.get("/users/{user_id}/subscription-history")
+async def user_subscription_history_endpoint(
+    user_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.admin_subscription_ops import user_subscription_history
+
+    return await user_subscription_history(db, user_id)
+
+
 @router.get("/settings/registration")
 async def get_registration_settings(
     _: bool = Depends(get_admin_credentials),

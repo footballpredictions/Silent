@@ -24,6 +24,11 @@ class Payment(Base):
     paid_amount: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
     # Промокод, применённый на момент создания платёжного намерения (use_count инкрементится при завершении)
     promo_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Код для поддержки в письме (если подписка не активировалась после оплаты)
+    support_code: Mapped[str | None] = mapped_column(String(32), nullable=True, unique=True, index=True)
+    # True после успешной авто/ручной выдачи подписки по этому платежу
+    subscription_applied: Mapped[bool] = mapped_column(default=False)
+    manual_activated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="payments")
 

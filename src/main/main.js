@@ -1147,7 +1147,7 @@ function resolve4WithTimeout(host, ms = 2000) {
   ])
 }
 
-/** YuMoney/success page must leave full-tunnel VPN, иначе оплата в браузере зависает. */
+/** YuMoney/SberPay/success page must leave full-tunnel VPN, иначе оплата в браузере зависает. */
 async function ensurePaymentBypassRoutes(url, sendLogFn = sendLog) {
   if (!wgApplied || vpnBootstrapMode) return
   const hosts = new Set()
@@ -1157,6 +1157,13 @@ async function ensurePaymentBypassRoutes(url, sendLogFn = sendLog) {
   } catch { /* ignore */ }
   hosts.add('yoomoney.ru')
   hosts.add('money.yandex.ru')
+  hosts.add('sberbank.ru')
+  hosts.add('online.sberbank.ru')
+  hosts.add('securepayments.sberbank.ru')
+  hosts.add('3dsec.sberbank.ru')
+  hosts.add('acs.sberbank.ru')
+  hosts.add('id.sber.ru')
+  hosts.add('sberid.ru')
   hosts.add('132-243-234-162.nip.io')
   const extra = [SERVER_IP_FALLBACK]
   await Promise.all([...hosts].map(async (host) => {
@@ -1185,7 +1192,7 @@ ipcMain.handle('open-external', async (_, url) => {
       sendLog('[open-external] invalid url')
       return false
     }
-    if (/132-243-234-162\.nip\.io|132\.243\.234\.162|yoomoney\.ru|money\.yandex\.ru/i.test(url)) {
+    if (/132-243-234-162\.nip\.io|132\.243\.234\.162|yoomoney\.ru|money\.yandex\.ru|sberbank\.ru|sber\.ru|sberid\.ru/i.test(url)) {
       await ensurePaymentBypassRoutes(url)
     }
     await shell.openExternal(url)

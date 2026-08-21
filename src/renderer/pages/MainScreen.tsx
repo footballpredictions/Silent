@@ -147,8 +147,11 @@ type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'bypass' | 'h
 const PLAN_LABELS: Record<string, string> = {
   trial: 'Пробный период',
   test: 'Тестовый режим',
+  three_days: '3 дня',
   monthly: 'Месяц',
+  two_months: '2 месяца',
   quarterly: '3 месяца',
+  half_year: 'Полгода',
   yearly: 'Год',
   unlimited: 'Бессрочно',
 }
@@ -1683,8 +1686,8 @@ export default function MainScreen({
                   <div className="text-sm font-semibold" style={{ color: fg }}>Выберите тариф</div>
                   {[
                     { id: 'monthly', label: 'Месяц', price: '199 ₽' },
-                    { id: 'quarterly', label: '3 месяца', price: '499 ₽' },
-                    { id: 'yearly', label: 'Год', price: '1 499 ₽' },
+                    { id: 'two_months', label: '2 месяца', price: '359 ₽' },
+                    { id: 'quarterly', label: '3 месяца', price: '478 ₽' },
                   ].map(plan => (
                     <button key={plan.id}
                       onClick={async () => {

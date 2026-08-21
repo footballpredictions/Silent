@@ -274,6 +274,8 @@ object WdttTunnelManager {
                         TAG,
                         "Site bypass: ${result.excludeCount} hole(s), unresolved=${result.unresolved.size}",
                     )
+                    // DNS мог завершиться после первого WG apply — добить дыры в AllowedIPs.
+                    reapplyMainTunnelForSiteBypass()
                 }
             } finally {
                 siteBypassResolving = false
@@ -300,12 +302,43 @@ object WdttTunnelManager {
         DebugLog.i(TAG, "Site bypass: ${next.size} hole(s)")
     }
 
-    /** TURN/VK excludes + пользовательские сайты (кэш, без сетевых вызовов). */
+    /**
+     * TURN/VK excludes + пользовательские сайты (кэш, без сетевых вызовов).
+     * Сайты — только на main VPN (как на PC: bootstrap без user site-bypass).
+     * mobileApiRoute после patch гарантирует 10.66.66.0/24 в AllowedIPs.
+     */
     private fun effectiveExcludeIps(context: Context? = lastContext): List<String> {
-        // Для стабильности main VPN используем только служебные исключения TURN/VK.
-        // Пользовательские site-bypass CIDR временно игнорируем: они могли
-        // разрывать маршрут на mobile data и давать "подключено, но без трафика".
-        return wgExcludeIps.toList()
+        refreshSiteBypassExcludes(context)
+        if (isBootstrapMode) return wgExcludeIps.toList()
+        val sites = synchronized(siteBypassCidrs) { siteBypassCidrs.toList() }
+        if (sites.isEmpty()) return wgExcludeIps.toList()
+        return (wgExcludeIps + sites).toList()
+    }
+
+    /** Мягкий reapply AllowedIPs после фонового DNS site-bypass (без полного stop). */
+    private fun reapplyMainTunnelForSiteBypass() {
+        if (!tunnelReady.value || isBootstrapMode || apiOverlayActive) return
+        if (WireGuardHelper.isWgTransitionActive()) return
+        val config = lastWgConfig ?: return
+        val ctx = lastContext ?: return
+        scope.launch {
+            wgApplyMutex.withLock {
+                if (!tunnelReady.value || isBootstrapMode || apiOverlayActive) return@withLock
+                try {
+                    withContext(Dispatchers.Main) {
+                        wgHelper?.startTunnel(
+                            config,
+                            effectiveExcludeIps(ctx),
+                            isBootstrap = false,
+                            mobileApiRoute = mobileApiRouteEnabled(),
+                        )
+                    }
+                    updateLog("site_bypass", "Сайты: маршруты обхода обновлены", 2)
+                } catch (e: Exception) {
+                    DebugLog.w(TAG, "site bypass reapply: ${e.message}")
+                }
+            }
+        }
     }
 
     private fun appendStderrLine(line: String) {

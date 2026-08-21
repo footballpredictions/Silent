@@ -179,15 +179,17 @@ object SiteBypassRoutes {
         return null
     }
 
-    private fun domainLookupHosts(rule: String): List<String>? {
+    internal fun domainLookupHosts(rule: String): List<String>? {
         var host = normalizeRuleInput(rule).lowercase(Locale.US)
         if (host.startsWith("*.")) {
             host = host.removePrefix("*.")
             if (!isDomainName(host)) return null
-            return listOf(host, "www.$host")
+            // Полный wildcard DNS недоступен — закрываем типичные витрины CDN/мобилки.
+            return listOf(host, "www.$host", "m.$host", "api.$host")
         }
         if (!isDomainName(host)) return null
-        return listOf(host)
+        // Apex (ozon.ru) часто отдаёт другие A, чем www — резолвим оба.
+        return listOf(host, "www.$host").distinct()
     }
 
     private fun isDomainName(host: String): Boolean {

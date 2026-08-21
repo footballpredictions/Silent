@@ -29,6 +29,16 @@ class SiteBypassRoutesTest {
     }
 
     @Test
+    fun `apex domain also resolves www`() {
+        assertEquals(listOf("ozon.ru", "www.ozon.ru"), SiteBypassRoutes.domainLookupHosts("ozon.ru"))
+        assertEquals(
+            listOf("ozon.ru", "www.ozon.ru", "m.ozon.ru", "api.ozon.ru"),
+            SiteBypassRoutes.domainLookupHosts("*.ozon.ru"),
+        )
+        assertEquals(null, SiteBypassRoutes.domainLookupHosts("ozon")) // без TLD
+    }
+
+    @Test
     fun `complement single host leaves neighbours`() {
         val hole = Ipv4Cidr(
             (1L shl 24) or (2L shl 16) or (3L shl 8) or 4L,

@@ -28,6 +28,9 @@ import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -38,8 +41,10 @@ class MainActivity : ComponentActivity() {
 
         const val EXTRA_OPEN_MAIN = "open_main"
         const val EXTRA_TILE_CONNECT = "tile_connect"
-        private const val SPLASH_MIN_PHONE_MS = 900L
-        private const val SPLASH_MIN_TV_MS = 500L
+        private const val SPLASH_MIN_PHONE_MS = 500L
+        private const val SPLASH_MIN_TV_MS = 400L
+        /** Максимум ожидания подписки/кеша на splash — дальше главный экран с тем, что успели. */
+        private const val SPLASH_MAX_WAIT_MS = 18_000L
 
         @Volatile
         private var splashDoneThisProcess = false
@@ -138,32 +143,45 @@ class MainActivity : ComponentActivity() {
             var bootVm by remember {
                 mutableStateOf<MainViewModel?>(if (skipSplash) requireVm() else null)
             }
+            var showingSplash by remember { mutableStateOf(!skipSplash) }
+            val progressFlow = remember(bootVm) {
+                bootVm?.launchBootstrapProgress
+                    ?: kotlinx.coroutines.flow.MutableStateFlow(0f)
+            }
+            val splashProgress by progressFlow.collectAsState(initial = 0f)
+
             LaunchedEffect(Unit) {
-                if (bootVm != null) {
-                    val model = bootVm!!
+                if (skipSplash) {
+                    val model = bootVm ?: requireVm().also { bootVm = it }
                     if (model.repository.isLoggedIn()) {
                         model.startLaunchPrefetch(this@MainActivity)
                     }
+                    showingSplash = false
                     return@LaunchedEffect
                 }
                 val minMs = if (deviceIsTv) SPLASH_MIN_TV_MS else SPLASH_MIN_PHONE_MS
                 val start = System.currentTimeMillis()
                 val model = requireVm()
+                bootVm = model
                 if (model.repository.isLoggedIn()) {
-                    // Prefetch/bootstrap идут дальше уже на главном экране — splash не ждёт DTLS.
-                    model.startLaunchPrefetch(this@MainActivity)
+                    val job = model.startLaunchPrefetch(this@MainActivity)
+                    withTimeoutOrNull(SPLASH_MAX_WAIT_MS) { job.join() }
                 }
                 val remain = minMs - (System.currentTimeMillis() - start)
                 if (remain > 0) delay(remain)
                 splashDoneThisProcess = true
-                bootVm = model
+                showingSplash = false
             }
-            if (bootVm == null) {
-                LaunchSplash()
+
+            if (showingSplash) {
+                LaunchSplash(
+                    progress = if (bootVm == null) 0.05f else splashProgress,
+                    showProgress = bootVm?.repository?.isLoggedIn() == true,
+                )
             } else {
                 MainActivityRoot(
                     activity = this,
-                    vm = bootVm!!,
+                    vm = bootVm ?: requireVm(),
                     isTv = deviceIsTv,
                     vpnPermissionGranted = vpnPermissionGranted,
                     pendingBootstrapAfterPermission = pendingBootstrapAfterPermission,

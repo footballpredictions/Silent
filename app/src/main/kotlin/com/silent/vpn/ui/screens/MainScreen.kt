@@ -291,6 +291,9 @@ fun MainScreen(
     onLoadReferral: ((com.silent.vpn.data.ReferralInfo?) -> Unit) -> Unit = {},
     onInitPayment: (String, (String, String) -> Unit, (String) -> Unit) -> Unit,
     paymentState: com.silent.vpn.PaymentUiState = com.silent.vpn.PaymentUiState.IDLE,
+    shopPlans: List<com.silent.vpn.MainViewModel.ShopPlanUi> = emptyList(),
+    paymentBusyPlan: String? = null,
+    onRefreshShopPlans: () -> Unit = {},
     openSubscriptionMenu: Boolean = false,
     onSubscriptionMenuOpened: () -> Unit = {},
     onStartPaymentPoll: (String) -> Unit = {},
@@ -822,6 +825,9 @@ fun MainScreen(
                             bg = bg,
                             primaryBtnBg = palette.primaryBtnBg,
                             primaryBtnFg = palette.primaryBtnFg,
+                            shopPlans = shopPlans,
+                            paymentBusyPlan = paymentBusyPlan,
+                            onRefreshShopPlans = onRefreshShopPlans,
                             onBack = {
                                 if (paymentState != com.silent.vpn.PaymentUiState.WAITING) onResetPaymentState()
                                 menuPage = MenuPage.ROOT
@@ -1007,6 +1013,9 @@ private fun MenuSubscription(
     bg: Color,
     primaryBtnBg: Color,
     primaryBtnFg: Color,
+    shopPlans: List<com.silent.vpn.MainViewModel.ShopPlanUi>,
+    paymentBusyPlan: String?,
+    onRefreshShopPlans: () -> Unit,
     onBack: () -> Unit,
     onInitPayment: (String, (String, String) -> Unit, (String) -> Unit) -> Unit,
     paymentState: com.silent.vpn.PaymentUiState,
@@ -1023,6 +1032,14 @@ private fun MenuSubscription(
         if (paymentState == com.silent.vpn.PaymentUiState.WAITING && subActive)
             com.silent.vpn.PaymentUiState.COMPLETED
         else paymentState
+    val plans = shopPlans.ifEmpty {
+        listOf(
+            com.silent.vpn.MainViewModel.ShopPlanUi("monthly", "Месяц", "199 ₽"),
+            com.silent.vpn.MainViewModel.ShopPlanUi("two_months", "2 месяца", "359 ₽"),
+            com.silent.vpn.MainViewModel.ShopPlanUi("quarterly", "3 месяца", "478 ₽"),
+        )
+    }
+    LaunchedEffect(Unit) { onRefreshShopPlans() }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         TvTextButton(
@@ -1067,35 +1084,82 @@ private fun MenuSubscription(
                     )
                 } else {
                     Text("Выберите тариф", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
-                    listOf("monthly" to ("Месяц" to "199 ₽"), "two_months" to ("2 месяца" to "359 ₽"), "quarterly" to ("3 месяца" to "478 ₽")).forEach { (id, labelPrice) ->
-                        TvPrimaryButton(
-                            onClick = {
-                                onInitPayment(
-                                    id,
-                                    { url, label ->
-                                        // Оплата всегда открывается во внешнем браузере, не встроена в приложение.
-                                        onOpenUrl(url)
-                                        onStartPaymentPoll(label)
-                                    },
-                                    onShowError,
-                                )
+                    val anyBusy = paymentBusyPlan != null
+                    plans.forEach { plan ->
+                        val busyThis = paymentBusyPlan == plan.id
+                        val interaction = remember(plan.id) { MutableInteractionSource() }
+                        val pressed by interaction.collectIsPressedAsState()
+                        val scale by animateFloatAsState(
+                            targetValue = when {
+                                busyThis -> 0.98f
+                                pressed -> 0.96f
+                                else -> 1f
                             },
-                            // Тёмная тема: белая кнопка / чёрный текст (primaryBtn*)
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = primaryBtnBg,
-                                contentColor = primaryBtnFg,
-                            ),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            animationSpec = tween(110),
+                            label = "planPress",
+                        )
+                        val fill = when {
+                            busyThis -> primaryBtnBg.copy(alpha = 0.72f)
+                            pressed -> primaryBtnFg
+                            else -> primaryBtnBg
+                        }
+                        val textCol = when {
+                            pressed && !busyThis -> primaryBtnBg
+                            else -> primaryBtnFg
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                                .graphicsLayer { scaleX = scale; scaleY = scale }
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(fill)
+                                .border(
+                                    width = 1.dp,
+                                    color = if (pressed || busyThis) primaryBtnFg.copy(alpha = 0.35f)
+                                    else primaryBtnFg.copy(alpha = 0.12f),
+                                    shape = RoundedCornerShape(12.dp),
+                                )
+                                .clickable(
+                                    enabled = !anyBusy,
+                                    interactionSource = interaction,
+                                    indication = null,
+                                ) {
+                                    onInitPayment(
+                                        plan.id,
+                                        { url, label ->
+                                            onOpenUrl(url)
+                                            onStartPaymentPoll(label)
+                                        },
+                                        onShowError,
+                                    )
+                                }
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
                         ) {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(labelPrice.first, fontSize = 12.sp, color = primaryBtnFg)
-                                Text(labelPrice.second, fontSize = 12.sp, color = primaryBtnFg)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(plan.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = textCol)
+                                if (busyThis) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            strokeWidth = 2.dp,
+                                            color = textCol,
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Открываем…", fontSize = 12.sp, color = textCol.copy(alpha = 0.9f))
+                                    }
+                                } else {
+                                    Text(plan.priceLabel, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = textCol)
+                                }
                             }
                         }
                     }
                     Text(
-                        "Оплата откроется в системном браузере (YuMoney).",
+                        "Оплата откроется в системном браузере (YuMoney / SberPay).",
                         fontSize = 10.sp,
                         color = fg.copy(alpha = 0.35f),
                         modifier = Modifier.padding(top = 10.dp),

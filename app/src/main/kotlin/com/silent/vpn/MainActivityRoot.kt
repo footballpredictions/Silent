@@ -61,6 +61,8 @@ fun MainActivityRoot(
     val bootstrapExpired by vm.bootstrapExpired.collectAsState()
     val pendingReferralCode by vm.pendingReferralCode.collectAsState()
     val paymentState by vm.paymentState.collectAsState()
+    val shopPlans by vm.shopPlans.collectAsState()
+    val paymentBusyPlan by vm.paymentBusyPlan.collectAsState()
     val openSubscriptionMenu by vm.openSubscriptionMenu.collectAsState()
     val subscriptionProbeActive by vm.subscriptionProbeActive.collectAsState()
 
@@ -174,6 +176,9 @@ fun MainActivityRoot(
                         onLoadReferral = vm::loadReferral,
                         onInitPayment = vm::initPayment,
                         paymentState = paymentState,
+                        shopPlans = shopPlans,
+                        paymentBusyPlan = paymentBusyPlan,
+                        onRefreshShopPlans = vm::refreshShopPlans,
                         openSubscriptionMenu = openSubscriptionMenu,
                         onSubscriptionMenuOpened = vm::consumeOpenSubscriptionMenu,
                         onStartPaymentPoll = vm::startPaymentPoll,

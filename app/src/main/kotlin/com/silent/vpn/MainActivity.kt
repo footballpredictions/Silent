@@ -28,7 +28,6 @@ import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 
@@ -45,6 +44,8 @@ class MainActivity : ComponentActivity() {
         private const val SPLASH_MIN_TV_MS = 400L
         /** Максимум ожидания подписки/кеша на splash — дальше главный экран с тем, что успели. */
         private const val SPLASH_MAX_WAIT_MS = 18_000L
+        /** Доезд полоски после выключения bootstrap (см. LaunchSplash BAR_FINISH_MS). */
+        private const val SPLASH_BAR_FINISH_MS = 360L
 
         @Volatile
         private var splashDoneThisProcess = false
@@ -138,10 +139,21 @@ class MainActivity : ComponentActivity() {
             intent?.removeExtra(EXTRA_OPEN_MAIN)
         }
 
+        // Bootstrap/prefetch — сразу, параллельно с первым кадром splash (не ждать LaunchedEffect).
+        val skipSplashEarly = splashDoneThisProcess || savedInstanceState != null
+        if (!skipSplashEarly) {
+            runCatching {
+                val model = requireVm()
+                if (model.repository.isLoggedIn()) {
+                    model.startLaunchPrefetch(this)
+                }
+            }
+        }
+
         setContent {
             val skipSplash = splashDoneThisProcess || savedInstanceState != null
             var bootVm by remember {
-                mutableStateOf<MainViewModel?>(if (skipSplash) requireVm() else null)
+                mutableStateOf<MainViewModel?>(requireVm())
             }
             var showingSplash by remember { mutableStateOf(!skipSplash) }
             val progressFlow = remember(bootVm) {
@@ -151,8 +163,8 @@ class MainActivity : ComponentActivity() {
             val splashProgress by progressFlow.collectAsState(initial = 0f)
 
             LaunchedEffect(Unit) {
+                val model = bootVm ?: requireVm().also { bootVm = it }
                 if (skipSplash) {
-                    val model = bootVm ?: requireVm().also { bootVm = it }
                     if (model.repository.isLoggedIn()) {
                         model.startLaunchPrefetch(this@MainActivity)
                     }
@@ -161,11 +173,10 @@ class MainActivity : ComponentActivity() {
                 }
                 val minMs = if (deviceIsTv) SPLASH_MIN_TV_MS else SPLASH_MIN_PHONE_MS
                 val start = System.currentTimeMillis()
-                val model = requireVm()
-                bootVm = model
                 if (model.repository.isLoggedIn()) {
-                    val job = model.startLaunchPrefetch(this@MainActivity)
-                    withTimeoutOrNull(SPLASH_MAX_WAIT_MS) { job.join() }
+                    // Prefetch уже мог стартовать в onCreate — ждём; bootstrap гасится внутри finally.
+                    model.awaitLaunchPrefetch(this@MainActivity, SPLASH_MAX_WAIT_MS)
+                    delay(SPLASH_BAR_FINISH_MS)
                 }
                 val remain = minMs - (System.currentTimeMillis() - start)
                 if (remain > 0) delay(remain)
@@ -175,7 +186,7 @@ class MainActivity : ComponentActivity() {
 
             if (showingSplash) {
                 LaunchSplash(
-                    progress = if (bootVm == null) 0.05f else splashProgress,
+                    progress = splashProgress,
                     showProgress = bootVm?.repository?.isLoggedIn() == true,
                 )
             } else {

@@ -69,6 +69,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
@@ -1125,8 +1126,15 @@ class MainViewModel @Inject constructor(
             if (!userTookOver && WdttTunnelManager.isBootstrapMode()) {
                 stopVpnLocally(context.applicationContext)
                 repo.clearTunnelApiBase()
-                withContext(Dispatchers.IO) {
-                    VpnConnectHelper.ensureCleanSlate(context.applicationContext)
+                if (forLaunch) {
+                    waitVpnServiceDown()
+                }
+                // ensureCleanSlate только вне splash: на launch teardown делает finishLaunchBootstrapTunnel
+                // лёгким wait — второй clean slate ломал первый connect тумблера.
+                if (!forLaunch) {
+                    withContext(Dispatchers.IO) {
+                        VpnConnectHelper.ensureCleanSlate(context.applicationContext)
+                    }
                 }
             } else if (!userTookOver) {
                 repo.clearTunnelApiBase()
@@ -1832,15 +1840,10 @@ class MainViewModel @Inject constructor(
     /** Тумблер не делает свой bootstrap: дожидается стартовый prefetch, чтобы был WG-кеш под GETCONF. */
     private suspend fun awaitStartPrefetchForToggleCache(context: Context) {
         val job = launchPrefetchJob
-        if (silentBootstrapSync && job != null && job.isActive) {
-            DebugLog.i("MainViewModel", "toggle: wait ephemeral finish before GETCONF")
-            job.join()
-            return
-        }
-        if (connectableCachedConfig() != null) return
+        // Всегда дождаться teardown splash-bootstrap — иначе первый connect гонится со stop VPN.
         if (job != null && job.isActive) {
-            DebugLog.i("MainViewModel", "toggle: wait start prefetch for WG cache")
-            job.join()
+            DebugLog.i("MainViewModel", "toggle: wait launch prefetch finish")
+            withTimeoutOrNull(12_000L) { job.join() }
         }
         if (connectableCachedConfig() != null) return
         DebugLog.i("MainViewModel", "toggle: no WG cache yet — finish start prefetch")
@@ -1865,17 +1868,51 @@ class MainViewModel @Inject constructor(
     }
 
     fun startLaunchPrefetch(context: Context): Job {
-        launchPrefetchJob?.cancel()
+        launchPrefetchJob?.let { if (it.isActive) return it }
         _launchBootstrapProgress.value = 0.04f
         _launchBootstrapActive.value = true
         return viewModelScope.launch {
             try {
                 prefetchConnectConfigAtLaunch(context)
             } finally {
+                // Только дождаться погасания bootstrap — без второго ensureCleanSlate
+                // (он ломал быстрый первый connect тумблера).
+                finishLaunchBootstrapTunnel(context)
                 setLaunchBootstrapProgress(1f)
                 _launchBootstrapActive.value = false
             }
         }.also { launchPrefetchJob = it }
+    }
+
+    /** Дождаться prefetch; если ещё не стартовал — стартовать. */
+    suspend fun awaitLaunchPrefetch(context: Context, timeoutMs: Long = 18_000L) {
+        val job = launchPrefetchJob?.takeIf { it.isActive } ?: startLaunchPrefetch(context)
+        withTimeoutOrNull(timeoutMs) { job.join() }
+    }
+
+    /** Снять leftover splash-bootstrap до главного экрана / тумблера. */
+    private suspend fun finishLaunchBootstrapTunnel(context: Context) {
+        if (userOwnsMainVpn()) {
+            silentBootstrapSync = false
+            DebugLog.i("MainViewModel", "launch bootstrap skip stop: user owns main VPN")
+            return
+        }
+        bootstrapVpnMode = false
+        val leftoverBoot =
+            WdttTunnelManager.isBootstrapMode() ||
+                (SilentVpnService.isRunning && !repo.isMainVpnTunnelUp())
+        if (leftoverBoot) {
+            stopVpnLocally(context.applicationContext)
+            repo.clearTunnelApiBase()
+            waitVpnServiceDown()
+        } else {
+            repo.clearTunnelApiBase()
+        }
+        silentBootstrapSync = false
+        DebugLog.i(
+            "MainViewModel",
+            "launch bootstrap cleared svc=${SilentVpnService.isRunning} bootMode=${WdttTunnelManager.isBootstrapMode()}",
+        )
     }
 
     private suspend fun mergeHashesIntoConfig(

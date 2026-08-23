@@ -117,6 +117,8 @@ class WireGuardHelper(context: Context) {
         withContext(Dispatchers.IO) {
             wgTransitionActive = true
             try {
+            SilentGoBackendVpnService.vpnExcludeRouteCidrs =
+                if (!apiOverlayMode && !isBootstrap) holeCidrsForExcludeRoute(excludeIPs) else emptyList()
 
             if (VpnService.prepare(appContext) != null) {
 
@@ -304,16 +306,15 @@ class WireGuardHelper(context: Context) {
 
             val tunnel = sharedTunnel
             if (tunnel != null) {
-                runCatching {
+                val hotOk = runCatching {
                     backend.setState(tunnel, Tunnel.State.UP, finalConfig)
                     lastAppliedSemanticKey = semanticKey
                     DebugLog.i(TAG, "WireGuard hot reload")
-                    return@withContext
-                }.onFailure { e ->
-                    // Живой туннель не гасим: DOWN/UP даёт долгое «выкл → вкл».
-                    DebugLog.w(TAG, "WG hot reload skipped, keep current tunnel: ${e.message}")
-                    return@withContext
-                }
+                }.isSuccess
+                if (hotOk) return@withContext
+                DebugLog.w(TAG, "WG hot reload failed — full recreate (site AllowedIPs)")
+                runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
+                sharedTunnel = null
             }
 
             val newTunnel = WgTunnel()
@@ -479,6 +480,18 @@ class WireGuardHelper(context: Context) {
     private val IPV6 = Regex("""^[0-9a-fA-F:]+$""")
     private val IPV6_CIDR = Regex("""^[0-9a-fA-F:]+/(12[0-8]|1[01][0-9]|[1-9]?[0-9])$""")
 
+    /** IP/CIDR-дыры для Android excludeRoute (API 33+). */
+    private fun holeCidrsForExcludeRoute(excludeIPs: Collection<String>): List<String> =
+        excludeIPs.mapNotNull { raw ->
+            val s = raw.trim()
+            when {
+                s.isEmpty() -> null
+                s.contains('/') -> s.takeIf { it.substringBefore('/').matches(IPV4) }
+                s.matches(IPV4) -> "$s/32"
+                else -> null
+            }
+        }.distinct()
+
 
 
     private suspend fun setTunnelUpWithRetry(tunnel: WgTunnel, config: Config) {
@@ -528,6 +541,7 @@ class WireGuardHelper(context: Context) {
                 sharedTunnel = null
 
                 lastAppliedSemanticKey = null
+                SilentGoBackendVpnService.vpnExcludeRouteCidrs = emptyList()
 
             }
 

@@ -85,21 +85,50 @@ export function slotFromSelectedServer(selected?: string | null): string | null 
   return null
 }
 
-export function cachedConfigMatchesPreferred(cfg: { selected_server?: string } | null | undefined): boolean {
+const SERVER_IPS_KEY = 'silent_vpn_server_ips'
+const BAKED_SERVER_IPS: Record<string, string> = {
+  server1: '132.243.234.162',
+  server2: '87.58.213.193',
+  server3: '78.17.74.27',
+}
+
+export function rememberVpnServerIps(servers: { key?: string; public_ip?: string }[]) {
+  try {
+    const cur = JSON.parse(localStorage.getItem(SERVER_IPS_KEY) || '{}') as Record<string, string>
+    for (const s of servers || []) {
+      const key = normalizePreferredServer(String(s.key || ''))
+      const ip = String(s.public_ip || '').trim()
+      if (key && ip) cur[key] = ip
+    }
+    localStorage.setItem(SERVER_IPS_KEY, JSON.stringify(cur))
+  } catch { /* ignore */ }
+}
+
+export function expectedIpForPreferred(slot = getPreferredServer()): string | null {
+  try {
+    const cur = JSON.parse(localStorage.getItem(SERVER_IPS_KEY) || '{}') as Record<string, string>
+    return cur[slot] || BAKED_SERVER_IPS[slot] || null
+  } catch {
+    return BAKED_SERVER_IPS[slot] || null
+  }
+}
+
+export function cachedConfigMatchesPreferred(cfg: { selected_server?: string; server_ip?: string } | null | undefined): boolean {
   if (!cfg) return false
   const slot = slotFromSelectedServer(cfg.selected_server)
   if (!slot) return false
-  return slot === getPreferredServer()
+  if (slot !== getPreferredServer()) return false
+  const wantIp = expectedIpForPreferred(slot)
+  const got = String(cfg.server_ip || '').trim()
+  if (!wantIp || !got) return false
+  return got === wantIp
 }
 
 export function setPreferredServer(server: string) {
   const normalized = normalizePreferredServer(server)
-  const prev = getPreferredServer()
   try {
     localStorage.setItem(PREFERRED_SERVER_KEY, normalized)
-    if (prev !== normalized) {
-      localStorage.removeItem('silent_vpn_config_cache')
-    }
+    localStorage.removeItem('silent_vpn_config_cache')
   } catch { /* ignore */ }
 }
 

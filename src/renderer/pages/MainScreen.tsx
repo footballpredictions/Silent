@@ -1733,24 +1733,15 @@ export default function MainScreen({
                                 await electron?.vpnDisconnect?.({ fast: true })
                               }
                             } catch { /* ignore */ }
-                            let initRes: { data?: { url?: string; label?: string } } | null = null
-                            try {
-                              initRes = await api.post(
-                                '/api/payments/init',
-                                { plan_type: plan.id },
-                                { timeout: 12_000 },
-                              )
-                            } catch {
-                              const bridged = await ensurePaymentBootstrapVpn()
-                              if (!bridged) {
-                                throw new Error('Не удалось включить временный интернет для оплаты. Повторите.')
-                              }
-                              initRes = await api.post(
-                                '/api/payments/init',
-                                { plan_type: plan.id },
-                                { timeout: 30_000 },
-                              )
+                            const bridged = await ensurePaymentBootstrapVpn()
+                            if (!bridged) {
+                              throw new Error('Не удалось включить временный интернет для оплаты. Повторите.')
                             }
+                            const initRes = await api.post(
+                              '/api/payments/init',
+                              { plan_type: plan.id },
+                              { timeout: 30_000 },
+                            )
                             const url = initRes?.data?.url
                             const label = initRes?.data?.label
                             if (!url || !label) throw new Error('Сервер не вернул ссылку на оплату')

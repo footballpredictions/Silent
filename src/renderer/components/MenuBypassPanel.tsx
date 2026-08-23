@@ -5,8 +5,8 @@ import {
   getPreferredServer,
   setPreferredServer,
   normalizePreferredServer,
+  rememberVpnServerIps,
 } from '../bypassStore'
-import { clearCachedVpnConfig } from '../vkConfig'
 
 type Props = {
   fg: string
@@ -130,6 +130,7 @@ export default function MenuBypassPanel({
         const data = res.data as VpnServersResponse
         if (!mounted) return
         setServers(Array.isArray(data.servers) ? data.servers : [])
+        rememberVpnServerIps(Array.isArray(data.servers) ? data.servers : [])
         // Локальный слот — источник правды. GET selected_server часто отстаёт
         // (устройство ещё на соте) и откатывал «Сервер 1» обратно на 2/3.
         const local = normalizePreferredServer(getPreferredServer())
@@ -165,20 +166,25 @@ export default function MenuBypassPanel({
         return
       }
       if (nextServer !== selectedServerSlot) {
-        const fp = getStableDeviceFingerprint()
-        const res = await api.post('/api/vpn/servers/select', {
-          device_fingerprint: fp,
-          preferred_server: nextServer,
-        })
-        const data = res.data as VpnServersResponse
-        const nextServers = Array.isArray(data.servers) ? data.servers : []
-        if (nextServers.length > 0) setServers(nextServers)
         setSelectedServerSlot(nextServer)
         setPreferredServer(nextServer)
-        // После смены слота не используем старый WG-кеш от предыдущего сервера.
-        clearCachedVpnConfig()
+        try {
+          const fp = getStableDeviceFingerprint()
+          const res = await api.post('/api/vpn/servers/select', {
+            device_fingerprint: fp,
+            preferred_server: nextServer,
+          })
+          const data = res.data as VpnServersResponse
+          const nextServers = Array.isArray(data.servers) ? data.servers : []
+          if (nextServers.length > 0) setServers(nextServers)
+          rememberVpnServerIps(nextServers)
+          setHint('Выбрано')
+        } catch {
+          setHint('Выбрано. Синхронизация с сервером при подключении.')
+        }
+      } else {
+        setHint('Выбрано')
       }
-      setHint('Выбрано')
     } finally {
       setBusy(false)
     }

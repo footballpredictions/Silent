@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.util.PaymentBrowser
 
 /** Пакеты VK — всегда вне туннеля (TURN), как в proxy-turn-vk-android. */
 val VK_TUNNEL_PACKAGES = setOf(
@@ -30,6 +31,15 @@ private val BOOTSTRAP_COMPANION_PACKAGES = listOf(
     "com.microsoft.emmx",
     "com.sec.android.app.sbrowser",
     "com.huawei.browser",
+    "com.mi.globalbrowser",
+    "com.miui.browser",
+    "com.vivo.browser",
+    "com.coloros.browser",
+    "com.heytap.browser",
+    "com.uc.browser",
+    "com.UCMobile",
+    "com.quark.browser",
+    "mark.via.gp",
     "com.yandex.browser",
     "com.yandex.browser.beta",
     "com.yandex.browser.alpha",
@@ -60,6 +70,9 @@ fun resolveBootstrapIncludedApps(context: Context): Set<String> {
     val out = linkedSetOf(context.packageName)
     for (pkg in BOOTSTRAP_COMPANION_PACKAGES) {
         if (isPackageInstalled(pm, pkg)) out.add(pkg)
+    }
+    PaymentBrowser.defaultHttpsBrowserPackage(context)?.let { defPkg ->
+        if (isPackageInstalled(pm, defPkg)) out.add(defPkg)
     }
     DebugLog.i("BootstrapVpn", "included apps: ${out.size} (${out.joinToString { it.substringAfterLast('.') }})")
     return out

@@ -865,7 +865,38 @@ class MainViewModel @Inject constructor(
         paymentPollJob = null
         markPaymentConfirmedUi()
         repo.clearPendingPaymentLabel()
-        stopPaymentBootstrap(appContext)
+        viewModelScope.launch {
+            paymentBootstrapMutex.withLock {
+                prefetchMainConfigBeforePaymentTeardown()
+                stopPaymentBootstrap(appContext)
+                waitVpnServiceDown()
+            }
+        }
+    }
+
+    /** Пока жив payment-bootstrap — скачать WG выбранного слота, чтобы первый тумблер не был пустым. */
+    private suspend fun prefetchMainConfigBeforePaymentTeardown() {
+        if (!isPaidSubscriptionConfirmed()) return
+        val fp = runCatching { repo.getDeviceFingerprint() }.getOrNull() ?: return
+        if (isPaymentBootstrapTunnelUp()) {
+            repo.ensureBootstrapTunnelApi()
+        } else if (!repo.isMainVpnTunnelUp()) {
+            return
+        }
+        runCatching {
+            val res = repo.getApi().getConfig(fp, repo.getPreferredServer())
+            val candidate = res.body()?.takeIf { res.isSuccessful } ?: return
+            if (isConfigConnectable(candidate) && cachedConfigMatchesPreferred(candidate)) {
+                repo.cacheVpnConfig(Gson().toJson(candidate))
+                rememberPrefetch(ConnectFetchResult(candidate, null, false))
+                DebugLog.i(
+                    "MainViewModel",
+                    "payment prefetch slot=${candidate.selected_server} ip=${candidate.server_ip}",
+                )
+            }
+        }.onFailure {
+            DebugLog.w("MainViewModel", "payment prefetch: ${it.message}")
+        }
     }
 
     private fun maybeCompletePaymentFromProfile(profile: UserProfile) {
@@ -1284,14 +1315,6 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun needsPaymentInternetBridge(): Boolean {
-        if (hasVpnAccess()) return false
-        if (repo.isOnMobileData()) return true
-        if (repo.isMainVpnTunnelUp() || paymentBootstrapHeld) return true
-        // Без forceProbe — иначе перед YuMoney на «битом» Wi‑Fi ждём лишний таймаут.
-        return !repo.isPublicBackendReachable(forceProbe = false)
-    }
-
     private suspend fun waitVpnServiceDown() {
         repeat(24) {
             if (!SilentVpnService.isRunning && !WdttTunnelManager.running.value) return
@@ -1300,24 +1323,20 @@ class MainViewModel @Inject constructor(
     }
 
     /** Как подтверждение почты при регистрации: bootstrap VPN остаётся включённым, пока идёт оплата. */
-    private suspend fun ensurePaymentBootstrapHeld(context: Context): Boolean =
-        paymentBootstrapMutex.withLock { ensurePaymentBootstrapHeldLocked(context) }
+    private suspend fun ensurePaymentBootstrapHeld(context: Context, force: Boolean = false): Boolean =
+        paymentBootstrapMutex.withLock { ensurePaymentBootstrapHeldLocked(context, force) }
 
-    private suspend fun ensurePaymentBootstrapHeldLocked(context: Context): Boolean {
-        if (isPaidSubscriptionConfirmed()) {
+    private suspend fun ensurePaymentBootstrapHeldLocked(context: Context, force: Boolean = false): Boolean {
+        if (isPaymentBootstrapTunnelUp()) {
+            holdPaymentBootstrapIfRunning()
+            return true
+        }
+        if (!force && isPaidSubscriptionConfirmed()) {
             markPaymentConfirmedUi()
             if (isAppForeground()) {
                 releasePaymentBootstrapAfterReturn()
                 return true
             }
-            if (isPaymentBootstrapTunnelUp()) {
-                holdPaymentBootstrapIfRunning()
-                return true
-            }
-        }
-        if (isPaymentBootstrapTunnelUp()) {
-            holdPaymentBootstrapIfRunning()
-            return true
         }
         if (repo.isMainVpnTunnelUp() || (SilentVpnService.isRunning && !WdttTunnelManager.isBootstrapMode())) {
             DebugLog.i("MainViewModel", "payment bootstrap: stop main VPN first")
@@ -3889,11 +3908,12 @@ class MainViewModel @Inject constructor(
             )
             return false
         }
-        val ok = slot == want
+        val ipOk = repo.vpnConfigIpMatchesPreferred(config.server_ip, want)
+        val ok = slot == want && ipOk
         if (!ok) {
             DebugLog.i(
                 "MainViewModel",
-                "skip cache: slot=$slot want=$want ip=${config.server_ip}",
+                "skip cache: slot=$slot want=$want ip=${config.server_ip} expect=${repo.expectedIpForPreferred(want)}",
             )
         }
         return ok
@@ -4550,39 +4570,24 @@ class MainViewModel @Inject constructor(
         _paymentBusyPlan.value = planType
         viewModelScope.launch {
             try {
-                if (needsPaymentInternetBridge()) {
-                    val ok = ensurePaymentBootstrapHeld(appContext)
-                    if (!ok) {
-                        onError("Не удалось включить временный интернет для оплаты. Повторите.")
+                val bridged = ensurePaymentBootstrapHeld(appContext, force = true)
+                if (!bridged) {
+                    onError("Не удалось включить временный интернет для оплаты. Повторите.")
+                    return@launch
+                }
+                val pay = runCatching { withEphemeralBackendApi { initPaymentApi(planType) } }
+                    .getOrElse { e ->
+                        val raw = e.message.orEmpty()
+                        onError(
+                            if (repo.isPublicConnectFailure(raw)) {
+                                "Не удалось открыть оплату. Повторите."
+                            } else {
+                                e.message ?: "Ошибка оплаты"
+                            },
+                        )
                         return@launch
                     }
-                    runCatching { withEphemeralBackendApi { initPaymentApi(planType) } }
-                        .onSuccess { rememberPaymentAndOpen(it.url, it.label, onUrl) }
-                        .onFailure { e ->
-                            stopPaymentBootstrap(appContext)
-                            onError(e.message ?: "Ошибка оплаты")
-                        }
-                    return@launch
-                }
-                if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
-                    val ok = runEphemeralApiBootstrap(appContext, force = true) {
-                        runCatching { initPaymentApi(planType) }
-                            .fold(
-                                onSuccess = { r -> rememberPaymentAndOpen(r.url, r.label, onUrl); true },
-                                onFailure = { e ->
-                                    onError(e.message ?: "Ошибка оплаты")
-                                    false
-                                },
-                            )
-                    }
-                    if (!ok) onError("Не удалось открыть оплату. Повторите.")
-                    return@launch
-                }
-                runCatching {
-                    repo.withUserBackendApi { initPaymentApi(planType) }
-                }.onSuccess { rememberPaymentAndOpen(it.url, it.label, onUrl) }.onFailure { e ->
-                    onError(e.message ?: "Ошибка")
-                }
+                rememberPaymentAndOpen(pay.url, pay.label, onUrl)
             } finally {
                 _paymentBusyPlan.value = null
             }

@@ -180,10 +180,10 @@ data class PreferredServerRequest(
 )
 
 data class VpnServerInfo(
-    val key: String,
-    val title: String,
-    val public_ip: String,
-    val wdtt_port: Int,
+    val key: String = "",
+    val title: String = "",
+    val public_ip: String = "",
+    val wdtt_port: Int = 0,
     val online_count: Int = 0,
     val api_base: String = "",
 )

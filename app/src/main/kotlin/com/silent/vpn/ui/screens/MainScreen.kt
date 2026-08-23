@@ -1159,7 +1159,7 @@ private fun MenuSubscription(
                         }
                     }
                     Text(
-                        "Оплата откроется в системном браузере (YuMoney / SberPay).",
+                        "Оплата откроется в Chrome или Яндекс.Браузере (YuMoney / SberPay).",
                         fontSize = 10.sp,
                         color = fg.copy(alpha = 0.35f),
                         modifier = Modifier.padding(top = 10.dp),

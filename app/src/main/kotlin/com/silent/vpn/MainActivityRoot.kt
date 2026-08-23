@@ -1,7 +1,6 @@
 package com.silent.vpn
 
 import android.content.Intent
-import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import androidx.compose.foundation.background
@@ -184,7 +183,7 @@ fun MainActivityRoot(
                         onStartPaymentPoll = vm::startPaymentPoll,
                         onResetPaymentState = vm::resetPaymentState,
                         onOpenUrl = { url ->
-                            activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                            com.silent.vpn.util.PaymentBrowser.openPaymentUrl(activity, url)
                         },
                         onShowError = vm::showError,
                         onRenameDevice = vm::renameDevice,

@@ -45,20 +45,19 @@ fun MenuBypassScreen(
     var applyHint by remember { mutableStateOf<String?>(null) }
     var servers by remember { mutableStateOf(fallbackServerList(selectedServerSlot)) }
     val scope = rememberCoroutineScope()
-    val switchLocked = applying || vpnState == VpnState.CONNECTING || vpnState == VpnState.CONNECTED
+    val switchLocked = vpnState == VpnState.CONNECTING || vpnState == VpnState.CONNECTED
 
     val hasPending =
         (pendingServerSlot != null && pendingServerSlot != selectedServerSlot)
 
     LaunchedEffect(Unit) {
+        selectedServerSlot = SilentRepository.normalizePreferredServer(repo.getPreferredServer())
         runCatching { repo.fetchVpnServers() }
             .onSuccess { body ->
                 if (body.servers.isNotEmpty()) {
                     servers = body.servers
                 }
-                selectedServerSlot = SilentRepository.normalizePreferredServer(
-                    repo.getPreferredServer().ifBlank { body.selected_server },
-                )
+                selectedServerSlot = SilentRepository.normalizePreferredServer(repo.getPreferredServer())
             }
             .onFailure {
                 applyHint = applyHint ?: "Не удалось загрузить список серверов."
@@ -121,7 +120,7 @@ fun MenuBypassScreen(
                 BypassOption(
                     title = server.title.ifBlank { slotTitle(slot) },
                     selected = (pendingServerSlot ?: selectedServerSlot) == slot,
-                    enabled = !switchLocked,
+                    enabled = !switchLocked && !applying,
                     fg = fg,
                     onSelect = { pendingServerSlot = slot },
                 )
@@ -148,16 +147,17 @@ fun MenuBypassScreen(
                     scope.launch {
                         try {
                             if (nextServer != null) {
-                                runCatching { repo.selectVpnServer(nextServer) }
+                                val slot = SilentRepository.normalizePreferredServer(nextServer)
+                                repo.setPreferredServer(slot)
+                                selectedServerSlot = slot
+                                runCatching { repo.selectVpnServer(slot) }
                                     .onSuccess { body ->
                                         if (body.servers.isNotEmpty()) servers = body.servers
+                                        applyHint = "Выбрано"
                                     }
                                     .onFailure {
-                                        applyHint = "Не удалось применить сервер."
+                                        applyHint = "Выбрано. Синхронизация с сервером при подключении."
                                     }
-                                selectedServerSlot = SilentRepository.normalizePreferredServer(nextServer)
-                                repo.setPreferredServer(selectedServerSlot)
-                                if (applyHint == null) applyHint = "Выбрано"
                             }
                         } finally {
                             applying = false

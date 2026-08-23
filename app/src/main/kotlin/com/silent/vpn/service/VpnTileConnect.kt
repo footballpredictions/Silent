@@ -122,7 +122,7 @@ object VpnTileConnect {
     private fun cachedConfigMatchesPreferred(repo: SilentRepository, config: VpnConfig): Boolean {
         val want = repo.getPreferredServer()
         val slot = SilentRepository.slotFromSelectedServer(config.selected_server) ?: return false
-        return slot == want
+        return slot == want && repo.vpnConfigIpMatchesPreferred(config.server_ip, want)
     }
 
     private fun isConfigConnectable(repo: SilentRepository, config: VpnConfig): Boolean {

@@ -81,9 +81,15 @@ class SilentRepository @Inject constructor(
         const val BYPASS_FAMILY_OLCRTC = "olcrtc"
         const val BYPASS_FAMILY_OLCRTC2 = "olcrtc2"
         const val PREF_PREFERRED_SERVER = "preferred_server"
+        const val PREF_SERVER_IPS = "vpn_server_ips_json"
         const val SERVER_MAIN = "server1"
         const val SERVER_CELL_PREFIX = "cell:"
         private val PREFERRED_SERVER_SLOT = Regex("^server\\d+$", RegexOption.IGNORE_CASE)
+        val BAKED_SERVER_IPS = mapOf(
+            "server1" to "132.243.234.162",
+            "server2" to "87.58.213.193",
+            "server3" to "78.17.74.27",
+        )
 
         fun normalizePreferredServer(raw: String?): String {
             val v = raw?.trim()?.lowercase().orEmpty()
@@ -1445,11 +1451,43 @@ class SilentRepository @Inject constructor(
 
     fun setPreferredServer(server: String) {
         val next = normalizePreferredServer(server)
-        val prev = getPreferredServer()
-        prefs.edit().putString(PREF_PREFERRED_SERVER, next).apply()
-        if (prev != next) {
-            clearCachedVpnConfig()
+        prefs.edit().putString(PREF_PREFERRED_SERVER, next).commit()
+        clearCachedVpnConfig()
+    }
+
+    fun rememberVpnServerIps(servers: List<VpnServerInfo>) {
+        if (servers.isEmpty()) return
+        val type = object : TypeToken<MutableMap<String, String>>() {}.type
+        val current: MutableMap<String, String> = runCatching {
+            Gson().fromJson<MutableMap<String, String>>(
+                prefs.getString(PREF_SERVER_IPS, "{}"),
+                type,
+            )
+        }.getOrNull() ?: mutableMapOf()
+        for (item in servers) {
+            val ip = item.public_ip?.trim().orEmpty()
+            val key = item.key?.trim().orEmpty()
+            if (ip.isNotBlank() && key.isNotBlank()) {
+                current[normalizePreferredServer(key)] = ip
+            }
         }
+        prefs.edit().putString(PREF_SERVER_IPS, Gson().toJson(current)).apply()
+    }
+
+    fun expectedIpForPreferred(slot: String = getPreferredServer()): String? {
+        val type = object : TypeToken<Map<String, String>>() {}.type
+        val stored: Map<String, String> = runCatching {
+            Gson().fromJson<Map<String, String>>(
+                prefs.getString(PREF_SERVER_IPS, "{}"),
+                type,
+            )
+        }.getOrNull() ?: emptyMap()
+        return stored[slot]?.takeIf { it.isNotBlank() } ?: BAKED_SERVER_IPS[slot]
+    }
+
+    fun vpnConfigIpMatchesPreferred(serverIp: String, slot: String = getPreferredServer()): Boolean {
+        val want = expectedIpForPreferred(slot) ?: return false
+        return serverIp.trim() == want
     }
 
     suspend fun fetchVpnServers(): VpnServersResponse {
@@ -1459,11 +1497,13 @@ class SilentRepository @Inject constructor(
             throw IllegalStateException("vpn servers HTTP ${res.code()}")
         }
         val body = res.body() ?: VpnServersResponse(getPreferredServer(), emptyList())
+        rememberVpnServerIps(body.servers)
         return body
     }
 
     suspend fun selectVpnServer(serverKey: String): VpnServersResponse {
         val key = serverKey.trim().ifBlank { SERVER_MAIN }
+        setPreferredServer(key)
         val res = getApi().selectVpnServer(
             PreferredServerRequest(
                 device_fingerprint = getDeviceFingerprint(),
@@ -1474,8 +1514,7 @@ class SilentRepository @Inject constructor(
             throw IllegalStateException("vpn select server HTTP ${res.code()}")
         }
         val body = res.body() ?: VpnServersResponse(key, emptyList())
-        setPreferredServer(key)
-        clearCachedVpnConfig()
+        runCatching { rememberVpnServerIps(body.servers) }
         return body
     }
 

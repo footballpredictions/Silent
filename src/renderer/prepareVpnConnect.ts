@@ -10,7 +10,7 @@ import {
 } from './hashItemsStore'
 import type { VpnConfigPayload } from './vkConfig'
 import { pushLog } from './debugLog'
-import { getPreferredServer } from './bypassStore'
+import { cachedConfigMatchesPreferred, getPreferredServer } from './bypassStore'
 
 /** Пресет «Как на сервере» не подменяет wg_dns — конфиг остаётся серверным. */
 function withDnsPreset(config: VpnConfigPayload): VpnConfigPayload {
@@ -35,7 +35,7 @@ export async function prepareVpnConnectConfig(
   let items: HashItem[] = getSavedHashItems()
   const cachedActive = activeServerHashes(items).length
   const configHashes = (config.vk_hashes || []).map(h => h.trim()).filter(Boolean).length
-  if (cachedActive >= 4 || configHashes >= 4) {
+  if ((cachedActive >= 4 || configHashes >= 4) && cachedConfigMatchesPreferred(merged)) {
     const serverHashes = activeServerHashes(items).map(i => i.hash.trim()).filter(Boolean)
     if (serverHashes.length > 0) merged = { ...merged, vk_hashes: serverHashes }
     return withDnsPreset(applyWorkerCountForConnect(merged))

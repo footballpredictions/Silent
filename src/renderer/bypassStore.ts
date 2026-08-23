@@ -94,8 +94,12 @@ export function cachedConfigMatchesPreferred(cfg: { selected_server?: string } |
 
 export function setPreferredServer(server: string) {
   const normalized = normalizePreferredServer(server)
+  const prev = getPreferredServer()
   try {
     localStorage.setItem(PREFERRED_SERVER_KEY, normalized)
+    if (prev !== normalized) {
+      localStorage.removeItem('silent_vpn_config_cache')
+    }
   } catch { /* ignore */ }
 }
 

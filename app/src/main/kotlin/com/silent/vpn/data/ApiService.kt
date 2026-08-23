@@ -109,6 +109,24 @@ data class HashFailureReportRequest(
     val device_fingerprint: String,
 )
 
+/**
+ * Репорт агенту доступности: на какой стадии сорвалось подключение.
+ * `age_sec` — сколько репорт пролежал в очереди, чтобы сервер отнёс отказ
+ * к моменту самого сбоя, а не к моменту доставки.
+ */
+data class ReachabilityReportRequest(
+    val stage: String,
+    val transport: String = "",
+    val network_type: String = "",
+    val carrier: String = "",
+    val server_slot: String = "",
+    val tunnel_uptime_sec: Int? = null,
+    val platform: String = "android",
+    val app_version: String = "",
+    val detail: String = "",
+    val age_sec: Int? = null,
+)
+
 data class DeviceRenameRequest(val device_name: String)
 
 data class DeviceRegisterRequest(
@@ -452,6 +470,9 @@ interface SilentApi {
 
     @POST("api/vpn/hashes/report-failure")
     suspend fun reportHashFailure(@Body req: HashFailureReportRequest): Response<Map<String, String>>
+
+    @POST("api/vpn/reachability-report")
+    suspend fun reportReachability(@Body req: ReachabilityReportRequest): Response<Map<String, Any>>
 
     @POST("api/vpn/bootstrap-config")
     suspend fun bootstrapConfig(@Body req: BootstrapConfigRequest): Response<VpnConfig>

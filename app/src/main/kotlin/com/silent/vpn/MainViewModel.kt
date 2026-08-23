@@ -25,6 +25,7 @@ import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.data.toHashItems
 import com.silent.vpn.data.PromoCheckRequest
+import com.silent.vpn.data.ReachabilityReportRequest
 import com.silent.vpn.data.ReferralInfo
 import com.silent.vpn.data.RegisterRequest
 import com.silent.vpn.data.SilentRepository
@@ -48,6 +49,7 @@ import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vpn.TelegramPathWarmup
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.HashFailureReporter
+import com.silent.vpn.vpn.ReachabilityReporter
 import com.silent.vpn.vpn.OlcrtcTunnelManager
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.sync.MobileSyncLog
@@ -221,6 +223,8 @@ class MainViewModel @Inject constructor(
     /** Должен быть объявлен до init — tunnelReady.collect может сработать в конструкторе. */
     private val pendingHashFailures = ConcurrentLinkedQueue<Triple<String, String, String>>()
     private var hashFailureFlushJob: Job? = null
+    /** Когда туннель поднялся — агенту доступности нужен возраст туннеля, чтобы отличить срыв на старте от смерти живого. */
+    @Volatile private var tunnelUpAtMs = 0L
 
     private val configSyncListener = object : ConfigSyncCoordinator.Listener {
         override fun onTheme(theme: ThemeData) {
@@ -259,6 +263,7 @@ class MainViewModel @Inject constructor(
 
         override fun onWifiSyncTickStart() {
             flushPendingHashFailures()
+            ReachabilityReporter.flush(viewModelScope)
         }
 
         override fun vpnState(): VpnState = _vpnState.value
@@ -321,6 +326,22 @@ class MainViewModel @Inject constructor(
     }
 
     init {
+        ReachabilityReporter.install { item, ageSec ->
+            if (!repo.isLoggedIn() || bootstrapVpnMode) return@install false
+            repo.reportReachability(
+                ReachabilityReportRequest(
+                    stage = item.stage,
+                    transport = if (repo.isOlcrtcBypass()) "olcrtc" else "udp",
+                    network_type = repo.reportNetworkType(),
+                    carrier = repo.reportCarrier(),
+                    server_slot = repo.getPreferredServer(),
+                    tunnel_uptime_sec = item.tunnelUptimeSec,
+                    app_version = com.silent.vpn.BuildConfig.VERSION_NAME,
+                    detail = item.detail,
+                    age_sec = ageSec,
+                ),
+            ).isSuccess
+        }
         HashFailureReporter.install { hash, errorType, message ->
             if (!repo.isLoggedIn() || bootstrapVpnMode) return@install
             if (repo.isOnMobileData() && !repo.allowsBackgroundConfigSync()) {
@@ -442,6 +463,7 @@ class MainViewModel @Inject constructor(
                         viewModelScope.launch { disconnect(appContext) }
                     } else {
                         _vpnError.value = err
+                        reportReachabilityFailure(err)
                     }
                 }
             }
@@ -500,6 +522,8 @@ class MainViewModel @Inject constructor(
                     WdttTunnelManager.activeWorkers.value < 1
                 ) {
                     TelegramPathWarmup.cancel()
+                    // Туннель умер сам: при выключении с тумблера состояние уже DISCONNECTING.
+                    reportReachabilityFailure("туннель оборван без запроса на отключение")
                     _vpnState.value = VpnState.DISCONNECTED
                     backendSyncCompleted = false
                     repo.clearTunnelApiBase()
@@ -2038,6 +2062,33 @@ class MainViewModel @Inject constructor(
                 }
         }
     }
+    /**
+     * Срыв подключения — в очередь агенту доступности. До готового туннеля это
+     * `handshake` (не встал), после — `tunnel_dead` (умер живой) с его возрастом.
+     */
+    private fun reportReachabilityFailure(detail: String) {
+        if (bootstrapVpnMode || !repo.isLoggedIn()) return
+        // Ошибка при живом туннеле — не срыв подключения: агенту это не сигнал.
+        if (WdttTunnelManager.tunnelReady.value) return
+        val upAt = tunnelUpAtMs
+        if (upAt > 0L) {
+            val uptime = ((System.currentTimeMillis() - upAt) / 1000).coerceAtLeast(0).toInt()
+            ReachabilityReporter.report(
+                viewModelScope,
+                ReachabilityReporter.STAGE_TUNNEL_DEAD,
+                tunnelUptimeSec = uptime,
+                detail = detail,
+            )
+        } else {
+            ReachabilityReporter.report(
+                viewModelScope,
+                ReachabilityReporter.STAGE_HANDSHAKE,
+                detail = detail,
+            )
+        }
+        tunnelUpAtMs = 0L
+    }
+
     private var lastTunnelAttachAtMs = 0L
     /** Первое подключение туннеля — sync/theme. Resume attach не должен дёргать WG overlay. */
     private fun onVpnTunnelReady(vpnConfig: VpnConfig? = null, initialConnect: Boolean = true) {
@@ -2045,6 +2096,9 @@ class MainViewModel @Inject constructor(
         if (silentBootstrapSync) return
         if (WdttTunnelManager.isBootstrapMode() && !bootstrapVpnMode) return
         val now = System.currentTimeMillis()
+        if (tunnelUpAtMs <= 0L) tunnelUpAtMs = now
+        // Канал до API подтвердился — самое время выгрузить накопленные отказы.
+        ReachabilityReporter.flush(viewModelScope)
         if (!initialConnect) {
             if (now - lastTunnelAttachAtMs < 5_000L) return
             lastTunnelAttachAtMs = now
@@ -3248,6 +3302,7 @@ class MainViewModel @Inject constructor(
                 repo.clearSyncRevisions()
                 repo.clearTunnelApiBase()
                 repo.clearTokens()
+                ReachabilityReporter.reset()
                 prefetchedConnect = null
                 prefetchedSlot = null
 
@@ -3297,6 +3352,7 @@ class MainViewModel @Inject constructor(
         backendSyncJob = null
         backendSyncCompleted = false
         lastTunnelAttachAtMs = 0L
+        tunnelUpAtMs = 0L
         pendingHashFailures.clear()
         hashFailureFlushJob?.cancel()
         hashFailureFlushJob = null
@@ -4273,6 +4329,7 @@ class MainViewModel @Inject constructor(
         backendSyncCompleted = false
         VpnSessionState.resetBackendSync()
         lastTunnelAttachAtMs = 0L
+        tunnelUpAtMs = 0L
         pendingHashFailures.clear()
         hashFailureFlushJob?.cancel()
         hashFailureFlushJob = null

@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import android.net.Network
+import android.telephony.TelephonyManager
 import android.util.Log
 import com.silent.vpn.BuildConfig
 import com.google.gson.Gson
@@ -3095,6 +3096,37 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
     suspend fun reportHashFailuresDirect(items: List<Triple<String, String, String>>) {
         items.forEach { (hash, errorType, message) ->
             reportHashFailureDirect(hash, errorType, message)
+        }
+    }
+
+    /** Тип сети для агента доступности: важно отличить сотового абонента от Wi‑Fi. */
+    fun reportNetworkType(): String = when {
+        isOnMobileData() -> "mobile"
+        VpnNetworkHelper.hasUnderlyingInternet(context) -> "wifi"
+        else -> "offline"
+    }
+
+    /** Оператор нужен, чтобы увидеть блокировку у одного оператора, а не у всех. */
+    fun reportCarrier(): String = runCatching {
+        if (!isOnMobileData()) return@runCatching ""
+        val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+        tm?.networkOperatorName?.trim().orEmpty().take(64)
+    }.getOrDefault("")
+
+    /**
+     * Отправить репорт о срыве подключения. В отличие от хешей канал не ограничиваем
+     * `allowsBackgroundConfigSync()`: смысл репорта именно в том, что связи не было,
+     * а `withBackendApi` сам перебирает tunnel → public → соты.
+     */
+    suspend fun reportReachability(req: ReachabilityReportRequest): Result<Unit> {
+        if (!isLoggedIn()) return Result.failure(IllegalStateException("not logged in"))
+        return runCatching {
+            withBackendApi {
+                val res = getApi().reportReachability(req)
+                if (!res.isSuccessful) {
+                    throw Exception("reachability-report ${res.code()}")
+                }
+            }
         }
     }
 

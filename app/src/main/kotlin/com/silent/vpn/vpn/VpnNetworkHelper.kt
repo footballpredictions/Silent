@@ -104,6 +104,18 @@ object VpnNetworkHelper {
         return false
     }
 
+    /** Wi‑Fi/LTE без VPN — для DNS site-bypass (резолв мимо туннеля). */
+    fun findUnderlyingNetwork(context: Context): Network? {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+            return network
+        }
+        return null
+    }
+
     /** Есть ли NOT_VPN сеть с INTERNET (без требования VALIDATED — для детекта полного обрыва). */
     fun hasAnyUnderlyingInternet(context: Context): Boolean {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager

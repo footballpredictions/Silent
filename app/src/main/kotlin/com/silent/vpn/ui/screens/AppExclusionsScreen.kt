@@ -39,6 +39,7 @@ import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.ui.theme.ThemePalette
 import com.silent.vpn.ui.theme.themeTextFieldColors
 import com.silent.vpn.vpn.SiteBypassRoutes
+import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -245,7 +246,8 @@ fun AppExclusionsScreen(
                 SiteBypassRoutes.clearResolveCache()
                 siteRules = capped
                 val result = withContext(Dispatchers.IO) {
-                    SiteBypassRoutes.resolveExcludeTargets(capped.joinToString("\n"))
+                    val dnsNet = VpnNetworkHelper.findUnderlyingNetwork(context)
+                    SiteBypassRoutes.resolveExcludeTargets(capped.joinToString("\n"), dnsNet)
                 }
                 siteHint = when {
                     result.unresolved.isNotEmpty() ->

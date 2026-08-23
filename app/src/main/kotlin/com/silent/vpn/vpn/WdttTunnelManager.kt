@@ -259,7 +259,8 @@ object WdttTunnelManager {
         siteBypassResolving = true
         scope.launch {
             try {
-                val result = SiteBypassRoutes.resolveExcludeTargets(raw)
+                val dnsNet = VpnNetworkHelper.findUnderlyingNetwork(ctx)
+                val result = SiteBypassRoutes.resolveExcludeTargets(raw, dnsNet)
                 val changed = synchronized(siteBypassCidrs) {
                     if (siteBypassCidrs.toList() == result.excludeCidrs) {
                         false
@@ -293,7 +294,8 @@ object WdttTunnelManager {
         val next = if (raw.isBlank()) {
             emptyList()
         } else {
-            SiteBypassRoutes.resolveExcludeTargets(raw).excludeCidrs
+            val dnsNet = VpnNetworkHelper.findUnderlyingNetwork(context)
+            SiteBypassRoutes.resolveExcludeTargets(raw, dnsNet).excludeCidrs
         }
         synchronized(siteBypassCidrs) {
             siteBypassCidrs.clear()
@@ -1354,6 +1356,17 @@ object WdttTunnelManager {
                 lastWgConfig = normalized
                 lastContext?.let { updateLog("dns", "DNS: ${DnsSettings.describe(it)}", 1) }
                 try {
+                    if (!isBootstrapMode) {
+                        lastContext?.let { ctx ->
+                            val raw = SilentPrefs.open(ctx)
+                                .getString(SilentRepository.PREF_BYPASS_ROUTES, "")
+                                ?.trim()
+                                .orEmpty()
+                            if (raw.isNotBlank()) {
+                                resolveSiteBypassExcludes(ctx.applicationContext)
+                            }
+                        }
+                    }
                     withContext(NonCancellable + Dispatchers.Main) {
                         wgHelper?.startTunnel(
                             normalized,

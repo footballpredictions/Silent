@@ -1,5 +1,6 @@
 package com.silent.vpn.vpn
 
+import android.net.Network
 import com.silent.vpn.util.DebugLog
 import java.net.InetAddress
 import java.net.URI
@@ -81,7 +82,7 @@ object SiteBypassRoutes {
     /**
      * Резолвит правила → список дыр (ip или cidr-строки) для merge с TURN/VK excludes.
      */
-    fun resolveExcludeTargets(rawRules: String): BuildResult {
+    fun resolveExcludeTargets(rawRules: String, dnsNetwork: Network? = null): BuildResult {
         val rules = limitRules(parseRules(rawRules))
         if (rules.isEmpty()) {
             return BuildResult("0.0.0.0/0", emptyList(), 0, emptyList(), false)
@@ -107,7 +108,7 @@ object SiteBypassRoutes {
                 unresolved.add(rule)
                 continue
             }
-            val resolved = resolveHosts(hosts)
+            val resolved = resolveHosts(hosts, dnsNetwork)
             if (resolved.isEmpty()) {
                 unresolved.add(rule)
                 continue
@@ -202,21 +203,18 @@ object SiteBypassRoutes {
         return labels.last().any { it.isLetter() }
     }
 
-    private fun resolveHosts(hosts: List<String>): Set<Ipv4Cidr> {
+    private fun resolveHosts(hosts: List<String>, dnsNetwork: Network? = null): Set<Ipv4Cidr> {
         val now = System.currentTimeMillis()
         val out = linkedSetOf<Ipv4Cidr>()
         for (host in hosts) {
-            val cached = resolveCache[host]
+            val cacheKey = if (dnsNetwork != null) "$host#net" else host
+            val cached = resolveCache[cacheKey]
             if (cached != null && now - cached.first < RESOLVE_TTL_MS && cached.second.isNotEmpty()) {
                 out.addAll(cached.second)
                 continue
             }
             val addrs = runCatching {
-                InetAddress.getAllByName(host)
-                    .mapNotNull { it.hostAddress?.trim() }
-                    .filter { it.matches(Regex("""\d+\.\d+\.\d+\.\d+""")) }
-                    .mapNotNull { parseCidr(it) }
-                    .toSet()
+                lookupHostIpv4(host, dnsNetwork)
             }.getOrElse {
                 DebugLog.w(TAG, "DNS $host: ${it.message}")
                 emptySet()
@@ -227,11 +225,24 @@ object SiteBypassRoutes {
                 cached?.second.orEmpty()
             }
             if (effective.isNotEmpty()) {
-                resolveCache[host] = now to effective
+                resolveCache[cacheKey] = now to effective
                 out.addAll(effective)
             }
         }
         return out
+    }
+
+    private fun lookupHostIpv4(host: String, dnsNetwork: Network?): Set<Ipv4Cidr> {
+        val inetAddrs = if (dnsNetwork != null) {
+            dnsNetwork.getAllByName(host)
+        } else {
+            InetAddress.getAllByName(host)
+        }
+        return inetAddrs
+            .mapNotNull { it.hostAddress?.trim() }
+            .filter { it.matches(Regex("""\d+\.\d+\.\d+\.\d+""")) }
+            .mapNotNull { parseCidr(it) }
+            .toSet()
     }
 
     private fun parseCidr(raw: String): Ipv4Cidr? {

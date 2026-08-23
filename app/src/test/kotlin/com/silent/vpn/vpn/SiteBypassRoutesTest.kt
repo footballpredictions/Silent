@@ -39,6 +39,15 @@ class SiteBypassRoutesTest {
     }
 
     @Test
+    fun `2ip ru is valid domain with www lookup`() {
+        assertEquals(listOf("2ip.ru", "www.2ip.ru"), SiteBypassRoutes.domainLookupHosts("2ip.ru"))
+        assertEquals("2ip.ru", SiteBypassRoutes.normalizeRuleInput("https://2ip.ru/"))
+        val cidrs = AllowedIpsHelper.generateExclusionAllowedIPs(listOf("188.40.167.82/32")).split(", ")
+        assertFalse(covers(cidrs, "188.40.167.82"))
+        assertTrue(covers(cidrs, "8.8.8.8"))
+    }
+
+    @Test
     fun `complement single host leaves neighbours`() {
         val hole = Ipv4Cidr(
             (1L shl 24) or (2L shl 16) or (3L shl 8) or 4L,

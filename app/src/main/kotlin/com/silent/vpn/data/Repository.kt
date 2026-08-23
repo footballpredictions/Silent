@@ -90,6 +90,7 @@ class SilentRepository @Inject constructor(
             "server2" to "87.58.213.193",
             "server3" to "78.17.74.27",
         )
+        private val IPV4_RE = Regex("""\b(\d{1,3}(?:\.\d{1,3}){3})\b""")
 
         fun normalizePreferredServer(raw: String?): String {
             val v = raw?.trim()?.lowercase().orEmpty()
@@ -576,6 +577,24 @@ class SilentRepository @Inject constructor(
     }
 
     private fun tunnelApiBase(): String = "http://$WG_TUNNEL_GATEWAY:8000"
+
+    /** TCP до 10.66.66.1:8000 реально проходит (не только флаг tunnelReady). */
+    fun probeTunnelGateway(): Boolean {
+        return try {
+            val client = OkHttpClient.Builder()
+                .connectTimeout(2, TimeUnit.SECONDS)
+                .readTimeout(2, TimeUnit.SECONDS)
+                .callTimeout(3, TimeUnit.SECONDS)
+                .build()
+            val req = okhttp3.Request.Builder()
+                .url("http://$WG_TUNNEL_GATEWAY:8000/health")
+                .get()
+                .build()
+            client.newCall(req).execute().use { true }
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     /** Bootstrap / app в туннеле — API только через 10.66.66.1 (как PC enableTunnelApi). */
     fun ensureBootstrapTunnelApi(): Boolean {
@@ -1486,8 +1505,18 @@ class SilentRepository @Inject constructor(
     }
 
     fun vpnConfigIpMatchesPreferred(serverIp: String, slot: String = getPreferredServer()): Boolean {
-        val want = expectedIpForPreferred(slot) ?: return false
-        return serverIp.trim() == want
+        val got = ipv4OrRaw(serverIp)
+        if (got.isBlank()) return false
+        val baked = BAKED_SERVER_IPS[slot]?.let { ipv4OrRaw(it) }
+        val stored = expectedIpForPreferred(slot)?.let { ipv4OrRaw(it) }
+        if (baked != null && got == baked) return true
+        if (stored != null && got == stored) return true
+        return false
+    }
+
+    private fun ipv4OrRaw(raw: String): String {
+        val dashed = raw.trim().replace('-', '.')
+        return IPV4_RE.find(dashed)?.value ?: dashed
     }
 
     suspend fun fetchVpnServers(): VpnServersResponse {

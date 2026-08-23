@@ -39,7 +39,17 @@ iptables -C FORWARD -d "$API_IP"/32 -p tcp --dport 8000 -j ACCEPT 2>/dev/null \
 iptables -C FORWARD -s "$API_IP"/32 -p tcp --sport 8000 -j ACCEPT 2>/dev/null \
   || iptables -I FORWARD 1 -s "$API_IP"/32 -p tcp --sport 8000 -j ACCEPT
 
-echo "[fix] PREROUTING:"; iptables -t nat -L PREROUTING -n | grep 10.66 || true
+# Соты DNAT/socat на Улей:8000, а docker-proxy слушает только 127.0.0.1:8000.
+# Без этого туннель 10.66.66.1:8000 с соты мёртв — клиент online 1 и сразу 0.
+# Публично 8000 не открываем: REDIRECT только с IP сот.
+for CELL_IP in 87.58.213.193 78.17.74.27; do
+  iptables -t nat -C PREROUTING -s "$CELL_IP"/32 -p tcp --dport 8000 \
+    -m comment --comment "CELL_API" -j REDIRECT --to-ports 8000 2>/dev/null \
+    || iptables -t nat -I PREROUTING 1 -s "$CELL_IP"/32 -p tcp --dport 8000 \
+      -m comment --comment "CELL_API" -j REDIRECT --to-ports 8000
+done
+
+echo "[fix] PREROUTING:"; iptables -t nat -L PREROUTING -n | grep -E '10.66|CELL_API' || true
 echo "[fix] OUTPUT:"; iptables -t nat -L OUTPUT -n | grep 10.66 || true
 
 ok=0

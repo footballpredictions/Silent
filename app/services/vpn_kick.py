@@ -447,7 +447,6 @@ async def kick_device_peers(
         await db.get(HiveCell, device.cell_id) if device.cell_id is not None else None
     )
     node_key = _QUEEN_NODE if on_queen or cell is None else str(cell.id)
-    watch_device_revoke(device.id, node_key=node_key)
 
     known = await _known_wg_pubs(db)
     live = await _dump_node_peers(db, on_queen=on_queen, cell=cell)
@@ -456,6 +455,8 @@ async def kick_device_peers(
     if _valid_wg_pub(live_pub):
         bound.add(live_pub)
     last_ts = session_last_connected if session_last_connected is not None else device.last_connected
+    if bind_new:
+        watch_device_revoke(device.id, node_key=node_key)
     owned = select_owned_getconf_extras(
         live,
         known_pubs=known,
@@ -464,10 +465,11 @@ async def kick_device_peers(
         bound_pubs=bound,
         unique_watch_on_node=bind_new and _unique_watch_on_node(node_key, device.id),
     )
-    for extra in select_extra_by_last_connected(live, last_ts, known):
-        owned.append(extra)
-    for extra in select_resurrected_extras(live, prev_ages, known):
-        owned.append(extra)
+    if bind_new:
+        for extra in select_extra_by_last_connected(live, last_ts, known):
+            owned.append(extra)
+        for extra in select_resurrected_extras(live, prev_ages, known):
+            owned.append(extra)
     extra_pubs = []
     for p in owned:
         if _valid_wg_pub(p.pub) and p.pub not in extra_pubs:
@@ -718,10 +720,10 @@ async def kick_user_vpn_sessions(db: AsyncSession, user: User) -> int:
 
 
 async def kick_connected_without_subscription(db: AsyncSession) -> int:
-    """Страховка: нет подписки → сразу срезать dataplane, включая GETCONF extra этого устройства.
+    """Страховка: нет подписки → срезать dataplane по ключу и точному IP.
 
     Не трогаем админов, тестовый режим и живой plan=test.
-    Не угадываем «самый свежий extra на соте» (инцидент 2026-08-16).
+    bind_new=False: не угадываем новый extra на тихой соте (2026-08-16 / 2026-08-23).
     """
     from app.services.subscription_service import (
         has_live_test_plan,
@@ -783,7 +785,7 @@ async def kick_connected_without_subscription(db: AsyncSession) -> int:
             has_active_subscription=has_sub,
         ):
             continue
-        if not await kick_device_peers(db, device, force=True, bind_new=True):
+        if not await kick_device_peers(db, device, force=True, bind_new=False):
             continue
         device.is_connected = False
         kicked += 1
@@ -828,7 +830,7 @@ async def kick_if_subscription_denied(
     last[did] = now
     kick_if_subscription_denied._last = last  # type: ignore[attr-defined]
     ok = await kick_device_peers(
-        db, device, force=True, bind_new=True, session_last_connected=session_last_connected,
+        db, device, force=True, bind_new=False, session_last_connected=session_last_connected,
     )
     try:
         await db.commit()

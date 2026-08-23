@@ -191,6 +191,7 @@ def test_owned_extras_unique_appeared():
 
 
 def test_owned_extras_solo_unknown_on_quiet_node():
+    """Тихая сота: не забирать единственный extra без совпадения IP."""
     known = {_k("devicekey")}
     live = [
         _p(_k("devicekey"), "10.66.0.25", 4),
@@ -199,12 +200,29 @@ def test_owned_extras_solo_unknown_on_quiet_node():
     got = select_owned_getconf_extras(
         live, known_pubs=known, device_ip="10.66.0.99/32", unique_watch_on_node=True,
     )
-    assert [p.pub for p in got] == [_k("onlyextra")]
+    assert got == []
     busy = live + [_p(_k("otherlive"), "10.66.0.19", 3)]
     got2 = select_owned_getconf_extras(
         busy, known_pubs=known, device_ip="10.66.0.99/32", unique_watch_on_node=True,
     )
     assert got2 == []
+
+
+def test_sweeper_style_no_guess_on_quiet_cell():
+    """Фоновый kick без bind_new: только extra с тем же IP, не чужой на Соте 2."""
+    known = {_k("unpaid")}
+    live = [
+        _p(_k("unpaid"), "10.66.2.150", 80),
+        _p(_k("payingnew"), "10.66.66.35", 2),
+    ]
+    got = select_owned_getconf_extras(
+        live,
+        known_pubs=known,
+        device_ip="10.66.2.150/32",
+        appeared_pubs={_k("payingnew")},
+        unique_watch_on_node=False,
+    )
+    assert got == []
 
 
 def test_owned_extras_two_appeared_not_guessed():
@@ -319,6 +337,7 @@ if __name__ == "__main__":
     test_owned_extras_unique_appeared()
     test_owned_extras_two_appeared_not_guessed()
     test_owned_extras_solo_unknown_on_quiet_node()
+    test_sweeper_style_no_guess_on_quiet_cell()
     test_owned_extras_ip_not_substring()
     test_last_connected_unique_leftover()
     test_resurrected_unique_cache_extra()

@@ -196,14 +196,10 @@ def select_owned_getconf_extras(
             p for p in live
             if p.pub in appeared and p.pub not in known
         ]
+        # Только уникальный НОВЫЙ extra. «Единственный unknown на тихой ноде»
+        # снимал платящих на Соте 2 (инцидент 2026-08-23).
         if len(fresh) == 1:
             out[fresh[0].pub] = fresh[0]
-        unknown = [
-            p for p in live
-            if valid_wg_pub(p.pub) and p.pub not in known
-        ]
-        if len(unknown) == 1:
-            out[unknown[0].pub] = unknown[0]
 
     return list(out.values())
 

@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.161** (olcrtc снят из UI; WDTT only) |
-| `Silent-Project/android/` | `android` | **1.0.161** (olcrtc снят из UI; WDTT only) |
+| `Silent-Project/pc/` | `pc` | **1.0.162** (olcrtc снят из UI; WDTT only) |
+| `Silent-Project/android/` | `android` | **1.0.162** (olcrtc снят из UI; WDTT only) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -885,6 +885,56 @@ cd pc; npm install; npm run dev
 - Теперь любой `HB socks CONNECT fail` на WB сразу переводит сессию в recover-путь (без ожидания второй ошибки).
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
+
+### 2026-08-23 — Смена сервера оставляла старый IP
+
+- Симптом: VPN off → другой сервер → on, 2ip всё равно старый IP/страна.
+- Корень Android: тумблер брал WG-кеш **без проверки слота**. Сегодняшний fallback «любой слот из кеша» после DTLS добивал: Сервер 3 поднимался на endpoint Сервера 2.
+- Фикс: кеш только если `selected_server` = выбранный слот; смена слота сбрасывает кеш; при miss — свежий `/config?preferred_server=`. PC: не early-return по хешам, если слот не совпал.
+- Backend: `/config` собирает endpoint из запрошенного слота, не из устаревшего ORM.
+- Прод: `restore_api_container.py` (api restart, wdtt не трогали). Debug APK: `android/SilentVPN-debug.apk`.
+- Пользователь подтвердил: смена сервера работает. Push: `android` `6d3d9e6`, `pc` `9d56337`, `main` `b86c31c`. Версию не поднимали (осталась **1.0.162**).
+- Release пересобран с bootstrap `vP_C4iBk9QZEetqR0a_MqiPJkeOyBEV1B_G6uViHuVU` (как в рабочей debug): APK `android/SilentVPN-release-1.0.162.apk` (~26 МБ), PC `pc/build-release-v141-146437/Silent VPN Setup 1.0.162.exe` (~79 МБ). OTA не заливали.
+
+### 2026-08-23 — Релиз 1.0.162 + fix site bypass (2ip.ru)
+
+- Push: `android` `0b6facc` (site bypass sync DNS on underlying + bump 1.0.162), `pc` `eeb4fdd` (version bump).
+- Bootstrap VK: `tONLyWpOlLj37fA3A8DIxsyM3crcbDMwWLh0JCqgGII`.
+- APK `SilentVPN-release-1.0.162.apk` (~26 МБ), PC `Silent VPN Setup 1.0.162.exe` (~79 МБ). OTA на прод — отдельно (`deploy_release.py`).
+
+### 2026-08-23 — Откат Android-подписки к 19–21.08 (fb1a716)
+
+- Убраны все эксперименты 23.08: overlay `/me` на main VPN, ретраи, `fetchProfileViaSubscriptionOverlay`, skip GETCONF reapply, фейковый `is_active`.
+- Восстановлено состояние коммита **`fb1a716`** (21.08): тумблер `requireGetconf=false`, GETCONF/DTLS вторым каналом, UI даты только из живого `/me` (ConfigSync / sync / cache).
+- Поверх отката сохранён только **репорт доступности** (`ReachabilityReporter`, `reportReachability` в Repository) — не связан с подпиской.
+- Debug APK пересобран: `android/SilentVPN-debug.apk`.
+
+### 2026-08-23 — Splash: bootstrap снова включается на boot-анимации
+
+- Симптом: полоска на старте крутилась, а bootstrap-туннель не поднимался (данные не грузились через него).
+- Корень: на Wi‑Fi splash уходил в публичный `/me`+register и **не вызывал** ephemeral. Коммиты 21.08 (`7b35be9`, `2992174`) на месте — туннель просто пропускался.
+- Фикс: `forLaunch` всегда поднимает bootstrap (Wi‑Fi тоже); на входе bootstrap стартует уже в `onCreate`, параллельно splash. Debug APK пересобран.
+
+### 2026-08-23 — Сота 2: снова «несколько секунд и стоп» (kick угадывал extra)
+
+- После фиксов `/32` и туннеля `:80` Сота 1 жила, Сота 2 снова глухла через несколько секунд. На Соте 2 было 0 live handshake, WRAP обрывался; в логе Улья шторм `queen wg kick ok` и `vpn kick sweeper: 3 device(s) without subscription`.
+- Корень: бесплатный Vivo на `server3` держал `watch` 25 мин. Свипер каждые ~10 с вызывал `kick_device_peers(bind_new=True)` и **продлевал watch**. На тихой Соте 2 «единственный новый GETCONF extra» приписывался этому аккаунту и снимался — платящий тестер умирал через секунды. Сота 1 не страдала: watch висел на слоте Соты 2.
+- Фикс: свипер и `kick_if_subscription_denied` — только ключ + точный IP (`bind_new=False`); убран захват «единственного unknown» на тихой ноде. `SILENT_DENY` снят с FORWARD обеих сот (там был DROP `10.66.0.69`, не причина всех).
+- Прод: `deploy_stable.py`. После: `wdtt` **active**, API/nginx running, health 200, DNAT сот на Улей `:80`, `tun8000=200`. Сота 2 сразу `live_hs=4` (было 0).
+- Android debug пересобран: `android/SilentVPN-debug.apk` (12:14 МСК, 121 МБ).
+
+### 2026-08-23 — Сота 2: online 1→0 (туннель API на :8000 закрыт)
+
+- Симптом: Сервер 3 — в админке онлайн 1 и сразу 0, интернета нет. `POST /connect` есть, через ~8 с `disconnect`.
+- Корень: после security `127.0.0.1:8000` Улей не слушает публичный :8000. Соты по-прежнему DNAT/socat `10.66.66.1:8000 → Улей:8000` — пакеты не доходят, heartbeat срывается, клиент гасит VPN. Сота 1 жила за счёт failover на HTTPS nip.io:443; этот клиент на соте 2 отваливался сразу.
+- Фикс без рестарта api/wdtt: nginx `:80` для IP сот проксирует `/health` и `/api/`; на сотах DNAT+socat → Улей`:80`. Проверка: `http://10.66.66.1:8000/health` с Соты 1 и 2 = 200.
+
+### 2026-08-23 — Сота 2: YouTube 2с и глухо (AllowedIPs /16)
+
+- Симптом: Сервер 3 (Сота 2) — VPN встаёт, YouTube пару секунд, потом нет интернета. Улей/Сота 1 живые. Это не warning check-host и не поломка wdtt/NAT.
+- Корень: в `devices.wg_address` остались маски `/16` и `/24` (87 штук). `apply_manifest_peers` ставил их в `wg set allowed-ips` как есть. У WireGuard AllowedIPs уникальны: `/16` на Xiaomi `10.66.0.6` (server3) **забирал всю подсеть** у живого клиента через секунды после синка манифеста. Сота 1 жила, потому что там только `/24` на `10.66.66.0/24`, клиенты на `10.66.0/1/2`.
+- Сегодняшний автоапгрейд cell-agent после деплоя olcrtc пересинхронизировал манифест и выставил этот `/16`.
+- Фикс на проде (без рестарта wdtt): адреса в БД → `host/32`; на Соте 1/2 тем же ключам выставлен `/32`; широких leftover нет. В коде: `peer_host_allowed()` всегда `/32`; манифест и дефолт конфига тоже `/32`. `standby_runtime.py` залит на volume Улья (соты подтянут автоапгрейдом).
 
 ### 2026-08-23 — olcrtc: агент выключен намертво, .so сняты (ТВ OTA)
 

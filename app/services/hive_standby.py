@@ -148,7 +148,9 @@ async def build_cell_manifest_enriched(db: AsyncSession, cell: HiveCell) -> dict
                 "id": str(d.id),
                 "user_id": str(d.user_id),
                 "wg_public_key": (d.wg_public_key or "").strip(),
-                "wg_address": (d.wg_address or "10.66.66.2/24").strip(),
+                "wg_address": (
+                    f"{(d.wg_address or '10.66.66.2').split('/', 1)[0]}/32"
+                ),
                 "is_connected": bool(d.is_connected),
                 "vpn_allowed": bool(allowed_map.get(d.user_id, False)),
             }

@@ -31,6 +31,15 @@ sys.modules.setdefault("httpx", ModuleType("httpx"))
 import standby_runtime as sr  # noqa: E402
 
 
+def test_peer_host_allowed_always_slash32():
+    assert sr.peer_host_allowed("10.66.0.6/16") == "10.66.0.6/32"
+    assert sr.peer_host_allowed("10.66.66.223/24") == "10.66.66.223/32"
+    assert sr.peer_host_allowed("10.66.1.36/32") == "10.66.1.36/32"
+    assert sr.peer_host_allowed("10.66.1.36") == "10.66.1.36/32"
+    assert sr.peer_host_allowed("") == ""
+    assert sr.peer_host_allowed(None) == ""
+
+
 def test_gc_keeps_manifest_key_drops_never_and_stale():
     known = "devicekeyaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa="
     dead = "deadextraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa="
@@ -107,6 +116,7 @@ def test_health_ok_restores_queen_dnat():
 
 
 if __name__ == "__main__":
+    test_peer_host_allowed_always_slash32()
     test_gc_keeps_manifest_key_drops_never_and_stale()
     test_gc_throttles_within_window()
     test_failover_paths_allow_client_api_not_admin()

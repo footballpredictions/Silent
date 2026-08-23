@@ -97,6 +97,17 @@ def _addr_ip(wg_address: str | None) -> str:
     return raw.split("/", 1)[0].strip()
 
 
+def peer_host_allowed(wg_address: str | None) -> str:
+    """Клиентский peer — всегда host/32.
+
+    Если в манифесте пришло 10.66.0.6/16, `wg set allowed-ips` забирает
+    всю подсеть у остальных peer'ов (уникальность AllowedIPs) — туннель
+    живёт пару секунд и глохнет.
+    """
+    ip = _addr_ip(wg_address)
+    return f"{ip}/32" if ip else ""
+
+
 def kick_wg_peer(public_key: str) -> bool:
     """Снимает peer с живого wdtt0 — отзыв подписки без HTTP от клиента."""
     pub = (public_key or "").strip()
@@ -464,8 +475,7 @@ def apply_manifest_peers(manifest: dict | None = None) -> int:
             continue
         if not pub or len(pub) < 40:
             continue
-        addr = addr or "10.66.66.2/32"
-        allowed = addr if "/" in addr else f"{addr}/32"
+        allowed = peer_host_allowed(addr) or "10.66.66.2/32"
         try:
             subprocess.run(
                 ["wg", "set", iface, "peer", pub, "allowed-ips", allowed],

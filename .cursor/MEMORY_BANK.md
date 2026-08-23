@@ -281,7 +281,21 @@ Occupancy **1 клиент = 1 комната** (TM+WB `max_clients=1`, прод
 | `docker compose up -d api --force-recreate` | ❌ | Сбрасывает контейнер к **старому image** → пропадают Улей (`/api/admin/hive/*` → 404), новый код, иногда `httpx` |
 | Менять `ports:` в compose без `docker cp` | ❌ | То же: новый контейнер = старый image |
 
-**Правило Agent (жёстко):** после любых правок backend на прод — `python scripts/deploy_stable.py` (нужен `admin-ui/dist`). `deploy_api.py` — алиас того же полного копирования. Не делать ручной `docker cp` выбранных файлов.
+**Почему после деплоя «опять старый контейнер / чего-то нет» (2026-08-23):**
+
+Прод — это **не git**. Образ `backend-api` собирался давно. Живой код — слой `docker cp` поверх образа. Хост `/opt/silent-vpn/backend` git часто отстаёт (на 23.08 был `bf693f9`, GitHub уже дальше) — скрипты копируют файлы с Windows, `git pull` на VPS не делают.
+
+| Что ломает | Что происходит |
+|------------|----------------|
+| `docker compose up -d api` / recreate | Новый контейнер = **старый image**. Админка без Улья, старый Python. Нужен сразу `restore_api_container.py` |
+| Нет локального `admin-ui/dist` | `deploy_stable.py` падает → агент идёт в `restore`, который **не** копирует админку, nginx, cell-agent volume |
+| `restore` вместо `deploy_stable` | В контейнере только `app/`+`ai/`. UI/nginx/host-скрипты могут остаться старыми |
+| `fix_tunnel_dnat.py` на хосте | Импортирует `_deploy_common` — на VPS модуля нет, DNAT после restore может не поправиться |
+| Тематические `deploy_*.py` | Старый FILES-список пропускал `models/` → 500 |
+
+Правильный путь: `cd admin-ui; npm run build` → `python scripts/deploy_stable.py`. Recreate контейнера — только вместе с `restore` сразу после. `wdtt` не рестартить.
+
+**Правило Agent (жёстко):** после любых правок backend на прод — `python scripts/deploy_stable.py` (нужен `admin-ui/dist`). `deploy_api.py` — алиас того же полного копирования. Не делать ручной `docker cp` выбранных файлов. Не `compose up api` «чтобы поменять .env» — это recreate из старого образа.
 
 **После любого `docker compose up` / recreate / смены `ports:` на VPS:**
 
@@ -886,6 +900,18 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-23 — Релиз клиентов после оплаты/слотов + почему деплой «теряет» код
+
+- Android: пользователь подтвердил — работает. Release `assembleRelease` с bootstrap `vP_C4iBk9QZEetqR0a_MqiPJkeOyBEV1B_G6uViHuVU` → `android/SilentVPN-release-1.0.162.apk`.
+- PC: слот пишется локально до API (как Android); YuMoney всегда через payment-bootstrap. Installer `build-installer.bat`.
+- Корень «после деплоя снова старое»: образ `backend-api` старый, живой код — overlay `docker cp`. `compose up`/recreate сбрасывает overlay к image. Нет `admin-ui/dist` → `deploy_stable.py` падает → агент идёт в `restore` (только `app/`+`ai/`). Хост git на VPS отстаёт — смотреть контейнер, не `git log` на сервере.
+- Канон без обходов: `cd admin-ui; npm run build` → `python scripts/deploy_stable.py`. Не recreate api, не рестарт `wdtt`.
+
+### 2026-08-23 — Слоты серверов: бэкенд затирал пин
+
+- С 16–18.08: `preferred_server=server1` считался «не пин», а `set_device_online` при handshake на Соте **перезаписывал** пин в server2/3. `GET /servers` ещё и сам писал cell_id/preferred. Выбор 2 → подключение на Улей/кэш → в меню снова 1; выбор 1 + старый кеш FI → 2ip Финляндия.
+- Фикс на проде (`restore_api_container.py`): online больше не трогает пин; GET /servers только читает. `wdtt` active, health 200.
+
 ### 2026-08-23 — Смена сервера оставляла старый IP
 
 - Симптом: VPN off → другой сервер → on, 2ip всё равно старый IP/страна.
@@ -895,6 +921,13 @@ cd pc; npm install; npm run dev
 - Прод: `restore_api_container.py` (api restart, wdtt не трогали). Debug APK: `android/SilentVPN-debug.apk`.
 - Пользователь подтвердил: смена сервера работает. Push: `android` `6d3d9e6`, `pc` `9d56337`, `main` `b86c31c`. Версию не поднимали (осталась **1.0.162**).
 - Release пересобран с bootstrap `vP_C4iBk9QZEetqR0a_MqiPJkeOyBEV1B_G6uViHuVU` (как в рабочей debug): APK `android/SilentVPN-release-1.0.162.apk` (~26 МБ), PC `pc/build-release-v141-146437/Silent VPN Setup 1.0.162.exe` (~79 МБ). OTA не заливали.
+
+### 2026-08-23 — Оплата YuMoney + первый тумблер + слот по IP
+
+- YuMoney: всегда временный bootstrap до открытия ссылки (и с trial/Wi‑Fi); не рвать туннель перед браузером. Ссылка в Chrome/Яндекс, не китайский default. Bootstrap include — китайские браузеры + default https.
+- После оплаты: пока bootstrap жив — prefetch `/config` выбранного слота в кеш, потом гасим служебный туннель. Первый тумблер не пустой.
+- Выбор сервера: кеш принимается только если `selected_server` **и** `server_ip` совпали со слотом (Улей `132.243.234.162`, Сота 1 FI, Сота 2 DE). Иначе «Сервер 1» поднимал Финляндию из старого кеша.
+- UI слота: выбор пишется в prefs сразу (`commit`), не ждём `POST /servers/select`. Иначе на LTE после «отключите VPN» запрос падает и при повторном входе снова «Сервер 1».
 
 ### 2026-08-23 — Релиз 1.0.162 + fix site bypass (2ip.ru)
 

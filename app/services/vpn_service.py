@@ -423,12 +423,9 @@ async def set_device_online(
         if cell_id is not None:
             cell = await hive_service.get_cell_by_id(db, cell_id)
             if cell:
+                # Где handshake — для онлайна. Пин пользователя (Сервер 1/2/3) не трогаем:
+                # иначе wdtt на Соте 1 затирал выбор «Сервер 1» в server2.
                 device.cell_id = cell.id
-                from app.services.hive_slots import slot_for_cell
-
-                slot = slot_for_cell(cell)
-                if slot:
-                    device.preferred_server = slot
         else:
             await hive_service.apply_manual_server_cell(db, device, commit=False)
     await db.commit()

@@ -246,14 +246,9 @@ async def get_vpn_servers(
     if device:
         from app.services import hive_service
 
-        selected, cell = await hive_service.resolve_manual_server_cell(
+        selected, _cell = await hive_service.resolve_manual_server_cell(
             db, getattr(device, "preferred_server", None)
         )
-        if getattr(device, "preferred_server", None) != selected or device.cell_id != cell.id:
-            if hasattr(device, "preferred_server"):
-                device.preferred_server = selected
-            device.cell_id = cell.id
-            await db.commit()
     servers = await list_manual_vpn_servers(db)
     return VpnServersResponse(
         selected_server=selected,

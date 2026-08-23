@@ -736,7 +736,7 @@ async def register_device(
         await db.commit()
         await db.refresh(existing)
         await dedupe_same_type_devices(db, user.id, device_type, device_fingerprint)
-        return await _build_vpn_config(db, existing)
+        return await _build_vpn_config(db, existing, pref_server or None)
 
     active_count = await count_active_sessions(db, user.id)
     if device_limit_applies(user) and active_count >= settings.MAX_DEVICES_PER_USER:
@@ -770,10 +770,14 @@ async def register_device(
     await db.refresh(device)
     await dedupe_same_type_devices(db, user.id, device_type, device_fingerprint)
 
-    return await _build_vpn_config(db, device)
+    return await _build_vpn_config(db, device, pref_server or None)
 
 
-async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigResponse:
+async def _build_vpn_config(
+    db: AsyncSession,
+    device: Device,
+    preferred_override: str | None = None,
+) -> VpnConfigResponse:
     from app.core.security import decrypt_value
     from app.services.user_hash_service import get_vpn_hashes_for_user
 
@@ -785,7 +789,10 @@ async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigRespon
     else:
         hashes = await get_active_vk_hashes(db)
 
-    preferred_server = "queen" if is_bootstrap else (getattr(device, "preferred_server", None) or "").strip()
+    preferred_server = "queen" if is_bootstrap else (
+        (preferred_override or "").strip()
+        or (getattr(device, "preferred_server", None) or "").strip()
+    )
     selected_server, cell = await hive_service.resolve_manual_server_cell(db, preferred_server)
     if device.cell_id != cell.id or getattr(device, "preferred_server", None) != selected_server:
         _set_device_server(device, selected_server, cell.id)
@@ -818,7 +825,7 @@ async def _build_vpn_config(db: AsyncSession, device: Device) -> VpnConfigRespon
     return VpnConfigResponse(
         device_id=str(device.id),
         wg_private_key=priv_key,
-        wg_address=device.wg_address or "10.66.66.2/24",
+        wg_address=device.wg_address or "10.66.66.2/32",
         wg_dns=await resolve_wg_dns(db),
         server_ip=server_ip,
         server_port=server_port,
@@ -915,13 +922,14 @@ async def build_vpn_config_for_user(
     device: Device,
     user: User,
     has_subscription: bool,
+    preferred_override: str | None = None,
 ) -> VpnConfigResponse:
     from app.services.user_hash_service import (
         get_server_hashes_for_user,
         recommended_stream_count,
     )
 
-    config = await _build_vpn_config(db, device)
+    config = await _build_vpn_config(db, device, preferred_override)
     if user.email == BOOTSTRAP_USER_EMAIL:
         return config
     server_hashes = await get_server_hashes_for_user(db, user)

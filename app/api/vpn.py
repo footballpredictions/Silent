@@ -160,9 +160,10 @@ async def get_config(
 
     await ensure_user_server_hashes(db, user.id)
     if preferred_server:
-        await set_device_preferred_server(db, user.id, fingerprint, preferred_server)
-        await db.refresh(device)
-    return await build_vpn_config_for_user(db, device, user, has_sub)
+        updated = await set_device_preferred_server(db, user.id, fingerprint, preferred_server)
+        if updated is not None:
+            device = updated
+    return await build_vpn_config_for_user(db, device, user, has_sub, preferred_server)
 
 
 @router.get("/hashes")

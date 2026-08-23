@@ -79,6 +79,11 @@ import { getApiBaseUrl } from '../tunnelApi'
 import { notifyConnect } from '../vpnBackendSync'
 import { flushPendingHashFailures, resetHashFailureReporter } from '../hashFailureReporter'
 import {
+  flushPendingReachabilityReports,
+  reportReachabilityFailure,
+  resetReachabilityReporter,
+} from '../reachabilityReporter'
+import {
   startConfigSync,
   stopConfigSync,
   resetConfigSyncOnLogout,
@@ -248,6 +253,8 @@ export default function MainScreen({
   const connectInFlightRef = useRef(false)
   const [vpnReady, setVpnReady] = useState(false)
   const snakeHoldRef = useRef<number | null>(null)
+  /** Когда туннель поднялся — нужен агенту доступности, чтобы отличить срыв на старте от смерти живого туннеля. */
+  const tunnelUpAtRef = useRef(0)
   const onlineMarkedRef = useRef(false)
   const subscriptionExpiredHandledRef = useRef(false)
   const pendingConnectAfterSubscriptionRefreshRef = useRef(false)
@@ -567,6 +574,8 @@ export default function MainScreen({
       }
       await seedConfigSyncRevision()
       void flushPendingHashFailures()
+      // Канал до API только что подтвердился — самое время выгрузить накопленные отказы.
+      void flushPendingReachabilityReports()
     } catch {
       onlineMarkedRef.current = false
     }
@@ -576,6 +585,7 @@ export default function MainScreen({
     const api_ = (window as any).electronAPI
     api_?.vpnIsReady?.().then((r: { ready?: boolean; workers?: number }) => {
       if (r?.ready && userWantsVpnRef.current) {
+        if (!tunnelUpAtRef.current) tunnelUpAtRef.current = Date.now()
         setConnected(true)
         setConnecting(false)
         setVpnReady(true)
@@ -606,6 +616,20 @@ export default function MainScreen({
         } catch { /* fall through */ }
         if (!mounted) return
         if (userWantsVpnRef.current && connectInFlightRef.current) return
+        // Туннель упал сам: выключение с тумблера сбрасывает флаг раньше, до vpnDisconnect.
+        if (userWantsVpnRef.current) {
+          const upAt = tunnelUpAtRef.current
+          void reportReachabilityFailure(
+            upAt
+              ? {
+                  stage: 'tunnel_dead',
+                  tunnelUptimeSec: Math.max(0, Math.round((Date.now() - upAt) / 1000)),
+                  detail: `vpn-stopped code=${code ?? '?'}`,
+                }
+              : { stage: 'handshake', detail: `vpn-stopped без готового туннеля code=${code ?? '?'}` },
+          )
+        }
+        tunnelUpAtRef.current = 0
         userWantsVpnRef.current = false
         onlineMarkedRef.current = false
         setMainVpnSessionActive(false)
@@ -633,6 +657,10 @@ export default function MainScreen({
         window.clearTimeout(snakeHoldRef.current)
         snakeHoldRef.current = null
       }
+      if (userWantsVpnRef.current) {
+        void reportReachabilityFailure({ stage: 'handshake', detail: String(msg || '').slice(0, 400) })
+      }
+      tunnelUpAtRef.current = 0
       setConnecting(false)
       setConnected(false)
       setVpnReady(false)
@@ -644,6 +672,7 @@ export default function MainScreen({
       if (!ok || bootstrap) return
       if (!userWantsVpnRef.current) return
       if (ok) {
+        tunnelUpAtRef.current = Date.now()
         setConnected(true)
         setVpnReady(true)
         if (snakeHoldRef.current == null) setConnecting(false)
@@ -762,6 +791,7 @@ export default function MainScreen({
       try {
         const r = await api_?.vpnIsReady?.()
         if (r?.ready && userWantsVpnRef.current) {
+          if (!tunnelUpAtRef.current) tunnelUpAtRef.current = Date.now()
           setConnected(true)
           setConnecting(false)
           setVpnReady(true)
@@ -786,6 +816,7 @@ export default function MainScreen({
   const resetVpnUi = () => {
     userWantsVpnRef.current = false
     connectInFlightRef.current = false
+    tunnelUpAtRef.current = 0
     clearSnakeHold()
     setConnected(false)
     setConnecting(false)
@@ -810,6 +841,7 @@ export default function MainScreen({
       const discToken = ++disconnectTokenRef.current
       connectInFlightRef.current = false
       userWantsVpnRef.current = false
+      tunnelUpAtRef.current = 0
       clearSnakeHold()
       pendingConnectAfterSubscriptionRefreshRef.current = false
       setConnected(false)
@@ -1208,6 +1240,7 @@ export default function MainScreen({
     clearSessionFingerprint()
     clearTokens()
     resetConfigSyncOnLogout()
+    resetReachabilityReporter()
     onLogout()
 
     void (async () => {

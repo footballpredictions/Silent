@@ -886,6 +886,15 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-23 — olcrtc: агент выключен намертво, .so сняты (ТВ OTA)
+
+- На Улье живых `olcrtc*` уже нет (`wdtt` active). Опасность была в том, что агент **ещё мог стартовать**: `olcrtc2_settings.agent_enabled` по умолчанию был `True`, admin `POST /olcrtc2` и cell-agent `/v1/olcrtc2/apply` поднимали unit’ы на сотах.
+- Фикс: `monitor_loop` у `olcrtc2_room_agent` и `olcrtc_room_agent` сразу выходит; load/save settings всегда `enabled=false`/`agent_enabled=false`; cell-agent apply/create отвечают **410**, teardown оставлен чтобы глушить старые unit. WDTT/API-заглушки `/olcrtc-config` не трогали — старые клиенты не получат 404.
+- Android: удалены `libolcrtc.so` / `libolcrtc2.so` / `libhev-socks5-tunnel.so` (все ABI), `libclient.so` на месте. Gradle `packaging.jniLibs.excludes` — даже если файлы вернут, в APK не попадут.
+- PC: `olcrtc.exe` / `olcrtc2-cnc.exe` / `sing-box.exe` убраны из electron-builder `extraResources`.
+- **Почему ТВ писал «приложение не установлено»:** текущий OTA `SilentVPN-release-1.0.161.apk` = **90 МБ**, внутри мёртвые olcrtc .so (~32 МБ × ABI, плюс olcrtc2). На приставке не хватает места на download+extract. TV-манифест (`leanback required=false`) мы не ломали. Лечится новым OTA без этих библиотек.
+- **Прод 2026-08-23:** `deploy_stable.py`. После: `wdtt` **active**, DNAT `10.66.66.1:8000` на API, health 200, в контейнере `olcrtc2_disabled True`, процессов olcrtc нет. Соты заберут новый cell-agent автоапгрейдом (без отдельного restart api).
+
 ### 2026-08-23 — Клиентский репорт доступности в PC и Android (+ поправка на возраст)
 
 - Вопрос «как клиент дорепортит, если сервер недоступен» вскрыл дырку: `ts` ставился сервером в момент вставки, поэтому отложенная пачка из очереди легла бы в текущее окно агрегации и агент увидел бы блокировку, которой уже нет.

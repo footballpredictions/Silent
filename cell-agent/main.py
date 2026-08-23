@@ -407,44 +407,9 @@ async def olcrtc_apply(
     body: OlcrtcApplyBody,
     x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
 ):
-    """Улей пушит server-{unit}.yaml и перезапускает olcrtc@unit на соте."""
+    """olcrtc снят: новые unit не поднимаем. Старые глушит /v1/olcrtc2/teardown."""
     _auth(x_cell_agent_secret)
-    import re
-    import subprocess
-
-    unit = (body.unit_name or "").strip()
-    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,120}", unit):
-        raise HTTPException(status_code=400, detail="bad unit_name")
-    if not (body.yaml_text or "").strip():
-        raise HTTPException(status_code=400, detail="yaml_text empty")
-    root = Path("/opt/silent-vpn/olcrtc")
-    root.mkdir(parents=True, exist_ok=True)
-    (root / f"data-{unit}").mkdir(parents=True, exist_ok=True)
-    path = root / f"server-{unit}.yaml"
-    path.write_text(body.yaml_text, encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
-    if body.restart:
-        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=30)
-        subprocess.run(
-            ["systemctl", "enable", f"olcrtc@{unit}.service"],
-            capture_output=True,
-            timeout=30,
-        )
-        r = subprocess.run(
-            ["systemctl", "restart", f"olcrtc@{unit}.service"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if r.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=(r.stderr or r.stdout or "restart failed")[:300],
-            )
-    return {"ok": True, "unit": unit, "path": str(path)}
+    raise HTTPException(status_code=410, detail="olcrtc removed: VK/WDTT only")
 
 
 class Olcrtc2ApplyBody(BaseModel):
@@ -471,106 +436,9 @@ async def olcrtc2_apply(
     body: Olcrtc2ApplyBody,
     x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
 ):
-    """Per-session olcrtc2@unit: env + restart (Telemost exit on cell, not queen)."""
+    """olcrtc2 снят: новые unit не поднимаем. Старые глушит /v1/olcrtc2/teardown."""
     _auth(x_cell_agent_secret)
-    import re
-    import subprocess
-
-    unit = (body.unit_name or "").strip()
-    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,120}", unit):
-        raise HTTPException(status_code=400, detail="bad unit_name")
-    room = (body.room or "").strip()
-    key = (body.crypto_key or "").strip().lower()
-    if not room or len(key) != 64:
-        raise HTTPException(status_code=400, detail="room and 64-hex crypto_key required")
-    prov = (body.provider or "telemost").strip().lower()
-    mode = "wbstream" if prov == "wbstream" else "telemost"
-    auth_token = (body.auth_token or "").strip()
-    import logging as _logging
-
-    _logging.getLogger("uvicorn.error").info(
-        "olcrtc2_apply unit=%s provider=%r mode=%s tok_len=%s room=%s",
-        unit,
-        body.provider,
-        mode,
-        len(auth_token),
-        room[:40],
-    )
-    if mode == "wbstream" and not auth_token.startswith("eyJ"):
-        raise HTTPException(
-            status_code=400,
-            detail="wbstream requires auth_token (account JWT eyJ…)",
-        )
-    root = Path("/opt/silent-vpn/olcrtc2")
-    env_dir = root / "env.d"
-    env_dir.mkdir(parents=True, exist_ok=True)
-    env_path = env_dir / f"{unit}.env"
-    lines = [
-        f"OLCRTC2_MODE={mode}",
-        f"OLCRTC2_ROOM={room}",
-        f"OLCRTC2_KEY={key}",
-        f"OLCRTC2_DNS={_pick_olcrtc2_dns(body.olcrtc_dns)}",
-    ]
-    if auth_token:
-        # escape newlines in JWT (should be single line)
-        lines.append(f"OLCRTC2_AUTH_TOKEN={auth_token.replace(chr(10), '').replace(chr(13), '')}")
-    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    try:
-        env_path.chmod(0o600)
-    except OSError:
-        pass
-    # Ensure template unit exists
-    unit_path = Path("/etc/systemd/system/olcrtc2@.service")
-    # Без CPUQuota=50%: Telemost/vp8 упирается в пол-ядра → секундные «зависания».
-    desired_unit = f"""[Unit]
-Description=Silent VPN olcrtc2-srv %i
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory={root}
-EnvironmentFile=-{root}/env.d/%i.env
-ExecStart={root}/olcrtc2-srv
-Restart=on-failure
-RestartSec=5
-MemoryMax=1G
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-"""
-    cur_unit = unit_path.read_text(encoding="utf-8") if unit_path.is_file() else ""
-    if cur_unit != desired_unit:
-        unit_path.write_text(desired_unit, encoding="utf-8")
-        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=30)
-    if body.restart:
-        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=30)
-        subprocess.run(
-            ["systemctl", "enable", f"olcrtc2@{unit}.service"],
-            capture_output=True,
-            timeout=30,
-        )
-        r = subprocess.run(
-            ["systemctl", "restart", f"olcrtc2@{unit}.service"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if r.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=(r.stderr or r.stdout or "restart failed")[:300],
-            )
-        active = subprocess.run(
-            ["systemctl", "is-active", f"olcrtc2@{unit}.service"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if (active.stdout or "").strip() != "active":
-            raise HTTPException(status_code=500, detail="unit not active after restart")
-    return {"ok": True, "unit": unit, "env": str(env_path)}
+    raise HTTPException(status_code=410, detail="olcrtc2 removed: VK/WDTT only")
 
 
 class Olcrtc2StatusBody(BaseModel):
@@ -656,8 +524,9 @@ async def olcrtc2_create(
     body: Olcrtc2CreateBody,
     x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
 ):
-    """Create Telemost room on CELL (Playwright). Never run this on WDTT queen."""
+    """olcrtc2 снят: Playwright/host-provision больше не вызываем."""
     _auth(x_cell_agent_secret)
+    raise HTTPException(status_code=410, detail="olcrtc2 removed: VK/WDTT only")
     provider = (body.provider or "telemost").strip().lower()
     if provider != "telemost":
         raise HTTPException(status_code=400, detail="cell create supports telemost only")

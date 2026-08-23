@@ -985,20 +985,7 @@ def request_scale_on_shortage(reason: str = "") -> None:
 
 
 async def monitor_loop() -> None:
-    logger.info(
-        "olcrtc room agent monitor starting (interval=%ss)…",
-        CHECK_INTERVAL_SECONDS,
-    )
-    await asyncio.sleep(STARTUP_DELAY_SECONDS)
-    while True:
-        try:
-            async with AsyncSessionLocal() as db:
-                state = await load_agent_state(db)
-                if state.enabled:
-                    await heal_rooms(db, force=False)
-        except Exception:
-            logger.exception("olcrtc room agent monitor error")
-        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+    logger.info("olcrtc room agent disabled (VK/WDTT only)")
 
 
 def start_room_agent_background():

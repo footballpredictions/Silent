@@ -10,8 +10,8 @@ Agent приступает к **первой невыполненной** зад
 
 ### Чистка olcrtc и установка на ТВ (2026-08-23)
 
-- [ ] **Вычистить olcrtc до конца:** снять фоновый агент/сервисы, которые ещё крутятся и жрут ресурсы на Улье/сотах; убрать библиотеки olcrtc под разные ABI из Android/PC. Аккуратно, без поломки WDTT и старых клиентов
-- [ ] **OTA на Android TV / Smart TV:** после OTA пишет «приложение не установлено». Сами ТВ-установку не чинили — найти, что сломалось (ABI/split APK, подпись, `minSdk`, `leanback`, TV-манифест)
+- [x] **Вычистить olcrtc до конца (код + деплой Улья):** 2026-08-23 `deploy_stable.py` — агенты no-op, settings всегда off, cell-agent apply/create 410. На проде: `wdtt` active, DNAT на API, health 200, `olcrtc2_disabled True`, живых `olcrtc*` нет. Соты подтянут cell-agent автоапгрейдом. Релиз APK/EXE без .so — отдельно
+- [ ] **OTA на Android TV / Smart TV:** причина — жирный fat-APK 90 МБ (`1.0.161` на проде) с мёртвыми `libolcrtc.so`/`libolcrtc2.so` (~190 МБ uncompressed на 4 ABI). ТВ не ставит (часто `INSUFFICIENT_STORAGE` / «приложение не установлено»). Gradle уже исключает эти .so; нужен новый OTA-релиз. Manifest/leanback не ломали
 
 ### olcrtc стабильность (план 2026-08-14)
 

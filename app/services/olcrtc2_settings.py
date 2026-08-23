@@ -39,7 +39,7 @@ def _provision_url(ip: str) -> str:
 def _defaults() -> dict[str, Any]:
     return {
         "enabled": False,
-        "agent_enabled": True,
+        "agent_enabled": False,
         "provider": "telemost",
         "room": "",  # diag-only shared room (optional)
         "crypto_key": "",  # master fallback; per-session keys preferred
@@ -207,8 +207,8 @@ async def load_olcrtc2_settings(db: AsyncSession) -> dict[str, Any]:
 
     out["provider"] = "telemost" if out.get("provider") != "wbstream" else "wbstream"
     out["socks_port"] = int(out.get("socks_port") or 8808)
-    out["enabled"] = bool(out.get("enabled"))
-    out["agent_enabled"] = bool(out.get("agent_enabled", True))
+    out["enabled"] = False
+    out["agent_enabled"] = False
     out["session_mode"] = True
     try:
         out["warm_pool_per_dt"] = max(0, min(8, int(out.get("warm_pool_per_dt") or 2)))
@@ -242,10 +242,8 @@ async def load_olcrtc2_settings(db: AsyncSession) -> dict[str, Any]:
 
 async def save_olcrtc2_settings(db: AsyncSession, patch: dict[str, Any]) -> dict[str, Any]:
     cur = await load_olcrtc2_settings(db)
-    if "enabled" in patch:
-        cur["enabled"] = bool(patch["enabled"])
-    if "agent_enabled" in patch:
-        cur["agent_enabled"] = bool(patch["agent_enabled"])
+    cur["enabled"] = False
+    cur["agent_enabled"] = False
     if "provider" in patch and patch["provider"] in ("telemost", "wbstream"):
         cur["provider"] = patch["provider"]
     if "room" in patch:

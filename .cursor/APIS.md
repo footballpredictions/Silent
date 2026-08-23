@@ -87,6 +87,40 @@
 | GET | `/theme` | — | **Публичная** тема UI (`ThemeResponse`) |
 | GET | `/olcrtc-config` | — | **Публичный** конфиг варианта 2 (olcrtc) для debug-клиентов |
 | GET | `/sync-state` | User | ConfigSync: ревизии theme/profile/hashes |
+| POST | `/reachability-report` | User | Репорт клиента об отказе подключения (rate limit по IP) — вход агента доступности |
+
+**reachability-report body** (обязателен только `stage`; старые клиенты эндпоинт не вызывают):
+
+```json
+{
+  "stage": "dns|tcp|tls|handshake|tunnel_dead|api",
+  "transport": "udp|tcp|olcrtc",
+  "network_type": "wifi|mobile|ethernet|offline",
+  "carrier": "MTS",
+  "server_slot": "server1",
+  "tunnel_uptime_sec": 4,
+  "platform": "android|pc|ios",
+  "app_version": "1.0.161",
+  "detail": "timeout",
+  "age_sec": 0
+}
+```
+
+Ответ: `{ "ok": true, "accepted": true }`. `accepted: false` — сработал rate limit
+(`detail: too many reports`) или репорт старше срока хранения (`detail: stale report`).
+
+**Про `age_sec`.** Отказ и означает, что отправить сразу не вышло: клиент кладёт репорт
+в очередь и досылает, когда канал появится (main VPN, сота `:9100`, bootstrap-туннель).
+`age_sec` — сколько репорт пролежал; сервер метит запись временем **самого отказа**
+(`now − age_sec`), иначе отложенная пачка попала бы в текущее окно агрегации и агент
+увидел бы блокировку, которой уже нет. Репорт старше 48 ч отбрасывается.
+Поле опционально: без него репорт считается свежим (поведение старых клиентов).
+
+**Как репорт доходит при блокировке.** Прямой путь до Улья не единственный: путь
+`vpn/*` входит в белый список публичного failover соты (`is_public_failover_path`),
+и сота проксирует запрос на Улей — у неё другой IP и порт `9100`. Плюс bootstrap-туннель
+по VK-хешу. Полный blackhole клиентская телеметрия не покрывает, но его и так видят
+российские ноды `check-host`.
 
 **sync-state query params:**
 
@@ -225,6 +259,11 @@ sequenceDiagram
 | POST | `/cells/{id}/upgrade-agent` | Admin | Обновить cell-agent на соте (body: SSH password) |
 | PATCH | `/cells/{id}` | Admin | Имя, priority, status (`active` / `draining` / `offline`) |
 | DELETE | `/cells/{id}` | Admin | Удалить соту (`?force=true` для provisioning/error) |
+| GET | `/availability` | Admin | Последний отчёт агента доступности + настройки + `running` |
+| GET | `/availability/history?limit=N` | Admin | История прогонов (`ts`, `status`, `summary`) |
+| GET | `/availability/knowledge` | Admin | Справочник методов блокировок РФ + решения |
+| POST | `/availability/run` | Admin | Проверить сейчас (409, если прогон уже идёт) |
+| PUT | `/availability/settings` | Admin | `enabled`, `external_enabled`, `interval_sec`, `ru_nodes`, `world_nodes` |
 
 **cell-agent на соте** (порт 9100, заголовок `X-Cell-Agent-Secret`):
 
@@ -233,6 +272,7 @@ sequenceDiagram
 | GET | `/health` | Health |
 | POST | `/v1/handshake` | Параметры VPN для Улья |
 | GET | `/v1/status` | CPU/RAM, wdtt_active |
+| POST | `/v1/net-probe` | Пробы TCP/UDP с соты (агент доступности): `{ targets: [{ name, host, port, proto }], timeout_sec }` — только чтение |
 
 **Env Hive:** `HIVE_CPU_PERCENT_THRESHOLD`, `HIVE_MEM_PERCENT_THRESHOLD`, `HIVE_CELL_AGENT_PORT`, `HIVE_PROVISION_SSH_USER`, `HIVE_PROVISION_STALE_MINUTES`, `HOST_PROC_ROOT` (опц. `/host/proc`).
 
@@ -285,6 +325,22 @@ Endpoint: `GET /api/vpn/theme` (публичный, без auth).
 ---
 
 ## Внешние сервисы
+
+### check-host.net (агент доступности)
+
+Точки наблюдения внутри РФ — единственный способ увидеть нас так, как видят клиенты из-за ТСПУ.
+Ключ не нужен, поэтому важно не превышать бюджет запросов.
+
+| Параметр | Значение |
+|----------|----------|
+| Ноды | `GET https://check-host.net/nodes/hosts` (`Accept: application/json`) |
+| Запуск проверки | `GET /check-{tcp,ping,http,dns}?host=…&node=…` → `request_id` |
+| Результат | `GET /check-result/{request_id}` — опрашивать, пока ноды не ответят |
+| Российские ноды | по полю страны `ru` (обычно 3–5 штук из ~58) |
+| Бюджет | `AVAILABILITY_MAX_EXTERNAL_CHECKS` (12 проверок за цикл), интервал 15 мин |
+
+Клиент и парсер: `ai/availability_probes.py`. `3xx` в HTTP-ответе считается успехом
+(ответ от нашего nginx дошёл), `4xx/5xx` — подменой ответа.
 
 ### VK API
 

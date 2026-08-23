@@ -24,6 +24,28 @@ class HashFailureReportRequest(BaseModel):
     device_fingerprint: str
 
 
+class ReachabilityReportRequest(BaseModel):
+    """Клиент сообщает, на какой стадии сорвалось подключение (для агента доступности).
+
+    Все поля кроме `stage` необязательны: старые клиенты этот эндпоинт не вызывают,
+    новые могут присылать столько данных, сколько знают.
+    """
+
+    stage: str  # dns | tcp | tls | handshake | tunnel_dead | api
+    transport: str = ""       # udp | tcp | olcrtc
+    network_type: str = ""    # wifi | mobile | ethernet
+    carrier: str = ""         # оператор, если клиент его знает
+    server_slot: str = ""     # server1 (Улей) | server2 (Сота 1) | ...
+    tunnel_uptime_sec: int | None = None
+    platform: str = ""        # android | pc | ios
+    app_version: str = ""
+    detail: str = ""
+    # Сколько репорт пролежал в клиентской очереди. Отказ обычно и означает, что
+    # отправить сразу не получилось, поэтому без этого поля отложенная пачка легла бы
+    # в текущее окно агрегации и агент увидел бы блокировку, которой уже нет.
+    age_sec: int | None = None
+
+
 class BootstrapConfigRequest(BaseModel):
     """Pre-login VPN config — only bootstrap VK hash, no subscription required."""
     bootstrap_hash: str

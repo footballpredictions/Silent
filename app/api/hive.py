@@ -13,6 +13,7 @@ from app.models import HiveCell
 from app.core.deps import get_admin_credentials
 from app.config import settings
 from app.schemas.hive import (
+    HiveAvailabilitySettings,
     HiveCellAutoConnect,
     HiveCellCreateManual,
     HiveCellCreateAgent,
@@ -35,6 +36,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/hive", tags=["admin-hive"])
 
 _FORCE_DELETE_STATUSES = frozenset({"provisioning", "error", "pending", "offline"})
+
+# Ручной прогон проверки доступности: не даём запустить два одновременно.
+_availability_run_in_progress = False
 
 
 async def _next_cell_name(db: AsyncSession) -> str:
@@ -504,3 +508,73 @@ async def mark_hive_incidents_seen(
 ):
     seen_at = await mark_admin_incidents_seen()
     return {"ok": True, "seen_at": seen_at}
+
+
+@router.get("/availability")
+async def hive_availability(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Последний отчёт агента доступности: блокировки и готовые решения."""
+    from app.services import availability_store
+
+    report = await availability_store.load_latest_report()
+    cfg = await availability_store.load_settings(db)
+    return {"report": report, "settings": cfg, "running": _availability_run_in_progress}
+
+
+@router.get("/availability/history")
+async def hive_availability_history(
+    limit: int = Query(30, ge=1, le=300),
+    _: bool = Depends(get_admin_credentials),
+):
+    from app.services import availability_store
+
+    return {"items": await availability_store.load_history(limit)}
+
+
+@router.get("/availability/knowledge")
+async def hive_availability_knowledge(
+    _: bool = Depends(get_admin_credentials),
+):
+    """Справочник: как блокируют в РФ и что делать по каждому типу."""
+    from ai.availability_knowledge import knowledge_to_dict
+
+    return {"items": knowledge_to_dict()}
+
+
+@router.post("/availability/run")
+async def hive_availability_run(
+    _: bool = Depends(get_admin_credentials),
+):
+    """Запустить проверку прямо сейчас (пробы только читают, сервисы не трогаются)."""
+    global _availability_run_in_progress
+
+    if _availability_run_in_progress:
+        raise HTTPException(status_code=409, detail="Проверка уже выполняется")
+
+    from ai.availability_agent import run_availability_check
+
+    _availability_run_in_progress = True
+    try:
+        # Админ смотрит отчёт прямо здесь — дублировать его в журнал инцидентов не нужно.
+        report = await run_availability_check(incidents=False)
+    except Exception as e:
+        logger.exception("Availability run failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Проверка не выполнена: {e}")
+    finally:
+        _availability_run_in_progress = False
+    return {"ok": True, "report": report.to_dict()}
+
+
+@router.put("/availability/settings")
+async def hive_availability_settings(
+    req: HiveAvailabilitySettings,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services import availability_store
+
+    patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    cfg = await availability_store.save_settings(db, patch)
+    return {"ok": True, "settings": cfg}

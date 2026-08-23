@@ -8,6 +8,11 @@ Agent приступает к **первой невыполненной** зад
 
 ## Открытые задачи
 
+### Чистка olcrtc и установка на ТВ (2026-08-23)
+
+- [ ] **Вычистить olcrtc до конца:** снять фоновый агент/сервисы, которые ещё крутятся и жрут ресурсы на Улье/сотах; убрать библиотеки olcrtc под разные ABI из Android/PC. Аккуратно, без поломки WDTT и старых клиентов
+- [ ] **OTA на Android TV / Smart TV:** после OTA пишет «приложение не установлено». Сами ТВ-установку не чинили — найти, что сломалось (ABI/split APK, подпись, `minSdk`, `leanback`, TV-манифест)
+
 ### olcrtc стабильность (план 2026-08-14)
 
 Полный план: `.cursor/PLAN_OLCRTC_STABILITY.md`.
@@ -54,6 +59,10 @@ Agent приступает к **первой невыполненной** зад
 
 ### Инфраструктура и репозиторий
 
+- [x] **AI-агент доступности: детекция блокировок DPI/ТСПУ + решение в отчёте** — 2026-08-23: `ai/availability_{model,knowledge,classifier,probes,agent,cli}.py`, `app/services/availability_store.py`, admin API `/api/admin/hive/availability*`, клиентский репорт `POST /api/vpn/reachability-report`, cell-agent `POST /v1/net-probe`, раздел «Доступность и блокировки» в Улье, 28 unit-тестов (`scripts/test_availability_unit.py`), runbook `backend/AVAILABILITY.md`. Пробы только читают (не ломают VPN)
+- [x] **Агент доступности на проде** — 2026-08-23: `deploy_stable.py`; таблицы созданы, 7 фоновых агентов, wdtt active, DNAT на IP Улья, 92 устройства онлайн. Живой прогон: Улей + Сота 1 + Сота 2 доступны из РФ (3 ноды), 30 с, 8 внешних проверок. Тихий режим: подтверждение 2 циклами, окно тишины 12 ч, ≤2 записи за цикл, ручной запуск в журнал не пишет; пропуск цикла при CPU ≥85 % / RAM ≥92 %
+- [x] **Клиентский репорт доступности в PC / Android** — 2026-08-23: `pc/src/renderer/reachabilityReporter.ts`, `android/.../vpn/ReachabilityReporter.kt`, `ApiService.ReachabilityReportRequest`, `Repository.reportReachability` + тип сети и оператор. Хуки: ошибка VPN при подключении → `handshake`, смерть живого туннеля → `tunnel_dead` с возрастом. Очередь с debounce 5 мин, backoff и выгрузкой после поднятия туннеля / Wi‑Fi tick; не привязана к `isTunnelApiActive()`. Новое поле `age_sec`: сервер метит отказ временем самого сбоя, отложенная пачка не создаёт ложную блокировку; старше 48 ч — `stale`. 33 unit-теста
+- [ ] Подключить клиентский репорт в iOS — по тому же контракту (`stage`, `transport`, `network_type`, `carrier`, `age_sec`)
 - [x] **Улей: автоподключение соты по IP + SSH root (wdtt, DNAT tunnel, cell-agent)** — 2026-06-20
 - [x] **Соты: локальный WG GC + snapshot слота (не копия всей БД)** — 2026-08-18: cell-agent GC как на Улье; `/v1/status` счётчики; manifest = `cell_id` ∪ `preferred_server`; Сота 1/2 апгрейд, extras сняты
 - [x] **Слой 3 failover + онлайн Улья/дашборд** — 2026-08-18: клиент бьёт в cell-agent :9100 если Улей недоступен; в Улье онлайн соты по WG live; в дашборде устройство · Улей/Сота N

@@ -186,6 +186,30 @@ class Settings(BaseSettings):
     # Standby / HA: локальный API на соте, если Улей недоступен (без GitHub-backup)
     HIVE_STANDBY_ENABLED: bool = True
 
+    # --- Агент доступности (детекция DPI/ТСПУ) ---
+    # Только чтение: пробы не меняют состояние сервера и не рестартят сервисы.
+    AVAILABILITY_AGENT_ENABLED: bool = True
+    AVAILABILITY_AGENT_INTERVAL_SEC: int = 1800
+    # Внешние пробы с российских нод (check-host.net). False = только локальные + клиенты.
+    AVAILABILITY_EXTERNAL_ENABLED: bool = True
+    AVAILABILITY_RU_NODES: int = 4
+    AVAILABILITY_WORLD_NODES: int = 2
+    AVAILABILITY_MAX_EXTERNAL_CHECKS: int = 10
+    # Сколько узлов проверяем снаружи за цикл (Улей всегда первый) — бюджет запросов
+    AVAILABILITY_MAX_EXTERNAL_TARGETS: int = 3
+    AVAILABILITY_CLIENT_WINDOW_MINUTES: int = 30
+    # Пробы «сота → Улей / сота → сота» через cell-agent /v1/net-probe
+    AVAILABILITY_PEER_PROBE_ENABLED: bool = True
+    AVAILABILITY_LOCAL_TIMEOUT_SEC: float = 6.0
+    # Ресурсы важнее диагностики: при такой загрузке хоста цикл пропускается
+    AVAILABILITY_SKIP_IF_CPU_PERCENT: float = 85.0
+    AVAILABILITY_SKIP_IF_MEM_PERCENT: float = 92.0
+    # Инциденты: сколько циклов подряд проблема должна подтвердиться перед записью
+    AVAILABILITY_INCIDENT_CONFIRM_CYCLES: int = 2
+    # Повторное напоминание о той же проблеме — не чаще, чем раз в N часов
+    AVAILABILITY_INCIDENT_RENOTIFY_HOURS: float = 12.0
+    AVAILABILITY_INCIDENT_MAX_PER_CYCLE: int = 2
+
     # Subscription prices (магазин: месяц / 2 мес / 3 мес; yearly — для старых клиентов)
     PRICE_MONTHLY: float = 199.0
     PRICE_TWO_MONTHS: float = 359.0

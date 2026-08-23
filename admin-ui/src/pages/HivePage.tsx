@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Hexagon, Plus, RefreshCw, Trash2, Wifi, WifiOff, Crown, Loader2, Cpu, HardDrive, Activity, Server } from 'lucide-react'
+import HiveAvailabilityPanel from '../components/HiveAvailabilityPanel'
 
 interface CellLoad {
   cpu_percent: number
@@ -459,6 +460,8 @@ export default function HivePage({ token }: { token: string }) {
           </p>
         </div>
       )}
+
+      <HiveAvailabilityPanel token={token} />
 
       <div className="bg-[#111] border border-[#222] rounded-xl p-4 md:p-5">
         <div className="flex items-center justify-between gap-3 mb-2">

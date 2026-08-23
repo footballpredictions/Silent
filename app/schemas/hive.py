@@ -58,6 +58,18 @@ class HiveCellUpdate(BaseModel):
     link_capacity_mbps: Optional[float] = Field(default=None, ge=0, le=100000)
 
 
+class HiveAvailabilitySettings(BaseModel):
+    """Настройки агента доступности (детекция блокировок DPI/ТСПУ)."""
+
+    enabled: Optional[bool] = None
+    external_enabled: Optional[bool] = Field(
+        default=None, description="Пробы с российских нод; False — только локально и по клиентам"
+    )
+    interval_sec: Optional[int] = Field(default=None, ge=120, le=21600)
+    ru_nodes: Optional[int] = Field(default=None, ge=1, le=12)
+    world_nodes: Optional[int] = Field(default=None, ge=0, le=6)
+
+
 class HiveCellResponse(BaseModel):
     id: uuid.UUID
     name: str

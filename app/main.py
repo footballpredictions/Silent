@@ -388,6 +388,45 @@ async def lifespan(app: FastAPI):
         ))
     logger.info("Database tables ready")
 
+    # Таблицы диагностического агента — отдельной транзакцией: их сбой не должен
+    # ронять схему основного продукта и поднятие API.
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS availability_reports (
+                    id BIGSERIAL PRIMARY KEY,
+                    ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    status VARCHAR(16) NOT NULL DEFAULT 'unknown',
+                    summary TEXT NOT NULL DEFAULT '',
+                    report_json TEXT NOT NULL DEFAULT '{}'
+                )
+            """))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_availability_reports_ts "
+                "ON availability_reports (ts DESC)"
+            ))
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS availability_client_reports (
+                    id BIGSERIAL PRIMARY KEY,
+                    ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    stage VARCHAR(32) NOT NULL DEFAULT 'unknown',
+                    transport VARCHAR(16) NOT NULL DEFAULT '',
+                    network_type VARCHAR(16) NOT NULL DEFAULT '',
+                    carrier VARCHAR(64) NOT NULL DEFAULT '',
+                    server_slot VARCHAR(32) NOT NULL DEFAULT '',
+                    tunnel_uptime_sec INTEGER,
+                    platform VARCHAR(32) NOT NULL DEFAULT '',
+                    app_version VARCHAR(32) NOT NULL DEFAULT '',
+                    detail TEXT NOT NULL DEFAULT ''
+                )
+            """))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_availability_client_reports_ts "
+                "ON availability_client_reports (ts DESC)"
+            ))
+    except Exception as e:
+        logger.error("availability tables skipped (API работает дальше): %s", e)
+
     from app.database import AsyncSessionLocal
     from app.services.hive_service import ensure_queen_cell
     from app.services.hive_incidents import load_persisted_incidents
@@ -450,6 +489,14 @@ async def lifespan(app: FastAPI):
             ("hive_cell_maintenance", hive_cell_maintenance_loop),
             ("proxy_health", proxy_health_loop),
         ]
+        # Диагностический агент подключаем отдельно: его импорт не должен лишать
+        # прод остальных агентов (VK, балансировка, обслуживание сот).
+        try:
+            from ai.availability_agent import availability_loop
+
+            agent_specs.append(("availability_watchdog", availability_loop))
+        except Exception as e:
+            logger.error("availability agent skipped (остальные агенты работают): %s", e)
         # VK-only mode: all olcrtc background agents are disabled.
 
         agents_task = start_when_leader("silent_background_agents", agent_specs)

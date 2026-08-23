@@ -1,7 +1,7 @@
 """VPN configuration and connection API."""
 import json
 import secrets
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -20,6 +20,7 @@ from app.schemas.vpn import (
     SyncStateResponse,
     HashRefreshRequest,
     HashFailureReportRequest,
+    ReachabilityReportRequest,
     InternalOnlineRequest,
     InternalAccessRequest,
     InternalOnlineResponse,
@@ -630,5 +631,42 @@ async def get_hive_meta(db: AsyncSession = Depends(get_db)):
     from app.services.hive_standby import hive_meta
 
     return await hive_meta(db)
+
+
+@router.post("/reachability-report")
+async def report_reachability(
+    req: ReachabilityReportRequest,
+    request: Request,
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Клиент сообщает, на какой стадии не удалось подключиться.
+
+    Единственный источник данных о доступности с точки зрения абонента в РФ:
+    внешние пробы видят только датацентры. Эндпоинт добавочный — клиенты
+    1.0.160/1.0.161 его не вызывают и продолжают работать без изменений.
+    """
+    from app.services.availability_store import record_client_report
+    from app.services.rate_limiter import check_ip_rate_limit
+
+    if await check_ip_rate_limit(request, "reachability", 30, 300):
+        return {"ok": True, "accepted": False, "detail": "too many reports"}
+
+    accepted = await record_client_report(
+        db,
+        stage=req.stage,
+        transport=req.transport or "",
+        network_type=req.network_type or "",
+        carrier=req.carrier or "",
+        server_slot=req.server_slot or "",
+        tunnel_uptime_sec=req.tunnel_uptime_sec,
+        platform=req.platform or "",
+        app_version=req.app_version or "",
+        detail=req.detail or "",
+        age_sec=req.age_sec,
+    )
+    if not accepted:
+        return {"ok": True, "accepted": False, "detail": "stale report"}
+    return {"ok": True, "accepted": True}
 
 

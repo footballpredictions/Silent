@@ -742,5 +742,131 @@ async def sync_manifest(
     return {"ok": True, "version": payload.get("version"), "device_count": payload.get("device_count")}
 
 
+class NetProbeTarget(BaseModel):
+    name: str = ""
+    host: str = ""
+    port: int = 0
+    proto: str = "tcp"
+
+
+class NetProbeRequest(BaseModel):
+    targets: list[NetProbeTarget] = []
+    timeout_sec: float = 5.0
+
+
+@app.post("/v1/net-probe")
+async def net_probe(
+    req: NetProbeRequest,
+    x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
+):
+    """Проверить доступность целей со стороны соты. Только чтение, ничего не меняет.
+
+    Нужен агенту доступности на Улье: вторая точка наблюдения отделяет
+    «нас блокируют» от «сервис упал».
+    """
+    _auth(x_cell_agent_secret)
+
+    import asyncio
+    import socket
+    import time
+
+    timeout = max(1.0, min(float(req.timeout_sec or 5.0), 15.0))
+    results: list[dict[str, Any]] = []
+
+    def _error_kind(exc: BaseException) -> str:
+        if isinstance(exc, (asyncio.TimeoutError, TimeoutError, socket.timeout)):
+            return "timeout"
+        if isinstance(exc, ConnectionRefusedError):
+            return "refused"
+        if isinstance(exc, ConnectionResetError):
+            return "reset"
+        if isinstance(exc, socket.gaierror):
+            return "dns"
+        text = str(exc).lower()
+        if "unreachable" in text or "no route" in text:
+            return "unreachable"
+        return "other"
+
+    def _udp_probe(host: str, port: int) -> tuple[bool, str, str]:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.settimeout(timeout)
+            sock.connect((host, port))
+            sock.send(b"\x00" * 16)
+            try:
+                sock.recv(256)
+                return True, "", "ответ получен"
+            except socket.timeout:
+                return True, "", "нет ответа (норма для wdtt/WG)"
+            except ConnectionRefusedError:
+                return False, "refused", "ICMP port unreachable"
+        except BaseException as e:  # noqa: BLE001
+            return False, _error_kind(e), str(e)[:160]
+        finally:
+            sock.close()
+
+    for target in req.targets[:12]:
+        host = (target.host or "").strip()
+        port = int(target.port or 0)
+        if not host or not (0 < port < 65536):
+            continue
+        proto = (target.proto or "tcp").strip().lower()
+        name = (target.name or f"{proto}:{host}:{port}")[:64]
+        started = time.monotonic()
+
+        if proto == "udp":
+            ok, kind, detail = await asyncio.to_thread(_udp_probe, host, port)
+            results.append(
+                {
+                    "name": name,
+                    "ok": ok,
+                    "latency_ms": None,
+                    "error_kind": kind,
+                    "detail": detail,
+                    "inconclusive": True,
+                }
+            )
+            continue
+
+        writer = None
+        try:
+            _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+            results.append(
+                {
+                    "name": name,
+                    "ok": True,
+                    "latency_ms": round((time.monotonic() - started) * 1000, 1),
+                    "error_kind": "",
+                    "detail": "",
+                    "inconclusive": False,
+                }
+            )
+        except BaseException as e:  # noqa: BLE001
+            results.append(
+                {
+                    "name": name,
+                    "ok": False,
+                    "latency_ms": None,
+                    "error_kind": _error_kind(e),
+                    "detail": str(e)[:160],
+                    "inconclusive": False,
+                }
+            )
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+
+    return {
+        "ok": True,
+        "cell_ip": _detect_public_ip(),
+        "agent_build_id": agent_build_id(),
+        "results": results,
+    }
+
+
 if mount_failover_routes is not None:
     mount_failover_routes(app)

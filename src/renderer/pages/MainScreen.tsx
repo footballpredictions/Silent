@@ -1727,15 +1727,14 @@ export default function MainScreen({
                         try {
                           const electron = (window as any).electronAPI
                           if (!profile?.subscription?.is_active) {
-                            try {
-                              const st = await electron?.vpnIsReady?.()
-                              if (st?.ready && !st?.bootstrap) {
-                                await electron?.vpnDisconnect?.({ fast: true })
+                            const st = await electron?.vpnIsReady?.().catch(() => null)
+                            const mainUp = !!(st?.ready && !st?.bootstrap)
+                            if (!mainUp) {
+                              let bridged = await ensurePaymentBootstrapVpn()
+                              if (!bridged) bridged = await ensurePaymentBootstrapVpn()
+                              if (!bridged) {
+                                throw new Error('Не удалось включить временный интернет для оплаты. Повторите.')
                               }
-                            } catch { /* ignore */ }
-                            const bridged = await ensurePaymentBootstrapVpn()
-                            if (!bridged) {
-                              throw new Error('Не удалось включить временный интернет для оплаты. Повторите.')
                             }
                             const initRes = await api.post(
                               '/api/payments/init',

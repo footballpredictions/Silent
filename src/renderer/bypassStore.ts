@@ -113,15 +113,24 @@ export function expectedIpForPreferred(slot = getPreferredServer()): string | nu
   }
 }
 
+function ipv4OrRaw(raw: string): string {
+  const dashed = String(raw || '').trim().replace(/-/g, '.')
+  const m = dashed.match(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/)
+  return m?.[1] || dashed
+}
+
 export function cachedConfigMatchesPreferred(cfg: { selected_server?: string; server_ip?: string } | null | undefined): boolean {
   if (!cfg) return false
   const slot = slotFromSelectedServer(cfg.selected_server)
   if (!slot) return false
   if (slot !== getPreferredServer()) return false
-  const wantIp = expectedIpForPreferred(slot)
-  const got = String(cfg.server_ip || '').trim()
-  if (!wantIp || !got) return false
-  return got === wantIp
+  const got = ipv4OrRaw(String(cfg.server_ip || ''))
+  if (!got) return false
+  const baked = ipv4OrRaw(BAKED_SERVER_IPS[slot] || '')
+  const stored = ipv4OrRaw(expectedIpForPreferred(slot) || '')
+  if (baked && got === baked) return true
+  if (stored && got === stored) return true
+  return false
 }
 
 export function setPreferredServer(server: string) {

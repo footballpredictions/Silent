@@ -891,6 +891,16 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+- Первый клик тарифа: иконка VPN уже есть, но TCP на `10.66.66.1:8000` ещё с LTE (`from /100.x`) → 12 с timeout, bootstrap гасился. Ждём health по туннелю, retry без гашения, сырой socket в UI не показываем.
+- Push + release 1.0.162: bootstrap `vP_C4iBk9QZEetqR0a_MqiPJkeOyBEV1B_G6uViHuVU`. APK `android/SilentVPN-release-1.0.162.apk`, PC installer `build-release-v141-*`. OTA не заливали.
+
+### 2026-08-23 — Оплата: не рвать рабочий VPN (откат к 19–21)
+
+- В релизе 23.08 оплата **всегда** гасила main VPN и поднимала bootstrap → первая кнопка «не удалось», после оплаты туннель с нуля 3–5 мин.
+- Как 21.08 (`fb1a716`): при живой подписке/trial bootstrap не трогаем. Bootstrap только если нет доступа (LTE без VPN).
+- После оплаты на bootstrap — prefetch `/config` и сразу `connect()`, не оставлять пользователя без туннеля.
+- Первый клик: один внутренний retry bootstrap. PC больше не делает `vpnDisconnect` перед YuMoney.
+
 ### 2026-08-23 — Закрыта дыра деплоя: app/ai как volume
 
 - `docker-compose.yml`: `./app:/app/app:ro`, `./ai:/app/ai:ro`. Recreate api больше не откатывает Python к старому image.

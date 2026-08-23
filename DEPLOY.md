@@ -19,8 +19,9 @@ cd backend
 | `scripts/_deploy_common.py` | *(модуль)* | SSH, `.env.deploy`, upload — импортируется скриптами |
 | `scripts/.env.deploy.example` | *(шаблон)* | Пример `DEPLOY_HOST`, `DEPLOY_PASS`, … |
 | `scripts/deploy_helper.py` | `python scripts/deploy_helper.py <action>` | VPS: check / install / status / creds |
-| `scripts/deploy_stable.py` | `python scripts/deploy_stable.py` | **Единственный** деплой backend на прод: все `app/**/*.py`, `ai/**/*.py`, `admin-ui/dist` |
+| `scripts/deploy_stable.py` | `python scripts/deploy_stable.py` | **Единственный** деплой backend на прод: все `app/**/*.py`, `ai/**/*.py`, `admin-ui/dist`, `docker-compose.yml` (volume app/ai) |
 | `scripts/deploy_api.py` | `python scripts/deploy_api.py` | Алиас → `deploy_stable.py` (FILES-список больше не используется) |
+| `scripts/restore_api_container.py` | `python scripts/restore_api_container.py` | Алиас → `deploy_stable.py` |
 | `scripts/deploy_vk_calls.py` | `python scripts/deploy_vk_calls.py` | VK Calls, VK ID, агент + admin-ui/dist |
 | `scripts/deploy_config_sync.py` | `python scripts/deploy_config_sync.py` | ConfigSync / sync-state |
 | `scripts/deploy_update_backend.py` | `python scripts/deploy_update_backend.py` | OTA API (без .exe/.apk) + admin-ui/dist |
@@ -33,7 +34,6 @@ cd backend
 | `scripts/deploy_olcrtc.py` | `python scripts/deploy_olcrtc.py` | olcrtc srv (systemd) + API/админка «Варианты обхода» |
 | `scripts/deploy_olcrtc_host_provision.py` | `python scripts/deploy_olcrtc_host_provision.py` | Host Playwright `:9101` — автосоздание комнат Telemost/WB для room-agent |
 | `scripts/deploy_cell_agent.py` | `python scripts/deploy_cell_agent.py <cell_ip>` | cell-agent на отдельной VPS-соте |
-| `scripts/restore_api_container.py` | `python scripts/restore_api_container.py` | Восстановить `app/`+`ai/` в контейнере после `compose up`/recreate |
 | `scripts/apply_security_phase1.py` | `python scripts/apply_security_phase1.py` | UFW, fail2ban, bind API `127.0.0.1:8000` (+ sync кода) |
 | `scripts/install.sh` | на сервере / через `deploy_helper install` | Первичная установка Docker + clone |
 | `scripts/gen_certs.sh` | на сервере | Перегенерация TLS |
@@ -71,9 +71,12 @@ cd backend
 - **Все** `app/**/*.py`
 - **Все** `ai/**/*.py`
 - `admin-ui/dist/**` (нужен `npm run build`)
-- `cell-agent/*.py`, `fix_tunnel_dnat`
+- `docker-compose.yml` (volume `./app`, `./ai`)
+- `cell-agent/*.py`, bash `fix_tunnel_dnat`
 
-`python scripts/deploy_api.py` теперь просто вызывает `deploy_stable.py` — точечный FILES больше не существует.
+`python scripts/deploy_api.py` и `restore_api_container.py` вызывают `deploy_stable.py`.
+
+`docker compose build` в этот цикл **не** входит. Образ — только при смене `Dockerfile.api` / `requirements.txt`.
 
 ### `deploy_vk_calls.py`
 
@@ -166,30 +169,31 @@ curl -sSL https://raw.githubusercontent.com/footballpredictions/Silent/main/scri
 
 Или с Windows: `python scripts/deploy_helper.py install`
 
-## Docker: не сбрасывать код в контейнере
+## Docker: код на volume, не overlay образа
 
-Образ `backend-api` на VPS часто **старее** git. Актуальный Python — через `docker cp` (`deploy_*.py`), не через `--force-recreate`.
+`./app` и `./ai` смонтированы в контейнер **:ro** (как `admin-ui/dist`). Recreate `api` не откатывает Python. Канон: `python scripts/deploy_stable.py`. `restore_api_container.py` — алиас полного деплоя.
 
 | Команда | Риск |
 |---------|------|
-| `deploy_stable.py`, `deploy_hive.py`, … | ✅ Безопасно |
+| `deploy_stable.py` | ✅ Безопасно |
 | `docker compose restart api` | ✅ Безопасно |
-| `docker compose up -d api --force-recreate` | ❌ Улей 404, старый код, падение без `httpx` |
+| `docker compose up -d api --no-deps` | ⚠️ Recreate меняет IP — скрипт чинит DNAT. Не трогать `wdtt` |
+| Тематические `deploy_*.py` с FILES | ❌ Не для прода-фиксов |
 
-**После `compose up` или смены `ports:` в `docker-compose.yml`:**
+См. `MEMORY_BANK.md` → «Docker: код в контейнере».
 
-```powershell
-python scripts/restore_api_container.py
-```
+### Пересборка образа — не при каждом деплое
 
-См. `MEMORY_BANK.md` → «Docker: код в контейнере», «Безопасность VPS».
+`docker compose build api` в обычный деплой **не входит**. Python и админка — volume с хоста.
+
+Пересобирать образ только если менялись `docker/Dockerfile.api` или `requirements.txt` (системные пакеты, pip в image). Тогда на VPS: `docker compose build api`, сразу `python scripts/deploy_stable.py` с Windows (DNAT + health). `wdtt` не рестартить.
 
 ## Безопасность (скрипты)
 
 | Скрипт | Назначение |
 |--------|------------|
-| `apply_security_phase1.py` | UFW, fail2ban, `127.0.0.1:8000` в compose (+ sync кода в контейнер) |
-| `restore_api_container.py` | Восстановить `app/` + `ai/` в контейнере после recreate |
+| `apply_security_phase1.py` | UFW, fail2ban, `127.0.0.1:8000` в compose |
+| `restore_api_container.py` | Алиас `deploy_stable.py` |
 
 ## После установки
 

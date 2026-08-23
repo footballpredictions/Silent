@@ -44,7 +44,11 @@ services:
       BUILD_AGENT_HOST_ROOT: /opt/silent-vpn/backend/build-agent
       # Playwright/units на хосте Улья (:9101), не loopback контейнера
       OLCRTC_HOST_PROVISION_URL: http://172.17.0.1:9101
+      PYTHONDONTWRITEBYTECODE: "1"
     volumes:
+      # Код с хоста, не из образа: recreate api больше не откатывает Python к старому image.
+      - ./app:/app/app:ro
+      - ./ai:/app/ai:ro
       - ./static:/app/static
       - ./cell-agent:/app/cell-agent:ro
       - ./admin-ui/dist:/app/admin-ui/dist:ro

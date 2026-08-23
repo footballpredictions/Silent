@@ -31,7 +31,8 @@ alwaysApply: true
 | android (`android`) | `android/scripts/` | `deploy_release.py` — OTA .apk |
 
 **Backend на прод:** `python scripts/deploy_stable.py` (нужен `admin-ui/dist`).  
-`deploy_api.py` — алиас того же полного копирования (с 18.08.2026). Не делать ручной `docker cp` выбранных файлов из `app/`.
+`deploy_api.py` — алиас того же полного копирования (с 18.08.2026). Не делать ручной `docker cp` выбранных файлов из `app/`.  
+`docker compose build` при обычном деплое **не** нужен (код на volume). Образ — только если менялись `docker/Dockerfile.api` или `requirements.txt`.
 
 **Исключение (не ронять VPN):** правка только `cell-agent/` — залить файлы в `/opt/silent-vpn/backend/cell-agent/` на хосте (volume `:ro`). **Не** делать `docker compose restart api nginx`: рестарт API на фоне старых агентов снова переключает DNAT туннеля (инцидент 2026-08-18). Соты подтянут код автоапгрейдом, пока Улей жив. **wdtt не рестартить.**
 

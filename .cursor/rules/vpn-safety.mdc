@@ -14,6 +14,7 @@ alwaysApply: true
 - Не снимать живые WG peer’ы (только мёртвые extras; ключи `devices` не трогать)
 - API/theme/login/config: старые клиенты 1.0.160/1.0.161 должны работать без обновления (новые поля опциональны)
 - Правка только `cell-agent/` → залить на хост VPS, **без** `docker compose restart api nginx`
+- Python API живёт volume `./app`+`./ai` (как админка). Recreate `api` код не откатывает; всё равно сразу DNAT. Деплой только `python scripts/deploy_stable.py`
 
 ## Как делать новое
 

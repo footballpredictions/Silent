@@ -7,6 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _deploy_common import BACKEND_ROOT, REMOTE, connect, run, upload_file  # noqa: E402
+from fix_tunnel_dnat import FIX_SH  # noqa: E402
 
 UFW_SCRIPT = r"""#!/bin/bash
 set -euo pipefail
@@ -66,24 +67,15 @@ def main() -> None:
     )
     run(client, "sleep 6")
 
-    print("\n=== 2b) Sync app+ai into container (image may be stale) ===")
-    run(
-        client,
-        f"cd {REMOTE} && find app ai -name '*.py' | while read -r f; do docker cp \"$f\" backend-api-1:/app/\"$f\"; done",
-        timeout=300,
-    )
+    print("\n=== 2b) Reload api (app/ai are host volumes; image overlay not used) ===")
     run(client, "docker exec backend-api-1 pip install -q httpx paramiko 2>/dev/null || true")
     run(client, f"cd {REMOTE} && docker compose restart api 2>&1", timeout=120)
     run(client, "sleep 12")
     run(client, f"cd {REMOTE} && docker compose ps api 2>&1")
 
-    print("\n=== 3) Tunnel DNAT fix ===")
-    fix_local = BACKEND_ROOT / "scripts" / "fix_tunnel_dnat.py"
-    if fix_local.is_file():
-        sftp.put(str(fix_local), f"{REMOTE}/scripts/fix_tunnel_dnat.py")
-        run(client, f"cd {REMOTE} && python3 scripts/fix_tunnel_dnat.py 2>&1", timeout=120)
-    else:
-        run(client, f"cd {REMOTE} && python3 scripts/fix_tunnel_dnat.py 2>&1", timeout=120)
+    print("\n=== 3) Tunnel DNAT fix (bash, not python on VPS) ===")
+    sftp.putfo(io.BytesIO(FIX_SH.encode()), "/tmp/fix_tunnel_dnat.sh")
+    run(client, "bash /tmp/fix_tunnel_dnat.sh 2>&1", timeout=60)
 
     print("\n=== 4) Health checks ===")
     run(client, "ss -tlnp | grep 8000 || true")

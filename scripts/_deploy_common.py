@@ -100,9 +100,13 @@ def upload_dir(sftp, client, local_dir: Path, remote_dir: str) -> None:
 
 
 def docker_cp_and_restart(client, rel_paths: list[str], restart: bool = True, sleep_s: int = 12) -> None:
+    # После volume ./app и ./ai docker cp пишет в хост (no-op, если файл уже залит).
+    # DNAT — bash, не python3 на VPS (там нет рабочего _deploy_common.ssh).
+    from fix_tunnel_dnat import FIX_SH
+
     files_sh = " ".join(f'"{f}"' for f in rel_paths)
     restart_cmd = f"docker compose restart api\nsleep {sleep_s}\n" if restart else ""
-    tunnel_fix = "python3 scripts/fix_tunnel_dnat.py 2>/dev/null || true\n" if restart else ""
+    tunnel_fix = "bash /tmp/fix_tunnel_dnat.sh\n" if restart else ""
     script = f"""#!/bin/bash
 set -e
 cd {REMOTE}
@@ -113,6 +117,7 @@ done
 echo
 """
     sftp = client.open_sftp()
+    sftp.putfo(io.BytesIO(FIX_SH.encode()), "/tmp/fix_tunnel_dnat.sh")
     sftp.putfo(io.BytesIO(script.encode()), "/tmp/deploy_docker_cp.sh")
     sftp.close()
     run(client, "bash /tmp/deploy_docker_cp.sh 2>&1", timeout=180)

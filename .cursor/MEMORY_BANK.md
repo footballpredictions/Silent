@@ -269,45 +269,34 @@ Occupancy **1 клиент = 1 комната** (TM+WB `max_clients=1`, прод
 
 ### Docker: код в контейнере (Agent ОБЯЗАН помнить)
 
-Образ `backend-api` на VPS **устаревает**. Актуальный Python попадает в контейнер через **`docker cp`** (скрипты `deploy_*.py`), а не через пересборку image при каждом деплое.
+С 2026-08-23 живой Python — **volume с хоста**, как админка: `./app:/app/app:ro`, `./ai:/app/ai:ro`. Recreate `api` больше не откатывает код к старому image.
+
+Канон: `python scripts/deploy_stable.py` (нужен `admin-ui/dist`). Скрипт: SFTP `app/`+`ai/`+UI+compose на хост → `docker compose up -d api --no-deps` (recreate только если compose изменился) → restart api/nginx → bash DNAT → проверка health/Улей/`wdtt active`. `restore_api_container.py` — алиас того же полного деплоя.
 
 | Действие | Можно? | Почему |
 |----------|--------|--------|
-| `python scripts/deploy_stable.py` | ✅ | `docker cp` **всех** `app/**/*.py` + `ai/**/*.py` + restart. Единственный безопасный деплой backend на прод. |
-| `python scripts/deploy_hive.py` / тематические | ⚠️ | Только если скрипт явно копирует все затронутые файлы, включая `models/` |
-| `python scripts/deploy_api.py` | ✅ алиас | С 18.08.2026 вызывает `deploy_stable.py`. Старый FILES-список удалён. |
-| `docker compose restart api` | ✅ | Перезапуск без смены файлов в контейнере |
-| `docker compose up -d` (без recreate) | ⚠️ | Только если менялся **только** `docker-compose.yml` (порты/volumes) — **сразу после** синхронизировать код (см. ниже) |
-| `docker compose up -d api --force-recreate` | ❌ | Сбрасывает контейнер к **старому image** → пропадают Улей (`/api/admin/hive/*` → 404), новый код, иногда `httpx` |
-| Менять `ports:` в compose без `docker cp` | ❌ | То же: новый контейнер = старый image |
+| `python scripts/deploy_stable.py` | ✅ | Единственный деплой backend на прод |
+| `python scripts/deploy_api.py` | ✅ алиас | То же, что `deploy_stable.py` |
+| `python scripts/restore_api_container.py` | ✅ алиас | То же, что `deploy_stable.py` (больше не «только app+ai») |
+| `docker compose restart api` | ✅ | Перезапуск; код на volume |
+| `docker compose up -d api --no-deps` | ⚠️ | Recreate безопасен для Python (volume), но меняет IP контейнера — сразу DNAT. Не трогать `wdtt` |
+| `docker compose up -d api --force-recreate` | ⚠️ | То же: код жив, но нужен DNAT. Не использовать без нужды |
+| Тематические `deploy_*.py` | ❌ для прода-фиксов | Короткий FILES пропускал файлы (инцидент 16.08) |
 
-**Почему после деплоя «опять старый контейнер / чего-то нет» (2026-08-23):**
+**Правило Agent (жёстко):** после правок backend — `cd admin-ui; npm run build` → `python scripts/deploy_stable.py`. Не ручной `docker cp`. Не рестартить `wdtt`. Нет `dist` → скрипт **падает**, не уходить в «обходной» неполный деплой.
 
-Прод — это **не git**. Образ `backend-api` собирался давно. Живой код — слой `docker cp` поверх образа. Хост `/opt/silent-vpn/backend` git часто отстаёт (на 23.08 был `bf693f9`, GitHub уже дальше) — скрипты копируют файлы с Windows, `git pull` на VPS не делают.
+**Пересборка Docker-образа при деплое — нет.** `docker compose build` / `build api` в обычный цикл не входит. Код `app/`+`ai/`+админка — volume с хоста; `deploy_stable.py` этого достаточно.
 
-| Что ломает | Что происходит |
-|------------|----------------|
-| `docker compose up -d api` / recreate | Новый контейнер = **старый image**. Админка без Улья, старый Python. Нужен сразу `restore_api_container.py` |
-| Нет локального `admin-ui/dist` | `deploy_stable.py` падает → агент идёт в `restore`, который **не** копирует админку, nginx, cell-agent volume |
-| `restore` вместо `deploy_stable` | В контейнере только `app/`+`ai/`. UI/nginx/host-скрипты могут остаться старыми |
-| `fix_tunnel_dnat.py` на хосте | Импортирует `_deploy_common` — на VPS модуля нет, DNAT после restore может не поправиться |
-| Тематические `deploy_*.py` | Старый FILES-список пропускал `models/` → 500 |
+Образ пересобирать **только** если менялись слои image, не Python-код:
 
-Правильный путь: `cd admin-ui; npm run build` → `python scripts/deploy_stable.py`. Recreate контейнера — только вместе с `restore` сразу после. `wdtt` не рестартить.
+| Меняли | Деплой |
+|--------|--------|
+| `app/**`, `ai/**`, `admin-ui`, `cell-agent`, `docker-compose.yml` (volumes/ports) | Только `deploy_stable.py` |
+| `requirements.txt`, `docker/Dockerfile.api`, apt/Go/Node в образе | Отдельно: `docker compose build api` на VPS, затем `deploy_stable.py` (подхватит новый image + DNAT). **wdtt не рестартить** |
 
-**Правило Agent (жёстко):** после любых правок backend на прод — `python scripts/deploy_stable.py` (нужен `admin-ui/dist`). `deploy_api.py` — алиас того же полного копирования. Не делать ручной `docker cp` выбранных файлов. Не `compose up api` «чтобы поменять .env» — это recreate из старого образа.
+После recreate скрипт ставит в контейнер `httpx paramiko redis disposable-email-domains` — это не замена `requirements.txt`.
 
-**После любого `docker compose up` / recreate / смены `ports:` на VPS:**
-
-```powershell
-cd backend
-python scripts/restore_api_container.py
-# или полный: python scripts/deploy_stable.py
-```
-
-`restore_api_container.py`: заливает `app/` + `ai/` с рабочей копии → `docker cp` → `pip install httpx paramiko` → `restart api` → `fix_tunnel_dnat`.
-
-**Инцидент 2026-07-02:** `apply_security_phase1.py` сделал `--force-recreate` → админка: Улей 404, пользователи без устройств. Исправлено `restore_api_container.py`. В `apply_security_phase1.py` recreate убран.
+**Инцидент 2026-07-02 / 2026-08-23:** recreate сбрасывал `docker cp` overlay → Улей 404. Закрыто volume `app`/`ai`.
 
 ### Безопасность VPS (production)
 
@@ -598,7 +587,7 @@ cd backend
 | wdtt-server systemd | `python scripts/deploy_wdtt_systemd.py` | Установка/обновление wdtt.service |
 | **Улей (Hive)** | `python scripts/deploy_hive.py` | Hive API, cell-agent, admin-ui «Улей» |
 | cell-agent на соту | `python scripts/deploy_cell_agent.py <ip>` | Ручная установка agent на VPS-соту |
-| **Восстановить код в контейнере** | `python scripts/restore_api_container.py` | После `compose up`/recreate или 404 на `/api/admin/hive/*` |
+| **Восстановить / полный деплой** | `python scripts/restore_api_container.py` | Алиас `deploy_stable.py` |
 | **Hardening VPS (UFW, :8000 localhost)** | `python scripts/apply_security_phase1.py` | Без `--force-recreate`; после — проверить Улей в админке |
 
 **Детали и списки файлов каждого скрипта:** `backend/DEPLOY.md` (не дублировать здесь).
@@ -609,6 +598,8 @@ cd backend
 cd backend\admin-ui; npm run build; cd ..
 python scripts/deploy_stable.py
 ```
+
+`docker compose build` **не** вызывать. Образ пересобирать только при правке `Dockerfile.api` / `requirements.txt`.
 
 `deploy_api.py` — алиас `deploy_stable.py`. Тематические `deploy_vk_calls.py` / `deploy_hive.py` по-прежнему со своими FILES — для прода-фиксов не использовать. Инцидент 2026-08-16 — сломанный вход из‑за неполного FILES.
 
@@ -900,10 +891,19 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-23 — Закрыта дыра деплоя: app/ai как volume
+
+- `docker-compose.yml`: `./app:/app/app:ro`, `./ai:/app/ai:ro`. Recreate api больше не откатывает Python к старому image.
+- `deploy_stable.py`: SFTP на хост → `up -d api --no-deps` → restart → bash DNAT → health/Улей/`wdtt active`. Без `docker cp` overlay.
+- `restore_api_container.py` = алиас полного `deploy_stable` (больше не урезанный restore).
+- DNAT на VPS только bash `/tmp/fix_tunnel_dnat.sh`, не `python3 scripts/fix_tunnel_dnat.py`.
+- **Прод 2026-08-23:** recreate `backend-api-1` с новыми volume. Mounts `/app/app`+`/app/ai` = 2. Health 200, tunnel `10.66.66.1:8000` OK, hive/cells 401 (не 404), **wdtt active**. DNAT на `172.18.0.4:8000`.
+
 ### 2026-08-23 — Релиз клиентов после оплаты/слотов + почему деплой «теряет» код
 
-- Android: пользователь подтвердил — работает. Release `assembleRelease` с bootstrap `vP_C4iBk9QZEetqR0a_MqiPJkeOyBEV1B_G6uViHuVU` → `android/SilentVPN-release-1.0.162.apk`.
-- PC: слот пишется локально до API (как Android); YuMoney всегда через payment-bootstrap. Installer `build-installer.bat`.
+- Android: пользователь подтвердил — работает. Release с bootstrap `vP_C4iBk9QZEetqR0a_MqiPJkeOyBEV1B_G6uViHuVU` → `android/SilentVPN-release-1.0.162.apk` (~26 МБ). Push `b3fc163`.
+- PC: слот пишется локально до API; YuMoney всегда через payment-bootstrap. Installer `pc/build-release-v141-804679/Silent VPN Setup 1.0.162.exe` (~79 МБ). Push `a0bfb56`.
+- Backend pin: `main` `9268aa4`. OTA на прод не заливали.
 - Корень «после деплоя снова старое»: образ `backend-api` старый, живой код — overlay `docker cp`. `compose up`/recreate сбрасывает overlay к image. Нет `admin-ui/dist` → `deploy_stable.py` падает → агент идёт в `restore` (только `app/`+`ai/`). Хост git на VPS отстаёт — смотреть контейнер, не `git log` на сервере.
 - Канон без обходов: `cd admin-ui; npm run build` → `python scripts/deploy_stable.py`. Не recreate api, не рестарт `wdtt`.
 

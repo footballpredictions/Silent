@@ -891,8 +891,12 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-23 — Релиз 1.0.162: YuMoney ждёт tunnel API
+
 - Первый клик тарифа: иконка VPN уже есть, но TCP на `10.66.66.1:8000` ещё с LTE (`from /100.x`) → 12 с timeout, bootstrap гасился. Ждём health по туннелю, retry без гашения, сырой socket в UI не показываем.
-- Push + release 1.0.162: bootstrap `vP_C4iBk9QZEetqR0a_MqiPJkeOyBEV1B_G6uViHuVU`. APK `android/SilentVPN-release-1.0.162.apk`, PC installer `build-release-v141-*`. OTA не заливали.
+- Push: android `4038cad`, pc `cf364b6`, main `98372ad`.
+- Release 1.0.162, bootstrap `vP_C4iBk9QZEetqR0a_MqiPJkeOyBEV1B_G6uViHuVU`.
+- APK: `android/SilentVPN-release-1.0.162.apk` (~26 МБ). PC: `pc/releases/Silent VPN Setup 1.0.162.exe` (~79 МБ). OTA на прод не заливали.
 
 ### 2026-08-23 — Оплата: не рвать рабочий VPN (откат к 19–21)
 

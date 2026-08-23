@@ -140,6 +140,12 @@ android {
             // rewrites the ELF even when size is unchanged → runtime hash mismatch and
             // «VPN-модуль изменён или повреждён». Keep symbols so packaged == pinned.
             keepDebugSymbols += listOf("**/libclient.so")
+            // olcrtc снят: мёртвые .so (~190 МБ) ломали OTA на TV («приложение не установлено»).
+            excludes += setOf(
+                "**/libolcrtc.so",
+                "**/libolcrtc2.so",
+                "**/libhev-socks5-tunnel.so",
+            )
         }
     }
     sourceSets {

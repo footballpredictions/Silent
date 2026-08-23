@@ -618,7 +618,7 @@ class MainViewModel @Inject constructor(
      */
     private suspend fun ensureVpnConfigRestored(context: Context): Boolean {
         val cached = loadCachedVpnConfig()
-        if (cached != null && isConfigConnectable(cached)) {
+        if (cached != null && isConfigConnectable(cached) && cachedConfigMatchesPreferred(cached)) {
             repo.mergeSavedHashesIntoCachedConfig()
             return true
         }
@@ -648,7 +648,8 @@ class MainViewModel @Inject constructor(
                 if (WdttTunnelManager.tunnelReady.value) {
                     withBootstrapBackendApi { applyRefreshVpnConfigDirect(fp) }
                     val restored = loadCachedVpnConfig()
-                    return restored != null && isConfigConnectable(restored)
+                    return restored != null && isConfigConnectable(restored) &&
+                        cachedConfigMatchesPreferred(restored)
                 }
             }
             return false
@@ -1704,7 +1705,7 @@ class MainViewModel @Inject constructor(
                     }
                     if (regRes.isSuccessful) {
                         val candidate = regRes.body()!!
-                        if (isConfigConnectable(candidate)) {
+                        if (isConfigConnectable(candidate) && cachedConfigMatchesPreferred(candidate)) {
                             repo.setVpnAccessDenied(false)
                             vpnConfig = candidate
                             repo.saveSessionDeviceId(candidate.device_id)
@@ -1727,7 +1728,7 @@ class MainViewModel @Inject constructor(
                         val cfgRes = repo.getApi().getConfig(fp, repo.getPreferredServer())
                         if (cfgRes.isSuccessful) {
                             val candidate = cfgRes.body()!!
-                            if (isConfigConnectable(candidate)) {
+                            if (isConfigConnectable(candidate) && cachedConfigMatchesPreferred(candidate)) {
                                 repo.setVpnAccessDenied(false)
                                 vpnConfig = candidate
                                 repo.cacheVpnConfig(Gson().toJson(candidate))
@@ -1771,24 +1772,25 @@ class MainViewModel @Inject constructor(
                     apiError = subscriptionRequiredMessage()
                 } else {
                     val cached = loadCachedVpnConfig()
-                    // Свежий DTLS-ответ: любой слот (Улей / Сота N), не только preferred из старого кеша.
-                    vpnConfig = cached?.takeIf { isConfigConnectable(it) }
+                    vpnConfig = cached?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
                     if (vpnConfig != null) {
                         repo.setVpnAccessDenied(false)
                         repo.mergeSavedHashesIntoCachedConfig()
-                        vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
+                        vpnConfig = loadCachedVpnConfig()?.takeIf {
+                            isConfigConnectable(it) && cachedConfigMatchesPreferred(it)
+                        }
                     }
                 }
             }
         }
 
-        // /me уже сказал «оплачено», а public /config на LTE закрыт: не выкидывать живой WG-кеш.
+        // /me уже сказал «оплачено», а public /config на LTE закрыт: не выкидывать WG-кеш другого слота.
         if (vpnConfig == null && !accessDenied && hasVpnAccess()) {
-            vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
+            vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
         }
         if (vpnConfig == null && !accessDenied && hasVpnAccess() && repo.hasMainVpnServerHashes()) {
             ensureVpnConfigRestored(context)
-            vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
+            vpnConfig = loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
         }
 
         if (vpnConfig != null) {
@@ -1912,7 +1914,7 @@ class MainViewModel @Inject constructor(
 
     private fun connectableCachedConfig(): VpnConfig? =
         warmConnectFetch()?.vpnConfig
-            ?: loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
+            ?: loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
 
     /** Тумблер не делает свой bootstrap: дожидается стартовый prefetch, чтобы был WG-кеш под GETCONF. */
     private suspend fun awaitStartPrefetchForToggleCache(context: Context) {
@@ -3763,13 +3765,41 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Тумблер: main VPN из кеша, без второго bootstrap и без GETCONF-сверки.
-                // Подписка на LTE — только стартовый bootstrap; пока сессия жива — режет сервер.
-                val vpnConfig = connectableCachedConfig()
+                // Тумблер: main VPN из кеша текущего слота. Смена сервера — свежий /config, не старый IP.
+                var vpnConfig = connectableCachedConfig()
                 awaitingGetconfAccess = false
                 pendingGetconfProfile = null
 
-                if (vpnConfig == null) {
+                if (vpnConfig == null && hasVpnAccess()) {
+                    DebugLog.i(
+                        "MainViewModel",
+                        "connect: cache miss/slot=${repo.getPreferredServer()} — fetch /config",
+                    )
+                    val fetch = fetchVpnConfigForConnect(
+                        context,
+                        fp,
+                        allowEphemeral = true,
+                        forLaunch = false,
+                    )
+                    if (fetch.accessDenied) {
+                        awaitingGetconfAccess = false
+                        _subscriptionProbeActive.value = false
+                        pendingGetconfProfile = null
+                        _vpnError.value = fetch.apiError ?: subscriptionRequiredMessage()
+                        _vpnState.value = VpnState.DISCONNECTED
+                        return@launch
+                    }
+                    val fetched = fetch.vpnConfig?.takeIf {
+                        isConfigConnectable(it) && cachedConfigMatchesPreferred(it)
+                    }
+                    if (fetched != null) {
+                        rememberPrefetch(fetch)
+                        vpnConfig = fetched
+                    }
+                }
+
+                val readyConfig = vpnConfig
+                if (readyConfig == null) {
                     DebugLog.e("MainViewModel", "connect: no WG cache (toggle does not bootstrap)")
                     awaitingGetconfAccess = false
                     _subscriptionProbeActive.value = false
@@ -3783,22 +3813,22 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
-                if (!isConfigConnectable(vpnConfig)) {
+                if (!isConfigConnectable(readyConfig)) {
                     awaitingGetconfAccess = false
                     _subscriptionProbeActive.value = false
                     pendingGetconfProfile = null
                     _vpnError.value = when {
-                        !repo.hasMainVpnServerHashes() && repo.resolveConnectVkHashes(vpnConfig.vk_hashes).isEmpty() ->
+                        !repo.hasMainVpnServerHashes() && repo.resolveConnectVkHashes(readyConfig.vk_hashes).isEmpty() ->
                             "Нет серверных хешей. Перезайдите в аккаунт."
-                        vpnConfig.vk_hashes.isEmpty() -> "Нет VK-хеша. Введите хеш на экране входа."
-                        !hasValidWgAddress(vpnConfig.wg_address) -> "Некорректный WireGuard-адрес от сервера. Обновите профиль и повторите."
+                        readyConfig.vk_hashes.isEmpty() -> "Нет VK-хеша. Введите хеш на экране входа."
+                        !hasValidWgAddress(readyConfig.wg_address) -> "Некорректный WireGuard-адрес от сервера. Обновите профиль и повторите."
                         else -> "Нет ключей WireGuard на сервере. Перезайдите в аккаунт."
                     }
                     _vpnState.value = VpnState.DISCONNECTED
                     return@launch
                 }
 
-                val toConnect = wdttConnectConfig(resolveMainVpnConfig(vpnConfig))
+                val toConnect = wdttConnectConfig(resolveMainVpnConfig(readyConfig))
                 DebugLog.i(
                     "MainViewModel",
                     "connect cache slot=${repo.getPreferredServer()} selected=${toConnect.selected_server} ip=${toConnect.server_ip} n=${toConnect.stream_count}",

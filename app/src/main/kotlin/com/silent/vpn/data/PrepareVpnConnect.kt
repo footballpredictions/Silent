@@ -49,7 +49,7 @@ suspend fun SilentRepository.prepareVpnConnectConfig(
     }
 
     runCatching {
-        val cfg = getApi().getConfig(fingerprint)
+        val cfg = getApi().getConfig(fingerprint, getPreferredServer())
         if (cfg.isSuccessful) {
             val fresh = cfg.body()!!
             val freshServer = fresh.vk_hashes

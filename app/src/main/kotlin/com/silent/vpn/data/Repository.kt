@@ -1444,7 +1444,12 @@ class SilentRepository @Inject constructor(
         normalizePreferredServer(prefs.getString(PREF_PREFERRED_SERVER, SERVER_MAIN))
 
     fun setPreferredServer(server: String) {
-        prefs.edit().putString(PREF_PREFERRED_SERVER, normalizePreferredServer(server)).apply()
+        val next = normalizePreferredServer(server)
+        val prev = getPreferredServer()
+        prefs.edit().putString(PREF_PREFERRED_SERVER, next).apply()
+        if (prev != next) {
+            clearCachedVpnConfig()
+        }
     }
 
     suspend fun fetchVpnServers(): VpnServersResponse {
@@ -1470,6 +1475,7 @@ class SilentRepository @Inject constructor(
         }
         val body = res.body() ?: VpnServersResponse(key, emptyList())
         setPreferredServer(key)
+        clearCachedVpnConfig()
         return body
     }
 

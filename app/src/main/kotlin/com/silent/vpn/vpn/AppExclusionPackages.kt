@@ -91,6 +91,7 @@ data class AppTunnelPolicy(
  */
 fun resolveAppTunnelPolicy(context: Context, includeAppInTunnel: Boolean = false): AppTunnelPolicy {
     val prefs = SilentPrefs.open(context)
+    val whitelistMode = prefs.getBoolean(SilentRepository.PREF_EXCLUSIONS_WHITELIST, false)
     val userSelected = prefs.getString(SilentRepository.PREF_EXCLUDED_APPS, "")
         ?.split(",")
         ?.filter { it.isNotBlank() }
@@ -102,12 +103,30 @@ fun resolveAppTunnelPolicy(context: Context, includeAppInTunnel: Boolean = false
     // чтобы пользовательские режимы БС не выводили приложения из VPN-туннеля.
     // Это устраняет сценарий "VPN подключен, но сайты/приложения не грузятся на LTE".
 
+    // Legacy-heal: если в prefs остался БС-режим, его список трактовался как ЧС и
+    // выборочно "выбрасывал" приложения из VPN (симптом: Telegram работает, YouTube нет).
+    // Для стабильности main VPN принудительно держим ЧС-модель и сбрасываем БС-хвост.
+    val effectiveSelected = if (whitelistMode) {
+        if (userSelected.isNotEmpty()) {
+            DebugLog.w("AppExclusions", "legacy whitelist detected (${userSelected.size}) -> reset to blacklist")
+        } else {
+            DebugLog.w("AppExclusions", "legacy whitelist flag detected -> reset to blacklist")
+        }
+        prefs.edit()
+            .putBoolean(SilentRepository.PREF_EXCLUSIONS_WHITELIST, false)
+            .putString(SilentRepository.PREF_EXCLUDED_APPS, "")
+            .apply()
+        emptySet()
+    } else {
+        userSelected
+    }
+
     val excluded = LinkedHashSet<String>()
     if (!includeAppInTunnel) {
         excluded.add(context.packageName)
     }
     excluded.addAll(VK_TUNNEL_PACKAGES)
-    excluded.addAll(userSelected)
+    excluded.addAll(effectiveSelected)
     val filtered = excluded.filter { isPackageInstalled(pm, it) }.toSet()
     DebugLog.i("AppExclusions", "ЧС excludeApplications: ${filtered.size}")
     return AppTunnelPolicy(whitelist = false, packages = filtered)

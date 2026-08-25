@@ -18,6 +18,11 @@
     <uses-feature android:name="android.hardware.faketouch" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.type.television" android:required="false" />
+    <!-- ACCESS_WIFI_STATE не должен делать Wi‑Fi железо обязательным для TV/приставок с Ethernet -->
+    <uses-feature android:name="android.hardware.wifi" android:required="false" />
+    <!-- Credential Manager тянет biometric/fingerprint permissions; на TV это не must-have -->
+    <uses-feature android:name="android.hardware.fingerprint" android:required="false" />
+    <uses-feature android:name="android.hardware.biometrics" android:required="false" />
 
     <queries>
         <package android:name="com.vkontakte.android" />

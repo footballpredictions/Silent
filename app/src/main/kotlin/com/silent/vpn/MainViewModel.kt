@@ -1980,17 +1980,20 @@ class MainViewModel @Inject constructor(
         warmConnectFetch()?.vpnConfig
             ?: loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) && cachedConfigMatchesPreferred(it) }
 
-    /** Тумблер не делает свой bootstrap: дожидается стартовый prefetch, чтобы был WG-кеш под GETCONF. */
-    private suspend fun awaitStartPrefetchForToggleCache(context: Context) {
+    /** Тумблер как в 1.0.160: берём любой валидный main-WG кеш, без доп. fetch/overlay. */
+    private fun connectableCachedConfigForToggle(): VpnConfig? =
+        loadCachedVpnConfig()?.takeIf { isConfigConnectable(it) }
+
+    /**
+     * Тумблер не запускает новый bootstrap/overlay.
+     * Если стартовый prefetch ещё идёт — даём ему коротко завершиться, затем берём только готовый кеш.
+     */
+    private suspend fun awaitStartPrefetchForToggleCache() {
         val job = launchPrefetchJob
-        // Всегда дождаться teardown splash-bootstrap — иначе первый connect гонится со stop VPN.
         if (job != null && job.isActive) {
-            DebugLog.i("MainViewModel", "toggle: wait launch prefetch finish")
-            withTimeoutOrNull(12_000L) { job.join() }
+            DebugLog.i("MainViewModel", "toggle: wait launch prefetch finish (short)")
+            withTimeoutOrNull(2_500L) { job.join() }
         }
-        if (connectableCachedConfig() != null) return
-        DebugLog.i("MainViewModel", "toggle: no WG cache yet — finish start prefetch")
-        prefetchConnectConfigAtLaunch(context)
     }
 
     /** Public /users/me на старте — живой ответ включает и выключает UI. Сеть недоступна — не трогаем кеш. */
@@ -3509,7 +3512,7 @@ class MainViewModel @Inject constructor(
         connectJob = viewModelScope.launch {
             DebugLog.i("MainViewModel", "connect() start")
             if (!repo.isOlcrtcBypass()) {
-                awaitStartPrefetchForToggleCache(context)
+                awaitStartPrefetchForToggleCache()
             }
             if (stopPaymentFirst) {
                 waitVpnServiceDown()
@@ -3530,9 +3533,6 @@ class MainViewModel @Inject constructor(
                 runCatching {
                     if (!shouldDeferProfileUntilSync()) {
                         restoreCachedProfileToUi()
-                    }
-                    if (hasVpnAccess()) {
-                        repo.applyCachedClientSync()
                     }
                 // Профиль не блокирует старт VPN (как 1.0.160) — иначе 6–10 оборотов змейки.
                 val subCached = _profile.value?.subscription?.is_active
@@ -3829,38 +3829,11 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Тумблер: main VPN из кеша текущего слота. Смена сервера — свежий /config, не старый IP.
-                var vpnConfig = connectableCachedConfig()
+                // Тумблер: как в 1.0.160 — старт из локального main-WG кеша без дозагрузок.
+                // Сервер/слот обновляются на старте приложения и при входе, не в момент нажатия.
+                var vpnConfig = connectableCachedConfigForToggle()
                 awaitingGetconfAccess = false
                 pendingGetconfProfile = null
-
-                if (vpnConfig == null && hasVpnAccess()) {
-                    DebugLog.i(
-                        "MainViewModel",
-                        "connect: cache miss/slot=${repo.getPreferredServer()} — fetch /config",
-                    )
-                    val fetch = fetchVpnConfigForConnect(
-                        context,
-                        fp,
-                        allowEphemeral = true,
-                        forLaunch = false,
-                    )
-                    if (fetch.accessDenied) {
-                        awaitingGetconfAccess = false
-                        _subscriptionProbeActive.value = false
-                        pendingGetconfProfile = null
-                        _vpnError.value = fetch.apiError ?: subscriptionRequiredMessage()
-                        _vpnState.value = VpnState.DISCONNECTED
-                        return@launch
-                    }
-                    val fetched = fetch.vpnConfig?.takeIf {
-                        isConfigConnectable(it) && cachedConfigMatchesPreferred(it)
-                    }
-                    if (fetched != null) {
-                        rememberPrefetch(fetch)
-                        vpnConfig = fetched
-                    }
-                }
 
                 val readyConfig = vpnConfig
                 if (readyConfig == null) {

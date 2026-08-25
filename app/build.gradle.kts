@@ -4,6 +4,7 @@ import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.cert.X509Certificate
 import java.util.Properties
+import java.util.zip.ZipFile
 
 plugins {
     alias(libs.plugins.android.application)
@@ -61,6 +62,8 @@ val libclientShaArm32 = sha256FileHex(file("src/main/jniLibs/armeabi-v7a/libclie
 val libclientShaX64 = sha256FileHex(file("src/main/jniLibs/x86_64/libclient.so"))
 val libclientShaX86 = sha256FileHex(file("src/main/jniLibs/x86/libclient.so"))
 val releaseCertSha = releaseCertSha256Hex()
+val releaseAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+val forbiddenReleaseLibs = setOf("libolcrtc.so", "libolcrtc2.so", "libhev-socks5-tunnel.so")
 
 android {
     namespace = "com.silent.vpn"
@@ -231,5 +234,59 @@ gradle.taskGraph.whenReady {
                 """.trimIndent(),
             )
         }
+        val missingLibclientAbis = releaseAbis.filter { abi ->
+            !file("src/main/jniLibs/$abi/libclient.so").isFile
+        }
+        if (missingLibclientAbis.isNotEmpty()) {
+            throw GradleException(
+                """
+                Release-сборка Android: отсутствует libclient.so для ABI: ${missingLibclientAbis.joinToString(", ")}.
+                Нельзя выпускать OTA без полного набора ABI (arm64/armv7/x86/x86_64), иначе часть TV/приставок не установит APK.
+                Пересоберите native: app\build_android_go.bat
+                """.trimIndent(),
+            )
+        }
     }
+}
+
+tasks.register("verifyReleaseApkNativeLayout") {
+    group = "verification"
+    description = "Проверяет ABI и forbidden .so в app-release.apk"
+    doLast {
+        val apk = file("$buildDir/outputs/apk/release/app-release.apk")
+        if (!apk.isFile) {
+            throw GradleException("Не найден APK для проверки: ${apk.path}")
+        }
+        val nativeEntries = mutableSetOf<String>()
+        ZipFile(apk).use { zip ->
+            val en = zip.entries()
+            while (en.hasMoreElements()) {
+                val name = en.nextElement().name
+                if (name.startsWith("lib/") && name.endsWith(".so")) {
+                    nativeEntries += name
+                }
+            }
+        }
+        val missingLibclientInApk = releaseAbis.filter { abi ->
+            "lib/$abi/libclient.so" !in nativeEntries
+        }
+        if (missingLibclientInApk.isNotEmpty()) {
+            throw GradleException(
+                "APK не содержит libclient.so для ABI: ${missingLibclientInApk.joinToString(", ")}",
+            )
+        }
+        val forbiddenInApk = nativeEntries.filter { entry ->
+            forbiddenReleaseLibs.any { lib -> entry.endsWith("/$lib") }
+        }
+        if (forbiddenInApk.isNotEmpty()) {
+            throw GradleException(
+                "В release APK попали запрещённые legacy libs: ${forbiddenInApk.joinToString(", ")}",
+            )
+        }
+        println("verifyReleaseApkNativeLayout: OK (${nativeEntries.size} native libs)")
+    }
+}
+
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    finalizedBy("verifyReleaseApkNativeLayout")
 }

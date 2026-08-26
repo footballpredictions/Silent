@@ -90,6 +90,10 @@ android {
                 storePassword = keystoreProperties.getProperty("storePassword")
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
+                // Максимальная совместимость sideload на TV/приставках.
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
             }
         }
     }
@@ -253,7 +257,12 @@ tasks.register("verifyReleaseApkNativeLayout") {
     group = "verification"
     description = "Проверяет ABI и forbidden .so в app-release.apk"
     doLast {
-        val apk = file("$buildDir/outputs/apk/release/app-release.apk")
+        val releaseDir = file("$buildDir/outputs/apk/release")
+        val apk = releaseDir
+            .listFiles()
+            ?.filter { it.isFile && it.extension.equals("apk", ignoreCase = true) }
+            ?.maxByOrNull { it.lastModified() }
+            ?: throw GradleException("Не найден release APK в: ${releaseDir.path}")
         if (!apk.isFile) {
             throw GradleException("Не найден APK для проверки: ${apk.path}")
         }

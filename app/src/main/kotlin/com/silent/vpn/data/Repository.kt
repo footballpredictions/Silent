@@ -1303,6 +1303,25 @@ class SilentRepository @Inject constructor(
         prefs.edit().remove(PREF_CACHED_CONFIG).remove(PREF_CACHED_CONFIG_TS).apply()
     }
 
+    private fun cachedConfigSlotPref(slot: String): String =
+        "${PREF_CACHED_CONFIG}_${normalizePreferredServer(slot)}"
+
+    fun cacheVpnConfigForSlot(slot: String, json: String) {
+        val key = cachedConfigSlotPref(slot)
+        prefs.edit().putString(key, json).apply()
+    }
+
+    fun getCachedVpnConfigForSlot(slot: String): String? =
+        prefs.getString(cachedConfigSlotPref(slot), null)?.takeIf { it.isNotBlank() }
+
+    private fun persistVpnConfigBySlot(json: String) {
+        val cfg = runCatching { Gson().fromJson(json, VpnConfig::class.java) }.getOrNull() ?: return
+        val fromSelected = slotFromSelectedServer(cfg.selected_server)
+        val fromIp = BAKED_SERVER_IPS.keys.firstOrNull { vpnConfigIpMatchesPreferred(cfg.server_ip, it) }
+        val slot = fromSelected ?: fromIp ?: return
+        cacheVpnConfigForSlot(slot, json)
+    }
+
     fun getExcludedPackages(): Set<String> =
         prefs.getString(PREF_EXCLUDED_APPS, "")?.split(",")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
 
@@ -1471,7 +1490,15 @@ class SilentRepository @Inject constructor(
     fun setPreferredServer(server: String) {
         val next = normalizePreferredServer(server)
         prefs.edit().putString(PREF_PREFERRED_SERVER, next).commit()
-        clearCachedVpnConfig()
+        val slotJson = getCachedVpnConfigForSlot(next)
+        if (!slotJson.isNullOrBlank()) {
+            prefs.edit()
+                .putString(PREF_CACHED_CONFIG, slotJson)
+                .putLong(PREF_CACHED_CONFIG_TS, System.currentTimeMillis())
+                .commit()
+        } else {
+            clearCachedVpnConfig()
+        }
     }
 
     fun rememberVpnServerIps(servers: List<VpnServerInfo>) {
@@ -3228,6 +3255,7 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
             .putString(PREF_CACHED_CONFIG, json)
             .putLong(PREF_CACHED_CONFIG_TS, System.currentTimeMillis())
             .apply()
+        persistVpnConfigBySlot(json)
         runCatching {
             // Не тащить profile из WG-кеша: после оплаты там ещё «нет», а /me уже «да».
             Gson().fromJson(json, VpnConfig::class.java)?.client_sync?.let {

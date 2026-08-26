@@ -49,6 +49,8 @@ object WdttTunnelManager {
     /** GETCONF в libclient ждёт ответ до 15 с — кеш раньше даёт устаревший WG и 0 трафика. */
     private const val MAIN_WG_CACHE_FALLBACK_MS = 22_000L
     private const val MAIN_WG_CACHE_FALLBACK_AFTER_ERR_MS = 28_000L
+    /** После первого старта не дёргаем фоновый site-bypass reapply (иначе OFF/ON иконки). */
+    private const val SITE_BYPASS_REAPPLY_GRACE_MS = 60_000L
     /** QS-плитка: libclient уже слушает :9000, WG можно поднять до ramp-up воркеров. */
     private const val TILE_WG_CACHE_FALLBACK_MS = 3_000L
     private const val TILE_WG_CACHE_FALLBACK_AFTER_ERR_MS = 5_000L
@@ -321,6 +323,11 @@ object WdttTunnelManager {
     private fun reapplyMainTunnelForSiteBypass() {
         if (!tunnelReady.value || isBootstrapMode || apiOverlayActive) return
         if (WireGuardHelper.isWgTransitionActive()) return
+        val sinceWgApply = System.currentTimeMillis() - lastWgApplyAtMs
+        if (lastWgApplyAtMs > 0L && sinceWgApply < SITE_BYPASS_REAPPLY_GRACE_MS) {
+            DebugLog.i(TAG, "site bypass reapply deferred: settle ${sinceWgApply}ms")
+            return
+        }
         val config = lastWgConfig ?: return
         val ctx = lastContext ?: return
         scope.launch {
@@ -824,6 +831,38 @@ object WdttTunnelManager {
             val force = tunnelReady.value && wgSourceRank(applySource) > wgSourceRank(appliedWgConfigSource)
             applyWireGuard(conf, applySource, forceReapply = force)
         }
+    }
+
+    /**
+     * Первый старт после смены сервера идёт из API cache.
+     * Когда чуть позже приходит GETCONF с тем же WG-содержимым, повторный startTunnel
+     * даёт видимое "иконка VPN пропала/появилась". В этом случае просто подтверждаем
+     * источник GETCONF без второго re-apply.
+     */
+    private fun isEquivalentMainWgConfig(oldConf: String?, newConf: String): Boolean {
+        val old = oldConf?.trim().orEmpty()
+        if (old.isBlank()) return false
+        fun pick(conf: String, key: String): String? =
+            conf.lineSequence()
+                .map { it.substringBefore("#").trim() }
+                .firstOrNull { it.startsWith("$key =", ignoreCase = true) }
+                ?.substringAfter("=")
+                ?.trim()
+                ?.lowercase()
+        fun digest(conf: String): String {
+            val parts = listOf(
+                pick(conf, "Address"),
+                pick(conf, "PrivateKey"),
+                pick(conf, "DNS"),
+                pick(conf, "PublicKey"),
+                pick(conf, "Endpoint"),
+                pick(conf, "AllowedIPs"),
+            )
+            return parts.joinToString("|") { it.orEmpty() }
+        }
+        val oldDigest = digest(old)
+        val newDigest = digest(newConf)
+        return oldDigest.isNotBlank() && oldDigest == newDigest
     }
 
     /** Пока WG не поднят или висит устаревший кеш — опрашиваем GETCONF после появления воркеров. */
@@ -1351,6 +1390,18 @@ object WdttTunnelManager {
                 val upgradeNow = wgSourceRank(source) > wgSourceRank(appliedWgConfigSource)
                 if (!forceReapply && !upgradeNow && tunnelReady.value) return@withLock
                 if (!forceReapply && normalized == lastWgConfig && tunnelReady.value && source == appliedWgConfigSource) {
+                    return@withLock
+                }
+                if (
+                    source == WgConfigSource.GETCONF &&
+                    tunnelReady.value &&
+                    appliedWgConfigSource == WgConfigSource.API_CACHE &&
+                    isEquivalentMainWgConfig(lastWgConfig, normalized)
+                ) {
+                    appliedWgConfigSource = WgConfigSource.GETCONF
+                    liveGetconfApplied.value = true
+                    wgConfigPending = false
+                    updateLog("wg_getconf_confirm", "GETCONF подтверждён без re-apply", 2)
                     return@withLock
                 }
                 lastWgConfig = normalized

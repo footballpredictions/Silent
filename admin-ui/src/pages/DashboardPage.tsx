@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Cpu, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight, Activity } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
@@ -349,10 +349,11 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
   const [netHistory, setNetHistory] = useState<HistoryPoint[]>([])
   const [loading, setLoading] = useState(false)
 
-  const fetchStats = async () => {
-    setLoading(true)
+  const fetchStats = useCallback(async (mode: 'full' | 'light' = 'full') => {
+    if (mode === 'full') setLoading(true)
     try {
-      const res = await fetch('/api/admin/stats', {
+      const qs = mode === 'light' ? '?light=1' : ''
+      const res = await fetch(`/api/admin/stats${qs}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (res.status === 401) {
@@ -365,7 +366,12 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       }
       const data: Stats = await res.json()
       if (!data?.system) return
-      setStats(data)
+      setStats(prev => {
+        if (mode === 'light' && prev) {
+          return { ...prev, system: data.system, users: data.users }
+        }
+        return data
+      })
       const t = new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       setCpuHistory(prev => [...prev.slice(-19), { t, v: data.system.cpu_percent }])
       setNetHistory(prev => [
@@ -375,15 +381,15 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
     } catch (e) {
       console.error(e)
     } finally {
-      setLoading(false)
+      if (mode === 'full') setLoading(false)
     }
-  }
+  }, [token, onUnauthorized])
 
   useEffect(() => {
-    fetchStats()
-    const interval = setInterval(fetchStats, 5000)
+    fetchStats('full')
+    const interval = setInterval(() => fetchStats('light'), 5000)
     return () => clearInterval(interval)
-  }, [])
+  }, [fetchStats])
 
   if (!stats) {
     return (
@@ -399,7 +405,7 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Дашборд</h1>
         <button
-          onClick={fetchStats}
+          onClick={() => fetchStats('full')}
           disabled={loading}
           className="flex items-center gap-2 text-xs text-[#666] hover:text-white transition-colors"
         >

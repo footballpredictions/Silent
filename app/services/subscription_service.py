@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text, func, or_
 
 from app.models import User, Subscription, Device
 from app.config import settings
@@ -327,66 +327,87 @@ async def clear_test_mode_exclusions(db: AsyncSession) -> int:
 
 async def clear_legacy_global_test_flags(db: AsyncSession) -> int:
     """When global test turns off: drop legacy is_test_user mass-sync; keep test_mode_personal only."""
-    result = await db.execute(select(User))
-    cleared = 0
-    for user in result.scalars().all():
-        if is_user_admin(user):
-            continue
-        changed = False
-        if user.is_test_user and not getattr(user, "test_mode_personal", False):
-            user.is_test_user = False
-            changed = True
-        if changed:
-            cleared += 1
+    result = await db.execute(
+        text(
+            """
+            UPDATE users
+            SET is_test_user = false
+            WHERE is_test_user = true
+              AND COALESCE(test_mode_personal, false) = false
+              AND lower(email) <> :admin_email
+            """
+        ),
+        {"admin_email": settings.ADMIN_LOGIN.lower()},
+    )
+    cleared = result.rowcount or 0
     if cleared:
         await db.commit()
     return cleared
 
 
 async def cleanup_global_test_subscriptions(db: AsyncSession) -> int:
-    """When global test mode turns off, cancel test subs for users without individual flag."""
+    """When global test mode turns off: drop overlay test plans and restore paid/trial.
+
+    Must stay set-based: a Python loop over all users holds a pool connection long
+    enough to starve admin login and client VPN (QueuePool TimeoutError).
+    """
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
 
-    affected = 0
-    result = await db.execute(select(User))
-    for user in result.scalars().all():
-        if is_user_admin(user) or user.email == BOOTSTRAP_USER_EMAIL or is_test_user(user):
-            continue
-        active_result = await db.execute(
-            select(Subscription).where(
-                Subscription.user_id == user.id,
-                Subscription.status == "active",
-                Subscription.plan_type == TEST_PLAN,
+    cancelled = await db.execute(
+        text(
+            """
+            UPDATE subscriptions s
+            SET status = 'cancelled'
+            FROM users u
+            WHERE s.user_id = u.id
+              AND s.status = 'active'
+              AND s.plan_type = :test_plan
+              AND COALESCE(u.test_mode_personal, false) = false
+              AND lower(u.email) <> :admin_email
+              AND u.email <> :bootstrap
+            """
+        ),
+        {
+            "test_plan": TEST_PLAN,
+            "admin_email": settings.ADMIN_LOGIN.lower(),
+            "bootstrap": BOOTSTRAP_USER_EMAIL,
+        },
+    )
+    await db.execute(
+        text(
+            """
+            UPDATE subscriptions s
+            SET status = 'active'
+            WHERE s.id IN (
+              SELECT DISTINCT ON (c.user_id) c.id
+              FROM subscriptions c
+              WHERE c.status = 'cancelled'
+                AND c.plan_type <> :test_plan
+                AND c.expires_at > (now() AT TIME ZONE 'utc')
+                AND NOT EXISTS (
+                  SELECT 1 FROM subscriptions a
+                  WHERE a.user_id = c.user_id
+                    AND a.status = 'active'
+                    AND a.plan_type <> :test_plan
+                    AND a.expires_at > (now() AT TIME ZONE 'utc')
+                )
+              ORDER BY c.user_id, c.expires_at DESC
             )
-        )
-        for sub in active_result.scalars().all():
-            if sub.is_active:
-                sub.status = "cancelled"
-                affected += 1
+            """
+        ),
+        {"test_plan": TEST_PLAN},
+    )
     await db.commit()
-    return affected
+    return cancelled.rowcount or 0
 
 
 async def reconcile_stale_test_subscriptions(db: AsyncSession) -> int:
-    """Cancel test subs left in DB for users no longer in test mode."""
+    """Cancel leftover test plans when global test is off; restore paid/trial."""
     from app.services.test_mode_settings import is_registration_test_mode_enabled
 
-    global_test = await is_registration_test_mode_enabled(db)
-    fixed = 0
-    result = await db.execute(select(User))
-    for user in result.scalars().all():
-        if is_user_admin(user):
-            continue
-        in_test = is_test_user(user) or (global_test and not is_test_mode_excluded(user))
-        if in_test:
-            continue
-        cancelled = await _cancel_active_test_subscriptions(db, user)
-        if cancelled:
-            await _restore_previous_subscription(db, user)
-            fixed += cancelled
-    if fixed:
-        await db.commit()
-    return fixed
+    if await is_registration_test_mode_enabled(db):
+        return 0
+    return await cleanup_global_test_subscriptions(db)
 
 
 async def apply_post_verification_benefits(db: AsyncSession, user: User) -> Subscription | None:
@@ -408,6 +429,38 @@ async def apply_post_verification_benefits(db: AsyncSession, user: User) -> Subs
         logger.warning("post_verify ensure_user_server_hashes failed: %s", e)
 
     return sub
+
+
+async def users_with_vpn_access_ids(db: AsyncSession) -> set:
+    """Кто сейчас имеет VPN: один SQL, без ensure_trial и без N+1."""
+    from app.services.test_mode_settings import is_registration_test_mode_enabled
+    from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
+
+    now = datetime.utcnow()
+    admin_email = (settings.ADMIN_LOGIN or "").lower()
+    not_bootstrap = User.email != BOOTSTRAP_USER_EMAIL
+    live_sub = (
+        select(Subscription.user_id)
+        .where(Subscription.status == "active", Subscription.expires_at > now)
+        .distinct()
+    )
+    global_test = await is_registration_test_mode_enabled(db)
+    if global_test:
+        access = or_(
+            User.is_admin.is_(True),
+            func.lower(User.email) == admin_email,
+            User.test_mode_excluded.is_(False),
+            User.id.in_(live_sub),
+        )
+    else:
+        access = or_(
+            User.is_admin.is_(True),
+            func.lower(User.email) == admin_email,
+            User.test_mode_personal.is_(True),
+            User.id.in_(live_sub),
+        )
+    rows = await db.execute(select(User.id).where(not_bootstrap, access))
+    return set(rows.scalars().all())
 
 
 async def has_live_test_plan(db: AsyncSession, user: User) -> bool:

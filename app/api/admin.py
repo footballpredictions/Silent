@@ -103,8 +103,22 @@ def _utc_iso(dt: datetime | None) -> str | None:
     return s
 
 
+async def _count_users_with_vpn_access(db: AsyncSession) -> tuple[int, int]:
+    """Счётчики дашборда без N+1 и без ensure_trial как побочного эффекта."""
+    from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
+    from app.services.subscription_service import users_with_vpn_access_ids
+
+    not_bootstrap = User.email != BOOTSTRAP_USER_EMAIL
+    total = int(
+        (await db.execute(select(func.count()).select_from(User).where(not_bootstrap))).scalar_one() or 0
+    )
+    active_ids = await users_with_vpn_access_ids(db)
+    return total, len(active_ids)
+
+
 @router.get("/stats")
 async def get_stats(
+    light: bool = Query(False, description="CPU/RAM/счётчики без VK-списков — для полла дашборда"),
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
@@ -117,7 +131,46 @@ async def get_stats(
     net = read_network_load()
 
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
-    from app.services.subscription_service import user_has_active_subscription, is_user_admin
+    from app.services.peak_online import record_online_peak
+    from app.services.hive_service import connected_devices_by_cell
+
+    total_users, active_subs = await _count_users_with_vpn_access(db)
+    _by_node, connected_devices = await connected_devices_by_cell(db)
+    peak_online, peak_online_at = await record_online_peak(db, int(connected_devices or 0))
+
+    system = {
+        "cpu_percent": cpu,
+        **cpu_info,
+        "memory_total_gb": round(mem.total / 1e9, 1),
+        "memory_used_gb": round(mem.used / 1e9, 1),
+        "memory_percent": mem.percent,
+        "disk_total_gb": round(disk.total / 1e9, 1),
+        "disk_used_gb": round(disk.used / 1e9, 1),
+        "disk_percent": disk.percent,
+        "network_interface": net.get("network_interface"),
+        "network_mbps_rx": float(net.get("network_mbps_rx") or 0.0),
+        "network_mbps_tx": float(net.get("network_mbps_tx") or 0.0),
+        "network_util_percent": float(net.get("network_util_percent") or 0.0),
+        "network_link_capacity_mbps": float(net.get("network_link_capacity_mbps") or settings.HIVE_LINK_CAPACITY_MBPS),
+    }
+    users_block = {
+        "total": total_users,
+        "active_subscriptions": active_subs,
+        "connected_devices": connected_devices,
+        "peak_online_devices": peak_online,
+        "peak_online_at": peak_online_at,
+    }
+    if light:
+        return {
+            "system": system,
+            "users": users_block,
+            "vk_hash_summary": {},
+            "vk_users": [],
+            "vk_hashes": [],
+        }
+
+    from app.models.hive_cell import HiveCell
+    from app.services.hive_slots import assign_online_to_cell_id, node_title_for_slot, slot_for_cell
 
     users_result = await db.execute(
         select(User)
@@ -135,27 +188,11 @@ async def get_stats(
         for d in devices_result.scalars().all():
             devices_by_user.setdefault(d.user_id, []).append(d)
 
-    active_subs = 0
-    for u in all_users:
-        if is_user_admin(u) or await user_has_active_subscription(u, db):
-            active_subs += 1
-
-    from app.services.peak_online import record_online_peak
-    from app.services.hive_service import connected_devices_by_cell, list_cells_with_stats
-    from app.models.hive_cell import HiveCell
-    from app.services.hive_slots import assign_online_to_cell_id, node_title_for_slot, slot_for_cell
-
     hive_cells = list((await db.execute(select(HiveCell))).scalars().all())
     queen_cell = next((c for c in hive_cells if c.is_queen), None)
     known_cell_ids = {c.id for c in hive_cells}
     slot_to_id = {slot_for_cell(c): c.id for c in hive_cells if slot_for_cell(c)}
     id_to_slot = {c.id: slot_for_cell(c) or "server1" for c in hive_cells}
-
-    _by_node, _db_connected = await connected_devices_by_cell(db)
-    hive_online_cards = await list_cells_with_stats(db)
-    connected_devices = sum(int(c.get("online_count") or 0) for c in hive_online_cards)
-    peak_online, peak_online_at = await record_online_peak(db, int(connected_devices or 0))
-    total_users = len(all_users)
 
     # VK hashes — все пользователи + legacy (без user_id)
     from ai.vk_manager import MAX_HASHES
@@ -269,28 +306,8 @@ async def get_stats(
     users_complete = sum(1 for u in vk_users if u["slots_filled"] >= MAX_HASHES)
 
     return {
-        "system": {
-            "cpu_percent": cpu,
-            **cpu_info,
-            "memory_total_gb": round(mem.total / 1e9, 1),
-            "memory_used_gb": round(mem.used / 1e9, 1),
-            "memory_percent": mem.percent,
-            "disk_total_gb": round(disk.total / 1e9, 1),
-            "disk_used_gb": round(disk.used / 1e9, 1),
-            "disk_percent": disk.percent,
-            "network_interface": net.get("network_interface"),
-            "network_mbps_rx": float(net.get("network_mbps_rx") or 0.0),
-            "network_mbps_tx": float(net.get("network_mbps_tx") or 0.0),
-            "network_util_percent": float(net.get("network_util_percent") or 0.0),
-            "network_link_capacity_mbps": float(net.get("network_link_capacity_mbps") or settings.HIVE_LINK_CAPACITY_MBPS),
-        },
-        "users": {
-            "total": len(all_users),
-            "active_subscriptions": active_subs,
-            "connected_devices": connected_devices,
-            "peak_online_devices": peak_online,
-            "peak_online_at": peak_online_at,
-        },
+        "system": system,
+        "users": users_block,
         "vk_hash_summary": {
             "total_active": len(all_hashes),
             "per_user_active": per_user_active,

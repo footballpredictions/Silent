@@ -34,16 +34,17 @@ async def hive_cell_maintenance_loop() -> None:
                 from app.services.vpn_kick import refresh_peer_snapshots
 
                 await refresh_peer_snapshots(db)
-                agent_stats = await auto_upgrade_cell_agents(db)
-                if agent_stats.get("upgraded"):
-                    logger.info("Hive cell-agent sync: upgraded %s cell(s)", agent_stats["upgraded"])
-                if settings.HIVE_CELL_MANIFEST_SYNC_ENABLED:
-                    await sync_all_cell_manifests(db)
                 from app.services.wg_peer_gc import gc_stale_queen_peers
 
                 gc = await gc_stale_queen_peers(db)
                 if gc.get("removed"):
                     logger.info("Hive wg peer gc: %s", gc)
+            async with AsyncSessionLocal() as db:
+                agent_stats = await auto_upgrade_cell_agents(db)
+                if agent_stats.get("upgraded"):
+                    logger.info("Hive cell-agent sync: upgraded %s cell(s)", agent_stats["upgraded"])
+                if settings.HIVE_CELL_MANIFEST_SYNC_ENABLED:
+                    await sync_all_cell_manifests(db)
         except Exception as e:
             logger.warning("Hive cell maintenance cycle failed: %s", e)
             push_incident(

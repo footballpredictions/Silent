@@ -666,7 +666,7 @@ async def probe_cell_agent(cell: HiveCell, password: str | None = None) -> dict:
     return await cell_agent_handshake(cell.api_url, pwd)
 
 
-async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
+async def fetch_worker_cell_load(cell: HiveCell, *, timeout: float | None = None) -> dict | None:
     """CPU/RAM соты через cell-agent /v1/status."""
     if cell.is_queen or not cell.api_url or cell.status not in ("active", "draining"):
         return None
@@ -684,7 +684,7 @@ async def fetch_worker_cell_load(cell: HiveCell) -> dict | None:
         return None
     url = f"{base}/v1/status"
     headers = {"X-Cell-Agent-Secret": pwd}
-    timeout = settings.HIVE_CELL_HTTP_TIMEOUT_SEC
+    timeout = settings.HIVE_CELL_HTTP_TIMEOUT_SEC if timeout is None else timeout
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             resp = await client.get(url, headers=headers)
@@ -805,7 +805,38 @@ def cell_to_response(
     return out
 
 
-async def list_cells_with_stats(db: AsyncSession) -> list[dict]:
+async def list_cells_with_stats(
+    db: AsyncSession,
+    *,
+    http_timeout: float | None = 3.0,
+) -> list[dict]:
+    cells = await _load_sorted_hive_cells(db)
+    _, queen_load = queen_accepting_new_vpn()
+    worker_load_map = await _worker_loads_for_cells(cells, timeout=http_timeout)
+    return await _assemble_cells_with_stats(db, cells, worker_load_map, queen_load)
+
+
+async def list_cells_with_stats_pooled(*, http_timeout: float = 3.0) -> list[dict]:
+    """HTTP к сотам без удержания соединения Postgres (админка поллит каждые 10с)."""
+    from app.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        cells = await _load_sorted_hive_cells(db)
+        for c in cells:
+            _ = (
+                c.id, c.name, c.is_queen, c.api_url, c.api_secret_enc, c.ssh_password_enc,
+                c.status, c.public_ip, c.priority, c.created_at, c.link_capacity_mbps,
+                c.max_clients, c.wdtt_port, c.wg_port, c.accepts_wdtt, c.last_seen_at,
+                c.last_error, c.tunnel_api_url, c.wg_public_key,
+            )
+        db.expunge_all()
+    _, queen_load = queen_accepting_new_vpn()
+    worker_load_map = await _worker_loads_for_cells(cells, timeout=http_timeout)
+    async with AsyncSessionLocal() as db:
+        return await _assemble_cells_with_stats(db, cells, worker_load_map, queen_load)
+
+
+async def _load_sorted_hive_cells(db: AsyncSession) -> list[HiveCell]:
     result = await db.execute(
         select(HiveCell).order_by(
             HiveCell.is_queen.desc(),
@@ -815,17 +846,31 @@ async def list_cells_with_stats(db: AsyncSession) -> list[dict]:
     )
     cells = list(result.scalars().all())
     cells.sort(key=cell_list_sort_key)
-    _, queen_load = queen_accepting_new_vpn()
+    return cells
 
+
+async def _worker_loads_for_cells(
+    cells: list[HiveCell],
+    *,
+    timeout: float | None,
+) -> dict[uuid.UUID, dict | None]:
     workers = [c for c in cells if not c.is_queen]
     worker_loads = await asyncio.gather(
-        *[fetch_worker_cell_load(c) for c in workers],
+        *[fetch_worker_cell_load(c, timeout=timeout) for c in workers],
         return_exceptions=True,
     )
     worker_load_map: dict[uuid.UUID, dict | None] = {}
     for cell, load in zip(workers, worker_loads):
         worker_load_map[cell.id] = load if isinstance(load, dict) else None
+    return worker_load_map
 
+
+async def _assemble_cells_with_stats(
+    db: AsyncSession,
+    cells: list[HiveCell],
+    worker_load_map: dict[uuid.UUID, dict | None],
+    queen_load: dict | None,
+) -> list[dict]:
     out = []
     olcrtc_map = await olcrtc_online_by_cell(db, [c.id for c in cells])
     online_map, _online_total = await connected_devices_by_cell(db)

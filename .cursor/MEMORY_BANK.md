@@ -10,8 +10,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.162** (olcrtc снят из UI; WDTT only) |
-| `Silent-Project/android/` | `android` | **1.0.162** (olcrtc снят из UI; WDTT only) |
+| `Silent-Project/pc/` | `pc` | **1.0.163** (olcrtc снят из UI; WDTT only) |
+| `Silent-Project/android/` | `android` | **1.0.163** (olcrtc снят из UI; WDTT only) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -891,6 +891,56 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-27 — 504 админки: пул Postgres + блокировка event loop
+
+- Nginx 504 на `/`, `/api/admin/*`, выдачу подписок и даже клиентский `/api/vpn/*`: `QueuePool limit of size 20 overflow 10`. Event loop ещё и блокировался синхронным `nsenter` kick всех unpaid peer’ов при grant.
+- Фикс: доступ к VPN одним SQL (`users_with_vpn_access_ids`); kicks в `to_thread`; `/hive/cells` отпускает соединение БД до HTTP к сотам (таймаут 3с); `/hive/summary` больше не дублирует HTTP; maintenance loop — две короткие сессии.
+- Прод: restart только `api`, DNAT на месте, `wdtt` active. Health/SPA ~5мс, HTTPS `/` 200.
+
+### 2026-08-27 — Админка висла: тяжёлый GET /admin/stats
+
+- Причина: проверка токена и полл дашборда каждые 5с били в `GET /api/admin/stats`. Эндпоинт грузил всех ~870 users, делал N+1 `user_has_active_subscription` (ещё и `ensure_trial` как побочный эффект) и звал `list_cells_with_stats` — HTTP ко всем сотам с таймаутом 15с.
+- Фикс: счётчики одним SQL; онлайн из `connected_devices_by_cell` без HTTP к сотам; `?light=1` без VK-списков для полла; токен проверяется через `/api/admin/sessions`.
+- Прод: залит `admin.py` + новый `admin-ui/dist`, restart только `api` (не nginx/wdtt). Light-path на проде **0.14с** (870 users / 88 active / 22 online). DNAT `10.66.66.1:8000` на API, `wdtt` active.
+- После обновления админку открыть с Ctrl+F5 (новый бандл `index-B9P0ytIg.js`).
+
+### 2026-08-27 — Выключение тестового режима: пул БД + снос оплаченных
+
+- Выключение глобального теста делало N+1 по всем ~870 users, держало соединение → `QueuePool TimeoutError` (админка 500) и **отменяло test-планы без возврата paid**. В БД: monthly/quarterly/yearly/two_months все `cancelled`.
+- Прод: вернул 81 непросроченную оплату (46 monthly / 12 two_months / 10 quarterly / 6 yearly / 7 unlimited). Health 200, `wdtt` active, DNAT `10.66.66.1:8000` на API.
+- Код: `cleanup_global_test_subscriptions` теперь set-based SQL + restore paid/trial. Залит `subscription_service.py`, restart только `api` (не nginx/wdtt).
+- Пользователям с оплатой: переподключить VPN. Админка: войти снова (во время фейла пула логин падал с 500).
+
+### 2026-08-27 — Лендинг: одинаковая высота статуса в подключении и DNS
+
+- Сцены «Подключение VPN» и «Смена DNS и сервера»: статус над тумблером в одном каркасе `.demo-home` / `.demo-home-body`, как на главном экране клиента (PC `gap-6`, Android 24.dp).
+- Кэш: `guide.css?v=12`. Push `silentvpn3.github.io` `main`: `f1d8f5c`.
+
+### 2026-08-27 — Лендинг: EN в анимациях оплаты/бонусов + фиксация описания
+
+- В демо оплаты и бонусов (и остальных сценах гайда) добавлены недостающие EN-строки: тарифы, ожидание оплаты, рефералка, промокод, меню, DNS/сервер, исключения, сессии.
+- Подписи шагов в оплате снова идут через `.demo-caption` (раньше `caption = null`).
+- Описание в бонусах больше не прыгает: секции `align-items: start`, фиксированная высота экрана телефона, слоты под «ссылка скопирована» / «скидка 20%» не схлопываются.
+- Кэш: `guide.css?v=11`, `guide.js?v=17`. Push `silentvpn3.github.io` `main`: `8e9076d`.
+
+### 2026-08-27 — Лендинг: статус VPN над тумблером
+
+- В гайде `#guide` сцены «Подключение» и «Смена DNS и сервера»: статус над тумблером, «Подключено» зелёным (`#16A34A`). Текст раздела подключения обновлён (RU/EN).
+- Push `silentvpn3.github.io` `main`: `cccf8d3`.
+
+### 2026-08-27 — Цены возвращены после теста (199/359/478)
+
+- Прод `.env` был `PRICE_*=50`. Вернул: monthly **199** / two_months **359** / quarterly **478** / yearly **1499**. Recreate `api` + restart `nginx`, DNAT `10.66.66.1:8000` OK, health 200, **wdtt active** (не рестартили).
+- Пуш не нужен: цены только в `.env` на VPS, в git уже 199/359/478.
+
+### 2026-08-27 — Android 1.0.163: сеть / звонок / вышки
+
+- Не ломали существующий Wi‑Fi↔LTE `transport_switch`, паузу при обрыве и `phone_call_end` (API 31+).
+- Добавлено: 2G↔3G↔4G (`rat_switch`, 5G в том же ведре что 4G — NSA не дёргает), дыра между вышками при том же `cell` (`cell_gap_restored` / `validated_after_gap` / смена IP `link_handover`), вход в зону Wi‑Fi после обрыва (`wifi_gap_restored`), звонок на Android 11− и Wi‑Fi calling через poll `AudioManager.mode`.
+- Короткий `internet_restored` больше не fast-path (только reapply WG) — полный restart после ожидания сети.
+- `anonym_token.outdated` на Соте 2 — ответ VK, не сота; в репортер хешей не уходит. Повторное подключение это подтвердило.
+- Release **1.0.163**. Debug APK: `android/SilentVPN-debug.apk`.
+
 ### 2026-08-27 — PC не подключается к Соте 2 (AllowedIPs extra)
 
 - Симптом: ПК `f05dd065` слот `server3` / `78.17.74.27`, 63/63 воркера, WG «активен», трафик ~0.16 МБ, Tunnel API timeout, hive `:443` ECONNREFUSED. Android на Соте 2 ок.
@@ -900,6 +950,7 @@ cd pc; npm install; npm run dev
 - PC: снятие bypass в очереди stop + epoch, чтобы leftover disconnect не вырезал маршруты API/VK после нового туннеля.
 - Тесты: `backend/scripts/test_cell_wg_gc_unit.py`.
 - Debug PC: `pc/build-debug-728967/win-unpacked/SilentVPN-Admin.bat`.
+- Release **1.0.163** сначала уехал с debug UI: leftover `DEBUG_BUILD=1` в Vite открыл лог/хеши. Vite больше не читает env; installer сбрасывает флаг и падает при sourcemap. Пересобран: `pc/build-release-v141-568749/Silent VPN Setup 1.0.163.exe`.
 
 ### 2026-08-27 — VK hash liveness (агент + клиент)
 

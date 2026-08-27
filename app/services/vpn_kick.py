@@ -46,6 +46,7 @@ _bound_extras: dict[str, set[str]] = {}
 _peer_snapshot: dict[str, set[str]] = {}
 _peer_ages: dict[str, dict[str, float | None]] = {}
 _QUEEN_NODE = "queen"
+_sync_unpaid_lock = asyncio.Lock()
 
 
 def watch_device_revoke(device_id, *, node_key: str = "") -> None:
@@ -583,18 +584,14 @@ async def sync_unpaid_deny_net(db: AsyncSession) -> int:
     Do not use DB wg_address / leftover live IPs and do not SSH the set onto cells:
     that blocked the API event loop and dropped paying users (2026-08-19).
     """
-    from app.services.subscription_service import (
-        has_live_test_plan,
-        is_user_admin,
-        user_has_active_subscription,
-        user_in_test_mode,
-    )
     from app.services.vpn_deny_net import (
         read_host_wdtt_identities,
         sync_queen_deny_ips,
         unpaid_ips_from_wdtt_only,
     )
 
+    if _sync_unpaid_lock.locked():
+        return 0
     result = await db.execute(select(Device).where(Device.is_active == True))  # noqa: E712
     devices = [
         d for d in result.scalars().all()
@@ -602,39 +599,29 @@ async def sync_unpaid_deny_net(db: AsyncSession) -> int:
     ]
     if not devices:
         _ensure_nsenter_helper()
-        return sync_queen_deny_ips(set())
-    user_ids = {d.user_id for d in devices}
-    users = {
-        u.id: u
-        for u in (await db.execute(select(User).where(User.id.in_(user_ids)))).scalars().all()
-    }
-    unpaid: list[Device] = []
-    for device in devices:
-        user = users.get(device.user_id)
-        if user is None:
-            continue
-        in_test = await user_in_test_mode(user, db)
-        live_test = await has_live_test_plan(db, user)
-        has_sub = await user_has_active_subscription(user, db)
-        if should_keep_vpn_dataplane(
-            is_admin=is_user_admin(user),
-            in_test_mode=in_test,
-            has_live_test_plan=live_test,
-            has_active_subscription=has_sub,
-        ):
-            continue
-        unpaid.append(device)
+        return await asyncio.to_thread(sync_queen_deny_ips, set())
+    from app.services.subscription_service import users_with_vpn_access_ids
+
+    allowed = await users_with_vpn_access_ids(db)
+    unpaid: list[Device] = [d for d in devices if d.user_id not in allowed]
     _ensure_nsenter_helper()
     idents = read_host_wdtt_identities([str(d.id) for d in unpaid])
     ips = unpaid_ips_from_wdtt_only(idents)
-    for rec in idents.values():
-        pub = rec.get("pub") or ""
-        if _valid_wg_pub(pub):
-            kick_wg_peer_on_queen(pub, force=True)
-        ip = rec.get("ip") or ""
-        if ip:
-            kick_wg_peer_on_queen("", allowed_ip=ip, force=True)
-    return sync_queen_deny_ips(ips)
+
+    def _kick_and_sync() -> int:
+        for rec in idents.values():
+            pub = rec.get("pub") or ""
+            if _valid_wg_pub(pub):
+                kick_wg_peer_on_queen(pub, force=True)
+            ip = rec.get("ip") or ""
+            if ip:
+                kick_wg_peer_on_queen("", allowed_ip=ip, force=True)
+        return sync_queen_deny_ips(ips)
+
+    if _sync_unpaid_lock.locked():
+        return 0
+    async with _sync_unpaid_lock:
+        return await asyncio.to_thread(_kick_and_sync)
 
 
 async def restore_user_vpn_dataplane(db: AsyncSession, user: User) -> None:
@@ -725,13 +712,6 @@ async def kick_connected_without_subscription(db: AsyncSession) -> int:
     Не трогаем админов, тестовый режим и живой plan=test.
     bind_new=False: не угадываем новый extra на тихой соте (2026-08-16 / 2026-08-23).
     """
-    from app.services.subscription_service import (
-        has_live_test_plan,
-        is_user_admin,
-        user_has_active_subscription,
-        user_in_test_mode,
-    )
-
     cutoff = datetime.utcnow() - timedelta(minutes=20)
     result = await db.execute(
         select(Device).where(
@@ -755,13 +735,9 @@ async def kick_connected_without_subscription(db: AsyncSession) -> int:
     devices = devices + extra_ids
     if not devices:
         return 0
-    user_ids = {d.user_id for d in devices}
-    users = {
-        u.id: u
-        for u in (
-            await db.execute(select(User).where(User.id.in_(user_ids)))
-        ).scalars().all()
-    }
+    from app.services.subscription_service import users_with_vpn_access_ids
+
+    allowed = await users_with_vpn_access_ids(db)
     kicked = 0
     cell_ids: set = set()
     seen: set[str] = set()
@@ -772,18 +748,7 @@ async def kick_connected_without_subscription(db: AsyncSession) -> int:
         seen.add(did)
         if (device.device_fingerprint or "").startswith("boot:"):
             continue
-        user = users.get(device.user_id)
-        if user is None:
-            continue
-        in_test = await user_in_test_mode(user, db)
-        live_test = await has_live_test_plan(db, user)
-        has_sub = await user_has_active_subscription(user, db)
-        if should_keep_vpn_dataplane(
-            is_admin=is_user_admin(user),
-            in_test_mode=in_test,
-            has_live_test_plan=live_test,
-            has_active_subscription=has_sub,
-        ):
+        if device.user_id in allowed:
             continue
         if not await kick_device_peers(db, device, force=True, bind_new=False):
             continue

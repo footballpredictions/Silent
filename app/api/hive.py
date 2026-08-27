@@ -133,11 +133,12 @@ async def _provision_cell_background(
 @router.get("/cells")
 async def list_hive_cells(
     _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
 ):
-    await hive_service.ensure_queen_cell(db)
-    await _sweep_stale_provisioning(db)
-    return await hive_service.list_cells_with_stats(db)
+    async with AsyncSessionLocal() as db:
+        await hive_service.ensure_queen_cell(db)
+        await _sweep_stale_provisioning(db)
+        await db.commit()
+    return await hive_service.list_cells_with_stats_pooled()
 
 
 @router.post("/cells/auto")
@@ -444,43 +445,53 @@ async def upgrade_cell_agent(
 @router.get("/summary")
 async def hive_summary(
     _: bool = Depends(get_admin_credentials),
-    db: AsyncSession = Depends(get_db),
 ):
-    await hive_service.ensure_queen_cell(db)
-    # GET не должен двигать устройства: админка поллит /summary каждые 10 с.
-    rebalance = {"moved": 0, "blocked": 0, "hardware": 0, "returned": 0}
-    cells = await hive_service.list_cells_with_stats(db)
-    extra = await hive_service.get_hive_summary_extra(db)
-    queen = await hive_service.get_queen_cell(db)
-    queen_capacity = None
-    if queen:
-        from app.services.hive_capacity import get_capacity_profile
+    async with AsyncSessionLocal() as db:
+        await hive_service.ensure_queen_cell(db)
+        # GET не должен двигать устройства: админка поллит /summary каждые 10 с.
+        # Не звать list_cells_with_stats — это HTTP к сотам; CPU сот уже в /cells.
+        rebalance = {"moved": 0, "blocked": 0, "hardware": 0, "returned": 0}
+        extra = await hive_service.get_hive_summary_extra(db)
+        queen = await hive_service.get_queen_cell(db)
+        cells_total = int(
+            (await db.execute(select(func.count()).select_from(HiveCell))).scalar_one() or 0
+        )
+        cells_active = int(
+            (
+                await db.execute(
+                    select(func.count()).select_from(HiveCell).where(HiveCell.status == "active")
+                )
+            ).scalar_one()
+            or 0
+        )
+        queen_capacity = None
+        if queen:
+            from app.services.hive_capacity import get_capacity_profile
 
-        queen_capacity = (
-            await get_capacity_profile(db, queen, load=extra.get("queen_load"))
-        ).to_dict()
-    total_online_vpn = sum(int(c.get("online_count") or 0) for c in cells)
-    total_online_all = total_online_vpn
-    return {
-        "cells_total": len(cells),
-        "cells_active": sum(1 for c in cells if c["status"] == "active"),
-        "total_online_vpn": total_online_vpn,
-        "total_online_all": total_online_all,
-        "worker_cells": extra["worker_cells"],
-        "queen_load": extra["queen_load"],
-        "queen_accepting_vpn": extra["queen_accepting_vpn"],
-        "cpu_threshold": extra["cpu_threshold"],
-        "mem_threshold": extra["mem_threshold"],
-        "bandwidth_threshold": extra["bandwidth_threshold"],
-        "total_capacity_online": extra["total_capacity_online"],
-        "all_cells_full": extra["all_cells_full"],
-        "full_cells": extra["full_cells"],
-        "rebalanced_moved": rebalance["moved"],
-        "rebalanced_blocked": rebalance["blocked"],
-        "rebalanced_hardware": rebalance.get("hardware", 0),
-        "rebalanced_returned": rebalance.get("returned", 0),
-        "queen_capacity": queen_capacity,
-    }
+            queen_capacity = (
+                await get_capacity_profile(db, queen, load=extra.get("queen_load"))
+            ).to_dict()
+        total_online_vpn = int(extra.get("total_online_vpn") or 0)
+        return {
+            "cells_total": cells_total,
+            "cells_active": cells_active,
+            "total_online_vpn": total_online_vpn,
+            "total_online_all": int(extra.get("total_online_all") or total_online_vpn),
+            "worker_cells": extra["worker_cells"],
+            "queen_load": extra["queen_load"],
+            "queen_accepting_vpn": extra["queen_accepting_vpn"],
+            "cpu_threshold": extra["cpu_threshold"],
+            "mem_threshold": extra["mem_threshold"],
+            "bandwidth_threshold": extra["bandwidth_threshold"],
+            "total_capacity_online": extra["total_capacity_online"],
+            "all_cells_full": extra["all_cells_full"],
+            "full_cells": extra["full_cells"],
+            "rebalanced_moved": rebalance["moved"],
+            "rebalanced_blocked": rebalance["blocked"],
+            "rebalanced_hardware": rebalance.get("hardware", 0),
+            "rebalanced_returned": rebalance.get("returned", 0),
+            "queen_capacity": queen_capacity,
+        }
 
 
 @router.get("/incidents")

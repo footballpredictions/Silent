@@ -16,7 +16,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 
 async function validateAdminToken(token: string): Promise<boolean> {
   try {
-    const res = await fetch('/api/admin/stats', {
+    const res = await fetch('/api/admin/sessions', {
       headers: { Authorization: `Bearer ${token}` },
     })
     return res.ok

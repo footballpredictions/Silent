@@ -12,6 +12,7 @@ import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.media.AudioManager
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -138,6 +139,11 @@ class SilentVpnService : Service() {
     private var lastUnderlyingInternet: Boolean? = null
     private var lastMobileDataState: Boolean? = null
     private var phoneCallActive = false
+    private var lastRatBucket = ""
+    private var lastBlackoutAtMs = 0L
+    private var unvalidatedSinceMs = 0L
+    private var lastLinkHandoverMs = 0L
+    private val lastLinkAddrs = mutableMapOf<String, String>()
     private var lastTransportRestartMs = 0L
     /** Дедуп LTE↔Wi‑Fi: callback и poll не должны давать два restart подряд. */
     private var lastTransportSwitchMs = 0L
@@ -399,6 +405,11 @@ class SilentVpnService : Service() {
                 lastNetworkValidated = true
                 transportUnhealthySinceMs = 0L
                 phoneCallActive = false
+                lastRatBucket = ""
+                lastBlackoutAtMs = 0L
+                unvalidatedSinceMs = 0L
+                lastLinkHandoverMs = 0L
+                lastLinkAddrs.clear()
                 pausedForNetwork = false
                 noInternetSinceMs = 0L
                 lastUnderlyingInternet = null
@@ -683,6 +694,11 @@ class SilentVpnService : Service() {
         lastNetworkValidated = true
         transportUnhealthySinceMs = 0L
         phoneCallActive = false
+        lastRatBucket = ""
+        lastBlackoutAtMs = 0L
+        unvalidatedSinceMs = 0L
+        lastLinkHandoverMs = 0L
+        lastLinkAddrs.clear()
         pausedForNetwork = false
         noInternetSinceMs = 0L
         lastUnderlyingInternet = null
@@ -770,10 +786,17 @@ class SilentVpnService : Service() {
             VpnNetworkHelper.hasAnyUnderlyingInternet(this),
         )
         lastMobileDataState = VpnNetworkHelper.isOnMobileData(this)
+        lastRatBucket = VpnNetworkHelper.cellularRatBucket(this)
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 activeNetworks.add(network)
                 maybeRecoverOnUnderlyingChange("available")
+            }
+
+            override fun onLosing(network: Network, maxMsToLive: Int) {
+                val caps = connectivityManager?.getNetworkCapabilities(network) ?: return
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
+                lastBlackoutAtMs = System.currentTimeMillis()
             }
 
             override fun onLost(network: Network) {
@@ -781,6 +804,29 @@ class SilentVpnService : Service() {
                 // Wi‑Fi выкл при живом LTE: cell уже в activeNetworks — без этого fingerprint
                 // остаётся "wifi" и transport_switch не приходит.
                 maybeRecoverOnUnderlyingChange("lost")
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
+                if (!isRunning) return
+                val caps = connectivityManager?.getNetworkCapabilities(network) ?: return
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
+                val key = when {
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cell"
+                    else -> return
+                }
+                val addrs = VpnNetworkHelper.linkAddressKey(lp)
+                if (addrs.isEmpty()) return
+                val prev = lastLinkAddrs[key]
+                lastLinkAddrs[key] = addrs
+                if (!NetworkRecoveryPolicy.shouldRecoverOnLinkAddrsChange(prev, addrs)) return
+                val fp = VpnNetworkHelper.underlyingTransportFingerprint(this@SilentVpnService)
+                if (fp != key) return
+                val now = System.currentTimeMillis()
+                if (!NetworkRecoveryPolicy.shouldAcceptLinkHandover(lastLinkHandoverMs, now)) return
+                lastLinkHandoverMs = now
+                DebugLog.i("VpnService", "link handover $key $prev → $addrs")
+                scheduleNetworkRecovery("link_handover:$key", 1_200L)
             }
 
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
@@ -794,8 +840,20 @@ class SilentVpnService : Service() {
                 if (validated != lastNetworkValidated) {
                     val wasValidated = lastNetworkValidated
                     lastNetworkValidated = validated
-                    if (!wasValidated && validated && isRunning) {
-                        scheduleNetworkRecovery("validated")
+                    val now = System.currentTimeMillis()
+                    if (wasValidated && !validated) {
+                        unvalidatedSinceMs = now
+                    } else if (!wasValidated && validated && isRunning) {
+                        val afterGap = NetworkRecoveryPolicy.shouldRecoverAfterValidatedGap(
+                            unvalidatedSinceMs,
+                            now,
+                        )
+                        unvalidatedSinceMs = 0L
+                        if (afterGap) {
+                            scheduleNetworkRecovery("validated_after_gap")
+                        } else {
+                            scheduleNetworkRecovery("validated")
+                        }
                     }
                 }
                 maybeRecoverOnUnderlyingChange("capabilities")
@@ -816,19 +874,27 @@ class SilentVpnService : Service() {
         val fp = VpnNetworkHelper.underlyingTransportFingerprint(this)
         val validated = VpnNetworkHelper.hasUnderlyingInternet(this)
         if (fp.isEmpty()) {
-            // Дыра wifi↔cell: НЕ сбрасывать fingerprint — иначе не будет transport_switch.
+            // Дыра wifi↔cell / между вышками: НЕ сбрасывать fingerprint — иначе не будет transport_switch.
+            lastBlackoutAtMs = System.currentTimeMillis()
             DebugLog.i("VpnService", "underlying $source: blackout (keep fp=$lastNetworkFingerprint)")
             scheduleNetworkRecovery("underlying_blackout", 1_500L)
             return
         }
         if (lastNetworkFingerprint.isEmpty()) {
             lastNetworkFingerprint = fp
+            if (fp == "cell") {
+                val rat = VpnNetworkHelper.cellularRatBucket(this)
+                if (rat.isNotEmpty()) lastRatBucket = rat
+            }
             if (validated) {
                 scheduleNetworkRecovery("${source}_restored:$fp", 800L)
             }
             return
         }
-        if (fp == lastNetworkFingerprint) return
+        if (fp == lastNetworkFingerprint) {
+            maybeRecoverSameTransport(source, fp, validated)
+            return
+        }
         val old = lastNetworkFingerprint
         lastNetworkFingerprint = fp
         val switch = wifiCellTransportTarget(old, fp)
@@ -838,6 +904,37 @@ class SilentVpnService : Service() {
             scheduleNetworkRecovery("transport_switch:$switch", 400L)
         } else if (validated) {
             scheduleNetworkRecovery("$source:$fp")
+        }
+        if (fp == "cell") {
+            val rat = VpnNetworkHelper.cellularRatBucket(this)
+            if (rat.isNotEmpty()) lastRatBucket = rat
+        }
+    }
+
+    /** Тот же wifi/cell: 2G↔4G, дыра между вышками, вход в зону Wi‑Fi после обрыва. */
+    private fun maybeRecoverSameTransport(source: String, fp: String, validated: Boolean) {
+        if (fp == "cell") {
+            val rat = VpnNetworkHelper.cellularRatBucket(this)
+            if (NetworkRecoveryPolicy.shouldRecoverOnRatChange(lastRatBucket, rat)) {
+                val old = lastRatBucket
+                lastRatBucket = rat
+                DebugLog.i("VpnService", "rat $old → $rat ($source)")
+                scheduleNetworkRecovery("rat_switch:$old->$rat", 500L)
+                return
+            }
+            if (rat.isNotEmpty()) lastRatBucket = rat
+        }
+        if (
+            NetworkRecoveryPolicy.shouldRecoverAfterTransportGap(
+                lastBlackoutAtMs = lastBlackoutAtMs,
+                nowMs = System.currentTimeMillis(),
+                validated = validated,
+            )
+        ) {
+            lastBlackoutAtMs = 0L
+            val kind = if (fp == "wifi") "wifi_gap_restored" else "cell_gap_restored"
+            DebugLog.i("VpnService", "gap restore $kind ($source)")
+            scheduleNetworkRecovery(kind, 800L)
         }
     }
 
@@ -905,6 +1002,11 @@ class SilentVpnService : Service() {
                 reason.startsWith("phone_call_end") ||
                 reason.startsWith("watchdog_olcrtc") ||
                 reason.startsWith("transport_switch:") ||
+                reason.startsWith("rat_switch:") ||
+                reason.startsWith("cell_gap_restored") ||
+                reason.startsWith("wifi_gap_restored") ||
+                reason.startsWith("link_handover:") ||
+                reason.startsWith("validated_after_gap") ||
                 reason.startsWith("underlying_blackout") ||
                 (pausedForNetwork && reason.startsWith("internet_restored"))
         if (!skipGrace && System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()) return
@@ -982,14 +1084,13 @@ class SilentVpnService : Service() {
             return
         }
         val activeWorkers = WdttTunnelManager.activeWorkers.value
-        // LTE↔Wi‑Fi: transport_switch — всегда полный restart libclient (fast-path ломал домашний Wi‑Fi).
+        // LTE↔Wi‑Fi / RAT / дыра между вышками — полный restart; fast-path ломал домашний Wi‑Fi.
         val canFastSwitch =
             activeWorkers > 0 &&
-                !reason.startsWith("transport_switch:") &&
+                !NetworkRecoveryPolicy.needsUnderlyingWaitRestart(reason) &&
                 (reason.startsWith("available:") ||
                     reason.startsWith("capabilities:") ||
-                    reason.startsWith("validated") ||
-                    reason.startsWith("internet_restored"))
+                    reason == "validated")
         if (canFastSwitch) {
             // Стабильный Wi‑Fi: не перезапускаем libclient без смены транспорта.
             WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
@@ -1021,6 +1122,31 @@ class SilentVpnService : Service() {
                 )
                 if (!isRunning || !ok) {
                     DebugLog.w("VpnService", "wdtt transport switch deferred — net not ready")
+                    scheduleNetworkRecovery("internet_restored", 2_500L)
+                    return@launch
+                }
+                lastTransportRestartMs = System.currentTimeMillis()
+                WdttTunnelManager.restartTransportAfterNetwork()
+                WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
+                scheduleRecoveryVerification("restart:$reason", trafficBeforeMb)
+            }
+            return
+        }
+        if (NetworkRecoveryPolicy.needsUnderlyingWaitRestart(reason)) {
+            val prefer = OlcrtcRecoveryPolicy.preferTransportFromReason(reason)
+            scope.launch(Dispatchers.IO) {
+                WdttTunnelManager.logUi(
+                    "net_wait",
+                    "ждём готовность сети${prefer?.let { " ($it)" } ?: ""}…",
+                    2,
+                )
+                val ok = VpnNetworkHelper.awaitUnderlyingReady(
+                    this@SilentVpnService,
+                    timeoutMs = 20_000L,
+                    preferTransport = prefer,
+                )
+                if (!isRunning || !ok) {
+                    DebugLog.w("VpnService", "network recovery deferred ($reason) — net not ready")
                     scheduleNetworkRecovery("internet_restored", 2_500L)
                     return@launch
                 }
@@ -1382,8 +1508,18 @@ class SilentVpnService : Service() {
         if (recoverySuppressedForRampUp()) return
         // fast-путь не трогал libclient — idle-трафик за 4 с не повод для полного restart.
         if (reason.startsWith("fast:") || reason.startsWith("resume:")) return
-        // После transport_switch воркеры ramp-up 10–30 с — второй restart через 4 с не нужен.
-        if (reason.contains("transport_switch")) return
+        // После transport_switch / RAT / handover воркеры ramp-up 10–30 с — второй restart через 4 с не нужен.
+        if (
+            reason.contains("transport_switch") ||
+            reason.contains("rat_switch") ||
+            reason.contains("gap_restored") ||
+            reason.contains("link_handover") ||
+            reason.contains("phone_call_end") ||
+            reason.contains("validated_after_gap") ||
+            reason.contains("internet_restored")
+        ) {
+            return
+        }
         recoveryVerifyJob = scope.launch {
             delay(RECOVERY_VERIFY_DELAY_MS)
             if (!isRunning || phoneCallActive) return@launch
@@ -1408,12 +1544,13 @@ class SilentVpnService : Service() {
 
     /** Пауза при полном обрыве; Wi‑Fi↔LTE → transport_switch (WDTT и olcrtc). */
     private fun checkUnderlyingNetwork() {
+        if (!isRunning) return
+        pollPhoneCallState()
         val olcrtcLive =
             olcrtcSessionActive ||
                 OlcrtcTunnelManager.running.value ||
                 OlcrtcTunnelManager.tunnelReady.value
         val wdttLive = WdttTunnelManager.tunnelReady.value
-        if (!isRunning) return
         if (!wdttLive && !olcrtcLive && !pausedForNetwork && !isTunnelPaused) return
         if (!olcrtcLive && WdttTunnelManager.isNetworkRecoverySuppressed()) return
         if (NetworkRecoveryPolicy.shouldDeferRecoveryForPhoneCall(phoneCallActive)) return
@@ -1444,6 +1581,7 @@ class SilentVpnService : Service() {
         val now = System.currentTimeMillis()
 
         if (!anyOnline) {
+            lastBlackoutAtMs = now
             if (noInternetSinceMs == 0L) noInternetSinceMs = now
             if (
                 NetworkRecoveryPolicy.shouldPauseForLostInternet(
@@ -1514,6 +1652,17 @@ class SilentVpnService : Service() {
         } else {
             lastMobileDataState = mobileNow
         }
+        if (underlyingFp == "cell" && (validatedOnline || anyOnline)) {
+            val rat = VpnNetworkHelper.cellularRatBucket(this)
+            if (NetworkRecoveryPolicy.shouldRecoverOnRatChange(lastRatBucket, rat)) {
+                val old = lastRatBucket
+                lastRatBucket = rat
+                DebugLog.i("VpnService", "poll rat $old → $rat")
+                scheduleNetworkRecovery("rat_switch:$old->$rat", 600L)
+            } else if (rat.isNotEmpty()) {
+                lastRatBucket = rat
+            }
+        }
         lastUnderlyingInternet = NetworkRecoveryPolicy.nextUnderlyingOnlineFlag(
             validatedOnline,
             anyOnline,
@@ -1551,27 +1700,35 @@ class SilentVpnService : Service() {
     }
 
     private fun setupPhoneCallMonitor() {
+        audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        phoneCallActive = NetworkRecoveryPolicy.isPhoneCallAudioMode(audioManager?.mode ?: AudioManager.MODE_NORMAL)
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
         if (audioModeListener != null) return
-        val am = getSystemService(AUDIO_SERVICE) as AudioManager
-        audioManager = am
+        val am = audioManager ?: return
         val listener = AudioManager.OnModeChangedListener { mode ->
             if (!isRunning) return@OnModeChangedListener
-            when (mode) {
-                AudioManager.MODE_IN_CALL,
-                AudioManager.MODE_IN_COMMUNICATION,
-                AudioManager.MODE_RINGTONE,
-                -> phoneCallActive = true
-                AudioManager.MODE_NORMAL -> {
-                    if (phoneCallActive) {
-                        phoneCallActive = false
-                        scheduleNetworkRecovery("phone_call_end", 3_000L)
-                    }
-                }
-            }
+            applyPhoneCallAudioMode(mode)
         }
         audioModeListener = listener
         am.addOnModeChangedListener(mainExecutor, listener)
+    }
+
+    /** API 31+ listener + poll на всех API (Wi‑Fi calling / OEM без callback / Android 11-). */
+    private fun pollPhoneCallState() {
+        val am = audioManager ?: (getSystemService(AUDIO_SERVICE) as? AudioManager) ?: return
+        audioManager = am
+        applyPhoneCallAudioMode(am.mode)
+    }
+
+    private fun applyPhoneCallAudioMode(mode: Int) {
+        val inCall = NetworkRecoveryPolicy.isPhoneCallAudioMode(mode)
+        if (inCall && !phoneCallActive) {
+            phoneCallActive = true
+            DebugLog.i("VpnService", "phone call start (audio mode=$mode)")
+        } else if (NetworkRecoveryPolicy.shouldFirePhoneCallEnd(phoneCallActive, inCall)) {
+            phoneCallActive = false
+            scheduleNetworkRecovery("phone_call_end", 3_000L)
+        }
     }
 
     private fun teardownPhoneCallMonitor() {

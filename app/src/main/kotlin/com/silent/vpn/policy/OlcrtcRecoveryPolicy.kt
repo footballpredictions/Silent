@@ -135,8 +135,13 @@ object OlcrtcRecoveryPolicy {
     )
 
     fun preferTransportFromReason(reason: String): String? = when {
-        reason.startsWith("transport_switch:wifi") -> "wifi"
-        reason.startsWith("transport_switch:mobile") -> "cell"
+        reason.startsWith("transport_switch:wifi") ||
+            reason.startsWith("wifi_gap") ||
+            reason.startsWith("link_handover:wifi") -> "wifi"
+        reason.startsWith("transport_switch:mobile") ||
+            reason.startsWith("cell_gap") ||
+            reason.startsWith("rat_switch") ||
+            reason.startsWith("link_handover:cell") -> "cell"
         else -> null
     }
 
@@ -190,6 +195,11 @@ object OlcrtcRecoveryPolicy {
         reason.startsWith("transport_switch:") ||
             reason.startsWith("internet_restored") ||
             reason.startsWith("phone_call_end") ||
+            reason.startsWith("rat_switch:") ||
+            reason.startsWith("cell_gap_restored") ||
+            reason.startsWith("wifi_gap_restored") ||
+            reason.startsWith("link_handover:") ||
+            reason.startsWith("validated_after_gap") ||
             reason.startsWith("olcrtc_peer_dead:process_exit") ||
             reason.startsWith("watchdog_olcrtc_down") ||
             reason.startsWith("watchdog_olcrtc_stuck")

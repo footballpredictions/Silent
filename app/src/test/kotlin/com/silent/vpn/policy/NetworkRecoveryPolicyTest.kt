@@ -29,6 +29,111 @@ class NetworkRecoveryPolicyTest {
     }
 
     @Test
+    fun `rat buckets 2g 3g 4g including nr as 4g`() {
+        assertEquals("2g", NetworkRecoveryPolicy.ratBucketFromNetworkType(2)) // EDGE
+        assertEquals("3g", NetworkRecoveryPolicy.ratBucketFromNetworkType(10)) // HSPA
+        assertEquals("4g", NetworkRecoveryPolicy.ratBucketFromNetworkType(13)) // LTE
+        assertEquals("4g", NetworkRecoveryPolicy.ratBucketFromNetworkType(20)) // NR
+        assertEquals("", NetworkRecoveryPolicy.ratBucketFromNetworkType(0))
+    }
+
+    @Test
+    fun `rat change all orders`() {
+        assertTrue(NetworkRecoveryPolicy.shouldRecoverOnRatChange("2g", "3g"))
+        assertTrue(NetworkRecoveryPolicy.shouldRecoverOnRatChange("3g", "4g"))
+        assertTrue(NetworkRecoveryPolicy.shouldRecoverOnRatChange("4g", "2g"))
+        assertTrue(NetworkRecoveryPolicy.shouldRecoverOnRatChange("4g", "3g"))
+        assertTrue(NetworkRecoveryPolicy.shouldRecoverOnRatChange("3g", "2g"))
+        assertTrue(NetworkRecoveryPolicy.shouldRecoverOnRatChange("2g", "4g"))
+        assertFalse(NetworkRecoveryPolicy.shouldRecoverOnRatChange("4g", "4g"))
+        assertFalse(NetworkRecoveryPolicy.shouldRecoverOnRatChange("", "4g"))
+        assertFalse(NetworkRecoveryPolicy.shouldRecoverOnRatChange("4g", ""))
+    }
+
+    @Test
+    fun `cell gap after tower blackout`() {
+        assertTrue(
+            NetworkRecoveryPolicy.shouldRecoverAfterTransportGap(
+                lastBlackoutAtMs = 1_000L,
+                nowMs = 3_000L,
+                validated = true,
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.shouldRecoverAfterTransportGap(
+                lastBlackoutAtMs = 1_000L,
+                nowMs = 1_200L,
+                validated = true,
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.shouldRecoverAfterTransportGap(
+                lastBlackoutAtMs = 1_000L,
+                nowMs = 3_000L,
+                validated = false,
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.shouldRecoverAfterTransportGap(
+                lastBlackoutAtMs = 0L,
+                nowMs = 10_000L,
+                validated = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `validated gap ignores doze blip`() {
+        assertFalse(
+            NetworkRecoveryPolicy.shouldRecoverAfterValidatedGap(
+                unvalidatedSinceMs = 1_000L,
+                nowMs = 2_500L,
+            ),
+        )
+        assertTrue(
+            NetworkRecoveryPolicy.shouldRecoverAfterValidatedGap(
+                unvalidatedSinceMs = 1_000L,
+                nowMs = 1_000L + NetworkRecoveryPolicy.VALIDATED_GAP_RECOVER_MS,
+            ),
+        )
+    }
+
+    @Test
+    fun `phone call audio modes and end`() {
+        assertTrue(NetworkRecoveryPolicy.isPhoneCallAudioMode(2)) // IN_CALL
+        assertTrue(NetworkRecoveryPolicy.isPhoneCallAudioMode(3)) // IN_COMMUNICATION
+        assertFalse(NetworkRecoveryPolicy.isPhoneCallAudioMode(0)) // NORMAL
+        assertTrue(NetworkRecoveryPolicy.shouldFirePhoneCallEnd(true, false))
+        assertFalse(NetworkRecoveryPolicy.shouldFirePhoneCallEnd(false, false))
+        assertFalse(NetworkRecoveryPolicy.shouldFirePhoneCallEnd(true, true))
+    }
+
+    @Test
+    fun `wait restart reasons include rat gap call handover`() {
+        assertTrue(NetworkRecoveryPolicy.needsUnderlyingWaitRestart("rat_switch:3g->4g"))
+        assertTrue(NetworkRecoveryPolicy.needsUnderlyingWaitRestart("cell_gap_restored"))
+        assertTrue(NetworkRecoveryPolicy.needsUnderlyingWaitRestart("wifi_gap_restored"))
+        assertTrue(NetworkRecoveryPolicy.needsUnderlyingWaitRestart("link_handover:cell"))
+        assertTrue(NetworkRecoveryPolicy.needsUnderlyingWaitRestart("phone_call_end"))
+        assertTrue(NetworkRecoveryPolicy.needsUnderlyingWaitRestart("internet_restored"))
+        assertTrue(NetworkRecoveryPolicy.needsUnderlyingWaitRestart("transport_switch:wifi"))
+        assertFalse(NetworkRecoveryPolicy.needsUnderlyingWaitRestart("validated"))
+        assertTrue(NetworkRecoveryPolicy.isRealNetworkRecoveryReason("rat_switch:2g->4g"))
+        assertTrue(NetworkRecoveryPolicy.isRealNetworkRecoveryReason("link_handover:wifi"))
+    }
+
+    @Test
+    fun `link handover first observation is ignored`() {
+        assertFalse(NetworkRecoveryPolicy.shouldRecoverOnLinkAddrsChange(null, "10.1.2.3"))
+        assertFalse(NetworkRecoveryPolicy.shouldRecoverOnLinkAddrsChange("", "10.1.2.3"))
+        assertTrue(NetworkRecoveryPolicy.shouldRecoverOnLinkAddrsChange("10.1.2.3", "10.9.8.7"))
+        assertFalse(NetworkRecoveryPolicy.shouldRecoverOnLinkAddrsChange("10.1.2.3", "10.1.2.3"))
+        assertTrue(NetworkRecoveryPolicy.shouldAcceptLinkHandover(0L, 10_000L))
+        assertFalse(NetworkRecoveryPolicy.shouldAcceptLinkHandover(1_000L, 10_000L))
+        assertTrue(NetworkRecoveryPolicy.shouldAcceptLinkHandover(1_000L, 32_000L))
+    }
+
+    @Test
     fun `skip transport restart in bootstrap`() {
         assertTrue(
             NetworkRecoveryPolicy.shouldSkipTransportRestart(

@@ -166,6 +166,10 @@ object HashFailureReporter {
 
         if (m.contains("global lockout")) return true
 
+        if (m.contains("anonym_token.outdated")) return true
+
+        if (m.contains("anonym_token") && m.contains("outdated")) return true
+
         return false
 
     }

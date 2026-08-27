@@ -2,9 +2,12 @@ package com.silent.vpn.vpn
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
+import android.telephony.TelephonyManager
+import com.silent.vpn.policy.NetworkRecoveryPolicy
 import com.silent.vpn.policy.OlcrtcRecoveryPolicy
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.util.DebugLog
@@ -173,6 +176,36 @@ object VpnNetworkHelper {
             hasCell -> "cell"
             else -> ""
         }
+    }
+
+    /**
+     * Поколение сотовой сети (2g/3g/4g) по underlying cellular, не по VPN.
+     * Без READ_PHONE_STATE: ConnectivityManager.NetworkInfo.subtype.
+     */
+    @Suppress("DEPRECATION")
+    fun cellularRatBucket(context: Context): String {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) continue
+            val info = cm.getNetworkInfo(network)
+            val fromInfo = info?.let { NetworkRecoveryPolicy.ratBucketFromNetworkType(it.subtype) }.orEmpty()
+            if (fromInfo.isNotEmpty()) return fromInfo
+        }
+        return runCatching {
+            val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+                ?: return@runCatching ""
+            NetworkRecoveryPolicy.ratBucketFromNetworkType(tm.dataNetworkType)
+        }.getOrDefault("")
+    }
+
+    /** Стабильный ключ адресов underlying-сети — смена IP при handover вышки / новой точки Wi‑Fi. */
+    fun linkAddressKey(lp: LinkProperties): String {
+        val all = lp.linkAddresses.mapNotNull { it.address.hostAddress }
+        val v4 = all.filter { it.contains('.') && !it.contains(':') }.sorted()
+        if (v4.isNotEmpty()) return v4.joinToString(",")
+        return all.sorted().joinToString(",")
     }
 
     /**

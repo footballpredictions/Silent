@@ -19,8 +19,9 @@ cd wdtt-go
 set GOOS=windows
 set GOARCH=amd64
 set CGO_ENABLED=0
-REM Как build-agent: фиксируем Go ≥1.26.3 (go.mod = 1.26)
-set GOTOOLCHAIN=go1.26.3
+REM Локальный Go (1.26.2): go1.26.3 toolchain download недоступен.
+set GOTOOLCHAIN=local
+set GOPROXY=off
 go build -ldflags="-s -w -checklinkname=0" -trimpath -o "..\resources\wdtt-client.exe" .
 if errorlevel 1 (
   echo wdtt build FAILED

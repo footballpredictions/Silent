@@ -1,5 +1,4 @@
 import api, { getDeviceFingerprint, isLoggedIn } from './api'
-import { isTunnelApiActive } from './tunnelApi'
 import { pushLog } from './debugLog'
 
 const DEBOUNCE_MS = 5 * 60 * 1000
@@ -35,23 +34,24 @@ export async function reportHashFailure(hash: string, errorType: string, message
   const h = hash.trim()
   if (h.length < 6) return
   const type = (errorType || 'unknown').trim().slice(0, 64)
+  const msg = String(message || '')
+  if (msg.toLowerCase().includes('anonym_token.outdated')) return
   const key = debounceKey(h, type)
   const now = Date.now()
   if (now - (lastReportMs.get(key) || 0) < DEBOUNCE_MS) return
   lastReportMs.set(key, now)
 
-  if (!isTunnelApiActive()) {
-    pendingQueue.push({ hash: h, errorType: type, message })
+  if (!isLoggedIn()) {
+    pendingQueue.push({ hash: h, errorType: type, message: msg })
     scheduleFlushPending()
-    pushLog('HashFail', `queued (no tunnel): ${h.slice(0, 8)}… ${type}`, 'W')
     return
   }
 
   try {
-    await postHashFailure(h, type, message)
+    await postHashFailure(h, type, msg)
     pushLog('HashFail', `reported ${h.slice(0, 8)}… ${type}`, 'I')
   } catch (e) {
-    pendingQueue.push({ hash: h, errorType: type, message })
+    pendingQueue.push({ hash: h, errorType: type, message: msg })
     scheduleFlushPending()
     pushLog('HashFail', `report failed: ${(e as Error)?.message || e}`, 'W')
   }
@@ -66,7 +66,7 @@ function scheduleFlushPending() {
 }
 
 export async function flushPendingHashFailures() {
-  if (!pendingQueue.length || !isTunnelApiActive() || !isLoggedIn()) return
+  if (!pendingQueue.length || !isLoggedIn()) return
   const batch = pendingQueue.splice(0, pendingQueue.length)
   for (const item of batch) {
     try {

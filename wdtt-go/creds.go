@@ -90,18 +90,21 @@ func fatalCallError(resp map[string]interface{}) *CallUnavailableError {
 	return &CallUnavailableError{Code: code, Message: msg}
 }
 
-// vkCallsShouldRetry вЂ” СЃРµС‚СЊ/decode/flood; captcha/call/api СЂРµС‚СЂР°РёС‚СЊ Р±РµСЃСЃРјС‹СЃР»РµРЅРЅРѕ.
+// vkCallsShouldRetry — сеть/decode/flood и протухший OK anonym token.
+// Captcha/call/прочий API ретраить бессмысленно.
 func vkCallsShouldRetry(err error) bool {
 	var failure *vkCallsFailure
 	if errors.As(err, &failure) {
 		switch failure.Kind {
 		case vkCallsFailureNetwork, vkCallsFailureDecode, vkCallsFailureFlood:
 			return true
+		case vkCallsFailureOKCDN:
+			return vkCallsIsStaleAnonToken(failure.Err)
 		default:
 			return false
 		}
 	}
-	return false
+	return vkCallsIsStaleAnonToken(err)
 }
 
 // vkCallsShouldFallbackToLegacy вЂ” РІ СЂРµР¶РёРјРµ vkcalls РќРРљРћР“Р”Рђ РЅРµ СѓС…РѕРґРёРј РІ legacy+РєР°РїС‡Сѓ
@@ -496,9 +499,13 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 			}
 		}
 		if !vkCallsShouldFallbackToLegacy(lastVKCallsErr) {
-			// РќРµ СѓС…РѕРґРёРј РІ legacy РІРЅСѓС‚СЂРё РїСЂРѕС†РµСЃСЃР° (С€С‚РѕСЂРј РєР°РїС‡Рё РїСЂРё n=63) вЂ”
-			// СЃРёРіРЅР°Р» РґР»СЏ Electron/Android: РїРµСЂРµР·Р°РїСѓСЃРє СЃ auto/manual Рё n=9.
-			log.Printf("[STREAM %d] [VK Auth] LEGACY_ESCALATE_CAPTCHA вЂ” host should switch to legacy captcha (%s)", streamID, describeVKCallsFailure(lastVKCallsErr))
+			// Не уходим в legacy внутри процесса (шторм капчи при n=63).
+			// anonym_token.outdated — не капча: хост не должен эскалировать.
+			if vkCallsIsStaleAnonToken(lastVKCallsErr) {
+				log.Printf("[STREAM %d] [VK Auth] stale anonym token after retries — skip group (no captcha) (%s)", streamID, describeVKCallsFailure(lastVKCallsErr))
+				return "", "", nil, lastVKCallsErr
+			}
+			log.Printf("[STREAM %d] [VK Auth] LEGACY_ESCALATE_CAPTCHA - host should switch to legacy captcha (%s)", streamID, describeVKCallsFailure(lastVKCallsErr))
 			return "", "", nil, lastVKCallsErr
 		}
 		log.Printf("[STREAM %d] [VK Auth] VK Calls exhausted (%s), falling back to legacy", streamID, describeVKCallsFailure(lastVKCallsErr))

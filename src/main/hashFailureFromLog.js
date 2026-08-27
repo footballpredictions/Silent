@@ -24,9 +24,26 @@ function resetCaptchaHits() {
   captchaHits.clear()
 }
 
+function isStaleAnonymToken(message) {
+  const m = String(message || '').toLowerCase()
+  return m.includes('anonym_token.outdated') ||
+    (m.includes('anonym_token') && m.includes('outdated'))
+}
+
+function isCallDeadMessage(message) {
+  const m = String(message || '').toLowerCase()
+  return m.includes('хеш мёртв') ||
+    m.includes('call not found') ||
+    m.includes('invalid join link') ||
+    m.includes('join link is not valid') ||
+    m.includes('conversation not found')
+}
+
 function isTransientHashError(message) {
   const m = String(message || '').toLowerCase()
   if (!m) return true
+  if (isStaleAnonymToken(m)) return true
+  if (isCallDeadMessage(m)) return false
   if (isCaptchaRelated(m)) return true
   if (m.includes('i/o timeout') || m.includes('context deadline exceeded')) return true
   if (m.includes('connection refused') || m.includes('connection reset')) return true
@@ -57,6 +74,8 @@ function finalizeFailure(hash, errorType, message) {
   let type = String(errorType || 'unknown').trim()
   const msg = String(message || '').slice(0, 500)
 
+  if (isStaleAnonymToken(msg)) return null
+
   if (isCaptchaRelated(msg) || type.toLowerCase().includes('captcha')) {
     if (!isPersistentCaptcha(h)) return null
     type = 'captcha_persistent'
@@ -67,12 +86,46 @@ function finalizeFailure(hash, errorType, message) {
   return { hash: h, errorType: type, message: msg }
 }
 
+function hashFromDeadLine(lineTrim, ctx) {
+  const hashFromLine = lineTrim.match(/хеш[:]\s*(\S+)/i)?.[1]
+    || lineTrim.match(/hash[:]\s*(\S+)/i)?.[1]
+  if (hashFromLine && hashFromLine.length >= 6) return hashFromLine.replace(/[.,;]+$/, '')
+  const stream = lineTrim.match(/\[STREAM (\d+)\]/)
+  if (stream) {
+    const gid = Math.floor(parseInt(stream[1], 10) / 100)
+    if (gid > 0) {
+      const hash = resolveHashForGroup(gid, ctx.groupHashPrefix, ctx.sessionVkHashes)
+      if (hash) return hash
+    }
+  }
+  const group = lineTrim.match(/\[ГРУППА #(\d+)\]/)
+  if (group) {
+    const hash = resolveHashForGroup(parseInt(group[1], 10), ctx.groupHashPrefix, ctx.sessionVkHashes)
+    if (hash) return hash
+  }
+  return ctx.sessionVkHashes[0] || null
+}
+
 /**
  * @returns {{ hash: string, errorType: string, message: string } | null}
  */
 function parseHashFailureFromLine(line, ctx) {
   const lineTrim = String(line || '').trim()
   if (!lineTrim || !ctx?.sessionVkHashes?.length) return null
+
+  const groupHash = lineTrim.match(/\[ГРУППА #(\d+)\] Запрос кредов \(хеш: (\S+)/)
+  if (groupHash) {
+    const gid = parseInt(groupHash[1], 10)
+    ctx.groupHashPrefix.set(gid, groupHash[2].replace(/\.$/, ''))
+    return null
+  }
+
+  // Join-link мёртв — репортить и до tunnelReady (STREAM 100 на GETCONF).
+  if (isCallDeadMessage(lineTrim)) {
+    const hash = hashFromDeadLine(lineTrim, ctx)
+    if (!hash) return null
+    return finalizeFailure(hash, 'hash_dead', lineTrim)
+  }
 
   const groupCred = lineTrim.match(/\[ГРУППА #(\d+)\] Ошибка кредов: (.+)/)
   if (groupCred && ctx.tunnelReady) {
@@ -81,13 +134,6 @@ function parseHashFailureFromLine(line, ctx) {
     const hash = resolveHashForGroup(gid, ctx.groupHashPrefix, ctx.sessionVkHashes)
     if (!hash) return null
     return finalizeFailure(hash, 'creds_failed', msg)
-  }
-
-  const groupHash = lineTrim.match(/\[ГРУППА #(\d+)\] Запрос кредов \(хеш: (\S+)/)
-  if (groupHash) {
-    const gid = parseInt(groupHash[1], 10)
-    ctx.groupHashPrefix.set(gid, groupHash[2].replace(/\.$/, ''))
-    return null
   }
 
   if (lineTrim.includes('[VK Auth] Failed') && ctx.tunnelReady) {
@@ -103,26 +149,11 @@ function parseHashFailureFromLine(line, ctx) {
   }
 
   if (
-    (lineTrim.includes('хеш мёртв') || /call not found/i.test(lineTrim)) &&
-    ctx.tunnelReady
-  ) {
-    const hashFromLine = lineTrim.match(/хеш[:]\s*(\S+)/i)?.[1]
-      || lineTrim.match(/hash[:]\s*(\S+)/i)?.[1]
-    const hash = hashFromLine || ctx.sessionVkHashes[0]
-    return finalizeFailure(hash, 'hash_dead', lineTrim)
-  }
-
-  if (
     lineTrim.includes('Фатальная ошибка') &&
-    (lineTrim.includes('хеш мёртв') || lineTrim.includes('FATAL_AUTH')) &&
+    lineTrim.includes('FATAL_AUTH') &&
     ctx.tunnelReady
   ) {
-    const worker = lineTrim.match(/\[ВОРКЕР #(\d+)\]/)
-    const gid = worker ? Math.floor(parseInt(worker[1], 10) / 100) || 1 : 1
-    if (lineTrim.includes('FATAL_AUTH')) return null
-    const hash = resolveHashForGroup(gid, ctx.groupHashPrefix, ctx.sessionVkHashes)
-    if (!hash) return null
-    return finalizeFailure(hash, 'hash_dead', lineTrim)
+    return null
   }
 
   return null
@@ -131,6 +162,8 @@ function parseHashFailureFromLine(line, ctx) {
 module.exports = {
   parseHashFailureFromLine,
   isTransientHashError,
+  isCallDeadMessage,
+  isStaleAnonymToken,
   resolveHashForGroup,
   resetCaptchaHits,
   finalizeFailure,

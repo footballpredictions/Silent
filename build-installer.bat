@@ -5,6 +5,9 @@ cd /d "%~dp0"
 echo === Silent VPN PC: clean + wdtt + NSIS installer ===
 
 echo module.exports = { DEBUG_BUILD: false };> src\main\buildFlags.js
+REM Иначе leftover DEBUG_BUILD=1 с debug-сборки открывает лог/хеши в release UI.
+set DEBUG_BUILD=
+set "DEBUG_BUILD="
 
 REM Уникальная папка сборки, чтобы electron-builder не пытался удалять заблокированный app.asar из прошлых прогонов.
 for /f %%R in ('powershell -NoProfile -Command "Get-Random -Minimum 1000 -Maximum 999999"') do set OUT_DIR=build-release-v141-%%R
@@ -39,8 +42,9 @@ set GOOS=windows
 set GOARCH=amd64
 set CGO_ENABLED=0
 set GOARM=
-REM Как build-agent: фиксируем Go ≥1.26.3 (go.mod = 1.26)
-set GOTOOLCHAIN=go1.26.3
+REM Локальный Go (1.26.2): go1.26.3 toolchain download недоступен.
+set GOTOOLCHAIN=local
+set GOPROXY=off
 go build -ldflags="-s -w -checklinkname=0" -trimpath -o "..\resources\wdtt-client.exe" .
 if errorlevel 1 (
   echo wdtt build FAILED
@@ -77,6 +81,12 @@ for %%F in (dist\renderer\assets\*.css) do (
     exit /b 1
   )
   echo OK: renderer CSS %%~nxF ^(%%~zF bytes^)
+)
+
+dir /b dist\renderer\assets\*.map >nul 2>&1
+if not errorlevel 1 (
+  echo ERROR: sourcemap in release renderer — debug flag leaked. Aborting.
+  exit /b 1
 )
 
 echo [3/3] NSIS installer -^> !OUT_DIR!\

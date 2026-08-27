@@ -123,6 +123,9 @@ let tunnelApiDown = false
 
 function noteVkFloodFromLog(line) {
   const m = String(line || '').toLowerCase()
+  // Протухший anonym token — не flood/captcha. При живых воркерах тоже не эскалируем.
+  if (m.includes('anonym_token.outdated') || m.includes('stale anonym token')) return
+  if (wgApplied && activeWorkerCount >= WORKERS_PER_GROUP) return
   if (
     m.includes('legacy_escalate_captcha') ||
     m.includes('flood_escalate_captcha') ||
@@ -573,6 +576,7 @@ function cleanupVpn() {
     void clearSiteBypass(sendLog)
   } catch { /* ignore */ }
   clearTelegramWarmupTimers()
+  telegramWarmupMinWorkersDone = false
   resetHashFailureSessionState()
   vpnBootstrapMode = false
   vpnOlcrtcMode = false
@@ -776,27 +780,41 @@ function ensureVpnReadyEvent(sendLogFn) {
   } else {
     sendLogFn?.(`[VPN] tunnel ready (WG + ${activeWorkerCount}/${sessionTargetWorkers} workers)`)
   }
-  // Прогрев DC/CDN Telegram: сразу + повтор когда воркеры догонят (превью/медиа).
+  // Telegram Desktop: не греть DC при 1 воркере — SYN часто мёртвый, клиент кэширует «нет сети».
   if (!vpnBootstrapMode && !vpnOlcrtcMode) {
-    void warmupTelegramTcp(sendLogFn)
+    maybeWarmupTelegram(sendLogFn, { logDefer: true })
     scheduleTelegramWarmupRetries(sendLogFn)
   }
 }
 
 let telegramWarmupTimers = []
+let telegramWarmupMinWorkersDone = false
 
 function clearTelegramWarmupTimers() {
   for (const t of telegramWarmupTimers) clearTimeout(t)
   telegramWarmupTimers = []
 }
 
+function maybeWarmupTelegram(sendLogFn, opts = {}) {
+  if (!vpnSessionActive || vpnBootstrapMode || vpnOlcrtcMode) return
+  const force = !!opts.force
+  if (!force && activeWorkerCount < WORKERS_PER_GROUP) {
+    if (opts.logDefer) {
+      sendLogFn?.(`[Apps] warmup Telegram отложен (workers=${activeWorkerCount}<${WORKERS_PER_GROUP})`)
+    }
+    return
+  }
+  if (activeWorkerCount >= WORKERS_PER_GROUP) telegramWarmupMinWorkersDone = true
+  void warmupTelegramTcp(sendLogFn)
+}
+
 function scheduleTelegramWarmupRetries(sendLogFn) {
   clearTelegramWarmupTimers()
-  // Первый ready часто при части воркеров; превью Telegram любит «пустой» путь.
-  for (const ms of [4000, 12000]) {
+  // Первый ready часто при 1 воркере; Desktop TG поднимается, когда рамп уже идёт.
+  for (const ms of [4000, 8000, 20000, 35000]) {
     telegramWarmupTimers.push(setTimeout(() => {
       if (!vpnSessionActive || vpnBootstrapMode) return
-      void warmupTelegramTcp(sendLogFn)
+      maybeWarmupTelegram(sendLogFn, { force: ms >= 20000 })
     }, ms))
   }
 }
@@ -811,13 +829,18 @@ function warmupTelegramTcp(sendLogFn) {
     { host: '149.154.175.100', port: 443 },
     { host: '149.154.167.51', port: 443 },
     { host: '149.154.167.91', port: 443 },
+    { host: '149.154.167.40', port: 443 },
+    { host: '149.154.165.92', port: 443 },
     { host: '91.108.56.165', port: 443 },
+    { host: '91.108.56.100', port: 443 },
     { host: '91.108.4.134', port: 443 },
     { host: '91.108.8.68', port: 443 },
     // MTProto часто 5222 (превью/медиа), не только 443
     { host: '149.154.167.51', port: 5222 },
+    { host: '149.154.167.91', port: 5222 },
     { host: '149.154.175.50', port: 5222 },
     { host: '91.108.56.165', port: 5222 },
+    { host: '91.108.56.100', port: 5222 },
     { host: 'api.telegram.org', port: 443 },
   ]
   sendLogFn?.(`[Apps] warmup Telegram DC/CDN (TCP, workers=${activeWorkerCount})…`)
@@ -1096,7 +1119,7 @@ ipcMain.handle('get-site-bypass', () => {
 })
 
 ipcMain.handle('warmup-telegram-path', async () => {
-  warmupTelegramTcp(sendLog)
+  maybeWarmupTelegram(sendLog)
   return true
 })
 
@@ -1288,15 +1311,17 @@ async function beginWdttSession(config, { switching = false } = {}) {
   // Исключения приложений + сайты: план сессии (full VPN). Bootstrap — без user exclusions.
   try {
     const { getExcludedExePathsForVpn, defaultStatePath } = require('./apps/exclusionsState')
-    const { applyAppExclusionsForSession, clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
-    const { applySiteBypassFromFile, clearSiteBypass, defaultSiteBypassPath } = require('./apps/siteBypass')
+    const { setActiveExcludedExePaths, clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
+    const { clearSiteBypass } = require('./apps/siteBypass')
     if (config.is_bootstrap) {
       clearActiveExcludedExePaths()
       void clearSiteBypass(sendLog)
     } else {
       const paths = getExcludedExePathsForVpn(defaultStatePath(app.getPath('userData')))
-      applyAppExclusionsForSession(paths, sendLog)
-      void applySiteBypassFromFile(defaultSiteBypassPath(app.getPath('userData')), sendLog)
+      setActiveExcludedExePaths(paths)
+      if (paths.length) {
+        sendLog(`[Apps] исключения: ${paths.length} exe — маршруты Steam/Roblox после туннеля, не на старте`)
+      }
     }
   } catch (e) {
     sendLog(`[Apps] exclusions plan: ${e?.message || e}`)
@@ -1607,6 +1632,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
       try {
         const { refreshAppExclusionBypassAfterTunnel } = require('./apps/vpnAppExclusions')
         await refreshAppExclusionBypassAfterTunnel(sendLog)
+        const { applySiteBypassFromFile, defaultSiteBypassPath } = require('./apps/siteBypass')
+        void applySiteBypassFromFile(defaultSiteBypassPath(app.getPath('userData')), sendLog)
       } catch (e) {
         sendLog(`[Apps] bypass after tunnel: ${e?.message || e}`)
       }
@@ -1672,6 +1699,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
         void upgradeToFullTunnel(`workers>=${fullTunnelTargetWorkers()}`)
       }
       if (wgApplied) ensureVpnReadyEvent(sendLog)
+      if (wgApplied && !telegramWarmupMinWorkersDone && activeWorkerCount >= WORKERS_PER_GROUP) {
+        maybeWarmupTelegram(sendLog)
+      }
       const now = Date.now()
       if (now - lastStatsLogToUiAt >= 8000) {
         lastStatsLogToUiAt = now
@@ -1707,6 +1737,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
         void upgradeToFullTunnel(`workers>=${fullTunnelTargetWorkers()}`)
       }
       if (wgApplied) ensureVpnReadyEvent(sendLog)
+      if (wgApplied && !telegramWarmupMinWorkersDone && activeWorkerCount >= WORKERS_PER_GROUP) {
+        maybeWarmupTelegram(sendLog)
+      }
     }
     // TURN IP в AllowedIPs не добавляем: split 0.0.0.0/0 → сотни маршрутов, WG на Windows падает (exit 10).
 

@@ -1,6 +1,6 @@
 {
   "name": "silent-vpn-pc",
-  "version": "1.0.162",
+  "version": "1.0.163",
   "description": "Silent VPN PC Client",
   "main": "src/main/main.js",
   "scripts": {
@@ -49,12 +49,6 @@
       {
         "from": "assets/icon.png",
         "to": "assets/icon.png"
-      }
-    ],
-    "extraFiles": [
-      {
-        "from": "SilentVPN-Admin.bat",
-        "to": "SilentVPN-Admin.bat"
       }
     ],
     "win": {

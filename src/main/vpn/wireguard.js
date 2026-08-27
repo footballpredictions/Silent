@@ -373,35 +373,126 @@ function isAccessDeniedOut(text) {
   return /access is denied|отказано в доступе|error:\s*5\b|недостаточно привилегий/i.test(String(text || ''))
 }
 
-async function runWgInstall(wgExe, stableConf, runtimeDir, send) {
-  send('[WG] Установка службы WireGuardTunnel$wg-turn...')
-  const uninstallOut = await runCmdAsync(`"${wgExe}" /uninstalltunnelservice ${TUNNEL_NAME}`, runtimeDir)
-  if (uninstallOut && isAccessDeniedOut(uninstallOut)) {
-    send('[WG] uninstall: Access is denied — нужны права администратора')
-  }
-  const installOut = await runCmdAsync(`"${wgExe}" /installtunnelservice "${stableConf}"`, runtimeDir)
-  if (installOut) send('[WG] install: ' + installOut.slice(0, 400))
-  if (isAccessDeniedOut(installOut)) {
-    return { ok: false, accessDenied: true, out: installOut }
-  }
+function isAlreadyInstalledOut(text) {
+  return /already installed and running/i.test(String(text || ''))
+}
 
+function isStartDenied1058(text) {
+  return /\b1058\b|отключена|no enabled devices|не имеет включенных устройств/i.test(String(text || ''))
+}
+
+async function enableWgAdapters(send) {
+  await psExecAsync(`
+    Get-NetAdapter -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard'
+      } |
+      ForEach-Object {
+        try { Enable-NetAdapter -Name $_.Name -Confirm:$false -ErrorAction Stop }
+        catch { netsh.exe interface set interface name="$($_.Name)" admin=enabled 2>$null | Out-Null }
+      }
+  `)
+}
+
+async function queryWgService() {
+  try {
+    const { stdout } = await execAsync(`sc query "${SERVICE_NAME}"`, {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 8000,
+    })
+    const out = String(stdout || '')
+    const running = /\bSTATE\s*:\s*4\b/i.test(out)
+      || /\bСостояние\s*:\s*4\b/i.test(out)
+      || /\bRUNNING\b/i.test(out)
+      || /\bРАБОТАЕТ\b/i.test(out)
+    return { exists: true, running, out }
+  } catch (e) {
+    const out = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n')
+    if (/1060|does not exist|не существует|не найден/i.test(out)) {
+      return { exists: false, running: false, out }
+    }
+    return { exists: true, running: false, out }
+  }
+}
+
+async function startWgService(send) {
+  await enableWgAdapters(send)
+  try {
+    await execAsync(`sc config "${SERVICE_NAME}" start= demand`, {
+      windowsHide: true,
+      timeout: 8000,
+      encoding: 'utf8',
+    })
+  } catch { /* ignore */ }
   try {
     await execAsync(`sc start "${SERVICE_NAME}"`, {
       windowsHide: true,
       timeout: 20000,
       encoding: 'utf8',
     })
+    return { ok: true }
   } catch (e) {
     const msg = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim()
-    // 1056 = служба уже запущена (installtunnelservice часто стартует сам)
-    if (msg && !/1056|already running|уже запущен/i.test(msg)) {
-      send('[WG] sc start: ' + msg.slice(0, 200))
-      if (isAccessDeniedOut(msg)) {
-        return { ok: false, accessDenied: true, out: msg }
+    if (/1056|already running|уже запущен/i.test(msg)) return { ok: true }
+    if (isStartDenied1058(msg)) {
+      send('[WG] sc start 1058 — адаптер был Disabled, включаем и повторяем')
+      await enableWgAdapters(send)
+      await sleep(1000)
+      try {
+        await execAsync(`sc start "${SERVICE_NAME}"`, {
+          windowsHide: true,
+          timeout: 20000,
+          encoding: 'utf8',
+        })
+        return { ok: true }
+      } catch (e2) {
+        const msg2 = [e2.stdout, e2.stderr, e2.message].filter(Boolean).join('\n').trim()
+        if (/1056|already running|уже запущен/i.test(msg2)) return { ok: true }
+        if (msg2) send('[WG] sc start: ' + msg2.slice(0, 220))
+        return { ok: false, out: msg2 }
       }
     }
+    if (msg && !/1056|already running|уже запущен/i.test(msg)) {
+      send('[WG] sc start: ' + msg.slice(0, 220))
+    }
+    if (isAccessDeniedOut(msg)) return { ok: false, accessDenied: true, out: msg }
+    return { ok: false, out: msg }
   }
-  return { ok: true, accessDenied: false, out: installOut }
+}
+
+async function runWgInstall(wgExe, stableConf, runtimeDir, send) {
+  send('[WG] Установка службы WireGuardTunnel$wg-turn...')
+  await enableWgAdapters(send)
+  const before = await queryWgService()
+  if (before.running) {
+    send('[WG] служба уже RUNNING — install пропускаем')
+    return { ok: true, accessDenied: false, out: '' }
+  }
+  if (before.exists) {
+    send('[WG] служба есть, но не RUNNING — старт без uninstall')
+    const started = await startWgService(send)
+    if (started.ok) return { ok: true, accessDenied: false, out: started.out || '' }
+    send('[WG] старт не удался — переустановка службы…', 'W')
+  }
+
+  const uninstallOut = await runCmdAsync(`"${wgExe}" /uninstalltunnelservice ${TUNNEL_NAME}`, runtimeDir)
+  if (uninstallOut && isAccessDeniedOut(uninstallOut)) {
+    send('[WG] uninstall: Access is denied — нужны права администратора')
+  }
+  await sleep(800)
+  const installOut = await runCmdAsync(`"${wgExe}" /installtunnelservice "${stableConf}"`, runtimeDir)
+  if (installOut) send('[WG] install: ' + installOut.slice(0, 400))
+  if (isAccessDeniedOut(installOut)) {
+    return { ok: false, accessDenied: true, out: installOut }
+  }
+  if (isAlreadyInstalledOut(installOut)) {
+    send('[WG] туннель уже стоит — Enable-NetAdapter + sc start, без повторного install')
+    const started = await startWgService(send)
+    return { ok: started.ok, accessDenied: !!started.accessDenied, out: installOut }
+  }
+  const started = await startWgService(send)
+  return { ok: started.ok !== false, accessDenied: !!started.accessDenied, out: installOut }
 }
 
 /**
@@ -706,12 +797,16 @@ ${bypassRoutePs1Lines(chunk)}
 }
 
 /** Снять host/CIDR routes без сброса сохранённого физического шлюза. */
-async function removeHostBypassRoutes(excludeIPs, send) {
+async function removeHostBypassRoutes(excludeIPs, send, epoch = null) {
   const targets = [...new Set(
     (excludeIPs || []).map(parseBypassTarget).filter(Boolean),
   )]
   if (!targets.length) return
   for (const t of targets) {
+    if (epoch != null && epoch !== wgApplyEpoch) {
+      send?.('[WG] Bypass host: снятие прервано — уже новый connect')
+      return
+    }
     try {
       await execAsync(`route delete ${t.ip}`, { windowsHide: true, timeout: 5000 })
     } catch { /* ignore */ }
@@ -722,11 +817,13 @@ async function removeHostBypassRoutes(excludeIPs, send) {
       )
     } catch { /* ignore */ }
   }
+  if (epoch != null && epoch !== wgApplyEpoch) return
   send?.(`[WG] Bypass host routes сняты: ${targets.length}`)
 }
 
-async function removeServerBypassRoutes(excludeIPs, send) {
-  await removeHostBypassRoutes(excludeIPs, send)
+async function removeServerBypassRoutes(excludeIPs, send, epoch = null) {
+  await removeHostBypassRoutes(excludeIPs, send, epoch)
+  if (epoch != null && epoch !== wgApplyEpoch) return
   const list = (excludeIPs || []).filter(Boolean)
   if (list.length) {
     send?.(`[WG] Bypass API снят: ${list.join(', ')}`)
@@ -781,9 +878,13 @@ function sleep(ms) {
 
 async function waitForTunnelUp(maxMs = 30000, send) {
   const deadline = Date.now() + maxMs
+  let enabled = false
   while (Date.now() < deadline) {
-    // sc query быстрее Get-NetAdapter — UI ready раньше
     if (await isServiceRunningAsync()) return true
+    if (!enabled) {
+      enabled = true
+      await enableWgAdapters(send)
+    }
     await sleep(300)
   }
   const up = await isServiceRunningAsync()
@@ -1078,12 +1179,22 @@ async function stopWireGuardTunnel(isDev, dirname, send, excludeIPs = []) {
   const epoch = wgApplyEpoch
   // Сначала туннель: иначе bypass снят, а /1+/1 остаются → нет интернета (Win10).
   await forceStopWireGuard(isDev, dirname, send)
-  if (epoch !== wgApplyEpoch) {
-    send?.('[WG] bypass не снимаем — уже новый connect')
-    return
-  }
-  await removeServerBypassRoutes(excludeIPs.length ? excludeIPs : [FALLBACK_BACKEND_IP], send)
-  savedPhysicalGateway = null
+  // Снятие bypass — в той же очереди stop, иначе waitWgStopIdle возвращается
+  // раньше, новый туннель встаёт, а route delete догоняет и вырезает API/VK.
+  await enqueueWgStop(async () => {
+    if (epoch !== wgApplyEpoch) {
+      send?.('[WG] bypass не снимаем — уже новый connect')
+      return
+    }
+    await removeServerBypassRoutes(
+      excludeIPs.length ? excludeIPs : [FALLBACK_BACKEND_IP],
+      send,
+      epoch,
+    )
+    if (epoch === wgApplyEpoch) {
+      savedPhysicalGateway = null
+    }
+  })
 }
 
 function buildWgConfigFromApi(config, listenPort = 9000) {
@@ -1344,16 +1455,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   send(elevated ? '[WG] Процесс с правами администратора' : '[WG] Без админа — нужен UAC для службы WireGuard')
 
   // Win10: прошлый disconnect мог только Disable-NetAdapter — перед install включим.
-  await psExecAsync(`
-    Get-NetAdapter -ErrorAction SilentlyContinue |
-      Where-Object {
-        ($_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard') -and
-        $_.Status -eq 'Disabled'
-      } |
-      ForEach-Object {
-        Enable-NetAdapter -Name $_.Name -Confirm:$false -ErrorAction SilentlyContinue
-      }
-  `)
+  await enableWgAdapters(send)
 
   if (!elevated) {
     const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly)
@@ -1368,7 +1470,13 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     return finishOk()
   }
 
-  // Сразу после OTA служба/драйвер ещё «остывают» — один повтор без UAC.
+  send('[WG] Служба не поднялась — Enable-NetAdapter + sc start, без второго uninstall…')
+  await enableWgAdapters(send)
+  await startWgService(send)
+  if (await waitForTunnelUp(15000, send)) {
+    return finishOk()
+  }
+
   send('[WG] Служба не поднялась — повтор установки через 2с…')
   await sleep(2000)
   const retryResult = await runWgInstall(wgExe, stableConf, runtimeDir, send)

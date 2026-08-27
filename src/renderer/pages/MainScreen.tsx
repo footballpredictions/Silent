@@ -1163,6 +1163,7 @@ export default function MainScreen({
           await markOnlineOnServer()
           void warmupBrowsingPath().catch(() => null)
           window.setTimeout(() => { void warmupBrowsingPath(8000).catch(() => null) }, 5000)
+          window.setTimeout(() => { void warmupBrowsingPath(8000).catch(() => null) }, 20000)
           fetchProfile()
           return
         }

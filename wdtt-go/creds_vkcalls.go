@@ -160,8 +160,8 @@ func getVKCredsViaVKCallsPath(ctx context.Context, link string, streamID int) (s
 		if ctx.Err() != nil {
 			return "", "", nil, ctx.Err()
 		}
-		// Flood/captcha/call — не долбим следующие хосты (усиливает rate-limit).
-		if !vkCallsShouldRetry(err) || vkCallsIsFlood(err) {
+		// Flood/captcha/call/stale token — не долбим следующие хосты (усиливает rate-limit).
+		if !vkCallsShouldRetry(err) || vkCallsIsFlood(err) || vkCallsIsStaleAnonToken(err) {
 			return "", "", nil, err
 		}
 		if hi+1 < len(vkCallsAPIHosts) {
@@ -292,51 +292,77 @@ func getVKCredsViaVKCallsHost(ctx context.Context, link string, streamID int, ap
 	}
 	log.Printf("[STREAM %d] [VKCalls] step3 OK, OK anonymToken (%d chars)", streamID, len(okAnonymToken))
 
-	okDeviceID := uuid.New().String()
 	step4 := "step4 auth.anonymLogin"
-	step4URL := "https://calls.okcdn.ru/fb.do?session_data=" +
-		neturl.QueryEscape(fmt.Sprintf(
-			`{"version":2,"device_id":"%s","client_version":"1.0.1"}`, okDeviceID,
-		)) +
-		"&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA"
-	resp4, err := doRequest(step4, step4URL)
-	if err != nil {
-		return "", "", nil, err
-	}
-	sessionKey, err := extractVKCallsStr(resp4, "session_key")
-	if err != nil {
-		return "", "", nil, newVKCallsFailure(step4, vkCallsFailureParse, fmt.Errorf("parse session_key: %w (resp: %s)", err, truncateVKCallsResp(resp4)))
-	}
-	log.Printf("[STREAM %d] [VKCalls] step4 OK, OK session_key (%d chars)", streamID, len(sessionKey))
-
 	step5 := "step5 vchat.joinConversationByLink"
-	step5URL := fmt.Sprintf(
-		"https://calls.okcdn.ru/fb.do?joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s",
-		link, okAnonymToken, sessionKey,
-	)
-	resp5, err := doRequest(step5, step5URL)
-	if err != nil {
-		return "", "", nil, err
-	}
-	if okErr := vkCallsOKError(resp5); okErr != nil {
-		return "", "", nil, newVKCallsFailure(step5, vkCallsFailureOKCDN, fmt.Errorf("%w (resp: %s)", okErr, truncateVKCallsResp(resp5)))
-	}
+	var lastJoinErr error
+	for joinAttempt := 1; joinAttempt <= 2; joinAttempt++ {
+		if joinAttempt > 1 {
+			log.Printf("[STREAM %d] [VKCalls] step5 anonym_token.outdated — refresh OK token (attempt %d)", streamID, joinAttempt)
+			resp3, err = doRequest(step3, step3URL)
+			if err != nil {
+				return "", "", nil, err
+			}
+			if apiErr := vkCallsAPIError(resp3); apiErr != nil {
+				return "", "", nil, newVKCallsFailure(step3, vkCallsAPIErrorKind(apiErr), apiErr)
+			}
+			okAnonymToken, err = extractVKCallsStr(resp3, "response", "token")
+			if err != nil {
+				return "", "", nil, newVKCallsFailure(step3, vkCallsFailureParse, fmt.Errorf("parse token: %w (resp: %s)", err, truncateVKCallsResp(resp3)))
+			}
+		}
 
-	user, err := extractVKCallsStr(resp5, "turn_server", "username")
-	if err != nil {
-		return "", "", nil, newVKCallsFailure(step5, vkCallsFailureParse, fmt.Errorf("parse username: %w (resp: %s)", err, truncateVKCallsResp(resp5)))
-	}
-	pass, err := extractVKCallsStr(resp5, "turn_server", "credential")
-	if err != nil {
-		return "", "", nil, newVKCallsFailure(step5, vkCallsFailureParse, fmt.Errorf("parse credential: %w", err))
-	}
-	addrs := parseVKCallsTURNAddresses(resp5)
-	if len(addrs) == 0 {
-		return "", "", nil, newVKCallsFailure(step5, vkCallsFailureParse, fmt.Errorf("turn_server.urls empty"))
-	}
+		okDeviceID := uuid.New().String()
+		step4URL := "https://calls.okcdn.ru/fb.do?session_data=" +
+			neturl.QueryEscape(fmt.Sprintf(
+				`{"version":2,"device_id":"%s","client_version":"1.0.1"}`, okDeviceID,
+			)) +
+			"&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA"
+		resp4, err := doRequest(step4, step4URL)
+		if err != nil {
+			return "", "", nil, err
+		}
+		sessionKey, err := extractVKCallsStr(resp4, "session_key")
+		if err != nil {
+			return "", "", nil, newVKCallsFailure(step4, vkCallsFailureParse, fmt.Errorf("parse session_key: %w (resp: %s)", err, truncateVKCallsResp(resp4)))
+		}
+		log.Printf("[STREAM %d] [VKCalls] step4 OK, OK session_key (%d chars)", streamID, len(sessionKey))
 
-	log.Printf("[STREAM %d] [VKCalls] SUCCESS, TURN urls=%d", streamID, len(addrs))
-	return user, pass, addrs, nil
+		step5URL := fmt.Sprintf(
+			"https://calls.okcdn.ru/fb.do?joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s",
+			link, okAnonymToken, sessionKey,
+		)
+		resp5, err := doRequest(step5, step5URL)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if okErr := vkCallsOKError(resp5); okErr != nil {
+			lastJoinErr = newVKCallsFailure(step5, vkCallsFailureOKCDN, fmt.Errorf("%w (resp: %s)", okErr, truncateVKCallsResp(resp5)))
+			if joinAttempt < 2 && vkCallsIsStaleAnonToken(okErr) {
+				continue
+			}
+			return "", "", nil, lastJoinErr
+		}
+
+		user, err := extractVKCallsStr(resp5, "turn_server", "username")
+		if err != nil {
+			return "", "", nil, newVKCallsFailure(step5, vkCallsFailureParse, fmt.Errorf("parse username: %w (resp: %s)", err, truncateVKCallsResp(resp5)))
+		}
+		pass, err := extractVKCallsStr(resp5, "turn_server", "credential")
+		if err != nil {
+			return "", "", nil, newVKCallsFailure(step5, vkCallsFailureParse, fmt.Errorf("parse credential: %w", err))
+		}
+		addrs := parseVKCallsTURNAddresses(resp5)
+		if len(addrs) == 0 {
+			return "", "", nil, newVKCallsFailure(step5, vkCallsFailureParse, fmt.Errorf("turn_server.urls empty"))
+		}
+
+		log.Printf("[STREAM %d] [VKCalls] SUCCESS, TURN urls=%d", streamID, len(addrs))
+		return user, pass, addrs, nil
+	}
+	if lastJoinErr != nil {
+		return "", "", nil, lastJoinErr
+	}
+	return "", "", nil, newVKCallsFailure(step5, vkCallsFailureOKCDN, fmt.Errorf("join failed"))
 }
 
 func extractVKCallsStr(resp map[string]interface{}, keys ...string) (string, error) {
@@ -425,6 +451,15 @@ func vkCallsOKError(resp map[string]interface{}) error {
 	}
 	msg, _ := resp["error_msg"].(string)
 	return &vkCallsOKAPIError{Code: int(code), Message: msg}
+}
+
+func vkCallsIsStaleAnonToken(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "anonym_token.outdated") ||
+		(strings.Contains(s, "anonym_token") && strings.Contains(s, "outdated"))
 }
 
 func truncateVKCallsLog(s string, n int) string {

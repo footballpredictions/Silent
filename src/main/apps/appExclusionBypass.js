@@ -251,7 +251,16 @@ function startAppExclusionBypass(exePaths, send) {
 /** После поднятия WG шлюз уже известен — сразу накатить platform packs. */
 async function refreshAppExclusionBypassAfterTunnel(send) {
   if (send) sendLog = send
-  if (!activeExePaths.length) return
+  if (!activeExePaths.length) {
+    let paths = []
+    try {
+      const { getActiveExcludedExePaths } = require('./vpnAppExclusions')
+      paths = getActiveExcludedExePaths()
+    } catch { /* ignore */ }
+    if (!paths.length) return
+    startAppExclusionBypass(paths, send)
+    return
+  }
   packsApplied = false
   await applyPlatformPacks(activeExePaths)
   await tick()

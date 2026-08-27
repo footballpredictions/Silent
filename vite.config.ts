@@ -12,7 +12,9 @@ function resolveBootstrapVkHash(mode: string): string {
 }
 
 export default defineConfig(({ mode }) => {
-  const isDebugBuild = mode === 'debug' || mode === 'development' || process.env.DEBUG_BUILD === '1'
+  // Только явный --mode debug|development. Env DEBUG_BUILD=1 с прошлой debug-сборки
+  // не должен открывать лог/хеши/капчу в release installer.
+  const isDebugBuild = mode === 'debug' || mode === 'development'
   return {
   plugins: [react()],
   base: './',

@@ -22,6 +22,35 @@ logger = logging.getLogger(__name__)
 BOOTSTRAP_EMAIL = "__bootstrap__@silent.local"
 
 
+def _live_subscription_user_ids():
+    """Пользователи с живой подпиской (включая выданный unlimited ~100 лет)."""
+    return (
+        select(Subscription.user_id)
+        .where(
+            Subscription.status == "active",
+            Subscription.expires_at > datetime.utcnow(),
+        )
+        .distinct()
+    )
+
+
+def _vpn_access_clause(*, global_test: bool, admin_email: str):
+    live_sub = _live_subscription_user_ids()
+    if global_test:
+        return or_(
+            User.is_admin.is_(True),
+            func.lower(User.email) == admin_email,
+            User.test_mode_excluded.is_(False),
+            User.id.in_(live_sub),
+        )
+    return or_(
+        User.is_admin.is_(True),
+        func.lower(User.email) == admin_email,
+        User.test_mode_personal.is_(True),
+        User.id.in_(live_sub),
+    )
+
+
 def _user_brief(user: User, *, admin: bool, in_test: bool, sub: Subscription | None) -> dict:
     return {
         "id": str(user.id),
@@ -189,6 +218,23 @@ async def list_subscription_users(
             )
         )
 
+    access = _vpn_access_clause(global_test=global_test, admin_email=admin_email)
+    if filter_mode == "active":
+        base = base.where(access)
+    elif filter_mode == "inactive":
+        base = base.where(~access, User.is_admin.is_(False))
+    elif filter_mode == "unpaid":
+        unpaid_subq = (
+            select(Payment.user_id)
+            .where(
+                Payment.status == "completed",
+                Payment.subscription_applied.is_(False),
+                Payment.support_code.is_not(None),
+            )
+            .distinct()
+        )
+        base = base.where(User.id.in_(unpaid_subq))
+
     count_q = select(func.count()).select_from(base.subquery())
     total_matched = int((await db.execute(count_q)).scalar_one() or 0)
 
@@ -196,50 +242,39 @@ async def list_subscription_users(
         case_admin_first(admin_email),
         User.created_at.desc(),
     )
+    if filter_mode == "active":
+        live_expires = (
+            select(
+                Subscription.user_id.label("uid"),
+                func.max(Subscription.expires_at).label("exp"),
+            )
+            .where(
+                Subscription.status == "active",
+                Subscription.expires_at > datetime.utcnow(),
+            )
+            .group_by(Subscription.user_id)
+            .subquery()
+        )
+        ordered = (
+            base.outerjoin(live_expires, User.id == live_expires.c.uid)
+            .order_by(
+                case_admin_first(admin_email),
+                live_expires.c.exp.desc().nullslast(),
+                User.created_at.desc(),
+            )
+        )
 
-    if searching or filter_mode != "all":
-        # Поиск / фильтр: берём весь подходящий набор (до 500), потом режем страницу только без q.
-        fetch_limit = min(500, total_matched or 500)
-        result = await db.execute(ordered.limit(fetch_limit))
-        candidates = list(result.scalars().all())
-        rows = await _build_user_rows(db, candidates, global_test)
-        if filter_mode == "active":
-            rows = [r for r in rows if r["subscription"]["active"]]
-        elif filter_mode == "inactive":
-            rows = [r for r in rows if not r["subscription"]["active"] and not r["is_admin"]]
-        elif filter_mode == "unpaid":
-            unpaid_ids = {
-                str(uid)
-                for uid, in (
-                    await db.execute(
-                        select(Payment.user_id)
-                        .where(
-                            Payment.status == "completed",
-                            Payment.subscription_applied.is_(False),
-                            Payment.support_code.is_not(None),
-                        )
-                        .distinct()
-                    )
-                ).all()
-            }
-            rows = [r for r in rows if r["id"] in unpaid_ids]
-        total = len(rows)
-        if searching:
-            # Все найденные на одном экране
-            return {
-                "items": rows,
-                "page": 1,
-                "page_size": total or page_size,
-                "total": total,
-                "pages": 1,
-            }
-        users_page = rows[offset : offset + page_size]
+    if searching:
+        result = await db.execute(ordered.limit(min(500, total_matched or 500)))
+        users = list(result.scalars().all())
+        items = await _build_user_rows(db, users, global_test)
+        total = len(items)
         return {
-            "items": users_page,
-            "page": page,
-            "page_size": page_size,
+            "items": items,
+            "page": 1,
+            "page_size": total or page_size,
             "total": total,
-            "pages": max(1, (total + page_size - 1) // page_size),
+            "pages": 1,
         }
 
     result = await db.execute(ordered.offset(offset).limit(page_size))

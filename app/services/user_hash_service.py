@@ -316,11 +316,16 @@ async def report_hash_failure(
             return True, "bootstrap logged"
         return False, "hash not found"
 
+    msg_l = (message or "").lower()
+    if "anonym_token.outdated" in msg_l:
+        return True, "ignored stale anonym token"
+
     matched.fail_count = int(matched.fail_count or 0) + 1
     matched.last_failed = datetime.utcnow()
     matched.last_checked = datetime.utcnow()
     if matched.fail_count >= FAIL_COUNT_DEACTIVATE:
         matched.is_active = False
+        matched.last_error_code = 1
         logger.warning(
             "hash slot %s deactivated (fail_count=%s) user=%s type=%s",
             matched.slot_index,

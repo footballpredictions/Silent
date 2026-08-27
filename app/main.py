@@ -114,6 +114,9 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE vk_hashes ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id)"
         ))
         await conn.execute(text(
+            "ALTER TABLE vk_hashes ADD COLUMN IF NOT EXISTS last_error_code INTEGER NOT NULL DEFAULT 0"
+        ))
+        await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_vk_hashes_user_id ON vk_hashes (user_id)"
         ))
         await conn.execute(text(

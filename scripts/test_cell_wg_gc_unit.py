@@ -115,7 +115,40 @@ def test_health_ok_restores_queen_dnat():
     assert action == "queen"
 
 
-if __name__ == "__main__":
+def test_manifest_does_not_steal_ip_from_live_extra():
+    extra = "liveextraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa="
+    android = "androidkeyaaaaaaaaaaaaaaaaaaaaaaaaaaaa="
+    allowed = {extra: "10.66.0.71/32", android: "(none)"}
+    hs = {extra: 40.0, android: None}
+    assert sr.should_skip_manifest_ip_steal(android, "10.66.0.71/32", allowed, hs) is True
+    assert sr.should_skip_manifest_ip_steal(extra, "10.66.0.71/32", allowed, hs) is False
+
+
+def test_manifest_may_take_ip_from_never_hs_holder():
+    dead = "deadextraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa="
+    android = "androidkeyaaaaaaaaaaaaaaaaaaaaaaaaaaaa="
+    allowed = {dead: "10.66.0.71/32"}
+    hs = {dead: None, android: None}
+    assert sr.should_skip_manifest_ip_steal(android, "10.66.0.71/32", allowed, hs) is False
+
+
+def test_heal_restores_empty_live_extra_from_never_hs():
+    extra = "liveextraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa="
+    android = "androidkeyaaaaaaaaaaaaaaaaaaaaaaaaaaaa="
+    pwd = {extra: "10.66.0.71"}
+    allowed = {extra: "(none)", android: "10.66.0.71/32"}
+    hs = {extra: 20.0, android: None}
+    got = sr.extra_heal_assignments(pwd, allowed, hs)
+    assert got == [(extra, "10.66.0.71")]
+
+
+def test_heal_does_not_steal_from_other_live_peer():
+    extra = "liveextraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa="
+    other = "otherliveaaaaaaaaaaaaaaaaaaaaaaaaaaaaa="
+    pwd = {extra: "10.66.0.71"}
+    allowed = {extra: "(none)", other: "10.66.0.71/32"}
+    hs = {extra: 20.0, other: 15.0}
+    assert sr.extra_heal_assignments(pwd, allowed, hs) == []
     test_peer_host_allowed_always_slash32()
     test_gc_keeps_manifest_key_drops_never_and_stale()
     test_gc_throttles_within_window()
@@ -124,4 +157,8 @@ if __name__ == "__main__":
     test_one_health_fail_does_not_enter_standby()
     test_three_health_fails_enter_standby()
     test_health_ok_restores_queen_dnat()
+    test_manifest_does_not_steal_ip_from_live_extra()
+    test_manifest_may_take_ip_from_never_hs_holder()
+    test_heal_restores_empty_live_extra_from_never_hs()
+    test_heal_does_not_steal_from_other_live_peer()
     print("ok")

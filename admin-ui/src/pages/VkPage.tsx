@@ -10,6 +10,11 @@ type Status = {
   vk_user_id: number | null
   hashes_active: number
   hashes_per_user?: number
+  hashes_dead?: number
+  hashes_probe_pending?: number
+  probe_budget?: number
+  probe_last_run?: string | null
+  probe_last_message?: string | null
   users_for_agent?: number
   users_needing_hashes?: number
   max_hashes: number
@@ -380,11 +385,16 @@ export default function VkPage({ token }: { token: string }) {
     if (statusLoading && !status) return 'Загрузка…'
     const floodMsk = status?.agent_flood_until_msk || formatMskFromUtc(status?.agent_flood_until)
     if (status?.agent_flood_cooldown) {
-      return `⏸ Пауза на сервере (осталась от старого VK-аккаунта) до ${floodMsk ?? '—'}`
+      return `⏸ Пауза создания хешей (VK flood на calls.start) до ${floodMsk ?? '—'}`
     }
     if (status?.agent_connected) {
       const need = status.users_needing_hashes ?? 0
-      const base = `✓ Агент работает · ${status.hashes_per_user ?? status.hashes_active} хешей · проверка ~15 мин`
+      const dead = status.hashes_dead ?? 0
+      const pending = status.hashes_probe_pending ?? 0
+      const budget = status.probe_budget ?? 8
+      let base = `✓ Агент работает · ${status.hashes_per_user ?? status.hashes_active} хешей · liveness ${budget}/цикл`
+      if (dead > 0) base += ` · ${dead} слотов с ошибкой 1`
+      if (pending > 0) base += ` · ${pending} ждут повторной пробы`
       return need > 0 ? `${base} · ${need} пользов. без полного набора (4/4)` : base
     }
     if (status?.agent_enabled && status?.calls_ok) {
@@ -492,7 +502,8 @@ export default function VkPage({ token }: { token: string }) {
         </div>
         <div className="p-5 space-y-3">
           <p className="text-xs text-[#666] leading-relaxed">
-            Агент каждые ~15 мин заполняет пустые слоты (0–3) у каждого пользователя. Сломанные хеши клиенты сообщают сами.
+            Агент каждые ~15 мин проверяет живые join-хеши (анонимный preview, без TURN) и заполняет
+            пустые и мёртвые слоты (ошибка 1). Протухший anonym_token на клиенте — не поломка слота.
           </p>
           <p
             className={`text-sm ${
@@ -509,8 +520,8 @@ export default function VkPage({ token }: { token: string }) {
           </p>
           {status?.agent_flood_cooldown && (
             <p className="text-[11px] text-[#666] leading-relaxed">
-              Это <strong>не</strong> блокировка нового аккаунта — таймер поставил наш сервер после flood у старого VK.
-              Нажмите «Снять паузу» (если токен OK и calls.start работает).
+              Это пауза **нашего** сервера после VK error 9 на создании звонков (`calls.start`), не блокировка аккаунта.
+              Проверка живых хешей (preview) эту паузу больше не ставит. «Снять паузу» сразу создаёт недостающие хеши, без пачки проб.
             </p>
           )}
           {status?.agent_last_message && (
@@ -518,6 +529,13 @@ export default function VkPage({ token }: { token: string }) {
               <span className="text-[#777]">Последний запуск</span>{' '}
               {status.agent_last_run ? `(${status.agent_last_run}): ` : ': '}
               {status.agent_last_message}
+            </p>
+          )}
+          {status?.probe_last_message && (
+            <p className="text-[11px] text-[#555] leading-relaxed border border-[#222] rounded-lg px-3 py-2 bg-[#0a0a0a]">
+              <span className="text-[#777]">Liveness</span>{' '}
+              {status.probe_last_run ? `(${status.probe_last_run}): ` : ': '}
+              {status.probe_last_message}
             </p>
           )}
           <div className="flex flex-wrap gap-2">

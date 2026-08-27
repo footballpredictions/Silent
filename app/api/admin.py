@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import tempfile
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete, case, update
+from sqlalchemy import select, func, delete, case, update, or_
 from pydantic import BaseModel
 from typing import Optional
 
@@ -225,6 +225,7 @@ async def get_stats(
                 "hash": h.hash_value,
                 "is_active": h.is_active,
                 "fail_count": h.fail_count,
+                "last_error_code": int(getattr(h, "last_error_code", 0) or 0),
                 "last_checked": h.last_checked,
             }
             for h in unique_hashes
@@ -256,6 +257,7 @@ async def get_stats(
             "user_connected": False,
             "is_active": h.is_active,
             "fail_count": h.fail_count,
+            "last_error_code": int(getattr(h, "last_error_code", 0) or 0),
             "last_checked": h.last_checked,
         }
         for h in legacy_hashes
@@ -899,6 +901,27 @@ async def vk_panel_status(
             users_needing += 1
     status["users_needing_hashes"] = users_needing
     status["max_hashes"] = MAX_HASHES
+    status["hashes_dead"] = (await db.execute(
+        select(func.count(VkHash.id)).where(
+            VkHash.user_id.isnot(None),
+            or_(VkHash.is_active == False, VkHash.last_error_code == 1),  # noqa: E712
+        )
+    )).scalar_one() or 0
+    status["hashes_probe_pending"] = (await db.execute(
+        select(func.count(VkHash.id)).where(
+            VkHash.is_active == True,  # noqa: E712
+            VkHash.last_error_code == 2,
+        )
+    )).scalar_one() or 0
+    from app.services.vk_agent_auth import _setting
+    from ai.vk_hash_liveness import (
+        SETTING_LAST,
+        SETTING_LAST_MSG,
+        PROBE_BUDGET,
+    )
+    status["probe_last_run"] = await _setting(db, SETTING_LAST)
+    status["probe_last_message"] = await _setting(db, SETTING_LAST_MSG)
+    status["probe_budget"] = PROBE_BUDGET
     return status
 
 
@@ -1186,11 +1209,11 @@ async def vk_agent_clear_flood(
         raise HTTPException(status_code=400, detail=err or "Токен VK не работает")
 
     await clear_flood_cooldown(db)
-    await set_agent_run_log(db, "Пауза flood снята вручную, запуск создания хешей…", ok=True)
-    background_tasks.add_task(agent_heal_background)
+    await set_agent_run_log(db, "Пауза flood снята вручную, запуск создания хешей (без liveness)…", ok=True)
+    background_tasks.add_task(agent_heal_background, fill_only=True)
     return {
         "success": True,
-        "message": "Пауза снята. Создание хешей запущено в фоне (1–3 мин).",
+        "message": "Пауза снята. Создание хешей запущено в фоне, без пачки preview.",
     }
 
 
@@ -1228,7 +1251,7 @@ async def vk_agent_restore_hashes(
     await db.execute(
         update(VkHash)
         .where(VkHash.is_active == False, VkHash.user_id.isnot(None))
-        .values(is_active=True, fail_count=0)
+        .values(is_active=True, fail_count=0, last_error_code=0)
     )
     await db.commit()
     return {
@@ -1310,6 +1333,7 @@ async def get_vk_hashes(
             "call_link": h.call_link,
             "is_active": h.is_active,
             "fail_count": h.fail_count,
+            "last_error_code": int(getattr(h, "last_error_code", 0) or 0),
             "last_checked": h.last_checked,
             "created_at": h.created_at,
         }

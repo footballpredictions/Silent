@@ -108,6 +108,88 @@ def peer_host_allowed(wg_address: str | None) -> str:
     return f"{ip}/32" if ip else ""
 
 
+LIVE_EXTRA_HS_SEC = 180.0
+WDTT_PASSWORDS_PATH = Path("/etc/wdtt/passwords.json")
+
+
+def parse_allowed_ips_map(text: str) -> dict[str, str]:
+    """`wg show wdtt0 allowed-ips` → pub → CIDR-строка (`(none)` если пусто)."""
+    out: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if not parts or not _valid_pub(parts[0]):
+            continue
+        out[parts[0].strip()] = parts[1] if len(parts) > 1 else "(none)"
+    return out
+
+
+def holder_of_ip(allowed_map: dict[str, str], ip: str) -> str | None:
+    want = _addr_ip(ip)
+    if not want:
+        return None
+    for pub, rest in allowed_map.items():
+        if not rest or rest == "(none)":
+            continue
+        for cidr in rest.split(","):
+            if _addr_ip(cidr) == want:
+                return pub
+    return None
+
+
+def live_handshake(age: float | None, live_sec: float = LIVE_EXTRA_HS_SEC) -> bool:
+    return age is not None and age < live_sec
+
+
+def should_skip_manifest_ip_steal(
+    target_pub: str,
+    ip: str,
+    allowed_map: dict[str, str],
+    hs_ages: dict[str, float | None],
+    *,
+    live_sec: float = LIVE_EXTRA_HS_SEC,
+) -> bool:
+    """Манифест не должен отбирать IP у живого GETCONF extra (другой pubkey).
+
+    Hive `devices.wg_address` и cell `passwords.json` выделяют IP независимо.
+    `wg set allowed-ips` уникален: Android API-ключ с тем же /32 обнуляет extra ПК.
+    """
+    holder = holder_of_ip(allowed_map, ip)
+    pub = (target_pub or "").strip()
+    if not holder or holder == pub:
+        return False
+    return live_handshake(hs_ages.get(holder), live_sec)
+
+
+def extra_heal_assignments(
+    pwd_pub_ip: dict[str, str],
+    allowed_map: dict[str, str],
+    hs_ages: dict[str, float | None],
+    *,
+    live_sec: float = LIVE_EXTRA_HS_SEC,
+) -> list[tuple[str, str]]:
+    """Живой GETCONF extra с AllowedIPs=(none) — вернуть IP, если его не держит другой live peer."""
+    out: list[tuple[str, str]] = []
+    for pub, ip in pwd_pub_ip.items():
+        host = _addr_ip(ip)
+        if not _valid_pub(pub) or not host:
+            continue
+        if not live_handshake(hs_ages.get(pub), live_sec):
+            continue
+        current = allowed_map.get(pub, "(none)")
+        owned = {
+            _addr_ip(c)
+            for c in str(current or "").split(",")
+            if c and c != "(none)"
+        }
+        if host in owned:
+            continue
+        holder = holder_of_ip(allowed_map, host)
+        if holder and holder != pub and live_handshake(hs_ages.get(holder), live_sec):
+            continue
+        out.append((pub, host))
+    return out
+
+
 def kick_wg_peer(public_key: str) -> bool:
     """Снимает peer с живого wdtt0 — отзыв подписки без HTTP от клиента."""
     pub = (public_key or "").strip()
@@ -449,6 +531,81 @@ def enforce_denied_manifest_peers(manifest: dict | None = None) -> int:
     return applied
 
 
+def _wg_allowed_map(iface: str) -> dict[str, str]:
+    try:
+        r = subprocess.run(
+            ["wg", "show", iface, "allowed-ips"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return {}
+    return parse_allowed_ips_map(r.stdout or "")
+
+
+def _hs_age_map() -> dict[str, float | None]:
+    return {pub: age for pub, age in _local_handshakes()}
+
+
+def _load_passwords_pub_ip(path: Path | None = None) -> dict[str, str]:
+    p = path or WDTT_PASSWORDS_PATH
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    devices = data.get("devices") or data.get("Devices") or {}
+    if not isinstance(devices, dict):
+        return {}
+    out: dict[str, str] = {}
+    for rec in devices.values():
+        if not isinstance(rec, dict):
+            continue
+        pub = (rec.get("pub_key") or rec.get("PubKey") or "").strip()
+        ip = _addr_ip(str(rec.get("ip") or rec.get("IP") or ""))
+        if _valid_pub(pub) and ip:
+            out[pub] = ip
+    return out
+
+
+def _set_peer_allowed_ip(iface: str, pub: str, ip: str) -> bool:
+    host = _addr_ip(ip)
+    if not iface or not _valid_pub(pub) or not host:
+        return False
+    try:
+        r = subprocess.run(
+            ["wg", "set", iface, "peer", pub, "allowed-ips", f"{host}/32"],
+            capture_output=True,
+            timeout=10,
+        )
+        return r.returncode == 0
+    except Exception as e:
+        logger.debug("wg set allowed-ips %s: %s", pub[:12], e)
+        return False
+
+
+def heal_live_getconf_allowed_ips() -> int:
+    """Вернуть AllowedIPs живым GETCONF extra, если IP не занят другим live peer."""
+    iface = _wg_iface()
+    if not iface:
+        return 0
+    pwd = _load_passwords_pub_ip()
+    if not pwd:
+        return 0
+    allowed_map = _wg_allowed_map(iface)
+    hs_ages = _hs_age_map()
+    restored = 0
+    for pub, host in extra_heal_assignments(pwd, allowed_map, hs_ages):
+        if not _set_peer_allowed_ip(iface, pub, host):
+            continue
+        restored += 1
+        allowed_map[pub] = f"{host}/32"
+        logger.warning("standby: restore extra %s… allowed-ips %s/32", pub[:12], host)
+    return restored
+
+
 def apply_manifest_peers(manifest: dict | None = None) -> int:
     """Синхронизирует WireGuard peers из manifest (для VPN без API Улья)."""
     global _last_peer_sync_version
@@ -462,7 +619,10 @@ def apply_manifest_peers(manifest: dict | None = None) -> int:
     if not iface:
         logger.warning("standby: wg interface not found")
         return 0
+    allowed_map = _wg_allowed_map(iface)
+    hs_ages = _hs_age_map()
     applied = 0
+    skipped = 0
     for d in m.get("devices") or []:
         if not isinstance(d, dict):
             continue
@@ -476,6 +636,14 @@ def apply_manifest_peers(manifest: dict | None = None) -> int:
         if not pub or len(pub) < 40:
             continue
         allowed = peer_host_allowed(addr) or "10.66.66.2/32"
+        if should_skip_manifest_ip_steal(pub, allowed, allowed_map, hs_ages):
+            skipped += 1
+            logger.warning(
+                "standby: skip steal %s from live extra (manifest %s…)",
+                _addr_ip(allowed),
+                pub[:12],
+            )
+            continue
         try:
             subprocess.run(
                 ["wg", "set", iface, "peer", pub, "allowed-ips", allowed],
@@ -484,11 +652,17 @@ def apply_manifest_peers(manifest: dict | None = None) -> int:
                 check=True,
             )
             applied += 1
+            allowed_map[pub] = allowed
         except Exception as e:
             logger.debug("wg peer %s: %s", pub[:12], e)
     _last_peer_sync_version = version
-    if applied:
-        logger.info("standby: synced %s wg peer(s), manifest v%s", applied, version)
+    if applied or skipped:
+        logger.info(
+            "standby: synced %s wg peer(s) skip_steal=%s, manifest v%s",
+            applied,
+            skipped,
+            version,
+        )
     return applied
 
 
@@ -652,6 +826,7 @@ async def standby_monitor_loop() -> None:
     while True:
         try:
             apply_manifest_peers()
+            heal_live_getconf_allowed_ips()
             enforce_denied_manifest_peers()
             sync_silent_deny()
             gc_stale_local_peers()

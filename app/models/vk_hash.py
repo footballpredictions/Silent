@@ -16,6 +16,7 @@ class VkHash(Base):
     slot_index: Mapped[int] = mapped_column(Integer, nullable=False)  # 0, 1, 2 (up to 3 hashes)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error_code: Mapped[int] = mapped_column(Integer, default=0)  # 0 ok, 1 dead, 2 probe pending
     last_checked: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_failed: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

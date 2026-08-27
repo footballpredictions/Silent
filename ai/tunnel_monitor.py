@@ -37,7 +37,7 @@ async def monitor_loop():
                             continue
                     await manager.check_and_heal()
                     consecutive_failures = 0
-                    logger.debug("VK hash check completed at %s", datetime.utcnow().isoformat())
+                    logger.debug("VK hash probe+fill completed at %s", datetime.utcnow().isoformat())
 
         except Exception as e:
             consecutive_failures += 1

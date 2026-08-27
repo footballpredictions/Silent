@@ -891,6 +891,128 @@ cd pc; npm install; npm run dev
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
 
+### 2026-08-27 — PC не подключается к Соте 2 (AllowedIPs extra)
+
+- Симптом: ПК `f05dd065` слот `server3` / `78.17.74.27`, 63/63 воркера, WG «активен», трафик ~0.16 МБ, Tunnel API timeout, hive `:443` ECONNREFUSED. Android на Соте 2 ок.
+- Сота жива: `wdtt`+agent active, DNAT `10.66.66.1:8000` → Улей, GETCONF extra ПК `ilSTB2U9…` handshake живой, **AllowedIPs=(none)**.
+- Корень: два независимых пула IP. Hive `devices.wg_address` Android `abe1b452` = `10.66.0.71/32`; cell GETCONF extra ПК в `passwords.json` тоже `10.66.0.71`. `apply_manifest_peers` делал `wg set` API-ключа Android → уникальность AllowedIPs обнуляла extra ПК. Overlay мёртв, WRAP/WDTT живы.
+- Фикс cell-agent: не отбирать IP у live extra; heal extra с `(none)` из `passwords.json`, если IP не у другого live peer. Соты: только `silent-cell-agent` restart, **wdtt не трогали**.
+- PC: снятие bypass в очереди stop + epoch, чтобы leftover disconnect не вырезал маршруты API/VK после нового туннеля.
+- Тесты: `backend/scripts/test_cell_wg_gc_unit.py`.
+- Debug PC: `pc/build-debug-728967/win-unpacked/SilentVPN-Admin.bat`.
+
+### 2026-08-27 — VK hash liveness (агент + клиент)
+
+- `anonym_token.outdated` — не смерть join-хеша; клиент не репортит, бэкенд игнорит.
+- Агент: round-robin проба `messages.getCallPreview` (анонимно, без TURN), 36 хешей/цикл, пауза 2.5 с. Два dead → `last_error_code=1` + `is_active=false`; issuer (`calls.start`) заменяет слот.
+- Flood error 9 — общий cooldown, fill не стартует. Отдельный VK-агент не заводили.
+- PC: `hashFailureReporter` шлёт POST без `isTunnelApiActive`; `call not found` репортится и до tunnelReady.
+- Админка VK: счётчик слотов с ошибкой 1 + строка liveness.
+- Тесты: `backend/scripts/test_vk_hash_liveness_unit.py`, `pc/test/hashFailureFromLog.test.js`.
+- Прод: `deploy_stable.py` — health `ok`, tunnel DNAT OK, **wdtt active** (не рестартили).
+- Debug PC: `pc/build-debug-788439/win-unpacked/SilentVPN-Admin.bat`.
+- Debug APK: `android/SilentVPN-debug.apk`.
+
+### 2026-08-27 — Агент сразу снова на паузе после «Снять паузу»
+
+- Причина: liveness (36× getCallPreview) ловил VK error 9 и ставил тот же `vk_agent_flood_until` на 45 мин, что и `calls.start`. Кнопка снимала паузу и сразу снова гоняла 36 проб.
+- Фикс: preview-flood только пауза проб на 20 мин; создание хешей не блокируется. «Снять паузу» — fill без liveness. Бюджет проб 8 / 8 с.
+- Прод: `deploy_stable.py`, health ok, wdtt active.
+
+### 2026-08-27 — PC: anonym_token.outdated и Telegram
+
+- Лог: 54/63 воркеров, 5 МБ, `STREAM 100 LEGACY_ESCALATE_CAPTCHA` / `anonym_token.outdated` (x2), Telegram не всегда стартует.
+- STREAM 100 = группа 1 GETCONF: протухший OK anonym token ронял 9 воркеров. Это не капча — не эскалировать.
+- Фикс Go: refresh token + retry join; без `LEGACY_ESCALATE` на stale token. Electron: игнор escalate при живых воркерах.
+- Telegram warmup: не греть DC при 1 воркере; повтор 4/8/20/35с и при ≥9 воркерах.
+- Debug: `pc/build-debug-647626/win-unpacked/SilentVPN-Admin.bat`.
+
+### 2026-08-27 — PC: Steam/Roblox bypass не на старте connect
+
+- 80+ CIDR (bluestacks+steam+roblox) ставились в beginWdttSession до WDTT/VK — PowerShell на критическом пути.
+- Маршруты приложений/сайтов — после WG. API/VK /32 по-прежнему нужны до туннеля.
+- Debug: `pc/build-debug-782708/win-unpacked/SilentVPN-Admin.bat`.
+
+- Лог: `Tunnel already installed and running` + `sc start 1058` + 0.00 МБ. Сота 2 жива.
+- Повторный install после forceStop не включает адаптер. Теперь: Enable-NetAdapter + sc start, uninstall только если службы нет.
+- Debug: `pc/build-debug-829896/win-unpacked/SilentVPN-Admin.bat`.
+- 829896: туннель встал сразу, 20 МБ, STREAM 700 по живому TURN → интернет пропал. Туннель теперь после 63 воркеров.
+- Debug: `pc/build-debug-391090/win-unpacked/SilentVPN-Admin.bat`.
+- Ожидание 63: старт дольше, ECONNABORTED nip.io (bypass снят на disconnect). Откат задержки — WG снова с GETCONF. Фикс 1058 оставлен.
+- Debug: `pc/build-debug-164023/win-unpacked/SilentVPN-Admin.bat`.
+
+- Улей и Сота 1 ок. Сервер 3 (`78.17.74.27`): `wdtt`+agent active, `tun8000=200`, peers 50 / live_hs 49.
+- Лог PC: смена ключей → полная переустановка → STOPPED → retry → `WG install timeout` → ложный успех, трафик 0.10 МБ.
+- Это leftover/гонка Windows WG при смене слота, не мёртвая Сота 2.
+
+- Лог 558204: `syncconf` + STREAM 700 + TURN attribute-not-found + Tunnel API timeout, 3.49 МБ.
+- Коммиты PC 23.08 **не трогали** `main.js` / `wireguard.js`. ЮMoney, слот-кеш, reachability, bump 1.0.162.
+- Симптом = leftover служба wg-turn после вчерашних debug + рамп GetCreds (STREAM 700). `skipForceStop: alreadyUp` — с 16.08 (`07a253e`).
+
+- Все незакоммиченные правки main.js / wireguard.js / wdtt-client сброшены (`git reset --hard`).
+- Debug с кода git: `pc/build-debug-558204/win-unpacked/SilentVPN-Admin.bat`.
+
+- 238553: syncconf OK, tunnel ready @55, Tunnel API timeout, 0.49 МБ.
+- Рамп: force reinstall (не syncconf), tunnel ready только @63.
+- syncconf: проверка свежего handshake, иначе reinstall.
+- 79100: SyntaxError в main.js (`vpn-stopped` if съеден) — починено, handshake не блокирует успешный install.
+
+- Эксперименты (handshake-блок, leftover без extra, force-reinstall) ломали install → 0 МБ.
+- wireguard.js = cf364b6. boot=9, рамп 3s/2s до 63, GETCONF с 1-й группы, WG во время install.
+- Debug: `pc/build-debug-426566/win-unpacked/SilentVPN-Admin.bat`.
+
+- 223538: `Туннель активен (syncconf)` + STREAM 700 + 63 воркера, трафик 0.13 МБ. leftover от сломанной переустановки, handshake нет.
+- syncconf теперь ждёт свежий handshake (секунды, не minutes ago). Нет — полная переустановка после waitForTunnelDown.
+- Extra 36→63 только если службы WG ещё нет (чистая установка). На leftover extra GetCreds не стартуют.
+- Debug: `pc/build-debug-310979/win-unpacked/SilentVPN-Admin.bat`.
+
+- Принудительная переустановка leftover сняла службу (`STOPPED`, retry install) → 63 воркера, трафик 0.02 МБ, интернета нет.
+- Возврат git: boot 9×хеши (36) + рамп 3s/2s до 63, `skipForceStop` если служба жива (syncconf). Без старта с 9 и без force-reinstall.
+- Debug: `pc/build-debug-223538/win-unpacked/SilentVPN-Admin.bat`.
+
+- Git-версия работает, потому что `/installtunnelservice` 15–25с: extra-группы успевают до пользовательского трафика.
+- Leftover `syncconf` поднимал туннель сразу → handshake мёртвый (`Tunnel API timeout` при 36) или extra GetCreds уже по живому трафику.
+- Снова git-рамп 9→63 (3s/2s). Полный VPN всегда переустанавливает WG, не syncconf. GETCONF с 1-й группы.
+- Debug: `pc/build-debug-148213/win-unpacked/SilentVPN-Admin.bat`.
+
+- Лог 585413: extra без VK, 63 воркера, трафик 7.56 МБ, `Tunnel API timeout`. YouTube жил, Telegram/сайты нет, потом YT тоже.
+- Extra Allocate по 4 хешам регистрируются в диспетчере и забирают WG-пакеты у живых 36; квота TURN сносит сессии.
+- VK Calls: жёсткий потолок = 9×число хешей (4→36). 63 только с 7 уникальными хешами.
+- Debug: `pc/build-debug-402781/win-unpacked/SilentVPN-Admin.bat`.
+
+- Лог: 36 воркеров, трафик 24 МБ → через ~2 мин `STREAM 700 VK Auth Success` → 62 воркера, трафик 24.11 МБ (интернет мёртв).
+- Повторный getCallPreview по тому же хешу сносит TURN boot-групп. Extra теперь **не** ходит в VK — те же креды, что у 36.
+- Рамп +9 каждые 8с. DNS не трогали.
+- Debug: `pc/build-debug-585413/win-unpacked/SilentVPN-Admin.bat`.
+
+- Extra-группа #5 стартовала через ~400мс после группы #1 (bootDone от лидера волны), а не после 36 воркеров → VK error 10, туннель мёртвый. Рамп в Electron был выключен → зависание на 36.
+- Фикс в Go: extra только после ВСЕХ boot + 50с / 35с. Нет LEGACY_ESCALATE у extra; при фейле — те же TURN, что у boot-хеша.
+- DNS не трогали (`1.1.1.1, 1.0.0.1, 77.88.8.8`).
+- Debug: `pc/build-debug-7454/win-unpacked/SilentVPN-Admin.bat`.
+
+- Сборка 683557 (Яндекс-DNS первым + InterfaceMetric 1 + рамп 36→63) убила и YouTube: это тот же класс поломки, что «только-Яндекс ломал Telegram».
+- Откат: DNS снова `1.1.1.1, 1.0.0.1, 77.88.8.8`; метрика адаптера Automatic; VK Calls без рампа (boot 9×хеши, как 63562). Сброс leftover Metric=1 через AutomaticMetric.
+- 63 воркера отдельно: рамп снова ронял сессию (группа #7 / error 10).
+- Debug: `pc/build-debug-422678/win-unpacked/SilentVPN-Admin.bat`.
+
+- boot 9 + рамп 1с + Disable-NetAdapter после syncconf ломали handshake: туннель снимался, трафик ~0, Tunnel API timeout.
+- Возврат `main.js` / `wireguard.js` к `cf364b6` (boot по числу хешей, рамп 3с/2с, без bounce).
+- Debug: `pc/build-debug-742878/win-unpacked/SilentVPN-Admin.bat`.
+
+- Повторный connect делал `syncconf` на leftover wg-turn: служба «жива», handshake со старым wdtt мёртвый → 10.66.66.1 timeout, сайты не открываются.
+- После syncconf: Disable/Enable адаптера и ждать handshake; если нет — полная переустановка службы.
+- Debug: `pc/build-debug-126549/win-unpacked/SilentVPN-Admin.bat`.
+
+- Ждать 9 воркеров перед WG было ошибкой: Windows `/installtunnelservice` и так 15–25 с, старт install откладывался → туннель поднимался уже к 63.
+- Теперь: GETCONF → сразу полный WG; boot 9, рамп vkcalls 1с/1с (к концу install уже 18–36 каналов).
+- Debug: `pc/build-debug-426576/win-unpacked/SilentVPN-Admin.bat`.
+
+### 2026-08-26 — Android splash: снова временный VPN на анимации + кеш всех слотов
+
+- Симптом: на boot-анимации не поднимался служебный туннель; догрузка server1/2/3 шла через `fetchVpnConfigForConnect` (`clearTunnelApiBase` + public), из‑за этого ephemeral не включался.
+- Фикс: `forLaunch` снова всегда поднимает bootstrap (Wi‑Fi и LTE). Extra-слоты качаются `GET /vpn/config` **пока туннель жив**, пишутся в per-slot кеш, активный конфиг не затирают. После splash тумблер берёт слот из кеша.
+- Debug APK: `android/app/build/outputs/apk/debug/SilentVPN-debug.apk`.
+
 ### 2026-08-23 — Релиз 1.0.162: YuMoney ждёт tunnel API
 
 - Первый клик тарифа: иконка VPN уже есть, но TCP на `10.66.66.1:8000` ещё с LTE (`from /100.x`) → 12 с timeout, bootstrap гасился. Ждём health по туннелю, retry без гашения, сырой socket в UI не показываем.

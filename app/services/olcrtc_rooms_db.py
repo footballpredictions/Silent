@@ -511,19 +511,6 @@ async def pool_metrics(db: AsyncSession) -> dict[str, Any]:
     max_clients = 2
     idle_ttl = 5
     check_iv = 150
-    try:
-        from ai.olcrtc_room_agent import CHECK_INTERVAL_SECONDS, load_agent_state
-
-        state = await load_agent_state(db)
-        agent_enabled = bool(state.enabled)
-        session_mode = bool(state.session_mode)
-        min_free = int(state.min_free_per_slot)
-        max_rooms = int(state.max_rooms_per_slot)
-        max_clients = int(state.max_clients)
-        idle_ttl = int(state.idle_room_ttl_min)
-        check_iv = int(CHECK_INTERVAL_SECONDS)
-    except Exception:
-        pass
     # Session-mode: пустой список комнат — норма (создаются при подключении).
     # Не пугать «нет свободных» и не звать «Создать запас».
     if session_mode:

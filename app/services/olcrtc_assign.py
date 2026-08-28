@@ -56,25 +56,11 @@ async def _fp_lock(key: str) -> asyncio.Lock:
 
 
 async def _agent_session_mode(db: AsyncSession) -> bool:
-    try:
-        from ai.olcrtc_room_agent import load_agent_state
-
-        state = await load_agent_state(db)
-        return bool(state.session_mode)
-    except Exception:
-        return True
+    return True
 
 
 async def _agent_max_clients(db: AsyncSession) -> int:
-    try:
-        from ai.olcrtc_room_agent import load_agent_state
-
-        state = await load_agent_state(db)
-        if state.session_mode:
-            return 1
-        return max(1, int(state.max_clients or 1))
-    except Exception:
-        return 1
+    return 1
 
 
 async def _wait_unit_linked(unit: str, *, timeout_sec: float = LINK_WAIT_SEC) -> bool:

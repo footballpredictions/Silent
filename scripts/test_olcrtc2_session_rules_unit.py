@@ -9,7 +9,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ASSIGN = (ROOT / "app" / "services" / "olcrtc2_assign.py").read_text(encoding="utf-8")
 LIVENESS = (ROOT / "ai" / "olcrtc_room_liveness.py").read_text(encoding="utf-8")
-AGENT = (ROOT / "ai" / "olcrtc2_room_agent.py").read_text(encoding="utf-8")
 SETTINGS = (ROOT / "app" / "services" / "olcrtc2_settings.py").read_text(encoding="utf-8")
 HIVE = (ROOT / "app" / "services" / "hive_service.py").read_text(encoding="utf-8")
 
@@ -47,7 +46,7 @@ def test_provider_cell_roles_not_on_queen():
 
 
 def test_telemost_warm_not_inflated_to_20():
-    assert 'patch["warm_pool_per_dt"] = 20' not in AGENT
+    assert not (ROOT / "ai" / "olcrtc2_room_agent.py").is_file()
     assert "TELEMOST_WARM_PER_DT_CAP = 2" in SETTINGS
     assert "def warm_pool_for" in SETTINGS
     assert "EXCESS_WARM_KEEP_SEC = 90" in ASSIGN

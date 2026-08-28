@@ -899,6 +899,8 @@ cd pc; npm install; npm run dev
 - Фикс: unpaid online больше не делает per-peer nsenter; deny только iptables по IP из `passwords.json`; leftover peers пачкой раз в 10 мин; просроченные `status=active` → `expired` (683 строки). Ключи `devices` и wdtt не трогали, **wdtt не рестартили**.
 - Предохранители: `scripts/test_vpn_kick_storm_unit.py` (инварианты hot path); `deploy_stable.py` гоняет его до заливки и на проде проверяет health < 1.5с + `queen wg kick` ≲ 40 / 20с.
 - Прод: restart только `api`, DNAT `10.66.66.1:8000` на месте, health ~5 мс, kick/20с = 0, load 6.2→1.3, nsenter 0%. Живых подписок 222. Платящим: переподключить VPN.
+- 23.08 агенты olcrtc оставили как no-op, чтобы админка не ловила ImportError. **2026-08-28:** удалены `ai/olcrtc_room_agent.py` и `ai/olcrtc2_room_agent.py`; admin/assign больше их не импортируют. Заглушки `/olcrtc-config` для старых клиентов на месте. На прод файлы снимутся следующим деплоем (volume не удаляет сам).
+- 23.08 агенты olcrtc оставили как no-op, чтобы админка не ловила ImportError. **2026-08-28:** удалены `ai/olcrtc_room_agent.py` и `ai/olcrtc2_room_agent.py`; admin/assign больше их не импортируют. Заглушки `/olcrtc-config` для старых клиентов на месте. На прод файлы снимутся следующим деплоем (volume не удаляет сам).
 
 ### 2026-08-27 — Подписки: «Активна» не показывала выданные безлимиты
 

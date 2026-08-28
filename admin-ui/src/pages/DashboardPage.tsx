@@ -1,7 +1,40 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Cpu, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight, Activity } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
+import SortSelect from '../components/SortSelect'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
+
+const DASHBOARD_USER_SORT_KEY = 'admin.dashboard.userSort'
+
+const DASHBOARD_USER_SORTS = [
+  { value: 'online', label: 'Онлайн сначала' },
+  { value: 'email_az', label: 'По алфавиту А→Я' },
+  { value: 'email_za', label: 'По алфавиту Я→А' },
+  { value: 'registered_new', label: 'Новые сначала' },
+  { value: 'registered_old', label: 'Старые сначала' },
+  { value: 'last_seen', label: 'Недавно в сети' },
+] as const
+
+type DashboardUserSort = (typeof DASHBOARD_USER_SORTS)[number]['value']
+
+function readStoredSort(key: string, fallback: string, allowed: readonly string[]): string {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw && allowed.includes(raw)) return raw
+  } catch { /* private mode */ }
+  return fallback
+}
+
+function parseAdminTs(iso?: string | null): number {
+  if (!iso) return 0
+  let s = String(iso).trim()
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+    s = s.replace(' ', 'T')
+    if (!s.endsWith('Z')) s += 'Z'
+  }
+  const t = new Date(s).getTime()
+  return Number.isNaN(t) ? 0 : t
+}
 
 interface Stats {
   system: {
@@ -44,6 +77,7 @@ interface Stats {
     user_email: string
     user_connected: boolean
     last_seen_at?: string | null
+    created_at?: string | null
     device_names?: string[]
     online_device_names?: string[]
     online_devices?: Array<{ name: string; node: string }>
@@ -179,6 +213,17 @@ function VkHashesCard({
     }
   }
 
+  const formatReg = (iso?: string | null): string => {
+    const t = parseAdminTs(iso)
+    if (!t) return ''
+    return new Date(t).toLocaleDateString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    })
+  }
+
   const users =
     vkUsers && vkUsers.length > 0
       ? vkUsers.map(u => [u.user_email, u] as const)
@@ -195,6 +240,7 @@ function VkHashesCard({
             user_email: email,
             user_connected: slots[0]?.user_connected ?? false,
             last_seen_at: null,
+            created_at: null,
             device_names: [],
             online_device_names: [],
             slots_filled: slots.length,
@@ -213,19 +259,59 @@ function VkHashesCard({
     Object.fromEntries(users.map(([email]) => [email, false]))
   )
   const [userSearch, setUserSearch] = useState('')
+  const [userSort, setUserSort] = useState<DashboardUserSort>(
+    () => readStoredSort(DASHBOARD_USER_SORT_KEY, 'online', DASHBOARD_USER_SORTS.map(s => s.value)) as DashboardUserSort
+  )
+
+  const setAndStoreSort = (value: string) => {
+    const next = (DASHBOARD_USER_SORTS.some(s => s.value === value) ? value : 'online') as DashboardUserSort
+    setUserSort(next)
+    try { localStorage.setItem(DASHBOARD_USER_SORT_KEY, next) } catch { /* ignore */ }
+  }
 
   const filteredUsers = useMemo(() => {
     const q = userSearch.trim().toLowerCase()
-    if (!q) return users
-    return users.filter(([email, u]) => {
-      if (email.toLowerCase().includes(q)) return true
-      const names = [
-        ...('device_names' in u && u.device_names ? u.device_names : []),
-        ...('online_device_names' in u && u.online_device_names ? u.online_device_names : []),
-      ]
-      return names.some(n => n.toLowerCase().includes(q))
+    const matched = !q
+      ? [...users]
+      : users.filter(([email, u]) => {
+          if (email.toLowerCase().includes(q)) return true
+          const names = [
+            ...('device_names' in u && u.device_names ? u.device_names : []),
+            ...('online_device_names' in u && u.online_device_names ? u.online_device_names : []),
+          ]
+          return names.some(n => n.toLowerCase().includes(q))
+        })
+    const connectedOf = (u: (typeof users)[number][1]) =>
+      'user_connected' in u ? Number(Boolean(u.user_connected)) : 0
+    const createdOf = (u: (typeof users)[number][1]) =>
+      parseAdminTs('created_at' in u ? u.created_at : null)
+    const seenOf = (u: (typeof users)[number][1]) =>
+      parseAdminTs('last_seen_at' in u ? u.last_seen_at : null)
+    matched.sort(([emailA, a], [emailB, b]) => {
+      switch (userSort) {
+        case 'online': {
+          const byOnline = connectedOf(b) - connectedOf(a)
+          if (byOnline) return byOnline
+          const bySeen = seenOf(b) - seenOf(a)
+          if (bySeen) return bySeen
+          return emailA.localeCompare(emailB, 'ru', { sensitivity: 'base' })
+        }
+        case 'email_az':
+          return emailA.localeCompare(emailB, 'ru', { sensitivity: 'base' })
+        case 'email_za':
+          return emailB.localeCompare(emailA, 'ru', { sensitivity: 'base' })
+        case 'registered_new':
+          return createdOf(b) - createdOf(a) || emailA.localeCompare(emailB, 'ru', { sensitivity: 'base' })
+        case 'registered_old':
+          return createdOf(a) - createdOf(b) || emailA.localeCompare(emailB, 'ru', { sensitivity: 'base' })
+        case 'last_seen':
+          return seenOf(b) - seenOf(a) || emailA.localeCompare(emailB, 'ru', { sensitivity: 'base' })
+        default:
+          return 0
+      }
     })
-  }, [users, userSearch])
+    return matched
+  }, [users, userSearch, userSort])
 
   const toggle = (email: string) =>
     setOpen(prev => ({ ...prev, [email]: !prev[email] }))
@@ -240,12 +326,21 @@ function VkHashesCard({
         <h3 className="text-xs text-[#666] uppercase tracking-wider flex items-center gap-2 shrink-0">
           <Hash className="w-3.5 h-3.5" /> Серверные VK-хеши (по пользователям)
         </h3>
-        <SearchInput
-          value={userSearch}
-          onChange={setUserSearch}
-          placeholder="Поиск по email или устройству…"
-          className="flex-1 sm:max-w-xs sm:ml-auto w-full"
-        />
+        <div className="flex flex-col sm:flex-row gap-2 sm:ml-auto w-full sm:w-auto">
+          <SearchInput
+            value={userSearch}
+            onChange={setUserSearch}
+            placeholder="Поиск по email или устройству…"
+            className="flex-1 sm:w-56 w-full"
+          />
+          <SortSelect
+            value={userSort}
+            onChange={setAndStoreSort}
+            options={[...DASHBOARD_USER_SORTS]}
+            className="sm:w-48 w-full"
+            label="Сортировка пользователей"
+          />
+        </div>
       </div>
       <p className="text-[10px] text-[#555] mb-4">{summaryLine}</p>
       {summary && summary.legacy_orphan > 0 && (
@@ -270,6 +365,7 @@ function VkHashesCard({
           const filled = 'slots_filled' in u ? u.slots_filled : slots.length
           const max = 'slots_max' in u ? u.slots_max : 4
           const connected = 'user_connected' in u ? u.user_connected : false
+          const registered = 'created_at' in u ? formatReg(u.created_at) : ''
           return (
             <div key={email} className="border border-[#1e1e1e] rounded-lg overflow-hidden">
               <button
@@ -300,12 +396,14 @@ function VkHashesCard({
                         : ('online_device_names' in u && u.online_device_names && u.online_device_names.length > 0)
                           ? u.online_device_names.join(', ')
                           : 'устройство не определено'}
+                      {registered ? ` · Рег.: ${registered}` : ''}
                     </span>
                   ) : (
                     <span className="text-[#666]">
                       Последний вход (МСК): {formatLastSeen('last_seen_at' in u ? u.last_seen_at : null)}
                       {' · '}
                       Устройства: {('device_names' in u && u.device_names && u.device_names.length > 0) ? u.device_names.join(', ') : '—'}
+                      {registered ? ` · Рег.: ${registered}` : ''}
                     </span>
                   )}
                 </div>

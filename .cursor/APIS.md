@@ -197,8 +197,8 @@ sequenceDiagram
 | GET | `/sessions` | Admin | Активные сессии + trusted devices |
 | DELETE | `/sessions/{id}` | Admin | Отозвать сессию (+ устройство) |
 | DELETE | `/devices/{id}` | Admin | Отозвать trusted device и его сессии |
-| GET | `/stats` | Admin | CPU/RAM/disk, users (`connected_devices`, `peak_online_devices`, `peak_online_at`), VK hashes |
-| GET | `/users` | Admin | Список пользователей |
+| GET | `/stats` | Admin | CPU/RAM/disk, users (`connected_devices`, `peak_online_devices`, `peak_online_at`), VK hashes; `vk_users[].created_at` |
+| GET | `/users` | Admin | Список пользователей (`is_online`, `online_devices` — опционально) |
 | POST | `/users/{id}/grant-subscription` | Admin | Выдача подписки |
 | POST | `/users/{id}/revoke-subscription` | Admin | Отзыв подписки |
 | POST | `/users/{id}/ban` | Admin | Ban/unban |

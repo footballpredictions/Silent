@@ -278,6 +278,7 @@ async def get_stats(
             "user_email": u.email,
             "user_connected": dev_online > 0,
             "last_seen_at": _utc_iso(last_seen),
+            "created_at": _utc_iso(getattr(u, "created_at", None)),
             "device_names": device_names,
             "online_device_names": online_device_names,
             "online_devices": online_devices,
@@ -354,6 +355,7 @@ async def list_users(
 
     user_ids = [u.id for u in users]
     dev_map: dict = {}
+    online_map: dict = {}
     hash_map: dict = {}
     subs_by_user: dict = {}
     if user_ids:
@@ -365,6 +367,14 @@ async def list_users(
             )
         ).all():
             dev_map[uid] = int(n)
+        for uid, n in (
+            await db.execute(
+                select(Device.user_id, func.count(Device.id))
+                .where(Device.user_id.in_(user_ids), Device.is_connected == True)  # noqa: E712
+                .group_by(Device.user_id)
+            )
+        ).all():
+            online_map[uid] = int(n)
         for uid, n in (
             await db.execute(
                 select(VkHash.user_id, func.count(VkHash.id))
@@ -428,6 +438,8 @@ async def list_users(
                 "expires_at": None if admin or in_test else (sub.expires_at if sub else None),
             },
             "devices_count": dev_count,
+            "is_online": online_map.get(user.id, 0) > 0,
+            "online_devices": online_map.get(user.id, 0),
         })
     return out
 

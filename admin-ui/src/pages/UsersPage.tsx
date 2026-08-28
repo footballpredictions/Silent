@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Ban, CheckCircle, ShieldCheck, Trash2 } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
+import SortSelect from '../components/SortSelect'
 
 interface UserRow {
   id: string; display_id: string; email: string; is_verified: boolean; is_active: boolean
@@ -11,9 +12,46 @@ interface UserRow {
   created_at: string; bootstrap_hash: string | null; server_hashes: number
   subscription: { active: boolean; plan: string | null; expires_at: string | null }
   devices_count: number
+  is_online?: boolean
+  online_devices?: number
   acquisition?: 'referral' | 'promo' | 'organic' | string
   pending_promo_code?: string | null
   referral_code?: string | null
+}
+
+const USERS_SORT_KEY = 'admin.users.sort'
+
+const USERS_SORTS = [
+  { value: 'online', label: 'Онлайн сначала' },
+  { value: 'email_az', label: 'По алфавиту А→Я' },
+  { value: 'email_za', label: 'По алфавиту Я→А' },
+  { value: 'registered_new', label: 'Новые сначала' },
+  { value: 'registered_old', label: 'Старые сначала' },
+  { value: 'subscription', label: 'Подписка сначала' },
+] as const
+
+type UsersSort = (typeof USERS_SORTS)[number]['value']
+
+function parseTs(iso?: string | null): number {
+  if (!iso) return 0
+  let s = String(iso).trim()
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+    s = s.replace(' ', 'T')
+    if (!s.endsWith('Z')) s += 'Z'
+  }
+  const t = new Date(s).getTime()
+  return Number.isNaN(t) ? 0 : t
+}
+
+function formatRegDate(iso?: string | null): string {
+  const t = parseTs(iso)
+  if (!t) return '—'
+  return new Date(t).toLocaleDateString('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  })
 }
 
 function subscriptionLabel(u: UserRow): string {
@@ -33,6 +71,13 @@ function devicesLabel(u: UserRow): string {
 export default function UsersPage({ token }: { token: string }) {
   const [users, setUsers] = useState<UserRow[]>([])
   const [search, setSearch] = useState('')
+  const [sort, setSort] = useState<UsersSort>(() => {
+    try {
+      const raw = localStorage.getItem(USERS_SORT_KEY)
+      if (raw && USERS_SORTS.some(s => s.value === raw)) return raw as UsersSort
+    } catch { /* ignore */ }
+    return 'registered_new'
+  })
   const [loading, setLoading] = useState(true)
   const [actionId, setActionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -80,12 +125,54 @@ export default function UsersPage({ token }: { token: string }) {
     await apiAction(u.id, '', 'DELETE')
   }
 
-  const filtered = users.filter(u =>
-    !u.email.includes('bootstrap') && (
-      u.email.toLowerCase().includes(search.toLowerCase()) ||
-      u.display_id.toLowerCase().includes(search.toLowerCase())
+  const setAndStoreSort = (value: string) => {
+    const next = (USERS_SORTS.some(s => s.value === value) ? value : 'registered_new') as UsersSort
+    setSort(next)
+    try { localStorage.setItem(USERS_SORT_KEY, next) } catch { /* ignore */ }
+  }
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase()
+    const list = users.filter(u =>
+      !u.email.includes('bootstrap') && (
+        u.email.toLowerCase().includes(q) ||
+        u.display_id.toLowerCase().includes(q)
+      )
     )
-  )
+    const subRank = (u: UserRow) => {
+      if (u.is_admin || u.subscription.plan === 'unlimited') return 3
+      if (u.in_test_mode ?? u.is_test_user) return 2
+      if (u.subscription.active) return 1
+      return 0
+    }
+    list.sort((a, b) => {
+      const byAdmin = Number(Boolean(b.is_admin)) - Number(Boolean(a.is_admin))
+      if (byAdmin) return byAdmin
+      switch (sort) {
+        case 'online': {
+          const byOnline = Number(Boolean(b.is_online)) - Number(Boolean(a.is_online))
+          if (byOnline) return byOnline
+          return parseTs(b.created_at) - parseTs(a.created_at)
+        }
+        case 'email_az':
+          return a.email.localeCompare(b.email, 'ru', { sensitivity: 'base' })
+        case 'email_za':
+          return b.email.localeCompare(a.email, 'ru', { sensitivity: 'base' })
+        case 'registered_new':
+          return parseTs(b.created_at) - parseTs(a.created_at)
+        case 'registered_old':
+          return parseTs(a.created_at) - parseTs(b.created_at)
+        case 'subscription': {
+          const bySub = subRank(b) - subRank(a)
+          if (bySub) return bySub
+          return parseTs(b.created_at) - parseTs(a.created_at)
+        }
+        default:
+          return 0
+      }
+    })
+    return list
+  }, [users, search, sort])
 
   return (
     <div className="space-y-6">
@@ -94,12 +181,21 @@ export default function UsersPage({ token }: { token: string }) {
           <h1 className="text-xl font-bold">Пользователи</h1>
           <p className="text-xs text-[#666] mt-1">{loading ? '…' : `${filtered.length} из ${users.length}`}</p>
         </div>
-        <SearchInput
-          value={search}
-          onChange={setSearch}
-          placeholder="Поиск по email или ID…"
-          className="w-full sm:w-56"
-        />
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder="Поиск по email или ID…"
+            className="w-full sm:w-56"
+          />
+          <SortSelect
+            value={sort}
+            onChange={setAndStoreSort}
+            options={[...USERS_SORTS]}
+            className="w-full sm:w-48"
+            label="Сортировка пользователей"
+          />
+        </div>
       </div>
 
       {error && (
@@ -109,11 +205,12 @@ export default function UsersPage({ token }: { token: string }) {
       )}
 
       <div className="bg-[#111] border border-[#222] rounded-xl overflow-x-auto">
-        <table className="w-full text-sm min-w-[700px]">
+        <table className="w-full text-sm min-w-[780px]">
           <thead>
             <tr className="border-b border-[#222] text-[#555] text-xs uppercase tracking-wider">
               <th className="text-left px-4 py-3">ID</th>
               <th className="text-left px-4 py-3">Email</th>
+              <th className="text-left px-4 py-3">Рег.</th>
               <th className="text-left px-4 py-3">Bootstrap</th>
               <th className="text-left px-4 py-3">Сервер</th>
               <th className="text-left px-4 py-3">Подписка</th>
@@ -124,9 +221,9 @@ export default function UsersPage({ token }: { token: string }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={8} className="text-center py-12 text-[#555]">Загрузка...</td></tr>
+              <tr><td colSpan={9} className="text-center py-12 text-[#555]">Загрузка...</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={8} className="text-center py-12 text-[#555]">Нет пользователей</td></tr>
+              <tr><td colSpan={9} className="text-center py-12 text-[#555]">Нет пользователей</td></tr>
             ) : (
               filtered.map(u => (
                 <tr key={u.id} className="border-b border-[#1a1a1a] hover:bg-[#151515] transition-colors">
@@ -134,6 +231,11 @@ export default function UsersPage({ token }: { token: string }) {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span>{u.email}</span>
+                      {u.is_online && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">
+                          Онлайн
+                        </span>
+                      )}
                       {(u.in_test_mode ?? u.is_test_user) && (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40">
                           Тест
@@ -151,6 +253,7 @@ export default function UsersPage({ token }: { token: string }) {
                       )}
                     </div>
                   </td>
+                  <td className="px-4 py-3 text-xs text-[#888] whitespace-nowrap">{formatRegDate(u.created_at)}</td>
                   <td className="px-4 py-3 font-mono text-xs text-[#888]">{u.bootstrap_hash || '—'}</td>
                   <td className="px-4 py-3 text-center">{u.server_hashes ?? 0}/3</td>
                   <td className="px-4 py-3">

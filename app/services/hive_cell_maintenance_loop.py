@@ -26,8 +26,16 @@ async def hive_cell_maintenance_loop() -> None:
                 stale_off = await clear_stale_online_status(db)
                 if stale_off:
                     logger.info("Hive stale-online cleanup: %s device(s) marked offline", stale_off)
+                from app.services.subscription_service import expire_stale_subscriptions
                 from app.services.vpn_kick import kick_connected_without_subscription
 
+                last_expire = float(getattr(hive_cell_maintenance_loop, "_last_expire", 0.0))
+                now = asyncio.get_running_loop().time()
+                if now - last_expire >= 300:
+                    expired = await expire_stale_subscriptions(db)
+                    if expired:
+                        logger.info("Hive expired %s stale subscriptions", expired)
+                    hive_cell_maintenance_loop._last_expire = now  # type: ignore[attr-defined]
                 kicked = await kick_connected_without_subscription(db)
                 if kicked:
                     logger.info("Hive vpn kick: %s connected device(s) without subscription", kicked)

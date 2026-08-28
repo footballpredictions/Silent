@@ -184,7 +184,8 @@ python debug_captcha.py
 - Failover/standby — только после нескольких подтверждённых фейлов (~45 с), health сначала на IP Улья, не на одном nip.io
 - GC/kick трогает только мёртвые extras; ключи `devices` и live handshake не трогать
 - Деплой cell-agent: залить `/opt/silent-vpn/backend/cell-agent/` (volume `:ro`), **не** рестартить api; соты подтянут файл автоапгрейдом, пока Улей жив
-- После деплоя проверить: `wdtt` active, DNAT сот → `132.243.234.162:8000`, health API 200
+- После деплоя проверить: `wdtt` active, DNAT сот → `132.243.234.162:8000`, health API 200, **нет kick-шторма** (`queen wg kick` ≲ 40 / 20с), health < 1.5с
+- Unpaid leftover после выключения теста: iptables deny + редкий batch, **не** per-peer `wg set` на каждый keepalive (инцидент 2026-08-28). Перед деплоем: `python scripts/test_vpn_kick_storm_unit.py`. Postgres pool не поднимать до тысяч.
 
 ### wdtt-server (systemd)
 
@@ -890,6 +891,14 @@ cd pc; npm install; npm run dev
 - Теперь любой `HB socks CONNECT fail` на WB сразу переводит сессию в recover-путь (без ожидания второй ошибки).
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
+
+### 2026-08-28 — После выключения теста: CPU и «сервер недоступен / hash»
+
+- Не Postgres-пул и не «десятки тысяч соединений». SQLAlchemy `pool_size=20 overflow=10`, Postgres `max_connections=100`. «Пул на десятки тысяч» — это `WG_SUBNET=10.66.0.0/16` (~65k IP), его не трогали.
+- В тесте у всех был доступ → sweeper kick почти никого не резал. После теста сотни leftover-туннелей без подписки: каждый keepalive звал `kick_if_subscription_denied` → `sync_unpaid_deny_net` снимал **все** unpaid peer’ы по одному `wg set` + sweeper каждые 10 с по `last_connected < 20 мин`. wdtt ~100% CPU, API ~110%, `/config` таймаут. PC: «Сервер недоступен. Выйдите и настройте hash» (пустой config, не отсутствие hash). Android: bootstrap 2 мин, интернет не идёт.
+- Фикс: unpaid online больше не делает per-peer nsenter; deny только iptables по IP из `passwords.json`; leftover peers пачкой раз в 10 мин; просроченные `status=active` → `expired` (683 строки). Ключи `devices` и wdtt не трогали, **wdtt не рестартили**.
+- Предохранители: `scripts/test_vpn_kick_storm_unit.py` (инварианты hot path); `deploy_stable.py` гоняет его до заливки и на проде проверяет health < 1.5с + `queen wg kick` ≲ 40 / 20с.
+- Прод: restart только `api`, DNAT `10.66.66.1:8000` на месте, health ~5 мс, kick/20с = 0, load 6.2→1.3, nsenter 0%. Живых подписок 222. Платящим: переподключить VPN.
 
 ### 2026-08-27 — Подписки: «Активна» не показывала выданные безлимиты
 

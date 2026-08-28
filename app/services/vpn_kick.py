@@ -2,6 +2,9 @@
 
 HTTP from the excluded Android app cannot reach 10.66.66.1 on LTE.
 GETCONF/keepalive is in-band; this module cuts the data plane on the host/cells.
+
+Hot path after test-off (2026-08-28): unpaid keepalive must not per-peer `wg set`.
+Guarded by `scripts/test_vpn_kick_storm_unit.py` + deploy_stable postflight.
 """
 from __future__ import annotations
 
@@ -10,10 +13,8 @@ import logging
 import shlex
 import subprocess
 import time
-from datetime import datetime, timedelta, timezone
-
 import httpx
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -74,7 +75,6 @@ def _bind_extra_pub(device_id, pub: str) -> None:
         return
     did = str(device_id)
     _bound_extras.setdefault(did, set()).add(p)
-    watch_device_revoke(did)
 
 
 def _bound_pubs_for(device_id) -> set[str]:
@@ -583,6 +583,9 @@ async def sync_unpaid_deny_net(db: AsyncSession) -> int:
     IPs come only from wdtt passwords.json (the address GETCONF actually issues).
     Do not use DB wg_address / leftover live IPs and do not SSH the set onto cells:
     that blocked the API event loop and dropped paying users (2026-08-19).
+
+    Per-peer `wg set` is forbidden here: after global test-off hundreds of leftover
+    tunnels re-GETCONF and a kick loop pins wdtt/API at 100% CPU.
     """
     from app.services.vpn_deny_net import (
         read_host_wdtt_identities,
@@ -592,10 +595,15 @@ async def sync_unpaid_deny_net(db: AsyncSession) -> int:
 
     if _sync_unpaid_lock.locked():
         return 0
-    result = await db.execute(select(Device).where(Device.is_active == True))  # noqa: E712
+    result = await db.execute(
+        select(Device.id, Device.user_id, Device.device_fingerprint).where(
+            Device.is_active == True  # noqa: E712
+        )
+    )
     devices = [
-        d for d in result.scalars().all()
-        if not (d.device_fingerprint or "").startswith("boot:")
+        (did, uid)
+        for did, uid, fp in result.all()
+        if not (fp or "").startswith("boot:")
     ]
     if not devices:
         _ensure_nsenter_helper()
@@ -603,25 +611,85 @@ async def sync_unpaid_deny_net(db: AsyncSession) -> int:
     from app.services.subscription_service import users_with_vpn_access_ids
 
     allowed = await users_with_vpn_access_ids(db)
-    unpaid: list[Device] = [d for d in devices if d.user_id not in allowed]
+    unpaid_ids = [str(did) for did, uid in devices if uid not in allowed]
     _ensure_nsenter_helper()
-    idents = read_host_wdtt_identities([str(d.id) for d in unpaid])
+    idents = read_host_wdtt_identities(unpaid_ids)
     ips = unpaid_ips_from_wdtt_only(idents)
-
-    def _kick_and_sync() -> int:
-        for rec in idents.values():
-            pub = rec.get("pub") or ""
-            if _valid_wg_pub(pub):
-                kick_wg_peer_on_queen(pub, force=True)
-            ip = rec.get("ip") or ""
-            if ip:
-                kick_wg_peer_on_queen("", allowed_ip=ip, force=True)
-        return sync_queen_deny_ips(ips)
+    if len(ips) > 2000:
+        logger.error("silent deny aborted: unpaid IP set too large (%s)", len(ips))
+        return 0
 
     if _sync_unpaid_lock.locked():
         return 0
     async with _sync_unpaid_lock:
-        return await asyncio.to_thread(_kick_and_sync)
+        return await asyncio.to_thread(sync_queen_deny_ips, ips)
+
+
+async def drop_unpaid_queen_peers_batch(db: AsyncSession, *, limit: int = 200) -> int:
+    """Снять WG-peer’ы устройств без доступа. Ключи devices/passwords.json не трогаем.
+
+    Чужие extras платящих не трогаем — только pubs unpaid device + wdtt identity.
+    """
+    from app.services.subscription_service import users_with_vpn_access_ids
+    from app.services.vpn_deny_net import read_host_wdtt_identities
+
+    allowed = await users_with_vpn_access_ids(db)
+    result = await db.execute(
+        select(
+            Device.id,
+            Device.user_id,
+            Device.wg_public_key,
+            Device.wg_live_public_key,
+            Device.device_fingerprint,
+        ).where(Device.is_active == True)  # noqa: E712
+    )
+    unpaid_ids: list[str] = []
+    pubs: list[str] = []
+    seen: set[str] = set()
+    for did, uid, wg, live, fp in result.all():
+        if (fp or "").startswith("boot:"):
+            continue
+        if uid in allowed:
+            continue
+        unpaid_ids.append(str(did))
+        for raw in (wg, live):
+            p = (raw or "").strip()
+            if _valid_wg_pub(p) and p not in seen:
+                seen.add(p)
+                pubs.append(p)
+    try:
+        idents = read_host_wdtt_identities(unpaid_ids)
+        for rec in idents.values():
+            p = (rec.get("pub") or "").strip()
+            if _valid_wg_pub(p) and p not in seen:
+                seen.add(p)
+                pubs.append(p)
+    except Exception as e:
+        logger.debug("wdtt identities for unpaid drop: %s", e)
+    pubs = pubs[: max(1, limit)]
+    if not pubs:
+        return 0
+    _ensure_nsenter_helper()
+    removed = await asyncio.to_thread(remove_wg_peers_batch_on_queen, pubs)
+    if removed:
+        logger.warning("queen unpaid peer batch removed=%s of %s", removed, len(pubs))
+        off = await db.execute(
+            select(Device).where(
+                Device.is_active == True,  # noqa: E712
+                Device.is_connected == True,  # noqa: E712
+            )
+        )
+        n_off = 0
+        for device in off.scalars().all():
+            if device.user_id in allowed:
+                continue
+            if (device.device_fingerprint or "").startswith("boot:"):
+                continue
+            device.is_connected = False
+            n_off += 1
+        if n_off:
+            await db.commit()
+    return removed
 
 
 async def restore_user_vpn_dataplane(db: AsyncSession, user: User) -> None:
@@ -707,76 +775,73 @@ async def kick_user_vpn_sessions(db: AsyncSession, user: User) -> int:
 
 
 async def kick_connected_without_subscription(db: AsyncSession) -> int:
-    """Страховка: нет подписки → срезать dataplane по ключу и точному IP.
+    """Страховка после отзыва: watched-устройства точечно; leftover — пачкой.
 
     Не трогаем админов, тестовый режим и живой plan=test.
-    bind_new=False: не угадываем новый extra на тихой соте (2026-08-16 / 2026-08-23).
+    Не гоняем per-peer nsenter по last_connected 20 мин — после выключения
+    глобального теста это вешало wdtt/API на 100% CPU.
     """
-    cutoff = datetime.utcnow() - timedelta(minutes=20)
-    result = await db.execute(
-        select(Device).where(
-            Device.is_active == True,  # noqa: E712
-            or_(
-                Device.is_connected == True,  # noqa: E712
-                Device.last_connected >= cutoff,
-            ),
-        )
-    )
-    devices = list(result.scalars().all())
-    watched_ids = {d for d, until in _watch_until.items() if until > time.monotonic()}
-    extra_ids: list = []
-    if watched_ids:
-        extra_q = await db.execute(
-            select(Device).where(Device.is_active == True)  # noqa: E712
-        )
-        for d in extra_q.scalars().all():
-            if str(d.id) in watched_ids and d not in devices:
-                extra_ids.append(d)
-    devices = devices + extra_ids
-    if not devices:
-        return 0
     from app.services.subscription_service import users_with_vpn_access_ids
 
     allowed = await users_with_vpn_access_ids(db)
     kicked = 0
     cell_ids: set = set()
-    seen: set[str] = set()
-    for device in devices:
-        did = str(device.id)
-        if did in seen:
-            continue
-        seen.add(did)
-        if (device.device_fingerprint or "").startswith("boot:"):
-            continue
-        if device.user_id in allowed:
-            continue
-        if not await kick_device_peers(db, device, force=True, bind_new=False):
-            continue
-        device.is_connected = False
-        kicked += 1
-        if device.cell_id is not None:
-            cell_ids.add(device.cell_id)
-    if kicked:
-        await db.commit()
-        logger.warning("vpn kick sweeper: %s device(s) without subscription", kicked)
-        from app.services.hive_cell_sync import invalidate_manifest_cache, sync_cell_manifest_by_id
+    now = time.monotonic()
+    watched_ids = {d for d, until in _watch_until.items() if until > now}
+    watch_at: dict[str, float] = getattr(kick_connected_without_subscription, "_watch_kick_at", {})
+    if watched_ids:
+        extra_q = await db.execute(
+            select(Device).where(Device.is_active == True)  # noqa: E712
+        )
+        seen: set[str] = set()
+        for device in extra_q.scalars().all():
+            did = str(device.id)
+            if did not in watched_ids or did in seen:
+                continue
+            seen.add(did)
+            if now - watch_at.get(did, 0) < 60:
+                continue
+            watch_at[did] = now
+            if (device.device_fingerprint or "").startswith("boot:"):
+                continue
+            if device.user_id in allowed:
+                continue
+            if not await kick_device_peers(db, device, force=True, bind_new=False):
+                continue
+            device.is_connected = False
+            kicked += 1
+            if device.cell_id is not None:
+                cell_ids.add(device.cell_id)
+        kick_connected_without_subscription._watch_kick_at = watch_at  # type: ignore[attr-defined]
+        if kicked:
+            await db.commit()
+            logger.warning("vpn kick sweeper watched: %s device(s)", kicked)
+            from app.services.hive_cell_sync import invalidate_manifest_cache, sync_cell_manifest_by_id
 
-        invalidate_manifest_cache()
-        for cid in cell_ids:
-            try:
-                await sync_cell_manifest_by_id(db, cid)
-            except Exception as e:
-                logger.warning("manifest push after sweeper kick failed: %s", e)
-    if not getattr(kick_connected_without_subscription, "_deny_fail_open", False):
+            invalidate_manifest_cache()
+            for cid in cell_ids:
+                try:
+                    await sync_cell_manifest_by_id(db, cid)
+                except Exception as e:
+                    logger.warning("manifest push after sweeper kick failed: %s", e)
+
+    last_drop = float(getattr(kick_connected_without_subscription, "_last_drop", 0.0))
+    if now - last_drop >= 600:
         try:
-            from app.services.vpn_deny_net import disable_queen_deny
-
-            _ensure_nsenter_helper()
-            disable_queen_deny()
-            logger.warning("silent deny fail-open: queen SILENT_DENY removed")
+            dropped = await drop_unpaid_queen_peers_batch(db, limit=200)
+            if dropped:
+                kicked += dropped
         except Exception as e:
-            logger.warning("silent deny fail-open: %s", e)
-        kick_connected_without_subscription._deny_fail_open = True  # type: ignore[attr-defined]
+            logger.warning("unpaid peer batch failed: %s", e)
+        kick_connected_without_subscription._last_drop = now  # type: ignore[attr-defined]
+
+    last_deny = float(getattr(kick_connected_without_subscription, "_last_deny", 0.0))
+    if now - last_deny >= 60:
+        try:
+            await sync_unpaid_deny_net(db)
+        except Exception as e:
+            logger.warning("silent deny sweeper failed: %s", e)
+        kick_connected_without_subscription._last_deny = now  # type: ignore[attr-defined]
     return kicked
 
 
@@ -786,32 +851,23 @@ async def kick_if_subscription_denied(
     *,
     session_last_connected=None,
 ) -> bool:
-    """Immediate cut when wdtt reports online for a user without subscription."""
+    """Пометить unpaid offline. Dataplane режет SILENT_DENY + редкий batch drop.
+
+    Per-peer nsenter здесь запрещён: leftover после теста снова GETCONF и
+    зацикливает wdtt/API.
+    """
     did = str(device.id)
     now = time.monotonic()
     last: dict[str, float] = getattr(kick_if_subscription_denied, "_last", {})
-    if now - last.get(did, 0) < 8:
+    if now - last.get(did, 0) < 45:
         return False
     last[did] = now
     kick_if_subscription_denied._last = last  # type: ignore[attr-defined]
-    ok = await kick_device_peers(
-        db, device, force=True, bind_new=False, session_last_connected=session_last_connected,
-    )
+    device.is_connected = False
     try:
         await db.commit()
     except Exception:
         await db.rollback()
-    from app.services.hive_cell_sync import invalidate_manifest_cache, sync_cell_manifest_by_id
-
-    invalidate_manifest_cache()
-    if device.cell_id is not None:
-        try:
-            await sync_cell_manifest_by_id(db, device.cell_id)
-        except Exception as e:
-            logger.warning("manifest push after unpaid online kick failed: %s", e)
-    try:
-        await sync_unpaid_deny_net(db)
-    except Exception as e:
-        logger.warning("silent deny after unpaid online: %s", e)
-    return ok
+        return False
+    return True
 

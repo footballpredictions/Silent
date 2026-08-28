@@ -33,8 +33,13 @@ async def set_registration_test_mode(db: AsyncSession, enabled: bool) -> tuple[b
             cleanup_global_test_subscriptions,
             clear_test_mode_exclusions,
             clear_legacy_global_test_flags,
+            invalidate_vpn_access_cache,
         )
         affected = await cleanup_global_test_subscriptions(db)
         await clear_legacy_global_test_flags(db)
         await clear_test_mode_exclusions(db)
+        invalidate_vpn_access_cache()
+    else:
+        from app.services.subscription_service import invalidate_vpn_access_cache
+        invalidate_vpn_access_cache()
     return enabled, affected

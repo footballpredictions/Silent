@@ -15,9 +15,11 @@ alwaysApply: true
 - API/theme/login/config: старые клиенты 1.0.160/1.0.161 должны работать без обновления (новые поля опциональны)
 - Правка только `cell-agent/` → залить на хост VPS, **без** `docker compose restart api nginx`
 - Python API живёт volume `./app`+`./ai` (как админка). Recreate `api` код не откатывает; всё равно сразу DNAT. Деплой только `python scripts/deploy_stable.py`
+- **Unpaid leftover (инцидент 2026-08-28):** не делать per-peer `wg set` из `/internal/online` и не снимать всех unpaid в `sync_unpaid_deny_net`. Deny = iptables по IP из `passwords.json`. Sweeper не гоняет `last_connected < 20 мин` по одному nsenter. Postgres pool не поднимать до тысяч (`max_connections=100`). Тест: `python scripts/test_vpn_kick_storm_unit.py` — обязателен до деплоя kick/подписок/теста.
 
 ## Как делать новое
 
 - Fail-safe: дефолт = старое рабочее поведение
 - Health Улья с соты — сначала прямой IP, не один nip.io
-- После деплоя: `wdtt` active, DNAT сот на IP Улья `:8000`, API health 200
+- После деплоя: `wdtt` active, DNAT сот на IP Улья `:8000`, API health 200 за <1.5с, нет kick-шторма (`queen wg kick` ≲ 40 / 20с)
+- Правки kick / подписок / тестового режима: сначала `python scripts/test_vpn_kick_storm_unit.py`

@@ -76,6 +76,8 @@ cd backend
 
 `python scripts/deploy_api.py` и `restore_api_container.py` вызывают `deploy_stable.py`.
 
+Перед заливкой скрипт сам гоняет `test_vpn_kick_unit.py` + `test_vpn_kick_storm_unit.py`. Если инварианты dataplane сломаны (kick-шторм unpaid leftover) — деплой **не начинается**. После рестарта API: health < 1.5с и не больше 40 строк `queen wg kick` за 20с, иначе скрипт падает (код уже на volume, это сигнал откатиться, а не «успешный деплой»).
+
 `docker compose build` в этот цикл **не** входит. Образ — только при смене `Dockerfile.api` / `requirements.txt`.
 
 ### `deploy_vk_calls.py`

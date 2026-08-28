@@ -7,10 +7,29 @@ from __future__ import annotations
 
 import io
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 from _deploy_common import BACKEND_ROOT, CONTAINER, REMOTE, connect, run
 from fix_tunnel_dnat import FIX_SH
+
+PREFLIGHT_TESTS = (
+    "scripts/test_vpn_kick_unit.py",
+    "scripts/test_vpn_kick_storm_unit.py",
+)
+
+
+def _preflight() -> None:
+    """Fail closed: do not upload if dataplane invariants are broken."""
+    for rel in PREFLIGHT_TESTS:
+        path = BACKEND_ROOT / rel.replace("/", os.sep)
+        if not path.is_file():
+            raise SystemExit(f"preflight missing {rel}")
+        print(f"preflight {rel}")
+        r = subprocess.run([sys.executable, str(path)], cwd=str(BACKEND_ROOT))
+        if r.returncode != 0:
+            raise SystemExit(f"preflight failed: {rel} — deploy aborted")
 
 SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".pytest_cache"}
 
@@ -37,6 +56,7 @@ def main() -> None:
     dist = BACKEND_ROOT / "admin-ui" / "dist"
     if not dist.is_dir() or not any(dist.iterdir()):
         raise SystemExit("Сначала: cd admin-ui && npm run build")
+    _preflight()
 
     client = connect()
     sftp = client.open_sftp()
@@ -132,11 +152,35 @@ if [ "$wdtt" != "active" ]; then
   echo "ERROR: wdtt is not active (script did not restart it)" >&2
   exit 1
 fi
+echo "=== postflight (kick-storm / latency) ==="
+python3 - <<'PY'
+import sys
+import time
+import urllib.request
+t0 = time.monotonic()
+try:
+    urllib.request.urlopen("http://127.0.0.1:8000/api/health", timeout=3)
+except Exception as e:
+    print("ERROR: health request failed", e)
+    sys.exit(1)
+dt = time.monotonic() - t0
+print(f"health_rtt {{dt:.3f}}s")
+if dt > 1.5:
+    print("ERROR: API health slower than 1.5s — likely event-loop / pool stall")
+    sys.exit(1)
+PY
+sleep 18
+kicks=$(docker logs --since 20s {CONTAINER} 2>&1 | grep -c "queen wg kick" || true)
+echo "queen_wg_kick_20s=$kicks"
+if [ "${{kicks:-0}}" -gt 40 ]; then
+  echo "ERROR: unpaid kick storm ($kicks wg kicks / 20s). Do not leave this on prod." >&2
+  exit 1
+fi
 """
     sftp2 = client.open_sftp()
     sftp2.putfo(io.BytesIO(script.encode()), "/tmp/deploy_stable.sh")
     sftp2.close()
-    run(client, "bash /tmp/deploy_stable.sh 2>&1", timeout=180)
+    run(client, "bash /tmp/deploy_stable.sh 2>&1", timeout=240)
     client.close()
     print("Done")
 

@@ -373,8 +373,6 @@ async def set_device_online(
 
     Returns subscription status so wdtt-server can drop sessions when access revoked.
     """
-    from app.services.subscription_service import user_has_active_subscription
-
     device = None
     try:
         device_uuid = uuid.UUID(device_ref)
@@ -399,13 +397,11 @@ async def set_device_online(
     if device is None:
         return {"ok": False, "subscription_active": False, "vpn_allowed": False}
 
-    user_result = await db.execute(select(User).where(User.id == device.user_id))
-    user = user_result.scalar_one_or_none()
-    sub_active = False
-    vpn_allowed = False
-    if user is not None:
-        sub_active = await user_has_active_subscription(user, db)
-        vpn_allowed = bool(user.is_admin or sub_active)
+    from app.services.subscription_service import users_with_vpn_access_ids_cached
+
+    allowed = await users_with_vpn_access_ids_cached(db)
+    vpn_allowed = device.user_id in allowed
+    sub_active = vpn_allowed
 
     if online and vpn_allowed and _disconnect_latch_active(
         device_ref,

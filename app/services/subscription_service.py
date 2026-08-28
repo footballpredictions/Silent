@@ -1,10 +1,11 @@
 """Subscription, trial and admin access helpers."""
 import logging
+import time
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text, func, or_
+from sqlalchemy import select, text, func, or_, update
 
 from app.models import User, Subscription, Device
 from app.config import settings
@@ -13,6 +14,14 @@ logger = logging.getLogger(__name__)
 
 TRIAL_PLAN = "trial"
 TEST_PLAN = "test"
+
+_access_cache: tuple[float, frozenset] | None = None
+_ACCESS_TTL_SEC = 15.0
+
+
+def invalidate_vpn_access_cache() -> None:
+    global _access_cache
+    _access_cache = None
 
 
 def is_user_admin(user: User) -> bool:
@@ -237,6 +246,7 @@ async def exit_user_test_mode(db: AsyncSession, user: User, *, excluded: bool = 
         for device in devices.scalars().all():
             device.is_connected = False
     await db.commit()
+    invalidate_vpn_access_cache()
     if restored is None:
         try:
             from app.services.vpn_kick import kick_user_vpn_sessions
@@ -281,6 +291,7 @@ async def enroll_user_in_test_mode(db: AsyncSession, user: User) -> Subscription
     db.add(subscription)
     await db.commit()
     await db.refresh(subscription)
+    invalidate_vpn_access_cache()
     try:
         from app.services.vpn_kick import restore_user_vpn_dataplane
 
@@ -398,6 +409,7 @@ async def cleanup_global_test_subscriptions(db: AsyncSession) -> int:
         {"test_plan": TEST_PLAN},
     )
     await db.commit()
+    invalidate_vpn_access_cache()
     return cancelled.rowcount or 0
 
 
@@ -461,6 +473,35 @@ async def users_with_vpn_access_ids(db: AsyncSession) -> set:
         )
     rows = await db.execute(select(User.id).where(not_bootstrap, access))
     return set(rows.scalars().all())
+
+
+async def users_with_vpn_access_ids_cached(
+    db: AsyncSession, *, ttl: float = _ACCESS_TTL_SEC
+) -> set:
+    """Hot path (/internal/online): тот же SQL, без ensure_trial на каждый keepalive."""
+    global _access_cache
+    now = time.monotonic()
+    if _access_cache and now - _access_cache[0] < ttl:
+        return set(_access_cache[1])
+    ids = await users_with_vpn_access_ids(db)
+    _access_cache = (now, frozenset(ids))
+    return ids
+
+
+async def expire_stale_subscriptions(db: AsyncSession) -> int:
+    """status=active при expires_at в прошлом путает фильтры и раздувает выборки."""
+    now = datetime.utcnow()
+    result = await db.execute(
+        update(Subscription)
+        .where(Subscription.status == "active", Subscription.expires_at < now)
+        .values(status="expired")
+    )
+    n = int(result.rowcount or 0)
+    if n:
+        await db.commit()
+        invalidate_vpn_access_cache()
+        logger.info("expired %s stale subscriptions", n)
+    return n
 
 
 async def has_live_test_plan(db: AsyncSession, user: User) -> bool:
@@ -550,6 +591,7 @@ async def grant_manual_subscription(
     db.add(subscription)
     await db.commit()
     await db.refresh(subscription)
+    invalidate_vpn_access_cache()
     try:
         from app.services.vpn_kick import restore_user_vpn_dataplane
 
@@ -577,6 +619,7 @@ async def revoke_subscription(db: AsyncSession, user: User) -> int:
     for device in devices.scalars().all():
         device.is_connected = False
     await db.commit()
+    invalidate_vpn_access_cache()
     try:
         from app.services.vpn_kick import kick_user_vpn_sessions
 

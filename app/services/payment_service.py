@@ -389,6 +389,8 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> dict:
         await db.commit()
 
     if subscription_ok:
+        from app.services.subscription_service import invalidate_vpn_access_cache
+        invalidate_vpn_access_cache()
         from app.services.referral_service import apply_referral_reward_after_payment
         try:
             await apply_referral_reward_after_payment(db, payment)
@@ -397,6 +399,13 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> dict:
 
     result = await db.execute(select(User).where(User.id == payment.user_id))
     user = result.scalar_one_or_none()
+    if subscription_ok and user:
+        try:
+            from app.services.vpn_kick import restore_user_vpn_dataplane
+
+            await restore_user_vpn_dataplane(db, user)
+        except Exception:
+            logger.exception("payment notify: restore dataplane failed payment=%s", payment.id)
     if user:
         expires = None
         if subscription is not None:

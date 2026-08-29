@@ -35,6 +35,7 @@ import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.data.VpnHashesResponse
 import com.silent.vpn.policy.ConfigSyncSkipPolicy
 import com.silent.vpn.policy.OlcrtcSessionPolicy
+import com.silent.vpn.policy.SessionsSyncPolicy
 import com.silent.vpn.security.AppIntegrity
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.service.VpnBackendSync
@@ -2428,17 +2429,18 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * Экран «Сессии»: поллинг профиля с сервера (через tunnel proxy при VPN — без overlay).
+     * Экран «Сессии»: сразу живой /me, затем poll.
+     * LTE тоже: раньше `isOnMobileData()` полностью отключал запрос — второй телефон не был виден.
      */
     fun setSessionsScreenActive(active: Boolean) {
         profilePollJob?.cancel()
         profilePollJob = null
-        if (!active || repo.isOnMobileData()) return
+        if (!SessionsSyncPolicy.shouldFetchLiveProfile(active)) return
         profilePollJob = viewModelScope.launch {
             while (true) {
                 if (!sessionsFetchInFlight) {
                     sessionsFetchInFlight = true
-                    val ok = runCatching { fetchProfileNow(force = true) }.getOrDefault(false)
+                    val ok = runCatching { fetchSessionsProfile() }.getOrDefault(false)
                     if (!ok && repo.isOnMobileData() && SilentVpnService.isRunning) {
                         DebugLog.w("MainViewModel", "sessions poll: live fetch failed (mobile+VPN)")
                     }
@@ -2447,6 +2449,25 @@ class MainViewModel @Inject constructor(
                 delay(SESSIONS_POLL_MS)
             }
         }
+    }
+
+    private suspend fun fetchSessionsProfile(): Boolean {
+        val viaTunnel = SessionsSyncPolicy.useTunnelProfileFetch(
+            onMobileData = repo.isOnMobileData(),
+            mainVpnUp = repo.isMainVpnTunnelUp(),
+        )
+        val result = if (viaTunnel) repo.fetchProfileLiveViaUser() else repo.fetchProfileLive()
+        return result.fold(
+            onSuccess = { p ->
+                applyServerProfile(p, force = true)
+                p.vk_user_id?.let { repo.saveVkUserId(it) }
+                true
+            },
+            onFailure = { e ->
+                DebugLog.w("MainViewModel", "sessions profile: ${e.message}")
+                false
+            },
+        )
     }
 
     /** Профиль приходит из initial sync + ConfigSync — без периодического overlay/poll. */

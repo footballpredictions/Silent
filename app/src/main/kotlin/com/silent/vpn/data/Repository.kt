@@ -1018,6 +1018,30 @@ class SilentRepository @Inject constructor(
         prefs.edit().putString(PREF_CACHED_PROFILE, Gson().toJson(profile)).apply()
     }
 
+    /** Список устройств с /config не должен теряться, если live /me уже был. */
+    private fun mergeNewerDeviceList(incoming: UserProfile) {
+        val current = getCachedProfile() ?: run {
+            saveCachedProfile(incoming)
+            com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener?.onProfile(incoming)
+            return
+        }
+        val changed = com.silent.vpn.policy.SessionsSyncPolicy.deviceListChanged(
+            currentIds = current.devices.map { it.id }.toSet(),
+            currentCount = current.devices_count,
+            incomingIds = incoming.devices.map { it.id }.toSet(),
+            incomingCount = incoming.devices_count,
+        )
+        if (!changed) return
+        val merged = current.copy(
+            devices = incoming.devices,
+            devices_count = incoming.devices_count,
+            connected_count = incoming.connected_count,
+        )
+        saveCachedProfile(merged)
+        com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener?.onProfile(merged)
+        Log.i(TAG, "client_sync merged devices ${current.devices_count}→${incoming.devices_count}")
+    }
+
     fun isVpnAccessDenied(): Boolean = prefs.getBoolean(PREF_VPN_ACCESS_DENIED, false)
 
     fun setVpnAccessDenied(denied: Boolean) {
@@ -1096,9 +1120,11 @@ class SilentRepository @Inject constructor(
                     !it.subscription.is_active
             when {
                 !forceProfile && liveProfileAppliedAtMs > 0L -> {
-                    MobileSyncLog.i("clientSync", "skip client_sync profile — live /me already applied")
+                    mergeNewerDeviceList(it)
+                    MobileSyncLog.i("clientSync", "keep live /me — merge devices if changed")
                 }
                 !forceProfile && wouldDowngradePaid -> {
+                    mergeNewerDeviceList(it)
                     MobileSyncLog.i(
                         "clientSync",
                         "skip stale inactive client_sync profile — paid subscription already cached",

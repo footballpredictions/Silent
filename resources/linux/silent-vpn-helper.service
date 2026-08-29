@@ -1,0 +1,15 @@
+[Unit]
+Description=Silent VPN privileged WireGuard helper
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/silent-vpn-wg-helper serve
+Restart=on-failure
+RestartSec=1
+RuntimeDirectory=silent-vpn
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

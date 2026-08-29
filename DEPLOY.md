@@ -104,7 +104,7 @@ AppImage через electron-builder с Windows часто не собирает
 После сборки загрузить AppImage в админке **Обновления → PC (Linux)** (или `POST /api/admin/updates/upload` с `platform=linux`).
 Клиент проверяет `GET /api/updates/check?platform=linux`.
 
-Права VPN: при первом включении `pkexec` (пароль администратора), аналог UAC на Windows.
+Права VPN: пароль администратора **один раз при установке** `.deb` (как UAC на Windows). `postinst` включает systemd-сервис `silent-vpn-helper` — тумблер VPN дальше без пароля. Не вызывать `pkexec` на каждый bypass/DNS.
 
 ---
 

@@ -1,12 +1,15 @@
 /**
  * WireGuard Linux — тот же контракт, что Windows `wireguard.js`.
  * Туннель wg-turn, AllowedIPs как на PC (0.0.0.0/1 + 128.0.0.0/1, bootstrap 10.66.66.0/24),
- * bypass /32 через физический шлюз. Права: pkexec (аналог UAC).
+ * bypass /32 через физический шлюз.
+ * Права: systemd-хелпер после установки .deb (пароль только в установщике),
+ * иначе один pkexec на запуск демона — дальше тумблер без пароля.
  */
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
-const { exec, execFile, execFileSync } = require('child_process')
+const net = require('net')
+const { exec, execFile, execFileSync, spawn } = require('child_process')
 const { promisify } = require('util')
 const execAsync = promisify(exec)
 const execFileAsync = promisify(execFile)
@@ -16,6 +19,9 @@ const TUNNEL_CONF_NAME = 'wg-turn.conf'
 const FALLBACK_BACKEND_IP = '132.243.234.162'
 const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
 const STABLE_CONF_DIR = path.join(os.homedir(), '.local', 'share', 'SilentVPN')
+const SYSTEM_HELPER = '/usr/libexec/silent-vpn-wg-helper'
+const HELPER_SOCK = '/run/silent-vpn/helper.sock'
+const HELPER_UNIT = 'silent-vpn-helper.service'
 
 function pickDnsServers(value) {
   return String(value || '')
@@ -40,6 +46,7 @@ let bypassChain = Promise.resolve()
 let wgApplyEpoch = 0
 let lastHelperPath = null
 let lastWgGo = 'auto'
+let daemonStartPromise = null
 
 function beginWgApply() {
   wgApplyEpoch += 1
@@ -95,6 +102,7 @@ function resourcesDir(isDev, dirname) {
 function findHelper(isDev, dirname) {
   const base = resourcesDir(isDev, dirname)
   const candidates = [
+    SYSTEM_HELPER,
     path.join(base, 'linux', 'silent-wg-helper'),
     path.join(base, 'silent-wg-helper'),
   ]
@@ -102,6 +110,119 @@ function findHelper(isDev, dirname) {
     if (fs.existsSync(p)) return p
   }
   return null
+}
+
+function pingHelper(timeoutMs = 400) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ path: HELPER_SOCK })
+    const t = setTimeout(() => {
+      sock.destroy()
+      resolve(false)
+    }, timeoutMs)
+    sock.once('connect', () => {
+      clearTimeout(t)
+      sock.destroy()
+      resolve(true)
+    })
+    sock.once('error', () => {
+      clearTimeout(t)
+      resolve(false)
+    })
+  })
+}
+
+function helperViaSocket(args, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect({ path: HELPER_SOCK })
+    let buf = ''
+    const t = setTimeout(() => {
+      sock.destroy()
+      const err = new Error('helper socket timeout')
+      err.code = 'ETIMEDOUT'
+      reject(err)
+    }, timeoutMs)
+    sock.setEncoding('utf8')
+    sock.once('connect', () => {
+      sock.write(`${JSON.stringify({ args })}\n`)
+    })
+    sock.on('data', (chunk) => {
+      buf += chunk
+      const nl = buf.indexOf('\n')
+      if (nl < 0) return
+      clearTimeout(t)
+      sock.end()
+      try {
+        const resp = JSON.parse(buf.slice(0, nl))
+        if (resp && resp.ok) {
+          resolve({ stdout: String(resp.out || ''), stderr: String(resp.err || '') })
+          return
+        }
+        const err = new Error(String(resp?.err || resp?.out || 'helper failed').trim())
+        err.code = resp?.code || 1
+        err.stdout = String(resp?.out || '')
+        err.stderr = String(resp?.err || '')
+        reject(err)
+      } catch (e) {
+        reject(e)
+      }
+    })
+    sock.once('error', (e) => {
+      clearTimeout(t)
+      reject(e)
+    })
+  })
+}
+
+async function waitForHelperSocket(ms = 8000) {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) {
+    if (await pingHelper()) return true
+    await sleep(150)
+  }
+  return pingHelper()
+}
+
+async function startHelperDaemonOnce() {
+  if (await pingHelper()) return
+  const helper = lastHelperPath || findHelper(false, __dirname) || SYSTEM_HELPER
+  if (isProcessElevated() && helper && fs.existsSync(helper)) {
+    spawn(helper, ['serve'], { detached: true, stdio: 'ignore' }).unref()
+    if (await waitForHelperSocket(6000)) return
+  }
+  try {
+    await execFileAsync('systemctl', ['start', HELPER_UNIT], { timeout: 8000 })
+    if (await waitForHelperSocket(6000)) return
+  } catch { /* user cannot start unit without root */ }
+  const pkHelper = fs.existsSync(SYSTEM_HELPER) ? SYSTEM_HELPER : helper
+  try {
+    await execFileAsync('pkexec', ['systemctl', 'start', HELPER_UNIT], { timeout: 120000 })
+    if (await waitForHelperSocket(8000)) return
+  } catch { /* unit missing (AppImage) — start serve */ }
+  if (!pkHelper || !fs.existsSync(pkHelper)) {
+    throw new Error('silent-wg-helper not found')
+  }
+  await new Promise((resolve, reject) => {
+    const p = spawn('pkexec', [pkHelper, 'serve'], { detached: true, stdio: 'ignore' })
+    p.once('error', reject)
+    p.unref()
+    waitForHelperSocket(60000).then((ok) => {
+      if (ok) resolve()
+      else reject(new Error('helper daemon did not start'))
+    })
+  })
+}
+
+async function ensureHelperDaemon() {
+  if (await pingHelper()) return
+  if (!daemonStartPromise) {
+    daemonStartPromise = startHelperDaemonOnce().finally(() => {
+      daemonStartPromise = null
+    })
+  }
+  await daemonStartPromise
+  if (!(await pingHelper())) {
+    throw new Error('Silent VPN helper не запущен')
+  }
 }
 
 function findWireguardGo(isDev, dirname) {
@@ -124,9 +245,11 @@ function prepareRuntimeDir(isDev, dirname, send) {
   }
   lastHelperPath = helper
   lastRuntimeDir = path.dirname(helper)
-  try {
-    fs.chmodSync(helper, 0o755)
-  } catch { /* ignore */ }
+  if (helper !== SYSTEM_HELPER) {
+    try {
+      fs.chmodSync(helper, 0o755)
+    } catch { /* ignore */ }
+  }
   lastWgGo = findWireguardGo(isDev, dirname)
   if (lastWgGo && lastWgGo !== 'auto') {
     try { fs.chmodSync(lastWgGo, 0o755) } catch { /* ignore */ }
@@ -145,21 +268,22 @@ function isProcessElevated() {
   }
 }
 
-function helperCmd(args, timeoutMs = 45000) {
+async function helperCmd(args, timeoutMs = 45000) {
   const helper = lastHelperPath
-  if (!helper) {
+  if (!helper && !fs.existsSync(SYSTEM_HELPER)) {
     const err = new Error('silent-wg-helper not found')
     err.code = 'ENOHELPER'
     throw err
   }
-  const elevated = isProcessElevated()
-  const bin = elevated ? helper : 'pkexec'
-  const binArgs = elevated ? args : [helper, ...args]
-  return execFileAsync(bin, binArgs, {
-    encoding: 'utf8',
-    timeout: timeoutMs,
-    maxBuffer: 2 * 1024 * 1024,
-  })
+  if (isProcessElevated() && helper) {
+    return execFileAsync(helper, args, {
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      maxBuffer: 2 * 1024 * 1024,
+    })
+  }
+  await ensureHelperDaemon()
+  return helperViaSocket(args, timeoutMs)
 }
 
 async function helperOut(args, timeoutMs = 20000) {
@@ -279,29 +403,24 @@ async function isWgStillPresentAsync() {
 
 async function capturePhysicalGateway(send) {
   const prev = savedPhysicalGateway
+  const apply = (gw, iface) => {
+    savedPhysicalGateway = { nextHop: gw, ifIndex: 0, alias: iface }
+    send?.(`[WG] Шлюз до VPN: ${gw} (${iface})`)
+    return savedPhysicalGateway
+  }
+  try {
+    const { stdout } = await execAsync('ip -4 route show default', { encoding: 'utf8', timeout: 5000 })
+    const lines = String(stdout || '').split('\n').filter(l => l && !l.includes(TUNNEL_NAME))
+    const m = (lines[0] || String(stdout || '')).match(/via\s+(\d+\.\d+\.\d+\.\d+).*dev\s+(\S+)/)
+    if (m) return apply(m[1], m[2])
+  } catch { /* helper fallback */ }
   try {
     const out = await helperOut(['gateway'], 12000)
     const parts = String(out || '').trim().split(/\s+/)
     if (parts.length >= 2 && /^\d+\.\d+\.\d+\.\d+$/.test(parts[0])) {
-      savedPhysicalGateway = {
-        nextHop: parts[0],
-        ifIndex: 0,
-        alias: parts[1],
-      }
-      send?.(`[WG] Шлюз до VPN: ${savedPhysicalGateway.nextHop} (${savedPhysicalGateway.alias})`)
-      return savedPhysicalGateway
+      return apply(parts[0], parts[1])
     }
   } catch (e) {
-    // без pkexec — пробуем ip route от пользователя
-    try {
-      const { stdout } = await execAsync('ip -4 route show default', { encoding: 'utf8', timeout: 5000 })
-      const m = String(stdout || '').match(/via\s+(\d+\.\d+\.\d+\.\d+).*dev\s+(\S+)/)
-      if (m) {
-        savedPhysicalGateway = { nextHop: m[1], ifIndex: 0, alias: m[2] }
-        send?.(`[WG] Шлюз до VPN: ${m[1]} (${m[2]})`)
-        return savedPhysicalGateway
-      }
-    } catch { /* ignore */ }
     send?.(`[WG] gateway: ${e?.message || e}`)
   }
   return prev?.nextHop ? prev : savedPhysicalGateway
@@ -514,7 +633,7 @@ async function forceStopWireGuard(isDev, dirname, send) {
     if (!(await isWgStillPresentAsync())) {
       send?.('[WG] Туннель wg-turn снят')
     } else {
-      send?.('[WG] Не удалось снять wg-turn — pkexec / sudo ip link delete wg-turn', 'E')
+      send?.('[WG] Не удалось снять wg-turn — helper / sudo ip link delete wg-turn', 'E')
     }
   })
 }
@@ -619,15 +738,15 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   const elevated = isProcessElevated()
   send(elevated
     ? '[WG] Процесс с правами root'
-    : '[WG] Без root — нужен pkexec (пароль администратора) для туннеля')
+    : '[WG] Туннель через helper (пароль только при установке пакета)')
 
   const wgGo = lastWgGo || findWireguardGo(isDev, dirname)
   try {
     await helperOut(['up', stableConf, wgGo], 90000)
   } catch (e) {
     const msg = String(e?.message || e)
-    if (/pkexec|not found|77|dismiss|cancel|org.freedesktop.policykit/i.test(msg)) {
-      send('[WG] pkexec отменён или недоступен. Запустите Silent VPN через sudo или установите policykit')
+    if (/pkexec|not found|77|dismiss|cancel|org.freedesktop.policykit|helper daemon/i.test(msg)) {
+      send('[WG] Нет прав на туннель. Переустановите .deb (пароль один раз при установке) или запустите helper: systemctl start silent-vpn-helper')
     } else {
       send('[WG] up: ' + msg.slice(0, 240))
     }
@@ -678,4 +797,6 @@ module.exports = {
   normalizeDnsValue,
   parseBypassTarget,
   buildAllowedIPsForLinux,
+  SYSTEM_HELPER,
+  HELPER_SOCK,
 }

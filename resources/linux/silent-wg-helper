@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Privileged WireGuard helper for Silent VPN on Linux.
 
-Must run as root (pkexec / sudo). Commands:
+Must run as root. After .deb install a systemd unit keeps `serve` running,
+so the GUI talks to a unix socket and never asks for a password.
 
+Commands:
+
+  serve
   up <conf> <wireguard-go-or-auto> [--subnet]
   down
   status
@@ -19,6 +23,9 @@ or 10.66.66.0/24 (bootstrap). Bypass /32 via physical gateway.
 from __future__ import annotations
 
 import base64
+import contextlib
+import io
+import json
 import os
 import re
 import shutil
@@ -31,8 +38,12 @@ IFACE = "wg-turn"
 RUN_DIR = "/run/silent-vpn"
 PID_FILE = os.path.join(RUN_DIR, "wireguard-go.pid")
 SOCK_PATH = f"/var/run/wireguard/{IFACE}.sock"
+HELPER_SOCK = os.path.join(RUN_DIR, "helper.sock")
 RESOLV_BAK = os.path.join(RUN_DIR, "resolv.conf.bak")
 STATE_FILE = os.path.join(RUN_DIR, "state")
+_IPV4 = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+_CIDR = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?$")
+_IFACE = re.compile(r"^[A-Za-z0-9_.:-]{1,15}$")
 
 
 def die(msg: str, code: int = 1) -> None:
@@ -418,11 +429,163 @@ COMMANDS = {
 }
 
 
-def main() -> None:
+def conf_path_ok(path: str) -> bool:
+    try:
+        ap = os.path.realpath(path).replace("\\", "/")
+    except OSError:
+        return False
+    if not ap.endswith(".conf"):
+        return False
+    return (
+        "/.local/share/SilentVPN/" in ap
+        or ap.startswith("/tmp/")
+        or ap.startswith("/var/tmp/")
+        or ap.startswith("/opt/silent-vpn/")
+        or ap.startswith("/run/silent-vpn/")
+    )
+
+
+def wg_go_path_ok(path: str) -> bool:
+    if not path or path in ("auto", "kernel", "-"):
+        return True
+    try:
+        ap = os.path.realpath(path)
+    except OSError:
+        return False
+    if os.path.basename(ap) != "wireguard-go":
+        return False
+    return (
+        ap.startswith("/opt/silent-vpn/")
+        or ap.startswith("/tmp/.mount_")
+        or ap.startswith("/usr/bin/")
+        or ap.startswith("/usr/local/bin/")
+    )
+
+
+def validate_args(args: list[str]) -> str | None:
+    if not args:
+        return "empty command"
+    cmd = args[0]
+    if cmd not in COMMANDS:
+        return f"unknown command: {cmd}"
+    rest = args[1:]
+    if cmd == "up":
+        if not rest:
+            return "up needs conf"
+        if not conf_path_ok(rest[0]):
+            return "conf path not allowed"
+        if len(rest) > 1 and not wg_go_path_ok(rest[1]):
+            return "wireguard-go path not allowed"
+    elif cmd == "bypass-add":
+        if len(rest) < 3:
+            return "bypass-add needs gw iface cidr"
+        if not _IPV4.match(rest[0]) or not _IFACE.match(rest[1]):
+            return "invalid gw/iface"
+        if not all(_CIDR.match(x) for x in rest[2:]):
+            return "invalid cidr"
+    elif cmd == "bypass-del":
+        if not rest or not all(_CIDR.match(x) for x in rest):
+            return "invalid cidr"
+    elif cmd == "dns-set":
+        if len(rest) < 2 or rest[0] != IFACE:
+            return "dns-set only for wg-turn"
+        servers = [x.strip() for x in re.split(r"[,;\s]+", rest[1]) if x.strip()]
+        if not servers or not all(_IPV4.match(s) for s in servers):
+            return "invalid dns"
+    return None
+
+
+def run_command(args: list[str]) -> tuple[int, str, str]:
+    err = validate_args(args)
+    if err:
+        return 2, "", err
+    out_buf = io.StringIO()
+    err_buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+            COMMANDS[args[0]](args[1:])
+        return 0, out_buf.getvalue(), err_buf.getvalue()
+    except SystemExit as e:
+        code = 0 if e.code in (0, None) else (e.code if isinstance(e.code, int) else 1)
+        return code, out_buf.getvalue(), err_buf.getvalue()
+    except Exception as e:
+        return 1, out_buf.getvalue(), str(e)
+
+
+def handle_client(conn: socket.socket) -> None:
+    conn.settimeout(120)
+    buf = b""
+    try:
+        while b"\n" not in buf:
+            chunk = conn.recv(4096)
+            if not chunk:
+                return
+            buf += chunk
+            if len(buf) > 1_000_000:
+                return
+    except OSError:
+        return
+    line = buf.split(b"\n", 1)[0].strip()
+    if not line:
+        return
+    try:
+        req = json.loads(line.decode("utf-8"))
+        args = req.get("args")
+        if not isinstance(args, list) or not all(isinstance(x, str) for x in args):
+            raise ValueError("args")
+        if len(args) > 64:
+            raise ValueError("too many args")
+    except Exception:
+        payload = json.dumps({"ok": False, "code": 2, "out": "", "err": "bad request"}) + "\n"
+        try:
+            conn.sendall(payload.encode("utf-8"))
+        except OSError:
+            pass
+        return
+    code, out, err = run_command(args)
+    payload = json.dumps({"ok": code == 0, "code": code, "out": out, "err": err}) + "\n"
+    try:
+        conn.sendall(payload.encode("utf-8"))
+    except OSError:
+        pass
+
+
+def cmd_serve(_: list[str]) -> None:
     need_root()
+    os.makedirs(RUN_DIR, exist_ok=True)
+    try:
+        os.remove(HELPER_SOCK)
+    except OSError:
+        pass
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(HELPER_SOCK)
+    os.chmod(HELPER_SOCK, 0o666)
+    srv.listen(8)
+    while True:
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            continue
+        try:
+            handle_client(conn)
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+
+def main() -> None:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        die("silent-wg-helper <up|down|status|gateway|bypass-add|bypass-del|dns-set|dns-restore> ...")
+        die(
+            "silent-wg-helper <serve|up|down|status|gateway|"
+            "bypass-add|bypass-del|dns-set|dns-restore> ..."
+        )
     cmd = sys.argv[1]
+    if cmd == "serve":
+        cmd_serve([])
+        return
+    need_root()
     fn = COMMANDS.get(cmd)
     if not fn:
         die(f"unknown command: {cmd}")

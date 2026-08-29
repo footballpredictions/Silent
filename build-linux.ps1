@@ -34,7 +34,11 @@ $env:GOTOOLCHAIN = 'local'
 $env:GOPROXY = 'https://proxy.golang.org,direct'
 Remove-Item Env:GOBIN -ErrorAction SilentlyContinue
 $wgOut = Join-Path (Get-Location) 'resources\linux\wireguard-go'
-go get golang.zx2c4.com/wireguard@latest 2>$null
+try {
+  go get golang.zx2c4.com/wireguard@latest 2>$null
+} catch {
+  Write-Host 'go get wireguard skipped (no module in cwd) — using module cache / existing binary'
+}
 $modRoot = Join-Path (go env GOPATH) 'pkg\mod\golang.zx2c4.com'
 $wgMod = Get-ChildItem $modRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'wireguard@*' } | Sort-Object Name -Descending | Select-Object -First 1
 if ($wgMod) {

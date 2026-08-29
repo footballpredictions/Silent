@@ -11,7 +11,13 @@ const {
   firstArg,
   looksLikeApp,
 } = require('../src/main/apps/listInstalledAppsLinux')
-const { parseBypassTarget, buildAllowedIPsForLinux, normalizeDnsValue } = require('../src/main/vpn/wireguardLinux')
+const {
+  parseBypassTarget,
+  buildAllowedIPsForLinux,
+  normalizeDnsValue,
+  SYSTEM_HELPER,
+  HELPER_SOCK,
+} = require('../src/main/vpn/wireguardLinux')
 const { packsForExePaths } = require('../src/main/apps/platformBypassPacks')
 
 describe('otaPlatform', () => {
@@ -68,6 +74,10 @@ describe('linux wireguard contract matches Windows', () => {
   it('DNS override same as PC', () => {
     assert.equal(normalizeDnsValue('77.88.8.8', '1.1.1.1'), '1.1.1.1')
     assert.ok(normalizeDnsValue('10.66.66.1', '').includes('10.66.66.1'))
+  })
+  it('uses system helper socket so toggle is not pkexec-per-call', () => {
+    assert.equal(SYSTEM_HELPER, '/usr/libexec/silent-vpn-wg-helper')
+    assert.equal(HELPER_SOCK, '/run/silent-vpn/helper.sock')
   })
 })
 

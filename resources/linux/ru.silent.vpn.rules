@@ -1,0 +1,5 @@
+polkit.addRule(function (action, subject) {
+  if (action.id == "ru.silent.vpn.wghelper" && subject.local && subject.active) {
+    return polkit.Result.YES;
+  }
+});

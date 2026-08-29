@@ -73,12 +73,19 @@ def collect_data(mtime: int) -> tuple[bytes, list[tuple[str, str]], int]:
             INSTALL_ROOT,
             "usr",
             "usr/bin",
+            "usr/libexec",
+            "usr/lib",
+            "usr/lib/systemd",
+            "usr/lib/systemd/system",
             "usr/share",
             "usr/share/applications",
             "usr/share/icons",
             "usr/share/icons/hicolor",
             "usr/share/icons/hicolor/256x256",
             "usr/share/icons/hicolor/256x256/apps",
+            "usr/share/polkit-1",
+            "usr/share/polkit-1/actions",
+            "usr/share/polkit-1/rules.d",
         }
         for d in sorted(dirs, key=lambda s: (s.count("/"), s)):
             tar.addfile(_tarinfo_dir(d, mtime))
@@ -133,7 +140,40 @@ def collect_data(mtime: int) -> tuple[bytes, list[tuple[str, str]], int]:
             md5s.append((hashlib.md5(icon).hexdigest(), "usr/share/icons/hicolor/256x256/apps/silent-vpn.png"))
             installed_size += len(icon)
 
-        installed_size += len(desktop) + len(wrapper)
+        extras = [
+            (
+                "usr/libexec/silent-vpn-wg-helper",
+                ROOT / "resources" / "linux" / "silent-wg-helper",
+                0o755,
+            ),
+            (
+                "usr/lib/systemd/system/silent-vpn-helper.service",
+                ROOT / "resources" / "linux" / "silent-vpn-helper.service",
+                0o644,
+            ),
+            (
+                "usr/share/polkit-1/actions/ru.silent.vpn.wg.policy",
+                ROOT / "resources" / "linux" / "ru.silent.vpn.wg.policy",
+                0o644,
+            ),
+            (
+                "usr/share/polkit-1/rules.d/ru.silent.vpn.rules",
+                ROOT / "resources" / "linux" / "ru.silent.vpn.rules",
+                0o644,
+            ),
+        ]
+        extra_bytes = 0
+        for arc, src, mode in extras:
+            if not src.is_file():
+                raise SystemExit(f"missing {src}")
+            data = src.read_bytes()
+            if src.name == "silent-wg-helper":
+                data = data.replace(b"\r\n", b"\n")
+            _taradd_file(tar, arc, data, mode, mtime)
+            md5s.append((hashlib.md5(data).hexdigest(), arc))
+            extra_bytes += len(data)
+
+        installed_size += len(desktop) + len(wrapper) + extra_bytes
     return buf.getvalue(), md5s, installed_size
 
 
@@ -145,7 +185,7 @@ def control_tar(md5s: list[tuple[str, str]], installed_size: int, mtime: int) ->
         "Priority: optional\n"
         "Architecture: amd64\n"
         "Maintainer: Silent VPN <noreply@silent>\n"
-        "Depends: libgtk-3-0, libnotify4, libnss3, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, python3, policykit-1, iproute2\n"
+        "Depends: libgtk-3-0, libnotify4, libnss3, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, python3, policykit-1, iproute2, systemd\n"
         f"Installed-Size: {max(1, installed_size // 1024)}\n"
         "Homepage: https://132-243-234-162.nip.io\n"
         "Description: Silent VPN desktop client\n"
@@ -162,11 +202,37 @@ def control_tar(md5s: list[tuple[str, str]], installed_size: int, mtime: int) ->
         "chmod 755 /opt/silent-vpn/resources/wdtt-client 2>/dev/null || true\n"
         "chmod 755 /opt/silent-vpn/resources/silent-wg-helper 2>/dev/null || true\n"
         "chmod 755 /opt/silent-vpn/resources/wireguard-go 2>/dev/null || true\n"
+        "chmod 755 /usr/libexec/silent-vpn-wg-helper 2>/dev/null || true\n"
         "if command -v update-desktop-database >/dev/null 2>&1; then\n"
         "  update-desktop-database -q /usr/share/applications || true\n"
         "fi\n"
         "if command -v xdg-mime >/dev/null 2>&1; then\n"
         "  xdg-mime default silent-vpn.desktop x-scheme-handler/silentvpn || true\n"
+        "fi\n"
+        "if [ -d /run/systemd/system ]; then\n"
+        "  systemctl daemon-reload || true\n"
+        "  systemctl enable silent-vpn-helper.service >/dev/null 2>&1 || true\n"
+        "  systemctl restart silent-vpn-helper.service || true\n"
+        "fi\n"
+        "exit 0\n"
+    ).encode("utf-8")
+    prerm = (
+        "#!/bin/sh\n"
+        "set -e\n"
+        "if [ -d /run/systemd/system ]; then\n"
+        "  systemctl stop silent-vpn-helper.service >/dev/null 2>&1 || true\n"
+        "fi\n"
+        "exit 0\n"
+    ).encode("utf-8")
+    postrm = (
+        "#!/bin/sh\n"
+        "set -e\n"
+        "if [ \"$1\" = remove ] || [ \"$1\" = purge ]; then\n"
+        "  if [ -d /run/systemd/system ]; then\n"
+        "    systemctl disable silent-vpn-helper.service >/dev/null 2>&1 || true\n"
+        "    systemctl daemon-reload || true\n"
+        "  fi\n"
+        "  rm -f /run/silent-vpn/helper.sock\n"
         "fi\n"
         "exit 0\n"
     ).encode("utf-8")
@@ -175,6 +241,8 @@ def control_tar(md5s: list[tuple[str, str]], installed_size: int, mtime: int) ->
         _taradd_file(tar, "control", control, 0o644, mtime)
         _taradd_file(tar, "md5sums", md5text, 0o644, mtime)
         _taradd_file(tar, "postinst", postinst, 0o755, mtime)
+        _taradd_file(tar, "prerm", prerm, 0o755, mtime)
+        _taradd_file(tar, "postrm", postrm, 0o755, mtime)
     return buf.getvalue()
 
 

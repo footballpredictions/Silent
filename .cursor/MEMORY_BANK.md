@@ -10,7 +10,7 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.163** (olcrtc снят из UI; WDTT only) |
+| `Silent-Project/pc/` | `pc` | **1.0.163** (olcrtc снят из UI; WDTT only; Linux = тот же клиент, AppImage) |
 | `Silent-Project/android/` | `android` | **1.0.163** (olcrtc снят из UI; WDTT only) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
@@ -45,7 +45,7 @@
 | Миграции | Alembic |
 | AI-агент VK | Python asyncio (`ai/vk_manager.py`) |
 | Admin UI | React 18 + TypeScript + Vite + Tailwind |
-| PC-клиент | Electron 32 + React + Vite + Go wdtt-client |
+| PC-клиент | Electron 32 + React + Vite + Go wdtt-client (Windows NSIS + Linux AppImage, один UI) |
 | Android | Kotlin + Jetpack Compose + WireGuard GoBackend |
 | iOS | Swift + SwiftUI + NetworkExtension |
 | VPN Core | wdtt-server (WireGuard over VK TURN/DTLS) |
@@ -128,6 +128,17 @@ cmd /c build-installer.bat
 Готовый installer: `pc/build-release-v141-XXXXX/Silent VPN Setup X.X.X.exe` + копия в `pc/releases/`.
 
 **UI:** кнопка закрытия на главном экране PC (`quitApp`) — полный выход из приложения и трея.
+
+### Linux-клиент — тот же PC, не отдельный продукт
+
+Linux **не** пятая git-ветка и **не** другой UI. Это тот же Electron в `Silent-Project/pc/` (ветка `pc`):
+
+- Renderer / тема / тумблер / bootstrap / login / полный туннель — **как Windows**
+- `device_type` в API остаётся `pc` (лимит 3 сессии, старые клиенты не ломаются)
+- OTA отдельно: `platform=linux` (AppImage), чтобы Windows не получал Linux-файл и наоборот
+- VPN: `resources/linux/silent-wg-helper` + bundled `wireguard-go` (fallback: kernel WireGuard + `wg`); права через `pkexec` (аналог UAC)
+- Сборка: `pc/build-linux.ps1` (кросс Go с Windows) / `pc/build-linux.sh` (на Linux). AppImage через electron-builder; с Windows часто нужен WSL/Docker
+- Перед release Linux — тот же вопрос про bootstrap VK-хеш, что и для PC `.exe`
 
 ### Диагностика VK Smart Captcha (`pc/debug_captcha.py`)
 
@@ -446,10 +457,11 @@ Silent-Project/                 ← рабочая папка (НЕ git), отк
 │   ├── scripts/                ← ВСЕ deploy-скрипты backend (см. раздел «Деплой»)
 │   ├── DEPLOY.md
 │   └── docker-compose.yml
-├── pc/                         ← git, ветка pc
+├── pc/                         ← git, ветка pc (Windows + Linux, один UI)
 │   ├── debug_captcha.py        ← диагностика VK captcha (см. «Диагностика VK Smart Captcha»)
 │   ├── scripts/                deploy_release.py — OTA .exe
-│   └── build-installer.bat
+│   ├── build-installer.bat     ← Windows NSIS
+│   └── build-linux.ps1 / .sh   ← Linux AppImage (wdtt-client + wireguard-go)
 ├── android/                    ← git, ветка android
 │   ├── app/                    Android Studio: открывать android/app
 │   ├── scripts/                deploy_release.py — OTA .apk
@@ -910,6 +922,18 @@ cd pc; npm install; npm run dev
 - Теперь любой `HB socks CONNECT fail` на WB сразу переводит сессию в recover-путь (без ожидания второй ошибки).
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
+
+### 2026-08-29 — Linux в админке «Обновления» + клиент в ветке pc
+
+- OTA `platform=linux` отдельно от Windows `pc`: админка карточка «PC (Linux)» (.deb/.AppImage), API `GET /api/updates/check?platform=linux`. Старые клиенты 1.0.160/161 не ломаются.
+- Linux-клиент — тот же Electron в ветке `pc` (не пятый репозиторий). Установщик: `Silent VPN Setup 1.0.163.deb`.
+- Деплой backend: `deploy_stable.py` (admin-ui/dist). Push: `origin/main` + `origin/pc`.
+
+### 2026-08-29 — Linux-клиент: тот же PC Electron
+
+- Задача: Linux не отличается от Windows ни UI, ни включением VPN (тот же renderer, тумблер, bootstrap → login → полный туннель).
+- Реализация в ветке `pc`, не отдельный репозиторий: `wireguardLinux.js` + helper `resources/linux/silent-wg-helper`, `device_type=pc`, OTA `platform=linux`.
+- Сборка: `build-linux.ps1` / `build-linux.sh`. AppImage с Windows может потребовать WSL/Docker.
 
 ### 2026-08-29 — Дашборд онлайн = Улей; соты без лимита connect
 

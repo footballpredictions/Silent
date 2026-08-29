@@ -55,6 +55,7 @@ function formatDate(iso: string | null): string {
 const platformLabel: Record<string, string> = {
   pc: 'PC (Windows)',
   android: 'Android',
+  linux: 'PC (Linux)',
 }
 
 function downloadHref(item: UpdateInfo): string | null {
@@ -78,6 +79,14 @@ export default function UpdatesPage({ token }: { token: string }) {
   const [buildCopyToast, setBuildCopyToast] = useState(false)
   const pcRef = useRef<HTMLInputElement>(null)
   const androidRef = useRef<HTMLInputElement>(null)
+  const linuxRef = useRef<HTMLInputElement>(null)
+
+  const fileRefFor = (platform: string) => (
+    platform === 'pc' ? pcRef : platform === 'linux' ? linuxRef : androidRef
+  )
+  const acceptFor = (platform: string) => (
+    platform === 'pc' ? '.exe,.msi' : platform === 'linux' ? '.AppImage,.appimage,.deb' : '.apk'
+  )
 
   const headers = { Authorization: `Bearer ${token}` }
 
@@ -392,6 +401,7 @@ export default function UpdatesPage({ token }: { token: string }) {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  {item.platform !== 'linux' && (
                   <button
                     type="button"
                     onClick={() => setNightlyFlag(item.platform as 'pc' | 'android', !(
@@ -425,6 +435,7 @@ export default function UpdatesPage({ token }: { token: string }) {
                       {(item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled : !!buildConfig?.nightly_android_enabled) ? 'ON' : 'OFF'}
                     </span>
                   </button>
+                  )}
                   {item.version && (
                     <button
                       onClick={() => remove(item.platform)}
@@ -449,9 +460,9 @@ export default function UpdatesPage({ token }: { token: string }) {
                   </a>
                 )}
                 <input
-                  ref={item.platform === 'pc' ? pcRef : androidRef}
+                  ref={fileRefFor(item.platform)}
                   type="file"
-                  accept={item.platform === 'pc' ? '.exe,.msi' : '.apk'}
+                  accept={acceptFor(item.platform)}
                   className="hidden"
                   onChange={e => {
                     const f = e.target.files?.[0]
@@ -461,7 +472,7 @@ export default function UpdatesPage({ token }: { token: string }) {
                 />
                 <button
                   disabled={uploading === item.platform}
-                  onClick={() => (item.platform === 'pc' ? pcRef : androidRef).current?.click()}
+                  onClick={() => fileRefFor(item.platform).current?.click()}
                   className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#e0e0e0] disabled:opacity-50"
                 >
                   <Upload className="w-4 h-4" />
@@ -476,6 +487,8 @@ export default function UpdatesPage({ token }: { token: string }) {
                   <Github className="w-4 h-4" />
                   {publishingGithub === item.platform ? 'Публикация…' : 'Опубликовать на GitHub'}
                 </button>
+                {item.platform !== 'linux' && (
+                <>
                 <button
                   disabled={building === item.platform || buildStatus?.running}
                   onClick={() => buildRelease(item.platform)}
@@ -503,6 +516,8 @@ export default function UpdatesPage({ token }: { token: string }) {
                     ? (buildStatus.stop_requested ? 'Остановка запрошена…' : (stoppingBuild ? 'Останавливаем…' : 'Остановить сборку'))
                     : 'Остановить сборку'}
                 </button>
+                </>
+                )}
               </div>
             </div>
           ))}

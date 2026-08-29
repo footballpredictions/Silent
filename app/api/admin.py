@@ -1767,7 +1767,7 @@ async def list_updates(_: bool = Depends(get_admin_credentials)):
 
 @router.post("/updates/upload")
 async def upload_update(
-    platform: str = Form(..., pattern="^(pc|android)$"),
+    platform: str = Form(..., pattern="^(pc|android|linux)$"),
     version: Optional[str] = Form(None),
     file: UploadFile = File(...),
     _: bool = Depends(get_admin_credentials),
@@ -1777,6 +1777,8 @@ async def upload_update(
     ext = os.path.splitext(file.filename)[1].lower()
     if platform == "pc" and ext not in (".exe", ".msi"):
         raise HTTPException(status_code=400, detail="PC update must be .exe or .msi")
+    if platform == "linux" and ext not in (".appimage", ".deb"):
+        raise HTTPException(status_code=400, detail="Linux update must be .AppImage or .deb")
     if platform == "android" and ext != ".apk":
         raise HTTPException(status_code=400, detail="Android update must be .apk")
 
@@ -1909,7 +1911,11 @@ async def publish_all_updates_to_github(_: bool = Depends(get_admin_credentials)
 
 
 def _platform_label(platform: str) -> str:
-    return "PC (Windows)" if platform == "pc" else "Android"
+    if platform == "pc":
+        return "PC (Windows)"
+    if platform == "linux":
+        return "PC (Linux)"
+    return "Android"
 
 
 # ─── Варианты обхода / olcrtc (вариант 2) ───────────────────────────────────

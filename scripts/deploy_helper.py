@@ -124,7 +124,7 @@ echo "y" | ufw enable 2>/dev/null || true
 echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-silent.conf
 sysctl -p /etc/sysctl.d/99-silent.conf 2>/dev/null
 
-mkdir -p static update/pc update/android
+mkdir -p static update/pc update/android update/linux
 docker compose up -d --build
 echo "=== Done ==="
 """

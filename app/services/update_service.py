@@ -6,7 +6,7 @@ import shutil
 from datetime import datetime, timezone
 from typing import Optional
 
-PLATFORMS = ("pc", "android")
+PLATFORMS = ("pc", "android", "linux")
 MANIFEST = "manifest.json"
 
 _BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "update"))

@@ -48,8 +48,8 @@ cd backend
 |----------|----------|
 | Путь backend | `/opt/silent-vpn/backend` (`DEPLOY_REMOTE`) |
 | Docker API | `backend-api-1` (`DEPLOY_CONTAINER`) |
-| OTA (хост) | `/opt/silent-vpn/backend/update/pc/`, `…/update/android/` |
-| OTA (в контейнере) | `/app/update/pc/`, `/app/update/android/` |
+| OTA (хост) | `/opt/silent-vpn/backend/update/pc/`, `…/update/android/`, `…/update/linux/` |
+| OTA (в контейнере) | `/app/update/pc/`, `/app/update/android/`, `/app/update/linux/` |
 
 ---
 
@@ -117,7 +117,7 @@ cd backend
 | `ai/release_build_scheduler.py` |
 | `admin-ui/dist/**` |
 
-Создаёт в контейнере `/app/update/pc`, `/app/update/android`.  
+Создаёт в контейнере `/app/update/pc`, `/app/update/android`, `/app/update/linux`.  
 Volumes в `docker-compose.yml`: `./update`, `./build-agent`, docker.sock.
 
 ### Build Agent (OTA-сборка на VPS)

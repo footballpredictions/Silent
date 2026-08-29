@@ -12,7 +12,7 @@ router = APIRouter(prefix="/updates", tags=["updates"])
 
 @router.get("/check")
 async def check_update(
-    platform: str = Query(..., pattern="^(pc|android)$"),
+    platform: str = Query(..., pattern="^(pc|android|linux)$"),
     version: str = Query(..., min_length=1, max_length=32),
 ):
     """Return update info if a newer version is available on the server."""

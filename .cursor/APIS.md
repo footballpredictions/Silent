@@ -186,7 +186,7 @@ sequenceDiagram
 
 | Метод | Путь | Auth | Описание |
 |-------|------|------|----------|
-| GET | `/check?platform=pc\|android&version=` | — | OTA: доступность обновления |
+| GET | `/check?platform=pc\|android\|linux&version=` | — | OTA: доступность обновления |
 
 ### Admin — `/api/admin`
 
@@ -238,8 +238,8 @@ sequenceDiagram
 | POST | `/promo` | Admin | Создание промокода |
 | GET | `/promo` | Admin | Список промокодов |
 | GET | `/logs` | Admin | Буфер логов |
-| GET | `/updates` | Admin | Манифесты PC/Android в `update/` |
-| POST | `/updates/upload` | Admin | Загрузить .exe / .apk |
+| GET | `/updates` | Admin | Манифесты PC (Windows) / Android / PC (Linux) в `update/` |
+| POST | `/updates/upload` | Admin | Загрузить .exe / .apk / .deb (.AppImage) |
 | DELETE | `/updates/{platform}` | Admin | Удалить обновление |
 | POST | `/updates/build/{platform}` | Admin | Сборка на сервере → `update/` |
 | POST | `/updates/publish-github/{platform}` | Admin | GitHub Release + `releases.json` на silentvpn3.github.io |

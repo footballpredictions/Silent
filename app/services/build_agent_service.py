@@ -423,7 +423,7 @@ async def build_platform(
     """Sync repo, embed new bootstrap hash, build release, publish to update/."""
     global _BUILD_RUNNING, _STOP_REQUESTED
 
-    if platform not in update_service.PLATFORMS:
+    if platform not in ("pc", "android"):
         raise BuildAgentError(f"Unknown platform: {platform}")
 
     if _BUILD_LOCK.locked() and not force:

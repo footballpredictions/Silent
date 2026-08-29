@@ -135,8 +135,8 @@ Linux **не** пятая git-ветка и **не** другой UI. Это т�
 
 - Renderer / тема / тумблер / bootstrap / login / полный туннель — **как Windows**
 - `device_type` в API остаётся `pc` (лимит 3 сессии, старые клиенты не ломаются)
-- OTA отдельно: `platform=linux` (AppImage), чтобы Windows не получал Linux-файл и наоборот
-- VPN: `resources/linux/silent-wg-helper` + bundled `wireguard-go` (fallback: kernel WireGuard + `wg`); права через `pkexec` (аналог UAC)
+- OTA отдельно: `platform=linux` (AppImage / `.deb`), чтобы Windows не получал Linux-файл и наоборот
+- VPN: `resources/linux/silent-wg-helper` + bundled `wireguard-go` (fallback: kernel WireGuard + `wg`). После установки `.deb` systemd `silent-vpn-helper` слушает `/run/silent-vpn/helper.sock` — пароль только в установщике, тумблер без `pkexec`
 - Сборка: `pc/build-linux.ps1` (кросс Go с Windows) / `pc/build-linux.sh` (на Linux). AppImage через electron-builder; с Windows часто нужен WSL/Docker
 - Перед release Linux — тот же вопрос про bootstrap VK-хеш, что и для PC `.exe`
 
@@ -922,6 +922,12 @@ cd pc; npm install; npm run dev
 - Теперь любой `HB socks CONNECT fail` на WB сразу переводит сессию в recover-путь (без ожидания второй ошибки).
 - Цена подхода: возможны более частые быстрые recover при редком ложном fail, но это лучше долгого зависания.
 - Сборка: `compileDebugKotlin` и `assembleDebug` — успешно.
+
+### 2026-08-29 — Linux: пароль один раз при установке, не на каждый ресурс
+
+- Было: каждый `up` / DNS / bypass-чанк вызывал `pkexec` — Ubuntu спрашивал пароль десятки раз.
+- Стало: `.deb` ставит `/usr/libexec/silent-vpn-wg-helper` + systemd `silent-vpn-helper.service`. GUI ходит в unix-сокет. Пароль — только у установщика пакета (как UAC на Windows).
+- Нужна переустановка нового `Silent VPN Setup 1.0.163.deb`.
 
 ### 2026-08-29 — Linux в админке «Обновления» + клиент в ветке pc
 

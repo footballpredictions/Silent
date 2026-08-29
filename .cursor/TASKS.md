@@ -11,10 +11,11 @@ Agent приступает к **первой невыполненной** зад
 ### Linux-клиент (2026-08-29)
 
 - [ ] **Linux-клиент = тот же PC Electron, UI и включение VPN 1:1:** не отдельная ветка/репозиторий. Тот же React renderer, тот же тумблер (bootstrap 2 мин → login → полный `0.0.0.0/1+128/1` + bypass), `device_type=pc`. Платформенный слой: WireGuard (wireguard-go / kernel + pkexec), `wdtt-client` linux/amd64, исключения приложений через `/proc`, OTA AppImage (`platform=linux`). Сборка: `pc/build-linux.ps1` / `pc/build-linux.sh`
-  - [x] Код: `wireguardLinux.js` + helper, wdtt path, exclusions `.desktop`/`/proc`, OTA `linux`, тесты 55/55
+  - [x] Код: `wireguardLinux.js` + helper, wdtt path, exclusions `.desktop`/`/proc`, OTA `linux`, тесты
   - [x] Кросс-компиляция `wdtt-client` linux/amd64 с Windows (~12 МБ)
   - [x] Собрать установщик `.deb` (`Silent VPN Setup 1.0.163.deb`) — двойной клик открывает установку
   - [x] Деплой backend (`platform=linux` в updates) — 2026-08-29 `deploy_stable.py`: health 200 (~42 мс), `wdtt` active, kick 0; админка «PC (Linux)»
+  - [x] **Права как Windows:** пароль один раз при установке `.deb`, тумблер без pkexec (systemd helper + socket). Новый `Silent VPN Setup 1.0.163.deb` — переустановить
 
 ### Чистка olcrtc и установка на ТВ (2026-08-23)
 

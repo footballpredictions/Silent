@@ -765,6 +765,13 @@ function mergeAppLists(...lists) {
 }
 
 function listInstalledApps() {
+  if (process.platform === 'linux') {
+    const { listLinuxDesktopApps } = require('./listInstalledAppsLinux')
+    const apps = listLinuxDesktopApps()
+    const withIcon = apps.filter(a => a.icon).length
+    console.log(`[Apps] linux desktop=${apps.length} icons=${withIcon}`)
+    return apps
+  }
   if (process.platform !== 'win32') return []
 
   const shortcuts = collectShortcutApps()

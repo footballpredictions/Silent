@@ -12,6 +12,7 @@
     "test": "node --test test/**/*.test.js test/**/*.test.mjs",
     "build": "npm run build:installer",
     "build:installer": "build-installer.bat",
+    "build:linux": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\build-linux.ps1",
     "dist": "npm run build:installer"
   },
   "build": {

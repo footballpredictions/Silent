@@ -1537,3 +1537,7 @@ module.exports = {
   prepareRuntimeDir,
   normalizeDnsValue,
 }
+
+if (process.platform === 'linux') {
+  module.exports = require('./wireguardLinux')
+}

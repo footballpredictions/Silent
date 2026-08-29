@@ -76,6 +76,38 @@ GET https://132-243-234-162.nip.io/api/updates/check?platform=pc&version=1.0.141
 
 ---
 
+## Linux (тот же клиент, AppImage)
+
+Linux **не** отдельный продукт: UI, тумблер, bootstrap и полный туннель как Windows.
+`device_type` в API = `pc`. OTA-канал отдельный: `platform=linux`.
+
+### Сборка
+
+**На Linux (предпочтительно):**
+
+```bash
+cd pc
+export BOOTSTRAP_VK_HASH="<хеш>"   # перед release — спросить у пользователя
+chmod +x build-linux.sh
+./build-linux.sh
+```
+
+Готовый файл: `pc/build-linux/Silent-VPN-<version>.AppImage`
+
+**С Windows:** `powershell -File .\build-linux.ps1` кросс-компилирует `wdtt-client` и `wireguard-go`.
+AppImage через electron-builder с Windows часто не собирается — тогда добить `./build-linux.sh` в WSL.
+
+Перед release — тот же вопрос про bootstrap VK-хеш, что и для `.exe`.
+
+### OTA
+
+После сборки загрузить AppImage в админке **Обновления → PC (Linux)** (или `POST /api/admin/updates/upload` с `platform=linux`).
+Клиент проверяет `GET /api/updates/check?platform=linux`.
+
+Права VPN: при первом включении `pkexec` (пароль администратора), аналог UAC на Windows.
+
+---
+
 ## Backend-деплой
 
 API, admin-ui, VK — только из `backend/DEPLOY.md` (ветка `main`).

@@ -65,10 +65,13 @@ const PACKS = [
     id: 'steam',
     match: (exe, leaf) =>
       leaf === 'steam.exe'
+      || leaf === 'steam'
       || leaf === 'steamwebhelper.exe'
       || leaf === 'steamservice.exe'
       || leaf === 'dota2.exe'
+      || leaf === 'dota2'
       || leaf === 'cs2.exe'
+      || leaf === 'cs2'
       || leaf === 'csgo.exe'
       || exe.includes('\\steam\\')
       || exe.includes('\\steamapps\\'),
@@ -98,7 +101,11 @@ const PACKS = [
   },
   {
     id: 'discord',
-    match: (exe, leaf) => leaf === 'discord.exe' || exe.includes('\\discord\\'),
+    match: (exe, leaf) =>
+      leaf === 'discord.exe'
+      || leaf === 'discord'
+      || exe.includes('\\discord\\')
+      || exe.includes('\\discord'),
     hosts: DISCORD_HOSTS,
   },
   {

@@ -1,0 +1,54 @@
+{
+  "appId": "ru.silent.vpn",
+  "productName": "Silent VPN",
+  "directories": {
+    "output": "build-linux"
+  },
+  "artifactName": "Silent-VPN-${version}.${ext}",
+  "files": [
+    "src/**",
+    "dist/renderer/**",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "resources/linux",
+      "to": ".",
+      "filter": ["wdtt-client", "silent-wg-helper", "wireguard-go"]
+    },
+    {
+      "from": "assets/tray.png",
+      "to": "assets/tray.png"
+    },
+    {
+      "from": "assets/icon.png",
+      "to": "assets/icon.png"
+    }
+  ],
+  "linux": {
+    "target": [
+      { "target": "deb", "arch": ["x64"] },
+      { "target": "dir", "arch": ["x64"] }
+    ],
+    "icon": "assets/icon.png",
+    "category": "Network",
+    "synopsis": "Silent VPN",
+    "executableName": "silent-vpn",
+    "desktop": {
+      "Name": "Silent VPN",
+      "Comment": "Silent VPN",
+      "StartupWMClass": "silent-vpn",
+      "Terminal": "false",
+      "Type": "Application",
+      "Categories": "Network;"
+    }
+  },
+  "deb": {
+    "packageName": "silent-vpn",
+    "depends": [
+      "python3",
+      "policykit-1",
+      "iproute2"
+    ]
+  }
+}

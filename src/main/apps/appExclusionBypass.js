@@ -32,6 +32,9 @@ let tickInFlight = false
 let packsApplied = false
 
 function normalizeExe(p) {
+  if (process.platform === 'linux') {
+    return String(p || '').trim().replace(/\\/g, '/').toLowerCase()
+  }
   return String(p || '')
     .trim()
     .replace(/\//g, '\\')
@@ -105,7 +108,86 @@ function buildCollectorScript(exePaths, outJsonPath) {
   ].join('\r\n')
 }
 
+function hexIpToDotted(hex) {
+  const n = parseInt(hex, 16)
+  if (!Number.isFinite(n)) return ''
+  return `${n & 255}.${(n >> 8) & 255}.${(n >> 16) & 255}.${(n >> 24) & 255}`
+}
+
+function linuxWantedLeaves(exePaths) {
+  return new Set(
+    (exePaths || [])
+      .map(normalizeExe)
+      .filter(Boolean)
+      .map(p => path.posix.basename(p.replace(/\\/g, '/'))),
+  )
+}
+
+function collectRemoteIpsLinuxSync(exePaths) {
+  const wantLeaf = linuxWantedLeaves(exePaths)
+  const wantPath = new Set((exePaths || []).map(normalizeExe).filter(Boolean))
+  if (!wantLeaf.size) return []
+  const inodeToPid = new Map()
+  try {
+    const pids = fs.readdirSync('/proc').filter(n => /^\d+$/.test(n))
+    for (const pid of pids) {
+      let exe = ''
+      try {
+        exe = fs.readlinkSync(`/proc/${pid}/exe`)
+      } catch {
+        continue
+      }
+      const norm = normalizeExe(exe)
+      const leaf = path.posix.basename(norm)
+      if (!wantPath.has(norm) && !wantLeaf.has(leaf)) continue
+      let fds = []
+      try {
+        fds = fs.readdirSync(`/proc/${pid}/fd`)
+      } catch {
+        continue
+      }
+      for (const fd of fds) {
+        try {
+          const t = fs.readlinkSync(`/proc/${pid}/fd/${fd}`)
+          const m = String(t).match(/^socket:\[(\d+)\]$/)
+          if (m) inodeToPid.set(m[1], pid)
+        } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
+
+  const ips = new Set()
+  for (const table of ['/proc/net/tcp', '/proc/net/udp']) {
+    let text = ''
+    try {
+      text = fs.readFileSync(table, 'utf8')
+    } catch {
+      continue
+    }
+    const lines = text.split('\n').slice(1)
+    for (const line of lines) {
+      const cols = line.trim().split(/\s+/)
+      if (cols.length < 10) continue
+      const rem = cols[2]
+      const inode = cols[9]
+      if (!inodeToPid.has(inode)) continue
+      const [hexIp] = rem.split(':')
+      const ip = hexIpToDotted(hexIp)
+      if (ip && !isSkippableIp(ip)) ips.add(ip)
+    }
+  }
+  return [...ips]
+}
+
 async function collectRemoteIps(exePaths) {
+  if (process.platform === 'linux') {
+    try {
+      return collectRemoteIpsLinuxSync(exePaths)
+    } catch (e) {
+      sendLog?.(`[Apps] bypass scan: ${e?.message || e}`)
+      return []
+    }
+  }
   const list = [...new Set((exePaths || []).map(normalizeExe).filter(p => p.endsWith('.exe')))]
   if (!list.length) return []
 

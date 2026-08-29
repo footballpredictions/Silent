@@ -1,0 +1,433 @@
+#!/usr/bin/env python3
+"""Privileged WireGuard helper for Silent VPN on Linux.
+
+Must run as root (pkexec / sudo). Commands:
+
+  up <conf> <wireguard-go-or-auto> [--subnet]
+  down
+  status
+  gateway
+  bypass-add <gw> <iface> <cidr> [cidr...]
+  bypass-del <cidr> [cidr...]
+  dns-set <ifname> <dns1>[,dns2...]
+  dns-restore
+
+Tunnel name is always wg-turn — same as Windows.
+Routing matches Windows PC: AllowedIPs 0.0.0.0/1 + 128.0.0.0/1 (full)
+or 10.66.66.0/24 (bootstrap). Bypass /32 via physical gateway.
+"""
+from __future__ import annotations
+
+import base64
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+IFACE = "wg-turn"
+RUN_DIR = "/run/silent-vpn"
+PID_FILE = os.path.join(RUN_DIR, "wireguard-go.pid")
+SOCK_PATH = f"/var/run/wireguard/{IFACE}.sock"
+RESOLV_BAK = os.path.join(RUN_DIR, "resolv.conf.bak")
+STATE_FILE = os.path.join(RUN_DIR, "state")
+
+
+def die(msg: str, code: int = 1) -> None:
+    sys.stderr.write(msg.rstrip() + "\n")
+    sys.exit(code)
+
+
+def need_root() -> None:
+    if os.geteuid() != 0:
+        die("need root (pkexec/sudo)", 77)
+
+
+def run(cmd: list[str], check: bool = True, capture: bool = False, timeout: int = 30):
+    return subprocess.run(
+        cmd,
+        check=check,
+        capture_output=capture,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def run_out(cmd: list[str], timeout: int = 15) -> str:
+    try:
+        p = run(cmd, check=False, capture=True, timeout=timeout)
+        return ((p.stdout or "") + (p.stderr or "")).strip()
+    except Exception:
+        return ""
+
+
+def parse_conf(path: str) -> dict:
+    data: dict = {
+        "private_key": "",
+        "address": "",
+        "dns": [],
+        "mtu": "1200",
+        "public_key": "",
+        "endpoint": "",
+        "allowed_ips": [],
+        "keepalive": "25",
+    }
+    section = ""
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1].strip().lower()
+                continue
+            if "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip().lower().replace(" ", "")
+            val = val.strip()
+            if key == "privatekey":
+                data["private_key"] = val
+            elif key == "address":
+                data["address"] = val.split(",")[0].strip()
+            elif key == "dns":
+                data["dns"] = [x.strip() for x in re.split(r"[,;\s]+", val) if x.strip()]
+            elif key == "mtu":
+                data["mtu"] = val
+            elif key == "publickey":
+                data["public_key"] = val
+            elif key == "endpoint":
+                data["endpoint"] = val
+            elif key == "allowedips":
+                data["allowed_ips"] = [x.strip() for x in val.split(",") if x.strip()]
+            elif key == "persistentkeepalive":
+                data["keepalive"] = val
+    if not data["private_key"] or not data["public_key"] or not data["address"]:
+        die("invalid wg conf: missing keys/address")
+    if not data["allowed_ips"]:
+        data["allowed_ips"] = ["0.0.0.0/1", "128.0.0.0/1"]
+    return data
+
+
+def b64_to_hex(s: str) -> str:
+    raw = base64.b64decode(s.strip())
+    if len(raw) != 32:
+        die(f"wg key must be 32 bytes, got {len(raw)}")
+    return raw.hex()
+
+
+def uapi_set(conf: dict) -> None:
+    body = [
+        "set=1",
+        f"private_key={b64_to_hex(conf['private_key'])}",
+        "replace_peers=true",
+        f"public_key={b64_to_hex(conf['public_key'])}",
+        f"endpoint={conf['endpoint']}",
+        f"persistent_keepalive_interval={conf['keepalive']}",
+    ]
+    for ip in conf["allowed_ips"]:
+        body.append(f"allowed_ip={ip}")
+    payload = "\n".join(body) + "\n\n"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(5)
+        sock.connect(SOCK_PATH)
+        sock.sendall(payload.encode("ascii"))
+        reply = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            reply += chunk
+            if b"\n\n" in reply:
+                break
+    finally:
+        sock.close()
+    text = reply.decode("ascii", errors="replace")
+    if "errno=0" not in text:
+        die(f"wireguard uapi failed: {text.strip()[:400]}")
+
+
+def iface_exists() -> bool:
+    return os.path.exists(f"/sys/class/net/{IFACE}")
+
+
+def iface_up() -> bool:
+    p = f"/sys/class/net/{IFACE}/operstate"
+    if not os.path.exists(p):
+        p = f"/sys/class/net/{IFACE}/flags"
+        if not os.path.exists(p):
+            return False
+        try:
+            flags = int(open(p, encoding="utf-8").read().strip(), 16)
+            return bool(flags & 0x1)
+        except Exception:
+            return False
+    try:
+        st = open(p, encoding="utf-8").read().strip().lower()
+        return st in ("up", "unknown")
+    except Exception:
+        return False
+
+
+def kill_wg_go() -> None:
+    pid = None
+    if os.path.isfile(PID_FILE):
+        try:
+            pid = int(open(PID_FILE, encoding="utf-8").read().strip())
+        except Exception:
+            pid = None
+    if pid:
+        try:
+            os.kill(pid, 15)
+            for _ in range(20):
+                try:
+                    os.kill(pid, 0)
+                    time.sleep(0.1)
+                except OSError:
+                    break
+            else:
+                os.kill(pid, 9)
+        except OSError:
+            pass
+        try:
+            os.remove(PID_FILE)
+        except OSError:
+            pass
+    run(["pkill", "-f", f"wireguard-go.*{IFACE}"], check=False)
+    if iface_exists():
+        run(["ip", "link", "delete", "dev", IFACE], check=False)
+
+
+def start_userspace(wg_go: str) -> None:
+    os.makedirs("/var/run/wireguard", exist_ok=True)
+    os.makedirs(RUN_DIR, exist_ok=True)
+    proc = subprocess.Popen(
+        [wg_go, IFACE],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    with open(PID_FILE, "w", encoding="utf-8") as f:
+        f.write(str(proc.pid))
+    for _ in range(50):
+        if os.path.exists(SOCK_PATH) and iface_exists():
+            return
+        time.sleep(0.1)
+    die("wireguard-go did not create interface/socket")
+
+
+def start_kernel() -> None:
+    run(["ip", "link", "add", "dev", IFACE, "type", "wireguard"], check=True)
+    if shutil.which("wg") is None:
+        die("kernel wireguard needs the 'wg' tool (wireguard-tools)")
+
+
+def apply_kernel_conf(conf: dict) -> None:
+    tmp = os.path.join(RUN_DIR, "wg.setconf")
+    os.makedirs(RUN_DIR, exist_ok=True)
+    lines = [
+        "[Interface]",
+        f"PrivateKey = {conf['private_key']}",
+        "[Peer]",
+        f"PublicKey = {conf['public_key']}",
+        f"Endpoint = {conf['endpoint']}",
+        f"AllowedIPs = {', '.join(conf['allowed_ips'])}",
+        f"PersistentKeepalive = {conf['keepalive']}",
+        "",
+    ]
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    os.chmod(tmp, 0o600)
+    run(["wg", "setconf", IFACE, tmp], check=True)
+
+
+def apply_addr_routes(conf: dict) -> None:
+    addr = conf["address"]
+    if "/" not in addr:
+        addr = addr + "/32"
+    run(["ip", "address", "flush", "dev", IFACE], check=False)
+    run(["ip", "address", "add", addr, "dev", IFACE], check=True)
+    mtu = str(conf.get("mtu") or "1200")
+    run(["ip", "link", "set", "dev", IFACE, "mtu", mtu, "up"], check=True)
+    for net in conf["allowed_ips"]:
+        run(["ip", "-4", "route", "replace", net, "dev", IFACE], check=False)
+
+
+def cmd_up(args: list[str]) -> None:
+    if len(args) < 1:
+        die("up <conf> [wireguard-go|auto] [--subnet]")
+    conf_path = args[0]
+    wg_go = args[1] if len(args) > 1 and not args[1].startswith("-") else "auto"
+    if not os.path.isfile(conf_path):
+        die(f"conf not found: {conf_path}")
+    conf = parse_conf(conf_path)
+    os.makedirs(RUN_DIR, exist_ok=True)
+    kill_wg_go()
+    time.sleep(0.2)
+
+    userspace = None
+    if wg_go and wg_go not in ("auto", "kernel", "-"):
+        if os.path.isfile(wg_go) and os.access(wg_go, os.X_OK):
+            userspace = wg_go
+    if userspace is None and wg_go == "auto":
+        cand = shutil.which("wireguard-go")
+        if cand:
+            userspace = cand
+
+    use_kernel = False
+    if userspace:
+        start_userspace(userspace)
+        uapi_set(conf)
+    else:
+        # kernel module
+        try:
+            run(["modprobe", "wireguard"], check=False)
+        except Exception:
+            pass
+        if not os.path.exists("/sys/module/wireguard") and not os.path.exists(
+            "/sys/class/net"
+        ):
+            die("no wireguard-go binary and no kernel wireguard")
+        start_kernel()
+        apply_kernel_conf(conf)
+        use_kernel = True
+
+    apply_addr_routes(conf)
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        f.write("kernel\n" if use_kernel else "userspace\n")
+    print("OK up", IFACE)
+
+
+def cmd_down(_: list[str]) -> None:
+    cmd_dns_restore([])
+    kill_wg_go()
+    print("OK down")
+
+
+def cmd_status(_: list[str]) -> None:
+    up = iface_exists() and iface_up()
+    print("up" if up else "down")
+    sys.exit(0 if up else 1)
+
+
+def cmd_gateway(_: list[str]) -> None:
+    # ip -4 route show default
+    p = run(["ip", "-4", "route", "show", "default"], check=False, capture=True)
+    text = (p.stdout or "").strip()
+    gw = ""
+    iface = ""
+    m = re.search(r"via\s+(\d+\.\d+\.\d+\.\d+)", text)
+    if m:
+        gw = m.group(1)
+    m = re.search(r"dev\s+(\S+)", text)
+    if m:
+        iface = m.group(1)
+        if iface == IFACE:
+            # already tunneled — try remaining defaults
+            for line in text.splitlines():
+                if IFACE in line:
+                    continue
+                m2 = re.search(r"via\s+(\d+\.\d+\.\d+\.\d+)", line)
+                m3 = re.search(r"dev\s+(\S+)", line)
+                if m2 and m3:
+                    gw, iface = m2.group(1), m3.group(1)
+                    break
+    if not gw or not iface:
+        die("no physical default gateway")
+    print(f"{gw} {iface}")
+
+
+def cmd_bypass_add(args: list[str]) -> None:
+    if len(args) < 3:
+        die("bypass-add <gw> <iface> <cidr> [cidr...]")
+    gw, iface = args[0], args[1]
+    ok = 0
+    for cidr in args[2:]:
+        dest = cidr if "/" in cidr else cidr + "/32"
+        p = run(
+            ["ip", "-4", "route", "replace", dest, "via", gw, "dev", iface, "metric", "1"],
+            check=False,
+            capture=True,
+        )
+        if p.returncode == 0:
+            ok += 1
+    if ok < 1:
+        die("bypass-add failed")
+    print(f"OK bypass {ok}")
+
+
+def cmd_bypass_del(args: list[str]) -> None:
+    for cidr in args:
+        dest = cidr if "/" in cidr else cidr + "/32"
+        run(["ip", "-4", "route", "del", dest], check=False)
+    print("OK bypass-del")
+
+
+def cmd_dns_set(args: list[str]) -> None:
+    if len(args) < 2:
+        die("dns-set <ifname> <dns,dns>")
+    ifname = args[0]
+    servers = [x.strip() for x in re.split(r"[,;\s]+", args[1]) if x.strip()]
+    if not servers:
+        return
+    if shutil.which("resolvectl"):
+        run(["resolvectl", "dns", ifname, *servers], check=False)
+        run(["resolvectl", "domain", ifname, "~."], check=False)
+        run(["resolvectl", "default-route", ifname, "yes"], check=False)
+        print("OK dns resolvectl")
+        return
+    os.makedirs(RUN_DIR, exist_ok=True)
+    if os.path.exists("/etc/resolv.conf") and not os.path.exists(RESOLV_BAK):
+        shutil.copy2("/etc/resolv.conf", RESOLV_BAK)
+    lines = ["# silent-vpn\n"] + [f"nameserver {s}\n" for s in servers]
+    # resolv.conf may be a symlink to systemd — replace carefully
+    try:
+        if os.path.islink("/etc/resolv.conf"):
+            os.remove("/etc/resolv.conf")
+        with open("/etc/resolv.conf", "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    except OSError as e:
+        die(f"dns-set: {e}")
+    print("OK dns resolv.conf")
+
+
+def cmd_dns_restore(_: list[str]) -> None:
+    if shutil.which("resolvectl") and iface_exists():
+        run(["resolvectl", "revert", IFACE], check=False)
+    if os.path.isfile(RESOLV_BAK):
+        try:
+            shutil.copy2(RESOLV_BAK, "/etc/resolv.conf")
+            os.remove(RESOLV_BAK)
+        except OSError:
+            pass
+    print("OK dns-restore")
+
+
+COMMANDS = {
+    "up": cmd_up,
+    "down": cmd_down,
+    "status": cmd_status,
+    "gateway": cmd_gateway,
+    "bypass-add": cmd_bypass_add,
+    "bypass-del": cmd_bypass_del,
+    "dns-set": cmd_dns_set,
+    "dns-restore": cmd_dns_restore,
+}
+
+
+def main() -> None:
+    need_root()
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        die("silent-wg-helper <up|down|status|gateway|bypass-add|bypass-del|dns-set|dns-restore> ...")
+    cmd = sys.argv[1]
+    fn = COMMANDS.get(cmd)
+    if not fn:
+        die(f"unknown command: {cmd}")
+    fn(sys.argv[2:])
+
+
+if __name__ == "__main__":
+    main()

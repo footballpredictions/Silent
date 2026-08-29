@@ -1,6 +1,28 @@
 const { execSync } = require('child_process')
+const fs = require('fs')
 
 const FALLBACK = '1.1.1.1,77.88.8.8'
+
+function getLinuxSystemDns() {
+  try {
+    const out = execSync('resolvectl dns', { encoding: 'utf8', timeout: 4000 }).trim()
+    const ips = [...out.matchAll(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/g)].map(m => m[1])
+    const uniq = [...new Set(ips.filter(ip => !ip.startsWith('127.')))]
+    if (uniq.length) return uniq.slice(0, 4).join(',')
+  } catch { /* ignore */ }
+  try {
+    const text = fs.readFileSync('/etc/resolv.conf', 'utf8')
+    const ips = [...text.matchAll(/^nameserver\s+(\d{1,3}(?:\.\d{1,3}){3})/gm)].map(m => m[1])
+    const uniq = [...new Set(ips.filter(ip => !ip.startsWith('127.')))]
+    if (uniq.length) return uniq.slice(0, 4).join(',')
+  } catch { /* ignore */ }
+  return FALLBACK
+}
+
+function getSystemDns() {
+  if (process.platform === 'linux') return getLinuxSystemDns()
+  return getWindowsSystemDns()
+}
 
 /** DNS Windows для libclient (-sys-dns), как Android systemDnsForLibclient. */
 function getWindowsSystemDns() {
@@ -21,4 +43,4 @@ $addrs = Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyCon
   return FALLBACK
 }
 
-module.exports = { getWindowsSystemDns }
+module.exports = { getWindowsSystemDns, getLinuxSystemDns, getSystemDns }

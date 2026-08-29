@@ -50,7 +50,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSiteBypass: () => ipcRenderer.invoke('get-site-bypass'),
   warmupTelegramPath: () => ipcRenderer.invoke('warmup-telegram-path'),
   getAppVersion: () => ipcRenderer.invoke('app-version'),
-  checkForUpdate: (version) => ipcRenderer.invoke('app-update-check', { version, platform: 'pc' }),
+  checkForUpdate: (version) => ipcRenderer.invoke('app-update-check', {
+    version,
+    platform: process.platform === 'linux' ? 'linux' : 'pc',
+  }),
   tunnelApiRequest: (payload) => ipcRenderer.invoke('tunnel-api-request', payload),
   setStandbyApiBases: (urls) => ipcRenderer.invoke('set-standby-api-bases', urls),
   olcrtc2ApiViaSocks: (payload) => ipcRenderer.invoke('olcrtc2-api-via-socks', payload),

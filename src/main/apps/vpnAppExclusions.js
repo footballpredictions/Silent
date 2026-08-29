@@ -37,7 +37,7 @@ async function clearActiveExcludedExePaths(send) {
 function applyAppExclusionsForSession(exePaths, send, options = {}) {
   const list = setActiveExcludedExePaths(exePaths)
   if (!list.length) {
-    send?.('[Apps] исключения: нет выбранных .exe')
+    send?.('[Apps] исключения: нет выбранных приложений')
     void stopAppExclusionBypass(send)
     return { applied: [], missing: [] }
   }

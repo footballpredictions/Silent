@@ -6,6 +6,7 @@ build-output-v*/
 build-release-v*/
 build-debug-*/
 build-fresh/
+build-linux/
 
 # Installers (локально)
 releases/
@@ -14,6 +15,9 @@ releases/*.exe
 
 # Go build artifacts (local)
 wdtt-go/*.exe
+resources/linux/wdtt-client
+resources/linux/wireguard-go
+resources/linux/wireguard
 
 # olcrtc / sing-box debug binaries (см. resources/OLCRTC_README.md)
 resources/olcrtc.exe

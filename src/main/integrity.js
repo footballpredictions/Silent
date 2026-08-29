@@ -31,7 +31,13 @@ function verifyWdttIntegrity({ isPackaged, isDebugBuild, exePath, log, expectedS
     return { ok: true }
   }
   const expected = String(
-    expectedSha != null ? expectedSha : (hashes.WDTT_SHA256 || ''),
+    expectedSha != null
+      ? expectedSha
+      : (
+        path.basename(String(exePath || '')) === 'wdtt-client'
+          ? (hashes.WDTT_LINUX_SHA256 || hashes.WDTT_SHA256 || '')
+          : (hashes.WDTT_SHA256 || '')
+      ),
   ).trim().toLowerCase()
   if (!expected) {
     // Нет пина в сборке — не блокируем (старые/ручные пакеты), только warn
@@ -39,7 +45,7 @@ function verifyWdttIntegrity({ isPackaged, isDebugBuild, exePath, log, expectedS
     return { ok: true }
   }
   if (!exePath || !fs.existsSync(exePath)) {
-    return { ok: false, reason: 'wdtt-client.exe не найден. Переустановите Silent VPN.' }
+    return { ok: false, reason: `${path.basename(exePath) || 'wdtt-client'} не найден. Переустановите Silent VPN.` }
   }
   try {
     const actual = sha256File(exePath)

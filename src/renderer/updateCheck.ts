@@ -16,6 +16,11 @@ export interface UpdateInfo {
 
 const APP_VERSION = __APP_VERSION__
 
+function otaPlatformId(): string {
+  if (typeof navigator !== 'undefined' && /linux/i.test(navigator.userAgent)) return 'linux'
+  return 'pc'
+}
+
 export function getAppVersion(): string {
   return APP_VERSION
 }
@@ -38,15 +43,16 @@ function parseUpdateResponse(data: UpdateInfo | null | undefined): UpdateInfo | 
   if (compareVersions(data.version, APP_VERSION) <= 0) return null
   pushLog('Update', `available ${APP_VERSION} → ${data.version}`)
   const filename = data.filename || ''
+  const plat = otaPlatformId()
   return {
     available: true,
     version: data.version,
     filename,
     size: data.size,
     uploaded_at: data.uploaded_at,
-    download_url: data.download_url || data.github_download_url || `/update/pc/${encodeURIComponent(filename)}`,
+    download_url: data.download_url || data.github_download_url || `/update/${plat}/${encodeURIComponent(filename)}`,
     github_download_url: data.github_download_url,
-    tunnel_download_url: data.tunnel_download_url || '/api/updates/download/pc',
+    tunnel_download_url: data.tunnel_download_url || `/api/updates/download/${plat}`,
   }
 }
 
@@ -54,7 +60,7 @@ async function checkViaRendererPublic(): Promise<UpdateInfo | null> {
   const base = getPublicApiBaseUrl()
   try {
     const res = await axios.get<UpdateInfo>(`${base}/api/updates/check`, {
-      params: { platform: 'pc', version: APP_VERSION },
+      params: { platform: otaPlatformId(), version: APP_VERSION },
       timeout: 45_000,
     })
     return parseUpdateResponse(res.data)

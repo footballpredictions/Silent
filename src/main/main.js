@@ -32,6 +32,7 @@ const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
 const { resolveVkExcludeIps, warmVkExcludeIps, invalidateVkExcludeCache } = require('./vpn/vkNetworkExcludes')
 const buildFlags = require('./buildFlags')
 const { verifyWdttIntegrity, softTamperHints } = require('./integrity')
+const { otaPlatform, wdttBinaryName, killOrphanWdttCmd } = require('./otaPlatform')
 const { effectiveConnectWorkers, WORKERS_PER_GROUP } = require('./workerLimits')
 const {
   beginOlcrtcSession,
@@ -1040,10 +1041,14 @@ async function runCaptchaSolve(lineTrim) {
 }
 
 function wdttExePath() {
-  const p = isDev
-    ? path.join(__dirname, '../../resources/wdtt-client.exe')
-    : path.join(process.resourcesPath, 'wdtt-client.exe')
-  return p
+  const name = wdttBinaryName()
+  if (isDev) {
+    if (process.platform === 'linux') {
+      return path.join(__dirname, '../../resources/linux', name)
+    }
+    return path.join(__dirname, '../../resources', name)
+  }
+  return path.join(process.resourcesPath, name)
 }
 
 ipcMain.handle('list-installed-apps', async () => {
@@ -1337,7 +1342,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
   wgCredPhase = false
   const exePath = wdttExePath()
   if (!fs.existsSync(exePath)) {
-    return { error: `wdtt-client.exe не найден: ${exePath}` }
+    return { error: `${wdttBinaryName()} не найден: ${exePath}` }
   }
   const integrity = verifyWdttIntegrity({
     isPackaged: app.isPackaged,
@@ -1348,6 +1353,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
   if (!integrity.ok) {
     sendLog(`[Integrity] ${integrity.reason}`)
     return { error: integrity.reason || 'Сборка повреждена' }
+  }
+  if (process.platform !== 'win32') {
+    try { fs.chmodSync(exePath, 0o755) } catch { /* ignore */ }
   }
 
   if (wdttProcess) {
@@ -1988,7 +1996,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 
     const exePath = wdttExePath()
     if (!fs.existsSync(exePath)) {
-      return { error: `wdtt-client.exe не найден: ${exePath}` }
+      return { error: `${wdttBinaryName()} не найден: ${exePath}` }
     }
 
     lastVpnConnectConfig = config
@@ -2057,18 +2065,19 @@ function shouldUseTunnelForOta() {
 }
 
 function updateCheckQuery(platform, version) {
-  return `/api/updates/check?platform=${encodeURIComponent(platform || 'pc')}&version=${encodeURIComponent(version || '')}`
+  return `/api/updates/check?platform=${encodeURIComponent(otaPlatform(platform))}&version=${encodeURIComponent(version || '')}`
 }
 
 /**
  * URL для скачивания OTA.
- * - VPN on → всегда /api/updates/download/pc (tunnel), НЕ pathname от GitHub
+ * - VPN on → всегда /api/updates/download/{platform} (tunnel), НЕ pathname от GitHub
  * - VPN off → абсолютный GitHub/HTTPS как есть; relative → public nip.io
  * Баг 1.0.152: GitHub URL превращался в http://10.66.66.1:8000/silentvpn3/... → 404 HTML → «100% / повреждён».
  */
 function resolveUpdateDownloadUrl(urlOrPath, tunnelPath) {
   if (shouldUseTunnelForOta()) {
-    const tp = String(tunnelPath || '/api/updates/download/pc').trim() || '/api/updates/download/pc'
+    const fallback = `/api/updates/download/${otaPlatform()}`
+    const tp = String(tunnelPath || fallback).trim() || fallback
     const path = tp.startsWith('/') ? tp : `/${tp}`
     return `${TUNNEL_API_ORIGIN}${path}`
   }
@@ -2081,8 +2090,8 @@ function resolveUpdateDownloadUrl(urlOrPath, tunnelPath) {
   return `${UPDATE_PUBLIC_BASE}${pathname}`
 }
 
-/** Минимальная проверка, что скачали NSIS/PE, а не HTML 404. */
-function assertValidPcInstaller(destPath, expectedSize) {
+/** Минимальная проверка, что скачали установщик, а не HTML 404. */
+function assertValidUpdatePayload(destPath, expectedSize) {
   if (!destPath || !fs.existsSync(destPath)) {
     throw new Error('Файл обновления не найден')
   }
@@ -2099,8 +2108,16 @@ function assertValidPcInstaller(destPath, expectedSize) {
   }
   const fd = fs.openSync(destPath, 'r')
   try {
-    const buf = Buffer.alloc(2)
-    fs.readSync(fd, buf, 0, 2, 0)
+    const buf = Buffer.alloc(4)
+    fs.readSync(fd, buf, 0, 4, 0)
+    if (process.platform === 'linux') {
+      // ELF
+      if (!(buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46)) {
+        try { fs.unlinkSync(destPath) } catch { /* ignore */ }
+        throw new Error('Файл повреждён (это не Linux AppImage)')
+      }
+      return
+    }
     if (buf[0] !== 0x4d || buf[1] !== 0x5a) {
       try { fs.unlinkSync(destPath) } catch { /* ignore */ }
       throw new Error('Файл повреждён (это не установщик Windows)')
@@ -2108,6 +2125,10 @@ function assertValidPcInstaller(destPath, expectedSize) {
   } finally {
     fs.closeSync(fd)
   }
+}
+
+function assertValidPcInstaller(destPath, expectedSize) {
+  return assertValidUpdatePayload(destPath, expectedSize)
 }
 
 /** PC: API через public HTTPS Улья, при недоступности — HTTP cell-agent сот. */
@@ -2457,8 +2478,8 @@ function fetchJsonGet(url, hostHeader = null) {
   })
 }
 
-ipcMain.handle('app-update-check', async (_, { version, platform = 'pc' }) => {
-  const q = updateCheckQuery(platform, version)
+ipcMain.handle('app-update-check', async (_, { version, platform } = {}) => {
+  const q = updateCheckQuery(otaPlatform(platform), version)
   if (captchaInProgress && !wgApplied) {
     return null
   }
@@ -2613,6 +2634,49 @@ ipcMain.handle('app-update-download', async (_, { url, filename, tunnelUrl, expe
  *
  * Bat: sleep → start Setup → когда Silent VPN.exe уже мёртв, /T безобиден.
  */
+function scheduleLinuxUpdateAfterExit(filePath) {
+  const abs = path.resolve(filePath)
+  if (!fs.existsSync(abs)) {
+    return { ok: false, error: 'File not found' }
+  }
+  const logPath = path.join(app.getPath('temp'), 'silent-ota-launch.log')
+  const shPath = path.join(app.getPath('temp'), `silent-ota-launch-${Date.now()}.sh`)
+  const current = String(process.env.APPIMAGE || '').replace(/"/g, '')
+  const setup = abs.replace(/"/g, '')
+  const lines = [
+    '#!/bin/sh',
+    `echo "$(date -Iseconds) waiting" > "${logPath.replace(/"/g, '')}"`,
+    'sleep 3',
+    `chmod +x "${setup}"`,
+  ]
+  if (current) {
+    lines.push(
+      `if [ -f "${current}" ]; then cp -f "${setup}" "${current}" && chmod +x "${current}"; fi`,
+      `echo "$(date -Iseconds) starting" >> "${logPath.replace(/"/g, '')}"`,
+      `nohup "${current}" >/dev/null 2>&1 &`,
+    )
+  } else {
+    lines.push(
+      `echo "$(date -Iseconds) starting" >> "${logPath.replace(/"/g, '')}"`,
+      `nohup "${setup}" >/dev/null 2>&1 &`,
+    )
+  }
+  lines.push('rm -f "$0"', '')
+  fs.writeFileSync(shPath, lines.join('\n'), { encoding: 'utf8', mode: 0o755 })
+  sendLog(`[Update] scheduled linux launcher: ${shPath}`)
+  const child = spawn('sh', [shPath], { detached: true, stdio: 'ignore' })
+  child.unref()
+  return { ok: true, batPath: shPath, logPath }
+}
+
+function killOrphanWdtt() {
+  try {
+    const { execFileSync } = require('child_process')
+    const spec = killOrphanWdttCmd()
+    execFileSync(spec.cmd, spec.args, { stdio: 'ignore', windowsHide: true, timeout: 5000 })
+  } catch { /* нет процесса */ }
+}
+
 function schedulePcInstallerAfterExit(filePath) {
   const abs = path.resolve(filePath)
   if (!fs.existsSync(abs)) {
@@ -2667,14 +2731,19 @@ ipcMain.handle('app-update-install', async (_, filePath) => {
       networkMonitor?.stop()
       await fastDisconnectVpn()
     } catch { /* ignore */ }
-    const { execSync } = require('child_process')
-    for (const proc of ['wdtt-client.exe', 'wireguard.exe', 'wg.exe']) {
-      try { execSync(`taskkill /F /IM ${proc}`, { stdio: 'ignore' }) } catch { /* ignore */ }
+    killOrphanWdtt()
+    if (process.platform === 'win32') {
+      const { execSync } = require('child_process')
+      for (const proc of ['wireguard.exe', 'wg.exe']) {
+        try { execSync(`taskkill /F /IM ${proc}`, { stdio: 'ignore' }) } catch { /* ignore */ }
+      }
     }
     await sleep(300)
 
     sendLog('[Update] schedule installer after exit: ' + filePath)
-    const scheduled = schedulePcInstallerAfterExit(filePath)
+    const scheduled = process.platform === 'linux'
+      ? scheduleLinuxUpdateAfterExit(filePath)
+      : schedulePcInstallerAfterExit(filePath)
     if (!scheduled.ok) {
       return { ok: false, error: scheduled.error || 'schedule failed' }
     }
@@ -2701,13 +2770,12 @@ app.whenReady().then(async () => {
   softTamperHints({ isPackaged: app.isPackaged, isDebugBuild, log: sendLog })
 
   // После OTA/установки: убиваем осиротевший wdtt и даём WireGuard дописаться.
-  try {
-    const { execSync } = require('child_process')
-    execSync('taskkill /F /IM wdtt-client.exe', { stdio: 'ignore', windowsHide: true })
-  } catch { /* нет процесса */ }
+  killOrphanWdtt()
 
-  const postInstallStamp = path.join('C:\\ProgramData\\SilentVPN', 'post-install.stamp')
-  if (fs.existsSync(postInstallStamp)) {
+  const postInstallStamp = process.platform === 'win32'
+    ? path.join('C:\\ProgramData\\SilentVPN', 'post-install.stamp')
+    : ''
+  if (postInstallStamp && fs.existsSync(postInstallStamp)) {
     try { fs.unlinkSync(postInstallStamp) } catch { /* ignore */ }
     sendLog('[WG] Первый запуск после установки — ждём готовности WireGuard…')
     await sleep(2500)

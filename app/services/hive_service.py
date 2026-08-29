@@ -5,6 +5,7 @@ import asyncio
 import ipaddress
 import logging
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlparse
@@ -38,6 +39,11 @@ from app.services.hive_slots import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Дашборд и шапка Улья: одно число = сумма WG live по нодам (кэш с /hive/cells).
+_SHOWN_ONLINE_AT = 0.0
+_SHOWN_ONLINE_N = 0
+_SHOWN_ONLINE_TTL_SEC = 20.0
 
 CELL_STATUSES_ACTIVE = frozenset({"active"})
 CELL_STATUSES_ASSIGNABLE = frozenset({"active"})
@@ -174,7 +180,7 @@ async def apply_manual_server_cell(
     *,
     commit: bool = False,
 ) -> HiveCell:
-    """Держать cell_id = выбранный Сервер 1/2/3, не отдавать слот балансиру."""
+    """Держать cell_id = выбранный Сервер 1/2/3. Оценка ёмкости в карточке Улья на connect не влияет."""
     raw = preferred_server if preferred_server is not None else getattr(device, "preferred_server", None)
     key, cell = await resolve_manual_server_cell(db, raw)
     if device.cell_id != cell.id or getattr(device, "preferred_server", None) != key:
@@ -426,6 +432,44 @@ async def _list_assignable_cells(db: AsyncSession) -> list[HiveCell]:
         .order_by(HiveCell.priority.asc(), HiveCell.created_at.asc())
     )
     return list(result.scalars().all())
+
+
+def remember_vpn_online_shown(n: int) -> None:
+    global _SHOWN_ONLINE_AT, _SHOWN_ONLINE_N
+    _SHOWN_ONLINE_N = max(0, int(n))
+    _SHOWN_ONLINE_AT = time.monotonic()
+
+
+def cached_vpn_online_shown(*, max_age: float | None = None) -> int | None:
+    if _SHOWN_ONLINE_AT <= 0:
+        return None
+    ttl = _SHOWN_ONLINE_TTL_SEC if max_age is None else float(max_age)
+    if (time.monotonic() - _SHOWN_ONLINE_AT) > ttl:
+        return None
+    return _SHOWN_ONLINE_N
+
+
+async def refresh_online_shown_cache() -> int:
+    """Собрать онлайн как шапка Улья (WG live) и запомнить для дашборда."""
+    rows = await list_cells_with_stats_pooled(http_timeout=2.0)
+    total = sum(int(c.get("online_count") or 0) for c in rows)
+    remember_vpn_online_shown(total)
+    return total
+
+
+async def vpn_online_shown_total(db: AsyncSession | None = None) -> int:
+    """Дашборд «Онлайн» = шапка Улья = сумма карточек (WG live по всем нодам)."""
+    cached = cached_vpn_online_shown()
+    if cached is not None:
+        return cached
+    try:
+        return await refresh_online_shown_cache()
+    except Exception as e:
+        logger.warning("Hive: online shown refresh failed: %s", e)
+        if db is not None:
+            _, total = await connected_devices_by_cell(db)
+            return int(total or 0)
+        return 0
 
 
 async def olcrtc_exit_cell_ips(db: AsyncSession) -> set[str]:
@@ -899,6 +943,7 @@ async def _assemble_cells_with_stats(
                 capacity=capacity,
             )
         )
+    remember_vpn_online_shown(sum(int(c.get("online_count") or 0) for c in out))
     return out
 
 
@@ -942,14 +987,17 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
         if online >= cap:
             full_cells += 1
     wdtt_nodes = len(assignable)
+    shown = cached_vpn_online_shown()
+    if shown is None:
+        shown = int(total_online or 0)
     return {
         "queen_load": queen_load,
         "queen_accepting_vpn": accepting,
         "worker_cells": len(all_workers),
         "olcrtc_cells": 0,
-        "total_online_vpn": total_online,
+        "total_online_vpn": shown,
         "total_online_olcrtc": total_online_olcrtc,
-        "total_online_all": total_online,
+        "total_online_all": shown,
         "total_capacity_online": total_capacity,
         "full_cells": full_cells,
         "all_cells_full": wdtt_nodes > 0 and full_cells >= wdtt_nodes,

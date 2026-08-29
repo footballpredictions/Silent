@@ -93,6 +93,37 @@ def test_node_online_shown_is_wg_live():
     assert node_online_shown(is_queen=True, db_online=71, wg_live=None) == 71
 
 
+def test_dashboard_online_is_sum_of_hive_cards():
+    """Дашборд и шапка Улья — одно число: сумма WG live, не is_connected из БД."""
+    db_total = 40 + 2 + 1
+    hive_cards = [
+        node_online_shown(is_queen=True, db_online=40, wg_live=70),
+        node_online_shown(is_queen=False, db_online=2, wg_live=8),
+        node_online_shown(is_queen=False, db_online=1, wg_live=5),
+    ]
+    assert sum(hive_cards) == 83
+    assert db_total != 83
+
+
+def test_manual_server_select_has_no_online_cap():
+    """Ручной Сервер 2/3 не смотрит max_online — лимит в карточке Улья не режет connect."""
+    hive = (ROOT / "app" / "services" / "hive_service.py").read_text(encoding="utf-8")
+    vpn = (ROOT / "app" / "services" / "vpn_service.py").read_text(encoding="utf-8")
+    start = hive.index("async def apply_manual_server_cell")
+    end = hive.index("\nasync def ", start + 10)
+    apply_fn = hive[start:end]
+    assert "max_online" not in apply_fn
+    assert "max_clients" not in apply_fn
+    start = hive.index("async def resolve_manual_server_cell")
+    end = hive.index("\nasync def ", start + 10)
+    resolve_fn = hive[start:end]
+    assert "max_online" not in resolve_fn
+    start = vpn.index("async def set_device_preferred_server")
+    end = vpn.index("\nasync def ", start + 10)
+    set_fn = vpn[start:end]
+    assert "max_online" not in set_fn
+
+
 def test_assign_online_unique_partition():
     queen, c1, c2 = "q", "c1", "c2"
     known = {queen, c1, c2}
@@ -144,5 +175,7 @@ if __name__ == "__main__":
     test_node_title_for_slot()
     test_device_on_node_default_server1_stays_on_cell()
     test_node_online_shown_is_wg_live()
+    test_dashboard_online_is_sum_of_hive_cards()
+    test_manual_server_select_has_no_online_cap()
     test_assign_online_unique_partition()
     print("ok")

@@ -132,10 +132,10 @@ async def get_stats(
 
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
     from app.services.peak_online import record_online_peak
-    from app.services.hive_service import connected_devices_by_cell
+    from app.services.hive_service import vpn_online_shown_total
 
     total_users, active_subs = await _count_users_with_vpn_access(db)
-    _by_node, connected_devices = await connected_devices_by_cell(db)
+    connected_devices = await vpn_online_shown_total(db)
     peak_online, peak_online_at = await record_online_peak(db, int(connected_devices or 0))
 
     system = {

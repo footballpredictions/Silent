@@ -90,6 +90,11 @@ async def gc_stale_queen_peers(
     }
 
 
+_QUEEN_WG_COUNTS_AT = 0.0
+_QUEEN_WG_COUNTS: dict[str, int] | None = None
+_QUEEN_WG_COUNTS_TTL_SEC = 8.0
+
+
 def count_queen_wg_live_3m(*, window_sec: float = 180.0, known: set[str] | None = None) -> int:
     """Живые handshake на wdtt0 Улья. known — только ключи устройств этой ноды."""
     counts = queen_wg_peer_counts(known_connected=known, window_sec=window_sec)
@@ -103,6 +108,15 @@ def queen_wg_peer_counts(
     known_connected: set[str] | None = None,
     window_sec: float = 180.0,
 ) -> dict[str, int]:
+    global _QUEEN_WG_COUNTS_AT, _QUEEN_WG_COUNTS
+    now = time.monotonic()
+    if (
+        known_connected is None
+        and window_sec == 180.0
+        and _QUEEN_WG_COUNTS is not None
+        and (now - _QUEEN_WG_COUNTS_AT) < _QUEEN_WG_COUNTS_TTL_SEC
+    ):
+        return dict(_QUEEN_WG_COUNTS)
     try:
         peers = _queen_wg_dump()
     except Exception:
@@ -123,10 +137,14 @@ def queen_wg_peer_counts(
             live += 1
             if p.pub in known:
                 live_known += 1
-    return {
+    out = {
         "wg_peers_total": len(peers),
         "wg_peers_never_hs": never,
         "wg_peers_live_3m": live,
         "wg_peers_live_known": live_known,
         "wg_gc_last_removed": 0,
     }
+    if known_connected is None and window_sec == 180.0:
+        _QUEEN_WG_COUNTS = dict(out)
+        _QUEEN_WG_COUNTS_AT = now
+    return out

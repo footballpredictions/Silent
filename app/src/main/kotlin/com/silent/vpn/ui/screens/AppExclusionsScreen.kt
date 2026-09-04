@@ -4,6 +4,8 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -16,12 +18,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import com.silent.vpn.ui.tv.TvIconButton
 import com.silent.vpn.ui.tv.TvPrimaryButton
 import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.ui.tv.tvClickable
@@ -46,6 +53,36 @@ import com.silent.vpn.vpn.WdttTunnelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+
+@Composable
+private fun SiteImportExportActions(
+    siteBusy: Boolean,
+    canExport: Boolean,
+    palette: ThemePalette,
+    onImport: () -> Unit,
+    onExport: () -> Unit,
+) {
+    Row {
+        IconButton(onClick = onImport, enabled = !siteBusy) {
+            Icon(
+                Icons.Default.FileUpload,
+                contentDescription = "Импорт списка",
+                tint = palette.fg.copy(alpha = if (siteBusy) 0.35f else 0.55f),
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        IconButton(onClick = onExport, enabled = !siteBusy && canExport) {
+            Icon(
+                Icons.Default.FileDownload,
+                contentDescription = "Экспорт списка",
+                tint = palette.fg.copy(alpha = if (!siteBusy && canExport) 0.55f else 0.35f),
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
 
 data class AppItem(
     val name: String,
@@ -195,6 +232,8 @@ fun AppExclusionsScreen(
     var newRule by remember { mutableStateOf("") }
     var siteHint by remember { mutableStateOf<String?>(null) }
     var siteBusy by remember { mutableStateOf(false) }
+    var editingRule by remember { mutableStateOf<String?>(null) }
+    var editDraft by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         loading = true
@@ -241,7 +280,7 @@ fun AppExclusionsScreen(
         reloadTunnel()
     }
 
-    fun persistSites(rules: List<String>) {
+    fun persistSites(rules: List<String>, hintOverride: String? = null) {
         scope.launch {
             siteBusy = true
             siteHint = null
@@ -250,16 +289,12 @@ fun AppExclusionsScreen(
                 repo.saveBypassRoutes(capped.joinToString("\n"))
                 SiteBypassRoutes.clearResolveCache()
                 siteRules = capped
-                val result = withContext(Dispatchers.IO) {
+                withContext(Dispatchers.IO) {
                     val dnsNet = VpnNetworkHelper.findUnderlyingNetwork(context)
                     SiteBypassRoutes.resolveExcludeTargets(capped.joinToString("\n"), dnsNet)
                 }
-                siteHint = when {
-                    result.unresolved.isNotEmpty() ->
-                        "Не резолвится: ${result.unresolved.take(2).joinToString()}"
-                    result.truncated -> "Список урезан — слишком много адресов"
-                    else -> result.resolvedPreview.firstOrNull()
-                }
+                // Как на PC: без списка IP в UI после добавления.
+                siteHint = hintOverride
                 reloadTunnel()
             } catch (e: Exception) {
                 siteHint = "Ошибка: ${e.message}"
@@ -285,6 +320,67 @@ fun AppExclusionsScreen(
         persistSites(siteRules + rule)
     }
 
+    fun saveSiteEdit(original: String) {
+        val next = SiteBypassRoutes.normalizeRuleInput(editDraft)
+        editingRule = null
+        if (next.isEmpty() || siteBusy) return
+        if (next.equals(original, ignoreCase = true)) return
+        if (siteRules.any { it.equals(next, ignoreCase = true) && !it.equals(original, ignoreCase = true) }) {
+            siteHint = "Уже в списке"
+            return
+        }
+        persistSites(siteRules.map { if (it == original) next else it })
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                val content = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        stream.bufferedReader().readText()
+                    }.orEmpty()
+                }
+                val imported = SiteBypassRoutes.extractRulesFromImportContent(content)
+                val before = siteRules.size
+                val merged = SiteBypassRoutes.mergeImportRules(siteRules, imported)
+                if (merged.size == before) {
+                    siteHint = "Новых правил не найдено"
+                } else {
+                    persistSites(merged, "Импорт: +${merged.size - before} правил")
+                }
+            } catch (e: Exception) {
+                siteHint = "Ошибка импорта: ${e.message}"
+            }
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch(Dispatchers.IO) {
+            try {
+                val payload = JSONObject()
+                    .put("version", 1)
+                    .put("rules", JSONArray(siteRules))
+                    .toString(2)
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(payload.toByteArray(Charsets.UTF_8))
+                }
+                withContext(Dispatchers.Main) {
+                    siteHint = "Экспорт: ${siteRules.size} правил"
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    siteHint = "Ошибка экспорта: ${e.message}"
+                }
+            }
+        }
+    }
+
     val displayApps = remember(apps, selected, search, showSystemApps) {
         apps
             .asSequence()
@@ -308,9 +404,58 @@ fun AppExclusionsScreen(
         }
     }
 
+    if (editingRule != null) {
+        AlertDialog(
+            onDismissRequest = { if (!siteBusy) editingRule = null },
+            title = { Text("Изменить правило", fontSize = 14.sp) },
+            text = {
+                OutlinedTextField(
+                    value = editDraft,
+                    onValueChange = { editDraft = it },
+                    placeholder = {
+                        Text("домен или IP…", color = palette.fieldPlaceholder)
+                    },
+                    singleLine = true,
+                    enabled = !siteBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = fieldColors,
+                )
+            },
+            confirmButton = {
+                TvTextButton(
+                    enabled = !siteBusy && editDraft.isNotBlank(),
+                    onClick = {
+                        val original = editingRule ?: return@TvTextButton
+                        saveSiteEdit(original)
+                    },
+                ) { Text("Сохранить") }
+            },
+            dismissButton = {
+                TvTextButton(onClick = { if (!siteBusy) editingRule = null }) {
+                    Text("Отмена")
+                }
+            },
+        )
+    }
+
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        TvTextButton(onClick = onBack, requestFocusOnOpen = true, requestFocusKey = "exclusions") {
-            Text("← Назад", fontSize = 12.sp, color = fg.copy(0.5f))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TvTextButton(onClick = onBack, requestFocusOnOpen = true, requestFocusKey = "exclusions") {
+                Text("← Назад", fontSize = 12.sp, color = fg.copy(0.5f))
+            }
+            if (pane == ExclusionsPane.Sites) {
+                SiteImportExportActions(
+                    siteBusy = siteBusy,
+                    canExport = siteRules.isNotEmpty(),
+                    palette = palette,
+                    onImport = { importLauncher.launch(arrayOf("*/*")) },
+                    onExport = { exportLauncher.launch("site-exclusions.json") },
+                )
+            }
         }
         Text("Исключения", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = fg)
 
@@ -353,6 +498,18 @@ fun AppExclusionsScreen(
                     shape = RoundedCornerShape(12.dp),
                     colors = fieldColors,
                     enabled = !siteBusy,
+                    trailingIcon = {
+                        if (newRule.isNotBlank()) {
+                            IconButton(onClick = { newRule = "" }, enabled = !siteBusy) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Очистить",
+                                    tint = fg.copy(alpha = 0.55f),
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                    },
                 )
                 TvPrimaryButton(
                     onClick = { addSiteRule() },
@@ -382,12 +539,12 @@ fun AppExclusionsScreen(
                     "${siteRules.size} / ${SiteBypassRoutes.MAX_RULES}",
                     fontSize = 10.sp,
                     color = fg.copy(0.4f),
-                    modifier = Modifier.padding(top = 4.dp, bottom = 6.dp),
+                    modifier = Modifier.padding(top = 8.dp, bottom = 6.dp),
                 )
                 if (siteRules.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
-                            "Список пуст\nДобавьте домен или IP",
+                            "Список пуст",
                             fontSize = 13.sp,
                             color = fg.copy(0.45f),
                         )
@@ -405,17 +562,39 @@ fun AppExclusionsScreen(
                                     .padding(vertical = 8.dp, horizontal = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text(rule, fontSize = 13.sp, color = fg, modifier = Modifier.weight(1f))
-                                Icon(
-                                    Icons.Default.Close,
-                                    contentDescription = "Удалить",
-                                    tint = fg.copy(0.5f),
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .clickable(enabled = !siteBusy) {
-                                            persistSites(siteRules.filterNot { it == rule })
-                                        },
+                                Text(
+                                    rule,
+                                    fontSize = 13.sp,
+                                    color = fg,
+                                    modifier = Modifier.weight(1f),
                                 )
+                                TvIconButton(
+                                    onClick = {
+                                        editingRule = rule
+                                        editDraft = rule
+                                    },
+                                    enabled = !siteBusy,
+                                    modifier = Modifier.size(32.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Default.Edit,
+                                        contentDescription = "Изменить",
+                                        tint = fg.copy(alpha = 0.45f),
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
+                                TvIconButton(
+                                    onClick = { persistSites(siteRules.filterNot { it == rule }) },
+                                    enabled = !siteBusy,
+                                    modifier = Modifier.size(32.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Удалить",
+                                        tint = fg.copy(alpha = 0.45f),
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
                             }
                         }
                     }

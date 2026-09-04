@@ -6,6 +6,8 @@ import java.net.InetAddress
 import java.net.URI
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Правила обхода VPN для сайтов: IP / CIDR / wildcard IP / домены.
@@ -45,6 +47,155 @@ object SiteBypassRoutes {
             .toList()
 
     fun limitRules(rules: List<String>): List<String> = rules.take(MAX_RULES)
+
+    private val IMPORT_DOMAIN_RE = Regex(
+        """(?:\*\.|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val IMPORT_IPV4_RE = Regex(
+        """\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?:/(?:3[0-2]|[12]?\d))?\b""",
+    )
+    private val IMPORT_IPV6_RE = Regex(
+        """\b(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?:/\d{1,3})?\b""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val IMPORT_URL_RE = Regex("""https?://[^\s/]+[^\s]*""", RegexOption.IGNORE_CASE)
+    private val JSON_META_KEYS = setOf("version", "schema", "updated", "updatedat", "updated_at", "comment")
+    private val JSON_CONTAINER_KEYS = listOf(
+        "rules", "sites", "domains", "hosts", "items", "data", "list", "entries",
+        "config", "payload", "body", "result",
+    )
+
+    private fun stripQuotes(raw: String): String =
+        raw.trim().trim('"').trim('\'')
+
+    private fun looksLikeRule(raw: String): Boolean {
+        val n = normalizeRuleInput(stripQuotes(raw))
+        if (n.isEmpty()) return false
+        if (Regex("""^\d+\.\d+\.\d+\.\d+""").containsMatchIn(n)) return true
+        if (':' in n) return true
+        return Regex(
+            """^[a-z0-9*](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$""",
+            RegexOption.IGNORE_CASE,
+        ).matches(n)
+    }
+
+    private fun tryParseJsonRoot(text: String): Any? {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return null
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            return runCatching {
+                when {
+                    trimmed.startsWith("[") -> JSONArray(trimmed)
+                    else -> JSONObject(trimmed)
+                }
+            }.getOrNull()
+        }
+        val objStart = trimmed.indexOf('{')
+        val objEnd = trimmed.lastIndexOf('}')
+        if (objStart >= 0 && objEnd > objStart) {
+            val slice = trimmed.substring(objStart, objEnd + 1)
+            val parsed = runCatching { JSONObject(slice) }.getOrNull()
+            if (parsed != null) return parsed
+        }
+        val arrStart = trimmed.indexOf('[')
+        val arrEnd = trimmed.lastIndexOf(']')
+        if (arrStart >= 0 && arrEnd > arrStart) {
+            return runCatching { JSONArray(trimmed.substring(arrStart, arrEnd + 1)) }.getOrNull()
+        }
+        return null
+    }
+
+    private fun walkJsonNode(node: Any?, addRaw: (String) -> Unit) {
+        when (node) {
+            null -> return
+            is String -> addRaw(node)
+            is JSONArray -> {
+                for (i in 0 until node.length()) walkJsonNode(node.opt(i), addRaw)
+            }
+            is JSONObject -> {
+                for (key in JSON_CONTAINER_KEYS) {
+                    if (key.lowercase(Locale.US) in JSON_META_KEYS) continue
+                    when (val child = node.opt(key)) {
+                        is JSONArray, is JSONObject -> walkJsonNode(child, addRaw)
+                        is String -> addRaw(child)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun extractFromPlainText(text: String, addRaw: (String) -> Unit) {
+        runCatching {
+            val parsed = tryParseJsonRoot(text)
+            if (parsed != null) walkJsonNode(parsed, addRaw)
+        }
+
+        IMPORT_URL_RE.findAll(text).forEach { addRaw(it.value) }
+        IMPORT_IPV4_RE.findAll(text).forEach { addRaw(it.value) }
+        IMPORT_IPV6_RE.findAll(text).forEach { addRaw(it.value) }
+        IMPORT_DOMAIN_RE.findAll(text).forEach { addRaw(it.value) }
+
+        text.lineSequence().forEach { line ->
+            val l = line.substringBefore('#').trim()
+            if (l.isEmpty()) return@forEach
+            if ('{' in l || '[' in l) return@forEach
+            if (',' in l && !l.contains("://")) {
+                l.split(',').forEach { part -> if (looksLikeRule(part)) addRaw(part) }
+            } else if (looksLikeRule(l)) {
+                addRaw(l)
+            }
+        }
+    }
+
+    /** Извлекает домены / IPv4 / IPv6 из json, txt, csv и смешанного текста. */
+    fun extractRulesFromImportContent(content: String): List<String> {
+        val found = linkedMapOf<String, String>()
+        fun addRaw(raw: String) {
+            val n = normalizeRuleInput(stripQuotes(raw))
+            if (n.isEmpty()) return
+            val key = n.lowercase(Locale.US)
+            if (!found.containsKey(key)) found[key] = n
+        }
+
+        val text = content
+        val trimmed = text.trim()
+        var jsonHandled = false
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            jsonHandled = runCatching {
+                val node: Any = when {
+                    trimmed.startsWith("[") -> JSONArray(trimmed)
+                    else -> JSONObject(trimmed)
+                }
+                walkJsonNode(node, ::addRaw)
+                true
+            }.getOrDefault(false)
+        }
+
+        // JVM unit-тесты: org.json из Android SDK — stub (opt/not mocked).
+        // Fallback: regex / plain text, в т.ч. для json-строк в кавычках.
+        if (!jsonHandled || found.isEmpty()) {
+            extractFromPlainText(text, ::addRaw)
+        }
+
+        return found.values.toList()
+    }
+
+    /** Merge: добавить уникальные правила, не превышая MAX_RULES. */
+    fun mergeImportRules(existing: List<String>, imported: List<String>): List<String> {
+        val seen = existing.map { it.lowercase(Locale.US) }.toMutableSet()
+        val out = existing.toMutableList()
+        for (raw in imported) {
+            val n = normalizeRuleInput(raw)
+            if (n.isEmpty()) continue
+            val key = n.lowercase(Locale.US)
+            if (key in seen) continue
+            seen.add(key)
+            out.add(n)
+            if (out.size >= MAX_RULES) break
+        }
+        return out
+    }
 
     fun normalizeRuleInput(raw: String): String {
         var s = raw.trim()

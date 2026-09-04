@@ -8,8 +8,8 @@
   - `android` → `1b34d36` (LTE sessions / online list)
   - `pc` (+ Linux) → `37af0b8` (Linux VPN rights via systemd helper)
 - **Снято с remote:** все коммиты 02.09 (persist dual-list, whitelist/YouTube, complement exclude, theme site placeholder и т.д.).
-- **Деплой:** `backend/scripts/deploy_stable.py` после reset.
-- Состояние клиентов = **до 02.09** (фактически конец августа / 1.0.163 линия без правок исключений 02.09).
+- **Деплой:** `deploy_stable.py` OK — health ~36 мс, `queen_wg_kick_20s=0`, `wdtt` active, DNAT tunnel → API OK. `wdtt` не рестартили отдельно.
+- Состояние клиентов = **до 02.09** (конец августа / 1.0.163 без правок исключений 02.09). OTA/debug клиенты — пересобрать с веток `android`/`pc` при необходимости.
 
 ## О проекте
 

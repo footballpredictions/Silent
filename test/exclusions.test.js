@@ -24,6 +24,12 @@ const {
   getExcludedExePathsForVpn,
 } = require('../src/main/apps/exclusionsState')
 const {
+  hydrateExclusions,
+  switchExclusionsMode,
+  setActiveIds,
+  applySave,
+} = require('../src/main/apps/exclusionsPersist')
+const {
   applyAppExclusionsForSession,
   assertExeExcludedInSession,
   clearActiveExcludedExePaths,
@@ -83,6 +89,11 @@ describe('exclusionsPolicy', () => {
     const b = resolveExcludedExePaths(['telegram'], apps)
     assert.deepEqual(a.exePaths, b.exePaths)
   })
+
+  it('empty whitelist is fail-safe: nothing bypassed (all traffic in VPN)', () => {
+    const { exePaths } = resolveBypassExePaths({ selectedIds: [], apps, whitelist: true })
+    assert.deepEqual(exePaths, [])
+  })
 })
 
 describe('siteBypass rules', () => {
@@ -94,6 +105,111 @@ describe('siteBypass rules', () => {
   it('parseRules dedupes and caps', () => {
     const rules = parseRules('ozon.ru\n#x\nozon.ru\n1.2.3.4')
     assert.deepEqual(rules, ['ozon.ru', '1.2.3.4'])
+  })
+})
+
+describe('exclusionsPersist helper', () => {
+  it('switch mode keeps the other list in memory', () => {
+    let state = hydrateExclusions({ selectedIds: [], whitelist: false })
+    state = setActiveIds({ ...state, whitelist: true, appBypassMode: 'whitelist' }, ['A', 'B'])
+    state = switchExclusionsMode(state, false)
+    state = setActiveIds(state, ['C', 'D', 'E'])
+    state = switchExclusionsMode(state, true)
+    assert.deepEqual(state.whitelistAppIds.sort(), ['A', 'B'])
+    assert.deepEqual(state.blacklistAppIds.sort(), ['C', 'D', 'E'])
+    assert.equal(state.whitelist, true)
+  })
+
+  it('applySave after restart hydrate keeps blacklist mode', () => {
+    const saved = applySave(null, { selectedIds: ['C', 'D', 'E'], whitelist: false })
+    const reloaded = hydrateExclusions(saved)
+    assert.equal(reloaded.whitelist, false)
+    assert.equal(reloaded.appBypassMode, 'blacklist')
+    assert.deepEqual(reloaded.blacklistAppIds.sort(), ['C', 'D', 'E'])
+  })
+})
+
+describe('dual list persistence — mode switch must not wipe the other list', () => {
+  const apps = [
+    { id: 'A', name: 'App A', exePath: 'C:\\Apps\\A\\a.exe' },
+    { id: 'B', name: 'App B', exePath: 'C:\\Apps\\B\\b.exe' },
+    { id: 'C', name: 'App C', exePath: 'C:\\Apps\\C\\c.exe' },
+    { id: 'D', name: 'App D', exePath: 'C:\\Apps\\D\\d.exe' },
+    { id: 'E', name: 'App E', exePath: 'C:\\Apps\\E\\e.exe' },
+  ]
+
+  it('whitelist [A,B] then blacklist [C,D,E] then back — both lists survive', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'silent-excl-dual-'))
+    const filePath = path.join(dir, 'app-exclusions.json')
+    try {
+      saveExclusionsState({ filePath, selectedIds: ['A', 'B'], apps, whitelist: true })
+      saveExclusionsState({ filePath, selectedIds: ['C', 'D', 'E'], apps, whitelist: false })
+      const afterBlack = loadExclusionsState(filePath)
+      assert.equal(afterBlack.whitelist, false)
+      assert.deepEqual([...afterBlack.whitelistAppIds].sort(), ['A', 'B'])
+      assert.deepEqual([...afterBlack.blacklistAppIds].sort(), ['C', 'D', 'E'])
+      assert.deepEqual([...afterBlack.selectedIds].sort(), ['C', 'D', 'E'])
+
+      saveExclusionsState({
+        filePath,
+        selectedIds: afterBlack.whitelistAppIds,
+        apps,
+        whitelist: true,
+        blacklistAppIds: afterBlack.blacklistAppIds,
+        whitelistAppIds: afterBlack.whitelistAppIds,
+      })
+      const afterWhite = loadExclusionsState(filePath)
+      assert.equal(afterWhite.whitelist, true)
+      assert.deepEqual([...afterWhite.whitelistAppIds].sort(), ['A', 'B'])
+      assert.deepEqual([...afterWhite.blacklistAppIds].sort(), ['C', 'D', 'E'])
+      assert.deepEqual([...afterWhite.selectedIds].sort(), ['A', 'B'])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('persist + reload keeps blacklist mode (restart hydrate)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'silent-excl-hydrate-'))
+    const filePath = path.join(dir, 'app-exclusions.json')
+    try {
+      saveExclusionsState({ filePath, selectedIds: ['C', 'D', 'E'], apps, whitelist: false })
+      const reloaded = loadExclusionsState(filePath)
+      assert.equal(reloaded.whitelist, false)
+      assert.deepEqual([...reloaded.blacklistAppIds].sort(), ['C', 'D', 'E'])
+      assert.equal(reloaded.appBypassMode, 'blacklist')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('migrates legacy single selectedIds into the then-active list', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'silent-excl-mig-'))
+    const filePath = path.join(dir, 'app-exclusions.json')
+    try {
+      fs.writeFileSync(filePath, JSON.stringify({
+        version: 2,
+        whitelist: false,
+        selectedIds: ['A'],
+        apps,
+      }), 'utf8')
+      const loaded = loadExclusionsState(filePath)
+      assert.deepEqual(loaded.blacklistAppIds, ['A'])
+      assert.deepEqual(loaded.whitelistAppIds, [])
+      assert.equal(loaded.whitelist, false)
+
+      fs.writeFileSync(filePath, JSON.stringify({
+        version: 2,
+        whitelist: true,
+        selectedIds: ['B'],
+        apps,
+      }), 'utf8')
+      const wl = loadExclusionsState(filePath)
+      assert.deepEqual(wl.whitelistAppIds, ['B'])
+      assert.deepEqual(wl.blacklistAppIds, [])
+      assert.equal(wl.whitelist, true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

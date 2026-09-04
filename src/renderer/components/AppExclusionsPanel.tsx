@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  getBlacklistApps,
   getExcludedApps,
   getSiteBypassRules,
+  getWhitelistApps,
   isExclusionsWhitelist,
   resetStaleExclusions,
   saveExcludedApps,
@@ -96,6 +98,66 @@ function ModeChip({
   )
 }
 
+function SearchField({
+  value,
+  onChange,
+  placeholder,
+  fieldBg,
+  fieldText,
+  fieldPlaceholder,
+  borderStrong,
+  fg,
+  muted,
+  className = 'mb-3',
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder: string
+  fieldBg: string
+  fieldText: string
+  fieldPlaceholder: string
+  borderStrong: string
+  fg: string
+  muted: string
+  className?: string
+}) {
+  return (
+    <div className={`relative w-full ${className}`}>
+      <input
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="theme-field w-full rounded-xl px-3 py-2 text-sm focus:outline-none pr-9"
+        style={{
+          userSelect: 'text',
+          background: fieldBg,
+          color: fieldText,
+          border: `1px solid ${borderStrong}`,
+          ['--field-ph' as any]: fieldPlaceholder,
+        } as any}
+        onFocus={e => { e.currentTarget.style.borderColor = fg }}
+        onBlur={e => { e.currentTarget.style.borderColor = borderStrong }}
+      />
+      {value.trim() ? (
+        <button
+          type="button"
+          aria-label="Очистить поиск"
+          title="Очистить"
+          onClick={() => onChange('')}
+          className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center"
+          style={{ color: muted }}
+          onMouseEnter={e => { e.currentTarget.style.color = fg }}
+          onMouseLeave={e => { e.currentTarget.style.color = muted }}
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+            <path d="M3 3l8 8M11 3L3 11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          </svg>
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 const STALE_RESET_KEY = 'pc_exclusions_startmenu_v2'
 const MAX_SITE_RULES = 100
 
@@ -144,6 +206,11 @@ export default function AppExclusionsPanel({
   const [newRule, setNewRule] = useState('')
   const [siteHint, setSiteHint] = useState<string | null>(null)
   const [siteBusy, setSiteBusy] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    scrollRef.current?.scrollTo({ top: 0 })
+  }, [whitelist])
 
   useEffect(() => {
     let cancelled = false
@@ -185,8 +252,10 @@ export default function AppExclusionsPanel({
   const switchMode = (toWhitelist: boolean) => {
     if (whitelist === toWhitelist) return
     setWhitelist(toWhitelist)
-    setSelected(new Set())
+    const next = toWhitelist ? getWhitelistApps() : getBlacklistApps()
+    setSelected(next)
     saveExceptionsMode(toWhitelist, apps)
+    scrollRef.current?.scrollTo({ top: 0 })
   }
 
   const persistSites = async (rules: string[]) => {
@@ -258,7 +327,7 @@ export default function AppExclusionsPanel({
   }
 
   return (
-    <div className="flex-1 p-4 overflow-y-auto text-left w-full self-stretch items-start">
+    <div ref={scrollRef} className="flex-1 p-4 overflow-y-auto text-left w-full self-stretch items-start">
       <button type="button" onClick={onBack} className="text-xs mb-4 block text-left" style={{ color: muted }}>
         ← Назад
       </button>
@@ -351,20 +420,16 @@ export default function AppExclusionsPanel({
             <ThemeCheck checked={allVisibleSelected} dark={dark} fg={fg} bg={bg} />
           </div>
 
-          <input
+          <SearchField
             value={search}
-            onChange={e => setSearch(e.target.value)}
+            onChange={setSearch}
             placeholder="Поиск..."
-            className="theme-field w-full rounded-xl px-3 py-2 text-sm mb-3 focus:outline-none"
-            style={{
-              userSelect: 'text',
-              background: fieldBg,
-              color: fieldText,
-              border: `1px solid ${borderStrong}`,
-              ['--field-ph' as any]: fieldPlaceholder,
-            } as any}
-            onFocus={e => { e.currentTarget.style.borderColor = fg }}
-            onBlur={e => { e.currentTarget.style.borderColor = borderStrong }}
+            fieldBg={fieldBg}
+            fieldText={fieldText}
+            fieldPlaceholder={fieldPlaceholder}
+            borderStrong={borderStrong}
+            fg={fg}
+            muted={muted}
           />
 
           {loading ? (

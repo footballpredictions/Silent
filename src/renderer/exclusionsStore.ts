@@ -1,23 +1,59 @@
 const EXCLUDED_KEY = 'pc_excluded_apps'
 const WHITELIST_KEY = 'pc_exclusions_whitelist'
+const BLACKLIST_KEY = 'pc_exclusions_blacklist'
+const WHITELIST_APPS_KEY = 'pc_exclusions_whitelist_apps'
+const DUAL_MIGRATED_KEY = 'pc_exclusions_dual_v1'
 const SITE_RULES_KEY = 'pc_site_bypass_rules'
 
-export function getExcludedApps(): Set<string> {
-  const raw = localStorage.getItem(EXCLUDED_KEY) || ''
-  return new Set(raw.split(',').map(s => s.trim()).filter(Boolean))
+function parseIds(raw: string | null | undefined): Set<string> {
+  return new Set((raw || '').split(',').map(s => s.trim()).filter(Boolean))
+}
+
+function joinIds(ids: Set<string> | string[]): string {
+  return [...ids].join(',')
+}
+
+function ensureDualMigrated() {
+  if (typeof localStorage === 'undefined') return
+  if (localStorage.getItem(DUAL_MIGRATED_KEY) === '1') return
+  const old = parseIds(localStorage.getItem(EXCLUDED_KEY))
+  const mode = localStorage.getItem(WHITELIST_KEY) === '1'
+  if (localStorage.getItem(BLACKLIST_KEY) == null) {
+    localStorage.setItem(BLACKLIST_KEY, mode ? '' : joinIds(old))
+  }
+  if (localStorage.getItem(WHITELIST_APPS_KEY) == null) {
+    localStorage.setItem(WHITELIST_APPS_KEY, mode ? joinIds(old) : '')
+  }
+  localStorage.setItem(DUAL_MIGRATED_KEY, '1')
 }
 
 export function isExclusionsWhitelist(): boolean {
+  ensureDualMigrated()
   return localStorage.getItem(WHITELIST_KEY) === '1'
 }
 
-export function saveExcludedApps(
-  ids: Set<string>,
-  apps?: PcAppItem[],
-  whitelist: boolean = false,
+export function getBlacklistApps(): Set<string> {
+  ensureDualMigrated()
+  return parseIds(localStorage.getItem(BLACKLIST_KEY))
+}
+
+export function getWhitelistApps(): Set<string> {
+  ensureDualMigrated()
+  return parseIds(localStorage.getItem(WHITELIST_APPS_KEY))
+}
+
+export function getExcludedApps(): Set<string> {
+  ensureDualMigrated()
+  return isExclusionsWhitelist() ? getWhitelistApps() : getBlacklistApps()
+}
+
+function flushToMain(
+  selected: Set<string>,
+  apps: PcAppItem[] | undefined,
+  whitelist: boolean,
+  blacklist: Set<string>,
+  whitelistApps: Set<string>,
 ) {
-  localStorage.setItem(EXCLUDED_KEY, [...ids].join(','))
-  localStorage.setItem(WHITELIST_KEY, whitelist ? '1' : '0')
   try {
     const api = (window as any).electronAPI
     if (api?.saveAppExclusions) {
@@ -27,9 +63,11 @@ export function saveExcludedApps(
         exePath: a.exePath || null,
       }))
       void api.saveAppExclusions({
-        selectedIds: [...ids],
+        selectedIds: [...selected],
         apps: slim,
         whitelist: !!whitelist,
+        blacklistAppIds: [...blacklist],
+        whitelistAppIds: [...whitelistApps],
       })
     }
   } catch {
@@ -37,18 +75,40 @@ export function saveExcludedApps(
   }
 }
 
+export function saveExcludedApps(
+  ids: Set<string>,
+  apps?: PcAppItem[],
+  whitelist: boolean = isExclusionsWhitelist(),
+) {
+  ensureDualMigrated()
+  localStorage.setItem(WHITELIST_KEY, whitelist ? '1' : '0')
+  if (whitelist) {
+    localStorage.setItem(WHITELIST_APPS_KEY, joinIds(ids))
+  } else {
+    localStorage.setItem(BLACKLIST_KEY, joinIds(ids))
+  }
+  localStorage.setItem(EXCLUDED_KEY, joinIds(ids))
+  flushToMain(ids, apps, whitelist, getBlacklistApps(), getWhitelistApps())
+}
+
 /**
- * Смена ЧС↔БС.
- * Всегда начинаем с пустого выбора — пользователь сам отмечает нужные.
+ * Смена ЧС↔БС: режим сохраняется, оба списка остаются.
  */
 export function saveExceptionsMode(whitelist: boolean, apps?: PcAppItem[]) {
-  saveExcludedApps(new Set(), apps, whitelist)
+  ensureDualMigrated()
+  localStorage.setItem(WHITELIST_KEY, whitelist ? '1' : '0')
+  const active = whitelist ? getWhitelistApps() : getBlacklistApps()
+  localStorage.setItem(EXCLUDED_KEY, joinIds(active))
+  flushToMain(active, apps, whitelist, getBlacklistApps(), getWhitelistApps())
 }
 
 /** Сброс старого БС / «все отмечены» после смены id (ярлыки). */
 export function resetStaleExclusions() {
   localStorage.removeItem(EXCLUDED_KEY)
   localStorage.setItem(WHITELIST_KEY, '0')
+  localStorage.setItem(BLACKLIST_KEY, '')
+  localStorage.setItem(WHITELIST_APPS_KEY, '')
+  localStorage.setItem(DUAL_MIGRATED_KEY, '1')
 }
 
 export function getSiteBypassRules(): string[] {

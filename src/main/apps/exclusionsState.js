@@ -1,10 +1,16 @@
 /**
  * Состояние исключений на стороне main (для VPN-сессии).
  * Renderer синхронизирует через IPC save-app-exclusions.
+ * Два независимых списка + режим; смена режима не затирает другой список.
  */
 const fs = require('fs')
 const path = require('path')
 const { resolveBypassExePaths } = require('./exclusionsPolicy')
+const {
+  hydrateExclusions,
+  applySave,
+  activeIds,
+} = require('./exclusionsPersist')
 
 const DEFAULT_FILE_NAME = 'app-exclusions.json'
 
@@ -12,21 +18,80 @@ function defaultStatePath(userDataPath) {
   return path.join(userDataPath, DEFAULT_FILE_NAME)
 }
 
+function emptyState() {
+  return {
+    version: 3,
+    whitelist: false,
+    appBypassMode: 'blacklist',
+    selectedIds: [],
+    blacklistAppIds: [],
+    whitelistAppIds: [],
+    apps: [],
+    entries: [],
+    exePaths: [],
+  }
+}
+
+function toPublicState(hydrated, apps, entries, exePaths, updatedAt) {
+  const selected = activeIds(hydrated)
+  return {
+    version: 3,
+    whitelist: !!hydrated.whitelist,
+    appBypassMode: hydrated.appBypassMode,
+    selectedIds: selected,
+    blacklistAppIds: [...hydrated.blacklistAppIds],
+    whitelistAppIds: [...hydrated.whitelistAppIds],
+    apps: apps || [],
+    entries: entries || [],
+    exePaths: exePaths || [],
+    updatedAt: updatedAt || null,
+  }
+}
+
+function resolveForState(hydrated, apps) {
+  const selected = activeIds(hydrated)
+  return resolveBypassExePaths({
+    selectedIds: selected,
+    apps,
+    whitelist: !!hydrated.whitelist,
+  })
+}
+
 /**
  * @param {object} opts
  * @param {string} opts.filePath
- * @param {string[]} opts.selectedIds
+ * @param {string[]} [opts.selectedIds]
  * @param {Array<{id:string,name?:string,exePath?:string|null}>} opts.apps
  * @param {boolean} [opts.whitelist]
+ * @param {string[]} [opts.blacklistAppIds]
+ * @param {string[]} [opts.whitelistAppIds]
  */
-function saveExclusionsState({ filePath, selectedIds, apps, whitelist = false }) {
-  const resolved = resolveBypassExePaths({ selectedIds, apps, whitelist: !!whitelist })
+function saveExclusionsState({
+  filePath,
+  selectedIds,
+  apps,
+  whitelist = false,
+  blacklistAppIds,
+  whitelistAppIds,
+}) {
+  const prev = loadExclusionsState(filePath)
+  const next = applySave(prev, {
+    selectedIds,
+    whitelist,
+    blacklistAppIds,
+    whitelistAppIds,
+  })
+  const list = apps || prev.apps || []
+  const resolved = resolveForState(next, list)
   const payload = {
-    version: 2,
+    version: 3,
     updatedAt: new Date().toISOString(),
-    whitelist: !!whitelist,
-    selectedIds: [...(selectedIds instanceof Set ? selectedIds : selectedIds || [])],
-    apps: (apps || []).map(a => ({
+    whitelist: !!next.whitelist,
+    appBypassMode: next.appBypassMode,
+    selectedIds: activeIds(next),
+    blacklistAppIds: [...next.blacklistAppIds],
+    whitelistAppIds: [...next.whitelistAppIds],
+    apps: list.map(a => ({
       id: a.id,
       name: a.name || '',
       exePath: a.exePath || null,
@@ -42,31 +107,26 @@ function saveExclusionsState({ filePath, selectedIds, apps, whitelist = false })
 function loadExclusionsState(filePath) {
   try {
     if (!fs.existsSync(filePath)) {
-      return { version: 2, whitelist: false, selectedIds: [], apps: [], entries: [], exePaths: [] }
+      return emptyState()
     }
     const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-    const selectedIds = Array.isArray(raw.selectedIds) ? raw.selectedIds : []
     const apps = Array.isArray(raw.apps) ? raw.apps : []
-    const whitelist = !!raw.whitelist
+    const hydrated = hydrateExclusions({
+      selectedIds: Array.isArray(raw.selectedIds) ? raw.selectedIds : [],
+      whitelist: !!raw.whitelist,
+      blacklistAppIds: Array.isArray(raw.blacklistAppIds) ? raw.blacklistAppIds : (raw.blacklistAppIds == null ? null : []),
+      whitelistAppIds: Array.isArray(raw.whitelistAppIds) ? raw.whitelistAppIds : (raw.whitelistAppIds == null ? null : []),
+    })
     const entries = Array.isArray(raw.entries) ? raw.entries : []
     let exePaths = Array.isArray(raw.exePaths)
       ? raw.exePaths
       : entries.map(e => e.exePath).filter(Boolean)
-    // Пересчёт с актуальным whitelist, если есть каталог apps
     if (apps.length) {
-      exePaths = resolveBypassExePaths({ selectedIds, apps, whitelist }).exePaths
+      exePaths = resolveForState(hydrated, apps).exePaths
     }
-    return {
-      version: raw.version || 2,
-      whitelist,
-      selectedIds,
-      apps,
-      entries,
-      exePaths,
-      updatedAt: raw.updatedAt || null,
-    }
+    return toPublicState(hydrated, apps, entries, exePaths, raw.updatedAt || null)
   } catch {
-    return { version: 2, whitelist: false, selectedIds: [], apps: [], entries: [], exePaths: [] }
+    return emptyState()
   }
 }
 

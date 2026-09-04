@@ -1072,7 +1072,16 @@ ipcMain.handle('save-app-exclusions', (_, payload) => {
     const selectedIds = Array.isArray(payload?.selectedIds) ? payload.selectedIds : []
     const appsList = Array.isArray(payload?.apps) ? payload.apps : []
     const whitelist = !!payload?.whitelist
-    const saved = saveExclusionsState({ filePath, selectedIds, apps: appsList, whitelist })
+    const blacklistAppIds = Array.isArray(payload?.blacklistAppIds) ? payload.blacklistAppIds : undefined
+    const whitelistAppIds = Array.isArray(payload?.whitelistAppIds) ? payload.whitelistAppIds : undefined
+    const saved = saveExclusionsState({
+      filePath,
+      selectedIds,
+      apps: appsList,
+      whitelist,
+      blacklistAppIds,
+      whitelistAppIds,
+    })
     sendLog(`[Apps] сохранены исключения (${whitelist ? 'БС' : 'ЧС'}): ${saved.exePaths.length} exe`)
     // VPN уже поднят — сразу перезапустить bypass-монитор
     if (wgApplied && !vpnBootstrapMode) {

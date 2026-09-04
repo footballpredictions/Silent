@@ -40,6 +40,17 @@ html, body, #root {
   transform-origin: center center;
 }
 
+@keyframes vpn-snake-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.vpn-toggle-snake {
+  animation: vpn-snake-spin 2.2s linear infinite;
+  transform-origin: center center;
+  will-change: transform;
+}
+
 /* Dark/light themed inputs — placeholder follows --field-ph */
 .theme-field::placeholder {
   color: var(--field-ph, #6B7280);

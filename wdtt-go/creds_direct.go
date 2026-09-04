@@ -13,11 +13,14 @@ var (
 	lanIPv4   net.IP
 )
 
-// Публичные DNS — обход DPI/poison Wi‑Fi ISP, который ломает api.vk.me.
+// Публичные DNS для VK auth. UDP Dial «успешен» всегда — поэтому TCP-first
+// и без 8.8.8.8 первым: на части Wi‑Fi Google DNS таймаутится (Linux full-tunnel).
 var vkPublicDNSServers = []string{
-	"8.8.8.8:53",
 	"77.88.8.8:53",
+	"77.88.8.1:53",
 	"1.1.1.1:53",
+	"1.0.0.1:53",
+	"8.8.8.8:53",
 }
 
 func isVirtualIface(name string) bool {
@@ -139,10 +142,12 @@ func getLanIPv4() net.IP {
 }
 
 func lanBoundDialer(timeout time.Duration) *net.Dialer {
-	return &net.Dialer{
+	d := &net.Dialer{
 		Timeout:   timeout,
 		KeepAlive: 30 * time.Second,
 	}
+	applyLanIfaceBind(d)
+	return d
 }
 
 func dialViaLan(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
@@ -168,18 +173,33 @@ func newVkDirectDialer() net.Dialer {
 	if ip := getLanIPv4(); ip != nil {
 		d.LocalAddr = &net.TCPAddr{IP: ip}
 	}
+	applyLanIfaceBind(&d)
 	return d
 }
 
-// vkDirectResolver — DNS только на публичные резолверы (не ISP), с LAN-bind.
-// Раньше Dial игнорировал адрес и ходил на system DNS → Wi‑Fi DPI poison api.vk.me.
+// vkDirectResolver — DNS на публичные резолверы (не ISP), с LAN-bind.
+// TCP-first: UDP Dial не проверяет достижимость → на Linux после WG
+// первый 8.8.8.8 «открывался» и потом read timeout, Yandex не пробовали.
 func vkDirectResolver() *net.Resolver {
+	tryDial := func(ctx context.Context, dnsAddr string) (net.Conn, error) {
+		conn, err := dialViaLan(ctx, "tcp", dnsAddr, 1500*time.Millisecond)
+		if err == nil {
+			return conn, nil
+		}
+		// UDP только если TCP refused (нет 53/tcp) — иначе таймаут UDP маскирует failover.
+		if isConnRefused(err) {
+			if uc, uerr := dialViaLan(ctx, "udp", dnsAddr, 1500*time.Millisecond); uerr == nil {
+				return uc, nil
+			}
+		}
+		return nil, err
+	}
 	return &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			var lastErr error
 			for _, dnsAddr := range vkPublicDNSServers {
-				conn, err := dialViaLan(ctx, network, dnsAddr, 3*time.Second)
+				conn, err := tryDial(ctx, dnsAddr)
 				if err == nil {
 					return conn, nil
 				}
@@ -199,5 +219,10 @@ func dialTurnUDP(resolved *net.UDPAddr) (*net.UDPConn, error) {
 	if ip := getLanIPv4(); ip != nil {
 		laddr = &net.UDPAddr{IP: ip}
 	}
-	return net.DialUDP("udp", laddr, resolved)
+	c, err := net.DialUDP("udp", laddr, resolved)
+	if err != nil {
+		return nil, err
+	}
+	applyLanConnProtect(c)
+	return c, nil
 }

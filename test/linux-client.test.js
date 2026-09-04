@@ -79,6 +79,26 @@ describe('linux wireguard contract matches Windows', () => {
     assert.equal(SYSTEM_HELPER, '/usr/libexec/silent-vpn-wg-helper')
     assert.equal(HELPER_SOCK, '/run/silent-vpn/helper.sock')
   })
+  it('dns bypass targets include cloudflare/yandex /32', () => {
+    const { dnsBypassIps } = require('../src/main/vpn/wireguardLinux')
+    const ips = dnsBypassIps('1.1.1.1, 1.0.0.1, 77.88.8.8')
+    assert.ok(ips.includes('1.1.1.1/32'))
+    assert.ok(ips.includes('77.88.8.8/32'))
+    assert.ok(ips.includes('8.8.8.8/32'), 'Google DNS always bypassed (DHCP leftover)')
+  })
+  it('hostPinPairsFromMap builds ip:host for Linux hosts-pin', () => {
+    const { hostPinPairsFromMap, VK_HOSTS } = require('../src/main/vpn/vkNetworkExcludes')
+    assert.ok(VK_HOSTS.includes('calls.okcdn.ru'), 'okcdn needed for VK Calls step4')
+    const pairs = hostPinPairsFromMap({
+      'api.vk.me': ['87.240.129.140'],
+      'api.vk.ru': ['87.240.190.75', 'bad'],
+      'calls.okcdn.ru': ['155.212.204.195'],
+    })
+    assert.ok(pairs.includes('87.240.129.140:api.vk.me'))
+    assert.ok(pairs.includes('87.240.190.75:api.vk.ru'))
+    assert.ok(pairs.includes('155.212.204.195:calls.okcdn.ru'))
+    assert.equal(pairs.length, 3)
+  })
 })
 
 describe('linux steam/discord pack match', () => {

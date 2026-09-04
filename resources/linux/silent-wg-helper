@@ -15,6 +15,12 @@ Commands:
   bypass-del <cidr> [cidr...]
   dns-set <ifname> <dns1>[,dns2...]
   dns-restore
+  hosts-pin <ip:hostname> [ip:hostname...]
+  hosts-restore
+  protect-on <gw> <iface>
+  protect-off
+  ipv6-block
+  ipv6-restore
 
 Tunnel name is always wg-turn — same as Windows.
 Routing matches Windows PC: AllowedIPs 0.0.0.0/1 + 128.0.0.0/1 (full)
@@ -40,10 +46,22 @@ PID_FILE = os.path.join(RUN_DIR, "wireguard-go.pid")
 SOCK_PATH = f"/var/run/wireguard/{IFACE}.sock"
 HELPER_SOCK = os.path.join(RUN_DIR, "helper.sock")
 RESOLV_BAK = os.path.join(RUN_DIR, "resolv.conf.bak")
+DNS_STATE = os.path.join(RUN_DIR, "dns-state.json")
+HOSTS_MARK_BEGIN = "# silent-vpn-hosts-begin"
+HOSTS_MARK_END = "# silent-vpn-hosts-end"
+# Android-like protect(): WDTT SO_MARK → this table (мимо wg-turn).
+LAN_PROTECT_MARK = "0x53494c"
+LAN_PROTECT_TABLE = "7349"
+LAN_PROTECT_PREF = "100"
+IPV6_STATE = os.path.join(RUN_DIR, "ipv6-state.json")
 STATE_FILE = os.path.join(RUN_DIR, "state")
 _IPV4 = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 _CIDR = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?$")
 _IFACE = re.compile(r"^[A-Za-z0-9_.:-]{1,15}$")
+_HOST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,253}$")
+_HOST_PAIR = re.compile(
+    r"^((?:\d{1,3}\.){3}\d{1,3}):([A-Za-z0-9][A-Za-z0-9._-]{0,253})$"
+)
 
 
 def die(msg: str, code: int = 1) -> None:
@@ -73,6 +91,41 @@ def run_out(cmd: list[str], timeout: int = 15) -> str:
     except Exception:
         return ""
 
+
+def list_other_ifaces(skip: str) -> list[str]:
+    out: list[str] = []
+    try:
+        for name in os.listdir("/sys/class/net"):
+            if name in (skip, "lo") or name.startswith("docker") or name.startswith("veth"):
+                continue
+            if name.startswith("br-") or name.startswith("virbr"):
+                continue
+            out.append(name)
+    except OSError:
+        pass
+    return out
+
+
+def save_dns_state(other: list[str]) -> None:
+    os.makedirs(RUN_DIR, exist_ok=True)
+    payload = {"other": other, "ts": time.time()}
+    with open(DNS_STATE, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+
+
+def load_dns_state() -> list[str]:
+    try:
+        with open(DNS_STATE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        other = data.get("other") or []
+        return [str(x) for x in other if isinstance(x, str)]
+    except (OSError, json.JSONDecodeError, TypeError):
+        return []
+
+
+def clear_dns_state() -> None:
+    with contextlib.suppress(OSError):
+        os.remove(DNS_STATE)
 
 def parse_conf(path: str) -> dict:
     data: dict = {
@@ -377,6 +430,14 @@ def cmd_bypass_del(args: list[str]) -> None:
     print("OK bypass-del")
 
 
+def _chattr_i(path: str, enable: bool) -> None:
+    chattr = shutil.which("chattr")
+    if not chattr or not os.path.exists(path):
+        return
+    flag = "+i" if enable else "-i"
+    run([chattr, flag, path], check=False)
+
+
 def cmd_dns_set(args: list[str]) -> None:
     if len(args) < 2:
         die("dns-set <ifname> <dns,dns>")
@@ -384,38 +445,288 @@ def cmd_dns_set(args: list[str]) -> None:
     servers = [x.strip() for x in re.split(r"[,;\s]+", args[1]) if x.strip()]
     if not servers:
         return
+
+    # Always pin /etc/resolv.conf to VPN DNS. Stub 127.0.0.53 often keeps DHCP
+    # upstreams (8.8.8.8 on wifi) → i/o timeout while WG is "up".
+    # Never leave 8.8.8.8 as nameserver — on some Wi‑Fi it times out via LAN too.
+    os.makedirs(RUN_DIR, exist_ok=True)
+    if os.path.exists("/etc/resolv.conf") and not os.path.exists(RESOLV_BAK):
+        try:
+            if os.path.islink("/etc/resolv.conf"):
+                with open(RESOLV_BAK, "w", encoding="utf-8") as f:
+                    f.write("SYMLINK:" + os.readlink("/etc/resolv.conf") + "\n")
+            else:
+                shutil.copy2("/etc/resolv.conf", RESOLV_BAK)
+        except OSError:
+            pass
+    lines = ["# silent-vpn\n", "options timeout:2 attempts:2\n"] + [
+        f"nameserver {s}\n" for s in servers
+    ]
+    try:
+        _chattr_i("/etc/resolv.conf", False)
+        if os.path.islink("/etc/resolv.conf") or os.path.exists("/etc/resolv.conf"):
+            os.remove("/etc/resolv.conf")
+        with open("/etc/resolv.conf", "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        _chattr_i("/etc/resolv.conf", True)
+        print("OK dns resolv.conf " + ",".join(servers))
+    except OSError as e:
+        print(f"WARN dns resolv.conf: {e}")
+
     if shutil.which("resolvectl"):
         run(["resolvectl", "dns", ifname, *servers], check=False)
         run(["resolvectl", "domain", ifname, "~."], check=False)
         run(["resolvectl", "default-route", ifname, "yes"], check=False)
-        print("OK dns resolvectl")
-        return
-    os.makedirs(RUN_DIR, exist_ok=True)
-    if os.path.exists("/etc/resolv.conf") and not os.path.exists(RESOLV_BAK):
-        shutil.copy2("/etc/resolv.conf", RESOLV_BAK)
-    lines = ["# silent-vpn\n"] + [f"nameserver {s}\n" for s in servers]
-    # resolv.conf may be a symlink to systemd — replace carefully
-    try:
-        if os.path.islink("/etc/resolv.conf"):
-            os.remove("/etc/resolv.conf")
-        with open("/etc/resolv.conf", "w", encoding="utf-8") as f:
-            f.writelines(lines)
-    except OSError as e:
-        die(f"dns-set: {e}")
-    print("OK dns resolv.conf")
+        others = list_other_ifaces(ifname)
+        save_dns_state(others)
+        for other in others:
+            run(["resolvectl", "default-route", other, "no"], check=False)
+            run(["resolvectl", "dns", other], check=False)
+            run(["resolvectl", "domain", other], check=False)
+        run(["resolvectl", "flush-caches"], check=False)
+        print("OK dns resolvectl demote=" + ",".join(others))
 
 
 def cmd_dns_restore(_: list[str]) -> None:
-    if shutil.which("resolvectl") and iface_exists():
-        run(["resolvectl", "revert", IFACE], check=False)
+    others = load_dns_state()
+    if shutil.which("resolvectl"):
+        if iface_exists():
+            run(["resolvectl", "revert", IFACE], check=False)
+        for other in others or list_other_ifaces(IFACE):
+            run(["resolvectl", "revert", other], check=False)
+        run(["resolvectl", "flush-caches"], check=False)
+    _chattr_i("/etc/resolv.conf", False)
     if os.path.isfile(RESOLV_BAK):
         try:
-            shutil.copy2(RESOLV_BAK, "/etc/resolv.conf")
+            raw = open(RESOLV_BAK, "r", encoding="utf-8", errors="replace").read()
+            if raw.startswith("SYMLINK:"):
+                target = raw.split(":", 1)[1].strip()
+                with contextlib.suppress(OSError):
+                    os.remove("/etc/resolv.conf")
+                os.symlink(target, "/etc/resolv.conf")
+            else:
+                shutil.copy2(RESOLV_BAK, "/etc/resolv.conf")
             os.remove(RESOLV_BAK)
         except OSError:
-            pass
+            with contextlib.suppress(OSError):
+                if not os.path.exists("/etc/resolv.conf"):
+                    os.symlink("/run/systemd/resolve/stub-resolv.conf", "/etc/resolv.conf")
+    clear_dns_state()
     print("OK dns-restore")
 
+
+def _strip_hosts_block(text: str) -> str:
+    out_lines: list[str] = []
+    skip = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped == HOSTS_MARK_BEGIN:
+            skip = True
+            continue
+        if stripped == HOSTS_MARK_END:
+            skip = False
+            continue
+        if not skip:
+            out_lines.append(line)
+    return "".join(out_lines)
+
+
+def cmd_hosts_pin(args: list[str]) -> None:
+    pairs: list[tuple[str, str]] = []
+    for raw in args:
+        m = _HOST_PAIR.match(raw.strip())
+        if not m:
+            die(f"bad hosts pair: {raw}")
+        pairs.append((m.group(1), m.group(2)))
+    if not pairs:
+        return
+    path = "/etc/hosts"
+    try:
+        prev = open(path, "r", encoding="utf-8", errors="replace").read()
+    except OSError as e:
+        die(f"hosts read: {e}")
+    base = _strip_hosts_block(prev).rstrip() + "\n"
+    block = [HOSTS_MARK_BEGIN + "\n"]
+    seen: set[tuple[str, str]] = set()
+    for ip, host in pairs:
+        key = (ip, host)
+        if key in seen:
+            continue
+        seen.add(key)
+        block.append(f"{ip} {host}\n")
+    block.append(HOSTS_MARK_END + "\n")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(base)
+            if not base.endswith("\n"):
+                f.write("\n")
+            f.writelines(block)
+        print(f"OK hosts-pin n={len(seen)}")
+    except OSError as e:
+        die(f"hosts write: {e}")
+
+
+def cmd_hosts_restore(_: list[str]) -> None:
+    path = "/etc/hosts"
+    try:
+        prev = open(path, "r", encoding="utf-8", errors="replace").read()
+    except OSError as e:
+        print(f"WARN hosts-restore: {e}")
+        return
+    if HOSTS_MARK_BEGIN not in prev:
+        print("OK hosts-restore noop")
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(_strip_hosts_block(prev))
+        print("OK hosts-restore")
+    except OSError as e:
+        print(f"WARN hosts-restore: {e}")
+
+
+def cmd_protect_on(args: list[str]) -> None:
+    """Policy routing for WDTT SO_MARK — аналог Android VpnService.protect()."""
+    if len(args) < 2:
+        die("protect-on <gw> <iface>")
+    gw, iface = args[0], args[1]
+    if not _IPV4.match(gw) or not _IFACE.match(iface):
+        die("invalid gw/iface")
+    # Clear previous
+    for _ in range(3):
+        run(
+            ["ip", "rule", "del", "fwmark", LAN_PROTECT_MARK, "lookup", LAN_PROTECT_TABLE],
+            check=False,
+        )
+    run(["ip", "route", "flush", "table", LAN_PROTECT_TABLE], check=False)
+    p = run(
+        ["ip", "route", "replace", "default", "via", gw, "dev", iface, "table", LAN_PROTECT_TABLE],
+        check=False,
+        capture=True,
+    )
+    if p.returncode != 0:
+        die(f"protect-on route: {(p.stderr or p.stdout or '').strip()}")
+    # Connected LAN routes so local gateway works
+    link = run_out(["ip", "-4", "route", "show", "dev", iface, "scope", "link"])
+    for line in link.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        run(["ip", "route", "replace", *parts, "table", LAN_PROTECT_TABLE], check=False)
+    run(
+        [
+            "ip",
+            "rule",
+            "add",
+            "fwmark",
+            LAN_PROTECT_MARK,
+            "lookup",
+            LAN_PROTECT_TABLE,
+            "priority",
+            LAN_PROTECT_PREF,
+        ],
+        check=False,
+    )
+    print(f"OK protect-on mark={LAN_PROTECT_MARK} via {gw} dev {iface}")
+
+
+def cmd_protect_off(_: list[str]) -> None:
+    for _ in range(3):
+        run(
+            ["ip", "rule", "del", "fwmark", LAN_PROTECT_MARK, "lookup", LAN_PROTECT_TABLE],
+            check=False,
+        )
+    run(["ip", "route", "flush", "table", LAN_PROTECT_TABLE], check=False)
+    print("OK protect-off")
+
+
+def _ipv6_ra_keys() -> list[str]:
+    keys = [
+        "net.ipv6.conf.all.accept_ra",
+        "net.ipv6.conf.default.accept_ra",
+    ]
+    for iface in list_other_ifaces(IFACE):
+        if iface in ("lo", "docker0"):
+            continue
+        keys.append(f"net.ipv6.conf.{iface}.accept_ra")
+    return keys
+
+
+def cmd_ipv6_block(_: list[str]) -> None:
+    """IPv4-only tunnel without sysctl disable_ipv6 (NM иначе орёт «нет интернета»).
+
+    Blackhole IPv6 default + stop RA — браузер сразу берёт IPv4 через WG.
+    """
+    os.makedirs(RUN_DIR, exist_ok=True)
+    state: dict = {"sysctl": {}, "blackhole": False}
+    if not os.path.exists(IPV6_STATE):
+        for key in _ipv6_ra_keys():
+            prev = run_out(["sysctl", "-n", key])
+            if prev != "":
+                state["sysctl"][key] = prev.strip().split("\n")[-1].strip()
+        try:
+            with open(IPV6_STATE, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+        except OSError:
+            pass
+    # Не трогаем disable_ipv6 — ломает NM/Firefox offline detection.
+    for key in _ipv6_ra_keys():
+        run(["sysctl", "-w", f"{key}=0"], check=False)
+    # Снести живые IPv6 default с wifi/eth (RA мог вернуть)
+    defs = run_out(["ip", "-6", "route", "show", "default"])
+    for line in defs.splitlines():
+        if "blackhole" in line or not line.strip():
+            continue
+        # ip -6 route del default via ... dev ...
+        parts = line.split()
+        run(["ip", "-6", "route", "del", *parts], check=False)
+    p = run(
+        ["ip", "-6", "route", "replace", "blackhole", "default", "metric", "1"],
+        check=False,
+        capture=True,
+    )
+    if p.returncode == 0 or "File exists" in ((p.stderr or "") + (p.stdout or "")):
+        try:
+            raw = open(IPV6_STATE, "r", encoding="utf-8").read() if os.path.isfile(IPV6_STATE) else "{}"
+            st = json.loads(raw or "{}")
+            st["blackhole"] = True
+            # Keep first-saved sysctl; merge ra keys if missing
+            if not st.get("sysctl"):
+                st["sysctl"] = state.get("sysctl") or {}
+            with open(IPV6_STATE, "w", encoding="utf-8") as f:
+                json.dump(st, f)
+        except Exception:
+            pass
+    print("OK ipv6-block blackhole")
+
+
+def cmd_ipv6_restore(_: list[str]) -> None:
+    st: dict = {}
+    if os.path.isfile(IPV6_STATE):
+        try:
+            st = json.loads(open(IPV6_STATE, "r", encoding="utf-8").read() or "{}")
+        except Exception:
+            st = {}
+    if st.get("blackhole"):
+        run(["ip", "-6", "route", "del", "blackhole", "default", "metric", "1"], check=False)
+        run(["ip", "-6", "route", "del", "blackhole", "default"], check=False)
+    for key, val in (st.get("sysctl") or {}).items():
+        if re.match(r"^-?\d+$", str(val)):
+            run(["sysctl", "-w", f"{key}={val}"], check=False)
+    # Fail-safe: allow RA again
+    if not st.get("sysctl"):
+        for key in _ipv6_ra_keys():
+            run(["sysctl", "-w", f"{key}=1"], check=False)
+    # Legacy: если старый ipv6-block выставлял disable_ipv6=1 — вернуть 0
+    for key in (
+        "net.ipv6.conf.all.disable_ipv6",
+        "net.ipv6.conf.default.disable_ipv6",
+    ):
+        cur = run_out(["sysctl", "-n", key]).strip()
+        if cur == "1" and key not in (st.get("sysctl") or {}):
+            run(["sysctl", "-w", f"{key}=0"], check=False)
+    with contextlib.suppress(OSError):
+        os.remove(IPV6_STATE)
+    print("OK ipv6-restore")
 
 COMMANDS = {
     "up": cmd_up,
@@ -426,6 +737,12 @@ COMMANDS = {
     "bypass-del": cmd_bypass_del,
     "dns-set": cmd_dns_set,
     "dns-restore": cmd_dns_restore,
+    "hosts-pin": cmd_hosts_pin,
+    "hosts-restore": cmd_hosts_restore,
+    "protect-on": cmd_protect_on,
+    "protect-off": cmd_protect_off,
+    "ipv6-block": cmd_ipv6_block,
+    "ipv6-restore": cmd_ipv6_restore,
 }
 
 
@@ -492,6 +809,22 @@ def validate_args(args: list[str]) -> str | None:
         servers = [x.strip() for x in re.split(r"[,;\s]+", rest[1]) if x.strip()]
         if not servers or not all(_IPV4.match(s) for s in servers):
             return "invalid dns"
+    elif cmd == "hosts-pin":
+        if not rest:
+            return "hosts-pin needs pairs"
+        if not all(_HOST_PAIR.match(x.strip()) for x in rest):
+            return "invalid hosts pair"
+    elif cmd == "hosts-restore":
+        pass
+    elif cmd == "protect-on":
+        if len(rest) < 2:
+            return "protect-on needs gw iface"
+        if not _IPV4.match(rest[0]) or not _IFACE.match(rest[1]):
+            return "invalid gw/iface"
+    elif cmd == "protect-off":
+        pass
+    elif cmd in ("ipv6-block", "ipv6-restore"):
+        pass
     return None
 
 
@@ -533,7 +866,7 @@ def handle_client(conn: socket.socket) -> None:
         args = req.get("args")
         if not isinstance(args, list) or not all(isinstance(x, str) for x in args):
             raise ValueError("args")
-        if len(args) > 64:
+        if len(args) > 128:
             raise ValueError("too many args")
     except Exception:
         payload = json.dumps({"ok": False, "code": 2, "out": "", "err": "bad request"}) + "\n"

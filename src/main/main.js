@@ -718,10 +718,17 @@ function clearBypassRefresh() {
 
 function scheduleBypassRefresh(sendLogFn) {
   clearBypassRefresh()
+  const intervalMs = process.platform === 'linux' ? 30_000 : 90_000
   bypassRefreshTimer = setInterval(() => {
     if (!wgApplied || vpnBootstrapMode) return
     void addServerBypassRoutes(sessionExcludeIPs, () => {})
-  }, 90_000)
+    if (process.platform === 'linux') {
+      try {
+        const { refreshTunnelGuards } = require('./vpn/wireguardLinux')
+        void refreshTunnelGuards(() => {})
+      } catch { /* ignore */ }
+    }
+  }, intervalMs)
 }
 
 function minCredGroupsForFullTunnel(total) {
@@ -1428,12 +1435,25 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
   // DNS bypass в фоне — не блокировать spawn/подписку на stdout (раньше теряли секунды).
   const excludePromise = collectExcludeIPs(config)
+  // Linux: /etc/hosts + iface для WDTT SO_BINDTODEVICE до spawn.
+  const spawnEnv = { ...process.env }
+  if (process.platform === 'linux') {
+    try {
+      const { pinVkHosts, capturePhysicalGateway, enableLanProtect } = require('./vpn/wireguardLinux')
+      void pinVkHosts(sendLog)
+      const gw = await capturePhysicalGateway(sendLog)
+      if (gw?.alias) spawnEnv.SILENT_LAN_IFACE = String(gw.alias)
+      // До spawn WDTT: table protect — TURN/VK не уйдут в WG после up.
+      void enableLanProtect(sendLog)
+    } catch { /* ignore */ }
+  }
   const apiConf = buildWgConfigFromApi(config)
 
   const gen = ++wdttGeneration
   const proc = spawn(exePath, args, {
     cwd: tmpDir,
     stdio: ['pipe', 'pipe', 'pipe'],
+    env: spawnEnv,
     windowsHide: true, // иначе Go-консоль всплывает (особенно после OTA / runAfterFinish)
   })
   wdttProcess = proc

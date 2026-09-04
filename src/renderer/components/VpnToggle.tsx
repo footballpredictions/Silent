@@ -28,98 +28,56 @@ function rgba(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`
 }
 
-function buildSnakeStops(snakeColor: string): { offset: number; color: string }[] {
-  const stops: { offset: number; color: string }[] = []
-  const span = SNAKE_HEAD_POS - SNAKE_TAIL_START
-  const steps = 96
-  const transparent = 'rgba(0,0,0,0)'
-
-  stops.push({ offset: 0, color: transparent })
-  stops.push({ offset: SNAKE_TAIL_START - 0.002, color: transparent })
-
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps
-    const pos = SNAKE_TAIL_START + span * t
-    const alpha = Math.pow(t, 4.4) * 0.98
-    stops.push({ offset: pos, color: rgba(snakeColor, alpha) })
-  }
-
-  let gap = SNAKE_HEAD_POS + 0.003
-  while (gap <= 1) {
-    stops.push({ offset: gap, color: transparent })
-    gap += 0.02
-  }
-  stops.push({ offset: 1, color: transparent })
-  return stops
-}
-
-/** Один stroke + conic gradient (аналог Android SweepGradient), без сегментов. */
-function drawSnakeRing(
-  ctx: CanvasRenderingContext2D,
-  size: number,
-  snakeColor: string,
-  rotationDeg: number,
-) {
-  const cx = size / 2
-  const cy = size / 2
-  const strokePx = SNAKE_STROKE
-  const radius = (size - strokePx) / 2
-  const startAngle = ((rotationDeg - 90) * Math.PI) / 180
-
-  const grad = ctx.createConicGradient(startAngle, cx, cy)
-  for (const { offset, color } of buildSnakeStops(snakeColor)) {
-    const pos = Math.min(1, Math.max(0, offset))
-    grad.addColorStop(pos, color)
-  }
-
-  ctx.beginPath()
-  ctx.arc(cx, cy, radius, 0, Math.PI * 2)
-  ctx.strokeStyle = grad
-  ctx.lineWidth = strokePx
-  ctx.lineCap = 'round'
-  ctx.stroke()
-
-  const headAngle = startAngle + SNAKE_HEAD_POS * Math.PI * 2
-  const hx = cx + radius * Math.cos(headAngle)
-  const hy = cy + radius * Math.sin(headAngle)
-  ctx.beginPath()
-  ctx.arc(hx, hy, strokePx / 2, 0, Math.PI * 2)
-  ctx.fillStyle = snakeColor
-  ctx.fill()
-}
-
+/**
+ * Змейка: сегменты дуги на canvas (без createConicGradient и без CSS mask —
+ * на Linux Electron оба варианта часто дают сплошной круг или пустоту).
+ */
 function SnakeRing({ color, size }: { color: string; size: number }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const rafRef = useRef(0)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
 
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    const dpr = window.devicePixelRatio || 1
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
     canvas.width = Math.round(size * dpr)
     canvas.height = Math.round(size * dpr)
-    canvas.style.width = `${size}px`
-    canvas.style.height = `${size}px`
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-    const t0 = performance.now()
-    const tick = (now: number) => {
-      const rot = (((now - t0) % SNAKE_ROTATION_MS) / SNAKE_ROTATION_MS) * 360
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      ctx.clearRect(0, 0, size, size)
-      drawSnakeRing(ctx, size, color, rot)
-      rafRef.current = requestAnimationFrame(tick)
+    const cx = size / 2
+    const cy = size / 2
+    const r = (size - SNAKE_STROKE) / 2
+    const span = SNAKE_HEAD_POS - SNAKE_TAIL_START
+    const steps = 56
+
+    ctx.clearRect(0, 0, size, size)
+    for (let i = 0; i < steps; i++) {
+      const t0 = i / steps
+      const t1 = (i + 1) / steps
+      if (t1 < SNAKE_TAIL_START || t0 > SNAKE_HEAD_POS) continue
+      const mid = (t0 + t1) / 2
+      const alpha = Math.pow(Math.max(0, (mid - SNAKE_TAIL_START) / span), 4.4) * 0.98
+      if (alpha < 0.03) continue
+      const a0 = -Math.PI / 2 + t0 * Math.PI * 2
+      const a1 = -Math.PI / 2 + t1 * Math.PI * 2
+      ctx.beginPath()
+      ctx.arc(cx, cy, r, a0, a1)
+      ctx.strokeStyle = rgba(color, alpha)
+      ctx.lineWidth = SNAKE_STROKE
+      ctx.lineCap = 'round'
+      ctx.stroke()
     }
-    rafRef.current = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafRef.current)
   }, [color, size])
 
   return (
     <canvas
       ref={canvasRef}
-      className="absolute inset-0 pointer-events-none"
+      className="absolute inset-0 pointer-events-none vpn-toggle-snake"
+      width={size}
+      height={size}
       aria-hidden
+      style={{ width: size, height: size }}
     />
   )
 }
@@ -141,8 +99,9 @@ function VpnToggleThumb({
   toggleOff: string
   snakeColor: string
 }) {
-  const showBorder = !showSnake
   const thumbPulse = showSnake
+  // При змейке обводку не рисуем — иначе толстое кольцо вокруг canvas.
+  const showBorder = !showSnake
   const borderColor = isConnected ? toggleOn : toggleOff
 
   return (

@@ -18,6 +18,8 @@ const TUNNEL_NAME = 'wg-turn'
 const TUNNEL_CONF_NAME = 'wg-turn.conf'
 const FALLBACK_BACKEND_IP = '132.243.234.162'
 const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
+/** DHCP/Google DNS часто остаётся в resolved — route мимо WG, но nameserver ими не ставим. */
+const EXTRA_DNS_BYPASS = ['8.8.8.8/32', '8.8.4.4/32']
 const STABLE_CONF_DIR = path.join(os.homedir(), '.local', 'share', 'SilentVPN')
 const SYSTEM_HELPER = '/usr/libexec/silent-vpn-wg-helper'
 const HELPER_SOCK = '/run/silent-vpn/helper.sock'
@@ -405,6 +407,10 @@ async function capturePhysicalGateway(send) {
   const prev = savedPhysicalGateway
   const apply = (gw, iface) => {
     savedPhysicalGateway = { nextHop: gw, ifIndex: 0, alias: iface }
+    // WDTT dialViaLan на Linux: SO_BINDTODEVICE (см. creds_direct_linux.go).
+    if (iface) {
+      try { process.env.SILENT_LAN_IFACE = String(iface) } catch { /* ignore */ }
+    }
     send?.(`[WG] Шлюз до VPN: ${gw} (${iface})`)
     return savedPhysicalGateway
   }
@@ -486,25 +492,130 @@ async function removeHostBypassRoutes(excludeIPs, send, epoch = null) {
 }
 
 async function applyWgDns(send, dnsValue = WG_DNS) {
-  const servers = pickDnsServers(dnsValue)
+  const base = pickDnsServers(dnsValue)
     .split(',')
     .map(s => s.trim())
     .filter(Boolean)
+  // Роутер первым: на части Wi‑Fi 8.8.8.8/публичный DNS таймаутится, а 192.168.x.1 работает.
+  const gw = savedPhysicalGateway?.nextHop
+  const servers = [...new Set([...(gw ? [gw] : []), ...base])]
   if (!servers.length) return
   try {
-    await helperOut(['dns-set', TUNNEL_NAME, servers.join(',')], 12000)
-    send?.(`[WG] DNS на адаптере: ${servers.join(', ')}`)
+    const out = await helperOut(['dns-set', TUNNEL_NAME, servers.join(',')], 12000)
+    const lines = String(out || '').trim().split('\n').filter(Boolean)
+    const hint = lines.join(' | ')
+    send?.(`[WG] DNS на адаптере: ${servers.join(', ')}${hint ? ` (${hint})` : ''}`)
   } catch (e) {
     send?.(`[WG] DNS: ${e?.message || e}`, 'W')
   }
 }
 
-async function finalizeTunnelUp(send, excludeIPs, subnetOnly, dnsValue = WG_DNS) {
-  if (!subnetOnly) {
-    await applyWgDns(send, dnsValue)
+/** DNS-серверы должны ходить мимо туннеля: иначе WDTT ещё не готов → lookup timeout → воркеры мрут. */
+function dnsBypassIps(dnsValue = WG_DNS) {
+  const fromMenu = pickDnsServers(dnsValue)
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(s => (s.includes('/') ? s : `${s}/32`))
+  const gw = savedPhysicalGateway?.nextHop
+  const gwCidr = gw ? [`${gw}/32`] : []
+  return [...new Set([...fromMenu, ...gwCidr, ...EXTRA_DNS_BYPASS])]
+}
+
+async function pinVkHosts(send) {
+  try {
+    const { resolveVkExcludeHostMap, hostPinPairsFromMap } = require('./vkNetworkExcludes')
+    const map = await resolveVkExcludeHostMap()
+    const pairs = hostPinPairsFromMap(map)
+    if (!pairs.length) {
+      send?.('[WG] hosts-pin: нет IP VK (DNS до туннеля?)', 'W')
+      return
+    }
+    const out = await helperOut(['hosts-pin', ...pairs], 12000)
+    const hint = String(out || '').trim().split('\n').filter(Boolean).pop() || ''
+    send?.(`[WG] hosts-pin VK: ${pairs.length}${hint ? ` (${hint})` : ''}`)
+  } catch (e) {
+    send?.(`[WG] hosts-pin: ${e?.message || e}`, 'W')
   }
-  if (excludeIPs.length) {
-    await addServerBypassRoutes(excludeIPs, send)
+}
+
+async function restoreVkHosts(send) {
+  try {
+    await helperOut(['hosts-restore'], 8000)
+  } catch (e) {
+    send?.(`[WG] hosts-restore: ${e?.message || e}`, 'W')
+  }
+}
+
+async function enableLanProtect(send) {
+  if (!savedPhysicalGateway?.nextHop || !savedPhysicalGateway?.alias) {
+    await capturePhysicalGateway(send)
+  }
+  const gw = savedPhysicalGateway
+  if (!gw?.nextHop || !gw?.alias) {
+    send?.('[WG] lan-protect: нет шлюза', 'W')
+    return false
+  }
+  try {
+    const out = await helperOut(['protect-on', gw.nextHop, gw.alias], 8000)
+    const hint = String(out || '').trim().split('\n').filter(Boolean).pop() || ''
+    send?.(`[WG] lan-protect (Android-like): ${hint || 'OK'}`)
+    return true
+  } catch (e) {
+    send?.(`[WG] lan-protect: ${e?.message || e}`, 'W')
+    return false
+  }
+}
+
+async function disableLanProtect(send) {
+  try {
+    await helperOut(['protect-off'], 5000)
+  } catch (e) {
+    send?.(`[WG] lan-protect off: ${e?.message || e}`, 'W')
+  }
+}
+
+async function blockIpv6Leak(send) {
+  try {
+    const out = await helperOut(['ipv6-block'], 8000)
+    const hint = String(out || '').trim().split('\n').filter(Boolean).pop() || ''
+    send?.(`[WG] IPv6 blackhole (без disable — меньше «нет интернета»): ${hint || 'OK'}`)
+  } catch (e) {
+    send?.(`[WG] IPv6 block: ${e?.message || e}`, 'W')
+  }
+}
+
+async function restoreIpv6(send) {
+  try {
+    await helperOut(['ipv6-restore'], 8000)
+  } catch (e) {
+    send?.(`[WG] IPv6 restore: ${e?.message || e}`, 'W')
+  }
+}
+
+let lastAppliedDns = WG_DNS
+
+/** Периодически: NM может вернуть IPv6 RA / переписать resolv.conf. */
+async function refreshTunnelGuards(send) {
+  await enableLanProtect(send)
+  await blockIpv6Leak(send)
+  await applyWgDns(send, lastAppliedDns)
+}
+
+async function finalizeTunnelUp(send, excludeIPs, subnetOnly, dnsValue = WG_DNS) {
+  const dnsIps = subnetOnly ? [] : dnsBypassIps(dnsValue)
+  const merged = [...new Set([...(excludeIPs || []), ...dnsIps])]
+  // Сначала host-route для DNS/API/VK — потом dns-set (иначе 1.1.1.1 уходит в мёртвый WG).
+  if (merged.length) {
+    await addServerBypassRoutes(merged, send)
+  }
+  if (!subnetOnly) {
+    lastAppliedDns = dnsValue || WG_DNS
+    await enableLanProtect(send)
+    await blockIpv6Leak(send)
+    // /etc/hosts до dns-set: WDTT auth (api.vk.me) не зависит от живого 8.8.8.8.
+    await pinVkHosts(send)
+    await applyWgDns(send, dnsValue)
   }
 }
 
@@ -647,11 +758,19 @@ async function stopWireGuardTunnel(isDev, dirname, send, excludeIPs = []) {
       return
     }
     await removeHostBypassRoutes(
-      excludeIPs.length ? excludeIPs : [FALLBACK_BACKEND_IP],
+      [
+        ...new Set([
+          ...(excludeIPs.length ? excludeIPs : [FALLBACK_BACKEND_IP]),
+          ...dnsBypassIps(),
+        ]),
+      ],
       send,
       epoch,
     )
     try { await helperOut(['dns-restore'], 8000) } catch { /* ignore */ }
+    await restoreVkHosts(send)
+    await disableLanProtect(send)
+    await restoreIpv6(send)
     if (epoch === wgApplyEpoch) {
       savedPhysicalGateway = null
     }
@@ -740,6 +859,17 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     ? '[WG] Процесс с правами root'
     : '[WG] Туннель через helper (пароль только при установке пакета)')
 
+  await gatewayPromise
+  // До up: host-route DNS/VK через LAN + protect table (TURN IP динамические).
+  if (!subnetOnly) {
+    const preBypass = [...new Set([...(excludeIPs || []), ...dnsBypassIps(resolvedDns)])]
+    if (preBypass.length) {
+      await addServerBypassRoutes(preBypass, send)
+    }
+    await enableLanProtect(send)
+    await pinVkHosts(send)
+  }
+
   const wgGo = lastWgGo || findWireguardGo(isDev, dirname)
   try {
     await helperOut(['up', stableConf, wgGo], 90000)
@@ -758,7 +888,6 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     return false
   }
 
-  await gatewayPromise
   await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns)
   send('[WG] Туннель активен')
   return true
@@ -797,6 +926,11 @@ module.exports = {
   normalizeDnsValue,
   parseBypassTarget,
   buildAllowedIPsForLinux,
+  dnsBypassIps,
+  pinVkHosts,
+  capturePhysicalGateway,
+  enableLanProtect,
+  refreshTunnelGuards,
   SYSTEM_HELPER,
   HELPER_SOCK,
 }

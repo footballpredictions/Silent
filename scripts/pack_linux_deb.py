@@ -15,7 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 UNPACKED = ROOT / "build-linux" / "linux-unpacked"
 OUT_DIR = ROOT / "build-linux"
 RELEASES = ROOT.parent / "releases"
-VERSION = "1.0.163"
+try:
+    VERSION = __import__("json").loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+except Exception:
+    VERSION = "1.0.164"
 PKG = "silent-vpn"
 INSTALL_ROOT = f"opt/{PKG}"
 
@@ -185,7 +188,7 @@ def control_tar(md5s: list[tuple[str, str]], installed_size: int, mtime: int) ->
         "Priority: optional\n"
         "Architecture: amd64\n"
         "Maintainer: Silent VPN <noreply@silent>\n"
-        "Depends: libgtk-3-0, libnotify4, libnss3, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, python3, policykit-1, iproute2, systemd\n"
+        "Depends: libgtk-3-0, libnotify4, libnss3, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, python3, policykit-1, iproute2, systemd, libcap2-bin\n"
         f"Installed-Size: {max(1, installed_size // 1024)}\n"
         "Homepage: https://132-243-234-162.nip.io\n"
         "Description: Silent VPN desktop client\n"
@@ -203,6 +206,10 @@ def control_tar(md5s: list[tuple[str, str]], installed_size: int, mtime: int) ->
         "chmod 755 /opt/silent-vpn/resources/silent-wg-helper 2>/dev/null || true\n"
         "chmod 755 /opt/silent-vpn/resources/wireguard-go 2>/dev/null || true\n"
         "chmod 755 /usr/libexec/silent-vpn-wg-helper 2>/dev/null || true\n"
+        "# Android-like protect: SO_MARK / SO_BINDTODEVICE на WDTT (мимо WG)\n"
+        "if command -v setcap >/dev/null 2>&1; then\n"
+        "  setcap cap_net_admin,cap_net_raw+ep /opt/silent-vpn/resources/wdtt-client 2>/dev/null || true\n"
+        "fi\n"
         "if command -v update-desktop-database >/dev/null 2>&1; then\n"
         "  update-desktop-database -q /usr/share/applications || true\n"
         "fi\n"

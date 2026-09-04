@@ -8,8 +8,13 @@ const {
   addServerBypassRoutes,
   removeHostBypassRoutes,
 } = require('../vpn/wireguard')
+const {
+  MAX_RULES,
+  normalizeRuleInput,
+  extractRulesFromImportContent,
+  mergeImportRules,
+} = require('./siteImportParse')
 
-const MAX_RULES = 100
 const IPV4_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/
 const CIDR_RE = /^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/
 const REFRESH_MS = 20 * 60 * 1000
@@ -20,20 +25,6 @@ let lastRulesRaw = ''
 
 function defaultSiteBypassPath(userDataPath) {
   return path.join(userDataPath, 'site-bypass.json')
-}
-
-function normalizeRuleInput(raw) {
-  let s = String(raw || '').trim()
-  if (!s) return ''
-  if (/^https?:\/\//i.test(s)) {
-    try {
-      s = new URL(s).hostname || s
-    } catch { /* keep */ }
-  } else if (s.includes('/') && !CIDR_RE.test(s)) {
-    const before = s.split('/')[0]
-    if (!IPV4_RE.test(before)) s = before
-  }
-  return s.trim().replace(/\.$/, '')
 }
 
 function parseRules(raw) {
@@ -218,6 +209,8 @@ module.exports = {
   MAX_RULES,
   normalizeRuleInput,
   parseRules,
+  extractRulesFromImportContent,
+  mergeImportRules,
   defaultSiteBypassPath,
   saveSiteBypassState,
   loadSiteBypassState,

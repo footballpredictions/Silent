@@ -17,6 +17,9 @@ const {
 const {
   parseRules,
   normalizeRuleInput,
+  extractRulesFromImportContent,
+  mergeImportRules,
+  MAX_RULES,
 } = require('../src/main/apps/siteBypass')
 const {
   saveExclusionsState,
@@ -105,6 +108,32 @@ describe('siteBypass rules', () => {
   it('parseRules dedupes and caps', () => {
     const rules = parseRules('ozon.ru\n#x\nozon.ru\n1.2.3.4')
     assert.deepEqual(rules, ['ozon.ru', '1.2.3.4'])
+  })
+
+  it('extractRulesFromImportContent reads json rules array', () => {
+    const content = '{"version":1,"rules":["ozon.ru","https://whoer.net/ru","1.2.3.4"]}'
+    const rules = extractRulesFromImportContent(content)
+    assert.ok(rules.includes('ozon.ru'))
+    assert.ok(rules.includes('whoer.net'))
+    assert.ok(rules.includes('1.2.3.4'))
+    assert.equal(rules.length, 3)
+  })
+
+  it('extractRulesFromImportContent reads plain txt and csv', () => {
+    const content = '# comment\nozon.ru\ntelegram.org, 8.8.8.8\n'
+    const rules = extractRulesFromImportContent(content)
+    assert.ok(rules.includes('ozon.ru'))
+    assert.ok(rules.includes('telegram.org'))
+    assert.ok(rules.includes('8.8.8.8'))
+  })
+
+  it('mergeImportRules keeps unique and respects limit', () => {
+    const merged = mergeImportRules(
+      ['ozon.ru'],
+      ['ozon.ru', 'whoer.net', '1.2.3.4'],
+      MAX_RULES,
+    )
+    assert.deepEqual(merged, ['ozon.ru', 'whoer.net', '1.2.3.4'])
   })
 })
 

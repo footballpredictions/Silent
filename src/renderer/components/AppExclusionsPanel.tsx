@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Download, Pencil, Upload, X } from 'lucide-react'
 import {
   getBlacklistApps,
   getExcludedApps,
@@ -11,6 +12,12 @@ import {
   saveSiteBypassRules,
   type PcAppItem,
 } from '../exclusionsStore'
+import {
+  extractRulesFromImportContent,
+  mergeImportRules,
+  normalizeRuleInput,
+  MAX_RULES as MAX_SITE_RULES,
+} from '../siteImportParse'
 
 interface Props {
   fg: string
@@ -109,6 +116,8 @@ function SearchField({
   fg,
   muted,
   className = 'mb-3',
+  disabled = false,
+  onKeyDown,
 }: {
   value: string
   onChange: (v: string) => void
@@ -120,14 +129,18 @@ function SearchField({
   fg: string
   muted: string
   className?: string
+  disabled?: boolean
+  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
 }) {
   return (
     <div className={`relative w-full ${className}`}>
       <input
         value={value}
         onChange={e => onChange(e.target.value)}
+        onKeyDown={onKeyDown}
         placeholder={placeholder}
-        className="theme-field w-full rounded-xl px-3 py-2 text-sm focus:outline-none pr-9"
+        disabled={disabled}
+        className="theme-field w-full rounded-xl px-3 py-2 text-sm focus:outline-none pr-9 disabled:opacity-50"
         style={{
           userSelect: 'text',
           background: fieldBg,
@@ -141,10 +154,11 @@ function SearchField({
       {value.trim() ? (
         <button
           type="button"
-          aria-label="Очистить поиск"
+          aria-label="Очистить"
           title="Очистить"
+          disabled={disabled}
           onClick={() => onChange('')}
-          className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center"
+          className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center disabled:opacity-40"
           style={{ color: muted }}
           onMouseEnter={e => { e.currentTarget.style.color = fg }}
           onMouseLeave={e => { e.currentTarget.style.color = muted }}
@@ -159,19 +173,6 @@ function SearchField({
 }
 
 const STALE_RESET_KEY = 'pc_exclusions_startmenu_v2'
-const MAX_SITE_RULES = 100
-
-function normalizeSiteRule(raw: string): string {
-  let s = raw.trim()
-  if (!s) return ''
-  if (/^https?:\/\//i.test(s)) {
-    try { s = new URL(s).hostname || s } catch { /* keep */ }
-  } else if (s.includes('/') && !/^\d+\.\d+\.\d+\.\d+\/\d{1,2}$/.test(s)) {
-    const before = s.split('/')[0]
-    if (!/^\d+\.\d+\.\d+\.\d+$/.test(before)) s = before
-  }
-  return s.trim().replace(/\.$/, '')
-}
 
 export default function AppExclusionsPanel({
   fg,
@@ -206,7 +207,10 @@ export default function AppExclusionsPanel({
   const [newRule, setNewRule] = useState('')
   const [siteHint, setSiteHint] = useState<string | null>(null)
   const [siteBusy, setSiteBusy] = useState(false)
+  const [editingRule, setEditingRule] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
+  const importInputRef = useRef<HTMLInputElement>(null)
 
   useLayoutEffect(() => {
     scrollRef.current?.scrollTo({ top: 0 })
@@ -258,19 +262,16 @@ export default function AppExclusionsPanel({
     scrollRef.current?.scrollTo({ top: 0 })
   }
 
-  const persistSites = async (rules: string[]) => {
+  const persistSites = async (rules: string[], hintOverride: string | null = null) => {
     setSiteBusy(true)
     setSiteHint(null)
     try {
       const capped = rules.slice(0, MAX_SITE_RULES)
       setSiteRules(capped)
       saveSiteBypassRules(capped)
-      const res = await (window as any).electronAPI?.saveSiteBypass?.({ rules: capped })
-      if (res?.unresolved?.length) {
-        setSiteHint(`Не резолвится: ${res.unresolved.slice(0, 2).join(', ')}`)
-      } else if (res?.targets?.length) {
-        setSiteHint(`Маршрутов: ${res.targets.length}`)
-      }
+      await (window as any).electronAPI?.saveSiteBypass?.({ rules: capped })
+      // Как на Android: без списка IP / «маршрутов» после добавления.
+      setSiteHint(hintOverride)
     } catch (e: any) {
       setSiteHint(`Ошибка: ${e?.message || e}`)
     } finally {
@@ -279,7 +280,7 @@ export default function AppExclusionsPanel({
   }
 
   const addSiteRule = () => {
-    const rule = normalizeSiteRule(newRule)
+    const rule = normalizeRuleInput(newRule)
     if (!rule || siteBusy) return
     if (siteRules.some(r => r.toLowerCase() === rule.toLowerCase())) {
       setSiteHint('Уже в списке')
@@ -292,6 +293,54 @@ export default function AppExclusionsPanel({
     }
     setNewRule('')
     void persistSites([...siteRules, rule])
+  }
+
+  const saveSiteEdit = () => {
+    const original = editingRule
+    if (!original) return
+    const next = normalizeRuleInput(editDraft)
+    setEditingRule(null)
+    if (!next || siteBusy) return
+    if (next.toLowerCase() === original.toLowerCase()) return
+    if (siteRules.some(r => r.toLowerCase() === next.toLowerCase() && r.toLowerCase() !== original.toLowerCase())) {
+      setSiteHint('Уже в списке')
+      return
+    }
+    void persistSites(siteRules.map(r => (r === original ? next : r)))
+  }
+
+  const onImportFile = async (file: File | null) => {
+    if (!file || siteBusy) return
+    try {
+      const content = await file.text()
+      const imported = extractRulesFromImportContent(content)
+      const before = siteRules.length
+      const merged = mergeImportRules(siteRules, imported, MAX_SITE_RULES)
+      if (merged.length === before) {
+        setSiteHint('Новых правил не найдено')
+      } else {
+        void persistSites(merged, `Импорт: +${merged.length - before} правил`)
+      }
+    } catch (e: any) {
+      setSiteHint(`Ошибка импорта: ${e?.message || e}`)
+    }
+  }
+
+  const exportSites = () => {
+    if (!siteRules.length || siteBusy) return
+    try {
+      const payload = JSON.stringify({ version: 1, rules: siteRules }, null, 2)
+      const blob = new Blob([payload], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'site-exclusions.json'
+      a.click()
+      URL.revokeObjectURL(url)
+      setSiteHint(`Экспорт: ${siteRules.length} правил`)
+    } catch (e: any) {
+      setSiteHint(`Ошибка экспорта: ${e?.message || e}`)
+    }
   }
 
   const displayApps = useMemo(() => {
@@ -327,10 +376,100 @@ export default function AppExclusionsPanel({
   }
 
   return (
-    <div ref={scrollRef} className="flex-1 p-4 overflow-y-auto text-left w-full self-stretch items-start">
-      <button type="button" onClick={onBack} className="text-xs mb-4 block text-left" style={{ color: muted }}>
-        ← Назад
-      </button>
+    <div ref={scrollRef} className="flex-1 p-4 overflow-y-auto text-left w-full self-stretch items-start relative">
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".json,.txt,.csv,.list,.conf,text/*,application/json,*/*"
+        className="hidden"
+        onChange={e => {
+          const file = e.target.files?.[0] || null
+          e.target.value = ''
+          void onImportFile(file)
+        }}
+      />
+
+      {editingRule && (
+        <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-xs rounded-xl p-4 shadow-xl" style={{ background: bg }}>
+            <div className="text-sm font-semibold mb-3" style={{ color: fg }}>Изменить правило</div>
+            <input
+              value={editDraft}
+              onChange={e => setEditDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') saveSiteEdit() }}
+              placeholder="домен или IP…"
+              disabled={siteBusy}
+              className="theme-field w-full rounded-xl px-3 py-2 text-sm mb-3 focus:outline-none"
+              style={{
+                userSelect: 'text',
+                background: fieldBg,
+                color: fieldText,
+                border: `1px solid ${borderStrong}`,
+                ['--field-ph' as any]: fieldPlaceholder,
+              } as any}
+              autoFocus
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => { if (!siteBusy) setEditingRule(null) }}
+                disabled={siteBusy}
+                className="flex-1 py-2 text-xs rounded-xl"
+                style={{ border: `1px solid ${borderStrong}`, color: fg, background: 'transparent' }}
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={saveSiteEdit}
+                disabled={siteBusy || !editDraft.trim()}
+                className="flex-1 py-2 text-xs rounded-xl disabled:opacity-50"
+                style={{ background: fg, color: bg }}
+              >
+                Сохранить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="w-full flex items-center justify-between mb-4">
+        <button type="button" onClick={onBack} className="text-xs text-left" style={{ color: muted }}>
+          ← Назад
+        </button>
+        {pane === 'sites' ? (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              title="Импорт списка"
+              aria-label="Импорт списка"
+              disabled={siteBusy}
+              onClick={() => importInputRef.current?.click()}
+              className="p-1.5 rounded-lg disabled:opacity-40"
+              style={{ color: muted }}
+              onMouseEnter={e => { e.currentTarget.style.color = fg }}
+              onMouseLeave={e => { e.currentTarget.style.color = muted }}
+            >
+              <Upload className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              title="Экспорт списка"
+              aria-label="Экспорт списка"
+              disabled={siteBusy || siteRules.length === 0}
+              onClick={exportSites}
+              className="p-1.5 rounded-lg disabled:opacity-40"
+              style={{ color: muted }}
+              onMouseEnter={e => { e.currentTarget.style.color = fg }}
+              onMouseLeave={e => { e.currentTarget.style.color = muted }}
+            >
+              <Download className="w-4 h-4" />
+            </button>
+          </div>
+        ) : (
+          <span />
+        )}
+      </div>
       <div className="text-sm font-bold text-left w-full" style={{ color: fg }}>
         Исключения
       </div>
@@ -345,19 +484,19 @@ export default function AppExclusionsPanel({
           <p className="text-[11px] mb-3 text-left w-full" style={{ color: muted }}>
             Домен или IP идут мимо VPN (ozon.ru, 1.2.3.4, 10.0.0.0/8)
           </p>
-          <input
+          <SearchField
             value={newRule}
-            onChange={e => setNewRule(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') addSiteRule() }}
+            onChange={setNewRule}
             placeholder="домен или IP…"
+            fieldBg={fieldBg}
+            fieldText={fieldText}
+            fieldPlaceholder={fieldPlaceholder}
+            borderStrong={borderStrong}
+            fg={fg}
+            muted={muted}
+            className="mb-2"
             disabled={siteBusy}
-            className="theme-field w-full rounded-xl px-3 py-2.5 text-sm focus:outline-none mb-2"
-            style={{
-              background: fieldBg,
-              color: fieldText,
-              border: `1px solid ${borderStrong}`,
-              ['--field-ph' as any]: fieldPlaceholder,
-            } as any}
+            onKeyDown={e => { if (e.key === 'Enter') addSiteRule() }}
           />
           <button
             type="button"
@@ -376,24 +515,38 @@ export default function AppExclusionsPanel({
           </p>
           {siteRules.length === 0 ? (
             <p className="text-xs py-6 text-left" style={{ color: muted }}>
-              Список пуст. Добавьте домен или IP.
+              Список пуст
             </p>
           ) : (
             <div className="space-y-1">
               {siteRules.map(rule => (
                 <div
                   key={rule}
-                  className="flex items-center gap-2 py-1.5 px-1"
+                  className="flex items-center gap-1 py-1.5 px-1"
                 >
                   <span className="flex-1 text-[13px] truncate" style={{ color: fg }}>{rule}</span>
                   <button
                     type="button"
                     disabled={siteBusy}
-                    onClick={() => void persistSites(siteRules.filter(r => r !== rule))}
-                    className="text-xs px-2"
+                    onClick={() => {
+                      setEditingRule(rule)
+                      setEditDraft(rule)
+                    }}
+                    className="p-1.5 rounded-lg shrink-0 disabled:opacity-40"
+                    title="Изменить"
                     style={{ color: muted }}
                   >
-                    ✕
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={siteBusy}
+                    onClick={() => void persistSites(siteRules.filter(r => r !== rule))}
+                    className="p-1.5 rounded-lg shrink-0 disabled:opacity-40"
+                    title="Удалить"
+                    style={{ color: muted }}
+                  >
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
               ))}

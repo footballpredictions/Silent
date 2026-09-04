@@ -3,6 +3,7 @@
  * Источники: меню Пуск, Desktop, Steam library, ярлыки BlueStacks.
  */
 const { execFileSync } = require('child_process')
+const crypto = require('crypto')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
@@ -23,9 +24,13 @@ const SKIP_STEAM_APPIDS = new Set([
   '858280', // Steamworks SDK Redist
 ])
 
+/**
+ * Стабильный id по полному пути. Нельзя truncate base64 пути:
+ * chrome.exe и chrome_proxy.exe совпадали в первых 48 символах → Chrome пропадал из списка.
+ */
 function makeId(targetPath, lnkPath) {
-  const base = String(targetPath || lnkPath || '').toLowerCase()
-  return Buffer.from(base).toString('base64url').slice(0, 48)
+  const base = String(targetPath || lnkPath || '').toLowerCase().replace(/\//g, '\\')
+  return crypto.createHash('sha256').update(base).digest('base64url').slice(0, 32)
 }
 
 function buildPsScript(outJsonPath) {
@@ -745,20 +750,92 @@ function collectUninstallApps() {
   }
 }
 
+/** Известные браузеры по фиксированным путям (как Yandex) — даже если ярлык потеряли в merge. */
+function collectKnownBrowsers() {
+  const out = []
+  const seen = new Set()
+  const add = (exePath, name, publisher) => {
+    const exe = String(exePath || '').trim()
+    if (!exe || !/\.exe$/i.test(exe) || !fs.existsSync(exe)) return
+    if (/chrome_proxy|software_reporter|elevation_service|notification_helper|crashpad|update/i.test(exe)) return
+    const key = exe.toLowerCase().replace(/\//g, '\\')
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({
+      id: makeId(exe, exe),
+      name,
+      installLocation: path.dirname(exe),
+      exePath: exe,
+      lnkPath: '',
+      publisher,
+      isSystem: false,
+      icon: null,
+      source: 'known-browser',
+    })
+  }
+
+  const pf = process.env.ProgramFiles || 'C:\\Program Files'
+  const pf86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+  const local = process.env.LOCALAPPDATA || ''
+
+  const candidates = [
+    [path.join(pf, 'Google', 'Chrome', 'Application', 'chrome.exe'), 'Google Chrome', 'Google LLC'],
+    [path.join(pf86, 'Google', 'Chrome', 'Application', 'chrome.exe'), 'Google Chrome', 'Google LLC'],
+    [path.join(local, 'Google', 'Chrome', 'Application', 'chrome.exe'), 'Google Chrome', 'Google LLC'],
+    [path.join(pf, 'Google', 'Chrome Beta', 'Application', 'chrome.exe'), 'Google Chrome Beta', 'Google LLC'],
+    [path.join(pf, 'Microsoft', 'Edge', 'Application', 'msedge.exe'), 'Microsoft Edge', 'Microsoft Corporation'],
+    [path.join(pf86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'), 'Microsoft Edge', 'Microsoft Corporation'],
+    [path.join(pf, 'Mozilla Firefox', 'firefox.exe'), 'Mozilla Firefox', 'Mozilla'],
+    [path.join(pf86, 'Mozilla Firefox', 'firefox.exe'), 'Mozilla Firefox', 'Mozilla'],
+    [path.join(local, 'Mozilla Firefox', 'firefox.exe'), 'Mozilla Firefox', 'Mozilla'],
+    [path.join(pf, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'), 'Brave', 'Brave Software'],
+    [path.join(local, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'), 'Brave', 'Brave Software'],
+    [path.join(pf, 'Opera', 'opera.exe'), 'Opera', 'Opera'],
+    [path.join(local, 'Programs', 'Opera', 'opera.exe'), 'Opera', 'Opera'],
+    [path.join(pf, 'Vivaldi', 'Application', 'vivaldi.exe'), 'Vivaldi', 'Vivaldi'],
+    [path.join(local, 'Vivaldi', 'Application', 'vivaldi.exe'), 'Vivaldi', 'Vivaldi'],
+  ]
+  for (const [exe, name, pub] of candidates) add(exe, name, pub)
+  return out
+}
+
 function mergeAppLists(...lists) {
   const byExe = new Map()
   const byId = new Map()
   for (const list of lists) {
     for (const app of list || []) {
-      const exeKey = app.exePath ? String(app.exePath).toLowerCase().replace(/\//g, '\\') : ''
+      let entry = app
+      const exeKey = entry.exePath ? String(entry.exePath).toLowerCase().replace(/\//g, '\\') : ''
       if (exeKey && byExe.has(exeKey)) {
         const prev = byExe.get(exeKey)
-        if (!prev.icon && app.icon) prev.icon = app.icon
+        if (!prev.icon && entry.icon) prev.icon = entry.icon
+        // Предпочитаем «настоящий» браузер chrome.exe, а не chrome_proxy PWA
+        if (
+          /chrome_proxy\.exe$/i.test(prev.exePath || '') &&
+          /chrome\.exe$/i.test(entry.exePath || '') &&
+          /chrome/i.test(entry.name || '')
+        ) {
+          prev.name = entry.name
+          prev.exePath = entry.exePath
+          prev.publisher = entry.publisher || prev.publisher
+          prev.source = entry.source || prev.source
+        }
         continue
       }
-      if (byId.has(app.id)) continue
-      byId.set(app.id, app)
-      if (exeKey) byExe.set(exeKey, app)
+      if (byId.has(entry.id)) {
+        const prev = byId.get(entry.id)
+        const prevExe = prev.exePath ? String(prev.exePath).toLowerCase().replace(/\//g, '\\') : ''
+        if (exeKey && prevExe && exeKey !== prevExe) {
+          // Защита от коллизий id: оставляем оба приложения
+          entry = { ...entry, id: makeId(`${exeKey}|${entry.name}|${entry.lnkPath || ''}`, exeKey) }
+          if (byId.has(entry.id)) continue
+        } else {
+          if (!prev.icon && entry.icon) prev.icon = entry.icon
+          continue
+        }
+      }
+      byId.set(entry.id, entry)
+      if (exeKey) byExe.set(exeKey, entry)
     }
   }
   return [...byId.values()]
@@ -776,16 +853,19 @@ function listInstalledApps() {
 
   const shortcuts = collectShortcutApps()
   const yandex = collectYandexApps()
+  const browsers = collectKnownBrowsers()
   const uninstall = collectUninstallApps()
-  const apps = mergeAppLists(shortcuts, yandex, uninstall)
+  // known browsers раньше uninstall/shortcuts-дублей: имя «Google Chrome», не PWA через chrome_proxy
+  const apps = mergeAppLists(browsers, yandex, shortcuts, uninstall)
   apps.sort((a, b) => a.name.localeCompare(b.name, 'ru'))
   const withIcon = apps.filter(a => a.icon).length
   const steamN = apps.filter(a => String(a.source || '').startsWith('steam')).length
   const yaN = apps.filter(a =>
     String(a.source || '').includes('yandex') || /яндекс|yandex/i.test(a.name || ''),
   ).length
+  const chromeN = apps.filter(a => /chrome\.exe$/i.test(String(a.exePath || ''))).length
   console.log(
-    `[Apps] total=${apps.length} icons=${withIcon} steam=${steamN} yandex=${yaN} uninstall=${uninstall.length}`,
+    `[Apps] total=${apps.length} icons=${withIcon} steam=${steamN} yandex=${yaN} chromeExe=${chromeN} uninstall=${uninstall.length}`,
   )
   return apps
 }
@@ -798,5 +878,8 @@ module.exports = {
   findSteamGameExe,
   extractVdfString,
   collectYandexApps,
+  collectKnownBrowsers,
+  makeId,
+  mergeAppLists,
   normalizePath: (p) => String(p || '').toLowerCase().replace(/\//g, '\\'),
 }

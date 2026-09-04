@@ -338,6 +338,39 @@ describe('collectYandexApps finds versioned browser.exe', () => {
   })
 })
 
+describe('makeId — chrome.exe vs chrome_proxy.exe не коллизят', () => {
+  it('разные полные пути → разные id (регресс Solus Messenger vs Google Chrome)', () => {
+    const { makeId, mergeAppLists } = require('../src/main/apps/listInstalledApps')
+    const chrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+    const proxy = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome_proxy.exe'
+    const idChrome = makeId(chrome, chrome)
+    const idProxy = makeId(proxy, proxy)
+    assert.notEqual(idChrome, idProxy)
+
+    const merged = mergeAppLists(
+      [{ id: idProxy, name: 'Solus Messenger', exePath: proxy, icon: null }],
+      [{ id: idChrome, name: 'Google Chrome', exePath: chrome, icon: null }],
+    )
+    assert.equal(merged.length, 2)
+    assert.ok(merged.some(a => a.name === 'Google Chrome'))
+    assert.ok(merged.some(a => a.name === 'Solus Messenger'))
+  })
+})
+
+describe('collectKnownBrowsers finds Google Chrome', () => {
+  it('видит chrome.exe в Program Files если файл есть', { skip: process.platform !== 'win32' }, () => {
+    const { collectKnownBrowsers } = require('../src/main/apps/listInstalledApps')
+    const chrome = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe')
+    const found = collectKnownBrowsers()
+    assert.equal(Array.isArray(found), true)
+    if (!fs.existsSync(chrome)) return
+    assert.ok(
+      found.some(a => /Google Chrome/i.test(a.name) && /chrome\.exe$/i.test(a.exePath)),
+      'ожидался Google Chrome',
+    )
+  })
+})
+
 describe('listInstalledApps (Windows integration)', () => {
   it('returns Start Menu apps with icons and some exePath', { skip: process.platform !== 'win32' }, () => {
     const { listInstalledApps } = require('../src/main/apps/listInstalledApps')
@@ -347,6 +380,17 @@ describe('listInstalledApps (Windows integration)', () => {
     assert.ok(withIcon.length > 0, 'ожидались PNG-иконки')
     const withExe = apps.filter(a => a.exePath && /\.exe$/i.test(a.exePath))
     assert.ok(withExe.length > 0, 'ожидались пути .exe')
+
+    const chromePath = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe')
+    if (fs.existsSync(chromePath)) {
+      assert.ok(
+        apps.some(a =>
+          /Google Chrome/i.test(a.name) &&
+          /\\chrome\.exe$/i.test(String(a.exePath || '').replace(/\//g, '\\')),
+        ),
+        'Google Chrome должен быть в списке исключений',
+      )
+    }
 
     // Резолв: если выбрать первое приложение с exe — оно попадает в план исключений
     const pick = withExe[0]

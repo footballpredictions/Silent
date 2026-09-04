@@ -36,6 +36,7 @@ import com.silent.vpn.data.VpnHashesResponse
 import com.silent.vpn.policy.ConfigSyncSkipPolicy
 import com.silent.vpn.policy.OlcrtcSessionPolicy
 import com.silent.vpn.policy.SessionsSyncPolicy
+import com.silent.vpn.policy.UpdateUrlResolver
 import com.silent.vpn.security.AppIntegrity
 import com.silent.vpn.service.SilentVpnService
 import com.silent.vpn.service.VpnBackendSync
@@ -436,6 +437,10 @@ class MainViewModel @Inject constructor(
             applyCachedProfileAfterSync()
             viewModelScope.launch {
                 ConfigSyncCoordinator.refreshWifiSubscriptionNow(repo, configSyncListener)
+                // LTE in-band sync не зовёт OTA внутри внутри performFullSync — после анимации/sync.
+                if (repo.isOnMobileData() && !otaCheckedThisVpnSession) {
+                    checkForAppUpdate(inOverlaySession = true)
+                }
             }
         }
         com.silent.vpn.sync.VpnDataSyncBridge.onOtaCheckInOverlaySession = {
@@ -2354,19 +2359,19 @@ class MainViewModel @Inject constructor(
     private var updateCheckInFlight = false
     private var otaCheckedThisVpnSession = false
 
-    /** OTA: Wi‑Fi — public HTTPS; LTE — overlay только до initial sync, потом direct tunnel. */
+    /** OTA: Wi‑Fi — public HTTPS; LTE — во время/после initial sync через tunnel. */
     fun checkForAppUpdate(inOverlaySession: Boolean = false) {
         if (updateCheckInFlight) return
         if (!inOverlaySession && otaCheckedThisVpnSession) return
         updateCheckInFlight = true
         viewModelScope.launch {
+            var ok = false
             try {
                 val version = com.silent.vpn.BuildConfig.VERSION_NAME
                 val vpnUp = SilentVpnService.isRunning &&
                     WdttTunnelManager.tunnelReady.value &&
                     !WdttTunnelManager.isBootstrapMode()
 
-                var ok = false
                 if (vpnUp && repo.allowsBackgroundConfigSync()) {
                     ok = runCatching {
                         if (inOverlaySession || repo.canUseMobileDirectTunnelApi()) {
@@ -2401,7 +2406,7 @@ class MainViewModel @Inject constructor(
                 DebugLog.w("MainViewModel", "checkUpdate: ${e.message}")
             } finally {
                 updateCheckInFlight = false
-                otaCheckedThisVpnSession = true
+                if (ok) otaCheckedThisVpnSession = true
             }
         }
     }
@@ -2503,6 +2508,13 @@ class MainViewModel @Inject constructor(
     fun downloadAndInstallUpdate(context: Context, onInstallReady: (Intent) -> Unit) {
         val info = _updateInfo.value ?: return
         if (_updateDownloading.value) return
+        val vpnReady = SilentVpnService.isRunning &&
+            WdttTunnelManager.tunnelReady.value &&
+            !WdttTunnelManager.isBootstrapMode()
+        if (!UpdateUrlResolver.canStartUpdateDownload(repo.isOnMobileData(), vpnReady)) {
+            _vpnError.value = "Чтобы скачать обновление, включите VPN"
+            return
+        }
         val primaryUrl = repo.resolveUpdateDownloadUrl(info) ?: return
         val fallbackGh = info.github_download_url?.trim()?.takeIf { it.startsWith("http") }
         viewModelScope.launch {

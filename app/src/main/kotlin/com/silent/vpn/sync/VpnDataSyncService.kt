@@ -187,6 +187,7 @@ class VpnDataSyncService : Service() {
                 appExcludedFromVpn = SilentRepository.APP_EXCLUDED_FROM_VPN,
             )
         ) {
+            // OTA после tunnelDataSyncCompleted — в onCycleCompleted (MainViewModel).
             return VpnDataSyncScheduler.completeFromClientSync(repo).let { true }
         }
         val syncBody: suspend () -> Boolean = {

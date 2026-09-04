@@ -33,25 +33,25 @@ class UpdateUrlResolverTest {
     }
 
     @Test
-    fun `lte vpn prefers github like wifi`() {
+    fun `lte vpn uses tunnel download not github`() {
         val url = UpdateUrlResolver.resolveUpdateDownloadUrl(
             baseInput(onMobileData = true, mainVpnTunnelUp = true).copy(
                 tunnelDownloadPath = "/api/updates/download/android",
                 githubDownloadUrl = "https://github.com/silentvpn3/releases/apk.apk",
             ),
         )
-        assertEquals("https://github.com/silentvpn3/releases/apk.apk", url)
+        assertEquals("http://10.66.66.1:8000/api/updates/download/android", url)
     }
 
     @Test
-    fun `lte vpn uses public download when no github`() {
+    fun `lte vpn uses default tunnel path when no github`() {
         val url = UpdateUrlResolver.resolveUpdateDownloadUrl(
             baseInput(onMobileData = true, mainVpnTunnelUp = true).copy(
                 downloadUrl = "/api/updates/download/android_tv",
                 otaPlatform = "android_tv",
             ),
         )
-        assertEquals("https://132-243-234-162.nip.io/api/updates/download/android_tv", url)
+        assertEquals("http://10.66.66.1:8000/api/updates/download/android_tv", url)
     }
 
     @Test
@@ -69,12 +69,30 @@ class UpdateUrlResolverTest {
     }
 
     @Test
-    fun `shouldUseTunnelUpdateDownload false on lte excluded vpn`() {
-        assertFalse(
+    fun `shouldUseTunnelUpdateDownload true on lte with vpn`() {
+        assertTrue(
             UpdateUrlResolver.shouldUseTunnelUpdateDownload(
                 baseInput(onMobileData = true, mainVpnTunnelUp = true),
             ),
         )
+    }
+
+    @Test
+    fun `shouldUseTunnelUpdateDownload false on lte without vpn`() {
+        assertFalse(
+            UpdateUrlResolver.shouldUseTunnelUpdateDownload(
+                baseInput(onMobileData = true, mainVpnTunnelUp = false),
+            ),
+        )
+    }
+
+    @Test
+    fun `mobile requires vpn to download wifi does not`() {
+        assertTrue(UpdateUrlResolver.requiresVpnToDownloadUpdate(onMobileData = true))
+        assertFalse(UpdateUrlResolver.requiresVpnToDownloadUpdate(onMobileData = false))
+        assertFalse(UpdateUrlResolver.canStartUpdateDownload(onMobileData = true, vpnReady = false))
+        assertTrue(UpdateUrlResolver.canStartUpdateDownload(onMobileData = true, vpnReady = true))
+        assertTrue(UpdateUrlResolver.canStartUpdateDownload(onMobileData = false, vpnReady = false))
     }
 
     @Test
@@ -86,7 +104,7 @@ class UpdateUrlResolverTest {
     }
 
     @Test
-    fun `resolveUpdateDownloadBase lte vpn uses public host`() {
+    fun `resolveUpdateDownloadBase lte vpn uses public host when base helper called`() {
         val base = UpdateUrlResolver.resolveUpdateDownloadBase(
             baseInput(onMobileData = true, mainVpnTunnelUp = true),
         )

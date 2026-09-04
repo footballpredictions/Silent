@@ -21,8 +21,21 @@ object UpdateUrlResolver {
         val otaPlatform: String = "android",
     )
 
-    /** App excluded: качаем с public/GitHub и при LTE+VPN. Tunnel — только если сами уйдём в fallback. */
-    fun shouldUseTunnelUpdateDownload(input: OtaUrlInput): Boolean = false
+    /**
+     * Мобильный интернет (часто белые списки): APK только через tunnel API при живом VPN.
+     * Wi‑Fi — public/GitHub, VPN не нужен.
+     */
+    fun shouldUseTunnelUpdateDownload(input: OtaUrlInput): Boolean {
+        if (!input.onMobileData) return false
+        if (input.isBootstrapMode) return false
+        return input.mainVpnTunnelUp
+    }
+
+    /** Скачивание OTA на LTE требует включённый VPN (обход whitelist). */
+    fun requiresVpnToDownloadUpdate(onMobileData: Boolean): Boolean = onMobileData
+
+    fun canStartUpdateDownload(onMobileData: Boolean, vpnReady: Boolean): Boolean =
+        !requiresVpnToDownloadUpdate(onMobileData) || vpnReady
 
     fun resolveUpdateDownloadBase(input: OtaUrlInput): String {
         if (!input.onMobileData || input.appExcludedFromVpn) {

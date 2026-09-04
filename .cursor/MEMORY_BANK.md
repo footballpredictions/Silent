@@ -1,5 +1,16 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (hard reset 2026-09-04)
+
+- **Явный запрос:** полный hard reset всех изменений с **2026-09-02** (исключения БС/ЧС, persist dual-list, site YouTube, Gemini-хвосты, docs).
+- **Remote force push:**
+  - `main` → `a4e9d19` (docs: Linux VPN helper / .deb)
+  - `android` → `1b34d36` (LTE sessions / online list)
+  - `pc` (+ Linux) → `37af0b8` (Linux VPN rights via systemd helper)
+- **Снято с remote:** все коммиты 02.09 (persist dual-list, whitelist/YouTube, complement exclude, theme site placeholder и т.д.).
+- **Деплой:** `backend/scripts/deploy_stable.py` после reset.
+- Состояние клиентов = **до 02.09** (фактически конец августа / 1.0.163 линия без правок исключений 02.09).
+
 ## О проекте
 
 **Silent VPN** — коммерческий VPN-сервис на базе WireGuard-туннелирования через VK TURN/DTLS серверы.

@@ -1403,7 +1403,11 @@ private fun MenuDevices(
     if (renameTarget != null) {
         AlertDialog(
             onDismissRequest = { if (!renameSaving) renameTarget = null },
-            title = { Text("Приписать имя", fontSize = 14.sp) },
+            containerColor = palette.bg,
+            titleContentColor = palette.fg,
+            textContentColor = palette.fg,
+            tonalElevation = 0.dp,
+            title = { Text("Приписать имя", fontSize = 14.sp, color = palette.fg) },
             text = {
                 OutlinedTextField(
                     value = renameText,
@@ -1426,11 +1430,11 @@ private fun MenuDevices(
                             if (ok) renameTarget = null
                         }
                     },
-                ) { Text("Сохранить") }
+                ) { Text("Сохранить", color = palette.fg) }
             },
             dismissButton = {
                 TvTextButton(onClick = { if (!renameSaving) renameTarget = null }) {
-                    Text("Отмена")
+                    Text("Отмена", color = palette.fg.copy(alpha = 0.6f))
                 }
             },
         )
@@ -1440,11 +1444,16 @@ private fun MenuDevices(
         val isSelf = !sessionDeviceId.isNullOrBlank() && target.id == sessionDeviceId
         AlertDialog(
             onDismissRequest = { if (!deleteSaving) deleteTarget = null },
-            title = { Text("Удалить сессию", fontSize = 14.sp) },
+            containerColor = palette.bg,
+            titleContentColor = palette.fg,
+            textContentColor = palette.fg,
+            tonalElevation = 0.dp,
+            title = { Text("Удалить сессию", fontSize = 14.sp, color = palette.fg) },
             text = {
                 Text(
                     if (isSelf) "Удалить эту сессию и выйти из аккаунта?" else "Удалить сессию этого устройства?",
                     fontSize = 13.sp,
+                    color = palette.fg,
                 )
             },
             confirmButton = {
@@ -1457,11 +1466,11 @@ private fun MenuDevices(
                             if (ok) deleteTarget = null
                         }
                     },
-                ) { Text(if (deleteSaving) "…" else "Удалить") }
+                ) { Text(if (deleteSaving) "…" else "Удалить", color = palette.fg) }
             },
             dismissButton = {
                 TvTextButton(onClick = { if (!deleteSaving) deleteTarget = null }) {
-                    Text("Отмена")
+                    Text("Отмена", color = palette.fg.copy(alpha = 0.6f))
                 }
             },
         )

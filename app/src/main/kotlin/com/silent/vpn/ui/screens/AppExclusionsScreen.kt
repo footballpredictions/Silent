@@ -407,7 +407,11 @@ fun AppExclusionsScreen(
     if (editingRule != null) {
         AlertDialog(
             onDismissRequest = { if (!siteBusy) editingRule = null },
-            title = { Text("Изменить правило", fontSize = 14.sp) },
+            containerColor = palette.bg,
+            titleContentColor = palette.fg,
+            textContentColor = palette.fg,
+            tonalElevation = 0.dp,
+            title = { Text("Изменить правило", fontSize = 14.sp, color = palette.fg) },
             text = {
                 OutlinedTextField(
                     value = editDraft,
@@ -428,11 +432,11 @@ fun AppExclusionsScreen(
                         val original = editingRule ?: return@TvTextButton
                         saveSiteEdit(original)
                     },
-                ) { Text("Сохранить") }
+                ) { Text("Сохранить", color = palette.fg) }
             },
             dismissButton = {
                 TvTextButton(onClick = { if (!siteBusy) editingRule = null }) {
-                    Text("Отмена")
+                    Text("Отмена", color = palette.fg.copy(alpha = 0.6f))
                 }
             },
         )

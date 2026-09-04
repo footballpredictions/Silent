@@ -154,7 +154,8 @@ fun Modifier.tvClickable(
     cornerRadius: Dp = 10.dp,
     pill: Boolean = false,
     ringOnly: Boolean = false,
-    ringOnTop: Boolean = false,
+    /** Поверх контента — иначе непрозрачный background перекрывает кольцо. */
+    ringOnTop: Boolean = true,
     onClick: () -> Unit,
 ): Modifier = composed {
     if (!rememberIsTv()) {

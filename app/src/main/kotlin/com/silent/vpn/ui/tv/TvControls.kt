@@ -118,7 +118,7 @@ fun TvPrimaryButton(
     Box(
         modifier = modifier
             .defaultMinSize(minHeight = 48.dp)
-            .tvClickable(enabled = enabled, cornerRadius = 12.dp, ringOnly = true, onClick = onClick)
+            .tvClickable(enabled = enabled, cornerRadius = 12.dp, ringOnly = true, ringOnTop = true, onClick = onClick)
             .background(bg, shape),
         contentAlignment = Alignment.Center,
     ) {

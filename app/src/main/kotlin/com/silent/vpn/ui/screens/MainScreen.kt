@@ -589,7 +589,12 @@ fun MainScreen(
                                 .height(36.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(updateBarBg)
-                                .clickable(enabled = !updateDownloading, onClick = onUpdateClick),
+                                .tvClickable(
+                                    enabled = !updateDownloading,
+                                    cornerRadius = 12.dp,
+                                    ringOnTop = true,
+                                    onClick = onUpdateClick,
+                                ),
                             contentAlignment = Alignment.Center,
                         ) {
                             if (updateDownloading) {

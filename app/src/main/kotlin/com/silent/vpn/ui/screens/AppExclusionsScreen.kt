@@ -25,7 +25,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import com.silent.vpn.ui.tv.TvIconButton
@@ -65,7 +64,7 @@ private fun SiteImportExportActions(
     onExport: () -> Unit,
 ) {
     Row {
-        IconButton(onClick = onImport, enabled = !siteBusy) {
+        TvIconButton(onClick = onImport, enabled = !siteBusy) {
             Icon(
                 Icons.Default.FileUpload,
                 contentDescription = "Импорт списка",
@@ -73,7 +72,7 @@ private fun SiteImportExportActions(
                 modifier = Modifier.size(20.dp),
             )
         }
-        IconButton(onClick = onExport, enabled = !siteBusy && canExport) {
+        TvIconButton(onClick = onExport, enabled = !siteBusy && canExport) {
             Icon(
                 Icons.Default.FileDownload,
                 contentDescription = "Экспорт списка",
@@ -150,14 +149,22 @@ private fun ThemeCheckbox(
         else -> fg
     }
     val checkTint = if (dark) Color.White else bg
-    val boxMod = if (focusable) {
-        modifier
-            .size(48.dp)
-            .tvClickable(cornerRadius = 6.dp, ringOnly = true, onClick = onClick)
-    } else {
-        modifier
-            .size(24.dp)
-            .clickable(onClick = onClick)
+    val isTv = rememberIsTv()
+    val boxMod = when {
+        focusable -> {
+            modifier
+                .size(48.dp)
+                .tvClickable(cornerRadius = 6.dp, ringOnly = true, ringOnTop = true, onClick = onClick)
+        }
+        isTv -> {
+            // Клик/фокус на родителе (строка) — иначе чекбокс перехватывает D-pad без кольца на строке.
+            modifier.size(24.dp)
+        }
+        else -> {
+            modifier
+                .size(24.dp)
+                .clickable(onClick = onClick)
+        }
     }
     Box(modifier = boxMod, contentAlignment = Alignment.Center) {
         Box(
@@ -193,7 +200,7 @@ private fun ModeChip(
             .clip(RoundedCornerShape(8.dp))
             .background(if (active) fg else Color.Transparent)
             .border(1.dp, if (active) fg else fg.copy(0.25f), RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
+            .tvClickable(cornerRadius = 8.dp, ringOnTop = true, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
         Text(label, fontSize = 12.sp, color = if (active) bg else fg)
@@ -504,7 +511,7 @@ fun AppExclusionsScreen(
                     enabled = !siteBusy,
                     trailingIcon = {
                         if (newRule.isNotBlank()) {
-                            IconButton(onClick = { newRule = "" }, enabled = !siteBusy) {
+                            TvIconButton(onClick = { newRule = "" }, enabled = !siteBusy) {
                                 Icon(
                                     Icons.Default.Close,
                                     contentDescription = "Очистить",
@@ -563,6 +570,15 @@ fun AppExclusionsScreen(
                             Row(
                                 Modifier
                                     .fillMaxWidth()
+                                    .tvClickable(
+                                        enabled = !siteBusy,
+                                        cornerRadius = 10.dp,
+                                        ringOnTop = true,
+                                        onClick = {
+                                            editingRule = rule
+                                            editDraft = rule
+                                        },
+                                    )
                                     .padding(vertical = 8.dp, horizontal = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
@@ -634,20 +650,27 @@ fun AppExclusionsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (isTv) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.tvClickable(
+                                cornerRadius = 8.dp,
+                                ringOnTop = true,
+                                onClick = { showSystemApps = !showSystemApps },
+                            ),
+                        ) {
                             ThemeCheckbox(
                                 checked = showSystemApps,
                                 dark = palette.dark,
                                 fg = fg,
                                 bg = bg,
                                 onClick = { showSystemApps = !showSystemApps },
-                                focusable = true,
+                                focusable = false,
                             )
                             Text(
                                 "Показать системные",
                                 fontSize = 12.sp,
                                 color = fg,
-                                modifier = Modifier.padding(start = 4.dp),
+                                modifier = Modifier.padding(start = 4.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
                             )
                         }
                     } else {
@@ -675,20 +698,28 @@ fun AppExclusionsScreen(
                         )
                     }
                     if (isTv) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.tvClickable(
+                                enabled = visiblePackages.isNotEmpty(),
+                                cornerRadius = 8.dp,
+                                ringOnTop = true,
+                                onClick = { toggleAll() },
+                            ),
+                        ) {
                             ThemeCheckbox(
                                 checked = allVisibleSelected,
                                 dark = palette.dark,
                                 fg = fg,
                                 bg = bg,
                                 onClick = { toggleAll() },
-                                focusable = true,
+                                focusable = false,
                             )
                             Text(
                                 "Выделить все",
                                 fontSize = 12.sp,
                                 color = fg.copy(alpha = if (visiblePackages.isNotEmpty()) 1f else 0.45f),
-                                modifier = Modifier.padding(start = 4.dp),
+                                modifier = Modifier.padding(start = 4.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
                             )
                         }
                     } else {
@@ -733,7 +764,11 @@ fun AppExclusionsScreen(
                                     .fillMaxWidth()
                                     .then(
                                         if (isTv) {
-                                            Modifier.tvClickable(cornerRadius = 10.dp, onClick = toggle)
+                                            Modifier.tvClickable(
+                                                cornerRadius = 10.dp,
+                                                ringOnTop = true,
+                                                onClick = toggle,
+                                            )
                                         } else {
                                             Modifier.clickable(onClick = toggle)
                                         },
@@ -753,7 +788,8 @@ fun AppExclusionsScreen(
                                     fg = fg,
                                     bg = bg,
                                     onClick = toggle,
-                                    focusable = isTv,
+                                    // На TV фокус на всей строке — чекбокс только визуал.
+                                    focusable = false,
                                 )
                             }
                         }
@@ -785,7 +821,7 @@ private fun SearchFieldWithClear(
         colors = fieldColors,
         trailingIcon = {
             if (value.isNotBlank()) {
-                IconButton(onClick = { onValueChange("") }) {
+                TvIconButton(onClick = { onValueChange("") }) {
                     Icon(
                         Icons.Filled.Close,
                         contentDescription = "Очистить поиск",

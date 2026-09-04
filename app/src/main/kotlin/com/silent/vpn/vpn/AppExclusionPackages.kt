@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
+import com.silent.vpn.policy.AppExclusionsPersist
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.PaymentBrowser
 
@@ -54,11 +55,9 @@ private val BOOTSTRAP_COMPANION_PACKAGES = listOf(
     "com.yandex.mail",
     "com.samsung.android.email.provider",
     "com.google.android.apps.messaging",
-    // YuMoney / кошелёк (если открывается как приложение, не только сайт)
     "ru.yoo.money",
     "ru.yandex.money",
     "com.yandex.money",
-    // SberPay / СберБанк Онлайн — deep-link с страницы YuMoney
     "ru.sberbankmobile",
     "ru.sberbankmobile_alpha",
     "ru.sberbank.sberbankid",
@@ -79,46 +78,42 @@ fun resolveBootstrapIncludedApps(context: Context): Set<String> {
 }
 
 data class AppTunnelPolicy(
-    /** true = БС: только эти пакеты через VPN (includeApplications). */
+    /** true = БС (зарезервировано). Сейчас main VPN всегда ЧС-модель. */
     val whitelist: Boolean,
     val packages: Set<String>,
 )
 
 /**
- * Main VPN: Silent в туннеле (API 10.66.66.1); VK — вне туннеля.
- * ЧС: excludeApplications(user + VK [+ self если нужно]).
- * БС: includeApplications(user ∪ self); VK не включаем.
+ * Main VPN: только ЧС-модель в туннеле (как 1.0.160/163).
+ * Persist БС/ЧС (режим + оба списка) живёт в prefs и UI — здесь **не затираем**.
+ * Непустой БС в туннеле пока no-op (full tunnel кроме Silent+VK), иначе includeApplications
+ * без Silent роняет DNS. Точечный фикс маршрутизации БС — отдельно.
  */
 fun resolveAppTunnelPolicy(context: Context, includeAppInTunnel: Boolean = false): AppTunnelPolicy {
     val prefs = SilentPrefs.open(context)
+    val dual = prefs.getBoolean(SilentRepository.PREF_EXCLUSIONS_DUAL_MIGRATED, false)
     val whitelistMode = prefs.getBoolean(SilentRepository.PREF_EXCLUSIONS_WHITELIST, false)
-    val userSelected = prefs.getString(SilentRepository.PREF_EXCLUDED_APPS, "")
-        ?.split(",")
-        ?.filter { it.isNotBlank() }
-        ?.toSet()
-        ?: emptySet()
+    fun parse(key: String): Set<String> =
+        prefs.getString(key, "")?.split(",")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+    val state = AppExclusionsPersist.hydrate(
+        selectedIds = parse(SilentRepository.PREF_EXCLUDED_APPS),
+        whitelist = whitelistMode,
+        blacklistAppIds = if (dual) parse(SilentRepository.PREF_EXCLUSIONS_BLACKLIST) else null,
+        whitelistAppIds = if (dual) parse(SilentRepository.PREF_EXCLUSIONS_WHITELIST_APPS) else null,
+    )
+    val intent = AppExclusionsPersist.tunnelIntent(state)
     val pm = context.packageManager
 
-    // Стабильность mobile first: применяем только ЧС-модель (как в 1.0.160),
-    // чтобы пользовательские режимы БС не выводили приложения из VPN-туннеля.
-    // Это устраняет сценарий "VPN подключен, но сайты/приложения не грузятся на LTE".
-
-    // Legacy-heal: если в prefs остался БС-режим, его список трактовался как ЧС и
-    // выборочно "выбрасывал" приложения из VPN (симптом: Telegram работает, YouTube нет).
-    // Для стабильности main VPN принудительно держим ЧС-модель и сбрасываем БС-хвост.
-    val effectiveSelected = if (whitelistMode) {
-        if (userSelected.isNotEmpty()) {
-            DebugLog.w("AppExclusions", "legacy whitelist detected (${userSelected.size}) -> reset to blacklist")
-        } else {
-            DebugLog.w("AppExclusions", "legacy whitelist flag detected -> reset to blacklist")
-        }
-        prefs.edit()
-            .putBoolean(SilentRepository.PREF_EXCLUSIONS_WHITELIST, false)
-            .putString(SilentRepository.PREF_EXCLUDED_APPS, "")
-            .apply()
+    // БС: не трогаем prefs (раньше heal сбрасывал режим и списки).
+    // В туннель — только ЧС-пакеты; при активном БС user-exclude пустой (full tunnel + Silent/VK out).
+    val userForTunnel = if (intent.whitelist) {
+        DebugLog.i(
+            "AppExclusions",
+            "БС mode persisted (${intent.userPackages.size} apps) — tunnel ЧС-safe (no wipe prefs)",
+        )
         emptySet()
     } else {
-        userSelected
+        intent.userPackages
     }
 
     val excluded = LinkedHashSet<String>()
@@ -126,7 +121,7 @@ fun resolveAppTunnelPolicy(context: Context, includeAppInTunnel: Boolean = false
         excluded.add(context.packageName)
     }
     excluded.addAll(VK_TUNNEL_PACKAGES)
-    excluded.addAll(effectiveSelected)
+    excluded.addAll(userForTunnel)
     val filtered = excluded.filter { isPackageInstalled(pm, it) }.toSet()
     DebugLog.i("AppExclusions", "ЧС excludeApplications: ${filtered.size}")
     return AppTunnelPolicy(whitelist = false, packages = filtered)
@@ -142,3 +137,4 @@ private fun isPackageInstalled(pm: PackageManager, pkg: String): Boolean = runCa
     pm.getPackageInfo(pkg, 0)
     true
 }.getOrDefault(false)
+

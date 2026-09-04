@@ -10,6 +10,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -18,6 +19,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import com.silent.vpn.ui.tv.TvPrimaryButton
@@ -182,6 +184,8 @@ fun AppExclusionsScreen(
     var search by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf(repo.getExcludedPackages()) }
     var whitelist by remember { mutableStateOf(repo.isExclusionsWhitelist()) }
+    var blacklistApps by remember { mutableStateOf(repo.getBlacklistPackages()) }
+    var whitelistApps by remember { mutableStateOf(repo.getWhitelistPackages()) }
     var showSystemApps by remember { mutableStateOf(false) }
 
     // —— Sites ——
@@ -223,14 +227,15 @@ fun AppExclusionsScreen(
     fun saveAppSelection(newSelected: Set<String>, newWhitelist: Boolean = whitelist) {
         selected = newSelected
         whitelist = newWhitelist
+        if (newWhitelist) whitelistApps = newSelected else blacklistApps = newSelected
         repo.saveExcludedApps(newSelected, newWhitelist)
         reloadTunnel()
     }
 
     fun switchMode(toWhitelist: Boolean) {
         if (whitelist == toWhitelist) return
-        val next = emptySet<String>()
-        repo.saveExceptionsMode(toWhitelist, next)
+        val next = if (toWhitelist) whitelistApps else blacklistApps
+        repo.saveExceptionsMode(toWhitelist)
         selected = next
         whitelist = toWhitelist
         reloadTunnel()
@@ -294,6 +299,13 @@ fun AppExclusionsScreen(
                     .thenBy { it.name.lowercase() },
             )
             .toList()
+    }
+    val appsListState = remember(whitelist) { LazyListState() }
+
+    LaunchedEffect(whitelist, loading) {
+        if (!loading && displayApps.isNotEmpty()) {
+            appsListState.scrollToItem(0)
+        }
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -507,16 +519,13 @@ fun AppExclusionsScreen(
                         )
                     }
                 }
-                OutlinedTextField(
+                SearchFieldWithClear(
                     value = search,
                     onValueChange = { search = it },
+                    placeholder = "Поиск...",
+                    palette = palette,
+                    fieldColors = fieldColors,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    placeholder = {
-                        Text("Поиск...", fontSize = 13.sp, color = palette.fieldPlaceholder)
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = fieldColors,
                 )
                 if (loading) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -524,6 +533,7 @@ fun AppExclusionsScreen(
                     }
                 } else {
                     LazyColumn(
+                        state = appsListState,
                         modifier = Modifier.weight(1f),
                         contentPadding = PaddingValues(bottom = 48.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -569,4 +579,38 @@ fun AppExclusionsScreen(
             }
         }
     }
+}
+
+@Composable
+private fun SearchFieldWithClear(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    palette: ThemePalette,
+    fieldColors: androidx.compose.material3.TextFieldColors,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        placeholder = {
+            Text(placeholder, fontSize = 13.sp, color = palette.fieldPlaceholder)
+        },
+        singleLine = true,
+        shape = RoundedCornerShape(12.dp),
+        colors = fieldColors,
+        trailingIcon = {
+            if (value.isNotBlank()) {
+                IconButton(onClick = { onValueChange("") }) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Очистить поиск",
+                        tint = palette.fg.copy(alpha = 0.55f),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        },
+    )
 }

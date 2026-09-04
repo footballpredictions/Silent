@@ -11,6 +11,7 @@ import com.silent.vpn.BuildConfig
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.silent.vpn.policy.ApiRoutePolicy
+import com.silent.vpn.policy.AppExclusionsPersist
 import com.silent.vpn.policy.OlcrtcSessionPolicy
 import com.silent.vpn.policy.TunnelHttpPolicy
 import com.silent.vpn.policy.UpdateUrlResolver
@@ -63,6 +64,9 @@ class SilentRepository @Inject constructor(
         const val PREF_SESSION_DEVICE_ID = "session_device_id"
         const val PREF_EXCLUDED_APPS = "excluded_apps"
         const val PREF_EXCLUSIONS_WHITELIST = "exclusions_whitelist"
+        const val PREF_EXCLUSIONS_BLACKLIST = "exclusions_blacklist_apps"
+        const val PREF_EXCLUSIONS_WHITELIST_APPS = "exclusions_whitelist_apps"
+        const val PREF_EXCLUSIONS_DUAL_MIGRATED = "exclusions_dual_migrated"
         /** Правила обхода сайтов: домен / IP / CIDR / wildcard, по одному на строку. */
         const val PREF_BYPASS_ROUTES = "bypass_routes"
         const val PREF_SAVED_HASH_ITEMS = "saved_hash_items"
@@ -1348,27 +1352,59 @@ class SilentRepository @Inject constructor(
         cacheVpnConfigForSlot(slot, json)
     }
 
-    fun getExcludedPackages(): Set<String> =
-        prefs.getString(PREF_EXCLUDED_APPS, "")?.split(",")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+    private fun parsePrefPackages(key: String): Set<String> =
+        prefs.getString(key, "")?.split(",")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
 
-    fun isExclusionsWhitelist(): Boolean = prefs.getBoolean(PREF_EXCLUSIONS_WHITELIST, false)
+    fun loadExclusionsPersist(): AppExclusionsPersist.State {
+        val dual = prefs.getBoolean(PREF_EXCLUSIONS_DUAL_MIGRATED, false)
+        val mode = prefs.getBoolean(PREF_EXCLUSIONS_WHITELIST, false)
+        val legacy = parsePrefPackages(PREF_EXCLUDED_APPS)
+        val state = AppExclusionsPersist.hydrate(
+            selectedIds = legacy,
+            whitelist = mode,
+            blacklistAppIds = if (dual) parsePrefPackages(PREF_EXCLUSIONS_BLACKLIST) else null,
+            whitelistAppIds = if (dual) parsePrefPackages(PREF_EXCLUSIONS_WHITELIST_APPS) else null,
+        )
+        if (!dual) persistExclusionsState(state)
+        return state
+    }
+
+    private fun persistExclusionsState(state: AppExclusionsPersist.State) {
+        // commit(): reloadTunnel сразу читает prefs — apply() гонка.
+        prefs.edit()
+            .putBoolean(PREF_EXCLUSIONS_WHITELIST, state.whitelist)
+            .putString(PREF_EXCLUSIONS_BLACKLIST, state.blacklistAppIds.joinToString(","))
+            .putString(PREF_EXCLUSIONS_WHITELIST_APPS, state.whitelistAppIds.joinToString(","))
+            .putString(PREF_EXCLUDED_APPS, state.activeIds.joinToString(","))
+            .putBoolean(PREF_EXCLUSIONS_DUAL_MIGRATED, true)
+            .commit()
+    }
+
+    fun getExcludedPackages(): Set<String> = loadExclusionsPersist().activeIds
+
+    fun getBlacklistPackages(): Set<String> = loadExclusionsPersist().blacklistAppIds
+
+    fun getWhitelistPackages(): Set<String> = loadExclusionsPersist().whitelistAppIds
+
+    fun isExclusionsWhitelist(): Boolean = loadExclusionsPersist().whitelist
 
     fun saveExcludedApps(packages: Set<String>, whitelist: Boolean = false) {
-        prefs.edit()
-            .putString(PREF_EXCLUDED_APPS, packages.joinToString(","))
-            .putBoolean(PREF_EXCLUSIONS_WHITELIST, whitelist)
-            .apply()
+        val current = loadExclusionsPersist()
+        persistExclusionsState(
+            AppExclusionsPersist.setActive(
+                current.copy(whitelist = whitelist),
+                packages,
+            ),
+        )
     }
 
     /**
-     * Смена ЧС↔БС.
-     * ЧС — пустой выбор; БС — [packages] (обычно все приложения уже отмечены).
+     * Смена ЧС↔БС: только режим. Оба списка сохраняются.
      */
+    @Suppress("UNUSED_PARAMETER")
     fun saveExceptionsMode(whitelist: Boolean, packages: Set<String> = emptySet()) {
-        prefs.edit()
-            .putString(PREF_EXCLUDED_APPS, if (whitelist) packages.joinToString(",") else "")
-            .putBoolean(PREF_EXCLUSIONS_WHITELIST, whitelist)
-            .apply()
+        val current = loadExclusionsPersist()
+        persistExclusionsState(AppExclusionsPersist.switchMode(current, whitelist))
     }
 
     fun getBypassRoutesRaw(): String =

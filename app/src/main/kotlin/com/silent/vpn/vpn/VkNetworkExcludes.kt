@@ -14,11 +14,15 @@ object VkNetworkExcludes {
     private val VK_HOSTS = listOf(
         "api.vk.ru",
         "api.vk.com",
+        "api.vk.me",
         "login.vk.ru",
         "login.vk.com",
         "id.vk.ru",
         "oauth.vk.ru",
         "oauth.vk.com",
+        // VK Calls step4 (как PC) — на случай если Silent в туннеле (БС).
+        "calls.okcdn.ru",
+        "okcdn.ru",
         "stun.vk.com",
         "turn.vk.com",
         "vk.ru",

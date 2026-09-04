@@ -8,6 +8,8 @@ import android.content.Intent
 
 import android.net.VpnService
 
+import android.os.Build
+
 import android.util.Log
 
 import com.silent.vpn.BuildConfig
@@ -49,6 +51,8 @@ import java.io.ByteArrayInputStream
  * WireGuard: split-tunnel (сервер/TURN вне WG), VK — excludeApplications.
  * Bootstrap: includeApplications (Silent + браузеры + почта + YuMoney/Сбер), AllowedIPs → API + backend HTTPS.
  * apiOverlayMode: кратко AllowedIPs = 10.66.66.0/24 (только bootstrap).
+ * Main VPN: AllowedIPs = 0.0.0.0/0; дыры сайтов — excludeRoute (API 33+).
+ * Complement 0.0.0.0/0−host (~32 CIDR) на OEM даёт blackhole (2ip.io / YouTube) — не использовать на main.
  * После основного VPN overlay не используем — отзыв через GETCONF/DTLS.
  */
 
@@ -68,6 +72,8 @@ class WireGuardHelper(context: Context) {
 
         var lastAppliedSemanticKey: String? = null
 
+        var lastExcludeRouteKey: String? = null
+
         @Volatile var wgTransitionActive: Boolean = false
 
         private const val TAG = "WireGuardHelper"
@@ -85,6 +91,7 @@ class WireGuardHelper(context: Context) {
             runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
             sharedTunnel = null
             lastAppliedSemanticKey = null
+            lastExcludeRouteKey = null
         }
     }
 
@@ -117,8 +124,11 @@ class WireGuardHelper(context: Context) {
         withContext(Dispatchers.IO) {
             wgTransitionActive = true
             try {
-            SilentGoBackendVpnService.vpnExcludeRouteCidrs =
+            val excludeRouteCidrs =
                 if (!apiOverlayMode && !isBootstrap) holeCidrsForExcludeRoute(excludeIPs) else emptyList()
+            SilentGoBackendVpnService.vpnExcludeRouteCidrs = excludeRouteCidrs
+            val excludeRouteKey = excludeRouteCidrs.sorted().joinToString(",")
+            val excludeRouteChanged = excludeRouteKey != lastExcludeRouteKey
 
             if (VpnService.prepare(appContext) != null) {
 
@@ -158,8 +168,20 @@ class WireGuardHelper(context: Context) {
                         }
                     }
                 } else if (excludeIPs.isNotEmpty()) {
-                    configToApply = AllowedIpsHelper.patchAllowedIPs(configToApply, excludeIPs).also {
-                        DebugLog.i(TAG, "Main AllowedIPs: 0.0.0.0/0 − ${excludeIPs.size} host(s)")
+                    // Main: не complement. ~32 CIDR на 1 IP → blackhole (2ip.io / YouTube на OEM).
+                    // Дыры — excludeRoute /32 (API 33+). AllowedIPs остаются 0.0.0.0/0.
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                        configToApply = AllowedIpsHelper.patchAllowedIPs(configToApply, excludeIPs).also {
+                            DebugLog.i(
+                                TAG,
+                                "Main AllowedIPs: 0.0.0.0/0 − ${excludeIPs.size} (API<33 fallback)",
+                            )
+                        }
+                    } else {
+                        DebugLog.i(
+                            TAG,
+                            "Main AllowedIPs: 0.0.0.0/0; excludeRoute=${excludeRouteCidrs.size}",
+                        )
                     }
                 }
                 if (!isBootstrap && mobileApiRoute) {
@@ -305,15 +327,22 @@ class WireGuardHelper(context: Context) {
 
 
             val tunnel = sharedTunnel
-            if (tunnel != null) {
+            if (tunnel != null && excludeRouteChanged && !apiOverlayMode && !isBootstrap) {
+                DebugLog.i(TAG, "site excludeRoute changed — full recreate")
+                runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
+                sharedTunnel = null
+            }
+            val liveTunnel = sharedTunnel
+            if (liveTunnel != null) {
                 val hotOk = runCatching {
-                    backend.setState(tunnel, Tunnel.State.UP, finalConfig)
+                    backend.setState(liveTunnel, Tunnel.State.UP, finalConfig)
                     lastAppliedSemanticKey = semanticKey
+                    lastExcludeRouteKey = excludeRouteKey
                     DebugLog.i(TAG, "WireGuard hot reload")
                 }.isSuccess
                 if (hotOk) return@withContext
-                DebugLog.w(TAG, "WG hot reload failed — full recreate (site AllowedIPs)")
-                runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
+                DebugLog.w(TAG, "WG hot reload failed — full recreate (site excludeRoute)")
+                runCatching { backend.setState(liveTunnel, Tunnel.State.DOWN, null) }
                 sharedTunnel = null
             }
 
@@ -324,6 +353,7 @@ class WireGuardHelper(context: Context) {
             sharedTunnel = newTunnel
 
             lastAppliedSemanticKey = semanticKey
+            lastExcludeRouteKey = excludeRouteKey
 
             Log.i(TAG, "WireGuard tunnel UP")
 
@@ -541,6 +571,7 @@ class WireGuardHelper(context: Context) {
                 sharedTunnel = null
 
                 lastAppliedSemanticKey = null
+                lastExcludeRouteKey = null
                 SilentGoBackendVpnService.vpnExcludeRouteCidrs = emptyList()
 
             }

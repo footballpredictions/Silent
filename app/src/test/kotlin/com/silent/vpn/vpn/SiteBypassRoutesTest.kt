@@ -44,4 +44,14 @@ class SiteBypassRoutesTest {
         )
         assertEquals(listOf("ozon.ru", "whoer.net", "1.2.3.4"), merged)
     }
+
+    @Test
+    fun `AllowedIpsHelper generates multi-cidr complement for one host hole`() {
+        // Регресс 2ip.io: complement одного /32 → десятки CIDR; на OEM сайт blackhole.
+        // Main VPN не должен патчить AllowedIPs этим списком (только excludeRoute).
+        val allowed = AllowedIpsHelper.generateExclusionAllowedIPs(listOf("188.40.167.81"))
+        val parts = allowed.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        assertTrue("ожидалось много префиксов, got ${parts.size}: $allowed", parts.size > 8)
+        assertTrue(parts.none { it == "0.0.0.0/0" })
+    }
 }

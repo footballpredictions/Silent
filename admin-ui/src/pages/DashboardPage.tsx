@@ -9,11 +9,11 @@ const DASHBOARD_NODE_KEY = 'admin.dashboard.resourceNode'
 
 const DASHBOARD_USER_SORTS = [
   { value: 'online', label: 'Онлайн сначала' },
+  { value: 'failures', label: 'Со сбоями сначала' },
   { value: 'email_az', label: 'По алфавиту А→Я' },
   { value: 'email_za', label: 'По алфавиту Я→А' },
   { value: 'registered_new', label: 'Новые сначала' },
   { value: 'registered_old', label: 'Старые сначала' },
-  { value: 'last_seen', label: 'Недавно в сети' },
 ] as const
 
 type DashboardUserSort = (typeof DASHBOARD_USER_SORTS)[number]['value']
@@ -302,15 +302,28 @@ function VkHashesCard({
       'user_connected' in u ? Number(Boolean(u.user_connected)) : 0
     const createdOf = (u: (typeof users)[number][1]) =>
       parseAdminTs('created_at' in u ? u.created_at : null)
-    const seenOf = (u: (typeof users)[number][1]) =>
-      parseAdminTs('last_seen_at' in u ? u.last_seen_at : null)
+    const failScoreOf = (u: (typeof users)[number][1]) => {
+      const slots = 'hashes' in u ? u.hashes : []
+      let total = 0
+      let badSlots = 0
+      for (const h of slots) {
+        const n = Number(h.fail_count || 0)
+        total += n
+        if (n > 0 || h.is_active === false) badSlots += 1
+      }
+      // Сначала у кого больше слотов со сбоями, затем суммарный fail_count
+      return badSlots * 1_000_000 + total
+    }
     matched.sort(([emailA, a], [emailB, b]) => {
       switch (userSort) {
         case 'online': {
           const byOnline = connectedOf(b) - connectedOf(a)
           if (byOnline) return byOnline
-          const bySeen = seenOf(b) - seenOf(a)
-          if (bySeen) return bySeen
+          return emailA.localeCompare(emailB, 'ru', { sensitivity: 'base' })
+        }
+        case 'failures': {
+          const byFail = failScoreOf(b) - failScoreOf(a)
+          if (byFail) return byFail
           return emailA.localeCompare(emailB, 'ru', { sensitivity: 'base' })
         }
         case 'email_az':
@@ -321,8 +334,6 @@ function VkHashesCard({
           return createdOf(b) - createdOf(a) || emailA.localeCompare(emailB, 'ru', { sensitivity: 'base' })
         case 'registered_old':
           return createdOf(a) - createdOf(b) || emailA.localeCompare(emailB, 'ru', { sensitivity: 'base' })
-        case 'last_seen':
-          return seenOf(b) - seenOf(a) || emailA.localeCompare(emailB, 'ru', { sensitivity: 'base' })
         default:
           return 0
       }

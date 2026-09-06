@@ -8,6 +8,22 @@ Agent приступает к **первой невыполненной** зад
 
 ## Открытые задачи
 
+### AI exit node — Сота 3 / Сервер 4 (2026-09-06)
+
+Runbook: `backend/AI_EXIT_NODE.md`.
+
+- [x] Ф0 аудит ноды, Ф1 гигиена egress, Ф2 свой резолвер, Ф3 sing-box TPROXY с fail-open watchdog
+- [x] Ф4 цепочка WARP / резидентный SOCKS5 — реализована, выключена по умолчанию
+- [x] Ф5 `/v1/egress-check` в cell-agent, карточка чистоты выхода в Улье, тихая проба в агенте доступности
+- [x] Базовая гигиена соты при подключении: `cell_hardening.py` в провижининге (ufw, TTL 64, IPv6 off, gai.conf), фаза `harden --host|--all` для старых сот
+- [x] «Сервер 4 для ИИ»: подпись слота с сервера (`cell_slot_title`) + статический слот в Android debug для админа, debug APK собран
+- [ ] **Ручная приёмка браузером** через Сервер 4: `chatgpt.com`, `gemini.google.com`, `claude.ai` без CAPTCHA, вход в аккаунт; `dnsleaktest` показывает US-резолвер; нет IPv6/WebRTC-утечки
+- [ ] PTR (rDNS) у HOSTKEY для `192.177.26.38` — нейтральное имя без vpn/proxy/tunnel/wg
+- [ ] Geofeed/коррекция гео в MaxMind, IPinfo, IP2Location; делистинг в AbuseIPDB/Spamhaus при необходимости
+- [ ] Ф6: лимит одновременных сессий на соту, затем снять `admin_only` кнопкой в Улье
+- [ ] Прогнать `harden --all` по Сотам 1–2 (после этого проверить: `wdtt` active, клиенты онлайн, `ufw status` = active)
+- [ ] План Б: вторая US-нода в другом ASN
+
 ### Linux-клиент (2026-08-29)
 
 - [ ] **Linux-клиент = тот же PC Electron, UI и включение VPN 1:1:** не отдельная ветка/репозиторий. Тот же React renderer, тот же тумблер (bootstrap 2 мин → login → полный `0.0.0.0/1+128/1` + bypass), `device_type=pc`. Платформенный слой: WireGuard (wireguard-go / kernel + pkexec), `wdtt-client` linux/amd64, исключения приложений через `/proc`, OTA AppImage (`platform=linux`). Сборка: `pc/build-linux.ps1` / `pc/build-linux.sh`

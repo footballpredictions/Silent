@@ -254,6 +254,11 @@ async def _run_external_probes(
 
 async def _collect_cell_agents(db) -> list[tuple[str, str, str]]:
     """(имя соты, api_url, секрет) — собираем заранее, чтобы не держать сессию БД."""
+    return [(name, url, secret) for name, url, secret, _ai in await _collect_cell_agents_ext(db)]
+
+
+async def _collect_cell_agents_ext(db) -> list[tuple[str, str, str, bool]]:
+    """То же плюс флаг ai_exit — для отдельной пробы ИИ-доменов с соты-выхода."""
     from app.core.security import decrypt_value
     from app.services.hive_service import _validate_outbound_url
 
@@ -269,15 +274,52 @@ async def _collect_cell_agents(db) -> list[tuple[str, str, str]]:
         .scalars()
         .all()
     )
-    out: list[tuple[str, str, str]] = []
+    out: list[tuple[str, str, str, bool]] = []
     for cell in cells:
         if not cell.api_url or not cell.api_secret_enc:
             continue
         try:
-            out.append((cell.name, _validate_outbound_url(cell.api_url), decrypt_value(cell.api_secret_enc)))
+            out.append((
+                cell.name,
+                _validate_outbound_url(cell.api_url),
+                decrypt_value(cell.api_secret_enc),
+                bool(getattr(cell, "ai_exit", False)),
+            ))
         except Exception:
             continue
     return out
+
+
+async def _run_ai_exit_probes(
+    agents: list[tuple[str, str, str, bool]], warnings: list[str]
+) -> None:
+    """Тихая проверка соты-выхода для ИИ: молчим, пока всё доступно.
+
+    Используем существующий /v1/net-probe — новых обязательных полей в отчёте нет,
+    поэтому классификатор и история не меняются.
+    """
+    payload = [
+        {"name": "ai_chatgpt", "host": "chatgpt.com", "port": 443, "proto": "tcp"},
+        {"name": "ai_gemini", "host": "gemini.google.com", "port": 443, "proto": "tcp"},
+        {"name": "ai_claude", "host": "claude.ai", "port": 443, "proto": "tcp"},
+    ]
+    for name, api_url, secret, ai_exit in agents:
+        if not ai_exit:
+            continue
+        try:
+            data = await cell_net_probe(api_url, secret, payload)
+        except Exception as e:
+            warnings.append(f"{name}: ИИ-домены с соты-выхода не проверены ({e}).")
+            continue
+        dead = [
+            str(item.get("name"))
+            for item in (data.get("results") or [])
+            if not item.get("ok") and not item.get("inconclusive")
+        ]
+        if dead:
+            warnings.append(
+                f"{name}: с соты-выхода не открываются ИИ-домены: {', '.join(dead)}."
+            )
 
 
 async def _run_peer_probes(
@@ -357,9 +399,10 @@ async def run_availability_check(
     async with AsyncSessionLocal() as db:
         cfg = await store.load_settings(db)
         targets = await _collect_targets(db)
-        agents = (
-            await _collect_cell_agents(db) if settings.AVAILABILITY_PEER_PROBE_ENABLED else []
+        agents_ext = (
+            await _collect_cell_agents_ext(db) if settings.AVAILABILITY_PEER_PROBE_ENABLED else []
         )
+        agents = [(name, url, secret) for name, url, secret, _ai in agents_ext]
 
     if not targets:
         report = AvailabilityReport(
@@ -390,6 +433,10 @@ async def run_availability_check(
             await _run_peer_probes(agents, targets, warnings)
         except Exception as e:
             warnings.append(f"Пробы между нодами не выполнены: {e}")
+        try:
+            await _run_ai_exit_probes(agents_ext, warnings)
+        except Exception as e:
+            warnings.append(f"Проба ИИ-доменов с соты-выхода не выполнена: {e}")
 
     try:
         buckets = await store.aggregate_client_reports(

@@ -57,6 +57,7 @@ WG_PORT = int(os.environ.get("WG_PORT", "56001"))
 HIVE_API_URL = (os.environ.get("HIVE_API_URL") or "").strip().rstrip("/")
 TUNNEL_API_URL = (os.environ.get("TUNNEL_API_URL") or "http://10.66.66.1:8000").strip()
 CELL_LINK_CAPACITY_MBPS = float(os.environ.get("CELL_LINK_CAPACITY_MBPS") or "1000")
+AGENT_PORT = int(os.environ.get("CELL_AGENT_PORT") or "9100")
 CELL_NETWORK_INTERFACE = (os.environ.get("CELL_NETWORK_INTERFACE") or "").strip()
 
 
@@ -763,6 +764,161 @@ async def net_probe(
         "cell_ip": _detect_public_ip(),
         "agent_build_id": agent_build_id(),
         "results": results,
+    }
+
+
+AI_EGRESS_TARGETS = (
+    ("chatgpt", "https://chatgpt.com/"),
+    ("gemini", "https://gemini.google.com/"),
+    ("claude", "https://claude.ai/"),
+    ("openai_api", "https://api.openai.com/v1/models"),
+)
+
+
+class EgressCheckRequest(BaseModel):
+    timeout_sec: float = 12.0
+    with_http: bool = True
+
+
+@app.post("/v1/egress-check")
+async def egress_check(
+    req: EgressCheckRequest,
+    x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
+):
+    """Чистота выхода соты: гео/флаги IP, PTR, резолвер, статус ИИ-доменов.
+
+    Только чтение: ни одной команды, меняющей состояние ноды.
+    """
+    _auth(x_cell_agent_secret)
+
+    import asyncio
+    import socket
+    import subprocess
+
+    timeout = max(3.0, min(float(req.timeout_sec or 12.0), 25.0))
+
+    def _sh(cmd: str, tmo: float = 4.0) -> str:
+        try:
+            r = subprocess.run(
+                ["bash", "-lc", cmd], capture_output=True, timeout=tmo, text=True
+            )
+            return (r.stdout or "").strip()
+        except Exception:
+            return ""
+
+    def _unit(name: str) -> str:
+        return _sh(f"systemctl is-active {name} 2>/dev/null || true", 3.0) or "n/a"
+
+    def _local_state() -> dict[str, Any]:
+        resolvers: list[str] = []
+        try:
+            for line in Path("/etc/resolv.conf").read_text(errors="ignore").splitlines():
+                if line.strip().startswith("nameserver "):
+                    resolvers.append(line.split(maxsplit=1)[1].strip())
+        except Exception:
+            pass
+        return {
+            "resolvers": resolvers,
+            "units": {
+                "unbound": _unit("unbound"),
+                "dnsmasq": _unit("dnsmasq"),
+                "sing_box": _unit("sing-box"),
+                "watchdog_timer": _unit("silent-ai-watchdog.timer"),
+                "wdtt": _unit("wdtt"),
+            },
+            "proxy_enabled": Path("/etc/silent-ai/proxy.enabled").is_file(),
+            "tproxy_hook": bool(
+                _sh("iptables -t mangle -S PREROUTING 2>/dev/null | grep -c SILENT_AI_TP", 4.0).strip() not in ("", "0")
+            ),
+            "dns_dnat": bool(
+                _sh("iptables -t nat -S PREROUTING 2>/dev/null | grep -c -- '--dport 53'", 4.0).strip() not in ("", "0")
+            ),
+            # True = порт агента ещё открыт всему интернету (гигиена не применена)
+            "agent_port_public": _sh(
+                f"iptables -S INPUT 2>/dev/null | grep -- '--dport {AGENT_PORT}' | grep -c DROP",
+                4.0,
+            ).strip() in ("", "0"),
+        }
+
+    def _ptr(ip: str) -> str:
+        if not ip:
+            return ""
+        try:
+            return socket.gethostbyaddr(ip)[0]
+        except Exception:
+            return ""
+
+    async def _get(url: str, tmo: float) -> tuple[int, str, float]:
+        import time as _t
+
+        started = _t.monotonic()
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=tmo, follow_redirects=False) as client:
+                resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                return resp.status_code, resp.text[:400], round((_t.monotonic() - started) * 1000, 1)
+        except Exception as e:  # noqa: BLE001
+            return 0, str(e)[:160], round((_t.monotonic() - started) * 1000, 1)
+
+    public_ip = await asyncio.to_thread(_detect_public_ip)
+    local = await asyncio.to_thread(_local_state)
+    ptr = await asyncio.to_thread(_ptr, public_ip)
+
+    geo: dict[str, Any] = {}
+    if public_ip:
+        code, body, _ = await _get(
+            "http://ip-api.com/json/"
+            f"{public_ip}?fields=status,country,city,isp,org,as,reverse,proxy,hosting,query",
+            min(timeout, 8.0),
+        )
+        if code == 200:
+            try:
+                geo = json.loads(body)
+            except Exception:
+                geo = {}
+
+    trace: dict[str, str] = {}
+    code, body, _ = await _get("https://www.cloudflare.com/cdn-cgi/trace", min(timeout, 8.0))
+    if code == 200:
+        for line in body.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                if k in ("ip", "loc", "warp", "colo", "tls", "http"):
+                    trace[k] = v
+
+    services: list[dict[str, Any]] = []
+    if req.with_http:
+        for name, url in AI_EGRESS_TARGETS:
+            status, _body, ms = await _get(url, timeout)
+            services.append(
+                {
+                    "name": name,
+                    "url": url,
+                    "status": status,
+                    "latency_ms": ms,
+                    # 403 у Cloudflare перед ChatGPT = challenge, это и есть «палят»
+                    "ok": status in (200, 301, 302, 307, 308, 401),
+                }
+            )
+
+    return {
+        "ok": True,
+        "cell_ip": public_ip,
+        "agent_build_id": agent_build_id(),
+        "ptr": ptr,
+        "geo": {
+            "country": geo.get("country") or "",
+            "city": geo.get("city") or "",
+            "asn": geo.get("as") or "",
+            "isp": geo.get("isp") or "",
+            "reverse": geo.get("reverse") or "",
+            "hosting": bool(geo.get("hosting")),
+            "proxy": bool(geo.get("proxy")),
+        },
+        "cf_trace": trace,
+        "services": services,
+        "local": local,
     }
 
 

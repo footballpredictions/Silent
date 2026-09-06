@@ -1,5 +1,31 @@
 # MEMORY BANK — Silent VPN Project
 
+> **Главный документ по ИИ-выходу и гигиене сот — `backend/AI_EXIT_NODE.md`.**
+> Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
+> сначала читать его, потом код.
+
+## Последние изменения (Гигиена новых сот + Сервер 4 в debug 2026-09-06)
+
+- **Дыра, которую закрыли:** на соте вообще не был включён `ufw`, `iptables INPUT` пуст — порт агента и всё слушающее торчало в интернет. Плюс наружу уходил TTL клиента (Windows 128 / Android 64), был жив IPv6-egress, glibc предпочитал IPv6.
+- `app/services/cell_hardening.py` — базовая гигиена: `ufw` (22, 56000/udp, 56001/udp, 9100/tcp, `10.66.0.0/16`) с обязательным `DEFAULT_FORWARD_POLICY=ACCEPT`, TTL→64, IPv6-egress off, `gai.conf` IPv4, юнит `silent-cell-hardening` на ребут.
+- Ставится **автоматически при подключении новой соты** (`hive_provision_service`, до правил nat). Для уже живых сот: `python scripts/deploy_ai_cell.py harden --host <ip>` или `--all`.
+- **9100 на обычной соте остаётся публичным намеренно** — это запасной API клиентов (`standby_api_urls`). Сужает его только AI-профиль, и такая сота из standby исключена.
+- Слот соты с `ai_exit` подписан «Сервер 4 для ИИ» (`hive_slots.cell_slot_title`) — во всех клиентах.
+- Android debug: слот `server4` в списке **всегда** (`MenuBypassScreen.withDebugAiServer`), `BAKED_SERVER_IPS["server4"]`. В release список по-прежнему только с сервера.
+- **Почему слот пропадал:** сота `admin_only`, и `GET /api/vpn/servers` не отдаёт её не-админской сессии; завязка показа на `getCachedProfile()?.is_admin` добивала остаток (профиль в debug-сборке свой). Права проверяет только сервер: `POST /servers/select` → 403, клиент откатывает локальный пин (`ServerNotAllowedException`) и пишет «Сервер доступен только администратору».
+- Тест: `python scripts/test_cell_hardening_unit.py`.
+
+## Последние изменения (AI exit node — Сота 3 2026-09-06)
+
+- Полный runbook: **`backend/AI_EXIT_NODE.md`** — модель угроз, архитектура, baseline, команды, приёмка, откат. Начинать с него.
+- Флаг `hive_cells.ai_exit` (миграция `sota3_ai_exit_v1`, вкл. для «Сота 3»). В Улье бейдж «ИИ-выход», тумблер и кнопка «Проверить выход».
+- Генератор фаз: `app/services/ai_exit_node.py`; CLI: `python scripts/deploy_ai_cell.py {audit|hygiene|dns|proxy|verify|status|rollback|agent}` из папки `backend`. Работает только с сотой, у которой стоит `ai_exit`. Пароль соты берётся из БД внутри API-контейнера, локально не хранится.
+- Применено на `192.177.26.38`: `9100` только Улью (снаружи `000`), TTL→64, IPv6-egress закрыт; unbound DoT(US) + dnsmasq `filter-AAAA` + DNAT клиентского `:53`; sing-box 1.11.15 TPROXY `:7895` со sniff SNI.
+- **Fail-open:** цепочку TPROXY вешает только `silent-ai-watchdog.timer` (20с) и снимает при нездоровом sing-box. Экстренно: `rm -f /etc/silent-ai/proxy.enabled && /opt/silent-vpn/ai-exit/watchdog.sh`.
+- Ф4 (WARP / резидентный SOCKS5 только для ИИ-доменов) реализована, но выключена: `proxy --chain warp|socks5://…`.
+- `admin_only` у Соты 3 **не снят** — сначала ручной тест браузером (чеклист §7 runbook). Сота с `ai_exit` исключена из `standby_api_urls`.
+- 403 от `chatgpt.com`/`claude.ai` с ноды — это отпечаток curl, а не бан IP: вердикт даёт только реальный браузер через VPN.
+
 ## Последние изменения (Сота 3 / Сервер 4 — только админ 2026-09-06)
 
 - Флаг `hive_cells.admin_only`: сота не в `GET /api/vpn/servers` у обычных, select → 403, config/connect сбрасывает на Улей, WDTT-spill не льёт.

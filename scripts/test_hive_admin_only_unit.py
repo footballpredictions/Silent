@@ -12,6 +12,7 @@ sys.modules.setdefault("app.database", SimpleNamespace(AsyncSessionLocal=None))
 from app.services.hive_slots import (  # noqa: E402
     cell_is_admin_only,
     cell_selectable_by_user,
+    cell_slot_title,
 )
 
 
@@ -45,6 +46,18 @@ def test_admin_only_visibility():
     assert _accepts_spill(sota4, set())
 
 
+def test_ai_exit_slot_title():
+    """Подпись слота приходит с сервера — клиенты её не выдумывают."""
+    queen = SimpleNamespace(is_queen=True, ai_exit=False)
+    plain = SimpleNamespace(is_queen=False, ai_exit=False)
+    ai = SimpleNamespace(is_queen=False, ai_exit=True)
+
+    assert cell_slot_title(queen, "server1") == "Сервер 1"
+    assert cell_slot_title(plain, "server3") == "Сервер 3"
+    assert cell_slot_title(ai, "server4") == "Сервер 4 для ИИ"
+
+
 if __name__ == "__main__":
     test_admin_only_visibility()
+    test_ai_exit_slot_title()
     print("ok")

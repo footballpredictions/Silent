@@ -32,6 +32,7 @@ from app.services.hive_slots import (
     cell_is_admin_only,
     cell_name_number,
     cell_selectable_by_user,
+    cell_slot_title,
     is_manual_server_pin,
     is_manual_server_slot,
     node_online_shown,
@@ -100,7 +101,7 @@ async def _build_manual_server_entries(db: AsyncSession) -> list[tuple[str, str,
                 n += 1
             slot = f"server{n}"
         used.add(slot)
-        entries.append((slot, slot_title(slot), cell))
+        entries.append((slot, cell_slot_title(cell, slot), cell))
     return entries
 
 
@@ -852,6 +853,7 @@ def cell_to_response(
         "priority": cell.priority,
         "accepts_wdtt": bool(cell.is_queen or getattr(cell, "accepts_wdtt", True)),
         "admin_only": bool(getattr(cell, "admin_only", False)),
+        "ai_exit": bool(getattr(cell, "ai_exit", False)),
         "manual_slot": slot_for_cell(cell) or None,
         "manual_slot_title": slot_title(slot_for_cell(cell)) if slot_for_cell(cell) else None,
         "last_seen_at": cell.last_seen_at,
@@ -884,7 +886,8 @@ async def list_cells_with_stats_pooled(*, http_timeout: float = 3.0) -> list[dic
             _ = (
                 c.id, c.name, c.is_queen, c.api_url, c.api_secret_enc, c.ssh_password_enc,
                 c.status, c.public_ip, c.priority, c.created_at, c.link_capacity_mbps,
-                c.max_clients, c.wdtt_port, c.wg_port, c.accepts_wdtt, c.admin_only, c.last_seen_at,
+                c.max_clients, c.wdtt_port, c.wg_port, c.accepts_wdtt, c.admin_only, c.ai_exit,
+                c.last_seen_at,
                 c.last_error, c.tunnel_api_url, c.wg_public_key,
             )
         db.expunge_all()

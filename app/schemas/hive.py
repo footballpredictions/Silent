@@ -54,6 +54,7 @@ class HiveCellUpdate(BaseModel):
     status: Optional[str] = Field(default=None, pattern="^(active|draining|offline)$")
     accepts_wdtt: Optional[bool] = None
     admin_only: Optional[bool] = None
+    ai_exit: Optional[bool] = None
     wg_public_key: Optional[str] = Field(default=None, min_length=40, max_length=512)
     public_ip: Optional[str] = Field(default=None, min_length=3, max_length=255)
     link_capacity_mbps: Optional[float] = Field(default=None, ge=0, le=100000)
@@ -90,6 +91,7 @@ class HiveCellResponse(BaseModel):
     status: str
     accepts_wdtt: bool = True
     admin_only: bool = False
+    ai_exit: bool = False
     manual_slot: Optional[str] = None
     manual_slot_title: Optional[str] = None
     priority: int

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.services.cell_hardening import baseline_setup_block
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +255,8 @@ def provision_cell_via_ssh(
     internal_secret = (settings.INTERNAL_API_SECRET or "").strip()
     passwords_json = json.dumps({"master": wdtt_master_password, "users": []})
     hive_meta = json.dumps({"hive_api_url": hive_api, "hive_cell_id": cell_id})
+    # Гигиена идёт до правил nat: ufw при включении перезаливает свои цепочки.
+    hardening = baseline_setup_block(agent_port=agent_port)
 
     remote_script = f"""#!/bin/bash
 export DEBIAN_FRONTEND=noninteractive
@@ -292,6 +295,7 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 SVCEOF
 
+{hardening}
 echo "[hive] net..."
 sysctl -w net.ipv4.ip_forward=1 || true
 ETH=$(ip route get 8.8.8.8 2>/dev/null | awk '{{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}}')
@@ -320,11 +324,6 @@ TPEOF
   systemctl daemon-reload
   systemctl enable --now silent-tunnel-api-proxy || true
 fi
-
-ufw allow 22/tcp 2>/dev/null || true
-ufw allow 56000/udp 2>/dev/null || true
-ufw allow 56001/udp 2>/dev/null || true
-ufw allow {agent_port}/tcp 2>/dev/null || true
 
 systemctl daemon-reload
 systemctl enable wdtt

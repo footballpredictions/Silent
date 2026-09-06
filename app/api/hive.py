@@ -333,6 +333,28 @@ async def probe_cell(
     return hive_service.cell_to_response(cell, online_count=online, assigned_devices=assigned)
 
 
+@router.post("/cells/{cell_id}/egress-check")
+async def egress_check_cell(
+    cell_id: uuid.UUID,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Чистота выхода соты: гео/флаги IP, PTR, резолвер, ответы ИИ-доменов."""
+    from app.services import ai_exit_node
+
+    cell = await hive_service.get_cell_by_id(db, cell_id)
+    if not cell:
+        raise HTTPException(status_code=404, detail="Сота не найдена")
+    if cell.is_queen:
+        raise HTTPException(status_code=400, detail="Проверка выхода — для сот, не для Улья")
+    try:
+        return await ai_exit_node.fetch_cell_egress(cell)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"cell-agent недоступен: {e}") from e
+
+
 @router.patch("/cells/{cell_id}")
 async def update_cell(
     cell_id: uuid.UUID,
@@ -357,6 +379,8 @@ async def update_cell(
         cell.accepts_wdtt = bool(req.accepts_wdtt)
     if req.admin_only is not None and not cell.is_queen:
         cell.admin_only = bool(req.admin_only)
+    if req.ai_exit is not None and not cell.is_queen:
+        cell.ai_exit = bool(req.ai_exit)
     if req.wg_public_key is not None and not cell.is_queen:
         cell.wg_public_key = req.wg_public_key.strip()
     if req.public_ip is not None and not cell.is_queen:

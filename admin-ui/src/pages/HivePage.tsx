@@ -37,12 +37,46 @@ interface HiveCell {
   status: string
   accepts_wdtt?: boolean
   admin_only?: boolean
+  ai_exit?: boolean
   manual_slot?: string | null
   manual_slot_title?: string | null
   last_error: string | null
   has_ssh_password?: boolean
   load?: CellLoad
   capacity?: { max_online: number; mode?: string; bottleneck?: string }
+}
+
+interface EgressInfo {
+  cell_ip?: string
+  ptr?: string
+  geo?: {
+    country?: string
+    city?: string
+    asn?: string
+    isp?: string
+    reverse?: string
+    hosting?: boolean
+    proxy?: boolean
+  }
+  cf_trace?: Record<string, string>
+  services?: { name: string; url: string; status: number; latency_ms: number; ok: boolean }[]
+  local?: {
+    resolvers?: string[]
+    units?: Record<string, string>
+    proxy_enabled?: boolean
+    tproxy_hook?: boolean
+    dns_dnat?: boolean
+    agent_port_public?: boolean
+  }
+  checked_at?: string
+  error?: string
+}
+
+const egressServiceLabel: Record<string, string> = {
+  chatgpt: 'ChatGPT',
+  gemini: 'Gemini',
+  claude: 'Claude',
+  openai_api: 'OpenAI API',
 }
 
 const capModeLabel: Record<string, string> = {
@@ -214,6 +248,98 @@ function fmtDetail(d: unknown): string {
   return 'Ошибка подключения соты'
 }
 
+function EgressChip({ ok, label, hint }: { ok: boolean; label: string; hint?: string }) {
+  return (
+    <span
+      title={hint}
+      className={`text-[11px] px-2 py-0.5 rounded border ${
+        ok ? 'bg-emerald-950/60 text-emerald-300 border-emerald-900' : 'bg-red-950/60 text-red-300 border-red-900'
+      }`}
+    >
+      {label}
+    </span>
+  )
+}
+
+function EgressCard({ info }: { info: EgressInfo }) {
+  if (info.error) {
+    return (
+      <div className="mt-4 border border-red-900/60 bg-red-950/20 rounded-lg p-3">
+        <p className="text-xs text-red-300">Проверка выхода не прошла: {info.error}</p>
+      </div>
+    )
+  }
+  const geo = info.geo || {}
+  const local = info.local || {}
+  const trace = info.cf_trace || {}
+  return (
+    <div className="mt-4 border border-[#222] bg-[#0d0d0d] rounded-lg p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-xs text-[#888]">
+          Чистота выхода · {info.cell_ip}
+          {info.checked_at ? ` · ${info.checked_at}` : ''}
+        </p>
+        <div className="flex gap-1.5 flex-wrap">
+          <EgressChip ok={!geo.hosting} label={geo.hosting ? 'hosting: да' : 'hosting: нет'} hint="Флаг датацентра у ip-api" />
+          <EgressChip ok={!geo.proxy} label={geo.proxy ? 'proxy: да' : 'proxy: нет'} hint="Флаг прокси/VPN у ip-api" />
+          <EgressChip ok={!!info.ptr} label={info.ptr ? 'PTR есть' : 'PTR пустой'} hint={info.ptr || 'rDNS правится в панели хостера'} />
+          <EgressChip
+            ok={!local.agent_port_public}
+            label={local.agent_port_public ? 'агент открыт' : 'агент закрыт'}
+            hint="Порт cell-agent виден интернету — признак VPN-узла"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+        <div>
+          <p className="text-[#666]">Гео</p>
+          <p className="text-[#ddd]">{[geo.country, geo.city].filter(Boolean).join(', ') || '—'}</p>
+        </div>
+        <div>
+          <p className="text-[#666]">ASN</p>
+          <p className="text-[#ddd] truncate" title={geo.asn}>{geo.asn || '—'}</p>
+        </div>
+        <div>
+          <p className="text-[#666]">Cloudflare loc</p>
+          <p className="text-[#ddd]">{trace.loc || '—'}{trace.warp && trace.warp !== 'off' ? ` · warp ${trace.warp}` : ''}</p>
+        </div>
+        <div>
+          <p className="text-[#666]">Резолвер ноды</p>
+          <p className="text-[#ddd] font-mono">{(local.resolvers || []).join(', ') || '—'}</p>
+        </div>
+      </div>
+      {info.services && info.services.length > 0 && (
+        <div className="flex gap-1.5 flex-wrap">
+          {info.services.map(s => (
+            <EgressChip
+              key={s.name}
+              ok={s.ok}
+              label={`${egressServiceLabel[s.name] || s.name}: ${s.status || 'нет ответа'}`}
+              hint={`${s.url} · ${s.latency_ms} мс`}
+            />
+          ))}
+        </div>
+      )}
+      <div className="flex gap-1.5 flex-wrap text-[11px] text-[#777]">
+        <span>DNS-заворот: {local.dns_dnat ? 'да' : 'нет'}</span>
+        <span>·</span>
+        <span>прокси: {local.proxy_enabled ? 'включён' : 'выключен'}</span>
+        <span>·</span>
+        <span>TPROXY-цепочка: {local.tproxy_hook ? 'подключена' : 'снята (fail-open)'}</span>
+        {local.units && (
+          <>
+            <span>·</span>
+            <span>
+              unbound {local.units.unbound}, dnsmasq {local.units.dnsmasq}, sing-box {local.units.sing_box}, wdtt{' '}
+              {local.units.wdtt}
+            </span>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function HivePage({ token }: { token: string }) {
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
   const [cells, setCells] = useState<HiveCell[]>([])
@@ -222,6 +348,8 @@ export default function HivePage({ token }: { token: string }) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [egress, setEgress] = useState<Record<string, EgressInfo>>({})
+  const [egressBusy, setEgressBusy] = useState<string | null>(null)
   const [form, setForm] = useState({ host: '', password: '', name: '' })
   const [metricsAt, setMetricsAt] = useState<Date | null>(null)
   const [incidents, setIncidents] = useState<HiveIncident[]>([])
@@ -323,6 +451,33 @@ export default function HivePage({ token }: { token: string }) {
     })
     await load()
     setBusy(null)
+  }
+
+  const setAiExit = async (id: string, aiExit: boolean) => {
+    setBusy(id)
+    await fetch(`/api/admin/hive/cells/${id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ ai_exit: aiExit }),
+    })
+    await load()
+    setBusy(null)
+  }
+
+  const checkEgress = async (cell: HiveCell) => {
+    setEgressBusy(cell.id)
+    try {
+      const res = await fetch(`/api/admin/hive/cells/${cell.id}/egress-check`, { method: 'POST', headers })
+      const data = await res.json().catch(() => ({}))
+      setEgress(prev => ({
+        ...prev,
+        [cell.id]: res.ok
+          ? { ...data, checked_at: new Date().toLocaleTimeString('ru-RU') }
+          : { error: fmtDetail(data.detail) || `HTTP ${res.status}` },
+      }))
+    } finally {
+      setEgressBusy(null)
+    }
   }
 
   const removeCell = async (cell: HiveCell) => {
@@ -576,6 +731,9 @@ export default function HivePage({ token }: { token: string }) {
                     {cell.admin_only && (
                       <span className="text-xs bg-violet-950 text-violet-300 px-2 py-0.5 rounded">Только админ</span>
                     )}
+                    {cell.ai_exit && (
+                      <span className="text-xs bg-sky-950 text-sky-300 px-2 py-0.5 rounded">ИИ-выход</span>
+                    )}
                     <span className="text-xs text-[#888]">{statusLabel[cell.status] || cell.status}</span>
                   </div>
                   <p className="text-sm text-[#888] mt-1 font-mono">{cell.public_ip}:{cell.wdtt_port}</p>
@@ -648,6 +806,27 @@ export default function HivePage({ token }: { token: string }) {
                   >
                     {cell.admin_only ? 'Открыть всем' : 'Только админ'}
                   </button>
+                  <button
+                    type="button"
+                    disabled={busy === cell.id}
+                    onClick={() => setAiExit(cell.id, !cell.ai_exit)}
+                    title="Профиль выхода для ИИ-сервисов. Флаг только помечает соту — настройку ставит scripts/deploy_ai_cell.py"
+                    className={`text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] disabled:opacity-50 ${
+                      cell.ai_exit ? 'text-sky-300' : 'text-[#aaa]'
+                    }`}
+                  >
+                    {cell.ai_exit ? 'Снять ИИ-профиль' : 'ИИ-выход'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={egressBusy === cell.id || cell.status !== 'active'}
+                    onClick={() => checkEgress(cell)}
+                    title="Спросить у соты, как её выход видят снаружи: гео, флаги hosting/proxy, PTR, резолвер, ответы ИИ-доменов"
+                    className="text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] text-[#aaa] flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {egressBusy === cell.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Activity className="w-3 h-3" />}
+                    Проверить выход
+                  </button>
                   <button type="button" disabled={busy === cell.id} onClick={() => removeCell(cell)}
                     className="text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] text-red-400 flex items-center gap-1 disabled:opacity-50">
                     {busy === cell.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
@@ -655,6 +834,7 @@ export default function HivePage({ token }: { token: string }) {
                   </button>
                 </div>
               )}
+              {egress[cell.id] && <EgressCard info={egress[cell.id]} />}
             </div>
           ))}
         </div>

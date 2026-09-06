@@ -40,9 +40,15 @@ def cell_public_api_base(cell: HiveCell) -> str:
 
 
 async def standby_api_urls(db: AsyncSession) -> list[str]:
-    """Публичные URL standby API для клиентов (theme / login / config)."""
+    """Публичные URL standby API для клиентов (theme / login / config).
+
+    Соту с AI-профилем сюда не даём: её cell-agent закрыт от интернета
+    (порт виден только Улью), клиент только зря ждал бы таймаут.
+    """
     urls: list[str] = []
     for cell in await get_standby_cells(db):
+        if getattr(cell, "ai_exit", False):
+            continue
         base = cell_public_api_base(cell)
         if base:
             urls.append(base)

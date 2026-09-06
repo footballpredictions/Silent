@@ -31,6 +31,14 @@ def slot_title(slot: str) -> str:
     return f"Сервер {n}" if n else (slot or "")
 
 
+def cell_slot_title(cell, slot: str) -> str:
+    """Подпись слота для клиента. Сота с `ai_exit` подписана явно — «Сервер N для ИИ»."""
+    base = slot_title(slot)
+    if cell is not None and not getattr(cell, "is_queen", False) and getattr(cell, "ai_exit", False):
+        return f"{base} для ИИ"
+    return base
+
+
 def node_title_for_slot(slot: str | None) -> str:
     """Подпись ноды для админки: Улей / Сота N (не «Сервер 2»)."""
     n = parse_manual_slot(slot)

@@ -34,6 +34,9 @@ class HiveCell(Base):
     accepts_wdtt: Mapped[bool] = mapped_column(Boolean, default=True)
     # True: в меню клиентов и в балансе только для is_admin (обкатка новой соты).
     admin_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    # True: сота-выход для ИИ-сервисов (свой резолвер, TPROXY, гигиена egress).
+    # Только маркер: настройку ставит scripts/deploy_ai_cell.py, API ничего не делает сам.
+    ai_exit: Mapped[bool] = mapped_column(Boolean, default=False)
     priority: Mapped[int] = mapped_column(Integer, default=100)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

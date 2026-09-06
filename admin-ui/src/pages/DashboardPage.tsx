@@ -59,6 +59,10 @@ interface Stats {
   users: {
     total: number
     active_subscriptions: number
+    subscriptions_paid?: number
+    subscriptions_granted?: number
+    subscriptions_trial?: number
+    vpn_access_users?: number
     connected_devices: number
     peak_online_devices?: number
     peak_online_at?: string | null
@@ -515,7 +519,29 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       {/* User stats */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard icon={Users} label="Пользователей" value={stats.users.total} />
-        <StatCard icon={Wifi} label="Активных подписок" value={stats.users.active_subscriptions} />
+        <div className="bg-[#111] border border-[#222] rounded-xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[#666] text-xs uppercase tracking-wider">Подписки</span>
+            <Wifi className="w-4 h-4 text-[#666]" />
+          </div>
+          <div className="space-y-2.5">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-[#aaa] text-sm" title="YuMoney / покупка в приложении">Оплаченные</span>
+              <span className="text-2xl font-bold tabular-nums">{stats.users.subscriptions_paid ?? 0}</span>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-[#aaa] text-sm" title="Выдал админ или бесплатный бонус (amount=0)">Выданные</span>
+              <span className="text-2xl font-bold tabular-nums">{stats.users.subscriptions_granted ?? 0}</span>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-[#aaa] text-sm" title="Пробный период (trial)">Пробный период</span>
+              <span className="text-2xl font-bold tabular-nums">{stats.users.subscriptions_trial ?? 0}</span>
+            </div>
+          </div>
+          <div className="text-[#555] text-xs mt-3 pt-2 border-t border-[#1e1e1e]">
+            всего живых: {stats.users.active_subscriptions}
+          </div>
+        </div>
         <div className="bg-[#111] border border-[#222] rounded-xl p-5">
           <div className="flex items-center justify-between mb-3">
             <span className="text-[#666] text-xs uppercase tracking-wider">Онлайн</span>

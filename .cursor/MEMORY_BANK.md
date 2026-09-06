@@ -1,5 +1,12 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (Дашборд: оплаченные / выданные / пробный 2026-09-06)
+
+- Вместо одного «Активных подписок» — три счётчика: **Оплаченные** (`amount_paid>0`), **Выданные** (админ grant / бонусы `amount=0`), **Пробный период** (`trial`).
+- API: `subscriptions_paid|granted|trial`, `active_subscriptions` = сумма; `vpn_access_users` отдельно.
+- Файлы: `subscription_kinds.py`, `subscription_service.dashboard_subscription_breakdown`, `DashboardPage.tsx`.
+- Деплой: `npm run build` + `deploy_stable.py`.
+
 ## Последние изменения (Улей RAM 10→16 ГБ / virtio balloon 2026-09-06)
 
 - **Симптом:** дашборд админки снова показывал ~10 ГБ RAM вместо 16.

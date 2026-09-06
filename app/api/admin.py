@@ -116,6 +116,29 @@ async def _count_users_with_vpn_access(db: AsyncSession) -> tuple[int, int]:
     return total, len(active_ids)
 
 
+async def _dashboard_users_block(db: AsyncSession) -> dict:
+    from app.services.peak_online import record_online_peak
+    from app.services.hive_service import vpn_online_shown_total
+    from app.services.subscription_service import dashboard_subscription_breakdown
+
+    total_users, vpn_access = await _count_users_with_vpn_access(db)
+    breakdown = await dashboard_subscription_breakdown(db)
+    connected_devices = await vpn_online_shown_total(db)
+    peak_online, peak_online_at = await record_online_peak(db, int(connected_devices or 0))
+    return {
+        "total": total_users,
+        # Совместимость: раньше это был VPN-доступ; теперь — сумма живых подписок
+        "active_subscriptions": int(breakdown["total"]),
+        "subscriptions_paid": int(breakdown["paid"]),
+        "subscriptions_granted": int(breakdown["granted"]),
+        "subscriptions_trial": int(breakdown["trial"]),
+        "vpn_access_users": vpn_access,
+        "connected_devices": connected_devices,
+        "peak_online_devices": peak_online,
+        "peak_online_at": peak_online_at,
+    }
+
+
 @router.get("/stats")
 async def get_stats(
     light: bool = Query(False, description="CPU/RAM/счётчики без VK-списков — для полла дашборда"),
@@ -132,13 +155,8 @@ async def get_stats(
     disk = psutil.disk_usage("/")
 
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
-    from app.services.peak_online import record_online_peak
-    from app.services.hive_service import vpn_online_shown_total
 
-    total_users, active_subs = await _count_users_with_vpn_access(db)
-    connected_devices = await vpn_online_shown_total(db)
-    peak_online, peak_online_at = await record_online_peak(db, int(connected_devices or 0))
-
+    users_block = await _dashboard_users_block(db)
     mem_total = float(load.get("memory_total_gb") or 0.0)
     mem_used = float(load.get("memory_used_gb") or 0.0)
     mem_pct = float(load.get("memory_percent") or 0.0)
@@ -158,13 +176,6 @@ async def get_stats(
         "network_link_capacity_mbps": float(
             load.get("network_link_capacity_mbps") or settings.HIVE_LINK_CAPACITY_MBPS
         ),
-    }
-    users_block = {
-        "total": total_users,
-        "active_subscriptions": active_subs,
-        "connected_devices": connected_devices,
-        "peak_online_devices": peak_online,
-        "peak_online_at": peak_online_at,
     }
     if light:
         return {

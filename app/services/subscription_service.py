@@ -9,11 +9,13 @@ from sqlalchemy import select, text, func, or_, update
 
 from app.models import User, Subscription, Device
 from app.config import settings
+from app.services.subscription_kinds import (
+    TRIAL_PLAN,
+    TEST_PLAN,
+    classify_subscription_kind,
+)
 
 logger = logging.getLogger(__name__)
-
-TRIAL_PLAN = "trial"
-TEST_PLAN = "test"
 
 _access_cache: tuple[float, frozenset] | None = None
 _ACCESS_TTL_SEC = 15.0
@@ -549,6 +551,52 @@ GRANTABLE_PLANS = {
     "yearly": 365,
     "unlimited": 36500,  # ~100 лет
 }
+
+
+async def dashboard_subscription_breakdown(db: AsyncSession) -> dict[str, int]:
+    """Живые подписки по пользователям: оплаченные / выданные / пробный.
+
+    На пользователя — одна категория (самый долгий активный план, без test).
+    """
+    from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
+
+    now = datetime.utcnow()
+    result = await db.execute(
+        select(
+            Subscription.user_id,
+            Subscription.plan_type,
+            Subscription.amount_paid,
+            Subscription.expires_at,
+        )
+        .join(User, User.id == Subscription.user_id)
+        .where(
+            User.email != BOOTSTRAP_USER_EMAIL,
+            Subscription.status == "active",
+            Subscription.expires_at > now,
+            Subscription.plan_type != TEST_PLAN,
+        )
+        .order_by(Subscription.user_id, Subscription.expires_at.desc())
+    )
+    best: dict = {}
+    for user_id, plan_type, amount_paid, _expires in result.all():
+        if user_id in best:
+            continue
+        best[user_id] = classify_subscription_kind(plan_type, amount_paid)
+
+    paid = granted = trial = 0
+    for kind in best.values():
+        if kind == "paid":
+            paid += 1
+        elif kind == "granted":
+            granted += 1
+        elif kind == "trial":
+            trial += 1
+    return {
+        "paid": paid,
+        "granted": granted,
+        "trial": trial,
+        "total": paid + granted + trial,
+    }
 
 
 async def grant_manual_subscription(

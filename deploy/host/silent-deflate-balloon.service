@@ -1,0 +1,12 @@
+[Unit]
+Description=Silent VPN — deflate virtio balloon (keep full guest RAM)
+After=multi-user.target
+ConditionPathExists=/sys/bus/virtio/drivers/virtio_balloon
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/silent-vpn/backend/deploy/host/silent-deflate-balloon.sh
+
+[Install]
+WantedBy=multi-user.target

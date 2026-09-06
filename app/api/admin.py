@@ -19,7 +19,7 @@ from app.config import settings
 from app.schemas.vpn import ThemeResponse
 from app.services.theme_settings import load_theme
 from app.services.system_info import get_cpu_info
-from app.services.proc_stats import read_network_load
+from app.services.proc_stats import read_host_load
 from app.services import update_service
 from app.services import admin_auth_service
 import uuid as uuid_mod
@@ -123,12 +123,13 @@ async def get_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Dashboard system stats."""
-    # System resources — CPU/RAM контейнера (быстро); канал — хост через /host/proc
-    cpu = float(psutil.cpu_percent(interval=0.1))
+    # CPU/RAM/канал — хост VPS (/host/proc), не cgroup контейнера API
+    load = read_host_load(cpu_interval=0.1)
+    cpu = float(load.get("cpu_percent") or 0.0)
     cpu_info = get_cpu_info(cpu)
-    mem = psutil.virtual_memory()
+    if load.get("cpu_cores"):
+        cpu_info["cpu_cores"] = int(load["cpu_cores"])
     disk = psutil.disk_usage("/")
-    net = read_network_load()
 
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
     from app.services.peak_online import record_online_peak
@@ -138,20 +139,25 @@ async def get_stats(
     connected_devices = await vpn_online_shown_total(db)
     peak_online, peak_online_at = await record_online_peak(db, int(connected_devices or 0))
 
+    mem_total = float(load.get("memory_total_gb") or 0.0)
+    mem_used = float(load.get("memory_used_gb") or 0.0)
+    mem_pct = float(load.get("memory_percent") or 0.0)
     system = {
         "cpu_percent": cpu,
         **cpu_info,
-        "memory_total_gb": round(mem.total / 1e9, 1),
-        "memory_used_gb": round(mem.used / 1e9, 1),
-        "memory_percent": mem.percent,
-        "disk_total_gb": round(disk.total / 1e9, 1),
-        "disk_used_gb": round(disk.used / 1e9, 1),
+        "memory_total_gb": mem_total,
+        "memory_used_gb": mem_used,
+        "memory_percent": mem_pct,
+        "disk_total_gb": round(disk.total / (1024**3), 1),
+        "disk_used_gb": round(disk.used / (1024**3), 1),
         "disk_percent": disk.percent,
-        "network_interface": net.get("network_interface"),
-        "network_mbps_rx": float(net.get("network_mbps_rx") or 0.0),
-        "network_mbps_tx": float(net.get("network_mbps_tx") or 0.0),
-        "network_util_percent": float(net.get("network_util_percent") or 0.0),
-        "network_link_capacity_mbps": float(net.get("network_link_capacity_mbps") or settings.HIVE_LINK_CAPACITY_MBPS),
+        "network_interface": load.get("network_interface"),
+        "network_mbps_rx": float(load.get("network_mbps_rx") or 0.0),
+        "network_mbps_tx": float(load.get("network_mbps_tx") or 0.0),
+        "network_util_percent": float(load.get("network_util_percent") or 0.0),
+        "network_link_capacity_mbps": float(
+            load.get("network_link_capacity_mbps") or settings.HIVE_LINK_CAPACITY_MBPS
+        ),
     }
     users_block = {
         "total": total_users,

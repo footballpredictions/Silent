@@ -1,0 +1,4 @@
+# Host deploy scripts must keep Unix LF (systemd ExecStart fails on CRLF shebang).
+deploy/host/*.sh text eol=lf
+deploy/host/*.service text eol=lf
+deploy/host/*.timer text eol=lf

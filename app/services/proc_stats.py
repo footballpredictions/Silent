@@ -337,17 +337,27 @@ def _read_cpu_cores(proc_root: str | None = None) -> int:
         return max(1, os.cpu_count() or 1)
 
 
-def _read_memory_total_gb(proc_root: str | None = None) -> float:
+def _read_meminfo_kb(proc_root: str | None = None) -> tuple[int, int]:
+    """(MemTotal_kb, MemAvailable_kb) с хоста."""
     root = proc_root or _host_proc_root() or "/proc"
     path = os.path.join(root, "meminfo")
+    total_kb = avail_kb = 0
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 if line.startswith("MemTotal:"):
-                    kb = int(line.split()[1])
-                    return round(kb / 1024 / 1024, 1)
+                    total_kb = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    avail_kb = int(line.split()[1])
     except OSError:
         pass
+    return total_kb, avail_kb
+
+
+def _read_memory_total_gb(proc_root: str | None = None) -> float:
+    total_kb, _ = _read_meminfo_kb(proc_root)
+    if total_kb > 0:
+        return round(total_kb / 1024 / 1024, 1)
     try:
         return round(psutil.virtual_memory().total / (1024**3), 1)
     except Exception:
@@ -356,9 +366,15 @@ def _read_memory_total_gb(proc_root: str | None = None) -> float:
 
 def _host_hardware_meta() -> dict:
     proc_root = _host_proc_root()
+    total_kb, avail_kb = _read_meminfo_kb(proc_root)
+    total_gb = round(total_kb / 1024 / 1024, 1) if total_kb > 0 else _read_memory_total_gb(proc_root)
+    used_gb = 0.0
+    if total_kb > 0:
+        used_gb = round(max(0, total_kb - avail_kb) / 1024 / 1024, 1)
     return {
         "cpu_cores": _read_cpu_cores(proc_root),
-        "memory_total_gb": _read_memory_total_gb(proc_root),
+        "memory_total_gb": total_gb,
+        "memory_used_gb": used_gb,
     }
 
 

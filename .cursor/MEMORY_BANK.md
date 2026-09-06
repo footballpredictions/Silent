@@ -1,5 +1,163 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (Улей RAM 10→16 ГБ / virtio balloon 2026-09-06)
+
+- **Симптом:** дашборд админки снова показывал ~10 ГБ RAM вместо 16.
+- **Не деплой и не «старый код в контейнере».** `lsmem`/`dmidecode` = **16G**, а `MemTotal` был **9.6GiB** — KVM **virtio balloon** (`virtio0`) забрал ~6.4GiB. Так уже фиксировали в Memory Bank как «Хост 9.6G» (2026-08-17).
+- **Фикс хоста:** unbind `virtio_balloon` → `MemTotal=15.6GiB`. Persist: `deploy/host/silent-deflate-balloon.*` + watch timer каждые 10 мин; `python scripts/deploy_balloon_deflate.py`.
+- **Код дашборда:** `/api/admin/stats` берёт CPU/RAM с `read_host_load` (хост `/host/proc`), не `psutil` контейнера; used/total в GiB. Тест: `scripts/test_proc_stats_memory_unit.py`.
+- **Деплой:** `deploy_balloon_deflate.py` + `deploy_stable.py` — health OK, `wdtt` active, kick 0. Обновить дашборд Ctrl+F5 → RAM ~15.6 ГБ.
+
+## Последние изменения (Linux YouTube flap / IPv6 soft 2026-09-04)
+
+- **Симптом:** YT то работает, то «нет интернета» → «соединение восстановлено», но сайт мёртв.
+- **Причина:** жёсткий `disable_ipv6=1` дергает NetworkManager/Firefox offline; плюс RA снова поднимает IPv6 default.
+- **Фикс:** soft block — `accept_ra=0` + blackhole default (без disable_ipv6); каждые 30с refresh protect/DNS/IPv6.
+- **.deb:** `pc\build-linux\Silent VPN Setup 1.0.164.deb` — переустановить. В логе: `IPv6 blackhole … OK ipv6-block blackhole`.
+- **Push:** `pc` `c585799`; `android` `493e367` (okcdn excludes).
+
+## Последние изменения (Linux IPv6 leak YouTube 2026-09-04)
+
+- **Симптом:** VPN ок, 2ip западный IP, YouTube не открывается.
+- **Причина:** AllowedIPs только IPv4 (`0.0.0.0/1+128/1`); YouTube/Chrome идут по **IPv6 мимо** туннеля. 2ip обычно IPv4.
+- **Фикс:** helper `ipv6-block` при полном туннеле (sysctl disable + blackhole default); `ipv6-restore` при stop.
+- **.deb:** `pc\build-linux\Silent VPN Setup 1.0.164.deb` — переустановить. В логе: `IPv6 block … OK ipv6-block`.
+
+## Последние изменения (Linux Android-like protect 2026-09-04)
+
+- **Лог:** Bypass 25 (okcdn есть), но воркеры ~19 и падают; `Tunnel API timeout` — datapath WG мёртв. Динамические TURN IP не в host-route списке.
+- **Как Android:** `excludeApplications(Silent)` = весь WDTT мимо VPN. На Linux: **SO_MARK + ip rule** (`protect-on`) + `setcap cap_net_admin,cap_net_raw` на wdtt-client.
+- **.deb:** `pc\build-linux\Silent VPN Setup 1.0.164.deb` — **переустановить**. В логе: `lan-protect (Android-like): OK protect-on…`. Проверка: `getcap /opt/silent-vpn/resources/wdtt-client`.
+
+## Последние изменения (Linux okcdn bypass 2026-09-04)
+
+- **Лог:** DNS/hosts OK, step3 anonymToken OK, застряли на 33/63. step4: `calls.okcdn.ru` → `155.212.204.195:443` timeout (IP не был в Bypass).
+- **Почему Android ок:** Silent целиком `excludeApplications` — WDTT мимо туннеля. Linux/Windows — только host-route список, `calls.okcdn.ru` не был в нём.
+- **Фикс:** `calls.okcdn.ru` + `okcdn.ru` в `vkNetworkExcludes` (PC + Android список).
+- **.deb:** `pc\build-linux\Silent VPN Setup 1.0.164.deb` — переустановить. В Bypass должны появиться `155.212…` / okcdn.
+
+## Последние изменения (Linux WDTT DNS TCP-first 2026-09-04)
+
+- **Почему Windows ок / Linux нет:** тот же WDTT, но на Linux full-tunnel + `vkDirectResolver` брал **UDP→8.8.8.8** первым (Dial «успешен», read timeout) — Yandex не пробовали. На Wi‑Fi ноута Google DNS мёртв.
+- **Не Android:** Android VpnService сам держит DNS в TUN; Linux — userspace WG + system routing. Ближе к Windows-логике, но нужен явный LAN-bind.
+- **Фикс WDTT:** DNS TCP-first, порядок Яндекс→CF→Google; Linux `SO_BINDTODEVICE` (`SILENT_LAN_IFACE`); bypass DNS/VK **до** `wg up`.
+- **UI:** обводка тумблера при змейке снова transparent.
+- **.deb:** `pc\build-linux\Silent VPN Setup 1.0.164.deb` — переустановить.
+
+## Последние изменения (Linux DNS hosts-pin + snake canvas 2026-09-04)
+
+- **Лог пользователя:** demote OK, но `lookup api.vk.me … → 8.8.8.8:53 i/o timeout`; воркеры мрут; змейки/кружка нет (CSS mask + transparent border).
+- **VPN:** `hosts-pin` api.vk.* в `/etc/hosts` до spawn WDTT; DNS nameserver = **шлюз Wi‑Fi** + 1.1.1.1/77.88.8.8 (не 8.8.8.8); `chattr +i` на resolv.conf; bypass ещё и 8.8.8.8/8.8.4.4.
+- **Змейка:** canvas сегменты дуги + обводка бегунка всегда видна; CSS rotate.
+- **.deb:** `pc\build-linux\Silent VPN Setup 1.0.164.deb` — **переустановить** (helper restart). В логе: `hosts-pin VK`, `DNS … 192.168.…, 1.1.1.1…`, без timeout на 8.8.8.8.
+
+## Последние изменения (Linux DNS bypass + CSS snake 2026-09-04)
+
+- **Скрины:** воркеры ~27–35 → падают; `lookup api.vk.ru/api.vk.me on 127.0.0.53:53: i/o timeout`; YouTube «сайт не найден». Не слабый ноут — DNS chicken-and-egg + canvas змейка.
+- **VPN:** host-route `/32` для DNS (`1.1.1.1`…) **до** `dns-set`; helper пишет `/etc/resolv.conf` на VPN DNS + demote остальных iface; иначе WDTT не резолвит VK → воркеры мрут.
+- **Змейка:** CSS `conic-gradient` + mask + `@keyframes vpn-snake-spin` (не canvas). Слабый GPU не причина.
+- **.deb:** `pc\build-linux\Silent VPN Setup 1.0.164.deb` (+ `releases\`), `-WithDebugLog`, хеш `4uhJ…`. **Переустановить** пакет (обновит helper systemd). В логе ждать `OK dns resolv.conf` / `demote=…`, без `127.0.0.53 … timeout`.
+
+## Последние изменения (Linux DNS + snake 2026-09-04)
+
+- **VPN «включён, ничего не грузит»:** systemd-resolved слал DNS на DHCP `8.8.8.8` с LAN wifi → timeout (`lookup api.vk.me … → 8.8.8.8`). Фикс `silent-wg-helper` dns-set: DNS на `wg-turn` + `default-route no` / clear DNS на остальных iface + flush-caches; restore делает `resolvectl revert`.
+- **Змейка без хвоста:** `createConicGradient`+stroke на Linux Electron → сплошной круг. Рисуем сегментами дуги с alpha.
+- **.deb с логом (тест):** `pc\build-linux\Silent VPN Setup 1.0.164.deb` (+ `releases\`), `-WithDebugLog`, хеш `4uhJ…`. Переустановить пакет (helper в systemd).
+
+## Последние изменения (Linux .deb 1.0.164 + DEBUG Log 2026-09-04)
+
+- **Временная** Linux-сборка с пунктом **«Лог»** (и меню «Хеши»): `build-linux.ps1 -WithDebugLog`.
+- Версия `1.0.164`, bootstrap `4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY`.
+- Артефакты: `pc\build-linux\Silent VPN Setup 1.0.164.deb` (~113 МБ) + `pc\releases\` + `silent-vpn_1.0.164_amd64.deb`.
+- `buildFlags.js` после сборки снова `DEBUG_BUILD: false` (Windows release не трогали).
+- **Не публиковать как production OTA** — только для снятия логов. Чистый Linux release без лога: `.\build-linux.ps1` без `-WithDebugLog`.
+
+## Последние изменения (Android TV focus ring exclusions + OTA 2026-09-04)
+
+- **Баг Smart TV:** чипы Сайты/Приложения/ЧС/БС и кнопка обновления на главном без синей обводки (голый `clickable`).
+- **Фикс:** `ModeChip` + update bar + строки сайтов/приложений через `tvClickable(ringOnTop)`; импорт/экспорт/clear — `TvIconButton`; чекбокс в строке не перехватывает фокус.
+- **Дефолт:** `tvClickable.ringOnTop = true`. Правило: `.cursor/rules/android-tv-focus.mdc` (alwaysApply).
+- Debug: `android\SilentVPN-debug.apk`. **Push:** `8684712`.
+
+## Последние изменения (Release 1.0.164 2026-09-04)
+
+- **Версия:** `1.0.163` → `1.0.164` (Android `versionCode=164` + PC `package.json`).
+- **Bootstrap VK:** тот же `4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY`.
+- **Android:** `android\SilentVPN-release-1.0.164.apk` (~26.3 МБ). **Push:** `8684712` (версия + TV focus).
+- **PC:** `pc\build-release-v141-882705\Silent VPN Setup 1.0.164.exe` (~79.2 МБ) + `pc\releases\`. **Push:** `6c5d030`.
+- **OTA:** пользователь заливает сам.
+
+## Последние изменения (Release 1.0.163 2026-09-04)
+
+- **Версия не менялась:** `1.0.163` (Android + PC).
+- **Bootstrap VK:** `4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY` ([vk.ru/call/join/…](https://vk.ru/call/join/4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY)).
+- **Android:** `android\SilentVPN-release-1.0.163.apk` (~26.3 МБ); `app\build\outputs\apk\release\SilentVPN-release.apk`. Код `24d1a17` (OTA mobile).
+- **PC:** `pc\build-release-v141-997442\Silent VPN Setup 1.0.163.exe` (~79.2 МБ) + `pc\releases\`. Код `a88b7b8`. `DEBUG_BUILD=false`.
+- **OTA на прод не заливали** — только локальные артефакты.
+
+## Последние изменения (Android OTA mobile vs Wi‑Fi 2026-09-04)
+
+- **Мобильный:** мета обновления приходит после initial sync при включении VPN (анимация); кнопка как раньше; скачивание только при VPN (иначе «Чтобы скачать обновление, включите VPN»); APK через tunnel `10.66.66.1:8000` (whitelist).
+- **Wi‑Fi:** проверка/скачивание без VPN, public/GitHub как раньше.
+- **Фикс:** LTE in-band sync не звал OTA — теперь `onCycleCompleted` + `shouldUseTunnelUpdateDownload` снова true на LTE+VPN.
+- **Тесты:** UpdateUrlResolverTest OK. **Push:** `24d1a17`. Debug: `android\SilentVPN-debug.apk`.
+
+## Последние изменения (Android 2ip.io site bypass blackhole 2026-09-04)
+
+- **Симптом:** исключение `2ip.io` → сайт не грузится; без исключения — западный IP. Другие сайты в исключениях ок. PC ок.
+- **Причина:** main VPN вычитал дыры из AllowedIPs (complement ≈ десятки CIDR на 1 IP) → OEM blackhole; PC делает host-route.
+- **Фикс:** main = `AllowedIPs 0.0.0.0/0` + только `excludeRoute` (API 33+); recreate при смене дыр. API&lt;33 — старый complement fallback.
+- **Тесты:** SiteBypassRoutesTest OK. **Push:** `android` (после `8a1f5ce`). Debug: `android\SilentVPN-debug.apk`.
+
+## Последние изменения (Android dialog light theme 2026-09-04)
+
+- **Баг:** окна «Приписать имя» (сессии) и «Изменить правило» (сайты) в светлой теме розовые (Material3 default surface).
+- **Фикс:** `containerColor = palette.bg`, `tonalElevation = 0`, цвета текста из палитры; то же для «Удалить сессию».
+- **Push:** `8a1f5ce`. Debug: `android\SilentVPN-debug.apk`.
+
+## Последние изменения (PC Chrome missing in exclusions 2026-09-04)
+
+- **Баг:** Google Chrome есть в системе, в списке исключений нет (Яндекс был).
+- **Причина:** `makeId` обрезал base64 пути до 48 символов → `chrome.exe` и `chrome_proxy.exe` (PWA Solus Messenger) получали один id; в merge оставался только proxy.
+- **Фикс:** sha256-id; `collectKnownBrowsers` (Chrome/Edge/Firefox/Brave/Opera/Vivaldi); merge устойчивее к коллизиям.
+- **Тесты:** 67/67. **Push:** `a88b7b8`. Debug: `pc\build-debug-28363\win-unpacked\Silent VPN.exe`.
+- Из‑за смены `makeId` старые галочки исключений могут сброситься — перевыбрать приложения один раз.
+- **Сайты: Яндекс ок / Chrome западный IP:** обход сайтов = host-route только по **IPv4** из нашего резолва. Chrome часто Secure DNS (DoH) + другие CDN IP / IPv6 → трафик мимо добавленных /32 идёт в VPN. Проверка: в Chrome выключить «Использовать защищённый DNS» или временно ЧС для Chrome.
+
+## Последние изменения (PC sites exclusions UI 2026-09-04)
+
+- **PC (Windows+Linux):** сайты как Android — импорт/экспорт, крестик в поле, Edit/Delete как в сессиях, без «Маршрутов/IP» после добавления.
+- **Парсер:** `siteImportParse.js` (+ TS для renderer); тесты 65/65.
+- **Push:** `pc` (после android `a478a3d`).
+- **Debug:** `pc\build-debug-891191\win-unpacked\Silent VPN.exe`.
+
+## Последние изменения (Android sites exclusions UI 2026-09-04)
+
+- **Сайты (Android):** импорт/экспорт (иконки справа от «Назад», json/txt/csv); крестик очистки в поле домена; Edit/Delete как в сессиях (диалог правки); без дампа IP после добавления.
+- **Парсер:** `SiteBypassRoutes.extractRulesFromImportContent` + merge; тесты OK.
+- **Push:** `a478a3d` на `origin/android`.
+- **Debug:** `android\SilentVPN-debug.apk`.
+
+## Последние изменения (PC exclusions persist 2026-09-04)
+
+- **PC (Windows+Linux, одна ветка `pc`):** dual-list persist ЧС/БС + режим; смена режима не затирает другой список; пустой БС = full tunnel; поиск с крестиком; выбранные сверху + scroll.
+- **Тесты:** `test/exclusions.test.js` 21/21. Push: `60db4fa`.
+- **Debug:** `pc\build-debug-151728\win-unpacked\Silent VPN.exe` (Linux UI тот же renderer).
+- Android уже в `1f76385` (push).
+
+## Последние изменения (Android exclusions UI 2026-09-04)
+
+- Список приложений: выбранные сверху + scroll к началу при открытии/смене ЧС↔БС.
+- Поиск: крестик очистки текста.
+- Debug: `android\SilentVPN-debug.apk`.
+
+## Последние изменения (Android exclusions persist only 2026-09-04)
+
+- **Точечно Android:** запоминать ЧС/БС режим + оба списка приложений при выходе/входе.
+- **Причины потери:** `saveExceptionsMode` чистил список; `resolveAppTunnelPolicy` при БС затирал prefs (`whitelist=false` + empty apps).
+- **Фикс:** `AppExclusionsPersist` dual-list; Repository `commit()`; UI не сбрасывает другой список; tunnel **не пишет** в prefs. Маршрутизация БС пока no-op (ЧС-safe), отдельно.
+- **Тесты:** `AppExclusionsPersistTest` OK; debug `android\SilentVPN-debug.apk`.
+
 ## Последние изменения (hard reset 2026-09-04)
 
 - **Явный запрос:** полный hard reset всех изменений с **2026-09-02** (исключения БС/ЧС, persist dual-list, site YouTube, Gemini-хвосты, docs).
@@ -10,6 +168,7 @@
 - **Снято с remote:** все коммиты 02.09 (persist dual-list, whitelist/YouTube, complement exclude, theme site placeholder и т.д.).
 - **Деплой:** `deploy_stable.py` OK — health ~36 мс, `queen_wg_kick_20s=0`, `wdtt` active, DNAT tunnel → API OK. `wdtt` не рестартили отдельно.
 - Состояние клиентов = **до 02.09** (конец августа / 1.0.163 без правок исключений 02.09). OTA/debug клиенты — пересобрать с веток `android`/`pc` при необходимости.
+- **Debug Android (после reset):** `android\SilentVPN-debug.apk` с `1b34d36` — иконка **Silent VPN (debug)**. Дальше точечные фиксы с Android.
 
 ## О проекте
 
@@ -21,8 +180,8 @@
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.163** (olcrtc снят из UI; WDTT only; Linux = тот же клиент, AppImage) |
-| `Silent-Project/android/` | `android` | **1.0.163** (olcrtc снят из UI; WDTT only) |
+| `Silent-Project/pc/` | `pc` | **1.0.164** (olcrtc снят из UI; WDTT only; Linux = тот же клиент, AppImage) |
+| `Silent-Project/android/` | `android` | **1.0.164** (olcrtc снят из UI; WDTT only) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
@@ -93,14 +252,14 @@
 
 ### Bootstrap VK-хеш (сборка Android + PC) — Agent ОБЯЗАН помнить
 
-**Текущий хеш (debug и release по умолчанию):**
+**Текущий хеш (последний release 2026-09-04; debug defaults в коде могут отличаться):**
 
-- Ссылка: https://vk.com/call/join/6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY
-- Значение: `6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY`
+- Ссылка: https://vk.ru/call/join/4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY
+- Значение: `4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY`
 
 | Тип сборки | Правило для Agent |
 |------------|-------------------|
-| **Debug / dev** | **Всегда** этот хеш — зашит в `android/app/build.gradle.kts` и `pc/vite.config.ts`. Собирать debug **без вопросов**. |
+| **Debug / dev** | Зашит в `android/app/build.gradle.kts` и `pc/vite.config.ts`. Собирать debug **без вопросов** (если не просили другой хеш). |
 | **Release** | **Перед каждой новой release-сборкой** (Android `assembleRelease`, PC `npm run build`) **спросить у пользователя** актуальную ссылку `vk.com/call/join/…`. Если дали новую — подставить в сборку. Если «оставь как есть» — использовать текущий хеш выше. **Не начинать release-сборку молча.** |
 
 **Команды release с хешем:**
@@ -108,11 +267,11 @@
 ```powershell
 # Android
 cd android\app
-.\gradlew.bat assembleRelease -PbootstrapVkHash=6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY
+.\gradlew.bat assembleRelease -PbootstrapVkHash=4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY
 
 # PC (PowerShell)
 cd pc
-$env:BOOTSTRAP_VK_HASH="6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY"
+$env:BOOTSTRAP_VK_HASH="4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY"
 npm run build
 ```
 

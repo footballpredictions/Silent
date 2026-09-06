@@ -18,6 +18,7 @@ cd backend
 |------|--------|------------|
 | `scripts/_deploy_common.py` | *(модуль)* | SSH, `.env.deploy`, upload — импортируется скриптами |
 | `scripts/.env.deploy.example` | *(шаблон)* | Пример `DEPLOY_HOST`, `DEPLOY_PASS`, … |
+| `scripts/deploy_balloon_deflate.py` | `python scripts/deploy_balloon_deflate.py` | Хост Улья: снять virtio balloon (MemTotal 10→16GiB), systemd oneshot+timer; **не** трогает wdtt |
 | `scripts/deploy_helper.py` | `python scripts/deploy_helper.py <action>` | VPS: check / install / status / creds |
 | `scripts/deploy_stable.py` | `python scripts/deploy_stable.py` | **Единственный** деплой backend на прод: все `app/**/*.py`, `ai/**/*.py`, `admin-ui/dist`, `docker-compose.yml` (volume app/ai) |
 | `scripts/deploy_api.py` | `python scripts/deploy_api.py` | Алиас → `deploy_stable.py` (FILES-список больше не используется) |

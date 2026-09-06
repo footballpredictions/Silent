@@ -1,0 +1,7 @@
+[Unit]
+Description=Silent VPN — unbind virtio balloon if MemTotal shrinks
+ConditionPathExists=/opt/silent-vpn/backend/deploy/host/silent-balloon-watch.sh
+
+[Service]
+Type=oneshot
+ExecStart=/opt/silent-vpn/backend/deploy/host/silent-balloon-watch.sh

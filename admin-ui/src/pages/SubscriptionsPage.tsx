@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Calendar, KeyRound, X, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
+import SortSelect from '../components/SortSelect'
 
 interface SubInfo {
   active: boolean
@@ -70,6 +71,32 @@ const PLANS = [
   { type: 'unlimited', label: '∞', days: null },
 ] as const
 
+const SUB_FILTER_KEY = 'admin.subscriptions.filter'
+
+const SUB_FILTERS = [
+  { value: 'all', label: 'Все' },
+  { value: 'with_sub', label: 'С подпиской' },
+  { value: 'monthly', label: 'Купили 1 мес.' },
+  { value: 'two_months', label: 'Купили 2 мес.' },
+  { value: 'quarterly', label: 'Купили 3 мес.' },
+  { value: 'granted', label: 'Выданные' },
+  { value: 'inactive', label: 'Без подписки' },
+  { value: 'unpaid', label: 'Оплата без подписки' },
+  { value: 'referrals', label: 'Рефералы' },
+  { value: 'trial', label: 'Пробный период' },
+] as const
+
+type SubFilter = (typeof SUB_FILTERS)[number]['value']
+
+function readStoredFilter(): SubFilter {
+  try {
+    const raw = localStorage.getItem(SUB_FILTER_KEY)
+    if (raw === 'active') return 'with_sub'
+    if (raw && SUB_FILTERS.some(f => f.value === raw)) return raw as SubFilter
+  } catch { /* private mode */ }
+  return 'all'
+}
+
 const PLAN_NAMES: Record<string, string> = {
   trial: 'Пробный',
   test: 'Тест',
@@ -80,14 +107,8 @@ const PLAN_NAMES: Record<string, string> = {
   half_year: 'Полгода',
   yearly: 'Год',
   unlimited: '∞',
+  referral_bonus: 'Реферал',
 }
-
-const FILTERS = [
-  { id: 'all', label: 'Все' },
-  { id: 'active', label: 'Активна' },
-  { id: 'inactive', label: 'Нет' },
-  { id: 'unpaid', label: 'Оплата без подписки' },
-] as const
 
 function subscriptionLabel(u: UserRow): string {
   const inTest = u.in_test_mode ?? u.is_test_user
@@ -113,7 +134,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
   const [users, setUsers] = useState<UserRow[]>([])
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]['id']>('all')
+  const [filter, setFilter] = useState<SubFilter>(() => readStoredFilter())
   const [page, setPage] = useState(1)
   const [pages, setPages] = useState(1)
   const [total, setTotal] = useState(0)
@@ -147,6 +168,12 @@ export default function SubscriptionsPage({ token }: { token: string }) {
   useEffect(() => {
     setPage(1)
   }, [debouncedSearch, filter])
+
+  const setAndStoreFilter = (value: string) => {
+    const next = (SUB_FILTERS.some(f => f.value === value) ? value : 'all') as SubFilter
+    setFilter(next)
+    try { localStorage.setItem(SUB_FILTER_KEY, next) } catch { /* ignore */ }
+  }
 
   const fetchTestMode = async () => {
     const res = await fetch('/api/admin/subscriptions/registration-test-mode', { headers })
@@ -452,26 +479,16 @@ export default function SubscriptionsPage({ token }: { token: string }) {
             value={search}
             onChange={setSearch}
             placeholder="Поиск по email или ID…"
+            className="w-full sm:w-56 shrink-0 min-w-0"
+          />
+          <SortSelect
+            value={filter}
+            onChange={setAndStoreFilter}
+            options={[...SUB_FILTERS]}
             className="w-full sm:w-56 shrink-0"
+            label="Фильтр подписок"
           />
         </div>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        {FILTERS.map(f => (
-          <button
-            key={f.id}
-            type="button"
-            onClick={() => setFilter(f.id)}
-            className={`px-3 py-1.5 rounded-lg text-xs border transition-colors cursor-pointer ${
-              filter === f.id
-                ? 'bg-white text-black border-white'
-                : 'border-[#2a2a2a] text-[#aaa] hover:border-[#444]'
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
       </div>
 
       {orphans.length > 0 && (

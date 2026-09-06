@@ -133,6 +133,7 @@ async def _dashboard_users_block(db: AsyncSession) -> dict:
         "active_subscriptions": int(breakdown["total"]),
         "subscriptions_paid": int(breakdown["paid"]),
         "subscriptions_granted": int(breakdown["granted"]),
+        "subscriptions_referral": int(breakdown.get("referral", 0)),
         "subscriptions_trial": int(breakdown["trial"]),
         "vpn_access_users": vpn_access,
         "connected_devices": connected_devices,
@@ -484,16 +485,22 @@ async def list_subscription_users_endpoint(
     q: str = Query("", description="email или display_id"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=10, le=500),
-    filter: str = Query("all", description="all|active|inactive|unpaid"),
+    filter: str = Query(
+        "all",
+        description=(
+            "all|with_sub|monthly|two_months|quarterly|granted|inactive|unpaid|referrals|trial"
+        ),
+    ),
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
     """Список для меню Подписки: пагинация; при q — все совпадения по базе."""
-    from app.services.admin_subscription_ops import list_subscription_users
+    from app.services.admin_subscription_ops import (
+        list_subscription_users,
+    )
+    from app.services.subscription_kinds import normalize_subscription_filter
 
-    mode = (filter or "all").strip().lower()
-    if mode not in ("all", "active", "inactive", "unpaid"):
-        mode = "all"
+    mode = normalize_subscription_filter(filter)
     return await list_subscription_users(
         db, q=q, page=page, page_size=page_size, filter_mode=mode
     )

@@ -74,6 +74,7 @@ interface Stats {
     active_subscriptions: number
     subscriptions_paid?: number
     subscriptions_granted?: number
+    subscriptions_referral?: number
     subscriptions_trial?: number
     vpn_access_users?: number
     connected_devices: number
@@ -590,8 +591,12 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
               <span className="text-2xl font-bold tabular-nums">{stats.users.subscriptions_paid ?? 0}</span>
             </div>
             <div className="flex items-baseline justify-between gap-3">
-              <span className="text-[#aaa] text-sm" title="Выдал админ или бесплатный бонус (amount=0)">Выданные</span>
+              <span className="text-[#aaa] text-sm" title="Выдал админ (amount_paid=0, не реф.бонус)">Выданные</span>
               <span className="text-2xl font-bold tabular-nums">{stats.users.subscriptions_granted ?? 0}</span>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-[#aaa] text-sm" title="Живой referral_bonus">Рефералы</span>
+              <span className="text-2xl font-bold tabular-nums">{stats.users.subscriptions_referral ?? 0}</span>
             </div>
             <div className="flex items-baseline justify-between gap-3">
               <span className="text-[#aaa] text-sm" title="Пробный период (trial)">Пробный период</span>

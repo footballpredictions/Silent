@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from sqlalchemy import select, func, or_, cast, String as SAString
+from sqlalchemy import select, func, or_, and_, cast, String as SAString
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import User, Payment, Subscription
@@ -15,6 +15,11 @@ from app.services.subscription_service import (
     user_in_test_mode,
     is_user_admin,
     TEST_PLAN,
+    TRIAL_PLAN,
+)
+from app.services.subscription_kinds import (
+    REFERRAL_PLAN,
+    normalize_subscription_filter,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,15 +27,83 @@ logger = logging.getLogger(__name__)
 BOOTSTRAP_EMAIL = "__bootstrap__@silent.local"
 
 
-def _live_subscription_user_ids():
-    """Пользователи с живой подпиской (включая выданный unlimited ~100 лет)."""
+def _live_subscription_user_ids(
+    *,
+    plan_types: tuple[str, ...] | None = None,
+    exclude_plans: tuple[str, ...] = (),
+    amount_zero: bool | None = None,
+):
+    """Пользователи с живой подпиской; опционально по плану / amount_paid."""
+    q = select(Subscription.user_id).where(
+        Subscription.status == "active",
+        Subscription.expires_at > datetime.utcnow(),
+    )
+    if plan_types:
+        q = q.where(Subscription.plan_type.in_(plan_types))
+    if exclude_plans:
+        q = q.where(Subscription.plan_type.notin_(exclude_plans))
+    if amount_zero is True:
+        q = q.where(Subscription.amount_paid == 0)
+    elif amount_zero is False:
+        q = q.where(Subscription.amount_paid > 0)
+    return q.distinct()
+
+
+def _best_live_subscription_rows():
+    """Самый долгий живой план на пользователя (без test) — как на дашборде."""
     return (
-        select(Subscription.user_id)
+        select(
+            Subscription.user_id.label("uid"),
+            Subscription.plan_type.label("plan_type"),
+            Subscription.amount_paid.label("amount_paid"),
+        )
         .where(
             Subscription.status == "active",
             Subscription.expires_at > datetime.utcnow(),
+            Subscription.plan_type != TEST_PLAN,
         )
-        .distinct()
+        .distinct(Subscription.user_id)
+        .order_by(Subscription.user_id, Subscription.expires_at.desc())
+        .subquery()
+    )
+
+
+def _user_ids_best_kind(*kinds: str):
+    """user_id, у кого classify(best live) ∈ kinds — те же правила, что dashboard_subscription_breakdown."""
+    best = _best_live_subscription_rows()
+    parts = []
+    if "trial" in kinds:
+        parts.append(best.c.plan_type == TRIAL_PLAN)
+    if "referral" in kinds:
+        parts.append(best.c.plan_type == REFERRAL_PLAN)
+    if "paid" in kinds:
+        parts.append(
+            and_(
+                best.c.amount_paid > 0,
+                best.c.plan_type.notin_((TRIAL_PLAN, TEST_PLAN, REFERRAL_PLAN)),
+            )
+        )
+    if "granted" in kinds:
+        parts.append(
+            and_(
+                best.c.amount_paid == 0,
+                best.c.plan_type.notin_((TRIAL_PLAN, TEST_PLAN, REFERRAL_PLAN)),
+            )
+        )
+    if not parts:
+        return select(best.c.uid).where(False)
+    return select(best.c.uid).where(or_(*parts))
+
+
+def _user_ids_best_paid_plan(plan_type: str):
+    """Купившие: самый долгий живой план = этот plan_type и amount_paid > 0.
+
+    Старые покупки при живой выдаче/реферале/другом плане не попадают.
+    """
+    best = _best_live_subscription_rows()
+    return select(best.c.uid).where(
+        best.c.plan_type == plan_type,
+        best.c.amount_paid > 0,
     )
 
 
@@ -219,11 +292,24 @@ async def list_subscription_users(
         )
 
     access = _vpn_access_clause(global_test=global_test, admin_email=admin_email)
-    if filter_mode == "active":
-        base = base.where(access)
-    elif filter_mode == "inactive":
+    mode = normalize_subscription_filter(filter_mode)
+
+    if mode == "with_sub":
+        # Покупки + выданные админом + реф.бонус (без trial) — как paid+granted+referral на дашборде
+        base = base.where(User.id.in_(_user_ids_best_kind("paid", "granted", "referral")))
+    elif mode == "monthly":
+        # Только если сейчас (best) купленный 1 мес.; старые покупки / реф / выдача — нет
+        base = base.where(User.id.in_(_user_ids_best_paid_plan("monthly")))
+    elif mode == "two_months":
+        base = base.where(User.id.in_(_user_ids_best_paid_plan("two_months")))
+    elif mode == "quarterly":
+        base = base.where(User.id.in_(_user_ids_best_paid_plan("quarterly")))
+    elif mode == "granted":
+        # Как «Выданные» на дашборде: best live = admin grant (не referral_bonus)
+        base = base.where(User.id.in_(_user_ids_best_kind("granted")))
+    elif mode == "inactive":
         base = base.where(~access, User.is_admin.is_(False))
-    elif filter_mode == "unpaid":
+    elif mode == "unpaid":
         unpaid_subq = (
             select(Payment.user_id)
             .where(
@@ -234,6 +320,11 @@ async def list_subscription_users(
             .distinct()
         )
         base = base.where(User.id.in_(unpaid_subq))
+    elif mode == "referrals":
+        # Только живой referral_bonus (best) — не invitee-флаг и не месяцы/выданные
+        base = base.where(User.id.in_(_user_ids_best_kind("referral")))
+    elif mode == "trial":
+        base = base.where(User.id.in_(_user_ids_best_kind("trial")))
 
     count_q = select(func.count()).select_from(base.subquery())
     total_matched = int((await db.execute(count_q)).scalar_one() or 0)
@@ -242,7 +333,7 @@ async def list_subscription_users(
         case_admin_first(admin_email),
         User.created_at.desc(),
     )
-    if filter_mode == "active":
+    if mode in ("with_sub", "monthly", "two_months", "quarterly", "granted", "trial"):
         live_expires = (
             select(
                 Subscription.user_id.label("uid"),

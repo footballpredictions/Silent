@@ -554,9 +554,10 @@ GRANTABLE_PLANS = {
 
 
 async def dashboard_subscription_breakdown(db: AsyncSession) -> dict[str, int]:
-    """Живые подписки по пользователям: оплаченные / выданные / пробный.
+    """Живые подписки по пользователям: оплаченные / выданные / рефералы / пробный.
 
     На пользователя — одна категория (самый долгий активный план, без test).
+    Реферальный бонус — отдельно от «Выданные» (как фильтр в Подписках).
     """
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
 
@@ -583,19 +584,22 @@ async def dashboard_subscription_breakdown(db: AsyncSession) -> dict[str, int]:
             continue
         best[user_id] = classify_subscription_kind(plan_type, amount_paid)
 
-    paid = granted = trial = 0
+    paid = granted = referral = trial = 0
     for kind in best.values():
         if kind == "paid":
             paid += 1
         elif kind == "granted":
             granted += 1
+        elif kind == "referral":
+            referral += 1
         elif kind == "trial":
             trial += 1
     return {
         "paid": paid,
         "granted": granted,
+        "referral": referral,
         "trial": trial,
-        "total": paid + granted + trial,
+        "total": paid + granted + referral + trial,
     }
 
 

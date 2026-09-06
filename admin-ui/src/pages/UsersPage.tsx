@@ -23,6 +23,7 @@ const USERS_SORT_KEY = 'admin.users.sort'
 
 const USERS_SORTS = [
   { value: 'online', label: 'Онлайн сначала' },
+  { value: 'unverified', label: 'Неверифицированные' },
   { value: 'email_az', label: 'По алфавиту А→Я' },
   { value: 'email_za', label: 'По алфавиту Я→А' },
   { value: 'registered_new', label: 'Новые сначала' },
@@ -152,6 +153,11 @@ export default function UsersPage({ token }: { token: string }) {
         case 'online': {
           const byOnline = Number(Boolean(b.is_online)) - Number(Boolean(a.is_online))
           if (byOnline) return byOnline
+          return parseTs(b.created_at) - parseTs(a.created_at)
+        }
+        case 'unverified': {
+          const byUnverified = Number(Boolean(a.is_verified)) - Number(Boolean(b.is_verified))
+          if (byUnverified) return byUnverified
           return parseTs(b.created_at) - parseTs(a.created_at)
         }
         case 'email_az':

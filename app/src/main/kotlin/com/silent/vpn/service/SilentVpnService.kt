@@ -796,6 +796,8 @@ class SilentVpnService : Service() {
             override fun onLosing(network: Network, maxMsToLive: Int) {
                 val caps = connectivityManager?.getNetworkCapabilities(network) ?: return
                 if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
+                // Гаснет чужая сеть (обычно сота при живом Wi‑Fi) — это не наша дыра.
+                if (!isOurUnderlying(caps)) return
                 lastBlackoutAtMs = System.currentTimeMillis()
             }
 
@@ -837,7 +839,10 @@ class SilentVpnService : Service() {
                 } else {
                     true
                 }
-                if (validated != lastNetworkValidated) {
+                // Флаг VALIDATED один на все сети: без этой проверки сота,
+                // поднявшаяся невалидированной при живом Wi‑Fi, роняла флаг,
+                // а следующее событие Wi‑Fi читалось как validated_after_gap.
+                if (validated != lastNetworkValidated && isOurUnderlying(caps)) {
                     val wasValidated = lastNetworkValidated
                     lastNetworkValidated = validated
                     val now = System.currentTimeMillis()
@@ -947,6 +952,14 @@ class SilentVpnService : Service() {
     }
 
     /** Только тип транспорта default-сети — без VALIDATED (Android часто мигает v0↔v1 на том же Wi‑Fi). */
+    /** Событие пришло по сети, на которой мы сейчас живём (а не по чужой соте/Wi‑Fi). */
+    private fun isOurUnderlying(caps: NetworkCapabilities?): Boolean =
+        NetworkRecoveryPolicy.isOurUnderlyingNetwork(
+            eventFp = networkFingerprint(caps),
+            currentFp = VpnNetworkHelper.underlyingTransportFingerprint(this),
+            lastFp = lastNetworkFingerprint,
+        )
+
     private fun networkFingerprint(caps: NetworkCapabilities?): String {
         if (caps == null) return ""
         return when {

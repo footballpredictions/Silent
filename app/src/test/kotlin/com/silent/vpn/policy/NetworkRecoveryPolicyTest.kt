@@ -8,6 +8,48 @@ import org.junit.Test
 class NetworkRecoveryPolicyTest {
 
     @Test
+    fun `cell events do not count as our gap while wifi is alive`() {
+        // Сота гаснет сама при живом Wi‑Fi — не наша дыра, рестарта быть не должно.
+        assertFalse(
+            NetworkRecoveryPolicy.isOurUnderlyingNetwork(
+                eventFp = "cell",
+                currentFp = "wifi",
+                lastFp = "wifi",
+            ),
+        )
+        // Событие нашей сети — учитываем.
+        assertTrue(
+            NetworkRecoveryPolicy.isOurUnderlyingNetwork(
+                eventFp = "wifi",
+                currentFp = "wifi",
+                lastFp = "wifi",
+            ),
+        )
+        // Полная дыра: текущего транспорта нет — ориентируемся на последний известный.
+        assertTrue(
+            NetworkRecoveryPolicy.isOurUnderlyingNetwork(
+                eventFp = "cell",
+                currentFp = "",
+                lastFp = "cell",
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.isOurUnderlyingNetwork(
+                eventFp = "",
+                currentFp = "wifi",
+                lastFp = "wifi",
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.isOurUnderlyingNetwork(
+                eventFp = "unknown",
+                currentFp = "",
+                lastFp = "",
+            ),
+        )
+    }
+
+    @Test
     fun `wifi cell transport target`() {
         assertEquals("wifi", NetworkRecoveryPolicy.wifiCellTransportTarget("cell", "wifi"))
         assertEquals("mobile", NetworkRecoveryPolicy.wifiCellTransportTarget("wifi", "cell"))

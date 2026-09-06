@@ -13,6 +13,20 @@ object NetworkRecoveryPolicy {
     /** Окно, в котором возврат того же wifi/cell после blackout = реальное восстановление. */
     const val TRANSPORT_GAP_MAX_MS = 60_000L
 
+    /**
+     * Событие пришло по сети, на которой мы реально живём?
+     *
+     * Колбэк слушает все не-VPN сети, поэтому при живом Wi‑Fi прилетают события
+     * соты, которую Android поднимает и гасит сам (IMS, MMS, чужие приложения).
+     * Считать их дырой нашей сети нельзя — иначе получаем «восстановление»
+     * и полный рестарт транспорта на неподвижном телефоне.
+     */
+    fun isOurUnderlyingNetwork(eventFp: String, currentFp: String, lastFp: String): Boolean {
+        if (eventFp.isEmpty()) return false
+        val ours = currentFp.ifEmpty { lastFp }
+        return ours.isNotEmpty() && eventFp == ours
+    }
+
     fun wifiCellTransportTarget(oldFp: String, newFp: String): String? = when {
         oldFp == "cell" && newFp == "wifi" -> "wifi"
         oldFp == "wifi" && newFp == "cell" -> "mobile"

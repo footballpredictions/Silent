@@ -90,6 +90,8 @@ const BAKED_SERVER_IPS: Record<string, string> = {
   server1: '132.243.234.162',
   server2: '87.58.213.193',
   server3: '78.17.74.27',
+  // Сота 3 / «Сервер 4 для ИИ»: без запечённого IP кеш конфига слота считается чужим.
+  server4: '192.177.26.38',
 }
 
 export function rememberVpnServerIps(servers: { key?: string; public_ip?: string }[]) {

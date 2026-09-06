@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import api from '../api'
 import { getStableDeviceFingerprint } from '../api'
+import { isDebugBuild } from '../debugBuild'
 import {
   getPreferredServer,
   setPreferredServer,
@@ -83,6 +84,33 @@ function slotTitle(slot: string): string {
   return n && /^\d+$/.test(n) ? `Сервер ${n}` : slot
 }
 
+const AI_SERVER_SLOT = 'server4'
+const AI_SERVER_TITLE = 'Сервер 4 для ИИ'
+
+/**
+ * Тестовая сборка: слот ИИ-соты в списке всегда, даже пока список серверов не
+ * пришёл с API. Права не проверяем — сота помечена admin_only, и не-админу
+ * сервер сам ответит 403 на выборе. В release список целиком с сервера.
+ */
+function withDebugAiServer(list: VpnServerInfo[]): VpnServerInfo[] {
+  if (!isDebugBuild) return list
+  const ai: VpnServerInfo = {
+    key: AI_SERVER_SLOT,
+    title: AI_SERVER_TITLE,
+    public_ip: '',
+    wdtt_port: 0,
+    online_count: 0,
+  }
+  const idx = list.findIndex((s) => normalizePreferredServer(s.key) === AI_SERVER_SLOT)
+  if (idx < 0) return [...list, ai]
+  const known = list[idx]
+  // Подпись с сервера главнее; заменяем только локальную заглушку «Сервер 4».
+  if (known.title && known.title !== slotTitle(AI_SERVER_SLOT)) return list
+  const next = [...list]
+  next[idx] = { ...known, title: AI_SERVER_TITLE }
+  return next
+}
+
 function applyDialogLine(fromSlot: string, toSlot: string, servers: VpnServerInfo[]): string {
   const titleOf = (key: string) =>
     servers.find((s) => normalizePreferredServer(s.key) === key)?.title || slotTitle(key)
@@ -129,8 +157,9 @@ export default function MenuBypassPanel({
         const res = await api.get('/api/vpn/servers', { params: { fingerprint: fp } })
         const data = res.data as VpnServersResponse
         if (!mounted) return
-        setServers(Array.isArray(data.servers) ? data.servers : [])
-        rememberVpnServerIps(Array.isArray(data.servers) ? data.servers : [])
+        const list = Array.isArray(data.servers) ? data.servers : []
+        setServers(withDebugAiServer(list))
+        rememberVpnServerIps(list)
         // Локальный слот — источник правды. GET selected_server часто отстаёт
         // (устройство ещё на соте) и откатывал «Сервер 1» обратно на 2/3.
         const local = normalizePreferredServer(getPreferredServer())
@@ -166,6 +195,7 @@ export default function MenuBypassPanel({
         return
       }
       if (nextServer !== selectedServerSlot) {
+        const prevServer = selectedServerSlot
         setSelectedServerSlot(nextServer)
         setPreferredServer(nextServer)
         try {
@@ -176,11 +206,19 @@ export default function MenuBypassPanel({
           })
           const data = res.data as VpnServersResponse
           const nextServers = Array.isArray(data.servers) ? data.servers : []
-          if (nextServers.length > 0) setServers(nextServers)
+          if (nextServers.length > 0) setServers(withDebugAiServer(nextServers))
           rememberVpnServerIps(nextServers)
           setHint('Выбрано')
-        } catch {
-          setHint('Выбрано. Синхронизация с сервером при подключении.')
+        } catch (e: any) {
+          if (e?.response?.status === 403) {
+            // Иначе остались бы с пином, которого на сервере нет: конфиг придёт
+            // от Улья и не сойдётся с ожидаемым IP слота.
+            setPreferredServer(prevServer)
+            setSelectedServerSlot(prevServer)
+            setHint('Сервер доступен только администратору.')
+          } else {
+            setHint('Выбрано. Синхронизация с сервером при подключении.')
+          }
         }
       } else {
         setHint('Выбрано')
@@ -210,11 +248,11 @@ export default function MenuBypassPanel({
 
       <div className="flex-1 overflow-y-auto min-h-0">
         <div style={{ paddingLeft: 12 }}>
-          {(servers.length > 0 ? servers : [
+          {(servers.length > 0 ? servers : withDebugAiServer([
             { key: 'server1', title: 'Сервер 1', public_ip: '', wdtt_port: 0, online_count: 0 },
             { key: 'server2', title: 'Сервер 2', public_ip: '', wdtt_port: 0, online_count: 0 },
             { key: 'server3', title: 'Сервер 3', public_ip: '', wdtt_port: 0, online_count: 0 },
-          ]).map((server) => {
+          ])).map((server) => {
             const slot = normalizePreferredServer(server.key)
             return (
             <div key={slot}>

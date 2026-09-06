@@ -244,6 +244,16 @@ def test_partial_asn_block_is_warning_with_carriers():
     assert report_status(verdicts) == "degraded"
 
 
+def test_single_checkhost_timeout_is_not_partial_block():
+    """3 ноды РФ, 1 timeout → 2/3: шум check-host, не «часть операторов»."""
+    snap = _queen()
+    snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=3)
+    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=2, failed=1)
+    kinds = _kinds(snap)
+    assert KIND_ASN_PARTIAL not in kinds
+    assert report_status(classify_target(snap)) == "ok"
+
+
 def test_throttling_needs_control_vantage():
     snap = _queen()
     snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=5, latency=900.0)

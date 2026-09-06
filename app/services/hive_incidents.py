@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import time
@@ -15,11 +16,14 @@ from app.database import AsyncSessionLocal
 
 MAX_INCIDENTS = 800
 DEDUP_WINDOW_SEC = 45.0
+TRUSTED_ADMIN_IPS_TTL_SEC = 120.0
 
 _incidents: deque[dict[str, Any]] = deque(maxlen=MAX_INCIDENTS)
 _last_seen: dict[str, float] = {}
 _persist_queue: deque[dict[str, Any]] = deque()
 _persist_worker_task: asyncio.Task | None = None
+_trusted_admin_ips: set[str] = set()
+_trusted_admin_ips_ts: float = 0.0
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +248,86 @@ def push_incident(
     return True
 
 
+def remember_trusted_admin_ip(ip: str) -> None:
+    """Запомнить IP доверенного админ-устройства (логин / last_seen)."""
+    cleaned = (ip or "").strip()
+    if cleaned:
+        _trusted_admin_ips.add(cleaned)
+
+
+def set_trusted_admin_ips(ips: list[str] | set[str] | tuple[str, ...]) -> None:
+    global _trusted_admin_ips_ts
+    _trusted_admin_ips.clear()
+    for raw in ips:
+        cleaned = (raw or "").strip()
+        if cleaned:
+            _trusted_admin_ips.add(cleaned)
+    _trusted_admin_ips_ts = time.time()
+
+
+def is_trusted_admin_client(ip: str) -> bool:
+    """True для админ-ПК/телефона, WG-туннеля и docker-сети — не пишем как «вмешательство».
+
+    Деплой/health бьют в API с Host≠ADMIN_PUBLIC_HOST через nginx/bridge →
+    AdminHostGuard давал ложные security-инциденты с ip=172.18.0.1.
+    """
+    cleaned = (ip or "").strip()
+    if not cleaned:
+        return False
+    if cleaned in ("127.0.0.1", "::1", "localhost"):
+        return True
+    try:
+        addr = ipaddress.ip_address(cleaned.split("%", 1)[0])
+    except ValueError:
+        return cleaned in _trusted_admin_ips
+    if addr.is_loopback:
+        return True
+    # Клиенты админки / peer’ы WireGuard
+    if addr in ipaddress.ip_network("10.66.0.0/16"):
+        return True
+    # Docker bridge / compose (деплой, health, nginx→api)
+    if addr in ipaddress.ip_network("172.16.0.0/12"):
+        return True
+    return cleaned in _trusted_admin_ips
+
+
+async def refresh_trusted_admin_ips_from_db() -> int:
+    """Подтянуть IP из admin_trusted_devices + живых admin_sessions."""
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT DISTINCT ip FROM (
+                          SELECT ip FROM admin_trusted_devices
+                           WHERE revoked_at IS NULL AND ip IS NOT NULL AND ip <> ''
+                          UNION
+                          SELECT ip FROM admin_sessions
+                           WHERE revoked_at IS NULL
+                             AND expires_at > NOW()
+                             AND ip IS NOT NULL AND ip <> ''
+                        ) t
+                        """
+                    )
+                )
+            ).fetchall()
+    except Exception as e:
+        logger.warning("trusted admin IPs refresh failed: %s", e)
+        return len(_trusted_admin_ips)
+    set_trusted_admin_ips([str(r[0]) for r in rows if r and r[0]])
+    return len(_trusted_admin_ips)
+
+
+async def trusted_admin_ips_refresh_loop() -> None:
+    while True:
+        try:
+            await refresh_trusted_admin_ips_from_db()
+        except Exception as e:
+            logger.warning("trusted admin IPs loop: %s", e)
+        await asyncio.sleep(TRUSTED_ADMIN_IPS_TTL_SEC)
+
+
 def push_security_event(
     *,
     source: str,
@@ -252,6 +336,8 @@ def push_security_event(
     client_ip: str = "",
     details: str = "",
 ) -> bool:
+    if client_ip and is_trusted_admin_client(client_ip):
+        return False
     text = message
     if client_ip:
         text = f"{message} ip={client_ip}"

@@ -15,6 +15,7 @@ from app.config import settings
 from app.core.security import create_access_token
 from app.models.admin_auth import AdminMfaChallenge, AdminSession, AdminTrustedDevice
 from app.services.email_service import send_admin_mfa_code_email
+from app.services.hive_incidents import remember_trusted_admin_ip
 from app.services.rate_limiter import get_client_ip
 
 _JUNK_NAMES = frozenset(
@@ -284,6 +285,7 @@ async def upsert_trusted_device(
             last_seen_at=datetime.utcnow(),
         )
         db.add(device)
+        remember_trusted_admin_ip(ip)
         await db.flush()
     else:
         # Avoid unique fp conflict when updating onto another row's fingerprint
@@ -305,6 +307,7 @@ async def upsert_trusted_device(
             device.label = label
         device.user_agent = ua
         device.ip = ip
+        remember_trusted_admin_ip(ip)
         device.last_seen_at = datetime.utcnow()
         if issue_token:
             if existing_device_token and device.token_hash == _hash_secret(existing_device_token):
@@ -356,6 +359,7 @@ async def create_admin_session(
     if device:
         device.last_seen_at = datetime.utcnow()
         device.ip = ip
+        remember_trusted_admin_ip(ip)
         device.user_agent = ua
         device.label = label
         device.device_type = dtype

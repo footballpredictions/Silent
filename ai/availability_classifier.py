@@ -57,6 +57,8 @@ from ai.availability_model import (
 
 # Порог «часть операторов отвалилась»: ниже него считаем частичной блокировкой.
 PARTIAL_OK_RATIO = 0.75
+# Один таймаут check-host при 3 нодах (2/3) — шум сервиса, не ТСПУ. Нужно ≥2 фейла.
+PARTIAL_MIN_FAILS = 2
 # Минимум клиентских отказов, ниже которого не делаем выводов по телеметрии.
 CLIENT_MIN_FAILURES = 5
 # Доля мобильных отказов, при которой это уже режим мобильной сети, а не наш IP.
@@ -408,7 +410,7 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
             )
             continue
 
-        if agg.ok_ratio < PARTIAL_OK_RATIO:
+        if agg.ok_ratio < PARTIAL_OK_RATIO and agg.fail_count >= PARTIAL_MIN_FAILS:
             failing = agg.failing_nodes()
             carriers = sorted({carrier_by_asn(n.asn) or n.asn for n in failing if n.asn})
             out.append(

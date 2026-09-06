@@ -558,7 +558,7 @@ async def hive_availability_knowledge(
 async def hive_availability_run(
     _: bool = Depends(get_admin_credentials),
 ):
-    """Запустить проверку прямо сейчас (пробы только читают, сервисы не трогаются)."""
+    """Запустить проверку в фоне (пробы ~1–2 мин — не держим HTTP до конца)."""
     global _availability_run_in_progress
 
     if _availability_run_in_progress:
@@ -567,15 +567,19 @@ async def hive_availability_run(
     from ai.availability_agent import run_availability_check
 
     _availability_run_in_progress = True
-    try:
-        # Админ смотрит отчёт прямо здесь — дублировать его в журнал инцидентов не нужно.
-        report = await run_availability_check(incidents=False)
-    except Exception as e:
-        logger.exception("Availability run failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"Проверка не выполнена: {e}")
-    finally:
-        _availability_run_in_progress = False
-    return {"ok": True, "report": report.to_dict()}
+
+    async def _job() -> None:
+        global _availability_run_in_progress
+        try:
+            # Админ смотрит отчёт в панели — в журнал инцидентов не дублируем.
+            await run_availability_check(incidents=False)
+        except Exception as e:
+            logger.exception("Availability run failed: %s", e)
+        finally:
+            _availability_run_in_progress = False
+
+    asyncio.create_task(_job())
+    return {"ok": True, "started": True, "running": True}
 
 
 @router.put("/availability/settings")

@@ -1,4 +1,5 @@
 """Silent VPN Backend — FastAPI application entry point."""
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -506,9 +507,28 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("background agents failed to start (API still up): %s", e)
 
+    # На каждом uvicorn-воркере: IP доверенных админ-устройств не пишем в security-инциденты
+    trusted_ips_task = None
+    try:
+        from app.services.hive_incidents import (
+            refresh_trusted_admin_ips_from_db,
+            trusted_admin_ips_refresh_loop,
+        )
+
+        await refresh_trusted_admin_ips_from_db()
+        trusted_ips_task = asyncio.create_task(trusted_admin_ips_refresh_loop())
+    except Exception as e:
+        logger.warning("trusted admin IPs refresh skipped: %s", e)
+
     yield
 
     # Shutdown
+    if trusted_ips_task is not None:
+        trusted_ips_task.cancel()
+        try:
+            await trusted_ips_task
+        except Exception:
+            pass
     if agents_task is not None:
         agents_task.cancel()
         try:

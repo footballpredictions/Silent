@@ -349,12 +349,13 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
     const res = await fetch('/api/admin/hive/availability', { headers: authHeaders })
     if (!res.ok) {
       setError('Не удалось получить отчёт о доступности')
-      return
+      return null
     }
     const data = await res.json().catch(() => ({}))
     setReport(data.report || null)
     setSettings(data.settings || null)
     setError(null)
+    return data as { report?: Report | null; settings?: AgentSettings | null; running?: boolean }
   }, [authHeaders])
 
   useEffect(() => { void load() }, [load])
@@ -368,14 +369,31 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
   const runNow = async () => {
     setRunning(true)
     setError(null)
+    const prevRun = settings?.last_run || null
     try {
       const res = await fetch('/api/admin/hive/availability/run', { method: 'POST', headers: authHeaders })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
-        setError(typeof data.detail === 'string' ? data.detail : 'Проверка не выполнена')
+        setError(typeof data.detail === 'string' ? data.detail : 'Не удалось запустить проверку')
         return
       }
-      setReport(data.report || null)
+      // Проверка на сервере ~1–2 мин — не ждём HTTP, опрашиваем готовый отчёт.
+      for (let i = 0; i < 90; i++) {
+        await new Promise(r => setTimeout(r, 2000))
+        const snap = await load()
+        if (!snap) continue
+        const last = snap.settings?.last_run || null
+        const done = !snap.running && last && last !== prevRun
+        if (done) return
+        // Если флаг running сбросился на другом воркере — берём свежий отчёт по ts.
+        if (!snap.running && snap.report?.ts) {
+          const ageMs = Date.now() - new Date(snap.report.ts).getTime()
+          if (ageMs >= 0 && ageMs < 180_000) return
+        }
+      }
+      setError('Проверка ещё идёт или ответ задерживается — обновите страницу через минуту')
+    } catch {
+      setError('Связь оборвалась. Если проверка уже шла — отчёт появится сам, обновите через минуту')
       await load()
     } finally {
       setRunning(false)

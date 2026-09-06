@@ -338,23 +338,23 @@ function VkHashesCard({
     : `${hashes.length} активных хешей`
 
   return (
-    <div className="bg-[#111] border border-[#222] rounded-xl p-5">
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-1">
-        <h3 className="text-xs text-[#666] uppercase tracking-wider flex items-center gap-2 shrink-0">
-          <Hash className="w-3.5 h-3.5" /> Серверные VK-хеши (по пользователям)
+    <div className="bg-[#111] border border-[#222] rounded-xl p-5 min-w-0 overflow-hidden">
+      <div className="flex flex-col gap-3 mb-1 min-w-0">
+        <h3 className="text-xs text-[#666] uppercase tracking-wider flex items-center gap-2">
+          <Hash className="w-3.5 h-3.5 shrink-0" /> Серверные VK-хеши (по пользователям)
         </h3>
-        <div className="flex flex-col sm:flex-row gap-2 sm:ml-auto w-full sm:w-auto">
+        <div className="flex flex-col sm:flex-row gap-2 w-full min-w-0">
           <SearchInput
             value={userSearch}
             onChange={setUserSearch}
             placeholder="Поиск по email или устройству…"
-            className="flex-1 sm:w-56 w-full"
+            className="w-full min-w-0 sm:flex-1 sm:max-w-xs"
           />
           <SortSelect
             value={userSort}
             onChange={setAndStoreSort}
             options={[...DASHBOARD_USER_SORTS]}
-            className="sm:w-48 w-full"
+            className="w-full sm:w-48 sm:shrink-0"
             label="Сортировка пользователей"
           />
         </div>
@@ -552,9 +552,9 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
   const unreachable = sys.reachable === false
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">Дашборд</h1>
+    <div className="space-y-6 min-w-0">
+      <div className="flex items-center justify-between gap-3 min-w-0">
+        <h1 className="text-xl font-bold truncate">Дашборд</h1>
         <button
           onClick={() => fetchStats('full')}
           disabled={loading}
@@ -612,19 +612,19 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       </div>
 
       {/* System */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="bg-[#111] border border-[#222] rounded-xl p-5">
-          <div className="flex items-center justify-between gap-3 mb-4">
-            <h3 className="text-xs text-[#666] uppercase tracking-wider flex items-center gap-2 shrink-0">
-              <Cpu className="w-3.5 h-3.5" /> Системные ресурсы
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 min-w-0">
+        <div className="bg-[#111] border border-[#222] rounded-xl p-5 min-w-0 overflow-hidden">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4 min-w-0">
+            <h3 className="text-xs text-[#666] uppercase tracking-wider flex items-center gap-2">
+              <Cpu className="w-3.5 h-3.5 shrink-0" /> Системные ресурсы
             </h3>
-            <div className="relative min-w-[8.5rem] max-w-[13rem]">
+            <div className="relative w-full min-w-0 sm:w-auto sm:min-w-[8.5rem] sm:max-w-[13rem]">
               <Server className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#555] pointer-events-none" />
               <select
                 value={resourceNodes.some(n => n.id === nodeId) ? nodeId : 'queen'}
                 onChange={e => selectNode(e.target.value)}
                 aria-label="Нода"
-                className="w-full appearance-none pl-8 pr-7 py-1.5 text-xs bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-white focus:outline-none focus:border-[#444] hover:border-[#3a3a3a] cursor-pointer"
+                className="w-full max-w-full min-w-0 appearance-none pl-8 pr-7 py-1.5 text-xs bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-white focus:outline-none focus:border-[#444] hover:border-[#3a3a3a] cursor-pointer"
                 title="Нода для CPU / RAM / канала"
               >
                 {resourceNodes.map(n => (

@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.silent.vpn.BuildConfig
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.data.VpnServerInfo
 import com.silent.vpn.ui.tv.TvTextButton
@@ -43,7 +44,9 @@ fun MenuBypassScreen(
     var pendingServerSlot by remember { mutableStateOf<String?>(null) }
     var applying by remember { mutableStateOf(false) }
     var applyHint by remember { mutableStateOf<String?>(null) }
-    var servers by remember { mutableStateOf(fallbackServerList(selectedServerSlot)) }
+    var servers by remember {
+        mutableStateOf(withDebugAiServer(fallbackServerList(selectedServerSlot)))
+    }
     val scope = rememberCoroutineScope()
     val switchLocked = vpnState == VpnState.CONNECTING || vpnState == VpnState.CONNECTED
 
@@ -55,7 +58,7 @@ fun MenuBypassScreen(
         runCatching { repo.fetchVpnServers() }
             .onSuccess { body ->
                 if (body.servers.isNotEmpty()) {
-                    servers = body.servers
+                    servers = withDebugAiServer(body.servers)
                 }
                 selectedServerSlot = SilentRepository.normalizePreferredServer(repo.getPreferredServer())
             }
@@ -152,11 +155,20 @@ fun MenuBypassScreen(
                                 selectedServerSlot = slot
                                 runCatching { repo.selectVpnServer(slot) }
                                     .onSuccess { body ->
-                                        if (body.servers.isNotEmpty()) servers = body.servers
+                                        if (body.servers.isNotEmpty()) {
+                                            servers = withDebugAiServer(body.servers)
+                                        }
                                         applyHint = "Выбрано"
                                     }
-                                    .onFailure {
-                                        applyHint = "Выбрано. Синхронизация с сервером при подключении."
+                                    .onFailure { e ->
+                                        if (e is SilentRepository.ServerNotAllowedException) {
+                                            // Пин уже откатан в репозитории — показываем то, что реально выбрано.
+                                            selectedServerSlot = SilentRepository
+                                                .normalizePreferredServer(repo.getPreferredServer())
+                                            applyHint = "Сервер доступен только администратору."
+                                        } else {
+                                            applyHint = "Выбрано. Синхронизация с сервером при подключении."
+                                        }
                                     }
                             }
                         } finally {
@@ -172,6 +184,25 @@ fun MenuBypassScreen(
             },
         )
     }
+}
+
+private const val AI_SERVER_SLOT = "server4"
+private const val AI_SERVER_TITLE = "Сервер 4 для ИИ"
+
+/**
+ * Тестовая сборка: слот ИИ-соты в списке всегда, даже пока список серверов не
+ * пришёл с API. Права не проверяем — сота помечена `admin_only`, и не-админу
+ * сервер сам ответит 403 на выборе. В release список целиком с сервера.
+ */
+private fun withDebugAiServer(list: List<VpnServerInfo>): List<VpnServerInfo> {
+    if (!BuildConfig.DEBUG) return list
+    val ai = VpnServerInfo(key = AI_SERVER_SLOT, title = AI_SERVER_TITLE)
+    val idx = list.indexOfFirst { SilentRepository.normalizePreferredServer(it.key) == AI_SERVER_SLOT }
+    if (idx < 0) return list + ai
+    val known = list[idx]
+    // Подпись с сервера главнее; заменяем только локальную заглушку «Сервер 4».
+    if (known.title.isNotBlank() && known.title != slotTitle(AI_SERVER_SLOT)) return list
+    return list.toMutableList().also { it[idx] = known.copy(title = AI_SERVER_TITLE) }
 }
 
 private fun slotTitle(slot: String): String {

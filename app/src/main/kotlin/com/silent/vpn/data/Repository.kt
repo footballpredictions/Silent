@@ -93,6 +93,8 @@ class SilentRepository @Inject constructor(
             "server1" to "132.243.234.162",
             "server2" to "87.58.213.193",
             "server3" to "78.17.74.27",
+            // Сота 3 / «Сервер 4 для ИИ»: без запечённого IP кеш конфига слота считается чужим.
+            "server4" to "192.177.26.38",
         )
         private val IPV4_RE = Regex("""\b(\d{1,3}(?:\.\d{1,3}){3})\b""")
 
@@ -1619,8 +1621,12 @@ class SilentRepository @Inject constructor(
         return body
     }
 
+    /** Сервер отказал в слоте: сота помечена «только админ». */
+    class ServerNotAllowedException(code: Int) : IllegalStateException("vpn select server HTTP $code")
+
     suspend fun selectVpnServer(serverKey: String): VpnServersResponse {
         val key = serverKey.trim().ifBlank { SERVER_MAIN }
+        val prev = getPreferredServer()
         setPreferredServer(key)
         val res = getApi().selectVpnServer(
             PreferredServerRequest(
@@ -1629,6 +1635,12 @@ class SilentRepository @Inject constructor(
             ),
         )
         if (!res.isSuccessful) {
+            if (res.code() == 403) {
+                // Иначе устройство осталось бы с пином, которого на сервере нет:
+                // конфиг пришёл бы от Улья и не сошёлся с ожидаемым IP слота.
+                setPreferredServer(prev)
+                throw ServerNotAllowedException(res.code())
+            }
             throw IllegalStateException("vpn select server HTTP ${res.code()}")
         }
         val body = res.body() ?: VpnServersResponse(key, emptyList())

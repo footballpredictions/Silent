@@ -782,14 +782,9 @@ async def _build_vpn_config(
     else:
         hashes = await get_active_vk_hashes(db)
 
-    preferred_server = "queen" if is_bootstrap else (
-        (preferred_override or "").strip()
-        or (getattr(device, "preferred_server", None) or "").strip()
+    selected_server, cell = await ensure_device_server_allowed(
+        db, device, user, preferred_override
     )
-    selected_server, cell = await hive_service.resolve_manual_server_cell(db, preferred_server)
-    if device.cell_id != cell.id or getattr(device, "preferred_server", None) != selected_server:
-        _set_device_server(device, selected_server, cell.id)
-        await db.commit()
     server_pub_key = (cell.wg_public_key or "").strip()
     if not server_pub_key:
         server_pub_key = await get_server_public_key(db)
@@ -835,7 +830,12 @@ async def set_device_preferred_server(
     user_id: uuid.UUID,
     device_fingerprint: str,
     preferred_server: str,
+    *,
+    is_admin: bool = False,
 ) -> Device | None:
+    from app.services.hive_slots import cell_selectable_by_user
+    from fastapi import HTTPException
+
     result = await db.execute(
         select(Device).where(
             Device.user_id == user_id,
@@ -847,18 +847,30 @@ async def set_device_preferred_server(
     if not device:
         return None
     key, cell = await hive_service.resolve_manual_server_cell(db, preferred_server)
+    if not cell_selectable_by_user(cell, is_admin=is_admin):
+        raise HTTPException(
+            status_code=403,
+            detail="Сервер временно доступен только администратору",
+        )
     _set_device_server(device, key, cell.id)
     await db.commit()
     await db.refresh(device)
     return device
 
 
-async def list_manual_vpn_servers(db: AsyncSession) -> list[dict]:
+async def list_manual_vpn_servers(
+    db: AsyncSession,
+    *,
+    include_admin_only: bool = False,
+) -> list[dict]:
     from app.services.hive_standby import cell_public_api_base
+    from app.services.hive_slots import cell_is_admin_only
 
     entries = await hive_service.manual_server_entries(db)
     out: list[dict] = []
     for key, title, cell in entries:
+        if cell_is_admin_only(cell) and not include_admin_only:
+            continue
         online = await hive_service.count_online_on_cell(db, cell.id)
         if cell.is_queen:
             api_base = (settings.FRONTEND_URL or "").strip().rstrip("/")
@@ -875,6 +887,31 @@ async def list_manual_vpn_servers(db: AsyncSession) -> list[dict]:
             }
         )
     return out
+
+
+async def ensure_device_server_allowed(
+    db: AsyncSession,
+    device: Device,
+    user: User | None,
+    preferred_override: str | None = None,
+) -> tuple[str, object]:
+    """Резолв слота; admin_only соты для не-админа → Улей (server1)."""
+    from app.services.hive_slots import cell_selectable_by_user
+    from app.services.subscription_service import is_user_admin
+
+    is_bootstrap = user and user.email == BOOTSTRAP_USER_EMAIL
+    preferred_server = "queen" if is_bootstrap else (
+        (preferred_override or "").strip()
+        or (getattr(device, "preferred_server", None) or "").strip()
+    )
+    admin = bool(user and not is_bootstrap and is_user_admin(user))
+    selected_server, cell = await hive_service.resolve_manual_server_cell(db, preferred_server)
+    if not cell_selectable_by_user(cell, is_admin=admin):
+        selected_server, cell = await hive_service.resolve_manual_server_cell(db, "server1")
+    if device.cell_id != cell.id or getattr(device, "preferred_server", None) != selected_server:
+        _set_device_server(device, selected_server, cell.id)
+        await db.commit()
+    return selected_server, cell
 
 
 BOOTSTRAP_USER_EMAIL = "__bootstrap__@silent.local"

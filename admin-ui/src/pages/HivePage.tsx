@@ -36,6 +36,7 @@ interface HiveCell {
   assigned_devices: number
   status: string
   accepts_wdtt?: boolean
+  admin_only?: boolean
   manual_slot?: string | null
   manual_slot_title?: string | null
   last_error: string | null
@@ -313,6 +314,17 @@ export default function HivePage({ token }: { token: string }) {
     setBusy(null)
   }
 
+  const setAdminOnly = async (id: string, adminOnly: boolean) => {
+    setBusy(id)
+    await fetch(`/api/admin/hive/cells/${id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ admin_only: adminOnly }),
+    })
+    await load()
+    setBusy(null)
+  }
+
   const removeCell = async (cell: HiveCell) => {
     if (cell.is_queen) return
     const force = cell.status === 'provisioning' || cell.status === 'error' || cell.status === 'pending'
@@ -561,6 +573,9 @@ export default function HivePage({ token }: { token: string }) {
                       </span>
                     )}
                     {cell.is_queen && <span className="text-xs bg-amber-950 text-amber-300 px-2 py-0.5 rounded">Улей</span>}
+                    {cell.admin_only && (
+                      <span className="text-xs bg-violet-950 text-violet-300 px-2 py-0.5 rounded">Только админ</span>
+                    )}
                     <span className="text-xs text-[#888]">{statusLabel[cell.status] || cell.status}</span>
                   </div>
                   <p className="text-sm text-[#888] mt-1 font-mono">{cell.public_ip}:{cell.wdtt_port}</p>
@@ -622,6 +637,17 @@ export default function HivePage({ token }: { token: string }) {
                       Вернуть в работу
                     </button>
                   )}
+                  <button
+                    type="button"
+                    disabled={busy === cell.id}
+                    onClick={() => setAdminOnly(cell.id, !cell.admin_only)}
+                    title="В меню клиентов и в автобалансе — только для администратора"
+                    className={`text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] disabled:opacity-50 ${
+                      cell.admin_only ? 'text-violet-300' : 'text-[#aaa]'
+                    }`}
+                  >
+                    {cell.admin_only ? 'Открыть всем' : 'Только админ'}
+                  </button>
                   <button type="button" disabled={busy === cell.id} onClick={() => removeCell(cell)}
                     className="text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] text-red-400 flex items-center gap-1 disabled:opacity-50">
                     {busy === cell.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}

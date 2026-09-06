@@ -39,6 +39,22 @@ def node_title_for_slot(slot: str | None) -> str:
     return f"Сота {n - 1}"
 
 
+def cell_is_admin_only(cell) -> bool:
+    return bool(
+        cell is not None
+        and not getattr(cell, "is_queen", False)
+        and getattr(cell, "admin_only", False)
+    )
+
+
+def cell_selectable_by_user(cell, *, is_admin: bool) -> bool:
+    if cell is None:
+        return False
+    if cell_is_admin_only(cell):
+        return bool(is_admin)
+    return True
+
+
 def slot_for_cell(cell) -> str:
     """Улей = server1, Сота N = server{N+1}. Новые соты → server4+ без правки клиентов."""
     if getattr(cell, "is_queen", False):

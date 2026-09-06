@@ -273,6 +273,18 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "ALTER TABLE hive_cells ADD COLUMN IF NOT EXISTS accepts_wdtt BOOLEAN NOT NULL DEFAULT TRUE"
         ))
+        await conn.execute(text(
+            "ALTER TABLE hive_cells ADD COLUMN IF NOT EXISTS admin_only BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        once_sota3_admin = await conn.execute(text(
+            "INSERT INTO hive_schema_migrations (name) VALUES ('sota3_admin_only_v1') "
+            "ON CONFLICT (name) DO NOTHING RETURNING name"
+        ))
+        if once_sota3_admin.rowcount:
+            await conn.execute(text(
+                "UPDATE hive_cells SET admin_only = TRUE "
+                "WHERE is_queen = false AND name ~* '^[[:space:]]*сота[[:space:]]*3([[:space:]]|$)'"
+            ))
         once_olcrtc_wdtt = await conn.execute(text(
             "INSERT INTO hive_schema_migrations (name) VALUES ('olcrtc_cells_no_wdtt_spill_v1') "
             "ON CONFLICT (name) DO NOTHING RETURNING name"

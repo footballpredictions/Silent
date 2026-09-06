@@ -32,6 +32,8 @@ class HiveCell(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     # False: сота под olcrtc2 (Сота 1/2) — WDTT-баланс на неё не льём.
     accepts_wdtt: Mapped[bool] = mapped_column(Boolean, default=True)
+    # True: в меню клиентов и в балансе только для is_admin (обкатка новой соты).
+    admin_only: Mapped[bool] = mapped_column(Boolean, default=False)
     priority: Mapped[int] = mapped_column(Integer, default=100)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

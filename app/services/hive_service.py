@@ -29,7 +29,9 @@ from app.services.hive_load import (
 )
 from app.services.hive_slots import (
     assign_online_to_cell_id,
+    cell_is_admin_only,
     cell_name_number,
+    cell_selectable_by_user,
     is_manual_server_pin,
     is_manual_server_slot,
     node_online_shown,
@@ -179,10 +181,13 @@ async def apply_manual_server_cell(
     preferred_server: str | None = None,
     *,
     commit: bool = False,
+    is_admin: bool = False,
 ) -> HiveCell:
-    """Держать cell_id = выбранный Сервер 1/2/3. Оценка ёмкости в карточке Улья на connect не влияет."""
+    """Держать cell_id = выбранный Сервер 1/2/3…. admin_only — только для админа."""
     raw = preferred_server if preferred_server is not None else getattr(device, "preferred_server", None)
     key, cell = await resolve_manual_server_cell(db, raw)
+    if not cell_selectable_by_user(cell, is_admin=is_admin):
+        key, cell = await resolve_manual_server_cell(db, "server1")
     if device.cell_id != cell.id or getattr(device, "preferred_server", None) != key:
         device.cell_id = cell.id
         if hasattr(device, "preferred_server"):
@@ -485,9 +490,11 @@ async def olcrtc_exit_cell_ips(db: AsyncSession) -> set[str]:
 
 
 def cell_accepts_wdtt_spill(cell: HiveCell, olcrtc_ips: set[str]) -> bool:
-    """Улей — да. Сота olcrtc2 — нет. Остальные (3, 4, …) — да."""
+    """Улей — да. Сота olcrtc2 — нет. admin_only — нет (только ручной выбор админа)."""
     if cell.is_queen:
         return True
+    if getattr(cell, "admin_only", False):
+        return False
     if getattr(cell, "accepts_wdtt", True) is False:
         return False
     ip = (cell.public_ip or "").strip()
@@ -844,6 +851,7 @@ def cell_to_response(
         "status": cell.status,
         "priority": cell.priority,
         "accepts_wdtt": bool(cell.is_queen or getattr(cell, "accepts_wdtt", True)),
+        "admin_only": bool(getattr(cell, "admin_only", False)),
         "manual_slot": slot_for_cell(cell) or None,
         "manual_slot_title": slot_title(slot_for_cell(cell)) if slot_for_cell(cell) else None,
         "last_seen_at": cell.last_seen_at,
@@ -876,7 +884,7 @@ async def list_cells_with_stats_pooled(*, http_timeout: float = 3.0) -> list[dic
             _ = (
                 c.id, c.name, c.is_queen, c.api_url, c.api_secret_enc, c.ssh_password_enc,
                 c.status, c.public_ip, c.priority, c.created_at, c.link_capacity_mbps,
-                c.max_clients, c.wdtt_port, c.wg_port, c.accepts_wdtt, c.last_seen_at,
+                c.max_clients, c.wdtt_port, c.wg_port, c.accepts_wdtt, c.admin_only, c.last_seen_at,
                 c.last_error, c.tunnel_api_url, c.wg_public_key,
             )
         db.expunge_all()

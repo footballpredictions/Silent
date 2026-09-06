@@ -160,7 +160,9 @@ async def get_config(
 
     await ensure_user_server_hashes(db, user.id)
     if preferred_server:
-        updated = await set_device_preferred_server(db, user.id, fingerprint, preferred_server)
+        updated = await set_device_preferred_server(
+            db, user.id, fingerprint, preferred_server, is_admin=is_user_admin(user)
+        )
         if updated is not None:
             device = updated
     return await build_vpn_config_for_user(db, device, user, has_sub, preferred_server)
@@ -234,6 +236,9 @@ async def get_vpn_servers(
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.services.subscription_service import is_user_admin
+    from app.services.vpn_service import ensure_device_server_allowed
+
     result = await db.execute(
         select(Device).where(
             Device.user_id == user.id,
@@ -244,12 +249,9 @@ async def get_vpn_servers(
     device = result.scalar_one_or_none()
     selected = "server1"
     if device:
-        from app.services import hive_service
-
-        selected, _cell = await hive_service.resolve_manual_server_cell(
-            db, getattr(device, "preferred_server", None)
-        )
-    servers = await list_manual_vpn_servers(db)
+        selected, _cell = await ensure_device_server_allowed(db, device, user)
+    admin = is_user_admin(user)
+    servers = await list_manual_vpn_servers(db, include_admin_only=admin)
     return VpnServersResponse(
         selected_server=selected,
         servers=[VpnServerInfo(**item) for item in servers],
@@ -262,15 +264,19 @@ async def select_vpn_server(
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.services.subscription_service import is_user_admin
+
+    admin = is_user_admin(user)
     device = await set_device_preferred_server(
         db,
         user.id,
         req.device_fingerprint,
         req.preferred_server,
+        is_admin=admin,
     )
     if not device:
         raise HTTPException(status_code=404, detail="Сессия устройства не найдена. Войдите снова.")
-    servers = await list_manual_vpn_servers(db)
+    servers = await list_manual_vpn_servers(db, include_admin_only=admin)
     return VpnServersResponse(
         selected_server=getattr(device, "preferred_server", None) or "server1",
         servers=[VpnServerInfo(**item) for item in servers],
@@ -394,11 +400,19 @@ async def connect(
             )
 
     if req.preferred_server:
-        await set_device_preferred_server(db, user.id, req.device_fingerprint, req.preferred_server)
+        await set_device_preferred_server(
+            db,
+            user.id,
+            req.device_fingerprint,
+            req.preferred_server,
+            is_admin=is_user_admin(user),
+        )
         await db.refresh(device)
     else:
         from app.services import hive_service as _hive
-        await _hive.apply_manual_server_cell(db, device, commit=False)
+        await _hive.apply_manual_server_cell(
+            db, device, commit=False, is_admin=is_user_admin(user)
+        )
 
     device.is_connected = True
     device.last_connected = datetime.utcnow()

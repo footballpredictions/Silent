@@ -63,19 +63,31 @@ export default function AdminDevicesMenu({
 
   useEffect(() => {
     if (!open) return
-    const onDoc = (e: MouseEvent) => {
+    const onDoc = (e: MouseEvent | TouchEvent) => {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
         setOpen(false)
       }
     }
     document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
+    document.addEventListener('touchstart', onDoc)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('touchstart', onDoc)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
   }, [open])
 
   const revokeDevice = async (row: DeviceRow) => {
     const id = row.device_id || row.id
     try {
-      // Prefer device endpoint
       let res = await fetch(`/api/admin/devices/${id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
@@ -107,70 +119,91 @@ export default function AdminDevicesMenu({
         className="p-1.5 rounded-lg text-[#666] hover:text-white hover:bg-[#1a1a1a] transition-colors"
         title="Устройства админа"
         aria-label="Меню устройств админа"
+        aria-expanded={open}
       >
         <UserRound className="w-4 h-4" />
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full mt-2 z-50 w-[min(100vw-2rem,22rem)] bg-[#111] border border-[#222] rounded-xl shadow-xl overflow-hidden">
-          <div className="flex items-center justify-between px-3 py-2.5 border-b border-[#222]">
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <Monitor className="w-4 h-4 text-[#888]" />
-              Устройства
+        <>
+          {/* Mobile: затемнение, чтобы панель не «терялась» за краем */}
+          <div
+            className="fixed inset-0 z-[55] bg-black/50 md:hidden"
+            aria-hidden
+            onClick={() => setOpen(false)}
+          />
+          <div
+            className={[
+              'z-[60] bg-[#111] border border-[#222] rounded-xl shadow-xl overflow-hidden',
+              // Телефон: на всю ширину экрана с отступами — всегда в кадре
+              'fixed left-3 right-3 top-14 max-h-[min(70vh,28rem)]',
+              // ПК: выпадашка от иконки вправо (как было)
+              'md:absolute md:left-0 md:right-auto md:top-full md:mt-2 md:w-[22rem] md:max-h-96 md:inset-x-auto',
+            ].join(' ')}
+            role="dialog"
+            aria-label="Устройства админа"
+          >
+            <div className="flex items-center justify-between px-3 py-2.5 border-b border-[#222]">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Monitor className="w-4 h-4 text-[#888]" />
+                Устройства
+              </div>
+              <button type="button" onClick={() => setOpen(false)} className="text-[#555] hover:text-white p-1">
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <button type="button" onClick={() => setOpen(false)} className="text-[#555] hover:text-white p-1">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
 
-          <div className="max-h-80 overflow-y-auto p-2">
-            {loading && <p className="text-xs text-[#666] px-2 py-3 text-center">Загрузка...</p>}
-            {error && <p className="text-xs text-red-400 px-2 py-1">{error}</p>}
+            <div className="max-h-[calc(min(70vh,28rem)-3rem)] md:max-h-80 overflow-y-auto p-2">
+              {loading && <p className="text-xs text-[#666] px-2 py-3 text-center">Загрузка...</p>}
+              {error && <p className="text-xs text-red-400 px-2 py-1">{error}</p>}
 
-            {!loading && (
-              devices.length === 0 ? (
-                <p className="text-xs text-[#555] px-2 py-3 text-center">Нет запомненных устройств</p>
-              ) : (
-                <ul className="space-y-1">
-                  {devices.map(d => {
-                    const isPhone = d.device_type === 'phone' || d.device_type === 'tablet'
-                    const Icon = isPhone ? Smartphone : Monitor
-                    return (
-                      <li
-                        key={d.device_id || d.id}
-                        className="flex items-start gap-2 px-2 py-2 rounded-lg hover:bg-[#1a1a1a] group"
-                      >
-                        <Icon className="w-4 h-4 text-[#666] mt-0.5 shrink-0" />
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm text-white truncate">
-                            {d.label}
-                            {d.is_current && (
-                              <span className="ml-1.5 text-[10px] text-[#aaa] font-medium">это устройство</span>
-                            )}
-                          </p>
-                          <p className="text-[11px] text-[#666] truncate">
-                            {isPhone ? 'Телефон' : 'ПК'}
-                            {d.ip ? ` · ${d.ip}` : ''}
-                            {d.online ? ' · онлайн' : ''}
-                          </p>
-                          <p className="text-[11px] text-[#555]">{fmtDate(d.last_seen_at || d.created_at)}</p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => revokeDevice(d)}
-                          className="p-1.5 text-[#555] hover:text-white opacity-70 group-hover:opacity-100"
-                          title="Удалить устройство"
+              {!loading && (
+                devices.length === 0 ? (
+                  <p className="text-xs text-[#555] px-2 py-3 text-center">Нет запомненных устройств</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {devices.map(d => {
+                      const isPhone = d.device_type === 'phone' || d.device_type === 'tablet'
+                      const Icon = isPhone ? Smartphone : Monitor
+                      return (
+                        <li
+                          key={d.device_id || d.id}
+                          className="flex items-start gap-2 px-2 py-2 rounded-lg hover:bg-[#1a1a1a] group"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )
-            )}
+                          <Icon className="w-4 h-4 text-[#666] mt-0.5 shrink-0" />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm text-white break-words">
+                              {d.label}
+                              {d.is_current && (
+                                <span className="ml-1.5 text-[10px] text-[#aaa] font-medium whitespace-nowrap">
+                                  это устройство
+                                </span>
+                              )}
+                            </p>
+                            <p className="text-[11px] text-[#666] break-all">
+                              {isPhone ? 'Телефон' : 'ПК'}
+                              {d.ip ? ` · ${d.ip}` : ''}
+                              {d.online ? ' · онлайн' : ''}
+                            </p>
+                            <p className="text-[11px] text-[#555]">{fmtDate(d.last_seen_at || d.created_at)}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => revokeDevice(d)}
+                            className="p-1.5 text-[#555] hover:text-white opacity-70 group-hover:opacity-100 shrink-0"
+                            title="Удалить устройство"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )
+              )}
+            </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   )

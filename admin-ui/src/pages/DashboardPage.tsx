@@ -120,7 +120,7 @@ interface Stats {
 }
 
 const StatCard = ({ icon: Icon, label, value, sub, color = 'white' }: any) => (
-  <div className="bg-[#111] border border-[#222] rounded-xl p-5">
+  <div className="bg-[#111] border border-[#222] rounded-xl p-5 h-full">
     <div className="flex items-center justify-between mb-3">
       <span className="text-[#666] text-xs uppercase tracking-wider">{label}</span>
       <Icon className={`w-4 h-4 text-${color}-400`} />
@@ -566,14 +566,14 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       </div>
 
       {/* User stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-stretch">
         <StatCard icon={Users} label="Пользователей" value={stats.users.total} />
-        <div className="bg-[#111] border border-[#222] rounded-xl p-5">
+        <div className="bg-[#111] border border-[#222] rounded-xl p-5 flex flex-col h-full">
           <div className="flex items-center justify-between mb-3">
             <span className="text-[#666] text-xs uppercase tracking-wider">Подписки</span>
             <Wifi className="w-4 h-4 text-[#666]" />
           </div>
-          <div className="space-y-2.5">
+          <div className="space-y-2.5 flex-1">
             <div className="flex items-baseline justify-between gap-3">
               <span className="text-[#aaa] text-sm" title="YuMoney / покупка в приложении">Оплаченные</span>
               <span className="text-2xl font-bold tabular-nums">{stats.users.subscriptions_paid ?? 0}</span>
@@ -588,25 +588,27 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
             </div>
           </div>
           <div className="text-[#555] text-xs mt-3 pt-2 border-t border-[#1e1e1e]">
-            всего живых: {stats.users.active_subscriptions}
+            всего: {stats.users.active_subscriptions}
           </div>
         </div>
-        <div className="bg-[#111] border border-[#222] rounded-xl p-5">
+        <div className="bg-[#111] border border-[#222] rounded-xl p-5 flex flex-col h-full">
           <div className="flex items-center justify-between mb-3">
             <span className="text-[#666] text-xs uppercase tracking-wider">Онлайн</span>
             <div className={`w-2.5 h-2.5 rounded-full ${stats.users.connected_devices > 0 ? 'bg-green-400 shadow-[0_0_6px_#4ade80]' : 'bg-[#444]'}`} />
           </div>
-          <div className="text-2xl font-bold">{stats.users.connected_devices}</div>
-          <div className="text-[#555] text-xs mt-1">все ноды: Улей + соты</div>
+          <div className="flex-1">
+            <div className="text-2xl font-bold tabular-nums">{stats.users.connected_devices}</div>
+          </div>
           <div
-            className="text-[#555] text-xs mt-1"
+            className="text-[#555] text-xs mt-3 pt-2 border-t border-[#1e1e1e]"
             title={
               stats.users.peak_online_at
                 ? `Зафиксировано: ${new Date(stats.users.peak_online_at).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
                 : undefined
             }
           >
-            максимум: {Math.max(stats.users.peak_online_devices ?? 0, stats.users.connected_devices)}
+            все ноды: Улей + соты · максимум:{' '}
+            {Math.max(stats.users.peak_online_devices ?? 0, stats.users.connected_devices)}
           </div>
         </div>
       </div>

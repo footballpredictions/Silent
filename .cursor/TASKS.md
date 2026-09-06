@@ -23,6 +23,13 @@ Runbook: `backend/AI_EXIT_NODE.md`.
 - [ ] Ф6: лимит одновременных сессий на соту, затем снять `admin_only` кнопкой в Улье
 - [ ] Прогнать `harden --all` по Сотам 1–2 (после этого проверить: `wdtt` active, клиенты онлайн, `ufw status` = active)
 - [ ] План Б: вторая US-нода в другом ASN
+- [ ] **Android: не проходит вход через Google в ИИ-приложениях** (пробовал разные), в браузере через тот же VPN всё ок. Смотреть WebView/Custom Tabs, `com.google.android.gms` в исключениях VPN, DNS/SNI для `accounts.google.com`
+
+### Ложные переподключения VPN (Android, 2026-09-06)
+
+- [x] Диагноз: колбэк слушает **все** не-VPN сети, поэтому сота, которую Android гасит сам при живом Wi-Fi, ставила `lastBlackoutAtMs` (`onLosing`) и роняла общий флаг VALIDATED (`onCapabilitiesChanged`) → `wifi_gap_restored` / `validated_after_gap` → полный рестарт транспорта, воркеры с нуля
+- [x] Фикс: `NetworkRecoveryPolicy.isOurUnderlyingNetwork` — события чужой сети игнорируются в обоих местах (+ юнит-тест)
+- [ ] Проверить на телефоне: сутки на Wi-Fi без самопроизвольных переподключений. В логе не должно быть `gap restore wifi_gap_restored` и `network recovery: validated_after_gap` при неподвижном телефоне
 
 ### Linux-клиент (2026-08-29)
 

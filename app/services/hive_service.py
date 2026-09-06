@@ -757,6 +757,12 @@ async def fetch_worker_cell_load(cell: HiveCell, *, timeout: float | None = None
             "network_link_capacity_mbps": link_display,
             "network_link_sysfs_mbps": round(sysfs, 1) if sysfs > 0 else None,
             "cpu_cores": int(data.get("cpu_cores") or 0) or None,
+            "cpu_model": (data.get("cpu_model") or None),
+            "cpu_freq_base_mhz": (
+                round(float(data["cpu_freq_base_mhz"]), 1)
+                if data.get("cpu_freq_base_mhz") not in (None, "", 0, 0.0)
+                else None
+            ),
             "memory_total_gb": round(float(data.get("memory_total_gb") or 0), 1) or None,
             "wdtt_active": bool(data.get("wdtt_active")),
             "agent_build_id": (data.get("agent_build_id") or None),

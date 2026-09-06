@@ -280,6 +280,31 @@ def _memory_total_gb() -> float:
         return 0.0
 
 
+def _cpu_model() -> str:
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def _cpu_freq_base_mhz(model: str) -> float | None:
+    import re
+
+    if not model:
+        return None
+    m = re.search(r"@\s*([\d.]+)\s*GHz", model, re.I)
+    if m:
+        return round(float(m.group(1)) * 1000.0, 1)
+    m = re.search(r"@\s*([\d.]+)\s*MHz", model, re.I)
+    if m:
+        return round(float(m.group(1)), 1)
+    return None
+
+
 @app.get("/v1/status")
 async def status(
     x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
@@ -324,6 +349,8 @@ async def status(
         cpu_cores = max(1, os.cpu_count() or 1)
     except Exception:
         pass
+    cpu_model = _cpu_model()
+    cpu_freq_base_mhz = _cpu_freq_base_mhz(cpu_model)
     wg_key = WG_SERVER_PUBLIC_KEY
     if not wg_key:
         try:
@@ -384,6 +411,8 @@ async def status(
         "network_link_capacity_mbps": network_link_capacity_mbps,
         "network_link_sysfs_mbps": network_link_sysfs_mbps,
         "cpu_cores": cpu_cores,
+        "cpu_model": cpu_model or None,
+        "cpu_freq_base_mhz": cpu_freq_base_mhz,
         "memory_total_gb": _memory_total_gb(),
         "agent_build_id": agent_build_id(),
         "olcrtc_units": olcrtc_units,

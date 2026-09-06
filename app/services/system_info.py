@@ -107,13 +107,14 @@ def get_cpu_info(cpu_percent: float = 0.0) -> dict:
             pass
 
     hw_mhz, hw_live = _hardware_mhz_live()
-    estimated = not hw_live
-
+    # На KVM/QEMU живой cpufreq часто нет — оценка «по загрузке» вводит в заблуждение.
+    # В дашборд отдаём текущую частоту только если железо реально её меняет.
     if hw_live and hw_mhz is not None:
         current_mhz = hw_mhz
+        estimated = False
     else:
-        ref = base_mhz or hw_mhz or 2300.0
-        current_mhz = _estimate_mhz_from_load(ref, cpu_percent)
+        current_mhz = None
+        estimated = True
 
     cores = psutil.cpu_count(logical=True) or 1
 

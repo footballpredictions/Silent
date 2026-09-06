@@ -1,7 +1,6 @@
 """Admin API — dashboard, user management, VK credentials, system stats."""
 import json
 import os
-import psutil
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, BackgroundTasks, Query
 from fastapi.responses import HTMLResponse
@@ -18,8 +17,11 @@ from app.core.deps import get_admin_credentials, get_admin_session_jti
 from app.config import settings
 from app.schemas.vpn import ThemeResponse
 from app.services.theme_settings import load_theme
-from app.services.system_info import get_cpu_info
-from app.services.proc_stats import read_host_load
+from app.services.dashboard_node_stats import (
+    QUEEN_NODE_ID,
+    dashboard_system_for_node,
+    list_dashboard_resource_nodes,
+)
 from app.services import update_service
 from app.services import admin_auth_service
 import uuid as uuid_mod
@@ -142,45 +144,30 @@ async def _dashboard_users_block(db: AsyncSession) -> dict:
 @router.get("/stats")
 async def get_stats(
     light: bool = Query(False, description="CPU/RAM/счётчики без VK-списков — для полла дашборда"),
+    node_id: str | None = Query(
+        None,
+        description="Нода для системных ресурсов: queen (дефолт) или UUID соты",
+    ),
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
     """Dashboard system stats."""
-    # CPU/RAM/канал — хост VPS (/host/proc), не cgroup контейнера API
-    load = read_host_load(cpu_interval=0.1)
-    cpu = float(load.get("cpu_percent") or 0.0)
-    cpu_info = get_cpu_info(cpu)
-    if load.get("cpu_cores"):
-        cpu_info["cpu_cores"] = int(load["cpu_cores"])
-    disk = psutil.disk_usage("/")
-
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
 
     users_block = await _dashboard_users_block(db)
-    mem_total = float(load.get("memory_total_gb") or 0.0)
-    mem_used = float(load.get("memory_used_gb") or 0.0)
-    mem_pct = float(load.get("memory_percent") or 0.0)
-    system = {
-        "cpu_percent": cpu,
-        **cpu_info,
-        "memory_total_gb": mem_total,
-        "memory_used_gb": mem_used,
-        "memory_percent": mem_pct,
-        "disk_total_gb": round(disk.total / (1024**3), 1),
-        "disk_used_gb": round(disk.used / (1024**3), 1),
-        "disk_percent": disk.percent,
-        "network_interface": load.get("network_interface"),
-        "network_mbps_rx": float(load.get("network_mbps_rx") or 0.0),
-        "network_mbps_tx": float(load.get("network_mbps_tx") or 0.0),
-        "network_util_percent": float(load.get("network_util_percent") or 0.0),
-        "network_link_capacity_mbps": float(
-            load.get("network_link_capacity_mbps") or settings.HIVE_LINK_CAPACITY_MBPS
-        ),
-    }
+    resource_nodes = await list_dashboard_resource_nodes(db)
+    known_ids = {n["id"] for n in resource_nodes}
+    selected = (node_id or QUEEN_NODE_ID).strip() or QUEEN_NODE_ID
+    if selected not in known_ids:
+        selected = QUEEN_NODE_ID
+    system = await dashboard_system_for_node(db, selected)
+    system["node_id"] = selected
+
     if light:
         return {
             "system": system,
             "users": users_block,
+            "resource_nodes": resource_nodes,
             "vk_hash_summary": {},
             "vk_users": [],
             "vk_hashes": [],
@@ -326,6 +313,7 @@ async def get_stats(
     return {
         "system": system,
         "users": users_block,
+        "resource_nodes": resource_nodes,
         "vk_hash_summary": {
             "total_active": len(all_hashes),
             "per_user_active": per_user_active,

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Cpu, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight, Activity } from 'lucide-react'
+import { Cpu, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight, Activity, Server } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
 import SortSelect from '../components/SortSelect'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
 const DASHBOARD_USER_SORT_KEY = 'admin.dashboard.userSort'
+const DASHBOARD_NODE_KEY = 'admin.dashboard.resourceNode'
 
 const DASHBOARD_USER_SORTS = [
   { value: 'online', label: 'Онлайн сначала' },
@@ -36,26 +37,38 @@ function parseAdminTs(iso?: string | null): number {
   return Number.isNaN(t) ? 0 : t
 }
 
+interface ResourceNode {
+  id: string
+  name: string
+  title: string
+  is_queen: boolean
+  status?: string
+}
+
 interface Stats {
   system: {
+    node_id?: string
     cpu_percent: number
     cpu_model?: string | null
-    cpu_cores?: number
+    cpu_cores?: number | null
     cpu_freq_base_mhz?: number | null
     cpu_freq_current_mhz?: number | null
     cpu_freq_estimated?: boolean
     memory_total_gb: number
     memory_used_gb: number
     memory_percent: number
-    disk_total_gb: number
-    disk_used_gb: number
-    disk_percent: number
+    disk_total_gb?: number | null
+    disk_used_gb?: number | null
+    disk_percent?: number | null
     network_interface?: string | null
     network_mbps_rx?: number
     network_mbps_tx?: number
     network_util_percent?: number
     network_link_capacity_mbps?: number
+    reachable?: boolean
+    cpu_percent_scope?: string
   }
+  resource_nodes?: ResourceNode[]
   users: {
     total: number
     active_subscriptions: number
@@ -450,12 +463,30 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
   const [cpuHistory, setCpuHistory] = useState<HistoryPoint[]>([])
   const [netHistory, setNetHistory] = useState<HistoryPoint[]>([])
   const [loading, setLoading] = useState(false)
+  const [nodeId, setNodeId] = useState(() => {
+    try {
+      return localStorage.getItem(DASHBOARD_NODE_KEY) || 'queen'
+    } catch {
+      return 'queen'
+    }
+  })
+
+  const resourceNodes = stats?.resource_nodes ?? [{ id: 'queen', name: 'Улей', title: 'Улей', is_queen: true }]
+
+  const selectNode = useCallback((id: string) => {
+    setNodeId(id)
+    try { localStorage.setItem(DASHBOARD_NODE_KEY, id) } catch { /* private mode */ }
+    setCpuHistory([])
+    setNetHistory([])
+  }, [])
 
   const fetchStats = useCallback(async (mode: 'full' | 'light' = 'full') => {
     if (mode === 'full') setLoading(true)
     try {
-      const qs = mode === 'light' ? '?light=1' : ''
-      const res = await fetch(`/api/admin/stats${qs}`, {
+      const params = new URLSearchParams()
+      if (mode === 'light') params.set('light', '1')
+      params.set('node_id', nodeId)
+      const res = await fetch(`/api/admin/stats?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (res.status === 401) {
@@ -468,9 +499,20 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       }
       const data: Stats = await res.json()
       if (!data?.system) return
+      const nodes = data.resource_nodes ?? []
+      const effectiveNode = data.system.node_id || nodeId
+      if (nodes.length && !nodes.some(n => n.id === effectiveNode) && effectiveNode !== 'queen') {
+        selectNode('queen')
+        return
+      }
       setStats(prev => {
         if (mode === 'light' && prev) {
-          return { ...prev, system: data.system, users: data.users }
+          return {
+            ...prev,
+            system: data.system,
+            users: data.users,
+            resource_nodes: data.resource_nodes ?? prev.resource_nodes,
+          }
         }
         return data
       })
@@ -485,7 +527,7 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
     } finally {
       if (mode === 'full') setLoading(false)
     }
-  }, [token, onUnauthorized])
+  }, [token, onUnauthorized, nodeId, selectNode])
 
   useEffect(() => {
     fetchStats('full')
@@ -501,6 +543,13 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       </div>
     )
   }
+
+  const sys = stats.system
+  const cores = sys.cpu_cores
+  const cpuLabel = cores
+    ? `CPU — ${sys.cpu_percent.toFixed(1)}% · ${cores} ядер`
+    : `CPU — ${sys.cpu_percent.toFixed(1)}%`
+  const unreachable = sys.reachable === false
 
   return (
     <div className="space-y-6">
@@ -565,52 +614,76 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       {/* System */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="bg-[#111] border border-[#222] rounded-xl p-5">
-          <h3 className="text-xs text-[#666] uppercase tracking-wider mb-4 flex items-center gap-2">
-            <Cpu className="w-3.5 h-3.5" /> Системные ресурсы
-          </h3>
-          {(stats.system.cpu_freq_base_mhz != null || stats.system.cpu_freq_current_mhz != null) && (
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <h3 className="text-xs text-[#666] uppercase tracking-wider flex items-center gap-2 shrink-0">
+              <Cpu className="w-3.5 h-3.5" /> Системные ресурсы
+            </h3>
+            <div className="relative min-w-[8.5rem] max-w-[13rem]">
+              <Server className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#555] pointer-events-none" />
+              <select
+                value={resourceNodes.some(n => n.id === nodeId) ? nodeId : 'queen'}
+                onChange={e => selectNode(e.target.value)}
+                aria-label="Нода"
+                className="w-full appearance-none pl-8 pr-7 py-1.5 text-xs bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-white focus:outline-none focus:border-[#444] hover:border-[#3a3a3a] cursor-pointer"
+                title="Нода для CPU / RAM / канала"
+              >
+                {resourceNodes.map(n => (
+                  <option key={n.id} value={n.id}>
+                    {n.title || n.name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#555] pointer-events-none" />
+            </div>
+          </div>
+          {unreachable && (
+            <div className="text-xs text-amber-500/90 mb-3">Сота сейчас не отвечает — метрики недоступны</div>
+          )}
+          {(sys.cpu_model || sys.cpu_freq_base_mhz != null || cores != null) && (
             <div className="text-xs text-[#666] mb-3 space-y-1">
-              <div className="flex flex-wrap gap-x-3 gap-y-1">
-                {stats.system.cpu_freq_base_mhz != null && (
-                  <span>Частота (номинал): <span className="text-[#aaa]">{formatGhz(stats.system.cpu_freq_base_mhz)}</span></span>
-                )}
-                {stats.system.cpu_freq_current_mhz != null && (
-                  <span>
-                    Онлайн:{' '}
-                    <span className="text-white font-medium">{formatLiveMhz(stats.system.cpu_freq_current_mhz)}</span>
-                    {stats.system.cpu_freq_estimated && (
-                      <span className="text-[#555] ml-1" title="VPS не отдаёт частоту с железа — оценка по загрузке CPU">
-                        (≈ по загрузке)
-                      </span>
-                    )}
-                  </span>
-                )}
-              </div>
-              {stats.system.cpu_model && (
-                <div className="text-[#555] truncate" title={stats.system.cpu_model}>
-                  {stats.system.cpu_model}
-                  {stats.system.cpu_cores ? ` · ${stats.system.cpu_cores} ядер` : ''}
+              {sys.cpu_freq_base_mhz != null && (
+                <div>
+                  Частота (номинал):{' '}
+                  <span className="text-[#aaa]">{formatGhz(sys.cpu_freq_base_mhz)}</span>
+                  {sys.cpu_freq_current_mhz != null && !sys.cpu_freq_estimated && (
+                    <span className="ml-3">
+                      сейчас:{' '}
+                      <span className="text-white font-medium">{formatLiveMhz(sys.cpu_freq_current_mhz)}</span>
+                    </span>
+                  )}
                 </div>
               )}
+              <div className="text-[#555] truncate" title={sys.cpu_model || undefined}>
+                {sys.cpu_model || 'CPU'}
+                {cores != null ? ` · ${cores} ядер` : ''}
+              </div>
             </div>
           )}
-          <ProgressBar percent={stats.system.cpu_percent} label={`CPU — ${stats.system.cpu_percent.toFixed(1)}%`} />
-          <ProgressBar percent={stats.system.memory_percent} label={`RAM — ${stats.system.memory_used_gb} / ${stats.system.memory_total_gb} GB`} />
-          <ProgressBar percent={stats.system.disk_percent} label={`Диск — ${stats.system.disk_used_gb} / ${stats.system.disk_total_gb} GB`} />
+          <ProgressBar percent={sys.cpu_percent} label={cpuLabel} />
+          <ProgressBar
+            percent={sys.memory_percent}
+            label={`RAM — ${sys.memory_used_gb} / ${sys.memory_total_gb} GB`}
+          />
+          {sys.disk_percent != null && sys.disk_total_gb != null && (
+            <ProgressBar
+              percent={sys.disk_percent}
+              label={`Диск — ${sys.disk_used_gb} / ${sys.disk_total_gb} GB`}
+            />
+          )}
           <div className="mt-1 pt-3 border-t border-[#1e1e1e]">
             <div className="flex items-center gap-2 text-xs text-[#666] mb-1">
               <Activity className="w-3.5 h-3.5" />
               <span>
-                Канал{stats.system.network_interface ? ` (${stats.system.network_interface})` : ''}
+                Канал{sys.network_interface ? ` (${sys.network_interface})` : ''}
                 {' · '}
-                {formatBandwidth(stats.system.network_mbps_rx ?? 0)}↓ / {formatBandwidth(stats.system.network_mbps_tx ?? 0)}↑
+                {formatBandwidth(sys.network_mbps_rx ?? 0)}↓ / {formatBandwidth(sys.network_mbps_tx ?? 0)}↑
                 {' · '}
-                лимит {stats.system.network_link_capacity_mbps?.toFixed(0) ?? '1000'} Мбит/с
+                лимит {sys.network_link_capacity_mbps?.toFixed(0) ?? '1000'} Мбит/с
               </span>
             </div>
             <ProgressBar
-              percent={stats.system.network_util_percent ?? 0}
-              label={`Загрузка канала — ${(stats.system.network_util_percent ?? 0).toFixed(1)}%`}
+              percent={sys.network_util_percent ?? 0}
+              label={`Загрузка канала — ${(sys.network_util_percent ?? 0).toFixed(1)}%`}
             />
           </div>
         </div>
@@ -626,7 +699,7 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
           <div className="border-t border-[#1e1e1e] pt-5">
             <LoadAreaChart
               title="Канал — загрузка (%)"
-              subtitle={`${formatBandwidth(stats.system.network_mbps_rx ?? 0)}↓ / ${formatBandwidth(stats.system.network_mbps_tx ?? 0)}↑`}
+              subtitle={`${formatBandwidth(sys.network_mbps_rx ?? 0)}↓ / ${formatBandwidth(sys.network_mbps_tx ?? 0)}↑`}
               data={netHistory}
               stroke="#38bdf8"
               fill="#38bdf815"

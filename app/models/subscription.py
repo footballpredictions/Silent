@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import String, DateTime, ForeignKey, func, Numeric
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
+from app.services.subscription_kinds import compute_days_left
 
 
 class Subscription(Base):
@@ -28,5 +29,4 @@ class Subscription(Base):
     def days_left(self) -> int:
         if not self.is_active:
             return 0
-        delta = self.expires_at - datetime.utcnow()
-        return max(0, delta.days)
+        return compute_days_left(self.expires_at)

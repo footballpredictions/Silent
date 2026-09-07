@@ -145,6 +145,11 @@ def _user_brief(user: User, *, admin: bool, in_test: bool, sub: Subscription | N
 
 
 def _payment_dict(p: Payment) -> dict:
+    from app.services.yumoney_datetime import yumoney_datetime_from_raw_response
+
+    # Предпочитаем время из оповещения ЮMoney (в т.ч. для старых платежей в raw_response).
+    yumoney_at = yumoney_datetime_from_raw_response(getattr(p, "raw_response", None))
+    completed_at = yumoney_at or p.completed_at
     return {
         "id": str(p.id),
         "plan_type": p.plan_type,
@@ -156,7 +161,7 @@ def _payment_dict(p: Payment) -> dict:
         "manual_activated_at": p.manual_activated_at,
         "yumoney_label": p.yumoney_label,
         "created_at": p.created_at,
-        "completed_at": p.completed_at,
+        "completed_at": completed_at,
     }
 
 

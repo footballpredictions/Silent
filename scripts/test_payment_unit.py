@@ -70,6 +70,22 @@ def _svc():
         return None
 
 
+class YuMoneyDatetimeTests(unittest.TestCase):
+    def setUp(self):
+        self.svc = _svc()
+        if not self.svc:
+            self.skipTest("fastapi/sqlalchemy stack not installed locally")
+
+    def test_notification_sets_completed_at_from_yumoney_datetime(self):
+        """Smoke: parse helper still re-exported path used by process_payment_notification."""
+        from app.services.yumoney_datetime import yumoney_datetime_from_notification
+        data = {"datetime": "2026-07-14T10:00:00Z"}
+        self.assertEqual(
+            yumoney_datetime_from_notification(data),
+            datetime(2026, 7, 14, 10, 0, 0),
+        )
+
+
 class WalletSelectionTests(unittest.TestCase):
     def setUp(self):
         self.svc = _svc()
@@ -513,6 +529,8 @@ class ProcessNotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["reason"], "completed")
         self.assertEqual(payment.status, "completed")
         self.assertAlmostEqual(float(payment.paid_amount), round(received, 2))
+        # Время оплаты = datetime из оповещения ЮMoney, не «сейчас».
+        self.assertEqual(payment.completed_at, datetime(2026, 7, 14, 10, 0, 0))
         activate.assert_awaited_once()
         send_email.assert_called_once()
 

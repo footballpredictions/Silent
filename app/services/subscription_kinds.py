@@ -1,6 +1,9 @@
 """Pure subscription kind helpers (no FastAPI) — dashboard / filters."""
 from __future__ import annotations
 
+import math
+from datetime import datetime
+
 TRIAL_PLAN = "trial"
 TEST_PLAN = "test"
 REFERRAL_PLAN = "referral_bonus"
@@ -34,6 +37,19 @@ PAID_OR_GRANTED_PLANS = (
 
 # Живой доступ «с подпиской»: покупки + выданные админом + реф.бонус (без trial/test)
 WITH_SUB_KINDS = frozenset({"paid", "granted", "referral"})
+
+
+def compute_days_left(expires_at: datetime, now: datetime | None = None) -> int:
+    """Календарные дни «включичительно»: при 3-дневном триале сразу 3, в последний день 1.
+
+    timedelta.days обрезает вниз (72ч−1с → 2), из‑за этого клиент писал «осталось 2»
+    в момент выдачи и «0» в последний день.
+    """
+    now = now or datetime.utcnow()
+    secs = (expires_at - now).total_seconds()
+    if secs <= 0:
+        return 0
+    return max(1, math.ceil(secs / 86400))
 
 
 def normalize_subscription_filter(raw: str | None) -> str:

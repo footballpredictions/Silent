@@ -125,6 +125,30 @@ function fmtDate(v: string | null | undefined): string {
   return v.split('T')[0]
 }
 
+/** Дата+время (МСК): для оплат по коду ЮMoney — не только день. */
+function fmtDateTime(v: string | null | undefined): string {
+  if (!v) return '—'
+  try {
+    let s = String(v).trim()
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+      s = s.replace(' ', 'T')
+      if (!s.endsWith('Z')) s += 'Z'
+    }
+    const dt = new Date(s)
+    if (Number.isNaN(dt.getTime())) return fmtDate(v)
+    return dt.toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  } catch {
+    return fmtDate(v)
+  }
+}
+
 function fmtMoney(n: number | null | undefined): string {
   if (n == null || Number.isNaN(n)) return '—'
   return `${Number(n).toFixed(0)} ₽`
@@ -515,7 +539,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                 <span>{o.user.email}</span>
                 <span className="text-[#666]">
                   {PLAN_NAMES[o.payment.plan_type] || o.payment.plan_type} · {fmtMoney(o.payment.amount)} ·{' '}
-                  {fmtDate(o.payment.completed_at)}
+                  {fmtDateTime(o.payment.completed_at)}
                 </span>
               </button>
             ))}
@@ -763,7 +787,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                     </div>
                     <div>
                       <div className="text-[#555]">Оплачено</div>
-                      <div>{fmtDate(codeResult.payment.completed_at)}</div>
+                      <div>{fmtDateTime(codeResult.payment.completed_at)}</div>
                     </div>
                     <div>
                       <div className="text-[#555]">Выдача</div>
@@ -868,7 +892,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                             </div>
                             <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-[#666]">
                               <span>{p.status}</span>
-                              <span>{fmtDate(p.completed_at || p.created_at)}</span>
+                              <span>{fmtDateTime(p.completed_at || p.created_at)}</span>
                               {p.support_code && (
                                 <button
                                   type="button"

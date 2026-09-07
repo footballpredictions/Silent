@@ -25,6 +25,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.models import Payment, User, Subscription, PromoCode
 from app.services.email_service import send_subscription_activated_email
+from app.services.yumoney_datetime import yumoney_datetime_from_notification
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +343,8 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> dict:
         return {"ok": True, "reason": "amount_mismatch"}
 
     payment.status = "completed"
-    payment.completed_at = datetime.utcnow()
+    # Точное время из оповещения ЮMoney (не момент обработки вебхука).
+    payment.completed_at = yumoney_datetime_from_notification(data) or datetime.utcnow()
     payment.operation_id = operation_id or None
     payment.paid_amount = round(received, 2)
     payment.raw_response = str(data)

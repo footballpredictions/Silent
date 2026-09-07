@@ -30,7 +30,7 @@ from app.services.yumoney_datetime import yumoney_datetime_from_notification
 logger = logging.getLogger(__name__)
 
 PLAN_PRICES = {
-    "monthly": (settings.PRICE_MONTHLY, 30),
+    "monthly": (settings.PRICE_MONTHLY, 30),  # days — только для UI/старых клиентов; срок = календарный месяц
     "two_months": (settings.PRICE_TWO_MONTHS, 60),
     "quarterly": (settings.PRICE_QUARTERLY, 90),  # 3 месяца
     "yearly": (settings.PRICE_YEARLY, 365),  # старые клиенты 1.0.160/161
@@ -229,6 +229,7 @@ def _signature_valid_for_any_wallet(data: dict) -> bool:
 
 async def _activate_subscription(db: AsyncSession, payment: Payment) -> Subscription:
     from app.services.subscription_service import TRIAL_PLAN
+    from app.services.subscription_kinds import plan_expires_at
 
     trial_result = await db.execute(
         select(Subscription).where(
@@ -240,7 +241,6 @@ async def _activate_subscription(db: AsyncSession, payment: Payment) -> Subscrip
     for trial in trial_result.scalars().all():
         trial.status = "cancelled"
 
-    _, days = PLAN_PRICES.get(payment.plan_type, (0, 30))
     now = datetime.utcnow()
     active_result = await db.execute(
         select(Subscription)
@@ -259,7 +259,7 @@ async def _activate_subscription(db: AsyncSession, payment: Payment) -> Subscrip
         status="active",
         amount_paid=float(payment.amount),
         started_at=now,
-        expires_at=base + timedelta(days=days),
+        expires_at=plan_expires_at(base, payment.plan_type),
     )
     db.add(subscription)
     return subscription
@@ -422,8 +422,9 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> dict:
             if latest:
                 expires = latest.expires_at
             else:
-                _, days = PLAN_PRICES.get(payment.plan_type, (0, 30))
-                expires = datetime.utcnow() + timedelta(days=days)
+                from app.services.subscription_kinds import plan_expires_at
+
+                expires = plan_expires_at(datetime.utcnow(), payment.plan_type)
         try:
             send_subscription_activated_email(
                 user.email,

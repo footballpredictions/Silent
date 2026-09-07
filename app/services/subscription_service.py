@@ -13,6 +13,7 @@ from app.services.subscription_kinds import (
     TRIAL_PLAN,
     TEST_PLAN,
     classify_subscription_kind,
+    plan_expires_at,
 )
 
 logger = logging.getLogger(__name__)
@@ -542,15 +543,15 @@ async def require_active_subscription(user: User, db: AsyncSession) -> None:
         )
 
 
-GRANTABLE_PLANS = {
-    "three_days": 3,
-    "monthly": 30,
-    "two_months": 60,
-    "quarterly": 90,
-    "half_year": 180,
-    "yearly": 365,
-    "unlimited": 36500,  # ~100 лет
-}
+GRANTABLE_PLANS = frozenset({
+    "three_days",
+    "monthly",
+    "two_months",
+    "quarterly",
+    "half_year",
+    "yearly",
+    "unlimited",
+})
 
 
 async def dashboard_subscription_breakdown(db: AsyncSession) -> dict[str, int]:
@@ -617,7 +618,6 @@ async def grant_manual_subscription(
     if is_user_admin(user):
         raise HTTPException(status_code=400, detail="Администратору подписка не нужна")
 
-    days = GRANTABLE_PLANS[plan_type]
     now = datetime.utcnow()
 
     active_result = await db.execute(
@@ -638,7 +638,7 @@ async def grant_manual_subscription(
         status="active",
         amount_paid=0,
         started_at=now,
-        expires_at=base + timedelta(days=days),
+        expires_at=plan_expires_at(base, plan_type),
     )
     db.add(subscription)
     await db.commit()

@@ -229,17 +229,12 @@ def _signature_valid_for_any_wallet(data: dict) -> bool:
 
 async def _activate_subscription(db: AsyncSession, payment: Payment) -> Subscription:
     from app.services.subscription_service import TRIAL_PLAN
-    from app.services.subscription_kinds import plan_expires_at
-
-    trial_result = await db.execute(
-        select(Subscription).where(
-            Subscription.user_id == payment.user_id,
-            Subscription.plan_type == TRIAL_PLAN,
-            Subscription.status == "active",
-        )
+    from app.services.subscription_kinds import (
+        plan_expires_at,
+        paid_subscription_stack_base,
+        REFERRAL_PLAN,
+        TEST_PLAN,
     )
-    for trial in trial_result.scalars().all():
-        trial.status = "cancelled"
 
     now = datetime.utcnow()
     active_result = await db.execute(
@@ -247,12 +242,19 @@ async def _activate_subscription(db: AsyncSession, payment: Payment) -> Subscrip
         .where(Subscription.user_id == payment.user_id, Subscription.status == "active")
         .order_by(Subscription.expires_at.desc())
     )
-    base = now
-    for existing in active_result.scalars().all():
-        if existing.is_active and existing.expires_at > base:
-            base = existing.expires_at
+    active_rows = list(active_result.scalars().all())
+    stack_pairs = []
+    for existing in active_rows:
+        # trial / referral / test снимаем, но в базу купленного срока не кладём
+        if (
+            existing.plan_type not in (TRIAL_PLAN, REFERRAL_PLAN, TEST_PLAN)
+            and existing.is_active
+            and existing.expires_at
+        ):
+            stack_pairs.append((existing.plan_type, existing.expires_at))
         existing.status = "cancelled"
 
+    base = paid_subscription_stack_base(now, stack_pairs)
     subscription = Subscription(
         user_id=payment.user_id,
         plan_type=payment.plan_type,

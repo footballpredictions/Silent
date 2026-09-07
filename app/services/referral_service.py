@@ -9,10 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import User, Payment, PromoCode, ReferralReward, Subscription
+from app.services.subscription_kinds import bonus_period_expires, REFERRAL_PLAN as KIND_REFERRAL_PLAN
 
 REFERRAL_BONUS_DAYS = settings.REFERRAL_BONUS_DAYS
 REFERRAL_MONTHLY_REWARD_LIMIT = settings.REFERRAL_MONTHLY_REWARD_LIMIT
-REFERRAL_PLAN = "referral_bonus"
+REFERRAL_PLAN = KIND_REFERRAL_PLAN
 REFERRAL_CODE_ALPHABET = string.ascii_uppercase + string.digits
 REFERRAL_CODE_LEN = 8
 
@@ -118,7 +119,10 @@ async def extend_subscription_days(
     days: int,
     plan_type: str = REFERRAL_PLAN,
 ) -> Subscription:
-    """Stack +days onto the latest active subscription (or create from now)."""
+    """Stack bonus onto the latest active subscription (or create from now).
+
+    При days=30 (дефолт реферала) — +1 календарный месяц, не +30 суток.
+    """
     now = datetime.utcnow()
     active_result = await db.execute(
         select(Subscription)
@@ -136,7 +140,7 @@ async def extend_subscription_days(
         status="active",
         amount_paid=0,
         started_at=now,
-        expires_at=base + timedelta(days=days),
+        expires_at=bonus_period_expires(base, days),
         promo_code=None,
     )
     # Keep previous active rows; stacking via new row with later expires_at

@@ -12,6 +12,8 @@ from app.services.subscription_kinds import (  # noqa: E402
     add_calendar_months,
     plan_expires_at,
     suggest_calendar_expires_fix,
+    bonus_period_expires,
+    paid_subscription_stack_base,
     CALENDAR_MONTHS_DEPLOY_CUTOFF_UTC,
 )
 
@@ -117,6 +119,53 @@ class CalendarMonthsTests(unittest.TestCase):
                 plan_type="monthly", started_at=started, expires_at=old_exp
             )
         )
+
+    def test_referral_bonus_30_is_calendar_month(self):
+        base = datetime(2026, 8, 27, 12, 0, 0)
+        self.assertEqual(bonus_period_expires(base, 30), datetime(2026, 9, 27, 12, 0, 0))
+
+    def test_referral_on_top_of_quarterly(self):
+        """После оплаты 3 мес. с 27.08 реф даёт ещё месяц → до 27.12, не 25.12."""
+        start = datetime(2026, 8, 27, 12, 0, 0)
+        paid_end = plan_expires_at(start, "quarterly")
+        self.assertEqual(paid_end, datetime(2026, 11, 27, 12, 0, 0))
+        total = bonus_period_expires(paid_end, 30)
+        self.assertEqual(total, datetime(2026, 12, 27, 12, 0, 0))
+        from datetime import timedelta
+        # Старый баг: реф как база +90 суток
+        wrong = start + timedelta(days=30) + timedelta(days=90)
+        self.assertEqual(wrong.date(), datetime(2026, 12, 25).date())
+
+    def test_paid_stack_ignores_referral_leftover(self):
+        now = datetime(2026, 8, 27, 12, 0, 0)
+        ref_end = datetime(2026, 9, 26, 12, 0, 0)
+        base = paid_subscription_stack_base(
+            now,
+            [("referral_bonus", ref_end), ("trial", now + __import__("datetime").timedelta(days=1))],
+        )
+        self.assertEqual(base, now)
+        paid = plan_expires_at(base, "quarterly")
+        self.assertEqual(paid, datetime(2026, 11, 27, 12, 0, 0))
+
+    def test_referral_on_top_of_monthly_not_oct26(self):
+        """Месяц 27.08→27.09; реф сверху → 27.10, не 26.10 (+30 от старого 26.09)."""
+        start = datetime(2026, 8, 27, 12, 0, 0)
+        paid_end = plan_expires_at(start, "monthly")
+        self.assertEqual(paid_end.date(), datetime(2026, 9, 27).date())
+        ref_end = bonus_period_expires(paid_end, 30)
+        self.assertEqual(ref_end.date(), datetime(2026, 10, 27).date())
+        from datetime import timedelta
+        legacy_ref = (start + timedelta(days=30)) + timedelta(days=30)
+        self.assertEqual(legacy_ref.date(), datetime(2026, 10, 26).date())
+
+    def test_paid_stack_keeps_existing_paid(self):
+        now = datetime(2026, 8, 27, 12, 0, 0)
+        existing_paid = datetime(2026, 10, 1, 12, 0, 0)
+        base = paid_subscription_stack_base(
+            now,
+            [("monthly", existing_paid), ("referral_bonus", datetime(2026, 9, 26, 12, 0, 0))],
+        )
+        self.assertEqual(base, existing_paid)
 
 
 if __name__ == "__main__":

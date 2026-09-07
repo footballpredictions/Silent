@@ -95,6 +95,37 @@ def plan_expires_at(base: datetime, plan_type: str) -> datetime:
     return add_calendar_months(base, 1)
 
 
+def bonus_period_expires(base: datetime, days: int) -> datetime:
+    """Реферальный/бонусный срок: 30 дней → 1 календарный месяц; иначе кратно 30 → N мес.; иначе сутки."""
+    n = int(days or 0)
+    if n <= 0:
+        return base
+    if n % 30 == 0:
+        return add_calendar_months(base, n // 30)
+    return base + timedelta(days=n)
+
+
+# При оплате не продлевать купленный план «поверх» бесплатного рефа/trial —
+# иначе 3 мес. от 27.08 выглядят как до 25.12 (база = конец рефа +90 суток).
+PAID_STACK_SKIP_PLANS = frozenset({TRIAL_PLAN, REFERRAL_PLAN, TEST_PLAN})
+
+
+def paid_subscription_stack_base(
+    now: datetime,
+    active_plan_expires: list[tuple[str, datetime | None]],
+) -> datetime:
+    """База для новой оплаченной/выданной подписки: max(now, expires платных), без referral/trial/test."""
+    base = now
+    for plan_type, expires_at in active_plan_expires:
+        plan = (plan_type or "").strip().lower()
+        if plan in PAID_STACK_SKIP_PLANS or expires_at is None:
+            continue
+        exp = expires_at.replace(tzinfo=None) if getattr(expires_at, "tzinfo", None) else expires_at
+        if exp > base:
+            base = exp
+    return base
+
+
 def suggest_calendar_expires_fix(
     *,
     plan_type: str,

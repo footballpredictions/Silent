@@ -23,7 +23,8 @@ Runbook: `backend/AI_EXIT_NODE.md`.
 - [ ] Ф6: лимит одновременных сессий на соту, затем снять `admin_only` кнопкой в Улье
 - [ ] Прогнать `harden --all` по Сотам 1–2 (после этого проверить: `wdtt` active, клиенты онлайн, `ufw status` = active)
 - [ ] План Б: вторая US-нода в другом ASN
-- [ ] **Android: не проходит вход через Google в ИИ-приложениях** (пробовал разные), в браузере через тот же VPN всё ок. Смотреть WebView/Custom Tabs, `com.google.android.gms` в исключениях VPN, DNS/SNI для `accounts.google.com`
+- [ ] **Android: Google-вход / ChatGPT** — OAuth и API теперь на одном WARP egress (без HOSTKEY-split). Переподключить Сервер 4, проверить ChatGPT app
+- [ ] **PC Gemini** — debug `build-debug-504533`: IPv6 blackhole. SilentVPN-Admin.bat → Сервер 4 → gemini.google.com
 
 ### Ложные переподключения VPN (Android, 2026-09-06)
 

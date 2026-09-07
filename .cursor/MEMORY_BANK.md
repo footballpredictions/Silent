@@ -4,6 +4,48 @@
 > Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
 > сначала читать его, потом код.
 
+## Последние изменения (подписки: время ЮMoney + days_left 2026-09-07)
+
+- Оплата по коду: `completed_at` берётся из `datetime` оповещения ЮMoney (не момент вебхука); для старых платежей — из `raw_response`. В админке «Подписки» показывается дата+время (МСК), не только день.
+- Триал / `days_left`: вместо `timedelta.days` (обрезало вниз → сразу «2» и в последний день «0») — `ceil` суток: сразу 3, в последний день 1. Тест: `python scripts/test_days_left_unit.py`.
+- **Деплой:** `deploy_stable.py` — health OK (~38 мс), `wdtt` active, DNAT на API, `queen_wg_kick_20s=0`. Админка с новым `fmtDateTime` залита.
+
+## Последние изменения (деплой AI apps fix 2026-09-07)
+
+- `proxy --chain warp` залито на Соту 3 и проверено: `final=ai-out`, WARP key ok, TCP+UDP/443 TPROXY, `accounts.google.com` в цепочке, `wdtt`+`sing-box` active.
+- Смысл: браузер слал SNI → WARP; приложения часто без SNI/QUIC → HOSTKEY. Теперь весь публичный HTTPS/QUIC с Сервера 4 идёт в WARP.
+- Переподключить Сервер 4 (VPN off/on), проверить ChatGPT **приложение** и Gemini на ПК.
+
+## Последние изменения (ChatGPT IP-split + PC IPv6 blackhole 2026-09-06)
+
+- Диагноз ChatGPT: через WARP `api.openai.com` = 401 (доступен), но Google-auth шёл на HOSTKEY, а API — на WARP → разные IP → вечный вход. Фикс: при `--chain warp|socks` auth-домены в `ai-out`, gauth RETURN выкл. Залито `proxy --chain warp` (wdtt active).
+- PC Gemini: `::` в AllowedIPs откатили; как Linux — `blockIpv6Leak` (Teredo/RA off + blackhole `::/0`). Debug: `pc/build-debug-504533/win-unpacked/` (SilentVPN-Admin.bat).
+- Переподключить Сервер 4; ChatGPT на Android; Gemini на ПК через SilentVPN-Admin.bat.
+
+## Последние изменения (AI-сота + PC Gemini 2026-09-06)
+
+- ChatGPT app всё ещё падал: QUIC UDP/443 обходил TPROXY/WARP. Залито: `dns` + `proxy --chain warp` — REJECT клиентского UDP/443, `sniff_override_destination`, узкий gauth (без www.google.com/gstatic). Status: QUIC REJECT, WARP key=ok, wdtt active.
+- PC Gemini на той же Wi‑Fi, что Android: на Windows IPv6 уходил мимо туннеля (AllowedIPs только IPv4). Фикс: `::/1, 8000::/1` + ULA `fd00:67:67::2/128` в `pc/.../wireguard.js`. Debug: `pc/build-debug-335342/win-unpacked/` (запуск через SilentVPN-Admin.bat).
+- Если ChatGPT после переподключения к Серверу 4 всё ещё вечный вход — free WARP часто банит OpenAI; нужен резидентный `proxy --chain socks5://…`. Play «не в вашей стране» = RU-аккаунт vs US IP, не чинится прокси.
+
+## Последние изменения (AI-сота: WARP для ChatGPT 2026-09-06)
+
+- Приёмка: Kimi и Lovable через Google входят; скачанный ChatGPT — вечный вход; Play Market «недоступен в вашей стране».
+- Вывод: Google-auth на соте ок. OpenAI душит HOSTKEY (`hosting/proxy`). Play — конфликт страны аккаунта (RU) и IP (US), не баг клиента.
+- Включён Ф4: `deploy_ai_cell.py proxy --chain warp` — `ai-out` = WARP только для ИИ-доменов (`chatgpt.com`/`openai.com`/…). `wdtt` не трогали. Откат: `proxy` без `--chain` или `proxy --off`.
+
+## Последние изменения (AI-сота: Google Sign-In в приложениях 2026-09-06)
+
+- Браузер через VPN ок, Gemini/ChatGPT через Google — нет. Клиентский IPv6-blackhole на WG Builder откатили (ломал set address).
+- На **соте** (не в APK): (1) клиентский DoT `:853` и DoH `:443` к `8.8.8.8/8.8.4.4/1.1.1.1/1.0.0.1/9.9.9.9` → REJECT в FORWARD — GMS не получает AAAA мимо `filter-AAAA`; (2) IP `accounts.google.com` / GMS auth — RETURN из TPROXY (`ipset silent-ai-gauth`), выход обычным NAT той же ноды (прозрачный прокси часто рвёт GMS).
+- Залито: `deploy_ai_cell.py dns` + `proxy`. Status: DoH reject в FORWARD, sing-box active, wdtt active. Проверить вход Google в приложении на Сервере 4 (переподключить VPN после деплоя).
+
+## Последние изменения (Android: откат IPv6 на WG Builder 2026-09-06)
+
+- `addAddress(fd00:67:67::2)` + `addRoute(::/0)` на GoBackend Builder ломал старт: WireGuard «Unable to set IP address», туннель не поднимался.
+- Откатил IPv6 с Builder полностью. `GoogleAuthTunnelPolicy` (Chrome/GMS/WebView нельзя в ЧС) оставлен — адреса WG не трогает.
+- Debug APK пересобран: `android/SilentVPN-debug.apk`.
+
 ## Последние изменения (Android: ложные переподключения 2026-09-06)
 
 - Симптом: телефон лежит, сеть не меняется, но иногда полный рестарт транспорта — в шторке воркеры с нуля.

@@ -16,6 +16,8 @@ sys.path.insert(0, str(ROOT))
 from app.services.ai_exit_node import (  # noqa: E402
     AI_DOMAIN_SUFFIXES,
     CLIENT_NET,
+    DOH_RESOLVER_IPS,
+    GOOGLE_AUTH_DOMAIN_SUFFIXES,
     TPROXY_PORT,
     _parse_socks_url,
     audit_script,
@@ -106,6 +108,32 @@ def test_dns_only_touches_client_traffic() -> None:
     assert "rm -f /etc/silent-ai/tif.dnsmasq" in off
 
 
+def test_google_auth_avoids_tproxy_and_app_doh() -> None:
+    """GMS ходит в свой DoH и ломается на TPROXY — браузер при этом жив."""
+    dns = dns_script(threat_filter_enabled=False)
+    assert '--dport 853 -j REJECT' in dns
+    assert '-p udp --dport 443 -j REJECT' in dns
+    for ip in DOH_RESOLVER_IPS:
+        assert ip in dns
+    assert "accounts.google.com" in GOOGLE_AUTH_DOMAIN_SUFFIXES
+    proxy = proxy_script()
+    assert "silent-ai-gauth" in proxy
+    assert "accounts.google.com" in proxy
+    assert "--dports 80,443 -j TPROXY" in proxy
+    # ИИ-сайты в обход не входят — их по-прежнему ведёт sing-box.
+    gauth = " ".join(GOOGLE_AUTH_DOMAIN_SUFFIXES)
+    assert "gemini.google.com" not in gauth
+    assert "chatgpt.com" not in gauth
+    assert "www.google.com" not in gauth
+    assert "www.gstatic.com" not in gauth
+    assert "s|__GAUTH_BYPASS__|on|" in proxy
+    assert "s|__GAUTH_BYPASS__|off|" in proxy_script(chain_url="warp")
+    rb = rollback_script(scope="dns")
+    assert "--dport 853 -j REJECT" in rb
+    for ip in DOH_RESOLVER_IPS:
+        assert ip in rb
+
+
 def test_proxy_is_fail_open() -> None:
     s = proxy_script()
     # Цепочку в PREROUTING вешает только watchdog и только если sing-box жив.
@@ -130,6 +158,7 @@ def test_singbox_config_shape() -> None:
     assert cfg["inbounds"][0]["type"] == "tproxy"
     assert cfg["inbounds"][0]["listen_port"] == TPROXY_PORT
     assert cfg["inbounds"][0]["sniff"] is True
+    assert cfg["inbounds"][0]["sniff_override_destination"] is True
     tags = {o["tag"] for o in cfg["outbounds"]}
     assert {"direct", "ai-out", "block"} <= tags
     ai_out = next(o for o in cfg["outbounds"] if o["tag"] == "ai-out")
@@ -145,7 +174,8 @@ def test_singbox_config_shape() -> None:
     assert ai_out["server"] == "203.0.113.9" and ai_out["server_port"] == 1080
     assert ai_out["username"] == "u"
     # Цепочка — только для ИИ-доменов, остальное всегда direct.
-    assert chained["route"]["final"] == "direct"
+    assert chained["route"]["final"] == "ai-out"
+    assert "accounts.google.com" in chained["route"]["rules"][-1]["domain_suffix"]
 
     # Секреты цепочки не должны утечь в git: они появляются только в скрипте.
     s = proxy_script(chain_url="socks5://u:p@203.0.113.9:1080")
@@ -158,6 +188,8 @@ def test_warp_chain_is_opt_in_and_patched_on_node() -> None:
     assert ai_out["type"] == "wireguard"
     # Ключи WARP появляются только на ноде, в репозитории их быть не должно.
     assert ai_out["private_key"] == "__WARP_PRIVATE_KEY__"
+    assert "accounts.google.com" in cfg["route"]["rules"][-1]["domain_suffix"]
+    assert cfg["route"]["final"] == "ai-out", "apps без SNI иначе уходят на HOSTKEY"
     s = proxy_script(chain_url="warp")
     assert 'if [ "warp" = "warp" ]' in s
     assert "wgcf register --accept-tos" in s
@@ -166,6 +198,9 @@ def test_warp_chain_is_opt_in_and_patched_on_node() -> None:
     # Без цепочки блок WARP не выполняется.
     assert 'if [ "direct" = "direct" ]' not in proxy_script()
     assert 'if [ "warp" = "warp" ]' not in proxy_script()
+    assert "s|__GAUTH_BYPASS__|off|" in s
+    # QUIC приложений в TPROXY, не только TCP.
+    assert '-p udp --dport 443 -j TPROXY' in s
 
 
 def test_chain_url_validation() -> None:

@@ -1,0 +1,20 @@
+---
+description: Android Smart TV — синяя обводка фокуса на всех кликабельных UI
+alwaysApply: true
+---
+
+# Android TV focus ring
+
+Любой новый/изменённый кликабельный элемент в **Android** UI **обязан** получать синюю обводку фокуса на Smart TV.
+
+## Как делать
+
+- `Modifier.tvClickable` / `tvMenuClickable` / `tvToggleClickable` — `android/.../ui/tv/TvFocus.kt`
+- Или `TvTextButton` / `TvIconButton` / `TvPrimaryButton` — `TvControls.kt`
+- На TV не использовать голый `clickable` / Material `Button`/`IconButton`/`TextButton` для интерактива
+- Непрозрачный фон → `ringOnTop = true` (дефолт `tvClickable`)
+- Один фокус на действие: `tvClickable` на строке; чекбокс внутри без своего focusable
+
+## Референс
+
+`TvFocusColors.ring` = `#2563EB`. Меню (`MenuNavItem`), чипы ЧС/БС/Сайты, кнопка обновления на главном.

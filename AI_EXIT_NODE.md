@@ -23,6 +23,7 @@
 | rDNS | PTR пустой | правится вручную в панели HOSTKEY (см. §6) |
 | DNS-резолвер и ECS | клиент шёл на `77.88.8.8` (РФ) или в чёрную дыру `10.66.66.1` | свой резолвер на соте, DoT на US-апстрим (Ф2) |
 | IPv6 / AAAA мимо туннеля | AAAA отдавались клиенту | `filter-AAAA` в dnsmasq + запрет IPv6-egress (Ф1, Ф2) |
+| Google Sign-In в приложениях (GMS) | DoH/DoT мимо `filter-AAAA` → AAAA; TPROXY рвёт GMS | REJECT клиентского DoT `:853` и DoH `:443` к `8.8.8.8/1.1.1.1/…`; IP auth-доменов (`accounts.google.com` и др.) — RETURN из TPROXY через `ipset silent-ai-gauth` |
 | TCP-отпечаток | TTL клиента (Windows 128 / Android 64) и MSS туннеля уходили наружу | TTL нормализован в 64; MSS решается терминацией TCP в sing-box (Ф3) |
 | Репутация IP/ASN | `AS395839 HOSTKEY`, `hosting: true`, `proxy: true` | не лечится настройкой — только Ф4 или смена провайдера |
 | Поведение (много аккаунтов с одного IP) | — | актуально после снятия `admin_only`, см. §8 |

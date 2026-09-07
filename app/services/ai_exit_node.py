@@ -28,6 +28,32 @@ TPROXY_TABLE = 100
 TPROXY_CHAIN = "SILENT_AI_TP"
 SINGBOX_DEFAULT_VERSION = "1.11.15"
 
+#: Google Sign-In в приложениях (GMS / Custom Tabs). Браузерный вход при этом
+#: может жить: Chrome берёт системный DNS, GMS — свой DoH и получает AAAA.
+GOOGLE_AUTH_DOMAIN_SUFFIXES: tuple[str, ...] = (
+    # Только OAuth/GMS — не www.google.com/gstatic: иначе Gemini CDN
+    # уходит мимо TPROXY/WARP на голый HOSTKEY, а ИИ-домены — в цепочку.
+    "accounts.google.com",
+    "accounts.youtube.com",
+    "oauth2.googleapis.com",
+    "oauthaccountmanager.googleapis.com",
+    "android.googleapis.com",
+    "android.clients.google.com",
+    "play.googleapis.com",
+    "play-fe.googleapis.com",
+    "accounts.gstatic.com",
+)
+
+#: Публичные резолверы, куда GMS/Chrome тащат DoH. Режем только :443 на эти IP —
+#: обычный HTTPS на других адресах Google не трогаем.
+DOH_RESOLVER_IPS: tuple[str, ...] = (
+    "8.8.8.8",
+    "8.8.4.4",
+    "1.1.1.1",
+    "1.0.0.1",
+    "9.9.9.9",
+)
+
 #: Домены ИИ-сервисов, для которых включается отдельный маршрут (и, при Ф4, цепочка).
 AI_DOMAIN_SUFFIXES: tuple[str, ...] = (
     "openai.com",
@@ -429,9 +455,24 @@ for P in udp tcp; do
   ipt_ins filter INPUT -s "$NET" -p "$P" --dport "$PORT" -j ACCEPT
   ipt_app filter INPUT -p "$P" --dport "$PORT" -j DROP
 done
+
+# GMS и Private DNS ходят в DoT/DoH мимо filter-AAAA → получают AAAA →
+# приложение уходит в IPv6 с LTE, браузер (системный DNS) — IPv4 через VPN.
+# Режем только клиентский FORWARD, wdtt/локальное не трогаем.
+for P in udp tcp; do
+  ipt_app filter FORWARD -s "$NET" -p "$P" --dport 853 -j REJECT
+done
+for DIP in __DOH_IPS__; do
+  for P in udp tcp; do
+    ipt_app filter FORWARD -s "$NET" -d "$DIP" -p "$P" --dport 443 -j REJECT
+  done
+done
+# ChatGPT/Cronet любят QUIC (UDP/443). TPROXY у нас только TCP → WARP не видит
+# приложение, браузер на TCP при этом ок. Режем клиентский QUIC → откат на TCP.
+ipt_app filter FORWARD -s "$NET" -p udp --dport 443 -j REJECT
 exit 0
 DNSEOS
-sed -i "s|__NET__|@@CLIENT_NET@@|; s|__PORT__|@@DNSMASQ_PORT@@|" @@AI_ROOT@@/20-dns.sh
+sed -i "s|__NET__|@@CLIENT_NET@@|; s|__PORT__|@@DNSMASQ_PORT@@|; s|__DOH_IPS__|@@DOH_IPS@@|" @@AI_ROOT@@/20-dns.sh
 chmod 755 @@AI_ROOT@@/20-dns.sh
 @@AI_ROOT@@/20-dns.sh
 
@@ -488,6 +529,7 @@ def dns_script(*, threat_filter_enabled: bool, tif_url: str | None = None) -> st
             "FORWARD_ADDRS": forward,
             "THREAT_FILTER": "on" if threat_filter_enabled else "off",
             "TIF_URL": url,
+            "DOH_IPS": " ".join(DOH_RESOLVER_IPS),
         },
     )
 
@@ -541,12 +583,34 @@ def chain_mode(chain_url: str | None) -> str:
     return "socks"
 
 
+def route_domains_for_chain(
+    chain_url: str | None,
+    domains: Iterable[str] = AI_DOMAIN_SUFFIXES,
+) -> list[str]:
+    """Домены → ai-out.
+
+    При WARP/SOCKS Google-auth тоже в ту же цепочку: иначе OAuth с HOSTKEY,
+    а ChatGPT API с WARP → разные IP → вечный вход в приложении (Kimi без
+    цепочки при этом жив). Без цепочки auth по-прежнему мимо TPROXY (ipset).
+    """
+    out = list(domains)
+    if chain_mode(chain_url) in ("warp", "socks"):
+        for d in GOOGLE_AUTH_DOMAIN_SUFFIXES:
+            if d not in out:
+                out.append(d)
+    return out
+
+
 def singbox_config(*, chain_url: str | None = None, domains: Iterable[str] = AI_DOMAIN_SUFFIXES) -> dict[str, Any]:
     """Конфиг sing-box: TPROXY-вход, sniff SNI, ИИ-домены отдельным outbound-ом.
 
     Без цепочки `ai-out` — тот же direct. Смысл всё равно есть: TCP терминируется
     на ноде, наружу уходит нормальный Linux-SYN (MSS 1460, TTL 64), а не
     туннельная аномалия клиента.
+
+    С WARP/SOCKS `final=ai-out`: нативные приложения (ChatGPT) часто без SNI /
+    с ECH / по IP — domain_suffix не срабатывает, браузер при этом жив.
+    Сервер 4 — ИИ-слот, весь клиентский HTTPS через цепочку допустим.
     """
     mode = chain_mode(chain_url)
     if mode == "warp":
@@ -555,6 +619,9 @@ def singbox_config(*, chain_url: str | None = None, domains: Iterable[str] = AI_
         ai_out = _parse_socks_url(chain_url or "")
     else:
         ai_out = {"type": "direct", "tag": "ai-out", "domain_strategy": "ipv4_only"}
+    # При цепочке — весь публичный трафик из TPROXY в ai-out (apps без SNI).
+    # Без цепочки — только domain_suffix, final=direct (как раньше).
+    final = "ai-out" if mode in ("warp", "socks") else "direct"
     return {
         "log": {"level": "warn", "timestamp": True},
         "dns": {
@@ -569,7 +636,7 @@ def singbox_config(*, chain_url: str | None = None, domains: Iterable[str] = AI_
                 "listen": "0.0.0.0",
                 "listen_port": TPROXY_PORT,
                 "sniff": True,
-                "sniff_override_destination": False,
+                "sniff_override_destination": True,
                 "tcp_fast_open": False,
             }
         ],
@@ -581,9 +648,9 @@ def singbox_config(*, chain_url: str | None = None, domains: Iterable[str] = AI_
         "route": {
             "rules": [
                 {"ip_is_private": True, "outbound": "direct"},
-                {"domain_suffix": list(domains), "outbound": "ai-out"},
+                {"domain_suffix": route_domains_for_chain(chain_url, domains), "outbound": "ai-out"},
             ],
-            "final": "direct",
+            "final": final,
             "auto_detect_interface": True,
         },
     }
@@ -593,6 +660,8 @@ PROXY_TEMPLATE = r"""
 VER="@@SINGBOX_VERSION@@"
 mkdir -p @@AI_ROOT@@ @@CONF_ROOT@@
 chmod 700 @@CONF_ROOT@@
+
+command -v ipset >/dev/null 2>&1 || apt-get install -y -qq ipset >/dev/null 2>&1 || true
 
 # --- 1. Бинарь sing-box ---------------------------------------------------- #
 NEED=1
@@ -713,7 +782,23 @@ install_rules() {
     iptables -t mangle -A "$CHAIN" -d "$N" -j RETURN
   done
   [ -n "$PUB" ] && iptables -t mangle -A "$CHAIN" -d "$PUB" -j RETURN
+  # Google auth мимо TPROXY — только без цепочки (direct). При WARP/SOCKS
+  # auth идёт в ai-out (тот же egress IP, иначе ChatGPT вечный вход).
+  if [ "__GAUTH_BYPASS__" = "on" ] && command -v ipset >/dev/null 2>&1; then
+    ipset create silent-ai-gauth hash:ip family inet timeout 3600 -exist
+    for d in __GAUTH_DOMAINS__; do
+      getent ahostsv4 "$d" 2>/dev/null | awk '{print $1}' | sort -u | while read -r ip; do
+        echo "$ip" | grep -Eq '^[0-9.]+$' || continue
+        ipset add silent-ai-gauth "$ip" timeout 3600 -exist 2>/dev/null || true
+      done
+    done
+    iptables -t mangle -C "$CHAIN" -m set --match-set silent-ai-gauth dst -j RETURN 2>/dev/null \
+      || iptables -t mangle -A "$CHAIN" -m set --match-set silent-ai-gauth dst -j RETURN
+  fi
   iptables -t mangle -A "$CHAIN" -p tcp -m multiport --dports 80,443 -j TPROXY --on-port "$PORT" --tproxy-mark "$MARK"
+  # QUIC (UDP/443): ChatGPT/Cronet не всегда откатываются на TCP после REJECT.
+  # Гоним в тот же TPROXY → sniff/WARP. Браузер и так на TCP.
+  iptables -t mangle -A "$CHAIN" -p udp --dport 443 -j TPROXY --on-port "$PORT" --tproxy-mark "$MARK"
   iptables -t mangle -A "$CHAIN" -j RETURN
   hook_present || iptables -t mangle -A PREROUTING -s "$NET" -j "$CHAIN"
 }
@@ -721,7 +806,7 @@ install_rules() {
 if healthy; then install_rules; else remove_hook; fi
 exit 0
 WDEOS
-sed -i "s|__NET__|@@CLIENT_NET@@|; s|__PORT__|@@TPROXY_PORT@@|; s|__MARK__|@@TPROXY_MARK@@|; s|__TABLE__|@@TPROXY_TABLE@@|; s|__CHAIN__|@@TPROXY_CHAIN@@|" @@AI_ROOT@@/watchdog.sh
+sed -i "s|__NET__|@@CLIENT_NET@@|; s|__PORT__|@@TPROXY_PORT@@|; s|__MARK__|@@TPROXY_MARK@@|; s|__TABLE__|@@TPROXY_TABLE@@|; s|__CHAIN__|@@TPROXY_CHAIN@@|; s|__GAUTH_DOMAINS__|@@GAUTH_DOMAINS@@|; s|__GAUTH_BYPASS__|@@GAUTH_BYPASS@@|" @@AI_ROOT@@/watchdog.sh
 chmod 755 @@AI_ROOT@@/watchdog.sh
 
 cat > /etc/systemd/system/silent-ai-watchdog.service <<'WSEOS'
@@ -791,6 +876,9 @@ def proxy_script(
             "SINGBOX_CONFIG": cfg,
             "CHAIN_MODE": chain_mode(chain_url),
             "ENABLE": "on" if enable else "off",
+            "GAUTH_DOMAINS": " ".join(GOOGLE_AUTH_DOMAIN_SUFFIXES),
+            # on = RETURN из TPROXY на HOSTKEY; off при WARP/SOCKS (один egress).
+            "GAUTH_BYPASS": "off" if chain_mode(chain_url) in ("warp", "socks") else "on",
         },
     )
 
@@ -806,10 +894,12 @@ for s in wdtt silent-cell-agent unbound dnsmasq sing-box silent-ai-rules silent-
 done
 echo "=== цепочка для ИИ-доменов ==="
 if [ -f @@CONF_ROOT@@/sing-box.json ]; then
-  python3 -c "import json;c=json.load(open('@@CONF_ROOT@@/sing-box.json'));print(next((o['type'] for o in c['outbounds'] if o.get('tag')=='ai-out'),'нет'))" 2>/dev/null || echo "(не прочитал)"
+  python3 -c "import json;c=json.load(open('@@CONF_ROOT@@/sing-box.json'));o=next((x for x in c['outbounds'] if x.get('tag')=='ai-out'),{});print(o.get('type','нет'), 'sniff_override='+str(c['inbounds'][0].get('sniff_override_destination')), 'key='+('ok' if o.get('private_key') and not str(o.get('private_key','')).startswith('__') else ('n/a' if o.get('type')!='wireguard' else 'BAD')))" 2>/dev/null || echo "(не прочитал)"
 else
   echo "(конфига нет)"
 fi
+echo "=== QUIC (UDP/443) клиента ==="
+iptables -C FORWARD -s 10.66.0.0/16 -p udp --dport 443 -j REJECT 2>/dev/null && echo "REJECT (приложение → TCP → TPROXY/WARP)" || echo "НЕТ — ChatGPT может уходить мимо WARP по QUIC"
 echo "=== proxy switch ==="
 [ -f @@CONF_ROOT@@/proxy.enabled ] && echo "proxy.enabled: да" || echo "proxy.enabled: нет (fail-open, трафик мимо прокси)"
 echo "=== tproxy hook ==="
@@ -939,7 +1029,21 @@ for P in udp tcp; do
   while iptables -t nat -C PREROUTING -s @@CLIENT_NET@@ -p "$P" --dport 53 ! -d "$PUB" -j DNAT --to-destination "$PUB:@@DNSMASQ_PORT@@" 2>/dev/null; do
     iptables -t nat -D PREROUTING -s @@CLIENT_NET@@ -p "$P" --dport 53 ! -d "$PUB" -j DNAT --to-destination "$PUB:@@DNSMASQ_PORT@@"
   done
+  while iptables -C FORWARD -s @@CLIENT_NET@@ -p "$P" --dport 853 -j REJECT 2>/dev/null; do
+    iptables -D FORWARD -s @@CLIENT_NET@@ -p "$P" --dport 853 -j REJECT
+  done
 done
+for DIP in @@DOH_IPS@@; do
+  for P in udp tcp; do
+    while iptables -C FORWARD -s @@CLIENT_NET@@ -d "$DIP" -p "$P" --dport 443 -j REJECT 2>/dev/null; do
+      iptables -D FORWARD -s @@CLIENT_NET@@ -d "$DIP" -p "$P" --dport 443 -j REJECT
+    done
+  done
+done
+while iptables -C FORWARD -s @@CLIENT_NET@@ -p udp --dport 443 -j REJECT 2>/dev/null; do
+  iptables -D FORWARD -s @@CLIENT_NET@@ -p udp --dport 443 -j REJECT
+done
+ipset destroy silent-ai-gauth 2>/dev/null || true
 rm -f @@AI_ROOT@@/20-dns.sh
 systemctl disable --now silent-ai-dnslist.timer >/dev/null 2>&1 || true
 [ -f @@CONF_ROOT@@/resolv.conf.bak ] && cp -a @@CONF_ROOT@@/resolv.conf.bak /etc/resolv.conf || true
@@ -974,6 +1078,7 @@ def rollback_script(*, scope: str = "all", agent_port: int = 9100) -> str:
             "TPROXY_CHAIN": TPROXY_CHAIN,
             "DNSMASQ_PORT": DNSMASQ_PORT,
             "AGENT_PORT": int(agent_port),
+            "DOH_IPS": " ".join(DOH_RESOLVER_IPS),
         },
     )
 

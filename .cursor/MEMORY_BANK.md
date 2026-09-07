@@ -9,6 +9,7 @@
 - «2 месяца» было `+60 суток` → 7.09 давало **6.11**, не 7.11. Теперь планы monthly/two_months/quarterly/half_year/yearly = календарные месяцы (то же число); three_days по-прежнему +3 дня. Выдача админом и оплата ЮMoney через `plan_expires_at`. Тест: `python scripts/test_plan_calendar_months_unit.py`.
 - **Деплой:** `deploy_stable.py` — health OK (~36 мс), `wdtt` active, kick 0.
 - **Бэкфилл БД:** `fix_subscription_calendar_expires.py --apply` — 114 активных (58 monthly / 9 two_months / 47 quarterly) сдвинуты на +1…+2 дня до того же числа; срок не укорачивали. Повторный прогон идемпотентен.
+- **Пуш + повторный деплой:** `24c47ff` на `origin/main`; `deploy_stable.py` — health OK, `wdtt` active, kick 0. Тесты на 31-е / високосный февраль в репо.
 
 ## Последние изменения (подписки: время ЮMoney + days_left 2026-09-07)
 

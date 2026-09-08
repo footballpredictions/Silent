@@ -177,6 +177,7 @@ data class ConnectRequest(
 data class PreferredServerRequest(
     val device_fingerprint: String,
     val preferred_server: String,
+    val app_version: String = "",
 )
 
 data class VpnServerInfo(
@@ -411,7 +412,10 @@ interface SilentApi {
     suspend fun connect(@Body req: ConnectRequest): Response<Map<String, String>>
 
     @GET("api/vpn/servers")
-    suspend fun getVpnServers(@Query("fingerprint") fingerprint: String): Response<VpnServersResponse>
+    suspend fun getVpnServers(
+        @Query("fingerprint") fingerprint: String,
+        @Query("app_version") appVersion: String,
+    ): Response<VpnServersResponse>
 
     @POST("api/vpn/servers/select")
     suspend fun selectVpnServer(@Body req: PreferredServerRequest): Response<VpnServersResponse>

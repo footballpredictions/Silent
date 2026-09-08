@@ -223,6 +223,7 @@ class SilentRepository @Inject constructor(
                 if (token != null) {
                     req = req.newBuilder().header("Authorization", "Bearer $token").build()
                 }
+                req = req.newBuilder().header("X-App-Version", BuildConfig.VERSION_NAME).build()
                 // HTTPS по IP: nginx ждёт Host с nip.io
                 if (req.url.host.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) {
                     req = req.newBuilder().header("Host", nipHost).build()
@@ -1612,7 +1613,7 @@ class SilentRepository @Inject constructor(
 
     suspend fun fetchVpnServers(): VpnServersResponse {
         val fp = getDeviceFingerprint()
-        val res = getApi().getVpnServers(fp)
+        val res = getApi().getVpnServers(fp, BuildConfig.VERSION_NAME)
         if (!res.isSuccessful) {
             throw IllegalStateException("vpn servers HTTP ${res.code()}")
         }
@@ -1632,6 +1633,7 @@ class SilentRepository @Inject constructor(
             PreferredServerRequest(
                 device_fingerprint = getDeviceFingerprint(),
                 preferred_server = key,
+                app_version = BuildConfig.VERSION_NAME,
             ),
         )
         if (!res.isSuccessful) {

@@ -24,9 +24,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.silent.vpn.BuildConfig
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.data.VpnServerInfo
+import com.silent.vpn.policy.VpnServerListPolicy
 import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.ui.tv.tvClickable
 import kotlinx.coroutines.launch
@@ -45,7 +45,7 @@ fun MenuBypassScreen(
     var applying by remember { mutableStateOf(false) }
     var applyHint by remember { mutableStateOf<String?>(null) }
     var servers by remember {
-        mutableStateOf(withDebugAiServer(fallbackServerList(selectedServerSlot)))
+        mutableStateOf(VpnServerListPolicy.staticList())
     }
     val scope = rememberCoroutineScope()
     val switchLocked = vpnState == VpnState.CONNECTING || vpnState == VpnState.CONNECTED
@@ -57,9 +57,7 @@ fun MenuBypassScreen(
         selectedServerSlot = SilentRepository.normalizePreferredServer(repo.getPreferredServer())
         runCatching { repo.fetchVpnServers() }
             .onSuccess { body ->
-                if (body.servers.isNotEmpty()) {
-                    servers = withDebugAiServer(body.servers)
-                }
+                servers = VpnServerListPolicy.displayList(body.servers)
                 selectedServerSlot = SilentRepository.normalizePreferredServer(repo.getPreferredServer())
             }
             .onFailure {
@@ -121,7 +119,7 @@ fun MenuBypassScreen(
             servers.forEach { server ->
                 val slot = SilentRepository.normalizePreferredServer(server.key)
                 BypassOption(
-                    title = server.title.ifBlank { slotTitle(slot) },
+                    title = server.title.ifBlank { VpnServerListPolicy.slotTitle(slot) },
                     selected = (pendingServerSlot ?: selectedServerSlot) == slot,
                     enabled = !switchLocked && !applying,
                     fg = fg,
@@ -155,9 +153,7 @@ fun MenuBypassScreen(
                                 selectedServerSlot = slot
                                 runCatching { repo.selectVpnServer(slot) }
                                     .onSuccess { body ->
-                                        if (body.servers.isNotEmpty()) {
-                                            servers = withDebugAiServer(body.servers)
-                                        }
+                                        servers = VpnServerListPolicy.displayList(body.servers)
                                         applyHint = "Выбрано"
                                     }
                                     .onFailure { e ->
@@ -186,52 +182,11 @@ fun MenuBypassScreen(
     }
 }
 
-private const val AI_SERVER_SLOT = "server4"
-private const val AI_SERVER_TITLE = "Сервер 4 для ИИ"
-
-/**
- * Тестовая сборка: слот ИИ-соты в списке всегда, даже пока список серверов не
- * пришёл с API. Права не проверяем — сота помечена `admin_only`, и не-админу
- * сервер сам ответит 403 на выборе. В release список целиком с сервера.
- */
-private fun withDebugAiServer(list: List<VpnServerInfo>): List<VpnServerInfo> {
-    if (!BuildConfig.DEBUG) return list
-    val ai = VpnServerInfo(key = AI_SERVER_SLOT, title = AI_SERVER_TITLE)
-    val idx = list.indexOfFirst { SilentRepository.normalizePreferredServer(it.key) == AI_SERVER_SLOT }
-    if (idx < 0) return list + ai
-    val known = list[idx]
-    // Подпись с сервера главнее; заменяем только локальную заглушку «Сервер 4».
-    if (known.title.isNotBlank() && known.title != slotTitle(AI_SERVER_SLOT)) return list
-    return list.toMutableList().also { it[idx] = known.copy(title = AI_SERVER_TITLE) }
-}
-
-private fun slotTitle(slot: String): String {
-    val n = SilentRepository.slotFromSelectedServer(slot)?.removePrefix("server")
-    return if (n.isNullOrBlank()) slot else "Сервер $n"
-}
-
-private fun fallbackServerList(selected: String): List<VpnServerInfo> {
-    val maxSlot = SilentRepository.slotFromSelectedServer(selected)
-        ?.removePrefix("server")
-        ?.toIntOrNull()
-        ?: 3
-    val n = maxOf(3, maxSlot)
-    return (1..n).map { i ->
-        VpnServerInfo(
-            key = "server$i",
-            title = "Сервер $i",
-            public_ip = "",
-            wdtt_port = 0,
-            online_count = 0,
-        )
-    }
-}
-
 private fun applyDialogLine(fromSlot: String, toSlot: String, servers: List<VpnServerInfo>): String {
     fun title(key: String): String =
         servers.firstOrNull { SilentRepository.normalizePreferredServer(it.key) == key }?.title
             ?.ifBlank { null }
-            ?: slotTitle(key)
+            ?: VpnServerListPolicy.slotTitle(key)
     return if (fromSlot != toSlot) "${title(fromSlot)} → ${title(toSlot)}" else title(toSlot)
 }
 

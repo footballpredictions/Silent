@@ -171,6 +171,51 @@ def test_port_block_when_one_port_dies_and_others_live():
     assert "DNAT" in " ".join(port_block[0].fixes)
 
 
+def test_ai_exit_closed_agent_port_is_not_dpi():
+    """Сота 3: :9100 закрыт фаерволом (только Улей), ping жив — гигиена, не ТСПУ."""
+    snap = TargetSnapshot(
+        name="сота3",
+        host="192.177.26.38",
+        role="cell",
+        agent_port=9100,
+        ai_exit=True,
+        status="active",
+    )
+    snap.local[CHANNEL_AGENT_TCP] = ProbeResult(channel=CHANNEL_AGENT_TCP, ok=True, latency_ms=2.0)
+    snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=2)
+    snap.ru[CHANNEL_AGENT_TCP] = _agg(CHANNEL_AGENT_TCP, failed=2)
+    kinds = _kinds(snap)
+    assert KIND_PORT_BLOCK not in kinds
+    assert KIND_OK in kinds
+    assert report_status(classify_target(snap)) == "ok"
+
+
+def test_regular_cell_agent_timeout_is_still_port_block():
+    snap = TargetSnapshot(
+        name="сота1",
+        host="87.58.213.193",
+        role="cell",
+        agent_port=9100,
+        ai_exit=False,
+        status="active",
+    )
+    snap.local[CHANNEL_AGENT_TCP] = ProbeResult(channel=CHANNEL_AGENT_TCP, ok=True)
+    snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=2)
+    snap.ru[CHANNEL_AGENT_TCP] = _agg(CHANNEL_AGENT_TCP, failed=2)
+    assert KIND_PORT_BLOCK in _kinds(snap)
+
+
+def test_ai_exit_has_no_public_tcp_probe():
+    from ai.availability_model import public_tcp_probe
+
+    snap = TargetSnapshot(
+        name="сота3", host="192.177.26.38", role="cell", agent_port=9100, ai_exit=True
+    )
+    assert public_tcp_probe(snap) is None
+    snap.ai_exit = False
+    assert public_tcp_probe(snap) == (9100, CHANNEL_AGENT_TCP)
+
+
 def test_udp_block_when_tcp_alive_and_udp_dead():
     snap = _queen()
     snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=5)

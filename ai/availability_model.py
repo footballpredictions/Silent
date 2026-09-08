@@ -281,6 +281,7 @@ class TargetSnapshot:
     wg_port: int = 0
     agent_port: int = 0
     domain: str = ""
+    ai_exit: bool = False
     local: dict[str, ProbeResult] = field(default_factory=dict)
     ru: dict[str, VantageAggregate] = field(default_factory=dict)
     world: dict[str, VantageAggregate] = field(default_factory=dict)
@@ -321,6 +322,7 @@ class TargetSnapshot:
             "wdtt_port": self.wdtt_port,
             "wg_port": self.wg_port,
             "domain": self.domain,
+            "ai_exit": self.ai_exit,
             "status": self.status,
             "online_count": self.online_count,
             "note": self.note,
@@ -330,6 +332,23 @@ class TargetSnapshot:
             "peer": {k: v.to_dict() for k, v in self.peer.items()},
             "clients": self.clients.to_dict() if self.clients else None,
         }
+
+
+def public_tcp_probe(snap: TargetSnapshot) -> tuple[int, str] | None:
+    """Какой TCP-порт светить на check-host из РФ.
+
+    На соте с ``ai_exit`` порт cell-agent (:9100) закрыт фаерволом: снаружи
+    виден только Улей. Таймаут с российских нод — ожидаемая гигиена, не DPI.
+    ICMP ping остаётся; публичного TCP у такой соты нет.
+    """
+    if snap.role == TARGET_QUEEN:
+        return (snap.api_port or 443), CHANNEL_API_TCP
+    if snap.ai_exit:
+        return None
+    port = int(snap.agent_port or 0)
+    if port <= 0:
+        return None
+    return port, CHANNEL_AGENT_TCP
 
 
 def select_external_probe_targets(

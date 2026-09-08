@@ -45,6 +45,7 @@ from ai.availability_model import (
     TARGET_QUEEN,
     TargetSnapshot,
     VantageAggregate,
+    public_tcp_probe,
     select_external_probe_targets,
 )
 from ai.availability_probes import (
@@ -102,6 +103,7 @@ async def _collect_targets(db) -> list[TargetSnapshot]:
             wg_port=int(cell.wg_port or 0),
             agent_port=0 if cell.is_queen else agent_port,
             domain=domain if cell.is_queen else "",
+            ai_exit=bool(getattr(cell, "ai_exit", False)),
             status=cell.status,
             note=slot_for_cell(cell),
         )
@@ -233,9 +235,11 @@ async def _run_external_probes(
             snap.world[channel] = world
 
     for snap in probed:
-        port, channel = _main_tcp_port(snap)
         await run("ping", snap.host, CHANNEL_PING, snap)
-        await run("tcp", f"{snap.host}:{port}", channel, snap)
+        pub = public_tcp_probe(snap)
+        if pub:
+            port, channel = pub
+            await run("tcp", f"{snap.host}:{port}", channel, snap)
         if snap.role == TARGET_QUEEN and snap.domain:
             # HTTPS по домену = TLS с нашим SNI: сравнение с TCP по IP отделяет
             # блокировку имени от блокировки адреса.

@@ -56,8 +56,10 @@ type Target = {
   wdtt_port: number
   wg_port: number
   domain: string
+  ai_exit?: boolean
   status: string
   online_count: number
+  note?: string
   local: Record<string, Probe>
   ru: Record<string, Vantage>
   world: Record<string, Vantage>
@@ -261,6 +263,9 @@ function TargetRow({ target }: { target: Target }) {
         <span className="text-[#ddd] font-medium">{target.name}</span>
         <span className="text-[#666] font-mono">{target.host}</span>
         {target.domain && <span className="text-[#555]">{target.domain}</span>}
+        {target.ai_exit && (
+          <span className="text-sky-400/90">ИИ-выход · 9100 только Улью</span>
+        )}
         <span className="text-[#555]">статус {target.status || '—'}</span>
         <span className="text-[#555]">онлайн {target.online_count}</span>
       </div>
@@ -300,6 +305,10 @@ function TargetRow({ target }: { target: Target }) {
                     {ru ? (
                       <span className={ru.failed === 0 ? 'text-emerald-400' : ru.ok === 0 ? 'text-red-400' : 'text-amber-300'}>
                         {ru.ok}/{ru.total}
+                      </span>
+                    ) : target.ai_exit && ch === 'agent_tcp' ? (
+                      <span className="text-[#888]" title="Порт закрыт фаерволом: снаружи отвечает только Улей">
+                        закрыт Улью
                       </span>
                     ) : (
                       <span className="text-[#444]">нет проб</span>

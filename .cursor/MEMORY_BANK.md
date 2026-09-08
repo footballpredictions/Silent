@@ -4,6 +4,19 @@
 > Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
 > сначала читать его, потом код.
 
+## Последние изменения (ложный DPI на соте3 2026-09-08)
+
+Агент доступности принял закрытый `:9100` Соты 3 за «блокировку по порту» и
+предлагал DNAT 443→9100. Это гигиена AI-exit (порт виден только Улью), не ТСПУ.
+Клиенты на 9100 этой соты не ходят — её нет в `standby_api_urls`. VPN-вход
+(wdtt/WG) не трогали.
+- Классификатор не ставит `port_block` на `agent_tcp` у `ai_exit`.
+- Check-host больше не долбит TCP 9100 из РФ на такой соте (остаётся ICMP).
+- Админка: бейдж «ИИ-выход · 9100 только Улью».
+- Тест: `python scripts/test_availability_unit.py` — 38 ok.
+- Деплой `deploy_stable.py`: health OK (~43 мс), `wdtt` active, `queen_wg_kick_20s=0`.
+- В админке нажать «Проверить сейчас» — красной «блокировки» на соте3 быть не должно.
+
 ## Последние изменения (Сервер 4 статичный список 2026-09-08)
 
 ПК: сразу рисовались 3 заглушки, 4-й слот дорисовывался после API. Android
@@ -25,7 +38,7 @@ release не подмешивал слот, а версия могла не до
 - Bootstrap VK тот же: `4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY`.
 - **Android:** `android/SilentVPN-release-1.0.165.apk` (~26.3 МБ).
 - **PC:** `pc/build-release-v141-603055/Silent VPN Setup 1.0.165.exe` (~79.2 МБ) + `releases/`.
-- OTA (`deploy_release.py`) и git push **не** делали.
+- OTA (`deploy_release.py`) **не** заливали. Git: `293d32c` main, `85ae07c` pc, `a602fa7` android.
 - ChatGPT app на HOSTKEY по-прежнему может не входить; Gemini/веб — ок.
 
 ## Последние изменения (WARP выкл — Gemini 2026-09-08)

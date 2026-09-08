@@ -53,6 +53,7 @@ from ai.availability_model import (
     VantageAggregate,
     Verdict,
     carrier_by_asn,
+    public_tcp_probe,
 )
 
 # Порог «часть операторов отвалилась»: ниже него считаем частичной блокировкой.
@@ -321,6 +322,9 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
 
     for channel in snap.ru_channels():
         if channel in (CHANNEL_DNS, CHANNEL_PING, CHANNEL_API_TLS, CHANNEL_API_HTTP):
+            continue
+        # AI-exit: :9100 режется фаерволом ноды, не ТСПУ. Не предлагать DNAT 443.
+        if public_tcp_probe(snap) is None and channel == CHANNEL_AGENT_TCP:
             continue
         agg = snap.ru_view(channel)
         if agg is None or agg.all_ok:

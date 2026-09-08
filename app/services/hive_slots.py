@@ -63,6 +63,50 @@ def cell_selectable_by_user(cell, *, is_admin: bool) -> bool:
     return True
 
 
+AI_EXIT_MIN_CLIENT = (1, 0, 165)
+_CLIENT_VERSION_RE = re.compile(r"(\d+)")
+
+
+def parse_client_version(raw: str | None) -> tuple[int, int, int] | None:
+    parts = [int(x) for x in _CLIENT_VERSION_RE.findall(raw or "")[:3]]
+    if not parts:
+        return None
+    while len(parts) < 3:
+        parts.append(0)
+    return parts[0], parts[1], parts[2]
+
+
+def client_meets_ai_exit_min(app_version: str | None) -> bool:
+    parsed = parse_client_version(app_version)
+    return parsed is not None and parsed >= AI_EXIT_MIN_CLIENT
+
+
+def cell_is_ai_exit(cell) -> bool:
+    return bool(
+        cell is not None
+        and not getattr(cell, "is_queen", False)
+        and getattr(cell, "ai_exit", False)
+    )
+
+
+def cell_visible_to_client(cell, *, is_admin: bool, app_version: str | None = "") -> bool:
+    """Список/выбор: ИИ-слот только с 1.0.165+. Пустая версия = старый клиент.
+
+    ``app_version is None`` — внутренний вызов (не гейтить по версии).
+    """
+    if not cell_selectable_by_user(cell, is_admin=is_admin):
+        return False
+    if cell_is_ai_exit(cell) and app_version is not None and not client_meets_ai_exit_min(app_version):
+        return False
+    return True
+
+
+def cell_select_forbidden_detail(cell, *, app_version: str | None = "") -> str:
+    if cell_is_ai_exit(cell) and app_version is not None and not client_meets_ai_exit_min(app_version):
+        return "Сервер доступен начиная с версии 1.0.165"
+    return "Сервер временно доступен только администратору"
+
+
 def slot_for_cell(cell) -> str:
     """Улей = server1, Сота N = server{N+1}. Новые соты → server4+ без правки клиентов."""
     if getattr(cell, "is_queen", False):

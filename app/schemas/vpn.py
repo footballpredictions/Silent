@@ -90,6 +90,7 @@ class ConnectRequest(BaseModel):
 class PreferredServerRequest(BaseModel):
     device_fingerprint: str
     preferred_server: str
+    app_version: Optional[str] = None
 
 
 class VpnServerInfo(BaseModel):

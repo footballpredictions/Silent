@@ -10,18 +10,13 @@ Agent приступает к **первой невыполненной** зад
 
 ### AI exit node — Сота 3 / Сервер 4 (2026-09-06)
 
-Runbook AI-exit (fallback): `backend/AI_EXIT_NODE.md`.  
-**Целевой транспорт:** `backend/AETHER.md` (Silent Aether).
+Runbook: `backend/AI_EXIT_NODE.md`. Выход = WDTT + гигиена ноды. WARP/TPROXY сейчас **выкл** (Gemini на HOSTKEY).
 
-- [x] Ф0–Ф5 AI-exit (гигиена, DNS, TPROXY, WARP/SOCKS, egress-check) — база знаний / rollback
-- [x] **Aether Ф0:** спека + allowlist + Memory Bank
-- [x] **Aether Ф1:** aether-server на Соте 3 (`silent-aether` active :8443, pubkey в AppSetting)
-- [x] **Aether Ф2:** PC sing-box AI-split + Android hev→SOCKS (admin_only)
-- [x] **Aether Ф3:** авто-приёмка `test_aether_accept.py` OK; лимит сессий 128
-- [x] **Aether Ф4:** rollback `aether_release.py --legacy-on`; open-all готов (`--open-all --confirm`)
-- [x] **Ручная приёмка (2026-09-08):** WARP на Соте 3. PC/Android веб и приложения нейросетей ок; ChatGPT app входит. PTR / geofeed / residential — отдельно
+- [x] Ф0–Ф5 AI-exit (гигиена, DNS, fail-open proxy, egress-check)
+- [x] **Приёмка 2026-09-08:** веб и приложения нейросетей ок на прямом IP соты; ChatGPT app на HOSTKEY не входил. WARP включали — Google/Gemini отвалился, снова **выкл**.
+- [x] **Открыть всем + 1.0.165:** `admin_only` снят; слот только у клиентов 1.0.165+ (`X-App-Version`). 1.0.164 слот не видит. WDTT-spill на `ai_exit` не льёт.
 - [ ] PTR / geofeed / Harden сот 1–2 / План Б ASN
-- [ ] При возможности `AETHER_UPSTREAM_SOCKS` (residential) + OTA PC/Android с Aether
+- [ ] При необходимости резидентный SOCKS (`proxy --chain socks5://…`), не WARP
 
 ### Ложные переподключения VPN (Android, 2026-09-06)
 

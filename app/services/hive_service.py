@@ -29,10 +29,9 @@ from app.services.hive_load import (
 )
 from app.services.hive_slots import (
     assign_online_to_cell_id,
-    cell_is_admin_only,
     cell_name_number,
-    cell_selectable_by_user,
     cell_slot_title,
+    cell_visible_to_client,
     is_manual_server_pin,
     is_manual_server_slot,
     node_online_shown,
@@ -183,11 +182,15 @@ async def apply_manual_server_cell(
     *,
     commit: bool = False,
     is_admin: bool = False,
+    app_version: str | None = None,
 ) -> HiveCell:
-    """Держать cell_id = выбранный Сервер 1/2/3…. admin_only — только для админа."""
+    """Держать cell_id = выбранный Сервер 1/2/3…. admin_only — только для админа.
+
+    ``app_version is None`` — внутренний путь (WDTT), пин ИИ-слота не сбрасываем.
+    """
     raw = preferred_server if preferred_server is not None else getattr(device, "preferred_server", None)
     key, cell = await resolve_manual_server_cell(db, raw)
-    if not cell_selectable_by_user(cell, is_admin=is_admin):
+    if not cell_visible_to_client(cell, is_admin=is_admin, app_version=app_version):
         key, cell = await resolve_manual_server_cell(db, "server1")
     if device.cell_id != cell.id or getattr(device, "preferred_server", None) != key:
         device.cell_id = cell.id
@@ -507,10 +510,12 @@ async def olcrtc_exit_cell_ips(db: AsyncSession) -> set[str]:
 
 
 def cell_accepts_wdtt_spill(cell: HiveCell, olcrtc_ips: set[str]) -> bool:
-    """Улей — да. Сота olcrtc2 — нет. admin_only — нет (только ручной выбор админа)."""
+    """Улей — да. Сота olcrtc2 — нет. admin_only / ai_exit — нет (только ручной выбор)."""
     if cell.is_queen:
         return True
     if getattr(cell, "admin_only", False):
+        return False
+    if getattr(cell, "ai_exit", False):
         return False
     if getattr(cell, "accepts_wdtt", True) is False:
         return False

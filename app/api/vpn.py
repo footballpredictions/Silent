@@ -73,6 +73,13 @@ def _olcrtc_disabled_payload() -> dict:
     }
 
 
+def _request_app_version(request: Request, query: str | None = None) -> str:
+    q = (query or "").strip()
+    if q:
+        return q
+    return (request.headers.get("x-app-version") or "").strip()
+
+
 @router.post("/bootstrap-config", response_model=VpnConfigResponse)
 async def bootstrap_config(req: BootstrapConfigRequest, db: AsyncSession = Depends(get_db)):
     """Pre-login VPN — reach backend through VK TURN with bootstrap hash only."""
@@ -91,6 +98,7 @@ async def bootstrap_config(req: BootstrapConfigRequest, db: AsyncSession = Depen
 @router.post("/device/register", response_model=VpnConfigResponse)
 async def device_register(
     req: DeviceRegisterRequest,
+    request: Request,
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -130,7 +138,9 @@ async def device_register(
         device = result.scalar_one_or_none()
         if not device:
             raise HTTPException(status_code=500, detail="Не удалось создать устройство")
-        return await build_vpn_config_for_user(db, device, user, has_sub)
+        return await build_vpn_config_for_user(
+            db, device, user, has_sub, app_version=_request_app_version(request)
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -138,7 +148,9 @@ async def device_register(
 @router.get("/config", response_model=VpnConfigResponse)
 async def get_config(
     fingerprint: str,
+    request: Request,
     preferred_server: str | None = None,
+    app_version: str = "",
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -159,13 +171,10 @@ async def get_config(
     from app.services.user_hash_service import ensure_user_server_hashes
 
     await ensure_user_server_hashes(db, user.id)
-    if preferred_server:
-        updated = await set_device_preferred_server(
-            db, user.id, fingerprint, preferred_server, is_admin=is_user_admin(user)
-        )
-        if updated is not None:
-            device = updated
-    return await build_vpn_config_for_user(db, device, user, has_sub, preferred_server)
+    ver = _request_app_version(request, app_version)
+    return await build_vpn_config_for_user(
+        db, device, user, has_sub, preferred_server, app_version=ver
+    )
 
 
 @router.get("/hashes")
@@ -233,12 +242,14 @@ async def report_hash_failure(
 @router.get("/servers", response_model=VpnServersResponse)
 async def get_vpn_servers(
     fingerprint: str,
+    request: Request,
+    app_version: str = "",
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.services.subscription_service import is_user_admin
     from app.services.vpn_service import ensure_device_server_allowed
 
+    ver = _request_app_version(request, app_version)
     result = await db.execute(
         select(Device).where(
             Device.user_id == user.id,
@@ -249,9 +260,11 @@ async def get_vpn_servers(
     device = result.scalar_one_or_none()
     selected = "server1"
     if device:
-        selected, _cell = await ensure_device_server_allowed(db, device, user)
+        selected, _cell = await ensure_device_server_allowed(
+            db, device, user, app_version=ver
+        )
     admin = is_user_admin(user)
-    servers = await list_manual_vpn_servers(db, include_admin_only=admin)
+    servers = await list_manual_vpn_servers(db, include_admin_only=admin, app_version=ver)
     return VpnServersResponse(
         selected_server=selected,
         servers=[VpnServerInfo(**item) for item in servers],
@@ -261,11 +274,11 @@ async def get_vpn_servers(
 @router.post("/servers/select", response_model=VpnServersResponse)
 async def select_vpn_server(
     req: PreferredServerRequest,
+    request: Request,
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.services.subscription_service import is_user_admin
-
+    ver = (_request_app_version(request) or (req.app_version or "").strip())
     admin = is_user_admin(user)
     device = await set_device_preferred_server(
         db,
@@ -273,10 +286,11 @@ async def select_vpn_server(
         req.device_fingerprint,
         req.preferred_server,
         is_admin=admin,
+        app_version=ver,
     )
     if not device:
         raise HTTPException(status_code=404, detail="Сессия устройства не найдена. Войдите снова.")
-    servers = await list_manual_vpn_servers(db, include_admin_only=admin)
+    servers = await list_manual_vpn_servers(db, include_admin_only=admin, app_version=ver)
     return VpnServersResponse(
         selected_server=getattr(device, "preferred_server", None) or "server1",
         servers=[VpnServerInfo(**item) for item in servers],
@@ -370,6 +384,7 @@ async def post_olcrtc_room_failure(
 @router.post("/connect")
 async def connect(
     req: ConnectRequest,
+    request: Request,
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -399,19 +414,36 @@ async def connect(
                 detail=f"Достигнут лимит {settings.MAX_DEVICES_PER_USER} одновременных подключений VPN.",
             )
 
+    ver = _request_app_version(request)
+    from app.services import hive_service as _hive
     if req.preferred_server:
-        await set_device_preferred_server(
-            db,
-            user.id,
-            req.device_fingerprint,
-            req.preferred_server,
-            is_admin=is_user_admin(user),
-        )
-        await db.refresh(device)
+        try:
+            await set_device_preferred_server(
+                db,
+                user.id,
+                req.device_fingerprint,
+                req.preferred_server,
+                is_admin=is_user_admin(user),
+                app_version=ver,
+            )
+            await db.refresh(device)
+        except HTTPException as e:
+            if e.status_code != 403:
+                raise
+            await _hive.apply_manual_server_cell(
+                db,
+                device,
+                commit=False,
+                is_admin=is_user_admin(user),
+                app_version=ver,
+            )
     else:
-        from app.services import hive_service as _hive
         await _hive.apply_manual_server_cell(
-            db, device, commit=False, is_admin=is_user_admin(user)
+            db,
+            device,
+            commit=False,
+            is_admin=is_user_admin(user),
+            app_version=ver,
         )
 
     device.is_connected = True

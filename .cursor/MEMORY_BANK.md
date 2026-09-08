@@ -4,30 +4,47 @@
 > Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
 > сначала читать его, потом код.
 
+## Последние изменения (Сервер 4 статичный список 2026-09-08)
+
+ПК: сразу рисовались 3 заглушки, 4-й слот дорисовывался после API. Android
+release не подмешивал слот, а версия могла не дойти → у обычного аккаунта
+список без «Сервер 4 для ИИ».
+- Клиенты 1.0.165 рисуют 1–4 сразу; API только подставляет IP/онлайн.
+- Версия ещё и в `?app_version=` / теле select, не только в заголовке.
+- Пересобрать APK/EXE 1.0.165 и поставить поверх. OTA не заливали.
+- **Android:** `android/SilentVPN-release-1.0.165.apk`
+- **PC:** `pc/build-release-v141-499290/Silent VPN Setup 1.0.165.exe`
+
+## Последние изменения (Сервер 4 всем + релиз 1.0.165 2026-09-08)
+
+Открыли Соту 3 / Сервер 4 всем, но слот виден **только в 1.0.165+**.
+- API: `X-App-Version`; `ai_exit` скрыт у пустой версии и у `< 1.0.165` (даже админу).
+- `admin_only` снят у `сота3` **после** деплоя гейта. WDTT-spill на `ai_exit` не льёт.
+- Деплой `deploy_stable.py`: health OK (~63 мс), `wdtt` active, `queen_wg_kick_20s=0`.
+- Клиенты шлют `X-App-Version`. Версия PC/Android **1.0.165**.
+- Bootstrap VK тот же: `4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY`.
+- **Android:** `android/SilentVPN-release-1.0.165.apk` (~26.3 МБ).
+- **PC:** `pc/build-release-v141-603055/Silent VPN Setup 1.0.165.exe` (~79.2 МБ) + `releases/`.
+- OTA (`deploy_release.py`) и git push **не** делали.
+- ChatGPT app на HOSTKEY по-прежнему может не входить; Gemini/веб — ок.
+
+## Последние изменения (WARP выкл — Gemini 2026-09-08)
+
+Последнее на соте было `proxy --chain warp` (весь HTTPS в Cloudflare WARP).
+Google/Gemini от этого отвалился. Снято: `proxy --off` + `dns` (leftover QUIC
+REJECT убран). Status: `wdtt` active, TPROXY не висит, `proxy.enabled` нет.
+Выход снова прямой IP HOSTKEY. VPN off/on на Сервере 4, проверить Gemini.
+
 ## Последние изменения (git = прод 2026-09-08)
 
 В git догнали то, что уже на Улье/соте и в debug APK: QUIC-REJECT только при
 `proxy.enabled`; пагинация дашборда/пользователей + soft-online; availability
 4 узла снаружи; `tls_renew_hook.sh`; Android `GoogleAuthTunnelPolicy` + IPv6-off.
-Не пушили: CRLF-шум, tmp, корневой `pc/wireguard.js`, бинарник wdtt, Aether-баннер
-в `AI_EXIT_NODE.md`.
-
-## Последние изменения (WARP на Соте 3 2026-09-08)
-
-Ф4 включена: `proxy --chain warp`. Status: `wdtt` active, `sing-box` active,
-`ai-out` wireguard `key=ok`, `proxy.enabled`, TPROXY, QUIC UDP/443 REJECT.
-Google-auth в той же цепочке (`GAUTH_BYPASS=off`, `final=ai-out`).
-**Приёмка владельца:** веб и приложения нейросетей на ПК/Android ок, ChatGPT app
-входит. Откат: `python scripts/deploy_ai_cell.py proxy --off` (wdtt не трогать).
-
-PC debug: `#` в `wireguard.js` → `SyntaxError` при старте Electron; заменено на `//`.
-Сборка `pc/build-debug-35517` (SilentVPN-Admin.bat).
 
 ## Последние изменения (приёмка Сервер 4 2026-09-08)
 
-ПК debug `build-debug-35517`, браузер: Gemini, GPT и остальные ИИ — ок.
-Android: Gemini и прочие нейросети в приложениях ок; **только ChatGPT app** —
-вечный вход на HOSTKEY. После включения WARP — проверить приложение.
+ПК debug `build-debug-35517`, браузер: Gemini, GPT и остальные ИИ — ок на HOSTKEY.
+Android: Gemini и прочие приложения ок; ChatGPT app на HOSTKEY — вечный вход.
 
 ## Последние изменения (PC: SyntaxError при старте 2026-09-08)
 
@@ -35,17 +52,18 @@ Electron падал: «A JavaScript error occurred in the main process» / `Synt
 В `pc/src/main/vpn/wireguard.js` внутри массива PowerShell стояли Python-комментарии `# Жёстко: снять IPv6…` — Node не парсит `#`. Заменено на `//`. `node --check` + `test/dns.test.js` 10/10.
 Debug: `pc/build-debug-35517/win-unpacked/` (SilentVPN-Admin.bat). `wdtt-client` не пересобирали (`GOPROXY=off`).
 
-## Последние изменения (Сервер 4: GPT тормозил из‑за leftover QUIC 2026-09-07)
+## Последние изменения (Сервер 4: leftover QUIC 2026-09-07)
 
-После отката Aether `sing-box`/WARP выключены (fail-open), но в FORWARD остался `REJECT UDP/443` «чтобы приложение шло в TPROXY». TPROXY мёртв → ChatGPT/Cronet ждут таймаут QUIC и только потом TCP. Снято: QUIC-REJECT только если есть `proxy.enabled`. `deploy_ai_cell.py dns` — wdtt не трогали. Долгое **включение VPN** — это WDTT/VK-воркеры, не GPT.
+В FORWARD остался `REJECT UDP/443` после выключения TPROXY → приложения ждут
+таймаут QUIC и только потом TCP. QUIC-REJECT только если есть `proxy.enabled`.
+`deploy_ai_cell.py dns` — wdtt не трогали. Долгое **включение VPN** — WDTT/VK-воркеры.
 
-## Последние изменения (откат Aether 2026-09-07 21:33)
+## Последние изменения (гигиена Соты 3 2026-09-07)
 
-Владелец: упор должен быть на мобильную сеть; самодельный Aether v1/v2 не дал толка. Откат к git + старый AI-exit (WDTT).
-- `silent-aether` на сота3 **остановлен** (`deploy_aether.py --off`). **wdtt active, не рестартили.**
-- Локальный код Aether удалён (`aether-go/`, скрипты, клиентские обвязки, `libaether.so`). Клиенты возвращены к HEAD.
-- Debug: `android/SilentVPN-debug.apk` (49 МБ) + `pc/build-debug-533483/win-unpacked/` — без Aether.
-- Инцидент «сота3 9100 режется из РФ»: это проба check-host с публичных нод на **cell-agent**, не VPN-вход. Клиенты на 9100 не ходят за туннелем. **DNAT 443→9100 не делал** (vpn-safety, сломает/займёт 443). Повторы с 12:02/02:27 — шум агента, не новая блокировка Сервера 4.
+Упор на мобильную сеть, самодельный обход транспорта снят. Клиенты на git HEAD.
+Инцидент «сота3 9100 режется из РФ»: проба check-host на **cell-agent**, не VPN-вход.
+Клиенты на 9100 за туннелем не ходят. **DNAT 443→9100 не делал** (vpn-safety).
+Повторы с 12:02/02:27 — шум агента, не новая блокировка Сервера 4.
 
 ## Последние изменения (реферал + оплата: календарь, без съедания рефа 2026-09-07)
 
@@ -386,8 +404,8 @@ Debug: `pc/build-debug-35517/win-unpacked/` (SilentVPN-Admin.bat). `wdtt-client`
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.164** (olcrtc снят из UI; WDTT only; Linux = тот же клиент, AppImage) |
-| `Silent-Project/android/` | `android` | **1.0.164** (olcrtc снят из UI; WDTT only) |
+| `Silent-Project/pc/` | `pc` | **1.0.165** (Сервер 4 для ИИ только в этой версии; WDTT only) |
+| `Silent-Project/android/` | `android` | **1.0.165** (Сервер 4 для ИИ только в этой версии; WDTT only) |
 | `Silent-Project/ios/` | `ios` | начальная |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  

@@ -763,13 +763,14 @@ async def register_device(
     await db.refresh(device)
     await dedupe_same_type_devices(db, user.id, device_type, device_fingerprint)
 
-    return await _build_vpn_config(db, device, pref_server or None)
+    return await _build_vpn_config(db, device, pref_server or None, app_version=None)
 
 
 async def _build_vpn_config(
     db: AsyncSession,
     device: Device,
     preferred_override: str | None = None,
+    app_version: str | None = None,
 ) -> VpnConfigResponse:
     from app.core.security import decrypt_value
     from app.services.user_hash_service import get_vpn_hashes_for_user
@@ -783,7 +784,7 @@ async def _build_vpn_config(
         hashes = await get_active_vk_hashes(db)
 
     selected_server, cell = await ensure_device_server_allowed(
-        db, device, user, preferred_override
+        db, device, user, preferred_override, app_version=app_version
     )
     server_pub_key = (cell.wg_public_key or "").strip()
     if not server_pub_key:
@@ -832,8 +833,9 @@ async def set_device_preferred_server(
     preferred_server: str,
     *,
     is_admin: bool = False,
+    app_version: str | None = "",
 ) -> Device | None:
-    from app.services.hive_slots import cell_selectable_by_user
+    from app.services.hive_slots import cell_select_forbidden_detail, cell_visible_to_client
     from fastapi import HTTPException
 
     result = await db.execute(
@@ -847,10 +849,10 @@ async def set_device_preferred_server(
     if not device:
         return None
     key, cell = await hive_service.resolve_manual_server_cell(db, preferred_server)
-    if not cell_selectable_by_user(cell, is_admin=is_admin):
+    if not cell_visible_to_client(cell, is_admin=is_admin, app_version=app_version):
         raise HTTPException(
             status_code=403,
-            detail="Сервер временно доступен только администратору",
+            detail=cell_select_forbidden_detail(cell, app_version=app_version),
         )
     _set_device_server(device, key, cell.id)
     await db.commit()
@@ -862,14 +864,15 @@ async def list_manual_vpn_servers(
     db: AsyncSession,
     *,
     include_admin_only: bool = False,
+    app_version: str | None = "",
 ) -> list[dict]:
     from app.services.hive_standby import cell_public_api_base
-    from app.services.hive_slots import cell_is_admin_only
+    from app.services.hive_slots import cell_visible_to_client
 
     entries = await hive_service.manual_server_entries(db)
     out: list[dict] = []
     for key, title, cell in entries:
-        if cell_is_admin_only(cell) and not include_admin_only:
+        if not cell_visible_to_client(cell, is_admin=include_admin_only, app_version=app_version):
             continue
         online = await hive_service.count_online_on_cell(db, cell.id)
         if cell.is_queen:
@@ -894,9 +897,10 @@ async def ensure_device_server_allowed(
     device: Device,
     user: User | None,
     preferred_override: str | None = None,
+    app_version: str | None = None,
 ) -> tuple[str, object]:
-    """Резолв слота; admin_only соты для не-админа → Улей (server1)."""
-    from app.services.hive_slots import cell_selectable_by_user
+    """Резолв слота; admin_only / старый клиент на ИИ-слоте → Улей (server1)."""
+    from app.services.hive_slots import cell_visible_to_client
     from app.services.subscription_service import is_user_admin
 
     is_bootstrap = user and user.email == BOOTSTRAP_USER_EMAIL
@@ -906,7 +910,7 @@ async def ensure_device_server_allowed(
     )
     admin = bool(user and not is_bootstrap and is_user_admin(user))
     selected_server, cell = await hive_service.resolve_manual_server_cell(db, preferred_server)
-    if not cell_selectable_by_user(cell, is_admin=admin):
+    if not cell_visible_to_client(cell, is_admin=admin, app_version=app_version):
         selected_server, cell = await hive_service.resolve_manual_server_cell(db, "server1")
     if device.cell_id != cell.id or getattr(device, "preferred_server", None) != selected_server:
         _set_device_server(device, selected_server, cell.id)
@@ -953,13 +957,14 @@ async def build_vpn_config_for_user(
     user: User,
     has_subscription: bool,
     preferred_override: str | None = None,
+    app_version: str | None = None,
 ) -> VpnConfigResponse:
     from app.services.user_hash_service import (
         get_server_hashes_for_user,
         recommended_stream_count,
     )
 
-    config = await _build_vpn_config(db, device, preferred_override)
+    config = await _build_vpn_config(db, device, preferred_override, app_version=app_version)
     if user.email == BOOTSTRAP_USER_EMAIL:
         return config
     server_hashes = await get_server_hashes_for_user(db, user)

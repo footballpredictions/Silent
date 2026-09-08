@@ -5,7 +5,12 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 
-const { normalizeDnsValue, buildWgConfigFromApi } = require('../src/main/vpn/wireguard')
+const {
+  normalizeDnsValue,
+  buildWgConfigFromApi,
+  buildAllowedIPsForWindows,
+  ensureWgIpv6Address,
+} = require('../src/main/vpn/wireguard')
 
 describe('normalizeDnsValue', () => {
   it('меню DNS важнее серверного', () => {
@@ -28,6 +33,19 @@ describe('normalizeDnsValue', () => {
   it('нормализует разделители', () => {
     assert.equal(normalizeDnsValue('', '1.1.1.1;8.8.8.8'), '1.1.1.1, 8.8.8.8')
     assert.equal(normalizeDnsValue('', ' 9.9.9.9   1.1.1.1 '), '9.9.9.9, 1.1.1.1')
+  })
+})
+
+describe('Windows IPv6 tunnel (Gemini leak)', () => {
+  it('AllowedIPs остаётся IPv4 /1+/1 (blackhole отдельно)', () => {
+    const allowed = buildAllowedIPsForWindows([], () => {})
+    assert.equal(allowed, '0.0.0.0/1, 128.0.0.0/1')
+    assert.doesNotMatch(allowed, /::/)
+  })
+
+  it('ensureWgIpv6Address всё ещё умеет добавить ULA', () => {
+    const out = ensureWgIpv6Address('Address = 10.66.66.5/32\n')
+    assert.match(out, /Address = 10\.66\.66\.5\/32, fd00:67:67::2\/128/)
   })
 })
 

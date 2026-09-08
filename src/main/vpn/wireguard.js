@@ -851,6 +851,7 @@ async function finalizeTunnelUp(send, excludeIPs, subnetOnly, dnsValue = WG_DNS)
   await polishWgNetworkProfile(send)
   if (!subnetOnly) {
     await applyWgDns(send, dnsValue)
+    await blockIpv6Leak(send)
   }
   if (excludeIPs.length) {
     await addServerBypassRoutes(excludeIPs, send)
@@ -1179,6 +1180,7 @@ async function stopWireGuardTunnel(isDev, dirname, send, excludeIPs = []) {
   const epoch = wgApplyEpoch
   // Сначала туннель: иначе bypass снят, а /1+/1 остаются → нет интернета (Win10).
   await forceStopWireGuard(isDev, dirname, send)
+  await restoreIpv6Leak(send)
   // Снятие bypass — в той же очереди stop, иначе waitWgStopIdle возвращается
   // раньше, новый туннель встаёт, а route delete догоняет и вырезает API/VK.
   await enqueueWgStop(async () => {
@@ -1254,9 +1256,98 @@ function buildAllowedIPsForWindows(excludeIPs, send) {
   // - CIDR-exclude 1 IP ≈32 маршрута → 1–2 Мбит, YouTube не грузится
   // - 0.0.0.0/1 + 128.0.0.0/1 = весь IPv4 БЕЗ kill-switch (2 маршрута);
   //   peer/API/VK держим на физ. NIC через addServerBypassRoutes (/32).
+  // IPv6 НЕ кладём в AllowedIPs: иначе Happy Eyeballs висит в мёртвом туннеле.
+  // Утечку режет blockIpv6Leak() (blackhole), как Linux helper.
   void excludeIPs
   send?.('[WG] AllowedIPs = 0.0.0.0/1, 128.0.0.0/1 (full без kill-switch; API/VK bypass)')
   return '0.0.0.0/1, 128.0.0.0/1'
+}
+
+/** К WG Address добавить ULA — иначе Windows не ставит IPv6 AllowedIPs. */
+function ensureWgIpv6Address(confText) {
+  const text = String(confText || '')
+  const m = text.match(/^\s*Address\s*=\s*(.+)$/m)
+  if (!m) return text
+  const cur = m[1].trim()
+  if (/:[0-9a-fA-F]/.test(cur) || cur.includes('::')) return text
+  return text.replace(/^\s*Address\s*=\s*.+$/m, `Address = ${cur}, fd00:67:67::2/128`)
+}
+
+/**
+ * Как Linux ipv6-block: без :: в AllowedIPs, blackhole default + выкл RA/Teredo.
+ * Иначе Gemini на Wi‑Fi уходит мимо Сервера 4 (Android VPN режет IPv6 сам).
+ */
+async function blockIpv6Leak(send) {
+  const ps = [
+    "$ErrorActionPreference='SilentlyContinue'",
+    "netsh interface teredo set state disabled | Out-Null",
+    "netsh interface 6to4 set state disabled | Out-Null",
+    "netsh interface isatap set state disabled | Out-Null",
+    // Жёстко: снять IPv6 с Wi‑Fi/Ethernet (Android VPN делает это сам).
+    // Иначе Chrome DoH/Happy Eyeballs уходят мимо Сервера 4 → Gemini мёртв на ПК.
+    "Get-NetAdapter | Where-Object {",
+    "  $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'WireGuard|Wintun|Loopback'",
+    "  -and $_.Name -notmatch 'WireGuard|wg-turn|Loopback'",
+    "} | ForEach-Object {",
+    "  Disable-NetAdapterBinding -Name $_.Name -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue",
+    "}",
+    "Get-NetIPInterface -AddressFamily IPv6 | Where-Object {",
+    "  $_.InterfaceAlias -notmatch 'Loopback|WireGuard|wg-turn|isatap|Teredo|6to4'",
+    "} | ForEach-Object {",
+    "  Set-NetIPInterface -InterfaceIndex $_.InterfaceIndex -RouterDiscovery Disabled -ErrorAction SilentlyContinue",
+    "}",
+    "Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Where-Object {",
+    "  $_.InterfaceAlias -notmatch 'Loopback'",
+    "} | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue",
+    "$loop = Get-NetIPInterface -AddressFamily IPv6 | Where-Object { $_.InterfaceAlias -match 'Loopback' } | Select-Object -First 1",
+    "if ($loop) {",
+    "  New-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $loop.InterfaceIndex -NextHop '::1' -RouteMetric 1 -Publish No -ErrorAction SilentlyContinue | Out-Null",
+    "}",
+    "Write-Output 'ok'",
+  ].join('; ')
+  try {
+    const { stdout } = await execAsync(
+      `powershell.exe -NoProfile -NonInteractive -Command "${ps.replace(/"/g, '\\"')}"`,
+      { encoding: 'utf8', windowsHide: true, timeout: 20000 },
+    )
+    if (String(stdout || '').includes('ok')) {
+      send?.('[WG] IPv6 leak blocked (ms_tcpip6 off + blackhole)')
+    } else {
+      send?.('[WG] IPv6 block: нет подтверждения', 'W')
+    }
+  } catch (e) {
+    send?.('[WG] IPv6 block: ' + (e.message || e), 'W')
+  }
+}
+
+async function restoreIpv6Leak(send) {
+  const ps = [
+    "$ErrorActionPreference='SilentlyContinue'",
+    "Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Where-Object {",
+    "  $_.InterfaceAlias -match 'Loopback' -and $_.NextHop -eq '::1'",
+    "} | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue",
+    "Get-NetAdapter | Where-Object {",
+    "  $_.InterfaceDescription -notmatch 'WireGuard|Wintun|Loopback'",
+    "  -and $_.Name -notmatch 'WireGuard|wg-turn|Loopback'",
+    "} | ForEach-Object {",
+    "  Enable-NetAdapterBinding -Name $_.Name -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue",
+    "}",
+    "Get-NetIPInterface -AddressFamily IPv6 | Where-Object {",
+    "  $_.InterfaceAlias -notmatch 'Loopback|WireGuard|wg-turn'",
+    "} | ForEach-Object {",
+    "  Set-NetIPInterface -InterfaceIndex $_.InterfaceIndex -RouterDiscovery Controlled -ErrorAction SilentlyContinue",
+    "}",
+    "Write-Output 'ok'",
+  ].join('; ')
+  try {
+    await execAsync(
+      `powershell.exe -NoProfile -NonInteractive -Command "${ps.replace(/"/g, '\\"')}"`,
+      { encoding: 'utf8', windowsHide: true, timeout: 20000 },
+    )
+    send?.('[WG] IPv6 restored (ms_tcpip6 on)')
+  } catch (e) {
+    send?.('[WG] IPv6 restore: ' + (e.message || e), 'W')
+  }
 }
 
 function generateExclusionAllowedIPs(excludeIPs) {
@@ -1531,6 +1622,8 @@ module.exports = {
   waitWgStopIdle,
   beginWgApply,
   currentWgApplyEpoch,
+  ensureWgIpv6Address,
+  buildAllowedIPsForWindows,
   disableWgAdapters,
   trySyncConf,
   copyStableConf,

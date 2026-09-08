@@ -113,6 +113,8 @@ def test_google_auth_avoids_tproxy_and_app_doh() -> None:
     dns = dns_script(threat_filter_enabled=False)
     assert '--dport 853 -j REJECT' in dns
     assert '-p udp --dport 443 -j REJECT' in dns
+    assert "proxy.enabled" in dns
+    assert "iptables -D FORWARD" in dns
     for ip in DOH_RESOLVER_IPS:
         assert ip in dns
     assert "accounts.google.com" in GOOGLE_AUTH_DOMAIN_SUFFIXES

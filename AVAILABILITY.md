@@ -157,8 +157,8 @@ docker exec backend-db-1 psql -U silent -d silent_vpn -c \
 `AVAILABILITY_EXTERNAL_ENABLED` | `True` | пускать ли пробы через `check-host.net`
 `AVAILABILITY_RU_NODES` | `4` | сколько российских нод брать
 `AVAILABILITY_WORLD_NODES` | `2` | контрольные ноды вне РФ
-`AVAILABILITY_MAX_EXTERNAL_CHECKS` | `10` | бюджет внешних проверок за цикл
-`AVAILABILITY_MAX_EXTERNAL_TARGETS` | `3` | сколько узлов проверяем снаружи (Улей первым)
+`AVAILABILITY_MAX_EXTERNAL_CHECKS` | `12` | бюджет внешних проверок за цикл
+`AVAILABILITY_MAX_EXTERNAL_TARGETS` | `4` | сколько узлов проверяем снаружи (Улей первым; иначе 4-я сота без РФ-точки)
 `AVAILABILITY_CLIENT_WINDOW_MINUTES` | `30` | окно агрегации клиентских репортов
 `AVAILABILITY_PEER_PROBE_ENABLED` | `True` | пробы со сот через cell-agent
 `AVAILABILITY_LOCAL_TIMEOUT_SEC` | `6.0` | таймаут локальных проб

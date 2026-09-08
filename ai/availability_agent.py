@@ -45,6 +45,7 @@ from ai.availability_model import (
     TARGET_QUEEN,
     TargetSnapshot,
     VantageAggregate,
+    select_external_probe_targets,
 )
 from ai.availability_probes import (
     cell_net_probe,
@@ -209,10 +210,9 @@ async def _run_external_probes(
     used = 0
     # Улей первым: если бюджета хватит не на всех, проверяем самое важное.
     max_targets = max(1, int(settings.AVAILABILITY_MAX_EXTERNAL_TARGETS))
-    ordered = sorted(targets, key=lambda t: 0 if t.role == TARGET_QUEEN else 1)
-    probed = ordered[:max_targets]
-    if len(ordered) > len(probed):
-        skipped = ", ".join(t.name for t in ordered[max_targets:])
+    probed, skipped_targets = select_external_probe_targets(targets, max_targets)
+    if skipped_targets:
+        skipped = ", ".join(t.name for t in skipped_targets)
         warnings.append(
             f"Снаружи проверены не все узлы (экономим запросы): пропущены {skipped}. "
             f"Их доступность видна по локальным пробам и пробам со сот."

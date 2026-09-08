@@ -4,6 +4,14 @@
 > Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
 > сначала читать его, потом код.
 
+## Последние изменения (git = прод 2026-09-08)
+
+В git догнали то, что уже на Улье/соте и в debug APK: QUIC-REJECT только при
+`proxy.enabled`; пагинация дашборда/пользователей + soft-online; availability
+4 узла снаружи; `tls_renew_hook.sh`; Android `GoogleAuthTunnelPolicy` + IPv6-off.
+Не пушили: CRLF-шум, tmp, корневой `pc/wireguard.js`, бинарник wdtt, Aether-баннер
+в `AI_EXIT_NODE.md`.
+
 ## Последние изменения (WARP на Соте 3 2026-09-08)
 
 Ф4 включена: `proxy --chain warp`. Status: `wdtt` active, `sing-box` active,

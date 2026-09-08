@@ -332,6 +332,15 @@ class TargetSnapshot:
         }
 
 
+def select_external_probe_targets(
+    targets: list[TargetSnapshot], max_targets: int
+) -> tuple[list[TargetSnapshot], list[TargetSnapshot]]:
+    """Улей первым; снаружи только первые max_targets (бюджет check-host)."""
+    ordered = sorted(targets, key=lambda t: 0 if t.role == TARGET_QUEEN else 1)
+    limit = max(1, int(max_targets))
+    return ordered[:limit], ordered[limit:]
+
+
 @dataclass
 class Verdict:
     """Вывод по цели: что происходит, почему так решили и как починить."""

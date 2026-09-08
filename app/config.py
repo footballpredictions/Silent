@@ -194,9 +194,9 @@ class Settings(BaseSettings):
     AVAILABILITY_EXTERNAL_ENABLED: bool = True
     AVAILABILITY_RU_NODES: int = 4
     AVAILABILITY_WORLD_NODES: int = 2
-    AVAILABILITY_MAX_EXTERNAL_CHECKS: int = 10
+    AVAILABILITY_MAX_EXTERNAL_CHECKS: int = 12
     # Сколько узлов проверяем снаружи за цикл (Улей всегда первый) — бюджет запросов
-    AVAILABILITY_MAX_EXTERNAL_TARGETS: int = 3
+    AVAILABILITY_MAX_EXTERNAL_TARGETS: int = 4
     AVAILABILITY_CLIENT_WINDOW_MINUTES: int = 30
     # Пробы «сота → Улей / сота → сота» через cell-agent /v1/net-probe
     AVAILABILITY_PEER_PROBE_ENABLED: bool = True

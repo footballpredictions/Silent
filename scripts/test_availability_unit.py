@@ -334,6 +334,32 @@ def test_no_vantage_marks_report_unknown():
     assert report_status(verdicts) == "unknown"
 
 
+def test_external_targets_cover_fourth_cell():
+    """Регресс: max=3 оставлял Соту 3 без РФ-точки → ложный no_vantage."""
+    from ai.availability_model import select_external_probe_targets
+
+    targets = [
+        TargetSnapshot(name="Улей", host="1.1.1.1", role=TARGET_QUEEN),
+        TargetSnapshot(name="Сота 1", host="2.2.2.2", role="cell"),
+        TargetSnapshot(name="Сота 2", host="3.3.3.3", role="cell"),
+        TargetSnapshot(name="Сота 3", host="192.177.26.38", role="cell"),
+    ]
+    probed3, skipped3 = select_external_probe_targets(targets, 3)
+    assert [t.name for t in probed3] == ["Улей", "Сота 1", "Сота 2"]
+    assert [t.name for t in skipped3] == ["Сота 3"]
+
+    probed4, skipped4 = select_external_probe_targets(targets, 4)
+    assert [t.name for t in probed4] == ["Улей", "Сота 1", "Сота 2", "Сота 3"]
+    assert skipped4 == []
+
+    # Дефолты в config должны покрывать 4 узла (проверяем через чтение файла, без pydantic).
+    from pathlib import Path
+    cfg = Path(__file__).resolve().parents[1] / "app" / "config.py"
+    text = cfg.read_text(encoding="utf-8")
+    assert "AVAILABILITY_MAX_EXTERNAL_TARGETS: int = 4" in text
+    assert "AVAILABILITY_MAX_EXTERNAL_CHECKS: int = 12" in text
+
+
 def test_every_verdict_has_actionable_fix():
     """Требование к агенту: любой вывод обязан содержать решение."""
     for m in all_methods():

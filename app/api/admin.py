@@ -118,14 +118,14 @@ async def _count_users_with_vpn_access(db: AsyncSession) -> tuple[int, int]:
     return total, len(active_ids)
 
 
-async def _dashboard_users_block(db: AsyncSession) -> dict:
+async def _dashboard_users_block(db: AsyncSession, *, soft_online: bool = False) -> dict:
     from app.services.peak_online import record_online_peak
     from app.services.hive_service import vpn_online_shown_total
     from app.services.subscription_service import dashboard_subscription_breakdown
 
     total_users, vpn_access = await _count_users_with_vpn_access(db)
     breakdown = await dashboard_subscription_breakdown(db)
-    connected_devices = await vpn_online_shown_total(db)
+    connected_devices = await vpn_online_shown_total(db, soft=soft_online)
     peak_online, peak_online_at = await record_online_peak(db, int(connected_devices or 0))
     return {
         "total": total_users,
@@ -155,7 +155,7 @@ async def get_stats(
     """Dashboard system stats."""
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
 
-    users_block = await _dashboard_users_block(db)
+    users_block = await _dashboard_users_block(db, soft_online=light)
     resource_nodes = await list_dashboard_resource_nodes(db)
     known_ids = {n["id"] for n in resource_nodes}
     selected = (node_id or QUEEN_NODE_ID).strip() or QUEEN_NODE_ID

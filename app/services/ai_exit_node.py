@@ -467,9 +467,16 @@ for DIP in __DOH_IPS__; do
     ipt_app filter FORWARD -s "$NET" -d "$DIP" -p "$P" --dport 443 -j REJECT
   done
 done
-# ChatGPT/Cronet любят QUIC (UDP/443). TPROXY у нас только TCP → WARP не видит
-# приложение, браузер на TCP при этом ок. Режем клиентский QUIC → откат на TCP.
-ipt_app filter FORWARD -s "$NET" -p udp --dport 443 -j REJECT
+# QUIC (UDP/443) режем только пока жив TPROXY/WARP: иначе приложение ждёт
+# таймаут и только потом падает на TCP — ChatGPT «вообще долго».
+# Прокси выключен (fail-open) — убираем leftover REJECT.
+if [ -f /etc/silent-ai/proxy.enabled ]; then
+  ipt_app filter FORWARD -s "$NET" -p udp --dport 443 -j REJECT
+else
+  while iptables -C FORWARD -s "$NET" -p udp --dport 443 -j REJECT 2>/dev/null; do
+    iptables -D FORWARD -s "$NET" -p udp --dport 443 -j REJECT
+  done
+fi
 exit 0
 DNSEOS
 sed -i "s|__NET__|@@CLIENT_NET@@|; s|__PORT__|@@DNSMASQ_PORT@@|; s|__DOH_IPS__|@@DOH_IPS@@|" @@AI_ROOT@@/20-dns.sh

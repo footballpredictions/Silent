@@ -463,11 +463,27 @@ async def refresh_online_shown_cache() -> int:
     return total
 
 
-async def vpn_online_shown_total(db: AsyncSession | None = None) -> int:
-    """Дашборд «Онлайн» = шапка Улья = сумма карточек (WG live по всем нодам)."""
+async def vpn_online_shown_total(
+    db: AsyncSession | None = None,
+    *,
+    soft: bool = False,
+    soft_max_age: float = 90.0,
+) -> int:
+    """Дашборд «Онлайн» = шапка Улья = сумма карточек (WG live по всем нодам).
+
+    soft=True (light-полл): не бить HTTP по сотам — кэш до soft_max_age или счётчик из БД.
+    """
     cached = cached_vpn_online_shown()
     if cached is not None:
         return cached
+    if soft:
+        stale = cached_vpn_online_shown(max_age=soft_max_age)
+        if stale is not None:
+            return stale
+        if db is not None:
+            _, total = await connected_devices_by_cell(db)
+            return int(total or 0)
+        return 0
     try:
         return await refresh_online_shown_cache()
     except Exception as e:

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Cpu, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight, Activity, Server } from 'lucide-react'
+import { Cpu, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight, ChevronLeft, Activity, Server } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
 import SortSelect from '../components/SortSelect'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
@@ -280,6 +280,8 @@ function VkHashesCard({
   const [userSort, setUserSort] = useState<DashboardUserSort>(
     () => readStoredSort(DASHBOARD_USER_SORT_KEY, 'online', DASHBOARD_USER_SORTS.map(s => s.value)) as DashboardUserSort
   )
+  const [page, setPage] = useState(1)
+  const pageSize = 50
 
   const setAndStoreSort = (value: string) => {
     const next = (DASHBOARD_USER_SORTS.some(s => s.value === value) ? value : 'online') as DashboardUserSort
@@ -342,6 +344,16 @@ function VkHashesCard({
     return matched
   }, [users, userSearch, userSort])
 
+  useEffect(() => {
+    setPage(1)
+  }, [userSearch, userSort])
+
+  const pages = Math.max(1, Math.ceil(filteredUsers.length / pageSize) || 1)
+  const safePage = Math.min(page, pages)
+  const pagedUsers = userSearch.trim()
+    ? filteredUsers
+    : filteredUsers.slice((safePage - 1) * pageSize, safePage * pageSize)
+
   const toggle = (email: string) =>
     setOpen(prev => ({ ...prev, [email]: !prev[email] }))
 
@@ -388,7 +400,7 @@ function VkHashesCard({
       )}
 
       <div className="space-y-1">
-        {filteredUsers.map(([email, u]) => {
+        {pagedUsers.map(([email, u]) => {
           const isOpen = open[email]
           const slots = 'hashes' in u ? u.hashes : []
           const filled = 'slots_filled' in u ? u.slots_filled : slots.length
@@ -466,6 +478,30 @@ function VkHashesCard({
           )
         })}
       </div>
+
+      {!userSearch.trim() && pages > 1 && (
+        <div className="flex items-center justify-between gap-3 mt-4">
+          <button
+            type="button"
+            disabled={safePage <= 1}
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-xs text-[#ccc] disabled:opacity-40 hover:border-[#444] cursor-pointer"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" /> Назад
+          </button>
+          <span className="text-xs text-[#666]">
+            {safePage} / {pages}
+          </span>
+          <button
+            type="button"
+            disabled={safePage >= pages}
+            onClick={() => setPage(p => Math.min(pages, p + 1))}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-xs text-[#ccc] disabled:opacity-40 hover:border-[#444] cursor-pointer"
+          >
+            Вперёд <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
     </div>
   )
 }

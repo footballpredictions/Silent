@@ -320,7 +320,8 @@ echo "cpu=$cpu mem=$mem iface=$dev rx=$rx tx=$tx util=$util cap=$cap"
 
 _load_cache_at: float = 0.0
 _load_cache_snap: dict | None = None
-_LOAD_CACHE_TTL = 2.5
+# Дашборд поллит light ~5с — кэш не короче интервала, иначе sleep на event loop.
+_LOAD_CACHE_TTL = 4.5
 
 
 def _read_cpu_cores(proc_root: str | None = None) -> int:

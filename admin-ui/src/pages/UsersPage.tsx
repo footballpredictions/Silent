@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Ban, CheckCircle, ShieldCheck, Trash2 } from 'lucide-react'
+import { Ban, CheckCircle, ShieldCheck, Trash2, ChevronLeft, ChevronRight } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
 import SortSelect from '../components/SortSelect'
 
@@ -82,6 +82,8 @@ export default function UsersPage({ token }: { token: string }) {
   const [loading, setLoading] = useState(true)
   const [actionId, setActionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const pageSize = 50
 
   const headers = { Authorization: `Bearer ${token}` }
 
@@ -180,6 +182,16 @@ export default function UsersPage({ token }: { token: string }) {
     return list
   }, [users, search, sort])
 
+  useEffect(() => {
+    setPage(1)
+  }, [search, sort])
+
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize) || 1)
+  const safePage = Math.min(page, pages)
+  const paged = search.trim()
+    ? filtered
+    : filtered.slice((safePage - 1) * pageSize, safePage * pageSize)
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -231,7 +243,7 @@ export default function UsersPage({ token }: { token: string }) {
             ) : filtered.length === 0 ? (
               <tr><td colSpan={9} className="text-center py-12 text-[#555]">Нет пользователей</td></tr>
             ) : (
-              filtered.map(u => (
+              paged.map(u => (
                 <tr key={u.id} className="border-b border-[#1a1a1a] hover:bg-[#151515] transition-colors">
                   <td className="px-4 py-3 font-mono text-[#888]">{u.display_id}</td>
                   <td className="px-4 py-3">
@@ -321,6 +333,30 @@ export default function UsersPage({ token }: { token: string }) {
           </tbody>
         </table>
       </div>
+
+      {!search.trim() && pages > 1 && (
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            disabled={safePage <= 1 || loading}
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-xs text-[#ccc] disabled:opacity-40 hover:border-[#444] cursor-pointer"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" /> Назад
+          </button>
+          <span className="text-xs text-[#666]">
+            {safePage} / {pages}
+          </span>
+          <button
+            type="button"
+            disabled={safePage >= pages || loading}
+            onClick={() => setPage(p => Math.min(pages, p + 1))}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-xs text-[#ccc] disabled:opacity-40 hover:border-[#444] cursor-pointer"
+          >
+            Вперёд <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
     </div>
   )
 }

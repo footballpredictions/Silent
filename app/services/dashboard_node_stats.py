@@ -1,6 +1,7 @@
 """Dashboard system metrics for Queen or a worker cell."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 
@@ -19,7 +20,7 @@ QUEEN_NODE_ID = "queen"
 
 
 def _queen_system() -> dict:
-    load = read_host_load(cpu_interval=0.1)
+    load = read_host_load(cpu_interval=0.05)
     cpu = float(load.get("cpu_percent") or 0.0)
     cpu_info = get_cpu_info(cpu)
     if load.get("cpu_cores"):
@@ -161,19 +162,19 @@ async def dashboard_system_for_node(db: AsyncSession, node_id: str | None) -> di
     """Метрики выбранной ноды. Дефолт — Улей. Недоступная сота → reachable=false."""
     nid = (node_id or QUEEN_NODE_ID).strip() or QUEEN_NODE_ID
     if nid == QUEEN_NODE_ID:
-        return _queen_system()
+        return await asyncio.to_thread(_queen_system)
 
     try:
         cell_uuid = uuid.UUID(nid)
     except ValueError:
-        return _queen_system()
+        return await asyncio.to_thread(_queen_system)
 
     from app.models.hive_cell import HiveCell
     from app.services.hive_service import fetch_worker_cell_load
 
     cell = await db.get(HiveCell, cell_uuid)
     if cell is None or cell.is_queen:
-        return _queen_system()
+        return await asyncio.to_thread(_queen_system)
 
     load = await fetch_worker_cell_load(cell, timeout=2.5)
     if not load:

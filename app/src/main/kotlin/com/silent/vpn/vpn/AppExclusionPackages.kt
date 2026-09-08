@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.policy.AppExclusionsPersist
+import com.silent.vpn.policy.GoogleAuthTunnelPolicy
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.PaymentBrowser
 
@@ -122,7 +123,13 @@ fun resolveAppTunnelPolicy(context: Context, includeAppInTunnel: Boolean = false
     }
     excluded.addAll(VK_TUNNEL_PACKAGES)
     excluded.addAll(userForTunnel)
-    val filtered = excluded.filter { isPackageInstalled(pm, it) }.toSet()
+    val droppedAuth = GoogleAuthTunnelPolicy.droppedFromExclude(excluded)
+    if (droppedAuth.isNotEmpty()) {
+        DebugLog.i("AppExclusions", "Google auth kept in tunnel: ${droppedAuth.joinToString()}")
+    }
+    val filtered = GoogleAuthTunnelPolicy.excludeWithoutGoogleAuth(excluded)
+        .filter { isPackageInstalled(pm, it) }
+        .toSet()
     DebugLog.i("AppExclusions", "ЧС excludeApplications: ${filtered.size}")
     return AppTunnelPolicy(whitelist = false, packages = filtered)
 }

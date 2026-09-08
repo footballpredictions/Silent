@@ -53,6 +53,7 @@ api.interceptors.request.use(cfg => {
   }
   const token = localStorage.getItem(TOKEN_KEY)
   if (token) cfg.headers!['Authorization'] = `Bearer ${token}`
+  cfg.headers!['X-App-Version'] = __APP_VERSION__
   return cfg
 })
 

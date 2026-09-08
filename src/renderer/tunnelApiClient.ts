@@ -53,6 +53,12 @@ function flattenAxiosHeaders(raw: unknown): Record<string, string> {
       headers.Authorization = String(auth)
     }
   }
+  if (!headers['X-App-Version'] && !headers['x-app-version'] && typeof anyRaw.get === 'function') {
+    const ver = anyRaw.get('X-App-Version') ?? anyRaw.get('x-app-version')
+    if (ver != null && typeof ver !== 'object') {
+      headers['X-App-Version'] = String(ver)
+    }
+  }
   if (!headers.Authorization && !headers.authorization) {
     try {
       const token = localStorage.getItem('silent_token')

@@ -18,7 +18,7 @@ RELEASES = ROOT.parent / "releases"
 try:
     VERSION = __import__("json").loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
 except Exception:
-    VERSION = "1.0.164"
+    VERSION = "1.0.165"
 PKG = "silent-vpn"
 INSTALL_ROOT = f"opt/{PKG}"
 

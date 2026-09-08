@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import api from '../api'
 import { getStableDeviceFingerprint } from '../api'
-import { isDebugBuild } from '../debugBuild'
+import { getAppVersion } from '../updateCheck'
 import {
   getPreferredServer,
   setPreferredServer,
   normalizePreferredServer,
   rememberVpnServerIps,
 } from '../bypassStore'
+import { displayVpnServers, slotTitle } from '../vpnServerList'
 
 type Props = {
   fg: string
@@ -79,38 +80,6 @@ type VpnServersResponse = {
   servers: VpnServerInfo[]
 }
 
-function slotTitle(slot: string): string {
-  const n = String(slot || '').replace(/^server/i, '')
-  return n && /^\d+$/.test(n) ? `Сервер ${n}` : slot
-}
-
-const AI_SERVER_SLOT = 'server4'
-const AI_SERVER_TITLE = 'Сервер 4 для ИИ'
-
-/**
- * Тестовая сборка: слот ИИ-соты в списке всегда, даже пока список серверов не
- * пришёл с API. Права не проверяем — сота помечена admin_only, и не-админу
- * сервер сам ответит 403 на выборе. В release список целиком с сервера.
- */
-function withDebugAiServer(list: VpnServerInfo[]): VpnServerInfo[] {
-  if (!isDebugBuild) return list
-  const ai: VpnServerInfo = {
-    key: AI_SERVER_SLOT,
-    title: AI_SERVER_TITLE,
-    public_ip: '',
-    wdtt_port: 0,
-    online_count: 0,
-  }
-  const idx = list.findIndex((s) => normalizePreferredServer(s.key) === AI_SERVER_SLOT)
-  if (idx < 0) return [...list, ai]
-  const known = list[idx]
-  // Подпись с сервера главнее; заменяем только локальную заглушку «Сервер 4».
-  if (known.title && known.title !== slotTitle(AI_SERVER_SLOT)) return list
-  const next = [...list]
-  next[idx] = { ...known, title: AI_SERVER_TITLE }
-  return next
-}
-
 function applyDialogLine(fromSlot: string, toSlot: string, servers: VpnServerInfo[]): string {
   const titleOf = (key: string) =>
     servers.find((s) => normalizePreferredServer(s.key) === key)?.title || slotTitle(key)
@@ -135,7 +104,7 @@ export default function MenuBypassPanel({
   const [selectedServerSlot, setSelectedServerSlot] = useState(
     normalizePreferredServer(getPreferredServer()),
   )
-  const [servers, setServers] = useState<VpnServerInfo[]>([])
+  const [servers, setServers] = useState<VpnServerInfo[]>(() => displayVpnServers(null))
   const [pendingServerSlot, setPendingServerSlot] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
@@ -154,11 +123,13 @@ export default function MenuBypassPanel({
     ;(async () => {
       try {
         const fp = getStableDeviceFingerprint()
-        const res = await api.get('/api/vpn/servers', { params: { fingerprint: fp } })
+        const res = await api.get('/api/vpn/servers', {
+          params: { fingerprint: fp, app_version: getAppVersion() },
+        })
         const data = res.data as VpnServersResponse
         if (!mounted) return
         const list = Array.isArray(data.servers) ? data.servers : []
-        setServers(withDebugAiServer(list))
+        setServers(displayVpnServers(list))
         rememberVpnServerIps(list)
         // Локальный слот — источник правды. GET selected_server часто отстаёт
         // (устройство ещё на соте) и откатывал «Сервер 1» обратно на 2/3.
@@ -203,10 +174,11 @@ export default function MenuBypassPanel({
           const res = await api.post('/api/vpn/servers/select', {
             device_fingerprint: fp,
             preferred_server: nextServer,
+            app_version: getAppVersion(),
           })
           const data = res.data as VpnServersResponse
           const nextServers = Array.isArray(data.servers) ? data.servers : []
-          if (nextServers.length > 0) setServers(withDebugAiServer(nextServers))
+          if (nextServers.length > 0) setServers(displayVpnServers(nextServers))
           rememberVpnServerIps(nextServers)
           setHint('Выбрано')
         } catch (e: any) {
@@ -248,11 +220,7 @@ export default function MenuBypassPanel({
 
       <div className="flex-1 overflow-y-auto min-h-0">
         <div style={{ paddingLeft: 12 }}>
-          {(servers.length > 0 ? servers : withDebugAiServer([
-            { key: 'server1', title: 'Сервер 1', public_ip: '', wdtt_port: 0, online_count: 0 },
-            { key: 'server2', title: 'Сервер 2', public_ip: '', wdtt_port: 0, online_count: 0 },
-            { key: 'server3', title: 'Сервер 3', public_ip: '', wdtt_port: 0, online_count: 0 },
-          ])).map((server) => {
+          {(servers.length > 0 ? servers : displayVpnServers(null)).map((server) => {
             const slot = normalizePreferredServer(server.key)
             return (
             <div key={slot}>

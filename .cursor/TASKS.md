@@ -10,21 +10,18 @@ Agent приступает к **первой невыполненной** зад
 
 ### AI exit node — Сота 3 / Сервер 4 (2026-09-06)
 
-Runbook: `backend/AI_EXIT_NODE.md`.
+Runbook AI-exit (fallback): `backend/AI_EXIT_NODE.md`.  
+**Целевой транспорт:** `backend/AETHER.md` (Silent Aether).
 
-- [x] Ф0 аудит ноды, Ф1 гигиена egress, Ф2 свой резолвер, Ф3 sing-box TPROXY с fail-open watchdog
-- [x] Ф4 цепочка WARP / резидентный SOCKS5 — реализована, выключена по умолчанию
-- [x] Ф5 `/v1/egress-check` в cell-agent, карточка чистоты выхода в Улье, тихая проба в агенте доступности
-- [x] Базовая гигиена соты при подключении: `cell_hardening.py` в провижининге (ufw, TTL 64, IPv6 off, gai.conf), фаза `harden --host|--all` для старых сот
-- [x] «Сервер 4 для ИИ»: подпись слота с сервера (`cell_slot_title`) + статический слот в Android debug для админа, debug APK собран
-- [ ] **Ручная приёмка браузером** через Сервер 4: `chatgpt.com`, `gemini.google.com`, `claude.ai` без CAPTCHA, вход в аккаунт; `dnsleaktest` показывает US-резолвер; нет IPv6/WebRTC-утечки
-- [ ] PTR (rDNS) у HOSTKEY для `192.177.26.38` — нейтральное имя без vpn/proxy/tunnel/wg
-- [ ] Geofeed/коррекция гео в MaxMind, IPinfo, IP2Location; делистинг в AbuseIPDB/Spamhaus при необходимости
-- [ ] Ф6: лимит одновременных сессий на соту, затем снять `admin_only` кнопкой в Улье
-- [ ] Прогнать `harden --all` по Сотам 1–2 (после этого проверить: `wdtt` active, клиенты онлайн, `ufw status` = active)
-- [ ] План Б: вторая US-нода в другом ASN
-- [ ] **Android: Google-вход / ChatGPT** — OAuth и API теперь на одном WARP egress (без HOSTKEY-split). Переподключить Сервер 4, проверить ChatGPT app
-- [ ] **PC Gemini** — debug `build-debug-504533`: IPv6 blackhole. SilentVPN-Admin.bat → Сервер 4 → gemini.google.com
+- [x] Ф0–Ф5 AI-exit (гигиена, DNS, TPROXY, WARP/SOCKS, egress-check) — база знаний / rollback
+- [x] **Aether Ф0:** спека + allowlist + Memory Bank
+- [x] **Aether Ф1:** aether-server на Соте 3 (`silent-aether` active :8443, pubkey в AppSetting)
+- [x] **Aether Ф2:** PC sing-box AI-split + Android hev→SOCKS (admin_only)
+- [x] **Aether Ф3:** авто-приёмка `test_aether_accept.py` OK; лимит сессий 128
+- [x] **Aether Ф4:** rollback `aether_release.py --legacy-on`; open-all готов (`--open-all --confirm`)
+- [x] **Ручная приёмка (2026-09-08):** WARP на Соте 3. PC/Android веб и приложения нейросетей ок; ChatGPT app входит. PTR / geofeed / residential — отдельно
+- [ ] PTR / geofeed / Harden сот 1–2 / План Б ASN
+- [ ] При возможности `AETHER_UPSTREAM_SOCKS` (residential) + OTA PC/Android с Aether
 
 ### Ложные переподключения VPN (Android, 2026-09-06)
 

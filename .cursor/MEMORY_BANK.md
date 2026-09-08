@@ -4,6 +4,41 @@
 > Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
 > сначала читать его, потом код.
 
+## Последние изменения (WARP на Соте 3 2026-09-08)
+
+Ф4 включена: `proxy --chain warp`. Status: `wdtt` active, `sing-box` active,
+`ai-out` wireguard `key=ok`, `proxy.enabled`, TPROXY, QUIC UDP/443 REJECT.
+Google-auth в той же цепочке (`GAUTH_BYPASS=off`, `final=ai-out`).
+**Приёмка владельца:** веб и приложения нейросетей на ПК/Android ок, ChatGPT app
+входит. Откат: `python scripts/deploy_ai_cell.py proxy --off` (wdtt не трогать).
+
+PC debug: `#` в `wireguard.js` → `SyntaxError` при старте Electron; заменено на `//`.
+Сборка `pc/build-debug-35517` (SilentVPN-Admin.bat).
+
+## Последние изменения (приёмка Сервер 4 2026-09-08)
+
+ПК debug `build-debug-35517`, браузер: Gemini, GPT и остальные ИИ — ок.
+Android: Gemini и прочие нейросети в приложениях ок; **только ChatGPT app** —
+вечный вход на HOSTKEY. После включения WARP — проверить приложение.
+
+## Последние изменения (PC: SyntaxError при старте 2026-09-08)
+
+Electron падал: «A JavaScript error occurred in the main process» / `SyntaxError: Invalid or unexpected token`.
+В `pc/src/main/vpn/wireguard.js` внутри массива PowerShell стояли Python-комментарии `# Жёстко: снять IPv6…` — Node не парсит `#`. Заменено на `//`. `node --check` + `test/dns.test.js` 10/10.
+Debug: `pc/build-debug-35517/win-unpacked/` (SilentVPN-Admin.bat). `wdtt-client` не пересобирали (`GOPROXY=off`).
+
+## Последние изменения (Сервер 4: GPT тормозил из‑за leftover QUIC 2026-09-07)
+
+После отката Aether `sing-box`/WARP выключены (fail-open), но в FORWARD остался `REJECT UDP/443` «чтобы приложение шло в TPROXY». TPROXY мёртв → ChatGPT/Cronet ждут таймаут QUIC и только потом TCP. Снято: QUIC-REJECT только если есть `proxy.enabled`. `deploy_ai_cell.py dns` — wdtt не трогали. Долгое **включение VPN** — это WDTT/VK-воркеры, не GPT.
+
+## Последние изменения (откат Aether 2026-09-07 21:33)
+
+Владелец: упор должен быть на мобильную сеть; самодельный Aether v1/v2 не дал толка. Откат к git + старый AI-exit (WDTT).
+- `silent-aether` на сота3 **остановлен** (`deploy_aether.py --off`). **wdtt active, не рестартили.**
+- Локальный код Aether удалён (`aether-go/`, скрипты, клиентские обвязки, `libaether.so`). Клиенты возвращены к HEAD.
+- Debug: `android/SilentVPN-debug.apk` (49 МБ) + `pc/build-debug-533483/win-unpacked/` — без Aether.
+- Инцидент «сота3 9100 режется из РФ»: это проба check-host с публичных нод на **cell-agent**, не VPN-вход. Клиенты на 9100 не ходят за туннелем. **DNAT 443→9100 не делал** (vpn-safety, сломает/займёт 443). Повторы с 12:02/02:27 — шум агента, не новая блокировка Сервера 4.
+
 ## Последние изменения (реферал + оплата: календарь, без съедания рефа 2026-09-07)
 
 - Баг: живой `referral_bonus` шёл в базу при оплате → «3 месяца» с 27.08 давали **25.12** (реф до 26.09 + 90 суток). Теперь оплата не стекает с trial/referral/test; реф-бонус (+30) = **+1 календарный месяц** поверх купленного плана.

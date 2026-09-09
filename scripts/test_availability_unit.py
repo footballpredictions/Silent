@@ -158,6 +158,27 @@ def test_service_down_when_local_probe_also_fails():
     assert report_status(verdicts) == "down"
 
 
+def test_service_down_mentions_host_offline_when_ping_also_dead():
+    snap = TargetSnapshot(
+        name="Сота 1",
+        host="87.58.213.193",
+        role="cell",
+        agent_port=9100,
+        status="active",
+        note="server2",
+    )
+    snap.local[CHANNEL_AGENT_TCP] = ProbeResult(
+        channel=CHANNEL_AGENT_TCP, ok=False, error_kind="timeout", detail="timeout"
+    )
+    snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, failed=2)
+    snap.ru[CHANNEL_AGENT_TCP] = _agg(CHANNEL_AGENT_TCP, failed=2)
+    verdicts = classify_target(snap)
+    down = [v for v in verdicts if v.kind == KIND_SERVICE_DOWN]
+    assert down
+    assert "недоступен целиком" in down[0].summary
+    assert any("VPS" in f or "хостер" in f for f in down[0].fixes)
+
+
 def test_port_block_when_one_port_dies_and_others_live():
     snap = _queen()
     snap.agent_port = 9100
@@ -381,20 +402,23 @@ def test_no_vantage_marks_report_unknown():
 
 def test_external_targets_cover_fourth_cell():
     """Регресс: max=3 оставлял Соту 3 без РФ-точки → ложный no_vantage."""
-    from ai.availability_model import select_external_probe_targets
+    from ai.availability_model import select_external_probe_targets, sort_targets_for_display
 
     targets = [
-        TargetSnapshot(name="Улей", host="1.1.1.1", role=TARGET_QUEEN),
-        TargetSnapshot(name="Сота 1", host="2.2.2.2", role="cell"),
-        TargetSnapshot(name="Сота 2", host="3.3.3.3", role="cell"),
-        TargetSnapshot(name="Сота 3", host="192.177.26.38", role="cell"),
+        TargetSnapshot(name="сота3", host="192.177.26.38", role="cell", note="server4"),
+        TargetSnapshot(name="Сота 2", host="3.3.3.3", role="cell", note="server3"),
+        TargetSnapshot(name="Улей", host="1.1.1.1", role=TARGET_QUEEN, note="server1"),
+        TargetSnapshot(name="Сота 1", host="2.2.2.2", role="cell", note="server2"),
     ]
+    ordered = sort_targets_for_display(targets)
+    assert [t.name for t in ordered] == ["Улей", "Сота 1", "Сота 2", "сота3"]
+
     probed3, skipped3 = select_external_probe_targets(targets, 3)
     assert [t.name for t in probed3] == ["Улей", "Сота 1", "Сота 2"]
-    assert [t.name for t in skipped3] == ["Сота 3"]
+    assert [t.name for t in skipped3] == ["сота3"]
 
     probed4, skipped4 = select_external_probe_targets(targets, 4)
-    assert [t.name for t in probed4] == ["Улей", "Сота 1", "Сота 2", "Сота 3"]
+    assert [t.name for t in probed4] == ["Улей", "Сота 1", "Сота 2", "сота3"]
     assert skipped4 == []
 
     # Дефолты в config должны покрывать 4 узла (проверяем через чтение файла, без pydantic).
@@ -403,6 +427,17 @@ def test_external_targets_cover_fourth_cell():
     text = cfg.read_text(encoding="utf-8")
     assert "AVAILABILITY_MAX_EXTERNAL_TARGETS: int = 4" in text
     assert "AVAILABILITY_MAX_EXTERNAL_CHECKS: int = 12" in text
+
+
+def test_targets_display_order_queen_then_cells_by_slot():
+    from ai.availability_model import sort_targets_for_display
+
+    targets = [
+        TargetSnapshot(name="сота3", host="9.9.9.9", role="cell", note="server4", ai_exit=True),
+        TargetSnapshot(name="Улей", host="1.1.1.1", role=TARGET_QUEEN, note="server1"),
+        TargetSnapshot(name="Сота 1", host="2.2.2.2", role="cell", note="server2"),
+    ]
+    assert [t.name for t in sort_targets_for_display(targets)] == ["Улей", "Сота 1", "сота3"]
 
 
 def test_every_verdict_has_actionable_fix():

@@ -399,7 +399,12 @@ export default function HivePage({ token }: { token: string }) {
   }, [load])
 
   useEffect(() => {
-    const provisioning = cells.some(c => c.status === 'provisioning')
+    const provisioning = cells.some(
+      c =>
+        c.status === 'provisioning' ||
+        (c.last_error || '').startsWith('Профиль для ИИ: настройка') ||
+        (c.last_error || '').startsWith('Профиль для ИИ: откат'),
+    )
     if (!provisioning) return
     const t = setInterval(() => { load(true) }, 4000)
     return () => clearInterval(t)
@@ -454,14 +459,41 @@ export default function HivePage({ token }: { token: string }) {
   }
 
   const setAiExit = async (id: string, aiExit: boolean) => {
+    const cell = cells.find(c => c.id === id)
+    if (!cell) return
+    if (!cell.has_ssh_password) {
+      setError('Нужен сохранённый SSH — переподключите соту через автоподключение')
+      return
+    }
+    const ok = aiExit
+      ? confirm(
+          `Включить «Профиль для ИИ» на «${cell.name}»?\n\n` +
+            'На соте сами поставятся гигиена (9100 только Улью) и свой DNS. ' +
+            'WARP/прокси не включаем. Займёт 1–2 минуты, VPN не рестартуем.',
+        )
+      : confirm(
+          `Снять «Профиль для ИИ» с «${cell.name}»?\n\n` +
+            'Откатим DNS/прокси и снова откроем 9100 наружу (как у обычной соты). 1–2 минуты.',
+        )
+    if (!ok) return
     setBusy(id)
-    await fetch(`/api/admin/hive/cells/${id}`, {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({ ai_exit: aiExit }),
-    })
-    await load()
-    setBusy(null)
+    setError(null)
+    try {
+      const res = await fetch(`/api/admin/hive/cells/${id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ ai_exit: aiExit }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(fmtDetail(data.detail) || `HTTP ${res.status}`)
+        return
+      }
+      if (data.message) setSuccess(data.message)
+      await load()
+    } finally {
+      setBusy(null)
+    }
   }
 
   const checkEgress = async (cell: HiveCell) => {
@@ -732,7 +764,7 @@ export default function HivePage({ token }: { token: string }) {
                       <span className="text-xs bg-violet-950 text-violet-300 px-2 py-0.5 rounded">Только админ</span>
                     )}
                     {cell.ai_exit && (
-                      <span className="text-xs bg-sky-950 text-sky-300 px-2 py-0.5 rounded">ИИ-выход</span>
+                      <span className="text-xs bg-sky-950 text-sky-300 px-2 py-0.5 rounded">Для ИИ</span>
                     )}
                     <span className="text-xs text-[#888]">{statusLabel[cell.status] || cell.status}</span>
                   </div>
@@ -765,7 +797,18 @@ export default function HivePage({ token }: { token: string }) {
                       <span className="text-[#555]"> · {capModeLabel[cell.capacity.mode] || cell.capacity.mode}</span>
                     )}
                   </p>
-                  {cell.last_error && <p className="text-xs text-red-400 mt-2 whitespace-pre-wrap">{cell.last_error}</p>}
+                  {cell.last_error && (
+                    <p
+                      className={`text-xs mt-2 whitespace-pre-wrap ${
+                        cell.last_error.startsWith('Профиль для ИИ: настройка') ||
+                        cell.last_error.startsWith('Профиль для ИИ: откат')
+                          ? 'text-sky-400'
+                          : 'text-red-400'
+                      }`}
+                    >
+                      {cell.last_error}
+                    </p>
+                  )}
                 </div>
                 <div className="text-right">
                   <p className="text-lg font-semibold">{cell.online_count}</p>
@@ -808,24 +851,24 @@ export default function HivePage({ token }: { token: string }) {
                   </button>
                   <button
                     type="button"
-                    disabled={busy === cell.id}
+                    disabled={busy === cell.id || (cell.status !== 'active' && cell.status !== 'draining')}
                     onClick={() => setAiExit(cell.id, !cell.ai_exit)}
-                    title="Профиль выхода для ИИ-сервисов. Флаг только помечает соту — настройку ставит scripts/deploy_ai_cell.py"
+                    title="Включить или снять профиль для ИИ на этой соте: гигиена + свой DNS (без WARP). Нужен сохранённый SSH."
                     className={`text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] disabled:opacity-50 ${
                       cell.ai_exit ? 'text-sky-300' : 'text-[#aaa]'
                     }`}
                   >
-                    {cell.ai_exit ? 'Снять ИИ-профиль' : 'ИИ-выход'}
+                    {cell.ai_exit ? 'Снять профиль для ИИ' : 'Профиль для ИИ'}
                   </button>
                   <button
                     type="button"
                     disabled={egressBusy === cell.id || cell.status !== 'active'}
                     onClick={() => checkEgress(cell)}
-                    title="Спросить у соты, как её выход видят снаружи: гео, флаги hosting/proxy, PTR, резолвер, ответы ИИ-доменов"
+                    title="Как IP соты видят снаружи: гео, hosting/proxy, PTR, резолвер, ответы ИИ-сайтов"
                     className="text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] text-[#aaa] flex items-center gap-1 disabled:opacity-50"
                   >
                     {egressBusy === cell.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Activity className="w-3 h-3" />}
-                    Проверить выход
+                    Проверить IP
                   </button>
                   <button type="button" disabled={busy === cell.id} onClick={() => removeCell(cell)}
                     className="text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] text-red-400 flex items-center gap-1 disabled:opacity-50">

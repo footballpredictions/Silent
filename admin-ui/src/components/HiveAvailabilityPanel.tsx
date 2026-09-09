@@ -264,7 +264,7 @@ function TargetRow({ target }: { target: Target }) {
         <span className="text-[#666] font-mono">{target.host}</span>
         {target.domain && <span className="text-[#555]">{target.domain}</span>}
         {target.ai_exit && (
-          <span className="text-sky-400/90">ИИ-выход · 9100 только Улью</span>
+          <span className="text-sky-400/90">Для ИИ · 9100 только Улью</span>
         )}
         <span className="text-[#555]">статус {target.status || '—'}</span>
         <span className="text-[#555]">онлайн {target.online_count}</span>

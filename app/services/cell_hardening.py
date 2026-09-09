@@ -131,6 +131,7 @@ WantedBy=multi-user.target
 HARDENEOS
 systemctl daemon-reload
 systemctl enable {HARDEN_UNIT} >/dev/null 2>&1 || true
+systemctl start {HARDEN_UNIT} >/dev/null 2>&1 || true
 {HARDEN_ROOT}/10-baseline.sh
 echo "[harden] ufw: $(ufw status 2>/dev/null | head -1)"
 """

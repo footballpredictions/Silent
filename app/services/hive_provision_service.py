@@ -312,15 +312,21 @@ if command -v socat >/dev/null || apt-get install -y -qq socat; then
   cat > /etc/systemd/system/silent-tunnel-api-proxy.service << 'TPEOF'
 [Unit]
 Description=Forward tunnel API 10.66.66.1:8000 to Hive
-After=network.target
+After=network-online.target
+Wants=network-online.target
+
 [Service]
 Type=simple
-ExecStart=/usr/bin/socat TCP-LISTEN:8000,bind=10.66.66.1,reuseaddr,fork TCP:{hive_ip}:80
+# После ребута адрес с lo пропадает → socat не биндится и крутит RestartSec=2.
+ExecStartPre=/bin/bash -c 'ip -4 addr show dev lo | grep -q "10.66.66.1/32" || ip addr add 10.66.66.1/32 dev lo'
+ExecStart=/usr/bin/socat TCP-LISTEN:8000,bind=10.66.66.1,reuseaddr,fork TCP:HIVE_IP_PLACEHOLDER:80
 Restart=always
 RestartSec=2
+
 [Install]
 WantedBy=multi-user.target
 TPEOF
+  sed -i "s/HIVE_IP_PLACEHOLDER/{hive_ip}/g" /etc/systemd/system/silent-tunnel-api-proxy.service
   systemctl daemon-reload
   systemctl enable --now silent-tunnel-api-proxy || true
 fi

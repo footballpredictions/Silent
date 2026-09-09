@@ -333,18 +333,40 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
         local = snap.local_ok(channel)
 
         if local is False:
+            ping = snap.ru_view(CHANNEL_PING)
+            host_dead = ping is not None and ping.all_failed
+            evidence = [
+                f"Локальная проба {channel_title(channel)} на порт {port or '?'} не прошла.",
+                f"Из РФ: {_fail_desc(agg)}.",
+            ]
+            if host_dead:
+                evidence.append(
+                    f"ICMP ping с российских нод тоже мёртв ({ping.fail_count}/{ping.total}) — "
+                    "это не упавший cell-agent, а недоступность всего IP (хост/провайдер)."
+                )
             out.append(
                 _verdict(
                     snap,
                     KIND_SERVICE_DOWN,
                     confidence=0.9,
-                    summary=f"{channel_title(channel)} не отвечает и локально — это не блокировка.",
-                    evidence=[
-                        f"Локальная проба {channel_title(channel)} на порт {port or '?'} не прошла.",
-                        f"Из РФ: {_fail_desc(agg)}.",
-                    ],
+                    summary=(
+                        f"{snap.host} недоступен целиком (ping и порты) — хост offline или сеть провайдера."
+                        if host_dead
+                        else f"{channel_title(channel)} не отвечает и локально — это не блокировка."
+                    ),
+                    evidence=evidence,
                     channel=channel,
                     port=port,
+                    extra_fixes=(
+                        [
+                            "Перезагрузить VPS Соты в панели хостера (SSH/ping с Улья тоже не проходят) — "
+                            "код и сервисы на мёртвом IP не починить удалённо.",
+                            "После подъёма: systemctl status silent-cell-agent wdtt — без рестарта wdtt, "
+                            "если он уже active.",
+                        ]
+                        if host_dead
+                        else []
+                    ),
                 )
             )
             continue

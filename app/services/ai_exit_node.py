@@ -1,8 +1,8 @@
-"""AI-выход: гигиена egress, локальный DNS и транспарентный прокси на одной соте.
+"""Профиль для ИИ на соте: гигиена egress, локальный DNS, опциональный прокси.
 
-Модуль только **строит** bash-скрипты и конфиги и умеет выполнить их по SSH.
-Применяется исключительно к соте с флагом `ai_exit` и только явной командой
-`scripts/deploy_ai_cell.py` — никакой автоматики в рантайме API.
+Строит bash-скрипты/конфиги и выполняет их по SSH. Точки входа:
+  * админка Улья — тумблер «Профиль для ИИ» (hygiene + dns; proxy/WARP не включаем);
+  * CLI `scripts/deploy_ai_cell.py` — те же фазы и proxy/rollback вручную.
 
 Инварианты (.cursor/rules/vpn-safety.mdc), которые здесь соблюдаются:
   * `wdtt.service` не рестартим и вообще не трогаем;
@@ -1110,6 +1110,48 @@ def run_on_cell(host: str, ssh_password: str, script: str, *, timeout: int = 900
         return code, out + (err or "")
     finally:
         client.close()
+
+
+def _require_phase_ok(phase: str, code: int, out: str) -> None:
+    if code != 0 or "=== done ===" not in out:
+        tail = (out or "")[-1200:]
+        raise RuntimeError(f"фаза {phase} не завершена (exit={code}): {tail}")
+
+
+def apply_ai_profile(
+    host: str,
+    ssh_password: str,
+    *,
+    queen_ip: str,
+    threat_filter_enabled: bool,
+    timeout: int = 900,
+) -> list[str]:
+    """Поставить профиль для ИИ: hygiene + dns. Proxy/WARP не включаем (Gemini на прямом IP)."""
+    host = _validate_ip(host, "host")
+    done: list[str] = []
+    for phase, kwargs in (
+        ("hygiene", {"queen_ip": queen_ip}),
+        ("dns", {"threat_filter_enabled": bool(threat_filter_enabled)}),
+    ):
+        script = build_phase_script(phase, **kwargs)
+        code, out = run_on_cell(host, ssh_password, script, timeout=timeout)
+        _require_phase_ok(phase, code, out)
+        done.append(phase)
+    return done
+
+
+def remove_ai_profile(
+    host: str,
+    ssh_password: str,
+    *,
+    timeout: int = 900,
+) -> list[str]:
+    """Снять профиль для ИИ (rollback all): прокси → DNS → открыть 9100."""
+    host = _validate_ip(host, "host")
+    script = build_phase_script("rollback", scope="all")
+    code, out = run_on_cell(host, ssh_password, script, timeout=timeout)
+    _require_phase_ok("rollback", code, out)
+    return ["rollback"]
 
 
 async def fetch_cell_egress(cell: Any, *, timeout: float = 40.0, with_http: bool = True) -> dict[str, Any]:

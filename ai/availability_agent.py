@@ -47,6 +47,7 @@ from ai.availability_model import (
     VantageAggregate,
     public_tcp_probe,
     select_external_probe_targets,
+    sort_targets_for_display,
 )
 from ai.availability_probes import (
     cell_net_probe,
@@ -114,8 +115,8 @@ async def _collect_targets(db) -> list[TargetSnapshot]:
         targets.append(snap)
 
     # Proxy-ноды сюда не берём: у них свой агент (`proxy_health_loop`), а их SOCKS-порт
-    # закрыт для Улья — «недоступен локально» тут означало бы ложную поломку сервиса.
-    return targets
+    # закрыт для Улья — «недоступен локально» тут читалось бы как ложная поломка сервиса.
+    return sort_targets_for_display(targets)
 
 
 def _main_tcp_port(snap: TargetSnapshot) -> tuple[int, str]:

@@ -248,6 +248,59 @@ def test_singbox_config_is_valid_json_in_script() -> None:
     json.loads(body)
 
 
+def test_apply_ai_profile_hygiene_then_dns_no_proxy() -> None:
+    import app.services.ai_exit_node as mod
+
+    seen: list[str] = []
+
+    def fake_run(host: str, ssh_password: str, script: str, *, timeout: int = 900):
+        assert host == "10.0.0.5"
+        if "unbound.conf.d/silent-ai.conf" in script:
+            seen.append("dns")
+        elif "QUEEN_IP=" in script or 'QUEEN_IP="' in script or f'"{QUEEN}"' in script:
+            seen.append("hygiene")
+        else:
+            seen.append("other")
+        assert "sing-box" not in script
+        assert not re.search(r"systemctl\s+(restart|stop)\s+wdtt", script)
+        return 0, 'echo "=== done ==="\n=== done ===\n'
+
+    orig = mod.run_on_cell
+    mod.run_on_cell = fake_run  # type: ignore[assignment]
+    try:
+        done = mod.apply_ai_profile(
+            "10.0.0.5",
+            "secret",
+            queen_ip=QUEEN,
+            threat_filter_enabled=False,
+        )
+        assert done == ["hygiene", "dns"]
+        assert seen == ["hygiene", "dns"]
+    finally:
+        mod.run_on_cell = orig
+
+
+def test_remove_ai_profile_runs_rollback() -> None:
+    import app.services.ai_exit_node as mod
+
+    calls = 0
+
+    def fake_run(host: str, ssh_password: str, script: str, *, timeout: int = 900):
+        nonlocal calls
+        calls += 1
+        assert "SCOPE=all" in script or 'SCOPE="all"' in script or "scope" in script.lower() or "rollback" in script.lower() or "ufw --force delete" in script or "9100" in script
+        assert not re.search(r"systemctl\s+(restart|stop)\s+wdtt", script)
+        return 0, "=== done ===\n"
+
+    orig = mod.run_on_cell
+    mod.run_on_cell = fake_run  # type: ignore[assignment]
+    try:
+        assert mod.remove_ai_profile("10.0.0.5", "secret") == ["rollback"]
+        assert calls == 1
+    finally:
+        mod.run_on_cell = orig
+
+
 if __name__ == "__main__":
     for fn in [v for k, v in sorted(globals().items()) if k.startswith("test_")]:
         fn()

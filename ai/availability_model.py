@@ -351,11 +351,40 @@ def public_tcp_probe(snap: TargetSnapshot) -> tuple[int, str] | None:
     return port, CHANNEL_AGENT_TCP
 
 
+def target_display_sort_key(snap: TargetSnapshot) -> tuple:
+    """Улей → Сота 1 → Сота 2 → … (по слоту serverN / номеру в имени).
+
+    Без сортировки SQLAlchemy отдаёт строки как попало — «сота3» оказывалась
+    выше Улья в админке.
+    """
+    if snap.role == TARGET_QUEEN:
+        return (0, 0, "")
+    slot_n = 9999
+    note = (snap.note or "").strip().lower()
+    if note.startswith("server"):
+        try:
+            slot_n = int(note[6:])
+        except ValueError:
+            slot_n = 9999
+    if slot_n >= 9999:
+        import re
+
+        m = re.search(r"(\d+)", snap.name or "")
+        if m:
+            # Сота N → server{N+1}; для порядка достаточно N
+            slot_n = int(m.group(1)) + 1
+    return (1, slot_n, snap.name or "")
+
+
+def sort_targets_for_display(targets: list[TargetSnapshot]) -> list[TargetSnapshot]:
+    return sorted(targets, key=target_display_sort_key)
+
+
 def select_external_probe_targets(
     targets: list[TargetSnapshot], max_targets: int
 ) -> tuple[list[TargetSnapshot], list[TargetSnapshot]]:
-    """Улей первым; снаружи только первые max_targets (бюджет check-host)."""
-    ordered = sorted(targets, key=lambda t: 0 if t.role == TARGET_QUEEN else 1)
+    """Улей первым, затем соты по номеру; снаружи только первые max_targets."""
+    ordered = sort_targets_for_display(targets)
     limit = max(1, int(max_targets))
     return ordered[:limit], ordered[limit:]
 

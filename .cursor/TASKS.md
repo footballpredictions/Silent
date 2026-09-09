@@ -15,7 +15,9 @@ Runbook: `backend/AI_EXIT_NODE.md`. Выход = WDTT + гигиена ноды.
 - [x] Ф0–Ф5 AI-exit (гигиена, DNS, fail-open proxy, egress-check)
 - [x] **Приёмка 2026-09-08:** веб и приложения нейросетей ок на прямом IP соты; ChatGPT app на HOSTKEY не входил. WARP включали — Google/Gemini отвалился, снова **выкл**.
 - [x] **Открыть всем + 1.0.165:** `admin_only` снят; слот только у клиентов 1.0.165+ (`X-App-Version`). 1.0.164 слот не видит. WDTT-spill на `ai_exit` не льёт.
-- [ ] PTR / geofeed / Harden сот 1–2 / План Б ASN
+- [x] **Harden сот 1–2** (2026-09-09): ufw active, TTL 64, IPv6 forward DROP, `silent-cell-hardening` enabled; wdtt/9100/tunnel не трогали
+- [x] **Профиль для ИИ из админки** (2026-09-09): тумблер ставит/снимает hygiene+dns на соте; без WARP; rename «ИИ-выход»→«Профиль для ИИ»
+- [ ] PTR / geofeed / План Б ASN
 - [ ] При необходимости резидентный SOCKS (`proxy --chain socks5://…`), не WARP
 
 ### Ложные переподключения VPN (Android, 2026-09-06)

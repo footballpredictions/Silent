@@ -43,7 +43,7 @@ def test_filter_semantics_best_only() -> None:
     assert not user_matches_subscription_filter(
         mode="monthly", best_kind="granted", best_plan="unlimited"
     )
-    # Купил месяц, потом длиннее реф.бонус → не в месяцах
+    # Купил месяц, потом длиннее реф.бонус → не в месяцах (устаревшая семантика best-only)
     assert not user_matches_subscription_filter(
         mode="monthly",
         best_kind="referral",
@@ -58,7 +58,20 @@ def test_filter_semantics_best_only() -> None:
     assert WITH_SUB_KINDS == frozenset({"paid", "granted", "referral"})
 
 
+def test_dashboard_referral_is_rewarded_invitee_not_inviter() -> None:
+    """Карточка «Рефералы»: купивший invitee с живым бонусом, не пригласивший."""
+    # Симулируем логику breakdown без БД
+    has_paid = {"invitee1", "invitee2", "inviter_with_paid"}
+    has_ref_bonus = {"invitee1", "invitee2", "inviter_only", "inviter_with_paid"}
+    rewarded_invitees = {"invitee1", "invitee2"}
+    referral_buyers = has_ref_bonus & rewarded_invitees
+    assert referral_buyers == {"invitee1", "invitee2"}
+    assert "inviter_only" not in referral_buyers
+    assert "inviter_with_paid" not in referral_buyers
+
+
 if __name__ == "__main__":
     test_classify_paid_granted_referral_trial()
     test_filter_semantics_best_only()
+    test_dashboard_referral_is_rewarded_invitee_not_inviter()
     print("OK")

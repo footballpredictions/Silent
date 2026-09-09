@@ -82,7 +82,7 @@ const SUB_FILTERS = [
   { value: 'granted', label: 'Выданные' },
   { value: 'inactive', label: 'Без подписки' },
   { value: 'unpaid', label: 'Оплата без подписки' },
-  { value: 'referrals', label: 'Рефералы' },
+  { value: 'referrals', label: 'Рефералы (+мес)' },
   { value: 'trial', label: 'Пробный период' },
 ] as const
 

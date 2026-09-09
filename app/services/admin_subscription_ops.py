@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from sqlalchemy import select, func, or_, and_, cast, String as SAString
+from sqlalchemy import select, func, or_, cast, String as SAString
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import User, Payment, Subscription
@@ -49,9 +49,12 @@ def _live_subscription_user_ids(
     return q.distinct()
 
 
-def _best_live_subscription_rows():
-    """Самый долгий живой план на пользователя (без test) — как на дашборде."""
-    return (
+def _user_ids_best_kind(*kinds: str):
+    """user_id по живым планам. paid = есть покупка; referral = купивший invitee с живым бонусом."""
+    from app.models import ReferralReward
+
+    now = datetime.utcnow()
+    live = (
         select(
             Subscription.user_id.label("uid"),
             Subscription.plan_type.label("plan_type"),
@@ -59,51 +62,74 @@ def _best_live_subscription_rows():
         )
         .where(
             Subscription.status == "active",
-            Subscription.expires_at > datetime.utcnow(),
+            Subscription.expires_at > now,
             Subscription.plan_type != TEST_PLAN,
         )
-        .distinct(Subscription.user_id)
-        .order_by(Subscription.user_id, Subscription.expires_at.desc())
         .subquery()
     )
-
-
-def _user_ids_best_kind(*kinds: str):
-    """user_id, у кого classify(best live) ∈ kinds — те же правила, что dashboard_subscription_breakdown."""
-    best = _best_live_subscription_rows()
     parts = []
     if "trial" in kinds:
-        parts.append(best.c.plan_type == TRIAL_PLAN)
-    if "referral" in kinds:
-        parts.append(best.c.plan_type == REFERRAL_PLAN)
+        parts.append(
+            select(live.c.uid).where(live.c.plan_type == TRIAL_PLAN).distinct()
+        )
     if "paid" in kinds:
         parts.append(
-            and_(
-                best.c.amount_paid > 0,
-                best.c.plan_type.notin_((TRIAL_PLAN, TEST_PLAN, REFERRAL_PLAN)),
+            select(live.c.uid)
+            .where(
+                live.c.amount_paid > 0,
+                live.c.plan_type.notin_((TRIAL_PLAN, TEST_PLAN, REFERRAL_PLAN)),
             )
+            .distinct()
         )
     if "granted" in kinds:
-        parts.append(
-            and_(
-                best.c.amount_paid == 0,
-                best.c.plan_type.notin_((TRIAL_PLAN, TEST_PLAN, REFERRAL_PLAN)),
+        # Выдача без живой покупки (иначе пользователь в paid)
+        paid_uids = (
+            select(live.c.uid)
+            .where(
+                live.c.amount_paid > 0,
+                live.c.plan_type.notin_((TRIAL_PLAN, TEST_PLAN, REFERRAL_PLAN)),
             )
+            .distinct()
+        )
+        parts.append(
+            select(live.c.uid)
+            .where(
+                live.c.amount_paid == 0,
+                live.c.plan_type.notin_((TRIAL_PLAN, TEST_PLAN, REFERRAL_PLAN)),
+                live.c.uid.notin_(paid_uids),
+            )
+            .distinct()
+        )
+    if "referral" in kinds:
+        # Купил по реф.ссылке (rewarded invitee) и ещё жив +1 мес бонуса
+        parts.append(
+            select(live.c.uid)
+            .where(live.c.plan_type == REFERRAL_PLAN)
+            .where(
+                live.c.uid.in_(
+                    select(ReferralReward.invitee_id).where(ReferralReward.status == "rewarded")
+                )
+            )
+            .distinct()
         )
     if not parts:
-        return select(best.c.uid).where(False)
-    return select(best.c.uid).where(or_(*parts))
+        return select(live.c.uid).where(False)
+    if len(parts) == 1:
+        return parts[0]
+    return parts[0].union(*parts[1:])
 
 
 def _user_ids_best_paid_plan(plan_type: str):
-    """Купившие: самый долгий живой план = этот plan_type и amount_paid > 0.
-
-    Старые покупки при живой выдаче/реферале/другом плане не попадают.
-    """
-    best = _best_live_subscription_rows()
-    return select(best.c.uid).where(
-        best.c.plan_type == plan_type,
-        best.c.amount_paid > 0,
+    """Купившие с живым этим планом (amount>0), даже если сверху длиннее реф.бонус."""
+    return (
+        select(Subscription.user_id)
+        .where(
+            Subscription.status == "active",
+            Subscription.expires_at > datetime.utcnow(),
+            Subscription.plan_type == plan_type,
+            Subscription.amount_paid > 0,
+        )
+        .distinct()
     )
 
 
@@ -300,8 +326,15 @@ async def list_subscription_users(
     mode = normalize_subscription_filter(filter_mode)
 
     if mode == "with_sub":
-        # Покупки + выданные админом + реф.бонус (без trial) — как paid+granted+referral на дашборде
-        base = base.where(User.id.in_(_user_ids_best_kind("paid", "granted", "referral")))
+        # Покупки + выданные + любой живой реф.бонус (invitee и пригласивший)
+        base = base.where(
+            or_(
+                User.id.in_(_user_ids_best_kind("paid", "granted", "referral")),
+                User.id.in_(
+                    _live_subscription_user_ids(plan_types=(REFERRAL_PLAN,))
+                ),
+            )
+        )
     elif mode == "monthly":
         # Только если сейчас (best) купленный 1 мес.; старые покупки / реф / выдача — нет
         base = base.where(User.id.in_(_user_ids_best_paid_plan("monthly")))
@@ -326,7 +359,7 @@ async def list_subscription_users(
         )
         base = base.where(User.id.in_(unpaid_subq))
     elif mode == "referrals":
-        # Только живой referral_bonus (best) — не invitee-флаг и не месяцы/выданные
+        # Купили по реф.ссылке и получили +1 мес (живой бонус) — не пригласившие
         base = base.where(User.id.in_(_user_ids_best_kind("referral")))
     elif mode == "trial":
         base = base.where(User.id.in_(_user_ids_best_kind("trial")))

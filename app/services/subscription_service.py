@@ -12,7 +12,7 @@ from app.config import settings
 from app.services.subscription_kinds import (
     TRIAL_PLAN,
     TEST_PLAN,
-    classify_subscription_kind,
+    REFERRAL_PLAN,
     admin_grant_expires_at,
 )
 
@@ -557,9 +557,17 @@ GRANTABLE_PLANS = frozenset({
 async def dashboard_subscription_breakdown(db: AsyncSession) -> dict[str, int]:
     """Живые подписки по пользователям: оплаченные / выданные / рефералы / пробный.
 
-    На пользователя — одна категория (самый долгий активный план, без test).
-    Реферальный бонус — отдельно от «Выданные» (как фильтр в Подписках).
+    Взаимоисключающие категории (для «всего»):
+      paid → есть живая покупка (amount>0), даже если сверху длиннее реф.бонус;
+      granted → выдача админа, без живой покупки;
+      trial → пробный;
+      leftover → только живой referral_bonus без покупки (обычно бонус пригласившему).
+
+    Карточка «Рефералы» — отдельно: invitee с status=rewarded и живым referral_bonus
+    (купил по ссылке и получил +1 мес). Не путать с регистрацией по ссылке без оплаты
+    и не считать пригласивших, которым начислили бонус за чужую покупку.
     """
+    from app.models import ReferralReward
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
 
     now = datetime.utcnow()
@@ -579,28 +587,55 @@ async def dashboard_subscription_breakdown(db: AsyncSession) -> dict[str, int]:
         )
         .order_by(Subscription.user_id, Subscription.expires_at.desc())
     )
-    best: dict = {}
-    for user_id, plan_type, amount_paid, _expires in result.all():
-        if user_id in best:
-            continue
-        best[user_id] = classify_subscription_kind(plan_type, amount_paid)
 
-    paid = granted = referral = trial = 0
-    for kind in best.values():
-        if kind == "paid":
+    # user_id → flags from all live rows
+    has_paid: set = set()
+    has_granted: set = set()
+    has_trial: set = set()
+    has_ref_bonus: set = set()
+    for user_id, plan_type, amount_paid, _expires in result.all():
+        plan = (plan_type or "").strip().lower()
+        amount = float(amount_paid or 0)
+        if plan == TRIAL_PLAN:
+            has_trial.add(user_id)
+        elif plan == REFERRAL_PLAN:
+            has_ref_bonus.add(user_id)
+        elif amount > 0:
+            has_paid.add(user_id)
+        else:
+            has_granted.add(user_id)
+
+    rewarded_invitees = set(
+        (
+            await db.execute(
+                select(ReferralReward.invitee_id).where(ReferralReward.status == "rewarded")
+            )
+        ).scalars().all()
+    )
+    # Карточка: купили по реф.ссылке и ещё жив +1 мес бонуса
+    referral_buyers = has_ref_bonus & rewarded_invitees
+
+    paid = granted = trial = leftover = 0
+    seen = has_paid | has_granted | has_trial | has_ref_bonus
+    for uid in seen:
+        if uid in has_paid:
             paid += 1
-        elif kind == "granted":
+        elif uid in has_granted:
             granted += 1
-        elif kind == "referral":
-            referral += 1
-        elif kind == "trial":
+        elif uid in has_trial:
             trial += 1
+        elif uid in has_ref_bonus:
+            leftover += 1
+
     return {
         "paid": paid,
         "granted": granted,
-        "referral": referral,
+        # Дашборд / фильтр «Рефералы»: только купившие invitee с живым бонусом
+        "referral": len(referral_buyers),
         "trial": trial,
-        "total": paid + granted + referral + trial,
+        # leftover (бонус пригласившему без своей покупки) входит в total, не в карточку
+        "referral_leftover": leftover,
+        "total": paid + granted + trial + leftover,
     }
 
 

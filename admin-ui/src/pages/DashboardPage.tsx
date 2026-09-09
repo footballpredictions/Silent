@@ -631,7 +631,7 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
               <span className="text-2xl font-bold tabular-nums">{stats.users.subscriptions_granted ?? 0}</span>
             </div>
             <div className="flex items-baseline justify-between gap-3">
-              <span className="text-[#aaa] text-sm" title="Живой referral_bonus">Рефералы</span>
+              <span className="text-[#aaa] text-sm" title="Купили по реферальной ссылке и получили +1 месяц (бонус ещё жив). Не регистрации без оплаты и не бонус пригласившему.">Рефералы</span>
               <span className="text-2xl font-bold tabular-nums">{stats.users.subscriptions_referral ?? 0}</span>
             </div>
             <div className="flex items-baseline justify-between gap-3">

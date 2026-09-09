@@ -63,11 +63,11 @@ interface CodeLookup {
 
 const PLANS = [
   { type: 'three_days', label: '3 дня', days: 3 },
-  { type: 'monthly', label: 'Месяц', days: 30 },
-  { type: 'two_months', label: '2 месяца', days: 60 },
-  { type: 'quarterly', label: '3 месяца', days: 90 },
-  { type: 'half_year', label: 'Полгода', days: 180 },
-  { type: 'yearly', label: 'Год', days: 365 },
+  { type: 'monthly', label: 'Месяц', days: null },
+  { type: 'two_months', label: '2 месяца', days: null },
+  { type: 'quarterly', label: '3 месяца', days: null },
+  { type: 'half_year', label: 'Полгода', days: null },
+  { type: 'yearly', label: 'Год', days: null },
   { type: 'unlimited', label: '∞', days: null },
 ] as const
 

@@ -13,7 +13,7 @@ from app.services.subscription_kinds import (
     TRIAL_PLAN,
     TEST_PLAN,
     classify_subscription_kind,
-    plan_expires_at,
+    admin_grant_expires_at,
 )
 
 logger = logging.getLogger(__name__)
@@ -609,7 +609,7 @@ async def grant_manual_subscription(
     user: User,
     plan_type: str,
 ) -> Subscription:
-    """Admin grant: cancel active subs, extend from current expiry or now."""
+    """Admin grant: снять все active и выдать план от сейчас (без плюсования хвоста)."""
     if plan_type not in GRANTABLE_PLANS:
         raise HTTPException(
             status_code=400,
@@ -625,11 +625,7 @@ async def grant_manual_subscription(
         .where(Subscription.user_id == user.id, Subscription.status == "active")
         .order_by(Subscription.expires_at.desc())
     )
-    # For unlimited always start from now (no stacking needed for ~100 years)
-    base = now if plan_type == "unlimited" else now
     for existing in active_result.scalars().all():
-        if plan_type != "unlimited" and existing.is_active and existing.expires_at > base:
-            base = existing.expires_at
         existing.status = "cancelled"
 
     subscription = Subscription(
@@ -638,7 +634,7 @@ async def grant_manual_subscription(
         status="active",
         amount_paid=0,
         started_at=now,
-        expires_at=plan_expires_at(base, plan_type),
+        expires_at=admin_grant_expires_at(now, plan_type),
     )
     db.add(subscription)
     await db.commit()
@@ -661,9 +657,9 @@ async def revoke_subscription(db: AsyncSession, user: User) -> int:
     )
     cancelled = 0
     for sub in active_result.scalars().all():
-        if sub.is_active:
-            sub.status = "cancelled"
-            cancelled += 1
+        # status=active снимаем всегда (и просроченные «зомби»), не только is_active
+        sub.status = "cancelled"
+        cancelled += 1
     user.updated_at = datetime.utcnow()
     devices = await db.execute(
         select(Device).where(Device.user_id == user.id, Device.is_connected == True)  # noqa: E712

@@ -114,7 +114,7 @@ def paid_subscription_stack_base(
     now: datetime,
     active_plan_expires: list[tuple[str, datetime | None]],
 ) -> datetime:
-    """База для новой оплаченной/выданной подписки: max(now, expires платных), без referral/trial/test."""
+    """База для новой оплаченной подписки: max(now, expires платных), без referral/trial/test."""
     base = now
     for plan_type, expires_at in active_plan_expires:
         plan = (plan_type or "").strip().lower()
@@ -125,6 +125,18 @@ def paid_subscription_stack_base(
             base = exp
     return base
 
+
+def admin_grant_expires_at(
+    now: datetime,
+    plan_type: str,
+    _active_plan_expires: list[tuple[str, datetime | None]] | None = None,
+) -> datetime:
+    """Срок при выдаче админом: всегда от now, хвост старого плана/рефа/trial не плюсуем.
+
+    Оплата (YuMoney) по-прежнему стекает платное→платное через paid_subscription_stack_base.
+    Админские чипы «Месяц/Год» = назначить план с сегодня, а не продлить поверх.
+    """
+    return plan_expires_at(now, plan_type)
 
 def suggest_calendar_expires_fix(
     *,

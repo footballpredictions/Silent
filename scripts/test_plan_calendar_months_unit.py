@@ -167,6 +167,30 @@ class CalendarMonthsTests(unittest.TestCase):
         )
         self.assertEqual(base, existing_paid)
 
+    def test_admin_grant_year_ignores_leftover_tail(self):
+        """После отзыва / смены плана админ выдаёт год от now, не хвост месяца/рефа."""
+        from app.services.subscription_kinds import admin_grant_expires_at
+
+        now = datetime(2026, 9, 9, 18, 0, 0)
+        leftover = [
+            ("monthly", datetime(2026, 10, 9, 18, 0, 0)),
+            ("referral_bonus", datetime(2026, 10, 15, 12, 0, 0)),
+        ]
+        # старый баг: base=хвост → до 2027-10-09
+        old = plan_expires_at(datetime(2026, 10, 9, 18, 0, 0), "yearly")
+        self.assertEqual(old.date(), datetime(2027, 10, 9).date())
+        got = admin_grant_expires_at(now, "yearly", leftover)
+        self.assertEqual(got, datetime(2027, 9, 9, 18, 0, 0))
+
+    def test_admin_grant_same_as_clean_now(self):
+        from app.services.subscription_kinds import admin_grant_expires_at
+
+        now = datetime(2026, 9, 9, 12, 0, 0)
+        self.assertEqual(
+            admin_grant_expires_at(now, "yearly", [("quarterly", datetime(2026, 12, 1))]),
+            plan_expires_at(now, "yearly"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

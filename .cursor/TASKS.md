@@ -35,6 +35,18 @@ Runbook: `backend/AI_EXIT_NODE.md`. Выход = WDTT + гигиена ноды.
   - [x] Собрать установщик `.deb` (`Silent VPN Setup 1.0.163.deb`) — двойной клик открывает установку
   - [x] Деплой backend (`platform=linux` в updates) — 2026-08-29 `deploy_stable.py`: health 200 (~42 мс), `wdtt` active, kick 0; админка «PC (Linux)»
   - [x] **Права как Windows:** пароль один раз при установке `.deb`, тумблер без pkexec (systemd helper + socket). Новый `Silent VPN Setup 1.0.163.deb` — переустановить
+  - [x] **Админка Обновления = PC/Android:** скачать / собрать / стоп / авто 00:00 / удалить + `build_linux.sh` + Docker-образы на Улье — 2026-09-10
+  - [x] **Лендинг кнопка Linux** + publish GitHub `.deb` → `releases.json`/`index.html` — 2026-09-10
+
+### Mac-клиент (2026-09-10)
+
+- [ ] **Mac = тот же PC Electron:** `wireguardDarwin.js` + LaunchDaemon helper, `wdtt`/`wireguard-go` darwin-arm64, OTA `platform=mac`, админка «PC (Mac)»
+  - [x] Код helper + Darwin WG + wiring main/ota/preload + тесты
+  - [x] Кросс-сборка бинарников с Windows (`build-mac.ps1`) → `resources/mac/`
+  - [x] Backend upload/check `platform=mac` + админка (загрузка .dmg; сборка на Улье — нет)
+  - [ ] **Собрать `.dmg` на MacBook:** `./build-mac.sh` → `build-mac/Silent VPN Setup 1.0.165.dmg`
+  - [ ] Приёмка VPN на Mac (helper password once, тумблер, bootstrap)
+  - [ ] Лендинг кнопка Mac (по желанию)
 
 ### Чистка olcrtc и установка на ТВ (2026-08-23)
 

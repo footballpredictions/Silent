@@ -30,11 +30,13 @@ interface BuildStatus {
   nightly_date: string | null
   nightly_pc_enabled?: boolean
   nightly_android_enabled?: boolean
+  nightly_linux_enabled?: boolean
 }
 
 interface BuildConfig {
   nightly_pc_enabled: boolean
   nightly_android_enabled: boolean
+  nightly_linux_enabled: boolean
 }
 
 function formatSize(bytes: number): string {
@@ -56,6 +58,7 @@ const platformLabel: Record<string, string> = {
   pc: 'PC (Windows)',
   android: 'Android',
   linux: 'PC (Linux)',
+  mac: 'PC (Mac)',
 }
 
 function downloadHref(item: UpdateInfo): string | null {
@@ -80,13 +83,20 @@ export default function UpdatesPage({ token }: { token: string }) {
   const pcRef = useRef<HTMLInputElement>(null)
   const androidRef = useRef<HTMLInputElement>(null)
   const linuxRef = useRef<HTMLInputElement>(null)
+  const macRef = useRef<HTMLInputElement>(null)
 
-  const fileRefFor = (platform: string) => (
-    platform === 'pc' ? pcRef : platform === 'linux' ? linuxRef : androidRef
-  )
-  const acceptFor = (platform: string) => (
-    platform === 'pc' ? '.exe,.msi' : platform === 'linux' ? '.AppImage,.appimage,.deb' : '.apk'
-  )
+  const fileRefFor = (platform: string) => {
+    if (platform === 'pc') return pcRef
+    if (platform === 'linux') return linuxRef
+    if (platform === 'mac') return macRef
+    return androidRef
+  }
+  const acceptFor = (platform: string) => {
+    if (platform === 'pc') return '.exe,.msi'
+    if (platform === 'linux') return '.AppImage,.appimage,.deb'
+    if (platform === 'mac') return '.dmg,.zip,.pkg'
+    return '.apk'
+  }
 
   const headers = { Authorization: `Bearer ${token}` }
 
@@ -236,17 +246,21 @@ export default function UpdatesPage({ token }: { token: string }) {
     }
   }
 
-  const setNightlyFlag = async (platform: 'pc' | 'android', enabled: boolean) => {
+  const setNightlyFlag = async (platform: 'pc' | 'android' | 'linux', enabled: boolean) => {
     const prev = buildConfig
     const next: BuildConfig = {
       nightly_pc_enabled: platform === 'pc' ? enabled : !!prev?.nightly_pc_enabled,
       nightly_android_enabled: platform === 'android' ? enabled : !!prev?.nightly_android_enabled,
+      nightly_linux_enabled: platform === 'linux' ? enabled : !!prev?.nightly_linux_enabled,
     }
     setBuildConfig(next)
     setSavingConfig(true)
     setMsg('')
     try {
-      const body = platform === 'pc' ? { pc_enabled: enabled } : { android_enabled: enabled }
+      const body =
+        platform === 'pc' ? { pc_enabled: enabled }
+        : platform === 'android' ? { android_enabled: enabled }
+        : { linux_enabled: enabled }
       const res = await fetch('/api/admin/updates/build-config', {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
@@ -401,12 +415,17 @@ export default function UpdatesPage({ token }: { token: string }) {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {item.platform !== 'linux' && (
+                  {item.platform !== 'mac' && (
                   <button
                     type="button"
-                    onClick={() => setNightlyFlag(item.platform as 'pc' | 'android', !(
-                      item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled : !!buildConfig?.nightly_android_enabled
-                    ))}
+                    onClick={() => setNightlyFlag(
+                      item.platform as 'pc' | 'android' | 'linux',
+                      !(
+                        item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled
+                        : item.platform === 'android' ? !!buildConfig?.nightly_android_enabled
+                        : !!buildConfig?.nightly_linux_enabled
+                      ),
+                    )}
                     disabled={savingConfig}
                     title="Включить/выключить ночную автосборку платформы"
                     className="inline-flex items-center gap-2 text-[#ccc] disabled:opacity-50"
@@ -414,25 +433,41 @@ export default function UpdatesPage({ token }: { token: string }) {
                     <span className="text-xs font-medium">Авто 00:00</span>
                     <span
                       className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${
-                        (item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled : !!buildConfig?.nightly_android_enabled)
+                        (
+                          item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled
+                          : item.platform === 'android' ? !!buildConfig?.nightly_android_enabled
+                          : !!buildConfig?.nightly_linux_enabled
+                        )
                           ? 'bg-purple-500'
                           : 'bg-[#333]'
                       }`}
                     >
                       <span
                         className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
-                          (item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled : !!buildConfig?.nightly_android_enabled)
+                          (
+                            item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled
+                            : item.platform === 'android' ? !!buildConfig?.nightly_android_enabled
+                            : !!buildConfig?.nightly_linux_enabled
+                          )
                             ? 'translate-x-4'
                             : 'translate-x-0.5'
                         }`}
                       />
                     </span>
                     <span className={`text-[11px] ${
-                      (item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled : !!buildConfig?.nightly_android_enabled)
+                      (
+                        item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled
+                        : item.platform === 'android' ? !!buildConfig?.nightly_android_enabled
+                        : !!buildConfig?.nightly_linux_enabled
+                      )
                         ? 'text-purple-300'
                         : 'text-[#666]'
                     }`}>
-                      {(item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled : !!buildConfig?.nightly_android_enabled) ? 'ON' : 'OFF'}
+                      {(
+                        item.platform === 'pc' ? !!buildConfig?.nightly_pc_enabled
+                        : item.platform === 'android' ? !!buildConfig?.nightly_android_enabled
+                        : !!buildConfig?.nightly_linux_enabled
+                      ) ? 'ON' : 'OFF'}
                     </span>
                   </button>
                   )}
@@ -487,7 +522,7 @@ export default function UpdatesPage({ token }: { token: string }) {
                   <Github className="w-4 h-4" />
                   {publishingGithub === item.platform ? 'Публикация…' : 'Опубликовать на GitHub'}
                 </button>
-                {item.platform !== 'linux' && (
+                {item.platform !== 'mac' && (
                 <>
                 <button
                   disabled={building === item.platform || buildStatus?.running}
@@ -517,6 +552,9 @@ export default function UpdatesPage({ token }: { token: string }) {
                     : 'Остановить сборку'}
                 </button>
                 </>
+                )}
+                {item.platform === 'mac' && (
+                  <span className="text-xs text-[#666] self-center">Сборка .dmg — только на MacBook (`./build-mac.sh`)</span>
                 )}
               </div>
             </div>

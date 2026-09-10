@@ -4,6 +4,55 @@
 > Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
 > сначала читать его, потом код.
 
+## Последние изменения (Mac-клиент prep 2026-09-10)
+
+Тот же Electron `pc/`, не iOS. Код: `wireguardDarwin.js`, helper LaunchDaemon,
+OTA `platform=mac`, админка «PC (Mac)» (загрузка `.dmg`). С Windows собраны
+darwin-arm64 `wdtt-client` + `wireguard-go` в `resources/mac/` (`build-mac.ps1`).
+**`.dmg` только на MacBook:** `./build-mac.sh` → `build-mac/Silent VPN Setup 1.0.165.dmg`.
+Тесты mac/linux 20 ok. Backend/admin ещё не деплоили.
+
+## Последние изменения (лендинг: сидящий Tux 2026-09-10)
+
+Иконка Linux — заливка сидящего пингвина (брюшко, клюв, глаза, ласты), не outline.
+Push `1af0e91`. Ctrl+F5 если кэш.
+
+## Последние изменения (лендинг: Tux у Linux 2026-09-10)
+
+Иконка карточки Linux: outline-пингвин вместо «монитора». Push `f95b2af`.
+
+## Последние изменения (лендинг: кнопка Linux 2026-09-10)
+
+На silentvpn3.github.io под Windows/Android — центрированная карточка **Linux**
+(`.deb`). JS/API/`releases.json`/`INLINE_FALLBACK` знают `platform=linux`.
+Публикация из админки патчит `linuxDownload` + asset `Silent.VPN.Setup.*.deb`.
+Push landing `e2ff66b`; backend `deploy_stable.py` (github_release_service):
+health ~38 мс, `wdtt` active, kick 0. После «Опубликовать на GitHub» для Linux
+ссылка на сайте заработает (до публикации — 404 на asset).
+
+## Последние изменения (Linux .deb 1.0.165 локально 2026-09-10)
+
+Production `.deb` без Debug Log: bootstrap `4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY`.
+- `pc\build-linux\Silent VPN Setup 1.0.165.deb` (~113 МБ)
+- копия: `pc\releases\Silent VPN Setup 1.0.165.deb`
+Залить вручную в админке → Обновления → PC (Linux).
+
+## Последние изменения (админ: Linux OTA build 2026-09-10)
+
+В «Обновления» у **PC (Linux)** те же кнопки, что у Windows/Android: Скачать,
+Собрать релиз, Остановить, Авто 00:00 (opt-in), Удалить. Build-agent:
+`build_linux.sh` (ветка `pc` → workspace/linux → `.deb`), GitHub asset `.deb`.
+На Улье: `install_linux_build_packages.sh` + образы `electronuserland/builder:20`
+и `golang:1.24-bookworm`. Деплой `deploy_build_agent.py` + `deploy_stable.py`:
+health OK (~44 мс), `wdtt` active, `queen_wg_kick_20s=0`. Hard-refresh админки.
+
+## Последние изменения (админ: пагинация в начало/конец 2026-09-10)
+
+В Подписках, Пользователях и дашборде (список VK-хешей): стрелки «в начало» /
+«в конец» + поле номера страницы (Enter/blur). Общий `ListPagination`.
+Деплой `deploy_stable.py`: health OK (~39 мс), `wdtt` active, `queen_wg_kick_20s=0`.
+Hard-refresh админки (Ctrl+F5), если кэш старый.
+
 ## Последние изменения (дашборд: Рефералы = купившие 2026-09-09)
 
 Карточка «Рефералы» считала всех с живым `referral_bonus` (10) — туда
@@ -868,7 +917,7 @@ Occupancy **1 клиент = 1 комната** (TM+WB `max_clients=1`, прод
 | Скрипты | `backend/build-agent/` (`sync_repo.sh`, `build_android.sh`, `build_pc.sh`) |
 | Сервис | `app/services/build_agent_service.py` |
 | Планировщик | `ai/release_build_scheduler.py` |
-| Админка | Обновления → «Собрать релиз в update» (PC / Android) |
+| Админка | Обновления → «Собрать релиз в update» (PC / Android / Linux) |
 | API | `POST /api/admin/updates/build/{platform}`, `GET …/build-status` |
 
 **Git:** перед сборкой клон/обновление в `build-agent/workspace/{pc,android}` — `git fetch`; `reset --hard` только если на remote есть новые коммиты.

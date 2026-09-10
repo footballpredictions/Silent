@@ -36,15 +36,25 @@ def main() -> None:
 
     script = f"""#!/bin/bash
 set -e
-mkdir -p /opt/silent-vpn/backend/update/pc /opt/silent-vpn/backend/update/android
+mkdir -p /opt/silent-vpn/backend/update/pc \
+  /opt/silent-vpn/backend/update/android \
+  /opt/silent-vpn/backend/update/linux \
+  {REMOTE}/workspace/linux
 chmod +x {REMOTE}/*.sh 2>/dev/null || true
+sed -i 's/\\r$//' {REMOTE}/*.sh 2>/dev/null || true
 ls -la {REMOTE}
 """
     sftp2 = client.open_sftp()
     sftp2.putfo(io.BytesIO(script.encode()), "/tmp/setup_build_agent.sh")
     sftp2.close()
     run(client, "bash /tmp/setup_build_agent.sh 2>&1", timeout=60)
-    print("Pre-pull PC builder image (may take a few minutes)...")
+    print("Install Linux build packages + pull Docker images (may take several minutes)...")
+    run(
+        client,
+        f"bash {REMOTE}/install_linux_build_packages.sh 2>&1 | tail -40",
+        timeout=1800,
+    )
+    print("Pre-pull PC Wine builder image...")
     run(client, "docker pull electronuserland/builder:wine 2>&1 | tail -5", timeout=900)
     client.close()
     print("Done. Mount in docker-compose: ./build-agent -> /app/build-agent")

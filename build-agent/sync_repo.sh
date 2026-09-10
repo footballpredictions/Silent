@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Синхронизация клона pc/android перед сборкой (без локальных правок).
+# Синхронизация клона pc/android/linux перед сборкой (без локальных правок).
+# linux → та же ветка pc (один Electron-клиент), каталог workspace/linux.
 set -euo pipefail
 
-PLATFORM="${1:?platform required: pc|android}"
-BRANCH="$PLATFORM"
+PLATFORM="${1:?platform required: pc|android|linux}"
+if [[ "$PLATFORM" == "linux" ]]; then
+  BRANCH="pc"
+else
+  BRANCH="$PLATFORM"
+fi
 REPO_URL="${BUILD_AGENT_GIT_URL:-https://github.com/footballpredictions/Silent.git}"
 ROOT="${BUILD_AGENT_ROOT:-/app/build-agent}"
 WORKSPACE="${BUILD_AGENT_WORKSPACE:-$ROOT/workspace}"

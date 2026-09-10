@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Cpu, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight, ChevronLeft, Activity, Server } from 'lucide-react'
+import { Cpu, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight, Activity, Server } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
 import SortSelect from '../components/SortSelect'
+import ListPagination from '../components/ListPagination'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
 const DASHBOARD_USER_SORT_KEY = 'admin.dashboard.userSort'
@@ -479,28 +480,13 @@ function VkHashesCard({
         })}
       </div>
 
-      {!userSearch.trim() && pages > 1 && (
-        <div className="flex items-center justify-between gap-3 mt-4">
-          <button
-            type="button"
-            disabled={safePage <= 1}
-            onClick={() => setPage(p => Math.max(1, p - 1))}
-            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-xs text-[#ccc] disabled:opacity-40 hover:border-[#444] cursor-pointer"
-          >
-            <ChevronLeft className="w-3.5 h-3.5" /> Назад
-          </button>
-          <span className="text-xs text-[#666]">
-            {safePage} / {pages}
-          </span>
-          <button
-            type="button"
-            disabled={safePage >= pages}
-            onClick={() => setPage(p => Math.min(pages, p + 1))}
-            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-xs text-[#ccc] disabled:opacity-40 hover:border-[#444] cursor-pointer"
-          >
-            Вперёд <ChevronRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
+      {!userSearch.trim() && (
+        <ListPagination
+          page={safePage}
+          pages={pages}
+          onPageChange={setPage}
+          className="mt-4"
+        />
       )}
     </div>
   )

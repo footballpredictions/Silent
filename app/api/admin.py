@@ -1613,6 +1613,7 @@ class PromoCreateRequest(BaseModel):
 class BuildConfigRequest(BaseModel):
     pc_enabled: Optional[bool] = None
     android_enabled: Optional[bool] = None
+    linux_enabled: Optional[bool] = None
 
 
 @router.post("/promo")
@@ -1779,7 +1780,7 @@ async def list_updates(_: bool = Depends(get_admin_credentials)):
 
 @router.post("/updates/upload")
 async def upload_update(
-    platform: str = Form(..., pattern="^(pc|android|linux)$"),
+    platform: str = Form(..., pattern="^(pc|android|linux|mac)$"),
     version: Optional[str] = Form(None),
     file: UploadFile = File(...),
     _: bool = Depends(get_admin_credentials),
@@ -1791,6 +1792,8 @@ async def upload_update(
         raise HTTPException(status_code=400, detail="PC update must be .exe or .msi")
     if platform == "linux" and ext not in (".appimage", ".deb"):
         raise HTTPException(status_code=400, detail="Linux update must be .AppImage or .deb")
+    if platform == "mac" and ext not in (".dmg", ".zip", ".pkg"):
+        raise HTTPException(status_code=400, detail="Mac update must be .dmg, .zip or .pkg")
     if platform == "android" and ext != ".apk":
         raise HTTPException(status_code=400, detail="Android update must be .apk")
 
@@ -1857,6 +1860,7 @@ async def updates_set_build_config(
         db,
         pc_enabled=req.pc_enabled,
         android_enabled=req.android_enabled,
+        linux_enabled=req.linux_enabled,
     )
 
 
@@ -1927,6 +1931,8 @@ def _platform_label(platform: str) -> str:
         return "PC (Windows)"
     if platform == "linux":
         return "PC (Linux)"
+    if platform == "mac":
+        return "PC (Mac)"
     return "Android"
 
 

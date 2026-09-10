@@ -45,7 +45,13 @@ class BuildAgentBusy(BuildAgentError):
 def _versioned_filename(version: str, original: str) -> str:
     base, ext = os.path.splitext(original)
     if not ext:
-        ext = ".apk" if original.endswith("apk") else ".exe"
+        lower = original.lower()
+        if lower.endswith("apk"):
+            ext = ".apk"
+        elif lower.endswith("deb") or "linux" in lower:
+            ext = ".deb"
+        else:
+            ext = ".exe"
     safe = version.strip()
     if not safe:
         return original
@@ -116,6 +122,7 @@ async def get_build_status(db: AsyncSession) -> dict:
     running = _BUILD_RUNNING
     nightly_pc = await _setting(db, "build_agent_nightly_pc_enabled")
     nightly_android = await _setting(db, "build_agent_nightly_android_enabled")
+    nightly_linux = await _setting(db, "build_agent_nightly_linux_enabled")
     return {
         "running": running,
         "stop_requested": _STOP_REQUESTED,
@@ -128,6 +135,8 @@ async def get_build_status(db: AsyncSession) -> dict:
         "nightly_date": await _setting(db, "build_agent_nightly_date"),
         "nightly_pc_enabled": nightly_pc != "0",
         "nightly_android_enabled": nightly_android != "0",
+        # Linux opt-in: без явного "1" ночная сборка не трогает linux
+        "nightly_linux_enabled": nightly_linux == "1",
     }
 
 
@@ -136,14 +145,18 @@ async def set_nightly_build_flags(
     *,
     pc_enabled: Optional[bool] = None,
     android_enabled: Optional[bool] = None,
+    linux_enabled: Optional[bool] = None,
 ) -> dict:
     if pc_enabled is not None:
         await _set_setting(db, "build_agent_nightly_pc_enabled", "1" if pc_enabled else "0")
     if android_enabled is not None:
         await _set_setting(db, "build_agent_nightly_android_enabled", "1" if android_enabled else "0")
+    if linux_enabled is not None:
+        await _set_setting(db, "build_agent_nightly_linux_enabled", "1" if linux_enabled else "0")
     return {
         "nightly_pc_enabled": (await _setting(db, "build_agent_nightly_pc_enabled")) != "0",
         "nightly_android_enabled": (await _setting(db, "build_agent_nightly_android_enabled")) != "0",
+        "nightly_linux_enabled": (await _setting(db, "build_agent_nightly_linux_enabled")) == "1",
     }
 
 
@@ -181,6 +194,7 @@ async def create_bootstrap_hash(db: AsyncSession) -> str:
 
 # Без wdtt-client.exe NSIS ~79 MB; полный установщик ~83 MB (см. build-agent/build_pc.sh).
 _PC_MIN_INSTALLER_BYTES = int(os.environ.get("PC_MIN_INSTALLER_BYTES", "81000000"))
+_LINUX_MIN_DEB_BYTES = int(os.environ.get("LINUX_MIN_DEB_BYTES", "50000000"))
 
 
 def _verify_pc_installer(artifact_path: str) -> None:
@@ -190,6 +204,21 @@ def _verify_pc_installer(artifact_path: str) -> None:
             f"PC installer too small ({size} bytes): wdtt-client.exe likely missing "
             f"(expected >= {_PC_MIN_INSTALLER_BYTES})"
         )
+
+
+def _verify_linux_deb(artifact_path: str) -> None:
+    name = os.path.basename(artifact_path).lower()
+    if not name.endswith(".deb") or not os.path.isfile(artifact_path):
+        raise BuildAgentError(f"Linux artifact is not a .deb file: {artifact_path!r}")
+    size = os.path.getsize(artifact_path)
+    if size < _LINUX_MIN_DEB_BYTES:
+        raise BuildAgentError(
+            f"Linux .deb too small ({size} bytes): expected >= {_LINUX_MIN_DEB_BYTES}"
+        )
+    with open(artifact_path, "rb") as fh:
+        magic = fh.read(8)
+    if not magic.startswith(b"!<arch>\n"):
+        raise BuildAgentError(f"Linux .deb has invalid ar magic: {artifact_path!r}")
 
 
 def _verify_android_apk(artifact_path: str) -> None:
@@ -299,6 +328,17 @@ def _workspace_artifact_paths(platform: str) -> list[Path]:
         paths.extend(repo.glob("build-release-v*"))
         paths.extend(repo.glob("build-output-v*"))
         paths.extend(repo.glob("build-fresh"))
+    elif platform == "linux":
+        paths.extend([
+            repo / "node_modules",
+            repo / "dist",
+            repo / "build-linux",
+            repo / "build-release-agent",
+            repo / "build-output",
+        ])
+        paths.extend(repo.glob("build-release-v*"))
+        paths.extend(repo.glob("build-output-v*"))
+        paths.extend(repo.glob("build-fresh"))
     elif platform == "android":
         paths.extend([
             repo / "app" / "build",
@@ -402,6 +442,14 @@ def _run_shell(script: Path, platform: str, bootstrap_hash: str, timeout: int) -
             exes = sorted(out_dir.glob("*.exe"), key=os.path.getmtime, reverse=True)
             if exes:
                 artifact = str(exes[0])
+    if artifact and not os.path.isfile(artifact) and platform == "linux":
+        out_dir = _WORKSPACE / "linux" / "build-linux"
+        if out_dir.is_dir():
+            debs = sorted(out_dir.glob("Silent VPN Setup *.deb"), key=os.path.getmtime, reverse=True)
+            if not debs:
+                debs = sorted(out_dir.glob("*.deb"), key=os.path.getmtime, reverse=True)
+            if debs:
+                artifact = str(debs[0])
     if not artifact or not os.path.isfile(artifact):
         raise BuildAgentError(f"Artifact path not found in build output: {artifact!r}")
     return artifact
@@ -423,7 +471,7 @@ async def build_platform(
     """Sync repo, embed new bootstrap hash, build release, publish to update/."""
     global _BUILD_RUNNING, _STOP_REQUESTED
 
-    if platform not in ("pc", "android"):
+    if platform not in ("pc", "android", "linux"):
         raise BuildAgentError(f"Unknown platform: {platform}")
 
     if _BUILD_LOCK.locked() and not force:
@@ -465,9 +513,14 @@ async def build_platform(
             )
 
             repo = _WORKSPACE / platform
-            version = _read_pc_version(repo) if platform == "pc" else _read_android_version(repo)
+            if platform == "android":
+                version = _read_android_version(repo)
+            else:
+                version = _read_pc_version(repo)
             if platform == "pc":
                 _verify_pc_installer(artifact_path)
+            elif platform == "linux":
+                _verify_linux_deb(artifact_path)
             elif platform == "android":
                 _verify_android_apk(artifact_path)
             info = _publish(platform, artifact_path, version)
@@ -517,7 +570,7 @@ async def build_platform(
 
 
 async def run_nightly_release_builds(db: AsyncSession) -> None:
-    """00:00 MSK: one bootstrap hash, rebuild PC + Android (version unchanged)."""
+    """00:00 MSK: one bootstrap hash, rebuild enabled platforms (version unchanged)."""
     from app.services.vk_agent_auth import is_agent_enabled, is_flood_cooldown
 
     if not await is_agent_enabled(db):
@@ -532,18 +585,21 @@ async def run_nightly_release_builds(db: AsyncSession) -> None:
     bootstrap_hash = await create_bootstrap_hash(db)
     await set_build_log(
         db,
-        "Ночная сборка: новый bootstrap-хеш, PC + Android…",
+        "Ночная сборка: новый bootstrap-хеш, PC + Android + Linux…",
         status="running",
         bootstrap_hash=bootstrap_hash,
     )
 
     pc_enabled = (await _setting(db, "build_agent_nightly_pc_enabled")) != "0"
     android_enabled = (await _setting(db, "build_agent_nightly_android_enabled")) != "0"
+    linux_enabled = (await _setting(db, "build_agent_nightly_linux_enabled")) == "1"
     platforms = []
     if android_enabled:
         platforms.append("android")
     if pc_enabled:
         platforms.append("pc")
+    if linux_enabled:
+        platforms.append("linux")
     if not platforms:
         await set_build_log(db, "Ночная сборка отключена для всех платформ", status="ok")
         return

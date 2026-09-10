@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Calendar, KeyRound, X, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
+import { Calendar, KeyRound, X, AlertTriangle } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
 import SortSelect from '../components/SortSelect'
+import ListPagination from '../components/ListPagination'
 
 interface SubInfo {
   active: boolean
@@ -684,28 +685,13 @@ export default function SubscriptionsPage({ token }: { token: string }) {
         </table>
       </div>
 
-      {!debouncedSearch && pages > 1 && (
-        <div className="flex items-center justify-between gap-3">
-          <button
-            type="button"
-            disabled={page <= 1 || loading}
-            onClick={() => setPage(p => Math.max(1, p - 1))}
-            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-xs text-[#ccc] disabled:opacity-40 hover:border-[#444] cursor-pointer"
-          >
-            <ChevronLeft className="w-3.5 h-3.5" /> Назад
-          </button>
-          <span className="text-xs text-[#666]">
-            {page} / {pages}
-          </span>
-          <button
-            type="button"
-            disabled={page >= pages || loading}
-            onClick={() => setPage(p => Math.min(pages, p + 1))}
-            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-xs text-[#ccc] disabled:opacity-40 hover:border-[#444] cursor-pointer"
-          >
-            Вперёд <ChevronRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
+      {!debouncedSearch && (
+        <ListPagination
+          page={page}
+          pages={pages}
+          onPageChange={setPage}
+          disabled={loading}
+        />
       )}
 
       {/* Модалка кода оплаты */}

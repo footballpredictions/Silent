@@ -61,9 +61,15 @@ def asset_download_url(version: str, filename: str) -> str:
 
 
 def github_asset_filename(platform: str, filename: str, version: str = "") -> str:
-    """Имя файла на GitHub Releases (PC installer — точки, не пробелы)."""
+    """Имя файла на GitHub Releases (PC/Linux installer — точки, не пробелы)."""
     safe = os.path.basename(filename or "")
-    if platform != "pc" or not safe.lower().endswith(".exe"):
+    if platform == "android" or not safe:
+        return safe
+    if platform == "pc" and not safe.lower().endswith(".exe"):
+        return safe
+    if platform == "linux" and not safe.lower().endswith(".deb"):
+        return safe
+    if platform == "mac" and not safe.lower().endswith(".dmg"):
         return safe
     if "." in safe.replace(" ", "") and " " not in safe:
         return safe
@@ -71,13 +77,27 @@ def github_asset_filename(platform: str, filename: str, version: str = "") -> st
     m = re.search(r"(\d+\.\d+\.\d+)", safe)
     if not ver and m:
         ver = m.group(1)
+    if platform == "linux":
+        if ver:
+            return f"Silent.VPN.Setup.{ver}.deb"
+        return safe.replace(" ", ".")
+    if platform == "mac":
+        if ver:
+            return f"Silent.VPN.Setup.{ver}.dmg"
+        return safe.replace(" ", ".")
     if ver:
         return f"Silent.VPN.Setup.{ver}.exe"
     return safe.replace(" ", ".")
 
 
+def _platform_asset_ext(platform: str) -> str:
+    return {"pc": ".exe", "android": ".apk", "linux": ".deb", "mac": ".dmg"}.get(platform, "")
+
+
 def _release_has_platform_asset(release: dict, platform: str) -> bool:
-    ext = ".exe" if platform == "pc" else ".apk"
+    ext = _platform_asset_ext(platform)
+    if not ext:
+        return False
     for asset in release.get("assets") or []:
         name = (asset.get("name") or "").lower()
         if name.endswith(ext):
@@ -116,6 +136,10 @@ async def _get_release_by_tag(token: str, tag: str) -> Optional[dict]:
 def _release_title(platform: str, version: str) -> str:
     if platform == "pc":
         return f"Silent VPN — ПК v{version}"
+    if platform == "linux":
+        return f"Silent VPN — Linux v{version}"
+    if platform == "mac":
+        return f"Silent VPN — Mac v{version}"
     return f"Silent VPN — Android v{version}"
 
 
@@ -126,12 +150,16 @@ def _combined_release_title(version: str) -> str:
 def _release_title_for_assets(version: str, asset_names: list[str]) -> str:
     has_pc = any(n.lower().endswith(".exe") for n in asset_names)
     has_apk = any(n.lower().endswith(".apk") for n in asset_names)
-    if has_pc and has_apk:
+    has_linux = any(n.lower().endswith(".deb") for n in asset_names)
+    count = sum(1 for x in (has_pc, has_apk, has_linux) if x)
+    if count >= 2:
         return _combined_release_title(version)
     if has_pc:
         return _release_title("pc", version)
     if has_apk:
         return _release_title("android", version)
+    if has_linux:
+        return _release_title("linux", version)
     return _combined_release_title(version)
 
 
@@ -139,9 +167,12 @@ def _release_body_for_assets(version: str, asset_names: list[str]) -> str:
     landing = "https://silentvpn3.github.io/"
     has_pc = any(n.lower().endswith(".exe") for n in asset_names)
     has_apk = any(n.lower().endswith(".apk") for n in asset_names)
+    has_linux = any(n.lower().endswith(".deb") for n in asset_names)
     lines = [f"Клиенты Silent VPN v{version}.\n"]
     if has_pc:
         lines.append("- **Windows (ПК)** — установщик `.exe`")
+    if has_linux:
+        lines.append("- **Linux (ПК)** — установщик `.deb`")
     if has_apk:
         lines.append("- **Android** — `.apk`")
     lines.append(f"\nСкачивание: {landing}")
@@ -150,10 +181,11 @@ def _release_body_for_assets(version: str, asset_names: list[str]) -> str:
 
 async def _create_release(token: str, tag: str, version: str, platform: str) -> dict:
     url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
+    ext = _platform_asset_ext(platform) or ".apk"
     body = {
         "tag_name": tag,
         "name": _release_title(platform, version),
-        "body": _release_body_for_assets(version, [".exe" if platform == "pc" else ".apk"]),
+        "body": _release_body_for_assets(version, [ext]),
         "draft": False,
         "prerelease": False,
         "generate_release_notes": False,
@@ -187,8 +219,10 @@ async def _delete_asset(token: str, asset_id: int) -> None:
 
 
 async def _remove_platform_assets(token: str, release: dict, platform: str) -> None:
-    """Удалить только файлы этой платформы (.exe / .apk), не трогая другую."""
-    ext = ".exe" if platform == "pc" else ".apk"
+    """Удалить только файлы этой платформы (.exe / .apk / .deb), не трогая другую."""
+    ext = _platform_asset_ext(platform)
+    if not ext:
+        return
     for asset in release.get("assets") or []:
         name = (asset.get("name") or "").lower()
         if name.endswith(ext):
@@ -252,7 +286,13 @@ async def _write_repo_file(token: str, path: str, content: str, sha: Optional[st
 
 
 def _platform_label(platform: str) -> str:
-    return "PC (Windows)" if platform == "pc" else "Android"
+    if platform == "pc":
+        return "PC (Windows)"
+    if platform == "linux":
+        return "PC (Linux)"
+    if platform == "mac":
+        return "PC (Mac)"
+    return "Android"
 
 
 def _format_size_mb(bytes_n: int | float | None) -> str:
@@ -281,25 +321,36 @@ def _patch_index_html_releases(html: str, releases: dict) -> str:
     """Обновить INLINE_FALLBACK + кнопки скачивания в index.html лендинга."""
     pc = releases.get("pc") or {}
     android = releases.get("android") or {}
+    linux = releases.get("linux") or {}
     if not pc.get("version") or not android.get("version"):
         raise GitHubReleaseError("Для index.html нужны pc и android в releases")
 
-    inline = (
-        "const INLINE_FALLBACK = {\n"
-        "      pc: {\n"
-        f'        version: "{pc["version"]}",\n'
-        f'        size: {int(pc.get("size") or 0)},\n'
-        f'        filename: "{pc["filename"]}",\n'
-        f'        download_url: "{pc["download_url"]}",\n'
-        "      },\n"
-        "      android: {\n"
-        f'        version: "{android["version"]}",\n'
-        f'        size: {int(android.get("size") or 0)},\n'
-        f'        filename: "{android["filename"]}",\n'
-        f'        download_url: "{android["download_url"]}",\n'
-        "      },\n"
-        "    };"
-    )
+    inline_parts = [
+        "const INLINE_FALLBACK = {\n",
+        "      pc: {\n",
+        f'        version: "{pc["version"]}",\n',
+        f'        size: {int(pc.get("size") or 0)},\n',
+        f'        filename: "{pc["filename"]}",\n',
+        f'        download_url: "{pc["download_url"]}",\n',
+        "      },\n",
+        "      android: {\n",
+        f'        version: "{android["version"]}",\n',
+        f'        size: {int(android.get("size") or 0)},\n',
+        f'        filename: "{android["filename"]}",\n',
+        f'        download_url: "{android["download_url"]}",\n',
+        "      },\n",
+    ]
+    if linux.get("version") and linux.get("filename") and linux.get("download_url"):
+        inline_parts.extend([
+            "      linux: {\n",
+            f'        version: "{linux["version"]}",\n',
+            f'        size: {int(linux.get("size") or 0)},\n',
+            f'        filename: "{linux["filename"]}",\n',
+            f'        download_url: "{linux["download_url"]}",\n',
+            "      },\n",
+        ])
+    inline_parts.append("    };")
+    inline = "".join(inline_parts)
     patched, n = re.subn(
         r"const INLINE_FALLBACK = \{.*?\};",
         inline,
@@ -336,6 +387,21 @@ def _patch_index_html_releases(html: str, releases: dict) -> str:
             f'id="androidMeta">{_format_size_mb(android.get("size"))}',
         ),
     ]
+    if linux.get("version") and linux.get("download_url"):
+        replacements.extend([
+            (
+                r'id="linuxDownload" href="[^"]*"',
+                f'id="linuxDownload" href="{linux["download_url"]}"',
+            ),
+            (
+                r'id="linuxVersion" data-version="[^"]*">v[^<]*',
+                f'id="linuxVersion" data-version="{linux["version"]}">v{linux["version"]}',
+            ),
+            (
+                r'id="linuxMeta"[^>]*>[^<]*',
+                f'id="linuxMeta">{_format_size_mb(linux.get("size"))}',
+            ),
+        ])
     for pattern, repl in replacements:
         patched, n = re.subn(pattern, repl, patched, count=1)
         if n != 1:
@@ -354,12 +420,16 @@ async def _sync_landing_index_html(token: str, releases: dict) -> None:
         return
     pc_v = (releases.get("pc") or {}).get("version")
     and_v = (releases.get("android") or {}).get("version")
+    linux_v = (releases.get("linux") or {}).get("version")
+    parts = [f"PC v{pc_v}", f"Android v{and_v}"]
+    if linux_v:
+        parts.append(f"Linux v{linux_v}")
     await _write_repo_file(
         token,
         INDEX_HTML_PATH,
         patched,
         sha,
-        f"index.html: PC v{pc_v}, Android v{and_v}",
+        f"index.html: {', '.join(parts)}",
     )
 
 
@@ -369,7 +439,7 @@ async def _build_landing_releases_snapshot(
     download_url: str,
     github_filename: str | None = None,
 ) -> dict:
-    """Собрать полный pc+android снимок для releases.json / index.html."""
+    """Собрать полный pc+android+linux снимок для releases.json / index.html."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     current: dict[str, Any] = {
         "updated_at": now,
@@ -449,7 +519,6 @@ async def _sync_peer_assets_from_server(
     fresh = await _get_release_by_tag(token, release_tag(version))
     release = fresh or release
     asset_names = {a.get("name") for a in release.get("assets") or [] if a.get("name")}
-    ext_by_platform = {"pc": ".exe", "android": ".apk"}
     for platform in update_service.PLATFORMS:
         if platform == skip_platform:
             continue

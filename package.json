@@ -13,6 +13,7 @@
     "build": "npm run build:installer",
     "build:installer": "build-installer.bat",
     "build:linux": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\build-linux.ps1",
+    "build:mac": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\build-mac.ps1",
     "dist": "npm run build:installer"
   },
   "build": {
@@ -63,7 +64,8 @@
     },
     "mac": {
       "target": "dmg",
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.png",
+      "category": "public.app-category.utilities"
     },
     "nsis": {
       "oneClick": false,

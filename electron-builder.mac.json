@@ -1,0 +1,48 @@
+{
+  "appId": "ru.silent.vpn",
+  "productName": "Silent VPN",
+  "directories": {
+    "output": "build-mac"
+  },
+  "artifactName": "Silent VPN Setup ${version}.${ext}",
+  "files": [
+    "src/**",
+    "dist/renderer/**",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "resources/mac",
+      "to": ".",
+      "filter": ["wdtt-client", "silent-wg-helper", "wireguard-go"]
+    },
+    {
+      "from": "assets/tray.png",
+      "to": "assets/tray.png"
+    },
+    {
+      "from": "assets/icon.png",
+      "to": "assets/icon.png"
+    }
+  ],
+  "mac": {
+    "target": [
+      { "target": "dmg", "arch": ["arm64"] }
+    ],
+    "icon": "assets/icon.png",
+    "category": "public.app-category.utilities",
+    "hardenedRuntime": false,
+    "gatekeeperAssess": false,
+    "identity": null,
+    "extendInfo": {
+      "NSAppleEventsUsageDescription": "Silent VPN installs a privileged helper for the VPN tunnel."
+    }
+  },
+  "dmg": {
+    "title": "Silent VPN ${version}",
+    "contents": [
+      { "x": 130, "y": 220 },
+      { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+    ]
+  }
+}

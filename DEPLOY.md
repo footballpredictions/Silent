@@ -108,6 +108,34 @@ AppImage через electron-builder с Windows часто не собирает
 
 ---
 
+## Mac (тот же клиент, .dmg)
+
+Mac **не** iOS и **не** отдельный репозиторий: тот же Electron `pc/`, UI/тумблер как Windows/Linux.
+`device_type` в API = `pc`. OTA: `platform=mac`.
+
+### Сборка
+
+**Только на macOS** (electron-builder `--mac` с Windows/Linux не собирает `.dmg`):
+
+```bash
+cd pc
+export BOOTSTRAP_VK_HASH="<хеш>"
+chmod +x build-mac.sh resources/mac/*
+./build-mac.sh
+```
+
+Готовый файл: `pc/build-mac/Silent VPN Setup <version>.dmg` (arm64 / Apple Silicon).
+
+**С Windows:** `powershell -File .\build-mac.ps1` кросс-компилирует `wdtt-client` + `wireguard-go` в `resources/mac/`, но упаковку `.dmg` всё равно нужно добить на MacBook.
+
+### OTA
+
+Загрузить `.dmg` в админке **Обновления → PC (Mac)**. Клиент: `GET /api/updates/check?platform=mac`.
+
+Права VPN: при первом подключении `osascript` ставит LaunchDaemon helper (пароль один раз) — дальше тумблер без пароля.
+
+---
+
 ## Backend-деплой
 
 API, admin-ui, VK — только из `backend/DEPLOY.md` (ветка `main`).

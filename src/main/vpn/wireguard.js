@@ -1633,4 +1633,6 @@ module.exports = {
 
 if (process.platform === 'linux') {
   module.exports = require('./wireguardLinux')
+} else if (process.platform === 'darwin') {
+  module.exports = require('./wireguardDarwin')
 }

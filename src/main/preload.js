@@ -52,7 +52,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppVersion: () => ipcRenderer.invoke('app-version'),
   checkForUpdate: (version) => ipcRenderer.invoke('app-update-check', {
     version,
-    platform: process.platform === 'linux' ? 'linux' : 'pc',
+    platform: process.platform === 'linux' ? 'linux' : process.platform === 'darwin' ? 'mac' : 'pc',
   }),
   tunnelApiRequest: (payload) => ipcRenderer.invoke('tunnel-api-request', payload),
   setStandbyApiBases: (urls) => ipcRenderer.invoke('set-standby-api-bases', urls),

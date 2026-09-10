@@ -718,14 +718,16 @@ function clearBypassRefresh() {
 
 function scheduleBypassRefresh(sendLogFn) {
   clearBypassRefresh()
-  const intervalMs = process.platform === 'linux' ? 30_000 : 90_000
+  const intervalMs = (process.platform === 'linux' || process.platform === 'darwin') ? 30_000 : 90_000
   bypassRefreshTimer = setInterval(() => {
     if (!wgApplied || vpnBootstrapMode) return
     void addServerBypassRoutes(sessionExcludeIPs, () => {})
-    if (process.platform === 'linux') {
+    if (process.platform === 'linux' || process.platform === 'darwin') {
       try {
-        const { refreshTunnelGuards } = require('./vpn/wireguardLinux')
-        void refreshTunnelGuards(() => {})
+        const mod = process.platform === 'darwin'
+          ? require('./vpn/wireguardDarwin')
+          : require('./vpn/wireguardLinux')
+        void mod.refreshTunnelGuards(() => {})
       } catch { /* ignore */ }
     }
   }, intervalMs)
@@ -1052,6 +1054,9 @@ function wdttExePath() {
   if (isDev) {
     if (process.platform === 'linux') {
       return path.join(__dirname, '../../resources/linux', name)
+    }
+    if (process.platform === 'darwin') {
+      return path.join(__dirname, '../../resources/mac', name)
     }
     return path.join(__dirname, '../../resources', name)
   }
@@ -1435,16 +1440,17 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
   // DNS bypass в фоне — не блокировать spawn/подписку на stdout (раньше теряли секунды).
   const excludePromise = collectExcludeIPs(config)
-  // Linux: /etc/hosts + iface для WDTT SO_BINDTODEVICE до spawn.
+  // Linux/mac: hosts + LAN iface для WDTT до spawn.
   const spawnEnv = { ...process.env }
-  if (process.platform === 'linux') {
+  if (process.platform === 'linux' || process.platform === 'darwin') {
     try {
-      const { pinVkHosts, capturePhysicalGateway, enableLanProtect } = require('./vpn/wireguardLinux')
-      void pinVkHosts(sendLog)
-      const gw = await capturePhysicalGateway(sendLog)
+      const mod = process.platform === 'darwin'
+        ? require('./vpn/wireguardDarwin')
+        : require('./vpn/wireguardLinux')
+      void mod.pinVkHosts(sendLog)
+      const gw = await mod.capturePhysicalGateway(sendLog)
       if (gw?.alias) spawnEnv.SILENT_LAN_IFACE = String(gw.alias)
-      // До spawn WDTT: table protect — TURN/VK не уйдут в WG после up.
-      void enableLanProtect(sendLog)
+      void mod.enableLanProtect(sendLog)
     } catch { /* ignore */ }
   }
   const apiConf = buildWgConfigFromApi(config)
@@ -2147,6 +2153,18 @@ function assertValidUpdatePayload(destPath, expectedSize) {
       }
       return
     }
+    if (process.platform === 'darwin') {
+      // .dmg / .zip — не MZ, не ELF; размер уже проверен выше
+      if (buf[0] === 0x4d && buf[1] === 0x5a) {
+        try { fs.unlinkSync(destPath) } catch { /* ignore */ }
+        throw new Error('Файл повреждён (это Windows EXE, не Mac)')
+      }
+      if (buf[0] === 0x7f && buf[1] === 0x45) {
+        try { fs.unlinkSync(destPath) } catch { /* ignore */ }
+        throw new Error('Файл повреждён (это Linux ELF, не Mac)')
+      }
+      return
+    }
     if (buf[0] !== 0x4d || buf[1] !== 0x5a) {
       try { fs.unlinkSync(destPath) } catch { /* ignore */ }
       throw new Error('Файл повреждён (это не установщик Windows)')
@@ -2663,6 +2681,30 @@ ipcMain.handle('app-update-download', async (_, { url, filename, tunnelUrl, expe
  *
  * Bat: sleep → start Setup → когда Silent VPN.exe уже мёртв, /T безобиден.
  */
+function scheduleMacUpdateAfterExit(filePath) {
+  const abs = path.resolve(filePath)
+  if (!fs.existsSync(abs)) {
+    return { ok: false, error: 'File not found' }
+  }
+  const logPath = path.join(app.getPath('temp'), 'silent-ota-launch.log')
+  const shPath = path.join(app.getPath('temp'), `silent-ota-launch-${Date.now()}.sh`)
+  const setup = abs.replace(/"/g, '')
+  const lines = [
+    '#!/bin/sh',
+    `echo "$(date -Iseconds) waiting" > "${logPath.replace(/"/g, '')}"`,
+    'sleep 3',
+    `echo "$(date -Iseconds) opening" >> "${logPath.replace(/"/g, '')}"`,
+    `open "${setup}"`,
+    'rm -f "$0"',
+    '',
+  ]
+  fs.writeFileSync(shPath, lines.join('\n'), { encoding: 'utf8', mode: 0o755 })
+  sendLog(`[Update] scheduled mac launcher: ${shPath}`)
+  const child = spawn('sh', [shPath], { detached: true, stdio: 'ignore' })
+  child.unref()
+  return { ok: true, batPath: shPath, logPath }
+}
+
 function scheduleLinuxUpdateAfterExit(filePath) {
   const abs = path.resolve(filePath)
   if (!fs.existsSync(abs)) {
@@ -2772,7 +2814,9 @@ ipcMain.handle('app-update-install', async (_, filePath) => {
     sendLog('[Update] schedule installer after exit: ' + filePath)
     const scheduled = process.platform === 'linux'
       ? scheduleLinuxUpdateAfterExit(filePath)
-      : schedulePcInstallerAfterExit(filePath)
+      : process.platform === 'darwin'
+        ? scheduleMacUpdateAfterExit(filePath)
+        : schedulePcInstallerAfterExit(filePath)
     if (!scheduled.ok) {
       return { ok: false, error: scheduled.error || 'schedule failed' }
     }

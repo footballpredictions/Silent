@@ -1,10 +1,15 @@
-/** OTA platform id for update API. Linux ≠ Windows installer. */
+/** OTA platform id for update API. Linux/mac ≠ Windows installer. */
 function otaPlatform(platformHint) {
   if (platformHint) {
     const p = String(platformHint).toLowerCase()
-    if (p === 'linux' || p === 'android' || p === 'pc') return p
+    if (p === 'linux' || p === 'android' || p === 'pc' || p === 'mac' || p === 'macos' || p === 'darwin') {
+      if (p === 'macos' || p === 'darwin') return 'mac'
+      return p === 'mac' ? 'mac' : p
+    }
   }
-  return process.platform === 'linux' ? 'linux' : 'pc'
+  if (process.platform === 'linux') return 'linux'
+  if (process.platform === 'darwin') return 'mac'
+  return 'pc'
 }
 
 function wdttBinaryName(platform = process.platform) {

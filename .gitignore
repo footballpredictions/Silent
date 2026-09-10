@@ -18,6 +18,8 @@ wdtt-go/*.exe
 resources/linux/wdtt-client
 resources/linux/wireguard-go
 resources/linux/wireguard
+resources/mac/wdtt-client
+resources/mac/wireguard-go
 
 # olcrtc / sing-box debug binaries (см. resources/OLCRTC_README.md)
 resources/olcrtc.exe

@@ -8,6 +8,15 @@ Agent приступает к **первой невыполненной** зад
 
 ## Открытые задачи
 
+### Admin-debug quality monitor (Android, 2026-09-11)
+
+- [x] Пассивный монитор только `BuildConfig.DEBUG` + `is_admin`: WG Δбайт + tunnel `/health` RTT
+- [x] Отправка через VPN (`reportQualityViaTunnel`), не public API (LTE whitelist)
+- [x] Локальный файл `silent-quality/quality-YYYYMMDD.jsonl` + кнопка Quality в Debug Log
+- [x] Backend `POST /api/vpn/quality-report` (admin-only) + `GET /api/admin/hive/quality-reports`
+- [ ] Собрать debug APK, проверить ночью/на LTE: файл пишется, репорт доходит через туннель
+- [ ] Деплой backend `deploy_stable.py` когда будете смотреть репорты в БД
+
 ### AI exit node — Сота 3 / Сервер 4 (2026-09-06)
 
 Runbook: `backend/AI_EXIT_NODE.md`. Выход = WDTT + гигиена ноды. WARP/TPROXY сейчас **выкл** (Gemini на HOSTKEY).

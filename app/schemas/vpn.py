@@ -46,6 +46,31 @@ class ReachabilityReportRequest(BaseModel):
     age_sec: int | None = None
 
 
+class QualityReportRequest(BaseModel):
+    """Admin-debug пассивная оценка скорости туннеля (Android debug + is_admin).
+
+    Старые клиенты эндпоинт не вызывают. Не-админам сервер отвечает accepted=false.
+    """
+
+    verdict: str = ""
+    likely_cause: str = ""
+    down_mbps: float | None = None
+    up_mbps: float | None = None
+    rx_delta: int | None = None
+    tx_delta: int | None = None
+    elapsed_ms: int | None = None
+    handshake_age_sec: int | None = None
+    tunnel_rtt_ms: float | None = None
+    network_type: str = ""
+    carrier: str = ""
+    server_slot: str = ""
+    platform: str = ""
+    app_version: str = ""
+    detail: str = ""
+    age_sec: int | None = None
+    payload_json: str = ""
+
+
 class BootstrapConfigRequest(BaseModel):
     """Pre-login VPN config — only bootstrap VK hash, no subscription required."""
     bootstrap_hash: str

@@ -4,13 +4,31 @@
 > Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
 > сначала читать его, потом код.
 
+## Последние изменения (admin-debug quality monitor 2026-09-11)
+
+Android debug + `is_admin`: пассивный монитор скорости (WG Δбайт / 60с + RTT
+`10.66.66.1/health`). Проблемы → локальный `silent-quality/quality-*.jsonl` и
+`POST /api/vpn/quality-report` **только через VPN** (не public). Не-админам
+сервер `accepted=false`. Админ список: `GET /api/admin/hive/quality-reports`.
+В Debug Log кнопка «Quality». Тесты: `QualityMonitorPolicyTest`, 
+`test_quality_report_unit.py`. Release / обычные юзеры не шлют.
+
+## Последние изменения (ночная скорость mobile 2026-09-11)
+
+Разбор жалобы «ночь 10→11.09 ~23:00–02:00 МСК, mobile ~3↓/0.3↑ Мбит, людей мало».
+На Улье: availability все циклы `ok`, `hive_incidents` пусто, kick 0, OOM/link нет,
+load ~1.5–2 / 6 CPU (ниже дневного). WDTT жив; агрегат ↓ ~15–30 Мбит (днём ~50–68).
+Онлайн касаний ~45 устройств / 42 юзера, 37× server1. Клиентских `tunnel_dead` — 9,
+не шторм. Вердикт: не перегруз/блок Улья; узкое место на пути mobile↔VK WRAP↔egress.
+
 ## Последние изменения (Mac-клиент prep 2026-09-10)
 
 Тот же Electron `pc/`, не iOS. Код: `wireguardDarwin.js`, helper LaunchDaemon,
 OTA `platform=mac`, админка «PC (Mac)» (загрузка `.dmg`). С Windows собраны
 darwin-arm64 `wdtt-client` + `wireguard-go` в `resources/mac/` (`build-mac.ps1`).
 **`.dmg` только на MacBook:** `./build-mac.sh` → `build-mac/Silent VPN Setup 1.0.165.dmg`.
-Тесты mac/linux 20 ok. Backend/admin ещё не деплоили.
+Тесты mac/linux 20 ok. Push: `pc` `152deb5`, `main` `b13629c`. Backend OTA
+код в git; на прод — отдельно `deploy_stable.py` когда понадобится.
 
 ## Последние изменения (лендинг: сидящий Tux 2026-09-10)
 

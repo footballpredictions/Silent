@@ -671,6 +671,17 @@ async def hive_availability_history(
     return {"items": await availability_store.load_history(limit)}
 
 
+@router.get("/quality-reports")
+async def hive_quality_reports(
+    limit: int = Query(50, ge=1, le=200),
+    _: bool = Depends(get_admin_credentials),
+):
+    """Admin-debug: пассивные репорты скорости с Android debug-админа."""
+    from app.services.quality_store import list_recent
+
+    return {"items": await list_recent(limit)}
+
+
 @router.get("/availability/knowledge")
 async def hive_availability_knowledge(
     _: bool = Depends(get_admin_credentials),

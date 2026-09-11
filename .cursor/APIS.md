@@ -88,6 +88,7 @@
 | GET | `/olcrtc-config` | — | **Публичный** конфиг варианта 2 (olcrtc) для debug-клиентов |
 | GET | `/sync-state` | User | ConfigSync: ревизии theme/profile/hashes |
 | POST | `/reachability-report` | User | Репорт клиента об отказе подключения (rate limit по IP) — вход агента доступности |
+| POST | `/quality-report` | User JWT + **is_admin** | Admin-debug пассивная скорость (Android debug); не-админам `accepted=false` |
 
 **reachability-report body** (обязателен только `stage`; старые клиенты эндпоинт не вызывают):
 

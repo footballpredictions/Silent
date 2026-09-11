@@ -21,6 +21,7 @@ from app.schemas.vpn import (
     HashRefreshRequest,
     HashFailureReportRequest,
     ReachabilityReportRequest,
+    QualityReportRequest,
     InternalOnlineRequest,
     InternalAccessRequest,
     InternalOnlineResponse,
@@ -709,6 +710,49 @@ async def report_reachability(
     )
     if not accepted:
         return {"ok": True, "accepted": False, "detail": "stale report"}
+    return {"ok": True, "accepted": True}
+
+
+@router.post("/quality-report")
+async def report_quality(
+    req: QualityReportRequest,
+    request: Request,
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-debug: пассивная оценка скорости туннеля (Android debug + is_admin).
+
+    Не-админам — accepted=false без записи (старые/обычные клиенты не ломаются).
+    """
+    from app.services.quality_store import record_quality_report
+    from app.services.rate_limiter import check_ip_rate_limit
+
+    if not is_user_admin(user):
+        return {"ok": True, "accepted": False, "detail": "admin only"}
+
+    if await check_ip_rate_limit(request, "quality", 60, 300):
+        return {"ok": True, "accepted": False, "detail": "too many reports"}
+
+    accepted = await record_quality_report(
+        db,
+        user_id=user.id,
+        email=user.email or "",
+        verdict=req.verdict or "",
+        likely_cause=req.likely_cause or "",
+        down_mbps=req.down_mbps,
+        up_mbps=req.up_mbps,
+        network_type=req.network_type or "",
+        carrier=req.carrier or "",
+        server_slot=req.server_slot or "",
+        tunnel_rtt_ms=req.tunnel_rtt_ms,
+        platform=req.platform or "",
+        app_version=req.app_version or "",
+        detail=req.detail or "",
+        age_sec=req.age_sec,
+        payload_json=req.payload_json or "",
+    )
+    if not accepted:
+        return {"ok": True, "accepted": False, "detail": "not stored"}
     return {"ok": True, "accepted": True}
 
 

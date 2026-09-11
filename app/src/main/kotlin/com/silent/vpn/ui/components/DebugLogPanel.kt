@@ -30,6 +30,7 @@ import com.silent.vpn.BuildConfig
 import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.util.rememberIsTv
 import com.silent.vpn.vpn.LogEntry
+import com.silent.vpn.vpn.QualityLogStore
 import com.silent.vpn.vpn.WdttTunnelManager
 import kotlinx.coroutines.launch
 
@@ -118,6 +119,24 @@ fun DebugLogDialog(
                         Toast.makeText(context, "Лог скопирован", Toast.LENGTH_SHORT).show()
                     }) {
                         Text("Копировать", color = Color(0xFF60A5FA), fontSize = 11.sp)
+                    }
+                    if (BuildConfig.DEBUG) {
+                        TvTextButton(onClick = {
+                            val f = QualityLogStore.todayFile(context)
+                            val tail = runCatching {
+                                if (!f.exists()) "(файла ещё нет)"
+                                else f.readLines().takeLast(40).joinToString("\n").ifBlank { "(пусто)" }
+                            }.getOrDefault("(ошибка чтения)")
+                            val payload = "path=${f.absolutePath}\n\n$tail"
+                            copyToClipboard(context, payload)
+                            Toast.makeText(
+                                context,
+                                "Quality log → буфер (${f.name})",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }) {
+                            Text("Quality", color = Color(0xFFFBBF24), fontSize = 11.sp)
+                        }
                     }
                     TvTextButton(onClick = { WdttTunnelManager.clearLogs() }) {
                         Text("Очистить", color = Color(0xFF9CA3AF), fontSize = 11.sp)

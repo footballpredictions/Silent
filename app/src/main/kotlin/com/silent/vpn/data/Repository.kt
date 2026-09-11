@@ -3307,6 +3307,49 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
         }
     }
 
+    /**
+     * Quality-репорт только через VPN-туннель (на LTE whitelist режет публичный API).
+     * Public fallback намеренно нет.
+     */
+    suspend fun reportQualityViaTunnel(req: QualityReportRequest): Result<Unit> {
+        if (!isLoggedIn()) return Result.failure(IllegalStateException("not logged in"))
+        if (!isMainVpnTunnelUp()) {
+            return Result.failure(IllegalStateException("vpn tunnel down"))
+        }
+        return runCatching {
+            withTunnelBackendBlock(allowOverlayFallback = true) {
+                val res = getApi().reportQuality(req)
+                if (!res.isSuccessful) {
+                    throw Exception("quality-report ${res.code()}")
+                }
+            }
+        }
+    }
+
+    /** RTT до tunnel API через текущий VPN (мс). null = не достучались. */
+    suspend fun probeTunnelHealthRttMs(timeoutMs: Long = 4_000L): Double? {
+        if (!isMainVpnTunnelUp()) return null
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val url = java.net.URL("${tunnelApiBase().trimEnd('/')}/health")
+                val t0 = System.nanoTime()
+                val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                    connectTimeout = timeoutMs.toInt()
+                    readTimeout = timeoutMs.toInt()
+                    requestMethod = "GET"
+                    instanceFollowRedirects = false
+                }
+                try {
+                    val code = conn.responseCode
+                    val ms = (System.nanoTime() - t0) / 1_000_000.0
+                    if (code in 200..299) ms else null
+                } finally {
+                    conn.disconnect()
+                }
+            }.getOrNull()
+        }
+    }
+
     internal suspend fun reportHashFailureDirect(hash: String, errorType: String, message: String) {
         val req = HashFailureReportRequest(
             hash = hash,

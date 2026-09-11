@@ -27,6 +27,84 @@ object NetworkRecoveryPolicy {
         return ours.isNotEmpty() && eventFp == ours
     }
 
+    /**
+     * Ставить lastBlackoutAtMs на onLosing?
+     *
+     * Шире, чем [isOurUnderlyingNetwork]: при умирающем Wi‑Fi Android часто уже
+     * переключил default на cell — событие wifi≠current, но last ещё wifi.
+     * Без метки дыры потом нет gap_restored / надёжного recover.
+     * Чужая сота при живом Wi‑Fi (current=wifi, event=cell) по-прежнему игнор.
+     */
+    fun shouldMarkUnderlyingBlackout(eventFp: String, currentFp: String, lastFp: String): Boolean {
+        if (eventFp.isEmpty()) return false
+        if (isOurUnderlyingNetwork(eventFp, currentFp, lastFp)) return true
+        // Handover: гаснет предыдущий транспорт, default уже новый.
+        return lastFp.isNotEmpty() && eventFp == lastFp && currentFp.isNotEmpty() && currentFp != eventFp
+    }
+
+    /**
+     * После паузы/чёрной дыры нельзя только reapply WG — UDP/WG сокеты уже мертвы.
+     * Иначе «сеть вернулась», UI зелёный, а трафика нет до рубильника.
+     */
+    fun needsFullRestartAfterNetworkEvent(reason: String, wasPausedOrBlackout: Boolean): Boolean {
+        if (needsUnderlyingWaitRestart(reason)) return true
+        if (!wasPausedOrBlackout) return false
+        val base = reason.substringBefore(':')
+        return base == "available" ||
+            base == "capabilities" ||
+            base == "available_restored" ||
+            base == "capabilities_restored" ||
+            base == "lost_restored" ||
+            base == "restored" ||
+            base == "validated" ||
+            base == "internet_restored" ||
+            base == "phone_call_end"
+    }
+
+    /** Во время звонка не теряем recover — кладём в очередь до phone_call_end. */
+    fun shouldQueueRecoveryDuringCall(phoneCallActive: Boolean, reason: String): Boolean {
+        if (!phoneCallActive) return false
+        val base = reason.substringBefore(':')
+        return base != "phone_call_end"
+    }
+
+    /**
+     * Несколько событий за звонок: не затирать switch/gap слабым available.
+     * Чем выше rank — тем важнее для полного reconnect после звонка.
+     */
+    fun preferDeferredRecoveryReason(current: String?, incoming: String): String {
+        val inc = incoming.trim()
+        if (inc.isEmpty()) return current?.trim().orEmpty()
+        val cur = current?.trim().orEmpty()
+        if (cur.isEmpty()) return inc
+        fun rank(r: String): Int = when (r.substringBefore(':')) {
+            "transport_switch",
+            "rat_switch",
+            "link_handover",
+            "wifi_gap_restored",
+            "cell_gap_restored",
+            "validated_after_gap",
+            "internet_restored",
+            "underlying_blackout",
+            -> 3
+            "available_restored",
+            "capabilities_restored",
+            "lost_restored",
+            "restored",
+            "phone_call_end",
+            -> 2
+            else -> 1
+        }
+        return if (rank(inc) >= rank(cur)) inc else cur
+    }
+
+    fun recoveryReasonAfterCallEnd(deferred: String?): String {
+        val d = deferred?.trim().orEmpty()
+        if (d.isEmpty()) return "phone_call_end"
+        if (d.substringBefore(':') == "phone_call_end") return "phone_call_end"
+        return d
+    }
+
     fun wifiCellTransportTarget(oldFp: String, newFp: String): String? = when {
         oldFp == "cell" && newFp == "wifi" -> "wifi"
         oldFp == "wifi" && newFp == "cell" -> "mobile"

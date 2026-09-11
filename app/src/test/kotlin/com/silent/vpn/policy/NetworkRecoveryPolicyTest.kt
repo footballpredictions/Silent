@@ -50,6 +50,120 @@ class NetworkRecoveryPolicyTest {
     }
 
     @Test
+    fun `wifi dying after default already flipped to cell is still our blackout`() {
+        // Wi‑Fi onLosing, Android уже переключил default на cell — дыру wifi всё равно надо учесть
+        // (иначе не будет gap/switch и после звонка/обрыва залипает до рубильника).
+        assertTrue(
+            NetworkRecoveryPolicy.shouldMarkUnderlyingBlackout(
+                eventFp = "wifi",
+                currentFp = "cell",
+                lastFp = "wifi",
+            ),
+        )
+        // Чужая сота при живом Wi‑Fi — по-прежнему нет.
+        assertFalse(
+            NetworkRecoveryPolicy.shouldMarkUnderlyingBlackout(
+                eventFp = "cell",
+                currentFp = "wifi",
+                lastFp = "wifi",
+            ),
+        )
+        // Наша текущая — да.
+        assertTrue(
+            NetworkRecoveryPolicy.shouldMarkUnderlyingBlackout(
+                eventFp = "cell",
+                currentFp = "cell",
+                lastFp = "cell",
+            ),
+        )
+    }
+
+    @Test
+    fun `after pause or blackout fast validated is not enough — need full restart`() {
+        assertTrue(
+            NetworkRecoveryPolicy.needsFullRestartAfterNetworkEvent(
+                reason = "validated",
+                wasPausedOrBlackout = true,
+            ),
+        )
+        assertTrue(
+            NetworkRecoveryPolicy.needsFullRestartAfterNetworkEvent(
+                reason = "available_restored:wifi",
+                wasPausedOrBlackout = true,
+            ),
+        )
+        assertTrue(
+            NetworkRecoveryPolicy.needsFullRestartAfterNetworkEvent(
+                reason = "capabilities:cell",
+                wasPausedOrBlackout = true,
+            ),
+        )
+        // Без паузы короткий validated — можно fast-path.
+        assertFalse(
+            NetworkRecoveryPolicy.needsFullRestartAfterNetworkEvent(
+                reason = "validated",
+                wasPausedOrBlackout = false,
+            ),
+        )
+        // phone_call_end / transport_switch — всегда полный.
+        assertTrue(
+            NetworkRecoveryPolicy.needsFullRestartAfterNetworkEvent(
+                reason = "phone_call_end",
+                wasPausedOrBlackout = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `call defers recovery but must replay after end`() {
+        assertTrue(
+            NetworkRecoveryPolicy.shouldQueueRecoveryDuringCall(
+                phoneCallActive = true,
+                reason = "transport_switch:mobile",
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.shouldQueueRecoveryDuringCall(
+                phoneCallActive = true,
+                reason = "phone_call_end",
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.shouldQueueRecoveryDuringCall(
+                phoneCallActive = false,
+                reason = "validated_after_gap",
+            ),
+        )
+        assertEquals(
+            "transport_switch:mobile",
+            NetworkRecoveryPolicy.recoveryReasonAfterCallEnd("transport_switch:mobile"),
+        )
+        assertEquals(
+            "phone_call_end",
+            NetworkRecoveryPolicy.recoveryReasonAfterCallEnd(null),
+        )
+        assertEquals(
+            "phone_call_end",
+            NetworkRecoveryPolicy.recoveryReasonAfterCallEnd(""),
+        )
+        // Слабый available не затирает уже накопленный switch.
+        assertEquals(
+            "transport_switch:mobile",
+            NetworkRecoveryPolicy.preferDeferredRecoveryReason(
+                "transport_switch:mobile",
+                "available:wifi",
+            ),
+        )
+        assertEquals(
+            "wifi_gap_restored",
+            NetworkRecoveryPolicy.preferDeferredRecoveryReason(
+                "available:cell",
+                "wifi_gap_restored",
+            ),
+        )
+    }
+
+    @Test
     fun `wifi cell transport target`() {
         assertEquals("wifi", NetworkRecoveryPolicy.wifiCellTransportTarget("cell", "wifi"))
         assertEquals("mobile", NetworkRecoveryPolicy.wifiCellTransportTarget("wifi", "cell"))

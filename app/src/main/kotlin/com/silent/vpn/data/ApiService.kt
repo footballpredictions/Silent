@@ -127,30 +127,6 @@ data class ReachabilityReportRequest(
     val age_sec: Int? = null,
 )
 
-/**
- * Admin-debug quality sample (пассивная скорость / tunnel RTT).
- * Сервер принимает только у is_admin; обычные клиенты не шлют.
- */
-data class QualityReportRequest(
-    val verdict: String,
-    val likely_cause: String = "",
-    val down_mbps: Double? = null,
-    val up_mbps: Double? = null,
-    val rx_delta: Long? = null,
-    val tx_delta: Long? = null,
-    val elapsed_ms: Long? = null,
-    val handshake_age_sec: Long? = null,
-    val tunnel_rtt_ms: Double? = null,
-    val network_type: String = "",
-    val carrier: String = "",
-    val server_slot: String = "",
-    val platform: String = "android",
-    val app_version: String = "",
-    val detail: String = "",
-    val age_sec: Int? = null,
-    val payload_json: String = "",
-)
-
 data class DeviceRenameRequest(val device_name: String)
 
 data class DeviceRegisterRequest(
@@ -501,9 +477,6 @@ interface SilentApi {
 
     @POST("api/vpn/reachability-report")
     suspend fun reportReachability(@Body req: ReachabilityReportRequest): Response<Map<String, Any>>
-
-    @POST("api/vpn/quality-report")
-    suspend fun reportQuality(@Body req: QualityReportRequest): Response<Map<String, Any>>
 
     @POST("api/vpn/bootstrap-config")
     suspend fun bootstrapConfig(@Body req: BootstrapConfigRequest): Response<VpnConfig>

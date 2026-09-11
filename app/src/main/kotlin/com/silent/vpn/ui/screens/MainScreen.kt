@@ -312,7 +312,6 @@ fun MainScreen(
     appearanceMode: AppearanceMode = AppearanceMode.LIGHT,
     onToggleAppearance: () -> Unit = {},
     onEnsureOlcrtcApi: suspend (providers: Array<out String>) -> Boolean = { true },
-    onQualityMeasure: (suspend () -> com.silent.vpn.vpn.QualityMonitor.MeasureResult)? = null,
 ) {
     val palette = remember(theme, appearanceMode) { theme.resolveThemePalette(appearanceMode) }
     val bg = palette.bg
@@ -912,7 +911,6 @@ fun MainScreen(
         DebugLogDialog(
             visible = showDebugLog,
             onDismiss = { showDebugLog = false },
-            onQualityMeasure = onQualityMeasure,
         )
     }
 }

@@ -511,16 +511,33 @@ class SilentRepository @Inject constructor(
             }
             MobileSyncLog.w(
                 "tunnel",
-                "API mobile direct failed → proxy/overlay: ${direct.exceptionOrNull()?.message}",
+                "API mobile direct failed → proxy: ${direct.exceptionOrNull()?.message}",
             )
             invalidateApiClient()
+        }
+
+        // Main VPN: withApiOverlayBrief — no-op. LTE excluded → TunnelApiProxy (как promo).
+        if (APP_EXCLUDED_FROM_VPN) {
+            if (prepareTunnelApiBaseLegacyProxy()) {
+                val viaProxy = runCatching { block() }
+                if (viaProxy.isSuccess && !isTunnelBackendFailure(viaProxy.getOrNull())) {
+                    MobileSyncLog.i("tunnel", "API via proxy ${getServerUrl()} mobile=${isOnMobileData()}")
+                    return viaProxy.getOrThrow()
+                }
+                MobileSyncLog.w(
+                    "tunnel",
+                    "API proxy failed: ${viaProxy.exceptionOrNull()?.message}",
+                )
+                invalidateApiClient()
+                runCatching { TunnelApiProxy.stopAndAwait() }
+            }
         }
 
         if (isOnMobileData()) {
             if (allowOverlayFallback) {
                 useApiBase(tunnelApiBase())
                 invalidateApiClient()
-                MobileSyncLog.i("tunnel", "API overlay brief (LTE routine fallback)")
+                MobileSyncLog.i("tunnel", "API overlay brief (LTE last resort / bootstrap)")
                 return WdttTunnelManager.withApiOverlayBrief(block, allowDuringRampUp = true)
             }
             throw IllegalStateException("mobile excluded API outside overlay session")
@@ -712,8 +729,7 @@ class SilentRepository @Inject constructor(
     }
 
     fun shouldUseTunnelApiProxy(): Boolean =
-        !isOnMobileData() &&
-            APP_EXCLUDED_FROM_VPN &&
+        APP_EXCLUDED_FROM_VPN &&
             WdttTunnelManager.tunnelReady.value &&
             WdttTunnelManager.running.value &&
             !WdttTunnelManager.isBootstrapMode() &&
@@ -760,8 +776,7 @@ class SilentRepository @Inject constructor(
             com.silent.vpn.vpn.WdttTunnelManager.tunnelReady.value &&
             !TunnelApiProxy.isActive()
 
-    suspend fun ensureTunnelApiProxy(): Boolean =
-        if (isOnMobileData()) false else prepareTunnelApiBaseLegacyProxy()
+    suspend fun ensureTunnelApiProxy(): Boolean = prepareTunnelApiBaseLegacyProxy()
 
     /**
      * Основной VPN: без overlay (LTE API не через WG; отзыв — GETCONF/DTLS).
@@ -3306,97 +3321,6 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
             }
         }
     }
-
-    /**
-     * Quality-репорт только через VPN-туннель (на LTE whitelist режет публичный API).
-     * Public fallback намеренно нет.
-     */
-    suspend fun reportQualityViaTunnel(req: QualityReportRequest): Result<Unit> {
-        if (!isLoggedIn()) return Result.failure(IllegalStateException("not logged in"))
-        if (!isMainVpnTunnelUp()) {
-            return Result.failure(IllegalStateException("vpn tunnel down"))
-        }
-        return runCatching {
-            withTunnelBackendBlock(allowOverlayFallback = true) {
-                val res = getApi().reportQuality(req)
-                if (!res.isSuccessful) {
-                    throw Exception("quality-report ${res.code()}")
-                }
-            }
-        }
-    }
-
-    /**
-     * RTT до tunnel API. Сначала VPN Network.openConnection, иначе локальный
-     * TunnelApiProxy (и на LTE) — upstream всё равно bind к VPN.
-     */
-    suspend fun probeTunnelHealthRttMs(timeoutMs: Long = 5_000L): Double? {
-        if (!isMainVpnTunnelUp()) return null
-        return withContext(Dispatchers.IO) {
-            probeHealthViaVpnNetwork(timeoutMs)?.let { return@withContext it }
-            if (APP_EXCLUDED_FROM_VPN) {
-                val proxyUp = runCatching {
-                    TunnelApiProxy.ensureStarted(context, timeoutMs = 8_000L)
-                }.getOrDefault(false)
-                if (proxyUp) {
-                    probeHealthViaUrl("${TunnelApiProxy.baseUrl()}/health", timeoutMs)
-                        ?.let { return@withContext it }
-                }
-            }
-            null
-        }
-    }
-
-    private fun probeHealthViaVpnNetwork(timeoutMs: Long): Double? {
-        val net = VpnNetworkHelper.getSilentVpnNetwork(context)
-            ?: VpnNetworkHelper.findOurVpnNetwork(context)
-            ?: run {
-                Log.w(TAG, "probeTunnelHealth: no VPN Network")
-                return null
-            }
-        return runCatching {
-            val url = java.net.URL("http://$WG_TUNNEL_GATEWAY:8000/health")
-            val t0 = System.nanoTime()
-            val conn = (net.openConnection(url) as java.net.HttpURLConnection).apply {
-                connectTimeout = timeoutMs.toInt().coerceAtLeast(1_000)
-                readTimeout = timeoutMs.toInt().coerceAtLeast(1_000)
-                requestMethod = "GET"
-                instanceFollowRedirects = false
-            }
-            try {
-                val code = conn.responseCode
-                val ms = (System.nanoTime() - t0) / 1_000_000.0
-                Log.i(TAG, "probeTunnelHealth net code=$code rtt=${ms.toInt()}ms")
-                if (code in 200..499) ms else null
-            } finally {
-                conn.disconnect()
-            }
-        }.onFailure { e ->
-            Log.w(TAG, "probeTunnelHealth net: ${e.javaClass.simpleName}: ${e.message}")
-        }.getOrNull()
-    }
-
-    private fun probeHealthViaUrl(url: String, timeoutMs: Long): Double? =
-        runCatching {
-            val t0 = System.nanoTime()
-            val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
-                connectTimeout = timeoutMs.toInt().coerceAtLeast(1_000)
-                readTimeout = timeoutMs.toInt().coerceAtLeast(1_000)
-                requestMethod = "GET"
-                instanceFollowRedirects = false
-            }
-            try {
-                val code = conn.responseCode
-                val ms = (System.nanoTime() - t0) / 1_000_000.0
-                Log.i(TAG, "probeTunnelHealth url code=$code rtt=${ms.toInt()}ms ($url)")
-                if (code in 200..499) ms else null
-            } finally {
-                conn.disconnect()
-            }
-        }.onFailure { e ->
-            Log.w(TAG, "probeTunnelHealth url: ${e.javaClass.simpleName}: ${e.message}")
-        }.getOrNull()
-
 
     internal suspend fun reportHashFailureDirect(hash: String, errorType: String, message: String) {
         val req = HashFailureReportRequest(

@@ -216,7 +216,6 @@ fun MainActivityRoot(
                             vm.cancelPendingOlcrtcConnectForApply()
                             vm.ensureOlcrtcConfigApi(activity, *providers)
                         },
-                        onQualityMeasure = { vm.measureQualityNow() },
                     )
                 }
             }

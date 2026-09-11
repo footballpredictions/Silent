@@ -589,32 +589,6 @@ class WireGuardHelper(context: Context) {
 
     }
 
-    /**
-     * Суммарный RX/TX WireGuard + возраст последнего handshake (сек).
-     * Нужен admin-debug QualityMonitor; в release не вызывается.
-     */
-    fun readTransferSnapshot(): QualityMonitor.Snapshot? {
-        val tunnel = sharedTunnel ?: return null
-        return runCatching {
-            val stats = backend.getStatistics(tunnel)
-            val rx = stats.totalRx()
-            val tx = stats.totalTx()
-            var newestHsMs = 0L
-            for (key in stats.peers()) {
-                val peer = stats.peer(key) ?: continue
-                if (peer.latestHandshakeEpochMillis > newestHsMs) {
-                    newestHsMs = peer.latestHandshakeEpochMillis
-                }
-            }
-            val ageSec = if (newestHsMs > 0L) {
-                ((System.currentTimeMillis() - newestHsMs) / 1000L).coerceAtLeast(0L)
-            } else {
-                null
-            }
-            QualityMonitor.Snapshot(rxBytes = rx, txBytes = tx, handshakeAgeSec = ageSec)
-        }.getOrNull()
-    }
-
     private suspend fun ensureGoBackendServiceStarted() {
 
         withContext(Dispatchers.Main) {

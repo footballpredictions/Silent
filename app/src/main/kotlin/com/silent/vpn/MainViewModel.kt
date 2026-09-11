@@ -27,7 +27,6 @@ import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.data.toHashItems
 import com.silent.vpn.data.PromoCheckRequest
 import com.silent.vpn.data.ReachabilityReportRequest
-import com.silent.vpn.data.QualityReportRequest
 import com.silent.vpn.data.ReferralInfo
 import com.silent.vpn.data.RegisterRequest
 import com.silent.vpn.data.SilentRepository
@@ -54,9 +53,6 @@ import com.silent.vpn.vpn.TelegramPathWarmup
 import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.HashFailureReporter
 import com.silent.vpn.vpn.ReachabilityReporter
-import com.silent.vpn.vpn.QualityMonitor
-import com.silent.vpn.vpn.QualityLogStore
-import com.silent.vpn.vpn.WireGuardHelper
 import com.silent.vpn.vpn.OlcrtcTunnelManager
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.sync.MobileSyncLog
@@ -552,7 +548,6 @@ class MainViewModel @Inject constructor(
                     // Туннель умер сам: при выключении с тумблера состояние уже DISCONNECTING.
                     reportReachabilityFailure("туннель оборван без запроса на отключение")
                     _vpnState.value = VpnState.DISCONNECTED
-                    QualityMonitor.stop()
                     backendSyncCompleted = false
                     repo.clearTunnelApiBase()
                     markLocalDeviceOffline()
@@ -2268,85 +2263,6 @@ class MainViewModel @Inject constructor(
         tunnelUpAtMs = 0L
     }
 
-    private fun qualityHost(): QualityMonitor.Host = object : QualityMonitor.Host {
-        override fun isEnabled(): Boolean =
-            BuildConfig.DEBUG && _profile.value?.is_admin == true && !bootstrapVpnMode
-
-        override fun isVpnUp(): Boolean {
-            if (_vpnState.value == VpnState.CONNECTED) return true
-            if (WdttTunnelManager.tunnelReady.value) return true
-            if (SilentVpnService.isRunning && repo.isMainVpnTunnelUp()) return true
-            return WireGuardHelper(appContext).isTunnelUp()
-        }
-
-        override fun readWgSnapshot(): QualityMonitor.Snapshot? =
-            WireGuardHelper(appContext).readTransferSnapshot()
-
-        override fun networkType(): String = repo.reportNetworkType()
-
-        override fun carrier(): String = repo.reportCarrier()
-
-        override fun serverSlot(): String = repo.getPreferredServer()
-
-        override suspend fun probeTunnelRttMs(): Double? = repo.probeTunnelHealthRttMs()
-
-        override suspend fun sendReport(json: org.json.JSONObject, ageSec: Int): Boolean {
-            val req = QualityReportRequest(
-                verdict = json.optString("verdict"),
-                likely_cause = json.optString("likely_cause"),
-                down_mbps = json.optDouble("down_mbps").takeIf { json.has("down_mbps") },
-                up_mbps = json.optDouble("up_mbps").takeIf { json.has("up_mbps") },
-                rx_delta = json.optLong("rx_delta").takeIf { json.has("rx_delta") },
-                tx_delta = json.optLong("tx_delta").takeIf { json.has("tx_delta") },
-                elapsed_ms = json.optLong("elapsed_ms").takeIf { json.has("elapsed_ms") },
-                handshake_age_sec = json.optLong("handshake_age_sec").takeIf {
-                    json.has("handshake_age_sec") && !json.isNull("handshake_age_sec")
-                },
-                tunnel_rtt_ms = json.optDouble("tunnel_rtt_ms").takeIf {
-                    json.has("tunnel_rtt_ms") && !json.isNull("tunnel_rtt_ms")
-                },
-                network_type = json.optString("network_type"),
-                carrier = json.optString("carrier"),
-                server_slot = json.optString("server_slot"),
-                app_version = json.optString("app_version", BuildConfig.VERSION_NAME),
-                detail = json.optString("likely_cause"),
-                age_sec = ageSec,
-                payload_json = json.toString().take(4000),
-            )
-            return repo.reportQualityViaTunnel(req).isSuccess
-        }
-    }
-
-    /** Только BuildConfig.DEBUG + is_admin: иначе не стартуем (не сыпать репортами). */
-    private fun syncQualityMonitor() {
-        if (!BuildConfig.DEBUG || _profile.value?.is_admin != true || bootstrapVpnMode) {
-            QualityMonitor.stop()
-            return
-        }
-        if (_vpnState.value == VpnState.CONNECTED &&
-            (WdttTunnelManager.tunnelReady.value || repo.isMainVpnTunnelUp())
-        ) {
-            QualityMonitor.bindHost(qualityHost())
-            if (!QualityMonitor.isRunning()) {
-                DebugLog.i(
-                    "QualityMonitor",
-                    "admin debug monitor on; log=${QualityLogStore.absolutePathHint(appContext)}",
-                )
-                QualityMonitor.start(appContext, viewModelScope, qualityHost())
-            }
-        } else {
-            QualityMonitor.stop()
-        }
-    }
-
-    /** Кнопка Quality в Debug Log — замер сразу, без ожидания фонового монитора. */
-    suspend fun measureQualityNow(): QualityMonitor.MeasureResult {
-        val host = qualityHost()
-        QualityMonitor.bindHost(host)
-        syncQualityMonitor()
-        return QualityMonitor.measureNow(appContext, host)
-    }
-
     private var lastTunnelAttachAtMs = 0L
     /** Первое подключение туннеля — sync/theme. Resume attach не должен дёргать WG overlay. */
     private fun onVpnTunnelReady(vpnConfig: VpnConfig? = null, initialConnect: Boolean = true) {
@@ -2357,8 +2273,6 @@ class MainViewModel @Inject constructor(
         if (tunnelUpAtMs <= 0L) tunnelUpAtMs = now
         // Канал до API подтвердился — самое время выгрузить накопленные отказы.
         ReachabilityReporter.flush(viewModelScope)
-        syncQualityMonitor()
-        QualityMonitor.flush(viewModelScope, qualityHost())
         if (!initialConnect) {
             if (now - lastTunnelAttachAtMs < 5_000L) return
             lastTunnelAttachAtMs = now
@@ -5147,7 +5061,6 @@ class MainViewModel @Inject constructor(
             if (profileHasPaidUi(profile) || profile.is_admin || profile.subscription.is_active) {
                 repo.markLiveProfileApplied()
             }
-            syncQualityMonitor()
             if (silentBootstrapSync || bootstrapVpnMode || WdttTunnelManager.isBootstrapMode()) {
                 if (hasVpnAccessForProfile(profile)) repo.setVpnAccessDenied(false)
                 else repo.setVpnAccessDenied(true)

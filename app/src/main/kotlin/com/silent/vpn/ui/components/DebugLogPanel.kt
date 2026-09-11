@@ -30,7 +30,6 @@ import com.silent.vpn.BuildConfig
 import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.util.rememberIsTv
 import com.silent.vpn.vpn.LogEntry
-import com.silent.vpn.vpn.QualityMonitor
 import com.silent.vpn.vpn.WdttTunnelManager
 import kotlinx.coroutines.launch
 
@@ -55,7 +54,6 @@ fun DebugLogButton(
 fun DebugLogDialog(
     visible: Boolean,
     onDismiss: () -> Unit,
-    onQualityMeasure: (suspend () -> com.silent.vpn.vpn.QualityMonitor.MeasureResult)? = null,
 ) {
     if (!BuildConfig.DEBUG || !visible) return
     val context = LocalContext.current
@@ -120,28 +118,6 @@ fun DebugLogDialog(
                         Toast.makeText(context, "Лог скопирован", Toast.LENGTH_SHORT).show()
                     }) {
                         Text("Копировать", color = Color(0xFF60A5FA), fontSize = 11.sp)
-                    }
-                    if (BuildConfig.DEBUG) {
-                        TvTextButton(onClick = {
-                            Toast.makeText(
-                                context,
-                                "Quality: смотрите видео ~12с…",
-                                Toast.LENGTH_LONG,
-                            ).show()
-                            scope.launch {
-                                val r = if (onQualityMeasure != null) {
-                                    onQualityMeasure()
-                                } else {
-                                    QualityMonitor.measureNow(context)
-                                }
-                                val payload =
-                                    "path=${r.path}\nverdict=${r.verdict}\n${r.summary}\n\n${r.rowJson}"
-                                copyToClipboard(context, payload)
-                                Toast.makeText(context, r.summary, Toast.LENGTH_LONG).show()
-                            }
-                        }) {
-                            Text("Quality", color = Color(0xFFFBBF24), fontSize = 11.sp)
-                        }
                     }
                     TvTextButton(onClick = { WdttTunnelManager.clearLogs() }) {
                         Text("Очистить", color = Color(0xFF9CA3AF), fontSize = 11.sp)

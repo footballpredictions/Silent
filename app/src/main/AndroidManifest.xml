@@ -12,6 +12,11 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Quality log → Download/SilentVPN (только API ≤28; на 10+ MediaStore). -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28"
+        tools:ignore="ScopedStorage" />
 
     <!-- Телефон + TV / приставки в одном APK -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />

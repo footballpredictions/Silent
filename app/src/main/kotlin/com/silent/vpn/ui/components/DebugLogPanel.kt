@@ -122,16 +122,13 @@ fun DebugLogDialog(
                     }
                     if (BuildConfig.DEBUG) {
                         TvTextButton(onClick = {
-                            val f = QualityLogStore.todayFile(context)
-                            val tail = runCatching {
-                                if (!f.exists()) "(файла ещё нет)"
-                                else f.readLines().takeLast(40).joinToString("\n").ifBlank { "(пусто)" }
-                            }.getOrDefault("(ошибка чтения)")
-                            val payload = "path=${f.absolutePath}\n\n$tail"
+                            val path = QualityLogStore.absolutePathHint(context)
+                            val tail = QualityLogStore.readTail(context)
+                            val payload = "path=$path\n\n$tail"
                             copyToClipboard(context, payload)
                             Toast.makeText(
                                 context,
-                                "Quality log → буфер (${f.name})",
+                                "Quality → Загрузки/SilentVPN",
                                 Toast.LENGTH_SHORT,
                             ).show()
                         }) {

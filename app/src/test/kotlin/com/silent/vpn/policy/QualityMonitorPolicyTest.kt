@@ -76,4 +76,17 @@ class QualityMonitorPolicyTest {
         assertFalse(QualityMonitorPolicy.shouldEscalate(1))
         assertTrue(QualityMonitorPolicy.shouldEscalate(2))
     }
+
+    @Test
+    fun `public quality path is under Download SilentVPN`() {
+        assertEquals(
+            "quality-20260911.jsonl",
+            QualityMonitorPolicy.qualityFileName("20260911"),
+        )
+        assertEquals("Download/SilentVPN/", QualityMonitorPolicy.mediaStoreRelativePath())
+        assertEquals(
+            "/storage/emulated/0/Download/SilentVPN/quality-20260911.jsonl",
+            QualityMonitorPolicy.publicPathHint("20260911"),
+        )
+    }
 }

@@ -100,4 +100,16 @@ object QualityMonitorPolicy {
 
     fun shouldEscalate(consecutiveProblems: Int, needed: Int = 2): Boolean =
         consecutiveProblems >= needed
+
+    /** Папка в общей памяти: Download/SilentVPN/ (не Android/data/…). */
+    const val PUBLIC_FOLDER = "SilentVPN"
+    const val DOWNLOADS_DIR = "Download"
+
+    fun qualityFileName(dayYyyyMmDd: String): String = "quality-$dayYyyyMmDd.jsonl"
+
+    /** RELATIVE_PATH для MediaStore.Downloads — со слэшем в конце. */
+    fun mediaStoreRelativePath(): String = "$DOWNLOADS_DIR/$PUBLIC_FOLDER/"
+
+    fun publicPathHint(dayYyyyMmDd: String): String =
+        "/storage/emulated/0/$DOWNLOADS_DIR/$PUBLIC_FOLDER/${qualityFileName(dayYyyyMmDd)}"
 }

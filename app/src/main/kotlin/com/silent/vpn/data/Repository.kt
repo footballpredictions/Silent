@@ -3326,29 +3326,77 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
         }
     }
 
-    /** RTT до tunnel API через текущий VPN (мс). null = не достучались. */
-    suspend fun probeTunnelHealthRttMs(timeoutMs: Long = 4_000L): Double? {
+    /**
+     * RTT до tunnel API. Сначала VPN Network.openConnection, иначе локальный
+     * TunnelApiProxy (и на LTE) — upstream всё равно bind к VPN.
+     */
+    suspend fun probeTunnelHealthRttMs(timeoutMs: Long = 5_000L): Double? {
         if (!isMainVpnTunnelUp()) return null
         return withContext(Dispatchers.IO) {
-            runCatching {
-                val url = java.net.URL("${tunnelApiBase().trimEnd('/')}/health")
-                val t0 = System.nanoTime()
-                val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
-                    connectTimeout = timeoutMs.toInt()
-                    readTimeout = timeoutMs.toInt()
-                    requestMethod = "GET"
-                    instanceFollowRedirects = false
+            probeHealthViaVpnNetwork(timeoutMs)?.let { return@withContext it }
+            if (APP_EXCLUDED_FROM_VPN) {
+                val proxyUp = runCatching {
+                    TunnelApiProxy.ensureStarted(context, timeoutMs = 8_000L)
+                }.getOrDefault(false)
+                if (proxyUp) {
+                    probeHealthViaUrl("${TunnelApiProxy.baseUrl()}/health", timeoutMs)
+                        ?.let { return@withContext it }
                 }
-                try {
-                    val code = conn.responseCode
-                    val ms = (System.nanoTime() - t0) / 1_000_000.0
-                    if (code in 200..299) ms else null
-                } finally {
-                    conn.disconnect()
-                }
-            }.getOrNull()
+            }
+            null
         }
     }
+
+    private fun probeHealthViaVpnNetwork(timeoutMs: Long): Double? {
+        val net = VpnNetworkHelper.getSilentVpnNetwork(context)
+            ?: VpnNetworkHelper.findOurVpnNetwork(context)
+            ?: run {
+                Log.w(TAG, "probeTunnelHealth: no VPN Network")
+                return null
+            }
+        return runCatching {
+            val url = java.net.URL("http://$WG_TUNNEL_GATEWAY:8000/health")
+            val t0 = System.nanoTime()
+            val conn = (net.openConnection(url) as java.net.HttpURLConnection).apply {
+                connectTimeout = timeoutMs.toInt().coerceAtLeast(1_000)
+                readTimeout = timeoutMs.toInt().coerceAtLeast(1_000)
+                requestMethod = "GET"
+                instanceFollowRedirects = false
+            }
+            try {
+                val code = conn.responseCode
+                val ms = (System.nanoTime() - t0) / 1_000_000.0
+                Log.i(TAG, "probeTunnelHealth net code=$code rtt=${ms.toInt()}ms")
+                if (code in 200..499) ms else null
+            } finally {
+                conn.disconnect()
+            }
+        }.onFailure { e ->
+            Log.w(TAG, "probeTunnelHealth net: ${e.javaClass.simpleName}: ${e.message}")
+        }.getOrNull()
+    }
+
+    private fun probeHealthViaUrl(url: String, timeoutMs: Long): Double? =
+        runCatching {
+            val t0 = System.nanoTime()
+            val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+                connectTimeout = timeoutMs.toInt().coerceAtLeast(1_000)
+                readTimeout = timeoutMs.toInt().coerceAtLeast(1_000)
+                requestMethod = "GET"
+                instanceFollowRedirects = false
+            }
+            try {
+                val code = conn.responseCode
+                val ms = (System.nanoTime() - t0) / 1_000_000.0
+                Log.i(TAG, "probeTunnelHealth url code=$code rtt=${ms.toInt()}ms ($url)")
+                if (code in 200..499) ms else null
+            } finally {
+                conn.disconnect()
+            }
+        }.onFailure { e ->
+            Log.w(TAG, "probeTunnelHealth url: ${e.javaClass.simpleName}: ${e.message}")
+        }.getOrNull()
+
 
     internal suspend fun reportHashFailureDirect(hash: String, errorType: String, message: String) {
         val req = HashFailureReportRequest(

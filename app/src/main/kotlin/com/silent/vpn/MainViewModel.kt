@@ -2272,9 +2272,12 @@ class MainViewModel @Inject constructor(
         override fun isEnabled(): Boolean =
             BuildConfig.DEBUG && _profile.value?.is_admin == true && !bootstrapVpnMode
 
-        override fun isVpnUp(): Boolean =
-            _vpnState.value == VpnState.CONNECTED &&
-                (WdttTunnelManager.tunnelReady.value || repo.isMainVpnTunnelUp())
+        override fun isVpnUp(): Boolean {
+            if (_vpnState.value == VpnState.CONNECTED) return true
+            if (WdttTunnelManager.tunnelReady.value) return true
+            if (SilentVpnService.isRunning && repo.isMainVpnTunnelUp()) return true
+            return WireGuardHelper(appContext).isTunnelUp()
+        }
 
         override fun readWgSnapshot(): QualityMonitor.Snapshot? =
             WireGuardHelper(appContext).readTransferSnapshot()
@@ -2323,6 +2326,7 @@ class MainViewModel @Inject constructor(
         if (_vpnState.value == VpnState.CONNECTED &&
             (WdttTunnelManager.tunnelReady.value || repo.isMainVpnTunnelUp())
         ) {
+            QualityMonitor.bindHost(qualityHost())
             if (!QualityMonitor.isRunning()) {
                 DebugLog.i(
                     "QualityMonitor",
@@ -2333,6 +2337,14 @@ class MainViewModel @Inject constructor(
         } else {
             QualityMonitor.stop()
         }
+    }
+
+    /** Кнопка Quality в Debug Log — замер сразу, без ожидания фонового монитора. */
+    suspend fun measureQualityNow(): QualityMonitor.MeasureResult {
+        val host = qualityHost()
+        QualityMonitor.bindHost(host)
+        syncQualityMonitor()
+        return QualityMonitor.measureNow(appContext, host)
     }
 
     private var lastTunnelAttachAtMs = 0L

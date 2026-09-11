@@ -59,16 +59,34 @@ class QualityMonitorPolicyTest {
     }
 
     @Test
-    fun `tunnel api fail wins over rates`() {
+    fun `tunnel api hard fail only when tunnel looks dead`() {
         val r = QualityMonitorPolicy.evaluate(
             QualityMonitorPolicy.SampleInput(
                 elapsedMs = 60_000,
-                rxDelta = 5_000_000,
-                txDelta = 1_000_000,
+                rxDelta = 100,
+                txDelta = 50,
+                handshakeAgeSec = 500,
                 tunnelApiOk = false,
             ),
         )
         assertEquals(QualityMonitorPolicy.Verdict.TUNNEL_API_FAIL, r.verdict)
+    }
+
+    @Test
+    fun `tunnel api soft when handshake fresh and traffic like youtube`() {
+        // Как ручной замер: ~3.4 Mbps / 4с, HS 28с, API probe fail
+        val r = QualityMonitorPolicy.evaluate(
+            QualityMonitorPolicy.SampleInput(
+                elapsedMs = 4_000,
+                rxDelta = 1_712_752,
+                txDelta = 126_208,
+                handshakeAgeSec = 28,
+                tunnelApiOk = false,
+            ),
+        )
+        assertEquals(QualityMonitorPolicy.Verdict.SLOW, r.verdict)
+        assertTrue(r.likelyCause.contains("tunnel_api_soft_fail"))
+        assertTrue(QualityMonitorPolicy.isProblem(r.verdict))
     }
 
     @Test
@@ -78,15 +96,26 @@ class QualityMonitorPolicyTest {
     }
 
     @Test
+    fun `min active bytes scales with window`() {
+        assertEquals(64L * 1024, QualityMonitorPolicy.minActiveBytesForWindow(60_000))
+        assertEquals(8L * 1024, QualityMonitorPolicy.minActiveBytesForWindow(4_000))
+        assertTrue(QualityMonitorPolicy.minActiveBytesForWindow(12_000) >= 8L * 1024)
+    }
+
+    @Test
     fun `public quality path is under Download SilentVPN`() {
         assertEquals(
-            "quality-20260911.jsonl",
-            QualityMonitorPolicy.qualityFileName("20260911"),
+            "quality-20260911-154812.jsonl",
+            QualityMonitorPolicy.qualityFileName("20260911", "154812"),
         )
         assertEquals("Download/SilentVPN/", QualityMonitorPolicy.mediaStoreRelativePath())
         assertEquals(
-            "/storage/emulated/0/Download/SilentVPN/quality-20260911.jsonl",
-            QualityMonitorPolicy.publicPathHint("20260911"),
+            "/storage/emulated/0/Download/SilentVPN/quality-20260911-154812.jsonl",
+            QualityMonitorPolicy.publicPathHint("quality-20260911-154812.jsonl"),
+        )
+        assertTrue(
+            QualityMonitorPolicy.mediaStoreRelativePathCandidates()
+                .any { it.contains("SilentVPN") },
         )
     }
 }

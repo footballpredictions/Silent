@@ -30,7 +30,7 @@ import com.silent.vpn.BuildConfig
 import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.util.rememberIsTv
 import com.silent.vpn.vpn.LogEntry
-import com.silent.vpn.vpn.QualityLogStore
+import com.silent.vpn.vpn.QualityMonitor
 import com.silent.vpn.vpn.WdttTunnelManager
 import kotlinx.coroutines.launch
 
@@ -55,6 +55,7 @@ fun DebugLogButton(
 fun DebugLogDialog(
     visible: Boolean,
     onDismiss: () -> Unit,
+    onQualityMeasure: (suspend () -> com.silent.vpn.vpn.QualityMonitor.MeasureResult)? = null,
 ) {
     if (!BuildConfig.DEBUG || !visible) return
     val context = LocalContext.current
@@ -122,15 +123,22 @@ fun DebugLogDialog(
                     }
                     if (BuildConfig.DEBUG) {
                         TvTextButton(onClick = {
-                            val path = QualityLogStore.absolutePathHint(context)
-                            val tail = QualityLogStore.readTail(context)
-                            val payload = "path=$path\n\n$tail"
-                            copyToClipboard(context, payload)
                             Toast.makeText(
                                 context,
-                                "Quality → Загрузки/SilentVPN",
-                                Toast.LENGTH_SHORT,
+                                "Quality: смотрите видео ~12с…",
+                                Toast.LENGTH_LONG,
                             ).show()
+                            scope.launch {
+                                val r = if (onQualityMeasure != null) {
+                                    onQualityMeasure()
+                                } else {
+                                    QualityMonitor.measureNow(context)
+                                }
+                                val payload =
+                                    "path=${r.path}\nverdict=${r.verdict}\n${r.summary}\n\n${r.rowJson}"
+                                copyToClipboard(context, payload)
+                                Toast.makeText(context, r.summary, Toast.LENGTH_LONG).show()
+                            }
                         }) {
                             Text("Quality", color = Color(0xFFFBBF24), fontSize = 11.sp)
                         }

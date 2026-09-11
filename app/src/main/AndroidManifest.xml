@@ -111,6 +111,15 @@
             android:name=".vpn.captcha.CaptchaCancelReceiver"
             android:exported="false" />
 
+        <!-- debug↔release: sibling просит снять зомби-VPN (setPackage → явная доставка). -->
+        <receiver
+            android:name=".service.SiblingVpnTeardownReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.silent.vpn.action.SIBLING_TEARDOWN" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".service.SilentVpnService"
             android:exported="false"

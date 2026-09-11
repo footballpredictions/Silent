@@ -19,7 +19,9 @@ import com.silent.vpn.data.DnsPreset
 import com.silent.vpn.data.DnsSettings
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
+import com.silent.vpn.policy.SiblingVpnPolicy
 import com.silent.vpn.service.SilentGoBackendVpnService
+import com.silent.vpn.service.SiblingVpnCleanup
 import com.silent.vpn.util.DebugLog
 
 import com.wireguard.android.backend.GoBackend
@@ -87,17 +89,22 @@ class WireGuardHelper(context: Context) {
                 appContext.startService(Intent(appContext, SilentGoBackendVpnService::class.java))
             }
             delay(300)
-            val tunnel = sharedTunnel ?: WgTunnel()
+            val name = SiblingVpnPolicy.wgTunnelName(appContext.packageName)
+            val tunnel = sharedTunnel ?: WgTunnel(name)
+            // Старое имя "silent" у debug до фикса — гасим оба.
             runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
+            if (name != "silent") {
+                runCatching { backend.setState(WgTunnel("silent"), Tunnel.State.DOWN, null) }
+            }
             sharedTunnel = null
             lastAppliedSemanticKey = null
             lastExcludeRouteKey = null
         }
     }
 
-    class WgTunnel : Tunnel {
+    class WgTunnel(private val tunnelName: String = "silent") : Tunnel {
 
-        override fun getName() = "silent"
+        override fun getName() = tunnelName
 
         override fun onStateChange(newState: Tunnel.State) {}
 
@@ -136,10 +143,10 @@ class WireGuardHelper(context: Context) {
 
             }
 
-            if (VpnNetworkHelper.isOtherVpnActive(appContext)) {
-
-                DebugLog.i(TAG, "Замена другого VPN — поднимаем Silent")
-
+            val foreignVpn = VpnNetworkHelper.isOtherVpnActive(appContext)
+            if (foreignVpn) {
+                DebugLog.i(TAG, "Чужой VPN активен — sibling teardown + ожидание")
+                SiblingVpnCleanup.clearForeignVpnIfNeeded(appContext)
             }
 
             ensureGoBackendServiceStarted()
@@ -346,9 +353,9 @@ class WireGuardHelper(context: Context) {
                 sharedTunnel = null
             }
 
-            val newTunnel = WgTunnel()
+            val newTunnel = WgTunnel(SiblingVpnPolicy.wgTunnelName(appContext.packageName))
 
-            setTunnelUpWithRetry(newTunnel, finalConfig)
+            setTunnelUpWithRetry(newTunnel, finalConfig, extraRetries = foreignVpn)
 
             sharedTunnel = newTunnel
 
@@ -524,38 +531,30 @@ class WireGuardHelper(context: Context) {
 
 
 
-    private suspend fun setTunnelUpWithRetry(tunnel: WgTunnel, config: Config) {
-
+    private suspend fun setTunnelUpWithRetry(
+        tunnel: WgTunnel,
+        config: Config,
+        extraRetries: Boolean = false,
+    ) {
         var last: Exception? = null
-
-        repeat(3) { attempt ->
-
+        val tries = if (extraRetries) 5 else 3
+        repeat(tries) { attempt ->
             try {
-
                 backend.setState(tunnel, Tunnel.State.UP, config)
-
                 return
-
             } catch (e: Exception) {
-
                 last = e
-
-                Log.w(TAG, "WG UP attempt ${attempt + 1}/3: ${e.message}")
-
-                DebugLog.w(TAG, "WG UP attempt ${attempt + 1}/3: ${e.message}")
-
+                Log.w(TAG, "WG UP attempt ${attempt + 1}/$tries: ${e.message}")
+                DebugLog.w(TAG, "WG UP attempt ${attempt + 1}/$tries: ${e.message}")
                 runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
-
+                if (extraRetries && VpnNetworkHelper.isOtherVpnActive(appContext)) {
+                    SiblingVpnCleanup.clearForeignVpnIfNeeded(appContext)
+                }
                 ensureGoBackendServiceStarted()
-
-                delay(250L * (attempt + 1))
-
+                delay(250L * (attempt + 1) + if (extraRetries) 400L else 0L)
             }
-
         }
-
         throw last ?: IllegalStateException("WireGuard UP failed")
-
     }
 
 

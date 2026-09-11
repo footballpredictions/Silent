@@ -107,22 +107,30 @@ object VpnConnectHelper {
         synchronized(lock) {
             val appCtx = context.applicationContext
             val orphanWg = VpnNetworkHelper.findOurVpnNetwork(appCtx) != null
+            val foreignVpn = VpnNetworkHelper.isOtherVpnActive(appCtx)
             val stale = needsStaleCleanup(context)
             WdttTunnelManager.ensureApiOverlayOff()
             VpnBackendSync.stop()
             VpnSessionState.resetBackendSync()
-            if (!orphanWg && !stale) {
+            if (!orphanWg && !stale && !foreignVpn) {
                 SessionTrace.mark("VpnConnectHelper.prepareForConnect", "clean reconnect — skip WG reset")
                 return
             }
-            SessionTrace.mark("VpnConnectHelper.prepareForConnect", "orphanWg=$orphanWg stale=$stale")
+            SessionTrace.mark(
+                "VpnConnectHelper.prepareForConnect",
+                "orphanWg=$orphanWg stale=$stale foreignVpn=$foreignVpn",
+            )
             runBlocking {
-                if (orphanWg || WdttTunnelManager.running.value) {
+                if (foreignVpn) {
+                    runCatching { SiblingVpnCleanup.clearForeignVpnIfNeeded(appCtx) }
+                        .onFailure { e -> DebugLog.w(TAG, "sibling cleanup: ${e.message}") }
+                }
+                if (orphanWg || WdttTunnelManager.running.value || foreignVpn) {
                     runCatching { WireGuardHelper(appCtx).forceStopSilentTunnel() }
                         .onFailure { e -> DebugLog.w(TAG, "forceStopSilentTunnel: ${e.message}") }
                 }
             }
-            if (stale) {
+            if (stale || foreignVpn) {
                 ensureCleanSlateLocked(appCtx, force = true, stale = true)
             }
         }
@@ -135,7 +143,7 @@ object VpnConnectHelper {
         synchronized(lock) {
             val stale = needsStaleCleanup(context)
             val now = System.currentTimeMillis()
-            if (!stale) {
+            if (!stale && !force) {
                 if (now - lastCleanSlateAtMs < CLEAN_SLATE_DEDUPE_MS) {
                     SessionTrace.mark("VpnConnectHelper.ensureCleanSlate", "skip (recent, clean)")
                     return
@@ -147,7 +155,7 @@ object VpnConnectHelper {
                 SessionTrace.mark("VpnConnectHelper.ensureCleanSlate", "skip (recent stale dedupe)")
                 return
             }
-            ensureCleanSlateLocked(context.applicationContext, force, stale)
+            ensureCleanSlateLocked(context.applicationContext, force, stale || force)
         }
     }
 

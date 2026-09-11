@@ -4,10 +4,151 @@
 > Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
 > сначала читать его, потом код.
 
+## Последние изменения (Quality monitor удалён с Android 2026-09-11)
+
+Полный откат admin-debug Quality с клиента: удалены QualityMonitor /
+QualityLogStore / QualityMonitorPolicy (+тесты), API `reportQuality`,
+кнопка Quality в Debug Log, probe RTT / reportViaTunnel в Repository.
+VPN/стабильность важнее незавершённого канала upload на LTE.
+
+## Последние изменения (Quality полностью вырезан 2026-09-11)
+
+Удалены Android QualityMonitor/Log/Policy/UI, backend quality_store,
+`/api/vpn/quality-report`, Hive Quality panel. Таблица в БД может остаться
+мёртвой (не трогаем). Деплой + пуш main/android.
+
+## Последние изменения (Quality: откат app-in-tunnel 2026-09-11)
+
+`withAppInTunnelForApi` ломал VPN (иконка вкл→пропадает, тумблер жив).
+Откат: без startTunnel/includeApp. Quality = локальный json + попытка
+TunnelApiProxy без reapply WG. Public/whitelist не трогаем.
+Даже из WG (`from 10.66.13.158`) до `10.66.66.1:8000` был timeout —
+отправка на сервер с LTE пока может fail; VPN стабильность важнее.
+
+## Последние изменения (Quality app-in-tunnel 2026-09-11)
+
+Public fallback на LTE whitelist — ошибка (nip.io режется). Убран.
+Отправка: кратко include Silent в WG → POST `10.66.66.1:8000`, exclude обратно.
+Может мигнуть VPN на время кнопки Quality.
+
+## Последние изменения (Quality 502→public fallback 2026-09-11)
+
+`quality-report 502` = TunnelApiProxy не достучался до 10.66.66.1 (excluded).
+После fail — public HTTPS (сота/cell). Toast/send_detail: accepted или ошибка с `(public)`.
+
+## Последние изменения (Quality via TunnelApiProxy 2026-09-11)
+
+`failed to connect to 10.66.66.1` на mobile: app excluded, а
+`withApiOverlayBrief` на main VPN — no-op. Фикс как у promo:
+`TunnelApiProxy` (127.0.0.1 → bind VPN Network). Proxy разрешён и на LTE.
+Debug APK пересобран.
+
+## Последние изменения (Quality: .json + sent в строке 2026-09-11)
+
+Prefs оставляли имя `*.jsonl` → MediaStore + MIME json = `*.jsonl.json`.
+Миграция на канон `quality-YYYYMMDD-HHmmss.json`. В файл пишем после upload
+с итоговым `sent`/`send_detail` (раньше первая строка всегда sent=false).
+
+## Последние изменения (Quality log .json не .jsonl.txt 2026-09-11)
+
+MediaStore: MIME `text/plain` + имя `.jsonl` → Android дописывал `.txt`.
+Теперь `quality-*.json` + MIME `application/json`. Новый debug APK.
+
+## Последние изменения (Quality upload без локального admin 2026-09-11)
+
+Toast «локально не admin» — клиент сам не слал, хотя сервер мог принять.
+Фикс: ручной Quality всегда пробует upload (debug); сервер решает;
+перед замером refresh профиля; adminLike = is_admin || max_devices≤0;
+toast показывает `accepted` / `admin only`. Новый debug APK.
+
+## Последние изменения (Quality → сервер+разбор 2026-09-11)
+
+Смысл цепочки: admin-debug шлёт **все** сэмплы (не только escalate) через
+VPN → Postgres `admin_quality_reports`. Улей считает сводку/вердикт
+(`build_analysis`) и показывает в админке Hive → Quality. Toast: `→ сервер ok`.
+Деплой `deploy_stable.py` OK (health 0.06s, kick 0, wdtt active). Debug APK собран.
+
+## Последние изменения (Quality monitor ready 2026-09-11)
+
+Ручной Quality 12с → вердикт `slow`/`ok`/`idle` по WG Δбайт; tunnel API soft.
+Лог: `Download/SilentVPN/quality-*.jsonl`. Push `android` `01f1788`.
+Приёмка: mobile/server3 → `slow` ↓3.1 при живом YouTube. Ждём ночной спад.
+
+## Последние изменения (Quality manual 12s 2026-09-11)
+
+Ручной Quality: окно 12с (было 4с) + порог idle пропорционален длине окна.
+Toast: «смотрите видео ~12с».
+
+## Последние изменения (Quality soft tunnel API 2026-09-11)
+
+При живом WG+трафике `tunnel_api_fail` врал (excluded-app / LTE, 10.66.66.1).
+Вердикт теперь по handshake+скорости; API fail — soft (`tunnel_api_soft_fail`).
+Probe: VPN Network, иначе TunnelApiProxy и на LTE.
+
+## Последние изменения (Quality probe via VPN Network 2026-09-11)
+
+Повторный `tunnel_api_fail` на LTE: `withApiOverlayBrief` на main VPN — no-op,
+OkHttp из excluded-app к 10.66.66.1 не ходит. Probe теперь
+`VpnNetwork.openConnection(http://10.66.66.1:8000/health)` как TunnelApiProxy.
+
+## Последние изменения (Quality tunnel probe 2026-09-11)
+
+`tunnel_api_fail` на server3/4 при живом YouTube: probe бил в `10.66.66.1`
+сырым URLConnection, а Silent excluded из WG → всегда null. Фикс: тот же
+`withTunnelBackendBlock` (proxy/overlay/direct), HTTP 200–499 = RTT ok.
+
+## Последние изменения (Quality host fix 2026-09-11)
+
+Кнопка Quality брала `boundHost` только если фоновый монитор уже стартовал
+(admin+sync). Теперь замер идёт через `ViewModel.measureQualityNow()` с живым
+host; VPN детект мягче (WG up / service). Toast — реальный вердикт.
+
+## Последние изменения (Quality = вердикт сети 2026-09-11)
+
+Кнопка Quality больше не пишет пустой probe: замер ~4с (Δ WG + tunnel RTT) →
+строка с `verdict` ok/idle/slow/…. Фон по-прежнему раз в 60с. Toast показывает
+вердикт сразу.
+
+## Последние изменения (quality log имя+toast 2026-09-11)
+
+Toast «запись не удалась» был ложным: MediaStore писал ok, readTail не находил
+файл. Копии — insert с одним DISPLAY_NAME. Фикс: файл дня
+`quality-YYYYMMDD-HHmmss.jsonl` (время первого создания), URI в prefs, toast по
+факту `append()` ok.
+
+## Последние изменения (quality log Android 16 2026-09-11)
+
+Пустая папка SilentVPN: кнопка Quality только mkdirs, файл писался лишь при
+escalate. Фикс: MediaStore надёжнее (pending cleanup, MIME text/plain, rewrite
+если `wa` нет); probe при старте монитора и по кнопке Quality; локально все
+сэмплы. Путь тот же: Загрузки/SilentVPN/quality-*.jsonl.
+
+## Последние изменения (quality log → Download 2026-09-11)
+
+Admin-debug quality jsonl пишется в общую память:
+`Download/SilentVPN/quality-YYYYMMDD.jsonl` (MediaStore на Android 10+),
+не в `Android/data/…/files/silent-quality/`. Push `android` `3d80092`.
+
+## Последние изменения (Android debug↔release VPN zombie 2026-09-11)
+
+Две установки (`com.silent.vpn` / `.debug`): после свайпа из недавних чужой
+UID оставляет TUN → у второй нет значка VPN, иногда только airplane/ребут.
+Фикс: broadcast `SIBLING_TEARDOWN` → force clean slate sibling’а; ожидание
+снятия чужого VPN перед WG UP; `ensureCleanSlate(force)` больше не skip;
+имя туннеля `silent` / `silent_dbg`. Тест: SiblingVpnPolicyTest. Push `android` `f4f1e91`.
+
+## Последние изменения (Android network recovery 2026-09-11)
+
+Фикс «после звонка / обрыва сети не поднимается, нужен рубильник» без отката
+защиты от ложных рестартов на чужой соте при живом Wi‑Fi:
+1) blackout на handover wifi→cell (last≠current); 2) recover во время звонка
+в очередь → на phone_call_end; 3) после pause/blackout нельзя fast reapply WG —
+полный restart. Тесты в NetworkRecoveryPolicyTest. Push `android` `987ec4f`.
+
 ## Последние изменения (admin-debug quality monitor 2026-09-11)
 
 Android debug + `is_admin`: пассивный монитор скорости (WG Δбайт / 60с + RTT
-`10.66.66.1/health`). Проблемы → локальный `silent-quality/quality-*.jsonl` и
+`10.66.66.1/health`). Проблемы → локальный `Download/SilentVPN/quality-*.jsonl` и
 `POST /api/vpn/quality-report` **только через VPN** (не public). Не-админам
 сервер `accepted=false`. Админ список: `GET /api/admin/hive/quality-reports`.
 В Debug Log кнопка «Quality». Тесты: `QualityMonitorPolicyTest`, 

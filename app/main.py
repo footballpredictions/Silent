@@ -452,8 +452,6 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS ix_availability_client_reports_ts "
                 "ON availability_client_reports (ts DESC)"
             ))
-            from app.services.quality_store import ensure_quality_table
-            await ensure_quality_table(conn)
     except Exception as e:
         logger.error("availability tables skipped (API работает дальше): %s", e)
 

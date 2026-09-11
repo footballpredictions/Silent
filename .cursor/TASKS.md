@@ -8,14 +8,9 @@ Agent приступает к **первой невыполненной** зад
 
 ## Открытые задачи
 
-### Admin-debug quality monitor (Android, 2026-09-11)
+### Admin-debug quality monitor (Android, 2026-09-11) — СНЯТО
 
-- [x] Пассивный монитор только `BuildConfig.DEBUG` + `is_admin`: WG Δбайт + tunnel `/health` RTT
-- [x] Отправка через VPN (`reportQualityViaTunnel`), не public API (LTE whitelist)
-- [x] Локальный файл `silent-quality/quality-YYYYMMDD.jsonl` + кнопка Quality в Debug Log
-- [x] Backend `POST /api/vpn/quality-report` (admin-only) + `GET /api/admin/hive/quality-reports`
-- [ ] Собрать debug APK, проверить ночью/на LTE: файл пишется, репорт доходит через туннель
-- [ ] Деплой backend `deploy_stable.py` когда будете смотреть репорты в БД
+- [x] **Полностью вырезано 2026-09-11:** клиент + API + админка Hive Quality. Не возвращать без рабочего канала на LTE без reapply WG.
 
 ### AI exit node — Сота 3 / Сервер 4 (2026-09-06)
 
@@ -30,11 +25,18 @@ Runbook: `backend/AI_EXIT_NODE.md`. Выход = WDTT + гигиена ноды.
 - [x] **Админ-выдача года не плюсует хвост** (2026-09-09): grant от now; починен `my@silent27-99.ru` 2028-03→2027-09
 - [ ] При необходимости резидентный SOCKS (`proxy --chain socks5://…`), не WARP — только если снова капчи
 
-### Ложные переподключения VPN (Android, 2026-09-06)
+### Debug↔release VPN залипание (Android, 2026-09-11)
 
-- [x] Диагноз: колбэк слушает **все** не-VPN сети, поэтому сота, которую Android гасит сам при живом Wi-Fi, ставила `lastBlackoutAtMs` (`onLosing`) и роняла общий флаг VALIDATED (`onCapabilitiesChanged`) → `wifi_gap_restored` / `validated_after_gap` → полный рестарт транспорта, воркеры с нуля
-- [x] Фикс: `NetworkRecoveryPolicy.isOurUnderlyingNetwork` — события чужой сети игнорируются в обоих местах (+ юнит-тест)
-- [ ] Проверить на телефоне: сутки на Wi-Fi без самопроизвольных переподключений. В логе не должно быть `gap restore wifi_gap_restored` и `network recovery: validated_after_gap` при неподвижном телефоне
+- [x] Диагноз: два UID; после свайпа sibling оставляет зомби-TUN; `findOurVpnNetwork` чужой не видит
+- [x] Sibling teardown broadcast + ожидание перед WG UP + `force` clean slate; tunnel name `silent`/`silent_dbg`
+- [ ] Проверить на телефоне: VPN в release → свайп → debug connect (и наоборот) без airplane/ребута
+
+### Ложные / пропущенные переподключения VPN (Android, 2026-09-11)
+
+- [x] Диагноз ложных: чужая сота при Wi‑Fi → blackout/VALIDATED → лишний restart
+- [x] Фикс чужой сети: `isOurUnderlyingNetwork` (2026-09-06)
+- [x] **Регресс «не переподключает»:** handover blackout, очередь recover на звонке, full restart после pause — 2026-09-11
+- [ ] Проверить на телефоне: Wi‑Fi↔LTE, airplane, звонок, потеря сети — без рубильника; на месте без самопроизвольных рестартов
 
 ### Linux-клиент (2026-08-29)
 

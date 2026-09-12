@@ -332,7 +332,7 @@ func main() {
 				for _, line := range lines {
 					newLines = append(newLines, line)
 					if strings.TrimSpace(line) == "[Interface]" {
-						newLines = append(newLines, "MTU = 1200")
+						newLines = append(newLines, "MTU = 1420")
 					}
 				}
 				finalConf = strings.Join(newLines, "\n")

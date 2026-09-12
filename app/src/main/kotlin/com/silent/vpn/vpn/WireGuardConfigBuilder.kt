@@ -25,7 +25,7 @@ object WireGuardConfigBuilder {
             appendLine("[Interface]")
             appendLine("PrivateKey = $priv")
             appendLine("Address = $addr")
-            appendLine("MTU = 1200")
+            appendLine("MTU = 1420")
             appendLine("DNS = $dns")
             appendLine()
             appendLine("[Peer]")

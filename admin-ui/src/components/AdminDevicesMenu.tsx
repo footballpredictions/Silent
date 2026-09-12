@@ -144,11 +144,16 @@ export default function AdminDevicesMenu({
             aria-label="Устройства админа"
           >
             <div className="flex items-center justify-between px-3 py-2.5 border-b border-[#222]">
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <Monitor className="w-4 h-4 text-[#888]" />
-                Устройства
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <Monitor className="w-4 h-4 text-[#888]" />
+                  Устройства
+                </div>
+                <p className="text-[10px] text-[#666] mt-0.5 pl-6">
+                  Лимит 2: этот ПК и телефон. Чужие не войдут.
+                </p>
               </div>
-              <button type="button" onClick={() => setOpen(false)} className="text-[#555] hover:text-white p-1">
+              <button type="button" onClick={() => setOpen(false)} className="text-[#555] hover:text-white p-1 shrink-0">
                 <X className="w-4 h-4" />
               </button>
             </div>

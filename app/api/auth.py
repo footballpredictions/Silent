@@ -412,21 +412,54 @@ async def admin_login(
     )
     mfa_email = (settings.ADMIN_MFA_EMAIL or "").strip()
 
+    # Лимит trusted (ПК+телефон): чужой браузер не получает MFA и не входит.
+    if device is None:
+        try:
+            await admin_auth_service.assert_unknown_device_may_login(db)
+        except ValueError as e:
+            if str(e) == "trusted_devices_full":
+                push_security_event(
+                    source="admin-login-untrusted-device",
+                    message="Admin login blocked: trusted devices full",
+                    severity="warning",
+                    client_ip=get_client_ip(request),
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "Это устройство не привязано к админке. "
+                        "Разрешены только 2: этот ПК и телефон. "
+                        "С доверенного устройства снимите слот в меню щита у логотипа, затем войдите здесь с MFA."
+                    ),
+                )
+            raise
+
     # Trusted device or MFA disabled → issue session immediately
     if device or not mfa_email:
         out_device_token = req.device_token
         if req.device_fingerprint and (device is not None or (not mfa_email and req.remember_device)):
-            device, out_device_token = await admin_auth_service.upsert_trusted_device(
-                db,
-                request=request,
-                fingerprint=req.device_fingerprint,
-                device_type=req.device_type or "pc",
-                device_name=req.device_name or "ПК",
-                platform_hint=req.client_platform,
-                mobile_hint=req.client_mobile,
-                existing_device_token=req.device_token,
-                issue_token=True,
-            )
+            try:
+                device, out_device_token = await admin_auth_service.upsert_trusted_device(
+                    db,
+                    request=request,
+                    fingerprint=req.device_fingerprint,
+                    device_type=req.device_type or "pc",
+                    device_name=req.device_name or "ПК",
+                    platform_hint=req.client_platform,
+                    mobile_hint=req.client_mobile,
+                    existing_device_token=req.device_token,
+                    issue_token=True,
+                )
+            except ValueError as e:
+                if str(e) == "trusted_devices_full":
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "Лимит доверенных устройств (2: ПК и телефон). "
+                            "Снимите слот в меню щита, затем войдите снова."
+                        ),
+                    )
+                raise
         token, session_id = await admin_auth_service.create_admin_session(
             db,
             request=request,
@@ -580,6 +613,20 @@ async def admin_mfa_verify(
         )
     except ValueError as e:
         reason = str(e)
+        if reason == "trusted_devices_full":
+            push_security_event(
+                source="admin-mfa-trusted-full",
+                message="Admin MFA blocked: trusted devices full",
+                severity="warning",
+                client_ip=get_client_ip(request),
+            )
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Лимит доверенных устройств (2). "
+                    "Снимите ПК или телефон в меню щита, затем привяжите это устройство."
+                ),
+            )
         if reason in ("bad_code", "invalid_challenge", "expired", "too_many_attempts"):
             push_security_event(
                 source="admin-mfa-verify-failed",

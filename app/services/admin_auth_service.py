@@ -179,6 +179,36 @@ async def find_trusted_device(
     return by_token or by_fp
 
 
+async def count_active_trusted_devices(db: AsyncSession) -> int:
+    from sqlalchemy import func
+
+    result = await db.execute(
+        select(func.count())
+        .select_from(AdminTrustedDevice)
+        .where(AdminTrustedDevice.revoked_at.is_(None))
+    )
+    return int(result.scalar_one() or 0)
+
+
+def trusted_devices_max() -> int:
+    return max(0, int(getattr(settings, "ADMIN_TRUSTED_DEVICES_MAX", 0) or 0))
+
+
+async def can_enroll_new_trusted_device(db: AsyncSession) -> bool:
+    """False если слоты заняты — новое устройство нельзя привязать."""
+    limit = trusted_devices_max()
+    if limit <= 0:
+        return True
+    return await count_active_trusted_devices(db) < limit
+
+
+async def assert_unknown_device_may_login(db: AsyncSession) -> None:
+    """Чужой браузер при полном лимите — без MFA и без сессии."""
+    if await can_enroll_new_trusted_device(db):
+        return
+    raise ValueError("trusted_devices_full")
+
+
 async def _revoke_device_row(db: AsyncSession, device: AdminTrustedDevice) -> None:
     now = datetime.utcnow()
     device.revoked_at = now
@@ -274,6 +304,8 @@ async def upsert_trusted_device(
     device_token: str | None = existing_device_token if device and existing_device_token else None
 
     if device is None:
+        if not await can_enroll_new_trusted_device(db):
+            raise ValueError("trusted_devices_full")
         device_token = secrets.token_urlsafe(32) if issue_token else None
         device = AdminTrustedDevice(
             device_fingerprint=fp or None,

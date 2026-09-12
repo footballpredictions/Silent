@@ -4,6 +4,17 @@
 > Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
 > сначала читать его, потом код.
 
+## Последние изменения (админка = только ПК+телефон 2026-09-12)
+
+Уже были 2 trusted: ПК и V2520A (телефон). Лимит `ADMIN_TRUSTED_DEVICES_MAX=2`:
+чужой браузер при полном лимите не получает MFA и не входит (403).
+Чтобы заменить устройство — снять слот в меню щита, затем MFA на новом.
+Деплой stable.
+
+## Последние изменения (OpenWrt-клиент 2026-09-12)
+
+YuMoney из preview/роутера: открывать QuickPay без Referer (`noreferrer`), как Android Intent — иначе «переводы недоступны» с 127.0.0.1 / *.silent.vpn. Тумблер и док как у клиентов. Preview: `http://127.0.0.1:7788/`.
+
 ## Последние изменения (ночные инциденты Сота2 = auto-upgrade 2026-09-12)
 
 Ночь 23–02 МСК: 6× `hive.agent-upgrade`, не status. Баг: при
@@ -726,7 +737,7 @@ Debug: `pc/build-debug-35517/win-unpacked/` (SilentVPN-Admin.bat). `wdtt-client`
 **Silent VPN** — коммерческий VPN-сервис на базе WireGuard-туннелирования через VK TURN/DTLS серверы.
 Технология маскирует трафик под зашифрованный медиатрафик WebRTC-звонков ВКонтакте.
 
-**GitHub:** https://github.com/footballpredictions/Silent.git — **один remote**, **четыре ветки**.
+**GitHub:** https://github.com/footballpredictions/Silent.git — **один remote**, **пять веток**.
 
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
@@ -734,6 +745,7 @@ Debug: `pc/build-debug-35517/win-unpacked/` (SilentVPN-Admin.bat). `wdtt-client`
 | `Silent-Project/pc/` | `pc` | **1.0.165** (Сервер 4 для ИИ только в этой версии; WDTT only) |
 | `Silent-Project/android/` | `android` | **1.0.165** (Сервер 4 для ИИ только в этой версии; WDTT only) |
 | `Silent-Project/ios/` | `ios` | начальная |
+| `Silent-Project/openwrt/` | `openwrt` | **1.0.165** (панель + агент, приёмка на роутере ещё впереди) |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
 Папка `Silent-Project/` **не является** git-репозиторием — это контейнер. Внутри каждая подпапка — **свой git** (worktree / clone) и **свой `.gitignore`**.
@@ -1228,6 +1240,7 @@ git clone -b main  https://github.com/footballpredictions/Silent.git backend
 git clone -b pc    https://github.com/footballpredictions/Silent.git pc
 git clone -b android https://github.com/footballpredictions/Silent.git android
 git clone -b ios   https://github.com/footballpredictions/Silent.git ios
+git clone -b openwrt https://github.com/footballpredictions/Silent.git openwrt
 # Симлинк Memory Bank (не копия!)
 cmd /c mklink /J .cursor backend\.cursor
 ```

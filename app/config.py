@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     ADMIN_MFA_MAX_ATTEMPTS: int = 5
     ADMIN_LOGIN_RATE_LIMIT_MAX: int = 10
     ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 300
+    # Сколько браузеров/устройств можно держать как trusted (ПК + телефон = 2).
+    # При полном лимите чужое устройство не получит MFA и не войдёт.
+    ADMIN_TRUSTED_DEVICES_MAX: int = 2
 
     # VK AI Assistant (Android client token for calls.create / TURN hashes)
     VK_LOGIN: str = ""

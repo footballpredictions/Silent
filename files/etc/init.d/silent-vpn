@@ -1,0 +1,14 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+USE_PROCD=1
+
+start_service() {
+	mkdir -p /etc/silent-vpn /var/run/silent-vpn
+	/usr/sbin/silent-vpn-ctl apply-dns >/dev/null 2>&1 || true
+}
+
+stop_service() {
+	/usr/sbin/silent-vpn-ctl disconnect >/dev/null 2>&1 || true
+}

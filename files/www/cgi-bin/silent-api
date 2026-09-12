@@ -1,0 +1,149 @@
+#!/bin/sh
+# Local JSON face for the web UI. Hive tokens stay on the router.
+
+SV_LIB="/usr/lib/silent-vpn"
+. "$SV_LIB/common.sh"
+. "$SV_LIB/hive.sh"
+. "$SV_LIB/session.sh"
+
+sv_mkdir
+
+read_body() {
+	if [ -n "$CONTENT_LENGTH" ] && [ "$CONTENT_LENGTH" -gt 0 ] 2>/dev/null; then
+		dd bs="$CONTENT_LENGTH" count=1 2>/dev/null
+	fi
+}
+
+json_out() {
+	echo "Status: $1"
+	echo "Content-Type: application/json; charset=utf-8"
+	echo "Cache-Control: no-store"
+	echo
+	shift
+	printf '%s\n' "$*"
+}
+
+OP="$(echo "${PATH_INFO:-}" | sed 's#^/##')"
+[ -n "$OP" ] || OP="$(echo "${QUERY_STRING:-}" | sed -n 's/.*op=\([^&]*\).*/\1/p')"
+[ -n "$OP" ] || OP="$(echo "${REQUEST_URI:-}" | sed -n 's|.*/silent-api/||p' | cut -d'?' -f1 | tr -d '/')"
+
+BODY="$(read_body)"
+
+email_of() { printf '%s' "$BODY" | jsonfilter -e '@.email' 2>/dev/null || true; }
+pass_of() { printf '%s' "$BODY" | jsonfilter -e '@.password' 2>/dev/null || true; }
+code_of() { printf '%s' "$BODY" | jsonfilter -e '@.referral_or_promo' 2>/dev/null || true; }
+
+case "$OP" in
+	status)
+		json_out 200 "$(silent-vpn-ctl status)"
+		;;
+	theme)
+		f="$(sv_hive_theme)"
+		json_out 200 "$(cat "$f" 2>/dev/null)"
+		;;
+	login)
+		f="$(sv_hive_login "$(email_of)" "$(pass_of)")" || true
+		if jsonfilter -i "$f" -e '@.access_token' >/dev/null 2>&1; then
+			sv_hive_register_device >/dev/null 2>&1 || true
+			me="$(sv_hive_me)"
+			rn="$(sv_router_name | sed 's/"/\\"/g')"
+			json_out 200 "$(printf '{"email":"%s","lan_ip":"%s","lan_url":"%s","router_name":"%s","profile":%s,"connected":false}' \
+				"$(email_of)" "$(sv_lan_ip)" "$(sv_lan_url)" "$rn" "$(cat "$me")")"
+		else
+			json_out 400 "$(cat "$f" 2>/dev/null || echo '{"detail":"Ошибка входа"}')"
+		fi
+		;;
+	register)
+		f="$(sv_hive_register "$(email_of)" "$(pass_of)" "$(code_of)")"
+		json_out 200 "$(cat "$f")"
+		;;
+	forgot)
+		f="$(sv_hive_forgot "$(email_of)")"
+		json_out 200 "$(cat "$f")"
+		;;
+	logout)
+		sv_disconnect_full
+		sv_session_clear
+		json_out 200 '{"ok":true}'
+		;;
+	connect)
+		if sv_connect_full; then
+			json_out 200 '{"ok":true,"connected":true}'
+		else
+			json_out 502 '{"detail":"Не удалось поднять туннель"}'
+		fi
+		;;
+	disconnect)
+		sv_disconnect_full
+		json_out 200 '{"ok":true,"connected":false}'
+		;;
+	profile)
+		f="$(sv_hive_me)"
+		json_out 200 "$(cat "$f")"
+		;;
+	referral)
+		f="$(sv_hive_referral)"
+		json_out 200 "$(cat "$f")"
+		;;
+	dns)
+		if [ "$REQUEST_METHOD" = "POST" ]; then
+			preset="$(printf '%s' "$BODY" | jsonfilter -e '@.preset' 2>/dev/null || echo server)"
+			custom="$(printf '%s' "$BODY" | jsonfilter -e '@.custom' 2>/dev/null || true)"
+			silent-vpn-ctl set-dns "$preset" "$custom"
+		fi
+		json_out 200 "$(printf '{"preset":"%s","custom":"%s"}' \
+			"$(uci -q get silent-vpn.main.dns_preset 2>/dev/null || echo server)" \
+			"$(uci -q get silent-vpn.main.dns_custom 2>/dev/null || true)")"
+		;;
+	exclusions)
+		if [ "$REQUEST_METHOD" = "POST" ]; then
+			on="$(printf '%s' "$BODY" | jsonfilter -e '@.ru_direct' 2>/dev/null)"
+			if [ "$on" = "true" ] || [ "$on" = "1" ]; then
+				silent-vpn-ctl ru-direct 1
+			else
+				silent-vpn-ctl ru-direct 0
+			fi
+		fi
+		json_out 200 "$(printf '{"ru_direct":%s}' \
+			"$([ "$(uci -q get silent-vpn.main.ru_direct 2>/dev/null)" = 1 ] && echo true || echo false)")"
+		;;
+	servers)
+		f="$(sv_hive_servers)"
+		if [ -s "$f" ]; then
+			json_out 200 "$(cat "$f")"
+		else
+			json_out 200 '{"selected_server":"server1","servers":[]}'
+		fi
+		;;
+	pay)
+		plan="$(printf '%s' "$BODY" | jsonfilter -e '@.plan_type' 2>/dev/null || echo monthly)"
+		[ -n "$plan" ] || plan="monthly"
+		f="$(sv_hive_pay "$plan")"
+		if [ -s "$f" ]; then
+			json_out 200 "$(cat "$f")"
+		else
+			json_out 502 '{"detail":"Не удалось начать оплату"}'
+		fi
+		;;
+	server)
+		key="$(printf '%s' "$BODY" | jsonfilter -e '@.key' 2>/dev/null || echo server1)"
+		[ -n "$key" ] || key="server1"
+		uci -q set silent-vpn.main.preferred_server="$key"
+		uci -q commit silent-vpn
+		sv_hive_register_device >/dev/null 2>&1 || true
+		f="$(sv_hive_preferred "$key")"
+		if [ -s "$f" ] && jsonfilter -i "$f" -e '@.selected_server' >/dev/null 2>&1; then
+			json_out 200 "$(cat "$f")"
+		else
+			f="$(sv_hive_servers)"
+			if [ -s "$f" ]; then
+				json_out 200 "$(cat "$f")"
+			else
+				json_out 200 "$(printf '{"selected_server":"%s","servers":[]}' "$key")"
+			fi
+		fi
+		;;
+	*)
+		json_out 404 '{"detail":"unknown op"}'
+		;;
+esac

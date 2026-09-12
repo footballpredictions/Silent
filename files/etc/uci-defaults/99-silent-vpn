@@ -1,0 +1,24 @@
+#!/bin/sh
+
+# Point the default uhttpd index through our host-aware door.
+# IP → LuCI, {lan}.silent.vpn → Silent UI.
+
+idx="$(uci -q get uhttpd.main.index_page)"
+case "$idx" in
+	*silent-entry*) ;;
+	*)
+		uci -q delete uhttpd.main.index_page
+		uci add_list uhttpd.main.index_page='cgi-bin/silent-entry'
+		if [ -n "$idx" ]; then
+			uci add_list uhttpd.main.index_page="$idx"
+		else
+			uci add_list uhttpd.main.index_page='cgi-bin/luci'
+		fi
+		uci commit uhttpd
+		;;
+esac
+
+chmod 0755 /usr/sbin/silent-vpn-ctl /www/cgi-bin/silent-entry /www/cgi-bin/silent-api 2>/dev/null || true
+/usr/sbin/silent-vpn-ctl apply-dns >/dev/null 2>&1 || true
+
+exit 0

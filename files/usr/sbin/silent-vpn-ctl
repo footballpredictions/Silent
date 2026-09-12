@@ -1,0 +1,80 @@
+#!/bin/sh
+# Public interface of the OpenWrt Silent agent.
+
+SV_LIB="${SV_LIB:-/usr/lib/silent-vpn}"
+. "$SV_LIB/common.sh"
+. "$SV_LIB/hive.sh"
+. "$SV_LIB/lan-name.sh"
+. "$SV_LIB/session.sh"
+
+sv_mkdir
+
+cmd="${1:-status}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+	status)
+		printf '{'
+		printf '"version":"%s",' "$SV_VERSION"
+		printf '"lan_ip":"%s",' "$(sv_lan_ip)"
+		printf '"lan_url":"%s",' "$(sv_lan_url)"
+		printf '"router_name":"%s",' "$(sv_router_name)"
+		printf '"connected":%s,' "$([ -f "$SV_RUN/connected" ] && echo true || echo false)"
+		printf '"session":%s,' "$(sv_session_active && echo true || echo false)"
+		printf '"cloak":%s,' "$(sv_cloak_available && echo true || echo false)"
+		printf '"ru_direct":%s,' "$([ "$(uci -q get silent-vpn.main.ru_direct 2>/dev/null)" = 1 ] && echo true || echo false)"
+		printf '"dns_preset":"%s",' "$(uci -q get silent-vpn.main.dns_preset 2>/dev/null || echo server)"
+		printf '"email":"%s"' "$(cat "$SV_VAR/email" 2>/dev/null || true)"
+		printf '}\n'
+		;;
+	lan-url)
+		sv_lan_url
+		;;
+	apply-dns)
+		sv_lan_apply_dns
+		;;
+	theme)
+		sv_hive_theme
+		;;
+	login)
+		sv_hive_login "$1" "$2"
+		;;
+	register)
+		sv_hive_register "$1" "$2" "$3"
+		;;
+	forgot)
+		sv_hive_forgot "$1"
+		;;
+	me)
+		sv_hive_me
+		;;
+	connect)
+		sv_connect_full
+		;;
+	disconnect)
+		sv_disconnect_full
+		;;
+	logout)
+		sv_disconnect_full
+		sv_session_clear
+		;;
+	preferred)
+		sv_hive_preferred "$1"
+		;;
+	referral)
+		sv_hive_referral
+		;;
+	ru-direct)
+		. "$SV_LIB/ru-direct.sh"
+		sv_ru_set "$1"
+		;;
+	set-dns)
+		uci -q set silent-vpn.main.dns_preset="${1:-server}"
+		uci -q set silent-vpn.main.dns_custom="${2:-}"
+		uci -q commit silent-vpn
+		;;
+	*)
+		echo "usage: silent-vpn-ctl status|lan-url|apply-dns|theme|login|register|forgot|me|connect|disconnect|logout|preferred|referral|ru-direct|set-dns" >&2
+		exit 2
+		;;
+esac

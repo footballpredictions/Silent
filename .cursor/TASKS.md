@@ -8,6 +8,32 @@ Agent приступает к **первой невыполненной** зад
 
 ## Открытые задачи
 
+### Game exit — Сота 2 / Dota UDP (2026-09-12)
+
+Мodem + белый список: исключения Steam нельзя. Нужен UDP путь через VPN к SDR Valve.
+Сота 2 (`78.17.74.27`). Runbook: `backend/GAME_EXIT_NODE.md`.
+
+- [x] Ф0 audit + probe Steam SDR (host + netns) — **UDP_PATH_OK** с соты (мелкие пакеты)
+- [x] Ф1 udp-tune (sysctl UDP + TCPMSS, без обхода SILENT_DENY); wdtt active
+- [x] Корень: клиентский MTU 1200 < Steam ~1300 → PC/Android MTU **1420**, сота2 wdtt0 **1420**
+- [ ] Приёмка: пользователь — `netsh mtu=1420` на wg-turn **или** новый PC-билд; Dota ping/matchmaking
+- [ ] Флаг `game_exit` + слот «для игр» — только если понадобится изоляция после приёмки
+
+### OpenWrt-клиент (2026-09-12)
+
+Папка `openwrt/` — свой агент + веб, совместим с тем же backend. Не LuCI/Amnezia-форк.
+
+- [x] Каркас: агент `silent-vpn-ctl`, CGI, dnsmasq `{lan-ip}.silent.vpn`, web UI из ThemeResponse
+- [x] INSTALL.md + локальный preview `python scripts/preview.py`
+- [x] Веб на весь экран, не phone-frame; контролы как у клиентов (2026-09-12)
+- [x] Поддержка = иконки Telegram; сессии OpenWrt+имя; 4 сервера; змейка на бегунке; DNS; RU-direct в исключениях
+- [x] Тумблер = Android/PC (тень, змейка по краю); preview — живой вход на Улей
+- [x] Док как у клиентов: Бессрочно / Оформить подписку; без 9999 дн. у админа
+- [x] Оплата YuMoney без Referer (как Android), не с 127.0.0.1
+- [ ] Приёмка на живом OpenWrt 23.05/24.10 (opkg + install.sh, логин, тумблер, LAN в туннеле)
+- [ ] Бинарь `wdtt-client` под типичные arch роутера (aarch64 / arm / mipsel)
+- [ ] Кнопка на лендинге / слот в админке «Обновления», когда будет ipk
+
 ### Admin-debug quality monitor (Android, 2026-09-11) — СНЯТО
 
 - [x] **Полностью вырезано 2026-09-11:** клиент + API + админка Hive Quality. Не возвращать без рабочего канала на LTE без reapply WG.

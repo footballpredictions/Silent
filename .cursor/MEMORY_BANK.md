@@ -3,6 +3,24 @@
 > **Главный документ по ИИ-выходу и гигиене сот — `backend/AI_EXIT_NODE.md`.**
 > Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
 > сначала читать его, потом код.
+> **Игры / Dota / Steam SDR (UDP) — `backend/GAME_EXIT_NODE.md` (Сота 2).**
+
+## Последние изменения (Dota MTU 1420 2026-09-12)
+
+Почему «нет изменений» после udp-tune на соте: egress UDP ок, а Steam SDR
+шлёт пакеты ~1300 байт — клиентский MTU **1200** (Telegram-эксперимент) их
+ронял. Фикс: PC/Android/Linux `MTU=1420`; Сота 2 `wdtt0 mtu 1420` без рестарта
+wdtt. Пользователю сразу: `netsh … mtu=1420` на `wg-turn`, потом новый PC-билд.
+Runbook `GAME_EXIT_NODE.md` обновлён.
+
+## Последние изменения (Game exit Сота 2 / Dota UDP 2026-09-12)
+
+Мodem+whitelist: исключения Steam нельзя. На Соте 2 (`78.17.74.27`):
+`deploy_game_cell.py` audit/probe/udp-tune. Probe Steam SDR: **UDP_PATH_OK**
+с хоста и из netns `10.66.251.x` (релеи отвечают). Значит сота UDP наружу
+не глушит. Тюнинг: sysctl UDP timeouts 120/180 + TCPMSS; **без** ACCEPT перед
+`SILENT_DENY` (первый вариант обходил deny — сразу rollback). `wdtt` active.
+Приёмка: пользователь на **Сервер 3**, Dota через VPN. Слот `game_exit` — позже.
 
 ## Последние изменения (админка = только ПК+телефон 2026-09-12)
 

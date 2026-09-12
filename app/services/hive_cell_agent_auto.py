@@ -21,6 +21,23 @@ _upgrading: set[uuid.UUID] = set()
 _fail_until: dict[uuid.UUID, float] = {}
 
 
+def should_attempt_agent_upgrade(
+    *,
+    load: dict | None,
+    target_id: str,
+) -> bool:
+    """Не лезть в SSH, если /v1/status недоступен — иначе remote_id=? → ложные апгрейды.
+
+    reachable + пустой build_id = старый агент без поля → один апгрейд ок.
+    """
+    if load is None:
+        return False
+    remote_id = (load.get("agent_build_id") or "").strip()
+    if remote_id == (target_id or "").strip():
+        return False
+    return True
+
+
 async def auto_upgrade_cell_agents(db: AsyncSession) -> dict:
     if not settings.HIVE_CELL_AGENT_AUTO_UPGRADE_ENABLED:
         return {"checked": 0, "upgraded": 0, "skipped": True}
@@ -40,8 +57,10 @@ async def auto_upgrade_cell_agents(db: AsyncSession) -> dict:
     )
     cells = list(result.scalars().all())
     upgraded = 0
+    skipped_unreachable = 0
     now = time.monotonic()
-    cooldown = max(60, int(settings.HIVE_CELL_AGENT_UPGRADE_FAIL_COOLDOWN_SEC))
+    # Было 120с — при ночном флапе SSH это сыпало инциденты каждые ~2 мин.
+    cooldown = max(600, int(settings.HIVE_CELL_AGENT_UPGRADE_FAIL_COOLDOWN_SEC))
 
     for cell in cells:
         if cell.id in _upgrading:
@@ -53,10 +72,16 @@ async def auto_upgrade_cell_agents(db: AsyncSession) -> dict:
             continue
 
         load = await fetch_worker_cell_load(cell)
-        remote_id = (load or {}).get("agent_build_id") if load else None
-        if remote_id == target_id:
+        if not should_attempt_agent_upgrade(load=load, target_id=target_id):
+            if load is None:
+                skipped_unreachable += 1
+                logger.debug(
+                    "Hive: cell-agent auto-upgrade skip %s — /v1/status unreachable",
+                    cell.name,
+                )
             continue
 
+        remote_id = (load or {}).get("agent_build_id") if load else None
         host = (cell.public_ip or "").strip()
         if not host:
             continue
@@ -81,16 +106,24 @@ async def auto_upgrade_cell_agents(db: AsyncSession) -> dict:
             )
         except Exception as e:
             _fail_until[cell.id] = now + cooldown
-            logger.warning("Hive: cell-agent auto-upgrade %s failed: %s", cell.name, e)
+            err = f"{type(e).__name__}: {e}".strip()
+            if not str(e).strip():
+                err = f"{type(e).__name__} (no message)"
+            logger.warning("Hive: cell-agent auto-upgrade %s failed: %s", cell.name, err)
             push_incident(
                 source="hive.agent-upgrade",
                 severity="error",
                 cell_name=cell.name,
                 cell_ip=cell.public_ip,
-                message=f"Auto-upgrade cell-agent failed: {e}",
+                message=f"Auto-upgrade cell-agent failed: {err}",
                 details=f"remote_id={remote_id or '?'} target_id={target_id}",
             )
         finally:
             _upgrading.discard(cell.id)
 
-    return {"checked": len(cells), "upgraded": upgraded, "target_build_id": target_id}
+    return {
+        "checked": len(cells),
+        "upgraded": upgraded,
+        "skipped_unreachable": skipped_unreachable,
+        "target_build_id": target_id,
+    }

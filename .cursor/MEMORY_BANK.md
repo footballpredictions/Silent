@@ -4,6 +4,21 @@
 > Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
 > сначала читать его, потом код.
 
+## Последние изменения (ночные инциденты Сота2 = auto-upgrade 2026-09-12)
+
+Ночь 23–02 МСК: 6× `hive.agent-upgrade`, не status. Баг: при
+недоступном `/v1/status` (`remote_id=?`) Улей всё равно лез по SSH
+апгрейдить агента; пустые Exception обходили soft-flap; cooldown 120с.
+Фикс: skip upgrade если status unreachable; весь agent-upgrade soft;
+cooldown ≥30 мин; понятный тип ошибки. Деплой stable.
+
+## Последние изменения (инциденты soft-flap 2026-09-11)
+
+Копали Соту 2: агент/wdtt живы, SSH ок, auth `/v1/status` ок.
+Журнал забивали краткие queen↔cell таймауты (+ standby DNAT на соте
+иногда мигал). Приглушение: soft-flap (3 фейла / 6ч) для status/manifest/
+agent-upgrade; дашборд `report_incident=False`, timeout 5с. Деплой stable.
+
 ## Последние изменения (Quality monitor удалён с Android 2026-09-11)
 
 Полный откат admin-debug Quality с клиента: удалены QualityMonitor /

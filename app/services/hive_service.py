@@ -739,7 +739,12 @@ async def probe_cell_agent(cell: HiveCell, password: str | None = None) -> dict:
     return await cell_agent_handshake(cell.api_url, pwd)
 
 
-async def fetch_worker_cell_load(cell: HiveCell, *, timeout: float | None = None) -> dict | None:
+async def fetch_worker_cell_load(
+    cell: HiveCell,
+    *,
+    timeout: float | None = None,
+    report_incident: bool = True,
+) -> dict | None:
     """CPU/RAM соты через cell-agent /v1/status."""
     if cell.is_queen or not cell.api_url or cell.status not in ("active", "draining"):
         return None
@@ -762,14 +767,15 @@ async def fetch_worker_cell_load(cell: HiveCell, *, timeout: float | None = None
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             resp = await client.get(url, headers=headers)
         if resp.status_code >= 400:
-            push_incident(
-                source="cell-agent.status",
-                severity="warning",
-                cell_name=cell.name,
-                cell_ip=cell.public_ip,
-                message=f"/v1/status HTTP {resp.status_code}",
-                details=resp.text[:220],
-            )
+            if report_incident:
+                push_incident(
+                    source="cell-agent.status",
+                    severity="warning",
+                    cell_name=cell.name,
+                    cell_ip=cell.public_ip,
+                    message=f"/v1/status HTTP {resp.status_code}",
+                    details=resp.text[:220],
+                )
             return None
         data = resp.json()
         if not isinstance(data, dict):
@@ -802,14 +808,15 @@ async def fetch_worker_cell_load(cell: HiveCell, *, timeout: float | None = None
         }
     except Exception as e:
         logger.debug("Hive: load %s failed: %s", cell.name, e)
-        err = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
-        push_incident(
-            source="cell-agent.status",
-            severity="warning",
-            cell_name=cell.name,
-            cell_ip=cell.public_ip,
-            message=f"/v1/status failed: {err}",
-        )
+        if report_incident:
+            err = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
+            push_incident(
+                source="cell-agent.status",
+                severity="warning",
+                cell_name=cell.name,
+                cell_ip=cell.public_ip,
+                message=f"/v1/status failed: {err}",
+            )
         return None
 
 

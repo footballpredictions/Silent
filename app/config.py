@@ -180,7 +180,8 @@ class Settings(BaseSettings):
     # Автообновление cell-agent на сотах (SSH из БД), интервал как в админке Улей
     HIVE_CELL_MAINTENANCE_INTERVAL_SEC: int = 10
     HIVE_CELL_AGENT_AUTO_UPGRADE_ENABLED: bool = True
-    HIVE_CELL_AGENT_UPGRADE_FAIL_COOLDOWN_SEC: int = 120
+    # После фейла SSH/апгрейда не долбить соту каждые 2 мин (ночные флапы сети).
+    HIVE_CELL_AGENT_UPGRADE_FAIL_COOLDOWN_SEC: int = 1800
     # True = новые VPN на соты при перегрузке Улья; офлайн переносится фоном
     HIVE_WORKER_ROUTING_ENABLED: bool = True
     # Standby / HA: локальный API на соте, если Улей недоступен (без GitHub-backup)

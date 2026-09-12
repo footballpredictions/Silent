@@ -176,7 +176,8 @@ async def dashboard_system_for_node(db: AsyncSession, node_id: str | None) -> di
     if cell is None or cell.is_queen:
         return await asyncio.to_thread(_queen_system)
 
-    load = await fetch_worker_cell_load(cell, timeout=2.5)
+    # Дашборд опрашивает каждые 5с — таймауты не пишем в журнал инцидентов.
+    load = await fetch_worker_cell_load(cell, timeout=5.0, report_incident=False)
     if not load:
         empty = _empty_system(node_id=nid, reachable=False)
         empty["cpu_cores"] = None

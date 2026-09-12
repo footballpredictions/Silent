@@ -17,9 +17,16 @@ from app.database import AsyncSessionLocal
 MAX_INCIDENTS = 800
 DEDUP_WINDOW_SEC = 45.0
 TRUSTED_ADMIN_IPS_TTL_SEC = 120.0
+# Кратковременные таймауты queen↔cell (status/manifest/SSH) — не забивать журнал.
+# Подтверждение 3 фейлами за 15 мин, повтор той же сигнатуры не чаще 6 ч.
+SOFT_FLAP_SOURCES = frozenset({"cell-agent.status", "hive.manifest", "hive.agent-upgrade"})
+SOFT_FLAP_CONFIRM = 3
+SOFT_FLAP_STREAK_WINDOW_SEC = 15 * 60.0
+SOFT_FLAP_RENOTIFY_SEC = 6 * 3600.0
 
 _incidents: deque[dict[str, Any]] = deque(maxlen=MAX_INCIDENTS)
 _last_seen: dict[str, float] = {}
+_soft_flap: dict[str, dict[str, float | int | None]] = {}
 _persist_queue: deque[dict[str, Any]] = deque()
 _persist_worker_task: asyncio.Task | None = None
 _trusted_admin_ips: set[str] = set()
@@ -211,6 +218,67 @@ def _classify(msg: str) -> tuple[str, str, list[str]]:
     return "unknown", "Требуется ручная диагностика", checks
 
 
+def _is_soft_network_noise(source: str, message: str) -> bool:
+    src = (source or "").strip()
+    # Весь auto-upgrade — шумный (SSH/сеть); пустые Exception() раньше обходили needles.
+    if src == "hive.agent-upgrade":
+        return True
+    if src not in SOFT_FLAP_SOURCES:
+        return False
+    raw = (message or "").lower()
+    needles = (
+        "timeout",
+        "timed out",
+        "connecterror",
+        "connection attempts failed",
+        "no existing session",
+        "opening channel",
+        "неверный логин",
+        "не удалось подключиться",
+        "ssh:",
+    )
+    return any(x in raw for x in needles)
+
+
+def _soft_flap_kind(message: str) -> str:
+    raw = (message or "").lower()
+    if "ssh" in raw or "login" in raw or "парол" in raw or "opening channel" in raw:
+        return "ssh"
+    if "manifest" in raw:
+        return "manifest"
+    return "status-unreachable"
+
+
+def soft_flap_allows(key: str, *, now: float | None = None) -> bool:
+    """True = можно писать в журнал. Чистая по ключу — для unit-тестов."""
+    ts = time.time() if now is None else float(now)
+    st = _soft_flap.get(key) or {}
+    window_start = float(st.get("window_start") or 0.0)
+    streak = int(st.get("streak") or 0)
+    last_notified = st.get("last_notified")
+    if window_start and (ts - window_start) > SOFT_FLAP_STREAK_WINDOW_SEC:
+        streak = 0
+        window_start = ts
+    if not window_start:
+        window_start = ts
+    streak += 1
+    allow = False
+    if streak >= SOFT_FLAP_CONFIRM:
+        if last_notified is None or (ts - float(last_notified)) >= SOFT_FLAP_RENOTIFY_SEC:
+            allow = True
+            last_notified = ts
+    _soft_flap[key] = {
+        "streak": streak,
+        "window_start": window_start,
+        "last_notified": last_notified,
+    }
+    return allow
+
+
+def reset_soft_flap_state() -> None:
+    _soft_flap.clear()
+
+
 def push_incident(
     *,
     source: str,
@@ -224,11 +292,17 @@ def push_incident(
     if not msg:
         return False
 
-    dedup_key = f"{source}|{cell_name}|{cell_ip}|{msg[:220]}"
     now = time.time()
-    prev = _last_seen.get(dedup_key)
-    if prev and (now - prev) < DEDUP_WINDOW_SEC:
-        return False
+    if _is_soft_network_noise(source, f"{msg} {details}"):
+        soft_key = f"soft|{source}|{cell_name}|{cell_ip}|{_soft_flap_kind(msg)}"
+        if not soft_flap_allows(soft_key, now=now):
+            return False
+        dedup_key = soft_key
+    else:
+        dedup_key = f"{source}|{cell_name}|{cell_ip}|{msg[:220]}"
+        prev = _last_seen.get(dedup_key)
+        if prev and (now - prev) < DEDUP_WINDOW_SEC:
+            return False
     _last_seen[dedup_key] = now
 
     category, hint, checks = _classify(f"{msg} {details}")
@@ -397,6 +471,7 @@ def clear_incidents() -> None:
     _incidents.clear()
     _last_seen.clear()
     _persist_queue.clear()
+    reset_soft_flap_state()
 
 
 def _enqueue_persist(payload: dict[str, Any]) -> None:

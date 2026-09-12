@@ -19,6 +19,11 @@ const STABLE_WG_DIR = path.join(STABLE_CONF_DIR, 'wireguard')
 const FALLBACK_BACKEND_IP = '132.243.234.162'
 /** DNS: Cloudflare+Yandex по умолчанию. Меню DNS — через options/config.dns_override. */
 const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
+/**
+ * Steam SDR (Dota/CS2) шлёт UDP ~1300 байт. MTU 1200/1280 их роняет →
+ * «ping any relay via UDP have failed (firewall or MTU)». 1420 — как у Tailscale.
+ */
+const WG_MTU = 1420
 
 function pickDnsServers(value) {
   return String(value || '')
@@ -618,14 +623,14 @@ async function isServiceRunningAsync() {
   }
 }
 
-/** Профиль Private — стабильнее маршруты/DNS на Windows (иконка в трее всё равно от Wi‑Fi). */
+/** Профиль Private + MTU под Steam SDR (~1300-byte UDP). */
 async function polishWgNetworkProfile(send) {
   try {
     await execAsync(
-      `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } | Select-Object -First 1; if ($a) { Set-NetConnectionProfile -InterfaceIndex $a.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue } }"`,
+      `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } | Select-Object -First 1; if ($a) { Set-NetConnectionProfile -InterfaceIndex $a.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue; netsh interface ipv4 set subinterface $a.ifIndex mtu=${WG_MTU} store=persistent | Out-Null } }"`,
       { windowsHide: true, timeout: 12000 },
     )
-    send?.('[WG] Адаптер wg-turn: профиль Private')
+    send?.(`[WG] Адаптер wg-turn: профиль Private, MTU ${WG_MTU}`)
   } catch { /* ignore */ }
 }
 
@@ -1210,7 +1215,7 @@ function buildWgConfigFromApi(config, listenPort = 9000) {
 PrivateKey = ${priv}
 Address = ${addr}
 DNS = ${dns}
-MTU = 1200
+MTU = ${WG_MTU}
 
 [Peer]
 PublicKey = ${pub}

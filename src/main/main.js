@@ -1608,16 +1608,17 @@ async function beginWdttSession(config, { switching = false } = {}) {
     if (wgAttempted) return false
 
     let normalizedConf = confText
-    // Telegram latency experiment: MTU 1200 (меньше фрагментации поверх VK DTLS).
+    // Steam SDR: UDP ~1300 байт. MTU 1200 ронял Dota/CS2 («ping relay via UDP failed»).
+    const WG_MTU = 1420
     if (/^\s*MTU\s*=/m.test(normalizedConf)) {
-      normalizedConf = normalizedConf.replace(/^\s*MTU\s*=.*/m, 'MTU = 1200')
+      normalizedConf = normalizedConf.replace(/^\s*MTU\s*=.*/m, `MTU = ${WG_MTU}`)
     } else {
       normalizedConf = normalizedConf.replace(
         /(\[Interface\][^\[]*)/,
-        (m) => m.trimEnd() + '\nMTU = 1200\n',
+        (m) => m.trimEnd() + `\nMTU = ${WG_MTU}\n`,
       )
     }
-    sendLog('[WG] MTU = 1200 (Telegram latency experiment)')
+    sendLog(`[WG] MTU = ${WG_MTU} (Steam SDR / path MTU)`)
     normalizedConf = normalizeWgConfText(normalizedConf)
 
     wgInstallInFlight = true

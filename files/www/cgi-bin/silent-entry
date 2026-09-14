@@ -1,8 +1,10 @@
 #!/bin/sh
 # Host-aware front door: *.silent.vpn → Silent UI, anything else → LuCI.
+# Silent UI only from a LAN cable, not from Wi-Fi.
 
 HOST="$(echo "${HTTP_HOST:-}" | tr 'A-Z' 'a-z' | cut -d: -f1)"
 INDEX="/www/silent-vpn/index.html"
+SV_LIB="/usr/lib/silent-vpn"
 
 is_silent=0
 case "$HOST" in
@@ -10,6 +12,18 @@ case "$HOST" in
 esac
 
 if [ "$is_silent" -eq 1 ] && [ -f "$INDEX" ]; then
+	if [ -f "$SV_LIB/common.sh" ]; then
+		. "$SV_LIB/common.sh"
+		if ! sv_http_allow_wired; then
+			echo "Status: 403 Forbidden"
+			echo "Content-Type: text/html; charset=utf-8"
+			echo "Cache-Control: no-store"
+			echo
+			echo "<!doctype html><meta charset=utf-8><title>Silent VPN</title>"
+			echo "<p>Вход в Silent VPN только по кабелю LAN, не с Wi‑Fi.</p>"
+			exit 0
+		fi
+	fi
 	echo "Status: 200 OK"
 	echo "Content-Type: text/html; charset=utf-8"
 	echo "Cache-Control: no-store"

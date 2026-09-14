@@ -4,7 +4,7 @@
 set -e
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-DEPS="kmod-wireguard wireguard-tools ip-full wget ca-bundle uhttpd jsonfilter"
+DEPS="kmod-wireguard wireguard-tools ip-full wget ca-bundle uhttpd jsonfilter iw"
 
 sv_pkg_kind() {
 	rel=""

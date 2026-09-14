@@ -97,6 +97,59 @@ sv_api_base() {
 	fi
 }
 
+sv_neigh_mac() {
+	local addr="$1" mac
+	addr="$(echo "$addr" | tr 'A-Z' 'a-z')"
+	addr="${addr#::ffff:}"
+	mac="$(ip -4 neigh show "$addr" 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "lladdr") { print $(i + 1); exit }}')"
+	[ -n "$mac" ] || mac="$(awk -v ip="$addr" '$1 == ip { print $4; exit }' /proc/net/arp 2>/dev/null)"
+	echo "$mac" | tr 'A-Z' 'a-z'
+}
+
+sv_is_wireless_dev() {
+	local d="$1"
+	[ -n "$d" ] || return 1
+	[ -d "/sys/class/net/$d/phy80211" ] && return 0
+	[ -d "/sys/class/net/$d/wireless" ] && return 0
+	case "$d" in
+		wlan*|apcli*|rax*|phy*-ap*|ra[0-9]*|wl[0-9]*|ath[0-9]*) return 0 ;;
+	esac
+	return 1
+}
+
+sv_addr_is_wifi_client() {
+	local addr="$1" mac iface ifaces
+	addr="$(echo "$addr" | tr 'A-Z' 'a-z')"
+	addr="${addr#::ffff:}"
+	mac="$(sv_neigh_mac "$addr")"
+	[ -n "$mac" ] || return 1
+	if command -v iw >/dev/null 2>&1; then
+		ifaces="$(iw dev 2>/dev/null | awk '/Interface/{print $2}')"
+		for iface in $ifaces; do
+			iw dev "$iface" station get "$mac" >/dev/null 2>&1 && return 0
+		done
+	fi
+	for iface in /sys/class/net/*/phy80211; do
+		[ -e "$iface" ] || continue
+		iface="$(echo "$iface" | sed 's|^/sys/class/net/||;s|/phy80211||')"
+		sv_is_wireless_dev "$iface" || continue
+		iw dev "$iface" station get "$mac" >/dev/null 2>&1 && return 0
+	done
+	return 1
+}
+
+# 0 = allow Silent UI (cable / local). 1 = Wi-Fi client, refuse.
+sv_http_allow_wired() {
+	local addr="${REMOTE_ADDR:-}"
+	case "$addr" in
+		""|127.*|::1|::ffff:127.*) return 0 ;;
+	esac
+	if sv_addr_is_wifi_client "$addr"; then
+		return 1
+	fi
+	return 0
+}
+
 sv_token() {
 	cat "$SV_VAR/access_token" 2>/dev/null || true
 }

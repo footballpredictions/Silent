@@ -12,7 +12,7 @@ OpenWrt 23.05+ (opkg на 23/24, apk на 25+). aarch64, arm, mipsel, x86_64.
 if command -v apk >/dev/null 2>&1; then apk update && apk add wget ca-bundle; else opkg update && opkg install wget ca-bundle; fi && wget -O /tmp/sv.sh https://silentvpn3.github.io/openwrt-install.sh && sh /tmp/sv.sh
 ```
 
-Дальше браузер: `http://<LAN-IP>.silent.vpn` → логин → тумблер.
+Дальше браузер **с кабеля LAN** (не с Wi‑Fi): `http://<LAN-IP>.silent.vpn` → логин → тумблер.
 
 Удалить:
 

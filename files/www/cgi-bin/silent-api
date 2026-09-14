@@ -23,6 +23,11 @@ json_out() {
 	printf '%s\n' "$*"
 }
 
+if ! sv_http_allow_wired; then
+	json_out 403 '{"detail":"Вход в Silent VPN только по кабелю LAN, не с Wi‑Fi"}'
+	exit 0
+fi
+
 OP="$(echo "${PATH_INFO:-}" | sed 's#^/##')"
 [ -n "$OP" ] || OP="$(echo "${QUERY_STRING:-}" | sed -n 's/.*op=\([^&]*\).*/\1/p')"
 [ -n "$OP" ] || OP="$(echo "${REQUEST_URI:-}" | sed -n 's|.*/silent-api/||p' | cut -d'?' -f1 | tr -d '/')"

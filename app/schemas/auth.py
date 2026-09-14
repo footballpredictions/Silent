@@ -42,6 +42,40 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class QrStartRequest(BaseModel):
+    device: LoginDeviceInfo | None = None
+
+
+class QrStartResponse(BaseModel):
+    token: str
+    expires_in: int
+    payload: str
+
+
+class QrPollResponse(BaseModel):
+    status: str
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str = "bearer"
+
+
+class QrApproveRequest(BaseModel):
+    token: str | None = None
+    payload: str | None = None
+
+
+class QrUserCodeResponse(BaseModel):
+    code: str
+    expires_in: int
+    payload: str
+
+
+class QrRedeemRequest(BaseModel):
+    code: str | None = None
+    payload: str | None = None
+    device: LoginDeviceInfo | None = None
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str
 

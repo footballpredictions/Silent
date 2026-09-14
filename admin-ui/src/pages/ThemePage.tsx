@@ -19,6 +19,17 @@ const defaultTheme = {
   dark_update_bar_progress_color: '', dark_login_link_color: '',
   login_remember_me_label: 'Запомнить меня',
   login_forgot_password_label: 'Забыли пароль?',
+  login_qr_tab_label: 'QR',
+  login_qr_title: 'Вход по QR',
+  login_qr_show_hint: 'Отсканируйте код любым сканером на телефоне — откроется Silent VPN',
+  login_qr_scan_hint: 'Отсканируйте QR любым сканером — откроется приложение',
+  login_qr_scan_label: 'Сканер',
+  login_qr_code_label: 'Мой код',
+  login_qr_waiting: 'Ожидание подтверждения…',
+  login_qr_expired: 'Код истёк — обновите',
+  login_qr_confirm_label: 'Подтвердить вход на ТВ',
+  login_qr_confirm_hint: 'Телевизор войдёт в ваш аккаунт',
+  menu_qr_label: 'QR-вход',
   login_forgot_title: 'Восстановление пароля',
   login_forgot_instruction: 'Введите email — мы отправим ссылку для установки нового пароля.',
   login_link_color: '#4680C2',
@@ -53,7 +64,7 @@ type Theme = typeof defaultTheme
 
 /** Какие поля темы влияют на каждый экран предпросмотра */
 const SCREEN_HINTS: Partial<Record<PreviewScreen, string>> = {
-  login: 'Стартовый экран: bootstrap VPN автоматически (хеш в сборке). Табы «Войти» / «Регистрация». Поле промо/реф на регистрации. Логотип.',
+  login: 'Стартовый экран: bootstrap VPN автоматически (хеш в сборке). Табы «Войти» / «Регистрация» / «QR». Поле промо/реф на регистрации. Логотип.',
   login_forgot: 'Экран из приложения после «Забыли пароль?».',
   login_expired: 'Панель при истечении 2 мин bootstrap. Тексты пока в коде клиентов.',
   login_reset_web: 'HTML-страница из письма — открывается в браузере, не в приложении.',
@@ -253,6 +264,17 @@ export default function ThemePage({ token }: { token: string }) {
             <p className="text-xs text-[#666]">{SCREEN_HINTS.login}</p>
             {field('«Запомнить меня»', 'login_remember_me_label')}
             {field('«Забыли пароль?»', 'login_forgot_password_label')}
+            {field('Вкладка QR', 'login_qr_tab_label')}
+            {field('Заголовок QR', 'login_qr_title')}
+            {fieldTextarea('Подсказка «мой код»', 'login_qr_show_hint')}
+            {fieldTextarea('Подсказка сканера', 'login_qr_scan_hint')}
+            {field('Подпись «Мой код»', 'login_qr_code_label')}
+            {field('Подпись «Сканер»', 'login_qr_scan_label')}
+            {field('Ожидание QR', 'login_qr_waiting')}
+            {field('QR истёк', 'login_qr_expired')}
+            {field('Кнопка подтверждения QR', 'login_qr_confirm_label')}
+            {fieldTextarea('Подсказка подтверждения QR', 'login_qr_confirm_hint')}
+            {field('Пункт меню QR', 'menu_qr_label')}
             {field('Цвет ссылок', 'login_link_color')}
             {field('Подпись поля промо/реф', 'register_referral_or_promo_label')}
             {fieldTextarea('Подсказка промо/реф', 'register_referral_or_promo_hint')}

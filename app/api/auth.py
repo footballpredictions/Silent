@@ -10,10 +10,14 @@ logger = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.models import User
+from app.core.deps import get_current_user
 from app.schemas.auth import (
     RegisterRequest, LoginRequest, TokenResponse,
     RefreshRequest, ForgotPasswordRequest, ResetPasswordRequest,
     AdminLoginRequest, AdminTokenResponse, AdminMfaVerifyRequest, AdminMfaResendRequest,
+    LoginDeviceInfo,
+    QrStartRequest, QrStartResponse, QrPollResponse,
+    QrApproveRequest, QrUserCodeResponse, QrRedeemRequest,
 )
 from app.core.security import (
     hash_password, verify_password,
@@ -23,7 +27,7 @@ from app.core.security import (
 from app.services.email_service import send_verification_email, send_password_reset_email
 from app.services.subscription_service import apply_post_verification_benefits
 from app.services.theme_settings import load_theme
-from app.services.vpn_service import ensure_device_session
+from app.services.vpn_service import ensure_device_session, prune_oldest_session_if_full
 from app.services.email_validation import (
     canonical_email,
     validate_registration_email_domain,
@@ -199,34 +203,207 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Аккаунт заблокирован")
 
-    if req.device and req.device.device_fingerprint.strip():
+    return await _tokens_for_user(db, user, req.device)
+
+
+async def _tokens_for_user(
+    db: AsyncSession,
+    user: User,
+    device: LoginDeviceInfo | None,
+) -> TokenResponse:
+    if device and device.device_fingerprint.strip():
         try:
             await ensure_device_session(
                 db,
                 user,
-                device_name=req.device.device_name,
-                device_type=req.device.device_type,
-                device_fingerprint=req.device.device_fingerprint,
+                device_name=device.device_name,
+                device_type=device.device_type,
+                device_fingerprint=device.device_fingerprint,
             )
         except ValueError as e:
             msg = str(e)
             if "лимит" in msg.lower() and "устройств" in msg.lower():
                 raise HTTPException(status_code=403, detail=msg)
-            logger.warning("login ensure_device_session: %s", e)
+            logger.warning("qr/login ensure_device_session: %s", e)
         except RuntimeError as e:
-            # Исчерпан WG-пул / сбой keygen — не 500, а понятный ответ клиенту
-            logger.error("login ensure_device_session RuntimeError: %s", e)
+            logger.error("qr/login ensure_device_session RuntimeError: %s", e)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(e) or "Сервис временно недоступен. Попробуйте позже.",
             )
         except (AttributeError, TypeError) as e:
-            logger.error("login ensure_device_session skipped: %s", e)
-
+            logger.error("qr/login ensure_device_session skipped: %s", e)
     return TokenResponse(
         access_token=create_access_token(user.id),
         refresh_token=create_refresh_token(user.id),
     )
+
+
+def _device_from_dict(raw: dict | None) -> LoginDeviceInfo | None:
+    if not raw:
+        return None
+    fp = str(raw.get("device_fingerprint") or "").strip()
+    if not fp:
+        return None
+    return LoginDeviceInfo(
+        device_fingerprint=fp,
+        device_type=str(raw.get("device_type") or "android"),
+        device_name=str(raw.get("device_name") or "Android"),
+    )
+
+
+def _qr_http_error(exc) -> HTTPException:
+    from app.services.qr_login_service import QrLoginError
+
+    if not isinstance(exc, QrLoginError):
+        return HTTPException(status_code=400, detail=str(exc))
+    status_code = 400
+    if exc.code in ("expired", "not_found", "already_used"):
+        status_code = 410
+    return HTTPException(status_code=status_code, detail=exc.message)
+
+
+async def _load_active_user(db: AsyncSession, user_id: str) -> User:
+    try:
+        uid = uuid_mod.UUID(str(user_id))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Код недействителен")
+    result = await db.execute(select(User).where(User.id == uid))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=403, detail="Аккаунт заблокирован")
+    if not user.is_verified:
+        raise HTTPException(status_code=403, detail="Подтвердите email перед входом")
+    return user
+
+
+@router.post("/qr/start", response_model=QrStartResponse)
+async def qr_start(req: QrStartRequest, request: Request):
+    if await check_ip_rate_limit(request, scope="qr-start", max_attempts=20, window_seconds=600):
+        raise HTTPException(status_code=429, detail="Слишком много попыток. Попробуйте позже.")
+    from app.services.qr_login_service import get_qr_login_service
+
+    device = None
+    if req.device and req.device.device_fingerprint.strip():
+        device = req.device.model_dump()
+    try:
+        started = await get_qr_login_service().start_session(device)
+    except Exception as e:
+        logger.warning("qr start failed: %s", e)
+        raise HTTPException(status_code=503, detail="QR-вход временно недоступен")
+    return QrStartResponse(token=started.token, expires_in=started.expires_in, payload=started.payload)
+
+
+@router.get("/qr/poll", response_model=QrPollResponse)
+async def qr_poll(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    if await check_ip_rate_limit(request, scope="qr-poll", max_attempts=180, window_seconds=180):
+        raise HTTPException(status_code=429, detail="Слишком много запросов. Подождите.")
+    from app.services.qr_login_service import get_qr_login_service
+
+    try:
+        poll = await get_qr_login_service().poll_session(token)
+    except Exception as e:
+        logger.warning("qr poll failed: %s", e)
+        raise HTTPException(status_code=503, detail="QR-вход временно недоступен")
+    if poll.status != "approved" or not poll.user_id:
+        return QrPollResponse(status=poll.status)
+    user = await _load_active_user(db, poll.user_id)
+    device = _device_from_dict(poll.device)
+    if device and device.device_fingerprint.strip():
+        try:
+            await prune_oldest_session_if_full(db, user)
+            await ensure_device_session(
+                db,
+                user,
+                device_name=device.device_name,
+                device_type=device.device_type,
+                device_fingerprint=device.device_fingerprint,
+            )
+        except ValueError as e:
+            logger.warning("qr poll device slot: %s", e)
+        except Exception as e:
+            logger.warning("qr poll device skipped: %s", e)
+    return QrPollResponse(
+        status="approved",
+        access_token=create_access_token(user.id),
+        refresh_token=create_refresh_token(user.id),
+    )
+
+
+@router.post("/qr/approve")
+async def qr_approve(
+    req: QrApproveRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+):
+    if await check_ip_rate_limit(request, scope="qr-approve", max_attempts=30, window_seconds=600):
+        raise HTTPException(status_code=429, detail="Слишком много попыток. Попробуйте позже.")
+    if not user.is_verified:
+        raise HTTPException(status_code=403, detail="Подтвердите email перед входом")
+    from app.services.qr_login_service import QrLoginError, get_qr_login_service
+
+    raw = (req.payload or "").strip() or None
+    token = (req.token or "").strip() or None
+    try:
+        if raw:
+            await get_qr_login_service().approve_payload(str(user.id), raw)
+        elif token:
+            await get_qr_login_service().approve_session(str(user.id), token)
+        else:
+            raise HTTPException(status_code=400, detail="Нужен QR-код")
+    except HTTPException:
+        raise
+    except QrLoginError as e:
+        raise _qr_http_error(e)
+    except Exception as e:
+        logger.warning("qr approve failed: %s", e)
+        raise HTTPException(status_code=503, detail="QR-вход временно недоступен")
+    return {"ok": True}
+
+
+@router.post("/qr/user-code", response_model=QrUserCodeResponse)
+async def qr_user_code(
+    request: Request,
+    user: User = Depends(get_current_user),
+):
+    if await check_ip_rate_limit(request, scope="qr-user-code", max_attempts=20, window_seconds=600):
+        raise HTTPException(status_code=429, detail="Слишком много попыток. Попробуйте позже.")
+    if not user.is_verified:
+        raise HTTPException(status_code=403, detail="Подтвердите email перед входом")
+    from app.services.qr_login_service import get_qr_login_service
+
+    try:
+        issued = await get_qr_login_service().issue_user_code(str(user.id))
+    except Exception as e:
+        logger.warning("qr user-code failed: %s", e)
+        raise HTTPException(status_code=503, detail="QR-вход временно недоступен")
+    return QrUserCodeResponse(code=issued.code, expires_in=issued.expires_in, payload=issued.payload)
+
+
+@router.post("/qr/redeem", response_model=TokenResponse)
+async def qr_redeem(req: QrRedeemRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    if await check_ip_rate_limit(request, scope="qr-redeem", max_attempts=15, window_seconds=600):
+        raise HTTPException(status_code=429, detail="Слишком много попыток. Попробуйте позже.")
+    from app.services.qr_login_service import QrLoginError, get_qr_login_service
+
+    raw = (req.payload or "").strip() or None
+    code = (req.code or "").strip() or None
+    try:
+        if raw:
+            user_id = await get_qr_login_service().redeem_payload(raw)
+        elif code:
+            user_id = await get_qr_login_service().redeem_user_code(code)
+        else:
+            raise HTTPException(status_code=400, detail="Нужен QR-код")
+    except HTTPException:
+        raise
+    except QrLoginError as e:
+        raise _qr_http_error(e)
+    except Exception as e:
+        logger.warning("qr redeem failed: %s", e)
+        raise HTTPException(status_code=503, detail="QR-вход временно недоступен")
+    user = await _load_active_user(db, user_id)
+    return await _tokens_for_user(db, user, req.device)
 
 
 @router.post("/refresh", response_model=TokenResponse)

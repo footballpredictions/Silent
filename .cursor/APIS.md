@@ -35,6 +35,11 @@
 | POST | `/register` | — | Регистрация `{ email, password, referral_or_promo? }`. Поле — либо реф-код пользователя, либо промокод (взаимоисключающе). Реф → `referred_by` + `ReferralReward(pending)`; промо → `pending_promo_code` (скидка при `/payments/init`). При `app_settings.registration_disabled=true` → **503** «Ведутся технические работы. Регистрация временно недоступна.» (админка «Доп. настройки»). Анти-абуз: **429** при >`REGISTER_RATE_LIMIT_MAX` попыток с одного IP за `REGISTER_RATE_LIMIT_WINDOW_MINUTES` (Redis fixed-window, fail-open без Redis); **400** если: hard-block анонимайзеров (`internet.ru`, Apple Hide My Email, Duck/Firefox Relay…), disposable-домен, `+alias`, или домен не в `ALLOWED_EMAIL_DOMAINS` (whitelist; `internet.ru` убран — Mail.ru анонимайзер). Gmail uniqueness по canonical (точки/googlemail). См. `email_validation.py`. Дополнительно: один trial на `device_fingerprint` (`require_device_trial_not_reused` в `/vpn/device/register`) — алиасы Mail.ru на одном устройстве не плодят бесплатный VPN |
 | GET | `/verify-email?token=` | — | HTML-подтверждение email |
 | POST | `/login` | — | JWT access + refresh; опционально `device` → ensure_device_session |
+| POST | `/qr/start` | — | Сессия QR для устройства без входа. `{ device? }` → `{ token, expires_in, payload }` (`silentvpn://qr?k=s&c=…`, TTL 120с) |
+| GET | `/qr/poll?token=` | — | `pending` / `expired` / `approved` + JWT (одноразово). Device из start |
+| POST | `/qr/approve` | User | Подтвердить сессию ТВ: `{ token }` или `{ payload }` |
+| POST | `/qr/user-code` | User | Короткий уникальный QR пользователя `{ code, expires_in, payload }` (`k=u`, TTL 120с, ротация) |
+| POST | `/qr/redeem` | — | Войти по коду пользователя `{ code\|payload, device? }` → JWT |
 | POST | `/refresh` | — | Обновление токенов |
 | POST | `/forgot-password` | — | Письмо сброса пароля |
 | POST | `/reset-password` | — | Смена пароля по токену |
@@ -316,6 +321,8 @@ Endpoint: `GET /api/vpn/theme` (публичный, без auth).
 | `login_forgot_password_label` | «Забыли пароль?» |
 | `login_forgot_title` / `login_forgot_instruction` | Forgot password |
 | `login_reset_title` / `login_reset_button_text` | Reset password |
+| `login_qr_tab_label` / `login_qr_title` / `login_qr_show_hint` / `login_qr_scan_hint` / `login_qr_scan_label` / `login_qr_code_label` / `login_qr_waiting` / `login_qr_expired` | QR-вход на экране логина |
+| `menu_qr_label` | Пункт меню «QR-вход» |
 | `payment_waiting_title` / `payment_waiting_text` | Экран ожидания оплаты (после открытия браузера) |
 | `payment_success_title` / `payment_success_text` | Оплата подтверждена (poll вернул `completed`) |
 | `payment_failed_title` / `payment_failed_text` | Оплата не подтверждена (`failed`) |

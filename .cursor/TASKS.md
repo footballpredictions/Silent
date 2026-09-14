@@ -6,6 +6,27 @@ Agent приступает к **первой невыполненной** зад
 
 ---
 
+### QR-вход (2026-09-12)
+
+Быстрый вход: ТВ показывает QR, телефон сканирует (и наоборот — уникальный код пользователя).
+
+- [x] Backend `QrLoginService` + `/api/auth/qr/*` + unit-тесты
+- [x] ThemeResponse / админка Оформление
+- [x] Android: вкладка QR + сканер + меню (TV focus)
+- [x] PC / OpenWrt / iOS
+- [x] Деплой backend (`deploy_stable.py`); live `/api/auth/qr/start` 200
+- [x] QR убран из меню; сканер у темы / лога; декодер YUV + approve API
+- [x] Кнопка сканера — иконка; полный экран + полоска; без дыры SurfaceView
+- [x] Debug: Android `SilentVPN-debug.apk`, PC `build-debug-14557`
+- [x] Корень «скан ничего не делает»: самодельный QR PC/OpenWrt не декодировался; encoder → `qrcode`
+- [x] QR только Smart TV; внешний сканер → deep link → кнопка подтверждения; VPN не рвём
+- [x] ТВ не входил после confirm: poll одноразовый + пересоздание QR; retry poll + reuse сессии; деплой stable
+- [x] Poll QR на ТВ через bootstrap overlay (приложение было вне туннеля)
+- [x] Симуляция: nested skip-if-active overlay роняет poll; lease + poll после qrStart
+- [x] ТВ poll на public API (как телефон) + не cancel своей poll-job до goToMain
+- [x] publicHiveApi в обход getServerUrl; 403 poll не молчит; JWT даже без слота устройства
+- [x] Приёмка: QR → confirm с телефона → ТВ входит
+
 ## Открытые задачи
 
 ### Game exit — Сота 2 / Dota UDP (2026-09-12)

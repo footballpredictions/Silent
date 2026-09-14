@@ -201,6 +201,17 @@ class ThemeResponse(BaseModel):
     # Web: /api/auth/reset-password-page (ссылка из письма)
     login_reset_title: str = "Новый пароль"
     login_reset_button_text: str = "Сохранить пароль"
+    login_qr_tab_label: str = "QR"
+    login_qr_title: str = "Вход по QR"
+    login_qr_show_hint: str = "Отсканируйте код любым сканером на телефоне — откроется Silent VPN"
+    login_qr_scan_hint: str = "Отсканируйте QR любым сканером — откроется приложение"
+    login_qr_scan_label: str = "Сканер"
+    login_qr_code_label: str = "Мой код"
+    login_qr_waiting: str = "Ожидание подтверждения…"
+    login_qr_expired: str = "Код истёк — обновите"
+    login_qr_confirm_label: str = "Подтвердить вход на ТВ"
+    login_qr_confirm_hint: str = "Телевизор войдёт в ваш аккаунт"
+    menu_qr_label: str = "QR-вход"
     # Deprecated — two-step VK hash UI (клиенты 2026-06+ не используют)
     login_step1_title: str = ""
     login_step1_instruction: str = ""

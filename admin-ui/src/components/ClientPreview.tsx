@@ -26,6 +26,9 @@ export type ClientTheme = {
   dark_update_bar_progress_color?: string
   dark_login_link_color?: string
   login_remember_me_label?: string
+  login_qr_tab_label?: string
+  login_qr_title?: string
+  menu_qr_label?: string
   login_forgot_password_label?: string
   login_forgot_title?: string
   login_forgot_instruction?: string

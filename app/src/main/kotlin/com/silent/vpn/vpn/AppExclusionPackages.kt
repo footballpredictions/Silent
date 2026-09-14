@@ -1,10 +1,13 @@
 package com.silent.vpn.vpn
 
 import android.content.Context
+import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.policy.AppExclusionsPersist
+import com.silent.vpn.policy.AppTunnelRouting
 import com.silent.vpn.policy.GoogleAuthTunnelPolicy
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.PaymentBrowser
@@ -79,16 +82,14 @@ fun resolveBootstrapIncludedApps(context: Context): Set<String> {
 }
 
 data class AppTunnelPolicy(
-    /** true = БС (зарезервировано). Сейчас main VPN всегда ЧС-модель. */
+    /** true = БС: packages = complement (мимо VPN), выбранные остаются в туннеле. */
     val whitelist: Boolean,
     val packages: Set<String>,
 )
 
 /**
- * Main VPN: только ЧС-модель в туннеле (как 1.0.160/163).
- * Persist БС/ЧС (режим + оба списка) живёт в prefs и UI — здесь **не затираем**.
- * Непустой БС в туннеле пока no-op (full tunnel кроме Silent+VK), иначе includeApplications
- * без Silent роняет DNS. Точечный фикс маршрутизации БС — отдельно.
+ * Main VPN: ЧС и БС кладут bypass-пакеты в excludeApplications.
+ * БС = все установленные минус выбранные. Silent/VK всегда в exclude, кроме overlay.
  */
 fun resolveAppTunnelPolicy(context: Context, includeAppInTunnel: Boolean = false): AppTunnelPolicy {
     val prefs = SilentPrefs.open(context)
@@ -104,40 +105,56 @@ fun resolveAppTunnelPolicy(context: Context, includeAppInTunnel: Boolean = false
     )
     val intent = AppExclusionsPersist.tunnelIntent(state)
     val pm = context.packageManager
-
-    // БС: не трогаем prefs (раньше heal сбрасывал режим и списки).
-    // В туннель — только ЧС-пакеты; при активном БС user-exclude пустой (full tunnel + Silent/VK out).
-    val userForTunnel = if (intent.whitelist) {
-        DebugLog.i(
-            "AppExclusions",
-            "БС mode persisted (${intent.userPackages.size} apps) — tunnel ЧС-safe (no wipe prefs)",
-        )
-        emptySet()
+    val installed = installedBypassCandidates(pm, context.packageName)
+    val built = AppTunnelRouting.fromIntent(
+        intent = intent,
+        selfPackage = context.packageName,
+        includeAppInTunnel = includeAppInTunnel,
+        vkPackages = VK_TUNNEL_PACKAGES,
+        installedPackages = installed,
+    )
+    val filtered = built.packages.filter { isPackageInstalled(pm, it) }.toSet()
+    if (built.whitelist) {
+        DebugLog.i("AppExclusions", "БС exclude complement: ${filtered.size} (keep=${intent.userPackages.size})")
     } else {
-        intent.userPackages
+        val droppedAuth = GoogleAuthTunnelPolicy.droppedFromExclude(intent.userPackages)
+        if (droppedAuth.isNotEmpty()) {
+            DebugLog.i("AppExclusions", "Google auth kept in tunnel: ${droppedAuth.joinToString()}")
+        }
+        DebugLog.i("AppExclusions", "ЧС excludeApplications: ${filtered.size}")
     }
-
-    val excluded = LinkedHashSet<String>()
-    if (!includeAppInTunnel) {
-        excluded.add(context.packageName)
-    }
-    excluded.addAll(VK_TUNNEL_PACKAGES)
-    excluded.addAll(userForTunnel)
-    val droppedAuth = GoogleAuthTunnelPolicy.droppedFromExclude(excluded)
-    if (droppedAuth.isNotEmpty()) {
-        DebugLog.i("AppExclusions", "Google auth kept in tunnel: ${droppedAuth.joinToString()}")
-    }
-    val filtered = GoogleAuthTunnelPolicy.excludeWithoutGoogleAuth(excluded)
-        .filter { isPackageInstalled(pm, it) }
-        .toSet()
-    DebugLog.i("AppExclusions", "ЧС excludeApplications: ${filtered.size}")
-    return AppTunnelPolicy(whitelist = false, packages = filtered)
+    return AppTunnelPolicy(whitelist = built.whitelist, packages = filtered)
 }
 
 /** @deprecated используйте [resolveAppTunnelPolicy] */
 fun resolveExcludedAppPackages(context: Context, includeAppInTunnel: Boolean = false): Set<String> {
-    val policy = resolveAppTunnelPolicy(context, includeAppInTunnel)
-    return if (policy.whitelist) emptySet() else policy.packages
+    return resolveAppTunnelPolicy(context, includeAppInTunnel).packages
+}
+
+/** Лаунчер + пользовательские пакеты — тот же круг, что список исключений. */
+private fun installedBypassCandidates(pm: PackageManager, selfPackage: String): Set<String> {
+    val fromPm = runCatching {
+        pm.getInstalledApplications(PackageManager.GET_META_DATA)
+    }.getOrDefault(emptyList())
+    val launcher = runCatching {
+        val launch = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        @Suppress("DEPRECATION")
+        pm.queryIntentActivities(launch, PackageManager.MATCH_ALL)
+            .mapNotNull { it.activityInfo?.packageName }
+            .toSet()
+    }.getOrDefault(emptySet())
+    val out = LinkedHashSet<String>()
+    for (info in fromPm) {
+        val pkg = info.packageName ?: continue
+        if (pkg == selfPackage || pkg in VK_TUNNEL_PACKAGES) continue
+        val system = info.flags and ApplicationInfo.FLAG_SYSTEM != 0
+        val updated = info.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0
+        if (!system || updated || pkg in launcher) out.add(pkg)
+    }
+    for (pkg in launcher) {
+        if (pkg != selfPackage && pkg !in VK_TUNNEL_PACKAGES) out.add(pkg)
+    }
+    return out
 }
 
 private fun isPackageInstalled(pm: PackageManager, pkg: String): Boolean = runCatching {

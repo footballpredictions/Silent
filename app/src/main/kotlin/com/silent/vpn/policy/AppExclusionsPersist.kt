@@ -51,13 +51,10 @@ object AppExclusionsPersist {
         else state.copy(blacklistAppIds = ids)
 
     /**
-     * Пустой БС = весь трафик в VPN (как пустой ЧС), а не «все приложения мимо».
+     * БС: галочка = через VPN. Пустой список = никто не выбран = все пользовательские мимо.
      */
     fun tunnelIntent(state: State): TunnelIntent {
         if (state.whitelist) {
-            if (state.whitelistAppIds.isEmpty()) {
-                return TunnelIntent(whitelist = false, userPackages = emptySet())
-            }
             return TunnelIntent(whitelist = true, userPackages = state.whitelistAppIds)
         }
         return TunnelIntent(whitelist = false, userPackages = state.blacklistAppIds)

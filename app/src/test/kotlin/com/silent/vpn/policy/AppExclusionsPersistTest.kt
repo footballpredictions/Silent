@@ -77,14 +77,14 @@ class AppExclusionsPersistTest {
     }
 
     @Test
-    fun `empty whitelist tunnel intent is fail-safe all through VPN`() {
+    fun `empty whitelist tunnel intent stays whitelist so unchecked apps can bypass`() {
         val emptyWl = AppExclusionsPersist.State(
             whitelist = true,
             blacklistAppIds = setOf("C"),
             whitelistAppIds = emptySet(),
         )
         val intent = AppExclusionsPersist.tunnelIntent(emptyWl)
-        assertFalse(intent.whitelist)
+        assertTrue(intent.whitelist)
         assertEquals(emptySet<String>(), intent.userPackages)
     }
 

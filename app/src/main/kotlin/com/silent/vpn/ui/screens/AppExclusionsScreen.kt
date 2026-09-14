@@ -623,7 +623,7 @@ fun AppExclusionsScreen(
 
             ExclusionsPane.Apps -> {
                 Text(
-                    if (whitelist) "БС: только выбранные через VPN"
+                    if (whitelist) "БС: галочка — через VPN, без галочки — мимо"
                     else "ЧС: выбранные мимо VPN",
                     fontSize = 11.sp,
                     color = fg.copy(0.5f),

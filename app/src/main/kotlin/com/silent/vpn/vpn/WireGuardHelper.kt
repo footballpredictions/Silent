@@ -54,6 +54,7 @@ import java.io.ByteArrayInputStream
  * Bootstrap: includeApplications (Silent + браузеры + почта + YuMoney/Сбер), AllowedIPs → API + backend HTTPS.
  * apiOverlayMode: кратко AllowedIPs = 10.66.66.0/24 (только bootstrap).
  * Main VPN: AllowedIPs = 0.0.0.0/0; дыры сайтов — excludeRoute (API 33+).
+ * Приложения: ЧС и БС = excludeApplications (БС = complement установленных).
  * Complement 0.0.0.0/0−host (~32 CIDR) на OEM даёт blackhole (2ip.io / YouTube) — не использовать на main.
  * После основного VPN overlay не используем — отзыв через GETCONF/DTLS.
  */
@@ -267,19 +268,12 @@ class WireGuardHelper(context: Context) {
                 runCatching {
                     val policy = resolveAppTunnelPolicy(appContext, includeAppInTunnel)
                     if (policy.packages.isEmpty()) return@runCatching
-                    if (policy.whitelist) {
-                        ifaceBuilder.includeApplications(policy.packages)
-                        DebugLog.i(
-                            TAG,
-                            "App БС includeApplications: ${policy.packages.size} (overlay=$apiOverlayMode)",
-                        )
-                    } else {
-                        ifaceBuilder.excludeApplications(policy.packages)
-                        DebugLog.i(
-                            TAG,
-                            "App ЧС excludeApplications: ${policy.packages.size} (overlay=$apiOverlayMode)",
-                        )
-                    }
+                    ifaceBuilder.excludeApplications(policy.packages)
+                    val mode = if (policy.whitelist) "БС" else "ЧС"
+                    DebugLog.i(
+                        TAG,
+                        "App $mode excludeApplications: ${policy.packages.size} (overlay=$apiOverlayMode)",
+                    )
                 }
             }
 

@@ -17,7 +17,7 @@ def main() -> int:
     dest = ROOT / "dist" / artifact_name(version)
     write_tarball(ROOT, dest)
     print(f"Built {dest} ({dest.stat().st_size} bytes)")
-    print("Universal: shell + web only, no CPU-specific binaries.")
+    print("Package: web + agent + wdtt-client for aarch64/arm/mipsel/x86_64.")
     return 0
 
 

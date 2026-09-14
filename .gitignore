@@ -4,3 +4,4 @@ __pycache__/
 *.ipk
 .ipk-build/
 dist/
+files/usr/lib/silent-vpn/wdtt/wdtt-client.*

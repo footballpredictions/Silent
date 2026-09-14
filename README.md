@@ -6,22 +6,19 @@
 
 ## Установка на роутер
 
-Сборка универсального архива (любой процессор):
-
-```powershell
-python scripts/build_release.py
-```
-
-Файл: `dist/silent-vpn-openwrt-1.0.165.tar.gz`. На роутере:
+OpenWrt 23.05+ (opkg на 23/24, apk на 25+). aarch64, arm, mipsel, x86_64.
 
 ```sh
-tar -xzf silent-vpn-openwrt-1.0.165.tar.gz
-cd silent-vpn
-sh install.sh deps
-sh install.sh install
+if command -v apk >/dev/null 2>&1; then apk update && apk add wget ca-bundle; else opkg update && opkg install wget ca-bundle; fi && wget -O /tmp/sv.sh https://silentvpn3.github.io/openwrt-install.sh && sh /tmp/sv.sh
 ```
 
-Или одной командой `sh install.sh`. Дальше браузер: `http://<LAN-IP>.silent.vpn` → логин → тумблер.
+Дальше браузер: `http://<LAN-IP>.silent.vpn` → логин → тумблер.
+
+Удалить:
+
+```sh
+wget -O /tmp/sv-rm.sh https://silentvpn3.github.io/openwrt-uninstall.sh && sh /tmp/sv-rm.sh
+```
 
 ## Локальный просмотр веба
 

@@ -8,7 +8,7 @@ from pathlib import Path
 SKIP_WEB = {"toggle-demo.html"}
 SKIP_DIR_NAMES = {"__pycache__", ".preview-cache"}
 EXEC_SUFFIXES = {".sh"}
-EXEC_NAMES = {"silent-vpn-ctl", "silent-entry", "silent-api", "99-silent-vpn"}
+EXEC_NAMES = {"silent-vpn-ctl", "silent-entry", "silent-api", "99-silent-vpn", "remote-install.sh"}
 
 
 def read_version(root: Path) -> str:
@@ -20,7 +20,11 @@ def artifact_name(version: str) -> str:
 
 
 def _is_exec(path: Path) -> bool:
-    return path.suffix in EXEC_SUFFIXES or path.name in EXEC_NAMES
+    return (
+        path.suffix in EXEC_SUFFIXES
+        or path.name in EXEC_NAMES
+        or path.name.startswith("wdtt-client.")
+    )
 
 
 def iter_release_files(root: Path) -> list[tuple[Path, str]]:
@@ -28,6 +32,12 @@ def iter_release_files(root: Path) -> list[tuple[Path, str]]:
     rows: list[tuple[Path, str]] = []
     rows.append((root / "install.sh", "silent-vpn/install.sh"))
     rows.append((root / "VERSION", "silent-vpn/VERSION"))
+    uninstall = root / "uninstall.sh"
+    if uninstall.is_file():
+        rows.append((uninstall, "silent-vpn/uninstall.sh"))
+    remote = root / "remote-install.sh"
+    if remote.is_file():
+        rows.append((remote, "silent-vpn/remote-install.sh"))
     for folder in ("files", "web"):
         base = root / folder
         for path in sorted(base.rglob("*")):

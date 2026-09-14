@@ -1,9 +1,8 @@
-# Optional WDTT cloak next to WireGuard (same role as wdtt-client on PC).
-# Binary is dropped in by the packager; this file only supervises it.
+# Cloak beside WireGuard (same role as on PC). Binary is bundled with the package.
 
 . "$SV_LIB/common.sh"
 
-SV_CLOAK_BIN="${SV_CLOAK_BIN:-/usr/bin/wdtt-client}"
+SV_CLOAK_BIN="${SV_CLOAK_BIN:-/usr/bin/spass}"
 SV_CLOAK_PID="$SV_RUN/cloak.pid"
 
 sv_cloak_available() {
@@ -15,6 +14,9 @@ sv_cloak_stop() {
 		kill "$(cat "$SV_CLOAK_PID")" >/dev/null 2>&1 || true
 		rm -f "$SV_CLOAK_PID"
 	fi
+	killall spass >/dev/null 2>&1 || true
+	killall svpass >/dev/null 2>&1 || true
+	killall svcloak >/dev/null 2>&1 || true
 	killall wdtt-client >/dev/null 2>&1 || true
 }
 

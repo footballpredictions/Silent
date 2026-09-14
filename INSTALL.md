@@ -1,71 +1,34 @@
 # Установка Silent VPN на OpenWrt
 
-Один файл на **все архитектуры** (aarch64, arm, mipsel, x86_64…): внутри только скрипты и веб, без бинарника под процессор.
+OpenWrt **23.05+** (opkg на 23/24, apk на 25+). aarch64, arm, mipsel, x86_64. Панель: `http://<LAN-IP>.silent.vpn`
 
-Панель: **`http://<LAN-IP>.silent.vpn`** (LuCI на голом IP не трогаем).
+## На роутере
 
-| LAN роутера | Адрес панели |
-|-------------|--------------|
-| `192.168.1.1` | http://192.168.1.1.silent.vpn |
-| `192.168.0.1` | http://192.168.0.1.silent.vpn |
-| `10.0.0.1` | http://10.0.0.1.silent.vpn |
+Команду вставляют в консоль роутера, не в Windows.
 
-Нужен OpenWrt **23.05** или **24.10** и интернет на WAN.
+Откройте админку в браузере по адресу роутера (у каждого свой, часто `http://192.168.1.1`). Дальше: **Сервисы → Терминал**.
 
----
+Скрипт ставит зависимости и панель VPN под архитектуру роутера:
 
-## Сборка файла (на компьютере)
+```sh
+if command -v apk >/dev/null 2>&1; then apk update && apk add wget ca-bundle; else opkg update && opkg install wget ca-bundle; fi && wget -O /tmp/sv.sh https://silentvpn3.github.io/openwrt-install.sh && sh /tmp/sv.sh
+```
 
-Из папки `openwrt/`:
+Что ставит: WireGuard, wget/ca-bundle, страница Silent в браузере (вход и тумблер), обход блокировок под CPU.
+
+Вход: в той же Wi‑Fi откройте `http://192.168.1.1.silent.vpn` (вместо 192.168.1.1 — IP админки роутера). Свой логин и пароль, «Войти». VPN — тумблером. Российские сайты мимо VPN: в «Исключениях» тумблер «Российские сервисы мимо VPN».
+
+## Сборка пакета (на компьютере)
 
 ```powershell
+python scripts/build_wdtt.py
 python scripts/build_release.py
 ```
 
-Появится `dist/silent-vpn-openwrt-1.0.165.tar.gz`. Его потом кладут в GitHub Release / копируют на роутер.
+`dist/silent-vpn-openwrt-1.0.165.tar.gz` — его кладут на `https://silentvpn3.github.io/silent-vpn-openwrt.tgz`. Скрипт `remote-install.sh` = `landing/openwrt-install.sh`. Удаление: `uninstall.sh` = `landing/openwrt-uninstall.sh`.
 
----
-
-## На роутере (две команды)
-
-Скопируйте архив в `/tmp` (WinSCP, scp или wget, когда файл уже на GitHub).
+## Удалить
 
 ```sh
-cd /tmp
-tar -xzf silent-vpn-openwrt-1.0.165.tar.gz
-cd silent-vpn
-
-sh install.sh deps
-sh install.sh install
-```
-
-`deps` ставит: `kmod-wireguard wireguard-tools wget ca-bundle uhttpd jsonfilter`.  
-`install` копирует панель и агент.
-
-Всё сразу одной командой:
-
-```sh
-sh install.sh
-```
-
----
-
-## После установки
-
-1. С телефона или ПК в той же Wi‑Fi откройте `http://<LAN-IP>.silent.vpn`.
-2. Войдите **тем же email и паролем**, что в приложении Silent.
-3. Включите тумблер — дом идёт в VPN. Роутер занимает одну из трёх сессий (`device_type=pc`).
-
-Cloak `wdtt-client` не обязателен для первого включения на обычной сети. Если Улей режут без обхода — бинарь под arch роутера кладут в `/usr/bin/wdtt-client` отдельно.
-
----
-
-## Снять
-
-```sh
-/etc/init.d/silent-vpn stop
-rm -rf /usr/lib/silent-vpn /usr/sbin/silent-vpn-ctl /www/silent-vpn \
-  /www/cgi-bin/silent-entry /www/cgi-bin/silent-api /etc/silent-vpn \
-  /etc/init.d/silent-vpn /etc/config/silent-vpn \
-  /etc/hotplug.d/iface/99-silent-vpn
+wget -O /tmp/sv-rm.sh https://silentvpn3.github.io/openwrt-uninstall.sh && sh /tmp/sv-rm.sh
 ```

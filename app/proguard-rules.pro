@@ -45,6 +45,10 @@
 -keep interface okhttp3.** { *; }
 -dontwarn okhttp3.**
 
+-keep class com.google.zxing.** { *; }
+-dontwarn com.google.zxing.**
+-keep class androidx.camera.** { *; }
+
 # Gson
 -keep class com.google.gson.** { *; }
 -keepclassmembers,allowobfuscation class * { @com.google.gson.annotations.SerializedName <fields>; }

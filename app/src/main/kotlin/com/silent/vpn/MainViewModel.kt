@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
@@ -22,6 +23,15 @@ import com.silent.vpn.data.ConfigSyncCoordinator
 import com.silent.vpn.data.HashItemDto
 import com.silent.vpn.data.LoginDeviceInfo
 import com.silent.vpn.data.LoginRequest
+import com.silent.vpn.data.QrApproveRequest
+import com.silent.vpn.data.QrApproveResponse
+import com.silent.vpn.data.QrRedeemRequest
+import com.silent.vpn.data.QrStartRequest
+import com.silent.vpn.data.parseQrPayload
+import com.silent.vpn.data.interpretQrPoll
+import com.silent.vpn.data.QrPollDecision
+import com.silent.vpn.data.qrApproveKeepsExistingVpn
+import com.silent.vpn.data.shouldReuseQrWaitingSession
 import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.activeServerHashes
 import com.silent.vpn.data.toHashItems
@@ -34,6 +44,7 @@ import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.UserProfile
 import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.data.VpnHashesResponse
+import com.silent.vpn.policy.ApiRoutePolicy
 import com.silent.vpn.policy.ConfigSyncSkipPolicy
 import com.silent.vpn.policy.OlcrtcSessionPolicy
 import com.silent.vpn.policy.SessionsSyncPolicy
@@ -48,6 +59,7 @@ import com.silent.vpn.service.VpnTileConnect
 import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.vk.HashParser
 import com.silent.vpn.util.DebugLog
+import com.silent.vpn.util.DevicePlatform
 import com.silent.vpn.util.SessionTrace
 import com.silent.vpn.vpn.TelegramPathWarmup
 import com.silent.vpn.vpn.VpnNetworkHelper
@@ -318,6 +330,23 @@ class MainViewModel @Inject constructor(
 
     private val _forgotSent = MutableStateFlow(false)
     val forgotSent: StateFlow<Boolean> = _forgotSent
+    private val _qrPayload = MutableStateFlow("")
+    val qrPayload: StateFlow<String> = _qrPayload
+    private val _qrWaiting = MutableStateFlow(false)
+    val qrWaiting: StateFlow<Boolean> = _qrWaiting
+    private val _qrExpired = MutableStateFlow(false)
+    val qrExpired: StateFlow<Boolean> = _qrExpired
+    private val _qrStatusText = MutableStateFlow("")
+    val qrStatusText: StateFlow<String> = _qrStatusText
+    private val _qrPending = MutableStateFlow<com.silent.vpn.data.QrLoginPayload?>(null)
+    val qrPending: StateFlow<com.silent.vpn.data.QrLoginPayload?> = _qrPending
+    private val _qrConfirmBusy = MutableStateFlow(false)
+    val qrConfirmBusy: StateFlow<Boolean> = _qrConfirmBusy
+    private val _qrConfirmError = MutableStateFlow<String?>(null)
+    val qrConfirmError: StateFlow<String?> = _qrConfirmError
+    private var qrPollJob: Job? = null
+    private var qrSessionToken: String = ""
+    private var qrEphemeralBootstrap = false
 
     val lastEmail: String get() = repo.getLastEmail().orEmpty()
     val lastPassword: String get() = repo.getRememberedPassword().orEmpty()
@@ -2573,11 +2602,12 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun <T> withBootstrapBackendApi(block: suspend () -> T): T {
-        if (isBootstrapAuthVpnActive()) {
-            repo.ensureBootstrapTunnelApi()
-            return block()
-        }
-        if (needsPreLoginApiOverlay()) {
+        val needOverlay = ApiRoutePolicy.preLoginApiNeedsOverlay(
+            appExcludedFromVpn = SilentRepository.APP_EXCLUDED_FROM_VPN,
+            vpnServiceRunning = SilentVpnService.isRunning,
+            tunnelReady = WdttTunnelManager.tunnelReady.value,
+        )
+        if (needOverlay) {
             if (!bootstrapVpnMode && _screen.value == AppScreen.LOGIN) {
                 bootstrapVpnMode = true
             }
@@ -2586,6 +2616,10 @@ class MainViewModel @Inject constructor(
                 repo.invalidateApiClient()
                 block()
             }
+        }
+        if (isBootstrapAuthVpnActive()) {
+            repo.ensureBootstrapTunnelApi()
+            return block()
         }
         return block()
     }
@@ -2945,6 +2979,364 @@ class MainViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    fun startQrLoginSession(activity: ComponentActivity? = null, forceRefresh: Boolean = false) {
+        invalidatePendingLogout()
+        if (
+            shouldReuseQrWaitingSession(
+                forceRefresh = forceRefresh,
+                token = qrSessionToken,
+                payload = _qrPayload.value,
+                expired = _qrExpired.value,
+            )
+        ) {
+            if (qrPollJob?.isActive != true) {
+                pollQrSession(activity, 120)
+            }
+            return
+        }
+        qrPollJob?.cancel()
+        viewModelScope.launch {
+            _qrExpired.value = false
+            _qrWaiting.value = true
+            _qrStatusText.value = ""
+            _authError.value = null
+            try {
+                if (_vpnState.value != VpnState.CONNECTED || !WdttTunnelManager.tunnelReady.value) {
+                    _authError.value = "Сначала дождитесь зелёной надписи «Канал готов»"
+                    return@launch
+                }
+                ensureTunnelApiBaseForLogin()
+                val device = LoginDeviceInfo(
+                    device_fingerprint = repo.startNewSession(),
+                    device_type = repo.getApiDeviceType(),
+                    device_name = repo.getDeviceDisplayName(),
+                )
+                var expiresIn = 120
+                var started = false
+                val req = QrStartRequest(device)
+                val publicRes = runCatching { repo.publicHiveApi().qrStart(req) }.getOrNull()
+                val res = if (publicRes != null && (publicRes.isSuccessful || publicRes.code() in 400..499)) {
+                    publicRes
+                } else {
+                    withBootstrapBackendApi {
+                        awaitTunnelApiReady()
+                        repo.getApi().qrStart(req)
+                    }
+                }
+                if (!res.isSuccessful) {
+                    _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Не удалось создать QR"
+                    _qrWaiting.value = false
+                } else {
+                    val body = res.body()!!
+                    qrSessionToken = body.token
+                    _qrPayload.value = body.payload
+                    _qrWaiting.value = true
+                    expiresIn = body.expires_in.coerceIn(30, 180)
+                    started = true
+                }
+                if (started) {
+                    pollQrSession(activity, expiresIn)
+                }
+            } catch (e: Exception) {
+                _authError.value = e.message ?: "Ошибка QR"
+                _qrWaiting.value = false
+            }
+        }
+    }
+
+    private fun pollQrSession(activity: ComponentActivity?, expiresIn: Int) {
+        qrPollJob?.cancel()
+        qrPollJob = viewModelScope.launch {
+            val deadline = SystemClock.elapsedRealtime() + expiresIn * 1000L
+            _qrStatusText.value = "Ожидание подтверждения с телефона…"
+            var access: String? = null
+            var refresh: String? = null
+            var useTunnelOverlay = false
+            try {
+                while (isActive && qrSessionToken.isNotBlank() && access == null) {
+                    if (SystemClock.elapsedRealtime() >= deadline) {
+                        _qrExpired.value = true
+                        _qrWaiting.value = false
+                        _qrStatusText.value = "Код истёк — обновите"
+                        break
+                    }
+                    val res = if (useTunnelOverlay) {
+                        withBootstrapBackendApi { repo.getApi().qrPoll(qrSessionToken) }
+                    } else {
+                        val publicRes = runCatching { repo.publicHiveApi().qrPoll(qrSessionToken) }
+                            .onFailure { e -> DebugLog.w("QR", "public poll: ${e.message}") }
+                            .getOrNull()
+                        if (publicRes != null) {
+                            publicRes
+                        } else {
+                            useTunnelOverlay = true
+                            withBootstrapBackendApi { repo.getApi().qrPoll(qrSessionToken) }
+                        }
+                    }
+                    val decision = interpretQrPoll(
+                        httpCode = res.code(),
+                        status = res.body()?.status,
+                        accessToken = res.body()?.access_token,
+                        refreshToken = res.body()?.refresh_token,
+                        errorText = parseError(res.errorBody()?.string() ?: ""),
+                    )
+                    when (decision) {
+                        is QrPollDecision.Approved -> {
+                            DebugLog.i("QR", "poll approved, tokens ready")
+                            access = decision.access
+                            refresh = decision.refresh
+                        }
+                        is QrPollDecision.Expired -> {
+                            _qrExpired.value = true
+                            _qrWaiting.value = false
+                            _qrStatusText.value = "Код истёк — обновите"
+                            break
+                        }
+                        is QrPollDecision.Failed -> {
+                            _authError.value = decision.message
+                            _qrStatusText.value = decision.message
+                            DebugLog.w("QR", "poll fatal ${res.code()}: ${decision.message}")
+                            break
+                        }
+                        is QrPollDecision.Pending -> Unit
+                        is QrPollDecision.Retry -> {
+                            DebugLog.w("QR", "poll HTTP ${res.code()}")
+                            _qrStatusText.value = "Связь с сервером… жду подтверждение"
+                        }
+                    }
+                    if (access != null) break
+                    delay(1500)
+                }
+            } catch (e: Exception) {
+                DebugLog.w("QR", "poll: ${e.message}")
+                _qrStatusText.value = "Нет связи с сервером"
+            }
+            val a = access
+            val r = refresh
+            if (!a.isNullOrBlank() && !r.isNullOrBlank()) {
+                _qrStatusText.value = "Подтверждение получено, вход…"
+                try {
+                    completeLoginFromTokens(a, r, activity)
+                } catch (e: Exception) {
+                    DebugLog.w("QR", "complete: ${e.message}")
+                    _authError.value = e.message ?: "Не удалось войти на ТВ"
+                    _qrStatusText.value = "Не удалось войти — обновите код"
+                }
+            }
+        }
+    }
+
+    fun loadUserQrCode() {
+        qrPollJob?.cancel()
+        viewModelScope.launch {
+            _qrExpired.value = false
+            _qrStatusText.value = ""
+            _authError.value = null
+            try {
+                val res = repo.getApi().qrUserCode()
+                if (!res.isSuccessful) {
+                    _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Не удалось получить QR"
+                    return@launch
+                }
+                val body = res.body()!!
+                qrSessionToken = ""
+                _qrPayload.value = body.payload
+                _qrWaiting.value = false
+                scheduleQrExpiry(body.expires_in.coerceIn(30, 180))
+            } catch (e: Exception) {
+                _authError.value = e.message ?: "Ошибка QR"
+            }
+        }
+    }
+
+    private fun scheduleQrExpiry(expiresIn: Int) {
+        qrPollJob?.cancel()
+        qrPollJob = viewModelScope.launch {
+            delay(expiresIn * 1000L)
+            _qrExpired.value = true
+            _qrStatusText.value = "Код истёк — обновите"
+        }
+    }
+
+    fun onQrScanned(raw: String, activity: ComponentActivity? = null) {
+        if (DevicePlatform.isTv(appContext)) return
+        val parsed = parseQrPayload(raw) ?: run {
+            _qrConfirmError.value = "Это не QR Silent VPN"
+            activity?.runOnUiThread {
+                Toast.makeText(activity, "Это не QR Silent VPN", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+        if (!parsed.isSession) {
+            _qrConfirmError.value = "Отсканируйте QR с экрана входа на ТВ"
+            return
+        }
+        _qrConfirmError.value = if (repo.isLoggedIn()) {
+            null
+        } else {
+            "Сначала войдите на этом телефоне, затем снова отсканируйте QR с ТВ"
+        }
+        _qrPending.value = parsed
+        DebugLog.i("QR", "pending ${parsed.code.take(8)}…")
+    }
+
+    fun dismissQrConfirm() {
+        if (_qrConfirmBusy.value) return
+        _qrPending.value = null
+        _qrConfirmError.value = null
+    }
+
+    fun confirmPendingQr(activity: ComponentActivity? = null) {
+        val parsed = _qrPending.value ?: return
+        if (!repo.isLoggedIn()) {
+            _qrConfirmError.value = "Сначала войдите на этом телефоне"
+            return
+        }
+        viewModelScope.launch {
+            _qrConfirmBusy.value = true
+            _qrConfirmError.value = null
+            val keepVpn = qrApproveKeepsExistingVpn(
+                mainVpnUp = repo.isMainVpnTunnelUp(),
+                serviceRunning = SilentVpnService.isRunning,
+                bootstrapMode = WdttTunnelManager.isBootstrapMode(),
+            )
+            qrEphemeralBootstrap = false
+            try {
+                val res = approveQrSession(parsed, keepVpn, activity)
+                if (!res.isSuccessful) {
+                    _qrConfirmError.value =
+                        parseError(res.errorBody()?.string() ?: "") ?: "Не удалось подтвердить вход"
+                    return@launch
+                }
+                _qrPending.value = null
+                _qrStatusText.value = "Вход на другом устройстве подтверждён"
+                activity?.runOnUiThread {
+                    Toast.makeText(activity, "Вход на другом устройстве подтверждён", Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                _qrConfirmError.value = e.message ?: "Ошибка QR"
+            } finally {
+                if (qrEphemeralBootstrap && !keepVpn && !repo.isMainVpnTunnelUp()) {
+                    disconnectBootstrapVpn(activity?.applicationContext ?: appContext)
+                }
+                qrEphemeralBootstrap = false
+                _qrConfirmBusy.value = false
+            }
+        }
+    }
+
+    private suspend fun approveQrSession(
+        parsed: com.silent.vpn.data.QrLoginPayload,
+        keepVpn: Boolean,
+        activity: ComponentActivity?,
+    ): retrofit2.Response<QrApproveResponse> {
+        val canonical = parsed.toUri()
+        val req = QrApproveRequest(token = parsed.code, payload = canonical)
+        DebugLog.i("QR", "approve ${parsed.code.take(8)}… keepVpn=$keepVpn")
+        if (keepVpn) {
+            return try {
+                repo.withUserBackendApi { repo.getApi().qrApprove(req) }
+            } catch (e: Exception) {
+                DebugLog.w("QR", "approve tunnel fail: ${e.message}, public")
+                repo.clearTunnelApiBase()
+                repo.getApi().qrApprove(req)
+            }
+        }
+        repo.clearTunnelApiBase()
+        val publicRes = runCatching { repo.getApi().qrApprove(req) }.getOrNull()
+        if (publicRes?.isSuccessful == true) return publicRes
+        if (!startEphemeralQrBootstrap(activity)) {
+            if (publicRes != null) return publicRes
+            error(publicRes?.let { parseError(it.errorBody()?.string() ?: "") } ?: "Нет связи с сервером")
+        }
+        qrEphemeralBootstrap = true
+        return withBootstrapBackendApi { repo.getApi().qrApprove(req) }
+    }
+
+    private suspend fun startEphemeralQrBootstrap(activity: ComponentActivity?): Boolean {
+        if (repo.isMainVpnTunnelUp()) return false
+        if (isBootstrapAuthVpnActive()) {
+            repo.ensureBootstrapTunnelApi()
+            return true
+        }
+        if (!isHashReady()) return false
+        val ctx = activity ?: return false
+        if (SilentVpnService.isRunning && !WdttTunnelManager.isBootstrapMode()) return false
+        val boot = HashParser.extract(repo.getBootstrapHash().orEmpty()) ?: return false
+        val fp = runCatching { repo.getDeviceFingerprint() }.getOrNull() ?: return false
+        val config = bootstrapLaunchConfig(BootstrapVpnConfig.build(boot, fp))
+        if (config.vk_hashes.isEmpty()) return false
+        bootstrapVpnMode = true
+        bootstrapContext = ctx.applicationContext
+        val intent = Intent(ctx.applicationContext, SilentVpnService::class.java).apply {
+            action = SilentVpnService.ACTION_CONNECT
+            putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(config))
+            putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, true)
+        }
+        ContextCompat.startForegroundService(ctx.applicationContext, intent)
+        repeat(40) {
+            delay(200)
+            if (repo.isMainVpnTunnelUp()) return false
+            if (WdttTunnelManager.tunnelReady.value && WdttTunnelManager.isBootstrapMode()) {
+                repo.ensureBootstrapTunnelApi()
+                return true
+            }
+        }
+        bootstrapVpnMode = false
+        return false
+    }
+
+    fun stopQrLogin() {
+        qrPollJob?.cancel()
+        qrPollJob = null
+        qrSessionToken = ""
+        _qrPayload.value = ""
+        _qrWaiting.value = false
+        _qrExpired.value = false
+        _qrStatusText.value = ""
+    }
+
+    private suspend fun completeLoginFromTokens(
+        access: String,
+        refresh: String,
+        activity: ComponentActivity?,
+    ) {
+        val ctx = activity?.applicationContext ?: appContext
+        repo.saveTokens(access, refresh)
+        var loginSucceeded = false
+        try {
+            loginSucceeded = applyLoginAfterQrTokens(repo.publicHiveApi(), syncTunnel = false)
+        } catch (e: Exception) {
+            DebugLog.w("QR", "complete public: ${e.message}")
+        }
+        if (!loginSucceeded && repo.isLoggedIn()) {
+            withBootstrapBackendApi {
+                loginSucceeded = applyLoginAfterQrTokens(repo.getApi(), syncTunnel = true)
+            }
+        }
+        if (loginSucceeded) {
+            disconnectBootstrapVpn(ctx)
+            rememberWarmConnectFromCache()
+            goToMain(skipProfileFetch = true)
+            startConfigSync()
+        }
+    }
+
+    private suspend fun applyLoginAfterQrTokens(
+        api: com.silent.vpn.data.SilentApi,
+        syncTunnel: Boolean,
+    ): Boolean {
+        if (!openLoginSession(api, clearTokensOnFailure = !syncTunnel)) {
+            return repo.isLoggedIn()
+        }
+        if (syncTunnel) {
+            if (!syncLoginDataViaBootstrapTunnel(registerIfNeeded = false)) {
+                _vpnError.value = "Профиль не загрузился. Включите VPN на главном экране."
+            }
+        }
+        return true
     }
 
     private suspend fun loginAttempt(
@@ -3415,9 +3807,12 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun openLoginSession(): Boolean {
+    private suspend fun openLoginSession(
+        api: com.silent.vpn.data.SilentApi = repo.getApi(),
+        clearTokensOnFailure: Boolean = true,
+    ): Boolean {
         val boot = repo.getBootstrapHash()
-        val res = repo.getApi().registerDevice(
+        val res = api.registerDevice(
             DeviceRegisterRequest(
                 repo.getDeviceDisplayName(),
                 repo.getApiDeviceType(),
@@ -3446,8 +3841,10 @@ class MainViewModel @Inject constructor(
         }
         _authError.value = parseError(bodyStr)
             ?: "Достигнут лимит устройств (3). Выйдите на другом устройстве."
-        repo.clearSessionFingerprint()
-        repo.clearTokens()
+        if (clearTokensOnFailure) {
+            repo.clearSessionFingerprint()
+            repo.clearTokens()
+        }
         restartBootstrapTimerIfNeeded()
         return false
     }

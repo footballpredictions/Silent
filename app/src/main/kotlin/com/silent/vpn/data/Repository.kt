@@ -769,6 +769,14 @@ class SilentRepository @Inject constructor(
         _apiCacheKey = null
     }
 
+    /**
+     * QR на экране входа: всегда публичный Улей, короткие таймауты.
+     * [getServerUrl] при bootstrap VPN подменяет base на 10.66.66.1 — poll туда
+     * не доходит (приложение в ЧС), хотя телефон уже подтвердил.
+     */
+    fun publicHiveApi(): SilentApi =
+        buildApi("${getPublicServerUrl().trimEnd('/')}/", connectTimeoutSec = 3, readTimeoutSec = 8)
+
     /** true когда app excluded из WG и overlay ещё нужен (прокси не поднят). */
     fun needsTunnelApiOverlay(): Boolean =
         APP_EXCLUDED_FROM_VPN &&

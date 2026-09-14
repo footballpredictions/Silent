@@ -24,6 +24,21 @@ data class RegisterRequest(
 data class ForgotPasswordRequest(val email: String)
 data class TokenResponse(val access_token: String, val refresh_token: String)
 data class RefreshRequest(val refresh_token: String)
+data class QrStartRequest(val device: LoginDeviceInfo? = null)
+data class QrStartResponse(val token: String = "", val expires_in: Int = 120, val payload: String = "")
+data class QrPollResponse(
+    val status: String = "pending",
+    val access_token: String? = null,
+    val refresh_token: String? = null,
+)
+data class QrApproveRequest(val token: String? = null, val payload: String? = null)
+data class QrApproveResponse(val ok: Boolean = false)
+data class QrUserCodeResponse(val code: String = "", val expires_in: Int = 120, val payload: String = "")
+data class QrRedeemRequest(
+    val code: String? = null,
+    val payload: String? = null,
+    val device: LoginDeviceInfo? = null,
+)
 
 data class SubscriptionInfo(
     val is_active: Boolean,
@@ -284,6 +299,17 @@ data class ThemeData(
     val login_forgot_instruction: String = "Введите email — мы отправим ссылку для установки нового пароля.",
     val login_reset_title: String = "Новый пароль",
     val login_reset_button_text: String = "Сохранить пароль",
+    val login_qr_tab_label: String = "QR",
+    val login_qr_title: String = "Вход по QR",
+    val login_qr_show_hint: String = "Покажите этот код на другом устройстве в приложении Silent VPN",
+    val login_qr_scan_hint: String = "Наведите камеру на QR в другом приложении Silent VPN",
+    val login_qr_scan_label: String = "Сканер",
+    val login_qr_code_label: String = "Мой код",
+    val login_qr_waiting: String = "Ожидание подтверждения…",
+    val login_qr_expired: String = "Код истёк — обновите",
+    val login_qr_confirm_label: String = "Подтвердить вход на ТВ",
+    val login_qr_confirm_hint: String = "Телевизор войдёт в ваш аккаунт",
+    val menu_qr_label: String = "QR-вход",
     val hive_standby_api_urls: String = "",
     val menu_bonuses_label: String = "Бонусы",
     val bonuses_title: String = "Бонусы",
@@ -355,6 +381,21 @@ data class SyncStateResponse(
 interface SilentApi {
     @POST("api/auth/login")
     suspend fun login(@Body req: LoginRequest): Response<TokenResponse>
+
+    @POST("api/auth/qr/start")
+    suspend fun qrStart(@Body req: QrStartRequest): Response<QrStartResponse>
+
+    @GET("api/auth/qr/poll")
+    suspend fun qrPoll(@Query("token") token: String): Response<QrPollResponse>
+
+    @POST("api/auth/qr/approve")
+    suspend fun qrApprove(@Body req: QrApproveRequest): Response<QrApproveResponse>
+
+    @POST("api/auth/qr/user-code")
+    suspend fun qrUserCode(): Response<QrUserCodeResponse>
+
+    @POST("api/auth/qr/redeem")
+    suspend fun qrRedeem(@Body req: QrRedeemRequest): Response<TokenResponse>
 
     @POST("api/auth/register")
     suspend fun register(@Body req: RegisterRequest): Response<Map<String, String>>

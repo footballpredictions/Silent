@@ -206,6 +206,8 @@ dependencies {
     implementation("androidx.credentials:credentials:1.5.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
 
+    implementation("com.google.zxing:core:3.5.3")
+
     // Unit tests
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)

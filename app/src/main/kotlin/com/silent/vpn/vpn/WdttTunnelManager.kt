@@ -7,6 +7,7 @@ import com.silent.vpn.data.DnsSettings
 import com.silent.vpn.data.HashChannelHelper
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
+import com.silent.vpn.policy.ApiOverlayLease
 import com.silent.vpn.service.VpnSessionState
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.DevicePlatform
@@ -129,6 +130,7 @@ object WdttTunnelManager {
     private val groupHashPrefix = mutableMapOf<Int, String>()
 
     @Volatile private var apiOverlayActive = false
+    private var overlayLease = ApiOverlayLease.State()
     @Volatile private var suppressNetworkRecovery = false
     private var overlayRestoreSuppressed = false
     private var lastOverlayEndedMs = 0L
@@ -1861,25 +1863,45 @@ object WdttTunnelManager {
             return block()
         }
         if (!isBootstrapMode) return withApiOverlayBrief(block, allowDuringRampUp = false)
-        if (!running.value || apiOverlayActive) return block()
+        if (!running.value) return block()
         val config = lastWgConfig ?: return block()
         val helper = wgHelper ?: return block()
-        return wgApplyMutex.withLock {
-            suppressNetworkRecovery = true
-            updateLog("overlay_on", "API overlay ON (bootstrap)", 50)
-            helper.startTunnel(config, effectiveExcludeIps(), isBootstrapMode, apiOverlayMode = true)
+        wgApplyMutex.withLock {
+            val (next, hardwareEnter) = ApiOverlayLease.begin(overlayLease)
+            overlayLease = next
             apiOverlayActive = true
-            delay(overlayEnterDelayMs)
-            try {
-                block()
-            } finally {
-                if (apiOverlayActive) {
-                    updateLog("overlay_off", "API overlay OFF", 50)
-                    helper.startTunnel(config, effectiveExcludeIps(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
-                    apiOverlayActive = false
-                    lastOverlayEndedMs = System.currentTimeMillis()
+            if (hardwareEnter) {
+                suppressNetworkRecovery = true
+                updateLog("overlay_on", "API overlay ON (bootstrap)", 50)
+                helper.startTunnel(config, effectiveExcludeIps(), isBootstrapMode, apiOverlayMode = true)
+                delay(overlayEnterDelayMs)
+            }
+        }
+        try {
+            return block()
+        } finally {
+            withContext(NonCancellable) {
+                wgApplyMutex.withLock {
+                    val (next, hardwareRestore) = ApiOverlayLease.end(overlayLease)
+                    overlayLease = next
+                    if (hardwareRestore) {
+                        updateLog("overlay_off", "API overlay OFF", 50)
+                        runCatching {
+                            helper.startTunnel(
+                                config,
+                                effectiveExcludeIps(),
+                                isBootstrapMode,
+                                apiOverlayMode = false,
+                                mobileApiRoute = mobileApiRouteEnabled(),
+                            )
+                        }
+                        apiOverlayActive = false
+                        lastOverlayEndedMs = System.currentTimeMillis()
+                        suppressNetworkRecovery = false
+                    } else {
+                        apiOverlayActive = next.active
+                    }
                 }
-                suppressNetworkRecovery = false
             }
         }
     }
@@ -1979,15 +2001,25 @@ object WdttTunnelManager {
     fun ensureApiOverlayOff() {
         if (overlayRestoreSuppressed || !apiOverlayActive || !needsWgOverlayReload()) {
             apiOverlayActive = false
+            overlayLease = ApiOverlayLease.State()
             return
         }
-        val config = lastWgConfig ?: run { apiOverlayActive = false; return }
-        val helper = wgHelper ?: run { apiOverlayActive = false; return }
+        val config = lastWgConfig ?: run {
+            apiOverlayActive = false
+            overlayLease = ApiOverlayLease.State()
+            return
+        }
+        val helper = wgHelper ?: run {
+            apiOverlayActive = false
+            overlayLease = ApiOverlayLease.State()
+            return
+        }
         scope.launch {
             wgApplyMutex.withLock {
                 if (!apiOverlayActive) return@withLock
                 helper.startTunnel(config, effectiveExcludeIps(), isBootstrapMode, apiOverlayMode = false, mobileApiRoute = mobileApiRouteEnabled())
                 apiOverlayActive = false
+                overlayLease = ApiOverlayLease.State()
             }
         }
     }
@@ -2082,6 +2114,7 @@ object WdttTunnelManager {
     private suspend fun stopInternal() {
         overlayRestoreSuppressed = true
         apiOverlayActive = false
+        overlayLease = ApiOverlayLease.State()
         suppressNetworkRecovery = false
         wgApplySettleJob?.cancel()
         wgApplySettleJob = null

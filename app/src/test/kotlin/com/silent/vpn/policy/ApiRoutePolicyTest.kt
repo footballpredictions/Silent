@@ -119,4 +119,62 @@ class ApiRoutePolicyTest {
         assertTrue(ApiRoutePolicy.wifiRoutinePrefersPublic(ctx(publicReachable = true)))
         assertFalse(ApiRoutePolicy.wifiRoutinePrefersPublic(ctx(publicReachable = false)))
     }
+
+    @Test
+    fun `tv qr login uses public hive even while bootstrap tunnel is ready`() {
+        assertEquals(
+            "https://hive.example",
+            ApiRoutePolicy.qrLoginIgnoresBootstrapHijack(
+                bootstrapTunnelReady = true,
+                overrideBase = null,
+                publicUrl = "https://hive.example/",
+                tunnelUrl = "http://10.66.66.1:8000",
+            ),
+        )
+    }
+
+    @Test
+    fun `tv qr poll prefers public hive when app is excluded from vpn`() {
+        assertEquals(
+            listOf("https://hive.example", "http://10.66.66.1:8000"),
+            ApiRoutePolicy.qrLoginPollBases(
+                appExcludedFromVpn = true,
+                publicUrl = "https://hive.example/",
+                tunnelUrl = "http://10.66.66.1:8000",
+            ),
+        )
+        assertEquals(
+            listOf("http://10.66.66.1:8000", "https://hive.example"),
+            ApiRoutePolicy.qrLoginPollBases(
+                appExcludedFromVpn = false,
+                publicUrl = "https://hive.example",
+                tunnelUrl = "http://10.66.66.1:8000",
+            ),
+        )
+    }
+
+    @Test
+    fun `tv login poll uses overlay while app is excluded from bootstrap vpn`() {
+        assertTrue(
+            ApiRoutePolicy.preLoginApiNeedsOverlay(
+                appExcludedFromVpn = true,
+                vpnServiceRunning = true,
+                tunnelReady = true,
+            ),
+        )
+        assertTrue(
+            !ApiRoutePolicy.preLoginApiNeedsOverlay(
+                appExcludedFromVpn = false,
+                vpnServiceRunning = true,
+                tunnelReady = true,
+            ),
+        )
+        assertTrue(
+            !ApiRoutePolicy.preLoginApiNeedsOverlay(
+                appExcludedFromVpn = true,
+                vpnServiceRunning = true,
+                tunnelReady = false,
+            ),
+        )
+    }
 }

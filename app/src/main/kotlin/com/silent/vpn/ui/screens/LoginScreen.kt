@@ -61,6 +61,7 @@ import com.silent.vpn.ui.tv.TvIconButton
 import com.silent.vpn.ui.tv.TvPrimaryButton
 import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.ui.tv.tvClickable
+import com.silent.vpn.ui.qr.QrLoginPanel
 import com.silent.vpn.util.rememberIsTv
 import com.silent.vpn.ui.theme.loginTextFieldColors
 
@@ -111,6 +112,13 @@ fun LoginScreen(
     onCloseApp: () -> Unit = {},
     appearanceMode: AppearanceMode = AppearanceMode.LIGHT,
     onToggleAppearance: () -> Unit = {},
+    qrPayload: String = "",
+    qrWaiting: Boolean = false,
+    qrExpired: Boolean = false,
+    qrStatusText: String = "",
+    onStartQrSession: () -> Unit = {},
+    onRefreshQr: () -> Unit = {},
+    onStopQr: () -> Unit = {},
 ) {
     val ui = remember(theme, appearanceMode) { theme.toLoginUi(appearanceMode) }
     var step by remember { mutableStateOf(LoginStep.AUTH) }
@@ -130,6 +138,7 @@ fun LoginScreen(
     val fieldFontSize = if (isTv) 16.sp else 14.sp
     val btnHeight = if (isTv) 56.dp else 48.dp
 
+    val qrTabLabel = theme?.login_qr_tab_label?.takeIf { it.isNotBlank() } ?: "QR"
     val rememberLabel = theme?.login_remember_me_label ?: "Запомнить меня"
     val forgotLabel = theme?.login_forgot_password_label ?: "Забыли пароль?"
     val forgotTitle = theme?.login_forgot_title ?: "Восстановление пароля"
@@ -142,6 +151,13 @@ fun LoginScreen(
             referralOrPromo = initialReferralOrPromo
             tab = "register"
         }
+    }
+    LaunchedEffect(isTv) {
+        if (!isTv && tab == "qr") tab = "login"
+    }
+    LaunchedEffect(tab, bootstrapReady, bootstrapExpired) {
+        if (isTv && tab == "qr" && bootstrapReady && !bootstrapExpired) onStartQrSession()
+        else if (tab != "qr") onStopQr()
     }
 
     val bootstrapMin = if (isTv) 3 else 2
@@ -246,7 +262,11 @@ fun LoginScreen(
                             .background(ui.tabBg, RoundedCornerShape(12.dp))
                             .padding(4.dp),
                     ) {
-                        listOf("login" to "Войти", "register" to "Регистрация").forEach { (key, label) ->
+                        buildList {
+                            add("login" to "Войти")
+                            add("register" to "Регистрация")
+                            if (isTv) add("qr" to qrTabLabel)
+                        }.forEach { (key, label) ->
                             val selected = tab == key
                             Box(
                                 modifier = Modifier
@@ -322,6 +342,23 @@ fun LoginScreen(
                                         Text("Откройте ссылку из письма (браузер или почта) — временный VPN включён", color = ui.hint, fontSize = 11.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 2.dp))
                                         TextButton(onClick = { tab = "login"; onRegDoneDismiss() }) { Text("Войти", fontSize = 12.sp, color = ui.fg) }
                                     }
+                                } else if (tab == "qr") {
+                                    QrLoginPanel(
+                                        theme = theme,
+                                        fg = ui.fg,
+                                        hint = ui.hint,
+                                        green = ui.green,
+                                        red = ui.red,
+                                        primaryBtnBg = ui.primaryBtnBg,
+                                        primaryBtnFg = ui.primaryBtnFg,
+                                        payload = qrPayload,
+                                        waiting = qrWaiting,
+                                        expired = qrExpired,
+                                        loading = loading,
+                                        error = error,
+                                        statusText = qrStatusText,
+                                        onRefresh = onRefreshQr,
+                                    )
                                 } else {
                                     Text("Email", color = ui.label, fontSize = 12.sp)
                                     OutlinedTextField(

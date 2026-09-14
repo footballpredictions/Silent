@@ -229,6 +229,7 @@ class MainActivity : ComponentActivity() {
         handleTileConnectIntent(intent)
         handleReferralDeepLink(intent)
         handlePaymentDeepLink(intent)
+        handleQrDeepLink(intent)
     }
 
     fun handleReferralDeepLink(intent: Intent?) {
@@ -245,6 +246,14 @@ class MainActivity : ComponentActivity() {
         if (data.scheme != "silentvpn" || data.host != "payment") return
         intent.data = null
         vm?.onPaymentReturnedFromBrowser()
+    }
+
+    fun handleQrDeepLink(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme != "silentvpn" || data.host != "qr") return
+        val raw = data.toString()
+        intent.data = null
+        vm?.onQrScanned(raw, this)
     }
 
     private fun handleNotificationOpenIntent(intent: Intent?) {

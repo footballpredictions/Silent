@@ -67,4 +67,43 @@ object ApiRoutePolicy {
             directFailed &&
             ctx.appExcludedFromVpn &&
             ctx.mainVpnTunnelUp
+
+    /**
+     * QR poll/start must ignore bootstrap hijack of getServerUrl → 10.66.66.1.
+     */
+    fun qrLoginIgnoresBootstrapHijack(
+        bootstrapTunnelReady: Boolean,
+        overrideBase: String?,
+        publicUrl: String,
+        tunnelUrl: String,
+    ): String {
+        if (!overrideBase.isNullOrBlank()) return overrideBase.trimEnd('/')
+        return publicUrl.trimEnd('/')
+    }
+
+    /**
+     * Экран входа: приложение вне WG, API на 10.66.66.1 только через overlay
+     * (иначе poll QR не доходит до Улья, хотя телефон уже подтвердил).
+     */
+    fun preLoginApiNeedsOverlay(
+        appExcludedFromVpn: Boolean,
+        vpnServiceRunning: Boolean,
+        tunnelReady: Boolean,
+    ): Boolean = appExcludedFromVpn && vpnServiceRunning && tunnelReady
+
+    /**
+     * QR на ТВ: приложение в ЧС туннеля, как телефон. Сначала публичный URL Улья,
+     * туннель 10.66.66.1 — запасной. Иначе poll не видит already-approved сессию.
+     */
+    fun qrLoginPollBases(
+        appExcludedFromVpn: Boolean,
+        publicUrl: String,
+        tunnelUrl: String,
+    ): List<String> {
+        val public = publicUrl.trimEnd('/')
+        val tunnel = tunnelUrl.trimEnd('/')
+        if (public.isBlank()) return listOf(tunnel).filter { it.isNotBlank() }
+        if (tunnel.isBlank() || tunnel == public) return listOf(public)
+        return if (appExcludedFromVpn) listOf(public, tunnel) else listOf(tunnel, public)
+    }
 }

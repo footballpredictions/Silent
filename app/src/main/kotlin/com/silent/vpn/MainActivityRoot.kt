@@ -17,10 +17,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.silent.vpn.ui.qr.QrConfirmSheet
 import com.silent.vpn.ui.screens.LoginScreen
 import com.silent.vpn.ui.screens.MainScreen
 import com.silent.vpn.ui.screens.VpnState
 import com.silent.vpn.ui.theme.AppearanceMode
+import com.silent.vpn.ui.theme.resolveThemePalette
 import com.silent.vpn.ui.theme.DarkSystemBarStrip
 import com.silent.vpn.ui.theme.SilentTheme
 import com.silent.vpn.util.LocalIsTv
@@ -57,6 +59,13 @@ fun MainActivityRoot(
     val updateProgress by vm.updateProgress.collectAsState()
     val updateDownloading by vm.updateDownloading.collectAsState()
     val forgotSent by vm.forgotSent.collectAsState()
+    val qrPayload by vm.qrPayload.collectAsState()
+    val qrWaiting by vm.qrWaiting.collectAsState()
+    val qrExpired by vm.qrExpired.collectAsState()
+    val qrStatusText by vm.qrStatusText.collectAsState()
+    val qrPending by vm.qrPending.collectAsState()
+    val qrConfirmBusy by vm.qrConfirmBusy.collectAsState()
+    val qrConfirmError by vm.qrConfirmError.collectAsState()
     val bootstrapExpired by vm.bootstrapExpired.collectAsState()
     val pendingReferralCode by vm.pendingReferralCode.collectAsState()
     val paymentState by vm.paymentState.collectAsState()
@@ -69,6 +78,7 @@ fun MainActivityRoot(
         activity.handleTileConnectIntent(initialIntent)
         activity.handleReferralDeepLink(initialIntent)
         activity.handlePaymentDeepLink(initialIntent)
+        activity.handleQrDeepLink(initialIntent)
     }
 
     LaunchedEffect(vpnPermissionGranted.value) {
@@ -145,6 +155,13 @@ fun MainActivityRoot(
                             }
                         },
                         appearanceMode = appearanceMode,
+                        qrPayload = qrPayload,
+                        qrWaiting = qrWaiting,
+                        qrExpired = qrExpired,
+                        qrStatusText = qrStatusText,
+                        onStartQrSession = { vm.startQrLoginSession(activity) },
+                        onRefreshQr = { vm.startQrLoginSession(activity, forceRefresh = true) },
+                        onStopQr = vm::stopQrLogin,
                         onToggleAppearance = {
                             val next = vm.repository.toggleAppearanceMode()
                             appearanceDark = next == "dark"
@@ -218,6 +235,22 @@ fun MainActivityRoot(
                         },
                     )
                 }
+                val palette = theme.resolveThemePalette(appearanceMode)
+                QrConfirmSheet(
+                    visible = qrPending != null && !isTv,
+                    theme = theme,
+                    fg = palette.fg,
+                    hint = palette.hint,
+                    red = palette.red,
+                    bg = palette.bg,
+                    primaryBtnBg = palette.primaryBtnBg,
+                    primaryBtnFg = palette.primaryBtnFg,
+                    busy = qrConfirmBusy,
+                    error = qrConfirmError,
+                    loggedIn = screen == AppScreen.MAIN || vm.repository.isLoggedIn(),
+                    onConfirm = { vm.confirmPendingQr(activity) },
+                    onDismiss = vm::dismissQrConfirm,
+                )
             }
         }
     }

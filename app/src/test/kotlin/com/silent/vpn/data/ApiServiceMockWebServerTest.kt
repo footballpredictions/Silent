@@ -262,6 +262,39 @@ class ApiServiceMockWebServerTest {
     }
 
     @Test
+    fun `qr poll pending then approved returns tokens`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"status":"pending"}"""))
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(
+                    """
+                    {
+                      "status": "approved",
+                      "access_token": "access-tv",
+                      "refresh_token": "refresh-tv"
+                    }
+                    """.trimIndent(),
+                ),
+        )
+
+        val pending = api.qrPoll("Abc_123-token")
+        assertTrue(pending.isSuccessful)
+        assertEquals("pending", pending.body()!!.status)
+
+        val approved = api.qrPoll("Abc_123-token")
+        assertTrue(approved.isSuccessful)
+        assertEquals("approved", approved.body()!!.status)
+        assertEquals("access-tv", approved.body()!!.access_token)
+        assertEquals("refresh-tv", approved.body()!!.refresh_token)
+
+        val first = server.takeRequest()
+        assertEquals("GET", first.method)
+        assertEquals("/api/auth/qr/poll?token=Abc_123-token", first.path)
+        server.takeRequest()
+    }
+
+    @Test
     fun `promo route policy uses overlay on lte excluded vpn`() {
         val route = ApiRoutePolicy.userApiRoute(
             ApiRoutePolicy.RouteContext(

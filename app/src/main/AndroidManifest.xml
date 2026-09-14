@@ -23,6 +23,8 @@
     <!-- Credential Manager тянет biometric/fingerprint permissions; на TV это не must-have -->
     <uses-feature android:name="android.hardware.fingerprint" android:required="false" />
     <uses-feature android:name="android.hardware.biometrics" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <queries>
         <package android:name="com.vkontakte.android" />
@@ -81,6 +83,12 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="silentvpn" android:host="payment" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="silentvpn" android:host="qr" />
             </intent-filter>
         </activity>
 

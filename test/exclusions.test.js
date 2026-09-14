@@ -93,9 +93,10 @@ describe('exclusionsPolicy', () => {
     assert.deepEqual(a.exePaths, b.exePaths)
   })
 
-  it('empty whitelist is fail-safe: nothing bypassed (all traffic in VPN)', () => {
+  it('empty whitelist bypasses all known apps so unchecked shops leave the tunnel', () => {
     const { exePaths } = resolveBypassExePaths({ selectedIds: [], apps, whitelist: true })
-    assert.deepEqual(exePaths, [])
+    assert.ok(exePaths.some(p => /Telegram\.exe$/i.test(p)))
+    assert.ok(exePaths.some(p => /chrome\.exe$/i.test(p)))
   })
 })
 

@@ -54,13 +54,8 @@ function resolveBypassExePaths({ selectedIds, apps, whitelist = false }) {
   if (!whitelist) {
     return resolveExcludedExePaths(selectedIds, list)
   }
-  const ids = selectedIds instanceof Set ? selectedIds : new Set(selectedIds || [])
-  // Пустой БС = весь трафик в VPN, а не «все приложения мимо».
-  if (ids.size === 0) {
-    return { exePaths: [], entries: [] }
-  }
-  // БС: мимо VPN всё, кроме выбранных (и без Silent). Сравниваем по exe-path — id могут дублировать один .exe.
-  const keepIds = new Set(selectedIds || [])
+  const keepIds = selectedIds instanceof Set ? selectedIds : new Set(selectedIds || [])
+  // БС: мимо VPN всё известное, кроме выбранных (и без Silent). Пустой БС = все известные мимо.
   const keepExe = new Set()
   for (const app of list) {
     if (!keepIds.has(app.id)) continue

@@ -556,7 +556,7 @@ export default function AppExclusionsPanel({
       ) : (
         <>
           <p className="text-[11px] mb-2 text-left w-full" style={{ color: muted }}>
-            {whitelist ? 'БС: только выбранные через VPN' : 'ЧС: выбранные мимо VPN'}
+            {whitelist ? 'БС: галочка — через VPN, без галочки — мимо' : 'ЧС: выбранные мимо VPN'}
           </p>
           <div className="flex gap-2 mb-3">
             <ModeChip label="ЧС" active={!whitelist} fg={fg} bg={bg} onClick={() => switchMode(false)} />

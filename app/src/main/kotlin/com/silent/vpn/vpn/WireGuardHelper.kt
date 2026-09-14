@@ -244,9 +244,15 @@ class WireGuardHelper(context: Context) {
 
                 .parseAddresses(parsed.`interface`.addresses.joinToString(", ") { it.toString() })
 
-            val mtu = 1200
+            // GETCONF с wdtt часто MTU=1280 — игнорируем. Политика по слоту (как PC):
+            // Сервер 3 → 1420, остальные → 1200.
+            val mtu = WireGuardConfigBuilder.mtuForPreferredSlot(appContext)
             ifaceBuilder.parseMtu(mtu.toString())
-            DebugLog.i(TAG, "MTU forced 1200 (Telegram parity PC 1.0.154)")
+            DebugLog.i(
+                TAG,
+                if (mtu >= WireGuardConfigBuilder.MTU_GAME) "MTU=$mtu (Сервер 3 / Steam SDR)"
+                else "MTU=$mtu (slot default; ignore conf/GETCONF)",
+            )
 
             ifaceBuilder.parsePrivateKey(parsed.`interface`.keyPair.privateKey.toBase64())
 

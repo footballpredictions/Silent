@@ -4,6 +4,25 @@
 
 Код **не** форк LuCI, AmneziaWG и Passwall. Заметки по чужим проектам: [RESEARCH.md](RESEARCH.md). Установка: [INSTALL.md](INSTALL.md).
 
+## Установка на роутер
+
+Сборка универсального архива (любой процессор):
+
+```powershell
+python scripts/build_release.py
+```
+
+Файл: `dist/silent-vpn-openwrt-1.0.165.tar.gz`. На роутере:
+
+```sh
+tar -xzf silent-vpn-openwrt-1.0.165.tar.gz
+cd silent-vpn
+sh install.sh deps
+sh install.sh install
+```
+
+Или одной командой `sh install.sh`. Дальше браузер: `http://<LAN-IP>.silent.vpn` → логин → тумблер.
+
 ## Локальный просмотр веба
 
 На Windows из этой папки:

@@ -3,3 +3,4 @@ __pycache__/
 .preview-cache/
 *.ipk
 .ipk-build/
+dist/

@@ -14,6 +14,7 @@ define Package/silent-vpn
   TITLE:=Silent VPN client for OpenWrt
   URL:=https://silentvpn3.github.io
   DEPENDS:=+kmod-wireguard +wireguard-tools +wget +ca-bundle +uhttpd +jsonfilter +jshn
+  PKGARCH:=all
 endef
 
 define Package/silent-vpn/description

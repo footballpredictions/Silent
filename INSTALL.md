@@ -1,8 +1,8 @@
 # Установка Silent VPN на OpenWrt
 
-Панель после установки: **`http://<LAN-IP>.silent.vpn`**
+Один файл на **все архитектуры** (aarch64, arm, mipsel, x86_64…): внутри только скрипты и веб, без бинарника под процессор.
 
-Примеры (у каждого роутера свой LAN):
+Панель: **`http://<LAN-IP>.silent.vpn`** (LuCI на голом IP не трогаем).
 
 | LAN роутера | Адрес панели |
 |-------------|--------------|
@@ -10,54 +10,55 @@
 | `192.168.0.1` | http://192.168.0.1.silent.vpn |
 | `10.0.0.1` | http://10.0.0.1.silent.vpn |
 
-Голый IP (`http://192.168.1.1`) остаётся **LuCI**. Мы его не подменяем.
+Нужен OpenWrt **23.05** или **24.10** и интернет на WAN.
 
-## Что нужно на роутере
+---
 
-- OpenWrt **23.05** или **24.10**
-- Свободно ~2 МБ flash + `kmod-wireguard` под ваше ядро
-- Выход в интернет на WAN (хотя бы до первого логина)
+## Сборка файла (на компьютере)
 
-Пакеты:
+Из папки `openwrt/`:
 
-```
-kmod-wireguard wireguard-tools wget ca-bundle uhttpd jsonfilter
+```powershell
+python scripts/build_release.py
 ```
 
-## Быстрая установка с компьютера в LAN
+Появится `dist/silent-vpn-openwrt-1.0.165.tar.gz`. Его потом кладут в GitHub Release / копируют на роутер.
 
-1. Скопируйте папку `openwrt/` на роутер (scp / WinSCP), например в `/tmp/silent-openwrt`.
-2. По SSH:
+---
+
+## На роутере (две команды)
+
+Скопируйте архив в `/tmp` (WinSCP, scp или wget, когда файл уже на GitHub).
 
 ```sh
-opkg update
-opkg install kmod-wireguard wireguard-tools wget ca-bundle uhttpd jsonfilter
-sh /tmp/silent-openwrt/install.sh
+cd /tmp
+tar -xzf silent-vpn-openwrt-1.0.165.tar.gz
+cd silent-vpn
+
+sh install.sh deps
+sh install.sh install
 ```
 
-3. С телефона или ПК в той же Wi‑Fi/LAN откройте адрес из таблицы выше.
-4. Войдите тем же аккаунтом Silent, что на телефоне/PC. Роутер занимает одну из **трёх** сессий (`device_type=pc`, как Linux/Mac).
+`deps` ставит: `kmod-wireguard wireguard-tools wget ca-bundle uhttpd jsonfilter`.  
+`install` копирует панель и агент.
 
-Скрипт пишет файлы, включает `silent-vpn`, прописывает dnsmasq `*.silent.vpn` и печатает ваш URL.
-
-## Сборка ipk (SDK / buildroot)
-
-Из дерева OpenWrt SDK:
+Всё сразу одной командой:
 
 ```sh
-ln -s /path/to/Silent-Project/openwrt package/silent-vpn
-make package/silent-vpn/compile
+sh install.sh
 ```
 
-Готовый `silent-vpn_1.0.165-1_*.ipk` ставьте через `opkg install` или System → Software → Upload.
+---
 
-## Первый вход
+## После установки
 
-1. Логин / регистрация — те же API, что у клиентов (`/api/auth/*`, тема с `/api/vpn/theme`).
-2. Тумблер поднимает WG-интерфейс `svpath` и (если лежит бинарь) `wdtt-client`.
-3. LAN-клиенты идут в туннель, сама подсеть LAN не уезжает — панель не отваливается.
+1. С телефона или ПК в той же Wi‑Fi откройте `http://<LAN-IP>.silent.vpn`.
+2. Войдите **тем же email и паролем**, что в приложении Silent.
+3. Включите тумблер — дом идёт в VPN. Роутер занимает одну из трёх сессий (`device_type=pc`).
 
-Если Улей по HTTPS недоступен без обхода — нужен cloak-бинарь (тот же `wdtt-client`, что у Linux-клиента) в `/usr/bin/wdtt-client` под архитектуру роутера (`aarch64`, `arm_cortex-a7`, `mipsel_24kc`, `x86_64`). Без него агент всё равно пишет WG-конфиг с Улья — на чистой сети этого достаточно.
+Cloak `wdtt-client` не обязателен для первого включения на обычной сети. Если Улей режут без обхода — бинарь под arch роутера кладут в `/usr/bin/wdtt-client` отдельно.
+
+---
 
 ## Снять
 
@@ -68,20 +69,3 @@ rm -rf /usr/lib/silent-vpn /usr/sbin/silent-vpn-ctl /www/silent-vpn \
   /etc/init.d/silent-vpn /etc/config/silent-vpn \
   /etc/hotplug.d/iface/99-silent-vpn
 ```
-
-LuCI index верните вручную, если меняли: `uci show uhttpd.main.index_page`.
-
-## Совместимость с backend
-
-Не требует деплоя API. Старые клиенты 1.0.160/1.0.161 не затрагиваются.
-
-| Поле | Значение |
-|------|----------|
-| `device_type` | `pc` |
-| `X-App-Version` | `1.0.165` |
-| Тема | `GET /api/vpn/theme` |
-| Логин | `POST /api/auth/login` |
-| Устройство | `POST /api/vpn/device/register` |
-| Конфиг | `GET /api/vpn/config` |
-| Тумблер | `POST /api/vpn/connect` / `disconnect` |
-| Туннель API | `http://10.66.66.1:8000` когда `svpath` поднят |

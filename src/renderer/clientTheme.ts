@@ -39,6 +39,17 @@ export interface ClientTheme {
   login_forgot_instruction?: string
   login_reset_title?: string
   login_reset_button_text?: string
+  login_qr_tab_label?: string
+  login_qr_title?: string
+  login_qr_show_hint?: string
+  login_qr_scan_hint?: string
+  login_qr_scan_label?: string
+  login_qr_code_label?: string
+  login_qr_waiting?: string
+  login_qr_expired?: string
+  login_qr_confirm_label?: string
+  login_qr_confirm_hint?: string
+  menu_qr_label?: string
   support_url?: string
   telegram_channel_url?: string
   telegram_proxy_url?: string

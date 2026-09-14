@@ -42,6 +42,7 @@ import { useAppearanceMode } from '../appearanceStore'
 import { isDebugBuild } from '../debugBuild'
 
 type LoginStep = 'auth' | 'forgot'
+type AuthTab = 'login' | 'register'
 
 export default function LoginScreen({
   theme,
@@ -57,7 +58,7 @@ export default function LoginScreen({
   const linkGlow = needsNeonGlow(ui.linkColor, ui.dark) ? neonTextShadow(ui.linkColor) : undefined
 
   const [step, setStep] = useState<LoginStep>('auth')
-  const [tab, setTab] = useState<'login' | 'register'>(initialReferralCode ? 'register' : 'login')
+  const [tab, setTab] = useState<AuthTab>(initialReferralCode ? 'register' : 'login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [referralOrPromo, setReferralOrPromo] = useState(initialReferralCode || '')

@@ -1608,8 +1608,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
     if (wgAttempted) return false
 
     let normalizedConf = confText
-    // Steam SDR: UDP ~1300 байт. MTU 1200 ронял Dota/CS2 («ping relay via UDP failed»).
-    const WG_MTU = 1420
+    // MTU 1420 только Сервер 3 (игры/Steam SDR); остальные слоты — 1200.
+    const { resolveWgMtu } = require('./vpn/wireguard')
+    const WG_MTU = resolveWgMtu(config)
     if (/^\s*MTU\s*=/m.test(normalizedConf)) {
       normalizedConf = normalizedConf.replace(/^\s*MTU\s*=.*/m, `MTU = ${WG_MTU}`)
     } else {
@@ -1618,7 +1619,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
         (m) => m.trimEnd() + `\nMTU = ${WG_MTU}\n`,
       )
     }
-    sendLog(`[WG] MTU = ${WG_MTU} (Steam SDR / path MTU)`)
+    sendLog(`[WG] MTU = ${WG_MTU}${WG_MTU >= 1420 ? ' (Сервер 3 / Steam SDR)' : ''}`)
     normalizedConf = normalizeWgConfText(normalizedConf)
 
     wgInstallInFlight = true

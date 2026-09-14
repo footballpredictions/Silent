@@ -371,11 +371,14 @@ function buildWgConfigFromApi(config, listenPort = 9000) {
   const addr = (config.wg_address || config.assigned_ip || '').trim()
   if (!addr) return null
   const dns = normalizeDnsValue(config.wg_dns || config.dns, config.dns_override)
+  const slot = String(config?.selected_server || '').trim().toLowerCase()
+  const ip = String(config?.server_ip || '').trim()
+  const mtu = (slot === 'server3' || ip === '78.17.74.27') ? 1420 : 1200
   return `[Interface]
 PrivateKey = ${priv}
 Address = ${addr}
 DNS = ${dns}
-MTU = 1420
+MTU = ${mtu}
 
 [Peer]
 PublicKey = ${pub}

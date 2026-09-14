@@ -19,11 +19,28 @@ const STABLE_WG_DIR = path.join(STABLE_CONF_DIR, 'wireguard')
 const FALLBACK_BACKEND_IP = '132.243.234.162'
 /** DNS: Cloudflare+Yandex по умолчанию. Меню DNS — через options/config.dns_override. */
 const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
+/** Обычные слоты — MTU 1200 (Telegram/общая стабильность). */
+const WG_MTU_DEFAULT = 1200
 /**
- * Steam SDR (Dota/CS2) шлёт UDP ~1300 байт. MTU 1200/1280 их роняет →
- * «ping any relay via UDP have failed (firewall or MTU)». 1420 — как у Tailscale.
+ * Сервер 3 (Сота 2): Steam SDR шлёт UDP ~1300 байт — нужен MTU 1420.
+ * На остальных слотах 1420 не ставим.
  */
-const WG_MTU = 1420
+const WG_MTU_GAME = 1420
+const GAME_SERVER_SLOT = 'server3'
+const GAME_SERVER_IP = '78.17.74.27'
+
+function resolveWgMtu(config) {
+  const slot = String(config?.selected_server || '').trim().toLowerCase()
+  const ip = String(config?.server_ip || '').trim()
+  if (slot === GAME_SERVER_SLOT || ip === GAME_SERVER_IP) return WG_MTU_GAME
+  return WG_MTU_DEFAULT
+}
+
+function mtuFromConfText(confText, fallback = WG_MTU_DEFAULT) {
+  const m = String(confText || '').match(/^\s*MTU\s*=\s*(\d+)/mi)
+  const n = m ? Number(m[1]) : NaN
+  return Number.isFinite(n) && n >= 1200 && n <= 1500 ? n : fallback
+}
 
 function pickDnsServers(value) {
   return String(value || '')
@@ -623,14 +640,15 @@ async function isServiceRunningAsync() {
   }
 }
 
-/** Профиль Private + MTU под Steam SDR (~1300-byte UDP). */
-async function polishWgNetworkProfile(send) {
+/** Профиль Private + MTU с адаптера (из conf: 1200 или 1420 на server3). */
+async function polishWgNetworkProfile(send, mtu = WG_MTU_DEFAULT) {
+  const mtuNum = Number(mtu) || WG_MTU_DEFAULT
   try {
     await execAsync(
-      `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } | Select-Object -First 1; if ($a) { Set-NetConnectionProfile -InterfaceIndex $a.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue; netsh interface ipv4 set subinterface $a.ifIndex mtu=${WG_MTU} store=persistent | Out-Null } }"`,
+      `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } | Select-Object -First 1; if ($a) { Set-NetConnectionProfile -InterfaceIndex $a.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue; netsh interface ipv4 set subinterface $a.ifIndex mtu=${mtuNum} store=persistent | Out-Null } }"`,
       { windowsHide: true, timeout: 12000 },
     )
-    send?.(`[WG] Адаптер wg-turn: профиль Private, MTU ${WG_MTU}`)
+    send?.(`[WG] Адаптер wg-turn: профиль Private, MTU ${mtuNum}`)
   } catch { /* ignore */ }
 }
 
@@ -852,8 +870,8 @@ async function applyWgDns(send, dnsValue = WG_DNS) {
   } catch { /* ignore */ }
 }
 
-async function finalizeTunnelUp(send, excludeIPs, subnetOnly, dnsValue = WG_DNS) {
-  await polishWgNetworkProfile(send)
+async function finalizeTunnelUp(send, excludeIPs, subnetOnly, dnsValue = WG_DNS, mtu = WG_MTU_DEFAULT) {
+  await polishWgNetworkProfile(send, mtu)
   if (!subnetOnly) {
     await applyWgDns(send, dnsValue)
     await blockIpv6Leak(send)
@@ -1211,11 +1229,12 @@ function buildWgConfigFromApi(config, listenPort = 9000) {
   const addr = (config.wg_address || config.assigned_ip || '').trim()
   if (!addr) return null
   const dns = normalizeDnsValue(config.wg_dns || config.dns, config.dns_override)
+  const mtu = resolveWgMtu(config)
   return `[Interface]
 PrivateKey = ${priv}
 Address = ${addr}
 DNS = ${dns}
-MTU = ${WG_MTU}
+MTU = ${mtu}
 
 [Peer]
 PublicKey = ${pub}
@@ -1458,9 +1477,11 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   send(`[WG] wireguard.exe: ${wgExe}`)
 
   let resolvedDns = WG_DNS
+  let resolvedMtu = WG_MTU_DEFAULT
   if (fs.existsSync(confPath)) {
     try {
       let conf = fs.readFileSync(confPath, 'utf8')
+      resolvedMtu = mtuFromConfText(conf)
       const allowed = subnetOnly
         ? '10.66.66.0/24'
         : buildAllowedIPsForWindows(excludeIPs, send)
@@ -1515,7 +1536,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   if (allowSyncconf) {
     if (await trySyncConf(runtimeDir, stableConf, send)) {
       await gatewayPromise
-      await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns)
+      await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns, resolvedMtu)
       send('[WG] Туннель активен (syncconf)')
       return true
     }
@@ -1529,7 +1550,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
 
   const finishOk = async () => {
     await gatewayPromise
-    await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns)
+    await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns, resolvedMtu)
     send('[WG] Туннель активен')
     try {
       const wgCli = path.join(runtimeDir, 'wg.exe')
@@ -1619,6 +1640,9 @@ module.exports = {
   forceStopWireGuard,
   stopWireGuardTunnel,
   buildWgConfigFromApi,
+  resolveWgMtu,
+  WG_MTU_DEFAULT,
+  WG_MTU_GAME,
   applyWireGuardConfig,
   addServerBypassRoutes,
   removeHostBypassRoutes,

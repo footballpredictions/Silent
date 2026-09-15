@@ -27,9 +27,12 @@ const {
   waitWgStopIdle,
   prepareRuntimeDir,
   beginWgApply,
+  probeTunnelGateway,
 } = require('./vpn/wireguard')
 const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
 const { resolveVkExcludeIps, warmVkExcludeIps, invalidateVkExcludeCache } = require('./vpn/vkNetworkExcludes')
+const { publicFailoverBases, publicFailoverAttemptTimeoutMs } = require('./vpn/apiFailover')
+const { HIVE_PUBLIC_IP, collectTunnelBypassIps } = require('./vpn/bypassTargets')
 const buildFlags = require('./buildFlags')
 const { verifyWdttIntegrity, softTamperHints } = require('./integrity')
 const { otaPlatform, wdttBinaryName, killOrphanWdttCmd } = require('./otaPlatform')
@@ -152,8 +155,8 @@ function isTunnelApiRefused(err) {
   return /ECONNREFUSED|ECONNRESET/i.test(msg)
 }
 
-const SERVER_IP_FALLBACK = '132.243.234.162'
-let sessionExcludeIPs = [SERVER_IP_FALLBACK]
+const SERVER_IP_FALLBACK = HIVE_PUBLIC_IP
+let sessionExcludeIPs = []
 let bypassRefreshTimer = null
 
 function normalizeServerIp(raw) {
@@ -696,17 +699,15 @@ const FALLBACK_BACKEND_IP = SERVER_IP_FALLBACK
 
 /**
  * IP вне WG через host-route bypass (не через AllowedIPs-split):
- * Улей/peer + VK API/login/TURN — иначе WDTT auth идёт в туннель / kill-switch.
+ * peer + VK API/login/TURN — иначе WDTT auth идёт в туннель / kill-switch.
+ * Публичный IP Улья — только если он и есть peer (слот «Сервер 1»).
  */
 async function collectExcludeIPs(config) {
-  const ips = new Set([SERVER_IP_FALLBACK])
-  const peer = normalizeServerIp(config?.server_ip)
-  if (peer) ips.add(peer)
+  let vkIps = []
   try {
-    const vkIps = await resolveVkExcludeIps()
-    for (const ip of vkIps) ips.add(ip)
-  } catch { /* DNS fail — остаётся peer/API */ }
-  return [...ips]
+    vkIps = await resolveVkExcludeIps()
+  } catch { /* DNS fail — остаётся peer */ }
+  return collectTunnelBypassIps({ serverIp: config?.server_ip, vkIps })
 }
 
 function clearBypassRefresh() {
@@ -1019,7 +1020,7 @@ async function runCaptchaSolve(lineTrim) {
       try {
         invalidateVkExcludeCache()
         const vkIps = await resolveVkExcludeIps()
-        sessionExcludeIPs = [...new Set([...(sessionExcludeIPs || []), SERVER_IP_FALLBACK, ...vkIps])]
+        sessionExcludeIPs = [...new Set([...(sessionExcludeIPs || []), ...vkIps])]
         await capturePhysicalGateway(sendLog)
         await addServerBypassRoutes(sessionExcludeIPs, sendLog)
       } catch { /* ignore */ }
@@ -1157,15 +1158,9 @@ ipcMain.handle('app-quit', () => {
 })
 async function ensureNipIoBypassRoutes(sendLogFn = sendLog) {
   if (!wgApplied || vpnBootstrapMode) return
-  const ips = new Set([SERVER_IP_FALLBACK, ...(sessionExcludeIPs || [])])
-  try {
-    const resolved = await resolve4WithTimeout('132-243-234-162.nip.io', 2000)
-    for (const ip of resolved || []) {
-      if (ip) ips.add(ip)
-    }
-  } catch { /* DNS fail — остаётся SERVER_IP */ }
+  const ips = new Set(sessionExcludeIPs || [])
   const list = [...ips]
-  sessionExcludeIPs = [...new Set([...(sessionExcludeIPs || []), ...list])]
+  sessionExcludeIPs = list
   await capturePhysicalGateway(sendLogFn)
   await addServerBypassRoutes(sessionExcludeIPs, sendLogFn)
   await sleep(400)
@@ -1269,42 +1264,15 @@ function resolveAdminPanelUrl() {
   return shouldOpenAdminViaTunnel() ? TUNNEL_ADMIN_URL : PUBLIC_ADMIN_URL
 }
 
-function probeTunnelAdminHealth(timeoutMs = 2500) {
-  return new Promise((resolve) => {
-    const req = http.get(
-      {
-        host: WG_TUNNEL_GATEWAY,
-        port: 8000,
-        path: '/health',
-        timeout: timeoutMs,
-      },
-      (res) => {
-        res.resume()
-        resolve(res.statusCode >= 200 && res.statusCode < 500)
-      },
-    )
-    req.on('timeout', () => {
-      req.destroy()
-      resolve(false)
-    })
-    req.on('error', () => resolve(false))
-  })
-}
-
 ipcMain.handle('get-admin-panel-url', () => resolveAdminPanelUrl())
 ipcMain.handle('open-admin-panel', async () => {
-  let url = resolveAdminPanelUrl()
+  const url = resolveAdminPanelUrl()
   try {
     if (shouldOpenAdminViaTunnel()) {
-      const ok = await probeTunnelAdminHealth()
-      if (!ok) {
-        sendLog('[Admin] tunnel health fail — fallback nip.io + bypass', 'W')
-        url = PUBLIC_ADMIN_URL
-        await ensurePublicApiBypass(sendLog)
-        sendLog(`[Admin] public nip.io (+ bypass) → ${url}`)
-      } else {
-        sendLog(`[Admin] tunnel → ${url}`)
-      }
+      const ok = typeof probeTunnelGateway === 'function' ? await probeTunnelGateway(2500) : true
+      sendLog(ok
+        ? `[Admin] tunnel → ${url}`
+        : `[Admin] 10.66.66.1:8000 не отвечает — всё равно открываем ${url} (переподключите VPN если пусто)`, 'W')
     } else {
       sendLog(`[Admin] public nip.io → ${url}`)
     }
@@ -1472,9 +1440,8 @@ async function beginWdttSession(config, { switching = false } = {}) {
     activeWorkerCount = 0
   }
 
-  let excludeIPs = [SERVER_IP_FALLBACK]
+  let excludeIPs = collectTunnelBypassIps({ serverIp: config?.server_ip })
   const peerIp = normalizeServerIp(config?.server_ip)
-  if (peerIp) excludeIPs.push(peerIp)
   sessionExcludeIPs = [...excludeIPs]
 
   let wgAttempted = false
@@ -2182,19 +2149,12 @@ function assertValidPcInstaller(destPath, expectedSize) {
 
 /** PC: API через public HTTPS Улья, при недоступности — HTTP cell-agent сот. */
 function getPublicFailoverBases() {
-  const out = []
-  const seen = new Set()
-  const add = (raw) => {
-    const v = String(raw || '').replace(/\/$/, '')
-    if (!v || seen.has(v)) return
-    seen.add(v)
-    out.push(v)
-  }
-  add(`https://${UPDATE_HOST}`)
-  add(`https://${SERVER_IP_FALLBACK}`)
-  standbyApiBases.forEach(add)
-  BAKED_STANDBY_API.forEach(add)
-  return out
+  return publicFailoverBases({
+    hiveHost: UPDATE_HOST,
+    hiveIp: SERVER_IP_FALLBACK,
+    standby: standbyApiBases,
+    baked: BAKED_STANDBY_API,
+  })
 }
 
 ipcMain.handle('set-standby-api-bases', (_, urls) => {
@@ -2227,7 +2187,10 @@ function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body
       method,
       headers: { ...headers, Host: isHttps ? UPDATE_HOST : u.host },
       body,
-      timeout: Math.min(timeout || 20000, index === 0 ? 20000 : 8000),
+      timeout: publicFailoverAttemptTimeoutMs(base, timeout || 20000, {
+        hiveHost: UPDATE_HOST,
+        hiveIp: SERVER_IP_FALLBACK,
+      }),
       rejectUnauthorized: false,
       servername: isHttps ? UPDATE_HOST : undefined,
     }).catch((err) => {
@@ -2629,14 +2592,13 @@ ipcMain.handle('app-update-download', async (_, { url, filename, tunnelUrl, expe
     const hivePath = String(tunnelUrl || '/api/updates/download/pc').trim() || '/api/updates/download/pc'
     const hivePathNorm = hivePath.startsWith('/') ? hivePath : `/${hivePath}`
     const candidates = []
-    // VPN on/off: hive по IP (в bypass), не 10.66.66.1 и не hostname nip.io.
+    if (wgApplied) {
+      candidates.push(`${TUNNEL_API_ORIGIN}${hivePathNorm}`)
+    }
     candidates.push(`https://${SERVER_IP_FALLBACK}${hivePathNorm}`)
     const raw = String(url || '').trim()
     if (/^https?:\/\//i.test(raw) && !raw.includes('10.66.66.1')) {
       candidates.push(raw)
-    }
-    if (wgApplied) {
-      candidates.push(`${TUNNEL_API_ORIGIN}${hivePathNorm}`)
     }
     const uniq = [...new Set(candidates.filter(Boolean))]
     if (!uniq.length) {

@@ -937,6 +937,7 @@ module.exports = {
   stopWireGuardTunnel,
   buildWgConfigFromApi,
   applyWireGuardConfig,
+  probeTunnelGateway: () => Promise.resolve(false),
   addServerBypassRoutes,
   removeHostBypassRoutes,
   capturePhysicalGateway,

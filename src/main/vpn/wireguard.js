@@ -900,6 +900,26 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms))
 }
 
+/** TCP до шлюза API в туннеле. syncconf после соты часто оставляет 10.66.66.1 мёртвым. */
+function probeTunnelGateway(timeoutMs = 2500) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: '10.66.66.1', port: 8000 })
+    const timer = setTimeout(() => {
+      sock.destroy()
+      resolve(false)
+    }, timeoutMs)
+    sock.once('connect', () => {
+      clearTimeout(timer)
+      sock.destroy()
+      resolve(true)
+    })
+    sock.once('error', () => {
+      clearTimeout(timer)
+      resolve(false)
+    })
+  })
+}
+
 async function waitForTunnelUp(maxMs = 30000, send) {
   const deadline = Date.now() + maxMs
   let enabled = false
@@ -1537,10 +1557,16 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     if (await trySyncConf(runtimeDir, stableConf, send)) {
       await gatewayPromise
       await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns, resolvedMtu)
-      send('[WG] Туннель активен (syncconf)')
-      return true
+      await sleep(400)
+      if (subnetOnly || await probeTunnelGateway()) {
+        send('[WG] Туннель активен (syncconf)')
+        if (!subnetOnly) send('[WG] tunnel API 10.66.66.1:8000 ok')
+        return true
+      }
+      send('[WG] syncconf: 10.66.66.1:8000 мёртв — полная переустановка', 'W')
+    } else {
+      send?.('[WG] syncconf не удался — переустановка службы…', 'W')
     }
-    send?.('[WG] syncconf не удался — переустановка службы…', 'W')
     await forceStopWireGuard(isDev, dirname, send)
     await sleep(200)
   } else if (serviceUp || (await isTunnelUpAsync())) {
@@ -1551,6 +1577,11 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   const finishOk = async () => {
     await gatewayPromise
     await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns, resolvedMtu)
+    await sleep(400)
+    if (!subnetOnly) {
+      const apiOk = await probeTunnelGateway()
+      send(apiOk ? '[WG] tunnel API 10.66.66.1:8000 ok' : '[WG] tunnel API 10.66.66.1:8000 FAIL', apiOk ? undefined : 'W')
+    }
     send('[WG] Туннель активен')
     try {
       const wgCli = path.join(runtimeDir, 'wg.exe')
@@ -1644,6 +1675,7 @@ module.exports = {
   WG_MTU_DEFAULT,
   WG_MTU_GAME,
   applyWireGuardConfig,
+  probeTunnelGateway,
   addServerBypassRoutes,
   removeHostBypassRoutes,
   capturePhysicalGateway,

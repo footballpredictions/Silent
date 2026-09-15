@@ -877,10 +877,9 @@ class SilentVpnService : Service() {
                             now,
                         )
                         unvalidatedSinceMs = 0L
+                        // Короткое VALIDATED-мигание doze/OEM не трогаем туннель.
                         if (afterGap) {
                             scheduleNetworkRecovery("validated_after_gap")
-                        } else {
-                            scheduleNetworkRecovery("validated")
                         }
                     }
                 }
@@ -952,17 +951,23 @@ class SilentVpnService : Service() {
             }
             if (rat.isNotEmpty()) lastRatBucket = rat
         }
-        if (
-            NetworkRecoveryPolicy.shouldRecoverAfterTransportGap(
+        when (
+            NetworkRecoveryPolicy.classifySameTransportGap(
                 lastBlackoutAtMs = lastBlackoutAtMs,
                 nowMs = System.currentTimeMillis(),
                 validated = validated,
             )
         ) {
-            lastBlackoutAtMs = 0L
-            val kind = if (fp == "wifi") "wifi_gap_restored" else "cell_gap_restored"
-            DebugLog.i("VpnService", "gap restore $kind ($source)")
-            scheduleNetworkRecovery(kind, 800L)
+            NetworkRecoveryPolicy.SameTransportGap.RESTORE -> {
+                lastBlackoutAtMs = 0L
+                val kind = if (fp == "wifi") "wifi_gap_restored" else "cell_gap_restored"
+                DebugLog.i("VpnService", "gap restore $kind ($source)")
+                scheduleNetworkRecovery(kind, 800L)
+            }
+            NetworkRecoveryPolicy.SameTransportGap.DISCARD -> {
+                lastBlackoutAtMs = 0L
+            }
+            NetworkRecoveryPolicy.SameTransportGap.NONE -> Unit
         }
     }
 
@@ -1087,13 +1092,12 @@ class SilentVpnService : Service() {
 
     private fun recoverTransportAfterNetwork(reason: String) {
         val now = System.currentTimeMillis()
-        val wasPausedOrBlackout =
-            pausedForNetwork ||
-                isTunnelPaused ||
-                (
-                    lastBlackoutAtMs > 0L &&
-                        now - lastBlackoutAtMs <= NetworkRecoveryPolicy.TRANSPORT_GAP_MAX_MS
-                    )
+        val wasPausedOrBlackout = NetworkRecoveryPolicy.wasRealPauseOrBlackout(
+            pausedForNetwork = pausedForNetwork,
+            isTunnelPaused = isTunnelPaused,
+            lastBlackoutAtMs = lastBlackoutAtMs,
+            nowMs = now,
+        )
         pausedForNetwork = false
         isTunnelPaused = false
         noInternetSinceMs = 0L
@@ -1142,6 +1146,19 @@ class SilentVpnService : Service() {
             return
         }
         val activeWorkers = WdttTunnelManager.activeWorkers.value
+        if (
+            NetworkRecoveryPolicy.shouldKeepHealthyTransport(
+                reason = reason,
+                transportHealthy = WdttTunnelManager.isTransportHealthy(),
+            )
+        ) {
+            DebugLog.i(
+                "VpnService",
+                "network recovery: keep healthy transport ($reason, workers=$activeWorkers)",
+            )
+            WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
+            return
+        }
         val forceFull = NetworkRecoveryPolicy.needsFullRestartAfterNetworkEvent(
             reason,
             wasPausedOrBlackout,
@@ -1188,7 +1205,7 @@ class SilentVpnService : Service() {
                     return@launch
                 }
                 lastTransportRestartMs = System.currentTimeMillis()
-                WdttTunnelManager.restartTransportAfterNetwork()
+                WdttTunnelManager.restartTransportAfterNetwork(reason)
                 WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
                 scheduleRecoveryVerification("restart:$reason", trafficBeforeMb)
             }
@@ -1214,14 +1231,14 @@ class SilentVpnService : Service() {
                 }
                 lastTransportRestartMs = System.currentTimeMillis()
                 lastBlackoutAtMs = 0L
-                WdttTunnelManager.restartTransportAfterNetwork()
+                WdttTunnelManager.restartTransportAfterNetwork(reason)
                 WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
                 scheduleRecoveryVerification("restart:$reason", trafficBeforeMb)
             }
             return
         }
         lastTransportRestartMs = System.currentTimeMillis()
-        WdttTunnelManager.restartTransportAfterNetwork()
+        WdttTunnelManager.restartTransportAfterNetwork(reason)
         WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
         scheduleRecoveryVerification("restart:$reason", trafficBeforeMb)
     }
@@ -1599,7 +1616,7 @@ class SilentVpnService : Service() {
                     "recovery verify failed ($reason): workers=$workers delta=$trafficDelta MB; force restart",
                 )
                 lastTransportRestartMs = System.currentTimeMillis()
-                WdttTunnelManager.restartTransportAfterNetwork()
+                WdttTunnelManager.restartTransportAfterNetwork(reason)
                 WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
             }
         }

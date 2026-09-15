@@ -211,7 +211,7 @@ class NetworkRecoveryPolicyTest {
         assertTrue(
             NetworkRecoveryPolicy.shouldRecoverAfterTransportGap(
                 lastBlackoutAtMs = 1_000L,
-                nowMs = 3_000L,
+                nowMs = 1_000L + NetworkRecoveryPolicy.VALIDATED_GAP_RECOVER_MS,
                 validated = true,
             ),
         )
@@ -219,6 +219,13 @@ class NetworkRecoveryPolicyTest {
             NetworkRecoveryPolicy.shouldRecoverAfterTransportGap(
                 lastBlackoutAtMs = 1_000L,
                 nowMs = 1_200L,
+                validated = true,
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.shouldRecoverAfterTransportGap(
+                lastBlackoutAtMs = 1_000L,
+                nowMs = 3_000L,
                 validated = true,
             ),
         )
@@ -234,6 +241,93 @@ class NetworkRecoveryPolicyTest {
                 lastBlackoutAtMs = 0L,
                 nowMs = 10_000L,
                 validated = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `idle phone radio blip is not a real blackout`() {
+        assertFalse(
+            NetworkRecoveryPolicy.wasRealPauseOrBlackout(
+                pausedForNetwork = false,
+                isTunnelPaused = false,
+                lastBlackoutAtMs = 10_000L,
+                nowMs = 10_400L,
+            ),
+        )
+        assertTrue(
+            NetworkRecoveryPolicy.wasRealPauseOrBlackout(
+                pausedForNetwork = false,
+                isTunnelPaused = false,
+                lastBlackoutAtMs = 10_000L,
+                nowMs = 10_000L + NetworkRecoveryPolicy.VALIDATED_GAP_RECOVER_MS,
+            ),
+        )
+        assertTrue(
+            NetworkRecoveryPolicy.wasRealPauseOrBlackout(
+                pausedForNetwork = true,
+                isTunnelPaused = false,
+                lastBlackoutAtMs = 0L,
+                nowMs = 1L,
+            ),
+        )
+        assertTrue(
+            NetworkRecoveryPolicy.wasRealPauseOrBlackout(
+                pausedForNetwork = false,
+                isTunnelPaused = true,
+                lastBlackoutAtMs = 0L,
+                nowMs = 1L,
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.wasRealPauseOrBlackout(
+                pausedForNetwork = false,
+                isTunnelPaused = false,
+                lastBlackoutAtMs = 1_000L,
+                nowMs = 1_000L + NetworkRecoveryPolicy.TRANSPORT_GAP_MAX_MS + 1,
+            ),
+        )
+        // Wi‑Fi↔LTE и звонок по-прежнему полный restart без «дырки».
+        assertTrue(
+            NetworkRecoveryPolicy.needsFullRestartAfterNetworkEvent(
+                reason = "transport_switch:mobile",
+                wasPausedOrBlackout = false,
+            ),
+        )
+        assertTrue(
+            NetworkRecoveryPolicy.needsFullRestartAfterNetworkEvent(
+                reason = "phone_call_end",
+                wasPausedOrBlackout = false,
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.needsFullRestartAfterNetworkEvent(
+                reason = "validated",
+                wasPausedOrBlackout = false,
+            ),
+        )
+        assertEquals(
+            NetworkRecoveryPolicy.SameTransportGap.DISCARD,
+            NetworkRecoveryPolicy.classifySameTransportGap(
+                lastBlackoutAtMs = 10_000L,
+                nowMs = 10_400L,
+                validated = true,
+            ),
+        )
+        assertEquals(
+            NetworkRecoveryPolicy.SameTransportGap.RESTORE,
+            NetworkRecoveryPolicy.classifySameTransportGap(
+                lastBlackoutAtMs = 10_000L,
+                nowMs = 10_000L + NetworkRecoveryPolicy.VALIDATED_GAP_RECOVER_MS,
+                validated = true,
+            ),
+        )
+        assertEquals(
+            NetworkRecoveryPolicy.SameTransportGap.NONE,
+            NetworkRecoveryPolicy.classifySameTransportGap(
+                lastBlackoutAtMs = 10_000L,
+                nowMs = 12_000L,
+                validated = false,
             ),
         )
     }
@@ -287,6 +381,60 @@ class NetworkRecoveryPolicyTest {
         assertTrue(NetworkRecoveryPolicy.shouldAcceptLinkHandover(0L, 10_000L))
         assertFalse(NetworkRecoveryPolicy.shouldAcceptLinkHandover(1_000L, 10_000L))
         assertTrue(NetworkRecoveryPolicy.shouldAcceptLinkHandover(1_000L, 32_000L))
+    }
+
+    @Test
+    fun `healthy tunnel survives oem same-transport events`() {
+        // Лежащий vivo: gap / смена IPv4 / VALIDATED ≥3.5 с при живом libclient.
+        // Полный kill даёт «Перезапуск транспорта» и рвёт VK Calls.
+        val oem = listOf(
+            "cell_gap_restored",
+            "wifi_gap_restored",
+            "link_handover:cell",
+            "validated_after_gap",
+            "available:cell",
+            "capabilities:cell",
+        )
+        for (reason in oem) {
+            assertTrue(
+                reason,
+                NetworkRecoveryPolicy.shouldKeepHealthyTransport(
+                    reason = reason,
+                    transportHealthy = true,
+                ),
+            )
+        }
+        // Реальные смена сети / звонок / пауза 8 с — kill даже при живых воркерах.
+        assertFalse(
+            NetworkRecoveryPolicy.shouldKeepHealthyTransport(
+                reason = "transport_switch:mobile",
+                transportHealthy = true,
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.shouldKeepHealthyTransport(
+                reason = "rat_switch:3g->4g",
+                transportHealthy = true,
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.shouldKeepHealthyTransport(
+                reason = "phone_call_end",
+                transportHealthy = true,
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.shouldKeepHealthyTransport(
+                reason = "internet_restored",
+                transportHealthy = true,
+            ),
+        )
+        assertFalse(
+            NetworkRecoveryPolicy.shouldKeepHealthyTransport(
+                reason = "cell_gap_restored",
+                transportHealthy = false,
+            ),
+        )
     }
 
     @Test

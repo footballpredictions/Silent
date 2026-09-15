@@ -14,6 +14,18 @@ object NetworkRecoveryPolicy {
     const val TRANSPORT_GAP_MAX_MS = 60_000L
 
     /**
+     * Короче этого — OEM/vivo мигание INTERNET на лежащем телефоне, не дыра между вышками.
+     * Раньше 400 мс давало cell_gap_restored и полный restart транспорта.
+     */
+    const val TRANSPORT_GAP_MIN_MS = VALIDATED_GAP_RECOVER_MS
+
+    enum class SameTransportGap {
+        NONE,
+        RESTORE,
+        DISCARD,
+    }
+
+    /**
      * Событие пришло по сети, на которой мы реально живём?
      *
      * Колбэк слушает все не-VPN сети, поэтому при живом Wi‑Fi прилетают события
@@ -169,12 +181,53 @@ object NetworkRecoveryPolicy {
         lastBlackoutAtMs: Long,
         nowMs: Long,
         validated: Boolean,
-        minGapMs: Long = 400L,
+        minGapMs: Long = TRANSPORT_GAP_MIN_MS,
         maxGapMs: Long = TRANSPORT_GAP_MAX_MS,
-    ): Boolean {
-        if (!validated || lastBlackoutAtMs <= 0L) return false
+    ): Boolean = classifySameTransportGap(
+        lastBlackoutAtMs = lastBlackoutAtMs,
+        nowMs = nowMs,
+        validated = validated,
+        minGapMs = minGapMs,
+        maxGapMs = maxGapMs,
+    ) == SameTransportGap.RESTORE
+
+    /**
+     * Когда fp снова wifi/cell после пустого fingerprint:
+     * RESTORE — реальная дыра (вышка/обрыв) → cell/wifi_gap_restored;
+     * DISCARD — короткий blip, метку blackout надо сбросить, иначе через 3.5 с
+     * та же метка превратится в «дыру» на уже живой сети.
+     */
+    fun classifySameTransportGap(
+        lastBlackoutAtMs: Long,
+        nowMs: Long,
+        validated: Boolean,
+        minGapMs: Long = TRANSPORT_GAP_MIN_MS,
+        maxGapMs: Long = TRANSPORT_GAP_MAX_MS,
+    ): SameTransportGap {
+        if (lastBlackoutAtMs <= 0L) return SameTransportGap.NONE
+        if (!validated) return SameTransportGap.NONE
         val dt = nowMs - lastBlackoutAtMs
-        return dt in minGapMs..maxGapMs
+        if (dt in minGapMs..maxGapMs) return SameTransportGap.RESTORE
+        return SameTransportGap.DISCARD
+    }
+
+    /**
+     * Полный restart из-за «дыры» только если туннель реально ставили на паузу
+     * (8 с без INTERNET) или blackout длился как вышка, не 400 мс OEM-мигания.
+     * Wi‑Fi↔LTE / звонок идут через needsUnderlyingWaitRestart без этой метки.
+     */
+    fun wasRealPauseOrBlackout(
+        pausedForNetwork: Boolean,
+        isTunnelPaused: Boolean,
+        lastBlackoutAtMs: Long,
+        nowMs: Long,
+        minBlackoutMs: Long = TRANSPORT_GAP_MIN_MS,
+        maxBlackoutMs: Long = TRANSPORT_GAP_MAX_MS,
+    ): Boolean {
+        if (pausedForNetwork || isTunnelPaused) return true
+        if (lastBlackoutAtMs <= 0L) return false
+        val dt = nowMs - lastBlackoutAtMs
+        return dt in minBlackoutMs..maxBlackoutMs
     }
 
     fun shouldRecoverAfterValidatedGap(
@@ -204,6 +257,28 @@ object NetworkRecoveryPolicy {
     fun isSpuriousRecoveryReason(reason: String): Boolean {
         val base = reason.substringBefore(':')
         return base == "unhealthy" || base == "stale" || base == "watchdog_down"
+    }
+
+    /**
+     * События, где UDP/WG сокеты почти наверняка мертвы — kill даже при живом процессе.
+     * OEM-мигание той же соты / смена IPv4 сюда не входит.
+     */
+    fun mustRestartHealthyTransport(reason: String): Boolean {
+        val base = reason.substringBefore(':')
+        return base == "transport_switch" ||
+            base == "rat_switch" ||
+            base == "phone_call_end" ||
+            base == "internet_restored"
+    }
+
+    /**
+     * libclient жив (процесс + READY): не убивать на gap/handover/validated.
+     * Иначе лежащий vivo каждые ~30 с рвёт VK Calls при 54 активных воркерах.
+     * Реальный обрыв: process мёртв / 0 воркеров → stale/zero-traffic watchdog.
+     */
+    fun shouldKeepHealthyTransport(reason: String, transportHealthy: Boolean): Boolean {
+        if (!transportHealthy) return false
+        return !mustRestartHealthyTransport(reason)
     }
 
     data class TransportRestartInput(

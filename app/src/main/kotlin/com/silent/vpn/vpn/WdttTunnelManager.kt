@@ -1673,7 +1673,7 @@ object WdttTunnelManager {
         }
     }
 
-    fun restartTransport(forceNetwork: Boolean = false) {
+    fun restartTransport(forceNetwork: Boolean = false, reason: String = "") {
         if (isBootstrapMode && forceNetwork) {
             updateLog("network_restart_skip", "[СЕТЬ] Bootstrap — мягкое восстановление", 50)
             if (!running.value || process?.isAlive != true) {
@@ -1691,7 +1691,8 @@ object WdttTunnelManager {
         if (!tunnelReady.value) return
         val params = lastParams ?: return
         val ctx = lastContext ?: return
-        updateLog("network_restart", "[СЕТЬ] Перезапуск транспорта", 50)
+        val why = reason.trim().takeIf { it.isNotEmpty() }?.let { " ($it)" }.orEmpty()
+        updateLog("network_restart", "[СЕТЬ] Перезапуск транспорта$why", 50)
         killProcess()
         scope.launch {
             delay(1500)
@@ -1700,7 +1701,8 @@ object WdttTunnelManager {
     }
 
     /** Явное восстановление после смены сети / звонка — без grace libclient. */
-    fun restartTransportAfterNetwork() = restartTransport(forceNetwork = true)
+    fun restartTransportAfterNetwork(reason: String = "") =
+        restartTransport(forceNetwork = true, reason = reason)
 
     /**
      * «Обновить канал Telegram»: перезапуск libclient (новые TURN), WG не снимаем.

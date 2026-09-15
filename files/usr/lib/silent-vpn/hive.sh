@@ -4,30 +4,47 @@
 
 sv_hive_post() {
 	local path="$1" json="$2"
-	local tmp out code
+	local tmp out code base to
 	sv_mkdir
 	tmp="$(mktemp "$SV_RUN/body.XXXXXX")"
 	printf '%s' "$json" > "$tmp"
 	out="$(mktemp "$SV_RUN/out.XXXXXX")"
-	code="$(sv_hive_wget POST "$(sv_api_base)$path" "$tmp" "$out")"
+	code="000"
+	for base in $(sv_api_bases); do
+		: > "$out"
+		to="$(sv_hive_timeout_for "$base")"
+		code="$(sv_hive_wget POST "${base}${path}" "$tmp" "$out" "$to")"
+		if [ -s "$out" ]; then
+			break
+		fi
+	done
 	echo "$code" > "$SV_RUN/http.code"
 	echo "$out"
 }
 
 sv_hive_get() {
 	local path="$1"
-	local out
+	local out code base to
 	sv_mkdir
 	out="$(mktemp "$SV_RUN/out.XXXXXX")"
-	sv_hive_wget GET "$(sv_api_base)$path" "" "$out" > "$SV_RUN/http.code"
+	code="000"
+	for base in $(sv_api_bases); do
+		: > "$out"
+		to="$(sv_hive_timeout_for "$base")"
+		code="$(sv_hive_wget GET "${base}${path}" "" "$out" "$to")"
+		if [ -s "$out" ]; then
+			break
+		fi
+	done
+	echo "$code" > "$SV_RUN/http.code"
 	echo "$out"
 }
 
 sv_hive_wget() {
-	local method="$1" url="$2" body="$3" out="$4"
+	local method="$1" url="$2" body="$3" out="$4" timeout="${5:-20}"
 	local token args st
 	token="$(sv_token)"
-	args="-qO $out --timeout=20"
+	args="-qO $out --timeout=$timeout"
 	[ -n "$token" ] && args="$args --header=Authorization: Bearer $token"
 	args="$args --header=X-App-Version:\ $SV_VERSION --header=Content-Type: application/json"
 	if [ "$method" = "POST" ]; then

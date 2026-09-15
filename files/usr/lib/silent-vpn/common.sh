@@ -89,12 +89,32 @@ sv_router_name() {
 	fi
 }
 
-sv_api_base() {
+sv_api_bases() {
+	# VPN поднят — только шлюз туннеля. Иначе Улей, потом соты.
 	if [ -f "$SV_RUN/path.up" ]; then
 		echo "$SV_TUNNEL_API"
-	else
-		echo "${SV_API_OVERRIDE:-$SV_PUBLIC_API}"
+		return
 	fi
+	if [ -n "$SV_API_OVERRIDE" ]; then
+		echo "$SV_API_OVERRIDE"
+		return
+	fi
+	echo "${SV_PUBLIC_API:-https://132-243-234-162.nip.io}"
+	echo "https://132.243.234.162"
+	echo "http://87.58.213.193:9100"
+	echo "http://78.17.74.27:9100"
+}
+
+sv_api_base() {
+	sv_api_bases | head -n1
+}
+
+sv_hive_timeout_for() {
+	case "$1" in
+		*:9100*) echo 8 ;;
+		*10.66.66.1*) echo 8 ;;
+		*) echo 4 ;;
+	esac
 }
 
 sv_neigh_mac() {
@@ -157,28 +177,35 @@ sv_token() {
 sv_http() {
 	# sv_http METHOD PATH [BODY_FILE]
 	local method="$1" path="$2" body="${3:-}"
-	local url base out hdr token extra
-	base="$(sv_api_base)"
-	url="${base}${path}"
+	local url base out hdr token extra to
 	out="$(mktemp "$SV_RUN/http.XXXXXX")"
 	hdr="$(mktemp "$SV_RUN/hdr.XXXXXX")"
 	token="$(sv_token)"
 	extra=""
 	[ -n "$token" ] && extra="--header=Authorization: Bearer $token"
-	if [ -n "$body" ]; then
-		wget -qO "$out" --server-response \
-			--header="Content-Type: application/json" \
-			--header="X-App-Version: $SV_VERSION" \
-			$extra \
-			--post-file="$body" \
-			--method="$method" \
-			"$url" 2>"$hdr" || true
-	else
-		wget -qO "$out" --server-response \
-			--header="X-App-Version: $SV_VERSION" \
-			$extra \
-			--method="$method" \
-			"$url" 2>"$hdr" || true
-	fi
+	for base in $(sv_api_bases); do
+		: > "$out"
+		url="${base}${path}"
+		to="$(sv_hive_timeout_for "$base")"
+		if [ -n "$body" ]; then
+			wget -qO "$out" --timeout="$to" --server-response \
+				--header="Content-Type: application/json" \
+				--header="X-App-Version: $SV_VERSION" \
+				$extra \
+				--post-file="$body" \
+				--method="$method" \
+				"$url" 2>"$hdr" || true
+		else
+			wget -qO "$out" --timeout="$to" --server-response \
+				--header="X-App-Version: $SV_VERSION" \
+				$extra \
+				--method="$method" \
+				"$url" 2>"$hdr" || true
+		fi
+		if [ -s "$out" ]; then
+			echo "$out"
+			return
+		fi
+	done
 	echo "$out"
 }

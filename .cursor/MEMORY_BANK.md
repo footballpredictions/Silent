@@ -5,6 +5,12 @@
 > сначала читать его, потом код.
 > **Игры / Dota / Steam SDR (UDP) — `backend/GAME_EXIT_NODE.md` (Сота 2).**
 
+## Последние изменения (OpenWrt пакет на Pages 2026-09-15)
+
+Пересобран `silent-vpn-openwrt-1.0.165.tar.gz` (hive-first API + wdtt aarch64/arm/mipsel/x86_64).
+На лендинг: `silent-vpn-openwrt.tgz`, `openwrt-install.sh` / `openwrt-uninstall.sh`.
+Ставить: wget `https://silentvpn3.github.io/openwrt-install.sh`.
+
 ## Последние изменения (все клиенты: Улей → соты 2026-09-15)
 
 Вход/регистрация/подписка: сначала Улей, если TCP молчит — соты `:9100` по очереди;

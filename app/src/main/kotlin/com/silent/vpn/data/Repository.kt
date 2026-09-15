@@ -13,6 +13,7 @@ import com.google.gson.reflect.TypeToken
 import com.silent.vpn.policy.ApiRoutePolicy
 import com.silent.vpn.policy.AppExclusionsPersist
 import com.silent.vpn.policy.OlcrtcSessionPolicy
+import com.silent.vpn.policy.PublicApiFailoverPolicy
 import com.silent.vpn.policy.TunnelHttpPolicy
 import com.silent.vpn.policy.UpdateUrlResolver
 import com.silent.vpn.vpn.TunnelApiProxy
@@ -585,11 +586,10 @@ class SilentRepository @Inject constructor(
 
     /** Public HTTPS Улья, затем standby-соты (если Улей режут по IP). */
     private fun publicApiBases(): List<String> {
-        val out = linkedSetOf<String>()
-        out.add("https://$DEFAULT_SERVER_HOST")
-        out.add(getPublicServerUrl().trimEnd('/'))
-        cachedStandbyApiBases().forEach { out.add(it) }
-        return out.filter { it.isNotBlank() }.distinct()
+        return PublicApiFailoverPolicy.orderedPublicBases(
+            hiveHttps = listOf("https://$DEFAULT_SERVER_HOST", getPublicServerUrl().trimEnd('/')),
+            cells = cachedStandbyApiBases(),
+        )
     }
 
     private fun cachedStandbyApiBases(): List<String> {
@@ -892,11 +892,14 @@ class SilentRepository @Inject constructor(
                 out.add("https://$gw")
             }
         }
-        standbyApiBasesFromTheme().forEach { out.add(it) }
-        cachedStandbyApiBases().forEach { out.add(it) }
-        out.add("https://${BootstrapVpnConfig.serverHost()}")
-        out.add("https://$DEFAULT_SERVER_HOST")
-        out.add(getPublicServerUrl())
+        PublicApiFailoverPolicy.orderedPublicBases(
+            hiveHttps = listOf(
+                "https://${BootstrapVpnConfig.serverHost()}",
+                "https://$DEFAULT_SERVER_HOST",
+                getPublicServerUrl(),
+            ),
+            cells = standbyApiBasesFromTheme() + cachedStandbyApiBases(),
+        ).forEach { out.add(it) }
         return out.filter { it.isNotBlank() }.toList()
     }
 

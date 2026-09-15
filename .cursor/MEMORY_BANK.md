@@ -5,6 +5,17 @@
 > сначала читать его, потом код.
 > **Игры / Dota / Steam SDR (UDP) — `backend/GAME_EXIT_NODE.md` (Сота 2).**
 
+## Последние изменения (Android ложный restart транспорта 2026-09-15)
+
+vivo снова рвал туннель после фикса 3.5 с: в логе 18:50 четыре `[СЕТЬ] Перезапуск транспорта`
+при 63 воркерах. `cell_gap` / `link_handover` / `validated_after_gap` всегда шли в kill
+(`needsUnderlyingWaitRestart` → forceFull), даже когда libclient жив.
+Теперь живой процесс не убиваем на OEM той же соты; полный restart как был —
+Wi‑Fi↔LTE, 2G↔4G, звонок, пауза 8 с без сети. Если всё же restart — в логе причина
+в скобках. Тест `healthy tunnel survives oem same-transport events`.
+Debug: `android/SilentVPN-debug.apk`. Лендинг не трогали.
+Приёмка idle: рестартов на лежащем телефоне нет (2026-09-15). Wi‑Fi↔LTE / звонок ещё не гоняли.
+
 ## Последние изменения (OpenWrt пакет на Pages 2026-09-15)
 
 Пересобран `silent-vpn-openwrt-1.0.165.tar.gz` (hive-first API + wdtt aarch64/arm/mipsel/x86_64).

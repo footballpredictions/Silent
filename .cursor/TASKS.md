@@ -31,6 +31,21 @@ Agent приступает к **первой невыполненной** зад
 
 ## Открытые задачи
 
+### Android ложный «Перезапуск транспорта» на лежащем телефоне (2026-09-15)
+
+vivo V2520A: сеть не терялась, звонка не было, в логе `[СЕТЬ] Перезапуск транспорта`.
+
+- [x] Корень: OEM INTERNET-blip ≥400 мс → `lastBlackoutAtMs` → `cell_gap_restored` / `validated`+blackout 60 с → kill libclient
+- [x] Gap того же wifi/cell только ≥3.5 с; короткий blip DISCARD (метку сбрасываем)
+- [x] `wasRealPauseOrBlackout`: пауза 8 с или дыра ≥3.5 с; Wi‑Fi↔LTE / RAT / handover / звонок без этой метки
+- [x] Короткое VALIDATED-мигание больше не планирует recover
+- [x] `NetworkRecoveryPolicyTest`; Debug `android/SilentVPN-debug.apk`
+- [x] Приёмка 18:47/18:50: порог 3.5 с не хватил — gap/handover всё равно forceFull kill при живых 54–63 воркерах
+- [x] `shouldKeepHealthyTransport`: живой libclient не убиваем на gap/handover/validated; Wi‑Fi↔LTE / RAT / звонок / пауза 8 с — как были
+- [x] В логе restart теперь с причиной в скобках
+- [x] Приёмка idle 2026-09-15: на лежащем vivo рестартов нет
+- [ ] Приёмка переподключения: Wi‑Fi↔LTE / вышка / звонок — VPN сам встаёт (ещё не гоняли)
+
 ### Админка доступности: ложный «блокировок нет» (2026-09-15)
 
 Скрин Улья: локально API/TLS ok, из РФ TCP+TLS 0/2 timeout, ping 1/2, DNS 2/2,
@@ -65,6 +80,7 @@ ICMP частичный, UDP WG жив (онлайн есть), соты `:22`/`
 - [x] Debug: `pc/build-debug-hiveadmin/win-unpacked/SilentVPN-Admin.bat`
 - [x] На слоте Улья syncconf оставлял мёртвый `10.66.66.1` — после syncconf проба :8000, иначе полная переустановка WG
 - [x] Все клиенты: Улей HTTPS → соты `:9100` (PC/Android/iOS/OpenWrt). Debug APK `android/SilentVPN-debug.apk`
+- [x] OpenWrt пакет пересобран (`dist/silent-vpn-openwrt-1.0.165.tar.gz` + wdtt). На лендинге локально `e2ac6c4`; Pages 403 — пуш `silentvpn3.github.io` нужен аккаунт `silentvpn3`, не `footballpredictions`
 - [x] Debug: `pc/build-debug-69815/win-unpacked/SilentVPN-Admin.bat`
 - [ ] Приёмка: VPN вкл → в логе `tunnel API 10.66.66.1:8000 ok`, админка открывается
 

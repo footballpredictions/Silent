@@ -106,6 +106,14 @@ def test_queen_proxy_urls_work_without_nipio():
     assert urls == ["http://1.2.3.4:8000/api/payments/plans"]
 
 
+def test_queen_tunnel_dnat_uses_nginx_80_not_closed_8000():
+    # provision: 10.66.66.1:8000 → Улей:80. docker-proxy :8000 только localhost.
+    assert sr.queen_tunnel_dnat_dest("132.243.234.162") == "132.243.234.162:80"
+    assert sr.queen_tunnel_dnat_dest("192.177.26.38") == "192.177.26.38:80"
+    assert sr.queen_tunnel_dnat_dest("") == ""
+    assert sr.queen_tunnel_dnat_legacy_dest("132.243.234.162") == "132.243.234.162:8000"
+
+
 def test_one_health_fail_does_not_enter_standby():
     healthy, streak, action = sr.apply_queen_health_tick(
         now_healthy=False, was_healthy=True, fail_streak=0, need=3
@@ -179,6 +187,7 @@ if __name__ == "__main__":
     test_queen_health_urls_prefer_direct_ip()
     test_queen_proxy_urls_use_ip8000_not_nipio_first()
     test_queen_proxy_urls_work_without_nipio()
+    test_queen_tunnel_dnat_uses_nginx_80_not_closed_8000()
     test_one_health_fail_does_not_enter_standby()
     test_three_health_fails_enter_standby()
     test_health_ok_restores_queen_dnat()

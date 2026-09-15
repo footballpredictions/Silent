@@ -734,20 +734,36 @@ async def check_queen_health() -> bool:
     return False
 
 
+def queen_tunnel_dnat_dest(queen_ip: str) -> str:
+    """Клиентский 10.66.66.1:8000 на соте → публичный nginx Улья :80 (allow IP сот)."""
+    ip = (queen_ip or "").strip()
+    return f"{ip}:80" if ip else ""
+
+
+def queen_tunnel_dnat_legacy_dest(queen_ip: str) -> str:
+    """Старый agent слал на Улей:8000 (docker-proxy только localhost → RST/403)."""
+    ip = (queen_ip or "").strip()
+    return f"{ip}:8000" if ip else ""
+
+
 def _iptables_dnat_to_local(enable: bool) -> None:
-    """Переключает DNAT 10.66.66.1:8000 → localhost:8000 (standby) или обратно на Улей."""
-    if not HIVE_QUEEN_IP:
+    """Переключает DNAT 10.66.66.1:8000 → localhost:8000 (standby) или обратно на Улей:80."""
+    queen_dst = queen_tunnel_dnat_dest(HIVE_QUEEN_IP)
+    if not queen_dst:
         return
-    queen_dst = f"{HIVE_QUEEN_IP}:8000"
+    legacy_dst = queen_tunnel_dnat_legacy_dest(HIVE_QUEEN_IP)
     local_dst = f"127.0.0.1:{STANDBY_API_PORT}"
     target = local_dst if enable else queen_dst
-    for table_cmd in (
-        ["iptables", "-t", "nat", "-D", "PREROUTING", "-d", TUNNEL_GATEWAY, "-p", "tcp", "--dport", "8000",
-         "-j", "DNAT", "--to-destination", queen_dst],
-        ["iptables", "-t", "nat", "-D", "PREROUTING", "-d", TUNNEL_GATEWAY, "-p", "tcp", "--dport", "8000",
-         "-j", "DNAT", "--to-destination", local_dst],
-    ):
-        subprocess.run(table_cmd, capture_output=True, timeout=10)
+    drop = [queen_dst, local_dst]
+    if legacy_dst and legacy_dst not in drop:
+        drop.append(legacy_dst)
+    for dst in drop:
+        subprocess.run(
+            ["iptables", "-t", "nat", "-D", "PREROUTING", "-d", TUNNEL_GATEWAY, "-p", "tcp", "--dport", "8000",
+             "-j", "DNAT", "--to-destination", dst],
+            capture_output=True,
+            timeout=10,
+        )
     subprocess.run(
         ["iptables", "-t", "nat", "-A", "PREROUTING", "-d", TUNNEL_GATEWAY, "-p", "tcp", "--dport", "8000",
          "-j", "DNAT", "--to-destination", target],

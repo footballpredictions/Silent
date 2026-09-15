@@ -5,6 +5,18 @@
 > сначала читать его, потом код.
 > **Игры / Dota / Steam SDR (UDP) — `backend/GAME_EXIT_NODE.md` (Сота 2).**
 
+## Последние изменения (Сервер 4 tunnel API 2026-09-15)
+
+ПК на Сервере 4: туннель жив, `[WG] tunnel API 10.66.66.1:8000 FAIL`. Агент
+уже был свежий — корень не в proxy. Сота 3 DNAT слала на Улей **:8000**, а
+docker-proxy слушает только `127.0.0.1:8000` (Connection refused). Рабочий путь
+как в provision: **Улей:80**, nginx allow только IP сот. Сота 3 в allow не была
+(403). Фикс: nginx `allow 192.177.26.38` + `nginx -s reload` (не compose restart);
+CELL_API REDIRECT `:8000→:80`; agent DNAT `10.66.66.1:8000 → queen:80` (снять
+legacy `:8000`). `:9100` с интернета закрыт. wdtt / api / TPROXY не трогали.
+Тесты: `test_fix_tunnel_dnat_unit.py`, `test_cell_wg_gc_unit.py`. Приёмка: reconnect
+Сервер 4 → `[WG] tunnel API 10.66.66.1:8000 ok`.
+
 ## Последние изменения (Android ложный restart транспорта 2026-09-15)
 
 vivo снова рвал туннель после фикса 3.5 с: в логе 18:50 четыре `[СЕТЬ] Перезапуск транспорта`

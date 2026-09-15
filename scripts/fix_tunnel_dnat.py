@@ -5,6 +5,14 @@ import io
 
 from _deploy_common import connect, run
 
+# Соты, которым Улей пускает :8000 (docker-proxy только 127.0.0.1).
+# Без IP соты DNAT 10.66.66.1:8000 с клиента мёртв. Публично 8000 не открываем.
+CELL_API_SOURCE_IPS = (
+    "87.58.213.193",  # Сота 1
+    "78.17.74.27",    # Сота 2
+    "192.177.26.38",  # Сота 3 / Сервер 4 (ИИ-выход)
+)
+
 FIX_SH = r"""#!/bin/bash
 set -euo pipefail
 
@@ -28,6 +36,12 @@ strip_rules() {
 strip_rules PREROUTING
 strip_rules OUTPUT
 
+while true; do
+  line=$(iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep CELL_API | head -1 | awk '{print $1}' || true)
+  [ -z "$line" ] && break
+  iptables -t nat -D PREROUTING "$line" || break
+done
+
 iptables -t nat -A PREROUTING -d 10.66.66.1/32 -p tcp -m tcp --dport 8000 \
   -m comment --comment "WDTT_API" -j DNAT --to-destination "$TARGET"
 iptables -t nat -A OUTPUT -d 10.66.66.1/32 -p tcp -m tcp --dport 8000 \
@@ -39,14 +53,13 @@ iptables -C FORWARD -d "$API_IP"/32 -p tcp --dport 8000 -j ACCEPT 2>/dev/null \
 iptables -C FORWARD -s "$API_IP"/32 -p tcp --sport 8000 -j ACCEPT 2>/dev/null \
   || iptables -I FORWARD 1 -s "$API_IP"/32 -p tcp --sport 8000 -j ACCEPT
 
-# Соты DNAT/socat на Улей:8000, а docker-proxy слушает только 127.0.0.1:8000.
-# Без этого туннель 10.66.66.1:8000 с соты мёртв — клиент online 1 и сразу 0.
-# Публично 8000 не открываем: REDIRECT только с IP сот.
-for CELL_IP in 87.58.213.193 78.17.74.27; do
+# Соты DNAT 10.66.66.1:8000 на Улей:8000, а docker-proxy слушает только 127.0.0.1:8000.
+# REDIRECT на :8000 с eth0 = Connection refused. Nginx :80 — allow только IP сот.
+for CELL_IP in __CELL_IPS__; do
   iptables -t nat -C PREROUTING -s "$CELL_IP"/32 -p tcp --dport 8000 \
-    -m comment --comment "CELL_API" -j REDIRECT --to-ports 8000 2>/dev/null \
+    -m comment --comment "CELL_API" -j REDIRECT --to-ports 80 2>/dev/null \
     || iptables -t nat -I PREROUTING 1 -s "$CELL_IP"/32 -p tcp --dport 8000 \
-      -m comment --comment "CELL_API" -j REDIRECT --to-ports 8000
+      -m comment --comment "CELL_API" -j REDIRECT --to-ports 80
 done
 
 echo "[fix] PREROUTING:"; iptables -t nat -L PREROUTING -n | grep -E '10.66|CELL_API' || true
@@ -66,7 +79,7 @@ if [ "$ok" = 0 ]; then
   curl -v --connect-timeout 3 http://10.66.66.1:8000/health 2>&1 | tail -8 || true
   exit 1
 fi
-"""
+""".replace("__CELL_IPS__", " ".join(CELL_API_SOURCE_IPS))
 
 
 def main() -> None:

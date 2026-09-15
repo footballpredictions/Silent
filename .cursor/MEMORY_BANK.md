@@ -5,6 +5,74 @@
 > сначала читать его, потом код.
 > **Игры / Dota / Steam SDR (UDP) — `backend/GAME_EXIT_NODE.md` (Сота 2).**
 
+## Последние изменения (все клиенты: Улей → соты 2026-09-15)
+
+Вход/регистрация/подписка: сначала Улей, если TCP молчит — соты `:9100` по очереди;
+сота проксирует на Улей `IP:8000`. ПК Electron (Win/Linux/Mac), Android, iOS,
+OpenWrt. Debug APK: `android/SilentVPN-debug.apk`. ПК: `build-debug-69815`.
+
+## Последние изменения (вход: Улей потом соты 2026-09-15)
+
+Логин/регистрация с ПК сначала били в соты `:9100`. Теперь публичный API:
+Улей HTTPS → IP Улья → Сота 1 → Сота 2. Если Улей TCP молчит — не ждём 20с,
+4с и следующая база. ПК `apiFailover.js`, Android `PublicApiFailoverPolicy`.
+Тесты: `node --test test/apiFailover.test.js`, `PublicApiFailoverPolicyTest`.
+Debug ПК: `pc/build-debug-69815/win-unpacked/SilentVPN-Admin.bat`.
+
+## Последние изменения (сота→Улей live API 2026-09-15)
+
+На любой соте клиент бил в `:9100` и получал снимок «Улей недоступен» (оплата,
+подписка, ConfigSync, вход). Health Улья с соты уже шёл на `IP:8000`, а **proxy**
+всё равно ходил на nip.io; если health падал — сразу снимок, без живого запроса.
+Фикс `cell-agent/standby_runtime.py`: proxy/health сначала `http://{queen}:8000`,
+failover всегда пробует живой Улей (login/payments/users/updates), снимок только
+если `:8000` мёртв. Standby DNAT `10.66.66.1` тоже проксирует, не 404. Тест
+`python scripts/test_cell_wg_gc_unit.py` ok. Залито на Улей + Сота 1/2
+(`systemctl restart silent-cell-agent`, **wdtt/api/nginx не трогали**). Проба
+с РФ: `:9100 /api/vpn/sync-state` → `Not authenticated` (живой Улей), не снимок.
+Сота 3 (`192.177.26.38`) restart агента не встал. ПК не пересобирали.
+
+## Последние изменения (ПК админка на слоте Улья 2026-09-15)
+
+YouTube жил, админка нет: слот Улья → IP в Bypass (так надо для WG UDP), а
+`10.66.66.1:8000` после `syncconf` мёртв (в коде это уже было описано). ConfigSync
+20с× бил в nip.io. Фикс: после syncconf проба шлюза, иначе полная переустановка
+WG; public failover сначала `:9100` сот. Debug:
+`pc/build-debug-hivefix/win-unpacked/SilentVPN-Admin.bat` (hiveadmin2 падал: `HIVE_PUBLIC_IP is not defined`).
+
+## Последние изменения (ПК: Улей через туннель 2026-09-15)
+
+На соте IP Улья больше не в Bypass (остаётся только peer + VK). Иначе админка/SSH
+шли в заблокированный TCP. Админка при VPN — `http://10.66.66.1:8000/dashboard`,
+без fallback на nip.io. SSH deploy: после таймаута `:22` Улья — `10.66.66.1:22`.
+Тесты: `pc/test/bypassTargets.test.js`, `python scripts/test_deploy_ssh_hosts_unit.py`.
+Debug: `pc/build-debug-hiveadmin/win-unpacked/SilentVPN-Admin.bat`. wdtt не трогали.
+
+## Последние изменения (PC откат к git 2026-09-15)
+
+По просьбе: все локальные правки ПК (connectPolicy, overlay, 4с public, правки
+main.js/configSync/MainScreen/tsconfig) сняты `git restore` + удалены untracked.
+HEAD `be89f2c` (MTU server3). Сборка `build-debug-764718` — старая, с overlay;
+нужен новый `build-debug.bat`. Собрано: `pc/build-debug-githead/win-unpacked/` (`SilentVPN-Admin.bat`), без overlay. Backend-классификатор доступности не откатывали.
+
+## Последние изменения (доступность Улья: ложный OK 2026-09-15)
+
+Скрин панели: Улей локально ok, из РФ API TCP и TLS 0/2 timeout, ping 1/2, баннер
+«блокировок нет». Не падение сервиса (онлайн 54, wdtt слушает) и не «дырка в коде
+Улья» — TCP к `132.243.234.162` из РФ/домашней сети не устанавливается (с ПК
+таймаут 22/80/443/8443), ICMP частично, соты `:22`/`:9100` живы. Классификатор
+ждал «другой канал all_ok» или полный blackhole; ping 1/2 не то и не другое.
+Фикс: `port_block`, если TCP all_failed, а ping не all_failed. Тест
+`test_hive_https_timeout_from_rf_is_port_block_even_if_ping_partial`, 41/41.
+Деплой с этой сети не прошёл: SSH Улья таймаут. wdtt не трогали.
+
+## Последние изменения (PC Wi‑Fi overlay как Android LTE 2026-09-15)
+
+Откат 8с эскалатора на капчу: он рвал VK Calls до набора воркеров. Public hive по-прежнему
+4с + cell-agent. Если Улей напрямую недоступен — bootstrap overlay и API через 10.66.66.1
+(конфиг/хеши/подписка), как LTE на Android; основной vkcalls не трогаем. Тест:
+`pc/test/connectPolicy.test.js`. Debug: `pc/build-debug-764718/win-unpacked/` (`SilentVPN-Admin.bat`).
+
 ## Последние изменения (дашборд онлайн прыгал 78/102 2026-09-15)
 
 Не два контейнера: один `backend-api-1`, uvicorn `--workers 2`. Light-полл дашборда

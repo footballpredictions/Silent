@@ -666,16 +666,39 @@ def apply_manifest_peers(manifest: dict | None = None) -> int:
     return applied
 
 
+def queen_api_bases(queen_ip: str = "", api_url: str = "") -> list[str]:
+    """Базы сота→Улей: сначала :8000 по IP (CELL_API), nip.io только запасной."""
+    bases: list[str] = []
+    ip = (queen_ip or "").strip()
+    if ip:
+        bases.append(f"http://{ip}:8000")
+    api = (api_url or "").strip().rstrip("/")
+    if api and api not in bases:
+        bases.append(api)
+    return bases
+
+
 def queen_health_urls(queen_ip: str = "", api_url: str = "") -> list[str]:
     """Сначала прямой IP Улья (без nip.io), потом публичный URL."""
     urls: list[str] = []
-    ip = (queen_ip or "").strip()
-    if ip:
-        urls.append(f"http://{ip}:8000/health")
-    api = (api_url or "").strip().rstrip("/")
-    if api and api not in urls:
-        urls.append(f"{api}/health")
+    for base in queen_api_bases(queen_ip, api_url):
+        for path in ("/health", "/api/health"):
+            u = f"{base}{path}"
+            if u not in urls:
+                urls.append(u)
     return urls
+
+
+def queen_proxy_urls(
+    rest: str,
+    query: str = "",
+    queen_ip: str = "",
+    api_url: str = "",
+) -> list[str]:
+    """Те же базы, что health: /api/{rest} сначала на IP:8000."""
+    path = (rest or "").lstrip("/")
+    q = f"?{query}" if query else ""
+    return [f"{base}/api/{path}{q}" for base in queen_api_bases(queen_ip, api_url)]
 
 
 def apply_queen_health_tick(
@@ -789,6 +812,8 @@ def create_standby_app() -> FastAPI:
         allowed = bool(dev.get("vpn_allowed", True))
         return InternalOnlineResponse(ok=True, subscription_active=allowed, vpn_allowed=allowed)
 
+    # Туннель 10.66.66.1 при standby DNAT: живые login/оплата с Улья, не 404.
+    mount_failover_routes(standby)
     return standby
 
 
@@ -871,7 +896,7 @@ def is_public_failover_path(rest: str) -> bool:
     if not path or path.startswith("admin") or path.startswith("vpn/internal"):
         return False
     head = path.split("/", 1)[0]
-    return head in ("vpn", "auth", "payments", "health")
+    return head in ("vpn", "auth", "payments", "health", "users", "updates")
 
 
 def _snapshot_theme() -> dict:
@@ -896,11 +921,14 @@ def _snapshot_hive_meta() -> dict:
 
 
 async def _proxy_queen(request: Request, rest: str) -> Response:
-    if not HIVE_API_URL:
+    urls = queen_proxy_urls(
+        rest,
+        query=request.url.query or "",
+        queen_ip=HIVE_QUEEN_IP,
+        api_url=HIVE_API_URL,
+    )
+    if not urls:
         raise HTTPException(status_code=503, detail="HIVE_API_URL not set")
-    url = f"{HIVE_API_URL}/api/{rest}"
-    if request.url.query:
-        url = f"{url}?{request.url.query}"
     headers = {}
     for k, v in request.headers.items():
         lk = k.lower()
@@ -909,11 +937,21 @@ async def _proxy_queen(request: Request, rest: str) -> Response:
         headers[k] = v
     body = await request.body()
     timeout = httpx.Timeout(20.0, connect=8.0)
+    last_exc: Exception | None = None
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-        r = await client.request(request.method, url, headers=headers, content=body)
-    skip = {"transfer-encoding", "connection", "content-encoding"}
-    out_headers = {k: v for k, v in r.headers.items() if k.lower() not in skip}
-    return Response(content=r.content, status_code=r.status_code, headers=out_headers)
+        for url in urls:
+            try:
+                r = await client.request(request.method, url, headers=headers, content=body)
+            except Exception as e:
+                last_exc = e
+                logger.debug("queen proxy %s: %s", url, e)
+                continue
+            skip = {"transfer-encoding", "connection", "content-encoding"}
+            out_headers = {k: v for k, v in r.headers.items() if k.lower() not in skip}
+            return Response(content=r.content, status_code=r.status_code, headers=out_headers)
+    if last_exc:
+        raise last_exc
+    raise HTTPException(status_code=503, detail="HIVE_API_URL not set")
 
 
 def _snapshot_response(rest: str) -> JSONResponse:
@@ -940,15 +978,12 @@ def mount_failover_routes(app: FastAPI) -> None:
     async def hive_public_failover(rest: str, request: Request):
         if not is_public_failover_path(rest):
             raise HTTPException(status_code=404, detail="not found")
+        # Живой proxy сота→Улей :8000 всегда первым. Health только для DNAT туннеля,
+        # не для оплаты/логина/подписки на публичном :9100.
         try:
-            healthy = await check_queen_health()
-        except Exception:
-            healthy = False
-        if healthy:
-            try:
-                return await _proxy_queen(request, rest)
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.warning("failover proxy: %s", e)
+            return await _proxy_queen(request, rest)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning("failover proxy: %s", e)
         return _snapshot_response(rest)

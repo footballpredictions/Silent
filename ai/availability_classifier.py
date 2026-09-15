@@ -413,8 +413,17 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
                 and c != CHANNEL_DNS
                 and (snap.ru_view(c) is not None and snap.ru_view(c).all_ok)  # type: ignore[union-attr]
             ]
-            if not alive:
-                continue  # это blackhole, его считает отдельное правило
+            ping = snap.ru_view(CHANNEL_PING)
+            # Ping 1/2 не all_ok — «живых» каналов нет, но IP не blackhole.
+            # Раньше continue ждал blackhole, а blackhole требует all_failed на ВСЕХ
+            # каналах включая ping → дыра и ложный KIND_OK.
+            if not alive and ping is not None and ping.all_failed:
+                continue
+            live_desc = (
+                ", ".join(channel_title(c) for c in alive)
+                if alive
+                else "ICMP ping с части нод проходит — IP не заглушен целиком"
+            )
             out.append(
                 _verdict(
                     snap,
@@ -423,7 +432,7 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
                     summary=f"Порт {port or '?'} ({channel_title(channel)}) режется, сам IP доступен.",
                     evidence=[
                         f"{channel_title(channel)} мертв на всех {agg.total} нодах: {_fail_desc(agg)}.",
-                        f"Живые каналы того же IP: {', '.join(channel_title(c) for c in alive)}.",
+                        f"Живые каналы того же IP: {live_desc}.",
                         f"Локально порт {port or '?'} отвечает.",
                     ],
                     channel=channel,

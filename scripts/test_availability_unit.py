@@ -192,6 +192,26 @@ def test_port_block_when_one_port_dies_and_others_live():
     assert "DNAT" in " ".join(port_block[0].fixes)
 
 
+def test_hive_https_timeout_from_rf_is_port_block_even_if_ping_partial():
+    """Скрин 2026-09-15: локально API/TLS ok, из РФ TCP+TLS 0/2 timeout, ping 1/2, DNS 2/2.
+
+    Классификатор ждал «другой канал all_ok» или полный blackhole. Ping 1/2 не all_ok
+    и не all_failed → дыра: баннер «блокировок нет», хотя HTTPS из РФ мёртв.
+    """
+    snap = _queen()
+    snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=1, failed=1)
+    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, failed=2)
+    snap.ru[CHANNEL_API_TLS] = _agg(CHANNEL_API_TLS, failed=2)
+    snap.ru[CHANNEL_DNS] = _agg(CHANNEL_DNS, ok=2, ips=("132.243.234.162",))
+    verdicts = classify_target(snap)
+    kinds = {v.kind for v in verdicts}
+    assert KIND_PORT_BLOCK in kinds, kinds
+    assert KIND_OK not in kinds
+    assert report_status(verdicts) == "blocked"
+    port = [v for v in verdicts if v.kind == KIND_PORT_BLOCK][0]
+    assert "443" in port.summary or "API" in port.summary
+
+
 def test_ai_exit_closed_agent_port_is_not_dpi():
     """Сота 3: :9100 закрыт фаерволом (только Улей), ping жив — гигиена, не ТСПУ."""
     snap = TargetSnapshot(

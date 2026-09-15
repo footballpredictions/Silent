@@ -37,6 +37,18 @@ def load_env() -> None:
         _load_dotenv(path)
 
 
+def ssh_hosts(primary: str | None = None) -> list[str]:
+    """Сначала публичный Улей, при TCP-блоке из РФ — шлюз туннеля 10.66.66.1:22."""
+    load_env()
+    first = (primary or os.environ.get("DEPLOY_HOST") or "132.243.234.162").strip()
+    tunnel = (os.environ.get("DEPLOY_TUNNEL_HOST") or "10.66.66.1").strip()
+    out: list[str] = []
+    for host in (first, tunnel):
+        if host and host not in out:
+            out.append(host)
+    return out
+
+
 def ssh_config() -> tuple[str, str, str]:
     load_env()
     host = os.environ.get("DEPLOY_HOST", "132.243.234.162")
@@ -51,13 +63,31 @@ def ssh_config() -> tuple[str, str, str]:
 
 
 def connect(timeout: int = 30):
+    import socket
+
     import paramiko
 
-    host, user, password = ssh_config()
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(host, username=user, password=password, timeout=timeout)
-    return client
+    hosts = ssh_hosts()
+    _, user, password = ssh_config()
+    last_err: BaseException | None = None
+    for host in hosts:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            client.connect(host, username=user, password=password, timeout=timeout)
+            if host != hosts[0]:
+                print(f"SSH via tunnel host {host} (public hive TCP blocked)")
+            return client
+        except (TimeoutError, socket.timeout, OSError) as e:
+            last_err = e
+            print(f"SSH {host}:22 failed: {type(e).__name__}")
+            try:
+                client.close()
+            except Exception:
+                pass
+    if last_err:
+        raise last_err
+    raise SystemExit("SSH: no hosts")
 
 
 def run(client, cmd: str, timeout: int = 300) -> str:

@@ -74,8 +74,11 @@ def test_gc_throttles_within_window():
 
 def test_failover_paths_allow_client_api_not_admin():
     assert sr.is_public_failover_path("vpn/theme")
+    assert sr.is_public_failover_path("vpn/sync-state")
     assert sr.is_public_failover_path("auth/login")
     assert sr.is_public_failover_path("payments/plans")
+    assert sr.is_public_failover_path("users/me")
+    assert sr.is_public_failover_path("updates/check")
     assert not sr.is_public_failover_path("admin/stats")
     assert not sr.is_public_failover_path("vpn/internal/online")
 
@@ -83,7 +86,24 @@ def test_failover_paths_allow_client_api_not_admin():
 def test_queen_health_urls_prefer_direct_ip():
     urls = sr.queen_health_urls("132.243.234.162", "https://132-243-234-162.nip.io")
     assert urls[0] == "http://132.243.234.162:8000/health"
-    assert urls[1] == "https://132-243-234-162.nip.io/health"
+    assert "http://132.243.234.162:8000/api/health" in urls
+    assert urls[-1].startswith("https://132-243-234-162.nip.io")
+
+
+def test_queen_proxy_urls_use_ip8000_not_nipio_first():
+    urls = sr.queen_proxy_urls(
+        "vpn/sync-state",
+        query="hashes_since=1",
+        queen_ip="132.243.234.162",
+        api_url="https://132-243-234-162.nip.io",
+    )
+    assert urls[0] == "http://132.243.234.162:8000/api/vpn/sync-state?hashes_since=1"
+    assert any(u.startswith("https://132-243-234-162.nip.io/api/vpn/sync-state") for u in urls)
+
+
+def test_queen_proxy_urls_work_without_nipio():
+    urls = sr.queen_proxy_urls("payments/plans", queen_ip="1.2.3.4", api_url="")
+    assert urls == ["http://1.2.3.4:8000/api/payments/plans"]
 
 
 def test_one_health_fail_does_not_enter_standby():
@@ -149,11 +169,16 @@ def test_heal_does_not_steal_from_other_live_peer():
     allowed = {extra: "(none)", other: "10.66.0.71/32"}
     hs = {extra: 20.0, other: 15.0}
     assert sr.extra_heal_assignments(pwd, allowed, hs) == []
+
+
+if __name__ == "__main__":
     test_peer_host_allowed_always_slash32()
     test_gc_keeps_manifest_key_drops_never_and_stale()
     test_gc_throttles_within_window()
     test_failover_paths_allow_client_api_not_admin()
     test_queen_health_urls_prefer_direct_ip()
+    test_queen_proxy_urls_use_ip8000_not_nipio_first()
+    test_queen_proxy_urls_work_without_nipio()
     test_one_health_fail_does_not_enter_standby()
     test_three_health_fails_enter_standby()
     test_health_ok_restores_queen_dnat()

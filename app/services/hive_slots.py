@@ -176,3 +176,24 @@ def node_online_shown(
     if wg_live is not None:
         return max(0, int(wg_live))
     return max(0, int(db_online or 0))
+
+
+def pick_dashboard_shown_online(
+    *,
+    ram: int | None,
+    shared: int | None,
+    stale_ram: int | None,
+    soft: bool,
+) -> int | None:
+    """Одно WG-число для дашборда/шапки при uvicorn --workers 2.
+
+    ram — кэш этого воркера; shared — Redis (общий); stale_ram — просроченный RAM
+    только для light-полла. None = нужно обновить по WG live, не брать is_connected из БД.
+    """
+    if ram is not None:
+        return max(0, int(ram))
+    if shared is not None:
+        return max(0, int(shared))
+    if soft and stale_ram is not None:
+        return max(0, int(stale_ram))
+    return None

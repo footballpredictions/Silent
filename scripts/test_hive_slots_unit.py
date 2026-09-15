@@ -16,6 +16,7 @@ from app.services.hive_slots import (  # noqa: E402
     node_online_shown,
     node_title_for_slot,
     parse_manual_slot,
+    pick_dashboard_shown_online,
     slot_for_cell,
     slot_title,
 )
@@ -105,6 +106,26 @@ def test_dashboard_online_is_sum_of_hive_cards():
     assert db_total != 83
 
 
+def test_light_poll_uses_shared_wg_not_db():
+    """2 uvicorn worker: light-полл не прыгает на is_connected из БД (79 vs 102)."""
+    db_total = 79
+    wg_live = 102
+    assert pick_dashboard_shown_online(ram=wg_live, shared=None, stale_ram=None, soft=True) == wg_live
+    assert pick_dashboard_shown_online(ram=None, shared=wg_live, stale_ram=None, soft=True) == wg_live
+    assert pick_dashboard_shown_online(ram=None, shared=None, stale_ram=wg_live, soft=True) == wg_live
+    assert pick_dashboard_shown_online(ram=None, shared=None, stale_ram=None, soft=True) is None
+    assert pick_dashboard_shown_online(ram=None, shared=None, stale_ram=None, soft=True) != db_total
+    assert pick_dashboard_shown_online(ram=None, shared=None, stale_ram=wg_live, soft=False) is None
+
+    hive = (ROOT / "app" / "services" / "hive_service.py").read_text(encoding="utf-8")
+    start = hive.index("async def vpn_online_shown_total")
+    end = hive.index("\nasync def ", start + 10)
+    fn = hive[start:end]
+    assert "pick_dashboard_shown_online" in fn
+    assert "hive:vpn_online_shown" in hive
+    assert fn.index("refresh_online_shown_cache") < fn.index("connected_devices_by_cell")
+
+
 def test_manual_server_select_has_no_online_cap():
     """Ручной Сервер 2/3 не смотрит max_online — лимит в карточке Улья не режет connect."""
     hive = (ROOT / "app" / "services" / "hive_service.py").read_text(encoding="utf-8")
@@ -176,6 +197,7 @@ if __name__ == "__main__":
     test_device_on_node_default_server1_stays_on_cell()
     test_node_online_shown_is_wg_live()
     test_dashboard_online_is_sum_of_hive_cards()
+    test_light_poll_uses_shared_wg_not_db()
     test_manual_server_select_has_no_online_cap()
     test_assign_online_unique_partition()
     print("ok")

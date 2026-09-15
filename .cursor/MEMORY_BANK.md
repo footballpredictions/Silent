@@ -5,6 +5,101 @@
 > сначала читать его, потом код.
 > **Игры / Dota / Steam SDR (UDP) — `backend/GAME_EXIT_NODE.md` (Сота 2).**
 
+## Последние изменения (дашборд онлайн прыгал 78/102 2026-09-15)
+
+Не два контейнера: один `backend-api-1`, uvicorn `--workers 2`. Light-полл дашборда
+на воркере без RAM-кэша брал `is_connected` из БД (~78), другой — WG live (~102).
+Фикс: общее число в Redis `hive:vpn_online_shown`; пустой кэш → refresh WG, не БД.
+Тест: `python scripts/test_hive_slots_unit.py`. Деплой `deploy_stable.py`: health 37 мс,
+wdtt active, queen_wg_kick_20s=0. Живой poll `/stats?light=1` 20× — одно число, spread 0.
+
+## Последние изменения (Android ignore GETCONF MTU 1280 2026-09-14)
+
+На Android везде было 1280: GETCONF с wdtt шлёт `MTU=1280`, Helper брал из conf.
+Теперь apply **игнорирует** conf/GETCONF: слот из prefs — server3→**1420**, иначе
+**1200** (как PC). Debug APK пересобран: `android/SilentVPN-debug.apk`.
+
+## Последние изменения (MTU 1420 только Сервер 3 2026-09-14)
+
+Откат глобального 1420: **1420 только server3** (Сота 2 / игры), на 1/2/4
+снова **1200**. PC `resolveWgMtu`, Android `WireGuardConfigBuilder.mtuForConfig`
++ Helper читает MTU из conf. Тест `WireGuardMtuPolicyTest` OK.
+Debug APK: `android/SilentVPN-debug.apk`.
+PC debug: `pc/build-debug-152195/win-unpacked/` (`SilentVPN-Admin.bat`).
+Лог: `MTU=1420 (Сервер 3 / Steam SDR)` только на 3-м слоте.
+
+## Последние изменения (Android MTU реально 1420 2026-09-14)
+
+В конфиге уже было `MTU = 1420`, но `WireGuardHelper` при apply
+форсил **1200** («Telegram parity»). Исправлено: apply ставит **1420**.
+Debug Log: `MTU=1420 (Steam SDR path)`.
+Debug APK: `android/SilentVPN-debug.apk` (пересобран).
+
+## Последние изменения (Android БС: Ozon/WB мимо VPN 2026-09-14)
+
+Пользователь в БС не отмечал Ozon/Wildberries — приложения всё равно видели VPN
+на серверах 1/3/4; на сервере 2 IP не в блоклисте магазинов. Корень: пустой БС
+сводился к full tunnel, плюс `includeApplications` на этом VpnService ненадёжен.
+Теперь БС = тот же `excludeApplications`, что ЧС: все лаунчер/user пакеты минус
+галочки. Пустой БС = все такие приложения мимо VPN. ПК: убран fail-safe «пустой БС
+= весь трафик в туннель». Тест: `unchecked ozon and wildberries leave the tunnel`.
+Debug APK: `android/SilentVPN-debug.apk`. **Приёмка ок** (пользователь 2026-09-14).
+
+## Последние изменения (Android БС исключений 2026-09-14)
+
+Белый список приложений в UI сохранялся, но в туннель не шёл: `resolveAppTunnelPolicy`
+всегда отдавал ЧС (full tunnel + Silent/VK out). Поэтому ЧС работал на серверах 1/3/4,
+а БС казался сломанным; на сервере 2 полный туннель «и так ок» — казалось, что БС жив.
+Фикс: `AppTunnelRouting` — БС = `includeApplications` (без Silent/VK), пустой БС = ЧС.
+ПК уже инвертировал список (`resolveBypassExePaths`). Тесты: `AppTunnelRoutingTest`,
+PC `exclusions.test.js` 26/26. Debug APK: `android/SilentVPN-debug.apk`.
+
+## Последние изменения (OpenWrt: вход Silent только с кабеля 2026-09-14)
+
+Панель `{lan}.silent.vpn` и CGI API закрыты для Wi‑Fi-клиентов (`iw station`).
+LuCI по IP с Wi‑Fi не трогали. На лендинге блок «Вход» поправлен локально, Pages не пушили.
+
+## Последние изменения (OpenWrt: spass 2026-09-14)
+
+Бинарь обхода — `/usr/bin/spass` (Silent + pass, без V: тихий проход).
+В спойлере лендинга указано имя `spass`. Pages не пушили.
+
+## Последние изменения (OpenWrt: скрипт удаления 2026-09-14)
+
+Ручной `rm` оставлял `svpath`, firewall и `silent-entry` в uhttpd. Теперь
+`openwrt-uninstall.sh` сам стопает VPN, чистит UCI/nft/DNS и снимает пакеты.
+На лендинге одна wget-команда, как установка.
+
+## Последние изменения (OpenWrt: opkg и apk 2026-09-14)
+
+Установка сама смотрит версию: 23/24 → `opkg`, 25+ → `apk`. Команда на лендинге
+только ставит `wget` (им же скачиваем скрипт); WireGuard и остальное — уже скрипт.
+
+## Последние изменения (лендинг OpenWrt: одна команда 2026-09-14)
+
+Карточка «Роутер»: иконка с антеннами, бейдж `23.05+`, процессоры в мета.
+Страница: SSH → одна `wget && sh` → вход. Пакет ставит wdtt сам, без WinSCP
+и без отдельного бинаря. На Pages пока не пушили.
+
+## Последние изменения (лендинг: страница OpenWrt 2026-09-14)
+
+Карточка «Роутер» рядом с Linux. Клик не скачивает файл — открывает
+`#openwrt`: WinSCP в `/tmp`, `install.sh deps` / `install`, вход на
+`{lan-ip}.silent.vpn`. На GitHub Pages пока не пушили.
+
+## Последние изменения (QR убран с ПК и OpenWrt 2026-09-14)
+
+На экране входа ПК/роутера QR не было; удалены хвосты: QrLoginPanel,
+encoder, qr-matrix.js, зависимости qrcode/jsqr. QR остаётся только на Smart TV.
+
+## Последние изменения (OpenWrt универсальный tar 2026-09-14)
+
+Сборка `python scripts/build_release.py` →
+`dist/silent-vpn-openwrt-1.0.165.tar.gz` (shell+web, `PKGARCH=all`, любой CPU).
+На роутере: `sh install.sh deps` затем `sh install.sh install` (или одна `sh install.sh`).
+Панель `{lan-ip}.silent.vpn` → логин Silent → тумблер.
+Залито в `origin/openwrt` (`602ac93`). Архив собирается локально, в git не лежит (`dist/`).
+
 ## Последние изменения (QR ТВ вход принят 2026-09-14)
 
 QR только Smart TV: телефон сканирует → confirm → ТВ входит.

@@ -36,16 +36,21 @@ from app.services.hive_slots import (
     is_manual_server_slot,
     node_online_shown,
     parse_manual_slot,
+    pick_dashboard_shown_online,
     slot_for_cell,
     slot_title,
 )
 
 logger = logging.getLogger(__name__)
 
-# Дашборд и шапка Улья: одно число = сумма WG live по нодам (кэш с /hive/cells).
+# Дашборд и шапка Улья: одно число = сумма WG live по нодам.
+# RAM на воркер + Redis — иначе uvicorn --workers 2 прыгает WG vs is_connected из БД.
 _SHOWN_ONLINE_AT = 0.0
 _SHOWN_ONLINE_N = 0
 _SHOWN_ONLINE_TTL_SEC = 20.0
+_SHOWN_ONLINE_SOFT_SEC = 90.0
+_REDIS_SHOWN_KEY = "hive:vpn_online_shown"
+_shown_redis = None
 
 CELL_STATUSES_ACTIVE = frozenset({"active"})
 CELL_STATUSES_ASSIGNABLE = frozenset({"active"})
@@ -443,10 +448,46 @@ async def _list_assignable_cells(db: AsyncSession) -> list[HiveCell]:
     return list(result.scalars().all())
 
 
-def remember_vpn_online_shown(n: int) -> None:
+def _get_shown_redis():
+    global _shown_redis
+    if _shown_redis is None:
+        from redis import asyncio as aioredis
+
+        _shown_redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    return _shown_redis
+
+
+async def _redis_get_shown() -> int | None:
+    try:
+        raw = await _get_shown_redis().get(_REDIS_SHOWN_KEY)
+        if raw is None:
+            return None
+        return max(0, int(raw))
+    except Exception:
+        logger.debug("Hive: shown-online redis get skipped", exc_info=True)
+        return None
+
+
+async def _redis_set_shown(n: int) -> None:
+    try:
+        await _get_shown_redis().set(
+            _REDIS_SHOWN_KEY,
+            str(max(0, int(n))),
+            ex=int(_SHOWN_ONLINE_SOFT_SEC),
+        )
+    except Exception:
+        logger.debug("Hive: shown-online redis set skipped", exc_info=True)
+
+
+def remember_vpn_online_shown_ram(n: int) -> None:
     global _SHOWN_ONLINE_AT, _SHOWN_ONLINE_N
     _SHOWN_ONLINE_N = max(0, int(n))
     _SHOWN_ONLINE_AT = time.monotonic()
+
+
+async def remember_vpn_online_shown(n: int) -> None:
+    remember_vpn_online_shown_ram(n)
+    await _redis_set_shown(n)
 
 
 def cached_vpn_online_shown(*, max_age: float | None = None) -> int | None:
@@ -462,7 +503,7 @@ async def refresh_online_shown_cache() -> int:
     """Собрать онлайн как шапка Улья (WG live) и запомнить для дашборда."""
     rows = await list_cells_with_stats_pooled(http_timeout=2.0)
     total = sum(int(c.get("online_count") or 0) for c in rows)
-    remember_vpn_online_shown(total)
+    await remember_vpn_online_shown(total)
     return total
 
 
@@ -474,19 +515,19 @@ async def vpn_online_shown_total(
 ) -> int:
     """Дашборд «Онлайн» = шапка Улья = сумма карточек (WG live по всем нодам).
 
-    soft=True (light-полл): не бить HTTP по сотам — кэш до soft_max_age или счётчик из БД.
+    soft=True (light-полл): не бить HTTP по сотам, если есть RAM/Redis кэш.
+    Пустой кэш — refresh WG, не is_connected из БД (иначе 2 воркера прыгают ~78/102).
     """
-    cached = cached_vpn_online_shown()
-    if cached is not None:
-        return cached
-    if soft:
-        stale = cached_vpn_online_shown(max_age=soft_max_age)
-        if stale is not None:
-            return stale
-        if db is not None:
-            _, total = await connected_devices_by_cell(db)
-            return int(total or 0)
-        return 0
+    ram = cached_vpn_online_shown()
+    shared = await _redis_get_shown()
+    stale = cached_vpn_online_shown(max_age=soft_max_age) if soft else None
+    picked = pick_dashboard_shown_online(
+        ram=ram, shared=shared, stale_ram=stale, soft=soft
+    )
+    if picked is not None:
+        if ram is None:
+            remember_vpn_online_shown_ram(picked)
+        return picked
     try:
         return await refresh_online_shown_cache()
     except Exception as e:
@@ -988,7 +1029,7 @@ async def _assemble_cells_with_stats(
                 capacity=capacity,
             )
         )
-    remember_vpn_online_shown(sum(int(c.get("online_count") or 0) for c in out))
+    await remember_vpn_online_shown(sum(int(c.get("online_count") or 0) for c in out))
     return out
 
 
@@ -1032,9 +1073,19 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
         if online >= cap:
             full_cells += 1
     wdtt_nodes = len(assignable)
-    shown = cached_vpn_online_shown()
+    ram = cached_vpn_online_shown()
+    shared = await _redis_get_shown()
+    shown = pick_dashboard_shown_online(
+        ram=ram,
+        shared=shared,
+        stale_ram=cached_vpn_online_shown(max_age=_SHOWN_ONLINE_SOFT_SEC),
+        soft=True,
+    )
     if shown is None:
-        shown = int(total_online or 0)
+        try:
+            shown = await refresh_online_shown_cache()
+        except Exception:
+            shown = int(total_online or 0)
     return {
         "queen_load": queen_load,
         "queen_accepting_vpn": accepting,

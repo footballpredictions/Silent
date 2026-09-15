@@ -26,8 +26,20 @@ Agent приступает к **первой невыполненной** зад
 - [x] ТВ poll на public API (как телефон) + не cancel своей poll-job до goToMain
 - [x] publicHiveApi в обход getServerUrl; 403 poll не молчит; JWT даже без слота устройства
 - [x] Приёмка: QR → confirm с телефона → ТВ входит
+- [x] Хвосты QR на ПК/OpenWrt удалены (вкладки уже не было)
+- [x] Хвосты QR на ПК/OpenWrt удалены (вкладки уже не было)
 
 ## Открытые задачи
+
+### Android БС исключений (2026-09-14)
+
+ЧС работал, БС на теле не применялся (no-op full tunnel). На сервере 2 маскировалось.
+
+- [x] Корень: `resolveAppTunnelPolicy` всегда `whitelist=false`
+- [x] `AppTunnelRouting` + тесты; БС = includeApplications без Silent/VK
+- [x] Приёмка на сервере 2 маскирует баг (IP соты не в блоклисте Ozon/WB)
+- [x] БС через exclude complement (как рабочий ЧС); пустой БС ≠ full tunnel
+- [x] Приёмка: БС без галочек на Ozon/WB — магазины не видят VPN
 
 ### Game exit — Сота 2 / Dota UDP (2026-09-12)
 
@@ -51,9 +63,14 @@ Agent приступает к **первой невыполненной** зад
 - [x] Тумблер = Android/PC (тень, змейка по краю); preview — живой вход на Улей
 - [x] Док как у клиентов: Бессрочно / Оформить подписку; без 9999 дн. у админа
 - [x] Оплата YuMoney без Referer (как Android), не с 127.0.0.1
-- [ ] Приёмка на живом OpenWrt 23.05/24.10 (opkg + install.sh, логин, тумблер, LAN в туннеле)
-- [ ] Бинарь `wdtt-client` под типичные arch роутера (aarch64 / arm / mipsel)
-- [ ] Кнопка на лендинге / слот в админке «Обновления», когда будет ipk
+- [x] Универсальный `silent-vpn-openwrt-*.tar.gz` (все arch) + `install.sh deps` / `install`
+- [x] Кнопка «Роутер» на лендинге → страница `#openwrt` (без скачивания с главной)
+- [x] Одна команда wget|sh; пакет сам ставит wdtt под arch (aarch64/arm/mipsel/x86_64)
+- [x] opkg (23/24) или apk (25+): скрипт сам выбирает по версии OpenWrt
+- [x] Удаление одной командой (`openwrt-uninstall.sh`): файлы, UCI WG/firewall/DNS, пакеты
+- [x] Вход в веб Silent только по LAN-кабелю, не с Wi‑Fi (LuCI по IP с Wi‑Fi ок)
+- [ ] Приёмка на живом OpenWrt 23.05+ (команда, логин, тумблер, LAN в туннеле)
+- [ ] Слот в админке «Обновления» / OTA ipk, когда появится пакет
 
 ### Admin-debug quality monitor (Android, 2026-09-11) — СНЯТО
 

@@ -8,6 +8,7 @@ import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.policy.AppExclusionsPersist
 import com.silent.vpn.policy.AppTunnelRouting
+import com.silent.vpn.policy.BootstrapTunnelAppsPolicy
 import com.silent.vpn.policy.GoogleAuthTunnelPolicy
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.util.PaymentBrowser
@@ -79,6 +80,19 @@ fun resolveBootstrapIncludedApps(context: Context): Set<String> {
     }
     DebugLog.i("BootstrapVpn", "included apps: ${out.size} (${out.joinToString { it.substringAfterLast('.') }})")
     return out
+}
+
+/** Bootstrap: полный туннель, VK наружу. includeApplications на OEM не работает. */
+fun resolveBootstrapExcludedApps(context: Context): Set<String> {
+    val pm = context.packageManager
+    val installedVk = VK_TUNNEL_PACKAGES.filter { isPackageInstalled(pm, it) }.toSet()
+    val excluded = BootstrapTunnelAppsPolicy.excludeFromTunnel(
+        vkPackages = VK_TUNNEL_PACKAGES,
+        installedPackages = installedVk + context.packageName,
+        selfPackage = context.packageName,
+    )
+    DebugLog.i("BootstrapVpn", "exclude VK from full tunnel: ${excluded.size}")
+    return excluded
 }
 
 data class AppTunnelPolicy(

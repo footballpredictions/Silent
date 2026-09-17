@@ -19,6 +19,7 @@ import com.silent.vpn.data.DnsPreset
 import com.silent.vpn.data.DnsSettings
 import com.silent.vpn.data.SilentPrefs
 import com.silent.vpn.data.SilentRepository
+import com.silent.vpn.policy.Ipv6LeakPolicy
 import com.silent.vpn.policy.SiblingVpnPolicy
 import com.silent.vpn.service.SilentGoBackendVpnService
 import com.silent.vpn.service.SiblingVpnCleanup
@@ -51,7 +52,7 @@ import java.io.ByteArrayInputStream
 /**
 
  * WireGuard: split-tunnel (сервер/TURN вне WG), VK — excludeApplications.
- * Bootstrap: includeApplications (Silent + браузеры + почта + YuMoney/Сбер), AllowedIPs → API + backend HTTPS.
+ * Bootstrap: полный туннель minus VK (includeApplications на OEM no-op). AllowedIPs на соте 0.0.0.0/0.
  * apiOverlayMode: кратко AllowedIPs = 10.66.66.0/24 (только bootstrap).
  * Main VPN: AllowedIPs = 0.0.0.0/0; дыры сайтов — excludeRoute (API 33+).
  * Приложения: ЧС и БС = excludeApplications (БС = complement установленных).
@@ -100,6 +101,8 @@ class WireGuardHelper(context: Context) {
             sharedTunnel = null
             lastAppliedSemanticKey = null
             lastExcludeRouteKey = null
+            SilentGoBackendVpnService.vpnExcludeRouteCidrs = emptyList()
+            SilentGoBackendVpnService.blockUnderlyingNetwork = false
         }
     }
 
@@ -135,6 +138,12 @@ class WireGuardHelper(context: Context) {
             val excludeRouteCidrs =
                 if (!apiOverlayMode && !isBootstrap) holeCidrsForExcludeRoute(excludeIPs) else emptyList()
             SilentGoBackendVpnService.vpnExcludeRouteCidrs = excludeRouteCidrs
+            SilentGoBackendVpnService.blockUnderlyingNetwork =
+                Ipv6LeakPolicy.shouldBlockUnderlyingNetwork(
+                    isBootstrap = isBootstrap,
+                    apiOverlayMode = apiOverlayMode,
+                    includeAppOverlay = includeAppOverlay,
+                )
             val excludeRouteKey = excludeRouteCidrs.sorted().joinToString(",")
             val excludeRouteChanged = excludeRouteKey != lastExcludeRouteKey
 
@@ -205,7 +214,7 @@ class WireGuardHelper(context: Context) {
 
 
             val appPolicyKey = if (isBootstrap && !apiOverlayMode && !includeAppOverlay) {
-                "bootstrap-companion"
+                "bootstrap-full-minus-vk"
             } else {
                 runCatching {
                     val p = resolveAppTunnelPolicy(
@@ -219,7 +228,7 @@ class WireGuardHelper(context: Context) {
             val excludeKey = when {
                 // Bootstrap: TURN-адреса добавляются по мере набора воркеров. Ключ держим
                 // константным, иначе каждый новый адрес пересоздаёт туннель и рвёт воркеры.
-                isBootstrap && !apiOverlayMode && !includeAppOverlay -> "bootstrap-companion"
+                isBootstrap && !apiOverlayMode && !includeAppOverlay -> "bootstrap-full-minus-vk"
                 includeAppOverlay -> "promo-app-in"
                 apiOverlayMode -> "overlay-app-in"
                 mobileApiRoute -> "mobile-api-${excludeIPs.sorted().joinToString(",")}"
@@ -227,7 +236,7 @@ class WireGuardHelper(context: Context) {
             }
 
             val semanticKey =
-                wgSemanticKey(configToApply) + "|ex=$excludeKey|apps=$appPolicyKey|ov=$apiOverlayMode|appin=$includeAppOverlay"
+                wgSemanticKey(configToApply) + "|ex=$excludeKey|apps=$appPolicyKey|ov=$apiOverlayMode|appin=$includeAppOverlay|blk=${SilentGoBackendVpnService.blockUnderlyingNetwork}"
 
             if (sharedTunnel != null && semanticKey.isNotBlank() && semanticKey == lastAppliedSemanticKey) {
 
@@ -260,11 +269,11 @@ class WireGuardHelper(context: Context) {
 
             if (isBootstrap && !apiOverlayMode && !includeAppOverlay) {
                 runCatching {
-                    val included = resolveBootstrapIncludedApps(appContext)
-                    if (included.isNotEmpty()) {
-                        ifaceBuilder.includeApplications(included)
-                        DebugLog.i(TAG, "Bootstrap includeApplications: ${included.size}")
+                    val excluded = resolveBootstrapExcludedApps(appContext)
+                    if (excluded.isNotEmpty()) {
+                        ifaceBuilder.excludeApplications(excluded)
                     }
+                    DebugLog.i(TAG, "Bootstrap full tunnel minus VK exclude=${excluded.size}")
                 }
             } else {
                 val includeAppInTunnel = apiOverlayMode || includeAppOverlay || !SilentRepository.APP_EXCLUDED_FROM_VPN
@@ -572,6 +581,7 @@ class WireGuardHelper(context: Context) {
                 lastAppliedSemanticKey = null
                 lastExcludeRouteKey = null
                 SilentGoBackendVpnService.vpnExcludeRouteCidrs = emptyList()
+                SilentGoBackendVpnService.blockUnderlyingNetwork = false
 
             }
 

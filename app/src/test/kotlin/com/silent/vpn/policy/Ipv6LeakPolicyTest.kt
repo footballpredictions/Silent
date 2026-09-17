@@ -18,4 +18,29 @@ class Ipv6LeakPolicyTest {
         assertFalse(Ipv6LeakPolicy.isWireGuardAllowedIpsSafe("0.0.0.0/0, ::/0"))
         assertFalse(Ipv6LeakPolicy.isWireGuardAllowedIpsSafe("::/0"))
     }
+
+    @Test
+    fun bootstrapBlocksUnderlaySoGmailCannotLeakIpv6() {
+        assertTrue(
+            Ipv6LeakPolicy.shouldBlockUnderlyingNetwork(
+                isBootstrap = true,
+                apiOverlayMode = false,
+                includeAppOverlay = false,
+            ),
+        )
+        assertFalse(
+            Ipv6LeakPolicy.shouldBlockUnderlyingNetwork(
+                isBootstrap = true,
+                apiOverlayMode = true,
+                includeAppOverlay = false,
+            ),
+        )
+        assertFalse(
+            Ipv6LeakPolicy.shouldBlockUnderlyingNetwork(
+                isBootstrap = false,
+                apiOverlayMode = false,
+                includeAppOverlay = false,
+            ),
+        )
+    }
 }

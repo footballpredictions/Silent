@@ -17,6 +17,9 @@ class SilentGoBackendVpnService : GoBackend.VpnService() {
     companion object {
         /** Дыры 0.0.0.0/0 (IP/CIDR) — задаёт WireGuardHelper перед establish(). */
         @Volatile var vpnExcludeRouteCidrs: List<String> = emptyList()
+
+        /** Bootstrap: drop IPv6 underlay, иначе Gmail уходит мимо туннеля. */
+        @Volatile var blockUnderlyingNetwork: Boolean = false
     }
 
     override fun getBuilder(): Builder = SiteBypassVpnBuilder()
@@ -34,6 +37,10 @@ class SilentGoBackendVpnService : GoBackend.VpnService() {
 
     private inner class SiteBypassVpnBuilder : Builder() {
         override fun establish(): ParcelFileDescriptor? {
+            if (blockUnderlyingNetwork) {
+                setBlocking(true)
+                DebugLog.i("GoBackendVpn", "blocking underlay (Gmail IPv6 leak off)")
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val n = applyExcludeRoutes(this, vpnExcludeRouteCidrs)
                 if (n > 0) {

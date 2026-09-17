@@ -45,7 +45,10 @@ import com.silent.vpn.data.UserProfile
 import com.silent.vpn.data.VpnConfig
 import com.silent.vpn.data.VpnHashesResponse
 import com.silent.vpn.policy.ApiRoutePolicy
+import com.silent.vpn.policy.BootstrapOverlayPolicy
 import com.silent.vpn.policy.ConfigSyncSkipPolicy
+import com.silent.vpn.policy.ConnectConfigFetchPolicy
+import com.silent.vpn.policy.EmailConfirmationPolicy
 import com.silent.vpn.policy.OlcrtcSessionPolicy
 import com.silent.vpn.policy.SessionsSyncPolicy
 import com.silent.vpn.policy.UpdateUrlResolver
@@ -1195,13 +1198,14 @@ class MainViewModel @Inject constructor(
             DebugLog.i("MainViewModel", "ephemeral sync throttled")
             return false
         }
-        // Splash (forLaunch): bootstrap всегда, и на Wi‑Fi — иначе полоска крутится без временного VPN.
-        // Вне splash public /me на Wi‑Fi достаточно, ephemeral не поднимаем.
+        // Splash: bootstrap всегда. Вне splash overlay не нужен, если Улей :443 сам отвечает.
+        // Сота :9100 в пробе theme не считается «Улей жив» — иначе тумблер не поднимает
+        // временный VPN и бьёт только в заблокированный nip.io («нет конфига»).
         if (
             apiBlock == null &&
             !forLaunch &&
             !repo.isOnMobileData() &&
-            repo.isPublicBackendReachable(forceProbe = true)
+            repo.isHiveHttpsReachable(forceProbe = true)
         ) {
             return false
         }
@@ -1780,10 +1784,9 @@ class MainViewModel @Inject constructor(
         persistToRepoCache: Boolean = true,
     ): ConnectFetchResult {
         val targetSlot = SilentRepository.normalizePreferredServer(preferredServer)
-        // Splash: сразу ephemeral (Wi‑Fi и LTE) — временный VPN на анимации.
-        // Тумблер ephemeral не вызывает — проверка подписки там через GETCONF/DTLS на main VPN.
+        // Сначала соты :9100. Ephemeral на Улей :56000 — только если публичный API молчит.
         val onMobile = repo.isOnMobileData()
-        val launchEphemeral = forLaunch && allowEphemeral
+        val skipPublic = ConnectConfigFetchPolicy.skipPublicFailover(onMobile, forLaunch)
         repo.clearTunnelApiBase()
         repo.useApiBase(repo.getPublicServerUrl())
         repo.invalidateApiClient()
@@ -1792,104 +1795,55 @@ class MainViewModel @Inject constructor(
         var vpnConfig: VpnConfig? = null
         var apiError: String? = null
         var accessDenied = false
-        var publicFailed = onMobile || launchEphemeral
+        var publicFailed = skipPublic
 
-        if (!onMobile && !launchEphemeral) {
-            coroutineScope {
-                val regJob = async {
-                    runCatching {
-                        repo.getApi().registerDevice(
-                            DeviceRegisterRequest(
-                                repo.getDeviceDisplayName(),
-                                repo.getApiDeviceType(),
-                                fp,
-                                null,
-                                null,
-                                targetSlot,
-                            ),
-                        )
-                    }.getOrNull()
+        if (!skipPublic) {
+            when (
+                val fetched = repo.fetchVpnConfigViaPublicFailover(
+                    fp,
+                    repo.getDeviceDisplayName(),
+                    repo.getApiDeviceType(),
+                    targetSlot,
+                )
+            ) {
+                is SilentRepository.PublicConnectConfig.Denied -> {
+                    accessDenied = true
+                    lastVpnConfigDenied = true
+                    applySubscriptionDeniedFromApi()
+                    apiError = parseError(fetched.body ?: "") ?: subscriptionRequiredMessage()
                 }
-                val hashesJob = async {
-                    runCatching { repo.getApi().getVpnHashes() }.getOrNull()
-                }
-
-                val regRes = regJob.await()
-                if (regRes != null) {
-                    when (regRes.code()) {
-                        402, 403 -> {
-                            accessDenied = true
-                            lastVpnConfigDenied = true
-                            applySubscriptionDeniedFromApi()
-                            apiError = parseError(regRes.errorBody()?.string() ?: "")
-                                ?: subscriptionRequiredMessage()
-                            return@coroutineScope
+                is SilentRepository.PublicConnectConfig.Ok -> {
+                    val candidate = fetched.config
+                    if (isConfigConnectable(candidate) && cachedConfigMatchesPreferred(candidate, targetSlot)) {
+                        repo.setVpnAccessDenied(false)
+                        vpnConfig = candidate
+                        repo.saveSessionDeviceId(candidate.device_id)
+                        _sessionDeviceId.value = candidate.device_id
+                        if (persistToRepoCache) {
+                            repo.cacheVpnConfig(Gson().toJson(candidate))
                         }
-                    }
-                    if (regRes.isSuccessful) {
-                        val candidate = regRes.body()!!
-                        if (isConfigConnectable(candidate) && cachedConfigMatchesPreferred(candidate, targetSlot)) {
-                            repo.setVpnAccessDenied(false)
-                            vpnConfig = candidate
-                            repo.saveSessionDeviceId(candidate.device_id)
-                            _sessionDeviceId.value = candidate.device_id
-                            if (persistToRepoCache) {
-                                repo.cacheVpnConfig(Gson().toJson(candidate))
+                        runCatching { repo.getApi().getVpnHashes() }.getOrNull()?.let { hres ->
+                            if (hres.isSuccessful) {
+                                vpnConfig = mergeHashesIntoConfig(hres, fp, vpnConfig!!)
                             }
-                        } else {
-                            apiError = "Сервер вернул некорректный WireGuard-конфиг. Обновите данные и повторите."
-                            publicFailed = true
                         }
-                    } else if (regRes.code() != 0) {
-                        apiError = parseError(regRes.errorBody()?.string() ?: "") ?: "Ошибка регистрации устройства"
+                    } else {
+                        apiError = "Сервер вернул некорректный WireGuard-конфиг. Обновите данные и повторите."
                         publicFailed = true
                     }
-                } else {
+                }
+                SilentRepository.PublicConnectConfig.Unreachable -> {
                     publicFailed = true
-                }
-
-                if (vpnConfig == null && !accessDenied) {
-                    runCatching {
-                        val cfgRes = repo.getApi().getConfig(fp, targetSlot)
-                        if (cfgRes.isSuccessful) {
-                            val candidate = cfgRes.body()!!
-                            if (isConfigConnectable(candidate) && cachedConfigMatchesPreferred(candidate, targetSlot)) {
-                                repo.setVpnAccessDenied(false)
-                                vpnConfig = candidate
-                                if (persistToRepoCache) {
-                                    repo.cacheVpnConfig(Gson().toJson(candidate))
-                                }
-                            } else {
-                                apiError = "Сервер вернул некорректный WireGuard-адрес. Повторите обновление профиля."
-                                publicFailed = true
-                            }
-                        } else if (cfgRes.code() == 402 || cfgRes.code() == 403) {
-                            apiError = parseError(cfgRes.errorBody()?.string() ?: "")
-                                ?: subscriptionRequiredMessage()
-                            accessDenied = true
-                            lastVpnConfigDenied = true
-                            applySubscriptionDeniedFromApi()
-                        } else {
-                            publicFailed = true
-                        }
-                    }.onFailure {
-                        publicFailed = true
-                        apiError = apiError ?: it.message
-                    }
-                }
-
-                hashesJob.await()?.let { hres ->
-                    if (hres.isSuccessful && vpnConfig != null) {
-                        vpnConfig = mergeHashesIntoConfig(hres, fp, vpnConfig!!)
-                    }
+                    apiError = apiError ?: "Сервер недоступен"
                 }
             }
+            if (vpnConfig == null && !accessDenied) publicFailed = true
             if (forLaunch && vpnConfig != null) setLaunchBootstrapProgress(0.72f)
         } else if (forLaunch) {
             setLaunchBootstrapProgress(0.4f)
         }
 
-        if (!accessDenied && allowEphemeral && (launchEphemeral || (vpnConfig == null && publicFailed))) {
+        if (!accessDenied && allowEphemeral && vpnConfig == null && publicFailed) {
             if (runEphemeralApiBootstrap(context, force = true, forLaunch = forLaunch)) {
                 if (userOwnsMainVpn()) {
                     DebugLog.i("MainViewModel", "ephemeral bootstrap: user took over VPN — keep GETCONF result")
@@ -3397,6 +3351,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             _authLoading.value = true
             _authError.value = null
+            var autoLogin = false
             try {
                 if (_vpnState.value != VpnState.CONNECTED) {
                     _authError.value = "Сначала подключитесь для входа (шаг 1)"
@@ -3411,9 +3366,17 @@ class MainViewModel @Inject constructor(
                         restartBootstrapTimerIfNeeded()
                     } else {
                         repo.saveRememberMe(email, password, rememberMe)
-                        _regEmail.value = email
-                        _regDone.value = true
-                        refreshBootstrapCountdownNow()
+                        val skip = EmailConfirmationPolicy.skipConfirmation(
+                            themeSkip = _theme.value?.skip_email_confirmation == true,
+                            requiredFlag = res.body()?.get("email_confirmation_required"),
+                        )
+                        if (skip) {
+                            autoLogin = true
+                        } else {
+                            _regEmail.value = email
+                            _regDone.value = true
+                            refreshBootstrapCountdownNow()
+                        }
                     }
                 }
                 // Таймер не перезапускаем — те же 2 мин с шага 1, потом VPN отключится.
@@ -3422,9 +3385,12 @@ class MainViewModel @Inject constructor(
                 restartBootstrapTimerIfNeeded()
             } finally {
                 _authLoading.value = false
-                if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED) {
+                if (bootstrapVpnMode && _vpnState.value == VpnState.CONNECTED && !autoLogin) {
                     restartBootstrapTimerIfNeeded()
                 }
+            }
+            if (autoLogin) {
+                login(email, password, rememberMe)
             }
         }
     }
@@ -4366,12 +4332,12 @@ class MainViewModel @Inject constructor(
                 if (vpnConfig == null && hasVpnAccess()) {
                     DebugLog.i(
                         "MainViewModel",
-                        "connect: cache miss/slot=${repo.getPreferredServer()} — fetch /config (no overlay)",
+                        "connect: cache miss/slot=${repo.getPreferredServer()} — fetch /config via hive then cells",
                     )
                     val fetch = fetchVpnConfigForConnect(
                         context,
                         fp,
-                        allowEphemeral = false,
+                        allowEphemeral = true,
                         forLaunch = false,
                     )
                     if (fetch.accessDenied) {
@@ -5585,12 +5551,21 @@ class MainViewModel @Inject constructor(
         return !isIgnoredVpnError(t.message)
     }
 
-    /** Только для bootstrap-VPN на экране входа: хеш + device_id boot:… */
+    /** Только для bootstrap-VPN на экране входа: хеш + device_id boot:… + Endpoint живой соты. */
     private fun bootstrapLaunchConfig(config: VpnConfig): VpnConfig {
         val withHash = applyBootstrapHash(config)
-        if (withHash.device_id.startsWith("boot:")) return withHash
+        val cells = BootstrapOverlayPolicy.cellIpsFromUrls(
+            SilentRepository.BAKED_STANDBY_API_URLS + repo.standbyApiUrlsForOverlay(),
+        )
+        val overlay = BootstrapOverlayPolicy.pick(
+            hiveIp = BootstrapVpnConfig.SERVER_HOST,
+            hivePort = BootstrapVpnConfig.SERVER_PORT,
+            cellIps = cells,
+        )
+        val relocated = withHash.copy(server_ip = overlay.ip, server_port = overlay.port)
+        if (relocated.device_id.startsWith("boot:")) return relocated
         val fp = repo.getOrCreatePreLoginFingerprint()
-        return withHash.copy(device_id = "boot:$fp")
+        return relocated.copy(device_id = "boot:$fp")
     }
 
     private fun applyBootstrapHash(config: VpnConfig): VpnConfig {

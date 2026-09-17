@@ -167,6 +167,20 @@ class ApiServiceMockWebServerTest {
     }
 
     @Test
+    fun registerSkipConfirmFlagStaysStringForMapParser() = runTest {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(201)
+                .setBody(
+                    """{"message":"Регистрация успешна. Можно войти.","email_confirmation_required":"false"}""",
+                ),
+        )
+        val res = api.register(RegisterRequest("a@b.co", "password12", null))
+        assertTrue(res.isSuccessful)
+        assertEquals("false", res.body()!!["email_confirmation_required"])
+    }
+
+    @Test
     fun `getReferral parses code link and stats`() = runTest {
         server.enqueue(
             MockResponse()

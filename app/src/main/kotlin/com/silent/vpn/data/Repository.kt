@@ -10,6 +10,7 @@ import android.util.Log
 import com.silent.vpn.BuildConfig
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.silent.vpn.policy.ApiHostHeaderPolicy
 import com.silent.vpn.policy.ApiRoutePolicy
 import com.silent.vpn.policy.AppExclusionsPersist
 import com.silent.vpn.policy.OlcrtcSessionPolicy
@@ -225,9 +226,10 @@ class SilentRepository @Inject constructor(
                     req = req.newBuilder().header("Authorization", "Bearer $token").build()
                 }
                 req = req.newBuilder().header("X-App-Version", BuildConfig.VERSION_NAME).build()
-                // HTTPS по IP: nginx ждёт Host с nip.io
-                if (req.url.host.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) {
-                    req = req.newBuilder().header("Host", nipHost).build()
+                // HTTPS по IP: nginx ждёт Host nip.io. Туннель 10.66.66.1 — нет
+                // (иначе :80 301 → POST register становится GET → 404).
+                ApiHostHeaderPolicy.nipIoHostHeader(req.url.host, nipHost)?.let { hostHdr ->
+                    req = req.newBuilder().header("Host", hostHdr).build()
                 }
                 chain.proceed(req)
             }
@@ -237,6 +239,8 @@ class SilentRepository @Inject constructor(
         val connectSec = connectTimeoutSec ?: if (baseUrl.contains("10.66.")) 12L else 4L
         val readSec = readTimeoutSec ?: 20L
         builder
+            .followRedirects(false)
+            .followSslRedirects(false)
             .connectTimeout(connectSec, TimeUnit.SECONDS)
             .readTimeout(readSec, TimeUnit.SECONDS)
             .callTimeout((readSec + connectSec + 5).coerceAtMost(180L), TimeUnit.SECONDS)
@@ -287,6 +291,23 @@ class SilentRepository @Inject constructor(
         publicReachableCachedAtMs = now
         Log.i(TAG, "public backend reachable=$ok")
         return ok
+    }
+
+    /** Только HTTPS Улья. Сота :9100 жива при мёртвом 443 — этого мало, чтобы не поднимать overlay. */
+    suspend fun isHiveHttpsReachable(forceProbe: Boolean = false): Boolean {
+        if (isOnMobileData()) return false
+        val hive = listOf(
+            "https://$DEFAULT_SERVER_HOST",
+            getPublicServerUrl().trimEnd('/'),
+        ).filter { it.startsWith("https://", ignoreCase = true) }.distinct()
+        for (base in hive) {
+            val hit = runCatching {
+                val api = buildApi("${base.trimEnd('/')}/", connectTimeoutSec = 3L, readTimeoutSec = 3L)
+                api.getTheme().isSuccessful
+            }.getOrDefault(false)
+            if (hit) return true
+        }
+        return false
     }
 
     fun isOnMobileData(): Boolean = VpnNetworkHelper.isOnMobileData(context)
@@ -585,6 +606,8 @@ class SilentRepository @Inject constructor(
         TunnelHttpPolicy.isTunnelUpstreamError(message)
 
     /** Public HTTPS Улья, затем standby-соты (если Улей режут по IP). */
+    fun publicApiFailoverBases(): List<String> = publicApiBases()
+
     private fun publicApiBases(): List<String> {
         return PublicApiFailoverPolicy.orderedPublicBases(
             hiveHttps = listOf("https://$DEFAULT_SERVER_HOST", getPublicServerUrl().trimEnd('/')),
@@ -599,6 +622,8 @@ class SilentRepository @Inject constructor(
         val parsed = raw.split(",").map { it.trim() }.filter { it.isNotBlank() }
         return (parsed + BAKED_STANDBY_API_URLS).distinct()
     }
+
+    fun standbyApiUrlsForOverlay(): List<String> = cachedStandbyApiBases()
 
     private fun tunnelApiBase(): String = "http://$WG_TUNNEL_GATEWAY:8000"
 
@@ -975,13 +1000,8 @@ class SilentRepository @Inject constructor(
             .followSslRedirects(true)
             .addInterceptor { chain ->
                 var req = chain.request()
-                val host = req.url.host
-                // Host nip.io — только для public HTTPS по IP; tunnel 10.66.66.1 / localhost — как есть.
-                if (host.matches(Regex("""\d+\.\d+\.\d+\.\d+""")) &&
-                    host != tunnelGw &&
-                    !host.startsWith("127.")
-                ) {
-                    req = req.newBuilder().header("Host", nipHost).build()
+                ApiHostHeaderPolicy.nipIoHostHeader(req.url.host, nipHost, tunnelGw)?.let { hostHdr ->
+                    req = req.newBuilder().header("Host", hostHdr).build()
                 }
                 chain.proceed(req)
             }
@@ -1637,15 +1657,117 @@ class SilentRepository @Inject constructor(
         return IPV4_RE.find(dashed)?.value ?: dashed
     }
 
+    sealed class PublicConnectConfig {
+        data class Ok(val config: VpnConfig) : PublicConnectConfig()
+        data class Denied(val code: Int, val body: String?) : PublicConnectConfig()
+        data object Unreachable : PublicConnectConfig()
+    }
+
+    /**
+     * /device/register и /vpn/config: Улей HTTPS, при таймауте — соты :9100.
+     * Иначе тумблер бьёт только в nip.io:443, overlay не стартует (проба theme с соты = «API жив»).
+     */
+    suspend fun fetchVpnConfigViaPublicFailover(
+        fingerprint: String,
+        deviceName: String,
+        deviceType: String,
+        preferredServer: String,
+    ): PublicConnectConfig {
+        for (base in publicApiBases()) {
+            val api = try {
+                buildApi(
+                    "${base.trimEnd('/')}/",
+                    connectTimeoutSec = PublicApiFailoverPolicy.connectTimeoutSec(base),
+                    readTimeoutSec = 12L,
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "public config client $base: ${e.message}")
+                continue
+            }
+            val reg = runCatching {
+                api.registerDevice(
+                    DeviceRegisterRequest(
+                        deviceName,
+                        deviceType,
+                        fingerprint,
+                        null,
+                        null,
+                        preferredServer,
+                    ),
+                )
+            }.getOrNull()
+            when (val code = reg?.code()) {
+                402, 403 -> return PublicConnectConfig.Denied(code, runCatching { reg.errorBody()?.string() }.getOrNull())
+                else -> {
+                    if (reg?.isSuccessful == true) {
+                        val body = reg.body()
+                        if (body != null) {
+                            useApiBase(base)
+                            invalidateApiClient()
+                            Log.i(TAG, "vpn config via $base")
+                            return PublicConnectConfig.Ok(body)
+                        }
+                    }
+                }
+            }
+            if (reg != null && !PublicApiFailoverPolicy.shouldTryNextBase(reg.code())) {
+                val cfg = runCatching { api.getConfig(fingerprint, preferredServer) }.getOrNull()
+                when (val code = cfg?.code()) {
+                    402, 403 -> return PublicConnectConfig.Denied(code, runCatching { cfg.errorBody()?.string() }.getOrNull())
+                    else -> {
+                        if (cfg?.isSuccessful == true && cfg.body() != null) {
+                            useApiBase(base)
+                            invalidateApiClient()
+                            return PublicConnectConfig.Ok(cfg.body()!!)
+                        }
+                    }
+                }
+                continue
+            }
+            val cfg = runCatching { api.getConfig(fingerprint, preferredServer) }.getOrNull()
+            when (val code = cfg?.code()) {
+                402, 403 -> return PublicConnectConfig.Denied(code, runCatching { cfg.errorBody()?.string() }.getOrNull())
+                else -> {
+                    if (cfg?.isSuccessful == true && cfg.body() != null) {
+                        useApiBase(base)
+                        invalidateApiClient()
+                        Log.i(TAG, "vpn/config via $base")
+                        return PublicConnectConfig.Ok(cfg.body()!!)
+                    }
+                }
+            }
+        }
+        return PublicConnectConfig.Unreachable
+    }
+
     suspend fun fetchVpnServers(): VpnServersResponse {
         val fp = getDeviceFingerprint()
-        val res = getApi().getVpnServers(fp, BuildConfig.VERSION_NAME)
-        if (!res.isSuccessful) {
-            throw IllegalStateException("vpn servers HTTP ${res.code()}")
+        var lastError: Exception? = null
+        for (base in publicApiBases()) {
+            try {
+                val api = buildApi(
+                    "${base.trimEnd('/')}/",
+                    connectTimeoutSec = PublicApiFailoverPolicy.connectTimeoutSec(base),
+                )
+                val res = api.getVpnServers(fp, BuildConfig.VERSION_NAME)
+                if (PublicApiFailoverPolicy.shouldTryNextBase(res.code())) {
+                    lastError = IllegalStateException("vpn servers HTTP ${res.code()} on $base")
+                    continue
+                }
+                if (!res.isSuccessful) {
+                    throw IllegalStateException("vpn servers HTTP ${res.code()}")
+                }
+                val body = res.body() ?: VpnServersResponse(getPreferredServer(), emptyList())
+                rememberVpnServerIps(body.servers)
+                useApiBase(base)
+                invalidateApiClient()
+                return body
+            } catch (e: Exception) {
+                lastError = e
+                Log.w(TAG, "vpn/servers on $base: ${e.message}")
+            }
         }
-        val body = res.body() ?: VpnServersResponse(getPreferredServer(), emptyList())
-        rememberVpnServerIps(body.servers)
-        return body
+        throw lastError ?: IllegalStateException("vpn servers unreachable")
     }
 
     /** Сервер отказал в слоте: сота помечена «только админ». */

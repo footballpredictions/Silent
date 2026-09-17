@@ -4,7 +4,7 @@ import java.net.URI
 
 /** Локальный bootstrap-конфиг без HTTPS к бекенду (нужен на мобильном интернете с белыми списками). */
 object BootstrapVpnConfig {
-    private const val SERVER_HOST = "132.243.234.162"
+    const val SERVER_HOST = "132.243.234.162"
     const val SERVER_PORT = 56000
     /** WDTT master password на сервере — для pre-login bootstrap-сессии. */
     private const val WDTT_MASTER_PASSWORD = "hAKfvX0lUTNuXJueD9Zx"

@@ -9,13 +9,22 @@ object AllowedIpsHelper {
         config.replace(Regex("(?m)^AllowedIPs\\s*=\\s*.+$"), "AllowedIPs = $subnet")
 
     /**
-     * Bootstrap: API в WG + HTTPS бекенда (verify/reset из браузера/почты).
-     * TURN/VK — вне AllowedIPs, идут напрямую по мобильной сети.
+     * Overlay на Улей (флапающий UDP): только API + IP Улья — иначе мёртвый handshake
+     * глотает соты :9100 и другие сервера.
+     * Overlay на живую соту: оставляем 0.0.0.0/0 — почта/браузер в полном туннеле.
      */
-    fun patchAllowedIPsForBootstrapAuth(config: String, serverIp: String): String {
-        val ip = serverIp.trim()
-        val allowed = if (ip.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) {
-            "$WG_TUNNEL_SUBNET, $ip/32"
+    fun patchAllowedIPsForBootstrapAuth(
+        config: String,
+        overlayServerIp: String,
+        hiveIp: String = "132.243.234.162",
+    ): String {
+        val overlay = overlayServerIp.trim()
+        val hive = hiveIp.trim()
+        if (overlay.isNotEmpty() && overlay != hive) {
+            return config
+        }
+        val allowed = if (overlay.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) {
+            "$WG_TUNNEL_SUBNET, $overlay/32"
         } else {
             WG_TUNNEL_SUBNET
         }

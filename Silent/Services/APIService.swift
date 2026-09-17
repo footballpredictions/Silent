@@ -74,6 +74,7 @@ struct ThemeData: Decodable {
     var login_qr_confirm_label: String?
     var login_qr_confirm_hint: String?
     var menu_qr_label: String?
+    var skip_email_confirmation: Bool?
 }
 
 struct PaymentResponse: Decodable {
@@ -173,6 +174,9 @@ class APIService: ObservableObject {
             try await refreshTokens()
             return try await requestOnce(path, method: method, body: body, auth: auth, base: base)
         }
+        if PublicApiFailover.shouldTryNextBase(httpCode: httpResp.statusCode) {
+            throw APIError.network
+        }
         guard (200..<300).contains(httpResp.statusCode) else {
             let detail = (try? JSONDecoder().decode([String: String].self, from: data))?["detail"] ?? "Error \(httpResp.statusCode)"
             throw APIError.server(detail)
@@ -221,7 +225,13 @@ class APIService: ObservableObject {
     }
 
     func register(email: String, password: String) async throws {
-        let _: [String: String] = try await request("api/auth/register", method: "POST", body: RegisterRequest(email: email, password: password), auth: false)
+        let resp: [String: String] = try await request("api/auth/register", method: "POST", body: RegisterRequest(email: email, password: password), auth: false)
+        if EmailConfirmationPolicy.skipConfirmation(
+            themeSkip: (try? await getTheme())?.skip_email_confirmation == true,
+            requiredFlag: resp["email_confirmation_required"]
+        ) {
+            _ = try await login(email: email, password: password)
+        }
     }
 
     func getProfile() async throws -> UserProfile {

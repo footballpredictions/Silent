@@ -90,7 +90,7 @@ sv_router_name() {
 }
 
 sv_api_bases() {
-	# VPN поднят — только шлюз туннеля. Иначе Улей, потом соты.
+	# VPN поднят — только шлюз туннеля. Иначе соты :9100, Улей :443 последним.
 	if [ -f "$SV_RUN/path.up" ]; then
 		echo "$SV_TUNNEL_API"
 		return
@@ -99,10 +99,10 @@ sv_api_bases() {
 		echo "$SV_API_OVERRIDE"
 		return
 	fi
-	echo "${SV_PUBLIC_API:-https://132-243-234-162.nip.io}"
-	echo "https://132.243.234.162"
 	echo "http://87.58.213.193:9100"
 	echo "http://78.17.74.27:9100"
+	echo "${SV_PUBLIC_API:-https://132-243-234-162.nip.io}"
+	echo "https://132.243.234.162"
 }
 
 sv_api_base() {

@@ -562,12 +562,23 @@ async function login() {
   }
 }
 
+function skipEmailConfirmation(themeSkip, requiredFlag) {
+  if (themeSkip) return true;
+  if (requiredFlag === false) return true;
+  if (typeof requiredFlag === "string" && requiredFlag.trim().toLowerCase() === "false") return true;
+  return false;
+}
+
 async function register() {
   state.loading = true;
   state.error = "";
   render();
   try {
-    await api.register(state.email, state.password, state.referral);
+    const data = await api.register(state.email, state.password, state.referral);
+    if (skipEmailConfirmation(state.theme && state.theme.skip_email_confirmation, data && data.email_confirmation_required)) {
+      await login();
+      return;
+    }
     state.regDone = true;
   } finally {
     state.loading = false;

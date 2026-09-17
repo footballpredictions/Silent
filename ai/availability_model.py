@@ -431,6 +431,10 @@ class AvailabilityReport:
     vantage: dict[str, Any] = field(default_factory=dict)
     duration_sec: float = 0.0
     warnings: list[str] = field(default_factory=list)
+    # Что агент сделал бы с запасным портом API. Только предложение: исполнителя нет.
+    port_plan: dict[str, Any] = field(default_factory=dict)
+    # Вход через живую соту, если Сервер 4 режут. Туннеля между сотами нет — не исполняем.
+    relay_plan: dict[str, Any] = field(default_factory=dict)
 
     def worst_severity(self) -> str:
         if not self.verdicts:
@@ -448,4 +452,6 @@ class AvailabilityReport:
             "vantage": dict(self.vantage),
             "verdicts": [v.to_dict() for v in self.verdicts],
             "targets": [t.to_dict() for t in self.targets],
+            "port_plan": dict(self.port_plan),
+            "relay_plan": dict(self.relay_plan),
         }

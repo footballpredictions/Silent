@@ -41,6 +41,28 @@ import uuid as uuid_mod
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+async def _email_fallback_bases(db: AsyncSession) -> list[str]:
+    """Резервные базы для ссылок в письмах: 443 Улья режут из РФ, соты :9100 живы."""
+    try:
+        from app.services.hive_standby import standby_api_urls
+
+        return await standby_api_urls(db)
+    except Exception as e:  # письмо важнее полного списка баз
+        logger.warning(f"email fallback bases: {e}")
+        return []
+
+
+async def _email_smtp_relays(db: AsyncSession) -> list[dict[str, str]]:
+    """Соты, которые могут отправить SMTP, если с Улья mail.ru:465 unreachable."""
+    try:
+        from app.services.email_relays import smtp_relays_from_db
+
+        return await smtp_relays_from_db(db)
+    except Exception as e:
+        logger.warning(f"email smtp relays: {e}")
+        return []
+
+
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(
     req: RegisterRequest,
@@ -111,10 +133,19 @@ async def register(
 
     inviter, promo = await resolve_referral_or_promo(db, req.referral_or_promo)
 
-    token = generate_token()
+    from app.services.email_confirmation_policy import (
+        register_payload,
+        register_verification_plan,
+    )
+    from app.services.registration_settings import is_skip_email_confirmation
+
+    skip_confirm = await is_skip_email_confirmation(db)
+    is_verified, send_mail = register_verification_plan(skip_confirm)
+    token = generate_token() if send_mail else None
     user = User(
         email=email_norm,
         password_hash=hash_password(req.password),
+        is_verified=is_verified,
         verification_token=token,
         referral_code=await generate_unique_referral_code(db),
     )
@@ -123,12 +154,24 @@ async def register(
     await bind_referral_on_register(db, user, inviter, promo)
     await db.commit()
 
-    # Отправка письма в фоне — не блокирует ответ клиенту
-    base_url = settings.FRONTEND_URL.rstrip("/")
-    background_tasks.add_task(send_verification_email, email_norm, token, base_url)
-    logger.info(f"Register: {email_norm}, verify link base: {base_url}")
+    if is_verified:
+        from app.services.subscription_service import apply_post_verification_benefits
 
-    return {"message": "Регистрация успешна. Проверьте email для подтверждения."}
+        await apply_post_verification_benefits(db, user)
+
+    if send_mail and token:
+        # Отправка письма в фоне — не блокирует ответ клиенту
+        base_url = settings.FRONTEND_URL.rstrip("/")
+        fallbacks = await _email_fallback_bases(db)
+        relays = await _email_smtp_relays(db)
+        background_tasks.add_task(
+            send_verification_email, email_norm, token, base_url, fallbacks, relays
+        )
+        logger.info(f"Register: {email_norm}, verify link base: {base_url}")
+    else:
+        logger.info(f"Register: {email_norm}, email confirmation skipped")
+
+    return register_payload(skip_confirm)
 
 
 @router.get("/verify-email", response_class=HTMLResponse)
@@ -197,8 +240,19 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     if not user or not verify_password(req.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Неверный email или пароль")
 
-    if not user.is_verified:
+    from app.services.email_confirmation_policy import login_allows_unverified
+    from app.services.registration_settings import is_skip_email_confirmation
+
+    skip_confirm = await is_skip_email_confirmation(db)
+    if not login_allows_unverified(skip_confirm, user.is_verified):
         raise HTTPException(status_code=403, detail="Подтвердите email перед входом")
+    if skip_confirm and not user.is_verified:
+        user.is_verified = True
+        user.verification_token = None
+        await db.commit()
+        from app.services.subscription_service import apply_post_verification_benefits
+
+        await apply_post_verification_benefits(db, user)
 
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Аккаунт заблокирован")
@@ -437,8 +491,12 @@ async def forgot_password(
         user.reset_token = token
         await db.commit()
         base_url = settings.FRONTEND_URL.rstrip("/")
+        fallbacks = await _email_fallback_bases(db)
+        relays = await _email_smtp_relays(db)
         # Отправка письма в фоне — не блокирует ответ клиенту
-        background_tasks.add_task(send_password_reset_email, req.email, token, base_url)
+        background_tasks.add_task(
+            send_password_reset_email, req.email, token, base_url, fallbacks, relays
+        )
     return {"message": "Если email зарегистрирован, письмо отправлено"}
 
 

@@ -258,3 +258,5 @@ class ThemeResponse(BaseModel):
     payment_timeout_text: str = "Если вы уже оплатили — подождите ещё немного или проверьте позже в разделе «Подписка»."
     payment_retry_button_text: str = "Попробовать снова"
     payment_cancel_button_text: str = "Отмена"
+    # Extra Settings: skip email confirm. Default false = old clients still wait for mail.
+    skip_email_confirmation: bool = False

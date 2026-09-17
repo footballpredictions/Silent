@@ -37,6 +37,9 @@ SETTING_LAST_STATUS = "availability_agent_last_status"
 # писалась бы в журнал каждый цикл и вытесняла остальные события.
 SETTING_INCIDENT_STATE = "availability_agent_incident_state"
 INCIDENT_STATE_MAX_KEYS = 40
+# Сколько окон подряд публичный API мёртв. Нужен между циклами и воркерами:
+# порт нельзя крутить по одному таймауту (инцидент DNAT 2026-08-18).
+SETTING_PORT_STATE = "availability_agent_port_state"
 
 
 def _defaults() -> dict[str, Any]:
@@ -195,6 +198,32 @@ async def save_incident_state(state: dict[str, dict[str, Any]]) -> None:
             await db.commit()
     except Exception as e:
         logger.warning("availability: состояние инцидентов не сохранено: %s", e)
+
+
+async def load_port_state() -> dict[str, Any]:
+    """`{dead_windows: int}` — счётчик подтверждённых мёртвых окон публичного API."""
+    try:
+        async with AsyncSessionLocal() as db:
+            raw = await _get(db, SETTING_PORT_STATE)
+    except Exception as e:
+        logger.warning("port state load: %s", e)
+        return {}
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+async def save_port_state(state: dict[str, Any]) -> None:
+    try:
+        async with AsyncSessionLocal() as db:
+            await _set(db, SETTING_PORT_STATE, json.dumps(state, ensure_ascii=False))
+            await db.commit()
+    except Exception as e:
+        logger.warning("port state save: %s", e)
 
 
 async def save_report(report: dict[str, Any]) -> None:

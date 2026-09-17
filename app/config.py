@@ -127,6 +127,13 @@ class Settings(BaseSettings):
     HIVE_PROVISION_SSH_TIMEOUT_SEC: int = 45
     HIVE_PROVISION_STALE_MINUTES: int = 20
     HIVE_CELL_AGENT_PORT: int = 9100
+    # Запасной HTTPS Улья (не 443). Пусто = старое поведение: публикуем только то,
+    # что кто-то реально открыл на Улье (nginx listen + ufw). Иначе клиенты и письма
+    # получают мёртвые адреса и ждут таймаут на каждом фолбэке (регресс 2026-09-16).
+    HIVE_API_ALT_PORTS: str = ""
+    # На проде включает docker-compose (true). Локально/по умолчанию выкл — fail-safe.
+    HIVE_API_PORT_AUTOSWITCH: bool = False
+    HIVE_API_PORT_CONFIRM_CYCLES: int = 2
     HIVE_PROVISION_SSH_USER: str = "root"
     HIVE_WDTT_BINARY_PATH: str = ""
     HIVE_REBALANCE_EXISTING_DEVICES: bool = True

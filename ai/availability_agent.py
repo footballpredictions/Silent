@@ -10,8 +10,9 @@
   6. Классификация: тип блокировки, уверенность, доказательства и план фикса.
   7. Отчёт в БД + инциденты в журнал Улья.
 
-Безопасность: агент только читает. Он не рестартит `wdtt`, не трогает DNAT,
-не снимает WG peer'ы и не меняет конфигурацию — все решения он лишь предлагает.
+Безопасность: пробы только читают. wdtt / DNAT / WG peer'ы не трогаем.
+Запасной HTTPS: если автосмена включена и кандидат с РФ жив — пишем порт
+в файл темы (`static/.hive_api_alt_ports`). 443 не закрываем.
 """
 from __future__ import annotations
 
@@ -453,6 +454,18 @@ async def run_availability_check(
 
     verdicts = classify_targets(targets)
     status = report_status(verdicts)
+    port_plan: dict = {}
+    try:
+        port_plan = await _build_port_plan(targets, vantage, warnings)
+    except Exception as e:
+        warnings.append(f"План запасного порта не посчитан: {e}")
+    relay_plan: dict = {}
+    try:
+        from ai.cell_relay_policy import build_relay_plan
+
+        relay_plan = build_relay_plan(targets)
+    except Exception as e:
+        warnings.append(f"План релея Сервер 4 не посчитан: {e}")
     report = AvailabilityReport(
         ts=_utc_now_iso(),
         status=status,
@@ -462,6 +475,8 @@ async def run_availability_check(
         vantage=vantage,
         duration_sec=time.monotonic() - started,
         warnings=warnings,
+        port_plan=port_plan,
+        relay_plan=relay_plan,
     )
 
     await store.save_report(report.to_dict())
@@ -469,6 +484,129 @@ async def run_availability_check(
     if incidents:
         await _push_incidents(report)
     return report
+
+
+async def _probe_alt_candidates(
+    queen: TargetSnapshot, vantage: dict[str, object], warnings: list[str]
+) -> dict[str, str]:
+    """Живы ли кандидаты с российских нод: open/refused = пакеты доходят, timeout = нет.
+
+    `refused` тоже годится: порт ещё не открыт, но фильтр его не режет.
+    """
+    from ai.availability_model import ERR_REFUSED
+    from ai.availability_probes import fetch_checkhost_nodes, vantage_check
+    from ai.hive_api_port_policy import CANDIDATE_ORDER
+
+    ru_nodes = list(vantage.get("ru_nodes") or [])  # type: ignore[arg-type]
+    if not ru_nodes:
+        return {}
+    node_info = await fetch_checkhost_nodes()
+    if not node_info:
+        return {}
+
+    reach: dict[str, str] = {}
+    for port in CANDIDATE_ORDER[:3]:  # бюджет внешних проверок не бесконечный
+        results = await vantage_check("tcp", f"{queen.host}:{port}", ru_nodes, node_info)
+        if not results:
+            continue
+        ru = [n for n in results.values() if n.country == "ru"]
+        if not ru:
+            continue
+        if any(n.ok for n in ru):
+            reach[str(port)] = "open"
+        elif any((n.error_kind or "") == ERR_REFUSED for n in ru):
+            reach[str(port)] = "refused"
+        else:
+            reach[str(port)] = "timeout"
+    if not reach:
+        warnings.append("Кандидатов на запасной порт проверить не удалось.")
+    return reach
+
+
+def _local_alt_listening(port: int) -> bool:
+    """Nginx в соседнем контейнере уже слушает запасной порт?"""
+    import socket
+
+    for host in ("nginx", "127.0.0.1"):
+        try:
+            with socket.create_connection((host, int(port)), timeout=1.5):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+async def _build_port_plan(
+    targets: list[TargetSnapshot], vantage: dict[str, object], warnings: list[str]
+) -> dict:
+    """План + публикация запасного порта в тему. wdtt/443 не трогаем."""
+    from urllib.parse import urlsplit
+
+    from ai.availability_port_plan import (
+        api_channel_counts,
+        build_plan,
+        needs_candidate_probe,
+    )
+    from ai.hive_api_port_exec import apply_close_stale_alt, apply_open_candidate
+    from ai.hive_api_port_policy import ACTION_CLOSE_STALE_ALT, ACTION_OPEN_CANDIDATE
+    from app.services.hive_standby import hive_alt_api_urls
+
+    queen = next((t for t in targets if t.role == TARGET_QUEEN), None)
+    if queen is None:
+        return {}
+
+    state = await store.load_port_state()
+    previous = int(state.get("dead_windows") or 0)
+    confirm = max(1, int(getattr(settings, "HIVE_API_PORT_CONFIRM_CYCLES", 2) or 2))
+    autoswitch = bool(settings.HIVE_API_PORT_AUTOSWITCH)
+
+    counts = api_channel_counts(queen)
+    reach: dict[str, str] = {}
+    if needs_candidate_probe(counts, previous, confirm_cycles=confirm):
+        reach = await _probe_alt_candidates(queen, vantage, warnings)
+
+    published: tuple[int, ...] = ()
+    try:
+        published = tuple(
+            p for p in (urlsplit(u).port for u in hive_alt_api_urls()) if p
+        )
+    except Exception as e:
+        logger.debug("published alt ports: %s", e)
+
+    plan, streak = build_plan(
+        queen,
+        previous_streak=previous,
+        published_alt_ports=published,
+        candidate_reach=reach,
+        confirm_cycles=confirm,
+        autoswitch_enabled=autoswitch,
+    )
+    executed = False
+    if autoswitch and plan.get("action") == ACTION_OPEN_CANDIDATE and plan.get("port"):
+        port = int(plan["port"])
+        listening = _local_alt_listening(port)
+        result = apply_open_candidate(port, listening=listening)
+        executed = bool(result.get("ok"))
+        if not executed:
+            warnings.append(
+                f"Запасной порт {port} не опубликован: {result.get('reason') or 'ошибка'}."
+            )
+        else:
+            plan["title"] = f"Запасной порт {port} опубликован"
+            logger.info("availability: published hive alt HTTPS :%s", port)
+    elif autoswitch and plan.get("action") == ACTION_CLOSE_STALE_ALT and plan.get("close_port"):
+        result = apply_close_stale_alt(int(plan["close_port"]))
+        executed = bool(result.get("ok"))
+    elif plan.get("reason") == "already_open":
+        executed = True
+    plan["executed"] = executed
+    new_state = {"dead_windows": streak}
+    if plan.get("port"):
+        new_state["published_port"] = int(plan["port"])
+    elif plan.get("suggested_port"):
+        new_state["published_port"] = int(plan["suggested_port"])
+    await store.save_port_state(new_state)
+    return plan
 
 
 async def _push_incidents(report: AvailabilityReport) -> None:

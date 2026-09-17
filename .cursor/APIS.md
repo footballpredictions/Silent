@@ -32,7 +32,7 @@
 
 | Метод | Путь | Auth | Описание |
 |-------|------|------|----------|
-| POST | `/register` | — | Регистрация `{ email, password, referral_or_promo? }`. Поле — либо реф-код пользователя, либо промокод (взаимоисключающе). Реф → `referred_by` + `ReferralReward(pending)`; промо → `pending_promo_code` (скидка при `/payments/init`). При `app_settings.registration_disabled=true` → **503** «Ведутся технические работы. Регистрация временно недоступна.» (админка «Доп. настройки»). Анти-абуз: **429** при >`REGISTER_RATE_LIMIT_MAX` попыток с одного IP за `REGISTER_RATE_LIMIT_WINDOW_MINUTES` (Redis fixed-window, fail-open без Redis); **400** если: hard-block анонимайзеров (`internet.ru`, Apple Hide My Email, Duck/Firefox Relay…), disposable-домен, `+alias`, или домен не в `ALLOWED_EMAIL_DOMAINS` (whitelist; `internet.ru` убран — Mail.ru анонимайзер). Gmail uniqueness по canonical (точки/googlemail). См. `email_validation.py`. Дополнительно: один trial на `device_fingerprint` (`require_device_trial_not_reused` в `/vpn/device/register`) — алиасы Mail.ru на одном устройстве не плодят бесплатный VPN |
+| POST | `/register` | — | Регистрация `{ email, password, referral_or_promo? }`. Поле — либо реф-код пользователя, либо промокод (взаимоисключающе). Реф → `referred_by` + `ReferralReward(pending)`; промо → `pending_promo_code` (скидка при `/payments/init`). При `app_settings.registration_disabled=true` → **503** «Ведутся технические работы. Регистрация временно недоступна.» (админка «Доп. настройки»). При `skip_email_confirmation=true` аккаунт сразу `is_verified`, письмо не шлётся, ответ `{ message, email_confirmation_required: "false" }` (строка, чтобы старые Map<String,String> не падали); `/login` пускает и ранее неподтверждённых. Анти-абуз: **429** при >`REGISTER_RATE_LIMIT_MAX` попыток с одного IP за `REGISTER_RATE_LIMIT_WINDOW_MINUTES` (Redis fixed-window, fail-open без Redis); **400** если: hard-block анонимайзеров (`internet.ru`, Apple Hide My Email, Duck/Firefox Relay…), disposable-домен, `+alias`, или домен не в `ALLOWED_EMAIL_DOMAINS` (whitelist; `internet.ru` убран — Mail.ru анонимайзер). Gmail uniqueness по canonical (точки/googlemail). См. `email_validation.py`. Дополнительно: один trial на `device_fingerprint` (`require_device_trial_not_reused` в `/vpn/device/register`) — алиасы Mail.ru на одном устройстве не плодят бесплатный VPN |
 | GET | `/verify-email?token=` | — | HTML-подтверждение email |
 | POST | `/login` | — | JWT access + refresh; опционально `device` → ensure_device_session |
 | POST | `/qr/start` | — | Сессия QR для устройства без входа. `{ device? }` → `{ token, expires_in, payload }` (`silentvpn://qr?k=s&c=…`, TTL 120с) |
@@ -226,8 +226,8 @@ sequenceDiagram
 | POST | `/maintenance/cleanup-bootstrap` | Admin | Удалить bootstrap user |
 | GET | `/theme` | Admin | Чтение темы |
 | POST | `/theme` | Admin | Запись темы |
-| GET | `/settings/registration` | Admin | Флаг `registration_disabled` + текст для клиентов |
-| POST | `/settings/registration` | Admin | Body `{ disabled: bool }` — вкл/выкл регистрацию (инциденты/техработы) |
+| GET | `/settings/registration` | Admin | Флаг `registration_disabled` + `skip_email_confirmation` + текст для клиентов |
+| POST | `/settings/registration` | Admin | Body `{ disabled?: bool, skip_email_confirmation?: bool }` — отдельно вкл/выкл регистрацию и подтверждение почты |
 | GET | `/settings/threat-filter` | Admin | DNS-фильтр угроз: `enabled`, `wg_dns`, `domains_count`, `list_updated_at` (HaGeZi TIF) |
 | POST | `/settings/threat-filter` | Admin | Body `{ enabled: bool }` — вкл/выкл; клиентам нужен reconnect для нового DNS |
 | GET | `/settings/vps-cleanup` | Admin | Автоочистка Улья: `enabled`, `interval_days`, `journal_max_mb`, `last_run_*` |
@@ -328,6 +328,7 @@ Endpoint: `GET /api/vpn/theme` (публичный, без auth).
 | `payment_failed_title` / `payment_failed_text` | Оплата не подтверждена (`failed`) |
 | `payment_timeout_title` / `payment_timeout_text` | Poll не дождался ответа за 10 мин |
 | `payment_retry_button_text` / `payment_cancel_button_text` | Кнопки экрана оплаты |
+| `skip_email_confirmation` | Extra Settings: без подтверждения почты (дефолт `false`) |
 
 ---
 

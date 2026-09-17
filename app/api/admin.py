@@ -16,7 +16,7 @@ from app.models import User, Subscription, Device, VkHash, AppSetting, PromoCode
 from app.core.deps import get_admin_credentials, get_admin_session_jti
 from app.config import settings
 from app.schemas.vpn import ThemeResponse
-from app.services.theme_settings import load_theme
+from app.services.theme_settings import load_theme, theme_json_for_store
 from app.services.dashboard_node_stats import (
     QUEEN_NODE_ID,
     dashboard_system_for_node,
@@ -455,7 +455,8 @@ class RegistrationTestModeRequest(BaseModel):
 
 
 class RegistrationDisabledRequest(BaseModel):
-    disabled: bool
+    disabled: bool | None = None
+    skip_email_confirmation: bool | None = None
 
 
 @router.get("/subscriptions/registration-test-mode")
@@ -560,15 +561,18 @@ async def get_registration_settings(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Доп. настройки: блокировка регистрации при инцидентах."""
+    """Доп. настройки: блокировка регистрации и пропуск подтверждения почты."""
     from app.services.registration_settings import (
         REGISTRATION_DISABLED_MESSAGE,
         is_registration_disabled,
+        is_skip_email_confirmation,
     )
 
     disabled = await is_registration_disabled(db)
+    skip_confirm = await is_skip_email_confirmation(db)
     return {
         "registration_disabled": disabled,
+        "skip_email_confirmation": skip_confirm,
         "message": REGISTRATION_DISABLED_MESSAGE,
     }
 
@@ -581,12 +585,19 @@ async def set_registration_settings(
 ):
     from app.services.registration_settings import (
         REGISTRATION_DISABLED_MESSAGE,
+        is_registration_disabled,
+        is_skip_email_confirmation,
         set_registration_disabled,
+        set_skip_email_confirmation,
     )
 
-    disabled = await set_registration_disabled(db, req.disabled)
+    if req.disabled is not None:
+        await set_registration_disabled(db, req.disabled)
+    if req.skip_email_confirmation is not None:
+        await set_skip_email_confirmation(db, req.skip_email_confirmation)
     return {
-        "registration_disabled": disabled,
+        "registration_disabled": await is_registration_disabled(db),
+        "skip_email_confirmation": await is_skip_email_confirmation(db),
         "message": REGISTRATION_DISABLED_MESSAGE,
     }
 
@@ -1508,7 +1519,7 @@ async def set_theme(
 ):
     result = await db.execute(select(AppSetting).where(AppSetting.key == "theme"))
     setting = result.scalar_one_or_none()
-    data = json.dumps(theme.model_dump())
+    data = json.dumps(theme_json_for_store(theme))
     if setting:
         setting.value = data
         setting.updated_at = datetime.utcnow()
@@ -1554,7 +1565,7 @@ async def upload_home_bg(
     theme.home_bg_image_url = url
     result = await db.execute(select(AppSetting).where(AppSetting.key == "theme"))
     setting = result.scalar_one_or_none()
-    data = json.dumps(theme.model_dump())
+    data = json.dumps(theme_json_for_store(theme))
     if setting:
         setting.value = data
         setting.updated_at = datetime.utcnow()
@@ -1591,7 +1602,7 @@ async def upload_logo(
     theme.logo_url = url
     result = await db.execute(select(AppSetting).where(AppSetting.key == "theme"))
     setting = result.scalar_one_or_none()
-    data = json.dumps(theme.model_dump())
+    data = json.dumps(theme_json_for_store(theme))
     if setting:
         setting.value = data
         setting.updated_at = datetime.utcnow()

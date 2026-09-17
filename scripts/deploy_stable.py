@@ -107,6 +107,12 @@ def main() -> None:
             sftp.put(str(lp), f"{REMOTE}/static/{name}")
             print(f"static/{name}")
 
+    client.exec_command(f"mkdir -p {REMOTE}/docker")
+    nginx_conf = BACKEND_ROOT / "docker" / "nginx.conf"
+    if nginx_conf.is_file():
+        sftp.put(str(nginx_conf), f"{REMOTE}/docker/nginx.conf")
+        print("upload docker/nginx.conf")
+
     sftp.close()
 
     # Код уже на хосте. up -d api --no-deps recreate только если compose изменился;
@@ -115,7 +121,7 @@ def main() -> None:
 set -e
 cd {REMOTE}
 echo "=== compose apply (no-deps, never wdtt) ==="
-docker compose up -d api --no-deps
+docker compose up -d api nginx --no-deps
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
   if docker inspect -f '{{{{.State.Running}}}}' {CONTAINER} 2>/dev/null | grep -q true; then
     break
@@ -138,6 +144,8 @@ bash /tmp/fix_tunnel_dnat.sh
 echo "=== verify ==="
 curl -sf http://127.0.0.1:8000/api/health && echo " health OK"
 curl -sf http://127.0.0.1:8000/health && echo " /health OK" || true
+alt=$(curl -sk -o /dev/null -w "%{{http_code}}" --connect-timeout 3 --resolve 132-243-234-162.nip.io:2083:127.0.0.1 https://132-243-234-162.nip.io:2083/api/health || true)
+echo "alt2083 HTTP $alt (expect 200)"
 admin=$(curl -s -o /dev/null -w "%{{http_code}}" http://127.0.0.1:8000/)
 echo "admin: $admin"
 hive=$(curl -s -o /dev/null -w "%{{http_code}}" -H "Host: 132-243-234-162.nip.io" http://127.0.0.1:8000/api/admin/hive/cells)

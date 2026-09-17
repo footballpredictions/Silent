@@ -87,6 +87,7 @@ def test_queen_health_urls_prefer_direct_ip():
     urls = sr.queen_health_urls("132.243.234.162", "https://132-243-234-162.nip.io")
     assert urls[0] == "http://132.243.234.162:8000/health"
     assert "http://132.243.234.162:8000/api/health" in urls
+    assert "http://132.243.234.162:80/health" in urls
     assert urls[-1].startswith("https://132-243-234-162.nip.io")
 
 
@@ -103,7 +104,8 @@ def test_queen_proxy_urls_use_ip8000_not_nipio_first():
 
 def test_queen_proxy_urls_work_without_nipio():
     urls = sr.queen_proxy_urls("payments/plans", queen_ip="1.2.3.4", api_url="")
-    assert urls == ["http://1.2.3.4:8000/api/payments/plans"]
+    assert urls[0] == "http://1.2.3.4:8000/api/payments/plans"
+    assert "http://1.2.3.4:80/api/payments/plans" in urls
 
 
 def test_queen_tunnel_dnat_uses_nginx_80_not_closed_8000():

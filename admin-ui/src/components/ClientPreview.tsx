@@ -65,6 +65,7 @@ export type ClientTheme = {
   payment_timeout_text?: string
   payment_retry_button_text?: string
   payment_cancel_button_text?: string
+  skip_email_confirmation?: boolean
 }
 
 type PreviewScreen =

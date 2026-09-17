@@ -1,0 +1,24 @@
+---
+description: Graphify — query-first по коду, fail-safe без графа
+alwaysApply: true
+---
+
+# Graphify (query-first)
+
+AST-граф кода (calls/imports/path). **Не** заменяет MCP `user-codebase-memory-mcp` (семантика/история). Если вопрос «как связано X с Y» / навигация по структуре — сначала graphify, если граф есть.
+
+## Fail-safe
+
+- Нет CLI или нет `graphify-out/graph.json` → обычный Grep/Read. **Не блокировать** работу. **Не** строить полный граф на каждом ходе (`graphify .` / `/graphify .`).
+- Полный extract Silent-Project (4 репо) — только по явной команде пользователя.
+- CLI: `graphify` в `%USERPROFILE%\.local\bin` (пакет `graphifyy` через `uv tool`). PowerShell: `graphify .`, не `/graphify .`.
+
+## Если граф есть
+
+1. `graphify query "<вопрос>"` / `path "A" "B"` / `explain "X"` — не сырой grep всего дерева.
+2. Потом точечный Read нужных файлов.
+3. `graphify update .` — только после серии правок в **одной** git-папке и только если граф уже был; не после каждого файла.
+
+## Секреты и артефакты
+
+Не индексировать `.env`, `.env.deploy`, credentials, ключи. См. `.graphifyignore`. `graphify-out/` не коммитить.

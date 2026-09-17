@@ -23,6 +23,8 @@ update/olcrtc/
 scripts/probe_*.py
 scripts/_diag_*.py
 scripts/_probe_*.py
+scripts/_tmp_*
+static/.hive_api_alt_ports
 
 # Secrets
 .env

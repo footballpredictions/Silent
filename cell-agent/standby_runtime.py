@@ -667,11 +667,19 @@ def apply_manifest_peers(manifest: dict | None = None) -> int:
 
 
 def queen_api_bases(queen_ip: str = "", api_url: str = "") -> list[str]:
-    """Базы сота→Улей: сначала :8000 по IP (CELL_API), nip.io только запасной."""
+    """Базы сота→Улей: сначала прямой IP, nip.io только запасной.
+
+    :8000 — CELL_API (redirect на nginx :80). :80 — тот же nginx allow IP сот.
+    HTTPS (api_url) последний: с соты 443 Улья обычно жив, с РФ — нет; клиенты
+    этот список не видят. Прямой IP всегда первый (инвариант health с соты).
+    """
     bases: list[str] = []
     ip = (queen_ip or "").strip()
     if ip:
         bases.append(f"http://{ip}:8000")
+        port80 = f"http://{ip}:80"
+        if port80 not in bases:
+            bases.append(port80)
     api = (api_url or "").strip().rstrip("/")
     if api and api not in bases:
         bases.append(api)

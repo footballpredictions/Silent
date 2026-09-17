@@ -1,0 +1,30 @@
+---
+description: Matt Pocock skills — дисциплина кода по триггерам
+alwaysApply: true
+---
+
+# Matt Pocock skills
+
+Перед действием смотри **available_skills**. Если релевантен — сразу Read его `SKILL.md` и следуй. Не дублируй уже стоящие UI/security/Cursor built-ins.
+
+## Триггеры (сразу Read + следовать)
+
+| Сигнал | Skill |
+|--------|--------|
+| баг / «не работает» / регресс | `diagnosing-bugs` |
+| новая фича с тестами / «напиши тест» / red-green | `tdd` |
+| ревью / «посмотри дифф» / PR | `code-review` |
+| архитектура модуля / «глубокий модуль» / новый слой | `codebase-design` |
+| merge/rebase конфликты | `resolving-merge-conflicts` |
+| исследование по докам/источникам | `research` |
+| пишем skill / AGENTS.md / правило для агента | `writing-for-agents` |
+| throwaway прототип UI/логики (явно) | `prototype` |
+
+`review-bugbot` / `review-security` — только по явной просьбе, не вместо `code-review`.
+
+## Адаптация под Silent VPN
+
+- Глоссарий = `.cursor/MEMORY_BANK.md`, не `CONTEXT.md`. Трекер = `.cursor/TASKS.md`, не Linear/GitHub issues. Не гонять `/setup-matt-pocock-skills`.
+- **Не коммитить и не пушить**, пока пользователь не сказал «пуш». `implement` не ставим — он сам коммитит.
+- Git живёт в `backend/`, `pc/`, `android/`, `ios/`. PowerShell: `;`, не `&&`.
+- При конфликте: vpn-safety > Memory Bank/TASKS > server-driven UI > эти skills.

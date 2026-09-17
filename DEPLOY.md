@@ -5,6 +5,8 @@
 
 Секреты SSH: `Silent-Project/.env.deploy` или `backend/.env.deploy` (шаблон `scripts/.env.deploy.example`).
 
+С РФ `:22` Улья часто таймаут. `10.66.66.1:22` — SSH Улья **только если VPN на слоте Улья**. На соте `10.66.66.1` — шлюз соты, пароль Улья не подходит. `:9100` соты — HTTP API, **не деплой**. Обход: SSH-прыжок ПК → Сота 1/2 `:22` → Улей `:22` (`DEPLOY_JUMP_HOSTS` / `DEPLOY_JUMP_PASS`, иначе на соту тот же `DEPLOY_PASS`).
+
 ```powershell
 pip install paramiko
 cd backend
@@ -36,6 +38,8 @@ cd backend
 | `scripts/deploy_olcrtc_host_provision.py` | `python scripts/deploy_olcrtc_host_provision.py` | Host Playwright `:9101` — автосоздание комнат Telemost/WB для room-agent |
 | `scripts/deploy_cell_agent.py` | `python scripts/deploy_cell_agent.py <cell_ip>` | cell-agent на отдельной VPS-соте |
 | `scripts/apply_security_phase1.py` | `python scripts/apply_security_phase1.py` | UFW, fail2ban, bind API `127.0.0.1:8000` (+ sync кода) |
+| `scripts/audit_hive_security.py` | `python scripts/audit_hive_security.py [--attempts N --pause SEC]` | Read-only аудит Улья: правила про 443/22, входы SSH, ключи, cron, docker, следы вторжения. Ничего не рестартит |
+| `scripts/diag_hive_tls_443.py` | `python scripts/diag_hive_tls_443.py` | Read-only: жив ли вход HTTPS Улья (Host обязателен: на 443 `return 444`) |
 | `scripts/install.sh` | на сервере / через `deploy_helper install` | Первичная установка Docker + clone |
 | `scripts/gen_certs.sh` | на сервере | Перегенерация TLS |
 
@@ -147,7 +151,15 @@ python scripts/deploy_stable.py
 # Диагностика
 python scripts/deploy_helper.py check
 python scripts/deploy_helper.py status
+
+# Улей не открывается снаружи (read-only, прод не трогают)
+python scripts/audit_hive_security.py
+python scripts/diag_hive_tls_443.py
 ```
+
+При плавающем блоке 443/22 SSH встаёт не с первой попытки: `connect()` сам
+повторяет, терпение — `DEPLOY_SSH_ATTEMPTS` и `DEPLOY_SSH_PAUSE_SEC`
+(по умолчанию 4 попытки с паузой 6 с).
 
 `deploy_api.py` = `deploy_stable.py`. Тематические `deploy_vk_calls.py` / `deploy_hive.py` / `deploy_config_sync.py` по-прежнему со своими FILES — для прода-фиксов не использовать.
 

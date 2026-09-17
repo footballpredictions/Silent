@@ -22,6 +22,7 @@ type CleanupStatus = {
 
 export default function ExtraSettingsPage({ token }: { token: string }) {
   const [disabled, setDisabled] = useState(false)
+  const [skipEmailConfirm, setSkipEmailConfirm] = useState(false)
   const [message, setMessage] = useState(
     'Ведутся технические работы. Регистрация временно недоступна.'
   )
@@ -32,7 +33,7 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
     journal_max_mb: 200,
   })
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState<'reg' | 'threat' | 'cleanup' | null>(null)
+  const [busy, setBusy] = useState<'reg' | 'skipMail' | 'threat' | 'cleanup' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
@@ -69,6 +70,7 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
         return
       }
       setDisabled(!!regData.registration_disabled)
+      setSkipEmailConfirm(!!regData.skip_email_confirmation)
       if (typeof regData.message === 'string' && regData.message) setMessage(regData.message)
       setThreat({
         enabled: !!threatData.enabled,
@@ -115,11 +117,43 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
         return
       }
       setDisabled(!!data.registration_disabled)
+      if (typeof data.skip_email_confirmation === 'boolean') {
+        setSkipEmailConfirm(data.skip_email_confirmation)
+      }
       if (typeof data.message === 'string' && data.message) setMessage(data.message)
       setSuccess(
         data.registration_disabled
           ? 'Регистрация отключена — новые пользователи увидят сообщение о техработах'
           : 'Регистрация снова открыта'
+      )
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const toggleSkipMail = async () => {
+    setBusy('skipMail')
+    setError(null)
+    setSuccess(null)
+    const next = !skipEmailConfirm
+    try {
+      const res = await fetch('/api/admin/settings/registration', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ skip_email_confirmation: next }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(data.detail || 'Не удалось сохранить')
+        return
+      }
+      setDisabled(!!data.registration_disabled)
+      setSkipEmailConfirm(!!data.skip_email_confirmation)
+      if (typeof data.message === 'string' && data.message) setMessage(data.message)
+      setSuccess(
+        data.skip_email_confirmation
+          ? 'Подтверждение почты выключено — после регистрации можно сразу войти'
+          : 'Подтверждение почты снова требуется'
       )
     } finally {
       setBusy(null)
@@ -262,6 +296,36 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
             <p className="text-sm text-amber-100/90 leading-relaxed">{message}</p>
           </div>
         )}
+      </div>
+
+      <div className="rounded-xl border border-[#222] bg-[#111] p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-medium text-white">Отключить подтверждение почты</h2>
+            <p className="text-xs text-[#666] mt-1.5 leading-relaxed">
+              При включении новые аккаунты сразу считаются подтверждёнными — письмо не
+              отправляется, вход работает без ссылки из почты. Уже зарегистрированные, но
+              не подтвердившие email, тоже смогут войти. Выключите, когда SMTP снова
+              стабилен.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={skipEmailConfirm}
+            disabled={loading || busy !== null}
+            onClick={toggleSkipMail}
+            className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+              skipEmailConfirm ? 'bg-purple-500' : 'bg-[#333]'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+                skipEmailConfirm ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </div>
       </div>
 
       <div className="rounded-xl border border-[#222] bg-[#111] p-5 space-y-4">

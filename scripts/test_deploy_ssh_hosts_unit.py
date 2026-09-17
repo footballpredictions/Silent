@@ -20,7 +20,24 @@ def test_ssh_hosts_no_dup_when_already_tunnel():
     assert hosts == ["10.66.66.1"]
 
 
+def test_jump_hosts_default_worker_cells():
+    from _deploy_common import jump_hosts
+
+    hosts = jump_hosts("")
+    assert hosts[0] == "87.58.213.193"
+    assert "78.17.74.27" in hosts
+    assert "192.177.26.38" not in hosts
+
+
+def test_jump_hosts_custom_list():
+    from _deploy_common import jump_hosts
+
+    assert jump_hosts(" 1.2.3.4 , 1.2.3.4, 5.6.7.8 ") == ["1.2.3.4", "5.6.7.8"]
+
+
 if __name__ == "__main__":
     test_ssh_hosts_hive_then_tunnel()
     test_ssh_hosts_no_dup_when_already_tunnel()
+    test_jump_hosts_default_worker_cells()
+    test_jump_hosts_custom_list()
     print("ok")

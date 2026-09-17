@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.standby_urls import compose_standby_api_urls
 from app.config import settings
 from app.models import Device, HiveCell, User
 from app.services import hive_service
@@ -39,20 +40,39 @@ def cell_public_api_base(cell: HiveCell) -> str:
     return f"http://{ip}:{port}"
 
 
+def hive_alt_api_urls() -> list[str]:
+    """HTTPS Улья на запасных портах (тема → клиенты). 443 не дублируем."""
+    from urllib.parse import urlparse
+
+    from ai.hive_api_port_exec import load_published_ports, parse_ports
+    from ai.hive_api_port_policy import alt_https_urls
+
+    raw = str(getattr(settings, "HIVE_API_ALT_PORTS", "") or "")
+    ports: list[int] = list(parse_ports(raw))
+    for port in load_published_ports():
+        if port not in ports:
+            ports.append(port)
+    host = urlparse(settings.FRONTEND_URL or "").hostname or "132-243-234-162.nip.io"
+    ip = (settings.VPN_SERVER_IP or "132.243.234.162").strip()
+    return alt_https_urls(host, ip, ports)
+
+
 async def standby_api_urls(db: AsyncSession) -> list[str]:
     """Публичные URL standby API для клиентов (theme / login / config).
 
+    Сначала соты :9100 (живой вход, когда 443 Улья режут), потом запасные
+    HTTPS Улья — и только если порт реально задан в HIVE_API_ALT_PORTS.
     Соту с AI-профилем сюда не даём: её cell-agent закрыт от интернета
     (порт виден только Улью), клиент только зря ждал бы таймаут.
     """
-    urls: list[str] = []
+    cells: list[str] = []
     for cell in await get_standby_cells(db):
         if getattr(cell, "ai_exit", False):
             continue
         base = cell_public_api_base(cell)
         if base:
-            urls.append(base)
-    return urls
+            cells.append(base)
+    return compose_standby_api_urls(cells, hive_alt_api_urls())
 
 
 async def standby_vpn_hosts(db: AsyncSession) -> list[str]:

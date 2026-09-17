@@ -74,6 +74,7 @@ def normalize_theme_data(data: dict) -> dict:
     ):
         out["bonuses_referral_title"] = "Ваша ссылка"
 
+    out.pop("skip_email_confirmation", None)
     return out
 
 
@@ -95,6 +96,13 @@ def theme_needs_migration(data: dict) -> bool:
     if ref in _LEGACY_REFERRAL_HINTS:
         return True
     return False
+
+
+def theme_json_for_store(theme: ThemeResponse) -> dict:
+    """Persist design fields only — skip_email_confirmation lives in Extra Settings."""
+    from app.services.email_confirmation_policy import strip_runtime_theme_keys
+
+    return strip_runtime_theme_keys(theme.model_dump())
 
 
 async def load_theme(db: AsyncSession, *, persist_migration: bool = False) -> ThemeResponse:
@@ -124,4 +132,10 @@ async def load_theme(db: AsyncSession, *, persist_migration: bool = False) -> Th
             theme.hive_standby_api_urls = ",".join(urls)
     except Exception:
         pass
+    try:
+        from app.services.registration_settings import is_skip_email_confirmation
+
+        theme.skip_email_confirmation = await is_skip_email_confirmation(db)
+    except Exception:
+        theme.skip_email_confirmation = False
     return theme

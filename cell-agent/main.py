@@ -767,6 +767,130 @@ async def net_probe(
     }
 
 
+class SmtpSendRequest(BaseModel):
+    smtp_host: str
+    smtp_port: int = 465
+    smtp_user: str = ""
+    smtp_pass: str = ""
+    mail_from: str = ""
+    from_name: str = "Silent VPN"
+    to: str
+    subject: str
+    html: str = ""
+    plain: str = ""
+
+
+def _smtp_tcp_ipv4(host: str, port: int, timeout: float):
+    import socket
+
+    last: OSError | None = None
+    infos = socket.getaddrinfo(host, int(port), socket.AF_INET, socket.SOCK_STREAM)
+    if not infos:
+        raise OSError(f"smtp: нет IPv4 для {host}")
+    for fam, socktype, proto, _canon, sa in infos:
+        sock = socket.socket(fam, socktype, proto)
+        sock.settimeout(timeout)
+        try:
+            sock.connect(sa)
+            return sock
+        except OSError as e:
+            last = e
+            try:
+                sock.close()
+            except Exception:
+                pass
+    raise last or OSError(f"smtp: IPv4 {host}:{port} недоступен")
+
+
+def _smtp_handshake(smtp, sock, host: str, timeout: float) -> None:
+    """Как app.services.email_smtp.handshake_smtp: 220, затем EHLO (иначе нет AUTH)."""
+    import smtplib
+
+    smtp.timeout = timeout
+    smtp.sock = sock
+    smtp.file = None
+    smtp._host = host
+    code, msg = smtp.getreply()
+    if int(code) != 220:
+        raise smtplib.SMTPConnectError(code, msg)
+    smtp.ehlo_or_helo_if_needed()
+
+
+def _smtp_send_from_cell(req: SmtpSendRequest) -> None:
+    """Исходящая почта с соты: Улей часто не достучится до smtp.mail.ru:465."""
+    import smtplib
+    import ssl
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    host = (req.smtp_host or "").strip()
+    port = int(req.smtp_port or 465)
+    to_email = (req.to or "").strip()
+    mail_from = (req.mail_from or "").strip()
+    if not host or "@" not in to_email or "@" not in mail_from:
+        raise ValueError("smtp payload incomplete")
+    if port not in (465, 587):
+        raise ValueError("smtp port not allowed")
+    html = req.html or ""
+    plain = req.plain or "Silent VPN — откройте HTML-версию письма."
+    if len(html) + len(plain) > 200_000:
+        raise ValueError("smtp body too large")
+
+    msg = MIMEMultipart("alternative")
+    msg["From"] = f"{(req.from_name or 'Silent VPN').strip()} <{mail_from}>"
+    msg["To"] = to_email
+    msg["Subject"] = (req.subject or "").strip() or "Silent VPN"
+    msg.attach(MIMEText(plain, "plain", "utf-8"))
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    timeout = 12.0
+    raw = _smtp_tcp_ipv4(host, port, timeout)
+    smtp = None
+    try:
+        if port == 465:
+            ctx = ssl.create_default_context()
+            ssock = ctx.wrap_socket(raw, server_hostname=host)
+            smtp = smtplib.SMTP_SSL()
+            _smtp_handshake(smtp, ssock, host, timeout)
+        else:
+            smtp = smtplib.SMTP()
+            _smtp_handshake(smtp, raw, host, timeout)
+            smtp.starttls()
+            smtp.ehlo()
+        smtp.login(req.smtp_user, req.smtp_pass)
+        smtp.sendmail(mail_from, to_email, msg.as_bytes())
+    finally:
+        if smtp is not None:
+            try:
+                smtp.quit()
+            except Exception:
+                try:
+                    smtp.close()
+                except Exception:
+                    pass
+        else:
+            try:
+                raw.close()
+            except Exception:
+                pass
+
+
+@app.post("/v1/smtp-send")
+async def smtp_send(
+    req: SmtpSendRequest,
+    x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
+):
+    """Улей просит соту отправить письмо, если свой SMTP unreachable."""
+    _auth(x_cell_agent_secret)
+    import asyncio
+
+    try:
+        await asyncio.to_thread(_smtp_send_from_cell, req)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=type(e).__name__) from e
+    return {"ok": True, "cell_ip": _detect_public_ip()}
+
+
 AI_EGRESS_TARGETS = (
     ("chatgpt", "https://chatgpt.com/"),
     ("gemini", "https://gemini.google.com/"),

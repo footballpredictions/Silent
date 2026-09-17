@@ -1,0 +1,23 @@
+---
+description: Context-guard — бюджет токенов, progressive disclosure
+alwaysApply: true
+---
+
+# Context-guard
+
+Дополняет Memory Bank, **не отменяет** «на каждый ход читать MEMORY_BANK + TASKS». Не копируй гигантские файлы целиком в ответ.
+
+## Когда Read `context-guard` SKILL.md
+
+Длинный чат, риск переполнения контекста, огромные логи/диффы, «не читай весь файл», compact/handoff.
+
+## Progressive disclosure
+
+1. MEMORY_BANK / TASKS — по правилам memory-bank (ключевые секции, не дамп всего файла в ответ).
+2. Код: Grep/символ → срез строк → полный файл только если файл небольшой или срез недостаточен.
+3. Логи/тест-вывод: head/tail или дайджест. Не тащить мегабайты в контекст.
+4. Секреты в выводе не цитировать (`.env`, `.env.deploy`, ключи, пароли).
+
+## Не ставить
+
+Не запускать context-guard setup/MCP/brief-mode, который переписывает AGENTS.md или отменяет Memory Bank. Compact — по явной просьбе или когда окно реально забито.

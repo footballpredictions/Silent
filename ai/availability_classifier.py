@@ -47,6 +47,7 @@ from ai.availability_model import (
     STAGE_TCP,
     STAGE_TLS,
     STAGE_TUNNEL_DEAD,
+    TARGET_QUEEN,
     TCP_CHANNELS,
     UDP_CHANNELS,
     TargetSnapshot,
@@ -111,11 +112,15 @@ def _verdict(
     channel: str = "",
     extra_fixes: list[str] | None = None,
     port: int = 0,
+    replace_fixes: bool = False,
 ) -> Verdict:
     m = method(kind)
-    fixes = list(m.fixes)
-    if extra_fixes:
-        fixes = extra_fixes + fixes
+    if replace_fixes and extra_fixes:
+        fixes = list(extra_fixes)
+    else:
+        fixes = list(m.fixes)
+        if extra_fixes:
+            fixes = extra_fixes + fixes
     return Verdict(
         target=snap.name,
         host=snap.host,
@@ -424,6 +429,26 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
                 if alive
                 else "ICMP ping с части нод проходит — IP не заглушен целиком"
             )
+            api_443 = channel in (CHANNEL_API_TCP, CHANNEL_API_TLS, CHANNEL_API_HTTP) and (
+                port in (0, 443, 8443) or (snap.api_port or 443) in (443, 8443)
+            )
+            # Локально TLS мёртв — это наша поломка, о ней уже сказано отдельно.
+            if api_443 and tls_entrance_broken(snap):
+                continue
+            if api_443:
+                extra_fixes = [
+                    "Не делать DNAT 8443/80→443 на том же IP: пакеты на 443 из РФ не доходят, "
+                    "текущие клиенты всё равно бьют в :443 — вход не оживает.",
+                    "Публичный вход уже есть: соты :9100 (standby) проксируют на Улей :80; "
+                    "после поднятия VPN API идёт в 10.66.66.1:8000. wdtt не рестартить.",
+                    "Новый IP/домен для публичного HTTPS — только если снова нужен вход "
+                    "именно на Улей из РФ; UDP WG на текущем адресе можно не трогать.",
+                ]
+            else:
+                extra_fixes = [
+                    f"Добавить альтернативный вход на порт 443/8443 через DNAT на {port or 'текущий порт'} "
+                    f"({snap.name}) — без рестарта сервиса.",
+                ]
             out.append(
                 _verdict(
                     snap,
@@ -436,11 +461,9 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
                         f"Локально порт {port or '?'} отвечает.",
                     ],
                     channel=channel,
-                    extra_fixes=[
-                        f"Добавить альтернативный вход на порт 443/8443 через DNAT на {port or 'текущий порт'} "
-                        f"({snap.name}) — без рестарта сервиса.",
-                    ],
+                    extra_fixes=extra_fixes,
                     port=port,
+                    replace_fixes=api_443,
                 )
             )
             continue
@@ -570,12 +593,57 @@ def _throttling_verdict(snap: TargetSnapshot) -> Verdict | None:
     )
 
 
+def tls_entrance_broken(snap: TargetSnapshot) -> bool:
+    """Локально TCP 443 открыт, а TLS и HTTPS молчат — вход сломан у нас.
+
+    Так выглядел инцидент 2026-09-16: `0.0.0.0:443` слушал docker-proxy, поэтому
+    TCP-проба проходила, а `curl https://127.0.0.1/api/health` отдавал 000. Снаружи
+    это неотличимо от резки порта, и агент писал «блокировок нет» / port_block.
+    """
+    if snap.role != TARGET_QUEEN:
+        return False
+    if snap.local_ok(CHANNEL_API_TCP) is not True:
+        return False
+    if snap.local_ok(CHANNEL_API_TLS) is not False:
+        return False
+    return snap.local_ok(CHANNEL_API_HTTP) is not True
+
+
+def _tls_entrance_verdict(snap: TargetSnapshot) -> Verdict | None:
+    if not tls_entrance_broken(snap):
+        return None
+    return _verdict(
+        snap,
+        KIND_SERVICE_DOWN,
+        confidence=0.85,
+        summary=f"{snap.name}: TCP 443 принимает, а TLS не отвечает — вход по HTTPS сломан у нас.",
+        evidence=[
+            "Локально TCP на 443 открыт (порт слушает), локальные TLS и HTTPS не прошли.",
+            "Снаружи это выглядит как резка порта, но пакеты доходят до сервиса.",
+        ],
+        channel=CHANNEL_API_TLS,
+        port=snap.api_port or 443,
+        extra_fixes=[
+            "Проверить nginx на Улье: `docker logs backend-nginx-1 | tail`, `nginx -T` "
+            "(server-блок 443, ssl_certificate) — `python scripts/diag_hive_tls_443.py`.",
+            "Проверить срок сертификата (certbot / acme.sh) — истёкший или пропавший файл "
+            "оставляет 443 открытым, но без рукопожатия.",
+            "Запасной порт и DNAT тут не помогают: сервис не отвечает и на самом Улье.",
+        ],
+        replace_fixes=True,
+    )
+
+
 def classify_target(snap: TargetSnapshot) -> list[Verdict]:
     verdicts: list[Verdict] = []
 
     dns = _dns_verdict(snap)
     if dns:
         verdicts.append(dns)
+
+    tls_broken = _tls_entrance_verdict(snap)
+    if tls_broken:
+        verdicts.append(tls_broken)
 
     blackhole = _blackhole_verdict(snap)
     if blackhole:

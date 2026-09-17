@@ -45,6 +45,9 @@ services:
       # Playwright/units на хосте Улья (:9101), не loopback контейнера
       OLCRTC_HOST_PROVISION_URL: http://172.17.0.1:9101
       PYTHONDONTWRITEBYTECODE: "1"
+      # Пусто: порт в тему пишет исполнитель после пробы с РФ, когда nginx слушает.
+      HIVE_API_ALT_PORTS: ${HIVE_API_ALT_PORTS:-}
+      HIVE_API_PORT_AUTOSWITCH: ${HIVE_API_PORT_AUTOSWITCH:-true}
     volumes:
       # Код с хоста, не из образа: recreate api больше не откатывает Python к старому image.
       - ./app:/app/app:ro
@@ -73,6 +76,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      # Запасной HTTPS, если из РФ режут 443. wdtt/56000 не трогаем.
+      - "2083:2083"
     volumes:
       - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/ssl/silent:ro

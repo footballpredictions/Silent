@@ -81,6 +81,40 @@ type Verdict = {
   channel: string
 }
 
+type PortPlan = {
+  action: string
+  title: string
+  port: number | null
+  suggested_port: number | null
+  close_port: number | null
+  keep_open: number[]
+  reason: string
+  explain: string
+  dead_windows: number
+  autoswitch: boolean
+  executed: boolean
+  candidates: { port: number; ru: string }[]
+}
+
+type RelayHop = {
+  name: string
+  host: string
+  ai_exit: boolean
+  action: string
+  entry: string | null
+  exit: string
+  reason: string
+  explain: string
+}
+
+type RelayPlan = {
+  action: string
+  title: string
+  explain: string
+  executed: boolean
+  hops: RelayHop[]
+}
+
 type Report = {
   ts: string
   status: string
@@ -91,6 +125,8 @@ type Report = {
   vantage: { ru_nodes?: string[]; world_nodes?: string[]; checks?: number }
   verdicts: Verdict[]
   targets: Target[]
+  port_plan?: PortPlan | null
+  relay_plan?: RelayPlan | null
 }
 
 type AgentSettings = {
@@ -241,6 +277,95 @@ function VerdictCard({ verdict }: { verdict: Verdict }) {
               </div>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const CANDIDATE_RU_LABEL: Record<string, string> = {
+  open: 'отвечает',
+  refused: 'пакеты доходят',
+  timeout: 'режется',
+}
+
+function PortPlanCard({ plan }: { plan: PortPlan }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-3 bg-[#0a0a0a] border border-[#242424] rounded-lg px-3 py-2.5">
+      <button type="button" onClick={() => setOpen(o => !o)} className="w-full flex items-start gap-2 text-left">
+        {open ? (
+          <ChevronDown className="w-4 h-4 mt-0.5 text-[#666] shrink-0" />
+        ) : (
+          <ChevronRight className="w-4 h-4 mt-0.5 text-[#666] shrink-0" />
+        )}
+        <span className="flex-1">
+          <span className="text-sm text-[#ddd]">Запасной порт API: {plan.title}</span>
+          <span className="block text-[11px] text-[#666] mt-0.5">
+            {plan.autoswitch ? 'автосмена включена' : 'автосмена выключена'} ·{' '}
+            {plan.executed
+              ? plan.port
+                ? `опубликован :${plan.port}`
+                : plan.suggested_port
+                  ? `в теме :${plan.suggested_port}`
+                  : 'порт опубликован'
+              : 'порт не менялся'}{' '}
+            · мёртвых окон подряд: {plan.dead_windows}
+          </span>
+        </span>
+      </button>
+      {open && (
+        <div className="mt-2 pl-6 space-y-1.5">
+          <p className="text-xs text-[#aaa]">{plan.explain}</p>
+          <p className="text-[11px] text-[#666]">
+            Никогда не закрываем: {plan.keep_open.join(', ')}
+          </p>
+          {plan.candidates.length > 0 && (
+            <div className="text-[11px] text-[#888]">
+              Кандидаты с российских нод:{' '}
+              {plan.candidates
+                .map(c => `${c.port} — ${CANDIDATE_RU_LABEL[c.ru] || c.ru}`)
+                .join(' · ')}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const RELAY_ACTION_RU: Record<string, string> = {
+  direct: 'напрямую',
+  relay: 'вход через другую соту',
+  hold: 'нет живого входа',
+}
+
+function RelayPlanCard({ plan }: { plan: RelayPlan }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-3 bg-[#0a0a0a] border border-[#242424] rounded-lg px-3 py-2.5">
+      <button type="button" onClick={() => setOpen(o => !o)} className="w-full flex items-start gap-2 text-left">
+        {open ? (
+          <ChevronDown className="w-4 h-4 mt-0.5 text-[#666] shrink-0" />
+        ) : (
+          <ChevronRight className="w-4 h-4 mt-0.5 text-[#666] shrink-0" />
+        )}
+        <span className="flex-1">
+          <span className="text-sm text-[#ddd]">Кольцо серверов: {plan.title}</span>
+          <span className="block text-[11px] text-[#666] mt-0.5">
+            туннеля между сотами нет · маршрут не применялся
+          </span>
+        </span>
+      </button>
+      {open && (
+        <div className="mt-2 pl-6 space-y-1.5">
+          <p className="text-xs text-[#aaa]">{plan.explain}</p>
+          {plan.hops.map(h => (
+            <p key={`${h.name}-${h.action}`} className="text-[11px] text-[#888]">
+              {h.ai_exit ? 'Сервер 4 · ' : ''}{h.name}: {RELAY_ACTION_RU[h.action] || h.action}
+              {h.action === 'relay' && h.entry ? ` ← ${h.entry}` : ''}
+            </p>
+          ))}
         </div>
       )}
     </div>
@@ -543,6 +668,9 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
               <p key={i} className="text-[11px] text-amber-300/90 mt-1">{w}</p>
             ))}
           </div>
+
+          {report.port_plan?.title && <PortPlanCard plan={report.port_plan} />}
+          {report.relay_plan?.title && <RelayPlanCard plan={report.relay_plan} />}
 
           {problems.length > 0 ? (
             <div className="mt-3 space-y-2">

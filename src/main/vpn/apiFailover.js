@@ -14,11 +14,16 @@ function publicFailoverBases({
     seen.add(v)
     out.push(v)
   }
-  // Вход/регистрация: сначала Улей; соты по очереди только если Улей не ответил.
+  const hive = { hiveHost, hiveIp }
+  const rest = []
+  for (const u of [...baked, ...standby]) {
+    if (isHivePublicBase(u, hive)) rest.push(u)
+    else add(u)
+  }
+  // Соты первыми: 443 Улья из РФ часто таймаут, вход/подписка живут на :9100.
   add(`https://${hiveHost}`)
   add(`https://${hiveIp}`)
-  for (const u of baked) add(u)
-  for (const u of standby) add(u)
+  for (const u of rest) add(u)
   return out
 }
 

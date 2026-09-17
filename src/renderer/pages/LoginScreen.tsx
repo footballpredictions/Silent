@@ -37,7 +37,7 @@ import WindowControls from '../components/WindowControls'
 import { pushLog } from '../debugLog'
 import { clearVpnLogs } from '../vpnLogStore'
 import { authStrings as s } from '../authStrings'
-import { needsNeonGlow, neonTextShadow, themeToUi, resolveThemeAssetUrl, type ClientTheme } from '../clientTheme'
+import { needsNeonGlow, neonTextShadow, themeToUi, resolveThemeAssetUrl, skipEmailConfirmation, type ClientTheme } from '../clientTheme'
 import { useAppearanceMode } from '../appearanceStore'
 import { isDebugBuild } from '../debugBuild'
 
@@ -251,9 +251,16 @@ export default function LoginScreen({
       const payload: { email: string; password: string; referral_or_promo?: string } = { email, password }
       const code = referralOrPromo.trim()
       if (code) payload.referral_or_promo = code
-      await api.post('/api/auth/register', payload, { timeout: 25_000 })
+      const res = await api.post('/api/auth/register', payload, { timeout: 25_000 })
       saveRememberMe(email, password, rememberMe)
-      setRegDone(true)
+      if (skipEmailConfirmation(theme?.skip_email_confirmation, res.data?.email_confirmation_required)) {
+        pushLog('Login', isBootstrapVpnActive() ? 'auth via bootstrap tunnel (main IPC)' : 'auth public HTTPS')
+        const loginRes = await api.post('/api/auth/login', { email, password }, { timeout: 25_000 })
+        saveTokens(loginRes.data.access_token, loginRes.data.refresh_token)
+        await finishAuth()
+      } else {
+        setRegDone(true)
+      }
     } catch (err: any) {
       setError(formatApiError(err, 'Ошибка регистрации'))
     } finally {

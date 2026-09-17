@@ -32,6 +32,12 @@ const {
 const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
 const { resolveVkExcludeIps, warmVkExcludeIps, invalidateVkExcludeCache } = require('./vpn/vkNetworkExcludes')
 const { publicFailoverBases, publicFailoverAttemptTimeoutMs } = require('./vpn/apiFailover')
+const {
+  cellIpsFromUrls,
+  pickBootstrapOverlay,
+  isHiveBootstrapIp,
+  HIVE_IP: BOOTSTRAP_HIVE_IP,
+} = require('./vpn/bootstrapOverlay')
 const { HIVE_PUBLIC_IP, collectTunnelBypassIps } = require('./vpn/bypassTargets')
 const buildFlags = require('./buildFlags')
 const { verifyWdttIntegrity, softTamperHints } = require('./integrity')
@@ -1300,6 +1306,19 @@ ipcMain.handle('vk-guest-bootstrap', async (_, authUrl) => {
 
 async function beginWdttSession(config, { switching = false } = {}) {
   vpnBootstrapMode = !!config.is_bootstrap
+  if (vpnBootstrapMode) {
+    const overlay = pickBootstrapOverlay({
+      hiveIp: BOOTSTRAP_HIVE_IP,
+      cellIps: cellIpsFromUrls([
+        ...(standbyApiBases || []),
+        'http://87.58.213.193:9100',
+        'http://78.17.74.27:9100',
+      ]),
+    })
+    config.server_ip = overlay.ip
+    config.server_port = overlay.port
+    sendLog(`[VPN] bootstrap overlay ${overlay.ip}:${overlay.port}${overlay.isHive ? ' (hive)' : ' (cell)'}`)
+  }
   config.server_ip = normalizeServerIp(config.server_ip)
 
   // Исключения приложений + сайты: план сессии (full VPN). Bootstrap — без user exclusions.
@@ -1610,7 +1629,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     const alreadyUp = await isServiceRunningAsync()
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
       skipWdttWait: true,
-      subnetOnly: vpnBootstrapMode || wgCredPhase,
+      subnetOnly: (vpnBootstrapMode && isHiveBootstrapIp(config.server_ip)) || wgCredPhase,
       skipForceStop: alreadyUp,
       reuseRuntime: true,
       dnsOverride: sessionDnsOverride,

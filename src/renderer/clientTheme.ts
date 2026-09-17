@@ -79,6 +79,17 @@ export interface ClientTheme {
   payment_timeout_text?: string
   payment_retry_button_text?: string
   payment_cancel_button_text?: string
+  skip_email_confirmation?: boolean
+}
+
+export function skipEmailConfirmation(
+  themeSkip?: boolean,
+  requiredFlag?: string | boolean | null,
+): boolean {
+  if (themeSkip) return true
+  if (requiredFlag === false) return true
+  if (typeof requiredFlag === 'string' && requiredFlag.trim().toLowerCase() === 'false') return true
+  return false
 }
 
 export function standbyApiBasesFromTheme(theme: ClientTheme | null): string[] {

@@ -51,6 +51,7 @@ import com.silent.vpn.policy.ConnectConfigFetchPolicy
 import com.silent.vpn.policy.EmailConfirmationPolicy
 import com.silent.vpn.policy.OlcrtcSessionPolicy
 import com.silent.vpn.policy.OtaCheckPolicy
+import com.silent.vpn.policy.OtaGithubDiscovery
 import com.silent.vpn.policy.SessionsSyncPolicy
 import com.silent.vpn.policy.UpdateUrlResolver
 import com.silent.vpn.security.AppIntegrity
@@ -2367,36 +2368,26 @@ class MainViewModel @Inject constructor(
                         WdttTunnelManager.tunnelReady.value &&
                         !WdttTunnelManager.isBootstrapMode()
                     val onMobile = repo.isOnMobileData()
-                    val channel = OtaCheckPolicy.channel(onMobile, vpnUp)
 
                     var succeeded = false
-                    if (channel == OtaCheckPolicy.Channel.TUNNEL ||
-                        channel == OtaCheckPolicy.Channel.TUNNEL_THEN_PUBLIC
+                    when (
+                        val gh = OtaGithubDiscovery.parse(
+                            repo.fetchGithubReleasesJson(),
+                            repo.getOtaPlatform(),
+                            version,
+                        )
                     ) {
-                        succeeded = runCatching {
-                            if (inOverlaySession || repo.canUseMobileDirectTunnelApi() || !onMobile) {
-                                if (onMobile) {
-                                    repo.prepareMainVpnDirectApi()
-                                    applyCheckUpdateResponse(version)
-                                } else {
-                                    repo.withOtaCheckApi { applyCheckUpdateResponse(version) }
-                                }
-                            } else {
-                                repo.withOtaBackendApi { applyCheckUpdateResponse(version) }
-                            }
-                        }.getOrDefault(false)
-                    }
-
-                    if (!succeeded && OtaCheckPolicy.allowPublicFallback(onMobile)) {
-                        val bases = listOf(
-                            repo.getPublicServerUrl().trimEnd('/'),
-                            "https://${SilentRepository.DEFAULT_SERVER_HOST}",
-                        ).distinct()
-                        for (base in bases) {
-                            if (runCatching { tryCheckUpdateOnBase(base, version) }.getOrDefault(false)) {
-                                succeeded = true
-                                break
-                            }
+                        is OtaGithubDiscovery.Result.Available -> {
+                            applyGithubOta(gh)
+                            succeeded = true
+                        }
+                        is OtaGithubDiscovery.Result.Current -> {
+                            _updateInfo.value = null
+                            DebugLog.i("MainViewModel", "checkUpdate: github.io up to date v=$version")
+                            succeeded = true
+                        }
+                        OtaGithubDiscovery.Result.Unreadable -> {
+                            DebugLog.w("MainViewModel", "checkUpdate: github.io unreadable, hive check skipped")
                         }
                     }
 
@@ -2422,26 +2413,19 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun applyCheckUpdateResponse(version: String): Boolean {
-        val res = repo.getApi().checkUpdate(repo.getOtaPlatform(), version)
-        if (!res.isSuccessful) {
-            DebugLog.w("MainViewModel", "checkUpdate HTTP ${res.code()} via ${repo.getServerUrl()}")
-            return false
-        }
-        val body = res.body()
-        if (body?.available == true) {
-            _updateInfo.value = body
-            updateApiBaseUrl = if (repo.isOnMobileData()) {
-                repo.getServerUrl().trimEnd('/')
-            } else {
-                repo.getPublicServerUrl().trimEnd('/')
-            }
-            DebugLog.i("MainViewModel", "checkUpdate: available ${body.version}")
-        } else {
-            _updateInfo.value = null
-            DebugLog.i("MainViewModel", "checkUpdate: up to date v=$version")
-        }
-        return true
+    private fun applyGithubOta(offer: OtaGithubDiscovery.Result.Available) {
+        val platform = repo.getOtaPlatform()
+        _updateInfo.value = UpdateCheckResponse(
+            available = true,
+            version = offer.version,
+            filename = offer.filename,
+            size = offer.size,
+            download_url = offer.downloadUrl,
+            github_download_url = offer.downloadUrl,
+            tunnel_download_url = "/api/updates/download/$platform",
+        )
+        updateApiBaseUrl = repo.getPublicServerUrl().trimEnd('/')
+        DebugLog.i("MainViewModel", "checkUpdate: github.io available ${offer.version}")
     }
 
     /**
@@ -2495,25 +2479,6 @@ class MainViewModel @Inject constructor(
     /** Главный экран: повторная проверка OTA (cooldown в OtaCheckPolicy). */
     fun setUpdatePolling(active: Boolean) {
         if (active) checkForAppUpdate()
-    }
-
-    private suspend fun tryCheckUpdateOnBase(base: String, version: String): Boolean {
-        repo.useApiBase(base)
-        val res = repo.getApi().checkUpdate(repo.getOtaPlatform(), version)
-        if (!res.isSuccessful) {
-            DebugLog.w("MainViewModel", "checkUpdate HTTP ${res.code()} on $base")
-            return false
-        }
-        val body = res.body()
-        if (body?.available == true) {
-            _updateInfo.value = body
-            updateApiBaseUrl = base.trimEnd('/')
-            DebugLog.i("MainViewModel", "checkUpdate: available ${body.version} on $base")
-        } else {
-            _updateInfo.value = null
-            DebugLog.i("MainViewModel", "checkUpdate: up to date v=$version on $base")
-        }
-        return true
     }
 
     fun downloadAndInstallUpdate(context: Context, onInstallReady: (Intent) -> Unit) {

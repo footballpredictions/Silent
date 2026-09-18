@@ -33,14 +33,14 @@ class UpdateUrlResolverTest {
     }
 
     @Test
-    fun `lte vpn uses tunnel download not github`() {
+    fun `lte vpn still downloads from github not hive`() {
         val url = UpdateUrlResolver.resolveUpdateDownloadUrl(
             baseInput(onMobileData = true, mainVpnTunnelUp = true).copy(
                 tunnelDownloadPath = "/api/updates/download/android",
                 githubDownloadUrl = "https://github.com/silentvpn3/releases/apk.apk",
             ),
         )
-        assertEquals("http://10.66.66.1:8000/api/updates/download/android", url)
+        assertEquals("https://github.com/silentvpn3/releases/apk.apk", url)
     }
 
     @Test

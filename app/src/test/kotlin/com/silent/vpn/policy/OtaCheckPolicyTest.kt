@@ -82,8 +82,8 @@ class OtaCheckPolicyTest {
     }
 
     @Test
-    fun `total timeout is shorter than public hive tls hang`() {
+    fun `total timeout covers github pages then short hive fallback`() {
         assertTrue(OtaCheckPolicy.TOTAL_TIMEOUT_MS < 20_000L)
-        assertTrue(OtaCheckPolicy.TOTAL_TIMEOUT_MS >= 8_000L)
+        assertTrue(OtaCheckPolicy.TOTAL_TIMEOUT_MS >= OtaGithubDiscovery.FETCH_TIMEOUT_MS)
     }
 }

@@ -16,6 +16,7 @@ import com.silent.vpn.policy.AppExclusionsPersist
 import com.silent.vpn.policy.OlcrtcSessionPolicy
 import com.silent.vpn.policy.PublicApiFailoverPolicy
 import com.silent.vpn.policy.TunnelHttpPolicy
+import com.silent.vpn.policy.OtaGithubDiscovery
 import com.silent.vpn.policy.UpdateUrlResolver
 import com.silent.vpn.vpn.TunnelApiProxy
 import com.silent.vpn.vpn.OlcrtcTunnelManager
@@ -979,6 +980,29 @@ class SilentRepository @Inject constructor(
                 tunnelDownloadPath = info.tunnel_download_url,
             ),
         )
+
+    /** Discovery independent of hive IP. Null = Pages unreachable, fall through to API. */
+    suspend fun fetchGithubReleasesJson(): String? = withContext(Dispatchers.IO) {
+        try {
+            val client = OkHttpClient.Builder()
+                .callTimeout(OtaGithubDiscovery.FETCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .connectTimeout(OtaGithubDiscovery.FETCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .readTimeout(OtaGithubDiscovery.FETCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .build()
+            val req = okhttp3.Request.Builder()
+                .url("${OtaGithubDiscovery.RELEASES_JSON_URL}?_=${System.currentTimeMillis()}")
+                .header("Cache-Control", "no-cache")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                resp.body?.string()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "github OTA json: ${e.message}")
+            null
+        }
+    }
 
     suspend fun <T> withUpdateDownloadRoute(block: suspend () -> T): T {
         if (!shouldUseTunnelUpdateDownload()) return block()

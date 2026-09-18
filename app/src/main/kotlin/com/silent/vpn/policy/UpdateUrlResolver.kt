@@ -62,15 +62,15 @@ object UpdateUrlResolver {
     }
 
     fun resolveUpdateDownloadUrl(input: OtaUrlInput): String? {
+        val gh = input.githubDownloadUrl?.trim()?.takeIf { it.startsWith("http") }
+        val absolute = input.downloadUrl?.trim()?.takeIf { it.startsWith("http") }
+        if (gh != null) return gh
+        if (absolute != null) return absolute
         if (shouldUseTunnelUpdateDownload(input)) {
             val path = input.tunnelDownloadPath?.trim()?.takeIf { it.isNotBlank() }
                 ?: "/api/updates/download/${input.otaPlatform}"
             return joinUpdateUrl(TUNNEL_API_BASE, path)
         }
-        val gh = input.githubDownloadUrl?.trim()?.takeIf { it.startsWith("http") }
-        val absolute = input.downloadUrl?.trim()?.takeIf { it.startsWith("http") }
-        if (gh != null) return gh
-        if (absolute != null) return absolute
         val rel = input.downloadUrl?.trim().orEmpty()
         if (rel.isBlank()) return null
         return joinUpdateUrl(resolveUpdateDownloadBase(input), rel)

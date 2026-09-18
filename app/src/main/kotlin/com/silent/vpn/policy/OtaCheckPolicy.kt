@@ -6,7 +6,7 @@ package com.silent.vpn.policy
  * for the rest of the VPN session — the banner never appeared.
  */
 object OtaCheckPolicy {
-    const val TOTAL_TIMEOUT_MS = 12_000L
+    const val TOTAL_TIMEOUT_MS = 18_000L
     const val RECHECK_COOLDOWN_MS = 30_000L
 
     enum class Channel {

@@ -12,7 +12,7 @@ class UpdateUrlResolverTest {
         onMobileData: Boolean = false,
         mainVpnTunnelUp: Boolean = false,
         isBootstrapMode: Boolean = false,
-        publicServerUrl: String = "https://132-243-234-162.nip.io",
+        publicServerUrl: String = "https://89-125-188-100.nip.io",
     ) = UpdateUrlResolver.OtaUrlInput(
         onMobileData = onMobileData,
         appExcludedFromVpn = true,
@@ -108,7 +108,7 @@ class UpdateUrlResolverTest {
         val base = UpdateUrlResolver.resolveUpdateDownloadBase(
             baseInput(onMobileData = true, mainVpnTunnelUp = true),
         )
-        assertEquals("https://132-243-234-162.nip.io", base)
+        assertEquals("https://89-125-188-100.nip.io", base)
     }
 
     @Test
@@ -123,7 +123,7 @@ class UpdateUrlResolverTest {
     fun `isTunnelApiBase detects gateway and localhost proxy`() {
         assertTrue(UpdateUrlResolver.isTunnelApiBase("http://10.66.66.1:8000"))
         assertTrue(UpdateUrlResolver.isTunnelApiBase("http://127.0.0.1:9000/api"))
-        assertFalse(UpdateUrlResolver.isTunnelApiBase("https://132-243-234-162.nip.io"))
+        assertFalse(UpdateUrlResolver.isTunnelApiBase("https://89-125-188-100.nip.io"))
     }
 
     @Test
@@ -131,7 +131,7 @@ class UpdateUrlResolverTest {
         val url = UpdateUrlResolver.resolveUpdateDownloadUrl(
             baseInput().copy(downloadUrl = "/files/app.apk"),
         )
-        assertEquals("https://132-243-234-162.nip.io/files/app.apk", url)
+        assertEquals("https://89-125-188-100.nip.io/files/app.apk", url)
     }
 
     @Test

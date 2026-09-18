@@ -28,7 +28,7 @@ class WireGuardMtuPolicyTest {
 
     @Test
     fun other_slots_keep_default_mtu_not_server_1280() {
-        assertEquals(1200, WireGuardConfigBuilder.mtuForConfig(cfg("server1", "132.243.234.162")))
+        assertEquals(1200, WireGuardConfigBuilder.mtuForConfig(cfg("server1", "89.125.188.100")))
         assertEquals(1200, WireGuardConfigBuilder.mtuForConfig(cfg("server2", "87.58.213.193")))
         assertEquals(1200, WireGuardConfigBuilder.mtuForConfig(cfg("server4", "192.177.26.38")))
         // GETCONF часто шлёт 1280 — клиентская политика всё равно 1200 вне server3

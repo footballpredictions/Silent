@@ -16,7 +16,7 @@ object AllowedIpsHelper {
     fun patchAllowedIPsForBootstrapAuth(
         config: String,
         overlayServerIp: String,
-        hiveIp: String = "132.243.234.162",
+        hiveIp: String = "89.125.188.100",
     ): String {
         val overlay = overlayServerIp.trim()
         val hive = hiveIp.trim()

@@ -50,6 +50,7 @@ import com.silent.vpn.policy.ConfigSyncSkipPolicy
 import com.silent.vpn.policy.ConnectConfigFetchPolicy
 import com.silent.vpn.policy.EmailConfirmationPolicy
 import com.silent.vpn.policy.OlcrtcSessionPolicy
+import com.silent.vpn.policy.OtaCheckPolicy
 import com.silent.vpn.policy.SessionsSyncPolicy
 import com.silent.vpn.policy.UpdateUrlResolver
 import com.silent.vpn.security.AppIntegrity
@@ -2283,6 +2284,13 @@ class MainViewModel @Inject constructor(
         if (!bootstrapVpnMode && repo.isLoggedIn()) {
             watchTunnelDataSyncFromCache()
         }
+        if (OtaCheckPolicy.shouldCheckOnTunnelReady(
+                repo.isOnMobileData(),
+                WdttTunnelManager.isBootstrapMode() || bootstrapVpnMode,
+            )
+        ) {
+            checkForAppUpdate()
+        }
     }
 
     /**
@@ -2342,54 +2350,73 @@ class MainViewModel @Inject constructor(
 
     private var updateCheckInFlight = false
     private var otaCheckedThisVpnSession = false
+    private var lastOtaCheckAtMs = 0L
 
-    /** OTA: Wi‑Fi — public HTTPS; LTE — во время/после initial sync через tunnel. */
+    /** OTA: при VPN — туннель сразу (public hive TLS с РФ часто висит); Wi‑Fi без VPN — public. */
     fun checkForAppUpdate(inOverlaySession: Boolean = false) {
         if (updateCheckInFlight) return
-        if (!inOverlaySession && otaCheckedThisVpnSession) return
+        val now = SystemClock.elapsedRealtime()
+        if (OtaCheckPolicy.shouldSkipRecheck(lastOtaCheckAtMs, now, inOverlaySession)) return
         updateCheckInFlight = true
         viewModelScope.launch {
             var ok = false
             try {
-                val version = com.silent.vpn.BuildConfig.VERSION_NAME
-                val vpnUp = SilentVpnService.isRunning &&
-                    WdttTunnelManager.tunnelReady.value &&
-                    !WdttTunnelManager.isBootstrapMode()
+                val timed = withTimeoutOrNull(OtaCheckPolicy.TOTAL_TIMEOUT_MS) {
+                    val version = com.silent.vpn.BuildConfig.VERSION_NAME
+                    val vpnUp = SilentVpnService.isRunning &&
+                        WdttTunnelManager.tunnelReady.value &&
+                        !WdttTunnelManager.isBootstrapMode()
+                    val onMobile = repo.isOnMobileData()
+                    val channel = OtaCheckPolicy.channel(onMobile, vpnUp)
 
-                if (vpnUp && repo.allowsBackgroundConfigSync()) {
-                    ok = runCatching {
-                        if (inOverlaySession || repo.canUseMobileDirectTunnelApi()) {
-                            repo.prepareMainVpnDirectApi()
-                            applyCheckUpdateResponse(version)
-                        } else {
-                            repo.withOtaBackendApi { applyCheckUpdateResponse(version) }
-                        }
-                    }.getOrDefault(false)
-                }
+                    var succeeded = false
+                    if (channel == OtaCheckPolicy.Channel.TUNNEL ||
+                        channel == OtaCheckPolicy.Channel.TUNNEL_THEN_PUBLIC
+                    ) {
+                        succeeded = runCatching {
+                            if (inOverlaySession || repo.canUseMobileDirectTunnelApi() || !onMobile) {
+                                if (onMobile) {
+                                    repo.prepareMainVpnDirectApi()
+                                    applyCheckUpdateResponse(version)
+                                } else {
+                                    repo.withOtaCheckApi { applyCheckUpdateResponse(version) }
+                                }
+                            } else {
+                                repo.withOtaBackendApi { applyCheckUpdateResponse(version) }
+                            }
+                        }.getOrDefault(false)
+                    }
 
-                if (!ok && !repo.isOnMobileData()) {
-                    val bases = listOf(
-                        repo.getPublicServerUrl().trimEnd('/'),
-                        "https://${SilentRepository.DEFAULT_SERVER_HOST}",
-                    ).distinct()
-                    for (base in bases) {
-                        if (runCatching { tryCheckUpdateOnBase(base, version) }.getOrDefault(false)) {
-                            ok = true
-                            break
+                    if (!succeeded && OtaCheckPolicy.allowPublicFallback(onMobile)) {
+                        val bases = listOf(
+                            repo.getPublicServerUrl().trimEnd('/'),
+                            "https://${SilentRepository.DEFAULT_SERVER_HOST}",
+                        ).distinct()
+                        for (base in bases) {
+                            if (runCatching { tryCheckUpdateOnBase(base, version) }.getOrDefault(false)) {
+                                succeeded = true
+                                break
+                            }
                         }
                     }
-                }
 
-                if (!ok) {
-                    DebugLog.w(
-                        "MainViewModel",
-                        "checkUpdate failed vpnUp=$vpnUp mobile=${repo.isOnMobileData()} excluded=${SilentRepository.APP_EXCLUDED_FROM_VPN}",
-                    )
+                    if (!succeeded) {
+                        DebugLog.w(
+                            "MainViewModel",
+                            "checkUpdate failed vpnUp=$vpnUp mobile=$onMobile excluded=${SilentRepository.APP_EXCLUDED_FROM_VPN}",
+                        )
+                    }
+                    succeeded
+                }
+                ok = timed == true
+                if (timed == null) {
+                    DebugLog.w("MainViewModel", "checkUpdate timeout")
                 }
             } catch (e: Exception) {
                 DebugLog.w("MainViewModel", "checkUpdate: ${e.message}")
             } finally {
                 updateCheckInFlight = false
+                lastOtaCheckAtMs = SystemClock.elapsedRealtime()
                 if (ok) otaCheckedThisVpnSession = true
             }
         }
@@ -2465,9 +2492,9 @@ class MainViewModel @Inject constructor(
         vpnProfilePollJob = null
     }
 
-    /** Главный экран: одна проверка OTA при открытии (только без VPN). */
+    /** Главный экран: повторная проверка OTA (cooldown в OtaCheckPolicy). */
     fun setUpdatePolling(active: Boolean) {
-        if (active && !otaCheckedThisVpnSession) checkForAppUpdate()
+        if (active) checkForAppUpdate()
     }
 
     private suspend fun tryCheckUpdateOnBase(base: String, version: String): Boolean {
@@ -4014,6 +4041,7 @@ class MainViewModel @Inject constructor(
             bootstrapVpnMode = false
             backendSyncCompleted = false
             otaCheckedThisVpnSession = false
+            lastOtaCheckAtMs = 0L
             VpnSessionState.resetBackendSync()
             if (VpnNetworkHelper.isOtherVpnActive(context)) {
                 DebugLog.i("MainViewModel", "Подключение заменит другой активный VPN")

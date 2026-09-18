@@ -1,0 +1,38 @@
+# Secrets
+.env
+.env.*
+**/.env
+**/.env.*
+.env.deploy
+**/.env.deploy
+**/credentials.json
+**/*credentials*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.keystore
+**/keystore.properties
+**/silent_credentials.txt
+
+# Graph / VCS / deps
+graphify-out/
+.git/
+**/node_modules/
+**/.venv/
+**/venv/
+**/__pycache__/
+**/.gradle/
+**/build/
+**/dist/
+**/.idea/
+
+# Native / vendor dumps
+vendor/
+**/jniLibs/
+**/*.apk
+**/*.exe
+**/*.so
+**/*.log
+
+# Context-guard local receipts (if any)
+.context-guard/

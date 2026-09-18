@@ -10,8 +10,8 @@ class PublicApiFailoverPolicyTest {
     fun `cells first so blocked hive 443 does not stall splash and toggle`() {
         val got = PublicApiFailoverPolicy.orderedPublicBases(
             hiveHttps = listOf(
-                "https://132-243-234-162.nip.io",
-                "https://132.243.234.162",
+                "https://89-125-188-100.nip.io",
+                "https://89.125.188.100",
             ),
             cells = listOf(
                 "http://87.58.213.193:9100",
@@ -22,8 +22,8 @@ class PublicApiFailoverPolicyTest {
             listOf(
                 "http://87.58.213.193:9100",
                 "http://78.17.74.27:9100",
-                "https://132-243-234-162.nip.io",
-                "https://132.243.234.162",
+                "https://89-125-188-100.nip.io",
+                "https://89.125.188.100",
             ),
             got,
         )
@@ -50,7 +50,7 @@ class PublicApiFailoverPolicyTest {
 
     @Test
     fun `https hive gets a short connect timeout so cells are reached`() {
-        assertEquals(4L, PublicApiFailoverPolicy.connectTimeoutSec("https://132-243-234-162.nip.io"))
+        assertEquals(4L, PublicApiFailoverPolicy.connectTimeoutSec("https://89-125-188-100.nip.io"))
         assertEquals(8L, PublicApiFailoverPolicy.connectTimeoutSec("http://87.58.213.193:9100"))
     }
 }

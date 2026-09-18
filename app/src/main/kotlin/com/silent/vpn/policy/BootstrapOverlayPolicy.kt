@@ -13,7 +13,7 @@ object BootstrapOverlayPolicy {
 
     fun cellIpsFromUrls(
         urls: List<String>,
-        hiveIps: Set<String> = setOf("132.243.234.162", "132-243-234-162.nip.io"),
+        hiveIps: Set<String> = setOf("89.125.188.100", "89-125-188-100.nip.io"),
         skipIps: Set<String> = AI_EXIT_IPS,
     ): List<String> {
         val hive = hiveIps.map { it.trim().lowercase() }.filter { it.isNotBlank() }.toSet()

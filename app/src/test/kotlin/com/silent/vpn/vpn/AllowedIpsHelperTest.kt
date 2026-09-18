@@ -21,8 +21,8 @@ class AllowedIpsHelperTest {
     @Test
     fun `bootstrap does not swallow cell ips when hive wg is dead`() {
         // Overlay на Улей :56000 — узкий AllowedIPs, иначе мёртвый handshake глотает соты.
-        val patched = AllowedIpsHelper.patchAllowedIPsForBootstrapAuth(baseConfig, "132.243.234.162")
-        assertTrue(patched.contains("AllowedIPs = 10.66.66.0/24, 132.243.234.162/32"))
+        val patched = AllowedIpsHelper.patchAllowedIPsForBootstrapAuth(baseConfig, "89.125.188.100")
+        assertTrue(patched.contains("AllowedIPs = 10.66.66.0/24, 89.125.188.100/32"))
         assertFalse(patched.contains("AllowedIPs = 0.0.0.0/0"))
         val line = patched.lines().first { it.startsWith("AllowedIPs") }
         val cidrs = line.removePrefix("AllowedIPs = ").split(", ")

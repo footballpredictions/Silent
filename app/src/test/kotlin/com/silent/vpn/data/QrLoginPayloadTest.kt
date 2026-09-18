@@ -40,7 +40,7 @@ class QrLoginPayloadTest {
 
     @Test
     fun parsesHttpsLandingFromExternalScanner() {
-        val parsed = parseQrPayload("https://132-243-234-162.nip.io/qr?k=s&c=Abc_123-token")!!
+        val parsed = parseQrPayload("https://89-125-188-100.nip.io/qr?k=s&c=Abc_123-token")!!
         assertTrue(parsed.isSession)
         assertEquals("Abc_123-token", parsed.code)
         assertEquals("silentvpn://qr?k=s&c=Abc_123-token", parsed.toUri())

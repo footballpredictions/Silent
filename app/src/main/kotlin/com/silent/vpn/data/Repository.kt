@@ -47,8 +47,8 @@ class SilentRepository @Inject constructor(
 ) {
     companion object {
         private const val TAG = "SilentRepository"
-        const val DEFAULT_SERVER_URL = "https://132-243-234-162.nip.io"
-        const val DEFAULT_SERVER_HOST = "132-243-234-162.nip.io"
+        const val DEFAULT_SERVER_URL = "https://89-125-188-100.nip.io"
+        const val DEFAULT_SERVER_HOST = "89-125-188-100.nip.io"
         const val PREF_SERVER_URL = "server_url"
         const val PREF_ACCESS_TOKEN = "access_token"
         const val PREF_REFRESH_TOKEN = "refresh_token"
@@ -92,7 +92,7 @@ class SilentRepository @Inject constructor(
         const val SERVER_CELL_PREFIX = "cell:"
         private val PREFERRED_SERVER_SLOT = Regex("^server\\d+$", RegexOption.IGNORE_CASE)
         val BAKED_SERVER_IPS = mapOf(
-            "server1" to "132.243.234.162",
+            "server1" to "89.125.188.100",
             "server2" to "87.58.213.193",
             "server3" to "78.17.74.27",
             // Сота 3 / «Сервер 4 для ИИ»: без запечённого IP кеш конфига слота считается чужим.
@@ -869,6 +869,20 @@ class SilentRepository @Inject constructor(
         return withRoutineBackendApi(allowOverlayFallback = true, block = block)
     }
 
+    /**
+     * Проверка OTA: при живом VPN сразу туннель/прокси, без ожидания public hive TLS.
+     * LTE — как [withOtaBackendApi] (overlay / direct).
+     */
+    suspend fun <T> withOtaCheckApi(block: suspend () -> T): T {
+        if (isOnMobileData()) return withOtaBackendApi(block)
+        if (!isMainVpnTunnelUp()) {
+            useApiBase(getPublicServerUrl())
+            invalidateApiClient()
+            return block()
+        }
+        return withTunnelBackendBlock(allowOverlayFallback = true, block = block)
+    }
+
     /** Долгая загрузка APK — tunnel direct/proxy без overlay. */
     suspend fun <T> withTunnelApiForUpdateDownload(block: suspend () -> T): T {
         if (!isMainVpnTunnelUp()) {
@@ -937,7 +951,7 @@ class SilentRepository @Inject constructor(
     fun getPublicServerUrl(): String {
         val raw = prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
         // Старый дефолт по IP: TLS к сертификату nip.io часто hang/fail на assign.
-        if (raw.contains("132.243.234.162") && !raw.contains("nip.io")) {
+        if (raw.contains("89.125.188.100") && !raw.contains("nip.io")) {
             val fixed = DEFAULT_SERVER_URL
             prefs.edit().putString(PREF_SERVER_URL, fixed).apply()
             return fixed

@@ -16,16 +16,16 @@ class ApiHostHeaderPolicyTest {
     @Test
     fun loopbackAndHostnameSkipNipIoHost() {
         assertFalse(ApiHostHeaderPolicy.shouldSetNipIoHost("127.0.0.1"))
-        assertFalse(ApiHostHeaderPolicy.shouldSetNipIoHost("132-243-234-162.nip.io"))
+        assertFalse(ApiHostHeaderPolicy.shouldSetNipIoHost("89-125-188-100.nip.io"))
         assertEquals(null, ApiHostHeaderPolicy.nipIoHostHeader("localhost"))
     }
 
     @Test
     fun publicHiveIpStillSendsNipIoHostForTlsVhost() {
-        assertTrue(ApiHostHeaderPolicy.shouldSetNipIoHost("132.243.234.162"))
+        assertTrue(ApiHostHeaderPolicy.shouldSetNipIoHost("89.125.188.100"))
         assertEquals(
             VpnNetworkConstants.DEFAULT_SERVER_HOST,
-            ApiHostHeaderPolicy.nipIoHostHeader("132.243.234.162"),
+            ApiHostHeaderPolicy.nipIoHostHeader("89.125.188.100"),
         )
     }
 

@@ -23,7 +23,7 @@ import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "HomeBgImage"
-private const val THEME_ASSET_PUBLIC_BASE = "https://132-243-234-162.nip.io"
+private const val THEME_ASSET_PUBLIC_BASE = "https://89-125-188-100.nip.io"
 
 private val homeBgHttp = OkHttpClient.Builder()
     .connectTimeout(12, TimeUnit.SECONDS)
@@ -111,7 +111,7 @@ fun resolveThemeAssetUrl(path: String?, apiBase: String = THEME_ASSET_PUBLIC_BAS
         return try {
             val u = java.net.URI(pathOnly)
             val host = u.host ?: return raw
-            if (host == "132.243.234.162" || host == "132-243-234-162.nip.io") {
+            if (host == "89.125.188.100" || host == "89-125-188-100.nip.io") {
                 val pathPart = u.path ?: "/"
                 "$THEME_ASSET_PUBLIC_BASE$pathPart$query"
             } else {

@@ -70,10 +70,10 @@ copy keystore\keystore.properties.example keystore\keystore.properties
 ## Проверка
 
 ```text
-GET https://132-243-234-162.nip.io/api/updates/check?platform=android&version=1.0.129
+GET https://89-125-188-100.nip.io/api/updates/check?platform=android&version=1.0.129
 ```
 
-Скачивание: `https://132-243-234-162.nip.io/update/android/<filename>`
+Скачивание: `https://89-125-188-100.nip.io/update/android/<filename>`
 
 ---
 

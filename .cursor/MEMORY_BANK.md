@@ -1,5 +1,13 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (Доступность Сервер 4 timeout 2026-09-18)
+
+Админка «всё доступно», но у сота3 локально `agent_tcp FAIL timeout`.
+VPN Сервера 4 жив (wdtt active, handshake). Корень: после смены IP Улья
+iptables :9100 пускал только старый `132.243.234.162`, новый `89.125.188.100` ловил DROP.
+Гигиена `deploy_ai_cell.py hygiene`: ACCEPT с нового IP. С Улья `:9100/health` = 200 за 0.16с.
+wdtt/api не рестартил. Классификатор аудита HEAD (pending ≠ timeout) на Улье уже был.
+
 ## Последние изменения (релизы 1.0.166 без bump 2026-09-18)
 
 Пересобраны **без поднятия версии**: PC Windows NSIS, Linux `.deb`, OpenWrt tarball, Android APK. Bootstrap `4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY`. GitHub-OTA внутри сборок. На сервер/GitHub не заливал.

@@ -1,5 +1,13 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (релизы 1.0.166 без bump 2026-09-18)
+
+Пересобраны **без поднятия версии**: PC Windows NSIS, Linux `.deb`, OpenWrt tarball, Android APK. Bootstrap `4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY`. GitHub-OTA внутри сборок. На сервер/GitHub не заливал.
+
+## Последние изменения (OTA с GitHub Pages 2026-09-18)
+
+In-app OTA **всех** клиентов с баннером (Android / PC Windows / Linux / Mac) смотрит только `https://silentvpn3.github.io/releases.json` и качает с GitHub Releases. Check/download через Улей убраны. iOS OTA нет (источник). OpenWrt ставится с github.io tarball. Версию не поднимал. **wdtt/api не трогал.**
+
 ## Последние изменения (онлайн 38 vs 2 2026-09-18)
 
 После `deploy_stable` (`docker compose restart api nginx`) клиенты массово GETCONF. Дашборд суммирует **все** WG handshake <3 мин, включая leftovers — Redis `hive:vpn_online_shown`=40 при `is_connected`=3.

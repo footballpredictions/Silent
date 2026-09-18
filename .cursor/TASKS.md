@@ -39,7 +39,8 @@ Agent приступает к **первой невыполненной** зад
 - [x] Админка: чип «Пробный» только снимает trial, без kick VPN
 - [x] Android / PC / iOS / OpenWrt: магазин на пробном
 - [x] Тесты `test_subscription_filters_unit.py`, `ShopOfferPolicyTest`, OpenWrt dock
-- [ ] Деплой backend (`deploy_stable.py`) + клиенты — по просьбе
+- [x] Деплой backend (`deploy_stable.py`): health 0.044с, wdtt active, kick 0
+- [x] Push `main` `416d4ce`, `pc` `b675b04`, `android` `630481c`, `ios` `fa5e59a`, `openwrt` `53f029b`
 
 ### Android ложный «Перезапуск транспорта» на лежащем телефоне (2026-09-15)
 

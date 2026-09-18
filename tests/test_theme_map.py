@@ -42,7 +42,7 @@ class ThemeMapTests(unittest.TestCase):
     def test_asset_url(self):
         self.assertEqual(
             resolve_asset_url("/static/logo.png"),
-            "https://132-243-234-162.nip.io/static/logo.png",
+            "https://89-125-188-100.nip.io/static/logo.png",
         )
 
 

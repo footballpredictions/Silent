@@ -25,11 +25,11 @@ from lib.silent_theme import palette  # noqa: E402
 HOST = os.environ.get("SILENT_PREVIEW_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SILENT_PREVIEW_PORT", "7788"))
 LAN_IP = os.environ.get("SILENT_PREVIEW_LAN", "192.168.1.1")
-HIVE = os.environ.get("SILENT_HIVE", "https://132-243-234-162.nip.io").rstrip("/")
+HIVE = os.environ.get("SILENT_HIVE", "https://89-125-188-100.nip.io").rstrip("/")
 PUBLIC_THEME = f"{HIVE}/api/vpn/theme"
 PREVIEW_MOCK = os.environ.get("SILENT_PREVIEW_MOCK", "") == "1"
 BOOTSTRAP = "4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY"
-APP_VERSION = "1.0.165"
+APP_VERSION = "1.0.166"
 
 _theme_lock = threading.Lock()
 _theme_cache: dict | None = None
@@ -199,7 +199,7 @@ def mock_profile(email: str) -> dict:
 
 def mock_servers() -> dict:
     api = [
-        {"key": "server1", "title": "Сервер 1", "public_ip": "132.243.234.162"},
+        {"key": "server1", "title": "Сервер 1", "public_ip": "89.125.188.100"},
         {"key": "server2", "title": "Сервер 2", "public_ip": "87.58.213.193"},
         {"key": "server3", "title": "Сервер 3", "public_ip": "78.17.74.27"},
         {"key": "server4", "title": "Сервер 4 для ИИ", "public_ip": ""},

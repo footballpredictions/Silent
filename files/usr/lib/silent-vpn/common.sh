@@ -4,9 +4,9 @@ SV_LIB="${SV_LIB:-/usr/lib/silent-vpn}"
 SV_VAR="${SV_VAR:-/etc/silent-vpn}"
 SV_RUN="${SV_RUN:-/var/run/silent-vpn}"
 SV_CONF="${SV_CONF:-/etc/config/silent-vpn}"
-SV_VERSION="${SV_VERSION:-1.0.165}"
+SV_VERSION="${SV_VERSION:-1.0.166}"
 SV_DEVICE_TYPE="pc"
-SV_PUBLIC_API="${SV_PUBLIC_API:-https://132-243-234-162.nip.io}"
+SV_PUBLIC_API="${SV_PUBLIC_API:-https://89-125-188-100.nip.io}"
 SV_TUNNEL_API="${SV_TUNNEL_API:-http://10.66.66.1:8000}"
 SV_BOOTSTRAP_HASH="${SV_BOOTSTRAP_HASH:-4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY}"
 SV_ZONE="silent.vpn"
@@ -101,8 +101,8 @@ sv_api_bases() {
 	fi
 	echo "http://87.58.213.193:9100"
 	echo "http://78.17.74.27:9100"
-	echo "${SV_PUBLIC_API:-https://132-243-234-162.nip.io}"
-	echo "https://132.243.234.162"
+	echo "${SV_PUBLIC_API:-https://89-125-188-100.nip.io}"
+	echo "https://89.125.188.100"
 }
 
 sv_api_base() {

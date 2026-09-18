@@ -10,7 +10,7 @@ const DEFAULTS = {
   login_link_color: "#4680C2",
 };
 
-const ASSET_BASE = "https://132-243-234-162.nip.io";
+const ASSET_BASE = "https://89-125-188-100.nip.io";
 
 function hex(value, fallback) {
   const raw = String(value || "").trim();
@@ -48,7 +48,7 @@ export function resolveAssetUrl(path) {
   if (!raw) return "";
   if (raw.includes("?")) raw = raw.split("?")[0];
   if (/^https?:\/\//i.test(raw)) {
-    return raw.replace("://132.243.234.162", "://132-243-234-162.nip.io");
+    return raw.replace("://89.125.188.100", "://89-125-188-100.nip.io");
   }
   const rel = raw.startsWith("/") ? raw : `/${raw}`;
   return `${ASSET_BASE}${rel}`;

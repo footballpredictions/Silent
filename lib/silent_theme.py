@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-PUBLIC_ASSET_BASE = "https://132-243-234-162.nip.io"
+PUBLIC_ASSET_BASE = "https://89-125-188-100.nip.io"
 
 _DEFAULTS = {
     "primary_color": "#000000",
@@ -71,8 +71,8 @@ def resolve_asset_url(path: str | None) -> str:
     if "?" in raw:
         raw = raw.split("?", 1)[0]
     if raw.startswith("http://") or raw.startswith("https://"):
-        return raw.replace("http://132.243.234.162", PUBLIC_ASSET_BASE).replace(
-            "https://132.243.234.162", PUBLIC_ASSET_BASE
+        return raw.replace("http://89.125.188.100", PUBLIC_ASSET_BASE).replace(
+            "https://89.125.188.100", PUBLIC_ASSET_BASE
         )
     rel = raw if raw.startswith("/") else f"/{raw}"
     return f"{PUBLIC_ASSET_BASE}{rel}"

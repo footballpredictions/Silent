@@ -15,9 +15,13 @@ export interface UpdateInfo {
 }
 
 const APP_VERSION = __APP_VERSION__
+const RELEASES_JSON_URL = 'https://silentvpn3.github.io/releases.json'
 
 function otaPlatformId(): string {
-  if (typeof navigator !== 'undefined' && /linux/i.test(navigator.userAgent)) return 'linux'
+  if (typeof navigator === 'undefined') return 'pc'
+  const ua = navigator.userAgent
+  if (/linux/i.test(ua) && !/android/i.test(ua)) return 'linux'
+  if (/mac os x|macintosh|darwin/i.test(ua)) return 'mac'
   return 'pc'
 }
 
@@ -43,30 +47,41 @@ function parseUpdateResponse(data: UpdateInfo | null | undefined): UpdateInfo | 
   if (compareVersions(data.version, APP_VERSION) <= 0) return null
   pushLog('Update', `available ${APP_VERSION} → ${data.version}`)
   const filename = data.filename || ''
-  const plat = otaPlatformId()
+  const download = data.download_url || data.github_download_url || ''
   return {
     available: true,
     version: data.version,
     filename,
     size: data.size,
     uploaded_at: data.uploaded_at,
-    download_url: data.download_url || data.github_download_url || `/update/${plat}/${encodeURIComponent(filename)}`,
-    github_download_url: data.github_download_url,
-    tunnel_download_url: data.tunnel_download_url || `/api/updates/download/${plat}`,
+    download_url: download,
+    github_download_url: data.github_download_url || download,
   }
 }
 
-async function checkViaRendererPublic(): Promise<UpdateInfo | null> {
-  const base = getPublicApiBaseUrl()
+async function checkViaGithubPages(): Promise<UpdateInfo | null> {
   try {
-    const res = await axios.get<UpdateInfo>(`${base}/api/updates/check`, {
-      params: { platform: otaPlatformId(), version: APP_VERSION },
-      timeout: 45_000,
+    const res = await axios.get(RELEASES_JSON_URL, {
+      timeout: 8_000,
+      params: { _: Date.now() },
     })
-    return parseUpdateResponse(res.data)
+    const key = otaPlatformId()
+    const row = res.data?.[key]
+    if (!row?.version || !row?.download_url) {
+      pushLog('Update', `github.io has no ${key} entry`, 'W')
+      return null
+    }
+    return parseUpdateResponse({
+      available: true,
+      version: row.version,
+      filename: row.filename,
+      size: row.size,
+      download_url: row.download_url,
+      github_download_url: row.download_url,
+    })
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
-    pushLog('Update', `check fail: ${msg}`, 'W')
+    pushLog('Update', `github.io check fail: ${msg}`, 'W')
     return null
   }
 }
@@ -75,8 +90,6 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   const electron = (window as typeof window & { electronAPI?: { checkForUpdate?: (v: string) => Promise<UpdateInfo | null> } }).electronAPI
   if (electron?.checkForUpdate) {
     try {
-      // null = обновлений нет или check вернул пусто — НЕ ходим в public axios
-      // (при VPN это даёт ложный «Network Error»).
       const data = await electron.checkForUpdate(APP_VERSION)
       return parseUpdateResponse(data)
     } catch (e: unknown) {
@@ -87,7 +100,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       return null
     }
   }
-  return checkViaRendererPublic()
+  return checkViaGithubPages()
 }
 
 export function getUpdateDownloadBase(): string {

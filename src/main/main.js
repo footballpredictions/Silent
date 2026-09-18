@@ -34,6 +34,12 @@ const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
 const { resolveVkExcludeIps, warmVkExcludeIps, invalidateVkExcludeCache } = require('./vpn/vkNetworkExcludes')
 const { publicFailoverBases, publicFailoverAttemptTimeoutMs } = require('./vpn/apiFailover')
 const {
+  RELEASES_JSON_URL,
+  FETCH_TIMEOUT_MS: GITHUB_OTA_TIMEOUT_MS,
+  parseGithubOta,
+  otaDownloadCandidates,
+} = require('./vpn/otaGithubDiscovery')
+const {
   cellIpsFromUrls,
   pickBootstrapOverlay,
   isHiveBootstrapIp,
@@ -2100,29 +2106,26 @@ function shouldUseTunnelForOta() {
   return !!(wgApplied && vpnSessionActive && !vpnBootstrapMode)
 }
 
-function updateCheckQuery(platform, version) {
-  return `/api/updates/check?platform=${encodeURIComponent(otaPlatform(platform))}&version=${encodeURIComponent(version || '')}`
-}
-
 /**
- * URL для скачивания OTA.
- * - VPN on → всегда /api/updates/download/{platform} (tunnel), НЕ pathname от GitHub
- * - VPN off → абсолютный GitHub/HTTPS как есть; relative → public nip.io
- * Баг 1.0.152: GitHub URL превращался в http://10.66.66.1:8000/silentvpn3/... → 404 HTML → «100% / повреждён».
+ * URL для скачивания OTA: всегда GitHub, если он есть.
+ * Hive/tunnel — только когда GitHub URL нет (старый манифест).
  */
 function resolveUpdateDownloadUrl(urlOrPath, tunnelPath) {
+  const git = String(urlOrPath || '').trim()
+  if (/^https?:\/\//i.test(git) && /github\.com|github\.io/i.test(git)) {
+    return git
+  }
   if (shouldUseTunnelForOta()) {
     const fallback = `/api/updates/download/${otaPlatform()}`
     const tp = String(tunnelPath || fallback).trim() || fallback
     const path = tp.startsWith('/') ? tp : `/${tp}`
     return `${TUNNEL_API_ORIGIN}${path}`
   }
-  const raw = String(urlOrPath || '').trim()
-  if (!raw) return null
-  if (/^https?:\/\//i.test(raw)) {
-    return raw
+  if (/^https?:\/\//i.test(git)) {
+    return git
   }
-  const pathname = raw.startsWith('/') ? raw : `/${raw}`
+  if (!git) return null
+  const pathname = git.startsWith('/') ? git : `/${git}`
   return `${UPDATE_PUBLIC_BASE}${pathname}`
 }
 
@@ -2522,35 +2525,49 @@ function fetchJsonGet(url, hostHeader = null) {
   })
 }
 
+function fetchGithubReleasesJson() {
+  return new Promise((resolve, reject) => {
+    const url = new URL(RELEASES_JSON_URL)
+    const req = https.get({
+      hostname: url.hostname,
+      path: `${url.pathname}?_=${Date.now()}`,
+      timeout: GITHUB_OTA_TIMEOUT_MS,
+    }, (res) => {
+      if (res.statusCode !== 200) {
+        reject(new Error(`github.io HTTP ${res.statusCode}`))
+        res.resume()
+        return
+      }
+      let body = ''
+      res.on('data', (chunk) => { body += chunk })
+      res.on('end', () => resolve(body))
+    })
+    req.on('error', reject)
+    req.on('timeout', () => {
+      req.destroy(new Error('github.io OTA timeout'))
+    })
+  })
+}
+
 ipcMain.handle('app-update-check', async (_, { version, platform } = {}) => {
-  const q = updateCheckQuery(otaPlatform(platform), version)
+  const plat = otaPlatform(platform)
   if (captchaInProgress && !wgApplied) {
     return null
   }
-  // Как ConfigSync: public через IP+Host (bypass). nip.io-hostname через полный
-  // туннель зависает → «Update check timeout». 10.66.66.1 часто ECONNREFUSED.
   try {
-    await ensurePublicApiBypass(sendLog)
-    const res = await publicDirectRequest({ method: 'GET', path: q, timeout: 20_000 })
-    if (res.status === 200 && res.data) {
-      sendLog('[Update] check via public OK')
-      return res.data
+    const raw = await fetchGithubReleasesJson()
+    const parsed = parseGithubOta(raw, plat, version)
+    if (parsed.kind === 'available') {
+      sendLog('[Update] check via github.io OK')
+      return parsed
     }
-    sendLog(`[Update] public check HTTP ${res.status}`)
+    if (parsed.kind === 'current') {
+      sendLog('[Update] github.io current')
+      return null
+    }
+    sendLog('[Update] github.io unreadable')
   } catch (e) {
-    sendLog(`[Update] public check fail: ${e?.message || e}`)
-  }
-  if (wgApplied) {
-    try {
-      const res = await tunnelHttpRequest({ method: 'GET', path: q, timeout: 5_000 })
-      if (res.status === 200 && res.data) {
-        sendLog('[Update] check via tunnel OK')
-        return res.data
-      }
-      sendLog(`[Update] tunnel check HTTP ${res.status}`)
-    } catch (e) {
-      sendLog(`[Update] tunnel check fail: ${e?.message || e}`)
-    }
+    sendLog(`[Update] github.io check fail: ${e?.message || e}`)
   }
   sendLog('[Update] check fail')
   return null
@@ -2622,17 +2639,12 @@ ipcMain.handle('app-update-download', async (_, { url, filename, tunnelUrl, expe
     const safeName = path.basename(filename || 'update.exe')
     const dest = path.join(app.getPath('temp'), safeName)
     const hivePath = String(tunnelUrl || '/api/updates/download/pc').trim() || '/api/updates/download/pc'
-    const hivePathNorm = hivePath.startsWith('/') ? hivePath : `/${hivePath}`
-    const candidates = []
-    if (wgApplied) {
-      candidates.push(`${TUNNEL_API_ORIGIN}${hivePathNorm}`)
-    }
-    candidates.push(`https://${SERVER_IP_FALLBACK}${hivePathNorm}`)
-    const raw = String(url || '').trim()
-    if (/^https?:\/\//i.test(raw) && !raw.includes('10.66.66.1')) {
-      candidates.push(raw)
-    }
-    const uniq = [...new Set(candidates.filter(Boolean))]
+    const uniq = otaDownloadCandidates({
+      githubUrl: url,
+      vpnUp: !!wgApplied,
+      tunnelOrigin: TUNNEL_API_ORIGIN,
+      hiveDownloadPath: hivePath,
+    })
     if (!uniq.length) {
       return { ok: false, error: 'Empty download URL' }
     }

@@ -21,7 +21,7 @@ GITHUB_REPO = os.environ.get("GITHUB_RELEASES_REPO", "silentvpn3.github.io")
 GITHUB_API = "https://api.github.com"
 RELEASES_JSON_PATH = "releases.json"
 INDEX_HTML_PATH = "index.html"
-API_BASE_DEFAULT = "https://132-243-234-162.nip.io"
+API_BASE_DEFAULT = "https://89-125-188-100.nip.io"
 
 
 class GitHubReleaseError(Exception):

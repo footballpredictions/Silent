@@ -1,6 +1,7 @@
 """Снять мёртвые GETCONF WireGuard-peer’ы на Улье. wdtt не рестартим, ключи из БД не трогаем."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -9,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Device
 from app.services.vpn_kick import _queen_wg_dump, remove_wg_peers_batch_on_queen
-from app.services.vpn_kick_select import NEVER_HS_GC_GRACE_SEC, select_gc_extra_pubs, valid_wg_pub
+from app.services.vpn_kick_select import NEVER_HS_GC_GRACE_SEC, merge_known_device_pubs, select_gc_extra_pubs
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +23,14 @@ GC_EVERY_SEC = 90.0
 async def known_device_pubs(db: AsyncSession) -> set[str]:
     rows = (
         await db.execute(
-            select(Device.wg_public_key).where(
+            select(Device.wg_public_key, Device.wg_live_public_key).where(
                 Device.is_active == True,  # noqa: E712
-                Device.wg_public_key.is_not(None),
             )
         )
-    ).scalars().all()
-    return {p.strip() for p in rows if p and valid_wg_pub(p)}
+    ).all()
+    wg = [r[0] for r in rows]
+    live = [r[1] for r in rows]
+    return merge_known_device_pubs(wg, live)
 
 
 def _with_never_hs_grace(cands: list[str], *, grace_sec: float, now: float) -> list[str]:
@@ -58,7 +60,7 @@ async def gc_stale_queen_peers(
         return {"ok": True, "skipped": True}
     _last_gc_at = now
     known = await known_device_pubs(db)
-    peers = _queen_wg_dump()
+    peers = await asyncio.to_thread(_queen_wg_dump)
     cands = select_gc_extra_pubs(peers, known)
     now = time.time()
     # hs>6ч — сразу; never-hs — только если висели дольше grace (идёт connect).
@@ -68,7 +70,7 @@ async def gc_stale_queen_peers(
     to_drop = (stale + ready_never)[:limit]
     if not to_drop:
         return {"ok": True, "removed": 0, "candidates": len(cands), "known": len(known)}
-    removed = remove_wg_peers_batch_on_queen(to_drop, batch=batch)
+    removed = await asyncio.to_thread(remove_wg_peers_batch_on_queen, to_drop, batch=batch)
     for pub in to_drop:
         _pending_never_hs.pop(pub, None)
     if removed and now - _last_gc_log_at > 30:

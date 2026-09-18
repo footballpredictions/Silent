@@ -177,7 +177,7 @@ def main() -> None:
     run(client, "sleep 1; systemctl --no-pager -l status silent-olcrtc-proxy.service | head -n 20")
     run(client, "ss -lntp | grep -E '8080|18443' || true")
     client.close()
-    print("Done — HTTPS_PROXY=http://132.243.234.162:8080")
+    print("Done — HTTPS_PROXY=http://89.125.188.100:8080")
 
 
 if __name__ == "__main__":

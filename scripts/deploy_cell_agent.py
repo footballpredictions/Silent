@@ -12,7 +12,7 @@ load_env()
 
 CELL_SECRET = os.environ.get("DEPLOY_CELL_AGENT_SECRET") or secrets.token_urlsafe(32)
 CELL_PORT = os.environ.get("DEPLOY_CELL_AGENT_PORT", "9100")
-HIVE_URL = os.environ.get("DEPLOY_HIVE_API_URL", "https://132-243-234-162.nip.io")
+HIVE_URL = os.environ.get("DEPLOY_HIVE_API_URL", "https://89-125-188-100.nip.io")
 PUBLIC_IP = os.environ.get("DEPLOY_CELL_PUBLIC_IP", "")
 WG_PUBKEY = os.environ.get("DEPLOY_WG_SERVER_PUBLIC_KEY", "")
 

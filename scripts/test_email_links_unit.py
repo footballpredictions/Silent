@@ -12,7 +12,7 @@ from app.services.email_links import (  # noqa: E402
     is_public_email_base,
 )
 
-HIVE = "https://132-243-234-162.nip.io"
+HIVE = "https://89-125-188-100.nip.io"
 CELLS = ["http://87.58.213.193:9100", "http://78.17.74.27:9100"]
 
 
@@ -52,17 +52,17 @@ def test_hive_alt_ports_do_not_eat_fallback_slots():
     ссылок на соты в письме не оставалось вовсе.
     """
     alt = [
-        "https://132-243-234-162.nip.io:2083",
-        "https://132.243.234.162:2083",
-        "https://132-243-234-162.nip.io:2053",
-        "https://132.243.234.162:2053",
+        "https://89-125-188-100.nip.io:2083",
+        "https://89.125.188.100:2083",
+        "https://89-125-188-100.nip.io:2053",
+        "https://89.125.188.100:2053",
     ]
     links = email_action_links(
         "api/auth/verify-email",
         "tok",
         HIVE,
         alt + CELLS,
-        exclude_hosts=("132-243-234-162.nip.io", "132.243.234.162"),
+        exclude_hosts=("89-125-188-100.nip.io", "89.125.188.100"),
     )
     assert links == [
         f"{CELLS[0]}/api/auth/verify-email?token=tok",

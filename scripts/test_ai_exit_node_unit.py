@@ -31,7 +31,7 @@ from app.services.ai_exit_node import (  # noqa: E402
     verify_script,
 )
 
-QUEEN = "132.243.234.162"
+QUEEN = "89.125.188.100"
 
 
 def _all_scripts() -> dict[str, str]:

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     SMTP_PASS: str = ""
     EMAIL_FROM: str = "noreply@silent-vpn.ru"
     EMAIL_FROM_NAME: str = "Silent VPN"
-    FRONTEND_URL: str = "https://132-243-234-162.nip.io"
+    FRONTEND_URL: str = "https://89-125-188-100.nip.io"
 
     # YuMoney — до 10 кошельков, каждый со своим секретом уведомлений.
     # Добавление нового кошелька = только новая пара env-переменных, без изменения кода.
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     # MFA: код подтверждения входа на эту почту (пустая строка = MFA выключен)
     ADMIN_MFA_EMAIL: str = "silent27@bk.ru"
     # Публичный Host админки (nginx). Tunnel 10.66.66.1 тоже разрешён в AdminHostGuard.
-    ADMIN_PUBLIC_HOST: str = "132-243-234-162.nip.io"
+    ADMIN_PUBLIC_HOST: str = "89-125-188-100.nip.io"
     ADMIN_SESSION_HOURS: int = 12
     ADMIN_MFA_CODE_TTL_MINUTES: int = 10
     ADMIN_MFA_MAX_ATTEMPTS: int = 5
@@ -95,8 +95,8 @@ class Settings(BaseSettings):
     # VK ID (user linking)
     VK_ID_APP_ID: int = 0
     VK_ID_CLIENT_SECRET: str = ""
-    VK_ID_REDIRECT_URI: str = "https://132-243-234-162.nip.io/api/auth/vk/callback"
-    VK_MESSAGES_REDIRECT_URI: str = "https://132-243-234-162.nip.io/api/auth/vk/messages-callback"
+    VK_ID_REDIRECT_URI: str = "https://89-125-188-100.nip.io/api/auth/vk/callback"
+    VK_MESSAGES_REDIRECT_URI: str = "https://89-125-188-100.nip.io/api/auth/vk/messages-callback"
     VK_BOT_WRITE_URL: str = "https://vk.com/write-239092728"
 
     # VPN Server

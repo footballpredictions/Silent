@@ -24,7 +24,7 @@ SETTINGS_KEY = "olcrtc2_settings"
 DEFAULT_CELL_TELEMOST = "87.58.213.193"  # Сота 1
 DEFAULT_CELL_WB = "78.17.74.27"  # Сота 2
 DEFAULT_CELL_IP = DEFAULT_CELL_TELEMOST
-QUEEN_IP = "132.243.234.162"
+QUEEN_IP = "89.125.188.100"
 # Сота 1: idle Telemost unit ~15–25% CPU. База держится 1/dt,
 # но cap=2 нужен для краткого burst на массовом входе.
 TELEMOST_WARM_PER_DT_CAP = 2

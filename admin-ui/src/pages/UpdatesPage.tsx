@@ -72,6 +72,7 @@ export default function UpdatesPage({ token }: { token: string }) {
   const [loading, setLoading] = useState(true)
   const [msg, setMsg] = useState('')
   const [uploading, setUploading] = useState<string | null>(null)
+  const [uploadPct, setUploadPct] = useState(0)
   const [building, setBuilding] = useState<string | null>(null)
   const [buildStatus, setBuildStatus] = useState<BuildStatus | null>(null)
   const [buildConfig, setBuildConfig] = useState<BuildConfig | null>(null)
@@ -126,11 +127,11 @@ export default function UpdatesPage({ token }: { token: string }) {
     try {
       const res = await fetch('/api/admin/updates', { headers })
       if (res.ok) setItems(await res.json())
-      await loadBuildStatus()
-      await loadBuildConfig()
-      await loadGithubStatus()
     } catch { /* ignore */ }
     setLoading(false)
+    void loadBuildStatus()
+    void loadBuildConfig()
+    void loadGithubStatus()
   }
 
   useEffect(() => { load() }, [])
@@ -143,29 +144,44 @@ export default function UpdatesPage({ token }: { token: string }) {
 
   const upload = async (platform: string, file: File) => {
     setUploading(platform)
+    setUploadPct(0)
     setMsg('')
     const fd = new FormData()
     fd.append('platform', platform)
     fd.append('file', file)
     try {
-      const res = await fetch('/api/admin/updates/upload', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
+      const data = await new Promise<{ ok: boolean; status: number; body: { detail?: string; version?: string } }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', '/api/admin/updates/upload')
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+        xhr.timeout = 600_000
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable && e.total > 0) {
+            setUploadPct(Math.min(99, Math.round((e.loaded / e.total) * 100)))
+          }
+        }
+        xhr.onload = () => {
+          let body: { detail?: string; version?: string } = {}
+          try { body = JSON.parse(xhr.responseText || '{}') } catch { /* nginx 413 */ }
+          resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, body })
+        }
+        xhr.onerror = () => reject(new Error('Ошибка сети'))
+        xhr.ontimeout = () => reject(new Error('Таймаут загрузки (10 мин). Залейте через VPN или подождите прогресс.'))
+        xhr.send(fd)
       })
-      let data: { detail?: string; version?: string; message?: string } = {}
-      try { data = await res.json() } catch { /* non-json e.g. nginx 413 */ }
-      if (!res.ok) {
-        if (res.status === 413) setMsg('Файл слишком большой для сервера (лимит 200 МБ)')
-        else setMsg(typeof data.detail === 'string' ? data.detail : `Ошибка загрузки (${res.status})`)
+      if (!data.ok) {
+        if (data.status === 413) setMsg('Файл слишком большой для сервера (лимит 200 МБ)')
+        else setMsg(typeof data.body.detail === 'string' ? data.body.detail : `Ошибка загрузки (${data.status})`)
       } else {
-        setMsg(`Загружено: ${platformLabel[platform]} v${data.version}`)
+        setUploadPct(100)
+        setMsg(`Загружено: ${platformLabel[platform]} v${data.body.version}`)
         await load()
       }
     } catch (e) {
       setMsg(e instanceof Error ? e.message : 'Ошибка сети')
     }
     setUploading(null)
+    setUploadPct(0)
   }
 
   const remove = async (platform: string) => {
@@ -511,7 +527,7 @@ export default function UpdatesPage({ token }: { token: string }) {
                   className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#e0e0e0] disabled:opacity-50"
                 >
                   <Upload className="w-4 h-4" />
-                  {uploading === item.platform ? 'Загрузка...' : 'Загрузить файл'}
+                  {uploading === item.platform ? `Загрузка ${uploadPct}%` : 'Загрузить файл'}
                 </button>
                 <button
                   disabled={!item.version || !githubStatus?.configured || publishingGithub === item.platform}

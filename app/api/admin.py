@@ -1809,8 +1809,11 @@ async def upload_update(
         raise HTTPException(status_code=400, detail="Android update must be .apk")
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        content = await file.read()
-        tmp.write(content)
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            tmp.write(chunk)
         tmp_path = tmp.name
     try:
         info = update_service.publish_file(platform, file.filename, tmp_path, version=version)

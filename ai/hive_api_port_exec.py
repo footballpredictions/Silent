@@ -49,9 +49,12 @@ def dump_published_ports(ports: tuple[int, ...] | list[int], path: Path | str | 
     keep = [
         int(x)
         for x in ports
-        if int(x) > 0 and int(x) not in KEEP_FOREVER and int(x) not in FORBIDDEN_PORTS
+        if 1 <= int(x) <= 65535 and int(x) not in KEEP_FOREVER and int(x) not in FORBIDDEN_PORTS
     ]
-    p.write_text(",".join(str(x) for x in keep) + ("\n" if keep else ""), encoding="utf-8")
+    raw = ",".join(str(x) for x in keep) + ("\n" if keep else "")
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(raw, encoding="utf-8")
+    tmp.replace(p)
 
 
 def _blocked(port: int) -> str:

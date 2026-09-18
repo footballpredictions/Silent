@@ -34,7 +34,7 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parent.parent
 PC_ROOT = BACKEND.parent / "pc"
 DEFAULT_CNC = PC_ROOT / "resources" / "olcrtc2-cnc.exe"
-DEFAULT_API = os.environ.get("SILENT_API", "https://132-243-234-162.nip.io").rstrip("/")
+DEFAULT_API = os.environ.get("SILENT_API", "https://89-125-188-100.nip.io").rstrip("/")
 WB_HOSTS = (
     "stream.wb.ru",
     "rtc-el-01.wb.ru",

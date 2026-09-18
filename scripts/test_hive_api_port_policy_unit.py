@@ -16,6 +16,7 @@ from ai.hive_api_port_policy import (  # noqa: E402
     alt_https_urls,
     decide_api_port_action,
     pick_candidate,
+    stale_published_ports,
 )
 
 
@@ -33,7 +34,7 @@ def test_one_of_two_tcp_ok_opens_alt_and_keeps_443():
             consecutive_all_failed=0,
             confirm_cycles=3,
             autoswitch=True,
-            candidate_reach={"2083": "refused", "2053": "refused"},
+            candidate_reach={"2083": "open", "2053": "timeout"},
         )
     )
     assert d.action == ACTION_OPEN_CANDIDATE
@@ -110,7 +111,7 @@ def test_confirmed_port_block_opens_reachable_candidate():
             confirm_cycles=3,
             autoswitch=True,
             open_ports=(443,),
-            candidate_reach={"8443": "timeout", "2083": "refused", "2053": "refused"},
+            candidate_reach={"8443": "timeout", "2083": "open", "2053": "timeout"},
         )
     )
     assert d.action == ACTION_OPEN_CANDIDATE
@@ -153,11 +154,12 @@ def test_no_autoswitch_stays_hold_even_if_confirmed():
             local_443_ok=True,
             consecutive_all_failed=3,
             autoswitch=False,
-            candidate_reach={"2083": "refused"},
+            candidate_reach={"2083": "open"},
         )
     )
     assert d.action == ACTION_HOLD
     assert d.suggested_port == 2083
+    assert d.reason == "dry_run"
 
 
 def test_never_close_443_or_vpn_ports():
@@ -211,16 +213,65 @@ def test_close_stale_alt_only_after_grace_and_replacement():
     assert 443 in d.keep_open
 
 
-def test_pick_candidate_skips_forbidden_and_timeout():
-    assert pick_candidate({"443": "refused", "1194": "refused", "2083": "timeout", "2053": "refused"}) == 2053
+def test_pick_candidate_skips_forbidden_timeout_and_refused():
+    assert pick_candidate({"443": "refused", "1194": "refused", "2083": "timeout", "2053": "refused"}) is None
+    assert pick_candidate({"2083": "open", "2053": "refused"}) == 2083
+    assert pick_candidate({"8443": "open", "2083": "timeout"}) is None
     assert pick_candidate({"8443": "timeout", "22": "refused"}) is None
 
 
+def test_refused_candidate_is_not_published_as_https():
+    d = decide_api_port_action(
+        PortPolicyInput(
+            tcp_ok=0,
+            tcp_fail=2,
+            tls_ok=0,
+            tls_fail=2,
+            ping_ok=2,
+            ping_fail=0,
+            local_443_ok=True,
+            autoswitch=True,
+            candidate_reach={"2083": "refused", "2053": "timeout", "8443": "open"},
+        )
+    )
+    assert d.action == ACTION_HOLD
+    assert d.port is None
+    assert d.reason == "no_candidate"
+
+
+def test_stale_timeout_published_opens_next_live_port():
+    d = decide_api_port_action(
+        PortPolicyInput(
+            tcp_ok=0,
+            tcp_fail=2,
+            tls_ok=0,
+            tls_fail=2,
+            ping_ok=2,
+            ping_fail=0,
+            local_443_ok=True,
+            autoswitch=True,
+            published_alt_ports=(2083,),
+            open_ports=(443, 2083),
+            stale_alt_blocked=stale_published_ports((2083,), {"2083": "timeout", "2053": "open"}),
+            candidate_reach={"2083": "timeout", "2053": "open"},
+        )
+    )
+    assert d.action == ACTION_OPEN_CANDIDATE
+    assert d.port == 2053
+    assert 443 in d.keep_open
+
+
+def test_stale_published_ports_need_explicit_dead_probe():
+    assert stale_published_ports((2083,), None) == ()
+    assert stale_published_ports((2083,), {"2083": "open"}) == ()
+    assert stale_published_ports((2083,), {"2083": "timeout"}) == (2083,)
+
+
 def test_alt_https_urls_use_sni_host_and_skip_443():
-    urls = alt_https_urls("132-243-234-162.nip.io", "132.243.234.162", [443, 2083])
+    urls = alt_https_urls("89-125-188-100.nip.io", "89.125.188.100", [443, 2083])
     assert urls == [
-        "https://132-243-234-162.nip.io:2083",
-        "https://132.243.234.162:2083",
+        "https://89-125-188-100.nip.io:2083",
+        "https://89.125.188.100:2083",
     ]
 
 
@@ -234,6 +285,9 @@ if __name__ == "__main__":
     test_no_autoswitch_stays_hold_even_if_confirmed()
     test_never_close_443_or_vpn_ports()
     test_close_stale_alt_only_after_grace_and_replacement()
-    test_pick_candidate_skips_forbidden_and_timeout()
+    test_pick_candidate_skips_forbidden_timeout_and_refused()
+    test_refused_candidate_is_not_published_as_https()
+    test_stale_timeout_published_opens_next_live_port()
+    test_stale_published_ports_need_explicit_dead_probe()
     test_alt_https_urls_use_sni_host_and_skip_443()
     print("ok")

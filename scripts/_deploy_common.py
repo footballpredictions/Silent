@@ -40,7 +40,7 @@ def load_env() -> None:
 def ssh_hosts(primary: str | None = None) -> list[str]:
     """Сначала публичный Улей, при TCP-блоке из РФ — шлюз туннеля 10.66.66.1:22."""
     load_env()
-    first = (primary or os.environ.get("DEPLOY_HOST") or "132.243.234.162").strip()
+    first = (primary or os.environ.get("DEPLOY_HOST") or "89.125.188.100").strip()
     tunnel = (os.environ.get("DEPLOY_TUNNEL_HOST") or "10.66.66.1").strip()
     out: list[str] = []
     for host in (first, tunnel):
@@ -80,7 +80,7 @@ def jump_auth() -> tuple[str, str]:
 
 def ssh_config() -> tuple[str, str, str]:
     load_env()
-    host = os.environ.get("DEPLOY_HOST", "132.243.234.162")
+    host = os.environ.get("DEPLOY_HOST", "89.125.188.100")
     user = os.environ.get("DEPLOY_USER", "root")
     password = os.environ.get("DEPLOY_PASS", "")
     if not password:
@@ -167,7 +167,7 @@ def _connect_via_cell_jump(hive_user: str, hive_password: str, timeout: int):
         return None
     hive_ip = ssh_hosts()[0]
     if hive_ip.startswith("10."):
-        hive_ip = (os.environ.get("DEPLOY_HOST") or "132.243.234.162").strip()
+        hive_ip = (os.environ.get("DEPLOY_HOST") or "89.125.188.100").strip()
     last: BaseException | None = None
     for jump_ip in jump_hosts():
         jump = paramiko.SSHClient()

@@ -1,9 +1,99 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (онлайн 38 vs 2 2026-09-18)
+
+После `deploy_stable` (`docker compose restart api nginx`) клиенты массово GETCONF. Дашборд суммирует **все** WG handshake <3 мин, включая leftovers — Redis `hive:vpn_online_shown`=40 при `is_connected`=3.
+Сейчас: wdtt active, DNAT `10.66.66.1:8000`→api, соты DNAT на `89.125.188.100:80`, tunnel 200, kick 0. Снял только extras не из `devices` (не ключи устройств), Redis сброшен. **wdtt/api не рестартил.**
+OTA не приходит, пока клиент не в живом туннеле: публичный HTTPS Улья с РФ висит.
+
+## Последние изменения (Android релиз 1.0.166 2026-09-18)
+
+Пересобран release **без поднятия версии**: `1.0.166` / versionCode 166.
+APK: `android/SilentVPN-release-1.0.166.apk` и `releases/SilentVPN-release-1.0.166.apk` (~26.5 МБ), OTA check через туннель. OTA на сервер не заливал.
+
+## Последние изменения (Android OTA check 2026-09-18)
+
+ПК OTA дошло с задержкой (~20с public TLS hang → tunnel). Android не предлагал: один check за VPN-сессию (успешный «уже 1.0.166/нет апдейта» блокировал повтор) и Wi‑Fi шёл в public HTTPS Улья.
+Сейчас: при VPN туннель сразу, повтор на главном с cooldown 30с, таймаут 12с. Версию не поднимал. Чтобы получить уже залитый 1.0.166 — выкл/вкл VPN на телефоне.
+
+## Последние изменения (OTA live 2026-09-18)
+
+Android **есть**: `update/android/SilentVPN-release-1.0.166.apk` + GitHub v1.0.166 (залит 17.09 23:00 UTC).
+PC Windows **есть**: `update/pc/Silent VPN Setup 1.0.166.exe` + GitHub (23:11 UTC). Linux OTA ещё **1.0.165**.
+`/api/updates/check` отдаёт `available:true` только если клиент **< 1.0.166**. На 1.0.166 баннера нет. Android проверяет OTA один раз за VPN-сессию.
+
+## Последние изменения (админка nip.io с VPN 2026-09-18)
+
+Кнопка снова всегда `https://89-125-188-100.nip.io/dashboard`. На соте Улей не в bypass.
+На слоте Улья hosts `10.66.66.1 nip.io` — HTTPS внутри туннеля (публичный :443 с РФ TLS hang).
+
+## Последние изменения (серт live + слоты админки 2026-09-18)
+
+Nginx отдаёт LE `CN=89-125-188-100.nip.io` до 16.12.2026. `certbot.timer` enabled, renew_hook копирует в docker ssl.
+Сняты 2 живых trusted device админки (V2520A + ПК), сессии тоже. Лимит 2 снова свободен.
+
+## Последние изменения (смена IP Улья 2026-09-18)
+
+Публичный Улей: `89.125.188.100` / `https://89-125-188-100.nip.io` (тот же VPS `VM-251932`, vps 167346).
+LE-серт до 2026-12-16. `deploy_stable.py` залит, api env новый, `hive_cells` queen обновлён.
+Соты 1–3: `HIVE_QUEEN_IP` + socat `10.66.66.1:8000` → `89.125.188.100:80`, tunnel 200, **wdtt не рестартили**.
+Клиенты **1.0.166**: PC `pc/build-release-v141-358992/Silent VPN Setup 1.0.166.exe`, Android `android/SilentVPN-release-1.0.166.apk`, OpenWrt `openwrt/dist/silent-vpn-openwrt-1.0.166.tar.gz`. iOS не пересобирали.
+**ЮMoney:** в кабинетах сменить notify на `https://89-125-188-100.nip.io/api/payments/yumoney/notify`.
+
 > **Главный документ по ИИ-выходу и гигиене сот — `backend/AI_EXIT_NODE.md`.**
 > Любая задача про Соту 3 / «Сервер 4 для ИИ», egress, DNS соты, TPROXY, фаервол ноды —
 > сначала читать его, потом код.
 > **Игры / Dota / Steam SDR (UDP) — `backend/GAME_EXIT_NODE.md` (Сота 2).**
+
+## Последние изменения (ПК nip.io timeout 2026-09-18)
+
+ERR_CONNECTION_TIMED_OUT на nip.io = TCP :443 Улья с РФ, мимо VPN.
+Кнопка: на соте снимаем Улей из bypass и открываем nip.io; на слоте Улья
+только `10.66.66.1:8000` (публичный :443 в bypass ради WG). Chrome-исключения
+больше не выучивают IP Улья.
+
+## Последние изменения (ПК админка nip.io 2026-09-18)
+
+Кнопка админки снова всегда `https://132-243-234-162.nip.io/dashboard`, не
+`10.66.66.1:8000`. Payment-bypass больше не выталкивает IP Улья из туннеля.
+С Соты 1 nip.io/dashboard = 200 за 0.14с. Нужен перезапуск ПК-клиента.
+
+## Последние изменения (ПК админка через соту 2026-09-18)
+
+Деплой `deploy_stable.py` (прыжок Сота 1). Корень: клиент на соте открывает
+`http://10.66.66.1:8000/dashboard` (Host `10.66.66.1`), socat → Улей `:80`.
+Nginx `location /` отдавал **444** — Android `/api` жил, ПК-админка нет.
+Теперь SPA проксируется на API, allow только соты/localhost/docker.
+Проба с Соты 1: `/dashboard` 200 HTML. health 0.04с, wdtt active, kick 0.
+
+## Последние изменения (OneDash + dry-run IP 2026-09-18)
+
+Хостер Улья и сот 1–3: OneDash (`ai/onedash_client.py`, API 2.0 Bearer).
+Ключ только в `.env.deploy`. Смена IP в публичных доках нет — только GET,
+POST не вызывается, `executed=False`. Не деплоили.
+
+## Последние изменения (аудит HEAD + dry-run смена IP 2026-09-18)
+
+Классификатор: `None` ноды = pending, не timeout цели; живой HTTPS с РФ
+не даёт port_block на TCP; нет KIND_OK на неполных пробах; в админке
+«оценка доказательств», не «80%». Кандидат запасного порта только `open`,
+8443 forbidden (mtg), `stale_alt_blocked` передаётся из reach.
+Deny: уникальный `/tmp/silent-deny-ids-*`, ошибка чтения не fail-open.
+GC: `wg_live_public_key` в known, dump/remove в `to_thread`.
+nginx `:80` default: allow `172.16.0.0/12` (403 /health с docker-моста).
+Автосмена IP: `ai/ip_rotate_policy.py` — dry-run, executed всегда False.
+Улей/соты 1–2 = OneDash (адаптер GET); Сота 3 = HOSTKEY. Не деплоили.
+
+## Последние изменения (канон TECHNOLOGY.md 2026-09-17)
+
+Для аудита другим агентом: `.cursor/TECHNOLOGY.md` — плоскости API/VPN,
+`10.66.66.1`, bootstrap overlay, что «сломанное» задумано, карта смены IP.
+Не править failover/TLS :9100/wdtt по отчёту аудита вслепую.
+
+## Последние изменения (debug клиенты 2026-09-17)
+
+Android: `android/SilentVPN-debug.apk`. PC: `pc/build-debug-655882/win-unpacked/`
+(`SilentVPN-Admin.bat`). Cell-first API + bootstrap на соту.
 
 ## Последние изменения (клиенты как Android 2026-09-17)
 
@@ -1267,10 +1357,10 @@ Debug: `pc/build-debug-35517/win-unpacked/` (SilentVPN-Admin.bat). `wdtt-client`
 | Локальная папка | Ветка GitHub | Версия |
 |-----------------|--------------|--------|
 | `Silent-Project/backend/` | `main` | — |
-| `Silent-Project/pc/` | `pc` | **1.0.165** (Сервер 4 для ИИ только в этой версии; WDTT only) |
-| `Silent-Project/android/` | `android` | **1.0.165** (Сервер 4 для ИИ только в этой версии; WDTT only) |
-| `Silent-Project/ios/` | `ios` | начальная |
-| `Silent-Project/openwrt/` | `openwrt` | **1.0.165** (панель + агент, приёмка на роутере ещё впереди) |
+| `Silent-Project/pc/` | `pc` | **1.0.166** (hive `89.125.188.100`) |
+| `Silent-Project/android/` | `android` | **1.0.166** (hive `89.125.188.100`) |
+| `Silent-Project/ios/` | `ios` | начальная (IP в исходниках, без rebuild) |
+| `Silent-Project/openwrt/` | `openwrt` | **1.0.166** (hive `89.125.188.100`) |
 
 **Рабочая папка в Cursor:** `C:\Users\silent27\AndroidStudioProjects\Silent-Project`  
 Папка `Silent-Project/` **не является** git-репозиторием — это контейнер. Внутри каждая подпапка — **свой git** (worktree / clone) и **свой `.gitignore`**.
@@ -1281,9 +1371,9 @@ Debug: `pc/build-debug-35517/win-unpacked/` (SilentVPN-Admin.bat). `wdtt-client`
 
 | Параметр | Значение |
 |----------|----------|
-| VPS IP | `132.243.234.162` |
-| HTTPS API | `https://132-243-234-162.nip.io` |
-| WDTT (UDP) | `132.243.234.162:56000` |
+| VPS IP | `89.125.188.100` |
+| HTTPS API | `https://89-125-188-100.nip.io` |
+| WDTT (UDP) | `89.125.188.100:56000` |
 | WireGuard (UDP) | `:56001` |
 | Tunnel API (через WG) | `http://10.66.66.1:8000` |
 | Путь на сервере | `/opt/silent-vpn/backend` (клон ветки `main`) |

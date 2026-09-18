@@ -20,6 +20,7 @@ from ai.availability_model import (
     ERR_HTTP,
     ERR_NONE,
     ERR_OTHER,
+    ERR_PENDING,
     ERR_REFUSED,
     ERR_RESET,
     ERR_TIMEOUT,
@@ -266,10 +267,10 @@ def pick_nodes(
 def _parse_node_payload(kind: str, payload: Any) -> tuple[bool, float | None, str, str, tuple[str, ...]]:
     """Единый разбор ответа внешнего сервиса → (ok, latency_ms, error_kind, detail, ips)."""
     if payload is None:
-        return False, None, ERR_TIMEOUT, "нода не вернула результат", ()
+        return False, None, ERR_PENDING, "нода не вернула результат", ()
     item = payload[0] if isinstance(payload, list) and payload else payload
     if item is None:
-        return False, None, ERR_TIMEOUT, "нет ответа от ноды", ()
+        return False, None, ERR_PENDING, "нет ответа от ноды", ()
 
     if isinstance(item, dict):
         err = str(item.get("error") or "")

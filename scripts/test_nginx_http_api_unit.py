@@ -33,7 +33,7 @@ def _server_blocks(conf: str) -> list[str]:
 def _http_nip_io_block(conf: str) -> str:
     found = []
     for block in _server_blocks(conf):
-        if "132-243-234-162.nip.io" not in block:
+        if "89-125-188-100.nip.io" not in block:
             continue
         if "listen 443" in block:
             continue
@@ -61,10 +61,32 @@ def test_http_nip_io_proxies_api_instead_of_server_301():
 def test_http_nip_io_still_redirects_browser_pages():
     block = _http_nip_io_block(NGINX.read_text(encoding="utf-8"))
     assert "location / {" in block or "location /{" in block
-    assert "return 301 https://132-243-234-162.nip.io" in block
+    assert "return 301 https://89-125-188-100.nip.io" in block
+
+
+def _default_http80_block(conf: str) -> str:
+    found = []
+    for block in _server_blocks(conf):
+        if "listen 80 default_server" in block:
+            found.append(block)
+    assert found, "нет listen 80 default_server"
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_default_http80_proxies_admin_spa_not_444():
+    """Сота DNAT → Улей:80, Host 10.66.66.1. return 444 на / ломает ПК-админку."""
+    block = _default_http80_block(NGINX.read_text(encoding="utf-8"))
+    loc = block.split("location / {", 1)[-1] if "location / {" in block else ""
+    assert loc, "нет location /"
+    assert "proxy_pass http://api" in loc
+    assert "return 444" not in loc
+    assert "allow 87.58.213.193" in block
+    assert "deny all" in block
 
 
 if __name__ == "__main__":
-    test_http_nip_io_proxies_api_instead_of_server_301()
-    test_http_nip_io_still_redirects_browser_pages()
-    print("ok")
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    for fn in tests:
+        fn()
+    print(f"ok ({len(tests)} tests)")

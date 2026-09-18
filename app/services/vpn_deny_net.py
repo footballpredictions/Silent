@@ -13,7 +13,10 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import os
 import subprocess
+import uuid
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,20 @@ _PROTECTED = frozenset({"10.66.66.1", "10.66.66.0", "10.66.66.2", "0.0.0.0"})
 _WDTT_PASSWORDS = "/etc/wdtt/passwords.json"
 _NSENTER_HELPER = "silent-nsenter"
 _last_queen_ips: frozenset[str] | None = None
+
+
+@dataclass(frozen=True)
+class IdentitiesRead:
+    ok: bool
+    identities: dict[str, dict[str, str]]
+    error: str = ""
+
+
+def deny_ids_tmp_path() -> str:
+    """Уникальный файл на каждый вызов: общий /tmp/silent-deny-ids.json скрещивал параллельные чтения."""
+    return f"/tmp/silent-deny-ids-{os.getpid()}-{uuid.uuid4().hex}.json"
+
+
 _DISABLE_SH = (
     f"iptables -F {CHAIN} 2>/dev/null || true; "
     f"while iptables -C FORWARD -j {CHAIN} 2>/dev/null; do "
@@ -104,21 +121,27 @@ def _nsenter(script: str, timeout: int = 30) -> subprocess.CompletedProcess:
 
 
 def read_host_wdtt_identities(device_ids: list[str]) -> dict[str, dict[str, str]]:
+    return read_host_wdtt_identities_result(device_ids).identities
+
+
+def read_host_wdtt_identities_result(device_ids: list[str]) -> IdentitiesRead:
     ids = [str(i) for i in device_ids if str(i) and not str(i).startswith("boot:")]
     if not ids:
-        return {}
+        return IdentitiesRead(ok=True, identities={})
     payload = json.dumps(ids)
+    tmp = deny_ids_tmp_path()
     write_script = (
         "python3 - <<'PY'\n"
         "from pathlib import Path\n"
-        f"Path('/tmp/silent-deny-ids.json').write_text({payload!r})\n"
+        f"Path({tmp!r}).write_text({payload!r})\n"
         "PY"
     )
     read_script = (
         "python3 - <<'PY'\n"
         "import json\n"
         "from pathlib import Path\n"
-        "ids=json.loads(Path('/tmp/silent-deny-ids.json').read_text())\n"
+        f"p=Path({tmp!r})\n"
+        "ids=json.loads(p.read_text())\n"
         "blob=json.load(open('/etc/wdtt/passwords.json'))\n"
         "devs=blob.get('devices') or {}\n"
         "out={}\n"
@@ -132,28 +155,29 @@ def read_host_wdtt_identities(device_ids: list[str]) -> dict[str, dict[str, str]
         "    if pub: rec['pub']=pub\n"
         "    if rec: out[i]=rec\n"
         "print(json.dumps(out))\n"
-        "Path('/tmp/silent-deny-ids.json').unlink(missing_ok=True)\n"
+        "p.unlink(missing_ok=True)\n"
         "PY"
     )
     try:
         wr = _nsenter(write_script, timeout=15)
         if wr.returncode != 0:
-            logger.warning("wdtt identities write rc=%s %s", wr.returncode, (wr.stderr or "")[:160])
-            return {}
+            err = (wr.stderr or "")[:160]
+            logger.warning("wdtt identities write rc=%s %s", wr.returncode, err)
+            return IdentitiesRead(ok=False, identities={}, error=err or "write_failed")
         r = _nsenter(read_script, timeout=20)
     except Exception as e:
         logger.warning("wdtt identities read failed: %s", e)
-        return {}
+        return IdentitiesRead(ok=False, identities={}, error=str(e)[:200])
     if r.returncode != 0:
         err = (r.stderr or r.stdout or "")[:200]
         logger.warning("wdtt identities rc=%s %s", r.returncode, err)
-        return {}
+        return IdentitiesRead(ok=False, identities={}, error=err or "read_failed")
     try:
         raw = json.loads((r.stdout or "").strip().splitlines()[-1])
-    except Exception:
-        return {}
+    except Exception as e:
+        return IdentitiesRead(ok=False, identities={}, error=str(e)[:160])
     if not isinstance(raw, dict):
-        return {}
+        return IdentitiesRead(ok=False, identities={}, error="not_object")
     cleaned: dict[str, dict[str, str]] = {}
     for did, rec in raw.items():
         if not isinstance(rec, dict):
@@ -167,7 +191,7 @@ def read_host_wdtt_identities(device_ids: list[str]) -> dict[str, dict[str, str]
             info["pub"] = pub
         if info:
             cleaned[str(did)] = info
-    return cleaned
+    return IdentitiesRead(ok=True, identities=cleaned)
 
 
 def _iptables_sync_script(ips: set[str]) -> str:
@@ -183,16 +207,23 @@ def _iptables_sync_script(ips: set[str]) -> str:
     for ip in safe:
         lines.append(f"iptables -A {CHAIN} -s {ip}/32 -j DROP")
         lines.append(f"iptables -A {CHAIN} -d {ip}/32 -j DROP")
-    return " ; ".join(lines)
+    head = " ; ".join(lines[:3])
+    drops = lines[3:]
+    if not drops:
+        return head
+    return head + " && " + " && ".join(drops)
 
 
 def disable_queen_deny() -> None:
     """Снять SILENT_DENY с FORWARD. Не рестартит wdtt."""
     global _last_queen_ips
     try:
-        _nsenter(_DISABLE_SH, timeout=20)
+        r = _nsenter(_DISABLE_SH, timeout=20)
     except Exception as e:
         logger.warning("silent deny disable failed: %s", e)
+        return
+    if r.returncode != 0:
+        logger.warning("silent deny disable rc=%s %s", r.returncode, (r.stderr or "")[:160])
         return
     _last_queen_ips = frozenset()
 

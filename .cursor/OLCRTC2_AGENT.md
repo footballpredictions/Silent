@@ -7,7 +7,7 @@
 
 | Нода | Роль |
 |------|------|
-| Улей `132.243.234.162` | только WDTT/VK + API — **olcrtc2 exit запрещён** |
+| Улей `89.125.188.100` | только WDTT/VK + API — **olcrtc2 exit запрещён** |
 | Сота 1 `87.58.213.193` | **Telemost** olcrtc2 (`cells.telemost`) + Playwright `:9101` |
 | Сота 2 `78.17.74.27` | **WB Stream** olcrtc2 (`cells.wbstream`) — create через HTTP API с queen |
 | Сота 3+ | запас / overflow |

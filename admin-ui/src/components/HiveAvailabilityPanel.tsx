@@ -229,7 +229,7 @@ function VerdictCard({ verdict }: { verdict: Verdict }) {
             {verdict.channel && (
               <span className="text-violet-300">{channelLabel(verdict.channel)}</span>
             )}
-            <span className="text-[#555]">уверенность {Math.round(verdict.confidence * 100)}%</span>
+            <span className="text-[#555]">оценка доказательств {verdict.confidence.toFixed(2)}</span>
           </div>
           <p className="text-sm text-[#eee] mt-1">{verdict.title}</p>
           <p className="text-xs text-[#999] mt-0.5">{verdict.summary}</p>

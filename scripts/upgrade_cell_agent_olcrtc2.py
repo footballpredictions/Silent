@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _deploy_common import BACKEND_ROOT, REMOTE, connect, run  # noqa: E402
 
-QUEEN_IP = "132.243.234.162"
+QUEEN_IP = "89.125.188.100"
 DEFAULT_CELL = "87.58.213.193"
 
 UPGRADE_FROM_HIVE = r"""

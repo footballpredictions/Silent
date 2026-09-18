@@ -143,7 +143,7 @@ python scripts/deploy_ai_cell.py rollback --scope proxy|dns|all
 - `ip-api`: `hosting: true`, `proxy: true`, `reverse: ""`.
 - ufw **выключен**, `iptables INPUT` пустой, политика ACCEPT. Наружу слушают
   `22/tcp`, `9100/tcp`, `56000/udp`, `56001/udp`.
-- `nat`: `DNAT 10.66.66.1:8000 → 132.243.234.162:8000`, `MASQUERADE 10.66.0.0/16 → eth0` (`WDTT_MANAGED`).
+- `nat`: `DNAT 10.66.66.1:8000 → 89.125.188.100:8000`, `MASQUERADE 10.66.0.0/16 → eth0` (`WDTT_MANAGED`).
 - `eth0` — только link-local IPv6, глобального IPv6 и v6-маршрута нет.
 - `wdtt0` MTU 1280, адрес ноды в туннеле `10.66.0.0/16`.
 - systemd-resolved занимает `127.0.0.53` и `127.0.0.54`, значит `127.0.0.1:53` свободен.

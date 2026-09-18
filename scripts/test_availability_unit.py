@@ -31,6 +31,7 @@ from ai.availability_knowledge import (  # noqa: E402
     KIND_SNI_BLOCK,
     KIND_THROTTLING,
     KIND_UDP_BLOCK,
+    KIND_UNKNOWN,
     all_methods,
     knowledge_to_dict,
     render_commands,
@@ -46,6 +47,8 @@ from ai.availability_model import (  # noqa: E402
     CHANNEL_TLS_NO_SNI,
     CHANNEL_WDTT_UDP,
     ERR_HTTP,
+    ERR_PENDING,
+    ERR_PROBE_ERROR,
     ERR_RESET,
     ERR_TIMEOUT,
     ClientSignals,
@@ -90,12 +93,12 @@ def _agg(channel: str, *, ok: int = 0, failed: int = 0, error: str = ERR_TIMEOUT
 def _queen(**kw) -> TargetSnapshot:
     snap = TargetSnapshot(
         name="Улей",
-        host="132.243.234.162",
+        host="89.125.188.100",
         role=TARGET_QUEEN,
         api_port=443,
         wdtt_port=56000,
         wg_port=56001,
-        domain="132-243-234-162.nip.io",
+        domain="89-125-188-100.nip.io",
         note="server1",
         status="active",
     )
@@ -202,7 +205,7 @@ def test_hive_https_timeout_from_rf_is_port_block_even_if_ping_partial():
     snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=1, failed=1)
     snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, failed=2)
     snap.ru[CHANNEL_API_TLS] = _agg(CHANNEL_API_TLS, failed=2)
-    snap.ru[CHANNEL_DNS] = _agg(CHANNEL_DNS, ok=2, ips=("132.243.234.162",))
+    snap.ru[CHANNEL_DNS] = _agg(CHANNEL_DNS, ok=2, ips=("89.125.188.100",))
     verdicts = classify_target(snap)
     kinds = {v.kind for v in verdicts}
     assert KIND_PORT_BLOCK in kinds, kinds
@@ -254,18 +257,16 @@ def test_live_tls_locally_still_allows_port_block():
     assert KIND_SERVICE_DOWN not in kinds
 
 
-def test_hive_443_port_block_does_not_recommend_dnat_on_same_ip():
-    """2026-09-16: из РФ :443 timeout, :80 открыт, API в туннеле жив. DNAT на 443 бесполезен."""
+def test_hive_443_https_success_is_not_categorical_port_block():
+    """TCP 0/2 при живом TLS с тех же точек — порт достижим, не «тотальная резка»."""
     snap = _queen()
     snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=2)
     snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, failed=2)
     snap.ru[CHANNEL_API_TLS] = _agg(CHANNEL_API_TLS, ok=2)
     snap.local[CHANNEL_API_TCP] = ProbeResult(channel=CHANNEL_API_TCP, ok=True, latency_ms=1.0)
-    port = [v for v in classify_target(snap) if v.kind == KIND_PORT_BLOCK][0]
-    text = " ".join(port.fixes)
-    assert "Не делать DNAT" in text
-    assert "через DNAT на 443" not in text
-    assert "10.66.66.1" in text or "9100" in text
+    kinds = _kinds(snap)
+    assert KIND_PORT_BLOCK not in kinds
+    assert KIND_OK in kinds or KIND_UNKNOWN in kinds
 
 
 def test_ai_exit_closed_agent_port_is_not_dpi():
@@ -356,7 +357,7 @@ def test_dns_ok_when_resolved_to_our_ip():
     snap = _queen()
     snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=3)
     snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=3)
-    snap.ru[CHANNEL_DNS] = _agg(CHANNEL_DNS, ok=3, ips=("132.243.234.162",))
+    snap.ru[CHANNEL_DNS] = _agg(CHANNEL_DNS, ok=3, ips=("89.125.188.100",))
     assert KIND_DNS_POISONING not in _kinds(snap)
 
 
@@ -638,7 +639,10 @@ def test_parse_node_payload_shapes():
     assert not ok and kind == "refused"
 
     ok, _, kind, _, _ = _parse_node_payload("tcp", None)
-    assert not ok and kind == ERR_TIMEOUT
+    assert not ok and kind == ERR_PENDING
+
+    ok, _, kind, _, _ = _parse_node_payload("tcp", [None])
+    assert not ok and kind == ERR_PENDING
 
     ok, latency, _, _, _ = _parse_node_payload(
         "ping", [[["OK", 0.12, "1.2.3.4"], ["OK", 0.2, "1.2.3.4"]]]
@@ -688,6 +692,68 @@ def test_client_clock_ahead_does_not_move_report_into_future():
 def test_client_report_older_than_retention_is_dropped():
     assert client_report_age_sec(MAX_AGE + 1, MAX_AGE) is None
     assert client_report_age_sec(MAX_AGE, MAX_AGE) == MAX_AGE
+
+
+def test_missing_vantage_node_is_pending_not_target_timeout():
+    snap = _queen()
+    snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=2)
+    snap.ru[CHANNEL_API_TCP] = VantageAggregate(
+        channel=CHANNEL_API_TCP,
+        nodes=[
+            NodeResult(node="ru1.node", country="ru", ok=False, error_kind=ERR_PENDING, detail="нет ответа"),
+            NodeResult(node="ru2.node", country="ru", ok=False, error_kind=ERR_PENDING, detail="нет ответа"),
+        ],
+    )
+    kinds = _kinds(snap)
+    assert KIND_PORT_BLOCK not in kinds
+    assert KIND_OK not in kinds
+    assert KIND_UNKNOWN in kinds
+    assert report_status(classify_target(snap)) in ("unknown", "degraded", "ok")
+
+
+def test_checkhost_service_error_is_not_port_block():
+    snap = _queen()
+    snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=2)
+    snap.ru[CHANNEL_API_TCP] = VantageAggregate(
+        channel=CHANNEL_API_TCP,
+        nodes=[
+            NodeResult(node="ru1.node", ok=False, error_kind=ERR_PROBE_ERROR, detail="HTTP 403"),
+            NodeResult(node="ru2.node", ok=False, error_kind=ERR_PROBE_ERROR, detail="HTTP 403"),
+        ],
+    )
+    assert KIND_PORT_BLOCK not in _kinds(snap)
+    assert KIND_UNKNOWN in _kinds(snap)
+
+
+def test_blackhole_does_not_claim_world_ok_without_world_probe():
+    snap = _queen()
+    snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, failed=5)
+    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, failed=5)
+    verdicts = classify_target(snap)
+    hole = [v for v in verdicts if v.kind == KIND_IP_BLACKHOLE]
+    assert hole
+    text = " ".join(hole[0].evidence)
+    assert "вне РФ" not in text.lower() or "не подтвердил" in text.lower()
+
+
+def test_app_http_403_is_not_operator_stub():
+    snap = _queen()
+    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=2)
+    snap.ru[CHANNEL_API_HTTP] = VantageAggregate(
+        channel=CHANNEL_API_HTTP,
+        nodes=[
+            NodeResult(node="ru1.node", ok=False, error_kind=ERR_HTTP, detail="HTTP 403 Forbidden"),
+            NodeResult(node="ru2.node", ok=False, error_kind=ERR_HTTP, detail="HTTP 403 Forbidden"),
+        ],
+    )
+    assert KIND_HTTP_STUB not in _kinds(snap)
+
+
+def test_port_block_knowledge_does_not_redirect_mtg_8443():
+    cmds = " ".join(render_commands(KIND_PORT_BLOCK, host="1.2.3.4", port=443))
+    assert "8443" not in cmds or "REDIRECT" not in cmds
+    udp = " ".join(render_commands(KIND_UDP_BLOCK, host="1.2.3.4"))
+    assert "8443" not in udp or "REDIRECT --to-ports 56000" not in udp
 
 
 def test_delayed_client_report_falls_out_of_aggregation_window():

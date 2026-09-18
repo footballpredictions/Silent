@@ -2,7 +2,7 @@
 
 Старые клиенты остаются на :443. Новые получают запасной порт в теме, если
 с РФ хоть одна нода режет API (1/2 тоже — иначе флап никогда не даст 0/2).
-Автосмена — живой кандидат с РФ (open/refused, не timeout).
+Автосмена — живой кандидат с РФ только `open` (HTTPS слушает). `refused` — нет listener, не публикуем. 8443 запрещён (mtg).
 """
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ ACTION_OPEN_CANDIDATE = "open_candidate"
 ACTION_CLOSE_STALE_ALT = "close_stale_alt"
 
 # Не открываем как «новый API» и не закрываем автоматом.
-FORBIDDEN_PORTS = frozenset({22, 80, 8000, 9100, 56000, 56001, 1194, 51820, 500, 4500})
+FORBIDDEN_PORTS = frozenset({22, 80, 8000, 9100, 56000, 56001, 1194, 51820, 500, 4500, 8443})
 KEEP_FOREVER = frozenset({443, 22, 80, 8000, 56000, 56001})
-CANDIDATE_ORDER = (2083, 2053, 2087, 2096, 8443)
-REACHABLE = frozenset({"open", "refused"})
+CANDIDATE_ORDER = (2083, 2053, 2087, 2096)
+REACHABLE = frozenset({"open"})
 
 
 @dataclass
@@ -72,6 +72,27 @@ def pick_candidate(reach: dict[int | str, str], *, skip: set[int] | None = None)
         if norm.get(port) in REACHABLE:
             return port
     return None
+
+
+def stale_published_ports(
+    published: tuple[int, ...] | list[int],
+    reach: dict[int | str, str] | None,
+) -> tuple[int, ...]:
+    """Опубликованный порт мёртв с РФ (timeout/refused). Без пробы не гадаем."""
+    if not reach:
+        return ()
+    norm: dict[int, str] = {}
+    for key, value in reach.items():
+        try:
+            norm[int(key)] = str(value or "").strip().lower()
+        except (TypeError, ValueError):
+            continue
+    out: list[int] = []
+    for port in published:
+        status = norm.get(int(port), "")
+        if status in ("timeout", "refused"):
+            out.append(int(port))
+    return tuple(out)
 
 
 def alt_https_urls(domain: str, ip: str, ports: list[int] | tuple[int, ...]) -> list[str]:

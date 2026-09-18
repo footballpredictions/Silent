@@ -31,7 +31,7 @@ def test_trusted_ip_skips_security_event():
         source="admin-host-guard",
         message="AdminHostGuard blocked forbidden host",
         client_ip="172.18.0.1",
-        details="path=/ host=132.243.234.162",
+        details="path=/ host=89.125.188.100",
     ) is False
     assert list_incidents(10) == []
 

@@ -144,11 +144,11 @@ bash /tmp/fix_tunnel_dnat.sh
 echo "=== verify ==="
 curl -sf http://127.0.0.1:8000/api/health && echo " health OK"
 curl -sf http://127.0.0.1:8000/health && echo " /health OK" || true
-alt=$(curl -sk -o /dev/null -w "%{{http_code}}" --connect-timeout 3 --resolve 132-243-234-162.nip.io:2083:127.0.0.1 https://132-243-234-162.nip.io:2083/api/health || true)
+alt=$(curl -sk -o /dev/null -w "%{{http_code}}" --connect-timeout 3 --resolve 89-125-188-100.nip.io:2083:127.0.0.1 https://89-125-188-100.nip.io:2083/api/health || true)
 echo "alt2083 HTTP $alt (expect 200)"
 admin=$(curl -s -o /dev/null -w "%{{http_code}}" http://127.0.0.1:8000/)
 echo "admin: $admin"
-hive=$(curl -s -o /dev/null -w "%{{http_code}}" -H "Host: 132-243-234-162.nip.io" http://127.0.0.1:8000/api/admin/hive/cells)
+hive=$(curl -s -o /dev/null -w "%{{http_code}}" -H "Host: 89-125-188-100.nip.io" http://127.0.0.1:8000/api/admin/hive/cells)
 echo "hive/cells HTTP $hive (expect 401)"
 if [ "$hive" = "404" ]; then
   echo "ERROR: hive routes missing" >&2

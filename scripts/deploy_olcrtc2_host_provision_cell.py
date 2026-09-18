@@ -4,7 +4,7 @@
   python scripts/deploy_olcrtc2_host_provision_cell.py
   python scripts/deploy_olcrtc2_host_provision_cell.py 87.58.213.193
 
-Слушает 0.0.0.0:9101, UFW только с IP Улья. ЖЁСТКО: не на 132.243.234.162.
+Слушает 0.0.0.0:9101, UFW только с IP Улья. ЖЁСТКО: не на 89.125.188.100.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import paramiko
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _deploy_common import BACKEND_ROOT, connect, run  # noqa: E402
 
-QUEEN_IP = "132.243.234.162"
+QUEEN_IP = "89.125.188.100"
 DEFAULT_CELL = "87.58.213.193"
 REMOTE_BASE = "/opt/silent-vpn/olcrtc2"
 REMOTE_HP = f"{REMOTE_BASE}/host-provision"

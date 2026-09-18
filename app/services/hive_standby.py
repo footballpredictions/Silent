@@ -52,8 +52,8 @@ def hive_alt_api_urls() -> list[str]:
     for port in load_published_ports():
         if port not in ports:
             ports.append(port)
-    host = urlparse(settings.FRONTEND_URL or "").hostname or "132-243-234-162.nip.io"
-    ip = (settings.VPN_SERVER_IP or "132.243.234.162").strip()
+    host = urlparse(settings.FRONTEND_URL or "").hostname or "89-125-188-100.nip.io"
+    ip = (settings.VPN_SERVER_IP or "89.125.188.100").strip()
     return alt_https_urls(host, ip, ports)
 
 

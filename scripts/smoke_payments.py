@@ -26,7 +26,7 @@ import uuid
 
 import httpx
 
-BASE = os.environ.get("SILENT_API", "https://132-243-234-162.nip.io").rstrip("/")
+BASE = os.environ.get("SILENT_API", "https://89-125-188-100.nip.io").rstrip("/")
 
 
 def main() -> int:

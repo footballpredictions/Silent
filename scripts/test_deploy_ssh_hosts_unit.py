@@ -9,8 +9,8 @@ from _deploy_common import ssh_hosts  # noqa: E402
 
 
 def test_ssh_hosts_hive_then_tunnel():
-    hosts = ssh_hosts("132.243.234.162")
-    assert hosts[0] == "132.243.234.162"
+    hosts = ssh_hosts("89.125.188.100")
+    assert hosts[0] == "89.125.188.100"
     assert "10.66.66.1" in hosts
     assert hosts.index("10.66.66.1") > 0
 

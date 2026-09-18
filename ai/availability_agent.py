@@ -466,6 +466,13 @@ async def run_availability_check(
         relay_plan = build_relay_plan(targets)
     except Exception as e:
         warnings.append(f"План релея Сервер 4 не посчитан: {e}")
+    ip_plan: dict = {}
+    try:
+        from ai.ip_rotate_policy import build_ip_plan
+
+        ip_plan = build_ip_plan(targets, verdicts, dry_run=True, paid_enabled=False)
+    except Exception as e:
+        warnings.append(f"План смены IP не посчитан: {e}")
     report = AvailabilityReport(
         ts=_utc_now_iso(),
         status=status,
@@ -477,6 +484,7 @@ async def run_availability_check(
         warnings=warnings,
         port_plan=port_plan,
         relay_plan=relay_plan,
+        ip_plan=ip_plan,
     )
 
     await store.save_report(report.to_dict())
@@ -489,9 +497,10 @@ async def run_availability_check(
 async def _probe_alt_candidates(
     queen: TargetSnapshot, vantage: dict[str, object], warnings: list[str]
 ) -> dict[str, str]:
-    """Живы ли кандидаты с российских нод: open/refused = пакеты доходят, timeout = нет.
+    """Живы ли кандидаты с российских нод: только `open` годится как HTTPS.
 
-    `refused` тоже годится: порт ещё не открыт, но фильтр его не режет.
+    `refused` значит пакет дошёл и RST — listener нет, URL публиковать нельзя.
+    `timeout` — фильтр или drop. 8443 не проверяем: там mtg.
     """
     from ai.availability_model import ERR_REFUSED
     from ai.availability_probes import fetch_checkhost_nodes, vantage_check
@@ -548,7 +557,7 @@ async def _build_port_plan(
         needs_candidate_probe,
     )
     from ai.hive_api_port_exec import apply_close_stale_alt, apply_open_candidate
-    from ai.hive_api_port_policy import ACTION_CLOSE_STALE_ALT, ACTION_OPEN_CANDIDATE
+    from ai.hive_api_port_policy import ACTION_CLOSE_STALE_ALT, ACTION_OPEN_CANDIDATE, stale_published_ports
     from app.services.hive_standby import hive_alt_api_urls
 
     queen = next((t for t in targets if t.role == TARGET_QUEEN), None)
@@ -577,6 +586,7 @@ async def _build_port_plan(
         queen,
         previous_streak=previous,
         published_alt_ports=published,
+        stale_alt_blocked=stale_published_ports(published, reach),
         candidate_reach=reach,
         confirm_cycles=confirm,
         autoswitch_enabled=autoswitch,

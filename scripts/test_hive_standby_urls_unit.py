@@ -11,8 +11,8 @@ from app.services.standby_urls import compose_standby_api_urls
 
 CELLS = ["http://87.58.213.193:9100", "http://78.17.74.27:9100"]
 ALTS = [
-    "https://132-243-234-162.nip.io:2083",
-    "https://132.243.234.162:2083",
+    "https://89-125-188-100.nip.io:2083",
+    "https://89.125.188.100:2083",
 ]
 
 
@@ -46,7 +46,7 @@ def test_runtime_file_ports_go_after_cells():
         p = Path(td) / "alt"
         p.write_text("2083\n", encoding="utf-8")
         ports = load_published_ports(p)
-    urls = alt_https_urls("132-243-234-162.nip.io", "132.243.234.162", ports)
+    urls = alt_https_urls("89-125-188-100.nip.io", "89.125.188.100", ports)
     assert urls == ALTS
     cells_then_alt = compose_standby_api_urls(CELLS, urls)
     assert cells_then_alt[:2] == CELLS

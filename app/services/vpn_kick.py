@@ -27,11 +27,14 @@ from app.services.hive_service import _validate_outbound_url, get_queen_cell, re
 from app.services.vpn_kick_select import (
     LivePeer,
     addr_ip,
+    count_keys_absent,
     parse_wg_show_dump,
+    page_round_robin,
     select_extra_by_last_connected,
     select_owned_getconf_extras,
     select_resurrected_extras,
     should_keep_vpn_dataplane,
+    should_mark_unpaid_offline,
     snapshot_ages,
     snapshot_appeared,
     valid_wg_pub,
@@ -39,6 +42,7 @@ from app.services.vpn_kick_select import (
 
 logger = logging.getLogger(__name__)
 _recent_queen_kicks: dict[str, float] = {}
+_unpaid_drop_cursor = 0
 _NSENTER_HELPER = "silent-nsenter"
 _WATCH_SEC = 25 * 60
 _watch_until: dict[str, float] = {}
@@ -229,11 +233,15 @@ def remove_wg_peers_batch_on_queen(pubs: list[str], *, batch: int = 40) -> int:
         inner = f"wg set wdtt0 {parts}"
         try:
             r = _nsenter_host(inner, timeout=60)
-            if r.returncode == 0:
-                removed += len(chunk)
-            else:
+            if r.returncode != 0:
                 err = (r.stderr or r.stdout or b"").decode("utf-8", errors="replace")[:240]
                 logger.warning("queen wg gc batch failed n=%s rc=%s %s", len(chunk), r.returncode, err)
+                continue
+            after = _queen_wg_dump()
+            if not after:
+                logger.warning("queen wg gc dump empty after remove n=%s", len(chunk))
+                continue
+            removed += count_keys_absent(chunk, {p.pub for p in after})
         except Exception as e:
             logger.warning("queen wg gc batch error: %s", e)
     return removed
@@ -588,7 +596,7 @@ async def sync_unpaid_deny_net(db: AsyncSession) -> int:
     tunnels re-GETCONF and a kick loop pins wdtt/API at 100% CPU.
     """
     from app.services.vpn_deny_net import (
-        read_host_wdtt_identities,
+        read_host_wdtt_identities_result,
         sync_queen_deny_ips,
         unpaid_ips_from_wdtt_only,
     )
@@ -613,8 +621,11 @@ async def sync_unpaid_deny_net(db: AsyncSession) -> int:
     allowed = await users_with_vpn_access_ids(db)
     unpaid_ids = [str(did) for did, uid in devices if uid not in allowed]
     _ensure_nsenter_helper()
-    idents = read_host_wdtt_identities(unpaid_ids)
-    ips = unpaid_ips_from_wdtt_only(idents)
+    got = read_host_wdtt_identities_result(unpaid_ids)
+    if not got.ok:
+        logger.warning("silent deny skip: identity read failed %s", got.error)
+        return 0
+    ips = unpaid_ips_from_wdtt_only(got.identities)
     if len(ips) > 2000:
         logger.error("silent deny aborted: unpaid IP set too large (%s)", len(ips))
         return 0
@@ -630,6 +641,7 @@ async def drop_unpaid_queen_peers_batch(db: AsyncSession, *, limit: int = 200) -
 
     Чужие extras платящих не трогаем — только pubs unpaid device + wdtt identity.
     """
+    global _unpaid_drop_cursor
     from app.services.subscription_service import users_with_vpn_access_ids
     from app.services.vpn_deny_net import read_host_wdtt_identities
 
@@ -646,17 +658,22 @@ async def drop_unpaid_queen_peers_batch(db: AsyncSession, *, limit: int = 200) -
     unpaid_ids: list[str] = []
     pubs: list[str] = []
     seen: set[str] = set()
+    device_pub_map: dict[object, set[str]] = {}
     for did, uid, wg, live, fp in result.all():
         if (fp or "").startswith("boot:"):
             continue
         if uid in allowed:
             continue
         unpaid_ids.append(str(did))
+        owned: set[str] = set()
         for raw in (wg, live):
             p = (raw or "").strip()
-            if _valid_wg_pub(p) and p not in seen:
-                seen.add(p)
-                pubs.append(p)
+            if _valid_wg_pub(p):
+                owned.add(p)
+                if p not in seen:
+                    seen.add(p)
+                    pubs.append(p)
+        device_pub_map[did] = owned
     try:
         idents = read_host_wdtt_identities(unpaid_ids)
         for rec in idents.values():
@@ -666,29 +683,37 @@ async def drop_unpaid_queen_peers_batch(db: AsyncSession, *, limit: int = 200) -
                 pubs.append(p)
     except Exception as e:
         logger.debug("wdtt identities for unpaid drop: %s", e)
-    pubs = pubs[: max(1, limit)]
-    if not pubs:
+    page, _unpaid_drop_cursor = page_round_robin(pubs, cursor=_unpaid_drop_cursor, limit=max(1, limit))
+    if not page:
         return 0
     _ensure_nsenter_helper()
-    removed = await asyncio.to_thread(remove_wg_peers_batch_on_queen, pubs)
-    if removed:
-        logger.warning("queen unpaid peer batch removed=%s of %s", removed, len(pubs))
-        off = await db.execute(
-            select(Device).where(
-                Device.is_active == True,  # noqa: E712
-                Device.is_connected == True,  # noqa: E712
-            )
+    removed = await asyncio.to_thread(remove_wg_peers_batch_on_queen, page)
+    if not removed:
+        return 0
+    logger.warning("queen unpaid peer batch removed=%s of %s", removed, len(page))
+    after = await asyncio.to_thread(_queen_wg_dump)
+    present = {p.pub for p in after}
+    gone = {p for p in page if p not in present} if after else set()
+    if not gone:
+        return removed
+    off = await db.execute(
+        select(Device).where(
+            Device.is_active == True,  # noqa: E712
+            Device.is_connected == True,  # noqa: E712
         )
-        n_off = 0
-        for device in off.scalars().all():
-            if device.user_id in allowed:
-                continue
-            if (device.device_fingerprint or "").startswith("boot:"):
-                continue
+    )
+    n_off = 0
+    for device in off.scalars().all():
+        if device.user_id in allowed:
+            continue
+        if (device.device_fingerprint or "").startswith("boot:"):
+            continue
+        owned = device_pub_map.get(device.id) or set()
+        if should_mark_unpaid_offline(owned, gone):
             device.is_connected = False
             n_off += 1
-        if n_off:
-            await db.commit()
+    if n_off:
+        await db.commit()
     return removed
 
 

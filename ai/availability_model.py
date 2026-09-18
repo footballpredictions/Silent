@@ -17,6 +17,8 @@ ERR_DNS = "dns"                  # имя не резолвится
 ERR_TLS = "tls"                  # TCP есть, TLS-рукопожатие не прошло
 ERR_HTTP = "http"                # ответ есть, но не тот (заглушка/редирект РКН)
 ERR_OTHER = "other"
+ERR_PENDING = "pending"          # нода измерителя не успела / нет payload
+ERR_PROBE_ERROR = "probe_error"  # сбой сервиса измерений, не цели
 
 # Стадии, на которых клиент может упасть (клиентская телеметрия).
 STAGE_DNS = "dns"
@@ -435,6 +437,8 @@ class AvailabilityReport:
     port_plan: dict[str, Any] = field(default_factory=dict)
     # Вход через живую соту, если Сервер 4 режут. Туннеля между сотами нет — не исполняем.
     relay_plan: dict[str, Any] = field(default_factory=dict)
+    # Платная смена IP хостера. Только чеклист, executed всегда False.
+    ip_plan: dict[str, Any] = field(default_factory=dict)
 
     def worst_severity(self) -> str:
         if not self.verdicts:
@@ -454,4 +458,5 @@ class AvailabilityReport:
             "targets": [t.to_dict() for t in self.targets],
             "port_plan": dict(self.port_plan),
             "relay_plan": dict(self.relay_plan),
+            "ip_plan": dict(self.ip_plan),
         }

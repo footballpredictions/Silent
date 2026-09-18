@@ -11,7 +11,7 @@ from app.services.olcrtc2_settings import DEFAULT_CELL_IP, load_olcrtc2_settings
 
 logger = logging.getLogger(__name__)
 
-QUEEN_IP = "132.243.234.162"
+QUEEN_IP = "89.125.188.100"
 REMOTE = "/opt/silent-vpn/olcrtc2"
 
 

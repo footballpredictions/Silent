@@ -4,7 +4,7 @@
   export CELL_AGENT_SECRET='длинный-случайный-пароль'
   export CELL_PUBLIC_IP='1.2.3.4'
   export WG_SERVER_PUBLIC_KEY='...'
-  export HIVE_API_URL='https://132-243-234-162.nip.io'
+  export HIVE_API_URL='https://89-125-188-100.nip.io'
   uvicorn main:app --host 0.0.0.0 --port 9100
 
 Пароль CELL_AGENT_SECRET вводится в админке «Улей» при подключении соты.

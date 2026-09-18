@@ -44,10 +44,10 @@ def _agg(channel: str, *, ok: int = 0, failed: int = 0) -> VantageAggregate:
 def _queen(**kw) -> TargetSnapshot:
     snap = TargetSnapshot(
         name="Улей",
-        host="132.243.234.162",
+        host="89.125.188.100",
         role=TARGET_QUEEN,
         api_port=443,
-        domain="132-243-234-162.nip.io",
+        domain="89-125-188-100.nip.io",
         status="active",
     )
     snap.local[CHANNEL_API_TCP] = ProbeResult(channel=CHANNEL_API_TCP, ok=True, latency_ms=3.0)
@@ -100,7 +100,7 @@ def test_confirmed_block_opens_candidate_when_autoswitch():
     plan, streak = build_plan(
         snap,
         previous_streak=1,
-        candidate_reach={"2083": "refused", "2053": "timeout"},
+        candidate_reach={"2083": "open", "2053": "timeout"},
         autoswitch_enabled=True,
         confirm_cycles=2,
     )
@@ -119,7 +119,7 @@ def test_dry_run_holds_when_autoswitch_off():
     plan, _ = build_plan(
         snap,
         previous_streak=3,
-        candidate_reach={"2083": "refused"},
+        candidate_reach={"2083": "open"},
         autoswitch_enabled=False,
     )
     assert plan["action"] == ACTION_HOLD

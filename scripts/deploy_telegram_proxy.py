@@ -18,7 +18,7 @@ from _deploy_common import connect, load_env, run
 
 load_env()
 
-HOST = os.environ.get("DEPLOY_HOST", "132.243.234.162")
+HOST = os.environ.get("DEPLOY_HOST", "89.125.188.100")
 PORT = int(os.environ.get("TELEGRAM_PROXY_PORT", "8443"))
 # Fake-TLS домен для ee-secret (DPI)
 TLS_DOMAIN = os.environ.get("TELEGRAM_PROXY_TLS_DOMAIN", "cloudflare.com")

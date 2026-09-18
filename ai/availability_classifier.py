@@ -23,6 +23,7 @@ from ai.availability_knowledge import (
     KIND_SNI_BLOCK,
     KIND_THROTTLING,
     KIND_UDP_BLOCK,
+    KIND_UNKNOWN,
     method,
     render_commands,
 )
@@ -39,6 +40,8 @@ from ai.availability_model import (
     CHANNEL_WDTT_UDP,
     CHANNEL_WG_UDP,
     ERR_HTTP,
+    ERR_PENDING,
+    ERR_PROBE_ERROR,
     ERR_RESET,
     ERR_TIMEOUT,
     ERR_UNREACHABLE,
@@ -61,6 +64,8 @@ from ai.availability_model import (
 PARTIAL_OK_RATIO = 0.75
 # Один таймаут check-host при 3 нодах (2/3) — шум сервиса, не ТСПУ. Нужно ≥2 фейла.
 PARTIAL_MIN_FAILS = 2
+PROBE_NOISE_KINDS = frozenset({ERR_PENDING, ERR_PROBE_ERROR})
+_APP_HTTP_MARKERS = ("HTTP 401", "HTTP 403", "HTTP 404", "HTTP 500", "HTTP 502", "HTTP 503")
 # Минимум клиентских отказов, ниже которого не делаем выводов по телеметрии.
 CLIENT_MIN_FAILURES = 5
 # Доля мобильных отказов, при которой это уже режим мобильной сети, а не наш IP.
@@ -100,6 +105,35 @@ BLOCKING_KINDS = frozenset(
 
 def channel_title(channel: str) -> str:
     return CHANNEL_TITLES.get(channel, channel)
+
+
+def _rf_https_open(snap: TargetSnapshot) -> bool:
+    """Живой TLS/HTTP с РФ доказывает, что TCP-порт в этот момент был достижим."""
+    for ch in (CHANNEL_API_TLS, CHANNEL_API_HTTP):
+        view = snap.ru_view(ch)
+        if view is not None and view.ok_count > 0:
+            return True
+    return False
+
+
+def _agg_is_probe_noise(agg: VantageAggregate) -> bool:
+    if not agg.available or agg.ok_count:
+        return False
+    kinds = set(agg.error_kinds())
+    return bool(kinds) and kinds <= PROBE_NOISE_KINDS
+
+
+def _looks_like_app_http(detail: str) -> bool:
+    text = (detail or "").upper()
+    return any(mark in text for mark in _APP_HTTP_MARKERS)
+
+
+def _world_ok_any(snap: TargetSnapshot, channels) -> bool:
+    for channel in channels:
+        view = snap.world_view(channel)
+        if view is not None and view.ok_count > 0:
+            return True
+    return False
 
 
 def _verdict(
@@ -224,14 +258,18 @@ def _blackhole_verdict(snap: TargetSnapshot) -> Verdict | None:
         )
 
     confidence = 0.8 if CHANNEL_PING in views else 0.7
-    if snap.world:
+    if _world_ok_any(snap, views):
         confidence += 0.1
     evidence = [
         f"Все проверенные каналы ({', '.join(channel_title(c) for c in views)}) — "
         f"молчание со всех {max(v.total for v in views.values())} российских нод.",
         f"Ошибки: {_fail_desc(next(iter(views.values())))} — ни одного refused, значит пакеты дропаются.",
-        "Локально те же порты отвечают, вне РФ адрес доступен.",
+        "Локально те же порты отвечают.",
     ]
+    if _world_ok_any(snap, views):
+        evidence.append("Вне РФ те же каналы отвечают — подозрение на фильтрацию пути РФ.")
+    elif snap.world:
+        evidence.append("Контроль вне РФ не подтвердил доступность — не называть это ТСПУ.")
     return _verdict(
         snap,
         KIND_IP_BLACKHOLE,
@@ -282,6 +320,8 @@ def _http_stub_verdict(snap: TargetSnapshot) -> Verdict | None:
     if snap.local_ok(CHANNEL_API_HTTP) is not True:
         return None
     sample = next((n for n in http.failing_nodes() if n.detail), None)
+    if any(_looks_like_app_http(n.detail) for n in http.failing_nodes()):
+        return None
     evidence = [
         f"{http.fail_count} из {http.total} российских нод получают не наш ответ.",
     ]
@@ -333,6 +373,8 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
             continue
         agg = snap.ru_view(channel)
         if agg is None or agg.all_ok:
+            continue
+        if _agg_is_probe_noise(agg):
             continue
         port = _channel_port(snap, channel)
         local = snap.local_ok(channel)
@@ -435,6 +477,8 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
             # Локально TLS мёртв — это наша поломка, о ней уже сказано отдельно.
             if api_443 and tls_entrance_broken(snap):
                 continue
+            if channel == CHANNEL_API_TCP and _rf_https_open(snap):
+                continue
             if api_443:
                 extra_fixes = [
                     "Не делать DNAT 8443/80→443 на том же IP: пакеты на 443 из РФ не доходят, "
@@ -446,8 +490,8 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
                 ]
             else:
                 extra_fixes = [
-                    f"Добавить альтернативный вход на порт 443/8443 через DNAT на {port or 'текущий порт'} "
-                    f"({snap.name}) — без рестарта сервиса.",
+                    f"Добавить альтернативный вход на 443 через DNAT на {port or 'текущий порт'} "
+                    f"({snap.name}) — без 8443 (там mtg) и без рестарта wdtt.",
                 ]
             out.append(
                 _verdict(
@@ -675,6 +719,24 @@ def classify_target(snap: TargetSnapshot) -> list[Verdict]:
                     )
                 )
             return verdicts
+        if any(
+            _agg_is_probe_noise(view)
+            for view in (snap.ru_view(ch) for ch in snap.ru_channels())
+            if view is not None
+        ):
+            verdicts.append(
+                _verdict(
+                    snap,
+                    KIND_UNKNOWN,
+                    confidence=0.4,
+                    summary=f"{snap.name}: пробы неполные, блокировку цели не подтверждаем.",
+                    evidence=[
+                        "Ноды измерителя не вернули результат или сервис проверки ответил ошибкой.",
+                        "Неполный охват не равен «все каналы доступны».",
+                    ],
+                )
+            )
+            return verdicts
         verdicts.append(
             _verdict(
                 snap,
@@ -727,6 +789,8 @@ def report_status(verdicts: list[Verdict]) -> str:
     # «Неизвестно» только если из РФ не подтверждён ни один узел: когда Улей виден,
     # непроверенная снаружи сота не должна гасить общий статус.
     if KIND_NO_VANTAGE in kinds and KIND_OK not in kinds:
+        return "unknown"
+    if KIND_UNKNOWN in kinds and KIND_OK not in kinds:
         return "unknown"
     return "ok"
 

@@ -7,7 +7,7 @@
 SSH пароль соты — из БД (как deploy_olcrtc_to_hive_cells). Бинарь — локальный
 linux amd64: olcrtc2/dist/olcrtc2-srv (собрать заранее).
 
-ЖЁСТКО: не ставить на Улей (132.243.234.162) рядом с wdtt.
+ЖЁСТКО: не ставить на Улей (89.125.188.100) рядом с wdtt.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _deploy_common import BACKEND_ROOT, connect, run  # noqa: E402
 
 REMOTE = "/opt/silent-vpn/olcrtc2"
-QUEEN_IP = "132.243.234.162"
+QUEEN_IP = "89.125.188.100"
 DEFAULT_CELL = "87.58.213.193"  # Сота 1
 
 UNIT = textwrap.dedent(

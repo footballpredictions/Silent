@@ -9,10 +9,10 @@
 
 | Сервис | URL |
 |--------|-----|
-| HTTPS API | `https://132-243-234-162.nip.io` |
-| VPS IP | `132.243.234.162` |
-| WDTT (UDP) | `132.243.234.162:56000` |
-| WireGuard (UDP) | `132.243.234.162:56001` |
+| HTTPS API | `https://89-125-188-100.nip.io` |
+| VPS IP | `89.125.188.100` |
+| WDTT (UDP) | `89.125.188.100:56000` |
+| WireGuard (UDP) | `89.125.188.100:56001` |
 | Tunnel API (через WG) | `http://10.66.66.1:8000` |
 | wdtt-server binary | `https://github.com/amurcanov/proxy-turn-vk-android/releases/latest/download/wdtt-server-linux-amd64` |
 | GitHub repo | `https://github.com/footballpredictions/Silent.git` |
@@ -164,7 +164,7 @@ sequenceDiagram
   API-->>App: pending|completed|failed|expired
 ```
 
-1. **Кабинет YuMoney (каждый кошелёк):** «Настройки для разработчиков» → HTTP-уведомления → URL `https://132-243-234-162.nip.io/api/payments/yumoney/notify` → секрет → `YUMONEY_SECRET_N` в `.env` (пара к `YUMONEY_WALLET_N`).
+1. **Кабинет YuMoney (каждый кошелёк):** «Настройки для разработчиков» → HTTP-уведомления → URL `https://89-125-188-100.nip.io/api/payments/yumoney/notify` → секрет → `YUMONEY_SECRET_N` в `.env` (пара к `YUMONEY_WALLET_N`).
 2. **Тело:** `application/x-www-form-urlencoded` (form). Ключевые поля: `label`, `operation_id`, `amount` / `withdraw_amount`, `currency`, `codepro`, `unaccepted`, подпись `sign` (с 2026-05-18) или legacy `sha1_hash`.
 3. **Подпись:** `_verify_yumoney_sign` — HMAC-SHA256 по всем параметрам **кроме** `sign`, ключи A–Z, значения URL-encoded (RFC 3986), секрет кошелька. Fallback: старый `sha1_hash`. Секрет берётся от **кошелька платежа** (`Payment.wallet` → `YUMONEY_SECRET_N`), не «любой из списка» после нахождения payment; до нахождения — проверка «хоть один кошелёк» для отсечения мусора.
 4. **Блокировка строки:** `SELECT … FOR UPDATE` по `Payment` где `label=…`.
@@ -458,7 +458,7 @@ SSH-секреты: `Silent-Project/.env.deploy` или `backend/.env.deploy` (�
 
 | Переменная | По умолчанию |
 |------------|--------------|
-| `DEPLOY_HOST` | `132.243.234.162` |
+| `DEPLOY_HOST` | `89.125.188.100` |
 | `DEPLOY_USER` | `root` |
 | `DEPLOY_PASS` | *(обязательно)* |
 | `DEPLOY_REMOTE` | `/opt/silent-vpn/backend` |
@@ -509,8 +509,8 @@ PC-клиент (`pc/src/renderer/`):
 
 | Константа | Значение |
 |-----------|----------|
-| `SERVER_URL` / `FALLBACK_PUBLIC` | `https://132-243-234-162.nip.io` |
-| `SERVER_HOST` | `132.243.234.162` |
+| `SERVER_URL` / `FALLBACK_PUBLIC` | `https://89-125-188-100.nip.io` |
+| `SERVER_HOST` | `89.125.188.100` |
 | `SERVER_PORT` (WDTT) | `56000` |
 | `WG_TUNNEL_GATEWAY` | `10.66.66.1` |
 

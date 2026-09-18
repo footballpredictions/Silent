@@ -55,7 +55,7 @@ fi
 cd /opt/silent-vpn/backend
 
 echo "=== TLS certificate ==="
-SERVER_IP=132.243.234.162
+SERVER_IP=89.125.188.100
 mkdir -p ssl
 openssl req -x509 -newkey rsa:4096 \\
     -keyout ssl/server.key \\
@@ -82,7 +82,7 @@ POSTGRES_PASSWORD=${{POSTGRES_PASS}}
 REDIS_PASSWORD=${{REDIS_PASS}}
 ADMIN_LOGIN=admin
 ADMIN_PASSWORD=${{ADMIN_PASS}}
-VPN_SERVER_IP=132.243.234.162
+VPN_SERVER_IP=89.125.188.100
 VPN_SERVER_PORT=56000
 WDTT_MASTER_PASSWORD=${{WDTT_PASS}}
 WDTT_PORT=56000

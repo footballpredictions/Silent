@@ -12,7 +12,10 @@ sys.modules.setdefault("app.database", SimpleNamespace(AsyncSessionLocal=None))
 
 from app.services.vpn_kick_select import (  # noqa: E402
     LivePeer,
+    count_keys_absent,
     device_looks_live,
+    merge_known_device_pubs,
+    page_round_robin,
     parse_wg_show_dump,
     pick_getconf_extras,
     select_gc_extra_pubs,
@@ -20,6 +23,7 @@ from app.services.vpn_kick_select import (  # noqa: E402
     select_extra_by_last_connected,
     select_resurrected_extras,
     should_keep_vpn_dataplane,
+    should_mark_unpaid_offline,
     snapshot_appeared,
 )
 
@@ -323,6 +327,37 @@ def test_safe_deny_ip_and_wdtt_identities():
     assert unpaid_ips_from_wdtt_only(mixed) == {"10.66.0.25", "10.66.5.144"}
 
 
+def test_deny_ids_tmp_paths_are_unique():
+    from app.services.vpn_deny_net import deny_ids_tmp_path, _iptables_sync_script
+
+    a = deny_ids_tmp_path()
+    b = deny_ids_tmp_path()
+    assert a != b
+    assert a.startswith("/tmp/silent-deny-ids-")
+    script = _iptables_sync_script({"10.66.0.25"})
+    assert " && " in script
+    assert script.count("iptables -A") >= 2
+
+
+def test_unpaid_page_advances_tail():
+    keys = [f"k{i}" for i in range(5)]
+    page1, cur = page_round_robin(keys, cursor=0, limit=2)
+    page2, cur = page_round_robin(keys, cursor=cur, limit=2)
+    page3, _ = page_round_robin(keys, cursor=cur, limit=2)
+    assert page1 == ["k0", "k1"]
+    assert page2 == ["k2", "k3"]
+    assert "k4" in page3
+
+
+def test_removed_count_and_offline_only_matching_pubs():
+    key = "aaaabbbbccccddddeeeeffffgggghhhhiiiijjjj="
+    other = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz="
+    assert count_keys_absent([key, other], {other}) == 1
+    assert should_mark_unpaid_offline({key}, {key})
+    assert not should_mark_unpaid_offline({other}, {key})
+    assert merge_known_device_pubs([key, ""], [other, None]) == {key, other}
+
+
 if __name__ == "__main__":
     test_parse_wg_show_dump()
     test_cell_never_guesses_extras()
@@ -343,4 +378,7 @@ if __name__ == "__main__":
     test_resurrected_unique_cache_extra()
     test_snapshot_appeared()
     test_safe_deny_ip_and_wdtt_identities()
+    test_deny_ids_tmp_paths_are_unique()
+    test_unpaid_page_advances_tail()
+    test_removed_count_and_offline_only_matching_pubs()
     print("ok")

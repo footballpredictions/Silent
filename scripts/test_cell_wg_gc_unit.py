@@ -84,22 +84,22 @@ def test_failover_paths_allow_client_api_not_admin():
 
 
 def test_queen_health_urls_prefer_direct_ip():
-    urls = sr.queen_health_urls("132.243.234.162", "https://132-243-234-162.nip.io")
-    assert urls[0] == "http://132.243.234.162:8000/health"
-    assert "http://132.243.234.162:8000/api/health" in urls
-    assert "http://132.243.234.162:80/health" in urls
-    assert urls[-1].startswith("https://132-243-234-162.nip.io")
+    urls = sr.queen_health_urls("89.125.188.100", "https://89-125-188-100.nip.io")
+    assert urls[0] == "http://89.125.188.100:8000/health"
+    assert "http://89.125.188.100:8000/api/health" in urls
+    assert "http://89.125.188.100:80/health" in urls
+    assert urls[-1].startswith("https://89-125-188-100.nip.io")
 
 
 def test_queen_proxy_urls_use_ip8000_not_nipio_first():
     urls = sr.queen_proxy_urls(
         "vpn/sync-state",
         query="hashes_since=1",
-        queen_ip="132.243.234.162",
-        api_url="https://132-243-234-162.nip.io",
+        queen_ip="89.125.188.100",
+        api_url="https://89-125-188-100.nip.io",
     )
-    assert urls[0] == "http://132.243.234.162:8000/api/vpn/sync-state?hashes_since=1"
-    assert any(u.startswith("https://132-243-234-162.nip.io/api/vpn/sync-state") for u in urls)
+    assert urls[0] == "http://89.125.188.100:8000/api/vpn/sync-state?hashes_since=1"
+    assert any(u.startswith("https://89-125-188-100.nip.io/api/vpn/sync-state") for u in urls)
 
 
 def test_queen_proxy_urls_work_without_nipio():
@@ -110,10 +110,10 @@ def test_queen_proxy_urls_work_without_nipio():
 
 def test_queen_tunnel_dnat_uses_nginx_80_not_closed_8000():
     # provision: 10.66.66.1:8000 → Улей:80. docker-proxy :8000 только localhost.
-    assert sr.queen_tunnel_dnat_dest("132.243.234.162") == "132.243.234.162:80"
+    assert sr.queen_tunnel_dnat_dest("89.125.188.100") == "89.125.188.100:80"
     assert sr.queen_tunnel_dnat_dest("192.177.26.38") == "192.177.26.38:80"
     assert sr.queen_tunnel_dnat_dest("") == ""
-    assert sr.queen_tunnel_dnat_legacy_dest("132.243.234.162") == "132.243.234.162:8000"
+    assert sr.queen_tunnel_dnat_legacy_dest("89.125.188.100") == "89.125.188.100:8000"
 
 
 def test_one_health_fail_does_not_enter_standby():

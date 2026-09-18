@@ -15,7 +15,7 @@ import paramiko
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _deploy_common import connect, run  # noqa: E402
 
-QUEEN_IP = "132.243.234.162"
+QUEEN_IP = "89.125.188.100"
 DEFAULT_CELL = "87.58.213.193"
 
 CREDS_PY = r"""

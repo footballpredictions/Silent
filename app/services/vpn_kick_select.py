@@ -295,3 +295,33 @@ def select_gc_extra_pubs(
         elif p.handshake_age >= stale_hs_sec:
             out.append(p.pub)
     return out
+
+
+def page_round_robin(keys: list[str], *, cursor: int, limit: int) -> tuple[list[str], int]:
+    """Сдвиг по списку, чтобы хвост unpaid не голодал при limit=200."""
+    if not keys or limit <= 0:
+        return [], 0
+    n = len(keys)
+    start = cursor % n
+    page = [keys[(start + i) % n] for i in range(min(int(limit), n))]
+    return page, (start + len(page)) % n
+
+
+def count_keys_absent(requested: list[str], present: set[str]) -> int:
+    return sum(1 for key in requested if key not in present)
+
+
+def merge_known_device_pubs(*groups: object) -> set[str]:
+    out: set[str] = set()
+    for group in groups:
+        if not group:
+            continue
+        for raw in group:
+            pub = (raw or "").strip()
+            if valid_wg_pub(pub):
+                out.add(pub)
+    return out
+
+
+def should_mark_unpaid_offline(device_pubs: set[str], removed: set[str]) -> bool:
+    return bool(device_pubs & removed)

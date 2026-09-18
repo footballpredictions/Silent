@@ -5,6 +5,7 @@ alwaysApply: true
 # Инструкции для Agent
 
 - Полный контекст: `.cursor/MEMORY_BANK.md`, задачи: `.cursor/TASKS.md`, API: `.cursor/APIS.md`.
+- Канон Улей/соты/overlay/смена IP (аудит): `.cursor/TECHNOLOGY.md`.
 - Memory Bank и TASKS — **на каждое сообщение пользователя** (см. `.cursor/rules/memory-bank.mdc`), не только в новом чате.
 - Skills — **на каждую задачу**, включая **новые** skills по мере подключения (см. `.cursor/rules/skills-auto.mdc`).
 - Ответы пользователю: **на русском**.

@@ -127,10 +127,9 @@ _METHODS: tuple[BlockMethod, ...] = (
             "После добавления порта прогнать проверку заново и убедиться, что новый вход виден из РФ.",
         ),
         commands=(
-            "iptables -t nat -A PREROUTING -p udp --dport 8443 -j REDIRECT --to-ports 56000",
-            "iptables -t nat -A PREROUTING -p tcp --dport 8443 -j REDIRECT --to-ports 56000",
-            "iptables -t nat -S PREROUTING | grep 8443   # проверить, что правило одно",
-            "curl -s -H 'Accept: application/json' 'https://check-host.net/check-tcp?host=<IP>:8443&max_nodes=6'",
+            "curl -s -H 'Accept: application/json' 'https://check-host.net/check-tcp?host=<IP>:2083&max_nodes=6'",
+            "curl -s -H 'Accept: application/json' 'https://check-host.net/check-http?host=https://<домен>/api/health&max_nodes=6'",
+            "ss -lntp | grep -E ':(443|2083)\\b' || true",
         ),
     ),
     BlockMethod(
@@ -154,9 +153,9 @@ _METHODS: tuple[BlockMethod, ...] = (
             "В клиенте после 2 неудачных UDP-рукопожатий автоматически пробовать TCP-вход, а не ретраить UDP.",
         ),
         commands=(
-            "iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-ports 56000",
             "curl -s -H 'Accept: application/json' 'https://check-host.net/check-udp?host=<IP>:56000&max_nodes=6'",
             "ss -lunp | grep 56000",
+            "# не REDIRECT 443/8443 на wdtt: 443 — HTTPS API, 8443 — mtg",
         ),
     ),
     BlockMethod(

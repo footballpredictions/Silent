@@ -37,7 +37,7 @@ def _print_verdict(index: int, verdict: dict[str, Any]) -> None:
     mark = SEV_MARK.get(str(verdict.get("severity")), "[ ?? ]")
     print(
         f"{index}. {mark} {verdict.get('target')} ({verdict.get('host')}) — "
-        f"{verdict.get('title')}  [уверенность {verdict.get('confidence')}]"
+        f"{verdict.get('title')}  [оценка доказательств {verdict.get('confidence')}]"
     )
     print(f"   Что происходит: {verdict.get('summary')}")
     for ev in verdict.get("evidence") or []:

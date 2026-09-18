@@ -99,6 +99,7 @@ timeout (это уже **порт**, не полный blackhole). API жив в
 - [x] Dry-run смена IP: `ai/ip_rotate_policy.py`, чеклист читателей, без покупки
 - [x] OneDash адаптер: GET inventory + карта IP→vps, change-ip в API 2.0 нет, POST заблокирован
 - [x] ПК nip.io timeout: с соты Улей не в bypass; слот Улья → 10.66.66.1; debug `pc/build-debug-167309`
+- [ ] Android: после OTA 165→166 Сервер 1 не крутит кеш старого IP Улья (нужен новый APK 1.0.166; приёмка)
 
 ### PC Wi‑Fi + ISP whitelist (2026-09-15)
 

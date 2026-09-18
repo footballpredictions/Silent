@@ -2,8 +2,8 @@ import Foundation
 
 /// Публичный API: сначала живые соты :9100, Улей :443 последним (его режут из РФ).
 enum PublicApiFailover {
-    static let hiveHttps = "https://132-243-234-162.nip.io"
-    static let hiveIpHttps = "https://132.243.234.162"
+    static let hiveHttps = "https://89-125-188-100.nip.io"
+    static let hiveIpHttps = "https://89.125.188.100"
     static let cells = [
         "http://87.58.213.193:9100",
         "http://78.17.74.27:9100",

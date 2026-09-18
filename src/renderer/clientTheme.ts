@@ -153,7 +153,7 @@ export function resolveAppName(raw?: string | null): string {
 }
 
 /** Absolute URL for theme assets (/static/...). Always use nip.io host — TLS cert is for nip.io, not raw IP. */
-export const THEME_ASSET_PUBLIC_BASE = 'https://132-243-234-162.nip.io'
+export const THEME_ASSET_PUBLIC_BASE = 'https://89-125-188-100.nip.io'
 
 export function resolveThemeAssetUrl(
   path: string | undefined | null,
@@ -172,12 +172,12 @@ export function resolveThemeAssetUrl(
       const u = new URL(pathOnly)
       // Rewrite IP / wrong host → nip.io so Electron/Android TLS works
       if (
-        u.hostname === '132.243.234.162' ||
-        u.hostname === '132-243-234-162.nip.io' ||
+        u.hostname === '89.125.188.100' ||
+        u.hostname === '89-125-188-100.nip.io' ||
         u.pathname.startsWith('/static/')
       ) {
-        if (u.hostname === '132.243.234.162') {
-          u.hostname = '132-243-234-162.nip.io'
+        if (u.hostname === '89.125.188.100') {
+          u.hostname = '89-125-188-100.nip.io'
           u.protocol = 'https:'
         }
         return `${u.origin}${u.pathname}${query || u.search}`

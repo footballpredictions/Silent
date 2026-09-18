@@ -1,7 +1,7 @@
 'use strict'
 
 /** Публичный IP Улья. В bypass только если он же WG/WDTT endpoint. */
-const HIVE_PUBLIC_IP = '132.243.234.162'
+const HIVE_PUBLIC_IP = '89.125.188.100'
 
 function normalizePeerIp(raw, hiveIp = HIVE_PUBLIC_IP) {
   const s = String(raw || '').trim()

@@ -10,7 +10,7 @@ import { checkForUpdate, getAppVersion, type UpdateInfo } from './updateCheck'
 import { useVpnLogSubscription } from './useVpnLogSubscription'
 import { isDebugBuild } from './debugBuild'
 
-const SERVER_URL = 'https://132-243-234-162.nip.io'
+const SERVER_URL = 'https://89-125-188-100.nip.io'
 
 type Screen = 'login' | 'main'
 

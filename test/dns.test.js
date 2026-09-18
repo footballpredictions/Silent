@@ -54,7 +54,7 @@ describe('buildWgConfigFromApi', () => {
     wg_private_key: 'priv',
     server_public_key: 'pub',
     wg_address: '10.66.66.5/32',
-    server_ip: '132.243.234.162',
+    server_ip: '89.125.188.100',
     server_port: 56001,
   }
 

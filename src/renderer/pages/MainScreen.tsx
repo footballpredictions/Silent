@@ -1596,7 +1596,7 @@ export default function MainScreen({
                     <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: muted }} />
                   </span>
                   <span className="text-[10px] leading-snug pl-0" style={{ color: muted }}>
-                    {connected || connecting ? 'при VPN: 10.66.66.1:8000' : 'без VPN: nip.io'}
+                    {connected || connecting ? 'при VPN: nip.io через туннель' : 'без VPN: nip.io'}
                   </span>
                 </button>
               )}

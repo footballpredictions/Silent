@@ -1,5 +1,5 @@
 const SERVER_URL_KEY = 'silent_server_url'
-const FALLBACK_PUBLIC = 'https://132-243-234-162.nip.io'
+const FALLBACK_PUBLIC = 'https://89-125-188-100.nip.io'
 
 function getPublicServerUrl(): string {
   const stored = localStorage.getItem(SERVER_URL_KEY) || ''
@@ -7,9 +7,7 @@ function getPublicServerUrl(): string {
 }
 
 export const WG_TUNNEL_GATEWAY = '10.66.66.1'
-/** Админка при VPN — через tunnel gateway (Host guard пускает 10.66.66.1). */
-export const WG_TUNNEL_ADMIN_URL = `http://${WG_TUNNEL_GATEWAY}:8000/dashboard`
-/** Админка без VPN — публичный nip.io. */
+/** Админка при VPN и без — публичный nip.io (трафик через туннель на слоте соты). */
 export const PUBLIC_ADMIN_URL = `${FALLBACK_PUBLIC}/dashboard`
 
 let mainVpnSessionActive = false
@@ -43,9 +41,9 @@ export function shouldRouteApiViaMain(): boolean {
   return mainVpnSessionActive || bootstrapApiRouting
 }
 
-/** VPN ON → tunnel admin; VPN OFF → nip.io. Реальное открытие — IPC open-admin-panel. */
-export function getAdminPanelUrl(vpnConnected = false): string {
-  return vpnConnected ? WG_TUNNEL_ADMIN_URL : PUBLIC_ADMIN_URL
+/** Всегда nip.io. С VPN на соте — через туннель; на Улье — hosts → 10.66.66.1. */
+export function getAdminPanelUrl(_vpnConnected = false, _serverIp = ''): string {
+  return PUBLIC_ADMIN_URL
 }
 
 export function setWgTunnelReady(ready: boolean) {

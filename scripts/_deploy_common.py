@@ -36,7 +36,7 @@ def connect(timeout: int = 30):
     password = os.environ.get("DEPLOY_PASS", "")
     if not password:
         raise SystemExit("Задайте DEPLOY_PASS в Silent-Project/.env.deploy (см. backend/scripts/.env.deploy.example)")
-    host = os.environ.get("DEPLOY_HOST", "132.243.234.162")
+    host = os.environ.get("DEPLOY_HOST", "89.125.188.100")
     user = os.environ.get("DEPLOY_USER", "root")
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())

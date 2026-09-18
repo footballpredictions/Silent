@@ -16,7 +16,7 @@ const execFileAsync = promisify(execFile)
 
 const TUNNEL_NAME = 'wg-turn'
 const TUNNEL_CONF_NAME = 'wg-turn.conf'
-const FALLBACK_BACKEND_IP = '132.243.234.162'
+const FALLBACK_BACKEND_IP = '89.125.188.100'
 const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
 /** DHCP/Google DNS часто остаётся в resolved — route мимо WG, но nameserver ими не ставим. */
 const EXTRA_DNS_BYPASS = ['8.8.8.8/32', '8.8.4.4/32']

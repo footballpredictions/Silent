@@ -6,9 +6,9 @@ import { standbyApiBasesFromTheme } from './clientTheme'
 const SERVER_URL_KEY = 'silent_server_url'
 const TOKEN_KEY = 'silent_token'
 const REFRESH_KEY = 'silent_refresh'
-const FALLBACK_PUBLIC = 'https://132-243-234-162.nip.io'
-const SERVER_IP = '132.243.234.162'
-const SERVER_HOST = '132-243-234-162.nip.io'
+const FALLBACK_PUBLIC = 'https://89-125-188-100.nip.io'
+const SERVER_IP = '89.125.188.100'
+const SERVER_HOST = '89-125-188-100.nip.io'
 /** Текущий fingerprint сессии (как Android PREF_DEVICE_FP). */
 const DEVICE_FP_KEY = 'silent_device_fingerprint'
 /** Стабильный id ПК — переживает logout/перелогин (как Android PREF_STABLE_FP). */

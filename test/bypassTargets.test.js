@@ -29,3 +29,42 @@ describe('collectTunnelBypassIps', () => {
     assert.ok(ips.includes('87.240.137.130'))
   })
 })
+
+const {
+  ADMIN_PANEL_URL,
+  resolveAdminPanelUrl,
+  isHivePublicUrl,
+  isPaymentBrowserUrl,
+} = require('../src/main/vpn/adminPanel')
+
+describe('admin panel URL', () => {
+  it('always opens public nip.io (VPN on cell, hive, or off)', () => {
+    assert.equal(resolveAdminPanelUrl(false), ADMIN_PANEL_URL)
+    assert.equal(resolveAdminPanelUrl(true, '87.58.213.193'), ADMIN_PANEL_URL)
+    assert.equal(resolveAdminPanelUrl(true, '89.125.188.100'), ADMIN_PANEL_URL)
+    assert.equal(ADMIN_PANEL_URL, 'https://89-125-188-100.nip.io/dashboard')
+  })
+
+  it('pins nip.io to tunnel gateway in hosts so hive-slot HTTPS stays in WG', () => {
+    const { applyAdminNipPin } = require('../src/main/vpn/adminPanel')
+    const pinned = applyAdminNipPin('127.0.0.1 localhost\n', { pin: true })
+    assert.match(pinned, /10\.66\.66\.1\s+89-125-188-100\.nip\.io\s+# silent-vpn-admin-nip/)
+    const cleared = applyAdminNipPin(pinned, { pin: false })
+    assert.equal(cleared.includes('silent-vpn-admin-nip'), false)
+    assert.match(cleared, /127\.0\.0\.1 localhost/)
+  })
+
+  it('strips hive from bypass on a cell so Chrome does not hit RF :443', () => {
+    const { bypassWithoutHiveIfCell } = require('../src/main/vpn/adminPanel')
+    const cell = bypassWithoutHiveIfCell(['87.58.213.193', '89.125.188.100'], '87.58.213.193')
+    assert.deepEqual(cell, ['87.58.213.193'])
+    const hive = bypassWithoutHiveIfCell(['89.125.188.100', '87.240.137.130'], '89.125.188.100')
+    assert.deepEqual(hive, ['89.125.188.100', '87.240.137.130'])
+  })
+
+  it('does not treat admin nip.io as a payment bypass URL', () => {
+    assert.equal(isHivePublicUrl(ADMIN_PANEL_URL), true)
+    assert.equal(isPaymentBrowserUrl(ADMIN_PANEL_URL), false)
+    assert.equal(isPaymentBrowserUrl('https://yoomoney.ru/checkout'), true)
+  })
+})

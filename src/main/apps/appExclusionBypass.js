@@ -50,6 +50,8 @@ function isSkippableIp(ip) {
   if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true
   if (p[0] === 169 && p[1] === 254) return true
   if (p[0] === 10 && p[1] === 66) return true
+  // Улей :443 с РФ таймаут. Не выталкивать его из туннеля, даже если Chrome в исключениях.
+  if (ip === '89.125.188.100') return true
   return false
 }
 

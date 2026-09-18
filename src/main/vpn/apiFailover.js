@@ -1,8 +1,8 @@
 'use strict'
 
 function publicFailoverBases({
-  hiveHost = '132-243-234-162.nip.io',
-  hiveIp = '132.243.234.162',
+  hiveHost = '89-125-188-100.nip.io',
+  hiveIp = '89.125.188.100',
   standby = [],
   baked = [],
 } = {}) {

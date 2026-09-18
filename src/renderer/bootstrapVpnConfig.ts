@@ -3,7 +3,7 @@ import { getCachedTheme } from './themeStore'
 import { standbyApiBasesFromTheme } from './clientTheme'
 
 /** Локальный bootstrap без HTTPS к бекенду (как Android BootstrapVpnConfig). */
-const SERVER_HOST = '132.243.234.162'
+const SERVER_HOST = '89.125.188.100'
 const SERVER_PORT = 56000
 const WDTT_MASTER_PASSWORD = 'hAKfvX0lUTNuXJueD9Zx'
 const BAKED_CELLS = ['http://87.58.213.193:9100', 'http://78.17.74.27:9100']
@@ -20,7 +20,7 @@ function hostOf(raw: string): string {
 }
 
 export function cellIpsFromUrls(urls: string[]): string[] {
-  const hive = new Set(['132.243.234.162', '132-243-234-162.nip.io'])
+  const hive = new Set(['89.125.188.100', '89-125-188-100.nip.io'])
   const out: string[] = []
   const seen = new Set<string>()
   for (const raw of urls) {

@@ -1,7 +1,7 @@
 'use strict'
 
-const HIVE_IP = '132.243.234.162'
-const HIVE_HOST = '132-243-234-162.nip.io'
+const HIVE_IP = '89.125.188.100'
+const HIVE_HOST = '89-125-188-100.nip.io'
 const AI_EXIT_IPS = new Set(['192.177.26.38'])
 const DEFAULT_WDTT_PORT = 56000
 

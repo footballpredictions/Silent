@@ -16,7 +16,7 @@ const TUNNEL_CONF_NAME = 'wg-turn.conf'
 const SERVICE_NAME = `WireGuardTunnel$${TUNNEL_NAME}`
 const STABLE_CONF_DIR = path.join(process.env.ProgramData || 'C:\\ProgramData', 'SilentVPN')
 const STABLE_WG_DIR = path.join(STABLE_CONF_DIR, 'wireguard')
-const FALLBACK_BACKEND_IP = '132.243.234.162'
+const FALLBACK_BACKEND_IP = '89.125.188.100'
 /** DNS: Cloudflare+Yandex по умолчанию. Меню DNS — через options/config.dns_override. */
 const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
 /** Обычные слоты — MTU 1200 (Telegram/общая стабильность). */

@@ -87,7 +87,7 @@ export function slotFromSelectedServer(selected?: string | null): string | null 
 
 const SERVER_IPS_KEY = 'silent_vpn_server_ips'
 const BAKED_SERVER_IPS: Record<string, string> = {
-  server1: '132.243.234.162',
+  server1: '89.125.188.100',
   server2: '87.58.213.193',
   server3: '78.17.74.27',
   // Сота 3 / «Сервер 4 для ИИ»: без запечённого IP кеш конфига слота считается чужим.

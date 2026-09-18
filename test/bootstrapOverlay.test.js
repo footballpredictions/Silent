@@ -9,7 +9,7 @@ const {
 describe('pickBootstrapOverlay', () => {
   it('temp vpn for mail uses a live cell not flapping hive udp', () => {
     const got = pickBootstrapOverlay({
-      hiveIp: '132.243.234.162',
+      hiveIp: '89.125.188.100',
       hivePort: 56000,
       cellIps: ['87.58.213.193', '78.17.74.27'],
     })
@@ -20,11 +20,11 @@ describe('pickBootstrapOverlay', () => {
 
   it('without cells overlay stays on hive', () => {
     const got = pickBootstrapOverlay({
-      hiveIp: '132.243.234.162',
+      hiveIp: '89.125.188.100',
       hivePort: 56000,
       cellIps: [],
     })
-    assert.equal(got.ip, '132.243.234.162')
+    assert.equal(got.ip, '89.125.188.100')
     assert.equal(got.isHive, true)
   })
 })
@@ -33,8 +33,8 @@ describe('cellIpsFromUrls', () => {
   it('yields cell ips and skips hive and ai cell', () => {
     const ips = cellIpsFromUrls([
       'http://87.58.213.193:9100',
-      'https://132-243-234-162.nip.io:2083',
-      'https://132.243.234.162:2083',
+      'https://89-125-188-100.nip.io:2083',
+      'https://89.125.188.100:2083',
       'http://78.17.74.27:9100',
       'http://192.177.26.38:9100',
     ])
@@ -45,6 +45,6 @@ describe('cellIpsFromUrls', () => {
 describe('isHiveBootstrapIp', () => {
   it('full tunnel when overlay is a cell', () => {
     assert.equal(isHiveBootstrapIp('87.58.213.193'), false)
-    assert.equal(isHiveBootstrapIp('132.243.234.162'), true)
+    assert.equal(isHiveBootstrapIp('89.125.188.100'), true)
   })
 })

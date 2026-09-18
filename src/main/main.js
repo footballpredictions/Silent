@@ -22,6 +22,7 @@ const {
   buildWgConfigFromApi,
   applyWireGuardConfig,
   addServerBypassRoutes,
+  removeHostBypassRoutes,
   capturePhysicalGateway,
   normalizeWgConfText,
   waitWgStopIdle,
@@ -39,6 +40,14 @@ const {
   HIVE_IP: BOOTSTRAP_HIVE_IP,
 } = require('./vpn/bootstrapOverlay')
 const { HIVE_PUBLIC_IP, collectTunnelBypassIps } = require('./vpn/bypassTargets')
+const {
+  resolveAdminPanelUrl,
+  isPaymentBrowserUrl,
+  bypassWithoutHiveIfCell,
+  peerIsHive,
+  syncAdminNipHosts,
+  HIVE_IP: ADMIN_HIVE_IP,
+} = require('./vpn/adminPanel')
 const buildFlags = require('./buildFlags')
 const { verifyWdttIntegrity, softTamperHints } = require('./integrity')
 const { otaPlatform, wdttBinaryName, killOrphanWdttCmd } = require('./otaPlatform')
@@ -625,6 +634,7 @@ function cleanupVpn() {
   // Не await — cleanupVpn синхронный; async stop не блокирует main/UI.
   // Disable только внутри очереди stop (с epoch) — иначе догоняет уже новый туннель.
   void stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
+  syncAdminNipHosts(false, sendLog)
   clearBypassRefresh()
   wgApplied = false
   tunnelReadySent = false
@@ -1174,7 +1184,7 @@ async function ensureNipIoBypassRoutes(sendLogFn = sendLog) {
 
 /**
  * Перед public HTTPS (fallback с туннеля / браузер): маршрут к VPS мимо WG.
- * Без этого full-tunnel + hairpin → ETIMEDOUT на nip.io и на 132.243.234.162:443.
+ * Без этого full-tunnel + hairpin → ETIMEDOUT на nip.io и на 89.125.188.100:443.
  * Не дёргать bypass чаще раза в 3с — иначе гонка маршрутов.
  */
 let lastPublicBypassAt = 0
@@ -1197,9 +1207,10 @@ function resolve4WithTimeout(host, ms = 2000) {
   ])
 }
 
-/** YuMoney/SberPay/success page must leave full-tunnel VPN, иначе оплата в браузере зависает. */
+/** YuMoney/SberPay must leave full-tunnel VPN. Админка nip.io — нет: иначе :443 уходит в РФ и режется. */
 async function ensurePaymentBypassRoutes(url, sendLogFn = sendLog) {
   if (!wgApplied || vpnBootstrapMode) return
+  if (!isPaymentBrowserUrl(url)) return
   const hosts = new Set()
   try {
     const u = new URL(String(url || ''))
@@ -1214,8 +1225,7 @@ async function ensurePaymentBypassRoutes(url, sendLogFn = sendLog) {
   hosts.add('acs.sberbank.ru')
   hosts.add('id.sber.ru')
   hosts.add('sberid.ru')
-  hosts.add('132-243-234-162.nip.io')
-  const extra = [SERVER_IP_FALLBACK]
+  const extra = []
   await Promise.all([...hosts].map(async (host) => {
     try {
       const ips = await resolve4WithTimeout(host, 2000)
@@ -1242,7 +1252,7 @@ ipcMain.handle('open-external', async (_, url) => {
       sendLog('[open-external] invalid url')
       return false
     }
-    if (/132-243-234-162\.nip\.io|132\.243\.234\.162|yoomoney\.ru|money\.yandex\.ru|sberbank\.ru|sber\.ru|sberid\.ru/i.test(url)) {
+    if (isPaymentBrowserUrl(url)) {
       await ensurePaymentBypassRoutes(url)
     }
     await shell.openExternal(url)
@@ -1253,38 +1263,40 @@ ipcMain.handle('open-external', async (_, url) => {
   }
 })
 /**
- * Админка в системном браузере.
- * VPN ON (full) → http://10.66.66.1:8000/dashboard (через туннель, без bypass —
- *   ISP whitelist часто режет nip.io вне VPN; Host guard пускает 10.66.66.1).
- * VPN OFF / bootstrap → публичный nip.io.
+ * Админка: nip.io через VPN на соте (как Android). С РФ :443 Улья без туннеля — ERR_CONNECTION_TIMED_OUT.
+ * Слот Улья: публичный :443 в bypass ради WG UDP, поэтому только 10.66.66.1.
  */
-const WG_TUNNEL_GATEWAY = '10.66.66.1'
-const PUBLIC_ADMIN_URL = 'https://132-243-234-162.nip.io/dashboard'
-const TUNNEL_ADMIN_URL = `http://${WG_TUNNEL_GATEWAY}:8000/dashboard`
-
-function shouldOpenAdminViaTunnel() {
-  return !!(vpnSessionActive || wgApplied) && !vpnBootstrapMode
-}
-
-function resolveAdminPanelUrl() {
-  return shouldOpenAdminViaTunnel() ? TUNNEL_ADMIN_URL : PUBLIC_ADMIN_URL
-}
-
 ipcMain.handle('get-admin-panel-url', () => resolveAdminPanelUrl())
 ipcMain.handle('open-admin-panel', async () => {
-  const url = resolveAdminPanelUrl()
-  try {
-    if (shouldOpenAdminViaTunnel()) {
-      const ok = typeof probeTunnelGateway === 'function' ? await probeTunnelGateway(2500) : true
-      sendLog(ok
-        ? `[Admin] tunnel → ${url}`
-        : `[Admin] 10.66.66.1:8000 не отвечает — всё равно открываем ${url} (переподключите VPN если пусто)`, 'W')
-    } else {
-      sendLog(`[Admin] public nip.io → ${url}`)
+  const vpnOn = !!(vpnSessionActive || wgApplied) && !vpnBootstrapMode
+  const peer = lastVpnConnectConfig?.server_ip || ''
+  if (vpnOn && peer && peer !== HIVE_PUBLIC_IP) {
+    const next = bypassWithoutHiveIfCell(sessionExcludeIPs, peer)
+    if (next.length !== sessionExcludeIPs.length) {
+      try {
+        await removeHostBypassRoutes([HIVE_PUBLIC_IP], sendLog)
+      } catch (e) {
+        sendLog(`[Admin] remove hive bypass: ${e?.message || e}`)
+      }
+      sessionExcludeIPs = next
+      try {
+        await addServerBypassRoutes(sessionExcludeIPs, sendLog)
+      } catch (e) {
+        sendLog(`[Admin] restore bypass: ${e?.message || e}`)
+      }
+      sendLog('[Admin] Улей убран из bypass — nip.io идёт через VPN')
+      await sleep(400)
     }
-  } catch (e) {
-    sendLog(`[Admin] warn: ${e?.message || e} — ${url}`)
+    syncAdminNipHosts(false, sendLog)
+  } else if (vpnOn && peer === HIVE_PUBLIC_IP) {
+    syncAdminNipHosts(true, sendLog)
+    await sleep(200)
   }
+  const url = resolveAdminPanelUrl()
+  if (!vpnOn) {
+    sendLog('[Admin] VPN выкл: nip.io:443 с РФ часто таймаут — включите VPN')
+  }
+  sendLog(`[Admin] ${url}`)
   await shell.openExternal(url)
   return url
 })
@@ -1659,6 +1671,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       wgRouteSettleUntil = Date.now() + 15_000
       await addServerBypassRoutes([...excludeIPs], sendLog)
       await ensureNipIoBypassRoutes(sendLog)
+      syncAdminNipHosts(peerIsHive(config?.server_ip, ADMIN_HIVE_IP), sendLog)
       scheduleBypassRefresh(sendLog)
       try {
         const { refreshAppExclusionBypassAfterTunnel } = require('./apps/vpnAppExclusions')
@@ -2076,8 +2089,8 @@ ipcMain.handle('vpn-consume-flood-escalate', async () => consumeVkFloodEscalate(
 
 ipcMain.handle('app-version', () => app.getVersion())
 
-const UPDATE_PUBLIC_BASE = 'https://132-243-234-162.nip.io'
-const UPDATE_HOST = '132-243-234-162.nip.io'
+const UPDATE_PUBLIC_BASE = 'https://89-125-188-100.nip.io'
+const UPDATE_HOST = '89-125-188-100.nip.io'
 const TUNNEL_API_ORIGIN = 'http://10.66.66.1:8000'
 const BAKED_STANDBY_API = ['http://87.58.213.193:9100', 'http://78.17.74.27:9100']
 let standbyApiBases = []

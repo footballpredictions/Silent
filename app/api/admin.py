@@ -813,6 +813,25 @@ async def revoke_user_subscription(
     return {"status": "revoked", "cancelled": cancelled}
 
 
+@router.post("/users/{user_id}/end-trial")
+async def end_user_trial(
+    user_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Снять пробный период сразу, чтобы пользователь мог оплатить не дожидаясь 3 дней."""
+    import uuid
+    from app.services.subscription_service import end_trial_subscription
+
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    cancelled = await end_trial_subscription(db, user)
+    return {"status": "trial_ended", "cancelled": cancelled}
+
+
 class UserTestModeRequest(BaseModel):
     enabled: bool
 

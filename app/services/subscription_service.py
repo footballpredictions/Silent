@@ -14,6 +14,7 @@ from app.services.subscription_kinds import (
     TEST_PLAN,
     REFERRAL_PLAN,
     admin_grant_expires_at,
+    is_active_trial_row,
 )
 
 logger = logging.getLogger(__name__)
@@ -709,4 +710,29 @@ async def revoke_subscription(db: AsyncSession, user: User) -> int:
         await kick_user_vpn_sessions(db, user)
     except Exception as e:
         logger.warning("revoke: live VPN kick failed: %s", e, exc_info=True)
+    return cancelled
+
+
+async def end_trial_subscription(db: AsyncSession, user: User) -> int:
+    """Снять только живой пробный период. Платные/выданные не трогать.
+
+    VPN не кикаем: пользователь может сразу открыть оплату, пока канал ещё жив.
+    Повторный trial не выдаётся — cancelled-строка уже есть.
+    """
+    if is_user_admin(user):
+        raise HTTPException(status_code=400, detail="Нельзя снять пробный период у администратора")
+
+    active_result = await db.execute(
+        select(Subscription).where(Subscription.user_id == user.id, Subscription.status == "active")
+    )
+    cancelled = 0
+    for sub in active_result.scalars().all():
+        if is_active_trial_row(sub.plan_type, sub.status):
+            sub.status = "cancelled"
+            cancelled += 1
+    if cancelled == 0:
+        raise HTTPException(status_code=400, detail="Нет активного пробного периода")
+    user.updated_at = datetime.utcnow()
+    await db.commit()
+    invalidate_vpn_access_cache()
     return cancelled

@@ -63,6 +63,7 @@ interface CodeLookup {
 }
 
 const PLANS = [
+  { type: 'trial', label: 'Пробный', days: 3, endOnly: true },
   { type: 'three_days', label: '3 дня', days: 3 },
   { type: 'monthly', label: 'Месяц', days: null },
   { type: 'two_months', label: '2 месяца', days: null },
@@ -347,6 +348,22 @@ export default function SubscriptionsPage({ token }: { token: string }) {
     setError(null)
     setSuccess(null)
     try {
+      if (planType === 'trial') {
+        if (!isPlanActive(u, 'trial')) return
+        const res = await fetch(`/api/admin/users/${u.id}/end-trial`, {
+          method: 'POST',
+          headers,
+        })
+        const body = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          setError(body.detail || 'Не удалось снять пробный период')
+          return
+        }
+        setSuccess(`Пробный период снят у ${u.email} — можно оплатить сразу`)
+        await fetchUsers()
+        if (history?.user.id === u.id) await openHistory(u.id)
+        return
+      }
       if (isPlanActive(u, planType)) {
         const res = await fetch(`/api/admin/users/${u.id}/revoke-subscription`, {
           method: 'POST',
@@ -654,16 +671,21 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                         {PLANS.map(p => {
                           const active = isPlanActive(u, p.type)
                           const busy = actionKey === `${u.id}:${p.type}`
+                          const endOnly = 'endOnly' in p && p.endOnly
                           return (
                             <button
                               key={p.type}
                               type="button"
                               onClick={() => togglePlan(u, p.type, p.label)}
-                              disabled={busy}
+                              disabled={busy || (endOnly && !active)}
                               title={
-                                active
-                                  ? `Забрать «${p.label}»`
-                                  : `Выдать «${p.label}»${p.days ? ` (${p.days} дн.)` : ''}`
+                                endOnly
+                                  ? active
+                                    ? 'Снять пробный период сразу (VPN не отключаем)'
+                                    : 'Пробный выдаётся сам при регистрации'
+                                  : active
+                                    ? `Забрать «${p.label}»`
+                                    : `Выдать «${p.label}»${p.days ? ` (${p.days} дн.)` : ''}`
                               }
                               className={`px-2.5 py-1 rounded-lg text-xs border transition-colors disabled:opacity-40 cursor-pointer ${
                                 active

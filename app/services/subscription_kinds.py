@@ -110,6 +110,19 @@ def bonus_period_expires(base: datetime, days: int) -> datetime:
 PAID_STACK_SKIP_PLANS = frozenset({TRIAL_PLAN, REFERRAL_PLAN, TEST_PLAN})
 
 
+def can_buy_paid_plan(*, is_active: bool, plan_type: str | None) -> bool:
+    """Магазин открыт без подписки и на пробном: оплата снимает trial и стартует с сегодня."""
+    if not is_active:
+        return True
+    return (plan_type or "").strip().lower() == TRIAL_PLAN
+
+
+def is_active_trial_row(plan_type: str | None, status: str | None) -> bool:
+    return (status or "").strip().lower() == "active" and (
+        (plan_type or "").strip().lower() == TRIAL_PLAN
+    )
+
+
 def paid_subscription_stack_base(
     now: datetime,
     active_plan_expires: list[tuple[str, datetime | None]],

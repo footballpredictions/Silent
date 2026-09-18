@@ -205,6 +205,7 @@ sequenceDiagram
 | GET | `/stats` | Admin | CPU/RAM/disk, users (`connected_devices`, `peak_online_devices`, `peak_online_at`), VK hashes; `vk_users[].created_at` |
 | GET | `/users` | Admin | Список пользователей (`is_online`, `online_devices` — опционально) |
 | POST | `/users/{id}/grant-subscription` | Admin | Выдача подписки |
+| POST | `/users/{id}/end-trial` | Admin | Снять только пробный период (без kick VPN) |
 | POST | `/users/{id}/revoke-subscription` | Admin | Отзыв подписки |
 | POST | `/users/{id}/ban` | Admin | Ban/unban |
 | POST | `/users/{id}/verify` | Admin | Ручная верификация email |

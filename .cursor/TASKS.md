@@ -31,6 +31,16 @@ Agent приступает к **первой невыполненной** зад
 
 ## Открытые задачи
 
+### Пробный период: оплата сразу (2026-09-18)
+
+Пользователи хотели оплатить, не дожидаясь 3 дней. Trial и «3 дня» не связывали.
+
+- [x] `can_buy_paid_plan` / `end_trial_subscription` + `POST /api/admin/users/{id}/end-trial`
+- [x] Админка: чип «Пробный» только снимает trial, без kick VPN
+- [x] Android / PC / iOS / OpenWrt: магазин на пробном
+- [x] Тесты `test_subscription_filters_unit.py`, `ShopOfferPolicyTest`, OpenWrt dock
+- [ ] Деплой backend (`deploy_stable.py`) + клиенты — по просьбе
+
 ### Android ложный «Перезапуск транспорта» на лежащем телефоне (2026-09-15)
 
 vivo V2520A: сеть не терялась, звонка не было, в логе `[СЕТЬ] Перезапуск транспорта`.

@@ -11,6 +11,8 @@ from app.services.subscription_kinds import (  # noqa: E402
     normalize_subscription_filter,
     SUBSCRIPTION_FILTER_MODES,
     user_matches_subscription_filter,
+    can_buy_paid_plan,
+    is_active_trial_row,
 )
 
 
@@ -49,7 +51,33 @@ def test_months_best_paid_only():
     )
 
 
+def test_shop_open_on_trial_and_when_inactive():
+    assert can_buy_paid_plan(is_active=False, plan_type=None)
+    assert can_buy_paid_plan(is_active=True, plan_type="trial")
+    assert can_buy_paid_plan(is_active=True, plan_type="TRIAL")
+    assert not can_buy_paid_plan(is_active=True, plan_type="monthly")
+    assert not can_buy_paid_plan(is_active=True, plan_type="three_days")
+    assert not can_buy_paid_plan(is_active=True, plan_type="unlimited")
+
+
+def test_end_trial_selects_only_live_trial():
+    assert is_active_trial_row("trial", "active")
+    assert not is_active_trial_row("trial", "cancelled")
+    assert not is_active_trial_row("three_days", "active")
+    assert not is_active_trial_row("monthly", "active")
+
+
+def test_trial_is_not_a_grantable_paid_plan():
+    from app.services.subscription_kinds import PAID_OR_GRANTED_PLANS, TRIAL_PLAN
+
+    assert TRIAL_PLAN not in PAID_OR_GRANTED_PLANS
+    assert "three_days" in PAID_OR_GRANTED_PLANS
+
+
 if __name__ == "__main__":
     test_normalize_filters()
     test_months_best_paid_only()
+    test_shop_open_on_trial_and_when_inactive()
+    test_end_trial_selects_only_live_trial()
+    test_trial_is_not_a_grantable_paid_plan()
     print("ok")

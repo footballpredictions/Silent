@@ -1,5 +1,15 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (trial: оплата сразу 2026-09-18)
+
+Пробный (`trial`) и «3 дня» (`three_days`) **не сливали**. Админка: чип «Пробный» только снимает trial (`POST /users/{id}/end-trial`), VPN не кикаем. Повторный trial не выдаётся. В клиентах магазин YuMoney виден на пробном (оплата снимает trial с сегодня). **wdtt/api не трогал, деплой не делал.**
+
+## Последние изменения (хард-ресет android ca7905b 2026-09-18)
+
+Android `git reset --hard ca7905b` и **force-push** `origin/android` на этот коммит.
+Снят `66955fe`. GitHub: [ca7905b](https://github.com/footballpredictions/Silent/commit/ca7905b002bc4606d6174f47e747ee746662a635).
+Debug с этого коммита, версию не поднимал. **wdtt/api не трогал.**
+
 ## Последние изменения (Android splash bootstrap на Wi‑Fi 2026-09-18)
 
 На LTE пустой кеш поднимал временный VPN, на Wi‑Fi соты `:9100` отвечали без overlay —

@@ -398,17 +398,13 @@ class SilentRepository @Inject constructor(
                 }
                 return withTunnelBackendBlock(allowOverlayFallback, block)
             }
-            useApiBase(getPublicServerUrl())
-            invalidateApiClient()
-            return block()
+            return withPublicApiFailover(block)
         }
 
         val tunnelUp = isMainVpnTunnelUp()
 
         if (!tunnelUp || isPublicBackendReachable()) {
-            useApiBase(getPublicServerUrl())
-            invalidateApiClient()
-            return runCatching { block() }.getOrElse { e ->
+            return runCatching { withPublicApiFailover(block) }.getOrElse { e ->
                 if (tunnelUp) {
                     Log.w(TAG, "public API failed on VPN Wi‑Fi: ${e.message}, tunnel fallback")
                     withTunnelBackendBlock(allowOverlayFallback, block)
@@ -419,6 +415,23 @@ class SilentRepository @Inject constructor(
         }
 
         return withTunnelBackendBlock(allowOverlayFallback, block)
+    }
+
+    private suspend fun <T> withPublicApiFailover(block: suspend () -> T): T {
+        var last: Throwable? = null
+        for (base in publicApiBases()) {
+            useApiBase(base)
+            invalidateApiClient()
+            val result = runCatching { block() }
+            if (result.isSuccess) return result.getOrThrow()
+            last = result.exceptionOrNull()
+            val msg = last?.message
+            if (!isPublicConnectFailure(msg) && last !is java.io.IOException) {
+                throw last ?: IllegalStateException("all api routes failed")
+            }
+            Log.w(TAG, "public API $base failed: $msg")
+        }
+        throw last ?: IllegalStateException("all api routes failed")
     }
 
     /** Промокод, подписка, оплата, сессии — один overlay на LTE при явном действии пользователя. */
@@ -446,7 +459,11 @@ class SilentRepository @Inject constructor(
                 skipIntervalThrottle = true,
             )
         }
-        return withRoutineBackendApi(allowOverlayFallback = false, block = block)
+        return runCatching {
+            withRoutineBackendApi(allowOverlayFallback = false, block = block)
+        }.getOrElse { e ->
+            if (isPublicConnectFailure(e.message)) withPublicApiFailover(block) else throw e
+        }
     }
 
     /**
@@ -951,13 +968,11 @@ class SilentRepository @Inject constructor(
 
     fun getPublicServerUrl(): String {
         val raw = prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
-        // Старый дефолт по IP: TLS к сертификату nip.io часто hang/fail на assign.
-        if (raw.contains("89.125.188.100") && !raw.contains("nip.io")) {
-            val fixed = DEFAULT_SERVER_URL
+        val fixed = PublicApiFailoverPolicy.rewriteStoredBase(raw, DEFAULT_SERVER_URL)
+        if (fixed != raw.trim().trimEnd('/')) {
             prefs.edit().putString(PREF_SERVER_URL, fixed).apply()
-            return fixed
         }
-        return raw
+        return fixed
     }
 
     fun resolveUpdateDownloadBase(preferredBase: String?): String =

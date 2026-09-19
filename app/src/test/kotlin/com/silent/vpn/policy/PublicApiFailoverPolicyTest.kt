@@ -49,6 +49,28 @@ class PublicApiFailoverPolicyTest {
     }
 
     @Test
+    fun `stored old hive ip is rewritten to current nip and never tried`() {
+        val nip = "https://89-125-188-100.nip.io"
+        assertEquals(
+            nip,
+            PublicApiFailoverPolicy.rewriteStoredBase("https://132.243.234.162", nip),
+        )
+        assertEquals(
+            nip,
+            PublicApiFailoverPolicy.rewriteStoredBase("https://132-243-234-162.nip.io", nip),
+        )
+        assertEquals(
+            nip,
+            PublicApiFailoverPolicy.rewriteStoredBase("https://89.125.188.100", nip),
+        )
+        val got = PublicApiFailoverPolicy.orderedPublicBases(
+            hiveHttps = listOf("https://132.243.234.162", nip),
+            cells = listOf("http://87.58.213.193:9100"),
+        )
+        assertEquals(listOf("http://87.58.213.193:9100", nip), got)
+    }
+
+    @Test
     fun `https hive gets a short connect timeout so cells are reached`() {
         assertEquals(4L, PublicApiFailoverPolicy.connectTimeoutSec("https://89-125-188-100.nip.io"))
         assertEquals(8L, PublicApiFailoverPolicy.connectTimeoutSec("http://87.58.213.193:9100"))

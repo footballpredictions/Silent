@@ -32,27 +32,14 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	// Как PC: anti-stall Telegram (паузы mid-flow / превью).
+	// Как PC 1.0.154: anti-stall Telegram (паузы mid-flow / превью).
 	uploadRetryMs = 50
+	chunkSize     = 8
 )
 
 type WorkerSlot struct {
 	ID     int
 	SendCh chan []byte
-	PrioCh chan []byte
-}
-
-func enqueueWorker(w *WorkerSlot, pkt []byte, prio bool) bool {
-	ch := w.SendCh
-	if prio && w.PrioCh != nil {
-		ch = w.PrioCh
-	}
-	select {
-	case ch <- pkt:
-		return true
-	default:
-		return false
-	}
 }
 
 type Dispatcher struct {
@@ -62,19 +49,11 @@ type Dispatcher struct {
 	mu         sync.Mutex // Используется только для записи
 	rrIndex    int
 	rrCount    int
-	chunkSeq int
-	ReturnCh chan []byte
+	ReturnCh   chan []byte
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	stats      *Stats
-}
-
-func pickWorkerIndex(seq, nw int) int {
-	if nw <= 0 {
-		return 0
-	}
-	return (seq * 11) % nw
 }
 
 func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) *Dispatcher {
@@ -95,7 +74,7 @@ func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) 
 	for i := 0; i < dispatcherWriteLoops; i++ {
 		go d.writeLoop()
 	}
-	log.Printf("[ДИСП] profile: ack-prio writers=%d retry=%dms", dispatcherWriteLoops, uploadRetryMs)
+	log.Printf("[ДИСП] profile: chunk=%d writers=%d retry=%dms (Telegram parity PC 1.0.154)", chunkSize, dispatcherWriteLoops, uploadRetryMs)
 	return d
 }
 
@@ -177,41 +156,34 @@ func (d *Dispatcher) readLoop() {
 
 		ws := *workersPtr
 		nw := len(ws)
-		prio := isAckPriority(n)
-		if !prio && d.rrCount == 0 {
-			d.rrIndex = pickWorkerIndex(d.chunkSeq, nw)
-		}
-		idx := d.rrIndex % nw
-		chunk := chunkSizeFor(n)
 
 		sent := false
-		if enqueueWorker(ws[idx], pkt, prio) {
+		idx := d.rrIndex % nw
+
+		// Пробуем текущий worker (chunk affinity)
+		w := ws[idx]
+		select {
+		case w.SendCh <- pkt:
 			sent = true
-			if !prio {
-				d.rrCount++
-				if d.rrCount >= chunk {
-					d.chunkSeq++
-					d.rrCount = 0
-				}
+			d.rrCount++
+			if d.rrCount >= chunkSize {
+				d.rrIndex = (idx + 1) % nw
+				d.rrCount = 0
 			}
-		} else {
+		default:
+			// Текущий worker перегружен — ищем свободный, начинаем новый chunk
 			for i := 1; i < nw; i++ {
 				altIdx := (idx + i) % nw
-				if enqueueWorker(ws[altIdx], pkt, prio) {
+				select {
+				case ws[altIdx].SendCh <- pkt:
 					sent = true
-					if !prio {
-						d.rrIndex = altIdx
-						d.rrCount = 1
-						d.chunkSeq++
-					}
+					d.rrIndex = altIdx
+					d.rrCount = 1 // первый пакет нового chunk'а уже отправлен
+				default:
+				}
+				if sent {
 					break
 				}
-			}
-		}
-
-		if !sent && prio {
-			if enqueueWorker(ws[idx], pkt, false) {
-				sent = true
 			}
 		}
 
@@ -226,7 +198,6 @@ func (d *Dispatcher) readLoop() {
 						sent = true
 						d.rrIndex = (idx + i) % nw
 						d.rrCount = 1
-						d.chunkSeq++
 					default:
 					}
 				}

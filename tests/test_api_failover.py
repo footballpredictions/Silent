@@ -16,6 +16,9 @@ class ApiFailoverTests(unittest.TestCase):
         self.assertLess(cell1, hive)
         self.assertIn("sv_hive_timeout_for", COMMON)
 
+    def test_old_hive_override_is_ignored(self):
+        self.assertIn("*132.243.234.162*", COMMON)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -96,8 +96,10 @@ sv_api_bases() {
 		return
 	fi
 	if [ -n "$SV_API_OVERRIDE" ]; then
-		echo "$SV_API_OVERRIDE"
-		return
+		case "$SV_API_OVERRIDE" in
+			*132.243.234.162*|*132-243-234-162*) ;;
+			*) echo "$SV_API_OVERRIDE"; return ;;
+		esac
 	fi
 	echo "http://87.58.213.193:9100"
 	echo "http://78.17.74.27:9100"

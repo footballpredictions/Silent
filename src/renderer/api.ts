@@ -19,14 +19,28 @@ const REMEMBER_EMAIL_KEY = 'silent_remember_email'
 const REMEMBER_PASSWORD_KEY = 'silent_remember_password'
 
 export function getServerUrl(): string {
-  return localStorage.getItem(SERVER_URL_KEY) || ''
+  const raw = localStorage.getItem(SERVER_URL_KEY) || ''
+  const fixed = rewritePublicBase(raw)
+  if (fixed !== raw.replace(/\/$/, '')) localStorage.setItem(SERVER_URL_KEY, fixed)
+  return fixed
 }
 export function setServerUrl(url: string) {
-  localStorage.setItem(SERVER_URL_KEY, url.replace(/\/$/, ''))
+  localStorage.setItem(SERVER_URL_KEY, rewritePublicBase(url))
 }
 
 export function getPublicApiBaseUrl(): string {
-  return (getServerUrl() || FALLBACK_PUBLIC).replace(/\/$/, '')
+  return getServerUrl() || FALLBACK_PUBLIC
+}
+
+function rewritePublicBase(raw: string): string {
+  const stored = (raw || '').replace(/\/$/, '')
+  if (!stored) return FALLBACK_PUBLIC
+  try {
+    const host = new URL(stored.includes('://') ? stored : `https://${stored}`).hostname.toLowerCase()
+    if (host === '132.243.234.162' || host === '132-243-234-162.nip.io') return FALLBACK_PUBLIC
+    if (host === SERVER_IP) return FALLBACK_PUBLIC
+  } catch { /* keep */ }
+  return stored
 }
 
 /** Публичные URL API: сначала соты, Улей :443 последним (его режут из РФ). */

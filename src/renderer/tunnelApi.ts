@@ -2,8 +2,20 @@ const SERVER_URL_KEY = 'silent_server_url'
 const FALLBACK_PUBLIC = 'https://89-125-188-100.nip.io'
 
 function getPublicServerUrl(): string {
-  const stored = localStorage.getItem(SERVER_URL_KEY) || ''
-  return (stored || FALLBACK_PUBLIC).replace(/\/$/, '')
+  const stored = (localStorage.getItem(SERVER_URL_KEY) || '').replace(/\/$/, '')
+  if (!stored) return FALLBACK_PUBLIC
+  try {
+    const host = new URL(stored.includes('://') ? stored : `https://${stored}`).hostname.toLowerCase()
+    if (
+      host === '132.243.234.162' ||
+      host === '132-243-234-162.nip.io' ||
+      host === '89.125.188.100'
+    ) {
+      localStorage.setItem(SERVER_URL_KEY, FALLBACK_PUBLIC)
+      return FALLBACK_PUBLIC
+    }
+  } catch { /* keep */ }
+  return stored
 }
 
 export const WG_TUNNEL_GATEWAY = '10.66.66.1'

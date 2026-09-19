@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	neturl "net/url"
 	"os"
 	"strings"
+	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	tlsclient "github.com/bogdanfinn/tls-client"
@@ -21,6 +23,7 @@ import (
 const (
 	vkConnectClientID     = "8093730"
 	vkCallsAnonAPIVersion = "5.276"
+	vkCallsJoinAttempts   = 4
 )
 
 // Ротация хостов: api.vk.ru приоритет (VK уходит с .com); .me — fallback при DPI.
@@ -295,7 +298,7 @@ func getVKCredsViaVKCallsHost(ctx context.Context, link string, streamID int, ap
 	step4 := "step4 auth.anonymLogin"
 	step5 := "step5 vchat.joinConversationByLink"
 	var lastJoinErr error
-	for joinAttempt := 1; joinAttempt <= 2; joinAttempt++ {
+	for joinAttempt := 1; joinAttempt <= vkCallsJoinAttempts; joinAttempt++ {
 		if joinAttempt > 1 {
 			log.Printf("[STREAM %d] [VKCalls] step5 anonym_token.outdated — refresh OK token (attempt %d)", streamID, joinAttempt)
 			resp3, err = doRequest(step3, step3URL)
@@ -337,7 +340,13 @@ func getVKCredsViaVKCallsHost(ctx context.Context, link string, streamID int, ap
 		}
 		if okErr := vkCallsOKError(resp5); okErr != nil {
 			lastJoinErr = newVKCallsFailure(step5, vkCallsFailureOKCDN, fmt.Errorf("%w (resp: %s)", okErr, truncateVKCallsResp(resp5)))
-			if joinAttempt < 2 && vkCallsIsStaleAnonToken(okErr) {
+			if joinAttempt < vkCallsJoinAttempts && vkCallsIsStaleAnonToken(okErr) {
+				wait := 400*time.Millisecond + time.Duration(rand.Intn(500))*time.Millisecond
+				select {
+				case <-ctx.Done():
+					return "", "", nil, ctx.Err()
+				case <-time.After(wait):
+				}
 				continue
 			}
 			return "", "", nil, lastJoinErr

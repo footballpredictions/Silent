@@ -279,7 +279,7 @@ func RunSession(
 	}
 	defer dtlsConn.Close()
 
-	hctx, hcancel := context.WithTimeout(sessCtx, 20*time.Second)
+	hctx, hcancel := context.WithTimeout(sessCtx, 30*time.Second)
 	log.Printf("[ВОРКЕР #%d] [DTLS] Рукопожатие (Handshake)...", sessionID)
 	err = dtlsConn.HandshakeContext(hctx)
 	hcancel()
@@ -328,6 +328,7 @@ func RunSession(
 	slot := &WorkerSlot{
 		ID:     sessionID,
 		SendCh: make(chan []byte, workerSendBuf),
+		PrioCh: make(chan []byte, prioChBuf),
 	}
 	d.Register(slot)
 	defer d.Unregister(slot)
@@ -378,20 +379,45 @@ func RunSession(
 	go func() {
 		defer proxyWg.Done()
 		defer sessCancel()
+		writePkt := func(pkt []byte) bool {
+			_ = dtlsConn.SetWriteDeadline(time.Now().Add(sessionReadTimeout))
+			_, writeErr := dtlsConn.Write(pkt)
+			putPktBuf(pkt)
+			if writeErr != nil {
+				log.Printf("[ВОРКЕР #%d] Ошибка Writer: %v", sessionID, writeErr)
+				return false
+			}
+			return true
+		}
 		for {
 			select {
 			case <-sessCtx.Done():
 				return
-			case pkt, ok := <-slot.SendCh:
+			case pkt, ok := <-slot.PrioCh:
 				if !ok {
 					return
 				}
-				_ = dtlsConn.SetWriteDeadline(time.Now().Add(sessionReadTimeout))
-				_, writeErr := dtlsConn.Write(pkt)
-				putPktBuf(pkt)
-				if writeErr != nil {
-					log.Printf("[ВОРКЕР #%d] Ошибка Writer: %v", sessionID, writeErr)
+				if !writePkt(pkt) {
 					return
+				}
+			default:
+				select {
+				case <-sessCtx.Done():
+					return
+				case pkt, ok := <-slot.PrioCh:
+					if !ok {
+						return
+					}
+					if !writePkt(pkt) {
+						return
+					}
+				case pkt, ok := <-slot.SendCh:
+					if !ok {
+						return
+					}
+					if !writePkt(pkt) {
+						return
+					}
 				}
 			}
 		}

@@ -552,8 +552,11 @@ function sendLog(line) {
     /\[КЛИЕНТ\]|\[STREAM|\[ГРУППА|\[VK Auth\]|FATAL|GETCONF|CAPTCHA|ошибка|error|timeout|зарегистрирован/i.test(trimmed)
   ) {
     const isError = /error|ошиб|fail|timeout|FATAL|FLOOD_ESCALATE/i.test(trimmed)
+    const noTs = trimmed.replace(/^\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+/, '')
+    const stream = noTs.match(/\[STREAM\s+(\d+)\]/)
+    const keyCore = (stream ? `stream${stream[1]}_` : '') + noTs.slice(0, 48)
     sendWdttLog({
-      key: `raw_${trimmed.slice(0, 28).replace(/\d+/g, '#')}`,
+      key: `raw_${keyCore.replace(/\d+/g, '#')}`,
       message: trimmed,
       priority: isError ? 99 : 2,
       isError,

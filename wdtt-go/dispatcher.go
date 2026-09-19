@@ -36,12 +36,25 @@ const (
 	returnChBuf      = 16384
 	writeLoopWorkers = 8
 	uploadRetryMs    = 50
-	chunkSize        = 8
 )
 
 type WorkerSlot struct {
 	ID     int
 	SendCh chan []byte
+	PrioCh chan []byte
+}
+
+func enqueueWorker(w *WorkerSlot, pkt []byte, prio bool) bool {
+	ch := w.SendCh
+	if prio && w.PrioCh != nil {
+		ch = w.PrioCh
+	}
+	select {
+	case ch <- pkt:
+		return true
+	default:
+		return false
+	}
 }
 
 type Dispatcher struct {
@@ -51,8 +64,8 @@ type Dispatcher struct {
 	mu         sync.Mutex
 	rrIndex    int
 	rrCount    int
-	chunkSeq   int // чередование групп (разные хеши/TURN), не подряд 0..8 одной группы
-	ReturnCh   chan []byte
+	chunkSeq int // чередование групп (разные хеши/TURN), не подряд 0..8 одной группы
+	ReturnCh chan []byte
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
@@ -86,7 +99,7 @@ func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) 
 	for i := 0; i < writeLoopWorkers; i++ {
 		go d.writeLoop()
 	}
-	log.Printf("[ДИСП] profile: chunk=%d writers=%d returnCh=%d (Telegram latency experiment)", chunkSize, writeLoopWorkers, returnChBuf)
+	log.Printf("[ДИСП] profile: ack-prio writers=%d returnCh=%d", writeLoopWorkers, returnChBuf)
 	return d
 }
 
@@ -159,36 +172,41 @@ func (d *Dispatcher) readLoop() {
 
 		ws := *workersPtr
 		nw := len(ws)
-
-		sent := false
-		if d.rrCount == 0 {
+		prio := isAckPriority(n)
+		if !prio && d.rrCount == 0 {
 			d.rrIndex = pickWorkerIndex(d.chunkSeq, nw)
 		}
 		idx := d.rrIndex % nw
+		chunk := chunkSizeFor(n)
 
-		w := ws[idx]
-		select {
-		case w.SendCh <- pkt:
+		sent := false
+		if enqueueWorker(ws[idx], pkt, prio) {
 			sent = true
-			d.rrCount++
-			if d.rrCount >= chunkSize {
-				d.chunkSeq++
-				d.rrCount = 0
+			if !prio {
+				d.rrCount++
+				if d.rrCount >= chunk {
+					d.chunkSeq++
+					d.rrCount = 0
+				}
 			}
-		default:
+		} else {
 			for i := 1; i < nw; i++ {
 				altIdx := (idx + i) % nw
-				select {
-				case ws[altIdx].SendCh <- pkt:
+				if enqueueWorker(ws[altIdx], pkt, prio) {
 					sent = true
-					d.rrIndex = altIdx
-					d.rrCount = 1
-					d.chunkSeq++
-				default:
-				}
-				if sent {
+					if !prio {
+						d.rrIndex = altIdx
+						d.rrCount = 1
+						d.chunkSeq++
+					}
 					break
 				}
+			}
+		}
+
+		if !sent && prio {
+			if enqueueWorker(ws[idx], pkt, false) {
+				sent = true
 			}
 		}
 

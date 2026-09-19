@@ -5073,22 +5073,52 @@ class MainViewModel @Inject constructor(
 
     fun deleteDevice(deviceId: String, onResult: (Boolean, String?) -> Unit) {
         viewModelScope.launch {
-            runCatching {
-                val res = repo.withUserBackendApi { repo.getApi().deleteDevice(deviceId) }
+            suspend fun call(): Pair<Boolean, String?> {
+                val res = repo.getApi().deleteDevice(deviceId)
+                if (com.silent.vpn.policy.TunnelHttpPolicy.isTunnelBackendFailure(res)) {
+                    error("VPN upstream failed")
+                }
                 if (res.isSuccessful) {
                     val isCurrentSession = deviceId == repo.getSessionDeviceId()
-                    if (isCurrentSession) {
-                        onResult(true, "__logout__")
-                    } else {
-                        removeDeviceFromLocalProfile(deviceId)
-                        onResult(true, null)
-                    }
-                } else {
-                    onResult(false, parseError(res.errorBody()?.string() ?: "") ?: "Ошибка удаления")
+                    if (isCurrentSession) return true to "__logout__"
+                    removeDeviceFromLocalProfile(deviceId)
+                    return true to null
                 }
-            }.onFailure {
-                onResult(false, it.message ?: "Ошибка")
+                return false to (parseError(res.errorBody()?.string() ?: "") ?: "Ошибка удаления")
             }
+            val vpnHeld = repo.isMainVpnTunnelUp() || SilentVpnService.isRunning
+            if (vpnHeld) {
+                if (WdttTunnelManager.isBootstrapMode()) {
+                    runCatching { withEphemeralBackendApi { call() } }
+                        .onSuccess { onResult(it.first, it.second) }
+                        .onFailure { onResult(false, repo.humanizeHashFetchError(it.message)) }
+                    return@launch
+                }
+                DebugLog.i("MainViewModel", "delete session: short bootstrap then restore main VPN")
+                runCatching { runPromoShortBootstrap(appContext) { call() } }
+                    .onSuccess { onResult(it.first, it.second) }
+                    .onFailure { onResult(false, repo.humanizeHashFetchError(it.message)) }
+                return@launch
+            }
+            if (repo.isOnMobileData()) {
+                var pair: Pair<Boolean, String?>? = null
+                val ok = runEphemeralApiBootstrap(appContext, force = true) {
+                    runCatching { call() }.fold(
+                        onSuccess = { pair = it; true },
+                        onFailure = { e ->
+                            pair = false to repo.humanizeHashFetchError(e.message)
+                            false
+                        },
+                    )
+                }
+                if (pair != null) onResult(pair!!.first, pair!!.second)
+                else if (!ok) onResult(false, "Не удалось достучаться до сервера")
+                else onResult(false, "Ошибка удаления")
+                return@launch
+            }
+            runCatching { repo.withUserBackendApi { call() } }
+                .onSuccess { onResult(it.first, it.second) }
+                .onFailure { onResult(false, it.message ?: "Ошибка") }
         }
     }
 

@@ -1,5 +1,9 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (админка: сессии пользователя 2026-09-19)
+
+В «Пользователи» клик по строке открывает ту же правую панель, что в подписках: список устройств (имя, тип, IP, время, онлайн) + «Удалить» / «Удалить все». API `GET/DELETE /api/admin/users/{id}/devices`. Ключи WG не отдаём. Как у клиента: только строка в `devices`, без per-peer `wg set`. Деплой `deploy_stable.py`: health 0.047с, wdtt active, kick 0. Приёмка ок — push `origin/main`.
+
 ## Последние изменения (YuMoney webhook + пуш 2026-09-19)
 
 Кабинет: тест HTTP-уведомления **дошёл** 19.09 17:08 МСК — `sign` ok, API 200, `unknown_label` (кнопка «Протестировать», платежа нет). URL в кабинете: https://yoomoney.ru/transfer/myservices/http-notification

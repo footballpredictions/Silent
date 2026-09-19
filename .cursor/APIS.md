@@ -204,6 +204,9 @@ sequenceDiagram
 | DELETE | `/devices/{id}` | Admin | Отозвать trusted device и его сессии |
 | GET | `/stats` | Admin | CPU/RAM/disk, users (`connected_devices`, `peak_online_devices`, `peak_online_at`), VK hashes; `vk_users[].created_at` |
 | GET | `/users` | Admin | Список пользователей (`is_online`, `online_devices` — опционально) |
+| GET | `/users/{id}/devices` | Admin | Сессии устройств пользователя (без WG-ключей) |
+| DELETE | `/users/{id}/devices/{device_id}` | Admin | Удалить одну сессию устройства |
+| DELETE | `/users/{id}/devices` | Admin | Удалить все сессии пользователя |
 | POST | `/users/{id}/grant-subscription` | Admin | Выдача подписки |
 | POST | `/users/{id}/end-trial` | Admin | Снять только пробный период (без kick VPN) |
 | POST | `/users/{id}/revoke-subscription` | Admin | Отзыв подписки |

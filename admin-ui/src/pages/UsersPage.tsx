@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Ban, CheckCircle, ShieldCheck, Trash2 } from 'lucide-react'
+import { Ban, CheckCircle, ShieldCheck, Trash2, X } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
 import SortSelect from '../components/SortSelect'
 import ListPagination from '../components/ListPagination'
@@ -18,6 +18,29 @@ interface UserRow {
   acquisition?: 'referral' | 'promo' | 'organic' | string
   pending_promo_code?: string | null
   referral_code?: string | null
+}
+
+interface DeviceRow {
+  id: string
+  device_name: string
+  device_type: string
+  last_ip: string | null
+  last_connected: string | null
+  created_at: string | null
+  is_connected: boolean
+  preferred_server: string
+}
+
+interface DevicesPayload {
+  user: { id: string; display_id: string; email: string }
+  devices: DeviceRow[]
+}
+
+const TYPE_NAMES: Record<string, string> = {
+  android: 'Android',
+  ios: 'iOS',
+  pc: 'ПК',
+  openwrt: 'OpenWrt',
 }
 
 const USERS_SORT_KEY = 'admin.users.sort'
@@ -70,6 +93,34 @@ function devicesLabel(u: UserRow): string {
   return u.is_admin ? `${u.devices_count}/∞` : `${u.devices_count}/3`
 }
 
+function fmtDate(v: string | null | undefined): string {
+  if (!v) return '—'
+  return v.split('T')[0]
+}
+
+function fmtDateTime(v: string | null | undefined): string {
+  if (!v) return '—'
+  try {
+    let s = String(v).trim()
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+      s = s.replace(' ', 'T')
+      if (!s.endsWith('Z')) s += 'Z'
+    }
+    const dt = new Date(s)
+    if (Number.isNaN(dt.getTime())) return fmtDate(v)
+    return dt.toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  } catch {
+    return fmtDate(v)
+  }
+}
+
 export default function UsersPage({ token }: { token: string }) {
   const [users, setUsers] = useState<UserRow[]>([])
   const [search, setSearch] = useState('')
@@ -84,6 +135,10 @@ export default function UsersPage({ token }: { token: string }) {
   const [actionId, setActionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(1)
+  const [devicesOpen, setDevicesOpen] = useState(false)
+  const [devicesBusy, setDevicesBusy] = useState(false)
+  const [devicesPayload, setDevicesPayload] = useState<DevicesPayload | null>(null)
+  const [deviceBusyId, setDeviceBusyId] = useState<string | null>(null)
   const pageSize = 50
 
   const headers = { Authorization: `Bearer ${token}` }
@@ -127,6 +182,66 @@ export default function UsersPage({ token }: { token: string }) {
       return
     }
     await apiAction(u.id, '', 'DELETE')
+  }
+
+  const openDevices = async (userId: string) => {
+    setDevicesBusy(true)
+    setDevicesOpen(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/devices`, { headers })
+      if (!res.ok) {
+        setError('Не удалось загрузить устройства')
+        setDevicesPayload(null)
+        return
+      }
+      setDevicesPayload(await res.json())
+    } finally {
+      setDevicesBusy(false)
+    }
+  }
+
+  const deleteDevice = async (deviceId: string) => {
+    if (!devicesPayload?.user.id) return
+    setDeviceBusyId(deviceId)
+    setError(null)
+    try {
+      const res = await fetch(
+        `/api/admin/users/${devicesPayload.user.id}/devices/${deviceId}`,
+        { method: 'DELETE', headers },
+      )
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(typeof body.detail === 'string' ? body.detail : 'Не удалось удалить сессию')
+        return
+      }
+      await openDevices(devicesPayload.user.id)
+      await fetchUsers()
+    } finally {
+      setDeviceBusyId(null)
+    }
+  }
+
+  const deleteAllDevices = async () => {
+    if (!devicesPayload?.user.id) return
+    if (!confirm(`Удалить все сессии ${devicesPayload.user.email}?`)) return
+    setDeviceBusyId('all')
+    setError(null)
+    try {
+      const res = await fetch(
+        `/api/admin/users/${devicesPayload.user.id}/devices`,
+        { method: 'DELETE', headers },
+      )
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(typeof body.detail === 'string' ? body.detail : 'Не удалось удалить сессии')
+        return
+      }
+      await openDevices(devicesPayload.user.id)
+      await fetchUsers()
+    } finally {
+      setDeviceBusyId(null)
+    }
   }
 
   const setAndStoreSort = (value: string) => {
@@ -245,7 +360,11 @@ export default function UsersPage({ token }: { token: string }) {
               <tr><td colSpan={9} className="text-center py-12 text-[#555]">Нет пользователей</td></tr>
             ) : (
               paged.map(u => (
-                <tr key={u.id} className="border-b border-[#1a1a1a] hover:bg-[#151515] transition-colors">
+                <tr
+                  key={u.id}
+                  className="border-b border-[#1a1a1a] hover:bg-[#151515] transition-colors cursor-pointer"
+                  onClick={() => openDevices(u.id)}
+                >
                   <td className="px-4 py-3 font-mono text-[#888]">{u.display_id}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -292,7 +411,7 @@ export default function UsersPage({ token }: { token: string }) {
                       </span>
                     </div>
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                     {u.is_admin ? (
                       <div className="text-right text-xs font-semibold text-amber-400/90 tracking-wide">
                         Админ
@@ -342,6 +461,97 @@ export default function UsersPage({ token }: { token: string }) {
           onPageChange={setPage}
           disabled={loading}
         />
+      )}
+
+      {devicesOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <button
+            type="button"
+            aria-label="Закрыть"
+            className="absolute inset-0 bg-black/60 cursor-pointer"
+            onClick={() => setDevicesOpen(false)}
+          />
+          <aside className="relative w-full max-w-md h-full bg-[#0d0d0d] border-l border-[#222] shadow-2xl overflow-y-auto">
+            <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-4 border-b border-[#222] bg-[#0d0d0d]/backdrop-blur">
+              <div>
+                <div className="font-semibold text-sm">Устройства</div>
+                <div className="text-xs text-[#666] mt-0.5 truncate max-w-[240px]">
+                  {devicesPayload?.user.email || (devicesBusy ? '…' : '')}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDevicesOpen(false)}
+                className="p-1.5 rounded-md text-[#666] hover:text-white hover:bg-[#1a1a1a] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-6">
+              {devicesBusy && !devicesPayload ? (
+                <div className="text-center text-[#555] py-10 text-sm">Загрузка…</div>
+              ) : devicesPayload ? (
+                <>
+                  <div className="rounded-xl border border-[#222] bg-[#111] p-4">
+                    <div className="text-xs text-[#555] mb-1">Сейчас</div>
+                    <div className="text-sm text-[#ddd]">
+                      {devicesPayload.devices.length
+                        ? `${devicesPayload.devices.length} ${devicesPayload.devices.length === 1 ? 'сессия' : 'сессии'}`
+                        : 'Нет сессий'}
+                    </div>
+                    <div className="mt-2 font-mono text-xs text-[#555]">{devicesPayload.user.display_id}</div>
+                    {devicesPayload.devices.length > 0 && (
+                      <button
+                        type="button"
+                        disabled={deviceBusyId === 'all'}
+                        onClick={() => void deleteAllDevices()}
+                        className="mt-3 text-xs text-red-400 hover:text-red-300 cursor-pointer disabled:opacity-40"
+                      >
+                        {deviceBusyId === 'all' ? '…' : 'Удалить все'}
+                      </button>
+                    )}
+                  </div>
+
+                  <section>
+                    <h3 className="text-xs uppercase tracking-wider text-[#555] mb-3">Сессии</h3>
+                    {devicesPayload.devices.length === 0 ? (
+                      <p className="text-xs text-[#555]">Нет устройств</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {devicesPayload.devices.map(d => (
+                          <li
+                            key={d.id}
+                            className="rounded-lg border border-[#1f1f1f] bg-[#111] px-3 py-2.5 text-xs"
+                          >
+                            <div className="flex justify-between gap-2">
+                              <span className="text-[#ddd]">{d.device_name}</span>
+                              <span className={d.is_connected ? 'text-green-400' : 'text-[#666]'}>
+                                {d.is_connected ? 'онлайн' : 'офлайн'}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-[#666]">
+                              <span>{TYPE_NAMES[d.device_type] || d.device_type}</span>
+                              <span>{d.last_ip || '—'}</span>
+                              <span>{fmtDateTime(d.last_connected || d.created_at)}</span>
+                              <button
+                                type="button"
+                                disabled={deviceBusyId === d.id}
+                                onClick={() => void deleteDevice(d.id)}
+                                className="text-red-400 hover:text-red-300 cursor-pointer disabled:opacity-40"
+                              >
+                                {deviceBusyId === d.id ? '…' : 'Удалить'}
+                              </button>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                </>
+              ) : null}
+            </div>
+          </aside>
+        </div>
       )}
     </div>
   )

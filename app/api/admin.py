@@ -568,6 +568,40 @@ async def user_subscription_history_endpoint(
     return await user_subscription_history(db, user_id)
 
 
+@router.get("/users/{user_id}/devices")
+async def list_user_devices_endpoint(
+    user_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.admin_user_devices import list_user_devices
+
+    return await list_user_devices(db, user_id)
+
+
+@router.delete("/users/{user_id}/devices/{device_id}")
+async def delete_user_device_endpoint(
+    user_id: str,
+    device_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.admin_user_devices import delete_user_device
+
+    return await delete_user_device(db, user_id, device_id)
+
+
+@router.delete("/users/{user_id}/devices")
+async def delete_all_user_devices_endpoint(
+    user_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.admin_user_devices import delete_all_user_devices
+
+    return await delete_all_user_devices(db, user_id)
+
+
 @router.get("/settings/registration")
 async def get_registration_settings(
     _: bool = Depends(get_admin_credentials),

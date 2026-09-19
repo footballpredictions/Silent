@@ -90,18 +90,34 @@ func fatalCallError(resp map[string]interface{}) *CallUnavailableError {
 	return &CallUnavailableError{Code: code, Message: msg}
 }
 
-// vkCallsShouldRetry вЂ” СЃРµС‚СЊ/decode/flood; captcha/call/api СЂРµС‚СЂР°РёС‚СЊ Р±РµСЃСЃРјС‹СЃР»РµРЅРЅРѕ.
+// vkCallsShouldRetry — сеть/decode/flood и протухший OK anonym token.
 func vkCallsShouldRetry(err error) bool {
 	var failure *vkCallsFailure
 	if errors.As(err, &failure) {
 		switch failure.Kind {
 		case vkCallsFailureNetwork, vkCallsFailureDecode, vkCallsFailureFlood:
 			return true
+		case vkCallsFailureOKCDN:
+			return vkCallsIsStaleAnonToken(failure.Err)
 		default:
 			return false
 		}
 	}
-	return false
+	return vkCallsIsStaleAnonToken(err)
+}
+
+// vkCallsShouldEscalateCaptcha — хост не должен уходить в n=9 из‑за outdated token.
+func vkCallsShouldEscalateCaptcha(err error) bool {
+	if err == nil {
+		return false
+	}
+	if vkCallsIsStaleAnonToken(err) || vkCallsIsFlood(err) {
+		return false
+	}
+	if _, ok := asCallUnavailableError(err); ok {
+		return false
+	}
+	return true
 }
 
 // vkCallsShouldFallbackToLegacy вЂ” РІ СЂРµР¶РёРјРµ vkcalls РќРРљРћР“Р”Рђ РЅРµ СѓС…РѕРґРёРј РІ legacy+РєР°РїС‡Сѓ
@@ -404,8 +420,8 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 
 	if getVKAuthMode() == "vkcalls" {
 		var lastVKCallsErr error
-		// Р”Рѕ 3 РїРѕРїС‹С‚РѕРє РЅР° СЃРµС‚СЊ/decode/flood. Captcha/call вЂ” СЃСЂР°Р·Сѓ СЃС‚РѕРї, Р±РµР· legacy.
-		for attempt := 1; attempt <= 3; attempt++ {
+		// До 5 попыток: сеть/flood/outdated token. Captcha/call — сразу стоп, без legacy.
+		for attempt := 1; attempt <= 5; attempt++ {
 			if err := waitVkFloodCooldown(ctx, streamID); err != nil {
 				return "", "", nil, err
 			}
@@ -416,24 +432,26 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 			}
 			lastVKCallsErr = err
 			if callErr, ok := asCallUnavailableError(err); ok {
-				log.Printf("[STREAM %d] [VK Auth] VK Calls non-retryable call error вЂ” no legacy/captcha: %v", streamID, callErr)
+				log.Printf("[STREAM %d] [VK Auth] VK Calls non-retryable call error — no legacy/captcha: %v", streamID, callErr)
 				return "", "", nil, callErr
 			}
 			if vkCallsIsFlood(err) {
 				noteVkFloodCooldown()
-				log.Printf("[STREAM %d] [VK Auth] VK Calls flood control вЂ” no legacy/captcha (%s)", streamID, describeVKCallsFailure(err))
+				log.Printf("[STREAM %d] [VK Auth] VK Calls flood control — no legacy/captcha (%s)", streamID, describeVKCallsFailure(err))
 			}
-			log.Printf("[STREAM %d] [VK Auth] VK Calls attempt %d/3 failed (%s)", streamID, attempt, describeVKCallsFailure(err))
+			log.Printf("[STREAM %d] [VK Auth] VK Calls attempt %d/5 failed (%s)", streamID, attempt, describeVKCallsFailure(err))
 			if ctx.Err() != nil {
 				return "", "", nil, ctx.Err()
 			}
 			if !vkCallsShouldRetry(err) {
 				break
 			}
-			if attempt < 3 {
+			if attempt < 5 {
 				wait := time.Duration(350+rand.Intn(400)) * time.Millisecond
 				if vkCallsIsFlood(err) {
 					wait = 3*time.Second + time.Duration(rand.Intn(3000))*time.Millisecond
+				} else if vkCallsIsStaleAnonToken(err) {
+					wait = 800*time.Millisecond + time.Duration(rand.Intn(700))*time.Millisecond
 				}
 				select {
 				case <-ctx.Done():
@@ -442,13 +460,12 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 				}
 			}
 		}
-		if !vkCallsShouldFallbackToLegacy(lastVKCallsErr) {
-			// РќРµ СѓС…РѕРґРёРј РІ legacy РІРЅСѓС‚СЂРё РїСЂРѕС†РµСЃСЃР° (С€С‚РѕСЂРј РєР°РїС‡Рё РїСЂРё n=63) вЂ”
-			// СЃРёРіРЅР°Р» РґР»СЏ Android host: РїРµСЂРµР·Р°РїСѓСЃРє СЃ auto/manual Рё n=9.
-			log.Printf("[STREAM %d] [VK Auth] LEGACY_ESCALATE_CAPTCHA вЂ” host should switch to legacy captcha (%s)", streamID, describeVKCallsFailure(lastVKCallsErr))
+		if vkCallsShouldEscalateCaptcha(lastVKCallsErr) {
+			log.Printf("[STREAM %d] [VK Auth] LEGACY_ESCALATE_CAPTCHA — host should switch to legacy captcha (%s)", streamID, describeVKCallsFailure(lastVKCallsErr))
 			return "", "", nil, lastVKCallsErr
 		}
-		log.Printf("[STREAM %d] [VK Auth] VK Calls exhausted (%s), falling back to legacy", streamID, describeVKCallsFailure(lastVKCallsErr))
+		log.Printf("[STREAM %d] [VK Auth] VK Calls exhausted without captcha (%s)", streamID, describeVKCallsFailure(lastVKCallsErr))
+		return "", "", nil, lastVKCallsErr
 	} else {
 		log.Printf("[STREAM %d] [VK Auth] Legacy mode selected, skipping VK Calls path", streamID)
 	}

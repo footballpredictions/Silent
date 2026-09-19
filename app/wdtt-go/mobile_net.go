@@ -1,5 +1,4 @@
-//go:build android
-
+// Без android-only тега: unit-тесты wdtt-go на Windows (gate/quota/ACK).
 package main
 
 import (

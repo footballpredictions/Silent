@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log"
-	"math/rand"
 	"net"
 	"strings"
 	"sync"
@@ -133,6 +132,8 @@ func WorkerGroup(
 		}()
 	}
 
+	allocateTicker := newAllocateGate()
+
 	for i, wid := range workerIDs {
 		wg.Add(1)
 
@@ -181,6 +182,10 @@ func WorkerGroup(
 				credsSnapshot.TurnURLs = cloneStringSlice(creds.TurnURLs)
 				credsMu.RUnlock()
 
+				if waitErr := allocateTicker.Wait(ctx); waitErr != nil {
+					return
+				}
+
 				configDelivered, sessErr := RunSession(ctx, tp, peer, d, localPort,
 					getConf, cc, wid, &credsSnapshot, deviceID, password, stats)
 
@@ -198,17 +203,10 @@ func WorkerGroup(
 					}
 					errStr := sessErr.Error()
 					errStrLower := strings.ToLower(errStr)
-
+					isQuota := isTurnQuotaError(sessErr)
 					turnAllocAttrMissing := strings.Contains(errStrLower, "turn allocate") &&
 						strings.Contains(errStrLower, "attribute not found")
-					turnCredRefreshNeeded := turnAllocAttrMissing ||
-						strings.Contains(errStrLower, "turn allocate auth") ||
-						strings.Contains(errStrLower, "invalid credential") ||
-						strings.Contains(errStrLower, "stale nonce") ||
-						strings.Contains(errStrLower, "allocation mismatch") ||
-						strings.Contains(errStrLower, "error 508") ||
-						strings.Contains(errStrLower, "turn квота") ||
-						strings.Contains(errStrLower, "quota")
+					turnCredRefreshNeeded := !isQuota && shouldRefreshTurnCreds(errStrLower)
 
 					if strings.Contains(errStrLower, "rate limit") ||
 						strings.Contains(errStrLower, "flood control") ||
@@ -225,7 +223,9 @@ func WorkerGroup(
 
 					attempt++
 					isWrapHandshakeTimeout := strings.Contains(errStr, "WRAP_AUTH_TIMEOUT")
-					if turnAllocAttrMissing {
+					if isQuota {
+						log.Printf("[ВОРКЕР #%d] [TURN] Квота relay, ждём без refresh кредов (попытка %d): %s", wid, attempt, errStr)
+					} else if turnAllocAttrMissing {
 						log.Printf("[ВОРКЕР #%d] [TURN] Allocate вернул неполный ответ, обновляем TURN-креды и повторяем (попытка %d): %s", wid, attempt, errStr)
 						refreshCreds("TURN Allocate attribute-not-found")
 					} else if turnCredRefreshNeeded {
@@ -239,11 +239,7 @@ func WorkerGroup(
 						log.Printf("[ВОРКЕР #%d] Ошибка (попытка %d): %s", wid, attempt, errStr)
 					}
 
-					// Если ошибка STUN (credentials invalid), воркер не сможет переподключиться. Завершаем.
-					isStunDeath := strings.Contains(errStrLower, "error 29") ||
-						strings.Contains(errStrLower, "cannot create socket")
-
-					if isStunDeath {
+					if shouldStopWorker(errStrLower, attempt) {
 						log.Printf("[ВОРКЕР #%d] Невосстановимая TURN/STUN ошибка, завершение: %s", wid, errStr)
 						return
 					}
@@ -253,10 +249,7 @@ func WorkerGroup(
 					return
 				}
 
-				retryDelay := time.Duration(5+rand.Intn(11)) * time.Second
-				if sessErr != nil && strings.Contains(sessErr.Error(), "WRAP_AUTH_TIMEOUT") {
-					retryDelay = time.Duration(300+rand.Intn(700)) * time.Millisecond
-				}
+				retryDelay := sessionRetryDelay(sessErr)
 				select {
 				case <-time.After(retryDelay):
 				case <-ctx.Done():

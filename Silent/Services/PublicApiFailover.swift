@@ -9,11 +9,24 @@ enum PublicApiFailover {
         "http://78.17.74.27:9100",
     ]
 
+    static func rewriteStoredBase(_ raw: String, currentNip: String = hiveHttps) -> String {
+        let stored = raw.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if stored.isEmpty { return currentNip }
+        let host = URL(string: stored)?.host?.lowercased()
+            ?? stored.replacingOccurrences(of: "https://", with: "")
+                .replacingOccurrences(of: "http://", with: "")
+                .split(separator: "/").first.map(String.init)?.lowercased()
+        if host == "132.243.234.162" || host == "132-243-234-162.nip.io" { return currentNip }
+        if host == "89.125.188.100" { return currentNip }
+        return stored
+    }
+
     static func bases(preferred: String) -> [String] {
         var out: [String] = []
         func add(_ raw: String) {
-            let v = raw.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let v = rewriteStoredBase(raw)
             guard !v.isEmpty, !out.contains(v) else { return }
+            if v.contains("132.243.234.162") || v.contains("132-243-234-162") { return }
             out.append(v)
         }
         cells.forEach { add($0) }

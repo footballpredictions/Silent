@@ -91,9 +91,11 @@ class APIService: ObservableObject {
         get {
             let raw = (defaults.string(forKey: "server_url") ?? "")
                 .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            return raw.isEmpty ? PublicApiFailover.hiveHttps : raw
+            let fixed = PublicApiFailover.rewriteStoredBase(raw)
+            if fixed != raw { defaults.set(fixed, forKey: "server_url") }
+            return fixed
         }
-        set { defaults.set(newValue.trimmingCharacters(in: .init(charactersIn: "/")), forKey: "server_url") }
+        set { defaults.set(PublicApiFailover.rewriteStoredBase(newValue), forKey: "server_url") }
     }
     var accessToken: String? {
         get { KeychainHelper.get("access_token") }

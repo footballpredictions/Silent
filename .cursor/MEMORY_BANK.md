@@ -1,5 +1,23 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (YuMoney webhook + пуш 2026-09-19)
+
+Кабинет: тест HTTP-уведомления **дошёл** 19.09 17:08 МСК — `sign` ok, API 200, `unknown_label` (кнопка «Протестировать», платежа нет). URL в кабинете: https://yoomoney.ru/transfer/myservices/http-notification
+Админка: «Выдать» по pending, если хук не пришёл (`can_manual_activate`). Push `origin/main`. Клиенты leftover IP уже на origin (android `574c6a6`, pc `5238da2`, ios `6d10add`, openwrt `dd851a8`). **wdtt не трогал.**
+
+## Последние изменения (деплой backend 2026-09-19)
+
+`python scripts/deploy_stable.py` (прыжок `10.66.66.1`): health 0.041с, wdtt active, kick 0, tunnel DNAT OK.
+На прод ушёл `f6468ee` (чип «Пробный» в админке). Клиентский leftover IP — в debug APK, не в этом деплое.
+
+## Последние изменения (IP leftover после отката 2026-09-19)
+
+Снял с git магазин на пробном: android `630481c`→`574c6a6`, ios `fa5e59a`→`6d10add`.
+Клиенты: prefs `132.243.234.162` → `https://89-125-188-100.nip.io`, API сначала соты `:9100`.
+Бэкенд накрутки Sep 19 не коммитил — `git reset --hard f6468ee`. Чип «Пробный» в админке (`416d4ce`) на месте.
+Тесты: Android PublicApiFailover, PC apiFailover 4/4, backend ip-rotate/nginx, OpenWrt failover. **wdtt не трогал.**
+ЮMoney кабинет руками: `http://87.58.213.193:9100/api/payments/yumoney/notify`.
+
 ## Последние изменения (trial: оплата сразу 2026-09-18)
 
 Пробный (`trial`) и «3 дня» (`three_days`) **не сливали**. Админка: чип «Пробный» только снимает trial (`POST /users/{id}/end-trial`), VPN не кикаем. Повторный trial не выдаётся. В клиентах магазин YuMoney виден на пробном (оплата снимает trial с сегодня).

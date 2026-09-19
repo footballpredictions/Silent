@@ -182,6 +182,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [history, setHistory] = useState<HistoryPayload | null>(null)
   const [historyBusy, setHistoryBusy] = useState(false)
+  const [historyGrantId, setHistoryGrantId] = useState<string | null>(null)
 
   const headers = { Authorization: `Bearer ${token}` }
   const pageSize = 50
@@ -418,8 +419,8 @@ export default function SubscriptionsPage({ token }: { token: string }) {
     }
   }
 
-  const lookupCode = async () => {
-    const code = codeInput.trim()
+  const lookupCode = async (raw?: string) => {
+    const code = (raw ?? codeInput).trim()
     if (!code) return
     setCodeBusy(true)
     setCodeError(null)
@@ -434,6 +435,29 @@ export default function SubscriptionsPage({ token }: { token: string }) {
       setCodeResult(body)
     } finally {
       setCodeBusy(false)
+    }
+  }
+
+  const activateHistoryPayment = async (p: PaymentRow) => {
+    if (!history?.user.id) return
+    setHistoryGrantId(p.id)
+    setError(null)
+    setSuccess(null)
+    try {
+      const url = p.support_code
+        ? `/api/admin/subscriptions/by-code/${encodeURIComponent(p.support_code)}/activate`
+        : `/api/admin/payments/${p.id}/activate`
+      const res = await fetch(url, { method: 'POST', headers })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(typeof body.detail === 'string' ? body.detail : 'Не удалось выдать подписку')
+        return
+      }
+      setSuccess(`Подписка подключена для ${history.user.email}`)
+      await openHistory(history.user.id)
+      await fetchUsers()
+    } finally {
+      setHistoryGrantId(null)
     }
   }
 
@@ -747,13 +771,13 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                 <input
                   value={codeInput}
                   onChange={e => setCodeInput(e.target.value.toUpperCase())}
-                  onKeyDown={e => e.key === 'Enter' && lookupCode()}
+                  onKeyDown={e => e.key === 'Enter' && void lookupCode()}
                   placeholder="SV-XXXX-XXXX"
                   className="flex-1 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-sm font-mono tracking-wider text-white placeholder:text-[#444] focus:outline-none focus:border-[#444]"
                 />
                 <button
                   type="button"
-                  onClick={lookupCode}
+                  onClick={() => void lookupCode()}
                   disabled={codeBusy || !codeInput.trim()}
                   className="px-4 py-2 rounded-lg bg-white text-black text-sm font-semibold hover:bg-[#e0e0e0] disabled:opacity-40 cursor-pointer"
                 >
@@ -906,9 +930,11 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                                   type="button"
                                   className="font-mono text-amber-200/80 hover:text-amber-100 cursor-pointer"
                                   onClick={() => {
+                                    const c = p.support_code || ''
                                     setCodeOpen(true)
-                                    setCodeInput(p.support_code || '')
-                                    setCodeResult(null)
+                                    setCodeError(null)
+                                    setCodeInput(c)
+                                    void lookupCode(c)
                                   }}
                                 >
                                   {p.support_code}
@@ -921,6 +947,16 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                               >
                                 {p.subscription_applied ? 'выдано' : 'без подписки'}
                               </span>
+                              {!p.subscription_applied && (
+                                <button
+                                  type="button"
+                                  disabled={historyGrantId === p.id}
+                                  onClick={() => activateHistoryPayment(p)}
+                                  className="text-green-400 hover:text-green-300 cursor-pointer disabled:opacity-40"
+                                >
+                                  {historyGrantId === p.id ? '…' : 'Выдать'}
+                                </button>
+                              )}
                             </div>
                           </li>
                         ))}

@@ -545,6 +545,18 @@ async def activate_subscription_by_code(
     return await activate_subscription_by_support_code(db, code)
 
 
+@router.post("/payments/{payment_id}/activate")
+async def activate_subscription_by_payment_id(
+    payment_id: str,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ручная выдача, если webhook не дошёл (в т.ч. pending)."""
+    from app.services.admin_subscription_ops import activate_subscription_by_payment_id as activate_row
+
+    return await activate_row(db, payment_id)
+
+
 @router.get("/users/{user_id}/subscription-history")
 async def user_subscription_history_endpoint(
     user_id: str,

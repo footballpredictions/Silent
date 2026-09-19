@@ -21,6 +21,7 @@ from app.services.subscription_kinds import (
     REFERRAL_PLAN,
     normalize_subscription_filter,
 )
+from app.services.payment_manual_activate import can_manual_activate
 
 logger = logging.getLogger(__name__)
 
@@ -219,10 +220,10 @@ async def lookup_payment_by_support_code(db: AsyncSession, raw_code: str) -> dic
     return {
         "payment": _payment_dict(payment),
         "user": _user_brief(user, admin=admin, in_test=in_test, sub=sub),
-        "needs_activation": (
-            payment.status == "completed"
-            and not bool(getattr(payment, "subscription_applied", False))
-            and not admin
+        "needs_activation": can_manual_activate(
+            status=payment.status,
+            applied=bool(getattr(payment, "subscription_applied", False)),
+            is_admin=admin,
         ),
     }
 
@@ -242,24 +243,84 @@ async def activate_subscription_by_support_code(db: AsyncSession, raw_code: str)
     if is_user_admin(user):
         raise HTTPException(status_code=400, detail="Администратору подписка не нужна")
 
-    if payment.status != "completed":
-        raise HTTPException(status_code=400, detail=f"Платёж в статусе «{payment.status}», не completed")
+    if not can_manual_activate(
+        status=payment.status,
+        applied=bool(payment.subscription_applied),
+        is_admin=False,
+    ):
+        if payment.subscription_applied:
+            return {**data, "status": "already_active"}
+        raise HTTPException(
+            status_code=400,
+            detail=f"Платёж в статусе «{payment.status}» вручную не выдаётся",
+        )
 
-    if payment.subscription_applied and not data.get("needs_activation"):
-        # Уже применено — вернём текущее состояние
-        return {**data, "status": "already_active"}
+    sub = await _grant_from_payment_row(db, user, payment)
+    refreshed = await lookup_payment_by_support_code(db, payment.support_code or raw_code)
+    return {**(refreshed or data), "status": "activated", "expires_at": sub.expires_at}
+
+
+async def _grant_from_payment_row(db: AsyncSession, user: User, payment: Payment):
+    now = datetime.utcnow()
+    if (payment.status or "").lower() != "completed":
+        payment.status = "completed"
+        if payment.completed_at is None:
+            payment.completed_at = now
+        if payment.paid_amount is None:
+            payment.paid_amount = payment.amount
+        await db.flush()
 
     plan = (payment.plan_type or "").strip().lower()
     sub = await grant_manual_subscription(db, user, plan)
-    # grant_manual делает commit — перечитываем payment
     result = await db.execute(select(Payment).where(Payment.id == payment.id))
     payment = result.scalar_one()
     payment.subscription_applied = True
     payment.manual_activated_at = datetime.utcnow()
     await db.commit()
+    try:
+        from app.services.email_service import send_subscription_activated_email
 
-    refreshed = await lookup_payment_by_support_code(db, payment.support_code or raw_code)
-    return {**(refreshed or data), "status": "activated", "expires_at": sub.expires_at}
+        send_subscription_activated_email(
+            user.email,
+            plan,
+            sub.expires_at,
+            support_code=payment.support_code,
+            subscription_ok=True,
+        )
+    except Exception as e:
+        logger.warning("manual activate email failed: %s", e)
+    return sub
+
+
+async def activate_subscription_by_payment_id(db: AsyncSession, payment_id: str) -> dict:
+    from fastapi import HTTPException
+    from uuid import UUID
+
+    try:
+        pid = UUID(str(payment_id))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Некорректный id оплаты")
+    result = await db.execute(select(Payment).where(Payment.id == pid))
+    payment = result.scalar_one_or_none()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Оплата не найдена")
+    user_result = await db.execute(select(User).where(User.id == payment.user_id))
+    user = user_result.scalar_one()
+    if is_user_admin(user):
+        raise HTTPException(status_code=400, detail="Администратору подписка не нужна")
+    if not can_manual_activate(
+        status=payment.status,
+        applied=bool(payment.subscription_applied),
+        is_admin=False,
+    ):
+        if payment.subscription_applied:
+            return {"status": "already_active"}
+        raise HTTPException(
+            status_code=400,
+            detail=f"Платёж в статусе «{payment.status}» вручную не выдаётся",
+        )
+    sub = await _grant_from_payment_row(db, user, payment)
+    return {"status": "activated", "expires_at": sub.expires_at}
 
 
 async def list_orphan_payments(db: AsyncSession, limit: int = 30) -> list[dict]:

@@ -164,7 +164,7 @@ sequenceDiagram
   API-->>App: pending|completed|failed|expired
 ```
 
-1. **Кабинет YuMoney (каждый кошелёк):** «Настройки для разработчиков» → HTTP-уведомления → URL `https://89-125-188-100.nip.io/api/payments/yumoney/notify` → секрет → `YUMONEY_SECRET_N` в `.env` (пара к `YUMONEY_WALLET_N`).
+1. **Кабинет YuMoney (каждый кошелёк):** [HTTP-уведомления](https://yoomoney.ru/transfer/myservices/http-notification) → URL `https://89-125-188-100.nip.io/api/payments/yumoney/notify` (если ЮMoney из РФ не достучится до Улья `:443` — `http://87.58.213.193:9100/api/payments/yumoney/notify`) → секрет → `YUMONEY_SECRET_N` в `.env` (пара к `YUMONEY_WALLET_N`). Тест кабинета 19.09: `sign` ok, HTTP 200, `unknown_label`.
 2. **Тело:** `application/x-www-form-urlencoded` (form). Ключевые поля: `label`, `operation_id`, `amount` / `withdraw_amount`, `currency`, `codepro`, `unaccepted`, подпись `sign` (с 2026-05-18) или legacy `sha1_hash`.
 3. **Подпись:** `_verify_yumoney_sign` — HMAC-SHA256 по всем параметрам **кроме** `sign`, ключи A–Z, значения URL-encoded (RFC 3986), секрет кошелька. Fallback: старый `sha1_hash`. Секрет берётся от **кошелька платежа** (`Payment.wallet` → `YUMONEY_SECRET_N`), не «любой из списка» после нахождения payment; до нахождения — проверка «хоть один кошелёк» для отсечения мусора.
 4. **Блокировка строки:** `SELECT … FOR UPDATE` по `Payment` где `label=…`.

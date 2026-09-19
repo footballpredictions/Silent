@@ -37,7 +37,7 @@ Agent приступает к **первой невыполненной** зад
 
 - [x] `can_buy_paid_plan` / `end_trial_subscription` + `POST /api/admin/users/{id}/end-trial`
 - [x] Админка: чип «Пробный» только снимает trial, без kick VPN
-- [x] Android / PC / iOS / OpenWrt: магазин на пробном
+- [x] Android / PC / iOS / OpenWrt: магазин на пробном — **откатил 19.09** (force-push)
 - [x] Тесты `test_subscription_filters_unit.py`, `ShopOfferPolicyTest`, OpenWrt dock
 - [x] Деплой backend (`deploy_stable.py`): health 0.044с, wdtt active, kick 0
 - [x] Push `main` `416d4ce`, `pc` `b675b04`, `android` `630481c`, `ios` `fa5e59a`, `openwrt` `53f029b`
@@ -102,7 +102,7 @@ timeout (это уже **порт**, не полный blackhole). API жив в
 - [ ] Публичный API/админка — через туннель `10.66.66.1` и `standby` сот `:9100`, не nip.io
 - [x] ПК: на соте IP Улья не в Bypass; админка `10.66.66.1:8000`; SSH fallback `10.66.66.1:22`
 - [ ] Прятать Улей: 443/22 с интернета только с IP сот + WG; nip.io не светить как основной вход
-- [x] Новый IP Улья `89.125.188.100` / `89-125-188-100.nip.io` (кабинет OneDash 2026-09-18): код + LE + соты socat/`HIVE_QUEEN_IP` + `deploy_stable.py` (wdtt не рестартили). Пересборка PC/Android/OpenWrt 1.0.166. iOS не пересобирали. **ЮMoney notify URL сменить в кабинетах.**
+- [x] Новый IP Улья `89.125.188.100` / `89-125-188-100.nip.io` (кабинет OneDash 2026-09-18): код + LE + соты socat/`HIVE_QUEEN_IP` + `deploy_stable.py` (wdtt не рестартили). Пересборка PC/Android/OpenWrt 1.0.166. iOS не пересобирали. **ЮMoney notify:** тест кабинета 19.09 17:08 — sign ok, 200.
 - [x] Аудит HEAD 2026-09-18: классификатор pending/probe_error, не port_block при живом HTTPS, без REDIRECT 8443→wdtt
 - [x] Запасной порт: публиковать только `open`, 8443 forbidden, stale из reach; автосмен по-прежнему выкл
 - [x] Deny unique tmp; read_failed не снимает SILENT_DENY; unpaid cursor + offline только своих ключей

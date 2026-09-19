@@ -28,8 +28,8 @@ LAN_IP = os.environ.get("SILENT_PREVIEW_LAN", "192.168.1.1")
 HIVE = os.environ.get("SILENT_HIVE", "https://89-125-188-100.nip.io").rstrip("/")
 PUBLIC_THEME = f"{HIVE}/api/vpn/theme"
 PREVIEW_MOCK = os.environ.get("SILENT_PREVIEW_MOCK", "") == "1"
-BOOTSTRAP = "4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY"
-APP_VERSION = "1.0.166"
+BOOTSTRAP = "T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc"
+APP_VERSION = "1.0.167"
 
 _theme_lock = threading.Lock()
 _theme_cache: dict | None = None

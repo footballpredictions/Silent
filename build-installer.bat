@@ -69,7 +69,7 @@ if not exist "tailwind.config.js" (
 )
 
 echo [2/3] renderer...
-if not defined BOOTSTRAP_VK_HASH set "BOOTSTRAP_VK_HASH=4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY"
+if not defined BOOTSTRAP_VK_HASH set "BOOTSTRAP_VK_HASH=T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc"
 echo Bootstrap hash: %BOOTSTRAP_VK_HASH%
 if exist "dist\renderer" rd /s /q "dist\renderer" 2>nul
 call npm run build:renderer

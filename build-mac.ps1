@@ -4,7 +4,7 @@
 param(
   [ValidateSet('arm64', 'amd64')]
   [string]$Arch = 'arm64',
-  [string]$BootstrapVkHash = $(if ($env:BOOTSTRAP_VK_HASH) { $env:BOOTSTRAP_VK_HASH } else { '4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY' })
+  [string]$BootstrapVkHash = $(if ($env:BOOTSTRAP_VK_HASH) { $env:BOOTSTRAP_VK_HASH } else { 'T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc' })
 )
 
 $ErrorActionPreference = 'Stop'

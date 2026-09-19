@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 echo '=== Silent VPN Linux: wdtt + wireguard-go + AppImage ==='
 printf '%s\n' 'module.exports = { DEBUG_BUILD: false };' > src/main/buildFlags.js
 unset DEBUG_BUILD || true
-export BOOTSTRAP_VK_HASH="${BOOTSTRAP_VK_HASH:-6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY}"
+export BOOTSTRAP_VK_HASH="${BOOTSTRAP_VK_HASH:-T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc}"
 
 mkdir -p resources/linux
 

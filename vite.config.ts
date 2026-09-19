@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 import pkg from './package.json'
 
 /** Debug: фиксированный VK-хеш. Release — только через BOOTSTRAP_VK_HASH при сборке. */
-const DEBUG_BOOTSTRAP_HASH = '6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY'
+const DEBUG_BOOTSTRAP_HASH = 'T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc'
 
 function resolveBootstrapVkHash(mode: string): string {
   const fromEnv = process.env.BOOTSTRAP_VK_HASH?.trim()

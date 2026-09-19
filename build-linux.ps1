@@ -1,7 +1,7 @@
 # Linux AppImage for Silent VPN (same UI/VPN flow as Windows PC).
 # Cross-compiles Go from Windows; electron-builder --linux often needs WSL/Docker.
 param(
-  [string]$BootstrapVkHash = $(if ($env:BOOTSTRAP_VK_HASH) { $env:BOOTSTRAP_VK_HASH } else { '6EJ_t4eeAb-wbJynEOE-gpHCuaZIYqCRzDB1HZamyxY' }),
+  [string]$BootstrapVkHash = $(if ($env:BOOTSTRAP_VK_HASH) { $env:BOOTSTRAP_VK_HASH } else { 'T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc' }),
   # Temporary: enable Log button + Hashes menu in packaged .deb (not for production OTA).
   [switch]$WithDebugLog
 )

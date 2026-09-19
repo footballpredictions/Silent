@@ -8,7 +8,7 @@ ARCH="${MAC_ARCH:-arm64}"
 echo "=== Silent VPN Mac (${ARCH}): wdtt + wireguard-go + DMG ==="
 printf '%s\n' 'module.exports = { DEBUG_BUILD: false };' > src/main/buildFlags.js
 unset DEBUG_BUILD || true
-export BOOTSTRAP_VK_HASH="${BOOTSTRAP_VK_HASH:-4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY}"
+export BOOTSTRAP_VK_HASH="${BOOTSTRAP_VK_HASH:-T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc}"
 
 mkdir -p resources/mac
 

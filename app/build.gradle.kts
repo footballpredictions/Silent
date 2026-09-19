@@ -22,7 +22,7 @@ val keystoreProperties = Properties().apply {
 }
 
 /** Debug: фиксированный VK-хеш для bootstrap VPN на экране входа. Release — только через -PbootstrapVkHash. */
-private val debugBootstrapVkHash = "vP_C4iBk9QZEetqR0a_MqiPJkeOyBEV1B_G6uViHuVU"
+private val debugBootstrapVkHash = "T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc"
 
 fun sha256FileHex(f: File): String {
     if (!f.isFile) return ""
@@ -73,8 +73,8 @@ android {
         applicationId = "com.silent.vpn"
         minSdk = 24
         targetSdk = 35
-        versionCode = 166
-        versionName = "1.0.166"
+        versionCode = 167
+        versionName = "1.0.167"
         testInstrumentationRunner = "com.silent.vpn.HiltTestRunner"
         // Не сбрасывать данные приложения при каждом прогоне — сохраняется логин/VPN-разрешение.
         testInstrumentationRunnerArguments["clearPackageData"] = "false"

@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import io
+import sys
 import textwrap
+from pathlib import Path
 
-from _deploy_common import connect, run
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _deploy_common import connect, run  # noqa: E402
+from app.services.hive_client_dns import threat_dns_sync_script  # noqa: E402
 
 REMOTE_ROOT = "/opt/silent-vpn"
 LIB_DIR = f"{REMOTE_ROOT}/threat-filter"
@@ -72,67 +77,7 @@ def main() -> None:
         """
     )
 
-    sync_sh = textwrap.dedent(
-        f"""\
-        #!/bin/bash
-        set -euo pipefail
-        ENV_FILE="/opt/silent-vpn/backend/.env"
-        COMMENT="SILENT_THREAT_DNS"
-        GW="10.66.66.1"
-        SUBNET="10.66.0.0/16"
-
-        SECRET=""
-        if [ -f "$ENV_FILE" ]; then
-          SECRET=$(grep -E '^INTERNAL_API_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '\\r' | tr -d '"' | tr -d "'")
-        fi
-        if [ -z "$SECRET" ]; then
-          echo "[threat-dns-sync] no INTERNAL_API_SECRET" >&2
-          exit 0
-        fi
-
-        RESP=$(curl -fsS --connect-timeout 3 --max-time 8 \\
-          -H "X-Internal-Secret: $SECRET" \\
-          "http://127.0.0.1:8000/api/vpn/internal/threat-filter" || echo '{{"enabled":false}}')
-        ENABLED=$(echo "$RESP" | sed -n 's/.*"enabled"[[:space:]]*:[[:space:]]*\\(true\\|false\\).*/\\1/p' | head -1)
-        [ -n "$ENABLED" ] || ENABLED=false
-
-        # Ensure tunnel gateway IP exists (same as Telegram proxy)
-        ip addr show lo | grep -q "$GW" || ip addr add "$GW/32" dev lo 2>/dev/null || true
-
-        del_rules() {{
-          while iptables -t nat -C PREROUTING -s "$SUBNET" -p udp --dport 53 \\
-              -j DNAT --to-destination "$GW:53" -m comment --comment "$COMMENT" 2>/dev/null; do
-            iptables -t nat -D PREROUTING -s "$SUBNET" -p udp --dport 53 \\
-              -j DNAT --to-destination "$GW:53" -m comment --comment "$COMMENT" || break
-          done
-          while iptables -t nat -C PREROUTING -s "$SUBNET" -p tcp --dport 53 \\
-              -j DNAT --to-destination "$GW:53" -m comment --comment "$COMMENT" 2>/dev/null; do
-            iptables -t nat -D PREROUTING -s "$SUBNET" -p tcp --dport 53 \\
-              -j DNAT --to-destination "$GW:53" -m comment --comment "$COMMENT" || break
-          done
-        }}
-
-        add_rules() {{
-          iptables -t nat -C PREROUTING -s "$SUBNET" -p udp --dport 53 \\
-            -j DNAT --to-destination "$GW:53" -m comment --comment "$COMMENT" 2>/dev/null || \\
-            iptables -t nat -A PREROUTING -s "$SUBNET" -p udp --dport 53 \\
-              -j DNAT --to-destination "$GW:53" -m comment --comment "$COMMENT"
-          iptables -t nat -C PREROUTING -s "$SUBNET" -p tcp --dport 53 \\
-            -j DNAT --to-destination "$GW:53" -m comment --comment "$COMMENT" 2>/dev/null || \\
-            iptables -t nat -A PREROUTING -s "$SUBNET" -p tcp --dport 53 \\
-              -j DNAT --to-destination "$GW:53" -m comment --comment "$COMMENT"
-        }}
-
-        if [ "$ENABLED" = "true" ]; then
-          systemctl start silent-threat-dns 2>/dev/null || true
-          add_rules
-          echo "[threat-dns-sync] enabled=true DNAT on"
-        else
-          del_rules
-          echo "[threat-dns-sync] enabled=false DNAT off"
-        fi
-        """
-    )
+    sync_sh = threat_dns_sync_script()
 
     allow_conf = textwrap.dedent(
         """\

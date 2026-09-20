@@ -21,16 +21,16 @@ GC_EVERY_SEC = 90.0
 
 
 async def known_device_pubs(db: AsyncSession) -> set[str]:
+    """Только identity-ключ устройства. wg_live_public_key — хвосты GETCONF, их нельзя
+    держать как known: иначе never-hs extras никогда не снимаются."""
     rows = (
         await db.execute(
-            select(Device.wg_public_key, Device.wg_live_public_key).where(
+            select(Device.wg_public_key).where(
                 Device.is_active == True,  # noqa: E712
             )
         )
     ).all()
-    wg = [r[0] for r in rows]
-    live = [r[1] for r in rows]
-    return merge_known_device_pubs(wg, live)
+    return merge_known_device_pubs([r[0] for r in rows])
 
 
 def _with_never_hs_grace(cands: list[str], *, grace_sec: float, now: float) -> list[str]:
@@ -61,6 +61,9 @@ async def gc_stale_queen_peers(
     _last_gc_at = now
     known = await known_device_pubs(db)
     peers = await asyncio.to_thread(_queen_wg_dump)
+    if not peers:
+        logger.warning("queen wg peer gc: empty dump (nsenter?), skip")
+        return {"ok": False, "removed": 0, "dump": 0, "known": len(known)}
     cands = select_gc_extra_pubs(peers, known)
     now = time.time()
     # hs>6ч — сразу; never-hs — только если висели дольше grace (идёт connect).

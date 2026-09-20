@@ -47,6 +47,19 @@ def node_title_for_slot(slot: str | None) -> str:
     return f"Сота {n - 1}"
 
 
+def node_title_for_cell(cell) -> str:
+    """Подпись живой ноды: Улей или имя/слот соты, не «все на Улье»."""
+    if cell is None or getattr(cell, "is_queen", False):
+        return "Улей"
+    slot = slot_for_cell(cell)
+    if slot:
+        titled = node_title_for_slot(slot)
+        if titled != "Улей":
+            return titled
+    name = (getattr(cell, "name", None) or "").strip()
+    return name or "Сота"
+
+
 def cell_is_admin_only(cell) -> bool:
     return bool(
         cell is not None

@@ -14,6 +14,7 @@ from app.services.hive_slots import (  # noqa: E402
     device_on_node,
     is_manual_server_pin,
     node_online_shown,
+    node_title_for_cell,
     node_title_for_slot,
     parse_manual_slot,
     pick_dashboard_shown_online,
@@ -188,6 +189,17 @@ def test_assign_online_unique_partition():
     assert counts == {queen: 2, c1: 2, c2: 1}
 
 
+def test_dashboard_online_row_keeps_cell_label():
+    """Сортировка «Онлайн» на дашборде не должна подписывать соту как Улей."""
+    queen = SimpleNamespace(is_queen=True, name="Улей")
+    cell = SimpleNamespace(is_queen=False, name="Сота 1")
+    unnamed = SimpleNamespace(is_queen=False, name="worker-alpha")
+    assert node_title_for_cell(queen) == "Улей"
+    assert node_title_for_cell(cell) == "Сота 1"
+    assert node_title_for_cell(unnamed) == "worker-alpha"
+    assert node_title_for_cell(None) == "Улей"
+
+
 if __name__ == "__main__":
     test_slot_for_queen_and_named_cells()
     test_unnamed_worker_has_no_fixed_slot()
@@ -200,4 +212,5 @@ if __name__ == "__main__":
     test_light_poll_uses_shared_wg_not_db()
     test_manual_server_select_has_no_online_cap()
     test_assign_online_unique_partition()
+    test_dashboard_online_row_keeps_cell_label()
     print("ok")

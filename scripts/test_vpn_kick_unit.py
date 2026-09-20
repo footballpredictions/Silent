@@ -145,6 +145,20 @@ def test_gc_keeps_device_key_even_if_never_hs():
     assert "oldextraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=" in got
 
 
+def test_gc_drops_getconf_live_key_with_no_handshake():
+    """wg_live_public_key leftovers must not protect never-hs extras (hive 121 ghosts)."""
+    identity = _k("devicekey")
+    leftover_live = _k("oldlivekey")
+    known = {identity}
+    live = [
+        LivePeer(identity, "10.66.0.2", 20.0),
+        LivePeer(leftover_live, "10.66.0.9", None),
+    ]
+    got = set(select_gc_extra_pubs(live, known))
+    assert identity not in got
+    assert leftover_live in got
+
+
 def test_keep_dataplane_for_test_and_paid():
     assert should_keep_vpn_dataplane(
         is_admin=False, in_test_mode=True, has_live_test_plan=False, has_active_subscription=False,
@@ -367,6 +381,7 @@ if __name__ == "__main__":
     test_device_looks_live_watch_overrides_stale()
     test_device_looks_live_recent_last_connected()
     test_gc_keeps_device_key_even_if_never_hs()
+    test_gc_drops_getconf_live_key_with_no_handshake()
     test_keep_dataplane_for_test_and_paid()
     test_owned_extras_same_ip()
     test_owned_extras_unique_appeared()

@@ -17,6 +17,8 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
+from standby_online import hive_cell_id_from_manifest, should_proxy_internal_online
+
 logger = logging.getLogger(__name__)
 
 HIVE_MANIFEST_PATH = Path("/etc/wdtt/hive_manifest.json")
@@ -801,6 +803,7 @@ def create_standby_app() -> FastAPI:
 
     @standby.post("/api/vpn/internal/online", response_model=InternalOnlineResponse)
     async def internal_online(
+        request: Request,
         req: InternalOnlineRequest,
         x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
     ):
@@ -808,6 +811,15 @@ def create_standby_app() -> FastAPI:
         if not secret or not secrets.compare_digest(x_internal_secret, secret):
             raise HTTPException(status_code=403, detail="forbidden")
         manifest = _load_manifest()
+        if should_proxy_internal_online(queen_healthy=_queen_healthy):
+            extra = {}
+            cid = hive_cell_id_from_manifest(manifest)
+            if cid:
+                extra["X-Hive-Cell-Id"] = cid
+            try:
+                return await _proxy_queen(request, "vpn/internal/online", extra_headers=extra)
+            except Exception as e:
+                logger.warning("standby: online proxy to queen failed: %s", e)
         if not manifest:
             return InternalOnlineResponse(ok=False, subscription_active=False, vpn_allowed=False)
         dev = _device_from_manifest(manifest, req.device_id.strip())
@@ -944,7 +956,7 @@ def _snapshot_hive_meta() -> dict:
     return {"queen_up": _queen_healthy, "role": "hive-cell-standby"}
 
 
-async def _proxy_queen(request: Request, rest: str) -> Response:
+async def _proxy_queen(request: Request, rest: str, extra_headers: dict | None = None) -> Response:
     urls = queen_proxy_urls(
         rest,
         query=request.url.query or "",
@@ -959,6 +971,8 @@ async def _proxy_queen(request: Request, rest: str) -> Response:
         if lk in ("host", "content-length", "connection", "transfer-encoding"):
             continue
         headers[k] = v
+    if extra_headers:
+        headers.update(extra_headers)
     body = await request.body()
     timeout = httpx.Timeout(20.0, connect=8.0)
     last_exc: Exception | None = None

@@ -33,6 +33,8 @@ def test_ttl_ipv6_and_mtu_probing():
     assert "ip6tables" in s and "FORWARD -j DROP" in s
     assert "tcp_mtu_probing=1" in s
     assert "tcp_slow_start_after_idle=0" in s
+    assert "nf_conntrack_udp_timeout=120" in s
+    assert "netdev_max_backlog=16384" in s
     assert "99-silent-egress-pmtu.conf" in s
     assert "silent-egress-pmtu.service" in s
 

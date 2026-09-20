@@ -16,6 +16,12 @@ sysctl -w net.ipv4.tcp_mtu_probing=1 >/dev/null 2>&1 || true
 sysctl -w net.ipv4.tcp_slow_start_after_idle=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv4.ip_no_pmtu_disc=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv4.icmp_echo_ignore_all=0 >/dev/null 2>&1 || true
+# DTLS воркеры: короткий UDP conntrack и backlog=1000 роняют рамп (53/63).
+sysctl -w net.netfilter.nf_conntrack_udp_timeout=120 >/dev/null 2>&1 || true
+sysctl -w net.netfilter.nf_conntrack_udp_timeout_stream=180 >/dev/null 2>&1 || true
+sysctl -w net.core.netdev_max_backlog=16384 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.udp_rmem_min=8192 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.udp_wmem_min=8192 >/dev/null 2>&1 || true
 
 iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
   || iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
@@ -38,6 +44,11 @@ net.ipv4.tcp_mtu_probing=1
 net.ipv4.tcp_slow_start_after_idle=0
 net.ipv4.ip_no_pmtu_disc=0
 net.ipv4.icmp_echo_ignore_all=0
+net.netfilter.nf_conntrack_udp_timeout=120
+net.netfilter.nf_conntrack_udp_timeout_stream=180
+net.core.netdev_max_backlog=16384
+net.ipv4.udp_rmem_min=8192
+net.ipv4.udp_wmem_min=8192
 SYS
 sysctl -p /etc/sysctl.d/99-silent-egress-pmtu.conf >/dev/null 2>&1 || true
 exit 0
@@ -78,7 +89,9 @@ iptables -t mangle -S FORWARD 2>/dev/null | grep -i TCPMSS || echo "(нет)"
 echo "=== TTL ==="
 iptables -t mangle -S POSTROUTING 2>/dev/null | grep -- "--ttl-set" || echo "(нет)"
 echo "=== sysctl ==="
-sysctl net.ipv4.tcp_mtu_probing net.ipv4.tcp_slow_start_after_idle net.ipv4.ip_no_pmtu_disc 2>/dev/null || true
+sysctl net.ipv4.tcp_mtu_probing net.ipv4.tcp_slow_start_after_idle net.ipv4.ip_no_pmtu_disc \
+  net.netfilter.nf_conntrack_udp_timeout net.netfilter.nf_conntrack_udp_timeout_stream \
+  net.core.netdev_max_backlog net.ipv4.udp_rmem_min 2>/dev/null || true
 echo "=== done ==="
 """
 

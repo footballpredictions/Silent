@@ -175,7 +175,7 @@ async def get_stats(
         }
 
     from app.models.hive_cell import HiveCell
-    from app.services.hive_slots import assign_online_to_cell_id, node_title_for_slot, slot_for_cell
+    from app.services.hive_slots import assign_online_to_cell_id, node_title_for_cell, slot_for_cell
 
     users_result = await db.execute(
         select(User)
@@ -197,7 +197,7 @@ async def get_stats(
     queen_cell = next((c for c in hive_cells if c.is_queen), None)
     known_cell_ids = {c.id for c in hive_cells}
     slot_to_id = {slot_for_cell(c): c.id for c in hive_cells if slot_for_cell(c)}
-    id_to_slot = {c.id: slot_for_cell(c) or "server1" for c in hive_cells}
+    id_to_title = {c.id: node_title_for_cell(c) for c in hive_cells}
 
     # VK hashes — все пользователи + legacy (без user_id)
     from ai.vk_manager import MAX_HASHES
@@ -240,7 +240,7 @@ async def get_stats(
                 slot_to_id=slot_to_id,
                 known_ids=known_cell_ids,
             )
-            node = node_title_for_slot(id_to_slot.get(nid) or "server1")
+            node = id_to_title.get(nid) or node_title_for_cell(queen_cell)
             label = name or "устройство"
             online_devices.append({"name": label, "node": node})
             if name and name not in online_device_names:

@@ -31,6 +31,54 @@ Agent приступает к **первой невыполненной** зад
 
 ## Открытые задачи
 
+### Регресс ACK-lane: предзагрузка и видео на ПК (2026-09-19)
+
+- [x] Корень: prio-ветка (`n≤128`) не двигает `rrIndex` → все ACK загрузки на одном воркере/релее; chunk 32 на границе anti-replay WG
+- [x] Откат диспетчера к `chunkSize=8`, снят `dispatcher_policy.go` и `PrioCh`; Allocate-gate / quota-wait / DTLS 30 с оставлены
+- [x] `go vet` + тесты PC и Android ok; debug ПК `build-debug-555393`, APK `android/SilentVPN-debug.apk`
+- [x] Push `pc` `7893df2`, `android` `33e70a3`
+- [x] Релизы 1.0.167 на откате: NSIS, `.deb`, APK, OpenWrt tarball (роутерный `wdtt-client` из `pc/wdtt-go` пересобран под 4 арх)
+- [ ] Залить 1.0.167 на GitHub Releases + `releases.json` на Pages — иначе OTA отдаёт сборку с ACK-lane
+- [ ] Приёмка: предзагрузка и видео на Сервере 1, 4PDA-приложение
+- [ ] Потолок 53/55 воркеров: нужен лог рампа с ПК (есть ли «Квота relay, ждём без refresh» / 486)
+- [ ] Улей: жёсткий ребут хостера 18:47 UTC 19.09 + `silent-vps-cleanup.service` failed — разобрать отдельно
+
+### Дашборд: онлайн только Улей (2026-09-19)
+
+- [x] Корень: standby `/internal/online` не проксировал на Улей → `is_connected` гас у сот
+- [x] Прокси online при queen_healthy + `X-Hive-Cell-Id`; подпись `node_title_for_cell`
+- [ ] Залить `cell-agent/` на соты и `deploy_stable.py` (admin.py + hive_slots), без рестарта wdtt/api/nginx
+
+### DNS в туннеле и 53 воркера на Сервере 1 (2026-09-19)
+
+Разбор лога: `[Основной] Потоков=63`, `[READY] (x53)`, `DNS: Как на сервере`.
+
+- [x] Клиентский DNS приложений — в WG на **всех** слотах (`DNS=` + `AllowedIPs 0.0.0.0/0`), не только 2/3
+- [x] Воркеры libclient на основном VPN **вне** туннеля (ЧС приложения) — иначе TURN/DTLS замирает на 2–3, не на 53
+- [x] «Свой DNS» — тот же WG DNS для **всех приложений в VPN**, не только браузера; воркеры его не используют
+- [x] Улей: фильтр выкл → DNAT `:53` на `1.1.1.1` (как Сервер 4), без рестарта wdtt
+- [x] На Улье 149 WG peer: live 12, never-hs 121 — хвосты GETCONF; «капча группы 2+» в логе — сторож через 75с, не VK
+- [x] GC: known только `wg_public_key` (live-ключ больше не защищает never-hs)
+- [x] Снял extras пачкой: drop 125, after peers 24 live3m 11 never 0, wdtt active
+- [x] 53/63 на Сервере 1: хвосты WG не причина; DTLS/UDP тюнинг на Улье
+- [x] UDP/TURN до Улья `:56000`: путь живой (20/20 с соты 1, VK TURN WRAP OK, фаервол ACCEPT). Не дыра после смены IP. check-host UDP timeout на всех трёх — wdtt не echo
+- [x] outdated token STREAM 700: refresh с attempt 2 работает (лог 21:20); лог 21:37 — Success attempt 1
+- [ ] Воркеры 55/53 на Улье: Сервер 1 пока оставляем (возможен IP). Allocate gate / quota wait / ACK-lane в 1.0.167. Приёмка 63 — позже
+- [x] YouTube серые превью: убран 20 мс dwell mid-flow; ACK-lane+chunk остались
+- [x] OTA: github.io `releases.json`, hive check skip. Релиз 1.0.167 собран, на Pages ещё не залит
+
+### Удаление сессии с клиента при VPN (2026-09-19)
+
+- [x] Корень: overlay no-op → HTTP к `10.66.66.1:8000` с LTE IP, таймаут 12 с
+- [x] `withUserBackendApi` → TunnelApiProxy; `UserApiRoute.TUNNEL_PROXY`
+- [x] Unit `ApiRoutePolicyTest` / `TunnelHttpPolicyTest` (DELETE без body)
+- [x] 502 Upstream error: HttpURLConnection DELETE; OkHttp bindSocket; LTE без public failover
+- [x] Откат short-bootstrap (stopVpn): промокод и удаление сессии → includeAppOverlay, VPN не рвём
+- [x] 10.66.66.1:8000 с `10.66.13.3` таймаут (шлюз соты) → failover на :9100 внутри WG
+- [x] Overlay+nip.io ломал VPN — полный откат на origin, схема 1.0.165 (`runPromoShortBootstrap`)
+- [x] Удаление сессии при VPN — тот же short bootstrap, что промокод до смены IP
+- [x] Приёмка: VPN выкл — промокод и удаление через временный bootstrap; схему оставить; push `origin/android`
+
 ### Egress Улей / сота 3 как соты 1–2 (2026-09-19)
 
 - [x] Срез: Улей без TCPMSS/TTL/IPv6-drop/`mtu_probing`; сота 2 с clamp; сота 1 с probing+TTL

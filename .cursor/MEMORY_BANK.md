@@ -1,5 +1,65 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (откат ACK-lane: предзагрузка и видео 2026-09-19)
+
+Симптомы вечером: на ПК сломалась предзагрузка, видео тормозит; 4PDA-приложение не работает. Корень — **ACK-приоритет** из `53f51f0` (pc) / `cdd7c25` (android): `isAckPriority(n≤128)` кладёт пакет в `PrioCh` воркера `ws[idx]` и **не двигает** `rrIndex`/`rrCount`. На чистой загрузке вверх идут только ACK, поэтому весь поток садится на **один** VK-релей (полоса = один релей, его потеря = стоп TCP). Второй эффект: `chunkSizeFor` 32 для ≥1000 Б учетверял разброс reorder (≈500 → ≈2000 пакетов) — граница anti-replay окна WG. **Откатил** диспетчер к `chunkSize=8` (состояние 1.0.154), снял `dispatcher_policy.go` и `PrioCh` из `session.go`; Allocate-gate, quota-wait и DTLS 30 с **оставил**. `go vet`+тесты ok. Debug: ПК `pc/build-debug-555393/win-unpacked/` (SilentVPN-Admin.bat), APK `android/SilentVPN-debug.apk`. Версию не поднимал, не коммитил, на прод не заливал.
+
+Релизы 1.0.167 пересобраны на откате **без bump версии**, bootstrap `T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc`: NSIS `pc/build-release-v141-492893/Silent VPN Setup 1.0.167.exe`, `.deb` `pc/build-linux/…1.0.167.deb`, APK `android/SilentVPN-release-1.0.167.apk` (libclient 12632504 — откатанный), OpenWrt `openwrt/dist/silent-vpn-openwrt-1.0.167.tar.gz` (важно: роутерный `wdtt-client` собирается из `pc/wdtt-go`, поэтому 4 арх-бинаря пересобраны). Копии в `releases/`. iOS/Mac с Windows нет. Деплой backend **не нужен** (правка чисто клиентская); на GitHub Releases/Pages не заливал — до этого OTA отдаёт старую сборку с ACK-lane. Push: `pc` `7893df2`, `android` `33e70a3`.
+
+По Улью в этот же вечер (read-only, ничего не менял): **жёсткий ребут хостера 18:47 UTC** (журнал boot -1 обрывается на `[СТАТ] Активных: 762`, через 37 с новый boot), `silent-vps-cleanup.service` в failed. 4PDA отдаёт `403 cf-mitigated: challenge` **и с Улья, и с соты 1** — egress Улья тут не виноват. Потолок 53/55 воркеров: бинарь wdtt идентичен соте (md5), лимитов в логах нет, conntrack 904/262144, дропов NIC нет, UDP rcvbuf-дропы на Улье реже, чем на соте с 63 воркерами — эти версии закрыты, нужен клиентский лог рампа (строка про 486 Quota).
+
+## Последние изменения (дашборд онлайн без сот 2026-09-19)
+
+Сортировка «Онлайн сначала»: зелёные только с Улья. Корень: wdtt на соте бьёт `127.0.0.1:8000` (standby), а `/internal/online` отвечал из манифеста и **не** писал `is_connected` на Улей. Через 10 мин `clear_stale_online_status` снимал сотовых. Теперь при живом Улье standby проксирует online на queen с `X-Hive-Cell-Id`. Подпись ноды — `node_title_for_cell`, не «все Улей». Тесты `test_cell_standby_online_unit.py` + `test_hive_slots_unit.py` ok. **wdtt не трогал.** На прод не заливал.
+
+## Последние изменения (релиз 1.0.167 2026-09-19)
+
+Версия **1.0.167**, bootstrap `T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc`. Сервер 1 не трогал. OTA check/download — `https://silentvpn3.github.io/releases.json` (не Улей). Push: `pc` `e4d740c`, `android` `dd9dc03`, `openwrt` `3f4d7bd`. Сборки: NSIS `pc/build-release-v141-646625/Silent VPN Setup 1.0.167.exe`, `.deb` `pc/build-linux/Silent VPN Setup 1.0.167.deb`, APK `android/SilentVPN-release-1.0.167.apk`, OpenWrt `openwrt/dist/silent-vpn-openwrt-1.0.167.tar.gz`. iOS/Mac с Windows нет. На GitHub Releases / Pages ещё не заливал. **wdtt не трогал.**
+
+## Последние изменения (YouTube серые превью 2026-09-19)
+
+Симптом: ролик играет, часть превью серые пару секунд. За день: DNS Улья на CF, egress IPv6 DROP, затем ACK-lane. Снял **20 мс dwell** (перескок воркера mid-flow) — это ломает HTTP/2 превью. ACK-lane и chunk 8/16/32 оставил. Сервер 1 / DNAT не трогал.
+
+## Последние изменения (Allocate gate + квота + ACK 2026-09-19)
+
+Токен на ПК уже ок: STREAM 700 Success attempt 1. Потолок 55/53 — не UDP Улья и не outdated: последняя группа бьёт Allocate разом → VK 486 Quota, refresh кредов только усиливал шторм. Своя реализация (код CSQTT/qWDTT не копировали): в группе не больше одной новой Allocate раз в 100 мс; на 486 ждать 30–61 с без refresh; ACK/DNS ≤128 байт в PrioCh, chunk 8/16/32 по размеру. DNS hot-swap и TCP TURN не делали. Тесты PC+Android wdtt-go ok. Debug: ПК `pc/build-debug-405724/win-unpacked/` (SilentVPN-Admin.bat), APK `android/SilentVPN-debug.apk`. **wdtt не трогал.** Приёмка: Сервер 1 к 63, в логе «Квота relay, ждём без refresh» вместо refresh на 486.
+
+## Последние изменения (срез CSQTT / qWDTT 2026-09-19)
+
+Сверил публичные репозитории, **код не копировал** (CSQTT PolyForm NC, qWDTT GPL-3). Идеи: gate на TURN Allocate (анти-486), при квоте ждать а не refresh, ACK-lane и adaptive chunk в диспетчере, hot DNS без разрыва потоков (CSQTT TUNCONF). У нас уже сильнее: Улей/соты, VKCalls+outdated refresh, ЧС приложения, рамп 36→63, server-driven UI. Не внедрял — ждём приёмку debug 282970.
+
+## Последние изменения (воркеры 55/53 после refresh токена 2026-09-19)
+
+Лог ПК: STREAM 700 **успех с 2-й попытки** — outdated token уже не режет группу. В UI «x98» — склейка timestamp, не 98 join. «Воркер #63 зарегистрирован (всего: 55)» — 55 DTLS, 8 так и не встали. ПК **убивал** воркера после 3 `all retransmissions failed` (Allocate на Улье), stagger 50мс, retry WRAP 5–16с. Теперь: не убиваем на retransmit, stagger 500мс, WRAP retry 300–1000мс, DTLS handshake 30с. Тесты `group_retry_test.go` ok. Debug: ПК `build-debug-282970`, APK `android/SilentVPN-debug.apk`. **wdtt не трогал.**
+
+## Последние изменения (UDP/TURN до Улья 2026-09-19)
+
+Путь воркеров на Сервер 1 **не закрыт**. Улей `89.125.188.100:56000` UDP: INPUT ACCEPT, ufw off, wdtt active, CPU 6c load ~1. С соты 1 дошли **20/20** UDP. Живой TURN: `95.163.34.x` / `91.231.135.x` / `90.156.236.x` → `:56000` (tcpdump). WRAP за 2ч: ~4090 OK / 41 отказ (мусор + наши пробы с сот). check-host UDP timeout и у Улья, и у сот 2–3 — wdtt не отвечает на мусор, сравнение бесполезно. Сокет `udp6 :56000` drops 1666 — не масштаб соты 1 (там 170k Rcvbuf и 63 воркера). **wdtt не рестартил.** Потолок 53/55 у клиента — не «TURN не достучался до нового IP»; дальше приёмка нового debug (токен) и лог поздних групп.
+
+## Последние изменения (сборки клиентов 2026-09-19)
+
+Без bump версии 1.0.166, bootstrap `4uhJXsVypBdlEbvt6k4hPEFi3RooXUqyUwDG4lgPBDY`. Debug: `android/SilentVPN-debug.apk`, ПК `pc/build-debug-899546/win-unpacked/`. Release: APK `android/SilentVPN-release-1.0.166.apk`, NSIS `pc/build-release-v141-186066/Silent VPN Setup 1.0.166.exe`, Linux `.deb` `pc/build-linux/Silent VPN Setup 1.0.166.deb`, OpenWrt `openwrt/dist/silent-vpn-openwrt-1.0.166.tar.gz`. Mac `.dmg` / iOS с Windows нет. На GitHub не заливал.
+
+## Последние изменения (воркеры 55/63 — outdated token 2026-09-19)
+
+Корень не Улей и не DNS: поздние группы VK (`STREAM 600`) падают на `anonym_token.outdated` (error 100). Android эскалировал это в капчу и скипал группу (~49 READY); ПК скипал группу без капчи → 55/63. Теперь: refresh OK-токена до 4 join + 5 циклов пути, outdated **не** капча. Тест `creds_stale_token_test.go` (PC) ok. Нужна пересборка libclient/PC debug. **wdtt не трогал.**
+
+## Последние изменения (воркеры 53/63 Улей 2026-09-19)
+
+Хвосты GETCONF (149 peer) **не** были причиной 53 воркеров: после очистки всё равно 53. Воркеры — DTLS на `IP:56000` через VK TURN, не DNS и не капча. На Улье ~790 живых DTLS при 12 сессиях Сервера 1 (соты 2/3 — 1–2 сессии). UDP conntrack был 30/120, backlog 1000; выставил 120/180 и backlog 16384, **wdtt не рестартил**. Переподключить Сервер 1 и смотреть набор до 63.
+
+## Последние изменения (GC extras Улья 2026-09-19)
+
+Снял 125 мёртвых GETCONF peer’ов на `wdtt0` (121 never-hs + 4 stale 6ч+). Живые не трогал: live3m 11→11, wdtt active. Было 149 peer, стало 24 (never 0). Корень: GC считал `wg_live_public_key` «устройством» и не снимал хвосты. Теперь known = только `Device.wg_public_key`. Тесты kick/GC ok. API не рестартил — цикл GC в процессе подхватит после следующего `deploy_stable.py`. **wdtt не трогал.**
+
+## Последние изменения (DNS Улья → Cloudflare + 53 воркера 2026-09-19)
+
+Клиентский DNS — **все приложения в VPN**. На Улье `:53` → `1.1.1.1`. «⚠ Воркеры 53/63 — ждём капчу VK» — сторож Android через 75с, не капча: на сотах 2–3 те же хеши дают 63. Улей: 149 WG peer, из них 121 без handshake. **wdtt не рестартил.**
+
+## Последние изменения (промокод + удаление сессии при VPN 2026-09-19)
+
+Откатил overlay / nip.io / соты-:9100 — ломали VPN. Схема **как до смены IP**: VPN выкл — промокод и удаление через временный bootstrap; VPN вкл — `runPromoShortBootstrap` и восстановление WG. Приёмка ок, схему не трогаем. Push `origin/android` `e8e52bd`. **wdtt не трогал.**
+
 ## Последние изменения (4PDA на Сервере 1 2026-09-19)
 
 Причина не Cloudflare-challenge IP Улья: DNS Яндекса `77.88.8.8` с Улья отдавал 4PDA криво. Смена на Cloudflare (`1.1.1.1`) — приложение и сайты на Сервере 1 летают. Код DNS по умолчанию не трогали (оставили как есть). Egress PMTU/TTL на Улье и соте 3 уже на хостах.

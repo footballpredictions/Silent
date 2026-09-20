@@ -42,6 +42,7 @@ from ai.availability_model import (
     ERR_HTTP,
     ERR_PENDING,
     ERR_PROBE_ERROR,
+    PROBE_NOISE_KINDS,
     ERR_RESET,
     ERR_TIMEOUT,
     ERR_UNREACHABLE,
@@ -64,7 +65,6 @@ from ai.availability_model import (
 PARTIAL_OK_RATIO = 0.75
 # Один таймаут check-host при 3 нодах (2/3) — шум сервиса, не ТСПУ. Нужно ≥2 фейла.
 PARTIAL_MIN_FAILS = 2
-PROBE_NOISE_KINDS = frozenset({ERR_PENDING, ERR_PROBE_ERROR})
 _APP_HTTP_MARKERS = ("HTTP 401", "HTTP 403", "HTTP 404", "HTTP 500", "HTTP 502", "HTTP 503")
 # Минимум клиентских отказов, ниже которого не делаем выводов по телеметрии.
 CLIENT_MIN_FAILURES = 5
@@ -117,10 +117,9 @@ def _rf_https_open(snap: TargetSnapshot) -> bool:
 
 
 def _agg_is_probe_noise(agg: VantageAggregate) -> bool:
-    if not agg.available or agg.ok_count:
+    if agg.ok_count or agg.fail_count:
         return False
-    kinds = set(agg.error_kinds())
-    return bool(kinds) and kinds <= PROBE_NOISE_KINDS
+    return any((n.error_kind or "") in PROBE_NOISE_KINDS for n in agg.nodes)
 
 
 def _looks_like_app_http(detail: str) -> bool:

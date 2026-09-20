@@ -261,7 +261,9 @@ async def load_latest_report() -> dict[str, Any] | None:
         data.setdefault("ts", str(row.get("ts")))
         data.setdefault("status", row.get("status"))
         data.setdefault("summary", row.get("summary"))
-        return data
+        from ai.availability_model import scrub_probe_noise_from_report
+
+        return scrub_probe_noise_from_report(data)
     return None
 
 

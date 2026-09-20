@@ -31,6 +31,10 @@ Agent приступает к **первой невыполненной** зад
 
 ## Открытые задачи
 
+### Доступность: pending в деталях (2026-09-20)
+
+- [x] check-host `pending` больше не 1/3 и не `pending×N` в «Ошибки»; деплой `deploy_stable.py`
+
 ### Регресс ACK-lane: предзагрузка и видео на ПК (2026-09-19)
 
 - [x] Корень: prio-ветка (`n≤128`) не двигает `rrIndex` → все ACK загрузки на одном воркере/релее; chunk 32 на границе anti-replay WG
@@ -38,7 +42,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] `go vet` + тесты PC и Android ok; debug ПК `build-debug-555393`, APK `android/SilentVPN-debug.apk`
 - [x] Push `pc` `7893df2`, `android` `33e70a3`
 - [x] Релизы 1.0.167 на откате: NSIS `build-release-v141-639012`, `.deb`, APK, OpenWrt tarball (20.09 утро)
-- [ ] Залить 1.0.167 на GitHub Releases + `releases.json` на Pages — иначе OTA отдаёт сборку с ACK-lane
+- [x] Залить 1.0.167 на GitHub Releases + `releases.json` на Pages (exe/apk/deb/openwrt, размеры = откат ACK-lane)
 - [ ] Приёмка: предзагрузка и видео на Сервере 1, 4PDA-приложение
 - [ ] Потолок 53/55 воркеров: нужен лог рампа с ПК (есть ли «Квота relay, ждём без refresh» / 486)
 - [ ] Улей: жёсткий ребут хостера 18:47 UTC 19.09 + `silent-vps-cleanup.service` failed — разобрать отдельно
@@ -68,7 +72,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] outdated token STREAM 700: refresh с attempt 2 работает (лог 21:20); лог 21:37 — Success attempt 1
 - [ ] Воркеры 55/53 на Улье: Сервер 1 пока оставляем (возможен IP). Allocate gate / quota wait / ACK-lane в 1.0.167. Приёмка 63 — позже
 - [x] YouTube серые превью: убран 20 мс dwell mid-flow; ACK-lane+chunk остались
-- [x] OTA: github.io `releases.json`, hive check skip. Релиз 1.0.167 собран, на Pages ещё не залит
+- [x] OTA: github.io `releases.json`, hive check skip. Релиз 1.0.167 на Pages + GitHub Releases (откат ACK-lane)
 
 ### Удаление сессии с клиента при VPN (2026-09-19)
 

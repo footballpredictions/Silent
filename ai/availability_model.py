@@ -19,6 +19,8 @@ ERR_HTTP = "http"                # ответ есть, но не тот (заг
 ERR_OTHER = "other"
 ERR_PENDING = "pending"          # нода измерителя не успела / нет payload
 ERR_PROBE_ERROR = "probe_error"  # сбой сервиса измерений, не цели
+# check-host: нода не ответила / HTTP 403 сервиса — не блок цели, не в 1/3.
+PROBE_NOISE_KINDS = frozenset({ERR_PENDING, ERR_PROBE_ERROR})
 
 # Стадии, на которых клиент может упасть (клиентская телеметрия).
 STAGE_DNS = "dns"
@@ -158,9 +160,13 @@ class VantageAggregate:
     nodes: list[NodeResult] = field(default_factory=list)
     source: str = "ru-external"
 
+    @staticmethod
+    def _is_noise(node: NodeResult) -> bool:
+        return (not node.ok) and (node.error_kind in PROBE_NOISE_KINDS)
+
     @property
     def total(self) -> int:
-        return len(self.nodes)
+        return sum(1 for n in self.nodes if not self._is_noise(n))
 
     @property
     def ok_count(self) -> int:
@@ -168,20 +174,20 @@ class VantageAggregate:
 
     @property
     def fail_count(self) -> int:
-        return self.total - self.ok_count
+        return sum(1 for n in self.nodes if not n.ok and not self._is_noise(n))
 
     @property
     def available(self) -> bool:
         """Была ли вообще возможность посмотреть с этой точки."""
-        return self.total > 0
+        return len(self.nodes) > 0
 
     @property
     def all_failed(self) -> bool:
-        return self.available and self.ok_count == 0
+        return self.fail_count > 0 and self.ok_count == 0
 
     @property
     def all_ok(self) -> bool:
-        return self.available and self.fail_count == 0
+        return self.ok_count > 0 and self.fail_count == 0
 
     @property
     def ok_ratio(self) -> float:
@@ -190,7 +196,7 @@ class VantageAggregate:
     def error_kinds(self) -> dict[str, int]:
         out: dict[str, int] = {}
         for n in self.nodes:
-            if n.ok or not n.error_kind:
+            if n.ok or not n.error_kind or n.error_kind in PROBE_NOISE_KINDS:
                 continue
             out[n.error_kind] = out.get(n.error_kind, 0) + 1
         return out
@@ -217,7 +223,7 @@ class VantageAggregate:
         return out
 
     def failing_nodes(self) -> list[NodeResult]:
-        return [n for n in self.nodes if not n.ok]
+        return [n for n in self.nodes if not n.ok and not self._is_noise(n)]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -233,6 +239,50 @@ class VantageAggregate:
             "error_kinds": self.error_kinds(),
             "nodes": [n.to_dict() for n in self.nodes],
         }
+
+
+def scrub_probe_noise_from_report(report: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Старый JSON в БД мог писать pending в 1/3 — при чтении убрать шум измерителя."""
+    if not isinstance(report, dict):
+        return report
+    for target in report.get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        for key in ("ru", "world"):
+            block = target.get(key)
+            if not isinstance(block, dict):
+                continue
+            for agg in block.values():
+                if isinstance(agg, dict):
+                    _scrub_vantage_dict(agg)
+    return report
+
+
+def _scrub_vantage_dict(agg: dict[str, Any]) -> None:
+    nodes = agg.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return
+    ok = 0
+    fail = 0
+    kinds: dict[str, int] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if node.get("ok"):
+            ok += 1
+            continue
+        kind = str(node.get("error_kind") or "").strip()
+        if kind in PROBE_NOISE_KINDS:
+            continue
+        fail += 1
+        if kind:
+            kinds[kind] = kinds.get(kind, 0) + 1
+    total = ok + fail
+    agg["ok"] = ok
+    agg["total"] = total
+    agg["failed"] = fail
+    agg["ok_ratio"] = round((ok / total), 3) if total else 0.0
+    agg["error_kinds"] = kinds
 
 
 @dataclass

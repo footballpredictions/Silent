@@ -1,5 +1,17 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (Доступность: pending не ошибка 2026-09-20)
+
+В «Доступность и блокировки» check-host `pending` (нода не успела) писался как fail: Улей TLS 1/3 pending×2, Сервер 4 ping 2/3 pending×1. Это шум измерителя, не ТСПУ. Теперь pending/probe_error не входят в total/failed и не в колонку «Ошибки»; старый отчёт чистится при чтении. Тесты `test_availability_unit.py` 52 ok. Деплой `deploy_stable.py`: health 0.044с, wdtt **active**, kick 0, tunnel DNAT OK. Админка: Ctrl+F5. **wdtt не трогал.**
+
+## Последние изменения (оплата в счётчик 2026-09-20)
+
+Трое вчерашних: webhook не дошёл, админ выдал план с `amount_paid=0` → «Выданные», не «Оплаченные». Пометил без смены срока и без kick: `alkos12.06@mail.ru` monthly 199 ₽ до 18.10; `coolsah1974@gmail.com` (в письме было colsah) quarterly 478 ₽ до 19.12; `dresvyankin88@gmail.com` two_months 359 ₽ до 18.11. Платёж completed + applied, лишние pending → expired. `mixankrasivi@gmail.com` уже был оплачен 28.08 (199 ₽ до 28.09) — не трогал. **wdtt не трогал.**
+
+## Последние изменения (OTA 1.0.167 на GitHub 2026-09-20)
+
+Опубликовал клиенты **1.0.167** (откат ACK-lane) из `releases/` на GitHub Releases `v1.0.167` + Pages `silentvpn3.github.io`. Размеры как у локальных сборок: exe **83071595**, apk **27792001**, deb **118402726**, OpenWrt tgz **18168757**. Live `https://silentvpn3.github.io/releases.json` — pc/android/linux 1.0.167, `updated_at` 2026-09-20T07:00:42Z. OpenWrt install: Pages `silent-vpn-openwrt.tgz`. Релиз: https://github.com/silentvpn3/silentvpn3.github.io/releases/tag/v1.0.167 iOS/Mac с Windows нет. **wdtt не трогал**, backend не деплоил.
+
 ## Последние изменения (VK-хеши 9 vs 67 онлайн 2026-09-20)
 
 Карточка «Серверные VK-хеши (по пользователям)» зеленела только по `Device.is_connected` (на проде 8 устройств / 7–9 людей за 3 мин), а шапка «Онлайн» — по max(БД, WG live) ≈ 67. Хеши у всех 1148 пользователей на месте (4/4). Теперь строка онлайн = keepalive **или** живой WG-ключ устройства (`wg_public_key` / `wg_live_public_key`), ключи с Улья (dump) и с сот (`wg_live_pubs` в `/v1/status`). Light-полл больше не подставляет пустой список хешей. Тесты `test_hive_slots_unit.py` + `test_cell_standby_online_unit.py` ok. Деплой `deploy_stable.py`: health 0.038с, wdtt **active**, kick 0, tunnel DNAT OK. Соты подтянут `wg_live_pubs` автоапгрейдом. Админка: Ctrl+F5. **wdtt не трогал.**

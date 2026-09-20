@@ -57,6 +57,7 @@ from ai.availability_model import (  # noqa: E402
     TARGET_QUEEN,
     TargetSnapshot,
     VantageAggregate,
+    scrub_probe_noise_from_report,
 )
 from ai.availability_probes import _parse_node_payload  # noqa: E402
 
@@ -692,6 +693,70 @@ def test_client_clock_ahead_does_not_move_report_into_future():
 def test_client_report_older_than_retention_is_dropped():
     assert client_report_age_sec(MAX_AGE + 1, MAX_AGE) is None
     assert client_report_age_sec(MAX_AGE, MAX_AGE) == MAX_AGE
+
+
+def test_pending_vantage_nodes_are_not_counted_as_failures():
+    """check-host pending — шум измерителя. В админке не 1/3 и не pending×2."""
+    agg = VantageAggregate(channel=CHANNEL_API_TLS)
+    agg.nodes.append(NodeResult(node="ru1.node", ok=True, latency_ms=338.0))
+    agg.nodes.append(NodeResult(node="ru2.node", ok=False, error_kind=ERR_PENDING, detail="нет ответа"))
+    agg.nodes.append(NodeResult(node="ru3.node", ok=False, error_kind=ERR_PENDING, detail="нет ответа"))
+    assert agg.ok_count == 1
+    assert agg.fail_count == 0
+    assert agg.total == 1
+    assert agg.all_ok
+    assert not agg.all_failed
+    assert agg.error_kinds() == {}
+    payload = agg.to_dict()
+    assert payload["ok"] == 1
+    assert payload["total"] == 1
+    assert payload["failed"] == 0
+    assert payload["error_kinds"] == {}
+    stale = {
+        "targets": [{
+            "ru": {
+                "api_tls": {
+                    "ok": 1,
+                    "total": 3,
+                    "failed": 2,
+                    "error_kinds": {"pending": 2},
+                    "nodes": payload["nodes"],
+                }
+            }
+        }]
+    }
+    cleaned = scrub_probe_noise_from_report(stale)
+    tls = cleaned["targets"][0]["ru"]["api_tls"]
+    assert tls["total"] == 1 and tls["failed"] == 0 and tls["error_kinds"] == {}
+
+
+def test_tls_one_ok_two_pending_is_not_partial_block():
+    snap = _queen()
+    snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=3)
+    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=3)
+    snap.ru[CHANNEL_API_TLS] = VantageAggregate(
+        channel=CHANNEL_API_TLS,
+        nodes=[
+            NodeResult(node="ru1.node", ok=True, latency_ms=338.0),
+            NodeResult(node="ru2.node", ok=False, error_kind=ERR_PENDING, detail="нет ответа"),
+            NodeResult(node="ru3.node", ok=False, error_kind=ERR_PENDING, detail="нет ответа"),
+        ],
+    )
+    kinds = _kinds(snap)
+    assert KIND_ASN_PARTIAL not in kinds
+    assert report_status(classify_target(snap)) == "ok"
+
+
+def test_ping_two_ok_one_pending_is_not_a_displayed_failure():
+    agg = VantageAggregate(channel=CHANNEL_PING)
+    agg.nodes.append(NodeResult(node="ru1.node", ok=True, latency_ms=109.0))
+    agg.nodes.append(NodeResult(node="ru2.node", ok=True, latency_ms=110.0))
+    agg.nodes.append(NodeResult(node="ru3.node", ok=False, error_kind=ERR_PENDING, detail="нет ответа"))
+    assert agg.total == 2
+    assert agg.ok_count == 2
+    assert agg.fail_count == 0
+    assert agg.all_ok
+    assert agg.error_kinds() == {}
 
 
 def test_missing_vantage_node_is_pending_not_target_timeout():

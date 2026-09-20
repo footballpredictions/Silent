@@ -333,6 +333,10 @@ data class ThemeData(
     val payment_timeout_text: String = "Если вы уже оплатили — подождите ещё немного или проверьте позже в разделе «Подписка».",
     val payment_retry_button_text: String = "Попробовать снова",
     val payment_cancel_button_text: String = "Отмена",
+    val subscription_tier_3_label: String = "3 устройства",
+    val subscription_tier_5_label: String = "5 устройств",
+    val subscription_choose_tier_title: String = "Сколько устройств",
+    val subscription_choose_plan_title: String = "Выберите тариф",
     val skip_email_confirmation: Boolean = false,
 )
 

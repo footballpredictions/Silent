@@ -1040,12 +1040,19 @@ private fun MenuSubscription(
         if (paymentState == com.silent.vpn.PaymentUiState.WAITING && subActive)
             com.silent.vpn.PaymentUiState.COMPLETED
         else paymentState
-    val plans = shopPlans.ifEmpty {
+    val plansAll = shopPlans.ifEmpty {
         listOf(
-            com.silent.vpn.MainViewModel.ShopPlanUi("monthly", "Месяц", "199 ₽"),
-            com.silent.vpn.MainViewModel.ShopPlanUi("two_months", "2 месяца", "359 ₽"),
-            com.silent.vpn.MainViewModel.ShopPlanUi("quarterly", "3 месяца", "478 ₽"),
+            com.silent.vpn.MainViewModel.ShopPlanUi("monthly", "Месяц", "199 ₽", 3),
+            com.silent.vpn.MainViewModel.ShopPlanUi("two_months", "2 месяца", "359 ₽", 3),
+            com.silent.vpn.MainViewModel.ShopPlanUi("quarterly", "3 месяца", "478 ₽", 3),
+            com.silent.vpn.MainViewModel.ShopPlanUi("monthly_5", "Месяц", "330 ₽", 5),
+            com.silent.vpn.MainViewModel.ShopPlanUi("two_months_5", "2 месяца", "594 ₽", 5),
+            com.silent.vpn.MainViewModel.ShopPlanUi("quarterly_5", "3 месяца", "792 ₽", 5),
         )
+    }
+    var selectedDevices by remember { mutableIntStateOf(3) }
+    val plans = plansAll.filter { it.devices == selectedDevices }.ifEmpty {
+        plansAll.filter { it.devices == 3 }.ifEmpty { plansAll.take(3) }
     }
     LaunchedEffect(Unit) { onRefreshShopPlans() }
 
@@ -1073,9 +1080,12 @@ private fun MenuSubscription(
                         "trial" -> "Пробный период"
                         "test" -> "Тестовый режим"
                         "three_days" -> "3 дня"
-                        "monthly" -> "Месяц"
-                        "two_months" -> "2 месяца"
-                        "quarterly" -> "3 месяца"
+                        "monthly" -> "Месяц · 3 устройства"
+                        "two_months" -> "2 месяца · 3 устройства"
+                        "quarterly" -> "3 месяца · 3 устройства"
+                        "monthly_5" -> "Месяц · 5 устройств"
+                        "two_months_5" -> "2 месяца · 5 устройств"
+                        "quarterly_5" -> "3 месяца · 5 устройств"
                         "half_year" -> "Полгода"
                         "yearly" -> "Год"
                         "unlimited" -> "Бессрочно"
@@ -1091,7 +1101,52 @@ private fun MenuSubscription(
                         modifier = Modifier.padding(top = 8.dp),
                     )
                 } else {
-                    Text("Выберите тариф", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+                    Text(
+                        theme?.subscription_choose_tier_title?.takeIf { it.isNotBlank() } ?: "Сколько устройств",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = fg,
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp, bottom = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(
+                            3 to (theme?.subscription_tier_3_label?.takeIf { it.isNotBlank() } ?: "3 устройства"),
+                            5 to (theme?.subscription_tier_5_label?.takeIf { it.isNotBlank() } ?: "5 устройств"),
+                        ).forEach { (count, label) ->
+                            val selected = selectedDevices == count
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .tvClickable(cornerRadius = 12.dp, onClick = { selectedDevices = count })
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (selected) primaryBtnBg else fg.copy(alpha = 0.06f))
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (selected) primaryBtnFg.copy(alpha = 0.2f) else fg.copy(alpha = 0.12f),
+                                        shape = RoundedCornerShape(12.dp),
+                                    )
+                                    .padding(vertical = 12.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    label,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (selected) primaryBtnFg else fg,
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        theme?.subscription_choose_plan_title?.takeIf { it.isNotBlank() } ?: "Выберите тариф",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = fg,
+                    )
                     val anyBusy = paymentBusyPlan != null
                     plans.forEach { plan ->
                         val busyThis = paymentBusyPlan == plan.id

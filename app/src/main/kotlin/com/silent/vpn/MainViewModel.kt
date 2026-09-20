@@ -128,12 +128,20 @@ class MainViewModel @Inject constructor(
     private val _openSubscriptionMenu = MutableStateFlow(false)
     val openSubscriptionMenu: StateFlow<Boolean> = _openSubscriptionMenu
 
-    data class ShopPlanUi(val id: String, val name: String, val priceLabel: String)
+    data class ShopPlanUi(
+        val id: String,
+        val name: String,
+        val priceLabel: String,
+        val devices: Int = 3,
+    )
 
     private val defaultShopPlans = listOf(
-        ShopPlanUi("monthly", "Месяц", "199 ₽"),
-        ShopPlanUi("two_months", "2 месяца", "359 ₽"),
-        ShopPlanUi("quarterly", "3 месяца", "478 ₽"),
+        ShopPlanUi("monthly", "Месяц", "199 ₽", 3),
+        ShopPlanUi("two_months", "2 месяца", "359 ₽", 3),
+        ShopPlanUi("quarterly", "3 месяца", "478 ₽", 3),
+        ShopPlanUi("monthly_5", "Месяц", "330 ₽", 5),
+        ShopPlanUi("two_months_5", "2 месяца", "594 ₽", 5),
+        ShopPlanUi("quarterly_5", "3 месяца", "792 ₽", 5),
     )
     private val _shopPlans = MutableStateFlow(defaultShopPlans)
     val shopPlans: StateFlow<List<ShopPlanUi>> = _shopPlans
@@ -856,12 +864,20 @@ class MainViewModel @Inject constructor(
                         is String -> p.toDoubleOrNull()
                         else -> null
                     } ?: return@mapNotNull null
+                    val devices = when (val d = row["devices"]) {
+                        is Number -> d.toInt()
+                        is String -> d.toIntOrNull()
+                        else -> null
+                    } ?: when {
+                        id.endsWith("_5") -> 5
+                        else -> 3
+                    }
                     val label = if (priceNum == priceNum.toLong().toDouble()) {
                         "${priceNum.toLong()} ₽"
                     } else {
                         String.format("%.2f ₽", priceNum)
                     }
-                    ShopPlanUi(id, name, label)
+                    ShopPlanUi(id, name, label, devices)
                 }
                 if (mapped.isNotEmpty()) _shopPlans.value = mapped
             }.onFailure {

@@ -1,5 +1,9 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (релиз: скрыть 5 устр. + YuMoney на БС 2026-09-20)
+
+`GET /payments/plans` снова только 3 тарифа (199/359/478); 5 устр. — `?all=1` (новые клиенты). Иначе релиз 1.0.167 тянул шесть кнопок оплаты. Bootstrap оплаты: БС/ЧС не применяются даже при apiOverlay (Chrome/YuMoney оставались мимо туннеля на LTE). Тесты shop_catalog + BootstrapAppExcludeDecision. Деплой health 0.044с, wdtt active, kick 0. Debug APK пересобран. **wdtt не трогал.**
+
 ## Последние изменения (пуш тарифов 3/5 2026-09-20)
 
 Push: `main` `b34e359`, `pc` `f40f5b6`, `android` `fdd26fe`, `ios` `564cbbe`, `openwrt` `6d18834`. Backend уже на проде. Debug: ПК `build-debug-399830`, APK `SilentVPN-debug.apk`. **wdtt не трогал.**

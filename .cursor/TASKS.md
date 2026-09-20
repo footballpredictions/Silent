@@ -39,6 +39,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] Оформление ClientPreview; тесты; `deploy_stable.py` (health 0.040с, wdtt active, kick 0)
 - [ ] Приёмка: магазин 3/5, после оплаты `max_devices` и Сессии N/5; Ctrl+F5 админки
 - [x] Пуш: `main` `b34e359`, `pc` `f40f5b6`, `android` `fdd26fe`, `ios` `564cbbe`, `openwrt` `6d18834`
+- [x] Hotfix: `/plans` без *_5 по умолчанию; bootstrap оплаты игнорит БС (YuMoney на LTE)
 
 ### Админка: Оформление как текущий клиент (2026-09-20)
 

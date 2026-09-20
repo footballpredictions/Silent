@@ -79,6 +79,10 @@ export interface ClientTheme {
   payment_timeout_text?: string
   payment_retry_button_text?: string
   payment_cancel_button_text?: string
+  subscription_tier_3_label?: string
+  subscription_tier_5_label?: string
+  subscription_choose_tier_title?: string
+  subscription_choose_plan_title?: string
   skip_email_confirmation?: boolean
 }
 

@@ -153,13 +153,27 @@ const PLAN_LABELS: Record<string, string> = {
   trial: 'Пробный период',
   test: 'Тестовый режим',
   three_days: '3 дня',
-  monthly: 'Месяц',
-  two_months: '2 месяца',
-  quarterly: '3 месяца',
+  monthly: 'Месяц · 3 устройства',
+  two_months: '2 месяца · 3 устройства',
+  quarterly: '3 месяца · 3 устройства',
+  monthly_5: 'Месяц · 5 устройств',
+  two_months_5: '2 месяца · 5 устройств',
+  quarterly_5: '3 месяца · 5 устройств',
   half_year: 'Полгода',
   yearly: 'Год',
   unlimited: 'Бессрочно',
 }
+
+type ShopPlan = { id: string; label: string; price: string; devices: number }
+
+const SHOP_PLANS: ShopPlan[] = [
+  { id: 'monthly', label: 'Месяц', price: '199 ₽', devices: 3 },
+  { id: 'two_months', label: '2 месяца', price: '359 ₽', devices: 3 },
+  { id: 'quarterly', label: '3 месяца', price: '478 ₽', devices: 3 },
+  { id: 'monthly_5', label: 'Месяц', price: '330 ₽', devices: 5 },
+  { id: 'two_months_5', label: '2 месяца', price: '594 ₽', devices: 5 },
+  { id: 'quarterly_5', label: '3 месяца', price: '792 ₽', devices: 5 },
+]
 
 function planLabel(planType: string | null | undefined): string {
   if (!planType) return '—'
@@ -241,6 +255,7 @@ export default function MainScreen({
   const [deleteSavingId, setDeleteSavingId] = useState<string | null>(null)
   const [activeWorkers, setActiveWorkers] = useState(0)
   const [paymentStatus, setPaymentStatus] = useState<'idle' | 'waiting' | 'completed' | 'failed' | 'timeout'>('idle')
+  const [shopDeviceTier, setShopDeviceTier] = useState<3 | 5>(3)
   const paymentPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const paymentPollDeadlineRef = useRef(0)
   const connectLockRef = useRef(false)
@@ -1717,12 +1732,36 @@ export default function MainScreen({
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <div className="text-sm font-semibold" style={{ color: fg }}>Выберите тариф</div>
-                  {[
-                    { id: 'monthly', label: 'Месяц', price: '199 ₽' },
-                    { id: 'two_months', label: '2 месяца', price: '359 ₽' },
-                    { id: 'quarterly', label: '3 месяца', price: '478 ₽' },
-                  ].map(plan => (
+                  <div className="text-sm font-semibold" style={{ color: fg }}>
+                    {clientTheme?.subscription_choose_tier_title || 'Сколько устройств'}
+                  </div>
+                  <div className="flex gap-2">
+                    {([
+                      { devices: 3 as const, label: clientTheme?.subscription_tier_3_label || '3 устройства' },
+                      { devices: 5 as const, label: clientTheme?.subscription_tier_5_label || '5 устройств' },
+                    ]).map(tier => {
+                      const on = shopDeviceTier === tier.devices
+                      return (
+                        <button
+                          key={tier.devices}
+                          type="button"
+                          onClick={() => setShopDeviceTier(tier.devices)}
+                          className="flex-1 py-2.5 rounded-xl text-xs font-semibold transition-colors"
+                          style={{
+                            background: on ? palette.primaryBtnBg : 'transparent',
+                            color: on ? palette.primaryBtnFg : fg,
+                            border: `1px solid ${on ? palette.primaryBtnBg : muted}`,
+                          }}
+                        >
+                          {tier.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <div className="text-sm font-semibold" style={{ color: fg }}>
+                    {clientTheme?.subscription_choose_plan_title || 'Выберите тариф'}
+                  </div>
+                  {SHOP_PLANS.filter(p => p.devices === shopDeviceTier).map(plan => (
                     <button key={plan.id}
                       onClick={async () => {
                         try {

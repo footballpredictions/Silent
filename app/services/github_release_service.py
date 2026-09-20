@@ -21,6 +21,7 @@ GITHUB_REPO = os.environ.get("GITHUB_RELEASES_REPO", "silentvpn3.github.io")
 GITHUB_API = "https://api.github.com"
 RELEASES_JSON_PATH = "releases.json"
 INDEX_HTML_PATH = "index.html"
+OPENWRT_PAGES_TGZ = "silent-vpn-openwrt.tgz"
 API_BASE_DEFAULT = "https://89-125-188-100.nip.io"
 
 
@@ -63,6 +64,16 @@ def asset_download_url(version: str, filename: str) -> str:
 def github_asset_filename(platform: str, filename: str, version: str = "") -> str:
     """Имя файла на GitHub Releases (PC/Linux installer — точки, не пробелы)."""
     safe = os.path.basename(filename or "")
+    ver = (version or "").strip()
+    m = re.search(r"(\d+\.\d+\.\d+)", safe)
+    if not ver and m:
+        ver = m.group(1)
+    if platform == "openwrt":
+        if ver:
+            return f"silent-vpn-openwrt-{ver}.tar.gz"
+        if safe.lower().endswith((".tar.gz", ".tgz")):
+            return safe
+        return OPENWRT_PAGES_TGZ
     if platform == "android" or not safe:
         return safe
     if platform == "pc" and not safe.lower().endswith(".exe"):
@@ -73,10 +84,6 @@ def github_asset_filename(platform: str, filename: str, version: str = "") -> st
         return safe
     if "." in safe.replace(" ", "") and " " not in safe:
         return safe
-    ver = (version or "").strip()
-    m = re.search(r"(\d+\.\d+\.\d+)", safe)
-    if not ver and m:
-        ver = m.group(1)
     if platform == "linux":
         if ver:
             return f"Silent.VPN.Setup.{ver}.deb"
@@ -91,16 +98,32 @@ def github_asset_filename(platform: str, filename: str, version: str = "") -> st
 
 
 def _platform_asset_ext(platform: str) -> str:
-    return {"pc": ".exe", "android": ".apk", "linux": ".deb", "mac": ".dmg"}.get(platform, "")
+    return {
+        "pc": ".exe",
+        "android": ".apk",
+        "linux": ".deb",
+        "mac": ".dmg",
+        "openwrt": ".tar.gz",
+    }.get(platform, "")
+
+
+def _platform_asset_exts(platform: str) -> tuple[str, ...]:
+    if platform == "openwrt":
+        return (".tar.gz", ".tgz")
+    ext = _platform_asset_ext(platform)
+    return (ext,) if ext else ()
+
+
+def _asset_name_matches_platform(name: str, platform: str) -> bool:
+    n = (name or "").lower()
+    return any(n.endswith(ext) for ext in _platform_asset_exts(platform))
 
 
 def _release_has_platform_asset(release: dict, platform: str) -> bool:
-    ext = _platform_asset_ext(platform)
-    if not ext:
+    if not _platform_asset_exts(platform):
         return False
     for asset in release.get("assets") or []:
-        name = (asset.get("name") or "").lower()
-        if name.endswith(ext):
+        if _asset_name_matches_platform(asset.get("name") or "", platform):
             return True
     return False
 
@@ -140,6 +163,8 @@ def _release_title(platform: str, version: str) -> str:
         return f"Silent VPN — Linux v{version}"
     if platform == "mac":
         return f"Silent VPN — Mac v{version}"
+    if platform == "openwrt":
+        return f"Silent VPN — OpenWrt v{version}"
     return f"Silent VPN — Android v{version}"
 
 
@@ -151,7 +176,8 @@ def _release_title_for_assets(version: str, asset_names: list[str]) -> str:
     has_pc = any(n.lower().endswith(".exe") for n in asset_names)
     has_apk = any(n.lower().endswith(".apk") for n in asset_names)
     has_linux = any(n.lower().endswith(".deb") for n in asset_names)
-    count = sum(1 for x in (has_pc, has_apk, has_linux) if x)
+    has_openwrt = any(_asset_name_matches_platform(n, "openwrt") for n in asset_names)
+    count = sum(1 for x in (has_pc, has_apk, has_linux, has_openwrt) if x)
     if count >= 2:
         return _combined_release_title(version)
     if has_pc:
@@ -160,6 +186,8 @@ def _release_title_for_assets(version: str, asset_names: list[str]) -> str:
         return _release_title("android", version)
     if has_linux:
         return _release_title("linux", version)
+    if has_openwrt:
+        return _release_title("openwrt", version)
     return _combined_release_title(version)
 
 
@@ -168,6 +196,7 @@ def _release_body_for_assets(version: str, asset_names: list[str]) -> str:
     has_pc = any(n.lower().endswith(".exe") for n in asset_names)
     has_apk = any(n.lower().endswith(".apk") for n in asset_names)
     has_linux = any(n.lower().endswith(".deb") for n in asset_names)
+    has_openwrt = any(_asset_name_matches_platform(n, "openwrt") for n in asset_names)
     lines = [f"Клиенты Silent VPN v{version}.\n"]
     if has_pc:
         lines.append("- **Windows (ПК)** — установщик `.exe`")
@@ -175,6 +204,8 @@ def _release_body_for_assets(version: str, asset_names: list[str]) -> str:
         lines.append("- **Linux (ПК)** — установщик `.deb`")
     if has_apk:
         lines.append("- **Android** — `.apk`")
+    if has_openwrt:
+        lines.append("- **OpenWrt** — пакет `.tar.gz` (install: `silent-vpn-openwrt.tgz`)")
     lines.append(f"\nСкачивание: {landing}")
     return "\n".join(lines)
 
@@ -219,13 +250,11 @@ async def _delete_asset(token: str, asset_id: int) -> None:
 
 
 async def _remove_platform_assets(token: str, release: dict, platform: str) -> None:
-    """Удалить только файлы этой платформы (.exe / .apk / .deb), не трогая другую."""
-    ext = _platform_asset_ext(platform)
-    if not ext:
+    """Удалить только файлы этой платформы (.exe / .apk / .deb / OpenWrt tarball), не трогая другую."""
+    if not _platform_asset_exts(platform):
         return
     for asset in release.get("assets") or []:
-        name = (asset.get("name") or "").lower()
-        if name.endswith(ext):
+        if _asset_name_matches_platform(asset.get("name") or "", platform):
             await _delete_asset(token, int(asset["id"]))
 
 
@@ -272,17 +301,51 @@ async def _read_repo_text(token: str, path: str) -> tuple[Optional[str], Optiona
     return text, payload.get("sha")
 
 
-async def _write_repo_file(token: str, path: str, content: str, sha: Optional[str], message: str) -> None:
+async def _write_repo_file(token: str, path: str, content: str | bytes, sha: Optional[str], message: str) -> None:
     url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{quote(path, safe='/')}"
+    raw = content.encode("utf-8") if isinstance(content, str) else content
     body: dict[str, Any] = {
         "message": message,
-        "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        "content": base64.b64encode(raw).decode("ascii"),
     }
     if sha:
         body["sha"] = sha
-    resp = await _request("PUT", url, token=token, json_body=body, timeout=60.0)
+    timeout = 180.0 if isinstance(content, (bytes, bytearray)) else 60.0
+    resp = await _request("PUT", url, token=token, json_body=body, timeout=timeout)
     if resp.status_code >= 400:
         raise GitHubReleaseError(f"PUT {path}: HTTP {resp.status_code} {resp.text[:400]}")
+
+
+async def _read_repo_sha(token: str, path: str) -> Optional[str]:
+    """SHA файла в репо (без тела; tgz >1 МБ через Contents API часто без content)."""
+    url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{quote(path, safe='/')}"
+    resp = await _request("GET", url, token=token, timeout=30.0)
+    if resp.status_code == 404:
+        return None
+    if resp.status_code < 400:
+        return resp.json().get("sha")
+    tree_url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/trees/HEAD?recursive=1"
+    tree_resp = await _request("GET", tree_url, token=token, timeout=30.0)
+    if tree_resp.status_code >= 400:
+        raise GitHubReleaseError(f"GET {path}: HTTP {resp.status_code} {resp.text[:300]}")
+    for item in (tree_resp.json().get("tree") or []):
+        if item.get("path") == path and item.get("sha"):
+            return item["sha"]
+    return None
+
+
+async def _sync_openwrt_pages_tgz(token: str, file_path: str, version: str) -> None:
+    """install.sh качает github.io/silent-vpn-openwrt.tgz, не только Release asset."""
+    sha = await _read_repo_sha(token, OPENWRT_PAGES_TGZ)
+    with open(file_path, "rb") as fh:
+        data = fh.read()
+    await _write_repo_file(
+        token,
+        OPENWRT_PAGES_TGZ,
+        data,
+        sha,
+        f"silent-vpn-openwrt.tgz: v{version}",
+    )
 
 
 def _platform_label(platform: str) -> str:
@@ -292,6 +355,8 @@ def _platform_label(platform: str) -> str:
         return "PC (Linux)"
     if platform == "mac":
         return "PC (Mac)"
+    if platform == "openwrt":
+        return "OpenWrt"
     return "Android"
 
 
@@ -439,7 +504,7 @@ async def _build_landing_releases_snapshot(
     download_url: str,
     github_filename: str | None = None,
 ) -> dict:
-    """Собрать полный pc+android+linux снимок для releases.json / index.html."""
+    """Собрать снимок всех платформ для releases.json / index.html."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     current: dict[str, Any] = {
         "updated_at": now,
@@ -590,6 +655,12 @@ async def publish_platform(platform: str, *, sync_landing: bool = True, sync_pee
             await _sync_landing_index_html(token, snapshot)
         except GitHubReleaseError as e:
             logger.warning("index.html landing sync failed: %s", e)
+
+    if platform == "openwrt":
+        try:
+            await _sync_openwrt_pages_tgz(token, file_path, str(version))
+        except GitHubReleaseError as e:
+            logger.warning("OpenWrt Pages tgz sync failed: %s", e)
 
     _patch_manifest_github(platform, download_url)
 

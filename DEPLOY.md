@@ -53,8 +53,8 @@ cd backend
 |----------|----------|
 | Путь backend | `/opt/silent-vpn/backend` (`DEPLOY_REMOTE`) |
 | Docker API | `backend-api-1` (`DEPLOY_CONTAINER`) |
-| OTA (хост) | `/opt/silent-vpn/backend/update/pc/`, `…/update/android/`, `…/update/linux/` |
-| OTA (в контейнере) | `/app/update/pc/`, `/app/update/android/`, `/app/update/linux/` |
+| OTA (хост) | `/opt/silent-vpn/backend/update/pc/`, `…/update/android/`, `…/update/linux/`, `…/update/mac/`, `…/update/openwrt/` |
+| OTA (в контейнере) | `/app/update/pc/`, `/app/update/android/`, `/app/update/linux/`, `/app/update/mac/`, `/app/update/openwrt/` |
 
 ---
 

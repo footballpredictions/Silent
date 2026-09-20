@@ -1868,22 +1868,20 @@ async def list_updates(_: bool = Depends(get_admin_credentials)):
 
 @router.post("/updates/upload")
 async def upload_update(
-    platform: str = Form(..., pattern="^(pc|android|linux|mac)$"),
+    platform: str = Form(..., pattern="^(pc|android|linux|mac|openwrt)$"),
     version: Optional[str] = Form(None),
     file: UploadFile = File(...),
     _: bool = Depends(get_admin_credentials),
 ):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename")
-    ext = os.path.splitext(file.filename)[1].lower()
-    if platform == "pc" and ext not in (".exe", ".msi"):
-        raise HTTPException(status_code=400, detail="PC update must be .exe or .msi")
-    if platform == "linux" and ext not in (".appimage", ".deb"):
-        raise HTTPException(status_code=400, detail="Linux update must be .AppImage or .deb")
-    if platform == "mac" and ext not in (".dmg", ".zip", ".pkg"):
-        raise HTTPException(status_code=400, detail="Mac update must be .dmg, .zip or .pkg")
-    if platform == "android" and ext != ".apk":
-        raise HTTPException(status_code=400, detail="Android update must be .apk")
+    ext = update_service.upload_suffix(file.filename)
+    allowed = update_service.allowed_upload_exts(platform)
+    if allowed and ext not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{platform} update must be {' / '.join(allowed)}",
+        )
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
         while True:
@@ -1964,6 +1962,8 @@ async def updates_build_release(
 ):
     if platform not in update_service.PLATFORMS:
         raise HTTPException(status_code=400, detail="Invalid platform")
+    if platform not in ("pc", "android", "linux"):
+        raise HTTPException(status_code=400, detail="Сборка на VPS только для PC / Android / Linux")
     from app.services.vk_agent_auth import is_agent_enabled
     from app.services.build_agent_service import get_build_status, build_platform_background
 
@@ -2024,6 +2024,8 @@ def _platform_label(platform: str) -> str:
         return "PC (Linux)"
     if platform == "mac":
         return "PC (Mac)"
+    if platform == "openwrt":
+        return "OpenWrt"
     return "Android"
 
 

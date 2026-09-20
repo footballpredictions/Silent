@@ -129,6 +129,36 @@ class LinuxBuildAgentUnit(unittest.TestCase):
         self.assertIn("linux: {", out)
         self.assertIn("Silent.VPN.Setup.1.0.165.deb", out)
 
+    def test_openwrt_is_update_platform_with_tarball_asset(self) -> None:
+        from app.services.update_service import PLATFORMS
+
+        self.assertIn("openwrt", PLATFORMS)
+        self.assertEqual(_platform_asset_ext("openwrt"), ".tar.gz")
+        self.assertEqual(
+            github_asset_filename("openwrt", "pkg.tgz", "1.0.167"),
+            "silent-vpn-openwrt-1.0.167.tar.gz",
+        )
+        self.assertEqual(
+            github_asset_filename("openwrt", "silent-vpn-openwrt-1.0.167.tar.gz", "1.0.167"),
+            "silent-vpn-openwrt-1.0.167.tar.gz",
+        )
+        release = {"assets": [{"name": "silent-vpn-openwrt-1.0.167.tar.gz"}]}
+        self.assertTrue(_release_has_platform_asset(release, "openwrt"))
+        self.assertFalse(_release_has_platform_asset(release, "linux"))
+
+        from app.services.github_release_service import OPENWRT_PAGES_TGZ, _platform_label, _release_title
+        from app.services.update_service import allowed_upload_exts, upload_suffix
+
+        self.assertEqual(OPENWRT_PAGES_TGZ, "silent-vpn-openwrt.tgz")
+        self.assertEqual(_platform_label("openwrt"), "OpenWrt")
+        self.assertEqual(_release_title("openwrt", "1.0.167"), "Silent VPN — OpenWrt v1.0.167")
+        self.assertEqual(upload_suffix("silent-vpn-openwrt-1.0.167.tar.gz"), ".tar.gz")
+        self.assertEqual(upload_suffix("pkg.tgz"), ".tgz")
+        self.assertEqual(upload_suffix("app.apk"), ".apk")
+        self.assertIn(".tar.gz", allowed_upload_exts("openwrt"))
+        self.assertIn(".tgz", allowed_upload_exts("openwrt"))
+        self.assertNotIn(".apk", allowed_upload_exts("openwrt"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,10 +6,29 @@ import shutil
 from datetime import datetime, timezone
 from typing import Optional
 
-PLATFORMS = ("pc", "android", "linux", "mac")
+PLATFORMS = ("pc", "android", "linux", "mac", "openwrt")
 MANIFEST = "manifest.json"
+UPLOAD_EXTS = {
+    "pc": (".exe", ".msi"),
+    "android": (".apk",),
+    "linux": (".appimage", ".deb"),
+    "mac": (".dmg", ".zip", ".pkg"),
+    "openwrt": (".tar.gz", ".tgz"),
+}
 
 _BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "update"))
+
+
+def upload_suffix(filename: str) -> str:
+    """Расширение для проверки загрузки (.tar.gz целиком, не .gz)."""
+    name = (filename or "").lower()
+    if name.endswith(".tar.gz"):
+        return ".tar.gz"
+    return os.path.splitext(name)[1]
+
+
+def allowed_upload_exts(platform: str) -> tuple[str, ...]:
+    return UPLOAD_EXTS.get(platform.lower().strip(), ())
 
 
 def _platform_dir(platform: str) -> str:

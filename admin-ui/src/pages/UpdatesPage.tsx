@@ -59,7 +59,10 @@ const platformLabel: Record<string, string> = {
   android: 'Android',
   linux: 'PC (Linux)',
   mac: 'PC (Mac)',
+  openwrt: 'OpenWrt',
 }
+
+const hasVpsBuild = (platform: string) => platform !== 'mac' && platform !== 'openwrt'
 
 function downloadHref(item: UpdateInfo): string | null {
   if (item.download_url) return item.download_url
@@ -85,17 +88,20 @@ export default function UpdatesPage({ token }: { token: string }) {
   const androidRef = useRef<HTMLInputElement>(null)
   const linuxRef = useRef<HTMLInputElement>(null)
   const macRef = useRef<HTMLInputElement>(null)
+  const openwrtRef = useRef<HTMLInputElement>(null)
 
   const fileRefFor = (platform: string) => {
     if (platform === 'pc') return pcRef
     if (platform === 'linux') return linuxRef
     if (platform === 'mac') return macRef
+    if (platform === 'openwrt') return openwrtRef
     return androidRef
   }
   const acceptFor = (platform: string) => {
     if (platform === 'pc') return '.exe,.msi'
     if (platform === 'linux') return '.AppImage,.appimage,.deb'
     if (platform === 'mac') return '.dmg,.zip,.pkg'
+    if (platform === 'openwrt') return '.tar.gz,.tgz'
     return '.apk'
   }
 
@@ -431,7 +437,7 @@ export default function UpdatesPage({ token }: { token: string }) {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {item.platform !== 'mac' && (
+                  {hasVpsBuild(item.platform) && (
                   <button
                     type="button"
                     onClick={() => setNightlyFlag(
@@ -538,7 +544,7 @@ export default function UpdatesPage({ token }: { token: string }) {
                   <Github className="w-4 h-4" />
                   {publishingGithub === item.platform ? 'Публикация…' : 'Опубликовать на GitHub'}
                 </button>
-                {item.platform !== 'mac' && (
+                {hasVpsBuild(item.platform) && (
                 <>
                 <button
                   disabled={building === item.platform || buildStatus?.running}
@@ -571,6 +577,9 @@ export default function UpdatesPage({ token }: { token: string }) {
                 )}
                 {item.platform === 'mac' && (
                   <span className="text-xs text-[#666] self-center">Сборка .dmg — только на MacBook (`./build-mac.sh`)</span>
+                )}
+                {item.platform === 'openwrt' && (
+                  <span className="text-xs text-[#666] self-center">Сборка .tar.gz — локально в openwrt/; install.sh качает silent-vpn-openwrt.tgz с github.io</span>
                 )}
               </div>
             </div>

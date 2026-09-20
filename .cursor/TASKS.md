@@ -31,6 +31,12 @@ Agent приступает к **первой невыполненной** зад
 
 ## Открытые задачи
 
+### Админка: OpenWrt в Обновлениях (2026-09-20)
+
+- [x] `PLATFORMS` + upload `.tar.gz`/`.tgz`; GitHub `silent-vpn-openwrt-{ver}.tar.gz` + Pages `silent-vpn-openwrt.tgz`
+- [x] Карточка OpenWrt как Mac (загрузка + GitHub, без VPS-сборки и nightly)
+- [x] Деплой `deploy_stable.py` + Ctrl+F5 админки
+
 ### Доступность: pending в деталях (2026-09-20)
 
 - [x] check-host `pending` больше не 1/3 и не `pending×N` в «Ошибки»; деплой `deploy_stable.py`

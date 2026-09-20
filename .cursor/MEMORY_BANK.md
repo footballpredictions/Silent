@@ -1,5 +1,9 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (OpenWrt в Обновлениях 2026-09-20)
+
+В админке «Обновления» не было карточки OpenWrt: `PLATFORMS` был pc/android/linux/mac. Добавил `openwrt`: загрузка `.tar.gz`/`.tgz`, публикация GitHub `silent-vpn-openwrt-{ver}.tar.gz` и Pages `silent-vpn-openwrt.tgz` (так качает install.sh). Сборка на VPS и nightly скрыты, как у Mac. Тесты `test_linux_build_agent_unit.py` ok. Деплой `deploy_stable.py`: health 0.038с, wdtt **active**, kick 0, tunnel DNAT OK. Админка: Ctrl+F5. **wdtt не трогал.**
+
 ## Последние изменения (Доступность: pending не ошибка 2026-09-20)
 
 В «Доступность и блокировки» check-host `pending` (нода не успела) писался как fail: Улей TLS 1/3 pending×2, Сервер 4 ping 2/3 pending×1. Это шум измерителя, не ТСПУ. Теперь pending/probe_error не входят в total/failed и не в колонку «Ошибки»; старый отчёт чистится при чтении. Тесты `test_availability_unit.py` 52 ok. Деплой `deploy_stable.py`: health 0.044с, wdtt **active**, kick 0, tunnel DNAT OK. Админка: Ctrl+F5. **wdtt не трогал.**

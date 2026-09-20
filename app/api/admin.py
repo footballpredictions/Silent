@@ -169,13 +169,19 @@ async def get_stats(
             "system": system,
             "users": users_block,
             "resource_nodes": resource_nodes,
-            "vk_hash_summary": {},
-            "vk_users": [],
-            "vk_hashes": [],
         }
 
     from app.models.hive_cell import HiveCell
-    from app.services.hive_slots import assign_online_to_cell_id, node_title_for_cell, slot_for_cell
+    from app.services.hive_slots import (
+        assign_online_to_cell_id,
+        device_shown_online,
+        merge_live_wg_pubs,
+        node_title_for_cell,
+        slot_for_cell,
+    )
+    from app.services.hive_service import cached_dashboard_live_pubs
+    from app.services.wg_peer_gc import queen_live_pubs_3m
+    import asyncio
 
     users_result = await db.execute(
         select(User)
@@ -208,6 +214,10 @@ async def get_stats(
         .order_by(VkHash.user_id.nullsfirst(), VkHash.slot_index)
     )
     all_hashes = hashes_result.scalars().all()
+    live_pubs = merge_live_wg_pubs(
+        await asyncio.to_thread(queen_live_pubs_3m),
+        cached_dashboard_live_pubs(),
+    )
     legacy_hashes = [h for h in all_hashes if h.user_id is None]
     by_user_id: dict = {}
     for h in all_hashes:
@@ -231,7 +241,7 @@ async def get_stats(
             name = (d.device_name or "").strip()
             if name and name not in device_names:
                 device_names.append(name)
-            if not d.is_connected:
+            if not device_shown_online(d, live_pubs):
                 continue
             nid = assign_online_to_cell_id(
                 device_cell_id=d.cell_id,
@@ -310,6 +320,7 @@ async def get_stats(
     per_user_active = sum(len(v) for v in by_user_id.values())
     users_with_any = sum(1 for u in vk_users if u["slots_filled"] > 0)
     users_complete = sum(1 for u in vk_users if u["slots_filled"] >= MAX_HASHES)
+    users_online = sum(1 for u in vk_users if u["user_connected"])
 
     return {
         "system": system,
@@ -322,6 +333,7 @@ async def get_stats(
             "users_total": len(all_users),
             "users_with_any": users_with_any,
             "users_complete": users_complete,
+            "users_online": users_online,
             "slots_max": MAX_HASHES,
         },
         "vk_users": vk_users,

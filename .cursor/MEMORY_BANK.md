@@ -1,5 +1,19 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (VK-хеши 9 vs 67 онлайн 2026-09-20)
+
+Карточка «Серверные VK-хеши (по пользователям)» зеленела только по `Device.is_connected` (на проде 8 устройств / 7–9 людей за 3 мин), а шапка «Онлайн» — по max(БД, WG live) ≈ 67. Хеши у всех 1148 пользователей на месте (4/4). Теперь строка онлайн = keepalive **или** живой WG-ключ устройства (`wg_public_key` / `wg_live_public_key`), ключи с Улья (dump) и с сот (`wg_live_pubs` в `/v1/status`). Light-полл больше не подставляет пустой список хешей. Тесты `test_hive_slots_unit.py` + `test_cell_standby_online_unit.py` ok. Деплой `deploy_stable.py`: health 0.038с, wdtt **active**, kick 0, tunnel DNAT OK. Соты подтянут `wg_live_pubs` автоапгрейдом. Админка: Ctrl+F5. **wdtt не трогал.**
+
+## Последние изменения (онлайн дашборда: все ноды 2026-09-20)
+
+Корень «6 в шапке / 3 на Улье / 0 на сотах при нагрузке»: карточка брала `wg_peers_live_3m`, агент **всегда** кладёт это поле (часто 0) — и затирал `is_connected` из БД. Плюс wdtt на соте бьёт `127.0.0.1:8000` (standby) и keepalive не писал онлайн на Улей → через 10 мин `clear_stale_online_status` снимал сотовых. Теперь карточка = **max(БД, WG live)**; standby при живом Улье проксирует `/internal/online` на queen с `X-Hive-Cell-Id`. Тесты `test_hive_slots_unit.py` + `test_cell_standby_online_unit.py` ok. Деплой `deploy_stable.py`: health 0.041с, wdtt **active**, kick 0, tunnel DNAT OK. Соты подтянут `standby_runtime.py` автоапгрейдом. **wdtt не трогал.**
+
+## Последние изменения (релизы 1.0.167 на откате ACK-lane 2026-09-20)
+
+Деплой backend **не делал**: откат ACK-lane только в клиентах (`pc` `7893df2`, `android` `33e70a3`). Незакоммиченный дашборд/DNS в `backend/` на прод не заливал. **wdtt не трогал.**
+
+Пересобраны все релизы **без bump** 1.0.167, bootstrap `T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc`: NSIS `pc/build-release-v141-639012/Silent VPN Setup 1.0.167.exe`, `.deb` `pc/build-linux/Silent VPN Setup 1.0.167.deb`, APK `android/SilentVPN-release-1.0.167.apk` (libclient 12632504, verify native OK), OpenWrt `openwrt/dist/silent-vpn-openwrt-1.0.167.tar.gz` (4 арх `wdtt-client` из `pc/wdtt-go`). Копии в `releases/`. iOS/Mac с Windows нет. На GitHub Releases / Pages не заливал — OTA до заливки отдаёт старую сборку с ACK-lane.
+
 ## Последние изменения (откат ACK-lane: предзагрузка и видео 2026-09-19)
 
 Симптомы вечером: на ПК сломалась предзагрузка, видео тормозит; 4PDA-приложение не работает. Корень — **ACK-приоритет** из `53f51f0` (pc) / `cdd7c25` (android): `isAckPriority(n≤128)` кладёт пакет в `PrioCh` воркера `ws[idx]` и **не двигает** `rrIndex`/`rrCount`. На чистой загрузке вверх идут только ACK, поэтому весь поток садится на **один** VK-релей (полоса = один релей, его потеря = стоп TCP). Второй эффект: `chunkSizeFor` 32 для ≥1000 Б учетверял разброс reorder (≈500 → ≈2000 пакетов) — граница anti-replay окна WG. **Откатил** диспетчер к `chunkSize=8` (состояние 1.0.154), снял `dispatcher_policy.go` и `PrioCh` из `session.go`; Allocate-gate, quota-wait и DTLS 30 с **оставил**. `go vet`+тесты ok. Debug: ПК `pc/build-debug-555393/win-unpacked/` (SilentVPN-Admin.bat), APK `android/SilentVPN-debug.apk`. Версию не поднимал, не коммитил, на прод не заливал.

@@ -184,11 +184,17 @@ def node_online_shown(
     wg_live: int | None = None,
     wg_live_known: int | None = None,
 ) -> int:
-    """Карточка ноды = live WG peer'ы (handshake < 3 мин). Нет метрики ноды — запасной счётчик из БД."""
-    _ = is_queen, wg_live_known
-    if wg_live is not None:
-        return max(0, int(wg_live))
-    return max(0, int(db_online or 0))
+    """Карточка ноды: не прятать людей.
+
+    Агент всегда кладёт ``wg_peers_live_3m`` (часто 0) — из‑за этого соты с
+    нагрузкой показывали 0, хотя в БД ``is_connected`` уже есть. Берём максимум
+    из БД и живых handshake.
+    """
+    _ = is_queen
+    db = max(0, int(db_online or 0))
+    live = 0 if wg_live is None else max(0, int(wg_live))
+    known = 0 if wg_live_known is None else max(0, int(wg_live_known))
+    return max(db, live, known)
 
 
 def pick_dashboard_shown_online(
@@ -210,3 +216,38 @@ def pick_dashboard_shown_online(
     if soft and stale_ram is not None:
         return max(0, int(stale_ram))
     return None
+
+
+def merge_live_wg_pubs(*groups) -> set[str]:
+    """Ключи живых handshake с нод (Улей dump + соты /v1/status)."""
+    out: set[str] = set()
+    for group in groups:
+        if not group:
+            continue
+        for p in group:
+            s = str(p).strip()
+            if s:
+                out.add(s)
+    return out
+
+
+def device_shown_online(device, live_pubs: set[str] | None = None) -> bool:
+    """Строка дашборда «онлайн» как шапка: БД или живой WG-ключ устройства.
+
+    ``is_connected`` пишет keepalive. На соте standby глотал /internal/online —
+    в БД 9, в шапке 67 (handshake). Сверяем и identity-ключ, и GETCONF extra
+    (``wg_live_public_key``), без leftover-счётчика без привязки к устройству.
+    """
+    if bool(getattr(device, "is_connected", False)):
+        return True
+    pubs = live_pubs or set()
+    if not pubs:
+        return False
+    for raw in (
+        getattr(device, "wg_public_key", None),
+        getattr(device, "wg_live_public_key", None),
+    ):
+        p = (raw or "").strip()
+        if p and p in pubs:
+            return True
+    return False

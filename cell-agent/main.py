@@ -388,7 +388,9 @@ async def status(
         pass
 
     wg_peers_total = wg_peers_never_hs = wg_peers_live_3m = wg_gc_last_removed = 0
+    wg_live_pubs: list[str] = []
     try:
+        from standby_runtime import wg_live_pubs as list_live_pubs
         from standby_runtime import wg_peer_counts
 
         counts = wg_peer_counts()
@@ -396,6 +398,7 @@ async def status(
         wg_peers_never_hs = int(counts.get("never_hs") or 0)
         wg_peers_live_3m = int(counts.get("live_3m") or 0)
         wg_gc_last_removed = int(counts.get("last_removed") or 0)
+        wg_live_pubs = list(list_live_pubs())
     except Exception:
         pass
 
@@ -423,6 +426,7 @@ async def status(
         "wg_peers_never_hs": wg_peers_never_hs,
         "wg_peers_live_3m": wg_peers_live_3m,
         "wg_gc_last_removed": wg_gc_last_removed,
+        "wg_live_pubs": wg_live_pubs,
     }
 
 

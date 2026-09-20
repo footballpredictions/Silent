@@ -43,7 +43,7 @@ from app.services.hive_slots import (
 
 logger = logging.getLogger(__name__)
 
-# Дашборд и шапка Улья: одно число = сумма WG live по нодам.
+# Дашборд и шапка Улья: одно число = сумма карточек (max БД, WG live по нодам).
 # RAM на воркер + Redis — иначе uvicorn --workers 2 прыгает WG vs is_connected из БД.
 _SHOWN_ONLINE_AT = 0.0
 _SHOWN_ONLINE_N = 0
@@ -51,6 +51,7 @@ _SHOWN_ONLINE_TTL_SEC = 20.0
 _SHOWN_ONLINE_SOFT_SEC = 90.0
 _REDIS_SHOWN_KEY = "hive:vpn_online_shown"
 _shown_redis = None
+_SHOWN_LIVE_PUBS: set[str] = set()
 
 CELL_STATUSES_ACTIVE = frozenset({"active"})
 CELL_STATUSES_ASSIGNABLE = frozenset({"active"})
@@ -479,6 +480,24 @@ async def _redis_set_shown(n: int) -> None:
         logger.debug("Hive: shown-online redis set skipped", exc_info=True)
 
 
+def _sanitize_wg_live_pubs(raw) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw[:400]:
+        s = str(item).strip()
+        if len(s) < 40 or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def cached_dashboard_live_pubs() -> set[str]:
+    return set(_SHOWN_LIVE_PUBS)
+
+
 def remember_vpn_online_shown_ram(n: int) -> None:
     global _SHOWN_ONLINE_AT, _SHOWN_ONLINE_N
     _SHOWN_ONLINE_N = max(0, int(n))
@@ -501,8 +520,16 @@ def cached_vpn_online_shown(*, max_age: float | None = None) -> int | None:
 
 async def refresh_online_shown_cache() -> int:
     """Собрать онлайн как шапка Улья (WG live) и запомнить для дашборда."""
+    global _SHOWN_LIVE_PUBS
     rows = await list_cells_with_stats_pooled(http_timeout=2.0)
     total = sum(int(c.get("online_count") or 0) for c in rows)
+    pubs: set[str] = set()
+    for row in rows:
+        for p in row.get("wg_live_pubs") or []:
+            s = str(p).strip()
+            if s:
+                pubs.add(s)
+    _SHOWN_LIVE_PUBS = pubs
     await remember_vpn_online_shown(total)
     return total
 
@@ -513,10 +540,10 @@ async def vpn_online_shown_total(
     soft: bool = False,
     soft_max_age: float = 90.0,
 ) -> int:
-    """Дашборд «Онлайн» = шапка Улья = сумма карточек (WG live по всем нодам).
+    """Дашборд «Онлайн» = шапка Улья = сумма карточек (люди в БД и handshake на нодах).
 
     soft=True (light-полл): не бить HTTP по сотам, если есть RAM/Redis кэш.
-    Пустой кэш — refresh WG, не is_connected из БД (иначе 2 воркера прыгают ~78/102).
+    Пустой кэш — refresh карточек, не сырой leftover WG.
     """
     ram = cached_vpn_online_shown()
     shared = await _redis_get_shown()
@@ -846,6 +873,7 @@ async def fetch_worker_cell_load(
             "wg_peers_never_hs": int(data.get("wg_peers_never_hs") or 0),
             "wg_peers_live_3m": int(data.get("wg_peers_live_3m") or 0),
             "wg_gc_last_removed": int(data.get("wg_gc_last_removed") or 0),
+            "wg_live_pubs": _sanitize_wg_live_pubs(data.get("wg_live_pubs")),
         }
     except Exception as e:
         logger.debug("Hive: load %s failed: %s", cell.name, e)
@@ -928,6 +956,7 @@ def cell_to_response(
         "last_seen_at": cell.last_seen_at,
         "last_error": cell.last_error,
         "created_at": cell.created_at,
+        "wg_live_pubs": _sanitize_wg_live_pubs((load or {}).get("wg_live_pubs")),
     }
     if load:
         out["load"] = load

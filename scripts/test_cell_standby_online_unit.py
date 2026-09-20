@@ -37,6 +37,13 @@ def test_manifest_cell_id_goes_to_queen_header():
     assert hive_cell_id_from_manifest(None) == ""
 
 
+def test_status_exposes_live_pubs_for_dashboard_hashes():
+    src = (ROOT / "cell-agent" / "standby_runtime.py").read_text(encoding="utf-8")
+    assert "def wg_live_pubs" in src
+    main = (ROOT / "cell-agent" / "main.py").read_text(encoding="utf-8")
+    assert '"wg_live_pubs"' in main
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for t in tests:

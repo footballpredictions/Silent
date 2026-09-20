@@ -98,6 +98,7 @@ async def gc_stale_queen_peers(
 _QUEEN_WG_COUNTS_AT = 0.0
 _QUEEN_WG_COUNTS: dict[str, int] | None = None
 _QUEEN_WG_COUNTS_TTL_SEC = 8.0
+_QUEEN_WG_LIVE_PUBS: set[str] = set()
 
 
 def count_queen_wg_live_3m(*, window_sec: float = 180.0, known: set[str] | None = None) -> int:
@@ -108,12 +109,18 @@ def count_queen_wg_live_3m(*, window_sec: float = 180.0, known: set[str] | None 
     return int(counts.get("wg_peers_live_3m") or 0)
 
 
+def queen_live_pubs_3m() -> set[str]:
+    """Публичные ключи с handshake <3 мин на wdtt0 Улья. Кэш вместе со счётчиками."""
+    queen_wg_peer_counts()
+    return set(_QUEEN_WG_LIVE_PUBS)
+
+
 def queen_wg_peer_counts(
     *,
     known_connected: set[str] | None = None,
     window_sec: float = 180.0,
 ) -> dict[str, int]:
-    global _QUEEN_WG_COUNTS_AT, _QUEEN_WG_COUNTS
+    global _QUEEN_WG_COUNTS_AT, _QUEEN_WG_COUNTS, _QUEEN_WG_LIVE_PUBS
     now = time.monotonic()
     if (
         known_connected is None
@@ -134,12 +141,15 @@ def queen_wg_peer_counts(
         }
     never = live = live_known = 0
     known = known_connected or set()
+    live_pubs: set[str] = set()
     for p in peers:
         if p.handshake_age is None:
             never += 1
             continue
         if p.handshake_age < window_sec:
             live += 1
+            if p.pub:
+                live_pubs.add(p.pub)
             if p.pub in known:
                 live_known += 1
     out = {
@@ -152,4 +162,5 @@ def queen_wg_peer_counts(
     if known_connected is None and window_sec == 180.0:
         _QUEEN_WG_COUNTS = dict(out)
         _QUEEN_WG_COUNTS_AT = now
+        _QUEEN_WG_LIVE_PUBS = live_pubs
     return out

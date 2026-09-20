@@ -117,6 +117,7 @@ interface Stats {
     users_total: number
     users_with_any: number
     users_complete: number
+    users_online?: number
     slots_max: number
   }
 }
@@ -358,9 +359,9 @@ function VkHashesCard({
   const toggle = (email: string) =>
     setOpen(prev => ({ ...prev, [email]: !prev[email] }))
 
-  const summaryLine = summary
-    ? `${summary.users_total} пользователей · ${summary.per_user_active} хешей у пользователей · ${summary.users_complete} с полным набором (${summary.slots_max}/${summary.slots_max})`
-    : `${hashes.length} активных хешей`
+  const summaryLine = summary && typeof summary.users_total === 'number'
+    ? `${summary.users_total} пользователей · онлайн ${summary.users_online ?? '—'} · ${summary.per_user_active} хешей у пользователей · ${summary.users_complete} с полным набором (${summary.slots_max}/${summary.slots_max})`
+    : `${(hashes || []).length} активных хешей`
 
   return (
     <div className="bg-[#111] border border-[#222] rounded-xl p-5 min-w-0 overflow-hidden">
@@ -540,7 +541,8 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
         return
       }
       setStats(prev => {
-        if (mode === 'light' && prev) {
+        if (mode === 'light') {
+          if (!prev) return prev
           return {
             ...prev,
             system: data.system,
@@ -750,7 +752,7 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
         </div>
       </div>
 
-      <VkHashesCard hashes={stats.vk_hashes} vkUsers={stats.vk_users} summary={stats.vk_hash_summary} />
+      <VkHashesCard hashes={stats.vk_hashes ?? []} vkUsers={stats.vk_users} summary={stats.vk_hash_summary} />
     </div>
   )
 }

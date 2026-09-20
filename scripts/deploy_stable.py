@@ -76,7 +76,7 @@ def main() -> None:
             print("ui", rel)
 
     cell_agent_dir = BACKEND_ROOT / "cell-agent"
-    for name in ("main.py", "standby_runtime.py"):
+    for name in ("main.py", "standby_runtime.py", "standby_online.py"):
         cell_agent = cell_agent_dir / name
         if cell_agent.is_file():
             rp = f"{REMOTE}/cell-agent/{name}"

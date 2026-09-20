@@ -37,17 +37,20 @@ Agent приступает к **первой невыполненной** зад
 - [x] Откат диспетчера к `chunkSize=8`, снят `dispatcher_policy.go` и `PrioCh`; Allocate-gate / quota-wait / DTLS 30 с оставлены
 - [x] `go vet` + тесты PC и Android ok; debug ПК `build-debug-555393`, APK `android/SilentVPN-debug.apk`
 - [x] Push `pc` `7893df2`, `android` `33e70a3`
-- [x] Релизы 1.0.167 на откате: NSIS, `.deb`, APK, OpenWrt tarball (роутерный `wdtt-client` из `pc/wdtt-go` пересобран под 4 арх)
+- [x] Релизы 1.0.167 на откате: NSIS `build-release-v141-639012`, `.deb`, APK, OpenWrt tarball (20.09 утро)
 - [ ] Залить 1.0.167 на GitHub Releases + `releases.json` на Pages — иначе OTA отдаёт сборку с ACK-lane
 - [ ] Приёмка: предзагрузка и видео на Сервере 1, 4PDA-приложение
 - [ ] Потолок 53/55 воркеров: нужен лог рампа с ПК (есть ли «Квота relay, ждём без refresh» / 486)
 - [ ] Улей: жёсткий ребут хостера 18:47 UTC 19.09 + `silent-vps-cleanup.service` failed — разобрать отдельно
 
-### Дашборд: онлайн только Улей (2026-09-19)
+### Дашборд: онлайн всех нод (2026-09-20)
 
-- [x] Корень: standby `/internal/online` не проксировал на Улей → `is_connected` гас у сот
-- [x] Прокси online при queen_healthy + `X-Hive-Cell-Id`; подпись `node_title_for_cell`
-- [ ] Залить `cell-agent/` на соты и `deploy_stable.py` (admin.py + hive_slots), без рестарта wdtt/api/nginx
+- [x] Корень: `wg_live=0` затирал людей на соте; standby глотал `/internal/online`
+- [x] `node_online_shown` = max(БД, WG); прокси online на Улей + `X-Hive-Cell-Id`
+- [x] Тесты hive_slots + cell_standby_online; `deploy_stable.py` health 0.041с, wdtt active, kick 0
+- [x] VK-хеши по пользователям: зелёные были только `is_connected` (9), шапка — WG (67). Теперь тот же live-ключ (+ GETCONF extra)
+- [ ] Приёмка: шапка = сумма карточек; в «Серверные VK-хеши» онлайн ≈ шапка, не 9 vs 67
+- [ ] Ctrl+F5 админки после деплоя
 
 ### DNS в туннеле и 53 воркера на Сервере 1 (2026-09-19)
 

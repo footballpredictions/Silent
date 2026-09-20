@@ -75,6 +75,10 @@ struct ThemeData: Decodable {
     var login_qr_confirm_hint: String?
     var menu_qr_label: String?
     var skip_email_confirmation: Bool?
+    var subscription_tier_3_label: String?
+    var subscription_tier_5_label: String?
+    var subscription_choose_tier_title: String?
+    var subscription_choose_plan_title: String?
 }
 
 struct PaymentResponse: Decodable {

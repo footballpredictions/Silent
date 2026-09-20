@@ -101,6 +101,9 @@ struct MainView: View {
         .sheet(isPresented: $vm.showSupport) {
             SupportView(vm: vm)
         }
+        .sheet(isPresented: $vm.showSubscription) {
+            SubscriptionSheet(vm: vm)
+        }
     }
 
     var statusText: String {

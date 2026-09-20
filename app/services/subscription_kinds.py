@@ -84,9 +84,37 @@ def add_calendar_months(dt: datetime, months: int) -> datetime:
     return dt.replace(year=year, month=month, day=day)
 
 
+# Планы магазина с 5 слотами устройств (срок как у базового id без суффикса).
+FIVE_DEVICE_PLAN_IDS = frozenset({"monthly_5", "two_months_5", "quarterly_5"})
+DEFAULT_MAX_DEVICES = 3
+FIVE_DEVICE_MAX = 5
+
+
+def duration_plan_key(plan_type: str | None) -> str:
+    """Ключ длительности: monthly_5 → monthly (срок тот же)."""
+    plan = (plan_type or "").strip().lower()
+    if plan.endswith("_5") and plan[:-2] in PLAN_CALENDAR_MONTHS:
+        return plan[:-2]
+    if plan.endswith("_5") and plan[:-2] in PLAN_FIXED_DAYS:
+        return plan[:-2]
+    if plan.endswith("_5") and len(plan) > 2:
+        base = plan[:-2]
+        if base:
+            return base
+    return plan
+
+
+def devices_for_plan(plan_type: str | None) -> int:
+    """Слоты сессий по плану: 3 по умолчанию, 5 для *_5. Админ — отдельно (0)."""
+    plan = (plan_type or "").strip().lower()
+    if plan in FIVE_DEVICE_PLAN_IDS or plan.endswith("_5"):
+        return FIVE_DEVICE_MAX
+    return DEFAULT_MAX_DEVICES
+
+
 def plan_expires_at(base: datetime, plan_type: str) -> datetime:
     """Срок окончания плана от base (обычно now или текущий expires_at при продлении)."""
-    plan = (plan_type or "").strip().lower()
+    plan = duration_plan_key(plan_type)
     if plan in PLAN_FIXED_DAYS:
         return base + timedelta(days=PLAN_FIXED_DAYS[plan])
     if plan in PLAN_CALENDAR_MONTHS:
@@ -268,11 +296,11 @@ def user_matches_subscription_filter(
     if mode == "with_sub":
         return best_kind in WITH_SUB_KINDS
     if mode == "monthly":
-        return best_kind == "paid" and best_plan == "monthly"
+        return best_kind == "paid" and duration_plan_key(best_plan) == "monthly"
     if mode == "two_months":
-        return best_kind == "paid" and best_plan == "two_months"
+        return best_kind == "paid" and duration_plan_key(best_plan) == "two_months"
     if mode == "quarterly":
-        return best_kind == "paid" and best_plan == "quarterly"
+        return best_kind == "paid" and duration_plan_key(best_plan) == "quarterly"
     if mode == "granted":
         return best_kind == "granted"
     if mode == "trial":

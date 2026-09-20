@@ -51,6 +51,7 @@ from app.services.subscription_service import (
     require_active_subscription,
     require_device_trial_not_reused,
     is_user_admin,
+    max_devices_for_user,
 )
 from app.services.theme_settings import load_theme
 from app.config import settings
@@ -408,10 +409,11 @@ async def connect(
 
     if not device.is_connected:
         connected = await count_connected_sessions(db, user.id)
-        if not is_user_admin(user) and connected >= settings.MAX_DEVICES_PER_USER:
+        limit = await max_devices_for_user(db, user)
+        if limit > 0 and connected >= limit:
             raise HTTPException(
                 status_code=403,
-                detail=f"Достигнут лимит {settings.MAX_DEVICES_PER_USER} одновременных подключений VPN.",
+                detail=f"Достигнут лимит {limit} одновременных подключений VPN.",
             )
 
     ver = _request_app_version(request)

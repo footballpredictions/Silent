@@ -153,6 +153,9 @@ async def check_promo(
         "two_months": settings.PRICE_TWO_MONTHS,
         "quarterly": settings.PRICE_QUARTERLY,
         "yearly": settings.PRICE_YEARLY,
+        "monthly_5": settings.PRICE_MONTHLY_5,
+        "two_months_5": settings.PRICE_TWO_MONTHS_5,
+        "quarterly_5": settings.PRICE_QUARTERLY_5,
     }
     original = price_map.get(req.plan_type, 0)
     discounted = round(original * (1 - promo.discount_percent / 100), 2)
@@ -168,9 +171,23 @@ async def check_promo(
 
 @router.get("/plans")
 async def get_plans():
-    """Тарифы магазина в приложении (3 плана). yearly остаётся в PLAN_PRICES для старых клиентов."""
+    """Тарифы магазина: список + tiers (3/5 устройств).
+
+    Старые клиенты читают JSON-массив и берут первые планы / все id.
+    Новые — фильтруют по devices или берут tiers.
+    """
+    plans_3 = [
+        {"id": "monthly", "name": "Месяц", "price": settings.PRICE_MONTHLY, "days": 30, "devices": 3},
+        {"id": "two_months", "name": "2 месяца", "price": settings.PRICE_TWO_MONTHS, "days": 60, "devices": 3},
+        {"id": "quarterly", "name": "3 месяца", "price": settings.PRICE_QUARTERLY, "days": 90, "devices": 3},
+    ]
+    plans_5 = [
+        {"id": "monthly_5", "name": "Месяц", "price": settings.PRICE_MONTHLY_5, "days": 30, "devices": 5},
+        {"id": "two_months_5", "name": "2 месяца", "price": settings.PRICE_TWO_MONTHS_5, "days": 60, "devices": 5},
+        {"id": "quarterly_5", "name": "3 месяца", "price": settings.PRICE_QUARTERLY_5, "days": 90, "devices": 5},
+    ]
+    # Список — как раньше (Retrofit List): 3-устройственные первыми для fail-safe старых UI.
     return [
-        {"id": "monthly", "name": "Месяц", "price": settings.PRICE_MONTHLY, "days": 30},
-        {"id": "two_months", "name": "2 месяца", "price": settings.PRICE_TWO_MONTHS, "days": 60},
-        {"id": "quarterly", "name": "3 месяца", "price": settings.PRICE_QUARTERLY, "days": 90},
+        *plans_3,
+        *plans_5,
     ]

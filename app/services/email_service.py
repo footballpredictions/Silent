@@ -293,9 +293,12 @@ def send_subscription_activated_email(
 ) -> bool:
     plan_names = {
         "three_days": "3 дня",
-        "monthly": "Месячный",
-        "two_months": "2 месяца",
-        "quarterly": "3 месяца",
+        "monthly": "Месячный (3 устройства)",
+        "two_months": "2 месяца (3 устройства)",
+        "quarterly": "3 месяца (3 устройства)",
+        "monthly_5": "Месячный (5 устройств)",
+        "two_months_5": "2 месяца (5 устройств)",
+        "quarterly_5": "3 месяца (5 устройств)",
         "half_year": "Полгода",
         "yearly": "Годовой",
         "unlimited": "Безлимитный",

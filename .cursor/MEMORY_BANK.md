@@ -1,5 +1,21 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (debug 3/5 устройств 2026-09-20)
+
+Пересобраны debug для приёмки тарифов 3/5: ПК `pc/build-debug-399830/win-unpacked/` (`SilentVPN-Admin.bat`), APK `android/SilentVPN-debug.apk` (48907945). Версию не поднимал, не пушил. **wdtt не трогал.**
+
+## Последние изменения (тарифы 3/5 устройств 2026-09-20)
+
+В подписке перед тарифами — выбор «3 устройства» / «5 устройств». Цены 5 устр.: 330 / 594 / 792 ₽ (`monthly_5` / `two_months_5` / `quarterly_5`). `max_devices` в профиле берётся из активного плана (3 или 5); бейдж «Сессии N/M» на клиентах. Theme: `subscription_tier_*` / `subscription_choose_*`. PC / Android / OpenWrt / iOS + Оформление ClientPreview. Тесты `test_device_tier_plans_unit.py` ok. Деплой `deploy_stable.py`: health 0.040с, wdtt **active**, kick 0, tunnel DNAT OK. Админка: Ctrl+F5. Клиенты на origin ещё не пушил. **wdtt не трогал.**
+
+## Последние изменения (Оформление: подписка без фейковых кнопок 2026-09-20)
+
+Превью «Подписка» больше не показывает кнопки «Тарифы / Ждём / Успех / Ошибка» — в клиенте их нет, только список тарифов. Исключения: чипы Сайты / Приложения как в PC/Android, не пункт бокового меню. Деплой `deploy_stable.py`. Админка: Ctrl+F5. **wdtt не трогал.**
+
+## Последние изменения (Оформление как текущий клиент 2026-09-20)
+
+Админка «Оформление» показывала старое меню (без DNS / «Выбор сервера», QR как пункт, «Исключения приложений»). Теперь превью как PC/Android: Подписка → Исключения (Сайты/Приложения, ЧС/БС) → DNS → Выбор сервера 1–4 → Бонусы → Сессии. QR — отдельный экран Smart TV, не вкладка телефона и не пункт меню. Telegram proxy только в debug. Вкладки сгруппированы: Вход / Главная / Меню. Деплой `deploy_stable.py`: health 0.034с, wdtt **active**, kick 0. Админка: Ctrl+F5. **wdtt не трогал.**
+
 ## Последние изменения (OpenWrt в Обновлениях 2026-09-20)
 
 В админке «Обновления» не было карточки OpenWrt: `PLATFORMS` был pc/android/linux/mac. Добавил `openwrt`: загрузка `.tar.gz`/`.tgz`, публикация GitHub `silent-vpn-openwrt-{ver}.tar.gz` и Pages `silent-vpn-openwrt.tgz` (так качает install.sh). Сборка на VPS и nightly скрыты, как у Mac. Тесты `test_linux_build_agent_unit.py` ok. Деплой `deploy_stable.py`: health 0.038с, wdtt **active**, kick 0, tunnel DNAT OK. Админка: Ctrl+F5. **wdtt не трогал.**

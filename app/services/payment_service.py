@@ -34,6 +34,9 @@ PLAN_PRICES = {
     "two_months": (settings.PRICE_TWO_MONTHS, 60),
     "quarterly": (settings.PRICE_QUARTERLY, 90),  # 3 месяца
     "yearly": (settings.PRICE_YEARLY, 365),  # старые клиенты 1.0.160/161
+    "monthly_5": (settings.PRICE_MONTHLY_5, 30),
+    "two_months_5": (settings.PRICE_TWO_MONTHS_5, 60),
+    "quarterly_5": (settings.PRICE_QUARTERLY_5, 90),
 }
 
 MAX_WALLETS = 10

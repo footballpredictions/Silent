@@ -17,7 +17,7 @@ from app.core.security import generate_wdtt_password, encrypt_value
 from app.config import settings
 from app.schemas.vpn import VpnConfigResponse
 from app.services import hive_service
-from app.services.subscription_service import device_limit_applies
+from app.services.subscription_service import device_limit_applies, max_devices_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +27,10 @@ DEVICE_LIMIT_HINT = (
 )
 
 
-def device_limit_error() -> ValueError:
+def device_limit_error(limit: int | None = None) -> ValueError:
+    n = settings.MAX_DEVICES_PER_USER if limit is None else limit
     return ValueError(
-        f"Достигнут лимит {settings.MAX_DEVICES_PER_USER} устройств. {DEVICE_LIMIT_HINT}"
+        f"Достигнут лимит {n} устройств. {DEVICE_LIMIT_HINT}"
     )
 
 
@@ -562,11 +563,14 @@ async def prune_old_sessions(db: AsyncSession, user_id) -> int:
 
 
 async def prune_oldest_session_if_full(db: AsyncSession, user: User) -> bool:
-    """Если лимит 3 — удалить самую старую неподключённую сессию."""
+    """Если лимит устройств исчерпан — удалить самую старую неподключённую сессию."""
     if not device_limit_applies(user):
         return False
+    limit = await max_devices_for_user(db, user)
+    if limit <= 0:
+        return False
     active_count = await count_active_sessions(db, user.id)
-    if active_count < settings.MAX_DEVICES_PER_USER:
+    if active_count < limit:
         return False
     result = await db.execute(
         select(Device)
@@ -665,8 +669,10 @@ async def ensure_device_session(
         return existing
 
     active_count = await count_active_sessions(db, user.id)
-    if device_limit_applies(user) and active_count >= settings.MAX_DEVICES_PER_USER:
-        raise device_limit_error()
+    if device_limit_applies(user):
+        limit = await max_devices_for_user(db, user)
+        if limit > 0 and active_count >= limit:
+            raise device_limit_error(limit)
 
     priv_key, pub_key = _generate_wg_keypair()
     pref_server, cell = await hive_service.resolve_manual_server_cell(db, pref_server)
@@ -732,8 +738,10 @@ async def register_device(
         return await _build_vpn_config(db, existing, pref_server or None)
 
     active_count = await count_active_sessions(db, user.id)
-    if device_limit_applies(user) and active_count >= settings.MAX_DEVICES_PER_USER:
-        raise device_limit_error()
+    if device_limit_applies(user):
+        limit = await max_devices_for_user(db, user)
+        if limit > 0 and active_count >= limit:
+            raise device_limit_error(limit)
 
     priv_key, pub_key = _generate_wg_keypair()
     if wg_public_key:

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import ClientPreview, { SCREEN_TABS, type PreviewScreen, type ClientTheme } from '../components/ClientPreview'
+import ClientPreview, { SCREEN_TAB_GROUPS, SCREEN_TABS, type PreviewScreen, type ClientTheme } from '../components/ClientPreview'
 
 const defaultTheme = {
   primary_color: '#000000', background_color: '#FFFFFF', text_color: '#000000',
@@ -58,20 +58,27 @@ const defaultTheme = {
   payment_timeout_text: 'Если вы уже оплатили — подождите ещё немного или проверьте позже в разделе «Подписка».',
   payment_retry_button_text: 'Попробовать снова',
   payment_cancel_button_text: 'Отмена',
+  subscription_tier_3_label: '3 устройства',
+  subscription_tier_5_label: '5 устройств',
+  subscription_choose_tier_title: 'Сколько устройств',
+  subscription_choose_plan_title: 'Выберите тариф',
 }
 
 type Theme = typeof defaultTheme
 
 /** Какие поля темы влияют на каждый экран предпросмотра */
 const SCREEN_HINTS: Partial<Record<PreviewScreen, string>> = {
-  login: 'Стартовый экран: bootstrap VPN автоматически (хеш в сборке). Табы «Войти» / «Регистрация» / «QR». Поле промо/реф на регистрации. Логотип.',
+  login: 'Телефон/ПК: табы «Войти» / «Регистрация». QR на этом экране нет. Промо/реф — только на регистрации. Логотип.',
   login_forgot: 'Экран из приложения после «Забыли пароль?».',
-  login_expired: 'Панель при истечении 2 мин bootstrap. Тексты пока в коде клиентов.',
+  login_qr: 'Только Smart TV: третья вкладка QR. На телефоне и в боковом меню пункта QR нет.',
+  login_expired: 'Панель при истечении bootstrap. Тексты пока в коде клиентов.',
   login_reset_web: 'HTML-страница из письма — открывается в браузере, не в приложении.',
   main: 'Главный экран: цвета, тумблер, логотип, фон. Лого и фон картинки пока только в debug PC/Android — release игнорирует. Переключатель тёмной темы справа — только превью.',
-  menu: 'Боковое меню: фон, текст, акцент, шрифт. Пункт «Бонусы». «Ускорить Telegram» если задан proxy URL.',
-  subscription: 'Тарифы + оплата (YuMoney в браузере): один флоу для PC/Android/iOS. Основной цвет (кнопки), фон, текст, тексты ожидания/успеха/ошибки оплаты.',
-  exceptions: 'Список приложений (Android): фон, текст, основной цвет.',
+  menu: 'Боковое меню как в клиенте: Подписка, Исключения, DNS, Выбор сервера, Бонусы, Сессии, Поддержка, О сервисе. «Ускорить Telegram» только в debug.',
+  subscription: 'Как в клиенте: выбор 3/5 устройств, затем список тарифов. Тексты ожидания/успеха/ошибки — после оплаты в браузере.',
+  exceptions: 'Как в клиенте: чипы Сайты / Приложения, в приложениях ЧС и БС. Не отдельный пункт бокового меню.',
+  dns: 'DNS: «Как на сервере» или свой. Применяется при следующем подключении VPN.',
+  bypass: 'Выбор сервера: Сервер 1–3 и «Сервер 4 для ИИ». Смена при выключенном VPN.',
   bonuses: 'Бонусы: реферальная ссылка + промокод. Тексты и подписи ниже.',
   devices: 'Сессии: фон, текст.',
   support: 'Поддержка: фон, текст. Два значка Telegram — канал и direct-поддержка.',
@@ -264,19 +271,8 @@ export default function ThemePage({ token }: { token: string }) {
             <p className="text-xs text-[#666]">{SCREEN_HINTS.login}</p>
             {field('«Запомнить меня»', 'login_remember_me_label')}
             {field('«Забыли пароль?»', 'login_forgot_password_label')}
-            {field('Вкладка QR', 'login_qr_tab_label')}
-            {field('Заголовок QR', 'login_qr_title')}
-            {fieldTextarea('Подсказка «мой код»', 'login_qr_show_hint')}
-            {fieldTextarea('Подсказка сканера', 'login_qr_scan_hint')}
-            {field('Подпись «Мой код»', 'login_qr_code_label')}
-            {field('Подпись «Сканер»', 'login_qr_scan_label')}
-            {field('Ожидание QR', 'login_qr_waiting')}
-            {field('QR истёк', 'login_qr_expired')}
-            {field('Кнопка подтверждения QR', 'login_qr_confirm_label')}
-            {fieldTextarea('Подсказка подтверждения QR', 'login_qr_confirm_hint')}
-            {field('Пункт меню QR', 'menu_qr_label')}
             {field('Цвет ссылок', 'login_link_color')}
-            {field('Подпись поля промо/реф', 'register_referral_or_promo_label')}
+            {field('Подпись поля промо/реф (регистрация)', 'register_referral_or_promo_label')}
             {fieldTextarea('Подсказка промо/реф', 'register_referral_or_promo_hint')}
             {colorFields()}
             <div>
@@ -311,6 +307,23 @@ export default function ThemePage({ token }: { token: string }) {
             {field('Заголовок', 'login_forgot_title')}
             {fieldTextarea('Инструкция', 'login_forgot_instruction')}
             {field('Цвет ссылок', 'login_link_color')}
+            {colorFields()}
+          </div>
+        )
+      case 'login_qr':
+        return (
+          <div className="space-y-4">
+            <p className="text-xs text-[#666]">{SCREEN_HINTS.login_qr}</p>
+            {field('Вкладка QR', 'login_qr_tab_label')}
+            {field('Заголовок QR', 'login_qr_title')}
+            {fieldTextarea('Подсказка «мой код»', 'login_qr_show_hint')}
+            {fieldTextarea('Подсказка сканера (телефон)', 'login_qr_scan_hint')}
+            {field('Подпись «Мой код»', 'login_qr_code_label')}
+            {field('Подпись «Сканер»', 'login_qr_scan_label')}
+            {field('Ожидание QR', 'login_qr_waiting')}
+            {field('QR истёк', 'login_qr_expired')}
+            {field('Кнопка подтверждения QR', 'login_qr_confirm_label')}
+            {fieldTextarea('Подсказка подтверждения QR', 'login_qr_confirm_hint')}
             {colorFields()}
           </div>
         )
@@ -395,8 +408,6 @@ export default function ThemePage({ token }: { token: string }) {
             {field('URL логотипа', 'logo_url')}
             {field('URL поддержки (Telegram direct)', 'support_url')}
             {field('URL канала Telegram', 'telegram_channel_url')}
-            {field('Telegram proxy URL (tg:// или t.me/proxy)', 'telegram_proxy_url')}
-            {field('Пункт меню proxy', 'telegram_proxy_menu_label')}
             {field('URL политики конфиденциальности', 'privacy_url')}
             {field('URL условий использования', 'terms_url')}
           </div>
@@ -425,7 +436,10 @@ export default function ThemePage({ token }: { token: string }) {
             {field('Цвет текста', 'text_color')}
             {field('Акцентный цвет', 'accent_color')}
             {field('Шрифт', 'font_family')}
-            {field('Telegram proxy URL', 'telegram_proxy_url')}
+            <p className="text-xs text-[#555] leading-relaxed">
+              «Ускорить Telegram» в меню только в debug-сборках. В release пункта нет.
+            </p>
+            {field('Telegram proxy URL (debug)', 'telegram_proxy_url')}
             {field('Пункт меню «Ускорить Telegram»', 'telegram_proxy_menu_label')}
           </div>
         )
@@ -433,6 +447,13 @@ export default function ThemePage({ token }: { token: string }) {
         return (
           <div className="space-y-4">
             <p className="text-xs text-[#666]">{SCREEN_HINTS.subscription}</p>
+            <p className="text-[11px] text-[#555] leading-relaxed">
+              На экране подписки — выбор числа устройств и тарифы. Тексты ниже показываются после перехода в браузер.
+            </p>
+            {field('Заголовок выбора устройств', 'subscription_choose_tier_title')}
+            {field('Подпись «3 устройства»', 'subscription_tier_3_label')}
+            {field('Подпись «5 устройств»', 'subscription_tier_5_label')}
+            {field('Заголовок тарифов', 'subscription_choose_plan_title')}
             {field('Заголовок «Ждём оплату»', 'payment_waiting_title')}
             {fieldTextarea('Текст «Ждём оплату»', 'payment_waiting_text')}
             {field('Заголовок «Успех»', 'payment_success_title')}
@@ -447,6 +468,8 @@ export default function ThemePage({ token }: { token: string }) {
           </div>
         )
       case 'exceptions':
+      case 'dns':
+      case 'bypass':
       case 'devices':
       case 'support':
       case 'about':
@@ -479,25 +502,32 @@ export default function ThemePage({ token }: { token: string }) {
       <div>
         <h1 className="text-xl font-bold">Оформление клиентов</h1>
         <p className="text-[#555] text-sm mt-1">
-          Вход без шага VK — bootstrap в сборке. Выберите экран: слева настройки, справа предпросмотр.
-          {' '}Логотип и фон главной сейчас применяются только в debug PC/Android.
+          Экраны и пункты меню как в текущих клиентах. Слева настройки выбранного экрана, справа предпросмотр.
+          {' '}QR — только Smart TV. Логотип и фон главной сейчас применяются только в debug PC/Android.
         </p>
       </div>
 
-      <div className="flex flex-wrap gap-1.5">
-        {SCREEN_TABS.map(({ id, label }) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setScreen(id)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
-              screen === id
-                ? 'bg-white text-black border-white'
-                : 'bg-[#1a1a1a] text-[#888] border-[#333] hover:border-[#555] hover:text-[#ccc]'
-            }`}
-          >
-            {label}
-          </button>
+      <div className="space-y-3 min-w-0">
+        {SCREEN_TAB_GROUPS.map(group => (
+          <div key={group.title} className="min-w-0">
+            <p className="text-[11px] text-[#555] mb-1.5">{group.title}</p>
+            <div className="flex flex-wrap gap-1.5">
+              {group.tabs.map(({ id, label }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setScreen(id)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
+                    screen === id
+                      ? 'bg-white text-black border-white'
+                      : 'bg-[#1a1a1a] text-[#888] border-[#333] hover:border-[#555] hover:text-[#ccc]'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
         ))}
       </div>
 

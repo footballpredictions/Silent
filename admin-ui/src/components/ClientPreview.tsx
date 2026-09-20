@@ -28,6 +28,9 @@ export type ClientTheme = {
   login_remember_me_label?: string
   login_qr_tab_label?: string
   login_qr_title?: string
+  login_qr_show_hint?: string
+  login_qr_waiting?: string
+  login_qr_expired?: string
   menu_qr_label?: string
   login_forgot_password_label?: string
   login_forgot_title?: string
@@ -65,12 +68,17 @@ export type ClientTheme = {
   payment_timeout_text?: string
   payment_retry_button_text?: string
   payment_cancel_button_text?: string
+  subscription_tier_3_label?: string
+  subscription_tier_5_label?: string
+  subscription_choose_tier_title?: string
+  subscription_choose_plan_title?: string
   skip_email_confirmation?: boolean
 }
 
 type PreviewScreen =
   | 'login'
   | 'login_forgot'
+  | 'login_qr'
   | 'login_expired'
   | 'login_reset_web'
   | 'main'
@@ -79,6 +87,8 @@ type PreviewScreen =
   | 'menu'
   | 'subscription'
   | 'exceptions'
+  | 'dns'
+  | 'bypass'
   | 'bonuses'
   | 'devices'
   | 'support'
@@ -86,28 +96,51 @@ type PreviewScreen =
 
 export type { PreviewScreen }
 
-export const SCREEN_TABS: { id: PreviewScreen; label: string }[] = [
-  { id: 'login', label: 'Вход' },
-  { id: 'login_forgot', label: 'Восстановление' },
-  { id: 'login_expired', label: 'Время вышло' },
-  { id: 'login_reset_web', label: 'Сброс (web)' },
-  { id: 'main', label: 'Главная' },
-  { id: 'main_update', label: 'Обновление' },
-  { id: 'main_download', label: 'Загрузка' },
-  { id: 'menu', label: 'Меню' },
-  { id: 'subscription', label: 'Подписка' },
-  { id: 'exceptions', label: 'Исключения' },
-  { id: 'bonuses', label: 'Бонусы' },
-  { id: 'devices', label: 'Сессии' },
-  { id: 'support', label: 'Поддержка' },
-  { id: 'about', label: 'О сервисе' },
+export const SCREEN_TAB_GROUPS: { title: string; tabs: { id: PreviewScreen; label: string }[] }[] = [
+  {
+    title: 'Вход',
+    tabs: [
+      { id: 'login', label: 'Вход' },
+      { id: 'login_forgot', label: 'Восстановление' },
+      { id: 'login_qr', label: 'QR (ТВ)' },
+      { id: 'login_expired', label: 'Время вышло' },
+      { id: 'login_reset_web', label: 'Сброс (web)' },
+    ],
+  },
+  {
+    title: 'Главная',
+    tabs: [
+      { id: 'main', label: 'Главная' },
+      { id: 'main_update', label: 'Обновление' },
+      { id: 'main_download', label: 'Загрузка' },
+    ],
+  },
+  {
+    title: 'Меню',
+    tabs: [
+      { id: 'menu', label: 'Меню' },
+      { id: 'subscription', label: 'Подписка' },
+      { id: 'exceptions', label: 'Исключения' },
+      { id: 'dns', label: 'DNS' },
+      { id: 'bypass', label: 'Выбор сервера' },
+      { id: 'bonuses', label: 'Бонусы' },
+      { id: 'devices', label: 'Сессии' },
+      { id: 'support', label: 'Поддержка' },
+      { id: 'about', label: 'О сервисе' },
+    ],
+  },
 ]
 
-const MENU_ITEMS_BASE: { id: PreviewScreen; label: string; badge?: string }[] = [
-  { id: 'subscription', label: 'Подписка', badge: 'Активна' },
-  { id: 'exceptions', label: 'Исключения приложений' },
+export const SCREEN_TABS = SCREEN_TAB_GROUPS.flatMap(g => g.tabs)
+
+/** Как Android/PC: Подписка → Исключения → DNS → Выбор сервера → Бонусы → Сессии → Поддержка → О сервисе */
+const MENU_ITEMS_BASE: { id: PreviewScreen; label: string }[] = [
+  { id: 'subscription', label: 'Подписка' },
+  { id: 'exceptions', label: 'Исключения' },
+  { id: 'dns', label: 'DNS  ·  Как на сервере' },
+  { id: 'bypass', label: 'Выбор сервера  ·  сервер' },
   { id: 'bonuses', label: 'Бонусы' },
-  { id: 'devices', label: 'Сессии', badge: '1/3' },
+  { id: 'devices', label: 'Сессии (1/3)' },
   { id: 'support', label: 'Поддержка' },
   { id: 'about', label: 'О сервисе' },
 ]
@@ -137,7 +170,11 @@ export default function ClientPreview({
     else setInternalScreen(s)
   }
   const [connected, setConnected] = useState(true)
-  const [paymentPreviewState, setPaymentPreviewState] = useState<'plans' | 'waiting' | 'success' | 'failed'>('plans')
+  const [authTab, setAuthTab] = useState<'login' | 'register'>('login')
+  const [exPane, setExPane] = useState<'sites' | 'apps'>('apps')
+  const [exWhite, setExWhite] = useState(false)
+  const [dnsOwn, setDnsOwn] = useState(false)
+  const [bypassSlot, setBypassSlot] = useState('server1')
 
   const w = 265
   const h = 606
@@ -173,7 +210,7 @@ export default function ClientPreview({
   const updateProgressPct = 47
   const linkColor = theme.login_link_color || '#4680C2'
   const isLoginPreview =
-    screen === 'login' || screen === 'login_forgot' || screen === 'login_expired'
+    screen === 'login' || screen === 'login_forgot' || screen === 'login_qr' || screen === 'login_expired'
   const appTitle = ((theme.app_name || 'Silent VPN').trim() || 'Silent VPN').toUpperCase()
   const homeBgUrl = (theme.home_bg_image_url || '').trim()
   const menuItems = MENU_ITEMS_BASE.map(item =>
@@ -246,6 +283,44 @@ export default function ClientPreview({
     }} />
   )
 
+  const modeChip = (label: string, active: boolean, onClick: () => void) => (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        fontSize: 10, padding: '5px 10px', borderRadius: 8, cursor: 'pointer',
+        background: active ? fg : 'transparent',
+        color: active ? bg : fg,
+        border: `1px solid ${active ? fg : `${fg}40`}`,
+      }}
+    >
+      {label}
+    </button>
+  )
+
+  const radioRow = (title: string, subtitle: string | undefined, selected: boolean, onClick: () => void) => (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        width: '100%', textAlign: 'left', padding: '8px 0', background: 'none',
+        border: 'none', cursor: 'pointer', color: fg, display: 'flex', alignItems: 'flex-start', gap: 8,
+      }}
+    >
+      <span style={{
+        width: 14, height: 14, borderRadius: '50%', marginTop: 1, flexShrink: 0,
+        border: `1.5px solid ${selected ? fg : `${fg}55`}`,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        {selected ? <span style={{ width: 6, height: 6, borderRadius: '50%', background: fg }} /> : null}
+      </span>
+      <span>
+        <span style={{ fontSize: 12, display: 'block' }}>{title}</span>
+        {subtitle ? <span style={{ fontSize: 10, color: muted }}>{subtitle}</span> : null}
+      </span>
+    </button>
+  )
+
   const menuDrawer = () => (
     <div style={{ position: 'absolute', inset: 0, display: 'flex', zIndex: 10 }}>
       <div style={{
@@ -273,25 +348,10 @@ export default function ClientPreview({
                 display: 'flex', alignItems: 'center', gap: 6,
                 borderRadius: 8,
               }}>
-              <span style={{ flex: 1 }}>{item.label}</span>
-              {item.badge && (
-                <span style={{ fontSize: 11, color: muted }}>{item.badge}</span>
-              )}
+              <span style={{ flex: 1, lineHeight: 1.35 }}>{item.label}</span>
               <span style={{ color: `${fg}4D`, fontSize: 12 }}>›</span>
             </button>
           ))}
-          {(theme.telegram_proxy_url || '').trim() && (
-            <button type="button"
-              style={{
-                width: '100%', textAlign: 'left', padding: '10px 12px', fontSize: 13,
-                background: 'none', border: 'none', cursor: 'default', color: fg,
-                display: 'flex', alignItems: 'center', gap: 6,
-                borderRadius: 8,
-              }}>
-              <span style={{ flex: 1 }}>{theme.telegram_proxy_menu_label || 'Ускорить Telegram'}</span>
-              <span style={{ color: `${fg}4D`, fontSize: 12 }}>›</span>
-            </button>
-          )}
           <button type="button" style={{
             width: '100%', textAlign: 'left', padding: '10px 12px', fontSize: 13,
             background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444', marginTop: 4,
@@ -329,8 +389,20 @@ export default function ClientPreview({
           {loginLogo()}
           <p style={{ fontSize: 11, fontWeight: 500, color: green, marginBottom: 12 }}>VPN включён</p>
           <div style={{ display: 'flex', borderRadius: 10, background: `${fg}0A`, padding: 3, marginBottom: 12 }}>
-            <div style={{ flex: 1, textAlign: 'center', padding: '6px 0', fontSize: 10, fontWeight: 600, background: theme.primary_color, color: bg, borderRadius: 8 }}>Войти</div>
-            <div style={{ flex: 1, textAlign: 'center', padding: '6px 0', fontSize: 10, color: muted }}>Регистрация</div>
+            {(['login', 'register'] as const).map(tab => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setAuthTab(tab)}
+                style={{
+                  flex: 1, textAlign: 'center', padding: '6px 0', fontSize: 10, fontWeight: 600,
+                  background: authTab === tab ? theme.primary_color : 'transparent',
+                  color: authTab === tab ? bg : muted, border: 'none', borderRadius: 8, cursor: 'pointer',
+                }}
+              >
+                {tab === 'login' ? 'Войти' : 'Регистрация'}
+              </button>
+            ))}
           </div>
           <div style={{ fontSize: 10, color: muted, marginBottom: 4 }}>Email</div>
           <input readOnly placeholder="you@example.com" style={{
@@ -342,24 +414,68 @@ export default function ClientPreview({
             width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 11, marginBottom: 8,
             borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
           }} />
-          <div style={{ fontSize: 10, color: muted, marginBottom: 4 }}>
-            {theme.register_referral_or_promo_label || 'Промокод или реферальный код'}
-          </div>
-          <input readOnly placeholder={theme.register_referral_or_promo_hint || 'Необязательно'} style={{
-            width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 11, marginBottom: 8,
-            borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
-          }} />
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, fontSize: 10 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 5, color: muted }}>
-              {themeCheckbox(true)}
-              {theme.login_remember_me_label || 'Запомнить меня'}
-            </label>
-            <span style={{ color: linkColor, fontSize: 10 }}>{theme.login_forgot_password_label || 'Забыли пароль?'}</span>
-          </div>
+          {authTab === 'register' && (
+            <>
+              <div style={{ fontSize: 10, color: muted, marginBottom: 4 }}>
+                {theme.register_referral_or_promo_label || 'Промокод или реферальный код'}
+              </div>
+              <input readOnly placeholder={theme.register_referral_or_promo_hint || 'Необязательно'} style={{
+                width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 11, marginBottom: 8,
+                borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
+              }} />
+            </>
+          )}
+          {authTab === 'login' && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, fontSize: 10 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, color: muted }}>
+                {themeCheckbox(true)}
+                {theme.login_remember_me_label || 'Запомнить меня'}
+              </label>
+              <span style={{ color: linkColor, fontSize: 10 }}>{theme.login_forgot_password_label || 'Забыли пароль?'}</span>
+            </div>
+          )}
           <button type="button" style={{
             width: '100%', padding: '10px 0', borderRadius: 10, border: 'none',
             background: theme.primary_color, color: bg, fontSize: 11, fontWeight: 600,
-          }}>Войти</button>
+          }}>{authTab === 'login' ? 'Войти' : 'Зарегистрироваться'}</button>
+        </div>
+      )}
+
+      {screen === 'login_qr' && (
+        <div style={{ flex: 1, padding: '24px 16px 16px', overflow: 'auto' }}>
+          {loginLogo()}
+          <p style={{ fontSize: 11, fontWeight: 500, color: green, marginBottom: 12 }}>VPN включён</p>
+          <div style={{ display: 'flex', borderRadius: 10, background: `${fg}0A`, padding: 3, marginBottom: 14 }}>
+            {['Войти', 'Регистрация', theme.login_qr_tab_label || 'QR'].map((lbl, i) => (
+              <div key={lbl} style={{
+                flex: 1, textAlign: 'center', padding: '6px 0', fontSize: 10, fontWeight: 600,
+                background: i === 2 ? theme.primary_color : 'transparent',
+                color: i === 2 ? bg : muted, borderRadius: 8,
+              }}>{lbl}</div>
+            ))}
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{theme.login_qr_title || 'Вход по QR'}</div>
+          <div style={{
+            width: 132, height: 132, margin: '0 auto 10px', borderRadius: 8,
+            background: previewDark ? '#fff' : '#111',
+            display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 4, padding: 10,
+          }}>
+            {Array.from({ length: 25 }, (_, i) => (
+              <div key={i} style={{
+                background: (i * 7) % 3 === 0 ? (previewDark ? '#111' : '#fff') : (previewDark ? '#fff' : '#111'),
+                borderRadius: 1,
+              }} />
+            ))}
+          </div>
+          <p style={{ fontSize: 10, color: muted, textAlign: 'center', lineHeight: 1.45, marginBottom: 8 }}>
+            {theme.login_qr_show_hint || 'Отсканируйте код любым сканером на телефоне — откроется Silent VPN'}
+          </p>
+          <p style={{ fontSize: 10, color: muted, textAlign: 'center' }}>
+            {theme.login_qr_waiting || 'Ожидание подтверждения…'}
+          </p>
+          <p style={{ fontSize: 9, color: `${fg}55`, textAlign: 'center', marginTop: 12, lineHeight: 1.4 }}>
+            Вкладка QR только на Smart TV — на телефоне её нет, пункт в меню тоже убран
+          </p>
         </div>
       )}
 
@@ -492,7 +608,7 @@ export default function ClientPreview({
                 <span style={{ position: 'relative' }}>
                   {updateDownloading
                     ? `${downloadLabel} ${updateProgressPct}%`
-                    : `${updateLabel} v1.0.144`}
+                    : `${updateLabel} v1.0.167`}
                 </span>
               </button>
             ) : (
@@ -507,93 +623,126 @@ export default function ClientPreview({
 
       {screen === 'menu' && menuDrawer()}
 
-      {screen === 'subscription' && subPage('Выберите тариф', (
-        <>
-          <div style={{ display: 'flex', gap: 4, marginBottom: 12, flexWrap: 'wrap' }}>
-            {([
-              ['plans', 'Тарифы'],
-              ['waiting', 'Ждём'],
-              ['success', 'Успех'],
-              ['failed', 'Ошибка'],
-            ] as const).map(([id, lbl]) => (
-              <button key={id} type="button" onClick={() => setPaymentPreviewState(id)} style={{
-                padding: '3px 8px', fontSize: 9, borderRadius: 6, cursor: 'pointer',
-                background: paymentPreviewState === id ? theme.primary_color : `${fg}0F`,
-                color: paymentPreviewState === id ? bg : muted,
-                border: 'none',
-              }}>{lbl}</button>
+      {screen === 'subscription' && subPage(theme.subscription_choose_plan_title || 'Выберите тариф', (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: fg, marginBottom: 2 }}>
+            {theme.subscription_choose_tier_title || 'Сколько устройств'}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {[
+              theme.subscription_tier_3_label || '3 устройства',
+              theme.subscription_tier_5_label || '5 устройств',
+            ].map((label, i) => (
+              <div key={label} style={{
+                flex: 1, textAlign: 'center', borderRadius: 12, padding: '10px 8px',
+                fontSize: 12, fontWeight: 600,
+                background: i === 0 ? planBtnBg : 'transparent',
+                color: i === 0 ? planBtnFg : fg,
+                border: `1px solid ${i === 0 ? planBtnBg : muted}`,
+              }}>
+                {label}
+              </div>
             ))}
           </div>
+          {[
+            ['Месяц', '199 ₽'],
+            ['2 месяца', '359 ₽'],
+            ['3 месяца', '478 ₽'],
+          ].map(([label, price]) => (
+            <div key={label} style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              background: planBtnBg, color: planBtnFg,
+              borderRadius: 12, padding: '10px 12px', fontSize: 12, fontWeight: 600,
+            }}>
+              <span>{label}</span><span>{price}</span>
+            </div>
+          ))}
+        </div>
+      ))}
 
-          {paymentPreviewState === 'plans' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {[
-                ['Месяц', '199 ₽'],
-                ['2 месяца', '359 ₽'],
-                ['3 месяца', '478 ₽'],
-              ].map(([label, price]) => (
-                <div key={label} style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  background: planBtnBg, color: planBtnFg,
-                  borderRadius: 12, padding: '10px 12px', fontSize: 12, fontWeight: 600,
+      {screen === 'exceptions' && subPage('Исключения', (
+        <>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            {modeChip('Сайты', exPane === 'sites', () => setExPane('sites'))}
+            {modeChip('Приложения', exPane === 'apps', () => setExPane('apps'))}
+          </div>
+          {exPane === 'sites' ? (
+            <>
+              <div style={{ fontSize: 11, color: muted, marginBottom: 8, lineHeight: 1.45 }}>
+                Домен или IP идут мимо VPN (ozon.ru, 1.2.3.4, 10.0.0.0/8)
+              </div>
+              <input readOnly placeholder="домен или IP…" style={{
+                width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 12, marginBottom: 8,
+                borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: muted,
+              }} />
+              <button type="button" style={{
+                width: '100%', padding: '8px 0', borderRadius: 10, border: 'none', marginBottom: 10,
+                background: planBtnBg, color: planBtnFg, fontSize: 12, fontWeight: 600, cursor: 'default',
+              }}>Добавить</button>
+              {['ozon.ru', '4pda.to'].map(name => (
+                <div key={name} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '8px 0', borderBottom: `0.5px solid ${fg}12`, fontSize: 12,
                 }}>
-                  <span>{label}</span><span>{price}</span>
+                  <span>{name}</span>
+                  <span style={{ fontSize: 11, color: muted }}>✕</span>
                 </div>
               ))}
-              <p style={{ fontSize: 9, color: `${fg}55`, marginTop: 6, lineHeight: 1.4 }}>
-                Оплата открывается в системном браузере (YuMoney). Не встраивается в приложение.
-              </p>
-            </div>
-          )}
-
-          {paymentPreviewState !== 'plans' && (() => {
-            const cfg = {
-              waiting: { title: theme.payment_waiting_title || 'Ждём подтверждения оплаты', text: theme.payment_waiting_text || 'Оплатите в открывшейся вкладке браузера.', color: theme.accent_color || fg },
-              success: { title: theme.payment_success_title || 'Оплата прошла успешно', text: theme.payment_success_text || 'Подписка активирована.', color: green },
-              failed: { title: theme.payment_failed_title || 'Оплата не прошла', text: theme.payment_failed_text || 'Платёж не был подтверждён.', color: red },
-            }[paymentPreviewState as 'waiting' | 'success' | 'failed']
-            return (
-              <div style={{
-                borderRadius: 14, padding: '18px 16px', textAlign: 'center',
-                border: `1px solid ${cfg.color}2E`, background: `${cfg.color}0D`,
-              }}>
-                <div style={{
-                  width: 36, height: 36, borderRadius: '50%', margin: '0 auto 10px',
-                  background: `${cfg.color}1A`, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 16,
-                }}>{paymentPreviewState === 'waiting' ? '⏳' : paymentPreviewState === 'success' ? '✓' : '✗'}</div>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{cfg.title}</div>
-                <div style={{ fontSize: 10, color: muted, lineHeight: 1.5 }}>{cfg.text}</div>
-                {paymentPreviewState === 'failed' && (
-                  <button type="button" style={{
-                    width: '100%', marginTop: 14, padding: '10px 0', borderRadius: 10, border: 'none',
-                    background: fg, color: bg, fontSize: 11, fontWeight: 600, cursor: 'default',
-                  }}>{theme.payment_retry_button_text || 'Попробовать снова'}</button>
-                )}
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 11, color: muted, marginBottom: 8 }}>
+                {exWhite ? 'БС: галочка — через VPN, без галочки — мимо' : 'ЧС: выбранные мимо VPN'}
               </div>
-            )
-          })()}
+              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                {modeChip('ЧС', !exWhite, () => setExWhite(false))}
+                {modeChip('БС', exWhite, () => setExWhite(true))}
+              </div>
+              <input readOnly value="Поиск приложений…" style={{
+                width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 12, marginBottom: 8,
+                borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: muted,
+              }} />
+              {['Telegram', 'YouTube', 'Chrome'].map((name, i) => (
+                <div key={name} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '8px 0', borderBottom: `0.5px solid ${fg}12`, fontSize: 12,
+                }}>
+                  <span>{name}</span>
+                  {themeCheckbox(i === 0)}
+                </div>
+              ))}
+            </>
+          )}
         </>
       ))}
 
-      {screen === 'exceptions' && subPage('Исключения приложений', (
+      {screen === 'dns' && subPage('DNS', (
+        <>
+          <div style={{ fontSize: 11, color: muted, lineHeight: 1.45, marginBottom: 12 }}>
+            Используйте рекомендуемый DNS или укажите свой. Применяется при следующем подключении VPN.
+          </div>
+          {radioRow('Как на сервере', 'Рекомендуется', !dnsOwn, () => setDnsOwn(false))}
+          {radioRow('Свой DNS', undefined, dnsOwn, () => setDnsOwn(true))}
+          {dnsOwn && (
+            <input readOnly placeholder="1.1.1.1, 8.8.8.8" style={{
+              width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 12, marginTop: 8,
+              borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: muted,
+            }} />
+          )}
+        </>
+      ))}
+
+      {screen === 'bypass' && subPage('Выбор сервера', (
         <>
           <div style={{ fontSize: 11, color: muted, marginBottom: 10 }}>
-            Приложения, которые не идут через VPN
+            Отключите VPN перед сменой сервера.
           </div>
-          <input readOnly value="Поиск приложений…" style={{
-            width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 12,
-            borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: muted,
-          }} />
-          {['Telegram', 'YouTube', 'Chrome'].map(name => (
-            <div key={name} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '8px 0', borderBottom: `0.5px solid ${fg}12`, fontSize: 12,
-            }}>
-              <span>{name}</span>
-              <div style={{ width: 18, height: 18, borderRadius: 4, border: `1.5px solid ${fg}44` }} />
-            </div>
-          ))}
+          {[
+            ['server1', 'Сервер 1'],
+            ['server2', 'Сервер 2'],
+            ['server3', 'Сервер 3'],
+            ['server4', 'Сервер 4 для ИИ'],
+          ].map(([id, title]) => radioRow(title, undefined, bypassSlot === id, () => setBypassSlot(id)))}
         </>
       ))}
 
@@ -692,7 +841,7 @@ export default function ClientPreview({
 
       {screen === 'about' && subPage('Silent VPN', (
         <div style={{ fontSize: 12, color: muted, lineHeight: 1.6 }}>
-          <p style={{ margin: '0 0 6px' }}>Версия 1.0.144</p>
+          <p style={{ margin: '0 0 6px' }}>Версия 1.0.167</p>
           <p style={{ margin: 0 }}>WireGuard-туннель через VK TURN/DTLS</p>
         </div>
       ))}
@@ -702,15 +851,19 @@ export default function ClientPreview({
   return (
     <div>
       {!hideTabs && (
-        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-          {SCREEN_TABS.map(({ id, label }) => (
-            <button key={id} type="button" onClick={() => goTo(id)} style={{
-              padding: '5px 10px', fontSize: 10, borderRadius: 8, cursor: 'pointer',
-              background: screen === id ? '#fff' : '#222', color: screen === id ? '#000' : '#aaa',
-              border: '1px solid #333',
-            }}>
-              {label}
-            </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+          {SCREEN_TAB_GROUPS.map(group => (
+            <div key={group.title} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {group.tabs.map(({ id, label }) => (
+                <button key={id} type="button" onClick={() => goTo(id)} style={{
+                  padding: '5px 10px', fontSize: 10, borderRadius: 8, cursor: 'pointer',
+                  background: screen === id ? '#fff' : '#222', color: screen === id ? '#000' : '#aaa',
+                  border: '1px solid #333',
+                }}>
+                  {label}
+                </button>
+              ))}
+            </div>
           ))}
         </div>
       )}

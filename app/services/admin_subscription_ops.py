@@ -121,13 +121,17 @@ def _user_ids_best_kind(*kinds: str):
 
 
 def _user_ids_best_paid_plan(plan_type: str):
-    """Купившие с живым этим планом (amount>0), даже если сверху длиннее реф.бонус."""
+    """Купившие с живым этим планом (amount>0), даже если сверху длиннее реф.бонус.
+
+    monthly включает и monthly_5 (тот же срок, другой лимит устройств).
+    """
+    variants = (plan_type, f"{plan_type}_5")
     return (
         select(Subscription.user_id)
         .where(
             Subscription.status == "active",
             Subscription.expires_at > datetime.utcnow(),
-            Subscription.plan_type == plan_type,
+            Subscription.plan_type.in_(variants),
             Subscription.amount_paid > 0,
         )
         .distinct()

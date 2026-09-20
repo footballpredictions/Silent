@@ -91,7 +91,7 @@ async def _profile_for_user(db: AsyncSession, user: User) -> UserProfileResponse
         devices=device_infos,
         devices_count=await count_active_sessions(db, user.id),
         connected_count=await count_connected_sessions(db, user.id),
-        max_devices=max_devices_for_user(user),
+        max_devices=await max_devices_for_user(db, user),
         vk_linked=user.vk_user_id is not None,
         vk_user_id=user.vk_user_id,
     )

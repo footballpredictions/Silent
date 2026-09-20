@@ -15,6 +15,7 @@ from app.services.subscription_kinds import (
     REFERRAL_PLAN,
     admin_grant_expires_at,
     is_active_trial_row,
+    devices_for_plan,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,11 +33,13 @@ def is_user_admin(user: User) -> bool:
     return bool(user.is_admin) or user.email.lower() == settings.ADMIN_LOGIN.lower()
 
 
-def max_devices_for_user(user: User) -> int:
-    """0 = безлимит (админ)."""
+async def max_devices_for_user(db: AsyncSession, user: User) -> int:
+    """Лимит сессий: 0 = безлимит (админ); иначе 3 или 5 по активному плану."""
     if is_user_admin(user):
         return 0
-    return settings.MAX_DEVICES_PER_USER
+    in_test = await user_in_test_mode(user, db)
+    sub = await get_display_subscription(db, user, in_test_mode=in_test)
+    return devices_for_plan(sub.plan_type if sub else None)
 
 
 def device_limit_applies(user: User) -> bool:

@@ -258,5 +258,10 @@ class ThemeResponse(BaseModel):
     payment_timeout_text: str = "Если вы уже оплатили — подождите ещё немного или проверьте позже в разделе «Подписка»."
     payment_retry_button_text: str = "Попробовать снова"
     payment_cancel_button_text: str = "Отмена"
+    # Выбор числа устройств перед тарифами (магазин)
+    subscription_tier_3_label: str = "3 устройства"
+    subscription_tier_5_label: str = "5 устройств"
+    subscription_choose_tier_title: str = "Сколько устройств"
+    subscription_choose_plan_title: str = "Выберите тариф"
     # Extra Settings: skip email confirm. Default false = old clients still wait for mail.
     skip_email_confirmation: bool = False

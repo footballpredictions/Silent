@@ -106,7 +106,7 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
         devices=device_infos,
         devices_count=active_sessions,
         connected_count=connected,
-        max_devices=max_devices_for_user(user),
+        max_devices=await max_devices_for_user(db, user),
         vk_linked=user.vk_user_id is not None,
         vk_user_id=user.vk_user_id,
     )

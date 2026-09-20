@@ -226,6 +226,10 @@ class Settings(BaseSettings):
     PRICE_TWO_MONTHS: float = 359.0
     PRICE_QUARTERLY: float = 478.0  # 3 месяца
     PRICE_YEARLY: float = 1499.0
+    # Тарифы на 5 устройств (тот же срок, другие цены)
+    PRICE_MONTHLY_5: float = 330.0
+    PRICE_TWO_MONTHS_5: float = 594.0
+    PRICE_QUARTERLY_5: float = 792.0
 
     # Referral (growth phase): +30/+30 after invitee's first paid plan.
     # Soft anti-abuse: max rewarded bonuses per inviter per rolling 30 days.

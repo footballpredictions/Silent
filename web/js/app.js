@@ -34,6 +34,7 @@ const state = {
   promoCode: "",
   promoMsg: "",
   copyMsg: "",
+  shopTier: 3,
   lanUrl: "http://192.168.1.1.silent.vpn",
   lanIp: "192.168.1.1",
   routerName: "OpenWrt",
@@ -232,7 +233,7 @@ function mainView(p) {
     ["router", "Роутер"],
     ["servers", "Выбор сервера"],
     ["bonuses", t.menu_bonuses_label || "Бонусы"],
-    ["devices", "Сессии"],
+    ["devices", `Сессии (${sessionsBadge()})`],
     ["support", "Поддержка"],
     ["about", "О сервисе"],
   ];
@@ -316,6 +317,13 @@ function dockHtml(p) {
   return "";
 }
 
+function sessionsBadge() {
+  const p = state.profile || {};
+  const count = p.devices_count ?? (p.devices || []).length ?? 0;
+  if (p.is_admin || (p.max_devices ?? 3) <= 0) return `${count}/∞`;
+  return `${count}/${p.max_devices ?? 3}`;
+}
+
 function subscriptionPage(t) {
   const profile = state.profile || {};
   const sub = profile.subscription || {};
@@ -324,12 +332,26 @@ function subscriptionPage(t) {
       <p class="hint">Тариф: ${esc(planLabel(sub.plan_type))}<br>
       ${isUnlimitedLike(profile) ? "Безлимитный доступ" : `Осталось: ${esc(sub.days_left ?? 0)} дней`}</p>`;
   }
-  const plans = [
-    ["monthly", "Месяц", "199 ₽"],
-    ["two_months", "2 месяца", "359 ₽"],
-    ["quarterly", "3 месяца", "478 ₽"],
-  ];
-  return `<h2>Выберите тариф</h2>
+  const tier = state.shopTier === 5 ? 5 : 3;
+  const plans = tier === 5
+    ? [
+      ["monthly_5", "Месяц", "330 ₽"],
+      ["two_months_5", "2 месяца", "594 ₽"],
+      ["quarterly_5", "3 месяца", "792 ₽"],
+    ]
+    : [
+      ["monthly", "Месяц", "199 ₽"],
+      ["two_months", "2 месяца", "359 ₽"],
+      ["quarterly", "3 месяца", "478 ₽"],
+    ];
+  const label3 = t.subscription_tier_3_label || "3 устройства";
+  const label5 = t.subscription_tier_5_label || "5 устройств";
+  return `<h2>${esc(t.subscription_choose_tier_title || "Сколько устройств")}</h2>
+    <div style="display:flex;gap:8px;margin:10px 0 16px">
+      <button type="button" class="opt ${tier === 3 ? "on" : ""}" data-act="shop-tier" data-tier="3" style="flex:1">${esc(label3)}</button>
+      <button type="button" class="opt ${tier === 5 ? "on" : ""}" data-act="shop-tier" data-tier="5" style="flex:1">${esc(label5)}</button>
+    </div>
+    <h2>${esc(t.subscription_choose_plan_title || "Выберите тариф")}</h2>
     ${plans.map(([id, label, price]) => `
       <button class="card-btn" data-act="pay" data-plan="${id}"><span>${label}</span><span>${price}</span></button>
     `).join("")}
@@ -526,6 +548,11 @@ async function handle(act, el) {
     if (act === "toggle") return toggleVpn();
     if (act === "copy-ref") return copyRef();
     if (act === "promo") return checkPromo();
+    if (act === "shop-tier") {
+      state.shopTier = el.dataset.tier === "5" ? 5 : 3;
+      render();
+      return;
+    }
     if (act === "pay") return pay(el.dataset.plan);
     if (act === "server") return pickServer(el.dataset.key);
     if (act === "dns-preset") return setDnsPreset(el.dataset.preset);

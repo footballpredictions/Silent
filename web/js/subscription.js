@@ -20,9 +20,12 @@ export function formatExpireDate(iso) {
 
 export function planLabel(type) {
   return {
-    monthly: "Месяц",
-    two_months: "2 месяца",
-    quarterly: "3 месяца",
+    monthly: "Месяц · 3 устройства",
+    two_months: "2 месяца · 3 устройства",
+    quarterly: "3 месяца · 3 устройства",
+    monthly_5: "Месяц · 5 устройств",
+    two_months_5: "2 месяца · 5 устройств",
+    quarterly_5: "3 месяца · 5 устройств",
     trial: "Пробный период",
     yearly: "Год",
     unlimited: "Бессрочно",

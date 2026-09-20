@@ -1,5 +1,9 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (пуш тарифов 3/5 2026-09-20)
+
+Push: `main` `b34e359`, `pc` `f40f5b6`, `android` `fdd26fe`, `ios` `564cbbe`, `openwrt` `6d18834`. Backend уже на проде. Debug: ПК `build-debug-399830`, APK `SilentVPN-debug.apk`. **wdtt не трогал.**
+
 ## Последние изменения (debug 3/5 устройств 2026-09-20)
 
 Пересобраны debug для приёмки тарифов 3/5: ПК `pc/build-debug-399830/win-unpacked/` (`SilentVPN-Admin.bat`), APK `android/SilentVPN-debug.apk` (48907945). Версию не поднимал, не пушил. **wdtt не трогал.**

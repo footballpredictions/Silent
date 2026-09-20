@@ -15,6 +15,7 @@ from app.services.payment_service import (
     process_payment_notification,
     get_payment_status,
 )
+from app.services.shop_catalog import build_shop_plans
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -170,24 +171,10 @@ async def check_promo(
 
 
 @router.get("/plans")
-async def get_plans():
-    """Тарифы магазина: список + tiers (3/5 устройств).
+async def get_plans(all: bool = False):
+    """Тарифы магазина.
 
-    Старые клиенты читают JSON-массив и берут первые планы / все id.
-    Новые — фильтруют по devices или берут tiers.
+    По умолчанию только 3-устройственные (старые клиенты 1.0.167 и ниже).
+    Новые клиенты: GET /payments/plans?all=1 — плюс тарифы на 5 устройств.
     """
-    plans_3 = [
-        {"id": "monthly", "name": "Месяц", "price": settings.PRICE_MONTHLY, "days": 30, "devices": 3},
-        {"id": "two_months", "name": "2 месяца", "price": settings.PRICE_TWO_MONTHS, "days": 60, "devices": 3},
-        {"id": "quarterly", "name": "3 месяца", "price": settings.PRICE_QUARTERLY, "days": 90, "devices": 3},
-    ]
-    plans_5 = [
-        {"id": "monthly_5", "name": "Месяц", "price": settings.PRICE_MONTHLY_5, "days": 30, "devices": 5},
-        {"id": "two_months_5", "name": "2 месяца", "price": settings.PRICE_TWO_MONTHS_5, "days": 60, "devices": 5},
-        {"id": "quarterly_5", "name": "3 месяца", "price": settings.PRICE_QUARTERLY_5, "days": 90, "devices": 5},
-    ]
-    # Список — как раньше (Retrofit List): 3-устройственные первыми для fail-safe старых UI.
-    return [
-        *plans_3,
-        *plans_5,
-    ]
+    return build_shop_plans(include_five_device=bool(all))

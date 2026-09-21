@@ -40,6 +40,14 @@ Agent приступает к **первой невыполненной** зад
 - [ ] Приёмка: магазин 3/5, после оплаты `max_devices` и Сессии N/5; Ctrl+F5 админки
 - [x] Пуш: `main` `b34e359`, `pc` `f40f5b6`, `android` `fdd26fe`, `ios` `564cbbe`, `openwrt` `6d18834`
 - [x] Hotfix: `/plans` без *_5 по умолчанию; bootstrap оплаты игнорит БС (YuMoney на LTE)
+- [x] Hotfix: bootstrap не сужает AllowedIPs при apiOverlay (YuMoney ERR_TIMED_OUT); revoke clamp expires_at; деплой + debug APK
+- [x] Откат YuMoney-пути к релизу 1.0.167 (`WireGuardHelper` = `dd9dc03`, без BootstrapAppExcludeDecision); debug APK
+- [x] Сверка с `dd9dc03`: оплата/WG/libclient как в релизе; отличия только UI тарифов 3/5; debug APK 13:19
+- [x] Откат android: hard `33e70a3` + cherry-pick только магазин 3/5; VPN как релиз; debug APK
+- [x] Подключение откатил к релизу (`2870627`); сняты все YuMoney AllowedIPs-эксперименты; debug APK
+- [x] Patch оплаты 3/5: SemanticKey+PaymentTunnelPolicy+prepareBootstrapInternet; тесты ok; debug APK
+- [x] Приёмка YuMoney на LTE: пользователь подтвердил «всё отлично»
+- [x] Пуш android `0ddf0bc` (force-with-lease, вместо `f0401d0`)
 
 ### Админка: Оформление как текущий клиент (2026-09-20)
 

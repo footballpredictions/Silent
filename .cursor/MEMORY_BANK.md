@@ -1,5 +1,65 @@
 # MEMORY BANK — Silent VPN Project
 
+## Последние изменения (пуш оплаты YuMoney LTE 2026-09-21)
+
+Приёмка пользователя: YuMoney на LTE ок. Push `android` `0ddf0bc` (force-with-lease поверх `f0401d0`). Backend: revoke clamp `expires_at` (`mark_subscription_admin_revoked`) + тест. **wdtt не трогал.**
+
+## Последние изменения (оплата 3/5: временный VPN browser routes 2026-09-21)
+
+По заданию: корень — semantic key WG без AllowedIPs → skip после TURN; ephemeral bootstrap гасил туннель оплаты; bridge по hasVpnAccess. Перенесено: `WireGuardSemanticKey`, `PaymentTunnelPolicy`, `prepareBootstrapInternetForPayment`, `awaitPaymentBrowserRoutes`, force held bootstrap, без short ephemeral-ветки. Магазин 3/5 / plan_type / API не трогал. Тесты SemanticKey+PaymentPolicy+AllowedIps: BUILD SUCCESSFUL. Debug APK установлен. **LTE на телефоне — приёмка пользователя.** **wdtt не трогал.**
+
+## Последние изменения (Android: подключение = релиз, без догадок 2026-09-20)
+
+Пользователь: взять рабочее подключение из релиза, ничего не придумывать. Сняты все локальные правки AllowedIPs/excludeRoute/wait-TURN/«Открываем». WG/MainViewModel/Wdtt/AllowedIps = коммит `2870627` (релиз 1.0.167 + только UI 3/5). Отличие от релиза — `getPlans(?all=1)` и экран тарифов. Debug APK. **wdtt не трогал.**
+
+## Последние изменения (YuMoney: excludeRoute TURN + не зависать на «Открываем» 2026-09-20)
+
+Симптом: галочка VPN, крутит «Открываем…». Лог: AllowedIPs уже `0.0.0.0/0`, но без excludeRoute TURN уходил в WG → API `tunnel api not ready` / SocketTimeout. Фикс: bootstrap excludeRoute как main; до TURN — узкий API AllowedIPs; held ждёт probe; перед Chrome — TURN excludes. Debug APK. **wdtt не трогал.**
+
+## Последние изменения (YuMoney: bootstrap AllowedIPs 0.0.0.0/0 без complement 2026-09-20)
+
+Лог (и release, и debug без подписки): Chrome `net_error -103` при `AllowedIPs = complement(TURN)` — десятки CIDR; в коде main это уже запрещено («OEM blackhole»), bootstrap всё ещё делал. Фикс: `patchAllowedIPsForBootstrapBrowser` → всегда `0.0.0.0/0` (TURN кратко через WG). Магазин 3/5 без изменений VPN-политики приложений. Тест AllowedIpsHelper ok. Debug APK поставлен. **wdtt не трогал.**
+
+## Последние изменения (Android: откат YuMoney-экспериментов, только магазин 3/5 2026-09-20)
+
+Пользователь: релиз ок; откатить всю «двойную оплату»/VPN-нароботки. `git reset --hard 33e70a3` (релиз 1.0.167 + откат ACK-lane) → cherry-pick только UI тарифов `fdd26fe` → `getPlans(?all=1)`. **Без** `f0401d0` / BootstrapAppExclude / browsers-in-tunnel / LTE-stop. WG/PaymentBrowser как в релизе. Debug APK. origin/android ещё на `f0401d0` (не пушил). **wdtt не трогал.**
+
+## Последние изменения (YuMoney: в туннеле только браузеры 2026-09-20)
+
+Симптом: временный VPN — сайты/приложения ок, браузер нет. Было «full tunnel − VK» (весь трафик в WG). Нужно наоборот: браузеры/почта/YuMoney/Сбер в туннеле, остальное наружу. `resolveBootstrapExcludedApps` = exclude complement от `resolveBootstrapIncludedApps` (includeApplications на OEM no-op). Тесты BootstrapTunnelAppsPolicy ok. Debug APK. **wdtt не трогал.**
+
+## Последние изменения (YuMoney: откат LTE-стопа, временный VPN как f0401d0 2026-09-20)
+
+Пользователь: временный включается и сразу гаснет → ссылка на LTE; при живой БС так не откроется. Откатил LTE-stop / waitVpnServiceDown перед open. Дерево android = `origin/android` `f0401d0` (тарифы 3/5 + bootstrap игнорит БС, Chrome в туннеле). WG/wdtt-go без локальных нароботок. Debug APK пересобран и поставлен. **wdtt не трогал.**
+
+## Последние изменения (YuMoney: URL ок, открытие на LTE без VPN 2026-09-20)
+
+Адрес верный: `https://yoomoney.ru/quickpay/confirm.xml`. Эксперимент «стоп VPN → LTE» — **откатан** (см. запись выше).
+
+## Последние изменения (YuMoney: adb-лог → Chrome на LTE 2026-09-20)
+
+С телефона V2520A: и **release** `com.silent.vpn`, и debug — при оплате без подписки. Лог 13:14: AllowedIPs уже `0.0.0.0/0 − TURN`, Chrome в bootstrap (`excluded=false`, hashes=1), сразу `chromium net_error -103` / ERR_TIMED_OUT. Корень не узкий AllowedIPs, а браузер через слабый bootstrap data-plane. Фикс: `paymentBrowserHold` → Silent в туннеле для API, Chrome/YuMoney по LTE (как success-page 505f18d). APK поставлен через adb. Логи: `android/logs/yumoney-*.txt`. **wdtt не трогал.**
+
+## Последние изменения (YuMoney: сверка с релизом 1.0.167 2026-09-20)
+
+Сравнил с `dd9dc03`: путь оплаты (WireGuardHelper / WdttTunnelManager / AllowedIps / PaymentBrowser / SilentVpnService) **бит-в-бит как в релизе**. Сняты все догадки (paymentBrowserHold, BootstrapAppExcludeDecision, wait-TURN). Отличия только магазин 3/5 (MainViewModel/MainScreen/ApiService). `wdtt-go` тоже откатил к `dd9dc03`, пересобрал `libclient.so`. Debug APK. **wdtt серверный не трогал.** Если на релизе ок, а тут нет при том же коде — смотреть сценарий (снятая подписка vs живой VPN) или что на телефон не встал этот APK.
+
+## Последние изменения (YuMoney: почему timeout + payment full tunnel 2026-09-20)
+
+Почему не работало: без подписки payment поднимает bootstrap, Chrome **внутри** VPN (`APP_EXCLUDED=false`), а на Улье AllowedIPs сначала только `10.66.66.0/24` → yoomoney.ru не маршрутизируется (`ERR_TIMED_OUT`). На релизе с живой подпиской идёт main VPN с полным туннелем — там ок. Фикс: `paymentBrowserHold` → с первого кадра полный AllowedIPs на время оплаты (логин-bootstrap не трогаем). Debug APK. **wdtt не трогал.**
+
+## Последние изменения (YuMoney: ждать TURN как в релизе 2026-09-20)
+
+Корень ERR_TIMED_OUT: на Улье bootstrap сначала AllowedIPs=API; полный интернет — только после TURN (`reloadBootstrapAllowedIps`). На телефоне payment не ждал TURN и открывал Chrome слишком рано. Вернул WG как в 1.0.167; payment bootstrap ждёт `bootstrapBrowserRoutesReady` + короткий settle. Debug APK пересобран. **wdtt не трогал.**
+
+## Последние изменения (YuMoney: откат к релизу 1.0.167 2026-09-20)
+
+Пользователь: на релизе YuMoney открывается, debug-«фиксы» ломали. Откатил догадки: `WireGuardHelper` как в `dd9dc03` (`patchAllowedIPsForBootstrapAuth` до TURN), снял `BootstrapAppExcludeDecision`. Тарифы 3/5 в MainViewModel оставлены. Revoke clamp на бэке без изменений. Debug APK пересобран `android/SilentVPN-debug.apk`. **wdtt не трогал.**
+
+## Последние изменения (YuMoney full-tunnel + revoke clamp 2026-09-20)
+
+YuMoney `ERR_TIMED_OUT` на LTE: payment-bootstrap звал `ensureBootstrapTunnelApi` → `apiOverlayMode` сужал AllowedIPs до `10.66.66.0/24`, Chrome без интернета. Теперь bootstrap **никогда** не сужает AllowedIPs (полный туннель минус VK). Подписка после «снять все»: `cleanup_global_test` / exit-test восстанавливали `cancelled` с будущим `expires_at` — revoke/end-trial теперь `mark_subscription_admin_revoked` (cancelled + expires_at=now). Тесты revoke + AllowedIps ok. Деплой: health 0.036с, wdtt active, kick 14/20с, tunnel DNAT OK. Debug APK `android/SilentVPN-debug.apk`. **wdtt не трогал.** Приёмка: поставить новый debug APK → оплата YuMoney; в админке снова снять подписку тест-юзеру (старый revoke без clamp ещё мог ожить до нового снятия).
+
 ## Последние изменения (релиз: скрыть 5 устр. + YuMoney на БС 2026-09-20)
 
 `GET /payments/plans` снова только 3 тарифа (199/359/478); 5 устр. — `?all=1` (новые клиенты). Иначе релиз 1.0.167 тянул шесть кнопок оплаты. Bootstrap оплаты: БС/ЧС не применяются даже при apiOverlay (Chrome/YuMoney оставались мимо туннеля на LTE). Тесты shop_catalog + BootstrapAppExcludeDecision. Деплой health 0.044с, wdtt active, kick 0. Debug APK пересобран. **wdtt не трогал.**

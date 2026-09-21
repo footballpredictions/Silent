@@ -16,6 +16,7 @@ from app.services.subscription_kinds import (
     admin_grant_expires_at,
     is_active_trial_row,
     devices_for_plan,
+    mark_subscription_admin_revoked,
 )
 
 logger = logging.getLogger(__name__)
@@ -689,7 +690,12 @@ async def grant_manual_subscription(
 
 
 async def revoke_subscription(db: AsyncSession, user: User) -> int:
-    """Cancel all active subscriptions and drop live VPN sessions."""
+    """Cancel all active subscriptions and drop live VPN sessions.
+
+    expires_at сдвигаем в прошлое: иначе exit_test_mode / cleanup_global_test
+    снова поднимает cancelled-строку с живым сроком («подписка вернулась»).
+    """
+    now = datetime.utcnow()
     active_result = await db.execute(
         select(Subscription)
         .where(Subscription.user_id == user.id, Subscription.status == "active")
@@ -697,9 +703,9 @@ async def revoke_subscription(db: AsyncSession, user: User) -> int:
     cancelled = 0
     for sub in active_result.scalars().all():
         # status=active снимаем всегда (и просроченные «зомби»), не только is_active
-        sub.status = "cancelled"
+        mark_subscription_admin_revoked(sub, now)
         cancelled += 1
-    user.updated_at = datetime.utcnow()
+    user.updated_at = now
     devices = await db.execute(
         select(Device).where(Device.user_id == user.id, Device.is_connected == True)  # noqa: E712
     )
@@ -721,21 +727,23 @@ async def end_trial_subscription(db: AsyncSession, user: User) -> int:
 
     VPN не кикаем: пользователь может сразу открыть оплату, пока канал ещё жив.
     Повторный trial не выдаётся — cancelled-строка уже есть.
+    expires_at в прошлое — чтобы cleanup/test-exit не реанимировал trial.
     """
     if is_user_admin(user):
         raise HTTPException(status_code=400, detail="Нельзя снять пробный период у администратора")
 
+    now = datetime.utcnow()
     active_result = await db.execute(
         select(Subscription).where(Subscription.user_id == user.id, Subscription.status == "active")
     )
     cancelled = 0
     for sub in active_result.scalars().all():
         if is_active_trial_row(sub.plan_type, sub.status):
-            sub.status = "cancelled"
+            mark_subscription_admin_revoked(sub, now)
             cancelled += 1
     if cancelled == 0:
         raise HTTPException(status_code=400, detail="Нет активного пробного периода")
-    user.updated_at = datetime.utcnow()
+    user.updated_at = now
     await db.commit()
     invalidate_vpn_access_cache()
     return cancelled

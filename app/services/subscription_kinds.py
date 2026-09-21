@@ -138,6 +138,14 @@ def bonus_period_expires(base: datetime, days: int) -> datetime:
 PAID_STACK_SKIP_PLANS = frozenset({TRIAL_PLAN, REFERRAL_PLAN, TEST_PLAN})
 
 
+def mark_subscription_admin_revoked(sub, now: datetime) -> None:
+    """Админ снял план: cancelled + expires_at≤now, иначе test-exit/cleanup снова активирует."""
+    sub.status = "cancelled"
+    exp = getattr(sub, "expires_at", None)
+    if exp is None or exp > now:
+        sub.expires_at = now
+
+
 def can_buy_paid_plan(*, is_active: bool, plan_type: str | None) -> bool:
     """Магазин открыт без подписки и на пробном: оплата снимает trial и стартует с сегодня."""
     if not is_active:

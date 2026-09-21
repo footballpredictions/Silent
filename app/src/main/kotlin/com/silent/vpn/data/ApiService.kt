@@ -479,7 +479,7 @@ interface SilentApi {
     suspend fun checkPromo(@Body req: PromoCheckRequest): Response<PromoCheckResponse>
 
     @GET("api/payments/plans")
-    suspend fun getPlans(): Response<List<Map<String, Any>>>
+    suspend fun getPlans(@Query("all") all: Int = 1): Response<List<Map<String, Any>>>
 
     @POST("api/auth/vk/guest/link/start")
     suspend fun vkGuestLinkStart(): Response<VkGuestLinkStartResponse>

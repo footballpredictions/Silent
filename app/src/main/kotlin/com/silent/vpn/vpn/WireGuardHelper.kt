@@ -226,8 +226,8 @@ class WireGuardHelper(context: Context) {
                 }.getOrDefault("apps?")
             }
             val excludeKey = when {
-                // Bootstrap: TURN-адреса добавляются по мере набора воркеров. Ключ держим
-                // константным, иначе каждый новый адрес пересоздаёт туннель и рвёт воркеры.
+                // Политика приложений постоянна, но фактические AllowedIPs входят в
+                // wgSemanticKey: переход API-only -> internet обязан применяться.
                 isBootstrap && !apiOverlayMode && !includeAppOverlay -> "bootstrap-full-minus-vk"
                 includeAppOverlay -> "promo-app-in"
                 apiOverlayMode -> "overlay-app-in"
@@ -396,25 +396,7 @@ class WireGuardHelper(context: Context) {
         return BootstrapVpnConfig.serverHost()
     }
 
-    private fun wgSemanticKey(config: String): String {
-
-        fun field(name: String): String =
-
-            Regex("""(?m)^$name\s*=\s*(\S+)""").find(config)?.groupValues?.getOrNull(1)?.trim().orEmpty()
-
-        return listOf(
-
-            field("PrivateKey"),
-
-            field("Address"),
-
-            field("PublicKey"),
-
-            field("Endpoint"),
-
-        ).joinToString("|")
-
-    }
+    private fun wgSemanticKey(config: String): String = WireGuardSemanticKey.from(config)
 
     private fun normalizeInterfaceConfig(config: String): String {
         var addressPatched = false

@@ -120,7 +120,7 @@ object WdttTunnelManager {
     /** Splash уже показал отзыв: WG только из GETCONF, кеш не поднимает интернет. */
     @Volatile var requireGetconfAccess = false
         private set
-    private val wgExcludeIps = linkedSetOf<String>()
+    private val wgExcludeIps = java.util.concurrent.CopyOnWriteArraySet<String>()
     /** CIDR/IP из пользовательских исключений сайтов (PREF_BYPASS_ROUTES). */
     private val siteBypassCidrs = linkedSetOf<String>()
     private var lastBootstrapRouteReloadMs = 0L
@@ -931,6 +931,7 @@ object WdttTunnelManager {
                                 "Bootstrap: TURN IP до WireGuard (${wgExcludeIps.size})",
                                 1,
                             )
+                            reloadBootstrapAllowedIps()
                         }
                     }
 
@@ -2026,12 +2027,43 @@ object WdttTunnelManager {
         }
     }
 
+    /**
+     * Payment must await applied browser routes, not just a WireGuard interface/API.
+     * Reapply synchronously under the same lock as overlays; do not rely on the
+     * best-effort, throttled reload triggered by native log messages.
+     */
+    suspend fun prepareBootstrapInternetForPayment(): Boolean = wgApplyMutex.withLock {
+        if (overlayRestoreSuppressed) return@withLock false
+        val exclusions = effectiveExcludeIps().filter {
+            com.silent.vpn.policy.PaymentTunnelPolicy.isIpv4Host(it)
+        }
+        if (!com.silent.vpn.policy.PaymentTunnelPolicy.canPrepareBrowser(
+                bootstrap = isBootstrapMode,
+                running = running.value,
+                tunnelReady = tunnelReady.value,
+                activeWorkers = activeWorkers.value,
+                overlayActive = apiOverlayActive,
+                hasTurnExclusions = exclusions.isNotEmpty(),
+            )
+        ) {
+            return@withLock false
+        }
+        val config = lastWgConfig ?: return@withLock false
+        val helper = wgHelper ?: return@withLock false
+        withContext(NonCancellable + Dispatchers.Main) {
+            // Nonempty validated exclusions force full IPv4 minus TURN in the helper.
+            helper.startTunnel(config, exclusions, isBootstrap = true)
+        }
+        updateLog("payment_routes", "Payment: browser routes applied, TURN outside VPN", 2)
+        true
+    }
+
     /** После появления TURN IP — расширить маршруты bootstrap (0.0.0.0/0 − TURN) для браузеров/почты. */
     private fun reloadBootstrapAllowedIps() {
         if (!isBootstrapMode || !tunnelReady.value || apiOverlayActive) return
         if (WireGuardHelper.isWgTransitionActive()) return
         val now = System.currentTimeMillis()
-        if (now - lastBootstrapRouteReloadMs < 8_000L) return
+        if (now - lastBootstrapRouteReloadMs < 1_500L) return
         val config = lastWgConfig ?: return
         if (wgApplyJob?.isActive == true) return
         lastBootstrapRouteReloadMs = now

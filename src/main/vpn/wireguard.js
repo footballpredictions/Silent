@@ -19,22 +19,11 @@ const STABLE_WG_DIR = path.join(STABLE_CONF_DIR, 'wireguard')
 const FALLBACK_BACKEND_IP = '89.125.188.100'
 /** DNS: Cloudflare+Yandex по умолчанию. Меню DNS — через options/config.dns_override. */
 const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
-/** Обычные слоты — MTU 1200 (Telegram/общая стабильность). */
-const WG_MTU_DEFAULT = 1200
-/**
- * Сервер 3 (Сота 2): Steam SDR шлёт UDP ~1300 байт — нужен MTU 1420.
- * На остальных слотах 1420 не ставим.
- */
-const WG_MTU_GAME = 1420
-const GAME_SERVER_SLOT = 'server3'
-const GAME_SERVER_IP = '78.17.74.27'
-
-function resolveWgMtu(config) {
-  const slot = String(config?.selected_server || '').trim().toLowerCase()
-  const ip = String(config?.server_ip || '').trim()
-  if (slot === GAME_SERVER_SLOT || ip === GAME_SERVER_IP) return WG_MTU_GAME
-  return WG_MTU_DEFAULT
-}
+const {
+  WG_MTU_DEFAULT,
+  WG_MTU_GAME,
+  resolveWgMtu,
+} = require('./wgMtu')
 
 function mtuFromConfText(confText, fallback = WG_MTU_DEFAULT) {
   const m = String(confText || '').match(/^\s*MTU\s*=\s*(\d+)/mi)

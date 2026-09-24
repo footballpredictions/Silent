@@ -2,8 +2,8 @@
  * Release-only целостность PC-клиента.
  * Debug / unpackaged (npm run dev) — проверки пропускаются.
  *
- * Хеш wdtt-client.exe генерируется scripts/gen_integrity_hashes.js
- * (вызывается из build-installer.bat после go build).
+ * Хеш wdtt-client генерируется scripts/gen_integrity_hashes.js
+ * (Windows / Linux / Mac — разные поля).
  */
 const fs = require('fs')
 const path = require('path')
@@ -13,13 +13,21 @@ let hashes
 try {
   hashes = require('./integrityHashes')
 } catch {
-  hashes = { WDTT_SHA256: '', GENERATED_AT: '' }
+  hashes = { WDTT_SHA256: '', WDTT_LINUX_SHA256: '', WDTT_MAC_SHA256: '', GENERATED_AT: '' }
 }
 
 function sha256File(filePath) {
   const hash = crypto.createHash('sha256')
   hash.update(fs.readFileSync(filePath))
   return hash.digest('hex')
+}
+
+/** Пин хеша по платформе (Mac и Linux оба зовутся wdtt-client — не путать). */
+function resolveExpectedWdttSha(platform, pinHashes) {
+  const h = pinHashes || {}
+  if (platform === 'darwin') return String(h.WDTT_MAC_SHA256 || '').trim()
+  if (platform === 'linux') return String(h.WDTT_LINUX_SHA256 || '').trim()
+  return String(h.WDTT_SHA256 || '').trim()
 }
 
 /**
@@ -31,17 +39,13 @@ function verifyWdttIntegrity({ isPackaged, isDebugBuild, exePath, log, expectedS
     return { ok: true }
   }
   const expected = String(
-    expectedSha != null
-      ? expectedSha
-      : (
-        path.basename(String(exePath || '')) === 'wdtt-client'
-          ? (hashes.WDTT_LINUX_SHA256 || hashes.WDTT_SHA256 || '')
-          : (hashes.WDTT_SHA256 || '')
-      ),
-  ).trim().toLowerCase()
+    expectedSha != null ? expectedSha : resolveExpectedWdttSha(process.platform, hashes),
+  )
+    .trim()
+    .toLowerCase()
   if (!expected) {
     // Нет пина в сборке — не блокируем (старые/ручные пакеты), только warn
-    log?.('[Integrity] WDTT_SHA256 пуст — пропуск проверки (пересоберите через build-installer.bat)')
+    log?.('[Integrity] WDTT SHA пуст — пропуск проверки (пересоберите через build-*.sh/bat)')
     return { ok: true }
   }
   if (!exePath || !fs.existsSync(exePath)) {
@@ -50,7 +54,7 @@ function verifyWdttIntegrity({ isPackaged, isDebugBuild, exePath, log, expectedS
   try {
     const actual = sha256File(exePath)
     if (actual !== expected) {
-      log?.(`[Integrity] wdtt-client hash mismatch`)
+      log?.(`[Integrity] wdtt-client hash mismatch (platform=${process.platform})`)
       return {
         ok: false,
         reason:
@@ -64,7 +68,7 @@ function verifyWdttIntegrity({ isPackaged, isDebugBuild, exePath, log, expectedS
 }
 
 /**
- * Soft: наличие/окружение подозрительно (не блокирует VPN).
+ * Soft: файл/окружение подозрительно (не блокирует VPN).
  */
 function softTamperHints({ isPackaged, isDebugBuild, log }) {
   if (!isPackaged || isDebugBuild) return
@@ -88,4 +92,5 @@ module.exports = {
   verifyWdttIntegrity,
   softTamperHints,
   sha256File,
+  resolveExpectedWdttSha,
 }

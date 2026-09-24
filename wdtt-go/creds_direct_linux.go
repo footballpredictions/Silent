@@ -13,6 +13,10 @@ import (
 // Нужны cap_net_admin,cap_net_raw на wdtt-client (setcap в .deb postinst).
 const lanProtectMark = 0x53494c // 'SIL'
 
+func logLanProtectBanner() {
+	// Linux: SO_MARK + helper protect-on table — баннер не критичен.
+}
+
 func applyLanIfaceBind(d *net.Dialer) {
 	if d == nil {
 		return

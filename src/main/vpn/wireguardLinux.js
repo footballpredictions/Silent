@@ -338,6 +338,8 @@ function normalizeWgConfText(conf) {
     .join('\n')
 }
 
+const { resolveWgMtu, WG_MTU_DEFAULT, WG_MTU_GAME } = require('./wgMtu')
+
 function buildWgConfigFromApi(config, listenPort = 9000) {
   const priv = (config.wg_private_key || '').trim()
   const pub = (config.server_public_key || '').trim()
@@ -345,9 +347,7 @@ function buildWgConfigFromApi(config, listenPort = 9000) {
   const addr = (config.wg_address || config.assigned_ip || '').trim()
   if (!addr) return null
   const dns = normalizeDnsValue(config.wg_dns || config.dns, config.dns_override)
-  const slot = String(config?.selected_server || '').trim().toLowerCase()
-  const ip = String(config?.server_ip || '').trim()
-  const mtu = (slot === 'server3' || ip === '78.17.74.27') ? 1420 : 1200
+  const mtu = resolveWgMtu(config)
   return `[Interface]
 PrivateKey = ${priv}
 Address = ${addr}
@@ -914,6 +914,9 @@ module.exports = {
   forceStopWireGuard,
   stopWireGuardTunnel,
   buildWgConfigFromApi,
+  resolveWgMtu,
+  WG_MTU_DEFAULT,
+  WG_MTU_GAME,
   applyWireGuardConfig,
   probeTunnelGateway: () => Promise.resolve(false),
   addServerBypassRoutes,

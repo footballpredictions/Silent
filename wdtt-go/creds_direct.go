@@ -214,14 +214,22 @@ func vkDirectResolver() *net.Resolver {
 }
 
 // dialTurnUDP — TURN с LocalAddr = Wi‑Fi/Ethernet (не wg-turn).
+// Protect (IP_BOUND_IF / SO_MARK) ставится в Control до connect(): на Darwin
+// connected UDP кеширует маршрут, а en0 — primary iface, поэтому один
+// LocalAddr не спасает от 0.0.0.0/1 → utun.
 func dialTurnUDP(resolved *net.UDPAddr) (*net.UDPConn, error) {
-	var laddr *net.UDPAddr
+	d := lanBoundDialer(10 * time.Second)
 	if ip := getLanIPv4(); ip != nil {
-		laddr = &net.UDPAddr{IP: ip}
+		d.LocalAddr = &net.UDPAddr{IP: ip}
 	}
-	c, err := net.DialUDP("udp", laddr, resolved)
+	conn, err := d.Dial("udp", resolved.String())
 	if err != nil {
 		return nil, err
+	}
+	c, ok := conn.(*net.UDPConn)
+	if !ok {
+		_ = conn.Close()
+		return nil, net.UnknownNetworkError("udp")
 	}
 	applyLanConnProtect(c)
 	return c, nil

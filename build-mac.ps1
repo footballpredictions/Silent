@@ -38,7 +38,7 @@ $wgOut = Join-Path (Get-Location) 'resources\mac\wireguard-go'
 $modRoot = Join-Path (go env GOPATH) 'pkg\mod\golang.zx2c4.com'
 $wgMod = Get-ChildItem $modRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'wireguard@*' } | Sort-Object Name -Descending | Select-Object -First 1
 if (-not $wgMod) {
-  go install golang.zx2c4.com/wireguard@v0.0.20230223 2>$null
+  go install golang.zx2c4.com/wireguard@0.0.20230223 2>$null
   $wgMod = Get-ChildItem $modRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'wireguard@*' } | Sort-Object Name -Descending | Select-Object -First 1
 }
 if ($wgMod) {
@@ -52,7 +52,7 @@ if (-not (Test-Path $wgOut)) {
   New-Item -ItemType Directory -Force -Path $tmp | Out-Null
   Push-Location $tmp
   go mod init tmpwg 2>$null
-  go get golang.zx2c4.com/wireguard@v0.0.20230223
+  go get golang.zx2c4.com/wireguard@0.0.20230223
   go build -ldflags='-s -w' -trimpath -o $wgOut golang.zx2c4.com/wireguard
   Pop-Location
 }
@@ -69,8 +69,9 @@ if ($LASTEXITCODE -ne 0) { throw 'integrity hash gen FAILED' }
 Write-Host '=== MAC PREP SUCCESS (binaries only) ==='
 Get-ChildItem resources\mac | Format-Table Name, Length
 Write-Host ''
-Write-Host 'Next on a MacBook (Apple Silicon):' -ForegroundColor Cyan
+Write-Host 'Next on a MacBook (Intel or Apple Silicon):' -ForegroundColor Cyan
 Write-Host '  cd pc'
 Write-Host '  chmod +x build-mac.sh resources/mac/*'
 Write-Host '  ./build-mac.sh'
+Write-Host '  (default = universal arm64+x64 DMG; optional MAC_ARCH=arm64|amd64)'
 Write-Host "Output: build-mac/Silent VPN Setup <version>.dmg"

@@ -179,6 +179,7 @@ func main() {
 	activeVKAuthMode := setVKAuthMode(*vkAuthMode)
 	setSysDNSServers(*sysDnsFlag)
 	log.Printf("[КЛИЕНТ] captcha-mode=%s vk-auth-mode=%s", activeCaptchaMode, activeVKAuthMode)
+	logLanProtectBanner()
 
 	if *peerAddr == "" || *vkHash == "" {
 		log.Fatal("[КЛИЕНТ] Нужны -peer и -vk")

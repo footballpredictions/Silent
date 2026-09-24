@@ -13,6 +13,7 @@ const {
   verifyWdttIntegrity,
   softTamperHints,
   sha256File,
+  resolveExpectedWdttSha,
 } = require('../src/main/integrity')
 
 function writeTemp(name, buf) {
@@ -65,7 +66,7 @@ describe('verifyWdttIntegrity gates', () => {
       log: (m) => logs.push(m),
     })
     assert.equal(r.ok, true)
-    assert.ok(logs.some((l) => /WDTT_SHA256 пуст/.test(l)))
+    assert.ok(logs.some((l) => /WDTT SHA пуст|WDTT_SHA256 пуст/.test(l)))
   })
 
   it('fails when exe missing in release', () => {
@@ -147,6 +148,23 @@ describe('softTamperHints', () => {
       if (prev === undefined) delete process.env.ELECTRON_RUN_AS_NODE
       else process.env.ELECTRON_RUN_AS_NODE = prev
     }
+  })
+})
+
+describe('resolveExpectedWdttSha', () => {
+  const pins = {
+    WDTT_SHA256: 'w'.repeat(64),
+    WDTT_LINUX_SHA256: 'l'.repeat(64),
+    WDTT_MAC_SHA256: 'm'.repeat(64),
+  }
+  it('uses MAC pin on darwin (not LINUX — same binary name)', () => {
+    assert.equal(resolveExpectedWdttSha('darwin', pins), 'm'.repeat(64))
+  })
+  it('uses LINUX pin on linux', () => {
+    assert.equal(resolveExpectedWdttSha('linux', pins), 'l'.repeat(64))
+  })
+  it('uses Windows pin on win32', () => {
+    assert.equal(resolveExpectedWdttSha('win32', pins), 'w'.repeat(64))
   })
 })
 

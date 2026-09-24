@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package main
 
@@ -6,6 +6,8 @@ import (
 	"net"
 	"syscall"
 )
+
+func logLanProtectBanner() {}
 
 func applyLanIfaceBind(_ *net.Dialer) {}
 

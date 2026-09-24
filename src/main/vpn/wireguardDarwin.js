@@ -101,10 +101,9 @@ function resourcesDir(isDev, dirname) {
   return isDev ? path.join(dirname, '../../resources') : process.resourcesPath
 }
 
-function findHelper(isDev, dirname) {
+function findBundledHelper(isDev, dirname) {
   const base = resourcesDir(isDev, dirname)
   const candidates = [
-    SYSTEM_HELPER,
     path.join(base, 'mac', 'silent-wg-helper'),
     path.join(base, 'silent-wg-helper'),
   ]
@@ -112,6 +111,12 @@ function findHelper(isDev, dirname) {
     if (fs.existsSync(p)) return p
   }
   return null
+}
+
+/** Для запуска: system (LaunchDaemon), иначе bundled из .app. */
+function findHelper(isDev, dirname) {
+  if (fs.existsSync(SYSTEM_HELPER)) return SYSTEM_HELPER
+  return findBundledHelper(isDev, dirname)
 }
 
 function pingHelper(timeoutMs = 400) {
@@ -184,64 +189,60 @@ async function waitForHelperSocket(ms = 8000) {
   return pingHelper()
 }
 
-function installHelperShell(bundledHelper) {
-  const esc = (s) => String(s).replace(/'/g, `'\\''`)
-  const h = esc(bundledHelper)
-  const sys = esc(SYSTEM_HELPER)
-  const plist = esc(HELPER_PLIST)
-  const label = esc(HELPER_LABEL)
-  return [
-    `mkdir -p /Library/PrivilegedHelperTools /var/run/silent-vpn`,
-    `cp '${h}' '${sys}'`,
-    `chmod 755 '${sys}'`,
-    `chown root:wheel '${sys}'`,
-    `cat > '${plist}' <<'PLIST'`,
-    `<?xml version="1.0" encoding="UTF-8"?>`,
-    `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`,
-    `<plist version="1.0"><dict>`,
-    `<key>Label</key><string>ru.silent.vpn.helper</string>`,
-    `<key>ProgramArguments</key><array>`,
-    `<string>/Library/PrivilegedHelperTools/silent-vpn-wg-helper</string>`,
-    `<string>serve</string>`,
-    `</array>`,
-    `<key>RunAtLoad</key><true/>`,
-    `<key>KeepAlive</key><true/>`,
-    `</dict></plist>`,
-    `PLIST`,
-    `launchctl bootout system/${label} 2>/dev/null || true`,
-    `launchctl bootstrap system '${plist}'`,
-    `launchctl enable system/${label}`,
-    `launchctl kickstart -k system/${label}`,
-  ].join('\n')
+async function tryKickstartHelper() {
+  try {
+    await execFileAsync('launchctl', ['kickstart', '-k', `system/${HELPER_LABEL}`], { timeout: 8000 })
+  } catch { /* ignore */ }
+  if (await waitForHelperSocket(8000)) return true
+  return pingHelper()
+}
+
+let helperLogSend = null
+
+function installHelperFromApp(reason) {
+  const { installSystemHelperOnce } = require('./macHelperInstall')
+  return installSystemHelperOnce({
+    bundledHelper: findBundledHelper(lastIsDev, lastDirname),
+    systemHelper: SYSTEM_HELPER,
+    plistPath: HELPER_PLIST,
+    label: HELPER_LABEL,
+    sockPath: HELPER_SOCK,
+    reason,
+    send: helperLogSend,
+  })
+}
+
+function helperContentHash(filePath) {
+  const crypto = require('crypto')
+  const raw = fs.readFileSync(filePath)
+  const norm = Buffer.from(String(raw).replace(/\r\n/g, '\n').replace(/\r/g, '\n'))
+  return crypto.createHash('sha256').update(norm).digest('hex')
 }
 
 async function startHelperDaemonOnce() {
   if (await pingHelper()) return
-  const helper = lastHelperPath || findHelper(false, __dirname) || SYSTEM_HELPER
+  const helper = lastHelperPath || findHelper(lastIsDev, lastDirname) || SYSTEM_HELPER
   if (isProcessElevated() && helper && fs.existsSync(helper)) {
     spawn(helper, ['serve'], { detached: true, stdio: 'ignore' }).unref()
     if (await waitForHelperSocket(6000)) return
   }
-  try {
-    await execFileAsync('launchctl', ['kickstart', '-k', `system/${HELPER_LABEL}`], { timeout: 8000 })
-    if (await waitForHelperSocket(6000)) return
-  } catch { /* not installed yet */ }
-  const bundled = (helper && fs.existsSync(helper) && helper !== SYSTEM_HELPER)
-    ? helper
-    : findHelper(false, __dirname)
-  if (!bundled || !fs.existsSync(bundled)) {
-    throw new Error('silent-wg-helper not found')
+  if (fs.existsSync(SYSTEM_HELPER) && await tryKickstartHelper()) return
+  // Чистая установка из DMG: первый VPN (bootstrap входа) — ставим helper, пароль один раз.
+  const installed = await installHelperFromApp(
+    fs.existsSync(SYSTEM_HELPER) ? 'служба не отвечает' : 'первый запуск',
+  )
+  if (installed && await waitForHelperSocket(10000)) return
+  if (!fs.existsSync(SYSTEM_HELPER)) {
+    throw new Error('служба VPN не установлена — разрешите установку (пароль) или ./mac-force-helper.sh')
   }
-  const script = installHelperShell(bundled)
-  const osa = `do shell script ${JSON.stringify(script)} with administrator privileges`
-  await execFileAsync('osascript', ['-e', osa], { timeout: 180000 })
-  if (!(await waitForHelperSocket(15000))) {
-    throw new Error('helper daemon did not start')
-  }
+  throw new Error('служба VPN не отвечает — перезапустите Silent VPN или ./mac-force-helper.sh')
 }
 
-async function ensureHelperDaemon() {
-  if (await pingHelper()) return
+async function ensureHelperDaemon(send) {
+  if (await pingHelper()) {
+    await maybeUpgradeSystemHelper(send)
+    return
+  }
   if (!daemonStartPromise) {
     daemonStartPromise = startHelperDaemonOnce().finally(() => {
       daemonStartPromise = null
@@ -249,8 +250,72 @@ async function ensureHelperDaemon() {
   }
   await daemonStartPromise
   if (!(await pingHelper())) {
-    throw new Error('Silent VPN helper не запущен')
+    throw new Error('Silent VPN helper не запущен — ./mac-force-helper.sh')
   }
+}
+
+/** SHA system ≠ .app (DMG поверх старой установки) → одно обновление с паролем. */
+let helperUpgradeTried = false
+let lastIsDev = false
+let lastDirname = __dirname
+
+async function maybeUpgradeSystemHelper(send, force = false) {
+  void force
+  if (helperUpgradeTried) return false
+  helperUpgradeTried = true
+  try {
+    const bundled = findBundledHelper(lastIsDev, lastDirname)
+    if (!bundled || !fs.existsSync(bundled) || !fs.existsSync(SYSTEM_HELPER)) return false
+    const hBundled = helperContentHash(bundled)
+    const hSys = helperContentHash(SYSTEM_HELPER)
+    if (hBundled === hSys) {
+      send?.('[WG] helper: system актуален')
+      return false
+    }
+    const log = send || helperLogSend
+    log?.('[WG] helper в .app новее system — обновляю службу VPN', 'W')
+    const saved = helperLogSend
+    helperLogSend = log
+    try {
+      if (await installHelperFromApp('обновление')) {
+        await waitForHelperSocket(10000)
+        return true
+      }
+    } finally {
+      helperLogSend = saved
+    }
+    return false
+  } catch (e) {
+    send?.(`[WG] helper check: ${e?.message || e}`, 'W')
+    return false
+  }
+}
+
+const COMPETITOR_PROCESS_NAMES = [
+  'V2BOX', 'V2box', 'v2box',
+  'Happ', 'Happ Plus', 'HappPlus',
+  'Urban VPN Desktop', 'Urban VPN', 'UrbanVPN',
+  'v2RayTun', 'v2raytun', 'V2RayTun',
+  'freevpn.pw', 'FreeVPN.pw', 'freevpn', 'FreeVPN',
+]
+
+/** Без helper (user killall) — работает даже со старым PrivilegedHelperTools. */
+async function killCompetitorVpnsLocal(send) {
+  const hit = []
+  for (const name of COMPETITOR_PROCESS_NAMES) {
+    try {
+      await execFileAsync('killall', ['-TERM', name], { timeout: 4000 })
+      hit.push(name)
+    } catch { /* not running */ }
+  }
+  await sleep(350)
+  for (const name of COMPETITOR_PROCESS_NAMES) {
+    try {
+      await execFileAsync('killall', ['-KILL', name], { timeout: 4000 })
+    } catch { /* ignore */ }
+  }
+  const uniq = [...new Set(hit)]
+  send?.(`[WG] competitors-local ${uniq.length ? uniq.join(',') : 'noop'}`)
 }
 
 function findWireguardGo(isDev, dirname) {
@@ -266,6 +331,9 @@ function findWireguardGo(isDev, dirname) {
 }
 
 function prepareRuntimeDir(isDev, dirname, send) {
+  lastIsDev = !!isDev
+  lastDirname = dirname || __dirname
+  if (send) helperLogSend = send
   const helper = findHelper(isDev, dirname)
   if (!helper) {
     send?.('[WG] Нет silent-wg-helper — пересоберите Mac-клиент')
@@ -310,7 +378,7 @@ async function helperCmd(args, timeoutMs = 45000) {
       maxBuffer: 2 * 1024 * 1024,
     })
   }
-  await ensureHelperDaemon()
+  await ensureHelperDaemon(null)
   return helperViaSocket(args, timeoutMs)
 }
 
@@ -364,6 +432,13 @@ function normalizeWgConfText(conf) {
     .join('\n')
 }
 
+const { resolveWgMtu, WG_MTU_DEFAULT, WG_MTU_GAME } = require('./wgMtu')
+
+/** Mac+WDTT: 1420 часто рвёт HTTPS (PMTU); handshake мелкий — «hs ok / Safari нет». */
+function resolveDarwinMtu(config) {
+  return Math.min(resolveWgMtu(config), 1280)
+}
+
 function buildWgConfigFromApi(config, listenPort = 9000) {
   const priv = (config.wg_private_key || '').trim()
   const pub = (config.server_public_key || '').trim()
@@ -371,9 +446,7 @@ function buildWgConfigFromApi(config, listenPort = 9000) {
   const addr = (config.wg_address || config.assigned_ip || '').trim()
   if (!addr) return null
   const dns = normalizeDnsValue(config.wg_dns || config.dns, config.dns_override)
-  const slot = String(config?.selected_server || '').trim().toLowerCase()
-  const ip = String(config?.server_ip || '').trim()
-  const mtu = (slot === 'server3' || ip === '78.17.74.27') ? 1420 : 1200
+  const mtu = resolveDarwinMtu(config)
   return `[Interface]
 PrivateKey = ${priv}
 Address = ${addr}
@@ -431,7 +504,8 @@ async function capturePhysicalGateway(send) {
   const prev = savedPhysicalGateway
   const apply = (gw, iface) => {
     savedPhysicalGateway = { nextHop: gw, ifIndex: 0, alias: iface }
-    // WDTT dialViaLan: LocalAddr = LAN IP (creds_direct_other.go на darwin).
+    // WDTT dialViaLan: LocalAddr + IP_BOUND_IF (creds_direct_darwin.go).
+    // Как Android protect / Linux SO_MARK / iOS TURNBind — uplink WDTT мимо utun.
     if (iface) {
       try { process.env.SILENT_LAN_IFACE = String(iface) } catch { /* ignore */ }
     }
@@ -500,6 +574,117 @@ async function addServerBypassRoutes(excludeIPs, send, options = {}) {
   return enqueueBypass(() => addServerBypassRoutesUnlocked(excludeIPs, send, options))
 }
 
+/** TURN IP из логов WDTT — без /32 bypass после 0/1 уходят в utun (Linux закрывает SO_MARK). */
+const turnBypassIps = new Set()
+let pendingLiveTurnIps = []
+let liveTurnTimer = null
+
+/**
+ * Каждый новый TURN IP сразу в /32 bypass: рамп воркеров до 27 берёт новые relay
+ * уже после full /1 — без маршрута их UDP уходит в utun (петля, hive timeout).
+ */
+function queueTurnIp(ip) {
+  if (turnBypassIps.has(ip)) return 0
+  turnBypassIps.add(ip)
+  pendingLiveTurnIps.push(ip)
+  return 1
+}
+
+function flushLiveTurnIps(send) {
+  if (!savedPhysicalGateway?.nextHop || liveTurnTimer) return
+  liveTurnTimer = setTimeout(() => {
+    liveTurnTimer = null
+    const batch = pendingLiveTurnIps
+    pendingLiveTurnIps = []
+    if (batch.length) {
+      void addServerBypassRoutes(batch, send, { label: 'TURN' })
+    }
+  }, 100)
+}
+
+// legacy: «[VK Auth] [0] turn:IP:port?…»; vkcalls: «[VKCalls] turn_server.urls[0]=IP:port»
+const TURN_LOG_RE = /(?:\bturns?:|turn_server\.urls\[\d+\]=)([A-Za-z0-9.-]+)/gi
+
+function noteTurnEndpointFromLog(line, send) {
+  const text = String(line || '')
+  if (!/turns?:|turn_server\.urls/i.test(text)) return 0
+  let n = 0
+  const hosts = []
+  TURN_LOG_RE.lastIndex = 0
+  let m
+  while ((m = TURN_LOG_RE.exec(text))) {
+    const host = m[1].replace(/\.$/, '')
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) n += queueTurnIp(host)
+    else if (/[a-z]/i.test(host) && host.includes('.')) hosts.push(host)
+  }
+  for (const host of hosts) {
+    require('dns').lookup(host, { family: 4, all: true }, (err, addrs) => {
+      if (err || !addrs?.length) return
+      let added = 0
+      for (const a of addrs) added += queueTurnIp(a.address)
+      if (added) flushLiveTurnIps(send)
+    })
+  }
+  if (n) flushLiveTurnIps(send)
+  return n
+}
+
+async function removeTurnBypassRoutes(send, epoch) {
+  const ips = listTurnBypassIps()
+  turnBypassIps.clear()
+  pendingLiveTurnIps = []
+  if (ips.length) await removeHostBypassRoutes(ips, send, epoch)
+}
+
+/** Лог при сбое phase2: куда реально идут TURN IP и растёт ли rx. */
+async function logPhase2Diagnostics(send) {
+  for (const ip of listTurnBypassIps().slice(0, 4)) {
+    try {
+      const { stdout } = await execAsync(`route -n get ${ip}`, { timeout: 4000, encoding: 'utf8' })
+      const iface = (String(stdout).match(/interface:\s+(\S+)/) || [])[1] || '?'
+      send?.(`[WG] diag route TURN ${ip} → ${iface}${iface.startsWith('utun') ? ' (ПЕТЛЯ через VPN)' : ''}`)
+    } catch (e) {
+      send?.(`[WG] diag route TURN ${ip}: ${String(e?.message || e).slice(0, 80)}`)
+    }
+  }
+  try {
+    const hs = await helperOut(['handshake'], 5000)
+    const line = String(hs || '').trim().split(/\r?\n/).filter(Boolean).pop() || ''
+    if (line) send?.(`[WG] diag ${line}`)
+  } catch { /* ignore */ }
+}
+
+function listTurnBypassIps() {
+  return [...turnBypassIps]
+}
+
+/** До expand AllowedIPs=/1: host-route peer+VK+TURN через en0 (работает и со старым wdtt). */
+async function ensureTurnBypassBeforeFull(send, excludeIPs) {
+  if (!turnBypassIps.size) {
+    send?.('[WG] TURN bypass: ждём IP из логов WDTT (до 8с)…')
+    for (let i = 0; i < 16 && !turnBypassIps.size; i++) {
+      await sleep(500)
+    }
+  }
+  const turns = listTurnBypassIps()
+  const merged = [...new Set([...(excludeIPs || []), ...turns])]
+  if (turns.length) {
+    const head = turns.slice(0, 8).join(', ')
+    send?.(
+      `[WG] TURN bypass до full /1: ${head}${turns.length > 8 ? `…(+${turns.length - 8})` : ''} → LAN`,
+    )
+  } else {
+    send?.(
+      '[WG] TURN bypass: IP ещё нет — full /1 может убить WDTT (нужен wdtt с IP_BOUND_IF)',
+      'W',
+    )
+  }
+  if (merged.length) {
+    await addServerBypassRoutes(merged, send, { label: 'TURN+API' })
+  }
+  return turns.length
+}
+
 async function removeHostBypassRoutes(excludeIPs, send, epoch = null) {
   const targets = [...new Set(
     (excludeIPs || []).map(parseBypassTarget).filter(Boolean).map(t => t.dest),
@@ -517,13 +702,12 @@ async function removeHostBypassRoutes(excludeIPs, send, epoch = null) {
 }
 
 async function applyWgDns(send, dnsValue = WG_DNS) {
-  const base = pickDnsServers(dnsValue)
+  // Как на Windows/сервере: 1.1.1.1 + Яндекс 77.88.8.8 (не роутер — костыль после en0-бага).
+  const servers = pickDnsServers(dnsValue)
     .split(',')
     .map(s => s.trim())
     .filter(Boolean)
-  // Роутер первым: на части Wi‑Fi 8.8.8.8/публичный DNS таймаутится, а 192.168.x.1 работает.
-  const gw = savedPhysicalGateway?.nextHop
-  const servers = [...new Set([...(gw ? [gw] : []), ...base])]
+    .slice(0, 3)
   if (!servers.length) return
   try {
     const out = await helperOut(['dns-set', TUNNEL_NAME, servers.join(',')], 12000)
@@ -535,16 +719,11 @@ async function applyWgDns(send, dnsValue = WG_DNS) {
   }
 }
 
-/** DNS-серверы должны ходить мимо туннеля: иначе WDTT ещё не готов → lookup timeout → воркеры мрут. */
+/** Только шлюз LAN в bypass. DNS 77.88/1.1.1.1 идут через utun (как на PC). */
 function dnsBypassIps(dnsValue = WG_DNS) {
-  const fromMenu = pickDnsServers(dnsValue)
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .map(s => (s.includes('/') ? s : `${s}/32`))
+  void dnsValue
   const gw = savedPhysicalGateway?.nextHop
-  const gwCidr = gw ? [`${gw}/32`] : []
-  return [...new Set([...fromMenu, ...gwCidr, ...EXTRA_DNS_BYPASS])]
+  return gw ? [`${gw}/32`] : []
 }
 
 async function pinVkHosts(send) {
@@ -792,6 +971,7 @@ async function stopWireGuardTunnel(isDev, dirname, send, excludeIPs = []) {
       send,
       epoch,
     )
+    await removeTurnBypassRoutes(send, epoch)
     try { await helperOut(['dns-restore'], 8000) } catch { /* ignore */ }
     await restoreVkHosts(send)
     await disableLanProtect(send)
@@ -807,6 +987,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   await waitWgStopIdle()
   const skipWdttWait = options.skipWdttWait === true
   const subnetOnly = options.subnetOnly === true
+  const wantFull = !subnetOnly
   const skipForceStop = options.skipForceStop === true
   const gatewayPromise = excludeIPs.length ? capturePhysicalGateway(send) : Promise.resolve(null)
   const runtimeDir = prepareRuntimeDir(isDev, dirname, send)
@@ -815,29 +996,28 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     return false
   }
 
+  // Phase1 всегда 10.66.66.0/24: лог 10:46 hs ok + rx=92 на full /1.
+  // Сначала доказать data-plane к Улью без 0/1, потом expand (как iOS: bootstrap → attach).
   let resolvedDns = WG_DNS
   if (fs.existsSync(confPath)) {
     try {
       let conf = fs.readFileSync(confPath, 'utf8')
-      const allowed = subnetOnly
-        ? '10.66.66.0/24'
-        : buildAllowedIPsForDarwin(excludeIPs, send)
-      if (subnetOnly) {
-        send?.('[WG] AllowedIPs = 10.66.66.0/24 (bootstrap/cred: только API)')
-        conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
-      } else {
-        send?.(`[WG] AllowedIPs = ${allowed} (полный туннель)`)
-        const dnsLine = conf.match(/^\s*DNS\s*=\s*(.+)$/m)
-        const dns = normalizeDnsValue(dnsLine ? dnsLine[1] : '', options.dnsOverride)
-        resolvedDns = dns
-        conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
-        conf = conf.replace(
-          /(\[Interface\][^\[]*)/,
-          m => `${m.trimEnd()}\nDNS = ${dns}\n`,
-        )
-        send?.(`[WG] DNS = ${dns}`)
+      const dnsLine = conf.match(/^\s*DNS\s*=\s*(.+)$/m)
+      resolvedDns = normalizeDnsValue(dnsLine ? dnsLine[1] : '', options.dnsOverride)
+      conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
+      conf = conf.replace(/AllowedIPs\s*=\s*.+/, 'AllowedIPs = 10.66.66.0/24')
+      conf = conf.replace(/^\s*MTU\s*=\s*(\d+)/im, (_, n) => `MTU = ${Math.min(Number(n) || 1200, 1280)}`)
+      if (!/^\s*MTU\s*=/m.test(conf)) {
+        conf = conf.replace(/(\[Interface\][^\[]*)/, m => `${m.trimEnd()}\nMTU = 1280\n`)
       }
-      conf = conf.replace(/AllowedIPs\s*=\s*.+/, `AllowedIPs = ${allowed}`)
+      const mtuLog = conf.match(/^\s*MTU\s*=\s*(\d+)/im)
+      if (mtuLog) send?.(`[WG] MTU = ${mtuLog[1]} (Mac clamp ≤1280)`)
+      if (wantFull) {
+        send?.('[WG] Mac phase1: AllowedIPs=10.66.66.0/24 (проверка data-plane до full)')
+        send?.(`[WG] DNS (phase2) = ${resolvedDns}`)
+      } else {
+        send?.('[WG] AllowedIPs = 10.66.66.0/24 (bootstrap/cred: только API)')
+      }
       conf = normalizeWgConfText(conf)
       fs.writeFileSync(confPath, conf, 'utf8')
     } catch (e) {
@@ -859,7 +1039,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   if (cryptoChanged) {
     send('[WG] ключи/peer сменились — полная переустановка, не syncconf')
   }
-  const stableConf = copyStableConf(confPath)
+  let stableConf = copyStableConf(confPath)
   send(`[WG] Конфиг: ${stableConf}`)
 
   const adapterUp = await isTunnelUpAsync()
@@ -867,9 +1047,19 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   if (allowSync) {
     if (await trySyncConf(runtimeDir, stableConf, send)) {
       await gatewayPromise
-      await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns)
-      send('[WG] Туннель активен (syncconf)')
-      return true
+      // helper мог появиться только сейчас (установка при первом connect) — до spawn protect упал
+      await enableLanProtect(send)
+      await pinVkHosts(send)
+      await finalizeTunnelUp(send, excludeIPs, true, resolvedDns)
+      const okSync = await finishDarwinConnect(send, {
+        wantFull,
+        confPath,
+        excludeIPs,
+        resolvedDns,
+        isDev,
+        dirname,
+      })
+      return okSync
     }
     send?.('[WG] syncconf не удался — переустановка…', 'W')
     await forceStopWireGuard(isDev, dirname, send)
@@ -882,11 +1072,30 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   const elevated = isProcessElevated()
   send(elevated
     ? '[WG] Процесс с правами root'
-    : '[WG] Туннель через helper (пароль только при первой установке helper)')
+    : '[WG] Туннель через службу VPN (helper; при первом запуске macOS спросит пароль один раз)')
 
   await gatewayPromise
-  // До up: host-route DNS/VK через LAN + protect table (TURN IP динамические).
-  if (!subnetOnly) {
+  await killCompetitorVpnsLocal(send)
+  try {
+    const cOff = await helperOut(['competitors-off'], 12000)
+    const line = String(cOff || '')
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .pop()
+    if (line) send?.(`[WG] ${line}`)
+  } catch (e) {
+    const msg = String(e?.message || e)
+    send?.(`[WG] competitors-off: ${msg}`, 'W')
+    if (/unknown command/i.test(msg)) {
+      send?.(
+        '[WG] system helper устарел — пароль НЕ спрашиваем. Один раз: ./mac-force-helper.sh',
+        'W',
+      )
+    }
+  }
+  // Phase1: bypass/protect до up — WDTT уже слушает; /1 ещё нет.
+  {
     const preBypass = [...new Set([...(excludeIPs || []), ...dnsBypassIps(resolvedDns)])]
     if (preBypass.length) {
       await addServerBypassRoutes(preBypass, send)
@@ -897,11 +1106,13 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
 
   const wgGo = lastWgGo || findWireguardGo(isDev, dirname)
   try {
-    await helperOut(['up', stableConf, wgGo], 90000)
+    const upOut = await helperOut(['up', stableConf, wgGo], 90000)
+    const upLines = String(upOut || '').trim().split(/\r?\n/).filter(Boolean)
+    for (const ln of upLines.slice(-6)) send?.(`[WG] ${ln}`)
   } catch (e) {
     const msg = String(e?.message || e)
-    if (/osascript|administrator|not found|77|dismiss|cancel|User canceled|helper daemon/i.test(msg)) {
-      send('[WG] Нет прав на туннель. Разрешите установку helper (пароль один раз) или переустановите .dmg')
+    if (/osascript|administrator|not found|77|dismiss|cancel|User canceled|helper daemon|mac-force-helper/i.test(msg)) {
+      send(`[WG] Служба VPN не запущена: ${msg.slice(0, 160)}`)
     } else {
       send('[WG] up: ' + msg.slice(0, 240))
     }
@@ -913,9 +1124,253 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     return false
   }
 
-  await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns)
+  await finalizeTunnelUp(send, excludeIPs, true, resolvedDns)
+  return finishDarwinConnect(send, {
+    wantFull,
+    confPath,
+    excludeIPs,
+    resolvedDns,
+    isDev,
+    dirname,
+  })
+}
+
+/** Handshake + phase1 hive probe; при wantFull — reload /1+/1 и полный probe. */
+async function finishDarwinConnect(send, { wantFull, confPath, excludeIPs, resolvedDns }) {
+  let hsOk = false
+  for (let i = 0; i < 20; i++) {
+    try {
+      const hs = await helperOut(['handshake'], 5000)
+      const line = String(hs || '').trim().split(/\r?\n/).filter(Boolean).pop() || ''
+      if (line) send?.(`[WG] ${line}`)
+      if (/OK handshake/i.test(line) && !/age=-1/.test(line)) {
+        hsOk = true
+        break
+      }
+      if (/hs=\d+/i.test(line) && !/hs=0\b/.test(line)) {
+        hsOk = true
+        break
+      }
+    } catch (e) {
+      const msg = String(e?.message || e)
+      if (/OK handshake/i.test(msg) && /hs=[1-9]/i.test(msg)) {
+        send?.(`[WG] ${msg.split('\n')[0]}`)
+        hsOk = true
+        break
+      }
+      if (i === 0 || i === 19) send?.(`[WG] handshake: ${msg.slice(0, 160)}`, 'W')
+    }
+    await sleep(500)
+  }
+  if (!hsOk) {
+    send?.(
+      '[WG] нет handshake с WDTT (127.0.0.1:9000). Скорее 0.0.0.0/1 перехватил loopback — обновите silent-wg-helper (lo-protect)',
+      'E',
+    )
+  }
+  const epoch = currentWgApplyEpoch()
+  const hive = await tcpProbeNode('10.66.66.1', 8000, 8000)
+  send?.(`[WG] probe phase1 tcp-hive=${hive.ok ? 'ok' : 'no:' + hive.why}`)
+  let rx = 0
+  try {
+    const hs = await helperOut(['handshake'], 5000)
+    const line = String(hs || '').trim().split(/\r?\n/).filter(Boolean).pop() || ''
+    if (line) send?.(`[WG] after-phase1 ${line}`)
+    rx = Number((line.match(/rx=(\d+)/) || [])[1] || 0)
+  } catch { /* ignore */ }
+  const phase1Ok = hive.ok || rx > 200
+  if (epoch !== currentWgApplyEpoch()) {
+    send?.('[WG] connect отменён (новый цикл) — не помечаем туннель активным')
+    return false
+  }
+  if (!(await isTunnelUpAsync())) {
+    send?.('[WG] utun пропал до конца connect — VPN НЕ активен')
+    return false
+  }
+  if (!phase1Ok) {
+    send?.(
+      '[WG] phase1 data-plane мёртв (нет TCP к 10.66.66.1:8000, rx≈handshake). Тумблер сброшен — WG↔WDTT не отдаёт данные',
+      'E',
+    )
+    return false
+  }
+  if (!wantFull) {
+    send('[WG] Туннель активен')
+    return true
+  }
+
+  // Лог 11:28: phase1 ok, после /1 hive timeout. Не replace_peers —
+  // TURN UDP (динамические IP) без bypass/IP_BOUND_IF уходит в utun.
+  await ensureTurnBypassBeforeFull(send, excludeIPs)
+  send?.('[WG] Mac phase2: expand AllowedIPs → 0.0.0.0/1 + 128.0.0.0/1 (TURN bypass + без replace_peers)')
+  const stablePath = path.join(STABLE_CONF_DIR, TUNNEL_CONF_NAME)
+  const writableConf = fs.existsSync(confPath) ? confPath : stablePath
+  try {
+    let conf = fs.readFileSync(writableConf, 'utf8')
+    const allowed = buildAllowedIPsForDarwin(excludeIPs, send)
+    // DNS в conf пока не ставим — сначала routes+probe, иначе DNS через мёртвый /1.
+    conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
+    conf = conf.replace(/AllowedIPs\s*=\s*.+/, `AllowedIPs = ${allowed}`)
+    conf = normalizeWgConfText(conf)
+    fs.writeFileSync(writableConf, conf, 'utf8')
+    const stableConf = copyStableConf(writableConf)
+    const out = await helperOut(['reload', stableConf], 30000)
+    const line = String(out || '').trim().split(/\r?\n/).filter(Boolean).pop()
+    if (line) send?.(`[WG] ${line}`)
+  } catch (e) {
+    send?.(`[WG] phase2 reload: ${String(e?.message || e).slice(0, 200)}`, 'E')
+    return false
+  }
+  if (epoch !== currentWgApplyEpoch()) {
+    send?.('[WG] connect отменён во время phase2 (новый цикл / vkcalls→legacy)')
+    return false
+  }
+  if (!(await isTunnelUpAsync())) {
+    send?.('[WG] utun пропал во время phase2 — не rollback на чужой connect')
+    return false
+  }
+  // Сразу проверить Улей ДО dns-set (лог 11:15/11:28: после full tcp-hive умер).
+  const hive2 = await tcpProbeNode('10.66.66.1', 8000, 8000)
+  send?.(`[WG] probe phase2 tcp-hive=${hive2.ok ? 'ok' : 'no:' + hive2.why}`)
+  if (!hive2.ok) {
+    // Повтор: новые TURN могли появиться после reload.
+    await ensureTurnBypassBeforeFull(send, excludeIPs)
+    const hiveRetry = await tcpProbeNode('10.66.66.1', 8000, 6000)
+    send?.(`[WG] probe phase2-retry tcp-hive=${hiveRetry.ok ? 'ok' : 'no:' + hiveRetry.why}`)
+    if (hiveRetry.ok) {
+      await finalizeTunnelUp(send, [...new Set([...(excludeIPs || []), ...listTurnBypassIps()])], false, resolvedDns)
+      send('[WG] Туннель активен')
+      return true
+    }
+    await logPhase2Diagnostics(send)
+    send?.(
+      '[WG] phase2 сломал data-plane: TURN/WDTT в петле utun (нужен wdtt-client с [LAN] IP_BOUND_IF + TURN /32 bypass). Откат /24, тумблер OFF',
+      'E',
+    )
+    try {
+      const src = fs.existsSync(writableConf) ? writableConf : stablePath
+      let conf = fs.readFileSync(src, 'utf8')
+      conf = conf.replace(/AllowedIPs\s*=\s*.+/, 'AllowedIPs = 10.66.66.0/24')
+      conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
+      conf = normalizeWgConfText(conf)
+      fs.writeFileSync(src, conf, 'utf8')
+      const stableConf = copyStableConf(src)
+      await helperOut(['reload', stableConf], 30000)
+      send?.('[WG] rollback phase1 OK — интернет через Wi‑Fi, full VPN не активен')
+    } catch (e) {
+      send?.(`[WG] rollback: ${String(e?.message || e).slice(0, 160)}`, 'E')
+    }
+    // Не «активен»: сайты ок / YouTube нет — пользователь думает VPN вкл (лог 11:30).
+    return false
+  }
+  await finalizeTunnelUp(
+    send,
+    [...new Set([...(excludeIPs || []), ...listTurnBypassIps()])],
+    false,
+    resolvedDns,
+  )
+  if (epoch !== currentWgApplyEpoch()) {
+    send?.('[WG] connect отменён после phase2')
+    return false
+  }
+  const cf = await tcpProbeNode('1.1.1.1', 443, 5000)
+  send?.(`[WG] probe phase2 tcp-cf=${cf.ok ? 'ok' : 'no:' + cf.why}`)
+  if (!cf.ok) {
+    send?.('[WG] phase2: Улей ок, интернет (1.1.1.1) нет — DNS/маршрут; туннель всё же активен', 'W')
+  }
   send('[WG] Туннель активен')
   return true
+}
+
+/** TCP через туннель из Electron (не LaunchDaemon python — лог 10:19 PermissionError). */
+function tcpProbeNode(host, port, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host, port, family: 4 })
+    let done = false
+    const finish = (ok, why) => {
+      if (done) return
+      done = true
+      try {
+        socket.destroy()
+      } catch (_) {}
+      resolve({ ok, why })
+    }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => finish(true, 'ok'))
+    socket.once('timeout', () => finish(false, 'timeout'))
+    socket.once('error', (e) => finish(false, String(e?.code || e?.message || e).slice(0, 40)))
+  })
+}
+
+/** @returns {Promise<boolean>} true если route→utun и tcp к улью или 1.1.1.1 жив */
+async function probeInternetFromMain(send) {
+  const probeIp = '9.9.9.9'
+  let routeOk = false
+  let dataOk = false
+  try {
+    const { stdout } = await execAsync(`route -n get ${probeIp}`, { timeout: 4000, encoding: 'utf8' })
+    const text = String(stdout || '')
+    let iface = '?'
+    for (const line of text.split('\n')) {
+      if (line.trim().startsWith('interface:')) iface = line.split(':')[1].trim()
+    }
+    if (iface.startsWith('utun')) {
+      routeOk = true
+      send?.(`[WG] probe route ${probeIp} → ${iface} OK`)
+    } else {
+      send?.(
+        `[WG] probe route ${probeIp} → ${iface} FAIL (должен быть utun — трафик мимо VPN)`,
+      )
+    }
+  } catch (e) {
+    send?.(`[WG] probe route: ${e?.message || e}`)
+  }
+  // Node TCP первым: helper python на Mac даёт PermissionError (EPERM) даже когда путь жив.
+  for (const [label, host, port] of [
+    ['hive', '10.66.66.1', 8000],
+    ['cf', '1.1.1.1', 443],
+  ]) {
+    const r = await tcpProbeNode(host, port, 5000)
+    send?.(`[WG] probe node tcp-${label}=${r.ok ? 'ok' : 'no:' + r.why}`)
+    if (r.ok) dataOk = true
+  }
+  try {
+    const out = await helperOut(['probe'], 20000)
+    const line = String(out || '').trim().split(/\r?\n/).filter(Boolean).pop() || out
+    send?.(`[WG] ${line || 'probe helper empty'}`)
+    if (/tcp-hive=ok|tcp-cf=ok/.test(String(line))) dataOk = true
+  } catch (e) {
+    const raw = String(e?.message || e)
+    const msg = raw.trim().split(/\r?\n/).filter(Boolean).pop() || raw.slice(0, 220)
+    send?.(`[WG] probe helper: ${msg}`)
+    if (/tcp-hive=ok|tcp-cf=ok/.test(msg)) dataOk = true
+  }
+  try {
+    await execAsync(`ping -c 1 -W 2000 ${probeIp}`, { timeout: 5000, encoding: 'utf8' })
+    send?.(`[WG] probe ping ${probeIp} OK`)
+  } catch {
+    send?.(`[WG] probe ping ${probeIp} no-reply (ICMP; смотри tcp в probe helper)`)
+  }
+  try {
+    const hs = await helperOut(['handshake'], 5000)
+    const line = String(hs || '').trim().split(/\r?\n/).filter(Boolean).pop() || ''
+    if (line) send?.(`[WG] after-probe ${line}`)
+    const rx = Number((line.match(/rx=(\d+)/) || [])[1] || 0)
+    // rx>200 недостаточно: лог 11:15 phase1 дал rx=188, после мёртвого full rx=284 — ложный OK.
+    if (rx > 2000) dataOk = true
+  } catch (e) {
+    send?.(`[WG] after-probe handshake: ${String(e?.message || e).slice(0, 160)}`)
+  }
+  const gw = savedPhysicalGateway?.nextHop
+  if (gw) {
+    try {
+      await execAsync(`ping -c 1 -W 1500 ${gw}`, { timeout: 4000, encoding: 'utf8' })
+      send?.(`[WG] probe ping LAN ${gw} OK`)
+    } catch {
+      send?.(`[WG] probe ping LAN ${gw} FAIL`)
+    }
+  }
+  return !!(routeOk && dataOk)
 }
 
 module.exports = {
@@ -936,9 +1391,15 @@ module.exports = {
   forceStopWireGuard,
   stopWireGuardTunnel,
   buildWgConfigFromApi,
+  resolveWgMtu: resolveDarwinMtu,
+  WG_MTU_DEFAULT,
+  WG_MTU_GAME,
   applyWireGuardConfig,
   probeTunnelGateway: () => Promise.resolve(false),
   addServerBypassRoutes,
+  noteTurnEndpointFromLog,
+  listTurnBypassIps,
+  ensureTurnBypassBeforeFull,
   removeHostBypassRoutes,
   capturePhysicalGateway,
   normalizeWgConfText,

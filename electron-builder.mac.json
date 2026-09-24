@@ -4,7 +4,8 @@
   "directories": {
     "output": "build-mac"
   },
-  "artifactName": "Silent VPN Setup ${version}.${ext}",
+  "artifactName": "Silent VPN Setup ${version}-${arch}.${ext}",
+  "afterPack": "./scripts/mac-after-pack.js",
   "files": [
     "src/**",
     "dist/renderer/**",
@@ -26,23 +27,24 @@
     }
   ],
   "mac": {
-    "target": [
-      { "target": "dmg", "arch": ["arm64"] }
-    ],
+    "target": ["dmg"],
     "icon": "assets/icon.png",
     "category": "public.app-category.utilities",
     "hardenedRuntime": false,
     "gatekeeperAssess": false,
     "identity": null,
+    "x64ArchFiles": "Contents/Resources/silent-wg-helper|Contents/Resources/assets/*",
     "extendInfo": {
       "NSAppleEventsUsageDescription": "Silent VPN installs a privileged helper for the VPN tunnel."
     }
   },
   "dmg": {
     "title": "Silent VPN ${version}",
+    "iconSize": 110,
+    "window": { "width": 540, "height": 380 },
     "contents": [
-      { "x": 130, "y": 220 },
-      { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      { "x": 140, "y": 190 },
+      { "x": 400, "y": 190, "type": "link", "path": "/Applications" }
     ]
   }
 }

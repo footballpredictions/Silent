@@ -144,11 +144,32 @@ def uapi_set(iface: str, conf: dict) -> None:
         f"private_key={b64_to_hex(conf['private_key'])}",
         "replace_peers=true",
         f"public_key={b64_to_hex(conf['public_key'])}",
+        "replace_allowed_ips=true",
         f"endpoint={conf['endpoint']}",
         f"persistent_keepalive_interval={conf['keepalive']}",
     ]
     for ip in conf["allowed_ips"]:
         body.append(f"allowed_ip={ip}")
+    _uapi_send(iface, body)
+
+
+def uapi_set_allowed_ips(iface: str, conf: dict) -> None:
+    """Только AllowedIPs — без replace_peers (лог 11:15: full uapi на reload убивал data-plane после phase1 ok)."""
+    if not conf.get("public_key"):
+        die("reload: no public_key")
+    if not conf.get("allowed_ips"):
+        die("reload: no allowed_ips")
+    body = [
+        "set=1",
+        f"public_key={b64_to_hex(conf['public_key'])}",
+        "replace_allowed_ips=true",
+    ]
+    for ip in conf["allowed_ips"]:
+        body.append(f"allowed_ip={ip}")
+    _uapi_send(iface, body)
+
+
+def _uapi_send(iface: str, body: list[str]) -> None:
     payload = "\n".join(body) + "\n\n"
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -228,10 +249,13 @@ def start_userspace(wg_go: str) -> str:
                 before.add(name[:-5])
     except OSError:
         pass
+    # Лог wireguard-go — иначе data-plane (rx=92) невидима.
+    wg_log = os.path.join(RUN_DIR, "wireguard-go.log")
+    log_f = open(wg_log, "ab", buffering=0)
     proc = subprocess.Popen(
         [wg_go, "utun"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_f,
+        stderr=log_f,
         start_new_session=True,
     )
     with open(PID_FILE, "w", encoding="utf-8") as f:
@@ -256,29 +280,176 @@ def start_userspace(wg_go: str) -> str:
     return ""
 
 
-def apply_addr_routes(iface: str, conf: dict) -> None:
-    addr = conf["address"].split("/")[0].strip()
+def clear_stale_split_default_routes(keep_iface: str = "") -> None:
+    """Снести чужие 0/1 и 128.0/1 (Happ/V2BOX utun), иначе traffic уходит в мёртвый iface."""
+    ns = run_out(["netstat", "-rn", "-f", "inet"])
+    removed = 0
+    for line in ns.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        dest = parts[0]
+        # macOS: "0/1" или "128.0/1"; иногда "default"
+        if dest not in ("0/1", "0.0.0.0/1", "128.0/1", "128.0.0.0/1"):
+            continue
+        netif = parts[-1] if not parts[-1].isdigit() else parts[-2]
+        # Netif колонка: обычно parts[3] при Expire пустом, иначе last non-digit
+        for p in reversed(parts[1:]):
+            if p.startswith("utun") or p.startswith("en") or p.startswith("bridge"):
+                netif = p
+                break
+        if keep_iface and netif == keep_iface:
+            continue
+        net = "0.0.0.0/1" if dest.startswith("0") else "128.0.0.0/1"
+        run(["route", "-n", "delete", "-net", net], check=False)
+        removed += 1
+    if removed:
+        print(f"OK route-gc removed={removed}")
+
+
+def apply_addr_routes(iface: str, conf: dict, *, addr: bool = True) -> None:
+    """Как wg-quick Darwin (darwin.bash add_addr/add_route).
+
+    addr=False — только маршруты (reload phase2): не трогаем ifconfig живого utun.
+    """
+    raw = (conf.get("address") or "").strip()
+    if not raw:
+        die("no address in conf")
+    if "/" not in raw:
+        raw = raw + "/32"
+    host = raw.split("/", 1)[0].strip()
     mtu = str(conf.get("mtu") or "1200")
-    # Point-to-point style: local = peer for /32 tunnel IP
-    run(["ifconfig", iface, "inet", addr, addr, "mtu", mtu, "up"], check=True)
+    if addr:
+        run(["ifconfig", iface, "inet", raw, host, "alias"], check=True)
+        run(["ifconfig", iface, "mtu", mtu], check=False)
+        run(["ifconfig", iface, "up"], check=True)
+    protect_loopback_for_wdtt()
+    clear_stale_split_default_routes(keep_iface="")
+    for net in ("0.0.0.0/1", "128.0.0.0/1"):
+        run(["route", "-q", "-n", "delete", "-inet", net], check=False)
+        run(["route", "-n", "delete", "-net", net], check=False)
+    # phase1→full: убрать узкий /24, иначе странные приоритеты
+    run(["route", "-q", "-n", "delete", "-inet", "10.66.66.0/24"], check=False)
+    for net in list(conf.get("allowed_ips") or []):
+        run(["route", "-q", "-n", "delete", "-inet", net], check=False)
+    routed_via = "interface"
     for net in conf["allowed_ips"]:
-        # Prefer -interface so traffic goes into utun without needing a gateway
         p = run(
-            ["route", "-n", "add", "-net", net, "-interface", iface],
+            ["route", "-q", "-n", "add", "-inet", net, "-interface", iface],
             check=False,
             capture=True,
         )
-        if p.returncode != 0:
-            # Already exists → change
+        err = ((p.stderr or "") + (p.stdout or "")).lower()
+        if p.returncode != 0 or "exists" in err:
             run(
-                ["route", "-n", "change", "-net", net, "-interface", iface],
+                ["route", "-q", "-n", "change", "-inet", net, "-interface", iface],
                 check=False,
             )
+    full = any(
+        n in ("0.0.0.0/1", "0/1", "0.0.0.0/0", "0/0") for n in conf.get("allowed_ips") or []
+    )
+    check_ip = "1.1.1.1" if full else "10.66.66.1"
+    rg = run_out(["route", "-n", "get", check_ip])
+    got = ""
+    gw_got = ""
+    for line in rg.splitlines():
+        if "interface:" in line:
+            got = line.split(":", 1)[1].strip()
+        if line.strip().startswith("gateway:"):
+            gw_got = line.split(":", 1)[1].strip()
+    print(
+        f"OK routes iface={iface} addr={raw} peer={host} via={routed_via} "
+        f"nets={','.join(conf['allowed_ips'])} check={check_ip}→{got or '?'} gw={gw_got or '-'}"
+    )
+    if got != iface and not (got.startswith("utun") and iface.startswith("utun")):
+        die(f"routes not on {iface}: {check_ip} still via {got or 'unknown'}")
+
+
+def protect_loopback_for_wdtt() -> None:
+    """127.0.0.0/8 ⊂ 0.0.0.0/1 — без host-route lo0 WG не достучится до WDTT :9000."""
+    for dest, kind in (("127.0.0.1", "-host"), ("127.0.0.0/8", "-net")):
+        args = ["route", "-n", "add", kind, dest, "-interface", "lo0"]
+        p = run(args, check=False, capture=True)
+        if p.returncode != 0:
+            run(
+                ["route", "-n", "change", kind, dest, "-interface", "lo0"],
+                check=False,
+            )
+    print("OK lo-protect 127.0.0.1+127/8 → lo0")
+
+
+def uapi_get(iface: str) -> str:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(3)
+        sock.connect(sock_path(iface))
+        sock.sendall(b"get=1\n\n")
+        reply = b""
+        while True:
+            chunk = sock.recv(8192)
+            if not chunk:
+                break
+            reply += chunk
+            if b"\n\n" in reply:
+                break
+    finally:
+        sock.close()
+    return reply.decode("ascii", errors="replace")
+
+
+def cmd_handshake(_: list[str]) -> None:
+    """Для логов: last_handshake_time_sec / rx_bytes / tx_bytes."""
+    iface = current_iface()
+    if not iface:
+        die("no iface")
+    text = uapi_get(iface)
+    hs = 0
+    rx = 0
+    tx = 0
+    for line in text.splitlines():
+        if line.startswith("last_handshake_time_sec="):
+            try:
+                hs = int(line.split("=", 1)[1].strip() or "0")
+            except ValueError:
+                hs = 0
+        elif line.startswith("rx_bytes="):
+            try:
+                rx = int(line.split("=", 1)[1].strip() or "0")
+            except ValueError:
+                rx = 0
+        elif line.startswith("tx_bytes="):
+            try:
+                tx = int(line.split("=", 1)[1].strip() or "0")
+            except ValueError:
+                tx = 0
+    age = int(time.time()) - hs if hs > 0 else -1
+    print(f"OK handshake iface={iface} hs={hs} age={age}s rx={rx} tx={tx}")
+    if hs <= 0:
+        sys.exit(2)
+
+
+def cmd_reload(args: list[str]) -> None:
+    """Сменить AllowedIPs/routes без kill wireguard-go и без replace_peers."""
+    if not args:
+        die("reload <conf>")
+    conf_path = args[0]
+    if not os.path.isfile(conf_path):
+        die(f"conf not found: {conf_path}")
+    iface = current_iface()
+    if not iface or not iface_exists(iface):
+        die("no iface — сначала up")
+    conf = parse_conf(conf_path)
+    uapi_set_allowed_ips(iface, conf)
+    apply_addr_routes(iface, conf, addr=False)
+    print("OK reload", iface)
 
 
 def cmd_up(args: list[str]) -> None:
     if len(args) < 1:
         die("up <conf> [wireguard-go|auto]")
+    # Иначе чужие utun/DNS (V2BOX/Happ/…) оставляют Mac без интернета.
+    with contextlib.suppress(Exception):
+        cmd_competitors_off([])
     conf_path = args[0]
     wg_go = args[1] if len(args) > 1 and not args[1].startswith("-") else "auto"
     if not os.path.isfile(conf_path):
@@ -307,7 +478,14 @@ def cmd_up(args: list[str]) -> None:
 
 
 def cmd_down(_: list[str]) -> None:
+    # Полный сброс: иначе после kill приложения остаются DNS/IPv6 blackhole → «нет интернета».
     cmd_dns_restore([])
+    with contextlib.suppress(Exception):
+        cmd_hosts_restore([])
+    with contextlib.suppress(Exception):
+        cmd_protect_off([])
+    with contextlib.suppress(Exception):
+        cmd_ipv6_restore([])
     kill_wg_go()
     print("OK down")
 
@@ -377,6 +555,16 @@ def cmd_bypass_del(args: list[str]) -> None:
     print("OK bypass-del")
 
 
+# Чужие VPN/туннели в System Settings — не трогаем их DNS (иначе «нет интернета»).
+_SKIP_DNS_SVC = re.compile(
+    r"vpn|v2ray|v2box|wireguard|utun|clash|happ|outline|shadowsocks|"
+    r"urban|freevpn|openvpn|tailscale|zerotier|surfshark|nord|express|"
+    r"proton|mullvad|windscribe|tunnelblick|viscosity|anyconnect|"
+    r"globalprotect|forticlient|warp|cloudflare|psiphon|lantern",
+    re.I,
+)
+
+
 def _network_services() -> list[str]:
     out = run_out(["networksetup", "-listallnetworkservices"])
     services: list[str] = []
@@ -388,24 +576,92 @@ def _network_services() -> list[str]:
     return services
 
 
+def _iface_to_service(iface: str) -> str | None:
+    """en0 → 'Wi-Fi' через networksetup -listnetworkserviceorder."""
+    if not iface:
+        return None
+    out = run_out(["networksetup", "-listnetworkserviceorder"])
+    current = None
+    for line in out.splitlines():
+        line = line.strip()
+        m = re.match(r"^\(\d+\)\s+(.+)$", line)
+        if m:
+            current = m.group(1).strip()
+            continue
+        if current and f"Device: {iface}" in line:
+            if not _SKIP_DNS_SVC.search(current):
+                return current
+            return None
+    return None
+
+
+def _default_route_iface() -> str:
+    text = run_out(["route", "-n", "get", "default"])
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("interface:"):
+            iface = line.split(":", 1)[1].strip()
+            if iface and not iface.startswith("utun"):
+                return iface
+    # уже в туннеле — физ. default из netstat
+    ns = run_out(["netstat", "-rn", "-f", "inet"])
+    for line in ns.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0] == "default" and not parts[3].startswith("utun"):
+            return parts[3]
+    return ""
+
+
+def _dns_target_services() -> list[str]:
+    """Только сервис шлюза (обычно Wi‑Fi). Не Thunderbolt/iPhone USB — ломают резолв."""
+    iface = _default_route_iface()
+    primary = _iface_to_service(iface) if iface else None
+    if primary:
+        return [primary]
+    # fallback: Wi-Fi / Ethernet по имени, без bridge/usb
+    out: list[str] = []
+    for s in _network_services():
+        if _SKIP_DNS_SVC.search(s):
+            continue
+        low = s.lower()
+        if "thunderbolt" in low or "iphone" in low or "bridge" in low or "usb" in low:
+            continue
+        if "wi-fi" in low or "wifi" in low or "ethernet" in low or "en" == low:
+            out.append(s)
+    return out or [s for s in _network_services() if not _SKIP_DNS_SVC.search(s)]
+
+
+def _flush_dns_cache() -> None:
+    run(["dscacheutil", "-flushcache"], check=False)
+    run(["killall", "-HUP", "mDNSResponder"], check=False)
+
+
 def cmd_dns_set(args: list[str]) -> None:
     if len(args) < 2:
         die("dns-set <ifname> <dns,dns>")
     servers = [x.strip() for x in re.split(r"[,;\s]+", args[1]) if x.strip()]
     if not servers:
         return
-    services = _network_services()
-    prev: dict = {"services": {}}
+    services = _dns_target_services()
+    if not services:
+        services = [s for s in _network_services() if not _SKIP_DNS_SVC.search(s)]
+    prev: dict = {"services": {}, "v6": {}}
     for svc in services:
         cur = run_out(["networksetup", "-getdnsservers", svc])
         if "There aren't any DNS Servers" in cur or not cur:
             prev["services"][svc] = ["Empty"]
         else:
             prev["services"][svc] = [x.strip() for x in cur.splitlines() if x.strip()]
+        # IPv6 off на primary — иначе Happy Eyeballs висит на AAAA / blackhole ::/0
+        v6 = run_out(["networksetup", "-getinfo", svc])
+        prev["v6"][svc] = "Automatic"
+        if "IPv6: Automatic" in v6 or "IPv6 IP address" in v6:
+            run(["networksetup", "-setv6off", svc], check=False)
         run(["networksetup", "-setdnsservers", svc, *servers], check=False)
     os.makedirs(RUN_DIR, exist_ok=True)
     with open(DNS_STATE, "w", encoding="utf-8") as f:
         json.dump(prev, f)
+    _flush_dns_cache()
     print("OK dns " + ",".join(servers) + " services=" + ",".join(services))
 
 
@@ -421,9 +677,102 @@ def cmd_dns_restore(_: list[str]) -> None:
             run(["networksetup", "-setdnsservers", svc, "Empty"], check=False)
         else:
             run(["networksetup", "-setdnsservers", svc, *servers], check=False)
+    for svc in (st.get("v6") or {}):
+        run(["networksetup", "-setv6automatic", svc], check=False)
     with contextlib.suppress(OSError):
         os.remove(DNS_STATE)
+    _flush_dns_cache()
     print("OK dns-restore")
+
+
+def cmd_probe(_: list[str]) -> None:
+    """route→utun + DNS + HTTP (ICMP через VPN часто fail — не считаем фатальным)."""
+    bits: list[str] = []
+    rg = run_out(["route", "-n", "get", "9.9.9.9"])
+    iface = ""
+    for line in rg.splitlines():
+        if "interface:" in line:
+            iface = line.split(":", 1)[1].strip()
+            bits.append(f"route={iface}")
+    p = run(
+        ["ping", "-c", "1", "-W", "2000", "9.9.9.9"],
+        check=False,
+        capture=True,
+    )
+    ok_ping = p.returncode == 0
+    bits.append("ping9.9.9.9=" + ("ok" if ok_ping else "fail"))
+    p2 = run(
+        [
+            "python3",
+            "-c",
+            "import socket; print(socket.getaddrinfo('ya.ru', 80)[0][4][0])",
+        ],
+        check=False,
+        capture=True,
+    )
+    dns_ip = ""
+    if p2.returncode == 0 and (p2.stdout or "").strip():
+        dns_ip = (p2.stdout or "").strip().splitlines()[0][:40]
+        bits.append("dns=" + dns_ip)
+    else:
+        bits.append("dns=fail")
+    # TCP = Safari-подобно. Только one-liner: multiline -c на Mac → IndentationError
+    # (лог 10:05 tcp-*=no:Traceback) — TCP вообще не слался, ложный «data-plane мёртв».
+    http_ok = False
+    hive_ok = False
+    py = "/usr/bin/python3"
+    for label, host, port in (
+        ("hive", "10.66.66.1", 8000),
+        ("cf", "1.1.1.1", 443),
+    ):
+        code = (
+            "import socket;"
+            f"s=socket.create_connection(({host!r},{port}),5);"
+            "s.close();print('ok')"
+        )
+        p3 = run([py, "-c", code], check=False, capture=True)
+        out = (p3.stdout or "").strip().splitlines()[:1]
+        if out and out[0] == "ok":
+            bits.append(f"tcp-{label}=ok")
+            if label == "hive":
+                hive_ok = True
+            else:
+                http_ok = True
+        else:
+            err = (p3.stderr or "").strip().splitlines()
+            # Последняя строка Traceback = тип ошибки (TimeoutError, …)
+            tip = err[-1][:40] if err else "fail"
+            if tip.startswith("Traceback") or "Error" not in tip:
+                tip = "timeout" if p3.returncode else (out[0][:40] if out else "fail")
+            bits.append(f"tcp-{label}=no:{tip}")
+    path_ok = http_ok or hive_ok
+    # rx после попытки трафика
+    try:
+        u = uapi_get(current_iface() or iface)
+        rx = "?"
+        for line in u.splitlines():
+            if line.startswith("rx_bytes="):
+                rx = line.split("=", 1)[1].strip()
+        bits.append(f"rx={rx}")
+    except Exception:
+        pass
+    # Хвост wireguard-go.log — иначе return-path невидима
+    try:
+        wg_log = os.path.join(RUN_DIR, "wireguard-go.log")
+        if os.path.isfile(wg_log):
+            with open(wg_log, "rb") as lf:
+                lf.seek(0, os.SEEK_END)
+                sz = lf.tell()
+                lf.seek(max(0, sz - 600))
+                tail = lf.read().decode("utf-8", "replace").strip().replace("\n", " | ")
+            if tail:
+                bits.append("wglog=" + tail[-180:])
+    except Exception:
+        pass
+    print("OK probe " + " ".join(bits))
+    # Фатально: маршрут не utun ИЛИ ни Улей, ни интернет не отвечают.
+    if not iface.startswith("utun") or not path_ok:
+        sys.exit(2)
 
 
 def _strip_hosts_block(text: str) -> str:
@@ -494,10 +843,11 @@ def cmd_hosts_restore(_: list[str]) -> None:
 
 
 def cmd_protect_on(args: list[str]) -> None:
-    # On macOS WDTT binds LocalAddr to LAN IP (no SO_MARK). Keep gateway known.
+    # Linux: fwmark policy. Darwin: реальный protect в wdtt-client (IP_BOUND_IF),
+    # helper только фиксирует gw/iface для логов / SILENT_LAN_IFACE с Electron.
     if len(args) < 2:
         die("protect-on <gw> <iface>")
-    print(f"OK protect-on noop via {args[0]} dev {args[1]}")
+    print(f"OK protect-on darwin-bound-if via {args[0]} dev {args[1]}")
 
 
 def cmd_protect_off(_: list[str]) -> None:
@@ -528,8 +878,55 @@ def cmd_ipv6_restore(_: list[str]) -> None:
     print("OK ipv6-restore")
 
 
+# Имена процессов/приложений с Mac пользователя (networksetup + типичные .app).
+COMPETITOR_PROCESS_NAMES = (
+    "V2BOX",
+    "V2box",
+    "v2box",
+    "Happ",
+    "Happ Plus",
+    "HappPlus",
+    "Urban VPN Desktop",
+    "Urban VPN",
+    "UrbanVPN",
+    "v2RayTun",
+    "v2raytun",
+    "V2RayTun",
+    "freevpn.pw",
+    "FreeVPN.pw",
+    "freevpn",
+    "FreeVPN",
+)
+
+
+def cmd_competitors_off(_: list[str]) -> None:
+    """Перед Silent-туннелем: quit/kill чужих VPN (не поднимаем их обратно на down)."""
+    hit: list[str] = []
+    for name in COMPETITOR_PROCESS_NAMES:
+        with contextlib.suppress(Exception):
+            run(
+                ["osascript", "-e", f'tell application "{name}" to quit'],
+                check=False,
+                capture=True,
+            )
+        p = run(["killall", "-TERM", name], check=False, capture=True)
+        if p.returncode == 0:
+            hit.append(name)
+    time.sleep(0.35)
+    for name in COMPETITOR_PROCESS_NAMES:
+        p = run(["killall", "-KILL", name], check=False, capture=True)
+        if p.returncode == 0:
+            hit.append(name)
+    seen: list[str] = []
+    for x in hit:
+        if x not in seen:
+            seen.append(x)
+    print("OK competitors-off " + (",".join(seen) if seen else "noop"))
+
+
 COMMANDS = {
     "up": cmd_up,
+    "reload": cmd_reload,
     "down": cmd_down,
     "status": cmd_status,
     "gateway": cmd_gateway,
@@ -543,6 +940,9 @@ COMMANDS = {
     "protect-off": cmd_protect_off,
     "ipv6-block": cmd_ipv6_block,
     "ipv6-restore": cmd_ipv6_restore,
+    "competitors-off": cmd_competitors_off,
+    "handshake": cmd_handshake,
+    "probe": cmd_probe,
 }
 
 
@@ -595,6 +995,11 @@ def validate_args(args: list[str]) -> str | None:
             return "conf path not allowed"
         if len(rest) > 1 and not wg_go_path_ok(rest[1]):
             return "wireguard-go path not allowed"
+    elif cmd == "reload":
+        if not rest:
+            return "reload needs conf"
+        if not conf_path_ok(rest[0]):
+            return "conf path not allowed"
     elif cmd == "bypass-add":
         if len(rest) < 3:
             return "bypass-add needs gw iface cidr"

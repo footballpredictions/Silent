@@ -124,9 +124,31 @@ chmod +x build-mac.sh resources/mac/*
 ./build-mac.sh
 ```
 
-Готовый файл: `pc/build-mac/Silent VPN Setup <version>.dmg` (arm64 / Apple Silicon).
+**Быстрый цикл на Mac (сборка + установка + лог на Desktop):**
 
-**С Windows:** `powershell -File .\build-mac.ps1` кросс-компилирует `wdtt-client` + `wireguard-go` в `resources/mac/`, но упаковку `.dmg` всё равно нужно добить на MacBook.
+```bash
+cd pc
+chmod +x mac-test-cycle.sh
+./mac-test-cycle.sh
+```
+
+Пишет на Рабочий стол `SilentVPN-errors-*.log` и `SilentVPN-full-*.log`. Только лог без сборки: `SKIP_BUILD=1 ./mac-test-cycle.sh`.
+
+Готовые файлы (два DMG, окно «перетащи в Applications»):
+- `pc/build-mac/Silent VPN Setup <version>-x64.dmg` — Intel
+- `pc/build-mac/Silent VPN Setup <version>-arm64.dmg` — Apple Silicon (M1/M2/M3)
+
+**Почему не universal:** SHA `wdtt-client` зашит в `app.asar` (integrity), а universal-упаковка thin-ит fat-бинарь → хеш не совпадает → релиз блокирует VPN. Поэтому каждая архитектура собирается отдельно: свой wdtt → свой хеш → свой DMG. Скрипт сам проверяет, что в `.app` нужный slice, тот же wdtt и есть `protect=darwin` (IP_BOUND_IF).
+
+```bash
+./build-mac.sh                  # оба DMG (с любого Mac)
+MAC_ARCH=amd64 ./build-mac.sh   # только Intel
+MAC_ARCH=arm64 ./build-mac.sh   # только Apple Silicon
+```
+
+**Intel Mac:** Homebrew может отказаться («только Apple Silicon») — ставь Node и Go с официальных `.pkg` (nodejs.org / go.dev), без brew. Intel собирает и arm64 DMG (Go кросс-компилирует, Electron arm64 качается сам).
+
+**С Windows:** `.dmg` не собрать (нужен `hdiutil`); `build-mac.ps1` только кросс-компилирует бинарники.
 
 ### OTA
 

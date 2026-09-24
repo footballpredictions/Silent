@@ -29,6 +29,7 @@ const {
   prepareRuntimeDir,
   beginWgApply,
   probeTunnelGateway,
+  resolveWgMtu,
 } = require('./vpn/wireguard')
 const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
 const { resolveVkExcludeIps, warmVkExcludeIps, invalidateVkExcludeCache } = require('./vpn/vkNetworkExcludes')
@@ -99,6 +100,8 @@ let tray = null
 let isQuitting = false
 let wdttProcess = null
 let wgApplied = false
+/** true пока applyWireGuardConfig в полёте — читает vpn-is-ready (module scope). */
+let wgInstallInFlight = false
 /** Debug: активен путь olcrtc (не WDTT/WG). */
 let vpnOlcrtcMode = false
 let pendingVkDeepLink = null
@@ -507,11 +510,93 @@ function startZeroWorkersWatchdog() {
   }, 5000)
 }
 
+let mainFileLogPath = null
+let mainFileLogReady = false
+
+function resolveMainFileLogPath() {
+  if (mainFileLogPath) return mainFileLogPath
+  try {
+    if (process.env.SILENT_VPN_FILE_LOG) {
+      mainFileLogPath = String(process.env.SILENT_VPN_FILE_LOG).trim()
+    } else if (process.platform === 'darwin') {
+      // Desktop под TCC: .app из Applications туда писать не может (append молча падал)
+      const dir = path.join(require('os').homedir(), 'Library', 'Logs', 'Silent VPN')
+      fs.mkdirSync(dir, { recursive: true })
+      mainFileLogPath = path.join(dir, 'SilentVPN-main.log')
+    } else if (app?.isReady?.()) {
+      // Desktop — чтобы mac-test-cycle / пользователь сразу видели файл
+      const desk = app.getPath('desktop')
+      mainFileLogPath = path.join(desk, 'SilentVPN-main.log')
+    } else {
+      mainFileLogPath = path.join(require('os').tmpdir(), 'SilentVPN-main.log')
+    }
+  } catch {
+    mainFileLogPath = path.join(require('os').tmpdir(), 'SilentVPN-main.log')
+  }
+  return mainFileLogPath
+}
+
+/** VPN/WG/капча → stderr (для mac-test-cycle) + файл на Desktop. */
+function mirrorMainLog(line) {
+  const s = String(line || '').trim()
+  if (!s) return
+  try {
+    console.error(s)
+  } catch { /* ignore */ }
+  try {
+    const p = resolveMainFileLogPath()
+    if (!mainFileLogReady) {
+      mainFileLogReady = true
+      try {
+        if (fs.statSync(p).size > 5 * 1024 * 1024) fs.renameSync(p, `${p}.old`)
+      } catch { /* нет файла */ }
+      fs.appendFileSync(p, `\n=== Silent VPN main ${new Date().toISOString()} pid=${process.pid} ===\n`, 'utf8')
+    }
+    fs.appendFileSync(p, s + '\n', 'utf8')
+  } catch { /* ignore */ }
+}
+
 function sendLog(line) {
   const trimmed = String(line || '').trim()
   if (!trimmed) return
 
   noteVkFloodFromLog(trimmed)
+
+  // Mac/Linux: TURN IP из WDTT → host-route bypass до full /1 (иначе петля utun).
+  if (/turns?:|turn_server\.urls/i.test(trimmed) && (process.platform === 'darwin' || process.platform === 'linux')) {
+    try {
+      const mod = process.platform === 'darwin'
+        ? require('./vpn/wireguardDarwin')
+        : require('./vpn/wireguardLinux')
+      if (typeof mod.noteTurnEndpointFromLog === 'function') {
+        mod.noteTurnEndpointFromLog(trimmed, sendLog)
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Сначала [WG]/[VPN]/… — иначе parseLibclientLine глотает *fail*/*timeout*
+  // (probe FAIL) и SilentVPN-main.log остаётся без диагноза (лог 08:42).
+  if (/^\[WG\]|^\[VPN\]|^\[Update\]|^\[olcrtc|^\[sing-box|^\[КАПЧА\]/.test(trimmed)) {
+    mirrorMainLog(trimmed)
+    const isError =
+      /\[olcrtc2?:err\]|FATAL|критич/i.test(trimmed) ||
+      (/error|ошиб|таймаут|timeout/i.test(trimmed) &&
+        !/operation not permitted|unreachable network|Failed to send packet|prefetch 498|soft-miss|exit/i.test(
+          trimmed,
+        ))
+    let tag = 'VPN'
+    if (trimmed.startsWith('[WG]')) tag = 'WireGuard'
+    else if (trimmed.startsWith('[КАПЧА]')) tag = 'Captcha'
+    else if (trimmed.startsWith('[olcrtc')) tag = 'olcrtc'
+    else if (trimmed.startsWith('[sing-box')) tag = 'sing-box'
+    sendWdttLog({
+      key: `sys_${tag}_${trimmed.slice(0, 36).replace(/\d+/g, '#')}`,
+      message: trimmed,
+      priority: isError ? 99 : 2,
+      isError,
+    })
+    return
+  }
 
   const parsed = parseLibclientLine(trimmed)
   if (parsed) {
@@ -527,30 +612,10 @@ function sendLog(line) {
     return
   }
 
-  if (/^\[WG\]|^\[VPN\]|^\[Update\]|^\[olcrtc|^\[sing-box/.test(trimmed)) {
-    // Не красить INFO/unreachable/operation not permitted как error.
-    const isError =
-      /\[olcrtc2?:err\]|FATAL|критич/i.test(trimmed) ||
-      (/error|ошиб|таймаут|timeout/i.test(trimmed) &&
-        !/operation not permitted|unreachable network|Failed to send packet|prefetch 498|soft-miss|exit/i.test(
-          trimmed,
-        ))
-    let tag = 'VPN'
-    if (trimmed.startsWith('[WG]')) tag = 'WireGuard'
-    else if (trimmed.startsWith('[olcrtc')) tag = 'olcrtc'
-    else if (trimmed.startsWith('[sing-box')) tag = 'sing-box'
-    sendWdttLog({
-      key: `sys_${tag}_${trimmed.slice(0, 36).replace(/\d+/g, '#')}`,
-      message: trimmed,
-      priority: isError ? 99 : 2,
-      isError,
-    })
-    return
-  }
-
   if (
-    /\[КЛИЕНТ\]|\[STREAM|\[ГРУППА|\[VK Auth\]|FATAL|GETCONF|CAPTCHA|ошибка|error|timeout|зарегистрирован/i.test(trimmed)
+    /\[КЛИЕНТ\]|\[LAN\]|\[STREAM|\[ГРУППА|\[VK Auth\]|FATAL|GETCONF|CAPTCHA|ошибка|error|timeout|зарегистрирован/i.test(trimmed)
   ) {
+    mirrorMainLog(trimmed)
     const isError = /error|ошиб|fail|timeout|FATAL|FLOOD_ESCALATE/i.test(trimmed)
     const noTs = trimmed.replace(/^\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+/, '')
     const stream = noTs.match(/\[STREAM\s+(\d+)\]/)
@@ -640,15 +705,23 @@ function cleanupVpn() {
     try { wdttProcess.kill() } catch {}
     wdttProcess = null
   }
-  // Не await — cleanupVpn синхронный; async stop не блокирует main/UI.
-  // Disable только внутри очереди stop (с epoch) — иначе догоняет уже новый туннель.
-  void stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
+  // Не await на обычном disconnect — UI не блокируем.
+  // before-quit на darwin/linux ждёт vpnCleanupPromise (иначе DNS/routes остаются).
+  vpnCleanupPromise = stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
+  const stopping = vpnCleanupPromise
+  void stopping.finally(() => {
+    if (vpnCleanupPromise === stopping) vpnCleanupPromise = null
+  })
   syncAdminNipHosts(false, sendLog)
   clearBypassRefresh()
   wgApplied = false
+  wgInstallInFlight = false
   tunnelReadySent = false
   clearTunnelReadyPoll()
 }
+
+/** Последний stopWireGuardTunnel — для await на before-quit (Mac/Linux). */
+let vpnCleanupPromise = null
 
 function isWdttAlive() {
   if (!wdttProcess) return false
@@ -1474,6 +1547,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
   wdttStartedAtMs = Date.now()
   if (!switching) {
     wgApplied = false
+    wgInstallInFlight = false
     tunnelReadySent = false
     activeWorkerCount = 0
   } else {
@@ -1514,8 +1588,6 @@ async function beginWdttSession(config, { switching = false } = {}) {
     clearWgRetries()
     sendVpnError(msg)
   }
-
-  let wgInstallInFlight = false
 
   const upgradeToFullTunnel = async (source = 'groups', attempt = 1) => {
     if (!wgCredPhase || wgFullTunnelUpgradeInFlight) return
@@ -1616,7 +1688,6 @@ async function beginWdttSession(config, { switching = false } = {}) {
 
     let normalizedConf = confText
     // MTU 1420 только Сервер 3 (игры/Steam SDR); остальные слоты — 1200.
-    const { resolveWgMtu } = require('./vpn/wireguard')
     const WG_MTU = resolveWgMtu(config)
     if (/^\s*MTU\s*=/m.test(normalizedConf)) {
       normalizedConf = normalizedConf.replace(/^\s*MTU\s*=.*/m, `MTU = ${WG_MTU}`)
@@ -1668,9 +1739,16 @@ async function beginWdttSession(config, { switching = false } = {}) {
     } finally {
       wgInstallInFlight = false
     }
+    // Windows: служба Wintun иногда успевает подняться после race — soft-OK ок.
+    // Darwin/Linux: «процесс/utun жив» ≠ data-plane. Лог 10:05: data-plane мёртв,
+    // apply вернул false, а эта ветка всё равно ставила «успех» → сайты по Wi‑Fi.
     if (!ok && (await isServiceRunningAsync())) {
-      sendLog('[WG] Туннель/служба активны после таймаута — считаем успехом')
-      ok = true
+      if (process.platform === 'win32') {
+        sendLog('[WG] Туннель/служба активны после таймаута — считаем успехом')
+        ok = true
+      } else {
+        sendLog('[WG] utun/служба живы, но install/probe не OK — НЕ считаем успехом')
+      }
     }
     if (ok) {
       wgApplied = true
@@ -1696,9 +1774,13 @@ async function beginWdttSession(config, { switching = false } = {}) {
       return true
     }
     failWireGuard(
-      isProcessElevated()
-        ? 'WireGuard не запустился. Проверьте services.msc → WireGuardTunnel$wg-turn'
-        : 'Разрешите UAC (Да) или запустите «Silent VPN (Admin).bat»',
+      process.platform === 'darwin'
+        ? 'VPN на Mac не поднялся (нет ответа туннеля или служба VPN не установлена). Тумблер сброшен, чтобы сайты не шли мимо VPN — попробуйте ещё раз.'
+        : process.platform === 'linux'
+          ? 'WireGuard не запустился. Проверьте helper / polkit'
+          : isProcessElevated()
+            ? 'WireGuard не запустился. Проверьте services.msc → WireGuardTunnel$wg-turn'
+            : 'Разрешите UAC (Да) или запустите «Silent VPN (Admin).bat»',
     )
     return false
   }
@@ -2875,8 +2957,23 @@ app.whenReady().then(async () => {
   warmVkExcludeIps()
 })
 
-app.on('before-quit', () => {
+let macQuitFlushDone = false
+app.on('before-quit', (e) => {
   isQuitting = true
+  // Mac/Linux: без await stop остаётся DNS/0.0.0.0/1 → «нет интернета» после закрытия.
+  if ((process.platform === 'darwin' || process.platform === 'linux') && !macQuitFlushDone) {
+    e.preventDefault()
+    cleanupVpn()
+    const pending = vpnCleanupPromise || Promise.resolve()
+    Promise.race([
+      pending.catch(() => {}),
+      new Promise((r) => setTimeout(r, 8000)),
+    ]).finally(() => {
+      macQuitFlushDone = true
+      app.quit()
+    })
+    return
+  }
   cleanupVpn()
 })
 

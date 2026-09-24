@@ -64,4 +64,12 @@ exports.default = async function macAfterPack(context) {
     fs.copyFileSync(helperFrom, helperTo)
     fs.chmodSync(helperTo, 0o755)
   }
+
+  // Apple Silicon не запускает неподписанный arm64 (Finder: «Не удается открыть программу»).
+  // Intel x64 без подписи ещё открывается. Ad-hoc подпись обязательна для обоих.
+  try {
+    execFileSync('xattr', ['-cr', appPath], { stdio: 'ignore' })
+  } catch { /* нет xattr */ }
+  execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' })
+  console.log('[mac-after-pack] ad-hoc codesign ok')
 }

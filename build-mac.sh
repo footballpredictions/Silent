@@ -150,17 +150,9 @@ for arch in "${GO_ARCHS[@]}"; do
       echo "ERROR: Electron в $APP_PATH не $SLICE — на этом Mac программа не откроется" >&2
       exit 1
     fi
-    # Подпись после правок Resources. Без неё arm64: «Не удается открыть программу».
-    xattr -cr "$APP_PATH" 2>/dev/null || true
-    codesign --force --deep --sign - "$APP_PATH"
+    # Подпись уже в mac-after-pack.js, до сборки DMG.
+    # Повторный hdiutil -srcfolder стирал окно: программа слева, Applications справа.
     codesign -dv "$APP_PATH" 2>&1 | head -5
-    # DMG electron-builder собран до этой подписи — пересобираем, иначе arm64 не откроется.
-    STAGE="$(mktemp -d "${TMPDIR:-/tmp}/silent-dmg.XXXXXX")"
-    cp -R "$APP_PATH" "$STAGE/"
-    ln -sf /Applications "$STAGE/Applications"
-    rm -f "$DMG_PATH"
-    hdiutil create -volname "Silent VPN ${VER}" -srcfolder "$STAGE" -ov -format UDZO "$DMG_PATH"
-    rm -rf "$STAGE"
   fi
 
   if [[ ! -f "$DMG_PATH" ]]; then

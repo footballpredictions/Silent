@@ -17,8 +17,18 @@ const execFileAsync = promisify(execFile)
 
 let promptedThisRun = false
 
-function buildInstallScript({ helperTmp, systemHelper, plistPath, label, sockPath }) {
+function bundledPythonPath() {
+  const bundled = path.join(process.resourcesPath || '', 'python', 'bin', 'python3')
+  if (bundled && fs.existsSync(bundled)) return bundled
+  // Системный /usr/bin/python3 на чистом Mac — заглушка: открывает установку Command Line Tools.
+  // В упакованном приложении его не вызываем.
+  if (process.defaultApp) return '/usr/bin/python3'
+  return null
+}
+
+function buildInstallScript({ helperTmp, systemHelper, plistPath, label, sockPath, pythonBin }) {
   const runDir = path.dirname(sockPath)
+  const py = pythonBin || '/usr/bin/python3'
   return `#!/bin/bash
 set -e
 mkdir -p /Library/PrivilegedHelperTools "${runDir}" /Library/LaunchDaemons
@@ -34,7 +44,7 @@ cat > "${plistPath}" <<'PLIST'
 <plist version="1.0"><dict>
 <key>Label</key><string>${label}</string>
 <key>ProgramArguments</key><array>
-<string>/usr/bin/python3</string>
+<string>${py}</string>
 <string>${systemHelper}</string>
 <string>serve</string>
 </array>
@@ -50,20 +60,21 @@ launchctl bootstrap system "${plistPath}" 2>/dev/null || true
 launchctl enable system/${label} 2>/dev/null || true
 launchctl kickstart -k system/${label} 2>/dev/null || true
 for i in $(seq 1 20); do
-  if /usr/bin/python3 -c "import socket,sys;s=socket.socket(socket.AF_UNIX);s.settimeout(0.3);s.connect(sys.argv[1])" "${sockPath}" 2>/dev/null; then
+  if "${py}" -c "import socket,sys;s=socket.socket(socket.AF_UNIX);s.settimeout(0.3);s.connect(sys.argv[1])" "${sockPath}" 2>/dev/null; then
     exit 0
   fi
   sleep 0.25
 done
-nohup /usr/bin/python3 "${systemHelper}" serve >"${runDir}/helper.out" 2>"${runDir}/helper.err" &
+nohup "${py}" "${systemHelper}" serve >"${runDir}/helper.out" 2>"${runDir}/helper.err" &
 sleep 1
 exit 0
 `
 }
 
-async function pythonAvailable() {
+async function pythonAvailable(pythonBin) {
+  if (!pythonBin) return false
   try {
-    await execFileAsync('/usr/bin/python3', ['-c', 'import sys'], { timeout: 15000 })
+    await execFileAsync(pythonBin, ['-c', 'import sys'], { timeout: 15000 })
     return true
   } catch {
     return false
@@ -89,9 +100,10 @@ async function installSystemHelperOnce({
     send?.('[WG] Нет silent-wg-helper в приложении — переустановите Silent VPN', 'E')
     return false
   }
-  if (!(await pythonAvailable())) {
+  const pythonBin = bundledPythonPath()
+  if (!(await pythonAvailable(pythonBin))) {
     send?.(
-      '[WG] Нет python3 для службы VPN. Установите Command Line Tools: в Terminal xcode-select --install',
+      '[WG] В приложении нет Python для службы VPN. Нужен новый DMG — Command Line Tools ставить не надо',
       'E',
     )
     return false
@@ -104,7 +116,7 @@ async function installSystemHelperOnce({
     fs.writeFileSync(helperTmp, text, { mode: 0o755 })
     try {
       await execFileAsync(
-        '/usr/bin/python3',
+        pythonBin,
         ['-c', 'import ast,sys;ast.parse(open(sys.argv[1]).read())', helperTmp],
         { timeout: 15000 },
       )
@@ -116,7 +128,7 @@ async function installSystemHelperOnce({
     const scriptPath = path.join(tmpDir, 'install.sh')
     fs.writeFileSync(
       scriptPath,
-      buildInstallScript({ helperTmp, systemHelper, plistPath, label, sockPath }),
+      buildInstallScript({ helperTmp, systemHelper, plistPath, label, sockPath, pythonBin }),
       { mode: 0o700 },
     )
     send?.(`[WG] Установка службы VPN (${reason}) — macOS один раз спросит пароль`)

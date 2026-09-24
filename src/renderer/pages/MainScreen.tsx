@@ -1195,13 +1195,14 @@ export default function MainScreen({
 
         pushLog('Main', 'connect timeout', 'E')
         resetVpnUi()
-        alert(
-          'WireGuard-туннель не поднялся.\n\n' +
-          '1) Закройте Silent VPN полностью (трей → Выход)\n' +
-          '2) Запустите снова от имени администратора\n' +
-          '3) В окне UAC нажмите «Да»\n\n' +
-          'Если не помогло: services.msc → WireGuardTunnel$wg-turn',
-        )
+        const onMac = /Mac/i.test(navigator.platform) || /Mac OS/i.test(navigator.userAgent)
+        alert(onMac
+          ? 'Туннель не поднялся.\n\nЗакройте Silent VPN и откройте снова. Если macOS спросит пароль администратора — разрешите: это установка службы VPN, один раз.'
+          : 'WireGuard-туннель не поднялся.\n\n' +
+            '1) Закройте Silent VPN полностью (трей → Выход)\n' +
+            '2) Запустите снова от имени администратора\n' +
+            '3) В окне UAC нажмите «Да»\n\n' +
+            'Если не помогло: services.msc → WireGuardTunnel$wg-turn')
         await api.post('/api/vpn/disconnect', { device_fingerprint: fp }).catch(() => null)
         await fetchProfile()
         return

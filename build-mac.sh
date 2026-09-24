@@ -60,6 +60,27 @@ chmod +x resources/mac/silent-wg-helper
 /usr/bin/python3 -m py_compile resources/mac/silent-wg-helper
 echo "  helper ok"
 
+# Чистый Mac не имеет Python: /usr/bin/python3 открывает установку Command Line Tools.
+# Кладём свой интерпретатор в .app, службу им и запускаем.
+fetch_bundled_python() {
+  local arch="$1"
+  local triple="x86_64-apple-darwin"
+  [[ "$arch" == "arm64" ]] && triple="aarch64-apple-darwin"
+  local url="https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-${triple}-install_only.tar.gz"
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/silent-py.XXXXXX")"
+  echo "  python ${triple}..."
+  curl -fsSL -o "$tmp/py.tgz" "$url"
+  tar -xzf "$tmp/py.tgz" -C "$tmp"
+  rm -rf resources/mac/python
+  mv "$tmp/python" resources/mac/python
+  rm -rf "$tmp"
+  chmod +x resources/mac/python/bin/python3
+  local info
+  info="$(lipo -info resources/mac/python/bin/python3 2>&1 || true)"
+  echo "  python: $info"
+}
+
 deps_native_ok() {
   node -e "require('rollup/dist/native.js')" >/dev/null 2>&1 || return 1
   if [[ -d node_modules/esbuild ]]; then
@@ -120,6 +141,8 @@ for arch in "${GO_ARCHS[@]}"; do
     echo "ERROR: wdtt-client без IP_BOUND_IF (protect=darwin) — full tunnel будет мёртв" >&2
     exit 1
   fi
+
+  fetch_bundled_python "$arch"
 
   # Хеш именно этого thin-бинаря → в asar этой сборки.
   node scripts/gen_integrity_hashes.js

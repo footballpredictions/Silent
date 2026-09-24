@@ -432,11 +432,11 @@ function normalizeWgConfText(conf) {
     .join('\n')
 }
 
-const { resolveWgMtu, WG_MTU_DEFAULT, WG_MTU_GAME } = require('./wgMtu')
+const { WG_MTU_DEFAULT, WG_MTU_GAME } = require('./wgMtu')
 
-/** Mac+WDTT: 1420 часто рвёт HTTPS (PMTU); handshake мелкий — «hs ok / Safari нет». */
-function resolveDarwinMtu(config) {
-  return Math.min(resolveWgMtu(config), 1280)
+/** Mac: один MTU 1280 на всех серверах. 1200 на 1 и 2 не проходит, 1420 рвёт PMTU. */
+function resolveDarwinMtu(_config) {
+  return 1280
 }
 
 function buildWgConfigFromApi(config, listenPort = 9000) {
@@ -1006,7 +1006,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
       resolvedDns = normalizeDnsValue(dnsLine ? dnsLine[1] : '', options.dnsOverride)
       conf = conf.replace(/^\s*DNS\s*=.*\r?\n/m, '')
       conf = conf.replace(/AllowedIPs\s*=\s*.+/, 'AllowedIPs = 10.66.66.0/24')
-      conf = conf.replace(/^\s*MTU\s*=\s*(\d+)/im, (_, n) => `MTU = ${Math.min(Number(n) || 1200, 1280)}`)
+      conf = conf.replace(/^\s*MTU\s*=\s*\d+/im, 'MTU = 1280')
       if (!/^\s*MTU\s*=/m.test(conf)) {
         conf = conf.replace(/(\[Interface\][^\[]*)/, m => `${m.trimEnd()}\nMTU = 1280\n`)
       }

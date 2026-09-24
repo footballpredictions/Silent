@@ -15,7 +15,7 @@
     {
       "from": "resources/mac",
       "to": ".",
-      "filter": ["wdtt-client", "silent-wg-helper", "wireguard-go"]
+      "filter": ["wdtt-client", "silent-wg-helper", "wireguard-go", "python/**"]
     },
     {
       "from": "assets/tray.png",

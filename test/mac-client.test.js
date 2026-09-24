@@ -49,8 +49,7 @@ describe('darwin wireguard contract matches Windows/Linux', () => {
   it('exports resolveWgMtu for main tryApplyWg', () => {
     const wg = require('../src/main/vpn/wireguardDarwin')
     assert.equal(typeof wg.resolveWgMtu, 'function')
-    assert.equal(wg.resolveWgMtu({ selected_server: 'server1' }), 1200)
-    // Mac clamp ≤1280 (не 1420) — иначе PMTU blackhole при WDTT
+    assert.equal(wg.resolveWgMtu({ selected_server: 'server1' }), 1280)
     assert.equal(wg.resolveWgMtu({ selected_server: 'server3' }), 1280)
   })
   it('helper cmd_down restores DNS/hosts/IPv6 (no leftover blackhole)', () => {
@@ -213,15 +212,19 @@ describe('darwin wireguard contract matches Windows/Linux', () => {
     assert.match(src, /ast\.parse/)
     assert.match(src, /\/bin\/bash \$\{scriptPath\}/)
     assert.doesNotMatch(src, /JSON\.stringify\(/)
+    const py = '/Applications/Silent VPN.app/Contents/Resources/python/bin/python3'
     const script = mod.buildInstallScript({
       helperTmp: '/tmp/x/silent-wg-helper',
       systemHelper: '/Library/PrivilegedHelperTools/silent-vpn-wg-helper',
       plistPath: '/Library/LaunchDaemons/ru.silent.vpn.helper.plist',
       label: 'ru.silent.vpn.helper',
       sockPath: '/var/run/silent-vpn/helper.sock',
+      pythonBin: py,
     })
     assert.match(script, /launchctl bootstrap system/)
     assert.match(script, /<string>serve<\/string>/)
+    assert.match(script, /Contents\/Resources\/python\/bin\/python3/)
+    assert.doesNotMatch(script, /\/usr\/bin\/python3/)
     mod._resetPromptForTests()
     const logs = []
     const first = await mod.installSystemHelperOnce({ bundledHelper: '/nope', send: (m) => logs.push(m) })

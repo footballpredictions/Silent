@@ -89,6 +89,10 @@ def github_asset_filename(platform: str, filename: str, version: str = "") -> st
             return f"Silent.VPN.Setup.{ver}.deb"
         return safe.replace(" ", ".")
     if platform == "mac":
+        from app.services.update_service import arch_from_filename
+        mac_arch = arch_from_filename(safe)
+        if ver and mac_arch:
+            return f"Silent.VPN.Setup.{ver}-{mac_arch}.dmg"
         if ver:
             return f"Silent.VPN.Setup.{ver}.dmg"
         return safe.replace(" ", ".")
@@ -374,12 +378,34 @@ def _landing_entry_from_manifest(
     download_url: str,
     github_filename: str | None = None,
 ) -> dict:
-    return {
+    entry = {
         "version": str(manifest["version"]),
         "filename": github_filename or manifest["filename"],
         "size": int(manifest.get("size") or 0),
         "download_url": download_url,
     }
+    if platform != "mac":
+        return entry
+    files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    arches: dict[str, dict] = {}
+    for arch, slot in files.items():
+        if arch not in ("x64", "arm64") or not isinstance(slot, dict) or not slot.get("filename"):
+            continue
+        gh_name = github_asset_filename("mac", slot["filename"], str(manifest["version"]))
+        url = (slot.get("github_download_url") or "").strip() or asset_download_url(
+            str(manifest["version"]), gh_name,
+        )
+        if github_filename and gh_name == github_filename:
+            url = download_url
+        arches[arch] = {
+            "version": str(manifest["version"]),
+            "filename": gh_name,
+            "size": int(slot.get("size") or 0),
+            "download_url": url,
+        }
+    if arches:
+        entry["arches"] = arches
+    return entry
 
 
 def _patch_index_html_releases(html: str, releases: dict) -> str:
@@ -558,7 +584,7 @@ async def _sync_landing_releases_json(
     return current
 
 
-def _patch_manifest_github(platform: str, download_url: str) -> None:
+def _patch_manifest_github(platform: str, download_url: str, arch_urls: Optional[dict] = None) -> None:
     mp = update_service._manifest_path(platform)
     if not os.path.isfile(mp):
         return
@@ -567,6 +593,10 @@ def _patch_manifest_github(platform: str, download_url: str) -> None:
             data = json.load(fh)
         data["github_download_url"] = download_url
         data["github_published_at"] = datetime.now(timezone.utc).isoformat()
+        files = data.get("files") if isinstance(data.get("files"), dict) else None
+        for arch, url in (arch_urls or {}).items():
+            if files and isinstance(files.get(arch), dict):
+                files[arch]["github_download_url"] = url
         with open(mp, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
     except (OSError, json.JSONDecodeError) as e:
@@ -587,9 +617,19 @@ async def _sync_peer_assets_from_server(
     for platform in update_service.PLATFORMS:
         if platform == skip_platform:
             continue
+        latest = update_service.get_latest(platform)
+        if platform == "mac" and latest and str(latest.get("version")) == str(version):
+            for item in update_service.mac_binaries(latest):
+                upload_name = github_asset_filename("mac", item["filename"], str(version))
+                if upload_name in asset_names:
+                    continue
+                uploaded = await _upload_release_asset(token, release, item["file_path"], upload_name)
+                name = uploaded.get("name") or upload_name
+                asset_names.add(name)
+                logger.info("GitHub release %s: restored %s from server update/", version, name)
+            continue
         if _release_has_platform_asset(release, platform):
             continue
-        latest = update_service.get_latest(platform)
         if not latest or str(latest.get("version")) != str(version):
             continue
         filename = latest.get("filename")
@@ -632,8 +672,22 @@ async def publish_platform(platform: str, *, sync_landing: bool = True, sync_pee
     else:
         await _remove_platform_assets(token, release, platform)
 
-    uploaded = await _upload_release_asset(token, release, file_path, upload_name)
-    asset_name = uploaded.get("name") or upload_name
+    arch_urls: dict[str, str] = {}
+    binaries = update_service.mac_binaries(latest) if platform == "mac" else []
+    if binaries:
+        uploaded = None
+        asset_name = upload_name
+        for item in binaries:
+            name = github_asset_filename("mac", item["filename"], str(version))
+            up = await _upload_release_asset(token, release, item["file_path"], name)
+            url = up.get("browser_download_url") or asset_download_url(version, name)
+            arch_urls[item["arch"]] = url
+            if item["arch"] == "x64" or uploaded is None:
+                uploaded = up
+                asset_name = up.get("name") or name
+    else:
+        uploaded = await _upload_release_asset(token, release, file_path, upload_name)
+        asset_name = uploaded.get("name") or upload_name
 
     release = await _get_release_by_tag(token, tag) or release
     if sync_peer:
@@ -662,7 +716,7 @@ async def publish_platform(platform: str, *, sync_landing: bool = True, sync_pee
         except GitHubReleaseError as e:
             logger.warning("OpenWrt Pages tgz sync failed: %s", e)
 
-    _patch_manifest_github(platform, download_url)
+    _patch_manifest_github(platform, download_url, arch_urls)
 
     return {
         "platform": platform,

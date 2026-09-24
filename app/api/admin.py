@@ -1870,6 +1870,7 @@ async def list_updates(_: bool = Depends(get_admin_credentials)):
 async def upload_update(
     platform: str = Form(..., pattern="^(pc|android|linux|mac|openwrt)$"),
     version: Optional[str] = Form(None),
+    arch: Optional[str] = Form(None),
     file: UploadFile = File(...),
     _: bool = Depends(get_admin_credentials),
 ):
@@ -1891,7 +1892,12 @@ async def upload_update(
             tmp.write(chunk)
         tmp_path = tmp.name
     try:
-        info = update_service.publish_file(platform, file.filename, tmp_path, version=version)
+        try:
+            info = update_service.publish_file(
+                platform, file.filename, tmp_path, version=version, arch=arch,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         return {"message": "Update published", **info}
     finally:
         try:
@@ -1903,11 +1909,12 @@ async def upload_update(
 @router.delete("/updates/{platform}")
 async def delete_update(
     platform: str,
+    arch: Optional[str] = None,
     _: bool = Depends(get_admin_credentials),
 ):
     if platform not in update_service.PLATFORMS:
         raise HTTPException(status_code=400, detail="Invalid platform")
-    update_service.delete_platform_update(platform)
+    update_service.delete_platform_update(platform, arch=arch)
     return {"message": f"Update for {platform} removed"}
 
 

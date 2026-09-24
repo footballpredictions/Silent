@@ -14,16 +14,17 @@ router = APIRouter(prefix="/updates", tags=["updates"])
 async def check_update(
     platform: str = Query(..., pattern="^(pc|android|linux|mac|openwrt)$"),
     version: str = Query(..., min_length=1, max_length=32),
+    arch: str = Query("", max_length=16),
 ):
     """Return update info if a newer version is available on the server."""
-    info = update_service.check_update(platform, version)
+    info = update_service.check_update(platform, version, arch=arch or None)
     if not info:
         return {"available": False}
     return info
 
 
 @router.get("/download/{platform}")
-async def download_update_file(platform: str):
+async def download_update_file(platform: str, arch: str = Query("", max_length=16)):
     """
     Скачивание OTA через tunnel API (10.66.66.1).
     LTE: приложение excluded из WG — GitHub напрямую недоступен; VPS стримит с диска или с GitHub.
@@ -32,7 +33,7 @@ async def download_update_file(platform: str):
     if p not in update_service.PLATFORMS:
         raise HTTPException(status_code=400, detail="Unknown platform")
 
-    latest = update_service.get_latest(p)
+    latest = update_service.get_latest(p, arch=arch or None)
     if not latest:
         raise HTTPException(status_code=404, detail="No update published")
 

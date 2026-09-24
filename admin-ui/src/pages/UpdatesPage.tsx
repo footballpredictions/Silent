@@ -1,6 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import { Download, Trash2, Upload, Hammer, Square, Github, Copy } from 'lucide-react'
 
+interface MacFileSlot {
+  filename: string
+  size: number
+  uploaded_at?: string | null
+  download_url?: string
+}
+
 interface UpdateInfo {
   platform: string
   version: string | null
@@ -10,6 +17,7 @@ interface UpdateInfo {
   download_url?: string
   github_download_url?: string
   github_published_at?: string | null
+  files?: Record<string, MacFileSlot>
 }
 
 interface GitHubStatus {
@@ -59,6 +67,8 @@ const platformLabel: Record<string, string> = {
   android: 'Android',
   linux: 'PC (Linux)',
   mac: 'PC (Mac)',
+  'mac-x64': 'Mac Intel (x64)',
+  'mac-arm64': 'Mac Apple Silicon (arm64)',
   openwrt: 'OpenWrt',
 }
 
@@ -87,6 +97,8 @@ export default function UpdatesPage({ token }: { token: string }) {
   const pcRef = useRef<HTMLInputElement>(null)
   const androidRef = useRef<HTMLInputElement>(null)
   const linuxRef = useRef<HTMLInputElement>(null)
+  const macX64Ref = useRef<HTMLInputElement>(null)
+  const macArmRef = useRef<HTMLInputElement>(null)
   const macRef = useRef<HTMLInputElement>(null)
   const openwrtRef = useRef<HTMLInputElement>(null)
 
@@ -148,12 +160,14 @@ export default function UpdatesPage({ token }: { token: string }) {
     return () => clearInterval(t)
   }, [buildStatus?.running, building, token])
 
-  const upload = async (platform: string, file: File) => {
-    setUploading(platform)
+  const upload = async (platform: string, file: File, arch?: string) => {
+    const busyKey = arch ? `${platform}:${arch}` : platform
+    setUploading(busyKey)
     setUploadPct(0)
     setMsg('')
     const fd = new FormData()
     fd.append('platform', platform)
+    if (arch) fd.append('arch', arch)
     fd.append('file', file)
     try {
       const data = await new Promise<{ ok: boolean; status: number; body: { detail?: string; version?: string } }>((resolve, reject) => {
@@ -180,7 +194,7 @@ export default function UpdatesPage({ token }: { token: string }) {
         else setMsg(typeof data.body.detail === 'string' ? data.body.detail : `Ошибка загрузки (${data.status})`)
       } else {
         setUploadPct(100)
-        setMsg(`Загружено: ${platformLabel[platform]} v${data.body.version}`)
+        setMsg(`Загружено: ${platformLabel[arch ? `${platform}-${arch}` : platform] || platform} v${data.body.version}`)
         await load()
       }
     } catch (e) {
@@ -412,9 +426,27 @@ export default function UpdatesPage({ token }: { token: string }) {
                   {item.version ? (
                     <div className="mt-2 space-y-1 text-sm text-[#888]">
                       <p>Версия: <span className="text-white">{item.version}</span></p>
-                      <p>Файл: {item.filename}</p>
-                      <p>Размер: {formatSize(item.size)}</p>
-                      <p>Загружено: {formatDate(item.uploaded_at)}</p>
+                      {item.platform === 'mac' ? (
+                        <>
+                          {(['x64', 'arm64'] as const).map(arch => {
+                            const slot = item.files?.[arch]
+                            const title = arch === 'x64' ? 'Intel (x64)' : 'Apple Silicon (arm64)'
+                            return (
+                              <p key={arch}>
+                                {title}: {slot?.filename
+                                  ? `${slot.filename} · ${formatSize(slot.size)} · ${formatDate(slot.uploaded_at || null)}`
+                                  : 'нет файла'}
+                              </p>
+                            )
+                          })}
+                        </>
+                      ) : (
+                        <>
+                          <p>Файл: {item.filename}</p>
+                          <p>Размер: {formatSize(item.size)}</p>
+                          <p>Загружено: {formatDate(item.uploaded_at)}</p>
+                        </>
+                      )}
                       {item.github_download_url ? (
                         <p>
                           GitHub:{' '}
@@ -516,6 +548,37 @@ export default function UpdatesPage({ token }: { token: string }) {
                     Скачать
                   </a>
                 )}
+                {item.platform === 'mac' ? (
+                  <>
+                    <input ref={macX64Ref} type="file" accept=".dmg,.zip,.pkg" className="hidden" onChange={e => {
+                      const f = e.target.files?.[0]
+                      if (f) upload('mac', f, 'x64')
+                      e.target.value = ''
+                    }} />
+                    <input ref={macArmRef} type="file" accept=".dmg,.zip,.pkg" className="hidden" onChange={e => {
+                      const f = e.target.files?.[0]
+                      if (f) upload('mac', f, 'arm64')
+                      e.target.value = ''
+                    }} />
+                    <button
+                      disabled={!!uploading}
+                      onClick={() => macX64Ref.current?.click()}
+                      className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#e0e0e0] disabled:opacity-50"
+                    >
+                      <Upload className="w-4 h-4" />
+                      {uploading === 'mac:x64' ? `Intel ${uploadPct}%` : 'Загрузить Intel (x64)'}
+                    </button>
+                    <button
+                      disabled={!!uploading}
+                      onClick={() => macArmRef.current?.click()}
+                      className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#e0e0e0] disabled:opacity-50"
+                    >
+                      <Upload className="w-4 h-4" />
+                      {uploading === 'mac:arm64' ? `ARM ${uploadPct}%` : 'Загрузить Apple Silicon (arm64)'}
+                    </button>
+                  </>
+                ) : (
+                  <>
                 <input
                   ref={fileRefFor(item.platform)}
                   type="file"
@@ -535,6 +598,8 @@ export default function UpdatesPage({ token }: { token: string }) {
                   <Upload className="w-4 h-4" />
                   {uploading === item.platform ? `Загрузка ${uploadPct}%` : 'Загрузить файл'}
                 </button>
+                  </>
+                )}
                 <button
                   disabled={!item.version || !githubStatus?.configured || publishingGithub === item.platform}
                   onClick={() => publishGithub(item.platform)}
@@ -576,7 +641,7 @@ export default function UpdatesPage({ token }: { token: string }) {
                 </>
                 )}
                 {item.platform === 'mac' && (
-                  <span className="text-xs text-[#666] self-center">Сборка .dmg — только на MacBook (`./build-mac.sh`)</span>
+                  <span className="text-xs text-[#666] self-center">Два DMG с MacBook (`./build-mac.sh`): Intel и Apple Silicon. Старые клиенты без архитектуры получают Intel.</span>
                 )}
                 {item.platform === 'openwrt' && (
                   <span className="text-xs text-[#666] self-center">Сборка .tar.gz — локально в openwrt/; install.sh качает silent-vpn-openwrt.tgz с github.io</span>

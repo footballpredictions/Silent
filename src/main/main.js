@@ -2641,7 +2641,8 @@ ipcMain.handle('app-update-check', async (_, { version, platform } = {}) => {
   }
   try {
     const raw = await fetchGithubReleasesJson()
-    const parsed = parseGithubOta(raw, plat, version)
+    const macArch = process.arch === 'arm64' ? 'arm64' : 'x64'
+    const parsed = parseGithubOta(raw, plat, version, macArch)
     if (parsed.kind === 'available') {
       sendLog('[Update] check via github.io OK')
       return parsed

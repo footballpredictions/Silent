@@ -53,6 +53,36 @@ describe('otaGithubDiscovery', () => {
     assert.equal(parseGithubOta('{', 'pc', '1.0.165').kind, 'unreadable')
   })
 
+  it('mac arches: arm64 and x64 each get their own DMG', () => {
+    const body = JSON.stringify({
+      mac: {
+        version: '1.0.168',
+        filename: 'Silent.VPN.Setup.1.0.168-x64.dmg',
+        size: 1,
+        download_url: 'https://github.com/silentvpn3/silentvpn3.github.io/releases/download/v1.0.168/Silent.VPN.Setup.1.0.168-x64.dmg',
+        arches: {
+          x64: {
+            version: '1.0.168',
+            filename: 'Silent.VPN.Setup.1.0.168-x64.dmg',
+            size: 1,
+            download_url: 'https://github.com/silentvpn3/silentvpn3.github.io/releases/download/v1.0.168/Silent.VPN.Setup.1.0.168-x64.dmg',
+          },
+          arm64: {
+            version: '1.0.168',
+            filename: 'Silent.VPN.Setup.1.0.168-arm64.dmg',
+            size: 2,
+            download_url: 'https://github.com/silentvpn3/silentvpn3.github.io/releases/download/v1.0.168/Silent.VPN.Setup.1.0.168-arm64.dmg',
+          },
+        },
+      },
+    })
+    const arm = parseGithubOta(body, 'mac', '1.0.167', 'arm64')
+    const intel = parseGithubOta(body, 'mac', '1.0.167', 'x64')
+    assert.equal(arm.kind, 'available')
+    assert.match(arm.download_url, /-arm64\.dmg/)
+    assert.match(intel.download_url, /-x64\.dmg/)
+  })
+
   it('maps windows/darwin/tv onto landing keys and never prefers hive download', () => {
     assert.equal(landingKey('windows'), 'pc')
     assert.equal(landingKey('darwin'), 'mac')

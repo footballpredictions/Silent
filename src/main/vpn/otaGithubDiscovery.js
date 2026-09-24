@@ -28,7 +28,7 @@ function landingKey(platform) {
   return p
 }
 
-function parseGithubOta(raw, platform, currentVersion) {
+function parseGithubOta(raw, platform, currentVersion, arch) {
   let root
   try {
     root = typeof raw === 'string' ? JSON.parse(raw) : raw
@@ -37,8 +37,16 @@ function parseGithubOta(raw, platform, currentVersion) {
   }
   if (!root || typeof root !== 'object') return { kind: 'unreadable' }
   const key = landingKey(platform)
-  const row = root[key]
+  let row = root[key]
   if (!row || typeof row !== 'object') return { kind: 'unreadable' }
+  if (key === 'mac' && row.arches && typeof row.arches === 'object') {
+    const archKey = arch === 'arm64' ? 'arm64' : 'x64'
+    const slot = row.arches[archKey]
+    if (!slot || typeof slot !== 'object' || !slot.version || !slot.download_url) {
+      return { kind: 'unreadable' }
+    }
+    row = { ...row, ...slot }
+  }
   const version = String(row.version || '').trim()
   const filename = String(row.filename || '').trim()
   const downloadUrl = String(row.download_url || '').trim()

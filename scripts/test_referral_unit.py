@@ -9,15 +9,36 @@ from pathlib import Path
 
 
 def _load_normalize_only():
-    """Inline copies of pure helpers to avoid importing FastAPI stack."""
+    """Те же правила, что referral_service, без импорта FastAPI."""
+    from urllib.parse import parse_qs, urlparse
+
+    def _code_from_link(text: str):
+        parsed = urlparse(text)
+        qs = parse_qs(parsed.query)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme.lower() == "silentvpn" and host == "ref":
+            values = qs.get("code") or []
+        else:
+            values = qs.get("ref") or qs.get("code") or []
+        if not values:
+            return None
+        return values[0].strip() or None
+
     def normalize_code(raw):
         if raw is None:
             return None
-        code = raw.strip().upper()
+        text = raw.strip()
+        if not text:
+            return None
+        if "://" in text:
+            extracted = _code_from_link(text)
+            if extracted:
+                text = extracted
+        code = text.strip().upper()
         return code or None
 
     def build_referral_link(code: str) -> str:
-        return f"silentvpn://ref?code={code}"
+        return f"https://silentvpn3.github.io/?ref={code}"
 
     return normalize_code, build_referral_link
 
@@ -28,7 +49,12 @@ class ReferralPureHelpersTests(unittest.TestCase):
         self.assertEqual(normalize_code("  ab12  "), "AB12")
         self.assertIsNone(normalize_code(""))
         self.assertIsNone(normalize_code(None))
-        self.assertEqual(build_referral_link("ABCD1234"), "silentvpn://ref?code=ABCD1234")
+        self.assertEqual(normalize_code("silentvpn://ref?code=abcd1234"), "ABCD1234")
+        self.assertEqual(normalize_code("https://silentvpn3.github.io/?ref=abcd1234"), "ABCD1234")
+        self.assertEqual(
+            build_referral_link("ABCD1234"),
+            "https://silentvpn3.github.io/?ref=ABCD1234",
+        )
 
 
 class ReferralRewardMockTests(unittest.IsolatedAsyncioTestCase):

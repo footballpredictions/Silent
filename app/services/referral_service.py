@@ -2,6 +2,7 @@
 import secrets
 import string
 from datetime import datetime, timedelta
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -16,17 +17,42 @@ REFERRAL_MONTHLY_REWARD_LIMIT = settings.REFERRAL_MONTHLY_REWARD_LIMIT
 REFERRAL_PLAN = KIND_REFERRAL_PLAN
 REFERRAL_CODE_ALPHABET = string.ascii_uppercase + string.digits
 REFERRAL_CODE_LEN = 8
+# Кликабельна в Telegram. Страница открывает silentvpn://ref?code= у установленного приложения.
+REFERRAL_PUBLIC_BASE = "https://silentvpn3.github.io"
+
+
+def _code_from_link(text: str) -> str | None:
+    parsed = urlparse(text)
+    qs = parse_qs(parsed.query)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme.lower() == "silentvpn" and host == "ref":
+        values = qs.get("code") or []
+    else:
+        values = qs.get("ref") or qs.get("code") or []
+    if not values:
+        return None
+    return values[0].strip() or None
 
 
 def normalize_code(raw: str | None) -> str | None:
     if raw is None:
         return None
-    code = raw.strip().upper()
+    text = raw.strip()
+    if not text:
+        return None
+    if "://" in text:
+        try:
+            extracted = _code_from_link(text)
+        except ValueError:
+            extracted = None
+        if extracted:
+            text = extracted
+    code = text.strip().upper()
     return code or None
 
 
 def build_referral_link(code: str) -> str:
-    return f"silentvpn://ref?code={code}"
+    return f"{REFERRAL_PUBLIC_BASE}/?ref={code}"
 
 
 async def generate_unique_referral_code(db: AsyncSession) -> str:

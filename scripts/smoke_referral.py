@@ -100,7 +100,7 @@ def main() -> int:
                     check("referral_code", bool(referral_code), str(referral_code))
                     check(
                         "referral_link",
-                        link.startswith("silentvpn://ref?code=") and referral_code in link,
+                        link == f"https://silentvpn3.github.io/?ref={referral_code}",
                         link,
                     )
                     check("bonus_days", data.get("bonus_days") == 30, str(data.get("bonus_days")))

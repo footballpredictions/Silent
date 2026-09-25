@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 import os
 
 from app.config import settings
@@ -611,6 +611,18 @@ app.include_router(updates_router, prefix="/api")
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "version": settings.APP_VERSION}
+
+
+@app.get("/r/{code}", include_in_schema=False)
+async def referral_open(code: str):
+    """Ссылка приглашения на Улье. Открывает приложение, код уже в адресе."""
+    import re
+
+    from app.services.referral_service import referral_open_page
+
+    if not re.fullmatch(r"[A-Za-z0-9]{4,32}", code):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return HTMLResponse(referral_open_page(code.upper()))
 
 
 @app.api_route(

@@ -17,8 +17,6 @@ REFERRAL_MONTHLY_REWARD_LIMIT = settings.REFERRAL_MONTHLY_REWARD_LIMIT
 REFERRAL_PLAN = KIND_REFERRAL_PLAN
 REFERRAL_CODE_ALPHABET = string.ascii_uppercase + string.digits
 REFERRAL_CODE_LEN = 8
-# Кликабельна в Telegram. Страница открывает silentvpn://ref?code= у установленного приложения.
-REFERRAL_PUBLIC_BASE = "https://silentvpn3.github.io"
 
 
 def _code_from_link(text: str) -> str | None:
@@ -29,9 +27,12 @@ def _code_from_link(text: str) -> str | None:
         values = qs.get("code") or []
     else:
         values = qs.get("ref") or qs.get("code") or []
-    if not values:
-        return None
-    return values[0].strip() or None
+    if values and values[0].strip():
+        return values[0].strip()
+    parts = [part for part in (parsed.path or "").split("/") if part]
+    if len(parts) >= 2 and parts[-2].lower() == "r":
+        return parts[-1].strip() or None
+    return None
 
 
 def normalize_code(raw: str | None) -> str | None:
@@ -51,8 +52,59 @@ def normalize_code(raw: str | None) -> str | None:
     return code or None
 
 
-def build_referral_link(code: str) -> str:
-    return f"{REFERRAL_PUBLIC_BASE}/?ref={code}"
+def build_referral_link(code: str, public_base: str | None = None) -> str:
+    """Кликабельная ссылка. База — сота :9100: 443 Улья из РФ без VPN не открывается.
+
+    Сота проксирует /api/auth/* на Улей, страница та же.
+    """
+    base = (public_base or settings.FRONTEND_URL or "").strip().rstrip("/")
+    return f"{base}/api/auth/r/{code}"
+
+
+async def referral_public_base(db: AsyncSession) -> str:
+    """Первая живая сота без AI-профиля. Если списка нет — адрес Улья."""
+    try:
+        from app.services.hive_standby import cell_public_api_base, get_standby_cells
+
+        for cell in await get_standby_cells(db):
+            if getattr(cell, "ai_exit", False):
+                continue
+            base = cell_public_api_base(cell)
+            if base:
+                return base
+    except Exception:
+        pass
+    return (settings.FRONTEND_URL or "").strip().rstrip("/")
+
+
+def referral_open_page(code: str) -> str:
+    """Публичная страница Улья: сразу открывает установленное приложение с кодом."""
+    app_link = f"silentvpn://ref?code={code}"
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Silent VPN</title>
+</head>
+<body>
+<p>Код приглашения: {code}</p>
+<p><a id="open" href="{app_link}">Открыть приложение</a></p>
+<script>
+(function () {{
+  var code = {code!r};
+  var app = "silentvpn://ref?code=" + code;
+  var ua = navigator.userAgent || "";
+  if (/Android/i.test(ua)) {{
+    location.href = "intent://ref?code=" + code + "#Intent;scheme=silentvpn;package=com.silent.vpn;end";
+    return;
+  }}
+  location.href = app;
+}})();
+</script>
+</body>
+</html>
+"""
 
 
 async def generate_unique_referral_code(db: AsyncSession) -> str:
@@ -260,7 +312,7 @@ async def get_referral_stats(db: AsyncSession, user: User) -> dict:
     rewarded_last_30d = await count_inviter_rewards_last_30_days(db, user.id)
     return {
         "referral_code": code,
-        "referral_link": build_referral_link(code),
+        "referral_link": build_referral_link(code, await referral_public_base(db)),
         "invited_count": int(invited.scalar_one() or 0),
         "rewarded_count": int(rewarded.scalar_one() or 0),
         "pending_count": int(pending.scalar_one() or 0),

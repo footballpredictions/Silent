@@ -56,6 +56,9 @@ def is_admin_surface(path: str) -> bool:
         return False
     if path.startswith("/static/") or path.startswith("/update/"):
         return False
+    # Публичная ссылка приглашения: https://Улей/r/КОД
+    if path == "/r" or path.startswith("/r/"):
+        return False
     # Everything else is admin SPA (/, /dashboard, /assets/...)
     return True
 

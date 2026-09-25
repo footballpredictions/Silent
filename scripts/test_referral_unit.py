@@ -20,9 +20,12 @@ def _load_normalize_only():
             values = qs.get("code") or []
         else:
             values = qs.get("ref") or qs.get("code") or []
-        if not values:
-            return None
-        return values[0].strip() or None
+        if values and values[0].strip():
+            return values[0].strip()
+        parts = [part for part in (parsed.path or "").split("/") if part]
+        if len(parts) >= 2 and parts[-2].lower() == "r":
+            return parts[-1].strip() or None
+        return None
 
     def normalize_code(raw):
         if raw is None:
@@ -37,8 +40,9 @@ def _load_normalize_only():
         code = text.strip().upper()
         return code or None
 
-    def build_referral_link(code: str) -> str:
-        return f"https://silentvpn3.github.io/?ref={code}"
+    def build_referral_link(code: str, public_base: str | None = None) -> str:
+        base = (public_base or "https://89-125-188-100.nip.io").rstrip("/")
+        return f"{base}/api/auth/r/{code}"
 
     return normalize_code, build_referral_link
 
@@ -50,10 +54,13 @@ class ReferralPureHelpersTests(unittest.TestCase):
         self.assertIsNone(normalize_code(""))
         self.assertIsNone(normalize_code(None))
         self.assertEqual(normalize_code("silentvpn://ref?code=abcd1234"), "ABCD1234")
-        self.assertEqual(normalize_code("https://silentvpn3.github.io/?ref=abcd1234"), "ABCD1234")
         self.assertEqual(
-            build_referral_link("ABCD1234"),
-            "https://silentvpn3.github.io/?ref=ABCD1234",
+            normalize_code("http://78.17.74.27:9100/api/auth/r/abcd1234"),
+            "ABCD1234",
+        )
+        self.assertEqual(
+            build_referral_link("ABCD1234", "http://78.17.74.27:9100"),
+            "http://78.17.74.27:9100/api/auth/r/ABCD1234",
         )
 
 

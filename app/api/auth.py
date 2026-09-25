@@ -63,6 +63,18 @@ async def _email_smtp_relays(db: AsyncSession) -> list[dict[str, str]]:
         return []
 
 
+@router.get("/r/{code}", response_class=HTMLResponse, include_in_schema=False)
+async def referral_open(code: str):
+    """Страница приглашения. Сота :9100 проксирует сюда, браузер открывает без VPN."""
+    import re
+
+    from app.services.referral_service import referral_open_page
+
+    if not re.fullmatch(r"[A-Za-z0-9]{4,32}", code):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return HTMLResponse(referral_open_page(code.upper()))
+
+
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(
     req: RegisterRequest,

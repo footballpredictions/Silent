@@ -52,29 +52,13 @@ def normalize_code(raw: str | None) -> str | None:
     return code or None
 
 
+# Красивое имя ссылки. Страница сама спрашивает Улей, затем соту 1, затем следующую.
+REFERRAL_PUBLIC_PAGE = "https://silentvpn3.github.io/invite"
+
+
 def build_referral_link(code: str, public_base: str | None = None) -> str:
-    """Кликабельная ссылка. База — сота :9100: 443 Улья из РФ без VPN не открывается.
-
-    Сота проксирует /api/auth/* на Улей, страница та же.
-    """
-    base = (public_base or settings.FRONTEND_URL or "").strip().rstrip("/")
-    return f"{base}/api/auth/r/{code}"
-
-
-async def referral_public_base(db: AsyncSession) -> str:
-    """Первая живая сота без AI-профиля. Если списка нет — адрес Улья."""
-    try:
-        from app.services.hive_standby import cell_public_api_base, get_standby_cells
-
-        for cell in await get_standby_cells(db):
-            if getattr(cell, "ai_exit", False):
-                continue
-            base = cell_public_api_base(cell)
-            if base:
-                return base
-    except Exception:
-        pass
-    return (settings.FRONTEND_URL or "").strip().rstrip("/")
+    base = (public_base or REFERRAL_PUBLIC_PAGE).strip().rstrip("/")
+    return f"{base}?code={code}"
 
 
 def referral_open_page(code: str) -> str:
@@ -312,7 +296,7 @@ async def get_referral_stats(db: AsyncSession, user: User) -> dict:
     rewarded_last_30d = await count_inviter_rewards_last_30_days(db, user.id)
     return {
         "referral_code": code,
-        "referral_link": build_referral_link(code, await referral_public_base(db)),
+        "referral_link": build_referral_link(code),
         "invited_count": int(invited.scalar_one() or 0),
         "rewarded_count": int(rewarded.scalar_one() or 0),
         "pending_count": int(pending.scalar_one() or 0),

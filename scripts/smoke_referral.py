@@ -100,7 +100,7 @@ def main() -> int:
                     check("referral_code", bool(referral_code), str(referral_code))
                     check(
                         "referral_link",
-                        link.endswith(f"/api/auth/r/{referral_code}") and ":9100" in link,
+                        link == f"https://silentvpn3.github.io/invite?code={referral_code}",
                         link,
                     )
                     check("bonus_days", data.get("bonus_days") == 30, str(data.get("bonus_days")))

@@ -759,7 +759,7 @@ export default function ClientPreview({
           <div style={{ fontSize: 10, color: muted, lineHeight: 1.45, marginBottom: 8 }}>
             {theme.bonuses_referral_hint || 'Скопируйте и отправьте другу'}
           </div>
-          <input readOnly value="http://78.17.74.27:9100/api/auth/r/ABCD1234" style={{
+          <input readOnly value="https://silentvpn3.github.io/invite?code=ABCD1234" style={{
             width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 11, marginBottom: 6,
             borderRadius: 10, border: `1px solid ${fg}22`, background: `${fg}08`, color: fg,
           }} />

@@ -177,6 +177,23 @@ def assign_online_to_cell_id(
     return queen_id
 
 
+def online_count_for_capacity(db_online: int, load: dict | None) -> int:
+    """Лимит — по тем же людям, что цифра на карточке.
+
+    История училась на ``is_connected`` (часто 1), а на карточке уже живой WG
+    (43). Тогда режим остаётся «по истории» и потолок ~15 при 43 онлайн.
+    """
+    data = load if isinstance(load, dict) else {}
+    wg = data.get("wg_peers_live_3m") if "wg_peers_live_3m" in data else None
+    known = data.get("wg_peers_live_known") if "wg_peers_live_known" in data else None
+    return node_online_shown(
+        is_queen=False,
+        db_online=int(db_online or 0),
+        wg_live=None if wg is None else int(wg),
+        wg_live_known=None if known is None else int(known),
+    )
+
+
 def node_online_shown(
     *,
     is_queen: bool,

@@ -319,7 +319,7 @@ async def vantage_check(
     nodes: Iterable[str],
     node_info: dict[str, dict[str, str]],
     *,
-    poll_attempts: int = 5,
+    poll_attempts: int = 8,
     poll_delay: float = 2.0,
     timeout: float = 12.0,
 ) -> dict[str, NodeResult]:

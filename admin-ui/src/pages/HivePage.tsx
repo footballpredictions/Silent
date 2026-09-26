@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Hexagon, Plus, RefreshCw, Trash2, Wifi, WifiOff, Crown, Loader2, Cpu, HardDrive, Activity, Server } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Hexagon, Plus, Trash2, Wifi, WifiOff, Crown, Loader2, Cpu, HardDrive, Activity, Server } from 'lucide-react'
 import HiveAvailabilityPanel from '../components/HiveAvailabilityPanel'
+import { bumpIncidentGen, shouldApplyIncidentList } from '../incidentListGuard'
+import { mergeHiveCellLoads } from '../hiveCellLoads'
 
 interface CellLoad {
   cpu_percent: number
@@ -199,7 +201,6 @@ function CellLoadGrid({
   const netUtil = network_util_percent ?? 0
   const hot = cpu_percent >= cpuThreshold || memory_percent >= memThreshold || netUtil >= bwThreshold
   return (
-    <>
     <div className={`grid grid-cols-3 gap-2 mt-3 ${hot ? 'opacity-100' : 'opacity-90'}`}>
       <div className="bg-[#0a0a0a] border border-[#222] rounded-lg px-3 py-2">
         <p className="text-[10px] text-[#666] uppercase flex items-center gap-1"><Cpu className="w-3 h-3" /> CPU</p>
@@ -221,14 +222,6 @@ function CellLoadGrid({
         <p className="text-[10px] text-[#555] mt-0.5">{fmtBandwidth(netRx)}↓ {fmtBandwidth(netTx)}↑</p>
       </div>
     </div>
-    {typeof cell.load.wg_peers_total === 'number' && (
-      <p className="text-[11px] text-[#777] mt-2">
-        WG peer’ы: {cell.load.wg_peers_total} · never-hs {cell.load.wg_peers_never_hs ?? 0} · live {cell.load.wg_peers_live_3m ?? 0} (онлайн)
-        {typeof cell.load.wg_peers_live_known === 'number' ? ` · свои ${cell.load.wg_peers_live_known}` : ''}
-        {(cell.load.wg_gc_last_removed ?? 0) > 0 ? ` · gc −${cell.load.wg_gc_last_removed}` : ''}
-      </p>
-    )}
-    </>
   )
 }
 
@@ -351,12 +344,14 @@ export default function HivePage({ token }: { token: string }) {
   const [egress, setEgress] = useState<Record<string, EgressInfo>>({})
   const [egressBusy, setEgressBusy] = useState<string | null>(null)
   const [form, setForm] = useState({ host: '', password: '', name: '' })
-  const [metricsAt, setMetricsAt] = useState<Date | null>(null)
   const [incidents, setIncidents] = useState<HiveIncident[]>([])
   const [incidentsSeenAt, setIncidentsSeenAt] = useState<string | null>(null)
+  const incidentsGen = useRef(0)
+  const loadMisses = useRef<Record<string, number>>({})
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setError(null)
+    const gen = incidentsGen.current
     const [cellsRes, sumRes, incidentsRes] = await Promise.all([
       fetch('/api/admin/hive/cells', { headers: { Authorization: `Bearer ${token}` } }),
       fetch('/api/admin/hive/summary', { headers: { Authorization: `Bearer ${token}` } }),
@@ -367,14 +362,18 @@ export default function HivePage({ token }: { token: string }) {
       setLoading(false)
       return
     }
-    setCells(await cellsRes.json())
+    const incoming = await cellsRes.json()
+    setCells(prev => {
+      const merged = mergeHiveCellLoads(prev, Array.isArray(incoming) ? incoming : [], loadMisses.current)
+      loadMisses.current = merged.misses
+      return merged.cells
+    })
     if (sumRes.ok) setSummary(await sumRes.json())
-    if (incidentsRes.ok) {
+    if (incidentsRes.ok && shouldApplyIncidentList(gen, incidentsGen.current)) {
       const data = await incidentsRes.json().catch(() => ({}))
       setIncidents(Array.isArray(data.items) ? data.items : [])
       setIncidentsSeenAt(typeof data.last_seen_at === 'string' ? data.last_seen_at : null)
     }
-    setMetricsAt(new Date())
     setLoading(false)
   }, [token])
 
@@ -537,6 +536,7 @@ export default function HivePage({ token }: { token: string }) {
 
   const clearIncidents = async () => {
     if (busy === 'incidents') return
+    incidentsGen.current = bumpIncidentGen(incidentsGen.current)
     setBusy('incidents')
     setError(null)
     setIncidents([])
@@ -550,9 +550,12 @@ export default function HivePage({ token }: { token: string }) {
         await load(true)
         return
       }
+      incidentsGen.current = bumpIncidentGen(incidentsGen.current)
+      const gen = incidentsGen.current
       const listRes = await fetch('/api/admin/hive/incidents?limit=120', {
         headers: { Authorization: `Bearer ${token}` },
       })
+      if (!shouldApplyIncidentList(gen, incidentsGen.current)) return
       if (listRes.ok) {
         const data = await listRes.json().catch(() => ({}))
         setIncidents(Array.isArray(data.items) ? data.items : [])
@@ -568,99 +571,24 @@ export default function HivePage({ token }: { token: string }) {
   const queenCell = cells.find(c => c.is_queen)
   const ql = queenCell?.load || summary?.queen_load
   const queenHw = fmtHardware(ql)
-  const hiveOnline = cells.reduce((n, c) => n + (c.online_count || 0), 0)
 
   return (
     <div className="space-y-6 max-w-5xl">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <Hexagon className="w-7 h-7" />
-            Улей
-          </h1>
-          <p className="text-[#888] text-sm mt-1">
-            Характеристики и нагрузка — с сервера, обновление каждые 10 с.
-            Cell-agent на сотах синхронизируется с Ульем автоматически.
-          </p>
-        </div>
-        <button type="button" onClick={() => { setLoading(true); load() }}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#1a1a1a] text-sm text-[#aaa] hover:text-white">
-          <RefreshCw className="w-4 h-4" /> Обновить
-        </button>
-      </div>
-      {metricsAt && (
-        <p className="text-xs text-[#555] -mt-3">
-          Последнее обновление: {metricsAt.toLocaleTimeString('ru')}
-        </p>
-      )}
-
-      {summary && ql && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <div className="bg-[#111] border border-[#222] rounded-xl p-4">
-            <p className="text-[#666] text-xs uppercase">Онлайн всего</p>
-            <p className="text-2xl font-semibold mt-1">{hiveOnline} / {summary.total_capacity_online}</p>
-            <p className="text-xs text-[#666] mt-1">
-              {cells.filter(c => c.is_queen).reduce((n, c) => n + (c.online_count || 0), 0)} Улей
-              {' + '}
-              {cells.filter(c => !c.is_queen).reduce((n, c) => n + (c.online_count || 0), 0)} соты
-            </p>
-          </div>
-          <div className="bg-[#111] border border-[#222] rounded-xl p-4">
-            <p className="text-[#666] text-xs uppercase flex items-center gap-1"><Cpu className="w-3 h-3" /> CPU Улья</p>
-            <p className={`text-2xl font-semibold mt-1 ${ql.cpu_percent >= summary.cpu_threshold ? 'text-amber-400' : ''}`}>
-              {ql.cpu_percent}%
-            </p>
-          </div>
-          <div className="bg-[#111] border border-[#222] rounded-xl p-4">
-            <p className="text-[#666] text-xs uppercase flex items-center gap-1"><HardDrive className="w-3 h-3" /> RAM Улья</p>
-            <p className={`text-2xl font-semibold mt-1 ${ql.memory_percent >= summary.mem_threshold ? 'text-amber-400' : ''}`}>
-              {ql.memory_percent}%
-            </p>
-          </div>
-          <div className="bg-[#111] border border-[#222] rounded-xl p-4">
-            <p className="text-[#666] text-xs uppercase flex items-center gap-1"><Activity className="w-3 h-3" /> Канал Улья</p>
-            <p className={`text-2xl font-semibold mt-1 ${(ql.network_util_percent ?? 0) >= summary.bandwidth_threshold ? 'text-amber-400' : ''}`}>
-              {(ql.network_util_percent ?? 0).toFixed(1)}%
-            </p>
-            <p className="text-xs text-[#555] mt-1">
-              {fmtBandwidth(ql.network_mbps_rx ?? 0)}↓ / {fmtBandwidth(ql.network_mbps_tx ?? 0)}↑
-            </p>
-          </div>
-          <div className="bg-[#111] border border-[#222] rounded-xl p-4">
-            <p className="text-[#666] text-xs uppercase">Режим</p>
-            <p className="text-sm font-medium mt-2">
-              {ql.build_running ? (
-                <span className="text-blue-400">Сборка OTA — VPN на Улье</span>
-              ) : summary.queen_accepting_vpn ? (
-                <span className="text-emerald-400">Улей в норме</span>
-              ) : (
-                <span className="text-orange-400">Улей нагружен</span>
-              )}
-            </p>
-            {summary.all_cells_full && (
-              <p className="text-xs text-red-400 mt-2">Все соты заполнены — добавьте новые соты</p>
-            )}
-          </div>
-        </div>
-      )}
+      <h1 className="text-2xl font-bold flex items-center gap-2">
+        <Hexagon className="w-7 h-7" />
+        Улей
+      </h1>
       {queenHw && (
-        <p className="text-sm text-[#aaa] flex items-center gap-1.5 -mt-2">
+        <p className="text-sm text-[#aaa] flex items-center gap-1.5">
           <Server className="w-3.5 h-3.5 text-[#666]" />
           Улей: {queenHw}
         </p>
       )}
-      {summary && (
-        <div className="bg-[#0d0d0d] border border-[#2a2a2a] rounded-lg px-4 py-3 text-xs text-[#888] leading-relaxed">
-          <p className="text-[#aaa] font-medium mb-1">Серверы</p>
-          <p>
-            Клиент сам выбирает Сервер 1 (Улей), 2 или 3 — это отдельные ноды.
-            Живой VPN Улей не перекидывает. CPU ≥ {summary.cpu_threshold}%, RAM ≥ {summary.mem_threshold}%,
-            канал ≥ {summary.bandwidth_threshold}% — индикатор нагрузки, не авто-баланс.
-          </p>
-        </div>
-      )}
 
-      <HiveAvailabilityPanel token={token} />
+      <HiveAvailabilityPanel
+        token={token}
+        onlineByHost={Object.fromEntries(cells.map(c => [c.public_ip, c.online_count]))}
+      />
 
       <div className="bg-[#111] border border-[#222] rounded-xl p-4 md:p-5">
         <div className="flex items-center justify-between gap-3 mb-2">
@@ -782,14 +710,6 @@ export default function HivePage({ token }: { token: string }) {
                       memThreshold={summary.mem_threshold}
                       bwThreshold={summary.bandwidth_threshold}
                     />
-                  )}
-                  {cell.assigned_devices > cell.online_count && !cell.is_queen && (
-                    <p className="text-xs text-[#666] mt-1">
-                      привязано в БД: {cell.assigned_devices}
-                      {cell.assigned_devices > cell.online_count
-                        ? ` (офлайн ${cell.assigned_devices - cell.online_count})`
-                        : ''}
-                    </p>
                   )}
                   <p className={`text-xs mt-1 ${cell.online_count >= cell.max_online ? 'text-red-400' : 'text-[#666]'}`}>
                     онлайн лимит: {cell.online_count} / {cell.max_online}

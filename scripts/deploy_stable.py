@@ -76,15 +76,13 @@ def main() -> None:
             print("ui", rel)
 
     cell_agent_dir = BACKEND_ROOT / "cell-agent"
-    for name in ("main.py", "standby_runtime.py", "standby_online.py"):
-        cell_agent = cell_agent_dir / name
-        if cell_agent.is_file():
-            rp = f"{REMOTE}/cell-agent/{name}"
-            client.exec_command(f"mkdir -p {REMOTE}/cell-agent")
-            sftp.put(str(cell_agent), rp)
-            print(f"upload cell-agent/{name}")
-        else:
-            print(f"WARN: cell-agent/{name} missing locally")
+    for cell_agent in sorted(cell_agent_dir.glob("*.py")):
+        if cell_agent.name.startswith("_"):
+            continue
+        rp = f"{REMOTE}/cell-agent/{cell_agent.name}"
+        client.exec_command(f"mkdir -p {REMOTE}/cell-agent")
+        sftp.put(str(cell_agent), rp)
+        print(f"upload cell-agent/{cell_agent.name}")
 
     client.exec_command(f"mkdir -p {REMOTE}/scripts")
     for name in ("fix_tunnel_dnat.py", "_deploy_common.py"):
@@ -144,8 +142,13 @@ bash /tmp/fix_tunnel_dnat.sh
 echo "=== verify ==="
 curl -sf http://127.0.0.1:8000/api/health && echo " health OK"
 curl -sf http://127.0.0.1:8000/health && echo " /health OK" || true
+rm -f {REMOTE}/static/.hive_api_alt_ports
 alt=$(curl -sk -o /dev/null -w "%{{http_code}}" --connect-timeout 3 --resolve 89-125-188-100.nip.io:2083:127.0.0.1 https://89-125-188-100.nip.io:2083/api/health || true)
-echo "alt2083 HTTP $alt (expect 200)"
+echo "alt2083 HTTP $alt (expect closed)"
+if [ "$alt" = "200" ]; then
+  echo "ERROR: запасной порт 2083 всё ещё отвечает" >&2
+  exit 1
+fi
 admin=$(curl -s -o /dev/null -w "%{{http_code}}" http://127.0.0.1:8000/)
 echo "admin: $admin"
 hive=$(curl -s -o /dev/null -w "%{{http_code}}" -H "Host: 89-125-188-100.nip.io" http://127.0.0.1:8000/api/admin/hive/cells)

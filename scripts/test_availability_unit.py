@@ -503,8 +503,8 @@ def test_external_targets_cover_fourth_cell():
     from pathlib import Path
     cfg = Path(__file__).resolve().parents[1] / "app" / "config.py"
     text = cfg.read_text(encoding="utf-8")
-    assert "AVAILABILITY_MAX_EXTERNAL_TARGETS: int = 4" in text
-    assert "AVAILABILITY_MAX_EXTERNAL_CHECKS: int = 12" in text
+    assert "AVAILABILITY_MAX_EXTERNAL_TARGETS: int = 8" in text
+    assert "AVAILABILITY_MAX_EXTERNAL_CHECKS: int = 40" in text
 
 
 def test_targets_display_order_queen_then_cells_by_slot():
@@ -709,6 +709,7 @@ def test_pending_vantage_nodes_are_not_counted_as_failures():
     assert agg.error_kinds() == {}
     payload = agg.to_dict()
     assert payload["ok"] == 1
+    assert payload["asked"] == 3
     assert payload["total"] == 1
     assert payload["failed"] == 0
     assert payload["error_kinds"] == {}

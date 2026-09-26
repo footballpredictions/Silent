@@ -41,27 +41,17 @@ def cell_public_api_base(cell: HiveCell) -> str:
 
 
 def hive_alt_api_urls() -> list[str]:
-    """HTTPS Улья на запасных портах (тема → клиенты). 443 не дублируем."""
-    from urllib.parse import urlparse
+    """Запасной HTTPS Улья снят: постоянно открытый :2083 в тему не отдаём.
 
-    from ai.hive_api_port_exec import load_published_ports, parse_ports
-    from ai.hive_api_port_policy import alt_https_urls
-
-    raw = str(getattr(settings, "HIVE_API_ALT_PORTS", "") or "")
-    ports: list[int] = list(parse_ports(raw))
-    for port in load_published_ports():
-        if port not in ports:
-            ports.append(port)
-    host = urlparse(settings.FRONTEND_URL or "").hostname or "89-125-188-100.nip.io"
-    ip = (settings.VPN_SERVER_IP or "89.125.188.100").strip()
-    return alt_https_urls(host, ip, ports)
+    Фолбэк клиентов — соты :9100, затем обычный 443.
+    """
+    return []
 
 
 async def standby_api_urls(db: AsyncSession) -> list[str]:
     """Публичные URL standby API для клиентов (theme / login / config).
 
-    Сначала соты :9100 (живой вход, когда 443 Улья режут), потом запасные
-    HTTPS Улья — и только если порт реально задан в HIVE_API_ALT_PORTS.
+    Соты :9100 — живой вход, когда 443 Улья режут. Запасного порта Улья нет.
     Соту с AI-профилем сюда не даём: её cell-agent закрыт от интернета
     (порт виден только Улью), клиент только зря ждал бы таймаут.
     """

@@ -548,75 +548,15 @@ def _local_alt_listening(port: int) -> bool:
 async def _build_port_plan(
     targets: list[TargetSnapshot], vantage: dict[str, object], warnings: list[str]
 ) -> dict:
-    """План + публикация запасного порта в тему. wdtt/443 не трогаем."""
-    from urllib.parse import urlsplit
+    """Запасной порт снят. Файл темы очищаем, чтобы :2083 не вернулся клиентам."""
+    del targets, vantage
+    from ai.hive_api_port_exec import dump_published_ports
 
-    from ai.availability_port_plan import (
-        api_channel_counts,
-        build_plan,
-        needs_candidate_probe,
-    )
-    from ai.hive_api_port_exec import apply_close_stale_alt, apply_open_candidate
-    from ai.hive_api_port_policy import ACTION_CLOSE_STALE_ALT, ACTION_OPEN_CANDIDATE, stale_published_ports
-    from app.services.hive_standby import hive_alt_api_urls
-
-    queen = next((t for t in targets if t.role == TARGET_QUEEN), None)
-    if queen is None:
-        return {}
-
-    state = await store.load_port_state()
-    previous = int(state.get("dead_windows") or 0)
-    confirm = max(1, int(getattr(settings, "HIVE_API_PORT_CONFIRM_CYCLES", 2) or 2))
-    autoswitch = bool(settings.HIVE_API_PORT_AUTOSWITCH)
-
-    counts = api_channel_counts(queen)
-    reach: dict[str, str] = {}
-    if needs_candidate_probe(counts, previous, confirm_cycles=confirm):
-        reach = await _probe_alt_candidates(queen, vantage, warnings)
-
-    published: tuple[int, ...] = ()
     try:
-        published = tuple(
-            p for p in (urlsplit(u).port for u in hive_alt_api_urls()) if p
-        )
+        dump_published_ports(())
     except Exception as e:
-        logger.debug("published alt ports: %s", e)
-
-    plan, streak = build_plan(
-        queen,
-        previous_streak=previous,
-        published_alt_ports=published,
-        stale_alt_blocked=stale_published_ports(published, reach),
-        candidate_reach=reach,
-        confirm_cycles=confirm,
-        autoswitch_enabled=autoswitch,
-    )
-    executed = False
-    if autoswitch and plan.get("action") == ACTION_OPEN_CANDIDATE and plan.get("port"):
-        port = int(plan["port"])
-        listening = _local_alt_listening(port)
-        result = apply_open_candidate(port, listening=listening)
-        executed = bool(result.get("ok"))
-        if not executed:
-            warnings.append(
-                f"Запасной порт {port} не опубликован: {result.get('reason') or 'ошибка'}."
-            )
-        else:
-            plan["title"] = f"Запасной порт {port} опубликован"
-            logger.info("availability: published hive alt HTTPS :%s", port)
-    elif autoswitch and plan.get("action") == ACTION_CLOSE_STALE_ALT and plan.get("close_port"):
-        result = apply_close_stale_alt(int(plan["close_port"]))
-        executed = bool(result.get("ok"))
-    elif plan.get("reason") == "already_open":
-        executed = True
-    plan["executed"] = executed
-    new_state = {"dead_windows": streak}
-    if plan.get("port"):
-        new_state["published_port"] = int(plan["port"])
-    elif plan.get("suggested_port"):
-        new_state["published_port"] = int(plan["suggested_port"])
-    await store.save_port_state(new_state)
-    return plan
+        warnings.append(f"Не удалось снять запасной порт из темы: {e}")
+    return {}
 
 
 async def _push_incidents(report: AvailabilityReport) -> None:

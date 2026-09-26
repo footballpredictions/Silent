@@ -230,6 +230,7 @@ class VantageAggregate:
             "channel": self.channel,
             "source": self.source,
             "total": self.total,
+            "asked": len(self.nodes),
             "ok": self.ok_count,
             "failed": self.fail_count,
             "ok_ratio": round(self.ok_ratio, 3),
@@ -280,6 +281,7 @@ def _scrub_vantage_dict(agg: dict[str, Any]) -> None:
     total = ok + fail
     agg["ok"] = ok
     agg["total"] = total
+    agg["asked"] = sum(1 for n in nodes if isinstance(n, dict))
     agg["failed"] = fail
     agg["ok_ratio"] = round((ok / total), 3) if total else 0.0
     agg["error_kinds"] = kinds

@@ -15,6 +15,7 @@ from app.config import settings
 from app.services.hive_incidents import push_incident
 from app.models import HiveCell, HiveLoadSample
 from app.services.hive_load import queen_accepting_new_vpn
+from app.services.hive_slots import online_count_for_capacity
 
 logger = logging.getLogger(__name__)
 
@@ -582,6 +583,7 @@ async def get_capacity_profile(
         from app.services.hive_service import count_online_on_cell
 
         online_count = await count_online_on_cell(db, cell.id)
+    online_count = online_count_for_capacity(online_count, load)
 
     samples = await fetch_recent_samples(db, cell.id)
     hardware = _hardware_from_load(load, cell)
@@ -712,14 +714,21 @@ async def sample_all_cells(db: AsyncSession) -> None:
         **queen_load,
         "network_link_capacity_mbps": _resolve_link_capacity_mbps(queen_load, queen),
     }
+    try:
+        from app.services.wg_peer_gc import queen_wg_peer_counts
+
+        queen_load = {**queen_load, **queen_wg_peer_counts()}
+    except Exception:
+        pass
     for cell in cells:
-        online = await count_online_on_cell(db, cell.id)
+        online_db = await count_online_on_cell(db, cell.id)
         if cell.is_queen:
             load = queen_load
         else:
             load = await fetch_worker_cell_load(cell)
             if not load:
                 continue
+        online = online_count_for_capacity(online_db, load)
         await record_sample(db, cell.id, online, load, cell=cell)
 
 

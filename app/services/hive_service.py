@@ -56,9 +56,6 @@ _SHOWN_LIVE_PUBS: set[str] = set()
 CELL_STATUSES_ACTIVE = frozenset({"active"})
 CELL_STATUSES_ASSIGNABLE = frozenset({"active"})
 BOOTSTRAP_USER_EMAIL = "__bootstrap__@silent.local"
-OLCRTC_STICKY_ONLINE_SEC = 300
-
-
 def cell_list_sort_key(cell: HiveCell) -> tuple:
     """Улей → соты по номеру в имени (Сота 1, Сота 2…), не по дате создания."""
     if cell.is_queen:
@@ -385,30 +382,9 @@ async def olcrtc_online_by_cell(
     db: AsyncSession,
     cell_ids: list[uuid.UUID],
 ) -> dict[uuid.UUID, int]:
-    """Свежие olcrtc2 sticky по сотам (для Hive UI/summary)."""
-    if not cell_ids:
-        return {}
-    from app.models.olcrtc2_room import Olcrtc2Room, Olcrtc2Sticky
-
-    cutoff = (
-        datetime.now(timezone.utc).replace(tzinfo=None)
-        - timedelta(seconds=OLCRTC_STICKY_ONLINE_SEC)
-    )
-    rows = await db.execute(
-        select(Olcrtc2Room.cell_id, func.count(Olcrtc2Sticky.id))
-        .join(Olcrtc2Sticky, Olcrtc2Sticky.room_id == Olcrtc2Room.id)
-        .where(
-            Olcrtc2Room.cell_id.is_not(None),
-            Olcrtc2Room.cell_id.in_(cell_ids),
-            Olcrtc2Sticky.updated_at >= cutoff,
-        )
-        .group_by(Olcrtc2Room.cell_id)
-    )
-    out: dict[uuid.UUID, int] = {}
-    for cid, n in rows.all():
-        if cid is not None:
-            out[cid] = int(n or 0)
-    return out
+    """Поле ответа для старых сборок админки. Обход снят, онлайн только WDTT."""
+    _ = (db, cell_ids)
+    return {}
 
 
 async def count_assigned_on_cell(db: AsyncSession, cell_id: uuid.UUID) -> int:
@@ -566,19 +542,13 @@ async def vpn_online_shown_total(
 
 
 async def olcrtc_exit_cell_ips(db: AsyncSession) -> set[str]:
-    """IP сот, занятых olcrtc2 (Телемост/WB) — не WDTT-балансир."""
-    from app.services.olcrtc2_settings import cell_ip_for_provider, load_olcrtc2_settings
-
-    s = await load_olcrtc2_settings(db)
-    ips = {
-        (cell_ip_for_provider(s, "telemost") or "").strip(),
-        (cell_ip_for_provider(s, "wbstream") or "").strip(),
-    }
-    return {ip for ip in ips if ip}
+    """Обход снят. Не исключаем соты из VPN по старым комнатам."""
+    _ = db
+    return set()
 
 
 def cell_accepts_wdtt_spill(cell: HiveCell, olcrtc_ips: set[str]) -> bool:
-    """Улей — да. Сота olcrtc2 — нет. admin_only / ai_exit — нет (только ручной выбор)."""
+    """Улей — да. admin_only / ai_exit — нет (только ручной выбор)."""
     if cell.is_queen:
         return True
     if getattr(cell, "admin_only", False):
@@ -601,22 +571,9 @@ async def list_wdtt_spill_workers(db: AsyncSession) -> list[HiveCell]:
 
 
 async def sync_olcrtc_cells_no_wdtt_spill(db: AsyncSession) -> int:
-    """Пометить Сота 1/2 (olcrtc2 exit) как не-WDTT, чтобы баланс шёл на 3+."""
-    reserved = await olcrtc_exit_cell_ips(db)
-    if not reserved:
-        return 0
-    rows = (await db.execute(select(HiveCell).where(HiveCell.is_queen.is_(False)))).scalars().all()
-    n = 0
-    for cell in rows:
-        ip = (cell.public_ip or "").strip()
-        want = ip not in reserved
-        if bool(getattr(cell, "accepts_wdtt", True)) != want:
-            cell.accepts_wdtt = want
-            n += 1
-    if n:
-        await db.commit()
-        logger.info("Hive: marked %s olcrtc cell(s) accepts_wdtt=false", n)
-    return n
+    """Раньше метил соты обхода как не-WDTT. Больше не трогаем флаги живых серверов."""
+    _ = db
+    return 0
 
 
 async def migrate_devices_to_queen(db: AsyncSession) -> int:
@@ -687,7 +644,7 @@ async def pick_cell_for_new_device(
     workers = await list_wdtt_spill_workers(db)
     if not workers:
         logger.warning(
-            "Hive: queen overloaded (cpu=%s mem=%s), WDTT-сот нет (1/2 заняты olcrtc) — остаёмся на Улье",
+            "Hive: queen overloaded (cpu=%s mem=%s), WDTT-сот нет — остаёмся на Улье",
             load_info.get("cpu_percent"),
             load_info.get("memory_percent"),
         )

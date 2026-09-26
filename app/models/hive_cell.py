@@ -30,7 +30,7 @@ class HiveCell(Base):
     link_capacity_mbps: Mapped[float | None] = mapped_column(Float, nullable=True)
     # pending | active | draining | offline | error
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
-    # False: сота под olcrtc2 (Сота 1/2) — WDTT-баланс на неё не льём.
+    # False: сота не принимает новых клиентов с балансира (ручной выбор в приложении остаётся).
     accepts_wdtt: Mapped[bool] = mapped_column(Boolean, default=True)
     # True: в меню клиентов и в балансе только для is_admin (обкатка новой соты).
     admin_only: Mapped[bool] = mapped_column(Boolean, default=False)

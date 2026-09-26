@@ -18,6 +18,7 @@ from app.services.hive_incidents import (  # noqa: E402
     reset_soft_flap_state,
     should_persist_after_clear,
     soft_flap_allows,
+    status_blip_should_record,
 )
 
 
@@ -78,6 +79,11 @@ def test_soft_flap_needs_three_then_renotify():
     assert soft_flap_allows(key, now=t0 + 60 + 6 * 3600 + 1) is True
 
 
+def test_status_blip_skipped_when_agent_just_answered():
+    assert status_blip_should_record(agent_answered_recently=True) is False
+    assert status_blip_should_record(agent_answered_recently=False) is True
+
+
 def test_agent_upgrade_empty_message_is_soft():
     assert _is_soft_network_noise("hive.agent-upgrade", "Auto-upgrade cell-agent failed:") is True
     assert _is_soft_network_noise("hive.agent-upgrade", "") is True
@@ -110,5 +116,6 @@ if __name__ == "__main__":
     test_clear_skips_stale_persist_queue()
     test_soft_flap_needs_three_then_renotify()
     test_agent_upgrade_empty_message_is_soft()
+    test_status_blip_skipped_when_agent_just_answered()
     test_status_readerror_is_soft_until_third_fail()
     print("ok")

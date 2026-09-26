@@ -183,7 +183,17 @@ def _classify(msg: str) -> tuple[str, str, list[str]]:
         ]
         return "auth", "Неверный секрет/доступ к agent", checks
 
-    if any(x in raw for x in ("timed out", "timeout", "read timeout", "connect timeout")):
+    if any(x in raw for x in (
+        "timed out",
+        "timeout",
+        "read timeout",
+        "connect timeout",
+        "readerror",
+        "connecterror",
+        "connection attempts failed",
+        "remoteprotocolerror",
+        "writeerror",
+    )):
         checks = [
             "Проверить RTT/потери между Ульем и сотой.",
             "Проверить, не режутся ли порты/соединения DPI/фаерволом.",
@@ -216,6 +226,11 @@ def _classify(msg: str) -> tuple[str, str, list[str]]:
         "Проверить сетевые блокировки (порт/домен/IP) и ретраи.",
     ]
     return "unknown", "Требуется ручная диагностика", checks
+
+
+def status_blip_should_record(*, agent_answered_recently: bool) -> bool:
+    """Обрыв /v1/status при живом агенте не пишем. Нет ответа дольше окна — пишем."""
+    return not agent_answered_recently
 
 
 def _is_soft_network_noise(source: str, message: str) -> bool:

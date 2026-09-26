@@ -19,7 +19,7 @@ from app.config import settings
 from app.core.security import encrypt_value, decrypt_value
 from app.models import Device, HiveCell, User
 from app.services.hive_capacity import get_capacity_profile, max_online_for_cell
-from app.services.hive_incidents import push_incident
+from app.services.hive_incidents import push_incident, status_blip_should_record
 from app.services.hive_load import (
     is_vpn_overloaded,
     load_stress_score,
@@ -764,6 +764,28 @@ async def probe_cell_agent(cell: HiveCell, password: str | None = None) -> dict:
     return await cell_agent_handshake(cell.api_url, pwd)
 
 
+_STATUS_OK_TTL_SEC = 600
+
+
+def _status_ok_key(cell_id: uuid.UUID) -> str:
+    return f"hive:cell_status_ok:{cell_id}"
+
+
+async def _mark_cell_status_ok(cell_id: uuid.UUID) -> None:
+    try:
+        await _get_shown_redis().set(_status_ok_key(cell_id), "1", ex=_STATUS_OK_TTL_SEC)
+    except Exception:
+        logger.debug("Hive: cell status ok mark skipped", exc_info=True)
+
+
+async def _cell_status_answered_recently(cell_id: uuid.UUID) -> bool:
+    try:
+        return bool(await _get_shown_redis().get(_status_ok_key(cell_id)))
+    except Exception:
+        logger.debug("Hive: cell status ok read skipped", exc_info=True)
+        return False
+
+
 async def fetch_worker_cell_load(
     cell: HiveCell,
     *,
@@ -807,7 +829,7 @@ async def fetch_worker_cell_load(
             return None
         link_display = display_link_capacity_mbps(cell, data)
         sysfs = float(data.get("network_link_sysfs_mbps") or 0)
-        return {
+        payload = {
             "cpu_percent": round(float(data.get("cpu_percent") or 0), 1),
             "memory_percent": round(float(data.get("memory_percent") or 0), 1),
             "network_interface": (data.get("network_interface") or None),
@@ -832,9 +854,13 @@ async def fetch_worker_cell_load(
             "wg_gc_last_removed": int(data.get("wg_gc_last_removed") or 0),
             "wg_live_pubs": _sanitize_wg_live_pubs(data.get("wg_live_pubs")),
         }
+        await _mark_cell_status_ok(cell.id)
+        return payload
     except Exception as e:
         logger.debug("Hive: load %s failed: %s", cell.name, e)
-        if report_incident:
+        if report_incident and status_blip_should_record(
+            agent_answered_recently=await _cell_status_answered_recently(cell.id),
+        ):
             err = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
             push_incident(
                 source="cell-agent.status",

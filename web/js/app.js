@@ -375,7 +375,7 @@ function serversPage() {
   const selected = normalizeSlot(state.servers?.selected_server || "server1");
   const locked = state.connected || state.connecting;
   return `<h2>Выбор сервера</h2>
-    <p class="hint" style="margin-bottom:14px">Слоты 1–4 всегда на месте. Живые IP подтягиваются с Улья сами.</p>
+    <p class="hint" style="margin-bottom:14px">Слоты 1–5 всегда на месте. Живые IP подтягиваются с Улья сами.</p>
     ${locked ? `<p class="hint" style="margin-bottom:12px">Переключение недоступно: VPN активен.</p>` : ""}
     ${list.map((s) => `
       <button class="opt ${s.key === selected ? "on" : ""}" data-act="server" data-key="${esc(s.key)}" ${locked ? "disabled" : ""}>

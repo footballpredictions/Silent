@@ -1,4 +1,4 @@
-"""Server slots 1–4, same merge rule as PC `vpnServerList.ts`."""
+"""Server slots 1–5, same merge rule as PC `vpnServerList.ts`."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ STATIC = (
     ("server2", "Сервер 2"),
     ("server3", "Сервер 3"),
     ("server4", "Сервер 4 для ИИ"),
+    ("server5", "Сервер 5"),
 )
 
 _ALIASES = {
@@ -15,6 +16,7 @@ _ALIASES = {
     "cell1": "server2",
     "cell2": "server3",
     "cell3": "server4",
+    "cell4": "server5",
     "ai_exit": "server4",
 }
 

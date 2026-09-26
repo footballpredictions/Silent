@@ -203,6 +203,7 @@ def mock_servers() -> dict:
         {"key": "server2", "title": "Сервер 2", "public_ip": "87.58.213.193"},
         {"key": "server3", "title": "Сервер 3", "public_ip": "78.17.74.27"},
         {"key": "server4", "title": "Сервер 4 для ИИ", "public_ip": ""},
+        {"key": "server5", "title": "Сервер 5", "public_ip": "89.37.192.241"},
     ]
     servers = display_vpn_servers(api)
     return {

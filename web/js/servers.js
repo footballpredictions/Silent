@@ -3,6 +3,7 @@ const STATIC = [
   { key: "server2", title: "Сервер 2" },
   { key: "server3", title: "Сервер 3" },
   { key: "server4", title: "Сервер 4 для ИИ" },
+  { key: "server5", title: "Сервер 5" },
 ];
 
 const ALIAS = {
@@ -11,6 +12,7 @@ const ALIAS = {
   cell1: "server2",
   cell2: "server3",
   cell3: "server4",
+  cell4: "server5",
   ai_exit: "server4",
 };
 

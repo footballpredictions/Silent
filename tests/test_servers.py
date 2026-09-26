@@ -8,10 +8,11 @@ from lib.silent_servers import display_vpn_servers, normalize_slot, selected_tit
 
 
 class ServerListTests(unittest.TestCase):
-    def test_always_four_without_api(self):
+    def test_always_five_without_api(self):
         rows = display_vpn_servers(None)
-        self.assertEqual([r["key"] for r in rows], ["server1", "server2", "server3", "server4"])
+        self.assertEqual([r["key"] for r in rows], ["server1", "server2", "server3", "server4", "server5"])
         self.assertEqual(rows[3]["title"], "Сервер 4 для ИИ")
+        self.assertEqual(rows[4]["title"], "Сервер 5")
 
     def test_merges_and_maps_legacy_keys(self):
         rows = display_vpn_servers([
@@ -21,7 +22,7 @@ class ServerListTests(unittest.TestCase):
         self.assertEqual(rows[0]["key"], "server1")
         self.assertEqual(rows[0]["title"], "Улей")
         self.assertEqual(rows[1]["key"], "server2")
-        self.assertEqual(len(rows), 4)
+        self.assertEqual(len(rows), 5)
 
     def test_normalize(self):
         self.assertEqual(normalize_slot("queen"), "server1")
@@ -29,6 +30,7 @@ class ServerListTests(unittest.TestCase):
 
     def test_selected_title(self):
         self.assertEqual(selected_title("server4"), "Сервер 4 для ИИ")
+        self.assertEqual(selected_title("server5"), "Сервер 5")
         self.assertEqual(selected_title("queen"), "Сервер 1")
 
 

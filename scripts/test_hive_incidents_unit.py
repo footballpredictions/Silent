@@ -14,6 +14,7 @@ from app.services.hive_incidents import (  # noqa: E402
     _as_utc_dt,
     _is_soft_network_noise,
     _row_to_public,
+    push_incident,
     reset_soft_flap_state,
     should_persist_after_clear,
     soft_flap_allows,
@@ -82,6 +83,25 @@ def test_agent_upgrade_empty_message_is_soft():
     assert _is_soft_network_noise("hive.agent-upgrade", "") is True
 
 
+def test_status_readerror_is_soft_until_third_fail():
+    """Обрыв тела /v1/status при живой соте не должен сыпать инцидент на каждый опрос."""
+    reset_soft_flap_state()
+    msg = "/v1/status failed: ReadError"
+    assert _is_soft_network_noise("cell-agent.status", msg) is True
+    assert _is_soft_network_noise("cell-agent.status", "/v1/status HTTP 500") is False
+    kwargs = dict(
+        source="cell-agent.status",
+        message=msg,
+        severity="warning",
+        cell_name="Сота 1",
+        cell_ip="203.0.113.10",
+    )
+    assert push_incident(**kwargs) is False
+    assert push_incident(**kwargs) is False
+    assert push_incident(**kwargs) is True
+    assert push_incident(**kwargs) is False
+
+
 if __name__ == "__main__":
     test_iso_string_becomes_datetime()
     test_zulu_iso_parsed()
@@ -90,4 +110,5 @@ if __name__ == "__main__":
     test_clear_skips_stale_persist_queue()
     test_soft_flap_needs_three_then_renotify()
     test_agent_upgrade_empty_message_is_soft()
+    test_status_readerror_is_soft_until_third_fail()
     print("ok")

@@ -742,6 +742,7 @@ export default function ClientPreview({
             ['server2', 'Сервер 2'],
             ['server3', 'Сервер 3'],
             ['server4', 'Сервер 4 для ИИ'],
+            ['server5', 'Сервер 5'],
           ].map(([id, title]) => radioRow(title, undefined, bypassSlot === id, () => setBypassSlot(id)))}
         </>
       ))}

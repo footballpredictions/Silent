@@ -65,9 +65,10 @@ CELL_NETWORK_INTERFACE = (os.environ.get("CELL_NETWORK_INTERFACE") or "").strip(
 
 def agent_build_id() -> str:
     h = hashlib.sha256(Path(__file__).read_bytes())
-    standby = Path(__file__).resolve().parent / "standby_runtime.py"
-    if standby.is_file():
-        h.update(standby.read_bytes())
+    for extra in ("standby_runtime.py", "queen_apply.py"):
+        extra_path = Path(__file__).resolve().parent / extra
+        if extra_path.is_file():
+            h.update(extra_path.read_bytes())
     return h.hexdigest()[:16]
 
 
@@ -93,7 +94,19 @@ def _detect_public_ip() -> str:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "role": "hive-cell-agent", "agent_build_id": agent_build_id()}
+    queen_ip = ""
+    try:
+        from queen_apply import current_queen_ip, env_queen_ip
+
+        queen_ip = current_queen_ip(env_queen_ip())
+    except Exception:
+        queen_ip = (os.environ.get("HIVE_QUEEN_IP") or "").strip()
+    return {
+        "status": "ok",
+        "role": "hive-cell-agent",
+        "agent_build_id": agent_build_id(),
+        "queen_ip": queen_ip,
+    }
 
 
 @app.post("/v1/handshake")
@@ -121,6 +134,8 @@ class ConfigureRequest(BaseModel):
     hive_api_url: Optional[str] = None
     internal_api_secret: Optional[str] = None
     hive_cell_id: Optional[str] = None
+    hive_queen_ip: Optional[str] = None
+    sibling_api_urls: Optional[list[str]] = None
 
 
 @app.post("/v1/configure")
@@ -128,14 +143,28 @@ async def configure(
     req: ConfigureRequest,
     x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
 ):
-    """Улей может передать runtime-конфиг (будущее: запись в env wdtt)."""
+    """Улей передаёт свой публичный IP. Сота сама пишет DNAT/socat. wdtt не трогаем."""
     _auth(x_cell_agent_secret)
+    applied: dict = {"ok": True, "applied": False}
+    if req.hive_queen_ip:
+        try:
+            from queen_apply import apply_queen_ip_on_host
+
+            applied = apply_queen_ip_on_host(
+                req.hive_queen_ip,
+                sibling_api_urls=req.sibling_api_urls or [],
+                agent_port=AGENT_PORT,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"queen ip apply failed: {e}")
     return {
         "ok": True,
-        "message": "configure accepted (apply wdtt env manually or via deploy script)",
+        "applied": bool(applied.get("applied")),
+        "queen_ip": applied.get("queen_ip") or req.hive_queen_ip,
         "received": {
             "hive_api_url": bool(req.hive_api_url),
             "hive_cell_id": bool(req.hive_cell_id),
+            "hive_queen_ip": bool(req.hive_queen_ip),
         },
     }
 

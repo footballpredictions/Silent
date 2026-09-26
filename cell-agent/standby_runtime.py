@@ -38,6 +38,15 @@ WG_INTERFACE = (os.environ.get("WG_INTERFACE") or "wdtt0").strip()
 INTERNAL_API_SECRET = (os.environ.get("INTERNAL_API_SECRET") or "").strip()
 HIVE_API_URL = (os.environ.get("HIVE_API_URL") or "").strip().rstrip("/")
 HIVE_QUEEN_IP = (os.environ.get("HIVE_QUEEN_IP") or "").strip()
+try:
+    from queen_apply import current_queen_ip as _live_queen_ip
+except ImportError:
+    def _live_queen_ip(env_ip: str = "") -> str:
+        return (env_ip or HIVE_QUEEN_IP or "").strip()
+
+
+def live_queen_ip() -> str:
+    return _live_queen_ip(HIVE_QUEEN_IP) or HIVE_QUEEN_IP
 STANDBY_API_PORT = int(os.environ.get("STANDBY_API_PORT") or "8000")
 TUNNEL_GATEWAY = "10.66.66.1"
 
@@ -758,8 +767,45 @@ def apply_queen_health_tick(
     return was_healthy, streak, None
 
 
+async def maybe_apply_sibling_queen_hint() -> bool:
+    """Если Улей сменил IP, соседняя сота уже знает новый адрес."""
+    try:
+        from queen_apply import (
+            QUEEN_STATE_PATH,
+            apply_queen_ip_on_host,
+            current_queen_ip,
+            env_queen_ip,
+            parse_queen_hint,
+            sibling_queen_hint_urls,
+        )
+    except ImportError:
+        return False
+    siblings: list[str] = []
+    try:
+        if QUEEN_STATE_PATH.is_file():
+            data = json.loads(QUEEN_STATE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                siblings = [str(u) for u in (data.get("sibling_api_urls") or []) if u]
+    except Exception:
+        siblings = []
+    if not siblings:
+        return False
+    current = current_queen_ip(env_queen_ip() or HIVE_QUEEN_IP)
+    for url in sibling_queen_hint_urls(siblings):
+        try:
+            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+                r = await client.get(url)
+            hint = parse_queen_hint(r.json() if r.status_code < 500 else None)
+            if hint and hint != current:
+                apply_queen_ip_on_host(hint, sibling_api_urls=siblings)
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def check_queen_health() -> bool:
-    urls = queen_health_urls(HIVE_QUEEN_IP, HIVE_API_URL)
+    urls = queen_health_urls(live_queen_ip(), HIVE_API_URL)
     if not urls:
         return False
     for url in urls:
@@ -787,10 +833,10 @@ def queen_tunnel_dnat_legacy_dest(queen_ip: str) -> str:
 
 def _iptables_dnat_to_local(enable: bool) -> None:
     """Переключает DNAT 10.66.66.1:8000 → localhost:8000 (standby) или обратно на Улей:80."""
-    queen_dst = queen_tunnel_dnat_dest(HIVE_QUEEN_IP)
+    queen_dst = queen_tunnel_dnat_dest(live_queen_ip())
     if not queen_dst:
         return
-    legacy_dst = queen_tunnel_dnat_legacy_dest(HIVE_QUEEN_IP)
+    legacy_dst = queen_tunnel_dnat_legacy_dest(live_queen_ip())
     local_dst = f"127.0.0.1:{STANDBY_API_PORT}"
     target = local_dst if enable else queen_dst
     drop = [queen_dst, local_dst]
@@ -922,6 +968,9 @@ async def standby_monitor_loop() -> None:
             gc_stale_local_peers()
             wg_peer_counts()
             healthy = await check_queen_health()
+            if not healthy:
+                await maybe_apply_sibling_queen_hint()
+                healthy = await check_queen_health()
             _queen_healthy, _queen_fail_streak, action = apply_queen_health_tick(
                 now_healthy=healthy,
                 was_healthy=_queen_healthy,
@@ -989,7 +1038,7 @@ async def _proxy_queen(request: Request, rest: str, extra_headers: dict | None =
     urls = queen_proxy_urls(
         rest,
         query=request.url.query or "",
-        queen_ip=HIVE_QUEEN_IP,
+        queen_ip=live_queen_ip(),
         api_url=HIVE_API_URL,
     )
     if not urls:

@@ -48,6 +48,11 @@ async def hive_cell_maintenance_loop() -> None:
                 if gc.get("removed"):
                     logger.info("Hive wg peer gc: %s", gc)
             async with AsyncSessionLocal() as db:
+                from app.services.hive_queen_push import push_queen_ip_to_cells
+
+                queen_push = await push_queen_ip_to_cells(db)
+                if queen_push.get("pushed"):
+                    logger.info("Hive queen-ip sync: %s cell(s)", queen_push["pushed"])
                 agent_stats = await auto_upgrade_cell_agents(db)
                 if agent_stats.get("upgraded"):
                     logger.info("Hive cell-agent sync: upgraded %s cell(s)", agent_stats["upgraded"])

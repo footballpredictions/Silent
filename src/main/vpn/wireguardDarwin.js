@@ -240,7 +240,9 @@ async function startHelperDaemonOnce() {
 
 async function ensureHelperDaemon(send) {
   if (await pingHelper()) {
-    await maybeUpgradeSystemHelper(send)
+    // Служба уже слушает сокет — пароль не спрашиваем, даже если .app новее.
+    // Иначе каждый новый запуск приложения снова открывает диалог.
+    send?.('[WG] Служба VPN уже запущена — пароль не нужен')
     return
   }
   if (!daemonStartPromise) {

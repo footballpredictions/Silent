@@ -29,9 +29,18 @@ function bundledPythonPath() {
 function buildInstallScript({ helperTmp, systemHelper, plistPath, label, sockPath, pythonBin }) {
   const runDir = path.dirname(sockPath)
   const py = pythonBin || '/usr/bin/python3'
-  // python-build-standalone без PYTHONHOME под launchd после перезагрузки сразу падает:
-  // сокета нет, воркеры WDTT уже есть, трафика нет.
-  const pyHome = py.includes('/python/bin/') ? path.dirname(path.dirname(py)) : ''
+  // Интерпретатор копируется из .app в PrivilegedHelperTools.
+  // Пока plist указывает внутрь .app, закрытие приложения гасит службу и следующий запуск снова просит пароль.
+  const bundledHome = py.includes('/python/bin/') ? path.dirname(path.dirname(py)) : ''
+  const pyHome = bundledHome ? '/Library/PrivilegedHelperTools/silent-vpn-python' : ''
+  const pyBin = pyHome ? `${pyHome}/bin/python3` : py
+  const pyCopy = bundledHome
+    ? `rm -rf "${pyHome}"
+ditto "${bundledHome}" "${pyHome}"
+chown -R root:wheel "${pyHome}"
+chmod -R a+rX "${pyHome}"
+`
+    : ''
   const pyEnv = pyHome
     ? `<key>WorkingDirectory</key><string>${pyHome}</string>
 <key>EnvironmentVariables</key><dict>
@@ -48,13 +57,13 @@ rm -f "${sockPath}"
 cp "${helperTmp}" "${systemHelper}"
 chmod 755 "${systemHelper}"
 chown root:wheel "${systemHelper}"
-cat > "${plistPath}" <<'PLIST'
+${pyCopy}cat > "${plistPath}" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${label}</string>
 <key>ProgramArguments</key><array>
-<string>${py}</string>
+<string>${pyBin}</string>
 <string>${systemHelper}</string>
 <string>serve</string>
 </array>
@@ -72,13 +81,9 @@ launchctl bootstrap system "${plistPath}" 2>/dev/null || true
 launchctl enable system/${label} 2>/dev/null || true
 launchctl kickstart -k system/${label} 2>/dev/null || true
 sleep 1
-if ! "${py}" -c "import socket,sys;s=socket.socket(socket.AF_UNIX);s.settimeout(0.3);s.connect(sys.argv[1])" "${sockPath}" 2>/dev/null; then
-  PYTHONHOME="${pyHome}" PYTHONNOUSERSITE=1 nohup "${py}" "${systemHelper}" serve >"${runDir}/helper.out" 2>"${runDir}/helper.err" &
-  sleep 1
-fi
 ready=0
 for i in $(seq 1 40); do
-  if "${py}" -c "import socket,sys;s=socket.socket(socket.AF_UNIX);s.settimeout(0.3);s.connect(sys.argv[1])" "${sockPath}" 2>/dev/null; then
+  if "${pyBin}" -c "import socket,sys;s=socket.socket(socket.AF_UNIX);s.settimeout(0.3);s.connect(sys.argv[1])" "${sockPath}" 2>/dev/null; then
     ready=1
     break
   fi

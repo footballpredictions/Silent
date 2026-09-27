@@ -91,18 +91,28 @@ if [[ -d "${APP_RES}" ]]; then
   cp "${WORK}" "${APP_HELPER}"
   chmod 755 "${APP_HELPER}"
 fi
+# Python вне .app: иначе закрытие приложения гасит службу и пароль спрашивается снова.
+rm -rf /Library/PrivilegedHelperTools/silent-vpn-python
+ditto "${APP_RES}/python" /Library/PrivilegedHelperTools/silent-vpn-python
+chown -R root:wheel /Library/PrivilegedHelperTools/silent-vpn-python
+chmod -R a+rX /Library/PrivilegedHelperTools/silent-vpn-python
 cat > "${PLIST}" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>ru.silent.vpn.helper</string>
 <key>ProgramArguments</key><array>
-<string>${BUNDLED_PY}</string>
+<string>/Library/PrivilegedHelperTools/silent-vpn-python/bin/python3</string>
 <string>/Library/PrivilegedHelperTools/silent-vpn-wg-helper</string>
 <string>serve</string>
 </array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
+<key>WorkingDirectory</key><string>/Library/PrivilegedHelperTools/silent-vpn-python</string>
+<key>EnvironmentVariables</key><dict>
+<key>PYTHONHOME</key><string>/Library/PrivilegedHelperTools/silent-vpn-python</string>
+<key>PYTHONNOUSERSITE</key><string>1</string>
+</dict>
 <key>StandardErrorPath</key><string>/var/run/silent-vpn/helper.err</string>
 <key>StandardOutPath</key><string>/var/run/silent-vpn/helper.out</string>
 </dict></plist>
@@ -112,12 +122,6 @@ launchctl bootstrap system "${PLIST}" 2>/dev/null || true
 launchctl enable system/${LABEL} 2>/dev/null || true
 launchctl kickstart -k system/${LABEL} 2>/dev/null || true
 sleep 1
-if ! "${BUNDLED_PY}" -c "import socket;s=socket.socket(socket.AF_UNIX);s.settimeout(0.3);s.connect('${SOCK}')" 2>/dev/null; then
-  # nohup: иначе выход osascript шлёт SIGHUP и служба умирает — сокет так и не появляется
-  nohup "${BUNDLED_PY}" "${SYS_HELPER}" serve >/var/run/silent-vpn/helper.out 2>/var/run/silent-vpn/helper.err &
-  disown || true
-  sleep 1
-fi
 chmod 644 /var/run/silent-vpn/helper.err /var/run/silent-vpn/helper.out 2>/dev/null || true
 "${BUNDLED_PY}" -m py_compile "${SYS_HELPER}"
 EOF

@@ -1,5 +1,6 @@
 package com.silent.vpn.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -131,6 +132,20 @@ fun LoginScreen(
     var showPassword by remember { mutableStateOf(false) }
     var rememberMe by remember(initialRememberMe) { mutableStateOf(initialRememberMe) }
     var showDebugLog by remember { mutableStateOf(false) }
+
+    BackHandler(
+        enabled = showDebugLog || step == LoginStep.FORGOT || regDone || tab != "login",
+    ) {
+        when {
+            showDebugLog -> showDebugLog = false
+            step == LoginStep.FORGOT -> step = LoginStep.AUTH
+            regDone -> {
+                tab = "login"
+                onRegDoneDismiss()
+            }
+            tab != "login" -> tab = "login"
+        }
+    }
     val rememberMeFocus = remember { FocusRequester() }
     val fieldColors = loginTextFieldColors(ui)
     val isTv = rememberIsTv()

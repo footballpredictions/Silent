@@ -1,5 +1,6 @@
 package com.silent.vpn.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -49,6 +50,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.res.painterResource
 import com.silent.vpn.BuildConfig
+import com.silent.vpn.policy.MenuBackPolicy
+import com.silent.vpn.policy.MenuBackStep
 import com.silent.vpn.R
 import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
@@ -333,6 +336,18 @@ fun MainScreen(
     var referralInfo by remember { mutableStateOf<com.silent.vpn.data.ReferralInfo?>(null) }
     var referralCopyMsg by remember { mutableStateOf("") }
     var showDebugLog by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = showDebugLog || menuOpen) {
+        when (MenuBackPolicy.step(showDebugLog, menuOpen, menuPage == MenuPage.ROOT)) {
+            MenuBackStep.CLOSE_DEBUG_LOG -> showDebugLog = false
+            MenuBackStep.TO_MENU_ROOT -> menuPage = MenuPage.ROOT
+            MenuBackStep.CLOSE_MENU -> {
+                menuOpen = false
+                menuPage = MenuPage.ROOT
+            }
+            MenuBackStep.LEAVE_APP -> Unit
+        }
+    }
 
     LaunchedEffect(openSubscriptionMenu) {
         if (!openSubscriptionMenu) return@LaunchedEffect

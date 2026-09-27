@@ -101,8 +101,7 @@ function sleep(ms) {
 
 const isDev = process.env.NODE_ENV === 'development'
 const isDebugBuild = !!buildFlags.DEBUG_BUILD || process.env.DEBUG_BUILD === '1' || !app.isPackaged
-// Релиз Mac: встроенный лог, чтобы снять, почему канал не поднялся. Windows-релиз без кнопки.
-const captureBuiltinLog = isDebugBuild || process.platform === 'darwin'
+const captureBuiltinLog = isDebugBuild
 const WIN_WIDTH = 265
 const WIN_HEIGHT = 606
 

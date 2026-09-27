@@ -2,6 +2,7 @@ package com.silent.vpn.policy
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PublicApiFailoverPolicyTest {
@@ -32,9 +33,47 @@ class PublicApiFailoverPolicyTest {
     @Test
     fun `open internet still requests every server slot even when cache exists`() {
         assertEquals(
-            listOf("server1", "server2", "server3", "server4"),
+            listOf("server1", "server2", "server3", "server4", "server5"),
             ConnectConfigFetchPolicy.launchConfigSlots(
-                alreadyCached = listOf("server1", "server2", "server3", "server4"),
+                alreadyCached = listOf("server1", "server2", "server3", "server4", "server5"),
+            ),
+        )
+    }
+
+    @Test
+    fun `successful config replaces the saved one even when the ip was not known yet`() {
+        assertTrue(
+            ConnectConfigFetchPolicy.shouldPersistFetchedConfig(
+                connectable = true,
+                ipMatchesSlot = false,
+            ),
+        )
+        assertFalse(
+            ConnectConfigFetchPolicy.shouldPersistFetchedConfig(
+                connectable = false,
+                ipMatchesSlot = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `late bootstrap still fetches configs once before it is stopped`() {
+        assertTrue(
+            ConnectConfigFetchPolicy.fetchConfigsBeforeStoppingBootstrap(
+                tunnelReady = true,
+                configsAlreadySaved = false,
+            ),
+        )
+        assertFalse(
+            ConnectConfigFetchPolicy.fetchConfigsBeforeStoppingBootstrap(
+                tunnelReady = true,
+                configsAlreadySaved = true,
+            ),
+        )
+        assertFalse(
+            ConnectConfigFetchPolicy.fetchConfigsBeforeStoppingBootstrap(
+                tunnelReady = false,
+                configsAlreadySaved = false,
             ),
         )
     }

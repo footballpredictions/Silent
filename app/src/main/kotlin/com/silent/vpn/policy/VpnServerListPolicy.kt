@@ -3,13 +3,14 @@ package com.silent.vpn.policy
 import com.silent.vpn.data.VpnServerInfo
 
 /**
- * Слоты 1–4 рисуются сразу, без ожидания API. Сервер 4 в 1.0.165+ статичен
- * («для ИИ»). Ответ API только подставляет IP/онлайн и чужие будущие слоты.
+ * Слоты 1–5 рисуются сразу, без ожидания API. Сервер 4 — «для ИИ»,
+ * Сервер 5 — обычное имя. Ответ API только подставляет IP/онлайн и чужие будущие слоты.
  */
 object VpnServerListPolicy {
     const val AI_SLOT = "server4"
     const val AI_TITLE = "Сервер 4 для ИИ"
-    private val STATIC_KEYS = listOf("server1", "server2", "server3", AI_SLOT)
+    const val FIFTH_SLOT = "server5"
+    private val STATIC_KEYS = listOf("server1", "server2", "server3", AI_SLOT, FIFTH_SLOT)
 
     fun staticKeys(): List<String> = STATIC_KEYS.toList()
 

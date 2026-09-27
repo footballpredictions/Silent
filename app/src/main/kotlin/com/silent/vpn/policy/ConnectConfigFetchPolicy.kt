@@ -18,4 +18,14 @@ object ConnectConfigFetchPolicy {
         val slots = VpnServerListPolicy.staticKeys()
         return if (alreadyCached.isEmpty()) slots else slots
     }
+
+    /** Удачный WG-конфиг пишем всегда. Старый кеш и чужой IP не оставляем вместо нового ответа. */
+    fun shouldPersistFetchedConfig(connectable: Boolean, ipMatchesSlot: Boolean): Boolean {
+        if (!connectable) return false
+        return ipMatchesSlot || !ipMatchesSlot
+    }
+
+    /** Туннель поднялся уже после таймаута ожидания — один запрос до того, как splash его погасит. */
+    fun fetchConfigsBeforeStoppingBootstrap(tunnelReady: Boolean, configsAlreadySaved: Boolean): Boolean =
+        tunnelReady && !configsAlreadySaved
 }

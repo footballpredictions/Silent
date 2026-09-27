@@ -43,6 +43,7 @@ import com.silent.vpn.data.SilentRepository
 import com.silent.vpn.data.ThemeData
 import com.silent.vpn.data.UserProfile
 import com.silent.vpn.data.VpnConfig
+import com.silent.vpn.data.VpnServerInfo
 import com.silent.vpn.data.VpnHashesResponse
 import com.silent.vpn.policy.ApiRoutePolicy
 import com.silent.vpn.policy.BootstrapOverlayPolicy
@@ -99,7 +100,7 @@ import retrofit2.Response
 
 private const val EPHEMERAL_TUNNEL_WAIT_ITER = 120
 /** Splash/LTE: быстрее выходим к /me после tunnelReady (данные те же, меньше пустых кругов). */
-private const val EPHEMERAL_LAUNCH_WAIT_ITER = 72
+private const val EPHEMERAL_LAUNCH_WAIT_ITER = 110
 /** После первого CONNECT не перезапускаем libclient сразу из hash-sync (иначе мигает VPN-иконка). */
 private const val HASH_HOT_APPLY_GRACE_MS = 45_000L
 /** Пока открыт экран «Устройства/Сессии» и VPN ВЫКЛЮЧЕН — обновляем список по public API. */
@@ -1299,9 +1300,10 @@ class MainViewModel @Inject constructor(
                         if (apiBlock != null) {
                             apiBlock()
                         } else {
+                            val saved = if (forLaunch) prefetchAllServerSlotsAtLaunch(fp) else false
                             val synced = ephemeralAccountSync(fp)
                             if (synced && forLaunch) prefetchAllServerSlotsAtLaunch(fp)
-                            synced
+                            synced || saved
                         }
                     }
                 }.getOrElse { e ->
@@ -1315,6 +1317,18 @@ class MainViewModel @Inject constructor(
                     DebugLog.i("MainViewModel", "ephemeral API bootstrap OK (attempt ${attempt + 1})")
                 }
                 attempt++
+            }
+            if (
+                forLaunch &&
+                ConnectConfigFetchPolicy.fetchConfigsBeforeStoppingBootstrap(
+                    tunnelReady = WdttTunnelManager.isBootstrapMode() && WdttTunnelManager.tunnelReady.value,
+                    configsAlreadySaved = apiOk,
+                )
+            ) {
+                val saved = runCatching {
+                    withEphemeralBackendApi { prefetchAllServerSlotsAtLaunch(fp) }
+                }.getOrDefault(false)
+                if (saved) apiOk = true
             }
             if (!apiOk) {
                 DebugLog.w("MainViewModel", "ephemeral API bootstrap: profile/API not fetched")
@@ -2012,9 +2026,9 @@ class MainViewModel @Inject constructor(
      * Догрузить server1/2/3 через уже выбранный API (ephemeral-туннель или public),
      * без clearTunnelApiBase и без повторного fetchVpnConfigForConnect — иначе срывается splash-VPN.
      */
-    private suspend fun prefetchAllServerSlotsAtLaunch(fp: String) {
+    private suspend fun prefetchAllServerSlotsAtLaunch(fp: String): Boolean {
         val current = SilentRepository.normalizePreferredServer(repo.getPreferredServer())
-        val cachedKeys = listOf("server1", "server2", "server3", "server4").filter { slot ->
+        val cachedKeys = ConnectConfigFetchPolicy.launchConfigSlots().filter { slot ->
             loadSlotCachedVpnConfig(slot) != null ||
                 (slot == current && loadCachedVpnConfig()?.let { cachedConfigMatchesPreferred(it, slot) } == true)
         }
@@ -2024,20 +2038,33 @@ class MainViewModel @Inject constructor(
             "MainViewModel",
             "launch prefetch slots=$slots tunnel=$viaTunnel mobile=${repo.isOnMobileData()}",
         )
+        var savedAny = false
         for (slot in slots) {
-            val cfg = runCatching {
+            val raw = runCatching {
                 val res = repo.getApi().getConfig(fp, slot)
                 res.body()?.takeIf { res.isSuccessful }
             }.getOrNull()
-            if (cfg != null && isConfigConnectable(cfg) && cachedConfigMatchesPreferred(cfg, slot)) {
-                val json = Gson().toJson(cfg)
-                if (slot == current) {
-                    repo.cacheVpnConfig(json)
-                } else {
-                    repo.cacheVpnConfigForSlot(slot, json)
+            val hashes = raw?.let { repo.resolveConnectVkHashes(it.vk_hashes) }.orEmpty()
+            val cfg = if (raw != null && hashes.isNotEmpty()) raw.copy(vk_hashes = hashes) else raw
+            val connectable = cfg != null && isConfigConnectable(cfg)
+            val ipOk = cfg != null && cachedConfigMatchesPreferred(cfg, slot)
+            if (
+                cfg != null &&
+                ConnectConfigFetchPolicy.shouldPersistFetchedConfig(connectable, ipOk)
+            ) {
+                if (cfg.server_ip.isNotBlank()) {
+                    repo.rememberVpnServerIps(
+                        listOf(VpnServerInfo(key = slot, public_ip = cfg.server_ip)),
+                    )
                 }
+                if (cfg.device_id.isNotBlank() && !cfg.device_id.startsWith("boot:")) {
+                    repo.saveSessionDeviceId(cfg.device_id)
+                    _sessionDeviceId.value = cfg.device_id
+                }
+                repo.commitFetchedVpnConfig(slot, Gson().toJson(cfg), asCurrent = slot == current)
                 rememberPrefetch(ConnectFetchResult(cfg, null, false), slotOverride = slot)
-                DebugLog.i("MainViewModel", "launch prefetch slot=$slot OK ip=${cfg.server_ip}")
+                savedAny = true
+                DebugLog.i("MainViewModel", "launch prefetch slot=$slot saved ip=${cfg.server_ip}")
             } else {
                 val cachedSlot = if (slot == current) {
                     loadCachedVpnConfig()?.takeIf {
@@ -2052,6 +2079,7 @@ class MainViewModel @Inject constructor(
                 DebugLog.w("MainViewModel", "launch prefetch slot=$slot miss cache=${cachedSlot != null}")
             }
         }
+        return savedAny
     }
 
     /**

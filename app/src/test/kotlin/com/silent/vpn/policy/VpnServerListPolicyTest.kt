@@ -9,10 +9,11 @@ import org.junit.Test
 class VpnServerListPolicyTest {
 
     @Test
-    fun `static list is four slots including ai title without waiting for api`() {
+    fun `static list is five slots including ai title without waiting for api`() {
         val list = VpnServerListPolicy.displayList(emptyList())
-        assertEquals(listOf("server1", "server2", "server3", "server4"), list.map { it.key })
-        assertEquals("Сервер 4 для ИИ", list.last().title)
+        assertEquals(listOf("server1", "server2", "server3", "server4", "server5"), list.map { it.key })
+        assertEquals("Сервер 4 для ИИ", list.first { it.key == "server4" }.title)
+        assertEquals("Сервер 5", list.last().title)
     }
 
     @Test
@@ -23,8 +24,9 @@ class VpnServerListPolicyTest {
             VpnServerInfo(key = "server3", title = "Сервер 3"),
         )
         val list = VpnServerListPolicy.displayList(api)
-        assertEquals(4, list.size)
+        assertEquals(5, list.size)
         assertTrue(list.any { it.key == "server4" && it.title == "Сервер 4 для ИИ" })
+        assertTrue(list.any { it.key == "server5" && it.title == "Сервер 5" })
     }
 
     @Test

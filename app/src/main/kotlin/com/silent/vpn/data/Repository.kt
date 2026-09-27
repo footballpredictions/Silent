@@ -98,6 +98,7 @@ class SilentRepository @Inject constructor(
             "server3" to "78.17.74.27",
             // Сота 3 / «Сервер 4 для ИИ»: без запечённого IP кеш конфига слота считается чужим.
             "server4" to "192.177.26.38",
+            "server5" to "89.37.192.241",
         )
         private val IPV4_RE = Regex("""\b(\d{1,3}(?:\.\d{1,3}){3})\b""")
 
@@ -1446,6 +1447,23 @@ class SilentRepository @Inject constructor(
     fun cacheVpnConfigForSlot(slot: String, json: String) {
         val key = cachedConfigSlotPref(slot)
         prefs.edit().putString(key, json).apply()
+    }
+
+    /** Splash: записать новый конфиг поверх старого до того, как временный VPN погаснет. */
+    fun commitFetchedVpnConfig(slot: String, json: String, asCurrent: Boolean) {
+        val edit = prefs.edit().putString(cachedConfigSlotPref(slot), json)
+        if (asCurrent) {
+            edit.putString(PREF_CACHED_CONFIG, json)
+                .putLong(PREF_CACHED_CONFIG_TS, System.currentTimeMillis())
+        }
+        edit.commit()
+        if (asCurrent) {
+            runCatching {
+                Gson().fromJson(json, VpnConfig::class.java)?.client_sync?.let {
+                    applyClientSync(it.copy(profile = null))
+                }
+            }
+        }
     }
 
     fun getCachedVpnConfigForSlot(slot: String): String? =

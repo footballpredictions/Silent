@@ -73,8 +73,10 @@ const PACKS = [
       || leaf === 'cs2.exe'
       || leaf === 'cs2'
       || leaf === 'csgo.exe'
+      || leaf === 'steam.app'
       || exe.includes('\\steam\\')
-      || exe.includes('\\steamapps\\'),
+      || exe.includes('\\steamapps\\')
+      || exe.includes('steam.app'),
     cidrs: STEAM_VALVE_CIDRS,
     hosts: [
       'steamcommunity.com',
@@ -104,8 +106,10 @@ const PACKS = [
     match: (exe, leaf) =>
       leaf === 'discord.exe'
       || leaf === 'discord'
+      || leaf === 'discord.app'
       || exe.includes('\\discord\\')
-      || exe.includes('\\discord'),
+      || exe.includes('\\discord')
+      || exe.includes('discord.app'),
     hosts: DISCORD_HOSTS,
   },
   {

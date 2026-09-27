@@ -12,6 +12,11 @@ function normalizePath(p) {
     .toLowerCase()
 }
 
+/** Windows .exe и macOS .app. Остальное в обход не берём. */
+function isBypassTarget(exe) {
+  return /\.exe$/i.test(exe) || /\.app$/i.test(exe)
+}
+
 /**
  * @param {Set<string>|string[]} selectedIds
  * @param {Array<{ id: string, name?: string, exePath?: string|null }>} apps
@@ -27,7 +32,7 @@ function resolveExcludedExePaths(selectedIds, apps) {
     const app = byId.get(id)
     if (!app) continue
     const exe = String(app.exePath || '').trim()
-    if (!exe || !/\.exe$/i.test(exe)) continue
+    if (!exe || !isBypassTarget(exe)) continue
     const key = normalizePath(exe)
     if (!key || seen.has(key)) continue
     seen.add(key)
@@ -60,13 +65,13 @@ function resolveBypassExePaths({ selectedIds, apps, whitelist = false }) {
   for (const app of list) {
     if (!keepIds.has(app.id)) continue
     const exe = String(app.exePath || '').trim()
-    if (exe && /\.exe$/i.test(exe)) keepExe.add(normalizePath(exe))
+    if (exe && isBypassTarget(exe)) keepExe.add(normalizePath(exe))
   }
   const seen = new Set()
   const entries = []
   for (const app of list) {
     const exe = String(app.exePath || '').trim()
-    if (!exe || !/\.exe$/i.test(exe)) continue
+    if (!exe || !isBypassTarget(exe)) continue
     const key = normalizePath(exe)
     if (!key || keepExe.has(key) || seen.has(key)) continue
     const name = String(app.name || '')
@@ -92,12 +97,13 @@ function isProcessExcluded(processPath, excludedExePaths) {
   const list = (excludedExePaths || []).map(normalizePath).filter(Boolean)
   if (list.includes(needle)) return true
   const base = needle.split('\\').pop()
-  if (!base) return false
-  return list.some(p => p.split('\\').pop() === base)
+  if (base && list.some(p => p.split('\\').pop() === base)) return true
+  return list.some(p => p.endsWith('.app') && (needle === p || needle.startsWith(`${p}\\`)))
 }
 
 module.exports = {
   normalizePath,
+  isBypassTarget,
   resolveExcludedExePaths,
   resolveBypassExePaths,
   isProcessExcluded,

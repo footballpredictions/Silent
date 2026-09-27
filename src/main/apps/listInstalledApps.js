@@ -849,6 +849,12 @@ function listInstalledApps() {
     console.log(`[Apps] linux desktop=${apps.length} icons=${withIcon}`)
     return apps
   }
+  if (process.platform === 'darwin') {
+    const { listMacApps } = require('./listInstalledAppsDarwin')
+    const apps = listMacApps()
+    console.log(`[Apps] mac apps=${apps.length}`)
+    return apps
+  }
   if (process.platform !== 'win32') return []
 
   const shortcuts = collectShortcutApps()

@@ -31,8 +31,13 @@ let sendLog = null
 let tickInFlight = false
 let packsApplied = false
 
+function isExcludedTarget(p) {
+  const s = String(p || '')
+  return /\.exe$/i.test(s) || /\.app$/i.test(s)
+}
+
 function normalizeExe(p) {
-  if (process.platform === 'linux') {
+  if (process.platform === 'linux' || process.platform === 'darwin') {
     return String(p || '').trim().replace(/\\/g, '/').toLowerCase()
   }
   return String(p || '')
@@ -181,7 +186,76 @@ function collectRemoteIpsLinuxSync(exePaths) {
   return [...ips]
 }
 
+function bundlePrefixes(exePaths) {
+  return (exePaths || [])
+    .map(p => String(p || '').trim().replace(/\\/g, '/').replace(/\/+$/, ''))
+    .filter(p => /\.app$/i.test(p))
+}
+
+function pidsInsideBundles(psText, bundles) {
+  const prefixes = bundles.map(b => b.toLowerCase())
+  const pids = new Set()
+  for (const line of String(psText || '').split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(.*)$/)
+    if (!m) continue
+    const cmd = m[2].toLowerCase()
+    if (prefixes.some(b => cmd.startsWith(`${b}/`) || cmd.includes(`${b}/`))) pids.add(m[1])
+  }
+  return pids
+}
+
+function remoteIpsFromDarwinSnapshots({ psText, lsofText, bundles }) {
+  const list = bundlePrefixes(bundles)
+  const pids = pidsInsideBundles(psText, list)
+  const ips = new Set()
+  let curPid = ''
+  for (const line of String(lsofText || '').split('\n')) {
+    if (line.startsWith('p')) {
+      curPid = line.slice(1).trim()
+      continue
+    }
+    if (!line.startsWith('n') || !pids.has(curPid)) continue
+    const addr = line.slice(1)
+    const remote = addr.includes('->') ? addr.split('->').pop() : addr
+    const ip = String(remote || '').replace(/^\[|\]$/g, '').split(':')[0]
+    if (ip && !isSkippableIp(ip)) ips.add(ip)
+  }
+  return [...ips]
+}
+
+function collectRemoteIpsDarwinSync(exePaths) {
+  const bundles = bundlePrefixes(exePaths)
+  if (!bundles.length) return []
+  const { execFileSync } = require('child_process')
+  let psText = ''
+  let lsofText = ''
+  try {
+    psText = execFileSync('ps', ['-ax', '-o', 'pid=,command='], {
+      encoding: 'utf8',
+      timeout: 8000,
+      maxBuffer: 8 * 1024 * 1024,
+    })
+    lsofText = execFileSync('lsof', ['-nP', '-i4', '-F', 'pcn'], {
+      encoding: 'utf8',
+      timeout: 8000,
+      maxBuffer: 8 * 1024 * 1024,
+    })
+  } catch (e) {
+    sendLog?.(`[Apps] bypass scan: ${e?.message || e}`)
+    return []
+  }
+  return remoteIpsFromDarwinSnapshots({ psText, lsofText, bundles })
+}
+
 async function collectRemoteIps(exePaths) {
+  if (process.platform === 'darwin') {
+    try {
+      return collectRemoteIpsDarwinSync(exePaths)
+    } catch (e) {
+      sendLog?.(`[Apps] bypass scan: ${e?.message || e}`)
+      return []
+    }
+  }
   if (process.platform === 'linux') {
     try {
       return collectRemoteIpsLinuxSync(exePaths)
@@ -315,14 +389,14 @@ async function tick() {
 
 function startAppExclusionBypass(exePaths, send) {
   sendLog = typeof send === 'function' ? send : null
-  activeExePaths = [...new Set((exePaths || []).filter(p => /\.exe$/i.test(String(p || ''))))]
+  activeExePaths = [...new Set((exePaths || []).filter(isExcludedTarget))]
   packsApplied = false
   if (timer) {
     clearInterval(timer)
     timer = null
   }
   if (!activeExePaths.length) {
-    sendLog?.('[Apps] bypass: нет .exe — монитор выкл')
+    sendLog?.('[Apps] bypass: нет приложений — монитор выкл')
     return
   }
   sendLog?.(
@@ -377,5 +451,6 @@ module.exports = {
   refreshAppExclusionBypassAfterTunnel,
   getLearnedAppBypassIps,
   collectRemoteIps,
+  remoteIpsFromDarwinSnapshots,
   isSkippableIp,
 }

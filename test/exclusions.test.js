@@ -414,3 +414,66 @@ describe('VPN wiring in main.js', () => {
     assert.match(mainSrc, /applySiteBypassFromFile/)
   })
 })
+
+describe('Mac app exclusions', () => {
+  const macApps = [
+    { id: 'chrome', name: 'Google Chrome', exePath: '/Applications/Google Chrome.app' },
+    { id: 'notes', name: 'Notes', exePath: '/System/Applications/Notes.app' },
+  ]
+
+  it('keeps selected .app bundles as bypass targets', () => {
+    const { exePaths } = resolveExcludedExePaths(new Set(['chrome']), macApps)
+    assert.deepEqual(exePaths, ['/Applications/Google Chrome.app'])
+  })
+
+  it('treats a process inside the bundle as excluded', () => {
+    const list = ['/Applications/Google Chrome.app']
+    assert.equal(
+      isProcessExcluded('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', list),
+      true,
+    )
+    assert.equal(isProcessExcluded('/Applications/Safari.app/Contents/MacOS/Safari', list), false)
+  })
+
+  it('reads remote IPv4 of processes that live in the selected bundle', () => {
+    const { remoteIpsFromDarwinSnapshots } = require('../src/main/apps/appExclusionBypass')
+    const psText = [
+      '11 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow',
+      '42 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '99 /Applications/Safari.app/Contents/MacOS/Safari',
+    ].join('\n')
+    const lsofText = [
+      'p42',
+      'n192.168.1.10:54321->93.184.216.34:443',
+      'n127.0.0.1:7777',
+      'p99',
+      'n10.0.0.2:1->1.1.1.1:443',
+    ].join('\n')
+    const ips = remoteIpsFromDarwinSnapshots({
+      psText,
+      lsofText,
+      bundles: ['/Applications/Google Chrome.app'],
+    })
+    assert.deepEqual(ips, ['93.184.216.34'])
+  })
+
+  it('lists .app bundles from a folder', () => {
+    const { listMacApps } = require('../src/main/apps/listInstalledAppsDarwin')
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'silent-mac-apps-'))
+    const app = path.join(root, 'Demo.app')
+    fs.mkdirSync(path.join(app, 'Contents'), { recursive: true })
+    fs.writeFileSync(
+      path.join(app, 'Contents', 'Info.plist'),
+      `<?xml version="1.0"?>
+<plist><dict>
+<key>CFBundleDisplayName</key><string>Demo App</string>
+<key>CFBundleName</key><string>Demo</string>
+</dict></plist>`,
+    )
+    const found = listMacApps([root])
+    assert.equal(found.length, 1)
+    assert.equal(found[0].name, 'Demo App')
+    assert.equal(found[0].exePath, app)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+})

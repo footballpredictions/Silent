@@ -7,7 +7,7 @@ import org.junit.Test
 class PublicApiFailoverPolicyTest {
 
     @Test
-    fun `cells first so blocked hive 443 does not stall splash and toggle`() {
+    fun `hive first then cell 1 then the next cell`() {
         val got = PublicApiFailoverPolicy.orderedPublicBases(
             hiveHttps = listOf(
                 "https://89-125-188-100.nip.io",
@@ -20,12 +20,22 @@ class PublicApiFailoverPolicyTest {
         )
         assertEquals(
             listOf(
+                "https://89.125.188.100",
                 "http://87.58.213.193:9100",
                 "http://78.17.74.27:9100",
                 "https://89-125-188-100.nip.io",
-                "https://89.125.188.100",
             ),
             got,
+        )
+    }
+
+    @Test
+    fun `open internet still requests every server slot even when cache exists`() {
+        assertEquals(
+            listOf("server1", "server2", "server3", "server4"),
+            ConnectConfigFetchPolicy.launchConfigSlots(
+                alreadyCached = listOf("server1", "server2", "server3", "server4"),
+            ),
         )
     }
 

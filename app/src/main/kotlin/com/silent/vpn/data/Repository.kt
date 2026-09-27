@@ -628,7 +628,11 @@ class SilentRepository @Inject constructor(
 
     private fun publicApiBases(): List<String> {
         return PublicApiFailoverPolicy.orderedPublicBases(
-            hiveHttps = listOf("https://$DEFAULT_SERVER_HOST", getPublicServerUrl().trimEnd('/')),
+            hiveHttps = listOf(
+                "https://${BAKED_SERVER_IPS.getValue(SERVER_MAIN)}",
+                "https://$DEFAULT_SERVER_HOST",
+                getPublicServerUrl().trimEnd('/'),
+            ),
             cells = cachedStandbyApiBases(),
         )
     }
@@ -951,6 +955,7 @@ class SilentRepository @Inject constructor(
         }
         PublicApiFailoverPolicy.orderedPublicBases(
             hiveHttps = listOf(
+                "https://${BAKED_SERVER_IPS.getValue(SERVER_MAIN)}",
                 "https://${BootstrapVpnConfig.serverHost()}",
                 "https://$DEFAULT_SERVER_HOST",
                 getPublicServerUrl(),

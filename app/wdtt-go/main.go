@@ -367,8 +367,6 @@ func main() {
 	}
 
 	for g := 0; g < numGroups; g++ {
-		isFirst := (g == 0)
-
 		ids := make([]int, workersPerGroup)
 		for i := range ids {
 			ids[i] = workerIDCounter
@@ -376,10 +374,10 @@ func main() {
 		}
 
 		gID := g + 1
-		var cc chan<- string
-		if isFirst {
-			cc = configCh
-		}
+		// Конфиг запрашивает каждая группа, не только первая. Если TURN первого
+		// хеша не доносит GETCONF до Улья, следующие группы с живым DTLS забирают
+		// его сами. Иначе воркеры есть, а туннель без конфига.
+		cc := configCh
 
 		waitReady := groupGate
 		var signalNext chan struct{}
@@ -390,7 +388,7 @@ func main() {
 
 		startHashIndex := g % hashCount
 		wg.Add(1)
-		isFirstGroup := isFirst
+		isFirstGroup := true
 		configChan := cc
 		workerIds := ids
 		hashIdx := startHashIndex

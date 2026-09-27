@@ -1,10 +1,21 @@
 package com.silent.vpn.policy
 
-/** Splash/тумблер: сначала публичный API (соты), Hive WG bootstrap только если соты молчат. */
+/** Splash/тумблер: сначала публичный API (Улей, затем соты). Hive WG bootstrap — если API молчит. */
 object ConnectConfigFetchPolicy {
     fun skipPublicFailover(onMobile: Boolean, forLaunch: Boolean): Boolean {
         // Раньше splash (`forLaunch`) и LTE сразу шли в ephemeral на Улей :56000.
         // При блоке 443/WG анимация не поднимала временный интернет и не видела подписку.
         return false
+    }
+
+    /**
+     * Слоты, которые splash обязан запросить у API.
+     * Временный VPN при этом не обязателен: если белые списки выключены, конфиг идёт
+     * по открытому интернету. Уже лежащий кеш запрос не отменяет — иначе слоты 2–4
+     * остаются старыми, а Сервер 4 не запрашивается вовсе.
+     */
+    fun launchConfigSlots(alreadyCached: Collection<String> = emptyList()): List<String> {
+        val slots = VpnServerListPolicy.staticKeys()
+        return if (alreadyCached.isEmpty()) slots else slots
     }
 }

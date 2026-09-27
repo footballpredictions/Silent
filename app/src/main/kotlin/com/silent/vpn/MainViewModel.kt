@@ -1834,7 +1834,7 @@ class MainViewModel @Inject constructor(
         persistToRepoCache: Boolean = true,
     ): ConnectFetchResult {
         val targetSlot = SilentRepository.normalizePreferredServer(preferredServer)
-        // Сначала соты :9100. Ephemeral на Улей :56000 — только если публичный API молчит.
+        // Публичный API: Улей, затем соты. Ephemeral на Улей :56000 — только если API молчит.
         val onMobile = repo.isOnMobileData()
         val skipPublic = ConnectConfigFetchPolicy.skipPublicFailover(onMobile, forLaunch)
         repo.clearTunnelApiBase()
@@ -2014,32 +2014,42 @@ class MainViewModel @Inject constructor(
      */
     private suspend fun prefetchAllServerSlotsAtLaunch(fp: String) {
         val current = SilentRepository.normalizePreferredServer(repo.getPreferredServer())
-        for (slot in listOf("server1", "server2", "server3")) {
-            if (slot == current) {
-                loadCachedVpnConfig()?.takeIf {
-                    isConfigConnectable(it) && cachedConfigMatchesPreferred(it, slot)
-                }?.let { cfg ->
-                    rememberPrefetch(ConnectFetchResult(cfg, null, false), slotOverride = slot)
-                    repo.cacheVpnConfigForSlot(slot, Gson().toJson(cfg))
-                }
-                continue
-            }
-            if (warmConnectFetch(slot) != null) continue
-            val cachedSlot = loadSlotCachedVpnConfig(slot)
-            if (cachedSlot != null) {
-                rememberPrefetch(ConnectFetchResult(cachedSlot, null, false), slotOverride = slot)
-                continue
-            }
+        val cachedKeys = listOf("server1", "server2", "server3", "server4").filter { slot ->
+            loadSlotCachedVpnConfig(slot) != null ||
+                (slot == current && loadCachedVpnConfig()?.let { cachedConfigMatchesPreferred(it, slot) } == true)
+        }
+        val slots = ConnectConfigFetchPolicy.launchConfigSlots(cachedKeys)
+        val viaTunnel = WdttTunnelManager.isBootstrapMode() && WdttTunnelManager.tunnelReady.value
+        DebugLog.i(
+            "MainViewModel",
+            "launch prefetch slots=$slots tunnel=$viaTunnel mobile=${repo.isOnMobileData()}",
+        )
+        for (slot in slots) {
             val cfg = runCatching {
                 val res = repo.getApi().getConfig(fp, slot)
                 res.body()?.takeIf { res.isSuccessful }
             }.getOrNull()
             if (cfg != null && isConfigConnectable(cfg) && cachedConfigMatchesPreferred(cfg, slot)) {
-                repo.cacheVpnConfigForSlot(slot, Gson().toJson(cfg))
+                val json = Gson().toJson(cfg)
+                if (slot == current) {
+                    repo.cacheVpnConfig(json)
+                } else {
+                    repo.cacheVpnConfigForSlot(slot, json)
+                }
                 rememberPrefetch(ConnectFetchResult(cfg, null, false), slotOverride = slot)
-                DebugLog.i("MainViewModel", "launch prefetch extra slot=$slot OK ip=${cfg.server_ip}")
+                DebugLog.i("MainViewModel", "launch prefetch slot=$slot OK ip=${cfg.server_ip}")
             } else {
-                DebugLog.w("MainViewModel", "launch prefetch extra slot=$slot skip")
+                val cachedSlot = if (slot == current) {
+                    loadCachedVpnConfig()?.takeIf {
+                        isConfigConnectable(it) && cachedConfigMatchesPreferred(it, slot)
+                    }
+                } else {
+                    loadSlotCachedVpnConfig(slot)
+                }
+                if (cachedSlot != null) {
+                    rememberPrefetch(ConnectFetchResult(cachedSlot, null, false), slotOverride = slot)
+                }
+                DebugLog.w("MainViewModel", "launch prefetch slot=$slot miss cache=${cachedSlot != null}")
             }
         }
     }

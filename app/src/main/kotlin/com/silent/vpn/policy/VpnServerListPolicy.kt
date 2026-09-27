@@ -11,6 +11,8 @@ object VpnServerListPolicy {
     const val AI_TITLE = "Сервер 4 для ИИ"
     private val STATIC_KEYS = listOf("server1", "server2", "server3", AI_SLOT)
 
+    fun staticKeys(): List<String> = STATIC_KEYS.toList()
+
     fun staticList(): List<VpnServerInfo> = STATIC_KEYS.map { key ->
         VpnServerInfo(
             key = key,

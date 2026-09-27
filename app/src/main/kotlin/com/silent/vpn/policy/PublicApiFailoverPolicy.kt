@@ -1,6 +1,6 @@
 package com.silent.vpn.policy
 
-/** Публичный API без туннеля: сначала живые соты :9100, Улей :443 последним (его режут из РФ). */
+/** Публичный API: Улей по IP, затем соты :9100. Имя nip.io последним — DNS до него часто висит. */
 object PublicApiFailoverPolicy {
 
     val RETIRED_HIVE_HOSTS: Set<String> = setOf(
@@ -46,8 +46,17 @@ object PublicApiFailoverPolicy {
                 if (v.isNotBlank() && !isRetired(v)) out.add(v)
             }
         }
+        val hiveIps = ArrayList<String>()
+        val hiveNames = ArrayList<String>()
+        for (raw in hiveHttps) {
+            val v = raw.trim().trimEnd('/')
+            if (v.isBlank() || isRetired(v)) continue
+            if (hostOf(v).matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) hiveIps.add(v)
+            else hiveNames.add(v)
+        }
+        addAll(hiveIps)
         addAll(cells)
-        addAll(hiveHttps)
+        addAll(hiveNames)
         return out.toList()
     }
 

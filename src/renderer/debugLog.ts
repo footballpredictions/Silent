@@ -1,7 +1,7 @@
 /** Буфер логов для UI «Лог» — как Android DebugLog.kt */
 
 import { pushAppLog } from './vpnLogStore'
-import { isDebugBuild } from './debugBuild'
+import { captureBuiltinLog, isDebugBuild } from './debugBuild'
 
 export type LogLevel = 'D' | 'I' | 'W' | 'E' | 'T'
 
@@ -62,7 +62,7 @@ function dedupeKey(tag: string, message: string): string {
 }
 
 function append(level: LogLevel, tag: string, message: string, flushUi: boolean) {
-  if (!isDebugBuild) return
+  if (!captureBuiltinLog) return
   const msg = String(message ?? '')
   const items = read()
   const key = dedupeKey(tag, msg)
@@ -102,33 +102,33 @@ export function logD(tag: string, message: string) {
 }
 
 export function logI(tag: string, message: string) {
-  if (!isDebugBuild) return
+  if (!captureBuiltinLog) return
   append('I', tag, message, true)
 }
 
 export function logW(tag: string, message: string) {
-  if (!isDebugBuild) return
+  if (!captureBuiltinLog) return
   append('W', tag, message, true)
 }
 
 export function logE(tag: string, message: string) {
-  if (!isDebugBuild) return
+  if (!captureBuiltinLog) return
   append('E', tag, message, true)
 }
 
 /** Только UI «Лог», без console. */
 export function traceUi(tag: string, message: string) {
-  if (!isDebugBuild) return
+  if (!captureBuiltinLog) return
   append('T', tag, message, true)
 }
 
 export function pushLog(tag: string, message: string, level: 'I' | 'W' | 'E' = 'I') {
-  if (!isDebugBuild) return
+  if (!captureBuiltinLog) return
   pushAppLog(tag, message, level)
 }
 
 export function ingestMainLog(payload: { tag?: string; level?: string; message?: string }) {
-  if (!isDebugBuild) return
+  if (!captureBuiltinLog) return
   const tag = payload.tag || 'Main'
   const msg = payload.message || ''
   const lvl = (payload.level || 'I').toUpperCase()

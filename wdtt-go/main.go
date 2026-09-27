@@ -421,6 +421,9 @@ func main() {
 		// хеша не доносит GETCONF до Улья, следующие группы с живым DTLS забирают
 		// его сами. Иначе воркеры есть, а wg-turn.conf так и не появляется.
 		cc := chan<- string(configCh)
+		if g == 0 {
+			log.Printf("[КЛИЕНТ] GETCONF-ALL-GROUPS")
+		}
 
 		var waitReady <-chan struct{}
 		var signalNext chan struct{}

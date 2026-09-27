@@ -101,6 +101,8 @@ function sleep(ms) {
 
 const isDev = process.env.NODE_ENV === 'development'
 const isDebugBuild = !!buildFlags.DEBUG_BUILD || process.env.DEBUG_BUILD === '1' || !app.isPackaged
+// Релиз Mac: встроенный лог, чтобы снять, почему канал не поднялся. Windows-релиз без кнопки.
+const captureBuiltinLog = isDebugBuild || process.platform === 'darwin'
 const WIN_WIDTH = 265
 const WIN_HEIGHT = 606
 
@@ -406,7 +408,7 @@ function createTray() {
 }
 
 function sendDebugLog(payload) {
-  if (!isDebugBuild) return
+  if (!captureBuiltinLog) return
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('debug-log', payload)
   }
@@ -430,7 +432,7 @@ function flushWdttLogBatch() {
 }
 
 function sendWdttLog(entry) {
-  if (!isDebugBuild || !entry?.key) return
+  if (!captureBuiltinLog || !entry?.key) return
   const prev = wdttLogPending.get(entry.key)
   if (prev) {
     wdttLogPending.set(entry.key, {
@@ -716,12 +718,13 @@ function cleanupVpn() {
   }
   // Не await на обычном disconnect — UI не блокируем.
   // before-quit на darwin/linux ждёт vpnCleanupPromise (иначе DNS/routes остаются).
-  vpnCleanupPromise = stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
+  const tunnelStop = stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
+  const hostsClear = Promise.resolve().then(() => syncAdminNipHosts(false, sendLog)).catch(() => false)
+  vpnCleanupPromise = Promise.all([tunnelStop, hostsClear]).then(() => {})
   const stopping = vpnCleanupPromise
   void stopping.finally(() => {
     if (vpnCleanupPromise === stopping) vpnCleanupPromise = null
   })
-  syncAdminNipHosts(false, sendLog)
   clearBypassRefresh()
   wgApplied = false
   wgInstallInFlight = false
@@ -1381,9 +1384,9 @@ ipcMain.handle('open-admin-panel', async () => {
       sendLog('[Admin] Улей убран из bypass — nip.io идёт через VPN')
       await sleep(400)
     }
-    syncAdminNipHosts(false, sendLog)
+    await syncAdminNipHosts(false, sendLog)
   } else if (vpnOn && peer === HIVE_PUBLIC_IP) {
-    syncAdminNipHosts(true, sendLog)
+    await syncAdminNipHosts(true, sendLog)
     await sleep(200)
   }
   const url = resolveAdminPanelUrl()
@@ -1770,7 +1773,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       wgRouteSettleUntil = Date.now() + 15_000
       await addServerBypassRoutes([...excludeIPs], sendLog)
       await ensureNipIoBypassRoutes(sendLog)
-      syncAdminNipHosts(peerIsHive(config?.server_ip, ADMIN_HIVE_IP), sendLog)
+      await syncAdminNipHosts(peerIsHive(config?.server_ip, ADMIN_HIVE_IP), sendLog)
       scheduleBypassRefresh(sendLog)
       try {
         const { refreshAppExclusionBypassAfterTunnel } = require('./apps/vpnAppExclusions')

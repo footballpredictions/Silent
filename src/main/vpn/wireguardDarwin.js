@@ -1415,6 +1415,7 @@ module.exports = {
   buildAllowedIPsForDarwin,
   dnsBypassIps,
   pinVkHosts,
+  helperOut,
   capturePhysicalGateway,
   enableLanProtect,
   refreshTunnelGuards,

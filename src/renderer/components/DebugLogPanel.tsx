@@ -5,10 +5,10 @@ import {
   subscribeVpnLogs,
   type LogEntry,
 } from '../vpnLogStore'
-import { isDebugBuild } from '../debugBuild'
+import { captureBuiltinLog } from '../debugBuild'
 
 export function DebugLogButton({ onClick }: { onClick: () => void }) {
-  if (!isDebugBuild) return null
+  if (!captureBuiltinLog) return null
   return (
     <button
       type="button"
@@ -79,7 +79,7 @@ export default function DebugLogPanel({ open, onClose }: { open: boolean; onClos
     return items.map(e => `${e.message} (x${e.count})`).join('\n')
   }, [items])
 
-  if (!isDebugBuild || !open) return null
+  if (!captureBuiltinLog || !open) return null
 
   const copyLog = () => {
     const text = logText || '(пусто)'

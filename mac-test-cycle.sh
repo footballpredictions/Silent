@@ -88,6 +88,11 @@ if [[ -d resources/mac ]]; then
   RES="$APP_DST/Contents/Resources"
   for b in wdtt-client wireguard-go silent-wg-helper; do
     if [[ -f "resources/mac/$b" ]]; then
+      if [[ "$b" == "wdtt-client" ]] && ! grep -a -q 'GETCONF-ALL-GROUPS' "resources/mac/$b"; then
+        echo "ERROR: resources/mac/wdtt-client без GETCONF каждой группы." >&2
+        echo "       Это бинарь до правки Сервера 1: воркеры есть, трафика нет. Нужен go build (./build-mac.sh)." >&2
+        exit 1
+      fi
       cp -f "resources/mac/$b" "$RES/"
       chmod +x "$RES/$b"
     fi

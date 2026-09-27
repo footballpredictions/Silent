@@ -141,6 +141,10 @@ for arch in "${GO_ARCHS[@]}"; do
     echo "ERROR: wdtt-client без IP_BOUND_IF (protect=darwin) — full tunnel будет мёртв" >&2
     exit 1
   fi
+  if ! grep -a -q 'GETCONF-ALL-GROUPS' resources/mac/wdtt-client; then
+    echo "ERROR: wdtt-client старый — GETCONF только у первой группы, на Сервере 1 воркеры без трафика" >&2
+    exit 1
+  fi
 
   fetch_bundled_python "$arch"
 

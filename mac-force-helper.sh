@@ -39,6 +39,13 @@ fi
 
 echo "Источник: $SRC_HELPER"
 
+# Чистый Mac: системный python3 — заглушка, она снова и снова открывает установку Command Line Tools.
+BUNDLED_PY="${APP_RES}/python/bin/python3"
+if [[ ! -x "$BUNDLED_PY" ]]; then
+  echo "ERROR: в приложении нет $BUNDLED_PY. Нужен DMG из ./build-mac.sh. Системный python3 не используем." >&2
+  exit 1
+fi
+
 WORK="$(mktemp /tmp/silent-wg-helper.XXXXXX)"
 PRIV=""
 trap 'rm -f "$WORK" ${PRIV:+"$PRIV"} 2>/dev/null || true' EXIT
@@ -52,7 +59,7 @@ fi
 perl -pi -e 's/\(p\.stdout \|\| ""\)/(p.stdout or "")/g; s/\(p\.stderr \|\| ""\)/(p.stderr or "")/g' "$WORK"
 chmod +x "$WORK" || true
 
-if ! /usr/bin/python3 -m py_compile "$WORK" 2>/tmp/silent-helper-syntax.err; then
+if ! "$BUNDLED_PY" -m py_compile "$WORK" 2>/tmp/silent-helper-syntax.err; then
   echo "ERROR: silent-wg-helper — SyntaxError даже после патча:" >&2
   cat /tmp/silent-helper-syntax.err >&2
   exit 1
@@ -90,7 +97,7 @@ cat > "${PLIST}" <<'PLIST'
 <plist version="1.0"><dict>
 <key>Label</key><string>ru.silent.vpn.helper</string>
 <key>ProgramArguments</key><array>
-<string>/usr/bin/python3</string>
+<string>${BUNDLED_PY}</string>
 <string>/Library/PrivilegedHelperTools/silent-vpn-wg-helper</string>
 <string>serve</string>
 </array>
@@ -100,15 +107,19 @@ cat > "${PLIST}" <<'PLIST'
 <key>StandardOutPath</key><string>/var/run/silent-vpn/helper.out</string>
 </dict></plist>
 PLIST
+chmod 755 /var/run/silent-vpn || true
 launchctl bootstrap system "${PLIST}" 2>/dev/null || true
 launchctl enable system/${LABEL} 2>/dev/null || true
 launchctl kickstart -k system/${LABEL} 2>/dev/null || true
 sleep 1
-if ! /usr/bin/python3 -c "import socket;s=socket.socket(socket.AF_UNIX);s.settimeout(0.3);s.connect('${SOCK}')" 2>/dev/null; then
-  /usr/bin/python3 "${SYS_HELPER}" serve >/var/run/silent-vpn/helper.out 2>/var/run/silent-vpn/helper.err &
+if ! "${BUNDLED_PY}" -c "import socket;s=socket.socket(socket.AF_UNIX);s.settimeout(0.3);s.connect('${SOCK}')" 2>/dev/null; then
+  # nohup: иначе выход osascript шлёт SIGHUP и служба умирает — сокет так и не появляется
+  nohup "${BUNDLED_PY}" "${SYS_HELPER}" serve >/var/run/silent-vpn/helper.out 2>/var/run/silent-vpn/helper.err &
+  disown || true
   sleep 1
 fi
-/usr/bin/python3 -m py_compile "${SYS_HELPER}"
+chmod 644 /var/run/silent-vpn/helper.err /var/run/silent-vpn/helper.out 2>/dev/null || true
+"${BUNDLED_PY}" -m py_compile "${SYS_HELPER}"
 EOF
 chmod 700 "$PRIV"
 
@@ -119,7 +130,7 @@ osascript -e "do shell script \"/bin/bash $(printf %q "$PRIV")\" with administra
 echo -n "Жду живой helper (connect)… "
 READY=0
 for i in $(seq 1 60); do
-  if python3 - <<'PY' 2>/dev/null
+  if "$BUNDLED_PY" - <<'PY' 2>/dev/null
 import socket
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(0.4)
@@ -135,9 +146,6 @@ PY
     READY=1
     break
   fi
-  if (( i % 10 == 0 )); then
-    osascript -e "do shell script \"launchctl kickstart -k system/${LABEL}; /usr/bin/python3 ${SYS_HELPER} serve >/var/run/silent-vpn/helper.out 2>/var/run/silent-vpn/helper.err &\" with administrator privileges" 2>/dev/null || true
-  fi
   sleep 0.25
 done
 
@@ -148,7 +156,7 @@ if [[ "$READY" != "1" ]]; then
   exit 1
 fi
 
-python3 - <<'PY'
+"$BUNDLED_PY" - <<'PY'
 import json, socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(8)
@@ -169,7 +177,7 @@ if "unknown command" in line.lower():
 print("OK: helper новый")
 PY
 
-python3 - <<'PY' 2>/dev/null || true
+"$BUNDLED_PY" - <<'PY' 2>/dev/null || true
 import json, socket
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(8)

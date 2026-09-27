@@ -8,7 +8,7 @@ import { getCachedTheme, saveCachedTheme } from './themeStore'
 import { runAppStateMigrationIfNeeded } from './appStateMigration'
 import { checkForUpdate, getAppVersion, type UpdateInfo } from './updateCheck'
 import { useVpnLogSubscription } from './useVpnLogSubscription'
-import { isDebugBuild } from './debugBuild'
+import { captureBuiltinLog } from './debugBuild'
 
 const SERVER_URL = 'https://89-125-188-100.nip.io'
 
@@ -33,7 +33,7 @@ export default function App() {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [pendingReferralCode, setPendingReferralCode] = useState('')
 
-  useVpnLogSubscription(isDebugBuild)
+  useVpnLogSubscription(captureBuiltinLog)
 
   useEffect(() => {
     runAppStateMigrationIfNeeded()

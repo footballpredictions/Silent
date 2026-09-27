@@ -49,7 +49,22 @@ function windowsHostsPath() {
   return path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'drivers', 'etc', 'hosts')
 }
 
+function syncAdminNipHostsDarwin(pin, send) {
+  const { helperOut } = require('./wireguardDarwin')
+  const mode = pin ? 'pin' : 'clear'
+  return helperOut(['admin-nip', mode], 12000).then((out) => {
+    const hint = String(out || '').trim().split('\n').filter(Boolean).pop() || ''
+    send?.(`[Admin] hosts nip.io ${pin ? `→ ${TUNNEL_GW}` : 'снят'}${hint ? ` (${hint})` : ''}`)
+    return true
+  }).catch((e) => {
+    send?.(`[Admin] hosts nip.io: ${e?.message || e}`)
+    return false
+  })
+}
+
 function syncAdminNipHosts(pin, send) {
+  // Mac: /etc/hosts только у root. Пишет служба VPN, не процесс приложения.
+  if (process.platform === 'darwin') return syncAdminNipHostsDarwin(!!pin, send)
   try {
     const file = windowsHostsPath()
     const raw = fs.readFileSync(file, 'utf8')

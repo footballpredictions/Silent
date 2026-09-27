@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  platform: process.platform === 'linux' ? 'linux' : process.platform === 'darwin' ? 'mac' : 'pc',
   minimize: () => ipcRenderer.invoke('window-minimize'),
   close: () => ipcRenderer.invoke('window-close'),
   quitApp: () => ipcRenderer.invoke('app-quit'),

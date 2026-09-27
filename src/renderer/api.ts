@@ -43,13 +43,17 @@ function rewritePublicBase(raw: string): string {
   return stored
 }
 
-/** Публичные URL API: сначала соты, Улей :443 последним (его режут из РФ). */
+/** Публичные URL API: Улей, затем соты :9100 (прокси на Улей). */
 export function getPublicApiCandidateBases(): string[] {
-  const out = new Set<string>()
-  standbyApiBasesFromTheme(getCachedTheme()).forEach(u => out.add(u.replace(/\/$/, '')))
-  out.add(getPublicApiBaseUrl())
-  out.add(getDirectApiBaseUrl())
-  return [...out]
+  const out: string[] = []
+  const add = (raw: string) => {
+    const v = String(raw || '').replace(/\/$/, '')
+    if (v && !out.includes(v)) out.push(v)
+  }
+  add(getDirectApiBaseUrl())
+  standbyApiBasesFromTheme(getCachedTheme()).forEach(add)
+  add(getPublicApiBaseUrl())
+  return out
 }
 
 export function getDirectApiBaseUrl(): string {

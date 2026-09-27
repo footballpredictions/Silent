@@ -352,7 +352,7 @@ func main() {
 				return
 			}
 			finalConf := rawConf
-					if !strings.Contains(finalConf, "MTU =") {
+			if !strings.Contains(finalConf, "MTU =") {
 				lines := strings.Split(finalConf, "\n")
 				var newLines []string
 				for _, line := range lines {
@@ -410,8 +410,6 @@ func main() {
 	log.Printf("[КЛИЕНТ] Boot: %d групп волнами по %d (хешей: %d), затем рамп до %d", bootGroups, waveSize, hashCount, targetWorkers)
 
 	for g := 0; g < numGroups; g++ {
-		isFirst := (g == 0)
-
 		ids := make([]int, workersPerGroup)
 		for i := range ids {
 			ids[i] = workerIDCounter
@@ -419,10 +417,10 @@ func main() {
 		}
 
 		gID := g + 1
-		var cc chan<- string
-		if isFirst {
-			cc = configCh
-		}
+		// Конфиг запрашивает каждая группа, не только первая. Если TURN первого
+		// хеша не доносит GETCONF до Улья, следующие группы с живым DTLS забирают
+		// его сами. Иначе воркеры есть, а wg-turn.conf так и не появляется.
+		cc := chan<- string(configCh)
 
 		var waitReady <-chan struct{}
 		var signalNext chan struct{}
@@ -464,7 +462,7 @@ func main() {
 			defer wg.Done()
 			WorkerGroup(ctx, groupID, hashIdx, tp, peer, disp, localPort,
 				isFirstGroup, configChan, workerIds, &pauseFlag, *deviceID, *connPassword, stats, wait, signal, rampSched)
-		}(gID, isFirst, cc, ids, startHashIndex, waitReady, signalNext, ramp)
+		}(gID, true, cc, ids, startHashIndex, waitReady, signalNext, ramp)
 	}
 
 	wg.Wait()

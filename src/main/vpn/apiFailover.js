@@ -41,19 +41,21 @@ function publicFailoverBases({
     out.push(v)
   }
   const hive = { hiveHost, hiveIp }
-  const rest = []
+  const cells = []
+  const hiveAlts = []
   for (const u of [...baked, ...standby]) {
-    if (isHivePublicBase(u, hive) || isRetiredHiveBase(u)) rest.push(u)
-    else add(u)
+    if (isRetiredHiveBase(u)) continue
+    if (isHivePublicBase(u, hive)) hiveAlts.push(u)
+    else cells.push(u)
   }
-  // Соты первыми: 443 Улья из РФ часто таймаут, вход/подписка живут на :9100.
-  add(`https://${hiveHost}`)
+  // Улей по IP: имя nip.io с этой сети часто не резолвится и даёт API timeout.
+  // Сота 1 проксирует на Улей, если 443 молчит, затем следующая сота. Имя — последним.
   add(`https://${hiveIp}`)
+  for (const u of cells) add(u)
+  add(`https://${hiveHost}`)
   const canon = rewriteStoredPublicBase(stored, `https://${hiveHost}`)
   if (canon && !isHivePublicBase(canon, hive) && !isRetiredHiveBase(canon)) add(canon)
-  for (const u of rest) {
-    if (!isRetiredHiveBase(u)) add(u)
-  }
+  for (const u of hiveAlts) add(u)
   return out
 }
 
@@ -66,14 +68,32 @@ function isHivePublicBase(base, { hiveHost = '', hiveIp = '' } = {}) {
   }
 }
 
-function publicFailoverAttemptTimeoutMs(base, requested = 20000, hive = {}) {
-  const cap = isHivePublicBase(base, hive) ? 4000 : 8000
-  return Math.min(Number(requested) || 20000, cap)
+function publicFailoverAttemptTimeoutMs(_base, requested = 20000, _hive = {}) {
+  return Math.min(Number(requested) || 20000, 8000)
+}
+
+/** Туннель уже поднят: публичный :443 Улья в bypass и с РФ часто висит до API timeout. */
+function publicBasesSkippingHive(bases, hive = {}) {
+  return (bases || []).filter((base) => !isHivePublicBase(base, hive))
+}
+
+function isSlowPublicHop(message) {
+  return /timeout|ECONNABORTED|ETIMEDOUT|ECONNRESET|socket hang up/i.test(String(message || ''))
+}
+
+/** Улей :443 с этой сети часто молчит, сота следом отвечает. Таймаут Улья в лог не пишем. */
+function shouldLogPublicHopFail(base, message, hive = {}, hasLaterBase = false) {
+  if (!hasLaterBase) return true
+  if (!isHivePublicBase(base, hive)) return true
+  return !isSlowPublicHop(message)
 }
 
 module.exports = {
   publicFailoverBases,
   publicFailoverAttemptTimeoutMs,
+  publicBasesSkippingHive,
+  shouldLogPublicHopFail,
+  isSlowPublicHop,
   isHivePublicBase,
   isRetiredHiveBase,
   rewriteStoredPublicBase,

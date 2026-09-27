@@ -5,6 +5,8 @@ const { spawn } = require('child_process')
 const dns = require('dns')
 const https = require('https')
 const http = require('http')
+const httpAgent = new http.Agent({ keepAlive: false })
+const httpsAgent = new https.Agent({ keepAlive: false })
 
 // Self-signed сервер — как на Android (TrustAllCerts)
 app.commandLine.appendSwitch('ignore-certificate-errors')
@@ -33,7 +35,14 @@ const {
 } = require('./vpn/wireguard')
 const { solveVkCaptcha, cancelCaptchaSolve } = require('./vk/captchaWebView')
 const { resolveVkExcludeIps, warmVkExcludeIps, invalidateVkExcludeCache } = require('./vpn/vkNetworkExcludes')
-const { publicFailoverBases, publicFailoverAttemptTimeoutMs } = require('./vpn/apiFailover')
+const {
+  publicFailoverBases,
+  publicFailoverAttemptTimeoutMs,
+  publicBasesSkippingHive,
+  isHivePublicBase,
+  shouldLogPublicHopFail,
+  isSlowPublicHop,
+} = require('./vpn/apiFailover')
 const {
   RELEASES_JSON_URL,
   FETCH_TIMEOUT_MS: GITHUB_OTA_TIMEOUT_MS,
@@ -1276,6 +1285,9 @@ async function ensurePublicApiBypass(sendLogFn = sendLog) {
   if (now - lastPublicBypassAt < 3000) return
   lastPublicBypassAt = now
   try {
+    // Соты — первый public API. Без /32 их IP уходит в full tunnel и :9100 даёт socket hang up.
+    const cellApiIps = ['87.58.213.193', '78.17.74.27']
+    sessionExcludeIPs = [...new Set([...(sessionExcludeIPs || []), ...cellApiIps])]
     await ensureNipIoBypassRoutes(sendLogFn)
   } catch (e) {
     sendLogFn?.(`[API] public bypass: ${e?.message || e}`)
@@ -2284,41 +2296,84 @@ ipcMain.handle('set-standby-api-bases', (_, urls) => {
   return true
 })
 
-function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 20000 }) {
-  const bases = getPublicFailoverBases()
-  const tryOne = (index) => {
-    if (index >= bases.length) {
-      return Promise.reject(new Error('All public API bases failed'))
+let hivePublicSlowUntil = 0
+
+function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 20000, skipHive = false }) {
+  const hive = { hiveHost: UPDATE_HOST, hiveIp: SERVER_IP_FALLBACK }
+  let bases = getPublicFailoverBases()
+  if (skipHive || Date.now() < hivePublicSlowUntil) bases = publicBasesSkippingHive(bases, hive)
+
+  const runChain = (list, { quietHive = false } = {}) => {
+    const tryOne = (index, retrySame = true) => {
+      if (index >= list.length) {
+        return Promise.reject(new Error('All public API bases failed'))
+      }
+      const base = list[index]
+      let u
+      try {
+        u = new URL(base)
+      } catch {
+        return tryOne(index + 1)
+      }
+      const isHttps = u.protocol === 'https:'
+      const port = u.port ? Number(u.port) : isHttps ? 443 : 80
+      const hiveHop = isHivePublicBase(base, hive)
+      return backendHttpRequest({
+        protocol: isHttps ? 'https' : 'http',
+        hostname: u.hostname,
+        port,
+        path: reqPath,
+        method,
+        headers: { ...headers, Host: isHttps ? UPDATE_HOST : u.host },
+        body,
+        timeout: publicFailoverAttemptTimeoutMs(base, timeout || 20000, hive),
+        rejectUnauthorized: false,
+        servername: isHttps ? UPDATE_HOST : undefined,
+      }).catch((err) => {
+        const msg = String(err?.message || err)
+        const later = index + 1 < list.length
+        if (hiveHop && isSlowPublicHop(msg)) hivePublicSlowUntil = Date.now() + 120_000
+        const hideHiveTimeout = quietHive && hiveHop && isSlowPublicHop(msg)
+        if (!hideHiveTimeout && shouldLogPublicHopFail(base, msg, hive, later)) {
+          sendLog(`[API] public ${u.hostname} fail: ${msg}`)
+        }
+        if (retrySame && /socket hang up|ECONNRESET/i.test(msg)) {
+          return tryOne(index, false)
+        }
+        return tryOne(index + 1)
+      })
     }
-    const base = bases[index]
-    let u
-    try {
-      u = new URL(base)
-    } catch {
-      return tryOne(index + 1)
-    }
-    const isHttps = u.protocol === 'https:'
-    const port = u.port ? Number(u.port) : isHttps ? 443 : 80
-    return backendHttpRequest({
-      protocol: isHttps ? 'https' : 'http',
-      hostname: u.hostname,
-      port,
-      path: reqPath,
-      method,
-      headers: { ...headers, Host: isHttps ? UPDATE_HOST : u.host },
-      body,
-      timeout: publicFailoverAttemptTimeoutMs(base, timeout || 20000, {
-        hiveHost: UPDATE_HOST,
-        hiveIp: SERVER_IP_FALLBACK,
-      }),
-      rejectUnauthorized: false,
-      servername: isHttps ? UPDATE_HOST : undefined,
-    }).catch((err) => {
-      sendLog(`[API] public ${u.hostname} fail: ${err?.message || err}`)
-      return tryOne(index + 1)
-    })
+    return tryOne(0)
   }
-  return tryOne(0)
+
+  const hiveBases = bases.filter((base) => isHivePublicBase(base, hive))
+  const rest = publicBasesSkippingHive(bases, hive)
+  if (!hiveBases.length || !rest.length) return runChain(bases)
+
+  // Улей :443 и сота сразу. Кто ответил первым — тот и есть API. Таймаут Улья не ждём и не пишем.
+  const hiveTry = runChain(hiveBases, { quietHive: true }).then(
+    (res) => ({ ok: true, res }),
+    (err) => ({ ok: false, err }),
+  )
+  const cellTry = runChain(rest).then(
+    (res) => ({ ok: true, res }),
+    (err) => ({ ok: false, err }),
+  )
+  return new Promise((resolve, reject) => {
+    let pending = 2
+    let failure = null
+    const done = (result) => {
+      if (result.ok) {
+        resolve(result.res)
+        return
+      }
+      failure = failure || result.err
+      pending -= 1
+      if (pending === 0) reject(failure || new Error('All public API bases failed'))
+    }
+    hiveTry.then(done)
+    cellTry.then(done)
+  })
 }
 
 function tunnelHttpRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 8000 }) {
@@ -2378,6 +2433,7 @@ function backendHttpRequest({
       method: String(method || 'GET').toUpperCase(),
       headers: hdrs,
       timeout,
+      agent: protocol === 'https' ? httpsAgent : httpAgent,
     }
     if (protocol === 'https') {
       opts.rejectUnauthorized = rejectUnauthorized !== false ? false : true
@@ -2455,9 +2511,10 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
   }
 
   const viaPublic = async () => {
-    // Full tunnel без bypass → hairpin на VPS public IP / nip.io зависает.
+    // Улей :443 в bypass ради WG. С РФ этот обход висит до API timeout.
+    // Пока туннель поднят — только соты, шлюз 10.66.66.1 остаётся основным.
     await ensurePublicApiBypass(sendLog)
-    return publicDirectRequest(opts)
+    return publicDirectRequest({ ...opts, skipHive: true })
   }
 
   if (wgApplied && tunnelApiDown && !olcrtc2) {
@@ -2613,10 +2670,12 @@ function fetchJsonGet(url, hostHeader = null) {
 function fetchGithubReleasesJson() {
   return new Promise((resolve, reject) => {
     const url = new URL(RELEASES_JSON_URL)
+    // VPN включён: github.io идёт в туннель и успевает дольше, чем прямой обход с РФ.
+    const timeoutMs = wgApplied ? 20_000 : GITHUB_OTA_TIMEOUT_MS
     const req = https.get({
       hostname: url.hostname,
       path: `${url.pathname}?_=${Date.now()}`,
-      timeout: GITHUB_OTA_TIMEOUT_MS,
+      timeout: timeoutMs,
     }, (res) => {
       if (res.statusCode !== 200) {
         reject(new Error(`github.io HTTP ${res.statusCode}`))
@@ -2636,11 +2695,19 @@ function fetchGithubReleasesJson() {
 
 ipcMain.handle('app-update-check', async (_, { version, platform } = {}) => {
   const plat = otaPlatform(platform)
-  if (captchaInProgress && !wgApplied) {
+  // github.io с РФ без туннеля висит до OTA timeout. Проверка пойдёт, когда VPN поднят.
+  if (!wgApplied || captchaInProgress) {
     return null
   }
   try {
-    const raw = await fetchGithubReleasesJson()
+    let raw
+    try {
+      raw = await fetchGithubReleasesJson()
+    } catch (e) {
+      if (!(wgApplied && /timeout/i.test(String(e?.message || e)))) throw e
+      await sleep(1500)
+      raw = await fetchGithubReleasesJson()
+    }
     const macArch = process.arch === 'arm64' ? 'arm64' : 'x64'
     const parsed = parseGithubOta(raw, plat, version, macArch)
     if (parsed.kind === 'available') {

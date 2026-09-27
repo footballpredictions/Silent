@@ -98,13 +98,13 @@ def test_queen_proxy_urls_use_ip8000_not_nipio_first():
         queen_ip="89.125.188.100",
         api_url="https://89-125-188-100.nip.io",
     )
-    assert urls[0] == "http://89.125.188.100:8000/api/vpn/sync-state?hashes_since=1"
+    assert urls[0] == "http://89.125.188.100:80/api/vpn/sync-state?hashes_since=1"
     assert any(u.startswith("https://89-125-188-100.nip.io/api/vpn/sync-state") for u in urls)
 
 
 def test_queen_proxy_urls_work_without_nipio():
     urls = sr.queen_proxy_urls("payments/plans", queen_ip="1.2.3.4", api_url="")
-    assert urls[0] == "http://1.2.3.4:8000/api/payments/plans"
+    assert urls[0] == "http://1.2.3.4:80/api/payments/plans"
     assert "http://1.2.3.4:80/api/payments/plans" in urls
 
 

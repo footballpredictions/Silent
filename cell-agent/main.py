@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import os
 import secrets
-import hashlib
 from pathlib import Path
 from typing import Any, Optional
 
@@ -22,6 +21,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
+
+from status_cache import StatusCache
 
 try:
     from standby_runtime import on_manifest_updated, standby_monitor_loop, mount_failover_routes
@@ -62,11 +63,9 @@ CELL_NETWORK_INTERFACE = (os.environ.get("CELL_NETWORK_INTERFACE") or "").strip(
 
 
 def agent_build_id() -> str:
-    h = hashlib.sha256(Path(__file__).read_bytes())
-    standby = Path(__file__).resolve().parent / "standby_runtime.py"
-    if standby.is_file():
-        h.update(standby.read_bytes())
-    return h.hexdigest()[:16]
+    from build_id import agent_build_id as compute
+
+    return compute()
 
 
 def _auth(secret: str) -> None:
@@ -306,11 +305,7 @@ def _cpu_freq_base_mhz(model: str) -> float | None:
     return None
 
 
-@app.get("/v1/status")
-async def status(
-    x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
-):
-    _auth(x_cell_agent_secret)
+def _collect_status() -> dict:
     wdtt_active = False
     cpu_percent = 0.0
     memory_percent = 0.0
@@ -362,30 +357,6 @@ async def status(
                 wg_key = p.read_text(encoding="utf-8").strip()
         except Exception:
             pass
-    olcrtc_units = 0
-    olcrtc_active = 0
-    try:
-        import subprocess
-
-        r = subprocess.run(
-            ["systemctl", "list-units", "olcrtc@*.service", "--no-legend", "--state=active"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-        lines = [ln for ln in (r.stdout or "").splitlines() if "olcrtc@" in ln]
-        olcrtc_active = len(lines)
-        r2 = subprocess.run(
-            ["systemctl", "list-unit-files", "olcrtc@*.service", "--no-legend"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-        olcrtc_units = len(
-            [ln for ln in (r2.stdout or "").splitlines() if "olcrtc@" in ln]
-        )
-    except Exception:
-        pass
 
     wg_peers_total = wg_peers_never_hs = wg_peers_live_3m = wg_gc_last_removed = 0
     wg_live_pubs: list[str] = []
@@ -403,7 +374,7 @@ async def status(
         pass
 
     return {
-        "public_ip": _detect_public_ip(),
+        "public_ip": CELL_PUBLIC_IP,
         "wdtt_active": wdtt_active,
         "wg_public_key": wg_key,
         "cpu_percent": cpu_percent,
@@ -419,15 +390,26 @@ async def status(
         "cpu_freq_base_mhz": cpu_freq_base_mhz,
         "memory_total_gb": _memory_total_gb(),
         "agent_build_id": agent_build_id(),
-        "olcrtc_units": olcrtc_units,
-        "olcrtc_peers_est": olcrtc_active,
-        "olcrtc_active_units": olcrtc_active,
+        "olcrtc_units": 0,
+        "olcrtc_peers_est": 0,
+        "olcrtc_active_units": 0,
         "wg_peers_total": wg_peers_total,
         "wg_peers_never_hs": wg_peers_never_hs,
         "wg_peers_live_3m": wg_peers_live_3m,
         "wg_gc_last_removed": wg_gc_last_removed,
         "wg_live_pubs": wg_live_pubs,
     }
+
+
+_STATUS_CACHE = StatusCache(ttl=2.0)
+
+
+@app.get("/v1/status")
+async def status(
+    x_cell_agent_secret: str = Header(default="", alias="X-Cell-Agent-Secret"),
+):
+    _auth(x_cell_agent_secret)
+    return await _STATUS_CACHE.get(_collect_status)
 
 
 class OlcrtcApplyBody(BaseModel):

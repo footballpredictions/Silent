@@ -1,7 +1,6 @@
 """Автоматическая настройка VPN-соты по SSH (IP + root-пароль)."""
 from __future__ import annotations
 
-import hashlib
 import io
 import ipaddress
 import json
@@ -56,14 +55,18 @@ def _load_cell_agent_py() -> str:
 
 
 def cell_agent_build_id() -> str:
-    """Хеш main.py + standby_runtime.py на Улье — для сравнения с сотами."""
-    h = hashlib.sha256()
-    h.update(_load_cell_agent_file("main.py").encode("utf-8"))
-    try:
-        h.update(_load_cell_agent_file("standby_runtime.py").encode("utf-8"))
-    except RuntimeError:
-        pass
-    return h.hexdigest()[:16]
+    """Тот же хеш, что agent_build_id() на соте (только залитые файлы)."""
+    import importlib.util
+
+    path = BACKEND_ROOT / "cell-agent" / "build_id.py"
+    if not path.is_file():
+        path = Path("/app/cell-agent/build_id.py")
+    spec = importlib.util.spec_from_file_location("cell_agent_build_id_mod", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cell-agent/build_id.py не найден")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return str(mod.agent_build_id())
 
 
 def _validate_wdtt_blob(data: bytes, source: str) -> bytes:

@@ -734,10 +734,17 @@ def queen_proxy_urls(
     queen_ip: str = "",
     api_url: str = "",
 ) -> list[str]:
-    """Те же базы, что health: /api/{rest} сначала на IP:8000."""
+    """Клиентский :9100 → Улей. Сначала :80.
+
+    Публичный :8000 на Улье — docker-proxy только localhost. С соты это RST,
+    и тогда TCP клиента на :9100 обрывается (socket hang up), до :80 дело не доходит.
+    """
     path = (rest or "").lstrip("/")
     q = f"?{query}" if query else ""
-    return [f"{base}/api/{path}{q}" for base in queen_api_bases(queen_ip, api_url)]
+    bases = queen_api_bases(queen_ip, api_url)
+    direct80 = [b for b in bases if b.startswith("http://") and b.endswith(":80")]
+    rest_bases = [b for b in bases if b not in direct80]
+    return [f"{base}/api/{path}{q}" for base in (direct80 + rest_bases)]
 
 
 def apply_queen_health_tick(
@@ -1003,8 +1010,15 @@ async def _proxy_queen(request: Request, rest: str, extra_headers: dict | None =
     if extra_headers:
         headers.update(extra_headers)
     body = await request.body()
-    timeout = httpx.Timeout(20.0, connect=8.0)
+    timeout = httpx.Timeout(6.0, connect=3.0)
     last_exc: Exception | None = None
+    hop = {
+        "transfer-encoding",
+        "connection",
+        "content-encoding",
+        "content-length",
+        "keep-alive",
+    }
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         for url in urls:
             try:
@@ -1013,8 +1027,12 @@ async def _proxy_queen(request: Request, rest: str, extra_headers: dict | None =
                 last_exc = e
                 logger.debug("queen proxy %s: %s", url, e)
                 continue
-            skip = {"transfer-encoding", "connection", "content-encoding"}
-            out_headers = {k: v for k, v in r.headers.items() if k.lower() not in skip}
+            if r.status_code >= 500 and not r.content:
+                last_exc = RuntimeError(f"empty {r.status_code}")
+                logger.warning("queen proxy empty %s %s", r.status_code, url)
+                continue
+            out_headers = {k: v for k, v in r.headers.items() if k.lower() not in hop}
+            out_headers["Connection"] = "close"
             return Response(content=r.content, status_code=r.status_code, headers=out_headers)
     if last_exc:
         raise last_exc
@@ -1045,8 +1063,7 @@ def mount_failover_routes(app: FastAPI) -> None:
     async def hive_public_failover(rest: str, request: Request):
         if not is_public_failover_path(rest):
             raise HTTPException(status_code=404, detail="not found")
-        # Живой proxy сота→Улей :8000 всегда первым. Health только для DNAT туннеля,
-        # не для оплаты/логина/подписки на публичном :9100.
+        # Живой proxy сота→Улей :80. :8000 — docker только localhost, RST рвёт клиент.
         try:
             return await _proxy_queen(request, rest)
         except HTTPException:

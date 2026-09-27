@@ -29,6 +29,16 @@ function bundledPythonPath() {
 function buildInstallScript({ helperTmp, systemHelper, plistPath, label, sockPath, pythonBin }) {
   const runDir = path.dirname(sockPath)
   const py = pythonBin || '/usr/bin/python3'
+  // python-build-standalone без PYTHONHOME под launchd после перезагрузки сразу падает:
+  // сокета нет, воркеры WDTT уже есть, трафика нет.
+  const pyHome = py.includes('/python/bin/') ? path.dirname(path.dirname(py)) : ''
+  const pyEnv = pyHome
+    ? `<key>WorkingDirectory</key><string>${pyHome}</string>
+<key>EnvironmentVariables</key><dict>
+<key>PYTHONHOME</key><string>${pyHome}</string>
+<key>PYTHONNOUSERSITE</key><string>1</string>
+</dict>`
+    : ''
   return `#!/bin/bash
 set -e
 mkdir -p /Library/PrivilegedHelperTools "${runDir}" /Library/LaunchDaemons
@@ -50,23 +60,35 @@ cat > "${plistPath}" <<'PLIST'
 </array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
+${pyEnv}
 <key>StandardErrorPath</key><string>${runDir}/helper.err</string>
 <key>StandardOutPath</key><string>${runDir}/helper.out</string>
 </dict></plist>
 PLIST
 chown root:wheel "${plistPath}"
 chmod 644 "${plistPath}"
+chmod 755 "${runDir}" || true
 launchctl bootstrap system "${plistPath}" 2>/dev/null || true
 launchctl enable system/${label} 2>/dev/null || true
 launchctl kickstart -k system/${label} 2>/dev/null || true
-for i in $(seq 1 20); do
+sleep 1
+if ! "${py}" -c "import socket,sys;s=socket.socket(socket.AF_UNIX);s.settimeout(0.3);s.connect(sys.argv[1])" "${sockPath}" 2>/dev/null; then
+  PYTHONHOME="${pyHome}" PYTHONNOUSERSITE=1 nohup "${py}" "${systemHelper}" serve >"${runDir}/helper.out" 2>"${runDir}/helper.err" &
+  sleep 1
+fi
+ready=0
+for i in $(seq 1 40); do
   if "${py}" -c "import socket,sys;s=socket.socket(socket.AF_UNIX);s.settimeout(0.3);s.connect(sys.argv[1])" "${sockPath}" 2>/dev/null; then
-    exit 0
+    ready=1
+    break
   fi
   sleep 0.25
 done
-nohup "${py}" "${systemHelper}" serve >"${runDir}/helper.out" 2>"${runDir}/helper.err" &
-sleep 1
+if [[ "$ready" != "1" ]]; then
+  echo "helper socket down" >&2
+  tail -40 "${runDir}/helper.err" >&2 || true
+  exit 1
+fi
 exit 0
 `
 }

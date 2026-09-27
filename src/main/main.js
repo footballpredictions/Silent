@@ -1734,6 +1734,17 @@ async function beginWdttSession(config, { switching = false } = {}) {
     // syncconf только если служба жива И ключи/peer те же (reconnect).
     // Улей↔сота: PublicKey другой — Windows syncconf его не меняет → 10.66.66.1 timeout + leak РФ.
     const alreadyUp = await isServiceRunningAsync()
+    if (process.platform === 'darwin') {
+      try {
+        const { ensureHelperDaemon } = require('./vpn/wireguard')
+        sendLog('[WG] Служба VPN: после перезагрузки macOS один раз спросит пароль, потом поднимет туннель')
+        await ensureHelperDaemon(sendLog)
+      } catch (e) {
+        wgInstallInFlight = false
+        failWireGuard(String(e?.message || e))
+        return false
+      }
+    }
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
       skipWdttWait: true,
       subnetOnly: (vpnBootstrapMode && isHiveBootstrapIp(config.server_ip)) || wgCredPhase,

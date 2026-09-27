@@ -1416,6 +1416,7 @@ module.exports = {
   dnsBypassIps,
   pinVkHosts,
   helperOut,
+  ensureHelperDaemon,
   capturePhysicalGateway,
   enableLanProtect,
   refreshTunnelGuards,

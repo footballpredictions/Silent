@@ -230,6 +230,10 @@ describe('darwin wireguard contract matches Windows/Linux', () => {
     assert.match(script, /launchctl bootstrap system/)
     assert.match(script, /<string>serve<\/string>/)
     assert.match(script, /Contents\/Resources\/python\/bin\/python3/)
+    assert.match(script, /PYTHONHOME/)
+    assert.match(script, /Contents\/Resources\/python</)
+    assert.match(script, /helper socket down/)
+    assert.match(script, /exit 1/)
     assert.doesNotMatch(script, /\/usr\/bin\/python3/)
     mod._resetPromptForTests()
     const logs = []

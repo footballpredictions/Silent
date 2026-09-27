@@ -1,4 +1,4 @@
-/** Статичный список серверов 1–4. Сервер 4 не ждёт ответ API. */
+/** Статичный список серверов 1–5. Слоты не ждут ответ API и не «появляются» позже. */
 export const AI_SERVER_SLOT = 'server4'
 export const AI_SERVER_TITLE = 'Сервер 4 для ИИ'
 
@@ -11,7 +11,7 @@ export type VpnServerRow = {
   api_base?: string
 }
 
-const STATIC_KEYS = ['server1', 'server2', 'server3', AI_SERVER_SLOT] as const
+const STATIC_KEYS = ['server1', 'server2', 'server3', AI_SERVER_SLOT, 'server5'] as const
 
 export function slotTitle(slot: string): string {
   const n = String(slot || '').replace(/^server/i, '')

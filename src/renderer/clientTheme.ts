@@ -83,6 +83,9 @@ export interface ClientTheme {
   subscription_tier_5_label?: string
   subscription_choose_tier_title?: string
   subscription_choose_plan_title?: string
+  subscription_pay_early_label?: string
+  subscription_renewal_title?: string
+  subscription_renewal_confirm_label?: string
   skip_email_confirmation?: boolean
 }
 

@@ -145,6 +145,7 @@ interface Profile {
   devices: DeviceInfo[]
   devices_count: number
   max_devices: number
+  payment_previews?: Record<string, { message: string; calculated_at?: string }>
 }
 
 type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'bypass' | 'hashes' | 'dns' | 'bonuses' | 'support' | 'about'
@@ -256,6 +257,8 @@ export default function MainScreen({
   const [activeWorkers, setActiveWorkers] = useState(0)
   const [paymentStatus, setPaymentStatus] = useState<'idle' | 'waiting' | 'completed' | 'failed' | 'timeout'>('idle')
   const [shopDeviceTier, setShopDeviceTier] = useState<3 | 5>(3)
+  const [showSubscriptionShop, setShowSubscriptionShop] = useState(false)
+  const [paymentBusyPlan, setPaymentBusyPlan] = useState<string | null>(null)
   const paymentPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const paymentPollDeadlineRef = useRef(0)
   const connectLockRef = useRef(false)
@@ -392,7 +395,7 @@ export default function MainScreen({
       try {
         const res = await api.get(`/api/payments/status/${label}`)
         const status = res.data?.status
-        if (status === 'completed') {
+        if (status === 'completed' && res.data?.subscription_applied !== false) {
           setPaymentStatus('completed')
           await fetchProfile()
           if (!document.hidden) {
@@ -419,9 +422,8 @@ export default function MainScreen({
   useEffect(() => () => stopPaymentPoll(), [stopPaymentPoll])
 
   useEffect(() => {
-    if (paymentStatus !== 'waiting' && paymentStatus !== 'completed') return
-    if (!(profile?.is_admin || profile?.subscription?.is_active)) return
-    if (paymentStatus === 'waiting') setPaymentStatus('completed')
+    if (paymentStatus !== 'completed') return
+    setShowSubscriptionShop(false)
     if (typeof document !== 'undefined' && document.hidden) return
     stopPaymentPoll()
     void stopPaymentBootstrapVpn().catch(() => null)
@@ -430,8 +432,7 @@ export default function MainScreen({
   useEffect(() => {
     const onVis = () => {
       if (document.hidden) return
-      const paid = profile?.is_admin || profile?.subscription?.is_active
-      if (paymentStatus === 'completed' || (paymentStatus === 'waiting' && paid)) {
+      if (paymentStatus === 'completed') {
         stopPaymentPoll()
         setPaymentStatus('completed')
         void stopPaymentBootstrapVpn().catch(() => null)
@@ -1573,6 +1574,7 @@ export default function MainScreen({
                   type="button"
                   onClick={() => {
                     setMenuPage(key as MenuPage)
+                    if (key === 'subscription') setShowSubscriptionShop(false)
                     if (key === 'bonuses') void loadReferral()
                   }}
                   className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors"
@@ -1639,7 +1641,7 @@ export default function MainScreen({
             <div className="flex-1 p-4 overflow-y-auto w-full">
               <button
                 type="button"
-                onClick={() => { setMenuPage(null); if (paymentStatus !== 'waiting') { stopPaymentPoll(); setPaymentStatus('idle') } }}
+                onClick={() => { if (showSubscriptionShop && paymentStatus === 'idle') { setShowSubscriptionShop(false); return }; setMenuPage(null); if (paymentStatus !== 'waiting') { stopPaymentPoll(); setPaymentStatus('idle') } }}
                 className="text-xs text-gray-400 mb-4 flex items-center gap-1"
               >
                 ← Назад
@@ -1647,9 +1649,7 @@ export default function MainScreen({
 
               {paymentStatus !== 'idle' ? (
                 (() => {
-                  const paymentUiStatus = (paymentStatus === 'waiting' && (profile?.is_admin || profile?.subscription?.is_active))
-                    ? 'completed'
-                    : paymentStatus
+                  const paymentUiStatus = paymentStatus
                   const cfg = {
                     waiting: {
                       title: clientTheme?.payment_waiting_title || 'Ждём подтверждения оплаты',
@@ -1718,18 +1718,30 @@ export default function MainScreen({
                           {clientTheme?.payment_retry_button_text || 'Попробовать снова'}
                         </button>
                       )}
+                      {paymentUiStatus === 'completed' && (
+                        <button type="button" className="mt-4 text-xs" onClick={() => setPaymentStatus('idle')}>
+                          Закрыть
+                        </button>
+                      )}
                     </div>
                   )
                 })()
-              ) : profile?.subscription?.is_active ? (
+              ) : (profile?.subscription?.is_active || isUnlimitedLikePlan(profile)) && !showSubscriptionShop ? (
                 <div className="space-y-2">
                   <div className="text-sm font-semibold">Подписка активна</div>
                   <div className="text-xs text-gray-500">
-                    Тариф: {planLabel(profile.subscription?.plan_type)}<br />
+                    Тариф: {planLabel(profile?.subscription?.plan_type)}<br />
                     {isUnlimitedLikePlan(profile)
                       ? 'Безлимитный доступ'
-                      : `Осталось: ${profile.subscription?.days_left ?? 0} дней`}
+                      : `Осталось: ${profile?.subscription?.days_left ?? 0} дней`}
                   </div>
+                  {!isUnlimitedLikePlan(profile) && (
+                    <button type="button" className="w-full mt-4 py-3 rounded-xl text-sm font-semibold"
+                      style={{ background: palette.primaryBtnBg, color: palette.primaryBtnFg }}
+                      onClick={() => { setShopDeviceTier(profile?.max_devices === 5 ? 5 : 3); setShowSubscriptionShop(true) }}>
+                      {clientTheme?.subscription_pay_early_label || 'Оплатить заранее'}
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -1764,10 +1776,21 @@ export default function MainScreen({
                   </div>
                   {SHOP_PLANS.filter(p => p.devices === shopDeviceTier).map(plan => (
                     <button key={plan.id}
+                      disabled={paymentBusyPlan !== null}
                       onClick={async () => {
+                        if (paymentBusyPlan !== null) return
+                        setPaymentBusyPlan(plan.id)
                         try {
                           const electron = (window as any).electronAPI
-                          if (!profile?.subscription?.is_active) {
+                          if (profile?.subscription?.is_active) {
+                            const cached = profile.payment_previews?.[plan.id]
+                            const age = Date.now() - Date.parse(cached?.calculated_at || '')
+                            const preview = cached && age >= 0 && age <= 300_000 ? cached
+                              : (await api.post('/api/payments/preview', { plan_type: plan.id }, { timeout: 30_000 })).data
+                            if (!preview?.message) throw new Error('Не удалось получить расчёт продления')
+                            if (!window.confirm(preview.message + '\n\nПерейти к оплате?')) return
+                          }
+                          {
                             const st = await electron?.vpnIsReady?.().catch(() => null)
                             const mainUp = !!(st?.ready && !st?.bootstrap)
                             if (!mainUp) {
@@ -1795,22 +1818,6 @@ export default function MainScreen({
                             startPaymentPoll(label)
                             return
                           }
-                          const res = await api.post(
-                            '/api/payments/init',
-                            { plan_type: plan.id },
-                            { timeout: 30_000 },
-                          )
-                          const url = res.data?.url
-                          const label = res.data?.label
-                          if (!url || !label) throw new Error('Сервер не вернул ссылку на оплату')
-                          const opened = await electron?.openExternal?.(url)
-                          if (opened === false) {
-                            try {
-                              await electron?.copyToClipboard?.(url)
-                            } catch { /* ignore */ }
-                            throw new Error('Не удалось открыть браузер. Ссылка скопирована — вставьте в Chrome/Edge вручную.')
-                          }
-                          startPaymentPoll(label)
                         } catch (e: any) {
                           const d = e?.response?.data?.detail
                           const msg = typeof d === 'string'
@@ -1819,12 +1826,14 @@ export default function MainScreen({
                               ? d.map((x: any) => x?.msg || x).filter(Boolean).join('; ')
                               : (e?.message || 'Не удалось начать оплату')
                           alert(msg)
+                        } finally {
+                          setPaymentBusyPlan(null)
                         }
                       }}
                       className="w-full flex items-center justify-between rounded-xl px-3 py-2.5 text-xs font-semibold transition-opacity hover:opacity-90"
                       style={{ background: palette.primaryBtnBg, color: palette.primaryBtnFg }}>
                       <span>{plan.label}</span>
-                      <span>{plan.price}</span>
+                      <span>{paymentBusyPlan === plan.id ? 'Открываем…' : plan.price}</span>
                     </button>
                   ))}
                   <p className="text-[10px] leading-relaxed" style={{ color: muted }}>

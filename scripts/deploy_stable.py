@@ -19,6 +19,7 @@ PREFLIGHT_TESTS = (
     "scripts/test_vpn_kick_storm_unit.py",
     "scripts/test_cell_agent_build_id_unit.py",
     "scripts/test_availability_refresh_unit.py",
+    "scripts/test_availability_polling_unit.py",
 )
 
 

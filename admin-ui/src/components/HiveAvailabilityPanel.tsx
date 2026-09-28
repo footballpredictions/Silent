@@ -428,8 +428,11 @@ function TargetRow({ target }: { target: Target }) {
                   </td>
                   <td className="py-1 pr-3">
                     {ru ? (
-                      <span className={ru.failed === 0 ? 'text-emerald-400' : ru.ok === 0 ? 'text-red-400' : 'text-amber-300'}>
-                        {ru.ok}/{ru.total}
+                      <span
+                        title={ru.total === 0 ? 'Внешний сервис пока не вернул пригодных измерений' : undefined}
+                        className={ru.total === 0 ? 'text-[#888]' : ru.failed === 0 ? 'text-emerald-400' : ru.ok === 0 ? 'text-red-400' : 'text-amber-300'}
+                      >
+                        {ru.total === 0 ? 'нет данных' : `${ru.ok}/${ru.total}`}
                       </span>
                     ) : target.ai_exit && ch === 'agent_tcp' ? (
                       <span className="text-[#888]" title="Порт закрыт фаерволом: снаружи отвечает только Улей">
@@ -674,7 +677,11 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
 
           {problems.length > 0 ? (
             <div className="mt-3 space-y-2">
-              <p className="text-xs text-[#888]">Найдено проблем: {problems.length}</p>
+              <p className="text-xs text-[#888]">
+                {problems.every(v => v.kind === 'unknown' || v.kind === 'no_vantage')
+                  ? `Неполные внешние измерения: ${problems.length}`
+                  : `Замечания по проверкам: ${problems.length}`}
+              </p>
               {problems.map((v, i) => <VerdictCard key={`${v.target}-${v.kind}-${i}`} verdict={v} />)}
             </div>
           ) : (

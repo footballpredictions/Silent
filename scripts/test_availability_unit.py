@@ -792,6 +792,18 @@ def test_checkhost_service_error_is_not_port_block():
     assert KIND_UNKNOWN in _kinds(snap)
 
 
+def test_report_summary_does_not_claim_pending_cell_is_available():
+    queen = _queen()
+    queen.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=3)
+    queen.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=3)
+    cell = TargetSnapshot(name="Сота 1", host="192.0.2.1", role="cell")
+    cell.ru[CHANNEL_PING] = VantageAggregate(channel=CHANNEL_PING,
+        nodes=[NodeResult(node="ru1", country="ru", ok=False, error_kind=ERR_PENDING)])
+    verdicts = classify_targets([queen, cell])
+    summary = report_summary(verdicts, report_status(verdicts))
+    assert "Недостаточно измерений: Сота 1" in summary, summary
+
+
 def test_blackhole_does_not_claim_world_ok_without_world_probe():
     snap = _queen()
     snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, failed=5)

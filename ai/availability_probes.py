@@ -21,6 +21,7 @@ from ai.availability_model import (
     ERR_NONE,
     ERR_OTHER,
     ERR_PENDING,
+    ERR_PROBE_ERROR,
     ERR_REFUSED,
     ERR_RESET,
     ERR_TIMEOUT,
@@ -317,15 +318,18 @@ async def vantage_check(
     nodes: Iterable[str],
     node_info: dict[str, dict[str, str]],
     *,
-    poll_attempts: int = 5,
+    poll_attempts: int = 25,
     poll_delay: float = 2.0,
     timeout: float = 12.0,
+    poll_timeout: float = 45.0,
 ) -> dict[str, NodeResult]:
     """Запустить внешнюю проверку и дождаться результатов по указанным нодам."""
     node_list = [n for n in nodes if n]
     if not node_list:
         return {}
     params: list[tuple[str, str]] = [("host", host)] + [("node", n) for n in node_list]
+    raw: dict[str, Any] = {}
+    service_error = ""
     try:
         async with httpx.AsyncClient(timeout=timeout, headers=CHECKHOST_HEADERS) as client:
             start = await client.get(f"{CHECKHOST_BASE}/check-{kind}", params=params)
@@ -335,23 +339,47 @@ async def vantage_check(
             if not request_id:
                 raise ValueError(f"нет request_id: {str(started)[:120]}")
 
-            raw: dict[str, Any] = {}
+            # null — ещё выполняющаяся проверка, а не отказ цели. У TCP/ICMP
+            # результат может появиться позже прежнего окна в 9 секунд.
+            deadline = time.monotonic() + max(0, poll_timeout)
             for attempt in range(poll_attempts):
-                await asyncio.sleep(poll_delay if attempt else 1.0)
-                res = await client.get(f"{CHECKHOST_BASE}/check-result/{request_id}")
-                if res.status_code >= 400:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(poll_delay if attempt else 1.0, remaining))
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    res = await asyncio.wait_for(
+                        client.get(f"{CHECKHOST_BASE}/check-result/{request_id}"),
+                        min(timeout, remaining),
+                    )
+                    res.raise_for_status()
+                    update = res.json()
+                    if not isinstance(update, dict):
+                        raise ValueError("сервис вернул неверный формат результата")
+                except Exception as e:
+                    # Сбой очередного GET не стирает уже готовые измерения.
+                    service_error = str(e)[:180]
                     continue
-                raw = res.json() or {}
-                if raw and all(raw.get(n) is not None for n in node_list):
+                service_error = ""
+                for node in node_list:
+                    payload = update.get(node)
+                    if payload is not None and _parse_node_payload(kind, payload)[2] != ERR_PENDING:
+                        raw[node] = payload
+                if all(n in raw for n in node_list):
                     break
     except Exception as e:
         logger.warning("availability: внешняя проверка %s %s не удалась: %s", kind, host, e)
-        return {}
+        service_error = str(e)[:180]
 
     out: dict[str, NodeResult] = {}
     for node in node_list:
         info = node_info.get(node, {})
         ok, latency, error_kind, detail, ips = _parse_node_payload(kind, raw.get(node))
+        if node not in raw and service_error:
+            error_kind, detail = ERR_PROBE_ERROR, service_error
         out[node] = NodeResult(
             node=node,
             country=info.get("country", ""),

@@ -845,8 +845,12 @@ def plan_incidents(
 
 def report_summary(verdicts: list[Verdict], status: str) -> str:
     if status == "ok":
-        targets = sorted({v.target for v in verdicts})
-        return f"Все проверенные узлы доступны из РФ ({', '.join(targets) or 'нет целей'})."
+        targets = sorted({v.target for v in verdicts if v.kind == KIND_OK})
+        incomplete = sorted({v.target for v in verdicts if v.kind in (KIND_UNKNOWN, KIND_NO_VANTAGE)})
+        summary = f"Проверенные узлы доступны из РФ ({', '.join(targets) or 'нет целей'})."
+        if incomplete:
+            summary += f" Недостаточно измерений: {', '.join(incomplete)}."
+        return summary
     top = [v for v in verdicts if v.kind not in (KIND_OK,)]
     if not top:
         return "Изменений нет."

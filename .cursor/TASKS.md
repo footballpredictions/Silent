@@ -6,6 +6,32 @@ Agent приступает к **первой невыполненной** зад
 
 ---
 
+### Предрелизная проверка и push1.0.168 (2026-09-28)
+
+- [x] Перепроверить Android278/PC121/OpenWrt45, payment+renewal56/checkout3/relay7, compatibility/kick-storm; версии/подпись/ресурсы/nativepins/GitHubOTA/права/SHA
+- [x] Сохранить исходный OpenWrt API-priority diff отдельно, вернуть рабочий cell-first и проверить фактический failover/tunnel shell loop
+- [x] Воспроизвести CRLF shell-archive регрессию, нормализовать только shell при упаковке без изменения бинарников, пересобрать OpenWrt и проверить все packagedfiles
+- [x] Подготовить4GitHubReleaseassets и4Pagesфайла с manifest168/install/uninstall/OpenWrt.tgz, обновитьSHA и передать releases/PUBLISH-1.0.168.md; публикацию выполняет пользователь
+- [x] Сохранить активный VPN, версии168, весь iOSWIP локально; Mac сборка отдельно, DMG/IPA здесь не строились
+- [ ] Выполнить разрешённые scoped commit/push PC/OpenWrt/backend и сверить удалённыеHEAD; Android не требует новогоcommit
+
+### Повторная сборка всех релизов без повышения версии (2026-09-28)
+
+- [x] Сохранить Android/PC/OpenWrt1.0.168, iOS1.0.1/build2; использовать принятый bootstrap и прежний APK release-сертификат
+- [x] Без taskkill/очистки старых PC-build папок запустить Windows NSIS/Linux DEB в новых каталогах; native Windows/Linux пересобраны, pins сверены, PC121 тест успешен
+- [x] Пересобрать OpenWrt Go для aarch64/ARMv7/mipsel/x86_64 и архив1.0.168; OpenWrt41 тест успешен
+- [x] Android assembleRelease --rerun-tasks52 задачи, freshAPK168/24libs/4ABI, прежний сертификат/подпись; готовый APK скопирован и SHA сверены
+- [x] Windows NSIS/Linux DEB готовы; app.asar168/release flags/pins/GitHub OTA и DEB ELF/права проверены; canonical SHA256/BUILD обновлены, debug сохранён
+- [x] Активные wdtt-client PID5288/wireguard2676 прежние; установки/деплоя/публикации/push не было
+- [x] macOS/iOS release в Windows недоступны: DMG требует Mac, iOS Xcode/подпись; ранее пользователь собирает Mac сам, исходники Apple остаются локально
+
+### Проверка GitHub-обновлений всех клиентов (2026-09-28)
+
+- [x] Проследить реальные проверки/скачивание Android/TV и Windows/Linux/macOS: metadata GitHub Pages, download GitHub; legacy backend fallback только при отсутствии ссылки, обычный OTA его не использует
+- [x] Проверить OpenWrt/iOS: OpenWrt без встроенного OTA, iOS собственного OTA нет; Mac код настроен, но нет опубликованной записи в manifest
+- [x] Live manifest/latest Release1.0.167; APK/EXE/DEB HEAD200 и размеры совпали, OpenWrt tgz200; README installer URL404, GitHub tree подтвердил отсутствие скрипта
+- [x] 19 Android и6 PC OTA тестов успешны; клиентский код, VPN и публикации не менялись.1.0.168 пока локальная сборка, не публичный OTA
+
 ### HTTPS 1/3 и неверный TLS-контроль (2026-09-28)
 
 - [x] Прочитать live-отчёт 16:51:59UTC: TCP3/3, domain HTTPS1/3 (Москва timeout×2, Санкт-Петербург200), world2/2; IP HTTPS даёт Broken pipe также вне РФ, nginx default возвращает444
@@ -14,6 +40,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] Production diff: только classifier/knowledge+UI, backup /tmp/silent-before-https-observation-20260928.tar.gz; canonical stable deploy health69мс/kick0; checksum158+UI совпали, wdtt PID764/DNAT прежние
 - [x] Production replay старого отчёта ok→degraded; свежий ручной отчёт17:11:36UTC/62.36с/pending=false: HTTPS1/3, https_degraded без SNI-block
 - [x] По команде «пуш и пересобери релизы если нужно» оценить сборки: только backend/админка, клиентские исходники текущим фиксом не менялись; админка уже пересобрана/развёрнута, релизы1.0.168 остаются актуальными
+- [x] Push main3f181f3 выполнен и удалённый HEAD проверен; backend после push чистый
 
 ### Отдельный сервер уведомлений ЮMoney (2026-09-28)
 

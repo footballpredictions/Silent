@@ -40,6 +40,35 @@ class ReleasePackTests(unittest.TestCase):
         self.assertEqual(slot_from_uname("x86_64"), "x86_64")
         self.assertIsNone(slot_from_uname("ppc"))
 
+    def test_windows_checkout_packages_runnable_shell_without_changing_binaries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "source"
+            root.mkdir()
+            (root / "VERSION").write_bytes(b"1.0.168\r\n")
+            script = b"#!/bin/sh\r\nprintf 'ready\\n'\r\n"
+            (root / "install.sh").write_bytes(script)
+            library = root / "files/usr/lib/silent-vpn"
+            library.mkdir(parents=True)
+            helper = library / "common.sh"
+            helper.write_bytes(b"# sourced helper\r\nready() { echo ready; }\r\n")
+            binary = library / "wdtt-client.x86_64"
+            binary_data = b"\x7fELF\r\n\x00\xff"
+            binary.write_bytes(binary_data)
+            cgi = root / "files/www/cgi-bin/silent-api"
+            cgi.parent.mkdir(parents=True)
+            cgi.write_bytes(script)
+            dest = Path(tmp) / "release.tar.gz"
+            write_tarball(root, dest)
+            with tarfile.open(dest, "r:gz") as tar:
+                for name in ("install.sh", "files/usr/lib/silent-vpn/common.sh", "files/www/cgi-bin/silent-api"):
+                    member = tar.getmember("silent-vpn/" + name)
+                    data = tar.extractfile(member).read()
+                    self.assertNotIn(b"\r\n", data, name)
+                    self.assertEqual(member.size, len(data))
+                self.assertEqual(tar.getmember("silent-vpn/install.sh").mode, 0o755)
+                self.assertEqual(tar.extractfile("silent-vpn/files/usr/lib/silent-vpn/wdtt-client.x86_64").read(), binary_data)
+            self.assertEqual((root / "install.sh").read_bytes(), script)
+
     def test_install_sh_checks_arch_before_copy(self):
         text = (Path(__file__).resolve().parents[1] / "install.sh").read_text(encoding="utf-8")
         start = text.find("install_files()")

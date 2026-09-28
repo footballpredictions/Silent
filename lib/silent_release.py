@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import tarfile
 from pathlib import Path
 
@@ -57,12 +58,18 @@ def write_tarball(root: Path, dest: Path) -> Path:
     members = iter_release_files(root)
     with tarfile.open(dest, "w:gz", format=tarfile.USTAR_FORMAT) as tar:
         for src, arcname in members:
+            data = src.read_bytes()
+            # A Windows checkout may have CRLF even when Git stores LF.
+            # Normalize executable shell scripts and sourced .sh helpers only;
+            # native binaries must keep their original bytes.
+            if src.suffix == ".sh" or data.startswith(b"#!"):
+                data = data.replace(b"\r\n", b"\n")
             info = tar.gettarinfo(str(src), arcname)
+            info.size = len(data)
             info.uid = 0
             info.gid = 0
             info.uname = "root"
             info.gname = "root"
             info.mode = 0o755 if _is_exec(src) else 0o644
-            with src.open("rb") as fh:
-                tar.addfile(info, fh)
+            tar.addfile(info, io.BytesIO(data))
     return dest

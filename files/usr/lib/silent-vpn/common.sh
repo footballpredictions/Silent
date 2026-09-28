@@ -91,6 +91,7 @@ sv_router_name() {
 
 sv_api_bases() {
 	# VPN поднят — только шлюз туннеля. Иначе соты :9100, Улей :443 последним.
+	# wget не подменяет Host для HTTPS по IP: сначала рабочий HTTP-прокси сот.
 	if [ -f "$SV_RUN/path.up" ]; then
 		echo "$SV_TUNNEL_API"
 		return

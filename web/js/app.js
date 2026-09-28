@@ -35,6 +35,9 @@ const state = {
   promoMsg: "",
   copyMsg: "",
   shopTier: 3,
+  showSubscriptionShop: false,
+  paymentBusy: false,
+  paymentStatus: "idle",
   lanUrl: "http://192.168.1.1.silent.vpn",
   lanIp: "192.168.1.1",
   routerName: "OpenWrt",
@@ -287,7 +290,7 @@ function pageInner(p, t) {
   if (page === "support") return supportPage(t);
   if (page === "about") {
     return `<h2>Silent VPN</h2>
-      <p class="hint">Версия 1.0.165 · OpenWrt</p>
+      <p class="hint">Версия 1.0.168 · OpenWrt</p>
       <p class="hint" style="margin-top:8px">Туннель как у PC и Android: WireGuard + WDTT. Этот веб — только панель роутера.</p>`;
   }
   return "";
@@ -327,10 +330,20 @@ function sessionsBadge() {
 function subscriptionPage(t) {
   const profile = state.profile || {};
   const sub = profile.subscription || {};
-  if (isUnlimitedLike(profile) || sub.is_active) {
+  if (state.paymentStatus === "waiting") {
+    return `<h2>${esc(t.payment_waiting_title || "Ждём подтверждения оплаты")}</h2>
+      <p class="hint">${esc(t.payment_waiting_text || "Оплатите в браузере и вернитесь сюда.")}</p>
+      <button class="primary" data-act="pay-cancel">Отмена</button>`;
+  }
+  if (state.paymentStatus === "completed") {
+    return `<h2>${esc(t.payment_success_title || "Оплата прошла успешно")}</h2>
+      <p class="hint">Подписка обновлена.</p><button class="primary" data-act="pay-cancel">Закрыть</button>`;
+  }
+  if (isUnlimitedLike(profile) || (sub.is_active && !state.showSubscriptionShop)) {
     return `<h2>Подписка активна</h2>
       <p class="hint">Тариф: ${esc(planLabel(sub.plan_type))}<br>
-      ${isUnlimitedLike(profile) ? "Безлимитный доступ" : `Осталось: ${esc(sub.days_left ?? 0)} дней`}</p>`;
+      ${isUnlimitedLike(profile) ? "Безлимитный доступ" : `Осталось: ${esc(sub.days_left ?? 0)} дней`}</p>
+      ${!isUnlimitedLike(profile) ? `<button class="primary" data-act="pay-early">${esc(t.subscription_pay_early_label || "Оплатить заранее")}</button>` : ""}`;
   }
   const tier = state.shopTier === 5 ? 5 : 3;
   const plans = tier === 5
@@ -353,7 +366,7 @@ function subscriptionPage(t) {
     </div>
     <h2>${esc(t.subscription_choose_plan_title || "Выберите тариф")}</h2>
     ${plans.map(([id, label, price]) => `
-      <button class="card-btn" data-act="pay" data-plan="${id}"><span>${label}</span><span>${price}</span></button>
+      <button class="card-btn" data-act="pay" data-plan="${id}" ${state.paymentBusy ? "disabled" : ""}><span>${label}</span><span>${price}</span></button>
     `).join("")}
     <p class="hint" style="margin-top:10px">Оплата откроется в браузере (YuMoney). После оплаты вернитесь сюда.</p>
     ${state.error ? `<p class="err">${esc(state.error)}</p>` : ""}`;
@@ -540,7 +553,9 @@ async function handle(act, el) {
       render();
       return;
     }
-    if (act === "page-back") { state.page = null; render(); return; }
+    if (act === "page-back") { if (state.showSubscriptionShop) state.showSubscriptionShop = false; else state.page = null; render(); return; }
+    if (act === "pay-early") { state.shopTier = state.profile?.max_devices === 5 ? 5 : 3; state.showSubscriptionShop = true; render(); return; }
+    if (act === "pay-cancel") { ++paymentPollVersion; state.paymentStatus = "idle"; state.showSubscriptionShop = false; render(); return; }
     if (act === "login") return login();
     if (act === "register") return register();
     if (act === "forgot") return forgot();
@@ -627,6 +642,9 @@ async function forgot() {
 }
 
 async function logout() {
+  ++paymentPollVersion;
+  state.paymentStatus = "idle";
+  state.showSubscriptionShop = false;
   state.loading = true;
   render();
   try { await api.logout(); } catch { /* keep going */ }
@@ -782,13 +800,59 @@ async function checkPromo() {
 }
 
 async function pay(plan) {
+  if (state.paymentBusy) return;
+  state.paymentBusy = true;
   state.error = "";
   render();
   try {
+    if (state.profile?.subscription?.is_active) {
+      const cached = state.profile.payment_previews?.[plan];
+      const age = Date.now() - Date.parse(cached?.calculated_at || "");
+      const preview = cached && age >= 0 && age <= 300_000 ? cached : await api.previewPayment(plan);
+      if (!preview.message) throw new Error(preview.detail || "Не удалось получить расчёт продления");
+      if (!window.confirm(preview.message + "\n\nПерейти к оплате?")) return;
+    }
     const res = await api.pay(plan);
     openPaymentUrl(res.url);
+    if (!res.label) throw new Error("Нет номера платежа");
+    state.paymentStatus = "waiting";
+    void pollPayment(res.label, ++paymentPollVersion);
   } catch (e) {
     state.error = e.message || "Не удалось открыть оплату";
+    render();
+  } finally {
+    state.paymentBusy = false;
+    render();
+  }
+}
+
+let paymentPollVersion = 0;
+async function pollPayment(label, version) {
+  const deadline = Date.now() + 10 * 60 * 1000;
+  while (version === paymentPollVersion && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 4000));
+    if (version !== paymentPollVersion) return;
+    try {
+      const result = await api.paymentStatus(label);
+      if (version !== paymentPollVersion) return;
+      if (result.status === "completed" && result.subscription_applied !== false) {
+        state.paymentStatus = "completed";
+        try { state.profile = await api.profile(); } catch { /* retain last profile until next refresh */ }
+        state.showSubscriptionShop = false;
+        render();
+        return;
+      }
+      if (["failed", "expired", "cancelled"].includes(result.status)) {
+        state.paymentStatus = "idle";
+        state.error = "Платёж не подтверждён. Попробуйте снова.";
+        render();
+        return;
+      }
+    } catch { /* temporary network loss does not confirm a payment */ }
+  }
+  if (version === paymentPollVersion) {
+    state.paymentStatus = "idle";
+    state.error = "Не дождались оплаты. Если уже оплатили — обновите подписку позже.";
     render();
   }
 }

@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import urllib.error
@@ -443,17 +444,28 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             if not promo:
                 return write_json(self, {"detail": "Не найден"}, 404)
             return write_json(self, {"discount_percent": 20})
-        if op == "pay" and method == "POST":
+        if op == "pay-status" and method == "POST":
+            body = read_json(self)
+            label = str(body.get("label") or "")
+            if not re.fullmatch(r"silent_[a-f0-9]{32}", label):
+                return write_json(self, {"detail": "Некорректный платёж"}, 400)
+            if live:
+                code, data = hive("GET", "/api/payments/status/" + label, token=hive_token())
+                return write_json(self, data, code)
+            return write_json(self, {"status": "pending"})
+        if op in ("pay", "pay-preview") and method == "POST":
             body = read_json(self)
             if live:
                 code, data = hive(
                     "POST",
-                    "/api/payments/init",
+                    "/api/payments/preview" if op == "pay-preview" else "/api/payments/init",
                     {"plan_type": body.get("plan_type") or "monthly"},
                     token=hive_token(),
                 )
                 return write_json(self, data, code)
-            return write_json(self, {"url": "https://yoomoney.ru", "label": "silent_preview"})
+            if op == "pay-preview":
+                return write_json(self, {"amount": 330, "message": "Предпросмотр: остаток будет пересчитан в дни нового тарифа. К оплате 330 ₽."})
+            return write_json(self, {"url": "https://yoomoney.ru/quickpay/confirm.xml", "label": "silent_" + "0" * 32})
         return write_json(self, {"detail": "unknown op"}, 404)
 
 

@@ -120,15 +120,26 @@ case "$OP" in
 			json_out 200 '{"selected_server":"server1","servers":[]}'
 		fi
 		;;
-	pay)
+	pay|pay-preview)
 		plan="$(printf '%s' "$BODY" | jsonfilter -e '@.plan_type' 2>/dev/null || echo monthly)"
 		[ -n "$plan" ] || plan="monthly"
-		f="$(sv_hive_pay "$plan")"
+		if [ "$OP" = "pay-preview" ]; then
+			f="$(sv_hive_post "/api/payments/preview" "$(printf '{"plan_type":"%s"}' "$plan")")"
+		else
+			f="$(sv_hive_pay "$plan")"
+		fi
 		if [ -s "$f" ]; then
 			json_out 200 "$(cat "$f")"
 		else
 			json_out 502 '{"detail":"Не удалось начать оплату"}'
 		fi
+		;;
+	pay-status)
+		label="$(printf '%s' "$BODY" | jsonfilter -e '@.label' 2>/dev/null)"
+		case "$label" in silent_[a-f0-9]*) ;; *) json_out 400 '{"detail":"Некорректный платёж"}'; exit 0;; esac
+		case "$label" in *[!a-z0-9_]*) json_out 400 '{"detail":"Некорректный платёж"}'; exit 0;; esac
+		f="$(sv_hive_get "/api/payments/status/$label")"
+		json_out 200 "$(cat "$f")"
 		;;
 	server)
 		key="$(printf '%s' "$BODY" | jsonfilter -e '@.key' 2>/dev/null || echo server1)"

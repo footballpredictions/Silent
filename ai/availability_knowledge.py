@@ -24,6 +24,7 @@ KIND_RST_INJECTION = "rst_injection"
 KIND_HTTP_STUB = "http_stub"
 KIND_THROTTLING = "throttling"
 KIND_ASN_PARTIAL = "asn_partial"
+KIND_HTTPS_DEGRADED = "https_degraded"
 KIND_MOBILE_SHUTDOWN = "mobile_shutdown"
 KIND_ACTIVE_PROBING = "active_probing_risk"
 KIND_ROUTE_LOSS = "route_loss"
@@ -47,8 +48,8 @@ _METHODS: tuple[BlockMethod, ...] = (
         kind=KIND_OK,
         title="Сервер доступен",
         severity="info",
-        how_it_works="Все проверенные каналы отвечают и из РФ, и локально.",
-        signals=("TCP/UDP/TLS проходят с российских точек наблюдения.",),
+        how_it_works="Доступность подтверждена основными пробами; доказательств блокировки недостаточно.",
+        signals=("Основные пробы проходят; единичные ошибки видны в деталях каналов.",),
         fixes=("Действий не требуется.",),
         commands=(),
     ),
@@ -321,6 +322,22 @@ _METHODS: tuple[BlockMethod, ...] = (
             "curl -s -H 'Accept: application/json' 'https://check-host.net/check-ping?host=<IP>&max_nodes=8'",
             "python -m ai.availability_cli --run",
         ),
+    ),
+    BlockMethod(
+        kind=KIND_HTTPS_DEGRADED,
+        title="Проблемы доступности HTTPS",
+        severity="warning",
+        how_it_works=(
+            "HTTPS-запрос не прошёл с нескольких российских точек наблюдения. "
+            "Это наблюдаемый отказ, но он не определяет причину: сеть, узел проверки, "
+            "TLS или сервер. Для вывода о SNI нужна успешная сравнительная проба."
+        ),
+        signals=("Несколько нод получили ошибку HTTPS; успешного SNI-контроля недостаточно.",),
+        fixes=(
+            "Повторить проверку с тех же нод и сопоставить TLS и HTTP-ответ с серверными логами.",
+            "По одному прогону не менять домен, маршруты и работающий VPN.",
+        ),
+        commands=(),
     ),
     BlockMethod(
         kind=KIND_ASN_PARTIAL,

@@ -11,6 +11,7 @@ from ai.availability_knowledge import (
     KIND_ASN_PARTIAL,
     KIND_DNS_POISONING,
     KIND_HTTP_STUB,
+    KIND_HTTPS_DEGRADED,
     KIND_IP_BLACKHOLE,
     KIND_MOBILE_SHUTDOWN,
     KIND_NO_VANTAGE,
@@ -301,7 +302,7 @@ def _sni_verdict(snap: TargetSnapshot) -> Verdict | None:
     if no_sni is None or not no_sni.all_ok or len(failed_nodes & control_nodes & tcp_nodes) < 2:
         evidence.append("Нет успешного контрольного TLS-соединения на тех же российских нодах.")
         return _verdict(
-            snap, KIND_UNKNOWN, confidence=0.55,
+            snap, KIND_HTTPS_DEGRADED, confidence=0.55,
             summary="HTTPS из РФ не проходит; блокировка именно по SNI не подтверждена.",
             evidence=evidence, channel=CHANNEL_API_TLS,
             extra_fixes=["Проверить TLS по IP и с доменом на одних и тех же российских нодах; до подтверждения не менять домен и маршруты."],
@@ -317,6 +318,29 @@ def _sni_verdict(snap: TargetSnapshot) -> Verdict | None:
         evidence=evidence,
         channel=CHANNEL_API_TLS,
         port=snap.api_port,
+    )
+
+
+def _https_partial_verdict(snap: TargetSnapshot) -> Verdict | None:
+    tls = snap.ru_view(CHANNEL_API_TLS)
+    if (tls is None or tls.all_failed or tls.ok_count == 0
+            or tls.fail_count < PARTIAL_MIN_FAILS or tls.ok_ratio >= PARTIAL_OK_RATIO
+            or snap.local_ok(CHANNEL_API_TLS) is not True):
+        return None
+    evidence = [
+        f"HTTPS с доменом: {tls.ok_count}/{tls.total}, ошибки: {_fail_desc(tls)}.",
+        f"Ноды с ошибками: {', '.join(n.node for n in tls.failing_nodes())}.",
+        "Локальное TLS-рукопожатие проходит. HTTPS-проба также проверяет HTTP-ответ.",
+        "Сбой HTTPS не определяет стадию отказа; блокировка по SNI не доказана.",
+    ]
+    world = snap.world_view(CHANNEL_API_TLS)
+    if world:
+        evidence.append(f"Контроль вне РФ: HTTPS {world.ok_count}/{world.total}.")
+    return _verdict(
+        snap, KIND_HTTPS_DEGRADED, confidence=0.6,
+        summary=(f"HTTPS с доменом отвечает с {tls.ok_count}/{tls.total} нод РФ; "
+                 "блокировка по SNI не подтверждена."),
+        evidence=evidence, channel=CHANNEL_API_TLS, port=snap.api_port,
     )
 
 
@@ -709,6 +733,9 @@ def classify_target(snap: TargetSnapshot) -> list[Verdict]:
         stub = _http_stub_verdict(snap)
         if stub:
             verdicts.append(stub)
+        https_partial = _https_partial_verdict(snap)
+        if https_partial and not stub:
+            verdicts.append(https_partial)
         verdicts.extend(_channel_verdicts(snap))
         throttle = _throttling_verdict(snap)
         if throttle:
@@ -752,7 +779,8 @@ def classify_target(snap: TargetSnapshot) -> list[Verdict]:
                 snap,
                 KIND_OK,
                 confidence=0.9,
-                summary=f"{snap.name}: все каналы доступны из РФ.",
+                summary=(f"{snap.name}: доступность из РФ подтверждена; "
+                         "доказательств блокировки недостаточно."),
                 evidence=[
                     f"Проверено каналов: {len(snap.ru_channels())}, "
                     f"нод: {max((v.total for v in snap.ru.values()), default=0)}."
@@ -794,7 +822,7 @@ def report_status(verdicts: list[Verdict]) -> str:
         return "down"
     if kinds & BLOCKING_KINDS:
         return "blocked"
-    if kinds & {KIND_ASN_PARTIAL, KIND_THROTTLING, KIND_ROUTE_LOSS, KIND_ACTIVE_PROBING}:
+    if kinds & {KIND_ASN_PARTIAL, KIND_HTTPS_DEGRADED, KIND_THROTTLING, KIND_ROUTE_LOSS, KIND_ACTIVE_PROBING}:
         return "degraded"
     # «Неизвестно» только если из РФ не подтверждён ни один узел: когда Улей виден,
     # непроверенная снаружи сота не должна гасить общий статус.

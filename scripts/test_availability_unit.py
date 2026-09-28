@@ -20,6 +20,7 @@ from ai.availability_knowledge import (  # noqa: E402
     KIND_ASN_PARTIAL,
     KIND_DNS_POISONING,
     KIND_HTTP_STUB,
+    KIND_HTTPS_DEGRADED,
     KIND_IP_BLACKHOLE,
     KIND_MOBILE_SHUTDOWN,
     KIND_NO_VANTAGE,
@@ -342,7 +343,8 @@ def test_https_timeout_without_differential_control_is_not_sni_block():
     snap.world[CHANNEL_API_TLS] = _agg(CHANNEL_API_TLS, ok=2, source="world-external")
     verdicts = classify_target(snap)
     assert not any(v.kind == KIND_SNI_BLOCK for v in verdicts), "SNI asserted without control"
-    assert any(v.kind == KIND_UNKNOWN and v.channel == CHANNEL_API_TLS for v in verdicts)
+    assert any(v.kind == KIND_HTTPS_DEGRADED and v.channel == CHANNEL_API_TLS for v in verdicts)
+    assert report_status(verdicts) == "degraded"
 
 
 def test_https_timeout_with_failed_control_is_not_sni_block():
@@ -351,6 +353,43 @@ def test_https_timeout_with_failed_control_is_not_sni_block():
     snap.ru[CHANNEL_API_TLS] = _agg(CHANNEL_API_TLS, failed=2)
     snap.ru[CHANNEL_TLS_NO_SNI] = _agg(CHANNEL_TLS_NO_SNI, failed=2)
     assert not any(v.kind == KIND_SNI_BLOCK for v in classify_target(snap))
+
+
+def test_observed_https_one_of_three_is_degraded_without_claiming_sni_block():
+    snap = _queen()
+    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=3)
+    snap.ru[CHANNEL_API_TLS] = _agg(CHANNEL_API_TLS, ok=1, failed=2)
+    snap.ru[CHANNEL_TLS_NO_SNI] = _agg(CHANNEL_TLS_NO_SNI, failed=3)
+    snap.world[CHANNEL_API_TLS] = _agg(CHANNEL_API_TLS, ok=2, source="world-external")
+    verdicts = classify_target(snap)
+    assert KIND_OK not in {v.kind for v in verdicts}, "HTTPS 1/3 must not say all channels are available"
+    assert KIND_SNI_BLOCK not in {v.kind for v in verdicts}
+    assert report_status(verdicts) == "degraded"
+    warning = next(v for v in verdicts if v.channel == CHANNEL_API_TLS)
+    assert warning.severity == "warning"
+    assert "1/3" in warning.summary
+    assert "SNI" in warning.summary and "не подтверждена" in warning.summary
+    healthy_cell = TargetSnapshot(name="Сота", host="192.0.2.1", role="cell")
+    healthy_cell.ru[CHANNEL_AGENT_TCP] = _agg(CHANNEL_AGENT_TCP, ok=3)
+    assert report_status(classify_targets([snap, healthy_cell])) == "degraded"
+
+
+def test_https_pending_nodes_do_not_become_degraded():
+    snap = _queen()
+    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=3)
+    snap.ru[CHANNEL_API_TLS] = _agg(CHANNEL_API_TLS, ok=1, failed=2, error=ERR_PENDING)
+    assert report_status(classify_target(snap)) == "ok"
+
+
+def test_rejected_ip_https_control_does_not_claim_every_channel_is_ok():
+    snap = _queen()
+    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=3)
+    snap.ru[CHANNEL_API_TLS] = _agg(CHANNEL_API_TLS, ok=3)
+    snap.ru[CHANNEL_TLS_NO_SNI] = _agg(CHANNEL_TLS_NO_SNI, failed=3, error="other")
+    verdicts = classify_target(snap)
+    assert report_status(verdicts) == "ok"
+    assert {v.kind for v in verdicts} == {KIND_OK}
+    assert "все каналы доступны" not in verdicts[0].summary
 
 
 def test_foreign_http_answer_reads_as_stub_not_sni_block():

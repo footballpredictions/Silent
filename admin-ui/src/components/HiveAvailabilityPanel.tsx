@@ -166,9 +166,9 @@ const SEVERITY_CLS: Record<string, string> = {
 
 const CHANNEL_LABEL: Record<string, string> = {
   api_tcp: 'API TCP',
-  api_tls: 'TLS с доменом',
+  api_tls: 'HTTPS с доменом',
   api_http: 'HTTP-ответ',
-  tls_no_sni: 'TLS без SNI',
+  tls_no_sni: 'HTTPS по IP (контроль)',
   wdtt_udp: 'wdtt UDP',
   wg_udp: 'WireGuard UDP',
   agent_tcp: 'cell-agent TCP',
@@ -416,7 +416,7 @@ function TargetRow({ target }: { target: Target }) {
                   <td className="py-1 pr-3">
                     {local ? (
                       <span title={local.detail} className={local.inconclusive ? 'text-[#888]' : local.ok ? 'text-emerald-400' : 'text-red-400'}>
-                        {local.inconclusive ? (local.ok ? 'нет ответа (норма UDP)' : 'нет данных') : local.ok ? 'ok' : local.error_kind || 'fail'}
+                        {local.inconclusive ? (local.ok ? 'нет ответа (норма UDP)' : 'нет данных') : local.ok ? (ch === 'api_tls' || ch === 'tls_no_sni' ? 'TLS ok' : 'ok') : local.error_kind || 'fail'}
                       </span>
                     ) : peer ? (
                       <span className={peer.ok ? 'text-emerald-400' : 'text-red-400'}>
@@ -430,7 +430,7 @@ function TargetRow({ target }: { target: Target }) {
                     {ru ? (
                       <span
                         title={ru.total === 0 ? 'Внешний сервис пока не вернул пригодных измерений' : undefined}
-                        className={ru.total === 0 ? 'text-[#888]' : ru.failed === 0 ? 'text-emerald-400' : ru.ok === 0 ? 'text-red-400' : 'text-amber-300'}
+                        className={ru.total === 0 || ch === 'tls_no_sni' ? 'text-[#888]' : ru.failed === 0 ? 'text-emerald-400' : ru.ok === 0 ? 'text-red-400' : 'text-amber-300'}
                       >
                         {ru.total === 0 ? 'нет данных' : `${ru.ok}/${ru.total}`}
                         {(ru.nodes ?? []).filter(n => n.error_kind === 'pending' || n.error_kind === 'probe_error').length > 0 && (
@@ -461,6 +461,12 @@ function TargetRow({ target }: { target: Target }) {
           </tbody>
         </table>
       </div>
+      {target.ru.tls_no_sni && (
+        <p className="text-[11px] text-[#888] mt-2">
+          Локально проверяется TLS-рукопожатие, из РФ — HTTPS-ответ. Контроль по IP может быть
+          закрыт nginx без домена; его отказ сам по себе не доказывает блокировку TLS.
+        </p>
+      )}
       {target.clients && (
         <p className="text-[11px] text-[#888] mt-2">
           Клиенты: {target.clients.failures} отказов за {target.clients.window_minutes} мин ·

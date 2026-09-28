@@ -507,7 +507,7 @@ class MainViewModel @Inject constructor(
                     DebugLog.e("MainViewModel", "WDTT error: $err")
                     if (paymentBootstrapHeld) {
                         DebugLog.w("MainViewModel", "payment bootstrap WDTT: $err")
-                        if (isBootstrapFatalError(err) && isAppForeground() && isPaidSubscriptionConfirmed()) {
+                        if (isBootstrapFatalError(err) && isAppForeground() && _paymentState.value == PaymentUiState.COMPLETED) {
                             paymentBootstrapHeld = false
                             bootstrapVpnMode = false
                             bootstrapContext?.let { stopVpnLocally(it) }
@@ -967,7 +967,10 @@ class MainViewModel @Inject constructor(
         val publicReachable = if (mainUp || mobile || bootstrap) {
             true
         } else {
-            repo.isPublicBackendReachable(forceProbe = false)
+            // Не ставим открытие оплаты за полной очередью таймаутов public API.
+            kotlinx.coroutines.withTimeoutOrNull(750L) {
+                repo.isPublicBackendReachable(forceProbe = false)
+            } ?: false
         }
         return com.silent.vpn.policy.PaymentTunnelPolicy.needsBridge(
             mainUp,
@@ -1004,7 +1007,7 @@ class MainViewModel @Inject constructor(
 
     private fun maybeCompletePaymentFromProfile(profile: UserProfile) {
         if (!isPaymentConfirmationPending()) return
-        if (profile.is_admin || profile.subscription.is_active) {
+        if (_paymentState.value == PaymentUiState.COMPLETED) {
             finishPaymentIfAppVisible()
         }
     }
@@ -1016,13 +1019,13 @@ class MainViewModel @Inject constructor(
         }
         requestOpenSubscription()
         viewModelScope.launch {
-            if (isPaidSubscriptionConfirmed()) {
+            if (_paymentState.value == PaymentUiState.COMPLETED) {
                 releasePaymentBootstrapAfterReturn()
                 return@launch
             }
             if (isPaymentBootstrapTunnelUp()) {
                 holdPaymentBootstrapIfRunning()
-            } else if (isPaymentConfirmationPending()) {
+            } else if (isPaymentConfirmationPending() && needsPaymentInternetBridge()) {
                 ensurePaymentBootstrapHeld(appContext)
             }
             val label = repo.getPendingPaymentLabel()
@@ -1032,13 +1035,13 @@ class MainViewModel @Inject constructor(
             ) {
                 startPaymentPoll(label)
             }
-            applyPaidSubscriptionIfReady()
+            if (_paymentState.value == PaymentUiState.COMPLETED) applyPaidSubscriptionIfReady()
         }
     }
 
     private fun restorePaymentBootstrapIfNeeded() {
         if (!repo.isLoggedIn()) return
-        if (isPaidSubscriptionConfirmed() && isPaymentConfirmationPending() && isAppForeground()) {
+        if (_paymentState.value == PaymentUiState.COMPLETED && isAppForeground()) {
             releasePaymentBootstrapAfterReturn()
             return
         }
@@ -1049,7 +1052,7 @@ class MainViewModel @Inject constructor(
             if (isPaymentBootstrapTunnelUp()) {
                 holdPaymentBootstrapIfRunning()
             } else {
-                viewModelScope.launch { ensurePaymentBootstrapHeld(appContext) }
+                viewModelScope.launch { if (needsPaymentInternetBridge()) ensurePaymentBootstrapHeld(appContext) }
             }
             if (
                 pending.isNotBlank() &&
@@ -1176,7 +1179,7 @@ class MainViewModel @Inject constructor(
                     runCatching {
                         if (bootstrapVpnMode && SilentVpnService.isRunning) {
                             withBootstrapBackendApi { fetchProfileNow(force = true) }
-                            if (isPaidSubscriptionConfirmed() && isPaymentConfirmationPending() && isAppForeground()) {
+                            if (_paymentState.value == PaymentUiState.COMPLETED && isAppForeground()) {
                                 releasePaymentBootstrapAfterReturn()
                             } else if (_profile.value != null && !isPaymentConfirmationPending()) {
                                 disconnectBootstrapVpn(appContext)
@@ -1462,7 +1465,7 @@ class MainViewModel @Inject constructor(
             holdPaymentBootstrapIfRunning()
             return awaitPaymentApiReady()
         }
-        if (!force && isPaidSubscriptionConfirmed()) {
+        if (!force && _paymentState.value == PaymentUiState.COMPLETED) {
             markPaymentConfirmedUi()
             if (isAppForeground()) {
                 releasePaymentBootstrapAfterReturn()
@@ -1478,22 +1481,8 @@ class MainViewModel @Inject constructor(
         val boot = HashParser.extract(repo.getBootstrapHash().orEmpty()) ?: return false
         val fp = runCatching { repo.getDeviceFingerprint() }.getOrNull() ?: return false
         val onMobile = repo.isOnMobileData()
-        // LTE: не ждём таймаут public bootstrapConfig — сразу локальный boot-хеш (как splash).
-        var config = if (onMobile) {
-            bootstrapLaunchConfig(BootstrapVpnConfig.build(boot, fp))
-        } else {
-            runCatching {
-                kotlinx.coroutines.withTimeout(2_500L) {
-                    val res = repo.getApi().bootstrapConfig(
-                        BootstrapConfigRequest(boot, repo.getApiDeviceType(), fp),
-                    )
-                    if (res.isSuccessful) bootstrapLaunchConfig(res.body()!!) else null
-                }
-            }.getOrNull()
-        }
-        if (config == null || config.vk_hashes.isEmpty()) {
-            config = bootstrapLaunchConfig(BootstrapVpnConfig.build(boot, fp))
-        }
+        // Оплата на LTE и Wi-Fi: запускаем локальный boot сразу, WG получаем через GETCONF.
+        val config = bootstrapLaunchConfig(BootstrapVpnConfig.build(boot, fp))
         if (config.vk_hashes.isEmpty()) return false
 
         paymentBootstrapHeld = true
@@ -1805,6 +1794,8 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun applyPaidSubscriptionIfReady(): Boolean {
+        if (_paymentState.value != PaymentUiState.COMPLETED) return false
+        refreshAccountDataSuspend(force = true)
         if (isPaidSubscriptionConfirmed()) {
             finishPaymentIfAppVisible()
             return true
@@ -2214,6 +2205,13 @@ class MainViewModel @Inject constructor(
 
     /** Снять leftover splash-bootstrap до главного экрана / тумблера. */
     private suspend fun finishLaunchBootstrapTunnel(context: Context) {
+        // Splash может завершиться уже после открытия оплаты. Туннель теперь принадлежит
+        // ожидающему платежу: остановка здесь оборвёт соединения открытого браузера.
+        if (isPaymentConfirmationPending()) {
+            silentBootstrapSync = false
+            DebugLog.i("MainViewModel", "launch bootstrap skip stop: payment owns tunnel")
+            return
+        }
         if (userOwnsMainVpn()) {
             silentBootstrapSync = false
             DebugLog.i("MainViewModel", "launch bootstrap skip stop: user owns main VPN")
@@ -3526,8 +3524,8 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun disconnectBootstrapVpn(context: Context) {
-        if (isPaymentConfirmationPending() && !isPaidSubscriptionConfirmed()) {
-            DebugLog.i("MainViewModel", "keep payment bootstrap until subscription confirmed")
+        if (isPaymentConfirmationPending() && _paymentState.value != PaymentUiState.COMPLETED) {
+            DebugLog.i("MainViewModel", "keep payment bootstrap until pending payment confirmed")
             return
         }
         if (!bootstrapVpnMode) return
@@ -5214,6 +5212,40 @@ class MainViewModel @Inject constructor(
         throw IllegalStateException(parseError(res.errorBody()?.string() ?: "") ?: "Ошибка оплаты")
     }
 
+    fun previewPayment(planType: String, onPreview: (com.silent.vpn.data.PaymentPreview) -> Unit,
+                       onError: (String) -> Unit) {
+        if (_paymentBusyPlan.value != null) return
+        _profile.value?.payment_previews?.get(planType)?.takeIf { it.isFresh() }?.let {
+            onPreview(it)
+            return
+        }
+        paymentInitJob?.cancel()
+        _paymentBusyPlan.value = planType
+        paymentInitJob = viewModelScope.launch {
+            try {
+                suspend fun fetch(): com.silent.vpn.data.PaymentPreview {
+                    val response = repo.getApi().previewPayment(com.silent.vpn.data.PaymentInitRequest(planType))
+                    if (!response.isSuccessful) error(parseError(response.errorBody()?.string() ?: "") ?: "Ошибка расчёта")
+                    return response.body() ?: error("Не удалось получить расчёт")
+                }
+                val preview = if (needsPaymentInternetBridge()) {
+                    if (!ensurePaymentBootstrapHeld(appContext, force = true)) {
+                        error("Не удалось включить временный интернет для оплаты. Повторите.")
+                    }
+                    withEphemeralBackendApi { fetch() }
+                } else repo.withUserBackendApi { fetch() }
+                onPreview(preview)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (paymentBootstrapHeld && repo.getPendingPaymentLabel().isBlank()) stopPaymentBootstrap(appContext)
+                onError(paymentInitUserMessage(e))
+            } finally {
+                _paymentBusyPlan.value = null
+            }
+        }
+    }
+
     private fun paymentInitUserMessage(e: Throwable?): String {
         val raw = e?.message.orEmpty()
         if (raw.isBlank() || repo.isPublicConnectFailure(raw) || raw.contains("10.66.66") ||
@@ -5288,7 +5320,10 @@ class MainViewModel @Inject constructor(
 
     private suspend fun paymentStatusApi(label: String): String {
         val res = repo.getApi().getPaymentStatus(label)
-        if (res.isSuccessful) return res.body()!!.status
+        if (res.isSuccessful) {
+            val payment = res.body()!!
+            return if (payment.status == "completed" && payment.subscription_applied == false) "activation_pending" else payment.status
+        }
         throw IllegalStateException(parseError(res.errorBody()?.string() ?: "") ?: "Ошибка проверки оплаты")
     }
 
@@ -5300,7 +5335,7 @@ class MainViewModel @Inject constructor(
         paymentPollJob = viewModelScope.launch {
             val deadline = System.currentTimeMillis() + 10 * 60 * 1000L
             while (true) {
-                val paid = isPaidSubscriptionConfirmed() || _paymentState.value == PaymentUiState.COMPLETED
+                val paid = _paymentState.value == PaymentUiState.COMPLETED
                 if (paid && isAppForeground()) {
                     releasePaymentBootstrapAfterReturn()
                     return@launch
@@ -5316,7 +5351,7 @@ class MainViewModel @Inject constructor(
                 }
                 if (System.currentTimeMillis() >= deadline) {
                     applyPaidSubscriptionIfReady()
-                    if (isPaidSubscriptionConfirmed() || _paymentState.value == PaymentUiState.COMPLETED) {
+                    if (_paymentState.value == PaymentUiState.COMPLETED) {
                         markPaymentConfirmedUi()
                         delay(2000)
                         continue
@@ -5348,8 +5383,8 @@ class MainViewModel @Inject constructor(
                 when (status) {
                     "completed" -> {
                         requestOpenSubscription()
-                        applyPaidSubscriptionIfReady()
                         markPaymentConfirmedUi()
+                        applyPaidSubscriptionIfReady()
                         if (isAppForeground()) {
                             releasePaymentBootstrapAfterReturn()
                             return@launch
@@ -5368,6 +5403,8 @@ class MainViewModel @Inject constructor(
     }
 
     fun resetPaymentState() {
+        paymentInitJob?.cancel()
+        paymentInitJob = null
         paymentPollJob?.cancel()
         paymentPollJob = null
         _paymentState.value = PaymentUiState.IDLE

@@ -68,6 +68,7 @@ data class UserProfile(
     val max_devices: Int,
     val vk_linked: Boolean = false,
     val vk_user_id: Long? = null,
+    val payment_previews: Map<String, PaymentPreview>? = null,
 )
 
 /** 0 или is_admin = безлимит слотов. */
@@ -337,12 +338,30 @@ data class ThemeData(
     val subscription_tier_5_label: String = "5 устройств",
     val subscription_choose_tier_title: String = "Сколько устройств",
     val subscription_choose_plan_title: String = "Выберите тариф",
+    val subscription_pay_early_label: String = "Оплатить заранее",
+    val subscription_renewal_title: String = "Продление подписки",
+    val subscription_renewal_confirm_label: String = "Перейти к оплате",
     val skip_email_confirmation: Boolean = false,
 )
 
 data class PaymentInitRequest(val plan_type: String, val promo_code: String? = null)
+data class PaymentPreview(
+    val amount: Double, val expires_at: String, val message: String,
+    val calculated_at: String? = null,
+) {
+    fun isFresh(nowMillis: Long = System.currentTimeMillis()): Boolean = runCatching {
+        val stamp = calculated_at ?: return false
+        val format = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("UTC")
+            isLenient = false
+        }
+        val age = nowMillis - (format.parse(stamp.take(19))?.time ?: return false)
+        age in 0..300_000L
+    }.getOrDefault(false)
+}
 data class PaymentResponse(val url: String, val wallet: String, val label: String, val amount: Double)
-data class PaymentStatusResponse(val label: String, val status: String, val plan_type: String, val amount: Double)
+data class PaymentStatusResponse(val label: String, val status: String, val plan_type: String, val amount: Double,
+                                 val subscription_applied: Boolean? = null)
 
 data class PromoCheckRequest(val code: String, val plan_type: String)
 data class PromoCheckResponse(
@@ -471,6 +490,9 @@ interface SilentApi {
 
     @POST("api/payments/init")
     suspend fun initPayment(@Body req: PaymentInitRequest): Response<PaymentResponse>
+
+    @POST("api/payments/preview")
+    suspend fun previewPayment(@Body req: PaymentInitRequest): Response<PaymentPreview>
 
     @GET("api/payments/status/{label}")
     suspend fun getPaymentStatus(@Path("label") label: String): Response<PaymentStatusResponse>

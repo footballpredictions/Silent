@@ -191,6 +191,7 @@ fun MainActivityRoot(
                         onCheckPromo = vm::checkPromo,
                         onLoadReferral = vm::loadReferral,
                         onInitPayment = vm::initPayment,
+                        onPreviewPayment = vm::previewPayment,
                         paymentState = paymentState,
                         shopPlans = shopPlans,
                         paymentBusyPlan = paymentBusyPlan,

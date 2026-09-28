@@ -38,6 +38,32 @@ class ApiServiceMockWebServerTest {
     }
 
     @Test
+    fun `profile delivers quarterly warning without a second api request and rejects stale estimates`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"id":"local","email":"local@example.org","display_id":"local","subscription":{"is_active":true,"plan_type":"quarterly","expires_at":"2026-12-28T00:00:00Z","days_left":91},"devices":[],"devices_count":0,"max_devices":3,"payment_previews":{"quarterly_5":{"amount":792,"expires_at":"2027-02-20T22:07:16Z","calculated_at":"2026-09-28T00:00:00.123456Z","message":"3 месяца на 5 устройств: 91.0 дн. покупки + 54.9 дн. остатка"}}}"""))
+        val profile = api.getProfile().body()!!
+        val preview = profile.payment_previews!!["quarterly_5"]!!
+        assertTrue(preview.message.contains("91.0 дн. покупки + 54.9"))
+        assertTrue(preview.isFresh(1790553660000L))
+        org.junit.Assert.assertFalse(preview.isFresh(1790553901000L))
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `prepaid checkout reads server warning and keeps pending despite active subscription`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"amount":330,"expires_at":"2026-10-25T01:05:27Z","message":"Остаток 15 дн. пересчитается в 9 дн. Подписка до 25.10.2026."}"""))
+        val preview = api.previewPayment(PaymentInitRequest("monthly_5")).body()!!
+        assertEquals(330.0, preview.amount, 0.001)
+        assertTrue(preview.message.contains("9 дн."))
+        assertEquals("/api/payments/preview", server.takeRequest().path)
+        server.enqueue(MockResponse().setBody("""{"label":"silent_test","status":"pending","plan_type":"monthly_5","amount":330,"subscription_applied":false}"""))
+        val pending = api.getPaymentStatus("silent_test").body()!!
+        assertEquals("pending", pending.status)
+        assertEquals(false, pending.subscription_applied)
+        server.enqueue(MockResponse().setBody("""{"label":"silent_test","status":"completed","plan_type":"monthly_5","amount":330,"subscription_applied":true}"""))
+        assertEquals(true, api.getPaymentStatus("silent_test").body()!!.subscription_applied)
+    }
+
+    @Test
     fun `promo check parses valid response`() = runTest {
         server.enqueue(
             MockResponse()

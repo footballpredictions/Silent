@@ -1143,11 +1143,13 @@ class SilentRepository @Inject constructor(
             incomingIds = incoming.devices.map { it.id }.toSet(),
             incomingCount = incoming.devices_count,
         )
-        if (!changed) return
+        // Checkout estimates also arrive with config sync, even when device IDs are unchanged.
+        if (!changed && incoming.payment_previews == current.payment_previews) return
         val merged = current.copy(
             devices = incoming.devices,
             devices_count = incoming.devices_count,
             connected_count = incoming.connected_count,
+            payment_previews = incoming.payment_previews ?: current.payment_previews,
         )
         saveCachedProfile(merged)
         com.silent.vpn.sync.VpnDataSyncBridge.configSyncListener?.onProfile(merged)

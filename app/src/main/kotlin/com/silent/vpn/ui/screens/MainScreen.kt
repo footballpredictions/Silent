@@ -293,6 +293,7 @@ fun MainScreen(
     onCheckPromo: (String, (String) -> Unit) -> Unit,
     onLoadReferral: ((com.silent.vpn.data.ReferralInfo?) -> Unit) -> Unit = {},
     onInitPayment: (String, (String, String) -> Unit, (String) -> Unit) -> Unit,
+    onPreviewPayment: (String, (com.silent.vpn.data.PaymentPreview) -> Unit, (String) -> Unit) -> Unit,
     paymentState: com.silent.vpn.PaymentUiState = com.silent.vpn.PaymentUiState.IDLE,
     shopPlans: List<com.silent.vpn.MainViewModel.ShopPlanUi> = emptyList(),
     paymentBusyPlan: String? = null,
@@ -853,6 +854,7 @@ fun MainScreen(
                                 menuPage = MenuPage.ROOT
                             },
                             onInitPayment = onInitPayment,
+                            onPreviewPayment = onPreviewPayment,
                             paymentState = paymentState,
                             onStartPaymentPoll = onStartPaymentPoll,
                             onResetPaymentState = onResetPaymentState,
@@ -1041,6 +1043,7 @@ private fun MenuSubscription(
     onRefreshShopPlans: () -> Unit,
     onBack: () -> Unit,
     onInitPayment: (String, (String, String) -> Unit, (String) -> Unit) -> Unit,
+    onPreviewPayment: (String, (com.silent.vpn.data.PaymentPreview) -> Unit, (String) -> Unit) -> Unit,
     paymentState: com.silent.vpn.PaymentUiState,
     onStartPaymentPoll: (String) -> Unit,
     onResetPaymentState: () -> Unit,
@@ -1050,11 +1053,11 @@ private fun MenuSubscription(
     val muted = fg.copy(alpha = 0.5f)
     val green = Color(0xFF16A34A)
     val red = Color(0xFFEF4444)
-    val subActive = profile?.is_admin == true || profile?.subscription?.is_active == true
-    val uiPaymentState =
-        if (paymentState == com.silent.vpn.PaymentUiState.WAITING && subActive)
-            com.silent.vpn.PaymentUiState.COMPLETED
-        else paymentState
+    val uiPaymentState = paymentState
+    var showShop by remember { mutableStateOf(false) }
+    var renewalPreview by remember { mutableStateOf<Pair<String, com.silent.vpn.data.PaymentPreview>?>(null) }
+    val unlimitedLike = profile?.is_admin == true || profile?.subscription?.plan_type in listOf("unlimited", "test")
+    fun pay(plan: String) = onInitPayment(plan, { url, label -> onOpenUrl(url); onStartPaymentPoll(label) }, onShowError)
     val plansAll = shopPlans.ifEmpty {
         listOf(
             com.silent.vpn.MainViewModel.ShopPlanUi("monthly", "Месяц", "199 ₽", 3),
@@ -1073,7 +1076,13 @@ private fun MenuSubscription(
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         TvTextButton(
-            onClick = onBack,
+            onClick = {
+                if (showShop) {
+                    if (paymentBusyPlan != null || renewalPreview != null) onResetPaymentState()
+                    renewalPreview = null
+                    showShop = false
+                } else onBack()
+            },
             modifier = Modifier.padding(bottom = 16.dp),
             requestFocusOnOpen = true,
             requestFocusKey = "subscription",
@@ -1089,7 +1098,7 @@ private fun MenuSubscription(
                     color = fg.copy(alpha = 0.45f),
                     modifier = Modifier.padding(bottom = 12.dp),
                 )
-                if (profile?.subscription?.is_active == true) {
+                if (profile != null && (profile.subscription.is_active || unlimitedLike) && !showShop) {
                     val planType = profile.subscription.plan_type
                     val planLabel = when (planType) {
                         "trial" -> "Пробный период"
@@ -1115,6 +1124,14 @@ private fun MenuSubscription(
                         color = fg.copy(alpha = 0.5f),
                         modifier = Modifier.padding(top = 8.dp),
                     )
+                    if (!unlimitedLike) {
+                        TvPrimaryButton(
+                            onClick = { selectedDevices = if (profile.max_devices == 5) 5 else 3; showShop = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = primaryBtnBg, contentColor = primaryBtnFg),
+                            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                            shape = RoundedCornerShape(12.dp),
+                        ) { Text(theme?.subscription_pay_early_label ?: "Оплатить заранее") }
+                    }
                 } else {
                     Text(
                         theme?.subscription_choose_tier_title?.takeIf { it.isNotBlank() } ?: "Сколько устройств",
@@ -1198,19 +1215,13 @@ private fun MenuSubscription(
                                     else primaryBtnFg.copy(alpha = 0.12f),
                                     shape = RoundedCornerShape(12.dp),
                                 )
-                                .clickable(
+                                .tvClickable(
                                     enabled = !anyBusy,
-                                    interactionSource = interaction,
-                                    indication = null,
+                                    cornerRadius = 12.dp,
                                 ) {
-                                    onInitPayment(
-                                        plan.id,
-                                        { url, label ->
-                                            onOpenUrl(url)
-                                            onStartPaymentPoll(label)
-                                        },
-                                        onShowError,
-                                    )
+                                    if (profile?.subscription?.is_active == true) {
+                                        onPreviewPayment(plan.id, { renewalPreview = plan.id to it }, onShowError)
+                                    } else pay(plan.id)
                                 }
                                 .padding(horizontal = 16.dp, vertical = 14.dp),
                         ) {
@@ -1296,6 +1307,11 @@ private fun MenuSubscription(
                     }
                     Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg, modifier = Modifier.padding(top = 10.dp))
                     Text(text, fontSize = 12.sp, color = muted, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp))
+                    if (uiPaymentState == com.silent.vpn.PaymentUiState.COMPLETED) {
+                        TvTextButton(onClick = { showShop = false; onResetPaymentState() }) {
+                            Text("Закрыть", color = fg)
+                        }
+                    }
                     if (uiPaymentState == com.silent.vpn.PaymentUiState.WAITING) {
                         CircularProgressIndicator(
                             modifier = Modifier.padding(top = 14.dp).size(18.dp),
@@ -1329,6 +1345,19 @@ private fun MenuSubscription(
                 }
             }
         }
+    }
+    renewalPreview?.let { (plan, preview) ->
+        AlertDialog(
+            onDismissRequest = { renewalPreview = null; onResetPaymentState() },
+            title = { Text(theme?.subscription_renewal_title ?: "Продление подписки") },
+            text = { Text(preview.message) },
+            confirmButton = {
+                TvTextButton(onClick = { renewalPreview = null; pay(plan) }) {
+                    Text(theme?.subscription_renewal_confirm_label ?: "Перейти к оплате")
+                }
+            },
+            dismissButton = { TvTextButton(onClick = { renewalPreview = null; onResetPaymentState() }) { Text("Отмена") } },
+        )
     }
 }
 

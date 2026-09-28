@@ -253,13 +253,15 @@ class WireGuardHelper(context: Context) {
 
                 .parseAddresses(parsed.`interface`.addresses.joinToString(", ") { it.toString() })
 
-            // GETCONF с wdtt часто MTU=1280 — игнорируем. Политика по слоту (как PC):
-            // Сервер 3 → 1420, остальные → 1200.
-            val mtu = WireGuardConfigBuilder.mtuForPreferredSlot(appContext)
+            // Bootstrap идёт через отдельную соту и не наследует игровой MTU main-слота.
+            // Main: Сервер 3 → 1420, остальные → 1200; bootstrap → 1200.
+            val mtu = if (isBootstrap) WireGuardConfigBuilder.MTU_DEFAULT
+                else WireGuardConfigBuilder.mtuForPreferredSlot(appContext)
             ifaceBuilder.parseMtu(mtu.toString())
             DebugLog.i(
                 TAG,
-                if (mtu >= WireGuardConfigBuilder.MTU_GAME) "MTU=$mtu (Сервер 3 / Steam SDR)"
+                if (isBootstrap) "MTU=$mtu (bootstrap)"
+                else if (mtu >= WireGuardConfigBuilder.MTU_GAME) "MTU=$mtu (Сервер 3 / Steam SDR)"
                 else "MTU=$mtu (slot default; ignore conf/GETCONF)",
             )
 

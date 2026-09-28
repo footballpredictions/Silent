@@ -415,8 +415,8 @@ function TargetRow({ target }: { target: Target }) {
                   <td className="py-1 pr-3 text-[#bbb]">{channelLabel(ch)}</td>
                   <td className="py-1 pr-3">
                     {local ? (
-                      <span className={local.ok ? 'text-emerald-400' : 'text-red-400'}>
-                        {local.ok ? (local.inconclusive ? 'слушает' : 'ok') : local.error_kind || 'fail'}
+                      <span title={local.detail} className={local.inconclusive ? 'text-[#888]' : local.ok ? 'text-emerald-400' : 'text-red-400'}>
+                        {local.inconclusive ? (local.ok ? 'нет ответа (норма UDP)' : 'нет данных') : local.ok ? 'ok' : local.error_kind || 'fail'}
                       </span>
                     ) : peer ? (
                       <span className={peer.ok ? 'text-emerald-400' : 'text-red-400'}>

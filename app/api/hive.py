@@ -37,8 +37,6 @@ router = APIRouter(prefix="/admin/hive", tags=["admin-hive"])
 
 _FORCE_DELETE_STATUSES = frozenset({"provisioning", "error", "pending", "offline"})
 
-# Ручной прогон проверки доступности: не даём запустить два одновременно.
-_availability_run_in_progress = False
 # Тумблер «Профиль для ИИ»: одна фоновая настройка на соту.
 _ai_profile_jobs: set[uuid.UUID] = set()
 
@@ -130,6 +128,15 @@ async def _provision_cell_background(
                     message=f"Provision failed: {e}",
                 )
             logger.exception("Hive provision failed for %s: %s", host, e)
+            return
+
+    # Только после active + commit и освобождения БД. Сбой диагностики не
+    # превращает уже работающую соту в error и не повторяет SSH-настройку.
+    try:
+        from app.services import availability_store
+        await availability_store.request_refresh()
+    except Exception as e:
+        logger.warning("Hive: сота подключена, пробы будут в следующем цикле: %s", e)
 
 
 async def _ai_profile_background(cell_id: uuid.UUID, *, enable: bool) -> None:
@@ -658,7 +665,7 @@ async def hive_availability(
 
     report = await availability_store.load_latest_report()
     cfg = await availability_store.load_settings(db)
-    return {"report": report, "settings": cfg, "running": _availability_run_in_progress}
+    return {"report": report, "settings": cfg, "running": bool(await availability_store.pending_refresh())}
 
 
 @router.get("/availability/history")
@@ -686,26 +693,10 @@ async def hive_availability_run(
     _: bool = Depends(get_admin_credentials),
 ):
     """Запустить проверку в фоне (пробы ~1–2 мин — не держим HTTP до конца)."""
-    global _availability_run_in_progress
-
-    if _availability_run_in_progress:
+    from app.services import availability_store
+    if await availability_store.pending_refresh():
         raise HTTPException(status_code=409, detail="Проверка уже выполняется")
-
-    from ai.availability_agent import run_availability_check
-
-    _availability_run_in_progress = True
-
-    async def _job() -> None:
-        global _availability_run_in_progress
-        try:
-            # Админ смотрит отчёт в панели — в журнал инцидентов не дублируем.
-            await run_availability_check(incidents=False)
-        except Exception as e:
-            logger.exception("Availability run failed: %s", e)
-        finally:
-            _availability_run_in_progress = False
-
-    asyncio.create_task(_job())
+    await availability_store.request_refresh()
     return {"ok": True, "started": True, "running": True}
 
 

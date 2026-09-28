@@ -435,8 +435,10 @@ def sort_targets_for_display(targets: list[TargetSnapshot]) -> list[TargetSnapsh
 def select_external_probe_targets(
     targets: list[TargetSnapshot], max_targets: int
 ) -> tuple[list[TargetSnapshot], list[TargetSnapshot]]:
-    """Улей первым, затем соты по номеру; снаружи только первые max_targets."""
+    """Улей первым, затем соты по номеру; 0 = все подключённые узлы."""
     ordered = sort_targets_for_display(targets)
+    if int(max_targets) <= 0:
+        return ordered, []
     limit = max(1, int(max_targets))
     return ordered[:limit], ordered[limit:]
 

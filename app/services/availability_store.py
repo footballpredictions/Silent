@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -33,6 +34,7 @@ SETTING_WORLD_NODES = "availability_agent_world_nodes"
 SETTING_EXTERNAL = "availability_agent_external_enabled"
 SETTING_LAST_RUN = "availability_agent_last_run"
 SETTING_LAST_STATUS = "availability_agent_last_status"
+SETTING_REFRESH = "availability_agent_refresh_requested"
 # Память о том, о чём уже сообщали в «Инциденты»: иначе одна и та же блокировка
 # писалась бы в журнал каждый цикл и вытесняла остальные события.
 SETTING_INCIDENT_STATE = "availability_agent_incident_state"
@@ -171,6 +173,31 @@ async def mark_run(status: str) -> None:
             await db.commit()
     except Exception as e:
         logger.warning("availability: не удалось записать метку запуска: %s", e)
+
+
+async def request_refresh() -> str:
+    """Общая очередь воркеров: новые подключения объединяются в один прогон."""
+    token = uuid.uuid4().hex
+    async with AsyncSessionLocal() as db:
+        await db.execute(text(
+            "INSERT INTO app_settings (key, value) VALUES (:key, :value) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP"
+        ), {"key": SETTING_REFRESH, "value": token})
+        await db.commit()
+    return token
+
+
+async def pending_refresh() -> str | None:
+    async with AsyncSessionLocal() as db:
+        return await _get(db, SETTING_REFRESH)
+
+
+async def finish_refresh(token: str) -> None:
+    # Подключение во время проб создаёт новый token: его нельзя стереть старым отчётом.
+    async with AsyncSessionLocal() as db:
+        await db.execute(text("DELETE FROM app_settings WHERE key = :key AND value = :value"),
+                         {"key": SETTING_REFRESH, "value": token})
+        await db.commit()
 
 
 async def load_incident_state() -> dict[str, dict[str, Any]]:

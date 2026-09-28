@@ -158,25 +158,24 @@ async def udp_listen_probe(host: str, port: int, channel: str, timeout: float = 
     это inconclusive, а не «всё хорошо».
     """
 
-    def _send() -> tuple[bool, str]:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            sock.settimeout(timeout)
-            sock.connect((host, port))
-            sock.send(b"\x00" * 16)
-            try:
-                sock.recv(256)
-                return True, "ответ получен"
-            except socket.timeout:
-                return True, "нет ответа (норма для wdtt/WG)"
-            except ConnectionRefusedError:
-                return False, "ICMP port unreachable — порт не слушает"
-        finally:
-            sock.close()
-
+    # Не использовать общий executor: provision/SSH занимают его потоки и
+    # ожидание очереди превращалось в ложный timeout работающего UDP-порта.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setblocking(False)
+    loop = asyncio.get_running_loop()
     try:
-        alive, detail = await asyncio.wait_for(asyncio.to_thread(_send), timeout + 2)
-    except BaseException as e:  # noqa: BLE001
+        await asyncio.wait_for(loop.sock_connect(sock, (host, port)), timeout)
+        await asyncio.wait_for(loop.sock_sendall(sock, b"\x00" * 16), timeout)
+        try:
+            await asyncio.wait_for(loop.sock_recv(sock, 256), timeout)
+        except asyncio.TimeoutError:
+            return ProbeResult(channel=channel, ok=True, inconclusive=True,
+                               detail="нет ответа (норма для wdtt/WG)")
+        return ProbeResult(channel=channel, ok=True, detail="ответ получен")
+    except ConnectionRefusedError:
+        return ProbeResult(channel=channel, ok=False, error_kind=ERR_REFUSED,
+                           detail="ICMP port unreachable — порт не слушает")
+    except Exception as e:
         return ProbeResult(
             channel=channel,
             ok=False,
@@ -184,9 +183,8 @@ async def udp_listen_probe(host: str, port: int, channel: str, timeout: float = 
             detail=str(e)[:200],
             inconclusive=True,
         )
-    if not alive:
-        return ProbeResult(channel=channel, ok=False, error_kind=ERR_REFUSED, detail=detail)
-    return ProbeResult(channel=channel, ok=True, detail=detail, inconclusive=True)
+    finally:
+        sock.close()
 
 
 async def dns_probe(name: str, channel: str, timeout: float = 5.0) -> ProbeResult:

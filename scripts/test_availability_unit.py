@@ -499,11 +499,13 @@ def test_external_targets_cover_fourth_cell():
     assert [t.name for t in probed4] == ["Улей", "Сота 1", "Сота 2", "сота3"]
     assert skipped4 == []
 
-    # Дефолты в config должны покрывать 4 узла (проверяем через чтение файла, без pydantic).
+    probed_all, skipped_all = select_external_probe_targets(targets, 0)
+    assert probed_all == ordered and skipped_all == []
+    # Дефолт автоматически покрывает все подключённые узлы.
     from pathlib import Path
     cfg = Path(__file__).resolve().parents[1] / "app" / "config.py"
     text = cfg.read_text(encoding="utf-8")
-    assert "AVAILABILITY_MAX_EXTERNAL_TARGETS: int = 4" in text
+    assert "AVAILABILITY_MAX_EXTERNAL_TARGETS: int = 0" in text
     assert "AVAILABILITY_MAX_EXTERNAL_CHECKS: int = 12" in text
 
 

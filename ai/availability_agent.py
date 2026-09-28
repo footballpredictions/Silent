@@ -210,11 +210,14 @@ async def _run_external_probes(
         warnings.append("Среди внешних нод нет российских — вывод о блокировке сделать нельзя.")
     nodes = ru_nodes + world_nodes
 
-    budget = int(settings.AVAILABILITY_MAX_EXTERNAL_CHECKS)
     used = 0
-    # Улей первым: если бюджета хватит не на всех, проверяем самое важное.
-    max_targets = max(1, int(settings.AVAILABILITY_MAX_EXTERNAL_TARGETS))
+    max_targets = int(settings.AVAILABILITY_MAX_EXTERNAL_TARGETS)
     probed, skipped_targets = select_external_probe_targets(targets, max_targets)
+    # Новые соты не должны терять базовые пробы при росте кластера. Сначала
+    # ping/TCP каждого узла, затем дополнительные проверки домена Улья.
+    basic_checks = sum(1 + bool(public_tcp_probe(t)) for t in probed)
+    budget = max(int(settings.AVAILABILITY_MAX_EXTERNAL_CHECKS), basic_checks)
+    skipped_channels = False
     if skipped_targets:
         skipped = ", ".join(t.name for t in skipped_targets)
         warnings.append(
@@ -223,8 +226,9 @@ async def _run_external_probes(
         )
 
     async def run(kind: str, host: str, channel: str, snap: TargetSnapshot) -> None:
-        nonlocal used
+        nonlocal used, skipped_channels
         if used >= budget:
+            skipped_channels = True
             return
         used += 1
         results = await vantage_check(kind, host, nodes, node_info)
@@ -242,13 +246,14 @@ async def _run_external_probes(
         if pub:
             port, channel = pub
             await run("tcp", f"{snap.host}:{port}", channel, snap)
+    for snap in probed:
         if snap.role == TARGET_QUEEN and snap.domain:
             # HTTPS по домену = TLS с нашим SNI: сравнение с TCP по IP отделяет
             # блокировку имени от блокировки адреса.
             await run("http", f"https://{snap.domain}/api/health", CHANNEL_API_TLS, snap)
             await run("dns", snap.domain, CHANNEL_DNS, snap)
 
-    if used >= budget:
+    if skipped_channels:
         warnings.append(
             f"Достигнут лимит внешних проверок за цикл ({budget}): часть каналов не проверена."
         )
@@ -395,7 +400,7 @@ def _attach_client_signals(targets: list[TargetSnapshot], buckets: dict[str, dic
 
 
 async def run_availability_check(
-    *, external: bool | None = None, incidents: bool = True
+    *, external: bool | None = None, incidents: bool = True, allow_port_changes: bool = True
 ) -> AvailabilityReport:
     started = time.monotonic()
     warnings: list[str] = []
@@ -456,7 +461,7 @@ async def run_availability_check(
     status = report_status(verdicts)
     port_plan: dict = {}
     try:
-        port_plan = await _build_port_plan(targets, vantage, warnings)
+        port_plan = await _build_port_plan(targets, vantage, warnings, allow_changes=allow_port_changes)
     except Exception as e:
         warnings.append(f"План запасного порта не посчитан: {e}")
     relay_plan: dict = {}
@@ -546,7 +551,8 @@ def _local_alt_listening(port: int) -> bool:
 
 
 async def _build_port_plan(
-    targets: list[TargetSnapshot], vantage: dict[str, object], warnings: list[str]
+    targets: list[TargetSnapshot], vantage: dict[str, object], warnings: list[str],
+    *, allow_changes: bool = True,
 ) -> dict:
     """План + публикация запасного порта в тему. wdtt/443 не трогаем."""
     from urllib.parse import urlsplit
@@ -567,7 +573,7 @@ async def _build_port_plan(
     state = await store.load_port_state()
     previous = int(state.get("dead_windows") or 0)
     confirm = max(1, int(getattr(settings, "HIVE_API_PORT_CONFIRM_CYCLES", 2) or 2))
-    autoswitch = bool(settings.HIVE_API_PORT_AUTOSWITCH)
+    autoswitch = bool(settings.HIVE_API_PORT_AUTOSWITCH) and allow_changes
 
     counts = api_channel_counts(queen)
     reach: dict[str, str] = {}
@@ -615,7 +621,8 @@ async def _build_port_plan(
         new_state["published_port"] = int(plan["port"])
     elif plan.get("suggested_port"):
         new_state["published_port"] = int(plan["suggested_port"])
-    await store.save_port_state(new_state)
+    if allow_changes:
+        await store.save_port_state(new_state)
     return plan
 
 
@@ -689,6 +696,18 @@ async def _host_is_busy() -> str:
     return ""
 
 
+async def _wait_for_next_check(interval: float) -> None:
+    """Лидер видит заявки любого API-воркера максимум через 10 секунд."""
+    deadline = time.monotonic() + interval
+    while time.monotonic() < deadline:
+        try:
+            if await store.pending_refresh():
+                return
+        except Exception as e:
+            logger.warning("availability: очередь проб недоступна: %s", e)
+        await asyncio.sleep(min(10, max(0, deadline - time.monotonic())))
+
+
 async def availability_loop() -> None:
     logger.info("Availability agent starting (детекция блокировок DPI/ТСПУ)")
     await asyncio.sleep(STARTUP_DELAY_SECONDS)
@@ -700,14 +719,21 @@ async def availability_loop() -> None:
             async with AsyncSessionLocal() as db:
                 cfg = await store.load_settings(db)
             interval = int(cfg["interval_sec"])
-            if not cfg["enabled"]:
+            refresh = await store.pending_refresh()
+            if not cfg["enabled"] and not refresh:
                 logger.debug("availability: агент выключен в настройках — цикл пропущен")
             else:
                 busy = await _host_is_busy()
                 if busy:
                     logger.info("availability: цикл пропущен, сервер занят (%s)", busy)
+                    if refresh:
+                        await asyncio.sleep(60)
                 else:
-                    report = await run_availability_check()
+                    report = await run_availability_check(
+                        incidents=not bool(refresh), allow_port_changes=not bool(refresh)
+                    )
+                    if refresh:
+                        await store.finish_refresh(refresh)
                     failures = 0
                     logger.info(
                         "availability: %s — %s (за %.1f с)",
@@ -721,6 +747,7 @@ async def availability_loop() -> None:
         except Exception as e:
             failures += 1
             logger.warning("availability: цикл упал (%s подряд): %s", failures, e)
+            await asyncio.sleep(60)
             if failures >= 3:
                 try:
                     await _push_agent_failure(str(e), failures)
@@ -728,4 +755,4 @@ async def availability_loop() -> None:
                     logger.debug("availability: инцидент о поломке агента не записан")
                 await asyncio.sleep(FAILURE_BACKOFF_SECONDS)
                 failures = 0
-        await asyncio.sleep(max(MIN_SLEEP_SECONDS, interval))
+        await _wait_for_next_check(max(MIN_SLEEP_SECONDS, interval))

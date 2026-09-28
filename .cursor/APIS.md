@@ -268,11 +268,15 @@ sequenceDiagram
 | POST | `/cells/{id}/upgrade-agent` | Admin | Обновить cell-agent на соте (body: SSH password) |
 | PATCH | `/cells/{id}` | Admin | Имя, priority, status (`active` / `draining` / `offline`) |
 | DELETE | `/cells/{id}` | Admin | Удалить соту (`?force=true` для provisioning/error) |
-| GET | `/availability` | Admin | Последний отчёт агента доступности + настройки + `running` |
+| GET | `/availability` | Admin | Последний отчёт агента доступности + настройки + `running` общей очереди всех воркеров |
 | GET | `/availability/history?limit=N` | Admin | История прогонов (`ts`, `status`, `summary`) |
 | GET | `/availability/knowledge` | Admin | Справочник методов блокировок РФ + решения |
-| POST | `/availability/run` | Admin | Проверить сейчас (409, если прогон уже идёт) |
+| POST | `/availability/run` | Admin | Поставить проверку в общую очередь лидера (409, если заявка уже есть); старт обычно ≤10 с, без изменения портов |
 | PUT | `/availability/settings` | Admin | `enabled`, `external_enabled`, `interval_sec`, `ru_nodes`, `world_nodes` |
+
+После успешного `/cells/auto` (`active` + commit) пробы запрашиваются автоматически.
+По умолчанию внешние ping/TCP покрывают все активные узлы; лимит количества узлов = 0 (авто).
+UDP без ответа — неопределённый результат, нормальный для WDTT/WG, а не доказательство живого порта.
 
 **cell-agent на соте** (порт 9100, заголовок `X-Cell-Agent-Secret`):
 

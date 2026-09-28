@@ -13,7 +13,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] Воспроизвести CRLF shell-archive регрессию, нормализовать только shell при упаковке без изменения бинарников, пересобрать OpenWrt и проверить все packagedfiles
 - [x] Подготовить4GitHubReleaseassets и4Pagesфайла с manifest168/install/uninstall/OpenWrt.tgz, обновитьSHA и передать releases/PUBLISH-1.0.168.md; публикацию выполняет пользователь
 - [x] Сохранить активный VPN, версии168, весь iOSWIP локально; Mac сборка отдельно, DMG/IPA здесь не строились
-- [ ] Выполнить разрешённые scoped commit/push PC/OpenWrt/backend и сверить удалённыеHEAD; Android не требует новогоcommit
+- [x] Выполнить разрешённые scoped commit/push PC2e9a60e/OpenWrt8734ae9/backend main530297e и сверить удалённыеHEAD; Android не требует новогоcommit, итоговаядокументационнаяфиксация без измененияисполняемогокода
 
 ### Повторная сборка всех релизов без повышения версии (2026-09-28)
 

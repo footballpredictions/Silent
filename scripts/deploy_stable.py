@@ -17,6 +17,7 @@ from fix_tunnel_dnat import FIX_SH
 PREFLIGHT_TESTS = (
     "scripts/test_vpn_kick_unit.py",
     "scripts/test_vpn_kick_storm_unit.py",
+    "scripts/test_cell_agent_build_id_unit.py",
 )
 
 

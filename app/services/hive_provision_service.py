@@ -54,8 +54,7 @@ def _load_cell_agent_py() -> str:
     return _load_cell_agent_file("main.py")
 
 
-def cell_agent_build_id() -> str:
-    """Тот же хеш, что agent_build_id() на соте (только залитые файлы)."""
+def _cell_agent_build_module():
     import importlib.util
 
     path = BACKEND_ROOT / "cell-agent" / "build_id.py"
@@ -66,7 +65,22 @@ def cell_agent_build_id() -> str:
         raise RuntimeError("cell-agent/build_id.py не найден")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return str(mod.agent_build_id())
+    return mod
+
+
+def cell_agent_build_id() -> str:
+    """Тот же хеш, что agent_build_id() на соте (только залитые файлы)."""
+    return str(_cell_agent_build_module().agent_build_id())
+
+
+def _load_cell_agent_bundle() -> dict[str, str]:
+    """Версия и копирование используют один список; всё читаем до SSH/рестарта."""
+    return {name: _load_cell_agent_file(name) for name in _cell_agent_build_module().SHIPPED}
+
+
+def _upload_cell_agent_bundle(sftp, bundle: dict[str, str]) -> None:
+    for name, text in bundle.items():
+        sftp.putfo(io.BytesIO(text.encode("utf-8")), f"/opt/silent-vpn/cell-agent/{name}")
 
 
 def _validate_wdtt_blob(data: bytes, source: str) -> bytes:
@@ -253,8 +267,7 @@ def provision_cell_via_ssh(
 
     wdtt_binary = _load_wdtt_binary()
     logger.info("Hive provision: wdtt binary %s bytes → cell %s", len(wdtt_binary), host)
-    agent_py = _load_cell_agent_py()
-    standby_py = _load_cell_agent_file("standby_runtime.py")
+    agent_bundle = _load_cell_agent_bundle()
     internal_secret = (settings.INTERNAL_API_SECRET or "").strip()
     passwords_json = json.dumps({"master": wdtt_master_password, "users": []})
     hive_meta = json.dumps({"hive_api_url": hive_api, "hive_cell_id": cell_id})
@@ -398,8 +411,7 @@ echo "WG_PUB=$WG_PUB"
     try:
         _ensure_remote_dir(client, "/opt/silent-vpn/cell-agent")
         sftp = client.open_sftp()
-        sftp.putfo(io.BytesIO(agent_py.encode()), "/opt/silent-vpn/cell-agent/main.py")
-        sftp.putfo(io.BytesIO(standby_py.encode()), "/opt/silent-vpn/cell-agent/standby_runtime.py")
+        _upload_cell_agent_bundle(sftp, agent_bundle)
         sftp.putfo(io.BytesIO(wdtt_binary), "/tmp/hive_wdtt_server_bin")
         sftp.putfo(io.BytesIO(passwords_json.encode()), "/tmp/hive_wdtt_passwords.json")
         sftp.putfo(io.BytesIO(hive_meta.encode()), "/tmp/hive_meta.json")
@@ -443,16 +455,14 @@ def upgrade_cell_agent_via_ssh(
     """Обновить cell-agent на соте (мониторинг CPU/RAM/канал) без полной переустановки."""
     host = _validate_host(host)
     link_mbps = int(link_capacity_mbps or settings.HIVE_CELL_DEFAULT_LINK_CAPACITY_MBPS)
-    agent_py = _load_cell_agent_py()
-    standby_py = _load_cell_agent_file("standby_runtime.py")
+    agent_bundle = _load_cell_agent_bundle()
     agent_port = settings.HIVE_CELL_AGENT_PORT
 
     client = _ssh_connect(host, ssh_password)
     try:
         _ensure_remote_dir(client, "/opt/silent-vpn/cell-agent")
         sftp = client.open_sftp()
-        sftp.putfo(io.BytesIO(agent_py.encode("utf-8")), "/opt/silent-vpn/cell-agent/main.py")
-        sftp.putfo(io.BytesIO(standby_py.encode("utf-8")), "/opt/silent-vpn/cell-agent/standby_runtime.py")
+        _upload_cell_agent_bundle(sftp, agent_bundle)
         sftp.close()
         code, out, err = _run(
             client,

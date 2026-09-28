@@ -1392,7 +1392,7 @@ export default function MainScreen({
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <ThemeModeToggle mode={appearanceMode} onToggle={toggleAppearance} color={fg} />
-          <DebugLogButton onClick={() => setShowDebugLog(true)} />
+          {isDevBuild && <DebugLogButton onClick={() => setShowDebugLog(true)} />}
           <WindowControls />
         </div>
       </div>
@@ -2082,7 +2082,7 @@ export default function MainScreen({
           )}
         </div>
       )}
-      <DebugLogPanel open={showDebugLog} onClose={() => setShowDebugLog(false)} />
+      {isDevBuild && <DebugLogPanel open={showDebugLog} onClose={() => setShowDebugLog(false)} />}
     </div>
   )
 }

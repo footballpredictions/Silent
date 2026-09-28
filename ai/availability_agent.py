@@ -209,6 +209,8 @@ async def _run_external_probes(
     if not ru_nodes:
         warnings.append("Среди внешних нод нет российских — вывод о блокировке сделать нельзя.")
     nodes = ru_nodes + world_nodes
+    if len(ru_nodes) < ru_limit:
+        warnings.append(f"Запрошено российских нод: {ru_limit}; внешний сервис предоставляет: {len(ru_nodes)}.")
 
     used = 0
     max_targets = int(settings.AVAILABILITY_MAX_EXTERNAL_TARGETS)
@@ -216,7 +218,8 @@ async def _run_external_probes(
     # Новые соты не должны терять базовые пробы при росте кластера. Сначала
     # ping/TCP каждого узла, затем дополнительные проверки домена Улья.
     basic_checks = sum(1 + bool(public_tcp_probe(t)) for t in probed)
-    budget = max(int(settings.AVAILABILITY_MAX_EXTERNAL_CHECKS), basic_checks)
+    extra_checks = 3 * sum(t.role == TARGET_QUEEN and bool(t.domain) for t in probed)
+    budget = max(int(settings.AVAILABILITY_MAX_EXTERNAL_CHECKS), basic_checks + extra_checks)
     skipped_channels = False
     if skipped_targets:
         skipped = ", ".join(t.name for t in skipped_targets)
@@ -225,15 +228,23 @@ async def _run_external_probes(
             f"Их доступность видна по локальным пробам и пробам со сот."
         )
 
+    # A dead measurement node must not add a full polling window to every
+    # channel in sequence. Bound concurrent requests without touching services.
+    semaphore = asyncio.Semaphore(3)
+    missing_nodes: set[str] = set()
+    jobs = []
+
     async def run(kind: str, host: str, channel: str, snap: TargetSnapshot) -> None:
         nonlocal used, skipped_channels
         if used >= budget:
             skipped_channels = True
             return
         used += 1
-        results = await vantage_check(kind, host, nodes, node_info)
+        async with semaphore:
+            results = await vantage_check(kind, host, nodes, node_info)
         if not results:
             return
+        missing_nodes.update(n for n, result in results.items() if result.error_kind in ("pending", "probe_error"))
         ru, world = _split_vantage(channel, results)
         if ru.available:
             snap.ru[channel] = ru
@@ -241,17 +252,22 @@ async def _run_external_probes(
             snap.world[channel] = world
 
     for snap in probed:
-        await run("ping", snap.host, CHANNEL_PING, snap)
+        jobs.append(("ping", snap.host, CHANNEL_PING, snap))
         pub = public_tcp_probe(snap)
         if pub:
             port, channel = pub
-            await run("tcp", f"{snap.host}:{port}", channel, snap)
+            jobs.append(("tcp", f"{snap.host}:{port}", channel, snap))
     for snap in probed:
         if snap.role == TARGET_QUEEN and snap.domain:
             # HTTPS по домену = TLS с нашим SNI: сравнение с TCP по IP отделяет
             # блокировку имени от блокировки адреса.
-            await run("http", f"https://{snap.domain}/api/health", CHANNEL_API_TLS, snap)
-            await run("dns", snap.domain, CHANNEL_DNS, snap)
+            jobs.append(("http", f"https://{snap.domain}/api/health", CHANNEL_API_TLS, snap))
+            jobs.append(("dns", snap.domain, CHANNEL_DNS, snap))
+            jobs.append(("http", f"https://{snap.host}/api/health", CHANNEL_TLS_NO_SNI, snap))
+
+    await asyncio.gather(*(run(*job) for job in jobs))
+    if missing_nodes:
+        warnings.append("Ноды внешнего сервиса не вернули часть измерений: " + ", ".join(sorted(missing_nodes)) + ". Это не отказ наших серверов; число ответивших нод может быть меньше запрошенного.")
 
     if skipped_channels:
         warnings.append(

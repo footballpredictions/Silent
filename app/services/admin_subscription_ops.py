@@ -265,6 +265,15 @@ async def activate_subscription_by_support_code(db: AsyncSession, raw_code: str)
 
 
 async def _grant_from_payment_row(db: AsyncSession, user: User, payment: Payment):
+    result = await db.execute(select(Payment).where(Payment.id == payment.id)
+                              .with_for_update().execution_options(populate_existing=True))
+    payment = result.scalar_one()
+    if payment.subscription_applied:
+        from app.services.subscription_service import get_active_subscription
+        current = await get_active_subscription(db, user)
+        if current:
+            return current
+        raise ValueError("Подписка по этому платежу уже была выдана")
     now = datetime.utcnow()
     if (payment.status or "").lower() != "completed":
         payment.status = "completed"
@@ -275,12 +284,21 @@ async def _grant_from_payment_row(db: AsyncSession, user: User, payment: Payment
         await db.flush()
 
     plan = (payment.plan_type or "").strip().lower()
-    sub = await grant_manual_subscription(db, user, plan)
+    from app.services.payment_service import _activate_subscription
+    sub = await _activate_subscription(db, payment)
+    await db.flush()
     result = await db.execute(select(Payment).where(Payment.id == payment.id))
     payment = result.scalar_one()
     payment.subscription_applied = True
     payment.manual_activated_at = datetime.utcnow()
     await db.commit()
+    from app.services.subscription_service import invalidate_vpn_access_cache
+    invalidate_vpn_access_cache()
+    try:
+        from app.services.vpn_kick import restore_user_vpn_dataplane
+        await restore_user_vpn_dataplane(db, user)
+    except Exception as e:
+        logger.warning("manual activate VPN restore failed: %s", e)
     try:
         from app.services.email_service import send_subscription_activated_email
 

@@ -14,6 +14,7 @@ from app.services.payment_service import (
     create_payment_intent,
     process_payment_notification,
     get_payment_status,
+    preview_payment,
 )
 from app.services.shop_catalog import build_shop_plans
 from app.config import settings
@@ -31,6 +32,19 @@ class PaymentInitRequest(BaseModel):
 class PromoCheckRequest(BaseModel):
     code: str
     plan_type: str
+
+
+@router.post("/preview")
+async def payment_preview(
+    req: PaymentInitRequest,
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read-only quote. Recomputed at settlement; no payment or promo use is created."""
+    try:
+        return await preview_payment(db, user, req.plan_type, req.promo_code)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/init")

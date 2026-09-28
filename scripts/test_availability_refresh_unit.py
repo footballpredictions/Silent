@@ -42,6 +42,28 @@ async def test_all_cells_receive_external_probes():
         assert all("agent_tcp" in t.ru for t in targets[1:]), "новым сотам нужен TCP, не только ping"
 
 
+async def test_external_probes_overlap_and_explain_missing_nodes():
+    targets = [TargetSnapshot(name="Улей", host="127.0.0.1", role="queen", domain="queen.test")]
+    targets += [TargetSnapshot(name=f"Сота {i}", host=f"127.0.0.{i+1}", role="cell", agent_port=8090) for i in range(1,5)]
+    active = peak = 0
+    async def vantage(kind, host, nodes, info):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.015)
+        active -= 1
+        return {"ru1":NodeResult(node="ru1", country="ru", ok=True),
+                "ru2":NodeResult(node="ru2", country="ru", ok=False, error_kind="pending")}
+    warnings = []
+    with patch.object(agent.settings,"AVAILABILITY_MAX_EXTERNAL_TARGETS",0), patch.object(agent.settings,"AVAILABILITY_MAX_EXTERNAL_CHECKS",12), patch.object(agent,"fetch_checkhost_nodes",AsyncMock(return_value={"ru1":{"country":"ru"},"ru2":{"country":"ru"}})), patch.object(agent,"pick_nodes",return_value=(["ru1","ru2"],[])), patch.object(agent,"vantage_check",vantage):
+        meta = await agent._run_external_probes(targets,ru_limit=6,world_limit=0,warnings=warnings)
+    assert 1 < peak <= 3, f"probes still serial or unlimited: peak={peak}"
+    assert any("ru2" in w for w in warnings), "silent loss of a probe node"
+    assert any("6" in w and "2" in w for w in warnings), "requested/available count unexplained"
+    assert "tls_no_sni" in targets[0].ru, "missing HTTPS IP control"
+    assert meta["checks"] == 13  # Five public TCP endpoints + pings + three HTTPS/DNS controls.
+
+
 async def test_udp_silence_with_busy_executor():
     loop = asyncio.get_running_loop()
     loop.set_default_executor(ThreadPoolExecutor(max_workers=1))

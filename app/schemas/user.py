@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 
 
@@ -43,6 +43,7 @@ class UserProfileResponse(BaseModel):
     max_devices: int = 3  # 0 = безлимит (админ)
     vk_linked: bool = False
     vk_user_id: int | None = None
+    payment_previews: dict[str, dict] = Field(default_factory=dict)
 
     model_config = {"from_attributes": True}
 

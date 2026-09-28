@@ -1,0 +1,28 @@
+[Unit]
+Description=Silent YuMoney durable notification receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=silent-payment-relay
+Group=silent-payment-relay
+ExecStart=/usr/bin/python3 /opt/silent-payment-relay/relay.py --config /etc/silent-payment-relay/config.json
+Restart=always
+RestartSec=3
+StateDirectory=silent-payment-relay
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/silent-payment-relay
+TimeoutStopSec=25
+
+[Install]
+WantedBy=multi-user.target

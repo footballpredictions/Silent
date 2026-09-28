@@ -82,6 +82,8 @@ async def _profile_for_user(db: AsyncSession, user: User) -> UserProfileResponse
         )
         for d in devices
     ]
+    from app.services.payment_service import profile_payment_previews
+    payment_previews = await profile_payment_previews(db, user) if not admin and not test else {}
     return UserProfileResponse(
         id=user.id,
         email=user.email,
@@ -94,6 +96,7 @@ async def _profile_for_user(db: AsyncSession, user: User) -> UserProfileResponse
         max_devices=await max_devices_for_user(db, user),
         vk_linked=user.vk_user_id is not None,
         vk_user_id=user.vk_user_id,
+        payment_previews=payment_previews,
     )
 
 

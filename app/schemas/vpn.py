@@ -263,5 +263,8 @@ class ThemeResponse(BaseModel):
     subscription_tier_5_label: str = "5 устройств"
     subscription_choose_tier_title: str = "Сколько устройств"
     subscription_choose_plan_title: str = "Выберите тариф"
+    subscription_pay_early_label: str = "Оплатить заранее"
+    subscription_renewal_title: str = "Продление подписки"
+    subscription_renewal_confirm_label: str = "Перейти к оплате"
     # Extra Settings: skip email confirm. Default false = old clients still wait for mail.
     skip_email_confirmation: bool = False

@@ -112,12 +112,12 @@ def build_payment_url(plan_type: str, label: str, amount: float, wallet: str) ->
     return f"{YUMONEY_QUICKPAY_URL}?{urlencode(params)}"
 
 
-async def create_payment_intent(
+async def payment_plan_amount(
     db: AsyncSession,
     user: User,
     plan_type: str,
     promo_code: Optional[str] = None,
-) -> dict:
+) -> tuple[float, str | None]:
     if plan_type not in PLAN_PRICES:
         raise ValueError(f"Unknown plan: {plan_type}")
 
@@ -142,7 +142,54 @@ async def create_payment_intent(
                 # use_count incremented only on successful payment (process_payment_notification),
                 # not here — otherwise an abandoned/failed payment would burn the promo for nothing.
 
-    amount = round(amount, 2)
+    return round(amount, 2), applied_code
+
+
+async def preview_payment(db: AsyncSession, user: User, plan_type: str,
+                          promo_code: Optional[str] = None) -> dict:
+    from app.services.subscription_renewal import quote_renewal
+
+    if getattr(user, "is_admin", False):
+        raise ValueError("Администратору подписка не нужна")
+    amount, code = await payment_plan_amount(db, user, plan_type, promo_code)
+    result = await db.execute(select(Subscription).where(
+        Subscription.user_id == user.id, Subscription.status == "active",
+    ))
+    quote = quote_renewal(now=datetime.utcnow(), plan_type=plan_type, amount=amount,
+                          prices=PLAN_PRICES, subscriptions=list(result.scalars().all())).as_dict()
+    return {**quote, "promo_code": code, "calculated_at": datetime.utcnow().isoformat() + "Z"}
+
+
+async def profile_payment_previews(db: AsyncSession, user: User) -> dict:
+    """Read-only quotes delivered with account sync; checkout needs no extra network hop."""
+    from app.services.subscription_renewal import quote_renewal
+    from app.services.shop_catalog import build_shop_plans
+
+    if user.is_admin or not user.is_verified:
+        return {}
+    now = datetime.utcnow()
+    result = await db.execute(select(Subscription).where(
+        Subscription.user_id == user.id, Subscription.status == "active",
+        Subscription.expires_at > now,
+    ))
+    subscriptions = list(result.scalars().all())
+    from app.services.subscription_kinds import PAID_STACK_SKIP_PLANS
+    if not any(s.plan_type not in PAID_STACK_SKIP_PLANS for s in subscriptions) or any(s.plan_type == "unlimited" for s in subscriptions):
+        return {}
+    previews = {}
+    for plan in build_shop_plans(include_five_device=True):
+        amount, code = await payment_plan_amount(db, user, plan["id"], None)
+        quote = quote_renewal(now=now, plan_type=plan["id"], amount=amount,
+                              prices=PLAN_PRICES, subscriptions=subscriptions).as_dict()
+        previews[plan["id"]] = {**quote, "promo_code": code, "calculated_at": now.isoformat() + "Z"}
+    return previews
+
+
+async def create_payment_intent(
+    db: AsyncSession, user: User, plan_type: str, promo_code: Optional[str] = None,
+) -> dict:
+    renewal = await preview_payment(db, user, plan_type, promo_code)
+    amount, applied_code = renewal["amount"], renewal["promo_code"]
     label = f"silent_{secrets.token_hex(16)}"
     wallet = _pick_wallet()["wallet"]
 
@@ -168,6 +215,7 @@ async def create_payment_intent(
         "wallet": wallet,
         "label": label,
         "amount": amount,
+        "renewal": renewal,
     }
 
 
@@ -231,14 +279,10 @@ def _signature_valid_for_any_wallet(data: dict) -> bool:
 
 
 async def _activate_subscription(db: AsyncSession, payment: Payment) -> Subscription:
-    from app.services.subscription_service import TRIAL_PLAN
-    from app.services.subscription_kinds import (
-        plan_expires_at,
-        paid_subscription_stack_base,
-        REFERRAL_PLAN,
-        TEST_PLAN,
-    )
+    from app.services.subscription_renewal import quote_renewal
 
+    # Serialize different payments for the same account, not only replay of one label.
+    await db.execute(select(User.id).where(User.id == payment.user_id).with_for_update())
     now = datetime.utcnow()
     active_result = await db.execute(
         select(Subscription)
@@ -246,25 +290,19 @@ async def _activate_subscription(db: AsyncSession, payment: Payment) -> Subscrip
         .order_by(Subscription.expires_at.desc())
     )
     active_rows = list(active_result.scalars().all())
-    stack_pairs = []
+    quote = quote_renewal(now=now, plan_type=payment.plan_type, amount=float(payment.amount),
+                         prices=PLAN_PRICES, subscriptions=active_rows)
     for existing in active_rows:
-        # trial / referral / test снимаем, но в базу купленного срока не кладём
-        if (
-            existing.plan_type not in (TRIAL_PLAN, REFERRAL_PLAN, TEST_PLAN)
-            and existing.is_active
-            and existing.expires_at
-        ):
-            stack_pairs.append((existing.plan_type, existing.expires_at))
         existing.status = "cancelled"
 
-    base = paid_subscription_stack_base(now, stack_pairs)
     subscription = Subscription(
         user_id=payment.user_id,
         plan_type=payment.plan_type,
         status="active",
         amount_paid=float(payment.amount),
         started_at=now,
-        expires_at=plan_expires_at(base, payment.plan_type),
+        expires_at=quote.expires_at,
+        renewal_daily_rate=quote.daily_rate,
     )
     db.add(subscription)
     return subscription
@@ -303,7 +341,9 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> dict:
         )
         return {"ok": False, "reason": "invalid_signature"}
 
-    if payment.status != "pending":
+    # An intent TTL closes the checkout UI, not the right to receive a paid transfer.
+    # Durable relays may deliver after polling has marked the intent expired.
+    if payment.status not in ("pending", "expired"):
         # Duplicate notification for an already-settled payment — respond 200, do nothing.
         logger.info("payment notify: payment %s already %s — idempotent", payment.id, payment.status)
         return {"ok": True, "reason": "already_processed"}
@@ -382,8 +422,10 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> dict:
     subscription = None
     subscription_ok = False
     try:
-        subscription = await _activate_subscription(db, payment)
-        payment.subscription_applied = True
+        async with db.begin_nested():
+            subscription = await _activate_subscription(db, payment)
+            payment.subscription_applied = True
+            await db.flush()
         subscription_ok = True
         await db.commit()
     except Exception:
@@ -466,9 +508,21 @@ async def get_payment_status(db: AsyncSession, user: User, label: str) -> dict:
             payment.status = "expired"
             await db.commit()
 
+    details = {}
+    if payment.status == "completed" and getattr(payment, "subscription_applied", False):
+        result = await db.execute(select(Subscription).where(
+            Subscription.user_id == user.id, Subscription.status == "active",
+        ).order_by(Subscription.expires_at.desc()))
+        current = result.scalars().first()
+        if current:
+            from app.services.subscription_kinds import devices_for_plan
+            details = {"expires_at": current.expires_at.isoformat() + "Z",
+                       "max_devices": devices_for_plan(current.plan_type)}
     return {
         "label": payment.yumoney_label,
         "status": payment.status,
         "plan_type": payment.plan_type,
         "amount": float(payment.amount),
+        "subscription_applied": getattr(payment, "subscription_applied", None),
+        **details,
     }

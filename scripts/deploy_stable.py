@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import io
+import argparse
 import os
 import subprocess
 import sys
-from pathlib import Path
+import time
+from pathlib import Path, PurePosixPath
 
 from _deploy_common import BACKEND_ROOT, CONTAINER, REMOTE, connect, run
 from fix_tunnel_dnat import FIX_SH
@@ -55,7 +57,54 @@ def _upload_py_tree(sftp, client, sub: str) -> int:
     return n
 
 
+def _selected_python_paths(paths: list[str]) -> list[str]:
+    result = []
+    for rel in paths:
+        path = PurePosixPath(rel)
+        if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] not in ("app", "ai") or path.suffix != ".py":
+            raise ValueError(f"Not an app/ai Python file: {rel}")
+        local = (BACKEND_ROOT / path).resolve()
+        if not local.is_relative_to(BACKEND_ROOT.resolve()) or not local.is_file():
+            raise ValueError(f"Missing or outside backend: {rel}")
+        compile(local.read_text(encoding="utf-8-sig"), str(local), "exec")
+        normalized = path.as_posix()
+        if normalized not in result:
+            result.append(normalized)
+    return result
+
+
+def _deploy_selected_python(paths: list[str]) -> None:
+    paths = _selected_python_paths(paths)
+    if not paths:
+        raise SystemExit("No Python files selected")
+    _preflight()
+    client = connect()
+    try:
+        with client.open_sftp() as sftp:
+            stamp = str(time.time_ns())
+            for rel in paths:
+                remote = f"{REMOTE}/{rel}"
+                existing = sftp.stat(remote)
+                # Preserve the exact previous bytes before replacing an existing live file.
+                with sftp.file(remote, "rb") as source, sftp.file(f"{remote}.before-{stamp}", "wb") as backup:
+                    backup.write(source.read())
+                temporary = f"{remote}.deploy-{stamp}"
+                sftp.put(str(BACKEND_ROOT / rel), temporary)
+                sftp.chmod(temporary, existing.st_mode & 0o777)
+                sftp.posix_rename(temporary, remote)
+                print("selected Python", rel)
+        _restart_and_verify(client)
+    finally:
+        client.close()
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--python-only", nargs="+", metavar="PATH", help="Only existing app/ai Python files; keep UI/compose/cell-agent unchanged")
+    args = parser.parse_args()
+    if args.python_only:
+        _deploy_selected_python(args.python_only)
+        return
     dist = BACKEND_ROOT / "admin-ui" / "dist"
     if not dist.is_dir() or not any(dist.iterdir()):
         raise SystemExit("Сначала: cd admin-ui && npm run build")
@@ -123,7 +172,10 @@ def main() -> None:
         print("upload docker/nginx.conf")
 
     sftp.close()
+    _restart_and_verify(client)
 
+
+def _restart_and_verify(client) -> None:
     # Код уже на хосте. up -d api --no-deps recreate только если compose изменился;
     # после volume ./app и ./ai recreate безопасен. wdtt не трогаем.
     script = f"""#!/bin/bash

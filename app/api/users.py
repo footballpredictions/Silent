@@ -97,6 +97,9 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
     active_sessions = await count_active_sessions(db, user.id)
     connected = await count_connected_sessions(db, user.id)
 
+    from app.services.payment_service import profile_payment_previews
+    payment_previews = await profile_payment_previews(db, user) if not admin and not test else {}
+
     return UserProfileResponse(
         id=user.id,
         email=user.email,
@@ -109,6 +112,7 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
         max_devices=await max_devices_for_user(db, user),
         vk_linked=user.vk_user_id is not None,
         vk_user_id=user.vk_user_id,
+        payment_previews=payment_previews,
     )
 
 

@@ -17,6 +17,7 @@ class Subscription(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     promo_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    renewal_daily_rate: Mapped[float | None] = mapped_column(Numeric(18, 8), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="subscriptions")

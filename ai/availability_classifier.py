@@ -295,10 +295,20 @@ def _sni_verdict(snap: TargetSnapshot) -> Verdict | None:
         f"TCP {snap.api_port} из РФ открывается на всех {tcp.total} нодах.",
         f"TLS с доменом {snap.domain or snap.host} не проходит: {_fail_desc(tls)}.",
     ]
-    confidence = 0.65
-    if no_sni is not None and no_sni.all_ok:
-        evidence.append("То же соединение без нашего SNI проходит — режется именно имя.")
-        confidence = 0.85
+    failed_nodes = {n.node for n in tls.failing_nodes()}
+    control_nodes = {n.node for n in (no_sni.nodes if no_sni else []) if n.ok}
+    tcp_nodes = {n.node for n in tcp.nodes if n.ok}
+    if no_sni is None or not no_sni.all_ok or len(failed_nodes & control_nodes & tcp_nodes) < 2:
+        evidence.append("Нет успешного контрольного TLS-соединения на тех же российских нодах.")
+        return _verdict(
+            snap, KIND_UNKNOWN, confidence=0.55,
+            summary="HTTPS из РФ не проходит; блокировка именно по SNI не подтверждена.",
+            evidence=evidence, channel=CHANNEL_API_TLS,
+            extra_fixes=["Проверить TLS по IP и с доменом на одних и тех же российских нодах; до подтверждения не менять домен и маршруты."],
+            replace_fixes=True,
+        )
+    evidence.append("То же соединение без нашего SNI проходит на тех же нодах — режется именно имя.")
+    confidence = 0.85
     return _verdict(
         snap,
         KIND_SNI_BLOCK,
@@ -365,7 +375,8 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
         )
 
     for channel in snap.ru_channels():
-        if channel in (CHANNEL_DNS, CHANNEL_PING, CHANNEL_API_TLS, CHANNEL_API_HTTP):
+        if channel in (CHANNEL_DNS, CHANNEL_PING, CHANNEL_API_TLS, CHANNEL_API_HTTP,
+                       CHANNEL_TLS_NO_SNI, CHANNEL_TLS_DECOY_SNI):
             continue
         # AI-exit: :9100 режется фаерволом ноды, не ТСПУ. Не предлагать DNAT 443.
         if public_tcp_probe(snap) is None and channel == CHANNEL_AGENT_TCP:

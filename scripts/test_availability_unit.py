@@ -335,6 +335,24 @@ def test_sni_block_when_tcp_ok_but_tls_with_domain_fails():
     assert any("IP" in f for f in sni[0].fixes)
 
 
+def test_https_timeout_without_differential_control_is_not_sni_block():
+    snap = _queen()
+    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=2)
+    snap.ru[CHANNEL_API_TLS] = _agg(CHANNEL_API_TLS, failed=2)
+    snap.world[CHANNEL_API_TLS] = _agg(CHANNEL_API_TLS, ok=2, source="world-external")
+    verdicts = classify_target(snap)
+    assert not any(v.kind == KIND_SNI_BLOCK for v in verdicts), "SNI asserted without control"
+    assert any(v.kind == KIND_UNKNOWN and v.channel == CHANNEL_API_TLS for v in verdicts)
+
+
+def test_https_timeout_with_failed_control_is_not_sni_block():
+    snap = _queen()
+    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=2)
+    snap.ru[CHANNEL_API_TLS] = _agg(CHANNEL_API_TLS, failed=2)
+    snap.ru[CHANNEL_TLS_NO_SNI] = _agg(CHANNEL_TLS_NO_SNI, failed=2)
+    assert not any(v.kind == KIND_SNI_BLOCK for v in classify_target(snap))
+
+
 def test_foreign_http_answer_reads_as_stub_not_sni_block():
     snap = _queen()
     snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=4)

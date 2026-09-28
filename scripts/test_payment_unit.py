@@ -366,6 +366,7 @@ class ProcessNotificationTests(unittest.IsolatedAsyncioTestCase):
             wallet="w1", yumoney_label="silent_abc123", status="pending",
             operation_id=None, paid_amount=None, promo_code=None, raw_response=None,
             completed_at=None,
+            support_code="SV-TEST-PAY1", subscription_applied=False,
         )
         base.update(kw)
         return SimpleNamespace(**base)
@@ -509,6 +510,7 @@ class ProcessNotificationTests(unittest.IsolatedAsyncioTestCase):
         db = AsyncMock()
         db.commit = AsyncMock()
         db.flush = AsyncMock()
+        db.begin_nested = MagicMock()
         # 1) payment lookup, 2) operation_id dup check, 3) email User lookup, 4) Subscription lookup
         db.execute = AsyncMock(side_effect=[
             _result(scalar=payment),
@@ -541,6 +543,7 @@ class ProcessNotificationTests(unittest.IsolatedAsyncioTestCase):
         db = AsyncMock()
         db.commit = AsyncMock()
         db.flush = AsyncMock()
+        db.begin_nested = MagicMock()
         db.execute = AsyncMock(side_effect=[
             _result(scalar=payment),      # payment lookup
             _result(scalar=None),         # operation_id dup check
@@ -560,6 +563,40 @@ class ProcessNotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["reason"], "completed")
         self.assertEqual(promo.use_count, 4)
         self.assertIsNone(user.pending_promo_code)
+
+    async def test_expired_intent_accepts_late_paid_notification_once(self):
+        payment = self._payment(status="expired")
+        db = AsyncMock()
+        db.begin_nested = MagicMock()
+        db.execute = AsyncMock(side_effect=[
+            _result(scalar=payment), _result(scalar=None),
+            _result(scalar=SimpleNamespace(id="user-1", email="u@example.com")),
+        ])
+        data = self._signed_notification()
+        with patch.object(self.svc, "_activate_subscription", new_callable=AsyncMock) as activate, \
+             patch("app.services.referral_service.apply_referral_reward_after_payment", new_callable=AsyncMock), \
+             patch("app.services.vpn_kick.restore_user_vpn_dataplane", new_callable=AsyncMock), \
+             patch.object(self.svc, "send_subscription_activated_email"):
+            activate.return_value = SimpleNamespace(expires_at=datetime.utcnow() + timedelta(days=30))
+            result = await self.svc.process_payment_notification(db, data)
+            self.assertEqual(result["reason"], "completed")
+            self.assertTrue(payment.subscription_applied)
+            db.execute = AsyncMock(return_value=_result(scalar=payment))
+            replay = await self.svc.process_payment_notification(db, data)
+            self.assertEqual(replay["reason"], "already_processed")
+            activate.assert_awaited_once()
+
+    async def test_expired_intent_still_requires_valid_signature_and_amount(self):
+        payment = self._payment(status="expired")
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_result(scalar=payment))
+        result = await self.svc.process_payment_notification(db, self._signed_notification(secret="forged"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(payment.status, "expired")
+        db.execute = AsyncMock(side_effect=[_result(scalar=payment), _result(scalar=None)])
+        result = await self.svc.process_payment_notification(db, self._signed_notification(amount="1.00", withdraw_amount="1.00"))
+        self.assertEqual(result["reason"], "amount_mismatch")
+        self.assertEqual(payment.status, "failed")
 
 
 class PaymentStatusTests(unittest.IsolatedAsyncioTestCase):

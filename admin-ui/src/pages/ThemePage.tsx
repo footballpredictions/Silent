@@ -62,6 +62,9 @@ const defaultTheme = {
   subscription_tier_5_label: '5 устройств',
   subscription_choose_tier_title: 'Сколько устройств',
   subscription_choose_plan_title: 'Выберите тариф',
+  subscription_pay_early_label: 'Оплатить заранее',
+  subscription_renewal_title: 'Продление подписки',
+  subscription_renewal_confirm_label: 'Перейти к оплате',
 }
 
 type Theme = typeof defaultTheme
@@ -454,6 +457,9 @@ export default function ThemePage({ token }: { token: string }) {
             {field('Подпись «3 устройства»', 'subscription_tier_3_label')}
             {field('Подпись «5 устройств»', 'subscription_tier_5_label')}
             {field('Заголовок тарифов', 'subscription_choose_plan_title')}
+            {field('Кнопка предоплаты', 'subscription_pay_early_label')}
+            {field('Заголовок предупреждения', 'subscription_renewal_title')}
+            {field('Кнопка подтверждения', 'subscription_renewal_confirm_label')}
             {field('Заголовок «Ждём оплату»', 'payment_waiting_title')}
             {fieldTextarea('Текст «Ждём оплату»', 'payment_waiting_text')}
             {field('Заголовок «Успех»', 'payment_success_title')}

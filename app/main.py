@@ -382,6 +382,9 @@ async def lifespan(app: FastAPI):
         ))
         # YuMoney: идемпотентность нотификаций + аудит суммы + промокод намерения
         await conn.execute(text(
+            "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS renewal_daily_rate NUMERIC(18, 8)"
+        ))
+        await conn.execute(text(
             "ALTER TABLE payments ADD COLUMN IF NOT EXISTS operation_id VARCHAR(255)"
         ))
         await conn.execute(text(

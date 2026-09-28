@@ -433,6 +433,11 @@ function TargetRow({ target }: { target: Target }) {
                         className={ru.total === 0 ? 'text-[#888]' : ru.failed === 0 ? 'text-emerald-400' : ru.ok === 0 ? 'text-red-400' : 'text-amber-300'}
                       >
                         {ru.total === 0 ? 'нет данных' : `${ru.ok}/${ru.total}`}
+                        {(ru.nodes ?? []).filter(n => n.error_kind === 'pending' || n.error_kind === 'probe_error').length > 0 && (
+                          <span className="ml-1 text-[#888]" title="Внешняя нода не вернула результат; это не таймаут нашего сервера">
+                            · нет ответа: {(ru.nodes ?? []).filter(n => n.error_kind === 'pending' || n.error_kind === 'probe_error').length}
+                          </span>
+                        )}
                       </span>
                     ) : target.ai_exit && ch === 'agent_tcp' ? (
                       <span className="text-[#888]" title="Порт закрыт фаерволом: снаружи отвечает только Улей">

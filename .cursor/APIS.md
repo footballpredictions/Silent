@@ -3,6 +3,10 @@
 Все endpoint'ы, внешние сервисы и переменные окружения проекта.
 **Секреты не хранятся в этом файле** — только имена переменных и расположение.
 
+Предоплата (2026-09-28): `POST /api/payments/preview` возвращает `plan_type`, `purchased_days`, `carried_days`, `expires_at`, `amount`, `message`, `calculated_at`. `/api/users/me` и профиль в client_sync_bundle дополнены опциональным `payment_previews` (map по id шести тарифов). Клиенты используют quotes не старше 5 минут для мгновенного предупреждения; при активации срок всегда пересчитывается по актуальным данным. Старые клиенты игнорируют новые поля.
+
+`remaining_days`, `carried_days`, `purchased_days` и текст предупреждения показывают целые дни (округление вверх). Это отображение; точный денежный остаток, ставка дня и `expires_at` сохраняют исходную точность.
+
 ---
 
 ## Production URLs
@@ -11,6 +15,7 @@
 |--------|-----|
 | HTTPS API | `https://89-125-188-100.nip.io` |
 | VPS IP | `89.125.188.100` |
+| Приёмник уведомлений ЮMoney (отдельный, без VPN) | `https://153-52-117-159.nip.io/api/payments/yumoney/notify` → постоянная очередь → старый webhook Улья по HTTPS 443/2083 |
 | WDTT (UDP) | `89.125.188.100:56000` |
 | WireGuard (UDP) | `89.125.188.100:56001` |
 | Tunnel API (через WG) | `http://10.66.66.1:8000` |
@@ -21,6 +26,15 @@
 ---
 
 ## Backend API
+
+Уведомления оплаты (2026-09-28): кошельки переключены пользователем на отдельный
+приёмник 153.52.117.159; два теста кабинетов приняты и переданы в Улей с 200.
+Старый `/api/payments/yumoney/notify` сохраняется, клиентские init/status и API URL
+не меняются. Приёмник подтверждает вход после записи SQLite, повторяет при сбоях;
+активация после доставки в Улей. Подлинное уведомление может завершить pending
+или expired заявку, completed/failed повторно срок не начисляют. Секреты только
+на сервере в `/etc/silent-payment-relay/config.json`, не в Git. Инструкция:
+`backend/payment-relay/README.md`; health: `https://153-52-117-159.nip.io/health`.
 
 **Базовый префикс:** `/api`  
 **Health:** `/health`, `/api/health`  
@@ -134,6 +148,10 @@ GET /api/vpn/sync-state?hashes_since=0&theme_since=0&profile_since=0
 ```
 
 ### Payments — `/api/payments` (на сервере, кастомный YuMoney QuickPay, без API YuMoney)
+
+**Предоплата (2026-09-28):** `POST /preview` (User) с `{plan_type, promo_code?}` — без создания платежа и расходования промокода. Возвращает `amount`, `expires_at` (UTC ISO), `remaining_days`, `carried_days`, `old_devices`, `new_devices`, `message`, `promo_code`. Перед init клиент показывает предупреждение. `/init` сохраняет прежние обязательные поля и добавляет `renewal` с расчётом. `/status/{label}` добавляет optional `subscription_applied`; для применённой оплаты — `expires_at`, `max_devices`. Активная старая подписка не подтверждает новую оплату; новые клиенты ждут completed + applied != false. Фактический срок пересчитывается в момент webhook/manual activation, а не фиксируется на экране preview.
+
+При том же числе устройств — добавить календарный купленный срок к текущему expires. При смене 3↔5 — остаток секунд × сохранённая стоимость дня / стоимость дня выбранного тарифа, затем добавить к новому периоду от сейчас. Покупка оплачивается целиком (с действующей promo-скидкой), остаток влияет только на дни. `subscriptions.renewal_daily_rate` хранит стоимость дня с переносом более ранних продлений; legacy NULL вычисляется из последней оплаты и одного календарного периода. Trial/referral/test не стекаются в покупку; unlimited не заменяется. Блокировки Payment/User и savepoint не допускают повторного начисления/частичной отмены старой подписки.
 
 Единый флоу для **всех** клиентов (PC/Android/iOS): `POST /init` → открыть `url` в системном браузере (не WebView, не проксируется через бекенд) → `GET /status/{label}` poll каждые ~4с до `completed`/`failed`/`expired` или таймаута (10 мин). Реализация: `app/services/payment_service.py`, план: `.cursor/PLAN_PAYMENTS_YUMONEY.md` (реализован + покрыт тестами `scripts/test_payment_unit.py`, 37/37 OK).
 

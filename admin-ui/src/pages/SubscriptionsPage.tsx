@@ -104,8 +104,11 @@ const PLAN_NAMES: Record<string, string> = {
   test: 'Тест',
   three_days: '3 дня',
   monthly: 'Месяц',
+  monthly_5: 'Месяц · 5 устройств',
   two_months: '2 месяца',
+  two_months_5: '2 месяца · 5 устройств',
   quarterly: '3 месяца',
+  quarterly_5: '3 месяца · 5 устройств',
   half_year: 'Полгода',
   yearly: 'Год',
   unlimited: '∞',
@@ -156,6 +159,16 @@ function fmtMoney(n: number | null | undefined): string {
   return `${Number(n).toFixed(0)} ₽`
 }
 
+function remainingSubscriptionDays(u: UserRow, now: number): number {
+  const { subscription: sub } = u
+  if (u.is_admin || (u.in_test_mode ?? u.is_test_user) || !sub.active ||
+      !sub.expires_at || ['trial', 'test', 'unlimited'].includes(sub.plan || '')) return 0
+  // API dates without an offset are UTC, including fractional prepaid days.
+  const raw = sub.expires_at.trim().replace(' ', 'T')
+  const expires = Date.parse(/[zZ]|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : `${raw}Z`)
+  return Number.isFinite(expires) ? Math.max(0, Math.ceil((expires - now) / 86400000)) : 0
+}
+
 export default function SubscriptionsPage({ token }: { token: string }) {
   const [users, setUsers] = useState<UserRow[]>([])
   const [search, setSearch] = useState('')
@@ -183,9 +196,19 @@ export default function SubscriptionsPage({ token }: { token: string }) {
   const [history, setHistory] = useState<HistoryPayload | null>(null)
   const [historyBusy, setHistoryBusy] = useState(false)
   const [historyGrantId, setHistoryGrantId] = useState<string | null>(null)
+  const [historyRevokeError, setHistoryRevokeError] = useState<string | null>(null)
+  const [now, setNow] = useState(Date.now)
+  const historyDays = history ? remainingSubscriptionDays(history.user, now) : 0
 
   const headers = { Authorization: `Bearer ${token}` }
   const pageSize = 50
+
+  useEffect(() => {
+    if (!historyOpen) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 30000)
+    return () => clearInterval(timer)
+  }, [historyOpen])
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 280)
@@ -406,6 +429,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
     setHistoryBusy(true)
     setHistoryOpen(true)
     setError(null)
+    setHistoryRevokeError(null)
     try {
       const res = await fetch(`/api/admin/users/${userId}/subscription-history`, { headers })
       if (!res.ok) {
@@ -416,6 +440,35 @@ export default function SubscriptionsPage({ token }: { token: string }) {
       setHistory(await res.json())
     } finally {
       setHistoryBusy(false)
+    }
+  }
+
+  const revokeHistorySubscription = async () => {
+    if (!history || actionKey || historyGrantId || historyBusy ||
+        !remainingSubscriptionDays(history.user, Date.now())) return
+    const user = history.user
+    setActionKey(`${user.id}:revoke`)
+    setHistoryRevokeError(null)
+    setError(null)
+    setSuccess(null)
+    try {
+      const res = await fetch(`/api/admin/users/${user.id}/revoke-subscription`, {
+        method: 'POST',
+        headers,
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setHistoryRevokeError(typeof body.detail === 'string' ? body.detail : 'Не удалось снять подписку')
+        return
+      }
+      setSuccess(`Подписка снята у ${user.email}`)
+      await openHistory(user.id)
+      await fetchUsers()
+      await fetchOrphans()
+    } catch {
+      setHistoryRevokeError('Не удалось снять подписку. Проверьте соединение и обновите профиль.')
+    } finally {
+      setActionKey(null)
     }
   }
 
@@ -903,6 +956,21 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                       {subscriptionLabel(history.user)}
                     </div>
                     <div className="mt-2 font-mono text-xs text-[#555]">{history.user.display_id}</div>
+                    {historyDays > 0 && (
+                      <div className="mt-3">
+                        <button
+                          type="button"
+                          onClick={revokeHistorySubscription}
+                          disabled={!!actionKey || !!historyGrantId || historyBusy}
+                          title="Снять всю текущую подписку, включая предоплаченные дни"
+                          className="w-full px-3 py-2 rounded-lg text-xs border border-red-500/60 bg-red-500/10 text-red-300 hover:bg-red-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-40 disabled:cursor-default transition-colors cursor-pointer"
+                        >
+                          {actionKey === `${history.user.id}:revoke` ? 'Снимаем…' : `Снять подписку · ${historyDays} дн.`}
+                        </button>
+                        <p className="mt-2 text-xs text-[#aaa]">Весь оставшийся срок, включая предоплату. VPN пользователя отключится.</p>
+                      </div>
+                    )}
+                    {historyRevokeError && <p role="alert" className="mt-2 text-xs text-red-300">{historyRevokeError}</p>}
                   </div>
 
                   <section>

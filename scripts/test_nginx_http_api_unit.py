@@ -85,6 +85,20 @@ def test_default_http80_proxies_admin_spa_not_444():
     assert "deny all" in block
 
 
+def test_default_https_exposes_only_health_to_ip_control():
+    """Check-host HTTPS-by-IP must reach health; raw-IP admin and API stay closed."""
+    conf = NGINX.read_text(encoding="utf-8")
+    blocks = [b for b in _server_blocks(conf) if "listen 443 ssl http2 default_server" in b]
+    assert len(blocks) == 1
+    block = blocks[0]
+    before_health, health_and_fallback = block.split("location = /api/health {", 1)
+    health, fallback = health_and_fallback.split("location / {", 1)
+    assert "return 444" not in before_health, "server-level 444 bypasses exact health location"
+    assert "proxy_pass http://api;" in health
+    assert "return 444;" in fallback
+    assert "location /api/" not in block, "do not expose the rest of API by raw IP"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in tests:

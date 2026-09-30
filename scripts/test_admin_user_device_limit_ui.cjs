@@ -31,8 +31,10 @@ const id = '11111111-1111-4111-8111-111111111111'
       if (path === '/api/admin/sessions') {
         return route.fulfill({ contentType: 'application/json', body: '{"sessions":[]}' })
       }
-      if (path === '/api/admin/users' && request.method() === 'GET') {
-        return route.fulfill({ contentType: 'application/json', body: JSON.stringify([user]) })
+      if (path === '/api/admin/users/paged' && request.method() === 'GET') {
+        return route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+          items: [user], total: 1, matched: 1, page: 1, page_size: 50,
+        }) })
       }
       if (path === `/api/admin/users/${id}/device-limit` && request.method() === 'PUT') {
         const body = request.postDataJSON()

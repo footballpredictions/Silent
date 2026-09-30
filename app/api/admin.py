@@ -118,15 +118,24 @@ async def _count_users_with_vpn_access(db: AsyncSession) -> tuple[int, int]:
     return total, len(active_ids)
 
 
-async def _dashboard_users_block(db: AsyncSession, *, soft_online: bool = False) -> dict:
+async def _dashboard_users_block(db: AsyncSession, *, soft_online: bool = False, fast: bool = False) -> dict:
     from app.services.peak_online import record_online_peak
     from app.services.hive_service import vpn_online_shown_total
     from app.services.subscription_service import dashboard_subscription_breakdown
 
     total_users, vpn_access = await _count_users_with_vpn_access(db)
     breakdown = await dashboard_subscription_breakdown(db)
-    connected_devices = await vpn_online_shown_total(db, soft=soft_online)
-    peak_online, peak_online_at = await record_online_peak(db, int(connected_devices or 0))
+    if fast:
+        from app.services.hive_service import cached_vpn_online_shown
+        from app.services.peak_online import get_peak_online
+
+        # First paint must never wait for a cold hive HTTP refresh. The full
+        # request follows immediately and supplies the authoritative count.
+        connected_devices = cached_vpn_online_shown()
+        peak_online, peak_online_at = await get_peak_online(db)
+    else:
+        connected_devices = await vpn_online_shown_total(db, soft=soft_online)
+        peak_online, peak_online_at = await record_online_peak(db, int(connected_devices or 0))
     return {
         "total": total_users,
         # Совместимость: раньше это был VPN-доступ; теперь — сумма живых подписок
@@ -145,6 +154,8 @@ async def _dashboard_users_block(db: AsyncSession, *, soft_online: bool = False)
 @router.get("/stats")
 async def get_stats(
     light: bool = Query(False, description="CPU/RAM/счётчики без VK-списков — для полла дашборда"),
+    fast: bool = False,
+    compact: bool = False,
     node_id: str | None = Query(
         None,
         description="Нода для системных ресурсов: queen (дефолт) или UUID соты",
@@ -155,7 +166,7 @@ async def get_stats(
     """Dashboard system stats."""
     from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
 
-    users_block = await _dashboard_users_block(db, soft_online=light)
+    users_block = await _dashboard_users_block(db, soft_online=light, fast=fast)
     resource_nodes = await list_dashboard_resource_nodes(db)
     known_ids = {n["id"] for n in resource_nodes}
     selected = (node_id or QUEEN_NODE_ID).strip() or QUEEN_NODE_ID
@@ -164,7 +175,7 @@ async def get_stats(
     system = await dashboard_system_for_node(db, selected)
     system["node_id"] = selected
 
-    if light:
+    if light or fast:
         return {
             "system": system,
             "users": users_block,
@@ -282,12 +293,13 @@ async def get_stats(
             }
             for h in unique_hashes
         ]
-        for row in slot_rows:
-            flat_hashes.append({
-                **row,
-                "user_email": u.email,
-                "user_connected": dev_online > 0,
-            })
+        if not compact:
+            for row in slot_rows:
+                flat_hashes.append({
+                    **row,
+                    "user_email": u.email,
+                    "user_connected": dev_online > 0,
+                })
         vk_users.append({
             "user_id": str(u.id),
             "user_email": u.email,
@@ -302,20 +314,21 @@ async def get_stats(
             "hashes": slot_rows,
         })
 
-    legacy_rows = [
-        {
-            "slot": h.slot_index,
-            "hash": h.hash_value,
-            "user_email": "(legacy, без пользователя)",
-            "user_connected": False,
-            "is_active": h.is_active,
-            "fail_count": h.fail_count,
-            "last_error_code": int(getattr(h, "last_error_code", 0) or 0),
-            "last_checked": h.last_checked,
-        }
-        for h in legacy_hashes
-    ]
-    flat_hashes.extend(legacy_rows)
+    if not compact:
+        legacy_rows = [
+            {
+                "slot": h.slot_index,
+                "hash": h.hash_value,
+                "user_email": "(legacy, без пользователя)",
+                "user_connected": False,
+                "is_active": h.is_active,
+                "fail_count": h.fail_count,
+                "last_error_code": int(getattr(h, "last_error_code", 0) or 0),
+                "last_checked": h.last_checked,
+            }
+            for h in legacy_hashes
+        ]
+        flat_hashes.extend(legacy_rows)
 
     per_user_active = sum(len(v) for v in by_user_id.values())
     users_with_any = sum(1 for u in vk_users if u["slots_filled"] > 0)
@@ -464,6 +477,64 @@ async def list_users(
             "online_devices": online_map.get(user.id, 0),
         })
     return out
+
+
+@router.get("/users/paged")
+async def list_users_paged(
+    q: str = Query("", description="Поиск по email или display_id"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    sort: Literal[
+        "online", "unverified", "email_az", "email_za",
+        "registered_new", "registered_old", "subscription",
+    ] = "registered_new",
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bounded Users response; old /users array contract remains unchanged."""
+    rows = await list_users(skip=0, limit=None, _=_, db=db)
+    total = len(rows)
+    needle = q.strip().casefold()
+    if needle:
+        rows = [row for row in rows if needle in row["email"].casefold()
+                or needle in row["display_id"].casefold()]
+
+    def subscription_rank(row: dict) -> int:
+        sub = row["subscription"]
+        if row["is_admin"] or sub["plan"] == "unlimited":
+            return 3
+        if row["in_test_mode"] or sub["plan"] == "test":
+            return 2
+        return 1 if sub["active"] else 0
+
+    def sort_key(row: dict):
+        created = row["created_at"] or datetime.min
+        if sort == "online":
+            return bool(row["is_online"]), created
+        if sort == "unverified":
+            return not bool(row["is_verified"]), created
+        if sort == "email_az" or sort == "email_za":
+            return row["email"].casefold()
+        if sort == "registered_old":
+            return created
+        if sort == "subscription":
+            return subscription_rank(row), created
+        return created
+
+    reverse = sort not in ("email_az", "registered_old")
+    admins = [row for row in rows if row["is_admin"]]
+    regular = [row for row in rows if not row["is_admin"]]
+    admins.sort(key=sort_key, reverse=reverse)
+    regular.sort(key=sort_key, reverse=reverse)
+    matched = len(rows)
+    start = (page - 1) * page_size
+    return {
+        "items": (admins + regular)[start:start + page_size],
+        "total": total,
+        "matched": matched,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 class RegistrationTestModeRequest(BaseModel):

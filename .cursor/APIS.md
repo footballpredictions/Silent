@@ -220,8 +220,9 @@ sequenceDiagram
 | GET | `/sessions` | Admin | Активные сессии + trusted devices |
 | DELETE | `/sessions/{id}` | Admin | Отозвать сессию (+ устройство) |
 | DELETE | `/devices/{id}` | Admin | Отозвать trusted device и его сессии |
-| GET | `/stats` | Admin | CPU/RAM/disk, users (`connected_devices`, `peak_online_devices`, `peak_online_at`), VK hashes; `vk_users[].created_at` |
+| GET | `/stats` | Admin | CPU/RAM/disk, users (`connected_devices`, `peak_online_devices`, `peak_online_at`), VK hashes; `vk_users[].created_at`. Опционально `fast=1` — быстрые карточки без обновления онлайн/VK (при отсутствии кэша `connected_devices=null`); `compact=1` — без дублирующего `vk_hashes` при наличии `vk_users`. Обычный ответ прежний. |
 | GET | `/users` | Admin | Список пользователей; `max_devices` — действующий лимит (0 для админа), `plan_max_devices` — по тарифу, `device_limit_override` — ручные 3/5 или `null`; `is_online`, `online_devices` — опционально |
+| GET | `/users/paged?q=&page=&page_size=&sort=` | Admin | Страница пользователей `{items,total,matched,page,page_size}`. Поиск по email/display_id во всей базе, сортировка `online`, `unverified`, `email_az`, `email_za`, `registered_new`, `registered_old`, `subscription`; размер страницы 1–200. Старый `/users` остаётся массивом. |
 | PUT | `/users/{id}/device-limit` | Admin | `{ "max_devices": 3 \| 5 \| null }` — ручной лимит одного пользователя или возврат к тарифу; срок и цена не меняются, существующие сессии не удаляются |
 | GET | `/users/{id}/devices` | Admin | Сессии устройств пользователя (без WG-ключей) |
 | DELETE | `/users/{id}/devices/{device_id}` | Admin | Удалить одну сессию устройства |

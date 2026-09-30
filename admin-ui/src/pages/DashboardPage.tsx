@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { Cpu, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight, Activity, Server } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
 import SortSelect from '../components/SortSelect'
@@ -78,7 +78,7 @@ interface Stats {
     subscriptions_referral?: number
     subscriptions_trial?: number
     vpn_access_users?: number
-    connected_devices: number
+    connected_devices: number | null
     peak_online_devices?: number
     peak_online_at?: string | null
   }
@@ -200,7 +200,7 @@ function LoadAreaChart({
   )
 }
 
-function VkHashesCard({
+const VkHashesCard = memo(function VkHashesCard({
   hashes,
   vkUsers,
   summary,
@@ -491,7 +491,7 @@ function VkHashesCard({
       )}
     </div>
   )
-}
+})
 
 export default function DashboardPage({ token, onUnauthorized }: { token: string; onUnauthorized?: () => void }) {
   const [stats, setStats] = useState<Stats | null>(null)
@@ -505,6 +505,8 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       return 'queen'
     }
   })
+  const [detailsReady, setDetailsReady] = useState(false)
+  const [detailsError, setDetailsError] = useState(false)
 
   const resourceNodes = stats?.resource_nodes ?? [{ id: 'queen', name: 'Улей', title: 'Улей', is_queen: true }]
 
@@ -515,34 +517,38 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
     setNetHistory([])
   }, [])
 
-  const fetchStats = useCallback(async (mode: 'full' | 'light' = 'full') => {
+  const fetchStats = useCallback(async (mode: 'fast' | 'full' | 'light' = 'full', signal?: AbortSignal): Promise<boolean> => {
     if (mode === 'full') setLoading(true)
     try {
       const params = new URLSearchParams()
       if (mode === 'light') params.set('light', '1')
+      if (mode === 'fast') params.set('fast', '1')
+      if (mode === 'full') params.set('compact', '1')
       params.set('node_id', nodeId)
       const res = await fetch(`/api/admin/stats?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
+        signal,
       })
       if (res.status === 401) {
         onUnauthorized?.()
-        return
+        return false
       }
       if (!res.ok) {
         console.error('stats HTTP', res.status)
-        return
+        if (mode === 'full') setDetailsError(true)
+        return false
       }
       const data: Stats = await res.json()
-      if (!data?.system) return
+      if (signal?.aborted || !data?.system) return false
       const nodes = data.resource_nodes ?? []
       const effectiveNode = data.system.node_id || nodeId
       if (nodes.length && !nodes.some(n => n.id === effectiveNode) && effectiveNode !== 'queen') {
         selectNode('queen')
-        return
+        return false
       }
       setStats(prev => {
-        if (mode === 'light') {
-          if (!prev) return prev
+        if (mode === 'light' || mode === 'fast') {
+          if (!prev) return mode === 'fast' ? { ...data, vk_hashes: [] } : prev
           return {
             ...prev,
             system: data.system,
@@ -552,23 +558,37 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
         }
         return data
       })
+      if (mode === 'full') {
+        setDetailsReady(true)
+        setDetailsError(false)
+      }
       const t = new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       setCpuHistory(prev => [...prev.slice(-19), { t, v: data.system.cpu_percent }])
       setNetHistory(prev => [
         ...prev.slice(-19),
         { t, v: data.system.network_util_percent ?? 0 },
       ])
+      return true
     } catch (e) {
-      console.error(e)
+      if (!signal?.aborted) {
+        console.error(e)
+        if (mode === 'full') setDetailsError(true)
+      }
+      return false
     } finally {
       if (mode === 'full') setLoading(false)
     }
   }, [token, onUnauthorized, nodeId, selectNode])
 
   useEffect(() => {
-    fetchStats('full')
-    const interval = setInterval(() => fetchStats('light'), 5000)
-    return () => clearInterval(interval)
+    const controller = new AbortController()
+    void (async () => {
+      if (await fetchStats('fast', controller.signal)) {
+        if (!controller.signal.aborted) await fetchStats('full', controller.signal)
+      }
+    })()
+    const interval = setInterval(() => { void fetchStats('light', controller.signal) }, 5000)
+    return () => { controller.abort(); clearInterval(interval) }
   }, [fetchStats])
 
   if (!stats) {
@@ -634,10 +654,10 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
         <div className="bg-[#111] border border-[#222] rounded-xl p-5 flex flex-col h-full">
           <div className="flex items-center justify-between mb-3">
             <span className="text-[#666] text-xs uppercase tracking-wider">Онлайн</span>
-            <div className={`w-2.5 h-2.5 rounded-full ${stats.users.connected_devices > 0 ? 'bg-green-400 shadow-[0_0_6px_#4ade80]' : 'bg-[#444]'}`} />
+            <div className={`w-2.5 h-2.5 rounded-full ${(stats.users.connected_devices ?? 0) > 0 ? 'bg-green-400 shadow-[0_0_6px_#4ade80]' : 'bg-[#444]'}`} />
           </div>
           <div className="flex-1">
-            <div className="text-2xl font-bold tabular-nums">{stats.users.connected_devices}</div>
+            <div className="text-2xl font-bold tabular-nums">{stats.users.connected_devices ?? '…'}</div>
           </div>
           <div
             className="text-[#555] text-xs mt-3 pt-2 border-t border-[#1e1e1e]"
@@ -648,7 +668,7 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
             }
           >
             все ноды: Улей + соты · максимум:{' '}
-            {Math.max(stats.users.peak_online_devices ?? 0, stats.users.connected_devices)}
+            {Math.max(stats.users.peak_online_devices ?? 0, stats.users.connected_devices ?? 0)}
           </div>
         </div>
       </div>
@@ -752,7 +772,13 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
         </div>
       </div>
 
-      <VkHashesCard hashes={stats.vk_hashes ?? []} vkUsers={stats.vk_users} summary={stats.vk_hash_summary} />
+      {detailsReady ? (
+        <VkHashesCard hashes={stats.vk_hashes ?? []} vkUsers={stats.vk_users} summary={stats.vk_hash_summary} />
+      ) : (
+        <div className="bg-[#111] border border-[#222] rounded-xl p-5 text-sm text-[#777]">
+          {detailsError ? 'Не удалось загрузить список VK-хешей. Нажмите «Обновить».' : 'Загрузка списка VK-хешей…'}
+        </div>
+      )}
     </div>
   )
 }

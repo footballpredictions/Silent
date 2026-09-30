@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Ban, CheckCircle, ShieldCheck, Trash2, X } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
 import SortSelect from '../components/SortSelect'
@@ -149,7 +149,11 @@ function fmtDateTime(v: string | null | undefined): string {
 
 export default function UsersPage({ token }: { token: string }) {
   const [users, setUsers] = useState<UserRow[]>([])
+  const [totalUsers, setTotalUsers] = useState(0)
+  const [matchedUsers, setMatchedUsers] = useState(0)
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [refreshKey, setRefreshKey] = useState(0)
   const [sort, setSort] = useState<UsersSort>(() => {
     try {
       const raw = localStorage.getItem(USERS_SORT_KEY)
@@ -173,20 +177,41 @@ export default function UsersPage({ token }: { token: string }) {
 
   const headers = { Authorization: `Bearer ${token}` }
 
-  const fetchUsers = async () => {
-    setLoading(true)
-    setError(null)
-    const res = await fetch('/api/admin/users', { headers })
-    if (!res.ok) {
-      setError('Не удалось загрузить пользователей')
-      setLoading(false)
-      return
-    }
-    setUsers(await res.json())
-    setLoading(false)
-  }
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), search ? 250 : 0)
+    return () => window.clearTimeout(timer)
+  }, [search])
 
-  useEffect(() => { fetchUsers() }, [])
+  useEffect(() => {
+    const controller = new AbortController()
+    const load = async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        const params = new URLSearchParams({
+          page: String(page), page_size: String(pageSize), sort, q: debouncedSearch,
+        })
+        const res = await fetch(`/api/admin/users/paged?${params}`, {
+          headers: { Authorization: `Bearer ${token}` }, signal: controller.signal,
+        })
+        if (!res.ok) throw new Error('Не удалось загрузить пользователей')
+        const body: { items: UserRow[]; total: number; matched: number } = await res.json()
+        if (controller.signal.aborted) return
+        setUsers(body.items)
+        setTotalUsers(body.total)
+        setMatchedUsers(body.matched)
+      } catch (cause) {
+        if (controller.signal.aborted) return
+        setError(cause instanceof Error ? cause.message : 'Не удалось загрузить пользователей')
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
+    void load()
+    return () => controller.abort()
+  }, [token, page, sort, debouncedSearch, refreshKey])
+
+  const fetchUsers = async () => { setRefreshKey(value => value + 1) }
 
   const apiAction = async (id: string, path: string, method: string) => {
     setActionId(id)
@@ -306,70 +331,20 @@ export default function UsersPage({ token }: { token: string }) {
     try { localStorage.setItem(USERS_SORT_KEY, next) } catch { /* ignore */ }
   }
 
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase()
-    const list = users.filter(u =>
-      !u.email.includes('bootstrap') && (
-        u.email.toLowerCase().includes(q) ||
-        u.display_id.toLowerCase().includes(q)
-      )
-    )
-    const subRank = (u: UserRow) => {
-      if (u.is_admin || u.subscription.plan === 'unlimited') return 3
-      if (u.in_test_mode ?? u.is_test_user) return 2
-      if (u.subscription.active) return 1
-      return 0
-    }
-    list.sort((a, b) => {
-      const byAdmin = Number(Boolean(b.is_admin)) - Number(Boolean(a.is_admin))
-      if (byAdmin) return byAdmin
-      switch (sort) {
-        case 'online': {
-          const byOnline = Number(Boolean(b.is_online)) - Number(Boolean(a.is_online))
-          if (byOnline) return byOnline
-          return parseTs(b.created_at) - parseTs(a.created_at)
-        }
-        case 'unverified': {
-          const byUnverified = Number(Boolean(a.is_verified)) - Number(Boolean(b.is_verified))
-          if (byUnverified) return byUnverified
-          return parseTs(b.created_at) - parseTs(a.created_at)
-        }
-        case 'email_az':
-          return a.email.localeCompare(b.email, 'ru', { sensitivity: 'base' })
-        case 'email_za':
-          return b.email.localeCompare(a.email, 'ru', { sensitivity: 'base' })
-        case 'registered_new':
-          return parseTs(b.created_at) - parseTs(a.created_at)
-        case 'registered_old':
-          return parseTs(a.created_at) - parseTs(b.created_at)
-        case 'subscription': {
-          const bySub = subRank(b) - subRank(a)
-          if (bySub) return bySub
-          return parseTs(b.created_at) - parseTs(a.created_at)
-        }
-        default:
-          return 0
-      }
-    })
-    return list
-  }, [users, search, sort])
-
   useEffect(() => {
     setPage(1)
   }, [search, sort])
 
-  const pages = Math.max(1, Math.ceil(filtered.length / pageSize) || 1)
+  const pages = Math.max(1, Math.ceil(matchedUsers / pageSize) || 1)
   const safePage = Math.min(page, pages)
-  const paged = search.trim()
-    ? filtered
-    : filtered.slice((safePage - 1) * pageSize, safePage * pageSize)
+  const paged = users
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold">Пользователи</h1>
-          <p className="text-xs text-[#666] mt-1">{loading ? '…' : `${filtered.length} из ${users.length}`}</p>
+          <p className="text-xs text-[#666] mt-1">{loading ? '…' : `${matchedUsers} из ${totalUsers}`}</p>
         </div>
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
           <SearchInput
@@ -412,7 +387,7 @@ export default function UsersPage({ token }: { token: string }) {
           <tbody>
             {loading ? (
               <tr><td colSpan={9} className="text-center py-12 text-[#555]">Загрузка...</td></tr>
-            ) : filtered.length === 0 ? (
+            ) : users.length === 0 ? (
               <tr><td colSpan={9} className="text-center py-12 text-[#555]">Нет пользователей</td></tr>
             ) : (
               paged.map(u => (
@@ -523,14 +498,12 @@ export default function UsersPage({ token }: { token: string }) {
         </table>
       </div>
 
-      {!search.trim() && (
-        <ListPagination
-          page={safePage}
-          pages={pages}
-          onPageChange={setPage}
-          disabled={loading}
-        />
-      )}
+      <ListPagination
+        page={safePage}
+        pages={pages}
+        onPageChange={setPage}
+        disabled={loading}
+      />
 
       {limitUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

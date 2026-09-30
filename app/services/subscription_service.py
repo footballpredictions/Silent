@@ -35,12 +35,23 @@ def is_user_admin(user: User) -> bool:
 
 
 async def max_devices_for_user(db: AsyncSession, user: User) -> int:
-    """Лимит сессий: 0 = безлимит (админ); иначе 3 или 5 по активному плану."""
+    """Лимит сессий: 0 для админа; ручные 3/5 либо активный план."""
     if is_user_admin(user):
         return 0
+    override = getattr(user, "device_limit_override", None)
+    if override in (3, 5):
+        return override
     in_test = await user_in_test_mode(user, db)
     sub = await get_display_subscription(db, user, in_test_mode=in_test)
-    return devices_for_plan(sub.plan_type if sub else None)
+    return effective_device_limit(user, sub.plan_type if sub else None)
+
+
+def effective_device_limit(user: User, plan_type: str | None) -> int:
+    """Общий расчёт для VPN, клиента и списка админки без N+1 запросов."""
+    if is_user_admin(user):
+        return 0
+    override = getattr(user, "device_limit_override", None)
+    return override if override in (3, 5) else devices_for_plan(plan_type)
 
 
 def device_limit_applies(user: User) -> bool:

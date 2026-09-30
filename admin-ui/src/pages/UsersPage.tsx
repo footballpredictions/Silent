@@ -13,6 +13,9 @@ interface UserRow {
   created_at: string; bootstrap_hash: string | null; server_hashes: number
   subscription: { active: boolean; plan: string | null; expires_at: string | null }
   devices_count: number
+  max_devices?: number
+  plan_max_devices?: number
+  device_limit_override?: number | null
   is_online?: boolean
   online_devices?: number
   acquisition?: 'referral' | 'promo' | 'organic' | string
@@ -41,6 +44,28 @@ const TYPE_NAMES: Record<string, string> = {
   ios: 'iOS',
   pc: 'ПК',
   openwrt: 'OpenWrt',
+}
+
+const PLAN_NAMES: Record<string, string> = {
+  trial: 'Пробный', three_days: '3 дня', monthly: 'Месяц',
+  monthly_5: 'Месяц', two_months: '2 месяца', two_months_5: '2 месяца',
+  quarterly: '3 месяца', quarterly_5: '3 месяца',
+  half_year: 'Полгода', yearly: 'Год',
+}
+
+function tariffDevices(u: UserRow): number {
+  if (u.plan_max_devices === 3 || u.plan_max_devices === 5) return u.plan_max_devices
+  return u.subscription.plan?.endsWith('_5') ? 5 : 3
+}
+
+function effectiveDevices(u: UserRow): number {
+  if (u.max_devices === 3 || u.max_devices === 5) return u.max_devices
+  return u.device_limit_override === 3 || u.device_limit_override === 5
+    ? u.device_limit_override : tariffDevices(u)
+}
+
+function deviceCountText(count: number): string {
+  return `${count} ${count === 3 ? 'устройства' : 'устройств'}`
 }
 
 const USERS_SORT_KEY = 'admin.users.sort'
@@ -84,13 +109,14 @@ function subscriptionLabel(u: UserRow): string {
   if (inTest || u.subscription.plan === 'test') return 'Тест · безлимит'
   if (u.is_admin || u.subscription.plan === 'unlimited') return '∞'
   if (!u.subscription.active) return 'Нет'
-  const plan = u.subscription.plan === 'trial' ? 'Пробный' : u.subscription.plan
+  const plan = PLAN_NAMES[u.subscription.plan || ''] || u.subscription.plan || 'Активна'
+  const tier = u.subscription.plan === 'trial' ? '' : ` · ${deviceCountText(tariffDevices(u))}`
   const until = u.subscription.expires_at?.split('T')[0]
-  return until ? `${plan} · до ${until}` : plan || 'Активна'
+  return until ? `${plan}${tier} · до ${until}` : `${plan}${tier}`
 }
 
 function devicesLabel(u: UserRow): string {
-  return u.is_admin ? `${u.devices_count}/∞` : `${u.devices_count}/3`
+  return u.is_admin ? `${u.devices_count}/∞` : `${u.devices_count}/${effectiveDevices(u)}`
 }
 
 function fmtDate(v: string | null | undefined): string {
@@ -139,7 +165,11 @@ export default function UsersPage({ token }: { token: string }) {
   const [devicesBusy, setDevicesBusy] = useState(false)
   const [devicesPayload, setDevicesPayload] = useState<DevicesPayload | null>(null)
   const [deviceBusyId, setDeviceBusyId] = useState<string | null>(null)
+  const [limitUserId, setLimitUserId] = useState<string | null>(null)
+  const [limitBusy, setLimitBusy] = useState(false)
+  const [limitError, setLimitError] = useState<string | null>(null)
   const pageSize = 50
+  const limitUser = users.find(u => u.id === limitUserId)
 
   const headers = { Authorization: `Bearer ${token}` }
 
@@ -241,6 +271,32 @@ export default function UsersPage({ token }: { token: string }) {
       await fetchUsers()
     } finally {
       setDeviceBusyId(null)
+    }
+  }
+
+  const saveDeviceLimit = async (maxDevices: 3 | 5 | null) => {
+    if (!limitUser || limitBusy) return
+    setLimitBusy(true)
+    setLimitError(null)
+    try {
+      const res = await fetch(`/api/admin/users/${limitUser.id}/device-limit`, {
+        method: 'PUT',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_devices: maxDevices }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setLimitError(typeof body.detail === 'string' ? body.detail : 'Не удалось изменить лимит устройств')
+        return
+      }
+      setUsers(rows => rows.map(u => u.id === limitUser.id
+        ? { ...u, max_devices: body.max_devices, device_limit_override: body.device_limit_override }
+        : u))
+      setLimitUserId(null)
+    } catch {
+      setLimitError('Не удалось изменить лимит устройств. Проверьте соединение.')
+    } finally {
+      setLimitBusy(false)
     }
   }
 
@@ -399,7 +455,20 @@ export default function UsersPage({ token }: { token: string }) {
                       {subscriptionLabel(u)}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-center">{devicesLabel(u)}</td>
+                  <td className="px-4 py-3 text-center" onClick={e => e.stopPropagation()}>
+                    {u.is_admin ? devicesLabel(u) : (
+                      <button
+                        type="button"
+                        aria-label={`${u.devices_count} из ${effectiveDevices(u)} устройств; изменить лимит`}
+                        title="Изменить лимит устройств этого пользователя"
+                        onClick={() => { setLimitError(null); setLimitUserId(u.id) }}
+                        className="inline-flex flex-col items-center rounded-md px-2 py-1 text-sky-300 hover:bg-sky-500/10 hover:text-sky-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 cursor-pointer"
+                      >
+                        <span>{devicesLabel(u)}</span>
+                        {u.device_limit_override != null && <span className="text-[10px] text-amber-300">вручную</span>}
+                      </button>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-col gap-1">
                       <div className="flex items-center gap-2">
@@ -461,6 +530,54 @@ export default function UsersPage({ token }: { token: string }) {
           onPageChange={setPage}
           disabled={loading}
         />
+      )}
+
+      {limitUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Закрыть выбор лимита устройств"
+            onClick={() => !limitBusy && setLimitUserId(null)}
+            className="absolute inset-0 bg-black/70 cursor-pointer"
+          />
+          <div role="dialog" aria-modal="true" aria-label="Лимит устройств" className="relative w-full max-w-sm rounded-xl border border-[#333] bg-[#111] p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-semibold text-sm text-[#eee]">Лимит устройств</h2>
+                <p className="mt-1 text-xs text-[#888] break-all">{limitUser.email}</p>
+              </div>
+              <button type="button" aria-label="Закрыть" disabled={limitBusy} onClick={() => setLimitUserId(null)} className="text-[#777] hover:text-white disabled:opacity-40 cursor-pointer"><X className="w-4 h-4" /></button>
+            </div>
+            <p className="mt-4 text-xs text-[#aaa]">
+              Тариф: {deviceCountText(tariffDevices(limitUser))} · сейчас {devicesLabel(limitUser)}.
+              {limitUser.device_limit_override != null && ' Лимит изменён вручную.'}
+            </p>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              {([3, 5] as const).map(count => (
+                <button
+                  key={count}
+                  type="button"
+                  disabled={limitBusy}
+                  onClick={() => void saveDeviceLimit(count)}
+                  aria-label={`Установить ${deviceCountText(count)}`}
+                  className={`rounded-lg border px-3 py-2 text-sm cursor-pointer disabled:opacity-40 ${effectiveDevices(limitUser) === count ? 'border-sky-500 text-sky-200 bg-sky-500/10' : 'border-[#333] text-[#ddd] hover:border-sky-500/60'}`}
+                >
+                  {deviceCountText(count)}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              disabled={limitBusy || limitUser.device_limit_override == null}
+              onClick={() => void saveDeviceLimit(null)}
+              className="mt-2 w-full rounded-lg border border-[#333] px-3 py-2 text-xs text-[#aaa] hover:text-white hover:border-[#555] disabled:opacity-40 cursor-pointer"
+            >
+              По тарифу ({deviceCountText(tariffDevices(limitUser))})
+            </button>
+            <p className="mt-4 text-xs text-[#777]">Срок и цена подписки не меняются. Существующие сессии не удаляются; новый лимит действует при добавлении устройств.</p>
+            {limitError && <p role="alert" className="mt-3 text-xs text-red-300">{limitError}</p>}
+          </div>
+        </div>
       )}
 
       {devicesOpen && (

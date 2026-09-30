@@ -221,7 +221,8 @@ sequenceDiagram
 | DELETE | `/sessions/{id}` | Admin | Отозвать сессию (+ устройство) |
 | DELETE | `/devices/{id}` | Admin | Отозвать trusted device и его сессии |
 | GET | `/stats` | Admin | CPU/RAM/disk, users (`connected_devices`, `peak_online_devices`, `peak_online_at`), VK hashes; `vk_users[].created_at` |
-| GET | `/users` | Admin | Список пользователей (`is_online`, `online_devices` — опционально) |
+| GET | `/users` | Admin | Список пользователей; `max_devices` — действующий лимит (0 для админа), `plan_max_devices` — по тарифу, `device_limit_override` — ручные 3/5 или `null`; `is_online`, `online_devices` — опционально |
+| PUT | `/users/{id}/device-limit` | Admin | `{ "max_devices": 3 \| 5 \| null }` — ручной лимит одного пользователя или возврат к тарифу; срок и цена не меняются, существующие сессии не удаляются |
 | GET | `/users/{id}/devices` | Admin | Сессии устройств пользователя (без WG-ключей) |
 | DELETE | `/users/{id}/devices/{device_id}` | Admin | Удалить одну сессию устройства |
 | DELETE | `/users/{id}/devices` | Admin | Удалить все сессии пользователя |

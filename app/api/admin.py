@@ -9,7 +9,7 @@ import tempfile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, case, update, or_
 from pydantic import BaseModel
-from typing import Optional
+from typing import Literal, Optional
 
 from app.database import get_db
 from app.models import User, Subscription, Device, VkHash, AppSetting, PromoCode, Payment, VkLinkSession, ReferralReward
@@ -369,7 +369,8 @@ async def list_users(
     from app.services.test_mode_settings import is_registration_test_mode_enabled
     global_test = await is_registration_test_mode_enabled(db)
 
-    from app.services.subscription_service import TEST_PLAN, is_user_admin
+    from app.services.subscription_service import TEST_PLAN, effective_device_limit, is_user_admin
+    from app.services.subscription_kinds import devices_for_plan
 
     user_ids = [u.id for u in users]
     dev_map: dict = {}
@@ -456,6 +457,9 @@ async def list_users(
                 "expires_at": None if admin or in_test else (sub.expires_at if sub else None),
             },
             "devices_count": dev_count,
+            "max_devices": effective_device_limit(user, "test" if in_test else (sub.plan_type if sub else None)),
+            "plan_max_devices": devices_for_plan("test" if in_test else (sub.plan_type if sub else None)),
+            "device_limit_override": user.device_limit_override,
             "is_online": online_map.get(user.id, 0) > 0,
             "online_devices": online_map.get(user.id, 0),
         })
@@ -824,6 +828,36 @@ async def set_vps_cleanup_settings(
 
 class GrantSubscriptionRequest(BaseModel):
     plan_type: str
+
+
+class UserDeviceLimitRequest(BaseModel):
+    max_devices: Literal[3, 5] | None
+
+
+@router.put("/users/{user_id}/device-limit")
+async def set_user_device_limit(
+    user_id: uuid_mod.UUID,
+    req: UserDeviceLimitRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ручной лимит одного пользователя; срок, тариф и платежи не меняются."""
+    from app.services.subscription_service import is_user_admin, max_devices_for_user
+    from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if is_user_admin(user) or user.email == BOOTSTRAP_USER_EMAIL:
+        raise HTTPException(status_code=400, detail="Нельзя менять лимит устройств этого пользователя")
+
+    user.device_limit_override = req.max_devices
+    await db.commit()
+    return {
+        "max_devices": await max_devices_for_user(db, user),
+        "device_limit_override": user.device_limit_override,
+    }
 
 
 @router.post("/users/{user_id}/grant-subscription")

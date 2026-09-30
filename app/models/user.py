@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Boolean, DateTime, BigInteger, ForeignKey, func
+from sqlalchemy import String, Boolean, DateTime, BigInteger, ForeignKey, Integer, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -17,6 +17,7 @@ class User(Base):
     is_test_user: Mapped[bool] = mapped_column(Boolean, default=False)
     test_mode_personal: Mapped[bool] = mapped_column(Boolean, default=False)
     test_mode_excluded: Mapped[bool] = mapped_column(Boolean, default=False)
+    device_limit_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
     verification_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reset_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
     vk_user_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True, index=True)

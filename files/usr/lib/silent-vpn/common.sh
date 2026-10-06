@@ -32,10 +32,12 @@ sv_json_get() {
 }
 
 sv_is_ipv4() {
-	echo "$1" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || return 1
-	echo "$1" | awk -F. '{
-		for (i = 1; i <= 4; i++) if ($i + 0 > 255) exit 1
-	}'
+	# awk only: busybox grep often has no {1,3} and then apply-dns exits before writing the name
+	echo "$1" | awk -F. 'NF == 4 {
+		for (i = 1; i <= 4; i++) if ($i !~ /^[0-9]+$/ || $i + 0 > 255) exit 1
+		exit 0
+	}
+	exit 1'
 }
 
 sv_lan_ip() {
@@ -174,34 +176,47 @@ sv_http_allow_wired() {
 }
 
 sv_token() {
-	cat "$SV_VAR/access_token" 2>/dev/null || true
+	tr -d ' \t\r\n' < "$SV_VAR/access_token" 2>/dev/null || true
 }
 
 sv_http() {
 	# sv_http METHOD PATH [BODY_FILE]
 	local method="$1" path="$2" body="${3:-}"
-	local url base out hdr token extra to
+	local url base out hdr token to
 	out="$(mktemp "$SV_RUN/http.XXXXXX")"
 	hdr="$(mktemp "$SV_RUN/hdr.XXXXXX")"
 	token="$(sv_token)"
-	extra=""
-	[ -n "$token" ] && extra="--header=Authorization: Bearer $token"
 	for base in $(sv_api_bases); do
 		: > "$out"
 		url="${base}${path}"
 		to="$(sv_hive_timeout_for "$base")"
+		# Headers stay quoted. Unquoted expansion splits "Bearer <token>" and the hive sees no login.
 		if [ -n "$body" ]; then
+			if [ -n "$token" ]; then
+				wget -qO "$out" --timeout="$to" --server-response \
+					--header="Content-Type: application/json" \
+					--header="X-App-Version: $SV_VERSION" \
+					--header="Authorization: Bearer $token" \
+					--post-file="$body" \
+					--method="$method" \
+					"$url" 2>"$hdr" || true
+			else
+				wget -qO "$out" --timeout="$to" --server-response \
+					--header="Content-Type: application/json" \
+					--header="X-App-Version: $SV_VERSION" \
+					--post-file="$body" \
+					--method="$method" \
+					"$url" 2>"$hdr" || true
+			fi
+		elif [ -n "$token" ]; then
 			wget -qO "$out" --timeout="$to" --server-response \
-				--header="Content-Type: application/json" \
 				--header="X-App-Version: $SV_VERSION" \
-				$extra \
-				--post-file="$body" \
+				--header="Authorization: Bearer $token" \
 				--method="$method" \
 				"$url" 2>"$hdr" || true
 		else
 			wget -qO "$out" --timeout="$to" --server-response \
 				--header="X-App-Version: $SV_VERSION" \
-				$extra \
 				--method="$method" \
 				"$url" 2>"$hdr" || true
 		fi

@@ -2,7 +2,16 @@
 
 . "$SV_LIB/common.sh"
 
+# spass marks its own sockets so TURN does not fall into the tunnel.
+SV_BYPASS_MARK="0x53494c"
+SV_BYPASS_TABLE="5458252"
+
 sv_path_clear() {
+	ip route del 0.0.0.0/1 dev "$SV_WG_IF" 2>/dev/null || true
+	ip route del 128.0.0.0/1 dev "$SV_WG_IF" 2>/dev/null || true
+	ip rule del fwmark "$SV_BYPASS_MARK" lookup "$SV_BYPASS_TABLE" 2>/dev/null || true
+	ip route flush table "$SV_BYPASS_TABLE" 2>/dev/null || true
+	ip link del dev "$SV_WG_IF" 2>/dev/null || true
 	uci -q delete network."$SV_WG_IF"
 	uci -q delete network."${SV_WG_IF}_peer"
 	uci -q commit network
@@ -38,7 +47,7 @@ DNS = $dns
 
 [Peer]
 PublicKey = $spub
-Endpoint = ${sip}:${sport}
+Endpoint = 127.0.0.1:9000
 AllowedIPs = $allowed
 PersistentKeepalive = 25
 EOF
@@ -57,6 +66,10 @@ sv_path_apply_uci() {
 	sip="$(jsonfilter -i "$1" -e '@.server_ip')"
 	sport="$(jsonfilter -i "$1" -e '@.server_port')"
 	spub="$(jsonfilter -i "$1" -e '@.server_public_key')"
+	case "$addr" in
+		""|*/*) ;;
+		*) addr="${addr}/32" ;;
+	esac
 
 	uci -q delete network."$SV_WG_IF"
 	uci set network."$SV_WG_IF"=interface
@@ -68,10 +81,12 @@ sv_path_apply_uci() {
 	uci -q delete network."${SV_WG_IF}_peer"
 	uci set network."${SV_WG_IF}_peer"=wireguard_"$SV_WG_IF"
 	uci set network."${SV_WG_IF}_peer".public_key="$spub"
-	uci set network."${SV_WG_IF}_peer".endpoint_host="$sip"
-	uci set network."${SV_WG_IF}_peer".endpoint_port="$sport"
+	# 56000 is the bypass port. WireGuard itself talks only to local spass.
+	uci set network."${SV_WG_IF}_peer".endpoint_host='127.0.0.1'
+	uci set network."${SV_WG_IF}_peer".endpoint_port='9000'
 	uci set network."${SV_WG_IF}_peer".persistent_keepalive='25'
-	uci set network."${SV_WG_IF}_peer".route_allowed_ips='1'
+	# Routes are added in sv_path_apply_turn only after a handshake.
+	uci set network."${SV_WG_IF}_peer".route_allowed_ips='0'
 	if [ -f "$SV_RUN/bootstrap" ]; then
 		uci add_list network."${SV_WG_IF}_peer".allowed_ips='10.66.66.0/24'
 	else
@@ -89,8 +104,78 @@ sv_path_apply_uci() {
 	sv_path_ensure_fw
 	uci commit network
 	uci commit firewall
-	ifup "$SV_WG_IF" >/dev/null 2>&1 || /etc/init.d/network reload >/dev/null 2>&1 || true
+	sv_path_apply_turn
+}
+
+sv_path_protect_bypass() {
+	local dev gw
+	dev="$(sv_ru_wan_dev 2>/dev/null || true)"
+	gw="$(sv_ru_wan_gw 2>/dev/null || true)"
+	[ -n "$dev" ] || dev="$(ip route show default | awk '{print $5; exit}')"
+	[ -n "$gw" ] || gw="$(ip route show default | awk '{print $3; exit}')"
+	[ -n "$dev" ] || return 0
+	ip route flush table "$SV_BYPASS_TABLE" 2>/dev/null || true
+	ip route replace "$gw/32" dev "$dev" table "$SV_BYPASS_TABLE" 2>/dev/null || true
+	if [ -n "$gw" ]; then
+		ip route replace default via "$gw" dev "$dev" table "$SV_BYPASS_TABLE" 2>/dev/null || true
+	else
+		ip route replace default dev "$dev" table "$SV_BYPASS_TABLE" 2>/dev/null || true
+	fi
+	ip rule del fwmark "$SV_BYPASS_MARK" lookup "$SV_BYPASS_TABLE" 2>/dev/null || true
+	ip rule add fwmark "$SV_BYPASS_MARK" lookup "$SV_BYPASS_TABLE" pref 50 2>/dev/null || true
+}
+
+sv_path_apply_turn() {
+	local src addr hs i
+	src="/etc/silent-vpn/wg-turn.conf"
+	[ -s "$src" ] || { sv_log "no turn conf"; return 1; }
+	if [ -x /usr/libexec/ip-full ]; then
+		ln -sf /usr/libexec/ip-full /usr/bin/ip
+	fi
+	umask 077
+	awk '
+		/^[ \t]*(Address|DNS|MTU)[ \t]*=/ { next }
+		/^[ \t]*Endpoint[ \t]*=/ { print "Endpoint = 127.0.0.1:9000"; next }
+		{ print }
+	' "$src" > /tmp/sv-wg.conf
+	chmod 600 /tmp/sv-wg.conf
+	ip link show "$SV_WG_IF" >/dev/null 2>&1 || ip link add dev "$SV_WG_IF" type wireguard || {
+		rm -f /tmp/sv-wg.conf
+		sv_log "no device $SV_WG_IF"
+		return 1
+	}
+	wg syncconf "$SV_WG_IF" /tmp/sv-wg.conf || {
+		rm -f /tmp/sv-wg.conf
+		sv_log "syncconf failed"
+		return 1
+	}
+	rm -f /tmp/sv-wg.conf
+	addr="$(awk '/^[ \t]*Address[ \t]*=/ { print $NF; exit }' "$src")"
+	case "$addr" in
+		""|*/*) ;;
+		*) addr="${addr}/32" ;;
+	esac
+	ip addr flush dev "$SV_WG_IF"
+	[ -n "$addr" ] && ip addr add "$addr" dev "$SV_WG_IF"
+	ip link set "$SV_WG_IF" up
+	/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	i=0
+	hs=0
+	while [ "$i" -lt 15 ]; do
+		hs="$(wg show "$SV_WG_IF" latest-handshakes 2>/dev/null | awk '{print $2}')"
+		[ -n "$hs" ] && [ "$hs" != "0" ] && break
+		i=$((i + 1))
+		sleep 1
+	done
+	if [ -z "$hs" ] || [ "$hs" = "0" ]; then
+		sv_log "no handshake"
+		return 1
+	fi
+	sv_path_protect_bypass
+	ip route replace 0.0.0.0/1 dev "$SV_WG_IF"
+	ip route replace 128.0.0.0/1 dev "$SV_WG_IF"
 	touch "$SV_RUN/path.up"
+	sv_log "path up hs=$hs"
 }
 
 sv_path_ensure_fw() {

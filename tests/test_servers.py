@@ -28,6 +28,15 @@ class ServerListTests(unittest.TestCase):
         self.assertEqual(normalize_slot("queen"), "server1")
         self.assertEqual(normalize_slot("ai_exit"), "server4")
 
+    def test_server5_ip_stays_baked(self):
+        rows = display_vpn_servers([
+            {"key": "server5", "title": "Сота", "public_ip": "1.2.3.4"},
+        ])
+        fifth = rows[4]
+        self.assertEqual(fifth["key"], "server5")
+        self.assertEqual(fifth["title"], "Сервер 5")
+        self.assertEqual(fifth["public_ip"], "89.37.192.241")
+
     def test_selected_title(self):
         self.assertEqual(selected_title("server4"), "Сервер 4 для ИИ")
         self.assertEqual(selected_title("server5"), "Сервер 5")

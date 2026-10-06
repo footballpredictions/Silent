@@ -43,6 +43,7 @@ def dnsmasq_address_lines(lan_ip: str) -> list[str]:
     return [
         f"address=/{host}/{ip}",
         f"address=/{ZONE}/{ip}",
+        "rebind-domain-ok=silent.vpn",
     ]
 
 

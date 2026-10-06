@@ -42,17 +42,35 @@ sv_hive_get() {
 
 sv_hive_wget() {
 	local method="$1" url="$2" body="$3" out="$4" timeout="${5:-20}"
-	local token args st
+	local token st
 	token="$(sv_token)"
-	args="-qO $out --timeout=$timeout"
-	[ -n "$token" ] && args="$args --header=Authorization: Bearer $token"
-	args="$args --header=X-App-Version:\ $SV_VERSION --header=Content-Type: application/json"
+	# One quoted header. `wget $args` splits "Bearer <token>" into extra words, so /me comes back unsigned.
 	if [ "$method" = "POST" ]; then
-		# busybox wget: POST via --post-file
-		wget $args --post-file="$body" "$url" >/dev/null 2>&1
+		if [ -n "$token" ]; then
+			wget -qO "$out" --timeout="$timeout" \
+				--header="Content-Type: application/json" \
+				--header="X-App-Version: $SV_VERSION" \
+				--header="Authorization: Bearer $token" \
+				--post-file="$body" \
+				"$url" >/dev/null 2>&1
+		else
+			wget -qO "$out" --timeout="$timeout" \
+				--header="Content-Type: application/json" \
+				--header="X-App-Version: $SV_VERSION" \
+				--post-file="$body" \
+				"$url" >/dev/null 2>&1
+		fi
+		st=$?
+	elif [ -n "$token" ]; then
+		wget -qO "$out" --timeout="$timeout" \
+			--header="X-App-Version: $SV_VERSION" \
+			--header="Authorization: Bearer $token" \
+			"$url" >/dev/null 2>&1
 		st=$?
 	else
-		wget $args "$url" >/dev/null 2>&1
+		wget -qO "$out" --timeout="$timeout" \
+			--header="X-App-Version: $SV_VERSION" \
+			"$url" >/dev/null 2>&1
 		st=$?
 	fi
 	if [ "$st" -eq 0 ]; then

@@ -10,6 +10,9 @@ STATIC = (
     ("server5", "Сервер 5"),
 )
 
+# Same baked address as PC bypassStore and Android Repository. API must not replace it.
+SERVER5_IP = "89.37.192.241"
+
 _ALIASES = {
     "queen": "server1",
     "main": "server1",
@@ -28,7 +31,13 @@ def normalize_slot(key: str) -> str:
 
 def static_vpn_servers() -> list[dict]:
     return [
-        {"key": key, "title": title, "public_ip": "", "wdtt_port": 0, "online_count": 0}
+        {
+            "key": key,
+            "title": title,
+            "public_ip": SERVER5_IP if key == "server5" else "",
+            "wdtt_port": 0,
+            "online_count": 0,
+        }
         for key, title in STATIC
     ]
 
@@ -47,12 +56,22 @@ def display_vpn_servers(from_api: list[dict] | None = None) -> list[dict]:
     for key, title in STATIC:
         known = by_key.get(key)
         if not known:
-            merged.append({"key": key, "title": title, "public_ip": "", "wdtt_port": 0, "online_count": 0})
+            merged.append({
+                "key": key,
+                "title": title,
+                "public_ip": SERVER5_IP if key == "server5" else "",
+                "wdtt_port": 0,
+                "online_count": 0,
+            })
             continue
         shown = (known.get("title") or "").strip() or title
         if key == "server4" and shown in ("Сервер 4", "server4"):
             shown = title
-        merged.append({**known, "key": key, "title": shown})
+        row = {**known, "key": key, "title": shown}
+        if key == "server5":
+            row["public_ip"] = SERVER5_IP
+            row["title"] = title
+        merged.append(row)
     for row in api:
         k = normalize_slot(str(row.get("key") or ""))
         if k and k not in static_keys:

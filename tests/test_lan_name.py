@@ -43,6 +43,7 @@ class LanNameTests(unittest.TestCase):
         lines = dnsmasq_address_lines("192.168.0.1")
         self.assertIn("address=/192.168.0.1.silent.vpn/192.168.0.1", lines)
         self.assertIn("address=/silent.vpn/192.168.0.1", lines)
+        self.assertIn("rebind-domain-ok=silent.vpn", lines)
 
 
 if __name__ == "__main__":

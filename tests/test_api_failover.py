@@ -91,6 +91,45 @@ cat "$response"
             "http://10.66.66.1:8000/api/users/me 8",
         ])
 
+    def test_bearer_token_stays_one_header(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            environment = os.environ.copy()
+            environment.update(
+                SV_LIB=(ROOT / "files/usr/lib/silent-vpn").as_posix(),
+                SV_VAR=(run / "state").as_posix(),
+                SV_RUN=run.as_posix(),
+                SV_API_OVERRIDE="",
+                SV_PUBLIC_API="https://89-125-188-100.nip.io",
+                SV_TUNNEL_API="http://10.66.66.1:8000",
+                SV_TEST_SUCCESS="http://87.58.213.193:9100/api/users/me",
+            )
+            script = r'''
+. "$SV_LIB/hive.sh"
+mkdir -p "$SV_VAR"
+printf '%s\n' 'abc.def.ghi' > "$SV_VAR/access_token"
+wget() {
+    local out="" url=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --header=Authorization:*) printf '%s\n' "$1" >> "$SV_RUN/headers" ;;
+            -qO) out="$2"; shift ;;
+            http://*|https://*) url="$1" ;;
+        esac
+        shift
+    done
+    [ "$url" = "$SV_TEST_SUCCESS" ] || return 1
+    printf '{"ok":true}' > "$out"
+}
+sv_hive_get /api/users/me >/dev/null
+'''
+            subprocess.run(
+                [SHELL, "-c", script], env=environment, text=True,
+                capture_output=True, timeout=10, check=True,
+            )
+            headers = (run / "headers").read_text().splitlines()
+            self.assertEqual(headers, ["--header=Authorization: Bearer abc.def.ghi"])
+
 
 if __name__ == "__main__":
     unittest.main()

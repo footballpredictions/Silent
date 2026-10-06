@@ -1,9 +1,11 @@
+const SERVER5_IP = "89.37.192.241";
+
 const STATIC = [
   { key: "server1", title: "Сервер 1" },
   { key: "server2", title: "Сервер 2" },
   { key: "server3", title: "Сервер 3" },
   { key: "server4", title: "Сервер 4 для ИИ" },
-  { key: "server5", title: "Сервер 5" },
+  { key: "server5", title: "Сервер 5", public_ip: SERVER5_IP },
 ];
 
 const ALIAS = {
@@ -37,7 +39,12 @@ export function displayVpnServers(fromApi) {
     if (stub.key === "server4" && (!title || title === "Сервер 4" || title === "server4")) {
       title = stub.title;
     }
-    return { ...stub, ...known, key: stub.key, title };
+    const row = { ...stub, ...known, key: stub.key, title };
+    if (stub.key === "server5") {
+      row.public_ip = SERVER5_IP;
+      row.title = stub.title;
+    }
+    return row;
   });
   for (const row of api) {
     const k = normalizeSlot(row.key);

@@ -23,10 +23,11 @@ sv_connect_full() {
 		cfg="$(sv_hive_config)"
 	fi
 	jsonfilter -i "$cfg" -e '@.device_id' > "$SV_VAR/device_id" 2>/dev/null || true
+	sv_cloak_start "$cfg" || return 1
+	sv_cloak_wait || return 1
 	sv_path_up_from_json "$cfg" || return 1
 	. "$SV_LIB/ru-direct.sh"
 	sv_ru_apply
-	sv_cloak_start "$cfg"
 	sv_hive_connect >/dev/null || true
 	touch "$SV_RUN/connected"
 	sv_log "path up"

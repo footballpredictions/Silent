@@ -86,7 +86,7 @@ sv_fetch() {
 }
 
 if [ "$(id -u 2>/dev/null || echo 1)" != 0 ]; then
-	echo "Нужен root. В Сервисы → Терминал вы уже root." >&2
+	echo "Нужен root. Подключитесь: ssh root@IP-роутера" >&2
 	exit 1
 fi
 

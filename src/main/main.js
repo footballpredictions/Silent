@@ -158,6 +158,7 @@ let requestApplyWgAfterCaptcha = null
 let vkFloodEscalatePending = false
 /** Сота: 10.66.66.1:8000 часто ECONNREFUSED — дальше сразу public. */
 let tunnelApiDown = false
+let tunnelApiRetryAfter = 0
 
 function noteVkFloodFromLog(line) {
   const m = String(line || '').toLowerCase()
@@ -186,7 +187,7 @@ function shouldLogTunnelApiFallback() {
 
 function isTunnelApiRefused(err) {
   const msg = String(err?.message || err || '')
-  return /ECONNREFUSED|ECONNRESET/i.test(msg)
+  return /ECONNREFUSED/i.test(msg)
 }
 
 const SERVER_IP_FALLBACK = HIVE_PUBLIC_IP
@@ -231,7 +232,8 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   app.on('second-instance', (_, argv) => {
-    if (mainWindow) {
+    if (isQuitting) return
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.show()
       mainWindow.focus()
@@ -586,16 +588,21 @@ function sendLog(line) {
 
   // Сначала [WG]/[VPN]/… — иначе parseLibclientLine глотает *fail*/*timeout*
   // (probe FAIL) и SilentVPN-main.log остаётся без диагноза (лог 08:42).
-  if (/^\[WG\]|^\[VPN\]|^\[Update\]|^\[olcrtc|^\[sing-box|^\[КАПЧА\]/.test(trimmed)) {
+  if (/^\[WG\]|^\[VPN\]|^\[Update\]|^\[olcrtc|^\[sing-box|^\[КАПЧА\]|^\[Sites\]|^\[Apps\]/.test(trimmed)) {
     mirrorMainLog(trimmed)
+    // Wintun can warn while renaming a stale foreign adapter and still create
+    // our interface successfully. Native startup failure is reported separately.
+    const recoveredAdapterRename = /^\[Sites\].*Failed to set foreign adapter name.*Code 0x00000490/i.test(trimmed)
     const isError =
-      /\[olcrtc2?:err\]|FATAL|критич/i.test(trimmed) ||
-      (/error|ошиб|таймаут|timeout/i.test(trimmed) &&
+      !recoveredAdapterRename && (/\[olcrtc2?:err\]|FATAL|критич/i.test(trimmed) ||
+      (/error|ошиб|таймаут|timeout|site-router:.*failed/i.test(trimmed) &&
         !/operation not permitted|unreachable network|Failed to send packet|prefetch 498|soft-miss|exit/i.test(
           trimmed,
-        ))
+        )))
     let tag = 'VPN'
     if (trimmed.startsWith('[WG]')) tag = 'WireGuard'
+    else if (trimmed.startsWith('[Sites]')) tag = 'Sites'
+    else if (trimmed.startsWith('[Apps]')) tag = 'Apps'
     else if (trimmed.startsWith('[КАПЧА]')) tag = 'Captcha'
     else if (trimmed.startsWith('[olcrtc')) tag = 'olcrtc'
     else if (trimmed.startsWith('[sing-box')) tag = 'sing-box'
@@ -1226,12 +1233,13 @@ ipcMain.handle('get-app-exclusions', () => {
   return loadExclusionsState(defaultStatePath(app.getPath('userData')))
 })
 
-async function prepareBrowserRoutingPolicy() {
-  const { loadSiteBypassState, defaultSiteBypassPath, resolveRulesToTargets, domainLookupHosts } = require('./apps/siteBypass')
+function prepareBrowserRoutingPolicy() {
+  const { loadSiteBypassState, defaultSiteBypassPath, initialBrowserPolicy } = require('./apps/siteBypass')
   const { getActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
   const state = loadSiteBypassState(defaultSiteBypassPath(app.getPath('userData')))
-  const resolved = await resolveRulesToTargets(state.rules)
-  return { whitelist: state.whitelist, targets: resolved.targets, domains: state.rules.filter(rule => domainLookupHosts(rule)), excluded: getActiveExcludedExePaths() }
+  // DNS may be unreachable until this tunnel exists. Start with literal IP rules
+  // and domains; post-start DNS observation/snapshot fills the domain addresses.
+  return { ...initialBrowserPolicy(state.rules, state.whitelist), excluded: getActiveExcludedExePaths() }
 }
 
 require('./vpn/browserRouter').setFailureHandler(() => {
@@ -2345,13 +2353,14 @@ ipcMain.handle('set-standby-api-bases', (_, urls) => {
 
 let hivePublicSlowUntil = 0
 
-function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 20000, skipHive = false }) {
+function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 20000, skipHive = false, shouldSwitchToTunnel = () => false }) {
   const hive = { hiveHost: UPDATE_HOST, hiveIp: SERVER_IP_FALLBACK }
   let bases = getPublicFailoverBases()
   if (skipHive || Date.now() < hivePublicSlowUntil) bases = publicBasesSkippingHive(bases, hive)
 
   const runChain = (list, { quietHive = false } = {}) => {
     const tryOne = (index, retrySame = true) => {
+      if (shouldSwitchToTunnel()) return Promise.reject(new Error('Public API request superseded by VPN'))
       if (index >= list.length) {
         return Promise.reject(new Error('All public API bases failed'))
       }
@@ -2367,7 +2376,9 @@ function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body
       const hiveHop = isHivePublicBase(base, hive)
       return backendHttpRequest({
         protocol: isHttps ? 'https' : 'http',
-        hostname: u.hostname,
+        // This fixed nip.io name encodes the configured hive IP. DNS outages
+        // must not block the first public attempt; HTTPS keeps its Host/SNI.
+        hostname: u.hostname === UPDATE_HOST ? SERVER_IP_FALLBACK : u.hostname,
         port,
         path: reqPath,
         method,
@@ -2377,6 +2388,10 @@ function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body
         rejectUnauthorized: false,
         servername: isHttps ? UPDATE_HOST : undefined,
       }).catch((err) => {
+        // A read started before WG can outlive adapter setup. Its old public
+        // route is obsolete: let the caller retry the now-ready tunnel, rather
+        // than walking every public address/port on the previous network.
+        if (shouldSwitchToTunnel()) throw err
         const msg = String(err?.message || err)
         const later = index + 1 < list.length
         if (hiveHop && isSlowPublicHop(msg)) hivePublicSlowUntil = Date.now() + 120_000
@@ -2412,6 +2427,10 @@ function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body
     const done = (result) => {
       if (result.ok) {
         resolve(result.res)
+        return
+      }
+      if (shouldSwitchToTunnel()) {
+        reject(result.err)
         return
       }
       failure = failure || result.err
@@ -2539,6 +2558,21 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
   const tunnelTimeout = olcrtc2
     ? Math.max(opts.timeout || 90_000, 90_000)
     : Math.min(opts.timeout || 8000, 8000)
+  const readOnly = /^(GET|HEAD)$/i.test(opts.method || 'GET')
+  const recoverPublicRead = async (publicError) => {
+    // Never replay payment/init or other mutations on a new transport: the
+    // public server might have processed a POST before its response was lost.
+    if (!readOnly || !wgApplied || olcrtc2) throw publicError
+    try {
+      const res = await tunnelHttpRequest({ ...opts, timeout: tunnelTimeout })
+      if (res.status >= 200 && res.status < 500) {
+        tunnelApiDown = false
+        tunnelApiRetryAfter = 0
+        return res
+      }
+    } catch { /* preserve the public failure if neither route recovered */ }
+    throw publicError
+  }
 
   // Во время капчи WG часто снят → public HTTPS ловит ECONNABORTED; ConfigSync/Update не долбим.
   if (captchaInProgress && !wgApplied) {
@@ -2561,11 +2595,12 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
     // Улей :443 в bypass ради WG. С РФ этот обход висит до API timeout.
     // Пока туннель поднят — только соты, шлюз 10.66.66.1 остаётся основным.
     await ensurePublicApiBypass(sendLog)
-    return publicDirectRequest({ ...opts, skipHive: true })
+    return publicDirectRequest({ ...opts, skipHive: true }).catch(recoverPublicRead)
   }
 
   if (wgApplied && tunnelApiDown && !olcrtc2) {
-    return viaPublic()
+    if (Date.now() < tunnelApiRetryAfter) return viaPublic()
+    tunnelApiDown = false
   }
 
   if (wgApplied) {
@@ -2608,12 +2643,13 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
         lastErr = e
         if (e?.code === 'OLCRTC_TUNNEL_ONLY') throw e
         const msg = String(e?.message || e)
-        if (!olcrtc2 && isTunnelApiRefused(e)) {
+        if (!olcrtc2 && !fragile && isTunnelApiRefused(e)) {
           tunnelApiDown = true
+          tunnelApiRetryAfter = Date.now() + 30_000
           return await viaPublic()
         }
         // EACCES/ECONNABORTED — типично при WG reinstall (маршруты/адаптер мигают)
-        const transient = /ECONNRESET|ECONNABORTED|EACCES|ETIMEDOUT|timeout|Tunnel API/i.test(msg)
+        const transient = /ECONNREFUSED|ECONNRESET|ECONNABORTED|EACCES|ETIMEDOUT|timeout|Tunnel API/i.test(msg)
         if (transient && attempt < maxAttempts) {
           if (!olcrtc2 && !fragile) await ensurePublicApiBypass(sendLog)
           await sleep(500 * attempt)
@@ -2664,7 +2700,7 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
     }
     return viaPublic()
   }
-  return publicDirectRequest(opts)
+  return publicDirectRequest({ ...opts, shouldSwitchToTunnel: () => readOnly && !olcrtc2 && wgApplied }).catch(recoverPublicRead)
 })
 
 ipcMain.handle('olcrtc2-api-via-socks', async (_, payload) => {

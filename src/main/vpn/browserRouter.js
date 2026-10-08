@@ -4,11 +4,12 @@ const { promisify } = require('util')
 const path = require('path')
 const fs = require('fs')
 const readline = require('readline')
+const { isIP } = require('net')
 const execFileAsync = promisify(execFile)
 
 let current = null
 let nextId = 0
-let policy = { whitelist: false, targets: [], domains: [], excluded: [], dns: [] }
+let policy = { whitelist: false, targets: [], domains: [], excluded: [], dns: [], pendingDNS: false }
 let failureHandler = () => {}
 let policyUpdates = Promise.resolve()
 let generation = 0
@@ -29,6 +30,46 @@ function request(session, op, payload = {}, timeout = 5000) {
 }
 
 function policySnapshot() { return { ...policy } }
+function ipv4Range(raw) {
+  const [ip, bits = '32'] = String(raw).split('/')
+  if (isIP(ip) !== 4 || !/^\d+$/.test(bits) || Number(bits) > 32) return null
+  const value = ip.split('.').reduce((n, octet) => n * 256 + Number(octet), 0)
+  const size = 2 ** (32 - Number(bits))
+  const first = Math.floor(value / size) * size
+  return { first, last: first + size - 1, prefix: `${ip}/${Number(bits)}` }
+}
+
+function protectBypassTargets(targets) {
+  if (current) current.protectedTargets = [...new Set([...(current.protectedTargets || []), ...targets])]
+}
+
+// Old clients left global /32 site routes in ActiveStore after a forced exit.
+// Such a route wins over /1 and prevents packets reaching the native router.
+// Limit migration to selected site destinations, the captured physical gateway,
+// and the old metric; never delete persistent/admin routes or transport bypass.
+function legacySiteRoutesScript(targets, gateway, protectedTargets = []) {
+  if (!Number.isInteger(gateway?.ifIndex) || gateway.ifIndex <= 0 || isIP(gateway.nextHop) !== 4) return ''
+  const protectedRanges = protectedTargets.map(ipv4Range).filter(Boolean)
+  const prefixes = [...new Set(targets.map(ipv4Range).filter(range => range && range.first > 0 &&
+    !protectedRanges.some(p => p.first <= range.last && range.first <= p.last)).map(range => range.prefix))]
+  if (!prefixes.length) return ''
+  return `$ErrorActionPreference='Stop'
+    $removed=0
+    foreach ($prefix in @(${prefixes.map(p => `'${p}'`).join(',')})) {
+      $persistent=@(Get-NetRoute -PolicyStore PersistentStore -DestinationPrefix $prefix -ErrorAction SilentlyContinue)
+      Get-NetRoute -PolicyStore ActiveStore -DestinationPrefix $prefix -ErrorAction SilentlyContinue | Where-Object {
+        $_.InterfaceIndex -eq ${gateway.ifIndex} -and $_.NextHop -eq '${gateway.nextHop}' -and $_.RouteMetric -le 1 -and $_.Protocol -eq 'NetMgmt'
+      } | ForEach-Object {
+        $route=$_
+        if (-not ($persistent | Where-Object { $_.InterfaceIndex -eq $route.InterfaceIndex -and $_.NextHop -eq $route.NextHop })) {
+          $route | Remove-NetRoute -Confirm:$false -ErrorAction Stop
+          $removed++
+        }
+      }
+    }
+    Write-Output $removed`
+}
+
 async function updatePolicy(patch) {
   const result = policyUpdates.then(() => updatePolicyUnlocked(patch))
   policyUpdates = result.catch(() => {})
@@ -39,8 +80,15 @@ async function updatePolicyUnlocked(patch) {
   const session = current
   if (isActive()) {
     try {
+      const script = legacySiteRoutesScript(next.targets, session.gateway, session.protectedTargets)
+      if (script) {
+        const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 15000 })
+        const removed = Number(String(stdout).trim())
+        if (removed > 0) session.send?.(`[Sites] удалено старых общих маршрутов сайтов: ${removed}`)
+      }
       const result = await request(session, 'policy', { policy: next })
       if (!result.ok) throw new Error('Не удалось применить правила браузера')
+      session.send?.(`[Sites] native подтвердил правила: ${next.whitelist ? 'БС' : 'ЧС'}, доменов=${next.domains.length}, IP=${next.targets.length}, программ=${next.excluded.length}, изменённых соединений=${result.changedFlows || 0}, ожидание DNS=${next.pendingDNS ? 'да' : 'нет'}`)
     } catch (error) {
       // Disconnect/start owns a newer session; keep the saved policy for next start.
       if (current === session && !session.stopping) throw error
@@ -70,7 +118,7 @@ function adapterScript(address, mtu) {
     }`
 }
 
-async function start({ conf, gateway, resourcesPath, initialPolicy, send, isCancelled = () => false }) {
+async function start({ conf, gateway, resourcesPath, initialPolicy, protectedTargets = [], send, isCancelled = () => false }) {
   const run = ++generation
   await stopCurrent()
   await policyUpdates
@@ -80,7 +128,7 @@ async function start({ conf, gateway, resourcesPath, initialPolicy, send, isCanc
   const exe = path.join(resourcesPath, 'wireguard', 'site-router.exe')
   if (!fs.existsSync(exe)) throw new Error('В сборке отсутствует маршрутизатор сайтов')
   const child = spawn(exe, [], { cwd: path.dirname(exe), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
-  const session = { child, pending: new Map(), ready: false, stopping: false }
+  const session = { child, pending: new Map(), ready: false, stopping: false, send, gateway, protectedTargets }
   current = session
   let resolveAdapter, rejectAdapter
   const adapterReady = new Promise((resolve, reject) => { resolveAdapter = resolve; rejectAdapter = reject })
@@ -152,4 +200,4 @@ async function stopCurrent() {
   try { await exited } finally { clearTimeout(timer); if (current === session) current = null }
 }
 
-module.exports = { start, stop, isActive, updatePolicy, policySnapshot, setFailureHandler, adapterScript }
+module.exports = { start, stop, isActive, updatePolicy, policySnapshot, setFailureHandler, adapterScript, protectBypassTargets, legacySiteRoutesScript }

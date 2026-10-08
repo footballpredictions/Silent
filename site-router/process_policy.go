@@ -9,15 +9,16 @@ import (
 // Browser rules apply to actual browser processes, never to their shared IPs.
 // Application exclusions take precedence, as on Android's VpnService.
 type processPolicy struct {
-	sites    *sitePolicy
-	excluded []string
-	dns      []string
+	sites      *sitePolicy
+	excluded   []string
+	dns        []string
+	pendingDNS bool
 }
 
 func newProcessPolicy(c policyConfig) *processPolicy {
 	p := newPolicy(c.Whitelist, c.Targets, []int{1})
 	p.domains = c.Domains
-	return &processPolicy{sites: p, excluded: c.Excluded, dns: c.DNS}
+	return &processPolicy{sites: p, excluded: c.Excluded, dns: c.DNS, pendingDNS: c.PendingDNS}
 }
 
 func updatedProcessPolicy(old *processPolicy, c policyConfig) *processPolicy {
@@ -47,11 +48,12 @@ func updatedProcessPolicy(old *processPolicy, c policyConfig) *processPolicy {
 }
 
 type policyConfig struct {
-	Whitelist bool     `json:"whitelist"`
-	Targets   []string `json:"targets"`
-	Domains   []string `json:"domains"`
-	Excluded  []string `json:"excluded"`
-	DNS       []string `json:"dns"`
+	PendingDNS bool     `json:"pendingDNS"`
+	Whitelist  bool     `json:"whitelist"`
+	Targets    []string `json:"targets"`
+	Domains    []string `json:"domains"`
+	Excluded   []string `json:"excluded"`
+	DNS        []string `json:"dns"`
 }
 
 func normalizedExe(s string) string { return strings.ToLower(strings.ReplaceAll(s, "/", "\\")) }
@@ -97,6 +99,11 @@ func (p *processPolicy) direct(exe string, dst netip.Addr, port uint16) bool {
 		return true
 	}
 	if !isBrowser(exe) {
+		return false
+	}
+	// With an unresolved allowlist, treating every destination as unselected
+	// would leak even selected sites during tunnel startup or a DNS outage.
+	if p.pendingDNS {
 		return false
 	}
 	return p.sites.direct(1, dst)

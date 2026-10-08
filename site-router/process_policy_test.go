@@ -1,9 +1,37 @@
 package main
 
 import (
+	"encoding/json"
 	"net/netip"
 	"testing"
 )
+
+func TestStartupBrowserAllowlistDoesNotLeakBeforeDNSSnapshot(t *testing.T) {
+	var cfg policyConfig
+	if err := json.Unmarshal([]byte(`{"whitelist":true,"domains":["2ip.io"],"pendingDNS":true,"excluded":["msedge.exe"]}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	p := newProcessPolicy(cfg)
+	ip := netip.MustParseAddr("188.40.167.81")
+	if p.direct("chrome.exe", ip, 443) {
+		t.Fatal("selected site escaped VPN while startup DNS snapshot was pending")
+	}
+	if !p.direct("msedge.exe", ip, 443) || p.direct("game.exe", ip, 443) {
+		t.Fatal("startup browser readiness changed explicit app routing")
+	}
+	if err := json.Unmarshal([]byte(`{"whitelist":true,"domains":["2ip.io"],"targets":["188.40.167.81/32"]}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	// A full snapshot explicitly ends the pending stage.
+	cfgJSON := []byte(`{"whitelist":true,"domains":["2ip.io"],"targets":["188.40.167.81/32"],"pendingDNS":false}`)
+	if err := json.Unmarshal(cfgJSON, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	next := updatedProcessPolicy(p, cfg)
+	if next.direct("chrome.exe", ip, 443) || !next.direct("chrome.exe", netip.MustParseAddr("9.9.9.9"), 443) {
+		t.Fatal("resolved browser snapshot did not activate the allowlist")
+	}
+}
 
 func TestWindowsBrowserRulesDoNotChangeApplicationRoute(t *testing.T) {
 	p := newProcessPolicy(policyConfig{Whitelist: true, Targets: []string{"8.8.8.8/32"}})

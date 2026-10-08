@@ -766,6 +766,7 @@ async function addServerBypassRoutesUnlocked(excludeIPs, send, options = {}) {
     (excludeIPs || []).map(parseBypassTarget).filter(Boolean).map(t => t.dest),
   )]
   if (!targets.length) return false
+  if (!options.label || options.label === 'API') browserRouter.protectBypassTargets(targets)
   const quiet = options.quiet === true
   const label = String(options.label || 'API').trim() || 'API'
   const chunkSize = 40
@@ -1563,6 +1564,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     try {
       await browserRouter.start({
         conf: fs.readFileSync(confPath, 'utf8'), gateway, send,
+        protectedTargets: excludeIPs,
         resourcesPath: isDev ? path.resolve(dirname, '../../resources') : process.resourcesPath,
         initialPolicy: { ...options.browserPolicy, dns: String(resolvedDns).split(/[,\s]+/).filter(Boolean) },
         isCancelled: options.isCancelled,

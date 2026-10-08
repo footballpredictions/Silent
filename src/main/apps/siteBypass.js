@@ -6,6 +6,7 @@ const dns = require('dns').promises
 const fs = require('fs')
 const path = require('path')
 const { siteDirectTargets } = require('./siteRoutingPolicy')
+const { browserDomains, browserLookupHosts } = require('./siteServiceDomains')
 const {
   addServerBypassRoutes,
   removeHostBypassRoutes,
@@ -21,6 +22,7 @@ const {
 const IPV4_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/
 const CIDR_RE = /^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/
 const REFRESH_MS = 20 * 60 * 1000
+const browserDnsCache = new Map()
 
 let appliedTargets = []
 let refreshTimer = null
@@ -140,6 +142,59 @@ async function resolveRulesToTargets(rules) {
   return { targets: [...targets], unresolved }
 }
 
+function initialBrowserPolicy(rules, whitelist) {
+  const domains = browserDomains(rules.filter(rule => domainLookupHosts(rule)))
+  return {
+    whitelist: whitelist === true,
+    targets: [...new Set(rules.map(parseIpOrCidr).filter(Boolean))],
+    domains,
+    pendingDNS: domains.length > 0,
+  }
+}
+
+// Native browser routing learns real in-tunnel DNS. The fallback snapshot must
+// not block policy edits/disconnect when the system resolver is unreachable.
+async function resolveBrowserRulesToTargets(rules, { timeoutMs = 2000, dnsServers = [] } = {}) {
+  const policy = initialBrowserPolicy(rules, false)
+  const targets = new Set(policy.targets)
+  const unresolved = []
+  const resolver = new dns.Resolver({ timeout: Math.min(750, timeoutMs), tries: 1 })
+  // Electron may have initialized DNS before the VPN existed. Use the tunnel's
+  // configured resolvers explicitly, rather than an old LAN-only DNS address.
+  if (dnsServers.length) resolver.setServers(dnsServers)
+  const deadline = Date.now() + timeoutMs
+  const selected = new Set(rules)
+  const domainRules = rules.filter(rule => domainLookupHosts(rule))
+  for (const [rule, entry] of browserDnsCache) {
+    if (!selected.has(rule) || entry.expires <= Date.now()) browserDnsCache.delete(rule)
+  }
+  let cursor = 0
+  let expired = false
+  const timer = setTimeout(() => { expired = true; resolver.cancel() }, timeoutMs)
+  const worker = async () => {
+    while (cursor < domainRules.length) {
+      const rule = domainRules[cursor++]
+      const hosts = browserLookupHosts(rule, domainLookupHosts(rule))
+      let ips = []
+      if (!expired && Date.now() < deadline) {
+        const answers = await Promise.all(hosts.map(host => resolver.resolve4(host).catch(() => [])))
+        ips = [...new Set(answers.flat().filter(ip => IPV4_RE.test(ip)).map(ip => `${ip}/32`))]
+      }
+      if (ips.length) browserDnsCache.set(rule, { ips, expires: Date.now() + 5 * 60 * 1000 })
+      else ips = browserDnsCache.get(rule)?.ips || []
+      if (!ips.length) unresolved.push(rule)
+      for (const ip of ips) targets.add(ip)
+    }
+  }
+  try {
+    await Promise.all(Array.from({ length: Math.min(8, domainRules.length) }, worker))
+  } finally {
+    clearTimeout(timer)
+    resolver.cancel()
+  }
+  return { targets: [...targets], unresolved }
+}
+
 function saveSiteBypassState(filePath, rules, whitelist = loadSiteBypassState(filePath).whitelist) {
   const capped = parseRules(Array.isArray(rules) ? rules.join('\n') : String(rules || ''))
   const payload = {
@@ -185,7 +240,7 @@ async function clearSiteBypassUnlocked(send) {
   appliedTargets = []
   appliedGateway = null
   if (process.platform === 'win32') {
-    await require('../vpn/browserRouter').updatePolicy({ whitelist: false, targets: [], domains: [] })
+    await require('../vpn/browserRouter').updatePolicy({ whitelist: false, targets: [], domains: [], pendingDNS: false })
   }
 }
 
@@ -207,22 +262,23 @@ async function applySiteBypassUnlocked(rules, send, options, generation) {
     await clearSiteBypassUnlocked(send)
     return { ok: true, targets: [], unresolved: [] }
   }
-  const resolved = await resolveRulesToTargets(list)
+  const browserOnly = options.browserOnly || process.platform === 'win32'
+  const resolved = browserOnly ? await resolveBrowserRulesToTargets(list, { dnsServers: options.dnsServers }) : await resolveRulesToTargets(list)
   if (generation !== routingGeneration) return { ok: false, cancelled: true }
   const { unresolved } = resolved
-  if (options.browserOnly || process.platform === 'win32') {
-    const domains = list.filter(rule => domainLookupHosts(rule))
-    await require('../vpn/browserRouter').updatePolicy({ whitelist: options.whitelist === true, targets: resolved.targets, domains })
+  if (browserOnly) {
+    const domains = browserDomains(list.filter(rule => domainLookupHosts(rule)))
+    await require('../vpn/browserRouter').updatePolicy({ whitelist: options.whitelist === true, targets: resolved.targets, domains, pendingDNS: unresolved.length > 0 })
     lastRulesRaw = list.join('\n')
     lastOptions = options
     stopSiteBypassRefresh()
     // Actual DNS answers in the router learn subdomains/TTL. Refresh the snapshot
     // as a fallback for browsers with their own encrypted resolver.
     if (generation === routingGeneration && domains.length) {
-      refreshTimer = setInterval(() => { void applySiteBypass(lastRulesRaw.split('\n'), send, lastOptions).catch(e => send?.(`[Sites] ${e.message}`)) }, REFRESH_MS)
+      refreshTimer = setInterval(() => { void applySiteBypass(lastRulesRaw.split('\n'), send, lastOptions).catch(e => send?.(`[Sites] ${e.message}`)) }, unresolved.length ? 15000 : REFRESH_MS)
       refreshTimer.unref?.()
     }
-    send?.(`[Sites] правила только для браузеров: ${list.length}`)
+    send?.(`[Sites] правила браузеров применены: ${options.whitelist ? 'БС' : 'ЧС'}, доменов=${domains.length}, IP=${resolved.targets.length}, без DNS=${unresolved.length}`)
     return { ok: true, targets: resolved.targets, unresolved }
   }
   const targets = siteDirectTargets(resolved.targets, options.whitelist, options.dnsServers)
@@ -278,4 +334,6 @@ module.exports = {
   clearSiteBypass,
   resolveRulesToTargets,
   domainLookupHosts,
+  initialBrowserPolicy,
+  resolveBrowserRulesToTargets,
 }

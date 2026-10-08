@@ -1,5 +1,18 @@
 # Windows browser site routing
 
+When site IP snapshots are applied, Windows removes matching legacy global site
+routes left by old clients: only ActiveStore routes with the old metric 0/1 on
+the captured physical gateway. Persistent routes and current API/peer/VK bypass
+destinations are preserved. Without this migration, a stale /32 wins over the
+tunnel's /1 and the native router never sees the selected site's packets.
+
+Before the first DNS snapshot, browsers stay in the tunnel (explicit app
+exclusions still take priority). An unresolved snapshot retries after 15 seconds
+instead of interpreting selected-but-unresolved sites as outside the allowlist.
+Policy changes reset only affected TCP flows. If Windows cannot delete a TCB,
+the router supplies a reverse TCP RST using the endpoint's latest ACK, so an idle
+pooled browser connection cannot remain on the previous route.
+
 Windows main VPN uses `site-router.exe` + the bundled signed `wintun.dll`.
 Bootstrap/payment temporary VPN keeps the existing WireGuard service path.
 This module ports the tested Android packet/DNS/direct-stack implementation;
@@ -15,8 +28,19 @@ only connections whose effective route changes are cleared. Windows closes their
 TCP state with SetTcpEntry so applications reconnect using the new route; direct
 UDP sessions are also cleared. Other connections and the VPN remain running.
 DNS answers for rules that remain selected survive list edits.
+Startup passes domain/literal-IP rules without waiting for pre-VPN DNS. Once the
+tunnel is up, fallback snapshots resolve at most eight domain rules at once with
+a two-second total budget; stalled DNS is cancelled and valid retained cache kept.
+Snapshots explicitly use the configured VPN DNS servers, including after edits;
+an old pre-connect LAN resolver must not leave selected Chrome sites without IPs.
+Policy ACKs/counts and native warnings are recorded under Sites in the main log.
 
 Actual VPN UDP DNS answers teach selected domains and subdomains before delivery.
+YouTube rules also include its separate googlevideo.com, ytimg.com and ggpht.com
+resource domains in either mode. Electron expands these only in the browser
+policy; the saved list stays as entered. Common static resource hosts seed the
+DNS snapshot, while dynamic video hosts are learned from actual DNS answers.
+CDN roots without A records do not keep the entire browser in pending-DNS mode.
 Manual encrypted DNS is not observable; resolved IP snapshots remain a fallback.
 IP-level rules can include shared CDN addresses inside the browser, as on Android.
 The router is IPv4; existing Windows IPv6 leak handling is retained.

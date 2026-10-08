@@ -35,6 +35,7 @@ type command struct {
 type cachedRoute struct {
 	direct  bool
 	expires time.Time
+	reset   []byte
 }
 type fragmentKey struct {
 	Source, Destination [4]byte
@@ -65,6 +66,10 @@ func (t *routedTun) choose(f flow, packet []byte) bool {
 		delete(t.routes, f)
 	}
 	if route, ok := t.routes[f]; ok && time.Now().Before(route.expires) {
+		if reset := tcpResetReply(packet); reset != nil {
+			route.reset = reset
+			t.routes[f] = route
+		}
 		return route.direct
 	}
 	direct := t.policy.Load().direct(t.owner(f), remote.Addr(), remote.Port())
@@ -81,7 +86,7 @@ func (t *routedTun) choose(f flow, packet []byte) bool {
 		ttl = 45 * time.Second
 	}
 	if len(t.routes) < 8192 {
-		t.routes[f] = cachedRoute{direct, time.Now().Add(ttl)}
+		t.routes[f] = cachedRoute{direct: direct, expires: time.Now().Add(ttl), reset: tcpResetReply(packet)}
 	}
 	return direct
 }
@@ -94,6 +99,7 @@ func (t *routedTun) updatePolicy(cfg policyConfig) int {
 	next := updatedProcessPolicy(t.policy.Load(), cfg)
 	t.policy.Store(next)
 	changed := make([]flow, 0)
+	resets := make(map[flow][]byte)
 	for f, old := range t.routes {
 		if time.Now().After(old.expires) {
 			delete(t.routes, f)
@@ -108,6 +114,7 @@ func (t *routedTun) updatePolicy(cfg policyConfig) int {
 		}
 		delete(t.routes, f)
 		changed = append(changed, f)
+		resets[f] = old.reset
 	}
 	if len(changed) > 0 {
 		clear(t.fragments)
@@ -119,7 +126,13 @@ func (t *routedTun) updatePolicy(cfg policyConfig) int {
 		}
 		if f.Protocol == 6 && t.resetTCP != nil {
 			if err := t.resetTCP(f); err != nil {
-				fmt.Fprintln(os.Stderr, "site-router: cannot close changed TCP flow:", err)
+				if packet := resets[f]; len(packet) > 0 && t.Device != nil {
+					if writeErr := t.writePacket(packet); writeErr != nil {
+						fmt.Fprintln(os.Stderr, "site-router: cannot reset changed TCP flow:", writeErr)
+					}
+				} else {
+					fmt.Fprintln(os.Stderr, "site-router: cannot close changed TCP flow:", err)
+				}
 			}
 		}
 	}
@@ -161,7 +174,7 @@ func (t *routedTun) Read(buffers [][]byte, sizes []int, offset int) (int, error)
 						if len(t.fragments) > 512 {
 							clear(t.fragments)
 						}
-						t.fragments[key] = cachedRoute{direct, time.Now().Add(30 * time.Second)}
+						t.fragments[key] = cachedRoute{direct: direct, expires: time.Now().Add(30 * time.Second)}
 					} else if old, found := t.fragments[key]; found && time.Now().Before(old.expires) {
 						direct = old.direct
 					}

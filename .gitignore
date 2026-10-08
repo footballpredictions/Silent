@@ -27,6 +27,7 @@ resources/olcrtc.exe
 resources/sing-box.exe
 resources/olcrtc/
 resources/sing-box/
+resources/wireguard/site-router.exe
 olcrtc/
 vendor/
 

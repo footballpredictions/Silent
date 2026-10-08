@@ -53,6 +53,9 @@ if errorlevel 1 (
 cd ..
 
 echo [1b/3] integrity hashes...
+echo Building browser site router...
+powershell -NoProfile -ExecutionPolicy Bypass -File site-router\build.ps1
+if errorlevel 1 exit /b 1
 call node scripts\gen_integrity_hashes.js
 if errorlevel 1 (
   echo integrity hash gen FAILED

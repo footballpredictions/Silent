@@ -30,6 +30,10 @@ if errorlevel 1 (
 cd ..
 call node scripts\gen_integrity_hashes.js
 
+echo [1b/3] browser site router...
+powershell -NoProfile -ExecutionPolicy Bypass -File site-router\build.ps1
+if errorlevel 1 exit /b 1
+
 echo [2/3] renderer (debug mode)...
 if exist "dist\renderer" rd /s /q "dist\renderer" 2>nul
 call npx vite build --mode debug --outDir dist/renderer

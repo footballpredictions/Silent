@@ -487,8 +487,8 @@ export default function AppExclusionsPanel({
             Домен или IP идут {sitesWhitelist ? 'через VPN' : 'мимо VPN'} (ozon.ru, 1.2.3.4, 10.0.0.0/8)
           </p>
           <div className="flex gap-2 mb-3">
-            <ModeChip label="Мимо VPN" active={!sitesWhitelist} fg={fg} bg={bg} onClick={() => { if (!siteBusy) void persistSites(siteRules, null, false) }} />
-            <ModeChip label="Через VPN" active={sitesWhitelist} fg={fg} bg={bg} onClick={() => { if (!siteBusy) void persistSites(siteRules, null, true) }} />
+            <ModeChip label="ЧС" active={!sitesWhitelist} fg={fg} bg={bg} onClick={() => { if (!siteBusy) void persistSites(siteRules, null, false) }} />
+            <ModeChip label="БС" active={sitesWhitelist} fg={fg} bg={bg} onClick={() => { if (!siteBusy) void persistSites(siteRules, null, true) }} />
           </div>
           <SearchField
             value={newRule}

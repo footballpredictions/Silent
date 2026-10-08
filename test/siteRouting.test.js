@@ -55,7 +55,7 @@ test('mode survives reload; legacy files keep bypass mode and the same list', ()
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('live mode changes replace routes; disconnect cancels queued changes and cleans owned routes', async () => {
+test('POSIX legacy route changes roll back and disconnect cancels queued changes', { skip: process.platform === 'win32' }, async () => {
   const wg = require('../src/main/vpn/wireguard')
   const saved = { ...wg }
   const bypassPath = require.resolve('../src/main/apps/siteBypass')

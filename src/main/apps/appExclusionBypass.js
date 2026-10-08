@@ -395,6 +395,11 @@ function startAppExclusionBypass(exePaths, send) {
     clearInterval(timer)
     timer = null
   }
+  if (process.platform === 'win32') {
+    void require('../vpn/browserRouter').updatePolicy({ excluded: activeExePaths }).catch(e => sendLog?.(`[Apps] ${e.message}`))
+    sendLog?.(`[Apps] исключения процессов: ${activeExePaths.length}`)
+    return
+  }
   if (!activeExePaths.length) {
     sendLog?.('[Apps] bypass: нет приложений — монитор выкл')
     return
@@ -409,6 +414,12 @@ function startAppExclusionBypass(exePaths, send) {
 /** После поднятия WG шлюз уже известен — сразу накатить platform packs. */
 async function refreshAppExclusionBypassAfterTunnel(send) {
   if (send) sendLog = send
+  if (process.platform === 'win32') {
+    const { getActiveExcludedExePaths } = require('./vpnAppExclusions')
+    activeExePaths = getActiveExcludedExePaths()
+    await require('../vpn/browserRouter').updatePolicy({ excluded: activeExePaths })
+    return
+  }
   if (!activeExePaths.length) {
     let paths = []
     try {
@@ -430,6 +441,9 @@ async function stopAppExclusionBypass(send) {
     timer = null
   }
   activeExePaths = []
+  if (process.platform === 'win32') {
+    await require('../vpn/browserRouter').updatePolicy({ excluded: [] })
+  }
   packsApplied = false
   const ips = [...new Set([...learnedTargets, ...packTargets])]
   learnedTargets.clear()

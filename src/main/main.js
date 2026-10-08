@@ -664,7 +664,8 @@ function quitAppFully() {
       mainWindow.destroy()
     }
   } catch { /* ignore */ }
-  setImmediate(() => {
+  const pending = vpnCleanupPromise || Promise.resolve()
+  Promise.race([pending.catch(() => {}), new Promise(resolve => setTimeout(resolve, 10000))]).finally(() => {
     try { app.exit(0) } catch { app.quit() }
   })
 }
@@ -1225,6 +1226,21 @@ ipcMain.handle('get-app-exclusions', () => {
   return loadExclusionsState(defaultStatePath(app.getPath('userData')))
 })
 
+async function prepareBrowserRoutingPolicy() {
+  const { loadSiteBypassState, defaultSiteBypassPath, resolveRulesToTargets, domainLookupHosts } = require('./apps/siteBypass')
+  const { getActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
+  const state = loadSiteBypassState(defaultSiteBypassPath(app.getPath('userData')))
+  const resolved = await resolveRulesToTargets(state.rules)
+  return { whitelist: state.whitelist, targets: resolved.targets, domains: state.rules.filter(rule => domainLookupHosts(rule)), excluded: getActiveExcludedExePaths() }
+}
+
+require('./vpn/browserRouter').setFailureHandler(() => {
+  if (!vpnSessionActive || vpnBootstrapMode) return
+  sendLog('[Sites] Маршрутизатор завершился; VPN отключается', 'E')
+  mainWindow?.webContents.send('vpn-error', 'VPN остановлен: ошибка маршрутизатора. Подключитесь повторно.')
+  cleanupVpn()
+})
+
 ipcMain.handle('save-site-bypass', async (_, payload) => {
   try {
     const {
@@ -1609,6 +1625,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
   }
 
   const upgradeToFullTunnel = async (source = 'groups', attempt = 1) => {
+    const wgConnectSeq = vpnConnectSeq
     if (!wgCredPhase || wgFullTunnelUpgradeInFlight) return
     if (!wgApplied) {
       if (attempt <= 20) {
@@ -1635,6 +1652,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
         skipForceStop: false,
         reuseRuntime: true,
         dnsOverride: sessionDnsOverride,
+        browserRouting: process.platform === 'win32' && !vpnBootstrapMode,
+        browserPolicy: process.platform === 'win32' && !vpnBootstrapMode ? await prepareBrowserRoutingPolicy() : undefined,
+        isCancelled: () => !vpnSessionActive || vpnConnectSeq !== wgConnectSeq,
       })
       if (!vpnSessionActive) {
         sendLog('[WG] full tunnel upgrade отменён (disconnect)')
@@ -1700,6 +1720,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
   }
 
   const tryApplyWg = async (confText, source = 'file') => {
+    const wgConnectSeq = vpnConnectSeq
     if (switching && wgApplied) return false
     if (wgApplied || wgFailed || wgInstallInFlight || !confText) return false
     if (!confText.includes('[Interface]')) return false
@@ -1749,12 +1770,17 @@ async function beginWdttSession(config, { switching = false } = {}) {
         return false
       }
     }
+    const browserPolicy = process.platform === 'win32' && !vpnBootstrapMode
+      ? await prepareBrowserRoutingPolicy() : undefined
     const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
       skipWdttWait: true,
       subnetOnly: (vpnBootstrapMode && isHiveBootstrapIp(config.server_ip)) || wgCredPhase,
       skipForceStop: alreadyUp,
       reuseRuntime: true,
       dnsOverride: sessionDnsOverride,
+      browserRouting: process.platform === 'win32' && !vpnBootstrapMode,
+      browserPolicy,
+      isCancelled: () => !vpnSessionActive || vpnConnectSeq !== wgConnectSeq,
     })
     const timeoutMs = isProcessElevated() ? 70000 : 90000
     let ok = false
@@ -1769,6 +1795,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     } finally {
       wgInstallInFlight = false
     }
+    if (!vpnSessionActive || vpnConnectSeq !== wgConnectSeq) return false
     // Windows: служба Wintun иногда успевает подняться после race — soft-OK ок.
     // Darwin/Linux: «процесс/utun жив» ≠ data-plane. Лог 10:05: data-plane мёртв,
     // apply вернул false, а эта ветка всё равно ставила «успех» → сайты по Wi‑Fi.
@@ -3049,9 +3076,9 @@ let macQuitFlushDone = false
 app.on('before-quit', (e) => {
   isQuitting = true
   // Mac/Linux: без await stop остаётся DNS/0.0.0.0/1 → «нет интернета» после закрытия.
-  if ((process.platform === 'darwin' || process.platform === 'linux') && !macQuitFlushDone) {
+  if ((process.platform === 'darwin' || process.platform === 'linux' || require('./vpn/browserRouter').isActive() || vpnCleanupPromise) && !macQuitFlushDone) {
     e.preventDefault()
-    cleanupVpn()
+    if (!vpnCleanupPromise) cleanupVpn()
     const pending = vpnCleanupPromise || Promise.resolve()
     Promise.race([
       pending.catch(() => {}),

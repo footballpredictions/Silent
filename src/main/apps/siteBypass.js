@@ -1,5 +1,6 @@
 /**
- * Исключения сайтов (домен / IP / CIDR) → host-route через физ. шлюз.
+ * Исключения сайтов (домен / IP / CIDR). Windows: политика процессов браузера.
+ * Linux/macOS пока используют прежние host-route через физический шлюз.
  */
 const dns = require('dns').promises
 const fs = require('fs')
@@ -183,6 +184,9 @@ async function clearSiteBypassUnlocked(send) {
   }
   appliedTargets = []
   appliedGateway = null
+  if (process.platform === 'win32') {
+    await require('../vpn/browserRouter').updatePolicy({ whitelist: false, targets: [], domains: [] })
+  }
 }
 
 function clearSiteBypass(send) {
@@ -206,6 +210,21 @@ async function applySiteBypassUnlocked(rules, send, options, generation) {
   const resolved = await resolveRulesToTargets(list)
   if (generation !== routingGeneration) return { ok: false, cancelled: true }
   const { unresolved } = resolved
+  if (options.browserOnly || process.platform === 'win32') {
+    const domains = list.filter(rule => domainLookupHosts(rule))
+    await require('../vpn/browserRouter').updatePolicy({ whitelist: options.whitelist === true, targets: resolved.targets, domains })
+    lastRulesRaw = list.join('\n')
+    lastOptions = options
+    stopSiteBypassRefresh()
+    // Actual DNS answers in the router learn subdomains/TTL. Refresh the snapshot
+    // as a fallback for browsers with their own encrypted resolver.
+    if (generation === routingGeneration && domains.length) {
+      refreshTimer = setInterval(() => { void applySiteBypass(lastRulesRaw.split('\n'), send, lastOptions).catch(e => send?.(`[Sites] ${e.message}`)) }, REFRESH_MS)
+      refreshTimer.unref?.()
+    }
+    send?.(`[Sites] правила только для браузеров: ${list.length}`)
+    return { ok: true, targets: resolved.targets, unresolved }
+  }
   const targets = siteDirectTargets(resolved.targets, options.whitelist, options.dnsServers)
   const previousTargets = appliedTargets
   // Снять старые, которых больше нет
@@ -257,4 +276,6 @@ module.exports = {
   applySiteBypass,
   applySiteBypassFromFile,
   clearSiteBypass,
+  resolveRulesToTargets,
+  domainLookupHosts,
 }

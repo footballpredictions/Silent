@@ -10,6 +10,7 @@ const { exec, execSync, execFile, execFileSync, spawn } = require('child_process
 const { promisify } = require('util')
 const execAsync = promisify(exec)
 const execFileAsync = promisify(execFile)
+const browserRouter = require('./browserRouter')
 
 const TUNNEL_NAME = 'wg-turn'
 const TUNNEL_CONF_NAME = 'wg-turn.conf'
@@ -580,6 +581,7 @@ async function psExecAsync(script) {
 }
 
 function isTunnelUp() {
+  if (browserRouter.isActive()) return true
   try {
     const out = execSync(
       'powershell.exe -NoProfile -Command "Get-NetAdapter -EA SilentlyContinue | ? { ($_.Name -eq \'wg-turn\' -or $_.InterfaceDescription -match \'WireGuard Tunnel\') -and $_.Status -eq \'Up\' } | Select -First 1 -Expand Name"',
@@ -592,6 +594,7 @@ function isTunnelUp() {
 }
 
 async function isTunnelUpAsync() {
+  if (browserRouter.isActive()) return true
   try {
     const { stdout } = await execAsync(
       'powershell.exe -NoProfile -Command "Get-NetAdapter -EA SilentlyContinue | ? { ($_.Name -eq \'wg-turn\' -or $_.InterfaceDescription -match \'WireGuard Tunnel\') -and $_.Status -eq \'Up\' } | Select -First 1 -Expand Name"',
@@ -605,6 +608,7 @@ async function isTunnelUpAsync() {
 
 /** STATE : 4 = Running (текст локализован на RU Windows). */
 function isServiceRunning() {
+  if (browserRouter.isActive()) return true
   try {
     const out = execSync(`sc query "${SERVICE_NAME}"`, { encoding: 'utf8', windowsHide: true })
     if (/\bSTATE\s*:\s*4\b/i.test(out) || /\bСостояние\s*:\s*4\b/i.test(out)) return true
@@ -615,6 +619,7 @@ function isServiceRunning() {
 }
 
 async function isServiceRunningAsync() {
+  if (browserRouter.isActive()) return true
   try {
     const { stdout } = await execAsync(`sc query "${SERVICE_NAME}"`, {
       encoding: 'utf8',
@@ -1153,6 +1158,7 @@ async function forceStopWireGuard(isDev, dirname, send) {
       send?.('[WG] stop отменён — уже новый connect')
       return
     }
+    await browserRouter.stop()
     const alreadyDown =
       !(await isWgStillPresentAsync()) && !(await isServiceRunningAsync())
     if (alreadyDown) {
@@ -1494,7 +1500,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   const skipForceStop = options.skipForceStop === true
   const reuseRuntime = options.reuseRuntime === true
   // Gateway в фоне — не блокировать install (как origin: sync без await-цепочки)
-  const gatewayPromise = excludeIPs.length ? capturePhysicalGateway(send) : Promise.resolve(null)
+  const gatewayPromise = excludeIPs.length || options.browserRouting ? capturePhysicalGateway(send) : Promise.resolve(null)
   const runtimeDir = prepareRuntimeDir(isDev, dirname, send, { reuse: reuseRuntime })
   if (!runtimeDir) {
     send('[WG] Нет wireguard.exe / wintun.dll — переустановите Silent VPN')
@@ -1543,6 +1549,32 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     await waitForPort('127.0.0.1', 9000, 8000)
   } else {
     send('[WG] WDTT активен, поднимаем WireGuard...')
+  }
+
+  if (!subnetOnly && options.browserRouting) {
+    if (!isProcessElevated()) {
+      send('[WG] Для раздельных правил запустите SilentVPN-Admin.bat', 'E')
+      return false
+    }
+    const gateway = await gatewayPromise
+    if (options.isCancelled?.()) return false
+    await forceStopWireGuard(isDev, dirname, send)
+    if (options.isCancelled?.()) return false
+    try {
+      await browserRouter.start({
+        conf: fs.readFileSync(confPath, 'utf8'), gateway, send,
+        resourcesPath: isDev ? path.resolve(dirname, '../../resources') : process.resourcesPath,
+        initialPolicy: { ...options.browserPolicy, dns: String(resolvedDns).split(/[,\s]+/).filter(Boolean) },
+        isCancelled: options.isCancelled,
+      })
+      await finalizeTunnelUp(send, excludeIPs, false, resolvedDns, resolvedMtu)
+      if (options.isCancelled?.()) return false
+      send('[WG] Туннель с независимыми правилами браузеров активен')
+      return true
+    } catch (error) {
+      send('[WG] ' + error.message, 'E')
+      return false
+    }
   }
 
   // sc query быстрее Get-NetAdapter

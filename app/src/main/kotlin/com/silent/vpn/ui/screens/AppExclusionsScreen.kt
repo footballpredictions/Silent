@@ -503,7 +503,7 @@ fun AppExclusionsScreen(
                     Modifier.padding(bottom = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    listOf(false to "Мимо VPN", true to "Через VPN").forEach { (mode, label) ->
+                    listOf(false to "ЧС", true to "БС").forEach { (mode, label) ->
                         ModeChip(label, sitesWhitelist == mode, fg, bg) {
                             if (!siteBusy && sitesWhitelist != mode) {
                                 repo.saveSitesWhitelist(mode)

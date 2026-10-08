@@ -4,6 +4,26 @@ package com.silent.vpn.vpn
 object AllowedIpsHelper {
     const val WG_TUNNEL_SUBNET = "10.66.66.0/24"
 
+    /** Сайты через VPN: только выбранные сети, служебный API и DNS; TURN остаётся снаружи. */
+    fun siteWhitelistAllowedIPs(
+        sites: Collection<String>,
+        transportExcludes: Collection<String>,
+        dnsServers: Collection<String>,
+    ): String {
+        val included = (sites + WG_TUNNEL_SUBNET + dnsServers).mapNotNull(::parseHole)
+        val direct = SiteBypassRoutes.complementCidrs(transportExcludes.mapNotNull(::parseHole))
+        val routes = included.flatMap { target ->
+            val net = target.networkCidr()
+            direct.mapNotNull { candidate ->
+                val specific = if (net.prefixLen >= candidate.prefixLen) net else candidate
+                val broad = if (net.prefixLen < candidate.prefixLen) net else candidate
+                specific.takeIf { (it.network and broad.mask()) == broad.network }
+            }
+        }.distinct()
+        // API всегда оставляет непустой AllowedIPs, включая пустой список сайтов.
+        return routes.joinToString(", ") { it.toString() }
+    }
+
     /** Только подсеть WG в туннеле — API (10.66.66.1) через VPN, TURN/VK напрямую. */
     fun patchAllowedIPsToSubnet(config: String, subnet: String = WG_TUNNEL_SUBNET): String =
         config.replace(Regex("(?m)^AllowedIPs\\s*=\\s*.+$"), "AllowedIPs = $subnet")

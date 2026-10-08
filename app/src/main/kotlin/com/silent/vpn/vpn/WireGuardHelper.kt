@@ -184,6 +184,17 @@ class WireGuardHelper(context: Context) {
                             DebugLog.i(TAG, "Bootstrap AllowedIPs: API + backend HTTPS")
                         }
                     }
+                } else if (!includeAppOverlay && SilentPrefs.open(appContext)
+                        .getBoolean(SilentRepository.PREF_SITES_WHITELIST, false)) {
+                    // DNS уже разрешён менеджером до WG apply; здесь только снимок кэша.
+                    val sites = WdttTunnelManager.resolvedSiteTargets()
+                    val dns = Regex("(?m)^DNS\\s*=\\s*(.+)$").find(configToApply)
+                        ?.groupValues?.get(1)?.split(',')?.map { it.trim() }
+                        ?: DnsPreset.FALLBACK.servers.split(',').map { it.trim() }
+                    val allowed = AllowedIpsHelper.siteWhitelistAllowedIPs(sites, excludeIPs, dns)
+                    configToApply = configToApply.replace(
+                        Regex("(?m)^AllowedIPs\\s*=\\s*.+$"), "AllowedIPs = $allowed",
+                    )
                 } else if (excludeIPs.isNotEmpty()) {
                     // Main: не complement. ~32 CIDR на 1 IP → blackhole (2ip.io / YouTube на OEM).
                     // Дыры — excludeRoute /32 (API 33+). AllowedIPs остаются 0.0.0.0/0.

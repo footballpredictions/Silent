@@ -308,6 +308,10 @@ object WdttTunnelManager {
         DebugLog.i(TAG, "Site bypass: ${next.size} hole(s)")
     }
 
+    /** Снимок разрешённых адресов сайтов; DNS выполняется до применения WG. */
+    internal fun resolvedSiteTargets(): List<String> =
+        synchronized(siteBypassCidrs) { siteBypassCidrs.toList() }
+
     /**
      * TURN/VK excludes + пользовательские сайты (кэш, без сетевых вызовов).
      * Сайты — только на main VPN (как на PC: bootstrap без user site-bypass).
@@ -316,6 +320,10 @@ object WdttTunnelManager {
     private fun effectiveExcludeIps(context: Context? = lastContext): List<String> {
         refreshSiteBypassExcludes(context)
         if (isBootstrapMode) return wgExcludeIps.toList()
+        val ctx = context ?: lastContext
+        if (ctx != null && SilentPrefs.open(ctx).getBoolean(SilentRepository.PREF_SITES_WHITELIST, false)) {
+            return wgExcludeIps.toList()
+        }
         val sites = synchronized(siteBypassCidrs) { siteBypassCidrs.toList() }
         if (sites.isEmpty()) return wgExcludeIps.toList()
         return (wgExcludeIps + sites).toList()

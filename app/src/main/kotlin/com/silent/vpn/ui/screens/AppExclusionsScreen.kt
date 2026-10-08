@@ -233,6 +233,7 @@ fun AppExclusionsScreen(
     var showSystemApps by remember { mutableStateOf(false) }
 
     // —— Sites ——
+    var sitesWhitelist by remember { mutableStateOf(repo.isSitesWhitelist()) }
     var siteRules by remember {
         mutableStateOf(SiteBypassRoutes.limitRules(SiteBypassRoutes.parseRules(repo.getBypassRoutesRaw())))
     }
@@ -493,11 +494,25 @@ fun AppExclusionsScreen(
         when (pane) {
             ExclusionsPane.Sites -> {
                 Text(
-                    "Домен или IP идут мимо VPN (ozon.ru, 1.2.3.4, 10.0.0.0/8)",
+                    "Домен или IP идут ${if (sitesWhitelist) "через VPN" else "мимо VPN"} (ozon.ru, 1.2.3.4, 10.0.0.0/8)",
                     fontSize = 11.sp,
                     color = fg.copy(0.5f),
                     modifier = Modifier.padding(bottom = 8.dp),
                 )
+                Row(
+                    Modifier.padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(false to "Мимо VPN", true to "Через VPN").forEach { (mode, label) ->
+                        ModeChip(label, sitesWhitelist == mode, fg, bg) {
+                            if (!siteBusy && sitesWhitelist != mode) {
+                                repo.saveSitesWhitelist(mode)
+                                sitesWhitelist = mode
+                                reloadTunnel()
+                            }
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = newRule,
                     onValueChange = { newRule = it },

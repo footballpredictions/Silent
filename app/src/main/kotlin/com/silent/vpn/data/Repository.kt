@@ -72,6 +72,7 @@ class SilentRepository @Inject constructor(
         const val PREF_EXCLUSIONS_DUAL_MIGRATED = "exclusions_dual_migrated"
         /** Правила обхода сайтов: домен / IP / CIDR / wildcard, по одному на строку. */
         const val PREF_BYPASS_ROUTES = "bypass_routes"
+        const val PREF_SITES_WHITELIST = "sites_whitelist"
         const val PREF_SAVED_HASH_ITEMS = "saved_hash_items"
         const val PREF_SAVED_HASH_ITEMS_TS = "saved_hash_items_ts"
         const val PREF_HASH_CHANNELS_PER_HASH = "hash_channels_per_hash"
@@ -1539,6 +1540,12 @@ class SilentRepository @Inject constructor(
 
     fun saveBypassRoutes(raw: String) {
         prefs.edit().putString(PREF_BYPASS_ROUTES, raw.trim()).apply()
+    }
+
+    fun isSitesWhitelist(): Boolean = prefs.getBoolean(PREF_SITES_WHITELIST, false)
+
+    fun saveSitesWhitelist(whitelist: Boolean) {
+        prefs.edit().putBoolean(PREF_SITES_WHITELIST, whitelist).apply()
     }
 
     fun getVkUserId(): Long = prefs.getLong(PREF_VK_USER_ID, 0L)

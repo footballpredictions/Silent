@@ -506,9 +506,19 @@ fun AppExclusionsScreen(
                     listOf(false to "ЧС", true to "БС").forEach { (mode, label) ->
                         ModeChip(label, sitesWhitelist == mode, fg, bg) {
                             if (!siteBusy && sitesWhitelist != mode) {
-                                repo.saveSitesWhitelist(mode)
-                                sitesWhitelist = mode
-                                reloadTunnel()
+                                try {
+                                    repo.saveSitesWhitelist(mode)
+                                    SiteBypassRoutes.clearResolveCache()
+                                    siteRules = SiteBypassRoutes.limitRules(SiteBypassRoutes.parseRules(repo.getBypassRoutesRaw()))
+                                    sitesWhitelist = mode
+                                    editingRule = null
+                                    editDraft = ""
+                                    newRule = ""
+                                    siteHint = null
+                                    reloadTunnel()
+                                } catch (e: Exception) {
+                                    siteHint = "Ошибка: ${e.message}"
+                                }
                             }
                         }
                     }

@@ -170,13 +170,13 @@ class WireGuardHelper(context: Context) {
             } else {
                 configString
             }
-            val sitePrefs = SilentPrefs.open(appContext)
-            val siteWhitelist = sitePrefs.getBoolean(SilentRepository.PREF_SITES_WHITELIST, false)
+            val siteState = com.silent.vpn.data.SiteExclusionsStore.load(SilentPrefs.open(appContext))
+            val siteWhitelist = siteState.whitelist
             val browserSites = !isBootstrap && !apiOverlayMode && !includeAppOverlay &&
-                (siteWhitelist || !sitePrefs.getString(SilentRepository.PREF_BYPASS_ROUTES, "").isNullOrBlank())
+                (siteWhitelist || siteState.activeRules.isNotBlank())
             val siteTargets = if (browserSites) WdttTunnelManager.resolvedSiteTargets() else emptyList()
             val siteDomains = if (browserSites) SiteBypassRoutes.parseRules(
-                sitePrefs.getString(SilentRepository.PREF_BYPASS_ROUTES, "").orEmpty(),
+                siteState.activeRules,
             ).filter { SiteBypassRoutes.domainLookupHosts(it) != null } else emptyList()
 
             if (!apiOverlayMode) {

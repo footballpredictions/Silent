@@ -246,10 +246,7 @@ object WdttTunnelManager {
         val now = System.currentTimeMillis()
         if (!force && now - lastSiteBypassRefreshMs < 30_000L) return
         lastSiteBypassRefreshMs = now
-        val raw = SilentPrefs.open(ctx)
-            .getString(SilentRepository.PREF_BYPASS_ROUTES, "")
-            ?.trim()
-            .orEmpty()
+        val raw = com.silent.vpn.data.SiteExclusionsStore.load(SilentPrefs.open(ctx)).activeRules
         if (raw.isBlank()) {
             val changed = synchronized(siteBypassCidrs) {
                 val had = siteBypassCidrs.isNotEmpty()
@@ -291,10 +288,7 @@ object WdttTunnelManager {
     /** Резолв с ожиданием результата — только из корутины (сохранение правил в UI). */
     private suspend fun resolveSiteBypassExcludes(context: Context) = withContext(Dispatchers.IO) {
         lastSiteBypassRefreshMs = System.currentTimeMillis()
-        val raw = SilentPrefs.open(context)
-            .getString(SilentRepository.PREF_BYPASS_ROUTES, "")
-            ?.trim()
-            .orEmpty()
+        val raw = com.silent.vpn.data.SiteExclusionsStore.load(SilentPrefs.open(context)).activeRules
         val next = if (raw.isBlank()) {
             emptyList()
         } else {
@@ -1419,10 +1413,7 @@ object WdttTunnelManager {
                 try {
                     if (!isBootstrapMode) {
                         lastContext?.let { ctx ->
-                            val raw = SilentPrefs.open(ctx)
-                                .getString(SilentRepository.PREF_BYPASS_ROUTES, "")
-                                ?.trim()
-                                .orEmpty()
+                            val raw = com.silent.vpn.data.SiteExclusionsStore.load(SilentPrefs.open(ctx)).activeRules
                             if (raw.isNotBlank()) {
                                 resolveSiteBypassExcludes(ctx.applicationContext)
                             }

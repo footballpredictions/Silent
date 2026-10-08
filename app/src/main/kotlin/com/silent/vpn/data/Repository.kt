@@ -71,8 +71,8 @@ class SilentRepository @Inject constructor(
         const val PREF_EXCLUSIONS_WHITELIST_APPS = "exclusions_whitelist_apps"
         const val PREF_EXCLUSIONS_DUAL_MIGRATED = "exclusions_dual_migrated"
         /** Правила обхода сайтов: домен / IP / CIDR / wildcard, по одному на строку. */
-        const val PREF_BYPASS_ROUTES = "bypass_routes"
-        const val PREF_SITES_WHITELIST = "sites_whitelist"
+        const val PREF_BYPASS_ROUTES = SiteExclusionsStore.ACTIVE_RULES_KEY
+        const val PREF_SITES_WHITELIST = SiteExclusionsStore.MODE_KEY
         const val PREF_SAVED_HASH_ITEMS = "saved_hash_items"
         const val PREF_SAVED_HASH_ITEMS_TS = "saved_hash_items_ts"
         const val PREF_HASH_CHANNELS_PER_HASH = "hash_channels_per_hash"
@@ -1544,17 +1544,19 @@ class SilentRepository @Inject constructor(
         persistExclusionsState(AppExclusionsPersist.switchMode(current, whitelist))
     }
 
-    fun getBypassRoutesRaw(): String =
-        prefs.getString(PREF_BYPASS_ROUTES, "")?.trim().orEmpty()
-
-    fun saveBypassRoutes(raw: String) {
-        prefs.edit().putString(PREF_BYPASS_ROUTES, raw.trim()).apply()
+    fun getBypassRoutesRaw(whitelist: Boolean? = null): String {
+        val state = SiteExclusionsStore.load(prefs)
+        return state.rulesFor(whitelist ?: state.whitelist)
     }
 
-    fun isSitesWhitelist(): Boolean = prefs.getBoolean(PREF_SITES_WHITELIST, false)
+    fun saveBypassRoutes(raw: String, whitelist: Boolean = isSitesWhitelist()) {
+        SiteExclusionsStore.save(prefs, raw, whitelist)
+    }
+
+    fun isSitesWhitelist(): Boolean = SiteExclusionsStore.load(prefs).whitelist
 
     fun saveSitesWhitelist(whitelist: Boolean) {
-        prefs.edit().putBoolean(PREF_SITES_WHITELIST, whitelist).apply()
+        SiteExclusionsStore.switchMode(prefs, whitelist)
     }
 
     fun getVkUserId(): Long = prefs.getLong(PREF_VK_USER_ID, 0L)

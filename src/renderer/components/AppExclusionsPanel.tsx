@@ -4,6 +4,7 @@ import {
   getBlacklistApps,
   getExcludedApps,
   getSiteBypassRules,
+  hydrateSiteBypassState,
   getWhitelistApps,
   isExclusionsWhitelist,
   isSitesWhitelist,
@@ -11,6 +12,7 @@ import {
   saveExcludedApps,
   saveExceptionsMode,
   saveSiteBypassRules,
+  saveSitesMode,
   type PcAppItem,
 } from '../exclusionsStore'
 import {
@@ -208,11 +210,29 @@ export default function AppExclusionsPanel({
   const [sitesWhitelist, setSitesWhitelist] = useState(() => isSitesWhitelist())
   const [newRule, setNewRule] = useState('')
   const [siteHint, setSiteHint] = useState<string | null>(null)
-  const [siteBusy, setSiteBusy] = useState(false)
+  const [siteBusy, setSiteBusy] = useState(true)
   const [editingRule, setEditingRule] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const state = await (window as any).electronAPI?.getSiteBypass?.()
+        if (cancelled) return
+        if (state) hydrateSiteBypassState(state)
+        setSiteRules(getSiteBypassRules())
+        setSitesWhitelist(isSitesWhitelist())
+      } catch (e: any) {
+        if (!cancelled) setSiteHint(`Ошибка: ${e?.message || e}`)
+      } finally {
+        if (!cancelled) setSiteBusy(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
 
   useLayoutEffect(() => {
     scrollRef.current?.scrollTo({ top: 0 })
@@ -270,7 +290,7 @@ export default function AppExclusionsPanel({
     try {
       const capped = rules.slice(0, MAX_SITE_RULES)
       await saveSiteBypassRules(capped, mode)
-      setSiteRules(capped)
+      setSiteRules(getSiteBypassRules(mode))
       setSitesWhitelist(mode)
       // Как на Android: без списка IP / «маршрутов» после добавления.
       setSiteHint(hintOverride)
@@ -279,6 +299,22 @@ export default function AppExclusionsPanel({
     } finally {
       setSiteBusy(false)
     }
+  }
+
+  const switchSitesMode = async (mode: boolean) => {
+    if (siteBusy || sitesWhitelist === mode) return
+    setSiteBusy(true)
+    setSiteHint(null)
+    try {
+      await saveSitesMode(mode)
+      setSitesWhitelist(mode)
+      setSiteRules(getSiteBypassRules(mode))
+      setEditingRule(null)
+      setEditDraft('')
+      setNewRule('')
+    } catch (e: any) {
+      setSiteHint(`Ошибка: ${e?.message || e}`)
+    } finally { setSiteBusy(false) }
   }
 
   const addSiteRule = () => {
@@ -487,8 +523,8 @@ export default function AppExclusionsPanel({
             Домен или IP идут {sitesWhitelist ? 'через VPN' : 'мимо VPN'} (ozon.ru, 1.2.3.4, 10.0.0.0/8)
           </p>
           <div className="flex gap-2 mb-3">
-            <ModeChip label="ЧС" active={!sitesWhitelist} fg={fg} bg={bg} onClick={() => { if (!siteBusy) void persistSites(siteRules, null, false) }} />
-            <ModeChip label="БС" active={sitesWhitelist} fg={fg} bg={bg} onClick={() => { if (!siteBusy) void persistSites(siteRules, null, true) }} />
+            <ModeChip label="ЧС" active={!sitesWhitelist} fg={fg} bg={bg} onClick={() => { void switchSitesMode(false) }} />
+            <ModeChip label="БС" active={sitesWhitelist} fg={fg} bg={bg} onClick={() => { void switchSitesMode(true) }} />
           </div>
           <SearchField
             value={newRule}

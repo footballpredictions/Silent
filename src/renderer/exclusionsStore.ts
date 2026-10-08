@@ -5,6 +5,36 @@ const WHITELIST_APPS_KEY = 'pc_exclusions_whitelist_apps'
 const DUAL_MIGRATED_KEY = 'pc_exclusions_dual_v1'
 const SITE_RULES_KEY = 'pc_site_bypass_rules'
 const SITE_WHITELIST_KEY = 'pc_site_whitelist'
+const SITE_BLACKLIST_RULES_KEY = 'pc_site_blacklist_rules'
+const SITE_WHITELIST_RULES_KEY = 'pc_site_whitelist_rules'
+
+function readSiteRules(key: string): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || '[]')
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : []
+  } catch { return [] }
+}
+
+function ensureSitesMigrated() {
+  const mode = isSitesWhitelist()
+  const legacy = readSiteRules(SITE_RULES_KEY)
+  if (localStorage.getItem(SITE_BLACKLIST_RULES_KEY) == null) {
+    localStorage.setItem(SITE_BLACKLIST_RULES_KEY, JSON.stringify(mode ? [] : legacy))
+  }
+  if (localStorage.getItem(SITE_WHITELIST_RULES_KEY) == null) {
+    localStorage.setItem(SITE_WHITELIST_RULES_KEY, JSON.stringify(mode ? legacy : []))
+  }
+}
+
+export function hydrateSiteBypassState(state: { rules: string[], whitelist: boolean, blacklistRules?: string[], whitelistRules?: string[] }) {
+  const dual = Array.isArray(state.blacklistRules) || Array.isArray(state.whitelistRules)
+  const black = dual ? state.blacklistRules || [] : state.whitelist ? [] : state.rules
+  const white = dual ? state.whitelistRules || [] : state.whitelist ? state.rules : []
+  localStorage.setItem(SITE_BLACKLIST_RULES_KEY, JSON.stringify(black))
+  localStorage.setItem(SITE_WHITELIST_RULES_KEY, JSON.stringify(white))
+  localStorage.setItem(SITE_RULES_KEY, JSON.stringify(state.whitelist ? white : black))
+  localStorage.setItem(SITE_WHITELIST_KEY, state.whitelist ? '1' : '0')
+}
 
 function parseIds(raw: string | null | undefined): Set<string> {
   return new Set((raw || '').split(',').map(s => s.trim()).filter(Boolean))
@@ -112,15 +142,9 @@ export function resetStaleExclusions() {
   localStorage.setItem(DUAL_MIGRATED_KEY, '1')
 }
 
-export function getSiteBypassRules(): string[] {
-  try {
-    const raw = localStorage.getItem(SITE_RULES_KEY) || ''
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : []
-  } catch {
-    return []
-  }
+export function getSiteBypassRules(whitelist = isSitesWhitelist()): string[] {
+  ensureSitesMigrated()
+  return readSiteRules(whitelist ? SITE_WHITELIST_RULES_KEY : SITE_BLACKLIST_RULES_KEY)
 }
 
 export function isSitesWhitelist(): boolean {
@@ -128,10 +152,24 @@ export function isSitesWhitelist(): boolean {
 }
 
 export async function saveSiteBypassRules(rules: string[], whitelist = isSitesWhitelist()) {
+  ensureSitesMigrated()
   const result = await (window as any).electronAPI?.saveSiteBypass?.({ rules, whitelist })
   if (result?.ok === false) throw new Error('Не удалось применить маршруты сайтов')
-  localStorage.setItem(SITE_RULES_KEY, JSON.stringify(rules))
-  localStorage.setItem(SITE_WHITELIST_KEY, whitelist ? '1' : '0')
+  hydrateSiteBypassState(result?.state || {
+    whitelist, rules,
+    blacklistRules: whitelist ? getSiteBypassRules(false) : rules,
+    whitelistRules: whitelist ? rules : getSiteBypassRules(true),
+  })
+}
+
+export async function saveSitesMode(whitelist: boolean) {
+  ensureSitesMigrated()
+  const result = await (window as any).electronAPI?.saveSiteBypass?.({ whitelist })
+  if (result?.ok === false) throw new Error('Не удалось применить маршруты сайтов')
+  hydrateSiteBypassState(result?.state || {
+    whitelist, rules: getSiteBypassRules(whitelist),
+    blacklistRules: getSiteBypassRules(false), whitelistRules: getSiteBypassRules(true),
+  })
 }
 
 export interface PcAppItem {

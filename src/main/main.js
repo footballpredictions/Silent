@@ -1259,19 +1259,20 @@ ipcMain.handle('save-site-bypass', async (_, payload) => {
       parseRules,
     } = require('./apps/siteBypass')
     const filePath = defaultSiteBypassPath(app.getPath('userData'))
-    const rules = parseRules(Array.isArray(payload?.rules) ? payload.rules.join('\n') : '')
+    const current = loadSiteBypassState(filePath)
     const whitelist = typeof payload?.whitelist === 'boolean'
-      ? payload.whitelist : loadSiteBypassState(filePath).whitelist
+      ? payload.whitelist : current.whitelist
+    const rules = Array.isArray(payload?.rules) ? parseRules(payload.rules.join('\n'))
+      : whitelist ? current.whitelistRules : current.blacklistRules
     if (wgApplied && !vpnBootstrapMode) {
       const result = await applySiteBypass(rules, sendLog, {
         whitelist,
         dnsServers: String(sessionDnsOverride || lastVpnConnectConfig?.wg_dns || '1.1.1.1,1.0.0.1,77.88.8.8').split(/[,\s]+/).filter(Boolean),
       })
-      if (result.ok) saveSiteBypassState(filePath, rules, whitelist)
-      return result
+      return result.ok ? { ...result, state: saveSiteBypassState(filePath, rules, whitelist) } : result
     }
-    saveSiteBypassState(filePath, rules, whitelist)
-    return { ok: true, targets: [], unresolved: [], deferred: true }
+    const state = saveSiteBypassState(filePath, rules, whitelist)
+    return { ok: true, targets: [], unresolved: [], deferred: true, state }
   } catch (e) {
     sendLog(`[Sites] save: ${e?.message || e}`)
     return { ok: false, targets: [], unresolved: [] }

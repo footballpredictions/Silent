@@ -196,10 +196,17 @@ async function resolveBrowserRulesToTargets(rules, { timeoutMs = 2000, dnsServer
 }
 
 function saveSiteBypassState(filePath, rules, whitelist = loadSiteBypassState(filePath).whitelist) {
-  const capped = parseRules(Array.isArray(rules) ? rules.join('\n') : String(rules || ''))
+  const current = loadSiteBypassState(filePath)
+  const activeKey = whitelist ? 'whitelistRules' : 'blacklistRules'
+  const capped = rules === undefined ? current[activeKey]
+    : parseRules(Array.isArray(rules) ? rules.join('\n') : String(rules || ''))
   const payload = {
-    version: 1,
+    version: 2,
     updatedAt: new Date().toISOString(),
+    blacklistRules: current.blacklistRules,
+    whitelistRules: current.whitelistRules,
+    [activeKey]: capped,
+    // Compatibility mirror: routing and older clients read the active list.
     rules: capped,
     whitelist: whitelist === true,
   }
@@ -210,16 +217,23 @@ function saveSiteBypassState(filePath, rules, whitelist = loadSiteBypassState(fi
 
 function loadSiteBypassState(filePath) {
   try {
-    if (!fs.existsSync(filePath)) return { version: 1, rules: [], whitelist: false }
-    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    const raw = fs.existsSync(filePath) ? JSON.parse(fs.readFileSync(filePath, 'utf8')) : {}
+    const whitelist = raw.whitelist === true
+    const parse = value => parseRules(Array.isArray(value) ? value.join('\n') : String(value || ''))
+    const legacy = parse(raw.rules || raw.raw)
+    const dual = Array.isArray(raw.blacklistRules) || Array.isArray(raw.whitelistRules)
+    const blacklistRules = dual ? parse(raw.blacklistRules) : whitelist ? [] : legacy
+    const whitelistRules = dual ? parse(raw.whitelistRules) : whitelist ? legacy : []
     return {
-      version: raw.version || 1,
-      whitelist: raw.whitelist === true,
-      rules: Array.isArray(raw.rules) ? parseRules(raw.rules.join('\n')) : parseRules(raw.raw || ''),
+      version: 2,
+      whitelist,
+      blacklistRules,
+      whitelistRules,
+      rules: whitelist ? whitelistRules : blacklistRules,
       updatedAt: raw.updatedAt || null,
     }
   } catch {
-    return { version: 1, rules: [], whitelist: false }
+    return { version: 2, rules: [], whitelist: false, blacklistRules: [], whitelistRules: [] }
   }
 }
 

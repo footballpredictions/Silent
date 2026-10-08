@@ -24,7 +24,7 @@ keystore/*
 # Logs
 *.log
 
-# Native libs (собираются локально / CI: libclient, libolcrtc, libhev-socks5-tunnel)
+# Native libs (собираются локально / CI: libclient, libsite-router, libolcrtc, libhev-socks5-tunnel)
 app/src/main/jniLibs/
 
 # Legacy olcrtc binaries in assets (используем jniLibs/libolcrtc.so)

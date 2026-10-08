@@ -27,6 +27,15 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.APP_BROWSER" />
+        </intent>
         <package android:name="com.vkontakte.android" />
         <package android:name="com.vk.calls" />
         <intent>
@@ -165,6 +174,15 @@
             android:name=".sync.VpnDataSyncService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".service.BrowserScopedVpnService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".service.SilentGoBackendVpnService"

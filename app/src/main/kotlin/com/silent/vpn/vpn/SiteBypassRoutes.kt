@@ -358,7 +358,7 @@ object SiteBypassRoutes {
         val now = System.currentTimeMillis()
         val out = linkedSetOf<Ipv4Cidr>()
         for (host in hosts) {
-            val cacheKey = if (dnsNetwork != null) "$host#net" else host
+            val cacheKey = if (dnsNetwork != null) "$host#${dnsNetwork.networkHandle}" else host
             val cached = resolveCache[cacheKey]
             if (cached != null && now - cached.first < RESOLVE_TTL_MS && cached.second.isNotEmpty()) {
                 out.addAll(cached.second)

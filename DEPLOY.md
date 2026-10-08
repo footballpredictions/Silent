@@ -53,6 +53,13 @@ python scripts/deploy_release.py "app\build\outputs\apk\release\app-release.apk"
 
 ## Сборка + загрузка
 
+Модуль браузерных правил `libsite-router.so` автоматически собирается Gradle-задачей
+`buildSiteRouter` перед `preBuild` для всех четырёх ABI. Нужны Go (toolchain 1.26.3
+загружается автоматически) и Android NDK; API 24 соответствует `minSdk`.
+Windows использует `app/site-router/build.ps1`, Linux/macOS — `build.sh`.
+Бинарники в `jniLibs` не хранятся в Git; `libclient.so` по-прежнему собирается
+через `build_android_go.bat` или существующий серверный build-agent.
+
 ```powershell
 cd android\app
 .\gradlew.bat assembleRelease

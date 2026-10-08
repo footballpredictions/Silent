@@ -224,6 +224,26 @@ dependencies {
     kspAndroidTest(libs.hilt.compiler)
 }
 
+val buildSiteRouter = tasks.register<Exec>("buildSiteRouter") {
+    group = "build"
+    description = "Builds the browser routing engine for all Android ABIs"
+    inputs.dir(file("site-router"))
+    outputs.files(releaseAbis.map { file("src/main/jniLibs/$it/libsite-router.so") })
+    workingDir = file("site-router")
+    environment("ANDROID_HOME", android.sdkDirectory.absolutePath)
+    if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+        commandLine("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "build.ps1")
+    } else {
+        commandLine("bash", "build.sh")
+    }
+    doLast {
+        val missing = releaseAbis.filter { !file("src/main/jniLibs/$it/libsite-router.so").let { f -> f.isFile && f.length() > 0 } }
+        if (missing.isNotEmpty()) throw GradleException("Не собран libsite-router.so: ${missing.joinToString(", ")}")
+    }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(buildSiteRouter) }
+
 gradle.taskGraph.whenReady {
     val releaseTasks = setOf("assembleRelease", "bundleRelease", "installRelease", "packageRelease")
     val buildingRelease = allTasks.any { task ->
@@ -285,6 +305,12 @@ tasks.register("verifyReleaseApkNativeLayout") {
             throw GradleException(
                 "APK не содержит libclient.so для ABI: ${missingLibclientInApk.joinToString(", ")}",
             )
+        }
+        val missingSiteRouterInApk = releaseAbis.filter { abi ->
+            "lib/$abi/libsite-router.so" !in nativeEntries
+        }
+        if (missingSiteRouterInApk.isNotEmpty()) {
+            throw GradleException("APK не содержит libsite-router.so: ${missingSiteRouterInApk.joinToString(", ")}")
         }
         val forbiddenInApk = nativeEntries.filter { entry ->
             forbiddenReleaseLibs.any { lib -> entry.endsWith("/$lib") }

@@ -263,7 +263,7 @@ object WdttTunnelManager {
         siteBypassResolving = true
         scope.launch {
             try {
-                val dnsNet = VpnNetworkHelper.findUnderlyingNetwork(ctx)
+                val dnsNet = siteDnsNetwork(ctx)
                 val result = SiteBypassRoutes.resolveExcludeTargets(raw, dnsNet)
                 val changed = synchronized(siteBypassCidrs) {
                     if (siteBypassCidrs.toList() == result.excludeCidrs) {
@@ -298,7 +298,7 @@ object WdttTunnelManager {
         val next = if (raw.isBlank()) {
             emptyList()
         } else {
-            val dnsNet = VpnNetworkHelper.findUnderlyingNetwork(context)
+            val dnsNet = siteDnsNetwork(context)
             SiteBypassRoutes.resolveExcludeTargets(raw, dnsNet).excludeCidrs
         }
         synchronized(siteBypassCidrs) {
@@ -312,6 +312,10 @@ object WdttTunnelManager {
     internal fun resolvedSiteTargets(): List<String> =
         synchronized(siteBypassCidrs) { siteBypassCidrs.toList() }
 
+    private fun siteDnsNetwork(context: Context) =
+        (if (!isBootstrapMode && tunnelReady.value) VpnNetworkHelper.getSilentVpnNetwork(context) else null)
+            ?: VpnNetworkHelper.findUnderlyingNetwork(context)
+
     /**
      * TURN/VK excludes + пользовательские сайты (кэш, без сетевых вызовов).
      * Сайты — только на main VPN (как на PC: bootstrap без user site-bypass).
@@ -319,14 +323,9 @@ object WdttTunnelManager {
      */
     private fun effectiveExcludeIps(context: Context? = lastContext): List<String> {
         refreshSiteBypassExcludes(context)
-        if (isBootstrapMode) return wgExcludeIps.toList()
-        val ctx = context ?: lastContext
-        if (ctx != null && SilentPrefs.open(ctx).getBoolean(SilentRepository.PREF_SITES_WHITELIST, false)) {
-            return wgExcludeIps.toList()
-        }
-        val sites = synchronized(siteBypassCidrs) { siteBypassCidrs.toList() }
-        if (sites.isEmpty()) return wgExcludeIps.toList()
-        return (wgExcludeIps + sites).toList()
+        // Site destinations belong to the browser flow policy, never to the
+        // common application's routes (in either blacklist or whitelist mode).
+        return wgExcludeIps.toList()
     }
 
     /** Мягкий reapply AllowedIPs после фонового DNS site-bypass (без полного stop). */

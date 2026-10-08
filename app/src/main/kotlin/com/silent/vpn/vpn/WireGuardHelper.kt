@@ -87,6 +87,7 @@ class WireGuardHelper(context: Context) {
     }
     suspend fun forceStopSilentTunnel() = wgMutex.withLock {
         withContext(Dispatchers.IO) {
+            BrowserScopedTunnel.stop()
             runCatching {
                 appContext.startService(Intent(appContext, SilentGoBackendVpnService::class.java))
             }
@@ -169,6 +170,14 @@ class WireGuardHelper(context: Context) {
             } else {
                 configString
             }
+            val sitePrefs = SilentPrefs.open(appContext)
+            val siteWhitelist = sitePrefs.getBoolean(SilentRepository.PREF_SITES_WHITELIST, false)
+            val browserSites = !isBootstrap && !apiOverlayMode && !includeAppOverlay &&
+                (siteWhitelist || !sitePrefs.getString(SilentRepository.PREF_BYPASS_ROUTES, "").isNullOrBlank())
+            val siteTargets = if (browserSites) WdttTunnelManager.resolvedSiteTargets() else emptyList()
+            val siteDomains = if (browserSites) SiteBypassRoutes.parseRules(
+                sitePrefs.getString(SilentRepository.PREF_BYPASS_ROUTES, "").orEmpty(),
+            ).filter { SiteBypassRoutes.domainLookupHosts(it) != null } else emptyList()
 
             if (!apiOverlayMode) {
                 if (isBootstrap) {
@@ -184,17 +193,6 @@ class WireGuardHelper(context: Context) {
                             DebugLog.i(TAG, "Bootstrap AllowedIPs: API + backend HTTPS")
                         }
                     }
-                } else if (!includeAppOverlay && SilentPrefs.open(appContext)
-                        .getBoolean(SilentRepository.PREF_SITES_WHITELIST, false)) {
-                    // DNS уже разрешён менеджером до WG apply; здесь только снимок кэша.
-                    val sites = WdttTunnelManager.resolvedSiteTargets()
-                    val dns = Regex("(?m)^DNS\\s*=\\s*(.+)$").find(configToApply)
-                        ?.groupValues?.get(1)?.split(',')?.map { it.trim() }
-                        ?: DnsPreset.FALLBACK.servers.split(',').map { it.trim() }
-                    val allowed = AllowedIpsHelper.siteWhitelistAllowedIPs(sites, excludeIPs, dns)
-                    configToApply = configToApply.replace(
-                        Regex("(?m)^AllowedIPs\\s*=\\s*.+$"), "AllowedIPs = $allowed",
-                    )
                 } else if (excludeIPs.isNotEmpty()) {
                     // Main: не complement. ~32 CIDR на 1 IP → blackhole (2ip.io / YouTube на OEM).
                     // Дыры — excludeRoute /32 (API 33+). AllowedIPs остаются 0.0.0.0/0.
@@ -247,7 +245,8 @@ class WireGuardHelper(context: Context) {
             }
 
             val semanticKey =
-                wgSemanticKey(configToApply) + "|ex=$excludeKey|apps=$appPolicyKey|ov=$apiOverlayMode|appin=$includeAppOverlay|blk=${SilentGoBackendVpnService.blockUnderlyingNetwork}"
+                wgSemanticKey(configToApply) + "|ex=$excludeKey|apps=$appPolicyKey|ov=$apiOverlayMode|appin=$includeAppOverlay|blk=${SilentGoBackendVpnService.blockUnderlyingNetwork}" +
+                    "|browser=$browserSites|sites=$siteWhitelist:${siteTargets.sorted().joinToString(",")}|domains=${siteDomains.sorted().joinToString(",")}"
 
             if (sharedTunnel != null && semanticKey.isNotBlank() && semanticKey == lastAppliedSemanticKey) {
 
@@ -356,6 +355,20 @@ class WireGuardHelper(context: Context) {
 
 
             val tunnel = sharedTunnel
+            if (browserSites) {
+                if (tunnel != null) {
+                    backend.setState(tunnel, Tunnel.State.DOWN, null)
+                    sharedTunnel = null
+                }
+                BrowserScopedTunnel.start(
+                    appContext, finalConfig, resolveAppTunnelPolicy(appContext),
+                    excludeIPs, siteTargets, siteDomains, siteWhitelist, semanticKey,
+                )
+                lastAppliedSemanticKey = semanticKey
+                lastExcludeRouteKey = excludeRouteKey
+                return@withContext
+            }
+            BrowserScopedTunnel.stop()
             if (tunnel != null && excludeRouteChanged && !apiOverlayMode && !isBootstrap) {
                 DebugLog.i(TAG, "site excludeRoute changed — full recreate")
                 runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
@@ -567,6 +580,7 @@ class WireGuardHelper(context: Context) {
 
         withContext(Dispatchers.IO) {
 
+            BrowserScopedTunnel.stop()
             sharedTunnel?.let {
 
                 runCatching { backend.setState(it, Tunnel.State.DOWN, null) }
@@ -588,6 +602,7 @@ class WireGuardHelper(context: Context) {
 
     fun isTunnelUp(): Boolean {
 
+        if (BrowserScopedTunnel.isRunning()) return true
         val tunnel = sharedTunnel ?: return false
 
         return runCatching { backend.getState(tunnel) == Tunnel.State.UP }.getOrDefault(false)
@@ -611,5 +626,3 @@ class WireGuardHelper(context: Context) {
     }
 
 }
-
-

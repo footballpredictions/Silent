@@ -6,6 +6,107 @@ Agent приступает к **первой невыполненной** зад
 
 ---
 
+### Пуш стабилизации ПК (2026-10-08)
+
+- [x] По явному запросу пользователя закоммитить18 source/test/README файлов без BOM/CRLF-only шума и сборок: pc7c0504ac234ffb0d32d101e6f1bae33439683695
+- [x] Push origin/pc выполнен, remote SHA совпадает с local HEAD; Android/iOS и серверный код не менялись
+- [x] Зафиксировать накопленный Memory/TASKS журнал отдельным docs-коммитом main, не включая app.zip/logs и не выполняя деплой
+
+### ПК: public API ошибки при запуске VPN и границы правил сайтов (2026-10-08)
+
+- [x] Объяснить: поддомены общие, отдельные CDN пока только по связкам сервисов; YouTube bundle не универсальная browser dependency policy
+- [x] Разобрать новый лог: EHOSTUNREACH/ConfigSync, DNS ENOTFOUND отсутствует; runtime health tunnel/public443/2083 сейчас200, точных времён API в агрегированном логе нет
+- [x] RED→GREEN real IPC: in-flight public GET→готовый VPN и refused latch+publicfailure; отмена obsolete public chain, fallback to tunnel, POSTno replay, OLCRTC2 прежний, реальные dual failures видимы
+- [x] npm149PASS/1SKIP, syntax/diff и упаковка integrityOK; debug build-debug-api-transition-20261008-135506/win-unpacked; без push
+- [ ] Пользователь: новая debug, cold start/подключение и ConfigSync sync-state; проверить отсутствие повторных ошибок и полную работу сайтов/оплаты
+
+### ПК: YouTube не полностью загружается в БС (2026-10-08)
+
+- [x] Пользователь принял исчезновение API ENOTFOUND; Chrome воспроизвёл ERR_CONNECTION_CLOSED для yt3.ggpht.com при youtube.com/БС, сравнение через VPN дало200/картинка загружена
+- [x] RED→GREEN расширение browser initial/live YouTube на googlevideo/ytimg/ggpht, static DNS seeds без вечного pendingDNS; сохранённый список/описание и приложения прежние
+- [x] npm144 PASS/1 SKIP, Go test/vet PASS, JS→native DNS policy integration с обеими модами и удалением; debug build-debug-youtube-sites-20261008-134347/win-unpacked, ASAR/native/integrity checksOK; без push
+- [ ] Пользователь: новая debug, БС youtube.com, открыть ролик заново — превью/аватар/видео/перемотка; проверить ЧС и независимые приложения. Ручной DoH/dynamic video cache остаются ограничением DNS/IP политики
+
+### ПК: public API nip.io ENOTFOUND (2026-10-08)
+
+- [x] Отличить DNS отказ отдельного public hop от общего VPN/API failure: actual DNS сейчасOK, tunnelhealth200
+- [x] RED→GREEN real publicDirectRequest: fixed hostname подключается к известному hiveIP, сохраняет443/HTTPS Host/SNI, standby не подменять
+- [x] Настоящий HTTPShealth поIP сoriginal Host/SNI200; npm143 PASS/1 SKIP, scopedAPI4/4
+- [x] Debug build-debug-api-ip-20261008-133353/win-unpacked, package/source/native/Wintun/WDTT integrity; без push/deploy
+- [ ] Приёмка нового запуска: отсутствует ENOTFOUND fixed public API; реальную авторизованную синхронизацию профиля проверить отдельно отhealth
+
+### ПК: предупреждения профиля и восстановление tunnel API (2026-10-08)
+
+- [x] Пользователь предварительно подтвердил работу сайтов; отделить штатный запуск от ConfigSync/public API warnings
+- [x] Read-only tunnel HTTP: health200, users/me401 без auth; не объявлять общий VPN сломанным и не скрывать реальные warnings
+- [x] RED→GREEN real main IPC: ECONNRESET transient, startup ECONNREFUSED retry, stable cell fallback30с затем tunnel recheck; focused3/3, полныйнабор141 PASS/1 SKIP до добавления третьего теста
+- [x] Debug build-debug-api-recovery-20261008-132926/win-unpacked, package/source/native/Wintun/WDTT integrity; без push/deploy
+- [ ] Приёмка новой debug: профиль обновляется после временного сбоя API, нет постоянного ухода на public при работающем tunnel; закрытие→другая сборка без destroyed-window
+
+### ПК: VPN только после переключения режима, ошибка закрывающегося окна (2026-10-08)
+
+- [x] Проверить новый лог: migration11 routes выполнена; при фиксированном БС настоящий Chrome2ip даёт VPN exit, другой сайт direct, итоговая политика не инвертирована
+- [x] RED→GREEN startup JS+Go: pendingDNS не даёт выбранным сайтам уходить direct до IP snapshot; app exclusions сохраняются, unresolved retry15с
+- [x] RED→GREEN real encrypted WG/TCP idle connection при SetTcpEntry failure: reverse RST в TUN по последнему ACK только изменённого flow; GREEN5/5, native22/22+vet
+- [x] RED→GREEN second-instance destroyed window: пропуск при выходе/уничтоженном окне; npm139 PASS/1 SKIP
+- [x] Debug build-debug-startup-live-20261008-132130/win-unpacked, package/source/native/Wintun/WDTT integrity; без push/deploy
+- [ ] Приёмка: cold start без нажатия режима сайтов, live ЧС/БС/добавление/удаление при открытых вкладках, закрытие клиента→открытие другой сборки без JavaScript exception
+
+### ПК: выбранный 2ip обходит VPN из-за старого global /32 (2026-10-08)
+
+- [x] Получить симптом: сайты открываются, VPN выход неверен; проверить запуск native/UAC (child elevated клиента, отдельной службы нет)
+- [x] Настоящий Chrome RED: выбранный2ip показывает тот же РФ IP, что сайт вне БС; найти physical188.40.167.81/32 metric1 ActiveStore, который обходит native
+- [x] RED→GREEN policy seam: удалить совпадающие legacy site routes перед ACK, ограничить gateway/metric/ActiveStore/NetMgmt, сохранить PersistentStore и current API/peer/VK protected targets
+- [x] Read-only реальный cleanup selection:11 кандидатов включая2ip; npm138 PASS/1 SKIP, syntax, debug build-debug-legacy-routes-20261008-130609 и package/integrity проверки; без push
+- [x] Приёмка migration: elevated клиент удалил11 старых routes по присланному логу, при фиксированном БС новый Chrome2ip даёт VPN exit; дефект перехода/старта исправлен отдельно выше, его приёмка ещё нужна
+
+### ПК: уточнить реальное поведение Chrome при рабочих DNS/HTTPS (2026-10-08)
+
+- [x] Проверить сохранённые tunnel DNS и /1 маршруты, actual native ACK БС7/12IP/1app, DNS reply/internal API/HTTPS ordinary process200 и public egress IPv4
+- [x] Проверить настоящий browser direct stack HTTPS через physical47 под активными /1:200; удалить диагностическую пробу, системную сеть не менять
+- [x] Не считать SetTcpEntry warning установленной причиной: injection317 encrypted TCP test и на старом коде PASS; тестовый рефактор откатить. Actual site-router token elevated1
+- [x] Получить точный симптом Chrome и воспроизвести нарушение: выбранный2ip показывает российский выход; причина stale physical /32, исправление и приёмка выше
+
+### ПК: DNS доменов через VPN, policy ACK и Wintun warning (2026-10-08)
+
+- [x] Уточнить Chrome; по логу отделить Wintun foreign rename0x490 от фактического native startup failure, wg-turn Up/read-only состояние подтверждено
+- [x] RED→GREEN live snapshot: использовать переданные VPN DNS вместо прежнего LAN resolver; startup без DNS сохранить
+- [x] RED→GREEN sendLog: Sites/Apps success и native ACK/counts сохраняются в main log, recoverable rename не красный, реальные native errors остаются видимыми
+- [x] PC137 PASS/1 SKIP, syntax/diff;7 реальных правил→12 IP/unresolved0 за293мс; debug build-debug-vpn-dns-20261008-123703/win-unpacked и package integrity, без push
+- [ ] Приёмка Chrome/исключений сайтов и программ на последнем debug; если повторится — сопоставить Sites native ACK/counts/changedFlows из нового лога
+
+### ПК: DNS до старта site-router блокировал VPN (2026-10-08)
+
+- [x] Повторная жалоба после close/start; воспроизвести реальный main prepare со stalled pre-VPN DNS: RED
+- [x] Удалить DNS ожидание из initial policy, сохранить домены/literal IP/app rules; GREEN
+- [x] Ограничить post-tunnel browser DNS snapshot общим2с/cancel/8domain workers; сохранять cache оставшихся доменов и удалять исключённые из списка
+- [x] PC135 PASS/1 SKIP, JS syntax/diff; debug build-debug-dns-startup-20261008-122348/win-unpacked + ASAR/native/Wintun/WDTT checks; без commit/push и без воздействия на активный установленный клиент
+- [ ] Проверить на новой сборке cold start и повторный запуск после полного выхода, затем live site/app исключения
+
+### ПК: старт после подтверждения Windows (2026-10-08)
+
+- [x] Проверить присланный workers63/traffic0/timeout лог; пользователь уточнил, что после подтверждения окна site-router всё заработало
+- [x] Read-only подтвердить native process, wg-turn Up, адрес и /1 маршруты, successful main log; firewall path-specific rules присутствуют, точный тип окна пока не подтверждён
+- [ ] Проверить именно live-редактирование списков из последней сборки — восстановление подключения после разрешения Windows не подтверждает этот сценарий
+
+### ЧС/БС сайтов, live-исключения ПК, debug и push (2026-10-08)
+
+- [x] Переименовать только кнопки сайтов в ЧС/БС на Android/ПК/iOS; описания сохранить, OpenWrt без таких кнопок не менять
+- [x] Windows: RED→GREEN существующих site/app flows; пересчитать только изменившиеся маршруты, закрыть соответствующие direct-сокеты/TCP TCB без WG restart; сохранить DNS/CDN оставшихся доменов при редактировании списка
+- [x] Android295/295 + assembleDebug, PC132 PASS/1 POSIX SKIP, native20/20 + go vet, renderer/package/integrity/diff проверки
+- [x] Debug Android: android/app/build/outputs/apk/debug/SilentVPN-debug.apk; Windows: pc/build-debug-sites-20261008-120425/win-unpacked, SilentVPN-Admin.bat
+- [x] По разрешению пользователя push только Android324ce5a / PCf8014a1; origin HEAD проверены, iOS переделку оставить локально до Mac
+- [ ] Пользовательская проверка нового Windows live-обновления сайтов/программ при активном VPN; предыдущая сборка и оплата с main VPN уже приняты
+- [ ] Проверить iOS переделку на Mac до отдельной публикации; browser-only Linux/macOS/экспериментальные PC olcrtc пути отдельно не перенесены
+
+### Windows PC: сайты отдельно от программ, debug без push (2026-10-08)
+
+- [x] Воспроизвести общий bypass от сайта регрессом RED; заменить Windows site/app host-routes на native per-process WG routing, GREEN
+- [x] Сохранить приоритет программ, browser-only домены/IP, DNS/CDN и live policy без WG restart; owner PID/path/children, direct physical interface, startup/disconnect/exit guards
+- [x] Проверить npm132 PASS + 1 POSIX SKIP, native15 PASS, go vet/JS syntax/renderer debug; собрать Windows x64 `pc/build-debug-sites-20261008-114204/win-unpacked` и проверить содержимое
+- [x] Пользователь принял сайты/программы и оплату при main VPN; отдельно сообщил о необходимости ручного reconnect после редактирования исключений. Разрешил новый debug и push Android/ПК (см. следующую запись)
+- [ ] Browser-only Linux/macOS и экспериментальные olcrtc пути отдельно не перенесены; в этой сборке исправлен Windows WG/WDTT
+
 ### Раздельный commit/push исправлений (2026-10-08)
 
 - [x] По явной команде пользователя разделить Android сайты (`32445cc`) и оплату (`4e3f3f4`), backend trial — отдельный commit с 6 тестами и API-документацией

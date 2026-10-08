@@ -12,9 +12,9 @@ class PaymentTunnelPolicyTest {
     }
 
     @Test
-    fun `working main vpn is preserved`() {
-        assertFalse(PaymentTunnelPolicy.needsBridge(true, true, false, false))
-        assertFalse(PaymentTunnelPolicy.needsBridge(true, false, false, true))
+    fun `main VPN payment uses the working payment bridge on both LTE and wifi`() {
+        assertTrue(PaymentTunnelPolicy.needsBridge(true, true, false, false))
+        assertTrue(PaymentTunnelPolicy.needsBridge(true, false, false, true))
     }
 
     @Test

@@ -146,6 +146,7 @@ class SilentRepository @Inject constructor(
         const val PREF_SYNC_PROFILE_REV = "config_sync_profile_rev"
         const val PREF_EPHEMERAL_SYNC_LAST_MS = "ephemeral_sync_last_ms"
         const val PREF_PENDING_PAYMENT_LABEL = "pending_payment_label"
+        private const val PREF_PAYMENT_MAIN_CONFIG = "payment_main_config"
         /** Минимальный интервал между авто ephemeral bootstrap (кнопка «Обновить» — без лимита). */
         const val EPHEMERAL_SYNC_MIN_MS = 30 * 60 * 1000L
         const val VK_APP_ID = 54610377L
@@ -1107,12 +1108,20 @@ class SilentRepository @Inject constructor(
         prefs.edit().remove(PREF_ACCESS_TOKEN).remove(PREF_REFRESH_TOKEN).apply()
         clearCachedProfile()
         clearPendingPaymentLabel()
+        savePaymentMainConfig(null)
         _api = null
         _apiCacheKey = null
     }
 
     fun getPendingPaymentLabel(): String =
         prefs.getString(PREF_PENDING_PAYMENT_LABEL, "")?.trim().orEmpty()
+
+    fun getPaymentMainConfig(): String? = prefs.getString(PREF_PAYMENT_MAIN_CONFIG, null)
+
+    fun savePaymentMainConfig(config: String?) {
+        if (config == null) prefs.edit().remove(PREF_PAYMENT_MAIN_CONFIG).apply()
+        else prefs.edit().putString(PREF_PAYMENT_MAIN_CONFIG, config).apply()
+    }
 
     fun savePendingPaymentLabel(label: String) {
         val v = label.trim()

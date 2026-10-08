@@ -7,7 +7,7 @@ internal object PaymentTunnelPolicy {
         mobile: Boolean,
         bootstrapAvailable: Boolean,
         publicBackendReachable: Boolean,
-    ): Boolean = !mainTunnelUp && (mobile || bootstrapAvailable || !publicBackendReachable)
+    ): Boolean = mainTunnelUp || mobile || bootstrapAvailable || !publicBackendReachable
 
     /**
      * Browser routes: WG up + TURN outside tunnel.

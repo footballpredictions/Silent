@@ -1229,19 +1229,24 @@ ipcMain.handle('save-site-bypass', async (_, payload) => {
   try {
     const {
       saveSiteBypassState,
+      loadSiteBypassState,
       defaultSiteBypassPath,
       applySiteBypass,
-      clearSiteBypass,
       parseRules,
     } = require('./apps/siteBypass')
     const filePath = defaultSiteBypassPath(app.getPath('userData'))
     const rules = parseRules(Array.isArray(payload?.rules) ? payload.rules.join('\n') : '')
-    saveSiteBypassState(filePath, rules)
+    const whitelist = typeof payload?.whitelist === 'boolean'
+      ? payload.whitelist : loadSiteBypassState(filePath).whitelist
     if (wgApplied && !vpnBootstrapMode) {
-      if (rules.length) return await applySiteBypass(rules, sendLog)
-      await clearSiteBypass(sendLog)
-      return { ok: true, targets: [], unresolved: [] }
+      const result = await applySiteBypass(rules, sendLog, {
+        whitelist,
+        dnsServers: String(sessionDnsOverride || lastVpnConnectConfig?.wg_dns || '1.1.1.1,1.0.0.1,77.88.8.8').split(/[,\s]+/).filter(Boolean),
+      })
+      if (result.ok) saveSiteBypassState(filePath, rules, whitelist)
+      return result
     }
+    saveSiteBypassState(filePath, rules, whitelist)
     return { ok: true, targets: [], unresolved: [], deferred: true }
   } catch (e) {
     sendLog(`[Sites] save: ${e?.message || e}`)
@@ -1789,7 +1794,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
         const { refreshAppExclusionBypassAfterTunnel } = require('./apps/vpnAppExclusions')
         await refreshAppExclusionBypassAfterTunnel(sendLog)
         const { applySiteBypassFromFile, defaultSiteBypassPath } = require('./apps/siteBypass')
-        void applySiteBypassFromFile(defaultSiteBypassPath(app.getPath('userData')), sendLog)
+        void applySiteBypassFromFile(defaultSiteBypassPath(app.getPath('userData')), sendLog, {
+          dnsServers: String(sessionDnsOverride || config?.wg_dns || '1.1.1.1,1.0.0.1,77.88.8.8').split(/[,\s]+/).filter(Boolean),
+        }).catch(e => sendLog(`[Sites] ${e.message}`))
       } catch (e) {
         sendLog(`[Apps] bypass after tunnel: ${e?.message || e}`)
       }

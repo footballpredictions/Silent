@@ -708,7 +708,7 @@ ${lines}
 `
 }
 
-function bypassRoutePs1Lines(ips) {
+function bypassRoutePs1Lines(ips, requireAll = false) {
   const targets = [...new Set(ips.map(parseBypassTarget).filter(Boolean))]
   if (!targets.length) return 'exit 0'
   const arr = targets.map(t => `@{ Ip='${t.ip}'; Mask='${t.mask}'; Dest='${t.dest}' }`).join(', ')
@@ -746,7 +746,7 @@ foreach ($t in $BypassTargets) {
   if (Get-NetRoute -DestinationPrefix $t.Dest -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -eq $phys.NextHop }) { $added++ }
   elseif (cmd /c "route print $($t.Ip)" 2>$null | Select-String -SimpleMatch $phys.NextHop) { $added++ }
 }
-if ($added -lt 1) { exit 1 }
+if ($added -lt ${requireAll ? targets.length : 1}) { exit 1 }
 exit 0
 `
 }
@@ -765,12 +765,13 @@ async function addServerBypassRoutesUnlocked(excludeIPs, send, options = {}) {
   const label = String(options.label || 'API').trim() || 'API'
   const chunkSize = 40
   let anyOk = false
+  let allOk = true
   for (let i = 0; i < targets.length; i += chunkSize) {
     const chunk = targets.slice(i, i + chunkSize)
     const scriptPath = path.join(os.tmpdir(), `silent-wg-bypass-${Date.now()}-${i}.ps1`)
     const ps1 = `
 $ErrorActionPreference = 'SilentlyContinue'
-${bypassRoutePs1Lines(chunk)}
+${bypassRoutePs1Lines(chunk, options.requireAll)}
 `
     try {
       fs.writeFileSync(scriptPath, ps1, 'utf8')
@@ -791,13 +792,14 @@ ${bypassRoutePs1Lines(chunk)}
         anyOk = true
         if (!quiet) send?.(`[WG] Bypass ${label} chunk ${Math.floor(i / chunkSize) + 1}: OK (retry)`)
       } catch {
+        allOk = false
         send?.(`[WG] Bypass ${label} chunk ${Math.floor(i / chunkSize) + 1}: ${msg.slice(0, 120)}`, 'W')
       }
     } finally {
       try { fs.unlinkSync(scriptPath) } catch {}
     }
   }
-  if (!anyOk) {
+  if (!anyOk || (options.requireAll && !allOk)) {
     send?.(`[WG] Bypass ${label} не применён`, 'W')
     return false
   }
@@ -809,11 +811,28 @@ ${bypassRoutePs1Lines(chunk)}
 }
 
 /** Снять host/CIDR routes без сброса сохранённого физического шлюза. */
-async function removeHostBypassRoutes(excludeIPs, send, epoch = null) {
+async function removeHostBypassRoutes(excludeIPs, send, epoch = null, options = {}) {
   const targets = [...new Set(
     (excludeIPs || []).map(parseBypassTarget).filter(Boolean),
   )]
   if (!targets.length) return
+  if (options.physicalOnly) {
+    const gateway = options.gateway || savedPhysicalGateway
+    if (!gateway?.nextHop || !gateway?.ifIndex) return
+    const prefixes = targets.map(t => `'${t.dest}'`).join(',')
+    const scriptPath = path.join(os.tmpdir(), `silent-site-routes-remove-${Date.now()}.ps1`)
+    try {
+      fs.writeFileSync(scriptPath,
+        `@(${prefixes}) | ForEach-Object { Remove-NetRoute -DestinationPrefix $_ -NextHop '${gateway.nextHop}' -InterfaceIndex ${gateway.ifIndex} -Confirm:$false -ErrorAction SilentlyContinue }`, 'utf8')
+      await execAsync(
+        `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`,
+        { windowsHide: true, timeout: 120000 },
+      ).catch(() => {})
+    } finally {
+      try { fs.unlinkSync(scriptPath) } catch {}
+    }
+    return
+  }
   for (const t of targets) {
     if (epoch != null && epoch !== wgApplyEpoch) {
       send?.('[WG] Bypass host: снятие прервано — уже новый connect')

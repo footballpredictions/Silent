@@ -6,6 +6,7 @@ import {
   getSiteBypassRules,
   getWhitelistApps,
   isExclusionsWhitelist,
+  isSitesWhitelist,
   resetStaleExclusions,
   saveExcludedApps,
   saveExceptionsMode,
@@ -204,6 +205,7 @@ export default function AppExclusionsPanel({
   })
 
   const [siteRules, setSiteRules] = useState<string[]>(() => getSiteBypassRules())
+  const [sitesWhitelist, setSitesWhitelist] = useState(() => isSitesWhitelist())
   const [newRule, setNewRule] = useState('')
   const [siteHint, setSiteHint] = useState<string | null>(null)
   const [siteBusy, setSiteBusy] = useState(false)
@@ -262,14 +264,14 @@ export default function AppExclusionsPanel({
     scrollRef.current?.scrollTo({ top: 0 })
   }
 
-  const persistSites = async (rules: string[], hintOverride: string | null = null) => {
+  const persistSites = async (rules: string[], hintOverride: string | null = null, mode = sitesWhitelist) => {
     setSiteBusy(true)
     setSiteHint(null)
     try {
       const capped = rules.slice(0, MAX_SITE_RULES)
+      await saveSiteBypassRules(capped, mode)
       setSiteRules(capped)
-      saveSiteBypassRules(capped)
-      await (window as any).electronAPI?.saveSiteBypass?.({ rules: capped })
+      setSitesWhitelist(mode)
       // Как на Android: без списка IP / «маршрутов» после добавления.
       setSiteHint(hintOverride)
     } catch (e: any) {
@@ -482,8 +484,12 @@ export default function AppExclusionsPanel({
       {pane === 'sites' ? (
         <>
           <p className="text-[11px] mb-3 text-left w-full" style={{ color: muted }}>
-            Домен или IP идут мимо VPN (ozon.ru, 1.2.3.4, 10.0.0.0/8)
+            Домен или IP идут {sitesWhitelist ? 'через VPN' : 'мимо VPN'} (ozon.ru, 1.2.3.4, 10.0.0.0/8)
           </p>
+          <div className="flex gap-2 mb-3">
+            <ModeChip label="Мимо VPN" active={!sitesWhitelist} fg={fg} bg={bg} onClick={() => { if (!siteBusy) void persistSites(siteRules, null, false) }} />
+            <ModeChip label="Через VPN" active={sitesWhitelist} fg={fg} bg={bg} onClick={() => { if (!siteBusy) void persistSites(siteRules, null, true) }} />
+          </div>
           <SearchField
             value={newRule}
             onChange={setNewRule}

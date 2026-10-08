@@ -451,19 +451,24 @@ async function addServerBypassRoutesUnlocked(excludeIPs, send, options = {}) {
   }
   const chunkSize = 40
   let anyOk = false
+  let allOk = true
   for (let i = 0; i < targets.length; i += chunkSize) {
     const chunk = targets.slice(i, i + chunkSize)
     try {
-      await helperOut(
+      const output = await helperOut(
         ['bypass-add', savedPhysicalGateway.nextHop, savedPhysicalGateway.alias, ...chunk],
         Math.min(120000, 15000 + chunk.length * 200),
       )
+      if (options.requireAll && Number(String(output).match(/OK bypass (\d+)/)?.[1]) !== chunk.length) {
+        throw new Error('Не все маршруты сайтов применены')
+      }
       anyOk = true
     } catch (e) {
+      allOk = false
       send?.(`[WG] Bypass ${label} chunk ${Math.floor(i / chunkSize) + 1}: ${String(e.message || e).slice(0, 120)}`, 'W')
     }
   }
-  if (!anyOk) {
+  if (!anyOk || (options.requireAll && !allOk)) {
     send?.(`[WG] Bypass ${label} не применён`, 'W')
     return false
   }

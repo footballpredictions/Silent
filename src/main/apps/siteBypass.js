@@ -4,9 +4,11 @@
 const dns = require('dns').promises
 const fs = require('fs')
 const path = require('path')
+const { siteDirectTargets } = require('./siteRoutingPolicy')
 const {
   addServerBypassRoutes,
   removeHostBypassRoutes,
+  capturePhysicalGateway,
 } = require('../vpn/wireguard')
 const {
   MAX_RULES,
@@ -22,6 +24,15 @@ const REFRESH_MS = 20 * 60 * 1000
 let appliedTargets = []
 let refreshTimer = null
 let lastRulesRaw = ''
+let lastOptions = {}
+let operations = Promise.resolve()
+let routingGeneration = 0
+let appliedGateway = null
+function serialize(operation) {
+  const result = operations.then(operation)
+  operations = result.catch(() => {})
+  return result
+}
 
 function defaultSiteBypassPath(userDataPath) {
   return path.join(userDataPath, 'site-bypass.json')
@@ -128,12 +139,13 @@ async function resolveRulesToTargets(rules) {
   return { targets: [...targets], unresolved }
 }
 
-function saveSiteBypassState(filePath, rules) {
+function saveSiteBypassState(filePath, rules, whitelist = loadSiteBypassState(filePath).whitelist) {
   const capped = parseRules(Array.isArray(rules) ? rules.join('\n') : String(rules || ''))
   const payload = {
     version: 1,
     updatedAt: new Date().toISOString(),
     rules: capped,
+    whitelist: whitelist === true,
   }
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8')
@@ -142,15 +154,16 @@ function saveSiteBypassState(filePath, rules) {
 
 function loadSiteBypassState(filePath) {
   try {
-    if (!fs.existsSync(filePath)) return { version: 1, rules: [] }
+    if (!fs.existsSync(filePath)) return { version: 1, rules: [], whitelist: false }
     const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'))
     return {
       version: raw.version || 1,
+      whitelist: raw.whitelist === true,
       rules: Array.isArray(raw.rules) ? parseRules(raw.rules.join('\n')) : parseRules(raw.raw || ''),
       updatedAt: raw.updatedAt || null,
     }
   } catch {
-    return { version: 1, rules: [] }
+    return { version: 1, rules: [], whitelist: false }
   }
 }
 
@@ -161,48 +174,75 @@ function stopSiteBypassRefresh() {
   }
 }
 
-async function clearSiteBypass(send) {
+async function clearSiteBypassUnlocked(send) {
   stopSiteBypassRefresh()
   lastRulesRaw = ''
   if (appliedTargets.length) {
-    await removeHostBypassRoutes(appliedTargets, send)
+    await removeHostBypassRoutes(appliedTargets, send, null, { physicalOnly: true, gateway: appliedGateway })
     send?.(`[Sites] снято маршрутов: ${appliedTargets.length}`)
   }
   appliedTargets = []
+  appliedGateway = null
 }
 
-async function applySiteBypass(rules, send) {
+function clearSiteBypass(send) {
+  routingGeneration++
+  stopSiteBypassRefresh()
+  return serialize(() => clearSiteBypassUnlocked(send))
+}
+
+function applySiteBypass(rules, send, options = {}) {
+  const generation = routingGeneration
+  return serialize(() => applySiteBypassUnlocked(rules, send, options, generation))
+}
+
+async function applySiteBypassUnlocked(rules, send, options, generation) {
+  if (generation !== routingGeneration) return { ok: false, cancelled: true }
   const list = parseRules(Array.isArray(rules) ? rules.join('\n') : String(rules || ''))
-  lastRulesRaw = list.join('\n')
-  if (!list.length) {
-    await clearSiteBypass(send)
+  if (!list.length && !options.whitelist) {
+    await clearSiteBypassUnlocked(send)
     return { ok: true, targets: [], unresolved: [] }
   }
-  const { targets, unresolved } = await resolveRulesToTargets(list)
+  const resolved = await resolveRulesToTargets(list)
+  if (generation !== routingGeneration) return { ok: false, cancelled: true }
+  const { unresolved } = resolved
+  const targets = siteDirectTargets(resolved.targets, options.whitelist, options.dnsServers)
+  const previousTargets = appliedTargets
   // Снять старые, которых больше нет
   const nextSet = new Set(targets)
   const toRemove = appliedTargets.filter(t => !nextSet.has(t))
-  if (toRemove.length) await removeHostBypassRoutes(toRemove, send)
+  if (toRemove.length) await removeHostBypassRoutes(toRemove, send, null, { physicalOnly: true, gateway: appliedGateway })
   const toAdd = targets.filter(t => !appliedTargets.includes(t))
-  if (toAdd.length) {
-    await addServerBypassRoutes(toAdd, send, { label: 'Sites' })
-  }
+  if (!appliedGateway) appliedGateway = await capturePhysicalGateway(send)
+  if (generation !== routingGeneration) return { ok: false, cancelled: true }
+  // Track attempted additions too, so disconnect cleans up a partially failed batch.
   appliedTargets = targets
+  if (toAdd.length) {
+    const ok = await addServerBypassRoutes(toAdd, send, { label: 'Sites', requireAll: true })
+    if (!ok) {
+      await removeHostBypassRoutes(toAdd, send, null, { physicalOnly: true, gateway: appliedGateway })
+      if (toRemove.length) await addServerBypassRoutes(toRemove, send, { label: 'Sites', requireAll: true })
+      appliedTargets = previousTargets
+      throw new Error('Не удалось применить маршруты сайтов')
+    }
+  }
   send?.(`[Sites] обход: ${targets.length} маршрут(ов)${unresolved.length ? `, не резолвится: ${unresolved.slice(0, 3).join(', ')}` : ''}`)
 
+  lastRulesRaw = list.join('\n')
+  lastOptions = options
   stopSiteBypassRefresh()
-  if (list.some(r => !parseIpOrCidr(r) && domainLookupHosts(r))) {
+  if (generation === routingGeneration && list.some(r => !parseIpOrCidr(r) && domainLookupHosts(r))) {
     refreshTimer = setInterval(() => {
-      void applySiteBypass(lastRulesRaw.split('\n'), send)
+      void applySiteBypass(lastRulesRaw.split('\n'), send, lastOptions).catch(e => send?.(`[Sites] ${e.message}`))
     }, REFRESH_MS)
     if (typeof refreshTimer.unref === 'function') refreshTimer.unref()
   }
   return { ok: true, targets, unresolved }
 }
 
-async function applySiteBypassFromFile(filePath, send) {
+async function applySiteBypassFromFile(filePath, send, options = {}) {
   const state = loadSiteBypassState(filePath)
-  return applySiteBypass(state.rules, send)
+  return applySiteBypass(state.rules, send, { ...options, whitelist: state.whitelist })
 }
 
 module.exports = {

@@ -4,6 +4,7 @@ const BLACKLIST_KEY = 'pc_exclusions_blacklist'
 const WHITELIST_APPS_KEY = 'pc_exclusions_whitelist_apps'
 const DUAL_MIGRATED_KEY = 'pc_exclusions_dual_v1'
 const SITE_RULES_KEY = 'pc_site_bypass_rules'
+const SITE_WHITELIST_KEY = 'pc_site_whitelist'
 
 function parseIds(raw: string | null | undefined): Set<string> {
   return new Set((raw || '').split(',').map(s => s.trim()).filter(Boolean))
@@ -122,16 +123,15 @@ export function getSiteBypassRules(): string[] {
   }
 }
 
-export function saveSiteBypassRules(rules: string[]) {
+export function isSitesWhitelist(): boolean {
+  return localStorage.getItem(SITE_WHITELIST_KEY) === '1'
+}
+
+export async function saveSiteBypassRules(rules: string[], whitelist = isSitesWhitelist()) {
+  const result = await (window as any).electronAPI?.saveSiteBypass?.({ rules, whitelist })
+  if (result?.ok === false) throw new Error('Не удалось применить маршруты сайтов')
   localStorage.setItem(SITE_RULES_KEY, JSON.stringify(rules))
-  try {
-    const api = (window as any).electronAPI
-    if (api?.saveSiteBypass) {
-      void api.saveSiteBypass({ rules })
-    }
-  } catch {
-    /* ignore */
-  }
+  localStorage.setItem(SITE_WHITELIST_KEY, whitelist ? '1' : '0')
 }
 
 export interface PcAppItem {

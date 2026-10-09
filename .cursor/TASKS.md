@@ -6,6 +6,17 @@ Agent приступает к **первой невыполненной** зад
 
 ---
 
+### Android: лишнее энергопотребление и ночной нагрев (2026-10-09)
+
+- [x] На устройстве подтвердить session-long silent:tunnel_cpu и повтор уведомления/плитки; ночной thermal spike отдельно не воспроизведён
+- [x] Session wake seam RED5→GREEN: bounded acquire30с, конечный startup/recovery/traffic grace, idle/pause/stop release, monotonic clock
+- [x] Notification cadence RED2→GREEN: без повторов неизменного содержимого, ready phase сразу; плитка по изменению состояния
+- [x] Сохранить native transport/WG/keepalive/access-check, network callbacks/recovery, режимы сайтов и оплату; legacy debug RTC protection консервативно прежняя
+- [x] 312 JVM PASS/0SKIP, debug и androidTest сборки; новый DEX и неизменённый libclient4ABI в APK проверены
+- [x] Реальные service/PowerManager: emulator2PASS; Vivo/API36 short idle/transfer/pause1PASS; long timeout на Vivo заблокирован OEM freeze и не засчитан
+- [x] Debug установлен без очистки аккаунта; Android2289e52 запушен и remote SHA подтверждён; тестовый emulator закрыт, остаточных silent lock нет
+- [ ] Пользователь: обычный VPN/VK через LTE и Wi‑Fi — ночь с выключенным экраном, расход/температура; фоновая музыка/загрузка, сообщения, wake и Wi‑Fi↔LTE без потери функциональности
+
 ### Удаление аккаунта отзывает действующий VPN (2026-10-09)
 
 - [x] Найти сохранённые WDTT identities вне Device и пропажу deny из manifest; queen/cell RED→GREEN

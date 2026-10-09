@@ -10,6 +10,8 @@ HiveLoadSample.measurement_version=2 для новых измерений, exist
 
 Production deploy выбранных app/main.py, app/models/hive_load_sample.py, app/services/hive_capacity.py через deploy_stable.py выполнен. Postflight health200/alt2083=200, RTT0.047с, queen kicks0/20с. Schema/index и normalized SHA всех3 файлов совпали. API snapshot 2026-10-09T17:17:58UTC: Улей14/32, Сота1 30/55, Сота2 37/163, Сота3 12/51, Сота4 10/49 (online/limit). У всех capacity.online_count_used=online_count, min(CPU/RAM/network)=max_online; новая историяv2 уже5замеров/ноду, legacy44–47тыс/ноду сохранена. Queen WDTT PID764, C1=847, C2=827, C3=815, C4=781 прежние, все active. Клиенты не изменялись, debug rebuild не нужен. Артефакты hive-capacity-after.json и verify_capacity_deploy.py локальные, без секретов; commit/push разрешён пользователем.
 
+Исправление опубликовано в origin/main: ba6620b9f91bfe82402ef6a3df6847e068a9554c; git ls-remote подтвердил совпадение с HEAD. Все функциональные изменения уже на production; последующая запись статуса документационная.
+
 ## Проверка лимитов/истории и WG-ключей (2026-10-09)
 
 Запрос пользователя: проверить прежний неверный расчёт онлайн-лимитов каждого сервера и историю; объяснить «Назначено устройств:37 · лимит:по истории» / «WG49 ключей ·11 онлайн ·27 без подключения» и влияние на сервер. Выполнен аудит, без изменения production-расчёта/конфигураций, удаления peer или deploy/push. Локально добавлены reusable read-only scripts/diag_hive_capacity.py и пять RED-регрессов scripts/test_hive_capacity_regression_unit.py; не подключать их к mandatory deploy preflight до исправления.

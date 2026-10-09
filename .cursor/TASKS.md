@@ -14,7 +14,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] Итоговый лимит равен минимуму CPU/RAM/сети; ручной cap и настоящий overload не маскируются
 - [x] 10 регрессов PASS; replay всех 5 production snapshots PASS; 10 mandatory preflight и slots/GC/standby/subscription PASS
 - [x] Узкий canonical deploy, новая история/лимиты всех 5 нод, прежние WDTT PID; health0.047с/kick0/source/schema PASS
-- [ ] Commit/push backend и проверка origin/main
+- [x] Commit/push backend ba6620b и проверка origin/main — совпадает
 
 ### Проверка онлайн-лимитов, истории и WG (2026-10-09)
 

@@ -277,6 +277,8 @@ sequenceDiagram
 
 ### Admin Hive — `/api/admin/hive`
 
+SPA админки: `/`, deep links и `/index.html` отдаются с `Cache-Control: no-store`. `GET /admin-ui-version.json` (тот же admin host guard, без токена) возвращает `{version, assets}` актуального JS/CSS entry, тоже no-store; браузер использует его для обновления восстановленной вкладки. Авторизация при этом сохраняется.
+
 В `GET /cells` профиль `capacity` дополнен опциональными `measurement_version` (2) и `online_count_used` — число DB/WG online, использованное расчётом. Сам лимит по CPU/RAM/сети остаётся оценкой для админки и автоподбора; ручной `max_clients` сохраняет приоритет. История расчёта использует только новые замеры v2; legacy v1 сохраняется до штатного retention. Старые клиенты совместимы.
 
 | Метод | Путь | Auth | Описание |

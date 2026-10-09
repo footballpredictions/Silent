@@ -18,6 +18,7 @@ from _deploy_common import BACKEND_ROOT, CONTAINER, REMOTE, connect, run
 from fix_tunnel_dnat import FIX_SH
 
 PREFLIGHT_TESTS = (
+    "scripts/test_admin_ui_cache_unit.py",
     "scripts/test_hive_capacity_regression_unit.py",
     "scripts/test_dashboard_online_consistency_unit.py",
     "scripts/test_admin_page_loading_unit.py",
@@ -116,7 +117,7 @@ def _deploy_selected_python(paths: list[str], *, admin_ui: Path | None = None) -
                 print("selected Python", rel)
             if admin_ui is not None:
                 _upload_admin_ui(sftp, client, admin_ui)
-        _restart_and_verify(client)
+        _restart_and_verify(client, expected_admin_index=admin_ui / 'index.html' if admin_ui else None)
     finally:
         client.close()
 
@@ -189,10 +190,72 @@ def main() -> None:
         print("upload docker/nginx.conf")
 
     sftp.close()
-    _restart_and_verify(client)
+    _restart_and_verify(client, expected_admin_index=dist / 'index.html')
 
 
-def _restart_and_verify(client) -> None:
+def _verify_admin_ui(client, expected_index: Path | None = None) -> None:
+    """Check the served SPA, not just uploaded files: stale HTML must fail publication."""
+    import hashlib
+    import json
+
+    expected_sha = hashlib.sha256(expected_index.read_bytes()).hexdigest() if expected_index else None
+    program = f'''
+import hashlib,json,urllib.request
+from app.config import settings
+expected_sha={expected_sha!r}
+sha=None
+def fetch(path, method='GET'):
+    request=urllib.request.Request('http://127.0.0.1:8000'+path,method=method,headers={{'Host':settings.ADMIN_PUBLIC_HOST}})
+    with urllib.request.urlopen(request,timeout=10) as response:
+        assert response.status==200, (path,response.status)
+        return response.headers,response.read()
+for path in ('/','/hive','/dashboard','/index.html'):
+    headers,body=fetch(path)
+    assert 'no-store' in headers.get('Cache-Control',''), ('cached admin entry',path)
+    current=hashlib.sha256(body).hexdigest()
+    assert sha is None or current==sha, ('different admin entries',path)
+    assert expected_sha is None or current==expected_sha, ('served admin build differs from uploaded build',path)
+    sha=current
+headers,body=fetch('/admin-ui-version.json')
+assert 'no-store' in headers.get('Cache-Control',''), 'cached admin version'
+manifest=json.loads(body)
+assert manifest.get('version') and manifest.get('assets'), 'missing admin version/assets'
+for asset in manifest['assets']:
+    assert asset.startswith('/assets/'), 'invalid admin asset'
+    fetch(asset,'HEAD')
+print(json.dumps({{'public_host':settings.ADMIN_PUBLIC_HOST,'entry_sha':sha}}))
+'''
+    stdin, stdout, stderr = client.exec_command(f'docker exec -i {shlex.quote(CONTAINER)} python -', timeout=90)
+    stdin.write(program)
+    stdin.flush()
+    stdin.channel.shutdown_write()
+    output = stdout.read().decode(errors='replace')
+    status = stdout.channel.recv_exit_status()
+    if status:
+        raise SystemExit('Admin UI postflight failed: ' + stderr.read().decode(errors='replace')[-1500:])
+    probe = json.loads(output)
+    host = probe['public_host']
+    for port in (443, 2083):
+        command = shlex.join(['curl', '-skS', '--connect-timeout', '3', '--max-time', '12',
+                              '--resolve', f'{host}:{port}:127.0.0.1', '-D', '-',
+                              f'https://{host}:{port}/hive'])
+        _, stdout, stderr = client.exec_command(command, timeout=20)
+        raw = stdout.read()
+        status = stdout.channel.recv_exit_status()
+        if status or b'\r\n\r\n' not in raw:
+            raise SystemExit(f'Admin UI HTTPS postflight failed on port {port}')
+        headers, body = raw.split(b'\r\n\r\n', 1)
+        lines = headers.decode().splitlines()
+        if len(lines[0].split()) < 2 or lines[0].split()[1] != '200':
+            raise SystemExit(f'Admin UI HTTPS status failed on port {port}')
+        values = {key.lower(): value.strip() for key, value in
+                  (line.split(':', 1) for line in lines[1:] if ':' in line)}
+        if 'no-store' not in values.get('cache-control', '') or hashlib.sha256(body).hexdigest() != probe['entry_sha']:
+            raise SystemExit(f'Admin UI HTTPS serves cached or different entry on port {port}')
+    print('PASS admin publication: no-store entry/version, identical routes, expected build, assets and HTTPS 443/2083')
+
+
+def _restart_and_verify(client, *, expected_admin_index: Path | None = None) -> None:
     # Код уже на хосте. up -d api --no-deps recreate только если compose изменился;
     # после volume ./app и ./ai recreate безопасен. wdtt не трогаем.
     script = f"""#!/bin/bash
@@ -267,6 +330,7 @@ fi
     sftp2.putfo(io.BytesIO(script.encode()), "/tmp/deploy_stable.sh")
     sftp2.close()
     run(client, "bash /tmp/deploy_stable.sh 2>&1", timeout=240)
+    _verify_admin_ui(client, expected_admin_index)
     client.close()
     print("Done")
 

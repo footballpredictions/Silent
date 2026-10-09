@@ -6,6 +6,15 @@ Agent приступает к **первой невыполненной** зад
 
 ---
 
+### Админка: старый дизайн после повторного открытия (2026-10-09)
+
+- [x] Production SHA/header audit: один новый index, отсутствует Cache-Control; route regression RED5
+- [x] no-store SPA/version; guard запуска/restore/resume с bounded reload, no auth reset
+- [x] Actual routes GREEN; build+6 guard tests, browser close/reopen/restore/offline/mismatch PASS; 11 preflight scripts PASS
+- [x] Правило admin-ui-publication.mdc, Memory Bank и mandatory runtime postflight SHA/cache/assets/HTTPS443/2083
+- [x] Canonical narrow deploy app/main.py + UI; production no-store/version/SHA/HTTPS443+2083/browser reopen PASS, PID764 прежний, RTT0.063с/kick0
+- [ ] Commit/push изменений админки и проверка origin/main
+
 ### Исправление онлайн-лимитов всех серверов (2026-10-09)
 
 - [x] Пользователь разрешил исправление и push: пример «30 онлайн / лимит 17»

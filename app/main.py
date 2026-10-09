@@ -674,13 +674,48 @@ admin_ui_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "a
 admin_ui_index = os.path.join(admin_ui_dist, "index.html")
 
 if os.path.isfile(admin_ui_index):
+    from html.parser import HTMLParser
+
+    admin_entry_headers = {"Cache-Control": "no-store", "Pragma": "no-cache", "Expires": "0"}
+
+    def admin_entry_response():
+        # A cached HTML entry keeps pointing at an old, still-valid hashed bundle.
+        return FileResponse(admin_ui_index, media_type="text/html", headers=admin_entry_headers)
+
+    class AdminEntryAssets(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.assets: set[str] = set()
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            url = None
+            if tag == "script" and attrs.get("type") == "module":
+                url = attrs.get("src")
+            elif tag == "link" and attrs.get("rel") in ("stylesheet", "modulepreload"):
+                url = attrs.get("href")
+            if url and url.startswith("/assets/"):
+                self.assets.add(url)
+
     assets_dir = os.path.join(admin_ui_dist, "assets")
     if os.path.isdir(assets_dir):
         app.mount("/assets", StaticFiles(directory=assets_dir), name="admin-assets")
 
     @app.get("/")
     async def serve_admin_root():
-        return FileResponse(admin_ui_index, media_type="text/html")
+        return admin_entry_response()
+
+    @app.get("/admin-ui-version.json", include_in_schema=False)
+    def serve_admin_version():
+        import hashlib
+        from fastapi.responses import JSONResponse
+
+        parser = AdminEntryAssets()
+        with open(admin_ui_index, encoding="utf-8") as entry:
+            parser.feed(entry.read())
+        assets = sorted(parser.assets)
+        version = hashlib.sha256("\n".join(assets).encode()).hexdigest()
+        return JSONResponse({"version": version, "assets": assets}, headers=admin_entry_headers)
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_admin_spa(full_path: str):
@@ -690,8 +725,10 @@ if os.path.isfile(admin_ui_index):
         if not candidate.startswith(admin_ui_dist):
             raise HTTPException(status_code=404, detail="Not Found")
         if os.path.isfile(candidate):
+            if candidate == admin_ui_index:
+                return admin_entry_response()
             return FileResponse(candidate)
-        return FileResponse(admin_ui_index, media_type="text/html")
+        return admin_entry_response()
 else:
     logger.warning(
         "Admin UI not found at %s — build: cd admin-ui && npm install && npm run build",

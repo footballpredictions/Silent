@@ -396,6 +396,14 @@ async def set_device_online(
         device = result.scalar_one_or_none()
 
     if device is None:
+        # Existing open tunnels of accounts deleted before this fix still report
+        # their UUID. Persist a deny once; do not tombstone an inactive DB row.
+        if device_uuid is not None:
+            existing = await db.execute(select(Device.id).where(Device.id == device_uuid))
+            if existing.scalar_one_or_none() is None:
+                from app.services.vpn_deny_net import remember_deleted_device_ids
+                if await remember_deleted_device_ids(db, [device_uuid]):
+                    await db.commit()
         return {"ok": False, "subscription_active": False, "vpn_allowed": False}
 
     from app.services.subscription_service import users_with_vpn_access_ids_cached

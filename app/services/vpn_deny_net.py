@@ -27,6 +27,66 @@ _PROTECTED = frozenset({"10.66.66.1", "10.66.66.0", "10.66.66.2", "0.0.0.0"})
 _WDTT_PASSWORDS = "/etc/wdtt/passwords.json"
 _NSENTER_HELPER = "silent-nsenter"
 _last_queen_ips: frozenset[str] | None = None
+DELETED_DEVICE_PREFIX = "vpn_deleted_device:"
+# Orphan identities survive account deletion. Batch restore keeps this bounded
+# without the old per-rule shell/argv limit at 2000 addresses.
+MAX_DENY_IPS = 10_000
+
+
+def canonical_device_ids(values) -> list[str]:
+    """Deletion records identify only registered UUID devices, never bootstrap refs."""
+    out = set()
+    for value in values:
+        try:
+            out.add(str(uuid.UUID(str(value))))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return sorted(out)
+
+
+async def remember_deleted_device_ids(db, device_ids) -> int:
+    """Persist UUID-only deny records in the same transaction as account deletion."""
+    from sqlalchemy.dialects.postgresql import insert
+    from app.models import AppSetting
+
+    ids = canonical_device_ids(device_ids)
+    if not ids:
+        return 0
+    result = await db.execute(
+        insert(AppSetting).values([
+            {"key": DELETED_DEVICE_PREFIX + did, "value": "deleted"} for did in ids
+        ]).on_conflict_do_nothing(index_elements=[AppSetting.key]).returning(AppSetting.key)
+    )
+    count = len(result.scalars().all())
+    if count:
+        from app.services.hive_cell_sync import invalidate_manifest_cache
+        invalidate_manifest_cache()
+    return count
+
+
+async def deleted_device_ids(db) -> list[str]:
+    from sqlalchemy import select
+    from app.models import AppSetting
+
+    result = await db.execute(select(AppSetting.key).where(AppSetting.key.startswith(DELETED_DEVICE_PREFIX)))
+    return canonical_device_ids(key[len(DELETED_DEVICE_PREFIX):] for key in result.scalars().all())
+
+
+def deleted_manifest_entries(device_ids, *, existing_ids=()) -> list[dict]:
+    existing = set(map(str, existing_ids))
+    return [
+        {"id": did, "user_id": "", "wg_public_key": "", "wg_address": "10.66.66.2/32",
+         "is_connected": False, "vpn_allowed": False}
+        for did in canonical_device_ids(device_ids) if did not in existing
+    ]
+
+
+def denied_identity_ips(identities, allowed_device_ids) -> set[str]:
+    """Exact wdtt IPs, including deleted rows; never deny an IP shared by allowed peers."""
+    allowed = set(map(str, allowed_device_ids))
+    permitted = unpaid_ips_from_wdtt_only({k: v for k, v in identities.items() if k in allowed})
+    denied = unpaid_ips_from_wdtt_only({k: v for k, v in identities.items() if k not in allowed})
+    return denied - permitted
 
 
 @dataclass(frozen=True)
@@ -110,10 +170,11 @@ def identities_from_wdtt_db(blob: dict, device_ids: list[str]) -> dict[str, dict
 def _nsenter(script: str, timeout: int = 30) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
-            "docker", "exec", _NSENTER_HELPER,
+            "docker", "exec", "-i", _NSENTER_HELPER,
             "nsenter", "-t", "1", "-m", "-n", "--",
-            "sh", "-c", script,
+            "sh",
         ],
+        input=script,
         capture_output=True,
         timeout=timeout,
         text=True,
@@ -124,9 +185,9 @@ def read_host_wdtt_identities(device_ids: list[str]) -> dict[str, dict[str, str]
     return read_host_wdtt_identities_result(device_ids).identities
 
 
-def read_host_wdtt_identities_result(device_ids: list[str]) -> IdentitiesRead:
-    ids = [str(i) for i in device_ids if str(i) and not str(i).startswith("boot:")]
-    if not ids:
+def read_host_wdtt_identities_result(device_ids: list[str] | None = None) -> IdentitiesRead:
+    ids = None if device_ids is None else [str(i) for i in device_ids if str(i) and not str(i).startswith("boot:")]
+    if ids == []:
         return IdentitiesRead(ok=True, identities={})
     payload = json.dumps(ids)
     tmp = deny_ids_tmp_path()
@@ -144,8 +205,10 @@ def read_host_wdtt_identities_result(device_ids: list[str]) -> IdentitiesRead:
         "ids=json.loads(p.read_text())\n"
         "blob=json.load(open('/etc/wdtt/passwords.json'))\n"
         "devs=blob.get('devices') or {}\n"
+        "if ids is None: ids=list(devs)\n"
         "out={}\n"
         "for i in ids:\n"
+        "    if str(i).startswith('boot:'): continue\n"
         "    d=devs.get(i) or {}\n"
         "    if not isinstance(d, dict): continue\n"
         "    rec={}\n"
@@ -180,6 +243,8 @@ def read_host_wdtt_identities_result(device_ids: list[str]) -> IdentitiesRead:
         return IdentitiesRead(ok=False, identities={}, error="not_object")
     cleaned: dict[str, dict[str, str]] = {}
     for did, rec in raw.items():
+        if ids is None and str(did) not in canonical_device_ids([did]):
+            continue
         if not isinstance(rec, dict):
             continue
         info: dict[str, str] = {}
@@ -197,21 +262,21 @@ def read_host_wdtt_identities_result(device_ids: list[str]) -> IdentitiesRead:
 def _iptables_sync_script(ips: set[str]) -> str:
     safe = sorted(ip for ip in ips if is_safe_deny_ip(ip))
     lines = [
+        "set -e",
         f"iptables -N {CHAIN} 2>/dev/null || true",
-        f"iptables -F {CHAIN}",
-        (
-            f"iptables -C FORWARD -j {CHAIN} 2>/dev/null || "
-            f"iptables -I FORWARD 1 -j {CHAIN}"
-        ),
+        "iptables-restore --noflush <<'SILENT_DENY_RULES'",
+        "*filter",
+        f":{CHAIN} - [0:0]",
+        f"-F {CHAIN}",
     ]
     for ip in safe:
-        lines.append(f"iptables -A {CHAIN} -s {ip}/32 -j DROP")
-        lines.append(f"iptables -A {CHAIN} -d {ip}/32 -j DROP")
-    head = " ; ".join(lines[:3])
-    drops = lines[3:]
-    if not drops:
-        return head
-    return head + " && " + " && ".join(drops)
+        lines.append(f"-A {CHAIN} -s {ip}/32 -j DROP")
+        lines.append(f"-A {CHAIN} -d {ip}/32 -j DROP")
+    lines.extend([
+        "COMMIT", "SILENT_DENY_RULES",
+        f"iptables -C FORWARD -j {CHAIN} 2>/dev/null || iptables -I FORWARD 1 -j {CHAIN}",
+    ])
+    return "\n".join(lines) + "\n"
 
 
 def disable_queen_deny() -> None:

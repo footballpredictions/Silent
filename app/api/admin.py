@@ -1087,6 +1087,10 @@ async def delete_user(
     if user.is_admin:
         raise HTTPException(status_code=400, detail="Нельзя удалить администратора")
 
+    from app.services.vpn_deny_net import remember_deleted_device_ids
+    device_rows = await db.execute(select(Device.id).where(Device.user_id == uid))
+    await remember_deleted_device_ids(db, device_rows.scalars().all())
+
     await db.execute(delete(VkHash).where(VkHash.user_id == uid))
     await db.execute(delete(VkLinkSession).where(VkLinkSession.user_id == uid))
     await db.execute(delete(Device).where(Device.user_id == uid))
@@ -1102,6 +1106,17 @@ async def delete_user(
     )
     await db.delete(user)
     await db.commit()
+    # The deny UUIDs outlive the cascade, and old cell agents understand these
+    # records as ordinary vpn_allowed=false entries. No per-peer kick/restart.
+    from app.services.hive_cell_sync import invalidate_manifest_cache, sync_all_cell_manifests
+    from app.services.vpn_kick import sync_unpaid_deny_net
+    invalidate_manifest_cache()
+    try:
+        await sync_unpaid_deny_net(db)
+        await sync_all_cell_manifests(db)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("deleted account deny sync pending: %s", exc)
     return {"status": "deleted", "id": user_id}
 
 

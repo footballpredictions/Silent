@@ -596,37 +596,34 @@ async def sync_unpaid_deny_net(db: AsyncSession) -> int:
     tunnels re-GETCONF and a kick loop pins wdtt/API at 100% CPU.
     """
     from app.services.vpn_deny_net import (
+        MAX_DENY_IPS,
+        denied_identity_ips,
         read_host_wdtt_identities_result,
         sync_queen_deny_ips,
-        unpaid_ips_from_wdtt_only,
     )
 
     if _sync_unpaid_lock.locked():
+        return 0
+    # Read local identities before the DB snapshot: a newly registered paying
+    # device cannot be mistaken for a deleted row due to a stale DB snapshot.
+    _ensure_nsenter_helper()
+    got = await asyncio.to_thread(read_host_wdtt_identities_result)
+    if not got.ok:
+        logger.warning("silent deny skip: identity read failed %s", got.error)
         return 0
     result = await db.execute(
         select(Device.id, Device.user_id, Device.device_fingerprint).where(
             Device.is_active == True  # noqa: E712
         )
     )
-    devices = [
-        (did, uid)
-        for did, uid, fp in result.all()
-        if not (fp or "").startswith("boot:")
-    ]
-    if not devices:
-        _ensure_nsenter_helper()
-        return await asyncio.to_thread(sync_queen_deny_ips, set())
+    devices = list(result.all())
     from app.services.subscription_service import users_with_vpn_access_ids
 
     allowed = await users_with_vpn_access_ids(db)
-    unpaid_ids = [str(did) for did, uid in devices if uid not in allowed]
-    _ensure_nsenter_helper()
-    got = read_host_wdtt_identities_result(unpaid_ids)
-    if not got.ok:
-        logger.warning("silent deny skip: identity read failed %s", got.error)
-        return 0
-    ips = unpaid_ips_from_wdtt_only(got.identities)
-    if len(ips) > 2000:
+    allowed_ids = {str(did) for did, uid, fp in devices
+                   if uid in allowed or (fp or "").startswith("boot:")}
+    ips = denied_identity_ips(got.identities, allowed_ids)
+    if len(ips) > MAX_DENY_IPS:
         logger.error("silent deny aborted: unpaid IP set too large (%s)", len(ips))
         return 0
 

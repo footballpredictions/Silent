@@ -6,6 +6,17 @@ Agent приступает к **первой невыполненной** зад
 
 ---
 
+### Удаление аккаунта отзывает действующий VPN (2026-10-09)
+
+- [x] Найти сохранённые WDTT identities вне Device и пропажу deny из manifest; queen/cell RED→GREEN
+- [x] UUID-only tombstones в транзакции DELETE, queen full identity deny, старые соты через vpn_allowed=false; late S2S unknown UUID сохраняется один раз
+- [x] Повтор отправки при недоступной соте: regression RED→GREEN; оплаченные/bootstrap/shared/protected IP сохранены
+- [x] 8 новых регрессов и 6 mandatory preflight scripts PASS; large batch в isolated netns сохраняет стороннюю цепочку
+- [x] Canonical python-only deploy; real admin DELETE/late online проверены, тестовые данные очищены, manifests synced4/total4
+- [x] Production queen: 948 orphan IP заблокированы, paid/bootstrap denied0, health200; WDTT PID764 прежний, kick0/20с
+- [x] Клиенты без изменений: debug пересборка не требуется; backend commit/push разрешён пользователем
+- [ ] Пользователь: удалить тестового пользователя при открытом VPN, проверить прекращение трафика и отсутствие обхода reconnect/сменой соты
+
 ### Подписка обновляется до успеха оплаты и отключения временного VPN (2026-10-09)
 
 - [x] Воспроизвести преждевременный COMPLETED/завершение poll при старом профиле; Android пропуск HTTP при LTE overlay установлен по исходникам

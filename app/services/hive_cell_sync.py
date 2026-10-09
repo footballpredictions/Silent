@@ -41,7 +41,13 @@ async def manifest_version(db: AsyncSession) -> int:
     user_row = await db.execute(select(func.max(User.updated_at)))
     user_updated = user_row.scalar_one_or_none()
     user_ts = int(user_updated.timestamp()) if user_updated else 0
-    return count * 1_000_000 + ((ts + user_ts) % 1_000_000)
+    from app.models import AppSetting
+    from app.services.vpn_deny_net import DELETED_DEVICE_PREFIX
+    deleted_row = await db.execute(select(func.count(AppSetting.key)).where(
+        AppSetting.key.startswith(DELETED_DEVICE_PREFIX)
+    ))
+    deleted_count = int(deleted_row.scalar_one() or 0)
+    return count * 1_000_000 + deleted_count * 1_000_003 + ((ts + user_ts) % 1_000_000)
 
 
 async def build_cell_manifest(db: AsyncSession, cell: HiveCell) -> dict:
@@ -134,8 +140,11 @@ async def sync_all_cell_manifests(db: AsyncSession) -> dict:
         if await push_manifest_to_cell(cell, manifest):
             synced += 1
 
-    _last_manifest_version = version
-    _last_sync_at = datetime.utcnow()
+    # A failed delivery must retry on the next maintenance cycle even when
+    # the database has not changed (especially after an account deletion).
+    if synced == len(workers):
+        _last_manifest_version = version
+        _last_sync_at = datetime.utcnow()
     if synced:
         logger.info("Hive manifest sync: %s/%s cells, version=%s", synced, len(workers), version)
     return {"synced": synced, "total": len(workers), "version": version}

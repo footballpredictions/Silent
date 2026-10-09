@@ -232,7 +232,7 @@ sequenceDiagram
 | POST | `/users/{id}/revoke-subscription` | Admin | Отзыв подписки |
 | POST | `/users/{id}/ban` | Admin | Ban/unban |
 | POST | `/users/{id}/verify` | Admin | Ручная верификация email |
-| DELETE | `/users/{id}` | Admin | Удаление пользователя + каскад |
+| DELETE | `/users/{id}` | Admin | Удаление пользователя + каскад; UUID устройств сохраняются для server-side VPN deny и манифестов сот, включая уже открытые туннели |
 | GET | `/vk/status` | Admin | Статус VK-агента |
 | POST | `/vk/bot-auth/start` | Admin | OAuth для AI-агента |
 | POST | `/vk/bot-auth/paste` | Admin | Вставка OAuth URL |

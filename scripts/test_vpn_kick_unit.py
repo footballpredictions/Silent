@@ -349,8 +349,10 @@ def test_deny_ids_tmp_paths_are_unique():
     assert a != b
     assert a.startswith("/tmp/silent-deny-ids-")
     script = _iptables_sync_script({"10.66.0.25"})
-    assert " && " in script
-    assert script.count("iptables -A") >= 2
+    assert "iptables-restore --noflush" in script
+    assert script.count("-A SILENT_DENY") == 2
+    assert "COMMIT" in script
+    assert "-F FORWARD" not in script
 
 
 def test_unpaid_page_advances_tail():

@@ -155,6 +155,8 @@ async def build_cell_manifest_enriched(db: AsyncSession, cell: HiveCell) -> dict
         meta = await hive_meta(db)
     except Exception:
         meta = None
+    from app.services.vpn_deny_net import deleted_device_ids, deleted_manifest_entries
+    revoked = deleted_manifest_entries(await deleted_device_ids(db), existing_ids=seen)
     return {
         "version": version,
         "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -181,5 +183,5 @@ async def build_cell_manifest_enriched(db: AsyncSession, cell: HiveCell) -> dict
                 "vpn_allowed": bool(allowed_map.get(d.user_id, False)),
             }
             for d in devices
-        ],
+        ] + revoked,
     }

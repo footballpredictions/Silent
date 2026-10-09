@@ -197,6 +197,13 @@ async def lifespan(app: FastAPI):
             "CREATE INDEX IF NOT EXISTS ix_hive_load_samples_sampled_at ON hive_load_samples (sampled_at)"
         ))
         await conn.execute(text(
+            "ALTER TABLE hive_load_samples ADD COLUMN IF NOT EXISTS measurement_version INTEGER NOT NULL DEFAULT 1"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_hive_load_samples_capacity_version "
+            "ON hive_load_samples (cell_id, measurement_version, sampled_at)"
+        ))
+        await conn.execute(text(
             "ALTER TABLE hive_cells ADD COLUMN IF NOT EXISTS link_capacity_mbps DOUBLE PRECISION"
         ))
         await conn.execute(text(

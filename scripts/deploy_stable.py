@@ -18,6 +18,7 @@ from _deploy_common import BACKEND_ROOT, CONTAINER, REMOTE, connect, run
 from fix_tunnel_dnat import FIX_SH
 
 PREFLIGHT_TESTS = (
+    "scripts/test_hive_capacity_regression_unit.py",
     "scripts/test_dashboard_online_consistency_unit.py",
     "scripts/test_admin_page_loading_unit.py",
     "scripts/test_deploy_stable_selection_unit.py",

@@ -5,7 +5,7 @@ import asyncio
 import logging
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
@@ -15,8 +15,10 @@ from app.config import settings
 from app.services.hive_incidents import push_incident
 from app.models import HiveCell, HiveLoadSample
 from app.services.hive_load import queen_accepting_new_vpn
+from app.services.hive_slots import node_online_shown
 
 logger = logging.getLogger(__name__)
+MEASUREMENT_VERSION = 2
 
 
 @dataclass
@@ -45,6 +47,7 @@ class CapacityProfile:
     limit_network: int | None = None
     cpu_power_ratio: float | None = None
     mem_power_ratio: float | None = None
+    online_count_used: int | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -66,6 +69,8 @@ class CapacityProfile:
             "peak_active_share": float(settings.HIVE_CAPACITY_PEAK_ACTIVE_SHARE),
             "cpu_power_ratio": self.cpu_power_ratio,
             "mem_power_ratio": self.mem_power_ratio,
+            "measurement_version": MEASUREMENT_VERSION,
+            "online_count_used": self.online_count_used,
         }
 
 
@@ -109,6 +114,9 @@ def _resolve_link_capacity_for_capacity(load: dict | None, cell: HiveCell | None
         db_link = float(cell.link_capacity_mbps or 0)
         if db_link > 0:
             return db_link
+        reported = float((load or {}).get("network_link_sysfs_mbps") or (load or {}).get("network_link_capacity_mbps") or 0)
+        if reported > 0:
+            return reported
         m = re.search(r"(\d+)", cell.name or "", re.I)
         if m and int(m.group(1)) == 1:
             return float(settings.HIVE_CELL_FIRST_LINK_CAPACITY_MBPS)
@@ -118,51 +126,6 @@ def _resolve_link_capacity_for_capacity(load: dict | None, cell: HiveCell | None
     if sysfs > 0:
         return sysfs
     return _resolve_link_capacity_mbps(load, cell)
-
-
-def _worker_link_online_scale(cell_hw: NodeHardware) -> float:
-    """1 Гбит ≈ 10% от эталона 10 Гбит — лимит онлайн масштабируется."""
-    premium = float(settings.HIVE_CELL_FIRST_LINK_CAPACITY_MBPS)
-    link = cell_hw.link_capacity_mbps
-    if link <= 0 or premium <= 0:
-        return 1.0
-    return max(0.1, min(10.0, link / premium))
-
-
-def _scale_worker_profile(profile: CapacityProfile, cell_hw: NodeHardware) -> CapacityProfile:
-    scale = _worker_link_online_scale(cell_hw)
-    if abs(scale - 1.0) < 0.01:
-        return profile
-    new_max = max(1, int(round(profile.max_online * scale)))
-    limits = dict(
-        cpu=profile.limit_cpu,
-        memory=profile.limit_mem,
-        network=profile.limit_network,
-    )
-    if limits.get("network"):
-        limits["network"] = max(1, int(round(limits["network"] * scale)))
-    bottleneck = profile.bottleneck
-    if limits.get("network") and limits["network"] <= new_max:
-        bottleneck = "network"
-    return CapacityProfile(
-        max_online=new_max,
-        bottleneck=bottleneck,
-        mode=profile.mode,
-        samples_count=profile.samples_count,
-        per_user_cpu_p95=profile.per_user_cpu_p95,
-        per_user_mem_p95=profile.per_user_mem_p95,
-        per_user_mbps_p95=profile.per_user_mbps_p95,
-        link_capacity_mbps=profile.link_capacity_mbps,
-        baseline_cpu=profile.baseline_cpu,
-        baseline_mem=profile.baseline_mem,
-        cpu_cores=profile.cpu_cores,
-        memory_total_gb=profile.memory_total_gb,
-        limit_cpu=limits.get("cpu"),
-        limit_mem=limits.get("memory"),
-        limit_network=limits.get("network"),
-        cpu_power_ratio=profile.cpu_power_ratio,
-        mem_power_ratio=profile.mem_power_ratio,
-    )
 
 
 def _hardware_from_load(load: dict | None, cell: HiveCell | None = None) -> NodeHardware:
@@ -227,13 +190,11 @@ def _samples_for_current_hardware(
 
 
 def _baseline_metric(samples: list[HiveLoadSample], attr: str) -> float:
-    idle = [float(getattr(s, attr) or 0) for s in samples if s.online_count <= 1]
+    idle = [float(getattr(s, attr) or 0) for s in samples if s.online_count == 0]
     if len(idle) >= 3:
         return float(_percentile(idle, 25) or 0)
-    all_vals = [float(getattr(s, attr) or 0) for s in samples]
-    if not all_vals:
-        return 0.0
-    return float(_percentile(all_vals, 10) or 0)
+    # Without observed idle periods, VPN load cannot be subtracted as background.
+    return 0.0
 
 
 def _limits_from_typicals(
@@ -246,10 +207,10 @@ def _limits_from_typicals(
     baseline_net: float,
     link_capacity_mbps: float,
 ) -> tuple[int, str, dict[str, int]]:
-    share = max(0.05, min(1.0, float(settings.HIVE_CAPACITY_PEAK_ACTIVE_SHARE)))
-    budget_cpu = max(0.15, typ_cpu * share)
-    budget_mem = max(0.05, typ_mem * share)
-    budget_mbps = max(0.0005, typ_mbps * share)
+    # These are measured averages per online connection, already including idle users.
+    budget_cpu = max(0.15, typ_cpu)
+    budget_mem = max(0.05, typ_mem)
+    budget_mbps = max(0.0005, typ_mbps)
 
     headroom_cpu = max(1.0, float(settings.HIVE_CPU_PERCENT_THRESHOLD) - baseline_cpu)
     headroom_mem = max(1.0, float(settings.HIVE_MEM_PERCENT_THRESHOLD) - baseline_mem)
@@ -365,11 +326,9 @@ def _blend_live_capacity(
         b_mem = _baseline_metric(samples, "memory_percent")
         b_net = _baseline_metric(samples, "network_mbps")
     else:
-        b_cpu = min(float(load.get("cpu_percent") or 0), 12.0)
-        b_mem = min(float(load.get("memory_percent") or 0), 20.0)
-        b_net = 0.0
+        b_cpu = b_mem = b_net = 0.0
 
-    live_max, live_bn, live_limits = _live_max_online_from_snapshot(
+    _, _, live_limits = _live_max_online_from_snapshot(
         online_count,
         load,
         hardware=hardware,
@@ -382,31 +341,19 @@ def _blend_live_capacity(
     if profile.mode in ("fallback", "estimated") or profile.samples_count < int(
         settings.HIVE_CAPACITY_MIN_SAMPLES
     ):
-        blended = live_max
         mode = "live"
     elif weight >= 0.99:
-        blended = live_max
         mode = "live"
     else:
-        blended = max(1, int(round((1.0 - weight) * profile.max_online + weight * live_max)))
         mode = "adaptive+live"
 
-    bottleneck = live_bn if live_max <= profile.max_online else profile.bottleneck
-    limits = {
-        "cpu": live_limits.get("cpu", profile.limit_cpu),
-        "memory": live_limits.get("memory", profile.limit_mem),
-        "network": live_limits.get("network", profile.limit_network),
-    }
-    if profile.limit_cpu is not None:
-        limits["cpu"] = min(limits["cpu"], profile.limit_cpu) if mode != "live" else live_limits["cpu"]
-    if profile.limit_mem is not None:
-        limits["memory"] = (
-            min(limits["memory"], profile.limit_mem) if mode != "live" else live_limits["memory"]
-        )
-    if profile.limit_network is not None:
-        limits["network"] = (
-            min(limits["network"], profile.limit_network) if mode != "live" else live_limits["network"]
-        )
+    limits = dict(live_limits)
+    if mode != "live":
+        for name, historical in (("cpu", profile.limit_cpu), ("memory", profile.limit_mem), ("network", profile.limit_network)):
+            if historical is not None:
+                limits[name] = max(1, int(round((1 - weight) * historical + weight * live_limits[name])))
+    bottleneck = min(limits, key=limits.get)
+    blended = limits[bottleneck]
 
     return CapacityProfile(
         max_online=blended,
@@ -565,6 +512,7 @@ async def fetch_recent_samples(db: AsyncSession, cell_id: uuid.UUID) -> list[Hiv
     result = await db.execute(
         select(HiveLoadSample)
         .where(HiveLoadSample.cell_id == cell_id, HiveLoadSample.sampled_at >= cutoff)
+        .where(HiveLoadSample.measurement_version == MEASUREMENT_VERSION)
         .order_by(HiveLoadSample.sampled_at.desc())
         .limit(int(settings.HIVE_CAPACITY_MAX_SAMPLES_PER_CELL))
     )
@@ -582,9 +530,22 @@ async def get_capacity_profile(
         from app.services.hive_service import count_online_on_cell
 
         online_count = await count_online_on_cell(db, cell.id)
+    if cell.is_queen and load and "wg_peers_live_3m" not in load:
+        from app.services.wg_peer_gc import queen_wg_peer_counts
+        load = {**load, **await asyncio.to_thread(queen_wg_peer_counts)}
+    online_count = node_online_shown(
+        is_queen=bool(cell.is_queen), db_online=online_count,
+        wg_live=(load or {}).get("wg_peers_live_3m"), wg_live_known=(load or {}).get("wg_peers_live_known"),
+    )
 
     samples = await fetch_recent_samples(db, cell.id)
-    hardware = _hardware_from_load(load, cell)
+    if not load and samples:
+        latest = samples[0]
+        hardware_load = {"cpu_cores": latest.cpu_cores, "memory_total_gb": latest.memory_total_gb}
+    else:
+        hardware_load = load
+    hardware = _hardware_from_load(hardware_load, cell)
+    samples = _samples_for_current_hardware(samples, hardware)
     profile = compute_max_online_from_samples(samples, hardware=hardware)
 
     if profile.mode == "fallback" and not cell.is_queen:
@@ -604,9 +565,6 @@ async def get_capacity_profile(
                     queen_hw=queen_hw,
                 )
 
-    if not cell.is_queen:
-        profile = _scale_worker_profile(profile, hardware)
-
     profile = _blend_live_capacity(
         profile,
         online_count=online_count,
@@ -614,28 +572,15 @@ async def get_capacity_profile(
         hardware=hardware,
         samples=samples,
     )
+    profile.online_count_used = online_count
 
     configured = int(cell.max_clients or 0)
     if configured > 0:
         capped = min(configured, profile.max_online)
-        return CapacityProfile(
+        return replace(profile,
             max_online=max(1, capped),
-            bottleneck=profile.bottleneck if profile.mode in ("adaptive", "estimated") else "manual_cap",
+            bottleneck="manual_cap" if capped < profile.max_online else profile.bottleneck,
             mode="manual_cap" if capped < profile.max_online else profile.mode,
-            samples_count=profile.samples_count,
-            per_user_cpu_p95=profile.per_user_cpu_p95,
-            per_user_mem_p95=profile.per_user_mem_p95,
-            per_user_mbps_p95=profile.per_user_mbps_p95,
-            link_capacity_mbps=profile.link_capacity_mbps,
-            baseline_cpu=profile.baseline_cpu,
-            baseline_mem=profile.baseline_mem,
-            cpu_cores=profile.cpu_cores,
-            memory_total_gb=profile.memory_total_gb,
-            limit_cpu=profile.limit_cpu,
-            limit_mem=profile.limit_mem,
-            limit_network=profile.limit_network,
-            cpu_power_ratio=profile.cpu_power_ratio,
-            mem_power_ratio=profile.mem_power_ratio,
         )
     return profile
 
@@ -662,7 +607,9 @@ async def record_sample(
     sample = HiveLoadSample(
         cell_id=cell_id,
         sampled_at=datetime.utcnow(),
-        online_count=max(0, int(online_count)),
+        online_count=node_online_shown(is_queen=bool(cell and cell.is_queen), db_online=online_count,
+                                       wg_live=load.get("wg_peers_live_3m"), wg_live_known=load.get("wg_peers_live_known")),
+        measurement_version=MEASUREMENT_VERSION,
         cpu_percent=round(float(load.get("cpu_percent") or 0), 2),
         memory_percent=round(float(load.get("memory_percent") or 0), 2),
         network_mbps=round(_network_mbps(load), 4),
@@ -707,6 +654,8 @@ async def sample_all_cells(db: AsyncSession) -> None:
         cells = list(result.scalars().all())
 
     _, queen_load = queen_accepting_new_vpn()
+    from app.services.wg_peer_gc import queen_wg_peer_counts
+    queen_load = {**queen_load, **await asyncio.to_thread(queen_wg_peer_counts)}
     queen = await ensure_queen_cell(db)
     queen_load = {
         **queen_load,
@@ -720,7 +669,9 @@ async def sample_all_cells(db: AsyncSession) -> None:
             load = await fetch_worker_cell_load(cell)
             if not load:
                 continue
-        await record_sample(db, cell.id, online, load, cell=cell)
+        shown = node_online_shown(is_queen=bool(cell.is_queen), db_online=online,
+                                  wg_live=load.get("wg_peers_live_3m"), wg_live_known=load.get("wg_peers_live_known"))
+        await record_sample(db, cell.id, shown, load, cell=cell)
 
 
 async def capacity_sampler_loop() -> None:

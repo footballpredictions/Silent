@@ -6,6 +6,23 @@ Agent приступает к **первой невыполненной** зад
 
 ---
 
+### Исправление онлайн-лимитов всех серверов (2026-10-09)
+
+- [x] Пользователь разрешил исправление и push: пример «30 онлайн / лимит 17»
+- [x] Единый DB/WG online для карточки, sampler и live capacity; убрать повторные active-share/network коэффициенты
+- [x] История v2 с индексом: старые замеры сохраняются, но не участвуют в обучении; фильтр железа применяется и к live baseline
+- [x] Итоговый лимит равен минимуму CPU/RAM/сети; ручной cap и настоящий overload не маскируются
+- [x] 10 регрессов PASS; replay всех 5 production snapshots PASS; 10 mandatory preflight и slots/GC/standby/subscription PASS
+- [x] Узкий canonical deploy, новая история/лимиты всех 5 нод, прежние WDTT PID; health0.047с/kick0/source/schema PASS
+- [ ] Commit/push backend и проверка origin/main
+
+### Проверка онлайн-лимитов, истории и WG (2026-10-09)
+
+- [x] Read-only API/DB/runtime snapshots всех5 нод; разница shown online против sampler DB подтверждена
+- [x] Пять RED-регрессов actual sampler/profile: source, active-share, network scaling, hardware history, blend consistency
+- [x] Расшифровать assigned/history/WG и проверить known/extras, память, retention; GC/safety units PASS
+- [x] Записать findings; production VPN/расчёт/история не менялись, deploy/push не выполнялись
+
 ### Админка: онлайн после деплоя и простой Улей (2026-10-09)
 
 - [x] Push предыдущего Android OTA: f7e94c4, origin/android совпадает

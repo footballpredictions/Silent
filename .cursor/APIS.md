@@ -277,6 +277,8 @@ sequenceDiagram
 
 ### Admin Hive — `/api/admin/hive`
 
+В `GET /cells` профиль `capacity` дополнен опциональными `measurement_version` (2) и `online_count_used` — число DB/WG online, использованное расчётом. Сам лимит по CPU/RAM/сети остаётся оценкой для админки и автоподбора; ручной `max_clients` сохраняет приоритет. История расчёта использует только новые замеры v2; legacy v1 сохраняется до штатного retention. Старые клиенты совместимы.
+
 | Метод | Путь | Auth | Описание |
 |-------|------|------|----------|
 | GET | `/cells` | Admin | Список сот + онлайн VPN, CPU/RAM |

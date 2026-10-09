@@ -20,6 +20,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.silent.vpn.BuildConfig
@@ -121,6 +122,14 @@ class SilentVpnService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var wakeLock: PowerManager.WakeLock? = null
+    private val tunnelWake = TunnelWakeController(object : TunnelWakeController.Lock {
+        override val isHeld: Boolean get() = wakeLock?.isHeld == true
+        override fun acquire(timeoutMs: Long) = acquireWakeLock(timeoutMs)
+        override fun release() {
+            if (wakeLock?.isHeld == true) wakeLock?.release()
+            wakeLock = null
+        }
+    })
     private var wifiLock: WifiManager.WifiLock? = null
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -187,8 +196,8 @@ class SilentVpnService : Service() {
     @Volatile
     private var pendingOlcrtcPreferTransport: String? = null
     private var performanceLocksHeld = false
-    private var lastNotifUpdateMs = 0L
-    private var lastNotifBody = ""
+    private val notificationGate = VpnNotificationGate(NOTIF_UPDATE_MIN_MS)
+    private var lastTileReady: Boolean? = null
     private var vpnOwnerCallback: ConnectivityManager.NetworkCallback? = null
     private var audioManager: AudioManager? = null
     private var audioModeListener: AudioManager.OnModeChangedListener? = null
@@ -238,10 +247,15 @@ class SilentVpnService : Service() {
                     }
                 }
                 if (isRunning) {
+                    ensureSessionWakeLock()
+                    val tileReady = WdttTunnelManager.tunnelReady.value || OlcrtcTunnelManager.tunnelReady.value
+                    if (tileReady != lastTileReady) {
+                        lastTileReady = tileReady
+                        VpnTileHelper.requestUpdate(this@SilentVpnService)
+                    }
                     val stats = WdttTunnelManager.stats.value
                     if (WdttTunnelManager.tunnelReady.value) {
                         connectGuardJob?.cancel()
-                        ensureSessionWakeLock()
                         if (!VpnServiceTracker.isSessionMarkedActive(this@SilentVpnService)) {
                             VpnServiceTracker.markSessionActive(this@SilentVpnService, true)
                         }
@@ -251,26 +265,22 @@ class SilentVpnService : Service() {
                             dataSyncServiceStarted = true
                         }
                         postVpnNotification(stats)
-                        VpnTileHelper.requestUpdate(this@SilentVpnService)
                         checkTransportHealth()
                         checkUnderlyingNetwork()
                         maybeRefreshWifiSubscription()
                     } else if (olcrtcLive) {
                         // Wi‑Fi↔LTE для olcrtc: раньше poll не вызывался (только WDTT ready).
                         connectGuardJob?.cancel()
-                        ensureSessionWakeLock()
                         checkUnderlyingNetwork()
                         if (OlcrtcTunnelManager.tunnelReady.value) {
                             postVpnNotification("olcrtc · туннель активен")
-                            VpnTileHelper.requestUpdate(this@SilentVpnService)
                         } else {
-                            startFg(buildConnectingNotification())
+                            postConnectingNotification()
                         }
                     } else if (pausedForNetwork || isTunnelPaused) {
-                        ensureSessionWakeLock()
                         checkUnderlyingNetwork()
                     } else if (WdttTunnelManager.running.value) {
-                        startFg(buildConnectingNotification())
+                        postConnectingNotification()
                     }
                 }
                 delay(2000)
@@ -347,7 +357,7 @@ class SilentVpnService : Service() {
                 }
                 try {
                     acquirePerformanceLocks()
-                    startFg(buildConnectingNotification())
+                    postConnectingNotification()
                 } catch (e: Exception) {
                     SessionTrace.warn("SilentVpnService.CONNECT", "FGS failed: ${e.message}")
                     DebugLog.e("VpnService", "CONNECT FGS failed", e)
@@ -420,7 +430,7 @@ class SilentVpnService : Service() {
                 lastMobileDataState = null
                 lastTransportRestartMs = 0L
                 lastWifiSubscriptionCheckMs = 0L
-                lastNotifUpdateMs = 0L
+                lastTileReady = null
                 tunnelProxyStarted = false
                 setupNetworkCallback()
                 setupScreenWakeMonitor()
@@ -521,7 +531,7 @@ class SilentVpnService : Service() {
                 isRunning = true
                 SessionTrace.mark("SilentVpnService.connect", "isRunning=true olcrtc")
                 dataSyncServiceStarted = false
-                startFg(buildConnectingNotification())
+                postConnectingNotification()
                 watchOlcrtcReadyNotification()
                 VpnTileHelper.requestUpdate(this)
                 return
@@ -709,8 +719,6 @@ class SilentVpnService : Service() {
         lastMobileDataState = null
         lastTransportRestartMs = 0L
         performanceLocksHeld = false
-        lastNotifBody = ""
-        lastNotifUpdateMs = 0L
         teardownNetworkCallback()
         teardownScreenWakeMonitor()
         teardownPhoneCallMonitor()
@@ -772,6 +780,7 @@ class SilentVpnService : Service() {
 
     /** Убрать уведомление из шторки — только когда VPN выключен (только main thread). */
     private fun clearVpnNotification() {
+        notificationGate.reset()
         runCatching {
             stopForeground(STOP_FOREGROUND_REMOVE)
             getSystemService(NotificationManager::class.java)?.cancel(NOTIF_ID)
@@ -1091,6 +1100,7 @@ class SilentVpnService : Service() {
     }
 
     private fun recoverTransportAfterNetwork(reason: String) {
+        tunnelWake.onRecovery(SystemClock.elapsedRealtime())
         val now = System.currentTimeMillis()
         val wasPausedOrBlackout = NetworkRecoveryPolicy.wasRealPauseOrBlackout(
             pausedForNetwork = pausedForNetwork,
@@ -1352,7 +1362,7 @@ class SilentVpnService : Service() {
         isTunnelPaused = false
         DebugLog.i("VpnService", "olcrtc recovery: $reason")
         WdttTunnelManager.logUi("olcrtc_recover", "переподключение: $reason", 2)
-        startFg(buildConnectingNotification())
+        postConnectingNotification()
         VpnTileHelper.requestUpdate(this)
         val epoch = disconnectEpoch
         val myGen = olcrtcRecoverGen.incrementAndGet()
@@ -1482,7 +1492,7 @@ class SilentVpnService : Service() {
                 )
                 withContext(Dispatchers.Main) {
                     if (isRunning) {
-                        startFg(buildConnectingNotification())
+                        postConnectingNotification()
                         watchOlcrtcReadyNotification()
                         VpnTileHelper.requestUpdate(this@SilentVpnService)
                     }
@@ -1933,6 +1943,7 @@ class SilentVpnService : Service() {
                 if (!isRunning) return
                 val action = intent?.action ?: return
                 if (action != Intent.ACTION_SCREEN_ON && action != Intent.ACTION_USER_PRESENT) return
+                tunnelWake.onRecovery(SystemClock.elapsedRealtime())
                 if (pausedForNetwork || isTunnelPaused) {
                     if (VpnNetworkHelper.hasAnyUnderlyingInternet(this@SilentVpnService)) {
                         DebugLog.i("VpnService", "screen wake — resume after pause")
@@ -2005,24 +2016,30 @@ class SilentVpnService : Service() {
 
     private fun acquirePerformanceLocks() {
         performanceLocksHeld = true
-        acquireWakeLock()
+        tunnelWake.onConnect(SystemClock.elapsedRealtime())
     }
 
-    /** Держим partial wake lock на всё время VPN — иначе doze гасит libclient при выключенном экране. */
+    /** Keep CPU awake for connection/recovery/data, allowing a quiet VPN to sleep. */
     private fun ensureSessionWakeLock() {
         if (!performanceLocksHeld) {
             performanceLocksHeld = true
         }
-        acquireWakeLock()
+        tunnelWake.update(
+            nowMs = SystemClock.elapsedRealtime(),
+            sessionRunning = isRunning,
+            tunnelReady = WdttTunnelManager.tunnelReady.value || OlcrtcTunnelManager.tunnelReady.value,
+            paused = pausedForNetwork || isTunnelPaused,
+            trafficMb = currentTrafficMb(),
+            continuousTraffic = olcrtcSessionActive || OlcrtcTunnelManager.running.value,
+        )
     }
 
-    private fun acquireWakeLock() {
-        if (wakeLock?.isHeld == true) return
-        val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "silent:tunnel_cpu").apply {
-            setReferenceCounted(false)
-            acquire()
-        }
+    private fun acquireWakeLock(timeoutMs: Long) {
+        val cpuLock = wakeLock ?: (getSystemService(POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "silent:tunnel_cpu")
+            .apply { setReferenceCounted(false) }
+            .also { wakeLock = it }
+        cpuLock.acquire(timeoutMs)
     }
 
     @Suppress("DEPRECATION")
@@ -2041,8 +2058,7 @@ class SilentVpnService : Service() {
     }
 
     private fun releaseWakeLock() {
-        if (wakeLock?.isHeld == true) wakeLock?.release()
-        wakeLock = null
+        tunnelWake.stop()
     }
 
     private fun releaseWifiLock() {
@@ -2079,6 +2095,7 @@ class SilentVpnService : Service() {
                 else -> startForeground(NOTIF_ID, notification)
             }
         } catch (e: Exception) {
+            notificationGate.reset()
             SessionTrace.warn("SilentVpnService.startFg", e.message ?: "failed")
             DebugLog.e("VpnService", "startForeground failed", e)
             throw e
@@ -2169,12 +2186,13 @@ class SilentVpnService : Service() {
             WdttTunnelManager.tunnelReady.value || OlcrtcTunnelManager.tunnelReady.value
         if (!isRunning || !tunnelUp) return
         val body = notificationBody(ready = true, stats = stats)
-        val now = System.currentTimeMillis()
-        if (body == lastNotifBody && now - lastNotifUpdateMs < NOTIF_UPDATE_MIN_MS) return
-        if (now - lastNotifUpdateMs < NOTIF_UPDATE_MIN_MS && lastNotifBody.isNotBlank()) return
-        lastNotifUpdateMs = now
-        lastNotifBody = body
+        if (!notificationGate.shouldPublish(true, body, SystemClock.elapsedRealtime())) return
         startFg(buildActiveNotification(stats))
+    }
+
+    private fun postConnectingNotification() {
+        if (!notificationGate.shouldPublish(false, "connecting", SystemClock.elapsedRealtime())) return
+        startFg(buildConnectingNotification())
     }
 
     /** olcrtc: SilentVpnService держит FG, а ready приходит из OlcrtcTunnelManager. */
@@ -2187,10 +2205,10 @@ class SilentVpnService : Service() {
                 if (ready) {
                     olcrtcEverReady = true
                     olcrtcSocksFailStreak = 0
-                    startFg(buildActiveNotification("olcrtc · туннель активен"))
+                    postVpnNotification("olcrtc · туннель активен")
                     VpnTileHelper.requestUpdate(this@SilentVpnService)
                 } else if (OlcrtcTunnelManager.running.value) {
-                    startFg(buildConnectingNotification())
+                    postConnectingNotification()
                 }
             }
         }
@@ -2221,7 +2239,7 @@ class SilentVpnService : Service() {
                 if (WdttTunnelManager.tunnelReady.value) {
                     startFg(buildActiveNotification(stats))
                 } else {
-                    startFg(buildConnectingNotification())
+                    postConnectingNotification()
                 }
             }
         } else {
@@ -2264,8 +2282,6 @@ class SilentVpnService : Service() {
         teardownPhoneCallMonitor()
         teardownVpnOwnershipMonitor()
         performanceLocksHeld = false
-        lastNotifBody = ""
-        lastNotifUpdateMs = 0L
         SilentRepository.APP_EXCLUDED_FROM_VPN = true
         runCatching { VpnDataSyncScheduler.onMainVpnDisconnected(applicationContext) }
         dataSyncServiceStarted = false

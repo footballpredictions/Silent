@@ -940,14 +940,9 @@ class MainViewModel @Inject constructor(
      * После SMS webhook приходит раньше страницы «Вернуться» — если выключить туннель
      * в браузере, на LTE будет белый экран вместо success-page.
      */
-    private fun finishPaymentIfAppVisible() {
-        markPaymentConfirmedUi()
-        if (isAppForeground()) {
-            releasePaymentBootstrapAfterReturn()
-        }
-    }
-
     private fun releasePaymentBootstrapAfterReturn() {
+        if (_paymentState.value != PaymentUiState.COMPLETED) return
+        if (paymentCleanupJob?.isActive == true) return
         paymentPollJob?.cancel()
         paymentPollJob = null
         markPaymentConfirmedUi()
@@ -1015,13 +1010,6 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private fun maybeCompletePaymentFromProfile(profile: UserProfile) {
-        if (!isPaymentConfirmationPending()) return
-        if (_paymentState.value == PaymentUiState.COMPLETED) {
-            finishPaymentIfAppVisible()
-        }
-    }
-
     /** YuMoney «вернуться на сайт» → silentvpn://payment */
     fun onPaymentReturnedFromBrowser() {
         if (repo.isLoggedIn()) {
@@ -1045,7 +1033,6 @@ class MainViewModel @Inject constructor(
             ) {
                 startPaymentPoll(label)
             }
-            if (_paymentState.value == PaymentUiState.COMPLETED) applyPaidSubscriptionIfReady()
         }
     }
 
@@ -1876,35 +1863,21 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun applyPaidSubscriptionIfReady(): Boolean {
-        if (_paymentState.value != PaymentUiState.COMPLETED) return false
-        refreshAccountDataSuspend(force = true)
-        if (isPaidSubscriptionConfirmed()) {
-            finishPaymentIfAppVisible()
-            return true
-        }
-        for (attempt in 1..8) {
-            if (isPaidSubscriptionConfirmed() || _paymentState.value == PaymentUiState.COMPLETED) {
-                finishPaymentIfAppVisible()
-                return true
-            }
-            if (_accountRefreshing.value) {
-                delay(1500)
-                continue
-            }
-            val (ok, _) = refreshAccountDataSuspend(force = true)
-            if (ok && isPaidSubscriptionConfirmed()) {
-                DebugLog.i("MainViewModel", "payment subscription active (attempt $attempt)")
-                finishPaymentIfAppVisible()
-                return true
-            }
-            delay(1500)
-        }
-        if (isPaidSubscriptionConfirmed()) {
-            finishPaymentIfAppVisible()
-            return true
-        }
-        return false
+    private suspend fun applyPaidSubscriptionIfReady(plan: String): Boolean {
+        // Called inside the payment-status API block: keep its working overlay/base.
+        // fetchProfileNow may skip HTTP while the LTE overlay is active.
+        return com.silent.vpn.policy.refreshPaidPaymentProfile(
+            fetch = { repo.fetchProfileDirect().getOrThrow() },
+            isPaid = { p ->
+                p.is_admin || (p.subscription.is_active &&
+                    p.subscription.plan_type !in listOf("trial", "test") &&
+                    (plan.isBlank() || p.subscription.plan_type == plan))
+            },
+            apply = { p ->
+                applyServerProfile(p, force = true)
+                p.vk_user_id?.let { repo.saveVkUserId(it) }
+            },
+        )
     }
 
     private data class ConnectFetchResult(
@@ -5410,7 +5383,10 @@ class MainViewModel @Inject constructor(
         val res = repo.getApi().getPaymentStatus(label)
         if (res.isSuccessful) {
             val payment = res.body()!!
-            return if (payment.status == "completed" && payment.subscription_applied == false) "activation_pending" else payment.status
+            if (payment.status != "completed") return payment.status
+            if (payment.subscription_applied == false) return "activation_pending"
+            // Save and publish /users/me before success can release the temporary VPN.
+            return if (applyPaidSubscriptionIfReady(payment.plan_type)) "completed" else "profile_pending"
         }
         throw IllegalStateException(parseError(res.errorBody()?.string() ?: "") ?: "Ошибка проверки оплаты")
     }
@@ -5438,7 +5414,6 @@ class MainViewModel @Inject constructor(
                     continue
                 }
                 if (System.currentTimeMillis() >= deadline) {
-                    applyPaidSubscriptionIfReady()
                     if (_paymentState.value == PaymentUiState.COMPLETED) {
                         markPaymentConfirmedUi()
                         delay(2000)
@@ -5469,11 +5444,11 @@ class MainViewModel @Inject constructor(
                         repo.withUserBackendApi { paymentStatusApi(label) }
                     }
                 }.getOrNull()
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 when (status) {
                     "completed" -> {
                         requestOpenSubscription()
                         markPaymentConfirmedUi()
-                        applyPaidSubscriptionIfReady()
                         if (isAppForeground()) {
                             releasePaymentBootstrapAfterReturn()
                             return@launch
@@ -5649,7 +5624,6 @@ class MainViewModel @Inject constructor(
                 runCatching { recoverMissingDeviceSession() }
                     .onFailure { e -> DebugLog.w("MainViewModel", "session recover: ${e.message}") }
             }
-            maybeCompletePaymentFromProfile(profile)
             if (profileHasPaidUi(profile) || profile.is_admin || profile.subscription.is_active) {
                 repo.markLiveProfileApplied()
             }
@@ -5661,7 +5635,6 @@ class MainViewModel @Inject constructor(
             // дальше — подписка/VPN как обычно
         } else {
             _profile.value = profile
-            maybeCompletePaymentFromProfile(profile)
             if (profileHasPaidUi(profile) || profile.is_admin || profile.subscription.is_active) {
                 repo.markLiveProfileApplied()
             }

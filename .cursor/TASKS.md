@@ -16,7 +16,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] Build и browser actions/error recovery, desktop/mobile/tablet без overflow; detector0
 - [x] Mandatory preflight онлайн/fast/UI publication; узкий canonical deploy с UI без перезаписи production vpn_kick drift
 - [x] Deploy и production SHA/Host200/online consistency; WDTT PID764 прежний, health0,043с/kick0
-- [ ] Push backend и проверить origin/main
+- [x] Push backend c4ffdb6 и проверить origin/main — совпадает
 
 ### Android: OTA через VPN на Wi-Fi/LTE и белых списках (2026-10-09)
 

@@ -33,14 +33,27 @@ class UpdateUrlResolverTest {
     }
 
     @Test
-    fun `lte vpn still downloads from github not hive`() {
+    fun `lte vpn downloads through tunnel even when github link is present`() {
         val url = UpdateUrlResolver.resolveUpdateDownloadUrl(
             baseInput(onMobileData = true, mainVpnTunnelUp = true).copy(
                 tunnelDownloadPath = "/api/updates/download/android",
                 githubDownloadUrl = "https://github.com/silentvpn3/releases/apk.apk",
             ),
         )
-        assertEquals("https://github.com/silentvpn3/releases/apk.apk", url)
+        assertEquals("http://10.66.66.1:8000/api/updates/download/android", url)
+    }
+
+    @Test
+    fun `wifi vpn downloads via prepared proxy instead of excluded public github`() {
+        val url = UpdateUrlResolver.resolveUpdateDownloadUrl(
+            baseInput(mainVpnTunnelUp = true).copy(
+                preferredHttpsBase = "http://127.0.0.1:18765",
+                tunnelProxyActive = true,
+                githubDownloadUrl = "https://github.com/silentvpn3/releases/apk.apk",
+                tunnelDownloadPath = "/api/updates/download/android",
+            ),
+        )
+        assertEquals("http://127.0.0.1:18765/api/updates/download/android", url)
     }
 
     @Test
@@ -87,12 +100,10 @@ class UpdateUrlResolverTest {
     }
 
     @Test
-    fun `mobile requires vpn to download wifi does not`() {
-        assertTrue(UpdateUrlResolver.requiresVpnToDownloadUpdate(onMobileData = true))
-        assertFalse(UpdateUrlResolver.requiresVpnToDownloadUpdate(onMobileData = false))
-        assertFalse(UpdateUrlResolver.canStartUpdateDownload(onMobileData = true, vpnReady = false))
-        assertTrue(UpdateUrlResolver.canStartUpdateDownload(onMobileData = true, vpnReady = true))
-        assertTrue(UpdateUrlResolver.canStartUpdateDownload(onMobileData = false, vpnReady = false))
+    fun `mobile without vpn can use public github on unrestricted network`() {
+        assertEquals("https://github.com/releases/new.apk", UpdateUrlResolver.resolveUpdateDownloadUrl(
+            baseInput(onMobileData = true).copy(githubDownloadUrl = "https://github.com/releases/new.apk"),
+        ))
     }
 
     @Test

@@ -355,7 +355,9 @@ class WireGuardHelper(context: Context) {
 
 
             val tunnel = sharedTunnel
-            if (browserSites) {
+            // Main VPN uses the same userspace WG device for app traffic and excluded-app OTA TCP.
+            // Android Network.bind cannot reach VPN from an excluded UID (EPERM).
+            if (!isBootstrap && !apiOverlayMode && !includeAppOverlay) {
                 if (tunnel != null) {
                     backend.setState(tunnel, Tunnel.State.DOWN, null)
                     sharedTunnel = null

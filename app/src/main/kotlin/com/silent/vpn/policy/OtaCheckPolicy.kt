@@ -10,14 +10,13 @@ object OtaCheckPolicy {
     const val RECHECK_COOLDOWN_MS = 30_000L
 
     enum class Channel {
-        NONE,
         PUBLIC,
         TUNNEL,
         TUNNEL_THEN_PUBLIC,
     }
 
     fun channel(onMobileData: Boolean, vpnUp: Boolean): Channel = when {
-        onMobileData && !vpnUp -> Channel.NONE
+        !vpnUp -> Channel.PUBLIC
         onMobileData -> Channel.TUNNEL
         vpnUp -> Channel.TUNNEL_THEN_PUBLIC
         else -> Channel.PUBLIC
@@ -39,5 +38,5 @@ object OtaCheckPolicy {
     }
 
     fun shouldCheckOnTunnelReady(onMobileData: Boolean, bootstrapMode: Boolean): Boolean =
-        !onMobileData && !bootstrapMode
+        !bootstrapMode
 }

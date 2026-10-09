@@ -22,20 +22,12 @@ object UpdateUrlResolver {
     )
 
     /**
-     * Мобильный интернет (часто белые списки): APK только через tunnel API при живом VPN.
-     * Wi‑Fi — public/GitHub, VPN не нужен.
+     * При живом VPN APK через tunnel API, независимо от Wi‑Fi/LTE.
      */
     fun shouldUseTunnelUpdateDownload(input: OtaUrlInput): Boolean {
-        if (!input.onMobileData) return false
         if (input.isBootstrapMode) return false
         return input.mainVpnTunnelUp
     }
-
-    /** Скачивание OTA на LTE требует включённый VPN (обход whitelist). */
-    fun requiresVpnToDownloadUpdate(onMobileData: Boolean): Boolean = onMobileData
-
-    fun canStartUpdateDownload(onMobileData: Boolean, vpnReady: Boolean): Boolean =
-        !requiresVpnToDownloadUpdate(onMobileData) || vpnReady
 
     fun resolveUpdateDownloadBase(input: OtaUrlInput): String {
         if (!input.onMobileData || input.appExcludedFromVpn) {
@@ -62,15 +54,17 @@ object UpdateUrlResolver {
     }
 
     fun resolveUpdateDownloadUrl(input: OtaUrlInput): String? {
+        if (shouldUseTunnelUpdateDownload(input)) {
+            // Base выбирается внутри подготовленного API route: direct или localhost proxy.
+            val base = input.preferredHttpsBase?.takeIf { isTunnelApiBase(it) } ?: TUNNEL_API_BASE
+            val path = input.tunnelDownloadPath?.trim()?.takeIf { it.startsWith("/") && !it.startsWith("//") }
+                ?: "/api/updates/download/${input.otaPlatform}"
+            return joinUpdateUrl(base, path)
+        }
         val gh = input.githubDownloadUrl?.trim()?.takeIf { it.startsWith("http") }
         val absolute = input.downloadUrl?.trim()?.takeIf { it.startsWith("http") }
         if (gh != null) return gh
         if (absolute != null) return absolute
-        if (shouldUseTunnelUpdateDownload(input)) {
-            val path = input.tunnelDownloadPath?.trim()?.takeIf { it.isNotBlank() }
-                ?: "/api/updates/download/${input.otaPlatform}"
-            return joinUpdateUrl(TUNNEL_API_BASE, path)
-        }
         val rel = input.downloadUrl?.trim().orEmpty()
         if (rel.isBlank()) return null
         return joinUpdateUrl(resolveUpdateDownloadBase(input), rel)

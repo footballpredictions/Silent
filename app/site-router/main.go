@@ -23,14 +23,16 @@ import (
 )
 
 type configuration struct {
-	Socket    string   `json:"socket"`
-	Wireguard string   `json:"wireguard"`
-	MTU       int      `json:"mtu"`
-	Whitelist bool     `json:"whitelist"`
-	Targets   []string `json:"targets"`
-	Domains   []string `json:"domains"`
-	Browsers  []int    `json:"browsers"`
-	Debug     bool     `json:"debug"`
+	Socket     string   `json:"socket"`
+	Wireguard  string   `json:"wireguard"`
+	MTU        int      `json:"mtu"`
+	Whitelist  bool     `json:"whitelist"`
+	Targets    []string `json:"targets"`
+	Domains    []string `json:"domains"`
+	Browsers   []int    `json:"browsers"`
+	Debug      bool     `json:"debug"`
+	OTAPort    int      `json:"ota_port"`
+	OTAAddress string   `json:"ota_address"`
 }
 type cachedRoute struct {
 	direct  bool
@@ -43,21 +45,28 @@ type fragmentKey struct {
 	Protocol    byte
 }
 type routedTun struct {
-	file      *os.File
-	events    chan tun.Event
-	policy    *sitePolicy
-	direct    *directStack
-	control   *net.UnixConn
-	reader    *bufio.Reader
-	routes    map[flow]cachedRoute
-	fragments map[fragmentKey]cachedRoute
-	writeMu   sync.Mutex
-	closeOnce sync.Once
-	mtu       int
-	debug     bool
+	file         *os.File
+	events       chan tun.Event
+	policy       *sitePolicy
+	direct       *directStack
+	control      *net.UnixConn
+	reader       *bufio.Reader
+	routes       map[flow]cachedRoute
+	fragments    map[fragmentKey]cachedRoute
+	writeMu      sync.Mutex
+	closeOnce    sync.Once
+	mtu          int
+	debug        bool
+	ota          *otaStack
+	packets      chan []byte
+	packetErrors chan error
+	packetPool   *sync.Pool
 }
 
 func (t *routedTun) choose(f flow, destination []byte) bool {
+	if len(t.policy.browsers) == 0 {
+		return false
+	}
 	remote, _ := netip.ParseAddrPort(f.Remote)
 	if remote.IsValid() && remote.Port() == 53 {
 		return false
@@ -124,11 +133,29 @@ func (t *routedTun) writePacket(p []byte) error {
 }
 func (t *routedTun) Read(buffers [][]byte, sizes []int, offset int) (int, error) {
 	for {
-		n, err := t.file.Read(buffers[0][offset:])
+		var n int
+		var err error
+		if t.packets == nil {
+			n, err = t.file.Read(buffers[0][offset:])
+		} else {
+			select {
+			case packet := <-t.packets:
+				n = copy(buffers[0][offset:], packet)
+				if t.packetPool != nil && cap(packet) == 65535 {
+					t.packetPool.Put(packet[:65535])
+				}
+			case err = <-t.packetErrors:
+			}
+		}
 		if err != nil {
 			return 0, err
 		}
 		packet := buffers[0][offset : offset+n]
+		// Userspace API packets bypass browser policy but remain inside WG.
+		if t.ota != nil && len(packet) >= 20 && tcpipSourceIsOTA(t.ota, packet) {
+			sizes[0] = n
+			return 1, nil
+		}
 		f, _, ok := packetFlow(packet)
 		direct := false
 		if ok {
@@ -158,6 +185,9 @@ func (t *routedTun) Read(buffers [][]byte, sizes []int, offset int) (int, error)
 }
 func (t *routedTun) Write(buffers [][]byte, offset int) (int, error) {
 	for i, b := range buffers {
+		if t.ota.receive(b[offset:]) {
+			continue
+		}
 		t.policy.observeDNS(b[offset:])
 		if err := t.writePacket(b[offset:]); err != nil {
 			return i, err
@@ -212,6 +242,49 @@ func run(path string) error {
 	adapter := &routedTun{file: file, events: make(chan tun.Event, 1), policy: newPolicy(cfg.Whitelist, cfg.Targets, cfg.Browsers), control: control, reader: bufio.NewReader(control), routes: make(map[flow]cachedRoute), fragments: make(map[fragmentKey]cachedRoute), mtu: cfg.MTU, debug: cfg.Debug}
 	adapter.policy.domains = cfg.Domains
 	adapter.direct = newDirectStack(ctx, cfg.MTU, adapter.writePacket)
+	if cfg.OTAPort > 0 {
+		adapter.packets = make(chan []byte, 32)
+		adapter.packetErrors = make(chan error, 1)
+		// Reuse physical TUN buffers; do not allocate 64KB for every application packet.
+		adapter.packetPool = &sync.Pool{New: func() any { return make([]byte, 65535) }}
+		go func() {
+			for {
+				packet := adapter.packetPool.Get().([]byte)
+				n, readErr := file.Read(packet)
+				if readErr != nil {
+					adapter.packetPool.Put(packet)
+					select {
+					case adapter.packetErrors <- readErr:
+					case <-ctx.Done():
+					}
+					return
+				}
+				select {
+				case adapter.packets <- packet[:n]:
+				case <-ctx.Done():
+					adapter.packetPool.Put(packet)
+					return
+				}
+			}
+		}()
+		adapter.ota, err = newOTAStack(ctx, cfg.OTAAddress, cfg.MTU, func(packet []byte) error {
+			select {
+			case adapter.packets <- packet:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+		if err != nil {
+			return err
+		}
+		defer adapter.ota.stack.Close()
+		server, serveErr := adapter.ota.serve(cfg.OTAPort)
+		if serveErr != nil {
+			return serveErr
+		}
+		defer server.Close()
+	}
 	wg := device.NewDevice(adapter, conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, "site-router: "))
 	defer wg.Close()
 	if err = wg.IpcSet(cfg.Wireguard); err != nil {

@@ -35,9 +35,9 @@ class OtaCheckPolicyTest {
     }
 
     @Test
-    fun `lte without vpn cannot check`() {
+    fun `lte without vpn checks public when carrier permits`() {
         assertEquals(
-            OtaCheckPolicy.Channel.NONE,
+            OtaCheckPolicy.Channel.PUBLIC,
             OtaCheckPolicy.channel(onMobileData = true, vpnUp = false),
         )
     }
@@ -75,9 +75,9 @@ class OtaCheckPolicyTest {
     }
 
     @Test
-    fun `wifi tunnel ready triggers ota check lte waits for overlay`() {
+    fun `wifi and lte tunnel ready trigger ota check without bootstrap`() {
         assertTrue(OtaCheckPolicy.shouldCheckOnTunnelReady(onMobileData = false, bootstrapMode = false))
-        assertFalse(OtaCheckPolicy.shouldCheckOnTunnelReady(onMobileData = true, bootstrapMode = false))
+        assertTrue(OtaCheckPolicy.shouldCheckOnTunnelReady(onMobileData = true, bootstrapMode = false))
         assertFalse(OtaCheckPolicy.shouldCheckOnTunnelReady(onMobileData = false, bootstrapMode = true))
     }
 

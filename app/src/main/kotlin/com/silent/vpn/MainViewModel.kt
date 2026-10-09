@@ -53,7 +53,8 @@ import com.silent.vpn.policy.ConnectConfigFetchPolicy
 import com.silent.vpn.policy.EmailConfirmationPolicy
 import com.silent.vpn.policy.OlcrtcSessionPolicy
 import com.silent.vpn.policy.OtaCheckPolicy
-import com.silent.vpn.policy.OtaGithubDiscovery
+import com.silent.vpn.update.OtaUpdateDiscovery
+import com.silent.vpn.update.OtaCheckGate
 import com.silent.vpn.policy.SessionsSyncPolicy
 import com.silent.vpn.policy.UpdateUrlResolver
 import com.silent.vpn.security.AppIntegrity
@@ -236,7 +237,6 @@ class MainViewModel @Inject constructor(
     private var profilePollJob: Job? = null
     private var vpnProfilePollJob: Job? = null
     @Volatile private var sessionsFetchInFlight = false
-    private var updateApiBaseUrl: String? = null
     /** One-shot: пользователь уже нажал CONNECT, ждём обновление подписки и повторяем автоматически. */
     private var pendingConnectAfterSubscriptionRefresh = false
     /** Splash отозвал подписку: CONNECTED только после GETCONF, не из WG-кеша. */
@@ -348,6 +348,7 @@ class MainViewModel @Inject constructor(
 
     private val _updateInfo = MutableStateFlow<UpdateCheckResponse?>(null)
     val updateInfo: StateFlow<UpdateCheckResponse?> = _updateInfo
+    private val otaCheckGate = OtaCheckGate()
 
     private val _updateProgress = MutableStateFlow(0)
     val updateProgress: StateFlow<Int> = _updateProgress
@@ -2430,7 +2431,7 @@ class MainViewModel @Inject constructor(
                 WdttTunnelManager.isBootstrapMode() || bootstrapVpnMode,
             )
         ) {
-            checkForAppUpdate()
+            checkForAppUpdate(force = true)
         }
     }
 
@@ -2489,83 +2490,40 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private var updateCheckInFlight = false
     private var otaCheckedThisVpnSession = false
-    private var lastOtaCheckAtMs = 0L
 
-    /** OTA: при VPN — туннель сразу (public hive TLS с РФ часто висит); Wi‑Fi без VPN — public. */
-    fun checkForAppUpdate(inOverlaySession: Boolean = false) {
-        if (updateCheckInFlight) return
-        val now = SystemClock.elapsedRealtime()
-        if (OtaCheckPolicy.shouldSkipRecheck(lastOtaCheckAtMs, now, inOverlaySession)) return
-        updateCheckInFlight = true
+    /** Tunnel ready / sync bypass cooldown and queue a retry if public discovery is still running. */
+    fun checkForAppUpdate(inOverlaySession: Boolean = false, force: Boolean = false) {
+        if (!otaCheckGate.tryStart(SystemClock.elapsedRealtime(), force || inOverlaySession)) return
         viewModelScope.launch {
-            var ok = false
             try {
-                val timed = withTimeoutOrNull(OtaCheckPolicy.TOTAL_TIMEOUT_MS) {
-                    val version = com.silent.vpn.BuildConfig.VERSION_NAME
-                    val vpnUp = SilentVpnService.isRunning &&
-                        WdttTunnelManager.tunnelReady.value &&
-                        !WdttTunnelManager.isBootstrapMode()
-                    val onMobile = repo.isOnMobileData()
-
-                    var succeeded = false
-                    when (
-                        val gh = OtaGithubDiscovery.parse(
-                            repo.fetchGithubReleasesJson(),
-                            repo.getOtaPlatform(),
-                            version,
-                        )
-                    ) {
-                        is OtaGithubDiscovery.Result.Available -> {
-                            applyGithubOta(gh)
-                            succeeded = true
-                        }
-                        is OtaGithubDiscovery.Result.Current -> {
-                            _updateInfo.value = null
-                            DebugLog.i("MainViewModel", "checkUpdate: github.io up to date v=$version")
-                            succeeded = true
-                        }
-                        OtaGithubDiscovery.Result.Unreadable -> {
-                            DebugLog.w("MainViewModel", "checkUpdate: github.io unreadable, hive check skipped")
-                        }
-                    }
-
-                    if (!succeeded) {
-                        DebugLog.w(
-                            "MainViewModel",
-                            "checkUpdate failed vpnUp=$vpnUp mobile=$onMobile excluded=${SilentRepository.APP_EXCLUDED_FROM_VPN}",
-                        )
-                    }
-                    succeeded
+                val result = withTimeoutOrNull(OtaCheckPolicy.TOTAL_TIMEOUT_MS) {
+                    OtaUpdateDiscovery.check(
+                        onMobileData = repo.isOnMobileData(),
+                        vpnUp = repo.isMainVpnTunnelUp(),
+                        platform = repo.getOtaPlatform(),
+                        currentVersion = com.silent.vpn.BuildConfig.VERSION_NAME,
+                        publicJson = { repo.fetchGithubReleasesJson() },
+                        tunnelCheck = { repo.checkUpdateViaTunnel() },
+                    )
                 }
-                ok = timed == true
-                if (timed == null) {
-                    DebugLog.w("MainViewModel", "checkUpdate timeout")
+                if (result != null) {
+                    _updateInfo.value = result.takeIf { it.available }
+                    otaCheckedThisVpnSession = true
+                    DebugLog.i("MainViewModel", "checkUpdate: available=${result.available} version=${result.version}")
+                } else {
+                    DebugLog.w("MainViewModel", "checkUpdate: route unavailable, retry on tunnel ready/sync")
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 DebugLog.w("MainViewModel", "checkUpdate: ${e.message}")
             } finally {
-                updateCheckInFlight = false
-                lastOtaCheckAtMs = SystemClock.elapsedRealtime()
-                if (ok) otaCheckedThisVpnSession = true
+                if (otaCheckGate.finish(SystemClock.elapsedRealtime()) && viewModelScope.isActive) {
+                    checkForAppUpdate(force = true)
+                }
             }
         }
-    }
-
-    private fun applyGithubOta(offer: OtaGithubDiscovery.Result.Available) {
-        val platform = repo.getOtaPlatform()
-        _updateInfo.value = UpdateCheckResponse(
-            available = true,
-            version = offer.version,
-            filename = offer.filename,
-            size = offer.size,
-            download_url = offer.downloadUrl,
-            github_download_url = offer.downloadUrl,
-            tunnel_download_url = "/api/updates/download/$platform",
-        )
-        updateApiBaseUrl = repo.getPublicServerUrl().trimEnd('/')
-        DebugLog.i("MainViewModel", "checkUpdate: github.io available ${offer.version}")
     }
 
     /**
@@ -2624,24 +2582,11 @@ class MainViewModel @Inject constructor(
     fun downloadAndInstallUpdate(context: Context, onInstallReady: (Intent) -> Unit) {
         val info = _updateInfo.value ?: return
         if (_updateDownloading.value) return
-        val vpnReady = SilentVpnService.isRunning &&
-            WdttTunnelManager.tunnelReady.value &&
-            !WdttTunnelManager.isBootstrapMode()
-        if (!UpdateUrlResolver.canStartUpdateDownload(repo.isOnMobileData(), vpnReady)) {
-            _vpnError.value = "Чтобы скачать обновление, включите VPN"
-            return
-        }
-        val primaryUrl = repo.resolveUpdateDownloadUrl(info) ?: return
         val fallbackGh = info.github_download_url?.trim()?.takeIf { it.startsWith("http") }
         viewModelScope.launch {
             _updateDownloading.value = true
             _updateProgress.value = 0
             try {
-                val useCdn = repo.isPublicCdnUpdateUrl(primaryUrl)
-                DebugLog.i(
-                    "MainViewModel",
-                    "update download url=$primaryUrl cdn=$useCdn lteTunnel=${repo.shouldUseTunnelUpdateDownload()}",
-                )
                 val downloadFrom: suspend (String) -> java.io.File = { url ->
                     AppUpdateManager.downloadApk(
                         context,
@@ -2652,6 +2597,8 @@ class MainViewModel @Inject constructor(
                     ) { pct -> _updateProgress.value = pct }
                 }
                 val file = repo.withUpdateDownloadRoute {
+                    val primaryUrl = repo.resolveUpdateDownloadUrl(info) ?: error("No update URL")
+                    DebugLog.i("MainViewModel", "update download url=$primaryUrl tunnel=${repo.shouldUseTunnelUpdateDownload()}")
                     runCatching { downloadFrom(primaryUrl) }.getOrElse { first ->
                         if (repo.shouldUseTunnelUpdateDownload()) throw first
                         val alt = fallbackGh?.takeIf { it != primaryUrl }
@@ -2664,7 +2611,9 @@ class MainViewModel @Inject constructor(
                 onInstallReady(AppUpdateManager.installApk(context, file, fromActivity = true))
             } catch (e: Exception) {
                 DebugLog.e("MainViewModel", "update download failed: ${e.message}")
-                _vpnError.value = "Ошибка загрузки обновления: ${e.message}"
+                _vpnError.value = if (!repo.isMainVpnTunnelUp()) {
+                    "Не удалось скачать обновление. Включите VPN и попробуйте снова"
+                } else "Ошибка загрузки обновления: ${e.message}"
             } finally {
                 _updateDownloading.value = false
             }
@@ -4148,7 +4097,7 @@ class MainViewModel @Inject constructor(
             bootstrapVpnMode = false
             backendSyncCompleted = false
             otaCheckedThisVpnSession = false
-            lastOtaCheckAtMs = 0L
+            otaCheckGate.resetCooldown()
             VpnSessionState.resetBackendSync()
             if (VpnNetworkHelper.isOtherVpnActive(context)) {
                 DebugLog.i("MainViewModel", "Подключение заменит другой активный VPN")

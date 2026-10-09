@@ -27,8 +27,17 @@ object AppUpdateManager {
         client: OkHttpClient,
         expectedSize: Long = 0L,
         onProgress: (Int) -> Unit,
+    ): File = downloadApkToDirectory(File(context.cacheDir, "updates"), url, filename, client, expectedSize, onProgress)
+
+    internal suspend fun downloadApkToDirectory(
+        dir: File,
+        url: String,
+        filename: String,
+        client: OkHttpClient,
+        expectedSize: Long = 0L,
+        onProgress: (Int) -> Unit,
     ): File = withContext(Dispatchers.IO) {
-        val dir = File(context.cacheDir, "updates").apply { mkdirs() }
+        dir.mkdirs()
         dir.listFiles()?.forEach { it.delete() }
         val dest = File(dir, filename.ifBlank { "update.apk" })
         val tmp = File(dir, "${dest.name}.part")

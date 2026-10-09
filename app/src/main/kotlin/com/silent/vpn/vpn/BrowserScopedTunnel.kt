@@ -27,6 +27,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Unknown owners retain the VPN. No global site routes or HTTP-proxy settings.
  */
 object BrowserScopedTunnel {
+    const val OTA_PORT = 18766
+    const val OTA_BASE_URL = "http://127.0.0.1:$OTA_PORT"
     @Volatile private var process: Process? = null
     private var tun: ParcelFileDescriptor? = null
     private var server: LocalServerSocket? = null
@@ -101,11 +103,14 @@ object BrowserScopedTunnel {
                     put("socket", socketName)
                     put("wireguard", config.toWgUserspaceString())
                     put("mtu", config.`interface`.mtu.orElse(1200))
+                    put("ota_port", OTA_PORT)
+                    put("ota_address", config.`interface`.addresses.first().address.hostAddress)
                     put("whitelist", whitelist)
                     put("debug", BuildConfig.DEBUG)
                     put("targets", JSONArray(targets.toList()))
                     put("domains", JSONArray(domains.toList()))
-                    put("browsers", JSONArray(browserUids(context).toList()))
+                    val browsers = if (whitelist || targets.isNotEmpty() || domains.isNotEmpty()) browserUids(context) else emptySet()
+                    put("browsers", JSONArray(browsers.toList()))
                 }.toString())
             }
             val listener = server!!

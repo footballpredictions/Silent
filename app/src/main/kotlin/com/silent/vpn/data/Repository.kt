@@ -997,7 +997,7 @@ class SilentRepository @Inject constructor(
 
     fun resolveUpdateDownloadUrl(info: UpdateCheckResponse): String? =
         UpdateUrlResolver.resolveUpdateDownloadUrl(
-            otaUrlInput().copy(
+            otaUrlInput(com.silent.vpn.vpn.BrowserScopedTunnel.OTA_BASE_URL).copy(
                 githubDownloadUrl = info.github_download_url,
                 downloadUrl = info.download_url,
                 tunnelDownloadPath = info.tunnel_download_url,
@@ -1027,24 +1027,22 @@ class SilentRepository @Inject constructor(
         }
     }
 
+    /** OTA uses a userspace TCP endpoint on the existing WG device, never Android Network.bind. */
     suspend fun <T> withUpdateDownloadRoute(block: suspend () -> T): T {
-        if (!shouldUseTunnelUpdateDownload()) return block()
-        if (!APP_EXCLUDED_FROM_VPN) {
-            prepareMainVpnDirectApi()
-            return block()
+        if (shouldUseTunnelUpdateDownload()) check(com.silent.vpn.vpn.BrowserScopedTunnel.isRunning()) {
+            "VPN update route not ready"
         }
-        Log.i(TAG, "OTA download LTE overlay → http://$WG_TUNNEL_GATEWAY:8000")
-        return com.silent.vpn.vpn.WdttTunnelManager.withApiOverlayBrief(
-            block = {
-                if (TunnelApiProxy.isActive()) {
-                    TunnelApiProxy.stopAndAwait()
-                }
-                prepareMainVpnDirectApi()
-                block()
-            },
-            allowDuringRampUp = true,
-            skipIntervalThrottle = true,
-        )
+        return block()
+    }
+
+    suspend fun checkUpdateViaTunnel(): UpdateCheckResponse? {
+        check(isMainVpnTunnelUp() && com.silent.vpn.vpn.BrowserScopedTunnel.isRunning()) {
+            "VPN update route not ready"
+        }
+        val response = buildApi("${com.silent.vpn.vpn.BrowserScopedTunnel.OTA_BASE_URL}/",
+            connectTimeoutSec = 3, readTimeoutSec = 8).checkUpdate(getOtaPlatform(), BuildConfig.VERSION_NAME)
+        if (!response.isSuccessful) error("OTA HTTP ${response.code()}")
+        return response.body()
     }
 
     fun isPublicCdnUpdateUrl(url: String): Boolean {

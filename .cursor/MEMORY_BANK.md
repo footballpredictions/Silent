@@ -10,6 +10,8 @@
 
 Узкий canonical deploy app/main.py + UI выполнен, прежний production drift vpn_kick.py сохранён. 11 preflight scripts PASS; postflight проверил no-store/version/all entry routes/expected SHA/assets/HTTPS443+2083, health200 RTT0.063с/kick0. Production entry SHA2e0262ca... совпал с local dist, JS index-DfREg3zo.js; Queen WDTT PID764 прежний/active. Production browser: login отрендерен, version probe200, close/reopen та же новая сборка, page errors0. Реальный browser Back после смены fixture-сборки показывает V5; в этом automation context настоящий BFCache не сработал, persisted event проверен отдельно синтетически + unit. Старый bundle на сервере сохранён по инварианту. Локальный fixture-процесс остановлен; production сессии/назначения/peer не менялись. Изменения подготовлены для push в рамках ранее разрешённого цикла исправлений админки.
 
+Исправление stale admin UI опубликовано: c9ec59879ff3024d2d8bcbbb6c1e282201a19f5c, origin/main совпал с HEAD. Деплой завершён и проверен; следующая запись — только статус документации.
+
 ## Исправление онлайн-лимитов всех серверов (2026-10-09)
 
 Пользователь после аудита разрешил исправить расчёт на всех нодах и push: «30 онлайн / лимит17». Sampler и get_capacity_profile теперь используют node_online_shown (max DB/WG), как карточка сервера. Queen WG snapshot читается через asyncio.to_thread и существующий кэш; не добавлен блокирующий SSH в event loop. Удалены второй active-share коэффициент к уже измеренной нагрузке на online и второй link/premium коэффициент ко всему worker limit. Пропускная способность участвует один раз в сетевом ограничении; CPU/RAM не умножаются на скорость канала.

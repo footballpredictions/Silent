@@ -13,7 +13,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] Actual routes GREEN; build+6 guard tests, browser close/reopen/restore/offline/mismatch PASS; 11 preflight scripts PASS
 - [x] Правило admin-ui-publication.mdc, Memory Bank и mandatory runtime postflight SHA/cache/assets/HTTPS443/2083
 - [x] Canonical narrow deploy app/main.py + UI; production no-store/version/SHA/HTTPS443+2083/browser reopen PASS, PID764 прежний, RTT0.063с/kick0
-- [ ] Commit/push изменений админки и проверка origin/main
+- [x] Commit/push изменений админки c9ec598; git ls-remote origin/main совпал с HEAD
 
 ### Исправление онлайн-лимитов всех серверов (2026-10-09)
 

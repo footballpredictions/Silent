@@ -11,12 +11,16 @@ import os
 import subprocess
 import sys
 import time
+import shlex
 from pathlib import Path, PurePosixPath
 
 from _deploy_common import BACKEND_ROOT, CONTAINER, REMOTE, connect, run
 from fix_tunnel_dnat import FIX_SH
 
 PREFLIGHT_TESTS = (
+    "scripts/test_dashboard_online_consistency_unit.py",
+    "scripts/test_admin_page_loading_unit.py",
+    "scripts/test_deploy_stable_selection_unit.py",
     "scripts/test_vpn_kick_unit.py",
     "scripts/test_vpn_kick_storm_unit.py",
     "scripts/test_deleted_user_vpn_unit.py",
@@ -74,7 +78,22 @@ def _selected_python_paths(paths: list[str]) -> list[str]:
     return result
 
 
-def _deploy_selected_python(paths: list[str]) -> None:
+def _upload_admin_ui(sftp, client, dist: Path) -> None:
+    """Publish entry point last; retain assets used by already-open admin tabs."""
+    stamp = str(time.time_ns())
+    files = sorted((p for p in dist.rglob('*') if p.is_file()), key=lambda p: (p.name == 'index.html', p.as_posix()))
+    for local in files:
+        rel = local.relative_to(dist).as_posix()
+        remote = f"{REMOTE}/admin-ui/dist/{rel}"
+        run(client, f"mkdir -p {shlex.quote(os.path.dirname(remote))}")
+        temporary = f"{remote}.deploy-{stamp}"
+        sftp.put(str(local), temporary)
+        sftp.chmod(temporary, 0o644)
+        sftp.posix_rename(temporary, remote)
+        print("ui", rel)
+
+
+def _deploy_selected_python(paths: list[str], *, admin_ui: Path | None = None) -> None:
     paths = _selected_python_paths(paths)
     if not paths:
         raise SystemExit("No Python files selected")
@@ -94,6 +113,8 @@ def _deploy_selected_python(paths: list[str]) -> None:
                 sftp.chmod(temporary, existing.st_mode & 0o777)
                 sftp.posix_rename(temporary, remote)
                 print("selected Python", rel)
+            if admin_ui is not None:
+                _upload_admin_ui(sftp, client, admin_ui)
         _restart_and_verify(client)
     finally:
         client.close()
@@ -102,13 +123,16 @@ def _deploy_selected_python(paths: list[str]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python-only", nargs="+", metavar="PATH", help="Only existing app/ai Python files; keep UI/compose/cell-agent unchanged")
+    parser.add_argument("--with-admin-ui", action="store_true", help="Also publish the built admin UI with --python-only")
     args = parser.parse_args()
-    if args.python_only:
-        _deploy_selected_python(args.python_only)
-        return
     dist = BACKEND_ROOT / "admin-ui" / "dist"
-    if not dist.is_dir() or not any(dist.iterdir()):
+    if (not args.python_only or args.with_admin_ui) and not (dist / 'index.html').is_file():
         raise SystemExit("Сначала: cd admin-ui && npm run build")
+    if args.python_only:
+        _deploy_selected_python(args.python_only, admin_ui=dist if args.with_admin_ui else None)
+        return
+    if args.with_admin_ui:
+        parser.error("--with-admin-ui requires --python-only")
     _preflight()
 
     client = connect()
@@ -117,16 +141,7 @@ def main() -> None:
     _upload_py_tree(sftp, client, "app")
     _upload_py_tree(sftp, client, "ai")
 
-    rdist = f"{REMOTE}/admin-ui/dist"
-    client.exec_command(f"rm -rf {rdist}/assets && mkdir -p {rdist}/assets")
-    for root, _, names in os.walk(dist):
-        for name in names:
-            lp = Path(root) / name
-            rel = lp.relative_to(dist).as_posix()
-            rp = f"{rdist}/{rel}"
-            client.exec_command(f"mkdir -p {os.path.dirname(rp)}")
-            sftp.put(str(lp), rp)
-            print("ui", rel)
+    _upload_admin_ui(sftp, client, dist)
 
     cell_agent_dir = BACKEND_ROOT / "cell-agent"
     for name in (

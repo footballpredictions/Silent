@@ -209,10 +209,10 @@ def pick_dashboard_shown_online(
     ram — кэш этого воркера; shared — Redis (общий); stale_ram — просроченный RAM
     только для light-полла. None = нужно обновить по WG live, не брать is_connected из БД.
     """
-    if ram is not None:
-        return max(0, int(ram))
     if shared is not None:
         return max(0, int(shared))
+    if ram is not None:
+        return max(0, int(ram))
     if soft and stale_ram is not None:
         return max(0, int(stale_ram))
     return None

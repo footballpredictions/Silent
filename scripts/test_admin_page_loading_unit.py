@@ -88,6 +88,7 @@ async def test_fast_users_block_does_not_refresh_hive() -> None:
     original_count = api._count_users_with_vpn_access
     original_breakdown = subscription_service.dashboard_subscription_breakdown
     original_cached = hive_service.cached_vpn_online_shown
+    original_shared = hive_service._redis_get_shown
     original_online = hive_service.vpn_online_shown_total
     original_peak = peak_online.get_peak_online
 
@@ -103,9 +104,13 @@ async def test_fast_users_block_does_not_refresh_hive() -> None:
     async def peak(db):
         return 3, None
 
+    async def empty_shared():
+        return None
+
     api._count_users_with_vpn_access = count
     subscription_service.dashboard_subscription_breakdown = breakdown
     hive_service.cached_vpn_online_shown = lambda: None
+    hive_service._redis_get_shown = empty_shared
     hive_service.vpn_online_shown_total = no_refresh
     peak_online.get_peak_online = peak
     try:
@@ -117,6 +122,7 @@ async def test_fast_users_block_does_not_refresh_hive() -> None:
         api._count_users_with_vpn_access = original_count
         subscription_service.dashboard_subscription_breakdown = original_breakdown
         hive_service.cached_vpn_online_shown = original_cached
+        hive_service._redis_get_shown = original_shared
         hive_service.vpn_online_shown_total = original_online
         peak_online.get_peak_online = original_peak
 

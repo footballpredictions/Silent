@@ -454,13 +454,16 @@ def _get_shown_redis():
     if _shown_redis is None:
         from redis import asyncio as aioredis
 
-        _shown_redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        _shown_redis = aioredis.from_url(
+            settings.REDIS_URL, decode_responses=True,
+            socket_connect_timeout=0.3, socket_timeout=0.3,
+        )
     return _shown_redis
 
 
 async def _redis_get_shown() -> int | None:
     try:
-        raw = await _get_shown_redis().get(_REDIS_SHOWN_KEY)
+        raw = await asyncio.wait_for(_get_shown_redis().get(_REDIS_SHOWN_KEY), timeout=0.35)
         if raw is None:
             return None
         return max(0, int(raw))
@@ -518,6 +521,15 @@ def cached_vpn_online_shown(*, max_age: float | None = None) -> int | None:
     return _SHOWN_ONLINE_N
 
 
+async def cached_vpn_online_shown_shared() -> int | None:
+    """Fast paint and all workers read one shared snapshot, never refresh nodes here."""
+    shared = await _redis_get_shown()
+    if shared is not None:
+        remember_vpn_online_shown_ram(shared)
+        return shared
+    return cached_vpn_online_shown()
+
+
 async def refresh_online_shown_cache() -> int:
     """Собрать онлайн как шапка Улья (WG live) и запомнить для дашборда."""
     global _SHOWN_LIVE_PUBS
@@ -552,7 +564,7 @@ async def vpn_online_shown_total(
         ram=ram, shared=shared, stale_ram=stale, soft=soft
     )
     if picked is not None:
-        if ram is None:
+        if picked != ram:
             remember_vpn_online_shown_ram(picked)
         return picked
     try:

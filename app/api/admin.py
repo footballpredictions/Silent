@@ -126,12 +126,12 @@ async def _dashboard_users_block(db: AsyncSession, *, soft_online: bool = False,
     total_users, vpn_access = await _count_users_with_vpn_access(db)
     breakdown = await dashboard_subscription_breakdown(db)
     if fast:
-        from app.services.hive_service import cached_vpn_online_shown
+        from app.services.hive_service import cached_vpn_online_shown_shared
         from app.services.peak_online import get_peak_online
 
         # First paint must never wait for a cold hive HTTP refresh. The full
         # request follows immediately and supplies the authoritative count.
-        connected_devices = cached_vpn_online_shown()
+        connected_devices = await cached_vpn_online_shown_shared()
         peak_online, peak_online_at = await get_peak_online(db)
     else:
         connected_devices = await vpn_online_shown_total(db, soft=soft_online)

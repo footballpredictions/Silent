@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Radar, ShieldAlert, ShieldCheck, Play, Loader2, ChevronDown, ChevronRight,
-  Copy, Check, BookOpen, Activity,
+  Copy, Check, Activity,
 } from 'lucide-react'
 
 type Probe = {
@@ -139,16 +139,6 @@ type AgentSettings = {
   last_status: string | null
 }
 
-type KnowledgeItem = {
-  kind: string
-  title: string
-  severity: string
-  how_it_works: string
-  signals: string[]
-  fixes: string[]
-  commands: string[]
-}
-
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   ok: { label: 'Доступно из РФ', cls: 'text-emerald-400 border-emerald-800 bg-emerald-950/40' },
   degraded: { label: 'Деградация', cls: 'text-amber-300 border-amber-800 bg-amber-950/40' },
@@ -198,7 +188,7 @@ function CopyButton({ text }: { text: string }) {
         setTimeout(() => setDone(false), 1500)
       }}
       title="Скопировать"
-      className="shrink-0 text-[#666] hover:text-white transition"
+      className="shrink-0 text-[#888] hover:text-white transition"
     >
       {done ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
     </button>
@@ -215,9 +205,9 @@ function VerdictCard({ verdict }: { verdict: Verdict }) {
         className="w-full flex items-start gap-2 text-left"
       >
         {open ? (
-          <ChevronDown className="w-4 h-4 mt-0.5 text-[#666] shrink-0" />
+          <ChevronDown className="w-4 h-4 mt-0.5 text-[#888] shrink-0" />
         ) : (
-          <ChevronRight className="w-4 h-4 mt-0.5 text-[#666] shrink-0" />
+          <ChevronRight className="w-4 h-4 mt-0.5 text-[#888] shrink-0" />
         )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -225,11 +215,11 @@ function VerdictCard({ verdict }: { verdict: Verdict }) {
               {verdict.severity}
             </span>
             <span className="text-[#ddd] font-medium">{verdict.target}</span>
-            <span className="text-[#666] font-mono">{verdict.host}</span>
+            <span className="text-[#888] font-mono">{verdict.host}</span>
             {verdict.channel && (
               <span className="text-violet-300">{channelLabel(verdict.channel)}</span>
             )}
-            <span className="text-[#555]">оценка доказательств {verdict.confidence.toFixed(2)}</span>
+            <span className="text-[#888]">оценка доказательств {verdict.confidence.toFixed(2)}</span>
           </div>
           <p className="text-sm text-[#eee] mt-1">{verdict.title}</p>
           <p className="text-xs text-[#999] mt-0.5">{verdict.summary}</p>
@@ -240,7 +230,7 @@ function VerdictCard({ verdict }: { verdict: Verdict }) {
         <div className="mt-3 pl-6 space-y-3">
           {verdict.evidence.length > 0 && (
             <div>
-              <p className="text-[10px] uppercase text-[#666] mb-1">Почему так решили</p>
+              <p className="text-[10px] uppercase text-[#888] mb-1">Почему так решили</p>
               <ul className="space-y-0.5">
                 {verdict.evidence.map((e, i) => (
                   <li key={i} className="text-xs text-[#aaa]">· {e}</li>
@@ -254,7 +244,7 @@ function VerdictCard({ verdict }: { verdict: Verdict }) {
               <ol className="space-y-1">
                 {verdict.fixes.map((f, i) => (
                   <li key={i} className="text-xs text-[#ddd] flex gap-2">
-                    <span className="text-[#555] shrink-0">{i + 1}.</span>
+                    <span className="text-[#888] shrink-0">{i + 1}.</span>
                     <span>{f}</span>
                   </li>
                 ))}
@@ -263,7 +253,7 @@ function VerdictCard({ verdict }: { verdict: Verdict }) {
           )}
           {verdict.commands.length > 0 && (
             <div>
-              <p className="text-[10px] uppercase text-[#666] mb-1">Команды</p>
+              <p className="text-[10px] uppercase text-[#888] mb-1">Команды</p>
               <div className="space-y-1">
                 {verdict.commands.map((c, i) => (
                   <div
@@ -295,13 +285,13 @@ function PortPlanCard({ plan }: { plan: PortPlan }) {
     <div className="mt-3 bg-[#0a0a0a] border border-[#242424] rounded-lg px-3 py-2.5">
       <button type="button" onClick={() => setOpen(o => !o)} className="w-full flex items-start gap-2 text-left">
         {open ? (
-          <ChevronDown className="w-4 h-4 mt-0.5 text-[#666] shrink-0" />
+          <ChevronDown className="w-4 h-4 mt-0.5 text-[#888] shrink-0" />
         ) : (
-          <ChevronRight className="w-4 h-4 mt-0.5 text-[#666] shrink-0" />
+          <ChevronRight className="w-4 h-4 mt-0.5 text-[#888] shrink-0" />
         )}
         <span className="flex-1">
           <span className="text-sm text-[#ddd]">Запасной порт API: {plan.title}</span>
-          <span className="block text-[11px] text-[#666] mt-0.5">
+          <span className="block text-[11px] text-[#888] mt-0.5">
             {plan.autoswitch ? 'автосмена включена' : 'автосмена выключена'} ·{' '}
             {plan.executed
               ? plan.port
@@ -317,7 +307,7 @@ function PortPlanCard({ plan }: { plan: PortPlan }) {
       {open && (
         <div className="mt-2 pl-6 space-y-1.5">
           <p className="text-xs text-[#aaa]">{plan.explain}</p>
-          <p className="text-[11px] text-[#666]">
+          <p className="text-[11px] text-[#888]">
             Никогда не закрываем: {plan.keep_open.join(', ')}
           </p>
           {plan.candidates.length > 0 && (
@@ -346,13 +336,13 @@ function RelayPlanCard({ plan }: { plan: RelayPlan }) {
     <div className="mt-3 bg-[#0a0a0a] border border-[#242424] rounded-lg px-3 py-2.5">
       <button type="button" onClick={() => setOpen(o => !o)} className="w-full flex items-start gap-2 text-left">
         {open ? (
-          <ChevronDown className="w-4 h-4 mt-0.5 text-[#666] shrink-0" />
+          <ChevronDown className="w-4 h-4 mt-0.5 text-[#888] shrink-0" />
         ) : (
-          <ChevronRight className="w-4 h-4 mt-0.5 text-[#666] shrink-0" />
+          <ChevronRight className="w-4 h-4 mt-0.5 text-[#888] shrink-0" />
         )}
         <span className="flex-1">
           <span className="text-sm text-[#ddd]">Кольцо серверов: {plan.title}</span>
-          <span className="block text-[11px] text-[#666] mt-0.5">
+          <span className="block text-[11px] text-[#888] mt-0.5">
             туннеля между сотами нет · маршрут не применялся
           </span>
         </span>
@@ -386,18 +376,18 @@ function TargetRow({ target }: { target: Target }) {
     <div className="bg-[#0a0a0a] border border-[#222] rounded-lg px-3 py-2">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-[#ddd] font-medium">{target.name}</span>
-        <span className="text-[#666] font-mono">{target.host}</span>
-        {target.domain && <span className="text-[#555]">{target.domain}</span>}
+        <span className="text-[#888] font-mono">{target.host}</span>
+        {target.domain && <span className="text-[#888]">{target.domain}</span>}
         {target.ai_exit && (
           <span className="text-sky-400/90">Для ИИ · 9100 только Улью</span>
         )}
-        <span className="text-[#555]">статус {target.status || '—'}</span>
-        <span className="text-[#555]">онлайн {target.online_count}</span>
+        <span className="text-[#888]">статус {target.status || '—'}</span>
+        <span className="text-[#888]">онлайн {target.online_count}</span>
       </div>
       <div className="mt-2 overflow-x-auto">
         <table className="w-full text-[11px]">
           <thead>
-            <tr className="text-[#555] text-left">
+            <tr className="text-[#888] text-left">
               <th className="font-normal py-1 pr-3">Канал</th>
               <th className="font-normal py-1 pr-3">Локально</th>
               <th className="font-normal py-1 pr-3">Из РФ</th>
@@ -487,8 +477,6 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
 
   const [report, setReport] = useState<Report | null>(null)
   const [settings, setSettings] = useState<AgentSettings | null>(null)
-  const [knowledge, setKnowledge] = useState<KnowledgeItem[]>([])
-  const [showKnowledge, setShowKnowledge] = useState(false)
   const [showTargets, setShowTargets] = useState(false)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -562,32 +550,20 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
     if (data.settings) setSettings(data.settings)
   }
 
-  const loadKnowledge = async () => {
-    setShowKnowledge(s => !s)
-    if (knowledge.length > 0) return
-    const res = await fetch('/api/admin/hive/availability/knowledge', { headers: authHeaders })
-    if (!res.ok) return
-    const data = await res.json().catch(() => ({}))
-    setKnowledge(Array.isArray(data.items) ? data.items : [])
-  }
-
   const status = report?.status || 'unknown'
   const meta = STATUS_META[status] || STATUS_META.unknown
   const problems = (report?.verdicts || []).filter(v => v.kind !== 'ok')
   const ruNodes = report?.vantage?.ru_nodes || []
 
   return (
-    <div className="bg-[#111] border border-[#222] rounded-xl p-4 md:p-5">
+    <div className="px-4 pb-4 md:px-5 md:pb-5">
       <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
         <div>
           <h2 className="font-medium flex items-center gap-2">
             <Radar className="w-4 h-4 text-[#888]" />
-            Доступность и блокировки (DPI / ТСПУ)
+            Проверка доступности
           </h2>
-          <p className="text-xs text-[#666] mt-0.5 max-w-2xl">
-            Агент проверяет, видят ли клиенты из РФ наши серверы, определяет способ блокировки
-            и даёт готовое решение. Пробы только читают: сервисы не перезапускаются.
-          </p>
+
         </div>
         <div className="flex items-center gap-2">
           <span className={`text-xs px-2.5 py-1 rounded-lg border ${meta.cls}`}>
@@ -614,7 +590,9 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
       </div>
 
       {settings && (
-        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-[#888]">
+        <details className="mt-3 text-xs text-[#888]">
+          <summary className="cursor-pointer py-2 hover:text-white">Настройки проверки</summary>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-1.5 cursor-pointer select-none">
             <input
               type="checkbox"
@@ -656,11 +634,12 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
             </select>
           </span>
           {settings.last_run && (
-            <span className="text-[#555]">
+            <span className="text-[#888]">
               Последний прогон: {new Date(settings.last_run).toLocaleString('ru-RU')}
             </span>
           )}
-        </div>
+          </div>
+        </details>
       )}
 
       {error && (
@@ -673,7 +652,7 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
         <>
           <div className="mt-3 bg-[#0d0d0d] border border-[#242424] rounded-lg px-3 py-2.5">
             <p className="text-sm text-[#ddd]">{report.summary}</p>
-            <p className="text-[11px] text-[#666] mt-1">
+            <p className="text-[11px] text-[#888] mt-1">
               {new Date(report.ts).toLocaleString('ru-RU')} · проверка {report.duration_sec} с ·
               российские ноды: {ruNodes.length > 0 ? ruNodes.join(', ') : 'нет'} ·
               внешних проверок {report.vantage?.checks ?? 0}
@@ -716,36 +695,11 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
           )}
         </>
       ) : (
-        <p className="mt-3 text-xs text-[#666]">
-          Отчётов пока нет. Нажмите «Проверить сейчас» или дождитесь автоматического прогона.
+        <p className="mt-3 text-xs text-[#888]">
+          Проверок пока нет.
         </p>
       )}
 
-      <button
-        type="button"
-        onClick={loadKnowledge}
-        className="mt-4 text-xs text-[#888] hover:text-white flex items-center gap-1.5"
-      >
-        <BookOpen className="w-3.5 h-3.5" />
-        {showKnowledge ? 'Скрыть' : 'Открыть'} справочник: как блокируют в РФ и что делать
-      </button>
-      {showKnowledge && (
-        <div className="mt-2 space-y-2 max-h-96 overflow-auto pr-1">
-          {knowledge.map(item => (
-            <div key={item.kind} className="bg-[#0a0a0a] border border-[#222] rounded-lg px-3 py-2">
-              <p className={`text-xs uppercase ${SEVERITY_CLS[item.severity] || 'text-[#aaa]'}`}>
-                {item.severity}
-              </p>
-              <p className="text-sm text-[#ddd] mt-0.5">{item.title}</p>
-              <p className="text-xs text-[#888] mt-1">{item.how_it_works}</p>
-              <p className="text-[10px] uppercase text-[#666] mt-2 mb-0.5">Признаки</p>
-              <ul>{item.signals.map((s, i) => <li key={i} className="text-xs text-[#999]">· {s}</li>)}</ul>
-              <p className="text-[10px] uppercase text-emerald-500/80 mt-2 mb-0.5">Решение</p>
-              <ul>{item.fixes.map((f, i) => <li key={i} className="text-xs text-[#ccc]">— {f}</li>)}</ul>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   )
 }

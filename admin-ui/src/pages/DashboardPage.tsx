@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Cpu, Users, Wifi, Hash, RefreshCw, ChevronDown, ChevronRight, Activity, Server } from 'lucide-react'
 import SearchInput from '../components/SearchInput'
 import SortSelect from '../components/SortSelect'
@@ -507,6 +507,8 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
   })
   const [detailsReady, setDetailsReady] = useState(false)
   const [detailsError, setDetailsError] = useState(false)
+  const viewController = useRef<AbortController | null>(null)
+  const activeRequest = useRef<{ key: symbol; signal?: AbortSignal } | null>(null)
 
   const resourceNodes = stats?.resource_nodes ?? [{ id: 'queen', name: 'Улей', title: 'Улей', is_queen: true }]
 
@@ -518,6 +520,10 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
   }, [])
 
   const fetchStats = useCallback(async (mode: 'fast' | 'full' | 'light' = 'full', signal?: AbortSignal): Promise<boolean> => {
+    signal ??= viewController.current?.signal
+    if (signal?.aborted || (activeRequest.current && !activeRequest.current.signal?.aborted)) return false
+    const key = Symbol('stats')
+    activeRequest.current = { key, signal }
     if (mode === 'full') setLoading(true)
     try {
       const params = new URLSearchParams()
@@ -529,6 +535,7 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
         headers: { Authorization: `Bearer ${token}` },
         signal,
       })
+      if (signal?.aborted) return false
       if (res.status === 401) {
         onUnauthorized?.()
         return false
@@ -576,18 +583,25 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
       }
       return false
     } finally {
-      if (mode === 'full') setLoading(false)
+      if (activeRequest.current?.key === key) {
+        activeRequest.current = null
+        if (mode === 'full') setLoading(false)
+      }
     }
   }, [token, onUnauthorized, nodeId, selectNode])
 
   useEffect(() => {
     const controller = new AbortController()
+    viewController.current = controller
+    let initialDone = false
     void (async () => {
-      if (await fetchStats('fast', controller.signal)) {
-        if (!controller.signal.aborted) await fetchStats('full', controller.signal)
-      }
+      await fetchStats('fast', controller.signal)
+      if (!controller.signal.aborted) await fetchStats('full', controller.signal)
+      initialDone = true
     })()
-    const interval = setInterval(() => { void fetchStats('light', controller.signal) }, 5000)
+    const interval = setInterval(() => {
+      if (initialDone) void fetchStats('light', controller.signal)
+    }, 5000)
     return () => { controller.abort(); clearInterval(interval) }
   }, [fetchStats])
 

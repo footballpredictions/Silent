@@ -6,6 +6,28 @@ Agent приступает к **первой невыполненной** зад
 
 ---
 
+### Админка: онлайн после деплоя и простой Улей (2026-10-09)
+
+- [x] Push предыдущего Android OTA: f7e94c4, origin/android совпадает
+- [x] Реальная диагностика fast/full/light и source hashes; worker RAM против Redis RED3→GREEN
+- [x] Единый shared snapshot для fast/full/light, правильное снижение/0, bounded Redis fallback
+- [x] Сериализация запросов дашборда; delayed full/manual refresh против light проверены браузером
+- [x] Улей: компактные серверы, добавление по кнопке, настройки/диагностика/журнал по раскрытию; убрать воду/дубли/справочник
+- [x] Build и browser actions/error recovery, desktop/mobile/tablet без overflow; detector0
+- [x] Mandatory preflight онлайн/fast/UI publication; узкий canonical deploy с UI без перезаписи production vpn_kick drift
+- [x] Deploy и production SHA/Host200/online consistency; WDTT PID764 прежний, health0,043с/kick0
+- [ ] Push backend и проверить origin/main
+
+### Android: OTA через VPN на Wi-Fi/LTE и белых списках (2026-10-09)
+
+- [x] URL/ready regression RED3; прямой Pages из excluded app и EPERM старого proxy выявлены
+- [x] VPN-first discovery, public без VPN на Wi-Fi/open LTE, queued force retry после ready/sync
+- [x] OTA-only userspace TCP на existing WG; main native router без изменения UID/site semantics, bootstrap прежний
+- [x] Native10 PASS на Android12 emulator: encrypted WG metadata/APK + simultaneous app TCP, старые9 site/DNS/TCP/UDP
+- [x] JVM321PASS/0SKIP, assembleDebug; native4ABI/Dex и исходный libclient сверены, APK установлен на тестовый emulator
+- [ ] Пользователь: новый APK — VPN Wi-Fi и LTE whitelist, update banner/download/install, parallel app traffic, screen-off/network change
+- [x] Push Android OTA разрешён и выполнен: f7e94c4; release/OTA автоматически не публиковать
+
 ### Android: лишнее энергопотребление и ночной нагрев (2026-10-09)
 
 - [x] На устройстве подтвердить session-long silent:tunnel_cpu и повтор уведомления/плитки; ночной thermal spike отдельно не воспроизведён

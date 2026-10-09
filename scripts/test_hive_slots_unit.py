@@ -241,7 +241,6 @@ def test_get_stats_marks_vk_users_via_shown_online():
     assert "users_online" in admin
     dash = (ROOT / "admin-ui" / "src" / "pages" / "DashboardPage.tsx").read_text(encoding="utf-8")
     assert "users_online" in dash
-    assert "if (!prev) return prev" in dash
 
 
 if __name__ == "__main__":

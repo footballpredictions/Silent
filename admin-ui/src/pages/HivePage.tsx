@@ -149,7 +149,7 @@ function CellHardwareLine({ cell }: { cell: HiveCell }) {
   if (!cell.load) {
     if (cell.is_queen) {
       return (
-        <p className="text-xs text-[#555] mt-1 flex items-center gap-1">
+        <p className="text-xs text-[#888] mt-1 flex items-center gap-1">
           <Server className="w-3 h-3 shrink-0" />
           характеристики сервера: нет данных
         </p>
@@ -157,7 +157,7 @@ function CellHardwareLine({ cell }: { cell: HiveCell }) {
     }
     if (cell.status === 'active') {
       return (
-        <p className="text-xs text-[#555] mt-1 flex items-center gap-1">
+        <p className="text-xs text-[#888] mt-1 flex items-center gap-1">
           <Server className="w-3 h-3 shrink-0" />
           характеристики: cell-agent недоступен
         </p>
@@ -167,7 +167,7 @@ function CellHardwareLine({ cell }: { cell: HiveCell }) {
   }
   if (!hw) {
     return (
-      <p className="text-xs text-[#555] mt-1 flex items-center gap-1">
+      <p className="text-xs text-[#888] mt-1 flex items-center gap-1">
         <Server className="w-3 h-3 shrink-0" />
         характеристики сервера: обновление…
       </p>
@@ -175,60 +175,29 @@ function CellHardwareLine({ cell }: { cell: HiveCell }) {
   }
   return (
     <p className="text-sm text-[#bbb] mt-1.5 flex items-center gap-1.5">
-      <Server className="w-3.5 h-3.5 text-[#666] shrink-0" />
+      <Server className="w-3.5 h-3.5 text-[#888] shrink-0" />
       {hw}
     </p>
   )
 }
 
-function CellLoadGrid({
-  cell,
-  cpuThreshold,
-  memThreshold,
-  bwThreshold,
-}: {
-  cell: HiveCell
-  cpuThreshold: number
-  memThreshold: number
-  bwThreshold: number
+function CellLoadGrid({ cell, cpuThreshold, memThreshold, bwThreshold }: {
+  cell: HiveCell; cpuThreshold: number; memThreshold: number; bwThreshold: number
 }) {
-  if (!cell.load) return null
-  const { cpu_percent, memory_percent, network_util_percent, network_mbps_rx, network_mbps_tx } = cell.load
-  const netRx = network_mbps_rx ?? 0
-  const netTx = network_mbps_tx ?? 0
-  const netUtil = network_util_percent ?? 0
-  const hot = cpu_percent >= cpuThreshold || memory_percent >= memThreshold || netUtil >= bwThreshold
+  if (!cell.load) return <p className="text-xs text-amber-300 mt-3">Нет данных о нагрузке</p>
+  const load = cell.load
   return (
-    <>
-    <div className={`grid grid-cols-3 gap-2 mt-3 ${hot ? 'opacity-100' : 'opacity-90'}`}>
-      <div className="bg-[#0a0a0a] border border-[#222] rounded-lg px-3 py-2">
-        <p className="text-[10px] text-[#666] uppercase flex items-center gap-1"><Cpu className="w-3 h-3" /> CPU</p>
-        <p className={`text-lg font-semibold mt-0.5 ${cpu_percent >= cpuThreshold ? 'text-amber-400' : ''}`}>
-          {cpu_percent}%
-        </p>
-      </div>
-      <div className="bg-[#0a0a0a] border border-[#222] rounded-lg px-3 py-2">
-        <p className="text-[10px] text-[#666] uppercase flex items-center gap-1"><HardDrive className="w-3 h-3" /> RAM</p>
-        <p className={`text-lg font-semibold mt-0.5 ${memory_percent >= memThreshold ? 'text-amber-400' : ''}`}>
-          {memory_percent}%
-        </p>
-      </div>
-      <div className="bg-[#0a0a0a] border border-[#222] rounded-lg px-3 py-2">
-        <p className="text-[10px] text-[#666] uppercase flex items-center gap-1"><Activity className="w-3 h-3" /> Канал</p>
-        <p className={`text-lg font-semibold mt-0.5 ${netUtil >= bwThreshold ? 'text-amber-400' : ''}`}>
-          {netUtil.toFixed(1)}%
-        </p>
-        <p className="text-[10px] text-[#555] mt-0.5">{fmtBandwidth(netRx)}↓ {fmtBandwidth(netTx)}↑</p>
-      </div>
+    <div className="flex flex-wrap gap-x-5 gap-y-2 mt-3 text-xs text-[#aaa] tabular-nums">
+      <span className={`flex items-center gap-1.5 ${load.cpu_percent >= cpuThreshold ? 'text-amber-300' : ''}`}>
+        <Cpu className="w-3.5 h-3.5" /> CPU {load.cpu_percent}%
+      </span>
+      <span className={`flex items-center gap-1.5 ${load.memory_percent >= memThreshold ? 'text-amber-300' : ''}`}>
+        <HardDrive className="w-3.5 h-3.5" /> RAM {load.memory_percent}%
+      </span>
+      <span className={`flex items-center gap-1.5 ${(load.network_util_percent ?? 0) >= bwThreshold ? 'text-amber-300' : ''}`}>
+        <Activity className="w-3.5 h-3.5" /> Канал {(load.network_util_percent ?? 0).toFixed(1)}%
+      </span>
     </div>
-    {typeof cell.load.wg_peers_total === 'number' && (
-      <p className="text-[11px] text-[#777] mt-2">
-        WG peer’ы: {cell.load.wg_peers_total} · never-hs {cell.load.wg_peers_never_hs ?? 0} · live {cell.load.wg_peers_live_3m ?? 0} (онлайн)
-        {typeof cell.load.wg_peers_live_known === 'number' ? ` · свои ${cell.load.wg_peers_live_known}` : ''}
-        {(cell.load.wg_gc_last_removed ?? 0) > 0 ? ` · gc −${cell.load.wg_gc_last_removed}` : ''}
-      </p>
-    )}
-    </>
   )
 }
 
@@ -236,7 +205,7 @@ const statusLabel: Record<string, string> = {
   active: 'Активна',
   provisioning: 'Настройка…',
   pending: 'Подключение…',
-  draining: 'Вывод из эксплуатации',
+  draining: 'Не принимает новых',
   offline: 'Выключена',
   error: 'Ошибка',
 }
@@ -292,19 +261,19 @@ function EgressCard({ info }: { info: EgressInfo }) {
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
         <div>
-          <p className="text-[#666]">Гео</p>
+          <p className="text-[#888]">Гео</p>
           <p className="text-[#ddd]">{[geo.country, geo.city].filter(Boolean).join(', ') || '—'}</p>
         </div>
         <div>
-          <p className="text-[#666]">ASN</p>
+          <p className="text-[#888]">ASN</p>
           <p className="text-[#ddd] truncate" title={geo.asn}>{geo.asn || '—'}</p>
         </div>
         <div>
-          <p className="text-[#666]">Cloudflare loc</p>
+          <p className="text-[#888]">Cloudflare loc</p>
           <p className="text-[#ddd]">{trace.loc || '—'}{trace.warp && trace.warp !== 'off' ? ` · warp ${trace.warp}` : ''}</p>
         </div>
         <div>
-          <p className="text-[#666]">Резолвер ноды</p>
+          <p className="text-[#888]">Резолвер ноды</p>
           <p className="text-[#ddd] font-mono">{(local.resolvers || []).join(', ') || '—'}</p>
         </div>
       </div>
@@ -350,6 +319,8 @@ export default function HivePage({ token }: { token: string }) {
   const [success, setSuccess] = useState<string | null>(null)
   const [egress, setEgress] = useState<Record<string, EgressInfo>>({})
   const [egressBusy, setEgressBusy] = useState<string | null>(null)
+  const [addOpen, setAddOpen] = useState(false)
+  const [incidentsOpen, setIncidentsOpen] = useState(false)
   const [form, setForm] = useState({ host: '', password: '', name: '' })
   const [metricsAt, setMetricsAt] = useState<Date | null>(null)
   const [incidents, setIncidents] = useState<HiveIncident[]>([])
@@ -381,6 +352,7 @@ export default function HivePage({ token }: { token: string }) {
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
+    if (!incidentsOpen) return
     const markSeen = async () => {
       const res = await fetch('/api/admin/hive/incidents/seen', {
         method: 'POST',
@@ -391,7 +363,7 @@ export default function HivePage({ token }: { token: string }) {
       if (typeof data.seen_at === 'string') setIncidentsSeenAt(data.seen_at)
     }
     void markSeen()
-  }, [token])
+  }, [token, incidentsOpen])
 
   useEffect(() => {
     const t = setInterval(() => { load(true) }, 10000)
@@ -433,6 +405,7 @@ export default function HivePage({ token }: { token: string }) {
         return
       }
       setForm({ host: '', password: '', name: '' })
+      setAddOpen(false)
       setSuccess(data.message || `Сота «${data.name}» — настройка запущена`)
       await load()
     } finally {
@@ -440,22 +413,28 @@ export default function HivePage({ token }: { token: string }) {
     }
   }
 
-  const setStatus = async (id: string, status: string) => {
+  const updateCell = async (id: string, patch: { status?: string; admin_only?: boolean }) => {
     setBusy(id)
-    await fetch(`/api/admin/hive/cells/${id}`, { method: 'PATCH', headers, body: JSON.stringify({ status }) })
-    await load()
-    setBusy(null)
+    setError(null)
+    try {
+      const res = await fetch(`/api/admin/hive/cells/${id}`, { method: 'PATCH', headers, body: JSON.stringify(patch) })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setError(fmtDetail(data.detail))
+        return
+      }
+      await load()
+    } catch {
+      setError('Не удалось сохранить настройки соты')
+    } finally {
+      setBusy(null)
+    }
   }
 
+  const setStatus = (id: string, status: string) => updateCell(id, { status })
+
   const setAdminOnly = async (id: string, adminOnly: boolean) => {
-    setBusy(id)
-    await fetch(`/api/admin/hive/cells/${id}`, {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({ admin_only: adminOnly }),
-    })
-    await load()
-    setBusy(null)
+    await updateCell(id, { admin_only: adminOnly })
   }
 
   const setAiExit = async (id: string, aiExit: boolean) => {
@@ -565,323 +544,152 @@ export default function HivePage({ token }: { token: string }) {
     }
   }
 
-  const queenCell = cells.find(c => c.is_queen)
-  const ql = queenCell?.load || summary?.queen_load
-  const queenHw = fmtHardware(ql)
   const hiveOnline = cells.reduce((n, c) => n + (c.online_count || 0), 0)
+  const activeCells = cells.filter(c => c.status === 'active').length
+  const actionClass = 'text-xs px-3 py-2 rounded-lg border border-[#333] bg-[#1a1a1a] hover:bg-[#222] disabled:opacity-50'
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <Hexagon className="w-7 h-7" />
-            Улей
-          </h1>
-          <p className="text-[#888] text-sm mt-1">
-            Характеристики и нагрузка — с сервера, обновление каждые 10 с.
-            Cell-agent на сотах синхронизируется с Ульем автоматически.
-          </p>
-        </div>
-        <button type="button" onClick={() => { setLoading(true); load() }}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#1a1a1a] text-sm text-[#aaa] hover:text-white">
-          <RefreshCw className="w-4 h-4" /> Обновить
-        </button>
-      </div>
-      {metricsAt && (
-        <p className="text-xs text-[#555] -mt-3">
-          Последнее обновление: {metricsAt.toLocaleTimeString('ru')}
-        </p>
-      )}
-
-      {summary && ql && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <div className="bg-[#111] border border-[#222] rounded-xl p-4">
-            <p className="text-[#666] text-xs uppercase">Онлайн всего</p>
-            <p className="text-2xl font-semibold mt-1">{hiveOnline} / {summary.total_capacity_online}</p>
-            <p className="text-xs text-[#666] mt-1">
-              {cells.filter(c => c.is_queen).reduce((n, c) => n + (c.online_count || 0), 0)} Улей
-              {' + '}
-              {cells.filter(c => !c.is_queen).reduce((n, c) => n + (c.online_count || 0), 0)} соты
-            </p>
-          </div>
-          <div className="bg-[#111] border border-[#222] rounded-xl p-4">
-            <p className="text-[#666] text-xs uppercase flex items-center gap-1"><Cpu className="w-3 h-3" /> CPU Улья</p>
-            <p className={`text-2xl font-semibold mt-1 ${ql.cpu_percent >= summary.cpu_threshold ? 'text-amber-400' : ''}`}>
-              {ql.cpu_percent}%
-            </p>
-          </div>
-          <div className="bg-[#111] border border-[#222] rounded-xl p-4">
-            <p className="text-[#666] text-xs uppercase flex items-center gap-1"><HardDrive className="w-3 h-3" /> RAM Улья</p>
-            <p className={`text-2xl font-semibold mt-1 ${ql.memory_percent >= summary.mem_threshold ? 'text-amber-400' : ''}`}>
-              {ql.memory_percent}%
-            </p>
-          </div>
-          <div className="bg-[#111] border border-[#222] rounded-xl p-4">
-            <p className="text-[#666] text-xs uppercase flex items-center gap-1"><Activity className="w-3 h-3" /> Канал Улья</p>
-            <p className={`text-2xl font-semibold mt-1 ${(ql.network_util_percent ?? 0) >= summary.bandwidth_threshold ? 'text-amber-400' : ''}`}>
-              {(ql.network_util_percent ?? 0).toFixed(1)}%
-            </p>
-            <p className="text-xs text-[#555] mt-1">
-              {fmtBandwidth(ql.network_mbps_rx ?? 0)}↓ / {fmtBandwidth(ql.network_mbps_tx ?? 0)}↑
-            </p>
-          </div>
-          <div className="bg-[#111] border border-[#222] rounded-xl p-4">
-            <p className="text-[#666] text-xs uppercase">Режим</p>
-            <p className="text-sm font-medium mt-2">
-              {ql.build_running ? (
-                <span className="text-blue-400">Сборка OTA — VPN на Улье</span>
-              ) : summary.queen_accepting_vpn ? (
-                <span className="text-emerald-400">Улей в норме</span>
-              ) : (
-                <span className="text-orange-400">Улей нагружен</span>
-              )}
-            </p>
-            {summary.all_cells_full && (
-              <p className="text-xs text-red-400 mt-2">Все соты заполнены — добавьте новые соты</p>
-            )}
-          </div>
-        </div>
-      )}
-      {queenHw && (
-        <p className="text-sm text-[#aaa] flex items-center gap-1.5 -mt-2">
-          <Server className="w-3.5 h-3.5 text-[#666]" />
-          Улей: {queenHw}
-        </p>
-      )}
-      {summary && (
-        <div className="bg-[#0d0d0d] border border-[#2a2a2a] rounded-lg px-4 py-3 text-xs text-[#888] leading-relaxed">
-          <p className="text-[#aaa] font-medium mb-1">Серверы</p>
-          <p>
-            Клиент сам выбирает Сервер 1 (Улей), 2 или 3 — это отдельные ноды.
-            Живой VPN Улей не перекидывает. CPU ≥ {summary.cpu_threshold}%, RAM ≥ {summary.mem_threshold}%,
-            канал ≥ {summary.bandwidth_threshold}% — индикатор нагрузки, не авто-баланс.
-          </p>
-        </div>
-      )}
-
-      <HiveAvailabilityPanel token={token} />
-
-      <div className="bg-[#111] border border-[#222] rounded-xl p-4 md:p-5">
-        <div className="flex items-center justify-between gap-3 mb-2">
-          <div>
-            <h2 className="font-medium">Инциденты Улья (ошибки/падения)</h2>
-            <p className="text-xs text-[#666] mt-0.5">
-              Записи хранятся в базе, пока не нажмёте «Очистить». Не пропадают при обновлении страницы.
-            </p>
-            {incidentsSeenAt && (
-              <p className="text-[11px] text-[#555] mt-1">
-                Последний просмотр панели инцидентов: {new Date(incidentsSeenAt).toLocaleString('ru-RU')}
-              </p>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={clearIncidents}
-            disabled={busy === 'incidents' || incidents.length === 0}
-            className="text-xs px-3 py-1.5 rounded-lg border border-[#333] bg-[#1a1a1a] text-[#ddd] cursor-pointer select-none touch-manipulation transition duration-100 hover:text-white hover:border-[#555] hover:bg-[#222] active:scale-[0.96] active:bg-[#0a0a0a] disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
-          >
-            {busy === 'incidents' ? 'Удаляю…' : 'Очистить'}
+    <div className="space-y-5 max-w-5xl min-w-0">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold flex items-center gap-2"><Hexagon className="w-7 h-7" /> Улей</h1>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => { void load() }} aria-label="Обновить серверы"
+            className="p-2.5 rounded-lg border border-[#333] text-[#aaa] hover:text-white hover:bg-[#1a1a1a]">
+            <RefreshCw className="w-4 h-4" />
+          </button>
+          <button type="button" onClick={() => setAddOpen(v => !v)} aria-expanded={addOpen} aria-controls="add-cell"
+            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white text-black text-sm font-medium">
+            <Plus className="w-4 h-4" /> Добавить соту
           </button>
         </div>
-        {incidents.length === 0 ? (
-          <p className="text-xs text-[#666]">Инцидентов пока нет.</p>
-        ) : (
-          <div className="max-h-72 overflow-auto space-y-2 pr-1">
-            {incidents.map((it, idx) => (
-              <div key={`${it.ts}-${idx}`} className="bg-[#0a0a0a] border border-[#242424] rounded-lg px-3 py-2">
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className={`${it.severity === 'error' ? 'text-red-400' : 'text-amber-300'} uppercase`}>
-                    {it.severity}
-                  </span>
-                  <span className="text-[#888]">{new Date(it.ts).toLocaleString('ru-RU')}</span>
-                  <span className="text-violet-300">{it.category}</span>
-                  <span className="text-[#777]">{it.source}</span>
-                  {(it.cell_name || it.cell_ip) && (
-                    <span className="text-[#999]">
-                      {it.cell_name || 'Сота'}{it.cell_ip ? ` (${it.cell_ip})` : ''}
-                    </span>
-                  )}
-                </div>
-                <p className="text-sm text-[#ddd] mt-1">{it.message}</p>
-                <p className="text-xs text-amber-300 mt-1">{it.hint}</p>
-                {it.checks && it.checks.length > 0 && (
-                  <p className="text-xs text-[#777] mt-1">{it.checks.join(' · ')}</p>
-                )}
-                {it.details && <p className="text-xs text-[#666] mt-1 break-all">{it.details}</p>}
-              </div>
-            ))}
+      </div>
+
+      {error && <div role="alert" className="bg-red-950/40 border border-red-800 text-red-300 text-sm rounded-lg px-4 py-3 whitespace-pre-wrap">{error}</div>}
+      {success && <div role="status" className="bg-emerald-950/40 border border-emerald-800 text-emerald-300 text-sm rounded-lg px-4 py-3">{success}</div>}
+
+      {addOpen && (
+        <div id="add-cell" className="bg-[#111] border border-[#222] rounded-xl p-4 md:p-5">
+          <div className="flex justify-between items-center gap-3 mb-4">
+            <h2 className="font-medium">Новая сота</h2>
+            <button type="button" onClick={() => setAddOpen(false)} className="text-sm text-[#aaa] hover:text-white">Закрыть</button>
           </div>
-        )}
-      </div>
-
-      {error && (
-        <div className="bg-red-950/40 border border-red-800 text-red-300 text-sm rounded-lg px-4 py-3 whitespace-pre-wrap">{error}</div>
+          <form onSubmit={connectAuto} className="grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-[#aaa] space-y-1.5">IP сервера
+              <input required value={form.host} autoComplete="off"
+                onChange={e => setForm(f => ({ ...f, host: e.target.value }))}
+                className="block w-full bg-[#0a0a0a] border border-[#333] rounded-lg px-3 py-2 text-sm text-white font-mono" />
+            </label>
+            <label className="text-xs text-[#aaa] space-y-1.5">SSH пароль root
+              <input required type="password" value={form.password} autoComplete="new-password"
+                onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+                className="block w-full bg-[#0a0a0a] border border-[#333] rounded-lg px-3 py-2 text-sm text-white" />
+            </label>
+            <label className="md:col-span-2 text-xs text-[#aaa] space-y-1.5">Название <span className="text-[#888]">(необязательно)</span>
+              <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                className="block w-full bg-[#0a0a0a] border border-[#333] rounded-lg px-3 py-2 text-sm text-white" />
+            </label>
+            <p className="md:col-span-2 text-xs text-[#888]">Ubuntu / Debian · SSH порт 22</p>
+            <button type="submit" disabled={busy === 'auto'}
+              className="md:col-span-2 flex items-center justify-center gap-2 bg-white text-black rounded-lg py-2.5 text-sm font-medium disabled:opacity-50">
+              {busy === 'auto' ? <><Loader2 className="w-4 h-4 animate-spin" /> Настраиваем…</> : 'Подключить соту'}
+            </button>
+          </form>
+        </div>
       )}
-      {success && (
-        <div className="bg-emerald-950/40 border border-emerald-800 text-emerald-300 text-sm rounded-lg px-4 py-3">{success}</div>
-      )}
 
-      <div className="bg-[#111] border border-[#222] rounded-xl p-4 md:p-6">
-        <h2 className="font-medium mb-1">Добавить соту</h2>
-        <p className="text-xs text-[#666] mb-4">IP + root-пароль SSH. Ubuntu/Debian, порт 22 открыт. 1–3 мин.</p>
-        <form onSubmit={connectAuto} className="grid gap-3 md:grid-cols-2">
-          <input required placeholder="IP сервера" value={form.host}
-            onChange={e => setForm(f => ({ ...f, host: e.target.value }))}
-            className="bg-[#0a0a0a] border border-[#333] rounded-lg px-3 py-2 text-sm font-mono" />
-          <input required type="password" placeholder="SSH пароль root" value={form.password}
-            onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-            className="bg-[#0a0a0a] border border-[#333] rounded-lg px-3 py-2 text-sm" />
-          <input placeholder="Название (необязательно)" value={form.name}
-            onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-            className="md:col-span-2 bg-[#0a0a0a] border border-[#333] rounded-lg px-3 py-2 text-sm" />
-          <button type="submit" disabled={busy === 'auto'}
-            className="md:col-span-2 flex items-center justify-center gap-2 bg-white text-black rounded-lg py-2.5 text-sm font-medium disabled:opacity-50">
-            {busy === 'auto' ? <><Loader2 className="w-4 h-4 animate-spin" /> Настраиваем…</> : <><Plus className="w-4 h-4" /> Подключить соту</>}
-          </button>
-        </form>
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 bg-[#111] border border-[#222] rounded-xl px-4 py-3 text-sm">
+        <p><span className="text-[#888]">Онлайн</span> <strong className="ml-2 tabular-nums">{loading ? '…' : hiveOnline}</strong></p>
+        <p><span className="text-[#888]">Серверы в работе</span> <strong className="ml-2 tabular-nums">{loading ? '…' : `${activeCells} / ${cells.length}`}</strong></p>
+        {metricsAt && <span className="sm:ml-auto text-xs text-[#888]">Обновлено {metricsAt.toLocaleTimeString('ru')}</span>}
       </div>
+      {summary?.all_cells_full && <p role="status" className="text-sm text-amber-300">Соты заполнены — добавьте сервер.</p>}
+      {summary?.queen_load?.build_running && <p className="text-sm text-blue-300">На Улье идёт сборка обновления.</p>}
 
-      {loading ? <p className="text-[#666] text-sm">Загрузка…</p> : (
+      {loading ? <p className="text-[#888] text-sm">Загрузка серверов…</p> : cells.length === 0 ? (
+        <p className="text-sm text-[#aaa]">Серверов пока нет. Добавьте первую соту.</p>
+      ) : (
         <div className="space-y-3">
           {cells.map(cell => (
-            <div key={cell.id} className="bg-[#111] border border-[#222] rounded-xl p-4 md:p-5">
-              <div className="flex flex-col md:flex-row md:justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {cell.is_queen ? <Crown className="w-4 h-4 text-amber-400" /> :
-                      cell.status === 'active' ? <Wifi className="w-4 h-4 text-emerald-400" /> :
-                      cell.status === 'provisioning' ? <Loader2 className="w-4 h-4 text-blue-400 animate-spin" /> :
-                      <WifiOff className="w-4 h-4 text-[#555]" />}
-                    <h2 className="font-semibold">{cell.name}</h2>
-                    {cell.manual_slot_title && (
-                      <span className="text-xs bg-[#1a1a1a] text-[#ccc] border border-[#333] px-2 py-0.5 rounded">
-                        {cell.manual_slot_title}
-                      </span>
-                    )}
-                    {cell.is_queen && <span className="text-xs bg-amber-950 text-amber-300 px-2 py-0.5 rounded">Улей</span>}
-                    {cell.admin_only && (
-                      <span className="text-xs bg-violet-950 text-violet-300 px-2 py-0.5 rounded">Только админ</span>
-                    )}
-                    {cell.ai_exit && (
-                      <span className="text-xs bg-sky-950 text-sky-300 px-2 py-0.5 rounded">Для ИИ</span>
-                    )}
-                    <span className="text-xs text-[#888]">{statusLabel[cell.status] || cell.status}</span>
+            <article key={cell.id} aria-label={cell.name} className="bg-[#111] border border-[#222] rounded-xl p-4 md:p-5 min-w-0">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h2 className="font-medium flex flex-wrap items-center gap-2">
+                    {cell.is_queen ? <Crown className="w-4 h-4 text-amber-400 shrink-0" /> : cell.status === 'active' ? <Wifi className="w-4 h-4 text-emerald-400 shrink-0" /> : <WifiOff className="w-4 h-4 text-[#888] shrink-0" />}
+                    <span className="break-words">{cell.name}</span>
+                    {cell.manual_slot_title && <span className="text-xs text-[#888] font-normal">{cell.manual_slot_title}</span>}
+                  </h2>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-xs">
+                    <span className={cell.status === 'active' ? 'text-emerald-400' : cell.status === 'error' || cell.status === 'offline' ? 'text-red-400' : 'text-amber-300'}>{statusLabel[cell.status] || cell.status}</span>
+                    {cell.admin_only && <span className="text-violet-300">Только админ</span>}
+                    {cell.ai_exit && <span className="text-sky-300">Профиль для ИИ</span>}
                   </div>
-                  <p className="text-sm text-[#888] mt-1 font-mono">{cell.public_ip}:{cell.wdtt_port}</p>
-                  {!cell.is_queen && cell.status === 'active' && !cell.has_ssh_password && (
-                    <p className="text-xs text-amber-500 mt-0.5">
-                      SSH не сохранён — автообновление агента недоступно (переподключите соту)
-                    </p>
-                  )}
-                  <CellHardwareLine cell={cell} />
-                  {summary && (
-                    <CellLoadGrid
-                      cell={cell}
-                      cpuThreshold={summary.cpu_threshold}
-                      memThreshold={summary.mem_threshold}
-                      bwThreshold={summary.bandwidth_threshold}
-                    />
-                  )}
-                  {cell.assigned_devices > cell.online_count && !cell.is_queen && (
-                    <p className="text-xs text-[#666] mt-1">
-                      привязано в БД: {cell.assigned_devices}
-                      {cell.assigned_devices > cell.online_count
-                        ? ` (офлайн ${cell.assigned_devices - cell.online_count})`
-                        : ''}
-                    </p>
-                  )}
-                  <p className={`text-xs mt-1 ${cell.online_count >= cell.max_online ? 'text-red-400' : 'text-[#666]'}`}>
-                    онлайн лимит: {cell.online_count} / {cell.max_online}
-                    {cell.capacity?.mode && (
-                      <span className="text-[#555]"> · {capModeLabel[cell.capacity.mode] || cell.capacity.mode}</span>
-                    )}
-                  </p>
-                  {cell.last_error && (
-                    <p
-                      className={`text-xs mt-2 whitespace-pre-wrap ${
-                        cell.last_error.startsWith('Профиль для ИИ: настройка') ||
-                        cell.last_error.startsWith('Профиль для ИИ: откат')
-                          ? 'text-sky-400'
-                          : 'text-red-400'
-                      }`}
-                    >
-                      {cell.last_error}
-                    </p>
-                  )}
+                  <p className="text-xs text-[#888] font-mono mt-2 break-all">{cell.public_ip}:{cell.wdtt_port}</p>
                 </div>
-                <div className="text-right">
-                  <p className="text-lg font-semibold">{cell.online_count}</p>
-                  <p className="text-xs text-[#666]">{cell.is_queen ? 'онлайн на Улье' : 'онлайн на соте'}</p>
-                  {cell.manual_slot_title && cell.online_count > 0 && (
-                    <p className="text-[10px] text-emerald-400 mt-0.5">{cell.is_queen ? 'Улей' : (cell.name || cell.manual_slot_title)}</p>
-                  )}
+                <div className="text-right shrink-0">
+                  <p className={`text-xl font-semibold tabular-nums ${cell.online_count >= cell.max_online ? 'text-amber-300' : ''}`}>{cell.online_count}<span className="text-xs font-normal text-[#888]"> / {cell.max_online}</span></p>
+                  <p className="text-xs text-[#888] mt-0.5">онлайн / лимит</p>
                 </div>
               </div>
-              {!cell.is_queen && (
-                <div className="flex gap-2 mt-4 flex-wrap items-center">
-                  {cell.status === 'provisioning' && (
-                    <span className="text-xs text-blue-400 flex items-center gap-1">
-                      <Loader2 className="w-3 h-3 animate-spin" /> Настройка 1–3 мин…
-                    </span>
+              <CellLoadGrid cell={cell} cpuThreshold={summary?.cpu_threshold ?? 80} memThreshold={summary?.mem_threshold ?? 85} bwThreshold={summary?.bandwidth_threshold ?? 90} />
+              {cell.last_error && <p className={`text-xs mt-3 whitespace-pre-wrap break-words ${cell.last_error.startsWith('Профиль для ИИ:') ? 'text-sky-300' : 'text-red-400'}`}>{cell.last_error}</p>}
+
+              <details className="mt-4 border-t border-[#222] pt-3">
+                <summary className="text-xs text-[#aaa] cursor-pointer hover:text-white py-1">{cell.is_queen ? 'Характеристики' : 'Настройки и характеристики'}</summary>
+                <div className="mt-3 space-y-3">
+                  <CellHardwareLine cell={cell} />
+                  <p className="text-xs text-[#888]">Назначено устройств: {cell.assigned_devices}{cell.capacity?.mode ? ` · лимит: ${capModeLabel[cell.capacity.mode] || cell.capacity.mode}` : ''}</p>
+                  {cell.load && <p className="text-xs text-[#888]">Трафик: ↓ {fmtBandwidth(cell.load.network_mbps_rx ?? 0)} · ↑ {fmtBandwidth(cell.load.network_mbps_tx ?? 0)}</p>}
+                  {typeof cell.load?.wg_peers_total === 'number' && <p className="text-xs text-[#888]">WG: {cell.load.wg_peers_total} ключей · {cell.load.wg_peers_live_3m ?? 0} онлайн · {cell.load.wg_peers_never_hs ?? 0} без подключения{typeof cell.load.wg_peers_live_known === 'number' ? ` · свои ${cell.load.wg_peers_live_known}` : ''}{(cell.load.wg_gc_last_removed ?? 0) > 0 ? ` · очищено ${cell.load.wg_gc_last_removed}` : ''}</p>}
+                  {!cell.is_queen && (
+                    <>
+                      {!cell.has_ssh_password && <p className="text-xs text-amber-300">SSH пароль не сохранён. Для профиля ИИ переподключите соту.</p>}
+                      <div className="flex flex-wrap gap-2">
+                        {cell.status === 'active' && <button type="button" disabled={busy === cell.id} onClick={() => setStatus(cell.id, 'draining')} title="Текущие подключения продолжат работать" className={`${actionClass} text-orange-300`}>Не принимать новых</button>}
+                        {cell.status === 'draining' && <button type="button" disabled={busy === cell.id} onClick={() => setStatus(cell.id, 'active')} className={`${actionClass} text-emerald-400`}>Вернуть в работу</button>}
+                        <button type="button" disabled={busy === cell.id} onClick={() => setAdminOnly(cell.id, !cell.admin_only)} className={`${actionClass} text-[#ccc]`}>{cell.admin_only ? 'Открыть всем' : 'Только админ'}</button>
+                        <button type="button" disabled={busy === cell.id || (cell.status !== 'active' && cell.status !== 'draining')} onClick={() => setAiExit(cell.id, !cell.ai_exit)} className={`${actionClass} text-[#ccc]`}>{cell.ai_exit ? 'Снять профиль для ИИ' : 'Профиль для ИИ'}</button>
+                        <button type="button" disabled={egressBusy === cell.id || cell.status !== 'active'} onClick={() => checkEgress(cell)} className={`${actionClass} text-[#ccc] flex items-center gap-1.5`}>{egressBusy === cell.id && <Loader2 className="w-3 h-3 animate-spin" />} Проверить IP</button>
+                        <button type="button" disabled={busy === cell.id} onClick={() => removeCell(cell)} className={`${actionClass} text-red-400 flex items-center gap-1.5`}><Trash2 className="w-3 h-3" />{cell.status === 'provisioning' ? 'Отменить настройку' : 'Удалить соту'}</button>
+                      </div>
+                    </>
                   )}
-                  {cell.status === 'active' && (
-                    <button type="button" disabled={busy === cell.id} onClick={() => setStatus(cell.id, 'draining')}
-                      title="Сота перестанет принимать новых клиентов. Текущие VPN доработают до отключения — после этого соту можно удалить."
-                      className="text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] text-orange-400 disabled:opacity-50">
-                      Вывод
-                    </button>
-                  )}
-                  {cell.status === 'draining' && (
-                    <button type="button" disabled={busy === cell.id} onClick={() => setStatus(cell.id, 'active')}
-                      className="text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] text-emerald-400 disabled:opacity-50">
-                      Вернуть в работу
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    disabled={busy === cell.id}
-                    onClick={() => setAdminOnly(cell.id, !cell.admin_only)}
-                    title="В меню клиентов и в автобалансе — только для администратора"
-                    className={`text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] disabled:opacity-50 ${
-                      cell.admin_only ? 'text-violet-300' : 'text-[#aaa]'
-                    }`}
-                  >
-                    {cell.admin_only ? 'Открыть всем' : 'Только админ'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy === cell.id || (cell.status !== 'active' && cell.status !== 'draining')}
-                    onClick={() => setAiExit(cell.id, !cell.ai_exit)}
-                    title="Включить или снять профиль для ИИ на этой соте: гигиена + свой DNS (без WARP). Нужен сохранённый SSH."
-                    className={`text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] disabled:opacity-50 ${
-                      cell.ai_exit ? 'text-sky-300' : 'text-[#aaa]'
-                    }`}
-                  >
-                    {cell.ai_exit ? 'Снять профиль для ИИ' : 'Профиль для ИИ'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={egressBusy === cell.id || cell.status !== 'active'}
-                    onClick={() => checkEgress(cell)}
-                    title="Как IP соты видят снаружи: гео, hosting/proxy, PTR, резолвер, ответы ИИ-сайтов"
-                    className="text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] text-[#aaa] flex items-center gap-1 disabled:opacity-50"
-                  >
-                    {egressBusy === cell.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Activity className="w-3 h-3" />}
-                    Проверить IP
-                  </button>
-                  <button type="button" disabled={busy === cell.id} onClick={() => removeCell(cell)}
-                    className="text-xs px-3 py-1.5 rounded-lg bg-[#1a1a1a] text-red-400 flex items-center gap-1 disabled:opacity-50">
-                    {busy === cell.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                    {cell.status === 'provisioning' ? 'Отменить' : 'Удалить'}
-                  </button>
+                  {egress[cell.id] && <EgressCard info={egress[cell.id]} />}
                 </div>
-              )}
-              {egress[cell.id] && <EgressCard info={egress[cell.id]} />}
-            </div>
+              </details>
+            </article>
           ))}
         </div>
       )}
+
+      <details className="bg-[#111] border border-[#222] rounded-xl">
+        <summary className="p-4 text-sm font-medium cursor-pointer hover:text-[#ccc]">Доступность серверов</summary>
+        <HiveAvailabilityPanel token={token} />
+      </details>
+      <details className="bg-[#111] border border-[#222] rounded-xl" onToggle={e => setIncidentsOpen(e.currentTarget.open)}>
+        <summary className="p-4 text-sm font-medium cursor-pointer hover:text-[#ccc]">Инциденты <span className={incidents.length ? 'text-amber-300 ml-2' : 'text-[#888] ml-2'}>{incidents.length || 'Нет ошибок'}</span></summary>
+        <div className="px-4 pb-4 space-y-3">
+          <div className="flex flex-wrap justify-between items-center gap-3">
+            <p className="text-xs text-[#888]">{incidentsSeenAt ? `Просмотрено ${new Date(incidentsSeenAt).toLocaleString('ru-RU')}` : 'Журнал событий'}</p>
+            <button type="button" onClick={clearIncidents} disabled={busy === 'incidents' || incidents.length === 0} className={`${actionClass} text-[#ccc]`}>{busy === 'incidents' ? 'Удаляю…' : 'Очистить журнал'}</button>
+          </div>
+          {incidents.length === 0 ? <p className="text-xs text-[#888]">Инцидентов нет.</p> : (
+            <div className="max-h-80 overflow-auto space-y-2">
+              {incidents.map((it, idx) => (
+                <div key={`${it.ts}-${idx}`} className="bg-[#0a0a0a] border border-[#242424] rounded-lg px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-[#888]">
+                    <span className={it.severity === 'error' ? 'text-red-400' : 'text-amber-300'}>{it.severity === 'error' ? 'Ошибка' : 'Предупреждение'}</span>
+                    <span>{new Date(it.ts).toLocaleString('ru-RU')}</span>
+                    {(it.cell_name || it.cell_ip) && <span>{it.cell_name || it.cell_ip}</span>}
+                  </div>
+                  <p className="text-sm text-[#ddd] mt-1 break-words">{it.message}</p>
+                  {it.hint && <p className="text-xs text-amber-300 mt-1">{it.hint}</p>}
+                  {(it.details || it.checks?.length) && <details className="mt-2 text-xs text-[#888]"><summary className="cursor-pointer">Подробности</summary><p className="mt-1">{it.category} · {it.source}</p><p className="mt-1">{it.checks?.join(' · ')}</p><p className="mt-1 break-all">{it.details}</p></details>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </details>
     </div>
   )
 }

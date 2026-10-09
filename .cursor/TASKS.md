@@ -6,6 +6,28 @@ Agent приступает к **первой невыполненной** зад
 
 ---
 
+### Подписка обновляется до успеха оплаты и отключения временного VPN (2026-10-09)
+
+- [x] Воспроизвести преждевременный COMPLETED/завершение poll при старом профиле; Android пропуск HTTP при LTE overlay установлен по исходникам
+- [x] Android: свежий профиль/кеш/UI через API block подтверждения оплаты; повтор при ошибке, cleanup после обновления; основной VPN/предзагрузка сохранены
+- [x] PC общий renderer: live profile до success, защита параллельных тиков/отмены, browser internet до возврата; OpenWrt тот же guard/retry без чужих WIP
+- [x] Android300 JVM + assembleDebug; PC161PASS/1SKIP,8 actual poll regressions, renderer/package integrity,11старых type errors/0новых; OpenWrt6scopedPASS и staged poll PASS (full46PASS/4API transportFAIL); kick-stormOK
+- [x] Commit Androidcb46c2a, PC10b965d, OpenWrtbbb3ee8 по явному запросу push; debug APK и pc/build-debug-payment-profile-20261009 готовы
+- [x] Push Android/PC/OpenWrt выполнен, удалённые SHA совпали; журнал публикуется отдельным docs-коммитом main
+- [ ] Пользователь: реальная оплата с временным VPN→возврат→главный экран с актуальной подпиской/лимитом без logout/restart; проверить продление и исходный main VPN
+- [ ] Mac: проверить iOS локальную payment правку через Swift/Xcode вместе с прежним WIP перед отдельной публикацией
+
+### Независимые списки ЧС и БС сайтов (2026-10-08)
+
+- [x] PC: v2 хранилище двух списков + legacy active mirror; mode-only IPC, отдельные renderer caches, гидратация из main, кнопки восстанавливают свой список
+- [x] Android: SharedPreferences store, атомарная запись режима/двух списков/active mirror, UI восстанавливает свой список, VPN/resolve читают согласованный active State
+- [x] Миграция единственного старого списка только в текущий режим; очистка/редактирование/import/export не трогают другой, описания прежние
+- [x] PC153PASS/1SKIP и настоящий React/Chrome UI прогон, renderer/debug package integrity; tsc11 прежних ошибок/0новых (полный check не PASS)
+- [x] Android297JVM PASS + assembleDebug, APK4ABI/store проверены; debug Android и PC build-debug-site-lists-20261008-141442 готовы без push
+- [x] iOS локальные source/store и Mac test добавлены в прежнюю переделку; OpenWrt меню без ЧС/БС sites, изменений нет
+- [ ] Mac: выполнить Swift store тест и Xcode build; iOS не пушить до проверки
+- [ ] Пользователь: Android/PC debug — разные ЧС/БС, import/remove, restart и live VPN; новый push только по запросу
+
 ### Пуш стабилизации ПК (2026-10-08)
 
 - [x] По явному запросу пользователя закоммитить18 source/test/README файлов без BOM/CRLF-only шума и сборок: pc7c0504ac234ffb0d32d101e6f1bae33439683695

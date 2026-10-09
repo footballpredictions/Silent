@@ -261,6 +261,7 @@ export default function MainScreen({
   const [paymentBusyPlan, setPaymentBusyPlan] = useState<string | null>(null)
   const paymentPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const paymentPollDeadlineRef = useRef(0)
+  const paymentPollVersionRef = useRef(0)
   const connectLockRef = useRef(false)
   const connectGenRef = useRef(0)
   /** Инвалидирует отложенный vpnDisconnect после нового включения. */
@@ -375,6 +376,7 @@ export default function MainScreen({
   }, [applyServerProfile])
 
   const stopPaymentPoll = useCallback(() => {
+    paymentPollVersionRef.current++
     if (paymentPollRef.current) {
       clearInterval(paymentPollRef.current)
       paymentPollRef.current = null
@@ -383,23 +385,35 @@ export default function MainScreen({
 
   const startPaymentPoll = useCallback((label: string) => {
     stopPaymentPoll()
+    const version = paymentPollVersionRef.current
+    let polling = false
     setPaymentStatus('waiting')
     paymentPollDeadlineRef.current = Date.now() + 10 * 60 * 1000 // 10 минут ожидания
     paymentPollRef.current = setInterval(async () => {
+      if (polling || version !== paymentPollVersionRef.current) return
       if (Date.now() > paymentPollDeadlineRef.current) {
         stopPaymentPoll()
         setPaymentStatus('timeout')
         void stopPaymentBootstrapVpn().catch(() => null)
         return
       }
+      polling = true
       try {
         const res = await api.get(`/api/payments/status/${label}`)
+        if (version !== paymentPollVersionRef.current) return
         const status = res.data?.status
         if (status === 'completed' && res.data?.subscription_applied !== false) {
+          // Use the same live payment route; fetchProfile can silently return cache.
+          const fresh = (await api.get('/api/users/me')).data as Profile
+          if (version !== paymentPollVersionRef.current) return
+          if (!fresh?.is_admin && (!fresh?.subscription?.is_active ||
+            ['trial', 'test'].includes(fresh.subscription.plan_type || '') ||
+            (res.data?.plan_type && fresh.subscription.plan_type !== res.data.plan_type))) return
+          applyServerProfile(fresh)
+          if (fresh.vk_user_id) saveVkUserId(fresh.vk_user_id)
+          stopPaymentPoll()
           setPaymentStatus('completed')
-          await fetchProfile()
           if (!document.hidden) {
-            stopPaymentPoll()
             if (isPaymentBootstrapActive()) {
               await stopPaymentBootstrapVpn().catch(() => null)
             }
@@ -408,26 +422,21 @@ export default function MainScreen({
           stopPaymentPoll()
           setPaymentStatus('failed')
           await stopPaymentBootstrapVpn().catch(() => null)
-        } else if (status === 'failed' || status === 'expired') {
-          stopPaymentPoll()
-          setPaymentStatus('failed')
-          await stopPaymentBootstrapVpn().catch(() => null)
         }
       } catch {
         // Сеть моргнула — не обрываем ожидание, попробуем на следующем тике.
+      } finally {
+        polling = false
       }
     }, 4000)
-  }, [fetchProfile, stopPaymentPoll])
+  }, [applyServerProfile, stopPaymentPoll])
 
   useEffect(() => () => stopPaymentPoll(), [stopPaymentPoll])
 
   useEffect(() => {
     if (paymentStatus !== 'completed') return
     setShowSubscriptionShop(false)
-    if (typeof document !== 'undefined' && document.hidden) return
-    stopPaymentPoll()
-    void stopPaymentBootstrapVpn().catch(() => null)
-  }, [paymentStatus, profile, stopPaymentPoll])
+  }, [paymentStatus])
 
   useEffect(() => {
     const onVis = () => {

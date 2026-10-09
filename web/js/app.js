@@ -836,8 +836,13 @@ async function pollPayment(label, version) {
       const result = await api.paymentStatus(label);
       if (version !== paymentPollVersion) return;
       if (result.status === "completed" && result.subscription_applied !== false) {
+        const fresh = await api.profile();
+        if (version !== paymentPollVersion) return;
+        if (!fresh?.is_admin && (!fresh?.subscription?.is_active ||
+          ["trial", "test"].includes(fresh.subscription.plan_type) ||
+          (result.plan_type && fresh.subscription.plan_type !== result.plan_type))) continue;
+        state.profile = fresh;
         state.paymentStatus = "completed";
-        try { state.profile = await api.profile(); } catch { /* retain last profile until next refresh */ }
         state.showSubscriptionShop = false;
         render();
         return;

@@ -43,6 +43,7 @@ export async function fetchBootstrapConfig(): Promise<VpnConfigPayload | null> {
   return applyBootstrapHash(buildLocalBootstrapConfig(boot, fp), boot)
 }
 
+let connectBootstrapHeld = false
 let bootstrapActive = false
 let bootstrapExpired = false
 let bootstrapTimeoutTimer: ReturnType<typeof setInterval> | null = null
@@ -103,6 +104,7 @@ async function expireBootstrapSession() {
   pushLog('Bootstrap', `session expired (${BOOTSTRAP_SESSION_MS / 1000}s)`)
   resetBootstrapDeadline()
   bootstrapActive = false
+  connectBootstrapHeld = false
   bootstrapExpired = true
   setBootstrapApiRouting(false)
   clearTunnelApiBase()
@@ -144,6 +146,7 @@ export async function shutdownBootstrapBeforeExit(): Promise<void> {
   cancelBootstrapSessionTimeout()
   resetBootstrapDeadline()
   bootstrapActive = false
+  connectBootstrapHeld = false
   setBootstrapApiRouting(false)
   clearTunnelApiBase()
   await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
@@ -269,6 +272,23 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
   return false
 }
 
+/** Восстановление конфига на главном экране: локальный VK-канал без public API. */
+export async function ensureConnectBootstrapVpn(): Promise<boolean> {
+  connectBootstrapHeld = true
+  bootstrapExpired = false
+  try {
+    return await ensureBootstrapVpn()
+  } catch (error) {
+    pushLog('Bootstrap', `config recovery failed: ${String(error)}`, 'W')
+    return false
+  }
+}
+
+/** Включая запуск: очистка login-bootstrap не должна прервать восстановление. */
+export function isConnectBootstrapActive(): boolean {
+  return connectBootstrapHeld
+}
+
 /** Профиль и хеши через tunnel (вызывать до disconnect bootstrap). */
 export async function prefetchLoginDataViaBootstrap(): Promise<boolean> {
   const { profile, hashesOk, olcrtcOk } = await syncLoginDataViaTunnel()
@@ -281,6 +301,7 @@ export function resetBootstrapRendererState(): void {
   bootstrapEnsureGeneration += 1
   cancelBootstrapSessionTimeout()
   bootstrapActive = false
+  connectBootstrapHeld = false
   setBootstrapApiRouting(false)
   clearTunnelApiBase()
 }
@@ -289,6 +310,7 @@ export async function disconnectBootstrapVpn(): Promise<void> {
   bootstrapEnsureGeneration += 1
   cancelBootstrapSessionTimeout()
   bootstrapActive = false
+  connectBootstrapHeld = false
   paymentBootstrapHeld = false
   setBootstrapApiRouting(false)
   clearTunnelApiBase()

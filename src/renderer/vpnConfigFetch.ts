@@ -7,11 +7,12 @@ function hasWgKeys(config: VpnConfigPayload | null | undefined): boolean {
   return !!config?.wg_private_key?.trim() && !!config?.server_public_key?.trim()
 }
 
-function isSubscriptionError(err: unknown): boolean {
-  return (err as { response?: { status?: number } })?.response?.status === 402
+function isAccessError(err: unknown): boolean {
+  const status = (err as { response?: { status?: number } })?.response?.status
+  return status === 402 || status === 403
 }
 
-/** Получить VPN-конфиг (register → /config) через публичный HTTPS. */
+/** Получить VPN-конфиг (register → /config) через текущий API-маршрут. */
 export async function fetchVpnConfigWithKeys(fingerprint: string): Promise<VpnConfigPayload | null> {
   try {
     const preferred = getPreferredServer()
@@ -27,7 +28,7 @@ export async function fetchVpnConfigWithKeys(fingerprint: string): Promise<VpnCo
       return config
     }
   } catch (e) {
-    if (isSubscriptionError(e)) throw e
+    if (isAccessError(e)) throw e
     pushLog('Main', `device/register fail: ${formatApiError(e, 'Network Error')}`, 'W')
   }
 
@@ -40,7 +41,7 @@ export async function fetchVpnConfigWithKeys(fingerprint: string): Promise<VpnCo
       return config
     }
   } catch (e) {
-    if (isSubscriptionError(e)) throw e
+    if (isAccessError(e)) throw e
     pushLog('Main', `vpn/config fail: ${formatApiError(e, 'Network Error')}`, 'W')
   }
 

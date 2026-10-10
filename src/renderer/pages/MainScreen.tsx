@@ -17,6 +17,8 @@ import {
 } from '../vkConfig'
 import {
   disconnectBootstrapVpn,
+  ensureConnectBootstrapVpn,
+  isConnectBootstrapActive,
   isBootstrapVpnActive,
   isPaymentBootstrapActive,
   resetBootstrapRendererState,
@@ -456,15 +458,15 @@ export default function MainScreen({
   }, [menuOpen, menuPage])
 
   useEffect(() => {
-    if (isPaymentBootstrapActive()) return
+    if (isPaymentBootstrapActive() || isConnectBootstrapActive()) return
     // На главном экране login-bootstrap не должен жить.
     resetBootstrapRendererState()
     const api_ = (window as any).electronAPI
     void (async () => {
       try {
-        if (isPaymentBootstrapActive()) return
+        if (isPaymentBootstrapActive() || isConnectBootstrapActive()) return
         const st = await api_?.vpnIsReady?.()
-        if (st?.bootstrap && !st?.ready && !isPaymentBootstrapActive()) {
+        if (st?.bootstrap && !st?.ready && !isPaymentBootstrapActive() && !isConnectBootstrapActive()) {
           await disconnectBootstrapVpn()
           pushLog('Main', 'stale bootstrap VPN stopped on main screen')
         }
@@ -883,7 +885,9 @@ export default function MainScreen({
       connectLockRef.current = false
       void (async () => {
         try {
-          if ((window as any).electronAPI?.vpnDisconnect) {
+          if (isConnectBootstrapActive()) {
+            await disconnectBootstrapVpn()
+          } else if ((window as any).electronAPI?.vpnDisconnect) {
             await (window as any).electronAPI.vpnDisconnect()
           }
         } catch { /* ignore */ }
@@ -933,6 +937,8 @@ export default function MainScreen({
     SessionTrace.enter('Main.connect', 'start')
     const connectGen = ++connectGenRef.current
     startSnakeHold(connectGen)
+    let recoveryBootstrapOwned = false
+    let mainConnectStarted = false
     try {
       const fp = DEVICE_FINGERPRINT()
       const api_ = (window as any).electronAPI
@@ -992,6 +998,14 @@ export default function MainScreen({
       if (!config) {
         try {
           config = await fetchVpnConfigWithKeys(fp)
+          if (connectGen !== connectGenRef.current) return
+          if (!config && !isOlcrtcBypass()) {
+            pushLog('Main', 'public config unavailable — recovering through temporary VK tunnel', 'W')
+            recoveryBootstrapOwned = true
+            const recovered = await ensureConnectBootstrapVpn()
+            if (connectGen !== connectGenRef.current) return
+            if (recovered) config = await fetchVpnConfigWithKeys(fp)
+          }
         } catch (e: any) {
           if (connectGen !== connectGenRef.current) return
           if (e.response?.status === 402) {
@@ -1025,7 +1039,7 @@ export default function MainScreen({
       if (!config) {
         pushLog('Main', 'no VPN config', 'E')
         resetVpnUi()
-        alert('Сервер недоступен. Выйдите и настройте hash на экране входа.')
+        alert('Не удалось получить настройки VPN. Временный VK-канал недоступен — повторите подключение.')
         return
       }
       if (!config.wg_private_key?.trim() || !config.server_public_key?.trim()) {
@@ -1038,6 +1052,7 @@ export default function MainScreen({
       // vpnConnect сразу; змейка 1.5 оборота держит «Подключение...» (SNAKE_MIN_VISIBLE_MS).
       connectLockRef.current = false
 
+      mainConnectStarted = true
       if (isBootstrapVpnActive()) {
         void (async () => {
           await disconnectBootstrapVpn()
@@ -1057,6 +1072,9 @@ export default function MainScreen({
       resetVpnUi()
     } finally {
       if (connectGen === connectGenRef.current) {
+        if (recoveryBootstrapOwned && !mainConnectStarted && isConnectBootstrapActive()) {
+          await disconnectBootstrapVpn().catch(() => null)
+        }
         connectLockRef.current = false
       }
     }

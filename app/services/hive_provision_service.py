@@ -389,7 +389,7 @@ Environment=WG_INTERFACE=wdtt0
 Environment=STANDBY_API_PORT=8000
 Environment=CELL_LINK_CAPACITY_MBPS={link_mbps}
 Environment=TUNNEL_API_URL=http://10.66.66.1:8000
-ExecStart=/opt/silent-vpn/cell-agent/venv/bin/uvicorn main:app --host 0.0.0.0 --port {agent_port}
+ExecStart=/opt/silent-vpn/cell-agent/venv/bin/python -m agent_http --host 0.0.0.0 --port {agent_port}
 Restart=always
 RestartSec=3
 
@@ -472,6 +472,8 @@ def upgrade_cell_agent_via_ssh(
             f"/etc/systemd/system/silent-cell-agent.service; "
             f"else sed -i \"/Environment=HIVE_API_URL/a Environment=CELL_LINK_CAPACITY_MBPS=$LINK\" "
             f"/etc/systemd/system/silent-cell-agent.service; fi; "
+            f"sed -i 's@^ExecStart=.*@ExecStart=/opt/silent-vpn/cell-agent/venv/bin/python -m agent_http --host 0.0.0.0 --port {agent_port}@' "
+            f"/etc/systemd/system/silent-cell-agent.service; "
             f"systemctl daemon-reload; "
             f"/opt/silent-vpn/cell-agent/venv/bin/pip install -q psutil httpx 2>/dev/null; "
             f"systemctl restart silent-cell-agent; sleep 2; "

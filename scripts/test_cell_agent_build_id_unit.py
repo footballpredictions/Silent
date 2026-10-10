@@ -61,9 +61,10 @@ def test_upgrade_replaces_old_build_formula_and_missing_modules() -> None:
                 remote_run = stack.enter_context(patch.object(provision, "_run", return_value=(0, "ok", "")))
                 provision.upgrade_cell_agent_via_ssh("93.184.216.34", "test-password")
             assert _cell_build_id(folder) == cell_agent_build_id(), "upgrade leaves build mismatch and repeats restart"
-            assert {"build_id.py", "main.py", "standby_online.py", "standby_runtime.py", "status_cache.py"} <= uploaded
+            assert {"agent_http.py", "build_id.py", "main.py", "standby_online.py", "standby_runtime.py", "status_cache.py"} <= uploaded
             command = remote_run.call_args.args[1]
             assert "systemctl restart silent-cell-agent" in command
+            assert "-m agent_http" in command, "upgrade leaves the unbounded legacy HTTP listener"
             assert "systemctl restart wdtt" not in command
             assert (folder / "queen_apply.py").is_file(), "legacy modules must not be deleted"
             client.close.assert_called_once()
@@ -83,7 +84,7 @@ def test_provision_ships_complete_agent_for_first_start() -> None:
                 hive_public_ip="93.184.216.35", hive_api_base="http://93.184.216.35:8000",
                 wdtt_master_password="test-master", cell_id="test-cell",
             )
-        assert {"build_id.py", "main.py", "standby_online.py", "standby_runtime.py", "status_cache.py"} <= uploaded
+        assert {"agent_http.py", "build_id.py", "main.py", "standby_online.py", "standby_runtime.py", "status_cache.py"} <= uploaded
         assert _cell_build_id(folder) == cell_agent_build_id()
 
 

@@ -18,6 +18,8 @@ from _deploy_common import BACKEND_ROOT, CONTAINER, REMOTE, connect, run
 from fix_tunnel_dnat import FIX_SH
 
 PREFLIGHT_TESTS = (
+    "scripts/test_nginx_http_api_unit.py",
+    "scripts/test_cell_http_guard_unit.py",
     "scripts/test_admin_ui_cache_unit.py",
     "scripts/test_hive_capacity_regression_unit.py",
     "scripts/test_dashboard_online_consistency_unit.py",
@@ -95,7 +97,23 @@ def _upload_admin_ui(sftp, client, dist: Path) -> None:
         print("ui", rel)
 
 
-def _deploy_selected_python(paths: list[str], *, admin_ui: Path | None = None) -> None:
+def _upload_cell_agent_source(sftp, client) -> None:
+    import runpy
+    names = runpy.run_path(str(BACKEND_ROOT / 'cell-agent/build_id.py'))['SHIPPED']
+    paths = [BACKEND_ROOT / 'cell-agent' / name for name in names]
+    for path in paths:
+        compile(path.read_text(encoding='utf-8'), str(path), 'exec')
+    stamp = str(time.time_ns())
+    for path in paths:
+        remote = f'{REMOTE}/cell-agent/{path.name}'
+        temporary = f'{remote}.deploy-{stamp}'
+        sftp.put(str(path), temporary)
+        sftp.chmod(temporary, 0o644)
+        sftp.posix_rename(temporary, remote)
+        print('cell-agent source', path.name)
+
+
+def _deploy_selected_python(paths: list[str], *, admin_ui: Path | None = None, cell_agent_source: bool = False, nginx_config: bool = False) -> None:
     paths = _selected_python_paths(paths)
     if not paths:
         raise SystemExit("No Python files selected")
@@ -117,6 +135,14 @@ def _deploy_selected_python(paths: list[str], *, admin_ui: Path | None = None) -
                 print("selected Python", rel)
             if admin_ui is not None:
                 _upload_admin_ui(sftp, client, admin_ui)
+            if cell_agent_source:
+                _upload_cell_agent_source(sftp, client)
+            if nginx_config:
+                remote = f'{REMOTE}/docker/nginx.conf'
+                with sftp.file(remote, 'rb') as source, sftp.file(f'{remote}.before-{stamp}', 'wb') as backup:
+                    backup.write(source.read())
+                sftp.put(str(BACKEND_ROOT / 'docker/nginx.conf'), remote)
+                print('selected nginx config')
         _restart_and_verify(client, expected_admin_index=admin_ui / 'index.html' if admin_ui else None)
     finally:
         client.close()
@@ -126,15 +152,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python-only", nargs="+", metavar="PATH", help="Only existing app/ai Python files; keep UI/compose/cell-agent unchanged")
     parser.add_argument("--with-admin-ui", action="store_true", help="Also publish the built admin UI with --python-only")
+    parser.add_argument("--with-cell-agent-source", action="store_true", help="Publish the SHIPPED agent source bundle with --python-only")
+    parser.add_argument("--with-nginx", action="store_true", help="Publish docker/nginx.conf with --python-only")
     args = parser.parse_args()
     dist = BACKEND_ROOT / "admin-ui" / "dist"
     if (not args.python_only or args.with_admin_ui) and not (dist / 'index.html').is_file():
         raise SystemExit("Сначала: cd admin-ui && npm run build")
     if args.python_only:
-        _deploy_selected_python(args.python_only, admin_ui=dist if args.with_admin_ui else None)
+        _deploy_selected_python(args.python_only, admin_ui=dist if args.with_admin_ui else None, cell_agent_source=args.with_cell_agent_source, nginx_config=args.with_nginx)
         return
     if args.with_admin_ui:
         parser.error("--with-admin-ui requires --python-only")
+    if args.with_cell_agent_source:
+        parser.error("--with-cell-agent-source requires --python-only")
+    if args.with_nginx:
+        parser.error("--with-nginx requires --python-only")
     _preflight()
 
     client = connect()
@@ -145,22 +177,8 @@ def main() -> None:
 
     _upload_admin_ui(sftp, client, dist)
 
-    cell_agent_dir = BACKEND_ROOT / "cell-agent"
-    for name in (
-        "build_id.py",
-        "main.py",
-        "standby_runtime.py",
-        "standby_online.py",
-        "status_cache.py",
-    ):
-        cell_agent = cell_agent_dir / name
-        if cell_agent.is_file():
-            rp = f"{REMOTE}/cell-agent/{name}"
-            client.exec_command(f"mkdir -p {REMOTE}/cell-agent")
-            sftp.put(str(cell_agent), rp)
-            print(f"upload cell-agent/{name}")
-        else:
-            print(f"WARN: cell-agent/{name} missing locally")
+    client.exec_command(f"mkdir -p {REMOTE}/cell-agent")
+    _upload_cell_agent_source(sftp, client)
 
     client.exec_command(f"mkdir -p {REMOTE}/scripts")
     for name in ("fix_tunnel_dnat.py", "_deploy_common.py"):
@@ -255,6 +273,44 @@ print(json.dumps({{'public_host':settings.ADMIN_PUBLIC_HOST,'entry_sha':sha}}))
     print('PASS admin publication: no-store entry/version, identical routes, expected build, assets and HTTPS 443/2083')
 
 
+def _verify_registered_cell_allowlist(client) -> None:
+    import ipaddress
+    import json
+    import re
+
+    program = '''import asyncio,json
+from sqlalchemy import select
+from app.database import AsyncSessionLocal
+from app.models import HiveCell
+async def main():
+    async with AsyncSessionLocal() as db:
+        rows=(await db.execute(select(HiveCell.public_ip).where(HiveCell.is_queen==False,HiveCell.status.in_(('active','draining'))))).scalars().all()
+        print(json.dumps(list(rows)))
+asyncio.run(main())
+'''
+    stdin, stdout, stderr = client.exec_command(f'docker exec -i {shlex.quote(CONTAINER)} python -', timeout=30)
+    stdin.write(program)
+    stdin.flush()
+    stdin.channel.shutdown_write()
+    ips = json.loads(stdout.read())
+    if stdout.channel.recv_exit_status():
+        raise SystemExit('Could not verify registered cell allowlist')
+    nginx = CONTAINER.replace('-api-', '-nginx-')
+    _, stdout, stderr = client.exec_command(f'docker exec {shlex.quote(nginx)} nginx -T', timeout=30)
+    conf = stdout.read().decode()
+    if stdout.channel.recv_exit_status():
+        raise SystemExit('Nginx config validation failed')
+    match = re.search(r'server\s*\{\s*listen\s+80\s+default_server;(.*?)\blocation\b', conf, re.S)
+    if not match:
+        raise SystemExit('Missing default HTTP tunnel server')
+    networks = [ipaddress.ip_network(address.strip(), strict=False)
+                for address in re.findall(r'\ballow\s+([^;]+);', match.group(1))]
+    missing = [address for address in ips if not any(ipaddress.ip_address(address) in network for network in networks)]
+    if missing:
+        raise SystemExit('Registered cell tunnel/bootstrap denied by nginx: ' + ', '.join(missing))
+    print(f'PASS nginx tunnel allowlist: all {len(ips)} registered active cells')
+
+
 def _restart_and_verify(client, *, expected_admin_index: Path | None = None) -> None:
     # Код уже на хосте. up -d api --no-deps recreate только если compose изменился;
     # после volume ./app и ./ai recreate безопасен. wdtt не трогаем.
@@ -331,6 +387,7 @@ fi
     sftp2.close()
     run(client, "bash /tmp/deploy_stable.sh 2>&1", timeout=240)
     _verify_admin_ui(client, expected_admin_index)
+    _verify_registered_cell_allowlist(client)
     client.close()
     print("Done")
 

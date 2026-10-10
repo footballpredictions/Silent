@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 SHIPPED = (
+    "agent_http.py",
     "build_id.py",
     "main.py",
     "standby_online.py",

@@ -26,12 +26,15 @@ def main() -> None:
     os.environ["DEPLOY_HOST"] = cell_host
     client = connect()
 
-    agent_main = (BACKEND_ROOT / "cell-agent" / "main.py").read_text(encoding="utf-8")
+    import runpy
+    shipped = runpy.run_path(str(BACKEND_ROOT / "cell-agent" / "build_id.py"))["SHIPPED"]
+    agent_bundle = {name: (BACKEND_ROOT / "cell-agent" / name).read_text(encoding="utf-8") for name in shipped}
     agent_req = (BACKEND_ROOT / "cell-agent" / "requirements.txt").read_text(encoding="utf-8")
 
     sftp = client.open_sftp()
     client.exec_command("mkdir -p /opt/silent-vpn/cell-agent")
-    sftp.putfo(io.BytesIO(agent_main.encode()), "/opt/silent-vpn/cell-agent/main.py")
+    for name, source in agent_bundle.items():
+        sftp.putfo(io.BytesIO(source.encode()), f"/opt/silent-vpn/cell-agent/{name}")
     sftp.putfo(io.BytesIO(agent_req.encode()), "/opt/silent-vpn/cell-agent/requirements.txt")
 
     script = f"""#!/bin/bash
@@ -52,7 +55,7 @@ Environment=WG_SERVER_PUBLIC_KEY={WG_PUBKEY}
 Environment=HIVE_API_URL={HIVE_URL}
 Environment=CELL_LINK_CAPACITY_MBPS=1000
 Environment=TUNNEL_API_URL=http://10.66.66.1:8000
-ExecStart=/opt/silent-vpn/cell-agent/venv/bin/uvicorn main:app --host 0.0.0.0 --port {CELL_PORT}
+ExecStart=/opt/silent-vpn/cell-agent/venv/bin/python -m agent_http --host 0.0.0.0 --port {CELL_PORT}
 Restart=always
 RestartSec=3
 

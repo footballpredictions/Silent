@@ -3,6 +3,8 @@
 Все endpoint'ы, внешние сервисы и переменные окружения проекта.
 **Секреты не хранятся в этом файле** — только имена переменных и расположение.
 
+Cell-agent HTTP (2026-10-10): прежний plain HTTP9100 status/bootstrap сохранён. Entry `python -m agent_http` ограничивает ожидание полных HTTP-заголовков15с и256 незавершёнными соединениями; полные запросы, streaming body и медленные ответы не обрываются этим таймером. Nginx Улья разрешает tunnel/bootstrap от всех4сот; canonical deploy проверяет allowlist по active/draining узлам БД. WireGuard/WDTT и клиентские API-контракты прежние.
+
 Предоплата (2026-09-28): `POST /api/payments/preview` возвращает `plan_type`, `purchased_days`, `carried_days`, `expires_at`, `amount`, `message`, `calculated_at`. `/api/users/me` и профиль в client_sync_bundle дополнены опциональным `payment_previews` (map по id шести тарифов). Клиенты используют quotes не старше 5 минут для мгновенного предупреждения; при активации срок всегда пересчитывается по актуальным данным. Старые клиенты игнорируют новые поля.
 
 `remaining_days`, `carried_days`, `purchased_days` и текст предупреждения показывают целые дни (округление вверх). Это отображение; точный денежный остаток, ставка дня и `expires_at` сохраняют исходную точность.

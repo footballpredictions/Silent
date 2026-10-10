@@ -6,6 +6,16 @@ Agent приступает к **первой невыполненной** зад
 
 ---
 
+### Нет нагрузки на Сотах 1/4 (2026-10-10)
+
+- [x] Production HTTP/local SSH diagnosis: FD1024/1024, входящие idle TCP9100, EMFILE; C2 тоже растёт
+- [x] TCP regression RED→GREEN, deadline15с/cap256, сохранить complete requests/body/response и старый HTTP/bootstrap
+- [x] SHIPPED/build_id/install/upgrade единый guard entry; canonical --with-cell-agent-source и mandatory TCP preflight
+- [x] 12 preflight + auto/status/standby units PASS; narrow backend+source canonical deploy health0.045с/kick0
+- [x] Linux TCP regression, agent-only upgrade4 ID58efb6e962ed07fa, WDTT PID before/after прежние, API-load/history на5нодах, real idle expiry/FD23–25 без роста
+- [x] Bootstrap403 Соты4: Nginx allowlist исправлен, 13 mandatory preflight + runtime DB/IP check; canonical deploy health0.042с/kick0, health/theme200 на4сотах
+- [ ] Записать итог, commit/push и проверить origin/main
+
 ### Админка: старый дизайн после повторного открытия (2026-10-09)
 
 - [x] Production SHA/header audit: один новый index, отсутствует Cache-Control; route regression RED5

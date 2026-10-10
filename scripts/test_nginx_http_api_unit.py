@@ -74,6 +74,13 @@ def _default_http80_block(conf: str) -> str:
     return found[0]
 
 
+def test_default_http80_all_known_cells_allowed():
+    block = _default_http80_block(NGINX.read_text(encoding="utf-8"))
+    for address in ('87.58.213.193', '78.17.74.27', '192.177.26.38', '89.37.192.241'):
+        assert f'allow {address};' in block, f'cell tunnel/bootstrap denied: {address}'
+    assert 'deny all;' in block
+
+
 def test_default_http80_proxies_admin_spa_not_444():
     """Сота DNAT → Улей:80, Host 10.66.66.1. return 444 на / ломает ПК-админку."""
     block = _default_http80_block(NGINX.read_text(encoding="utf-8"))

@@ -84,6 +84,32 @@ require_arch() {
 	SV_WDTT_SRC="$src"
 }
 
+install_dns_nftset() {
+	dnsmasq --version 2>/dev/null | grep -q ' nftset ' && return 0
+	echo "Российские сервисы: требуется dnsmasq-full (nftset)"
+	local work original result=0 config
+	work="$(mktemp -d /tmp/sv-dns-package.XXXXXX)" || return 1
+	config="${SV_DHCP_CONFIG:-/etc/config/dhcp}"
+	cp "$config" "$work/dhcp" || return 1
+	if [ "$SV_PKG" = apk ]; then
+		apk add dnsmasq-full || result=1
+	else
+		original="$(opkg list-installed | awk '$1 == "dnsmasq" || $1 == "dnsmasq-dhcpv6" {print $1; exit}')"
+		[ -n "$original" ] || original=dnsmasq
+		# Cache both variants before removing the running resolver.
+		(cd "$work" && opkg download "$original" && opkg download dnsmasq-full) || { rm -rf "$work"; return 1; }
+		opkg remove "$original" || result=1
+		if [ "$result" = 0 ] && ! opkg install "$work"/dnsmasq-full_*.ipk; then
+			opkg install "$work"/"${original}"_*.ipk || true
+			result=1
+		fi
+	fi
+	cp "$work/dhcp" "$config"
+	rm -rf "$work"
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+	[ "$result" = 0 ] && dnsmasq --version 2>/dev/null | grep -q ' nftset '
+}
+
 install_deps() {
 	echo "Silent VPN — зависимости"
 	sv_require_pkg
@@ -93,6 +119,7 @@ install_deps() {
 	fi
 	sv_pkg_update
 	sv_pkg_add $DEPS
+	install_dns_nftset
 }
 
 install_wdtt() {
@@ -108,6 +135,10 @@ install_files() {
 		exit 1
 	fi
 	require_arch
+	# A previous package put these on the main table and the router lost WAN until reboot.
+	ip route del 0.0.0.0/1 dev svpath 2>/dev/null || true
+	ip route del 128.0.0.0/1 dev svpath 2>/dev/null || true
+	while ip rule del lookup 201 2>/dev/null; do :; done
 	echo "Silent VPN — установка из $ROOT ($SV_WDTT_SLOT)"
 	mkdir -p /usr/lib/silent-vpn /www/silent-vpn /www/cgi-bin /etc/silent-vpn \
 		/etc/uci-defaults /etc/hotplug.d/iface /etc/init.d /usr/sbin
@@ -136,7 +167,12 @@ install_files() {
 	/etc/init.d/silent-vpn start
 	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 
-	url="$(/usr/sbin/silent-vpn-ctl lan-url 2>/dev/null || echo "http://$(uci -q get network.lan.ipaddr).silent.vpn")"
+	# Last step, after the service start: same UCI write that makes the panel name resolve.
+	SV_LIB=/usr/lib/silent-vpn
+	. /usr/lib/silent-vpn/lan-name.sh
+	sv_lan_apply_dns || echo "Имя панели не прописалось" >&2
+
+	url="http://$(sv_lan_ip).silent.vpn"
 	echo
 	echo "Готово: $url"
 	echo "Войдите аккаунтом Silent и включите тумблер."

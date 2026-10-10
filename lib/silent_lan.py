@@ -19,11 +19,16 @@ def is_ipv4(value: str) -> bool:
     return bool(_IPV4.match((value or "").strip()))
 
 
-def lan_host(lan_ip: str) -> str:
-    ip = (lan_ip or "").strip()
+def normalize_lan_ip(value: str) -> str:
+    """OpenWrt 25 stores ``192.168.1.1/24`` in ``network.lan.ipaddr``."""
+    ip = (value or "").strip().split()[0].split("/", 1)[0]
     if not is_ipv4(ip):
-        raise ValueError(f"not an IPv4 LAN address: {lan_ip!r}")
-    return f"{ip}.{ZONE}"
+        raise ValueError(f"not an IPv4 LAN address: {value!r}")
+    return ip
+
+
+def lan_host(lan_ip: str) -> str:
+    return f"{normalize_lan_ip(lan_ip)}.{ZONE}"
 
 
 def lan_url(lan_ip: str, *, scheme: str = "http") -> str:
@@ -36,9 +41,7 @@ def host_is_silent_zone(host: str) -> bool:
 
 
 def dnsmasq_address_lines(lan_ip: str) -> list[str]:
-    ip = (lan_ip or "").strip()
-    if not is_ipv4(ip):
-        raise ValueError(f"not an IPv4 LAN address: {lan_ip!r}")
+    ip = normalize_lan_ip(lan_ip)
     host = lan_host(ip)
     return [
         f"address=/{host}/{ip}",

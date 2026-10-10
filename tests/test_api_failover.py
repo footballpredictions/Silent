@@ -54,7 +54,7 @@ wget() {
     local out="" timeout="" url=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            -qO) out="$2"; shift ;;
+            -qO|-O) out="$2"; shift ;;
             --timeout=*) timeout="${1#--timeout=}" ;;
             http://*|https://*) url="$1" ;;
         esac
@@ -113,7 +113,7 @@ wget() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --header=Authorization:*) printf '%s\n' "$1" >> "$SV_RUN/headers" ;;
-            -qO) out="$2"; shift ;;
+            -qO|-O) out="$2"; shift ;;
             http://*|https://*) url="$1" ;;
         esac
         shift

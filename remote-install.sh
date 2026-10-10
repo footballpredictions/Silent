@@ -85,6 +85,22 @@ sv_fetch() {
 	exit 1
 }
 
+sv_unpack() {
+	local archive="$1" stage="$2" arch
+	: > "$stage/.exclude-architectures"
+	for arch in aarch64 arm mipsel x86_64; do
+		if [ "$arch" != "$slot" ]; then
+			# BusyBox tar -X matches full member names; GNU glob behavior differs.
+			printf 'silent-vpn/files/usr/lib/silent-vpn/wdtt/wdtt-client.%s\nSilent-openwrt/files/usr/lib/silent-vpn/wdtt/wdtt-client.%s\n' "$arch" "$arch" >> "$stage/.exclude-architectures"
+		fi
+	done
+	tar -xzf "$archive" -C "$stage" -X "$stage/.exclude-architectures"
+}
+
+sv_remote_cleanup() {
+	[ -z "${STAGE:-}" ] || rm -rf "$STAGE"
+}
+
 if [ "$(id -u 2>/dev/null || echo 1)" != 0 ]; then
 	echo "Нужен root. Подключитесь: ssh root@IP-роутера" >&2
 	exit 1
@@ -97,17 +113,20 @@ if [ -z "$slot" ]; then
 fi
 echo "CPU: $(uname -m) → $slot"
 
+cd /tmp
+# Clean the fixed names used by earlier installers, including failed unpack.
+rm -rf silent-vpn Silent-openwrt silent-vpn-openwrt.tgz
+STAGE="$(mktemp -d /tmp/sv-install.XXXXXX)"
+trap sv_remote_cleanup EXIT
+trap 'exit 1' HUP INT TERM
 sv_pkg_update
 sv_pkg_add wget ca-bundle
-
-cd /tmp
-rm -rf silent-vpn Silent-openwrt silent-vpn-openwrt.tgz
-sv_fetch "$PKG" silent-vpn-openwrt.tgz
-tar -xzf silent-vpn-openwrt.tgz
-if [ -d silent-vpn ]; then
-	WORKDIR=/tmp/silent-vpn
-elif [ -d Silent-openwrt ]; then
-	WORKDIR=/tmp/Silent-openwrt
+sv_fetch "$PKG" "$STAGE/package.tgz"
+sv_unpack "$STAGE/package.tgz" "$STAGE"
+if [ -d "$STAGE/silent-vpn" ]; then
+	WORKDIR="$STAGE/silent-vpn"
+elif [ -d "$STAGE/Silent-openwrt" ]; then
+	WORKDIR="$STAGE/Silent-openwrt"
 else
 	echo "В архиве нет silent-vpn/" >&2
 	exit 1
@@ -115,11 +134,11 @@ fi
 
 if [ ! -f "$WORKDIR/files/usr/lib/silent-vpn/wdtt/wdtt-client.$slot" ]; then
 	echo "Нет модуля обхода для архитектуры $slot." >&2
-	rm -rf "$WORKDIR" /tmp/silent-vpn-openwrt.tgz
 	exit 1
 fi
 
 sh "$WORKDIR/install.sh"
 cd /tmp
-rm -rf silent-vpn Silent-openwrt silent-vpn-openwrt.tgz
+sv_remote_cleanup
+STAGE=""
 exec rm -f /tmp/sv.sh

@@ -50,10 +50,16 @@ sv_cloak_start() {
 			-device-id "$did" \
 			-listen 127.0.0.1:9000 \
 			-n "$n" \
-			>>/var/log/silent-cloak.log 2>&1
+			>>/var/log/silent-cloak.log 2>&1 &
+		# BusyBox ash execs a final foreground command. Without an explicit
+		# child + wait, spass inherits CGI as its parent and exits on the next
+		# parent watchdog tick after uhttpd sends the connection response.
+		transport_pid=$!
+		trap 'kill "$transport_pid" 2>/dev/null; wait "$transport_pid" 2>/dev/null; exit 0' TERM INT
+		wait "$transport_pid"
 	) &
 	echo $! > "$SV_CLOAK_PID"
-	sv_log "cloak started pid=$(cat "$SV_CLOAK_PID")"
+	sv_log "cloak started pid=$(cat "$SV_CLOAK_PID") peer=${sip}:${sport} streams=$n"
 }
 
 sv_cloak_wait() {
@@ -61,6 +67,7 @@ sv_cloak_wait() {
 	while [ "$i" -lt 25 ]; do
 		if netstat -lun 2>/dev/null | grep -q ':9000' || ss -lun 2>/dev/null | grep -q ':9000'; then
 			if [ -s /etc/silent-vpn/wg-turn.conf ]; then
+				sv_log "cloak ready, turn conf $(wc -c < /etc/silent-vpn/wg-turn.conf) bytes"
 				return 0
 			fi
 		fi

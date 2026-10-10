@@ -15,8 +15,13 @@ async function send(path, options = {}) {
   } catch {
     data = { detail: text || res.statusText };
   }
-  if (!res.ok) {
-    const err = new Error(formatDetail(data.detail) || data.error || `HTTP ${res.status}`);
+  if (!res.ok || data.ok === false) {
+    const err = new Error(
+      formatDetail(data.detail) ||
+      (res.status === 401 ? "Неверный email или пароль" : "") ||
+      data.error ||
+      `HTTP ${res.status}`
+    );
     err.status = res.status;
     err.data = data;
     throw err;
@@ -53,6 +58,12 @@ export const api = {
   setDns: (preset, custom) => send("/dns", { method: "POST", body: JSON.stringify({ preset, custom }) }),
   exclusions: () => send("/exclusions"),
   setRuDirect: (enabled) => send("/exclusions", { method: "POST", body: JSON.stringify({ ru_direct: !!enabled }) }),
+  log: async () => {
+    const res = await fetch(`${API}/log`, { credentials: "same-origin", cache: "no-store" });
+    const text = await res.text();
+    if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+    return text;
+  },
 };
 
 /** Like Android PaymentBrowser: no website Referer (YuMoney binds QuickPay to the site). */

@@ -48,14 +48,34 @@ case "$OP" in
 		;;
 	login)
 		f="$(sv_hive_login "$(email_of)" "$(pass_of)")" || true
-		if jsonfilter -i "$f" -e '@.access_token' >/dev/null 2>&1; then
+		token="$(jsonfilter -i "$f" -e '@.access_token' 2>/dev/null || true)"
+		case "$token" in
+			*.*.*) ;;
+			*) token="" ;;
+		esac
+		me=""
+		pemail=""
+		if [ -n "$token" ]; then
 			sv_hive_register_device >/dev/null 2>&1 || true
 			me="$(sv_hive_me)"
+			pemail="$(jsonfilter -i "$me" -e '@.email' 2>/dev/null || true)"
+		fi
+		if [ -n "$token" ] && [ -n "$pemail" ]; then
 			rn="$(sv_router_name | sed 's/"/\\"/g')"
 			json_out 200 "$(printf '{"email":"%s","lan_ip":"%s","lan_url":"%s","router_name":"%s","profile":%s,"connected":false}' \
-				"$(email_of)" "$(sv_lan_ip)" "$(sv_lan_url)" "$rn" "$(cat "$me")")"
+				"$pemail" "$(sv_lan_ip)" "$(sv_lan_url)" "$rn" "$(cat "$me")")"
 		else
-			json_out 400 "$(cat "$f" 2>/dev/null || echo '{"detail":"Ошибка входа"}')"
+			rm -f "$SV_VAR/access_token" "$SV_VAR/refresh_token"
+			if [ -n "$token" ]; then
+				detail="Сервер не отдал данные аккаунта"
+			else
+				detail="$(jsonfilter -i "$f" -e '@.detail' 2>/dev/null || true)"
+				[ -n "$detail" ] || detail="Неверный email или пароль"
+			fi
+			detail="$(printf '%s' "$detail" | tr -d '"\\' | cut -c 1-180)"
+			sv_log "login rejected: $detail"
+			# 200, not 401: uhttpd drops a 401 body, and the form then shows nothing.
+			json_out 200 "$(printf '{"ok":false,"detail":"%s"}' "$detail")"
 		fi
 		;;
 	register)
@@ -75,8 +95,34 @@ case "$OP" in
 		if sv_connect_full; then
 			json_out 200 '{"ok":true,"connected":true}'
 		else
-			json_out 502 '{"detail":"Не удалось поднять туннель"}'
+			last="$(tail -n 1 /var/log/silent-vpn.log 2>/dev/null | tr -d '"\\' | cut -c 1-180)"
+			[ -n "$last" ] || last="Не удалось поднять туннель"
+			json_out 502 "$(printf '{"detail":"%s"}' "$last")"
 		fi
+		;;
+	log-clear)
+		: > /var/log/silent-vpn.log
+		echo "Status: 200"
+		echo "Content-Type: text/plain; charset=utf-8"
+		echo "Cache-Control: no-store"
+		echo
+		echo "очищено"
+		;;
+	log)
+		echo "Status: 200"
+		echo "Content-Type: text/plain; charset=utf-8"
+		echo "Cache-Control: no-store"
+		echo
+		if [ -f /var/log/silent-vpn.log ]; then
+			tail -n 300 /var/log/silent-vpn.log | sed \
+				-e 's/[Pp]rivate[Kk]ey.*/PrivateKey ***/' \
+				-e 's/[Bb]earer [^ ]*/Bearer ***/' \
+				-e 's/[Pp]assword.*/password ***/'
+		else
+			echo "лога ещё нет — включите тумблер"
+		fi
+		echo
+		sv_status_dump 2>/dev/null || echo "снимок маршрутов недоступен"
 		;;
 	disconnect)
 		sv_disconnect_full

@@ -6,6 +6,8 @@ USE_PROCD=1
 
 start_service() {
 	mkdir -p /etc/silent-vpn /var/run/silent-vpn
+	# Recover the WAN resolver after an unexpected reboot during a VPN session.
+	/usr/sbin/silent-vpn-ctl recover-dns >/dev/null 2>&1 || true
 	/usr/sbin/silent-vpn-ctl apply-dns >/dev/null 2>&1 || true
 }
 

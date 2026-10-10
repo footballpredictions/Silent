@@ -40,6 +40,8 @@ uci -q delete firewall.svpath
 uci -q delete firewall.sv_lan_to_path
 uci -q commit network
 uci -q commit firewall
+uci -q delete dhcp.silent_ru
+rm -f /etc/nftables.d/90-silent-ru.nft
 
 addrs="$(uci -q get dhcp.@dnsmasq[0].address 2>/dev/null || true)"
 for addr in $addrs; do
@@ -80,6 +82,11 @@ if command -v apk >/dev/null 2>&1; then
 	apk del kmod-wireguard wireguard-tools ip-full >/dev/null 2>&1 || true
 elif command -v opkg >/dev/null 2>&1; then
 	opkg remove kmod-wireguard wireguard-tools ip-full >/dev/null 2>&1 || true
+fi
+
+# path.sh creates this alias; package removal only restores its own /sbin/ip.
+if [ "$(readlink /usr/bin/ip 2>/dev/null)" = /usr/libexec/ip-full ] && [ ! -x /usr/libexec/ip-full ]; then
+	ln -sf /bin/busybox /usr/bin/ip
 fi
 
 echo "Готово. Silent VPN снят."

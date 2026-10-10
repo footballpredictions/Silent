@@ -42,42 +42,59 @@ sv_hive_get() {
 
 sv_hive_wget() {
 	local method="$1" url="$2" body="$3" out="$4" timeout="${5:-20}"
-	local token st
+	local token st errf err code
 	token="$(sv_token)"
+	errf="$(mktemp "$SV_RUN/wget.XXXXXX")"
 	# One quoted header. `wget $args` splits "Bearer <token>" into extra words, so /me comes back unsigned.
+	# stderr is kept: uclient-fetch drops the body on HTTP 4xx, and the status is only in that line.
 	if [ "$method" = "POST" ]; then
 		if [ -n "$token" ]; then
-			wget -qO "$out" --timeout="$timeout" \
+			wget -O "$out" --timeout="$timeout" \
 				--header="Content-Type: application/json" \
 				--header="X-App-Version: $SV_VERSION" \
 				--header="Authorization: Bearer $token" \
 				--post-file="$body" \
-				"$url" >/dev/null 2>&1
+				"$url" >"$errf" 2>&1
 		else
-			wget -qO "$out" --timeout="$timeout" \
+			wget -O "$out" --timeout="$timeout" \
 				--header="Content-Type: application/json" \
 				--header="X-App-Version: $SV_VERSION" \
 				--post-file="$body" \
-				"$url" >/dev/null 2>&1
+				"$url" >"$errf" 2>&1
 		fi
 		st=$?
 	elif [ -n "$token" ]; then
-		wget -qO "$out" --timeout="$timeout" \
+		wget -O "$out" --timeout="$timeout" \
 			--header="X-App-Version: $SV_VERSION" \
 			--header="Authorization: Bearer $token" \
-			"$url" >/dev/null 2>&1
+			"$url" >"$errf" 2>&1
 		st=$?
 	else
-		wget -qO "$out" --timeout="$timeout" \
+		wget -O "$out" --timeout="$timeout" \
 			--header="X-App-Version: $SV_VERSION" \
-			"$url" >/dev/null 2>&1
+			"$url" >"$errf" 2>&1
 		st=$?
 	fi
+	err="$(cat "$errf" 2>/dev/null || true)"
+	rm -f "$errf"
 	if [ "$st" -eq 0 ]; then
 		echo 200
-	else
-		echo 000
+		return
 	fi
+	code="$(printf '%s\n' "$err" | sed -n 's/.*[^0-9]\([1-5][0-9][0-9]\).*/\1/p' | head -n 1)"
+	case "$code" in
+		401)
+			[ -s "$out" ] || printf '%s\n' '{"detail":"Неверный email или пароль"}' > "$out"
+			echo 401
+			;;
+		4*|5*)
+			[ -s "$out" ] || printf '%s\n' "{\"detail\":\"Сервер ответил ${code}\"}" > "$out"
+			echo "$code"
+			;;
+		*)
+			echo 000
+			;;
+	esac
 }
 
 sv_hive_theme() {
@@ -85,15 +102,20 @@ sv_hive_theme() {
 }
 
 sv_hive_login() {
-	local email="$1" password="$2" out
+	local email="$1" password="$2" out token
 	out="$(sv_hive_post "/api/auth/login" "$(printf '{"email":"%s","password":"%s"}' "$email" "$password")")"
-	if [ -s "$out" ] && jsonfilter -i "$out" -e '@.access_token' >/dev/null; then
-		jsonfilter -i "$out" -e '@.access_token' > "$SV_VAR/access_token"
-		jsonfilter -i "$out" -e '@.refresh_token' > "$SV_VAR/refresh_token"
-		printf '%s' "$email" > "$SV_VAR/email"
-		echo "$out"
-		return 0
-	fi
+	token="$(jsonfilter -i "$out" -e '@.access_token' 2>/dev/null || true)"
+	# A real session token has three parts. An error body must not keep the previous login.
+	case "$token" in
+		*.*.*)
+			printf '%s' "$token" > "$SV_VAR/access_token"
+			jsonfilter -i "$out" -e '@.refresh_token' > "$SV_VAR/refresh_token" 2>/dev/null || true
+			printf '%s' "$email" > "$SV_VAR/email"
+			echo "$out"
+			return 0
+			;;
+	esac
+	rm -f "$SV_VAR/access_token" "$SV_VAR/refresh_token"
 	echo "$out"
 	return 1
 }

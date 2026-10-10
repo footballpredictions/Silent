@@ -1,4 +1,4 @@
-import { api, openPaymentUrl } from "./api.js";
+import { api, openPaymentUrl } from "./api.js?v=1.0.169";
 import { displayVpnServers, normalizeSlot, selectedTitle } from "./servers.js";
 import { applyPalette, palette } from "./theme.js";
 import { dockKind, formatExpireDate, hasVpnAccess, isUnlimitedLike, planLabel } from "./subscription.js";
@@ -38,6 +38,10 @@ const state = {
   showSubscriptionShop: false,
   paymentBusy: false,
   paymentStatus: "idle",
+  logText: "",
+  logTimer: 0,
+  logOpen: false,
+  logCopied: false,
   lanUrl: "http://192.168.1.1.silent.vpn",
   lanIp: "192.168.1.1",
   routerName: "OpenWrt",
@@ -187,7 +191,7 @@ function loginView(p) {
           <label class="check"><input type="checkbox" data-bind-check="remember" ${state.remember ? "checked" : ""}> ${esc(remember)}</label>
           <button type="button" class="linkish" data-act="forgot-open">${esc(forgot)}</button>
         </div>
-        ${state.error ? `<p class="err">${esc(state.error)}</p>` : ""}
+        ${state.error ? `<p class="login-alert">${esc(state.error)}</p>` : ""}
         <button class="primary" type="submit" ${state.loading ? "disabled" : ""}>
           ${state.loading ? "…" : label}
         </button>
@@ -207,10 +211,12 @@ function loginView(p) {
       <section class="login-pane">
         <div class="login-tools">
           <button class="mode-btn" data-act="mode" title="Тема">${state.mode === "dark" ? icon("sun") : icon("moon")}</button>
+          <button type="button" class="log-btn" data-act="log-open" title="Лог">Лог</button>
         </div>
         <div class="login-form">${body}</div>
       </section>
-    </div>`;
+    </div>
+    ${logOverlay()}`;
 }
 
 function mainView(p) {
@@ -246,6 +252,7 @@ function mainView(p) {
       ${p.homeBgUrl ? `<img class="home-bg" src="${esc(p.homeBgUrl)}" alt="" onerror="this.remove()">` : ""}
       <div class="home-status" style="color:${statusColor}">${esc(status)}</div>
       ${toggleMarkup({ visualOn, showSnake, pressed: state.pressed })}
+      ${state.error ? `<p class="err" style="text-align:center;padding:0 18px">${esc(state.error)}</p>` : ""}
     </div>
     <div class="dock">${dockHtml(p)}</div>`;
 
@@ -271,11 +278,13 @@ function mainView(p) {
           <div class="topbar-title">${esc(p.appTitle)}</div>
           <div class="topbar-end">
             <button class="mode-btn" data-act="mode" title="Тема">${state.mode === "dark" ? icon("sun") : icon("moon")}</button>
+            <button type="button" class="log-btn" data-act="log-open" title="Лог">Лог</button>
           </div>
         </div>
         ${state.page ? `<div class="page"><div class="page-inner">${pageInner(p, t)}</div></div>` : home}
       </main>
-    </div>`;
+    </div>
+    ${logOverlay()}`;
 }
 
 function pageInner(p, t) {
@@ -290,7 +299,7 @@ function pageInner(p, t) {
   if (page === "support") return supportPage(t);
   if (page === "about") {
     return `<h2>Silent VPN</h2>
-      <p class="hint">Версия 1.0.168 · OpenWrt</p>
+      <p class="hint">Версия 1.0.169 · OpenWrt</p>
       <p class="hint" style="margin-top:8px">Туннель как у PC и Android: WireGuard + WDTT. Этот веб — только панель роутера.</p>`;
   }
   return "";
@@ -372,6 +381,52 @@ function subscriptionPage(t) {
     ${state.error ? `<p class="err">${esc(state.error)}</p>` : ""}`;
 }
 
+function detailText(detail) {
+  if (!detail) return "";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((x) => x.msg || x).filter(Boolean).join("; ");
+  return String(detail);
+}
+
+function logLineClass(line) {
+  if (/fail|error|rejected|нет |не удалось/i.test(line)) return "bad";
+  if (/connect ok|nat: ok|ping ok|firewall reload ok/i.test(line)) return "ok";
+  if (/handshake|cloak|ping|fwd |srcnat|routeget/i.test(line)) return "info";
+  return "";
+}
+
+function logOverlay() {
+  if (!state.logOpen) return "";
+  const raw = String(state.logText || "");
+  const lines = raw.split("\n").filter((line) => line.trim().length);
+  const body = lines.length
+    ? lines.map((line) => `<div class="log-line ${logLineClass(line)}">${esc(line)}</div>`).join("")
+    : `<p class="log-empty">Лог пуст. Подключите VPN.</p>`;
+  return `<div class="log-mask" data-act="log-close">
+    <div class="log-card" data-act="log-card">
+      <div class="log-head">
+        <div class="log-title">Лог VPN</div>
+        <button type="button" class="log-act" data-act="log-copy">Копир.</button>
+        <button type="button" class="log-act muted" data-act="log-clear">Очист.</button>
+        <button type="button" class="log-act muted" data-act="log-close">Закрыть</button>
+        ${state.logCopied ? `<div class="log-toast">Лог скопирован</div>` : ""}
+      </div>
+      <div class="log-body">${body}</div>
+    </div>
+  </div>`;
+}
+
+const LOG_API = (location.hostname === "127.0.0.1" || location.hostname === "localhost")
+  ? "/silent/api"
+  : "/cgi-bin/silent-api";
+
+async function fetchLogText() {
+  const res = await fetch(`${LOG_API}/log`, { credentials: "same-origin", cache: "no-store" });
+  const text = await res.text();
+  if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+  return text;
+}
+
 function routerPage() {
   return `<h2>Роутер</h2>
     <p class="hint" style="margin-bottom:12px">Веб-панель всегда открывается как адрес LAN + <strong>.silent.vpn</strong>. LuCI на голом IP не трогаем.</p>
@@ -380,7 +435,7 @@ function routerPage() {
     <p class="label">LAN IPv4</p>
     <input class="field" readonly value="${esc(state.lanIp)}">
     <p class="hint">Примеры: 192.168.1.1.silent.vpn, 192.168.0.1.silent.vpn, 10.0.0.1.silent.vpn</p>
-    <p class="hint" style="margin-top:12px">Весь дом идёт в туннель, кроме самой LAN-подсети. Kill-switch: если туннель упал — WAN для клиентов гасится, панель остаётся.</p>`;
+    <p class="hint" style="margin-top:12px">Домашние устройства идут в туннель. Сам роутер остаётся в обычном интернете, поэтому панель и обход не гаснут. Если туннель упал, дом снова выходит напрямую.</p>`;
 }
 
 function serversPage() {
@@ -506,6 +561,7 @@ function bind() {
     } else {
       el.addEventListener("click", (e) => {
         e.preventDefault();
+        e.stopPropagation();
         void handle(act, el);
       });
     }
@@ -528,6 +584,7 @@ function bind() {
       }
     });
   }
+  ensureLogPoll();
 }
 
 async function handle(act, el) {
@@ -556,9 +613,14 @@ async function handle(act, el) {
     if (act === "page-back") { if (state.showSubscriptionShop) state.showSubscriptionShop = false; else state.page = null; render(); return; }
     if (act === "pay-early") { state.shopTier = state.profile?.max_devices === 5 ? 5 : 3; state.showSubscriptionShop = true; render(); return; }
     if (act === "pay-cancel") { ++paymentPollVersion; state.paymentStatus = "idle"; state.showSubscriptionShop = false; render(); return; }
-    if (act === "login") return login();
-    if (act === "register") return register();
-    if (act === "forgot") return forgot();
+    if (act === "login") { await login(); return; }
+    if (act === "register") { await register(); return; }
+    if (act === "forgot") { await forgot(); return; }
+    if (act === "log-open") { state.logOpen = true; render(); void refreshLog(); return; }
+    if (act === "log-close") { state.logOpen = false; render(); return; }
+    if (act === "log-card") return;
+    if (act === "log-copy") { await copyLog(); return; }
+    if (act === "log-clear") { await clearLog(); return; }
     if (act === "logout") return logout();
     if (act === "toggle") return toggleVpn();
     if (act === "copy-ref") return copyRef();
@@ -591,13 +653,21 @@ async function login() {
   render();
   try {
     const res = await api.login(state.email, state.password);
+    const email = res?.profile?.email || "";
+    if (res?.ok === false || !email) {
+      throw new Error(detailText(res?.detail) || "Неверный email или пароль");
+    }
     state.session = res;
-    state.profile = res.profile || await api.profile();
+    state.profile = res.profile;
     applyExtras(res);
     state.connected = !!res.connected;
     if (res.theme) state.theme = res.theme;
     if (res.live != null) state.live = !!res.live;
     await hydrateAfterAuth();
+  } catch (e) {
+    state.error = e.message || "Неверный email или пароль";
+    state.session = null;
+    state.profile = null;
   } finally {
     state.loading = false;
     render();
@@ -622,6 +692,8 @@ async function register() {
       return;
     }
     state.regDone = true;
+  } catch (e) {
+    state.error = e.message || "Не удалось зарегистрироваться";
   } finally {
     state.loading = false;
     render();
@@ -635,6 +707,8 @@ async function forgot() {
   try {
     await api.forgot(state.forgotEmail || state.email);
     state.forgotSent = true;
+  } catch (e) {
+    state.error = e.message || "Не удалось отправить письмо";
   } finally {
     state.loading = false;
     render();
@@ -685,12 +759,64 @@ async function toggleVpn() {
     const wait = Math.max(0, SNAKE_MIN_VISIBLE_MS - (Date.now() - started));
     await new Promise((r) => setTimeout(r, wait));
     state.connected = true;
+    state.error = "";
   } catch (e) {
-    state.error = e.message;
+    state.error = e.message || "Не удалось поднять туннель";
+    state.connected = false;
+    state.logOpen = true;
   } finally {
     state.connecting = false;
     render();
+    if (state.logOpen) void refreshLog();
   }
+}
+
+async function refreshLog() {
+  if (!state.logOpen && !state.logTimer) return;
+  try {
+    const text = await fetchLogText();
+    if (text !== state.logText) {
+      state.logText = text;
+      if (state.logOpen) render();
+    }
+  } catch (e) {
+    state.logText = e.message || String(e);
+    if (state.logOpen) render();
+  }
+}
+
+async function copyLog() {
+  const text = state.logText || "(пусто)";
+  const area = document.createElement("textarea");
+  area.value = text;
+  document.body.appendChild(area);
+  area.select();
+  document.execCommand("copy");
+  area.remove();
+  state.logCopied = true;
+  render();
+  setTimeout(() => {
+    state.logCopied = false;
+    if (state.logOpen) render();
+  }, 1500);
+}
+
+async function clearLog() {
+  await fetch(`${LOG_API}/log-clear`, { method: "POST", credentials: "same-origin", cache: "no-store" });
+  state.logText = "";
+  await refreshLog();
+}
+
+function ensureLogPoll() {
+  if (!state.logOpen) {
+    if (state.logTimer) {
+      clearInterval(state.logTimer);
+      state.logTimer = 0;
+    }
+    return;
+  }
+  if (state.logTimer) return;
+  state.logTimer = setInterval(() => { void refreshLog(); }, 2000);
 }
 
 async function loadReferral() {

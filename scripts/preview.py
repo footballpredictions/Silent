@@ -30,7 +30,7 @@ HIVE = os.environ.get("SILENT_HIVE", "https://89-125-188-100.nip.io").rstrip("/"
 PUBLIC_THEME = f"{HIVE}/api/vpn/theme"
 PREVIEW_MOCK = os.environ.get("SILENT_PREVIEW_MOCK", "") == "1"
 BOOTSTRAP = "T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc"
-APP_VERSION = "1.0.167"
+APP_VERSION = "1.0.169"
 
 _theme_lock = threading.Lock()
 _theme_cache: dict | None = None

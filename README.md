@@ -6,18 +6,28 @@
 
 ## Установка на роутер
 
-OpenWrt 23.05+ (opkg на 23/24, apk на 25+). aarch64, arm, mipsel, x86_64.
+OpenWrt 23.05+. aarch64, arm, mipsel, x86_64. [Инструкция](INSTALL.md).
+
+В SSH-сессии роутера проверьте свободное место:
 
 ```sh
-if command -v apk >/dev/null 2>&1; then apk update && apk add wget ca-bundle; else opkg update && opkg install wget ca-bundle; fi && wget -O /tmp/sv.sh https://silentvpn3.github.io/openwrt-install.sh && sh /tmp/sv.sh
+df -h /tmp /overlay
 ```
 
-Дальше браузер **с кабеля LAN** (не с Wi‑Fi): `http://<LAN-IP>.silent.vpn` → логин → тумблер.
+Нужно свободно: 50 МБ в `/tmp` и 35 МБ в `/overlay`.
 
-Удалить:
+Установите (роутеру нужен интернет):
 
 ```sh
-wget -O /tmp/sv-rm.sh https://silentvpn3.github.io/openwrt-uninstall.sh && sh /tmp/sv-rm.sh
+wget -O /tmp/sv.sh https://silentvpn3.github.io/openwrt-install.sh && sh /tmp/sv.sh
+```
+
+Откройте `http://<LAN-IP>.silent.vpn` или IP роутера. Войдите и включите тумблер.
+
+Удаление:
+
+```sh
+sh /usr/sbin/silent-vpn-uninstall
 ```
 
 ## Локальный просмотр веба

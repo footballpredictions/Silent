@@ -33,6 +33,9 @@ case "$cmd" in
 	apply-dns)
 		sv_lan_apply_dns
 		;;
+	recover-dns)
+		sv_path_dns_restore
+		;;
 	theme)
 		sv_hive_theme
 		;;

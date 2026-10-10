@@ -4,7 +4,7 @@ SV_LIB="${SV_LIB:-/usr/lib/silent-vpn}"
 SV_VAR="${SV_VAR:-/etc/silent-vpn}"
 SV_RUN="${SV_RUN:-/var/run/silent-vpn}"
 SV_CONF="${SV_CONF:-/etc/config/silent-vpn}"
-SV_VERSION="${SV_VERSION:-1.0.168}"
+SV_VERSION="${SV_VERSION:-1.0.169}"
 SV_DEVICE_TYPE="pc"
 SV_PUBLIC_API="${SV_PUBLIC_API:-https://89-125-188-100.nip.io}"
 SV_TUNNEL_API="${SV_TUNNEL_API:-http://10.66.66.1:8000}"
@@ -19,7 +19,13 @@ sv_mkdir() {
 }
 
 sv_log() {
-	logger -t silent-vpn "$*"
+	local sz
+	logger -t silent-vpn "$*" 2>/dev/null || true
+	echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> /var/log/silent-vpn.log 2>/dev/null || true
+	sz="$(wc -c < /var/log/silent-vpn.log 2>/dev/null || echo 0)"
+	if [ "$sz" -gt 200000 ]; then
+		tail -n 250 /var/log/silent-vpn.log > /var/log/silent-vpn.log.tmp && mv /var/log/silent-vpn.log.tmp /var/log/silent-vpn.log
+	fi
 }
 
 sv_uci_get() {
@@ -33,16 +39,17 @@ sv_json_get() {
 
 sv_is_ipv4() {
 	# awk only: busybox grep often has no {1,3} and then apply-dns exits before writing the name
-	echo "$1" | awk -F. 'NF == 4 {
+	echo "$1" | awk -F. '{
+		if (NF != 4) exit 1
 		for (i = 1; i <= 4; i++) if ($i !~ /^[0-9]+$/ || $i + 0 > 255) exit 1
 		exit 0
-	}
-	exit 1'
+	}'
 }
 
 sv_lan_ip() {
 	local ip
 	ip="$(uci -q get network.lan.ipaddr 2>/dev/null | awk '{print $1}')"
+	ip="${ip%%/*}"
 	[ -n "$ip" ] || ip="$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
 	[ -n "$ip" ] || ip="192.168.1.1"
 	echo "$ip"

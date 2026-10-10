@@ -10,6 +10,7 @@ from lib.silent_lan import (
     host_is_silent_zone,
     lan_host,
     lan_url,
+    normalize_lan_ip,
 )
 
 
@@ -26,6 +27,11 @@ class LanNameTests(unittest.TestCase):
             self.assertEqual(lan_host(ip), host)
             self.assertEqual(lan_url(ip), f"http://{host}")
             self.assertEqual(extract_lan_ip_from_host(host), ip)
+
+    def test_strips_openwrt_prefix(self):
+        self.assertEqual(normalize_lan_ip("192.168.1.1/24"), "192.168.1.1")
+        self.assertEqual(lan_host("192.168.1.1/24"), "192.168.1.1.silent.vpn")
+        self.assertEqual(lan_url("192.168.1.1/24"), "http://192.168.1.1.silent.vpn")
 
     def test_rejects_garbage(self):
         with self.assertRaises(ValueError):

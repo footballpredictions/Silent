@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Toggle demo</title>
+  <link rel="stylesheet" href="/silent-vpn/css/app.css?v=20260912c">
+  <style>
+    body { display: flex; gap: 64px; padding: 48px; align-items: center; justify-content: center; }
+    .col { text-align: center; }
+    .col p { margin-bottom: 16px; font-size: 12px; letter-spacing: 0.12em; color: #6b7280; }
+  </style>
+</head>
+<body>
+  <div class="col" id="off"></div>
+  <div class="col" id="busy"></div>
+  <div class="col" id="on"></div>
+  <script type="module">
+    import { toggleMarkup, mountToggleSnake } from "/silent-vpn/js/toggle.js";
+    document.getElementById("off").innerHTML = `<p>ОТКЛЮЧЕНО</p>${toggleMarkup({ visualOn: false, showSnake: false, pressed: false })}`;
+    document.getElementById("busy").innerHTML = `<p>ПОДКЛЮЧЕНИЕ</p>${toggleMarkup({ visualOn: false, showSnake: true, pressed: false })}`;
+    document.getElementById("on").innerHTML = `<p>ПОДКЛЮЧЕНО</p>${toggleMarkup({ visualOn: true, showSnake: false, pressed: false })}`;
+    mountToggleSnake(document.querySelector("canvas.thumb-snake"), "#000000");
+  </script>
+</body>
+</html>

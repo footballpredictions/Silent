@@ -1,0 +1,43 @@
+#!/bin/sh
+export PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ROOT=/opt/lib/silent-keenetic
+PID=/opt/var/run/silent-keenetic/agent.pid
+READY=/opt/etc/silent-keenetic/web.ready
+mkdir -p /opt/var/run/silent-keenetic
+running() {
+    [ -r "$PID" ] || return 1
+    p=$(cat "$PID")
+    case "$p" in ''|*[!0-9]*) return 1 ;; esac
+    [ -r "/proc/$p/cmdline" ] || return 1
+    tr '\000' ' ' < "/proc/$p/cmdline" | grep -F "$ROOT/guard.sh" >/dev/null
+}
+case "${1:-start}" in
+    start)
+        running && exit 0
+        "$ROOT/silent-keenetic" --check || exit 1
+        rm -f "$READY"
+        /bin/sh "$ROOT/guard.sh" >/dev/null 2>&1 &
+        echo $! > "$PID"
+        i=0
+        while [ ! -s "$READY" ] && [ "$i" -lt 6 ]; do sleep 1; i=$((i+1)); done
+        if ! running || [ ! -s "$READY" ]; then
+            "$0" stop
+            echo 'Агент не запустился (проверьте LAN/порт/конфигурацию)'
+            exit 1
+        fi
+        ;;
+    stop)
+        if running; then
+            kill "$(cat "$PID")"
+            i=0
+            while running && [ "$i" -lt 25 ]; do sleep 1; i=$((i+1)); done
+            running && { echo 'Агент ещё завершает очистку; повторите stop'; exit 1; }
+        fi
+        # Explicit local cleanup even after crash, without killing unrelated processes.
+        "$ROOT/silent-keenetic" --cleanup || exit 1
+        rm -f "$PID"
+        ;;
+    restart) "$0" stop && "$0" start ;;
+    status) if running; then echo running; else echo stopped; exit 1; fi ;;
+    *) echo 'start|stop|restart|status'; exit 2 ;;
+esac

@@ -400,10 +400,10 @@ sv_path_fw_pass() {
 	[ -n "$dev" ] || dev="br-lan"
 	sv_path_offload_off
 	sv_path_fw_write || sv_log "fw files not written"
-	if /etc/init.d/firewall reload >/tmp/sv-fw.log 2>&1; then
+	if /etc/init.d/firewall reload >/dev/null 2>&1; then
 		sv_log "firewall reload ok"
 	else
-		sv_log "firewall reload failed: $(tail -n 4 /tmp/sv-fw.log 2>/dev/null | tr '\n' ' ')"
+		sv_log "firewall reload failed"
 		sv_path_fw_drop_files
 		/etc/init.d/firewall reload >/dev/null 2>&1 || sv_log "firewall restore failed"
 	fi

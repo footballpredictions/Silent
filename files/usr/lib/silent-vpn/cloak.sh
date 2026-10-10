@@ -50,7 +50,7 @@ sv_cloak_start() {
 			-device-id "$did" \
 			-listen 127.0.0.1:9000 \
 			-n "$n" \
-			>>/var/log/silent-cloak.log 2>&1 &
+			>/dev/null 2>&1 &
 		# BusyBox ash execs a final foreground command. Without an explicit
 		# child + wait, spass inherits CGI as its parent and exits on the next
 		# parent watchdog tick after uhttpd sends the connection response.

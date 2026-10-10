@@ -72,7 +72,7 @@ rm -rf /usr/lib/silent-vpn /usr/sbin/silent-vpn-ctl \
 	/etc/init.d/silent-vpn /etc/config/silent-vpn \
 	/etc/hotplug.d/iface/99-silent-vpn /etc/uci-defaults/99-silent-vpn \
 	/var/run/silent-vpn /tmp/dnsmasq.d/silent-vpn.conf /tmp/dnsmasq.d/silent-ru.conf \
-	/var/log/silent-cloak.log
+	/var/log/silent-cloak.log /var/log/silent-vpn.log /var/log/silent-vpn.log.tmp /tmp/sv-fw.log
 
 /etc/init.d/firewall reload >/dev/null 2>&1 || true
 /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true

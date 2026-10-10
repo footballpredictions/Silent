@@ -140,6 +140,7 @@ install_files() {
 	ip route del 128.0.0.0/1 dev svpath 2>/dev/null || true
 	while ip rule del lookup 201 2>/dev/null; do :; done
 	echo "Silent VPN — установка из $ROOT ($SV_WDTT_SLOT)"
+	rm -f /var/log/silent-vpn.log /var/log/silent-vpn.log.tmp /var/log/silent-cloak.log /tmp/sv-fw.log
 	mkdir -p /usr/lib/silent-vpn /www/silent-vpn /www/cgi-bin /etc/silent-vpn \
 		/etc/uci-defaults /etc/hotplug.d/iface /etc/init.d /usr/sbin
 

@@ -5,6 +5,7 @@ import { dockKind, formatExpireDate, hasVpnAccess, isUnlimitedLike, planLabel } 
 import { mountToggleSnake, SNAKE_MIN_VISIBLE_MS, toggleMarkup } from "./toggle.js";
 
 let stopSnake = () => {};
+const LOG_ENABLED = false;
 
 const state = {
   theme: null,
@@ -211,7 +212,7 @@ function loginView(p) {
       <section class="login-pane">
         <div class="login-tools">
           <button class="mode-btn" data-act="mode" title="Тема">${state.mode === "dark" ? icon("sun") : icon("moon")}</button>
-          <button type="button" class="log-btn" data-act="log-open" title="Лог">Лог</button>
+          ${LOG_ENABLED ? '<button type="button" class="log-btn" data-act="log-open" title="Лог">Лог</button>' : ""}
         </div>
         <div class="login-form">${body}</div>
       </section>
@@ -278,7 +279,7 @@ function mainView(p) {
           <div class="topbar-title">${esc(p.appTitle)}</div>
           <div class="topbar-end">
             <button class="mode-btn" data-act="mode" title="Тема">${state.mode === "dark" ? icon("sun") : icon("moon")}</button>
-            <button type="button" class="log-btn" data-act="log-open" title="Лог">Лог</button>
+            ${LOG_ENABLED ? '<button type="button" class="log-btn" data-act="log-open" title="Лог">Лог</button>' : ""}
           </div>
         </div>
         ${state.page ? `<div class="page"><div class="page-inner">${pageInner(p, t)}</div></div>` : home}
@@ -396,7 +397,7 @@ function logLineClass(line) {
 }
 
 function logOverlay() {
-  if (!state.logOpen) return "";
+  if (!LOG_ENABLED || !state.logOpen) return "";
   const raw = String(state.logText || "");
   const lines = raw.split("\n").filter((line) => line.trim().length);
   const body = lines.length
@@ -616,7 +617,7 @@ async function handle(act, el) {
     if (act === "login") { await login(); return; }
     if (act === "register") { await register(); return; }
     if (act === "forgot") { await forgot(); return; }
-    if (act === "log-open") { state.logOpen = true; render(); void refreshLog(); return; }
+    if (LOG_ENABLED && act === "log-open") { state.logOpen = true; render(); void refreshLog(); return; }
     if (act === "log-close") { state.logOpen = false; render(); return; }
     if (act === "log-card") return;
     if (act === "log-copy") { await copyLog(); return; }
@@ -763,7 +764,7 @@ async function toggleVpn() {
   } catch (e) {
     state.error = e.message || "Не удалось поднять туннель";
     state.connected = false;
-    state.logOpen = true;
+    state.logOpen = LOG_ENABLED;
   } finally {
     state.connecting = false;
     render();
@@ -772,7 +773,7 @@ async function toggleVpn() {
 }
 
 async function refreshLog() {
-  if (!state.logOpen && !state.logTimer) return;
+  if (!LOG_ENABLED || (!state.logOpen && !state.logTimer)) return;
   try {
     const text = await fetchLogText();
     if (text !== state.logText) {
@@ -808,7 +809,7 @@ async function clearLog() {
 }
 
 function ensureLogPoll() {
-  if (!state.logOpen) {
+  if (!LOG_ENABLED || !state.logOpen) {
     if (state.logTimer) {
       clearInterval(state.logTimer);
       state.logTimer = 0;

@@ -19,13 +19,8 @@ sv_mkdir() {
 }
 
 sv_log() {
-	local sz
-	logger -t silent-vpn "$*" 2>/dev/null || true
-	echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> /var/log/silent-vpn.log 2>/dev/null || true
-	sz="$(wc -c < /var/log/silent-vpn.log 2>/dev/null || echo 0)"
-	if [ "$sz" -gt 200000 ]; then
-		tail -n 250 /var/log/silent-vpn.log > /var/log/silent-vpn.log.tmp && mv /var/log/silent-vpn.log.tmp /var/log/silent-vpn.log
-	fi
+	# Production builds do not write diagnostics to RAM, flash or syslog.
+	:
 }
 
 sv_uci_get() {

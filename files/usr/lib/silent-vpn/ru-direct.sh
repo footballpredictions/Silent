@@ -41,22 +41,45 @@ sv_ru_clear_policy() {
 }
 
 sv_ru_ensure_nft() {
-	nft list set inet fw4 sv_ru >/dev/null 2>&1 || \
-		nft add set inet fw4 sv_ru '{ type ipv4_addr; flags timeout; timeout 1h; }' 2>/dev/null || \
-		nft add set inet fw4 sv_ru '{ type ipv4_addr; }' 2>/dev/null || true
+	local current legacy=0 ips="" txn snapshot
+	current="$(nft list set inet fw4 sv_ru 2>/dev/null)" || current=""
+	# Browser DNS caches and open connections can outlive a set timeout.
+	# Keep learned addresses until bypass is disabled, not for a fixed hour.
+	case "$current" in *timeout*) legacy=1 ;; esac
+	[ -n "$current" ] || \
+		nft add set inet fw4 sv_ru '{ type ipv4_addr; }' || return 1
 	nft list chain inet fw4 silent_ru_mark >/dev/null 2>&1 || \
 		nft add chain inet fw4 silent_ru_mark '{ type filter hook prerouting priority -150; policy accept; }' || return 1
-	nft flush chain inet fw4 silent_ru_out 2>/dev/null || true
-	nft delete chain inet fw4 silent_ru_out 2>/dev/null || true
-	nft add chain inet fw4 silent_ru_out '{ type route hook output priority -150; policy accept; }' || return 1
-	# fw4 reload can preserve the chain declaration but discard runtime rules.
-	nft flush chain inet fw4 silent_ru_mark || return 1
-	nft flush chain inet fw4 silent_ru_out || return 1
-	nft add rule inet fw4 silent_ru_mark ip daddr @sv_ru counter meta mark set "$SV_RU_MARK" || return 1
-	nft add rule inet fw4 silent_ru_out ip daddr @sv_ru counter meta mark set "$SV_RU_MARK" || return 1
+	nft list chain inet fw4 silent_ru_out >/dev/null 2>&1 || \
+		nft add chain inet fw4 silent_ru_out '{ type route hook output priority -150; policy accept; }' || return 1
+	mkdir -p "$SV_RUN" || return 1
+	txn="$SV_RUN/ru-policy.nft"
+	snapshot="$SV_RUN/ru-set.json"
+	if [ "$legacy" = 1 ]; then
+		nft -j list set inet fw4 sv_ru > "$snapshot" || return 1
+		if grep -q '"elem"' "$snapshot"; then
+			ips="$(jsonfilter -i "$snapshot" -e '@.nftables[*].set.elem[*].elem.val')" || { rm -f "$snapshot"; return 1; }
+			ips="$(printf '%s' "$ips" | tr '\n' ',')"
+		fi
+		rm -f "$snapshot"
+	fi
+	# A single kernel transaction preserves routes and learned IPs during migration.
+	{
+		echo 'flush chain inet fw4 silent_ru_mark'
+		echo 'flush chain inet fw4 silent_ru_out'
+		if [ "$legacy" = 1 ]; then
+			echo 'delete set inet fw4 sv_ru'
+			echo 'add set inet fw4 sv_ru { type ipv4_addr; }'
+			[ -z "$ips" ] || echo "add element inet fw4 sv_ru { $ips }"
+		fi
+		echo "add rule inet fw4 silent_ru_mark ip daddr @sv_ru counter meta mark set $SV_RU_MARK"
+		echo "add rule inet fw4 silent_ru_out ip daddr @sv_ru counter meta mark set $SV_RU_MARK"
+	} > "$txn"
+	if ! nft -f "$txn"; then rm -f "$txn"; return 1; fi
+	rm -f "$txn"
 	mkdir -p "$(dirname "$SV_RU_NFT")" || return 1
 	cat > "$SV_RU_NFT" <<EOF
-set sv_ru { type ipv4_addr; flags timeout; timeout 1h; }
+set sv_ru { type ipv4_addr; }
 chain silent_ru_mark {
  type filter hook prerouting priority -150; policy accept;
  ip daddr @sv_ru counter meta mark set $SV_RU_MARK

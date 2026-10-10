@@ -62,3 +62,6 @@ sber.ru
 edna.ru
 # Школково: учебная платформа и её поддомены.
 shkolkovo.online
+# Школково: отдельный домен ресурсов и DNS-алиас платформы.
+cdn.devgroup.tech
+s97968.cdn.ngenix.net

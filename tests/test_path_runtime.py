@@ -34,7 +34,7 @@ install_dns_nftset || exit 1
     def test_ru_existing_empty_chains_receive_mark_rules(self):
         lines = self.run_shell(r'''
 SV_RU_NFT="$SV_RUN/ru.nft"
-nft() { echo "$*"; }
+nft() { case "$1" in -f) cat "$2" ;; *) echo "$*" ;; esac; }
 sv_ru_ensure_nft
 ''', library='ru-direct.sh')
         self.assertTrue(any('add rule inet fw4 silent_ru_mark' in line for line in lines))
@@ -64,6 +64,34 @@ sv_ru_write_dns || exit 1
 printf 'dhcp.silent_ru.domain=ozon.ru\ndhcp.silent_ru.domain=ozone.ru\ndhcp.silent_ru.domain=wbbasket.ru\n' > "$SV_RUN/expected"
 cmp "$SV_RUN/expected" "$SV_RUN/uci-domains"
 ''', library='ru-direct.sh')
+
+    def test_ru_addresses_do_not_expire_while_browsers_keep_dns_cache(self):
+        lines = self.run_shell(r'''
+SV_RU_NFT="$SV_RUN/ru.nft"
+nft() { case "$1" in -f) cat "$2" ;; *) echo "$*" ;; esac; }
+sv_ru_ensure_nft || exit 1
+cat "$SV_RU_NFT"
+''', library='ru-direct.sh')
+        self.assertFalse(any('timeout' in line for line in lines), '\n'.join(lines))
+
+    def test_ru_timed_set_is_migrated_atomically_preserving_learned_addresses(self):
+        lines = self.run_shell(r'''
+SV_RU_NFT="$SV_RUN/ru.nft"
+nft() {
+    case "$*" in
+        'list set inet fw4 sv_ru') echo 'set sv_ru { type ipv4_addr; timeout 1h; }' ;;
+        '-j list set inet fw4 sv_ru') echo '{"nftables":[{"set":{"elem":[{"elem":{"val":"198.18.0.1"}}]}}]}' ;;
+        '-f '*) echo ATOMIC; cat "$2" ;;
+        *) echo "$*" ;;
+    esac
+}
+jsonfilter() { echo '198.18.0.1'; }
+sv_ru_ensure_nft || exit 1
+''', library='ru-direct.sh')
+        self.assertIn('ATOMIC', lines)
+        self.assertIn('delete set inet fw4 sv_ru', lines)
+        self.assertTrue(any('add element inet fw4 sv_ru { 198.18.0.1 }' in line for line in lines))
+        self.assertLess(lines.index('flush chain inet fw4 silent_ru_mark'), lines.index('delete set inet fw4 sv_ru'))
 
     def test_gateway_wait_tolerates_initial_packet_loss_but_is_bounded(self):
         for success in (True, False):

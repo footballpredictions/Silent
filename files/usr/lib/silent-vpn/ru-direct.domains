@@ -1,8 +1,15 @@
 # Российские сервисы — идут мимо туннеля, когда включён ru-direct.
-# Свой список Silent, не чужой dump. Один домен на строку, без www.
+# Один DNS-суффикс на строку; поддомены учитываются автоматически.
+# Российские зоны: новые сайты в этих зонах не требуют правки списка.
+ru
+su
+xn--p1ai
+# Основные сервисы и их отдельные CDN вне российских зон.
 yandex.ru
 yandex.net
 yandex.com
+yastatic.net
+yandex.st
 ya.ru
 dzen.ru
 kinopoisk.ru
@@ -10,19 +17,37 @@ vk.com
 vk.ru
 vk.me
 userapi.com
+vkvideo.ru
+vkuseraudio.net
+vkuserlive.net
+max.ru
+oneme.ru
+mycdn.me
+okcdn.ru
 mail.ru
+imgsmail.ru
+mailstatic.ru
 ok.ru
 gosuslugi.ru
 nalog.ru
+nalog.gov.ru
 mos.ru
 cbr.ru
 sberbank.ru
+sberbank.com
 online.sberbank.ru
 tinkoff.ru
+tbank.ru
 alfabank.ru
 vtb.ru
 wildberries.ru
+wildberries.com
+wb.ru
+wbbasket.ru
+wbstatic.net
+wbcontent.net
 ozon.ru
+ozone.ru
 avito.ru
 2gis.ru
 hh.ru

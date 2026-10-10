@@ -51,6 +51,7 @@ class ReleasePackTests(unittest.TestCase):
             library.mkdir(parents=True)
             helper = library / "common.sh"
             helper.write_bytes(b"# sourced helper\r\nready() { echo ready; }\r\n")
+            (library / "ru-direct.domains").write_bytes(b"ozon.ru\r\nozone.ru\r\nwbbasket.ru\r\n")
             binary = library / "wdtt-client.x86_64"
             binary_data = b"\x7fELF\r\n\x00\xff"
             binary.write_bytes(binary_data)
@@ -60,7 +61,8 @@ class ReleasePackTests(unittest.TestCase):
             dest = Path(tmp) / "release.tar.gz"
             write_tarball(root, dest)
             with tarfile.open(dest, "r:gz") as tar:
-                for name in ("install.sh", "files/usr/lib/silent-vpn/common.sh", "files/www/cgi-bin/silent-api"):
+                for name in ("install.sh", "files/usr/lib/silent-vpn/common.sh", "files/www/cgi-bin/silent-api",
+                             "files/usr/lib/silent-vpn/ru-direct.domains"):
                     member = tar.getmember("silent-vpn/" + name)
                     data = tar.extractfile(member).read()
                     self.assertNotIn(b"\r\n", data, name)

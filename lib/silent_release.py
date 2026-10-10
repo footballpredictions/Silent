@@ -60,9 +60,9 @@ def write_tarball(root: Path, dest: Path) -> Path:
         for src, arcname in members:
             data = src.read_bytes()
             # A Windows checkout may have CRLF even when Git stores LF.
-            # Normalize executable shell scripts and sourced .sh helpers only;
+            # Normalize shell scripts, sourced helpers and DNS domain lists;
             # native binaries must keep their original bytes.
-            if src.suffix == ".sh" or data.startswith(b"#!"):
+            if src.suffix in {".sh", ".domains"} or data.startswith(b"#!"):
                 data = data.replace(b"\r\n", b"\n")
             info = tar.gettarinfo(str(src), arcname)
             info.size = len(data)

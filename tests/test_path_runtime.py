@@ -51,6 +51,20 @@ sv_ru_write_dns
         self.assertIn('add_list dhcp.silent_ru.domain=ozon.ru', lines)
         self.assertIn('add_list dhcp.silent_ru.name=sv_ru', lines)
 
+    def test_ru_dns_windows_domain_list_has_no_carriage_returns_in_uci(self):
+        self.run_shell(r'''
+SV_RU_LIST="$SV_RUN/domains"
+printf '# list\r\nozon.ru\r\n\r\nozone.ru\r\nwbbasket.ru\r\n' > "$SV_RU_LIST"
+uci() {
+    case "$*" in
+        'add_list dhcp.silent_ru.domain='*) printf '%s\n' "$2" >> "$SV_RUN/uci-domains" ;;
+    esac
+}
+sv_ru_write_dns || exit 1
+printf 'dhcp.silent_ru.domain=ozon.ru\ndhcp.silent_ru.domain=ozone.ru\ndhcp.silent_ru.domain=wbbasket.ru\n' > "$SV_RUN/expected"
+cmp "$SV_RUN/expected" "$SV_RUN/uci-domains"
+''', library='ru-direct.sh')
+
     def test_gateway_wait_tolerates_initial_packet_loss_but_is_bounded(self):
         for success in (True, False):
             with self.subTest(success=success):

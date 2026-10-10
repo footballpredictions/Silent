@@ -69,6 +69,10 @@ python -m unittest discover -s tests -v
 
 Интерфейс агента один: `silent-vpn-ctl`. Веб ходит только в локальный CGI.
 
+«Российские сервисы мимо VPN» направляет через WAN домены `.ru`, `.su`, `.рф`
+и отдельные домены российских сервисов/CDN в других зонах. Список DNS-суффиксов:
+`files/usr/lib/silent-vpn/ru-direct.domains`; MAX и ресурсы Ozon/Wildberries включены.
+
 ## Пуш
 
 Это отдельная папка проекта, как `pc/` / `android/`. Коммит и remote — только по команде «пуш».

@@ -13,7 +13,10 @@ class RuDirectListTests(unittest.TestCase):
             if line.strip() and not line.lstrip().startswith("#")
         ]
         self.assertGreaterEqual(len(rows), 20)
-        for must in ("yandex.ru", "vk.com", "gosuslugi.ru", "sberbank.ru", "ozon.ru"):
+        for must in ("yandex.ru", "vk.com", "gosuslugi.ru", "sberbank.ru", "ozon.ru",
+                     "ozone.ru", "wbbasket.ru", "wb.ru", "wbstatic.net", "wbcontent.net",
+                     "max.ru", "oneme.ru", "mycdn.me", "okcdn.ru", "yastatic.net",
+                     "ru", "su", "xn--p1ai"):
             self.assertIn(must, rows)
         for row in rows:
             self.assertFalse(row.startswith("www."))

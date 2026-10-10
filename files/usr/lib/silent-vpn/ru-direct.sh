@@ -84,7 +84,9 @@ sv_ru_ensure_route() {
 }
 
 sv_ru_write_dns() {
-	local d
+	local d cr
+	# Accept Windows domain lists without copying CR into dnsmasq's UCI rules.
+	cr="$(printf '\r')"
 	uci -q delete dhcp.silent_ru || true
 	uci set dhcp.silent_ru=ipset || return 1
 	uci set dhcp.silent_ru.table_family=inet || return 1
@@ -92,6 +94,7 @@ sv_ru_write_dns() {
 	uci set dhcp.silent_ru.family=4 || return 1
 	uci add_list dhcp.silent_ru.name=sv_ru || return 1
 	while read -r d || [ -n "$d" ]; do
+		d="${d%"$cr"}"
 		case "$d" in ''|\#*) continue ;; esac
 		uci add_list "dhcp.silent_ru.domain=$d" || return 1
 	done < "$SV_RU_LIST"

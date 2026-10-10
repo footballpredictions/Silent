@@ -12,6 +12,8 @@
 
 Дополнительный реальный дефект: Сота4 получала HTTP403 на bootstrap proxy, потому что default HTTP80 allowlist Nginx на Улье содержал только первые3соты. Добавлен89.37.192.241, deny all сохранён. Canonical deploy получил --with-nginx для узкого обновления конфигурации с backup; nginx HTTP regression теперь mandatory вместе с TCP guard (13 preflight scripts). Runtime postflight сверяет active/draining public_ip из БД с фактическим nginx -T allowlist: будущий пропуск не пройдёт незамеченным. Второй canonical deploy PASS: health0.042с/kick0, UI публикация прежняя/проверена, все4адреса разрешены; старые /api/health и /api/vpn/theme200 на каждой соте. Клиенты не менялись, debug rebuild не требуется. Артефакты диагностики локальные в .playwright-mcp, секреты не записываются. Commit/push в рамках разрешённого пользователем цикла админки.
 
+Исправление телеметрии/HTTP guard и allowlist опубликовано: e358ba4339344dff0a9f80b6d776374c45bd1ba6, origin/main совпал с HEAD. Production проверен; следующая запись статуса документационная.
+
 ## Админка: старый дизайн при повторном открытии (2026-10-09)
 
 Запрос пользователя: после закрытия/открытия Улья снова старый дизайн, ручная перезагрузка возвращает новый; исправить и закрепить от повторения. Production direct/HTTPS выдавал один index SHA44c2b26d..., совпадающий с локальным, с актуальным JS index-C7JdSGB-.js; отдельной старой сборки не найдено. На всех SPA-входах отсутствовал Cache-Control, были Last-Modified/ETag: браузер мог использовать heuristic HTML cache со старыми hashed asset URLs. RED4 на actual route declarations, затем RED5 с отсутствующим version probe. Новый deploy postflight на старой production версии тоже RED: cached admin entry /.

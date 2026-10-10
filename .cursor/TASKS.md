@@ -14,7 +14,7 @@ Agent приступает к **первой невыполненной** зад
 - [x] 12 preflight + auto/status/standby units PASS; narrow backend+source canonical deploy health0.045с/kick0
 - [x] Linux TCP regression, agent-only upgrade4 ID58efb6e962ed07fa, WDTT PID before/after прежние, API-load/history на5нодах, real idle expiry/FD23–25 без роста
 - [x] Bootstrap403 Соты4: Nginx allowlist исправлен, 13 mandatory preflight + runtime DB/IP check; canonical deploy health0.042с/kick0, health/theme200 на4сотах
-- [ ] Записать итог, commit/push и проверить origin/main
+- [x] Итог записан, backend e358ba4 опубликован; git ls-remote origin/main совпал с HEAD
 
 ### Админка: старый дизайн после повторного открытия (2026-10-09)
 

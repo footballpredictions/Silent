@@ -1,0 +1,71 @@
+"""Local panel reports the running tunnel and releases profile response files."""
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SHELL = shutil.which("sh")
+if not SHELL and os.name == "nt":
+    candidate = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Git/bin/sh.exe"
+    if candidate.is_file():
+        SHELL = str(candidate)
+SESSION = (ROOT / "files/usr/lib/silent-vpn/session.sh").read_text(encoding="utf-8")
+CONNECTED = SESSION[SESSION.index("sv_session_connected()"):SESSION.index("sv_connect_abort()")]
+
+
+@unittest.skipUnless(SHELL, "POSIX shell required for panel CGI scenarios")
+class PanelCgiTests(unittest.TestCase):
+    def run_script(self, directory, script):
+        environment = os.environ.copy()
+        environment.update(SV_RUN=Path(directory).as_posix(), SV_VAR=Path(directory).as_posix())
+        return subprocess.run([SHELL, "-c", script], env=environment, capture_output=True,
+                              text=True, encoding="utf-8", timeout=10, check=True).stdout
+
+    def test_local_online_requires_live_process_and_applied_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = self.run_script(directory, CONNECTED + r'''
+touch "$SV_RUN/connected" "$SV_RUN/path.up"
+echo $$ > "$SV_RUN/cloak.pid"
+sv_session_connected && echo LIVE
+rm "$SV_RUN/path.up"
+sv_session_connected || echo NO_PATH
+touch "$SV_RUN/path.up"
+echo 99999999 > "$SV_RUN/cloak.pid"
+sv_session_connected || echo DEAD
+echo invalid > "$SV_RUN/cloak.pid"
+sv_session_connected || echo INVALID
+''')
+            self.assertEqual(output.splitlines(), ["LIVE", "NO_PATH", "DEAD", "INVALID"])
+
+    def test_profile_cgi_removes_its_response_without_clearing_session(self):
+        # Run the actual CGI dispatch. The API boundary substitutes a profile file,
+        # so cleanup is tested without accessing any real account or network.
+        source = (ROOT / "files/www/cgi-bin/silent-api").read_text(encoding="utf-8")
+        source = source.replace('SV_LIB="/usr/lib/silent-vpn"', '')
+        for name in ["common", "hive", "session"]:
+            source = source.replace(f'. "$SV_LIB/{name}.sh"', '')
+        with tempfile.TemporaryDirectory() as directory:
+            script = r'''
+sv_mkdir() { mkdir -p "$SV_RUN"; }
+sv_http_allow_wired() { return 0; }
+sv_hive_me() {
+    printf '{"email":"fixture@example.test"}' > "$SV_RUN/profile.tmp"
+    echo "$SV_RUN/profile.tmp"
+}
+printf '%s' 'fixture-token' > "$SV_VAR/access_token"
+PATH_INFO=/profile
+''' + source + r'''
+[ ! -f "$SV_RUN/profile.tmp" ] && echo CLEANED
+[ -s "$SV_VAR/access_token" ] && echo SESSION_PRESERVED
+'''
+            output = self.run_script(directory, script)
+            self.assertIn('{"email":"fixture@example.test"}', output)
+            self.assertIn("CLEANED", output)
+            self.assertIn("SESSION_PRESERVED", output)
+
+
+if __name__ == "__main__":
+    unittest.main()

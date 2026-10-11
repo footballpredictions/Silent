@@ -17,7 +17,7 @@ const state = {
   password: "",
   referral: "",
   showPass: false,
-  remember: true,
+  remember: readStorage(localStorage, "sv-remember") !== "0",
   forgotEmail: "",
   forgotSent: false,
   regDone: false,
@@ -25,6 +25,8 @@ const state = {
   loading: false,
   session: null,
   profile: null,
+  profileError: "",
+  restoreAvailable: false,
   connected: false,
   connecting: false,
   disconnecting: false,
@@ -58,6 +60,65 @@ const state = {
 const $app = document.getElementById("app");
 const $chrome = document.getElementById("chrome");
 const $studioUrl = document.getElementById("studioUrl");
+
+function readStorage(storage, key) {
+  try { return storage.getItem(key); } catch { return null; }
+}
+
+function savePanelSession() {
+  // Only the browser preference is stored here. Credentials stay on the router.
+  try { localStorage.setItem("sv-remember", state.remember ? "1" : "0"); } catch { /* private browser */ }
+  try { sessionStorage.setItem("sv-panel-session", "1"); } catch { /* private browser */ }
+}
+
+function canRestoreSession() {
+  return readStorage(localStorage, "sv-remember") !== "0" ||
+    readStorage(sessionStorage, "sv-panel-session") === "1";
+}
+
+let sessionVersion = 0;
+let connectionVersion = 0;
+let profileRequest = null;
+
+function loadProfile(version = sessionVersion, knownStatus = null) {
+  if (profileRequest?.version === version) return profileRequest.promise;
+  const request = { version };
+  const connection = connectionVersion;
+  request.promise = (async () => {
+    try {
+      const [profile, status] = await Promise.all([
+        api.profile(), knownStatus ? Promise.resolve(knownStatus) : api.status().catch(() => null),
+      ]);
+      if (!profile?.email) throw new Error(detailText(profile?.detail) || "Не удалось загрузить аккаунт");
+      if (version !== sessionVersion) return false;
+      if (status && connection === connectionVersion && !state.connecting && !state.disconnecting) {
+        state.connected = !!status.connected;
+      }
+      state.profile = {
+        ...profile,
+        devices: (profile.devices || []).map(device => status?.device_id && device.id === status.device_id
+          ? { ...device, self: true, is_connected: state.connected }
+          : device),
+      };
+      state.profileError = "";
+      return true;
+    } finally {
+      if (profileRequest === request) profileRequest = null;
+    }
+  })();
+  profileRequest = request;
+  return request.promise;
+}
+
+async function refreshProfile() {
+  if (!state.session || state.loading) return;
+  const version = sessionVersion;
+  try { await loadProfile(version); }
+  catch (e) {
+    if (version === sessionVersion) state.profileError = e.message || "Не удалось обновить сессии";
+  }
+  if (version === sessionVersion) render();
+}
 
 function ui() {
   return palette(state.theme, state.mode);
@@ -214,7 +275,7 @@ function loginView(p) {
           <button class="mode-btn" data-act="mode" title="Тема">${state.mode === "dark" ? icon("sun") : icon("moon")}</button>
           ${LOG_ENABLED ? '<button type="button" class="log-btn" data-act="log-open" title="Лог">Лог</button>' : ""}
         </div>
-        <div class="login-form">${body}</div>
+        <div class="login-form">${body}${state.restoreAvailable ? `<button class="linkish" data-act="restore" ${state.loading ? "disabled" : ""}>Повторить загрузку аккаунта</button>` : ""}</div>
       </section>
     </div>
     ${logOverlay()}`;
@@ -473,6 +534,7 @@ function devicesPage() {
   const devices = state.profile?.devices || [];
   return `<h2>Сессии</h2>
     <p class="hint" style="margin-bottom:12px">VPN онлайн: ${devices.filter((d) => d.is_connected).length} из ${state.profile?.devices_count || devices.length}</p>
+    ${state.profileError ? `<p class="err">${esc(state.profileError)}. Показаны последние данные.</p>` : ""}
     ${devices.map((d) => {
       const kind = sessionKind(d);
       const extra = sessionRouterName(d);
@@ -608,6 +670,7 @@ async function handle(act, el) {
       state.menu = false;
       if (state.page === "bonuses") void loadReferral();
       if (state.page === "servers") void loadServers();
+      if (state.page === "devices") await refreshProfile();
       render();
       return;
     }
@@ -615,6 +678,7 @@ async function handle(act, el) {
     if (act === "pay-early") { state.shopTier = state.profile?.max_devices === 5 ? 5 : 3; state.showSubscriptionShop = true; render(); return; }
     if (act === "pay-cancel") { ++paymentPollVersion; state.paymentStatus = "idle"; state.showSubscriptionShop = false; render(); return; }
     if (act === "login") { await login(); return; }
+    if (act === "restore") { await boot(); return; }
     if (act === "register") { await register(); return; }
     if (act === "forgot") { await forgot(); return; }
     if (LOG_ENABLED && act === "log-open") { state.logOpen = true; render(); void refreshLog(); return; }
@@ -650,28 +714,37 @@ async function login() {
     return;
   }
   state.loading = true;
+  const version = ++sessionVersion;
   state.error = "";
   render();
   try {
     const res = await api.login(state.email, state.password);
+    if (version !== sessionVersion) return;
     const email = res?.profile?.email || "";
     if (res?.ok === false || !email) {
       throw new Error(detailText(res?.detail) || "Неверный email или пароль");
     }
     state.session = res;
     state.profile = res.profile;
+    state.profileError = "";
+    state.restoreAvailable = false;
+    savePanelSession();
+    state.password = "";
     applyExtras(res);
     state.connected = !!res.connected;
     if (res.theme) state.theme = res.theme;
     if (res.live != null) state.live = !!res.live;
     await hydrateAfterAuth();
   } catch (e) {
+    if (version !== sessionVersion) return;
     state.error = e.message || "Неверный email или пароль";
     state.session = null;
     state.profile = null;
   } finally {
-    state.loading = false;
-    render();
+    if (version === sessionVersion) {
+      state.loading = false;
+      render();
+    }
   }
 }
 
@@ -717,6 +790,8 @@ async function forgot() {
 }
 
 async function logout() {
+  ++sessionVersion;
+  try { sessionStorage.removeItem("sv-panel-session"); } catch { /* private browser */ }
   ++paymentPollVersion;
   state.paymentStatus = "idle";
   state.showSubscriptionShop = false;
@@ -725,6 +800,8 @@ async function logout() {
   try { await api.logout(); } catch { /* keep going */ }
   state.session = null;
   state.profile = null;
+  state.profileError = "";
+  state.restoreAvailable = false;
   state.connected = false;
   state.menu = false;
   state.page = null;
@@ -740,6 +817,7 @@ async function toggleVpn() {
     render();
     return;
   }
+  ++connectionVersion;
   if (state.connected) {
     state.disconnecting = true;
     render();
@@ -996,27 +1074,50 @@ async function pickServer(key) {
 }
 
 async function boot() {
+  const version = ++sessionVersion;
+  state.loading = true;
+  state.error = "";
   const host = location.hostname;
   state.preview = host === "127.0.0.1" || host === "localhost";
   try {
     const status = await api.status();
+    if (version !== sessionVersion) return;
     if (status.theme) state.theme = status.theme;
     applyExtras(status);
-    if (status.session) {
+    if (status.session && canRestoreSession()) {
+      state.restoreAvailable = true;
       state.session = status.session;
-      state.profile = status.profile;
       state.connected = !!status.connected;
+      if (!await loadProfile(version, status)) return;
+      state.restoreAvailable = false;
       await hydrateAfterAuth();
     } else {
       applyServerPayload(null);
     }
-  } catch {
+  } catch (e) {
+    if (version !== sessionVersion) return;
+    state.session = null;
+    state.profile = null;
+    state.error = e.message || "Не удалось загрузить аккаунт";
     try { state.theme = await api.theme(); } catch { state.theme = {}; }
   }
+  if (version !== sessionVersion) return;
+  state.loading = false;
   if (!state.theme) {
     try { state.theme = await api.theme(); } catch { state.theme = {}; }
   }
   render();
 }
+
+// Refresh only while the list is visible; never accumulate parallel CGI requests.
+setInterval(() => {
+  if (!document.hidden && state.page === "devices") void refreshProfile();
+}, 30_000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state.session) void refreshProfile();
+});
+window.addEventListener("focus", () => {
+  if (!document.hidden && state.session) void refreshProfile();
+});
 
 boot();

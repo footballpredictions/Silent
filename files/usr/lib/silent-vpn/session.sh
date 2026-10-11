@@ -15,6 +15,14 @@ sv_session_active() {
 	[ -s "$SV_VAR/access_token" ]
 }
 
+sv_session_connected() {
+	local pid
+	[ -f "$SV_RUN/connected" ] && [ -f "$SV_RUN/path.up" ] || return 1
+	pid="$(cat "$SV_RUN/cloak.pid" 2>/dev/null)"
+	case "$pid" in ''|*[!0-9]*|0) return 1 ;; esac
+	kill -0 "$pid" 2>/dev/null
+}
+
 sv_connect_abort() {
 	sv_log "$1"
 	# Remove LAN policy before stopping transport, including partial startup.

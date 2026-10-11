@@ -62,8 +62,9 @@ case "$OP" in
 		fi
 		if [ -n "$token" ] && [ -n "$pemail" ]; then
 			rn="$(sv_router_name | sed 's/"/\\"/g')"
-			json_out 200 "$(printf '{"email":"%s","lan_ip":"%s","lan_url":"%s","router_name":"%s","profile":%s,"connected":false}' \
-				"$pemail" "$(sv_lan_ip)" "$(sv_lan_url)" "$rn" "$(cat "$me")")"
+			json_out 200 "$(printf '{"email":"%s","lan_ip":"%s","lan_url":"%s","router_name":"%s","profile":%s,"connected":%s}' \
+				"$pemail" "$(sv_lan_ip)" "$(sv_lan_url)" "$rn" "$(cat "$me")" \
+				"$(sv_session_connected && echo true || echo false)")"
 		else
 			rm -f "$SV_VAR/access_token" "$SV_VAR/refresh_token"
 			if [ -n "$token" ]; then
@@ -112,6 +113,7 @@ case "$OP" in
 	profile)
 		f="$(sv_hive_me)"
 		json_out 200 "$(cat "$f")"
+		rm -f "$f"
 		;;
 	referral)
 		f="$(sv_hive_referral)"

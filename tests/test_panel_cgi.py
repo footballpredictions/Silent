@@ -50,7 +50,7 @@ sv_session_connected || echo INVALID
         with tempfile.TemporaryDirectory() as directory:
             script = r'''
 sv_mkdir() { mkdir -p "$SV_RUN"; }
-sv_http_allow_wired() { return 0; }
+sv_http_allow_lan() { return 0; }
 sv_hive_me() {
     printf '{"email":"fixture@example.test"}' > "$SV_RUN/profile.tmp"
     echo "$SV_RUN/profile.tmp"

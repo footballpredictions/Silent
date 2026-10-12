@@ -23,8 +23,8 @@ json_out() {
 	printf '%s\n' "$*"
 }
 
-if ! sv_http_allow_wired; then
-	json_out 403 '{"detail":"Вход в Silent VPN только по кабелю LAN, не с Wi‑Fi"}'
+if ! sv_http_allow_lan; then
+	json_out 403 '{"detail":"Панель Silent VPN доступна только в локальной сети роутера"}'
 	exit 0
 fi
 

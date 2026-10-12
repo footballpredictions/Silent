@@ -22,7 +22,9 @@ df -h /tmp /overlay
 wget -O /tmp/sv.sh https://silentvpn3.github.io/openwrt-install.sh && sh /tmp/sv.sh
 ```
 
-Откройте `http://<LAN-IP>.silent.vpn` или IP роутера. Войдите, включите
+Подключитесь к локальной сети роутера по Wi-Fi или кабелю. Откройте
+`http://<LAN-IP>.silent.vpn` (панель напрямую: `http://<LAN-IP>/silent-vpn/`). Доступ к панели — только из LAN.
+Войдите, включите
 «Российские сервисы мимо VPN» в «Исключениях», затем включите VPN.
 
 Удаление:

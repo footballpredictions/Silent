@@ -86,14 +86,41 @@ assert.equal(calls,1);
 assert.ok(p.app.innerHTML.includes('VPN онлайн: 1'));
 ''')
 
-    def test_checked_remember_restores_new_tab_but_stores_no_credentials(self):
+    def test_checked_remember_prefills_credentials_after_logout_and_reopen(self):
         self.run_panel('''
 const values=new Map(), local=storage(values);const p=panel({local});
 p.state.email=profile.email;p.state.password='fixture-password';await p.login();
 const reopened=panel({local});await reopened.boot();
 assert.equal(reopened.state.profile.email,profile.email);
 assert.equal(p.state.password,'');
-assert.equal(JSON.stringify([...values]).includes('fixture'),false);
+await p.logout();
+assert.equal(p.state.email,profile.email);
+assert.equal(p.state.password,'fixture-password');
+assert.ok(p.app.innerHTML.includes('value="fixture-password"'));
+const loggedOut=panel({local,api:{status:async()=>({session:false})}});
+await loggedOut.boot();assert.equal(loggedOut.state.session,null);
+assert.equal(loggedOut.state.email,profile.email);
+assert.equal(loggedOut.state.password,'fixture-password');
+''')
+
+    def test_unchecked_remember_clears_previous_saved_credentials(self):
+        self.run_panel('''
+const local=storage();const p=panel({local});
+p.state.email=profile.email;p.state.password='fixture-password';await p.login();
+await p.logout();p.state.remember=false;p.state.password='new-password';await p.login();
+await p.logout();assert.equal(p.state.password,'');assert.equal(p.state.email,'');
+const reopened=panel({local,api:{status:async()=>({session:false})}});await reopened.boot();
+assert.equal(reopened.state.password,'');assert.equal(reopened.state.email,'');
+''')
+
+    def test_failed_login_does_not_replace_saved_credentials(self):
+        self.run_panel('''
+const local=storage();const p=panel({local});
+p.state.email=profile.email;p.state.password='fixture-password';await p.login();await p.logout();
+p.state.email='wrong@example.test';p.state.password='wrong-password';
+p.api.login=async()=>{throw new Error('Invalid login');};await p.login();
+const reopened=panel({local,api:{status:async()=>({session:false})}});await reopened.boot();
+assert.equal(reopened.state.email,profile.email);assert.equal(reopened.state.password,'fixture-password');
 ''')
 
     def test_unchecked_remember_survives_reload_of_same_tab(self):
@@ -132,7 +159,7 @@ p.api.profile=()=>new Promise(done=>{resolve=done;});
 const pending=p.handle('page',{dataset:{page:'devices'}});
 await p.logout();resolve(profile);await pending;
 assert.equal(p.state.session,null);assert.equal(p.state.profile,null);
-assert.equal(p.app.innerHTML.includes('fixture@example.test'),false);
+assert.ok(p.app.innerHTML.includes('data-act="login"'));
 ''')
 
     def test_visible_list_poll_updates_online_devices_without_parallel_requests(self):

@@ -6,6 +6,7 @@ import { mountToggleSnake, SNAKE_MIN_VISIBLE_MS, toggleMarkup } from "./toggle.j
 
 let stopSnake = () => {};
 const LOG_ENABLED = false;
+const rememberedLogin = readRememberedLogin();
 
 const state = {
   theme: null,
@@ -13,8 +14,8 @@ const state = {
   view: "boot",
   tab: "login",
   step: "auth",
-  email: "",
-  password: "",
+  email: rememberedLogin.email || "",
+  password: rememberedLogin.password || "",
   referral: "",
   showPass: false,
   remember: readStorage(localStorage, "sv-remember") !== "0",
@@ -65,9 +66,30 @@ function readStorage(storage, key) {
   try { return storage.getItem(key); } catch { return null; }
 }
 
-function savePanelSession() {
-  // Only the browser preference is stored here. Credentials stay on the router.
+function readRememberedLogin() {
+  if (readStorage(localStorage, "sv-remember") !== "1") return {};
+  try {
+    const saved = JSON.parse(readStorage(localStorage, "sv-login") || "null");
+    return typeof saved?.email === "string" && typeof saved?.password === "string"
+      ? saved : {};
+  } catch { return {}; }
+}
+
+function forgetRememberedLogin() {
+  try {
+    localStorage.removeItem("sv-login");
+    localStorage.setItem("sv-remember", "0");
+  } catch { /* private browser */ }
+}
+
+function savePanelSession(email, password) {
   try { localStorage.setItem("sv-remember", state.remember ? "1" : "0"); } catch { /* private browser */ }
+  if (state.remember) {
+    // Opt-in form credentials belong to this browser; router tokens are never stored here.
+    try { localStorage.setItem("sv-login", JSON.stringify({ email, password })); } catch { /* private browser */ }
+  } else {
+    forgetRememberedLogin();
+  }
   try { sessionStorage.setItem("sv-panel-session", "1"); } catch { /* private browser */ }
 }
 
@@ -239,10 +261,10 @@ function loginView(p) {
       </div>
       <form data-act="${submit}">
         <p class="label">Email</p>
-        <input class="field" type="email" data-bind="email" value="${esc(state.email)}" placeholder="you@example.com" required>
+        <input class="field" type="email" name="username" autocomplete="username" data-bind="email" value="${esc(state.email)}" placeholder="you@example.com" required>
         <p class="label">Пароль</p>
         <div class="field-wrap">
-          <input class="field" type="${state.showPass ? "text" : "password"}" data-bind="password" value="${esc(state.password)}" placeholder="••••••••" minlength="8" required>
+          <input class="field" type="${state.showPass ? "text" : "password"}" name="password" autocomplete="${state.tab === "register" ? "new-password" : "current-password"}" data-bind="password" value="${esc(state.password)}" placeholder="••••••••" minlength="8" required>
           <button type="button" class="eye" data-act="eye">${state.showPass ? icon("eyeOff") : icon("eye")}</button>
         </div>
         ${state.tab === "register" ? `
@@ -612,6 +634,7 @@ function bind() {
   $app.querySelectorAll("[data-bind-check]").forEach((el) => {
     el.addEventListener("change", () => {
       state[el.dataset.bindCheck] = el.checked;
+      if (el.dataset.bindCheck === "remember" && !el.checked) forgetRememberedLogin();
     });
   });
   $app.querySelectorAll("[data-act]").forEach((el) => {
@@ -619,6 +642,9 @@ function bind() {
     if (el.tagName === "FORM") {
       el.addEventListener("submit", (e) => {
         e.preventDefault();
+        el.querySelectorAll("[data-bind]").forEach(input => {
+          state[input.dataset.bind] = input.value;
+        });
         void handle(act);
       });
     } else {
@@ -718,7 +744,9 @@ async function login() {
   state.error = "";
   render();
   try {
-    const res = await api.login(state.email, state.password);
+    const loginEmail = state.email;
+    const loginPassword = state.password;
+    const res = await api.login(loginEmail, loginPassword);
     if (version !== sessionVersion) return;
     const email = res?.profile?.email || "";
     if (res?.ok === false || !email) {
@@ -728,7 +756,7 @@ async function login() {
     state.profile = res.profile;
     state.profileError = "";
     state.restoreAvailable = false;
-    savePanelSession();
+    savePanelSession(loginEmail, loginPassword);
     state.password = "";
     applyExtras(res);
     state.connected = !!res.connected;
@@ -800,6 +828,13 @@ async function logout() {
   try { await api.logout(); } catch { /* keep going */ }
   state.session = null;
   state.profile = null;
+  const saved = readRememberedLogin();
+  state.email = saved.email || "";
+  state.password = saved.password || "";
+  state.showPass = false;
+  state.tab = "login";
+  state.step = "auth";
+  state.error = "";
   state.profileError = "";
   state.restoreAvailable = false;
   state.connected = false;
@@ -1090,6 +1125,7 @@ async function boot() {
       state.connected = !!status.connected;
       if (!await loadProfile(version, status)) return;
       state.restoreAvailable = false;
+      state.password = "";
       await hydrateAfterAuth();
     } else {
       applyServerPayload(null);

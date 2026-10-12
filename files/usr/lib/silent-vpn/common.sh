@@ -165,16 +165,54 @@ sv_addr_is_wifi_client() {
 	return 1
 }
 
-# 0 = allow Silent UI (cable / local). 1 = Wi-Fi client, refuse.
-sv_http_allow_wired() {
-	local addr="${REMOTE_ADDR:-}"
-	case "$addr" in
-		""|127.*|::1|::ffff:127.*) return 0 ;;
-	esac
-	if sv_addr_is_wifi_client "$addr"; then
-		return 1
+# Allow devices directly connected to the LAN, over either cable or Wi-Fi.
+# Private addresses alone are not enough: guest, WAN and VPN use them too.
+sv_http_allow_lan() {
+	local addr family lan_dev route scope
+	addr="$(printf '%s' "${REMOTE_ADDR:-}" | tr 'A-Z' 'a-z')"
+	addr="${addr#::ffff:}"
+	[ -n "$addr" ] || return 1
+	[ "$addr" = "::1" ] && return 0
+	lan_dev="$(ubus call network.interface.lan status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)"
+	[ -n "$lan_dev" ] || lan_dev="$(uci -q get network.lan.device)"
+	if [ -z "$lan_dev" ]; then
+		if [ "$(uci -q get network.lan.type)" = bridge ]; then
+			lan_dev=br-lan
+		else
+			lan_dev="$(uci -q get network.lan.ifname)"
+		fi
 	fi
-	return 0
+	lan_dev="${lan_dev:-br-lan}"
+	case "$addr" in
+		*:*)
+			family=-6
+			scope="${addr#*%}"
+			if [ "$scope" != "$addr" ]; then
+				[ "$scope" = "$lan_dev" ] || return 1
+				addr="${addr%%%*}"
+			fi
+			case "$addr" in *[!0-9a-f:]*) return 1 ;; esac
+			case "$addr" in fe[89ab][0-9a-f]:*) addr="$addr%$lan_dev" ;; esac
+			;;
+		*)
+			family=-4
+			sv_is_ipv4 "$addr" || return 1
+			case "$addr" in 127.*) return 0 ;; esac
+			;;
+	esac
+	route="$(ip "$family" route get "$addr" 2>/dev/null)" || return 1
+	printf '%s\n' "$route" | awk -v lan="$lan_dev" '
+		{ for (i = 1; i <= NF; i++) {
+			if ($i == "via") gateway = 1
+			if ($i == "dev" && $(i + 1) == lan) direct_lan = 1
+		} }
+		END { exit !(direct_lan && !gateway) }
+	'
+}
+
+# Compatibility with already installed CGI files during a small-file upgrade.
+sv_http_allow_wired() {
+	sv_http_allow_lan
 }
 
 sv_token() {

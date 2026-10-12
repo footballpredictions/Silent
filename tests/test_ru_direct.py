@@ -6,6 +6,10 @@ DOMAINS = ROOT / "files" / "usr" / "lib" / "silent-vpn" / "ru-direct.domains"
 
 
 class RuDirectListTests(unittest.TestCase):
+    def test_gdz_requires_vpn_despite_ru_suffix(self):
+        exceptions = DOMAINS.with_name("ru-vpn.domains").read_text(encoding="utf-8").splitlines()
+        self.assertIn("gdz-raketa.ru", exceptions)
+
     def test_list_has_core_ru_services(self):
         rows = [
             line.strip()

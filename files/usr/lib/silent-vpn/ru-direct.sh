@@ -4,6 +4,7 @@
 . "$SV_LIB/common.sh"
 
 SV_RU_LIST="${SV_RU_LIST:-$SV_LIB/ru-direct.domains}"
+SV_RU_VPN_LIST="${SV_RU_VPN_LIST:-$SV_LIB/ru-vpn.domains}"
 SV_RU_DNS="/tmp/dnsmasq.d/silent-ru.conf"
 SV_RU_NFT="${SV_RU_NFT:-/etc/nftables.d/90-silent-ru.nft}"
 SV_RU_TABLE="${SV_RU_TABLE:-162}"
@@ -35,6 +36,7 @@ sv_ru_clear_policy() {
 	ip rule del fwmark "$SV_RU_MARK" lookup "$SV_RU_TABLE" 2>/dev/null || true
 	ip route flush table "$SV_RU_TABLE" 2>/dev/null || true
 	nft flush set inet fw4 sv_ru 2>/dev/null || true
+	nft flush set inet fw4 sv_ru_vpn 2>/dev/null || true
 	nft flush chain inet fw4 silent_ru_mark 2>/dev/null || true
 	nft flush chain inet fw4 silent_ru_out 2>/dev/null || true
 	rm -f "$SV_RU_NFT"
@@ -48,6 +50,8 @@ sv_ru_ensure_nft() {
 	case "$current" in *timeout*) legacy=1 ;; esac
 	[ -n "$current" ] || \
 		nft add set inet fw4 sv_ru '{ type ipv4_addr; }' || return 1
+	nft list set inet fw4 sv_ru_vpn >/dev/null 2>&1 || \
+		nft add set inet fw4 sv_ru_vpn '{ type ipv4_addr; }' || return 1
 	nft list chain inet fw4 silent_ru_mark >/dev/null 2>&1 || \
 		nft add chain inet fw4 silent_ru_mark '{ type filter hook prerouting priority -150; policy accept; }' || return 1
 	nft list chain inet fw4 silent_ru_out >/dev/null 2>&1 || \
@@ -72,21 +76,22 @@ sv_ru_ensure_nft() {
 			echo 'add set inet fw4 sv_ru { type ipv4_addr; }'
 			[ -z "$ips" ] || echo "add element inet fw4 sv_ru { $ips }"
 		fi
-		echo "add rule inet fw4 silent_ru_mark ip daddr @sv_ru counter meta mark set $SV_RU_MARK"
-		echo "add rule inet fw4 silent_ru_out ip daddr @sv_ru counter meta mark set $SV_RU_MARK"
+		echo "add rule inet fw4 silent_ru_mark ip daddr @sv_ru ip daddr != @sv_ru_vpn counter meta mark set $SV_RU_MARK"
+		echo "add rule inet fw4 silent_ru_out ip daddr @sv_ru ip daddr != @sv_ru_vpn counter meta mark set $SV_RU_MARK"
 	} > "$txn"
 	if ! nft -f "$txn"; then rm -f "$txn"; return 1; fi
 	rm -f "$txn"
 	mkdir -p "$(dirname "$SV_RU_NFT")" || return 1
 	cat > "$SV_RU_NFT" <<EOF
 set sv_ru { type ipv4_addr; }
+set sv_ru_vpn { type ipv4_addr; }
 chain silent_ru_mark {
  type filter hook prerouting priority -150; policy accept;
- ip daddr @sv_ru counter meta mark set $SV_RU_MARK
+ ip daddr @sv_ru ip daddr != @sv_ru_vpn counter meta mark set $SV_RU_MARK
 }
 chain silent_ru_out {
  type route hook output priority -150; policy accept;
- ip daddr @sv_ru counter meta mark set $SV_RU_MARK
+ ip daddr @sv_ru ip daddr != @sv_ru_vpn counter meta mark set $SV_RU_MARK
 }
 EOF
 }
@@ -121,13 +126,45 @@ sv_ru_write_dns() {
 		case "$d" in ''|\#*) continue ;; esac
 		uci add_list "dhcp.silent_ru.domain=$d" || return 1
 	done < "$SV_RU_LIST"
+	uci -q delete dhcp.silent_ru_vpn || true
+	if [ -s "$SV_RU_VPN_LIST" ]; then
+		uci set dhcp.silent_ru_vpn=ipset || return 1
+		uci set dhcp.silent_ru_vpn.table_family=inet || return 1
+		uci set dhcp.silent_ru_vpn.table=fw4 || return 1
+		uci set dhcp.silent_ru_vpn.family=4 || return 1
+		uci add_list dhcp.silent_ru_vpn.name=sv_ru_vpn || return 1
+		while read -r d || [ -n "$d" ]; do
+			d="${d%"$cr"}"
+			case "$d" in ''|\#*) continue ;; esac
+			uci add_list "dhcp.silent_ru_vpn.domain=$d" || return 1
+		done < "$SV_RU_VPN_LIST"
+	fi
 	uci commit dhcp
+}
+
+sv_ru_seed_vpn_ips() {
+	local d cr ip
+	[ -s "$SV_RU_VPN_LIST" ] || return 0
+	cr="$(printf '\r')"
+	# Seed before DNS restarts, so clients with cached answers also get the exception.
+	while read -r d || [ -n "$d" ]; do
+		d="${d%"$cr"}"
+		case "$d" in ''|\#*) continue ;; esac
+		for ip in $(nslookup -type=A "$d" 127.0.0.1 2>/dev/null | awk '
+			/^Name:/ { answer = 1 }
+			answer && /^Address[^:]*:/ { sub(/^[^:]*:[ \t]*/, ""); print $1 }
+		'); do
+			sv_is_ipv4 "$ip" || continue
+			nft add element inet fw4 sv_ru_vpn "{ $ip }" 2>/dev/null || true
+		done
+	done < "$SV_RU_VPN_LIST"
 }
 
 sv_ru_apply() {
 	if ! sv_ru_enabled; then
 		rm -f "$SV_RU_DNS"
 		uci -q delete dhcp.silent_ru || true
+		uci -q delete dhcp.silent_ru_vpn || true
 		uci commit dhcp
 		sv_ru_clear_policy
 		/etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
@@ -138,6 +175,7 @@ sv_ru_apply() {
 	sv_ru_ensure_nft || return 1
 	sv_ru_ensure_route || return 1
 	sv_ru_write_dns || return 1
+	sv_ru_seed_vpn_ips
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
 	sv_log "ru-direct on table=$SV_RU_TABLE mark=$SV_RU_MARK"
 }

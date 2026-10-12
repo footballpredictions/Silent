@@ -32,6 +32,7 @@ nft flush chain inet fw4 silent_ru_out 2>/dev/null || true
 nft delete chain inet fw4 silent_ru_mark 2>/dev/null || true
 nft delete chain inet fw4 silent_ru_out 2>/dev/null || true
 nft delete set inet fw4 sv_ru 2>/dev/null || true
+nft delete set inet fw4 sv_ru_vpn 2>/dev/null || true
 
 uci -q delete network.svpath
 uci -q delete network.svpath_peer
@@ -41,6 +42,7 @@ uci -q delete firewall.sv_lan_to_path
 uci -q commit network
 uci -q commit firewall
 uci -q delete dhcp.silent_ru
+uci -q delete dhcp.silent_ru_vpn
 rm -f /etc/nftables.d/90-silent-ru.nft
 
 addrs="$(uci -q get dhcp.@dnsmasq[0].address 2>/dev/null || true)"

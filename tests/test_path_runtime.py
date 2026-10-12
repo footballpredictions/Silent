@@ -51,6 +51,58 @@ sv_ru_write_dns
         self.assertIn('add_list dhcp.silent_ru.domain=ozon.ru', lines)
         self.assertIn('add_list dhcp.silent_ru.name=sv_ru', lines)
 
+    def test_ru_vpn_exception_wins_over_broad_ru_mark_on_both_hooks(self):
+        lines = self.run_shell(r'''
+SV_RU_NFT="$SV_RUN/ru.nft"
+nft() { case "$1" in -f) cat "$2" ;; *) echo "$*" ;; esac; }
+sv_ru_ensure_nft || exit 1
+cat "$SV_RU_NFT"
+''', library='ru-direct.sh')
+        for chain in ['silent_ru_mark', 'silent_ru_out']:
+            self.assertTrue(any(f'add rule inet fw4 {chain} ip daddr @sv_ru ip daddr != @sv_ru_vpn'
+                                in line for line in lines))
+        self.assertIn('set sv_ru_vpn { type ipv4_addr; }', lines)
+
+    def test_ru_vpn_dns_suffix_list_is_registered_and_normalized(self):
+        lines = self.run_shell(r'''
+SV_RU_LIST="$SV_RUN/domains"
+SV_RU_VPN_LIST="$SV_RUN/vpn-domains"
+printf 'ru\nozon.ru\n' > "$SV_RU_LIST"
+printf '# exceptions\r\ngdz-raketa.ru\r\n' > "$SV_RU_VPN_LIST"
+uci() { echo "$*"; }
+sv_ru_write_dns || exit 1
+''', library='ru-direct.sh')
+        self.assertIn('set dhcp.silent_ru_vpn=ipset', lines)
+        self.assertIn('add_list dhcp.silent_ru_vpn.name=sv_ru_vpn', lines)
+        self.assertIn('add_list dhcp.silent_ru_vpn.domain=gdz-raketa.ru', lines)
+        self.assertFalse(any('\r' in line for line in lines))
+
+    def test_ru_vpn_seed_supports_existing_client_dns_cache(self):
+        lines = self.run_shell(r'''
+SV_RU_VPN_LIST="$SV_RUN/vpn-domains"
+printf 'gdz-raketa.ru\n' > "$SV_RU_VPN_LIST"
+nslookup() {
+    printf 'Server: 127.0.0.1\nAddress: 127.0.0.1:53\nName: gdz-raketa.ru\nAddress: 155.212.160.137\nAddress: 2001:db8::1\n'
+}
+nft() { echo "$*"; }
+sv_ru_seed_vpn_ips || exit 1
+''', library='ru-direct.sh')
+        self.assertIn('add element inet fw4 sv_ru_vpn { 155.212.160.137 }', lines)
+        self.assertEqual(len(lines), 1)
+
+    def test_disabling_ru_bypass_cleans_exception_dns_and_addresses(self):
+        lines = self.run_shell(r'''
+SV_RU_NFT="$SV_RUN/ru.nft"
+SV_RU_DNS="$SV_RUN/ru.conf"
+sv_ru_enabled() { return 1; }
+uci() { echo "$*"; }
+nft() { echo "nft $*"; }
+ip() { :; }
+sv_ru_apply || exit 1
+''', library='ru-direct.sh')
+        self.assertIn('-q delete dhcp.silent_ru_vpn', lines)
+        self.assertIn('nft flush set inet fw4 sv_ru_vpn', lines)
+
     def test_ru_dns_windows_domain_list_has_no_carriage_returns_in_uci(self):
         self.run_shell(r'''
 SV_RU_LIST="$SV_RUN/domains"

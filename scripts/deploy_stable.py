@@ -18,6 +18,7 @@ from _deploy_common import BACKEND_ROOT, CONTAINER, REMOTE, connect, run
 from fix_tunnel_dnat import FIX_SH
 
 PREFLIGHT_TESTS = (
+    "scripts/test_routing_policy_unit.py",
     "scripts/test_nginx_http_api_unit.py",
     "scripts/test_cell_http_guard_unit.py",
     "scripts/test_admin_ui_cache_unit.py",
@@ -124,13 +125,19 @@ def _deploy_selected_python(paths: list[str], *, admin_ui: Path | None = None, c
             stamp = str(time.time_ns())
             for rel in paths:
                 remote = f"{REMOTE}/{rel}"
-                existing = sftp.stat(remote)
-                # Preserve the exact previous bytes before replacing an existing live file.
-                with sftp.file(remote, "rb") as source, sftp.file(f"{remote}.before-{stamp}", "wb") as backup:
-                    backup.write(source.read())
+                try:
+                    existing = sftp.stat(remote)
+                except OSError as exc:
+                    if exc.errno != 2:
+                        raise
+                    existing = None
+                # Preserve old bytes; new service modules have no previous version.
+                if existing is not None:
+                    with sftp.file(remote, "rb") as source, sftp.file(f"{remote}.before-{stamp}", "wb") as backup:
+                        backup.write(source.read())
                 temporary = f"{remote}.deploy-{stamp}"
                 sftp.put(str(BACKEND_ROOT / rel), temporary)
-                sftp.chmod(temporary, existing.st_mode & 0o777)
+                sftp.chmod(temporary, existing.st_mode & 0o777 if existing else 0o644)
                 sftp.posix_rename(temporary, remote)
                 print("selected Python", rel)
             if admin_ui is not None:

@@ -689,6 +689,27 @@ async def delete_all_user_devices_endpoint(
     return await delete_all_user_devices(db, user_id)
 
 
+class RoutingPolicyRequest(BaseModel):
+    direct_domains: list[str]
+    vpn_domains: list[str]
+
+
+@router.get("/settings/routing-policy")
+async def get_routing_policy(_: bool = Depends(get_admin_credentials), db: AsyncSession = Depends(get_db)):
+    from app.services.routing_policy import load_policy
+    return await load_policy(db)
+
+
+@router.post("/settings/routing-policy")
+async def set_routing_policy(req: RoutingPolicyRequest, _: bool = Depends(get_admin_credentials),
+                             db: AsyncSession = Depends(get_db)):
+    from app.services.routing_policy import save_policy
+    try:
+        return await save_policy(db, req.direct_domains, req.vpn_domains)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/settings/registration")
 async def get_registration_settings(
     _: bool = Depends(get_admin_credentials),

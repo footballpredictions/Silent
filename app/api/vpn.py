@@ -58,6 +58,13 @@ from app.config import settings
 router = APIRouter(prefix="/vpn", tags=["vpn"])
 
 
+@router.get("/routing-policy")
+async def get_routing_policy(db: AsyncSession = Depends(get_db)):
+    """Non-secret shared policy; also available through cell public failover."""
+    from app.services.routing_policy import load_policy
+    return await load_policy(db)
+
+
 def _olcrtc_disabled_payload() -> dict:
     return {
         "enabled": False,

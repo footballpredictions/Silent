@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import deploy_stable
@@ -11,6 +11,17 @@ from deploy_stable import _selected_python_paths
 
 
 class SelectionTests(unittest.TestCase):
+    def test_selected_deploy_can_add_new_module_without_backing_up_missing_file(self):
+        client = MagicMock()
+        sftp = client.open_sftp.return_value.__enter__.return_value
+        sftp.stat.side_effect = FileNotFoundError(2, 'not found')
+        with patch.object(deploy_stable, '_preflight'), patch.object(deploy_stable, 'connect', return_value=client), \
+             patch.object(deploy_stable, '_restart_and_verify'):
+            deploy_stable._deploy_selected_python(['app/services/routing_policy.py'])
+        sftp.file.assert_not_called()
+        self.assertEqual(sftp.chmod.call_args.args[1], 0o644)
+        self.assertEqual(sftp.posix_rename.call_args.args[1], deploy_stable.REMOTE + '/app/services/routing_policy.py')
+
     def test_existing_payment_file_only_and_deduplicated(self):
         self.assertEqual(_selected_python_paths(["app/services/payment_service.py"] * 2), ["app/services/payment_service.py"])
 

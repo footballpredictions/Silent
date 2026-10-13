@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Settings } from 'lucide-react'
+import RoutingPolicySettings from '../components/RoutingPolicySettings'
 
 type ThreatStatus = {
   enabled: boolean
@@ -259,6 +260,8 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
           {success}
         </div>
       )}
+
+      <RoutingPolicySettings token={token} />
 
       <div className="rounded-xl border border-[#222] bg-[#111] p-5 space-y-4">
         <div className="flex items-start justify-between gap-4">

@@ -9,6 +9,11 @@ fi
 
 echo "Silent VPN — удаление"
 
+if [ -x /etc/init.d/silent-vpn-policy ]; then
+	/etc/init.d/silent-vpn-policy stop >/dev/null 2>&1 || true
+	/etc/init.d/silent-vpn-policy disable >/dev/null 2>&1 || true
+fi
+
 if [ -x /usr/sbin/silent-vpn-ctl ]; then
 	/usr/sbin/silent-vpn-ctl disconnect >/dev/null 2>&1 || true
 fi
@@ -68,10 +73,10 @@ if [ "$kept" = 0 ]; then
 fi
 uci -q commit uhttpd
 
-rm -rf /usr/lib/silent-vpn /usr/sbin/silent-vpn-ctl \
+rm -rf /usr/lib/silent-vpn /usr/sbin/silent-vpn-ctl /usr/sbin/silent-vpn-policy \
 	/usr/bin/spass /usr/bin/svpass /usr/bin/svcloak /usr/bin/wdtt-client /www/silent-vpn \
 	/www/cgi-bin/silent-entry /www/cgi-bin/silent-api /etc/silent-vpn \
-	/etc/init.d/silent-vpn /etc/config/silent-vpn \
+	/etc/init.d/silent-vpn /etc/init.d/silent-vpn-policy /etc/config/silent-vpn \
 	/etc/hotplug.d/iface/99-silent-vpn /etc/uci-defaults/99-silent-vpn \
 	/var/run/silent-vpn /tmp/dnsmasq.d/silent-vpn.conf /tmp/dnsmasq.d/silent-ru.conf \
 	/var/log/silent-cloak.log /var/log/silent-vpn.log /var/log/silent-vpn.log.tmp /tmp/sv-fw.log

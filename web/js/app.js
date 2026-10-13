@@ -611,17 +611,15 @@ function dnsPage() {
 
 function exclusionsPage() {
   return `<h2>Исключения</h2>
-    <p class="hint" style="margin-bottom:16px">На роутере нет списка приложений, как на телефоне. Вместо этого весь дом ходит через DNS роутера: можно вывести российские сервисы в обход туннеля.</p>
     <div class="switch-row">
       <div>
         <div style="font-size:14px;font-weight:500">Российские сервисы мимо VPN</div>
-        <p class="hint" style="margin-top:4px">Яндекс, VK, Госуслуги, банки, Почта, маркетплейсы — напрямую в WAN. YouTube, Google и остальное остаются в туннеле.</p>
       </div>
       <button class="mini-toggle ${state.ruDirect ? "on" : ""}" data-act="ru-direct" aria-pressed="${state.ruDirect}">
         <span class="mini-thumb"></span>
       </button>
     </div>
-    <p class="hint" style="margin-top:16px">Как это видят программы в доме: браузер и приложения берут DNS с роутера — RU-домены получают «домашние» IP и уходят мимо WG. Если программа сама ходит в DoH (Chrome «безопасный DNS») или зашила IP, она может остаться в VPN. Телефоны с своим VPN-клиентом Silent этот обход не дублируют: у них свои исключения.</p>`;
+    `;
 }
 
 

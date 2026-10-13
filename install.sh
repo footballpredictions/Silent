@@ -147,10 +147,12 @@ install_files() {
 	cp -a "$ROOT/files/usr/lib/silent-vpn/." /usr/lib/silent-vpn/
 	rm -rf /usr/lib/silent-vpn/wdtt
 	cp -a "$ROOT/files/usr/sbin/silent-vpn-ctl" /usr/sbin/silent-vpn-ctl
+	cp -a "$ROOT/files/usr/sbin/silent-vpn-policy" /usr/sbin/silent-vpn-policy
 	cp -a "$ROOT/files/www/cgi-bin/." /www/cgi-bin/
 	cp -a "$ROOT/web/." /www/silent-vpn/
 	rm -f /www/silent-vpn/toggle-demo.html
 	cp -a "$ROOT/files/etc/init.d/silent-vpn" /etc/init.d/silent-vpn
+	cp -a "$ROOT/files/etc/init.d/silent-vpn-policy" /etc/init.d/silent-vpn-policy
 	cp -a "$ROOT/files/etc/config/silent-vpn" /etc/config/silent-vpn
 	cp -a "$ROOT/files/etc/hotplug.d/iface/99-silent-vpn" /etc/hotplug.d/iface/99-silent-vpn
 	cp -a "$ROOT/files/etc/uci-defaults/99-silent-vpn" /etc/uci-defaults/99-silent-vpn
@@ -166,6 +168,9 @@ install_files() {
 	sh /etc/uci-defaults/99-silent-vpn || true
 	/etc/init.d/silent-vpn enable
 	/etc/init.d/silent-vpn start
+	chmod 0755 /usr/sbin/silent-vpn-policy /etc/init.d/silent-vpn-policy
+	/etc/init.d/silent-vpn-policy enable
+	/etc/init.d/silent-vpn-policy start
 	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 
 	# Last step, after the service start: same UCI write that makes the panel name resolve.

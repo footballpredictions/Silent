@@ -101,14 +101,81 @@ sv_ru_ensure_route() {
 	dev="$(sv_ru_wan_dev)" || true
 	gw="$(sv_ru_wan_gw)" || true
 	[ -n "$dev" ] || return 0
-	ip route flush table "$SV_RU_TABLE" 2>/dev/null || true
 	if [ -n "$gw" ]; then
 		ip route replace default via "$gw" dev "$dev" table "$SV_RU_TABLE" 2>/dev/null || true
 	else
 		ip route replace default dev "$dev" table "$SV_RU_TABLE" 2>/dev/null || true
 	fi
-	ip rule del fwmark "$SV_RU_MARK" lookup "$SV_RU_TABLE" 2>/dev/null || true
-	ip rule add fwmark "$SV_RU_MARK" lookup "$SV_RU_TABLE" pref "$SV_RU_PRIO" 2>/dev/null || true
+	ip rule show | grep -q "fwmark $SV_RU_MARK lookup $SV_RU_TABLE" || \
+		ip rule add fwmark "$SV_RU_MARK" lookup "$SV_RU_TABLE" pref "$SV_RU_PRIO" 2>/dev/null || true
+}
+
+sv_ru_policy_ready() {
+	nft list chain inet fw4 silent_ru_mark 2>/dev/null | grep -q 'ip daddr != @sv_ru_vpn' && \
+		nft list chain inet fw4 silent_ru_out 2>/dev/null | grep -q 'ip daddr != @sv_ru_vpn'
+}
+
+sv_ru_snapshot_sets() {
+	local set tmp
+	for set in sv_ru sv_ru_vpn; do
+		tmp="$SV_RUN/$set.ips.new"
+		nft -j list set inet fw4 "$set" > "$tmp.json" 2>/dev/null || continue
+		jsonfilter -i "$tmp.json" -e '@.nftables[*].set.elem[*]' > "$tmp" 2>/dev/null
+		rm -f "$tmp.json"
+		# Keep old addresses if a firewall reload just emptied the sets.
+		cat "$SV_RUN/$set.ips" "$tmp" 2>/dev/null | sort -u > "$tmp.all"
+		mv "$tmp.all" "$SV_RUN/$set.ips"
+		rm -f "$tmp"
+	done
+}
+
+sv_ru_restore_sets() {
+	local set txn
+	txn="$(mktemp "$SV_RUN/ru-restore.XXXXXX")" || return 1
+	for set in sv_ru sv_ru_vpn; do
+		[ -s "$SV_RUN/$set.ips" ] || continue
+		# One parser per set, not a fork/awk process for every cached address.
+		awk -F. -v set="$set" '
+		NF == 4 {
+		 valid=1
+		 for(i=1;i<=4;i++) if($i !~ /^[0-9]+$/ || $i+0>255) valid=0
+		 if(valid) printf "add element inet fw4 %s { %s }\n",set,$0
+		}' "$SV_RUN/$set.ips" >> "$txn"
+	done
+	[ ! -s "$txn" ] || nft -f "$txn" 2>/dev/null || true
+	rm -f "$txn"
+}
+
+sv_ru_lock() {
+	local owner
+	mkdir -p "$SV_RUN"
+	if ! mkdir "$SV_RUN/ru.lock" 2>/dev/null; then
+		owner="$(cat "$SV_RUN/ru.lock/pid" 2>/dev/null)"
+		case "$owner" in ''|*[!0-9]*|0) return 1 ;; esac
+		kill -0 "$owner" 2>/dev/null && return 1
+		rm -f "$SV_RUN/ru.lock/pid"
+		rmdir "$SV_RUN/ru.lock" 2>/dev/null || return 1
+		mkdir "$SV_RUN/ru.lock" 2>/dev/null || return 1
+	fi
+	echo "$$" > "$SV_RUN/ru.lock/pid"
+}
+
+sv_ru_unlock() {
+	[ "$(cat "$SV_RUN/ru.lock/pid" 2>/dev/null)" = "$$" ] || return 0
+	rm -f "$SV_RUN/ru.lock/pid"
+	rmdir "$SV_RUN/ru.lock" 2>/dev/null || true
+}
+
+sv_ru_maintain() {
+	sv_ru_enabled || return 0
+	if ! sv_ru_policy_ready; then
+		sv_ru_ensure_nft || return 1
+	fi
+	# Restore addresses even when fw4 recreated the included empty sets/chains.
+	sv_ru_restore_sets
+	sv_ru_ensure_route
+	sv_ru_seed_vpn_ips
+	sv_ru_snapshot_sets
 }
 
 sv_ru_write_dns() {
@@ -160,24 +227,74 @@ sv_ru_seed_vpn_ips() {
 	done < "$SV_RU_VPN_LIST"
 }
 
-sv_ru_apply() {
+sv_ru_apply_inner() {
 	if ! sv_ru_enabled; then
 		rm -f "$SV_RU_DNS"
 		uci -q delete dhcp.silent_ru || true
 		uci -q delete dhcp.silent_ru_vpn || true
 		uci commit dhcp
 		sv_ru_clear_policy
+		rm -f "$SV_RUN/sv_ru.ips" "$SV_RUN/sv_ru_vpn.ips" "$SV_RUN/policy.applied"
 		/etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
 		sv_log "ru-direct off"
 		return 0
+	fi
+	if [ -f "$SV_LIB/routing-policy.sh" ]; then
+		. "$SV_LIB/routing-policy.sh"
+		sv_policy_fetch || true
+		sv_policy_use_cache || return 1
 	fi
 	dnsmasq --version 2>/dev/null | grep -q ' nftset ' || { sv_log "ru-direct needs dnsmasq-full with nftset"; return 1; }
 	sv_ru_ensure_nft || return 1
 	sv_ru_ensure_route || return 1
 	sv_ru_write_dns || return 1
 	sv_ru_seed_vpn_ips
+	sv_ru_snapshot_sets
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
+	if [ -s "$SV_VAR/routing-policy.json" ]; then
+		jsonfilter -i "$SV_VAR/routing-policy.json" -e '@.revision' > "$SV_RUN/policy.applied"
+	fi
 	sv_log "ru-direct on table=$SV_RU_TABLE mark=$SV_RU_MARK"
+}
+
+sv_ru_apply() {
+	local code
+	sv_ru_lock || return 1
+	sv_ru_apply_inner
+	code=$?
+	sv_ru_unlock
+	return "$code"
+}
+
+sv_ru_refresh() {
+	local now last revision applied
+	sv_ru_enabled || return 0
+	sv_ru_lock || return 0
+	. "$SV_LIB/routing-policy.sh"
+	now="$(date +%s)"
+	last="$(cat "$SV_RUN/policy.fetched" 2>/dev/null)"
+	case "$last" in ''|*[!0-9]*) last=0 ;; esac
+	if [ "$((now - last))" -ge 300 ]; then
+		sv_policy_fetch || true
+		echo "$now" > "$SV_RUN/policy.fetched"
+	fi
+	sv_policy_use_cache
+	revision="$(jsonfilter -i "$SV_VAR/routing-policy.json" -e '@.revision' 2>/dev/null)"
+	applied="$(cat "$SV_RUN/policy.applied" 2>/dev/null)"
+	if [ -n "$revision" ] && [ "$revision" != "$applied" ]; then
+		# Rebuild only when admin changed the list. No periodic DNS/service restart.
+		if sv_ru_ensure_nft && sv_ru_write_dns; then
+			nft flush set inet fw4 sv_ru 2>/dev/null || true
+			nft flush set inet fw4 sv_ru_vpn 2>/dev/null || true
+			rm -f "$SV_RUN/sv_ru.ips" "$SV_RUN/sv_ru_vpn.ips"
+			sv_ru_seed_vpn_ips
+			if /etc/init.d/dnsmasq restart >/dev/null 2>&1; then
+				echo "$revision" > "$SV_RUN/policy.applied"
+			fi
+		fi
+	fi
+	sv_ru_maintain
+	sv_ru_unlock
 }
 
 sv_ru_set() {

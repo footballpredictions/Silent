@@ -1,0 +1,12 @@
+#!/bin/sh
+SV_LIB="${SV_LIB:-/usr/lib/silent-vpn}"
+. "$SV_LIB/ru-direct.sh"
+trap 'sv_ru_unlock' EXIT
+if [ "$1" = --once ]; then
+	sv_ru_refresh
+	exit $?
+fi
+while :; do
+	sv_ru_refresh
+	sleep 60
+done

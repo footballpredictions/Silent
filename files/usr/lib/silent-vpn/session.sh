@@ -18,6 +18,7 @@ sv_session_active() {
 sv_session_connected() {
 	local pid
 	[ -f "$SV_RUN/connected" ] && [ -f "$SV_RUN/path.up" ] || return 1
+	sv_tunnel_api_ready || return 1
 	pid="$(cat "$SV_RUN/cloak.pid" 2>/dev/null)"
 	case "$pid" in ''|*[!0-9]*|0) return 1 ;; esac
 	kill -0 "$pid" 2>/dev/null

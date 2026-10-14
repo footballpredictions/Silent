@@ -29,7 +29,11 @@ class PanelCgiTests(unittest.TestCase):
             output = self.run_script(directory, CONNECTED + r'''
 touch "$SV_RUN/connected" "$SV_RUN/path.up"
 echo $$ > "$SV_RUN/cloak.pid"
+sv_tunnel_api_ready() { return 0; }
 sv_session_connected && echo LIVE
+sv_tunnel_api_ready() { return 1; }
+sv_session_connected || echo NO_ROUTE
+sv_tunnel_api_ready() { return 0; }
 rm "$SV_RUN/path.up"
 sv_session_connected || echo NO_PATH
 touch "$SV_RUN/path.up"
@@ -38,7 +42,7 @@ sv_session_connected || echo DEAD
 echo invalid > "$SV_RUN/cloak.pid"
 sv_session_connected || echo INVALID
 ''')
-            self.assertEqual(output.splitlines(), ["LIVE", "NO_PATH", "DEAD", "INVALID"])
+            self.assertEqual(output.splitlines(), ["LIVE", "NO_ROUTE", "NO_PATH", "DEAD", "INVALID"])
 
     def test_profile_cgi_removes_its_response_without_clearing_session(self):
         # Run the actual CGI dispatch. The API boundary substitutes a profile file,

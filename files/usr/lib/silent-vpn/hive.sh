@@ -14,10 +14,11 @@ sv_hive_post() {
 		: > "$out"
 		to="$(sv_hive_timeout_for "$base")"
 		code="$(sv_hive_wget POST "${base}${path}" "$tmp" "$out" "$to")"
-		if [ -s "$out" ]; then
-			break
-		fi
+		case "$code" in
+			2*|4*) [ ! -s "$out" ] || break ;;
+		esac
 	done
+	case "$code" in 000|5*) printf '%s\n' '{"detail":"Сервер временно недоступен. Повторите попытку."}' > "$out" ;; esac
 	echo "$code" > "$SV_RUN/http.code"
 	echo "$out"
 }
@@ -32,10 +33,11 @@ sv_hive_get() {
 		: > "$out"
 		to="$(sv_hive_timeout_for "$base")"
 		code="$(sv_hive_wget GET "${base}${path}" "" "$out" "$to")"
-		if [ -s "$out" ]; then
-			break
-		fi
+		case "$code" in
+			2*|4*) [ ! -s "$out" ] || break ;;
+		esac
 	done
+	case "$code" in 000|5*) printf '%s\n' '{"detail":"Сервер временно недоступен. Повторите попытку."}' > "$out" ;; esac
 	echo "$code" > "$SV_RUN/http.code"
 	echo "$out"
 }

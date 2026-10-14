@@ -97,12 +97,18 @@ sv_router_name() {
 	fi
 }
 
+sv_tunnel_api_ready() {
+	[ -f "$SV_RUN/path.up" ] && [ -d "/sys/class/net/$SV_WG_IF" ] || return 1
+	ip -4 route get 10.66.66.1 2>/dev/null | awk -v iface="$SV_WG_IF" '
+		{for(i=1;i<NF;i++) if($i=="dev" && $(i+1)==iface) found=1}
+		END {exit !found}'
+}
+
 sv_api_bases() {
-	# VPN поднят — только шлюз туннеля. Иначе соты :9100, Улей :443 последним.
+	# Prefer a routed tunnel, but keep recovery APIs available after a tunnel failure.
 	# wget не подменяет Host для HTTPS по IP: сначала рабочий HTTP-прокси сот.
-	if [ -f "$SV_RUN/path.up" ]; then
+	if [ -f "$SV_RUN/path.up" ] && sv_tunnel_api_ready; then
 		echo "$SV_TUNNEL_API"
-		return
 	fi
 	if [ -n "$SV_API_OVERRIDE" ]; then
 		case "$SV_API_OVERRIDE" in
@@ -220,6 +226,7 @@ sv_http_allow_wired() {
 }
 
 sv_token() {
+	[ -s "$SV_VAR/access_token" ] || return 0
 	tr -d ' \t\r\n' < "$SV_VAR/access_token" 2>/dev/null || true
 }
 

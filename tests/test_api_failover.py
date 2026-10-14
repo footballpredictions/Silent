@@ -31,7 +31,7 @@ class ApiFailoverTests(unittest.TestCase):
 
 @unittest.skipUnless(SHELL, "POSIX shell required for API transport scenarios")
 class ApiTransportTests(unittest.TestCase):
-    def request(self, successful_base, tunnel_up=False):
+    def request(self, successful_base, tunnel_up=False, *, failed_with_body=False, method="GET", tunnel_ready=True):
         with tempfile.TemporaryDirectory() as directory:
             run = Path(directory)
             if tunnel_up:
@@ -45,11 +45,15 @@ class ApiTransportTests(unittest.TestCase):
                 SV_PUBLIC_API="https://89-125-188-100.nip.io",
                 SV_TUNNEL_API="http://10.66.66.1:8000",
                 SV_TEST_SUCCESS=successful_base + "/api/users/me",
+                SV_TEST_ERROR_BODY="1" if failed_with_body else "0",
+                SV_TEST_METHOD=method,
+                SV_TEST_TUNNEL_READY="0" if tunnel_ready else "1",
             )
             # Exercise the real shell request loop. The stub records attempted
             # URLs and returns a response only for the selected reachable API.
             script = '''
 . "$SV_LIB/hive.sh"
+sv_tunnel_api_ready() { return "$SV_TEST_TUNNEL_READY"; }
 wget() {
     local out="" timeout="" url=""
     while [ "$#" -gt 0 ]; do
@@ -61,10 +65,20 @@ wget() {
         shift
     done
     printf '%s %s\\n' "$url" "$timeout" >> "$SV_RUN/attempts"
-    [ "$url" = "$SV_TEST_SUCCESS" ] || return 1
+    if [ "$url" != "$SV_TEST_SUCCESS" ]; then
+        if [ "$SV_TEST_ERROR_BODY" = 1 ]; then
+            printf '{"detail":"temporarily unavailable"}' > "$out"
+            echo 'HTTP/1.1 503 Service Unavailable' >&2
+        fi
+        return 1
+    fi
     printf '{"ok":true}' > "$out"
 }
-response="$(sv_hive_get /api/users/me)"
+if [ "$SV_TEST_METHOD" = POST ]; then
+    response="$(sv_hive_post /api/users/me '{}')"
+else
+    response="$(sv_hive_get /api/users/me)"
+fi
 cat "$response"
 '''
             result = subprocess.run(
@@ -90,6 +104,25 @@ cat "$response"
         self.assertEqual(self.request("http://10.66.66.1:8000", tunnel_up=True), [
             "http://10.66.66.1:8000/api/users/me 8",
         ])
+
+    def test_stale_tunnel_marker_still_allows_login_api_via_cell(self):
+        self.assertEqual(self.request("http://87.58.213.193:9100", tunnel_up=True), [
+            "http://10.66.66.1:8000/api/users/me 8",
+            "http://87.58.213.193:9100/api/users/me 8",
+        ])
+
+    def test_missing_tunnel_interface_skips_dead_gateway(self):
+        self.assertEqual(self.request("http://87.58.213.193:9100", tunnel_up=True, tunnel_ready=False), [
+            "http://87.58.213.193:9100/api/users/me 8",
+        ])
+
+    def test_transient_error_body_does_not_stop_get_or_post_failover(self):
+        for method in ("GET", "POST"):
+            with self.subTest(method=method):
+                self.assertEqual(self.request("http://78.17.74.27:9100", failed_with_body=True, method=method), [
+                    "http://87.58.213.193:9100/api/users/me 8",
+                    "http://78.17.74.27:9100/api/users/me 8",
+                ])
 
     def test_bearer_token_stays_one_header(self):
         with tempfile.TemporaryDirectory() as directory:

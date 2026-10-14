@@ -30,7 +30,7 @@ HIVE = os.environ.get("SILENT_HIVE", "https://89-125-188-100.nip.io").rstrip("/"
 PUBLIC_THEME = f"{HIVE}/api/vpn/theme"
 PREVIEW_MOCK = os.environ.get("SILENT_PREVIEW_MOCK", "") == "1"
 BOOTSTRAP = "T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc"
-APP_VERSION = "1.0.169"
+APP_VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 
 _theme_lock = threading.Lock()
 _theme_cache: dict | None = None
@@ -317,7 +317,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         if op == "theme" and method == "GET":
             return write_json(self, theme)
         if op == "status" and method == "GET":
-            payload = {**base, "connected": _connected}
+            payload = {**base, "version": APP_VERSION, "connected": _connected}
             if _session:
                 payload["session"] = {k: _session[k] for k in ("email",) if k in _session}
                 payload["profile"] = live_profile() if live else mock_profile(_session["email"])

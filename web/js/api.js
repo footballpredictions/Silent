@@ -37,6 +37,9 @@ function formatDetail(detail) {
 }
 
 export const api = {
+  updateCheck: () => send("/update-check", { cache: "no-store" }),
+  updateStatus: () => send("/update-status", { cache: "no-store" }),
+  updateStart: () => send("/update-start", { method: "POST", body: "{}" }),
   status: () => send("/status"),
   theme: () => send("/theme"),
   login: (email, password) => send("/login", { method: "POST", body: JSON.stringify({ email, password }) }),

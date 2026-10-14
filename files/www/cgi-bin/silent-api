@@ -34,11 +34,34 @@ OP="$(echo "${PATH_INFO:-}" | sed 's#^/##')"
 
 BODY="$(read_body)"
 
+if [ -d "$SV_RUN/update.lock" ] && [ -f "$SV_LIB/update.sh" ]; then
+	. "$SV_LIB/update.sh"
+	case "$OP:$REQUEST_METHOD" in
+		connect:*|disconnect:*|logout:*|server:POST|exclusions:POST|dns:POST)
+			if sv_update_busy; then
+				json_out 409 '{"detail":"Дождитесь завершения обновления"}'
+				exit 0
+			fi ;;
+	esac
+fi
+
 email_of() { printf '%s' "$BODY" | jsonfilter -e '@.email' 2>/dev/null || true; }
 pass_of() { printf '%s' "$BODY" | jsonfilter -e '@.password' 2>/dev/null || true; }
 code_of() { printf '%s' "$BODY" | jsonfilter -e '@.referral_or_promo' 2>/dev/null || true; }
 
 case "$OP" in
+	update-check|update-status)
+		json_out 200 "$(/usr/sbin/silent-vpn-update "${OP#update-}")"
+		;;
+	update-start)
+		if [ "$REQUEST_METHOD" != POST ] || ! sv_session_active; then
+			json_out 403 '{"detail":"Войдите в аккаунт для обновления"}'
+		elif [ -n "${HTTP_ORIGIN:-}" ] && [ "$HTTP_ORIGIN" != "http://$HTTP_HOST" ] && [ "$HTTP_ORIGIN" != "https://$HTTP_HOST" ]; then
+			json_out 403 '{"detail":"Откройте панель роутера заново"}'
+		else
+			json_out 200 "$(/usr/sbin/silent-vpn-update start)"
+		fi
+		;;
 	status)
 		json_out 200 "$(silent-vpn-ctl status)"
 		;;

@@ -39,6 +39,9 @@ define Package/silent-vpn/install
 	$(INSTALL_BIN) ./files/etc/uci-defaults/99-silent-vpn $(1)/etc/uci-defaults/99-silent-vpn
 	$(INSTALL_BIN) ./files/etc/hotplug.d/iface/99-silent-vpn $(1)/etc/hotplug.d/iface/99-silent-vpn
 	$(INSTALL_BIN) ./files/usr/sbin/silent-vpn-ctl $(1)/usr/sbin/silent-vpn-ctl
+	$(INSTALL_BIN) ./files/usr/sbin/silent-vpn-update $(1)/usr/sbin/silent-vpn-update
+	$(INSTALL_DATA) ./VERSION $(1)/usr/lib/silent-vpn/VERSION
+	$(INSTALL_DATA) ./remote-install.sh $(1)/usr/lib/silent-vpn/installer.sh
 	$(CP) ./files/usr/lib/silent-vpn/* $(1)/usr/lib/silent-vpn/
 	$(INSTALL_BIN) ./files/www/cgi-bin/silent-entry $(1)/www/cgi-bin/silent-entry
 	$(INSTALL_BIN) ./files/www/cgi-bin/silent-api $(1)/www/cgi-bin/silent-api

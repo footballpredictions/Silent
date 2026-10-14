@@ -1,4 +1,4 @@
-import { api, openPaymentUrl } from "./api.js?v=1.0.170";
+import { api, openPaymentUrl } from "./api.js?v=1.0.170-r8";
 import { displayVpnServers, normalizeSlot, selectedTitle } from "./servers.js";
 import { applyPalette, palette } from "./theme.js";
 import { dockKind, formatExpireDate, hasVpnAccess, isUnlimitedLike, planLabel } from "./subscription.js";
@@ -31,7 +31,7 @@ const state = {
   connected: false,
   connecting: false,
   disconnecting: false,
-  menu: false,
+  menu: typeof window.matchMedia === "function" && window.matchMedia("(min-width: 861px)").matches,
   page: null,
   servers: null,
   referralInfo: null,
@@ -56,7 +56,54 @@ const state = {
   dnsMsg: "",
   live: false,
   pressed: false,
+  installedVersion: "—",
+  update: { phase: "idle" },
 };
+
+let updateRequest = false;
+const UPDATE_BUSY = new Set(["queued", "checking", "downloading", "verifying", "installing"]);
+const updateBusy = () => UPDATE_BUSY.has(state.update.phase);
+
+function updateHtml() {
+  const u = state.update;
+  const p = ui();
+  const colors = `background:${esc(p.updateBarBg || p.fg)};color:${esc(p.updateBarFg || p.bg)}`;
+  if (u.phase === "available") return `<button class="dock-pay update-action" style="${colors}" data-act="update-start">${esc(state.theme?.update_bar_label_available || "Доступно обновление")} v${esc(u.version)}</button>`;
+  if (updateBusy()) return `<button class="dock-pay update-action" style="${colors}" disabled role="status" aria-live="polite">${esc(u.detail || "Обновление…")}</button>`;
+  if (u.phase === "done") return `<p class="hint update-progress" role="status">${esc(u.detail || "Обновление установлено")}</p><button class="dock-pay update-action" data-act="update-reload">Открыть обновлённую панель</button>`;
+  if (u.phase === "error") return `<p class="err update-progress" role="status">${esc(u.detail)}</p><button class="dock-pay update-action" data-act="update-check">Повторить проверку обновления</button>`;
+  return "";
+}
+
+async function checkUpdate(force = false) {
+  if (updateRequest || updateBusy() || !api.updateCheck) return;
+  updateRequest = true;
+  try {
+    const running = await api.updateStatus();
+    state.update = UPDATE_BUSY.has(running.phase) || (!force && (running.phase === "error" || (running.phase === "done" && running.version !== state.installedVersion)))
+      ? running : await api.updateCheck();
+  } catch {
+    // Offline checks must not hide the account or interrupt a running VPN.
+    if (state.page === "about") state.update = {phase:"error",detail:"Не удалось проверить обновление. Повторите попытку."};
+  } finally { updateRequest = false; render(); }
+}
+
+async function startUpdate() {
+  if (updateBusy()) return;
+  state.update = {phase:"queued", detail:"Подготовка обновления"};
+  render();
+  try { state.update = await api.updateStart(); }
+  catch (e) { state.update = {phase:"error", detail:e.message || "Не удалось начать обновление"}; }
+  render();
+}
+
+async function pollUpdate() {
+  if (!updateBusy() || updateRequest || document.hidden || !api.updateStatus) return;
+  updateRequest = true;
+  try { state.update = await api.updateStatus(); }
+  catch { /* uhttpd briefly restarts during installation; keep polling */ }
+  finally { updateRequest = false; render(); }
+}
 
 const $app = document.getElementById("app");
 const $chrome = document.getElementById("chrome");
@@ -156,6 +203,8 @@ function esc(value) {
 
 function icon(name) {
   const icons = {
+    close: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>',
+    back: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 5-7 7 7 7M5 12h14"/></svg>',
     menu: '<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
     sun: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="5"/><g fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round"><path d="M12 2.2v2.4M12 19.4v2.4M2.2 12h2.4M19.4 12h2.4M4.85 4.85l1.7 1.7M17.45 17.45l1.7 1.7M4.85 19.15l1.7-1.7M17.45 6.55l1.7-1.7"/></g></svg>',
     moon: '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5" fill="currentColor"/><circle cx="16.2" cy="9.2" r="4.4" fill="var(--sv-bg)"/></svg>',
@@ -338,12 +387,14 @@ function mainView(p) {
       ${toggleMarkup({ visualOn, showSnake, pressed: state.pressed })}
       ${state.error ? `<p class="err" style="text-align:center;padding:0 18px">${esc(state.error)}</p>` : ""}
     </div>
-    <div class="dock">${dockHtml(p)}</div>`;
+    <div class="dock">${updateHtml() || dockHtml(p)}</div>`;
 
   return `
-    <div class="shell">
+    <div class="shell ${state.menu ? "menu-open" : ""}">
+      ${state.menu ? '<button class="menu-scrim" data-act="menu-close" aria-label="Закрыть меню"></button>' : ""}
       <aside class="side ${state.menu ? "open" : ""}">
         <div class="side-head">
+          <button class="mode-btn side-close" data-act="menu-close" aria-label="Закрыть меню" title="Закрыть меню">${icon("close")}</button>
           <div class="mail">${esc(email)}</div>
           <div class="meta">Аккаунт: ${esc(id)}</div>
           <div class="meta">Роутер · OpenWrt</div>
@@ -358,7 +409,9 @@ function mainView(p) {
       </aside>
       <main class="stage">
         <div class="topbar">
-          <button class="mode-btn menu-toggle" data-act="menu" title="Меню">${icon("menu")}</button>
+          ${state.page
+            ? `<button class="mode-btn" data-act="page-back" aria-label="Назад" title="Назад">${icon("back")}</button>`
+            : `<button class="mode-btn menu-toggle" data-act="menu" aria-label="Меню" title="Меню">${icon("menu")}</button>`}
           <div class="topbar-title">${esc(p.appTitle)}</div>
           <div class="topbar-end">
             <button class="mode-btn" data-act="mode" title="Тема">${state.mode === "dark" ? icon("sun") : icon("moon")}</button>
@@ -383,7 +436,7 @@ function pageInner(p, t) {
   if (page === "support") return supportPage(t);
   if (page === "about") {
     return `<h2>Silent VPN</h2>
-      <p class="hint">Версия 1.0.170 · OpenWrt</p>
+      <p class="hint">Версия ${esc(state.installedVersion)} · OpenWrt</p>
       <p class="hint" style="margin-top:8px">Туннель как у PC и Android: WireGuard + WDTT. Этот веб — только панель роутера.</p>`;
   }
   return "";
@@ -676,6 +729,10 @@ function bind() {
 
 async function handle(act, el) {
   try {
+    if (act === "update-reload") { location.reload(); return; }
+    if (act === "update-start") return startUpdate();
+    if (act === "update-check") { if (updateBusy()) return; state.update = {phase:"idle"}; return checkUpdate(true); }
+    if (updateBusy() && ["toggle", "logout", "server", "ru-direct", "dns-save", "dns-preset"].includes(act)) return;
     if (act === "mode") {
       state.mode = state.mode === "dark" ? "light" : "dark";
       localStorage.setItem("sv-mode", state.mode);
@@ -964,6 +1021,7 @@ function applyServerPayload(raw) {
 
 function applyExtras(payload) {
   if (!payload) return;
+  if (payload.version) state.installedVersion = payload.version;
   if (payload.lan_url) state.lanUrl = payload.lan_url;
   if (payload.lan_ip) state.lanIp = payload.lan_ip;
   if (payload.router_name) state.routerName = payload.router_name;
@@ -1147,6 +1205,8 @@ async function boot() {
 setInterval(() => {
   if (!document.hidden && state.page === "devices") void refreshProfile();
 }, 30_000);
+setInterval(() => { void pollUpdate(); }, 2_000);
+setInterval(() => { if (!document.hidden && state.session) void checkUpdate(); }, 15 * 60_000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && state.session) void refreshProfile();
 });
@@ -1154,4 +1214,4 @@ window.addEventListener("focus", () => {
   if (!document.hidden && state.session) void refreshProfile();
 });
 
-boot();
+boot().then(() => { void checkUpdate(); });

@@ -164,7 +164,11 @@ install_files() {
 	rm -f /www/silent-vpn/toggle-demo.html
 	cp -a "$ROOT/files/etc/init.d/silent-vpn" /etc/init.d/silent-vpn
 	cp -a "$ROOT/files/etc/init.d/silent-vpn-policy" /etc/init.d/silent-vpn-policy
-	cp -a "$ROOT/files/etc/config/silent-vpn" /etc/config/silent-vpn
+	if [ "${SILENT_OPENWRT_UPDATE:-0}" != 1 ] || [ ! -f /etc/config/silent-vpn ]; then
+		cp -a "$ROOT/files/etc/config/silent-vpn" /etc/config/silent-vpn
+	fi
+	uci -q set "silent-vpn.main.app_version=$(cat "$ROOT/VERSION")"
+	uci -q commit silent-vpn
 	cp -a "$ROOT/files/etc/hotplug.d/iface/99-silent-vpn" /etc/hotplug.d/iface/99-silent-vpn
 	cp -a "$ROOT/files/etc/uci-defaults/99-silent-vpn" /etc/uci-defaults/99-silent-vpn
 	if [ -f "$ROOT/uninstall.sh" ]; then
@@ -172,6 +176,11 @@ install_files() {
 		chmod 0755 /usr/sbin/silent-vpn-uninstall
 	fi
 	install_wdtt
+	cp "$ROOT/VERSION" /usr/lib/silent-vpn/VERSION
+	printf '%s\n' "$SV_WDTT_SLOT" > /usr/lib/silent-vpn/ARCH
+	cp "$ROOT/remote-install.sh" /usr/lib/silent-vpn/installer.sh
+	cp "$ROOT/files/usr/sbin/silent-vpn-update" /usr/sbin/silent-vpn-update
+	chmod 0755 /usr/sbin/silent-vpn-update
 
 	chmod 0755 /usr/sbin/silent-vpn-ctl /www/cgi-bin/silent-entry /www/cgi-bin/silent-api \
 		/etc/init.d/silent-vpn /etc/hotplug.d/iface/99-silent-vpn

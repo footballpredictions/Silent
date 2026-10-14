@@ -17,7 +17,7 @@ for (const file of ['servers', 'subscription']) {
     Buffer.from(fs.readFileSync(`${base}/web/js/${file}.js`)).toString('base64'));
 }
 const source = fs.readFileSync(`${base}/web/js/app.js`, 'utf8')
-  .replace(/^import .*;\r?\n/gm, '').replace(/boot\(\);\s*$/, '');
+  .replace(/^import .*;\r?\n/gm, '').replace(/^boot\(\).*;\s*$/m, '');
 const storage = (values = new Map()) => ({
   getItem: key => values.get(key) ?? null,
   setItem: (key, value) => values.set(key, String(value)),
@@ -49,6 +49,42 @@ function panel({local = storage(), tab = storage(), api = {}} = {}) {
 
 @unittest.skipUnless(NODE, "Node required for real panel runtime scenarios")
 class PanelRuntimeTests(unittest.TestCase):
+    def test_update_is_only_on_home_and_menu_has_close_and_back(self):
+        self.run_panel('''
+const p=panel({api:{updateCheck:async()=>({phase:'available',version:'1.0.170'}),updateStatus:async()=>({phase:'idle'})}});
+await p.boot();await p.handle('update-check');
+assert.ok(p.app.innerHTML.includes('Доступно обновление'));
+assert.ok(!p.app.innerHTML.includes('dock-title'));
+await p.handle('menu');assert.equal(p.state.menu,true);
+assert.ok(p.app.innerHTML.includes('data-act="menu-close"'));
+await p.handle('menu-close');assert.equal(p.state.menu,false);
+await p.handle('page',{dataset:{page:'about'}});
+assert.ok(p.app.innerHTML.includes('data-act="page-back"'));
+assert.ok(!p.app.innerHTML.includes('data-act="update-start"'));
+await p.handle('page-back');assert.equal(p.state.page,null);
+assert.ok(p.app.innerHTML.includes('data-act="update-start"'));
+''')
+
+    def test_update_button_is_in_home_dock_and_survives_temporary_restart(self):
+        self.run_panel('''
+const p=panel({api:{updateCheck:async()=>({phase:'available',version:'1.0.171'}),
+ updateStatus:async()=>({phase:'idle'}),updateStart:async()=>({phase:'downloading',detail:'Downloading'})}});
+await p.boot();await p.handle('update-check');
+assert.ok(p.app.innerHTML.includes('data-act="update-start"'));
+assert.ok(p.app.innerHTML.includes('1.0.171'));
+await p.handle('update-start');assert.equal(p.state.update.phase,'downloading');
+assert.ok(p.app.innerHTML.includes('Downloading'));
+await p.handle('logout');assert.ok(p.state.session);
+''')
+
+    def test_about_uses_installed_version_from_router_status(self):
+        self.run_panel('''
+const p=panel({api:{status:async()=>({session:true,version:'1.0.171'})}});
+await p.boot(); await p.handle('page',{dataset:{page:'about'}});
+assert.ok(p.app.innerHTML.includes('Версия 1.0.171'));
+assert.ok(!p.app.innerHTML.includes('Версия 1.0.170'));
+''')
+
     def run_panel(self, scenario):
         result = subprocess.run([NODE, "--input-type=module", "-e", HARNESS + scenario,
                                  ROOT.as_posix()], capture_output=True, text=True,

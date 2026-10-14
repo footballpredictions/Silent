@@ -119,10 +119,10 @@ sv_space() {
 }
 
 sv_preflight() {
-	local compressed="$1" unpacked="$2" ram_needed flash_needed available
+	local compressed="$1" unpacked="$2" extra="${3:-0}" ram_needed flash_needed available
 	case "$compressed:$unpacked" in *[!0-9:]*|:*|*:) echo "Некорректные размеры пакета" >&2; return 1 ;; esac
 	[ "$compressed" -gt 0 ] && [ "$unpacked" -gt 0 ] || return 1
-	ram_needed=$(( (compressed + unpacked + 1023) / 1024 + 8192 ))
+	ram_needed=$(( (compressed + unpacked + extra + 1023) / 1024 + 8192 ))
 	flash_needed=$(( (unpacked + 1023) / 1024 + 8192 ))
 	sv_space /tmp "$ram_needed" 'временные файлы' || return 1
 	sv_space /usr "$flash_needed" 'установка и зависимости' || return 1
@@ -133,6 +133,9 @@ sv_preflight() {
 		return 1
 	fi
 }
+
+# Also supplies architecture/resource/archive helpers to the panel updater.
+if [ "${SILENT_OPENWRT_LIBRARY:-0}" = 1 ]; then return 0; fi
 
 if [ "$(id -u 2>/dev/null || echo 1)" != 0 ]; then
 	echo "Нужен root. Подключитесь: ssh root@IP-роутера" >&2
@@ -155,7 +158,8 @@ trap 'exit 1' HUP INT TERM
 sv_pkg_update
 sv_pkg_add wget ca-bundle jsonfilter
 if [ -z "$PKG" ]; then
-	sv_fetch "$RELEASES" "$STAGE/releases.json"
+	sv_fetch "${RELEASES}?check=$(date +%s)" "$STAGE/releases.json"
+	VERSION="$(sv_json version)"
 	PKG="$(sv_json download_url)"
 	SIZE="$(sv_json size)"
 	UNPACKED="$(sv_json unpacked_size)"
@@ -182,6 +186,11 @@ fi
 
 if [ -f "$WORKDIR/ARCH" ] && [ "$(cat "$WORKDIR/ARCH")" != "$slot" ]; then
 	echo "Архитектура пакета не совпадает с $slot." >&2
+	exit 1
+fi
+
+if [ -n "${VERSION:-}" ] && [ "$(cat "$WORKDIR/VERSION" 2>/dev/null)" != "$VERSION" ]; then
+	echo "Версия архива не совпадает с опубликованной $VERSION." >&2
 	exit 1
 fi
 

@@ -118,7 +118,7 @@ awk() { if [ "$2" = /proc/meminfo ]; then echo 99999999; else command awk "$@"; 
 sv_fetch() {
   echo "$1" >> "$TEST_TMP/downloads"
   case "$1" in
-    *releases.json) echo '{}' > "$2" ;;
+    *releases.json*) echo '{}' > "$2" ;;
     */only-"$EXPECTED_ARCH".tar.gz) cp "$TEST_TMP/source.tgz" "$2" ;;
     *) exit 97 ;;
   esac

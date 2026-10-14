@@ -9,6 +9,15 @@ fi
 
 echo "Silent VPN — удаление"
 
+if [ -f /usr/lib/silent-vpn/update.sh ]; then
+	SV_RUN=/var/run/silent-vpn
+	. /usr/lib/silent-vpn/update.sh
+	if sv_update_busy; then
+		echo "Дождитесь завершения обновления и повторите удаление." >&2
+		exit 1
+	fi
+fi
+
 if [ -x /etc/init.d/silent-vpn-policy ]; then
 	/etc/init.d/silent-vpn-policy stop >/dev/null 2>&1 || true
 	/etc/init.d/silent-vpn-policy disable >/dev/null 2>&1 || true
@@ -73,7 +82,7 @@ if [ "$kept" = 0 ]; then
 fi
 uci -q commit uhttpd
 
-rm -rf /usr/lib/silent-vpn /usr/sbin/silent-vpn-ctl /usr/sbin/silent-vpn-policy \
+rm -rf /usr/lib/silent-vpn /usr/sbin/silent-vpn-ctl /usr/sbin/silent-vpn-policy /usr/sbin/silent-vpn-update \
 	/usr/bin/spass /usr/bin/svpass /usr/bin/svcloak /usr/bin/wdtt-client /www/silent-vpn \
 	/www/cgi-bin/silent-entry /www/cgi-bin/silent-api /etc/silent-vpn \
 	/etc/init.d/silent-vpn /etc/init.d/silent-vpn-policy /etc/config/silent-vpn \

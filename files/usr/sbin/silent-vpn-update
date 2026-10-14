@@ -1,0 +1,16 @@
+#!/bin/sh
+SV_LIB="${SV_LIB:-/usr/lib/silent-vpn}"
+. "$SV_LIB/common.sh"
+. "$SV_LIB/hive.sh"
+. "$SV_LIB/session.sh"
+SILENT_OPENWRT_LIBRARY=1 . "$SV_LIB/installer.sh"
+set +e
+. "$SV_LIB/update.sh"
+sv_mkdir
+case "${1:-status}" in
+	check) sv_update_check ;;
+	start) sv_update_start ;;
+	status) sv_update_status ;;
+	run) sv_update_run ;;
+	*) exit 2 ;;
+esac

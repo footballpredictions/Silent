@@ -131,6 +131,8 @@ class WireGuardHelper(context: Context) {
 
         includeAppOverlay: Boolean = false,
 
+        forceSocketRebind: Boolean = false,
+
     ) = wgMutex.withLock {
 
         withContext(Dispatchers.IO) {
@@ -248,7 +250,7 @@ class WireGuardHelper(context: Context) {
                 wgSemanticKey(configToApply) + "|ex=$excludeKey|apps=$appPolicyKey|ov=$apiOverlayMode|appin=$includeAppOverlay|blk=${SilentGoBackendVpnService.blockUnderlyingNetwork}" +
                     "|browser=$browserSites|sites=$siteWhitelist:${siteTargets.sorted().joinToString(",")}|domains=${siteDomains.sorted().joinToString(",")}"
 
-            if (sharedTunnel != null && semanticKey.isNotBlank() && semanticKey == lastAppliedSemanticKey) {
+            if (!forceSocketRebind && sharedTunnel != null && semanticKey.isNotBlank() && semanticKey == lastAppliedSemanticKey) {
 
                 DebugLog.i(TAG, "WireGuard skip (same config, tunnel UP)")
 
@@ -364,13 +366,17 @@ class WireGuardHelper(context: Context) {
                 }
                 BrowserScopedTunnel.start(
                     appContext, finalConfig, resolveAppTunnelPolicy(appContext),
-                    excludeIPs, siteTargets, siteDomains, siteWhitelist, semanticKey,
+                    excludeIPs, siteTargets, siteDomains, siteWhitelist, semanticKey, forceSocketRebind,
                 )
                 lastAppliedSemanticKey = semanticKey
                 lastExcludeRouteKey = excludeRouteKey
                 return@withContext
             }
             BrowserScopedTunnel.stop()
+            if (forceSocketRebind && sharedTunnel != null) {
+                backend.setState(sharedTunnel!!, Tunnel.State.DOWN, null)
+                sharedTunnel = null
+            }
             if (tunnel != null && excludeRouteChanged && !apiOverlayMode && !isBootstrap) {
                 DebugLog.i(TAG, "site excludeRoute changed — full recreate")
                 runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }

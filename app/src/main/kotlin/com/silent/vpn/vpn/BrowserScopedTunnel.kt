@@ -62,8 +62,10 @@ object BrowserScopedTunnel {
         domains: Collection<String>,
         whitelist: Boolean,
         semanticKey: String,
+        forceSocketRebind: Boolean = false,
     ) {
-        if (key == semanticKey && isRunning()) return
+        // An unchanged WG policy does not mean sockets survived a network handover.
+        if (!forceSocketRebind && key == semanticKey && isRunning()) return
         stop()
         val binary = File(context.applicationInfo.nativeLibraryDir, "libsite-router.so")
         check(binary.canExecute()) { "Отсутствует модуль правил сайтов для этой архитектуры" }

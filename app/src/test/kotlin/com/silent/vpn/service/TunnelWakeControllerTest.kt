@@ -1,5 +1,7 @@
 package com.silent.vpn.service
 
+import com.silent.vpn.policy.NetworkRecoveryPolicy
+
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -13,6 +15,25 @@ class TunnelWakeControllerTest {
             isHeld = true
         }
         override fun release() { isHeld = false }
+    }
+
+    @Test fun `online recovery before debounce survives an old paused stats tick for a bounded interval`() {
+        val lock = CpuLock()
+        val controller = TunnelWakeController(lock)
+        controller.onConnect(0L)
+        controller.update(200_000L, true, true, true, 1.0)
+        assertFalse(lock.isHeld)
+        val recoveryStarted = 201_000L
+        controller.onRecovery(recoveryStarted)
+        val wakeUntil = recoveryStarted + 60_000L
+        val protected = NetworkRecoveryPolicy.shouldProtectOnlineRecovery(true, true, wakeUntil, 201_100L)
+        controller.update(201_100L, true, true, !protected, 1.0)
+        assertTrue("the queued reconnect slept before its delayed job", lock.isHeld)
+        val expired = NetworkRecoveryPolicy.shouldProtectOnlineRecovery(true, true, wakeUntil, wakeUntil)
+        controller.update(wakeUntil, true, true, !expired, 1.0)
+        assertFalse("a stuck recovery kept the CPU awake indefinitely", lock.isHeld)
+        assertFalse(NetworkRecoveryPolicy.shouldProtectOnlineRecovery(true, false, wakeUntil, 201_100L))
+        assertTrue(lock.acquisitions.all { it in 1L..30_000L })
     }
 
     @Test fun `idle connected session allows CPU sleep instead of holding it all night`() {

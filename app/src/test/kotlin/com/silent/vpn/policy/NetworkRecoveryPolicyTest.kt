@@ -8,6 +8,16 @@ import org.junit.Test
 class NetworkRecoveryPolicyTest {
 
     @Test
+    fun `live process cannot suppress recovery of sockets after a real radio gap`() {
+        for (reason in listOf("cell_gap_restored", "wifi_gap_restored", "link_handover:cell", "validated_after_gap")) {
+            assertFalse(
+                "A live process is not proof that sockets survived $reason",
+                NetworkRecoveryPolicy.shouldKeepHealthyTransport(reason, transportHealthy = true),
+            )
+        }
+    }
+
+    @Test
     fun `cell events do not count as our gap while wifi is alive`() {
         // Сота гаснет сама при живом Wi‑Fi — не наша дыра, рестарта быть не должно.
         assertFalse(
@@ -279,7 +289,7 @@ class NetworkRecoveryPolicyTest {
                 nowMs = 1L,
             ),
         )
-        assertFalse(
+        assertTrue(
             NetworkRecoveryPolicy.wasRealPauseOrBlackout(
                 pausedForNetwork = false,
                 isTunnelPaused = false,
@@ -330,6 +340,34 @@ class NetworkRecoveryPolicyTest {
                 validated = false,
             ),
         )
+    }
+
+    @Test
+    fun `long coverage outage is restored instead of discarded after one minute`() {
+        assertEquals(
+            NetworkRecoveryPolicy.SameTransportGap.RESTORE,
+            NetworkRecoveryPolicy.classifySameTransportGap(1_000L, 601_000L, validated = true),
+        )
+    }
+
+    @Test
+    fun `real pause overrides the process alive shortcut for ordinary callbacks`() {
+        assertFalse(NetworkRecoveryPolicy.shouldKeepHealthyTransport("capabilities:cell", true, true))
+        assertTrue(NetworkRecoveryPolicy.shouldKeepHealthyTransport("capabilities:cell", true, false))
+    }
+
+    @Test
+    fun `frozen positive worker snapshot is a full recovery reason`() {
+        val reason = "watchdog_transport_stalled"
+        assertTrue(NetworkRecoveryPolicy.isRealNetworkRecoveryReason(reason))
+        assertTrue(NetworkRecoveryPolicy.needsUnderlyingWaitRestart(reason))
+        assertFalse(NetworkRecoveryPolicy.shouldKeepHealthyTransport(reason, true))
+    }
+
+    @Test
+    fun `zero worker stale watchdog cannot be silenced by a live native process`() {
+        assertFalse(NetworkRecoveryPolicy.shouldKeepHealthyTransport("stale", true, activeWorkers = 0))
+        assertTrue(NetworkRecoveryPolicy.shouldKeepHealthyTransport("stale", true, activeWorkers = 18))
     }
 
     @Test
@@ -384,14 +422,9 @@ class NetworkRecoveryPolicyTest {
     }
 
     @Test
-    fun `healthy tunnel survives oem same-transport events`() {
-        // Лежащий vivo: gap / смена IPv4 / VALIDATED ≥3.5 с при живом libclient.
-        // Полный kill даёт «Перезапуск транспорта» и рвёт VK Calls.
+    fun `healthy tunnel survives availability events without a real radio gap`() {
+        // Short radio/validation blips are discarded before a recovery reason is emitted.
         val oem = listOf(
-            "cell_gap_restored",
-            "wifi_gap_restored",
-            "link_handover:cell",
-            "validated_after_gap",
             "available:cell",
             "capabilities:cell",
         )

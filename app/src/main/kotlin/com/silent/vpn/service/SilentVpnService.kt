@@ -19,6 +19,7 @@ import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
@@ -45,6 +46,9 @@ import com.silent.vpn.vpn.WireGuardHelper
 import com.silent.vpn.vpn.WireGuardConfigBuilder
 import com.silent.vpn.vpn.captcha.ManlCaptchaWebViewManager
 import com.silent.vpn.policy.NetworkRecoveryPolicy
+import com.silent.vpn.policy.NetworkRecoveryQueue
+import com.silent.vpn.policy.UnderlyingRecoveryTracker
+import com.silent.vpn.policy.TransportLivenessWatch
 import com.silent.vpn.policy.OlcrtcRecoveryPolicy
 import com.silent.vpn.policy.VpnNetworkConstants.MIN_TRANSPORT_RESTART_INTERVAL_MS
 import dagger.hilt.android.EntryPointAccessors
@@ -139,6 +143,11 @@ class SilentVpnService : Service() {
     private var lastNetworkFingerprint = ""
     private var lastNetworkValidated = true
     private var networkRecoveryJob: Job? = null
+    private val networkRecoveryQueue = NetworkRecoveryQueue()
+    private val underlyingRecoveryTracker = UnderlyingRecoveryTracker { SystemClock.elapsedRealtime() }
+    private var networkRecoveryGeneration = 0
+    private var lastUnderlyingNetworkId: String? = null
+    private val transportLivenessWatch = TransportLivenessWatch()
     private var recoveryVerifyJob: Job? = null
     private var transportUnhealthySinceMs = 0L
     private var isTunnelPaused = false
@@ -153,8 +162,6 @@ class SilentVpnService : Service() {
     private var lastRatBucket = ""
     private var lastBlackoutAtMs = 0L
     private var unvalidatedSinceMs = 0L
-    private var lastLinkHandoverMs = 0L
-    private val lastLinkAddrs = mutableMapOf<String, String>()
     /** Fingerprint сети из callback — когда onLosing уже без caps. */
     private val networkFpByNet = java.util.concurrent.ConcurrentHashMap<Network, String>()
     private var lastTransportRestartMs = 0L
@@ -422,8 +429,6 @@ class SilentVpnService : Service() {
                 lastRatBucket = ""
                 lastBlackoutAtMs = 0L
                 unvalidatedSinceMs = 0L
-                lastLinkHandoverMs = 0L
-                lastLinkAddrs.clear()
                 pausedForNetwork = false
                 noInternetSinceMs = 0L
                 lastUnderlyingInternet = null
@@ -449,6 +454,7 @@ class SilentVpnService : Service() {
                     SessionTrace.warn("SilentVpnService.CONNECT", "startup failed: ${e.message}")
                     DebugLog.e("VpnService", "CONNECT startup failed", e)
                     isRunning = false
+                    VpnTileHelper.requestUpdate(this)
                     performanceLocksHeld = false
                     releaseWakeLock()
                     releaseWifiLock()
@@ -669,6 +675,10 @@ class SilentVpnService : Service() {
     }
 
     private fun disconnect() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            scope.launch { disconnect() }
+            return
+        }
         if (
             !isRunning &&
             !WdttTunnelManager.running.value &&
@@ -699,7 +709,7 @@ class SilentVpnService : Service() {
         teardownVpnOwnershipMonitor()
         VpnTileHelper.requestUpdate(this)
         transportWatchdogJob?.cancel()
-        networkRecoveryJob?.cancel()
+        clearNetworkRecovery()
         recoveryVerifyJob?.cancel()
         statsUpdaterJob?.cancel()
         isTunnelPaused = false
@@ -711,8 +721,6 @@ class SilentVpnService : Service() {
         lastRatBucket = ""
         lastBlackoutAtMs = 0L
         unvalidatedSinceMs = 0L
-        lastLinkHandoverMs = 0L
-        lastLinkAddrs.clear()
         pausedForNetwork = false
         noInternetSinceMs = 0L
         lastUnderlyingInternet = null
@@ -792,6 +800,18 @@ class SilentVpnService : Service() {
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         activeNetworks.clear()
         networkFpByNet.clear()
+        underlyingRecoveryTracker.clear()
+        connectivityManager?.let { cm ->
+            for (network in cm.allNetworks) {
+                val caps = cm.getNetworkCapabilities(network) ?: continue
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+                cacheUnderlyingCapabilities(network, caps)
+                cm.getLinkProperties(network)?.let { properties ->
+                    underlyingRecoveryTracker.linkChanged(network.toString(), VpnNetworkHelper.linkAddressKey(properties))
+                }
+            }
+        }
+        lastUnderlyingNetworkId = underlyingRecoveryTracker.selected()?.id
         deferredRecoveryReason = null
         // Underlying NOT_VPN — не default/VPN (иначе Wi‑Fi↔LTE не видно при живом туннеле).
         lastNetworkFingerprint = VpnNetworkHelper.underlyingTransportFingerprint(this)
@@ -802,97 +822,76 @@ class SilentVpnService : Service() {
         )
         lastMobileDataState = VpnNetworkHelper.isOnMobileData(this)
         lastRatBucket = VpnNetworkHelper.cellularRatBucket(this)
+        val callbackGeneration = networkRecoveryGeneration
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                activeNetworks.add(network)
-                rememberNetworkFp(network)
-                maybeRecoverOnUnderlyingChange("available")
+                // Android delivers capabilities and link properties after this callback.
+                // Querying them here can return null/stale snapshots during a handover.
+                scope.launch {
+                    if (!isRunning || callbackGeneration != networkRecoveryGeneration) return@launch
+                    activeNetworks.add(network)
+                }
             }
 
             override fun onLosing(network: Network, maxMsToLive: Int) {
-                val caps = connectivityManager?.getNetworkCapabilities(network)
-                val eventFp = when {
-                    caps != null -> {
-                        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
-                        networkFingerprint(caps)
-                    }
-                    else -> networkFpByNet[network].orEmpty()
+                scope.launch {
+                    if (!isRunning || callbackGeneration != networkRecoveryGeneration) return@launch
+                    val id = network.toString()
+                    val selected = underlyingRecoveryTracker.selected()
+                    if (id != selected?.id && id != lastUnderlyingNetworkId) return@launch
+                    // onLosing is advisory: the same Network can remain usable indefinitely.
+                    // Record an actual gap on onLost/INTERNET loss instead.
+                    DebugLog.i("VpnService", "underlying losing ${underlyingRecoveryTracker.fingerprint(id)}")
                 }
-                if (!NetworkRecoveryPolicy.shouldMarkUnderlyingBlackout(
-                        eventFp = eventFp,
-                        currentFp = VpnNetworkHelper.underlyingTransportFingerprint(this@SilentVpnService),
-                        lastFp = lastNetworkFingerprint,
-                    )
-                ) {
-                    return
-                }
-                lastBlackoutAtMs = System.currentTimeMillis()
-                DebugLog.i("VpnService", "underlying losing $eventFp (blackout)")
             }
 
             override fun onLost(network: Network) {
-                activeNetworks.remove(network)
-                networkFpByNet.remove(network)
-                // Wi‑Fi выкл при живом LTE: cell уже в activeNetworks — без этого fingerprint
-                // остаётся "wifi" и transport_switch не приходит.
-                maybeRecoverOnUnderlyingChange("lost")
+                scope.launch {
+                    if (!isRunning || callbackGeneration != networkRecoveryGeneration) return@launch
+                    activeNetworks.remove(network)
+                    val wasSelected = underlyingRecoveryTracker.lost(network.toString())
+                    networkFpByNet.remove(network)
+                    // Abrupt radio loss need not be preceded by onLosing.
+                    if (wasSelected && lastBlackoutAtMs == 0L) lastBlackoutAtMs = System.currentTimeMillis()
+                    maybeRecoverOnUnderlyingChange("lost")
+                }
             }
 
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
-                if (!isRunning) return
-                val caps = connectivityManager?.getNetworkCapabilities(network) ?: return
-                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
-                rememberNetworkFp(network, caps)
-                val key = when {
-                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
-                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cell"
-                    else -> return
+                scope.launch {
+                    if (!isRunning || callbackGeneration != networkRecoveryGeneration) return@launch
+                    val id = network.toString()
+                    val changed = underlyingRecoveryTracker.linkChanged(id, VpnNetworkHelper.linkAddressKey(lp))
+                    val selected = underlyingRecoveryTracker.selected() ?: return@launch
+                    if (!changed || selected.id != id) return@launch
+                    DebugLog.i("VpnService", "link handover ${selected.transport}")
+                    scheduleNetworkRecovery("link_handover:${selected.transport}", 1_200L)
                 }
-                val addrs = VpnNetworkHelper.linkAddressKey(lp)
-                if (addrs.isEmpty()) return
-                val prev = lastLinkAddrs[key]
-                lastLinkAddrs[key] = addrs
-                if (!NetworkRecoveryPolicy.shouldRecoverOnLinkAddrsChange(prev, addrs)) return
-                val fp = VpnNetworkHelper.underlyingTransportFingerprint(this@SilentVpnService)
-                if (fp != key) return
-                val now = System.currentTimeMillis()
-                if (!NetworkRecoveryPolicy.shouldAcceptLinkHandover(lastLinkHandoverMs, now)) return
-                lastLinkHandoverMs = now
-                DebugLog.i("VpnService", "link handover $key $prev → $addrs")
-                scheduleNetworkRecovery("link_handover:$key", 1_200L)
             }
 
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
-                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return
-                rememberNetworkFp(network, caps)
-                val validated = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                } else {
-                    true
-                }
-                // Флаг VALIDATED один на все сети: без этой проверки сота,
-                // поднявшаяся невалидированной при живом Wi‑Fi, роняла флаг,
-                // а следующее событие Wi‑Fi читалось как validated_after_gap.
-                if (validated != lastNetworkValidated && isOurUnderlying(caps)) {
-                    val wasValidated = lastNetworkValidated
-                    lastNetworkValidated = validated
-                    val now = System.currentTimeMillis()
-                    if (wasValidated && !validated) {
-                        unvalidatedSinceMs = now
-                    } else if (!wasValidated && validated && isRunning) {
-                        val afterGap = NetworkRecoveryPolicy.shouldRecoverAfterValidatedGap(
-                            unvalidatedSinceMs,
-                            now,
-                        )
-                        unvalidatedSinceMs = 0L
-                        // Короткое VALIDATED-мигание doze/OEM не трогаем туннель.
-                        if (afterGap) {
-                            scheduleNetworkRecovery("validated_after_gap")
+                scope.launch {
+                    if (!isRunning || callbackGeneration != networkRecoveryGeneration ||
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                    ) return@launch
+                    val wasSelected = underlyingRecoveryTracker.selected()?.id == network.toString()
+                    cacheUnderlyingCapabilities(network, caps)
+                    val selected = underlyingRecoveryTracker.selected()
+                    val validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                    if (validated != lastNetworkValidated && (wasSelected || selected?.id == network.toString())) {
+                        val wasValidated = lastNetworkValidated
+                        lastNetworkValidated = validated
+                        val now = System.currentTimeMillis()
+                        if (wasValidated && !validated) {
+                            unvalidatedSinceMs = now
+                        } else if (!wasValidated && validated) {
+                            val afterGap = NetworkRecoveryPolicy.shouldRecoverAfterValidatedGap(unvalidatedSinceMs, now)
+                            unvalidatedSinceMs = 0L
+                            if (afterGap) scheduleNetworkRecovery("validated_after_gap")
                         }
                     }
+                    maybeRecoverOnUnderlyingChange("capabilities")
                 }
-                maybeRecoverOnUnderlyingChange("capabilities")
             }
         }
         // Всегда NOT_VPN: default callback при VPN = сеть туннеля → wifi/cell не детектятся.
@@ -907,13 +906,22 @@ class SilentVpnService : Service() {
     private fun maybeRecoverOnUnderlyingChange(source: String) {
         if (!isRunning) return
         if (isOlcrtcInitialConnectInProgress()) return
-        val fp = VpnNetworkHelper.underlyingTransportFingerprint(this)
-        val validated = VpnNetworkHelper.hasUnderlyingInternet(this)
+        val selected = underlyingRecoveryTracker.selected()
+        val fp = selected?.transport.orEmpty()
+        val validated = selected?.validated == true
         if (fp.isEmpty()) {
             // Дыра wifi↔cell / между вышками: НЕ сбрасывать fingerprint — иначе не будет transport_switch.
-            lastBlackoutAtMs = System.currentTimeMillis()
+            if (lastBlackoutAtMs == 0L) lastBlackoutAtMs = System.currentTimeMillis()
             DebugLog.i("VpnService", "underlying $source: blackout (keep fp=$lastNetworkFingerprint)")
             scheduleNetworkRecovery("underlying_blackout", 1_500L)
+            return
+        }
+        val sameTransportReplacement = lastUnderlyingNetworkId != null &&
+            lastUnderlyingNetworkId != selected?.id && fp == lastNetworkFingerprint
+        lastUnderlyingNetworkId = selected?.id
+        if (sameTransportReplacement) {
+            DebugLog.i("VpnService", "underlying $source: new Network on $fp")
+            scheduleNetworkRecovery("link_handover:$fp", 800L)
             return
         }
         if (lastNetworkFingerprint.isEmpty()) {
@@ -928,11 +936,13 @@ class SilentVpnService : Service() {
             return
         }
         if (fp == lastNetworkFingerprint) {
-            maybeRecoverSameTransport(source, fp, validated)
+            // Carrier whitelists/captive probes may never gain VALIDATED, while native can connect.
+            maybeRecoverSameTransport(source, fp, selected?.internet == true)
             return
         }
         val old = lastNetworkFingerprint
         lastNetworkFingerprint = fp
+        lastMobileDataState = fp == "cell"
         val switch = wifiCellTransportTarget(old, fp)
         if (switch != null) {
             DebugLog.i("VpnService", "underlying $source: $old → $fp → transport_switch:$switch")
@@ -983,27 +993,18 @@ class SilentVpnService : Service() {
     private fun currentDefaultNetworkFingerprint(): String =
         VpnNetworkHelper.underlyingTransportFingerprint(this)
 
-    private fun fingerprintForNetwork(network: Network): String {
-        val cm = connectivityManager ?: return ""
-        return networkFingerprint(cm.getNetworkCapabilities(network))
-    }
-
-    /** Только тип транспорта default-сети — без VALIDATED (Android часто мигает v0↔v1 на том же Wi‑Fi). */
-    /** Событие пришло по сети, на которой мы сейчас живём (а не по чужой соте/Wi‑Fi). */
-    private fun isOurUnderlying(caps: NetworkCapabilities?): Boolean =
-        NetworkRecoveryPolicy.isOurUnderlyingNetwork(
-            eventFp = networkFingerprint(caps),
-            currentFp = VpnNetworkHelper.underlyingTransportFingerprint(this),
-            lastFp = lastNetworkFingerprint,
+    private fun cacheUnderlyingCapabilities(network: Network, caps: NetworkCapabilities) {
+        val transport = networkFingerprint(caps)
+        if (transport !in setOf("wifi", "cell", "eth")) return
+        networkFpByNet[network] = transport
+        underlyingRecoveryTracker.capabilities(
+            UnderlyingRecoveryTracker.NetworkState(
+                id = network.toString(),
+                transport = transport,
+                internet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
+                validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+            ),
         )
-
-    private fun rememberNetworkFp(network: Network, caps: NetworkCapabilities? = null) {
-        val c = caps ?: connectivityManager?.getNetworkCapabilities(network) ?: return
-        if (c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
-        val fp = networkFingerprint(c)
-        if (fp == "wifi" || fp == "cell" || fp == "eth") {
-            networkFpByNet[network] = fp
-        }
     }
 
     private fun networkFingerprint(caps: NetworkCapabilities?): String {
@@ -1021,26 +1022,65 @@ class SilentVpnService : Service() {
         NetworkRecoveryPolicy.wifiCellTransportTarget(oldFp, newFp)
 
     private fun scheduleNetworkRecovery(reason: String, delayMs: Long = NETWORK_RECOVERY_DELAY_MS) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            val generation = networkRecoveryGeneration
+            scope.launch {
+                if (generation == networkRecoveryGeneration) scheduleNetworkRecovery(reason, delayMs)
+            }
+            return
+        }
         if (!isRunning) return
+        // Acquire while the callback is executing, before a delayed coroutine can sleep in doze.
+        // Internal retries preserve the original bounded grace rather than extending it forever.
+        val allowWake = (NetworkRecoveryPolicy.mustRestartHealthyTransport(reason) ||
+                NetworkRecoveryPolicy.isSpuriousRecoveryReason(reason)) &&
+            !reason.contains(":retry") && !reason.contains(":suppressed") &&
+            VpnNetworkHelper.hasAnyUnderlyingInternet(this)
+        val elapsedNow = SystemClock.elapsedRealtime()
+        if (networkRecoveryQueue.enqueue(reason, elapsedNow, delayMs, allowWake)) {
+            tunnelWake.onRecovery(elapsedNow)
+        }
+        if (networkRecoveryQueue.inFlight) return
         networkRecoveryJob?.cancel()
+        launchPendingNetworkRecovery()
+    }
+
+    private fun clearNetworkRecovery() {
+        networkRecoveryGeneration++
+        networkRecoveryJob?.cancel()
+        networkRecoveryJob = null
+        networkRecoveryQueue.clear()
+        underlyingRecoveryTracker.clear()
+        lastUnderlyingNetworkId = null
+        transportLivenessWatch.reset()
+    }
+
+    private fun launchPendingNetworkRecovery() {
+        val waitMs = networkRecoveryQueue.remainingDelayMs(SystemClock.elapsedRealtime()) ?: return
+        val generation = networkRecoveryGeneration
         networkRecoveryJob = scope.launch {
-            delay(delayMs)
-            requestNetworkRecovery(reason)
+            delay(waitMs)
+            val request = networkRecoveryQueue.begin(SystemClock.elapsedRealtime()) ?: return@launch
+            try {
+                requestNetworkRecovery(request.reason)
+            } finally {
+                if (generation == networkRecoveryGeneration) {
+                    networkRecoveryQueue.finish()
+                    networkRecoveryJob = null
+                    if (isRunning) launchPendingNetworkRecovery()
+                }
+            }
         }
     }
 
-    private fun requestNetworkRecovery(reason: String) {
+    private suspend fun requestNetworkRecovery(reason: String) {
         val olcrtcPath = olcrtcSessionActive ||
             lastOlcrtcConfigJson != null ||
             OlcrtcTunnelManager.running.value ||
             OlcrtcTunnelManager.tunnelReady.value
         if (!olcrtcPath && WdttTunnelManager.isNetworkRecoverySuppressed()) {
-            if (WdttTunnelManager.isWgApplySettling()) {
-                DebugLog.i("VpnService", "recovery dropped — WG settle ($reason)")
-                return
-            }
             // Если в момент события идёт WG/overlay transition, не теряем recovery-сигнал.
-            scheduleNetworkRecovery("$reason:suppressed", 1_200L)
+            scheduleNetworkRecovery("${reason.substringBefore(":suppressed")}:suppressed", 1_200L)
             return
         }
         if (!isRunning) return
@@ -1071,16 +1111,24 @@ class SilentVpnService : Service() {
                 reason.startsWith("wifi_gap_restored") ||
                 reason.startsWith("link_handover:") ||
                 reason.startsWith("validated_after_gap") ||
+                reason.startsWith("watchdog_transport_stalled") ||
                 reason.startsWith("underlying_blackout") ||
                 (pausedForNetwork && reason.startsWith("internet_restored"))
-        if (!skipGrace && System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()) return
+        val connectGraceRemaining = networkGraceMs() - (System.currentTimeMillis() - connectStartedAtMs)
+        if (!skipGrace && connectGraceRemaining > 0L) {
+            if (NetworkRecoveryPolicy.isRealNetworkRecoveryReason(reason)) {
+                scheduleNetworkRecovery(NetworkRecoveryPolicy.retryReason(reason), connectGraceRemaining)
+            }
+            return
+        }
         if (reason.startsWith("underlying_blackout")) {
             // Только пауза при полной дыре; switch ждём когда fp снова появится.
             if (!VpnNetworkHelper.hasAnyUnderlyingInternet(this)) {
-                if (!pausedForNetwork) {
-                    pausedForNetwork = true
-                    isTunnelPaused = true
+                if (noInternetSinceMs == 0L) {
+                    noInternetSinceMs = lastBlackoutAtMs.takeIf { it > 0L } ?: System.currentTimeMillis()
                 }
+                // The 8-second gate actually pauses native. Flags alone would block that gate.
+                checkUnderlyingNetwork()
             }
             return
         }
@@ -1099,8 +1147,7 @@ class SilentVpnService : Service() {
         recoverTransportAfterNetwork(reason)
     }
 
-    private fun recoverTransportAfterNetwork(reason: String) {
-        tunnelWake.onRecovery(SystemClock.elapsedRealtime())
+    private suspend fun recoverTransportAfterNetwork(reason: String) {
         val now = System.currentTimeMillis()
         val wasPausedOrBlackout = NetworkRecoveryPolicy.wasRealPauseOrBlackout(
             pausedForNetwork = pausedForNetwork,
@@ -1108,9 +1155,6 @@ class SilentVpnService : Service() {
             lastBlackoutAtMs = lastBlackoutAtMs,
             nowMs = now,
         )
-        pausedForNetwork = false
-        isTunnelPaused = false
-        noInternetSinceMs = 0L
         DebugLog.i("VpnService", "network recovery: $reason (fullHint=$wasPausedOrBlackout)")
         if (
             olcrtcSessionActive ||
@@ -1118,6 +1162,9 @@ class SilentVpnService : Service() {
             OlcrtcTunnelManager.running.value ||
             OlcrtcTunnelManager.tunnelReady.value
         ) {
+            pausedForNetwork = false
+            isTunnelPaused = false
+            noInternetSinceMs = 0L
             recoverOlcrtcAfterNetwork(reason)
             return
         }
@@ -1128,6 +1175,13 @@ class SilentVpnService : Service() {
             } else {
                 WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
             }
+            pausedForNetwork = false
+            isTunnelPaused = false
+            noInternetSinceMs = 0L
+            return
+        }
+        if (!VpnNetworkHelper.hasAnyUnderlyingInternet(this)) {
+            scheduleNetworkRecovery(NetworkRecoveryPolicy.retryReason(reason), 2_500L)
             return
         }
         val trafficBeforeMb = currentTrafficMb()
@@ -1150,8 +1204,22 @@ class SilentVpnService : Service() {
             }
         }
         if (!WdttTunnelManager.running.value || !WdttTunnelManager.tunnelReady.value) {
+            if (!VpnNetworkHelper.hasAnyUnderlyingInternet(this)) {
+                scheduleNetworkRecovery(NetworkRecoveryPolicy.retryReason(reason), 2_500L)
+                return
+            }
             DebugLog.w("VpnService", "network recovery: transport down, resume")
             WdttTunnelManager.resume()
+            if (WdttTunnelManager.tunnelReady.value &&
+                !WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext, forceSocketRebind = true)
+            ) {
+                scheduleNetworkRecovery(NetworkRecoveryPolicy.retryReason(reason), 1_200L)
+                return
+            }
+            pausedForNetwork = false
+            isTunnelPaused = false
+            noInternetSinceMs = 0L
+            lastBlackoutAtMs = 0L
             scheduleRecoveryVerification("resume:$reason", trafficBeforeMb)
             return
         }
@@ -1160,13 +1228,17 @@ class SilentVpnService : Service() {
             NetworkRecoveryPolicy.shouldKeepHealthyTransport(
                 reason = reason,
                 transportHealthy = WdttTunnelManager.isTransportHealthy(),
+                wasPausedOrBlackout = wasPausedOrBlackout,
+                activeWorkers = activeWorkers,
             )
         ) {
             DebugLog.i(
                 "VpnService",
                 "network recovery: keep healthy transport ($reason, workers=$activeWorkers)",
             )
-            WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
+            if (!WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)) {
+                scheduleNetworkRecovery(NetworkRecoveryPolicy.retryReason(reason), 1_200L)
+            }
             return
         }
         val forceFull = NetworkRecoveryPolicy.needsFullRestartAfterNetworkEvent(
@@ -1183,73 +1255,52 @@ class SilentVpnService : Service() {
                     reason == "validated")
         if (canFastSwitch) {
             // Стабильный Wi‑Fi: не перезапускаем libclient без смены транспорта.
-            WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
+            if (!WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)) {
+                scheduleNetworkRecovery(NetworkRecoveryPolicy.retryReason(reason), 1_200L)
+            }
             return
         }
         if (!forceFull && shouldSkipTransportRestart(reason)) {
             DebugLog.i("VpnService", "network recovery: skip libclient restart ($reason)")
-            WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
-            return
-        }
-        if (reason.startsWith("transport_switch:")) {
-            val target = reason.removePrefix("transport_switch:")
-            if (target == lastTransportSwitchTarget && now - lastTransportSwitchMs < 30_000L) {
-                DebugLog.i("VpnService", "transport switch duplicate ($target) — skip second restart")
-                WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
-                return
-            }
-            lastTransportSwitchTarget = target
-            lastTransportSwitchMs = now
-            // Ждём VALIDATED wifi/cell до restart libclient (иначе handshake timeout).
-            scope.launch(Dispatchers.IO) {
-                val prefer = if (target == "wifi") "wifi" else "cell"
-                WdttTunnelManager.logUi("net_wait", "ждём готовность сети ($prefer)…", 2)
-                val ok = VpnNetworkHelper.awaitUnderlyingReady(
-                    this@SilentVpnService,
-                    timeoutMs = 20_000L,
-                    preferTransport = prefer,
-                )
-                if (!isRunning || !ok) {
-                    DebugLog.w("VpnService", "wdtt transport switch deferred — net not ready")
-                    scheduleNetworkRecovery("internet_restored", 2_500L)
-                    return@launch
-                }
-                lastTransportRestartMs = System.currentTimeMillis()
-                WdttTunnelManager.restartTransportAfterNetwork(reason)
-                WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
-                scheduleRecoveryVerification("restart:$reason", trafficBeforeMb)
+            if (!WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)) {
+                scheduleNetworkRecovery(NetworkRecoveryPolicy.retryReason(reason), 1_200L)
             }
             return
         }
         if (forceFull || NetworkRecoveryPolicy.needsUnderlyingWaitRestart(reason)) {
             val prefer = OlcrtcRecoveryPolicy.preferTransportFromReason(reason)
-            scope.launch(Dispatchers.IO) {
-                WdttTunnelManager.logUi(
-                    "net_wait",
-                    "ждём готовность сети${prefer?.let { " ($it)" } ?: ""}…",
-                    2,
-                )
-                val ok = VpnNetworkHelper.awaitUnderlyingReady(
+            WdttTunnelManager.logUi(
+                "net_wait",
+                "ждём готовность сети${prefer?.let { " ($it)" } ?: ""}…",
+                2,
+            )
+            val ok = withContext(Dispatchers.IO) {
+                VpnNetworkHelper.awaitUnderlyingReady(
                     this@SilentVpnService,
                     timeoutMs = 20_000L,
                     preferTransport = prefer,
                 )
-                if (!isRunning || !ok) {
-                    DebugLog.w("VpnService", "network recovery deferred ($reason) — net not ready")
-                    scheduleNetworkRecovery("internet_restored", 2_500L)
-                    return@launch
-                }
-                lastTransportRestartMs = System.currentTimeMillis()
-                lastBlackoutAtMs = 0L
-                WdttTunnelManager.restartTransportAfterNetwork(reason)
-                WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
-                scheduleRecoveryVerification("restart:$reason", trafficBeforeMb)
             }
+            if (!isRunning) return
+            if (!ok) {
+                DebugLog.i("VpnService", "network recovery waits for internet ($reason)")
+                scheduleNetworkRecovery(NetworkRecoveryPolicy.retryReason(reason), 2_500L)
+                return
+            }
+        }
+        if (!WdttTunnelManager.restartTransportAfterNetwork(reason)) {
+            scheduleNetworkRecovery(NetworkRecoveryPolicy.retryReason(reason), 1_200L)
+            return
+        }
+        if (!WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext, forceSocketRebind = true)) {
+            scheduleNetworkRecovery(NetworkRecoveryPolicy.retryReason(reason), 1_200L)
             return
         }
         lastTransportRestartMs = System.currentTimeMillis()
-        WdttTunnelManager.restartTransportAfterNetwork(reason)
-        WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
+        lastBlackoutAtMs = 0L
+        pausedForNetwork = false
+        isTunnelPaused = false
+        noInternetSinceMs = 0L
         scheduleRecoveryVerification("restart:$reason", trafficBeforeMb)
     }
 
@@ -1470,7 +1521,7 @@ class SilentVpnService : Service() {
                                 isError = true,
                             )
                             if (OlcrtcRecoveryPolicy.shouldScheduleRecoverRetry(olcrtcEverReady, reason)) {
-                                scheduleNetworkRecovery("${reason}:retry", 4_000L)
+                                scheduleNetworkRecovery(NetworkRecoveryPolicy.retryReason(reason), 4_000L)
                             }
                             return@launch
                         }
@@ -1527,7 +1578,7 @@ class SilentVpnService : Service() {
                     val retry = OlcrtcRecoveryPolicy.shouldScheduleRecoverRetry(olcrtcEverReady, reason)
                     if (retry && reason.count { it == ':' } < 2) {
                         // не больше 2 авто-retry, иначе «тихо мёртвый» Connected
-                        scheduleNetworkRecovery("$reason:retry", 4_000L)
+                        scheduleNetworkRecovery(NetworkRecoveryPolicy.retryReason(reason), 4_000L)
                     } else {
                         WdttTunnelManager.logUi(
                             "olcrtc_dead",
@@ -1662,17 +1713,19 @@ class SilentVpnService : Service() {
             return
         }
 
+        refreshRecoverySnapshotsFromPoll()
+        if (underlyingRecoveryTracker.selected() != null) maybeRecoverOnUnderlyingChange("poll")
         val anyOnline = VpnNetworkHelper.hasAnyUnderlyingInternet(this)
         val validatedOnline = VpnNetworkHelper.hasUnderlyingInternet(this)
         val wasOnline = lastUnderlyingInternet
-        val mobileNow = VpnNetworkHelper.isOnMobileData(this)
+        val underlyingFp = underlyingRecoveryTracker.selected()?.transport.orEmpty()
+        val mobileNow = underlyingFp == "cell"
         val mobileWas = lastMobileDataState
-        val underlyingFp = VpnNetworkHelper.underlyingTransportFingerprint(this)
         val now = System.currentTimeMillis()
 
         if (!anyOnline) {
-            lastBlackoutAtMs = now
-            if (noInternetSinceMs == 0L) noInternetSinceMs = now
+            if (lastBlackoutAtMs == 0L) lastBlackoutAtMs = now
+            if (noInternetSinceMs == 0L) noInternetSinceMs = lastBlackoutAtMs
             if (
                 NetworkRecoveryPolicy.shouldPauseForLostInternet(
                     anyOnline = false,
@@ -1688,6 +1741,7 @@ class SilentVpnService : Service() {
                 )
                 pausedForNetwork = true
                 isTunnelPaused = true
+                networkRecoveryQueue.noteOffline()
                 if (olcrtcLive) {
                     OlcrtcTunnelManager.stop(silent = true)
                 } else {
@@ -1759,7 +1813,46 @@ class SilentVpnService : Service() {
         )
     }
 
+    /** Poll uses normal snapshots to cover OEM callback omissions, without querying in callbacks. */
+    private fun refreshRecoverySnapshotsFromPoll() {
+        val cm = connectivityManager ?: return
+        val networks = cm.allNetworks
+        underlyingRecoveryTracker.retainNetworkIds(networks.map { it.toString() }.toSet())
+        for (network in networks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+            cacheUnderlyingCapabilities(network, caps)
+            val properties = cm.getLinkProperties(network) ?: continue
+            val changed = underlyingRecoveryTracker.linkChanged(network.toString(), VpnNetworkHelper.linkAddressKey(properties))
+            val selected = underlyingRecoveryTracker.selected()
+            if (changed && selected?.id == network.toString()) {
+                scheduleNetworkRecovery("link_handover:${selected.transport}", 800L)
+            }
+        }
+    }
+
     private fun checkTransportHealth() {
+        val now = System.currentTimeMillis()
+        val canCheckLiveness = isRunning && !pausedForNetwork &&
+            WdttTunnelManager.running.value && WdttTunnelManager.tunnelReady.value &&
+            !WdttTunnelManager.isBootstrapMode() && !WdttTunnelManager.isCaptchaInProgress() &&
+            !WdttTunnelManager.isNetworkRecoverySuppressed() &&
+            now - connectStartedAtMs >= LIBCLIENT_START_GRACE_MS &&
+            VpnNetworkHelper.hasAnyUnderlyingInternet(this)
+        if (canCheckLiveness) {
+            val statsAtMs = WdttTunnelManager.lastTransportStatsAtMs()
+            when (transportLivenessWatch.observe(
+                statsAtMs = statsAtMs,
+                stale = statsAtMs > 0L && now - statsAtMs >= TRANSPORT_STALE_MS,
+                nowMs = SystemClock.elapsedRealtime(),
+            )) {
+                TransportLivenessWatch.Action.VERIFY -> tunnelWake.onRecovery(SystemClock.elapsedRealtime())
+                TransportLivenessWatch.Action.RECOVER -> scheduleNetworkRecovery("watchdog_transport_stalled", 500L)
+                TransportLivenessWatch.Action.NONE -> Unit
+            }
+        } else {
+            transportLivenessWatch.reset()
+        }
         if (recoverySuppressedForRampUp()) {
             transportUnhealthySinceMs = 0L
             return
@@ -1774,7 +1867,6 @@ class SilentVpnService : Service() {
             return
         }
         if (System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()) return
-        val now = System.currentTimeMillis()
         if (!WdttTunnelManager.isTransportHealthy()) {
             if (transportUnhealthySinceMs == 0L) transportUnhealthySinceMs = now
             else if (now - transportUnhealthySinceMs >= TRANSPORT_UNHEALTHY_MS) {
@@ -2028,7 +2120,14 @@ class SilentVpnService : Service() {
             nowMs = SystemClock.elapsedRealtime(),
             sessionRunning = isRunning,
             tunnelReady = WdttTunnelManager.tunnelReady.value || OlcrtcTunnelManager.tunnelReady.value,
-            paused = pausedForNetwork || isTunnelPaused,
+            paused = (pausedForNetwork || isTunnelPaused) &&
+                !NetworkRecoveryPolicy.shouldProtectOnlineRecovery(
+                    recoveryPending = networkRecoveryQueue.inFlight ||
+                        networkRecoveryQueue.remainingDelayMs(SystemClock.elapsedRealtime()) != null,
+                    underlyingOnline = VpnNetworkHelper.hasAnyUnderlyingInternet(this),
+                    wakeUntilMs = networkRecoveryQueue.wakeUntilMs,
+                    nowMs = SystemClock.elapsedRealtime(),
+                ),
             trafficMb = currentTrafficMb(),
             continuousTraffic = olcrtcSessionActive || OlcrtcTunnelManager.running.value,
         )
@@ -2261,7 +2360,7 @@ class SilentVpnService : Service() {
         disconnectEpoch++
         disconnectJob?.cancel()
         transportWatchdogJob?.cancel()
-        networkRecoveryJob?.cancel()
+        clearNetworkRecovery()
         recoveryVerifyJob?.cancel()
         statsUpdaterJob?.cancel()
         connectGuardJob?.cancel()

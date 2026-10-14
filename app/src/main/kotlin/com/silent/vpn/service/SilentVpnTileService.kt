@@ -2,7 +2,6 @@ package com.silent.vpn.service
 
 import android.app.PendingIntent
 import android.content.Intent
-import android.graphics.drawable.Icon
 import android.net.VpnService
 import android.os.Build
 import android.service.quicksettings.Tile
@@ -28,8 +27,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
- * Quick Settings — WDTT и olcrtc: [VpnSessionState.isActive].
- * После kill с VPN ON: OS может кешировать ACTIVE — принудительно синхронизируем.
+ * Quick Settings — состояние включённой сессии WDTT/olcrtc.
+ * Потеря ready при смене сети не выключает рубильник и не меняет действие на CONNECT.
  */
 @RequiresApi(Build.VERSION_CODES.N)
 class SilentVpnTileService : TileService() {
@@ -39,7 +38,8 @@ class SilentVpnTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
-        updateTile(isVpnConnected())
+        VpnServiceTracker.reconcileStaleSession(this)
+        updateTile()
         stateJob?.cancel()
         stateJob = scope.launch {
             try {
@@ -48,8 +48,9 @@ class SilentVpnTileService : TileService() {
                     WdttTunnelManager.tunnelReady,
                     OlcrtcTunnelManager.running,
                     OlcrtcTunnelManager.tunnelReady,
-                ) { _, _, _, _ -> Unit }.collect {
-                    updateTile(isVpnConnected())
+                    VpnTileHelper.stateChanges,
+                ) { _, _, _, _, _ -> Unit }.collect {
+                    updateTile()
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -61,7 +62,13 @@ class SilentVpnTileService : TileService() {
 
     override fun onStopListening() {
         stateJob?.cancel()
+        stateJob = null
         super.onStopListening()
+    }
+
+    override fun onTileAdded() {
+        super.onTileAdded()
+        VpnTileHelper.requestUpdate(this)
     }
 
     override fun onClick() {
@@ -73,24 +80,27 @@ class SilentVpnTileService : TileService() {
         }
     }
 
-    private fun isVpnConnected(): Boolean = VpnSessionState.isActive()
+    private fun sessionState(): VpnTileSessionPolicy.State = VpnTileSessionPolicy.resolve(
+        serviceRunning = SilentVpnService.isRunning,
+        wdttRunning = WdttTunnelManager.running.value,
+        wdttReady = WdttTunnelManager.isTransportReadyStrict(),
+        olcrtcRunning = OlcrtcTunnelManager.running.value,
+        olcrtcReady = OlcrtcTunnelManager.tunnelReady.value,
+        captchaPending = VpnTileConnect.isCaptchaPending(),
+    )
 
     private fun performClick() {
         runCatching {
             VpnServiceTracker.reconcileStaleSession(this)
+            val state = sessionState()
+            updateTile()
 
-            if (VpnTileConnect.isCaptchaPending()) {
+            if (state.captchaPending) {
                 ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
                 return
             }
 
-            val connected = isVpnConnected()
-            // Залипшая ACTIVE после kill с VPN ON — синхронизируем до действия.
-            if (!connected) {
-                updateTile(false)
-            }
-
-            if (connected) {
+            if (state.enabled) {
                 startService(
                     Intent(this, SilentVpnService::class.java).apply {
                         action = SilentVpnService.ACTION_DISCONNECT
@@ -124,23 +134,27 @@ class SilentVpnTileService : TileService() {
         }
     }
 
-    private fun updateTile(connected: Boolean) {
+    private fun updateTile() {
         runCatching {
             val service = this
+            val session = sessionState()
             qsTile?.apply {
                 label = getString(R.string.app_name)
                 icon = BrandMarkIcons.tileIcon(service)
                 when {
-                    VpnTileConnect.isCaptchaPending() -> {
+                    session.captchaPending -> {
                         state = Tile.STATE_ACTIVE
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                             subtitle = getString(R.string.tile_subtitle_captcha)
                         }
                     }
-                    connected -> {
+                    session.enabled -> {
                         state = Tile.STATE_ACTIVE
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            subtitle = getString(R.string.tile_subtitle_connected)
+                            subtitle = getString(
+                                if (session.ready) R.string.tile_subtitle_connected
+                                else R.string.tile_subtitle_connecting,
+                            )
                         }
                     }
                     else -> {

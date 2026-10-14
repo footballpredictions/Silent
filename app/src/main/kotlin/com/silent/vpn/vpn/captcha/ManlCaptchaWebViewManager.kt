@@ -38,6 +38,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.random.Random
+import com.silent.vpn.service.VpnTileHelper
 
 object ManlCaptchaWebViewManager {
     private const val TAG = "ManlCaptchaWV"
@@ -48,6 +49,8 @@ object ManlCaptchaWebViewManager {
     var activeActivity: ManlCaptchaActivity? = null
     var pendingIntentToStart: Intent? = null
     var isCaptchaPending = false
+    @Volatile
+    private var pendingApplicationContext: Context? = null
 
     fun checkAndShowPendingCaptcha(context: Context) {
         val intent = pendingIntentToStart ?: return
@@ -68,11 +71,15 @@ object ManlCaptchaWebViewManager {
     }
 
     fun cancelCaptcha() {
+        val activity = activeActivity
+        val appContext = pendingApplicationContext ?: activity?.applicationContext
         pendingResult.getAndSet(null)?.cancel(CancellationException("Cancelled by system"))
-        activeActivity?.finish()
         activeActivity = null
         pendingIntentToStart = null
         isCaptchaPending = false
+        pendingApplicationContext = null
+        appContext?.let(VpnTileHelper::requestUpdate)
+        activity?.finish()
     }
 
     private const val NOTIFICATION_ID = 9001
@@ -136,20 +143,20 @@ object ManlCaptchaWebViewManager {
             }
 
             isCaptchaPending = true
+            val appContext = context.applicationContext
+            pendingApplicationContext = appContext
             val deferred = CompletableDeferred<Result<String>>()
             pendingResult.set(deferred)
 
-            showCaptchaNotification(context, redirectUri)
-
-            val intent = Intent(context, ManlCaptchaActivity::class.java).apply {
-                putExtra("redirectUri", redirectUri)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
-            }
-            pendingIntentToStart = intent
-
-            context.startActivity(intent)
-
             try {
+                val intent = Intent(context, ManlCaptchaActivity::class.java).apply {
+                    putExtra("redirectUri", redirectUri)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+                }
+                pendingIntentToStart = intent
+                VpnTileHelper.requestUpdate(appContext)
+                showCaptchaNotification(context, redirectUri)
+                context.startActivity(intent)
                 withTimeout(CAPTCHA_TIMEOUT_MS) {
                     deferred.await().getOrThrow()
                 }
@@ -157,6 +164,8 @@ object ManlCaptchaWebViewManager {
                 isCaptchaPending = false
                 pendingResult.set(null)
                 pendingIntentToStart = null
+                pendingApplicationContext = null
+                VpnTileHelper.requestUpdate(appContext)
                 clearCaptchaNotification(context)
                 try {
                     activeActivity?.finish()

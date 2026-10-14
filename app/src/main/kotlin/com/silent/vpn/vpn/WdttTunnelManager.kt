@@ -82,6 +82,7 @@ object WdttTunnelManager {
     private var appliedWgConfigSource = WgConfigSource.NONE
     private var lastGetconfErrorMs = 0L
     private val startStopMutex = Mutex()
+    private var transportRestartJob: Job? = null
     private val wgApplyMutex = Mutex()
 
     private var floodCount = 0
@@ -112,6 +113,7 @@ object WdttTunnelManager {
     private var wrapAuthTimeoutCount = 0
     var processStartedAtMs = 0L
     private var lastActiveAtMs = 0L
+    @Volatile private var lastTransportStatsMs = 0L
 
     private var lastParams: Params? = null
     private var lastContext: Context? = null
@@ -418,10 +420,12 @@ object WdttTunnelManager {
         }
     }
 
-    fun start(context: Context, params: Params, isSwitching: Boolean = false) {
+    fun start(context: Context, params: Params, isSwitching: Boolean = false, expectedSession: Params? = null) {
         scope.launch {
             startStopMutex.withLock {
                 try {
+                    // A delayed network restart must not resurrect a stopped/replaced session.
+                    if (expectedSession != null && (overlayRestoreSuppressed || lastParams !== expectedSession)) return@withLock
                     if (running.value && !isSwitching) return@withLock
 
                     val appContext = context.applicationContext
@@ -548,6 +552,8 @@ object WdttTunnelManager {
                     val libDir = appContext.applicationInfo.nativeLibraryDir
                     process = LibClientBinary.startLibclientProcess(appContext, cmd, libDir, appContext.filesDir)
                     processStartedAtMs = System.currentTimeMillis()
+                    // Expect a first status heartbeat too, rather than waiting forever for it.
+                    lastTransportStatsMs = processStartedAtMs
                     wrapAuthTimeoutCount = 0
                     lastActiveAtMs = 0L
                     running.value = true
@@ -980,6 +986,7 @@ object WdttTunnelManager {
                     }
 
                     if (lineTrim.contains("[СТАТИСТИКА]")) {
+                        lastTransportStatsMs = now
                         val msg = lineTrim.substringAfter("[СТАТИСТИКА]").trim()
                         stats.value = msg
                         val prevActive = activeWorkers.value
@@ -1344,32 +1351,31 @@ object WdttTunnelManager {
     }
 
     /** После Wi‑Fi↔LTE / восстановления сети — обновить AllowedIPs (mobile API route). */
-    fun reapplyWireGuardForNetworkChange(context: Context) {
-        if (!tunnelReady.value || isBootstrapMode || apiOverlayActive) return
-        val sinceApply = System.currentTimeMillis() - lastWgApplyAtMs
-        if (lastWgApplyAtMs > 0L && sinceApply < 15_000L) {
-            DebugLog.i("WdttTunnel", "wg network reload skip — settle ${sinceApply}ms")
-            return
-        }
-        val config = lastWgConfig ?: return
+    suspend fun reapplyWireGuardForNetworkChange(
+        context: Context,
+        forceSocketRebind: Boolean = false,
+    ): Boolean = wgApplyMutex.withLock {
+        if (!tunnelReady.value || isBootstrapMode || apiOverlayActive || overlayRestoreSuppressed) return@withLock false
+        val config = lastWgConfig ?: return@withLock false
+        val helper = wgHelper ?: return@withLock false
         lastContext = context.applicationContext
-        scope.launch {
-            wgApplyMutex.withLock {
-                if (!tunnelReady.value || isBootstrapMode || apiOverlayActive) return@withLock
-                runCatching {
-                    withContext(NonCancellable + Dispatchers.Main) {
-                        wgHelper?.startTunnel(
-                            config,
-                            effectiveExcludeIps(),
-                            isBootstrap = false,
-                            mobileApiRoute = mobileApiRouteEnabled(),
-                        )
-                    }
-                    updateLog("wg_network_reload", "WireGuard: маршруты после смены сети", 2)
-                }.onFailure { e ->
-                    DebugLog.w("WdttTunnel", "wg network reload: ${e.message}")
-                }
+        try {
+            withContext(NonCancellable + Dispatchers.Main) {
+                helper.startTunnel(
+                    config,
+                    effectiveExcludeIps(),
+                    isBootstrap = false,
+                    mobileApiRoute = mobileApiRouteEnabled(),
+                    forceSocketRebind = forceSocketRebind,
+                )
             }
+            updateLog("wg_network_reload", "WireGuard: маршруты после смены сети", 2)
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DebugLog.w("WdttTunnel", "wg network reload: ${e.message}")
+            false
         }
     }
 
@@ -1672,31 +1678,35 @@ object WdttTunnelManager {
         }
     }
 
-    fun restartTransport(forceNetwork: Boolean = false, reason: String = "") {
+    fun restartTransport(forceNetwork: Boolean = false, reason: String = ""): Boolean {
+        if (overlayRestoreSuppressed) return false
         if (isBootstrapMode && forceNetwork) {
             updateLog("network_restart_skip", "[СЕТЬ] Bootstrap — мягкое восстановление", 50)
             if (!running.value || process?.isAlive != true) {
-                val params = lastParams ?: return
-                val ctx = lastContext ?: return
-                scope.launch { start(ctx, params, isSwitching = true) }
+                val params = lastParams ?: return false
+                val ctx = lastContext ?: return false
+                scope.launch { start(ctx, params, isSwitching = true, expectedSession = params) }
             }
-            return
+            return true
         }
         if (!forceNetwork) {
             val elapsed = System.currentTimeMillis() - processStartedAtMs
-            if (processStartedAtMs > 0L && elapsed < NETWORK_RESTART_GRACE_MS) return
+            if (processStartedAtMs > 0L && elapsed < NETWORK_RESTART_GRACE_MS) return false
         }
-        if (isNetworkRecoverySuppressed()) return
-        if (!tunnelReady.value) return
-        val params = lastParams ?: return
-        val ctx = lastContext ?: return
+        if (isNetworkRecoverySuppressed() || overlayRestoreSuppressed) return false
+        if (!tunnelReady.value) return false
+        val params = lastParams ?: return false
+        val ctx = lastContext ?: return false
+        if (transportRestartJob?.isActive == true) return true
         val why = reason.trim().takeIf { it.isNotEmpty() }?.let { " ($it)" }.orEmpty()
         updateLog("network_restart", "[СЕТЬ] Перезапуск транспорта$why", 50)
         killProcess()
-        scope.launch {
+        transportRestartJob = scope.launch {
             delay(1500)
-            start(ctx, params, isSwitching = true)
+            if (overlayRestoreSuppressed || !running.value || lastParams !== params) return@launch
+            start(ctx, params, isSwitching = true, expectedSession = params)
         }
+        return true
     }
 
     /** Явное восстановление после смены сети / звонка — без grace libclient. */
@@ -1773,16 +1783,19 @@ object WdttTunnelManager {
 
     fun pause() {
         if (!running.value) return
+        transportRestartJob?.cancel()
+        transportRestartJob = null
         killProcess()
         activeWorkers.value = 0
     }
 
     fun resume() {
+        if (overlayRestoreSuppressed) return
         val params = lastParams ?: return
         val ctx = lastContext ?: return
         if (running.value && process?.isAlive == true) return
         running.value = true
-        scope.launch { start(ctx, params, isSwitching = true) }
+        scope.launch { start(ctx, params, isSwitching = true, expectedSession = params) }
     }
 
     fun isCaptchaInProgress(): Boolean = captchaInProgress
@@ -1831,6 +1844,8 @@ object WdttTunnelManager {
 
     fun prepareForShutdown() {
         overlayRestoreSuppressed = true
+        transportRestartJob?.cancel()
+        transportRestartJob = null
     }
 
     /** WG поднят — VPN включён; воркеры могут ещё набираться. */
@@ -1845,6 +1860,9 @@ object WdttTunnelManager {
         // Воркеры могут мигать (VK flood) при живом WG — не считаем туннель мёртвым.
         return proc.isAlive
     }
+
+    /** Latest native heartbeat, or start time until the first snapshot arrives. */
+    fun lastTransportStatsAtMs(): Long = lastTransportStatsMs
 
     /** Долго нет активных воркеров при живом процессе — вероятно «завис» после doze/смены сети. */
     fun isTransportStale(thresholdMs: Long): Boolean {
@@ -2145,12 +2163,15 @@ object WdttTunnelManager {
 
     private suspend fun stopInternal() {
         overlayRestoreSuppressed = true
+        transportRestartJob?.cancel()
+        transportRestartJob = null
         apiOverlayActive = false
         overlayLease = ApiOverlayLease.State()
         suppressNetworkRecovery = false
         wgApplySettleJob?.cancel()
         wgApplySettleJob = null
         lastWgApplyAtMs = 0L
+        lastTransportStatsMs = 0L
         // После login bootstrap флаг иначе залипает → isMainVpnSessionForUi=false → экран входа.
         isBootstrapMode = false
         requireGetconfAccess = false
@@ -2255,6 +2276,7 @@ object WdttTunnelManager {
         captchaSolveJob?.cancel()
         CaptchaWebViewManager.cancelCurrentSolve()
         ManlCaptchaWebViewManager.cancelCaptcha()
+        lastContext?.let(com.silent.vpn.service.VpnTileHelper::requestUpdate)
     }
 
     private suspend fun handleCaptchaSolve(
@@ -2269,6 +2291,7 @@ object WdttTunnelManager {
         }
         captchaInProgress = true
         captchaManualInProgress = requestMode == "manual"
+        com.silent.vpn.service.VpnTileHelper.requestUpdate(ctx)
         try {
             val token = when (requestMode) {
                 "manual" -> ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
@@ -2290,6 +2313,7 @@ object WdttTunnelManager {
             if (session == captchaSession.get()) {
                 captchaInProgress = false
                 captchaManualInProgress = false
+                com.silent.vpn.service.VpnTileHelper.requestUpdate(ctx)
             }
         }
     }

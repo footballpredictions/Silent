@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import httpx
 
-from app.services import update_service
+from app.services import update_service, openwrt_package
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,8 @@ def github_asset_filename(platform: str, filename: str, version: str = "") -> st
         ver = m.group(1)
     if platform == "openwrt":
         if ver:
-            return f"silent-vpn-openwrt-{ver}.tar.gz"
+            arch = openwrt_package.filename_arch(safe)
+            return f"silent-vpn-openwrt-{ver}{'-' + arch if arch else ''}.tar.gz"
         if safe.lower().endswith((".tar.gz", ".tgz")):
             return safe
         return OPENWRT_PAGES_TGZ
@@ -209,7 +210,7 @@ def _release_body_for_assets(version: str, asset_names: list[str]) -> str:
     if has_apk:
         lines.append("- **Android** — `.apk`")
     if has_openwrt:
-        lines.append("- **OpenWrt** — пакет `.tar.gz` (install: `silent-vpn-openwrt.tgz`)")
+        lines.append("- **OpenWrt** — отдельные пакеты aarch64, ARMv7, mipsel и x86_64; установщик выбирает архитектуру автоматически")
     lines.append(f"\nСкачивание: {landing}")
     return "\n".join(lines)
 
@@ -253,11 +254,13 @@ async def _delete_asset(token: str, asset_id: int) -> None:
         raise GitHubReleaseError(f"Delete asset {asset_id}: HTTP {resp.status_code}")
 
 
-async def _remove_platform_assets(token: str, release: dict, platform: str) -> None:
+async def _remove_platform_assets(token: str, release: dict, platform: str, *, architectures_only: bool = False) -> None:
     """Удалить только файлы этой платформы (.exe / .apk / .deb / OpenWrt tarball), не трогая другую."""
     if not _platform_asset_exts(platform):
         return
     for asset in release.get("assets") or []:
+        if architectures_only and not openwrt_package.filename_arch(asset.get("name") or ""):
+            continue
         if _asset_name_matches_platform(asset.get("name") or "", platform):
             await _delete_asset(token, int(asset["id"]))
 
@@ -384,14 +387,17 @@ def _landing_entry_from_manifest(
         "size": int(manifest.get("size") or 0),
         "download_url": download_url,
     }
-    if platform != "mac":
+    if platform not in ("mac", "openwrt"):
         return entry
     files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
     arches: dict[str, dict] = {}
     for arch, slot in files.items():
-        if arch not in ("x64", "arm64") or not isinstance(slot, dict) or not slot.get("filename"):
+        allowed = update_service.MAC_ARCHES if platform == "mac" else update_service.OPENWRT_ARCHES
+        if arch not in allowed or not isinstance(slot, dict) or not slot.get("filename"):
             continue
-        gh_name = github_asset_filename("mac", slot["filename"], str(manifest["version"]))
+        if platform == "openwrt" and slot.get("version") != manifest["version"]:
+            continue
+        gh_name = github_asset_filename(platform, slot["filename"], str(manifest["version"]))
         url = (slot.get("github_download_url") or "").strip() or asset_download_url(
             str(manifest["version"]), gh_name,
         )
@@ -403,6 +409,8 @@ def _landing_entry_from_manifest(
             "size": int(slot.get("size") or 0),
             "download_url": url,
         }
+        if platform == "openwrt":
+            arches[arch].update({k: slot[k] for k in ("sha256", "unpacked_size")})
     if arches:
         entry["arches"] = arches
     return entry
@@ -544,6 +552,14 @@ async def _build_landing_releases_snapshot(
         local = update_service.get_latest(p)
         if not local:
             continue
+        if p == "openwrt" and local.get("files"):
+            try:
+                packages = update_service.openwrt_binaries(local, require_complete=True)
+            except ValueError:
+                continue
+            # Other platform publications must not advertise staged router packages.
+            if not all(item.get("github_download_url") for item in packages):
+                continue
         gh = local.get("github_download_url") or asset_download_url(
             local["version"],
             github_asset_filename(p, local["filename"], str(local["version"])),
@@ -618,16 +634,24 @@ async def _sync_peer_assets_from_server(
         if platform == skip_platform:
             continue
         latest = update_service.get_latest(platform)
-        if platform == "mac" and latest and str(latest.get("version")) == str(version):
-            for item in update_service.mac_binaries(latest):
-                upload_name = github_asset_filename("mac", item["filename"], str(version))
+        if platform in ("mac", "openwrt") and latest and str(latest.get("version")) == str(version):
+            if platform == "openwrt" and latest.get("files"):
+                try:
+                    binaries = update_service.openwrt_binaries(latest, require_complete=True)
+                except ValueError:
+                    continue
+            else:
+                binaries = update_service.mac_binaries(latest) if platform == "mac" else []
+            for item in binaries:
+                upload_name = github_asset_filename(platform, item["filename"], str(version))
                 if upload_name in asset_names:
                     continue
                 uploaded = await _upload_release_asset(token, release, item["file_path"], upload_name)
                 name = uploaded.get("name") or upload_name
                 asset_names.add(name)
                 logger.info("GitHub release %s: restored %s from server update/", version, name)
-            continue
+            if binaries:
+                continue
         if _release_has_platform_asset(release, platform):
             continue
         if not latest or str(latest.get("version")) != str(version):
@@ -656,6 +680,13 @@ async def publish_platform(platform: str, *, sync_landing: bool = True, sync_pee
     if not latest:
         raise GitHubReleaseError(f"Нет файла обновления для {platform} в update/")
 
+    binaries = update_service.mac_binaries(latest) if platform == "mac" else []
+    if platform == "openwrt" and latest.get("files"):
+        try:
+            binaries = update_service.openwrt_binaries(latest, require_complete=True)
+        except ValueError as exc:
+            raise GitHubReleaseError(str(exc)) from exc
+
     token = _token()
     version = latest["version"]
     filename = latest["filename"]
@@ -670,19 +701,18 @@ async def publish_platform(platform: str, *, sync_landing: bool = True, sync_pee
         release = await _create_release(token, tag, version, platform)
         logger.info("GitHub release created: %s (%s)", tag, platform)
     else:
-        await _remove_platform_assets(token, release, platform)
+        await _remove_platform_assets(token, release, platform, architectures_only=platform == "openwrt" and bool(binaries))
 
     arch_urls: dict[str, str] = {}
-    binaries = update_service.mac_binaries(latest) if platform == "mac" else []
     if binaries:
         uploaded = None
         asset_name = upload_name
         for item in binaries:
-            name = github_asset_filename("mac", item["filename"], str(version))
+            name = github_asset_filename(platform, item["filename"], str(version))
             up = await _upload_release_asset(token, release, item["file_path"], name)
             url = up.get("browser_download_url") or asset_download_url(version, name)
             arch_urls[item["arch"]] = url
-            if item["arch"] == "x64" or uploaded is None:
+            if (platform == "mac" and item["arch"] == "x64") or item["filename"] == filename or uploaded is None:
                 uploaded = up
                 asset_name = up.get("name") or name
     else:
@@ -701,6 +731,13 @@ async def publish_platform(platform: str, *, sync_landing: bool = True, sync_pee
     download_url = uploaded.get("browser_download_url") or asset_download_url(version, asset_name)
     release_page = release.get("html_url") or f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tag/{tag}"
 
+    if platform == "openwrt" and binaries:
+        # Publish the bootstrap paired with this build, before its metadata becomes visible.
+        script = openwrt_package.installer_script(binaries[0]["file_path"])
+        script_sha = await _read_repo_sha(token, "openwrt-install.sh")
+        await _write_repo_file(token, "openwrt-install.sh", script, script_sha,
+                               f"OpenWrt architecture installer: v{version}")
+
     if sync_landing:
         snapshot = await _sync_landing_releases_json(
             token, platform, latest, download_url, asset_name
@@ -710,7 +747,7 @@ async def publish_platform(platform: str, *, sync_landing: bool = True, sync_pee
         except GitHubReleaseError as e:
             logger.warning("index.html landing sync failed: %s", e)
 
-    if platform == "openwrt":
+    if platform == "openwrt" and not binaries:
         try:
             await _sync_openwrt_pages_tgz(token, file_path, str(version))
         except GitHubReleaseError as e:

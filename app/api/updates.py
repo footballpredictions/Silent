@@ -36,6 +36,8 @@ async def download_update_file(platform: str, arch: str = Query("", max_length=1
     latest = update_service.get_latest(p, arch=arch or None)
     if not latest:
         raise HTTPException(status_code=404, detail="No update published")
+    if p == "openwrt" and latest.get("files") and not arch:
+        raise HTTPException(status_code=400, detail="OpenWrt: specify arch=aarch64, arm, mipsel or x86_64")
 
     filename = latest.get("filename") or ("update.apk" if p == "android" else "update.exe")
     file_path = latest.get("file_path")

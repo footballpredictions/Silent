@@ -2055,7 +2055,10 @@ async def delete_update(
 ):
     if platform not in update_service.PLATFORMS:
         raise HTTPException(status_code=400, detail="Invalid platform")
-    update_service.delete_platform_update(platform, arch=arch)
+    try:
+        update_service.delete_platform_update(platform, arch=arch)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"message": f"Update for {platform} removed"}
 
 

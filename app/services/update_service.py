@@ -3,11 +3,14 @@ import json
 import os
 import re
 import shutil
+import tempfile
+from app.services import openwrt_package
 from datetime import datetime, timezone
 from typing import Optional
 
 PLATFORMS = ("pc", "android", "linux", "mac", "openwrt")
 MAC_ARCHES = ("x64", "arm64")
+OPENWRT_ARCHES = openwrt_package.ARCHES
 MANIFEST = "manifest.json"
 UPLOAD_EXTS = {
     "pc": (".exe", ".msi"),
@@ -63,8 +66,15 @@ def _read_manifest(platform: str) -> Optional[dict]:
 def _write_manifest(platform: str, data: dict) -> None:
     ensure_dirs()
     path = _manifest_path(platform)
-    with open(path, "w", encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(path),
+                                     prefix=".manifest-", delete=False) as f:
+        temporary = f.name
         json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 def _parse_version(v: str) -> tuple:
@@ -115,7 +125,7 @@ def _download_url(platform: str, filename: str) -> str:
 
 def _annotate_mac_files(platform: str, entry: dict) -> dict:
     files = _mac_files(entry)
-    if platform != "mac" or not files:
+    if platform not in ("mac", "openwrt") or not files:
         return entry
     annotated = {}
     for arch, slot in files.items():
@@ -176,17 +186,45 @@ def mac_binaries(latest: dict) -> list[dict]:
     return out
 
 
+def openwrt_binaries(latest: dict, *, require_complete: bool = False) -> list[dict]:
+    """A release is publishable only with four validated packages of one version."""
+    out = []
+    for arch in OPENWRT_ARCHES:
+        slot = _mac_files(latest).get(arch) or {}
+        filename = slot.get("filename")
+        path = os.path.join(_platform_dir("openwrt"), filename) if filename else None
+        if path and os.path.isfile(path) and slot.get("version") == latest.get("version"):
+            out.append({**slot, "arch": arch, "file_path": path})
+    if require_complete and len(out) != len(OPENWRT_ARCHES):
+        raise ValueError("OpenWrt: загрузите все 4 пакета одной версии: aarch64, arm, mipsel, x86_64")
+    if require_complete:
+        if len({item.get("build_id") for item in out}) != 1:
+            raise ValueError("OpenWrt: пакеты из разных сборок; загрузите четыре архива из одного запуска build_release.py")
+        scripts = set()
+        for item in out:
+            info = openwrt_package.inspect_package(item["file_path"], item["arch"], latest["version"])
+            if info["sha256"] != item.get("sha256") or info["build_id"] != item.get("build_id"):
+                raise ValueError("OpenWrt: файл изменился после загрузки")
+            scripts.add(openwrt_package.installer_script(item["file_path"]))
+        if len(scripts) != 1:
+            raise ValueError("OpenWrt: установщики в четырёх пакетах различаются; пересоберите одним скриптом")
+    return out
+
+
 def get_latest(platform: str, arch: Optional[str] = None) -> Optional[dict]:
     m = _read_manifest(platform)
     if not m:
         return None
-    want = normalize_mac_arch(arch) if platform == "mac" else None
-    if want:
+    want = normalize_mac_arch(arch) if platform == "mac" else openwrt_package.normalize_arch(arch) if platform == "openwrt" else None
+    if platform == "openwrt" and arch and not want:
+        return None
+    if want and (platform != "openwrt" or _mac_files(m)):
         slot = _mac_files(m).get(want) or {}
         if not slot.get("filename"):
             return None
         picked = {
             **m,
+            **slot,
             "filename": slot["filename"],
             "size": slot.get("size") or 0,
             "uploaded_at": slot.get("uploaded_at") or m.get("uploaded_at"),
@@ -233,6 +271,9 @@ def _resolve_download_url(latest: dict) -> Optional[str]:
 def check_update(platform: str, current_version: str, arch: Optional[str] = None) -> Optional[dict]:
     latest = get_latest(platform, arch=arch)
     if not latest:
+        return None
+    if platform == "openwrt" and not arch and latest.get("files"):
+        # Legacy clients cannot install an arbitrary architecture-specific package.
         return None
     if not is_newer(latest["version"], current_version):
         return None
@@ -300,6 +341,29 @@ def publish_file(
     dest_path = os.path.join(dest_dir, safe_name)
     uploaded_at = datetime.now(timezone.utc).isoformat()
 
+    if platform == "openwrt":
+        want = openwrt_package.normalize_arch(arch) or openwrt_package.filename_arch(safe_name)
+        if not want or (arch and not openwrt_package.normalize_arch(arch)):
+            raise ValueError("OpenWrt: выберите aarch64, arm, mipsel или x86_64")
+        if openwrt_package.filename_arch(safe_name) != want:
+            raise ValueError("OpenWrt: архитектура в имени файла не совпадает с выбранной")
+        info = openwrt_package.inspect_package(src_path, want, version)
+        prev = _read_manifest(platform) or {}
+        files = _mac_files(prev)
+        # Per-slot versions prevent mixed packages being offered as one release.
+        files[want] = {"filename": safe_name, "size": os.path.getsize(src_path),
+                       "uploaded_at": uploaded_at, **info}
+        if os.path.abspath(src_path) != os.path.abspath(dest_path):
+            temporary = dest_path + ".upload"
+            shutil.copy2(src_path, temporary)
+            os.replace(temporary, dest_path)
+        primary = want
+        manifest = {**files[primary], "files": files}
+        _write_manifest(platform, manifest)
+        _cleanup_platform_dir(platform, safe_name, {s["filename"] for s in files.values()})
+        return {"platform": platform, "arch": want, **manifest,
+                "download_url": _download_url(platform, safe_name)}
+
     if platform == "mac":
         arch_norm = normalize_mac_arch(arch) or arch_from_filename(safe_name)
         if not arch_norm:
@@ -362,7 +426,9 @@ def publish_file(
 
 def delete_platform_update(platform: str, arch: Optional[str] = None) -> bool:
     m = _read_manifest(platform)
-    want = normalize_mac_arch(arch) if platform == "mac" else None
+    want = normalize_mac_arch(arch) if platform == "mac" else openwrt_package.normalize_arch(arch) if platform == "openwrt" else None
+    if platform == "openwrt" and arch and not want:
+        raise ValueError("OpenWrt: неизвестная архитектура")
     if want and m:
         files = _mac_files(m)
         slot = files.pop(want, None) or {}
@@ -371,13 +437,15 @@ def delete_platform_update(platform: str, arch: Optional[str] = None) -> bool:
             fp = os.path.join(_platform_dir(platform), fn)
             if os.path.isfile(fp):
                 os.remove(fp)
-        primary = _mac_primary_arch(files)
+        primary = _mac_primary_arch(files) if platform == "mac" else next((a for a in OPENWRT_ARCHES if files.get(a)), None)
         if not primary:
             mp = _manifest_path(platform)
             if os.path.isfile(mp):
                 os.remove(mp)
             return True
         slot = files[primary]
+        if platform == "openwrt":
+            m.update(slot)
         m["files"] = files
         m["filename"] = slot["filename"]
         m["size"] = slot.get("size") or 0

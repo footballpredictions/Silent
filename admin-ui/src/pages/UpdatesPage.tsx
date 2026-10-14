@@ -6,6 +6,8 @@ interface MacFileSlot {
   size: number
   uploaded_at?: string | null
   download_url?: string
+  version?: string
+  build_id?: string
 }
 
 interface UpdateInfo {
@@ -73,6 +75,11 @@ const platformLabel: Record<string, string> = {
 }
 
 const hasVpsBuild = (platform: string) => platform !== 'mac' && platform !== 'openwrt'
+const openwrtArches = ['aarch64', 'arm', 'mipsel', 'x86_64'] as const
+const openwrtArchLabel: Record<string, string> = { aarch64: 'aarch64', arm: 'ARMv7', mipsel: 'mipsel', x86_64: 'x86_64' }
+const openwrtComplete = (item: UpdateInfo) => openwrtArches.every(arch =>
+  item.files?.[arch]?.filename && item.files[arch].version === item.version &&
+  item.files[arch].build_id && item.files[arch].build_id === item.files.aarch64?.build_id)
 
 function downloadHref(item: UpdateInfo): string | null {
   if (item.download_url) return item.download_url
@@ -101,6 +108,7 @@ export default function UpdatesPage({ token }: { token: string }) {
   const macArmRef = useRef<HTMLInputElement>(null)
   const macRef = useRef<HTMLInputElement>(null)
   const openwrtRef = useRef<HTMLInputElement>(null)
+  const openwrtInputs = useRef<Record<string, HTMLInputElement | null>>({})
 
   const fileRefFor = (platform: string) => {
     if (platform === 'pc') return pcRef
@@ -204,11 +212,12 @@ export default function UpdatesPage({ token }: { token: string }) {
     setUploadPct(0)
   }
 
-  const remove = async (platform: string) => {
-    if (!confirm(`Удалить обновление для ${platformLabel[platform]}?`)) return
+  const remove = async (platform: string, arch?: string) => {
+    if (!confirm(`Удалить обновление для ${platformLabel[platform]}${arch ? ` (${arch})` : ''}?`)) return
     setMsg('')
     try {
-      await fetch(`/api/admin/updates/${platform}`, { method: 'DELETE', headers })
+      const res = await fetch(`/api/admin/updates/${platform}${arch ? `?arch=${arch}` : ''}`, { method: 'DELETE', headers })
+      if (!res.ok) throw new Error('Ошибка удаления')
       setMsg('Удалено')
       await load()
     } catch {
@@ -419,9 +428,9 @@ export default function UpdatesPage({ token }: { token: string }) {
       ) : (
         <div className="space-y-4">
           {items.map(item => (
-            <div key={item.platform} className="bg-[#111] border border-[#222] rounded-xl p-5">
+            <div key={item.platform} className="bg-[#111] border border-[#222] rounded-xl p-5 min-w-0">
               <div className="flex items-start justify-between gap-4">
-                <div>
+                <div className="min-w-0">
                   <h2 className="font-semibold">{platformLabel[item.platform] || item.platform}</h2>
                   {item.version ? (
                     <div className="mt-2 space-y-1 text-sm text-[#888]">
@@ -440,6 +449,8 @@ export default function UpdatesPage({ token }: { token: string }) {
                             )
                           })}
                         </>
+                      ) : item.platform === 'openwrt' && item.files ? (
+                        <p className="text-[#aaa]">{openwrtComplete(item) ? 'Все 4 пакета готовы к публикации' : 'Для публикации нужны 4 пакета из одной сборки'}</p>
                       ) : (
                         <>
                           <p>Файл: {item.filename}</p>
@@ -538,7 +549,7 @@ export default function UpdatesPage({ token }: { token: string }) {
               </div>
 
               <div className="mt-4 pt-4 border-t border-[#222] flex flex-wrap items-center gap-3">
-                {downloadHref(item) && (
+                {item.platform !== 'openwrt' && downloadHref(item) && (
                   <a
                     href={downloadHref(item)!}
                     download={item.filename || true}
@@ -548,7 +559,31 @@ export default function UpdatesPage({ token }: { token: string }) {
                     Скачать
                   </a>
                 )}
-                {item.platform === 'mac' ? (
+                {item.platform === 'openwrt' ? (
+                  <div className="w-full space-y-3">
+                    {openwrtArches.map(arch => {
+                      const slot = item.files?.[arch]
+                      const busy = uploading === `openwrt:${arch}`
+                      return (
+                        <div key={arch} className="flex flex-wrap items-center gap-3 border-b border-[#222] pb-3 last:border-0">
+                          <div className="flex-1 min-w-0 basis-40">
+                            <p className="text-sm font-semibold">{openwrtArchLabel[arch]}</p>
+                            <p className="text-xs text-[#aaa] break-all mt-1">{slot?.filename ? `${slot.version} · ${formatSize(slot.size)} · ${slot.filename}` : 'Пакет не загружен'}</p>
+                          </div>
+                          <input ref={element => { openwrtInputs.current[arch] = element }} type="file" accept=".tar.gz,.tgz" className="hidden" aria-label={`Пакет OpenWrt ${arch}`} onChange={e => {
+                            const file = e.target.files?.[0]
+                            if (file) void upload('openwrt', file, arch)
+                            e.target.value = ''
+                          }} />
+                          {slot?.download_url && <a href={slot.download_url} download={slot.filename} className="p-2 text-[#ccc] hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400" aria-label={`Скачать OpenWrt ${arch}`}><Download className="w-4 h-4" /></a>}
+                          <button disabled={!!uploading || !!publishingGithub} onClick={() => openwrtInputs.current[arch]?.click()} className="inline-flex items-center gap-2 bg-white text-black px-3 py-2 rounded-lg text-sm font-semibold hover:bg-[#e0e0e0] disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400" aria-label={`Загрузить OpenWrt ${arch}`}><Upload className="w-4 h-4" />{busy ? `${uploadPct}%` : slot ? 'Заменить' : 'Загрузить'}</button>
+                          {slot && <button onClick={() => void remove('openwrt', arch)} disabled={!!uploading || !!publishingGithub} className="p-2 text-[#aaa] hover:text-red-400 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400" aria-label={`Удалить OpenWrt ${arch}`}><Trash2 className="w-4 h-4" /></button>}
+                        </div>
+                      )
+                    })}
+                    {!item.files && item.filename && <p className="text-xs text-[#aaa]">Сейчас загружен прежний общий архив. Загрузите четыре отдельных пакета.</p>}
+                  </div>
+                ) : item.platform === 'mac' ? (
                   <>
                     <input ref={macX64Ref} type="file" accept=".dmg,.zip,.pkg" className="hidden" onChange={e => {
                       const f = e.target.files?.[0]
@@ -601,7 +636,7 @@ export default function UpdatesPage({ token }: { token: string }) {
                   </>
                 )}
                 <button
-                  disabled={!item.version || !githubStatus?.configured || publishingGithub === item.platform}
+                  disabled={!item.version || !githubStatus?.configured || !!uploading || publishingGithub === item.platform || (item.platform === 'openwrt' && !openwrtComplete(item))}
                   onClick={() => publishGithub(item.platform)}
                   className="inline-flex items-center gap-2 bg-[#1a1a1a] border border-purple-900/50 text-purple-200 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#221a2a] disabled:opacity-50"
                   title="Загрузить в GitHub Releases + обновить releases.json на silentvpn3.github.io"
@@ -644,7 +679,7 @@ export default function UpdatesPage({ token }: { token: string }) {
                   <span className="text-xs text-[#666] self-center">Два DMG с MacBook (`./build-mac.sh`): Intel и Apple Silicon. Старые клиенты без архитектуры получают Intel.</span>
                 )}
                 {item.platform === 'openwrt' && (
-                  <span className="text-xs text-[#666] self-center">Сборка .tar.gz — локально в openwrt/; install.sh качает silent-vpn-openwrt.tgz с github.io</span>
+                  <span className="text-xs text-[#aaa] self-center">Сборка: python openwrt/scripts/build_release.py. Загрузите 4 архива из openwrt/dist. Установщик сам выберет нужный на GitHub.</span>
                 )}
               </div>
             </div>

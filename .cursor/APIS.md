@@ -29,6 +29,22 @@ Cell-agent HTTP (2026-10-10): прежний plain HTTP9100 status/bootstrap с�
 
 ## Backend API
 
+OpenWrt architecture packages (сервер и админка задеплоены 2026-10-14):
+`POST /api/admin/updates/upload` принимает `platform=openwrt`,
+`arch=aarch64|arm|mipsel|x86_64`, файл `silent-vpn-openwrt-VERSION-ARCH.tar.gz`.
+Внутри ARCH, VERSION, PACKAGE.json (schema_version1/arch/version/build_id), один
+проверенный little-endian ELF. `files[arch]` хранит свою version/build_id/size/
+unpacked_size/sha256; DELETE `/api/admin/updates/openwrt?arch=...` удаляет один слот.
+Public check/download используют `arch`; без него split-пакеты не предлагаются
+старым клиентам. Прежний universal manifest скачивается как раньше.
+GitHub publish требует все4 одной версии и build_id, сохраняет старый universal
+asset/Pages tgz; новые4 — Releases, согласованный bootstrap — Pages,
+`releases.json.openwrt.arches[arch]` содержит version/filename/download_url/size/
+unpacked_size/sha256. Bootstrap проверяет ресурсы и SHA256, не скачивает общий архив.
+Для выбранного canonical deploy нужны оба API файла admin.py/updates.py,
+services update_service.py/github_release_service.py/НОВЫЙ openwrt_package.py и UI dist;
+старый deploy_update_backend.py не использовать вместо deploy_stable.py.
+
 Общая политика обхода (2026-10-13): `GET /api/vpn/routing-policy` — публичный
 несекретный JSON `{schema_version:1, revision, direct_domains:[], vpn_domains:[],
 refresh_seconds:300}`. Домены — DNS-суффиксы (включая поддомены); VPN-исключения

@@ -16,6 +16,73 @@ from test_path_runtime import SHELL, ROOT
 
 @unittest.skipUnless(SHELL, "POSIX shell required")
 class UpdateRuntimeTests(unittest.TestCase):
+    def test_start_without_nohup_recovers_stale_lock_and_detaches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory)
+            (base / "update.lock").mkdir()
+            (base / "update.lock/pid").write_text("29999999")
+            runner=base / "runner.sh"
+            runner.write_text('''#!/bin/sh
+echo $$ > "$SV_RUN/update.lock/pid"
+printf '{"phase":"checking"}\\n' > "$SV_RUN/update-state.json"
+touch "$SV_RUN/update.lock/started"
+echo started >> "$SV_RUN/starts"
+sleep 2
+touch "$SV_RUN/completed"
+printf '{"phase":"current"}\\n' > "$SV_RUN/update-state.json"
+rm -rf "$SV_RUN/update.lock"
+''', encoding="utf-8", newline="\n")
+            runner.chmod(0o755)
+            source=(ROOT / "files/usr/lib/silent-vpn/update.sh").read_text(encoding="utf-8")
+            source=source.replace('/usr/sbin/silent-vpn-update', '"$TEST_RUNNER"')
+            code=source+r'''
+SV_RUN="$(pwd)"
+export SV_RUN
+TEST_RUNNER="$SV_RUN/runner.sh"
+export TEST_RUNNER
+nohup() { return 127; }
+setsid() { return 127; }
+sv_json_get() { sed -n 's/.*"phase":"\([^"]*\)".*/\1/p' "$1"; }
+sv_update_start
+sv_update_start
+worker="$(cat "$SV_RUN/update.lock/pid" 2>/dev/null)"
+[ -z "$worker" ] || kill -HUP "$worker"
+'''
+            (base / "start.sh").write_text(code,encoding="utf-8",newline="\n")
+            result=subprocess.run([SHELL,"start.sh"],cwd=base,capture_output=True,text=True,encoding="utf-8",timeout=10)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(len(result.stdout.splitlines()),2,result.stdout)
+            for line in result.stdout.splitlines():
+                self.assertIn(json.loads(line)["phase"],("checking","current"))
+            # The CGI-like parent has exited; its background worker must finish.
+            import time
+            for _ in range(40):
+                if (base / "completed").exists(): break
+                time.sleep(0.1)
+            self.assertTrue((base / "completed").exists(),result.stdout+result.stderr)
+            for _ in range(20):
+                if not (base / "update.lock").exists(): break
+                time.sleep(0.1)
+            self.assertFalse((base / "update.lock").exists())
+            self.assertEqual((base / "starts").read_text().splitlines(),["started"])
+
+    def test_failed_launcher_reports_error_and_releases_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory)
+            source=(ROOT / "files/usr/lib/silent-vpn/update.sh").read_text(encoding="utf-8")
+            source=source.replace('/usr/sbin/silent-vpn-update','"$SV_RUN/missing-runner"')
+            code=source+r'''
+SV_RUN="$(pwd)"
+export SV_RUN
+sv_json_get() { sed -n 's/.*"phase":"\([^"]*\)".*/\1/p' "$1"; }
+sv_update_start
+'''
+            (base / "start.sh").write_text(code,encoding="utf-8",newline="\n")
+            result=subprocess.run([SHELL,"start.sh"],cwd=base,capture_output=True,text=True,encoding="utf-8",timeout=10)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(json.loads(result.stdout)["phase"],"error")
+            self.assertFalse((base / "update.lock").exists())
+
     def test_lock_blocks_parallel_start_and_detects_dead_worker(self):
         source = (ROOT / "files/usr/lib/silent-vpn/update.sh").read_text(encoding="utf-8")
         definitions = source.split('sv_update_status()')[0]

@@ -116,18 +116,43 @@ sv_update_check() {
 }
 
 sv_update_start() {
+	local launcher_pid worker_pid attempt
 	sv_update_busy && { sv_update_status; return; }
 	if ! mkdir "$SV_RUN/update.lock" 2>/dev/null; then
 		if sv_update_busy; then sv_update_status; return; fi
+		# Only one request may reclaim a dead worker's lock.
+		mkdir "$SV_RUN/update.lock/reclaim" 2>/dev/null || { sv_update_status; return; }
+		if sv_update_busy; then
+			rmdir "$SV_RUN/update.lock/reclaim" 2>/dev/null || true
+			sv_update_status
+			return
+		fi
 		rm -rf "$SV_RUN/update.lock"
-		echo '{"phase":"error","detail":"Предыдущее обновление прервано. Повторите попытку."}'
-		return
+		mkdir "$SV_RUN/update.lock" 2>/dev/null || { sv_update_status; return; }
 	fi
-	# PID belongs to the starter until the worker takes ownership; no immortal marker.
+	# Ignore the CGI's hangup using POSIX shell builtins; nohup is not in base OpenWrt.
 	echo "$$" > "$SV_RUN/update.lock/pid"
 	sv_update_state queued 'Подготовка обновления'
-	nohup /usr/sbin/silent-vpn-update run </dev/null >/dev/null 2>&1 &
-	echo "$!" > "$SV_RUN/update.lock/pid"
+	(
+		trap '' HUP
+		exec /usr/sbin/silent-vpn-update run
+	) </dev/null >/dev/null 2>&1 &
+	launcher_pid=$!
+	# Never overwrite the PID written by the worker, and acknowledge real startup.
+	for attempt in 1 2 3 4 5; do
+		if [ -f "$SV_RUN/update.lock/started" ] && sv_update_busy; then
+			sv_update_status
+			return
+		fi
+		[ -d "$SV_RUN/update.lock" ] || { sv_update_status; return; }
+		worker_pid="$(cat "$SV_RUN/update.lock/pid" 2>/dev/null)"
+		if [ "$worker_pid" = "$$" ] && ! kill -0 "$launcher_pid" 2>/dev/null; then break; fi
+		sleep 1
+	done
+	kill "$launcher_pid" 2>/dev/null || true
+	wait "$launcher_pid" 2>/dev/null || true
+	rm -rf "$SV_RUN/update.lock"
+	sv_update_state error 'Не удалось запустить обновление. Повторите попытку.'
 	sv_update_status
 }
 
@@ -169,6 +194,7 @@ sv_update_run() {
 	trap sv_update_cleanup EXIT
 	trap 'sv_update_state error "Обновление прервано"; exit 1' HUP INT TERM
 	sv_update_state checking 'Проверка обновления'
+	: > "$SV_RUN/update.lock/started"
 	slot="$(sv_slot)"
 	[ -n "$slot" ] || { sv_update_state error 'Процессор не поддерживается'; return 1; }
 	info="$UPDATE_STAGE/info.json"

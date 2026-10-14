@@ -61,7 +61,7 @@ await p.handle('menu-close');assert.equal(p.state.menu,false);
 await p.handle('page',{dataset:{page:'about'}});
 assert.ok(p.app.innerHTML.includes('data-act="page-back"'));
 assert.ok(!p.app.innerHTML.includes('data-act="update-start"'));
-await p.handle('page-back');assert.equal(p.state.page,null);
+await p.handle('page-back');assert.equal(p.state.page,null);assert.equal(p.state.menu,true);
 assert.ok(p.app.innerHTML.includes('data-act="update-start"'));
 ''')
 

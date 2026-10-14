@@ -1,4 +1,4 @@
-import { api, openPaymentUrl } from "./api.js?v=1.0.170-r8";
+import { api, openPaymentUrl } from "./api.js?v=1.0.170-r9";
 import { displayVpnServers, normalizeSlot, selectedTitle } from "./servers.js";
 import { applyPalette, palette } from "./theme.js";
 import { dockKind, formatExpireDate, hasVpnAccess, isUnlimitedLike, planLabel } from "./subscription.js";
@@ -755,7 +755,7 @@ async function handle(act, el) {
       render();
       return;
     }
-    if (act === "page-back") { if (state.showSubscriptionShop) state.showSubscriptionShop = false; else state.page = null; render(); return; }
+    if (act === "page-back") { if (state.showSubscriptionShop) state.showSubscriptionShop = false; else { state.page = null; state.menu = true; } render(); return; }
     if (act === "pay-early") { state.shopTier = state.profile?.max_devices === 5 ? 5 : 3; state.showSubscriptionShop = true; render(); return; }
     if (act === "pay-cancel") { ++paymentPollVersion; state.paymentStatus = "idle"; state.showSubscriptionShop = false; render(); return; }
     if (act === "login") { await login(); return; }

@@ -191,7 +191,11 @@ install_files() {
 	chmod 0755 /usr/sbin/silent-vpn-policy /etc/init.d/silent-vpn-policy
 	/etc/init.d/silent-vpn-policy enable
 	/etc/init.d/silent-vpn-policy start
-	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+	# Existing CGI/static routes read new files per request. Keep the OTA worker's
+	# parent web service running; a fresh installation still needs its first index.
+	if [ "${SILENT_OPENWRT_UPDATE:-0}" != 1 ]; then
+		/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+	fi
 
 	# Last step, after the service start: same UCI write that makes the panel name resolve.
 	SV_LIB=/usr/lib/silent-vpn

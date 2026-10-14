@@ -119,11 +119,11 @@ sv_space() {
 }
 
 sv_preflight() {
-	local compressed="$1" unpacked="$2" extra="${3:-0}" flash_extra="${4:-0}" ram_needed flash_needed available
-	case "$compressed:$unpacked:$extra:$flash_extra" in *[!0-9:]*|:*|*:) echo "Некорректные размеры пакета" >&2; return 1 ;; esac
+	local compressed="$1" unpacked="$2" extra="${3:-0}" ram_needed flash_needed available
+	case "$compressed:$unpacked" in *[!0-9:]*|:*|*:) echo "Некорректные размеры пакета" >&2; return 1 ;; esac
 	[ "$compressed" -gt 0 ] && [ "$unpacked" -gt 0 ] || return 1
 	ram_needed=$(( (compressed + unpacked + extra + 1023) / 1024 + 8192 ))
-	flash_needed=$(( (unpacked + flash_extra + 1023) / 1024 + 8192 ))
+	flash_needed=$(( (unpacked + 1023) / 1024 + 8192 ))
 	sv_space /tmp "$ram_needed" 'временные файлы' || return 1
 	sv_space /usr "$flash_needed" 'установка и зависимости' || return 1
 	available="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"

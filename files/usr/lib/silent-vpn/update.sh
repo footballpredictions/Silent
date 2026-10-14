@@ -169,12 +169,21 @@ sv_update_download() {
 		printf '%s  %s\n' "$sha" "$out" | sha256sum -c - >/dev/null 2>&1
 }
 
-sv_update_archive() {
-	local archive="$1" stage="$2" slot="$3" version="$4" names
+sv_update_archive_headers() {
+	local archive="$1" slot="$2" version="$3" names
 	names="$(tar -tzf "$archive")" || return 1
 	printf '%s\n' "$names" | awk '
 		$0 !~ /^silent-vpn\// || $0 ~ /(^|\/)\.\.(\/|$)/ {bad=1}
 		END {exit bad}' || return 1
+	[ "$(tar -xOzf "$archive" silent-vpn/ARCH 2>/dev/null)" = "$slot" ] || return 1
+	[ "$(tar -xOzf "$archive" silent-vpn/VERSION 2>/dev/null)" = "$version" ] || return 1
+	printf '%s\n' "$names" | grep -qx 'silent-vpn/install.sh' || return 1
+	printf '%s\n' "$names" | grep -qx "silent-vpn/files/usr/lib/silent-vpn/wdtt/wdtt-client.$slot"
+}
+
+sv_update_archive() {
+	local archive="$1" stage="$2" slot="$3" version="$4"
+	sv_update_archive_headers "$archive" "$slot" "$version" || return 1
 	sv_unpack "$archive" "$stage" || return 1
 	[ "$(cat "$stage/silent-vpn/ARCH" 2>/dev/null)" = "$slot" ] || return 1
 	[ "$(cat "$stage/silent-vpn/VERSION" 2>/dev/null)" = "$version" ] || return 1
@@ -184,13 +193,16 @@ sv_update_archive() {
 
 sv_update_cleanup() {
 	[ -z "${UPDATE_STAGE:-}" ] || rm -rf "$UPDATE_STAGE"
-	[ -z "${UPDATE_BACKUP_STAGE:-}" ] || rm -rf "$UPDATE_BACKUP_STAGE"
+	if [ "${UPDATE_RESUME:-0}" = 1 ]; then
+		/etc/init.d/silent-vpn-policy start >/dev/null 2>&1 || true
+		silent-vpn-ctl connect >/dev/null 2>&1 || sv_update_state error 'Обновление не завершено. Включите VPN вручную.'
+	fi
 	rm -rf "$SV_RUN/update.lock"
 }
 
 sv_update_run() {
-	local slot info version result was_connected backup_bytes backup_root size unpacked
-	UPDATE_BACKUP_STAGE=""
+	local slot info version result was_connected backup_bytes size unpacked
+	UPDATE_RESUME=0
 	echo "$$" > "$SV_RUN/update.lock/pid"
 	UPDATE_STAGE="$(mktemp -d /tmp/sv-update.XXXXXX)" || { sv_update_state error 'Не удалось создать временный каталог'; rm -rf "$SV_RUN/update.lock"; return 1; }
 	trap sv_update_cleanup EXIT
@@ -204,50 +216,54 @@ sv_update_run() {
 	[ "$result" != 2 ] || { sv_update_state current 'Установлена последняя версия'; return 0; }
 	[ "$result" = 0 ] || { sv_update_state error 'Не удалось получить обновление'; return 1; }
 	version="$(sv_json_get "$info" version)"
-	# Prefer RAM for the rollback; use flash when the active VPN needs that RAM.
-	backup_bytes="$(du -sk /usr/lib/silent-vpn /usr/bin/spass /www/silent-vpn /usr/sbin/silent-vpn-* /etc/config/silent-vpn 2>/dev/null | awk '{sum+=$1} END {printf "%.0f", sum*1024+65536}')"
 	size="$(sv_json_get "$info" size)"
 	unpacked="$(sv_json_get "$info" unpacked_size)"
-	backup_root="$UPDATE_STAGE"
-	if ! sv_preflight "$size" "$unpacked" "$backup_bytes" >/dev/null 2>&1; then
-		sv_preflight "$size" "$unpacked" 0 "$backup_bytes" || {
-			sv_update_state error 'Недостаточно свободного места или памяти'; return 1;
-		}
-		UPDATE_BACKUP_STAGE="$(mktemp -d "$SV_VAR/.update-backup.XXXXXX")" || {
-			sv_update_state error 'Не удалось подготовить резервную копию'; return 1;
-		}
-		backup_root="$UPDATE_BACKUP_STAGE"
-	fi
+	# The active VPN only needs room for the compressed download, not two payloads.
+	sv_preflight "$size" 1 && sv_space /usr "$(( (unpacked + 1023) / 1024 + 8192 ))" 'установка' || {
+		sv_update_state error 'Недостаточно свободного места или памяти'; return 1;
+	}
 	sv_update_state downloading 'Скачивание обновления' "$version"
 	sv_update_download "$info" "$UPDATE_STAGE/package.tgz" "$slot" || {
 		sv_update_state error 'Не удалось скачать и проверить пакет. Повторите попытку.'; return 1;
 	}
 	sv_update_state verifying 'Проверка пакета' "$version"
+	sv_update_archive_headers "$UPDATE_STAGE/package.tgz" "$slot" "$version" || {
+		sv_update_state error 'Пакет не соответствует версии или процессору'; return 1;
+	}
+	# Pause only after SHA256, archive structure, architecture and version are valid.
+	was_connected=0
+	sv_session_connected && was_connected=1
+	UPDATE_RESUME="$was_connected"
+	sv_update_state verifying 'Подготовка установки' "$version"
+	silent-vpn-ctl disconnect >/dev/null 2>&1 || true
+	/etc/init.d/silent-vpn-policy stop >/dev/null 2>&1 || true
+	backup_bytes="$(du -sk /usr/lib/silent-vpn /usr/bin/spass /www/silent-vpn /usr/sbin/silent-vpn-* /etc/config/silent-vpn 2>/dev/null | awk '{sum+=$1} END {printf "%.0f", sum*1024+65536}')"
+	sv_preflight "$size" "$unpacked" "$backup_bytes" || {
+		sv_update_state error 'Недостаточно свободного места или памяти'; return 1;
+	}
 	sv_update_archive "$UPDATE_STAGE/package.tgz" "$UPDATE_STAGE" "$slot" "$version" || {
 		sv_update_state error 'Пакет не соответствует версии или процессору'; return 1;
 	}
 	rm -f "$UPDATE_STAGE/package.tgz"
 	# Preserve all existing configuration and executable files before touching VPN.
-	(cd / && tar -cf "$backup_root/rollback.tar" usr/lib/silent-vpn usr/bin/spass \
+	(cd / && tar -cf "$UPDATE_STAGE/rollback.tar" usr/lib/silent-vpn usr/bin/spass \
 		usr/sbin/silent-vpn-ctl usr/sbin/silent-vpn-policy usr/sbin/silent-vpn-update \
 		usr/sbin/silent-vpn-uninstall www/silent-vpn www/cgi-bin/silent-api www/cgi-bin/silent-entry \
 		etc/config/silent-vpn etc/init.d/silent-vpn etc/init.d/silent-vpn-policy \
 		etc/hotplug.d/iface/99-silent-vpn etc/uci-defaults/99-silent-vpn) || {
 		sv_update_state error 'Не удалось сохранить предыдущую сборку'; return 1;
 	}
-	was_connected=0
-	sv_session_connected && was_connected=1
 	sv_update_state installing 'Установка обновления' "$version"
 	cp /etc/config/silent-vpn "$UPDATE_STAGE/config.before" || { sv_update_state error 'Не удалось сохранить настройки'; return 1; }
-	silent-vpn-ctl disconnect >/dev/null 2>&1 || true
-	/etc/init.d/silent-vpn-policy stop >/dev/null 2>&1 || true
 	if ! SILENT_OPENWRT_UPDATE=1 sh "$UPDATE_STAGE/silent-vpn/install.sh" --skip-deps >/dev/null 2>&1 ||
 		[ "$(cat /usr/lib/silent-vpn/VERSION 2>/dev/null)" != "$version" ]; then
-		if ! tar -xf "$backup_root/rollback.tar" -C / >/dev/null 2>&1; then
+		if ! tar -xf "$UPDATE_STAGE/rollback.tar" -C / >/dev/null 2>&1; then
+			UPDATE_RESUME=0
 			sv_update_state error 'Ошибка восстановления. Нужна переустановка по инструкции.'
 			return 1
 		fi
 		/etc/init.d/silent-vpn-policy start >/dev/null 2>&1 || true
+		UPDATE_RESUME=0
 		[ "$was_connected" = 0 ] || silent-vpn-ctl connect >/dev/null 2>&1 || true
 		sv_update_state error 'Установка не завершена. Восстановлена предыдущая сборка.'
 		return 1
@@ -256,6 +272,7 @@ sv_update_run() {
 	uci -q set "silent-vpn.main.app_version=$version"
 	uci -q commit silent-vpn
 	/etc/init.d/silent-vpn-policy restart >/dev/null 2>&1 || true
+	UPDATE_RESUME=0
 	if [ "$was_connected" = 1 ] && ! silent-vpn-ctl connect >/dev/null 2>&1; then
 		sv_update_state done 'Обновлено. Подключите VPN кнопкой включения.' "$version"
 	else

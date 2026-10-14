@@ -81,13 +81,6 @@ class InstallerGuardTests(unittest.TestCase):
         for sizes in ('0 1', '12 nope', '"" 1', '1 -1'):
             self.assertNotEqual(self.shell("sv_preflight " + sizes).returncode, 0)
 
-    def test_flash_backup_is_included_in_free_space_guard(self):
-        limits='df() { if [ "$2" = /usr ]; then echo "dev 999999 0 30000 0% /"; else echo "dev 999999 0 999999 0% /"; fi; }\n'
-        self.assertEqual(self.shell(limits+'sv_preflight 4000000 13000000').returncode,0)
-        result=self.shell(limits+'sv_preflight 4000000 13000000 0 13000000')
-        self.assertNotEqual(result.returncode,0)
-        self.assertIn("Недостаточно места",result.stderr)
-
     def test_arch_detection_rejects_armv6_big_endian_and_mips64(self):
         for machine, endian, expected in (("aarch64", "1", "aarch64"), ("armv7l", "1", "arm"),
                 ("armv6l", "1", ""), ("mips", "1", "mipsel"), ("mips", "2", ""),

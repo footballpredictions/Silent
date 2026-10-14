@@ -171,7 +171,7 @@ echo install >> "$SV_RUN/events"
 echo '1.0.171' > "$SV_TEST_ROOT/usr/lib/silent-vpn/VERSION"
 echo new-binary > "$SV_TEST_ROOT/usr/bin/spass"
 echo replaced-config > "$SV_TEST_ROOT/etc/config/silent-vpn"
-[ "$TEST_MODE" != install_failure ]
+case "$TEST_MODE" in *install_failure) exit 1 ;; esac
 '''
             payload = {"VERSION": b"1.0.171", "ARCH": arch.encode(), "install.sh": install.encode(),
                        f"files/usr/lib/silent-vpn/wdtt/wdtt-client.{arch}": b"fake transport"}
@@ -198,11 +198,16 @@ echo replaced-config > "$SV_TEST_ROOT/etc/config/silent-vpn"
 SV_TEST_TMP="$(pwd)"
 SV_TEST_ROOT="$SV_TEST_TMP/router"
 SV_RUN="$SV_TEST_TMP/run"
+SV_VAR="$SV_TEST_TMP/state"
+mkdir -p "$SV_VAR"
 sv_json_get() { "$TEST_PYTHON" "$SV_TEST_TMP/read_field.py" "$1" "$2"; }
 sv_update_info() { cp "$SV_TEST_TMP/info.json" "$2"; }
 sv_api_bases() { echo https://fixture.test; }
 sv_slot() { echo "$TEST_ARCH"; }
-sv_preflight() { [ "$TEST_MODE" != no_space ]; }
+sv_preflight() {
+ [ "$TEST_MODE" != no_space ] || return 1
+ case "$TEST_MODE" in low_ram*) [ "${3:-0}" = 0 ] ;; *) return 0 ;; esac
+}
 sv_session_connected() { return 0; }
 wget() { cp "$SV_TEST_TMP/package.tgz" "$2"; }
 silent-vpn-ctl() { echo "$1" >> "$SV_RUN/events"; }
@@ -221,7 +226,23 @@ sv_update_run
             snapshot = {name: (router / name).read_text() for name in old_files}
             self.assertEqual(list(base.glob("sv-update.*")), [], result.stderr)
             self.assertFalse((run / "update.lock").exists())
+            self.assertEqual(list((base / "state").glob('.update-backup.*')), [])
             return result, state, events, snapshot
+
+    def test_low_ram_uses_flash_backup_and_cleans_it(self):
+        result, state, events, snapshot = self.worker(mode="low_ram")
+        self.assertEqual(result.returncode, 0, str(state)+result.stderr)
+        self.assertEqual(state["phase"], "done")
+        self.assertEqual(snapshot["usr/lib/silent-vpn/VERSION"].strip(), "1.0.171")
+        self.assertEqual(snapshot["etc/config/silent-vpn"], "old-etc/config/silent-vpn")
+
+    def test_low_ram_install_failure_restores_flash_backup(self):
+        result, state, events, snapshot = self.worker(mode="low_ram_install_failure")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(state["phase"], "error")
+        self.assertEqual(snapshot["usr/lib/silent-vpn/VERSION"], "1.0.170")
+        self.assertEqual(snapshot["usr/bin/spass"], "old-usr/bin/spass")
+        self.assertIn("connect", events)
 
     def test_all_architectures_install_reconnect_preserve_config_and_cleanup(self):
         for arch in ("aarch64", "arm", "mipsel", "x86_64"):

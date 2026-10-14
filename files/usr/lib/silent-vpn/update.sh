@@ -184,11 +184,13 @@ sv_update_archive() {
 
 sv_update_cleanup() {
 	[ -z "${UPDATE_STAGE:-}" ] || rm -rf "$UPDATE_STAGE"
+	[ -z "${UPDATE_BACKUP_STAGE:-}" ] || rm -rf "$UPDATE_BACKUP_STAGE"
 	rm -rf "$SV_RUN/update.lock"
 }
 
 sv_update_run() {
-	local slot info version result was_connected backup_bytes
+	local slot info version result was_connected backup_bytes backup_root size unpacked
+	UPDATE_BACKUP_STAGE=""
 	echo "$$" > "$SV_RUN/update.lock/pid"
 	UPDATE_STAGE="$(mktemp -d /tmp/sv-update.XXXXXX)" || { sv_update_state error 'Не удалось создать временный каталог'; rm -rf "$SV_RUN/update.lock"; return 1; }
 	trap sv_update_cleanup EXIT
@@ -202,11 +204,20 @@ sv_update_run() {
 	[ "$result" != 2 ] || { sv_update_state current 'Установлена последняя версия'; return 0; }
 	[ "$result" = 0 ] || { sv_update_state error 'Не удалось получить обновление'; return 1; }
 	version="$(sv_json_get "$info" version)"
-	# RAM also holds the old payload until installation and reconnection succeed.
+	# Prefer RAM for the rollback; use flash when the active VPN needs that RAM.
 	backup_bytes="$(du -sk /usr/lib/silent-vpn /usr/bin/spass /www/silent-vpn /usr/sbin/silent-vpn-* /etc/config/silent-vpn 2>/dev/null | awk '{sum+=$1} END {printf "%.0f", sum*1024+65536}')"
-	sv_preflight "$(sv_json_get "$info" size)" "$(sv_json_get "$info" unpacked_size)" "$backup_bytes" || {
-		sv_update_state error 'Недостаточно свободного места или памяти'; return 1;
-	}
+	size="$(sv_json_get "$info" size)"
+	unpacked="$(sv_json_get "$info" unpacked_size)"
+	backup_root="$UPDATE_STAGE"
+	if ! sv_preflight "$size" "$unpacked" "$backup_bytes" >/dev/null 2>&1; then
+		sv_preflight "$size" "$unpacked" 0 "$backup_bytes" || {
+			sv_update_state error 'Недостаточно свободного места или памяти'; return 1;
+		}
+		UPDATE_BACKUP_STAGE="$(mktemp -d "$SV_VAR/.update-backup.XXXXXX")" || {
+			sv_update_state error 'Не удалось подготовить резервную копию'; return 1;
+		}
+		backup_root="$UPDATE_BACKUP_STAGE"
+	fi
 	sv_update_state downloading 'Скачивание обновления' "$version"
 	sv_update_download "$info" "$UPDATE_STAGE/package.tgz" "$slot" || {
 		sv_update_state error 'Не удалось скачать и проверить пакет. Повторите попытку.'; return 1;
@@ -217,7 +228,7 @@ sv_update_run() {
 	}
 	rm -f "$UPDATE_STAGE/package.tgz"
 	# Preserve all existing configuration and executable files before touching VPN.
-	(cd / && tar -cf "$UPDATE_STAGE/rollback.tar" usr/lib/silent-vpn usr/bin/spass \
+	(cd / && tar -cf "$backup_root/rollback.tar" usr/lib/silent-vpn usr/bin/spass \
 		usr/sbin/silent-vpn-ctl usr/sbin/silent-vpn-policy usr/sbin/silent-vpn-update \
 		usr/sbin/silent-vpn-uninstall www/silent-vpn www/cgi-bin/silent-api www/cgi-bin/silent-entry \
 		etc/config/silent-vpn etc/init.d/silent-vpn etc/init.d/silent-vpn-policy \
@@ -232,7 +243,7 @@ sv_update_run() {
 	/etc/init.d/silent-vpn-policy stop >/dev/null 2>&1 || true
 	if ! SILENT_OPENWRT_UPDATE=1 sh "$UPDATE_STAGE/silent-vpn/install.sh" --skip-deps >/dev/null 2>&1 ||
 		[ "$(cat /usr/lib/silent-vpn/VERSION 2>/dev/null)" != "$version" ]; then
-		if ! tar -xf "$UPDATE_STAGE/rollback.tar" -C / >/dev/null 2>&1; then
+		if ! tar -xf "$backup_root/rollback.tar" -C / >/dev/null 2>&1; then
 			sv_update_state error 'Ошибка восстановления. Нужна переустановка по инструкции.'
 			return 1
 		fi

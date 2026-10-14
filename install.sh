@@ -1,5 +1,5 @@
 #!/bin/sh
-# Universal Silent VPN installer for OpenWrt (any CPU).
+# Silent VPN installer for supported OpenWrt architectures.
 
 set -e
 
@@ -66,8 +66,11 @@ sv_wdtt_slot() {
 	m="$(uname -m 2>/dev/null || true)"
 	case "$m" in
 		aarch64|arm64) echo aarch64 ;;
-		armv7*|armv6*|arm) echo arm ;;
-		mipsel*|mips*) echo mipsel ;;
+		armv7l|armv8l) echo arm ;;
+		mipsel|mips)
+			endian="$(od -An -tu1 -j5 -N1 /bin/busybox 2>/dev/null | tr -d ' ')"
+			[ "$endian" = 1 ] && echo mipsel || echo ""
+			;;
 		x86_64|amd64) echo x86_64 ;;
 		*) echo "" ;;
 	esac
@@ -82,6 +85,10 @@ require_arch() {
 	fi
 	SV_WDTT_SLOT="$slot"
 	SV_WDTT_SRC="$src"
+	if [ -f "$ROOT/ARCH" ] && [ "$(cat "$ROOT/ARCH")" != "$slot" ]; then
+		echo "Архитектура пакета не совпадает с $slot." >&2
+		exit 1
+	fi
 }
 
 install_dns_nftset() {
@@ -144,7 +151,11 @@ install_files() {
 	mkdir -p /usr/lib/silent-vpn /www/silent-vpn /www/cgi-bin /etc/silent-vpn \
 		/etc/uci-defaults /etc/hotplug.d/iface /etc/init.d /usr/sbin
 
-	cp -a "$ROOT/files/usr/lib/silent-vpn/." /usr/lib/silent-vpn/
+	# Keep the large transport binary in /tmp until its one final copy to /usr/bin.
+	for source in "$ROOT/files/usr/lib/silent-vpn/"*; do
+		[ "${source##*/}" = wdtt ] && continue
+		cp -a "$source" /usr/lib/silent-vpn/
+	done
 	rm -rf /usr/lib/silent-vpn/wdtt
 	cp -a "$ROOT/files/usr/sbin/silent-vpn-ctl" /usr/sbin/silent-vpn-ctl
 	cp -a "$ROOT/files/usr/sbin/silent-vpn-policy" /usr/sbin/silent-vpn-policy

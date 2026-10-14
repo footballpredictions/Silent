@@ -2,14 +2,19 @@
 # One-shot OpenWrt install: check CPU, deps, panel, wdtt, then wipe /tmp copies.
 set -e
 
-PKG="${SILENT_OPENWRT_PKG:-https://silentvpn3.github.io/silent-vpn-openwrt.tgz}"
+PKG="${SILENT_OPENWRT_PKG:-}"
+RELEASES="${SILENT_OPENWRT_RELEASES:-https://silentvpn3.github.io/releases.json}"
 
 sv_slot() {
 	m="$(uname -m 2>/dev/null || true)"
 	case "$m" in
 		aarch64|arm64) echo aarch64 ;;
-		armv7*|armv6*|arm) echo arm ;;
-		mipsel*|mips*) echo mipsel ;;
+		armv7l|armv8l) echo arm ;;
+		mipsel|mips)
+			# uname says 'mips' on both endiannesses; inspect the userspace ELF.
+			endian="$(od -An -tu1 -j5 -N1 /bin/busybox 2>/dev/null | tr -d ' ')"
+			[ "$endian" = 1 ] && echo mipsel || echo ""
+			;;
 		x86_64|amd64) echo x86_64 ;;
 		*) echo "" ;;
 	esac
@@ -101,6 +106,34 @@ sv_remote_cleanup() {
 	[ -z "${STAGE:-}" ] || rm -rf "$STAGE"
 }
 
+sv_json() { jsonfilter -i "$STAGE/releases.json" -e "@.openwrt.arches.$slot.$1"; }
+
+sv_space() {
+	local path="$1" needed="$2" label="$3" free
+	free="$(df -Pk "$path" | awk 'END {print $4}')"
+	case "$free" in ''|*[!0-9]*) echo "Не удалось проверить место: $path" >&2; return 1 ;; esac
+	if [ "$free" -lt "$needed" ]; then
+		echo "Недостаточно места ($label): свободно ${free} KB, нужно ${needed} KB." >&2
+		return 1
+	fi
+}
+
+sv_preflight() {
+	local compressed="$1" unpacked="$2" ram_needed flash_needed available
+	case "$compressed:$unpacked" in *[!0-9:]*|:*|*:) echo "Некорректные размеры пакета" >&2; return 1 ;; esac
+	[ "$compressed" -gt 0 ] && [ "$unpacked" -gt 0 ] || return 1
+	ram_needed=$(( (compressed + unpacked + 1023) / 1024 + 8192 ))
+	flash_needed=$(( (unpacked + 1023) / 1024 + 8192 ))
+	sv_space /tmp "$ram_needed" 'временные файлы' || return 1
+	sv_space /usr "$flash_needed" 'установка и зависимости' || return 1
+	available="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+	# Older kernels have no MemAvailable; df remains the available guard there.
+	if [ -n "$available" ] && [ "$available" -lt "$ram_needed" ]; then
+		echo "Недостаточно оперативной памяти: свободно ${available} KB, нужно ${ram_needed} KB." >&2
+		return 1
+	fi
+}
+
 if [ "$(id -u 2>/dev/null || echo 1)" != 0 ]; then
 	echo "Нужен root. Подключитесь: ssh root@IP-роутера" >&2
 	exit 1
@@ -120,15 +153,35 @@ STAGE="$(mktemp -d /tmp/sv-install.XXXXXX)"
 trap sv_remote_cleanup EXIT
 trap 'exit 1' HUP INT TERM
 sv_pkg_update
-sv_pkg_add wget ca-bundle
+sv_pkg_add wget ca-bundle jsonfilter
+if [ -z "$PKG" ]; then
+	sv_fetch "$RELEASES" "$STAGE/releases.json"
+	PKG="$(sv_json download_url)"
+	SIZE="$(sv_json size)"
+	UNPACKED="$(sv_json unpacked_size)"
+	SHA256="$(sv_json sha256)"
+	case "$PKG" in https://github.com/*/releases/download/*) ;; *) echo "Нет опубликованного пакета для $slot." >&2; exit 1 ;; esac
+	[ "${#SHA256}" = 64 ] || { echo "Нет контрольной суммы пакета $slot." >&2; exit 1; }
+	case "$SHA256" in *[!0-9a-f]*) exit 1 ;; esac
+	sv_preflight "$SIZE" "$UNPACKED"
+fi
 sv_fetch "$PKG" "$STAGE/package.tgz"
+if [ -n "${SHA256:-}" ]; then
+	printf '%s  %s\n' "$SHA256" "$STAGE/package.tgz" | sha256sum -c -
+fi
 sv_unpack "$STAGE/package.tgz" "$STAGE"
+rm -f "$STAGE/package.tgz"
 if [ -d "$STAGE/silent-vpn" ]; then
 	WORKDIR="$STAGE/silent-vpn"
 elif [ -d "$STAGE/Silent-openwrt" ]; then
 	WORKDIR="$STAGE/Silent-openwrt"
 else
 	echo "В архиве нет silent-vpn/" >&2
+	exit 1
+fi
+
+if [ -f "$WORKDIR/ARCH" ] && [ "$(cat "$WORKDIR/ARCH")" != "$slot" ]; then
+	echo "Архитектура пакета не совпадает с $slot." >&2
 	exit 1
 fi
 

@@ -14,7 +14,7 @@ OUT = ROOT / "files" / "usr" / "lib" / "silent-vpn" / "wdtt"
 
 TARGETS = (
     ("aarch64", "arm64", {}),
-    ("arm", "arm", {"GOARM": "7"}),
+    ("arm", "arm", {"GOARM": "7,softfloat"}),
     ("mipsel", "mipsle", {"GOMIPS": "softfloat"}),
     ("x86_64", "amd64", {}),
 )
@@ -38,7 +38,7 @@ def main() -> int:
         print(f"wdtt-client.{name} ({goarch})...")
         subprocess.run(
             [
-                "go",
+                os.environ.get("GO_BINARY", "go"),
                 "build",
                 "-ldflags=-s -w -checklinkname=0",
                 "-trimpath",

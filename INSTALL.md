@@ -1,6 +1,6 @@
 # Установка Silent VPN на OpenWrt
 
-OpenWrt 23.05+. aarch64, arm, mipsel, x86_64.
+OpenWrt 23.05+. aarch64, ARMv7, mipsel (little-endian), x86_64.
 
 1. Подключитесь по SSH (укажите IP своего роутера):
 
@@ -11,10 +11,10 @@ ssh root@192.168.1.1
 2. Проверьте свободное место:
 
 ```sh
-df -h /tmp /overlay
+df -h /tmp /usr; free -m
 ```
 
-Нужно свободно: 50 МБ в `/tmp` и 35 МБ в `/overlay` (колонка Available).
+Установщик сам проверит место и скачает пакет только для вашего процессора.
 
 3. Установите. Роутеру нужен интернет:
 
@@ -34,10 +34,25 @@ sh /usr/sbin/silent-vpn-uninstall
 ## Сборка и публикация
 
 ```powershell
-python scripts/build_wdtt.py
 python scripts/build_release.py
 ```
 
-В GitHub Pages публикуются три файла: `silent-vpn-openwrt.tgz` из `dist/`,
-`openwrt-install.sh` из `remote-install.sh`, `openwrt-uninstall.sh` из `uninstall.sh`.
-Скрипт скачивает архив с `https://silentvpn3.github.io/silent-vpn-openwrt.tgz`.
+Это единственная штатная команда сборки (из `openwrt/`). Нужны Python 3.11+,
+Go 1.26+ и исходники транспорта в соседней папке `pc/wdtt-go`.
+Скрипт пересобирает транспорт и создаёт в `dist/` четыре архива
+`silent-vpn-openwrt-ВЕРСИЯ-{aarch64,arm,mipsel,x86_64}.tar.gz`,
+`openwrt-packages.json` с размерами/контрольными суммами и `SHA256SUMS`.
+ARM — ARMv7 soft-float; ARMv6, big-endian MIPS и MIPS64 не поддерживаются.
+`--skip-transport` — только для локальной упаковки уже собранных бинарников.
+
+В админке → «Обновления» → OpenWrt загрузите четыре архива и нажмите
+«Опубликовать на GitHub». Сервер проверяет состав и одинаковую версию,
+публикует четыре файла в Releases `silentvpn3/silentvpn3.github.io`,
+обновляет установщик на Pages и `releases.json` (раздел `openwrt.arches`).
+Установщик выбирает URL нужного пакета, проверяет RAM, `/tmp`, `/usr` и SHA256.
+Архив удаляется до копирования на флеш, рабочая папка — при завершении или ошибке.
+На RAM и зависимости оставляется запас 8 МиБ; установка не гарантируется на
+роутерах, где даже один транспорт и зависимости не помещаются. Временные
+файлы пакетного менеджера принадлежат OpenWrt и не удаляются установщиком.
+Прежний общий архив на Pages сохраняется для старых установщиков;
+новый установщик его автоматически не скачивает. Источник и публикация релизов — разные репозитории.

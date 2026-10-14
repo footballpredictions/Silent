@@ -36,7 +36,10 @@ class ReleasePackTests(unittest.TestCase):
     def test_uname_to_wdtt_slot(self):
         self.assertEqual(slot_from_uname("aarch64"), "aarch64")
         self.assertEqual(slot_from_uname("armv7l"), "arm")
-        self.assertEqual(slot_from_uname("mips"), "mipsel")
+        self.assertEqual(slot_from_uname("mips", little_endian=True), "mipsel")
+        self.assertIsNone(slot_from_uname("mips", little_endian=False))
+        self.assertIsNone(slot_from_uname("mips"))
+        self.assertIsNone(slot_from_uname("armv6l"))
         self.assertEqual(slot_from_uname("x86_64"), "x86_64")
         self.assertIsNone(slot_from_uname("ppc"))
 
@@ -77,7 +80,7 @@ class ReleasePackTests(unittest.TestCase):
         self.assertGreater(start, 0)
         self.assertLess(
             text.find("require_arch", start),
-            text.find('cp -a "$ROOT/files/usr/lib/silent-vpn/."', start),
+            text.find('cp -a "$source"', start),
         )
         self.assertIn("/usr/bin/spass", text)
         self.assertIn("silent-vpn-uninstall", text)

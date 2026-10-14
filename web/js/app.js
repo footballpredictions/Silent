@@ -1,4 +1,4 @@
-import { api, openPaymentUrl } from "./api.js?v=1.0.169";
+import { api, openPaymentUrl } from "./api.js?v=1.0.170";
 import { displayVpnServers, normalizeSlot, selectedTitle } from "./servers.js";
 import { applyPalette, palette } from "./theme.js";
 import { dockKind, formatExpireDate, hasVpnAccess, isUnlimitedLike, planLabel } from "./subscription.js";
@@ -383,7 +383,7 @@ function pageInner(p, t) {
   if (page === "support") return supportPage(t);
   if (page === "about") {
     return `<h2>Silent VPN</h2>
-      <p class="hint">Версия 1.0.169 · OpenWrt</p>
+      <p class="hint">Версия 1.0.170 · OpenWrt</p>
       <p class="hint" style="margin-top:8px">Туннель как у PC и Android: WireGuard + WDTT. Этот веб — только панель роутера.</p>`;
   }
   return "";

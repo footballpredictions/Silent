@@ -156,9 +156,13 @@ case "$OP" in
 		if [ "$REQUEST_METHOD" = "POST" ]; then
 			on="$(printf '%s' "$BODY" | jsonfilter -e '@.ru_direct' 2>/dev/null)"
 			if [ "$on" = "true" ] || [ "$on" = "1" ]; then
-				silent-vpn-ctl ru-direct 1
+				on=1
 			else
-				silent-vpn-ctl ru-direct 0
+				on=0
+			fi
+			if ! silent-vpn-ctl ru-direct "$on"; then
+				json_out 503 '{"detail":"Не удалось применить обход российских сервисов"}'
+				exit 0
 			fi
 		fi
 		json_out 200 "$(printf '{"ru_direct":%s}' \

@@ -18,6 +18,24 @@ CONNECTED = SESSION[SESSION.index("sv_session_connected()"):SESSION.index("sv_co
 
 @unittest.skipUnless(SHELL, "POSIX shell required for panel CGI scenarios")
 class PanelCgiTests(unittest.TestCase):
+    def test_exclusions_cgi_does_not_report_success_when_policy_fails(self):
+        source = (ROOT / 'files/www/cgi-bin/silent-api').read_text(encoding='utf-8')
+        source = source.replace('SV_LIB="/usr/lib/silent-vpn"', '')
+        for name in ['common', 'hive', 'session']:
+            source = source.replace(f'. "$SV_LIB/{name}.sh"', '')
+        with tempfile.TemporaryDirectory() as directory:
+            output = self.run_script(directory, r'''
+sv_mkdir() { :; }
+sv_http_allow_lan() { return 0; }
+jsonfilter() { cat >/dev/null; echo true; }
+silent-vpn-ctl() { return 1; }
+uci() { echo 1; }
+PATH_INFO=/exclusions
+REQUEST_METHOD=POST
+''' + source)
+            self.assertIn('Status: 503', output)
+            self.assertNotIn('Status: 200', output)
+
     def run_script(self, directory, script):
         environment = os.environ.copy()
         environment.update(SV_RUN=Path(directory).as_posix(), SV_VAR=Path(directory).as_posix())

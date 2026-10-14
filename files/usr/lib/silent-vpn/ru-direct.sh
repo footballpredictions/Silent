@@ -15,21 +15,41 @@ sv_ru_enabled() {
 	[ "$(uci -q get silent-vpn.main.ru_direct 2>/dev/null)" = "1" ]
 }
 
+sv_ru_wan_route() {
+	local routes
+	# netifd's interface named "wan" can be down while a modem/WWAN is online.
+	# Our tunnel never changes main's default. Take device and gateway from the
+	# same live default route, so a reconnect cannot mix two different uplinks.
+	routes="$(ip -4 route show table main default 2>/dev/null)" || return 1
+	printf '%s\n' "$routes" | awk -v tunnel="$SV_WG_IF" '
+		$1 == "default" {
+			dev = ""; gw = "-"; metric = 0; bad = 0
+			for (i = 2; i <= NF; i++) {
+				if ($i == "dev") dev = $(i + 1)
+				if ($i == "via") gw = $(i + 1)
+				if ($i == "metric") metric = $(i + 1) + 0
+				if ($i == "linkdown" || $i == "dead" || $i == "nexthop") bad = 1
+			}
+			if (bad || dev == "" || dev == "lo" || dev == tunnel) next
+			if (!found || metric < best) {
+				found = 1; best = metric; result = dev " " gw
+			}
+		}
+		END { if (found) print result; else exit 1 }
+	'
+}
+
 sv_ru_wan_dev() {
-	local d
-	d="$(ifstatus wan 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null || true)"
-	[ -n "$d" ] || d="$(ifstatus wan 2>/dev/null | jsonfilter -e '@.device' 2>/dev/null || true)"
-	[ -n "$d" ] || d="$(uci -q get network.wan.device 2>/dev/null || true)"
-	[ -n "$d" ] || d="$(uci -q get network.wan.ifname 2>/dev/null || true)"
-	[ -n "$d" ] && echo "$d"
+	local route
+	route="$(sv_ru_wan_route)" || return 1
+	printf '%s\n' "${route%% *}"
 }
 
 sv_ru_wan_gw() {
-	local g
-	g="$(ifstatus wan 2>/dev/null | jsonfilter -e '@.route[0].nexthop' 2>/dev/null || true)"
-	[ -n "$g" ] || g="$(ifstatus wan 2>/dev/null | jsonfilter -e '@.inactive.route[0].nexthop' 2>/dev/null || true)"
-	[ -n "$g" ] || g="$(uci -q get network.wan.gateway 2>/dev/null || true)"
-	[ -n "$g" ] && echo "$g"
+	local route gw
+	route="$(sv_ru_wan_route)" || return 1
+	gw="${route#* }"
+	[ "$gw" = - ] || [ "$gw" = 0.0.0.0 ] || printf '%s\n' "$gw"
 }
 
 sv_ru_clear_policy() {
@@ -97,17 +117,19 @@ EOF
 }
 
 sv_ru_ensure_route() {
-	local dev gw
-	dev="$(sv_ru_wan_dev)" || true
-	gw="$(sv_ru_wan_gw)" || true
-	[ -n "$dev" ] || return 0
-	if [ -n "$gw" ]; then
-		ip route replace default via "$gw" dev "$dev" table "$SV_RU_TABLE" 2>/dev/null || true
+	local route dev gw
+	route="$(sv_ru_wan_route)" || return 1
+	dev="${route%% *}"
+	gw="${route#* }"
+	if [ "$gw" != - ] && [ "$gw" != 0.0.0.0 ]; then
+		# The gateway is already reachable through this device in main. Table
+		# 162 owns only a default; onlink avoids depending on a copied LAN route.
+		ip route replace default via "$gw" dev "$dev" onlink table "$SV_RU_TABLE" 2>/dev/null || return 1
 	else
-		ip route replace default dev "$dev" table "$SV_RU_TABLE" 2>/dev/null || true
+		ip route replace default dev "$dev" table "$SV_RU_TABLE" 2>/dev/null || return 1
 	fi
 	ip rule show | grep -q "fwmark $SV_RU_MARK lookup $SV_RU_TABLE" || \
-		ip rule add fwmark "$SV_RU_MARK" lookup "$SV_RU_TABLE" pref "$SV_RU_PRIO" 2>/dev/null || true
+		ip rule add fwmark "$SV_RU_MARK" lookup "$SV_RU_TABLE" pref "$SV_RU_PRIO" 2>/dev/null || return 1
 }
 
 sv_ru_policy_ready() {
@@ -298,8 +320,18 @@ sv_ru_refresh() {
 }
 
 sv_ru_set() {
-	local on="$1"
-	uci -q set silent-vpn.main.ru_direct="$on"
-	uci -q commit silent-vpn
-	sv_ru_apply
+	local on="$1" previous code=0
+	case "$on" in 0|1) ;; *) return 1 ;; esac
+	sv_ru_lock || return 1
+	previous="$(uci -q get silent-vpn.main.ru_direct 2>/dev/null)"
+	case "$previous" in 0|1) ;; *) previous=0 ;; esac
+	uci -q set silent-vpn.main.ru_direct="$on" && \
+		uci -q commit silent-vpn && sv_ru_apply_inner || code=$?
+	if [ "$code" != 0 ]; then
+		uci -q set silent-vpn.main.ru_direct="$previous"
+		uci -q commit silent-vpn
+		sv_ru_apply_inner >/dev/null 2>&1 || true
+	fi
+	sv_ru_unlock
+	return "$code"
 }

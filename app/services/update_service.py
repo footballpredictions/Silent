@@ -299,6 +299,10 @@ def check_update(platform: str, current_version: str, arch: Optional[str] = None
     out["tunnel_download_url"] = tunnel
     if latest.get("arch"):
         out["arch"] = latest["arch"]
+    if platform == "openwrt":
+        for key in ("sha256", "unpacked_size", "build_id"):
+            if key in latest:
+                out[key] = latest[key]
     return out
 
 

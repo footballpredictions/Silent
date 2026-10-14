@@ -79,6 +79,8 @@ class OpenWrtUpdateTests(unittest.TestCase):
             self.assertTrue(Path(picked["file_path"]).is_file())
             info = us.check_update("openwrt", "1.0.168", arch)
             self.assertEqual(info["arch"], arch)
+            self.assertEqual(info["sha256"], picked["sha256"])
+            self.assertEqual(info["unpacked_size"], picked["unpacked_size"])
             self.assertTrue(info["tunnel_download_url"].endswith(f"?arch={arch}"))
         self.assertIsNone(us.get_latest("openwrt", "mips64"))
         self.assertIsNone(us.check_update("openwrt", "1.0.168"))

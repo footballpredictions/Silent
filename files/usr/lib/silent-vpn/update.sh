@@ -191,8 +191,13 @@ sv_update_archive() {
 		[ -s "$stage/silent-vpn/files/usr/lib/silent-vpn/wdtt/wdtt-client.$slot" ]
 }
 
-sv_update_cleanup() {
+sv_update_release_payload() {
 	[ -z "${UPDATE_STAGE:-}" ] || rm -rf "$UPDATE_STAGE"
+	UPDATE_STAGE=""
+}
+
+sv_update_cleanup() {
+	sv_update_release_payload
 	if [ "${UPDATE_RESUME:-0}" = 1 ]; then
 		/etc/init.d/silent-vpn-policy start >/dev/null 2>&1 || true
 		silent-vpn-ctl connect >/dev/null 2>&1 || sv_update_state error 'Обновление не завершено. Включите VPN вручную.'
@@ -264,6 +269,7 @@ sv_update_run() {
 		fi
 		/etc/init.d/silent-vpn-policy start >/dev/null 2>&1 || true
 		UPDATE_RESUME=0
+		sv_update_release_payload
 		[ "$was_connected" = 0 ] || silent-vpn-ctl connect >/dev/null 2>&1 || true
 		sv_update_state error 'Установка не завершена. Восстановлена предыдущая сборка.'
 		return 1
@@ -273,6 +279,8 @@ sv_update_run() {
 	uci -q commit silent-vpn
 	/etc/init.d/silent-vpn-policy restart >/dev/null 2>&1 || true
 	UPDATE_RESUME=0
+	# Give the transport its RAM back before starting it, while retaining the lock.
+	sv_update_release_payload
 	if [ "$was_connected" = 1 ] && ! silent-vpn-ctl connect >/dev/null 2>&1; then
 		sv_update_state done 'Обновлено. Подключите VPN кнопкой включения.' "$version"
 	else

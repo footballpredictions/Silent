@@ -213,7 +213,14 @@ sv_preflight() {
 sv_space() { return 0; }
 sv_session_connected() { return 0; }
 wget() { echo download >> "$SV_RUN/events"; cp "$SV_TEST_TMP/package.tgz" "$2"; }
-silent-vpn-ctl() { echo "$1" >> "$SV_RUN/events"; [ "$1" != disconnect ] || VPN_STOPPED=1; return 0; }
+silent-vpn-ctl() {
+ echo "$1" >> "$SV_RUN/events"
+ [ "$1" != disconnect ] || VPN_STOPPED=1
+ if [ "$1" = connect ]; then
+  for stage in "$SV_TEST_TMP"/sv-update.*; do [ ! -d "$stage" ] || echo payload_during_connect >> "$SV_RUN/events"; done
+ fi
+ return 0
+}
 uci() { :; }
 sv_update_run
 '''
@@ -242,6 +249,7 @@ sv_update_run
                 self.assertLess(events.index("disconnect"), events.index("install"))
                 self.assertLess(events.index("download"), events.index("disconnect"))
                 self.assertLess(events.index("install"), events.index("connect"))
+                self.assertNotIn("payload_during_connect",events)
 
     def test_low_ram_active_vpn_downloads_before_pause_and_installs(self):
         result,state,events,snapshot=self.worker(mode="low_ram")
@@ -275,3 +283,4 @@ sv_update_run
         self.assertEqual(snapshot["usr/bin/spass"], "old-usr/bin/spass")
         self.assertEqual(snapshot["etc/config/silent-vpn"], "old-etc/config/silent-vpn")
         self.assertIn("connect", events, str(state) + result.stdout + result.stderr)
+        self.assertNotIn("payload_during_connect",events)

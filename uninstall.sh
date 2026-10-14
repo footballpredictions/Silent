@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+if [ -x /opt/lib/silent-keenetic/silent-keenetic ]; then
+    /opt/lib/silent-keenetic/silent-keenetic --update-busy-check
+fi
 if [ -x /opt/etc/init.d/S99silent-keenetic ]; then
     /opt/etc/init.d/S99silent-keenetic stop
 elif [ -x /opt/lib/silent-keenetic/silent-keenetic ]; then

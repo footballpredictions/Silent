@@ -38,6 +38,14 @@ drop_chain() {
     "$bin" -w 2 -t "$table" -F "$child" 2>/dev/null || true
     "$bin" -w 2 -t "$table" -X "$child" 2>/dev/null || true
 }
+ensure_sets() {
+    for set in svk_direct svk_vpn; do
+        if ! ipset list "$set" -n >/dev/null 2>&1; then
+            ipset create "$set" hash:ip family inet maxelem 131072 -exist
+            touch "$RUN/sets-reset"
+        fi
+    done
+}
 rules() {
     only=${1:-all}
     if [ "$only" = all ] || [ "$only" = mangle ]; then
@@ -45,6 +53,8 @@ rules() {
         for net in 0.0.0.0/8 10.0.0.0/8 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4; do
             iptables -w 2 -t mangle -A SVK_M -d "$net" -j RETURN
         done
+        iptables -w 2 -t mangle -A SVK_M -i "$LAN" -s "$PREFIX" -m set --match-set svk_vpn dst -j MARK --set-xmark "$MARK"
+        iptables -w 2 -t mangle -A SVK_M -m set --match-set svk_vpn dst -j RETURN
         iptables -w 2 -t mangle -A SVK_M -m set --match-set svk_direct dst -j RETURN
         iptables -w 2 -t mangle -A SVK_M -i "$LAN" -s "$PREFIX" -j MARK --set-xmark "$MARK"
         jump iptables mangle PREROUTING SVK_M
@@ -96,7 +106,8 @@ cleanup() {
     ip route del 10.66.66.1/32 dev "$IF" 2>/dev/null || true
     ip route flush table "$TABLE" dev "$IF" 2>/dev/null || true
     ipset destroy svk_direct 2>/dev/null || true
-    rm -f "$RUN/address"
+    ipset destroy svk_vpn 2>/dev/null || true
+    rm -f "$RUN/address" "$RUN/sets-reset"
     return "$failed"
 }
 check() {
@@ -130,6 +141,7 @@ case "$OP" in
         ip rule add pref 52 from "${ADDR%/*}/32" table "$TABLE"
         # DNS resolver sockets bind to WG's address + interface.
         ipset create svk_direct hash:ip family inet maxelem 131072 -exist
+        ipset create svk_vpn hash:ip family inet maxelem 131072 -exist
         # Allow replies to the readiness probe before activating any LAN route.
         chain iptables filter SVK_I
         iptables -w 2 -A SVK_I -i "$IF" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
@@ -141,6 +153,11 @@ case "$OP" in
         until ping -I "$IF" -c 1 -W 2 10.66.66.1 >/dev/null 2>&1; do
             n=$((n+1)); [ "$n" -lt 5 ] || exit 1
         done
+        ;;
+    api-ready)
+        [ -f "$RUN/active" ] || exit 1
+        ip -o -4 addr show dev "$IF" | grep -q ' inet ' || exit 1
+        ip -4 route get 10.66.66.1 | grep -q "dev $IF" || exit 1
         ;;
     up)
         # Roll back a partially installed firewall if any required extension is missing.
@@ -154,10 +171,24 @@ case "$OP" in
     restore)
         [ -f "$RUN/active" ] || exit 0
         ip link show "$IF" >/dev/null 2>&1 || exit 0
+        ensure_sets
         case "${6:-all}" in mangle|nat|filter|ipv6|all) rules "${6:-all}" ;; *) exit 0 ;; esac
         ;;
     ensure)
         [ -f "$RUN/active" ] || exit 0
+        ip -o -4 addr show dev "$IF" | grep -q ' inet ' || exit 1
+        [ -r "$RUN/address" ] || exit 1
+        address=$(cat "$RUN/address"); address=${address%/*}
+        ip route replace default dev "$IF" table "$TABLE"
+        ip route replace "$PREFIX" dev "$LAN" table "$TABLE"
+        ip route replace 10.66.66.1/32 dev "$IF"
+        current=$(ip rule show)
+        if printf '%s\n' "$current" | awk '($1 == "51:" || $1 == "52:") && $0 !~ /lookup 20513/ {bad=1} END {exit !bad}'; then
+            echo 'Приоритеты ip rule 51/52 заняты другим ПО'; exit 1
+        fi
+        printf '%s\n' "$current" | grep -q '^51:.*fwmark.*lookup 20513' || ip rule add pref 51 fwmark "$MARK" table "$TABLE"
+        printf '%s\n' "$current" | grep -q "^52:.*from $address.*lookup 20513" || ip rule add pref 52 from "$address/32" table "$TABLE"
+        ensure_sets
         if ! iptables -w 2 -t mangle -C PREROUTING -j SVK_M 2>/dev/null ||
            ! iptables -w 2 -t nat -C PREROUTING -j SVK_N 2>/dev/null ||
            ! iptables -w 2 -t filter -C FORWARD -j SVK_F 2>/dev/null ||
@@ -166,5 +197,5 @@ case "$OP" in
         fi
         ;;
     down) cleanup ;;
-    *) echo 'check|prepare|ready|up|restore|down' >&2; exit 2 ;;
+    *) echo 'check|prepare|ready|api-ready|up|restore|ensure|down' >&2; exit 2 ;;
 esac

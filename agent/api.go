@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-var publicAPIs = []string{"http://87.58.213.193:9100", "http://78.17.74.27:9100", "https://89-125-188-100.nip.io", "https://89.125.188.100"}
+var publicAPIs = []string{"http://87.58.213.193:9100", "http://78.17.74.27:9100", "http://192.177.26.38:9100", "http://89.37.192.241:9100", "https://89-125-188-100.nip.io", "https://89.125.188.100"}
 
 type apiError struct {
 	Code int
@@ -30,13 +30,28 @@ func (e *apiError) Error() string {
 }
 
 func (a *Agent) call(ctx context.Context, method, path string, body any) (json.RawMessage, error) {
+	return a.callBases(ctx, a.apiBases(), method, path, body)
+}
+
+func (a *Agent) apiBases() []string {
 	a.mu.RLock()
-	token, connected := a.cfg.Token, a.connected
+	connected := a.connected
 	a.mu.RUnlock()
-	bases := a.bases
-	if connected {
-		bases = []string{tunnelAPI}
+	bases := append([]string(nil), a.bases...)
+	ready := a.tunnelReady
+	if a.pathReady != nil {
+		ready = a.pathReady
 	}
+	if connected && ready() {
+		bases = append([]string{tunnelAPI}, bases...)
+	}
+	return bases
+}
+
+func (a *Agent) callBases(ctx context.Context, bases []string, method, path string, body any) (json.RawMessage, error) {
+	a.mu.RLock()
+	token := a.cfg.Token
+	a.mu.RUnlock()
 	var payload []byte
 	if body != nil {
 		var err error
@@ -64,14 +79,14 @@ func (a *Agent) call(ctx context.Context, method, path string, body any) (json.R
 		}
 		b, readErr := io.ReadAll(io.LimitReader(res.Body, 2<<20))
 		res.Body.Close()
-		if readErr != nil || !json.Valid(b) {
-			continue
-		}
 		// Access/subscription failures are authoritative; never fail over to bypass them.
 		if res.StatusCode >= 400 && res.StatusCode < 500 {
+			if !json.Valid(b) {
+				b = json.RawMessage(`{"detail":"Сервер отклонил запрос"}`)
+			}
 			return nil, &apiError{res.StatusCode, b}
 		}
-		if res.StatusCode >= 500 {
+		if readErr != nil || !json.Valid(b) || res.StatusCode < 200 || res.StatusCode >= 300 {
 			continue
 		}
 		return b, nil
@@ -82,7 +97,7 @@ func (a *Agent) call(ctx context.Context, method, path string, body any) (json.R
 func (a *Agent) deviceBody() map[string]string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return map[string]string{"device_fingerprint": a.cfg.Fingerprint, "device_type": "pc", "device_name": "Keenetic " + a.model, "bootstrap_hash": bootstrapHash}
+	return map[string]string{"device_fingerprint": a.cfg.Fingerprint, "device_type": "pc", "device_name": "Keenetic " + a.model, "bootstrap_hash": bootstrapHash, "app_version": version}
 }
 func (a *Agent) fpQuery() string {
 	a.mu.RLock()

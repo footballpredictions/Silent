@@ -27,6 +27,7 @@ type Agent struct {
 	mu                sync.RWMutex
 	op                sync.Mutex
 	saveMu            sync.Mutex
+	updateMu          sync.RWMutex
 	cfg               Config
 	path, root, model string
 	client            *http.Client
@@ -35,10 +36,19 @@ type Agent struct {
 	cancel            context.CancelFunc
 	stopTunnel        func()
 	domains           []string
+	vpnDomains        []string
+	policyMu          sync.RWMutex
+	learnedMu         sync.Mutex
+	policyRevision    string
+	lastPolicy        time.Time
+	learnedDirect     map[string]bool
+	learnedVPN        map[string]bool
+	pathReady         func() bool
 	upstream          []string
 	wgAddress         string
 	servers           []*dnsServer
 	run               func(context.Context, string, ...string) error
+	restoreSets       func(context.Context, string) error
 }
 
 func (a *Agent) persist() error {
@@ -50,11 +60,15 @@ func (a *Agent) persist() error {
 	return saveConfig(a.path, c)
 }
 func (a *Agent) isConnected() bool { a.mu.RLock(); defer a.mu.RUnlock(); return a.connected }
-func (a *Agent) lanURL() string    { return fmt.Sprintf("http://%s:%d", a.cfg.LANIP, a.cfg.Port) }
+func (a *Agent) lanURL() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return fmt.Sprintf("http://%s:%d", a.cfg.LANIP, a.cfg.Port)
+}
 func (a *Agent) status() any {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return map[string]any{"version": version, "platform": "keenetic", "lan_ip": a.cfg.LANIP, "lan_url": a.lanURL(), "router_name": "Keenetic " + a.model, "connected": a.connected, "session": a.cfg.Token != "", "cloak": true, "ru_direct": a.cfg.Direct, "dns_preset": a.cfg.DNSPreset, "dns_custom": a.cfg.DNSCustom, "email": a.cfg.Email}
+	return map[string]any{"version": version, "platform": "keenetic", "arch": packageArch, "build_id": packageBuildID, "device_id": a.cfg.DeviceID, "lan_ip": a.cfg.LANIP, "lan_url": fmt.Sprintf("http://%s:%d", a.cfg.LANIP, a.cfg.Port), "router_name": "Keenetic " + a.model, "connected": a.connected, "session": a.cfg.Token != "", "cloak": true, "ru_direct": a.cfg.Direct, "dns_preset": a.cfg.DNSPreset, "dns_custom": a.cfg.DNSCustom, "email": a.cfg.Email}
 }
 func reply(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -67,6 +81,9 @@ func (a *Agent) handler() http.Handler {
 	webFS, _ := fs.Sub(assets, "web")
 	files := http.FileServer(http.FS(webFS))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a.mu.RLock()
+		cfg := a.cfg
+		a.mu.RUnlock()
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -76,13 +93,13 @@ func (a *Agent) handler() http.Handler {
 			host = h
 		}
 		remote, _, _ := net.SplitHostPort(r.RemoteAddr)
-		_, subnet, _ := net.ParseCIDR(a.cfg.LANPrefix)
-		if host != a.cfg.LANIP || !subnet.Contains(net.ParseIP(remote)) {
+		_, subnet, _ := net.ParseCIDR(cfg.LANPrefix)
+		if host != cfg.LANIP || !subnet.Contains(net.ParseIP(remote)) {
 			http.Error(w, "LAN only", 403)
 			return
 		}
 		user, pass, ok := r.BasicAuth()
-		if !ok || user != "admin" || subtle.ConstantTimeCompare([]byte(pass), []byte(a.cfg.AdminPassword)) != 1 {
+		if !ok || user != "admin" || subtle.ConstantTimeCompare([]byte(pass), []byte(cfg.AdminPassword)) != 1 {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Silent Keenetic", charset="UTF-8"`)
 			http.Error(w, "Нужен пароль локальной панели", 401)
 			return
@@ -118,7 +135,7 @@ func (a *Agent) handler() http.Handler {
 
 func (a *Agent) serveAPI(w http.ResponseWriter, r *http.Request) {
 	op := strings.TrimPrefix(r.URL.Path, "/cgi-bin/silent-api/")
-	methods := map[string]string{"status": "GET", "theme": "GET", "login": "POST", "register": "POST", "forgot": "POST", "profile": "GET", "referral": "GET", "servers": "GET", "server": "POST", "pay": "POST", "pay-preview": "POST", "pay-status": "POST", "promo": "POST", "connect": "POST", "disconnect": "POST", "logout": "POST", "log": "GET"}
+	methods := map[string]string{"status": "GET", "theme": "GET", "login": "POST", "register": "POST", "forgot": "POST", "profile": "GET", "referral": "GET", "servers": "GET", "server": "POST", "pay": "POST", "pay-preview": "POST", "pay-status": "POST", "promo": "POST", "connect": "POST", "disconnect": "POST", "logout": "POST", "log": "GET", "update-check": "GET", "update-status": "GET", "update-start": "POST"}
 	method, exists := methods[op]
 	if op == "dns" || op == "exclusions" {
 		exists = true
@@ -143,9 +160,28 @@ func (a *Agent) serveAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ctx := r.Context()
+	if r.Method == "POST" {
+		if op == "update-start" {
+			a.updateMu.Lock()
+			defer a.updateMu.Unlock()
+		} else {
+			a.updateMu.RLock()
+			defer a.updateMu.RUnlock()
+		}
+	}
+	if updateBusy(a.path) && (op == "login" || op == "connect" || op == "disconnect" || op == "logout" || op == "server" || ((op == "dns" || op == "exclusions") && r.Method == "POST")) {
+		reply(w, http.StatusConflict, map[string]string{"detail": "Дождитесь завершения обновления"})
+		return
+	}
 	var v any
 	var err error
 	switch op {
+	case "update-check":
+		v = a.checkUpdate(ctx)
+	case "update-status":
+		v = updateStatus(a.path)
+	case "update-start":
+		v, err = a.startUpdate()
 	case "status":
 		v = a.status()
 	case "log":
@@ -279,7 +315,23 @@ func main() {
 	check := flag.Bool("check", false, "check prerequisites without changing routes")
 	cleanup := flag.Bool("cleanup", false, "remove only Silent Keenetic network state")
 	restore := flag.String("restore", "", "restore own netfilter table")
+	updateWorker := flag.Bool("update-worker", false, "run detached Keenetic update")
+	updateCheck := flag.Bool("update-busy-check", false, "refuse manual uninstall while update runs")
 	flag.Parse()
+	if *updateCheck {
+		if updateBusy(*path) {
+			fmt.Fprintln(os.Stderr, "Дождитесь завершения обновления")
+			os.Exit(1)
+		}
+		return
+	}
+	if *updateWorker {
+		if err := runUpdateWorker(*path, *root); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *initLAN != "" {
 		if _, err := os.Stat(*path); err == nil {
 			fmt.Fprintln(os.Stderr, "Конфигурация уже существует")
@@ -343,13 +395,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	domains, _ := os.ReadFile(filepath.Join(a.root, "ru-direct.domains"))
-	for _, line := range strings.Split(string(domains), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "#") {
-			a.domains = append(a.domains, line)
-		}
-	}
+	a.loadPolicy()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	server := &http.Server{Addr: net.JoinHostPort(c.LANIP, fmt.Sprint(c.Port)), Handler: a.handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384}
@@ -386,7 +432,16 @@ func main() {
 	}()
 	go a.watch(ctx)
 	if c.Reconnect && c.Token != "" {
-		go func() { _ = a.connect(ctx) }()
+		go func() {
+			for updateBusy(a.path) {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Second):
+				}
+			}
+			_ = a.connect(ctx)
+		}()
 	}
 	if err = server.Serve(listener); err != nil && err != http.ErrServerClosed {
 		stop()

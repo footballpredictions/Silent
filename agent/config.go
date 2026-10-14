@@ -23,6 +23,7 @@ type Config struct {
 	Port          int    `json:"port"`
 	AdminPassword string `json:"admin_password"`
 	Fingerprint   string `json:"fingerprint"`
+	DeviceID      string `json:"device_id,omitempty"`
 	Token         string `json:"access_token,omitempty"`
 	RefreshToken  string `json:"refresh_token,omitempty"`
 	Email         string `json:"email,omitempty"`

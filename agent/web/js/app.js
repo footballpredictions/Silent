@@ -1,4 +1,4 @@
-import { api, openPaymentUrl } from "./api.js?v=1.0.169";
+import { api, openPaymentUrl } from "./api.js?v=1.0.169-r10";
 import { displayVpnServers, normalizeSlot, selectedTitle } from "./servers.js";
 import { applyPalette, palette } from "./theme.js";
 import { dockKind, formatExpireDate, hasVpnAccess, isUnlimitedLike, planLabel } from "./subscription.js";
@@ -6,6 +6,7 @@ import { mountToggleSnake, SNAKE_MIN_VISIBLE_MS, toggleMarkup } from "./toggle.j
 
 let stopSnake = () => {};
 const LOG_ENABLED = false;
+const rememberedLogin = readRememberedLogin();
 
 const state = {
   theme: null,
@@ -13,11 +14,11 @@ const state = {
   view: "boot",
   tab: "login",
   step: "auth",
-  email: "",
-  password: "",
+  email: rememberedLogin.email || "",
+  password: rememberedLogin.password || "",
   referral: "",
   showPass: false,
-  remember: true,
+  remember: readStorage(localStorage, "sv-remember") !== "0",
   forgotEmail: "",
   forgotSent: false,
   regDone: false,
@@ -25,10 +26,12 @@ const state = {
   loading: false,
   session: null,
   profile: null,
+  profileError: "",
+  restoreAvailable: false,
   connected: false,
   connecting: false,
   disconnecting: false,
-  menu: false,
+  menu: typeof window.matchMedia === "function" && window.matchMedia("(min-width: 861px)").matches,
   page: null,
   servers: null,
   referralInfo: null,
@@ -43,7 +46,7 @@ const state = {
   logTimer: 0,
   logOpen: false,
   logCopied: false,
-  lanUrl: "http://192.168.1.1:8787",
+  lanUrl: "http://192.168.1.1.silent.vpn",
   lanIp: "192.168.1.1",
   routerName: "Keenetic",
   preview: false,
@@ -53,11 +56,138 @@ const state = {
   dnsMsg: "",
   live: false,
   pressed: false,
+  installedVersion: "—",
+  update: { phase: "idle" },
 };
+
+let updateRequest = false;
+const UPDATE_BUSY = new Set(["queued", "checking", "downloading", "verifying", "installing"]);
+const updateBusy = () => UPDATE_BUSY.has(state.update.phase);
+
+function updateHtml() {
+  const u = state.update;
+  const p = ui();
+  const colors = `background:${esc(p.updateBarBg || p.fg)};color:${esc(p.updateBarFg || p.bg)}`;
+  if (u.phase === "available") return `<button class="dock-pay update-action" style="${colors}" data-act="update-start">${esc(state.theme?.update_bar_label_available || "Доступно обновление")} v${esc(u.version)}</button>`;
+  if (updateBusy()) return `<button class="dock-pay update-action" style="${colors}" disabled role="status" aria-live="polite">${esc(u.detail || "Обновление…")}</button>`;
+  if (u.phase === "done") return `<p class="hint update-progress" role="status">${esc(u.detail || "Обновление установлено")}</p><button class="dock-pay update-action" data-act="update-reload">Открыть обновлённую панель</button>`;
+  if (u.phase === "error") return `<p class="err update-progress" role="status">${esc(u.detail)}</p><button class="dock-pay update-action" data-act="update-check">Повторить проверку обновления</button>`;
+  return "";
+}
+
+async function checkUpdate(force = false) {
+  if (updateRequest || updateBusy() || !api.updateCheck) return;
+  updateRequest = true;
+  try {
+    const running = await api.updateStatus();
+    state.update = UPDATE_BUSY.has(running.phase) || (!force && (running.phase === "error" || (running.phase === "done" && running.version !== state.installedVersion)))
+      ? running : await api.updateCheck();
+  } catch {
+    // Offline checks must not hide the account or interrupt a running VPN.
+    if (state.page === "about") state.update = {phase:"error",detail:"Не удалось проверить обновление. Повторите попытку."};
+  } finally { updateRequest = false; render(); }
+}
+
+async function startUpdate() {
+  if (updateBusy()) return;
+  state.update = {phase:"queued", detail:"Подготовка обновления"};
+  render();
+  try { state.update = await api.updateStart(); }
+  catch (e) { state.update = {phase:"error", detail:e.message || "Не удалось начать обновление"}; }
+  render();
+}
+
+async function pollUpdate() {
+  if (!updateBusy() || updateRequest || document.hidden || !api.updateStatus) return;
+  updateRequest = true;
+  try { state.update = await api.updateStatus(); }
+  catch { /* Agent restarts during installation; keep polling. */ }
+  finally { updateRequest = false; render(); }
+}
 
 const $app = document.getElementById("app");
 const $chrome = document.getElementById("chrome");
 const $studioUrl = document.getElementById("studioUrl");
+
+function readStorage(storage, key) {
+  try { return storage.getItem(key); } catch { return null; }
+}
+
+function readRememberedLogin() {
+  if (readStorage(localStorage, "sv-remember") !== "1") return {};
+  try {
+    const saved = JSON.parse(readStorage(localStorage, "sv-login") || "null");
+    return typeof saved?.email === "string" && typeof saved?.password === "string"
+      ? saved : {};
+  } catch { return {}; }
+}
+
+function forgetRememberedLogin() {
+  try {
+    localStorage.removeItem("sv-login");
+    localStorage.setItem("sv-remember", "0");
+  } catch { /* private browser */ }
+}
+
+function savePanelSession(email, password) {
+  try { localStorage.setItem("sv-remember", state.remember ? "1" : "0"); } catch { /* private browser */ }
+  if (state.remember) {
+    // Opt-in form credentials belong to this browser; router tokens are never stored here.
+    try { localStorage.setItem("sv-login", JSON.stringify({ email, password })); } catch { /* private browser */ }
+  } else {
+    forgetRememberedLogin();
+  }
+  try { sessionStorage.setItem("sv-panel-session", "1"); } catch { /* private browser */ }
+}
+
+function canRestoreSession() {
+  return readStorage(localStorage, "sv-remember") !== "0" ||
+    readStorage(sessionStorage, "sv-panel-session") === "1";
+}
+
+let sessionVersion = 0;
+let connectionVersion = 0;
+let profileRequest = null;
+
+function loadProfile(version = sessionVersion, knownStatus = null) {
+  if (profileRequest?.version === version) return profileRequest.promise;
+  const request = { version };
+  const connection = connectionVersion;
+  request.promise = (async () => {
+    try {
+      const [profile, status] = await Promise.all([
+        api.profile(), knownStatus ? Promise.resolve(knownStatus) : api.status().catch(() => null),
+      ]);
+      if (!profile?.email) throw new Error(detailText(profile?.detail) || "Не удалось загрузить аккаунт");
+      if (version !== sessionVersion) return false;
+      if (status && connection === connectionVersion && !state.connecting && !state.disconnecting) {
+        state.connected = !!status.connected;
+      }
+      state.profile = {
+        ...profile,
+        devices: (profile.devices || []).map(device => status?.device_id && device.id === status.device_id
+          ? { ...device, self: true, is_connected: state.connected }
+          : device),
+      };
+      state.profileError = "";
+      return true;
+    } finally {
+      if (profileRequest === request) profileRequest = null;
+    }
+  })();
+  profileRequest = request;
+  return request.promise;
+}
+
+async function refreshProfile() {
+  if (!state.session || state.loading) return;
+  const version = sessionVersion;
+  try { await loadProfile(version); }
+  catch (e) {
+    if (version === sessionVersion) state.profileError = e.message || "Не удалось обновить сессии";
+  }
+  if (version === sessionVersion) render();
+}
 
 function ui() {
   return palette(state.theme, state.mode);
@@ -73,6 +203,8 @@ function esc(value) {
 
 function icon(name) {
   const icons = {
+    close: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>',
+    back: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 5-7 7 7 7M5 12h14"/></svg>',
     menu: '<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
     sun: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="5"/><g fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round"><path d="M12 2.2v2.4M12 19.4v2.4M2.2 12h2.4M19.4 12h2.4M4.85 4.85l1.7 1.7M17.45 17.45l1.7 1.7M4.85 19.15l1.7-1.7M17.45 6.55l1.7-1.7"/></g></svg>',
     moon: '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5" fill="currentColor"/><circle cx="16.2" cy="9.2" r="4.4" fill="var(--sv-bg)"/></svg>',
@@ -178,10 +310,10 @@ function loginView(p) {
       </div>
       <form data-act="${submit}">
         <p class="label">Email</p>
-        <input class="field" type="email" data-bind="email" value="${esc(state.email)}" placeholder="you@example.com" required>
+        <input class="field" type="email" name="username" autocomplete="username" data-bind="email" value="${esc(state.email)}" placeholder="you@example.com" required>
         <p class="label">Пароль</p>
         <div class="field-wrap">
-          <input class="field" type="${state.showPass ? "text" : "password"}" data-bind="password" value="${esc(state.password)}" placeholder="••••••••" minlength="8" required>
+          <input class="field" type="${state.showPass ? "text" : "password"}" name="password" autocomplete="${state.tab === "register" ? "new-password" : "current-password"}" data-bind="password" value="${esc(state.password)}" placeholder="••••••••" minlength="8" required>
           <button type="button" class="eye" data-act="eye">${state.showPass ? icon("eyeOff") : icon("eye")}</button>
         </div>
         ${state.tab === "register" ? `
@@ -214,7 +346,7 @@ function loginView(p) {
           <button class="mode-btn" data-act="mode" title="Тема">${state.mode === "dark" ? icon("sun") : icon("moon")}</button>
           ${LOG_ENABLED ? '<button type="button" class="log-btn" data-act="log-open" title="Лог">Лог</button>' : ""}
         </div>
-        <div class="login-form">${body}</div>
+        <div class="login-form">${body}${state.restoreAvailable ? `<button class="linkish" data-act="restore" ${state.loading ? "disabled" : ""}>Повторить загрузку аккаунта</button>` : ""}</div>
       </section>
     </div>
     ${logOverlay()}`;
@@ -255,12 +387,14 @@ function mainView(p) {
       ${toggleMarkup({ visualOn, showSnake, pressed: state.pressed })}
       ${state.error ? `<p class="err" style="text-align:center;padding:0 18px">${esc(state.error)}</p>` : ""}
     </div>
-    <div class="dock">${dockHtml(p)}</div>`;
+    <div class="dock">${updateHtml() || dockHtml(p)}</div>`;
 
   return `
-    <div class="shell">
+    <div class="shell ${state.menu ? "menu-open" : ""}">
+      ${state.menu ? '<button class="menu-scrim" data-act="menu-close" aria-label="Закрыть меню"></button>' : ""}
       <aside class="side ${state.menu ? "open" : ""}">
         <div class="side-head">
+          <button class="mode-btn side-close" data-act="menu-close" aria-label="Закрыть меню" title="Закрыть меню">${icon("close")}</button>
           <div class="mail">${esc(email)}</div>
           <div class="meta">Аккаунт: ${esc(id)}</div>
           <div class="meta">Роутер · Keenetic</div>
@@ -275,7 +409,9 @@ function mainView(p) {
       </aside>
       <main class="stage">
         <div class="topbar">
-          <button class="mode-btn menu-toggle" data-act="menu" title="Меню">${icon("menu")}</button>
+          ${state.page
+            ? `<button class="mode-btn" data-act="page-back" aria-label="Назад" title="Назад">${icon("back")}</button>`
+            : `<button class="mode-btn menu-toggle" data-act="menu" aria-label="Меню" title="Меню">${icon("menu")}</button>`}
           <div class="topbar-title">${esc(p.appTitle)}</div>
           <div class="topbar-end">
             <button class="mode-btn" data-act="mode" title="Тема">${state.mode === "dark" ? icon("sun") : icon("moon")}</button>
@@ -300,7 +436,7 @@ function pageInner(p, t) {
   if (page === "support") return supportPage(t);
   if (page === "about") {
     return `<h2>Silent VPN</h2>
-      <p class="hint">Версия 1.0.169 · Keenetic</p>
+      <p class="hint">Версия ${esc(state.installedVersion)} · Keenetic</p>
       <p class="hint" style="margin-top:8px">Туннель как у PC и Android: WireGuard + WDTT. Этот веб — только панель роутера.</p>`;
   }
   return "";
@@ -473,6 +609,7 @@ function devicesPage() {
   const devices = state.profile?.devices || [];
   return `<h2>Сессии</h2>
     <p class="hint" style="margin-bottom:12px">VPN онлайн: ${devices.filter((d) => d.is_connected).length} из ${state.profile?.devices_count || devices.length}</p>
+    ${state.profileError ? `<p class="err">${esc(state.profileError)}. Показаны последние данные.</p>` : ""}
     ${devices.map((d) => {
       const kind = sessionKind(d);
       const extra = sessionRouterName(d);
@@ -527,17 +664,15 @@ function dnsPage() {
 
 function exclusionsPage() {
   return `<h2>Исключения</h2>
-    <p class="hint" style="margin-bottom:16px">На роутере нет списка приложений, как на телефоне. Вместо этого весь дом ходит через DNS роутера: можно вывести российские сервисы в обход туннеля.</p>
     <div class="switch-row">
       <div>
         <div style="font-size:14px;font-weight:500">Российские сервисы мимо VPN</div>
-        <p class="hint" style="margin-top:4px">Яндекс, VK, Госуслуги, банки, Почта, маркетплейсы — напрямую в WAN. YouTube, Google и остальное остаются в туннеле.</p>
       </div>
       <button class="mini-toggle ${state.ruDirect ? "on" : ""}" data-act="ru-direct" aria-pressed="${state.ruDirect}">
         <span class="mini-thumb"></span>
       </button>
     </div>
-    <p class="hint" style="margin-top:16px">Как это видят программы в доме: браузер и приложения берут DNS с роутера — RU-домены получают «домашние» IP и уходят мимо WG. Если программа сама ходит в DoH (Chrome «безопасный DNS») или зашила IP, она может остаться в VPN. Телефоны с своим VPN-клиентом Silent этот обход не дублируют: у них свои исключения.</p>`;
+    `;
 }
 
 
@@ -550,6 +685,7 @@ function bind() {
   $app.querySelectorAll("[data-bind-check]").forEach((el) => {
     el.addEventListener("change", () => {
       state[el.dataset.bindCheck] = el.checked;
+      if (el.dataset.bindCheck === "remember" && !el.checked) forgetRememberedLogin();
     });
   });
   $app.querySelectorAll("[data-act]").forEach((el) => {
@@ -557,6 +693,9 @@ function bind() {
     if (el.tagName === "FORM") {
       el.addEventListener("submit", (e) => {
         e.preventDefault();
+        el.querySelectorAll("[data-bind]").forEach(input => {
+          state[input.dataset.bind] = input.value;
+        });
         void handle(act);
       });
     } else {
@@ -590,6 +729,10 @@ function bind() {
 
 async function handle(act, el) {
   try {
+    if (act === "update-reload") { location.reload(); return; }
+    if (act === "update-start") return startUpdate();
+    if (act === "update-check") { if (updateBusy()) return; state.update = {phase:"idle"}; return checkUpdate(true); }
+    if (updateBusy() && ["toggle", "logout", "server", "ru-direct", "dns-save", "dns-preset"].includes(act)) return;
     if (act === "mode") {
       state.mode = state.mode === "dark" ? "light" : "dark";
       localStorage.setItem("sv-mode", state.mode);
@@ -608,13 +751,15 @@ async function handle(act, el) {
       state.menu = false;
       if (state.page === "bonuses") void loadReferral();
       if (state.page === "servers") void loadServers();
+      if (state.page === "devices") await refreshProfile();
       render();
       return;
     }
-    if (act === "page-back") { if (state.showSubscriptionShop) state.showSubscriptionShop = false; else state.page = null; render(); return; }
+    if (act === "page-back") { if (state.showSubscriptionShop) state.showSubscriptionShop = false; else { state.page = null; state.menu = true; } render(); return; }
     if (act === "pay-early") { state.shopTier = state.profile?.max_devices === 5 ? 5 : 3; state.showSubscriptionShop = true; render(); return; }
     if (act === "pay-cancel") { ++paymentPollVersion; state.paymentStatus = "idle"; state.showSubscriptionShop = false; render(); return; }
     if (act === "login") { await login(); return; }
+    if (act === "restore") { await boot(); return; }
     if (act === "register") { await register(); return; }
     if (act === "forgot") { await forgot(); return; }
     if (LOG_ENABLED && act === "log-open") { state.logOpen = true; render(); void refreshLog(); return; }
@@ -650,28 +795,39 @@ async function login() {
     return;
   }
   state.loading = true;
+  const version = ++sessionVersion;
   state.error = "";
   render();
   try {
-    const res = await api.login(state.email, state.password);
+    const loginEmail = state.email;
+    const loginPassword = state.password;
+    const res = await api.login(loginEmail, loginPassword);
+    if (version !== sessionVersion) return;
     const email = res?.profile?.email || "";
     if (res?.ok === false || !email) {
       throw new Error(detailText(res?.detail) || "Неверный email или пароль");
     }
     state.session = res;
     state.profile = res.profile;
+    state.profileError = "";
+    state.restoreAvailable = false;
+    savePanelSession(loginEmail, loginPassword);
+    state.password = "";
     applyExtras(res);
     state.connected = !!res.connected;
     if (res.theme) state.theme = res.theme;
     if (res.live != null) state.live = !!res.live;
     await hydrateAfterAuth();
   } catch (e) {
+    if (version !== sessionVersion) return;
     state.error = e.message || "Неверный email или пароль";
     state.session = null;
     state.profile = null;
   } finally {
-    state.loading = false;
-    render();
+    if (version === sessionVersion) {
+      state.loading = false;
+      render();
+    }
   }
 }
 
@@ -717,6 +873,8 @@ async function forgot() {
 }
 
 async function logout() {
+  ++sessionVersion;
+  try { sessionStorage.removeItem("sv-panel-session"); } catch { /* private browser */ }
   ++paymentPollVersion;
   state.paymentStatus = "idle";
   state.showSubscriptionShop = false;
@@ -725,6 +883,15 @@ async function logout() {
   try { await api.logout(); } catch { /* keep going */ }
   state.session = null;
   state.profile = null;
+  const saved = readRememberedLogin();
+  state.email = saved.email || "";
+  state.password = saved.password || "";
+  state.showPass = false;
+  state.tab = "login";
+  state.step = "auth";
+  state.error = "";
+  state.profileError = "";
+  state.restoreAvailable = false;
   state.connected = false;
   state.menu = false;
   state.page = null;
@@ -740,6 +907,7 @@ async function toggleVpn() {
     render();
     return;
   }
+  ++connectionVersion;
   if (state.connected) {
     state.disconnecting = true;
     render();
@@ -853,6 +1021,7 @@ function applyServerPayload(raw) {
 
 function applyExtras(payload) {
   if (!payload) return;
+  if (payload.version) state.installedVersion = payload.version;
   if (payload.lan_url) state.lanUrl = payload.lan_url;
   if (payload.lan_ip) state.lanIp = payload.lan_ip;
   if (payload.router_name) state.routerName = payload.router_name;
@@ -996,27 +1165,53 @@ async function pickServer(key) {
 }
 
 async function boot() {
+  const version = ++sessionVersion;
+  state.loading = true;
+  state.error = "";
   const host = location.hostname;
   state.preview = host === "127.0.0.1" || host === "localhost";
   try {
     const status = await api.status();
+    if (version !== sessionVersion) return;
     if (status.theme) state.theme = status.theme;
     applyExtras(status);
-    if (status.session) {
+    if (status.session && canRestoreSession()) {
+      state.restoreAvailable = true;
       state.session = status.session;
-      state.profile = status.profile;
       state.connected = !!status.connected;
+      if (!await loadProfile(version, status)) return;
+      state.restoreAvailable = false;
+      state.password = "";
       await hydrateAfterAuth();
     } else {
       applyServerPayload(null);
     }
-  } catch {
+  } catch (e) {
+    if (version !== sessionVersion) return;
+    state.session = null;
+    state.profile = null;
+    state.error = e.message || "Не удалось загрузить аккаунт";
     try { state.theme = await api.theme(); } catch { state.theme = {}; }
   }
+  if (version !== sessionVersion) return;
+  state.loading = false;
   if (!state.theme) {
     try { state.theme = await api.theme(); } catch { state.theme = {}; }
   }
   render();
 }
 
-boot();
+// Refresh only while the list is visible; never accumulate parallel CGI requests.
+setInterval(() => {
+  if (!document.hidden && state.page === "devices") void refreshProfile();
+}, 30_000);
+setInterval(() => { void pollUpdate(); }, 2_000);
+setInterval(() => { if (!document.hidden && state.session) void checkUpdate(); }, 15 * 60_000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state.session) void refreshProfile();
+});
+window.addEventListener("focus", () => {
+  if (!document.hidden && state.session) void refreshProfile();
+});
+
+boot().then(() => { void checkUpdate(); });

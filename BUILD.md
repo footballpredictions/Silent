@@ -1,20 +1,28 @@
-# Keenetic 1.0.169 — локальная сборка 2026-10-10
+# Keenetic 1.0.169 — проверка и пересборка 2026-10-14
 
-Создан отдельный проект `keenetic`, без изменения исходного OpenWrt, ПК, серверов или роутеров.
+Синхронизирован с OpenWrt `4a6155b`; версия сохранена 1.0.169. Исправление OpenWrt WWAN `0e25e63` также учтено: Keenetic уже оставляет direct-трафик на штатном маршруте NDM вместо отдельного выхода через интерфейс с фиксированным именем. Это закреплено отдельным сетевым тестом. Реальные роутеры для этих проверок не изменяются.
 
-- Go 1.26.2, CGO=0, 7 Linux targets: aarch64, armv7, armv5, mipsel, mips, x86_64, i386.
-- Реально скомпилированы 14 ELF: автономный агент + текущий `pc/wdtt-go` транспорт для каждого CPU.
-- ELF class/machine/endianness проверены; PT_INTERP отсутствует. MIPS softfloat, ARMv5/7 отдельные варианты.
-- `go test ./...`: PASS, 25 cases включая подтесты. Исполнение на Windows: переносимые API/auth/config/WG-parser/DNS-boundary tests. Linux TUN и реальная маршрутизация этим не проверены.
-- `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go vet ./...`: PASS.
-- Python unittest: 8 PASS. POSIX network.sh исполняется через Git Bash с подменёнными сетевыми командами; проверены ограничение LAN, IPv6 guard, rollback частичного запуска, собственная cleanup и быстрые NDM hooks. Хостовые маршруты не менялись.
-- Release checks: все архитектуры, executable modes, LF/no-BOM, SHA256 manifest PASS.
-- Все 14 бинарников, runtime scripts и README в итоговом архиве byte-for-byte совпадают с текущими файлами сборки/исходниками.
-- Universal: 54039137 bytes, SHA256 `770f8985e0a59f6edf62e4eb5f9f3fb5c96fd8c1509493643e92dee408c31392`.
-- `dist/` содержит универсальный архив, 7 отдельных архивов, manifest.json и SHA256SUMS.
+- API: туннель выбирается при наличии IPv4/маршрута; при сетевой ошибке и 5xx доступны четыре соты и публичный API. Любые 4xx остаются терминальными, включая не-JSON ответы. Health проверяет именно туннель.
+- Общая политика direct/vpn с сервера каждые 300 секунд; проверка схемы/размеров/доменов, последний исправный кеш, packaged fallback. VPN имеет приоритет при совпадении доменов/IP. При неизменной revision sets не очищаются.
+- Восстановление собственных routes/rules/iptables/ipset после NDM/WAN-событий. Learned IP без таймера восстанавливаются одной командой `ipset restore` только после пересоздания sets, а не отдельным процессом для каждого IP каждые 20 секунд.
+- Панель: реальная версия агента, X/назад/вложенный магазин, вход/повторное открытие/сессии; кнопка OTA только на главном экране.
+- OTA: отдельная метадата `keenetic.arches.CPU`, строго Keenetic ARCH/VERSION/PACKAGE.json/ELF/SHA/size/build_id, безопасный состав архива; OpenWrt пакеты не принимаются. Доступ LAN/Basic/Origin/аккаунт, блокировка параллельных изменений, отдельный worker с setsid без nohup и подтверждением запуска.
+- Скачивание и потоковая проверка при работающем VPN; затем остановка только своего сервиса, повторная RAM-проверка, распаковка/временный rollback/установка. Payload и rollback удаляются до старта сервиса. Аккаунт, пароль панели, LAN и reconnect сохраняются. Ошибка установки восстанавливает старые runtime файлы. Flash-fallback для OTA не используется. Для старых ядер без MemAvailable применяется консервативный MemFree.
+- Установщик проверяет место до остановки клиента, атомарно заменяет исполняемые файлы, при OTA откладывает запуск до очистки рабочего каталога. Supervisor переживает HUP запускающей SSH-сессии.
 
-Проверка архивов однажды запущена до завершения их пересоздания: получили ожидаемую неполную gzip/старый manifest. После exit=0 финальной сборки повторены проверки: 8 PASS; это не дефект runtime.
+Проверки:
 
-Требуются Entware, Linux >=3.2, TUN, подходящие iptables/ip6tables/ipset и свободные правила/таблица. Панель LAN:8787, отдельный локальный пароль; DNS LAN:15353 (не занимает mDNS 5353). IPv4 VPN, IPv6 LAN forwarding блокируется на время подключения. FastNAT/PPE, реальный RAM/CPU, трафик LAN, NDM события, supervisor и автоподключение требуют проверки на настоящем устройстве. Автоматическое отключение ускорения не выполняется; fail-open, strict kill switch отсутствует.
+- 55 Go cases с подтестами — PASS на Windows: API/auth/config/policy/DNS-boundaries/OTA metadata/archive/transaction failures.
+- Go vet для Linux amd64 CGO=0 — PASS.
+- 31 Python test — PASS: 16 сценариев shipped JS панели; 4 реальные shell установки/rollback в изолированном /opt; 8 сетевых/shell сценариев и 3 проверки архивов. Сетевые команды подменены, маршруты компьютера не изменяются. Shell runtime прогон выполнялся вне Windows sandbox из-за ограничений Git Bash/coreutils на доступ к временным путям.
+- Все 7 настоящих CPU-архивов прошли именно Go `scanPackage`, используемый OTA. На первом прогоне он отклонил три пакета из-за нормального TAR record padding: поддержка нулевого заполнения до 10240 байт исправлена, добавлена регрессия с запретом ненулевого хвоста; выполнена полная повторная сборка и все 7 PASS.
+- Go 1.26.2, CGO=0: реально скомпилированы 14 статических ELF (агент+spass): aarch64, armv7, armv5, mipsel, mips, x86_64, i386. Проверены ELF class/machine/endian/no PT_INTERP, Go CPU/GOARM/GOMIPS, встроенный build_id.
+- Все 8 SHA256/размеры и метадата; каждый runtime script/README/бинарник в CPU-пакетах byte-for-byte соответствует исходникам/выходам сборки. LF/no BOM, executable modes — PASS. git diff --check — PASS.
 
-Исследование пользовательской темы 4PDA и первичных источников: RESEARCH.md. Commit/push/публикация/установка не выполнялись. Существующий OpenWrt DIAGNOSIS и четыре PC WIP пути сохранены.
+Предыдущая локальная сборка до публикации: Build ID `0cf2954cd6b01fa87377d372c2a2821c7663f86abba6dad07e2cf23d972e1f98`, универсальный архив 54559451 bytes, SHA256 `22dbfa367b3af9382a3cc1a6c6ca8f35f1894b043b1f0ab78c1c9be4b02e6584`. При пересборке актуальные значения берутся из `dist/manifest.json` и `dist/SHA256SUMS`.
+`dist/` содержит universal + 7 CPU архивов, SHA256SUMS, manifest.json и release-entry.json.
+
+Сборка: `python keenetic/scripts/build.py`.
+Проверка настоящих архивов OTA-валидатором: `python keenetic/scripts/verify_package_runtime.py` (Go test overlay, исходники агента не меняет).
+
+Реальные TUN/скорость/память/NDM/FastNAT/PPE/трафик LAN/OTA на Keenetic пока не испытаны. Пакеты публикуются в `silentvpn3/silentvpn3.github.io`, Release `v1.0.169`, отдельно от исходников `footballpredictions/Silent/keenetic`. OTA скачивает CPU-пакет именно из репозитория релизов; это проверяется тестом. При публикации `release-entry.json` добавляется в общий Pages `releases.json`, сохраняя другие платформы. Поддержка Keenetic в серверной админке и единый bootstrap Entware остаются отдельными задачами; имеющийся клиент использует публичную Pages-метадату.

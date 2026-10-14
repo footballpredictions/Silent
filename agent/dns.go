@@ -23,7 +23,10 @@ func suffixMatch(name string, domains []string) bool {
 }
 
 func (a *Agent) answerDNS(w dns.ResponseWriter, q *dns.Msg) {
-	_, subnet, _ := net.ParseCIDR(a.cfg.LANPrefix)
+	a.mu.RLock()
+	prefix := a.cfg.LANPrefix
+	a.mu.RUnlock()
+	_, subnet, _ := net.ParseCIDR(prefix)
 	addr, _, _ := net.SplitHostPort(w.RemoteAddr().String())
 	if !subnet.Contains(net.ParseIP(addr)) || len(q.Question) != 1 {
 		r := new(dns.Msg)
@@ -38,8 +41,11 @@ func (a *Agent) answerDNS(w dns.ResponseWriter, q *dns.Msg) {
 		_ = w.WriteMsg(r)
 		return
 	}
+	a.policyMu.RLock()
+	defer a.policyMu.RUnlock()
 	a.mu.RLock()
-	direct := a.cfg.Direct && suffixMatch(q.Question[0].Name, a.domains)
+	vpn := a.cfg.Direct && suffixMatch(q.Question[0].Name, a.vpnDomains)
+	direct := a.cfg.Direct && !vpn && suffixMatch(q.Question[0].Name, a.domains)
 	upstream := append([]string(nil), a.upstream...)
 	wgIP := a.wgAddress
 	a.mu.RUnlock()
@@ -71,17 +77,36 @@ func (a *Agent) answerDNS(w dns.ResponseWriter, q *dns.Msg) {
 		answer = new(dns.Msg)
 		answer.SetRcode(q, dns.RcodeServerFailure)
 	}
-	if direct && answer.Rcode == dns.RcodeSuccess {
+	if (direct || vpn) && answer.Rcode == dns.RcodeSuccess {
+		set := "svk_direct"
+		if vpn {
+			set = "svk_vpn"
+		}
 		for _, rr := range answer.Answer {
 			if ar, ok := rr.(*dns.A); ok {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				err := a.run(ctx, "ipset", "add", "svk_direct", ar.A.String(), "-exist")
+				err := a.run(ctx, "ipset", "add", set, ar.A.String(), "-exist")
 				cancel()
 				if err != nil {
 					answer = new(dns.Msg)
 					answer.SetRcode(q, dns.RcodeServerFailure)
 					break
 				}
+				a.learnedMu.Lock()
+				if a.learnedDirect == nil {
+					a.learnedDirect = make(map[string]bool)
+				}
+				if a.learnedVPN == nil {
+					a.learnedVPN = make(map[string]bool)
+				}
+				values := a.learnedDirect
+				if vpn {
+					values = a.learnedVPN
+				}
+				if len(values) < 131072 {
+					values[ar.A.String()] = true
+				}
+				a.learnedMu.Unlock()
 			}
 		}
 	}

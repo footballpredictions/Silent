@@ -33,6 +33,9 @@ func (a *Agent) disconnect() error {
 	defer cancel()
 	netErr := a.network(ctx, "down")
 	a.stopDNS()
+	a.learnedMu.Lock()
+	a.learnedDirect, a.learnedVPN = nil, nil
+	a.learnedMu.Unlock()
 	if a.stopTunnel != nil {
 		a.stopTunnel()
 		a.stopTunnel = nil
@@ -56,6 +59,9 @@ func (a *Agent) connect(parent context.Context) (err error) {
 	if a.isConnected() {
 		return nil
 	}
+	if updateBusy(a.path) {
+		return fmt.Errorf("Дождитесь завершения обновления")
+	}
 	ctx, cancel := context.WithTimeout(parent, 100*time.Second)
 	a.mu.Lock()
 	a.cancel = cancel
@@ -75,6 +81,7 @@ func (a *Agent) connect(parent context.Context) (err error) {
 	if err = a.network(ctx, "down"); err != nil {
 		return err
 	}
+	a.refreshPolicy(ctx)
 	_, err = a.call(ctx, "GET", "/api/users/me", nil)
 	if err != nil {
 		var ae *apiError
@@ -106,6 +113,9 @@ func (a *Agent) connect(parent context.Context) (err error) {
 	if cfg.Streams < 1 || cfg.Streams > 16 {
 		cfg.Streams = 9
 	}
+	a.mu.Lock()
+	a.cfg.DeviceID = cfg.ID
+	a.mu.Unlock()
 	turnPath := filepath.Join(filepath.Dir(a.path), "wg-turn.conf")
 	_ = os.Remove(turnPath)
 	proc := exec.Command(filepath.Join(a.root, "spass"), "-peer", net.JoinHostPort(cfg.IP, fmt.Sprint(cfg.Port)), "-vk", strings.Join(cfg.Hashes, ","), "-password", cfg.Password, "-device-id", cfg.ID, "-listen", "127.0.0.1:9000", "-n", fmt.Sprint(cfg.Streams))
@@ -231,27 +241,53 @@ func (a *Agent) watch(ctx context.Context) {
 				failures = 0
 				continue
 			}
-			probe, cancel := context.WithTimeout(ctx, 8*time.Second)
-			_, err := a.call(probe, "GET", "/api/vpn/theme", nil)
+			if updateBusy(a.path) {
+				continue
+			}
+			a.op.Lock()
+			if !a.isConnected() {
+				a.op.Unlock()
+				continue
+			}
+			restore, cancel := context.WithTimeout(ctx, 15*time.Second)
+			err := a.network(restore, "ensure")
+			reset := filepath.Join("/opt/var/run/silent-keenetic", "sets-reset")
+			if _, statErr := os.Stat(reset); err == nil && statErr == nil {
+				err = a.restoreLearned(restore)
+				if err == nil {
+					_ = os.Remove(reset)
+				}
+			}
 			cancel()
 			if err == nil {
-				restore, cancel := context.WithTimeout(ctx, 10*time.Second)
-				err = a.network(restore, "ensure")
-				cancel()
+				probe, stop := context.WithTimeout(ctx, 8*time.Second)
+				// Management may fall back to WAN; tunnel health must test the tunnel itself.
+				_, err = a.callBases(probe, []string{tunnelAPI}, "GET", "/api/vpn/theme", nil)
+				stop()
 			}
 			if err == nil {
 				failures = 0
+				refresh, stop := context.WithTimeout(ctx, 20*time.Second)
+				a.refreshPolicy(refresh)
+				stop()
+				a.op.Unlock()
 				continue
 			}
 			failures++
 			if failures < 3 {
+				a.op.Unlock()
 				continue
 			}
 			a.interrupt()
-			a.op.Lock()
 			a.disconnect()
 			a.op.Unlock()
 			failures = 0
 		}
 	}
+}
+
+func (a *Agent) tunnelReady() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return a.network(ctx, "api-ready") == nil
 }

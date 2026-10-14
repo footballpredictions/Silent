@@ -16,7 +16,8 @@ case "${1:-start}" in
         running && exit 0
         "$ROOT/silent-keenetic" --check || exit 1
         rm -f "$READY"
-        /bin/sh "$ROOT/guard.sh" >/dev/null 2>&1 &
+        # Survive the launching SSH session without requiring nohup.
+        ( trap '' HUP; exec /bin/sh "$ROOT/guard.sh" ) </dev/null >/dev/null 2>&1 &
         echo $! > "$PID"
         i=0
         while [ ! -s "$READY" ] && [ "$i" -lt 6 ]; do sleep 1; i=$((i+1)); done

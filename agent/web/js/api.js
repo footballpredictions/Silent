@@ -1,6 +1,6 @@
 const host = location.hostname;
 const isPreview = host === "127.0.0.1" || host === "localhost";
-const API = "/cgi-bin/silent-api";
+const API = isPreview ? "/silent/api" : "/cgi-bin/silent-api";
 
 async function send(path, options = {}) {
   const res = await fetch(`${API}${path}`, {
@@ -37,6 +37,9 @@ function formatDetail(detail) {
 }
 
 export const api = {
+  updateCheck: () => send("/update-check", { cache: "no-store" }),
+  updateStatus: () => send("/update-status", { cache: "no-store" }),
+  updateStart: () => send("/update-start", { method: "POST", body: "{}" }),
   status: () => send("/status"),
   theme: () => send("/theme"),
   login: (email, password) => send("/login", { method: "POST", body: JSON.stringify({ email, password }) }),

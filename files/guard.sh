@@ -12,7 +12,8 @@ finish() {
     rm -f "$PID"
     exit 0
 }
-trap finish TERM INT HUP
+trap finish TERM INT
+trap '' HUP
 while [ "$stopping" = 0 ]; do
     "$ROOT/silent-keenetic" &
     child=$!

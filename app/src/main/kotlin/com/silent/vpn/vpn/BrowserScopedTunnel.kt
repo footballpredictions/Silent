@@ -25,6 +25,7 @@ import com.silent.vpn.policy.TunnelDataWatch
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Application exclusions remain Android UID exclusions. The native TUN reader
@@ -52,6 +53,57 @@ object BrowserScopedTunnel {
         runCatching { value.exitValue(); false }.getOrDefault(true)
 
     @Synchronized fun isRunning(): Boolean = alive(process)
+
+    /** Revision-only update: preserve the native WG device, TUN and application sockets. */
+    @Synchronized internal fun applyRussianPolicy(context: Context): Boolean {
+        if (!alive(process)) return false
+        val policy = com.silent.vpn.data.RussianServices.config(context)
+        val ack = TargetAck(++targetRevision)
+        targetAck = ack
+        return try {
+            val update = JSONObject().put("revision", ack.revision).put("russian", policy)
+            checkNotNull(process).outputStream.apply { write((update.toString() + "\n").toByteArray()); flush() }
+            check(ack.done.await(2_500, TimeUnit.MILLISECONDS) && ack.applied)
+            key = null // A later full reapply must still reconcile its semantic key.
+            com.silent.vpn.data.RussianServices.applied(context, policy)
+            true
+        } catch (e: Exception) {
+            DebugLog.w("BrowserRouting", "policy update not acknowledged: ${e.message}")
+            false
+        } finally { if (targetAck === ack) targetAck = null }
+    }
+
+    internal class PhysicalRecovery internal constructor(internal val native: Process, internal val epoch: Long, internal val dns: List<String>)
+    private val physicalEpoch = AtomicLong()
+
+    private fun physicalDns(context: Context): List<String> = runCatching {
+        val network = VpnNetworkHelper.findUnderlyingNetwork(context) ?: return@runCatching emptyList()
+        context.getSystemService(ConnectivityManager::class.java).getLinkProperties(network)?.dnsServers
+            ?.mapNotNull { it.hostAddress }?.take(4).orEmpty()
+    }.getOrDefault(emptyList())
+
+    internal fun newPhysicalRecovery(context: Context? = null): PhysicalRecovery? = process?.takeIf { alive(it) }?.let {
+        PhysicalRecovery(it, physicalEpoch.incrementAndGet(), context?.let(::physicalDns).orEmpty())
+    }
+
+    /** Close sockets from the lost physical network; retain policy, WG and TUN. */
+    internal fun recoverPhysicalNetwork(): Boolean = newPhysicalRecovery()?.let { recoverPhysicalNetwork(it) } ?: true
+
+    @Synchronized internal fun recoverPhysicalNetwork(recovery: PhysicalRecovery): Boolean {
+        // A late callback/retry must not reset a replacement process or newer path.
+        if (process !== recovery.native || !alive(process) || recovery.epoch != physicalEpoch.get()) return true
+        return runCatching {
+            val ack = TargetAck(++targetRevision)
+            targetAck = ack
+            try {
+                val update = JSONObject().put("revision", ack.revision).put("network_epoch", recovery.epoch)
+                    .put("physical_dns", JSONArray(recovery.dns))
+                checkNotNull(process).outputStream.apply { write((update.toString() + "\n").toByteArray()); flush() }
+                check(ack.done.await(2_500, TimeUnit.MILLISECONDS) && ack.applied)
+                DebugLog.i("BrowserRouting", "physical sockets refreshed; WG/TUN preserved")
+            } finally { if (targetAck === ack) targetAck = null }
+        }.onFailure { DebugLog.w("BrowserRouting", "physical recovery: ${it.message}") }.isSuccess
+    }
 
     /** Local counters only: no radio traffic, DNS, timer, or additional WireGuard peer. */
     internal fun pathHealth(): TunnelDataWatch.Sample? = localRequest("/_silent/health", 1_000) { connection ->
@@ -124,6 +176,7 @@ object BrowserScopedTunnel {
                 checkNotNull(process).outputStream.apply { write((update.toString() + "\n").toByteArray()); flush() }
                 check(ack.done.await(2_500, TimeUnit.MILLISECONDS) && ack.applied) { "Не подтверждено обновление адресов обхода" }
                 key = semanticKey
+                com.silent.vpn.data.RussianServices.applied(context, russian)
                 DebugLog.i("BrowserRouting", "site addresses updated; WG/TUN preserved")
                 return
             } finally { if (targetAck === ack) targetAck = null }
@@ -165,6 +218,7 @@ object BrowserScopedTunnel {
             configuration = File(context.noBackupFilesDir, "browser-routing-runtime.json").apply {
                 writeText(JSONObject().apply {
                     put("russian", russian)
+                    put("physical_dns", JSONArray(physicalDns(context)))
                     put("socket", socketName)
                     put("wireguard", config.toWgUserspaceString())
                     put("mtu", config.`interface`.mtu.orElse(1200))
@@ -252,6 +306,7 @@ object BrowserScopedTunnel {
             configuration = null
             key = semanticKey
             deviceFingerprint = fingerprint
+            com.silent.vpn.data.RussianServices.applied(context, russian)
             DebugLog.i("BrowserRouting", "browser-only site rules active; other apps keep app policy")
         } catch (error: Throwable) {
             stop()
@@ -278,6 +333,7 @@ object BrowserScopedTunnel {
     }
 
     @Synchronized fun stop() {
+        com.silent.vpn.data.RussianServices.tunnelStopped()
         key = null
         deviceFingerprint = null
         targetAck?.done?.countDown()

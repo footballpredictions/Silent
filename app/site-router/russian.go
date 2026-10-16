@@ -32,6 +32,7 @@ type russianRouter struct {
 	config     russianConfig
 	generation uint64
 	answers    map[netip.Addr]*russianAnswer
+	resolvers  []string
 	slots      chan struct{}
 	dial       func(context.Context, string, string) (net.Conn, error)
 	exchange   func(context.Context, []byte) ([]byte, error)
@@ -41,8 +42,36 @@ func newRussianRouter(c russianConfig) *russianRouter {
 	r := &russianRouter{answers: make(map[netip.Addr]*russianAnswer), slots: make(chan struct{}, 32)}
 	r.dial = (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext
 	r.exchange = r.lookup
+	r.updateDNS(nil)
 	r.update(c)
 	return r
+}
+
+// Prefer the current carrier/Wi-Fi DNS. Public resolvers remain fallbacks;
+// using only one provider fails on networks that filter third-party UDP DNS.
+func (r *russianRouter) updateDNS(addresses []string) {
+	servers := make([]string, 0, 6)
+	for _, raw := range addresses {
+		address, err := netip.ParseAddr(raw)
+		if err != nil || address.IsUnspecified() || address.IsMulticast() || address.IsLoopback() {
+			continue
+		}
+		server := net.JoinHostPort(address.String(), "53")
+		if !slices.Contains(servers, server) {
+			servers = append(servers, server)
+		}
+		if len(servers) == 4 {
+			break
+		}
+	}
+	for _, fallback := range []string{"77.88.8.8:53", "77.88.8.1:53"} {
+		if !slices.Contains(servers, fallback) {
+			servers = append(servers, fallback)
+		}
+	}
+	r.mu.Lock()
+	r.resolvers = servers
+	r.mu.Unlock()
 }
 func russianDomain(name string, rules []string) bool {
 	name = strings.TrimSuffix(strings.ToLower(name), ".")
@@ -216,12 +245,23 @@ func (r *russianRouter) observe(packet []byte) {
 	}
 }
 func (r *russianRouter) lookup(ctx context.Context, query []byte) ([]byte, error) {
-	for _, server := range []string{"77.88.8.8:53", "77.88.8.1:53"} {
-		connection, err := r.dial(ctx, "udp4", server)
+	r.mu.RLock()
+	servers := slices.Clone(r.resolvers)
+	r.mu.RUnlock()
+	for _, server := range servers {
+		if ctx.Err() != nil {
+			break
+		}
+		connection, err := r.dial(ctx, "udp", server)
 		if err != nil {
 			continue
 		}
-		connection.SetDeadline(time.Now().Add(1500 * time.Millisecond))
+		deadline := time.Now().Add(4 * time.Second)
+		if limit, ok := ctx.Deadline(); ok && limit.Before(deadline) {
+			deadline = limit
+		}
+		connection.SetDeadline(deadline)
+		stopClose := context.AfterFunc(ctx, func() { connection.Close() })
 		_, err = connection.Write(query)
 		data := make([]byte, 65507)
 		n := 0
@@ -229,6 +269,7 @@ func (r *russianRouter) lookup(ctx context.Context, query []byte) ([]byte, error
 			n, err = connection.Read(data)
 		}
 		connection.Close()
+		stopClose()
 		if err == nil {
 			return data[:n], nil
 		}
@@ -291,12 +332,17 @@ func (r *russianRouter) handleDNS(ctx context.Context, packet []byte, write func
 	select {
 	case r.slots <- struct{}{}:
 	default:
+		message.Response = true
+		message.RCode = dnsmessage.RCodeServerFailure
+		answer, _ := message.Pack()
+		_ = write(russianReply(packet, h, answer))
 		return true
 	}
 	packet = append([]byte(nil), packet...)
+	networkContext := ctx
 	go func() {
 		defer func() { <-r.slots }()
-		ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		ctx, cancel := context.WithTimeout(networkContext, 12*time.Second)
 		defer cancel()
 		query, _ := message.Pack()
 		answer, err := r.exchange(ctx, query)
@@ -308,10 +354,13 @@ func (r *russianRouter) handleDNS(ctx context.Context, packet []byte, write func
 			answer, _ = message.Pack()
 		}
 		reply := russianReply(packet, h, answer)
-		r.observe(reply) // Install the route before the first application TCP/UDP packet.
-		if ctx.Err() == nil {
-			_ = write(reply)
+		// A request timeout needs SERVFAIL so the application can retry. Only a
+		// retired physical network/session suppresses delivery of this old reply.
+		if networkContext.Err() != nil {
+			return
 		}
+		r.observe(reply) // Install the route before the first application TCP/UDP packet.
+		_ = write(reply)
 	}()
 	return true
 }

@@ -154,6 +154,8 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/updates/check":
 			io.WriteString(w, `{"available":true,"version":"1.0.999"}`)
+		case "/api/vpn/routing-policy":
+			io.WriteString(w, `{"schema_version":1,"revision":"policy-through-existing-wg"}`)
 		case "/api/updates/download/android":
 			w.Write(payload)
 		case "/ordinary":
@@ -219,6 +221,15 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstConnection := <-applicationConnections
+	resp, err = client.Get(local.URL + "/api/vpn/routing-policy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routingPolicy, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != 200 || !bytes.Contains(routingPolicy, []byte("policy-through-existing-wg")) || resp.Header.Get("X-Silent-Upstream") != "1" {
+		t.Fatalf("Routing policy did not use existing encrypted WG: %d %s %v", resp.StatusCode, routingPolicy, err)
+	}
 	var acknowledgement bytes.Buffer
 	if err := applyTargetUpdates(strings.NewReader("{\"revision\":1,\"targets\":[\"203.0.113.7\"]}\n"), adapter.policy, &acknowledgement); err != nil {
 		t.Fatal(err)

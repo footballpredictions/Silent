@@ -56,9 +56,30 @@ class BrowserPolicyRefreshDeviceTest {
             BrowserScopedTunnel.start(context, config, policy, excluded, emptyList(), emptyList(), false, "ru-revision", updated)
             assertSame("A RU server-policy refresh replaced WG/TUN", russianProcess, native())
             assertTrue(russianProcess.isAlive)
+            assertTrue("Revision-only policy update was not acknowledged", BrowserScopedTunnel.applyRussianPolicy(context))
+            assertSame("Policy delivery replaced WG/TUN", russianProcess, native())
+            assertTrue("Private network recovery was not acknowledged", BrowserScopedTunnel.recoverPhysicalNetwork())
+            assertSame("Physical recovery replaced WG/TUN", russianProcess, native())
+            assertNotNull(BrowserScopedTunnel.pathHealth())
+            BrowserScopedTunnel.start(context, config, policy, excluded, emptyList(), emptyList(), false, "ru-after-network", updated)
+            assertSame("Policy update after recovery replaced WG/TUN", russianProcess, native())
+            val revision = BrowserScopedTunnel::class.java.getDeclaredField("targetRevision").apply { isAccessible = true }
+            val retired = checkNotNull(BrowserScopedTunnel.newPhysicalRecovery(context))
+            val current = checkNotNull(BrowserScopedTunnel.newPhysicalRecovery(context))
+            val before = revision.getLong(BrowserScopedTunnel)
+            assertTrue(BrowserScopedTunnel.recoverPhysicalNetwork(retired))
+            assertEquals("An obsolete network request reached the native process", before, revision.getLong(BrowserScopedTunnel))
+            assertTrue(BrowserScopedTunnel.recoverPhysicalNetwork(current))
+            assertTrue("Retry of the same network epoch was not acknowledged", BrowserScopedTunnel.recoverPhysicalNetwork(current))
+            assertSame(russianProcess, native())
         } finally {
             BrowserScopedTunnel.stop()
             context.stopService(Intent(context, BrowserScopedVpnService::class.java))
+            val teardownDeadline = android.os.SystemClock.elapsedRealtime() + 3_000L
+            while (BrowserScopedVpnService.instance != null && android.os.SystemClock.elapsedRealtime() < teardownDeadline) {
+                Thread.sleep(10)
+            }
+            assertNull("Retired VPN service can still stop the next test's router", BrowserScopedVpnService.instance)
         }
     }
 }

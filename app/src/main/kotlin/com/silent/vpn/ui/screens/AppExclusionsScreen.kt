@@ -230,6 +230,7 @@ fun AppExclusionsScreen(
     var pane by remember { mutableStateOf(ExclusionsPane.Apps) }
     var russianDirect by remember { mutableStateOf(RussianServices.enabled(context)) }
     var russianError by remember { mutableStateOf<String?>(null) }
+    val russianDelivery by RussianServices.delivery.collectAsState()
 
     // —— Apps ——
     var apps by remember { mutableStateOf<List<AppItem>>(emptyList()) }
@@ -509,6 +510,20 @@ fun AppExclusionsScreen(
         }
         russianError?.let { Text(it, color = fg, fontSize = 12.sp) }
         if (russianDirect) {
+            val received = russianDelivery == RussianServices.Delivery.RECEIVED
+            Text(
+                when (russianDelivery) {
+                    RussianServices.Delivery.RECEIVED -> "Список получен"
+                    RussianServices.Delivery.LOADING -> "Получаем список через VPN…"
+                    RussianServices.Delivery.FAILED -> "Не удалось обновить список. Используется сохранённый; повторим автоматически."
+                    RussianServices.Delivery.WAITING -> "Список будет получен после подключения VPN"
+                },
+                color = if (received) {
+                    if (palette.dark) palette.green else Color(0xFF15803D)
+                } else fg.copy(.7f),
+                fontSize = 12.sp,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
             Text("Другие исключения временно отключены. Ваши списки сохранены.", color = fg.copy(.5f), fontSize = 12.sp)
             Spacer(Modifier.height(12.dp))
             Text("Сайты: ${siteRules.size} сохранено", color = fg.copy(.3f), fontSize = 13.sp)

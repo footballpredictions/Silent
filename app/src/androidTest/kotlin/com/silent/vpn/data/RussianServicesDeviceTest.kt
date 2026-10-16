@@ -59,7 +59,9 @@ class RussianServicesDeviceTest {
         try {
             val policy = RussianServices.config(context)
             assertEquals(1, policy.getInt("schema_version"))
-            assertTrue(policy.getJSONArray("direct_domains").length() >= 117)
+            val bundled = org.json.JSONObject(context.assets.open("russian-services-policy.json").bufferedReader().use { it.readText() })
+            assertEquals(bundled.getString("revision"), policy.getString("revision"))
+            assertEquals(bundled.getJSONArray("direct_domains").toString(), policy.getJSONArray("direct_domains").toString())
             assertTrue(policy.getJSONArray("vpn_domains").length() > 0)
             assertFalse(policy.getBoolean("enabled"))
         } finally { prefs.edit().putString(key, old).commit() }

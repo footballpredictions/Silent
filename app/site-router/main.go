@@ -23,17 +23,18 @@ import (
 )
 
 type configuration struct {
-	Russian    russianConfig `json:"russian"`
-	Socket     string        `json:"socket"`
-	Wireguard  string        `json:"wireguard"`
-	MTU        int           `json:"mtu"`
-	Whitelist  bool          `json:"whitelist"`
-	Targets    []string      `json:"targets"`
-	Domains    []string      `json:"domains"`
-	Browsers   []int         `json:"browsers"`
-	Debug      bool          `json:"debug"`
-	OTAPort    int           `json:"ota_port"`
-	OTAAddress string        `json:"ota_address"`
+	PhysicalDNS []string      `json:"physical_dns"`
+	Russian     russianConfig `json:"russian"`
+	Socket      string        `json:"socket"`
+	Wireguard   string        `json:"wireguard"`
+	MTU         int           `json:"mtu"`
+	Whitelist   bool          `json:"whitelist"`
+	Targets     []string      `json:"targets"`
+	Domains     []string      `json:"domains"`
+	Browsers    []int         `json:"browsers"`
+	Debug       bool          `json:"debug"`
+	OTAPort     int           `json:"ota_port"`
+	OTAAddress  string        `json:"ota_address"`
 }
 type cachedRoute struct {
 	direct  bool
@@ -189,7 +190,11 @@ func (t *routedTun) Read(buffers [][]byte, sizes []int, offset int) (int, error)
 			return 0, err
 		}
 		packet := buffers[0][offset : offset+n]
-		if t.russian.handleDNS(t.ctx, packet, t.writePacket) {
+		dnsContext := t.ctx
+		if t.direct != nil {
+			dnsContext = t.direct.networkContext()
+		}
+		if t.russian.handleDNS(dnsContext, packet, t.writePacket) {
 			continue
 		}
 		// Userspace API packets bypass browser policy but remain inside WG.
@@ -286,6 +291,7 @@ func run(path string) error {
 	adapter := &routedTun{file: file, events: make(chan tun.Event, 1), policy: newPolicy(cfg.Whitelist, cfg.Targets, cfg.Browsers), control: control, reader: bufio.NewReader(control), routes: make(map[flow]cachedRoute), fragments: make(map[fragmentKey]cachedRoute), mtu: cfg.MTU, debug: cfg.Debug}
 	adapter.policy.domains = cfg.Domains
 	adapter.russian = newRussianRouter(cfg.Russian)
+	adapter.russian.updateDNS(cfg.PhysicalDNS)
 	adapter.ctx = ctx
 	adapter.direct = newDirectStack(ctx, cfg.MTU, adapter.writePacket)
 	if cfg.OTAPort > 0 {
@@ -343,7 +349,7 @@ func run(path string) error {
 	}
 	fmt.Println("READY")
 	// Kotlin owns lifetime and closes stdin before closing the FD/process.
-	return applyTargetUpdates(os.Stdin, adapter.policy, os.Stdout, adapter.russian)
+	return applyRouterUpdates(os.Stdin, adapter.policy, os.Stdout, adapter.russian, adapter.direct.resetNetwork)
 }
 func main() {
 	if len(os.Args) != 2 {

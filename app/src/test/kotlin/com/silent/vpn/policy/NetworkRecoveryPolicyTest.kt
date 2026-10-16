@@ -7,6 +7,16 @@ import org.junit.Test
 
 class NetworkRecoveryPolicyTest {
 
+    @Test fun `physical recovery ignores validation blips and VPN-only failures`() {
+        assertFalse(NetworkRecoveryPolicy.shouldRecoverDirectNetwork("validated_after_gap", false))
+        assertFalse(NetworkRecoveryPolicy.shouldRecoverDirectNetwork("data_path_stalled:probe", false))
+        assertFalse(NetworkRecoveryPolicy.shouldRecoverDirectNetwork("data_path_stalled:probe", true))
+        for (reason in listOf("wifi_gap_restored", "cell_gap_restored", "transport_switch:wifi", "link_handover:cell")) {
+            assertTrue(reason, NetworkRecoveryPolicy.shouldRecoverDirectNetwork(reason, false))
+        }
+        assertTrue(NetworkRecoveryPolicy.shouldRecoverDirectNetwork("internet_restored", true))
+    }
+
     @Test
     fun `cell events do not count as our gap while wifi is alive`() {
         // Сота гаснет сама при живом Wi‑Fi — не наша дыра, рестарта быть не должно.

@@ -26,3 +26,16 @@ func TestTargetUpdatePreservesLearnedDNSAndApplicationPolicy(t *testing.T) {
 		t.Fatal("Live DNS/app policy was lost")
 	}
 }
+
+func TestNetworkUpdateKeepsManualTargetsAndDeduplicatesEpoch(t *testing.T) {
+	p := newPolicy(false, []string{"203.0.113.1"}, []int{10001})
+	var output bytes.Buffer
+	resets := 0
+	input := "{\"revision\":1,\"network_epoch\":9}\n{\"revision\":2,\"network_epoch\":9}\n{\"revision\":3,\"network_epoch\":8}\n"
+	if err := applyRouterUpdates(strings.NewReader(input), p, &output, nil, func() { resets++ }); err != nil {
+		t.Fatal(err)
+	}
+	if resets != 1 || !p.direct(10001, netip.MustParseAddr("203.0.113.1")) {
+		t.Fatal("Network update lost targets or repeated a completed handover")
+	}
+}

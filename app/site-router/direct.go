@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -21,10 +22,29 @@ import (
 )
 
 // The router process belongs to Silent's excluded UID: these outbound sockets
-// use the physical network. Application flows never enter this TCP/IP stack.
+// use the physical network. Only flows selected for DIRECT enter this stack.
 type directStack struct {
-	stack *stack.Stack
-	link  *channel.Endpoint
+	stack         *stack.Stack
+	link          *channel.Endpoint
+	mu            sync.Mutex
+	parent        context.Context
+	network       context.Context
+	cancelNetwork context.CancelFunc
+}
+
+// A new physical network cannot migrate established TCP/UDP sockets. Cancel
+// only those sockets (and physical DNS), keeping the virtual stack and WG alive.
+func (s *directStack) networkContext() context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.network
+}
+func (s *directStack) resetNetwork() {
+	s.mu.Lock()
+	old := s.cancelNetwork
+	s.network, s.cancelNetwork = context.WithCancel(s.parent)
+	s.mu.Unlock()
+	old()
 }
 
 type idleConn struct{ net.Conn }
@@ -41,6 +61,8 @@ func (c idleConn) Write(b []byte) (int, error) {
 func newDirectStack(ctx context.Context, mtu int, write func([]byte) error) *directStack {
 	s := stack.New(stack.Options{NetworkProtocols: []stack.NetworkProtocolFactory{ipv4.NewProtocol}, TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol}})
 	link := channel.New(512, uint32(mtu), "")
+	network, cancelNetwork := context.WithCancel(ctx)
+	direct := &directStack{stack: s, link: link, parent: ctx, network: network, cancelNetwork: cancelNetwork}
 	if err := s.CreateNIC(1, link); err != nil {
 		panic(err.String())
 	}
@@ -48,10 +70,11 @@ func newDirectStack(ctx context.Context, mtu int, write func([]byte) error) *dir
 	s.SetSpoofing(1, true)
 	s.SetRouteTable([]tcpip.Route{{Destination: header.IPv4EmptySubnet, NIC: 1}})
 	tcpForwarder := tcp.NewForwarder(s, 65535, 256, func(request *tcp.ForwarderRequest) {
+		flowContext := direct.networkContext()
 		go func() {
 			id := request.ID()
 			target := net.JoinHostPort(id.LocalAddress.String(), portString(id.LocalPort))
-			upstream, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp4", target)
+			upstream, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(flowContext, "tcp4", target)
 			if err != nil {
 				request.Complete(true)
 				return
@@ -65,6 +88,8 @@ func newDirectStack(ctx context.Context, mtu int, write func([]byte) error) *dir
 			}
 			request.Complete(false)
 			client := gonet.NewTCPConn(&queue, endpoint)
+			stopClose := context.AfterFunc(flowContext, func() { client.Close(); upstream.Close() })
+			defer stopClose()
 			defer client.Close()
 			defer upstream.Close()
 			done := make(chan struct{})
@@ -82,6 +107,7 @@ func newDirectStack(ctx context.Context, mtu int, write func([]byte) error) *dir
 	})
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 	udpForwarder := udp.NewForwarder(s, func(request *udp.ForwarderRequest) {
+		flowContext := direct.networkContext()
 		id := request.ID()
 		var queue waiter.Queue
 		endpoint, err := request.CreateEndpoint(&queue)
@@ -91,11 +117,13 @@ func newDirectStack(ctx context.Context, mtu int, write func([]byte) error) *dir
 		client := gonet.NewUDPConn(&queue, endpoint)
 		go func() {
 			defer client.Close()
-			upstream, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "udp4", net.JoinHostPort(id.LocalAddress.String(), portString(id.LocalPort)))
+			upstream, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(flowContext, "udp4", net.JoinHostPort(id.LocalAddress.String(), portString(id.LocalPort)))
 			if err != nil {
 				return
 			}
 			defer upstream.Close()
+			stopClose := context.AfterFunc(flowContext, func() { client.Close(); upstream.Close() })
+			defer stopClose()
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -140,7 +168,7 @@ func newDirectStack(ctx context.Context, mtu int, write func([]byte) error) *dir
 		}
 	}()
 	go func() { <-ctx.Done(); s.Close(); link.Close() }()
-	return &directStack{s, link}
+	return direct
 }
 
 func (s *directStack) inject(packet []byte) {

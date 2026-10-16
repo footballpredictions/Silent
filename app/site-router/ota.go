@@ -25,7 +25,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 )
 
-// TCP for two read-only OTA endpoints over the ALREADY running WireGuard device.
+// Read-only updates and routing policy over the ALREADY running WireGuard device.
 // No second WG handshake/key, Android bind, overlay, or application route change.
 type otaStack struct {
 	stack   *stack.Stack
@@ -154,8 +154,8 @@ func otaHandler(transport http.RoundTripper) http.Handler {
 	}
 	proxy.FlushInterval = -1
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || (r.URL.Path != "/api/updates/check" && r.URL.Path != "/api/updates/download/android") {
-			http.Error(w, "OTA endpoint only", http.StatusForbidden)
+		if r.Method != http.MethodGet || (r.URL.Path != "/api/updates/check" && r.URL.Path != "/api/updates/download/android" && r.URL.Path != "/api/vpn/routing-policy") {
+			http.Error(w, "Read-only endpoint only", http.StatusForbidden)
 			return
 		}
 		proxy.ServeHTTP(w, r)

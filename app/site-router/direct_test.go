@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,10 +79,21 @@ func TestDirectBrowserStackTCPAndUDPReplies(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer udpServer.Close()
+	var afterHandover atomic.Bool
 	go func() {
 		b := make([]byte, 100)
-		n, peer, e := udpServer.ReadFrom(b)
-		if e == nil {
+		firstPeer := ""
+		for {
+			n, peer, e := udpServer.ReadFrom(b)
+			if e != nil {
+				return
+			}
+			if firstPeer == "" {
+				firstPeer = peer.String()
+			}
+			if afterHandover.Load() && peer.String() == firstPeer {
+				continue
+			}
 			udpServer.WriteTo(b[:n], peer)
 		}
 	}()
@@ -95,5 +107,20 @@ func TestDirectBrowserStackTCPAndUDPReplies(t *testing.T) {
 	n, err := udpClient.Read(b)
 	if err != nil || string(b[:n]) != "browser UDP" {
 		t.Fatalf("UDP reply %q %v", b[:n], err)
+	}
+	// An unchanged application UDP socket must acquire a fresh physical socket.
+	afterHandover.Store(true)
+	direct.resetNetwork()
+	until := time.Now().Add(2 * time.Second)
+	for {
+		udpClient.SetDeadline(time.Now().Add(100 * time.Millisecond))
+		udpClient.Write([]byte("new network"))
+		n, err = udpClient.Read(b)
+		if err == nil && string(b[:n]) == "new network" {
+			break
+		}
+		if time.Now().After(until) {
+			t.Fatalf("UDP retained the dead physical socket: %v", err)
+		}
 	}
 }

@@ -284,6 +284,11 @@ object NetworkRecoveryPolicy {
         return !mustRestartHealthyTransport(reason)
     }
 
+    /** A failed VPN server does not invalidate working physical DIRECT sockets. */
+    fun shouldRecoverDirectNetwork(reason: String, wasPaused: Boolean): Boolean =
+        reason.substringBefore(':') != "data_path_stalled" &&
+            (wasPaused || mustRestartHealthyTransport(reason))
+
     data class TransportRestartInput(
         val bootstrapMode: Boolean,
         val reason: String,

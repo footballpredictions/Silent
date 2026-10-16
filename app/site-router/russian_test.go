@@ -1,13 +1,141 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"golang.org/x/net/dns/dnsmessage"
+	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestPhysicalDNSUpdateReachesLookupBeforeNetworkAck(t *testing.T) {
+	r := newRussianRouter(russianConfig{Enabled: true, Direct: []string{"flashscore.com"}})
+	first := ""
+	r.dial = func(ctx context.Context, _, target string) (net.Conn, error) {
+		first = target
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			server.Read(make([]byte, 512))
+			server.Write(ruFixture("flashscore.com", true, [4]byte{203, 0, 113, 9})[28:])
+		}()
+		return client, nil
+	}
+	var output bytes.Buffer
+	err := applyRouterUpdates(strings.NewReader("{\"revision\":1,\"network_epoch\":1,\"physical_dns\":[\"192.0.2.53\"]}\n"), newPolicy(false, nil, nil), &output, r, func() {
+		if _, err := r.lookup(context.Background(), ruFixture("flashscore.com", false, [4]byte{})[28:]); err != nil {
+			t.Error(err)
+		}
+	})
+	if err != nil || first != "192.0.2.53:53" || output.String() != "POLICY_READY:1\n" {
+		t.Fatalf("Carrier DNS did not reach the new physical path: first=%s err=%v", first, err)
+	}
+}
+
+func TestRussianDNSTimeoutReturnsFailureInsteadOfSilence(t *testing.T) {
+	r := newRussianRouter(russianConfig{Enabled: true, Direct: []string{"flashscore.com"}})
+	r.exchange = func(ctx context.Context, _ []byte) ([]byte, error) { <-ctx.Done(); return nil, ctx.Err() }
+	replies := make(chan []byte, 1)
+	r.handleDNS(context.Background(), ruFixture("flashscore.com", false, [4]byte{}), func(p []byte) error { replies <- p; return nil })
+	select {
+	case reply := <-replies:
+		answer, _, ok := russianDNS(reply, true)
+		if !ok || answer.RCode != dnsmessage.RCodeServerFailure {
+			t.Fatal("Expected explicit DNS failure")
+		}
+	case <-time.After(13 * time.Second):
+		t.Fatal("DNS timeout was swallowed; application keeps waiting for a reply")
+	}
+}
+
+func TestRussianDNSBusyQueueReturnsFailureInsteadOfSilence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := newRussianRouter(russianConfig{Enabled: true, Direct: []string{"flashscore.com"}})
+	r.exchange = func(ctx context.Context, _ []byte) ([]byte, error) { <-ctx.Done(); return nil, ctx.Err() }
+	replies := make(chan []byte, 1)
+	for i := 0; i < 33; i++ {
+		r.handleDNS(ctx, ruFixture("flashscore.com", false, [4]byte{}), func(p []byte) error { replies <- p; return nil })
+	}
+	select {
+	case reply := <-replies:
+		answer, _, ok := russianDNS(reply, true)
+		if !ok || answer.RCode != dnsmessage.RCodeServerFailure {
+			t.Fatal("Expected retryable DNS busy response")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Full DNS queue silently swallowed the application request")
+	}
+}
+
+func TestRussianDNSReadStopsWithLostPhysicalNetwork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := newRussianRouter(russianConfig{Enabled: true, Direct: []string{"ru"}})
+	started := make(chan struct{}, 1)
+	r.dial = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			server.Read(make([]byte, 512))
+			started <- struct{}{}
+			server.Read(make([]byte, 1))
+		}()
+		return client, nil
+	}
+	done := make(chan struct{})
+	go func() { r.lookup(ctx, []byte("query")); close(done) }()
+	<-started
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("DNS read retained a socket from the lost network")
+	}
+}
+
+func TestRussianDNSAcceptsDelayedMobileReply(t *testing.T) {
+	r := newRussianRouter(russianConfig{Enabled: true, Direct: []string{"flashscore.com"}})
+	ip := [4]byte{203, 0, 113, 9}
+	r.dial = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			if _, err := server.Read(make([]byte, 512)); err != nil {
+				return
+			}
+			timer := time.NewTimer(1800 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				server.Write(ruFixture("flashscore.com", true, ip)[28:])
+			case <-ctx.Done():
+			}
+		}()
+		return client, nil
+	}
+	replies := make(chan []byte, 1)
+	r.handleDNS(context.Background(), ruFixture("flashscore.com", false, ip), func(p []byte) error { replies <- p; return nil })
+	select {
+	case reply := <-replies:
+		answer, _, ok := russianDNS(reply, true)
+		if !ok || answer.RCode != dnsmessage.RCodeSuccess || !r.direct(netip.AddrFrom4(ip)) {
+			t.Fatal("A valid delayed mobile DNS reply was discarded; DIRECT application cannot start")
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("Mobile DNS was silently dropped")
+	}
+}
 
 func ruFixture(name string, response bool, ip [4]byte) []byte {
 	q := dnsmessage.Question{Name: dnsmessage.MustNewName(name + "."), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}

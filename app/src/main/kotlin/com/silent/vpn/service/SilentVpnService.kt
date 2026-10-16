@@ -141,6 +141,7 @@ class SilentVpnService : Service() {
     private var lastNetworkFingerprint = ""
     private var lastNetworkValidated = true
     private var networkRecoveryJob: Job? = null
+    private var directRecoveryJob: Job? = null
     private var recoveryVerifyJob: Job? = null
     private var pendingRecoveryReason: String? = null
     private var recoveryDueMs = Long.MAX_VALUE
@@ -712,6 +713,7 @@ class SilentVpnService : Service() {
         VpnTileHelper.requestUpdate(this)
         transportWatchdogJob?.cancel()
         networkRecoveryJob?.cancel()
+        directRecoveryJob?.cancel()
         pendingRecoveryReason = null
         recoveryDueMs = Long.MAX_VALUE
         dataCheckJob?.cancel()
@@ -867,6 +869,7 @@ class SilentVpnService : Service() {
                 val now = System.currentTimeMillis()
                 if (!NetworkRecoveryPolicy.shouldAcceptLinkHandover(lastLinkHandoverMs, now)) return@dispatch
                 lastLinkHandoverMs = now
+                recoveredUnderlying = null
                 DebugLog.i("VpnService", "link handover $key $prev → $addrs")
                 scheduleNetworkRecovery("link_handover:$key", 1_200L)
             }
@@ -971,6 +974,7 @@ class SilentVpnService : Service() {
             if (NetworkRecoveryPolicy.shouldRecoverOnRatChange(lastRatBucket, rat)) {
                 val old = lastRatBucket
                 lastRatBucket = rat
+                recoveredUnderlying = null
                 DebugLog.i("VpnService", "rat $old → $rat ($source)")
                 scheduleNetworkRecovery("rat_switch:$old->$rat", 500L)
                 return
@@ -986,6 +990,7 @@ class SilentVpnService : Service() {
         ) {
             NetworkRecoveryPolicy.SameTransportGap.RESTORE -> {
                 lastBlackoutAtMs = 0L
+                recoveredUnderlying = null
                 val kind = if (fp == "wifi") "wifi_gap_restored" else "cell_gap_restored"
                 DebugLog.i("VpnService", "gap restore $kind ($source)")
                 scheduleNetworkRecovery(kind, 800L)
@@ -1153,7 +1158,7 @@ class SilentVpnService : Service() {
             return
         }
         val underlying = VpnNetworkHelper.findUnderlyingNetwork(this)
-        if (healthy && underlying != null && underlying == recoveredUnderlying &&
+        if ((healthy || WdttTunnelManager.isNetworkRestartInFlight()) && underlying != null && underlying == recoveredUnderlying &&
             now - recoveredAtMs < 15_000L && reason.substringBefore(':') != "data_path_stalled") {
             DebugLog.i("VpnService", "network recovery already applied to this network ($reason)")
             return
@@ -1168,12 +1173,20 @@ class SilentVpnService : Service() {
             scheduleNetworkRecovery(reason, 2_500L)
             return
         }
+        val recoveryNetwork = VpnNetworkHelper.findUnderlyingNetwork(this)
+        if (recoveryNetwork == null) {
+            scheduleNetworkRecovery(reason, 1_200L)
+            return
+        }
         val accepted = withContext(Dispatchers.IO) { WdttTunnelManager.restartTransportAfterNetwork(reason) }
         if (!accepted) {
             scheduleNetworkRecovery(reason, 1_200L)
             return
         }
-        recoveredUnderlying = VpnNetworkHelper.findUnderlyingNetwork(this)
+        if (NetworkRecoveryPolicy.shouldRecoverDirectNetwork(reason, wasPaused)) {
+            recoverDirectAfterNetwork(epoch, recoveryNetwork)
+        }
+        recoveredUnderlying = recoveryNetwork
         recoveredAtMs = System.currentTimeMillis()
         lastTransportRestartMs = recoveredAtMs
         lastBlackoutAtMs = 0L
@@ -1184,6 +1197,20 @@ class SilentVpnService : Service() {
         dataWatch.reset()
         // WG's peer is loopback. Its device/TUN and existing application sockets survive.
         WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
+    }
+
+    private fun recoverDirectAfterNetwork(session: Int, network: Network?) {
+        val recovery = BrowserScopedTunnel.newPhysicalRecovery(applicationContext) ?: return
+        directRecoveryJob?.cancel()
+        directRecoveryJob = scope.launch {
+            repeat(3) {
+                if (!isRunning || session != disconnectEpoch || network != VpnNetworkHelper.findUnderlyingNetwork(this@SilentVpnService)) return@launch
+                if (withContext(Dispatchers.IO) { BrowserScopedTunnel.recoverPhysicalNetwork(recovery) }) return@launch
+                // Retry the same native epoch: a lost ACK must not close fresh sockets.
+                delay(1_200L)
+            }
+            DebugLog.w("VpnService", "physical recovery unconfirmed; VPN recovery continues independently")
+        }
     }
 
     private fun checkTunnelDataPath() {
@@ -2231,6 +2258,7 @@ class SilentVpnService : Service() {
         disconnectJob?.cancel()
         transportWatchdogJob?.cancel()
         networkRecoveryJob?.cancel()
+        directRecoveryJob?.cancel()
         pendingRecoveryReason = null
         recoveryDueMs = Long.MAX_VALUE
         dataCheckJob?.cancel()

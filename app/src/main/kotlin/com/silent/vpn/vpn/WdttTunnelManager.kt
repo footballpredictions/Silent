@@ -19,6 +19,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -553,16 +554,30 @@ object WdttTunnelManager {
                     russianPolicyJob?.cancel()
                     val policyProcess = process
                     if (!isBootstrapMode) russianPolicyJob = scope.launch {
+                        var nextRefreshAt = 0L
                         while (isActive && process === policyProcess && policyProcess?.isAlive == true) {
-                            if (com.silent.vpn.data.RussianServices.enabled(appContext)) {
+                            val changeVersion = com.silent.vpn.data.RussianServices.changes.value
+                            var waitMs = 1_000L
+                            if (!com.silent.vpn.data.RussianServices.enabled(appContext)) {
+                                nextRefreshAt = 0L
+                                waitMs = 300_000L
+                            } else if (tunnelReady.value && !apiOverlayActive && !WireGuardHelper.isWgTransitionActive() &&
+                                BrowserScopedTunnel.isRunning() && android.os.SystemClock.elapsedRealtime() >= nextRefreshAt) {
+                                // Fetch only after the native encrypted API relay is ready. Never
+                                // replace WG or enter a payment/bootstrap overlay for this read.
                                 com.silent.vpn.data.RussianServices.refresh(appContext)
-                                // Initial policy fetch can finish before WG has settled.
-                                while (isActive && process === policyProcess && policyProcess?.isAlive == true &&
-                                    (!tunnelReady.value || apiOverlayActive || WireGuardHelper.isWgTransitionActive() ||
-                                        System.currentTimeMillis() - lastWgApplyAtMs < SITE_BYPASS_REAPPLY_GRACE_MS)) delay(2_000L)
-                                if (isActive && process === policyProcess && policyProcess?.isAlive == true) reapplyMainTunnelForSiteBypass()
+                                if (!isActive || process !== policyProcess || policyProcess?.isAlive != true) break
+                                val applied = com.silent.vpn.data.RussianServices.hasReceivedPolicy() &&
+                                    com.silent.vpn.data.RussianServices.enabled(appContext) &&
+                                    BrowserScopedTunnel.applyRussianPolicy(appContext)
+                                if (!applied && changeVersion == com.silent.vpn.data.RussianServices.changes.value)
+                                    com.silent.vpn.data.RussianServices.applicationFailed()
+                                nextRefreshAt = android.os.SystemClock.elapsedRealtime() + if (applied) 300_000L else 10_000L
+                                waitMs = if (applied) 300_000L else 10_000L
                             }
-                            delay(300_000L)
+                            kotlinx.coroutines.withTimeoutOrNull(waitMs) {
+                                com.silent.vpn.data.RussianServices.changes.first { it != changeVersion }
+                            }?.let { nextRefreshAt = 0L }
                         }
                     }
                     wrapAuthTimeoutCount = 0
@@ -1690,6 +1705,8 @@ object WdttTunnelManager {
     }
 
     @Volatile private var networkRestartJob: Job? = null
+
+    fun isNetworkRestartInFlight(): Boolean = networkRestartJob?.isActive == true
 
     @Synchronized
     fun restartTransport(forceNetwork: Boolean = false, reason: String = ""): Boolean {

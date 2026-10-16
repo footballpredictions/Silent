@@ -6,6 +6,10 @@ import java.net.HttpURLConnection
 import java.net.Proxy
 import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import com.silent.vpn.vpn.BrowserScopedTunnel
 import org.json.JSONObject
 
 /** Independent override: never rewrites either saved app/site list or its mode. */
@@ -15,13 +19,35 @@ object RussianServices {
     private val fetching = AtomicBoolean(false)
     @Volatile private var attemptedAt = 0L
     @Volatile private var bundled: String? = null
+    enum class Delivery { WAITING, LOADING, RECEIVED, FAILED }
+    private val mutableDelivery = MutableStateFlow(Delivery.WAITING)
+    val delivery = mutableDelivery.asStateFlow()
+    private val generation = AtomicLong()
+    private val mutableChanges = MutableStateFlow(0L)
+    val changes = mutableChanges.asStateFlow()
+    @Volatile private var receivedRevision: String? = null
 
     fun enabled(context: Context): Boolean = SilentPrefs.open(context).getBoolean(ENABLED_KEY, false)
 
-    fun setEnabled(context: Context, enabled: Boolean) {
+    @Synchronized fun setEnabled(context: Context, enabled: Boolean) {
         check(SilentPrefs.open(context).edit().putBoolean(ENABLED_KEY, enabled).commit()) {
             "Не удалось сохранить режим российских сервисов"
         }
+        val version = generation.incrementAndGet()
+        attemptedAt = 0L
+        receivedRevision = null
+        mutableDelivery.value = Delivery.WAITING
+        mutableChanges.value = version
+    }
+
+    /** Called only after native POLICY_READY (or READY for the initial config). */
+    @Synchronized fun applied(context: Context, policy: JSONObject) {
+        if (enabled(context) && policy.optBoolean("enabled") &&
+            policy.optString("revision") == receivedRevision) mutableDelivery.value = Delivery.RECEIVED
+    }
+
+    fun tunnelStopped() {
+        if (mutableDelivery.value == Delivery.RECEIVED) mutableDelivery.value = Delivery.WAITING
     }
 
     private fun valid(raw: String): JSONObject? = runCatching {
@@ -49,39 +75,59 @@ object RussianServices {
             .put("enabled", enabled(context))
     }
 
-    /** Bounded public read; malformed/error replies never replace a usable policy. */
+    /** Native relay shares the live WG device: no overlay or second VPN session. */
     fun refresh(context: Context): Boolean {
         val now = SystemClock.elapsedRealtime()
-        if (!enabled(context) || (attemptedAt > 0 && now - attemptedAt < 60_000) || !fetching.compareAndSet(false, true)) return false
+        if (!enabled(context) || (attemptedAt > 0 && now - attemptedAt < 10_000) || !fetching.compareAndSet(false, true)) return false
         attemptedAt = now
+        val requestGeneration = generation.get()
+        receivedRevision = null
+        mutableDelivery.value = Delivery.LOADING
         try {
             val previous = config(context).getString("revision")
-            for (base in listOf(SilentRepository.DEFAULT_SERVER_URL,
-                "http://87.58.213.193:9100", "http://78.17.74.27:9100",
-                "http://192.177.26.38:9100", "http://89.37.192.241:9100")) {
-                val connection = URL("$base/api/vpn/routing-policy").openConnection(Proxy.NO_PROXY) as HttpURLConnection
-                try {
-                    connection.connectTimeout = 2_000
-                    connection.readTimeout = 2_000
-                    connection.instanceFollowRedirects = false
-                    if (connection.responseCode != 200) continue
-                    val bytes = connection.inputStream.use { input ->
-                        val output = java.io.ByteArrayOutputStream()
-                        val buffer = ByteArray(8192)
-                        while (output.size() <= 262_144) {
-                            val n = input.read(buffer, 0, minOf(buffer.size, 262_145 - output.size()))
-                            if (n < 0) break
-                            output.write(buffer, 0, n)
-                        }
-                        output.toByteArray()
-                    }
-                    val policy = valid(bytes.toString(Charsets.UTF_8)) ?: continue
-                    if (policy.getString("revision") == previous) return false
-                    check(SilentPrefs.open(context).edit().putString(CACHE_KEY, policy.toString()).commit())
-                    return true
-                } catch (_: Exception) { } finally { connection.disconnect() }
+            val policy = downloadPolicy() ?: return false
+            return synchronized(this) {
+                if (!enabled(context) || requestGeneration != generation.get()) return@synchronized false
+                check(SilentPrefs.open(context).edit().putString(CACHE_KEY, policy.toString()).commit())
+                receivedRevision = policy.getString("revision")
+                receivedRevision != previous
             }
-        } finally { fetching.set(false) }
-        return false
+        } catch (_: Exception) {
+            return false
+        } finally {
+            synchronized(this) {
+                if (requestGeneration == generation.get() && receivedRevision == null) mutableDelivery.value = Delivery.FAILED
+            }
+            fetching.set(false)
+        }
     }
+
+    private fun downloadPolicy(): JSONObject? {
+        val connection = URL("${BrowserScopedTunnel.OTA_BASE_URL}/api/vpn/routing-policy")
+            .openConnection(Proxy.NO_PROXY) as HttpURLConnection
+        return try {
+            connection.connectTimeout = 1_000
+            connection.readTimeout = 5_000
+            connection.useCaches = false
+            connection.instanceFollowRedirects = false
+            if (connection.responseCode != 200 || connection.getHeaderField("X-Silent-Upstream") != "1") return null
+            val deadline = SystemClock.elapsedRealtime() + 5_000
+            val bytes = connection.inputStream.use { input ->
+                val output = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                while (output.size() <= 262_144) {
+                    check(SystemClock.elapsedRealtime() < deadline)
+                    val n = input.read(buffer, 0, minOf(buffer.size, 262_145 - output.size()))
+                    if (n < 0) break
+                    output.write(buffer, 0, n)
+                }
+                output.toByteArray()
+            }
+            valid(bytes.toString(Charsets.UTF_8))
+        } finally { connection.disconnect() }
+    }
+
+    fun hasReceivedPolicy(): Boolean = receivedRevision != null
+
+    fun applicationFailed() { mutableDelivery.value = Delivery.FAILED }
 }

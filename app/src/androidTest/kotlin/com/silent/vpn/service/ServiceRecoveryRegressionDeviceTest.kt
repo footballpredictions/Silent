@@ -8,6 +8,15 @@ import com.silent.vpn.vpn.VpnNetworkHelper
 import com.silent.vpn.vpn.WdttTunnelManager
 import com.silent.vpn.vpn.BrowserScopedTunnel
 import com.silent.vpn.policy.TunnelDataWatch
+import com.silent.vpn.vpn.AppTunnelPolicy
+import com.silent.vpn.vpn.SiteBypassRoutes
+import com.silent.vpn.vpn.Ipv4Cidr
+import com.wireguard.config.Config
+import android.content.Intent
+import android.net.VpnService
+import org.junit.Assert.assertSame
+import org.json.JSONObject
+import org.json.JSONArray
 import android.os.SystemClock
 import android.net.ConnectivityManager
 import java.net.ServerSocket
@@ -131,6 +140,63 @@ class ServiceRecoveryRegressionDeviceTest {
         assertTrue("A confirmed lost network kept the original sockets", transport.stops() > 0)
     }
 
+    @Test fun missingBypassAcknowledgementCannotBlockMobileVpnRecovery() = withTransport { service, transport ->
+        val nativeField = BrowserScopedTunnel::class.java.getDeclaredField("process").apply { isAccessible = true }
+        check(nativeField.get(BrowserScopedTunnel) == null)
+        // The bypass child is alive but never acknowledges its private command.
+        val unresponsiveRouter = TransportProcess()
+        try {
+            nativeField.set(BrowserScopedTunnel, unresponsiveRouter)
+            recover(service, "rat_switch:3g")
+            assertTrue("A missing bypass ACK prevented recovery of the mobile VPN transport", transport.stops() > 0)
+        } finally {
+            nativeField.set(BrowserScopedTunnel, null)
+        }
+    }
+
+    @Test fun confirmedGapReachesLiveDirectRouterButValidationDoesNot() = withTransport { service, transport ->
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        check(VpnService.prepare(context) == null)
+        val excluded = SiteBypassRoutes.complementCidrs(listOf(Ipv4Cidr(0xc6120000L, 15))).map { it.toString() }
+        val config = Config.parse(ByteArrayInputStream("""
+            [Interface]
+            PrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+            Address = 198.18.0.2/32
+            MTU = 1200
+            [Peer]
+            PublicKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=
+            AllowedIPs = 198.18.0.0/15
+            Endpoint = 127.0.0.1:9
+        """.trimIndent().toByteArray()))
+        val nativeField = BrowserScopedTunnel::class.java.getDeclaredField("process").apply { isAccessible = true }
+        val revision = BrowserScopedTunnel::class.java.getDeclaredField("targetRevision").apply { isAccessible = true }
+        try {
+            // start() waits for the Android VPN service; keep the Main looper free.
+            kotlinx.coroutines.withContext(Dispatchers.IO) {
+                BrowserScopedTunnel.start(context, config, AppTunnelPolicy(false, setOf(context.packageName)),
+                    excluded, emptyList(), emptyList(), false, "recovery-boundary",
+                    JSONObject().put("enabled", true).put("direct_domains", JSONArray(listOf("ru"))))
+            }
+            val native = nativeField.get(BrowserScopedTunnel)
+            val before = revision.getLong(BrowserScopedTunnel)
+            recover(service, "validated_after_gap")
+            assertEquals(before, revision.getLong(BrowserScopedTunnel))
+            assertEquals(0, transport.stops())
+            recover(service, "wifi_gap_restored")
+            withTimeout(3_000) { while (revision.getLong(BrowserScopedTunnel) == before) delay(25) }
+            assertEquals("Confirmed handover never reached the live native router", before + 1, revision.getLong(BrowserScopedTunnel))
+            assertEquals(1, transport.stops())
+            assertSame("Service recovery replaced WG/TUN", native, nativeField.get(BrowserScopedTunnel))
+            recover(service, "internet_restored")
+            delay(75)
+            assertEquals("A second callback reset DIRECT again during the same transport restart", before + 1, revision.getLong(BrowserScopedTunnel))
+        } finally {
+            BrowserScopedTunnel.stop()
+            context.stopService(Intent(context, BrowserScopedVpnService::class.java))
+            withTimeout(3_000) { while (BrowserScopedVpnService.instance != null) delay(10) }
+        }
+    }
+
     @Test fun validationEventCannotOverwriteAQueuedRealGap() = withTransport { service, transport ->
         val schedule = SilentVpnService::class.java.getDeclaredMethod(
             "scheduleNetworkRecovery", String::class.java, java.lang.Long.TYPE,
@@ -200,6 +266,21 @@ class ServiceRecoveryRegressionDeviceTest {
     }
 
     private suspend fun withPathServer(upstreamResponds: Boolean, test: suspend () -> Unit) {
+        // A previous real TUN test changes Android's default network asynchronously.
+        // This fixture specifically tests a stall on an unchanged physical network.
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        var selected = VpnNetworkHelper.findUnderlyingNetwork(context)
+        var unchangedSince = SystemClock.elapsedRealtime()
+        withTimeout(10_000) {
+            while (selected == null || SystemClock.elapsedRealtime() - unchangedSince < 2_500L) {
+                delay(50)
+                val current = VpnNetworkHelper.findUnderlyingNetwork(context)
+                if (current == null || current != selected) {
+                    selected = current
+                    unchangedSince = SystemClock.elapsedRealtime()
+                }
+            }
+        }
         val processField = BrowserScopedTunnel::class.java.getDeclaredField("process").apply { isAccessible = true }
         val previous = processField.get(BrowserScopedTunnel)
         val server = ServerSocket(18766, 8, InetAddress.getByName("127.0.0.1"))

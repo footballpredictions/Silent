@@ -1,6 +1,6 @@
 import Foundation
 
-/// Публичный API: сначала живые соты :9100, Улей :443 последним (его режут из РФ).
+/// Публичный API: Улей :443, затем соты :9100 (прокси на Улей).
 enum PublicApiFailover {
     static let hiveHttps = "https://89-125-188-100.nip.io"
     static let hiveIpHttps = "https://89.125.188.100"
@@ -29,16 +29,19 @@ enum PublicApiFailover {
             if v.contains("132.243.234.162") || v.contains("132-243-234-162") { return }
             out.append(v)
         }
+        if !out.contains(hiveIpHttps) { out.append(hiveIpHttps) }
         cells.forEach { add($0) }
-        add(preferred)
         add(hiveHttps)
-        add(hiveIpHttps)
+        add(preferred)
+        extraBases.forEach { add($0) }
         return out
     }
 
+    static var extraBases: [String] = []
+
     static func timeoutSeconds(_ base: String) -> TimeInterval {
-        if base.contains(":9100") { return 8 }
-        return 4
+        _ = base
+        return 8
     }
 
     static func shouldTryNextBase(httpCode: Int) -> Bool {

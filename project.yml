@@ -1,0 +1,115 @@
+name: Silent
+options:
+  bundleIdPrefix: com.silent
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+settings:
+  SWIFT_VERSION: "5.0"
+  IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+  TARGETED_DEVICE_FAMILY: "1,2"
+  CODE_SIGN_STYLE: Automatic
+  DEVELOPMENT_TEAM: ""
+  MARKETING_VERSION: "1.0.169"
+  CURRENT_PROJECT_VERSION: "3"
+  ENABLE_USER_SCRIPT_SANDBOXING: NO
+targets:
+  Silent:
+    type: application
+    platform: iOS
+    sources:
+      - path: Silent
+        excludes:
+          - "*.entitlements"
+      - path: Shared
+    dependencies:
+      - target: SilentTunnel
+        embed: true
+    entitlements:
+      path: Silent/Silent.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.silent.vpn
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Silent VPN
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+    info:
+      path: Silent/Info.plist
+      properties:
+        CFBundleDisplayName: Silent VPN
+        UILaunchScreen: {}
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        CFBundleURLTypes:
+          - CFBundleURLName: silentvpn
+            CFBundleURLSchemes:
+              - silentvpn
+        UIAppFonts:
+          - Inter-Regular.ttf
+          - Inter-Medium.ttf
+          - Inter-SemiBold.ttf
+        LSApplicationQueriesSchemes:
+          - tg
+          - telegram
+  SilentTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: SilentTunnel
+        excludes:
+          - Generated
+          - Native
+          - WdttStub.c
+          - "*.entitlements"
+      - path: SilentTunnel/Generated/EngineBridge.c
+      - path: Shared
+    entitlements:
+      path: SilentTunnel/SilentTunnel.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.silent.vpn.tunnel
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_OBJC_BRIDGING_HEADER: SilentTunnel/SilentTunnel-Bridging-Header.h
+        OTHER_LDFLAGS: "@$(SRCROOT)/SilentTunnel/Generated/link.resp"
+    info:
+      path: SilentTunnel/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    preBuildScripts:
+      - name: Select native engine
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/SilentTunnel/Generated/EngineBridge.c
+          - $(SRCROOT)/SilentTunnel/Generated/link.resp
+        script: |
+          set -e
+          GEN="$SRCROOT/SilentTunnel/Generated"
+          mkdir -p "$GEN" "$SRCROOT/SilentTunnel/Native"
+          if [ -f "$SRCROOT/SilentTunnel/Native/libwdtt.a" ]; then
+            printf '%s\n' '/* symbols come from libwdtt.a */' > "$GEN/EngineBridge.c"
+            printf '%s\n' '-force_load $(SRCROOT)/SilentTunnel/Native/libwdtt.a' > "$GEN/link.resp"
+            printf '%s\n' '-framework CoreFoundation' >> "$GEN/link.resp"
+            printf '%s\n' '-framework Security' >> "$GEN/link.resp"
+            printf '%s\n' '-framework Foundation' >> "$GEN/link.resp"
+            printf '%s\n' '-lresolv' >> "$GEN/link.resp"
+          else
+            cp "$SRCROOT/SilentTunnel/WdttStub.c" "$GEN/EngineBridge.c"
+            printf '%s\n' '-framework NetworkExtension' > "$GEN/link.resp"
+          fi
+schemes:
+  Silent:
+    build:
+      targets:
+        Silent: all
+        SilentTunnel: all
+    run:
+      config: Debug
+    archive:
+      config: Release

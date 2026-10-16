@@ -1,90 +1,5 @@
 import Foundation
 
-// MARK: - Models
-
-struct LoginRequest: Encodable { let email: String; let password: String }
-struct RegisterRequest: Encodable { let email: String; let password: String }
-struct TokenResponse: Decodable { let access_token: String; let refresh_token: String }
-struct EmptyBody: Encodable {}
-struct QrStartResponse: Decodable { let token: String; let expires_in: Int; let payload: String }
-struct QrPollResponse: Decodable {
-    let status: String
-    let access_token: String?
-    let refresh_token: String?
-}
-struct QrUserCodeResponse: Decodable { let code: String; let expires_in: Int; let payload: String }
-
-struct SubscriptionInfo: Decodable {
-    let is_active: Bool
-    let plan_type: String?
-    let expires_at: String?
-    let days_left: Int
-}
-
-struct DeviceInfo: Decodable, Identifiable {
-    let id: String
-    let device_name: String
-    let device_type: String
-    let is_connected: Bool
-    let last_connected: String?
-}
-
-struct UserProfile: Decodable {
-    let id: String
-    let email: String
-    let display_id: String
-    let subscription: SubscriptionInfo
-    let devices: [DeviceInfo]
-    let devices_count: Int
-    let max_devices: Int
-}
-
-struct VpnConfig: Decodable {
-    let device_id: String
-    let wg_private_key: String
-    let wg_address: String
-    let wg_dns: String
-    let server_ip: String
-    let server_port: Int
-    let server_public_key: String
-    let wdtt_password: String
-    let vk_hashes: [String]
-    let stream_count: Int
-}
-
-struct ThemeData: Decodable {
-    var primary_color: String = "#000000"
-    var background_color: String = "#FFFFFF"
-    var text_color: String = "#000000"
-    var accent_color: String = "#1A1A1A"
-    var toggle_on_color: String = "#000000"
-    var toggle_off_color: String = "#CCCCCC"
-    var font_family: String = "Inter"
-    var logo_url: String = ""
-    var home_bg_image_url: String = ""
-    var app_name: String = "Silent"
-    var support_url: String = "https://t.me/silentvpn3?direct"
-    var telegram_channel_url: String = "https://t.me/silentvpn3"
-    var telegram_proxy_url: String = ""
-    var telegram_proxy_menu_label: String = "Ускорить Telegram"
-    var privacy_url: String = ""
-    var terms_url: String = ""
-    var login_qr_title: String?
-    var login_qr_show_hint: String?
-    var login_qr_confirm_label: String?
-    var login_qr_confirm_hint: String?
-    var menu_qr_label: String?
-    var skip_email_confirmation: Bool?
-    var subscription_tier_3_label: String?
-    var subscription_tier_5_label: String?
-    var subscription_choose_tier_title: String?
-    var subscription_choose_plan_title: String?
-}
-
-struct PaymentResponse: Decodable {
-    let url: String; let wallet: String; let label: String; let amount: Double
-}
-
 // MARK: - API Service
 
 class APIService: ObservableObject {
@@ -123,12 +38,23 @@ class APIService: ObservableObject {
         body: Encodable? = nil,
         auth: Bool = true
     ) async throws -> T {
+        let data = try await requestData(path, method: method, body: body, auth: auth)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func requestData(
+        _ path: String,
+        method: String = "GET",
+        body: Encodable? = nil,
+        auth: Bool = true,
+        allowRefresh: Bool = true
+    ) async throws -> Data {
         let bases = PublicApiFailover.bases(preferred: serverURL)
         guard !bases.isEmpty else { throw APIError.noServer }
         var lastError: Error = APIError.network
         for base in bases {
             do {
-                return try await requestOnce(path, method: method, body: body, auth: auth, base: base)
+                return try await requestOnce(path, method: method, body: body, auth: auth, base: base, allowRefresh: allowRefresh)
             } catch let e as APIError {
                 switch e {
                 case .network, .invalidURL:
@@ -145,13 +71,14 @@ class APIService: ObservableObject {
         throw lastError
     }
 
-    private func requestOnce<T: Decodable>(
+    private func requestOnce(
         _ path: String,
         method: String,
         body: Encodable?,
         auth: Bool,
-        base: String
-    ) async throws -> T {
+        base: String,
+        allowRefresh: Bool
+    ) async throws -> Data {
         let trimmed = path.hasPrefix("/") ? String(path.dropFirst()) : path
         guard let url = URL(string: "\(base)/\(trimmed)") else { throw APIError.invalidURL }
 
@@ -176,68 +103,74 @@ class APIService: ObservableObject {
         }
 
         guard let httpResp = response as? HTTPURLResponse else { throw APIError.network }
-        if httpResp.statusCode == 401 && auth {
+        if httpResp.statusCode == 401 && auth && allowRefresh {
             try await refreshTokens()
-            return try await requestOnce(path, method: method, body: body, auth: auth, base: base)
+            return try await requestOnce(path, method: method, body: body, auth: auth, base: base, allowRefresh: false)
         }
         if PublicApiFailover.shouldTryNextBase(httpCode: httpResp.statusCode) {
             throw APIError.network
         }
         guard (200..<300).contains(httpResp.statusCode) else {
-            let detail = (try? JSONDecoder().decode([String: String].self, from: data))?["detail"] ?? "Error \(httpResp.statusCode)"
+            let detail = serverDetail(data) ?? "Ошибка \(httpResp.statusCode)"
             throw APIError.server(detail)
         }
-        return try JSONDecoder().decode(T.self, from: data)
+        return data
+    }
+
+    private func serverDetail(_ data: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let s = obj["detail"] as? String { return s }
+        if let list = obj["detail"] as? [[String: Any]] {
+            let msgs = list.compactMap { $0["msg"] as? String }
+            if !msgs.isEmpty { return msgs.joined(separator: " ") }
+        }
+        return nil
     }
 
     private func refreshTokens() async throws {
         guard let rt = refreshToken else { throw APIError.unauthorized }
         struct RefReq: Encodable { let refresh_token: String }
-        let resp: TokenResponse = try await request("api/auth/refresh", method: "POST", body: RefReq(refresh_token: rt), auth: false)
+        let data = try await requestData("api/auth/refresh", method: "POST", body: RefReq(refresh_token: rt), auth: false, allowRefresh: false)
+        let resp = try JSONDecoder().decode(TokenResponse.self, from: data)
         accessToken = resp.access_token
         refreshToken = resp.refresh_token
     }
 
     // ─── API Methods ─────────────────────────────────────────────────────────
 
-    func qrStart() async throws -> QrStartResponse {
-        try await request("api/auth/qr/start", method: "POST", body: EmptyBody(), auth: false)
-    }
-
-    func qrPoll(token: String) async throws -> QrPollResponse {
-        try await request("api/auth/qr/poll?token=\(token)", auth: false)
-    }
-
-    func qrUserCode() async throws -> QrUserCodeResponse {
-        try await request("api/auth/qr/user-code", method: "POST", body: EmptyBody())
-    }
-
-    func qrApprove(payload: String) async throws {
-        struct Req: Encodable { let payload: String }
-        let _: [String: Bool] = try await request("api/auth/qr/approve", method: "POST", body: Req(payload: payload))
-    }
-
-    func qrRedeem(payload: String) async throws -> TokenResponse {
-        struct Req: Encodable { let payload: String }
-        let resp: TokenResponse = try await request("api/auth/qr/redeem", method: "POST", body: Req(payload: payload), auth: false)
-        accessToken = resp.access_token; refreshToken = resp.refresh_token
-        return resp
-    }
-
     func login(email: String, password: String) async throws -> TokenResponse {
         let resp: TokenResponse = try await request("api/auth/login", method: "POST", body: LoginRequest(email: email, password: password), auth: false)
-        accessToken = resp.access_token; refreshToken = resp.refresh_token
+        accessToken = resp.access_token
+        refreshToken = resp.refresh_token
         return resp
     }
 
-    func register(email: String, password: String) async throws {
-        let resp: [String: String] = try await request("api/auth/register", method: "POST", body: RegisterRequest(email: email, password: password), auth: false)
-        if EmailConfirmationPolicy.skipConfirmation(
-            themeSkip: (try? await getTheme())?.skip_email_confirmation == true,
-            requiredFlag: resp["email_confirmation_required"]
-        ) {
+    /// true — сразу вошли. false — нужно подтвердить почту.
+    func register(email: String, password: String, referralOrPromo: String?) async throws -> Bool {
+        let code = referralOrPromo?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let data = try await requestData(
+            "api/auth/register",
+            method: "POST",
+            body: RegisterRequest(email: email, password: password, referral_or_promo: (code?.isEmpty == false) ? code : nil),
+            auth: false
+        )
+        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let flag: String? = {
+            if let s = obj?["email_confirmation_required"] as? String { return s }
+            if let b = obj?["email_confirmation_required"] as? Bool { return b ? "true" : "false" }
+            return nil
+        }()
+        let themeSkip = (try? await getTheme())?.skip_email_confirmation == true
+        if EmailConfirmationPolicy.skipConfirmation(themeSkip: themeSkip, requiredFlag: flag) {
             _ = try await login(email: email, password: password)
+            return true
         }
+        return false
+    }
+
+    func forgotPassword(email: String) async throws {
+        struct Req: Encodable { let email: String }
+        _ = try await requestData("api/auth/forgot-password", method: "POST", body: Req(email: email), auth: false)
     }
 
     func getProfile() async throws -> UserProfile {
@@ -245,27 +178,122 @@ class APIService: ObservableObject {
     }
 
     func getTheme() async throws -> ThemeData {
-        try await request("api/vpn/theme", auth: false)
+        let data = try await requestData("api/vpn/theme", auth: false)
+        defaults.set(data, forKey: "cached_theme_json")
+        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        let theme = ThemeData(dict: obj)
+        let extra = theme.hive_standby_api_urls
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        PublicApiFailover.extraBases = extra
+        return theme
     }
 
-    func registerDevice(name: String, type: String) async throws -> VpnConfig {
-        struct Req: Encodable { let device_name: String; let device_type: String; let device_fingerprint: String; let wg_public_key: String? }
-        return try await request("api/vpn/device/register", method: "POST", body: Req(device_name: name, device_type: type, device_fingerprint: deviceFingerprint, wg_public_key: nil))
+    func cachedTheme() -> ThemeData? {
+        guard let data = defaults.data(forKey: "cached_theme_json"),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        return ThemeData(dict: obj)
     }
 
-    func connect() async throws {
-        struct Req: Encodable { let device_fingerprint: String; let device_type: String }
-        let _: [String: String] = try await request("api/vpn/connect", method: "POST", body: Req(device_fingerprint: deviceFingerprint, device_type: "ios"))
+    func getPlans() async throws -> [ShopPlan] {
+        try await request("api/payments/plans?all=1", auth: false)
+    }
+
+    func registerDevice(name: String, preferredServer: String) async throws -> VpnConfig {
+        struct Req: Encodable {
+            let device_name: String
+            let device_type: String
+            let device_fingerprint: String
+            let wg_public_key: String?
+            let preferred_server: String
+        }
+        return try await request(
+            "api/vpn/device/register",
+            method: "POST",
+            body: Req(
+                device_name: name,
+                device_type: "ios",
+                device_fingerprint: deviceFingerprint,
+                wg_public_key: nil,
+                preferred_server: preferredServer
+            )
+        )
+    }
+
+    func connect(preferredServer: String) async throws {
+        struct Req: Encodable {
+            let device_fingerprint: String
+            let device_type: String
+            let preferred_server: String
+        }
+        _ = try await requestData(
+            "api/vpn/connect",
+            method: "POST",
+            body: Req(device_fingerprint: deviceFingerprint, device_type: "ios", preferred_server: preferredServer)
+        )
     }
 
     func disconnect() async throws {
         struct Req: Encodable { let device_fingerprint: String }
-        let _: [String: String] = try await request("api/vpn/disconnect", method: "POST", body: Req(device_fingerprint: deviceFingerprint))
+        _ = try await requestData("api/vpn/disconnect", method: "POST", body: Req(device_fingerprint: deviceFingerprint))
+    }
+
+    func logoutSession() async {
+        struct Req: Encodable { let device_fingerprint: String }
+        _ = try? await requestData("api/users/logout", method: "POST", body: Req(device_fingerprint: deviceFingerprint))
+        accessToken = nil
+        refreshToken = nil
     }
 
     func initPayment(plan: String, promo: String? = nil) async throws -> PaymentResponse {
         struct Req: Encodable { let plan_type: String; let promo_code: String? }
         return try await request("api/payments/init", method: "POST", body: Req(plan_type: plan, promo_code: promo))
+    }
+
+    func previewPayment(plan: String) async throws -> PaymentPreview {
+        struct Req: Encodable { let plan_type: String }
+        return try await request("api/payments/preview", method: "POST", body: Req(plan_type: plan))
+    }
+
+    func paymentStatus(label: String) async throws -> PaymentStatus {
+        let safe = label.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? label
+        return try await request("api/payments/status/\(safe)")
+    }
+
+    func referral() async throws -> ReferralInfo {
+        try await request("api/users/me/referral")
+    }
+
+    func checkPromo(code: String, plan: String) async throws -> PromoCheck {
+        struct Req: Encodable { let code: String; let plan_type: String }
+        return try await request("api/payments/promo/check", method: "POST", body: Req(code: code, plan_type: plan))
+    }
+
+    func fetchServers() async throws -> VpnServersBody {
+        try await request("api/vpn/servers")
+    }
+
+    func selectServer(_ slot: String) async throws -> VpnServersBody {
+        struct Req: Encodable {
+            let device_fingerprint: String
+            let preferred_server: String
+            let app_version: String
+        }
+        return try await request(
+            "api/vpn/servers/select",
+            method: "POST",
+            body: Req(device_fingerprint: deviceFingerprint, preferred_server: slot, app_version: "1.0.0")
+        )
+    }
+
+    func renameDevice(id: String, name: String) async throws {
+        struct Req: Encodable { let device_name: String }
+        _ = try await requestData("api/users/devices/\(id)", method: "PATCH", body: Req(device_name: name))
+    }
+
+    func deleteDevice(id: String) async throws {
+        _ = try await requestData("api/users/devices/\(id)", method: "DELETE")
     }
 
     func logout() { accessToken = nil; refreshToken = nil }

@@ -13,6 +13,11 @@ sv_path_ip() {
 	fi
 }
 
+sv_path_fw_reload() {
+	. "$SV_LIB/ru-direct.sh"
+	sv_ru_firewall_reload
+}
+
 sv_path_drop_blackhole() {
 	local ipb
 	ipb="$(sv_path_ip)"
@@ -33,7 +38,7 @@ sv_path_clear() {
 	sv_path_kernel_restore
 	sv_path_offload_restore
 	sv_path_fw_drop_files
-	/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	sv_path_fw_reload || true
 	ip link del dev "$SV_WG_IF" 2>/dev/null || true
 	uci -q delete network."$SV_WG_IF"
 	uci -q delete network."${SV_WG_IF}_peer"
@@ -400,12 +405,12 @@ sv_path_fw_pass() {
 	[ -n "$dev" ] || dev="br-lan"
 	sv_path_offload_off
 	sv_path_fw_write || sv_log "fw files not written"
-	if /etc/init.d/firewall reload >/dev/null 2>&1; then
+	if sv_path_fw_reload; then
 		sv_log "firewall reload ok"
 	else
 		sv_log "firewall reload failed"
 		sv_path_fw_drop_files
-		/etc/init.d/firewall reload >/dev/null 2>&1 || sv_log "firewall restore failed"
+		sv_path_fw_reload || sv_log "firewall restore failed"
 	fi
 	if sv_path_fw_seen; then
 		sv_log "nat: ok"

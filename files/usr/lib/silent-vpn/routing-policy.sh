@@ -41,7 +41,7 @@ sv_policy_validate() {
 }
 
 sv_policy_fetch() {
-	local base tmp
+	local base tmp saved
 	sv_mkdir
 	tmp="$(mktemp "$SV_RUN/policy-download.XXXXXX")" || return 1
 	for base in $(sv_policy_bases); do
@@ -50,9 +50,13 @@ sv_policy_fetch() {
 		if wget -q -O "$tmp" --timeout="$(sv_hive_timeout_for "$base")" \
 			"$base/api/vpn/routing-policy" 2>/dev/null && sv_policy_validate "$tmp"; then
 			if ! cmp -s "$tmp" "$SV_VAR/routing-policy.json"; then
-				cp "$tmp" "$SV_VAR/routing-policy.json.new" || { rm -f "$tmp"; return 1; }
-				chmod 600 "$SV_VAR/routing-policy.json.new"
-				mv "$SV_VAR/routing-policy.json.new" "$SV_VAR/routing-policy.json"
+				# Background refresh and first-time connect can finish together.
+				# Each validated writer needs its own file until the atomic rename.
+				saved="$(mktemp "$SV_VAR/routing-policy.XXXXXX")" || { rm -f "$tmp"; return 1; }
+				if ! { cp "$tmp" "$saved" && chmod 600 "$saved" && mv "$saved" "$SV_VAR/routing-policy.json"; }; then
+					rm -f "$tmp" "$saved"
+					return 1
+				fi
 				rm -f "$tmp"
 			else
 				rm -f "$tmp"

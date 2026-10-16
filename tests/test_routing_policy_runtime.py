@@ -8,6 +8,139 @@ import test_path_runtime as runtime
 class PolicyRuntimeTests(unittest.TestCase):
     run_shell = runtime.RouterRuntimeTests.run_shell
 
+    def test_reconnect_restores_cached_destinations_before_reporting_ready(self):
+        # A reconnect reloads fw4; the browser still holds its DNS answers.
+        lines = self.run_shell(r'''
+sed 's|/etc/init.d/dnsmasq restart|test_dns_restart|g' "$SV_LIB/ru-direct.sh" > "$SV_RUN/ru-fixture.sh"
+. "$SV_RUN/ru-fixture.sh"
+rm "$SV_LIB/routing-policy.sh"
+printf '192.0.2.7\n' > "$SV_RUN/sv_ru.ips"
+printf '198.51.100.8\n' > "$SV_RUN/sv_ru_vpn.ips"
+sv_ru_enabled() { return 0; }
+dnsmasq() { echo 'options: nftset DHCP'; }
+sv_ru_ensure_nft() { :; }
+sv_ru_ensure_route() { :; }
+sv_ru_write_dns() { :; }
+sv_ru_seed_vpn_ips() { :; }
+sv_ru_snapshot_sets() { :; }
+test_dns_restart() { :; }
+nft() { [ "$1" = -f ] || exit 1; cat "$2" >> "$SV_RUN/restored"; }
+sv_ru_apply || exit 1
+test ! -f "$SV_RUN/restored" || cat "$SV_RUN/restored"
+echo ready
+''', library='ru-direct.sh')
+        self.assertEqual(lines, ['add element inet fw4 sv_ru { 192.0.2.7 }',
+                                 'add element inet fw4 sv_ru_vpn { 198.51.100.8 }', 'ready'])
+
+    def test_reconnect_uses_valid_cached_policy_without_network_wait(self):
+        lines = self.run_shell(r'''
+sed 's|/etc/init.d/dnsmasq restart|test_dns_restart|g' "$SV_LIB/ru-direct.sh" > "$SV_RUN/ru-fixture.sh"
+. "$SV_RUN/ru-fixture.sh"
+cat > "$SV_LIB/routing-policy.sh" <<'EOF'
+sv_policy_validate() { return 0; }
+sv_policy_use_cache() { return 0; }
+sv_policy_fetch() { echo unexpected-network-wait; return 1; }
+EOF
+echo cached-policy > "$SV_VAR/routing-policy.json"
+sv_ru_enabled() { return 0; }
+dnsmasq() { echo 'options: nftset DHCP'; }
+sv_ru_ensure_nft() { :; }
+sv_ru_ensure_route() { :; }
+sv_ru_write_dns() { :; }
+sv_ru_seed_vpn_ips() { :; }
+sv_ru_snapshot_sets() { :; }
+sv_ru_restore_sets() { :; }
+jsonfilter() { echo revision; }
+test_dns_restart() { :; }
+sv_ru_apply || exit 1
+echo ready
+''', library='ru-direct.sh')
+        self.assertEqual(lines, ['ready'])
+
+    def test_connect_cannot_report_success_if_bypass_failed(self):
+        lines = self.run_shell(r'''
+cat > "$SV_LIB/ru-direct.sh" <<'EOF'
+sv_ru_apply() { return 1; }
+EOF
+sv_hive_register_device() { echo fixture; }
+jsonfilter() { echo fixture; }
+sv_cloak_start() { :; }
+sv_cloak_wait() { :; }
+sv_path_up_from_json() { touch "$SV_RUN/path.up"; }
+sv_path_clear() { rm -f "$SV_RUN/path.up"; }
+sv_cloak_stop() { :; }
+sv_hive_connect() { :; }
+if sv_connect_full; then echo connected-without-bypass; else echo failed; fi
+test ! -f "$SV_RUN/connected" || echo false-connected-marker
+''', library='session.sh')
+        self.assertEqual(lines, ['failed'])
+
+    def test_firewall_reload_preserves_recent_dns_answers_before_next_poll(self):
+        lines = self.run_shell(r'''
+sv_ru_enabled() { return 0; }
+echo 192.0.2.9 > "$SV_RUN/live"
+sv_ru_snapshot_sets() { cat "$SV_RUN/live" >> "$SV_RUN/sv_ru.ips"; }
+sv_ru_ensure_nft() { :; }
+sv_ru_restore_sets() { cat "$SV_RUN/sv_ru.ips" > "$SV_RUN/live"; }
+sv_ru_firewall_restart() { : > "$SV_RUN/live"; }
+sv_ru_firewall_reload || exit 1
+cat "$SV_RUN/live"
+test ! -d "$SV_RUN/ru.lock" || exit 1
+''', library='ru-direct.sh')
+        self.assertEqual(lines, ['192.0.2.9'])
+
+    def test_background_fetch_does_not_block_reconnect_writer(self):
+        lines = self.run_shell(r'''
+cat > "$SV_LIB/routing-policy.sh" <<'EOF'
+sv_policy_fetch() {
+  if [ -d "$SV_RUN/ru.lock" ]; then echo writer-blocked-during-network; fi
+  return 1
+}
+sv_policy_use_cache() { :; }
+EOF
+sv_ru_enabled() { return 0; }
+jsonfilter() { :; }
+sv_ru_maintain() { :; }
+sv_ru_refresh
+test ! -d "$SV_RUN/ru.lock" || exit 1
+echo ready
+''', library='ru-direct.sh')
+        self.assertEqual(lines, ['ready'])
+
+    def test_rejected_cached_ip_restore_is_reported_and_tempfile_removed(self):
+        lines = self.run_shell(r'''
+echo 192.0.2.7 > "$SV_RUN/sv_ru.ips"
+nft() { return 1; }
+if sv_ru_restore_sets; then echo false-success; else echo failed; fi
+for file in "$SV_RUN"/ru-restore.*; do [ ! -e "$file" ] || echo leaked-tempfile; done
+''', library='ru-direct.sh')
+        self.assertEqual(lines, ['failed'])
+
+    def test_connect_waits_for_active_policy_writer_and_then_applies_bypass(self):
+        lines = self.run_shell(r'''
+mkdir -p "$SV_RUN/ru.lock"
+echo $$ > "$SV_RUN/ru.lock/pid"
+sleep() { rm -f "$SV_RUN/ru.lock/pid"; rmdir "$SV_RUN/ru.lock"; }
+sv_ru_apply_inner() { echo bypass-applied; }
+sv_ru_apply || exit 1
+test ! -d "$SV_RUN/ru.lock" || exit 1
+''', library='ru-direct.sh')
+        self.assertEqual(lines, ['bypass-applied'])
+
+    def test_firewall_reload_failure_unlocks_and_preserves_saved_addresses(self):
+        lines = self.run_shell(r'''
+sv_ru_enabled() { return 0; }
+echo 192.0.2.9 > "$SV_RUN/sv_ru.ips"
+sv_ru_snapshot_sets() { :; }
+sv_ru_ensure_nft() { :; }
+sv_ru_restore_sets() { :; }
+sv_ru_firewall_restart() { return 1; }
+if sv_ru_firewall_reload; then echo false-success; else echo failed; fi
+cat "$SV_RUN/sv_ru.ips"
+test ! -d "$SV_RUN/ru.lock" || exit 1
+''', library='ru-direct.sh')
+        self.assertEqual(lines, ['failed', '192.0.2.9'])
+
     def test_busy_once_worker_cannot_unlock_another_writer(self):
         lines = self.run_shell(r'''
 mkdir -p "$SV_RUN/ru.lock"
@@ -145,6 +278,30 @@ sv_policy_fetch || true
 cat "$SV_VAR/routing-policy.json"
 ''', library='ru-direct.sh')
         self.assertEqual(lines, ['saved'])
+
+    def test_simultaneous_downloads_publish_complete_cache_without_shared_tempfile(self):
+        lines = self.run_shell(r'''
+. "$SV_LIB/routing-policy.sh"
+sv_policy_bases() { echo fixture; }
+sv_policy_validate() { grep -q valid "$1"; }
+sv_hive_timeout_for() { echo 1; }
+wget() { echo valid > "$3"; }
+cp() {
+  command cp "$@" || return 1
+  echo "$2" >> "$SV_RUN/copies"
+  while [ "$(wc -l < "$SV_RUN/copies")" -lt 2 ]; do sleep 0.02; done
+}
+sv_policy_fetch & first=$!
+sv_policy_fetch & second=$!
+wait "$first" || exit 1
+wait "$second" || exit 1
+test "$(sort -u "$SV_RUN/copies" | wc -l)" -eq 2 || exit 1
+cat "$SV_VAR/routing-policy.json"
+for file in "$SV_VAR"/routing-policy.*; do
+  [ "$file" = "$SV_VAR/routing-policy.json" ] || echo leaked-cache-file
+done
+''', library='ru-direct.sh')
+        self.assertEqual(lines, ['valid'])
 
 
 if __name__ == '__main__':

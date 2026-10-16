@@ -152,7 +152,7 @@ sv_ru_snapshot_sets() {
 }
 
 sv_ru_restore_sets() {
-	local set txn
+	local set txn code=0
 	txn="$(mktemp "$SV_RUN/ru-restore.XXXXXX")" || return 1
 	for set in sv_ru sv_ru_vpn; do
 		[ -s "$SV_RUN/$set.ips" ] || continue
@@ -164,8 +164,9 @@ sv_ru_restore_sets() {
 		 if(valid) printf "add element inet fw4 %s { %s }\n",set,$0
 		}' "$SV_RUN/$set.ips" >> "$txn"
 	done
-	[ ! -s "$txn" ] || nft -f "$txn" 2>/dev/null || true
+	[ ! -s "$txn" ] || nft -f "$txn" 2>/dev/null || code=$?
 	rm -f "$txn"
+	return "$code"
 }
 
 sv_ru_lock() {
@@ -188,14 +189,41 @@ sv_ru_unlock() {
 	rmdir "$SV_RUN/ru.lock" 2>/dev/null || true
 }
 
+sv_ru_lock_wait() {
+	local attempt=0
+	while ! sv_ru_lock; do
+		[ "$attempt" -lt 10 ] || return 1
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+}
+
+sv_ru_firewall_restart() {
+	/etc/init.d/firewall reload >/dev/null 2>&1
+}
+
+sv_ru_firewall_reload() {
+	local code=0
+	sv_ru_lock_wait || return 1
+	# fw4 recreates our included sets empty. Save the latest DNS answers before
+	# that happens; phones/browsers can keep using them without another lookup.
+	if sv_ru_enabled; then sv_ru_snapshot_sets; fi
+	sv_ru_firewall_restart || code=$?
+	if sv_ru_enabled; then
+		sv_ru_ensure_nft && sv_ru_restore_sets || code=1
+	fi
+	sv_ru_unlock
+	return "$code"
+}
+
 sv_ru_maintain() {
 	sv_ru_enabled || return 0
 	if ! sv_ru_policy_ready; then
 		sv_ru_ensure_nft || return 1
 	fi
 	# Restore addresses even when fw4 recreated the included empty sets/chains.
-	sv_ru_restore_sets
-	sv_ru_ensure_route
+	sv_ru_restore_sets || return 1
+	sv_ru_ensure_route || return 1
 	sv_ru_seed_vpn_ips
 	sv_ru_snapshot_sets
 }
@@ -263,13 +291,18 @@ sv_ru_apply_inner() {
 	fi
 	if [ -f "$SV_LIB/routing-policy.sh" ]; then
 		. "$SV_LIB/routing-policy.sh"
-		sv_policy_fetch || true
+		# The policy daemon refreshes in the background. A reconnect must not wait
+		# for every public fallback when a last-good policy is already available.
+		if ! { [ -s "$SV_VAR/routing-policy.json" ] && sv_policy_validate "$SV_VAR/routing-policy.json"; }; then
+			sv_policy_fetch || true
+		fi
 		sv_policy_use_cache || return 1
 	fi
 	dnsmasq --version 2>/dev/null | grep -q ' nftset ' || { sv_log "ru-direct needs dnsmasq-full with nftset"; return 1; }
 	sv_ru_ensure_nft || return 1
 	sv_ru_ensure_route || return 1
 	sv_ru_write_dns || return 1
+	sv_ru_restore_sets || return 1
 	sv_ru_seed_vpn_ips
 	sv_ru_snapshot_sets
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
@@ -281,7 +314,7 @@ sv_ru_apply_inner() {
 
 sv_ru_apply() {
 	local code
-	sv_ru_lock || return 1
+	sv_ru_lock_wait || return 1
 	sv_ru_apply_inner
 	code=$?
 	sv_ru_unlock
@@ -291,7 +324,6 @@ sv_ru_apply() {
 sv_ru_refresh() {
 	local now last revision applied
 	sv_ru_enabled || return 0
-	sv_ru_lock || return 0
 	. "$SV_LIB/routing-policy.sh"
 	now="$(date +%s)"
 	last="$(cat "$SV_RUN/policy.fetched" 2>/dev/null)"
@@ -300,6 +332,9 @@ sv_ru_refresh() {
 		sv_policy_fetch || true
 		echo "$now" > "$SV_RUN/policy.fetched"
 	fi
+	# Network failover must not hold the writer lock needed by a reconnect.
+	sv_ru_lock || return 0
+	if ! sv_ru_enabled; then sv_ru_unlock; return 0; fi
 	sv_policy_use_cache
 	revision="$(jsonfilter -i "$SV_VAR/routing-policy.json" -e '@.revision' 2>/dev/null)"
 	applied="$(cat "$SV_RUN/policy.applied" 2>/dev/null)"

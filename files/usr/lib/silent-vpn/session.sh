@@ -53,7 +53,7 @@ sv_connect_full() {
 	sv_cloak_wait || { sv_connect_abort "cloak wait failed"; return 1; }
 	sv_path_up_from_json "$cfg" || { sv_connect_abort "path failed"; return 1; }
 	. "$SV_LIB/ru-direct.sh"
-	sv_ru_apply
+	sv_ru_apply || { sv_connect_abort "ru-direct apply failed"; return 1; }
 	sv_hive_connect >/dev/null || true
 	touch "$SV_RUN/connected"
 	sv_log "connect ok"

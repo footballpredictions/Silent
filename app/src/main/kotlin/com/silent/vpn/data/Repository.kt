@@ -1524,6 +1524,7 @@ class SilentRepository @Inject constructor(
     fun isExclusionsWhitelist(): Boolean = loadExclusionsPersist().whitelist
 
     fun saveExcludedApps(packages: Set<String>, whitelist: Boolean = false) {
+        if (RussianServices.enabled(context)) return
         val current = loadExclusionsPersist()
         persistExclusionsState(
             AppExclusionsPersist.setActive(
@@ -1538,6 +1539,7 @@ class SilentRepository @Inject constructor(
      */
     @Suppress("UNUSED_PARAMETER")
     fun saveExceptionsMode(whitelist: Boolean, packages: Set<String> = emptySet()) {
+        if (RussianServices.enabled(context)) return
         val current = loadExclusionsPersist()
         persistExclusionsState(AppExclusionsPersist.switchMode(current, whitelist))
     }
@@ -1548,12 +1550,14 @@ class SilentRepository @Inject constructor(
     }
 
     fun saveBypassRoutes(raw: String, whitelist: Boolean = isSitesWhitelist()) {
+        if (RussianServices.enabled(context)) return
         SiteExclusionsStore.save(prefs, raw, whitelist)
     }
 
     fun isSitesWhitelist(): Boolean = SiteExclusionsStore.load(prefs).whitelist
 
     fun saveSitesWhitelist(whitelist: Boolean) {
+        if (RussianServices.enabled(context)) return
         SiteExclusionsStore.switchMode(prefs, whitelist)
     }
 

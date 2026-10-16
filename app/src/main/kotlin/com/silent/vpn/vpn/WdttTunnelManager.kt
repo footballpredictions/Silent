@@ -67,6 +67,7 @@ object WdttTunnelManager {
     private var process: Process? = null
     private var readerJob: Job? = null
     private var watchdogJob: Job? = null
+    private var russianPolicyJob: Job? = null
     private var bootstrapFallbackJob: Job? = null
     private var mainWgFallbackJob: Job? = null
     private var confPollJob: Job? = null
@@ -549,6 +550,21 @@ object WdttTunnelManager {
                     val libDir = appContext.applicationInfo.nativeLibraryDir
                     process = LibClientBinary.startLibclientProcess(appContext, cmd, libDir, appContext.filesDir)
                     processStartedAtMs = System.currentTimeMillis()
+                    russianPolicyJob?.cancel()
+                    val policyProcess = process
+                    if (!isBootstrapMode) russianPolicyJob = scope.launch {
+                        while (isActive && process === policyProcess && policyProcess?.isAlive == true) {
+                            if (com.silent.vpn.data.RussianServices.enabled(appContext)) {
+                                com.silent.vpn.data.RussianServices.refresh(appContext)
+                                // Initial policy fetch can finish before WG has settled.
+                                while (isActive && process === policyProcess && policyProcess?.isAlive == true &&
+                                    (!tunnelReady.value || apiOverlayActive || WireGuardHelper.isWgTransitionActive() ||
+                                        System.currentTimeMillis() - lastWgApplyAtMs < SITE_BYPASS_REAPPLY_GRACE_MS)) delay(2_000L)
+                                if (isActive && process === policyProcess && policyProcess?.isAlive == true) reapplyMainTunnelForSiteBypass()
+                            }
+                            delay(300_000L)
+                        }
+                    }
                     wrapAuthTimeoutCount = 0
                     lastActiveAtMs = 0L
                     running.value = true
@@ -2091,25 +2107,32 @@ object WdttTunnelManager {
 
     fun reloadWireGuard(context: Context) {
         if (!tunnelReady.value) return
-        val config = lastWgConfig ?: return
+        val params = lastParams
         lastContext = context.applicationContext
         scope.launch {
             SiteBypassRoutes.clearResolveCache()
             resolveSiteBypassExcludes(context.applicationContext)
-            wgHelper?.stopTunnel()
-            delay(200)
-            withContext(Dispatchers.Main) {
-                wgHelper?.startTunnel(
-                    config,
-                    effectiveExcludeIps(context.applicationContext),
-                    isBootstrap = isBootstrapMode,
-                    mobileApiRoute = mobileApiRouteEnabled(),
-                )
+            wgApplyMutex.withLock {
+                if (!tunnelReady.value || lastParams !== params) return@withLock
+                // Overlay restoration reads the latest saved mode itself. Do not
+                // replace a short API/payment tunnel with the main tunnel here.
+                if (apiOverlayActive) return@withLock
+                val config = lastWgConfig ?: return@withLock
+                withContext(Dispatchers.Main) {
+                    wgHelper?.startTunnel(
+                        config,
+                        effectiveExcludeIps(context.applicationContext),
+                        isBootstrap = isBootstrapMode,
+                        mobileApiRoute = mobileApiRouteEnabled(),
+                    )
+                }
             }
         }
     }
 
     private fun killProcess() {
+        russianPolicyJob?.cancel()
+        russianPolicyJob = null
         bootstrapFallbackJob?.cancel()
         mainWgFallbackJob?.cancel()
         confPollJob?.cancel()

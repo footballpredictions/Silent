@@ -12,6 +12,8 @@ import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.json.JSONObject
+import org.json.JSONArray
 
 /** Real native process + TUN, restricted to benchmark IPs on a disposable emulator. */
 @RunWith(AndroidJUnit4::class)
@@ -46,6 +48,14 @@ class BrowserPolicyRefreshDeviceTest {
             assertSame("A DNS address refresh replaced the live WG/TUN", original, native())
             assertTrue(original.isAlive)
             assertNotNull(BrowserScopedTunnel.pathHealth())
+            val ru = JSONObject().put("enabled", true).put("direct_domains", JSONArray(listOf("ru")))
+                .put("vpn_domains", JSONArray(listOf("protected.ru")))
+            BrowserScopedTunnel.start(context, config, policy, excluded, emptyList(), emptyList(), false, "ru-initial", ru)
+            val russianProcess = native()
+            val updated = JSONObject(ru.toString()).put("direct_domains", JSONArray(listOf("ru", "shop.com")))
+            BrowserScopedTunnel.start(context, config, policy, excluded, emptyList(), emptyList(), false, "ru-revision", updated)
+            assertSame("A RU server-policy refresh replaced WG/TUN", russianProcess, native())
+            assertTrue(russianProcess.isAlive)
         } finally {
             BrowserScopedTunnel.stop()
             context.stopService(Intent(context, BrowserScopedVpnService::class.java))

@@ -97,10 +97,12 @@ object BrowserScopedTunnel {
         domains: Collection<String>,
         whitelist: Boolean,
         semanticKey: String,
+        russian: JSONObject = JSONObject(),
     ) {
         if (key == semanticKey && isRunning()) return
         val browsers = if (whitelist || targets.isNotEmpty() || domains.isNotEmpty()) browserUids(context) else emptySet()
         val shape = JSONObject().apply {
+            put("russian_enabled", russian.optBoolean("enabled", false))
             put("wg", config.toWgUserspaceString())
             put("addresses", config.`interface`.addresses.joinToString(","))
             put("dns", config.`interface`.dnsServers.joinToString(","))
@@ -118,6 +120,7 @@ object BrowserScopedTunnel {
             targetAck = ack
             try {
                 val update = JSONObject().put("revision", ack.revision).put("targets", JSONArray(targets.toList()))
+                    .put("russian", russian)
                 checkNotNull(process).outputStream.apply { write((update.toString() + "\n").toByteArray()); flush() }
                 check(ack.done.await(2_500, TimeUnit.MILLISECONDS) && ack.applied) { "Не подтверждено обновление адресов обхода" }
                 key = semanticKey
@@ -161,6 +164,7 @@ object BrowserScopedTunnel {
             // Configuration contains a WG key: app-private file, removed on stop.
             configuration = File(context.noBackupFilesDir, "browser-routing-runtime.json").apply {
                 writeText(JSONObject().apply {
+                    put("russian", russian)
                     put("socket", socketName)
                     put("wireguard", config.toWgUserspaceString())
                     put("mtu", config.`interface`.mtu.orElse(1200))

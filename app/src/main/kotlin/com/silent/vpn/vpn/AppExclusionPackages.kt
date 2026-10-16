@@ -118,6 +118,10 @@ fun resolveAppTunnelPolicy(context: Context, includeAppInTunnel: Boolean = false
         whitelistAppIds = if (dual) parse(SilentRepository.PREF_EXCLUSIONS_WHITELIST_APPS) else null,
     )
     val intent = AppExclusionsPersist.tunnelIntent(state)
+    if (com.silent.vpn.data.RussianServices.enabled(context) && !includeAppInTunnel) {
+        // All user apps participate; the transport's own UID must remain physical.
+        return AppTunnelPolicy(false, setOf(context.packageName))
+    }
     val pm = context.packageManager
     val installed = installedBypassCandidates(pm, context.packageName)
     val built = AppTunnelRouting.fromIntent(

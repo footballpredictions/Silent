@@ -171,9 +171,12 @@ class WireGuardHelper(context: Context) {
                 configString
             }
             val siteState = com.silent.vpn.data.SiteExclusionsStore.load(SilentPrefs.open(appContext))
-            val siteWhitelist = siteState.whitelist
+            val russian = com.silent.vpn.data.RussianServices.config(appContext)
+            val ruDirect = russian.getBoolean("enabled") && !isBootstrap && !apiOverlayMode && !includeAppOverlay
+            russian.put("enabled", ruDirect)
+            val siteWhitelist = !ruDirect && siteState.whitelist
             val browserSites = !isBootstrap && !apiOverlayMode && !includeAppOverlay &&
-                (siteWhitelist || siteState.activeRules.isNotBlank())
+                !ruDirect && (siteWhitelist || siteState.activeRules.isNotBlank())
             val siteTargets = if (browserSites) WdttTunnelManager.resolvedSiteTargets() else emptyList()
             val siteDomains = if (browserSites) SiteBypassRoutes.parseRules(
                 siteState.activeRules,
@@ -246,7 +249,7 @@ class WireGuardHelper(context: Context) {
 
             val semanticKey =
                 wgSemanticKey(configToApply) + "|ex=$excludeKey|apps=$appPolicyKey|ov=$apiOverlayMode|appin=$includeAppOverlay|blk=${SilentGoBackendVpnService.blockUnderlyingNetwork}" +
-                    "|browser=$browserSites|sites=$siteWhitelist:${siteTargets.sorted().joinToString(",")}|domains=${siteDomains.sorted().joinToString(",")}"
+                    "|browser=$browserSites|sites=$siteWhitelist:${siteTargets.sorted().joinToString(",")}|domains=${siteDomains.sorted().joinToString(",")}|ru=$ruDirect:${russian.getString("revision")}"
 
             if (sharedTunnel != null && semanticKey.isNotBlank() && semanticKey == lastAppliedSemanticKey) {
 
@@ -364,7 +367,7 @@ class WireGuardHelper(context: Context) {
                 }
                 BrowserScopedTunnel.start(
                     appContext, finalConfig, resolveAppTunnelPolicy(appContext),
-                    excludeIPs, siteTargets, siteDomains, siteWhitelist, semanticKey,
+                    excludeIPs, siteTargets, siteDomains, siteWhitelist, semanticKey, russian,
                 )
                 lastAppliedSemanticKey = semanticKey
                 lastExcludeRouteKey = excludeRouteKey

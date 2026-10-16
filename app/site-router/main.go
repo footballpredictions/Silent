@@ -23,16 +23,17 @@ import (
 )
 
 type configuration struct {
-	Socket     string   `json:"socket"`
-	Wireguard  string   `json:"wireguard"`
-	MTU        int      `json:"mtu"`
-	Whitelist  bool     `json:"whitelist"`
-	Targets    []string `json:"targets"`
-	Domains    []string `json:"domains"`
-	Browsers   []int    `json:"browsers"`
-	Debug      bool     `json:"debug"`
-	OTAPort    int      `json:"ota_port"`
-	OTAAddress string   `json:"ota_address"`
+	Russian    russianConfig `json:"russian"`
+	Socket     string        `json:"socket"`
+	Wireguard  string        `json:"wireguard"`
+	MTU        int           `json:"mtu"`
+	Whitelist  bool          `json:"whitelist"`
+	Targets    []string      `json:"targets"`
+	Domains    []string      `json:"domains"`
+	Browsers   []int         `json:"browsers"`
+	Debug      bool          `json:"debug"`
+	OTAPort    int           `json:"ota_port"`
+	OTAAddress string        `json:"ota_address"`
 }
 type cachedRoute struct {
 	direct  bool
@@ -45,6 +46,9 @@ type fragmentKey struct {
 	Protocol    byte
 }
 type routedTun struct {
+	russianEpoch uint64
+	russian      *russianRouter
+	ctx          context.Context
 	file         *os.File
 	events       chan tun.Event
 	policy       *sitePolicy
@@ -66,6 +70,38 @@ type routedTun struct {
 }
 
 func (t *routedTun) choose(f flow, destination []byte) bool {
+	if t.russian.enabled() {
+		if epoch := t.russian.epoch(); epoch != t.russianEpoch {
+			clear(t.routes)
+			clear(t.fragments)
+			t.russianEpoch = epoch
+		}
+		h := int(destination[0]&15) * 4
+		if f.Protocol == 6 && len(destination) > h+13 && destination[h+13]&0x12 == 0x02 {
+			delete(t.routes, f)
+		}
+		remote, err := netip.ParseAddrPort(f.Remote)
+		if err != nil || remote.Port() == 53 {
+			return false
+		}
+		if route, ok := t.routes[f]; ok && time.Now().Before(route.expires) {
+			route.expires = time.Now().Add(5 * time.Minute)
+			t.routes[f] = route
+			return route.direct && !t.russian.mustVPN(remote.Addr())
+		}
+		direct := t.russian.direct(remote.Addr())
+		if len(t.routes) >= 4096 {
+			for key, route := range t.routes {
+				if time.Now().After(route.expires) {
+					delete(t.routes, key)
+				}
+			}
+		}
+		if len(t.routes) < 4096 {
+			t.routes[f] = cachedRoute{direct, time.Now().Add(5 * time.Minute)}
+		}
+		return direct
+	}
 	if len(t.policy.browsers) == 0 {
 		return false
 	}
@@ -153,6 +189,9 @@ func (t *routedTun) Read(buffers [][]byte, sizes []int, offset int) (int, error)
 			return 0, err
 		}
 		packet := buffers[0][offset : offset+n]
+		if t.russian.handleDNS(t.ctx, packet, t.writePacket) {
+			continue
+		}
 		// Userspace API packets bypass browser policy but remain inside WG.
 		if t.ota != nil && len(packet) >= 20 && tcpipSourceIsOTA(t.ota, packet) {
 			sizes[0] = n
@@ -188,6 +227,7 @@ func (t *routedTun) Read(buffers [][]byte, sizes []int, offset int) (int, error)
 }
 func (t *routedTun) Write(buffers [][]byte, offset int) (int, error) {
 	for i, b := range buffers {
+		t.russian.observe(b[offset:])
 		t.pathReceived.Add(1)
 		if t.ota.receive(b[offset:]) {
 			continue
@@ -245,6 +285,8 @@ func run(path string) error {
 	defer cancel()
 	adapter := &routedTun{file: file, events: make(chan tun.Event, 1), policy: newPolicy(cfg.Whitelist, cfg.Targets, cfg.Browsers), control: control, reader: bufio.NewReader(control), routes: make(map[flow]cachedRoute), fragments: make(map[fragmentKey]cachedRoute), mtu: cfg.MTU, debug: cfg.Debug}
 	adapter.policy.domains = cfg.Domains
+	adapter.russian = newRussianRouter(cfg.Russian)
+	adapter.ctx = ctx
 	adapter.direct = newDirectStack(ctx, cfg.MTU, adapter.writePacket)
 	if cfg.OTAPort > 0 {
 		adapter.packets = make(chan []byte, 32)
@@ -301,7 +343,7 @@ func run(path string) error {
 	}
 	fmt.Println("READY")
 	// Kotlin owns lifetime and closes stdin before closing the FD/process.
-	return applyTargetUpdates(os.Stdin, adapter.policy, os.Stdout)
+	return applyTargetUpdates(os.Stdin, adapter.policy, os.Stdout, adapter.russian)
 }
 func main() {
 	if len(os.Args) != 2 {

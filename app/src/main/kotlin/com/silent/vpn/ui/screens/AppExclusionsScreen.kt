@@ -27,6 +27,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import com.silent.vpn.ui.tv.TvIconButton
 import com.silent.vpn.ui.tv.TvPrimaryButton
 import com.silent.vpn.ui.tv.TvTextButton
@@ -40,10 +42,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import com.silent.vpn.data.SilentRepository
+import com.silent.vpn.data.RussianServices
 import com.silent.vpn.ui.theme.ThemePalette
 import com.silent.vpn.ui.theme.themeTextFieldColors
 import com.silent.vpn.vpn.SiteBypassRoutes
@@ -221,6 +228,8 @@ fun AppExclusionsScreen(
     val fieldColors = themeTextFieldColors(palette)
 
     var pane by remember { mutableStateOf(ExclusionsPane.Apps) }
+    var russianDirect by remember { mutableStateOf(RussianServices.enabled(context)) }
+    var russianError by remember { mutableStateOf<String?>(null) }
 
     // —— Apps ——
     var apps by remember { mutableStateOf<List<AppItem>>(emptyList()) }
@@ -272,6 +281,7 @@ fun AppExclusionsScreen(
     }
 
     fun saveAppSelection(newSelected: Set<String>, newWhitelist: Boolean = whitelist) {
+        if (RussianServices.enabled(context)) return
         selected = newSelected
         whitelist = newWhitelist
         if (newWhitelist) whitelistApps = newSelected else blacklistApps = newSelected
@@ -280,6 +290,7 @@ fun AppExclusionsScreen(
     }
 
     fun switchMode(toWhitelist: Boolean) {
+        if (RussianServices.enabled(context)) return
         if (whitelist == toWhitelist) return
         val next = if (toWhitelist) whitelistApps else blacklistApps
         repo.saveExceptionsMode(toWhitelist)
@@ -289,7 +300,9 @@ fun AppExclusionsScreen(
     }
 
     fun persistSites(rules: List<String>, hintOverride: String? = null) {
+        if (RussianServices.enabled(context)) return
         scope.launch {
+            if (RussianServices.enabled(context)) return@launch
             siteBusy = true
             siteHint = null
             try {
@@ -459,7 +472,7 @@ fun AppExclusionsScreen(
             TvTextButton(onClick = onBack, requestFocusOnOpen = true, requestFocusKey = "exclusions") {
                 Text("← Назад", fontSize = 12.sp, color = fg.copy(0.5f))
             }
-            if (pane == ExclusionsPane.Sites) {
+            if (pane == ExclusionsPane.Sites && !russianDirect) {
                 SiteImportExportActions(
                     siteBusy = siteBusy,
                     canExport = siteRules.isNotEmpty(),
@@ -470,6 +483,37 @@ fun AppExclusionsScreen(
             }
         }
         Text("Исключения", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = fg)
+
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 12.dp)
+                .semantics { role = Role.Switch; stateDescription = if (russianDirect) "Включено" else "Выключено" }
+                .tvClickable(enabled = !siteBusy, onClick = {
+                    try {
+                        val next = !russianDirect
+                        RussianServices.setEnabled(context, next)
+                        russianDirect = next
+                        russianError = null
+                        editingRule = null
+                        reloadTunnel()
+                    } catch (e: Exception) { russianError = e.message }
+                }),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Российские сервисы мимо VPN", color = fg, fontSize = 14.sp)
+                Text("Для всех приложений. Остальной трафик — через VPN.", color = fg.copy(.5f), fontSize = 11.sp)
+            }
+            Switch(checked = russianDirect, onCheckedChange = null,
+                colors = SwitchDefaults.colors(checkedThumbColor = bg, checkedTrackColor = fg))
+        }
+        russianError?.let { Text(it, color = fg, fontSize = 12.sp) }
+        if (russianDirect) {
+            Text("Другие исключения временно отключены. Ваши списки сохранены.", color = fg.copy(.5f), fontSize = 12.sp)
+            Spacer(Modifier.height(12.dp))
+            Text("Сайты: ${siteRules.size} сохранено", color = fg.copy(.3f), fontSize = 13.sp)
+            Text("Приложения: ${selected.size} сохранено", color = fg.copy(.3f), fontSize = 13.sp)
+        } else {
 
         Row(
             Modifier.padding(top = 10.dp, bottom = 8.dp),
@@ -821,6 +865,7 @@ fun AppExclusionsScreen(
                     }
                 }
             }
+        }
         }
     }
 }

@@ -192,6 +192,31 @@ export default function AppExclusionsPanel({
   onBack,
 }: Props) {
   const [pane, setPane] = useState<Pane>('apps')
+  const russianLocked = useRef(true)
+  const [russianSupported, setRussianSupported] = useState(true)
+  const [russianDirect, setRussianDirect] = useState(false)
+  const [russianBusy, setRussianBusy] = useState(true)
+  const [russianError, setRussianError] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    Promise.resolve((window as any).electronAPI?.getRussianServices?.()).then(state => {
+      if (!cancelled) { setRussianSupported(state?.supported !== false); russianLocked.current = state?.enabled === true; setRussianDirect(state?.enabled === true); setRussianBusy(false) }
+    }).catch(() => { if (!cancelled) { setRussianError('Не удалось прочитать режим'); setRussianBusy(false) } })
+    return () => { cancelled = true }
+  }, [])
+  async function toggleRussianDirect() {
+    russianLocked.current = true
+    setRussianBusy(true)
+    setRussianError(null)
+    setEditingRule(null)
+    try {
+      const result = await (window as any).electronAPI?.setRussianServices?.(!russianDirect)
+      if (!result?.ok) throw new Error(result?.detail || 'Не удалось применить режим')
+      russianLocked.current = result.enabled === true
+      setRussianDirect(result.enabled === true)
+    } catch (error: any) { russianLocked.current = russianDirect; setRussianError(error.message) }
+    finally { setRussianBusy(false) }
+  }
   const [apps, setApps] = useState<PcAppItem[]>([])
   const [loading, setLoading] = useState(true)
   const [loadFailed, setLoadFailed] = useState(false)
@@ -252,6 +277,7 @@ export default function AppExclusionsPanel({
         const valid = new Set(next.map((a: PcAppItem) => a.id))
         setSelected(prev => {
           const kept = new Set([...prev].filter(id => valid.has(id)))
+          if (russianLocked.current) return prev
           if (kept.size !== prev.size) saveExcludedApps(kept, next, whitelist)
           return kept
         })
@@ -270,12 +296,14 @@ export default function AppExclusionsPanel({
   }, [])
 
   const persistApps = (next: Set<string>, wl = whitelist) => {
+    if (russianLocked.current) return
     setSelected(next)
     setWhitelist(wl)
     saveExcludedApps(next, apps, wl)
   }
 
   const switchMode = (toWhitelist: boolean) => {
+    if (russianLocked.current) return
     if (whitelist === toWhitelist) return
     setWhitelist(toWhitelist)
     const next = toWhitelist ? getWhitelistApps() : getBlacklistApps()
@@ -285,6 +313,7 @@ export default function AppExclusionsPanel({
   }
 
   const persistSites = async (rules: string[], hintOverride: string | null = null, mode = sitesWhitelist) => {
+    if (russianLocked.current) return
     setSiteBusy(true)
     setSiteHint(null)
     try {
@@ -302,6 +331,7 @@ export default function AppExclusionsPanel({
   }
 
   const switchSitesMode = async (mode: boolean) => {
+    if (russianLocked.current) return
     if (siteBusy || sitesWhitelist === mode) return
     setSiteBusy(true)
     setSiteHint(null)
@@ -436,7 +466,7 @@ export default function AppExclusionsPanel({
               onChange={e => setEditDraft(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') saveSiteEdit() }}
               placeholder="домен или IP…"
-              disabled={siteBusy}
+              disabled={siteBusy || russianDirect || russianBusy}
               className="theme-field w-full rounded-xl px-3 py-2 text-sm mb-3 focus:outline-none"
               style={{
                 userSelect: 'text',
@@ -451,7 +481,7 @@ export default function AppExclusionsPanel({
               <button
                 type="button"
                 onClick={() => { if (!siteBusy) setEditingRule(null) }}
-                disabled={siteBusy}
+                disabled={siteBusy || russianDirect || russianBusy}
                 className="flex-1 py-2 text-xs rounded-xl"
                 style={{ border: `1px solid ${borderStrong}`, color: fg, background: 'transparent' }}
               >
@@ -481,7 +511,7 @@ export default function AppExclusionsPanel({
               type="button"
               title="Импорт списка"
               aria-label="Импорт списка"
-              disabled={siteBusy}
+              disabled={siteBusy || russianDirect || russianBusy}
               onClick={() => importInputRef.current?.click()}
               className="p-1.5 rounded-lg disabled:opacity-40"
               style={{ color: muted }}
@@ -494,7 +524,7 @@ export default function AppExclusionsPanel({
               type="button"
               title="Экспорт списка"
               aria-label="Экспорт списка"
-              disabled={siteBusy || siteRules.length === 0}
+              disabled={siteBusy || russianDirect || russianBusy || siteRules.length === 0}
               onClick={exportSites}
               className="p-1.5 rounded-lg disabled:opacity-40"
               style={{ color: muted }}
@@ -512,6 +542,26 @@ export default function AppExclusionsPanel({
         Исключения
       </div>
 
+      {russianSupported && <button type="button" role="switch" aria-checked={russianDirect}
+        aria-label="Российские сервисы мимо VPN" disabled={russianBusy || siteBusy}
+        onClick={() => { void toggleRussianDirect() }}
+        className="w-full flex items-center gap-3 py-4 text-left disabled:opacity-50"
+        style={{ color: fg }}>
+        <span className="flex-1">
+          <span className="block text-sm font-medium">Российские сервисы мимо VPN</span>
+          <span className="block text-[11px] mt-1" style={{ color: muted }}>Для всех приложений. Остальной трафик — через VPN.</span>
+        </span>
+        <span aria-hidden="true" className="shrink-0 w-9 h-5 rounded-full p-0.5 transition-colors"
+          style={{ background: russianDirect ? fg : borderStrong }}>
+          <span className="block w-4 h-4 rounded-full transition-transform"
+            style={{ background: bg, transform: russianDirect ? 'translateX(16px)' : 'translateX(0)' }} />
+        </span>
+      </button>}
+      {russianError && <p role="alert" className="text-xs mb-3" style={{ color: fg }}>{russianError}</p>}
+      {russianDirect && <p className="text-xs mb-3" style={{ color: muted }}>Другие исключения временно отключены. Ваши списки сохранены.</p>}
+      <fieldset disabled={russianDirect || russianBusy} className="m-0 p-0 border-0 min-w-0 w-full"
+        style={{ opacity: russianDirect ? 0.35 : 1 }}>
+      <legend className="sr-only">Ручные исключения</legend>
       <div className="flex gap-2 mt-3 mb-3">
         <ModeChip label="Сайты" active={pane === 'sites'} fg={fg} bg={bg} onClick={() => setPane('sites')} />
         <ModeChip label="Приложения" active={pane === 'apps'} fg={fg} bg={bg} onClick={() => setPane('apps')} />
@@ -537,7 +587,7 @@ export default function AppExclusionsPanel({
             fg={fg}
             muted={muted}
             className="mb-2"
-            disabled={siteBusy}
+            disabled={siteBusy || russianDirect || russianBusy}
             onKeyDown={e => { if (e.key === 'Enter') addSiteRule() }}
           />
           <button
@@ -569,7 +619,7 @@ export default function AppExclusionsPanel({
                   <span className="flex-1 text-[13px] truncate" style={{ color: fg }}>{rule}</span>
                   <button
                     type="button"
-                    disabled={siteBusy}
+                    disabled={siteBusy || russianDirect || russianBusy}
                     onClick={() => {
                       setEditingRule(rule)
                       setEditDraft(rule)
@@ -582,7 +632,7 @@ export default function AppExclusionsPanel({
                   </button>
                   <button
                     type="button"
-                    disabled={siteBusy}
+                    disabled={siteBusy || russianDirect || russianBusy}
                     onClick={() => void persistSites(siteRules.filter(r => r !== rule))}
                     className="p-1.5 rounded-lg shrink-0 disabled:opacity-40"
                     title="Удалить"
@@ -685,6 +735,7 @@ export default function AppExclusionsPanel({
           )}
         </>
       )}
+      </fieldset>
     </div>
   )
 }

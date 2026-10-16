@@ -60,6 +60,7 @@ test('renderer and real main IPC switch only the selected saved list, including 
   const applied = []
   let fail = false
   const handle = vm.runInNewContext(`(${callback})`, {
+    russianModeChanging: false, russianServices: { enabled: () => false },
     app: { getPath: () => f.dir }, wgApplied: true, vpnBootstrapMode: false,
     sessionDnsOverride: null, lastVpnConnectConfig: null, sendLog() {},
     require: () => ({ ...sites, async applySiteBypass(rules, _, options) {

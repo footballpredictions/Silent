@@ -270,6 +270,10 @@ function applySiteBypass(rules, send, options = {}) {
 }
 
 async function applySiteBypassUnlocked(rules, send, options, generation) {
+  if (require('./russianServices').enabled()) {
+    await clearSiteBypassUnlocked(send)
+    return { ok: true, targets: [], unresolved: [], deferred: true }
+  }
   if (generation !== routingGeneration) return { ok: false, cancelled: true }
   const list = parseRules(Array.isArray(rules) ? rules.join('\n') : String(rules || ''))
   if (!list.length && !options.whitelist) {
@@ -278,7 +282,7 @@ async function applySiteBypassUnlocked(rules, send, options, generation) {
   }
   const browserOnly = options.browserOnly || process.platform === 'win32'
   const resolved = browserOnly ? await resolveBrowserRulesToTargets(list, { dnsServers: options.dnsServers }) : await resolveRulesToTargets(list)
-  if (generation !== routingGeneration) return { ok: false, cancelled: true }
+  if (generation !== routingGeneration || require('./russianServices').enabled()) return { ok: false, cancelled: true }
   const { unresolved } = resolved
   if (browserOnly) {
     const domains = browserDomains(list.filter(rule => domainLookupHosts(rule)))

@@ -229,3 +229,17 @@ func TestIdleBrowserConnectionClosesOnModeChangeWhenSetTCPEntryFails(t *testing.
 		t.Fatal("idle browser connection did not close when SetTcpEntry failed")
 	}
 }
+
+func TestRussianIdenticalPolicyDoesNotExpireActiveDirectTCP(t *testing.T) {
+	cfg := policyConfig{Russian: russianConfig{Enabled: true, Direct: []string{"ru"}}}
+	adapter := &routedTun{routes: make(map[flow]cachedRoute), owner: func(flow) string { t.Fatal("Global mode requested process owner"); return "" }}
+	adapter.policy.Store(newProcessPolicy(cfg))
+	f := flow{6, "10.66.66.2:50000", "203.0.113.9:443"}
+	adapter.routes[f] = cachedRoute{direct: true, expires: time.Now().Add(time.Hour)}
+	if changed := adapter.updatePolicy(cfg); changed != 0 {
+		t.Fatal("Identical refresh broke an existing RU TCP flow")
+	}
+	if !adapter.routes[f].direct {
+		t.Fatal("DIRECT flow was discarded")
+	}
+}

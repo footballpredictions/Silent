@@ -9,6 +9,7 @@ import (
 // Browser rules apply to actual browser processes, never to their shared IPs.
 // Application exclusions take precedence, as on Android's VpnService.
 type processPolicy struct {
+	russian    *russianRouter
 	sites      *sitePolicy
 	excluded   []string
 	dns        []string
@@ -18,11 +19,17 @@ type processPolicy struct {
 func newProcessPolicy(c policyConfig) *processPolicy {
 	p := newPolicy(c.Whitelist, c.Targets, []int{1})
 	p.domains = c.Domains
-	return &processPolicy{sites: p, excluded: c.Excluded, dns: c.DNS, pendingDNS: c.PendingDNS}
+	russian := newRussianRouter(c.Russian)
+	russian.dial = newPhysicalDialer(1500 * time.Millisecond).DialContext
+	return &processPolicy{sites: p, excluded: c.Excluded, dns: c.DNS, pendingDNS: c.PendingDNS, russian: russian}
 }
 
 func updatedProcessPolicy(old *processPolicy, c policyConfig) *processPolicy {
 	next := newProcessPolicy(c)
+	if old != nil && old.russian != nil {
+		next.russian = old.russian
+		next.russian.update(c.Russian)
+	}
 	// Windows/browser DNS caches outlive policy edits. Keep answers associated
 	// with remaining rules, including their CDN/subdomain addresses.
 	if old != nil {
@@ -48,12 +55,13 @@ func updatedProcessPolicy(old *processPolicy, c policyConfig) *processPolicy {
 }
 
 type policyConfig struct {
-	PendingDNS bool     `json:"pendingDNS"`
-	Whitelist  bool     `json:"whitelist"`
-	Targets    []string `json:"targets"`
-	Domains    []string `json:"domains"`
-	Excluded   []string `json:"excluded"`
-	DNS        []string `json:"dns"`
+	Russian    russianConfig `json:"russian"`
+	PendingDNS bool          `json:"pendingDNS"`
+	Whitelist  bool          `json:"whitelist"`
+	Targets    []string      `json:"targets"`
+	Domains    []string      `json:"domains"`
+	Excluded   []string      `json:"excluded"`
+	DNS        []string      `json:"dns"`
 }
 
 func normalizedExe(s string) string { return strings.ToLower(strings.ReplaceAll(s, "/", "\\")) }
@@ -70,6 +78,9 @@ func isBrowser(exe string) bool {
 }
 
 func (p *processPolicy) appExcluded(exe string) bool {
+	if p.russian.enabled() {
+		return false
+	}
 	if exe == "" {
 		return false
 	}
@@ -91,6 +102,9 @@ func (p *processPolicy) direct(exe string, dst netip.Addr, port uint16) bool {
 		if raw == dst.String() {
 			return false
 		}
+	}
+	if p.russian.enabled() {
+		return p.russian.direct(dst)
 	}
 	if exe == "" {
 		return false

@@ -43,6 +43,7 @@ type fragmentKey struct {
 	Protocol            byte
 }
 type routedTun struct {
+	ctx context.Context
 	tun.Device
 	policy    atomic.Pointer[processPolicy]
 	direct    *directStack
@@ -70,9 +71,15 @@ func (t *routedTun) choose(f flow, packet []byte) bool {
 			route.reset = reset
 			t.routes[f] = route
 		}
-		return route.direct
+		policy := t.policy.Load()
+		return route.direct && !(policy.russian.enabled() && policy.russian.mustVPN(remote.Addr()))
 	}
-	direct := t.policy.Load().direct(t.owner(f), remote.Addr(), remote.Port())
+	policy := t.policy.Load()
+	exe := ""
+	if !policy.russian.enabled() {
+		exe = t.owner(f)
+	}
+	direct := policy.direct(exe, remote.Addr(), remote.Port())
 	if len(t.routes) >= 8192 {
 		for key, entry := range t.routes {
 			if time.Now().After(entry.expires) {
@@ -96,8 +103,17 @@ func (t *routedTun) choose(f flow, packet []byte) bool {
 // the new route after their own TCB is closed; UDP uses the new route immediately.
 func (t *routedTun) updatePolicy(cfg policyConfig) int {
 	t.routesMu.Lock()
-	next := updatedProcessPolicy(t.policy.Load(), cfg)
+	oldPolicy := t.policy.Load()
+	oldRussian := oldPolicy.russian.enabled()
+	oldEpoch := oldPolicy.russian.epoch()
+	next := updatedProcessPolicy(oldPolicy, cfg)
 	t.policy.Store(next)
+	// App/site edits cannot change this global mode, nor expire active RU TCP
+	// flows merely because a periodic identical policy ACK was requested.
+	if oldRussian && next.russian.enabled() && oldEpoch == next.russian.epoch() {
+		t.routesMu.Unlock()
+		return 0
+	}
 	changed := make([]flow, 0)
 	resets := make(map[flow][]byte)
 	for f, old := range t.routes {
@@ -109,7 +125,11 @@ func (t *routedTun) updatePolicy(cfg policyConfig) int {
 		if e != nil {
 			continue
 		}
-		if next.direct(t.owner(f), remote.Addr(), remote.Port()) == old.direct {
+		exe := ""
+		if !next.russian.enabled() {
+			exe = t.owner(f)
+		}
+		if next.direct(exe, remote.Addr(), remote.Port()) == old.direct {
 			continue
 		}
 		delete(t.routes, f)
@@ -160,6 +180,9 @@ func (t *routedTun) Read(buffers [][]byte, sizes []int, offset int) (int, error)
 		kept := 0
 		for i := 0; i < n; i++ {
 			packet := buffers[i][offset : offset+sizes[i]]
+			if t.policy.Load().russian.handleDNS(t.ctx, packet, t.writePacket) {
+				continue
+			}
 			f, _, ok := packetFlow(packet)
 			direct := false
 			if ok {
@@ -197,6 +220,9 @@ func (t *routedTun) Read(buffers [][]byte, sizes []int, offset int) (int, error)
 	}
 }
 func (t *routedTun) Write(buffers [][]byte, offset int) (int, error) {
+	for _, packet := range buffers {
+		t.policy.Load().russian.observe(packet[offset:])
+	}
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
 	for _, b := range buffers {
@@ -310,6 +336,7 @@ func run() error {
 	adapter.policy.Store(newProcessPolicy(cfg.Policy))
 	adapter.owner = func(f flow) string { return ownerExe(f, adapter.policy.Load()) }
 	ctx, cancel := context.WithCancel(context.Background())
+	adapter.ctx = ctx
 	defer cancel()
 	adapter.direct = newDirectStack(ctx, mtu, adapter.writePacket)
 	wg := device.NewDevice(adapter, conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, "site-router: "))

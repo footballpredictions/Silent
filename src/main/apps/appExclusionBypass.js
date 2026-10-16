@@ -388,6 +388,7 @@ async function tick() {
 }
 
 function startAppExclusionBypass(exePaths, send) {
+  if (require('./russianServices').enabled()) { void stopAppExclusionBypass(send); return }
   sendLog = typeof send === 'function' ? send : null
   activeExePaths = [...new Set((exePaths || []).filter(isExcludedTarget))]
   packsApplied = false
@@ -413,6 +414,7 @@ function startAppExclusionBypass(exePaths, send) {
 
 /** После поднятия WG шлюз уже известен — сразу накатить platform packs. */
 async function refreshAppExclusionBypassAfterTunnel(send) {
+  if (require('./russianServices').enabled()) { await stopAppExclusionBypass(send); return }
   if (send) sendLog = send
   if (process.platform === 'win32') {
     const { getActiveExcludedExePaths } = require('./vpnAppExclusions')

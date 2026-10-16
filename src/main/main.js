@@ -1196,6 +1196,7 @@ ipcMain.handle('list-installed-apps', async () => {
 
 ipcMain.handle('save-app-exclusions', (_, payload) => {
   try {
+    if (russianModeChanging || russianServices.enabled()) return { ok: false, detail: 'Включён приоритет российских сервисов' }
     const { saveExclusionsState, defaultStatePath } = require('./apps/exclusionsState')
     const { applyAppExclusionsForSession, clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
     const filePath = defaultStatePath(app.getPath('userData'))
@@ -1233,13 +1234,69 @@ ipcMain.handle('get-app-exclusions', () => {
   return loadExclusionsState(defaultStatePath(app.getPath('userData')))
 })
 
+const russianServices = require('./apps/russianServices')
+let russianModeChanging = false
+let russianRefreshTimer = null
+function startRussianPolicyRefresh() {
+  if (russianRefreshTimer) return
+  russianRefreshTimer = setInterval(async () => {
+    if (!wgApplied || vpnBootstrapMode || russianModeChanging || !russianServices.enabled()) return
+    const store = russianServices.configure(app.getPath('userData'))
+    await store.refresh()
+    if (wgApplied && !vpnBootstrapMode && !russianModeChanging && store.enabled()) {
+      try { await require('./vpn/browserRouter').updatePolicy({ russian: store.snapshot() }) }
+      catch (error) { sendLog(`[RU] обновление политики: ${error.message}`) }
+    }
+  }, 300000)
+  russianRefreshTimer.unref?.()
+}
+ipcMain.handle('get-russian-services', () => {
+  russianServices.configure(app.getPath('userData'))
+  return { enabled: russianServices.enabled(), supported: russianServices.supported() }
+})
+ipcMain.handle('set-russian-services', async (_, enabled) => {
+  if (!russianServices.supported()) return { ok: false, detail: 'Режим пока поддерживается в Windows-клиенте' }
+  if (typeof enabled !== 'boolean' || russianModeChanging) return { ok: false, detail: 'Дождитесь применения режима' }
+  const store = russianServices.configure(app.getPath('userData'))
+  const previous = store.enabled()
+  russianModeChanging = true
+  try {
+    store.setEnabled(enabled)
+    if (wgApplied && !vpnBootstrapMode) {
+      const router = require('./vpn/browserRouter')
+      const sites = require('./apps/siteBypass')
+      const apps = require('./apps/vpnAppExclusions')
+      await require('./apps/appExclusionBypass').stopAppExclusionBypass(sendLog)
+      await sites.clearSiteBypass(sendLog)
+      await router.updatePolicy(prepareBrowserRoutingPolicy())
+      if (!enabled) {
+        const { loadExclusionsState, defaultStatePath } = require('./apps/exclusionsState')
+        apps.applyAppExclusionsForSession(loadExclusionsState(defaultStatePath(app.getPath('userData'))).exePaths, sendLog)
+        await sites.applySiteBypassFromFile(sites.defaultSiteBypassPath(app.getPath('userData')), sendLog, {
+          dnsServers: String(sessionDnsOverride || lastVpnConnectConfig?.wg_dns || '1.1.1.1,1.0.0.1,77.88.8.8').split(/[,\s]+/).filter(Boolean),
+        })
+      }
+    }
+    return { ok: true, enabled }
+  } catch (error) {
+    try {
+      store.setEnabled(previous)
+      if (wgApplied && !vpnBootstrapMode) await require('./vpn/browserRouter').updatePolicy(prepareBrowserRoutingPolicy())
+    } catch (rollback) { sendLog(`[RU] откат режима: ${rollback.message}`) }
+    return { ok: false, enabled: store.enabled(), detail: error.message }
+  } finally { russianModeChanging = false }
+})
+
 function prepareBrowserRoutingPolicy() {
+  const russian = russianServices.configure(app.getPath('userData')).snapshot()
+  if (russian.enabled) return { whitelist: false, targets: [], domains: [], pendingDNS: false, excluded: [], russian }
+
   const { loadSiteBypassState, defaultSiteBypassPath, initialBrowserPolicy } = require('./apps/siteBypass')
   const { getActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
   const state = loadSiteBypassState(defaultSiteBypassPath(app.getPath('userData')))
   // DNS may be unreachable until this tunnel exists. Start with literal IP rules
   // and domains; post-start DNS observation/snapshot fills the domain addresses.
-  return { ...initialBrowserPolicy(state.rules, state.whitelist), excluded: getActiveExcludedExePaths() }
+  return { ...initialBrowserPolicy(state.rules, state.whitelist), excluded: getActiveExcludedExePaths(), russian }
 }
 
 require('./vpn/browserRouter').setFailureHandler(() => {
@@ -1251,6 +1308,7 @@ require('./vpn/browserRouter').setFailureHandler(() => {
 
 ipcMain.handle('save-site-bypass', async (_, payload) => {
   try {
+    if (russianModeChanging || russianServices.enabled()) return { ok: false, detail: 'Включён приоритет российских сервисов' }
     const {
       saveSiteBypassState,
       loadSiteBypassState,
@@ -1670,6 +1728,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
         return
       }
       if (ok) {
+        if (process.platform === 'win32' && !vpnBootstrapMode) await require('./vpn/browserRouter').updatePolicy(prepareBrowserRoutingPolicy())
         wgCredPhase = false
         sendLog(`[WG] Полный туннель активен, DNS = ${sessionDnsOverride || '1.1.1.1 + 77.88.8.8'}`)
         // После reinstall маршруты мигают → EACCES/ECONNABORTED на API.
@@ -1817,6 +1876,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       }
     }
     if (ok) {
+      if (process.platform === 'win32' && !vpnBootstrapMode) await require('./vpn/browserRouter').updatePolicy(prepareBrowserRoutingPolicy())
       wgApplied = true
       wgAttempted = true
       clearWgRetries()
@@ -3078,6 +3138,8 @@ ipcMain.handle('app-update-install', async (_, filePath) => {
 })
 
 app.whenReady().then(async () => {
+  russianServices.configure(app.getPath('userData'))
+  startRussianPolicyRefresh()
   if (process.defaultApp) {
     if (process.argv.length >= 2) {
       app.setAsDefaultProtocolClient('silentvpn', process.execPath, [path.resolve(process.argv[1])])

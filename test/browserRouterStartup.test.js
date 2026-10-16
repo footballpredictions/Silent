@@ -15,6 +15,7 @@ test('real main startup prepares browser rules even when pre-VPN DNS never respo
   try {
     const prepare = vm.runInNewContext(`(${functionSource})`, {
       app: { getPath: () => 'fixture' },
+      russianServices: { configure: () => ({ snapshot: () => ({ enabled: false }) }) },
       require(name) {
         if (name === './apps/siteBypass') return { ...sites, loadSiteBypassState: () => ({ whitelist: true, rules: ['2ip.io', 'mail.ru', '8.8.8.8', '192.0.2.0/24'] }) }
         if (name === './apps/vpnAppExclusions') return { getActiveExcludedExePaths: () => ['game.exe'] }

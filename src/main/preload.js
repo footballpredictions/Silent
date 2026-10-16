@@ -49,6 +49,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppExclusions: () => ipcRenderer.invoke('get-app-exclusions'),
   saveSiteBypass: (payload) => ipcRenderer.invoke('save-site-bypass', payload),
   getSiteBypass: () => ipcRenderer.invoke('get-site-bypass'),
+  getRussianServices: () => ipcRenderer.invoke('get-russian-services'),
+  setRussianServices: (enabled) => ipcRenderer.invoke('set-russian-services', enabled),
   warmupTelegramPath: () => ipcRenderer.invoke('warmup-telegram-path'),
   getAppVersion: () => ipcRenderer.invoke('app-version'),
   checkForUpdate: (version) => ipcRenderer.invoke('app-update-check', {

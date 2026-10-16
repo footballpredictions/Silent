@@ -6,6 +6,35 @@ import (
 	"testing"
 )
 
+func TestRussianModeOverridesManualListsForEveryApplication(t *testing.T) {
+	for _, dns := range [][]string{nil, {"1.1.1.1", "8.8.8.8"}} {
+		cfg := policyConfig{Whitelist: true, Excluded: []string{"game.exe"}, DNS: dns,
+			Targets: []string{"198.51.100.2/32"}, Russian: russianConfig{Enabled: true, Direct: []string{"ru"}}}
+		p := newProcessPolicy(cfg)
+		ip := [4]byte{203, 0, 113, 7}
+		p.russian.observe(ruFixture("shop.ru", true, ip))
+		for _, exe := range []string{"", "game.exe", "chrome.exe", "app.exe"} {
+			if !p.direct(exe, netip.AddrFrom4(ip), 443) {
+				t.Fatalf("RU route missing for %q with DNS %v", exe, dns)
+			}
+			if p.direct(exe, netip.MustParseAddr("198.51.100.3"), 443) {
+				t.Fatalf("Manual exclusion remained active for %q", exe)
+			}
+			if p.direct(exe, netip.AddrFrom4(ip), 53) {
+				t.Fatal("DNS was routed as an application flow")
+			}
+		}
+		cfg.Russian.Enabled = false
+		restored := updatedProcessPolicy(p, cfg)
+		if !restored.direct("game.exe", netip.MustParseAddr("198.51.100.3"), 443) {
+			t.Fatal("Saved app exclusion was not restored")
+		}
+		if restored.direct("app.exe", netip.AddrFrom4(ip), 443) {
+			t.Fatal("RU mode stayed active")
+		}
+	}
+}
+
 func TestStartupBrowserAllowlistDoesNotLeakBeforeDNSSnapshot(t *testing.T) {
 	var cfg policyConfig
 	if err := json.Unmarshal([]byte(`{"whitelist":true,"domains":["2ip.io"],"pendingDNS":true,"excluded":["msedge.exe"]}`), &cfg); err != nil {

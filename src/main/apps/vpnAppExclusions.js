@@ -20,7 +20,7 @@ function setActiveExcludedExePaths(exePaths) {
 }
 
 function getActiveExcludedExePaths() {
-  return [...activeExcludedExePaths]
+  return require('./russianServices').enabled() ? [] : [...activeExcludedExePaths]
 }
 
 async function clearActiveExcludedExePaths(send) {
@@ -36,6 +36,10 @@ async function clearActiveExcludedExePaths(send) {
  */
 function applyAppExclusionsForSession(exePaths, send, options = {}) {
   const list = setActiveExcludedExePaths(exePaths)
+  if (require('./russianServices').enabled()) {
+    void stopAppExclusionBypass(send)
+    return { applied: [], missing: [] }
+  }
   if (!list.length) {
     send?.('[Apps] исключения: нет выбранных приложений')
     void stopAppExclusionBypass(send)

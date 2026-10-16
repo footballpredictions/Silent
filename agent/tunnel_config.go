@@ -116,6 +116,11 @@ func (a *Agent) network(ctx context.Context, op string, args ...string) error {
 	a.mu.RLock()
 	c := a.cfg
 	a.mu.RUnlock()
+	if op == "up" && c.Direct {
+		if err := a.restoreLearned(ctx); err != nil {
+			return fmt.Errorf("Восстановление обхода: %w", err)
+		}
+	}
 	argv := []string{filepath.Join(a.root, "network.sh"), op, c.LANInterface, c.LANIP, c.LANPrefix, fmt.Sprint(c.Port)}
 	argv = append(argv, args...)
 	return a.run(ctx, "/bin/sh", argv...)

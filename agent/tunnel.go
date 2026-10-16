@@ -33,9 +33,8 @@ func (a *Agent) disconnect() error {
 	defer cancel()
 	netErr := a.network(ctx, "down")
 	a.stopDNS()
-	a.learnedMu.Lock()
-	a.learnedDirect, a.learnedVPN = nil, nil
-	a.learnedMu.Unlock()
+	// Client DNS caches outlive a reconnect/server switch. Keep the addresses
+	// for the current policy and restore them before redirecting LAN again.
 	if a.stopTunnel != nil {
 		a.stopTunnel()
 		a.stopTunnel = nil

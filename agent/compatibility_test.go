@@ -160,6 +160,50 @@ func TestLearnedIPsRestoredWithoutExpiration(t *testing.T) {
 	}
 }
 
+func TestReconnectRestoresBypassBeforeRedirectingLAN(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		a := testAgent(t)
+		a.cfg.Direct = enabled
+		a.learnedDirect = map[string]bool{"192.0.2.7": true}
+		var events []string
+		a.restoreSets = func(ctx context.Context, data string) error {
+			events = append(events, "restore")
+			if !strings.Contains(data, "svk_direct 192.0.2.7 -exist") {
+				t.Fatal(data)
+			}
+			return nil
+		}
+		a.run = func(ctx context.Context, name string, args ...string) error {
+			events = append(events, "redirect")
+			return nil
+		}
+		if err := a.network(context.Background(), "up"); err != nil {
+			t.Fatal(err)
+		}
+		want := "[redirect]"
+		if enabled {
+			want = "[restore redirect]"
+		}
+		if fmt.Sprint(events) != want {
+			t.Fatal(enabled, events)
+		}
+	}
+}
+
+func TestReconnectStopsBeforeLANIfBypassRestoreFails(t *testing.T) {
+	a := testAgent(t)
+	a.cfg.Direct = true
+	a.learnedDirect = map[string]bool{"192.0.2.7": true}
+	a.restoreSets = func(ctx context.Context, data string) error { return fmt.Errorf("restore failed") }
+	a.run = func(ctx context.Context, name string, args ...string) error {
+		t.Fatal("LAN redirected without bypass")
+		return nil
+	}
+	if err := a.network(context.Background(), "up"); err == nil {
+		t.Fatal("bypass failure reported as success")
+	}
+}
+
 func TestUpdateStartRequiresSilentAccount(t *testing.T) {
 	a := testAgent(t)
 	r := httptest.NewRequest("POST", "http://192.168.1.1:8787/cgi-bin/silent-api/update-start", strings.NewReader(`{}`))

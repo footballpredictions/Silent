@@ -10,7 +10,7 @@ object NetworkRecoveryPolicy {
     /** VALIDATED мигает в doze <2с; дыра между вышками обычно длиннее. */
     const val VALIDATED_GAP_RECOVER_MS = 3_500L
 
-    /** Legacy window retained for source compatibility; long outages still recover. */
+    /** Окно, в котором возврат того же wifi/cell после blackout = реальное восстановление. */
     const val TRANSPORT_GAP_MAX_MS = 60_000L
 
     /**
@@ -95,10 +95,9 @@ object NetworkRecoveryPolicy {
             "link_handover",
             "wifi_gap_restored",
             "cell_gap_restored",
-            "validated_after_gap",
             "internet_restored",
             "underlying_blackout",
-            "watchdog_transport_stalled",
+            "data_path_stalled",
             -> 3
             "available_restored",
             "capabilities_restored",
@@ -141,7 +140,6 @@ object NetworkRecoveryPolicy {
             base == "watchdog_olcrtc_down" ||
             base == "watchdog_olcrtc_stuck" ||
             base == "watchdog_olcrtc_socks" ||
-            base == "watchdog_transport_stalled" ||
             base == "underlying_blackout" ||
             base == "rat_switch" ||
             base == "cell_gap_restored" ||
@@ -162,8 +160,7 @@ object NetworkRecoveryPolicy {
             base == "link_handover" ||
             base == "validated_after_gap" ||
             base == "internet_restored" ||
-            base == "phone_call_end" ||
-            base == "watchdog_transport_stalled"
+            base == "phone_call_end"
     }
 
     /**
@@ -205,13 +202,12 @@ object NetworkRecoveryPolicy {
         nowMs: Long,
         validated: Boolean,
         minGapMs: Long = TRANSPORT_GAP_MIN_MS,
-        @Suppress("UNUSED_PARAMETER") maxGapMs: Long = TRANSPORT_GAP_MAX_MS,
+        maxGapMs: Long = TRANSPORT_GAP_MAX_MS,
     ): SameTransportGap {
         if (lastBlackoutAtMs <= 0L) return SameTransportGap.NONE
         if (!validated) return SameTransportGap.NONE
         val dt = nowMs - lastBlackoutAtMs
-        // A long flight-mode/coverage outage is still a recovery, even after a minute.
-        if (dt >= minGapMs) return SameTransportGap.RESTORE
+        if (dt in minGapMs..maxGapMs) return SameTransportGap.RESTORE
         return SameTransportGap.DISCARD
     }
 
@@ -226,12 +222,12 @@ object NetworkRecoveryPolicy {
         lastBlackoutAtMs: Long,
         nowMs: Long,
         minBlackoutMs: Long = TRANSPORT_GAP_MIN_MS,
-        @Suppress("UNUSED_PARAMETER") maxBlackoutMs: Long = TRANSPORT_GAP_MAX_MS,
+        maxBlackoutMs: Long = TRANSPORT_GAP_MAX_MS,
     ): Boolean {
         if (pausedForNetwork || isTunnelPaused) return true
         if (lastBlackoutAtMs <= 0L) return false
         val dt = nowMs - lastBlackoutAtMs
-        return dt >= minBlackoutMs
+        return dt in minBlackoutMs..maxBlackoutMs
     }
 
     fun shouldRecoverAfterValidatedGap(
@@ -264,35 +260,28 @@ object NetworkRecoveryPolicy {
     }
 
     /**
-     * Реальная смена сети, адреса или подтверждённая дыра требуют новых сокетов.
-     * Короткие OEM-мигания отсекаются до этой точки по длительности дыры.
+     * События, где UDP/WG сокеты почти наверняка мертвы — kill даже при живом процессе.
+     * OEM-мигание той же соты / смена IPv4 сюда не входит.
      */
     fun mustRestartHealthyTransport(reason: String): Boolean {
         val base = reason.substringBefore(':')
         return base == "transport_switch" ||
             base == "rat_switch" ||
-            base == "phone_call_end" ||
-            base == "internet_restored" ||
             base == "cell_gap_restored" ||
             base == "wifi_gap_restored" ||
             base == "link_handover" ||
-            base == "validated_after_gap" ||
-            base == "watchdog_transport_stalled"
+            base == "data_path_stalled" ||
+            base == "phone_call_end" ||
+            base == "internet_restored"
     }
 
     /**
-     * Живой процесс не доказывает живые сетевые сокеты после handover.
-     * Без реального изменения сети сохраняем транспорт, чтобы idle не рвал VK Calls.
+     * VALIDATED alone is a system probe result, not a failed VPN data path.
+     * A confirmed lost network or failed data probes cannot use process liveness.
      */
-    fun shouldKeepHealthyTransport(
-        reason: String,
-        transportHealthy: Boolean,
-        wasPausedOrBlackout: Boolean = false,
-        activeWorkers: Int = 1,
-    ): Boolean {
-        if (!transportHealthy || activeWorkers <= 0) return false
-        return !mustRestartHealthyTransport(reason) &&
-            !needsFullRestartAfterNetworkEvent(reason, wasPausedOrBlackout)
+    fun shouldKeepHealthyTransport(reason: String, transportHealthy: Boolean): Boolean {
+        if (!transportHealthy) return false
+        return !mustRestartHealthyTransport(reason)
     }
 
     data class TransportRestartInput(
@@ -357,14 +346,4 @@ object NetworkRecoveryPolicy {
      */
     fun nextUnderlyingOnlineFlag(validatedOnline: Boolean, anyOnline: Boolean): Boolean =
         validatedOnline || anyOnline
-
-    fun shouldProtectOnlineRecovery(
-        recoveryPending: Boolean,
-        underlyingOnline: Boolean,
-        wakeUntilMs: Long,
-        nowMs: Long,
-    ): Boolean = recoveryPending && underlyingOnline && nowMs < wakeUntilMs
-
-    fun retryReason(reason: String): String =
-        reason.substringBefore(":retry").substringBefore(":suppressed") + ":retry"
 }

@@ -9,11 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -61,6 +61,8 @@ type routedTun struct {
 	packets      chan []byte
 	packetErrors chan error
 	packetPool   *sync.Pool
+	pathSent     atomic.Uint64
+	pathReceived atomic.Uint64
 }
 
 func (t *routedTun) choose(f flow, destination []byte) bool {
@@ -180,11 +182,13 @@ func (t *routedTun) Read(buffers [][]byte, sizes []int, offset int) (int, error)
 			continue
 		}
 		sizes[0] = n
+		t.pathSent.Add(1)
 		return 1, nil
 	}
 }
 func (t *routedTun) Write(buffers [][]byte, offset int) (int, error) {
 	for i, b := range buffers {
+		t.pathReceived.Add(1)
 		if t.ota.receive(b[offset:]) {
 			continue
 		}
@@ -279,7 +283,9 @@ func run(path string) error {
 			return err
 		}
 		defer adapter.ota.stack.Close()
-		server, serveErr := adapter.ota.serve(cfg.OTAPort)
+		server, serveErr := adapter.ota.serveWithHealth(cfg.OTAPort, func() (uint64, uint64) {
+			return adapter.pathSent.Load(), adapter.pathReceived.Load()
+		})
 		if serveErr != nil {
 			return serveErr
 		}
@@ -295,8 +301,7 @@ func run(path string) error {
 	}
 	fmt.Println("READY")
 	// Kotlin owns lifetime and closes stdin before closing the FD/process.
-	_, err = io.Copy(io.Discard, os.Stdin)
-	return err
+	return applyTargetUpdates(os.Stdin, adapter.policy, os.Stdout)
 }
 func main() {
 	if len(os.Args) != 2 {

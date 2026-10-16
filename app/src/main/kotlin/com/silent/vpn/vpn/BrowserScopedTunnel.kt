@@ -17,6 +17,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.InetSocketAddress
+import java.net.HttpURLConnection
+import java.net.Proxy
+import java.net.URL
+import java.security.MessageDigest
+import com.silent.vpn.policy.TunnelDataWatch
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -35,11 +40,41 @@ object BrowserScopedTunnel {
     private var control: LocalSocket? = null
     private var configuration: File? = null
     private var key: String? = null
+    private var deviceFingerprint: String? = null
+    private var targetRevision = 0L
+    private class TargetAck(val revision: Long) {
+        val done = CountDownLatch(1)
+        var applied = false
+    }
+    @Volatile private var targetAck: TargetAck? = null
 
     private fun alive(value: Process?): Boolean = value != null &&
         runCatching { value.exitValue(); false }.getOrDefault(true)
 
     @Synchronized fun isRunning(): Boolean = alive(process)
+
+    /** Local counters only: no radio traffic, DNS, timer, or additional WireGuard peer. */
+    internal fun pathHealth(): TunnelDataWatch.Sample? = localRequest("/_silent/health", 1_000) { connection ->
+        if (connection.responseCode != 200) return@localRequest null
+        val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+        TunnelDataWatch.Sample(json.getLong("sent"), json.getLong("received"))
+    }
+
+    internal fun probePath(): Boolean = localRequest("/api/updates/check?platform=android", 5_000) {
+        it.responseCode
+        it.getHeaderField("X-Silent-Upstream") == "1"
+    } ?: false
+
+    private fun <T> localRequest(path: String, timeout: Int, read: (HttpURLConnection) -> T): T? {
+        val connection = URL(OTA_BASE_URL + path).openConnection(Proxy.NO_PROXY) as HttpURLConnection
+        return try {
+            connection.connectTimeout = 1_000
+            connection.readTimeout = timeout
+            connection.useCaches = false
+            connection.instanceFollowRedirects = false
+            read(connection)
+        } catch (_: Exception) { null } finally { connection.disconnect() }
+    }
 
     fun browserUids(context: Context): Set<Int> {
         val pm = context.packageManager
@@ -62,10 +97,34 @@ object BrowserScopedTunnel {
         domains: Collection<String>,
         whitelist: Boolean,
         semanticKey: String,
-        forceSocketRebind: Boolean = false,
     ) {
-        // An unchanged WG policy does not mean sockets survived a network handover.
-        if (!forceSocketRebind && key == semanticKey && isRunning()) return
+        if (key == semanticKey && isRunning()) return
+        val browsers = if (whitelist || targets.isNotEmpty() || domains.isNotEmpty()) browserUids(context) else emptySet()
+        val shape = JSONObject().apply {
+            put("wg", config.toWgUserspaceString())
+            put("addresses", config.`interface`.addresses.joinToString(","))
+            put("dns", config.`interface`.dnsServers.joinToString(","))
+            put("mtu", config.`interface`.mtu.orElse(1200))
+            put("apps", JSONArray(appPolicy.packages.sorted()))
+            put("excludes", JSONArray(transportExcludes.sorted()))
+            put("domains", JSONArray(domains.sorted()))
+            put("whitelist", whitelist)
+            put("browsers", JSONArray(browsers.sorted()))
+        }.toString()
+        val fingerprint = MessageDigest.getInstance("SHA-256").digest(shape.toByteArray())
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        if (deviceFingerprint == fingerprint && isRunning()) {
+            val ack = TargetAck(++targetRevision)
+            targetAck = ack
+            try {
+                val update = JSONObject().put("revision", ack.revision).put("targets", JSONArray(targets.toList()))
+                checkNotNull(process).outputStream.apply { write((update.toString() + "\n").toByteArray()); flush() }
+                check(ack.done.await(2_500, TimeUnit.MILLISECONDS) && ack.applied) { "Не подтверждено обновление адресов обхода" }
+                key = semanticKey
+                DebugLog.i("BrowserRouting", "site addresses updated; WG/TUN preserved")
+                return
+            } finally { if (targetAck === ack) targetAck = null }
+        }
         stop()
         val binary = File(context.applicationInfo.nativeLibraryDir, "libsite-router.so")
         check(binary.canExecute()) { "Отсутствует модуль правил сайтов для этой архитектуры" }
@@ -111,7 +170,6 @@ object BrowserScopedTunnel {
                     put("debug", BuildConfig.DEBUG)
                     put("targets", JSONArray(targets.toList()))
                     put("domains", JSONArray(domains.toList()))
-                    val browsers = if (whitelist || targets.isNotEmpty() || domains.isNotEmpty()) browserUids(context) else emptySet()
                     put("browsers", JSONArray(browsers.toList()))
                 }.toString())
             }
@@ -160,11 +218,18 @@ object BrowserScopedTunnel {
                 try {
                     RouterProcessOutput.consume(native.inputStream) { line ->
                         if (line == "READY") { readySeen.set(true); ready.countDown() }
+                        else if (line.startsWith("POLICY_READY:")) {
+                            targetAck?.takeIf { it.revision == line.substringAfter(':').toLongOrNull() }?.let {
+                                it.applied = true
+                                it.done.countDown()
+                            }
+                        }
                         else if (line.startsWith("FLOW ")) DebugLog.d("BrowserRouting", line)
                         else DebugLog.w("BrowserRouting", line.take(180))
                     }
                 } finally {
                     ready.countDown()
+                    if (process === native) targetAck?.done?.countDown()
                     synchronized(this) {
                         // A retiring reader must never stop its replacement.
                         if (process === native) {
@@ -182,6 +247,7 @@ object BrowserScopedTunnel {
             configuration?.delete()
             configuration = null
             key = semanticKey
+            deviceFingerprint = fingerprint
             DebugLog.i("BrowserRouting", "browser-only site rules active; other apps keep app policy")
         } catch (error: Throwable) {
             stop()
@@ -209,6 +275,9 @@ object BrowserScopedTunnel {
 
     @Synchronized fun stop() {
         key = null
+        deviceFingerprint = null
+        targetAck?.done?.countDown()
+        targetAck = null
         val oldProcess = process
         process = null
         runCatching { oldProcess?.outputStream?.close() }

@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,18 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
+
+type droppingBind struct {
+	conn.Bind
+	drop atomic.Bool
+}
+
+func (b *droppingBind) Send(packets [][]byte, endpoint conn.Endpoint) error {
+	if b.drop.Load() {
+		return nil
+	}
+	return b.Bind.Send(packets, endpoint)
+}
 
 func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -95,7 +108,8 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 			}
 		}
 	}()
-	clientWG := device.NewDevice(adapter, conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, "test-client: "))
+	link := &droppingBind{Bind: conn.NewDefaultBind()}
+	clientWG := device.NewDevice(adapter, link, device.NewLogger(device.LogLevelError, "test-client: "))
 	exitWG := device.NewDevice(exitTun, conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, "test-exit: "))
 	defer exitWG.Close()
 	defer func() { adapter.packetErrors <- io.EOF; clientWG.Close() }()
@@ -135,6 +149,7 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := bytes.Repeat([]byte("apk-bytes-through-encrypted-wg"), 200_000)
+	applicationConnections := make(chan string, 4)
 	exitHTTP := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/updates/check":
@@ -142,6 +157,7 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 		case "/api/updates/download/android":
 			w.Write(payload)
 		case "/ordinary":
+			applicationConnections <- r.RemoteAddr
 			io.WriteString(w, "application VPN still works")
 		default:
 			http.NotFound(w, r)
@@ -168,6 +184,9 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 	resp.Body.Close()
 	if err != nil || resp.StatusCode != 200 || !bytes.Contains(metadata, []byte(`"available":true`)) {
 		t.Fatalf("Metadata: %d %s %v", resp.StatusCode, metadata, err)
+	}
+	if adapter.pathSent.Load() != 0 {
+		t.Fatal("Internal API probes must not create application-traffic demand")
 	}
 	appClient := &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 		return host.DialContextTCP(ctx, &net.TCPAddr{IP: net.ParseIP("10.66.66.1"), Port: 8000})
@@ -199,6 +218,29 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+	firstConnection := <-applicationConnections
+	var acknowledgement bytes.Buffer
+	if err := applyTargetUpdates(strings.NewReader("{\"revision\":1,\"targets\":[\"203.0.113.7\"]}\n"), adapter.policy, &acknowledgement); err != nil {
+		t.Fatal(err)
+	}
+	if acknowledgement.String() != "POLICY_READY:1\n" {
+		t.Fatal("Target update was not acknowledged")
+	}
+	ordinary, err := appClient.Get("http://10.66.66.1:8000/ordinary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, ordinary.Body)
+	ordinary.Body.Close()
+	if <-applicationConnections != firstConnection {
+		t.Fatal("A target refresh replaced the existing application TCP connection")
+	}
+	if adapter.pathSent.Load() == 0 || adapter.pathReceived.Load() == 0 {
+		t.Fatal("Application packets did not reach the real VPN path counters")
+	}
+	if resp.Header.Get("X-Silent-Upstream") != "1" {
+		t.Fatal("An actual encrypted upstream response was not marked")
+	}
 	if resp, err := client.Post(local.URL+"/api/updates/download/android", "text/plain", nil); err != nil {
 		t.Fatal(err)
 	} else {
@@ -214,5 +256,30 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 		if resp.StatusCode != 403 {
 			t.Fatal("Proxy allowed unrelated API")
 		}
+	}
+	// A carrier black hole can retain Network, IP, WG, and the native process.
+	// The real encrypted device must expose sent packets without replies.
+	time.Sleep(100 * time.Millisecond)
+	beforeSent, beforeReceived := adapter.pathSent.Load(), adapter.pathReceived.Load()
+	link.drop.Store(true)
+	blocked := &http.Client{Timeout: 400 * time.Millisecond, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return host.DialContextTCP(ctx, &net.TCPAddr{IP: net.ParseIP("10.66.66.1"), Port: 8000})
+	}}}
+	if response, err := blocked.Get("http://10.66.66.1:8000/ordinary"); err == nil {
+		response.Body.Close()
+		t.Fatal("Black-holed tunnel unexpectedly passed application traffic")
+	}
+	blocked.CloseIdleConnections()
+	if adapter.pathSent.Load() <= beforeSent || adapter.pathReceived.Load() != beforeReceived {
+		t.Fatal("The unchanged live WG device did not expose the stalled data path")
+	}
+	link.drop.Store(false)
+	response, err := client.Get(local.URL + "/api/updates/check?platform=android")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.Header.Get("X-Silent-Upstream") != "1" {
+		t.Fatal("The original WG device did not recover")
 	}
 }

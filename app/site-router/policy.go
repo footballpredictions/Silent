@@ -42,6 +42,8 @@ func (p *sitePolicy) direct(uid int, destination netip.Addr) bool {
 	if !p.browsers[uid] || netip.MustParsePrefix("10.66.66.0/24").Contains(destination) {
 		return false
 	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	found := false
 	for _, target := range p.targets {
 		if target.Contains(destination) {
@@ -50,13 +52,20 @@ func (p *sitePolicy) direct(uid int, destination netip.Addr) bool {
 		}
 	}
 	if !found {
-		p.mu.RLock()
 		until, exists := p.learned[destination]
 		found = exists && p.now().Before(until)
-		p.mu.RUnlock()
 	}
 	if p.whitelist {
 		return !found
 	}
 	return found
+}
+
+// DNS warm-up targets may rotate while the device, rules and app policy stay put.
+// Learned DNS and cached flow decisions belong to the running tunnel.
+func (p *sitePolicy) replaceTargets(targets []string) {
+	next := newPolicy(false, targets, nil)
+	p.mu.Lock()
+	p.targets = next.targets
+	p.mu.Unlock()
 }

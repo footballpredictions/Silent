@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -146,6 +147,11 @@ func otaHandler(transport http.RoundTripper) http.Handler {
 	upstream, _ := url.Parse("http://10.66.66.1:8000")
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	proxy.Transport = transport
+	// Only an upstream response proves the encrypted path. Local proxy errors do not.
+	proxy.ModifyResponse = func(r *http.Response) error {
+		r.Header.Set("X-Silent-Upstream", "1")
+		return nil
+	}
 	proxy.FlushInterval = -1
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || (r.URL.Path != "/api/updates/check" && r.URL.Path != "/api/updates/download/android") {
@@ -157,13 +163,27 @@ func otaHandler(transport http.RoundTripper) http.Handler {
 }
 
 func (o *otaStack) serve(port int) (*http.Server, error) {
+	return o.serveWithHealth(port, nil)
+}
+
+func (o *otaStack) serveWithHealth(port int, health func() (uint64, uint64)) (*http.Server, error) {
 	listener, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return nil, err
 	}
 	transport := &http.Transport{DialContext: o.dial, MaxIdleConns: 2, IdleConnTimeout: 30 * time.Second,
 		ResponseHeaderTimeout: 15 * time.Second, DisableCompression: true}
-	server := &http.Server{Handler: otaHandler(transport), ReadHeaderTimeout: 5 * time.Second}
+	upstream := otaHandler(transport)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if health != nil && r.Method == http.MethodGet && r.URL.Path == "/_silent/health" {
+			sent, received := health()
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]uint64{"sent": sent, "received": received})
+			return
+		}
+		upstream.ServeHTTP(w, r)
+	})
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	go server.Serve(listener)
 	return server, nil
 }

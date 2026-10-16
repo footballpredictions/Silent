@@ -110,13 +110,22 @@ object VpnNetworkHelper {
     /** Wi‑Fi/LTE без VPN — для DNS site-bypass (резолв мимо туннеля). */
     fun findUnderlyingNetwork(context: Context): Network? {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        // The transport process is excluded from the VPN; prefer its actual default.
+        cm.activeNetwork?.let { network ->
+            val caps = cm.getNetworkCapabilities(network)
+            if (caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return network
+        }
+        var fallback: Network? = null
         for (network in cm.allNetworks) {
             val caps = cm.getNetworkCapabilities(network) ?: continue
             if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
             if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
-            return network
+            if (fallback == null) fallback = network
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                hasUsableWifi(caps)) return network
         }
-        return null
+        return fallback
     }
 
     /** Есть ли NOT_VPN сеть с INTERNET (без требования VALIDATED — для детекта полного обрыва). */
@@ -133,22 +142,8 @@ object VpnNetworkHelper {
     /** Cellular без активного Wi‑Fi/Ethernet (Wi‑Fi радио «вкл» без сети не считается). */
     fun isOnMobileData(context: Context): Boolean {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        var cellInternet = false
-        var wifiInternet = false
-        for (network in cm.allNetworks) {
-            val caps = cm.getNetworkCapabilities(network) ?: continue
-            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
-            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
-                DebugLog.i(TAG, "isOnMobileData=false (ethernet)")
-                return false
-            }
-            if (hasUsableWifi(caps)) wifiInternet = true
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) cellInternet = true
-        }
-        val onMobile = cellInternet && !wifiInternet
-        DebugLog.i(TAG, "isOnMobileData=$onMobile cell=$cellInternet wifi=$wifiInternet")
-        return onMobile
+        val network = findUnderlyingNetwork(context) ?: return false
+        return cm.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
     }
 
     /**
@@ -157,23 +152,12 @@ object VpnNetworkHelper {
      */
     fun underlyingTransportFingerprint(context: Context): String {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        var hasEth = false
-        var hasWifi = false
-        var hasCell = false
-        for (network in cm.allNetworks) {
-            val caps = cm.getNetworkCapabilities(network) ?: continue
-            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
-            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
-            when {
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> hasEth = true
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> hasWifi = true
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> hasCell = true
-            }
-        }
+        val network = findUnderlyingNetwork(context) ?: return ""
+        val caps = cm.getNetworkCapabilities(network) ?: return ""
         return when {
-            hasEth -> "eth"
-            hasWifi -> "wifi"
-            hasCell -> "cell"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "eth"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cell"
             else -> ""
         }
     }

@@ -20,10 +20,20 @@ uci() {
         *) return 1 ;;
     esac
 }
+# DSA switch: cable clients often show as lan1/lan2, Wi-Fi as br-lan.
+sv_dev_is_lan() {
+    local d="$1" lan="$2"
+    [ "$d" = "$lan" ] && return 0
+    case "$lan:$d" in
+        br-lan:lan1|br-lan:lan2|br-lan:eth0|br-home:lan1) return 0 ;;
+    esac
+    return 1
+}
 ip() {
     case "$*" in
         '-4 neigh show 192.168.1.173') echo '192.168.1.173 dev br-lan lladdr 32:4f:a9:40:e8:63 REACHABLE' ;;
-        '-4 route get 192.168.1.173'|'-4 route get 192.168.1.195') echo "$REMOTE_ADDR dev ${FIXTURE_LAN_DEV:-br-lan} src 192.168.1.1" ;;
+        '-4 route get 192.168.1.173') echo "$REMOTE_ADDR dev ${FIXTURE_LAN_DEV:-br-lan} src 192.168.1.1" ;;
+        '-4 route get 192.168.1.195') echo "$REMOTE_ADDR dev lan1 src 192.168.1.1" ;;
         '-4 route get 192.168.3.9') echo '192.168.3.9 dev br-guest src 192.168.3.1' ;;
         '-4 route get 79.111.32.7'|'-4 route get 10.0.0.7') echo "$REMOTE_ADDR dev wan src 79.111.37.132" ;;
         '-4 route get 1.1.1.1') echo '1.1.1.1 via 79.111.32.1 dev wan src 79.111.37.132' ;;
@@ -76,11 +86,12 @@ class PanelLanAccessTests(unittest.TestCase):
     def test_wifi_phone_in_lan_allowed(self):
         self.assert_access("192.168.1.173", True)
 
-    def test_wired_pc_in_lan_allowed(self):
+    def test_wired_pc_on_dsa_lan_port_allowed(self):
+        # OpenWrt DSA: route get for a cable PC often says "dev lan1", not br-lan.
         self.assert_access("192.168.1.195", True)
 
     def test_configured_lan_device_allowed(self):
-        self.assert_access("192.168.1.195", True, "br-home")
+        self.assert_access("192.168.1.173", True, "br-home")
 
     def test_ipv6_lan_and_mapped_ipv4_allowed(self):
         for address in ["fd92:8ac2:23b8::42", "fe80::42", "::ffff:192.168.1.173"]:

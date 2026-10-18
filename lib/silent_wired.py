@@ -1,4 +1,4 @@
-"""Wi-Fi vs ethernet ifname heuristics for Silent UI (cable-only login)."""
+"""Wi-Fi vs ethernet ifname heuristics (legacy helpers; panel allows both)."""
 
 from __future__ import annotations
 

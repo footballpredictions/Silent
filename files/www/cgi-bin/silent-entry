@@ -20,7 +20,8 @@ if [ "$is_silent" -eq 1 ] && [ -f "$INDEX" ]; then
 			echo "Cache-Control: no-store"
 			echo
 			echo "<!doctype html><meta charset=utf-8><title>Silent VPN</title>"
-			echo "<p>Панель Silent VPN доступна только в локальной сети роутера.</p>"
+			echo "<p>Панель Silent VPN доступна по Wi-Fi или кабелю в сети роутера.</p>"
+			echo "<p>Если на телефоне или ПК включён свой Silent VPN — отключите его и откройте <code>http://IP_роутера</code> (без .silent.vpn).</p>"
 			exit 0
 		fi
 	fi

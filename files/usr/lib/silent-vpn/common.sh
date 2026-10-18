@@ -175,10 +175,24 @@ sv_addr_is_wifi_client() {
 	return 1
 }
 
+# True if $1 is the LAN L3 device or a bridge port under it (DSA lan1/lan2, eth0…).
+sv_dev_is_lan() {
+	local d="$1" lan="$2" master
+	[ -n "$d" ] && [ -n "$lan" ] || return 1
+	[ "$d" = "$lan" ] && return 0
+	[ -e "/sys/class/net/$lan/brif/$d" ] && return 0
+	if [ -L "/sys/class/net/$d/master" ]; then
+		master="$(basename "$(readlink "/sys/class/net/$d/master" 2>/dev/null)" 2>/dev/null)"
+		[ "$master" = "$lan" ] && return 0
+	fi
+	return 1
+}
+
 # Allow devices directly connected to the LAN, over either cable or Wi-Fi.
 # Private addresses alone are not enough: guest, WAN and VPN use them too.
+# DSA cable ports often appear as "dev lan1" in `ip route get`, not br-lan.
 sv_http_allow_lan() {
-	local addr family lan_dev route scope
+	local addr family lan_dev route scope dev
 	addr="$(printf '%s' "${REMOTE_ADDR:-}" | tr 'A-Z' 'a-z')"
 	addr="${addr#::ffff:}"
 	[ -n "$addr" ] || return 1
@@ -198,7 +212,7 @@ sv_http_allow_lan() {
 			family=-6
 			scope="${addr#*%}"
 			if [ "$scope" != "$addr" ]; then
-				[ "$scope" = "$lan_dev" ] || return 1
+				sv_dev_is_lan "$scope" "$lan_dev" || return 1
 				addr="${addr%%%*}"
 			fi
 			case "$addr" in *[!0-9a-f:]*) return 1 ;; esac
@@ -211,13 +225,11 @@ sv_http_allow_lan() {
 			;;
 	esac
 	route="$(ip "$family" route get "$addr" 2>/dev/null)" || return 1
-	printf '%s\n' "$route" | awk -v lan="$lan_dev" '
-		{ for (i = 1; i <= NF; i++) {
-			if ($i == "via") gateway = 1
-			if ($i == "dev" && $(i + 1) == lan) direct_lan = 1
-		} }
-		END { exit !(direct_lan && !gateway) }
-	'
+	case "$route" in
+		*" via "*) return 1 ;;
+	esac
+	dev="$(printf '%s\n' "$route" | awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+	sv_dev_is_lan "$dev" "$lan_dev"
 }
 
 # Compatibility with already installed CGI files during a small-file upgrade.

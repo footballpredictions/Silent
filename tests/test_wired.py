@@ -24,7 +24,13 @@ class WiredGuardTests(unittest.TestCase):
         api = (root / "files/www/cgi-bin/silent-api").read_text(encoding="utf-8")
         self.assertIn("sv_http_allow_lan", entry)
         self.assertIn("sv_http_allow_lan", api)
-        self.assertIn("локальной сети", entry.lower())
+        self.assertNotIn("только по кабел", entry.lower())
+        self.assertNotIn("только по кабел", api.lower())
+        self.assertIn("Wi-Fi", entry)
+        self.assertIn("кабел", entry.lower())
+        self.assertIn("Wi-Fi", api)
+        deny = (root / "files/usr/lib/silent-vpn/common.sh").read_text(encoding="utf-8")
+        self.assertIn("sv_dev_is_lan", deny)
 
 
 if __name__ == "__main__":

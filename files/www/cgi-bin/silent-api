@@ -24,7 +24,7 @@ json_out() {
 }
 
 if ! sv_http_allow_lan; then
-	json_out 403 '{"detail":"Панель Silent VPN доступна только в локальной сети роутера"}'
+	json_out 403 '{"detail":"Панель доступна по Wi-Fi или кабелю в сети роутера. Если на телефоне или ПК включён Silent VPN — отключите его и откройте http://IP_роутера"}'
 	exit 0
 fi
 

@@ -18,6 +18,7 @@ sv_hive_post() {
 			2*|4*) [ ! -s "$out" ] || break ;;
 		esac
 	done
+	rm -f "$tmp"
 	case "$code" in 000|5*) printf '%s\n' '{"detail":"Сервер временно недоступен. Повторите попытку."}' > "$out" ;; esac
 	echo "$code" > "$SV_RUN/http.code"
 	echo "$out"
@@ -152,11 +153,68 @@ sv_hive_method() {
 
 sv_hive_rename_device() {
 	local id="$1" name="$2"
-	sv_hive_method PATCH "/api/users/devices/$id" "$(printf '{"device_name":"%s"}' "$name")"
+	sv_hive_session_request PATCH "/api/users/devices/$id" "$(printf '{"device_name":"%s"}' "$name")"
 }
 
 sv_hive_delete_device() {
-	sv_hive_method DELETE "/api/users/devices/$1" ""
+	sv_hive_session_request DELETE "/api/users/devices/$1" ""
+}
+
+# Refresh only after an authoritative 401, through the same tunnel-first API chain.
+# A network failure must not make the panel erase its still valid refresh token.
+sv_hive_refresh_access() (
+	local old refresh out code access next current lock access_tmp refresh_tmp
+	old="$(sv_token)"
+	refresh="$(cat "$SV_VAR/refresh_token" 2>/dev/null)"
+	case "$refresh" in ""|*[!a-zA-Z0-9_.-]*) return 2 ;; esac
+	lock="$SV_RUN/session-refresh.lock"
+	mkdir "$lock" 2>/dev/null || return 1
+	out=""
+	access_tmp=""
+	refresh_tmp=""
+	trap '[ -z "$out" ] || rm -f "$out"; [ -z "$access_tmp" ] || rm -f "$access_tmp"; [ -z "$refresh_tmp" ] || rm -f "$refresh_tmp"; rmdir "$lock" 2>/dev/null' 0
+	out="$(sv_hive_post /api/auth/refresh "$(printf '{"refresh_token":"%s"}' "$refresh")")"
+	code="$(cat "$SV_RUN/http.code" 2>/dev/null)"
+	case "$code" in 2*) ;; 401|403) return 2 ;; *) return 1 ;; esac
+	access="$(jsonfilter -i "$out" -e '@.access_token' 2>/dev/null)"
+	next="$(jsonfilter -i "$out" -e '@.refresh_token' 2>/dev/null)"
+	case "$access" in ""|*[!a-zA-Z0-9_.-]*) return 1 ;; esac
+	current="$(sv_token)"
+	# Do not restore a login that was explicitly closed while refresh was pending.
+	[ -n "$current" ] || return 2
+	[ "$current" = "$old" ] || return 0
+	access_tmp="$(mktemp "$SV_VAR/access.XXXXXX")" || return 1
+	printf '%s' "$access" > "$access_tmp" || return 1
+	case "$next" in ""|*[!a-zA-Z0-9_.-]*) ;; *)
+		refresh_tmp="$(mktemp "$SV_VAR/refresh.XXXXXX")" || return 1
+		printf '%s' "$next" > "$refresh_tmp" || return 1 ;;
+	esac
+	[ "$(sv_token)" = "$old" ] || return 2
+	mv -f "$access_tmp" "$SV_VAR/access_token" || return 1
+	[ -z "$refresh_tmp" ] || mv -f "$refresh_tmp" "$SV_VAR/refresh_token" || return 1
+	return 0
+)
+
+sv_hive_session_request() {
+	local method="$1" path="$2" json="${3:-}" out code refreshed
+	if [ "$method" = GET ]; then out="$(sv_hive_get "$path")"
+	else out="$(sv_hive_method "$method" "$path" "$json")"; fi
+	code="$(cat "$SV_RUN/http.code" 2>/dev/null)"
+	if [ "$code" = 401 ]; then
+		sv_hive_refresh_access
+		refreshed=$?
+		if [ "$refreshed" -eq 0 ]; then
+			rm -f "$out"
+			if [ "$method" = GET ]; then out="$(sv_hive_get "$path")"
+			else out="$(sv_hive_method "$method" "$path" "$json")"; fi
+		elif [ "$refreshed" -eq 1 ]; then
+			echo 503 > "$SV_RUN/http.code"
+			printf '%s\n' '{"detail":"Не удалось обновить сессию. Повторите попытку."}' > "$out"
+		else
+			echo 401 > "$SV_RUN/http.code"
+		fi
+	fi
+	echo "$out"
 }
 
 sv_hive_theme() {
@@ -197,7 +255,7 @@ sv_hive_forgot() {
 }
 
 sv_hive_me() {
-	sv_hive_get "/api/users/me"
+	sv_hive_session_request GET "/api/users/me"
 }
 
 sv_hive_register_device() {

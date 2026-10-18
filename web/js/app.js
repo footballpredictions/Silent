@@ -157,10 +157,12 @@ function canRestoreSession() {
 let sessionVersion = 0;
 let connectionVersion = 0;
 let profileRequest = null;
+let devicesVersion = 0;
+let deviceMutation = false;
 
 function loadProfile(version = sessionVersion, knownStatus = null) {
-  if (profileRequest?.version === version) return profileRequest.promise;
-  const request = { version };
+  if (profileRequest?.version === version && profileRequest.revision === devicesVersion) return profileRequest.promise;
+  const request = { version, revision: devicesVersion };
   const connection = connectionVersion;
   request.promise = (async () => {
     try {
@@ -168,7 +170,7 @@ function loadProfile(version = sessionVersion, knownStatus = null) {
         api.profile(), knownStatus ? Promise.resolve(knownStatus) : api.status().catch(() => null),
       ]);
       if (!profile?.email) throw new Error(detailText(profile?.detail) || "Не удалось загрузить аккаунт");
-      if (version !== sessionVersion) return false;
+      if (version !== sessionVersion || request.revision !== devicesVersion) return false;
       if (status && connection === connectionVersion && !state.connecting && !state.disconnecting) {
         state.connected = !!status.connected;
       }
@@ -198,7 +200,7 @@ function loadProfile(version = sessionVersion, knownStatus = null) {
 }
 
 async function refreshProfile() {
-  if (!state.session || state.loading) return;
+  if (!state.session || state.loading || deviceMutation) return;
   const version = sessionVersion;
   try { await loadProfile(version); }
   catch (e) {
@@ -900,38 +902,62 @@ async function forgot() {
 }
 
 async function renameDevice(id) {
-  if (!id) return;
+  if (!id || deviceMutation) return;
   const current = (state.profile?.devices || []).find((d) => d.id === id);
   const initial = sessionRouterName(current || {}) || "";
   const name = window.prompt("Имя сессии", initial);
   if (name == null) return;
   const trimmed = String(name).trim().slice(0, 64);
   if (!trimmed) return;
+  const version = sessionVersion;
+  deviceMutation = true;
+  devicesVersion++;
   try {
     await api.renameDevice(id, trimmed);
+    if (version !== sessionVersion) return;
+    devicesVersion++;
+    deviceMutation = false;
+    if (state.profile?.devices) state.profile.devices = state.profile.devices.map(d => d.id === id ? {...d, device_name:trimmed} : d);
     await refreshProfile();
   } catch (e) {
+    if (version !== sessionVersion) return;
     state.profileError = e.message || "Не удалось переименовать";
     render();
+  } finally {
+    deviceMutation = false;
   }
 }
 
 async function deleteDevice(id, isSelf) {
-  if (!id) return;
+  if (!id || deviceMutation) return;
   const msg = isSelf
     ? "Удалить эту сессию и выйти из аккаунта на роутере? VPN при этом не отключится."
     : "Удалить эту сессию?";
   if (!window.confirm(msg)) return;
+  const version = sessionVersion;
+  deviceMutation = true;
+  devicesVersion++;
   try {
     await api.deleteDevice(id);
+    if (version !== sessionVersion) return;
+    devicesVersion++;
+    deviceMutation = false;
+    if (state.profile?.devices) {
+      state.profile.devices = state.profile.devices.filter(d => d.id !== id);
+      state.profile.devices_count = state.profile.devices.length;
+      state.profile.connected_count = state.profile.devices.filter(d => d.is_connected).length;
+    }
     if (isSelf) {
       await logout();
       return;
     }
     await refreshProfile();
   } catch (e) {
+    if (version !== sessionVersion) return;
     state.profileError = e.message || "Не удалось удалить сессию";
     render();
+  } finally {
+    deviceMutation = false;
   }
 }
 

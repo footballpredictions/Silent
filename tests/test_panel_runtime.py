@@ -51,6 +51,32 @@ function panel({local = storage(), tab = storage(new Map([['sv-panel-session','1
 
 @unittest.skipUnless(NODE, "Node required for real panel runtime scenarios")
 class PanelRuntimeTests(unittest.TestCase):
+    def test_session_mutation_is_not_undone_by_an_older_profile(self):
+        self.run_panel(r'''
+let resolveOld;const original={...profile,devices_count:1,devices:[{id:'other',device_name:'Old',is_connected:true}]};
+const p=panel({api:{profile:async()=>original,deleteDevice:async()=>({ok:true})}});await p.boot();
+p.api.profile=()=>new Promise(done=>{resolveOld=done;});
+const pending=p.handle('page',{dataset:{page:'devices'}});
+await Promise.resolve();
+p.api.profile=async()=>({...profile,devices_count:0,devices:[]});
+await p.handle('device-delete',{dataset:{id:'other',self:'0'}});
+resolveOld(original);await pending;
+assert.equal(p.state.profile.devices.length,0);
+''')
+
+    def test_rename_survives_followup_profile_network_failure(self):
+        self.run_panel(r'''
+let failing=false, renamed;
+const original={...profile,devices:[{id:'other',device_name:'Android',is_connected:true},{id:'pc',device_name:'PC',is_connected:false}]};
+const p=panel({api:{profile:async()=>{if(failing)throw new Error('WAN blocked');return original;},renameDevice:async(id,name)=>{renamed={id,name};}}});
+await p.boot();failing=true;
+await p.handle('device-rename',{dataset:{id:'other'}});
+assert.equal(renamed.id,'other');assert.equal(renamed.name,'Renamed');
+assert.equal(p.state.profile.devices[0].device_name,'Renamed');
+assert.equal(p.state.profile.devices[1].device_name,'PC');
+assert.ok(p.state.profileError.includes('WAN blocked'));
+''')
+
     def test_update_is_only_on_home_and_menu_has_close_and_back(self):
         self.run_panel('''
 const p=panel({api:{updateCheck:async()=>({phase:'available',version:'1.0.170'}),updateStatus:async()=>({phase:'idle'})}});

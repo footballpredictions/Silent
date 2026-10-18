@@ -447,8 +447,8 @@ function pageInner(p, t) {
   if (page === "support") return supportPage(t);
   if (page === "about") {
     return `<h2>Silent VPN</h2>
-      <p class="hint">Версия ${esc(state.installedVersion)} · OpenWrt</p>
-      <p class="hint" style="margin-top:8px">Туннель как у PC и Android: WireGuard + WDTT. Этот веб — только панель роутера.</p>`;
+      <p class="hint" style="white-space:pre-line;margin-top:8px">Версия ${esc(state.installedVersion)}
+WireGuard-туннель через VK TURN/DTLS</p>`;
   }
   return "";
 }

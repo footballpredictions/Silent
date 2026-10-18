@@ -85,7 +85,10 @@ await p.logout();assert.equal(p.state.session,null);
 const p=panel({api:{status:async()=>({session:true,version:'1.0.171'})}});
 await p.boot(); await p.handle('page',{dataset:{page:'about'}});
 assert.ok(p.app.innerHTML.includes('Версия 1.0.171'));
+assert.ok(p.app.innerHTML.includes('WireGuard-туннель через VK TURN/DTLS'));
 assert.ok(!p.app.innerHTML.includes('Версия 1.0.170'));
+assert.ok(!p.app.innerHTML.includes('WDTT'));
+assert.ok(!p.app.innerHTML.includes('только панель'));
 ''')
 
     def run_panel(self, scenario):

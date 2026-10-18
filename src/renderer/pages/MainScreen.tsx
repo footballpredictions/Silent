@@ -283,6 +283,8 @@ export default function MainScreen({
   const [updateDownloading, setUpdateDownloading] = useState(false)
   const [updateProgress, setUpdateProgress] = useState(0)
   const [hashSyncKey, setHashSyncKey] = useState(0)
+  const profileFetchVersionRef = useRef(0)
+  const [sessionsError, setSessionsError] = useState('')
 
   const applyServerProfile = useCallback((p: Profile) => {
     // Сессия пропала на сервере — не разлогиниваем: перерегистрируем устройство.
@@ -365,15 +367,17 @@ export default function MainScreen({
   }, [applyServerProfile])
 
   const fetchProfile = useCallback(async () => {
+    const version = ++profileFetchVersionRef.current
     try {
       const res = await api.get('/api/users/me')
+      if (version !== profileFetchVersionRef.current) return undefined
       applyServerProfile(res.data as Profile)
+      setSessionsError('')
       if (res.data.vk_user_id) saveVkUserId(res.data.vk_user_id)
       return res.data as Profile
     } catch {
-      const cached = getCachedProfile<Profile>()
-      if (cached) setProfile(cached)
-      return cached
+      if (version === profileFetchVersionRef.current) setSessionsError('Не удалось обновить сессии. Показаны последние данные.')
+      return undefined
     }
   }, [applyServerProfile])
 
@@ -505,7 +509,7 @@ export default function MainScreen({
   useEffect(() => {
     if (menuPage !== 'devices') return
     fetchProfile()
-    const id = window.setInterval(() => fetchProfile(), 30_000)
+    const id = window.setInterval(() => fetchProfile(), 10_000)
     return () => clearInterval(id)
   }, [menuPage, fetchProfile])
 
@@ -1260,6 +1264,7 @@ export default function MainScreen({
   const [loggingOut, setLoggingOut] = useState(false)
 
   const handleLogout = () => {
+    profileFetchVersionRef.current++
     if (logoutBusyRef.current) return
     logoutBusyRef.current = true
     setLoggingOut(true)
@@ -1316,14 +1321,23 @@ export default function MainScreen({
   const saveRename = async () => {
     if (!renameTarget || renameSaving) return
     setRenameSaving(true)
+    profileFetchVersionRef.current++
     try {
       const name = renameText.trim() || defaultDeviceName(renameTarget.device_type)
       await api.patch(`/api/users/devices/${renameTarget.id}`, { device_name: name })
+      profileFetchVersionRef.current++
+      setProfile(p => {
+        if (!p) return p
+        const next = { ...p, devices: p.devices.map(d => d.id === renameTarget.id ? { ...d, device_name: name } : d) }
+        saveCachedProfile(next)
+        return next
+      })
       setRenameTarget(null)
-      fetchProfile()
+      await fetchProfile()
     } catch (e: any) {
       alert(e.response?.data?.detail || 'Ошибка переименования')
     } finally {
+      profileFetchVersionRef.current++
       setRenameSaving(false)
     }
   }
@@ -1336,11 +1350,20 @@ export default function MainScreen({
       : 'Удалить сессию этого устройства?'
     if (!window.confirm(msg)) return
     setDeleteSavingId(d.id)
+    profileFetchVersionRef.current++
     try {
       await api.delete(`/api/users/devices/${d.id}`)
+      profileFetchVersionRef.current++
       if (isSelf) {
         handleLogout()
       } else {
+        setProfile(p => {
+          if (!p) return p
+          const devices = p.devices.filter(device => device.id !== d.id)
+          const next = { ...p, devices, devices_count: devices.length }
+          saveCachedProfile(next)
+          return next
+        })
         await fetchProfile()
       }
     } catch (e: any) {
@@ -2032,6 +2055,7 @@ export default function MainScreen({
                 ← Назад
               </button>
               <div className="text-sm font-semibold mb-1 text-left">Сессии</div>
+              {sessionsError && <p role="status" className="text-xs mb-3" style={{ color: muted }}>{sessionsError}</p>}
               <div className="text-[11px] mb-3 text-left" style={{ color: muted }}>
                 VPN онлайн: {profile?.devices?.filter(d => d.is_connected || (localOnline && isCurrentSessionDevice(d, sessionDeviceId))).length || 0} из {profile?.devices_count || 0}
               </div>
